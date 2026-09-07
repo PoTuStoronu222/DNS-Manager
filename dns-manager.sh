@@ -4,7 +4,7 @@ MANAGER_PATH="/usr/bin/dns-manager"
 # ==========================================
 # ОСНОВНЫЕ ПАРАМЕТРЫ
 # ==========================================
-VERSION="1.13-HYBRID"
+VERSION="1.14"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -745,39 +745,62 @@ test_one_dns() {
 id="$1"; url="$(normalize_url "$(dns_url "$id")")"; name="$(dns_name "$id")"; cat="$(dns_cat "$id")"
 host="$(url_host "$url")"
 port="$(url_port "$url")"
-ipx="$(resolve_host "$host")"
-[ -n "$ipx" ] || { printf '%s|%s|%s|-1|BOOTSTRAP_FAIL\n' "$id" "$cat" "$name" > "$TMP_DIR/t.$id"; return; }
 q="$TMP_DIR/q.$id"; body="$TMP_DIR/body.$id"; hdr="$TMP_DIR/h.$id"
 : > "$body"; : > "$hdr"
 printf '\022\064\001\000\000\001\000\000\000\000\000\000\007example\003com\000\000\001\000\001' > "$q"
-result="$(curl -sS -o "$body" -D "$hdr" -w '%{http_code}|%{time_total}|%{errormsg}' \
---connect-timeout 3 --max-time 6 --resolve "$host:$port:$ipx" \
--H 'Content-Type: application/dns-message' -H 'Accept: application/dns-message' \
---data-binary "@$q" "$url" 2>/dev/null)"
-code="${result%%|*}"; rest="${result#*|}"; tim="${rest%%|*}"; err="${rest#*|}"
-[ -z "$code" ] && code="000"
-bytes="$(wc -c < "$body" 2>/dev/null | tr -d ' ')"; [ -n "$bytes" ] || bytes=0
-ctype="$(awk -F': *' 'tolower($1)=="content-type"{print tolower($2)}' "$hdr" 2>/dev/null | tail -n1 | tr -d '\r')"
-case "$tim" in ''|0) ms=-1;; *) ms="$(awk -v t="$tim" 'BEGIN{v=t*1000; if(v<1)v=1; printf "%.0f", v}')";; esac
-case "$code" in
-200)
-case "$ctype" in *application/dns-message*) ct_ok=yes;; *) ct_ok=no;; esac
-if [ "$bytes" -ge 12 ] && [ "$ct_ok" = yes ]; then st=OK; else st=BAD_DOH_RESPONSE; fi ;;
-000)
-elc="$(printf '%s' "$err" | tr '[:upper:]' '[:lower:]')"
-case "$elc" in
-*timed*|*timeout*) st=CURL_TIMEOUT;;
-*ssl*|*tls*|*certificate*|*schannel*) st=TLS_ERROR;;
-*could\ not\ resolve*|*resolve\ host*|*name\ or\ service*) st=DNS_ERROR;;
-*connection\ refused*|*failed\ to\ connect*|*connection\ reset*|*could\ not\ connect*) st=CONNECTION_ERROR;;
-*) st=CURL_ERROR;;
-esac ;;
-4??|5??) st="HTTP_$code" ;;
-*) st="HTTP_$code" ;;
-esac
+
+# У одного хоста может быть несколько A-записей. Проверяем несколько адресов,
+# иначе единичный плохой IP даёт ложный результат для конкретной сети.
+_ips=""
+if [ "$HAS_DIG" = yes ]; then
+    for bs in $(printf '%s' "$BOOTSTRAP_DNS" | tr ',' ' '); do
+        _chunk="$(dig +short +time=2 +tries=1 "@$bs" "$host" A 2>/dev/null | awk '/^[0-9]+(\.[0-9]+){3}$/{print}' | head -n 4)"
+        [ -n "$_chunk" ] && { _ips="$_chunk"; break; }
+    done
+fi
+[ -n "$_ips" ] || { _one="$(resolve_host "$host")"; [ -n "$_one" ] && _ips="$_one"; }
+[ -n "$_ips" ] || { printf '%s|%s|%s|-1|BOOTSTRAP_FAIL\n' "$id" "$cat" "$name" > "$TMP_DIR/t.$id"; rm -f "$q" "$body" "$hdr"; return; }
+
+_best_ms=-1; st=CONNECTION_ERROR
+while IFS= read -r ipx; do
+    [ -n "$ipx" ] || continue
+    : > "$body"; : > "$hdr"
+    result="$(curl -sS -o "$body" -D "$hdr" -w '%{http_code}|%{time_total}|%{errormsg}' \
+    --connect-timeout 3 --max-time 6 --resolve "$host:$port:$ipx" \
+    -H 'Content-Type: application/dns-message' -H 'Accept: application/dns-message' \
+    --data-binary "@$q" "$url" 2>/dev/null)"
+    code="${result%%|*}"; rest="${result#*|}"; tim="${rest%%|*}"; err="${rest#*|}"
+    [ -z "$code" ] && code="000"
+    bytes="$(wc -c < "$body" 2>/dev/null | tr -d ' ')"; [ -n "$bytes" ] || bytes=0
+    ctype="$(awk -F': *' 'tolower($1)=="content-type"{print tolower($2)}' "$hdr" 2>/dev/null | tail -n1 | tr -d '\r')"
+    case "$tim" in ''|0) ms=-1;; *) ms="$(awk -v t="$tim" 'BEGIN{v=t*1000; if(v<1)v=1; printf "%.0f", v}')";; esac
+    case "$code" in
+    200)
+        case "$ctype" in *application/dns-message*) ct_ok=yes;; *) ct_ok=no;; esac
+        if [ "$bytes" -ge 12 ] && [ "$ct_ok" = yes ]; then
+            if [ "$_best_ms" -lt 0 ] || { [ "$ms" -ge 0 ] && [ "$ms" -lt "$_best_ms" ]; }; then _best_ms="$ms"; fi
+            st=OK
+        else st=BAD_DOH_RESPONSE; fi ;;
+    000)
+        elc="$(printf '%s' "$err" | tr '[:upper:]' '[:lower:]')"
+        case "$elc" in
+        *timed*|*timeout*) st=CURL_TIMEOUT;;
+        *ssl*|*tls*|*certificate*|*schannel*) st=TLS_ERROR;;
+        *could\ not\ resolve*|*resolve\ host*|*name\ or\ service*) st=DNS_ERROR;;
+        *connection\ refused*|*failed\ to\ connect*|*connection\ reset*|*could\ not\ connect*) st=CONNECTION_ERROR;;
+        *) st=CURL_ERROR;; esac ;;
+    4??|5??) st="HTTP_$code" ;;
+    *) st="HTTP_$code" ;;
+    esac
+    [ "$st" = OK ] && break
+done <<EOF_IPS
+$_ips
+EOF_IPS
+[ "$st" = OK ] && ms="$_best_ms" || ms=-1
 printf '%s|%s|%s|%s|%s\n' "$id" "$cat" "$name" "$ms" "$st" > "$TMP_DIR/t.$id"
 rm -f "$q" "$body" "$hdr"
 }
+
 # ==========================================
 # ТЕСТ КАТАЛОГА DNS
 # ==========================================
@@ -1977,6 +2000,136 @@ done
 uci commit https-dns-proxy 2>/dev/null || return 1
 return 0
 }
+# ==========================================
+# HYBRID — АДАПТИВНОЕ ПРИМЕНЕНИЕ
+# ==========================================
+HYBRID_STAGE_MIN="${HYBRID_STAGE_MIN:-1}"
+HYBRID_STAGE_FIRST_PORT=5153
+HYBRID_STAGE_LAST_PORT=5199
+STAGE_USED=""
+STAGE_SECTIONS=""
+
+stage_port_used() {
+_p="$1"; for _x in $STAGE_USED; do [ "$_x" = "$_p" ] && return 0; done; return 1
+}
+stage_free_port() {
+FREE_STAGE_PORT=""; _p="$HYBRID_STAGE_FIRST_PORT"
+while [ "$_p" -le "$HYBRID_STAGE_LAST_PORT" ]; do
+    stage_port_used "$_p" && { _p=$((_p+1)); continue; }
+    port_used_anywhere "$_p" >/dev/null 2>&1; _rc=$?
+    [ "$_rc" = 2 ] && return 2
+    if [ "$_rc" = 1 ]; then STAGE_USED="$STAGE_USED $_p"; FREE_STAGE_PORT="$_p"; return 0; fi
+    _p=$((_p+1))
+done
+return 1
+}
+stage_add_doh() {
+_slot="$1"; _id="$2"; _url="$(normalize_url "$(dns_url "$_id")")"; _name="$(dns_name "$_id")"
+[ -n "$_url" ] || return 1
+stage_free_port || return 1
+_port="$FREE_STAGE_PORT"
+_sec="$(uci add https-dns-proxy https-dns-proxy 2>/dev/null)" || return 1
+_b="$(printf '%s' "$BOOTSTRAP_DNS" | tr ',' ' ')"; [ -n "$_b" ] || _b="1.1.1.1"
+uci set "https-dns-proxy.$_sec.bootstrap_dns=$_b" || return 1
+uci set "https-dns-proxy.$_sec.listen_port=$_port" || return 1
+uci set "https-dns-proxy.$_sec.resolver_url=$_url" || return 1
+uci set "https-dns-proxy.$_sec.request_timeout=2" || return 1
+uci set "https-dns-proxy.$_sec.dns_manager=1" || return 1
+uci set "https-dns-proxy.$_sec.dns_manager_stage=1" || return 1
+STAGE_SECTIONS="$STAGE_SECTIONS $_sec"
+eval "PORT_$_slot=\"$_port\""
+printf "  ${C_CYAN}◇ Тестируется локальный DoH: %s → 127.0.0.1:%s${C_NC}\n" "$_name" "$_port"
+}
+stage_drop_by_url() {
+_url="$(normalize_url "$1")"; _i=0
+while uci -q get "https-dns-proxy.@https-dns-proxy[$_i]" >/dev/null 2>&1; do
+    _m="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].dns_manager_stage" 2>/dev/null)"
+    _u="$(normalize_url "$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].resolver_url" 2>/dev/null)")"
+    if [ "$_m" = 1 ] && [ "$_u" = "$_url" ]; then uci -q delete "https-dns-proxy.@https-dns-proxy[$_i]"; continue; fi
+    _i=$((_i+1))
+done
+}
+stage_local_ok() {
+_p="$1"; _domain="${2:-example.com}"; sleep 1
+if command -v dig >/dev/null 2>&1; then dig +time=3 +tries=1 @127.0.0.1 -p "$_p" "$_domain" A >/dev/null 2>&1 || return 1
+elif command -v nslookup >/dev/null 2>&1; then nslookup "$_domain" 127.0.0.1 >/dev/null 2>&1 || return 1
+else return 1; fi
+return 0
+}
+stage_restart_hdp() {
+uci commit https-dns-proxy || return 1
+/etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || return 1
+sleep 2
+}
+candidate_already_used() {
+_id="$1"
+for _slot in 1 2 3 4 5 6 RU RU_2; do eval "_v=\${SLOT_$_slot:-}"; [ "$_v" = "$_id" ] && return 0; done
+return 1
+}
+next_hybrid_candidate() {
+_wantcat="$1"; _fallback="$2"; _skip="$3"
+awk -F'|' -v c="$_wantcat" -v f="$_fallback" -v s="$_skip" '$5=="OK" && $1!=s && ($2==c || (f=="yes" && $2=="clean")){print}' "$TEST_RESULTS" 2>/dev/null |
+sort -t'|' -k4,4n |
+while IFS='|' read -r _id _cat _name _ms _st; do candidate_already_used "$_id" && continue; printf '%s\n' "$_id"; break; done
+}
+adaptive_hybrid_prepare() {
+[ "$DNS_PROFILE" = hybrid ] || return 0
+[ -s "$TEST_RESULTS" ] || test_dns_catalog || return 1
+STAGE_USED=""; STAGE_SECTIONS=""; _success=0
+_tried="$TMP_DIR/hybrid-stage-tried-$$"; : > "$_tried"
+
+for _slot in 1 2 3 4 5 6; do
+    eval "_want=\${SLOT_$_slot:-}"; _chosen=""
+    for _attempt in 1 2 3 4 5 6 7 8; do
+        if [ -n "$_want" ] && ! grep -qxF "$_want" "$_tried" 2>/dev/null; then _cand="$_want"; else _cand="$(next_hybrid_candidate bypass yes "$_want")"; fi
+        [ -n "$_cand" ] || break
+        printf '%s\n' "$_cand" >> "$_tried"
+        if stage_add_doh "$_slot" "$_cand"; then
+            if stage_restart_hdp && stage_local_ok "$PORT_$_slot" example.com; then _chosen="$_cand"; break; fi
+            stage_drop_by_url "$(dns_url "$_cand")"; stage_restart_hdp >/dev/null 2>&1 || true
+        fi
+        _want=""
+    done
+    if [ -n "$_chosen" ]; then
+        eval "SLOT_$_slot=\"$_chosen\""; eval "SLOT_${_slot}_CAT=\"bypass\""; _success=$((_success+1))
+        printf "  ${C_GREEN}✓ Слот %s подтверждён именно через локальный https-dns-proxy: %s${C_NC}\n" "$_slot" "$(dns_name "$_chosen")"
+    else
+        eval "SLOT_$_slot=\"\""; eval "SLOT_${_slot}_CAT=\"bypass\""
+        warn_msg "Не удалось поднять рабочий локальный DoH для слота $_slot. Слот будет пропущен."
+    fi
+done
+
+eval "_ruwant=\${SLOT_RU:-}"; _ruchosen=""
+for _attempt in 1 2 3 4 5 6; do
+    if [ -n "$_ruwant" ] && ! grep -qxF "$_ruwant" "$_tried" 2>/dev/null; then _cand="$_ruwant"; else
+        _cand="$(awk -F'|' '$5=="OK" && $2=="regional"{print}' "$TEST_RESULTS" 2>/dev/null | sort -t'|' -k4,4n | while IFS='|' read -r _id _cat _name _ms _st; do candidate_already_used "$_id" && continue; printf '%s\n' "$_id"; break; done)"
+    fi
+    [ -n "$_cand" ] || break
+    printf '%s\n' "$_cand" >> "$_tried"
+    if stage_add_doh RU "$_cand"; then
+        if stage_restart_hdp && stage_local_ok "$PORT_RU" yandex.ru; then _ruchosen="$_cand"; break; fi
+        stage_drop_by_url "$(dns_url "$_cand")"; stage_restart_hdp >/dev/null 2>&1 || true
+    fi
+    _ruwant=""
+done
+if [ -n "$_ruchosen" ]; then SLOT_RU="$_ruchosen"; SLOT_RU_CAT="regional"; printf "  ${C_GREEN}✓ RU подтверждён локально: %s${C_NC}\n" "$(dns_name "$_ruchosen")"; else SLOT_RU=""; SLOT_RU_CAT="regional"; PORT_RU=""; warn_msg "Региональный DoH локально не поднялся. RU-раздел отключён, чтобы не блокировать Apply."; fi
+rm -f "$_tried"
+[ "$_success" -ge "$HYBRID_STAGE_MIN" ] || { err_msg "На этом соединении удалось поднять только $_success DoH из 6. Нужны минимум $HYBRID_STAGE_MIN; старая конфигурация остаётся нетронутой."; return 1; }
+return 0
+}
+swap_to_staged_doh() {
+_removed=0; _i=0
+while uci -q get "https-dns-proxy.@https-dns-proxy[$_i]" >/dev/null 2>&1; do
+    _stage="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].dns_manager_stage" 2>/dev/null)"
+    if [ "$_stage" = 1 ]; then uci -q delete "https-dns-proxy.@https-dns-proxy[$_i].dns_manager_stage"; _i=$((_i+1)); continue; fi
+    _u="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].resolver_url" 2>/dev/null)"
+    [ -n "$_u" ] && printf "  ${C_PINK}↻ Старый DoH удалён при переключении: %s${C_NC}\n" "$_u"
+    uci -q delete "https-dns-proxy.@https-dns-proxy[$_i]" || return 1; _removed=$((_removed+1))
+done
+uci commit https-dns-proxy || return 1
+printf "${C_GREEN}✓ После локального canary-теста удалено старых/чужих DoH: %s. Остался только проверенный пул DNS Manager.${C_NC}\n" "$_removed"
+}
+
 apply_settings() {
 clear_screen
 run_discovery
@@ -1987,7 +2140,8 @@ fi
 printf "${C_TITLE}=== ⚡ ПОДГОТОВКА И ПЛАН ПРИМЕНЕНИЯ ===${C_NC}\n"
 printf "${C_WHITE}Будет настроено:${C_NC}\n"
 if [ "$DNS_PROFILE" = hybrid ]; then
-printf "  ${C_YELLOW}Hybrid SmartDNS — 6 DoH + Yandex RU${C_NC}\n"
+printf "  ${C_YELLOW}Hybrid SmartDNS — до 6 DoH + Yandex RU${C_NC}\n"
+printf "${C_WHITE}Сначала каждый кандидат будет поднят как локальный canary; заблокированные/неподнявшиеся DNS автоматически заменяются другими.${C_NC}\n"
 printf "${C_WHITE}Обычные запросы — параллельно:${C_NC}\n"
 for _s in 1 2 3 4 5 6; do
 eval "_v=\${SLOT_$_s}"
@@ -2040,26 +2194,22 @@ log_tx "PLAN" "all" "APPLY" "START" "version=$VERSION"
 
 if [ "$DOH_TOTAL" -gt 0 ] || [ "$DNS_PROFILE" = hybrid ]; then
 /etc/init.d/https-dns-proxy stop >/dev/null 2>&1 || true
-sleep 3
+sleep 2
 fi
 configure_hdp_manager_control || { err_msg "Не удалось зафиксировать DNS Manager как единственный источник настройки DoH/dnsmasq."; tx_restore_on_failure; return 1; }
-clear_all_doh_for_apply || { err_msg "Не удалось удалить старый слой DoH."; tx_restore_on_failure; return 1; }
-disc_listeners
-disc_dns
 if [ "$DNS_PROFILE" = hybrid ]; then
-TX_RESERVED_PORTS=""
-for s in 1 2 3 4 5 6; do
-eval "v=\${SLOT_$s}"
-ensure_doh_slot "$s" "$v" || { err_msg "Не удалось подготовить Hybrid-слот $s."; tx_restore_on_failure; return 1; }
-done
-ensure_doh_slot RU "$SLOT_RU" || { err_msg "Не удалось подготовить RU-слот 5059."; tx_restore_on_failure; return 1; }
+    disc_listeners; disc_dns
+    adaptive_hybrid_prepare || { tx_restore_on_failure; return 1; }
+    swap_to_staged_doh || { err_msg "Не удалось переключить проверенный DoH-пул."; tx_restore_on_failure; return 1; }
 else
-for s in 1 2 3 4 5 6; do
-eval "v=\${SLOT_$s}"
-ensure_doh_slot "$s" "$v" || { err_msg "Не удалось подготовить слот $s."; tx_restore_on_failure; return 1; }
-done
-ensure_doh_slot RU "$SLOT_RU" || { tx_restore_on_failure; return 1; }
-ensure_doh_slot RU_2 "$SLOT_RU_2" || { tx_restore_on_failure; return 1; }
+    disc_listeners; disc_dns
+    clear_all_doh_for_apply || { err_msg "Не удалось удалить старый слой DoH."; tx_restore_on_failure; return 1; }
+    for s in 1 2 3 4 5 6; do
+        eval "v=\${SLOT_$s}"
+        ensure_doh_slot "$s" "$v" || { err_msg "Не удалось подготовить слот $s."; tx_restore_on_failure; return 1; }
+    done
+    ensure_doh_slot RU "$SLOT_RU" || { tx_restore_on_failure; return 1; }
+    ensure_doh_slot RU_2 "$SLOT_RU_2" || { tx_restore_on_failure; return 1; }
 fi
 
 plan_dup="$(for s in 1 2 3 4 5 6 RU RU_2; do eval "p=\${PORT_$s}"; [ -n "$p" ] && printf '%s\n' "$p"; done | sort | uniq -d | head -n1)"
@@ -3021,7 +3171,7 @@ printf "${C_WHITE}Сначала роутер будет перечитан, з�
 printf "${C_WHITE}После теста будут выбраны только реально доступные кандидаты.${C_NC}\n"
 printf "${C_YELLOW}⏳ Идёт параллельный перебор всех DoH-эндпоинтов — это не самый быстрый шаг.${C_NC}\n"
 menu_section "ЧТО БУДЕТ НАСТРОЕНО"
-menu_note "✓ 6 разных рабочих DoH для общего пула"
+menu_note "✓ до 6 разных реально поднявшихся DoH для общего пула"
 menu_note "✓ Yandex RU для .ru / .su / .рф"
 menu_note "✓ dnsmasq :53"
 menu_note "✓ allservers=1"
