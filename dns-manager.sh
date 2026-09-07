@@ -4,7 +4,7 @@ MANAGER_PATH="/usr/bin/dns-manager"
 # ==========================================
 # ОСНОВНЫЕ ПАРАМЕТРЫ
 # ==========================================
-VERSION="1.22"
+VERSION="1.23"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -2120,6 +2120,50 @@ verify_selected_doh() {
     [ "$_checked" -gt 0 ] || { err_msg "После применения не найдено ни одного рабочего локального DNS-порта."; return 1; }
     return 0
 }
+rebuild_selected_hdp_sections() {
+    [ "$DNS_PROFILE" = hybrid ] || return 1
+    _keep_file="$TMP_DIR/rebuild-keep-$$"
+    : > "$_keep_file" || return 1
+    for _rs in 1 2 3 4 5 6 RU RU_2; do
+        eval "_rid=\${SLOT_${_rs}:-}"
+        [ -n "$_rid" ] || continue
+        eval "_rport=\${PORT_${_rs}:-}"
+        [ -n "$_rport" ] || _rport="$(hybrid_desired_port "$_rs")"
+        _rurl="$(normalize_url "$(dns_url "$_rid")")"
+        [ -n "$_rurl" ] || { rm -f "$_keep_file"; return 1; }
+        printf '%s|%s|%s\n' "$_rs" "$_rport" "$_rurl" >> "$_keep_file"
+    done
+
+    # В активной схеме все собственные секции DNS строятся заново строго
+    # по текущим слотам. Это исключает накопление старых секций и гарантирует
+    # ровно одну секцию на каждый выбранный порт.
+    _i=0
+    while uci -q get "https-dns-proxy.@https-dns-proxy[$_i]" >/dev/null 2>&1; do
+        _m="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].dns_manager" 2>/dev/null)"
+        if [ "$_m" = 1 ]; then
+            uci -q delete "https-dns-proxy.@https-dns-proxy[$_i]" || { rm -f "$_keep_file"; return 1; }
+            continue
+        fi
+        _i=$((_i+1))
+    done
+
+    while IFS='|' read -r _rs _rport _rurl; do
+        [ -n "$_rs" ] || continue
+        _sec="$(uci add https-dns-proxy https-dns-proxy 2>/dev/null)" || { rm -f "$_keep_file"; return 1; }
+        _bl="$(printf '%s' "$BOOTSTRAP_DNS_ALL" | tr ',' ' ')"
+        [ -n "$_bl" ] || _bl="1.1.1.1"
+        uci set "https-dns-proxy.$_sec.bootstrap_dns=$_bl" || { rm -f "$_keep_file"; return 1; }
+        uci set "https-dns-proxy.$_sec.listen_addr=127.0.0.1" || { rm -f "$_keep_file"; return 1; }
+        uci set "https-dns-proxy.$_sec.listen_port=$_rport" || { rm -f "$_keep_file"; return 1; }
+        uci set "https-dns-proxy.$_sec.resolver_url=$_rurl" || { rm -f "$_keep_file"; return 1; }
+        uci set "https-dns-proxy.$_sec.request_timeout=2" || { rm -f "$_keep_file"; return 1; }
+        uci set "https-dns-proxy.$_sec.dns_manager=1" || { rm -f "$_keep_file"; return 1; }
+    done < "$_keep_file"
+
+    uci commit https-dns-proxy || { rm -f "$_keep_file"; return 1; }
+    rm -f "$_keep_file"
+    return 0
+}
 replace_failed_slot_from_test() {
     _slot="$FAILED_SLOT"
     _old_id="$FAILED_SLOT_ID"
@@ -2131,15 +2175,13 @@ replace_failed_slot_from_test() {
 
     _tried="$TMP_DIR/repair-tried-$$-$_slot"
     _used="$TMP_DIR/repair-used-$$"
-    : > "$_tried"
-    : > "$_used"
+    : > "$_tried" || return 1
+    : > "$_used" || { rm -f "$_tried"; return 1; }
     for _s in 1 2 3 4 5 6 RU RU_2; do
         eval "_u_id=\${SLOT_${_s}:-}"
         [ -n "$_u_id" ] || continue
         printf '%s\n' "$(normalize_url "$(dns_url "$_u_id")")" >> "$_used"
     done
-
-    _old_url="$(normalize_url "$(dns_url "$_old_id")")"
     printf '%s\n' "$_old_id" >> "$_tried"
 
     while IFS='|' read -r _rid _rcat _rname _rms _rst; do
@@ -2149,7 +2191,13 @@ replace_failed_slot_from_test() {
         [ "$_rid" = "$_old_id" ] && continue
         case "$_slot" in
             RU|RU_2) [ "$_rcat" = regional ] || continue ;;
-            *) case "$_rcat" in bypass|clean) ;; *) continue ;; esac ;;
+            *)
+                if [ "$DNS_SELECTION_MODE" = quick ]; then
+                    case "$_rcat" in bypass|clean) ;; *) continue ;; esac
+                else
+                    [ "$_rcat" = "$_cat" ] || continue
+                fi
+                ;;
         esac
         grep -qxF "$_rid" "$_tried" 2>/dev/null && continue
         _new_url="$(normalize_url "$(dns_url "$_rid")")"
@@ -2157,29 +2205,28 @@ replace_failed_slot_from_test() {
         grep -qxF "$_new_url" "$_used" 2>/dev/null && continue
 
         printf "  ${C_YELLOW}↻ Слот %s: %s не отвечает. Заменяю на %s.${C_NC}\n" "$_slot" "$(dns_name "$_old_id")" "$(dns_name "$_rid")"
-
-        _idx=""
-        _i=0
-        while uci -q get "https-dns-proxy.@https-dns-proxy[$_i]" >/dev/null 2>&1; do
-            _m="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].dns_manager" 2>/dev/null)"
-            _p="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].listen_port" 2>/dev/null)"
-            _u="$(normalize_url "$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].resolver_url" 2>/dev/null)")"
-            if [ "$_m" = 1 ] && [ "$_p" = "$_port" ]; then _idx="$_i"; break; fi
-            _i=$((_i+1))
-        done
-        [ -n "$_idx" ] || { warn_msg "Не нашёл секцию DNS для порта $_port. Замена невозможна."; continue; }
-
-        uci set "https-dns-proxy.@https-dns-proxy[$_idx].resolver_url=$_new_url" || continue
-        uci set "https-dns-proxy.@https-dns-proxy[$_idx].listen_addr=127.0.0.1" || continue
-        uci set "https-dns-proxy.@https-dns-proxy[$_idx].listen_port=$_port" || continue
-        _b_list="$(printf '%s' "$BOOTSTRAP_DNS_ALL" | tr ',' ' ')"
-        [ -n "$_b_list" ] && uci set "https-dns-proxy.@https-dns-proxy[$_idx].bootstrap_dns=$_b_list" || true
-        uci commit https-dns-proxy || continue
-
+        _old_slot_id="$_old_id"
         eval "SLOT_${_slot}=\"$_rid\""
-        eval "SLOT_${_slot}_CAT=\"$_rcat\""
+        if [ "$DNS_SELECTION_MODE" = quick ]; then
+            eval "SLOT_${_slot}_CAT=\"bypass\""
+        else
+            eval "SLOT_${_slot}_CAT=\"$_rcat\""
+        fi
+        if [ "$DNS_PROFILE" = hybrid ]; then
+            eval "PORT_${_slot}=\"$_port\""
+        fi
+        if rebuild_selected_hdp_sections; then
+            printf '%s\n' "$_rid" >> "$_tried"
+            rm -f "$_tried" "$_used" 2>/dev/null
+            return 0
+        fi
+        eval "SLOT_${_slot}=\"$_old_slot_id\""
+        if [ "$DNS_SELECTION_MODE" = quick ]; then
+            eval "SLOT_${_slot}_CAT=\"bypass\""
+        else
+            eval "SLOT_${_slot}_CAT=\"$_cat\""
+        fi
         printf '%s\n' "$_rid" >> "$_tried"
-        return 0
     done <<EOF_REPAIR_CANDIDATES
 $(awk -F'|' '$1!="" && NF>=5 && $5=="OK" && $4 ~ /^[0-9]+$/ {print}' "$TEST_RESULTS" 2>/dev/null | sort -t'|' -k4,4n)
 EOF_REPAIR_CANDIDATES
@@ -2564,9 +2611,8 @@ adaptive_hybrid_prepare() {
     PORT_4="$HYBRID_PORT_4"; PORT_5="$HYBRID_PORT_5"; PORT_6="$HYBRID_PORT_6"
     PORT_RU="$HYBRID_PORT_RU"; PORT_RU_2=""
 
-    _bypass_selected="$(awk -F'|' '$2=="bypass"{n++} END{print n+0}' "$_pool" 2>/dev/null)"
-    if [ "$_bypass_selected" -lt 6 ]; then
-        warn_msg "Рабочих DNS обхода не хватило: $_bypass_selected из 6. Остальные слоты заполнены быстрыми DNS-резервами."
+    if [ "${_bypass_count:-0}" -lt 6 ]; then
+        warn_msg "Рабочих DNS обхода не хватило: ${_bypass_count:-0} из 6. Остальные слоты заполнены быстрыми DNS-резервами."
     fi
     DNS_SELECTION_MODE="quick"
     DNS_SELECTION_CATEGORY="bypass"
