@@ -4,7 +4,7 @@ MANAGER_PATH="/usr/bin/dns-manager"
 # ==========================================
 # ОСНОВНЫЕ ПАРАМЕТРЫ
 # ==========================================
-VERSION="1.21"
+VERSION="1.22"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -536,7 +536,7 @@ BOOTSTRAP_DNS="$BOOTSTRAP_DNS_ALL"
 : "${BOOTSTRAP_DNS:=$BOOTSTRAP_DNS_ALL}"
 : "${TLD_RU_ENABLED:=1}"; : "${BLOCK_QUIC:=0}"; : "${MTU_FIX:=0}"; : "${FORCE_DOH:=0}"
 : "${NTP_IP_FALLBACK:=1}"; : "${SYSCTL_TUNING:=0}"; : "${GO_OPTIMIZE:=0}"; : "${DNSMASQ_PERF:=0}"; : "${NTP_CLIENTS:=0}"; : "${CLIENT_FIXES:=0}"; : "${SYSCTL_EXTENDED:=0}"; : "${TAILSCALE_HOTPLUG:=0}"; : "${CRON_CLEANUP:=0}"
-: "${BALANCER_ENABLED:=1}"; : "${NTP_PRESET:=cf_ip}"; : "${DNS_PROFILE:=hybrid}"
+: "${BALANCER_ENABLED:=1}"; : "${NTP_PRESET:=cf_ip}"; : "${DNS_PROFILE:=hybrid}"; : "${DNS_SELECTION_MODE:=quick}"; : "${DNS_SELECTION_CATEGORY:=bypass}"
 : "${WATCHDOG_ENABLED:=1}"; : "${WATCHDOG_INTERVAL:=15}"
 TLD_SPLIT="$TLD_RU_ENABLED"
 if [ "$_had_dns_profile" = 0 ] && [ -z "$DNS_PROFILE" ]; then
@@ -598,6 +598,8 @@ CRON_CLEANUP="$CRON_CLEANUP"
 BALANCER_ENABLED="$BALANCER_ENABLED"
 NTP_PRESET="$NTP_PRESET"
 DNS_PROFILE="$DNS_PROFILE"
+DNS_SELECTION_MODE="$DNS_SELECTION_MODE"
+DNS_SELECTION_CATEGORY="$DNS_SELECTION_CATEGORY"
 WATCHDOG_ENABLED="$WATCHDOG_ENABLED"
 WATCHDOG_INTERVAL="$WATCHDOG_INTERVAL"
 EOF_CFG
@@ -2177,7 +2179,6 @@ replace_failed_slot_from_test() {
         eval "SLOT_${_slot}=\"$_rid\""
         eval "SLOT_${_slot}_CAT=\"$_rcat\""
         printf '%s\n' "$_rid" >> "$_tried"
-        rm -f "$_tried" "$_used" 2>/dev/null
         return 0
     done <<EOF_REPAIR_CANDIDATES
 $(awk -F'|' '$1!="" && NF>=5 && $5=="OK" && $4 ~ /^[0-9]+$/ {print}' "$TEST_RESULTS" 2>/dev/null | sort -t'|' -k4,4n)
@@ -2480,92 +2481,96 @@ adaptive_hybrid_prepare() {
     : > "$_selected_urls" || { rm -f "$_tried" 2>/dev/null; return 1; }
 
     printf "\n${C_CYAN}Формирую набор только из DNS, которые прошли последнюю полную проверку DoH.${C_NC}\n"
-
     _hybrid_ok_count="$(awk -F'|' '$1!="" && NF>=5 && $5=="OK" && $4 ~ /^[0-9]+$/{n++} END{print n+0}' "$TEST_RESULTS" 2>/dev/null)"
-    printf "  В последней полной проверке подтверждено: %s DNS.${C_NC}\n" "$_hybrid_ok_count"
+    printf "  В последней полной проверке подтверждено: %s DNS.\n" "$_hybrid_ok_count"
 
-    # ВАЖНО: здесь больше нет запуска https-dns-proxy и повторного сетевого теста.
-    # Общая проверка уже является стандартным RFC 8484 DoH-тестом. Набор строится
-    # только из её строк со статусом OK и числовым временем ответа.
-    for _slot in 1 2 3 4 5 6; do
-        _chosen=""
-        _port="$(hybrid_desired_port "$_slot")"
+    # В быстром режиме сначала заполняем слоты только обходными DNS.
+    # Clean DNS используются только как резерв, если подтверждённых обходных
+    # DNS недостаточно для всех шести слотов.
+    _pool="$TMP_DIR/hybrid-pool-$$"
+    : > "$_pool"
+    awk -F'|' 'NF>=5 && $2=="bypass" && $5=="OK" && $4 ~ /^[0-9]+$/ {print}' "$TEST_RESULTS" 2>/dev/null | sort -t'|' -k4,4n > "$_pool.bypass"
+    awk -F'|' 'NF>=5 && $2=="clean" && $5=="OK" && $4 ~ /^[0-9]+$/ {print}' "$TEST_RESULTS" 2>/dev/null | sort -t'|' -k4,4n > "$_pool.clean"
+
+    _fill=0
+    while IFS='|' read -r _id _cat _name _ms _st; do
+        [ -n "$_id" ] || continue
+        grep -qxF "$_id" "$_tried" 2>/dev/null && continue
+        _u="$(normalize_url "$(dns_url "$_id")")"
+        [ -n "$_u" ] || continue
+        grep -qxF "$_u" "$_selected_urls" 2>/dev/null && continue
+        printf '%s\n' "$_id" >> "$_tried"
+        printf '%s\n' "$_u" >> "$_selected_urls"
+        printf '%s|%s|%s|%s|%s\n' "$_id" "$_cat" "$_name" "$_ms" "$_st" >> "$_pool"
+        _fill=$((_fill+1))
+        [ "$_fill" -ge 6 ] && break
+    done < "$_pool.bypass"
+
+    _bypass_count="$_fill"
+    if [ "$_fill" -lt 6 ]; then
         while IFS='|' read -r _id _cat _name _ms _st; do
             [ -n "$_id" ] || continue
-            [ "$_st" = OK ] || continue
-            case "$_cat" in bypass|clean) ;; *) continue;; esac
-            case "$_ms" in ''|*[!0-9]*) continue;; esac
-            grep -qxF "$_id" "$_tried" 2>/dev/null && continue
-            _cand_url="$(normalize_url "$(dns_url "$_id")")"
-            [ -n "$_cand_url" ] || continue
-            grep -qxF "$_cand_url" "$_selected_urls" 2>/dev/null && continue
+            [ "$_fill" -ge 6 ] && break
+            _u="$(normalize_url "$(dns_url "$_id")")"
+            [ -n "$_u" ] || continue
+            grep -qxF "$_u" "$_selected_urls" 2>/dev/null && continue
             printf '%s\n' "$_id" >> "$_tried"
-            _chosen="$_id"
-            printf '%s\n' "$_cand_url" >> "$_selected_urls"
-            printf "  ${C_GREEN}✓ Слот %s: %s → 127.0.0.1:%s${C_NC}\n" "$_slot" "$(dns_name "$_id")" "$_port"
-            break
-        done <<EOF_HYB_SLOT
-$(awk -F'|' 'NF>=5 && $5=="OK" && ($2=="bypass" || $2=="clean") && $4 ~ /^[0-9]+$/ {print}' "$TEST_RESULTS" 2>/dev/null | sort -t'|' -k4,4n)
-EOF_HYB_SLOT
+            printf '%s\n' "$_u" >> "$_selected_urls"
+            printf '%s|%s|%s|%s|%s\n' "$_id" "$_cat" "$_name" "$_ms" "$_st" >> "$_pool"
+            _fill=$((_fill+1))
+        done < "$_pool.clean"
+    fi
 
-        if [ -n "$_chosen" ]; then
-            eval "SLOT_$_slot=\"$_chosen\""
-            eval "SLOT_${_slot}_CAT=\"$(dns_cat "$_chosen")\""
-            _success=$((_success+1))
+    if [ "$_fill" -lt 6 ]; then
+        rm -f "$_pool" "$_pool.bypass" "$_pool.clean" "$_tried" "$_selected_urls" 2>/dev/null
+        err_msg "После полной проверки подтверждённых DNS недостаточно даже с резервом. Набор не применён."
+        return 1
+    fi
+
+    for _slot in 1 2 3 4 5 6; do
+        IFS='|' read -r _id _cat _name _ms _st < "$_pool"
+        [ -n "$_id" ] || { rm -f "$_pool" "$_pool.bypass" "$_pool.clean" "$_tried" "$_selected_urls" 2>/dev/null; return 1; }
+        sed '1d' "$_pool" > "$_pool.tmp" && mv "$_pool.tmp" "$_pool"
+        eval "SLOT_$_slot=\"$_id\""
+        # В быстром режиме даже clean-резерв считается ролью bypass:
+        # Watchdog понимает, что это резерв и сможет заменить его на обход.
+        eval "SLOT_${_slot}_CAT=\"bypass\""
+        _port="$(hybrid_desired_port "$_slot")"
+        if [ "$_cat" = bypass ]; then
+            printf "  ${C_GREEN}✓ Слот %s: %s → 127.0.0.1:%s${C_NC}\n" "$_slot" "$(dns_name "$_id")" "$_port"
         else
-            eval "SLOT_$_slot=''"
-            eval "SLOT_${_slot}_CAT='bypass'"
-            warn_msg "Для слота $_slot нет свободного DNS из последней полной проверки. Слот будет пропущен."
+            printf "  ${C_YELLOW}↳ Слот %s: %s → 127.0.0.1:%s (резерв, DNS обхода недостаточно)${C_NC}\n" "$_slot" "$(dns_name "$_id")" "$_port"
         fi
+        _success=$((_success+1))
     done
 
     SLOT_RU=""
     SLOT_RU_CAT="regional"
-    while IFS='|' read -r _id _cat _name _ms _st; do
-        [ -n "$_id" ] || continue
-        [ "$_cat" = regional ] || continue
-        [ "$_st" = OK ] || continue
-        case "$_ms" in ''|*[!0-9]*) continue;; esac
-        grep -qxF "$_id" "$_tried" 2>/dev/null && continue
-        _cand_url="$(normalize_url "$(dns_url "$_id")")"
-        [ -n "$_cand_url" ] || continue
-        grep -qxF "$_cand_url" "$_selected_urls" 2>/dev/null && continue
-        SLOT_RU="$_id"
-        printf '%s\n' "$_id" >> "$_tried"
-        printf '%s\n' "$_cand_url" >> "$_selected_urls"
-        printf "  ${C_GREEN}✓ RU: %s → 127.0.0.1:%s${C_NC}\n" "$(dns_name "$_id")" "$(hybrid_desired_port RU)"
+    _yandex_ok="$(awk -F'|' 'NF>=5 && $1=="yandex_ru" && $2=="regional" && $5=="OK" && $4 ~ /^[0-9]+$/ {print "yes";exit}' "$TEST_RESULTS" 2>/dev/null)"
+    if [ "$_yandex_ok" = yes ]; then
+        SLOT_RU="yandex_ru"
+        printf "  ${C_GREEN}✓ RU: Yandex RU → 127.0.0.1:%s${C_NC}\n" "$(hybrid_desired_port RU)"
         _success=$((_success+1))
-        break
-    done <<EOF_HYB_RU
-$(awk -F'|' 'NF>=5 && $2=="regional" && $5=="OK" && $4 ~ /^[0-9]+$/ {print}' "$TEST_RESULTS" 2>/dev/null | sort -t'|' -k4,4n)
-EOF_HYB_RU
+    else
+        rm -f "$_pool" "$_pool.bypass" "$_pool.clean" "$_tried" "$_selected_urls" 2>/dev/null
+        err_msg "Yandex RU не прошёл последнюю полную проверку. Настройка не применена."
+        return 1
+    fi
 
+    # RU2 в быстром режиме автоматически не включается.
     SLOT_RU_2=""
     SLOT_RU_2_CAT="regional"
-    while IFS='|' read -r _id _cat _name _ms _st; do
-        [ -n "$_id" ] || continue
-        [ "$_cat" = regional ] || continue
-        [ "$_st" = OK ] || continue
-        case "$_ms" in ''|*[!0-9]*) continue;; esac
-        grep -qxF "$_id" "$_tried" 2>/dev/null && continue
-        _cand_url="$(normalize_url "$(dns_url "$_id")")"
-        [ -n "$_cand_url" ] || continue
-        grep -qxF "$_cand_url" "$_selected_urls" 2>/dev/null && continue
-        SLOT_RU_2="$_id"
-        printf '%s\n' "$_id" >> "$_tried"
-        printf '%s\n' "$_cand_url" >> "$_selected_urls"
-        printf "  ${C_GREEN}✓ RU2: %s → 127.0.0.1:%s${C_NC}\n" "$(dns_name "$_id")" "$(hybrid_desired_port RU_2)"
-        break
-    done <<EOF_HYB_RU2
-$(awk -F'|' 'NF>=5 && $2=="regional" && $5=="OK" && $4 ~ /^[0-9]+$/ {print}' "$TEST_RESULTS" 2>/dev/null | sort -t'|' -k4,4n)
-EOF_HYB_RU2
+    PORT_1="$HYBRID_PORT_1"; PORT_2="$HYBRID_PORT_2"; PORT_3="$HYBRID_PORT_3"
+    PORT_4="$HYBRID_PORT_4"; PORT_5="$HYBRID_PORT_5"; PORT_6="$HYBRID_PORT_6"
+    PORT_RU="$HYBRID_PORT_RU"; PORT_RU_2=""
 
-    rm -f "$_tried" "$_selected_urls" 2>/dev/null
-    reset_hybrid_runtime_ports
-    [ "$_success" -ge "${HYBRID_STAGE_MIN:-1}" ] || {
-        err_msg "После полной проверки не удалось сформировать рабочий набор DNS. Настройки не изменены."
-        return 1
-    }
+    _bypass_selected="$(awk -F'|' '$2=="bypass"{n++} END{print n+0}' "$_pool" 2>/dev/null)"
+    if [ "$_bypass_selected" -lt 6 ]; then
+        warn_msg "Рабочих DNS обхода не хватило: $_bypass_selected из 6. Остальные слоты заполнены быстрыми DNS-резервами."
+    fi
+    DNS_SELECTION_MODE="quick"
+    DNS_SELECTION_CATEGORY="bypass"
+    rm -f "$_pool" "$_pool.bypass" "$_pool.clean" "$_tried" "$_selected_urls" 2>/dev/null
     return 0
 }
 reset_hybrid_runtime_ports() {
@@ -3325,6 +3330,16 @@ menu_prompt
 safe_read a
 case "$a" in
 1)
+DNS_PROFILE="custom"
+DNS_SELECTION_MODE="profile"
+DNS_SELECTION_CATEGORY="$goal"
+TLD_RU_ENABLED=0
+TLD_SPLIT=0
+BALANCER_ENABLED=1
+PORT_1="$HYBRID_PORT_1"; PORT_2="$HYBRID_PORT_2"; PORT_3="$HYBRID_PORT_3"
+PORT_4="$HYBRID_PORT_4"; PORT_5="$HYBRID_PORT_5"; PORT_6="$HYBRID_PORT_6"
+PORT_RU=""; PORT_RU_2=""
+SLOT_RU=""; SLOT_RU_2=""
 if auto_fill_slots "$goal"; then
 CORE_ONLY=1
 apply_settings
@@ -3375,8 +3390,11 @@ row="$(grep -v '^#' "$DNS_CATALOG" | sed -n "${c}p")"
 id="$(printf '%s' "$row" | cut -d'|' -f1)"
 [ -n "$id" ] || return
 
+DNS_PROFILE="custom"
+DNS_SELECTION_MODE="manual"
 eval "SLOT_$slot=\$id"
 _selected_cat="$(printf '%s' "$row" | cut -d'|' -f2)"
+DNS_SELECTION_CATEGORY="$_selected_cat"
 eval "SLOT_${slot}_CAT=\$_selected_cat"
 save_config
 }
@@ -3721,6 +3739,8 @@ printf "  ${C_GREEN}✓${C_NC} кэш DNS для более быстрых по�
 test_dns_catalog || return 1
 [ -s "$TEST_RESULTS" ] || return 1
 DNS_PROFILE="hybrid"
+DNS_SELECTION_MODE="quick"
+DNS_SELECTION_CATEGORY="bypass"
 # Для быстрого режима окончательный набор формируется только после локальной
 # проверки через реальные порты 5053-5059. Предварительный список не показываем.
 SLOT_1=""; SLOT_2=""; SLOT_3=""; SLOT_4=""; SLOT_5=""; SLOT_6=""
@@ -3765,26 +3785,40 @@ fi
 # ==========================================
 watchdog_desired_cat() {
     _slot="$1"
-    _cat=""
-    eval "_cat=\${SLOT_${_slot}_CAT:-}"
-    if [ -z "$_cat" ]; then
-        eval "_id=\${SLOT_${_slot}:-}"
-        [ -n "$_id" ] && _cat="$(dns_cat "$_id")"
-    fi
-    case "$_slot" in
-        RU|RU_2) [ -n "$_cat" ] || _cat="regional" ;;
-        *) [ -n "$_cat" ] || _cat="bypass" ;;
+    case "$DNS_SELECTION_MODE" in
+        quick)
+            case "$_slot" in RU|RU_2) printf '%s\n' regional ;; *) printf '%s\n' bypass ;; esac
+            return 0
+            ;;
+        profile|manual)
+            _cat=""
+            eval "_cat=\${SLOT_${_slot}_CAT:-}"
+            [ -n "$_cat" ] || { eval "_id=\${SLOT_${_slot}:-}"; [ -n "$_id" ] && _cat="$(dns_cat "$_id")"; }
+            case "$_slot" in RU|RU_2) [ -n "$_cat" ] || _cat="regional" ;; esac
+            printf '%s\n' "$_cat"
+            return 0
+            ;;
+        *)
+            _cat=""
+            eval "_cat=\${SLOT_${_slot}_CAT:-}"
+            [ -n "$_cat" ] || _cat="$(dns_cat "$(eval "printf '%s' \"\${SLOT_${_slot}:-}\"")")"
+            case "$_slot" in RU|RU_2) [ -n "$_cat" ] || _cat="regional" ;; *) [ -n "$_cat" ] || _cat="bypass" ;; esac
+            printf '%s\n' "$_cat"
+            ;;
     esac
-    printf '%s\n' "$_cat"
 }
-
 watchdog_candidate_categories() {
     _slot="$1"
     _desired="$(watchdog_desired_cat "$_slot")"
-    printf '%s\n' "$_desired"
-    [ "$_desired" = "bypass" ] && printf '%s\n' "clean"
+    if [ "$DNS_SELECTION_MODE" = quick ]; then
+        # В быстром режиме приоритет всегда у обхода. Clean допустим только
+        # как резерв, когда обходной DNS недоступен.
+        printf '%s\n' bypass
+        printf '%s\n' clean
+    else
+        printf '%s\n' "$_desired"
+    fi
 }
-
 watchdog_enforce_hdp_control() {
     _changed=0
     [ "$(uci -q get https-dns-proxy.config.dnsmasq_config_update 2>/dev/null)" = "-" ] || _changed=1
@@ -3922,7 +3956,7 @@ watchdog_pick_replacement() {
             _rurl="$(normalize_url "$(dns_url "$_rid")")"
             [ -n "$_rurl" ] || continue
             grep -qxF "$_rurl" "$_used" 2>/dev/null && continue
-            grep -qxF "$_rurl" "$_tried" 2>/dev/null && continue
+            grep -qxF "$_rid" "$_tried" 2>/dev/null && continue
 
             if watchdog_test_candidate "$_slot" "$_rid"; then
                 if [ "$_rcat" = "$_need" ] || { [ "$_need" = bypass ] && [ "$_rcat" = clean ]; }; then
@@ -3930,7 +3964,7 @@ watchdog_pick_replacement() {
                     return 0
                 fi
             fi
-            printf '%s\n' "$_rurl" >> "$_tried"
+            printf '%s\n' "$_rid" >> "$_tried"
         done <<EOF_CANDIDATES
 $(awk -F'|' -v c="$_need" '$5=="OK" && (c=="__ANY__" || $2==c){print}' "$TEST_RESULTS" 2>/dev/null | sort -t'|' -k4,4n)
 EOF_CANDIDATES
