@@ -4,7 +4,7 @@ MANAGER_PATH="/usr/bin/dns-manager"
 # ==========================================
 # ОСНОВНЫЕ ПАРАМЕТРЫ
 # ==========================================
-VERSION="1.12-HYBRID"
+VERSION="1.13-HYBRID"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -17,6 +17,10 @@ BOOTSTRAP_CATALOG="$CFG_DIR/bootstrap-catalog.conf"
 BOGUS_CATALOG="$CFG_DIR/bogus-catalog.conf"
 PREV_DNSMASQ="$CFG_DIR/dnsmasq-previous.conf"
 PREV_SERVICES="$CFG_DIR/services-previous.conf"
+BASELINE_DIR="$BASE_DIR/baseline"
+BASELINE_MANIFEST="$BASELINE_DIR/manifest"
+BASELINE_LAST="$BASELINE_DIR/last-applied.manifest"
+BASELINE_META="$BASELINE_DIR/meta"
 OWNERSHIP="$STATE_DIR/ownership.conf"
 TEST_RESULTS="$STATE_DIR/dns-test-results.conf"
 TMP_DIR="$(mktemp -d /tmp/dnsmgr.XXXXXX 2>/dev/null || { d="/tmp/dnsmgr.$$"; mkdir -p "$d"; printf "%s" "$d"; })"
@@ -186,14 +190,118 @@ SYS_ARCH="$(sed -n "s/^DISTRIB_ARCH='\([^']*\)'.*/\1/p" /etc/openwrt_release | h
 # КАТАЛОГИ И НАЧАЛЬНАЯ ИНИЦИАЛИЗАЦИЯ
 # ==========================================
 init_dirs() {
-mkdir -p "$CFG_DIR" "$STATE_DIR" "$TMP_DIR" 2>/dev/null
+mkdir -p "$CFG_DIR" "$STATE_DIR" "$TMP_DIR" "$BASELINE_DIR" 2>/dev/null
 touch "$LOG_FILE" "$TX_LOG" "$OWNERSHIP" 2>/dev/null
+}
+
+# ==========================================
+# ПОСТОЯННЫЙ BASELINE — НЕ ЗАВИСИТ ОТ ВЕРСИИ MANAGER
+# ==========================================
+baseline_files() {
+printf '%s\n' \
+/etc/config/dhcp \
+/etc/config/https-dns-proxy \
+/etc/config/firewall \
+/etc/config/system \
+/etc/sysctl.d/90-dns-manager.conf \
+/etc/sysctl.d/91-dns-manager-extended.conf \
+/etc/dnsmasq.d/90-dns-manager-bogus.conf \
+/etc/dnsmasq.d/91-dns-manager-client-fixes.conf \
+/etc/hotplug.d/iface/99-dns-manager-tailscale \
+/etc/crontabs/root \
+/etc/init.d/tg-ws-proxy-go \
+/etc/init.d/tailscale
+}
+baseline_key() {
+printf '%s' "$1" | sed 's#^/##; s#[/ ]#_#g'
+}
+baseline_capture_once() {
+    [ -s "$BASELINE_MANIFEST" ] && return 0
+    mkdir -p "$BASELINE_DIR/files" || return 1
+    : > "$BASELINE_MANIFEST"
+    _legacy=0
+    [ -s "$OWNERSHIP" ] && _legacy=1
+    [ -s "$PREV_DNSMASQ" ] && _legacy=1
+    while IFS= read -r _f; do
+        [ -n "$_f" ] || continue
+        _k="$(baseline_key "$_f")"
+        if [ -f "$_f" ]; then
+            cp -p "$_f" "$BASELINE_DIR/files/$_k" 2>/dev/null || return 1
+            _h="$(file_hash "$_f")"
+            printf '%s|%s|1|%s\n' "$_f" "$_k" "$_h" >> "$BASELINE_MANIFEST"
+        else
+            printf '%s|%s|0|NONE\n' "$_f" "$_k" >> "$BASELINE_MANIFEST"
+        fi
+    done <<EOF_BASELINE
+$(baseline_files)
+EOF_BASELINE
+    printf 'created_at=%s\n' "$(date +%s)" > "$BASELINE_META"
+    printf 'manager_version=%s\n' "$VERSION" >> "$BASELINE_META"
+    printf 'legacy=%s\n' "$_legacy" >> "$BASELINE_META"
+    if [ "$_legacy" = 1 ]; then
+        printf 'restorable=0\n' >> "$BASELINE_META"
+        warn_msg "Создан архив текущего legacy-состояния без гарантии восстановления пред-Mgr конфигурации. Новый чистый baseline будет доступен после явного сброса ownership."
+    else
+        printf 'restorable=1\n' >> "$BASELINE_META"
+        info_msg "Создан постоянный baseline. Он не будет перезаписан при обновлениях DNS Manager."
+    fi
+    log_tx "BASELINE" "router" "CAPTURE" "OK" "dir=$BASELINE_DIR;legacy=$_legacy"
+}
+baseline_mark_applied() {
+    [ -s "$BASELINE_MANIFEST" ] || return 1
+    : > "$BASELINE_LAST"
+    while IFS='|' read -r _f _k _existed _basehash; do
+        [ -n "$_f" ] || continue
+        if [ -f "$_f" ]; then
+            _curh="$(file_hash "$_f")"
+            printf '%s|%s|1|%s\n' "$_f" "$_k" "$_curh" >> "$BASELINE_LAST"
+        else
+            printf '%s|%s|0|NONE\n' "$_f" "$_k" >> "$BASELINE_LAST"
+        fi
+    done < "$BASELINE_MANIFEST"
+    return 0
+}
+baseline_restore_if_safe() {
+    [ -s "$BASELINE_MANIFEST" ] || return 1
+    [ -s "$BASELINE_LAST" ] || return 1
+    grep -q '^restorable=1$' "$BASELINE_META" 2>/dev/null || return 1
+    _conflict=0
+    while IFS='|' read -r _f _k _last_existed _last_hash; do
+        [ -n "$_f" ] || continue
+        if [ "$_last_existed" = 1 ]; then
+            _cur="$(file_hash "$_f")"
+        else
+            _cur="NONE"
+            [ -f "$_f" ] && _cur="$(file_hash "$_f")"
+        fi
+        [ "$_cur" = "$_last_hash" ] || { _conflict=1; break; }
+    done < "$BASELINE_LAST"
+    if [ "$_conflict" = 1 ]; then
+        warn_msg "Baseline не восстанавливается целиком: после последнего применения обнаружены изменения. Выполняю только безопасное удаление объектов DNS Manager."
+        return 2
+    fi
+    while IFS='|' read -r _f _k _existed _basehash; do
+        [ -n "$_f" ] || continue
+        if [ "$_existed" = 1 ]; then
+            cp -p "$BASELINE_DIR/files/$_k" "$_f" 2>/dev/null || return 1
+        else
+            rm -f "$_f" 2>/dev/null
+        fi
+    done < "$BASELINE_MANIFEST"
+    log_tx "BASELINE" "router" "RESTORE" "OK" "safe=yes"
+    return 0
+}
+clear_baseline_for_reacquire() {
+    rm -rf "$BASELINE_DIR" 2>/dev/null
+    mkdir -p "$BASELINE_DIR/files" 2>/dev/null || return 1
+    rm -f "$BASELINE_MANIFEST" "$BASELINE_LAST" "$BASELINE_META" 2>/dev/null
+    info_msg "Старый baseline архивирован/отпущен. Следующее применение создаст новый baseline."
 }
 write_catalogs() {
 rm -f "$DNS_CATALOG.previous" "$NTP_CATALOG.previous" "$BOOTSTRAP_CATALOG.previous" "$BOGUS_CATALOG.previous" 2>/dev/null
-if [ ! -s "$DNS_CATALOG" ] || ! grep -q '^# DNSCATVER=8.1-RU' "$DNS_CATALOG" 2>/dev/null; then
+if [ ! -s "$DNS_CATALOG" ] || ! grep -q '^# DNSCATVER=8.2-RU-NOSOCIAL' "$DNS_CATALOG" 2>/dev/null; then
 cat > "$DNS_CATALOG" <<'EOF_DNS'
-# DNSCATVER=8.1-RU
+# DNSCATVER=8.2-RU-NOSOCIAL
 # Список кандидатов. Работоспособность проверяется с роутера.
 # ФОРМАТ СТРОКИ: ID|CATEGORY|PROFILE|NAME|URL|REGION|STATUS
 # ==========================================
@@ -315,7 +423,6 @@ cloudflare_family|family|malware+adult|Cloudflare Family|https://family.cloudfla
 adguard_family|family|ads+tracking+adult|AdGuard Family|https://family.adguard-dns.com/dns-query|global|verified-published-current
 mullvad_family|family|ads+tracking+malware+adult+gambling|Mullvad Family|https://family.dns.mullvad.net/dns-query|global|verified-published-current
 mullvad_all|family|ads+tracking+malware+adult+gambling+social|Mullvad All|https://all.dns.mullvad.net/dns-query|global|verified-published-current
-controld_p3|social|social|Control D Social|https://freedns.controld.com/p3|global|verified-published-current
 controld_family|family|family|Control D Family|https://freedns.controld.com/family|global|verified-published-current
 opendns_family|family|adult|OpenDNS FamilyShield|https://doh.familyshield.opendns.com/dns-query|global|verified-published-current
 cleanbrowsing_adult|family|adult+malware|CleanBrowsing Adult|https://doh.cleanbrowsing.org/doh/adult-filter/|global|verified-published-current
@@ -400,7 +507,7 @@ _had_dns_profile=0
 : "${TLD_RU_ENABLED:=1}"; : "${BLOCK_QUIC:=0}"; : "${MTU_FIX:=0}"; : "${FORCE_DOH:=0}"
 : "${NTP_IP_FALLBACK:=1}"; : "${SYSCTL_TUNING:=0}"; : "${GO_OPTIMIZE:=0}"; : "${DNSMASQ_PERF:=0}"; : "${NTP_CLIENTS:=0}"; : "${CLIENT_FIXES:=0}"; : "${SYSCTL_EXTENDED:=0}"; : "${TAILSCALE_HOTPLUG:=0}"; : "${CRON_CLEANUP:=0}"
 : "${BALANCER_ENABLED:=1}"; : "${NTP_PRESET:=cf_ip}"; : "${DNS_PROFILE:=hybrid}"
-: "${WATCHDOG_ENABLED:=0}"; : "${WATCHDOG_INTERVAL:=15}"
+: "${WATCHDOG_ENABLED:=1}"; : "${WATCHDOG_INTERVAL:=15}"
 TLD_SPLIT="$TLD_RU_ENABLED"
 if [ "$_had_dns_profile" = 0 ] && [ -z "$DNS_PROFILE" ]; then
 DNS_PROFILE="hybrid"
@@ -765,6 +872,7 @@ else
 DNS_PROFILE="hybrid"
 TLD_RU_ENABLED=1
 BALANCER_ENABLED=1
+WATCHDOG_ENABLED=1
 PORT_1="$HYBRID_PORT_1"; PORT_2="$HYBRID_PORT_2"; PORT_3="$HYBRID_PORT_3"
 PORT_4="$HYBRID_PORT_4"; PORT_5="$HYBRID_PORT_5"; PORT_6="$HYBRID_PORT_6"
 [ -n "$SLOT_RU" ] && PORT_RU="$HYBRID_PORT_RU"
@@ -968,13 +1076,12 @@ return 1
 # DoH — ПРИМЕНЕНИЕ КОНФИГУРАЦИИ
 # ==========================================
 clear_all_doh_for_apply() {
-    printf "${C_PINK}↻ Все существующие DoH будут удалены и заменены выбранной схемой.${C_NC}\n"
-    _i=0
+    printf "${C_PINK}↻ Все существующие DoH будут удалены и заменены выбранной схемой DNS Manager.${C_NC}\n"
     _removed=0
-    while uci -q get "https-dns-proxy.@https-dns-proxy[$_i]" >/dev/null 2>&1; do
-        _u="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].resolver_url" 2>/dev/null)"
+    while uci -q get "https-dns-proxy.@https-dns-proxy[0]" >/dev/null 2>&1; do
+        _u="$(uci -q get "https-dns-proxy.@https-dns-proxy[0].resolver_url" 2>/dev/null)"
         [ -n "$_u" ] && printf "  ${C_PINK}↻ Удаляется DoH: %s${C_NC}\n" "$_u"
-        uci -q delete "https-dns-proxy.@https-dns-proxy[$_i]" || return 1
+        uci -q delete "https-dns-proxy.@https-dns-proxy[0]" || return 1
         _removed=$((_removed+1))
     done
     uci commit https-dns-proxy || return 1
@@ -983,9 +1090,18 @@ clear_all_doh_for_apply() {
     DOH_OURS=0
     DOH_FOREIGN=0
     DOH_UNKNOWN=0
-    printf "${C_GREEN}✓ Старых DoH удалено: %s. Будет создана только выбранная схема.${C_NC}\n" "$_removed"
+    printf "${C_GREEN}✓ Старых/чужих DoH удалено: %s. Остаётся только схема DNS Manager.${C_NC}\n" "$_removed"
 }
 record_own() { printf '%s|%s|%s|%s\n' "$1" "$2" "$3" "$4" >> "$OWNERSHIP"; }
+configure_hdp_manager_control() {
+    # Актуальный https-dns-proxy по умолчанию сам правит dnsmasq при старте.
+    # DNS Manager делает это сам, поэтому отключаем второй источник правды.
+    uci set https-dns-proxy.config.dnsmasq_config_update='-' || return 1
+    uci set https-dns-proxy.config.force_dns='0' || return 1
+    uci set https-dns-proxy.config.notrack_dns='0' || return 1
+    uci commit https-dns-proxy || return 1
+}
+
 ensure_doh_slot() {
 slot="$1"; id="$2"; [ -n "$id" ] || return 0
 url="$(normalize_url "$(dns_url "$id")")"; name="$(dns_name "$id")"
@@ -1036,9 +1152,11 @@ fi
 local existing_foreign
 existing_foreign="$(find_any_doh_by_url "$url")"
 if [ -n "$existing_foreign" ]; then
+local _foreign_idx="$(printf '%s' "$existing_foreign" | cut -d'|' -f1)"
 local owner="$(printf '%s' "$existing_foreign" | cut -d'|' -f3)"
 local p_old="$(printf '%s' "$existing_foreign" | cut -d'|' -f2)"
-warn_msg "$name уже используется другой/неизвестной секцией (порт $p_old, владелец=$(owner_ru "$owner")). Создаю отдельный экземпляр DNS Manager."
+warn_msg "$name уже использовался чужой/неизвестной секцией (порт $p_old, владелец=$(owner_ru "$owner")). Она удаляется: при активном DNS Manager чужие DoH не остаются."
+[ -n "$_foreign_idx" ] && uci -q delete "https-dns-proxy.@https-dns-proxy[$_foreign_idx]" || return 1
 fi
 
 local target="$desired"
@@ -1764,7 +1882,7 @@ TX_DIR="$STATE_DIR/tx-$TX_ID"
 rm -rf "$TX_DIR" 2>/dev/null
 mkdir -p "$TX_DIR/files" || return 1
 TX_ACTIVE=1
-for f in /etc/config/dhcp /etc/config/https-dns-proxy /etc/config/firewall /etc/config/system /etc/sysctl.d/90-dns-manager.conf /etc/sysctl.d/91-dns-manager-extended.conf /etc/dnsmasq.d/90-dns-manager-bogus.conf /etc/dnsmasq.d/91-dns-manager-client-fixes.conf /etc/hotplug.d/iface/99-dns-manager-tailscale /etc/crontabs/root; do
+for f in /etc/config/dhcp /etc/config/https-dns-proxy /etc/config/firewall /etc/config/system /etc/sysctl.d/90-dns-manager.conf /etc/sysctl.d/91-dns-manager-extended.conf /etc/dnsmasq.d/90-dns-manager-bogus.conf /etc/dnsmasq.d/91-dns-manager-client-fixes.conf /etc/hotplug.d/iface/99-dns-manager-tailscale /etc/crontabs/root /etc/init.d/tg-ws-proxy-go /etc/init.d/tailscale; do
 key="$(printf '%s' "$f" | sed 's#^/##; s#[/ ]#_#g')"
 if [ -f "$f" ]; then cp -p "$f" "$TX_DIR/files/$key"; file_hash "$f" > "$TX_DIR/$key.before"; printf '%s|%s|1\n' "$f" "$key" >> "$TX_DIR/manifest"; else printf '%s|%s|0\n' "$f" "$key" >> "$TX_DIR/manifest"; fi
 done
@@ -1916,6 +2034,7 @@ validate_selected_slots || return 1
 confirm_action "Применить показанную выше конфигурацию?" || return
 TX_ID="$(date +%Y%m%d-%H%M%S)-$$"
 TX_RESERVED_PORTS=""
+baseline_capture_once || { err_msg "Не удалось создать постоянный baseline. Изменения не выполняются."; return 1; }
 tx_snapshot_start || { err_msg "Не удалось создать снимок транзакции. Изменения не выполняются."; return 1; }
 log_tx "PLAN" "all" "APPLY" "START" "version=$VERSION"
 
@@ -1923,6 +2042,7 @@ if [ "$DOH_TOTAL" -gt 0 ] || [ "$DNS_PROFILE" = hybrid ]; then
 /etc/init.d/https-dns-proxy stop >/dev/null 2>&1 || true
 sleep 3
 fi
+configure_hdp_manager_control || { err_msg "Не удалось зафиксировать DNS Manager как единственный источник настройки DoH/dnsmasq."; tx_restore_on_failure; return 1; }
 clear_all_doh_for_apply || { err_msg "Не удалось удалить старый слой DoH."; tx_restore_on_failure; return 1; }
 disc_listeners
 disc_dns
@@ -1964,18 +2084,16 @@ if [ "$CORE_ONLY" != 1 ] && [ "$CLIENT_FIXES" = 1 ]; then apply_client_fixes || 
 if [ "$CORE_ONLY" != 1 ] && [ "$SYSCTL_EXTENDED" = 1 ]; then apply_sysctl_extended || { err_msg "Не удалось применить расширенный sysctl."; tx_restore_on_failure; return 1; }; fi
 if [ "$CORE_ONLY" != 1 ] && [ "$TAILSCALE_HOTPLUG" = 1 ]; then apply_tailscale_hotplug || { err_msg "Не удалось настроить автоматический запуск Tailscale."; tx_restore_on_failure; return 1; }; fi
 if [ "$CORE_ONLY" != 1 ] && [ "$CRON_CLEANUP" = 1 ]; then cleanup_manager_cron || { err_msg "Не удалось очистить cron DNS Manager."; tx_restore_on_failure; return 1; }; fi
-tx_snapshot_after_apply
-sleep 1
+WATCHDOG_ENABLED="${WATCHDOG_ENABLED:-1}"
+apply_watchdog || { err_msg "Не удалось настроить cron Watchdog."; tx_restore_on_failure; return 1; }
 
-uci revert https-dns-proxy 2>/dev/null
-uci revert dhcp 2>/dev/null
-uci revert firewall 2>/dev/null
-uci revert system 2>/dev/null
 /etc/init.d/https-dns-proxy restart 2>/dev/null || true
 /etc/init.d/dnsmasq restart 2>/dev/null || true
 if [ "$SYS_FW" = fw4 ]; then /etc/init.d/firewall reload 2>/dev/null || /etc/init.d/firewall restart 2>/dev/null; else /etc/init.d/firewall restart 2>/dev/null; fi
 run_discovery
+tx_snapshot_after_apply
 if verify_after_apply; then
+baseline_mark_applied || warn_msg "Не удалось обновить контрольный снимок baseline."
 tx_commit
 save_config
 printf "\n${C_WHITE}Фактические порты после применения:${C_NC}\n"
@@ -1993,15 +2111,47 @@ err_msg "Конфигурация не прошла проверку. Все и�
 fi
 pause
 }
+restore_hdp_control_from_baseline() {
+    _bf="$BASELINE_DIR/files/etc_config_https-dns-proxy"
+    [ -f "$_bf" ] || return 0
+    for _opt in dnsmasq_config_update force_dns notrack_dns; do
+        _v="$(awk -v o="$_opt" '
+            /^config[[:space:]]+main([[:space:]]|$)/ { in_main=1; next }
+            /^config[[:space:]]/ { in_main=0 }
+            in_main && $1=="option" && $2==o { v=$3; gsub(/^'"'"'|'"'"'$/, "", v); print v; exit }
+        ' "$_bf" 2>/dev/null)"
+        if [ -n "$_v" ]; then
+            uci set "https-dns-proxy.config.$_opt=$_v" 2>/dev/null || true
+        else
+            uci -q delete "https-dns-proxy.config.$_opt" 2>/dev/null || true
+        fi
+    done
+    uci commit https-dns-proxy 2>/dev/null || true
+}
+
 rollback_ours() {
 clear_screen
-printf "${C_YELLOW}=== 🔄 Удаление только своих изменений ===${C_NC}\n"
+printf "${C_YELLOW}=== 🔄 Удаление изменений DNS Manager ===${C_NC}\n"
+if baseline_restore_if_safe; then
+    /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || true
+    /etc/init.d/dnsmasq restart >/dev/null 2>&1 || true
+    if [ "$SYS_FW" = fw4 ]; then
+        /etc/init.d/firewall reload >/dev/null 2>&1 || /etc/init.d/firewall restart >/dev/null 2>&1
+    else
+        /etc/init.d/firewall restart >/dev/null 2>&1
+    fi
+    rm -f "$BASELINE_LAST" 2>/dev/null
+    ok_msg "Исходное состояние до первого захвата DNS Manager восстановлено. Baseline сохранён для аудита и повторного применения."
+    pause
+    return 0
+fi
 i=0
 while uci -q get "https-dns-proxy.@https-dns-proxy[$i]" >/dev/null 2>&1; do
 m="$(uci -q get "https-dns-proxy.@https-dns-proxy[$i].dns_manager" 2>/dev/null)"
 if [ "$m" = 1 ]; then uci -q delete "https-dns-proxy.@https-dns-proxy[$i]"; else i=$((i+1)); fi
 done
 uci commit https-dns-proxy 2>/dev/null
+restore_hdp_control_from_baseline
 sec="$(get_dnsmasq_section)"
 grep '^dnsmasq|server|' "$OWNERSHIP" 2>/dev/null | while IFS='|' read -r _type _key val _meta; do
 uci -q del_list "dhcp.$sec.server=$val" 2>/dev/null
@@ -2103,7 +2253,6 @@ security) printf '%s' 'Безопасность';;
 privacy) printf '%s' 'Приватность';;
 adblock) printf '%s' 'Блокировка рекламы';;
 family) printf '%s' 'Семейный';;
-social) printf '%s' 'Социальный';;
 regional) printf '%s' 'Региональный';;
 *) printf '%s' "$1";;
 esac
@@ -2233,8 +2382,7 @@ menu_item "[5]" "🧹 Блокировка рекламы"
 menu_section "КАТЕГОРИИ"
 menu_item "[6]" "Обход блокировок"
 menu_item "[7]" "Семейный DNS"
-menu_item "[8]" "Социальные сети / сервисы"
-menu_item "[9]" "Все категории"
+menu_item "[8]" "Все категории"
 menu_back
 menu_prompt
 safe_read goal
@@ -2247,21 +2395,20 @@ case "$goal" in
 5) menu_best_actions adblock "БЛОКИРОВКА РЕКЛАМЫ";;
 6) menu_best_actions bypass "ОБХОД БЛОКИРОВОК";;
 7) menu_best_actions family "СЕМЕЙНЫЙ DNS";;
-8) menu_best_actions social "СОЦИАЛЬНЫЕ СЕТИ И СЕРВИСЫ";;
-9) menu_best_actions all "ВСЕ КАТЕГОРИИ";;
+8) menu_best_actions all "ВСЕ КАТЕГОРИИ";;
 *) warn_msg "Неверный пункт."; pause;;
 esac
 done
 }
 auto_fill_slots() {
 _cat="$1"
-if ! case "$_cat" in bypass|clean|security|privacy|adblock|family|social|all) true;; *) false;; esac; then
+if ! case "$_cat" in bypass|clean|security|privacy|adblock|family|all) true;; *) false;; esac; then
     warn_msg "Неизвестная категория DNS."
     pause
     return 1
 fi
 if [ ! -s "$TEST_RESULTS" ]; then
-    info_msg "Тест DNS ещё не запускался. Запускаю тест..."
+    info_msg "Результатов теста ещё нет. Запускаю один полный тест каталога..."
     test_dns_catalog
 fi
 [ -s "$TEST_RESULTS" ] || { warn_msg "Не удалось получить результаты теста."; pause; return 1; }
@@ -2318,7 +2465,7 @@ fi
 if [ "$_cat" = all ]; then
     _src2="$TMP_DIR/auto-candidates-all"
     : > "$_src2"
-    for _c in bypass clean security privacy adblock family social; do
+    for _c in bypass clean security privacy adblock family; do
         awk -F'|' -v c="$_c" '$2==c{print}' "$_src" 2>/dev/null | head -n1 >> "$_src2"
     done
     cat "$_src" 2>/dev/null >> "$_src2"
@@ -2879,7 +3026,7 @@ menu_note "✓ Yandex RU для .ru / .su / .рф"
 menu_note "✓ dnsmasq :53"
 menu_note "✓ allservers=1"
 menu_note "✓ уникальные порты"
-menu_note "✓ чужие DoH/Firewall не присваиваются менеджеру"
+menu_note "✓ старые и чужие DoH удаляются при применении"
 menu_note "✓ проверка после применения + автоматический откат"
 printf "${C_YELLOW}⚠${C_NC} DNS не заменяет Zapret/VPN при блокировках по IP, SNI, DPI и HTTP.\n"
 test_dns_catalog
@@ -2893,6 +3040,7 @@ SLOT_RU_2_CAT="regional"
 TLD_RU_ENABLED=1
 TLD_SPLIT=1
 BALANCER_ENABLED=1
+WATCHDOG_ENABLED=1
 PORT_1="$HYBRID_PORT_1"; PORT_2="$HYBRID_PORT_2"; PORT_3="$HYBRID_PORT_3"
 PORT_4="$HYBRID_PORT_4"; PORT_5="$HYBRID_PORT_5"; PORT_6="$HYBRID_PORT_6"
 PORT_RU="$HYBRID_PORT_RU"; PORT_RU_2=""
@@ -2944,11 +3092,131 @@ printf '%s\n' "$_desired"
 printf '%s\n' "__ANY__"
 }
 
+watchdog_enforce_hdp_control() {
+    _changed=0
+    [ "$(uci -q get https-dns-proxy.config.dnsmasq_config_update 2>/dev/null)" = "-" ] || _changed=1
+    [ "$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null)" = "0" ] || _changed=1
+    [ "$(uci -q get https-dns-proxy.config.notrack_dns 2>/dev/null)" = "0" ] || _changed=1
+    [ "$_changed" = 1 ] || return 0
+    log_msg "Обнаружен drift настроек https-dns-proxy. Возвращаю контроль DNS Manager (dnsmasq_config_update=-, force_dns=0, notrack_dns=0)."
+    uci set https-dns-proxy.config.dnsmasq_config_update='-' || return 1
+    uci set https-dns-proxy.config.force_dns='0' || return 1
+    uci set https-dns-proxy.config.notrack_dns='0' || return 1
+    uci commit https-dns-proxy || return 1
+    /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || return 1
+    return 0
+}
+watchdog_enforce_doh_authority() {
+    _foreign=0
+    _i=0
+    while uci -q get "https-dns-proxy.@https-dns-proxy[$_i]" >/dev/null 2>&1; do
+        _m="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].dns_manager" 2>/dev/null)"
+        [ "$_m" = 1 ] || { _foreign=1; break; }
+        _i=$((_i+1))
+    done
+    [ "$_foreign" = 1 ] || return 0
+    log_msg "Обнаружен сторонний/неразмеченный DoH при активном DNS Manager. Выполняю очистку и восстанавливаю только наши DoH."
+    /etc/init.d/https-dns-proxy stop >/dev/null 2>&1 || true
+    _i=0
+    while uci -q get "https-dns-proxy.@https-dns-proxy[$_i]" >/dev/null 2>&1; do
+        _m="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].dns_manager" 2>/dev/null)"
+        if [ "$_m" = 1 ]; then
+            _i=$((_i+1))
+        else
+            uci -q delete "https-dns-proxy.@https-dns-proxy[$_i]" || return 1
+        fi
+    done
+    uci commit https-dns-proxy || return 1
+    /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || return 1
+    return 0
+}
+watchdog_expected_servers() {
+    _out="$TMP_DIR/watchdog-expected-servers-$$"
+    : > "$_out"
+    for _ws in 1 2 3 4 5 6; do
+        eval "_wid=\\${SLOT_${_ws}:-}"; [ -n "$_wid" ] || continue
+        eval "_wp=\\${PORT_${_ws}:-}"; [ -n "$_wp" ] || continue
+        printf '127.0.0.1#%s\n' "$_wp" >> "$_out"
+    done
+    if [ "${TLD_RU_ENABLED:-0}" = 1 ]; then
+        if [ -n "$SLOT_RU" ] && [ -n "$PORT_RU" ]; then
+            for _t in /ru /su /xn--p1ai; do printf '%s/127.0.0.1#%s\n' "$_t" "$PORT_RU" >> "$_out"; done
+        fi
+        if [ -n "$SLOT_RU_2" ] && [ -n "$PORT_RU_2" ]; then
+            for _t in /ru /su /xn--p1ai; do printf '%s/127.0.0.1#%s\n' "$_t" "$PORT_RU_2" >> "$_out"; done
+        fi
+    fi
+    sort -u "$_out" -o "$_out" 2>/dev/null || true
+    printf '%s\n' "$_out"
+}
+watchdog_dnsmasq_guard() {
+    _sec="$(get_dnsmasq_section)"
+    [ -n "$_sec" ] || return 1
+    _actual="$TMP_DIR/watchdog-actual-servers-$$"
+    _expected="$TMP_DIR/watchdog-expected-servers-$$"
+    : > "$_actual"
+    uci -q get "dhcp.$_sec.server" 2>/dev/null | tr ' ' '\n' | sed '/^$/d' | sort -u > "$_actual"
+    _expected="$(watchdog_expected_servers)"
+    if [ ! -s "$_expected" ]; then
+        return 0
+    fi
+    _balance_bad=0
+    if [ "${BALANCER_ENABLED:-1}" = 1 ]; then
+        [ "$(uci -q get "dhcp.$_sec.allservers" 2>/dev/null)" = 1 ] || _balance_bad=1
+    else
+        [ -z "$(uci -q get "dhcp.$_sec.allservers" 2>/dev/null)" ] || _balance_bad=1
+    fi
+    if ! cmp -s "$_actual" "$_expected" 2>/dev/null || [ "$(uci -q get "dhcp.$_sec.noresolv" 2>/dev/null)" != 1 ] || [ "$_balance_bad" = 1 ]; then
+        log_msg "Обнаружен drift dnsmasq. Восстанавливаю авторитетную конфигурацию DNS Manager."
+        reconcile_dnsmasq || return 1
+        /etc/init.d/dnsmasq restart >/dev/null 2>&1 || return 1
+    fi
+    return 0
+}
+watchdog_service_recover() {
+    _need=0
+    [ -z "$(pgrep -f 'https-dns-proxy' 2>/dev/null)" ] && _need=1
+    for _ws in 1 2 3 4 5 6 RU RU_2; do
+        eval "_wid=\\${SLOT_${_ws}:-}"; [ -n "$_wid" ] || continue
+        eval "_wp=\\${PORT_${_ws}:-}"; [ -n "$_wp" ] || continue
+        if command -v ss >/dev/null 2>&1; then
+            ss -lntup 2>/dev/null | grep -qE "(127\\.0\\.0\\.1|0\\.0\\.0\\.0|::):${_wp}([[:space:]]|$)" || _need=1
+        elif command -v netstat >/dev/null 2>&1; then
+            netstat -lntup 2>/dev/null | grep -qE ":${_wp}([[:space:]]|$)" || _need=1
+        fi
+    done
+    [ "$_need" = 1 ] || return 0
+    log_msg "Признаки зависшего/неполного https-dns-proxy обнаружены. Выполняю одно восстановительное перезапускание сервиса."
+    /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || return 1
+    sleep 3
+    return 0
+}
+
 watchdog_check_slot() {
     _id="$1"
     [ -n "$_id" ] || return 1
     _url="$(normalize_url "$(dns_url "$_id")")"
     [ -n "$_url" ] || return 1
+    case "$_id" in
+        *) : ;;
+    esac
+    _port=""
+    for _ws in 1 2 3 4 5 6 RU RU_2; do
+        eval "_wid=\${SLOT_${_ws}:-}"
+        if [ "$_wid" = "$_id" ]; then
+            eval "_port=\${PORT_${_ws}:-}"
+            break
+        fi
+    done
+    [ -n "$_port" ] || return 1
+    if command -v ss >/dev/null 2>&1; then
+        ss -lntup 2>/dev/null | grep -qE "(127\.0\.0\.1|0\.0\.0\.0|::):${_port}([[:space:]]|$)" || return 1
+    elif command -v netstat >/dev/null 2>&1; then
+        netstat -lntup 2>/dev/null | grep -qE ":${_port}([[:space:]]|$)" || return 1
+    fi
+    if command -v dig >/dev/null 2>&1; then
+        dig +time=2 +tries=1 @127.0.0.1 -p "$_port" example.com A >/dev/null 2>&1 || return 1
+    fi
     verify_doh_endpoint "$_url" "$(dns_name "$_id")" >/dev/null 2>&1
 }
 
@@ -3015,11 +3283,11 @@ run_watchdog() {
     run_discovery
     load_config
 
-    if [ "${DNS_PROFILE:-}" != "hybrid" ]; then
-        log_msg "Проверка DoH пропущена: активный профиль не Hybrid."
-        rm -f "$_lock" 2>/dev/null
-        return 0
-    fi
+    watchdog_enforce_hdp_control || log_msg "Не удалось полностью восстановить контроль над настройками https-dns-proxy."
+    watchdog_enforce_doh_authority || log_msg "Не удалось полностью очистить сторонние DoH."
+    watchdog_dnsmasq_guard || log_msg "Не удалось полностью восстановить конфигурацию dnsmasq."
+    watchdog_service_recover || log_msg "Не удалось выполнить восстановительное перезапускание https-dns-proxy."
+    run_discovery
 
     _age=999999999
     if [ -f "$TEST_RESULTS" ]; then
@@ -3029,8 +3297,8 @@ run_watchdog() {
         _age=$(( _now - _mtime ))
         [ "$_age" -lt 0 ] && _age=999999999
     fi
-    if [ "$_age" -gt 3600 ]; then
-        log_msg "Результаты теста старше часа. Запускаю повторную проверку каталога."
+    if [ "$_age" -gt 21600 ]; then
+        log_msg "Результаты теста старше шести часов. Запускаю обновление каталога кандидатов."
         test_dns_catalog >/dev/null 2>&1 || true
     fi
 
@@ -3207,6 +3475,7 @@ printf "  ${C_YELLOW}${C_BOLD}dnsmasq${C_NC}            %b\n" "$(state_word "$DN
 printf "  ${C_YELLOW}${C_BOLD}https-dns-proxy${C_NC}    %b\n" "$(state_word "$HAS_HDP")"
 printf "  ${C_YELLOW}${C_BOLD}DoH обнаружено${C_NC}     ${C_YELLOW}${C_BOLD}%s${C_NC}\n" "$DOH_TOTAL"
 printf "  ${C_YELLOW}${C_BOLD}Watchdog${C_NC}            %b\n" "$(module_state_word watchdog "$WATCHDOG_ENABLED")"
+[ -s "$BASELINE_MANIFEST" ] && printf "  ${C_YELLOW}${C_BOLD}Baseline${C_NC}            ${C_GREEN}создан • не перезаписывается${C_NC}\n" || printf "  ${C_YELLOW}${C_BOLD}Baseline${C_NC}            ${C_YELLOW}будет создан при первом Apply${C_NC}\n"
 [ "$FORCE_DNS" = 1 ] && printf "  ${C_YELLOW}${C_BOLD}⚠ force_dns${C_NC} ${C_CYAN}стороннего DoH включён${C_NC}\n"
 
 menu_section "БЫСТРЫЙ ЗАПУСК"
