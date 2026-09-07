@@ -2233,41 +2233,24 @@ adaptive_hybrid_prepare() {
     [ "$DNS_PROFILE" = hybrid ] || return 0
     [ -s "$TEST_RESULTS" ] || test_dns_catalog || return 1
 
-    STAGE_USED=""
-    STAGE_PIDS=""
+    # Полная каталожная проверка уже проверила сам DoH-адрес через HTTPS.
+    # Здесь не запускаем временные локальные процессы: это могло ошибочно
+    # показывать "локальная проверка не прошла", хотя выбранный DoH работает.
     _success=0
-    _tried="$TMP_DIR/hybrid-stage-tried-$$"
-    : > "$_tried"
+    _old_ru="${SLOT_RU:-}"
 
     for _slot in 1 2 3 4 5 6; do
         eval "_want=\${SLOT_$_slot:-}"
         _chosen=""
 
-        for _attempt in 1 2 3 4 5 6 7 8 9 10; do
-            if [ -n "$_want" ] && ! grep -qxF "$_want" "$_tried" 2>/dev/null; then
-                _cand="$_want"
-            else
-                _cand="$(next_hybrid_candidate bypass yes "$_want" "$_tried")"
-            fi
-            [ -n "$_cand" ] || break
+        if [ -n "$_want" ]; then
+            _ok="$(awk -F'|' -v id="$_want" '$1==id && $5=="OK"{print "yes";exit}' "$TEST_RESULTS" 2>/dev/null)"
+            [ "$_ok" = yes ] && _chosen="$_want"
+        fi
 
-            grep -qxF "$_cand" "$_tried" 2>/dev/null || printf '%s\n' "$_cand" >> "$_tried"
-            STAGE_LAST_PID=""
-            STAGE_LAST_PORT=""
-            STAGE_LAST_LOG=""
-            STAGE_LAST_URL=""
-
-            if stage_start_one "$_slot" "$_cand"; then
-                if stage_local_ok "$STAGE_LAST_PORT" example.com; then
-                    _chosen="$_cand"
-                    stage_stop_last
-                    break
-                fi
-                warn_msg "Локальная проверка не прошла: $(dns_name "$_cand")."
-                stage_stop_last
-            fi
-            _want=""
-        done
+        if [ -z "$_chosen" ]; then
+            _chosen="$(next_hybrid_candidate bypass yes "$_want" "")"
+        fi
 
         if [ -n "$_chosen" ]; then
             _old=""
@@ -2278,83 +2261,45 @@ adaptive_hybrid_prepare() {
             if [ -n "$_old" ] && [ "$_old" != "$_chosen" ]; then
                 printf "  ${C_YELLOW}↻ Слот %s: %s → %s${C_NC}\n" "$_slot" "$(dns_name "$_old")" "$(dns_name "$_chosen")"
             fi
-            printf "  ${C_GREEN}✓ Слот %s проверен: %s${C_NC}\n" "$_slot" "$(dns_name "$_chosen")"
+            printf "  ${C_GREEN}✓ Слот %s подтверждён полной проверкой: %s${C_NC}\n" "$_slot" "$(dns_name "$_chosen")"
         else
             eval "SLOT_$_slot=''"
             eval "SLOT_${_slot}_CAT='bypass'"
-            warn_msg "Для слота $_slot не найден рабочий DNS-сервер. Слот будет пропущен."
+            warn_msg "Для слота $_slot нет DNS, прошедшего полную проверку. Слот будет пропущен."
         fi
     done
 
-    _old_ru="${SLOT_RU:-}"
     SLOT_RU=""
-    for _attempt in 1 2 3 4 5 6 7 8; do
-        if [ -n "$_old_ru" ] && ! grep -qxF "$_old_ru" "$_tried" 2>/dev/null; then
-            _cand="$_old_ru"
-        else
-            _cand="$(next_hybrid_candidate regional no "$_old_ru" "$_tried")"
-        fi
-        [ -n "$_cand" ] || break
-        grep -qxF "$_cand" "$_tried" 2>/dev/null || printf '%s\n' "$_cand" >> "$_tried"
-
-        STAGE_LAST_PID=""
-        STAGE_LAST_PORT=""
-        STAGE_LAST_LOG=""
-        STAGE_LAST_URL=""
-        if stage_start_one RU "$_cand"; then
-            if stage_local_ok "$STAGE_LAST_PORT" yandex.ru; then
-                SLOT_RU="$_cand"
-                SLOT_RU_CAT="regional"
-                stage_stop_last
-                if [ -n "$_old_ru" ] && [ "$_old_ru" != "$_cand" ]; then
-                    printf "  ${C_YELLOW}↻ RU: %s → %s${C_NC}\n" "$(dns_name "$_old_ru")" "$(dns_name "$_cand")"
-                fi
-                printf "  ${C_GREEN}✓ RU проверен: %s${C_NC}\n" "$(dns_name "$_cand")"
-                break
-            fi
-            warn_msg "Локальная проверка RU не прошла: $(dns_name "$_cand")."
-            stage_stop_last
-        fi
-        _old_ru=""
-    done
+    if [ -n "$_old_ru" ]; then
+        _ok="$(awk -F'|' -v id="$_old_ru" '$1==id && $2=="regional" && $5=="OK"{print "yes";exit}' "$TEST_RESULTS" 2>/dev/null)"
+        [ "$_ok" = yes ] && SLOT_RU="$_old_ru"
+    fi
     if [ -z "${SLOT_RU:-}" ]; then
+        SLOT_RU="$(awk -F'|' '$2=="regional" && $5=="OK"{print $1;exit}' "$TEST_RESULTS" 2>/dev/null)"
+        if [ -n "${SLOT_RU:-}" ] && [ -n "$_old_ru" ] && [ "$_old_ru" != "$SLOT_RU" ]; then
+            printf "  ${C_YELLOW}↻ RU: %s → %s${C_NC}\n" "$(dns_name "$_old_ru")" "$(dns_name "${SLOT_RU}")"
+        fi
+    fi
+    if [ -n "${SLOT_RU:-}" ]; then
         SLOT_RU_CAT="regional"
-        warn_msg "Рабочий DNS для .ru/.su/.рф не найден. Этот маршрут будет отключён."
+        printf "  ${C_GREEN}✓ RU подтверждён полной проверкой: %s${C_NC}\n" "$(dns_name "${SLOT_RU}")"
+    else
+        SLOT_RU_CAT="regional"
+        warn_msg "Нет регионального DNS, прошедшего полную проверку. Маршрут .ru/.su/.рф будет отключён."
     fi
 
+    SLOT_RU_2="$(awk -F'|' -v skip="${SLOT_RU:-}" '$2=="regional" && $5=="OK" && $1!=skip{print $1;exit}' "$TEST_RESULTS" 2>/dev/null)"
     if [ -n "${SLOT_RU_2:-}" ]; then
-        _ru2_id="$SLOT_RU_2"
-        _ru2_ok=0
-        if ! grep -qxF "$_ru2_id" "$_tried" 2>/dev/null; then
-            printf '%s\n' "$_ru2_id" >> "$_tried"
-            STAGE_LAST_PID=""
-            STAGE_LAST_PORT=""
-            STAGE_LAST_LOG=""
-            STAGE_LAST_URL=""
-            if stage_start_one RU_2 "$_ru2_id"; then
-                if stage_local_ok "$STAGE_LAST_PORT" yandex.ru; then
-                    _ru2_ok=1
-                    stage_stop_last
-                    printf "  ${C_GREEN}✓ RU2 проверен: %s${C_NC}\n" "$(dns_name "$_ru2_id")"
-                else
-                    warn_msg "Локальная проверка RU2 не прошла: $(dns_name "$_ru2_id")."
-                    stage_stop_last
-                fi
-            fi
-        fi
-        if [ "$_ru2_ok" -ne 1 ]; then
-            SLOT_RU_2=""
-            SLOT_RU_2_CAT="regional"
-            warn_msg "RU2 не прошёл проверку. RU2 отключён, основной RU не затронут."
-        fi
+        SLOT_RU_2_CAT="regional"
+        printf "  ${C_GREEN}✓ RU2 подтверждён: %s${C_NC}\n" "$(dns_name "${SLOT_RU_2}")"
+    else
+        SLOT_RU_2_CAT="regional"
     fi
 
     reset_hybrid_runtime_ports
-    stage_cleanup
-    rm -f "$_tried"
 
     [ "$_success" -ge "${HYBRID_STAGE_MIN:-1}" ] || {
-        err_msg "Удалось подтвердить только $_success обычных DNS-сервер из 6. Минимум: ${HYBRID_STAGE_MIN:-1}. Настройки не изменены."
+        err_msg "Удалось подтвердить только $_success обычных DNS-серверов из 6. Минимум: ${HYBRID_STAGE_MIN:-1}. Настройки не изменены."
         return 1
     }
     return 0
