@@ -2456,7 +2456,7 @@ EOF_HYB_RU2
 
     rm -f "$_tried" "$_selected_urls" 2>/dev/null
     reset_hybrid_runtime_ports
-    [ "$(_success)" -ge "${HYBRID_STAGE_MIN:-1}" ] || {
+    [ "$_success" -ge "${HYBRID_STAGE_MIN:-1}" ] || {
         err_msg "После полной проверки не удалось сформировать рабочий набор DNS. Настройки не изменены."
         return 1
     }
