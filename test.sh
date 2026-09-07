@@ -2262,7 +2262,9 @@ stage_local_ok() {
     _p="$1"
     _domain="${2:-example.com}"
     _wait=0
-    while [ "$_wait" -lt 8 ]; do
+    # Проверяем быстрым циклом: функция выбора не должна выглядеть зависшей.
+    # Достаточно одной успешной DNS-ответной проверки через реальный порт слота.
+    while [ "$_wait" -lt 4 ]; do
         if [ -n "${STAGE_LAST_PID:-}" ] && stage_process_alive "$STAGE_LAST_PID" && listener_port_exists "$_p"; then
             if local_dns_query_ok "$_p" "$_domain"; then
                 return 0
@@ -2310,7 +2312,7 @@ stage_stop_last() {
     _old="$STAGE_LAST_PID"
     _old_port="$STAGE_LAST_PORT"
     [ -n "$_old" ] && kill "$_old" 2>/dev/null || true
-    sleep 1
+    sleep 0.2
     [ -n "$_old" ] && kill -9 "$_old" 2>/dev/null || true
     _new=""
     for _pid in $STAGE_PIDS; do
@@ -2389,10 +2391,14 @@ adaptive_hybrid_prepare() {
             grep -qxF "$_cand_url" "$_selected_urls" 2>/dev/null && continue
 
             printf '%s\n' "$_id" >> "$_tried"
+            printf "  ${C_CYAN}• Слот %s: проверяю %s...${C_NC}\n" "$_slot" "$(dns_name "$_id")"
             if stage_try_candidate "$_slot" "$_id" "$_domain"; then
                 _chosen="$_id"
                 printf '%s\n' "$_cand_url" >> "$_selected_urls"
+                printf "  ${C_GREEN}✓ Слот %s: %s отвечает через 127.0.0.1:%s${C_NC}\n" "$_slot" "$(dns_name "$_id")" "$_port"
                 break
+            else
+                printf "  ${C_YELLOW}↷ Слот %s: %s не подтвердился, беру следующий.${C_NC}\n" "$_slot" "$(dns_name "$_id")"
             fi
         done <<EOF_CANDIDATES
 $(awk -F'|' 'NF>=5 && $5=="OK" && ($2=="bypass" || $2=="clean") && $4 ~ /^[0-9]+$/ {print}' "$TEST_RESULTS" 2>/dev/null | sort -t'|' -k4,4n)
@@ -2426,10 +2432,14 @@ EOF_CANDIDATES
         grep -qxF "$_cand_url" "$_selected_urls" 2>/dev/null && continue
 
         printf '%s\n' "$_id" >> "$_tried"
+        printf "  ${C_CYAN}• RU: проверяю %s...${C_NC}\n" "$(dns_name "$_id")"
         if stage_try_candidate RU "$_id" yandex.ru; then
             _ru_chosen="$_id"
             printf '%s\n' "$_cand_url" >> "$_selected_urls"
+            printf "  ${C_GREEN}✓ RU: %s отвечает через 127.0.0.1:%s${C_NC}\n" "$(dns_name "$_id")" "$_ru_port"
             break
+        else
+            printf "  ${C_YELLOW}↷ RU: %s не подтвердился, беру следующий.${C_NC}\n" "$(dns_name "$_id")"
         fi
     done <<EOF_RU_CANDIDATES
 $(awk -F'|' '$1!="" && NF>=5 && $2=="regional" && $5=="OK" && $4 ~ /^[0-9]+$/ {print}' "$TEST_RESULTS" 2>/dev/null | sort -t'|' -k4,4n)
@@ -2460,12 +2470,15 @@ EOF_RU_CANDIDATES
         grep -qxF "$_cand_url" "$_selected_urls" 2>/dev/null && continue
 
         printf '%s\n' "$_id" >> "$_tried"
+        printf "  ${C_CYAN}• RU2: проверяю %s...${C_NC}\n" "$(dns_name "$_id")"
         if stage_try_candidate RU_2 "$_id" yandex.ru; then
             SLOT_RU_2="$_id"
             SLOT_RU_2_CAT="regional"
             printf '%s\n' "$_cand_url" >> "$_selected_urls"
-            printf "  ${C_GREEN}✓ RU2 подтверждён: %s → 127.0.0.1:%s${C_NC}\n" "$(dns_name "$_id")" "$_ru2_port"
+            printf "  ${C_GREEN}✓ RU2: %s отвечает через 127.0.0.1:%s${C_NC}\n" "$(dns_name "$_id")" "$_ru2_port"
             break
+        else
+            printf "  ${C_YELLOW}↷ RU2: %s не подтвердился, беру следующий.${C_NC}\n" "$(dns_name "$_id")"
         fi
     done <<EOF_RU2_CANDIDATES
 $(awk -F'|' '$1!="" && NF>=5 && $2=="regional" && $5=="OK" && $4 ~ /^[0-9]+$/ {print}' "$TEST_RESULTS" 2>/dev/null | sort -t'|' -k4,4n)
