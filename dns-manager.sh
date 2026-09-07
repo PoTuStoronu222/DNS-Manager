@@ -4,7 +4,7 @@ MANAGER_PATH="/usr/bin/dns-manager"
 # ==========================================
 # ОСНОВНЫЕ ПАРАМЕТРЫ
 # ==========================================
-VERSION="1.24"
+VERSION="1.25"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -2150,8 +2150,7 @@ rebuild_selected_hdp_sections() {
     while IFS='|' read -r _rs _rport _rurl; do
         [ -n "$_rs" ] || continue
         _sec="$(uci add https-dns-proxy https-dns-proxy 2>/dev/null)" || { rm -f "$_keep_file"; return 1; }
-        _bl="$(printf '%s' "$BOOTSTRAP_DNS_ALL" | tr ',' ' ')"
-        [ -n "$_bl" ] || _bl="1.1.1.1"
+        _bl="${BOOTSTRAP_DNS_ALL:-1.1.1.1}"
         uci set "https-dns-proxy.$_sec.bootstrap_dns=$_bl" || { rm -f "$_keep_file"; return 1; }
         uci set "https-dns-proxy.$_sec.listen_addr=127.0.0.1" || { rm -f "$_keep_file"; return 1; }
         uci set "https-dns-proxy.$_sec.listen_port=$_rport" || { rm -f "$_keep_file"; return 1; }
@@ -2191,6 +2190,7 @@ replace_failed_slot_from_test() {
     done
     printf '%s\n' "$_old_id" >> "$_slot_tried"
     grep -qxF "$_old_id" "$REPAIR_BAD_IDS" 2>/dev/null || printf '%s\n' "$_old_id" >> "$REPAIR_BAD_IDS"
+    _prev_failed_id="$_old_id"
 
     while IFS='|' read -r _rid _rcat _rname _rms _rst; do
         [ -n "$_rid" ] || continue
@@ -2213,7 +2213,9 @@ replace_failed_slot_from_test() {
         [ -n "$_new_url" ] || continue
         grep -qxF "$_new_url" "$_used" 2>/dev/null && continue
 
-        printf "  ${C_YELLOW}↻ Слот %s: %s не отвечает. Проверяю замену %s.${C_NC}\n" "$_slot" "$(dns_name "$_old_id")" "$(dns_name "$_rid")"
+        _candidate_name="$(dns_name "$_rid")"
+        _previous_name="$(dns_name "$_prev_failed_id")"
+        printf "  ${C_YELLOW}↻ Слот %s: %s не отвечает. Проверяю замену %s.${C_NC}\n" "$_slot" "$_previous_name" "$_candidate_name"
         _old_slot_id="$_old_id"
         eval "SLOT_${_slot}=\"$_rid\""
         if [ "$DNS_SELECTION_MODE" = quick ]; then
@@ -2251,12 +2253,12 @@ replace_failed_slot_from_test() {
             *) listener_port_exists "$_port" && local_dns_query_ok "$_port" "example.com" ;;
         esac
         then
-            printf "  ${C_GREEN}✓ Слот %s: %s подтверждён на 127.0.0.1:%s.${C_NC}\n" "$_slot" "$(dns_name "$_rid")" "$_port"
+            printf "  ${C_GREEN}✓ Слот %s: %s подтверждён на 127.0.0.1:%s.${C_NC}\n" "$_slot" "$_candidate_name" "$_port"
             rm -f "$_slot_tried" "$_used" 2>/dev/null
             return 0
         fi
 
-        printf "  ${C_RED}✗ Слот %s: %s также не ответил через 127.0.0.1:%s. Больше его не пробую.${C_NC}\n" "$_slot" "$(dns_name "$_rid")" "$_port"
+        printf "  ${C_RED}✗ Слот %s: %s также не ответил через 127.0.0.1:%s. Больше его не пробую.${C_NC}\n" "$_slot" "$_candidate_name" "$_port"
         printf '%s\n' "$_rid" >> "$_slot_tried"
         grep -qxF "$_rid" "$REPAIR_BAD_IDS" 2>/dev/null || printf '%s\n' "$_rid" >> "$REPAIR_BAD_IDS"
         eval "SLOT_${_slot}=\"$_old_slot_id\""
@@ -2270,6 +2272,7 @@ replace_failed_slot_from_test() {
         sleep 3
         run_discovery
         _old_id="$_old_slot_id"
+        _prev_failed_id="$_rid"
         # После возврата старого проблемного DNS он уже находится в BAD_IDS,
         # поэтому на следующей итерации будет выбран действительно новый кандидат.
     done <<EOF_REPAIR_CANDIDATES
