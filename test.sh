@@ -31,7 +31,23 @@ TX_ACTIVE=0
 TX_RESERVED_PORTS=""
 TX_PRE_SLOTS=""
 CORE_ONLY=0
-trap 'rm -rf "$TMP_DIR"' EXIT INT TERM
+cleanup_runtime() {
+    # Останавливаем только временные процессы проверки и затем удаляем временный каталог.
+    # При Ctrl+C нельзя удалять TMP_DIR до завершения текущей функции: фоновые проверки
+    # ещё могут писать туда свои логи и временные файлы.
+    for _pid in ${STAGE_PIDS:-}; do
+        [ -n "$_pid" ] || continue
+        kill "$_pid" 2>/dev/null || true
+    done
+    sleep 1 2>/dev/null || true
+    for _pid in ${STAGE_PIDS:-}; do
+        [ -n "$_pid" ] || continue
+        kill -9 "$_pid" 2>/dev/null || true
+    done
+    [ -n "${TMP_DIR:-}" ] && rm -rf "$TMP_DIR" 2>/dev/null || true
+}
+trap cleanup_runtime EXIT
+trap 'exit 130' INT TERM
 C_GREEN='\033[1;32m'
 C_RED='\033[1;31m'
 C_CYAN='\033[1;36m'
@@ -2335,6 +2351,9 @@ adaptive_hybrid_prepare() {
     STAGE_USED=""
     STAGE_PIDS=""
     STAGE_LAST_PID=""
+    if [ "${HYBRID_PREFLIGHT_SILENT:-0}" != 1 ]; then
+        printf "\n${C_CYAN}Проверяю выбранные DNS через реальные локальные порты. Неработающие серверы не попадут в план.${C_NC}\n"
+    fi
     STAGE_LAST_PORT=""
     STAGE_LAST_LOG=""
     STAGE_LAST_URL=""
@@ -2489,7 +2508,9 @@ apply_settings() {
 
     if [ "$DNS_PROFILE" = hybrid ]; then
         if [ "${HYBRID_STAGE_SKIP:-0}" != 1 ]; then
+            HYBRID_SELECTION_QUIET=1
             hybrid_prepare_selection
+            HYBRID_SELECTION_QUIET=0
 
             # Сначала проверяем кандидатов через реальные порты слотов,
             # чтобы в показанном плане не было DNS, которые потом не отвечают локально.
@@ -3205,13 +3226,15 @@ SLOT_RU_2="$(awk -F'|' -v skip="$_ru1" 'NF>=5 && $2=="regional" && $5=="OK" && $
 if [ -n "$SLOT_RU_2" ]; then SLOT_RU_2_CAT="regional"; else SLOT_RU_2_CAT="regional"; fi
 
 save_config
-printf "${C_GREEN}✓ Автоматически выбран набор DNS без дублей.${C_NC}\n"
-for i in 1 2 3 4 5 6; do
-    eval "_v=\${SLOT_$i}"
-    [ -n "$_v" ] && printf "  ${C_WHITE}Слот %s: %s${C_NC}\n" "$i" "$(dns_name "$_v")"
-done
-[ -n "$SLOT_RU" ] && printf "  ${C_WHITE}RU: %s${C_NC}\n" "$(dns_name "$SLOT_RU")"
-[ -n "$SLOT_RU_2" ] && printf "  ${C_WHITE}RU2: %s${C_NC}\n" "$(dns_name "$SLOT_RU_2")"
+if [ "${HYBRID_SELECTION_QUIET:-0}" != 1 ]; then
+    printf "${C_GREEN}✓ Автоматически выбран набор DNS без дублей.${C_NC}\n"
+    for i in 1 2 3 4 5 6; do
+        eval "_v=\${SLOT_$i}"
+        [ -n "$_v" ] && printf "  ${C_WHITE}Слот %s: %s${C_NC}\n" "$i" "$(dns_name "$_v")"
+    done
+    [ -n "$SLOT_RU" ] && printf "  ${C_WHITE}RU: %s${C_NC}\n" "$(dns_name "$SLOT_RU")"
+    [ -n "$SLOT_RU_2" ] && printf "  ${C_WHITE}RU2: %s${C_NC}\n" "$(dns_name "$SLOT_RU_2")"
+fi
 return 0
 }
 
