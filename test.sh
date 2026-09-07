@@ -1043,21 +1043,24 @@ log_tx "APPLY" "NTP" "ADD" "OK" "profile=$NTP_PRESET;servers=$servers"
 # МЕНЮ NTP
 # ==========================================
 menu_ntp() {
-menu_header "🕐 ВРЕМЯ / NTP"
+menu_header "ВРЕМЯ / NTP — точное время на роутере"
 _cur_ntp="$(uci -q get system.ntp.server 2>/dev/null)"
-printf "${C_YELLOW}${C_BOLD}Текущие NTP серверы:${C_NC}\n"
+printf "${C_WHITE}Зачем нужен этот раздел:${C_NC}\n"
+printf "  Точное время нужно роутеру для HTTPS-соединений, проверки сертификатов,\n"
+printf "  журналов и автоматических задач.\n\n"
+printf "${C_YELLOW}${C_BOLD}Текущие серверы времени:${C_NC}\n"
 if [ -n "$_cur_ntp" ]; then
 for _s in $_cur_ntp; do
-printf "  ${C_CYAN}•${C_NC} ${C_YELLOW}${C_BOLD}%s${C_NC}\n" "$_s"
+printf "  ${C_CYAN}•${C_NC} %s\n" "$_s"
 done
 else
 printf "  ${C_YELLOW}(не настроены)${C_NC}\n"
 fi
-printf "\n${C_YELLOW}${C_BOLD}Выбранный профиль:${C_NC} ${C_YELLOW}${C_BOLD}%s${C_NC}\n" "$NTP_PRESET"
-menu_item "[1]" "Cloudflare (IP, без DNS)"
-menu_item "[2]" "NIST (несколько IP)"
-menu_item "[3]" "ВНИИФТРИ Москва"
-menu_item "[4]" "Google (IP, leap-smear)"
+printf "\n${C_YELLOW}${C_BOLD}Выбранный источник времени:${C_NC} ${C_YELLOW}${C_BOLD}%s${C_NC}\n\n" "$NTP_PRESET"
+menu_item "[1]" "Cloudflare — быстрый источник по IP, DNS не нужен"
+menu_item "[2]" "NIST — несколько серверов точного времени"
+menu_item "[3]" "ВНИИФТРИ Москва — российские серверы времени"
+menu_item "[4]" "Google — серверы времени по IP"
 menu_back
 menu_prompt
 safe_read c
@@ -2931,9 +2934,9 @@ menu_header "⭐ ВЫБОР DNS"
 menu_section "ГОТОВЫЕ ПРОФИЛИ"
 menu_item "[1]" "⭐ Гибридный DNS — 6 DNS-сервер + Yandex RU"
 menu_item "[2]" "⚡ Чистый быстрый DNS"
-menu_item "[3]" "🛡 Максимальная безопасность"
-menu_item "[4]" "🔐 Максимальная приватность"
-menu_item "[5]" "🧹 Блокировка рекламы"
+menu_item "[3]" "Максимальная безопасность"
+menu_item "[4]" "Максимальная приватность"
+menu_item "[5]" "Блокировка рекламы"
 menu_section "КАТЕГОРИИ"
 menu_item "[6]" "Обход блокировок"
 menu_item "[7]" "Семейный DNS"
@@ -3334,24 +3337,24 @@ module_state_word() {
 # ==========================================
 menu_extras() {
 while :; do
-menu_header "🔧 НАСТРОЙКИ"
+menu_header "НАСТРОЙКИ"
 
-menu_section "🛡 СЕТЬ И ОБХОД"
+menu_section "СЕТЬ И ОБХОД"
 menu_item_state "[1]" "Блокировка QUIC" "$(module_state_word quic "$BLOCK_QUIC")"
 menu_item_state "[2]" "Исправление сетевых параметров / MSS" "$(module_state_word mtu "$MTU_FIX")"
 menu_item_state "[3]" "Принудительный DNS" "$(module_state_word force "$FORCE_DOH")"
 
-menu_section "⚡ ПРОИЗВОДИТЕЛЬНОСТЬ"
+menu_section "ПРОИЗВОДИТЕЛЬНОСТЬ"
 menu_item_state "[4]" "Оптимизация TCP и Conntrack" "$(module_state_word sysctl "$SYSCTL_TUNING")"
 menu_item_state "[5]" "Кэширование DNS-запросов" "$(module_state_word dnsmasq_perf "$DNSMASQ_PERF")"
 menu_item_state "[6]" "Оптимизация Go-сервисов" "$(module_state_word go "$GO_OPTIMIZE")"
 
-menu_section "📡 СЕРВИСЫ И КЛИЕНТЫ"
+menu_section "СЕРВИСЫ И КЛИЕНТЫ"
 menu_item_state "[7]" "Время для устройств сети" "$(module_state_word ntp_clients "$NTP_CLIENTS")"
 menu_item_state "[8]" "Tailscale при поднятии WAN" "$(module_state_word ts_hotplug "$TAILSCALE_HOTPLUG")"
 menu_item_state "[9]" "Исправления телеметрии и связи" "$(module_state_word client_fixes "$CLIENT_FIXES")"
 
-menu_section "🧹 ОБСЛУЖИВАНИЕ"
+menu_section "ОБСЛУЖИВАНИЕ"
 menu_item "[10]" "Очистка старых заданий"
 menu_item_state "[11]" "Автоматическая проверка DNS" "$(module_state_word watchdog "$WATCHDOG_ENABLED")"
 menu_item "[12]" "IP-заглушки провайдера"
@@ -3934,7 +3937,7 @@ apply_watchdog() {
 main_menu() {
 while :; do
 run_discovery
-menu_header "🚀 ДИСПЕТЧЕР DNS $VERSION"
+menu_header "ДИСПЕТЧЕР DNS $VERSION"
 
 menu_section "СОСТОЯНИЕ РОУТЕРА"
 printf "  ${C_YELLOW}${C_BOLD}IPv4${C_NC}               %b\n" "$(state_word "$IPV4_ROUTE")"
@@ -3947,26 +3950,26 @@ printf "  ${C_YELLOW}${C_BOLD}Автопроверка${C_NC}            %b\n" "
 [ "$FORCE_DNS" = 1 ] && printf "  ${C_YELLOW}${C_BOLD}Принудительный DNS${C_NC} ${C_CYAN}включён${C_NC}\n"
 
 menu_section "БЫСТРЫЙ ЗАПУСК"
-menu_item "[1]" "🚀 МАКСИМАЛЬНЫЙ ОБХОД"
+menu_item "[1]" "МАКСИМАЛЬНЫЙ ОБХОД"
 
 menu_section "ПРОФИЛИ DNS"
-menu_item "[2]" "⚡ Максимальная скорость"
-menu_item "[3]" "🛡 Максимальная безопасность"
-menu_item "[4]" "🔐 Максимальная приватность"
-menu_item "[5]" "🧹 Блокировка рекламы"
-menu_item "[6]" "⭐ Выбор по категориям"
+menu_item "[2]" "Максимальная скорость"
+menu_item "[3]" "Максимальная безопасность"
+menu_item "[4]" "Максимальная приватность"
+menu_item "[5]" "Блокировка рекламы"
+menu_item "[6]" "Выбор по категориям"
 
 menu_section "НАСТРОЙКА"
-menu_item "[7]" "📊 Карта состояния"
-printf "  ${C_CYAN}${C_BOLD}%-5s${C_NC} ${C_YELLOW}${C_BOLD}%-38s${C_NC} ${C_CYAN}${C_BOLD}(%s)${C_NC}\n" "[8]" "🧪 Проверка DNS-серверов" "$(count_dns)"
-printf "  ${C_CYAN}${C_BOLD}%-5s${C_NC} ${C_YELLOW}${C_BOLD}%-38s${C_NC} ${C_CYAN}${C_BOLD}(6+2)${C_NC}\n" "[9]" "⚙ Серверы DNS"
-menu_item "[10]" "🎯 НАЧАЛЬНЫЕ DNS"
-menu_item "[11]" "🕐 ВРЕМЯ"
-menu_item "[12]" "🔧 НАСТРОЙКИ"
+menu_item "[7]" "Карта состояния"
+printf "  ${C_CYAN}${C_BOLD}%-5s${C_NC} ${C_YELLOW}${C_BOLD}%-38s${C_NC} ${C_CYAN}${C_BOLD}(%s)${C_NC}\n" "[8]" "Проверка DNS-серверов" "$(count_dns)"
+printf "  ${C_CYAN}${C_BOLD}%-5s${C_NC} ${C_YELLOW}${C_BOLD}%-38s${C_NC} ${C_CYAN}${C_BOLD}(6+2)${C_NC}\n" "[9]" "Серверы DNS"
+menu_item "[10]" "DNS ДЛЯ ЗАПУСКА"
+menu_item "[11]" "ВРЕМЯ"
+menu_item "[12]" "НАСТРОЙКИ"
 menu_item "[13]" "Состояние и журнал"
-menu_item "[14]" "⚡ Показать и применить"
-menu_item "[15]" "📦 Установить недостающее"
-menu_item "[16]" "🗑 Удалить изменения"
+menu_item "[14]" "Показать и применить"
+menu_item "[15]" "Установить недостающее"
+menu_item "[16]" "Удалить изменения"
 
 menu_back
 menu_prompt
@@ -3990,7 +3993,7 @@ case "$c" in
 15) menu_install ;;
 16)
 clear_screen
-menu_header "↻ УДАЛЕНИЕ ИЗМЕНЕНИЙ"
+menu_header "УДАЛЕНИЕ ИЗМЕНЕНИЙ"
 warn_msg "Будут удалены только изменения диспетчера DNS."
 if confirm_action "Удалить изменения?"; then rollback_ours; else info_msg "Отменено."; fi
 ;;
