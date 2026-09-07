@@ -4,7 +4,7 @@ MANAGER_PATH="/usr/bin/dns-manager"
 # ==========================================
 # ОСНОВНЫЕ ПАРАМЕТРЫ
 # ==========================================
-VERSION="1.37"
+VERSION="1.38"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -1112,6 +1112,43 @@ record_own "ntp" "system.ntp.server" "$servers" "profile=$NTP_PRESET"
 ok_msg "NTP: IP-профиль '$NTP_PRESET' добавлен без удаления существующих серверов."
 log_tx "APPLY" "NTP" "ADD" "OK" "profile=$NTP_PRESET;servers=$servers"
 }
+apply_ntp_host_ips() {
+    [ -n "$(uci -q get system.ntp 2>/dev/null)" ] || return 0
+    _ntp_servers="$(uci -q get system.ntp.server 2>/dev/null)"
+    [ -n "$_ntp_servers" ] || return 0
+    _ntp_changed=0
+    _ntp_all="$_ntp_servers"
+
+    for _ntp_host in $_ntp_servers; do
+        printf '%s' "$_ntp_host" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}$' && continue
+        case "$_ntp_host" in
+            *[!A-Za-z0-9._-]*|*.*.*.*.*) continue ;;
+            *.*) ;;
+            *) continue ;;
+        esac
+
+        _ntp_ip="$(resolve_host "$_ntp_host" 2>/dev/null || true)"
+        [ -n "$_ntp_ip" ] || _ntp_ip="$(resolve_host_fallback "$_ntp_host" 2>/dev/null || true)"
+        [ -n "$_ntp_ip" ] || continue
+
+        _exists=0
+        for _cur_ntp in $_ntp_all; do
+            [ "$_cur_ntp" = "$_ntp_ip" ] && _exists=1
+        done
+        [ "$_exists" = 1 ] && continue
+        uci add_list system.ntp.server="$_ntp_ip" || return 1
+        _ntp_all="$_ntp_all $_ntp_ip"
+        _ntp_changed=1
+    done
+
+    if [ "$_ntp_changed" = 1 ]; then
+        uci set system.ntp.enabled='1' || return 1
+        uci set system.ntp.use_dhcp='0' || return 1
+        uci commit system || return 1
+        log_tx "APPLY" "NTP" "ADD_IP" "OK" "system.ntp.server hostname-to-ip"
+    fi
+    return 0
+}
 # ==========================================
 # МЕНЮ NTP
 # ==========================================
@@ -1911,8 +1948,11 @@ ok_msg "Выбранные подтверждённые bogus-nxdomain доба�
 pause
 }
 apply_ntp_if_needed() {
-[ "$NTP_IP_FALLBACK" = 1 ] || return 0
-apply_ntp_ip_fallback
+    apply_ntp_host_ips || return 1
+    if [ "$NTP_IP_FALLBACK" = 1 ]; then
+        apply_ntp_ip_fallback || return 1
+    fi
+    return 0
 }
 url_host() {
     _u="$1"
@@ -2279,7 +2319,6 @@ replace_failed_slot_from_test() {
 
             printf "  ${C_YELLOW}↻ Слот %s: %s не отвечает. Проверяю замену %s.${C_NC}\n" "$_slot" "$_current_name" "$_candidate_name"
 
-            # Порт слота неизменен. Меняем только DNS-кандидата.
             eval "SLOT_${_slot}=\"$_rid\""
             if [ "$DNS_SELECTION_MODE" = quick ]; then
                 eval "SLOT_${_slot}_CAT=\"bypass\""
@@ -2324,8 +2363,6 @@ replace_failed_slot_from_test() {
             printf '%s\n' "$_rid" >> "$_slot_tried"
             grep -qxF "$_rid" "$REPAIR_BAD_IDS" 2>/dev/null || printf '%s\n' "$_rid" >> "$REPAIR_BAD_IDS"
 
-            # Оставляем неудачный кандидат в текущем слоте до следующей попытки.
-            # Поэтому следующее сообщение честно называет именно его.
             _previous_id="$_rid"
             _old_display="$_candidate_name"
         done <<EOF_REPAIR_PASS
@@ -2852,6 +2889,8 @@ apply_settings() {
     tx_snapshot_start || { err_msg "Не удалось сохранить копию настроек. Настройки не изменены."; return 1; }
     log_tx "PLAN" "all" "APPLY" "START" "version=$VERSION"
 
+    apply_ntp_host_ips || { err_msg "Не удалось подготовить серверы времени."; tx_restore_on_failure; return 1; }
+
     if [ "$DNS_PROFILE" = hybrid ] && [ "${HYBRID_STAGE_SKIP:-0}" != 1 ]; then
         validate_selected_slots || { err_msg "Выбранный набор DNS больше не соответствует последней полной проверке."; tx_restore_on_failure; return 1; }
         /etc/init.d/https-dns-proxy stop >/dev/null 2>&1 || true
@@ -2913,7 +2952,7 @@ apply_settings() {
     reconcile_dnsmasq || { err_msg "Не удалось настроить dnsmasq."; tx_restore_on_failure; return 1; }
     ensure_dnsmasq_balancer || { err_msg "Не удалось включить одновременный опрос DNS."; tx_restore_on_failure; return 1; }
     if [ "$NTP_IP_FALLBACK" = 1 ]; then
-        apply_ntp_if_needed || { err_msg "Не удалось настроить NTP по IP."; tx_restore_on_failure; return 1; }
+        apply_ntp_ip_fallback || { err_msg "Не удалось настроить NTP по IP."; tx_restore_on_failure; return 1; }
     fi
     if [ "$CORE_ONLY" != 1 ] && [ "${FORCE_DOH:-0}" = 1 ]; then
         apply_dns_force || { err_msg "Не удалось применить принудительный DNS."; tx_restore_on_failure; return 1; }
