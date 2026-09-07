@@ -761,12 +761,13 @@ q="$TMP_DIR/q.$id"; body="$TMP_DIR/body.$id"; hdr="$TMP_DIR/h.$id"
 printf '\022\064\001\000\000\001\000\000\000\000\000\000\007example\003com\000\000\001\000\001' > "$q"
 
 _ips=""
+# Для каталожной проверки сначала используем обычное разрешение имени.
+# Bootstrap DNS нужен рабочим https-dns-proxy, но он сам может быть недоступен у провайдера.
 if [ "$HAS_DIG" = yes ]; then
-    for bs in $(printf '%s' "$BOOTSTRAP_DNS" | tr ',' ' '); do
-        _chunk="$(dig +short +time=2 +tries=1 "@$bs" "$host" A 2>/dev/null | awk '/^[0-9]+(\.[0-9]+){3}$/{print}' | head -n 4)"
-        [ -n "$_chunk" ] && { _ips="$_chunk"; break; }
-    done
+    _chunk="$(dig +short +time=3 +tries=1 "$host" A 2>/dev/null | awk '/^[0-9]+(\.[0-9]+){3}$/{print}' | head -n 4)"
+    [ -n "$_chunk" ] && _ips="$_chunk"
 fi
+[ -n "$_ips" ] || { _one="$(resolve_host_fallback "$host")"; [ -n "$_one" ] && _ips="$_one"; }
 [ -n "$_ips" ] || { _one="$(resolve_host "$host")"; [ -n "$_one" ] && _ips="$_one"; }
 [ -n "$_ips" ] || { printf '%s|%s|%s|-1|BOOTSTRAP_FAIL\n' "$id" "$cat" "$name" > "$TMP_DIR/t.$id"; rm -f "$q" "$body" "$hdr"; return; }
 
@@ -831,6 +832,11 @@ okn="$(grep -c '|OK$' "$TEST_RESULTS" 2>/dev/null)"
 failn=$((total-okn))
 printf "${C_GREEN}✓ Успешно: %s${C_NC} | ${C_YELLOW}Проблемные: %s${C_NC} | Всего: %s\n" "$okn" "$failn" "$total"
 printf "${C_CYAN}Время — полный ответ DNS-сервера. Меньше — лучше.${C_NC}\n"
+if [ "$okn" -eq 0 ]; then
+    warn_msg "Не удалось проверить ни одного DNS-сервера. Настройки не изменены."
+    log_tx "TEST" "dns-catalog" "RUN" "FAIL" "ok=$okn,total=$total"
+    return 1
+fi
 log_tx "TEST" "dns-catalog" "RUN" "OK" "ok=$okn,total=$total"
 }
 # ==========================================
@@ -3441,8 +3447,8 @@ printf "  ${C_GREEN}✓${C_NC} одновременная работа выбр�
 printf "  ${C_GREEN}✓${C_NC} проверка после настройки\n"
 printf "  ${C_GREEN}✓${C_NC} сохранение исходных настроек для отката\n"
 printf "  ${C_GREEN}✓${C_NC} кэш DNS для более быстрых повторных запросов\n\n"
-test_dns_catalog
-[ -s "$TEST_RESULTS" ] || return
+test_dns_catalog || return 1
+[ -s "$TEST_RESULTS" ] || return 1
 DNS_PROFILE="hybrid"
 auto_fill_slots bypass || return 1
 SLOT_RU="yandex_ru"
