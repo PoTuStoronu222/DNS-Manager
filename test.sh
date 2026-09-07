@@ -152,7 +152,17 @@ ok_msg() { log_msg "Готово: $*"; printf "${C_GREEN}[✓] %s${C_NC}\n" "$*"
 info_msg() { log_msg "Информация: $*"; printf "${C_CYAN}[ℹ] %s${C_NC}\n" "$*"; }
 warn_msg() { log_msg "Внимание: $*"; printf "${C_YELLOW}[!] %s${C_NC}\n" "$*"; }
 err_msg() { log_msg "Ошибка: $*"; printf "${C_RED}[✗] %s${C_NC}\n" "$*"; }
-safe_read() { read -r "$@"; }
+safe_read() {
+    # Всегда читаем ответ пользователя из терминала. Это важно, когда
+    # функция запускается из перенаправленного вывода/подпроцесса.
+    if [ -t 0 ]; then
+        read -r "$@"
+    elif [ -r /dev/tty ]; then
+        read -r "$@" < /dev/tty
+    else
+        read -r "$@"
+    fi
+}
 confirm_action() {
     _prompt="$1"
     if [ "${SILENT_APPLY:-0}" = 1 ]; then
@@ -2601,6 +2611,7 @@ apply_settings() {
     validate_selected_slots || return 1
     confirm_action "Применить показанную выше конфигурацию?" || return
 
+    printf "\n${C_CYAN}Начинаю применение. Это может занять немного времени...${C_NC}\n"
     TX_ID="$(date +%Y%m%d-%H%M%S)-$$"
     TX_RESERVED_PORTS=""
     baseline_capture_once || { err_msg "Не удалось сохранить исходную копию. Настройки не изменены."; return 1; }
