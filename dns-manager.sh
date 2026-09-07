@@ -4,7 +4,7 @@ MANAGER_PATH="/usr/bin/dns-manager"
 # ==========================================
 # ОСНОВНЫЕ ПАРАМЕТРЫ
 # ==========================================
-VERSION="1.35"
+VERSION="1.36"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -16,7 +16,7 @@ NTP_CATALOG="$CFG_DIR/ntp-catalog.conf"
 BOOTSTRAP_CATALOG="$CFG_DIR/bootstrap-catalog.conf"
 BOGUS_CATALOG="$CFG_DIR/bogus-catalog.conf"
 BOOTSTRAP_DNS_ALL="77.88.8.8,77.88.8.1,94.140.14.14,1.1.1.1,1.0.0.1,8.8.8.8,8.8.4.4,9.9.9.9,149.112.112.112,208.67.222.222,208.67.220.220,149.112.121.10,149.112.122.10,76.76.2.0,76.76.10.0,194.242.2.2,194.242.2.3"
-DNSCAT_VERSION="8.4-RU-NOSOCIAL"
+DNSCAT_VERSION="8.5-RU-NOSOCIAL"
 PREV_DNSMASQ="$CFG_DIR/dnsmasq-previous.conf"
 PREV_SERVICES="$CFG_DIR/services-previous.conf"
 BASELINE_DIR="$BASE_DIR/baseline"
@@ -352,7 +352,7 @@ rm -f "$DNS_CATALOG.previous" "$NTP_CATALOG.previous" "$BOOTSTRAP_CATALOG.previo
 _old_dnscatver="$(sed -n 's/^# DNSCATVER=//p' "$DNS_CATALOG" 2>/dev/null | head -n1)"
 if [ ! -s "$DNS_CATALOG" ] || [ "$_old_dnscatver" != "$DNSCAT_VERSION" ]; then
 cat > "$DNS_CATALOG" <<'EOF_DNS'
-# DNSCATVER=8.4-RU-NOSOCIAL
+# DNSCATVER=8.5-RU-NOSOCIAL
 # ==========================================
 # КАТАЛОГ DNS — ОБХОД И СЕРВИСЫ
 # ==========================================
@@ -369,6 +369,7 @@ comss_ru|bypass|geo+services|Comss DNS RU|https://dns.comss.ru/dns-query|ru/glob
 comss_bypass|bypass|geo+security|Comss.one|https://dns.comss.one/dns-query|ru/global|verified-published-current
 comss_adblock_bypass|bypass|geo+ads+security|Comss.one Ad Filter|https://router.comss.one/dns-query|ru/global|verified-published-current
 dns_ai_ru|bypass|geo+services|DNS-AI.RU|https://dns.dns-ai.ru/dns-query|ru/global|official-current
+yo1nk|bypass|geo+services|YO1NK DNS|https://dns.yo1nk.app/dns-query|global|user-confirmed-current
 vppay|bypass|geo+services|VPPay DNS|https://dns.vppay.ru/dns-query|ru/global|user-confirmed-current
 dynx|bypass|geo+youtube|DynX DNS|https://dns.dynx.pro/dns-query|global|review-runtime
 paesa|bypass|geo+youtube|Paesa DNS|https://dns.paesa.es/dns-query|global|review-runtime
@@ -1402,6 +1403,36 @@ exact_list_has() {
 target="$1"; val="$2"
 uci -q get "$target" 2>/dev/null | tr ' ' '\n' | sed "s/^['\"]//; s/['\"]$//" | grep -qxF "$val"
 }
+ensure_dnsmasq_balancer() {
+    _sec="$(get_dnsmasq_section)"
+    [ -n "$_sec" ] || return 1
+    _changed=0
+    if [ "$(uci -q get "dhcp.$_sec.allservers" 2>/dev/null)" != 1 ]; then
+        uci set "dhcp.$_sec.allservers=1" || return 1
+        _changed=1
+        record_own "dnsmasq" "allservers" 1 "section=$_sec"
+    fi
+    if [ "$(uci -q get "dhcp.$_sec.strictorder" 2>/dev/null)" != 0 ]; then
+        uci set "dhcp.$_sec.strictorder=0" || return 1
+        _changed=1
+        record_own "dnsmasq" "strictorder" 0 "section=$_sec"
+    fi
+    if [ "$(uci -q get "dhcp.$_sec.noresolv" 2>/dev/null)" != 1 ]; then
+        uci set "dhcp.$_sec.noresolv=1" || return 1
+        _changed=1
+        record_own "dnsmasq" "noresolv" 1 "section=$_sec"
+    fi
+    if [ "$_changed" = 1 ]; then
+        uci commit dhcp || return 1
+        /etc/init.d/dnsmasq restart >/dev/null 2>&1 || return 1
+        sleep 2
+        ok_msg "Одновременный опрос DNS включён и проверен."
+    fi
+    [ "$(uci -q get "dhcp.$_sec.allservers" 2>/dev/null)" = 1 ] || return 1
+    [ "$(uci -q get "dhcp.$_sec.strictorder" 2>/dev/null)" = 0 ] || return 1
+    [ "$(uci -q get "dhcp.$_sec.noresolv" 2>/dev/null)" = 1 ] || return 1
+    return 0
+}
 reconcile_dnsmasq() {
     sec="$(get_dnsmasq_section)"
     uci -q get "dhcp.$sec" >/dev/null 2>&1 || return 1
@@ -2248,7 +2279,6 @@ replace_failed_slot_from_test() {
 
             printf "  ${C_YELLOW}↻ Слот %s: %s не отвечает. Проверяю замену %s.${C_NC}\n" "$_slot" "$_current_name" "$_candidate_name"
 
-            # Порт слота неизменен. Меняем только DNS-кандидата.
             eval "SLOT_${_slot}=\"$_rid\""
             if [ "$DNS_SELECTION_MODE" = quick ]; then
                 eval "SLOT_${_slot}_CAT=\"bypass\""
@@ -2270,7 +2300,6 @@ replace_failed_slot_from_test() {
             fi
 
             /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || true
-            # После перезапуска даём сервису подняться; затем делаем сам DNS-запрос.
             sleep 4
             _domain="example.com"
             case "$_slot" in RU|RU_2) _domain="yandex.ru" ;; esac
@@ -2293,8 +2322,6 @@ replace_failed_slot_from_test() {
             printf '%s\n' "$_rid" >> "$_slot_tried"
             grep -qxF "$_rid" "$REPAIR_BAD_IDS" 2>/dev/null || printf '%s\n' "$_rid" >> "$REPAIR_BAD_IDS"
 
-            # Оставляем неудачный кандидат в текущем слоте до следующей попытки.
-            # Поэтому следующее сообщение честно называет именно его.
             _previous_id="$_rid"
             _old_display="$_candidate_name"
         done <<EOF_REPAIR_PASS
@@ -2350,6 +2377,8 @@ verify_after_apply() {
 
     verify_selected_doh || return 1
 
+    # Проверяем не только наличие слушателя, а реальный DNS-ответ через локальный DNS.
+    # Это не даёт ложной ошибки на OpenWrt, где dnsmasq может слушать несколько адресов.
     local_dns_query_ok 53 "example.com" || {
         err_msg "Локальный DNS после применения не отвечает через 127.0.0.1:53."; return 1;
     }
@@ -2741,6 +2770,7 @@ apply_settings() {
         SLOT_RU_CAT="regional"; SLOT_RU_2_CAT="regional"
     fi
     BOOTSTRAP_DNS="$BOOTSTRAP_DNS_ALL"
+    BALANCER_ENABLED=1
     HYBRID_SELECTION_READY=0
     HYBRID_PREFLIGHT_WAS_RUNNING=0
 
@@ -2877,6 +2907,7 @@ apply_settings() {
     }
 
     reconcile_dnsmasq || { err_msg "Не удалось настроить dnsmasq."; tx_restore_on_failure; return 1; }
+    ensure_dnsmasq_balancer || { err_msg "Не удалось включить одновременный опрос DNS."; tx_restore_on_failure; return 1; }
     if [ "$NTP_IP_FALLBACK" = 1 ]; then
         apply_ntp_if_needed || { err_msg "Не удалось настроить NTP по IP."; tx_restore_on_failure; return 1; }
     fi
@@ -2920,6 +2951,8 @@ apply_settings() {
 
     /etc/init.d/https-dns-proxy restart 2>/dev/null || true
     /etc/init.d/dnsmasq restart 2>/dev/null || true
+    sleep 2
+    ensure_dnsmasq_balancer || { err_msg "Одновременный опрос DNS не включился после запуска. Изменения откатываются."; tx_restore_on_failure; return 1; }
     reload_fw
     run_discovery
     tx_snapshot_after_apply
@@ -3756,41 +3789,69 @@ done
 ensure_dependencies(){
 missing=""
 [ "$HAS_CURL" = yes ] || missing="$missing curl"
-
 [ "$HAS_HDP" = yes ] || missing="$missing https-dns-proxy"
 CA_OK=no
 [ -s /etc/ssl/certs/ca-certificates.crt ] && CA_OK=yes
 if [ "$CA_OK" != yes ]; then
-if command -v apk >/dev/null 2>&1; then
-apk info -e ca-certificates >/dev/null 2>&1 && CA_OK=yes
-apk info -e ca-bundle >/dev/null 2>&1 && CA_OK=yes
-elif command -v opkg >/dev/null 2>&1; then
-opkg status ca-certificates 2>/dev/null | grep -q '^Status:.*installed' && CA_OK=yes
-opkg status ca-bundle 2>/dev/null | grep -q '^Status:.*installed' && CA_OK=yes
-fi
+    if command -v apk >/dev/null 2>&1; then
+        apk info -e ca-certificates >/dev/null 2>&1 && CA_OK=yes
+        apk info -e ca-bundle >/dev/null 2>&1 && CA_OK=yes
+    elif command -v opkg >/dev/null 2>&1; then
+        opkg status ca-certificates 2>/dev/null | grep -q '^Status:.*installed' && CA_OK=yes
+        opkg status ca-bundle 2>/dev/null | grep -q '^Status:.*installed' && CA_OK=yes
+    fi
 fi
 [ "$CA_OK" = yes ] || missing="$missing ca-certificates"
 [ "$HAS_DNSMASQ" = yes ] || missing="$missing dnsmasq"
 printf '%s\n' "$missing"
+}
+install_missing_dependencies(){
+    run_discovery >/dev/null 2>&1 || true
+    _need="$(ensure_dependencies)"
+    if [ -z "$_need" ]; then
+        return 0
+    fi
+    printf "\n${C_YELLOW}↻ Обнаружены недостающие компоненты. Устанавливаю...${C_NC}\n"
+    for _pkg in $_need; do
+        printf "  ${C_PINK}↻${C_NC} %s\n" "$_pkg"
+    done
+    printf "\n"
+    if [ "$PKG_MGR" = "apk" ]; then
+        apk update >/dev/null 2>&1 && apk add $_need
+    else
+        opkg update >/dev/null 2>&1 && opkg install $_need
+    fi
+    _rc=$?
+    run_discovery >/dev/null 2>&1 || true
+    if [ "$_rc" -eq 0 ]; then
+        _left="$(ensure_dependencies)"
+        if [ -z "$_left" ]; then
+            ok_msg "Все необходимые компоненты установлены."
+            return 0
+        fi
+    fi
+    err_msg "Не удалось установить все необходимые компоненты. Настройка остановлена."
+    return 1
 }
 # ==========================================
 # МЕНЮ УСТАНОВКИ
 # ==========================================
 menu_install() {
 menu_header "ПРОГРАММЫ"
+run_discovery >/dev/null 2>&1 || true
 printf "  curl              : %s\n" "$(state_word "$HAS_CURL")"
 printf "  dig (доп.)         : %s\n" "$(state_word "$HAS_DIG")"
 printf "  https-dns-proxy   : %s\n" "$(state_word "$HAS_HDP")"
 CA_OK=no
 [ -s /etc/ssl/certs/ca-certificates.crt ] && CA_OK=yes
 if [ "$CA_OK" != yes ]; then
-if command -v apk >/dev/null 2>&1; then
-apk info -e ca-certificates >/dev/null 2>&1 && CA_OK=yes
-apk info -e ca-bundle >/dev/null 2>&1 && CA_OK=yes
-elif command -v opkg >/dev/null 2>&1; then
-opkg status ca-certificates 2>/dev/null | grep -q '^Status:.*installed' && CA_OK=yes
-opkg status ca-bundle 2>/dev/null | grep -q '^Status:.*installed' && CA_OK=yes
-fi
+    if command -v apk >/dev/null 2>&1; then
+        apk info -e ca-certificates >/dev/null 2>&1 && CA_OK=yes
+        apk info -e ca-bundle >/dev/null 2>&1 && CA_OK=yes
+    elif command -v opkg >/dev/null 2>&1; then
+        opkg status ca-certificates 2>/dev/null | grep -q '^Status:.*installed' && CA_OK=yes
+        opkg status ca-bundle 2>/dev/null | grep -q '^Status:.*installed' && CA_OK=yes
+    fi
 fi
 printf "  CA-сертификаты    : %s\n" "$(state_word "$CA_OK")"
 printf "  dnsmasq           : %s\n" "$(state_word "$HAS_DNSMASQ")"
@@ -3806,14 +3867,7 @@ printf "  ${C_PINK}↻${C_NC} %s\n" "$pkg"
 done
 printf "\n"
 if confirm_action "Установить недостающие компоненты сейчас?"; then
-if [ "$PKG_MGR" = "apk" ]; then
-apk update && apk add $need
-else
-opkg update && opkg install $need
-fi
-run_discovery
-if [ "$HAS_CURL" = yes ] && \
-[ "$HAS_HDP" = yes ] && [ "$HAS_DNSMASQ" = yes ]; then
+if install_missing_dependencies; then
 ok_msg "Обязательные компоненты установлены."
 else
 warn_msg "После установки остались недостающие компоненты. Проверьте состояние."
@@ -3823,6 +3877,7 @@ info_msg "Установка отменена."
 fi
 pause
 }
+
 # ==========================================
 # МЕНЮ СОСТОЯНИЯ
 # ==========================================
@@ -4393,6 +4448,8 @@ case "${1:-}" in
 watchdog|--watchdog|-w)
     preflight_readonly
     init_dirs
+    run_discovery
+    install_missing_dependencies || exit 1
     write_catalogs
     load_config
     log_msg "Запуск автоматической проверки DNS."
@@ -4403,7 +4460,9 @@ esac
 
 preflight_readonly
 init_dirs
-auto_update_manager        
+run_discovery
+install_missing_dependencies || exit 1
+auto_update_manager
 write_catalogs
 load_config
 if [ "${_had_dns_profile:-1}" = 0 ]; then
