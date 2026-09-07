@@ -590,6 +590,7 @@ HAS_DIG="no"; command -v dig >/dev/null 2>&1 && HAS_DIG="yes"
 HAS_NTPD="no"; command -v ntpd >/dev/null 2>&1 && HAS_NTPD="yes"
 HAS_NTPQ="no"; command -v ntpq >/dev/null 2>&1 && HAS_NTPQ="yes"
 HAS_HDP="no"; command -v https-dns-proxy >/dev/null 2>&1 && HAS_HDP="yes"
+HDP_RUNNING="no"; pgrep -f '[h]ttps-dns-proxy' >/dev/null 2>&1 && HDP_RUNNING="yes"
 IPV4_ROUTE="no"; ip -4 route show default 2>/dev/null | grep -q . && IPV4_ROUTE="yes"
 IPV6_ROUTE="no"; ip -6 route show default 2>/dev/null | grep -q . && IPV6_ROUTE="yes"
 FREE_OVERLAY="$(df -k /overlay 2>/dev/null | awk 'NR==2{print $4}')"
@@ -969,7 +970,7 @@ PORT_4="$HYBRID_PORT_4"; PORT_5="$HYBRID_PORT_5"; PORT_6="$HYBRID_PORT_6"
 # ==========================================
 show_hybrid_profile() {
 while :; do
-menu_header "⭐ HYBRID SMARTDNS"
+menu_header "ГИБРИДНЫЙ DNS"
 menu_section "ОБЩИЕ DNS-СЕРВЕРЫ"
 printf "${C_WHITE}  %-8s %-34s %s${C_NC}\n" "ПОРТ" "DNS" "РОЛЬ"
 printf "  ──────────────────────────────────────────────────────────\n"
@@ -986,9 +987,9 @@ printf "\n${C_SECTION}РЕЖИМ${C_NC}\n"
 printf "  ${C_WHITE}Общий DNS:${C_NC} 6 серверов работают одновременно.\n"
 printf "  ${C_WHITE}RU:${C_NC}       .ru / .su / .рф → отдельный DNS.\n"
 menu_section "ДЕЙСТВИЯ"
-menu_item "[1]" "⚡ Автоматически настроить"
-menu_item "[2]" "🧪 Проверить DNS"
-menu_item "[3]" "🔧 Изменить слоты"
+menu_item "[1]" "Автоматически настроить"
+menu_item "[2]" "Проверить DNS"
+menu_item "[3]" "Изменить слоты"
 menu_back
 menu_prompt
 safe_read _c
@@ -1043,7 +1044,7 @@ log_tx "APPLY" "NTP" "ADD" "OK" "profile=$NTP_PRESET;servers=$servers"
 # МЕНЮ NTP
 # ==========================================
 menu_ntp() {
-menu_header "ВРЕМЯ / NTP — точное время на роутере"
+menu_header "СИНХРОНИЗАЦИЯ ВРЕМЕНИ — точное время на роутере"
 _cur_ntp="$(uci -q get system.ntp.server 2>/dev/null)"
 printf "${C_WHITE}Зачем нужен этот раздел:${C_NC}\n"
 printf "  Точное время нужно роутеру для HTTPS-соединений, проверки сертификатов,\n"
@@ -1976,26 +1977,35 @@ listener_port_exists() {
 }
 local_dns_query_ok() {
     _lp="$1"
+    _domain="${2:-example.com}"
     [ -n "$_lp" ] || return 1
+    if command -v dig >/dev/null 2>&1; then
+        _ans="$(dig +time=2 +tries=1 +short @127.0.0.1 -p "$_lp" "$_domain" A 2>/dev/null | head -n 1)"
+        printf '%s\n' "$_ans" | grep -Eq '^[0-9]+(\.[0-9]+){3}$' && return 0
+        _ans="$(dig +time=2 +tries=1 @127.0.0.1 -p "$_lp" "$_domain" A 2>/dev/null | awk '/^;; ANSWER SECTION:/{f=1;next} f && $4=="A" && $NF ~ /^[0-9]+(\.[0-9]+){3}$/ {print $NF; exit}')"
+        [ -n "$_ans" ] && return 0
+    fi
     _nc="$(command -v nc 2>/dev/null || true)"
-    [ -n "$_nc" ] || return 1
-    _tag="$$-$(date +%s%N | cut -c1-10)"
-    _q="$TMP_DIR/local-dns-q-$_tag"
-    _r="$TMP_DIR/local-dns-r-$_tag"
-    : > "$_r" || return 1
-    printf '\022\064\001\000\000\001\000\000\000\000\000\000\007example\003com\000\000\001\000\001' > "$_q" || { rm -f "$_q" "$_r"; return 1; }
-    "$_nc" -u -w 2 127.0.0.1 "$_lp" < "$_q" > "$_r" 2>/dev/null || true
-    _n="$(wc -c < "$_r" 2>/dev/null | tr -d ' ')"
-    case "$_n" in ''|*[!0-9]*) _n=0 ;; esac
-    [ "$_n" -ge 12 ] || { rm -f "$_q" "$_r"; return 1; }
-    set -- $(od -An -tu1 -N8 "$_r" 2>/dev/null)
-    _f1="${3:-0}"; _f2="${4:-0}"; _a1="${7:-0}"; _a2="${8:-0}"
-    [ "$_f1" -ge 128 ] 2>/dev/null || { rm -f "$_q" "$_r"; return 1; }
-    [ "$(( _f2 & 15 ))" -eq 0 ] 2>/dev/null || { rm -f "$_q" "$_r"; return 1; }
-    _an=$(( _a1 * 256 + _a2 ))
-    [ "$_an" -gt 0 ] 2>/dev/null || { rm -f "$_q" "$_r"; return 1; }
-    rm -f "$_q" "$_r"
-    return 0
+    if [ -n "$_nc" ]; then
+        _tag="$$-$(date +%s%N | cut -c1-10)"
+        _q="$TMP_DIR/local-dns-q-$_tag"
+        _r="$TMP_DIR/local-dns-r-$_tag"
+        : > "$_r" || return 1
+        printf '\022\064\001\000\000\001\000\000\000\000\000\000\007example\003com\000\000\001\000\001' > "$_q" || { rm -f "$_q" "$_r"; return 1; }
+        "$_nc" -u -w 2 127.0.0.1 "$_lp" < "$_q" > "$_r" 2>/dev/null || true
+        _n="$(wc -c < "$_r" 2>/dev/null | tr -d ' ')"
+        case "$_n" in ''|*[!0-9]*) _n=0 ;; esac
+        [ "$_n" -ge 12 ] || { rm -f "$_q" "$_r"; return 1; }
+        set -- $(od -An -tu1 -N8 "$_r" 2>/dev/null)
+        _f1="${3:-0}"; _f2="${4:-0}"; _a1="${7:-0}"; _a2="${8:-0}"
+        [ "$_f1" -ge 128 ] 2>/dev/null || { rm -f "$_q" "$_r"; return 1; }
+        [ "$(( _f2 & 15 ))" -eq 0 ] 2>/dev/null || { rm -f "$_q" "$_r"; return 1; }
+        _an=$(( _a1 * 256 + _a2 ))
+        [ "$_an" -gt 0 ] 2>/dev/null || { rm -f "$_q" "$_r"; return 1; }
+        rm -f "$_q" "$_r"
+        return 0
+    fi
+    return 1
 }
 
 verify_selected_doh() {
@@ -2439,7 +2449,7 @@ apply_settings() {
         fi
     fi
 
-    printf "${C_TITLE}=== ⚡ ПОДГОТОВКА И ПЛАН ПРИМЕНЕНИЯ ===${C_NC}\n"
+    printf "${C_TITLE}===  ПОДГОТОВКА И ПЛАН ПРИМЕНЕНИЯ ===${C_NC}\n"
     printf "${C_WHITE}Будет настроено:${C_NC}\n"
     if [ "$DNS_PROFILE" = hybrid ]; then
         printf "  ${C_YELLOW}Гибридный DNS — 6 серверов + Яндекс RU${C_NC}\n"
@@ -2454,8 +2464,7 @@ apply_settings() {
         else
             printf "\n${C_YELLOW}RU-маршрут сейчас не выбран.${C_NC}\n"
         fi
-        printf "\n\n"
-        printf "  \n"
+        printf "\n"
     else
         printf "  ${C_YELLOW}Своя настройка DNS${C_NC}\n"
         for _s in 1 2 3 4 5 6; do
@@ -2794,6 +2803,30 @@ else
 printf "${C_YELLOW}ВЫКЛ • не выбрано${C_NC}"
 fi
 }
+hybrid_runtime_state_word() {
+    [ "${DNS_PROFILE:-}" = "hybrid" ] || return 0
+    _expected=0
+    _actual=0
+    for _hs in 1 2 3 4 5 6 RU RU_2; do
+        eval "_hid=\${SLOT_${_hs}:-}"
+        [ -n "$_hid" ] || continue
+        _expected=$((_expected+1))
+        _hp="$(hybrid_desired_port "$_hs")"
+        _hu="$(normalize_url "$(dns_url "$_hid")")"
+        if [ -s "${DOH_INV:-}" ] && awk -F'|' -v p="$_hp" -v u="$_hu" '$2==p && $3=="OURS" && $5=="yes" && $6==u {ok=1} END{exit !ok}' "$DOH_INV" 2>/dev/null; then
+            _actual=$((_actual+1))
+        fi
+    done
+    if [ "$_expected" -eq 0 ]; then
+        printf "${C_YELLOW}ВЫКЛ • не настроен${C_NC}"
+    elif [ "$_actual" -eq "$_expected" ]; then
+        printf "${C_GREEN}ВКЛ • работает${C_NC}"
+    elif [ "$_actual" -gt 0 ]; then
+        printf "${C_YELLOW}ВКЛ • работает частично${C_NC}"
+    else
+        printf "${C_YELLOW}ВКЛ • настроен, но не запущен${C_NC}"
+    fi
+}
 # ==========================================
 # МЕНЮ КАРТЫ DNS
 # ==========================================
@@ -2817,7 +2850,7 @@ third_party_running() {
     esac
 }
 show_map() {
-menu_header "📊 СОСТОЯНИЕ РОУТЕРА"
+menu_header "СОСТОЯНИЕ РОУТЕРА"
 menu_section "СИСТЕМА"
 printf "  OpenWrt:        ${C_WHITE}%s${C_NC}\n" "$SYS_OWRT"
 printf "  Платформа:      ${C_WHITE}%s${C_NC}\n" "$SYS_TARGET"
@@ -2836,11 +2869,12 @@ printf "  DNS-серверов всего:       ${C_WHITE}%s${C_NC}\n" "$DOH_TO
 printf "  наших:           ${C_WHITE}%s${C_NC}\n" "$DOH_OURS"
 printf "  Других:           ${C_WHITE}%s${C_NC}\n" "$DOH_FOREIGN"
 printf "  Без владельца:     ${C_WHITE}%s${C_NC}\n" "$DOH_UNKNOWN"
-printf "  Гибридный DNS:        %s\n" "$(state_word "$DNS_SMARTDNS")"
-printf "  Unbound:         %s\n" "$(state_word "$DNS_UNBOUND")"
-printf "  AdGuard Home:    %s\n" "$(state_word "$DNS_ADGUARD")"
-printf "  MosDNS:          %s\n" "$(state_word "$DNS_MOSDNS")"
-printf "  Sing-box:        %s\n" "$(state_word "$DNS_SINGBOX")"
+hybrid_runtime_state_word | grep -q . && printf "  Гибридный DNS:    %s\n" "$(hybrid_runtime_state_word)"
+[ "$DNS_SMARTDNS" = yes ] && printf "  SmartDNS:         %s\n" "$(state_word "$DNS_SMARTDNS")"
+[ "$DNS_UNBOUND" = yes ] && printf "  Unbound:          %s\n" "$(state_word "$DNS_UNBOUND")"
+[ "$DNS_ADGUARD" = yes ] && printf "  AdGuard Home:     %s\n" "$(state_word "$DNS_ADGUARD")"
+[ "$DNS_MOSDNS" = yes ] && printf "  MosDNS:           %s\n" "$(state_word "$DNS_MOSDNS")"
+[ "$DNS_SINGBOX" = yes ] && printf "  Sing-box:         %s\n" "$(state_word "$DNS_SINGBOX")"
 menu_section "ВЫБРАННЫЕ DNS"
 printf "  ${C_WHITE}%-6s %-32s %s${C_NC}\n" "СЛОТ" "DNS" "ФАКТИЧЕСКИЙ ПОРТ"
 for _s in 1 2 3 4 5 6; do
@@ -2897,7 +2931,7 @@ pause
 # МЕНЮ DNS-сервер
 # ==========================================
 show_doh() {
-menu_header "🔎 НАЙДЕННЫЕ DNS-СЕРВЕРЫ"
+menu_header "НАЙДЕННЫЕ DNS-СЕРВЕРЫ"
 [ -s "$DOH_INV" ] || { printf "${C_YELLOW}https-dns-proxy секции не найдены.${C_NC}\n"; pause; return; }
 menu_section "СЕКЦИИ"
 printf "  ${C_WHITE}%-4s %-8s %-12s %-8s %-12s${C_NC}\n" "#" "ПОРТ" "ВЛАДЕЛЕЦ" "СОСТ." "АДРЕС"
@@ -2909,7 +2943,7 @@ done < "$DOH_INV"
 pause
 }
 show_tests() {
-menu_header "🧪 РЕЗУЛЬТАТЫ ПРОВЕРКИ DNS"
+menu_header "РЕЗУЛЬТАТЫ ПРОВЕРКИ DNS"
 [ -s "$TEST_RESULTS" ] || { printf "${C_YELLOW}Тест ещё не запускался.${C_NC}\n"; pause; return; }
 okn="$(grep -c '|OK$' "$TEST_RESULTS" 2>/dev/null)"; total="$(count_dns)"; failn=$((total-okn))
 printf "${C_GREEN}✓ Работают: %s${C_NC}    ${C_RED}✗ Ошибки: %s${C_NC}    ${C_WHITE}Всего: %s${C_NC}\n\n" "$okn" "$failn" "$total"
@@ -2930,10 +2964,10 @@ pause
 }
 show_best() {
 while :; do
-menu_header "⭐ ВЫБОР DNS"
+menu_header "ВЫБОР DNS"
 menu_section "ГОТОВЫЕ ПРОФИЛИ"
-menu_item "[1]" "⭐ Гибридный DNS — 6 DNS-сервер + Yandex RU"
-menu_item "[2]" "⚡ Чистый быстрый DNS"
+menu_item "[1]" "Гибридный DNS — 6 DNS-серверов + Яндекс RU"
+menu_item "[2]" "Чистый быстрый DNS"
 menu_item "[3]" "Максимальная безопасность"
 menu_item "[4]" "Максимальная приватность"
 menu_item "[5]" "Блокировка рекламы"
@@ -3105,11 +3139,11 @@ return 0
 menu_best_actions() {
 goal="$1"; title="$2"
 while :; do
-menu_header "⭐ $title"
+menu_header "$title"
 menu_section "ДЕЙСТВИЯ"
-menu_item "[1]" "⚡ Автонастройка: подобрать и применить безопасно"
-menu_item "[2]" "⭐ Показать лучшие варианты"
-menu_item "[3]" "⚙ Выбрать DNS вручную"
+menu_item "[1]" "Автонастройка: подобрать и применить безопасно"
+menu_item "[2]" "Показать лучшие варианты"
+menu_item "[3]" "Выбрать DNS вручную"
 menu_back
 menu_prompt
 safe_read a
@@ -3123,7 +3157,7 @@ fi
 ;;
 2)
 clear_screen
-menu_header "⭐ ЛУЧШИЕ ВАРИАНТЫ — $title"
+menu_header "ЛУЧШИЕ ВАРИАНТЫ — $title"
 menu_section "ТОП-5 ПО ВРЕМЕНИ ОТВЕТА"
 show_best_category "$goal" 5 | while IFS='|' read -r _id _cat _name _ms _st; do
 printf "  ${C_CYAN}${C_BOLD}•${C_NC} ${C_GREEN}${C_BOLD}%-34s${C_NC} ${C_YELLOW}%s мс${C_NC}\n" "$_name" "$_ms"
@@ -3142,7 +3176,7 @@ done
 # ==========================================
 select_slot() {
 slot="$1"; clear_screen
-menu_header "⚙ ВЫБОР DNS-СЕРВЕРА $slot"
+menu_header "ВЫБОР DNS-СЕРВЕРА $slot"
 n=1
 while IFS='|' read -r id cat prof name url region status; do
 case "$id" in ''|\#*) continue;; esac
@@ -3175,7 +3209,7 @@ save_config
 # ==========================================
 menu_slots() {
 while :; do
-menu_header "⚙ СЕРВЕРЫ DNS"
+menu_header "СЕРВЕРЫ DNS"
 if [ "$DNS_PROFILE" = "hybrid" ]; then
 printf "${C_YELLOW}${C_BOLD}Профиль:${C_NC} ${C_GREEN}${C_BOLD}Гибридный DNS${C_NC}\n"
 else
@@ -3194,7 +3228,7 @@ menu_section "РЕГИОНАЛЬНЫЕ СЛОТЫ"
 printf "  ${C_CYAN}${C_BOLD}[7]${C_NC} ${C_GREEN}${C_BOLD}RU${C_NC}   ${C_GREEN}%-30s${C_NC} ${C_YELLOW}${C_BOLD}%s${C_NC}\n" "$(dns_name "$SLOT_RU")" "${PORT_RU:-$HYBRID_PORT_RU}"
 printf "  ${C_CYAN}${C_BOLD}[8]${C_NC} ${C_GREEN}${C_BOLD}RU2${C_NC}  ${C_GREEN}%-30s${C_NC} ${C_YELLOW}${C_BOLD}%s${C_NC}\n" "$(dns_name "$SLOT_RU_2")" "${PORT_RU_2:-авто}"
 menu_section "ДЕЙСТВИЯ"
-menu_item "[9]" "⚡ Автоподбор лучших"
+menu_item "[9]" "Автоподбор лучших"
 menu_item "[10]" "Восстановить стандартную настройку"
 menu_back
 menu_prompt
@@ -3416,7 +3450,7 @@ printf '%s\n' "$missing"
 # МЕНЮ УСТАНОВКИ
 # ==========================================
 menu_install() {
-menu_header "📦 ПРОГРАММЫ"
+menu_header "ПРОГРАММЫ"
 printf "  curl              : %s\n" "$(state_word "$HAS_CURL")"
 printf "  dig (доп.)         : %s\n" "$(state_word "$HAS_DIG")"
 printf "  https-dns-proxy   : %s\n" "$(state_word "$HAS_HDP")"
@@ -3466,7 +3500,7 @@ pause
 # МЕНЮ СОСТОЯНИЯ
 # ==========================================
 menu_status() {
-menu_header "📋 СОСТОЯНИЕ И ЖУРНАЛ"
+menu_header "СОСТОЯНИЕ И ЖУРНАЛ"
 printf "${C_WHITE}Последние события:${C_NC}\n"
 if [ -s "$LOG_FILE" ]; then tail -15 "$LOG_FILE" | sed -e "s/ START / Запуск /" -e "s/ UPDATE / Обновление /" -e "s/ INFO / Информация: /" -e "s/ WARN / Внимание: /" -e "s/ ERROR / Ошибка: /"; else printf "${C_YELLOW}Журнал пока пуст.${C_NC}\n"; fi
 echo ""
@@ -3535,7 +3569,7 @@ CORE_ONLY=0
 # ==========================================
 dependency_preflight(){
 run_discovery >/dev/null 2>&1 || true
-printf "${C_TITLE}📦 ПРОВЕРКА ЗАВИСИМОСТЕЙ${C_NC}\n"
+printf "${C_TITLE} ПРОВЕРКА ЗАВИСИМОСТЕЙ${C_NC}\n"
 printf '  curl              : %b\n' "$(state_word "$HAS_CURL")"
 printf '  dig               : %b\n' "$(state_word "$HAS_DIG")"
 printf '  https-dns-proxy   : %b\n' "$(state_word "$HAS_HDP")"
@@ -3943,7 +3977,7 @@ menu_section "СОСТОЯНИЕ РОУТЕРА"
 printf "  ${C_YELLOW}${C_BOLD}IPv4${C_NC}               %b\n" "$(state_word "$IPV4_ROUTE")"
 printf "  ${C_YELLOW}${C_BOLD}IPv6${C_NC}               %b\n" "$(state_word "$IPV6_ROUTE")"
 printf "  ${C_YELLOW}${C_BOLD}dnsmasq${C_NC}            %b\n" "$(state_word "$DNSMASQ_RUN")"
-printf "  ${C_YELLOW}${C_BOLD}Защищённый DNS${C_NC}     %b\n" "$(state_word "$HAS_HDP")"
+printf "  ${C_YELLOW}${C_BOLD}Защищённый DNS${C_NC}     %b\n" "$(state_word "$HDP_RUNNING")"
 printf "  ${C_YELLOW}${C_BOLD}DNS-серверов найдено${C_NC} ${C_YELLOW}${C_BOLD}%s${C_NC}\n" "$DOH_TOTAL"
 printf "  ${C_YELLOW}${C_BOLD}Автопроверка${C_NC}            %b\n" "$(module_state_word watchdog "$WATCHDOG_ENABLED")"
 [ -s "$BASELINE_MANIFEST" ] && printf "  ${C_YELLOW}${C_BOLD}Исходная копия${C_NC}      ${C_GREEN}есть${C_NC}\n" || printf "  ${C_YELLOW}${C_BOLD}Исходная копия${C_NC}      ${C_YELLOW}нет${C_NC}\n"
@@ -3964,7 +3998,7 @@ menu_item "[7]" "Карта состояния"
 printf "  ${C_CYAN}${C_BOLD}%-5s${C_NC} ${C_YELLOW}${C_BOLD}%-38s${C_NC} ${C_CYAN}${C_BOLD}(%s)${C_NC}\n" "[8]" "Проверка DNS-серверов" "$(count_dns)"
 printf "  ${C_CYAN}${C_BOLD}%-5s${C_NC} ${C_YELLOW}${C_BOLD}%-38s${C_NC} ${C_CYAN}${C_BOLD}(6+2)${C_NC}\n" "[9]" "Серверы DNS"
 menu_item "[10]" "DNS ДЛЯ ЗАПУСКА"
-menu_item "[11]" "ВРЕМЯ"
+menu_item "[11]" "СИНХРОНИЗАЦИЯ ВРЕМЕНИ"
 menu_item "[12]" "НАСТРОЙКИ"
 menu_item "[13]" "Состояние и журнал"
 menu_item "[14]" "Показать и применить"
