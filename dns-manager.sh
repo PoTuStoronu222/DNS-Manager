@@ -2144,15 +2144,13 @@ stage_start_one() {
     _slot="$1"; _id="$2"; _url="$(normalize_url "$(dns_url "$_id")")"; _name="$(dns_name "$_id")"
     [ -n "$_url" ] || return 1
     _port="$(hybrid_desired_port "$_slot")"
-    if [ -z "$_port" ] || stage_port_used "$_port"; then
-        stage_free_port || return 1
-        _port="$FREE_STAGE_PORT"
-    elif listener_port_exists "$_port"; then
-        stage_free_port || return 1
-        _port="$FREE_STAGE_PORT"
-    else
-        STAGE_USED="$STAGE_USED $_port"
+    [ -n "$_port" ] || return 1
+    # Для каждого слота используется только его штатный порт.
+    # Никогда не переносим кандидата на другой порт: меняется DNS, а не слот.
+    if stage_port_used "$_port" || listener_port_exists "$_port"; then
+        return 1
     fi
+    STAGE_USED="$STAGE_USED $_port"
 
     _bin="$(command -v https-dns-proxy 2>/dev/null)"
     [ -n "$_bin" ] || return 1
@@ -2186,19 +2184,28 @@ stage_process_alive() {
 stage_local_ok() {
     _p="$1"
     _domain="${2:-example.com}"
-    sleep 2
+    _wait=0
+    while [ "$_wait" -lt 8 ]; do
+        if [ -n "${STAGE_LAST_PID:-}" ] && stage_process_alive "$STAGE_LAST_PID" && listener_port_exists "$_p"; then
+            break
+        fi
+        sleep 1
+        _wait=$((_wait+1))
+    done
+
     [ -n "${STAGE_LAST_PID:-}" ] && stage_process_alive "$STAGE_LAST_PID" || return 1
     listener_port_exists "$_p" || return 1
 
-    # Сначала проверяем реальный DNS-ответ через локальный порт.
-    if command -v nslookup >/dev/null 2>&1; then
-        _nsout="$(nslookup -q=A -p "$_p" -t 2 -r 1 "$_domain" 127.0.0.1 2>/dev/null || true)"
-        printf '%s\n' "$_nsout" | grep -Eq 'Address[[:space:]]+[0-9]+[[:space:]]*:?[[:space:]]*[0-9]+(\.[0-9]+){3}|^Address:[[:space:]]*[0-9]+(\.[0-9]+){3}' && return 0
-        return 1
+    # BusyBox nslookup на OpenWrt обычно не умеет задавать нестандартный порт.
+    # Поэтому не используем его здесь как обязательную проверку: он давал ложный
+    # отказ даже тогда, когда https-dns-proxy уже запустился и слушает нужный порт.
+    # Сам DoH-сервер уже прошёл полноценную внешнюю проверку до применения.
+    _log="${STAGE_LAST_LOG:-}"
+    if [ -s "$_log" ]; then
+        if grep -Eiq 'fatal|panic|bind failed|address already in use|invalid option|unknown option' "$_log" 2>/dev/null; then
+            return 1
+        fi
     fi
-
-    # На роутерах без nslookup подтверждаем хотя бы факт нормального запуска
-    # службы на нужном порту. Сам внешний DoH уже прошёл полную проверку до применения.
     return 0
 }
 stage_stop_last() {
@@ -2248,12 +2255,12 @@ adaptive_hybrid_prepare() {
     [ "$DNS_PROFILE" = hybrid ] || return 0
     [ -s "$TEST_RESULTS" ] || test_dns_catalog || return 1
 
-    STAGE_USED=""
-    STAGE_PIDS=""
     _success=0
-    _tried="$TMP_DIR/hybrid-stage-tried-$$"
-    : > "$_tried"
+    _tried="$TMP_DIR/hybrid-direct-tried-$$"
+    : > "$_tried" || return 1
 
+    # Каждый слот имеет один постоянный рабочий порт.
+    # Перебираются только DNS-кандидаты. Временные порты для проверки не используются.
     for _slot in 1 2 3 4 5 6; do
         eval "_want=\${SLOT_$_slot:-}"
         _chosen=""
@@ -2267,20 +2274,35 @@ adaptive_hybrid_prepare() {
             [ -n "$_cand" ] || break
 
             grep -qxF "$_cand" "$_tried" 2>/dev/null || printf '%s\n' "$_cand" >> "$_tried"
-            STAGE_LAST_PID=""
-            STAGE_LAST_PORT=""
-            STAGE_LAST_LOG=""
-            STAGE_LAST_URL=""
 
-            if stage_start_one "$_slot" "$_cand"; then
-                if stage_local_ok "$STAGE_LAST_PORT" example.com; then
-                    _chosen="$_cand"
-                    stage_stop_last
-                    break
-                fi
-                warn_msg "Локальная проверка не прошла: $(dns_name "$_cand")."
-                stage_stop_last
+            # Повторная проверка кандидата выполняется напрямую к его DoH URL.
+            # Используется стандартный бинарный DoH-запрос application/dns-message,
+            # без запуска https-dns-proxy и без подмены порта кандидата.
+            printf "  ${C_CYAN}◇ Проверка DNS: %s → слот %s (порт %s)${C_NC}\n" "$(dns_name "$_cand")" "$_slot" "$(hybrid_desired_port "$_slot")"
+            test_one_dns "$_cand"
+            _rfile="$TMP_DIR/t.$_cand"
+            _st=""
+            if [ -f "$_rfile" ]; then
+                IFS='|' read -r _rid _rcat _rname _rms _st < "$_rfile"
             fi
+
+            if [ "$_st" = "OK" ]; then
+                _chosen="$_cand"
+                printf "  ${C_GREEN}✓ DNS подтверждён для слота %s: %s${C_NC}\n" "$_slot" "$(dns_name "$_cand")"
+                break
+            fi
+
+            _friendly="не прошёл проверку DoH"
+            case "$_st" in
+                BOOTSTRAP_FAIL|DNS_ERROR) _friendly="не удалось определить адрес сервера" ;;
+                CURL_TIMEOUT) _friendly="тайм-аут ответа" ;;
+                TLS_ERROR) _friendly="ошибка защищённого соединения" ;;
+                CONNECTION_ERROR) _friendly="сервер недоступен" ;;
+                BAD_DOH_RESPONSE) _friendly="получен некорректный ответ DoH" ;;
+                HTTP_4*|HTTP_5*) _friendly="сервер вернул HTTP $_st" ;;
+                CURL_ERROR) _friendly="ошибка соединения" ;;
+            esac
+            warn_msg "DNS «$(dns_name "$_cand")»: $_friendly. Пробую следующий DNS для слота $_slot."
             _want=""
         done
 
@@ -2293,7 +2315,6 @@ adaptive_hybrid_prepare() {
             if [ -n "$_old" ] && [ "$_old" != "$_chosen" ]; then
                 printf "  ${C_YELLOW}↻ Слот %s: %s → %s${C_NC}\n" "$_slot" "$(dns_name "$_old")" "$(dns_name "$_chosen")"
             fi
-            printf "  ${C_GREEN}✓ Слот %s проверен: %s${C_NC}\n" "$_slot" "$(dns_name "$_chosen")"
         else
             eval "SLOT_$_slot=''"
             eval "SLOT_${_slot}_CAT='bypass'"
@@ -2312,24 +2333,20 @@ adaptive_hybrid_prepare() {
         [ -n "$_cand" ] || break
         grep -qxF "$_cand" "$_tried" 2>/dev/null || printf '%s\n' "$_cand" >> "$_tried"
 
-        STAGE_LAST_PID=""
-        STAGE_LAST_PORT=""
-        STAGE_LAST_LOG=""
-        STAGE_LAST_URL=""
-        if stage_start_one RU "$_cand"; then
-            if stage_local_ok "$STAGE_LAST_PORT" yandex.ru; then
-                SLOT_RU="$_cand"
-                SLOT_RU_CAT="regional"
-                stage_stop_last
-                if [ -n "$_old_ru" ] && [ "$_old_ru" != "$_cand" ]; then
-                    printf "  ${C_YELLOW}↻ RU: %s → %s${C_NC}\n" "$(dns_name "$_old_ru")" "$(dns_name "$_cand")"
-                fi
-                printf "  ${C_GREEN}✓ RU проверен: %s${C_NC}\n" "$(dns_name "$_cand")"
-                break
-            fi
-            warn_msg "Локальная проверка RU не прошла: $(dns_name "$_cand")."
-            stage_stop_last
+        printf "  ${C_CYAN}◇ Проверка DNS: %s → RU (порт %s)${C_NC}\n" "$(dns_name "$_cand")" "$HYBRID_PORT_RU"
+        test_one_dns "$_cand"
+        _rfile="$TMP_DIR/t.$_cand"
+        _st=""
+        if [ -f "$_rfile" ]; then
+            IFS='|' read -r _rid _rcat _rname _rms _st < "$_rfile"
         fi
+        if [ "$_st" = "OK" ]; then
+            SLOT_RU="$_cand"
+            SLOT_RU_CAT="regional"
+            printf "  ${C_GREEN}✓ RU подтверждён: %s${C_NC}\n" "$(dns_name "$_cand")"
+            break
+        fi
+        warn_msg "DNS «$(dns_name "$_cand")» не прошёл проверку DoH для RU. Пробую следующий DNS."
         _old_ru=""
     done
     if [ -z "${SLOT_RU:-}" ]; then
@@ -2339,41 +2356,31 @@ adaptive_hybrid_prepare() {
 
     if [ -n "${SLOT_RU_2:-}" ]; then
         _ru2_id="$SLOT_RU_2"
-        _ru2_ok=0
-        if ! grep -qxF "$_ru2_id" "$_tried" 2>/dev/null; then
-            printf '%s\n' "$_ru2_id" >> "$_tried"
-            STAGE_LAST_PID=""
-            STAGE_LAST_PORT=""
-            STAGE_LAST_LOG=""
-            STAGE_LAST_URL=""
-            if stage_start_one RU_2 "$_ru2_id"; then
-                if stage_local_ok "$STAGE_LAST_PORT" yandex.ru; then
-                    _ru2_ok=1
-                    stage_stop_last
-                    printf "  ${C_GREEN}✓ RU2 проверен: %s${C_NC}\n" "$(dns_name "$_ru2_id")"
-                else
-                    warn_msg "Локальная проверка RU2 не прошла: $(dns_name "$_ru2_id")."
-                    stage_stop_last
-                fi
-            fi
+        test_one_dns "$_ru2_id"
+        _rfile="$TMP_DIR/t.$_ru2_id"
+        _st=""
+        if [ -f "$_rfile" ]; then
+            IFS='|' read -r _rid _rcat _rname _rms _st < "$_rfile"
         fi
-        if [ "$_ru2_ok" -ne 1 ]; then
+        if [ "$_st" = "OK" ]; then
+            printf "  ${C_GREEN}✓ RU2 подтверждён: %s${C_NC}\n" "$(dns_name "$_ru2_id")"
+        else
             SLOT_RU_2=""
             SLOT_RU_2_CAT="regional"
-            warn_msg "RU2 не прошёл проверку. RU2 отключён, основной RU не затронут."
+            warn_msg "RU2 не прошёл проверку DoH. RU2 отключён, основной RU не затронут."
         fi
     fi
 
+    rm -f "$_tried" 2>/dev/null
     reset_hybrid_runtime_ports
-    stage_cleanup
-    rm -f "$_tried"
 
     [ "$_success" -ge "${HYBRID_STAGE_MIN:-1}" ] || {
-        err_msg "Удалось подтвердить только $_success обычных DNS-сервер из 6. Минимум: ${HYBRID_STAGE_MIN:-1}. Настройки не изменены."
+        err_msg "Удалось подтвердить только $_success обычных DNS-серверов из 6. Минимум: ${HYBRID_STAGE_MIN:-1}. Настройки не изменены."
         return 1
     }
     return 0
 }
+
 reset_hybrid_runtime_ports() {
     [ "$DNS_PROFILE" = hybrid ] || return 0
     for _s in 1 2 3 4 5 6; do
