@@ -2262,31 +2262,19 @@ stage_local_ok() {
     _p="$1"
     _domain="${2:-example.com}"
     _wait=0
-    # Проверяем быстрым циклом: функция выбора не должна выглядеть зависшей.
-    # Достаточно одной успешной DNS-ответной проверки через реальный порт слота.
-    while [ "$_wait" -lt 4 ]; do
-        if [ -n "${STAGE_LAST_PID:-}" ] && stage_process_alive "$STAGE_LAST_PID" && listener_port_exists "$_p"; then
-            if local_dns_query_ok "$_p" "$_domain"; then
-                return 0
-            fi
+    while [ "$_wait" -lt 5 ]; do
+        if listener_port_exists "$_p" && local_dns_query_ok "$_p" "$_domain"; then
+            return 0
         fi
         sleep 1
         _wait=$((_wait+1))
     done
-
-    [ -n "${STAGE_LAST_PID:-}" ] && stage_process_alive "$STAGE_LAST_PID" || return 1
-    listener_port_exists "$_p" || return 1
-
     _log="${STAGE_LAST_LOG:-}"
-    if [ -s "$_log" ]; then
-        if grep -Eiq 'fatal|panic|bind failed|address already in use|invalid option|unknown option' "$_log" 2>/dev/null; then
-            return 1
-        fi
+    if [ -s "$_log" ] && grep -Eiq 'fatal|panic|bind failed|address already in use|invalid option|unknown option' "$_log" 2>/dev/null; then
+        return 1
     fi
-    local_dns_query_ok "$_p" "$_domain" || return 1
-    return 0
+    listener_port_exists "$_p" && local_dns_query_ok "$_p" "$_domain"
 }
-
 stage_try_candidate() {
     _slot="$1"
     _id="$2"
@@ -2312,8 +2300,15 @@ stage_stop_last() {
     _old="$STAGE_LAST_PID"
     _old_port="$STAGE_LAST_PORT"
     [ -n "$_old" ] && kill "$_old" 2>/dev/null || true
-    sleep 0.2
+    sleep 0.3
     [ -n "$_old" ] && kill -9 "$_old" 2>/dev/null || true
+    if [ -n "$_old_port" ]; then
+        _w=0
+        while listener_port_exists "$_old_port" && [ "$_w" -lt 6 ]; do
+            sleep 0.3
+            _w=$((_w+1))
+        done
+    fi
     _new=""
     for _pid in $STAGE_PIDS; do
         [ "$_pid" = "$_old" ] || _new="$_new $_pid"
@@ -2369,6 +2364,8 @@ adaptive_hybrid_prepare() {
     STAGE_LAST_PORT=""
     STAGE_LAST_LOG=""
     STAGE_LAST_URL=""
+    _hybrid_ok_count="$(awk -F'|' '$1!="" && NF>=5 && $5=="OK" && $4 ~ /^[0-9]+$/{n++} END{print n+0}' "$TEST_RESULTS" 2>/dev/null)"
+    printf "  Проверено по общему тесту: %s DNS с успешным ответом. В план допускаются только они.\n" "$_hybrid_ok_count"
 
     # Для каждого слота берём только кандидатов из последнего полного теста,
     # но дополнительно подтверждаем работу именно через боевой локальный порт слота.
@@ -2525,15 +2522,24 @@ apply_settings() {
     clear_screen
     run_discovery
     load_config
+    if [ "${HYBRID_FORCE_RESELECT:-0}" = 1 ] && [ "$DNS_PROFILE" = hybrid ]; then
+        SLOT_1=""; SLOT_2=""; SLOT_3=""; SLOT_4=""; SLOT_5=""; SLOT_6=""
+        SLOT_RU=""; SLOT_RU_2=""
+        SLOT_1_CAT="bypass"; SLOT_2_CAT="bypass"; SLOT_3_CAT="bypass"
+        SLOT_4_CAT="bypass"; SLOT_5_CAT="bypass"; SLOT_6_CAT="bypass"
+        SLOT_RU_CAT="regional"; SLOT_RU_2_CAT="regional"
+    fi
     BOOTSTRAP_DNS="$BOOTSTRAP_DNS_ALL"
     HYBRID_SELECTION_READY=0
     HYBRID_PREFLIGHT_WAS_RUNNING=0
 
     if [ "$DNS_PROFILE" = hybrid ]; then
         if [ "${HYBRID_STAGE_SKIP:-0}" != 1 ]; then
-            HYBRID_SELECTION_QUIET=1
-            hybrid_prepare_selection
-            HYBRID_SELECTION_QUIET=0
+            if [ "${HYBRID_FORCE_RESELECT:-0}" != 1 ]; then
+                HYBRID_SELECTION_QUIET=1
+                hybrid_prepare_selection
+                HYBRID_SELECTION_QUIET=0
+            fi
 
             # Сначала проверяем кандидатов через реальные порты слотов,
             # чтобы в показанном плане не было DNS, которые потом не отвечают локально.
@@ -2542,7 +2548,7 @@ apply_settings() {
             fi
             /etc/init.d/https-dns-proxy stop >/dev/null 2>&1 || true
             sleep 1
-            HYBRID_PREFLIGHT_SILENT=1
+            HYBRID_PREFLIGHT_SILENT=0
             adaptive_hybrid_prepare || {
                 HYBRID_PREFLIGHT_SILENT=0
                 if [ "$HYBRID_PREFLIGHT_WAS_RUNNING" = 1 ]; then
@@ -3674,11 +3680,13 @@ printf "  ${C_GREEN}✓${C_NC} кэш DNS для более быстрых по�
 test_dns_catalog || return 1
 [ -s "$TEST_RESULTS" ] || return 1
 DNS_PROFILE="hybrid"
-auto_fill_slots bypass || return 1
-SLOT_RU="yandex_ru"
-SLOT_RU_2=""
-SLOT_RU_CAT="regional"
-SLOT_RU_2_CAT="regional"
+# Для быстрого режима окончательный набор формируется только после локальной
+# проверки через реальные порты 5053-5059. Предварительный список не показываем.
+SLOT_1=""; SLOT_2=""; SLOT_3=""; SLOT_4=""; SLOT_5=""; SLOT_6=""
+SLOT_RU=""; SLOT_RU_2=""
+SLOT_1_CAT="bypass"; SLOT_2_CAT="bypass"; SLOT_3_CAT="bypass"
+SLOT_4_CAT="bypass"; SLOT_5_CAT="bypass"; SLOT_6_CAT="bypass"
+SLOT_RU_CAT="regional"; SLOT_RU_2_CAT="regional"
 TLD_RU_ENABLED=1
 TLD_SPLIT=1
 BALANCER_ENABLED=1
@@ -3688,10 +3696,11 @@ BOOTSTRAP_DNS="$BOOTSTRAP_DNS_ALL"
 PORT_1="$HYBRID_PORT_1"; PORT_2="$HYBRID_PORT_2"; PORT_3="$HYBRID_PORT_3"
 PORT_4="$HYBRID_PORT_4"; PORT_5="$HYBRID_PORT_5"; PORT_6="$HYBRID_PORT_6"
 PORT_RU="$HYBRID_PORT_RU"; PORT_RU_2=""
-save_config
+HYBRID_FORCE_RESELECT=1
 CORE_ONLY=1
 apply_settings
 CORE_ONLY=0
+HYBRID_FORCE_RESELECT=0
 }
 # ==========================================
 # ПРОВЕРКА ЗАВИСИМОСТЕЙ
