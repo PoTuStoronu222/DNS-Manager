@@ -4,7 +4,7 @@ MANAGER_PATH="/usr/bin/dns-manager"
 # ==========================================
 # ОСНОВНЫЕ ПАРАМЕТРЫ
 # ==========================================
-VERSION="1.32"
+VERSION="1.33"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -353,7 +353,7 @@ write_catalogs() {
 rm -f "$DNS_CATALOG.previous" "$NTP_CATALOG.previous" "$BOOTSTRAP_CATALOG.previous" "$BOGUS_CATALOG.previous" 2>/dev/null
 if [ ! -s "$DNS_CATALOG" ] || ! grep -q '^# DNSCATVER=8.2-RU-NOSOCIAL' "$DNS_CATALOG" 2>/dev/null; then
 cat > "$DNS_CATALOG" <<'EOF_DNS'
-# DNSCATVER=8.2-RU-NOSOCIAL
+# DNSCATVER=8.3-RU-NOSOCIAL
 # ==========================================
 # КАТАЛОГ DNS — ОБХОД И СЕРВИСЫ
 # ==========================================
@@ -369,6 +369,7 @@ geohide_8443|bypass|geo+services|GeoHide DNS :8443|https://dns.geohide.ru:8443/d
 comss_ru|bypass|geo+services|Comss DNS RU|https://dns.comss.ru/dns-query|ru/global|user-confirmed-current
 comss_bypass|bypass|geo+security|Comss.one|https://dns.comss.one/dns-query|ru/global|verified-published-current
 comss_adblock_bypass|bypass|geo+ads+security|Comss.one Ad Filter|https://router.comss.one/dns-query|ru/global|verified-published-current
+dns_ai_ru|bypass|geo+services|DNS-AI.RU|https://dns.dns-ai.ru/dns-query|ru/global|official-current
 vppay|bypass|geo+services|VPPay DNS|https://dns.vppay.ru/dns-query|ru/global|user-confirmed-current
 dynx|bypass|geo+youtube|DynX DNS|https://dns.dynx.pro/dns-query|global|review-runtime
 paesa|bypass|geo+youtube|Paesa DNS|https://dns.paesa.es/dns-query|global|review-runtime
