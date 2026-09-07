@@ -4,7 +4,7 @@ MANAGER_PATH="/usr/bin/dns-manager"
 # ==========================================
 # ОСНОВНЫЕ ПАРАМЕТРЫ
 # ==========================================
-VERSION="1.17"
+VERSION="1.18"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -53,8 +53,6 @@ UPDATE_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dn
 
 _ver_newer() {
     awk -v a="$1" -v b="$2" 'BEGIN{
-        # Формат версии менеджера: первая часть — основная, вторая — номер выпуска.
-        # 1.2 считается как 1.20, поэтому 1.2 новее 1.19.
         split(a, x, "\\."); split(b, y, "\\.");
         ma=(x[1]=="" ? 0 : x[1]+0); mb=(y[1]=="" ? 0 : y[1]+0);
         if (ma > mb) exit 0;
@@ -312,8 +310,6 @@ rm -f "$DNS_CATALOG.previous" "$NTP_CATALOG.previous" "$BOOTSTRAP_CATALOG.previo
 if [ ! -s "$DNS_CATALOG" ] || ! grep -q '^# DNSCATVER=8.2-RU-NOSOCIAL' "$DNS_CATALOG" 2>/dev/null; then
 cat > "$DNS_CATALOG" <<'EOF_DNS'
 # DNSCATVER=8.2-RU-NOSOCIAL
-# Список кандидатов. Работоспособность проверяется с роутера.
-# ФОРМАТ СТРОКИ: ID|CATEGORY|PROFILE|NAME|URL|REGION|STATUS
 # ==========================================
 # КАТАЛОГ DNS — ОБХОД И СЕРВИСЫ
 # ==========================================
@@ -449,7 +445,6 @@ fi
 if [ ! -s "$NTP_CATALOG" ] || ! grep -q '^# NTPCATVER=6.6-FINAL-HYBRID' "$NTP_CATALOG" 2>/dev/null; then
 cat > "$NTP_CATALOG" <<'EOF_NTP'
 # NTPCATVER=6.6-FINAL-HYBRID
-# ID|КАТЕГОРИЯ|ИМЯ|IPV4|IPV6|РЕЖИМ|LEAP|СТАТУС
 cf_ip|global|Cloudflare|162.159.200.1 162.159.200.123|2606:4700:f1::1 2606:4700:f1::123|ip-first|no-smear|verified-current
 nist_ip|global|NIST|129.6.15.28 129.6.15.29 129.6.15.30 129.6.15.27 129.6.15.26|2610:20:6f15:15::27 2610:20:6f15:15::26|ip-first|no-smear|verified-current
 google_ip|special|Google Public NTP|216.239.35.0 216.239.35.4 216.239.35.8 216.239.35.12||ip-only|smear|verified-current
@@ -465,7 +460,6 @@ fi
 if [ ! -s "$BOOTSTRAP_CATALOG" ] || ! grep -q '^# BOOTSTRAPCATVER=6.6-FIX13' "$BOOTSTRAP_CATALOG" 2>/dev/null; then
 cat > "$BOOTSTRAP_CATALOG" <<'EOF_BOOT'
 # BOOTSTRAPCATVER=6.6-FINAL-HYBRID
-# ID|ПРОВАЙДЕР|IPV4|IPV6|РОЛЬ|СТАТУС
 yandex|Yandex|77.88.8.8,77.88.8.1|2a02:6b8::feed:0ff,2a02:6b8:0:1::feed:0ff|bootstrap|verified-current
 adguard|AdGuard|94.140.14.14,94.140.15.15|2a10:50c0::ad1:ff,2a10:50c0::ad2:ff|bootstrap|verified-current
 cloudflare|Cloudflare|1.1.1.1,1.0.0.1|2606:4700:4700::1111,2606:4700:4700::1001|bootstrap|verified-current
@@ -480,7 +474,6 @@ fi
 if [ ! -s "$BOGUS_CATALOG" ] || ! grep -q '^# BOGUSCATVER=6.6-FIX13' "$BOGUS_CATALOG" 2>/dev/null; then
 cat > "$BOGUS_CATALOG" <<'EOF_BOGUS'
 # BOGUSCATVER=6.6-FINAL-HYBRID
-# ID|ТИП|IP|ОПИСАНИЕ|НАДЁЖНОСТЬ|СТАТУС
 rtk_95_167|hijack|95.167.13.50|Ростелеком: исторически подтвержденная заглушка|high|historical-confirmed
 ttk_62_33|hijack|62.33.207.195|ТТК: исторически указанный адрес|medium|historical-confirmed
 onlime_77_37|hijack|77.37.254.90|Онлайм: исторически указанный адрес|medium|historical-confirmed
@@ -763,8 +756,6 @@ q="$TMP_DIR/q.$id"; body="$TMP_DIR/body.$id"; hdr="$TMP_DIR/h.$id"
 printf '\022\064\001\000\000\001\000\000\000\000\000\000\007example\003com\000\000\001\000\001' > "$q"
 
 _ips=""
-# Для каталожной проверки сначала используем обычное разрешение имени.
-# Bootstrap DNS нужен рабочим https-dns-proxy, но он сам может быть недоступен у провайдера.
 if [ "$HAS_DIG" = yes ]; then
     _chunk="$(dig +short +time=3 +tries=1 "$host" A 2>/dev/null | awk '/^[0-9]+(\.[0-9]+){3}$/{print}' | head -n 4)"
     [ -n "$_chunk" ] && _ips="$_chunk"
@@ -1134,8 +1125,6 @@ clear_all_doh_for_apply() {
 }
 record_own() { printf '%s|%s|%s|%s\n' "$1" "$2" "$3" "$4" >> "$OWNERSHIP"; }
 configure_hdp_manager_control() {
-    # Актуальный https-dns-proxy по умолчанию сам правит dnsmasq при старте.
-    # диспетчер DNS делает это сам, поэтому отключаем второй источник правды.
     uci set https-dns-proxy.config.dnsmasq_config_update='-' || return 1
     uci set https-dns-proxy.config.force_dns='0' || return 1
     uci set https-dns-proxy.config.notrack_dns='0' || return 1
@@ -2145,8 +2134,6 @@ stage_start_one() {
     [ -n "$_url" ] || return 1
     _port="$(hybrid_desired_port "$_slot")"
     [ -n "$_port" ] || return 1
-    # Для каждого слота используется только его штатный порт.
-    # Никогда не переносим кандидата на другой порт: меняется DNS, а не слот.
     if stage_port_used "$_port" || listener_port_exists "$_port"; then
         return 1
     fi
@@ -2196,10 +2183,6 @@ stage_local_ok() {
     [ -n "${STAGE_LAST_PID:-}" ] && stage_process_alive "$STAGE_LAST_PID" || return 1
     listener_port_exists "$_p" || return 1
 
-    # BusyBox nslookup на OpenWrt обычно не умеет задавать нестандартный порт.
-    # Поэтому не используем его здесь как обязательную проверку: он давал ложный
-    # отказ даже тогда, когда https-dns-proxy уже запустился и слушает нужный порт.
-    # Сам DoH-сервер уже прошёл полноценную внешнюю проверку до применения.
     _log="${STAGE_LAST_LOG:-}"
     if [ -s "$_log" ]; then
         if grep -Eiq 'fatal|panic|bind failed|address already in use|invalid option|unknown option' "$_log" 2>/dev/null; then
@@ -2259,8 +2242,6 @@ adaptive_hybrid_prepare() {
     _tried="$TMP_DIR/hybrid-direct-tried-$$"
     : > "$_tried" || return 1
 
-    # Каждый слот имеет один постоянный рабочий порт.
-    # Перебираются только DNS-кандидаты. Временные порты для проверки не используются.
     for _slot in 1 2 3 4 5 6; do
         eval "_want=\${SLOT_$_slot:-}"
         _chosen=""
@@ -2275,9 +2256,6 @@ adaptive_hybrid_prepare() {
 
             grep -qxF "$_cand" "$_tried" 2>/dev/null || printf '%s\n' "$_cand" >> "$_tried"
 
-            # Повторная проверка кандидата выполняется напрямую к его DoH URL.
-            # Используется стандартный бинарный DoH-запрос application/dns-message,
-            # без запуска https-dns-proxy и без подмены порта кандидата.
             printf "  ${C_CYAN}◇ Проверка DNS: %s → слот %s (порт %s)${C_NC}\n" "$(dns_name "$_cand")" "$_slot" "$(hybrid_desired_port "$_slot")"
             test_one_dns "$_cand"
             _rfile="$TMP_DIR/t.$_cand"
@@ -3653,8 +3631,6 @@ watchdog_check_slot() {
         netstat -lntup 2>/dev/null | grep -qE ":${_port}([[:space:]]|$)" || return 1
     fi
 
-    # После перезапуска достаточно убедиться, что нужный локальный порт действительно слушается.
-    # Полная проверка доступности самого DoH уже выполнена каталогом перед применением.
     return 0
 }
 # WATCHDOG — ЗАМЕНА НЕРАБОТАЮЩЕГО DNS
@@ -3700,7 +3676,6 @@ watchdog_pick_replacement() {
             grep -qxF "$_rurl" "$_tried" 2>/dev/null && continue
 
             if watchdog_test_candidate "$_slot" "$_rid"; then
-                # 
                 if [ "$_rcat" = "$_need" ] || { [ "$_need" = bypass ] && [ "$_rcat" = clean ]; }; then
                     printf '%s|%s\n' "$_rid" "$_rcat"
                     return 0
