@@ -4,7 +4,7 @@ MANAGER_PATH="/usr/bin/dns-manager"
 # ==========================================
 # ОСНОВНЫЕ ПАРАМЕТРЫ
 # ==========================================
-VERSION="1.14"
+VERSION="1.15"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -2026,8 +2026,15 @@ return 1
 stage_add_doh() {
 _slot="$1"; _id="$2"; _url="$(normalize_url "$(dns_url "$_id")")"; _name="$(dns_name "$_id")"
 [ -n "$_url" ] || return 1
-stage_free_port || return 1
-_port="$FREE_STAGE_PORT"
+_port="$(hybrid_desired_port "$_slot")"
+if [ -z "$_port" ] || stage_port_used "$_port"; then
+    _port=""
+else
+    port_used_anywhere "$_port"; _prc=$?
+    [ "$_prc" = 2 ] && return 1
+    [ "$_prc" = 0 ] && _port=""
+fi
+if [ -z "$_port" ]; then stage_free_port || return 1; _port="$FREE_STAGE_PORT"; fi
 _sec="$(uci add https-dns-proxy https-dns-proxy 2>/dev/null)" || return 1
 _b="$(printf '%s' "$BOOTSTRAP_DNS" | tr ',' ' ')"; [ -n "$_b" ] || _b="1.1.1.1"
 uci set "https-dns-proxy.$_sec.bootstrap_dns=$_b" || return 1
@@ -2067,10 +2074,19 @@ for _slot in 1 2 3 4 5 6 RU RU_2; do eval "_v=\${SLOT_$_slot:-}"; [ "$_v" = "$_i
 return 1
 }
 next_hybrid_candidate() {
-_wantcat="$1"; _fallback="$2"; _skip="$3"
-awk -F'|' -v c="$_wantcat" -v f="$_fallback" -v s="$_skip" '$5=="OK" && $1!=s && ($2==c || (f=="yes" && $2=="clean")){print}' "$TEST_RESULTS" 2>/dev/null |
-sort -t'|' -k4,4n |
-while IFS='|' read -r _id _cat _name _ms _st; do candidate_already_used "$_id" && continue; printf '%s\n' "$_id"; break; done
+_wantcat="$1"; _fallback="$2"; _skip="$3"; _triedfile="$4"
+_candfile="$TMP_DIR/next-candidates-$$"
+awk -F'|' -v c="$_wantcat" -v f="$_fallback" '$5=="OK" && ($2==c || (f=="yes" && $2=="clean")){print}' "$TEST_RESULTS" 2>/dev/null | sort -t'|' -k4,4n > "$_candfile"
+while IFS='|' read -r _id _cat _name _ms _st; do
+    [ -n "$_id" ] || continue
+    [ "$_id" = "$_skip" ] && continue
+    [ -n "$_triedfile" ] && grep -qxF "$_id" "$_triedfile" 2>/dev/null && continue
+    printf '%s\n' "$_id"
+    rm -f "$_candfile" 2>/dev/null
+    return 0
+done < "$_candfile"
+rm -f "$_candfile" 2>/dev/null
+return 1
 }
 adaptive_hybrid_prepare() {
 [ "$DNS_PROFILE" = hybrid ] || return 0
@@ -2081,9 +2097,13 @@ _tried="$TMP_DIR/hybrid-stage-tried-$$"; : > "$_tried"
 for _slot in 1 2 3 4 5 6; do
     eval "_want=\${SLOT_$_slot:-}"; _chosen=""
     for _attempt in 1 2 3 4 5 6 7 8; do
-        if [ -n "$_want" ] && ! grep -qxF "$_want" "$_tried" 2>/dev/null; then _cand="$_want"; else _cand="$(next_hybrid_candidate bypass yes "$_want")"; fi
+        if [ -n "$_want" ] && ! grep -qxF "$_want" "$_tried" 2>/dev/null; then
+            _cand="$_want"
+        else
+            _cand="$(next_hybrid_candidate bypass yes "$_want" "$_tried")"
+        fi
         [ -n "$_cand" ] || break
-        printf '%s\n' "$_cand" >> "$_tried"
+        grep -qxF "$_cand" "$_tried" 2>/dev/null || printf '%s\n' "$_cand" >> "$_tried"
         if stage_add_doh "$_slot" "$_cand"; then
             if stage_restart_hdp && stage_local_ok "$PORT_$_slot" example.com; then _chosen="$_cand"; break; fi
             stage_drop_by_url "$(dns_url "$_cand")"; stage_restart_hdp >/dev/null 2>&1 || true
@@ -2101,18 +2121,26 @@ done
 
 eval "_ruwant=\${SLOT_RU:-}"; _ruchosen=""
 for _attempt in 1 2 3 4 5 6; do
-    if [ -n "$_ruwant" ] && ! grep -qxF "$_ruwant" "$_tried" 2>/dev/null; then _cand="$_ruwant"; else
-        _cand="$(awk -F'|' '$5=="OK" && $2=="regional"{print}' "$TEST_RESULTS" 2>/dev/null | sort -t'|' -k4,4n | while IFS='|' read -r _id _cat _name _ms _st; do candidate_already_used "$_id" && continue; printf '%s\n' "$_id"; break; done)"
+    if [ -n "$_ruwant" ] && ! grep -qxF "$_ruwant" "$_tried" 2>/dev/null; then
+        _cand="$_ruwant"
+    else
+        _cand="$(next_hybrid_candidate regional no "$_ruwant" "$_tried")"
     fi
     [ -n "$_cand" ] || break
-    printf '%s\n' "$_cand" >> "$_tried"
+    grep -qxF "$_cand" "$_tried" 2>/dev/null || printf '%s\n' "$_cand" >> "$_tried"
     if stage_add_doh RU "$_cand"; then
         if stage_restart_hdp && stage_local_ok "$PORT_RU" yandex.ru; then _ruchosen="$_cand"; break; fi
         stage_drop_by_url "$(dns_url "$_cand")"; stage_restart_hdp >/dev/null 2>&1 || true
     fi
     _ruwant=""
 done
-if [ -n "$_ruchosen" ]; then SLOT_RU="$_ruchosen"; SLOT_RU_CAT="regional"; printf "  ${C_GREEN}✓ RU подтверждён локально: %s${C_NC}\n" "$(dns_name "$_ruchosen")"; else SLOT_RU=""; SLOT_RU_CAT="regional"; PORT_RU=""; warn_msg "Региональный DoH локально не поднялся. RU-раздел отключён, чтобы не блокировать Apply."; fi
+if [ -n "$_ruchosen" ]; then
+    SLOT_RU="$_ruchosen"; SLOT_RU_CAT="regional"
+    printf "  ${C_GREEN}✓ RU подтверждён локально: %s${C_NC}\n" "$(dns_name "$_ruchosen")"
+else
+    SLOT_RU=""; SLOT_RU_CAT="regional"; PORT_RU=""
+    warn_msg "Региональный DoH локально не поднялся. RU-раздел отключён, чтобы не блокировать Apply."
+fi
 rm -f "$_tried"
 [ "$_success" -ge "$HYBRID_STAGE_MIN" ] || { err_msg "На этом соединении удалось поднять только $_success DoH из 6. Нужны минимум $HYBRID_STAGE_MIN; старая конфигурация остаётся нетронутой."; return 1; }
 return 0
