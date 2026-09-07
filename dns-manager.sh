@@ -4,7 +4,7 @@ MANAGER_PATH="/usr/bin/dns-manager"
 # ==========================================
 # ОСНОВНЫЕ ПАРАМЕТРЫ
 # ==========================================
-VERSION="1.30"
+VERSION="1.31"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -4024,6 +4024,56 @@ watchdog_service_recover() {
     return 0
 }
 
+# Проверяет, что авторитетная конфигурация https-dns-proxy действительно
+# соответствует текущему набору слотов. Локальный порт может отвечать даже
+# после внешнего изменения URL, поэтому одного DNS-запроса недостаточно.
+watchdog_hdp_guard() {
+    _expected="$TMP_DIR/watchdog-hdp-expected-$$"
+    _actual="$TMP_DIR/watchdog-hdp-actual-$$"
+    : > "$_expected" || return 1
+    : > "$_actual" || { rm -f "$_expected"; return 1; }
+
+    for _s in 1 2 3 4 5 6 RU RU_2; do
+        eval "_id=\${SLOT_${_s}:-}"
+        [ -n "$_id" ] || continue
+        eval "_p=\${PORT_${_s}:-}"
+        [ -n "$_p" ] || continue
+        _u="$(normalize_url "$(dns_url "$_id")")"
+        [ -n "$_u" ] || { rm -f "$_expected" "$_actual"; return 1; }
+        printf '%s|%s|%s\n' "$_s" "$_p" "$_u" >> "$_expected"
+    done
+
+    _i=0
+    while uci -q get "https-dns-proxy.@https-dns-proxy[$_i]" >/dev/null 2>&1; do
+        _m="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].dns_manager" 2>/dev/null)"
+        if [ "$_m" = 1 ]; then
+            _p="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].listen_port" 2>/dev/null)"
+            _u="$(normalize_url "$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].resolver_url" 2>/dev/null)")"
+            printf '%s|%s\n' "$_p" "$_u" >> "$_actual"
+        fi
+        _i=$((_i+1))
+    done
+
+    _expected_n="$(wc -l < "$_expected" 2>/dev/null | tr -d ' ')"
+    _actual_n="$(wc -l < "$_actual" 2>/dev/null | tr -d ' ')"
+    _bad=0
+    [ "$_expected_n" = "$_actual_n" ] || _bad=1
+    while IFS='|' read -r _slot _port _url; do
+        [ -n "$_url" ] || continue
+        grep -qxF "$_port|$_url" "$_actual" 2>/dev/null || { _bad=1; break; }
+    done < "$_expected"
+
+    if [ "$_bad" = 1 ]; then
+        log_msg "Обнаружено изменение конфигурации DNS. Восстанавливаю выбранные серверы без изменения профиля."
+        rebuild_selected_hdp_sections || { rm -f "$_expected" "$_actual"; return 1; }
+        /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || { rm -f "$_expected" "$_actual"; return 1; }
+        sleep 3
+    fi
+
+    rm -f "$_expected" "$_actual" 2>/dev/null
+    return 0
+}
+
 watchdog_check_slot() {
     _slot="$1"
     case "$_slot" in
@@ -4145,8 +4195,9 @@ run_watchdog() {
     load_config
     watchdog_enforce_hdp_control || log_msg "Не удалось полностью восстановить контроль над настройками https-dns-proxy."
     watchdog_enforce_doh_authority || log_msg "Не удалось полностью очистить сторонние DNS-сервер."
-    watchdog_dnsmasq_guard || log_msg "Не удалось полностью восстановить конфигурацию dnsmasq."
     watchdog_service_recover || log_msg "Не удалось выполнить восстановительное перезапускание https-dns-proxy."
+    watchdog_hdp_guard || log_msg "Не удалось проверить соответствие DNS-серверов выбранному набору."
+    watchdog_dnsmasq_guard || log_msg "Не удалось полностью восстановить конфигурацию dnsmasq."
     run_discovery
     _age=999999999
     if [ -f "$TEST_RESULTS" ]; then
