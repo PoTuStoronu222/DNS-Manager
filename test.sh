@@ -1302,6 +1302,13 @@ validate_selected_slots() {
         [ -n "$_id" ] || continue
         _u="$(normalize_url "$(dns_url "$_id")")"
         [ -n "$_u" ] || { err_msg "Слот $s содержит DNS без URL."; return 1; }
+        if [ "$DNS_PROFILE" = hybrid ] && [ -s "$TEST_RESULTS" ]; then
+            _tested_ok="$(awk -F'|' -v id="$_id" 'NF>=5 && $1==id && $5=="OK" && $4 ~ /^[0-9]+$/ {print "yes"; exit}' "$TEST_RESULTS" 2>/dev/null)"
+            if [ "$_tested_ok" != yes ]; then
+                err_msg "DNS «$(dns_name "$_id")» не прошёл последнюю полную проверку. Он не может быть применён."
+                return 1
+            fi
+        fi
         if grep -qxF "$_u" "$_urls" 2>/dev/null; then
             err_msg "Один и тот же адрес DNS-сервера выбран несколько раз: $(dns_name "$_id")."
             return 1
@@ -2294,113 +2301,86 @@ adaptive_hybrid_prepare() {
     [ -s "$TEST_RESULTS" ] || test_dns_catalog || return 1
 
     _success=0
-    _tried="$TMP_DIR/hybrid-direct-tried-$$"
+    _tried="$TMP_DIR/hybrid-selected-tried-$$"
     : > "$_tried" || return 1
 
     for _slot in 1 2 3 4 5 6; do
         eval "_want=\${SLOT_$_slot:-}"
         _chosen=""
 
-        for _attempt in 1 2 3 4 5 6 7 8 9 10; do
-            if [ -n "$_want" ] && ! grep -qxF "$_want" "$_tried" 2>/dev/null; then
-                _cand="$_want"
-            else
-                _cand="$(next_hybrid_candidate bypass yes "$_want" "$_tried")"
+        if [ -n "$_want" ] && ! grep -qxF "$_want" "$_tried" 2>/dev/null; then
+            _ok="$(awk -F'|' -v id="$_want" 'NF>=5 && $1==id && $5=="OK" && $4 ~ /^[0-9]+$/ {print "yes"; exit}' "$TEST_RESULTS" 2>/dev/null)"
+            _wcat="$(dns_cat "$_want")"
+            if [ "$_ok" = yes ] && { [ "$_wcat" = bypass ] || [ "$_wcat" = clean ]; }; then
+                _chosen="$_want"
             fi
-            [ -n "$_cand" ] || break
+        fi
 
-            grep -qxF "$_cand" "$_tried" 2>/dev/null || printf '%s\n' "$_cand" >> "$_tried"
-
-            printf "  ${C_CYAN}◇ Проверка DNS: %s → слот %s (порт %s)${C_NC}\n" "$(dns_name "$_cand")" "$_slot" "$(hybrid_desired_port "$_slot")"
-            test_one_dns "$_cand"
-            _rfile="$TMP_DIR/t.$_cand"
-            _st=""
-            if [ -f "$_rfile" ]; then
-                IFS='|' read -r _rid _rcat _rname _rms _st < "$_rfile"
-            fi
-
-            if [ "$_st" = "OK" ]; then
-                _chosen="$_cand"
-                printf "  ${C_GREEN}✓ DNS подтверждён для слота %s: %s${C_NC}\n" "$_slot" "$(dns_name "$_cand")"
-                break
-            fi
-
-            _friendly="не прошёл проверку DoH"
-            case "$_st" in
-                BOOTSTRAP_FAIL|DNS_ERROR) _friendly="не удалось определить адрес сервера" ;;
-                CURL_TIMEOUT) _friendly="тайм-аут ответа" ;;
-                TLS_ERROR) _friendly="ошибка защищённого соединения" ;;
-                CONNECTION_ERROR) _friendly="сервер недоступен" ;;
-                BAD_DOH_RESPONSE) _friendly="получен некорректный ответ DoH" ;;
-                HTTP_4*|HTTP_5*) _friendly="сервер вернул HTTP $_st" ;;
-                CURL_ERROR) _friendly="ошибка соединения" ;;
-            esac
-            warn_msg "DNS «$(dns_name "$_cand")»: $_friendly. Пробую следующий DNS для слота $_slot."
-            _want=""
-        done
+        if [ -z "$_chosen" ]; then
+            _chosen="$(next_hybrid_candidate bypass yes "" "$_tried")"
+        fi
 
         if [ -n "$_chosen" ]; then
-            _old=""
+            printf '%s\n' "$_chosen" >> "$_tried"
             eval "_old=\${SLOT_$_slot:-}"
             eval "SLOT_$_slot=\"$_chosen\""
             eval "SLOT_${_slot}_CAT=\"bypass\""
             _success=$((_success+1))
-            if [ -n "$_old" ] && [ "$_old" != "$_chosen" ]; then
+            if [ "$_chosen" = "$_old" ]; then
+                printf "  ${C_GREEN}✓ DNS подтверждён для слота %s: %s${C_NC}\n" "$_slot" "$(dns_name "$_chosen")"
+            elif [ -n "$_old" ]; then
                 printf "  ${C_YELLOW}↻ Слот %s: %s → %s${C_NC}\n" "$_slot" "$(dns_name "$_old")" "$(dns_name "$_chosen")"
+                printf "  ${C_GREEN}✓ DNS подтверждён по последней полной проверке: %s${C_NC}\n" "$(dns_name "$_chosen")"
+            else
+                printf "  ${C_GREEN}✓ Слот %s: выбран %s${C_NC}\n" "$_slot" "$(dns_name "$_chosen")"
             fi
         else
             eval "SLOT_$_slot=''"
             eval "SLOT_${_slot}_CAT='bypass'"
-            warn_msg "Для слота $_slot не найден рабочий DNS-сервер. Слот будет пропущен."
+            warn_msg "Для слота $_slot не найден DNS, прошедший последнюю полную проверку. Слот будет пропущен."
         fi
     done
 
     _old_ru="${SLOT_RU:-}"
     SLOT_RU=""
-    for _attempt in 1 2 3 4 5 6 7 8; do
-        if [ -n "$_old_ru" ] && ! grep -qxF "$_old_ru" "$_tried" 2>/dev/null; then
-            _cand="$_old_ru"
-        else
-            _cand="$(next_hybrid_candidate regional no "$_old_ru" "$_tried")"
-        fi
-        [ -n "$_cand" ] || break
-        grep -qxF "$_cand" "$_tried" 2>/dev/null || printf '%s\n' "$_cand" >> "$_tried"
+    _ru_chosen=""
 
-        printf "  ${C_CYAN}◇ Проверка DNS: %s → RU (порт %s)${C_NC}\n" "$(dns_name "$_cand")" "$HYBRID_PORT_RU"
-        test_one_dns "$_cand"
-        _rfile="$TMP_DIR/t.$_cand"
-        _st=""
-        if [ -f "$_rfile" ]; then
-            IFS='|' read -r _rid _rcat _rname _rms _st < "$_rfile"
-        fi
-        if [ "$_st" = "OK" ]; then
-            SLOT_RU="$_cand"
-            SLOT_RU_CAT="regional"
-            printf "  ${C_GREEN}✓ RU подтверждён: %s${C_NC}\n" "$(dns_name "$_cand")"
-            break
-        fi
-        warn_msg "DNS «$(dns_name "$_cand")» не прошёл проверку DoH для RU. Пробую следующий DNS."
-        _old_ru=""
-    done
-    if [ -z "${SLOT_RU:-}" ]; then
+    if [ -n "$_old_ru" ] && ! grep -qxF "$_old_ru" "$_tried" 2>/dev/null; then
+        _ok="$(awk -F'|' -v id="$_old_ru" 'NF>=5 && $1==id && $5=="OK" && $2=="regional" && $4 ~ /^[0-9]+$/ {print "yes"; exit}' "$TEST_RESULTS" 2>/dev/null)"
+        [ "$_ok" = yes ] && _ru_chosen="$_old_ru"
+    fi
+
+    if [ -z "$_ru_chosen" ]; then
+        _ru_chosen="$(next_hybrid_candidate regional no "" "$_tried")"
+    fi
+
+    if [ -n "$_ru_chosen" ]; then
+        printf '%s\n' "$_ru_chosen" >> "$_tried"
+        SLOT_RU="$_ru_chosen"
         SLOT_RU_CAT="regional"
-        warn_msg "Рабочий DNS для .ru/.su/.рф не найден. Этот маршрут будет отключён."
+        if [ "$_ru_chosen" = "$_old_ru" ]; then
+            printf "  ${C_GREEN}✓ RU подтверждён по последней полной проверке: %s${C_NC}\n" "$(dns_name "$_ru_chosen")"
+        elif [ -n "$_old_ru" ]; then
+            printf "  ${C_YELLOW}↻ RU: %s → %s${C_NC}\n" "$(dns_name "$_old_ru")" "$(dns_name "$_ru_chosen")"
+            printf "  ${C_GREEN}✓ RU подтверждён по последней полной проверке: %s${C_NC}\n" "$(dns_name "$_ru_chosen")"
+        else
+            printf "  ${C_GREEN}✓ RU выбран: %s${C_NC}\n" "$(dns_name "$_ru_chosen")"
+        fi
+    else
+        SLOT_RU_CAT="regional"
+        warn_msg "Рабочий DNS для .ru/.su/.рф не найден среди серверов, прошедших последнюю полную проверку. Этот маршрут будет отключён."
     fi
 
     if [ -n "${SLOT_RU_2:-}" ]; then
         _ru2_id="$SLOT_RU_2"
-        test_one_dns "$_ru2_id"
-        _rfile="$TMP_DIR/t.$_ru2_id"
-        _st=""
-        if [ -f "$_rfile" ]; then
-            IFS='|' read -r _rid _rcat _rname _rms _st < "$_rfile"
-        fi
-        if [ "$_st" = "OK" ]; then
-            printf "  ${C_GREEN}✓ RU2 подтверждён: %s${C_NC}\n" "$(dns_name "$_ru2_id")"
+        _ok="$(awk -F'|' -v id="$_ru2_id" 'NF>=5 && $1==id && $5=="OK" && $2=="regional" && $4 ~ /^[0-9]+$/ {print "yes"; exit}' "$TEST_RESULTS" 2>/dev/null)"
+        if [ "$_ok" = yes ] && ! grep -qxF "$_ru2_id" "$_tried" 2>/dev/null; then
+            printf '%s\n' "$_ru2_id" >> "$_tried"
+            printf "  ${C_GREEN}✓ RU2 подтверждён по последней полной проверке: %s${C_NC}\n" "$(dns_name "$_ru2_id")"
         else
             SLOT_RU_2=""
             SLOT_RU_2_CAT="regional"
-            warn_msg "RU2 не прошёл проверку DoH. RU2 отключён, основной RU не затронут."
+            warn_msg "RU2 не прошёл последнюю полную проверку. RU2 отключён, основной RU не затронут."
         fi
     fi
 
@@ -2408,7 +2388,7 @@ adaptive_hybrid_prepare() {
     reset_hybrid_runtime_ports
 
     [ "$_success" -ge "${HYBRID_STAGE_MIN:-1}" ] || {
-        err_msg "Удалось подтвердить только $_success обычных DNS-серверов из 6. Минимум: ${HYBRID_STAGE_MIN:-1}. Настройки не изменены."
+        err_msg "Удалось выбрать только $_success DNS-серверов из 6 по результатам последней полной проверки. Минимум: ${HYBRID_STAGE_MIN:-1}. Настройки не изменены."
         return 1
     }
     return 0
