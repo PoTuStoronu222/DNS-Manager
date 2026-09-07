@@ -4,7 +4,7 @@ MANAGER_PATH="/usr/bin/dns-manager"
 # ==========================================
 # ОСНОВНЫЕ ПАРАМЕТРЫ
 # ==========================================
-VERSION="1.18"
+VERSION="1.19"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -1953,6 +1953,30 @@ listener_port_exists() {
     fi
     return 1
 }
+local_dns_query_ok() {
+    _lp="$1"
+    [ -n "$_lp" ] || return 1
+    _nc="$(command -v nc 2>/dev/null || true)"
+    [ -n "$_nc" ] || return 1
+    _tag="$$-$(date +%s%N | cut -c1-10)"
+    _q="$TMP_DIR/local-dns-q-$_tag"
+    _r="$TMP_DIR/local-dns-r-$_tag"
+    : > "$_r" || return 1
+    printf '\022\064\001\000\000\001\000\000\000\000\000\000\007example\003com\000\000\001\000\001' > "$_q" || { rm -f "$_q" "$_r"; return 1; }
+    "$_nc" -u -w 2 127.0.0.1 "$_lp" < "$_q" > "$_r" 2>/dev/null || true
+    _n="$(wc -c < "$_r" 2>/dev/null | tr -d ' ')"
+    case "$_n" in ''|*[!0-9]*) _n=0 ;; esac
+    [ "$_n" -ge 12 ] || { rm -f "$_q" "$_r"; return 1; }
+    set -- $(od -An -tu1 -N8 "$_r" 2>/dev/null)
+    _f1="${3:-0}"; _f2="${4:-0}"; _a1="${7:-0}"; _a2="${8:-0}"
+    [ "$_f1" -ge 128 ] 2>/dev/null || { rm -f "$_q" "$_r"; return 1; }
+    [ "$(( _f2 & 15 ))" -eq 0 ] 2>/dev/null || { rm -f "$_q" "$_r"; return 1; }
+    _an=$(( _a1 * 256 + _a2 ))
+    [ "$_an" -gt 0 ] 2>/dev/null || { rm -f "$_q" "$_r"; return 1; }
+    rm -f "$_q" "$_r"
+    return 0
+}
+
 verify_selected_doh() {
     verify_applied_doh_config || return 1
 
@@ -1963,33 +1987,33 @@ verify_selected_doh() {
         [ -n "$_id" ] || continue
         [ -n "$_p" ] || { err_msg "Слот $s: боевой порт не определён."; return 1; }
 
-        if listener_port_exists "$_p"; then
+        if listener_port_exists "$_p" && local_dns_query_ok "$_p" "example.com"; then
             printf "  ${C_GREEN}✓${C_NC} Слот %s работает: 127.0.0.1:%s ← %s\n" "$s" "$_p" "$(dns_name "$_id")"
             _checked=$((_checked+1))
         else
-            err_msg "Слот $s ($(dns_name "$_id")): служба DNS не слушает порт 127.0.0.1:$_p."
+            err_msg "Слот $s ($(dns_name "$_id")): DNS не ответил через 127.0.0.1:$_p."
             return 1
         fi
     done
 
     if [ -n "${SLOT_RU:-}" ]; then
         [ -n "${PORT_RU:-}" ] || { err_msg "RU: боевой порт не определён."; return 1; }
-        if listener_port_exists "$PORT_RU"; then
+        if listener_port_exists "$PORT_RU" && local_dns_query_ok "$PORT_RU" "yandex.ru"; then
             printf "  ${C_GREEN}✓${C_NC} RU работает: 127.0.0.1:%s ← %s\n" "$PORT_RU" "$(dns_name "$SLOT_RU")"
             _checked=$((_checked+1))
         else
-            err_msg "RU ($(dns_name "$SLOT_RU")): служба DNS не слушает порт 127.0.0.1:$PORT_RU."
+            err_msg "RU ($(dns_name "$SLOT_RU")): DNS не ответил через 127.0.0.1:$PORT_RU."
             return 1
         fi
     fi
 
     if [ -n "${SLOT_RU_2:-}" ]; then
         [ -n "${PORT_RU_2:-}" ] || { err_msg "RU2: боевой порт не определён."; return 1; }
-        if listener_port_exists "$PORT_RU_2"; then
+        if listener_port_exists "$PORT_RU_2" && local_dns_query_ok "$PORT_RU_2" "yandex.ru"; then
             printf "  ${C_GREEN}✓${C_NC} RU2 работает: 127.0.0.1:%s ← %s\n" "$PORT_RU_2" "$(dns_name "$SLOT_RU_2")"
             _checked=$((_checked+1))
         else
-            err_msg "RU2 ($(dns_name "$SLOT_RU_2")): служба DNS не слушает порт 127.0.0.1:$PORT_RU_2."
+            err_msg "RU2 ($(dns_name "$SLOT_RU_2")): DNS не ответил через 127.0.0.1:$PORT_RU_2."
             return 1
         fi
     fi
@@ -3591,73 +3615,45 @@ watchdog_dnsmasq_guard() {
     return 0
 }
 watchdog_service_recover() {
-    _need=0
-    [ -z "$(pgrep -f 'https-dns-proxy' 2>/dev/null)" ] && _need=1
-    for _ws in 1 2 3 4 5 6 RU RU_2; do
-        case "$_ws" in 1) _wid="${SLOT_1:-}"; _wp="${PORT_1:-}";; 2) _wid="${SLOT_2:-}"; _wp="${PORT_2:-}";; 3) _wid="${SLOT_3:-}"; _wp="${PORT_3:-}";; 4) _wid="${SLOT_4:-}"; _wp="${PORT_4:-}";; 5) _wid="${SLOT_5:-}"; _wp="${PORT_5:-}";; 6) _wid="${SLOT_6:-}"; _wp="${PORT_6:-}";; RU) _wid="${SLOT_RU:-}"; _wp="${PORT_RU:-}";; RU_2) _wid="${SLOT_RU_2:-}"; _wp="${PORT_RU_2:-}";; esac
-        [ -n "$_wid" ] || continue
-        [ -n "$_wp" ] || continue
-        if command -v ss >/dev/null 2>&1; then
-            ss -lntup 2>/dev/null | grep -qE "(127\\.0\\.0\\.1|0\\.0\\.0\\.0|::):${_wp}([[:space:]]|$)" || _need=1
-        elif command -v netstat >/dev/null 2>&1; then
-            netstat -lntup 2>/dev/null | grep -qE ":${_wp}([[:space:]]|$)" || _need=1
-        fi
-    done
-    [ "$_need" = 1 ] || return 0
-    log_msg "DNS-служба работает неполностью. Перезапускаю её один раз."
+    pgrep -f 'https-dns-proxy' >/dev/null 2>&1 && return 0
+    log_msg "Служба DNS не запущена. Перезапускаю её."
     /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || return 1
     sleep 3
+    pgrep -f 'https-dns-proxy' >/dev/null 2>&1 || return 1
     return 0
 }
 
 watchdog_check_slot() {
-    _id="$1"
+    _slot="$1"
+    case "$_slot" in
+        1) _id="${SLOT_1:-}"; _port="${PORT_1:-}"; _domain="example.com";;
+        2) _id="${SLOT_2:-}"; _port="${PORT_2:-}"; _domain="example.com";;
+        3) _id="${SLOT_3:-}"; _port="${PORT_3:-}"; _domain="example.com";;
+        4) _id="${SLOT_4:-}"; _port="${PORT_4:-}"; _domain="example.com";;
+        5) _id="${SLOT_5:-}"; _port="${PORT_5:-}"; _domain="example.com";;
+        6) _id="${SLOT_6:-}"; _port="${PORT_6:-}"; _domain="example.com";;
+        RU) _id="${SLOT_RU:-}"; _port="${PORT_RU:-}"; _domain="yandex.ru";;
+        RU_2) _id="${SLOT_RU_2:-}"; _port="${PORT_RU_2:-}"; _domain="yandex.ru";;
+        *) return 1;;
+    esac
     [ -n "$_id" ] || return 1
-    _port=""
-    _slot_name=""
-    for _ws in 1 2 3 4 5 6 RU RU_2; do
-        case "$_ws" in 1) _wid="${SLOT_1:-}";; 2) _wid="${SLOT_2:-}";; 3) _wid="${SLOT_3:-}";; 4) _wid="${SLOT_4:-}";; 5) _wid="${SLOT_5:-}";; 6) _wid="${SLOT_6:-}";; RU) _wid="${SLOT_RU:-}";; RU_2) _wid="${SLOT_RU_2:-}";; esac
-        if [ "$_wid" = "$_id" ]; then
-            case "$_ws" in 1) _port="${PORT_1:-}";; 2) _port="${PORT_2:-}";; 3) _port="${PORT_3:-}";; 4) _port="${PORT_4:-}";; 5) _port="${PORT_5:-}";; 6) _port="${PORT_6:-}";; RU) _port="${PORT_RU:-}";; RU_2) _port="${PORT_RU_2:-}";; esac
-            _slot_name="$_ws"
-            break
-        fi
-    done
     [ -n "$_port" ] || return 1
-
-    if command -v ss >/dev/null 2>&1; then
-        ss -lntup 2>/dev/null | grep -qE "(127\\.0\\.0\\.1|0\\.0\\.0\\.0|::):${_port}([[:space:]]|$)" || return 1
-    elif command -v netstat >/dev/null 2>&1; then
-        netstat -lntup 2>/dev/null | grep -qE ":${_port}([[:space:]]|$)" || return 1
-    fi
-
+    listener_port_exists "$_port" || return 1
+    local_dns_query_ok "$_port" "$_domain" || return 1
     return 0
 }
+
 # WATCHDOG — ЗАМЕНА НЕРАБОТАЮЩЕГО DNS
 # ==========================================
 watchdog_test_candidate() {
     _slot="$1"
     _id="$2"
     [ -n "$_id" ] || return 1
-    STAGE_LAST_PID=""
-    STAGE_LAST_PORT=""
-    STAGE_LAST_LOG=""
-    STAGE_LAST_URL=""
-    if ! stage_start_one "$_slot" "$_id"; then
-        return 1
-    fi
-    if [ "$_slot" = RU ] || [ "$_slot" = RU_2 ]; then
-        _domain="yandex.ru"
-    else
-        _domain="example.com"
-    fi
-    if stage_local_ok "$STAGE_LAST_PORT" "$_domain"; then
-        stage_stop_last
-        return 0
-    fi
-    stage_stop_last
-    return 1
+    _url="$(normalize_url "$(dns_url "$_id")")"
+    [ -n "$_url" ] || return 1
+    verify_doh_endpoint "$_url" "$(dns_name "$_id")" >/dev/null 2>&1
 }
+
 watchdog_pick_replacement() {
     _slot="$1"
     _used="$2"
@@ -3752,7 +3748,7 @@ run_watchdog() {
         _is_fallback=0
         [ "$_current_cat" != "$_desired" ] && _is_fallback=1
 
-        if watchdog_check_slot "$_id"; then
+        if watchdog_check_slot "$_slot"; then
             if [ "$_is_fallback" = 1 ] && [ "$_returned" = 0 ]; then
                 _tried="$TMP_DIR/watchdog-tried-${_slot}-$$"
                 : > "$_tried"
@@ -3787,7 +3783,7 @@ run_watchdog() {
                         eval "SLOT_${_slot}=\"$_old\""
                         eval "SLOT_${_slot}_CAT=\"$_desired\""
                         save_config
-                        log_msg "Возврат DNS в слотеа $_slot: попытка $_attempt не прошла, откат выполнен."
+                        log_msg "Возврат DNS в слоте $_slot: попытка $_attempt не прошла, откат выполнен."
                         [ "$_attempt" -lt 3 ] && sleep 2
                     done
                     if [ "$_success" = 1 ]; then
@@ -3800,7 +3796,7 @@ run_watchdog() {
         fi
 
         sleep 5
-        if watchdog_check_slot "$_id"; then
+        if watchdog_check_slot "$_slot"; then
             log_msg "DNS в слоте $_slot: первый сбой не подтвердился."
             continue
         fi
@@ -3817,7 +3813,7 @@ run_watchdog() {
             _repl="${_picked%%|*}"
             _repl_cat="${_picked#*|}"
             if [ -z "$_repl" ] || [ "$_repl" = "$_id" ]; then
-                log_msg "Для DNS в слотеа $_slot на попытке $_attempt рабочая замена не найдена."
+                log_msg "Для DNS в слоте $_slot на попытке $_attempt рабочая замена не найдена."
                 break
             fi
 
@@ -3850,7 +3846,7 @@ run_watchdog() {
             eval "SLOT_${_slot}=\"$_old\""
             eval "SLOT_${_slot}_CAT=\"$_oldcat\""
             save_config
-            log_msg "Замена DNS в слотеа $_slot: попытка $_attempt не прошла, откат выполнен."
+            log_msg "Замена DNS в слоте $_slot: попытка $_attempt не прошла, откат выполнен."
             [ "$_attempt" -lt 3 ] && sleep 2
         done
 
@@ -3859,7 +3855,7 @@ run_watchdog() {
             eval "SLOT_${_slot}_CAT=\"$_oldcat\""
             save_config
             _wd_rc=1
-            log_msg "Для DNS в слотеа $_slot не удалось найти рабочую замену после трёх попыток. Текущий DNS сохранён."
+            log_msg "Для DNS в слоте $_slot не удалось найти рабочую замену после трёх попыток. Текущий DNS сохранён."
         fi
     done
 
