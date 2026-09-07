@@ -817,7 +817,7 @@ test_dns_catalog() {
 [ "$HAS_CURL" = yes ] || { warn_msg "curl не установлен. Сначала установите его через пункт I."; return 1; }
 rm -f "$TMP_DIR/t."* "$TMP_DIR/q."* "$TMP_DIR/body."* "$TMP_DIR/h."* "$TEST_RESULTS" 2>/dev/null
 total="$(count_dns)"
-printf "${C_WHITE}Проверяю %s DNS-серверов...${C_NC}\n" "$total"
+printf "${C_WHITE}Проверяю %s DNS-серверов. Это может занять до 5 минут...${C_NC}\n" "$total"
 n=0
 while IFS='|' read -r id _rest; do
 case "$id" in ''|\#*) continue;; esac
@@ -2151,8 +2151,15 @@ stage_start_one() {
     _b="$(stage_bootstrap_for_ipv4)"
     _family_args=""
     [ "${IPV6_ROUTE:-no}" != "yes" ] && _family_args="-4"
+    _host="$(url_host "$_url")"
+    _resolved_ip="$(resolve_host_fallback "$_host" 2>/dev/null || true)"
+    [ -n "$_resolved_ip" ] || _resolved_ip="$(resolve_host "$_host" 2>/dev/null || true)"
     printf "  ${C_CYAN}◇ Проверка DNS: %s → 127.0.0.1:%s${C_NC}\n" "$_name" "$_port"
-    "$_bin" -a 127.0.0.1 -p "$_port" -b "$_b" $_family_args -r "$_url" -u nobody -g nogroup >"$_log" 2>&1 &
+    if [ -n "$_resolved_ip" ]; then
+        "$_bin" -a 127.0.0.1 -p "$_port" -b "$_b" $_family_args -R "$_resolved_ip" -r "$_url" -u nobody -g nogroup >"$_log" 2>&1 &
+    else
+        "$_bin" -a 127.0.0.1 -p "$_port" -b "$_b" $_family_args -r "$_url" -u nobody -g nogroup >"$_log" 2>&1 &
+    fi
     _pid=$!
     STAGE_PIDS="$STAGE_PIDS $_pid"
     STAGE_LAST_PID="$_pid"
@@ -3437,7 +3444,7 @@ printf "  ${C_GREEN}✓${C_NC} кэш DNS для более быстрых по�
 test_dns_catalog
 [ -s "$TEST_RESULTS" ] || return
 DNS_PROFILE="hybrid"
-auto_fill_slots bypass
+auto_fill_slots bypass || return 1
 SLOT_RU="yandex_ru"
 SLOT_RU_2=""
 SLOT_RU_CAT="regional"
