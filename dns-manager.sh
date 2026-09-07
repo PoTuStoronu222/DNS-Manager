@@ -4,7 +4,7 @@ MANAGER_PATH="/usr/bin/dns-manager"
 # ==========================================
 # ОСНОВНЫЕ ПАРАМЕТРЫ
 # ==========================================
-VERSION="1.25"
+VERSION="1.26"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -1276,7 +1276,7 @@ fi
 local sec
 sec="$(uci add https-dns-proxy https-dns-proxy 2>/dev/null)" || return 1
 
-local b_list="$(printf '%s' "$BOOTSTRAP_DNS" | tr ',' ' ')"
+local b_list="$(printf '%s' "$BOOTSTRAP_DNS")"
 [ -z "$b_list" ] && b_list="1.1.1.1"
 uci set "https-dns-proxy.$sec.bootstrap_dns=$b_list" || return 1
 uci set "https-dns-proxy.$sec.listen_port=$target" || return 1
@@ -2164,120 +2164,122 @@ rebuild_selected_hdp_sections() {
     return 0
 }
 replace_failed_slot_from_test() {
+    local _slot _old_id _port _cat _slot_tried _used _current_id _current_name _candidate_name _new_url _rcat _rms _rst _rid _rname _previous_id _previous_name _domain _candidate_ok
     _slot="$FAILED_SLOT"
     _old_id="$FAILED_SLOT_ID"
     _port="$FAILED_SLOT_PORT"
+    _cat="$FAILED_SLOT_CAT"
     [ -n "$_slot" ] || return 1
     [ -s "$TEST_RESULTS" ] || return 1
-    _cat="$FAILED_SLOT_CAT"
     case "$_slot" in RU|RU_2) _cat="regional" ;; esac
 
     _slot_tried="$TMP_DIR/repair-tried-$$-$_slot"
-    _used="$TMP_DIR/repair-used-$$"
+    _used="$TMP_DIR/repair-used-$$-$_slot"
     : > "$_slot_tried" || return 1
     : > "$_used" || { rm -f "$_slot_tried"; return 1; }
 
-    # На протяжении всей одной транзакции запоминаем кандидатов, которые
-    # уже не смогли подняться на реальном локальном порту. Это запрещает
-    # цикл A -> B -> A -> B. ID храним единообразно, а не вперемешку с URL.
     [ -n "${REPAIR_BAD_IDS:-}" ] || REPAIR_BAD_IDS="$TMP_DIR/repair-bad-ids-$$"
     [ -f "$REPAIR_BAD_IDS" ] || : > "$REPAIR_BAD_IDS"
 
+    # Уже занятые DNS не предлагаются как замена другому слоту.
     for _s in 1 2 3 4 5 6 RU RU_2; do
         eval "_u_id=\${SLOT_${_s}:-}"
         [ -n "$_u_id" ] || continue
-        printf '%s\n' "$(normalize_url "$(dns_url "$_u_id")")" >> "$_used"
+        _new_url="$(normalize_url "$(dns_url "$_u_id")")"
+        [ -n "$_new_url" ] && printf '%s\n' "$_new_url" >> "$_used"
     done
+
     printf '%s\n' "$_old_id" >> "$_slot_tried"
     grep -qxF "$_old_id" "$REPAIR_BAD_IDS" 2>/dev/null || printf '%s\n' "$_old_id" >> "$REPAIR_BAD_IDS"
-    _prev_failed_id="$_old_id"
+    _previous_id="$_old_id"
 
-    while IFS='|' read -r _rid _rcat _rname _rms _rst; do
-        [ -n "$_rid" ] || continue
-        [ "$_rst" = OK ] || continue
-        case "$_rms" in ''|*[!0-9]*) continue ;; esac
-        [ "$_rid" = "$_old_id" ] && continue
-        case "$_slot" in
-            RU|RU_2) [ "$_rcat" = regional ] || continue ;;
-            *)
-                if [ "$DNS_SELECTION_MODE" = quick ]; then
-                    case "$_rcat" in bypass|clean) ;; *) continue ;; esac
-                else
-                    [ "$_rcat" = "$_cat" ] || continue
-                fi
-                ;;
-        esac
-        grep -qxF "$_rid" "$_slot_tried" 2>/dev/null && continue
-        grep -qxF "$_rid" "$REPAIR_BAD_IDS" 2>/dev/null && continue
-        _new_url="$(normalize_url "$(dns_url "$_rid")")"
-        [ -n "$_new_url" ] || continue
-        grep -qxF "$_new_url" "$_used" 2>/dev/null && continue
-
-        _candidate_name="$(dns_name "$_rid")"
-        _previous_name="$(dns_name "$_prev_failed_id")"
-        printf "  ${C_YELLOW}↻ Слот %s: %s не отвечает. Проверяю замену %s.${C_NC}\n" "$_slot" "$_previous_name" "$_candidate_name"
-        _old_slot_id="$_old_id"
-        eval "SLOT_${_slot}=\"$_rid\""
-        if [ "$DNS_SELECTION_MODE" = quick ]; then
-            eval "SLOT_${_slot}_CAT=\"bypass\""
-        else
-            eval "SLOT_${_slot}_CAT=\"$_rcat\""
-        fi
-        if [ "$DNS_PROFILE" = hybrid ]; then
-            eval "PORT_${_slot}=\"$_port\""
+    # В быстром режиме сначала проверяем все подтверждённые обходные DNS,
+    # затем — clean DNS как резерв. В профилях категория не смешивается.
+    for _passcat in bypass clean; do
+        if [ "$DNS_SELECTION_MODE" != quick ]; then
+            [ "$_passcat" = "bypass" ] || break
+            _passcat="$_cat"
         fi
 
-        # Перестраиваем только авторитетные секции выбранного набора.
-        # Реальный локальный ответ проверяется сразу после запуска ниже;
-        # просто успешный uci commit кандидата не считается подтверждением.
-        if ! rebuild_selected_hdp_sections; then
-            eval "SLOT_${_slot}=\"$_old_slot_id\""
+        while IFS='|' read -r _rid _rcat _rname _rms _rst; do
+            [ -n "$_rid" ] || continue
+            [ "$_rst" = OK ] || continue
+            case "$_rms" in ''|*[!0-9]*) continue ;; esac
+            [ "$_rid" = "$_old_id" ] && continue
+            grep -qxF "$_rid" "$_slot_tried" 2>/dev/null && continue
+            grep -qxF "$_rid" "$REPAIR_BAD_IDS" 2>/dev/null && continue
+
+            if [ "$DNS_SELECTION_MODE" = quick ]; then
+                [ "$_rcat" = "$_passcat" ] || continue
+            else
+                [ "$_rcat" = "$_cat" ] || continue
+            fi
+
+            _new_url="$(normalize_url "$(dns_url "$_rid")")"
+            [ -n "$_new_url" ] || continue
+            grep -qxF "$_new_url" "$_used" 2>/dev/null && continue
+
+            _current_name="$(dns_name "$_previous_id")"
+            _candidate_name="$(dns_name "$_rid")"
+            [ -n "$_current_name" ] || _current_name="выбранный DNS"
+            [ -n "$_candidate_name" ] || _candidate_name="новый DNS"
+
+            printf "  ${C_YELLOW}↻ Слот %s: %s не отвечает. Проверяю замену %s.${C_NC}\n" "$_slot" "$_current_name" "$_candidate_name"
+
+            # Порт слота неизменен. Меняем только DNS-кандидата.
+            eval "SLOT_${_slot}=\"$_rid\""
             if [ "$DNS_SELECTION_MODE" = quick ]; then
                 eval "SLOT_${_slot}_CAT=\"bypass\""
             else
-                eval "SLOT_${_slot}_CAT=\"$_cat\""
+                eval "SLOT_${_slot}_CAT=\"$_rcat\""
             fi
+            eval "PORT_${_slot}=\"$_port\""
+
+            if ! rebuild_selected_hdp_sections; then
+                eval "SLOT_${_slot}=\"$_previous_id\""
+                if [ "$DNS_SELECTION_MODE" = quick ]; then
+                    eval "SLOT_${_slot}_CAT=\"bypass\""
+                else
+                    eval "SLOT_${_slot}_CAT=\"$_cat\""
+                fi
+                printf '%s\n' "$_rid" >> "$_slot_tried"
+                grep -qxF "$_rid" "$REPAIR_BAD_IDS" 2>/dev/null || printf '%s\n' "$_rid" >> "$REPAIR_BAD_IDS"
+                continue
+            fi
+
+            /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || true
+            # После перезапуска даём сервису подняться; затем делаем сам DNS-запрос.
+            sleep 4
+            _domain="example.com"
+            case "$_slot" in RU|RU_2) _domain="yandex.ru" ;; esac
+            _candidate_ok=0
+            for _try in 1 2 3; do
+                if listener_port_exists "$_port" && local_dns_query_ok "$_port" "$_domain"; then
+                    _candidate_ok=1
+                    break
+                fi
+                [ "$_try" -lt 3 ] && sleep 1
+            done
+
+            if [ "$_candidate_ok" = 1 ]; then
+                printf "  ${C_GREEN}✓ Слот %s: %s подтверждён на 127.0.0.1:%s.${C_NC}\n" "$_slot" "$_candidate_name" "$_port"
+                rm -f "$_slot_tried" "$_used" 2>/dev/null
+                return 0
+            fi
+
+            printf "  ${C_RED}✗ Слот %s: %s также не ответил через 127.0.0.1:%s. Больше его не пробую.${C_NC}\n" "$_slot" "$_candidate_name" "$_port"
             printf '%s\n' "$_rid" >> "$_slot_tried"
             grep -qxF "$_rid" "$REPAIR_BAD_IDS" 2>/dev/null || printf '%s\n' "$_rid" >> "$REPAIR_BAD_IDS"
-            continue
-        fi
 
-        # Кандидат считается выбранным только после отдельной перезагрузки
-        # и проверки именно его фиксированного локального порта.
-        /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || true
-        sleep 3
-        run_discovery
-        if case "$_slot" in
-            RU) listener_port_exists "$_port" && local_dns_query_ok "$_port" "yandex.ru" ;;
-            RU_2) listener_port_exists "$_port" && local_dns_query_ok "$_port" "yandex.ru" ;;
-            *) listener_port_exists "$_port" && local_dns_query_ok "$_port" "example.com" ;;
-        esac
-        then
-            printf "  ${C_GREEN}✓ Слот %s: %s подтверждён на 127.0.0.1:%s.${C_NC}\n" "$_slot" "$_candidate_name" "$_port"
-            rm -f "$_slot_tried" "$_used" 2>/dev/null
-            return 0
-        fi
+            # Оставляем неудачный кандидат в текущем слоте до следующей попытки.
+            # Поэтому следующее сообщение честно называет именно его.
+            _previous_id="$_rid"
+        done <<EOF_REPAIR_PASS
+$(awk -F'|' -v c="$_passcat" '$1!="" && NF>=5 && $2==c && $5=="OK" && $4 ~ /^[0-9]+$/ {print}' "$TEST_RESULTS" 2>/dev/null | sort -t'|' -k4,4n)
+EOF_REPAIR_PASS
 
-        printf "  ${C_RED}✗ Слот %s: %s также не ответил через 127.0.0.1:%s. Больше его не пробую.${C_NC}\n" "$_slot" "$_candidate_name" "$_port"
-        printf '%s\n' "$_rid" >> "$_slot_tried"
-        grep -qxF "$_rid" "$REPAIR_BAD_IDS" 2>/dev/null || printf '%s\n' "$_rid" >> "$REPAIR_BAD_IDS"
-        eval "SLOT_${_slot}=\"$_old_slot_id\""
-        if [ "$DNS_SELECTION_MODE" = quick ]; then
-            eval "SLOT_${_slot}_CAT=\"bypass\""
-        else
-            eval "SLOT_${_slot}_CAT=\"$_cat\""
-        fi
-        rebuild_selected_hdp_sections >/dev/null 2>&1 || true
-        /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || true
-        sleep 3
-        run_discovery
-        _old_id="$_old_slot_id"
-        _prev_failed_id="$_rid"
-        # После возврата старого проблемного DNS он уже находится в BAD_IDS,
-        # поэтому на следующей итерации будет выбран действительно новый кандидат.
-    done <<EOF_REPAIR_CANDIDATES
-$(awk -F'|' '$1!="" && NF>=5 && $5=="OK" && $4 ~ /^[0-9]+$/ {print}' "$TEST_RESULTS" 2>/dev/null | sort -t'|' -k4,4n)
-EOF_REPAIR_CANDIDATES
+        [ "$DNS_SELECTION_MODE" = quick ] || break
+    done
 
     rm -f "$_slot_tried" "$_used" 2>/dev/null
     warn_msg "Для слота $_slot не найден другой DNS, который прошёл общую проверку и заработал через локальный порт."
@@ -3577,7 +3579,7 @@ save_config
 }
 apply_bootstrap_only() {
     BOOTSTRAP_DNS="$BOOTSTRAP_DNS_ALL"
-    b_list="$(printf '%s' "$BOOTSTRAP_DNS" | tr ',' ' ')"
+    b_list="$(printf '%s' "$BOOTSTRAP_DNS")"
     i=0; changed=0
     while uci -q get "https-dns-proxy.@https-dns-proxy[$i]" >/dev/null 2>&1; do
         if [ "$(uci -q get "https-dns-proxy.@https-dns-proxy[$i].dns_manager" 2>/dev/null)" = 1 ]; then
