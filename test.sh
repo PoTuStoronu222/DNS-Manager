@@ -2519,46 +2519,29 @@ EOF_HYB_SLOT
         fi
     done
 
+    # RU всегда выбирается как основной региональный DNS без семейной/рекламной фильтрации.
+    # Автоподбор никогда не подставляет Family/Safe или другой фильтрующий профиль в RU.
     SLOT_RU=""
     SLOT_RU_CAT="regional"
-    while IFS='|' read -r _id _cat _name _ms _st; do
-        [ -n "$_id" ] || continue
-        [ "$_cat" = regional ] || continue
-        [ "$_st" = OK ] || continue
-        case "$_ms" in ''|*[!0-9]*) continue;; esac
-        grep -qxF "$_id" "$_tried" 2>/dev/null && continue
-        _cand_url="$(normalize_url "$(dns_url "$_id")")"
-        [ -n "$_cand_url" ] || continue
-        grep -qxF "$_cand_url" "$_selected_urls" 2>/dev/null && continue
-        SLOT_RU="$_id"
-        printf '%s\n' "$_id" >> "$_tried"
-        printf '%s\n' "$_cand_url" >> "$_selected_urls"
-        printf "  ${C_GREEN}✓ RU: %s → 127.0.0.1:%s${C_NC}\n" "$(dns_name "$_id")" "$(hybrid_desired_port RU)"
-        _success=$((_success+1))
-        break
-    done <<EOF_HYB_RU
-$(awk -F'|' 'NF>=5 && $2=="regional" && $5=="OK" && $4 ~ /^[0-9]+$/ {print}' "$TEST_RESULTS" 2>/dev/null | sort -t'|' -k4,4n)
-EOF_HYB_RU
+    _ru_id="yandex_ru"
+    _ru_ok="$(awk -F'|' -v id="$_ru_id" 'NF>=5 && $1==id && $2=="regional" && $5=="OK" && $4 ~ /^[0-9]+$/ {print "yes"; exit}' "$TEST_RESULTS" 2>/dev/null)"
+    if [ "$_ru_ok" = yes ]; then
+        _cand_url="$(normalize_url "$(dns_url "$_ru_id")")"
+        if [ -n "$_cand_url" ] && ! grep -qxF "$_cand_url" "$selected_urls" 2>/dev/null; then
+            SLOT_RU="$_ru_id"
+            printf '%s\n' "$_ru_id" >> "$_tried"
+            printf '%s\n' "$_cand_url" >> "$_selected_urls"
+            printf "  ${C_GREEN}✓ RU: %s → 127.0.0.1:%s${C_NC}\n" "$(dns_name "$_ru_id")" "$(hybrid_desired_port RU)"
+            _success=$((_success+1))
+        fi
+    else
+        warn_msg "Yandex RU не прошёл последнюю полную проверку. RU-маршрут не назначен автоматически."
+    fi
 
+    # RU2 не заполняется автоматически. Это отдельный ручной/профильный слот,
+    # чтобы Family/Safe и другие фильтрующие DNS не попадали в основной RU-маршрут.
     SLOT_RU_2=""
     SLOT_RU_2_CAT="regional"
-    while IFS='|' read -r _id _cat _name _ms _st; do
-        [ -n "$_id" ] || continue
-        [ "$_cat" = regional ] || continue
-        [ "$_st" = OK ] || continue
-        case "$_ms" in ''|*[!0-9]*) continue;; esac
-        grep -qxF "$_id" "$_tried" 2>/dev/null && continue
-        _cand_url="$(normalize_url "$(dns_url "$_id")")"
-        [ -n "$_cand_url" ] || continue
-        grep -qxF "$_cand_url" "$_selected_urls" 2>/dev/null && continue
-        SLOT_RU_2="$_id"
-        printf '%s\n' "$_id" >> "$_tried"
-        printf '%s\n' "$_cand_url" >> "$_selected_urls"
-        printf "  ${C_GREEN}✓ RU2: %s → 127.0.0.1:%s${C_NC}\n" "$(dns_name "$_id")" "$(hybrid_desired_port RU_2)"
-        break
-    done <<EOF_HYB_RU2
-$(awk -F'|' 'NF>=5 && $2=="regional" && $5=="OK" && $4 ~ /^[0-9]+$/ {print}' "$TEST_RESULTS" 2>/dev/null | sort -t'|' -k4,4n)
-EOF_HYB_RU2
 
     rm -f "$_tried" "$_selected_urls" 2>/dev/null
     reset_hybrid_runtime_ports
