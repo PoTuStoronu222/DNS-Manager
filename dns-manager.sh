@@ -4,7 +4,7 @@ MANAGER_PATH="/usr/bin/dns-manager"
 # ==========================================
 # ОСНОВНЫЕ ПАРАМЕТРЫ
 # ==========================================
-VERSION="1.34"
+VERSION="1.35"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -25,9 +25,6 @@ BASELINE_LAST="$BASELINE_DIR/last-applied.manifest"
 BASELINE_META="$BASELINE_DIR/meta"
 OWNERSHIP="$STATE_DIR/ownership.conf"
 TEST_RESULTS="$STATE_DIR/dns-test-results.conf"
-# Безопасная уборка старых временных каталогов диспетчера.
-# Удаляем только каталоги строго с нашим префиксом, которые старше двух суток.
-# Текущий TMP_DIR и свежие каталоги не затрагиваются.
 cleanup_stale_tmp_dirs() {
     _self_tmp="${TMP_DIR:-}"
     find /tmp -maxdepth 1 -type d -name 'dnsmgr.*' -mtime +1 -print 2>/dev/null | while IFS= read -r _old_dir; do
@@ -539,7 +536,6 @@ if [ "${_old_dnscatver:-}" != "$DNSCAT_VERSION" ]; then
     rm -f "$TEST_RESULTS"
     printf '%s\n' "$DNSCAT_VERSION" > "$STATE_DIR/dns-catalog.version" 2>/dev/null
 fi
-printf '%s\n' "$VERSION" > "$STATE_DIR/catalog.version" 2>/dev/null
 }
 # ==========================================
 # ЗАГРУЗКА И СОХРАНЕНИЕ НАСТРОЕК
@@ -751,6 +747,7 @@ dns_name() { dns_field "$1" 4 | sed 's/\\\\\././g'; }
 dns_url() { dns_field "$1" 5; }
 dns_cat() { dns_field "$1" 2; }
 count_dns() { grep -v '^#' "$DNS_CATALOG" 2>/dev/null | grep -c '|'; }
+dns_catalog_version() { sed -n 's/^# DNSCATVER=//p' "$DNS_CATALOG" 2>/dev/null | head -n1; }
 ntp_name() { awk -F'|' -v id="$1" '$1==id{print $3;exit}' "$NTP_CATALOG"; }
 ntp_ipv4() { awk -F'|' -v id="$1" '$1==id{print $4;exit}' "$NTP_CATALOG"; }
 ntp_leap() { awk -F'|' -v id="$1" '$1==id{print $7;exit}' "$NTP_CATALOG"; }
@@ -2353,8 +2350,8 @@ verify_after_apply() {
 
     verify_selected_doh || return 1
 
-    listener_port_exists 53 || {
-        err_msg "dnsmasq после применения не слушает локальный DNS-порт 127.0.0.1:53."; return 1;
+    local_dns_query_ok 53 "example.com" || {
+        err_msg "Локальный DNS после применения не отвечает через 127.0.0.1:53."; return 1;
     }
 
     _sec="$(get_dnsmasq_section)"
@@ -3831,6 +3828,9 @@ pause
 # ==========================================
 menu_status() {
 menu_header "СОСТОЯНИЕ И ЖУРНАЛ"
+_catalog_ver="$(dns_catalog_version)"
+_catalog_count="$(count_dns)"
+printf "${C_WHITE}Каталог DNS:${C_NC} ${C_GREEN}%s${C_NC} • ${C_CYAN}%s серверов${C_NC}\n" "${_catalog_ver:-не определён}" "${_catalog_count:-0}"
 printf "${C_WHITE}Последние события:${C_NC}\n"
 if [ -s "$LOG_FILE" ]; then tail -15 "$LOG_FILE" | sed -e "s/ START / Запуск /" -e "s/ UPDATE / Обновление /" -e "s/ INFO / Информация: /" -e "s/ WARN / Внимание: /" -e "s/ ERROR / Ошибка: /"; else printf "${C_YELLOW}Журнал пока пуст.${C_NC}\n"; fi
 echo ""
@@ -4330,6 +4330,7 @@ printf "  ${C_YELLOW}${C_BOLD}IPv6${C_NC}               %b\n" "$(state_word "$IP
 printf "  ${C_YELLOW}${C_BOLD}dnsmasq${C_NC}            %b\n" "$(state_word "$DNSMASQ_RUN")"
 printf "  ${C_YELLOW}${C_BOLD}Защищённый DNS${C_NC}     %b\n" "$(state_word "$HDP_RUNNING")"
 printf "  ${C_YELLOW}${C_BOLD}DNS-серверов найдено${C_NC} ${C_YELLOW}${C_BOLD}%s${C_NC}\n" "$DOH_TOTAL"
+printf "  ${C_YELLOW}${C_BOLD}Каталог DNS${C_NC}              ${C_CYAN}%s • %s серверов${C_NC}\n" "$(dns_catalog_version)" "$(count_dns)"
 printf "  ${C_YELLOW}${C_BOLD}Автопроверка${C_NC}            %b\n" "$(module_state_word watchdog "$WATCHDOG_ENABLED")"
 [ -s "$BASELINE_MANIFEST" ] && printf "  ${C_YELLOW}${C_BOLD}Исходная копия${C_NC}      ${C_GREEN}есть${C_NC}\n" || printf "  ${C_YELLOW}${C_BOLD}Исходная копия${C_NC}      ${C_YELLOW}нет${C_NC}\n"
 [ "$FORCE_DNS" = 1 ] && printf "  ${C_YELLOW}${C_BOLD}Принудительный DNS${C_NC} ${C_CYAN}включён${C_NC}\n"
@@ -4347,6 +4348,7 @@ menu_item "[6]" "Выбор по категориям"
 menu_section "НАСТРОЙКА"
 menu_item "[7]" "Карта состояния"
 printf "  ${C_CYAN}${C_BOLD}%-5s${C_NC} ${C_YELLOW}${C_BOLD}%-38s${C_NC} ${C_CYAN}${C_BOLD}(%s)${C_NC}\n" "[8]" "Проверка DNS-серверов" "$(count_dns)"
+printf "  ${C_WHITE}      Каталог DNS: ${C_CYAN}%s${C_NC} • ${C_CYAN}%s серверов${C_NC}\n" "$(dns_catalog_version)" "$(count_dns)"
 printf "  ${C_CYAN}${C_BOLD}%-5s${C_NC} ${C_YELLOW}${C_BOLD}%-38s${C_NC} ${C_CYAN}${C_BOLD}(6+2)${C_NC}\n" "[9]" "Серверы DNS"
 menu_item "[10]" "DNS ДЛЯ ЗАПУСКА"
 menu_item "[11]" "СИНХРОНИЗАЦИЯ ВРЕМЕНИ"
