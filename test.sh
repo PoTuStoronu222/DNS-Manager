@@ -2059,6 +2059,10 @@ local_dns_query_ok() {
 }
 
 verify_selected_doh() {
+    FAILED_SLOT=""
+    FAILED_SLOT_ID=""
+    FAILED_SLOT_PORT=""
+    FAILED_SLOT_CAT=""
     verify_applied_doh_config || return 1
 
     _checked=0
@@ -2072,6 +2076,10 @@ verify_selected_doh() {
             printf "  ${C_GREEN}✓${C_NC} Слот %s работает: 127.0.0.1:%s ← %s\n" "$s" "$_p" "$(dns_name "$_id")"
             _checked=$((_checked+1))
         else
+            FAILED_SLOT="$_s"
+            FAILED_SLOT_ID="$_id"
+            FAILED_SLOT_PORT="$_p"
+            FAILED_SLOT_CAT="$(watchdog_desired_cat "$_s" 2>/dev/null || dns_cat "$_id")"
             err_msg "Слот $s ($(dns_name "$_id")): DNS не ответил через 127.0.0.1:$_p."
             return 1
         fi
@@ -2083,6 +2091,10 @@ verify_selected_doh() {
             printf "  ${C_GREEN}✓${C_NC} RU работает: 127.0.0.1:%s ← %s\n" "$PORT_RU" "$(dns_name "$SLOT_RU")"
             _checked=$((_checked+1))
         else
+            FAILED_SLOT="RU"
+            FAILED_SLOT_ID="$SLOT_RU"
+            FAILED_SLOT_PORT="$PORT_RU"
+            FAILED_SLOT_CAT="regional"
             err_msg "RU ($(dns_name "$SLOT_RU")): DNS не ответил через 127.0.0.1:$PORT_RU."
             return 1
         fi
@@ -2094,6 +2106,10 @@ verify_selected_doh() {
             printf "  ${C_GREEN}✓${C_NC} RU2 работает: 127.0.0.1:%s ← %s\n" "$PORT_RU_2" "$(dns_name "$SLOT_RU_2")"
             _checked=$((_checked+1))
         else
+            FAILED_SLOT="RU_2"
+            FAILED_SLOT_ID="$SLOT_RU_2"
+            FAILED_SLOT_PORT="$PORT_RU_2"
+            FAILED_SLOT_CAT="regional"
             err_msg "RU2 ($(dns_name "$SLOT_RU_2")): DNS не ответил через 127.0.0.1:$PORT_RU_2."
             return 1
         fi
@@ -2102,6 +2118,96 @@ verify_selected_doh() {
     [ "$_checked" -gt 0 ] || { err_msg "После применения не найдено ни одного рабочего локального DNS-порта."; return 1; }
     return 0
 }
+replace_failed_slot_from_test() {
+    _slot="$FAILED_SLOT"
+    _old_id="$FAILED_SLOT_ID"
+    _port="$FAILED_SLOT_PORT"
+    [ -n "$_slot" ] || return 1
+    [ -s "$TEST_RESULTS" ] || return 1
+    _cat="$FAILED_SLOT_CAT"
+    case "$_slot" in RU|RU_2) _cat="regional" ;; esac
+
+    _tried="$TMP_DIR/repair-tried-$$-$_slot"
+    _used="$TMP_DIR/repair-used-$$"
+    : > "$_tried"
+    : > "$_used"
+    for _s in 1 2 3 4 5 6 RU RU_2; do
+        eval "_u_id=\${SLOT_${_s}:-}"
+        [ -n "$_u_id" ] || continue
+        printf '%s\n' "$(normalize_url "$(dns_url "$_u_id")")" >> "$_used"
+    done
+
+    _old_url="$(normalize_url "$(dns_url "$_old_id")")"
+    printf '%s\n' "$_old_id" >> "$_tried"
+
+    while IFS='|' read -r _rid _rcat _rname _rms _rst; do
+        [ -n "$_rid" ] || continue
+        [ "$_rst" = OK ] || continue
+        case "$_rms" in ''|*[!0-9]*) continue ;; esac
+        [ "$_rid" = "$_old_id" ] && continue
+        case "$_slot" in
+            RU|RU_2) [ "$_rcat" = regional ] || continue ;;
+            *) case "$_rcat" in bypass|clean) ;; *) continue ;; esac ;;
+        esac
+        grep -qxF "$_rid" "$_tried" 2>/dev/null && continue
+        _new_url="$(normalize_url "$(dns_url "$_rid")")"
+        [ -n "$_new_url" ] || continue
+        grep -qxF "$_new_url" "$_used" 2>/dev/null && continue
+
+        printf "  ${C_YELLOW}↻ Слот %s: %s не отвечает. Заменяю на %s.${C_NC}\n" "$_slot" "$(dns_name "$_old_id")" "$(dns_name "$_rid")"
+
+        _idx=""
+        _i=0
+        while uci -q get "https-dns-proxy.@https-dns-proxy[$_i]" >/dev/null 2>&1; do
+            _m="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].dns_manager" 2>/dev/null)"
+            _p="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].listen_port" 2>/dev/null)"
+            _u="$(normalize_url "$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].resolver_url" 2>/dev/null)")"
+            if [ "$_m" = 1 ] && [ "$_p" = "$_port" ]; then _idx="$_i"; break; fi
+            _i=$((_i+1))
+        done
+        [ -n "$_idx" ] || { warn_msg "Не нашёл секцию DNS для порта $_port. Замена невозможна."; continue; }
+
+        uci set "https-dns-proxy.@https-dns-proxy[$_idx].resolver_url=$_new_url" || continue
+        uci set "https-dns-proxy.@https-dns-proxy[$_idx].listen_addr=127.0.0.1" || continue
+        uci set "https-dns-proxy.@https-dns-proxy[$_idx].listen_port=$_port" || continue
+        _b_list="$(printf '%s' "$BOOTSTRAP_DNS_ALL" | tr ',' ' ')"
+        [ -n "$_b_list" ] && uci set "https-dns-proxy.@https-dns-proxy[$_idx].bootstrap_dns=$_b_list" || true
+        uci commit https-dns-proxy || continue
+
+        eval "SLOT_${_slot}=\"$_rid\""
+        eval "SLOT_${_slot}_CAT=\"$_rcat\""
+        printf '%s\n' "$_rid" >> "$_tried"
+        rm -f "$_tried" "$_used" 2>/dev/null
+        return 0
+    done <<EOF_REPAIR_CANDIDATES
+$(awk -F'|' '$1!="" && NF>=5 && $5=="OK" && $4 ~ /^[0-9]+$/ {print}' "$TEST_RESULTS" 2>/dev/null | sort -t'|' -k4,4n)
+EOF_REPAIR_CANDIDATES
+
+    rm -f "$_tried" "$_used" 2>/dev/null
+    warn_msg "Для слота $_slot не найден другой DNS, прошедший последнюю полную проверку."
+    return 1
+}
+verify_after_apply_with_repair() {
+    _attempt=0
+    _max=8
+    while [ "$_attempt" -lt "$_max" ]; do
+        FAILED_SLOT=""
+        FAILED_SLOT_ID=""
+        FAILED_SLOT_PORT=""
+        FAILED_SLOT_CAT=""
+        if verify_after_apply; then return 0; fi
+        [ -n "$FAILED_SLOT" ] || return 1
+        _attempt=$((_attempt+1))
+        printf "  ${C_CYAN}Проверка не пройдена. Подбираю замену из успешных результатов общего теста (попытка $_attempt/$_max).${C_NC}\n"
+        replace_failed_slot_from_test || return 1
+        /etc/init.d/https-dns-proxy restart 2>/dev/null || true
+        sleep 3
+        run_discovery
+        tx_snapshot_after_apply
+    done
+    return 1
+}
+
 verify_after_apply() {
     sleep 3
 
@@ -2680,7 +2786,7 @@ apply_settings() {
     run_discovery
     tx_snapshot_after_apply
 
-    if verify_after_apply; then
+    if verify_after_apply_with_repair; then
         baseline_mark_applied || warn_msg "Не удалось обновить контрольный снимок."
         tx_commit
         save_config
