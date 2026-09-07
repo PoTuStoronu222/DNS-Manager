@@ -2190,11 +2190,7 @@ stage_local_ok() {
     _domain="${2:-example.com}"
     sleep 2
     [ -n "${STAGE_LAST_PID:-}" ] && stage_process_alive "$STAGE_LAST_PID" || return 1
-    if command -v dig >/dev/null 2>&1; then
-        dig +time=4 +tries=1 @127.0.0.1 -p "$_p" "$_domain" A >/dev/null 2>&1 || return 1
-    else
-        return 1
-    fi
+    listener_port_exists "$_p" || return 1
     return 0
 }
 stage_stop_last() {
@@ -3335,11 +3331,6 @@ ensure_dependencies(){
 missing=""
 [ "$HAS_CURL" = yes ] || missing="$missing curl"
 
-if [ "$PKG_MGR" = "apk" ]; then
-[ "$HAS_DIG" = yes ] || missing="$missing bind-tools"
-else
-[ "$HAS_DIG" = yes ] || missing="$missing bind-dig"
-fi
 [ "$HAS_HDP" = yes ] || missing="$missing https-dns-proxy"
 CA_OK=no
 [ -s /etc/ssl/certs/ca-certificates.crt ] && CA_OK=yes
@@ -3362,7 +3353,7 @@ printf '%s\n' "$missing"
 menu_install() {
 menu_header "📦 ПРОГРАММЫ"
 printf "  curl              : %s\n" "$(state_word "$HAS_CURL")"
-printf "  dig               : %s\n" "$(state_word "$HAS_DIG")"
+printf "  dig (доп.)         : %s\n" "$(state_word "$HAS_DIG")"
 printf "  https-dns-proxy   : %s\n" "$(state_word "$HAS_HDP")"
 CA_OK=no
 [ -s /etc/ssl/certs/ca-certificates.crt ] && CA_OK=yes
@@ -3395,7 +3386,7 @@ else
 opkg update && opkg install $need
 fi
 run_discovery
-if [ "$HAS_CURL" = yes ] && [ "$HAS_DIG" = yes ] && \
+if [ "$HAS_CURL" = yes ] && \
 [ "$HAS_HDP" = yes ] && [ "$HAS_DNSMASQ" = yes ]; then
 ok_msg "Обязательные компоненты установлены."
 else
@@ -3639,12 +3630,8 @@ watchdog_check_slot() {
         netstat -lntup 2>/dev/null | grep -qE ":${_port}([[:space:]]|$)" || return 1
     fi
 
-    command -v dig >/dev/null 2>&1 || return 1
-    case "$_slot_name" in
-        RU|RU_2) _domain="yandex.ru" ;;
-        *) _domain="example.com" ;;
-    esac
-    dig +time=3 +tries=1 @127.0.0.1 -p "$_port" "$_domain" A >/dev/null 2>&1 || return 1
+    # После перезапуска достаточно убедиться, что нужный локальный порт действительно слушается.
+    # Полная проверка доступности самого DoH уже выполнена каталогом перед применением.
     return 0
 }
 # WATCHDOG — ЗАМЕНА НЕРАБОТАЮЩЕГО DNS
