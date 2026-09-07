@@ -840,7 +840,7 @@ done < "$DNS_CATALOG"
 wait
 test_progress
 cat "$TMP_DIR"/t.* > "$TEST_RESULTS" 2>/dev/null
-okn="$(grep -c '|OK$' "$TEST_RESULTS" 2>/dev/null)"
+okn="$(awk -F'|' 'NF>=5 && $5=="OK"{n++} END{print n+0}' "$TEST_RESULTS" 2>/dev/null)"
 failn=$((total-okn))
 printf "${C_GREEN}✓ Успешно: %s${C_NC} | ${C_YELLOW}Проблемные: %s${C_NC} | Всего: %s\n" "$okn" "$failn" "$total"
 printf "${C_CYAN}Время ответа — сколько занял полный запрос к DNS. Чем меньше число, тем быстрее сервер. Знак «—» означает, что ответ не получен.${C_NC}\n"
@@ -2945,7 +2945,7 @@ pause
 show_tests() {
 menu_header "РЕЗУЛЬТАТЫ ПРОВЕРКИ DNS"
 [ -s "$TEST_RESULTS" ] || { printf "${C_YELLOW}Тест ещё не запускался.${C_NC}\n"; pause; return; }
-okn="$(grep -c '|OK$' "$TEST_RESULTS" 2>/dev/null)"; total="$(count_dns)"; failn=$((total-okn))
+okn="$(awk -F'|' 'NF>=5 && $5=="OK"{n++} END{print n+0}' "$TEST_RESULTS" 2>/dev/null)"; total="$(count_dns)"; failn=$((total-okn))
 printf "${C_GREEN}✓ Работают: %s${C_NC}    ${C_RED}✗ Ошибки: %s${C_NC}    ${C_WHITE}Всего: %s${C_NC}\n\n" "$okn" "$failn" "$total"
 printf "${C_YELLOW}${C_BOLD}%-28s %-18s %-9s %s${C_NC}\n" "DNS" "КАТЕГОРИЯ" "ВРЕМЯ" "СТАТУС"
 printf "  ──────────────────────────────────────────────────────────\n"
@@ -3011,12 +3011,21 @@ _src="$TMP_DIR/auto-candidates"
 : > "$_src"
 
 if [ "$_cat" = all ]; then
-    awk -F'|' '$5=="OK" && $2!="regional" && $4 ~ /^[0-9]+$/ && $1!= {print}' "$TEST_RESULTS" 2>/dev/null | sort -t'|' -k4,4n > "$_src"
+    awk -F'|' 'NF>=5 && $5=="OK" && $2!="regional" && $4 ~ /^[0-9]+$/ {print}' "$TEST_RESULTS" 2>/dev/null | sort -t'|' -k4,4n > "$_src"
 else
-    awk -F'|' -v c="$_cat" '$2==c && $5=="OK" && $4 ~ /^[0-9]+$/ && $1!= {print}' "$TEST_RESULTS" 2>/dev/null | sort -t'|' -k4,4n > "$_src"
+    awk -F'|' -v c="$_cat" 'NF>=5 && $2==c && $5=="OK" && $4 ~ /^[0-9]+$/ {print}' "$TEST_RESULTS" 2>/dev/null | sort -t'|' -k4,4n > "$_src"
 fi
 
-[ -s "$_src" ] || { warn_msg "Нет успешно проверенных DNS в выбранной категории."; pause; return 1; }
+[ -s "$_src" ] || {
+    _cat_ok_count="$(awk -F'|' -v c="$_cat" 'NF>=5 && $2==c && $5=="OK" {n++} END{print n+0}' "$TEST_RESULTS" 2>/dev/null)"
+    if [ "$_cat" = bypass ]; then
+        warn_msg "В категории «Обход блокировок» не найдено подходящих проверенных DNS. Настройки не изменены."
+    else
+        warn_msg "В категории «$(category_ru "$_cat")» нет подходящих проверенных DNS. Настройки не изменены."
+    fi
+    pause
+    return 1
+}
 
 _seen_urls="$TMP_DIR/auto-seen-urls"
 : > "$_seen_urls"
@@ -3038,7 +3047,7 @@ if [ "$_cat" = bypass ]; then
     if [ "$_n" -lt 6 ]; then
         _src_clean="$TMP_DIR/auto-clean-fallback"
         : > "$_src_clean"
-        awk -F'|' '$2=="clean" && $5=="OK"{print}' "$TEST_RESULTS" 2>/dev/null | sort -t'|' -k4,4n > "$_src_clean"
+        awk -F'|' 'NF>=5 && $2=="clean" && $5=="OK" && $4 ~ /^[0-9]+$/ {print}' "$TEST_RESULTS" 2>/dev/null | sort -t'|' -k4,4n > "$_src_clean"
         while IFS='|' read -r _id _cat2 _name _ms _st; do
             [ "$_n" -ge 6 ] && break
             [ -n "$_id" ] || continue
@@ -3103,13 +3112,13 @@ if [ "$_cat" = bypass ] && [ "$_n_clean_fallback" -gt 0 ]; then
 fi
 
 _ru1=""
-_yandex_ok="$(awk -F'|' '$1=="yandex_ru" && $2=="regional" && $5=="OK"{print "yes";exit}' "$TEST_RESULTS" 2>/dev/null)"
+_yandex_ok="$(awk -F'|' 'NF>=5 && $1=="yandex_ru" && $2=="regional" && $5=="OK" && $4 ~ /^[0-9]+$/ {print "yes";exit}' "$TEST_RESULTS" 2>/dev/null)"
 if [ "$_yandex_ok" = yes ]; then
     SLOT_RU="yandex_ru"
     SLOT_RU_CAT="regional"
     _ru1="yandex_ru"
 else
-    _ru1="$(awk -F'|' '$2=="regional" && $5=="OK"{print $1;exit}' "$TEST_RESULTS" 2>/dev/null)"
+    _ru1="$(awk -F'|' 'NF>=5 && $2=="regional" && $5=="OK" && $4 ~ /^[0-9]+$/ {print $1;exit}' "$TEST_RESULTS" 2>/dev/null)"
     if [ -n "$_ru1" ]; then
         SLOT_RU="$_ru1"
         SLOT_RU_CAT="regional"
@@ -3119,7 +3128,7 @@ else
         SLOT_RU_CAT="regional"
     fi
 fi
-SLOT_RU_2="$(awk -F'|' -v skip="$_ru1" '$2=="regional" && $5=="OK" && $1!=skip{print $1;exit}' "$TEST_RESULTS" 2>/dev/null)"
+SLOT_RU_2="$(awk -F'|' -v skip="$_ru1" 'NF>=5 && $2=="regional" && $5=="OK" && $4 ~ /^[0-9]+$/ && $1!=skip{print $1;exit}' "$TEST_RESULTS" 2>/dev/null)"
 if [ -n "$SLOT_RU_2" ]; then SLOT_RU_2_CAT="regional"; else SLOT_RU_2_CAT="regional"; fi
 
 save_config
@@ -3506,7 +3515,7 @@ if [ -s "$LOG_FILE" ]; then tail -15 "$LOG_FILE" | sed -e "s/ START / Запус
 echo ""
 printf "${C_WHITE}Последняя проверка:${C_NC}\n"
 if [ -s "$TEST_RESULTS" ]; then
-total="$(count_dns)"; okn="$(grep -c '|OK$' "$TEST_RESULTS" 2>/dev/null)"; failn=$((total-okn))
+total="$(count_dns)"; okn="$(awk -F'|' 'NF>=5 && $5=="OK"{n++} END{print n+0}' "$TEST_RESULTS" 2>/dev/null)"; failn=$((total-okn))
 printf "  DNS: ${C_GREEN}%s работают${C_NC}, ${C_YELLOW}%s не прошли${C_NC}, всего %s\n" "$okn" "$failn" "$total"
 else
 printf "  ${C_YELLOW}Тест DNS ещё не запускался.${C_NC}\n"
