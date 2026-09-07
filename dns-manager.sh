@@ -4,7 +4,7 @@ MANAGER_PATH="/usr/bin/dns-manager"
 # ==========================================
 # ОСНОВНЫЕ ПАРАМЕТРЫ
 # ==========================================
-VERSION="1.16"
+VERSION="1.2"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -749,8 +749,6 @@ q="$TMP_DIR/q.$id"; body="$TMP_DIR/body.$id"; hdr="$TMP_DIR/h.$id"
 : > "$body"; : > "$hdr"
 printf '\022\064\001\000\000\001\000\000\000\000\000\000\007example\003com\000\000\001\000\001' > "$q"
 
-# У одного хоста может быть несколько A-записей. Проверяем несколько адресов,
-# иначе единичный плохой IP даёт ложный результат для конкретной сети.
 _ips=""
 if [ "$HAS_DIG" = yes ]; then
     for bs in $(printf '%s' "$BOOTSTRAP_DNS" | tr ',' ' '); do
@@ -2072,7 +2070,6 @@ stage_start_one() {
     STAGE_LAST_PORT="$_port"
     STAGE_LAST_LOG="$_log"
     STAGE_LAST_URL="$_url"
-    eval "PORT_$_slot=\"$_port\""
     return 0
 }
 stage_process_alive() {
@@ -2191,12 +2188,59 @@ if [ -z "${SLOT_RU:-}" ]; then
     SLOT_RU=""; SLOT_RU_CAT="regional"; PORT_RU=""
     warn_msg "Региональный DoH локально не поднялся. RU-раздел отключён, чтобы не блокировать Apply."
 fi
+
+if [ -n "${SLOT_RU_2:-}" ]; then
+    _ru2_ok=0
+    _ru2_id="$SLOT_RU_2"
+    if ! grep -qxF "$_ru2_id" "$_tried" 2>/dev/null; then
+        printf '%s\n' "$_ru2_id" >> "$_tried"
+        STAGE_LAST_PID=""; STAGE_LAST_PORT=""; STAGE_LAST_LOG=""; STAGE_LAST_URL=""
+        if stage_start_one RU_2 "$_ru2_id"; then
+            if stage_local_ok "$STAGE_LAST_PORT" yandex.ru; then
+                _ru2_ok=1
+                stage_stop_last
+                printf "  ${C_GREEN}✓ RU2 подтверждён изолированным canary: %s${C_NC}\n" "$(dns_name "$_ru2_id")"
+            else
+                warn_msg "Локальный RU2-canary не прошёл: $(dns_name "$_ru2_id")."
+                stage_stop_last
+            fi
+        fi
+    fi
+    if [ "$_ru2_ok" -ne 1 ]; then
+        SLOT_RU_2=""; SLOT_RU_2_CAT="regional"; PORT_RU_2=""
+        warn_msg "RU2 локально не поднялся. Резервный RU2 отключён, чтобы не ломать Apply."
+    fi
+fi
+reset_hybrid_runtime_ports
 stage_cleanup
 rm -f "$_tried"
 [ "$_success" -ge "$HYBRID_STAGE_MIN" ] || { err_msg "На этом соединении удалось поднять только $_success DoH из 6. Нужны минимум $HYBRID_STAGE_MIN; старая конфигурация остаётся нетронутой."; return 1; }
 return 0
 }
 swap_to_staged_doh() {
+    return 0
+}
+
+reset_hybrid_runtime_ports() {
+    [ "$DNS_PROFILE" = hybrid ] || return 0
+    for _s in 1 2 3 4 5 6; do
+        eval "_v=\${SLOT_$_s:-}"
+        if [ -n "$_v" ]; then
+            eval "PORT_$_s=\$(hybrid_desired_port "$_s")"
+        else
+            eval "PORT_$_s=''"
+        fi
+    done
+    if [ -n "${SLOT_RU:-}" ]; then
+        PORT_RU="$(hybrid_desired_port RU)"
+    else
+        PORT_RU=""
+    fi
+    if [ -n "${SLOT_RU_2:-}" ]; then
+        PORT_RU_2="$(hybrid_desired_port RU_2)"
+    else
+        PORT_RU_2=""
+    fi
     return 0
 }
 
@@ -2262,11 +2306,10 @@ baseline_capture_once || { err_msg "Не удалось создать пост�
 tx_snapshot_start || { err_msg "Не удалось создать снимок транзакции. Изменения не выполняются."; return 1; }
 log_tx "PLAN" "all" "APPLY" "START" "version=$VERSION"
 
-# Canary проходит на отдельных локальных портах и НЕ останавливает текущий DNS.
-# Только после успешного canary мы берём DNS Core под контроль Manager и переключаем конфигурацию.
 if [ "$DNS_PROFILE" = hybrid ]; then
     disc_listeners; disc_dns
     adaptive_hybrid_prepare || { tx_restore_on_failure; return 1; }
+    reset_hybrid_runtime_ports || { err_msg "Не удалось восстановить боевые порты после canary."; tx_restore_on_failure; return 1; }
 fi
 
 if [ "$DOH_TOTAL" -gt 0 ] || [ "$DNS_PROFILE" = hybrid ]; then
