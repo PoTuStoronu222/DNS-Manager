@@ -4,7 +4,7 @@ MANAGER_PATH="/usr/bin/dns-manager"
 # ==========================================
 # ОСНОВНЫЕ ПАРАМЕТРЫ
 # ==========================================
-VERSION="1.33"
+VERSION="1.34"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -16,6 +16,7 @@ NTP_CATALOG="$CFG_DIR/ntp-catalog.conf"
 BOOTSTRAP_CATALOG="$CFG_DIR/bootstrap-catalog.conf"
 BOGUS_CATALOG="$CFG_DIR/bogus-catalog.conf"
 BOOTSTRAP_DNS_ALL="77.88.8.8,77.88.8.1,94.140.14.14,1.1.1.1,1.0.0.1,8.8.8.8,8.8.4.4,9.9.9.9,149.112.112.112,208.67.222.222,208.67.220.220,149.112.121.10,149.112.122.10,76.76.2.0,76.76.10.0,194.242.2.2,194.242.2.3"
+DNSCAT_VERSION="8.4-RU-NOSOCIAL"
 PREV_DNSMASQ="$CFG_DIR/dnsmasq-previous.conf"
 PREV_SERVICES="$CFG_DIR/services-previous.conf"
 BASELINE_DIR="$BASE_DIR/baseline"
@@ -351,9 +352,10 @@ clear_baseline_for_reacquire() {
 }
 write_catalogs() {
 rm -f "$DNS_CATALOG.previous" "$NTP_CATALOG.previous" "$BOOTSTRAP_CATALOG.previous" "$BOGUS_CATALOG.previous" 2>/dev/null
-if [ ! -s "$DNS_CATALOG" ] || ! grep -q '^# DNSCATVER=8.2-RU-NOSOCIAL' "$DNS_CATALOG" 2>/dev/null; then
+_old_dnscatver="$(sed -n 's/^# DNSCATVER=//p' "$DNS_CATALOG" 2>/dev/null | head -n1)"
+if [ ! -s "$DNS_CATALOG" ] || [ "$_old_dnscatver" != "$DNSCAT_VERSION" ]; then
 cat > "$DNS_CATALOG" <<'EOF_DNS'
-# DNSCATVER=8.3-RU-NOSOCIAL
+# DNSCATVER=8.4-RU-NOSOCIAL
 # ==========================================
 # КАТАЛОГ DNS — ОБХОД И СЕРВИСЫ
 # ==========================================
@@ -533,8 +535,9 @@ sys_zero|system|0.0.0.0|Системное значение: только вру
 sys_loop|system|127.0.0.1|Системное значение: только вручную|high|manual-only
 EOF_BOGUS
 fi
-if [ -f "$STATE_DIR/catalog.version" ] && [ "$(cat "$STATE_DIR/catalog.version" 2>/dev/null)" != "$VERSION" ]; then
-rm -f "$TEST_RESULTS"
+if [ "${_old_dnscatver:-}" != "$DNSCAT_VERSION" ]; then
+    rm -f "$TEST_RESULTS"
+    printf '%s\n' "$DNSCAT_VERSION" > "$STATE_DIR/dns-catalog.version" 2>/dev/null
 fi
 printf '%s\n' "$VERSION" > "$STATE_DIR/catalog.version" 2>/dev/null
 }
