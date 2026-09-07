@@ -531,13 +531,14 @@ BOOTSTRAP_DNS="$BOOTSTRAP_DNS_ALL"
 : "${SLOT_RU:=}"; : "${SLOT_RU_2:=}"
 : "${SLOT_1_CAT:=}"; : "${SLOT_2_CAT:=}"; : "${SLOT_3_CAT:=}"; : "${SLOT_4_CAT:=}"; : "${SLOT_5_CAT:=}"; : "${SLOT_6_CAT:=}"
 : "${SLOT_RU_CAT:=}"; : "${SLOT_RU_2_CAT:=}"
+: "${SLOT_1_PRIMARY:=}"; : "${SLOT_2_PRIMARY:=}"; : "${SLOT_3_PRIMARY:=}"; : "${SLOT_4_PRIMARY:=}"; : "${SLOT_5_PRIMARY:=}"; : "${SLOT_6_PRIMARY:=}"
 : "${PORT_1:=}"; : "${PORT_2:=}"; : "${PORT_3:=}"; : "${PORT_4:=}"; : "${PORT_5:=}"; : "${PORT_6:=}"
 : "${PORT_RU:=}"; : "${PORT_RU_2:=}"
 : "${BOOTSTRAP_DNS:=$BOOTSTRAP_DNS_ALL}"
 : "${TLD_RU_ENABLED:=1}"; : "${BLOCK_QUIC:=0}"; : "${MTU_FIX:=0}"; : "${FORCE_DOH:=0}"
 : "${NTP_IP_FALLBACK:=1}"; : "${SYSCTL_TUNING:=0}"; : "${GO_OPTIMIZE:=0}"; : "${DNSMASQ_PERF:=0}"; : "${NTP_CLIENTS:=0}"; : "${CLIENT_FIXES:=0}"; : "${SYSCTL_EXTENDED:=0}"; : "${TAILSCALE_HOTPLUG:=0}"; : "${CRON_CLEANUP:=0}"
 : "${BALANCER_ENABLED:=1}"; : "${NTP_PRESET:=cf_ip}"; : "${DNS_PROFILE:=hybrid}"
-: "${WATCHDOG_ENABLED:=1}"; : "${WATCHDOG_INTERVAL:=15}"
+: "${WATCHDOG_ENABLED:=1}"; : "${WATCHDOG_INTERVAL:=15}"; : "${WATCHDOG_MODE:=profile}"
 TLD_SPLIT="$TLD_RU_ENABLED"
 if [ "$_had_dns_profile" = 0 ] && [ -z "$DNS_PROFILE" ]; then
 DNS_PROFILE="hybrid"
@@ -600,6 +601,13 @@ NTP_PRESET="$NTP_PRESET"
 DNS_PROFILE="$DNS_PROFILE"
 WATCHDOG_ENABLED="$WATCHDOG_ENABLED"
 WATCHDOG_INTERVAL="$WATCHDOG_INTERVAL"
+WATCHDOG_MODE="$WATCHDOG_MODE"
+SLOT_1_PRIMARY="$SLOT_1_PRIMARY"
+SLOT_2_PRIMARY="$SLOT_2_PRIMARY"
+SLOT_3_PRIMARY="$SLOT_3_PRIMARY"
+SLOT_4_PRIMARY="$SLOT_4_PRIMARY"
+SLOT_5_PRIMARY="$SLOT_5_PRIMARY"
+SLOT_6_PRIMARY="$SLOT_6_PRIMARY"
 EOF_CFG
 }
 # ==========================================
@@ -2484,40 +2492,68 @@ adaptive_hybrid_prepare() {
     _hybrid_ok_count="$(awk -F'|' '$1!="" && NF>=5 && $5=="OK" && $4 ~ /^[0-9]+$/{n++} END{print n+0}' "$TEST_RESULTS" 2>/dev/null)"
     printf "  В последней полной проверке подтверждено: %s DNS.${C_NC}\n" "$_hybrid_ok_count"
 
-    # ВАЖНО: здесь больше нет запуска https-dns-proxy и повторного сетевого теста.
-    # Общая проверка уже является стандартным RFC 8484 DoH-тестом. Набор строится
-    # только из её строк со статусом OK и числовым временем ответа.
-    for _slot in 1 2 3 4 5 6; do
-        _chosen=""
-        _port="$(hybrid_desired_port "$_slot")"
+    # Быстрый режим: сначала только DNS категории bypass.
+    # Если bypass-кандидатов не хватает, добираем только из clean.
+    # Для слотов fallback clean всё равно сохраняется роль bypass — Watchdog
+    # увидит, что это временная замена, и позже вернёт настоящий bypass, когда он заработает.
+    _bypass_candidates="$TMP_DIR/hybrid-bypass-candidates-$$"
+    _clean_candidates="$TMP_DIR/hybrid-clean-candidates-$$"
+    awk -F'|' 'NF>=5 && $2=="bypass" && $5=="OK" && $4 ~ /^[0-9]+$/ {print}' "$TEST_RESULTS" 2>/dev/null | sort -t'|' -k4,4n > "$_bypass_candidates"
+    awk -F'|' 'NF>=5 && $2=="clean" && $5=="OK" && $4 ~ /^[0-9]+$/ {print}' "$TEST_RESULTS" 2>/dev/null | sort -t'|' -k4,4n > "$_clean_candidates"
+
+    _select_from_file() {
+        _file="$1"
+        _slot="$2"
+        _port="$3"
         while IFS='|' read -r _id _cat _name _ms _st; do
             [ -n "$_id" ] || continue
-            [ "$_st" = OK ] || continue
-            case "$_cat" in bypass|clean) ;; *) continue;; esac
-            case "$_ms" in ''|*[!0-9]*) continue;; esac
             grep -qxF "$_id" "$_tried" 2>/dev/null && continue
             _cand_url="$(normalize_url "$(dns_url "$_id")")"
             [ -n "$_cand_url" ] || continue
             grep -qxF "$_cand_url" "$_selected_urls" 2>/dev/null && continue
             printf '%s\n' "$_id" >> "$_tried"
-            _chosen="$_id"
             printf '%s\n' "$_cand_url" >> "$_selected_urls"
-            printf "  ${C_GREEN}✓ Слот %s: %s → 127.0.0.1:%s${C_NC}\n" "$_slot" "$(dns_name "$_id")" "$_port"
-            break
-        done <<EOF_HYB_SLOT
-$(awk -F'|' 'NF>=5 && $5=="OK" && ($2=="bypass" || $2=="clean") && $4 ~ /^[0-9]+$/ {print}' "$TEST_RESULTS" 2>/dev/null | sort -t'|' -k4,4n)
-EOF_HYB_SLOT
+            printf '%s|%s\n' "$_id" "$_cat"
+            return 0
+        done < "$_file"
+        return 1
+    }
 
+    for _slot in 1 2 3 4 5 6; do
+        _chosen=""; _chosen_cat=""; _port="$(hybrid_desired_port "$_slot")"
+        _picked="$(_select_from_file "$_bypass_candidates" "$_slot" "$_port")"
+        if [ -n "$_picked" ]; then
+            _chosen="${_picked%%|*}"; _chosen_cat="bypass"
+        else
+            _picked="$(_select_from_file "$_clean_candidates" "$_slot" "$_port")"
+            if [ -n "$_picked" ]; then
+                _chosen="${_picked%%|*}"; _chosen_cat="clean"
+            fi
+        fi
         if [ -n "$_chosen" ]; then
             eval "SLOT_$_slot=\"$_chosen\""
-            eval "SLOT_${_slot}_CAT=\"$(dns_cat "$_chosen")\""
+            # В быстром обходе SLOT_*_CAT хранит требуемую роль bypass,
+            # а не фактическую категорию fallback clean.
+            eval "SLOT_${_slot}_CAT=\"bypass\""
+            if [ "$_chosen_cat" = bypass ]; then
+                eval "SLOT_${_slot}_PRIMARY=\"$_chosen\""
+            else
+                eval "SLOT_${_slot}_PRIMARY=\"\""
+            fi
             _success=$((_success+1))
+            if [ "$_chosen_cat" = clean ]; then
+                printf "  ${C_YELLOW}↪ Слот %s: свободного DNS обхода не хватило, временно выбран быстрый DNS → 127.0.0.1:%s ← %s${C_NC}\n" "$_slot" "$_port" "$(dns_name "$_chosen")"
+            else
+                printf "  ${C_GREEN}✓ Слот %s: %s → 127.0.0.1:%s${C_NC}\n" "$_slot" "$(dns_name "$_chosen")" "$_port"
+            fi
         else
             eval "SLOT_$_slot=''"
             eval "SLOT_${_slot}_CAT='bypass'"
-            warn_msg "Для слота $_slot нет свободного DNS из последней полной проверки. Слот будет пропущен."
+            eval "SLOT_${_slot}_PRIMARY=''"
+            warn_msg "Для слота $_slot не найден проверенный DNS обхода или резервный быстрый DNS."
         fi
     done
+    rm -f "$_bypass_candidates" "$_clean_candidates" 2>/dev/null
 
     # RU всегда выбирается как основной региональный DNS без семейной/рекламной фильтрации.
     # Автоподбор никогда не подставляет Family/Safe или другой фильтрующий профиль в RU.
@@ -3308,10 +3344,12 @@ menu_prompt
 safe_read a
 case "$a" in
 1)
+DNS_PROFILE="$goal"
+WATCHDOG_MODE="profile"
 if auto_fill_slots "$goal"; then
-CORE_ONLY=1
-apply_settings
-CORE_ONLY=0
+    CORE_ONLY=1
+    apply_settings
+    CORE_ONLY=0
 fi
 ;;
 2)
@@ -3361,6 +3399,8 @@ id="$(printf '%s' "$row" | cut -d'|' -f1)"
 eval "SLOT_$slot=\$id"
 _selected_cat="$(printf '%s' "$row" | cut -d'|' -f2)"
 eval "SLOT_${slot}_CAT=\$_selected_cat"
+WATCHDOG_MODE="profile"
+case "$slot" in 1|2|3|4|5|6) eval "SLOT_${slot}_PRIMARY=''" ;; esac
 save_config
 }
 # ==========================================
@@ -3710,11 +3750,13 @@ SLOT_1=""; SLOT_2=""; SLOT_3=""; SLOT_4=""; SLOT_5=""; SLOT_6=""
 SLOT_RU=""; SLOT_RU_2=""
 SLOT_1_CAT="bypass"; SLOT_2_CAT="bypass"; SLOT_3_CAT="bypass"
 SLOT_4_CAT="bypass"; SLOT_5_CAT="bypass"; SLOT_6_CAT="bypass"
+SLOT_1_PRIMARY=""; SLOT_2_PRIMARY=""; SLOT_3_PRIMARY=""; SLOT_4_PRIMARY=""; SLOT_5_PRIMARY=""; SLOT_6_PRIMARY=""
 SLOT_RU_CAT="regional"; SLOT_RU_2_CAT="regional"
 TLD_RU_ENABLED=1
 TLD_SPLIT=1
 BALANCER_ENABLED=1
 WATCHDOG_ENABLED=1
+WATCHDOG_MODE="hybrid_bypass"
 DNSMASQ_PERF=1
 BOOTSTRAP_DNS="$BOOTSTRAP_DNS_ALL"
 PORT_1="$HYBRID_PORT_1"; PORT_2="$HYBRID_PORT_2"; PORT_3="$HYBRID_PORT_3"
@@ -3749,15 +3791,22 @@ fi
 watchdog_desired_cat() {
     _slot="$1"
     _cat=""
+    case "$_slot" in
+        RU|RU_2)
+            printf 'regional\n'
+            return 0
+            ;;
+    esac
+    if [ "${WATCHDOG_MODE:-profile}" = "hybrid_bypass" ]; then
+        printf 'bypass\n'
+        return 0
+    fi
     eval "_cat=\${SLOT_${_slot}_CAT:-}"
     if [ -z "$_cat" ]; then
         eval "_id=\${SLOT_${_slot}:-}"
         [ -n "$_id" ] && _cat="$(dns_cat "$_id")"
     fi
-    case "$_slot" in
-        RU|RU_2) [ -n "$_cat" ] || _cat="regional" ;;
-        *) [ -n "$_cat" ] || _cat="bypass" ;;
-    esac
+    [ -n "$_cat" ] || _cat="bypass"
     printf '%s\n' "$_cat"
 }
 
@@ -3896,6 +3945,25 @@ watchdog_pick_replacement() {
     _tried="$3"
 
     [ -s "$TEST_RESULTS" ] || return 1
+
+    # Для быстрого обхода сначала пробуем вернуть исходный preferred-bypass DNS,
+    # который стоял в слоте до временной замены на clean. Если он снова работает,
+    # возвращаем именно его, а не случайный другой сервер обхода.
+    if [ "${WATCHDOG_MODE:-profile}" = "hybrid_bypass" ]; then
+        eval "_primary=\${SLOT_${_slot}_PRIMARY:-}"
+        case "$_slot" in 1|2|3|4|5|6) ;; *) _primary="" ;; esac
+        eval "_current_for_primary=\${SLOT_${_slot}:-}"
+        if [ -n "$_primary" ] && [ "$_primary" != "$_current_for_primary" ]; then
+            _pstatus="$(awk -F'|' -v id="$_primary" 'NF>=5 && $1==id && $2=="bypass" && $5=="OK" && $4 ~ /^[0-9]+$/ {print "yes"; exit}' "$TEST_RESULTS" 2>/dev/null)"
+            if [ "$_pstatus" = yes ] && watchdog_test_candidate "$_slot" "$_primary"; then
+                printf '%s|bypass\n' "$_primary"
+                return 0
+            fi
+            _purl="$(normalize_url "$(dns_url "$_primary")")"
+            [ -n "$_purl" ] && printf '%s\n' "$_purl" >> "$_tried"
+        fi
+    fi
+
     watchdog_candidate_categories "$_slot" > "$TMP_DIR/watchdog-categories-$$"
 
     while IFS= read -r _need; do
@@ -4071,6 +4139,13 @@ run_watchdog() {
                 CORE_ONLY=0
                 HYBRID_STAGE_SKIP=0
                 grep -qxF "$_repl_url" "$_used" 2>/dev/null || printf '%s\n' "$_repl_url" >> "$_used"
+                if [ "${WATCHDOG_MODE:-profile}" = "hybrid_bypass" ] && [ "$_repl_cat" = bypass ]; then
+                    eval "_primary_after=\${SLOT_${_slot}_PRIMARY:-}"
+                    if [ -z "$_primary_after" ]; then
+                        eval "SLOT_${_slot}_PRIMARY=\"$_repl\""
+                        save_config
+                    fi
+                fi
                 log_msg "DNS в слоте $_slot заменён: $(dns_name "$_old") -> $(dns_name "$_repl"). Попытка $_attempt успешна."
                 break
             fi
