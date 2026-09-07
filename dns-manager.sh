@@ -4,7 +4,7 @@ MANAGER_PATH="/usr/bin/dns-manager"
 # ==========================================
 # ОСНОВНЫЕ ПАРАМЕТРЫ
 # ==========================================
-VERSION="1.31"
+VERSION="1.32"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -24,7 +24,24 @@ BASELINE_LAST="$BASELINE_DIR/last-applied.manifest"
 BASELINE_META="$BASELINE_DIR/meta"
 OWNERSHIP="$STATE_DIR/ownership.conf"
 TEST_RESULTS="$STATE_DIR/dns-test-results.conf"
+# Безопасная уборка старых временных каталогов диспетчера.
+# Удаляем только каталоги строго с нашим префиксом, которые старше двух суток.
+# Текущий TMP_DIR и свежие каталоги не затрагиваются.
+cleanup_stale_tmp_dirs() {
+    _self_tmp="${TMP_DIR:-}"
+    find /tmp -maxdepth 1 -type d -name 'dnsmgr.*' -mtime +1 -print 2>/dev/null | while IFS= read -r _old_dir; do
+        [ -n "$_old_dir" ] || continue
+        [ "$_old_dir" = "$_self_tmp" ] && continue
+        case "$_old_dir" in
+            /tmp/dnsmgr.[A-Za-z0-9._-]*) ;;
+            *) continue ;;
+        esac
+        rm -rf "$_old_dir" 2>/dev/null || true
+    done
+}
+
 TMP_DIR="$(mktemp -d /tmp/dnsmgr.XXXXXX 2>/dev/null || { d="/tmp/dnsmgr.$$"; mkdir -p "$d"; printf "%s" "$d"; })"
+cleanup_stale_tmp_dirs
 TX_ID="$(date +%Y%m%d-%H%M%S)-$$"
 TX_DIR="$STATE_DIR/tx-$TX_ID"
 TX_ACTIVE=0
@@ -34,7 +51,7 @@ CORE_ONLY=0
 cleanup_runtime() {
     # Останавливаем только временные процессы проверки и затем удаляем временный каталог.
     # При Ctrl+C нельзя удалять TMP_DIR до завершения текущей функции: фоновые проверки
-    # ещё могут писать туда свои логи и временные файлы.
+    # ещё могут писать туда логи и временные файлы.
     for _pid in ${STAGE_PIDS:-}; do
         [ -n "$_pid" ] || continue
         kill "$_pid" 2>/dev/null || true
@@ -48,6 +65,7 @@ cleanup_runtime() {
 }
 trap cleanup_runtime EXIT
 trap 'exit 130' INT TERM
+
 C_GREEN='\033[1;32m'
 C_RED='\033[1;31m'
 C_CYAN='\033[1;36m'
@@ -4220,9 +4238,12 @@ run_watchdog() {
         _desired="$(watchdog_desired_cat "$_slot")"; _current_cat="$(dns_cat "$_id")"
         _need_return=0
         if [ "$DNS_SELECTION_MODE" = quick ] && [ "$_slot" != RU ] && [ "$_slot" != RU_2 ]; then
-            _pref=""; case "$_slot" in 1|2|3|4|5|6) eval "_pref=\${QUICK_PREF_$_slot:-}" ;; esac
-            [ -n "$_pref" ] && [ "$_id" != "$_pref" ] && _need_return=1
-            [ "$_current_cat" != "$_desired" ] && _need_return=1
+            # В быстром режиме рабочий clean-fallback не трогаем, пока исходный bypass
+            # действительно не вернулся в последней полной проверке.
+            # Иначе Watchdog начнёт бессмысленно перебирать другие DNS только из-за того,
+            # что текущий резерв формально относится к категории clean.
+            _return_pref="$(watchdog_preferred_quick_candidate "$_slot" 2>/dev/null || true)"
+            [ -n "$_return_pref" ] && [ "$_id" != "$_return_pref" ] && _need_return=1
         fi
         if watchdog_check_slot "$_slot"; then
             if [ "$_need_return" = 1 ]; then
