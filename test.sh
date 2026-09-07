@@ -2210,7 +2210,9 @@ stage_start_one() {
     _host="$(url_host "$_url")"
     _resolved_ip="$(resolve_host_fallback "$_host" 2>/dev/null || true)"
     [ -n "$_resolved_ip" ] || _resolved_ip="$(resolve_host "$_host" 2>/dev/null || true)"
-    printf "  ${C_CYAN}◇ Проверка DNS: %s → 127.0.0.1:%s${C_NC}\n" "$_name" "$_port"
+    if [ "${HYBRID_PREFLIGHT_SILENT:-0}" != 1 ]; then
+        printf "  ${C_CYAN}◇ Проверка DNS: %s → 127.0.0.1:%s${C_NC}\n" "$_name" "$_port"
+    fi
     if [ -n "$_resolved_ip" ]; then
         "$_bin" -a 127.0.0.1 -p "$_port" -b "$_b" $_family_args -R "$_resolved_ip" -r "$_url" -u nobody -g nogroup >"$_log" 2>&1 &
     else
@@ -2236,7 +2238,9 @@ stage_local_ok() {
     _wait=0
     while [ "$_wait" -lt 8 ]; do
         if [ -n "${STAGE_LAST_PID:-}" ] && stage_process_alive "$STAGE_LAST_PID" && listener_port_exists "$_p"; then
-            break
+            if local_dns_query_ok "$_p" "$_domain"; then
+                return 0
+            fi
         fi
         sleep 1
         _wait=$((_wait+1))
@@ -2251,7 +2255,30 @@ stage_local_ok() {
             return 1
         fi
     fi
+    local_dns_query_ok "$_p" "$_domain" || return 1
     return 0
+}
+
+stage_try_candidate() {
+    _slot="$1"
+    _id="$2"
+    _domain="${3:-example.com}"
+    _port="$(hybrid_desired_port "$_slot")"
+    [ -n "$_port" ] || return 1
+
+    STAGE_USED=""
+    STAGE_LAST_PID=""
+    STAGE_LAST_PORT=""
+    STAGE_LAST_LOG=""
+    STAGE_LAST_URL=""
+
+    stage_start_one "$_slot" "$_id" || return 1
+    if stage_local_ok "$_port" "$_domain"; then
+        stage_stop_last
+        return 0
+    fi
+    stage_stop_last
+    return 1
 }
 stage_stop_last() {
     _old="$STAGE_LAST_PID"
@@ -2302,93 +2329,128 @@ adaptive_hybrid_prepare() {
 
     _success=0
     _tried="$TMP_DIR/hybrid-selected-tried-$$"
+    _selected_urls="$TMP_DIR/hybrid-selected-urls-$$"
     : > "$_tried" || return 1
+    : > "$_selected_urls" || { rm -f "$_tried" 2>/dev/null; return 1; }
+    STAGE_USED=""
+    STAGE_PIDS=""
+    STAGE_LAST_PID=""
+    STAGE_LAST_PORT=""
+    STAGE_LAST_LOG=""
+    STAGE_LAST_URL=""
 
+    # Для каждого слота берём только кандидатов из последнего полного теста,
+    # но дополнительно подтверждаем работу именно через боевой локальный порт слота.
+    # Порт принадлежит слоту и между кандидатами не меняется.
     for _slot in 1 2 3 4 5 6; do
-        eval "_want=\${SLOT_$_slot:-}"
         _chosen=""
+        _domain="example.com"
+        _port="$(hybrid_desired_port "$_slot")"
 
-        if [ -n "$_want" ] && ! grep -qxF "$_want" "$_tried" 2>/dev/null; then
-            _ok="$(awk -F'|' -v id="$_want" 'NF>=5 && $1==id && $5=="OK" && $4 ~ /^[0-9]+$/ {print "yes"; exit}' "$TEST_RESULTS" 2>/dev/null)"
-            _wcat="$(dns_cat "$_want")"
-            if [ "$_ok" = yes ] && { [ "$_wcat" = bypass ] || [ "$_wcat" = clean ]; }; then
-                _chosen="$_want"
+        while IFS='|' read -r _id _cat _name _ms _st; do
+            [ -n "$_id" ] || continue
+            grep -qxF "$_id" "$_tried" 2>/dev/null && continue
+            [ "$_st" = OK ] || continue
+            case "$_cat" in bypass|clean) ;; *) continue;; esac
+            case "$_ms" in ''|*[!0-9]*) continue;; esac
+
+            # Один URL не используется одновременно несколькими слотами.
+            _cand_url="$(normalize_url "$(dns_url "$_id")")"
+            [ -n "$_cand_url" ] || continue
+            grep -qxF "$_cand_url" "$_selected_urls" 2>/dev/null && continue
+
+            printf '%s\n' "$_id" >> "$_tried"
+            if stage_try_candidate "$_slot" "$_id" "$_domain"; then
+                _chosen="$_id"
+                printf '%s\n' "$_cand_url" >> "$_selected_urls"
+                break
             fi
-        fi
-
-        if [ -z "$_chosen" ]; then
-            _chosen="$(next_hybrid_candidate bypass yes "" "$_tried")"
-        fi
+        done <<EOF_CANDIDATES
+$(awk -F'|' 'NF>=5 && $5=="OK" && ($2=="bypass" || $2=="clean") && $4 ~ /^[0-9]+$/ {print}' "$TEST_RESULTS" 2>/dev/null | sort -t'|' -k4,4n)
+EOF_CANDIDATES
 
         if [ -n "$_chosen" ]; then
-            printf '%s\n' "$_chosen" >> "$_tried"
-            eval "_old=\${SLOT_$_slot:-}"
             eval "SLOT_$_slot=\"$_chosen\""
             eval "SLOT_${_slot}_CAT=\"bypass\""
             _success=$((_success+1))
-            if [ "$_chosen" = "$_old" ]; then
-                printf "  ${C_GREEN}✓ DNS подтверждён для слота %s: %s${C_NC}\n" "$_slot" "$(dns_name "$_chosen")"
-            elif [ -n "$_old" ]; then
-                printf "  ${C_YELLOW}↻ Слот %s: %s → %s${C_NC}\n" "$_slot" "$(dns_name "$_old")" "$(dns_name "$_chosen")"
-                printf "  ${C_GREEN}✓ DNS подтверждён по последней полной проверке: %s${C_NC}\n" "$(dns_name "$_chosen")"
-            else
-                printf "  ${C_GREEN}✓ Слот %s: выбран %s${C_NC}\n" "$_slot" "$(dns_name "$_chosen")"
-            fi
+            printf "  ${C_GREEN}✓ Слот %s подтверждён: %s → 127.0.0.1:%s${C_NC}\n" "$_slot" "$(dns_name "$_chosen")" "$_port"
         else
             eval "SLOT_$_slot=''"
             eval "SLOT_${_slot}_CAT='bypass'"
-            warn_msg "Для слота $_slot не найден DNS, прошедший последнюю полную проверку. Слот будет пропущен."
+            warn_msg "Для слота $_slot не найден DNS, который прошёл полную проверку и реальную локальную проверку через порт $_port. Слот будет пропущен."
         fi
     done
 
     _old_ru="${SLOT_RU:-}"
     SLOT_RU=""
     _ru_chosen=""
+    _ru_port="$(hybrid_desired_port RU)"
 
-    if [ -n "$_old_ru" ] && ! grep -qxF "$_old_ru" "$_tried" 2>/dev/null; then
-        _ok="$(awk -F'|' -v id="$_old_ru" 'NF>=5 && $1==id && $5=="OK" && $2=="regional" && $4 ~ /^[0-9]+$/ {print "yes"; exit}' "$TEST_RESULTS" 2>/dev/null)"
-        [ "$_ok" = yes ] && _ru_chosen="$_old_ru"
-    fi
+    while IFS='|' read -r _id _cat _name _ms _st; do
+        [ -n "$_id" ] || continue
+        grep -qxF "$_id" "$_tried" 2>/dev/null && continue
+        [ "$_cat" = regional ] || continue
+        [ "$_st" = OK ] || continue
+        case "$_ms" in ''|*[!0-9]*) continue;; esac
+        _cand_url="$(normalize_url "$(dns_url "$_id")")"
+        [ -n "$_cand_url" ] || continue
+        grep -qxF "$_cand_url" "$_selected_urls" 2>/dev/null && continue
 
-    if [ -z "$_ru_chosen" ]; then
-        _ru_chosen="$(next_hybrid_candidate regional no "" "$_tried")"
-    fi
+        printf '%s\n' "$_id" >> "$_tried"
+        if stage_try_candidate RU "$_id" yandex.ru; then
+            _ru_chosen="$_id"
+            printf '%s\n' "$_cand_url" >> "$_selected_urls"
+            break
+        fi
+    done <<EOF_RU_CANDIDATES
+$(awk -F'|' '$1!="" && NF>=5 && $2=="regional" && $5=="OK" && $4 ~ /^[0-9]+$/ {print}' "$TEST_RESULTS" 2>/dev/null | sort -t'|' -k4,4n)
+EOF_RU_CANDIDATES
 
     if [ -n "$_ru_chosen" ]; then
-        printf '%s\n' "$_ru_chosen" >> "$_tried"
         SLOT_RU="$_ru_chosen"
         SLOT_RU_CAT="regional"
-        if [ "$_ru_chosen" = "$_old_ru" ]; then
-            printf "  ${C_GREEN}✓ RU подтверждён по последней полной проверке: %s${C_NC}\n" "$(dns_name "$_ru_chosen")"
-        elif [ -n "$_old_ru" ]; then
-            printf "  ${C_YELLOW}↻ RU: %s → %s${C_NC}\n" "$(dns_name "$_old_ru")" "$(dns_name "$_ru_chosen")"
-            printf "  ${C_GREEN}✓ RU подтверждён по последней полной проверке: %s${C_NC}\n" "$(dns_name "$_ru_chosen")"
-        else
-            printf "  ${C_GREEN}✓ RU выбран: %s${C_NC}\n" "$(dns_name "$_ru_chosen")"
-        fi
+        _success=$((_success+1))
+        printf "  ${C_GREEN}✓ RU подтверждён: %s → 127.0.0.1:%s${C_NC}\n" "$(dns_name "$_ru_chosen")" "$_ru_port"
     else
         SLOT_RU_CAT="regional"
-        warn_msg "Рабочий DNS для .ru/.su/.рф не найден среди серверов, прошедших последнюю полную проверку. Этот маршрут будет отключён."
+        warn_msg "Для .ru/.su/.рф не найден DNS, который прошёл полную и локальную проверку. Этот маршрут будет отключён."
     fi
 
-    if [ -n "${SLOT_RU_2:-}" ]; then
-        _ru2_id="$SLOT_RU_2"
-        _ok="$(awk -F'|' -v id="$_ru2_id" 'NF>=5 && $1==id && $5=="OK" && $2=="regional" && $4 ~ /^[0-9]+$/ {print "yes"; exit}' "$TEST_RESULTS" 2>/dev/null)"
-        if [ "$_ok" = yes ] && ! grep -qxF "$_ru2_id" "$_tried" 2>/dev/null; then
-            printf '%s\n' "$_ru2_id" >> "$_tried"
-            printf "  ${C_GREEN}✓ RU2 подтверждён по последней полной проверке: %s${C_NC}\n" "$(dns_name "$_ru2_id")"
-        else
-            SLOT_RU_2=""
+    # Второй региональный сервер оставляем только после такой же проверки.
+    _ru2_old="${SLOT_RU_2:-}"
+    SLOT_RU_2=""
+    _ru2_port="$(hybrid_desired_port RU_2)"
+    while IFS='|' read -r _id _cat _name _ms _st; do
+        [ -n "$_id" ] || continue
+        grep -qxF "$_id" "$_tried" 2>/dev/null && continue
+        [ "$_cat" = regional ] || continue
+        [ "$_st" = OK ] || continue
+        case "$_ms" in ''|*[!0-9]*) continue;; esac
+        _cand_url="$(normalize_url "$(dns_url "$_id")")"
+        [ -n "$_cand_url" ] || continue
+        grep -qxF "$_cand_url" "$_selected_urls" 2>/dev/null && continue
+
+        printf '%s\n' "$_id" >> "$_tried"
+        if stage_try_candidate RU_2 "$_id" yandex.ru; then
+            SLOT_RU_2="$_id"
             SLOT_RU_2_CAT="regional"
-            warn_msg "RU2 не прошёл последнюю полную проверку. RU2 отключён, основной RU не затронут."
+            printf '%s\n' "$_cand_url" >> "$_selected_urls"
+            printf "  ${C_GREEN}✓ RU2 подтверждён: %s → 127.0.0.1:%s${C_NC}\n" "$(dns_name "$_id")" "$_ru2_port"
+            break
         fi
-    fi
+    done <<EOF_RU2_CANDIDATES
+$(awk -F'|' '$1!="" && NF>=5 && $2=="regional" && $5=="OK" && $4 ~ /^[0-9]+$/ {print}' "$TEST_RESULTS" 2>/dev/null | sort -t'|' -k4,4n)
+EOF_RU2_CANDIDATES
 
-    rm -f "$_tried" 2>/dev/null
+    [ -n "${SLOT_RU_2:-}" ] || [ -z "$_ru2_old" ] || log_msg "Резервный DNS для .ru/.su/.рф не прошёл локальную проверку и отключён до следующей проверки каталога."
+
+    stage_cleanup
+    STAGE_USED=""
+    rm -f "$_tried" "$_selected_urls" 2>/dev/null
     reset_hybrid_runtime_ports
 
     [ "$_success" -ge "${HYBRID_STAGE_MIN:-1}" ] || {
-        err_msg "Удалось выбрать только $_success DNS-серверов из 6 по результатам последней полной проверки. Минимум: ${HYBRID_STAGE_MIN:-1}. Настройки не изменены."
+        err_msg "Не удалось подтвердить рабочий набор DNS через локальные порты. Настройки не изменены."
         return 1
     }
     return 0
@@ -2422,10 +2484,43 @@ apply_settings() {
     run_discovery
     load_config
     BOOTSTRAP_DNS="$BOOTSTRAP_DNS_ALL"
+    HYBRID_SELECTION_READY=0
+    HYBRID_PREFLIGHT_WAS_RUNNING=0
 
     if [ "$DNS_PROFILE" = hybrid ]; then
         if [ "${HYBRID_STAGE_SKIP:-0}" != 1 ]; then
             hybrid_prepare_selection
+
+            # Сначала проверяем кандидатов через реальные порты слотов,
+            # чтобы в показанном плане не было DNS, которые потом не отвечают локально.
+            if pgrep -f 'https-dns-proxy' >/dev/null 2>&1; then
+                HYBRID_PREFLIGHT_WAS_RUNNING=1
+            fi
+            /etc/init.d/https-dns-proxy stop >/dev/null 2>&1 || true
+            sleep 1
+            HYBRID_PREFLIGHT_SILENT=1
+            adaptive_hybrid_prepare || {
+                HYBRID_PREFLIGHT_SILENT=0
+                if [ "$HYBRID_PREFLIGHT_WAS_RUNNING" = 1 ]; then
+                    /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || true
+                fi
+                return 1
+            }
+            HYBRID_PREFLIGHT_SILENT=0
+            reset_hybrid_runtime_ports || {
+                if [ "$HYBRID_PREFLIGHT_WAS_RUNNING" = 1 ]; then
+                    /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || true
+                fi
+                err_msg "Не удалось подготовить рабочие порты DNS."
+                return 1
+            }
+            HYBRID_SELECTION_READY=1
+
+            # После предварительной проверки возвращаем службу в исходное состояние.
+            if [ "$HYBRID_PREFLIGHT_WAS_RUNNING" = 1 ]; then
+                /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || true
+                sleep 2
+            fi
         fi
     fi
 
@@ -2491,11 +2586,9 @@ apply_settings() {
     tx_snapshot_start || { err_msg "Не удалось сохранить копию настроек. Настройки не изменены."; return 1; }
     log_tx "PLAN" "all" "APPLY" "START" "version=$VERSION"
 
-    if [ "$DNS_PROFILE" = hybrid ] && [ "${HYBRID_STAGE_SKIP:-0}" != 1 ]; then
+    if [ "$DNS_PROFILE" = hybrid ] && [ "${HYBRID_STAGE_SKIP:-0}" != 1 ] && [ "${HYBRID_SELECTION_READY:-0}" != 1 ]; then
         /etc/init.d/https-dns-proxy stop >/dev/null 2>&1 || true
         sleep 1
-        disc_listeners
-        disc_dns
         adaptive_hybrid_prepare || { tx_restore_on_failure; return 1; }
         reset_hybrid_runtime_ports || { err_msg "Не удалось восстановить боевые порты после проверки."; tx_restore_on_failure; return 1; }
         validate_selected_slots || { err_msg "После проверки набор DNS стал некорректным."; tx_restore_on_failure; return 1; }
