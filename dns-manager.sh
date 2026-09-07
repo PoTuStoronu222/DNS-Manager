@@ -4,7 +4,7 @@ MANAGER_PATH="/usr/bin/dns-manager"
 # ==========================================
 # ОСНОВНЫЕ ПАРАМЕТРЫ
 # ==========================================
-VERSION="1.36"
+VERSION="1.37"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -2279,6 +2279,7 @@ replace_failed_slot_from_test() {
 
             printf "  ${C_YELLOW}↻ Слот %s: %s не отвечает. Проверяю замену %s.${C_NC}\n" "$_slot" "$_current_name" "$_candidate_name"
 
+            # Порт слота неизменен. Меняем только DNS-кандидата.
             eval "SLOT_${_slot}=\"$_rid\""
             if [ "$DNS_SELECTION_MODE" = quick ]; then
                 eval "SLOT_${_slot}_CAT=\"bypass\""
@@ -2300,6 +2301,7 @@ replace_failed_slot_from_test() {
             fi
 
             /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || true
+            # После перезапуска даём сервису подняться; затем делаем сам DNS-запрос.
             sleep 4
             _domain="example.com"
             case "$_slot" in RU|RU_2) _domain="yandex.ru" ;; esac
@@ -2322,6 +2324,8 @@ replace_failed_slot_from_test() {
             printf '%s\n' "$_rid" >> "$_slot_tried"
             grep -qxF "$_rid" "$REPAIR_BAD_IDS" 2>/dev/null || printf '%s\n' "$_rid" >> "$REPAIR_BAD_IDS"
 
+            # Оставляем неудачный кандидат в текущем слоте до следующей попытки.
+            # Поэтому следующее сообщение честно называет именно его.
             _previous_id="$_rid"
             _old_display="$_candidate_name"
         done <<EOF_REPAIR_PASS
@@ -3805,6 +3809,14 @@ fi
 [ "$HAS_DNSMASQ" = yes ] || missing="$missing dnsmasq"
 printf '%s\n' "$missing"
 }
+prepare_dns_operation(){
+    run_discovery >/dev/null 2>&1 || true
+    install_missing_dependencies || return 1
+    write_catalogs
+    load_config
+    run_discovery >/dev/null 2>&1 || true
+    return 0
+}
 install_missing_dependencies(){
     run_discovery >/dev/null 2>&1 || true
     _need="$(ensure_dependencies)"
@@ -4418,20 +4430,20 @@ menu_prompt
 safe_read c
 [ -z "$c" ] && { clear_screen; printf "${C_GREEN}Диспетчер DNS завершён.${C_NC}\n"; exit 0; }
 case "$c" in
-1) quick_max_bypass ;;
-2) menu_best_actions clean "БЫСТРЫЙ DNS" ;;
-3) menu_best_actions security "МАКСИМАЛЬНАЯ БЕЗОПАСНОСТЬ" ;;
-4) menu_best_actions privacy "МАКСИМАЛЬНАЯ ПРИВАТНОСТЬ" ;;
-5) menu_best_actions adblock "БЛОКИРОВКА РЕКЛАМЫ" ;;
-6) show_best ;;
+1) prepare_dns_operation || { pause; continue; }; quick_max_bypass ;;
+2) prepare_dns_operation || { pause; continue; }; menu_best_actions clean "БЫСТРАЯ НАСТРОЙКА" ;;
+3) prepare_dns_operation || { pause; continue; }; menu_best_actions security "МАКСИМАЛЬНАЯ БЕЗОПАСНОСТЬ" ;;
+4) prepare_dns_operation || { pause; continue; }; menu_best_actions privacy "МАКСИМАЛЬНАЯ ПРИВАТНОСТЬ" ;;
+5) prepare_dns_operation || { pause; continue; }; menu_best_actions adblock "БЛОКИРОВКА РЕКЛАМЫ" ;;
+6) prepare_dns_operation || { pause; continue; }; show_best ;;
 7) show_map ;;
-8) test_dns_catalog; show_tests ;;
-9) menu_slots ;;
-10) menu_bootstrap ;;
-11) menu_ntp ;;
-12) menu_extras ;;
+8) prepare_dns_operation || { pause; continue; }; test_dns_catalog; show_tests ;;
+9) prepare_dns_operation || { pause; continue; }; menu_slots ;;
+10) prepare_dns_operation || { pause; continue; }; menu_bootstrap ;;
+11) prepare_dns_operation || { pause; continue; }; menu_ntp ;;
+12) prepare_dns_operation || { pause; continue; }; menu_extras ;;
 13) menu_status ;;
-14) apply_settings ;;
+14) prepare_dns_operation || { pause; continue; }; apply_settings ;;
 15) menu_install ;;
 16)
 clear_screen
