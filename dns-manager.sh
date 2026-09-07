@@ -2116,10 +2116,12 @@ stage_free_port() {
 FREE_STAGE_PORT=""; _p="$HYBRID_STAGE_FIRST_PORT"
 while [ "$_p" -le "$HYBRID_STAGE_LAST_PORT" ]; do
     stage_port_used "$_p" && { _p=$((_p+1)); continue; }
-    port_used_anywhere "$_p" >/dev/null 2>&1; _rc=$?
-    [ "$_rc" = 2 ] && return 2
-    if [ "$_rc" = 1 ]; then STAGE_USED="$STAGE_USED $_p"; FREE_STAGE_PORT="$_p"; return 0; fi
-    _p=$((_p+1))
+    if listener_port_exists "$_p"; then
+        _p=$((_p+1)); continue
+    fi
+    STAGE_USED="$STAGE_USED $_p"
+    FREE_STAGE_PORT="$_p"
+    return 0
 done
 return 1
 }
@@ -2145,15 +2147,11 @@ stage_start_one() {
     if [ -z "$_port" ] || stage_port_used "$_port"; then
         stage_free_port || return 1
         _port="$FREE_STAGE_PORT"
+    elif listener_port_exists "$_port"; then
+        stage_free_port || return 1
+        _port="$FREE_STAGE_PORT"
     else
-        port_used_anywhere "$_port"; _prc=$?
-        [ "$_prc" = 2 ] && return 1
-        if [ "$_prc" = 0 ]; then
-            stage_free_port || return 1
-            _port="$FREE_STAGE_PORT"
-        else
-            STAGE_USED="$STAGE_USED $_port"
-        fi
+        STAGE_USED="$STAGE_USED $_port"
     fi
 
     _bin="$(command -v https-dns-proxy 2>/dev/null)"
@@ -2191,18 +2189,36 @@ stage_local_ok() {
     sleep 2
     [ -n "${STAGE_LAST_PID:-}" ] && stage_process_alive "$STAGE_LAST_PID" || return 1
     listener_port_exists "$_p" || return 1
+
+    # Сначала проверяем реальный DNS-ответ через локальный порт.
+    if command -v nslookup >/dev/null 2>&1; then
+        _nsout="$(nslookup -q=A -p "$_p" -t 2 -r 1 "$_domain" 127.0.0.1 2>/dev/null || true)"
+        printf '%s\n' "$_nsout" | grep -Eq 'Address[[:space:]]+[0-9]+[[:space:]]*:?[[:space:]]*[0-9]+(\.[0-9]+){3}|^Address:[[:space:]]*[0-9]+(\.[0-9]+){3}' && return 0
+        return 1
+    fi
+
+    # На роутерах без nslookup подтверждаем хотя бы факт нормального запуска
+    # службы на нужном порту. Сам внешний DoH уже прошёл полную проверку до применения.
     return 0
 }
 stage_stop_last() {
-    [ -n "$STAGE_LAST_PID" ] && kill "$STAGE_LAST_PID" 2>/dev/null || true
-    sleep 1
-    [ -n "$STAGE_LAST_PID" ] && kill -9 "$STAGE_LAST_PID" 2>/dev/null || true
     _old="$STAGE_LAST_PID"
+    _old_port="$STAGE_LAST_PORT"
+    [ -n "$_old" ] && kill "$_old" 2>/dev/null || true
+    sleep 1
+    [ -n "$_old" ] && kill -9 "$_old" 2>/dev/null || true
     _new=""
     for _pid in $STAGE_PIDS; do
         [ "$_pid" = "$_old" ] || _new="$_new $_pid"
     done
     STAGE_PIDS="$_new"
+    if [ -n "$_old_port" ]; then
+        _stage_new_used=""
+        for _sp in $STAGE_USED; do
+            [ "$_sp" = "$_old_port" ] || _stage_new_used="$_stage_new_used $_sp"
+        done
+        STAGE_USED="$_stage_new_used"
+    fi
     STAGE_LAST_PID=""; STAGE_LAST_PORT=""; STAGE_LAST_LOG=""; STAGE_LAST_URL=""
 }
 stage_drop_by_url() {
@@ -2457,14 +2473,14 @@ apply_settings() {
     log_tx "PLAN" "all" "APPLY" "START" "version=$VERSION"
 
     if [ "$DNS_PROFILE" = hybrid ] && [ "${HYBRID_STAGE_SKIP:-0}" != 1 ]; then
+        /etc/init.d/https-dns-proxy stop >/dev/null 2>&1 || true
+        sleep 1
         disc_listeners
         disc_dns
         adaptive_hybrid_prepare || { tx_restore_on_failure; return 1; }
         reset_hybrid_runtime_ports || { err_msg "Не удалось восстановить боевые порты после проверки."; tx_restore_on_failure; return 1; }
         validate_selected_slots || { err_msg "После проверки набор DNS стал некорректным."; tx_restore_on_failure; return 1; }
-    fi
-
-    if [ "$DOH_TOTAL" -gt 0 ] || [ "$DNS_PROFILE" = hybrid ]; then
+    elif [ "$DOH_TOTAL" -gt 0 ]; then
         /etc/init.d/https-dns-proxy stop >/dev/null 2>&1 || true
         sleep 1
     fi
