@@ -2,7 +2,7 @@
 MANAGER_PATH="/usr/bin/dns-manager"
 # ==========================================
 # ==========================================
-VERSION="1.85"
+VERSION="1.87"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -128,7 +128,7 @@ fi
 printf "${C_PINK}↻ Доступна версия %s. Обновление...${C_NC}\n" "$_new_version"
 if cp -f "$_upd_tmp" "$MANAGER_PATH" 2>/dev/null && chmod 755 "$MANAGER_PATH" 2>/dev/null; then
   rm -f "$_upd_tmp" 2>/dev/null
-  printf "${C_GREEN}✓ Диспетчер DNS обновлён: %s → %s${C_NC}\n" "$VERSION" "$_new_version"
+  printf "${C_GREEN}✓ DNS Manager обновлён: %s → %s${C_NC}\n" "$VERSION" "$_new_version"
   mkdir -p "$STATE_DIR" 2>/dev/null
   log_msg "Обновление $VERSION -> $_new_version"
   DNS_MANAGER_NO_UPDATE=1 exec "$MANAGER_PATH"
@@ -290,7 +290,7 @@ baseline_restore_if_safe() {
         [ "$_cur" = "$_last_hash" ] || { _conflict=1; break; }
     done < "$BASELINE_LAST"
     if [ "$_conflict" = 1 ]; then
-        warn_msg "Исходное состояние изменилось после последнего применения. Выполняю только безопасное удаление изменений диспетчера DNS."
+        warn_msg "Исходное состояние изменилось после последнего применения. Выполняю только безопасное удаление изменений DNS Manager."
         return 2
     fi
     while IFS='|' read -r _f _k _existed _basehash; do
@@ -1224,7 +1224,7 @@ return 1
 # ==========================================
 # ==========================================
 clear_all_doh_for_apply() {
-    printf "${C_PINK}↻ Все существующие DNS-серверы будут удалены и заменены выбранной схемой диспетчер DNS.${C_NC}\n"
+    printf "${C_PINK}↻ Все существующие DNS-серверы будут удалены и заменены выбранной схемой DNS Manager.${C_NC}\n"
     _removed=0
     while uci -q get "https-dns-proxy.@https-dns-proxy[0]" >/dev/null 2>&1; do
         _u="$(uci -q get "https-dns-proxy.@https-dns-proxy[0].resolver_url" 2>/dev/null)"
@@ -1297,7 +1297,7 @@ if [ -n "$existing_foreign" ]; then
 local _foreign_idx="$(printf '%s' "$existing_foreign" | cut -d'|' -f1)"
 local owner="$(printf '%s' "$existing_foreign" | cut -d'|' -f3)"
 local p_old="$(printf '%s' "$existing_foreign" | cut -d'|' -f2)"
-warn_msg "$name уже использовался чужой/неизвестной секцией (порт $p_old, владелец=$(owner_ru "$owner")). Она удаляется: при активном диспетчер DNS не оставляет другие DNS-серверы."
+warn_msg "$name уже использовался чужой/неизвестной секцией (порт $p_old, владелец=$(owner_ru "$owner")). Она удаляется: при активном DNS Manager не оставляет другие DNS-серверы."
 [ -n "$_foreign_idx" ] && uci -q delete "https-dns-proxy.@https-dns-proxy[$_foreign_idx]" || return 1
 fi
 local target="$desired"
@@ -1637,7 +1637,7 @@ marker="$(grep -c 'DNS_MANAGER_GOMEMLIMIT' "$f" 2>/dev/null)"
 current_hash="$(file_hash "$f")"
 hash_file="$STATE_DIR/$(basename "$f").managed.sha256"
 if [ -s "$hash_file" ] && [ "$(cat "$hash_file")" != "$current_hash" ] && [ "$marker" = 1 ]; then
-warn_msg "$f был изменён после последнего применения диспетчер DNS. Пропускаю Go-оптимизацию."
+warn_msg "$f был изменён после последнего применения DNS Manager. Пропускаю Go-оптимизацию."
 continue
 fi
 if [ "$marker" = 1 ]; then
@@ -1667,7 +1667,7 @@ apply_ntp_clients() {
     fi
     uci -q delete firewall.dns_manager_ntp_client
     uci set firewall.dns_manager_ntp_client=redirect || return 1
-    uci set firewall.dns_manager_ntp_client.name='диспетчер DNS: NTP клиентов в роутер' || return 1
+    uci set firewall.dns_manager_ntp_client.name='DNS Manager: NTP клиентов в роутер' || return 1
     uci set firewall.dns_manager_ntp_client.src='lan' || return 1
     uci set firewall.dns_manager_ntp_client.proto='udp' || return 1
     uci set firewall.dns_manager_ntp_client.src_dport='123' || return 1
@@ -1825,13 +1825,13 @@ cleanup_manager_cron() {
     cand="$TMP_DIR/cron-manager-candidates"
     grep -E '(DNS_MANAGER_CRON|dns-manager|dns_manager).*(dnsmasq|https-dns-proxy|tailscale).*(restart|reload)' "$f" > "$cand" 2>/dev/null || true
     if [ ! -s "$cand" ]; then
-        info_msg "Старых помеченных cron-запусков диспетчер DNS не найдено. Пользовательский cron не изменён."
+        info_msg "Старых помеченных cron-запусков DNS Manager не найдено. Пользовательский cron не изменён."
         return 0
     fi
     awk '!/(DNS_MANAGER_CRON|dns-manager|dns_manager).*(dnsmasq|https-dns-proxy|tailscale).*(restart|reload)/{print}' "$f" > "$f.tmp" || return 1
     mv "$f.tmp" "$f" || return 1
     /etc/init.d/cron reload >/dev/null 2>&1 || true
-    ok_msg "Старые cron-запуски диспетчер DNS удалены. Остальные задания cron сохранены."
+    ok_msg "Старые cron-запуски DNS Manager удалены. Остальные задания cron сохранены."
 }
 # ==========================================
 # ==========================================
@@ -1843,7 +1843,7 @@ apply_dns_force() {
     fi
     uci -q delete firewall.dns_manager_dns_redirect
     uci set firewall.dns_manager_dns_redirect=redirect || return 1
-    uci set firewall.dns_manager_dns_redirect.name='диспетчер DNS: перенаправление DNS' || return 1
+    uci set firewall.dns_manager_dns_redirect.name='DNS Manager: перенаправление DNS' || return 1
     uci set firewall.dns_manager_dns_redirect.src='lan' || return 1
     uci set firewall.dns_manager_dns_redirect.proto='tcp udp' || return 1
     uci set firewall.dns_manager_dns_redirect.src_dport='53' || return 1
@@ -1852,7 +1852,7 @@ apply_dns_force() {
     uci set firewall.dns_manager_dns_redirect.target='DNAT' || return 1
     uci -q delete firewall.dns_manager_dot_block
     uci set firewall.dns_manager_dot_block=rule || return 1
-    uci set firewall.dns_manager_dot_block.name='диспетчер DNS: блокировка DoT' || return 1
+    uci set firewall.dns_manager_dot_block.name='DNS Manager: блокировка DoT' || return 1
     uci set firewall.dns_manager_dot_block.src='lan' || return 1
     uci set firewall.dns_manager_dot_block.dest='wan' || return 1
     uci set firewall.dns_manager_dot_block.proto='tcp udp' || return 1
@@ -1886,7 +1886,7 @@ if [ ! -f "$conf" ]; then
 printf '%s\n' '# DNS_MANAGER_MANAGED=1' > "$conf" || return 1
 record_own "file" "$conf" "created" "bogus"
 elif ! grep -q '^# DNS_MANAGER_MANAGED=1$' "$conf"; then
-warn_msg "$conf уже существует и не помечен диспетчер DNS. Не меняю его."
+warn_msg "$conf уже существует и не помечен DNS Manager. Не меняю его."
 pause; return
 fi
 for n in $pick; do
@@ -2720,7 +2720,7 @@ apply_settings() {
         [ "$CLIENT_FIXES" = 1 ] && printf "  ${C_GREEN}✓${C_NC} Клиентские DNS-фиксы\n" || printf "  ${C_YELLOW}—${C_NC} Клиентские фиксы не изменяются\n"
         [ "$SYSCTL_EXTENDED" = 1 ] && printf "  ${C_GREEN}✓${C_NC} Расширенная настройка сети\n" || printf "  ${C_YELLOW}—${C_NC} Расширенный sysctl не изменяется\n"
         [ "$TAILSCALE_HOTPLUG" = 1 ] && printf "  ${C_GREEN}✓${C_NC} Запуск Tailscale после сети\n" || printf "  ${C_YELLOW}—${C_NC} Tailscale hotplug не изменяется\n"
-        [ "$CRON_CLEANUP" = 1 ] && printf "  ${C_GREEN}✓${C_NC} Очистка старых заданий диспетчер DNS\n" || printf "  ${C_YELLOW}—${C_NC} Cron не изменяется\n"
+        [ "$CRON_CLEANUP" = 1 ] && printf "  ${C_GREEN}✓${C_NC} Очистка старых заданий DNS Manager\n" || printf "  ${C_YELLOW}—${C_NC} Cron не изменяется\n"
         [ "$WATCHDOG_ENABLED" = 1 ] && printf "  ${C_GREEN}✓${C_NC} Автоматическая проверка DNS: каждые %s мин\n" "$WATCHDOG_INTERVAL" || printf "  ${C_YELLOW}—${C_NC} Автоматическая проверка DNS не изменяется\n"
     fi
     printf "\n${C_WHITE}Текущее состояние до применения:${C_NC}\n"
@@ -2828,7 +2828,7 @@ apply_settings() {
         apply_tailscale_hotplug || { err_msg "Не удалось настроить автоматический запуск Tailscale."; tx_restore_on_failure; return 1; }
     fi
     if [ "$CORE_ONLY" != 1 ] && [ "$CRON_CLEANUP" = 1 ]; then
-        cleanup_manager_cron || { err_msg "Не удалось очистить cron диспетчер DNS."; tx_restore_on_failure; return 1; }
+        cleanup_manager_cron || { err_msg "Не удалось очистить cron DNS Manager."; tx_restore_on_failure; return 1; }
     fi
     WATCHDOG_ENABLED="${WATCHDOG_ENABLED:-1}"
     apply_watchdog || { err_msg "Не удалось настроить cron Автопроверка."; tx_restore_on_failure; return 1; }
@@ -2880,7 +2880,7 @@ restore_hdp_control_from_baseline() {
 }
 rollback_ours() {
 clear_screen
-printf "${C_YELLOW}=== 🔄 Удаление изменений диспетчер DNS ===${C_NC}\n"
+printf "${C_YELLOW}=== 🔄 Удаление изменений DNS Manager ===${C_NC}\n"
 if baseline_restore_if_safe; then
     /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || true
     /etc/init.d/dnsmasq restart >/dev/null 2>&1 || true
@@ -2890,7 +2890,7 @@ if baseline_restore_if_safe; then
         /etc/init.d/firewall restart >/dev/null 2>&1
     fi
     rm -f "$BASELINE_LAST" 2>/dev/null
-    ok_msg "Исходное состояние до первого захвата диспетчер DNS восстановлено. Исходная копия сохранён для аудита и повторного применения."
+    ok_msg "Исходное состояние до первого захвата DNS Manager восстановлено. Исходная копия сохранён для аудита и повторного применения."
     pause
     return 0
 fi
@@ -2947,7 +2947,7 @@ bak="$f.dns-manager.bak"
 if [ -f "$bak" ]; then
 curh="$(file_hash "$f")"; managedh="$(cat "$STATE_DIR/$(basename "$f").managed.sha256" 2>/dev/null)"
 if [ -n "$managedh" ] && [ -n "$curh" ] && [ "$curh" != "$managedh" ]; then
-warn_msg "Не восстанавливаю $f: он изменён после последнего применения диспетчер DNS."
+warn_msg "Не восстанавливаю $f: он изменён после последнего применения DNS Manager."
 else
 mv "$bak" "$f" 2>/dev/null
 fi
@@ -3124,7 +3124,7 @@ printf "  QUIC нашего менеджера:      %s\n" "$(state_word "$QUIC_
 printf "  Чужое эквивалентное правило: %s\n" "$(state_word "$QUIC_FOREIGN")"
 printf "  Активный nft:               %s\n" "$(state_word "$NFT_ACTIVE")"
 printf "  Аппаратное ускорение:       %s\n" "$(state_word "$FLOW_OFFLOAD")"
-menu_section "НАСТРОЙКИ ДИСПЕТЧЕРА DNS"
+menu_section "НАСТРОЙКИ DNS Manager"
 printf "  Настройка:                   ${C_YELLOW}%s${C_NC}\n" "$( [ "$DNS_PROFILE" = hybrid ] && printf '%s' 'Гибридный DNS — 6 серверов + Яндекс RU' || printf '%s' 'Своя настройка' )"
 printf "  Балансировка DNS:           %s\n" "$(config_state_word "$BALANCER_ENABLED")"
 printf "  Отдельный DNS (.ru/.su/.рф): %s\n" "$(config_state_word "$TLD_SPLIT")"
@@ -3954,7 +3954,7 @@ watchdog_enforce_hdp_control() {
     [ "$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null)" = "0" ] || _changed=1
     [ "$(uci -q get https-dns-proxy.config.notrack_dns 2>/dev/null)" = "0" ] || _changed=1
     [ "$_changed" = 1 ] || return 0
-    log_msg "Обнаружен drift настроек https-dns-proxy. Возвращаю контроль диспетчер DNS.."
+    log_msg "Обнаружен drift настроек https-dns-proxy. Возвращаю контроль DNS Manager.."
     uci set https-dns-proxy.config.dnsmasq_config_update='-' || return 1
     uci set https-dns-proxy.config.force_dns='0' || return 1
     uci set https-dns-proxy.config.notrack_dns='0' || return 1
@@ -4035,7 +4035,7 @@ watchdog_dnsmasq_guard() {
         [ -z "$(uci -q get "dhcp.$_sec.allservers" 2>/dev/null)" ] || _balance_bad=1
     fi
     if ! cmp -s "$_actual" "$_expected" 2>/dev/null || [ "$(uci -q get "dhcp.$_sec.noresolv" 2>/dev/null)" != 1 ] || [ "$_balance_bad" = 1 ]; then
-        log_msg "Обнаружен drift dnsmasq. Восстанавливаю авторитетную конфигурацию диспетчер DNS."
+        log_msg "Обнаружен drift dnsmasq. Восстанавливаю авторитетную конфигурацию DNS Manager."
         reconcile_dnsmasq || return 1
         /etc/init.d/dnsmasq restart >/dev/null 2>&1 || return 1
     fi
@@ -4303,7 +4303,7 @@ apply_watchdog() {
 main_menu() {
 while :; do
 run_discovery
-menu_header "ДИСПЕТЧЕР DNS $VERSION"
+menu_header "DNS Manager $VERSION"
 menu_section "СОСТОЯНИЕ РОУТЕРА"
 printf "  ${C_YELLOW}${C_BOLD}IPv4${C_NC}               %b\n" "$(state_word "$IPV4_ROUTE")"
 printf "  ${C_YELLOW}${C_BOLD}IPv6${C_NC}               %b\n" "$(state_word "$IPV6_ROUTE")"
@@ -4338,7 +4338,7 @@ menu_item "[16]" "Удалить изменения"
 menu_back
 menu_prompt
 safe_read c
-[ -z "$c" ] && { clear_screen; printf "${C_GREEN}Диспетчер DNS завершён.${C_NC}\n"; exit 0; }
+[ -z "$c" ] && { clear_screen; printf "${C_GREEN}DNS Manager завершён.${C_NC}\n"; exit 0; }
 case "$c" in
 1) prepare_dns_operation || { pause; continue; }; quick_max_bypass ;;
 2) prepare_dns_operation || { pause; continue; }; menu_best_actions clean "БЫСТРАЯ НАСТРОЙКА" ;;
@@ -4358,7 +4358,7 @@ case "$c" in
 16)
 clear_screen
 menu_header "УДАЛЕНИЕ ИЗМЕНЕНИЙ"
-warn_msg "Будут удалены только изменения диспетчера DNS."
+warn_msg "Будут удалены только изменения DNS Manager."
 if confirm_action "Удалить изменения?"; then rollback_ours; else info_msg "Отменено."; fi
 ;;
 *) warn_msg "Неизвестный пункт."; pause ;;
@@ -4393,5 +4393,5 @@ fi
 run_discovery
 printf "${C_GREEN}✓ Первый проход завершён. Настройки роутера не изменены.${C_NC}\n"
 printf "${C_YELLOW}ℹ DNS-серверов в списке: %s.${C_NC}\n" "$(count_dns)"
-log_msg "Запуск диспетчера DNS. Версия $VERSION. OpenWrt=$SYS_OWRT; платформа=$SYS_TARGET; архитектура=$SYS_ARCH; firewall=$SYS_FW"
+log_msg "Запуск DNS Manager. Версия $VERSION. OpenWrt=$SYS_OWRT; платформа=$SYS_TARGET; архитектура=$SYS_ARCH; firewall=$SYS_FW"
 main_menu
