@@ -4,7 +4,7 @@ MANAGER_PATH="/usr/bin/dns-manager"
 # ==========================================
 # ОСНОВНЫЕ ПАРАМЕТРЫ
 # ==========================================
-VERSION="1.38"
+VERSION="1.39"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -89,13 +89,14 @@ _ver_newer() {
         ma=(x[1]=="" ? 0 : x[1]+0); mb=(y[1]=="" ? 0 : y[1]+0);
         if (ma > mb) exit 0;
         if (ma < mb) exit 1;
-        fa=(x[2]=="" ? "0" : x[2]); fb=(y[2]=="" ? "0" : y[2]);
-        if (fa ~ /^[0-9]+$/ && fb ~ /^[0-9]+$/) {
-            while (length(fa) < length(fb)) fa=fa "0";
-            while (length(fb) < length(fa)) fb=fb "0";
-            if ((fa+0) > (fb+0)) exit 0;
-            if ((fa+0) < (fb+0)) exit 1;
-        }
+
+        # First two components are the human version number. Treat them
+        # as a decimal value so 1.10 means 1.1, not 1.10 > 1.9.
+        a12=ma + (x[2]=="" ? 0 : (x[2]+0)/10^(length(x[2])));
+        b12=mb + (y[2]=="" ? 0 : (y[2]+0)/10^(length(y[2])));
+        if (a12 > b12) exit 0;
+        if (a12 < b12) exit 1;
+
         for (i=3; i<=10; i++) {
             va=(x[i]=="" ? 0 : x[i]+0); vb=(y[i]=="" ? 0 : y[i]+0);
             if (va > vb) exit 0;
@@ -721,6 +722,75 @@ HAS_TGMT="$OTHER_TGMT"
 HAS_BYEDPI="$OTHER_BYEDPI"
 HAS_TAILSCALE="$OTHER_TAILSCALE"
 }
+# ==========================================
+# ПУТЬ DNS К УСТРОЙСТВАМ СЕТИ
+# ==========================================
+dns_redirect_conflict_uci() {
+    _changed=0
+    _secs="$(uci show firewall 2>/dev/null | sed -n "s/^firewall\.\([^.=]*\)=redirect$/\1/p")"
+    for _sec in $_secs; do
+        [ "$(uci -q get "firewall.$_sec.src" 2>/dev/null)" = "lan" ] || continue
+        _sd="$(uci -q get "firewall.$_sec.src_dport" 2>/dev/null)"
+        printf '%s' "$_sd" | tr ' ' '\n' | grep -qxF '53' || continue
+        _target="$(uci -q get "firewall.$_sec.target" 2>/dev/null)"
+        case "$_target" in DNAT|dnat|REDIRECT|redirect) ;; *) continue ;; esac
+        _dp="$(uci -q get "firewall.$_sec.dest_port" 2>/dev/null)"
+        [ -n "$_dp" ] || continue
+        case "$_dp" in
+            53|53-53) continue ;;
+        esac
+        _disabled="$(uci -q get "firewall.$_sec.disabled" 2>/dev/null)"
+        [ "$_disabled" = 1 ] && continue
+        uci set "firewall.$_sec.disabled=1" || return 1
+        _changed=1
+    done
+    printf '%s\n' "$_changed"
+}
+dns_path_conflict_nft() {
+    [ "$SYS_FW" = fw4 ] || return 1
+    command -v nft >/dev/null 2>&1 || return 1
+    _out="$TMP_DIR/dns-path-conflicts-$$"
+    : > "$_out" || return 1
+    _lan_dev="$(uci -q get network.lan.device 2>/dev/null)"
+    _lan_if="$(uci -q get network.lan.ifname 2>/dev/null)"
+    nft -a list ruleset 2>/dev/null | awk -v ld="$_lan_dev" -v li="$_lan_if" '
+        /^[[:space:]]*chain[[:space:]][^ {]+[[:space:]]*\{/ { c=$2; gsub(/[^A-Za-z0-9_.-]/,"",c); next }
+        /iifname[[:space:]]+"[^"]+"/ && /dport[[:space:]]+53/ && /redirect[[:space:]]+to[[:space:]]+:[0-9]+/ && /#[[:space:]]*handle[[:space:]]+[0-9]+/ {
+            ok=0; if ($0 ~ /iifname[[:space:]]+"br-lan"/) ok=1
+            if (ld != "" && index($0,"iifname \"" ld "\"")>0) ok=1
+            if (li != "" && index($0,"iifname \"" li "\"")>0) ok=1
+            if (!ok) next
+            line=$0
+            sub(/^.*redirect[[:space:]]+to[[:space:]]+:/,"",line)
+            port=line; sub(/[^0-9].*$/,"",port)
+            if (port == "53" || port == "") next
+            h=$0; sub(/^.*#[[:space:]]*handle[[:space:]]+/,"",h); sub(/[^0-9].*$/,"",h)
+            if (c != "" && h != "") print c "|" h "|" $0
+        }
+    ' > "$_out"
+    if [ -s "$_out" ]; then
+        cat "$_out"
+        rm -f "$_out"
+        return 0
+    fi
+    rm -f "$_out"
+    return 1
+}
+prepare_dns_path() {
+    # Конфликты, явно записанные в UCI firewall, можно безопасно отключить:
+    # исходная конфигурация сохраняется в общем baseline транзакции.
+    _cfg_changed="$(dns_redirect_conflict_uci 2>/dev/null || printf 0)"
+    [ "$_cfg_changed" = 1 ] && uci commit firewall >/dev/null 2>&1 || true
+    [ "$_cfg_changed" = 1 ] && reload_fw || true
+
+    # Runtime nft-правила неизвестного происхождения не удаляем.
+    # Если после reload конфликт всё ещё существует, применение останавливаем,
+    # чтобы не ломать сторонний сервис (TGWS и т.п.).
+    if dns_path_conflict_nft >/dev/null 2>&1; then
+        return 1
+    fi
+    return 0
+}
 disc_firewall() {
     QUIC_OURS=0
     QUIC_FOREIGN=0
@@ -729,6 +799,8 @@ disc_firewall() {
     fi
     [ "$(uci -q get firewall.@defaults[0].flow_offloading 2>/dev/null)" = 1 ] && FLOW_OFFLOAD="yes" || FLOW_OFFLOAD="no"
     if command -v nft >/dev/null 2>&1 && nft list ruleset >/dev/null 2>&1; then NFT_ACTIVE="yes"; else NFT_ACTIVE="no"; fi
+    DNS_PATH_CONFLICT="no"
+    dns_path_conflict_nft >/dev/null 2>&1 && DNS_PATH_CONFLICT="yes"
 }
 run_discovery() {
 init_dirs
@@ -2997,6 +3069,7 @@ apply_settings() {
     sleep 2
     ensure_dnsmasq_balancer || { err_msg "Одновременный опрос DNS не включился после запуска. Изменения откатываются."; tx_restore_on_failure; return 1; }
     reload_fw
+    prepare_dns_path || { err_msg "Не удалось подготовить DNS для устройств сети."; tx_restore_on_failure; return 1; }
     run_discovery
     tx_snapshot_after_apply
 
@@ -4119,6 +4192,20 @@ watchdog_expected_servers() {
     sort -u "$_out" -o "$_out" 2>/dev/null || true
     printf '%s\n' "$_out"
 }
+watchdog_dns_path_guard() {
+    # Watchdog не удаляет runtime nft-правила чужих сервисов.
+    # Явные UCI-redirect на другой DNS-порт отключаются, затем firewall
+    # перечитывается. Любой оставшийся runtime-конфликт только фиксируется.
+    _cfg_changed="$(dns_redirect_conflict_uci 2>/dev/null || printf 0)"
+    if [ "$_cfg_changed" = 1 ]; then
+        uci commit firewall >/dev/null 2>&1 || return 1
+        reload_fw || return 1
+    fi
+    if dns_path_conflict_nft >/dev/null 2>&1; then
+        return 1
+    fi
+    return 0
+}
 watchdog_dnsmasq_guard() {
     _sec="$(get_dnsmasq_section)"
     [ -n "$_sec" ] || return 1
@@ -4325,6 +4412,7 @@ run_watchdog() {
     watchdog_enforce_doh_authority || log_msg "Не удалось полностью очистить сторонние DNS-сервер."
     watchdog_service_recover || log_msg "Не удалось выполнить восстановительное перезапускание https-dns-proxy."
     watchdog_hdp_guard || log_msg "Не удалось проверить соответствие DNS-серверов выбранному набору."
+    watchdog_dns_path_guard || log_msg "Обнаружен конфликт пути DNS в firewall."
     watchdog_dnsmasq_guard || log_msg "Не удалось полностью восстановить конфигурацию dnsmasq."
     run_discovery
     _age=999999999
