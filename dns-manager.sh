@@ -2,7 +2,7 @@
 MANAGER_PATH="/usr/bin/dns-manager"
 # ==========================================
 # ==========================================
-VERSION="1.42"
+VERSION="1.43"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -2653,7 +2653,6 @@ reset_hybrid_runtime_ports() {
 apply_settings() {
     clear_screen
     run_discovery
-    load_config
     if [ "${HYBRID_FORCE_RESELECT:-0}" = 1 ] && [ "$DNS_PROFILE" = hybrid ]; then
         SLOT_1=""; SLOT_2=""; SLOT_3=""; SLOT_4=""; SLOT_5=""; SLOT_6=""
         SLOT_RU=""; SLOT_RU_2=""
