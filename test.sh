@@ -2,7 +2,7 @@
 MANAGER_PATH="/usr/bin/dns-manager"
 # ==========================================
 # ==========================================
-VERSION="1.83"
+VERSION="1.84"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -3580,7 +3580,16 @@ module_state_word() {
 }
 # ==========================================
 # ==========================================
-web_access_real() { [ -x "$WEB_INIT" ] && pgrep -f '[t]tyd.*dns-manager' >/dev/null 2>&1; }
+web_access_real() {
+    [ -x "$WEB_INIT" ] || return 1
+    if command -v ss >/dev/null 2>&1; then
+        ss -lnt 2>/dev/null | grep -qE "(^|[[:space:]])([^[:space:]]*:)?7682([[:space:]]|$)" && return 0
+    fi
+    if command -v netstat >/dev/null 2>&1; then
+        netstat -lnt 2>/dev/null | grep -qE "(^|[[:space:]])[^[:space:]]*:7682([[:space:]]|$)" && return 0
+    fi
+    return 1
+}
 web_access_install() {
     if command -v ttyd >/dev/null 2>&1; then return 0; fi
     if [ "$PKG_MGR" = "apk" ]; then
@@ -3595,19 +3604,29 @@ web_access_install() {
 web_access_write_service() {
     cat > "$WEB_INIT" <<EOF_WEB_INIT
 #!/bin/sh /etc/rc.common
-START=98
-STOP=10
+START=99
+STOP=50
 USE_PROCD=1
+
 start_service() {
+    _lan_dev=""
+    . /lib/functions/network.sh 2>/dev/null
+    network_get_device _lan_dev lan 2>/dev/null || true
+    [ -n "$_lan_dev" ] || _lan_dev="br-lan"
     procd_open_instance
-    procd_set_param command /usr/bin/ttyd -p 7682 -W -O -t fontSize=15 sh /usr/bin/dns-manager
+    procd_set_param command /usr/bin/ttyd -p 7682 -i "$_lan_dev" -W -t fontSize=15 sh /usr/bin/dns-manager
     procd_set_param respawn 5 10 0
+    procd_set_param stdout 1
+    procd_set_param stderr 1
     procd_close_instance
 }
-stop_service() { procd_kill_instance; }
+
+stop_service() {
+    procd_kill_instance
+}
 EOF_WEB_INIT
     chmod 755 "$WEB_INIT" || return 1
-    grep -q -- "ttyd -p 7682 -W -O -t fontSize=15 sh /usr/bin/dns-manager" "$WEB_INIT" 2>/dev/null
+    grep -q -- 'ttyd -p 7682 -i' "$WEB_INIT" 2>/dev/null
 }
 web_access_firewall() {
     uci -q delete firewall.dns_manager_web_ttyd
