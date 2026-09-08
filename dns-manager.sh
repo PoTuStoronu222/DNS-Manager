@@ -2,7 +2,7 @@
 MANAGER_PATH="/usr/bin/dns-manager"
 # ==========================================
 # ==========================================
-VERSION="1.44"
+VERSION="1.45"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -27,6 +27,7 @@ WEB_INIT="/etc/init.d/ttyd"
 WEB_ACCESS_PORT="7682"
 WEB_ACCESS_ENABLED=0
 WEB_TTYD_SECTION="dns_manager"
+LUCI_CONTROLLER="/usr/lib/lua/luci/controller/dns_manager.lua"
 cleanup_stale_tmp_dirs() {
     _self_tmp="${TMP_DIR:-}"
     find /tmp -maxdepth 1 -type d -name 'dnsmgr.*' -mtime +1 -print 2>/dev/null | while IFS= read -r _old_dir; do
@@ -2880,8 +2881,18 @@ restore_hdp_control_from_baseline() {
 }
 rollback_ours() {
 clear_screen
+WEB_ACCESS_ENABLED=0
+web_access_luci_remove
+web_access_remove_config
+web_access_remove_firewall
+/etc/init.d/ttyd restart >/dev/null 2>&1 || true
 printf "${C_YELLOW}=== 🔄 Удаление изменений DNS Manager ===${C_NC}\n"
 if baseline_restore_if_safe; then
+    WEB_ACCESS_ENABLED=0
+    web_access_luci_remove
+    web_access_remove_config
+    web_access_remove_firewall
+    /etc/init.d/ttyd restart >/dev/null 2>&1 || true
     /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || true
     /etc/init.d/dnsmasq restart >/dev/null 2>&1 || true
     if [ "$SYS_FW" = fw4 ]; then
@@ -3649,6 +3660,41 @@ web_access_remove_firewall() {
     uci commit firewall >/dev/null 2>&1 || true
     /etc/init.d/firewall reload >/dev/null 2>&1 || /etc/init.d/firewall restart >/dev/null 2>&1 || true
 }
+web_access_luci_install() {
+    mkdir -p /usr/lib/lua/luci/controller || return 1
+    cat > "$LUCI_CONTROLLER" <<'EOF_LUCI'
+module("luci.controller.dns_manager", package.seeall)
+
+function index()
+    local uci = require "luci.model.uci".cursor()
+    if uci:get("ttyd", "dns_manager", "enable") ~= "1" then return end
+    if uci:get("ttyd", "dns_manager", "command") ~= "/usr/bin/dns-manager" then return end
+    local e = entry({"admin", "services", "dns_manager"}, call("redirect_to_manager"), _("DNS Manager"), 70)
+    e.leaf = true
+end
+
+function redirect_to_manager()
+    local uci = require "luci.model.uci".cursor()
+    local http = require "luci.http"
+    local ip = uci:get("network", "lan", "ipaddr") or "192.168.1.1"
+    local port = uci:get("ttyd", "dns_manager", "port") or "7682"
+    ip = ip:match("^[^/]+") or ip
+    if ip:find(":", 1, true) then
+        http.redirect("http://[" .. ip .. "]:" .. port .. "/")
+    else
+        http.redirect("http://" .. ip .. ":" .. port .. "/")
+    end
+end
+EOF_LUCI
+    chmod 0644 "$LUCI_CONTROLLER"
+    rm -rf /tmp/luci-* /tmp/luci-indexcache* 2>/dev/null || true
+    /etc/init.d/rpcd reload >/dev/null 2>&1 || true
+}
+web_access_luci_remove() {
+    rm -f "$LUCI_CONTROLLER"
+    rm -rf /tmp/luci-* /tmp/luci-indexcache* 2>/dev/null || true
+    /etc/init.d/rpcd reload >/dev/null 2>&1 || true
+}
 apply_web_access() {
     case "${WEB_ACCESS_ENABLED:-0}" in
         1)
@@ -3657,14 +3703,16 @@ apply_web_access() {
             if ! web_access_install; then WEB_ACCESS_ENABLED=0; save_config; err_msg 'Не удалось установить ttyd.'; return 1; fi
             if ! web_access_write_config; then WEB_ACCESS_ENABLED=0; save_config; err_msg 'Не удалось настроить web-доступ.'; return 1; fi
             if ! web_access_firewall; then WEB_ACCESS_ENABLED=0; web_access_remove_config; save_config; /etc/init.d/ttyd restart >/dev/null 2>&1 || true; err_msg 'Не удалось открыть web-доступ в LAN.'; return 1; fi
+            if ! web_access_luci_install; then WEB_ACCESS_ENABLED=0; web_access_remove_firewall; web_access_remove_config; save_config; /etc/init.d/ttyd restart >/dev/null 2>&1 || true; err_msg 'Не удалось добавить пункт DNS Manager в LuCI.'; return 1; fi
             /etc/init.d/ttyd enable >/dev/null 2>&1 || true
             /etc/init.d/ttyd restart >/dev/null 2>&1 || true
             sleep 1
             if web_access_real; then save_config; _web_ip="$(uci -q get network.lan.ipaddr 2>/dev/null | cut -d/ -f1)"; ok_msg "Доступ из браузера включён: http://${_web_ip:-192.168.1.1}:$WEB_ACCESS_PORT"; return 0; fi
-            WEB_ACCESS_ENABLED=0; web_access_remove_firewall; web_access_remove_config; save_config; /etc/init.d/ttyd restart >/dev/null 2>&1 || true; err_msg 'Web-доступ не запустился.'; return 1
+            WEB_ACCESS_ENABLED=0; web_access_remove_firewall; web_access_remove_config; web_access_luci_remove; save_config; /etc/init.d/ttyd restart >/dev/null 2>&1 || true; err_msg 'Web-доступ не запустился.'; return 1
             ;;
         *)
             WEB_ACCESS_ENABLED=0
+            web_access_remove_luci
             web_access_remove_config
             web_access_remove_firewall
             /etc/init.d/ttyd restart >/dev/null 2>&1 || true
