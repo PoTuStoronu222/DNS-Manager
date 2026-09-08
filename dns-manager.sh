@@ -1,9 +1,8 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
 # ==========================================
-# ОСНОВНЫЕ ПАРАМЕТРЫ
 # ==========================================
-VERSION="1.41"
+VERSION="1.42"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -72,7 +71,6 @@ C_DGRAY='\033[1;37m'
 C_TITLE='\033[0;34m'
 C_SECTION='\033[1;33m'
 # ==========================================
-# ПРОВЕРКА И ОБНОВЛЕНИЕ
 # ==========================================
 UPDATE_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager.sh"
 _ver_newer() {
@@ -136,7 +134,6 @@ rm -f "$_upd_tmp" 2>/dev/null
 return 0
 }
 # ==========================================
-# СООБЩЕНИЯ И СЛУЖЕБНЫЙ ВЫВОД
 # ==========================================
 log_msg() {
 mkdir -p "$BASE_DIR" "$STATE_DIR" 2>/dev/null
@@ -202,7 +199,6 @@ menu_prompt() {
 printf "${C_YELLOW}${C_BOLD}Выберите пункт: ${C_NC}"
 }
 # ==========================================
-# ПРЕДВАРИТЕЛЬНАЯ ПРОВЕРКА
 # ==========================================
 preflight_readonly() {
 [ "$(id -u 2>/dev/null)" = 0 ] || { err_msg "Нужны права root."; exit 1; }
@@ -215,14 +211,12 @@ SYS_TARGET="$(sed -n "s/^DISTRIB_TARGET='\([^']*\)'.*/\1/p" /etc/openwrt_release
 SYS_ARCH="$(sed -n "s/^DISTRIB_ARCH='\([^']*\)'.*/\1/p" /etc/openwrt_release | head -n1)"
 }
 # ==========================================
-# КАТАЛОГИ И НАЧАЛЬНАЯ ИНИЦИАЛИЗАЦИЯ
 # ==========================================
 init_dirs() {
 mkdir -p "$CFG_DIR" "$STATE_DIR" "$TMP_DIR" "$BASELINE_DIR" 2>/dev/null
 touch "$LOG_FILE" "$TX_LOG" "$OWNERSHIP" 2>/dev/null
 }
 # ==========================================
-# ПОСТОЯННЫЙ BASELINE — НЕ ЗАВИСИТ ОТ ВЕРСИИ MANAGER
 # ==========================================
 baseline_files() {
 printf '%s\n'  /etc/config/dhcp  /etc/config/https-dns-proxy  /etc/config/firewall  /etc/config/system  /etc/sysctl.d/90-dns-manager.conf  /etc/sysctl.d/91-dns-manager-extended.conf  /etc/dnsmasq.d/90-dns-manager-bogus.conf  /etc/dnsmasq.d/91-dns-manager-client-fixes.conf  /etc/hotplug.d/iface/99-dns-manager-tailscale  /etc/crontabs/root  /etc/init.d/tg-ws-proxy-go  /etc/init.d/tailscale
@@ -317,9 +311,7 @@ rm -f "$DNS_CATALOG.previous" "$NTP_CATALOG.previous" "$BOOTSTRAP_CATALOG.previo
 _old_dnscatver="$(sed -n 's/^# DNSCATVER=//p' "$DNS_CATALOG" 2>/dev/null | head -n1)"
 if [ ! -s "$DNS_CATALOG" ] || [ "$_old_dnscatver" != "$DNSCAT_VERSION" ]; then
 cat > "$DNS_CATALOG" <<'EOF_DNS'
-# DNSCATVER=8.5-RU-NOSOCIAL
 # ==========================================
-# КАТАЛОГ DNS — ОБХОД И СЕРВИСЫ
 # ==========================================
 mafioznik|bypass|geo+services|Mafioznik DNS|https://dns.mafioznik.com/dns-query|ru/global|verified-current
 mafioznik_xyz|bypass|geo+services|Mafioznik DNS XYZ|https://dns.mafioznik.xyz/dns-query|ru/global|runtime-check
@@ -344,13 +336,11 @@ dns4all|bypass|uncensored|DNS4all|https://doh.dns4all.eu/dns-query|eu/global|sou
 dns4eu_unfiltered|clean|unfiltered|DNS4EU Unfiltered|https://unfiltered.joindns4.eu/dns-query|eu|verified-published-current
 shecan|bypass|geo+services|Shecan DNS|https://free.shecan.ir/dns-query|ir/global|runtime-check
 # ==========================================
-# КАТАЛОГ DNS — РЕГИОНАЛЬНЫЕ
 # ==========================================
 yandex_ru|regional|ru+su+rf|Yandex RU|https://common.dot.dns.yandex.net/dns-query|ru|verified-published-current
 yandex_safe|regional|ru+su+rf|Yandex Safe|https://safe.dot.dns.yandex.net/dns-query|ru|runtime-check
 yandex_family|regional|ru+su+rf|Yandex Family|https://family.dot.dns.yandex.net/dns-query|ru|runtime-check
 # ==========================================
-# КАТАЛОГ DNS — ЧИСТЫЕ И ПУБЛИЧНЫЕ
 # ==========================================
 cloudflare_clean|clean|unfiltered|Cloudflare|https://cloudflare-dns.com/dns-query|global|verified-published-current
 google_clean|clean|unfiltered|Google Public DNS|https://dns.google/dns-query|global|verified-published-current
@@ -378,7 +368,6 @@ doh_seby|clean|unfiltered|Seby DNS|https://doh.seby.io/dns-query|global|source-l
 dns_surfshark|clean|unfiltered|Surfshark DNS|https://dns.surfsharkdns.com/dns-query|global|source-listed
 hostux|clean|unfiltered|Hostux DNS|https://dns.hostux.net/dns-query|global|source-listed
 # ==========================================
-# КАТАЛОГ DNS — БЕЗОПАСНОСТЬ
 # ==========================================
 cloudflare_security|security|malware|Cloudflare Security|https://security.cloudflare-dns.com/dns-query|global|verified-published-current
 quad9_secure|security|malware+dnssec|Quad9 Secure|https://dns.quad9.net/dns-query|global|verified-published-current
@@ -400,7 +389,6 @@ dnsforge_strict|security|strict-filtering|dnsforge Strict|https://hard.dnsforge.
 dnsbunker|security|balanced-threat|DNSBUNKER Pro+TIF|https://dnsbunker.org/dns-query|germany|verified-published-current
 nsec_arnor|security|malware+phishing|arnor.org|https://nsec.arnor.org/dns-query|global|source-listed
 # ==========================================
-# КАТАЛОГ DNS — ПРИВАТНОСТЬ
 # ==========================================
 mullvad_clean|privacy|qname-minimization|Mullvad Clean|https://dns.mullvad.net/dns-query|global|verified-published-current
 mullvad_adblock|adblock|ads+tracking|Mullvad Adblock|https://adblock.dns.mullvad.net/dns-query|global|verified-published-current
@@ -420,7 +408,6 @@ pumplex|privacy|no-ads+dnssec|PumpleX|https://dns.pumplex.com/dns-query|france|v
 dnsforge|privacy|privacy|dnsforge|https://dnsforge.de/dns-query|germany|verified-published-current
 ffmuc|privacy|community|FFMUC|https://doh.ffmuc.net/dns-query|germany|verified-published-current
 # ==========================================
-# КАТАЛОГ DNS — БЛОКИРОВКА РЕКЛАМЫ
 # ==========================================
 adguard_default|adblock|ads+tracking+phishing|AdGuard DNS|https://dns.adguard-dns.com/dns-query|global|verified-published-current
 controld_p2|adblock|ads+tracking|Control D Ads+Tracking|https://freedns.controld.com/p2|global|verified-published-current
@@ -433,7 +420,6 @@ angry_im|adblock|ads|Angry.im|https://doh.angry.im/dns-query|global|source-liste
 dns_bebas_default|adblock|ads+malware+phishing|BebasDNS|https://dns.bebasid.com/dns-query|id/global|source-listed
 blokada|adblock|privacy|Blokada DNS|https://dns.blokada.org/dns-query|global|source-listed
 # ==========================================
-# КАТАЛОГ DNS — СЕМЕЙНАЯ ЗАЩИТА
 # ==========================================
 cloudflare_family|family|malware+adult|Cloudflare Family|https://family.cloudflare-dns.com/dns-query|global|verified-published-current
 adguard_family|family|ads+tracking+adult|AdGuard Family|https://family.adguard-dns.com/dns-query|global|verified-published-current
@@ -454,7 +440,6 @@ EOF_DNS
 fi
 if [ ! -s "$NTP_CATALOG" ] || ! grep -q '^# NTPCATVER=6.6-FINAL-HYBRID' "$NTP_CATALOG" 2>/dev/null; then
 cat > "$NTP_CATALOG" <<'EOF_NTP'
-# NTPCATVER=6.6-FINAL-HYBRID
 cf_ip|global|Cloudflare|162.159.200.1 162.159.200.123|2606:4700:f1::1 2606:4700:f1::123|ip-first|no-smear|verified-current
 nist_ip|global|NIST|129.6.15.28 129.6.15.29 129.6.15.30 129.6.15.27 129.6.15.26|2610:20:6f15:15::27 2610:20:6f15:15::26|ip-first|no-smear|verified-current
 google_ip|special|Google Public NTP|216.239.35.0 216.239.35.4 216.239.35.8 216.239.35.12||ip-only|smear|verified-current
@@ -469,7 +454,6 @@ EOF_NTP
 fi
 if [ ! -s "$BOOTSTRAP_CATALOG" ] || ! grep -q '^# BOOTSTRAPCATVER=6.6-FIX13' "$BOOTSTRAP_CATALOG" 2>/dev/null; then
 cat > "$BOOTSTRAP_CATALOG" <<'EOF_BOOT'
-# BOOTSTRAPCATVER=6.6-FINAL-HYBRID
 yandex|Yandex|77.88.8.8,77.88.8.1|2a02:6b8::feed:0ff,2a02:6b8:0:1::feed:0ff|bootstrap|verified-current
 adguard|AdGuard|94.140.14.14,94.140.15.15|2a10:50c0::ad1:ff,2a10:50c0::ad2:ff|bootstrap|verified-current
 cloudflare|Cloudflare|1.1.1.1,1.0.0.1|2606:4700:4700::1111,2606:4700:4700::1001|bootstrap|verified-current
@@ -483,7 +467,6 @@ EOF_BOOT
 fi
 if [ ! -s "$BOGUS_CATALOG" ] || ! grep -q '^# BOGUSCATVER=6.6-FIX13' "$BOGUS_CATALOG" 2>/dev/null; then
 cat > "$BOGUS_CATALOG" <<'EOF_BOGUS'
-# BOGUSCATVER=6.6-FINAL-HYBRID
 rtk_95_167|hijack|95.167.13.50|Ростелеком: исторически подтвержденная заглушка|high|historical-confirmed
 ttk_62_33|hijack|62.33.207.195|ТТК: исторически указанный адрес|medium|historical-confirmed
 onlime_77_37|hijack|77.37.254.90|Онлайм: исторически указанный адрес|medium|historical-confirmed
@@ -504,7 +487,6 @@ if [ "${_old_dnscatver:-}" != "$DNSCAT_VERSION" ]; then
 fi
 }
 # ==========================================
-# ЗАГРУЗКА И СОХРАНЕНИЕ НАСТРОЕК
 # ==========================================
 load_config() {
 _had_dns_profile=0
@@ -596,7 +578,6 @@ WATCHDOG_INTERVAL="$WATCHDOG_INTERVAL"
 EOF_CFG
 }
 # ==========================================
-# ОБНАРУЖЕНИЕ СИСТЕМЫ И ЗАВИСИМОСТЕЙ
 # ==========================================
 disc_system() {
 HAS_DNSMASQ="no"; command -v dnsmasq >/dev/null 2>&1 && HAS_DNSMASQ="yes"
@@ -687,7 +668,6 @@ HAS_BYEDPI="$OTHER_BYEDPI"
 HAS_TAILSCALE="$OTHER_TAILSCALE"
 }
 # ==========================================
-# ПУТЬ DNS К УСТРОЙСТВАМ СЕТИ
 # ==========================================
 dns_redirect_conflict_uci() {
     _changed=0
@@ -771,7 +751,6 @@ disc_firewall
 log_tx "DISCOVER" "router" "READ" "OK" "OpenWrt=$SYS_OWRT;fw=$SYS_FW;dns=$DNSMASQ_RUN;doh=$DOH_TOTAL"
 }
 # ==========================================
-# РАБОТА С КАТАЛОГАМИ
 # ==========================================
 dns_field() { awk -F'|' -v id="$1" -v f="$2" '$1==id{print $f;exit}' "$DNS_CATALOG"; }
 dns_name() { dns_field "$1" 4 | sed 's/\\\\\././g'; }
@@ -783,9 +762,7 @@ ntp_name() { awk -F'|' -v id="$1" '$1==id{print $3;exit}' "$NTP_CATALOG"; }
 ntp_ipv4() { awk -F'|' -v id="$1" '$1==id{print $4;exit}' "$NTP_CATALOG"; }
 ntp_leap() { awk -F'|' -v id="$1" '$1==id{print $7;exit}' "$NTP_CATALOG"; }
 # ==========================================
-# СЛУЖЕБНЫЕ ФУНКЦИИ
 # ==========================================
-# НОРМАЛИЗАЦИЯ И ПРОВЕРКА АДРЕСОВ
 # ==========================================
 normalize_url() {
 _u="$1"
@@ -799,7 +776,6 @@ else printf ''
 fi
 }
 # ==========================================
-# РЕЗОЛВИНГ И BOOTSTRAP DNS
 # ==========================================
 resolve_host() {
 host="$1"
@@ -829,9 +805,7 @@ fi
 return 1
 }
 # ==========================================
-# ПРОВЕРКА DNS И DNS-сервер
 # ==========================================
-# ТЕСТИРОВАНИЕ DNS-СЕРВЕРОВ
 # ==========================================
 validate_dns_message() {
     _file="$1"
@@ -4156,7 +4130,7 @@ run_watchdog() {
         [ "$_slot" != RU_2 ] || [ -n "${PORT_RU_2:-}" ] || continue
         _desired="$(watchdog_desired_cat "$_slot")"; _current_cat="$(dns_cat "$_id")"
         _need_return=0
-        if [ "$DNS_SELECTION_MODE" = quick ] && [ "$_slot" != RU ] && [ "$_slot" != RU_2 ]; then
+        if [ "$DNS_SELECTION_MODE" = quick ] && [ "$_slot" != RU ] && [ "$_slot" != RU_2 ] && [ "$_current_cat" = clean ]; then
             _return_pref="$(watchdog_preferred_quick_candidate "$_slot" 2>/dev/null || true)"
             [ -n "$_return_pref" ] && [ "$_id" != "$_return_pref" ] && _need_return=1
         fi
