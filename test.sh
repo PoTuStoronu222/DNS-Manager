@@ -2,7 +2,7 @@
 MANAGER_PATH="/usr/bin/dns-manager"
 # ==========================================
 # ==========================================
-VERSION="1.84"
+VERSION="1.85"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -23,9 +23,10 @@ BASELINE_LAST="$BASELINE_DIR/last-applied.manifest"
 BASELINE_META="$BASELINE_DIR/meta"
 OWNERSHIP="$STATE_DIR/ownership.conf"
 TEST_RESULTS="$STATE_DIR/dns-test-results.conf"
-WEB_INIT="/etc/init.d/dns-manager-web"
+WEB_INIT="/etc/init.d/ttyd"
 WEB_ACCESS_PORT="7682"
 WEB_ACCESS_ENABLED=0
+WEB_TTYD_SECTION="dns_manager"
 cleanup_stale_tmp_dirs() {
     _self_tmp="${TMP_DIR:-}"
     find /tmp -maxdepth 1 -type d -name 'dnsmgr.*' -mtime +1 -print 2>/dev/null | while IFS= read -r _old_dir; do
@@ -222,7 +223,7 @@ touch "$LOG_FILE" "$TX_LOG" "$OWNERSHIP" 2>/dev/null
 # ==========================================
 # ==========================================
 baseline_files() {
-printf '%s\n'  /etc/config/dhcp  /etc/config/https-dns-proxy  /etc/config/firewall  /etc/config/system  /etc/sysctl.d/90-dns-manager.conf  /etc/sysctl.d/91-dns-manager-extended.conf  /etc/dnsmasq.d/90-dns-manager-bogus.conf  /etc/dnsmasq.d/91-dns-manager-client-fixes.conf  /etc/hotplug.d/iface/99-dns-manager-tailscale  /etc/crontabs/root  /etc/init.d/tg-ws-proxy-go  /etc/init.d/tailscale  /etc/init.d/dns-manager-web
+printf '%s\n'  /etc/config/dhcp  /etc/config/https-dns-proxy  /etc/config/firewall  /etc/config/system  /etc/sysctl.d/90-dns-manager.conf  /etc/sysctl.d/91-dns-manager-extended.conf  /etc/dnsmasq.d/90-dns-manager-bogus.conf  /etc/dnsmasq.d/91-dns-manager-client-fixes.conf  /etc/hotplug.d/iface/99-dns-manager-tailscale  /etc/crontabs/root  /etc/init.d/tg-ws-proxy-go  /etc/init.d/tailscale
 }
 baseline_key() {
 printf '%s' "$1" | sed 's#^/##; s#[/ ]#_#g'
@@ -3561,7 +3562,7 @@ check_module_state() {
         ts_hotplug) [ -f /etc/hotplug.d/iface/99-dns-manager-tailscale ] && printf 1 || printf 0 ;;
         cron) [ "${CRON_CLEANUP:-0}" = 1 ] && printf 1 || printf 0 ;;
         watchdog) grep -qsE '^[[:space:]]*\*/[0-9]+[[:space:]]+\*[[:space:]]+\*[[:space:]]+\*[[:space:]]+\*.*dns-manager[[:space:]]+(watchdog|-w|--watchdog)([[:space:]]|$)' /etc/crontabs/root 2>/dev/null && printf 1 || printf 0 ;;
-        web) [ -x "$WEB_INIT" ] && pgrep -f '[t]tyd.*dns-manager' >/dev/null 2>&1 && printf 1 || printf 0 ;;
+        web) [ -x "$WEB_INIT" ] && uci -q get "ttyd.$WEB_TTYD_SECTION.command" 2>/dev/null | grep -qx "/usr/bin/dns-manager" && pgrep -f '[t]tyd.*dns-manager' >/dev/null 2>&1 && printf 1 || printf 0 ;;
         *) printf 0 ;;
     esac
 }
@@ -3581,17 +3582,32 @@ module_state_word() {
 # ==========================================
 # ==========================================
 web_access_real() {
-    [ -x "$WEB_INIT" ] || return 1
+    uci -q get "ttyd.$WEB_TTYD_SECTION.command" 2>/dev/null | grep -qx '/usr/bin/dns-manager' || return 1
+    pgrep -f '[t]tyd.*dns-manager' >/dev/null 2>&1 || return 1
     if command -v ss >/dev/null 2>&1; then
-        ss -lnt 2>/dev/null | grep -qE "(^|[[:space:]])([^[:space:]]*:)?7682([[:space:]]|$)" && return 0
+        ss -lnt 2>/dev/null | grep -qE '(^|[[:space:]])[^[:space:]]*:7682([[:space:]]|$)' && return 0
     fi
     if command -v netstat >/dev/null 2>&1; then
-        netstat -lnt 2>/dev/null | grep -qE "(^|[[:space:]])[^[:space:]]*:7682([[:space:]]|$)" && return 0
+        netstat -lnt 2>/dev/null | grep -qE '(^|[[:space:]])[^[:space:]]*:7682([[:space:]]|$)' && return 0
+    fi
+    return 1
+}
+web_access_own_port() {
+    uci -q get "ttyd.$WEB_TTYD_SECTION.command" 2>/dev/null | grep -qx '/usr/bin/dns-manager' && pgrep -f '[t]tyd.*dns-manager' >/dev/null 2>&1
+}
+web_access_port_busy() {
+    if command -v ss >/dev/null 2>&1 && ss -lnt 2>/dev/null | grep -qE '(^|[[:space:]])[^[:space:]]*:7682([[:space:]]|$)'; then
+        web_access_own_port && return 1
+        return 0
+    fi
+    if command -v netstat >/dev/null 2>&1 && netstat -lnt 2>/dev/null | grep -qE '(^|[[:space:]])[^[:space:]]*:7682([[:space:]]|$)'; then
+        web_access_own_port && return 1
+        return 0
     fi
     return 1
 }
 web_access_install() {
-    if command -v ttyd >/dev/null 2>&1; then return 0; fi
+    command -v ttyd >/dev/null 2>&1 && [ -x /etc/init.d/ttyd ] && return 0
     if [ "$PKG_MGR" = "apk" ]; then
         apk update >/dev/null 2>&1 || return 1
         apk add ttyd >/dev/null 2>&1 || return 1
@@ -3599,34 +3615,23 @@ web_access_install() {
         opkg update >/dev/null 2>&1 || return 1
         opkg install ttyd >/dev/null 2>&1 || return 1
     fi
-    command -v ttyd >/dev/null 2>&1
+    command -v ttyd >/dev/null 2>&1 && [ -x /etc/init.d/ttyd ]
 }
-web_access_write_service() {
-    cat > "$WEB_INIT" <<EOF_WEB_INIT
-#!/bin/sh /etc/rc.common
-START=99
-STOP=50
-USE_PROCD=1
-
-start_service() {
-    _lan_dev=""
-    . /lib/functions/network.sh 2>/dev/null
-    network_get_device _lan_dev lan 2>/dev/null || true
-    [ -n "$_lan_dev" ] || _lan_dev="br-lan"
-    procd_open_instance
-    procd_set_param command /usr/bin/ttyd -p 7682 -i "$_lan_dev" -W -t fontSize=15 sh /usr/bin/dns-manager
-    procd_set_param respawn 5 10 0
-    procd_set_param stdout 1
-    procd_set_param stderr 1
-    procd_close_instance
+web_access_write_config() {
+    uci -q get "ttyd.$WEB_TTYD_SECTION" >/dev/null 2>&1 && uci -q delete "ttyd.$WEB_TTYD_SECTION"
+    uci set "ttyd.$WEB_TTYD_SECTION=ttyd" || return 1
+    uci set "ttyd.$WEB_TTYD_SECTION.enable=1" || return 1
+    uci set "ttyd.$WEB_TTYD_SECTION.port=$WEB_ACCESS_PORT" || return 1
+    uci set "ttyd.$WEB_TTYD_SECTION.interface=@lan" || return 1
+    uci set "ttyd.$WEB_TTYD_SECTION.readonly=0" || return 1
+    uci set "ttyd.$WEB_TTYD_SECTION.check_origin=0" || return 1
+    uci set "ttyd.$WEB_TTYD_SECTION.command=/usr/bin/dns-manager" || return 1
+    uci add_list "ttyd.$WEB_TTYD_SECTION.client_option=fontSize=15" || return 1
+    uci commit ttyd || return 1
 }
-
-stop_service() {
-    procd_kill_instance
-}
-EOF_WEB_INIT
-    chmod 755 "$WEB_INIT" || return 1
-    grep -q -- 'ttyd -p 7682 -i' "$WEB_INIT" 2>/dev/null
+web_access_remove_config() {
+    uci -q delete "ttyd.$WEB_TTYD_SECTION"
+    uci commit ttyd >/dev/null 2>&1 || true
 }
 web_access_firewall() {
     uci -q delete firewall.dns_manager_web_ttyd
@@ -3648,21 +3653,21 @@ apply_web_access() {
     case "${WEB_ACCESS_ENABLED:-0}" in
         1)
             WEB_ACCESS_PORT=7682
-            if command -v ss >/dev/null 2>&1 && ss -lnt 2>/dev/null | grep -qE ":$WEB_ACCESS_PORT([[:space:]]|$)"; then WEB_ACCESS_ENABLED=0; save_config; err_msg "Порт web-доступа $WEB_ACCESS_PORT уже занят."; return 1; fi
-            if command -v netstat >/dev/null 2>&1 && netstat -lnt 2>/dev/null | grep -qE ":$WEB_ACCESS_PORT([[:space:]]|$)"; then WEB_ACCESS_ENABLED=0; save_config; err_msg "Порт web-доступа $WEB_ACCESS_PORT уже занят."; return 1; fi
+            if web_access_port_busy; then WEB_ACCESS_ENABLED=0; save_config; err_msg "Порт web-доступа $WEB_ACCESS_PORT уже занят."; return 1; fi
             if ! web_access_install; then WEB_ACCESS_ENABLED=0; save_config; err_msg 'Не удалось установить ttyd.'; return 1; fi
-            if ! web_access_write_service; then WEB_ACCESS_ENABLED=0; save_config; err_msg 'Не удалось настроить web-доступ.'; return 1; fi
-            if ! web_access_firewall; then WEB_ACCESS_ENABLED=0; "$WEB_INIT" disable >/dev/null 2>&1 || true; "$WEB_INIT" stop >/dev/null 2>&1 || true; rm -f "$WEB_INIT"; save_config; err_msg 'Не удалось открыть web-доступ в LAN.'; return 1; fi
-            "$WEB_INIT" enable >/dev/null 2>&1 || true
-            "$WEB_INIT" restart >/dev/null 2>&1 || true
+            if ! web_access_write_config; then WEB_ACCESS_ENABLED=0; save_config; err_msg 'Не удалось настроить web-доступ.'; return 1; fi
+            if ! web_access_firewall; then WEB_ACCESS_ENABLED=0; web_access_remove_config; save_config; /etc/init.d/ttyd restart >/dev/null 2>&1 || true; err_msg 'Не удалось открыть web-доступ в LAN.'; return 1; fi
+            /etc/init.d/ttyd enable >/dev/null 2>&1 || true
+            /etc/init.d/ttyd restart >/dev/null 2>&1 || true
+            sleep 1
             if web_access_real; then save_config; _web_ip="$(uci -q get network.lan.ipaddr 2>/dev/null | cut -d/ -f1)"; ok_msg "Доступ из браузера включён: http://${_web_ip:-192.168.1.1}:$WEB_ACCESS_PORT"; return 0; fi
-            WEB_ACCESS_ENABLED=0; web_access_remove_firewall; "$WEB_INIT" disable >/dev/null 2>&1 || true; "$WEB_INIT" stop >/dev/null 2>&1 || true; rm -f "$WEB_INIT"; save_config; err_msg 'Web-доступ не запустился.'; return 1
+            WEB_ACCESS_ENABLED=0; web_access_remove_firewall; web_access_remove_config; save_config; /etc/init.d/ttyd restart >/dev/null 2>&1 || true; err_msg 'Web-доступ не запустился.'; return 1
             ;;
         *)
             WEB_ACCESS_ENABLED=0
-            [ -x "$WEB_INIT" ] && { "$WEB_INIT" disable >/dev/null 2>&1 || true; "$WEB_INIT" stop >/dev/null 2>&1 || true; }
+            web_access_remove_config
             web_access_remove_firewall
-            rm -f "$WEB_INIT"
+            /etc/init.d/ttyd restart >/dev/null 2>&1 || true
             save_config
             ok_msg 'Доступ из браузера выключен.'
             return 0
