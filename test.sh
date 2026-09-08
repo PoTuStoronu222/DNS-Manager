@@ -2,7 +2,7 @@
 MANAGER_PATH="/usr/bin/dns-manager"
 # ==========================================
 # ==========================================
-VERSION="1.82"
+VERSION="1.83"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -3582,14 +3582,17 @@ module_state_word() {
 # ==========================================
 web_access_real() { [ -x "$WEB_INIT" ] && pgrep -f '[t]tyd.*dns-manager' >/dev/null 2>&1; }
 web_access_install() {
-    command -v ttyd >/dev/null 2>&1 && return 0
-    if [ "$PKG_MGR" = "apk" ]; then apk update >/dev/null 2>&1 && apk add ttyd >/dev/null 2>&1; else opkg update >/dev/null 2>&1 && opkg install ttyd >/dev/null 2>&1; fi
+    if command -v ttyd >/dev/null 2>&1; then return 0; fi
+    if [ "$PKG_MGR" = "apk" ]; then
+        apk update >/dev/null 2>&1 || return 1
+        apk add ttyd >/dev/null 2>&1 || return 1
+    else
+        opkg update >/dev/null 2>&1 || return 1
+        opkg install ttyd >/dev/null 2>&1 || return 1
+    fi
     command -v ttyd >/dev/null 2>&1
 }
 web_access_write_service() {
-    _web_iface="$(uci -q get network.lan.device 2>/dev/null)"
-    [ -n "$_web_iface" ] || _web_iface="$(uci -q get network.lan.ifname 2>/dev/null)"
-    [ -n "$_web_iface" ] || _web_iface="br-lan"
     cat > "$WEB_INIT" <<EOF_WEB_INIT
 #!/bin/sh /etc/rc.common
 START=98
@@ -3597,14 +3600,14 @@ STOP=10
 USE_PROCD=1
 start_service() {
     procd_open_instance
-    procd_set_param command /usr/bin/ttyd -i $_web_iface -p 7682 -W -O -t fontSize=15 sh /usr/bin/dns-manager
+    procd_set_param command /usr/bin/ttyd -p 7682 -W -O -t fontSize=15 sh /usr/bin/dns-manager
     procd_set_param respawn 5 10 0
     procd_close_instance
 }
 stop_service() { procd_kill_instance; }
 EOF_WEB_INIT
     chmod 755 "$WEB_INIT" || return 1
-    grep -q -- "-i $_web_iface -p 7682" "$WEB_INIT" 2>/dev/null
+    grep -q -- "ttyd -p 7682 -W -O -t fontSize=15 sh /usr/bin/dns-manager" "$WEB_INIT" 2>/dev/null
 }
 web_access_firewall() {
     uci -q delete firewall.dns_manager_web_ttyd
