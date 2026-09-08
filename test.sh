@@ -22,9 +22,6 @@ TMP_DIR="$(mktemp -d /tmp/dnsmgr.XXXXXX 2>/dev/null || { d="/tmp/dnsmgr.$$"; mkd
 cleanup_stale_tmp_dirs
 TX_ID="$(date +%Y%m%d-%H%M%S)-$$"; TX_DIR="$STATE_DIR/tx-$TX_ID"; TX_ACTIVE=0; TX_RESERVED_PORTS=""; TX_PRE_SLOTS=""; CORE_ONLY=0
 cleanup_runtime() {
-    # Останавливаем только временные процессы проверки и затем удаляем временный каталог.
-    # При Ctrl+C нельзя удалять TMP_DIR до завершения текущей функции: фоновые проверки
-    # ещё могут писать туда логи и временные файлы.
     for _pid in ${STAGE_PIDS:-}; do
         [ -n "$_pid" ] || continue
         kill "$_pid" 2>/dev/null || true
@@ -65,8 +62,6 @@ _ver_newer() {
         if (ma > mb) exit 0;
         if (ma < mb) exit 1;
 
-        # First two components are the human version number. Treat them
-        # as a decimal value so 1.10 means 1.1, not 1.10 > 1.9.
         a12=ma + (x[2]=="" ? 0 : (x[2]+0)/10^(length(x[2])));
         b12=mb + (y[2]=="" ? 0 : (y[2]+0)/10^(length(y[2])));
         if (a12 > b12) exit 0;
@@ -145,8 +140,6 @@ info_msg() { log_msg "Информация: $*"; printf "${C_CYAN}[ℹ] %s${C_NC
 warn_msg() { log_msg "Внимание: $*"; printf "${C_YELLOW}[!] %s${C_NC}\n" "$*"; }
 err_msg() { log_msg "Ошибка: $*"; printf "${C_RED}[✗] %s${C_NC}\n" "$*"; }
 safe_read() {
-    # Всегда читаем ответ пользователя из терминала. Это важно, когда
-    # функция запускается из перенаправленного вывода/подпроцесса.
     if [ -t 0 ]; then
         read -r "$@"
     elif [ -r /dev/tty ]; then
@@ -328,7 +321,6 @@ rm -f "$DNS_CATALOG.previous" "$NTP_CATALOG.previous" "$BOOTSTRAP_CATALOG.previo
 _old_dnscatver="$(sed -n 's/^# DNSCATVER=//p' "$DNS_CATALOG" 2>/dev/null | head -n1)"
 if [ ! -s "$DNS_CATALOG" ] || [ "$_old_dnscatver" != "$DNSCAT_VERSION" ]; then
 cat > "$DNS_CATALOG" <<'EOF_DNS'
-# DNSCATVER=8.5-RU-NOSOCIAL
 # ==========================================
 # КАТАЛОГ DNS — ОБХОД И СЕРВИСЫ
 # ==========================================
@@ -465,7 +457,6 @@ EOF_DNS
 fi
 if [ ! -s "$NTP_CATALOG" ] || ! grep -q '^# NTPCATVER=6.6-FINAL-HYBRID' "$NTP_CATALOG" 2>/dev/null; then
 cat > "$NTP_CATALOG" <<'EOF_NTP'
-# NTPCATVER=6.6-FINAL-HYBRID
 cf_ip|global|Cloudflare|162.159.200.1 162.159.200.123|2606:4700:f1::1 2606:4700:f1::123|ip-first|no-smear|verified-current
 nist_ip|global|NIST|129.6.15.28 129.6.15.29 129.6.15.30 129.6.15.27 129.6.15.26|2610:20:6f15:15::27 2610:20:6f15:15::26|ip-first|no-smear|verified-current
 google_ip|special|Google Public NTP|216.239.35.0 216.239.35.4 216.239.35.8 216.239.35.12||ip-only|smear|verified-current
@@ -480,7 +471,6 @@ EOF_NTP
 fi
 if [ ! -s "$BOOTSTRAP_CATALOG" ] || ! grep -q '^# BOOTSTRAPCATVER=6.6-FIX13' "$BOOTSTRAP_CATALOG" 2>/dev/null; then
 cat > "$BOOTSTRAP_CATALOG" <<'EOF_BOOT'
-# BOOTSTRAPCATVER=6.6-FINAL-HYBRID
 yandex|Yandex|77.88.8.8,77.88.8.1|2a02:6b8::feed:0ff,2a02:6b8:0:1::feed:0ff|bootstrap|verified-current
 adguard|AdGuard|94.140.14.14,94.140.15.15|2a10:50c0::ad1:ff,2a10:50c0::ad2:ff|bootstrap|verified-current
 cloudflare|Cloudflare|1.1.1.1,1.0.0.1|2606:4700:4700::1111,2606:4700:4700::1001|bootstrap|verified-current
@@ -494,7 +484,6 @@ EOF_BOOT
 fi
 if [ ! -s "$BOGUS_CATALOG" ] || ! grep -q '^# BOGUSCATVER=6.6-FIX13' "$BOGUS_CATALOG" 2>/dev/null; then
 cat > "$BOGUS_CATALOG" <<'EOF_BOGUS'
-# BOGUSCATVER=6.6-FINAL-HYBRID
 rtk_95_167|hijack|95.167.13.50|Ростелеком: исторически подтвержденная заглушка|high|historical-confirmed
 ttk_62_33|hijack|62.33.207.195|ТТК: исторически указанный адрес|medium|historical-confirmed
 onlime_77_37|hijack|77.37.254.90|Онлайм: исторически указанный адрес|medium|historical-confirmed
@@ -688,15 +677,10 @@ dns_path_conflict_nft() {
     return 1
 }
 prepare_dns_path() {
-    # Конфликты, явно записанные в UCI firewall, можно безопасно отключить:
-    # исходная конфигурация сохраняется в общем baseline транзакции.
     _cfg_changed="$(dns_redirect_conflict_uci 2>/dev/null || printf 0)"
     [ "$_cfg_changed" = 1 ] && uci commit firewall >/dev/null 2>&1 || true
     [ "$_cfg_changed" = 1 ] && reload_fw || true
 
-    # Runtime nft-правила неизвестного происхождения не удаляем.
-    # Если после reload конфликт всё ещё существует, применение останавливаем,
-    # чтобы не ломать сторонний сервис (TGWS и т.п.).
     if dns_path_conflict_nft >/dev/null 2>&1; then
         return 1
     fi
@@ -794,7 +778,6 @@ validate_dns_message() {
     [ "$_n" -ge 12 ] || return 1
     set -- $(od -An -tu1 -N12 "$_file" 2>/dev/null)
     [ "$#" -ge 12 ] || return 1
-    # ID должен совпадать с нашим запросом 0x1234. QR=1, вопрос один, RCODE=0.
     [ "$1" -eq 18 ] 2>/dev/null || return 1
     [ "$2" -eq 52 ] 2>/dev/null || return 1
     [ $(( $3 & 128 )) -ne 0 ] 2>/dev/null || return 1
@@ -1768,7 +1751,6 @@ info_msg "Старый скрипт $f сохранён в $f.previous"
 fi
 cat > "$f.tmp" <<'EOF_HOT'
 #!/bin/sh
-# DNS_MANAGER_TAILSCALE_HOTPLUG=1
 [ "$ACTION" = ifup ] || exit 0
 [ "$INTERFACE" = wan ] || exit 0
 MARK="/var/run/dns-manager/tailscale-hotplug-window"
@@ -2072,15 +2054,10 @@ local_dns_query_ok() {
     _domain="${2:-example.com}"
     [ -n "$_lp" ] || return 1
 
-    # Для проверки реального локального DNS используем тот же путь, которым
-    # обычно диагностируют DNS на OpenWrt: прямой запрос dig на 127.0.0.1:PORT.
-    # Это надёжнее, чем вручную разбирать UDP-пакет через nc/od.
     if command -v dig >/dev/null 2>&1; then
         _ans="$(dig @127.0.0.1 -p "$_lp" "$_domain" A +time=3 +tries=1 +short 2>/dev/null | awk '/^[0-9]+(\.[0-9]+){3}$/ {print; exit}')"
         [ -n "$_ans" ] && return 0
 
-        # Иногда первый ответ может быть CNAME. Повторяем обычный короткий
-        # вывод без ограничения только первой строкой.
         _ans="$(dig @127.0.0.1 -p "$_lp" "$_domain" A +time=3 +tries=1 2>/dev/null | awk '$4=="A" && $NF ~ /^[0-9]+(\.[0-9]+){3}$/ {print $NF; exit}')"
         [ -n "$_ans" ] && return 0
         return 1
@@ -2157,9 +2134,6 @@ rebuild_selected_hdp_sections() {
         printf '%s|%s|%s\n' "$_rs" "$_rport" "$_rurl" >> "$_keep_file"
     done
 
-    # В активной схеме все собственные секции DNS строятся заново строго
-    # по текущим слотам. Это исключает накопление старых секций и гарантирует
-    # ровно одну секцию на каждый выбранный порт.
     _i=0
     while uci -q get "https-dns-proxy.@https-dns-proxy[$_i]" >/dev/null 2>&1; do
         _m="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].dns_manager" 2>/dev/null)"
@@ -2205,7 +2179,6 @@ replace_failed_slot_from_test() {
     [ -n "${REPAIR_BAD_IDS:-}" ] || REPAIR_BAD_IDS="$TMP_DIR/repair-bad-ids-$$"
     [ -f "$REPAIR_BAD_IDS" ] || : > "$REPAIR_BAD_IDS"
 
-    # Уже занятые DNS не предлагаются как замена другому слоту.
     for _s in 1 2 3 4 5 6 RU RU_2; do
         eval "_u_id=\${SLOT_${_s}:-}"
         [ -n "$_u_id" ] || continue
@@ -2219,8 +2192,6 @@ replace_failed_slot_from_test() {
     _old_display="$(dns_name "$_old_id")"
     [ -n "$_old_display" ] || _old_display="выбранный DNS"
 
-    # В быстром режиме сначала проверяем все подтверждённые обходные DNS,
-    # затем — clean DNS как резерв. В профилях категория не смешивается.
     for _passcat in bypass clean; do
         if [ "$DNS_SELECTION_MODE" != quick ]; then
             [ "$_passcat" = "bypass" ] || break
@@ -2272,7 +2243,6 @@ replace_failed_slot_from_test() {
             fi
 
             /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || true
-            # После перезапуска даём сервису подняться; затем делаем сам DNS-запрос.
             sleep 4
             _domain="example.com"
             case "$_slot" in RU|RU_2) _domain="yandex.ru" ;; esac
@@ -2347,8 +2317,6 @@ verify_after_apply() {
 
     verify_selected_doh || return 1
 
-    # Проверяем не только наличие слушателя, а реальный DNS-ответ через локальный DNS.
-    # Это не даёт ложной ошибки на OpenWrt, где dnsmasq может слушать несколько адресов.
     local_dns_query_ok 53 "example.com" || {
         err_msg "Локальный DNS после применения не отвечает через 127.0.0.1:53."; return 1;
     }
@@ -2365,7 +2333,6 @@ verify_after_apply() {
     fi
     return 0
 }
-# ТРАНЗАКЦИЯ И ОТКАТ
 # ==========================================
 tx_snapshot_start() {
 TX_DIR="$STATE_DIR/tx-$TX_ID"
@@ -2599,9 +2566,6 @@ adaptive_hybrid_prepare() {
     _hybrid_ok_count="$(awk -F'|' '$1!="" && NF>=5 && $5=="OK" && $4 ~ /^[0-9]+$/{n++} END{print n+0}' "$TEST_RESULTS" 2>/dev/null)"
     printf "  В последней полной проверке подтверждено: %s DNS.\n" "$_hybrid_ok_count"
 
-    # В быстром режиме сначала заполняем слоты только обходными DNS.
-    # Clean DNS используются только как резерв, если подтверждённых обходных
-    # DNS недостаточно для всех шести слотов.
     _pool="$TMP_DIR/hybrid-pool-$$"
     : > "$_pool"
     awk -F'|' 'NF>=5 && $2=="bypass" && $5=="OK" && $4 ~ /^[0-9]+$/ {print}' "$TEST_RESULTS" 2>/dev/null | sort -t'|' -k4,4n > "$_pool.bypass"
@@ -2652,8 +2616,6 @@ adaptive_hybrid_prepare() {
         else
             eval "QUICK_PREF_$_slot=\"\""
         fi
-        # В быстром режиме даже clean-резерв считается ролью bypass:
-        # Watchdog понимает, что это резерв и сможет заменить его на обход.
         eval "SLOT_${_slot}_CAT=\"bypass\""
         _port="$(hybrid_desired_port "$_slot")"
         if [ "$_cat" = bypass ]; then
@@ -2677,7 +2639,6 @@ adaptive_hybrid_prepare() {
         return 1
     fi
 
-    # RU2 в быстром режиме автоматически не включается.
     SLOT_RU_2=""
     SLOT_RU_2_CAT="regional"
     PORT_1="$HYBRID_PORT_1"; PORT_2="$HYBRID_PORT_2"; PORT_3="$HYBRID_PORT_3"
@@ -2730,8 +2691,6 @@ apply_settings() {
     BOOTSTRAP_DNS="$BOOTSTRAP_DNS_ALL"; BALANCER_ENABLED=1; HYBRID_SELECTION_READY=0; HYBRID_PREFLIGHT_WAS_RUNNING=0
 
     if [ "$DNS_PROFILE" = hybrid ] && [ "${HYBRID_STAGE_SKIP:-0}" != 1 ]; then
-        # Выбор набора делаем только по последней полной RFC 8484-проверке.
-        # Реальные локальные порты проверяются уже после применения конфигурации.
         adaptive_hybrid_prepare || return 1
         reset_hybrid_runtime_ports || {
             err_msg "Не удалось определить боевые порты DNS."
@@ -3891,8 +3850,6 @@ printf "  ${C_GREEN}✓${C_NC} кэш DNS для более быстрых по�
 test_dns_catalog || return 1
 [ -s "$TEST_RESULTS" ] || return 1
 DNS_PROFILE="hybrid"; DNS_SELECTION_MODE="quick"; DNS_SELECTION_CATEGORY="bypass"
-# Для быстрого режима окончательный набор формируется только после локальной
-# проверки через реальные порты 5053-5059. Предварительный список не показываем.
 SLOT_1=""; SLOT_2=""; SLOT_3=""; SLOT_4=""; SLOT_5=""; SLOT_6=""
 SLOT_RU=""; SLOT_RU_2=""
 SLOT_1_CAT="bypass"; SLOT_2_CAT="bypass"; SLOT_3_CAT="bypass"
@@ -3956,8 +3913,6 @@ watchdog_candidate_categories() {
     _slot="$1"
     _desired="$(watchdog_desired_cat "$_slot")"
     if [ "$DNS_SELECTION_MODE" = quick ]; then
-        # В быстром режиме приоритет всегда у обхода. Clean допустим только
-        # как резерв, когда обходной DNS недоступен.
         printf '%s\n' bypass
         printf '%s\n' clean
     else
@@ -4023,9 +3978,6 @@ watchdog_expected_servers() {
     printf '%s\n' "$_out"
 }
 watchdog_dns_path_guard() {
-    # Watchdog не удаляет runtime nft-правила чужих сервисов.
-    # Явные UCI-redirect на другой DNS-порт отключаются, затем firewall
-    # перечитывается. Любой оставшийся runtime-конфликт только фиксируется.
     _cfg_changed="$(dns_redirect_conflict_uci 2>/dev/null || printf 0)"
     if [ "$_cfg_changed" = 1 ]; then
         uci commit firewall >/dev/null 2>&1 || return 1
@@ -4069,9 +4021,6 @@ watchdog_service_recover() {
     return 0
 }
 
-# Проверяет, что авторитетная конфигурация https-dns-proxy действительно
-# соответствует текущему набору слотов. Локальный порт может отвечать даже
-# после внешнего изменения URL, поэтому одного DNS-запроса недостаточно.
 watchdog_hdp_guard() {
     _expected="$TMP_DIR/watchdog-hdp-expected-$$"
     _actual="$TMP_DIR/watchdog-hdp-actual-$$"
@@ -4139,7 +4088,6 @@ watchdog_check_slot() {
     return 0
 }
 
-# WATCHDOG — ЗАМЕНА НЕРАБОТАЮЩЕГО DNS
 # ==========================================
 watchdog_test_candidate() {
     _slot="$1"
@@ -4223,7 +4171,6 @@ watchdog_apply_slot_candidate() {
     sleep 2
     return 1
 }
-# WATCHDOG — ЗАПУСК ПРОВЕРКИ
 # ==========================================
 run_watchdog() {
     _lock="$STATE_DIR/watchdog.lock"
@@ -4266,10 +4213,6 @@ run_watchdog() {
         _desired="$(watchdog_desired_cat "$_slot")"; _current_cat="$(dns_cat "$_id")"
         _need_return=0
         if [ "$DNS_SELECTION_MODE" = quick ] && [ "$_slot" != RU ] && [ "$_slot" != RU_2 ]; then
-            # В быстром режиме рабочий clean-fallback не трогаем, пока исходный bypass
-            # действительно не вернулся в последней полной проверке.
-            # Иначе Watchdog начнёт бессмысленно перебирать другие DNS только из-за того,
-            # что текущий резерв формально относится к категории clean.
             _return_pref="$(watchdog_preferred_quick_candidate "$_slot" 2>/dev/null || true)"
             [ -n "$_return_pref" ] && [ "$_id" != "$_return_pref" ] && _need_return=1
         fi
@@ -4311,7 +4254,6 @@ run_watchdog() {
     rm -f "$_used" "$_lock"
     return "$_wd_rc"
 }
-# WATCHDOG — НАСТРОЙКА
 # ==========================================
 apply_watchdog() {
     f="/etc/crontabs/root"
