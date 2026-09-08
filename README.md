@@ -2,11 +2,15 @@
 
 > Скрипт настраивает DNS на OpenWrt: читает реальное состояние роутера, вживую тестирует каталог DoH, показывает план и применяет изменения только после подтверждения. Не прошла проверка — откатывает свою транзакцию.
 
+<div align="center">
+
 ![OpenWrt](https://img.shields.io/badge/OpenWrt-22_23_24_25-00B5E2?style=for-the-badge&logo=openwrt&logoColor=white)
 ![Оболочка](https://img.shields.io/badge/оболочка-POSIX_sh-4EAA25?style=for-the-badge)
 ![Hybrid DoH](https://img.shields.io/badge/Hybrid_DoH-6_%2B_RU-FF6D00?style=for-the-badge)
 ![RU split](https://img.shields.io/badge/RU_split-.ru_.su_.рф-E4405F?style=for-the-badge)
 ![Откат](https://img.shields.io/badge/откат-транзакций-7C4DFF?style=for-the-badge)
+
+</div>
 
 **Легенда:** 🟢 работает / включено · 🟡 внимание / выключено · 🔴 ошибка · 🩷 изменение или откат · 🔵 информация
 
