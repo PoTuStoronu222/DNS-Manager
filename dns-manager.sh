@@ -2,7 +2,7 @@
 MANAGER_PATH="/usr/bin/dns-manager"
 # ==========================================
 # ==========================================
-VERSION="1.62"
+VERSION="1.63"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -1180,6 +1180,7 @@ menu_item "[4]" "Google — серверы времени по IP"
 menu_back
 menu_prompt
 safe_read c
+_old_ntp_preset="$NTP_PRESET"
 case "$c" in
 1) NTP_PRESET="cf_ip";;
 2) NTP_PRESET="nist_ip";;
@@ -1187,8 +1188,13 @@ case "$c" in
 4) NTP_PRESET="google_ip";;
 *) return;;
 esac
-save_config
-apply_ntp_ip_fallback
+if apply_ntp_ip_fallback; then
+    save_config
+else
+    NTP_PRESET="$_old_ntp_preset"
+    save_config >/dev/null 2>&1 || true
+    err_msg "Не удалось применить выбранный набор NTP. Предыдущий выбор сохранён."
+fi
 pause
 }
 # ==========================================
@@ -1542,33 +1548,78 @@ apply_quic() {
 # ==========================================
 # ==========================================
 apply_sysctl() {
-[ "$SYSCTL_TUNING" = 1 ] || return 0
-f="/etc/sysctl.d/90-dns-manager.conf"
-sf="$STATE_DIR/sysctl-before.conf"
-[ -f "$f" ] || : > "$f" || return 1
-for p in "net.ipv4.tcp_fastopen=3" "net.ipv4.tcp_fin_timeout=15" "net.core.somaxconn=1024"; do
-key="${p%%=*}"; val="${p#*=}"; before="$(sysctl -n "$key" 2>/dev/null)"
-grep -q "^${key}|" "$sf" 2>/dev/null || printf '%s|%s\n' "$key" "${before:-unknown}" >> "$sf"
-foreign="$(grep -Rhs "^${key}=" /etc/sysctl.d 2>/dev/null | grep -v '^#' | grep -v "^${key}=${val}$" | head -n1)"
-if [ -n "$foreign" ] && ! grep -q "^${key}=${val}$" "$f" 2>/dev/null; then
-warn_msg "Не меняю $key: найдено стороннее значение ($foreign). Проверьте конфигурацию sysctl для этого параметра."
-continue
-fi
-grep -q "^${key}=${val}$" "$f" 2>/dev/null || printf '%s\n' "$p" >> "$f"
-sysctl -w "$p" >/dev/null 2>&1 || { warn_msg "Не удалось применить $p."; return 1; }
-record_own "sysctl" "$key" "$val" "before=${before:-unknown}"
-done
+    f="/etc/sysctl.d/90-dns-manager.conf"
+    sf="$STATE_DIR/sysctl-before.conf"
+    _expected="net.ipv4.tcp_fastopen=3
+net.ipv4.tcp_fin_timeout=15
+net.core.somaxconn=1024"
+    if [ "${SYSCTL_TUNING:-0}" != 1 ]; then
+        return 0
+    fi
+    if [ -e "$f" ] && ! sysctl_base_file_owned "$f"; then
+        err_msg "$f уже существует и не принадлежит DNS Manager. Файл не изменён."
+        return 1
+    fi
+    [ -s "$sf" ] || : > "$sf" || return 1
+    for p in "net.ipv4.tcp_fastopen=3" "net.ipv4.tcp_fin_timeout=15" "net.core.somaxconn=1024"; do
+        key="${p%%=*}"; val="${p#*=}"; before="$(sysctl -n "$key" 2>/dev/null)"
+        grep -q "^${key}|" "$sf" 2>/dev/null || printf '%s|%s\n' "$key" "${before:-unknown}" >> "$sf" || return 1
+        foreign=""
+        for _sf in /etc/sysctl.d/*; do
+            [ -f "$_sf" ] || continue
+            [ "$_sf" = "$f" ] && continue
+            _fv="$(grep -hs "^${key}=" "$_sf" 2>/dev/null | grep -v '^#' | grep -v "^${key}=${val}$" | head -n1)"
+            [ -n "$_fv" ] && { foreign="$_fv"; break; }
+        done
+        if [ -n "$foreign" ]; then
+            warn_msg "Не меняю $key: найдено стороннее значение ($foreign)."
+            return 1
+        fi
+    done
+    _tmp="$f.tmp.$$"
+    {
+        printf '%s\n' '# DNS_MANAGER_MANAGED=1'
+        printf '%s\n' '# DNS_MANAGER_SYSCTL=1'
+        printf '%s\n' "$_expected"
+    } > "$_tmp" || { rm -f "$_tmp"; return 1; }
+    for p in "net.ipv4.tcp_fastopen=3" "net.ipv4.tcp_fin_timeout=15" "net.core.somaxconn=1024"; do
+        sysctl -w "$p" >/dev/null 2>&1 || {
+            warn_msg "Не удалось применить $p."
+            rm -f "$_tmp"
+            while IFS='|' read -r _k _v; do
+                [ -n "$_k" ] && [ "$_v" != unknown ] && sysctl -w "$_k=$_v" >/dev/null 2>&1 || true
+            done < "$sf"
+            return 1
+        }
+        record_own "sysctl" "${p%%=*}" "${p#*=}" "applied"
+    done
+    mv "$_tmp" "$f" || { rm -f "$_tmp"; return 1; }
+    return 0
+}
+sysctl_base_file_owned() {
+    _f="$1"
+    [ -f "$_f" ] || return 1
+    grep -qxF '# DNS_MANAGER_MANAGED=1' "$_f" 2>/dev/null && return 0
+    grep -qxF '# DNS_MANAGER_SYSCTL=1' "$_f" 2>/dev/null && return 0
+    grep -qxF 'net.ipv4.tcp_fastopen=3' "$_f" 2>/dev/null && \
+    grep -qxF 'net.ipv4.tcp_fin_timeout=15' "$_f" 2>/dev/null && \
+    grep -qxF 'net.core.somaxconn=1024' "$_f" 2>/dev/null
 }
 remove_sysctl_base() {
     f="/etc/sysctl.d/90-dns-manager.conf"
     sf="$STATE_DIR/sysctl-before.conf"
-    [ -f "$f" ] || return 0
-    for kv in net.ipv4.tcp_fastopen net.ipv4.tcp_fin_timeout net.core.somaxconn; do
-        old="$(awk -F'|' -v k="$kv" '$1==k{print $2;exit}' "$sf" 2>/dev/null)"
-        [ -n "$old" ] && [ "$old" != unknown ] && sysctl -w "$kv=$old" >/dev/null 2>&1 || true
-    done
-    rm -f "$f" "$sf"
+    if [ -f "$f" ] && sysctl_base_file_owned "$f"; then
+        if [ -s "$sf" ]; then
+            while IFS='|' read -r _k _v; do
+                [ -n "$_k" ] && [ "$_v" != unknown ] && sysctl -w "$_k=$_v" >/dev/null 2>&1 || true
+            done < "$sf"
+        fi
+        rm -f "$f" || return 1
+    fi
+    rm -f "$sf"
+    return 0
 }
+
 # ==========================================
 # ==========================================
 apply_extras_now() {
@@ -1719,7 +1770,7 @@ remove_dnsmasq_perf() {
 apply_client_fixes() {
     [ "${CLIENT_FIXES:-0}" = 1 ] || return 0
     f="/etc/dnsmasq.d/91-dns-manager-client-fixes.conf"
-    if [ -e "$f" ] && ! grep -qxF '# DNS_MANAGER_MANAGED=1' "$f" 2>/dev/null; then
+    if [ -e "$f" ] && ! client_fixes_file_owned "$f"; then
         err_msg "$f уже существует и не принадлежит DNS Manager. Файл не изменён."
         return 1
     fi
@@ -1748,48 +1799,105 @@ apply_client_fixes() {
 }
 remove_client_fixes() {
     f="/etc/dnsmasq.d/91-dns-manager-client-fixes.conf"
-    if grep -q '^# DNS_MANAGER_MANAGED=1$' "$f" 2>/dev/null; then rm -f "$f"; /etc/init.d/dnsmasq restart >/dev/null 2>&1 || true; fi
+    if client_fixes_file_owned "$f"; then
+        rm -f "$f" || return 1
+    fi
+    return 0
 }
 apply_sysctl_extended() {
-    [ "${SYSCTL_EXTENDED:-0}" = 1 ] || return 0
     f="/etc/sysctl.d/91-dns-manager-extended.conf"
     sf="$STATE_DIR/sysctl-extended-before.conf"
-    _tmp="$f.tmp.$$"
+    _params="net.netfilter.nf_conntrack_max=65536
+net.ipv4.tcp_keepalive_time=600
+net.ipv4.tcp_keepalive_intvl=60
+net.ipv4.tcp_keepalive_probes=5
+net.core.rmem_max=4194304
+net.core.wmem_max=4194304
+net.core.rmem_default=262144
+net.core.wmem_default=262144"
+    [ "${SYSCTL_EXTENDED:-0}" = 1 ] || return 0
+    if [ -e "$f" ] && ! sysctl_extended_file_owned "$f"; then
+        err_msg "$f уже существует и не принадлежит DNS Manager. Файл не изменён."
+        return 1
+    fi
     [ -s "$sf" ] || : > "$sf" || return 1
-    : > "$_tmp" || return 1
-    for p in "net.netfilter.nf_conntrack_max=65536" "net.ipv4.tcp_keepalive_time=600" "net.ipv4.tcp_keepalive_intvl=60" "net.ipv4.tcp_keepalive_probes=5" "net.core.rmem_max=4194304" "net.core.wmem_max=4194304" "net.core.rmem_default=262144" "net.core.wmem_default=262144"; do
+    while IFS= read -r p; do
+        [ -n "$p" ] || continue
         _k="${p%%=*}"
         _old="$(sysctl -n "$_k" 2>/dev/null)"
-        grep -q "^${_k}|" "$sf" 2>/dev/null || printf '%s|%s\n' "$_k" "${_old:-unknown}" >> "$sf" || { rm -f "$_tmp"; return 1; }
-        printf '%s\n' "$p" >> "$_tmp" || { rm -f "$_tmp"; return 1; }
-    done
+        grep -q "^${_k}|" "$sf" 2>/dev/null || printf '%s|%s\n' "$_k" "${_old:-unknown}" >> "$sf" || return 1
+        _foreign=""
+        for _sf in /etc/sysctl.d/*; do
+            [ -f "$_sf" ] || continue
+            case "$_sf" in
+                /etc/sysctl.d/90-dns-manager.conf|/etc/sysctl.d/91-dns-manager-extended.conf) continue ;;
+            esac
+            _fv="$(grep -hs "^${_k}=" "$_sf" 2>/dev/null | grep -v '^#' | grep -v "^${_k}=${p#*=}$" | head -n1)"
+            [ -n "$_fv" ] && { _foreign="$_fv"; break; }
+        done
+        [ -z "$_foreign" ] || { warn_msg "Не меняю $_k: найдено стороннее значение ($_foreign)."; return 1; }
+    done <<EOF_SYSCTL_EXT
+$_params
+EOF_SYSCTL_EXT
     if command -v modprobe >/dev/null 2>&1; then
         modprobe nf_conntrack >/dev/null 2>&1 || true
     fi
+    _tmp="$f.tmp.$$"
+    {
+        printf '%s\n' '# DNS_MANAGER_MANAGED=1'
+        printf '%s\n' '# DNS_MANAGER_SYSCTL_EXTENDED=1'
+        printf '%s\n' "$_params"
+    } > "$_tmp" || { rm -f "$_tmp"; return 1; }
     while IFS= read -r _p; do
         [ -n "$_p" ] || continue
         sysctl -w "$_p" >/dev/null 2>&1 || {
             warn_msg "Не удалось применить расширенный sysctl: $_p"
+            rm -f "$_tmp"
             while IFS='|' read -r _k _v; do
                 [ -n "$_k" ] && [ "$_v" != unknown ] && sysctl -w "$_k=$_v" >/dev/null 2>&1 || true
             done < "$sf"
-            rm -f "$_tmp"
             return 1
         }
-    done < "$_tmp"
+    done <<EOF_SYSCTL_APPLY
+$_params
+EOF_SYSCTL_APPLY
     mv "$_tmp" "$f" || { rm -f "$_tmp"; return 1; }
     record_own "file" "$f" "managed" "extended-sysctl"
     return 0
 }
-remove_sysctl_extended() {
-    f="/etc/sysctl.d/91-dns-manager-extended.conf"; sf="$STATE_DIR/sysctl-extended-before.conf"
-    if [ -s "$sf" ]; then
-        while IFS='|' read -r _k _v; do
-            [ -n "$_k" ] && [ "$_v" != unknown ] && sysctl -w "$_k=$_v" >/dev/null 2>&1 || true
-        done < "$sf"
-    fi
-    rm -f "$f" "$sf"
+sysctl_extended_file_owned() {
+    _f="$1"
+    [ -f "$_f" ] || return 1
+    grep -qxF '# DNS_MANAGER_MANAGED=1' "$_f" 2>/dev/null && return 0
+    grep -qxF '# DNS_MANAGER_SYSCTL_EXTENDED=1' "$_f" 2>/dev/null && return 0
+    for _p in \
+        'net.netfilter.nf_conntrack_max=65536' \
+        'net.ipv4.tcp_keepalive_time=600' \
+        'net.ipv4.tcp_keepalive_intvl=60' \
+        'net.ipv4.tcp_keepalive_probes=5' \
+        'net.core.rmem_max=4194304' \
+        'net.core.wmem_max=4194304' \
+        'net.core.rmem_default=262144' \
+        'net.core.wmem_default=262144'; do
+        grep -qxF "$_p" "$_f" 2>/dev/null || return 1
+    done
+    return 0
 }
+remove_sysctl_extended() {
+    f="/etc/sysctl.d/91-dns-manager-extended.conf"
+    sf="$STATE_DIR/sysctl-extended-before.conf"
+    if [ -f "$f" ] && sysctl_extended_file_owned "$f"; then
+        if [ -s "$sf" ]; then
+            while IFS='|' read -r _k _v; do
+                [ -n "$_k" ] && [ "$_v" != unknown ] && sysctl -w "$_k=$_v" >/dev/null 2>&1 || true
+            done < "$sf"
+        fi
+        rm -f "$f" || return 1
+    fi
+    rm -f "$sf"
+    return 0
+}
+
 # ==========================================
 # ==========================================
 # ==========================================
@@ -3454,6 +3562,17 @@ apply_mtu_toggle() {
     save_config || return 1
     return 0
 }
+client_fixes_file_owned() {
+    _f="$1"
+    [ -f "$_f" ] || return 1
+    # Current ownership marker.
+    grep -qxF '# DNS_MANAGER_MANAGED=1' "$_f" 2>/dev/null && return 0
+    # Legacy DNS Manager marker. The client-fixes marker itself is a legacy
+    # ownership token for files created by older manager versions.
+    grep -qxF '# DNS_MANAGER_CLIENT_FIXES=1' "$_f" 2>/dev/null && return 0
+    return 1
+}
+
 check_module_state() {
     _sec="$(get_dnsmasq_section)"
     case "$1" in
@@ -3492,7 +3611,16 @@ check_module_state() {
             ;;
         quic)
             for _rname in Block_UDP_80 Block_UDP_443; do
-                uci show firewall 2>/dev/null | grep -q "name='$_rname'" || { printf 0; return; }
+                _rsec="$(uci show firewall 2>/dev/null | sed -n "s/^firewall\.\([^.=]*\)=rule$/\1/p" | while read -r _x; do [ "$(uci -q get firewall.$_x.name 2>/dev/null)" = "$_rname" ] && { printf '%s' "$_x"; break; }; done)"
+                [ -n "$_rsec" ] || { printf 0; return; }
+                [ "$(uci -q get firewall.$_rsec.proto 2>/dev/null)" = "udp" ] || { printf 0; return; }
+                [ "$(uci -q get firewall.$_rsec.src 2>/dev/null)" = "lan" ] || { printf 0; return; }
+                [ "$(uci -q get firewall.$_rsec.dest 2>/dev/null)" = "wan" ] || { printf 0; return; }
+                case "$_rname" in
+                    Block_UDP_80) [ "$(uci -q get firewall.$_rsec.dest_port 2>/dev/null)" = 80 ] || { printf 0; return; } ;;
+                    Block_UDP_443) [ "$(uci -q get firewall.$_rsec.dest_port 2>/dev/null)" = 443 ] || { printf 0; return; } ;;
+                esac
+                [ "$(uci -q get firewall.$_rsec.target 2>/dev/null)" = REJECT ] || { printf 0; return; }
             done
             printf 1
             ;;
@@ -3500,18 +3628,26 @@ check_module_state() {
             [ "$(uci -q get firewall.@defaults[0].mtu_fix 2>/dev/null)" = 1 ] && printf 1 || printf 0
             ;;
         sysctl)
+            f="/etc/sysctl.d/90-dns-manager.conf"
+            [ -f "$f" ] || { printf 0; return; }
+            sysctl_base_file_owned "$f" || { printf 0; return; }
             for _p in "net.ipv4.tcp_fastopen=3" "net.ipv4.tcp_fin_timeout=15" "net.core.somaxconn=1024"; do
                 _k="${_p%%=*}"; _v="${_p#*=}"
                 [ "$(sysctl -n "$_k" 2>/dev/null)" = "$_v" ] || { printf 0; return; }
+                grep -qxF "$_p" "$f" 2>/dev/null || { printf 0; return; }
             done
-            [ -f /etc/sysctl.d/90-dns-manager.conf ] && printf 1 || printf 0
+            printf 1
             ;;
         sysctl_ext)
+            f="/etc/sysctl.d/91-dns-manager-extended.conf"
+            [ -f "$f" ] || { printf 0; return; }
+            sysctl_extended_file_owned "$f" || { printf 0; return; }
             for _p in "net.netfilter.nf_conntrack_max=65536" "net.ipv4.tcp_keepalive_time=600" "net.ipv4.tcp_keepalive_intvl=60" "net.ipv4.tcp_keepalive_probes=5" "net.core.rmem_max=4194304" "net.core.wmem_max=4194304" "net.core.rmem_default=262144" "net.core.wmem_default=262144"; do
                 _k="${_p%%=*}"; _v="${_p#*=}"
                 [ "$(sysctl -n "$_k" 2>/dev/null)" = "$_v" ] || { printf 0; return; }
+                grep -qxF "$_p" "$f" 2>/dev/null || { printf 0; return; }
             done
-            [ -f /etc/sysctl.d/91-dns-manager-extended.conf ] && printf 1 || printf 0
+            printf 1
             ;;
         force)
             if [ "${FORCE_DNS:-0}" = 1 ]; then
@@ -3557,8 +3693,7 @@ check_module_state() {
             ;;
         client_fixes)
             f="/etc/dnsmasq.d/91-dns-manager-client-fixes.conf"
-            [ -f "$f" ] || { printf 0; return; }
-            grep -qxF '# DNS_MANAGER_MANAGED=1' "$f" 2>/dev/null || { printf 0; return; }
+            client_fixes_file_owned "$f" || { printf 0; return; }
             grep -qxF '# DNS_MANAGER_CLIENT_FIXES=1' "$f" 2>/dev/null || { printf 0; return; }
             for _fix in \
                 'local=/telemetry.mozilla.org/' \
@@ -3599,8 +3734,13 @@ check_module_state() {
 }
 
 module_state_word() {
+    _module="$1"
     _desired="$2"
-    _real="$(check_module_state "$1")"
+    _real="$(check_module_state "$_module")"
+    if [ "$_module" = force ] && [ "${FORCE_DNS:-0}" = 1 ] && [ "$_desired" = 1 ]; then
+        printf "${C_BOLD}${C_GREEN}✓ ВКЛ${C_NC} ${C_CYAN}${C_BOLD}• внешний перехват${C_NC}"
+        return 0
+    fi
     if [ "$_desired" = 1 ] && [ "$_real" = 1 ]; then
         printf "${C_BOLD}${C_GREEN}✓ ВКЛ${C_NC} ${C_CYAN}${C_BOLD}• применено${C_NC}"
     elif [ "$_desired" = 1 ]; then
@@ -3764,18 +3904,29 @@ menu_back
 menu_prompt
 safe_read c
 case "$c" in
-1) [ "$BLOCK_QUIC" = 1 ] && BLOCK_QUIC=0 || BLOCK_QUIC=1; apply_extras_now quic; pause;;
-2) [ "$MTU_FIX" = 1 ] && MTU_FIX=0 || MTU_FIX=1; apply_extras_now mtu; pause;;
-3) [ "$FORCE_DOH" = 1 ] && FORCE_DOH=0 || FORCE_DOH=1; apply_extras_now force; pause;;
+1) _old="$BLOCK_QUIC"; [ "$BLOCK_QUIC" = 1 ] && BLOCK_QUIC=0 || BLOCK_QUIC=1; if ! apply_extras_now quic; then BLOCK_QUIC="$_old"; save_config >/dev/null 2>&1 || true; err_msg "Не удалось изменить блокировку QUIC."; fi; pause;;
+2) _old="$MTU_FIX"; [ "$MTU_FIX" = 1 ] && MTU_FIX=0 || MTU_FIX=1; if ! apply_extras_now mtu; then MTU_FIX="$_old"; save_config >/dev/null 2>&1 || true; err_msg "Не удалось изменить исправление сетевых параметров."; fi; pause;;
+3) _old="$FORCE_DOH"; [ "$FORCE_DOH" = 1 ] && FORCE_DOH=0 || FORCE_DOH=1; if ! apply_extras_now force; then FORCE_DOH="$_old"; save_config >/dev/null 2>&1 || true; err_msg "Не удалось изменить принудительный DNS."; fi; pause;;
 4)
+_old_sysctl="$SYSCTL_TUNING"
+_old_sysctl_ext="$SYSCTL_EXTENDED"
 if [ "$SYSCTL_TUNING" = 1 ]; then SYSCTL_TUNING=0; SYSCTL_EXTENDED=0; else SYSCTL_TUNING=1; SYSCTL_EXTENDED=1; fi
-apply_extras_now sysctl
-apply_extras_now sysctl_ext
+_bundle_ok=1
+apply_extras_now sysctl || _bundle_ok=0
+[ "$_bundle_ok" = 1 ] && apply_extras_now sysctl_ext || [ "$_bundle_ok" = 1 ] && _bundle_ok=0
+if [ "$_bundle_ok" != 1 ]; then
+    SYSCTL_TUNING="$_old_sysctl"
+    SYSCTL_EXTENDED="$_old_sysctl_ext"
+    apply_extras_now sysctl >/dev/null 2>&1 || true
+    apply_extras_now sysctl_ext >/dev/null 2>&1 || true
+    save_config >/dev/null 2>&1 || true
+    err_msg "Не удалось полностью применить оптимизацию TCP и Conntrack. Состояние настройки возвращено."
+fi
 pause;;
-5) [ "$DNSMASQ_PERF" = 1 ] && DNSMASQ_PERF=0 || DNSMASQ_PERF=1; apply_extras_now dnsmasq_perf; pause;;
-6) [ "$NTP_CLIENTS" = 1 ] && NTP_CLIENTS=0 || NTP_CLIENTS=1; apply_extras_now ntp_clients; pause;;
-7) [ "$CLIENT_FIXES" = 1 ] && CLIENT_FIXES=0 || CLIENT_FIXES=1; apply_extras_now client_fixes; pause;;
-8) [ "$WATCHDOG_ENABLED" = 1 ] && WATCHDOG_ENABLED=0 || WATCHDOG_ENABLED=1; apply_watchdog; pause;;
+5) _old="$DNSMASQ_PERF"; [ "$DNSMASQ_PERF" = 1 ] && DNSMASQ_PERF=0 || DNSMASQ_PERF=1; if ! apply_extras_now dnsmasq_perf; then DNSMASQ_PERF="$_old"; save_config >/dev/null 2>&1 || true; err_msg "Не удалось изменить кэширование DNS."; fi; pause;;
+6) _old="$NTP_CLIENTS"; [ "$NTP_CLIENTS" = 1 ] && NTP_CLIENTS=0 || NTP_CLIENTS=1; if ! apply_extras_now ntp_clients; then NTP_CLIENTS="$_old"; save_config >/dev/null 2>&1 || true; err_msg "Не удалось изменить NTP для клиентов."; fi; pause;;
+7) _old="$CLIENT_FIXES"; [ "$CLIENT_FIXES" = 1 ] && CLIENT_FIXES=0 || CLIENT_FIXES=1; if ! apply_extras_now client_fixes; then CLIENT_FIXES="$_old"; save_config >/dev/null 2>&1 || true; err_msg "Не удалось изменить клиентские DNS-фиксы."; fi; pause;;
+8) _old_watchdog="$WATCHDOG_ENABLED"; [ "$WATCHDOG_ENABLED" = 1 ] && WATCHDOG_ENABLED=0 || WATCHDOG_ENABLED=1; if ! apply_watchdog; then WATCHDOG_ENABLED="$_old_watchdog"; save_config >/dev/null 2>&1 || true; err_msg "Не удалось изменить автопроверку DNS."; fi; pause;;
 9) [ "$WEB_ACCESS_ENABLED" = 1 ] && WEB_ACCESS_ENABLED=0 || WEB_ACCESS_ENABLED=1; apply_web_access; pause;;
 10) return;;
 '') return;;
