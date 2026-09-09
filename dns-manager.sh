@@ -2,7 +2,7 @@
 MANAGER_PATH="/usr/bin/dns-manager"
 # ==========================================
 # ==========================================
-VERSION="1.46"
+VERSION="1.47"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -3018,6 +3018,35 @@ printf "  Настройка DNS-кэша:             %s\n" "$(module_state_wor
 printf "  NTP для клиентов:           %s\n" "$(module_state_word ntp_clients "$NTP_CLIENTS")"
 printf "  Связь системных служб:     %s\n" "$(module_state_word client_fixes "$CLIENT_FIXES")"
 printf "${C_GREEN}✓ Discovery завершён. Изменений в конфигурацию не внесено.${C_NC}\n"
+menu_section "ЖУРНАЛ"
+printf "${C_WHITE}Последние события:${C_NC}\n"
+if [ -s "$LOG_FILE" ]; then tail -15 "$LOG_FILE" | sed -e "s/ START / Запуск /" -e "s/ UPDATE / Обновление /" -e "s/ INFO / Информация: /" -e "s/ WARN / Внимание: /" -e "s/ ERROR / Ошибка: /"; else printf "${C_YELLOW}Журнал пока пуст.${C_NC}\n"; fi
+echo ""
+printf "${C_WHITE}Последняя проверка:${C_NC}\n"
+if [ -s "$TEST_RESULTS" ]; then
+    _status_total="$(count_dns)"
+    _status_ok="$(awk -F'|' 'NF>=5 && $5=="OK"{n++} END{print n+0}' "$TEST_RESULTS" 2>/dev/null)"
+    _status_fail=$((_status_total-_status_ok))
+    printf "  DNS: ${C_GREEN}%s работают${C_NC}, ${C_YELLOW}%s не прошли${C_NC}, всего %s\n" "$_status_ok" "$_status_fail" "$_status_total"
+else
+    printf "  ${C_YELLOW}Тест DNS ещё не запускался.${C_NC}\n"
+fi
+echo ""
+printf "${C_WHITE}Последние действия:${C_NC}\n"
+if [ -s "$TX_LOG" ]; then
+    tail -10 "$TX_LOG" | awk -F'|' 'NF>=7 {
+        phase=$4; obj=$5; act=$6; res=$7;
+        if (phase=="DISCOVER") phase="Проверка состояния";
+        else if (phase=="TEST") phase="Тест";
+        else if (phase=="PLAN") phase="Подготовка";
+        else if (phase=="APPLY") phase="Настройка";
+        else if (phase=="VERIFY") phase="Проверка результата";
+        if (res=="OK") res="успешно"; else if (res=="FAIL") res="ошибка";
+        printf "  %s: %s → %s → %s\n", phase,obj,act,res;
+    }'
+else
+    printf "  ${C_YELLOW}Транзакций пока нет.${C_NC}\n"
+fi
 pause
 }
 # ==========================================
@@ -3056,30 +3085,27 @@ pause
 }
 show_best() {
 while :; do
-menu_header "ВЫБОР DNS"
-menu_section "ГОТОВЫЕ ПРОФИЛИ"
-menu_item "[1]" "Гибридный DNS — 6 DNS-серверов + Яндекс RU"
-menu_item "[2]" "Чистый быстрый DNS"
-menu_item "[3]" "Максимальная безопасность"
-menu_item "[4]" "Максимальная приватность"
-menu_item "[5]" "Блокировка рекламы"
+menu_header "ВЫБОР КАТЕГОРИИ DNS"
 menu_section "КАТЕГОРИИ"
-menu_item "[6]" "Обход блокировок"
-menu_item "[7]" "Семейный DNS"
-menu_item "[8]" "Все категории"
+menu_item "[1]" "Без фильтрации"
+menu_item "[2]" "Защита от угроз"
+menu_item "[3]" "Конфиденциальность"
+menu_item "[4]" "Блокировка рекламы"
+menu_item "[5]" "Обход блокировок"
+menu_item "[6]" "Семейная фильтрация"
+menu_item "[7]" "Все категории"
 menu_back
 menu_prompt
 safe_read goal
 [ -z "$goal" ] && return
 case "$goal" in
-1) show_hybrid_profile;;
-2) menu_best_actions clean "БЫСТРЫЙ DNS";;
-3) menu_best_actions security "МАКСИМАЛЬНАЯ БЕЗОПАСНОСТЬ";;
-4) menu_best_actions privacy "МАКСИМАЛЬНАЯ ПРИВАТНОСТЬ";;
-5) menu_best_actions adblock "БЛОКИРОВКА РЕКЛАМЫ";;
-6) menu_best_actions bypass "ОБХОД БЛОКИРОВОК";;
-7) menu_best_actions family "СЕМЕЙНЫЙ DNS";;
-8) menu_best_actions all "ВСЕ КАТЕГОРИИ";;
+1) menu_best_actions clean "БЕЗ ФИЛЬТРАЦИИ";;
+2) menu_best_actions security "ЗАЩИТА ОТ УГРОЗ";;
+3) menu_best_actions privacy "КОНФИДЕНЦИАЛЬНОСТЬ";;
+4) menu_best_actions adblock "БЛОКИРОВКА РЕКЛАМЫ";;
+5) menu_best_actions bypass "ОБХОД БЛОКИРОВОК";;
+6) menu_best_actions family "СЕМЕЙНЫЙ DNS";;
+7) menu_best_actions all "ВСЕ КАТЕГОРИИ";;
 *) warn_msg "Неверный пункт."; pause;;
 esac
 done
@@ -3692,82 +3718,6 @@ install_missing_dependencies(){
 }
 # ==========================================
 # ==========================================
-menu_install() {
-menu_header "ПРОГРАММЫ"
-run_discovery >/dev/null 2>&1 || true
-printf "  curl              : %s\n" "$(state_word "$HAS_CURL")"
-printf "  dig (доп.)         : %s\n" "$(state_word "$HAS_DIG")"
-printf "  https-dns-proxy   : %s\n" "$(state_word "$HAS_HDP")"
-CA_OK=no
-[ -s /etc/ssl/certs/ca-certificates.crt ] && CA_OK=yes
-if [ "$CA_OK" != yes ]; then
-    if command -v apk >/dev/null 2>&1; then
-        apk info -e ca-certificates >/dev/null 2>&1 && CA_OK=yes
-        apk info -e ca-bundle >/dev/null 2>&1 && CA_OK=yes
-    elif command -v opkg >/dev/null 2>&1; then
-        opkg status ca-certificates 2>/dev/null | grep -q '^Status:.*installed' && CA_OK=yes
-        opkg status ca-bundle 2>/dev/null | grep -q '^Status:.*installed' && CA_OK=yes
-    fi
-fi
-printf "  CA-сертификаты    : %s\n" "$(state_word "$CA_OK")"
-printf "  dnsmasq           : %s\n" "$(state_word "$HAS_DNSMASQ")"
-need="$(ensure_dependencies)"
-if [ -z "$need" ]; then
-ok_msg "Все обязательные компоненты уже установлены."
-pause
-return
-fi
-printf "${C_YELLOW}Необходимо установить:${C_NC}\n"
-for pkg in $need; do
-printf "  ${C_PINK}↻${C_NC} %s\n" "$pkg"
-done
-printf "\n"
-if confirm_action "Установить недостающие компоненты сейчас?"; then
-if install_missing_dependencies; then
-ok_msg "Обязательные компоненты установлены."
-else
-warn_msg "После установки остались недостающие компоненты. Проверьте состояние."
-fi
-else
-info_msg "Установка отменена."
-fi
-pause
-}
-# ==========================================
-# ==========================================
-menu_status() {
-menu_header "СОСТОЯНИЕ И ЖУРНАЛ"
-_catalog_ver="$(dns_catalog_version)"
-_catalog_count="$(count_dns)"
-printf "${C_WHITE}Каталог DNS:${C_NC} ${C_GREEN}%s${C_NC} • ${C_CYAN}%s серверов${C_NC}\n" "${_catalog_ver:-не определён}" "${_catalog_count:-0}"
-printf "${C_WHITE}Последние события:${C_NC}\n"
-if [ -s "$LOG_FILE" ]; then tail -15 "$LOG_FILE" | sed -e "s/ START / Запуск /" -e "s/ UPDATE / Обновление /" -e "s/ INFO / Информация: /" -e "s/ WARN / Внимание: /" -e "s/ ERROR / Ошибка: /"; else printf "${C_YELLOW}Журнал пока пуст.${C_NC}\n"; fi
-echo ""
-printf "${C_WHITE}Последняя проверка:${C_NC}\n"
-if [ -s "$TEST_RESULTS" ]; then
-total="$(count_dns)"; okn="$(awk -F'|' 'NF>=5 && $5=="OK"{n++} END{print n+0}' "$TEST_RESULTS" 2>/dev/null)"; failn=$((total-okn))
-printf "  DNS: ${C_GREEN}%s работают${C_NC}, ${C_YELLOW}%s не прошли${C_NC}, всего %s\n" "$okn" "$failn" "$total"
-else
-printf "  ${C_YELLOW}Тест DNS ещё не запускался.${C_NC}\n"
-fi
-echo ""
-printf "${C_WHITE}Последние действия:${C_NC}\n"
-if [ -s "$TX_LOG" ]; then
-tail -10 "$TX_LOG" | awk -F'|' 'NF>=7 {
-phase=$4; obj=$5; act=$6; res=$7;
-if (phase=="DISCOVER") phase="Проверка состояния";
-else if (phase=="TEST") phase="Тест";
-else if (phase=="PLAN") phase="Подготовка";
-else if (phase=="APPLY") phase="Настройка";
-else if (phase=="VERIFY") phase="Проверка результата";
-if (res=="OK") res="успешно"; else if (res=="FAIL") res="ошибка";
-printf "  %s: %s → %s → %s\n", phase,obj,act,res;
-}'
-else
-printf "  ${C_YELLOW}Транзакций пока нет.${C_NC}\n"
-fi
-pause
-}
 # ==========================================
 # ==========================================
 quick_max_bypass() {
@@ -4232,17 +4182,14 @@ menu_item "[4]" "Максимальная приватность"
 menu_item "[5]" "Блокировка рекламы"
 menu_item "[6]" "Выбор по категориям"
 menu_section "НАСТРОЙКА"
-menu_item "[7]" "Карта состояния"
-printf "  ${C_CYAN}${C_BOLD}%-5s${C_NC} ${C_YELLOW}${C_BOLD}%-38s${C_NC} ${C_CYAN}${C_BOLD}(%s)${C_NC}\n" "[8]" "Проверка DNS-серверов" "$(count_dns)"
-printf "  ${C_WHITE}      Каталог DNS: ${C_CYAN}%s${C_NC} • ${C_CYAN}%s серверов${C_NC}\n" "$(dns_catalog_version)" "$(count_dns)"
-printf "  ${C_CYAN}${C_BOLD}%-5s${C_NC} ${C_YELLOW}${C_BOLD}%-38s${C_NC} ${C_CYAN}${C_BOLD}(6+2)${C_NC}\n" "[9]" "Серверы DNS"
+menu_item "[7]" "Состояние и журнал"
+printf "  ${C_CYAN}${C_BOLD}%-5s${C_NC} ${C_YELLOW}${C_BOLD}%-38s${C_NC}\n" "[8]" "Проверка DNS-серверов"
+menu_item "[9]" "Серверы DNS"
 menu_item "[10]" "DNS ДЛЯ ЗАПУСКА"
 menu_item "[11]" "СИНХРОНИЗАЦИЯ ВРЕМЕНИ"
 menu_item "[12]" "НАСТРОЙКИ"
-menu_item "[13]" "Состояние и журнал"
-menu_item "[14]" "Показать и применить"
-menu_item "[15]" "Установить недостающее"
-menu_item "[16]" "Удалить изменения"
+menu_item "[13]" "Применить настройки DNS"
+menu_item "[14]" "Удалить изменения"
 menu_back
 menu_prompt
 safe_read c
@@ -4260,10 +4207,8 @@ case "$c" in
 10) prepare_dns_operation || { pause; continue; }; menu_bootstrap ;;
 11) prepare_dns_operation || { pause; continue; }; menu_ntp ;;
 12) prepare_dns_operation || { pause; continue; }; menu_extras ;;
-13) menu_status ;;
-14) prepare_dns_operation || { pause; continue; }; apply_settings ;;
-15) menu_install ;;
-16)
+13) prepare_dns_operation || { pause; continue; }; apply_settings ;;
+14)
 clear_screen
 menu_header "УДАЛЕНИЕ ИЗМЕНЕНИЙ"
 warn_msg "Будут удалены только изменения DNS Manager."
