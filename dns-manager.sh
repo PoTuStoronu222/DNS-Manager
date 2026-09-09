@@ -2,7 +2,7 @@
 MANAGER_PATH="/usr/bin/dns-manager"
 # ==========================================
 # ==========================================
-VERSION="1.45"
+VERSION="1.46"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -224,7 +224,7 @@ touch "$LOG_FILE" "$TX_LOG" "$OWNERSHIP" 2>/dev/null
 # ==========================================
 # ==========================================
 baseline_files() {
-printf '%s\n'  /etc/config/dhcp  /etc/config/https-dns-proxy  /etc/config/firewall  /etc/config/system  /etc/sysctl.d/90-dns-manager.conf  /etc/sysctl.d/91-dns-manager-extended.conf  /etc/dnsmasq.d/90-dns-manager-bogus.conf  /etc/dnsmasq.d/91-dns-manager-client-fixes.conf  /etc/hotplug.d/iface/99-dns-manager-tailscale  /etc/crontabs/root  /etc/init.d/tg-ws-proxy-go  /etc/init.d/tailscale
+printf '%s\n'  /etc/config/dhcp  /etc/config/https-dns-proxy  /etc/config/firewall  /etc/config/system  /etc/sysctl.d/90-dns-manager.conf  /etc/sysctl.d/91-dns-manager-extended.conf  /etc/dnsmasq.d/90-dns-manager-bogus.conf  /etc/dnsmasq.d/91-dns-manager-client-fixes.conf   /etc/crontabs/root  
 }
 baseline_key() {
 printf '%s' "$1" | sed 's#^/##; s#[/ ]#_#g'
@@ -506,7 +506,7 @@ BOOTSTRAP_DNS="$BOOTSTRAP_DNS_ALL"
 : "${PORT_RU:=}"; : "${PORT_RU_2:=}"
 : "${BOOTSTRAP_DNS:=$BOOTSTRAP_DNS_ALL}"
 : "${TLD_RU_ENABLED:=1}"; : "${BLOCK_QUIC:=0}"; : "${MTU_FIX:=0}"; : "${FORCE_DOH:=0}"
-: "${NTP_IP_FALLBACK:=1}"; : "${SYSCTL_TUNING:=0}"; : "${GO_OPTIMIZE:=0}"; : "${DNSMASQ_PERF:=0}"; : "${NTP_CLIENTS:=0}"; : "${CLIENT_FIXES:=0}"; : "${SYSCTL_EXTENDED:=0}"; : "${TAILSCALE_HOTPLUG:=0}"; : "${CRON_CLEANUP:=0}"
+: "${NTP_IP_FALLBACK:=1}"; : "${SYSCTL_TUNING:=0}"; : "${DNSMASQ_PERF:=0}"; : "${NTP_CLIENTS:=0}"; : "${CLIENT_FIXES:=0}"; : "${SYSCTL_EXTENDED:=0}"
 : "${BALANCER_ENABLED:=1}"; : "${NTP_PRESET:=cf_ip}"; : "${DNS_PROFILE:=hybrid}"; : "${DNS_SELECTION_MODE:=quick}"; : "${DNS_SELECTION_CATEGORY:=bypass}"
 : "${QUICK_PREF_1:=}"; : "${QUICK_PREF_2:=}"; : "${QUICK_PREF_3:=}"; : "${QUICK_PREF_4:=}"; : "${QUICK_PREF_5:=}"; : "${QUICK_PREF_6:=}"
 : "${WATCHDOG_ENABLED:=1}"; : "${WATCHDOG_INTERVAL:=15}"
@@ -560,14 +560,11 @@ BLOCK_QUIC="$BLOCK_QUIC"
 MTU_FIX="$MTU_FIX"
 NTP_IP_FALLBACK="$NTP_IP_FALLBACK"
 SYSCTL_TUNING="$SYSCTL_TUNING"
-GO_OPTIMIZE="$GO_OPTIMIZE"
 FORCE_DOH="$FORCE_DOH"
 DNSMASQ_PERF="$DNSMASQ_PERF"
 NTP_CLIENTS="$NTP_CLIENTS"
 CLIENT_FIXES="$CLIENT_FIXES"
 SYSCTL_EXTENDED="$SYSCTL_EXTENDED"
-TAILSCALE_HOTPLUG="$TAILSCALE_HOTPLUG"
-CRON_CLEANUP="$CRON_CLEANUP"
 BALANCER_ENABLED="$BALANCER_ENABLED"
 NTP_PRESET="$NTP_PRESET"
 DNS_PROFILE="$DNS_PROFILE"
@@ -660,7 +657,6 @@ OTHER_TGGO="no"; pgrep -f tg-ws-proxy-go >/dev/null 2>&1 && OTHER_TGGO="yes"
 OTHER_TGRS="no"; pgrep -f tg-ws-proxy-rs >/dev/null 2>&1 && OTHER_TGRS="yes"
 OTHER_TGMT="no"; pgrep -f tg-ws-proxy-mtproto >/dev/null 2>&1 && OTHER_TGMT="yes"
 OTHER_BYEDPI="no"; { [ -x /etc/init.d/byedpi ] || pgrep -f byedpi >/dev/null 2>&1; } && OTHER_BYEDPI="yes"
-OTHER_TAILSCALE="no"; [ -x /etc/init.d/tailscale ] && OTHER_TAILSCALE="yes"
 HAS_ZAPRET="$OTHER_ZAPRET"
 HAS_ZAPRET2="$OTHER_ZAPRET2"
 HAS_NETSHIFT="$OTHER_NETSHIFT"
@@ -673,7 +669,6 @@ HAS_TGGO="$OTHER_TGGO"
 HAS_TGRUST="$OTHER_TGRS"
 HAS_TGMT="$OTHER_TGMT"
 HAS_BYEDPI="$OTHER_BYEDPI"
-HAS_TAILSCALE="$OTHER_TAILSCALE"
 }
 # ==========================================
 # ==========================================
@@ -1554,27 +1549,6 @@ remove_sysctl_base() {
     done
     rm -f "$f" "$sf"
 }
-remove_go_optimize() {
-    for f in /etc/init.d/tg-ws-proxy-go /etc/init.d/tailscale; do
-        bak="$f.dns-manager.bak"
-        [ -f "$bak" ] || continue
-        curh="$(file_hash "$f")"
-        managedh="$(cat "$STATE_DIR/$(basename "$f").managed.sha256" 2>/dev/null)"
-        if [ -n "$managedh" ] && [ -n "$curh" ] && [ "$curh" != "$managedh" ]; then
-            warn_msg "Не восстанавливаю $f: файл изменён вручную после настройки."
-            continue
-        fi
-        mv "$bak" "$f" 2>/dev/null || continue
-        rm -f "$STATE_DIR/$(basename "$f").managed.sha256"
-    done
-}
-reload_fw() {
-    if [ "$SYS_FW" = fw4 ]; then
-        /etc/init.d/firewall reload >/dev/null 2>&1 || /etc/init.d/firewall restart >/dev/null 2>&1
-    else
-        /etc/init.d/firewall restart >/dev/null 2>&1
-    fi
-}
 # ==========================================
 # ==========================================
 apply_extras_now() {
@@ -1594,9 +1568,6 @@ apply_extras_now() {
             ;;
         sysctl)
             if [ "$SYSCTL_TUNING" = 1 ]; then apply_sysctl; else remove_sysctl_base; fi
-            ;;
-        go)
-            if [ "$GO_OPTIMIZE" = 1 ]; then apply_go; else remove_go_optimize; fi
             ;;
         force)
             if [ "$FORCE_DOH" = 1 ]; then apply_dns_force; else remove_dns_force; fi
@@ -1618,41 +1589,12 @@ apply_extras_now() {
         sysctl_ext)
             if [ "$SYSCTL_EXTENDED" = 1 ]; then apply_sysctl_extended; else remove_sysctl_extended; fi
             ;;
-        ts_hotplug)
-            if [ "$TAILSCALE_HOTPLUG" = 1 ]; then apply_tailscale_hotplug; else remove_tailscale_hotplug; fi
-            ;;
-        cron)
-            if [ "$CRON_CLEANUP" = 1 ]; then cleanup_manager_cron; fi
-            ;;
     esac
     run_discovery
     save_config
 }
 # ==========================================
 # ==========================================
-apply_go() {
-[ "$GO_OPTIMIZE" = 1 ] || return 0
-for f in /etc/init.d/tg-ws-proxy-go /etc/init.d/tailscale; do
-[ -f "$f" ] || continue
-marker="$(grep -c 'DNS_MANAGER_GOMEMLIMIT' "$f" 2>/dev/null)"
-current_hash="$(file_hash "$f")"
-hash_file="$STATE_DIR/$(basename "$f").managed.sha256"
-if [ -s "$hash_file" ] && [ "$(cat "$hash_file")" != "$current_hash" ] && [ "$marker" = 1 ]; then
-warn_msg "$f был изменён после последнего применения DNS Manager. Пропускаю Go-оптимизацию."
-continue
-fi
-if [ "$marker" = 1 ]; then
-continue
-fi
-bak="$f.dns-manager.bak"
-[ -f "$bak" ] || cp "$f" "$bak" 2>/dev/null || { warn_msg "Не удалось создать backup $f"; continue; }
-ev="GOMEMLIMIT=85MiB"; [ "$f" = "/etc/init.d/tg-ws-proxy-go" ] && ev="GOMAXPROCS=1 GOMEMLIMIT=50MiB"
-awk -v ev="$ev" '/procd_open_instance/{print;print "    # ОГРАНИЧЕНИЕ ПАМЯТИ GO";print "    procd_set_param env "ev;next}1' "$f" > "$TMP_DIR/go.$$" || { rm -f "$TMP_DIR/go.$$"; continue; }
-mv "$TMP_DIR/go.$$" "$f" || continue
-file_hash "$f" > "$hash_file"
-record_own "file" "$f" "managed-hash" "$hash_file"
-done
-}
 # ==========================================
 # ==========================================
 # ==========================================
@@ -1775,65 +1717,8 @@ remove_sysctl_extended() {
 }
 # ==========================================
 # ==========================================
-apply_tailscale_hotplug() {
-[ "${TAILSCALE_HOTPLUG:-0}" = 1 ] || return 0
-f="/etc/hotplug.d/iface/99-dns-manager-tailscale"
-mkdir -p /etc/hotplug.d/iface 2>/dev/null
-if [ -f "$f" ] && ! grep -q '^# DNS_MANAGER_TAILSCALE_HOTPLUG=1$' "$f" 2>/dev/null; then
-cp -p "$f" "$f.previous" 2>/dev/null
-info_msg "Старый скрипт $f сохранён в $f.previous"
-fi
-cat > "$f.tmp" <<'EOF_HOT'
-[ "$ACTION" = ifup ] || exit 0
-[ "$INTERFACE" = wan ] || exit 0
-MARK="/var/run/dns-manager/tailscale-hotplug-window"
-[ -s "$MARK" ] || exit 0
-NOW="$(date +%s)"; START="$(cat "$MARK" 2>/dev/null)"
-[ -n "$START" ] || exit 0
-[ $((NOW-START)) -ge 0 ] 2>/dev/null || exit 0
-[ $((NOW-START)) -le 600 ] 2>/dev/null || { rm -f "$MARK"; exit 0; }
-[ -x /etc/init.d/tailscale ] && /etc/init.d/tailscale restart >/dev/null 2>&1 || true
-rm -f "$MARK"
-EOF_HOT
-mv "$f.tmp" "$f" || return 1
-chmod 755 "$f"
-date +%s > "$STATE_DIR/tailscale-hotplug-window" 2>/dev/null || true
-record_own "file" "$f" "created" "tailscale-hotplug"
-if [ -x /etc/init.d/tailscale ]; then
-ok_msg "Hotplug-скрипт Tailscale установлен."
-else
-info_msg "Tailscale сейчас не установлен — скрипт уже лежит и заработает сразу после установки Tailscale."
-fi
-}
-remove_tailscale_hotplug() {
-f="/etc/hotplug.d/iface/99-dns-manager-tailscale"
-if [ -f "$f" ]; then
-rm -f "$f"
-if [ -f "$f.previous" ]; then
-ok_msg "Hotplug-скрипт Tailscale удалён. Старая копия: $f.previous"
-else
-ok_msg "Hotplug-скрипт Tailscale удалён."
-fi
-fi
-rm -f "$STATE_DIR/tailscale-hotplug-window"
-}
 # ==========================================
 # ==========================================
-cleanup_manager_cron() {
-    [ "${CRON_CLEANUP:-0}" = 1 ] || return 0
-    f="/etc/crontabs/root"
-    [ -f "$f" ] || return 0
-    cand="$TMP_DIR/cron-manager-candidates"
-    grep -E '(DNS_MANAGER_CRON|dns-manager|dns_manager).*(dnsmasq|https-dns-proxy|tailscale).*(restart|reload)' "$f" > "$cand" 2>/dev/null || true
-    if [ ! -s "$cand" ]; then
-        info_msg "Старых помеченных cron-запусков DNS Manager не найдено. Пользовательский cron не изменён."
-        return 0
-    fi
-    awk '!/(DNS_MANAGER_CRON|dns-manager|dns_manager).*(dnsmasq|https-dns-proxy|tailscale).*(restart|reload)/{print}' "$f" > "$f.tmp" || return 1
-    mv "$f.tmp" "$f" || return 1
-    /etc/init.d/cron reload >/dev/null 2>&1 || true
-    ok_msg "Старые cron-запуски DNS Manager удалены. Остальные задания cron сохранены."
-}
 # ==========================================
 # ==========================================
 apply_dns_force() {
@@ -2326,7 +2211,7 @@ TX_DIR="$STATE_DIR/tx-$TX_ID"
 rm -rf "$TX_DIR" 2>/dev/null
 mkdir -p "$TX_DIR/files" || return 1
 TX_ACTIVE=1
-for f in /etc/config/dhcp /etc/config/https-dns-proxy /etc/config/firewall /etc/config/system /etc/sysctl.d/90-dns-manager.conf /etc/sysctl.d/91-dns-manager-extended.conf /etc/dnsmasq.d/90-dns-manager-bogus.conf /etc/dnsmasq.d/91-dns-manager-client-fixes.conf /etc/hotplug.d/iface/99-dns-manager-tailscale /etc/crontabs/root /etc/init.d/tg-ws-proxy-go /etc/init.d/tailscale; do
+for f in /etc/config/dhcp /etc/config/https-dns-proxy /etc/config/firewall /etc/config/system /etc/sysctl.d/90-dns-manager.conf /etc/sysctl.d/91-dns-manager-extended.conf /etc/dnsmasq.d/90-dns-manager-bogus.conf /etc/dnsmasq.d/91-dns-manager-client-fixes.conf; do
 key="$(printf '%s' "$f" | sed 's#^/##; s#[/ ]#_#g')"
 if [ -f "$f" ]; then cp -p "$f" "$TX_DIR/files/$key"; file_hash "$f" > "$TX_DIR/$key.before"; printf '%s|%s|1\n' "$f" "$key" >> "$TX_DIR/manifest"; else printf '%s|%s|0\n' "$f" "$key" >> "$TX_DIR/manifest"; fi
 done
@@ -2714,14 +2599,11 @@ apply_settings() {
         [ "$BLOCK_QUIC" = 1 ] && printf "  ${C_GREEN}✓${C_NC} Блокировка быстрых соединений UDP\n" || printf "  ${C_YELLOW}—${C_NC} QUIC не изменяется\n"
         [ "$MTU_FIX" = 1 ] && printf "  ${C_GREEN}✓${C_NC} Исправление сетевых параметров\n" || printf "  ${C_YELLOW}—${C_NC} MTU не изменяется\n"
         [ "$SYSCTL_TUNING" = 1 ] && printf "  ${C_GREEN}✓${C_NC} Настройка сети\n" || printf "  ${C_YELLOW}—${C_NC} sysctl не изменяется\n"
-        [ "$GO_OPTIMIZE" = 1 ] && printf "  ${C_GREEN}✓${C_NC} Настройка сетевых служб\n" || printf "  ${C_YELLOW}—${C_NC} Go/Tailscale/TG WS не изменяется\n"
         [ "${FORCE_DOH:-0}" = 1 ] && printf "  ${C_GREEN}✓${C_NC} Принудительный локальный DNS\n" || printf "  ${C_YELLOW}—${C_NC} Принудительный локальный DNS не изменяется\n"
         [ "$NTP_CLIENTS" = 1 ] && printf "  ${C_GREEN}✓${C_NC} Время для устройств сети (DHCP 42 + DNAT 123)\n" || printf "  ${C_YELLOW}—${C_NC} NTP клиентов не изменяется\n"
         [ "$DNSMASQ_PERF" = 1 ] && printf "  ${C_GREEN}✓${C_NC} Настройка DNS-кэша\n" || printf "  ${C_YELLOW}—${C_NC} Настройка DNS-кэша не изменяется\n"
         [ "$CLIENT_FIXES" = 1 ] && printf "  ${C_GREEN}✓${C_NC} Клиентские DNS-фиксы\n" || printf "  ${C_YELLOW}—${C_NC} Клиентские фиксы не изменяются\n"
         [ "$SYSCTL_EXTENDED" = 1 ] && printf "  ${C_GREEN}✓${C_NC} Расширенная настройка сети\n" || printf "  ${C_YELLOW}—${C_NC} Расширенный sysctl не изменяется\n"
-        [ "$TAILSCALE_HOTPLUG" = 1 ] && printf "  ${C_GREEN}✓${C_NC} Запуск Tailscale после сети\n" || printf "  ${C_YELLOW}—${C_NC} Tailscale hotplug не изменяется\n"
-        [ "$CRON_CLEANUP" = 1 ] && printf "  ${C_GREEN}✓${C_NC} Очистка старых заданий DNS Manager\n" || printf "  ${C_YELLOW}—${C_NC} Cron не изменяется\n"
         [ "$WATCHDOG_ENABLED" = 1 ] && printf "  ${C_GREEN}✓${C_NC} Автоматическая проверка DNS: каждые %s мин\n" "$WATCHDOG_INTERVAL" || printf "  ${C_YELLOW}—${C_NC} Автоматическая проверка DNS не изменяется\n"
     fi
     printf "\n${C_WHITE}Текущее состояние до применения:${C_NC}\n"
@@ -2810,9 +2692,6 @@ apply_settings() {
     if [ "$CORE_ONLY" != 1 ] && [ "$SYSCTL_TUNING" = 1 ]; then
         apply_sysctl || { err_msg "Не удалось применить sysctl."; tx_restore_on_failure; return 1; }
     fi
-    if [ "$CORE_ONLY" != 1 ] && [ "$GO_OPTIMIZE" = 1 ]; then
-        apply_go || { err_msg "Не удалось применить оптимизацию Go."; tx_restore_on_failure; return 1; }
-    fi
     if [ "$CORE_ONLY" != 1 ] && [ "$NTP_CLIENTS" = 1 ]; then
         apply_ntp_clients || { err_msg "Не удалось настроить NTP для клиентов."; tx_restore_on_failure; return 1; }
     fi
@@ -2824,12 +2703,6 @@ apply_settings() {
     fi
     if [ "$CORE_ONLY" != 1 ] && [ "$SYSCTL_EXTENDED" = 1 ]; then
         apply_sysctl_extended || { err_msg "Не удалось применить расширенный sysctl."; tx_restore_on_failure; return 1; }
-    fi
-    if [ "$CORE_ONLY" != 1 ] && [ "$TAILSCALE_HOTPLUG" = 1 ]; then
-        apply_tailscale_hotplug || { err_msg "Не удалось настроить автоматический запуск Tailscale."; tx_restore_on_failure; return 1; }
-    fi
-    if [ "$CORE_ONLY" != 1 ] && [ "$CRON_CLEANUP" = 1 ]; then
-        cleanup_manager_cron || { err_msg "Не удалось очистить cron DNS Manager."; tx_restore_on_failure; return 1; }
     fi
     WATCHDOG_ENABLED="${WATCHDOG_ENABLED:-1}"
     apply_watchdog || { err_msg "Не удалось настроить cron Автопроверка."; tx_restore_on_failure; return 1; }
@@ -2943,7 +2816,6 @@ remove_ntp_clients >/dev/null 2>&1 || true
 remove_client_fixes >/dev/null 2>&1 || true
 remove_dnsmasq_perf >/dev/null 2>&1 || true
 remove_sysctl_extended >/dev/null 2>&1 || true
-remove_tailscale_hotplug >/dev/null 2>&1 || true
 if [ -f /etc/sysctl.d/90-dns-manager.conf ]; then
 for kv in net.ipv4.tcp_fastopen net.ipv4.tcp_fin_timeout net.core.somaxconn; do
 old="$(awk -F'|' -v k="$kv" '$1==k{print $2;exit}' "$STATE_DIR/sysctl-before.conf" 2>/dev/null)"
@@ -2953,7 +2825,7 @@ mgr="$(awk -F'=' -v k="$kv" '$1==k{print $2;exit}' /etc/sysctl.d/90-dns-manager.
 done
 rm -f /etc/sysctl.d/90-dns-manager.conf "$STATE_DIR/sysctl-before.conf"
 fi
-for f in /etc/init.d/tg-ws-proxy-go /etc/init.d/tailscale; do
+for f in; do
 bak="$f.dns-manager.bak"
 if [ -f "$bak" ]; then
 curh="$(file_hash "$f")"; managedh="$(cat "$STATE_DIR/$(basename "$f").managed.sha256" 2>/dev/null)"
@@ -3072,7 +2944,6 @@ third_party_running() {
         tgrs) pgrep -f 'tg-ws-proxy-rs' >/dev/null 2>&1 ;;
         tgmt) pgrep -f 'tg-ws-proxy-mtproto' >/dev/null 2>&1 ;;
         byedpi) pgrep -f 'byedpi' >/dev/null 2>&1 ;;
-        tailscale) pgrep -f 'tailscaled' >/dev/null 2>&1 || pgrep -f 'tailscale' >/dev/null 2>&1 ;;
         *) return 1 ;;
     esac
 }
@@ -3121,7 +2992,7 @@ if [ -n "${SLOT_RU_2:-}" ]; then
 fi
 menu_section "СТОРОННИЕ РЕШЕНИЯ"
 _side_found=0
-for _tp in  "zapret|Zapret" "zapret2|Zapret2" "netshift|NetShift" "splify|splify"  "mixomo|Mixomo" "magi|MagiTrickle" "hev|HevSocks5Tunnel" "awg|AWG"  "tggo|TG-Go" "tgrs|TG-Rust" "tgmt|TG-MTProto" "byedpi|ByeDPI" "tailscale|Tailscale"; do
+for _tp in  "zapret|Zapret" "zapret2|Zapret2" "netshift|NetShift" "splify|splify"  "mixomo|Mixomo" "magi|MagiTrickle" "hev|HevSocks5Tunnel" "awg|AWG"  "tggo|TG-Go" "tgrs|TG-Rust" "tgmt|TG-MTProto" "byedpi|ByeDPI"; do
     _kind="${_tp%%|*}"
     _label="${_tp#*|}"
     if third_party_running "$_kind"; then
@@ -3144,9 +3015,7 @@ printf "  Исправление сетевых параметров / MSS:     
 printf "  Принудительный DNS:         %s\n" "$(module_state_word force "$FORCE_DOH")"
 printf "  Настройка сети:     %s\n" "$(module_state_word sysctl "$SYSCTL_TUNING")"
 printf "  Настройка DNS-кэша:             %s\n" "$(module_state_word dnsmasq_perf "$DNSMASQ_PERF")"
-printf "  Оптимизация Go-приложений:  %s\n" "$(module_state_word go "$GO_OPTIMIZE")"
 printf "  NTP для клиентов:           %s\n" "$(module_state_word ntp_clients "$NTP_CLIENTS")"
-printf "  Запуск Tailscale после сети:  %s\n" "$(module_state_word ts_hotplug "$TAILSCALE_HOTPLUG")"
 printf "  Связь системных служб:     %s\n" "$(module_state_word client_fixes "$CLIENT_FIXES")"
 printf "${C_GREEN}✓ Discovery завершён. Изменений в конфигурацию не внесено.${C_NC}\n"
 pause
@@ -3565,14 +3434,11 @@ check_module_state() {
         mtu) [ "$(uci -q get firewall.@defaults[0].mtu_fix 2>/dev/null)" = 1 ] && printf 1 || printf 0 ;;
         sysctl) [ -f /etc/sysctl.d/90-dns-manager.conf ] && printf 1 || printf 0 ;;
         sysctl_ext) [ -f /etc/sysctl.d/91-dns-manager-extended.conf ] && printf 1 || printf 0 ;;
-        go) grep -qs 'DNS_MANAGER_GOMEMLIMIT' /etc/init.d/tg-ws-proxy-go /etc/init.d/tailscale 2>/dev/null && printf 1 || printf 0 ;;
-        force) uci -q get firewall.dns_manager_dns_redirect >/dev/null 2>&1 && printf 1 || printf 0 ;;
+                force) uci -q get firewall.dns_manager_dns_redirect >/dev/null 2>&1 && printf 1 || printf 0 ;;
         ntp_clients) uci -q get firewall.dns_manager_ntp_client >/dev/null 2>&1 && printf 1 || printf 0 ;;
         dnsmasq_perf) [ "$(uci -q get "dhcp.$sec.cachesize" 2>/dev/null)" = 1000 ] && printf 1 || printf 0 ;;
         client_fixes) [ -f /etc/dnsmasq.d/91-dns-manager-client-fixes.conf ] && printf 1 || printf 0 ;;
-        ts_hotplug) [ -f /etc/hotplug.d/iface/99-dns-manager-tailscale ] && printf 1 || printf 0 ;;
-        cron) [ "${CRON_CLEANUP:-0}" = 1 ] && printf 1 || printf 0 ;;
-        watchdog) grep -qsE '^[[:space:]]*\*/[0-9]+[[:space:]]+\*[[:space:]]+\*[[:space:]]+\*[[:space:]]+\*.*dns-manager[[:space:]]+(watchdog|-w|--watchdog)([[:space:]]|$)' /etc/crontabs/root 2>/dev/null && printf 1 || printf 0 ;;
+                watchdog) grep -qsE '^[[:space:]]*\*/[0-9]+[[:space:]]+\*[[:space:]]+\*[[:space:]]+\*[[:space:]]+\*.*dns-manager[[:space:]]+(watchdog|-w|--watchdog)([[:space:]]|$)' /etc/crontabs/root 2>/dev/null && printf 1 || printf 0 ;;
         web) [ -x "$WEB_INIT" ] && uci -q get "ttyd.$WEB_TTYD_SECTION.command" 2>/dev/null | grep -qx "/usr/bin/dns-manager" && pgrep -f '[t]tyd.*dns-manager' >/dev/null 2>&1 && printf 1 || printf 0 ;;
         *) printf 0 ;;
     esac
@@ -3733,16 +3599,13 @@ menu_item_state "[3]" "Принудительный DNS" "$(module_state_word fo
 menu_section "ПРОИЗВОДИТЕЛЬНОСТЬ"
 menu_item_state "[4]" "Оптимизация TCP и Conntrack" "$(module_state_word sysctl "$SYSCTL_TUNING")"
 menu_item_state "[5]" "Кэширование DNS-запросов" "$(module_state_word dnsmasq_perf "$DNSMASQ_PERF")"
-menu_item_state "[6]" "Оптимизация Go-сервисов" "$(module_state_word go "$GO_OPTIMIZE")"
 menu_section "СЕРВИСЫ И КЛИЕНТЫ"
-menu_item_state "[7]" "Время для устройств сети" "$(module_state_word ntp_clients "$NTP_CLIENTS")"
-menu_item_state "[8]" "Tailscale при поднятии WAN" "$(module_state_word ts_hotplug "$TAILSCALE_HOTPLUG")"
-menu_item_state "[9]" "Исправления телеметрии и связи" "$(module_state_word client_fixes "$CLIENT_FIXES")"
+menu_item_state "[6]" "Время для устройств сети" "$(module_state_word ntp_clients "$NTP_CLIENTS")"
+menu_item_state "[7]" "Исправления телеметрии и связи" "$(module_state_word client_fixes "$CLIENT_FIXES")"
 menu_section "ОБСЛУЖИВАНИЕ"
-menu_item "[10]" "Очистка старых заданий"
-menu_item_state "[11]" "Автоматическая проверка DNS" "$(module_state_word watchdog "$WATCHDOG_ENABLED")"
-menu_item_state "[12]" "Доступ из браузера" "$(module_state_word web "$WEB_ACCESS_ENABLED")"
-menu_item "[13]" "IP-заглушки провайдера"
+menu_item_state "[8]" "Автоматическая проверка DNS" "$(module_state_word watchdog "$WATCHDOG_ENABLED")"
+menu_item_state "[9]" "Доступ из браузера" "$(module_state_word web "$WEB_ACCESS_ENABLED")"
+menu_item "[10]" "IP-заглушки провайдера"
 menu_back
 menu_prompt
 safe_read c
@@ -3760,14 +3623,11 @@ apply_extras_now sysctl
 apply_extras_now sysctl_ext
 pause;;
 5) [ "$DNSMASQ_PERF" = 1 ] && DNSMASQ_PERF=0 || DNSMASQ_PERF=1; apply_extras_now dnsmasq_perf; pause;;
-6) [ "$GO_OPTIMIZE" = 1 ] && GO_OPTIMIZE=0 || GO_OPTIMIZE=1; apply_extras_now go; pause;;
-7) [ "$NTP_CLIENTS" = 1 ] && NTP_CLIENTS=0 || NTP_CLIENTS=1; apply_extras_now ntp_clients; pause;;
-8) [ "$TAILSCALE_HOTPLUG" = 1 ] && TAILSCALE_HOTPLUG=0 || TAILSCALE_HOTPLUG=1; apply_extras_now ts_hotplug; pause;;
-9) [ "$CLIENT_FIXES" = 1 ] && CLIENT_FIXES=0 || CLIENT_FIXES=1; apply_extras_now client_fixes; pause;;
-10) cleanup_manager_cron; CRON_CLEANUP=1; save_config; pause;;
-11) [ "$WATCHDOG_ENABLED" = 1 ] && WATCHDOG_ENABLED=0 || WATCHDOG_ENABLED=1; apply_watchdog; pause;;
-12) [ "$WEB_ACCESS_ENABLED" = 1 ] && WEB_ACCESS_ENABLED=0 || WEB_ACCESS_ENABLED=1; apply_web_access; pause;;
-13) menu_bogus;;
+6) [ "$NTP_CLIENTS" = 1 ] && NTP_CLIENTS=0 || NTP_CLIENTS=1; apply_extras_now ntp_clients; pause;;
+7) [ "$CLIENT_FIXES" = 1 ] && CLIENT_FIXES=0 || CLIENT_FIXES=1; apply_extras_now client_fixes; pause;;
+8) [ "$WATCHDOG_ENABLED" = 1 ] && WATCHDOG_ENABLED=0 || WATCHDOG_ENABLED=1; apply_watchdog; pause;;
+9) [ "$WEB_ACCESS_ENABLED" = 1 ] && WEB_ACCESS_ENABLED=0 || WEB_ACCESS_ENABLED=1; apply_web_access; pause;;
+10) menu_bogus;;
 '') return;;
 *) warn_msg "Неизвестный пункт."; pause;;
 esac
