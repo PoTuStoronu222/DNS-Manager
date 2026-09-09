@@ -2,7 +2,7 @@
 MANAGER_PATH="/usr/bin/dns-manager"
 # ==========================================
 # ==========================================
-VERSION="1.48"
+VERSION="1.50"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -527,6 +527,17 @@ if [ "$DNS_PROFILE" = "hybrid" ]; then
     done
 fi
 }
+sync_regional_dns_state() {
+    if [ -n "${SLOT_RU:-}" ] || [ -n "${SLOT_RU_2:-}" ]; then
+        TLD_RU_ENABLED=1
+        TLD_SPLIT=1
+    else
+        TLD_RU_ENABLED=0
+        TLD_SPLIT=0
+    fi
+}
+# ==========================================
+# ==========================================
 save_config() {
 umask 077
 cat > "$CONFIG_FILE" <<EOF_CFG
@@ -721,6 +732,17 @@ dns_path_conflict_nft() {
         return 0
     fi
     rm -f "$_out"
+    return 1
+}
+reload_fw() {
+    if [ -x /etc/init.d/firewall ]; then
+        /etc/init.d/firewall reload >/dev/null 2>&1 || /etc/init.d/firewall restart >/dev/null 2>&1 || return 1
+        return 0
+    fi
+    if command -v fw4 >/dev/null 2>&1; then
+        fw4 reload >/dev/null 2>&1 || fw4 restart >/dev/null 2>&1 || return 1
+        return 0
+    fi
     return 1
 }
 prepare_dns_path() {
@@ -1100,7 +1122,7 @@ uci set system.ntp.use_dhcp='0' || return 1
 uci commit system || return 1
 /etc/init.d/sysntpd restart >/dev/null 2>&1
 record_own "ntp" "system.ntp.server" "$servers" "profile=$NTP_PRESET"
-ok_msg "NTP: IP-профиль '$NTP_PRESET' добавлен без удаления существующих серверов."
+ok_msg "NTP: набор \"$(case "$NTP_PRESET" in cf_ip) printf "Cloudflare";; nist_ip) printf "NIST";; vniiftri_moscow) printf "ВНИИФТРИ";; google_ip) printf "Google";; *) printf "%s" "$NTP_PRESET";; esac)\" добавлен без удаления существующих серверов."
 log_tx "APPLY" "NTP" "ADD" "OK" "profile=$NTP_PRESET;servers=$servers"
 }
 apply_ntp_host_ips() {
@@ -2079,11 +2101,7 @@ replace_failed_slot_from_test() {
     _previous_id="$_old_id"
     _old_display="$(dns_name "$_old_id")"
     [ -n "$_old_display" ] || _old_display="выбранный DNS"
-    for _passcat in bypass clean; do
-        if [ "$DNS_SELECTION_MODE" != quick ]; then
-            [ "$_passcat" = "bypass" ] || break
-            _passcat="$_cat"
-        fi
+    for _passcat in "$_cat"; do
         while IFS='|' read -r _rid _rcat _rname _rms _rst; do
             [ -n "$_rid" ] || continue
             [ "$_rst" = OK ] || continue
@@ -2091,11 +2109,7 @@ replace_failed_slot_from_test() {
             [ "$_rid" = "$_old_id" ] && continue
             grep -qxF "$_rid" "$_slot_tried" 2>/dev/null && continue
             grep -qxF "$_rid" "$REPAIR_BAD_IDS" 2>/dev/null && continue
-            if [ "$DNS_SELECTION_MODE" = quick ]; then
-                [ "$_rcat" = "$_passcat" ] || continue
-            else
-                [ "$_rcat" = "$_cat" ] || continue
-            fi
+            [ "$_rcat" = "$_passcat" ] || continue
             _new_url="$(normalize_url "$(dns_url "$_rid")")"
             [ -n "$_new_url" ] || continue
             grep -qxF "$_new_url" "$_used" 2>/dev/null && continue
@@ -2541,6 +2555,7 @@ reset_hybrid_runtime_ports() {
     return 0
 }
 apply_settings() {
+    sync_regional_dns_state
     clear_screen
     run_discovery
     if [ "${HYBRID_FORCE_RESELECT:-0}" = 1 ] && [ "$DNS_PROFILE" = hybrid ]; then
@@ -3006,7 +3021,9 @@ printf "  Аппаратное ускорение:       %s\n" "$(state_word "$F
 menu_section "НАСТРОЙКИ DNS Manager"
 printf "  Настройка:                   ${C_YELLOW}%s${C_NC}\n" "$( [ "$DNS_PROFILE" = hybrid ] && printf '%s' 'Гибридный DNS — 6 серверов + Яндекс RU' || printf '%s' 'Своя настройка' )"
 printf "  Балансировка DNS:           %s\n" "$(config_state_word "$BALANCER_ENABLED")"
-printf "  Отдельный DNS (.ru/.su/.рф): %s\n" "$(config_state_word "$TLD_SPLIT")"
+_tld_state=0
+[ -n "${SLOT_RU:-}" ] || [ -n "${SLOT_RU_2:-}" ] && _tld_state=1
+printf "  Отдельный DNS (.ru/.su/.рф): %s\n" "$(config_state_word "$_tld_state")"
 printf "  Блокировка QUIC (DPI):      %s\n" "$(module_state_word quic "$BLOCK_QUIC")"
 printf "  Исправление сетевых параметров / MSS:      %s\n" "$(module_state_word mtu "$MTU_FIX")"
 printf "  Принудительный DNS:         %s\n" "$(module_state_word force "$FORCE_DOH")"
@@ -3033,6 +3050,7 @@ printf "${C_WHITE}Последние действия:${C_NC}\n"
 if [ -s "$TX_LOG" ]; then
     tail -10 "$TX_LOG" | awk -F'|' 'NF>=7 {
         phase=$4; obj=$5; act=$6; res=$7;
+        if (phase=="" || obj=="" || act=="" || res=="") next;
         if (phase=="DISCOVER") phase="Проверка состояния";
         else if (phase=="TEST") phase="Тест";
         else if (phase=="PLAN") phase="Подготовка";
@@ -3299,6 +3317,7 @@ safe_read c
 if [ "$c" = "99" ]; then
 eval "SLOT_$slot=''"
 eval "SLOT_${slot}_CAT=''"
+sync_regional_dns_state
 save_config
 return
 fi
@@ -3311,6 +3330,7 @@ eval "SLOT_$slot=\$id"
 _selected_cat="$(printf '%s' "$row" | cut -d'|' -f2)"
 DNS_SELECTION_CATEGORY="$_selected_cat"
 eval "SLOT_${slot}_CAT=\$_selected_cat"
+sync_regional_dns_state
 save_config
 }
 # ==========================================
@@ -3323,6 +3343,9 @@ printf "${C_YELLOW}${C_BOLD}Профиль:${C_NC} ${C_GREEN}${C_BOLD}Гибри
 else
 printf "${C_YELLOW}${C_BOLD}Настройка:${C_NC} ${C_GREEN}${C_BOLD}своя${C_NC}\n"
 fi
+_tld_state=0
+[ -n "${SLOT_RU:-}" ] || [ -n "${SLOT_RU_2:-}" ] && _tld_state=1
+printf "${C_YELLOW}${C_BOLD}DNS для .ru/.su/.рф:${C_NC} %s\n" "$(config_state_word "$_tld_state")"
 menu_section "ОБЩИЕ СЛОТЫ"
 printf "  ${C_YELLOW}${C_BOLD}%-4s %-34s %-8s${C_NC}\n" "№" "DNS" "ПОРТ"
 printf "  ──────────────────────────────────────────────────────────\n"
@@ -3601,7 +3624,6 @@ pause;;
 7) [ "$CLIENT_FIXES" = 1 ] && CLIENT_FIXES=0 || CLIENT_FIXES=1; apply_extras_now client_fixes; pause;;
 8) [ "$WATCHDOG_ENABLED" = 1 ] && WATCHDOG_ENABLED=0 || WATCHDOG_ENABLED=1; apply_watchdog; pause;;
 9) [ "$WEB_ACCESS_ENABLED" = 1 ] && WEB_ACCESS_ENABLED=0 || WEB_ACCESS_ENABLED=1; apply_web_access; pause;;
-10) return;;
 '') return;;
 *) warn_msg "Неизвестный пункт."; pause;;
 esac
@@ -3747,12 +3769,8 @@ watchdog_desired_cat() {
 watchdog_candidate_categories() {
     _slot="$1"
     _desired="$(watchdog_desired_cat "$_slot")"
-    if [ "$DNS_SELECTION_MODE" = quick ]; then
-        printf '%s\n' bypass
-        printf '%s\n' clean
-    else
-        printf '%s\n' "$_desired"
-    fi
+    [ -n "$_desired" ] || return 1
+    printf '%s\n' "$_desired"
 }
 watchdog_enforce_hdp_control() {
     _changed=0
@@ -3941,7 +3959,8 @@ watchdog_pick_replacement() {
         _preferred="$(watchdog_preferred_quick_candidate "$_slot")"
         if [ -n "$_preferred" ]; then
             _purl="$(normalize_url "$(dns_url "$_preferred")")"
-            if [ -n "$_purl" ] && ! grep -qxF "$_purl" "$_used" 2>/dev/null && ! grep -qxF "$_preferred" "$_tried" 2>/dev/null; then
+            _pcat="$(dns_cat "$_preferred")"
+            if [ "$_pcat" = bypass ] && [ -n "$_purl" ] && ! grep -qxF "$_purl" "$_used" 2>/dev/null && ! grep -qxF "$_preferred" "$_tried" 2>/dev/null; then
                 printf '%s|bypass\n' "$_preferred"
                 return 0
             fi
@@ -3958,7 +3977,7 @@ watchdog_pick_replacement() {
             [ -n "$_rurl" ] || continue
             grep -qxF "$_rurl" "$_used" 2>/dev/null && continue
             grep -qxF "$_rid" "$_tried" 2>/dev/null && continue
-            if [ "$_rcat" = "$_need" ] || { [ "$_need" = bypass ] && [ "$_rcat" = clean ]; }; then
+            if [ "$_rcat" = "$_need" ]; then
                 printf '%s|%s\n' "$_rid" "$_rcat"
                 rm -f "$TMP_DIR/watchdog-categories-$$" 2>/dev/null
                 return 0
@@ -4038,24 +4057,7 @@ run_watchdog() {
         eval "_id=\${SLOT_${_slot}:-}"; [ -n "$_id" ] || continue
         [ "$_slot" != RU_2 ] || [ -n "${PORT_RU_2:-}" ] || continue
         _desired="$(watchdog_desired_cat "$_slot")"; _current_cat="$(dns_cat "$_id")"
-        _need_return=0
-        if [ "$DNS_SELECTION_MODE" = quick ] && [ "$_slot" != RU ] && [ "$_slot" != RU_2 ] && [ "$_current_cat" = clean ]; then
-            _return_pref="$(watchdog_preferred_quick_candidate "$_slot" 2>/dev/null || true)"
-            [ -n "$_return_pref" ] && [ "$_id" != "$_return_pref" ] && _need_return=1
-        fi
         if watchdog_check_slot "$_slot"; then
-            if [ "$_need_return" = 1 ]; then
-                _tried="$TMP_DIR/watchdog-tried-${_slot}-$$"; : > "$_tried"; printf '%s\n' "$_id" >> "$_tried"
-                _picked="$(watchdog_pick_replacement "$_slot" "$_used" "$_tried")"; _repl="${_picked%%|*}"; _repl_cat="${_picked#*|}"
-                if [ -n "$_repl" ] && [ "$_repl" != "$_id" ]; then
-                    printf "  ${C_YELLOW}↻ Слот %s: %s работает. Проверяю возврат %s.${C_NC}\n" "$_slot" "$(dns_name "$_id")" "$(dns_name "$_repl")"
-                    if watchdog_apply_slot_candidate "$_slot" "$_repl" "$_repl_cat" "$_id" "$_current_cat"; then
-                        _u="$(normalize_url "$(dns_url "$_repl")")"; grep -qxF "$_u" "$_used" 2>/dev/null || printf '%s\n' "$_u" >> "$_used"
-                        printf "  ${C_GREEN}✓ Слот %s: %s возвращён.${C_NC}\n" "$_slot" "$(dns_name "$_repl")"
-                    fi
-                fi
-                rm -f "$_tried"
-            fi
             continue
         fi
         sleep 5
