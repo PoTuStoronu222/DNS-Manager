@@ -2,7 +2,7 @@
 MANAGER_PATH="/usr/bin/dns-manager"
 # ==========================================
 # ==========================================
-VERSION="1.63"
+VERSION="1.64"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -1583,8 +1583,9 @@ net.core.somaxconn=1024"
         printf '%s\n' "$_expected"
     } > "$_tmp" || { rm -f "$_tmp"; return 1; }
     for p in "net.ipv4.tcp_fastopen=3" "net.ipv4.tcp_fin_timeout=15" "net.core.somaxconn=1024"; do
-        sysctl -w "$p" >/dev/null 2>&1 || {
-            warn_msg "Не удалось применить $p."
+        _out="$(sysctl -w "$p" 2>&1)"
+        [ $? -eq 0 ] || {
+            [ -n "$_out" ] && warn_msg "Не удалось применить $p: $_out" || warn_msg "Не удалось применить $p."
             rm -f "$_tmp"
             while IFS='|' read -r _k _v; do
                 [ -n "$_k" ] && [ "$_v" != unknown ] && sysctl -w "$_k=$_v" >/dev/null 2>&1 || true
@@ -1621,6 +1622,56 @@ remove_sysctl_base() {
 }
 
 # ==========================================
+# ==========================================
+apply_sysctl_bundle() {
+    # Apply/restore base + extended sysctl as one menu operation.
+    # Each low-level function remains responsible for its own ownership and rollback.
+    _want_base="$1"
+    _want_ext="$2"
+    _saved_base="$SYSCTL_TUNING"
+    _saved_ext="$SYSCTL_EXTENDED"
+    SYSCTL_TUNING="$_want_base"
+    SYSCTL_EXTENDED="$_want_ext"
+
+    if [ "$_want_base" = 1 ]; then
+        apply_sysctl || {
+            SYSCTL_TUNING="$_saved_base"
+            SYSCTL_EXTENDED="$_saved_ext"
+            err_msg "Базовый sysctl не применён. Проверьте параметры net.ipv4.tcp_fastopen, net.ipv4.tcp_fin_timeout и net.core.somaxconn."
+            return 1
+        }
+    else
+        remove_sysctl_base || {
+            SYSCTL_TUNING="$_saved_base"
+            SYSCTL_EXTENDED="$_saved_ext"
+            err_msg "Не удалось отключить базовый sysctl."
+            return 1
+        }
+    fi
+
+    if [ "$_want_ext" = 1 ]; then
+        apply_sysctl_extended || {
+            # Do not report success for a partial bundle. Restore the just-applied
+            # base layer when the extended layer fails.
+            remove_sysctl_base >/dev/null 2>&1 || true
+            SYSCTL_TUNING="$_saved_base"
+            SYSCTL_EXTENDED="$_saved_ext"
+            err_msg "Расширенный sysctl не применён. Проверьте nf_conntrack и параметры TCP/buffer. Базовый слой откатан."
+            return 1
+        }
+    else
+        remove_sysctl_extended || {
+            SYSCTL_TUNING="$_saved_base"
+            SYSCTL_EXTENDED="$_saved_ext"
+            err_msg "Не удалось отключить расширенный sysctl."
+            return 1
+        }
+    fi
+
+    run_discovery || return 1
+    save_config || return 1
+    return 0
+}
 # ==========================================
 apply_extras_now() {
     case "$1" in
@@ -1850,8 +1901,9 @@ EOF_SYSCTL_EXT
     } > "$_tmp" || { rm -f "$_tmp"; return 1; }
     while IFS= read -r _p; do
         [ -n "$_p" ] || continue
-        sysctl -w "$_p" >/dev/null 2>&1 || {
-            warn_msg "Не удалось применить расширенный sysctl: $_p"
+        _out="$(sysctl -w "$_p" 2>&1)"
+        [ $? -eq 0 ] || {
+            [ -n "$_out" ] && warn_msg "Не удалось применить расширенный sysctl: $_p: $_out" || warn_msg "Не удалось применить расширенный sysctl: $_p"
             rm -f "$_tmp"
             while IFS='|' read -r _k _v; do
                 [ -n "$_k" ] && [ "$_v" != unknown ] && sysctl -w "$_k=$_v" >/dev/null 2>&1 || true
@@ -3636,6 +3688,16 @@ check_module_state() {
                 [ "$(sysctl -n "$_k" 2>/dev/null)" = "$_v" ] || { printf 0; return; }
                 grep -qxF "$_p" "$f" 2>/dev/null || { printf 0; return; }
             done
+            if [ "${SYSCTL_EXTENDED:-0}" = 1 ]; then
+                f="/etc/sysctl.d/91-dns-manager-extended.conf"
+                [ -f "$f" ] || { printf 0; return; }
+                sysctl_extended_file_owned "$f" || { printf 0; return; }
+                for _p in "net.netfilter.nf_conntrack_max=65536" "net.ipv4.tcp_keepalive_time=600" "net.ipv4.tcp_keepalive_intvl=60" "net.ipv4.tcp_keepalive_probes=5" "net.core.rmem_max=4194304" "net.core.wmem_max=4194304" "net.core.rmem_default=262144" "net.core.wmem_default=262144"; do
+                    _k="${_p%%=*}"; _v="${_p#*=}"
+                    [ "$(sysctl -n "$_k" 2>/dev/null)" = "$_v" ] || { printf 0; return; }
+                    grep -qxF "$_p" "$f" 2>/dev/null || { printf 0; return; }
+                done
+            fi
             printf 1
             ;;
         sysctl_ext)
@@ -3910,17 +3972,18 @@ case "$c" in
 4)
 _old_sysctl="$SYSCTL_TUNING"
 _old_sysctl_ext="$SYSCTL_EXTENDED"
-if [ "$SYSCTL_TUNING" = 1 ]; then SYSCTL_TUNING=0; SYSCTL_EXTENDED=0; else SYSCTL_TUNING=1; SYSCTL_EXTENDED=1; fi
-_bundle_ok=1
-apply_extras_now sysctl || _bundle_ok=0
-[ "$_bundle_ok" = 1 ] && apply_extras_now sysctl_ext || [ "$_bundle_ok" = 1 ] && _bundle_ok=0
-if [ "$_bundle_ok" != 1 ]; then
+if [ "$SYSCTL_TUNING" = 1 ]; then
+    _new_sysctl=0
+    _new_sysctl_ext=0
+else
+    _new_sysctl=1
+    _new_sysctl_ext=1
+fi
+if ! apply_sysctl_bundle "$_new_sysctl" "$_new_sysctl_ext"; then
     SYSCTL_TUNING="$_old_sysctl"
     SYSCTL_EXTENDED="$_old_sysctl_ext"
-    apply_extras_now sysctl >/dev/null 2>&1 || true
-    apply_extras_now sysctl_ext >/dev/null 2>&1 || true
     save_config >/dev/null 2>&1 || true
-    err_msg "Не удалось полностью применить оптимизацию TCP и Conntrack. Состояние настройки возвращено."
+    err_msg "Оптимизация TCP и Conntrack не изменена: конфигурация возвращена."
 fi
 pause;;
 5) _old="$DNSMASQ_PERF"; [ "$DNSMASQ_PERF" = 1 ] && DNSMASQ_PERF=0 || DNSMASQ_PERF=1; if ! apply_extras_now dnsmasq_perf; then DNSMASQ_PERF="$_old"; save_config >/dev/null 2>&1 || true; err_msg "Не удалось изменить кэширование DNS."; fi; pause;;
