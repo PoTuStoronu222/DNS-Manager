@@ -2,7 +2,7 @@
 MANAGER_PATH="/usr/bin/dns-manager"
 # ==========================================
 # ==========================================
-VERSION="1.61"
+VERSION="1.62"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -1719,8 +1719,12 @@ remove_dnsmasq_perf() {
 apply_client_fixes() {
     [ "${CLIENT_FIXES:-0}" = 1 ] || return 0
     f="/etc/dnsmasq.d/91-dns-manager-client-fixes.conf"
-    [ -f "$f" ] || printf '%s\n' '# DNS_MANAGER_MANAGED=1' > "$f" || return 1
+    if [ -e "$f" ] && ! grep -qxF '# DNS_MANAGER_MANAGED=1' "$f" 2>/dev/null; then
+        err_msg "$f уже существует и не принадлежит DNS Manager. Файл не изменён."
+        return 1
+    fi
     {
+        printf '%s\n' '# DNS_MANAGER_MANAGED=1'
         printf '%s\n' '# DNS_MANAGER_CLIENT_FIXES=1'
         printf '%s\n' 'local=/telemetry.mozilla.org/'
         printf '%s\n' 'local=/telemetry.microsoft.com/'
@@ -2920,17 +2924,6 @@ mgr="$(awk -F'=' -v k="$kv" '$1==k{print $2;exit}' /etc/sysctl.d/90-dns-manager.
 done
 rm -f /etc/sysctl.d/90-dns-manager.conf "$STATE_DIR/sysctl-before.conf"
 fi
-for f in; do
-bak="$f.dns-manager.bak"
-if [ -f "$bak" ]; then
-curh="$(file_hash "$f")"; managedh="$(cat "$STATE_DIR/$(basename "$f").managed.sha256" 2>/dev/null)"
-if [ -n "$managedh" ] && [ -n "$curh" ] && [ "$curh" != "$managedh" ]; then
-warn_msg "Не восстанавливаю $f: он изменён после последнего применения DNS Manager."
-else
-mv "$bak" "$f" 2>/dev/null
-fi
-fi
-done
 /etc/init.d/https-dns-proxy restart 2>/dev/null
 /etc/init.d/dnsmasq restart 2>/dev/null
 printf "${C_GREEN}✓ Изменения обработаны.${C_NC}\n"
@@ -3567,10 +3560,25 @@ check_module_state() {
             [ -f "$f" ] || { printf 0; return; }
             grep -qxF '# DNS_MANAGER_MANAGED=1' "$f" 2>/dev/null || { printf 0; return; }
             grep -qxF '# DNS_MANAGER_CLIENT_FIXES=1' "$f" 2>/dev/null || { printf 0; return; }
-            grep -qxF 'local=/telemetry.mozilla.org/' "$f" 2>/dev/null || { printf 0; return; }
-            grep -qxF 'local=/telemetry.microsoft.com/' "$f" 2>/dev/null || { printf 0; return; }
-            grep -qxF 'server=/clients3.google.com/77.88.8.8' "$f" 2>/dev/null || { printf 0; return; }
-            grep -qxF 'server=/clients3.google.com/77.88.8.1' "$f" 2>/dev/null || { printf 0; return; }
+            for _fix in \
+                'local=/telemetry.mozilla.org/' \
+                'local=/telemetry.microsoft.com/' \
+                'local=/vortex.data.microsoft.com/' \
+                'local=/settings-win.data.microsoft.com/' \
+                'local=/metrics.android.com/' \
+                'local=/metrics.samsung.com/' \
+                'server=/clients3.google.com/77.88.8.8' \
+                'server=/clients3.google.com/77.88.8.1' \
+                'server=/connectivitycheck.gstatic.com/77.88.8.8' \
+                'server=/connectivitycheck.gstatic.com/77.88.8.1' \
+                'server=/connectivitycheck.android.com/77.88.8.8' \
+                'server=/connectivitycheck.android.com/77.88.8.1' \
+                'server=/connectivitycheck.samsung.com/77.88.8.8' \
+                'server=/connectivitycheck.samsung.com/77.88.8.1' \
+                'server=/connectivitycheck.platform.hicloud.com/77.88.8.8' \
+                'server=/connectivitycheck.platform.hicloud.com/77.88.8.1'; do
+                grep -qxF "$_fix" "$f" 2>/dev/null || { printf 0; return; }
+            done
             printf 1
             ;;
         watchdog)
