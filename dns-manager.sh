@@ -2,7 +2,7 @@
 MANAGER_PATH="/usr/bin/dns-manager"
 # ==========================================
 # ==========================================
-VERSION="1.64"
+VERSION="2.00"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -225,7 +225,7 @@ touch "$LOG_FILE" "$TX_LOG" "$OWNERSHIP" 2>/dev/null
 # ==========================================
 # ==========================================
 baseline_files() {
-printf '%s\n'  /etc/config/dhcp  /etc/config/https-dns-proxy  /etc/config/firewall  /etc/config/system  /etc/sysctl.d/90-dns-manager.conf  /etc/sysctl.d/91-dns-manager-extended.conf  /etc/dnsmasq.d/90-dns-manager-bogus.conf  /etc/dnsmasq.d/91-dns-manager-client-fixes.conf   /etc/crontabs/root  
+printf '%s\n'  /etc/config/dhcp  /etc/config/https-dns-proxy  /etc/config/firewall  /etc/config/system  /etc/sysctl.d/90-dns-manager.conf /etc/sysctl.d/91-dns-manager-extended.conf  /etc/dnsmasq.d/90-dns-manager-bogus.conf  /etc/dnsmasq.d/91-dns-manager-client-fixes.conf   /etc/crontabs/root  
 }
 baseline_key() {
 printf '%s' "$1" | sed 's#^/##; s#[/ ]#_#g'
@@ -639,8 +639,7 @@ while uci -q get "https-dns-proxy.@https-dns-proxy[$i]" >/dev/null 2>&1; do
 p="$(uci -q get "https-dns-proxy.@https-dns-proxy[$i].listen_port" 2>/dev/null)"
 a="$(uci -q get "https-dns-proxy.@https-dns-proxy[$i].listen_addr" 2>/dev/null)"
 u="$(normalize_url "$(uci -q get "https-dns-proxy.@https-dns-proxy[$i].resolver_url" 2>/dev/null)")"
-m="$(uci -q get "https-dns-proxy.@https-dns-proxy[$i].dns_manager" 2>/dev/null)"
-[ "$m" = 1 ] && owner="OURS" || owner="UNKNOWN"
+owner="OURS"
 running="no"
 if [ -n "$p" ] && [ -s "$LISTENERS" ] && grep -qE "(:|\])$p([[:space:]]|$)" "$LISTENERS" 2>/dev/null; then running="yes"; fi
 [ "$owner" = UNKNOWN ] && [ "$running" = yes ] && owner="FOREIGN"
@@ -767,6 +766,7 @@ disc_firewall() {
 }
 run_discovery() {
 init_dirs
+    migrate_legacy_manager_files >/dev/null 2>&1 || true
 disc_system
 disc_network
 disc_listeners
@@ -1246,11 +1246,14 @@ return 1
 # ==========================================
 # ==========================================
 clear_all_doh_for_apply() {
-    printf "${C_PINK}↻ Все существующие DNS-серверы будут удалены и заменены выбранной схемой DNS Manager.${C_NC}\n"
+    # DNS Manager is the authoritative owner of the DoH configuration.
+    # Before every apply, remove ALL existing https-dns-proxy sections and
+    # rebuild the complete selected set from the manager configuration.
+    printf "${C_PINK}↻ Все существующие DNS-секции https-dns-proxy будут удалены и заменены выбранной схемой DNS Manager.${C_NC}\n"
     _removed=0
     while uci -q get "https-dns-proxy.@https-dns-proxy[0]" >/dev/null 2>&1; do
         _u="$(uci -q get "https-dns-proxy.@https-dns-proxy[0].resolver_url" 2>/dev/null)"
-        [ -n "$_u" ] && printf "  ${C_PINK}↻ Удаляется DNS-сервер: %s${C_NC}\n" "$_u"
+        [ -n "$_u" ] && printf "  ${C_PINK}↻ Удаляется DNS-секция: %s${C_NC}\n" "$_u"
         uci -q delete "https-dns-proxy.@https-dns-proxy[0]" || return 1
         _removed=$((_removed+1))
     done
@@ -1260,7 +1263,9 @@ clear_all_doh_for_apply() {
     DOH_OURS=0
     DOH_FOREIGN=0
     DOH_UNKNOWN=0
-    printf "${C_GREEN}✓ Старых DNS-серверов удалено: %s. Остаются выбранные DNS-серверы.${C_NC}\n" "$_removed"
+    disc_listeners
+    disc_dns
+    printf "${C_GREEN}✓ Старых DNS-секций удалено: %s. Устанавливается полный набор DNS Manager.${C_NC}\n" "$_removed"
 }
 record_own() { printf '%s|%s|%s|%s\n' "$1" "$2" "$3" "$4" >> "$OWNERSHIP"; }
 configure_hdp_manager_control() {
@@ -1301,7 +1306,6 @@ target="$FREE_PORT_RESULT"
 fi
 if [ "$target" != "$current" ]; then
 if [ -n "$sec_idx" ]; then
-[ "$(uci -q get "https-dns-proxy.@https-dns-proxy[$sec_idx].dns_manager" 2>/dev/null)" = "1" ] || return 1
 uci set "https-dns-proxy.@https-dns-proxy[$sec_idx].listen_port=$target" || return 1
 uci set "https-dns-proxy.@https-dns-proxy[$sec_idx].listen_addr=127.0.0.1" || return 1
 else
@@ -1316,11 +1320,9 @@ fi
 local existing_foreign
 existing_foreign="$(find_any_doh_by_url "$url")"
 if [ -n "$existing_foreign" ]; then
-local _foreign_idx="$(printf '%s' "$existing_foreign" | cut -d'|' -f1)"
-local owner="$(printf '%s' "$existing_foreign" | cut -d'|' -f3)"
-local p_old="$(printf '%s' "$existing_foreign" | cut -d'|' -f2)"
-warn_msg "$name уже использовался чужой/неизвестной секцией (порт $p_old, владелец=$(owner_ru "$owner")). Она удаляется: при активном DNS Manager не оставляет другие DNS-серверы."
-[ -n "$_foreign_idx" ] && uci -q delete "https-dns-proxy.@https-dns-proxy[$_foreign_idx]" || return 1
+    local owner="$(printf '%s' "$existing_foreign" | cut -d'|' -f3)"
+    local p_old="$(printf '%s' "$existing_foreign" | cut -d'|' -f2)"
+    warn_msg "$name уже используется другой/неизвестной секцией (порт $p_old, владелец=$(owner_ru "$owner")). Сторонняя секция сохраняется; DNS Manager создаст свою локальную секцию."
 fi
 local target="$desired"
 if [ -n "$target" ]; then
@@ -1346,7 +1348,6 @@ uci set "https-dns-proxy.$sec.listen_port=$target" || return 1
 uci set "https-dns-proxy.$sec.listen_addr=127.0.0.1" || return 1
 uci set "https-dns-proxy.$sec.resolver_url=$url" || return 1
 uci set "https-dns-proxy.$sec.request_timeout=2" || return 1
-uci set "https-dns-proxy.$sec.dns_manager=1" || return 1
 record_own "doh" "$target" "$url" "slot=$slot;name=$name"
 eval "PORT_$slot=\"$target\""
 printf "  ${C_GREEN}+ %s → 127.0.0.1:%s${C_NC}\n" "$name" "$target"
@@ -1388,14 +1389,10 @@ reconcile_selected_own_doh() {
     sort -u "$_keep" -o "$_keep" 2>/dev/null || true
     i=0
     while uci -q get "https-dns-proxy.@https-dns-proxy[$i]" >/dev/null 2>&1; do
-        _m="$(uci -q get "https-dns-proxy.@https-dns-proxy[$i].dns_manager" 2>/dev/null)"
-        if [ "$_m" = 1 ]; then
-            _u="$(normalize_url "$(uci -q get "https-dns-proxy.@https-dns-proxy[$i].resolver_url" 2>/dev/null)")"
-            if [ -z "$_u" ] || ! grep -qxF "$_u" "$_keep" 2>/dev/null; then
-                printf "${C_PINK}↻ Удаляется устаревшая собственная секция DNS: %s${C_NC}\n" "${_u:-без URL}"
-                uci -q delete "https-dns-proxy.@https-dns-proxy[$i]" || return 1
-                continue
-            fi
+        _u="$(normalize_url "$(uci -q get "https-dns-proxy.@https-dns-proxy[$i].resolver_url" 2>/dev/null)")"
+        if [ -z "$_u" ] || ! grep -qxF "$_u" "$_keep" 2>/dev/null; then
+            uci -q delete "https-dns-proxy.@https-dns-proxy[$i]" || return 1
+            continue
         fi
         i=$((i+1))
     done
@@ -1469,38 +1466,55 @@ ensure_dnsmasq_balancer() {
     [ "$(uci -q get "dhcp.$_sec.noresolv" 2>/dev/null)" = 1 ] || return 1
     return 0
 }
+dnsmasq_manager_server_owned() {
+    _val="$1"
+    [ -n "$_val" ] || return 1
+    # Prefer the persistent ownership journal from all previous manager versions.
+    awk -F'|' -v v="$_val" '$1=="dnsmasq" && $2=="server" && $3==v {found=1; exit} END{exit found?0:1}' "$OWNERSHIP" 2>/dev/null && return 0
+    # Legacy manager versions did not always leave a reliable journal. These are
+    # the manager's dedicated local DoH ports and regional routes.
+    case "$_val" in
+        127.0.0.1#505[3-9]|127.0.0.1#5060|/ru/127.0.0.1#505[3-9]|/ru/127.0.0.1#5060|/su/127.0.0.1#505[3-9]|/su/127.0.0.1#5060|/xn--p1ai/127.0.0.1#505[3-9]|/xn--p1ai/127.0.0.1#5060) return 0 ;;
+    esac
+    return 1
+}
 reconcile_dnsmasq() {
     sec="$(get_dnsmasq_section)"
     uci -q get "dhcp.$sec" >/dev/null 2>&1 || return 1
     [ -s "$PREV_DNSMASQ" ] || {
-  {
-    printf 'SERVER\n'
-    uci -q get "dhcp.$sec.server" 2>/dev/null | tr ' ' '\n'
-    printf 'ALLSERVERS=%s\n' "$(uci -q get "dhcp.$sec.allservers" 2>/dev/null)"
-    printf 'STRICTORDER=%s\n' "$(uci -q get "dhcp.$sec.strictorder" 2>/dev/null)"
-    printf 'NORESOLV=%s\n' "$(uci -q get "dhcp.$sec.noresolv" 2>/dev/null)"
-    printf 'SECTION=%s\n' "$sec"
-  } > "$PREV_DNSMASQ" 2>/dev/null || true
-}
+      {
+        printf 'SERVER\n'
+        uci -q get "dhcp.$sec.server" 2>/dev/null | tr ' ' '\n'
+        printf 'ALLSERVERS=%s\n' "$(uci -q get "dhcp.$sec.allservers" 2>/dev/null)"
+        printf 'STRICTORDER=%s\n' "$(uci -q get "dhcp.$sec.strictorder" 2>/dev/null)"
+        printf 'NORESOLV=%s\n' "$(uci -q get "dhcp.$sec.noresolv" 2>/dev/null)"
+        printf 'SECTION=%s\n' "$sec"
+      } > "$PREV_DNSMASQ" 2>/dev/null || true
+    }
+    # DNS Manager is authoritative for upstream DNS in this profile.
+    # Rebuild the server list from scratch so stale/foreign DNS entries cannot
+    # survive an apply. The original values are preserved in PREV_DNSMASQ.
     while uci -q delete "dhcp.$sec.server" >/dev/null 2>&1; do :; done
     for s in 1 2 3 4 5 6; do
         eval "id=\${SLOT_$s}"; eval "p=\${PORT_$s}"
         [ -n "$id" ] && [ -n "$p" ] || continue
         val="127.0.0.1#$p"
-        uci add_list "dhcp.$sec.server=$val" || return 1
+        exact_list_has "dhcp.$sec.server" "$val" || {
+            uci add_list "dhcp.$sec.server=$val" || return 1
+        }
         record_own "dnsmasq" "server" "$val" "section=$sec"
     done
     if [ "$TLD_RU_ENABLED" = 1 ] && [ -n "$SLOT_RU" ] && [ -n "$PORT_RU" ]; then
         for t in /ru /su /xn--p1ai; do
             val="$t/127.0.0.1#$PORT_RU"
-            uci add_list "dhcp.$sec.server=$val" || return 1
+            exact_list_has "dhcp.$sec.server" "$val" || uci add_list "dhcp.$sec.server=$val" || return 1
             record_own "dnsmasq" "server" "$val" "section=$sec"
         done
     fi
     if [ "$TLD_RU_ENABLED" = 1 ] && [ -n "$SLOT_RU_2" ] && [ -n "$PORT_RU_2" ]; then
         for t in /ru /su /xn--p1ai; do
             val="$t/127.0.0.1#$PORT_RU_2"
-            uci add_list "dhcp.$sec.server=$val" || return 1
+            exact_list_has "dhcp.$sec.server" "$val" || uci add_list "dhcp.$sec.server=$val" || return 1
             record_own "dnsmasq" "server" "$val" "section=$sec"
         done
     fi
@@ -1520,15 +1534,38 @@ reconcile_dnsmasq() {
 }
 # ==========================================
 # ==========================================
-apply_quic() {
-    [ "$BLOCK_QUIC" = 1 ] || return 0
+firewall_quic_rule_owned() {
+    _rsec="$1"
+    _rname="$2"
+    [ "$(uci -q get "firewall.$_rsec.name" 2>/dev/null)" = "$_rname" ] || return 1
+    [ "$(uci -q get "firewall.$_rsec.src" 2>/dev/null)" = lan ] || return 1
+    [ "$(uci -q get "firewall.$_rsec.dest" 2>/dev/null)" = wan ] || return 1
+    [ "$(uci -q get "firewall.$_rsec.proto" 2>/dev/null)" = udp ] || return 1
+    case "$_rname" in
+        Block_UDP_80) [ "$(uci -q get "firewall.$_rsec.dest_port" 2>/dev/null)" = 80 ] || return 1 ;;
+        Block_UDP_443) [ "$(uci -q get "firewall.$_rsec.dest_port" 2>/dev/null)" = 443 ] || return 1 ;;
+        *) return 1 ;;
+    esac
+    [ "$(uci -q get "firewall.$_rsec.target" 2>/dev/null)" = REJECT ] || return 1
+    return 0
+}
+quic_remove_managed_rules() {
     for _rname in Block_UDP_80 Block_UDP_443; do
-        while :; do
-            _ridx="$(uci show firewall 2>/dev/null | grep "name='$_rname'" | head -n1 | cut -d. -f2 | cut -d= -f1)"
-            [ -n "$_ridx" ] || break
+        _secs="$(uci show firewall 2>/dev/null | sed -n 's/^firewall\.\([^.=]*\)=rule$/\1/p')"
+        for _ridx in $_secs; do
+            [ "$(uci -q get "firewall.$_ridx.name" 2>/dev/null)" = "$_rname" ] || continue
+            firewall_quic_rule_owned "$_ridx" "$_rname" || {
+                warn_msg "Правило $_rname существует, но его структура не совпадает с правилом DNS Manager. Не удаляю его."
+                continue
+            }
             uci -q delete "firewall.$_ridx" || return 1
         done
     done
+    return 0
+}
+apply_quic() {
+    [ "$BLOCK_QUIC" = 1 ] || return 0
+    quic_remove_managed_rules || return 1
     uci add firewall rule >/dev/null 2>&1 || return 1
     uci set firewall.@rule[-1].name='Block_UDP_80' || return 1
     uci add_list firewall.@rule[-1].proto='udp' || return 1
@@ -1547,45 +1584,59 @@ apply_quic() {
 }
 # ==========================================
 # ==========================================
+sysctl_base_manager_path() { printf '%s' "/etc/sysctl.d/90-dns-manager.conf"; }
+sysctl_extended_manager_path() { printf '%s' "/etc/sysctl.d/91-dns-manager-extended.conf"; }
+sysctl_base_managed_files() {
+    [ -f "/etc/sysctl.d/90-dns-manager.conf" ] && printf '%s\n' "/etc/sysctl.d/90-dns-manager.conf"
+}
+sysctl_extended_managed_files() {
+    [ -f "/etc/sysctl.d/91-dns-manager-extended.conf" ] && printf '%s\n' "/etc/sysctl.d/91-dns-manager-extended.conf"
+}
+
+migrate_legacy_manager_files() {
+    # 1.70 introduced 98/99 names unnecessarily. Collapse them back to the
+    # single canonical Manager namespace. Only exact Manager-owned content is
+    # migrated; canonical files always remain authoritative.
+    _src="/etc/sysctl.d/98-dns-manager.conf"
+    _dst="/etc/sysctl.d/90-dns-manager.conf"
+    if [ -f "$_src" ] && [ ! -f "$_dst" ] && sysctl_base_file_owned "$_src"; then
+        cp -p "$_src" "$_dst" 2>/dev/null || return 1
+        rm -f "$_src" 2>/dev/null || return 1
+    elif [ -f "$_src" ] && [ -f "$_dst" ] && sysctl_base_file_owned "$_src"; then
+        rm -f "$_src" 2>/dev/null || return 1
+    fi
+    _src="/etc/sysctl.d/99-dns-manager-extended.conf"
+    _dst="/etc/sysctl.d/91-dns-manager-extended.conf"
+    if [ -f "$_src" ] && [ ! -f "$_dst" ] && sysctl_extended_file_owned "$_src"; then
+        cp -p "$_src" "$_dst" 2>/dev/null || return 1
+        rm -f "$_src" 2>/dev/null || return 1
+    elif [ -f "$_src" ] && [ -f "$_dst" ] && sysctl_extended_file_owned "$_src"; then
+        rm -f "$_src" 2>/dev/null || return 1
+    fi
+    return 0
+}
+
 apply_sysctl() {
-    f="/etc/sysctl.d/90-dns-manager.conf"
+    f="$(sysctl_base_manager_path)"
     sf="$STATE_DIR/sysctl-before.conf"
     _expected="net.ipv4.tcp_fastopen=3
 net.ipv4.tcp_fin_timeout=15
 net.core.somaxconn=1024"
-    if [ "${SYSCTL_TUNING:-0}" != 1 ]; then
-        return 0
-    fi
-    if [ -e "$f" ] && ! sysctl_base_file_owned "$f"; then
-        err_msg "$f уже существует и не принадлежит DNS Manager. Файл не изменён."
-        return 1
-    fi
+    [ "${SYSCTL_TUNING:-0}" = 1 ] || return 0
     [ -s "$sf" ] || : > "$sf" || return 1
     for p in "net.ipv4.tcp_fastopen=3" "net.ipv4.tcp_fin_timeout=15" "net.core.somaxconn=1024"; do
-        key="${p%%=*}"; val="${p#*=}"; before="$(sysctl -n "$key" 2>/dev/null)"
-        grep -q "^${key}|" "$sf" 2>/dev/null || printf '%s|%s\n' "$key" "${before:-unknown}" >> "$sf" || return 1
-        foreign=""
-        for _sf in /etc/sysctl.d/*; do
-            [ -f "$_sf" ] || continue
-            [ "$_sf" = "$f" ] && continue
-            _fv="$(grep -hs "^${key}=" "$_sf" 2>/dev/null | grep -v '^#' | grep -v "^${key}=${val}$" | head -n1)"
-            [ -n "$_fv" ] && { foreign="$_fv"; break; }
-        done
-        if [ -n "$foreign" ]; then
-            warn_msg "Не меняю $key: найдено стороннее значение ($foreign)."
-            return 1
-        fi
+        _k="${p%%=*}"; _old="$(sysctl -n "$_k" 2>/dev/null)"
+        grep -q "^${_k}|" "$sf" 2>/dev/null || printf '%s|%s\n' "$_k" "${_old:-unknown}" >> "$sf" || return 1
     done
+    # This is the Manager's canonical tuning zone: enforce our values.
     _tmp="$f.tmp.$$"
     {
-        printf '%s\n' '# DNS_MANAGER_MANAGED=1'
-        printf '%s\n' '# DNS_MANAGER_SYSCTL=1'
         printf '%s\n' "$_expected"
     } > "$_tmp" || { rm -f "$_tmp"; return 1; }
     for p in "net.ipv4.tcp_fastopen=3" "net.ipv4.tcp_fin_timeout=15" "net.core.somaxconn=1024"; do
         _out="$(sysctl -w "$p" 2>&1)"
         [ $? -eq 0 ] || {
-            [ -n "$_out" ] && warn_msg "Не удалось применить $p: $_out" || warn_msg "Не удалось применить $p."
+            [ -n "$_out" ] && err_msg "Не удалось применить $p: $_out" || err_msg "Не удалось применить $p."
             rm -f "$_tmp"
             while IFS='|' read -r _k _v; do
                 [ -n "$_k" ] && [ "$_v" != unknown ] && sysctl -w "$_k=$_v" >/dev/null 2>&1 || true
@@ -1600,23 +1651,23 @@ net.core.somaxconn=1024"
 sysctl_base_file_owned() {
     _f="$1"
     [ -f "$_f" ] || return 1
-    grep -qxF '# DNS_MANAGER_MANAGED=1' "$_f" 2>/dev/null && return 0
-    grep -qxF '# DNS_MANAGER_SYSCTL=1' "$_f" 2>/dev/null && return 0
-    grep -qxF 'net.ipv4.tcp_fastopen=3' "$_f" 2>/dev/null && \
-    grep -qxF 'net.ipv4.tcp_fin_timeout=15' "$_f" 2>/dev/null && \
-    grep -qxF 'net.core.somaxconn=1024' "$_f" 2>/dev/null
+    for _p in \
+        'net.ipv4.tcp_fastopen=3' \
+        'net.ipv4.tcp_fin_timeout=15' \
+        'net.core.somaxconn=1024'; do
+        grep -qxF "$_p" "$_f" 2>/dev/null || return 1
+    done
+    return 0
 }
 remove_sysctl_base() {
-    f="/etc/sysctl.d/90-dns-manager.conf"
     sf="$STATE_DIR/sysctl-before.conf"
-    if [ -f "$f" ] && sysctl_base_file_owned "$f"; then
-        if [ -s "$sf" ]; then
-            while IFS='|' read -r _k _v; do
-                [ -n "$_k" ] && [ "$_v" != unknown ] && sysctl -w "$_k=$_v" >/dev/null 2>&1 || true
-            done < "$sf"
-        fi
-        rm -f "$f" || return 1
+    if [ -s "$sf" ]; then
+        while IFS='|' read -r _k _v; do
+            [ -n "$_k" ] && [ "$_v" != unknown ] && sysctl -w "$_k=$_v" >/dev/null 2>&1 || true
+        done < "$sf"
     fi
+    _f="/etc/sysctl.d/90-dns-manager.conf"
+    [ -f "$_f" ] && rm -f "$_f" || true
     rm -f "$sf"
     return 0
 }
@@ -1690,11 +1741,7 @@ apply_extras_now() {
             apply_mtu_toggle || return 1
             ;;
         sysctl)
-            if [ "$SYSCTL_TUNING" = 1 ]; then
-                apply_sysctl || return 1
-            else
-                remove_sysctl_base || return 1
-            fi
+            apply_sysctl_bundle "$SYSCTL_TUNING" "$SYSCTL_EXTENDED" || return 1
             ;;
         force)
             if [ "$FORCE_DOH" = 1 ]; then
@@ -1821,13 +1868,9 @@ remove_dnsmasq_perf() {
 apply_client_fixes() {
     [ "${CLIENT_FIXES:-0}" = 1 ] || return 0
     f="/etc/dnsmasq.d/91-dns-manager-client-fixes.conf"
-    if [ -e "$f" ] && ! client_fixes_file_owned "$f"; then
-        err_msg "$f уже существует и не принадлежит DNS Manager. Файл не изменён."
-        return 1
-    fi
+    _before="$STATE_DIR/client-fixes-before.conf"
+    if [ ! -e "$_before" ] && [ -e "$f" ]; then cp -p "$f" "$_before" || return 1; fi
     {
-        printf '%s\n' '# DNS_MANAGER_MANAGED=1'
-        printf '%s\n' '# DNS_MANAGER_CLIENT_FIXES=1'
         printf '%s\n' 'local=/telemetry.mozilla.org/'
         printf '%s\n' 'local=/telemetry.microsoft.com/'
         printf '%s\n' 'local=/vortex.data.microsoft.com/'
@@ -1850,13 +1893,17 @@ apply_client_fixes() {
 }
 remove_client_fixes() {
     f="/etc/dnsmasq.d/91-dns-manager-client-fixes.conf"
-    if client_fixes_file_owned "$f"; then
-        rm -f "$f" || return 1
+    _before="$STATE_DIR/client-fixes-before.conf"
+    if [ -f "$_before" ]; then
+        cp -p "$_before" "$f" || return 1
+        rm -f "$_before"
+    else
+        rm -f "$f" || true
     fi
     return 0
 }
 apply_sysctl_extended() {
-    f="/etc/sysctl.d/91-dns-manager-extended.conf"
+    f="$(sysctl_extended_manager_path)"
     sf="$STATE_DIR/sysctl-extended-before.conf"
     _params="net.netfilter.nf_conntrack_max=65536
 net.ipv4.tcp_keepalive_time=600
@@ -1867,26 +1914,12 @@ net.core.wmem_max=4194304
 net.core.rmem_default=262144
 net.core.wmem_default=262144"
     [ "${SYSCTL_EXTENDED:-0}" = 1 ] || return 0
-    if [ -e "$f" ] && ! sysctl_extended_file_owned "$f"; then
-        err_msg "$f уже существует и не принадлежит DNS Manager. Файл не изменён."
-        return 1
-    fi
     [ -s "$sf" ] || : > "$sf" || return 1
     while IFS= read -r p; do
         [ -n "$p" ] || continue
         _k="${p%%=*}"
         _old="$(sysctl -n "$_k" 2>/dev/null)"
         grep -q "^${_k}|" "$sf" 2>/dev/null || printf '%s|%s\n' "$_k" "${_old:-unknown}" >> "$sf" || return 1
-        _foreign=""
-        for _sf in /etc/sysctl.d/*; do
-            [ -f "$_sf" ] || continue
-            case "$_sf" in
-                /etc/sysctl.d/90-dns-manager.conf|/etc/sysctl.d/91-dns-manager-extended.conf) continue ;;
-            esac
-            _fv="$(grep -hs "^${_k}=" "$_sf" 2>/dev/null | grep -v '^#' | grep -v "^${_k}=${p#*=}$" | head -n1)"
-            [ -n "$_fv" ] && { _foreign="$_fv"; break; }
-        done
-        [ -z "$_foreign" ] || { warn_msg "Не меняю $_k: найдено стороннее значение ($_foreign)."; return 1; }
     done <<EOF_SYSCTL_EXT
 $_params
 EOF_SYSCTL_EXT
@@ -1895,33 +1928,30 @@ EOF_SYSCTL_EXT
     fi
     _tmp="$f.tmp.$$"
     {
-        printf '%s\n' '# DNS_MANAGER_MANAGED=1'
-        printf '%s\n' '# DNS_MANAGER_SYSCTL_EXTENDED=1'
         printf '%s\n' "$_params"
     } > "$_tmp" || { rm -f "$_tmp"; return 1; }
+    # This is the Manager's canonical extended tuning zone: enforce our values.
     while IFS= read -r _p; do
         [ -n "$_p" ] || continue
         _out="$(sysctl -w "$_p" 2>&1)"
         [ $? -eq 0 ] || {
-            [ -n "$_out" ] && warn_msg "Не удалось применить расширенный sysctl: $_p: $_out" || warn_msg "Не удалось применить расширенный sysctl: $_p"
+            [ -n "$_out" ] && err_msg "Не удалось применить расширенный sysctl: $_p: $_out" || err_msg "Не удалось применить расширенный sysctl: $_p"
             rm -f "$_tmp"
             while IFS='|' read -r _k _v; do
                 [ -n "$_k" ] && [ "$_v" != unknown ] && sysctl -w "$_k=$_v" >/dev/null 2>&1 || true
             done < "$sf"
             return 1
         }
+        record_own "sysctl" "${_p%%=*}" "${_p#*=}" "extended-applied"
     done <<EOF_SYSCTL_APPLY
 $_params
 EOF_SYSCTL_APPLY
     mv "$_tmp" "$f" || { rm -f "$_tmp"; return 1; }
-    record_own "file" "$f" "managed" "extended-sysctl"
     return 0
 }
 sysctl_extended_file_owned() {
     _f="$1"
     [ -f "$_f" ] || return 1
-    grep -qxF '# DNS_MANAGER_MANAGED=1' "$_f" 2>/dev/null && return 0
-    grep -qxF '# DNS_MANAGER_SYSCTL_EXTENDED=1' "$_f" 2>/dev/null && return 0
     for _p in \
         'net.netfilter.nf_conntrack_max=65536' \
         'net.ipv4.tcp_keepalive_time=600' \
@@ -1936,16 +1966,14 @@ sysctl_extended_file_owned() {
     return 0
 }
 remove_sysctl_extended() {
-    f="/etc/sysctl.d/91-dns-manager-extended.conf"
     sf="$STATE_DIR/sysctl-extended-before.conf"
-    if [ -f "$f" ] && sysctl_extended_file_owned "$f"; then
-        if [ -s "$sf" ]; then
-            while IFS='|' read -r _k _v; do
-                [ -n "$_k" ] && [ "$_v" != unknown ] && sysctl -w "$_k=$_v" >/dev/null 2>&1 || true
-            done < "$sf"
-        fi
-        rm -f "$f" || return 1
+    if [ -s "$sf" ]; then
+        while IFS='|' read -r _k _v; do
+            [ -n "$_k" ] && [ "$_v" != unknown ] && sysctl -w "$_k=$_v" >/dev/null 2>&1 || true
+        done < "$sf"
     fi
+    _f="/etc/sysctl.d/91-dns-manager-extended.conf"
+    [ -f "$_f" ] && rm -f "$_f" || true
     rm -f "$sf"
     return 0
 }
@@ -2004,11 +2032,8 @@ printf "\nНомера через пробел, Enter=отмена: "; safe_read
 [ -n "$pick" ] || return
 conf="/etc/dnsmasq.d/90-dns-manager-bogus.conf"
 if [ ! -f "$conf" ]; then
-printf '%s\n' '# DNS_MANAGER_MANAGED=1' > "$conf" || return 1
-record_own "file" "$conf" "created" "bogus"
-elif ! grep -q '^# DNS_MANAGER_MANAGED=1$' "$conf"; then
-warn_msg "$conf уже существует и не помечен DNS Manager. Не меняю его."
-pause; return
+    : > "$conf" || return 1
+    record_own "file" "$conf" "created" "bogus"
 fi
 for n in $pick; do
 row="$(grep -v '^#' "$BOGUS_CATALOG" | sed -n "${n}p")"
@@ -2140,15 +2165,12 @@ verify_applied_doh_config() {
     done
     _i=0
     while uci -q get "https-dns-proxy.@https-dns-proxy[$_i]" >/dev/null 2>&1; do
-        _m="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].dns_manager" 2>/dev/null)"
-        if [ "$_m" = 1 ]; then
-            _p="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].listen_port" 2>/dev/null)"
-            _u="$(normalize_url "$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].resolver_url" 2>/dev/null)")"
-            printf '%s|%s\n' "$_p" "$_u" >> "$_actual"
-            [ "$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].listen_addr" 2>/dev/null)" = "127.0.0.1" ] || {
-                err_msg "секция DNS $_i не ограничена 127.0.0.1."; return 1;
-            }
-        fi
+        _p="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].listen_port" 2>/dev/null)"
+        _u="$(normalize_url "$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].resolver_url" 2>/dev/null)")"
+        printf '%s|%s\n' "$_p" "$_u" >> "$_actual"
+        [ "$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].listen_addr" 2>/dev/null)" = "127.0.0.1" ] || {
+            err_msg "секция DNS $_i не ограничена 127.0.0.1."; return 1;
+        }
         _i=$((_i+1))
     done
     _expected_n="$(wc -l < "$_expected" 2>/dev/null | tr -d ' ')"
@@ -2266,15 +2288,14 @@ rebuild_selected_hdp_sections() {
         [ -n "$_rurl" ] || { rm -f "$_keep_file"; return 1; }
         printf '%s|%s|%s\n' "$_rs" "$_rport" "$_rurl" >> "$_keep_file"
     done
-    _i=0
-    while uci -q get "https-dns-proxy.@https-dns-proxy[$_i]" >/dev/null 2>&1; do
-        _m="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].dns_manager" 2>/dev/null)"
-        if [ "$_m" = 1 ]; then
-            uci -q delete "https-dns-proxy.@https-dns-proxy[$_i]" || { rm -f "$_keep_file"; return 1; }
-            continue
-        fi
-        _i=$((_i+1))
+
+    # DNS Manager owns the complete https-dns-proxy configuration while an
+    # active DNS profile is applied. Remove every existing section and rebuild
+    # exactly the selected set below.
+    while uci -q get "https-dns-proxy.@https-dns-proxy[0]" >/dev/null 2>&1; do
+        uci -q delete "https-dns-proxy.@https-dns-proxy[0]" || { rm -f "$_keep_file"; return 1; }
     done
+
     while IFS='|' read -r _rs _rport _rurl; do
         [ -n "$_rs" ] || continue
         _sec="$(uci add https-dns-proxy https-dns-proxy 2>/dev/null)" || { rm -f "$_keep_file"; return 1; }
@@ -2284,7 +2305,6 @@ rebuild_selected_hdp_sections() {
         uci set "https-dns-proxy.$_sec.listen_port=$_rport" || { rm -f "$_keep_file"; return 1; }
         uci set "https-dns-proxy.$_sec.resolver_url=$_rurl" || { rm -f "$_keep_file"; return 1; }
         uci set "https-dns-proxy.$_sec.request_timeout=2" || { rm -f "$_keep_file"; return 1; }
-        uci set "https-dns-proxy.$_sec.dns_manager=1" || { rm -f "$_keep_file"; return 1; }
     done < "$_keep_file"
     uci commit https-dns-proxy || { rm -f "$_keep_file"; return 1; }
     rm -f "$_keep_file"
@@ -2861,7 +2881,7 @@ apply_settings() {
     printf "  dnsmasq: %b\n" "$(state_word "$DNSMASQ_RUN")"
     printf "  DNS-сервер: %s (настройка %s / другие %s / без определения %s)\n" "$DOH_TOTAL" "$DOH_OURS" "$DOH_FOREIGN" "$DOH_UNKNOWN"
     if [ "$DOH_TOTAL" -gt 0 ]; then
-        printf "  ${C_YELLOW}↻ После подтверждения старые DNS-серверы будут заменены выбранными.${C_NC}\n"
+        printf "  ${C_YELLOW}↻ После подтверждения ВСЕ существующие DNS-секции будут заменены выбранным набором DNS Manager.${C_NC}\n"
     fi
     printf "  ${C_CYAN}${C_NC}\n"
     validate_selected_slots || return 1
@@ -2948,8 +2968,8 @@ apply_settings() {
             return 1
         }
     fi
-    if [ "$CORE_ONLY" != 1 ] && [ "$SYSCTL_TUNING" = 1 ]; then
-        apply_sysctl || { err_msg "Не удалось применить sysctl."; tx_restore_on_failure; return 1; }
+    if [ "$CORE_ONLY" != 1 ] && { [ "$SYSCTL_TUNING" = 1 ] || [ "$SYSCTL_EXTENDED" = 1 ]; }; then
+        apply_sysctl_bundle "$SYSCTL_TUNING" "$SYSCTL_EXTENDED" || { err_msg "Не удалось применить общий пакет TCP/Conntrack sysctl."; tx_restore_on_failure; return 1; }
     fi
     if [ "$CORE_ONLY" != 1 ] && [ "$NTP_CLIENTS" = 1 ]; then
         apply_ntp_clients || { err_msg "Не удалось настроить NTP для клиентов."; tx_restore_on_failure; return 1; }
@@ -2959,9 +2979,6 @@ apply_settings() {
     fi
     if [ "$CORE_ONLY" != 1 ] && [ "$CLIENT_FIXES" = 1 ]; then
         apply_client_fixes || { err_msg "Не удалось применить клиентские DNS-фиксы."; tx_restore_on_failure; return 1; }
-    fi
-    if [ "$CORE_ONLY" != 1 ] && [ "$SYSCTL_EXTENDED" = 1 ]; then
-        apply_sysctl_extended || { err_msg "Не удалось применить расширенный sysctl."; tx_restore_on_failure; return 1; }
     fi
     WATCHDOG_ENABLED="${WATCHDOG_ENABLED:-1}"
     apply_watchdog || { err_msg "Не удалось настроить cron Автопроверка."; tx_restore_on_failure; return 1; }
@@ -3037,10 +3054,8 @@ if baseline_restore_if_safe; then
     pause
     return 0
 fi
-i=0
-while uci -q get "https-dns-proxy.@https-dns-proxy[$i]" >/dev/null 2>&1; do
-m="$(uci -q get "https-dns-proxy.@https-dns-proxy[$i].dns_manager" 2>/dev/null)"
-if [ "$m" = 1 ]; then uci -q delete "https-dns-proxy.@https-dns-proxy[$i]"; else i=$((i+1)); fi
+while uci -q get "https-dns-proxy.@https-dns-proxy[0]" >/dev/null 2>&1; do
+uci -q delete "https-dns-proxy.@https-dns-proxy[0]" || break
 done
 uci commit https-dns-proxy 2>/dev/null
 restore_hdp_control_from_baseline
@@ -3050,44 +3065,31 @@ uci -q del_list "dhcp.$sec.server=$val" 2>/dev/null
 done
 uci commit dhcp 2>/dev/null
 if [ -s "$PREV_DNSMASQ" ]; then
-    _prev_sec="$(sed -n 's/^SECTION=//p' "$PREV_DNSMASQ" | head -n1)"
-    [ -n "$_prev_sec" ] || _prev_sec="$sec"
-    while uci -q delete "dhcp.$_prev_sec.server" >/dev/null 2>&1; do :; done
-    _in_servers=0
-    while IFS= read -r _line; do
-        case "$_line" in
-            SERVER) _in_servers=1; continue ;;
-            ALLSERVERS=*) _in_servers=0; _v="${_line#ALLSERVERS=}"; [ -n "$_v" ] && uci set "dhcp.$_prev_sec.allservers=$_v" || uci -q delete "dhcp.$_prev_sec.allservers"; continue ;;
-            STRICTORDER=*) _v="${_line#STRICTORDER=}"; [ -n "$_v" ] && uci set "dhcp.$_prev_sec.strictorder=$_v" || uci -q delete "dhcp.$_prev_sec.strictorder"; continue ;;
-            NORESOLV=*) _v="${_line#NORESOLV=}"; [ -n "$_v" ] && uci set "dhcp.$_prev_sec.noresolv=$_v" || uci -q delete "dhcp.$_prev_sec.noresolv"; continue ;;
-            SECTION=*) continue ;;
-        esac
-        [ "$_in_servers" = 1 ] && [ -n "$_line" ] && uci add_list "dhcp.$_prev_sec.server=$_line" >/dev/null 2>&1 || true
-    done < "$PREV_DNSMASQ"
-    uci commit dhcp 2>/dev/null
+    # Keep the legacy snapshot for audit, but do not replace the entire live list:
+    # unified rollback removes only entries known to be owned by DNS Manager.
     rm -f "$PREV_DNSMASQ" 2>/dev/null
 fi
-for r in Block_UDP_80 Block_UDP_443; do
-while :; do idx="$(uci show firewall 2>/dev/null | grep "name='$r'" | head -n1 | cut -d. -f2 | cut -d= -f1)"; [ -n "$idx" ] || break; uci -q delete "firewall.$idx"; done
-done
+quic_remove_managed_rules >/dev/null 2>&1 || true
 uci commit firewall 2>/dev/null
 remove_ntp_clients >/dev/null 2>&1 || true
 remove_client_fixes >/dev/null 2>&1 || true
 remove_dnsmasq_perf >/dev/null 2>&1 || true
 remove_sysctl_extended >/dev/null 2>&1 || true
-if [ -f /etc/sysctl.d/90-dns-manager.conf ]; then
-for kv in net.ipv4.tcp_fastopen net.ipv4.tcp_fin_timeout net.core.somaxconn; do
-old="$(awk -F'|' -v k="$kv" '$1==k{print $2;exit}' "$STATE_DIR/sysctl-before.conf" 2>/dev/null)"
-cur="$(sysctl -n "$kv" 2>/dev/null)"
-mgr="$(awk -F'=' -v k="$kv" '$1==k{print $2;exit}' /etc/sysctl.d/90-dns-manager.conf 2>/dev/null)"
-[ -n "$old" ] && [ -n "$mgr" ] && [ "$cur" = "$mgr" ] && [ "$old" != unknown ] && sysctl -w "$kv=$old" >/dev/null 2>&1
+for _sf in /etc/sysctl.d/90-dns-manager.conf; do
+    [ -f "$_sf" ] || continue
+    sysctl_base_file_owned "$_sf" || continue
+    for kv in net.ipv4.tcp_fastopen net.ipv4.tcp_fin_timeout net.core.somaxconn; do
+        old="$(awk -F'|' -v k="$kv" '$1==k{print $2;exit}' "$STATE_DIR/sysctl-before.conf" 2>/dev/null)"
+        cur="$(sysctl -n "$kv" 2>/dev/null)"
+        mgr="$(awk -F'=' -v k="$kv" '$1==k{print $2;exit}' "$_sf" 2>/dev/null)"
+        [ -n "$old" ] && [ -n "$mgr" ] && [ "$cur" = "$mgr" ] && [ "$old" != unknown ] && sysctl -w "$kv=$old" >/dev/null 2>&1
+    done
+    rm -f "$_sf" "$STATE_DIR/sysctl-before.conf"
 done
-rm -f /etc/sysctl.d/90-dns-manager.conf "$STATE_DIR/sysctl-before.conf"
-fi
 /etc/init.d/https-dns-proxy restart 2>/dev/null
 /etc/init.d/dnsmasq restart 2>/dev/null
 printf "${C_GREEN}✓ Изменения обработаны.${C_NC}\n"
-printf "${C_YELLOW}! Ручные изменения не перезаписывались.${C_NC}\n"
+printf "${C_YELLOW}! Изменения вне зоны DNS Manager не затрагивались.${C_NC}\n"
 pause
 }
 # ==========================================
@@ -3584,13 +3586,7 @@ apply_bogus
 }
 apply_quic_toggle() {
     if [ "$BLOCK_QUIC" != 1 ]; then
-        for _rname in Block_UDP_80 Block_UDP_443; do
-            while :; do
-                _ridx="$(uci show firewall 2>/dev/null | grep "name='$_rname'" | head -n1 | cut -d. -f2 | cut -d= -f1)"
-                [ -n "$_ridx" ] || break
-                uci -q delete "firewall.$_ridx" || return 1
-            done
-        done
+        quic_remove_managed_rules || return 1
     else
         apply_quic || return 1
     fi
@@ -3617,12 +3613,26 @@ apply_mtu_toggle() {
 client_fixes_file_owned() {
     _f="$1"
     [ -f "$_f" ] || return 1
-    # Current ownership marker.
-    grep -qxF '# DNS_MANAGER_MANAGED=1' "$_f" 2>/dev/null && return 0
-    # Legacy DNS Manager marker. The client-fixes marker itself is a legacy
-    # ownership token for files created by older manager versions.
-    grep -qxF '# DNS_MANAGER_CLIENT_FIXES=1' "$_f" 2>/dev/null && return 0
-    return 1
+    for _fix in \
+        'local=/telemetry.mozilla.org/' \
+        'local=/telemetry.microsoft.com/' \
+        'local=/vortex.data.microsoft.com/' \
+        'local=/settings-win.data.microsoft.com/' \
+        'local=/metrics.android.com/' \
+        'local=/metrics.samsung.com/' \
+        'server=/clients3.google.com/77.88.8.8' \
+        'server=/clients3.google.com/77.88.8.1' \
+        'server=/connectivitycheck.gstatic.com/77.88.8.8' \
+        'server=/connectivitycheck.gstatic.com/77.88.8.1' \
+        'server=/connectivitycheck.android.com/77.88.8.8' \
+        'server=/connectivitycheck.android.com/77.88.8.1' \
+        'server=/connectivitycheck.samsung.com/77.88.8.8' \
+        'server=/connectivitycheck.samsung.com/77.88.8.1' \
+        'server=/connectivitycheck.platform.hicloud.com/77.88.8.8' \
+        'server=/connectivitycheck.platform.hicloud.com/77.88.8.1'; do
+        grep -qxF "$_fix" "$_f" 2>/dev/null || return 1
+    done
+    return 0
 }
 
 check_module_state() {
@@ -3680,18 +3690,16 @@ check_module_state() {
             [ "$(uci -q get firewall.@defaults[0].mtu_fix 2>/dev/null)" = 1 ] && printf 1 || printf 0
             ;;
         sysctl)
-            f="/etc/sysctl.d/90-dns-manager.conf"
+            f="$(sysctl_base_manager_path)"
             [ -f "$f" ] || { printf 0; return; }
-            sysctl_base_file_owned "$f" || { printf 0; return; }
             for _p in "net.ipv4.tcp_fastopen=3" "net.ipv4.tcp_fin_timeout=15" "net.core.somaxconn=1024"; do
                 _k="${_p%%=*}"; _v="${_p#*=}"
                 [ "$(sysctl -n "$_k" 2>/dev/null)" = "$_v" ] || { printf 0; return; }
                 grep -qxF "$_p" "$f" 2>/dev/null || { printf 0; return; }
             done
             if [ "${SYSCTL_EXTENDED:-0}" = 1 ]; then
-                f="/etc/sysctl.d/91-dns-manager-extended.conf"
+                f="$(sysctl_extended_manager_path)"
                 [ -f "$f" ] || { printf 0; return; }
-                sysctl_extended_file_owned "$f" || { printf 0; return; }
                 for _p in "net.netfilter.nf_conntrack_max=65536" "net.ipv4.tcp_keepalive_time=600" "net.ipv4.tcp_keepalive_intvl=60" "net.ipv4.tcp_keepalive_probes=5" "net.core.rmem_max=4194304" "net.core.wmem_max=4194304" "net.core.rmem_default=262144" "net.core.wmem_default=262144"; do
                     _k="${_p%%=*}"; _v="${_p#*=}"
                     [ "$(sysctl -n "$_k" 2>/dev/null)" = "$_v" ] || { printf 0; return; }
@@ -3701,7 +3709,7 @@ check_module_state() {
             printf 1
             ;;
         sysctl_ext)
-            f="/etc/sysctl.d/91-dns-manager-extended.conf"
+            f="$(sysctl_extended_manager_path)"
             [ -f "$f" ] || { printf 0; return; }
             sysctl_extended_file_owned "$f" || { printf 0; return; }
             for _p in "net.netfilter.nf_conntrack_max=65536" "net.ipv4.tcp_keepalive_time=600" "net.ipv4.tcp_keepalive_intvl=60" "net.ipv4.tcp_keepalive_probes=5" "net.core.rmem_max=4194304" "net.core.wmem_max=4194304" "net.core.rmem_default=262144" "net.core.wmem_default=262144"; do
@@ -3713,7 +3721,7 @@ check_module_state() {
             ;;
         force)
             if [ "${FORCE_DNS:-0}" = 1 ]; then
-                printf 1
+                printf 2
                 return
             fi
             uci -q get firewall.dns_manager_dns_redirect >/dev/null 2>&1 || { printf 0; return; }
@@ -3755,8 +3763,6 @@ check_module_state() {
             ;;
         client_fixes)
             f="/etc/dnsmasq.d/91-dns-manager-client-fixes.conf"
-            client_fixes_file_owned "$f" || { printf 0; return; }
-            grep -qxF '# DNS_MANAGER_CLIENT_FIXES=1' "$f" 2>/dev/null || { printf 0; return; }
             for _fix in \
                 'local=/telemetry.mozilla.org/' \
                 'local=/telemetry.microsoft.com/' \
@@ -3799,7 +3805,7 @@ module_state_word() {
     _module="$1"
     _desired="$2"
     _real="$(check_module_state "$_module")"
-    if [ "$_module" = force ] && [ "${FORCE_DNS:-0}" = 1 ] && [ "$_desired" = 1 ]; then
+    if [ "$_module" = force ] && [ "$_real" = 2 ] && [ "$_desired" = 1 ]; then
         printf "${C_BOLD}${C_GREEN}✓ ВКЛ${C_NC} ${C_CYAN}${C_BOLD}• внешний перехват${C_NC}"
         return 0
     fi
@@ -4155,28 +4161,29 @@ watchdog_enforce_hdp_control() {
     return 0
 }
 watchdog_enforce_doh_authority() {
-    _foreign=0
+    [ "$DNS_PROFILE" = hybrid ] || [ "$DNS_PROFILE" = custom ] || return 0
+    # The selected DNS profile is authoritative. Any drift, including extra
+    # sections, is corrected by rebuilding the complete manager-owned set.
+    _expected=0
+    for _s in 1 2 3 4 5 6 RU RU_2; do
+        eval "_id=\${SLOT_${_s}:-}"
+        [ -n "$_id" ] && _expected=$((_expected+1))
+    done
+    _actual=0
     _i=0
     while uci -q get "https-dns-proxy.@https-dns-proxy[$_i]" >/dev/null 2>&1; do
-        _m="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].dns_manager" 2>/dev/null)"
-        [ "$_m" = 1 ] || { _foreign=1; break; }
+        _actual=$((_actual+1))
         _i=$((_i+1))
     done
-    [ "$_foreign" = 1 ] || return 0
-    log_msg "Найден другой DNS-сервер. Его настройка будет удалена."
-    /etc/init.d/https-dns-proxy stop >/dev/null 2>&1 || true
-    _i=0
-    while uci -q get "https-dns-proxy.@https-dns-proxy[$_i]" >/dev/null 2>&1; do
-        _m="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].dns_manager" 2>/dev/null)"
-        if [ "$_m" = 1 ]; then
-            _i=$((_i+1))
-        else
-            uci -q delete "https-dns-proxy.@https-dns-proxy[$_i]" || return 1
-        fi
-    done
-    uci commit https-dns-proxy || return 1
-    /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || return 1
-    return 0
+    if [ "$_actual" != "$_expected" ]; then
+        log_msg "Количество DNS-секций отличается от выбранной схемы ($_actual вместо $_expected). Пересобираю полный набор DNS Manager."
+        rebuild_selected_hdp_sections || return 1
+        /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || return 1
+        sleep 3
+        return 0
+    fi
+    # Even when the count matches, enforce the exact selected URLs/ports.
+    watchdog_hdp_guard
 }
 watchdog_expected_servers() {
     _out="$TMP_DIR/watchdog-expected-servers-$$"
@@ -4257,12 +4264,9 @@ watchdog_hdp_guard() {
     done
     _i=0
     while uci -q get "https-dns-proxy.@https-dns-proxy[$_i]" >/dev/null 2>&1; do
-        _m="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].dns_manager" 2>/dev/null)"
-        if [ "$_m" = 1 ]; then
-            _p="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].listen_port" 2>/dev/null)"
-            _u="$(normalize_url "$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].resolver_url" 2>/dev/null)")"
-            printf '%s|%s\n' "$_p" "$_u" >> "$_actual"
-        fi
+        _p="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].listen_port" 2>/dev/null)"
+        _u="$(normalize_url "$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].resolver_url" 2>/dev/null)")"
+        printf '%s|%s\n' "$_p" "$_u" >> "$_actual"
         _i=$((_i+1))
     done
     _expected_n="$(wc -l < "$_expected" 2>/dev/null | tr -d ' ')"
@@ -4557,6 +4561,7 @@ done
 }
 # ==========================================
 # ==========================================
+migrate_legacy_manager_files || { err_msg "Не удалось объединить старые файлы DNS Manager в единый namespace."; exit 1; }
 main_menu() {
 while :; do
 run_discovery
