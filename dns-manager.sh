@@ -2,7 +2,7 @@
 MANAGER_PATH="/usr/bin/dns-manager"
 # ==========================================
 # ==========================================
-VERSION="1.47"
+VERSION="1.48"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -1139,11 +1139,8 @@ apply_ntp_host_ips() {
 # ==========================================
 # ==========================================
 menu_ntp() {
-menu_header "СИНХРОНИЗАЦИЯ ВРЕМЕНИ — точное время на роутере"
+menu_header "СЕРВЕРЫ ТОЧНОГО ВРЕМЕНИ"
 _cur_ntp="$(uci -q get system.ntp.server 2>/dev/null)"
-printf "${C_WHITE}Зачем нужен этот раздел:${C_NC}\n"
-printf "  Точное время нужно роутеру для HTTPS-соединений, проверки сертификатов,\n"
-printf "  журналов и автоматических задач.\n\n"
 printf "${C_YELLOW}${C_BOLD}Текущие серверы времени:${C_NC}\n"
 if [ -n "$_cur_ntp" ]; then
 for _s in $_cur_ntp; do
@@ -1152,10 +1149,10 @@ done
 else
 printf "  ${C_YELLOW}(не настроены)${C_NC}\n"
 fi
-printf "\n${C_YELLOW}${C_BOLD}Выбранный источник времени:${C_NC} ${C_YELLOW}${C_BOLD}%s${C_NC}\n\n" "$NTP_PRESET"
-menu_item "[1]" "Cloudflare — быстрый источник по IP, DNS не нужен"
-menu_item "[2]" "NIST — несколько серверов точного времени"
-menu_item "[3]" "ВНИИФТРИ Москва — российские серверы времени"
+printf "\n${C_YELLOW}${C_BOLD}Выбранный набор:${C_NC} ${C_YELLOW}${C_BOLD}%s${C_NC}\n\n" "$(case "$NTP_PRESET" in cf_ip) printf "Cloudflare";; nist_ip) printf "NIST";; vniiftri_moscow) printf "ВНИИФТРИ";; google_ip) printf "Google";; *) printf "%s" "$NTP_PRESET";; esac)"
+menu_item "[1]" "Cloudflare — серверы времени по IP"
+menu_item "[2]" "NIST — серверы точного времени"
+menu_item "[3]" "ВНИИФТРИ — российские серверы времени"
 menu_item "[4]" "Google — серверы времени по IP"
 menu_back
 menu_prompt
@@ -3083,9 +3080,39 @@ printf "%-28s %-18s %-9s %b\n" "$name" "$cat_text" "$time" "$status"
 done
 pause
 }
-show_best() {
+apply_profile_now() {
+goal="$1"
+case "$goal" in
+bypass)
+    quick_max_bypass
+    return
+    ;;
+clean|security|privacy|adblock|family|all)
+    DNS_PROFILE="custom"
+    DNS_SELECTION_MODE="profile"
+    DNS_SELECTION_CATEGORY="$goal"
+    TLD_RU_ENABLED=0
+    TLD_SPLIT=0
+    BALANCER_ENABLED=1
+    PORT_1="$HYBRID_PORT_1"; PORT_2="$HYBRID_PORT_2"; PORT_3="$HYBRID_PORT_3"
+    PORT_4="$HYBRID_PORT_4"; PORT_5="$HYBRID_PORT_5"; PORT_6="$HYBRID_PORT_6"
+    PORT_RU=""; PORT_RU_2=""
+    SLOT_RU=""; SLOT_RU_2=""
+    if auto_fill_slots "$goal"; then
+        CORE_ONLY=1
+        apply_settings
+        CORE_ONLY=0
+    fi
+    ;;
+*)
+    warn_msg "Неизвестный профиль DNS."
+    pause
+    ;;
+esac
+}
+menu_category_select() {
 while :; do
-menu_header "ВЫБОР КАТЕГОРИИ DNS"
+menu_header "ВЫБОР DNS"
 menu_section "КАТЕГОРИИ"
 menu_item "[1]" "Без фильтрации"
 menu_item "[2]" "Защита от угроз"
@@ -3099,16 +3126,19 @@ menu_prompt
 safe_read goal
 [ -z "$goal" ] && return
 case "$goal" in
-1) menu_best_actions clean "БЕЗ ФИЛЬТРАЦИИ";;
-2) menu_best_actions security "ЗАЩИТА ОТ УГРОЗ";;
-3) menu_best_actions privacy "КОНФИДЕНЦИАЛЬНОСТЬ";;
-4) menu_best_actions adblock "БЛОКИРОВКА РЕКЛАМЫ";;
-5) menu_best_actions bypass "ОБХОД БЛОКИРОВОК";;
-6) menu_best_actions family "СЕМЕЙНЫЙ DNS";;
-7) menu_best_actions all "ВСЕ КАТЕГОРИИ";;
+1) apply_profile_now clean;;
+2) apply_profile_now security;;
+3) apply_profile_now privacy;;
+4) apply_profile_now adblock;;
+5) apply_profile_now bypass;;
+6) apply_profile_now family;;
+7) apply_profile_now all;;
 *) warn_msg "Неверный пункт."; pause;;
 esac
 done
+}
+show_best() {
+menu_category_select
 }
 auto_fill_slots() {
 _cat="$1"
@@ -3251,52 +3281,6 @@ return 0
 }
 # ==========================================
 # ==========================================
-menu_best_actions() {
-goal="$1"; title="$2"
-while :; do
-menu_header "$title"
-menu_section "ДЕЙСТВИЯ"
-menu_item "[1]" "Автонастройка: подобрать и применить безопасно"
-menu_item "[2]" "Показать лучшие варианты"
-menu_item "[3]" "Выбрать DNS вручную"
-menu_back
-menu_prompt
-safe_read a
-case "$a" in
-1)
-DNS_PROFILE="custom"
-DNS_SELECTION_MODE="profile"
-DNS_SELECTION_CATEGORY="$goal"
-TLD_RU_ENABLED=0
-TLD_SPLIT=0
-BALANCER_ENABLED=1
-PORT_1="$HYBRID_PORT_1"; PORT_2="$HYBRID_PORT_2"; PORT_3="$HYBRID_PORT_3"
-PORT_4="$HYBRID_PORT_4"; PORT_5="$HYBRID_PORT_5"; PORT_6="$HYBRID_PORT_6"
-PORT_RU=""; PORT_RU_2=""
-SLOT_RU=""; SLOT_RU_2=""
-if auto_fill_slots "$goal"; then
-CORE_ONLY=1
-apply_settings
-CORE_ONLY=0
-fi
-;;
-2)
-clear_screen
-menu_header "ЛУЧШИЕ ВАРИАНТЫ — $title"
-menu_section "ТОП-5 ПО ВРЕМЕНИ ОТВЕТА"
-show_best_category "$goal" 5 | while IFS='|' read -r _id _cat _name _ms _st; do
-printf "  ${C_CYAN}${C_BOLD}•${C_NC} ${C_GREEN}${C_BOLD}%-34s${C_NC} ${C_YELLOW}%s мс${C_NC}\n" "$_name" "$_ms"
-done
-pause
-;;
-3) menu_slots; return;;
-'') return;;
-*) warn_msg "Неверный пункт."; pause;;
-esac
-done
-}
-# ==========================================
-# ==========================================
 select_slot() {
 slot="$1"; clear_screen
 menu_header "ВЫБОР DNS-СЕРВЕРА $slot"
@@ -3352,7 +3336,7 @@ menu_section "РЕГИОНАЛЬНЫЕ СЛОТЫ"
 printf "  ${C_CYAN}${C_BOLD}[7]${C_NC} ${C_GREEN}${C_BOLD}RU${C_NC}   ${C_GREEN}%-30s${C_NC} ${C_YELLOW}${C_BOLD}%s${C_NC}\n" "$(dns_name "$SLOT_RU")" "${PORT_RU:-$HYBRID_PORT_RU}"
 printf "  ${C_CYAN}${C_BOLD}[8]${C_NC} ${C_GREEN}${C_BOLD}RU2${C_NC}  ${C_GREEN}%-30s${C_NC} ${C_YELLOW}${C_BOLD}%s${C_NC}\n" "$(dns_name "$SLOT_RU_2")" "${PORT_RU_2:-авто}"
 menu_section "ДЕЙСТВИЯ"
-menu_item "[9]" "Автоподбор лучших"
+menu_item "[9]" "Сохранить и применить DNS"
 menu_item "[10]" "Восстановить стандартную настройку"
 menu_back
 menu_prompt
@@ -3362,21 +3346,11 @@ case "$c" in
 1|2|3|4|5|6) select_slot "$c";;
 7) select_slot RU;;
 8) select_slot RU_2;;
-9) show_best;;
+9) CORE_ONLY=1; apply_settings; _rc=$?; CORE_ONLY=0; [ "$_rc" -eq 0 ] || warn_msg "Не удалось применить выбранные DNS."; pause;;
 10) hybrid_set_defaults; save_config; ok_msg "Стандартный Гибридный DNS восстановлен: 5053–5058 + Yandex 5059."; pause;;
 *) warn_msg "Неверный пункт."; pause;;
 esac
 done
-}
-menu_bootstrap() {
-menu_header "DNS ДЛЯ ЗАПУСКА"
-BOOTSTRAP_DNS="$BOOTSTRAP_DNS_ALL"
-printf "${C_WHITE}Используются все встроенные DNS:${C_NC}\n"
-for _bs in $(printf '%s' "$BOOTSTRAP_DNS_ALL" | tr ',' ' '); do
-    printf "  ${C_GREEN}•${C_NC} %s\n" "$_bs"
-done
-save_config
-pause
 }
 menu_bogus() {
 apply_bogus
@@ -3391,7 +3365,6 @@ quic) [ "$QUIC_OURS" = 1 ] || [ "$QUIC_FOREIGN" = 1 ] && printf 'ВКЛ • пр
 mtu) printf 'ВКЛ • ожидает применения';;
 ntp) printf 'ВКЛ • IP-профиль настроен';;
 sysctl) printf 'ВКЛ • ожидает применения';;
-go) printf 'ВКЛ • ожидает применения';;
 *) printf 'ВКЛ';;
 esac
 }
@@ -3399,26 +3372,6 @@ toggle_and_apply_dnsmasq() {
 reconcile_dnsmasq >/dev/null 2>&1
 /etc/init.d/dnsmasq restart >/dev/null 2>&1
 save_config
-}
-apply_bootstrap_only() {
-    BOOTSTRAP_DNS="$BOOTSTRAP_DNS_ALL"
-    b_list="$(printf '%s' "$BOOTSTRAP_DNS")"
-    i=0; changed=0
-    while uci -q get "https-dns-proxy.@https-dns-proxy[$i]" >/dev/null 2>&1; do
-        if [ "$(uci -q get "https-dns-proxy.@https-dns-proxy[$i].dns_manager" 2>/dev/null)" = 1 ]; then
-            uci set "https-dns-proxy.@https-dns-proxy[$i].bootstrap_dns=$b_list" || return 1
-            changed=1
-        fi
-        i=$((i+1))
-    done
-    if [ "$changed" = 1 ]; then
-        uci commit https-dns-proxy 2>/dev/null || return 1
-        /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || return 1
-        ok_msg "Все встроенные DNS для запуска прописаны."
-    else
-        info_msg "DNS-серверов пока нет. Все встроенные DNS будут прописаны при следующей настройке."
-    fi
-    save_config
 }
 apply_quic_toggle() {
     if [ "$BLOCK_QUIC" != 1 ]; then
@@ -3631,7 +3584,6 @@ menu_item_state "[7]" "Исправления телеметрии и связи
 menu_section "ОБСЛУЖИВАНИЕ"
 menu_item_state "[8]" "Автоматическая проверка DNS" "$(module_state_word watchdog "$WATCHDOG_ENABLED")"
 menu_item_state "[9]" "Доступ из браузера" "$(module_state_word web "$WEB_ACCESS_ENABLED")"
-menu_item "[10]" "IP-заглушки провайдера"
 menu_back
 menu_prompt
 safe_read c
@@ -3640,11 +3592,7 @@ case "$c" in
 2) [ "$MTU_FIX" = 1 ] && MTU_FIX=0 || MTU_FIX=1; apply_extras_now mtu; pause;;
 3) [ "$FORCE_DOH" = 1 ] && FORCE_DOH=0 || FORCE_DOH=1; apply_extras_now force; pause;;
 4)
-if [ "$SYSCTL_TUNING" = 1 ]; then
-SYSCTL_TUNING=0; SYSCTL_EXTENDED=0
-else
-SYSCTL_TUNING=1; SYSCTL_EXTENDED=1
-fi
+if [ "$SYSCTL_TUNING" = 1 ]; then SYSCTL_TUNING=0; SYSCTL_EXTENDED=0; else SYSCTL_TUNING=1; SYSCTL_EXTENDED=1; fi
 apply_extras_now sysctl
 apply_extras_now sysctl_ext
 pause;;
@@ -3653,7 +3601,7 @@ pause;;
 7) [ "$CLIENT_FIXES" = 1 ] && CLIENT_FIXES=0 || CLIENT_FIXES=1; apply_extras_now client_fixes; pause;;
 8) [ "$WATCHDOG_ENABLED" = 1 ] && WATCHDOG_ENABLED=0 || WATCHDOG_ENABLED=1; apply_watchdog; pause;;
 9) [ "$WEB_ACCESS_ENABLED" = 1 ] && WEB_ACCESS_ENABLED=0 || WEB_ACCESS_ENABLED=1; apply_web_access; pause;;
-10) menu_bogus;;
+10) return;;
 '') return;;
 *) warn_msg "Неизвестный пункт."; pause;;
 esac
@@ -4158,6 +4106,36 @@ apply_watchdog() {
 }
 # ==========================================
 # ==========================================
+menu_dns() {
+while :; do
+menu_header "НАСТРОЙКА DNS"
+menu_section "ГОТОВЫЕ ПРОФИЛИ"
+menu_item "[1]" "Максимальный обход"
+menu_item "[2]" "Максимальная скорость"
+menu_item "[3]" "Максимальная безопасность"
+menu_item "[4]" "Максимальная приватность"
+menu_item "[5]" "Блокировка рекламы"
+menu_item "[6]" "Выбор по категориям"
+menu_section "РУЧНАЯ НАСТРОЙКА"
+menu_item "[7]" "Серверы DNS"
+menu_back
+menu_prompt
+safe_read c
+[ -z "$c" ] && return
+case "$c" in
+1) apply_profile_now bypass;;
+2) apply_profile_now clean;;
+3) apply_profile_now security;;
+4) apply_profile_now privacy;;
+5) apply_profile_now adblock;;
+6) menu_category_select;;
+7) menu_slots;;
+*) warn_msg "Неизвестный пункт."; pause;;
+esac
+done
+}
+# ==========================================
+# ==========================================
 main_menu() {
 while :; do
 run_discovery
@@ -4167,54 +4145,37 @@ printf "  ${C_YELLOW}${C_BOLD}IPv4${C_NC}               %b\n" "$(state_word "$IP
 printf "  ${C_YELLOW}${C_BOLD}IPv6${C_NC}               %b\n" "$(state_word "$IPV6_ROUTE")"
 printf "  ${C_YELLOW}${C_BOLD}dnsmasq${C_NC}            %b\n" "$(state_word "$DNSMASQ_RUN")"
 printf "  ${C_YELLOW}${C_BOLD}Защищённый DNS${C_NC}     %b\n" "$(state_word "$HDP_RUNNING")"
-printf "  ${C_YELLOW}${C_BOLD}DNS-серверов найдено${C_NC} ${C_YELLOW}${C_BOLD}%s${C_NC}\n" "$DOH_TOTAL"
-printf "  ${C_YELLOW}${C_BOLD}Каталог DNS${C_NC}              ${C_CYAN}%s • %s серверов${C_NC}\n" "$(dns_catalog_version)" "$(count_dns)"
-printf "  ${C_YELLOW}${C_BOLD}Автопроверка${C_NC}            %b\n" "$(module_state_word watchdog "$WATCHDOG_ENABLED")"
-[ -s "$BASELINE_MANIFEST" ] && printf "  ${C_YELLOW}${C_BOLD}Исходная копия${C_NC}      ${C_GREEN}есть${C_NC}\n" || printf "  ${C_YELLOW}${C_BOLD}Исходная копия${C_NC}      ${C_YELLOW}нет${C_NC}\n"
-printf "  ${C_YELLOW}${C_BOLD}Web-доступ${C_NC}            %b\n" "$(module_state_word web "$WEB_ACCESS_ENABLED")"
+printf "  ${C_YELLOW}${C_BOLD}DNS-серверов найдено${C_NC} %s\n" "$DOH_TOTAL"
+printf "  ${C_YELLOW}${C_BOLD}Каталог DNS${C_NC}        ${C_CYAN}%s • %s серверов${C_NC}\n" "$(dns_catalog_version)" "$(count_dns)"
+printf "  ${C_YELLOW}${C_BOLD}Автопроверка${C_NC}       %b\n" "$(module_state_word watchdog "$WATCHDOG_ENABLED")"
+[ -s "$BASELINE_MANIFEST" ] && printf "  ${C_YELLOW}${C_BOLD}Исходная копия${C_NC}    ${C_GREEN}есть${C_NC}\n" || printf "  ${C_YELLOW}${C_BOLD}Исходная копия${C_NC}    ${C_YELLOW}нет${C_NC}\n"
+printf "  ${C_YELLOW}${C_BOLD}Web-доступ${C_NC}         %b\n" "$(module_state_word web "$WEB_ACCESS_ENABLED")"
 [ "$FORCE_DNS" = 1 ] && printf "  ${C_YELLOW}${C_BOLD}Принудительный DNS${C_NC} ${C_CYAN}включён${C_NC}\n"
-menu_section "БЫСТРЫЙ ЗАПУСК"
-menu_item "[1]" "МАКСИМАЛЬНЫЙ ОБХОД"
-menu_section "ПРОФИЛИ DNS"
-menu_item "[2]" "Максимальная скорость"
-menu_item "[3]" "Максимальная безопасность"
-menu_item "[4]" "Максимальная приватность"
-menu_item "[5]" "Блокировка рекламы"
-menu_item "[6]" "Выбор по категориям"
-menu_section "НАСТРОЙКА"
-menu_item "[7]" "Состояние и журнал"
-printf "  ${C_CYAN}${C_BOLD}%-5s${C_NC} ${C_YELLOW}${C_BOLD}%-38s${C_NC}\n" "[8]" "Проверка DNS-серверов"
-menu_item "[9]" "Серверы DNS"
-menu_item "[10]" "DNS ДЛЯ ЗАПУСКА"
-menu_item "[11]" "СИНХРОНИЗАЦИЯ ВРЕМЕНИ"
-menu_item "[12]" "НАСТРОЙКИ"
-menu_item "[13]" "Применить настройки DNS"
-menu_item "[14]" "Удалить изменения"
+menu_section "НАСТРОЙКА DNS"
+menu_item "[1]" "Настроить DNS"
+menu_section "СЕРВИСЫ"
+menu_item "[2]" "Проверка DNS-серверов"
+menu_item "[3]" "Состояние и журнал"
+menu_item "[4]" "Серверы точного времени"
+menu_item "[5]" "НАСТРОЙКИ"
+menu_item "[6]" "Удалить изменения"
 menu_back
 menu_prompt
 safe_read c
 [ -z "$c" ] && { clear_screen; printf "${C_GREEN}DNS Manager завершён.${C_NC}\n"; exit 0; }
 case "$c" in
-1) prepare_dns_operation || { pause; continue; }; quick_max_bypass ;;
-2) prepare_dns_operation || { pause; continue; }; menu_best_actions clean "БЫСТРАЯ НАСТРОЙКА" ;;
-3) prepare_dns_operation || { pause; continue; }; menu_best_actions security "МАКСИМАЛЬНАЯ БЕЗОПАСНОСТЬ" ;;
-4) prepare_dns_operation || { pause; continue; }; menu_best_actions privacy "МАКСИМАЛЬНАЯ ПРИВАТНОСТЬ" ;;
-5) prepare_dns_operation || { pause; continue; }; menu_best_actions adblock "БЛОКИРОВКА РЕКЛАМЫ" ;;
-6) prepare_dns_operation || { pause; continue; }; show_best ;;
-7) show_map ;;
-8) prepare_dns_operation || { pause; continue; }; test_dns_catalog; show_tests ;;
-9) prepare_dns_operation || { pause; continue; }; menu_slots ;;
-10) prepare_dns_operation || { pause; continue; }; menu_bootstrap ;;
-11) prepare_dns_operation || { pause; continue; }; menu_ntp ;;
-12) prepare_dns_operation || { pause; continue; }; menu_extras ;;
-13) prepare_dns_operation || { pause; continue; }; apply_settings ;;
-14)
+1) prepare_dns_operation || { pause; continue; }; menu_dns;;
+2) prepare_dns_operation || { pause; continue; }; test_dns_catalog; show_tests;;
+3) show_map;;
+4) prepare_dns_operation || { pause; continue; }; menu_ntp;;
+5) prepare_dns_operation || { pause; continue; }; menu_extras;;
+6)
 clear_screen
 menu_header "УДАЛЕНИЕ ИЗМЕНЕНИЙ"
 warn_msg "Будут удалены только изменения DNS Manager."
 if confirm_action "Удалить изменения?"; then rollback_ours; else info_msg "Отменено."; fi
 ;;
-*) warn_msg "Неизвестный пункт."; pause ;;
+*) warn_msg "Неизвестный пункт."; pause;;
 esac
 done
 }
