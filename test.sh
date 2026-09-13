@@ -2,7 +2,7 @@
 MANAGER_PATH="/usr/bin/dns-manager"
 # ==========================================
 # ==========================================
-VERSION="1.91"
+VERSION="2.06"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -15,6 +15,15 @@ BOOTSTRAP_CATALOG="$CFG_DIR/bootstrap-catalog.conf"
 BOGUS_CATALOG="$CFG_DIR/bogus-catalog.conf"
 BOOTSTRAP_DNS_ALL="77.88.8.8,77.88.8.1,94.140.14.14,1.1.1.1,1.0.0.1,8.8.8.8,8.8.4.4,9.9.9.9,149.112.112.112,208.67.222.222,208.67.220.220,149.112.121.10,149.112.122.10,76.76.2.0,76.76.10.0,194.242.2.2,194.242.2.3"
 DNSCAT_VERSION="8.5-RU-NOSOCIAL"
+WATCHDOG_SPEC_VERSION="5"
+# Resource-safety defaults for small OpenWrt routers.
+TEST_BATCH_DEFAULT=4
+WATCHDOG_MAX_REPAIRS=1
+WATCHDOG_MAX_RESTARTS=2
+LOG_MAX_BYTES=262144
+TX_LOG_MAX_BYTES=262144
+OWNERSHIP_MAX_BYTES=131072
+TX_KEEP_MINUTES=60
 PREV_DNSMASQ="$CFG_DIR/dnsmasq-previous.conf"
 PREV_SERVICES="$CFG_DIR/services-previous.conf"
 BASELINE_DIR="$BASE_DIR/baseline"
@@ -22,44 +31,126 @@ BASELINE_MANIFEST="$BASELINE_DIR/manifest"
 BASELINE_LAST="$BASELINE_DIR/last-applied.manifest"
 BASELINE_META="$BASELINE_DIR/meta"
 OWNERSHIP="$STATE_DIR/ownership.conf"
+MTU_BEFORE="$STATE_DIR/mtu-before.conf"
+NTP_CLIENTS_BEFORE="$STATE_DIR/ntp-clients-before.conf"
+FORCE_DNS_BEFORE="$STATE_DIR/force-dns-before.conf"
 TEST_RESULTS="$STATE_DIR/dns-test-results.conf"
 WEB_INIT="/etc/init.d/ttyd"
 WEB_ACCESS_PORT="7682"
 WEB_ACCESS_ENABLED=0
 WEB_TTYD_SECTION="dns_manager"
-LUCI_MENU="/usr/share/luci/menu.d/dns-manager.json"
-LUCI_VIEW_DIR="/www/luci-static/resources/view/dns_manager"
-LUCI_VIEW="$LUCI_VIEW_DIR/redirect.js"
+LUCI_CONTROLLER="/usr/lib/lua/luci/controller/dns_manager.lua"
+MUTATION_LOCK_DIR="$STATE_DIR/mutation.lock"
+MUTATION_LOCK_HELD=0
+rotate_small_file() {
+    _rf="$1"
+    _max="$2"
+    [ -n "$_rf" ] && [ -f "$_rf" ] || return 0
+    _sz="$(wc -c < "$_rf" 2>/dev/null | tr -d ' ')"
+    case "$_sz" in ''|*[!0-9]*) return 0;; esac
+    [ "$_sz" -gt "$_max" ] || return 0
+    _tmp="${_rf}.tmp.$$"
+    tail -n 1200 "$_rf" > "$_tmp" 2>/dev/null || { rm -f "$_tmp"; return 0; }
+    mv "$_tmp" "$_rf" 2>/dev/null || { rm -f "$_tmp"; }
+}
+rotate_runtime_logs() {
+    rotate_small_file "$LOG_FILE" "$LOG_MAX_BYTES"
+    rotate_small_file "$TX_LOG" "$TX_LOG_MAX_BYTES"
+    if [ -f "$OWNERSHIP" ]; then
+        _sz="$(wc -c < "$OWNERSHIP" 2>/dev/null | tr -d ' ')"
+        case "$_sz" in ''|*[!0-9]*) ;; *)
+            if [ "$_sz" -gt "$OWNERSHIP_MAX_BYTES" ]; then
+                _tmp="${OWNERSHIP}.tmp.$$"
+                tail -n 1800 "$OWNERSHIP" > "$_tmp" 2>/dev/null && mv "$_tmp" "$OWNERSHIP" 2>/dev/null || rm -f "$_tmp"
+            fi
+            ;;
+        esac
+    fi
+}
+cleanup_transaction_history() {
+    [ -d "$STATE_DIR" ] || return 0
+    for _txd in "$STATE_DIR"/tx-*; do
+        [ -d "$_txd" ] || continue
+        [ "$_txd" = "${TX_DIR:-}" ] && continue
+        find "$_txd" -maxdepth 0 -mmin +"$TX_KEEP_MINUTES" -exec rm -rf {} \; 2>/dev/null || true
+    done
+}
+
+acquire_mutation_lock() {
+    mkdir -p "$STATE_DIR" 2>/dev/null || return 1
+    if mkdir "$MUTATION_LOCK_DIR" 2>/dev/null; then
+        printf '%s\n' "$$" > "$MUTATION_LOCK_DIR/pid" 2>/dev/null || true
+        MUTATION_LOCK_HELD=1
+        return 0
+    fi
+    _mpid="$(cat "$MUTATION_LOCK_DIR/pid" 2>/dev/null)"
+    if [ -n "$_mpid" ] && kill -0 "$_mpid" 2>/dev/null; then
+        log_msg "Операция пропущена: другой процесс DNS Manager уже изменяет конфигурацию (PID $_mpid)."
+        return 1
+    fi
+    rm -rf "$MUTATION_LOCK_DIR" 2>/dev/null || true
+    mkdir "$MUTATION_LOCK_DIR" 2>/dev/null || return 1
+    printf '%s\n' "$$" > "$MUTATION_LOCK_DIR/pid" 2>/dev/null || true
+    MUTATION_LOCK_HELD=1
+    return 0
+}
+release_mutation_lock() {
+    [ "${MUTATION_LOCK_HELD:-0}" = 1 ] || return 0
+    rm -rf "$MUTATION_LOCK_DIR" 2>/dev/null || true
+    MUTATION_LOCK_HELD=0
+}
+
 cleanup_stale_tmp_dirs() {
     _self_tmp="${TMP_DIR:-}"
-    find /tmp -maxdepth 1 -type d -name 'dnsmgr.*' -mtime +1 -print 2>/dev/null | while IFS= read -r _old_dir; do
+    find /tmp -maxdepth 1 -type d -name 'dnsmgr.*' -print 2>/dev/null | while IFS= read -r _old_dir; do
         [ -n "$_old_dir" ] || continue
         [ "$_old_dir" = "$_self_tmp" ] && continue
         case "$_old_dir" in
             /tmp/dnsmgr.[A-Za-z0-9._-]*) ;;
             *) continue ;;
         esac
-        rm -rf "$_old_dir" 2>/dev/null || true
+        _base="${_old_dir##*/}"
+        _pid="${_base#dnsmgr.}"
+        _pid="${_pid%%-*}"
+        if printf '%s' "$_pid" | grep -Eq '^[0-9]+$'; then
+            if kill -0 "$_pid" 2>/dev/null; then
+                _cmd=""
+                [ -r "/proc/$_pid/cmdline" ] && _cmd="$(tr '\0' ' ' < "/proc/$_pid/cmdline" 2>/dev/null)"
+                case "$_cmd" in *dns-manager*) continue;; esac
+            fi
+            rm -rf "$_old_dir" 2>/dev/null || true
+        else
+            find "$_old_dir" -maxdepth 0 -mmin +30 -exec rm -rf {} \; 2>/dev/null || true
+        fi
     done
 }
-TMP_DIR="$(mktemp -d /tmp/dnsmgr.XXXXXX 2>/dev/null || { d="/tmp/dnsmgr.$$"; mkdir -p "$d"; printf "%s" "$d"; })"
+TMP_DIR="$(mktemp -d "/tmp/dnsmgr.$$-XXXXXX" 2>/dev/null || { d="/tmp/dnsmgr.$$"; n=0; while ! mkdir "$d" 2>/dev/null; do n=$((n+1)); d="/tmp/dnsmgr.$$-$n"; [ "$n" -lt 20 ] || break; done; [ -d "$d" ] || exit 1; printf "%s" "$d"; })"
 cleanup_stale_tmp_dirs
+cleanup_transaction_history
+rotate_runtime_logs
 TX_ID="$(date +%Y%m%d-%H%M%S)-$$"
 TX_DIR="$STATE_DIR/tx-$TX_ID"
 TX_ACTIVE=0
 TX_RESERVED_PORTS=""
 TX_PRE_SLOTS=""
 CORE_ONLY=0
+CRON_TMP_FILE=""
+UPDATE_TMP_FILE=""
 cleanup_runtime() {
-    for _pid in ${STAGE_PIDS:-}; do
-        [ -n "$_pid" ] || continue
-        kill "$_pid" 2>/dev/null || true
-    done
-    sleep 1 2>/dev/null || true
-    for _pid in ${STAGE_PIDS:-}; do
-        [ -n "$_pid" ] || continue
-        kill -9 "$_pid" 2>/dev/null || true
-    done
+    if [ -n "${STAGE_PIDS:-}" ]; then
+        for _pid in ${STAGE_PIDS:-}; do
+            [ -n "$_pid" ] || continue
+            kill "$_pid" 2>/dev/null || true
+        done
+        sleep 1 2>/dev/null || true
+        for _pid in ${STAGE_PIDS:-}; do
+            [ -n "$_pid" ] || continue
+            kill -9 "$_pid" 2>/dev/null || true
+        done
+    fi
+    [ -n "${CRON_TMP_FILE:-}" ] && rm -f "$CRON_TMP_FILE" 2>/dev/null || true
+    [ -n "${UPDATE_TMP_FILE:-}" ] && rm -f "$UPDATE_TMP_FILE" 2>/dev/null || true
+    release_mutation_lock 2>/dev/null || true
     [ -n "${TMP_DIR:-}" ] && rm -rf "$TMP_DIR" 2>/dev/null || true
 }
 trap cleanup_runtime EXIT
@@ -82,18 +173,10 @@ C_SECTION='\033[1;33m'
 UPDATE_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager.sh"
 _ver_newer() {
     awk -v a="$1" -v b="$2" 'BEGIN{
-        split(a, x, "\\."); split(b, y, "\\.");
-        ma=(x[1]=="" ? 0 : x[1]+0); mb=(y[1]=="" ? 0 : y[1]+0);
-        if (ma > mb) exit 0;
-        if (ma < mb) exit 1;
-        a12=ma + (x[2]=="" ? 0 : (x[2]+0)/10^(length(x[2])));
-        b12=mb + (y[2]=="" ? 0 : (y[2]+0)/10^(length(y[2])));
-        if (a12 > b12) exit 0;
-        if (a12 < b12) exit 1;
-        for (i=3; i<=10; i++) {
-            va=(x[i]=="" ? 0 : x[i]+0); vb=(y[i]=="" ? 0 : y[i]+0);
-            if (va > vb) exit 0;
-            if (va < vb) exit 1;
+        na=split(a,x,"\\."); nb=split(b,y,"\\."); n=(na>nb?na:nb);
+        for(i=1;i<=n;i++){
+            va=(x[i]==""?0:x[i]+0); vb=(y[i]==""?0:y[i]+0);
+            if(va>vb) exit 0; if(va<vb) exit 1;
         }
         exit 1;
     }'
@@ -106,6 +189,7 @@ auto_update_manager() {
 [ -w "${MANAGER_PATH%/*}" ] || return 0
 command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1 || return 0
 _upd_tmp="/tmp/dns-manager-update-$$"
+UPDATE_TMP_FILE="$_upd_tmp"
 rm -f "$_upd_tmp" 2>/dev/null
 if command -v curl >/dev/null 2>&1; then
   curl -fsSL --connect-timeout 4 --max-time 15 -o "$_upd_tmp" "$UPDATE_URL" >/dev/null 2>&1
@@ -114,7 +198,7 @@ else
 fi
 if [ ! -s "$_upd_tmp" ]; then
   printf "${C_CYAN}ℹ Проверка обновления: источник недоступен. Запуск продолжается.${C_NC}\n"
-  rm -f "$_upd_tmp" 2>/dev/null; return 0
+  rm -f "$_upd_tmp" 2>/dev/null; UPDATE_TMP_FILE=""; return 0
 fi
 head -n 1 "$_upd_tmp" 2>/dev/null | grep -q '^#!/bin/sh' || { rm -f "$_upd_tmp"; return 0; }
 _new_version="$(sed -n 's/^VERSION="\([^"]*\)"$/\1/p' "$_upd_tmp" 2>/dev/null | head -n1)"
@@ -122,22 +206,26 @@ if [ -z "$_new_version" ]; then rm -f "$_upd_tmp"; return 0; fi
 sh -n "$_upd_tmp" 2>/dev/null || { rm -f "$_upd_tmp"; return 0; }
 if [ "$_new_version" = "$VERSION" ]; then
   printf "${C_GREEN}✓ Проверка обновления: версия %s актуальна.${C_NC}\n" "$VERSION"
-  rm -f "$_upd_tmp" 2>/dev/null; return 0
+  rm -f "$_upd_tmp" 2>/dev/null; UPDATE_TMP_FILE=""; return 0
 fi
 if ! _ver_newer "$_new_version" "$VERSION"; then
   printf "${C_CYAN}ℹ Версия %s не новее установленной %s. Обновление не требуется.${C_NC}\n" "$_new_version" "$VERSION"
-  rm -f "$_upd_tmp" 2>/dev/null; return 0
+  rm -f "$_upd_tmp" 2>/dev/null; UPDATE_TMP_FILE=""; return 0
 fi
 printf "${C_PINK}↻ Доступна версия %s. Обновление...${C_NC}\n" "$_new_version"
 if cp -f "$_upd_tmp" "$MANAGER_PATH" 2>/dev/null && chmod 755 "$MANAGER_PATH" 2>/dev/null; then
   rm -f "$_upd_tmp" 2>/dev/null
+  UPDATE_TMP_FILE=""
   printf "${C_GREEN}✓ DNS Manager обновлён: %s → %s${C_NC}\n" "$VERSION" "$_new_version"
   mkdir -p "$STATE_DIR" 2>/dev/null
   log_msg "Обновление $VERSION -> $_new_version"
+  [ -n "${TMP_DIR:-}" ] && rm -rf "$TMP_DIR" 2>/dev/null || true
+  TMP_DIR=""
   DNS_MANAGER_NO_UPDATE=1 exec "$MANAGER_PATH"
 fi
 printf "${C_YELLOW}! Не удалось заменить %s. Запуск продолжается на %s.${C_NC}\n" "$MANAGER_PATH" "$VERSION"
 rm -f "$_upd_tmp" 2>/dev/null
+UPDATE_TMP_FILE=""
 return 0
 }
 # ==========================================
@@ -145,9 +233,13 @@ return 0
 log_msg() {
 mkdir -p "$BASE_DIR" "$STATE_DIR" 2>/dev/null
 printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$LOG_FILE" 2>/dev/null
+LOG_MSG_COUNT=$(( ${LOG_MSG_COUNT:-0} + 1 ))
+if [ $((LOG_MSG_COUNT % 32)) -eq 0 ]; then rotate_runtime_logs; fi
 }
 log_tx() {
 printf 'TX|%s|%s|%s|%s|%s|%s\n' "$TX_ID" "$(date +%s)" "$1" "$2" "$3" "$4" "$5" >> "$TX_LOG" 2>/dev/null
+LOG_TX_COUNT=$(( ${LOG_TX_COUNT:-0} + 1 ))
+if [ $((LOG_TX_COUNT % 32)) -eq 0 ]; then rotate_runtime_logs; fi
 }
 ok_msg() { log_msg "Готово: $*"; printf "${C_GREEN}[✓] %s${C_NC}\n" "$*"; }
 info_msg() { log_msg "Информация: $*"; printf "${C_CYAN}[ℹ] %s${C_NC}\n" "$*"; }
@@ -226,7 +318,7 @@ touch "$LOG_FILE" "$TX_LOG" "$OWNERSHIP" 2>/dev/null
 # ==========================================
 # ==========================================
 baseline_files() {
-printf '%s\n'  /etc/config/dhcp  /etc/config/https-dns-proxy  /etc/config/firewall  /etc/config/system  /etc/sysctl.d/90-dns-manager.conf  /etc/sysctl.d/91-dns-manager-extended.conf  /etc/dnsmasq.d/90-dns-manager-bogus.conf  /etc/dnsmasq.d/91-dns-manager-client-fixes.conf  /etc/hotplug.d/iface/99-dns-manager-tailscale  /etc/crontabs/root  /etc/init.d/tg-ws-proxy-go  /etc/init.d/tailscale
+printf '%s\n'  /etc/config/dhcp  /etc/config/https-dns-proxy  /etc/config/firewall  /etc/config/system  /etc/sysctl.d/90-dns-manager.conf /etc/sysctl.d/91-dns-manager-extended.conf  /etc/dnsmasq.d/90-dns-manager-bogus.conf  /etc/dnsmasq.d/91-dns-manager-client-fixes.conf   /etc/crontabs/root  
 }
 baseline_key() {
 printf '%s' "$1" | sed 's#^/##; s#[/ ]#_#g'
@@ -495,6 +587,15 @@ fi
 }
 # ==========================================
 # ==========================================
+sync_regional_dns_state() {
+    if [ -n "${SLOT_RU:-}" ] || [ -n "${SLOT_RU_2:-}" ]; then
+        TLD_RU_ENABLED=1
+        TLD_SPLIT=1
+    else
+        TLD_RU_ENABLED=0
+        TLD_SPLIT=0
+    fi
+}
 load_config() {
 _had_dns_profile=0
 [ -f "$CONFIG_FILE" ] && grep -q '^DNS_PROFILE=' "$CONFIG_FILE" 2>/dev/null && _had_dns_profile=1
@@ -508,7 +609,7 @@ BOOTSTRAP_DNS="$BOOTSTRAP_DNS_ALL"
 : "${PORT_RU:=}"; : "${PORT_RU_2:=}"
 : "${BOOTSTRAP_DNS:=$BOOTSTRAP_DNS_ALL}"
 : "${TLD_RU_ENABLED:=1}"; : "${BLOCK_QUIC:=0}"; : "${MTU_FIX:=0}"; : "${FORCE_DOH:=0}"
-: "${NTP_IP_FALLBACK:=1}"; : "${SYSCTL_TUNING:=0}"; : "${GO_OPTIMIZE:=0}"; : "${DNSMASQ_PERF:=0}"; : "${NTP_CLIENTS:=0}"; : "${CLIENT_FIXES:=0}"; : "${SYSCTL_EXTENDED:=0}"; : "${TAILSCALE_HOTPLUG:=0}"; : "${CRON_CLEANUP:=0}"
+: "${NTP_IP_FALLBACK:=1}"; : "${SYSCTL_TUNING:=0}"; : "${DNSMASQ_PERF:=0}"; : "${NTP_CLIENTS:=0}"; : "${CLIENT_FIXES:=0}"; : "${SYSCTL_EXTENDED:=0}"
 : "${BALANCER_ENABLED:=1}"; : "${NTP_PRESET:=cf_ip}"; : "${DNS_PROFILE:=hybrid}"; : "${DNS_SELECTION_MODE:=quick}"; : "${DNS_SELECTION_CATEGORY:=bypass}"
 : "${QUICK_PREF_1:=}"; : "${QUICK_PREF_2:=}"; : "${QUICK_PREF_3:=}"; : "${QUICK_PREF_4:=}"; : "${QUICK_PREF_5:=}"; : "${QUICK_PREF_6:=}"
 : "${WATCHDOG_ENABLED:=1}"; : "${WATCHDOG_INTERVAL:=15}"
@@ -528,10 +629,14 @@ if [ "$DNS_PROFILE" = "hybrid" ]; then
         fi
     done
 fi
+sync_regional_dns_state
 }
 save_config() {
+sync_regional_dns_state
 umask 077
-cat > "$CONFIG_FILE" <<EOF_CFG
+mkdir -p "$CFG_DIR" 2>/dev/null || return 1
+_cfg_tmp="${CONFIG_FILE}.tmp.$$"
+cat > "$_cfg_tmp" <<EOF_CFG
 SLOT_1="$SLOT_1"
 SLOT_2="$SLOT_2"
 SLOT_3="$SLOT_3"
@@ -562,14 +667,11 @@ BLOCK_QUIC="$BLOCK_QUIC"
 MTU_FIX="$MTU_FIX"
 NTP_IP_FALLBACK="$NTP_IP_FALLBACK"
 SYSCTL_TUNING="$SYSCTL_TUNING"
-GO_OPTIMIZE="$GO_OPTIMIZE"
 FORCE_DOH="$FORCE_DOH"
 DNSMASQ_PERF="$DNSMASQ_PERF"
 NTP_CLIENTS="$NTP_CLIENTS"
 CLIENT_FIXES="$CLIENT_FIXES"
 SYSCTL_EXTENDED="$SYSCTL_EXTENDED"
-TAILSCALE_HOTPLUG="$TAILSCALE_HOTPLUG"
-CRON_CLEANUP="$CRON_CLEANUP"
 BALANCER_ENABLED="$BALANCER_ENABLED"
 NTP_PRESET="$NTP_PRESET"
 DNS_PROFILE="$DNS_PROFILE"
@@ -586,6 +688,7 @@ WATCHDOG_INTERVAL="$WATCHDOG_INTERVAL"
 WEB_ACCESS_ENABLED="$WEB_ACCESS_ENABLED"
 WEB_ACCESS_PORT="$WEB_ACCESS_PORT"
 EOF_CFG
+mv "$_cfg_tmp" "$CONFIG_FILE" || { rm -f "$_cfg_tmp"; return 1; }
 }
 # ==========================================
 # ==========================================
@@ -606,8 +709,17 @@ IPV6_ROUTE="no"; ip -6 route show default 2>/dev/null | grep -q . && IPV6_ROUTE=
 FREE_OVERLAY="$(df -k /overlay 2>/dev/null | awk 'NR==2{print $4}')"
 }
 disc_network() {
-LAN_IP="$(ip -4 addr 2>/dev/null | awk '/inet /{print $2}' | cut -d/ -f1 | awk '/^192\.|^10\.|^172\.(1[6-9]|2[0-9]|3[0-1])\./{print; exit}')"
-[ -n "$LAN_IP" ] || LAN_IP="$(uci -q get network.lan.ipaddr 2>/dev/null | cut -d/ -f1 | head -n1)"
+LAN_IP="$(uci -q get network.lan.ipaddr 2>/dev/null | cut -d/ -f1 | head -n1)"
+if [ -z "$LAN_IP" ]; then
+    _lan_dev="$(uci -q get network.lan.device 2>/dev/null)"
+    _lan_if="$(uci -q get network.lan.ifname 2>/dev/null)"
+    if [ -n "$_lan_dev" ]; then
+        LAN_IP="$(ip -4 addr show dev "$_lan_dev" 2>/dev/null | awk '/inet /{print $2}' | cut -d/ -f1 | head -n1)"
+    fi
+    if [ -z "$LAN_IP" ] && [ -n "$_lan_if" ]; then
+        LAN_IP="$(ip -4 addr show dev "$_lan_if" 2>/dev/null | awk '/inet /{print $2}' | cut -d/ -f1 | head -n1)"
+    fi
+fi
 [ -n "$LAN_IP" ] || LAN_IP="192.168.1.1"
 WAN_PROTO="$(uci -q get network.wan.proto 2>/dev/null)"
 IP_RULES="$(ip rule show 2>/dev/null | wc -l)"
@@ -622,27 +734,61 @@ elif command -v netstat >/dev/null 2>&1; then
 netstat -lntup 2>/dev/null >> "$LISTENERS"
 fi
 }
+doh_slot_matches_current() {
+    _slot="$1"; _port="$2"; _url="$3"
+    [ -n "$_url" ] || return 1
+    case "$_slot" in
+        1|2|3|4|5|6|RU|RU_2) ;;
+        *) return 1 ;;
+    esac
+    eval "_sid=\${SLOT_${_slot}:-}"
+    [ -n "$_sid" ] || return 1
+    _expected_url="$(normalize_url "$(dns_url "$_sid")")"
+    [ "$_url" = "$_expected_url" ] || return 1
+    eval "_expected_port=\${PORT_${_slot}:-}"
+    if [ "$DNS_PROFILE" = hybrid ]; then
+        _expected_port="$(hybrid_desired_port "$_slot")"
+    fi
+    [ -n "$_expected_port" ] || return 1
+    [ "$_port" = "$_expected_port" ] || return 1
+    return 0
+}
+refresh_doh_scheme_counts() {
+    DOH_MATCH=0
+    DOH_OTHER=0
+    [ -s "${DOH_INV:-}" ] || return 0
+    _used_slots="$TMP_DIR/doh-matched-slots"
+    : > "$_used_slots"
+    while IFS='|' read -r _idx _port _addr _running _url; do
+        _matched=0
+        for _slot in 1 2 3 4 5 6 RU RU_2; do
+            grep -qxF "$_slot" "$_used_slots" 2>/dev/null && continue
+            if doh_slot_matches_current "$_slot" "$_port" "$_url"; then
+                _matched=1
+                printf '%s\n' "$_slot" >> "$_used_slots"
+                break
+            fi
+        done
+        if [ "$_matched" = 1 ]; then DOH_MATCH=$((DOH_MATCH+1)); else DOH_OTHER=$((DOH_OTHER+1)); fi
+    done < "$DOH_INV"
+    rm -f "$_used_slots" 2>/dev/null
+}
 disc_dns() {
 DNSMASQ_RUN="no"; if /etc/init.d/dnsmasq status >/dev/null 2>&1; then DNSMASQ_RUN="yes"; elif pgrep -x dnsmasq >/dev/null 2>&1; then DNSMASQ_RUN="yes"; fi
 DOH_INV="$TMP_DIR/doh_inventory"; : > "$DOH_INV"
-DOH_TOTAL=0; DOH_OURS=0; DOH_FOREIGN=0; DOH_UNKNOWN=0
+DOH_TOTAL=0; DOH_MATCH=0; DOH_OTHER=0
 FORCE_DNS="$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null)"
 i=0
 while uci -q get "https-dns-proxy.@https-dns-proxy[$i]" >/dev/null 2>&1; do
 p="$(uci -q get "https-dns-proxy.@https-dns-proxy[$i].listen_port" 2>/dev/null)"
 a="$(uci -q get "https-dns-proxy.@https-dns-proxy[$i].listen_addr" 2>/dev/null)"
 u="$(normalize_url "$(uci -q get "https-dns-proxy.@https-dns-proxy[$i].resolver_url" 2>/dev/null)")"
-m="$(uci -q get "https-dns-proxy.@https-dns-proxy[$i].dns_manager" 2>/dev/null)"
-[ "$m" = 1 ] && owner="OURS" || owner="UNKNOWN"
 running="no"
 if [ -n "$p" ] && [ -s "$LISTENERS" ] && grep -qE "(:|\])$p([[:space:]]|$)" "$LISTENERS" 2>/dev/null; then running="yes"; fi
-[ "$owner" = UNKNOWN ] && [ "$running" = yes ] && owner="FOREIGN"
-[ "$owner" = OURS ] && DOH_OURS=$((DOH_OURS+1))
-[ "$owner" = FOREIGN ] && DOH_FOREIGN=$((DOH_FOREIGN+1))
-[ "$owner" = UNKNOWN ] && DOH_UNKNOWN=$((DOH_UNKNOWN+1))
-printf '%s|%s|%s|%s|%s|%s\n' "$i" "$p" "$owner" "$a" "$running" "$u" >> "$DOH_INV"
+printf '%s|%s|%s|%s|%s\n' "$i" "$p" "$a" "$running" "$u" >> "$DOH_INV"
 i=$((i+1)); DOH_TOTAL=$((DOH_TOTAL+1))
 done
+refresh_doh_scheme_counts
 DNS_SMARTDNS="no"; [ -x /etc/init.d/smartdns ] && DNS_SMARTDNS="yes"
 DNS_UNBOUND="no"; [ -x /etc/init.d/unbound ] && DNS_UNBOUND="yes"
 DNS_ADGUARD="no"; [ -x /etc/init.d/adguardhome ] && DNS_ADGUARD="yes"
@@ -662,7 +808,6 @@ OTHER_TGGO="no"; pgrep -f tg-ws-proxy-go >/dev/null 2>&1 && OTHER_TGGO="yes"
 OTHER_TGRS="no"; pgrep -f tg-ws-proxy-rs >/dev/null 2>&1 && OTHER_TGRS="yes"
 OTHER_TGMT="no"; pgrep -f tg-ws-proxy-mtproto >/dev/null 2>&1 && OTHER_TGMT="yes"
 OTHER_BYEDPI="no"; { [ -x /etc/init.d/byedpi ] || pgrep -f byedpi >/dev/null 2>&1; } && OTHER_BYEDPI="yes"
-OTHER_TAILSCALE="no"; [ -x /etc/init.d/tailscale ] && OTHER_TAILSCALE="yes"
 HAS_ZAPRET="$OTHER_ZAPRET"
 HAS_ZAPRET2="$OTHER_ZAPRET2"
 HAS_NETSHIFT="$OTHER_NETSHIFT"
@@ -675,7 +820,6 @@ HAS_TGGO="$OTHER_TGGO"
 HAS_TGRUST="$OTHER_TGRS"
 HAS_TGMT="$OTHER_TGMT"
 HAS_BYEDPI="$OTHER_BYEDPI"
-HAS_TAILSCALE="$OTHER_TAILSCALE"
 }
 # ==========================================
 # ==========================================
@@ -730,6 +874,16 @@ dns_path_conflict_nft() {
     rm -f "$_out"
     return 1
 }
+reload_fw() {
+    if [ -x /etc/init.d/firewall ]; then
+        /etc/init.d/firewall reload >/dev/null 2>&1 && return 0
+        /etc/init.d/firewall restart >/dev/null 2>&1 && return 0
+    fi
+    command -v fw4 >/dev/null 2>&1 || [ -x /sbin/fw4 ] || [ -x /usr/sbin/fw4 ] || return 1
+    fw4 reload >/dev/null 2>&1 && return 0
+    fw4 restart >/dev/null 2>&1 && return 0
+    return 1
+}
 prepare_dns_path() {
     _cfg_changed="$(dns_redirect_conflict_uci 2>/dev/null || printf 0)"
     [ "$_cfg_changed" = 1 ] && uci commit firewall >/dev/null 2>&1 || true
@@ -752,6 +906,7 @@ disc_firewall() {
 }
 run_discovery() {
 init_dirs
+    migrate_legacy_manager_files >/dev/null 2>&1 || true
 disc_system
 disc_network
 disc_listeners
@@ -820,18 +975,19 @@ return 1
 validate_dns_message() {
     _file="$1"
     [ -s "$_file" ] || return 1
-    _n="$(wc -c < "$_file" 2>/dev/null | tr -d " ")"
-    case "$_n" in ''|*[!0-9]*) return 1;; esac
-    [ "$_n" -ge 12 ] || return 1
-    set -- $(od -An -tu1 -N12 "$_file" 2>/dev/null)
-    [ "$#" -ge 12 ] || return 1
-    [ "$1" -eq 18 ] 2>/dev/null || return 1
-    [ "$2" -eq 52 ] 2>/dev/null || return 1
-    [ $(( $3 & 128 )) -ne 0 ] 2>/dev/null || return 1
-    [ $(( $3 & 120 )) -eq 0 ] 2>/dev/null || return 1
-    [ $(( $4 & 15 )) -eq 0 ] 2>/dev/null || return 1
-    [ $(( $5 * 256 + $6 )) -eq 1 ] 2>/dev/null || return 1
-    return 0
+    _hdr="$(od -An -tu1 -N12 "$_file" 2>/dev/null | awk '
+        {for(i=1;i<=NF;i++) printf "%s ", $i}
+    ' )"
+    awk -v h="$_hdr" 'BEGIN{
+        n=split(h,a," "); if(n<12) exit 1;
+        for(i=1;i<=12;i++) if(a[i]!~ /^[0-9]+$/) exit 1;
+        if(a[1]!=18 || a[2]!=52) exit 1;
+        if(int(a[3]/128)%2==0) exit 1;
+        if(int(a[3]/8)%16!=0) exit 1;
+        if(a[4]%16!=0) exit 1;
+        if((a[5]*256+a[6])!=1) exit 1;
+        exit 0;
+    }'
 }
 test_one_dns() {
 id="$1"; url="$(normalize_url "$(dns_url "$id")")"; name="$(dns_name "$id")"; cat="$(dns_cat "$id")"
@@ -861,7 +1017,7 @@ while IFS= read -r ipx; do
     case "$code" in
     200)
         case "$ctype" in *application/dns-message*) ct_ok=yes;; *) ct_ok=no;; esac
-        if [ "$bytes" -ge 12 ] && [ "$ct_ok" = yes ]; then
+        if [ "$bytes" -ge 12 ] && [ "$ct_ok" = yes ] && validate_dns_message "$body"; then
             if [ "$_best_ms" -lt 0 ] || { [ "$ms" -ge 0 ] && [ "$ms" -lt "$_best_ms" ]; }; then _best_ms="$ms"; fi
             st=OK
         else st=BAD_DOH_RESPONSE; fi ;;
@@ -887,6 +1043,7 @@ rm -f "$q" "$body" "$hdr"
 # ==========================================
 # ==========================================
 test_dns_catalog() {
+rotate_runtime_logs
 [ "$HAS_CURL" = yes ] || { warn_msg "curl не установлен. Сначала установите его через пункт I."; return 1; }
 rm -f "$TMP_DIR/t."* "$TMP_DIR/q."* "$TMP_DIR/body."* "$TMP_DIR/h."* "$TEST_RESULTS" 2>/dev/null
 total="$(count_dns)"
@@ -903,7 +1060,23 @@ test_progress() {
     printf "  ${C_CYAN}Промежуточный результат:${C_NC} проверено %s из %s | работают %s | ошибки %s\n" "$_done" "$total" "$_ok" "$_bad"
 }
 n=0
-batch=30
+batch="${TEST_BATCH:-$TEST_BATCH_DEFAULT}"
+case "$batch" in ''|*[!0-9]*) batch="$TEST_BATCH_DEFAULT";; esac
+[ "$batch" -ge 1 ] 2>/dev/null || batch=1
+[ "$batch" -le 6 ] 2>/dev/null || batch=6
+if [ -r /proc/meminfo ]; then
+    _mem_avail="$(awk '/^MemAvailable:/{print $2; exit}' /proc/meminfo 2>/dev/null)"
+    case "$_mem_avail" in ''|*[!0-9]*) ;; *)
+        [ "$_mem_avail" -lt 16384 ] && batch=1
+        [ "$_mem_avail" -ge 16384 ] && [ "$_mem_avail" -lt 32768 ] && [ "$batch" -gt 2 ] && batch=2
+        ;;
+    esac
+fi
+_load="$(awk '{print $1; exit}' /proc/loadavg 2>/dev/null)"
+_cpu="$(grep -c '^processor' /proc/cpuinfo 2>/dev/null)"
+case "$_cpu" in ''|*[!0-9]*) _cpu=1;; esac
+_load10="$(awk -v x="$_load" 'BEGIN{printf "%.0f", x*10}' 2>/dev/null)"
+case "$_load10" in ''|*[!0-9]*) ;; *) [ "$_load10" -gt $((_cpu*20)) ] && batch=1;; esac
 while IFS='|' read -r id _rest; do
     case "$id" in ''|\#*) continue;; esac
     test_one_dns "$id" &
@@ -1032,6 +1205,7 @@ warn_msg "Yandex RU сейчас не прошёл тест. RU-маршрут �
 SLOT_RU=""
 fi
 fi
+sync_regional_dns_state
 PORT_1="$HYBRID_PORT_1"; PORT_2="$HYBRID_PORT_2"; PORT_3="$HYBRID_PORT_3"
 PORT_4="$HYBRID_PORT_4"; PORT_5="$HYBRID_PORT_5"; PORT_6="$HYBRID_PORT_6"
 [ -n "$SLOT_RU" ] && PORT_RU="$HYBRID_PORT_RU"
@@ -1111,6 +1285,7 @@ ok_msg "NTP: IP-профиль '$NTP_PRESET' добавлен без удале�
 log_tx "APPLY" "NTP" "ADD" "OK" "profile=$NTP_PRESET;servers=$servers"
 }
 apply_ntp_host_ips() {
+    [ "${NTP_IP_FALLBACK:-0}" = 1 ] || return 0
     [ -n "$(uci -q get system.ntp 2>/dev/null)" ] || return 0
     _ntp_servers="$(uci -q get system.ntp.server 2>/dev/null)"
     [ -n "$_ntp_servers" ] || return 0
@@ -1146,11 +1321,8 @@ apply_ntp_host_ips() {
 # ==========================================
 # ==========================================
 menu_ntp() {
-menu_header "СИНХРОНИЗАЦИЯ ВРЕМЕНИ — точное время на роутере"
+menu_header "СЕРВЕРЫ ТОЧНОГО ВРЕМЕНИ"
 _cur_ntp="$(uci -q get system.ntp.server 2>/dev/null)"
-printf "${C_WHITE}Зачем нужен этот раздел:${C_NC}\n"
-printf "  Точное время нужно роутеру для HTTPS-соединений, проверки сертификатов,\n"
-printf "  журналов и автоматических задач.\n\n"
 printf "${C_YELLOW}${C_BOLD}Текущие серверы времени:${C_NC}\n"
 if [ -n "$_cur_ntp" ]; then
 for _s in $_cur_ntp; do
@@ -1159,14 +1331,15 @@ done
 else
 printf "  ${C_YELLOW}(не настроены)${C_NC}\n"
 fi
-printf "\n${C_YELLOW}${C_BOLD}Выбранный источник времени:${C_NC} ${C_YELLOW}${C_BOLD}%s${C_NC}\n\n" "$NTP_PRESET"
-menu_item "[1]" "Cloudflare — быстрый источник по IP, DNS не нужен"
-menu_item "[2]" "NIST — несколько серверов точного времени"
-menu_item "[3]" "ВНИИФТРИ Москва — российские серверы времени"
+printf "\n${C_YELLOW}${C_BOLD}Выбранный набор:${C_NC} ${C_YELLOW}${C_BOLD}%s${C_NC}\n\n" "$(case "$NTP_PRESET" in cf_ip) printf "Cloudflare";; nist_ip) printf "NIST";; vniiftri_moscow) printf "ВНИИФТРИ";; google_ip) printf "Google";; *) printf "%s" "$NTP_PRESET";; esac)"
+menu_item "[1]" "Cloudflare — серверы времени по IP"
+menu_item "[2]" "NIST — серверы точного времени"
+menu_item "[3]" "ВНИИФТРИ — российские серверы времени"
 menu_item "[4]" "Google — серверы времени по IP"
 menu_back
 menu_prompt
 safe_read c
+_old_ntp_preset="$NTP_PRESET"
 case "$c" in
 1) NTP_PRESET="cf_ip";;
 2) NTP_PRESET="nist_ip";;
@@ -1174,21 +1347,23 @@ case "$c" in
 4) NTP_PRESET="google_ip";;
 *) return;;
 esac
-save_config
-apply_ntp_ip_fallback
+if apply_ntp_ip_fallback; then
+    save_config
+else
+    NTP_PRESET="$_old_ntp_preset"
+    save_config >/dev/null 2>&1 || true
+    err_msg "Не удалось применить выбранный набор NTP. Предыдущий выбор сохранён."
+fi
 pause
 }
 # ==========================================
 # ==========================================
 # ==========================================
-find_own_doh_by_url() {
-awk -F'|' -v u="$(normalize_url "$1")" '$6==u && $3=="OURS"{print $1"|"$2"|"$6;exit}' "$DOH_INV"
+find_doh_by_url() {
+    awk -F'|' -v u="$(normalize_url "$1")" '$5==u{print $1"|"$2"|"$3"|"$4"|"$5;exit}' "$DOH_INV"
 }
-find_any_doh_by_url() {
-awk -F'|' -v u="$(normalize_url "$1")" '$6==u{print $1"|"$2"|"$3"|"$4"|"$5;exit}' "$DOH_INV"
-}
-find_own_doh_by_port() {
-awk -F'|' -v p="$1" '$2==p && $3=="OURS"{print $1"|"$2"|"$6;exit}' "$DOH_INV"
+find_doh_by_port() {
+    awk -F'|' -v p="$1" '$2==p{print $1"|"$2"|"$3"|"$4"|"$5;exit}' "$DOH_INV"
 }
 port_used_anywhere() {
 p="$1"
@@ -1227,21 +1402,25 @@ return 1
 # ==========================================
 # ==========================================
 clear_all_doh_for_apply() {
-    printf "${C_PINK}↻ Все существующие DNS-серверы будут удалены и заменены выбранной схемой DNS Manager.${C_NC}\n"
+    # DNS Manager is the authoritative owner of the DoH configuration.
+    # Before every apply, remove ALL existing https-dns-proxy sections and
+    # rebuild the complete selected set from the manager configuration.
+    printf "${C_PINK}↻ Все существующие DNS-секции https-dns-proxy будут удалены и заменены выбранной схемой DNS Manager.${C_NC}\n"
     _removed=0
     while uci -q get "https-dns-proxy.@https-dns-proxy[0]" >/dev/null 2>&1; do
         _u="$(uci -q get "https-dns-proxy.@https-dns-proxy[0].resolver_url" 2>/dev/null)"
-        [ -n "$_u" ] && printf "  ${C_PINK}↻ Удаляется DNS-сервер: %s${C_NC}\n" "$_u"
+        [ -n "$_u" ] && printf "  ${C_PINK}↻ Удаляется DNS-секция: %s${C_NC}\n" "$_u"
         uci -q delete "https-dns-proxy.@https-dns-proxy[0]" || return 1
         _removed=$((_removed+1))
     done
     uci commit https-dns-proxy || return 1
     : > "$DOH_INV"
     DOH_TOTAL=0
-    DOH_OURS=0
-    DOH_FOREIGN=0
-    DOH_UNKNOWN=0
-    printf "${C_GREEN}✓ Старых DNS-серверов удалено: %s. Остаются выбранные DNS-серверы.${C_NC}\n" "$_removed"
+    DOH_MATCH=0
+    DOH_OTHER=0
+    disc_listeners
+    disc_dns
+    printf "${C_GREEN}✓ Старых DNS-секций удалено: %s. Устанавливается полный набор DNS Manager.${C_NC}\n" "$_removed"
 }
 record_own() { printf '%s|%s|%s|%s\n' "$1" "$2" "$3" "$4" >> "$OWNERSHIP"; }
 configure_hdp_manager_control() {
@@ -1257,7 +1436,7 @@ url="$(normalize_url "$(dns_url "$id")")"; name="$(dns_name "$id")"
 local desired=""
 [ "$DNS_PROFILE" = "hybrid" ] && desired="$(hybrid_desired_port "$slot")"
 local existing_own
-existing_own="$(find_own_doh_by_url "$url")"
+existing_own="$(find_doh_by_url "$url")"
 if [ -n "$existing_own" ]; then
 local sec_idx="$(printf '%s' "$existing_own" | cut -d'|' -f1)"
 local current="$(printf '%s' "$existing_own" | cut -d'|' -f2)"
@@ -1282,7 +1461,6 @@ target="$FREE_PORT_RESULT"
 fi
 if [ "$target" != "$current" ]; then
 if [ -n "$sec_idx" ]; then
-[ "$(uci -q get "https-dns-proxy.@https-dns-proxy[$sec_idx].dns_manager" 2>/dev/null)" = "1" ] || return 1
 uci set "https-dns-proxy.@https-dns-proxy[$sec_idx].listen_port=$target" || return 1
 uci set "https-dns-proxy.@https-dns-proxy[$sec_idx].listen_addr=127.0.0.1" || return 1
 else
@@ -1293,15 +1471,6 @@ fi
 eval "PORT_$slot=\"$target\""
 printf "  ${C_GREEN}+ %s → 127.0.0.1:%s${C_NC}\n" "$name" "$target"
 return 0
-fi
-local existing_foreign
-existing_foreign="$(find_any_doh_by_url "$url")"
-if [ -n "$existing_foreign" ]; then
-local _foreign_idx="$(printf '%s' "$existing_foreign" | cut -d'|' -f1)"
-local owner="$(printf '%s' "$existing_foreign" | cut -d'|' -f3)"
-local p_old="$(printf '%s' "$existing_foreign" | cut -d'|' -f2)"
-warn_msg "$name уже использовался чужой/неизвестной секцией (порт $p_old, владелец=$(owner_ru "$owner")). Она удаляется: при активном DNS Manager не оставляет другие DNS-серверы."
-[ -n "$_foreign_idx" ] && uci -q delete "https-dns-proxy.@https-dns-proxy[$_foreign_idx]" || return 1
 fi
 local target="$desired"
 if [ -n "$target" ]; then
@@ -1327,7 +1496,6 @@ uci set "https-dns-proxy.$sec.listen_port=$target" || return 1
 uci set "https-dns-proxy.$sec.listen_addr=127.0.0.1" || return 1
 uci set "https-dns-proxy.$sec.resolver_url=$url" || return 1
 uci set "https-dns-proxy.$sec.request_timeout=2" || return 1
-uci set "https-dns-proxy.$sec.dns_manager=1" || return 1
 record_own "doh" "$target" "$url" "slot=$slot;name=$name"
 eval "PORT_$slot=\"$target\""
 printf "  ${C_GREEN}+ %s → 127.0.0.1:%s${C_NC}\n" "$name" "$target"
@@ -1335,7 +1503,7 @@ printf "  ${C_GREEN}+ %s → 127.0.0.1:%s${C_NC}\n" "$name" "$target"
 repair_duplicate_own_doh_ports() {
 [ -s "$DOH_INV" ] || return 0
 dup_ports="$TMP_DIR/dup-own-ports"
-awk -F'|' '$3=="OURS" && $2!=""{cnt[$2]++} END{for(p in cnt) if(cnt[p]>1) print p}' "$DOH_INV" > "$dup_ports"
+awk -F'|' '$2!=""{cnt[$2]++} END{for(p in cnt) if(cnt[p]>1) print p}' "$DOH_INV" > "$dup_ports"
 [ -s "$dup_ports" ] || return 0
 while IFS= read -r p; do
 first=1
@@ -1353,7 +1521,7 @@ record_own "doh" "$newp" "$url" "repair_duplicate_port=$oldp;section=$idx"
 log_tx "PLAN" "doh.duplicate.$idx" "MOVE" "OK" "from=$oldp;to=$newp;url=$url"
 printf "  ${C_YELLOW}↻ Исправлен дубликат порта %s для %s → %s (${C_GREEN}успешно${C_NC})\n" "$oldp" "$(dns_name "$url")" "$newp"
 done <<EOF_DUP
-$(awk -F'|' -v p="$p" '$3=="OURS" && $2==p{print $1"|"$6}' "$DOH_INV")
+$(awk -F'|' -v p="$p" '$2==p{print $1"|"$5}' "$DOH_INV")
 EOF_DUP
 done < "$dup_ports"
 }
@@ -1369,14 +1537,10 @@ reconcile_selected_own_doh() {
     sort -u "$_keep" -o "$_keep" 2>/dev/null || true
     i=0
     while uci -q get "https-dns-proxy.@https-dns-proxy[$i]" >/dev/null 2>&1; do
-        _m="$(uci -q get "https-dns-proxy.@https-dns-proxy[$i].dns_manager" 2>/dev/null)"
-        if [ "$_m" = 1 ]; then
-            _u="$(normalize_url "$(uci -q get "https-dns-proxy.@https-dns-proxy[$i].resolver_url" 2>/dev/null)")"
-            if [ -z "$_u" ] || ! grep -qxF "$_u" "$_keep" 2>/dev/null; then
-                printf "${C_PINK}↻ Удаляется устаревшая собственная секция DNS: %s${C_NC}\n" "${_u:-без URL}"
-                uci -q delete "https-dns-proxy.@https-dns-proxy[$i]" || return 1
-                continue
-            fi
+        _u="$(normalize_url "$(uci -q get "https-dns-proxy.@https-dns-proxy[$i].resolver_url" 2>/dev/null)")"
+        if [ -z "$_u" ] || ! grep -qxF "$_u" "$_keep" 2>/dev/null; then
+            uci -q delete "https-dns-proxy.@https-dns-proxy[$i]" || return 1
+            continue
         fi
         i=$((i+1))
     done
@@ -1450,38 +1614,55 @@ ensure_dnsmasq_balancer() {
     [ "$(uci -q get "dhcp.$_sec.noresolv" 2>/dev/null)" = 1 ] || return 1
     return 0
 }
+dnsmasq_manager_server_owned() {
+    _val="$1"
+    [ -n "$_val" ] || return 1
+    # Prefer the persistent ownership journal from all previous manager versions.
+    awk -F'|' -v v="$_val" '$1=="dnsmasq" && $2=="server" && $3==v {found=1; exit} END{exit found?0:1}' "$OWNERSHIP" 2>/dev/null && return 0
+    # Legacy manager versions did not always leave a reliable journal. These are
+    # the manager's dedicated local DoH ports and regional routes.
+    case "$_val" in
+        127.0.0.1#505[3-9]|127.0.0.1#5060|/ru/127.0.0.1#505[3-9]|/ru/127.0.0.1#5060|/su/127.0.0.1#505[3-9]|/su/127.0.0.1#5060|/xn--p1ai/127.0.0.1#505[3-9]|/xn--p1ai/127.0.0.1#5060) return 0 ;;
+    esac
+    return 1
+}
 reconcile_dnsmasq() {
     sec="$(get_dnsmasq_section)"
     uci -q get "dhcp.$sec" >/dev/null 2>&1 || return 1
     [ -s "$PREV_DNSMASQ" ] || {
-  {
-    printf 'SERVER\n'
-    uci -q get "dhcp.$sec.server" 2>/dev/null | tr ' ' '\n'
-    printf 'ALLSERVERS=%s\n' "$(uci -q get "dhcp.$sec.allservers" 2>/dev/null)"
-    printf 'STRICTORDER=%s\n' "$(uci -q get "dhcp.$sec.strictorder" 2>/dev/null)"
-    printf 'NORESOLV=%s\n' "$(uci -q get "dhcp.$sec.noresolv" 2>/dev/null)"
-    printf 'SECTION=%s\n' "$sec"
-  } > "$PREV_DNSMASQ" 2>/dev/null || true
-}
+      {
+        printf 'SERVER\n'
+        uci -q get "dhcp.$sec.server" 2>/dev/null | tr ' ' '\n'
+        printf 'ALLSERVERS=%s\n' "$(uci -q get "dhcp.$sec.allservers" 2>/dev/null)"
+        printf 'STRICTORDER=%s\n' "$(uci -q get "dhcp.$sec.strictorder" 2>/dev/null)"
+        printf 'NORESOLV=%s\n' "$(uci -q get "dhcp.$sec.noresolv" 2>/dev/null)"
+        printf 'SECTION=%s\n' "$sec"
+      } > "$PREV_DNSMASQ" 2>/dev/null || true
+    }
+    # DNS Manager is authoritative for upstream DNS in this profile.
+    # Rebuild the server list from scratch so stale/foreign DNS entries cannot
+    # survive an apply. The original values are preserved in PREV_DNSMASQ.
     while uci -q delete "dhcp.$sec.server" >/dev/null 2>&1; do :; done
     for s in 1 2 3 4 5 6; do
         eval "id=\${SLOT_$s}"; eval "p=\${PORT_$s}"
         [ -n "$id" ] && [ -n "$p" ] || continue
         val="127.0.0.1#$p"
-        uci add_list "dhcp.$sec.server=$val" || return 1
+        exact_list_has "dhcp.$sec.server" "$val" || {
+            uci add_list "dhcp.$sec.server=$val" || return 1
+        }
         record_own "dnsmasq" "server" "$val" "section=$sec"
     done
     if [ "$TLD_RU_ENABLED" = 1 ] && [ -n "$SLOT_RU" ] && [ -n "$PORT_RU" ]; then
         for t in /ru /su /xn--p1ai; do
             val="$t/127.0.0.1#$PORT_RU"
-            uci add_list "dhcp.$sec.server=$val" || return 1
+            exact_list_has "dhcp.$sec.server" "$val" || uci add_list "dhcp.$sec.server=$val" || return 1
             record_own "dnsmasq" "server" "$val" "section=$sec"
         done
     fi
     if [ "$TLD_RU_ENABLED" = 1 ] && [ -n "$SLOT_RU_2" ] && [ -n "$PORT_RU_2" ]; then
         for t in /ru /su /xn--p1ai; do
             val="$t/127.0.0.1#$PORT_RU_2"
-            uci add_list "dhcp.$sec.server=$val" || return 1
+            exact_list_has "dhcp.$sec.server" "$val" || uci add_list "dhcp.$sec.server=$val" || return 1
             record_own "dnsmasq" "server" "$val" "section=$sec"
         done
     fi
@@ -1501,15 +1682,35 @@ reconcile_dnsmasq() {
 }
 # ==========================================
 # ==========================================
-apply_quic() {
-    [ "$BLOCK_QUIC" = 1 ] || return 0
+firewall_quic_rule_owned() {
+    _rsec="$1"
+    _rname="$2"
+    [ "$(uci -q get "firewall.$_rsec.name" 2>/dev/null)" = "$_rname" ] || return 1
+    [ "$(uci -q get "firewall.$_rsec.src" 2>/dev/null)" = lan ] || return 1
+    [ "$(uci -q get "firewall.$_rsec.dest" 2>/dev/null)" = wan ] || return 1
+    [ "$(uci -q get "firewall.$_rsec.proto" 2>/dev/null)" = udp ] || return 1
+    case "$_rname" in
+        Block_UDP_80) [ "$(uci -q get "firewall.$_rsec.dest_port" 2>/dev/null)" = 80 ] || return 1 ;;
+        Block_UDP_443) [ "$(uci -q get "firewall.$_rsec.dest_port" 2>/dev/null)" = 443 ] || return 1 ;;
+        *) return 1 ;;
+    esac
+    [ "$(uci -q get "firewall.$_rsec.target" 2>/dev/null)" = REJECT ] || return 1
+    return 0
+}
+quic_remove_managed_rules() {
     for _rname in Block_UDP_80 Block_UDP_443; do
-        while :; do
-            _ridx="$(uci show firewall 2>/dev/null | grep "name='$_rname'" | head -n1 | cut -d. -f2 | cut -d= -f1)"
-            [ -n "$_ridx" ] || break
+        _secs="$(uci show firewall 2>/dev/null | sed -n 's/^firewall\.\([^.=]*\)=rule$/\1/p')"
+        for _ridx in $_secs; do
+            [ "$(uci -q get "firewall.$_ridx.name" 2>/dev/null)" = "$_rname" ] || continue
             uci -q delete "firewall.$_ridx" || return 1
         done
     done
+    return 0
+}
+
+apply_quic() {
+    [ "$BLOCK_QUIC" = 1 ] || return 0
+    quic_remove_managed_rules || return 1
     uci add firewall rule >/dev/null 2>&1 || return 1
     uci set firewall.@rule[-1].name='Block_UDP_80' || return 1
     uci add_list firewall.@rule[-1].proto='udp' || return 1
@@ -1528,65 +1729,151 @@ apply_quic() {
 }
 # ==========================================
 # ==========================================
-apply_sysctl() {
-[ "$SYSCTL_TUNING" = 1 ] || return 0
-f="/etc/sysctl.d/90-dns-manager.conf"
-sf="$STATE_DIR/sysctl-before.conf"
-[ -f "$f" ] || : > "$f" || return 1
-for p in "net.ipv4.tcp_fastopen=3" "net.ipv4.tcp_fin_timeout=15" "net.core.somaxconn=1024"; do
-key="${p%%=*}"; val="${p#*=}"; before="$(sysctl -n "$key" 2>/dev/null)"
-grep -q "^${key}|" "$sf" 2>/dev/null || printf '%s|%s\n' "$key" "${before:-unknown}" >> "$sf"
-foreign="$(grep -Rhs "^${key}=" /etc/sysctl.d 2>/dev/null | grep -v '^#' | grep -v "^${key}=${val}$" | head -n1)"
-if [ -n "$foreign" ] && ! grep -q "^${key}=${val}$" "$f" 2>/dev/null; then
-warn_msg "Не меняю $key: найдено стороннее значение ($foreign). Проверьте конфигурацию sysctl для этого параметра."
-continue
-fi
-grep -q "^${key}=${val}$" "$f" 2>/dev/null || printf '%s\n' "$p" >> "$f"
-sysctl -w "$p" >/dev/null 2>&1 || warn_msg "Не удалось применить $p"
-record_own "sysctl" "$key" "$val" "before=${before:-unknown}"
-done
+sysctl_base_manager_path() { printf '%s' "/etc/sysctl.d/90-dns-manager.conf"; }
+sysctl_extended_manager_path() { printf '%s' "/etc/sysctl.d/91-dns-manager-extended.conf"; }
+sysctl_base_managed_files() {
+    [ -f "/etc/sysctl.d/90-dns-manager.conf" ] && printf '%s\n' "/etc/sysctl.d/90-dns-manager.conf"
 }
-remove_sysctl_base() {
-    f="/etc/sysctl.d/90-dns-manager.conf"
-    sf="$STATE_DIR/sysctl-before.conf"
-    [ -f "$f" ] || return 0
-    for kv in net.ipv4.tcp_fastopen net.ipv4.tcp_fin_timeout net.core.somaxconn; do
-        old="$(awk -F'|' -v k="$kv" '$1==k{print $2;exit}' "$sf" 2>/dev/null)"
-        [ -n "$old" ] && [ "$old" != unknown ] && sysctl -w "$kv=$old" >/dev/null 2>&1 || true
-    done
-    rm -f "$f" "$sf"
+sysctl_extended_managed_files() {
+    [ -f "/etc/sysctl.d/91-dns-manager-extended.conf" ] && printf '%s\n' "/etc/sysctl.d/91-dns-manager-extended.conf"
 }
-remove_go_optimize() {
-    for f in /etc/init.d/tg-ws-proxy-go /etc/init.d/tailscale; do
-        bak="$f.dns-manager.bak"
-        [ -f "$bak" ] || continue
-        curh="$(file_hash "$f")"
-        managedh="$(cat "$STATE_DIR/$(basename "$f").managed.sha256" 2>/dev/null)"
-        if [ -n "$managedh" ] && [ -n "$curh" ] && [ "$curh" != "$managedh" ]; then
-            warn_msg "Не восстанавливаю $f: файл изменён вручную после настройки."
-            continue
-        fi
-        mv "$bak" "$f" 2>/dev/null || continue
-        rm -f "$STATE_DIR/$(basename "$f").managed.sha256"
-    done
-}
-reload_fw() {
-    if [ "$SYS_FW" = fw4 ]; then
-        /etc/init.d/firewall reload >/dev/null 2>&1 || /etc/init.d/firewall restart >/dev/null 2>&1
-    else
-        /etc/init.d/firewall restart >/dev/null 2>&1
+
+migrate_legacy_manager_files() {
+    # 1.70 introduced 98/99 names unnecessarily. Collapse them back to the
+    # single canonical Manager namespace. Only exact Manager-owned content is
+    # migrated; canonical files always remain authoritative.
+    _src="/etc/sysctl.d/98-dns-manager.conf"
+    _dst="/etc/sysctl.d/90-dns-manager.conf"
+    if [ -f "$_src" ] && [ ! -f "$_dst" ] && sysctl_base_file_owned "$_src"; then
+        cp -p "$_src" "$_dst" 2>/dev/null || return 1
+        rm -f "$_src" 2>/dev/null || return 1
+    elif [ -f "$_src" ] && [ -f "$_dst" ] && sysctl_base_file_owned "$_src"; then
+        rm -f "$_src" 2>/dev/null || return 1
     fi
+    _src="/etc/sysctl.d/99-dns-manager-extended.conf"
+    _dst="/etc/sysctl.d/91-dns-manager-extended.conf"
+    if [ -f "$_src" ] && [ ! -f "$_dst" ] && sysctl_extended_file_owned "$_src"; then
+        cp -p "$_src" "$_dst" 2>/dev/null || return 1
+        rm -f "$_src" 2>/dev/null || return 1
+    elif [ -f "$_src" ] && [ -f "$_dst" ] && sysctl_extended_file_owned "$_src"; then
+        rm -f "$_src" 2>/dev/null || return 1
+    fi
+    return 0
+}
+
+apply_sysctl() {
+    f="$(sysctl_base_manager_path)"
+    sf="$STATE_DIR/sysctl-before.conf"
+    _expected="net.ipv4.tcp_fastopen=3
+net.ipv4.tcp_fin_timeout=15
+net.core.somaxconn=1024"
+    [ "${SYSCTL_TUNING:-0}" = 1 ] || return 0
+    [ -s "$sf" ] || : > "$sf" || return 1
+    for p in "net.ipv4.tcp_fastopen=3" "net.ipv4.tcp_fin_timeout=15" "net.core.somaxconn=1024"; do
+        _k="${p%%=*}"; _old="$(sysctl -n "$_k" 2>/dev/null)"
+        grep -q "^${_k}|" "$sf" 2>/dev/null || printf '%s|%s\n' "$_k" "${_old:-unknown}" >> "$sf" || return 1
+    done
+    # This is the Manager's canonical tuning zone: enforce our values.
+    _tmp="$f.tmp.$$"
+    {
+        printf '%s\n' "$_expected"
+    } > "$_tmp" || { rm -f "$_tmp"; return 1; }
+    for p in "net.ipv4.tcp_fastopen=3" "net.ipv4.tcp_fin_timeout=15" "net.core.somaxconn=1024"; do
+        _out="$(sysctl -w "$p" 2>&1)"
+        [ $? -eq 0 ] || {
+            [ -n "$_out" ] && err_msg "Не удалось применить $p: $_out" || err_msg "Не удалось применить $p."
+            rm -f "$_tmp"
+            while IFS='|' read -r _k _v; do
+                [ -n "$_k" ] && [ "$_v" != unknown ] && sysctl -w "$_k=$_v" >/dev/null 2>&1 || true
+            done < "$sf"
+            return 1
+        }
+        record_own "sysctl" "${p%%=*}" "${p#*=}" "applied"
+    done
+    mv "$_tmp" "$f" || { rm -f "$_tmp"; return 1; }
+    return 0
+}
+sysctl_base_file_owned() {
+    _f="$1"
+    [ -f "$_f" ] || return 1
+    return 0
+}
+
+remove_sysctl_base() {
+    sf="$STATE_DIR/sysctl-before.conf"
+    if [ -s "$sf" ]; then
+        while IFS='|' read -r _k _v; do
+            [ -n "$_k" ] && [ "$_v" != unknown ] && sysctl -w "$_k=$_v" >/dev/null 2>&1 || true
+        done < "$sf"
+    fi
+    _f="/etc/sysctl.d/90-dns-manager.conf"
+    [ -f "$_f" ] && rm -f "$_f" || true
+    rm -f "$sf"
+    return 0
+}
+
+# ==========================================
+# ==========================================
+apply_sysctl_bundle() {
+    # Apply/restore base + extended sysctl as one menu operation.
+    # Each low-level function remains responsible for its own ownership and rollback.
+    _want_base="$1"
+    _want_ext="$2"
+    _saved_base="$SYSCTL_TUNING"
+    _saved_ext="$SYSCTL_EXTENDED"
+    SYSCTL_TUNING="$_want_base"
+    SYSCTL_EXTENDED="$_want_ext"
+
+    if [ "$_want_base" = 1 ]; then
+        apply_sysctl || {
+            SYSCTL_TUNING="$_saved_base"
+            SYSCTL_EXTENDED="$_saved_ext"
+            err_msg "Базовый sysctl не применён. Проверьте параметры net.ipv4.tcp_fastopen, net.ipv4.tcp_fin_timeout и net.core.somaxconn."
+            return 1
+        }
+    else
+        remove_sysctl_base || {
+            SYSCTL_TUNING="$_saved_base"
+            SYSCTL_EXTENDED="$_saved_ext"
+            err_msg "Не удалось отключить базовый sysctl."
+            return 1
+        }
+    fi
+
+    if [ "$_want_ext" = 1 ]; then
+        apply_sysctl_extended || {
+            # Do not report success for a partial bundle. Restore the just-applied
+            # base layer when the extended layer fails.
+            remove_sysctl_base >/dev/null 2>&1 || true
+            SYSCTL_TUNING="$_saved_base"
+            SYSCTL_EXTENDED="$_saved_ext"
+            err_msg "Расширенный sysctl не применён. Проверьте nf_conntrack и параметры TCP/buffer. Базовый слой откатан."
+            return 1
+        }
+    else
+        remove_sysctl_extended || {
+            SYSCTL_TUNING="$_saved_base"
+            SYSCTL_EXTENDED="$_saved_ext"
+            err_msg "Не удалось отключить расширенный sysctl."
+            return 1
+        }
+    fi
+
+    run_discovery || return 1
+    save_config || return 1
+    return 0
 }
 # ==========================================
-# ==========================================
-apply_extras_now() {
+_apply_extras_now_impl() {
+
     case "$1" in
         balance|tld)
             reconcile_dnsmasq || return 1
             /etc/init.d/dnsmasq restart >/dev/null 2>&1 || return 1
             ;;
         ntp)
-            [ "$NTP_IP_FALLBACK" = 1 ] && apply_ntp_ip_fallback || true
+            [ "$NTP_IP_FALLBACK" = 1 ] || return 0
+            apply_ntp_ip_fallback || return 1
             ;;
         quic)
             apply_quic_toggle || return 1
@@ -1595,79 +1882,85 @@ apply_extras_now() {
             apply_mtu_toggle || return 1
             ;;
         sysctl)
-            if [ "$SYSCTL_TUNING" = 1 ]; then apply_sysctl; else remove_sysctl_base; fi
-            ;;
-        go)
-            if [ "$GO_OPTIMIZE" = 1 ]; then apply_go; else remove_go_optimize; fi
+            apply_sysctl_bundle "$SYSCTL_TUNING" "$SYSCTL_EXTENDED" || return 1
             ;;
         force)
-            if [ "$FORCE_DOH" = 1 ]; then apply_dns_force; else remove_dns_force; fi
-            reload_fw
+            if [ "$FORCE_DOH" = 1 ]; then
+                apply_dns_force || return 1
+            else
+                remove_dns_force || return 1
+            fi
+            reload_fw || return 1
             ;;
         ntp_clients)
-            if [ "$NTP_CLIENTS" = 1 ]; then apply_ntp_clients; else remove_ntp_clients; fi
+            if [ "$NTP_CLIENTS" = 1 ]; then
+                apply_ntp_clients || return 1
+            else
+                remove_ntp_clients || return 1
+            fi
             /etc/init.d/dnsmasq restart >/dev/null 2>&1 || return 1
-            reload_fw
+            reload_fw || return 1
             ;;
         dnsmasq_perf)
-            if [ "$DNSMASQ_PERF" = 1 ]; then apply_dnsmasq_perf; else remove_dnsmasq_perf; fi
+            if [ "$DNSMASQ_PERF" = 1 ]; then
+                apply_dnsmasq_perf || return 1
+            else
+                remove_dnsmasq_perf || return 1
+            fi
             /etc/init.d/dnsmasq restart >/dev/null 2>&1 || return 1
             ;;
         client_fixes)
-            if [ "$CLIENT_FIXES" = 1 ]; then apply_client_fixes; else remove_client_fixes; fi
+            if [ "$CLIENT_FIXES" = 1 ]; then
+                apply_client_fixes || return 1
+            else
+                remove_client_fixes || return 1
+            fi
             /etc/init.d/dnsmasq restart >/dev/null 2>&1 || return 1
             ;;
         sysctl_ext)
-            if [ "$SYSCTL_EXTENDED" = 1 ]; then apply_sysctl_extended; else remove_sysctl_extended; fi
+            if [ "$SYSCTL_EXTENDED" = 1 ]; then
+                apply_sysctl_extended || return 1
+            else
+                remove_sysctl_extended || return 1
+            fi
             ;;
-        ts_hotplug)
-            if [ "$TAILSCALE_HOTPLUG" = 1 ]; then apply_tailscale_hotplug; else remove_tailscale_hotplug; fi
-            ;;
-        cron)
-            if [ "$CRON_CLEANUP" = 1 ]; then cleanup_manager_cron; fi
+        *)
+            return 1
             ;;
     esac
-    run_discovery
-    save_config
+    run_discovery || return 1
+    save_config || return 1
+    return 0
 }
+
+apply_extras_now() {
+    acquire_mutation_lock || return 1
+    _rc=0
+    _apply_extras_now_impl "$@" || _rc=$?
+    release_mutation_lock
+    return "$_rc"
+}
+
 # ==========================================
 # ==========================================
-apply_go() {
-[ "$GO_OPTIMIZE" = 1 ] || return 0
-for f in /etc/init.d/tg-ws-proxy-go /etc/init.d/tailscale; do
-[ -f "$f" ] || continue
-marker="$(grep -c 'DNS_MANAGER_GOMEMLIMIT' "$f" 2>/dev/null)"
-current_hash="$(file_hash "$f")"
-hash_file="$STATE_DIR/$(basename "$f").managed.sha256"
-if [ -s "$hash_file" ] && [ "$(cat "$hash_file")" != "$current_hash" ] && [ "$marker" = 1 ]; then
-warn_msg "$f был изменён после последнего применения DNS Manager. Пропускаю Go-оптимизацию."
-continue
-fi
-if [ "$marker" = 1 ]; then
-continue
-fi
-bak="$f.dns-manager.bak"
-[ -f "$bak" ] || cp "$f" "$bak" 2>/dev/null || { warn_msg "Не удалось создать backup $f"; continue; }
-ev="GOMEMLIMIT=85MiB"; [ "$f" = "/etc/init.d/tg-ws-proxy-go" ] && ev="GOMAXPROCS=1 GOMEMLIMIT=50MiB"
-awk -v ev="$ev" '/procd_open_instance/{print;print "    # ОГРАНИЧЕНИЕ ПАМЯТИ GO";print "    procd_set_param env "ev;next}1' "$f" > "$TMP_DIR/go.$$" || { rm -f "$TMP_DIR/go.$$"; continue; }
-mv "$TMP_DIR/go.$$" "$f" || continue
-file_hash "$f" > "$hash_file"
-record_own "file" "$f" "managed-hash" "$hash_file"
-done
-}
 # ==========================================
 # ==========================================
 # ==========================================
 apply_ntp_clients() {
     [ "${NTP_CLIENTS:-0}" = 1 ] || return 0
-    sec="$(get_dnsmasq_section)"
-    [ -n "$sec" ] || return 1
-    _opt="42,$LAN_IP"
-    _cur="$(uci -q get "dhcp.$sec.dhcp_option" 2>/dev/null)"
-    if ! printf '%s\n' "$_cur" | tr ' ' '\n' | grep -qxF "$_opt"; then
-        uci add_list "dhcp.$sec.dhcp_option=$_opt" || return 1
-        record_own "dnsmasq" "dhcp_option" "$_opt" "section=$sec"
+    sec="$(get_dnsmasq_section)"; [ -n "$sec" ] || return 1
+    if [ ! -s "$NTP_CLIENTS_BEFORE" ]; then
+        {
+            printf 'section|%s\n' "$sec"
+            printf 'dhcp_option|%s\n' "$(uci -q get "dhcp.$sec.dhcp_option" 2>/dev/null)"
+            if uci -q get firewall.dns_manager_ntp_client >/dev/null 2>&1; then
+                printf 'fw_exists|1\n'
+                for _k in name src proto src_dport dest_ip dest_port target; do printf 'fw_%s|%s\n' "$_k" "$(uci -q get "firewall.dns_manager_ntp_client.$_k" 2>/dev/null)"; done
+            else printf 'fw_exists|0\n'; fi
+        } > "$NTP_CLIENTS_BEFORE" || return 1
     fi
+    _opt="42,$LAN_IP"
+    exact_list_has "dhcp.$sec.dhcp_option" "$_opt" || uci add_list "dhcp.$sec.dhcp_option=$_opt" || return 1
     uci -q delete firewall.dns_manager_ntp_client
     uci set firewall.dns_manager_ntp_client=redirect || return 1
     uci set firewall.dns_manager_ntp_client.name='DNS Manager: NTP клиентов в роутер' || return 1
@@ -1681,24 +1974,44 @@ apply_ntp_clients() {
     uci commit firewall || return 1
 }
 remove_ntp_clients() {
-    sec="$(get_dnsmasq_section)"
-    [ -n "$sec" ] && uci -q del_list "dhcp.$sec.dhcp_option=42,$LAN_IP"
-    uci -q delete firewall.dns_manager_ntp_client
-    uci commit dhcp >/dev/null 2>&1 || true
-    uci commit firewall >/dev/null 2>&1 || true
+    if [ -s "$NTP_CLIENTS_BEFORE" ]; then
+        _sec="$(sed -n 's/^section|//p' "$NTP_CLIENTS_BEFORE" 2>/dev/null | head -n1)"
+        [ -n "$_sec" ] || _sec="$(get_dnsmasq_section)"
+        _old="$(sed -n 's/^dhcp_option|//p' "$NTP_CLIENTS_BEFORE" 2>/dev/null | head -n1)"
+        if [ -n "$_old" ]; then uci set "dhcp.$_sec.dhcp_option=$_old"; else uci -q delete "dhcp.$_sec.dhcp_option"; fi
+        _exists="$(sed -n 's/^fw_exists|//p' "$NTP_CLIENTS_BEFORE" 2>/dev/null | head -n1)"
+        uci -q delete firewall.dns_manager_ntp_client
+        if [ "$_exists" = 1 ]; then
+            uci set firewall.dns_manager_ntp_client=redirect 2>/dev/null || true
+            for _k in name src proto src_dport dest_ip dest_port target; do
+                _v="$(sed -n "s/^fw_${_k}|//p" "$NTP_CLIENTS_BEFORE" 2>/dev/null | head -n1)"
+                [ -n "$_v" ] && uci set "firewall.dns_manager_ntp_client.$_k=$_v" 2>/dev/null || true
+            done
+        fi
+        rm -f "$NTP_CLIENTS_BEFORE"
+    else
+        sec="$(get_dnsmasq_section)"
+        [ -n "$sec" ] && uci -q del_list "dhcp.$sec.dhcp_option=42,$LAN_IP"
+        uci -q delete firewall.dns_manager_ntp_client
+    fi
+    uci commit dhcp >/dev/null 2>&1 || return 1
+    uci commit firewall >/dev/null 2>&1 || return 1
+    return 0
 }
-# ==========================================
+
 # ==========================================
 apply_dnsmasq_perf() {
     [ "${DNSMASQ_PERF:-0}" = 1 ] || return 0
     sec="$(get_dnsmasq_section)"
     [ -n "$sec" ] || return 1
     _f="$STATE_DIR/dnsmasq-perf-before.conf"
-    : > "$_f" || return 1
-    for _k in cachesize dnsforwardmax max_cache_ttl boguspriv domainneeded quietdhcp filter_aaaa; do
-        _v="$(uci -q get "dhcp.$sec.$_k" 2>/dev/null)"
-        printf '%s|%s\n' "$_k" "$_v" >> "$_f"
-    done
+    if [ ! -s "$_f" ]; then
+        : > "$_f" || return 1
+        for _k in cachesize dnsforwardmax max_cache_ttl boguspriv domainneeded quietdhcp filter_aaaa; do
+            _v="$(uci -q get "dhcp.$sec.$_k" 2>/dev/null)"
+            printf '%s|%s\n' "$_k" "$_v" >> "$_f" || return 1
+        done
+    fi
     uci set "dhcp.$sec.cachesize=1000" || return 1
     uci set "dhcp.$sec.dnsforwardmax=300" || return 1
     uci set "dhcp.$sec.max_cache_ttl=86400" || return 1
@@ -1725,9 +2038,9 @@ remove_dnsmasq_perf() {
 apply_client_fixes() {
     [ "${CLIENT_FIXES:-0}" = 1 ] || return 0
     f="/etc/dnsmasq.d/91-dns-manager-client-fixes.conf"
-    [ -f "$f" ] || printf '%s\n' '# DNS_MANAGER_MANAGED=1' > "$f" || return 1
+    _before="$STATE_DIR/client-fixes-before.conf"
+    if [ ! -e "$_before" ] && [ -e "$f" ]; then cp -p "$f" "$_before" || return 1; fi
     {
-        printf '%s\n' '# DNS_MANAGER_CLIENT_FIXES=1'
         printf '%s\n' 'local=/telemetry.mozilla.org/'
         printf '%s\n' 'local=/telemetry.microsoft.com/'
         printf '%s\n' 'local=/vortex.data.microsoft.com/'
@@ -1746,104 +2059,126 @@ apply_client_fixes() {
         printf '%s\n' 'server=/connectivitycheck.platform.hicloud.com/77.88.8.1'
     } > "$f.tmp" || return 1
     mv "$f.tmp" "$f" || return 1
-    record_own "file" "$f" "managed" "client-fixes"
+    return 0
 }
+
 remove_client_fixes() {
     f="/etc/dnsmasq.d/91-dns-manager-client-fixes.conf"
-    if grep -q '^# DNS_MANAGER_MANAGED=1$' "$f" 2>/dev/null; then rm -f "$f"; /etc/init.d/dnsmasq restart >/dev/null 2>&1 || true; fi
+    _before="$STATE_DIR/client-fixes-before.conf"
+    if [ -f "$_before" ]; then
+        cp -p "$_before" "$f" || return 1
+        rm -f "$_before"
+    else
+        rm -f "$f" || true
+    fi
+    return 0
+}
+recommended_conntrack_max() {
+    _mem="$(awk '/^MemTotal:/{print $2; exit}' /proc/meminfo 2>/dev/null)"
+    case "$_mem" in ''|*[!0-9]*) printf '16384'; return;; esac
+    if [ "$_mem" -lt 131072 ]; then printf '8192'
+    elif [ "$_mem" -lt 262144 ]; then printf '16384'
+    elif [ "$_mem" -lt 524288 ]; then printf '32768'
+    else printf '65536'
+    fi
+}
+sysctl_extended_params() {
+    _ct="$(recommended_conntrack_max)"
+    _buf=4194304
+    _def=262144
+    _mem="$(awk '/^MemTotal:/{print $2; exit}' /proc/meminfo 2>/dev/null)"
+    case "$_mem" in ''|*[!0-9]*) ;; *)
+        if [ "$_mem" -lt 262144 ]; then _buf=2097152; _def=131072; fi
+        ;;
+    esac
+    cat <<EOF_SYSCTL_VALUES
+net.netfilter.nf_conntrack_max=$_ct
+net.ipv4.tcp_keepalive_time=600
+net.ipv4.tcp_keepalive_intvl=60
+net.ipv4.tcp_keepalive_probes=5
+net.core.rmem_max=$_buf
+net.core.wmem_max=$_buf
+net.core.rmem_default=$_def
+net.core.wmem_default=$_def
+EOF_SYSCTL_VALUES
 }
 apply_sysctl_extended() {
-    [ "${SYSCTL_EXTENDED:-0}" = 1 ] || return 0
-    f="/etc/sysctl.d/91-dns-manager-extended.conf"
+    f="$(sysctl_extended_manager_path)"
     sf="$STATE_DIR/sysctl-extended-before.conf"
-    : > "$sf" || return 1
-    for p in "net.netfilter.nf_conntrack_max=65536" "net.ipv4.tcp_keepalive_time=600" "net.ipv4.tcp_keepalive_intvl=60" "net.ipv4.tcp_keepalive_probes=5" "net.core.rmem_max=4194304" "net.core.wmem_max=4194304" "net.core.rmem_default=262144" "net.core.wmem_default=262144"; do
-        _k="${p%%=*}"; _v="${p#*=}"; _old="$(sysctl -n "$_k" 2>/dev/null)"; printf '%s|%s\n' "$_k" "${_old:-unknown}" >> "$sf"
-        printf '%s\n' "$p" >> "$f.tmp"
-    done
-    mv "$f.tmp" "$f" || return 1
-    command -v modprobe >/dev/null 2>&1 && modprobe nf_conntrack >/dev/null 2>&1 || true
-    sysctl -p "$f" >/dev/null 2>&1 || true
-    record_own "file" "$f" "managed" "extended-sysctl"
+    _params="$(sysctl_extended_params)"
+    [ "${SYSCTL_EXTENDED:-0}" = 1 ] || return 0
+    [ -s "$sf" ] || : > "$sf" || return 1
+    while IFS= read -r p; do
+        [ -n "$p" ] || continue
+        _k="${p%%=*}"
+        _old="$(sysctl -n "$_k" 2>/dev/null)"
+        grep -q "^${_k}|" "$sf" 2>/dev/null || printf '%s|%s\n' "$_k" "${_old:-unknown}" >> "$sf" || return 1
+    done <<EOF_SYSCTL_EXT
+$_params
+EOF_SYSCTL_EXT
+    if command -v modprobe >/dev/null 2>&1; then
+        modprobe nf_conntrack >/dev/null 2>&1 || true
+    fi
+    _tmp="$f.tmp.$$"
+    {
+        printf '%s\n' "$_params"
+    } > "$_tmp" || { rm -f "$_tmp"; return 1; }
+    # This is the Manager's canonical extended tuning zone: enforce our values.
+    while IFS= read -r _p; do
+        [ -n "$_p" ] || continue
+        _out="$(sysctl -w "$_p" 2>&1)"
+        [ $? -eq 0 ] || {
+            [ -n "$_out" ] && err_msg "Не удалось применить расширенный sysctl: $_p: $_out" || err_msg "Не удалось применить расширенный sysctl: $_p"
+            rm -f "$_tmp"
+            while IFS='|' read -r _k _v; do
+                [ -n "$_k" ] && [ "$_v" != unknown ] && sysctl -w "$_k=$_v" >/dev/null 2>&1 || true
+            done < "$sf"
+            return 1
+        }
+        record_own "sysctl" "${_p%%=*}" "${_p#*=}" "extended-applied"
+    done <<EOF_SYSCTL_APPLY
+$_params
+EOF_SYSCTL_APPLY
+    mv "$_tmp" "$f" || { rm -f "$_tmp"; return 1; }
+    return 0
 }
+sysctl_extended_file_owned() {
+    _f="$1"
+    [ -f "$_f" ] || return 1
+    return 0
+}
+
 remove_sysctl_extended() {
-    f="/etc/sysctl.d/91-dns-manager-extended.conf"; sf="$STATE_DIR/sysctl-extended-before.conf"
+    sf="$STATE_DIR/sysctl-extended-before.conf"
     if [ -s "$sf" ]; then
         while IFS='|' read -r _k _v; do
             [ -n "$_k" ] && [ "$_v" != unknown ] && sysctl -w "$_k=$_v" >/dev/null 2>&1 || true
         done < "$sf"
     fi
-    rm -f "$f" "$sf"
+    _f="/etc/sysctl.d/91-dns-manager-extended.conf"
+    [ -f "$_f" ] && rm -f "$_f" || true
+    rm -f "$sf"
+    return 0
 }
+
 # ==========================================
 # ==========================================
-apply_tailscale_hotplug() {
-[ "${TAILSCALE_HOTPLUG:-0}" = 1 ] || return 0
-f="/etc/hotplug.d/iface/99-dns-manager-tailscale"
-mkdir -p /etc/hotplug.d/iface 2>/dev/null
-if [ -f "$f" ] && ! grep -q '^# DNS_MANAGER_TAILSCALE_HOTPLUG=1$' "$f" 2>/dev/null; then
-cp -p "$f" "$f.previous" 2>/dev/null
-info_msg "Старый скрипт $f сохранён в $f.previous"
-fi
-cat > "$f.tmp" <<'EOF_HOT'
-[ "$ACTION" = ifup ] || exit 0
-[ "$INTERFACE" = wan ] || exit 0
-MARK="/var/run/dns-manager/tailscale-hotplug-window"
-[ -s "$MARK" ] || exit 0
-NOW="$(date +%s)"; START="$(cat "$MARK" 2>/dev/null)"
-[ -n "$START" ] || exit 0
-[ $((NOW-START)) -ge 0 ] 2>/dev/null || exit 0
-[ $((NOW-START)) -le 600 ] 2>/dev/null || { rm -f "$MARK"; exit 0; }
-[ -x /etc/init.d/tailscale ] && /etc/init.d/tailscale restart >/dev/null 2>&1 || true
-rm -f "$MARK"
-EOF_HOT
-mv "$f.tmp" "$f" || return 1
-chmod 755 "$f"
-date +%s > "$STATE_DIR/tailscale-hotplug-window" 2>/dev/null || true
-record_own "file" "$f" "created" "tailscale-hotplug"
-if [ -x /etc/init.d/tailscale ]; then
-ok_msg "Hotplug-скрипт Tailscale установлен."
-else
-info_msg "Tailscale сейчас не установлен — скрипт уже лежит и заработает сразу после установки Tailscale."
-fi
-}
-remove_tailscale_hotplug() {
-f="/etc/hotplug.d/iface/99-dns-manager-tailscale"
-if [ -f "$f" ]; then
-rm -f "$f"
-if [ -f "$f.previous" ]; then
-ok_msg "Hotplug-скрипт Tailscale удалён. Старая копия: $f.previous"
-else
-ok_msg "Hotplug-скрипт Tailscale удалён."
-fi
-fi
-rm -f "$STATE_DIR/tailscale-hotplug-window"
-}
 # ==========================================
 # ==========================================
-cleanup_manager_cron() {
-    [ "${CRON_CLEANUP:-0}" = 1 ] || return 0
-    f="/etc/crontabs/root"
-    [ -f "$f" ] || return 0
-    cand="$TMP_DIR/cron-manager-candidates"
-    grep -E '(DNS_MANAGER_CRON|dns-manager|dns_manager).*(dnsmasq|https-dns-proxy|tailscale).*(restart|reload)' "$f" > "$cand" 2>/dev/null || true
-    if [ ! -s "$cand" ]; then
-        info_msg "Старых помеченных cron-запусков DNS Manager не найдено. Пользовательский cron не изменён."
-        return 0
-    fi
-    awk '!/(DNS_MANAGER_CRON|dns-manager|dns_manager).*(dnsmasq|https-dns-proxy|tailscale).*(restart|reload)/{print}' "$f" > "$f.tmp" || return 1
-    mv "$f.tmp" "$f" || return 1
-    /etc/init.d/cron reload >/dev/null 2>&1 || true
-    ok_msg "Старые cron-запуски DNS Manager удалены. Остальные задания cron сохранены."
-}
 # ==========================================
 # ==========================================
 apply_dns_force() {
     [ "${FORCE_DOH:-0}" = 1 ] || return 0
-    if [ "${FORCE_DNS:-}" = 1 ]; then
-        warn_msg "Сторонний force_dns уже включён. Второй перехват DNS не создаётся."
-        return 0
+    if [ ! -s "$FORCE_DNS_BEFORE" ]; then
+        {
+            printf 'force_dns|%s\n' "$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null)"
+            printf 'notrack_dns|%s\n' "$(uci -q get https-dns-proxy.config.notrack_dns 2>/dev/null)"
+            printf 'dnsmasq_config_update|%s\n' "$(uci -q get https-dns-proxy.config.dnsmasq_config_update 2>/dev/null)"
+        } > "$FORCE_DNS_BEFORE" || return 1
     fi
+    uci set https-dns-proxy.config.force_dns=0 || return 1
+    uci set https-dns-proxy.config.notrack_dns=0 || return 1
+    uci set https-dns-proxy.config.dnsmasq_config_update=- || return 1
     uci -q delete firewall.dns_manager_dns_redirect
     uci set firewall.dns_manager_dns_redirect=redirect || return 1
     uci set firewall.dns_manager_dns_redirect.name='DNS Manager: перенаправление DNS' || return 1
@@ -1861,16 +2196,27 @@ apply_dns_force() {
     uci set firewall.dns_manager_dot_block.proto='tcp udp' || return 1
     uci set firewall.dns_manager_dot_block.dest_port='853' || return 1
     uci set firewall.dns_manager_dot_block.target='REJECT' || return 1
+    uci commit https-dns-proxy || return 1
     uci commit firewall || return 1
-    record_own "firewall" "name" "dns_manager_dns_redirect" "created"
-    record_own "firewall" "name" "dns_manager_dot_block" "created"
+    return 0
 }
 remove_dns_force() {
     uci -q delete firewall.dns_manager_dns_redirect
     uci -q delete firewall.dns_manager_dot_block
-    uci commit firewall >/dev/null 2>&1 || true
+    if [ -s "$FORCE_DNS_BEFORE" ]; then
+        while IFS='|' read -r _k _v; do
+            case "$_k" in
+                force_dns|notrack_dns|dnsmasq_config_update)
+                    if [ -n "$_v" ]; then uci set "https-dns-proxy.config.$_k=$_v"; else uci -q delete "https-dns-proxy.config.$_k"; fi
+                    ;;
+            esac
+        done < "$FORCE_DNS_BEFORE"
+        rm -f "$FORCE_DNS_BEFORE"
+    fi
+    uci commit https-dns-proxy >/dev/null 2>&1 || return 1
+    uci commit firewall >/dev/null 2>&1 || return 1
+    return 0
 }
-# ==========================================
 # ==========================================
 apply_bogus() {
 clear_screen
@@ -1886,11 +2232,8 @@ printf "\nНомера через пробел, Enter=отмена: "; safe_read
 [ -n "$pick" ] || return
 conf="/etc/dnsmasq.d/90-dns-manager-bogus.conf"
 if [ ! -f "$conf" ]; then
-printf '%s\n' '# DNS_MANAGER_MANAGED=1' > "$conf" || return 1
-record_own "file" "$conf" "created" "bogus"
-elif ! grep -q '^# DNS_MANAGER_MANAGED=1$' "$conf"; then
-warn_msg "$conf уже существует и не помечен DNS Manager. Не меняю его."
-pause; return
+    : > "$conf" || return 1
+    record_own "file" "$conf" "created" "bogus"
 fi
 for n in $pick; do
 row="$(grep -v '^#' "$BOGUS_CATALOG" | sed -n "${n}p")"
@@ -1903,10 +2246,9 @@ ok_msg "Выбранные подтверждённые bogus-nxdomain доба�
 pause
 }
 apply_ntp_if_needed() {
+    [ "$NTP_IP_FALLBACK" = 1 ] || return 0
     apply_ntp_host_ips || return 1
-    if [ "$NTP_IP_FALLBACK" = 1 ]; then
-        apply_ntp_ip_fallback || return 1
-    fi
+    apply_ntp_ip_fallback || return 1
     return 0
 }
 url_host() {
@@ -2022,15 +2364,12 @@ verify_applied_doh_config() {
     done
     _i=0
     while uci -q get "https-dns-proxy.@https-dns-proxy[$_i]" >/dev/null 2>&1; do
-        _m="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].dns_manager" 2>/dev/null)"
-        if [ "$_m" = 1 ]; then
-            _p="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].listen_port" 2>/dev/null)"
-            _u="$(normalize_url "$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].resolver_url" 2>/dev/null)")"
-            printf '%s|%s\n' "$_p" "$_u" >> "$_actual"
-            [ "$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].listen_addr" 2>/dev/null)" = "127.0.0.1" ] || {
-                err_msg "секция DNS $_i не ограничена 127.0.0.1."; return 1;
-            }
-        fi
+        _p="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].listen_port" 2>/dev/null)"
+        _u="$(normalize_url "$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].resolver_url" 2>/dev/null)")"
+        printf '%s|%s\n' "$_p" "$_u" >> "$_actual"
+        [ "$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].listen_addr" 2>/dev/null)" = "127.0.0.1" ] || {
+            err_msg "секция DNS $_i не ограничена 127.0.0.1."; return 1;
+        }
         _i=$((_i+1))
     done
     _expected_n="$(wc -l < "$_expected" 2>/dev/null | tr -d ' ')"
@@ -2068,9 +2407,9 @@ local_dns_query_ok() {
     _domain="${2:-example.com}"
     [ -n "$_lp" ] || return 1
     if command -v dig >/dev/null 2>&1; then
-        _ans="$(dig @127.0.0.1 -p "$_lp" "$_domain" A +time=3 +tries=1 +short 2>/dev/null | awk '/^[0-9]+(\.[0-9]+){3}$/ {print; exit}')"
+        _ans="$(dig @127.0.0.1 -p "$_lp" "$_domain" A +time=2 +tries=1 +short 2>/dev/null | awk '/^[0-9]+(\.[0-9]+){3}$/ {print; exit}')"
         [ -n "$_ans" ] && return 0
-        _ans="$(dig @127.0.0.1 -p "$_lp" "$_domain" A +time=3 +tries=1 2>/dev/null | awk '$4=="A" && $NF ~ /^[0-9]+(\.[0-9]+){3}$/ {print $NF; exit}')"
+        _ans="$(dig @127.0.0.1 -p "$_lp" "$_domain" A +time=2 +tries=1 2>/dev/null | awk '$4=="A" && $NF ~ /^[0-9]+(\.[0-9]+){3}$/ {print $NF; exit}')"
         [ -n "$_ans" ] && return 0
         return 1
     fi
@@ -2136,7 +2475,7 @@ verify_selected_doh() {
     return 0
 }
 rebuild_selected_hdp_sections() {
-    [ "$DNS_PROFILE" = hybrid ] || return 1
+    case "$DNS_PROFILE" in hybrid|custom) ;; *) return 1 ;; esac
     _keep_file="$TMP_DIR/rebuild-keep-$$"
     : > "$_keep_file" || return 1
     for _rs in 1 2 3 4 5 6 RU RU_2; do
@@ -2148,15 +2487,14 @@ rebuild_selected_hdp_sections() {
         [ -n "$_rurl" ] || { rm -f "$_keep_file"; return 1; }
         printf '%s|%s|%s\n' "$_rs" "$_rport" "$_rurl" >> "$_keep_file"
     done
-    _i=0
-    while uci -q get "https-dns-proxy.@https-dns-proxy[$_i]" >/dev/null 2>&1; do
-        _m="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].dns_manager" 2>/dev/null)"
-        if [ "$_m" = 1 ]; then
-            uci -q delete "https-dns-proxy.@https-dns-proxy[$_i]" || { rm -f "$_keep_file"; return 1; }
-            continue
-        fi
-        _i=$((_i+1))
+
+    # DNS Manager owns the complete https-dns-proxy configuration while an
+    # active DNS profile is applied. Remove every existing section and rebuild
+    # exactly the selected set below.
+    while uci -q get "https-dns-proxy.@https-dns-proxy[0]" >/dev/null 2>&1; do
+        uci -q delete "https-dns-proxy.@https-dns-proxy[0]" || { rm -f "$_keep_file"; return 1; }
     done
+
     while IFS='|' read -r _rs _rport _rurl; do
         [ -n "$_rs" ] || continue
         _sec="$(uci add https-dns-proxy https-dns-proxy 2>/dev/null)" || { rm -f "$_keep_file"; return 1; }
@@ -2166,7 +2504,6 @@ rebuild_selected_hdp_sections() {
         uci set "https-dns-proxy.$_sec.listen_port=$_rport" || { rm -f "$_keep_file"; return 1; }
         uci set "https-dns-proxy.$_sec.resolver_url=$_rurl" || { rm -f "$_keep_file"; return 1; }
         uci set "https-dns-proxy.$_sec.request_timeout=2" || { rm -f "$_keep_file"; return 1; }
-        uci set "https-dns-proxy.$_sec.dns_manager=1" || { rm -f "$_keep_file"; return 1; }
     done < "$_keep_file"
     uci commit https-dns-proxy || { rm -f "$_keep_file"; return 1; }
     rm -f "$_keep_file"
@@ -2319,6 +2656,43 @@ verify_after_apply() {
         [ "$(uci -q get "dhcp.$_sec.allservers" 2>/dev/null)" = 1 ] || {
             err_msg "Одновременный опрос DNS не включён."; return 1;
         }
+        [ "$(uci -q get "dhcp.$_sec.strictorder" 2>/dev/null)" = 0 ] || {
+            err_msg "dnsmasq: strictorder=0 не применён."; return 1;
+        }
+    fi
+    if [ -n "${SLOT_RU:-}" ] || [ -n "${SLOT_RU_2:-}" ]; then
+        [ "$(check_module_state tld 2>/dev/null)" = 1 ] || {
+            err_msg "Маршрут .ru/.su/.рф после применения не соответствует выбранному DNS."; return 1;
+        }
+    fi
+    if [ "$CORE_ONLY" != 1 ]; then
+        if [ "${FORCE_DOH:-0}" = 1 ]; then
+            [ "$(check_module_state force 2>/dev/null)" = 1 ] || { err_msg "Принудительный DNS после применения не подтверждён."; return 1; }
+        fi
+        if [ "${BLOCK_QUIC:-0}" = 1 ]; then
+            [ "$(check_module_state quic 2>/dev/null)" = 1 ] || { err_msg "Блокировка QUIC после применения не подтверждена."; return 1; }
+        fi
+        if [ "${MTU_FIX:-0}" = 1 ]; then
+            [ "$(check_module_state mtu 2>/dev/null)" = 1 ] || { err_msg "Исправление MTU/MSS после применения не подтверждено."; return 1; }
+        fi
+        if [ "${SYSCTL_TUNING:-0}" = 1 ]; then
+            [ "$(check_module_state sysctl 2>/dev/null)" = 1 ] || { err_msg "Настройка сети (sysctl) после применения не подтверждена."; return 1; }
+        fi
+        if [ "${NTP_CLIENTS:-0}" = 1 ]; then
+            [ "$(check_module_state ntp_clients 2>/dev/null)" = 1 ] || { err_msg "NTP для клиентов после применения не подтверждён."; return 1; }
+        fi
+        if [ "${DNSMASQ_PERF:-0}" = 1 ]; then
+            [ "$(check_module_state dnsmasq_perf 2>/dev/null)" = 1 ] || { err_msg "Настройка DNS-кэша после применения не подтверждена."; return 1; }
+        fi
+        if [ "${CLIENT_FIXES:-0}" = 1 ]; then
+            [ "$(check_module_state client_fixes 2>/dev/null)" = 1 ] || { err_msg "Клиентские DNS-фиксы после применения не подтверждены."; return 1; }
+        fi
+        if [ "${SYSCTL_EXTENDED:-0}" = 1 ]; then
+            [ "$(check_module_state sysctl_ext 2>/dev/null)" = 1 ] || { err_msg "Расширенная настройка сети после применения не подтверждена."; return 1; }
+        fi
+        if [ "${NTP_IP_FALLBACK:-0}" = 1 ]; then
+            [ "$(check_module_state ntp 2>/dev/null)" = 1 ] || { err_msg "NTP по IP после применения не подтверждён."; return 1; }
+        fi
     fi
     return 0
 }
@@ -2328,7 +2702,7 @@ TX_DIR="$STATE_DIR/tx-$TX_ID"
 rm -rf "$TX_DIR" 2>/dev/null
 mkdir -p "$TX_DIR/files" || return 1
 TX_ACTIVE=1
-for f in /etc/config/dhcp /etc/config/https-dns-proxy /etc/config/firewall /etc/config/system /etc/sysctl.d/90-dns-manager.conf /etc/sysctl.d/91-dns-manager-extended.conf /etc/dnsmasq.d/90-dns-manager-bogus.conf /etc/dnsmasq.d/91-dns-manager-client-fixes.conf /etc/hotplug.d/iface/99-dns-manager-tailscale /etc/crontabs/root /etc/init.d/tg-ws-proxy-go /etc/init.d/tailscale; do
+for f in /etc/config/dhcp /etc/config/https-dns-proxy /etc/config/firewall /etc/config/system /etc/sysctl.d/90-dns-manager.conf /etc/sysctl.d/91-dns-manager-extended.conf /etc/dnsmasq.d/90-dns-manager-bogus.conf /etc/dnsmasq.d/91-dns-manager-client-fixes.conf /etc/crontabs/root; do
 key="$(printf '%s' "$f" | sed 's#^/##; s#[/ ]#_#g')"
 if [ -f "$f" ]; then cp -p "$f" "$TX_DIR/files/$key"; file_hash "$f" > "$TX_DIR/$key.before"; printf '%s|%s|1\n' "$f" "$key" >> "$TX_DIR/manifest"; else printf '%s|%s|0\n' "$f" "$key" >> "$TX_DIR/manifest"; fi
 done
@@ -2375,11 +2749,15 @@ fi
 /etc/init.d/firewall reload 2>/dev/null || /etc/init.d/firewall restart 2>/dev/null || true
 TX_ACTIVE=0
 log_tx "ROLLBACK" "transaction" "RESTORE" "OK" "dir=$TX_DIR;guarded=yes"
+rm -rf "$TX_DIR" 2>/dev/null || true
+TX_DIR=""
 }
 tx_commit() {
 TX_ACTIVE=0
 printf '%s\n' "$(date +%s)" > "$TX_DIR/COMMITTED" 2>/dev/null
 log_tx "TX" "transaction" "COMMIT" "OK" "dir=$TX_DIR"
+rm -rf "$TX_DIR" 2>/dev/null || true
+TX_DIR=""
 }
 # ==========================================
 # ==========================================
@@ -2407,6 +2785,7 @@ done
 return 1
 }
 stage_cleanup() {
+    [ -n "${STAGE_PIDS:-}" ] || return 0
     for _pid in $STAGE_PIDS; do
         [ -n "$_pid" ] || continue
         kill "$_pid" 2>/dev/null || true
@@ -2561,7 +2940,6 @@ adaptive_hybrid_prepare() {
     _pool="$TMP_DIR/hybrid-pool-$$"
     : > "$_pool"
     awk -F'|' 'NF>=5 && $2=="bypass" && $5=="OK" && $4 ~ /^[0-9]+$/ {print}' "$TEST_RESULTS" 2>/dev/null | sort -t'|' -k4,4n > "$_pool.bypass"
-    awk -F'|' 'NF>=5 && $2=="clean" && $5=="OK" && $4 ~ /^[0-9]+$/ {print}' "$TEST_RESULTS" 2>/dev/null | sort -t'|' -k4,4n > "$_pool.clean"
     _fill=0
     while IFS='|' read -r _id _cat _name _ms _st; do
         [ -n "$_id" ] || continue
@@ -2577,21 +2955,8 @@ adaptive_hybrid_prepare() {
     done < "$_pool.bypass"
     _bypass_count="$_fill"
     if [ "$_fill" -lt 6 ]; then
-        while IFS='|' read -r _id _cat _name _ms _st; do
-            [ -n "$_id" ] || continue
-            [ "$_fill" -ge 6 ] && break
-            _u="$(normalize_url "$(dns_url "$_id")")"
-            [ -n "$_u" ] || continue
-            grep -qxF "$_u" "$_selected_urls" 2>/dev/null && continue
-            printf '%s\n' "$_id" >> "$_tried"
-            printf '%s\n' "$_u" >> "$_selected_urls"
-            printf '%s|%s|%s|%s|%s\n' "$_id" "$_cat" "$_name" "$_ms" "$_st" >> "$_pool"
-            _fill=$((_fill+1))
-        done < "$_pool.clean"
-    fi
-    if [ "$_fill" -lt 6 ]; then
-        rm -f "$_pool" "$_pool.bypass" "$_pool.clean" "$_tried" "$_selected_urls" 2>/dev/null
-        err_msg "После полной проверки подтверждённых DNS недостаточно даже с резервом. Набор не применён."
+        rm -f "$_pool" "$_pool.bypass" "$_tried" "$_selected_urls" 2>/dev/null
+        err_msg "В категории «Обход блокировок» подтверждено только $_fill DNS из 6. Набор не применён."
         return 1
     fi
     for _slot in 1 2 3 4 5 6; do
@@ -2606,11 +2971,7 @@ adaptive_hybrid_prepare() {
         fi
         eval "SLOT_${_slot}_CAT=\"bypass\""
         _port="$(hybrid_desired_port "$_slot")"
-        if [ "$_cat" = bypass ]; then
-            printf "  ${C_GREEN}✓ Слот %s: %s → 127.0.0.1:%s${C_NC}\n" "$_slot" "$(dns_name "$_id")" "$_port"
-        else
-            printf "  ${C_YELLOW}↳ Слот %s: %s → 127.0.0.1:%s (резерв, DNS обхода недостаточно)${C_NC}\n" "$_slot" "$(dns_name "$_id")" "$_port"
-        fi
+        printf "  ${C_GREEN}✓ Слот %s: %s → 127.0.0.1:%s${C_NC}\n" "$_slot" "$(dns_name "$_id")" "$_port"
         _success=$((_success+1))
     done
     SLOT_RU=""
@@ -2630,9 +2991,6 @@ adaptive_hybrid_prepare() {
     PORT_1="$HYBRID_PORT_1"; PORT_2="$HYBRID_PORT_2"; PORT_3="$HYBRID_PORT_3"
     PORT_4="$HYBRID_PORT_4"; PORT_5="$HYBRID_PORT_5"; PORT_6="$HYBRID_PORT_6"
     PORT_RU="$HYBRID_PORT_RU"; PORT_RU_2=""
-    if [ "${_bypass_count:-0}" -lt 6 ]; then
-        warn_msg "Рабочих DNS обхода не хватило: ${_bypass_count:-0} из 6. Остальные слоты заполнены быстрыми DNS-резервами."
-    fi
     DNS_SELECTION_MODE="quick"
     DNS_SELECTION_CATEGORY="bypass"
     rm -f "$_pool" "$_pool.bypass" "$_pool.clean" "$_tried" "$_selected_urls" 2>/dev/null
@@ -2660,7 +3018,7 @@ reset_hybrid_runtime_ports() {
     fi
     return 0
 }
-apply_settings() {
+_apply_settings_impl() {
     clear_screen
     run_discovery
     if [ "${HYBRID_FORCE_RESELECT:-0}" = 1 ] && [ "$DNS_PROFILE" = hybrid ]; then
@@ -2683,6 +3041,7 @@ apply_settings() {
         }
         HYBRID_SELECTION_READY=1
     fi
+    sync_regional_dns_state
     printf "${C_TITLE}===  ПОДГОТОВКА И ПЛАН ПРИМЕНЕНИЯ ===${C_NC}\n"
     printf "${C_WHITE}Будет настроено:${C_NC}\n"
     if [ "$DNS_PROFILE" = hybrid ]; then
@@ -2716,21 +3075,18 @@ apply_settings() {
         [ "$BLOCK_QUIC" = 1 ] && printf "  ${C_GREEN}✓${C_NC} Блокировка быстрых соединений UDP\n" || printf "  ${C_YELLOW}—${C_NC} QUIC не изменяется\n"
         [ "$MTU_FIX" = 1 ] && printf "  ${C_GREEN}✓${C_NC} Исправление сетевых параметров\n" || printf "  ${C_YELLOW}—${C_NC} MTU не изменяется\n"
         [ "$SYSCTL_TUNING" = 1 ] && printf "  ${C_GREEN}✓${C_NC} Настройка сети\n" || printf "  ${C_YELLOW}—${C_NC} sysctl не изменяется\n"
-        [ "$GO_OPTIMIZE" = 1 ] && printf "  ${C_GREEN}✓${C_NC} Настройка сетевых служб\n" || printf "  ${C_YELLOW}—${C_NC} Go/Tailscale/TG WS не изменяется\n"
         [ "${FORCE_DOH:-0}" = 1 ] && printf "  ${C_GREEN}✓${C_NC} Принудительный локальный DNS\n" || printf "  ${C_YELLOW}—${C_NC} Принудительный локальный DNS не изменяется\n"
         [ "$NTP_CLIENTS" = 1 ] && printf "  ${C_GREEN}✓${C_NC} Время для устройств сети (DHCP 42 + DNAT 123)\n" || printf "  ${C_YELLOW}—${C_NC} NTP клиентов не изменяется\n"
         [ "$DNSMASQ_PERF" = 1 ] && printf "  ${C_GREEN}✓${C_NC} Настройка DNS-кэша\n" || printf "  ${C_YELLOW}—${C_NC} Настройка DNS-кэша не изменяется\n"
         [ "$CLIENT_FIXES" = 1 ] && printf "  ${C_GREEN}✓${C_NC} Клиентские DNS-фиксы\n" || printf "  ${C_YELLOW}—${C_NC} Клиентские фиксы не изменяются\n"
         [ "$SYSCTL_EXTENDED" = 1 ] && printf "  ${C_GREEN}✓${C_NC} Расширенная настройка сети\n" || printf "  ${C_YELLOW}—${C_NC} Расширенный sysctl не изменяется\n"
-        [ "$TAILSCALE_HOTPLUG" = 1 ] && printf "  ${C_GREEN}✓${C_NC} Запуск Tailscale после сети\n" || printf "  ${C_YELLOW}—${C_NC} Tailscale hotplug не изменяется\n"
-        [ "$CRON_CLEANUP" = 1 ] && printf "  ${C_GREEN}✓${C_NC} Очистка старых заданий DNS Manager\n" || printf "  ${C_YELLOW}—${C_NC} Cron не изменяется\n"
         [ "$WATCHDOG_ENABLED" = 1 ] && printf "  ${C_GREEN}✓${C_NC} Автоматическая проверка DNS: каждые %s мин\n" "$WATCHDOG_INTERVAL" || printf "  ${C_YELLOW}—${C_NC} Автоматическая проверка DNS не изменяется\n"
     fi
     printf "\n${C_WHITE}Текущее состояние до применения:${C_NC}\n"
     printf "  dnsmasq: %b\n" "$(state_word "$DNSMASQ_RUN")"
-    printf "  DNS-сервер: %s (настройка %s / другие %s / без определения %s)\n" "$DOH_TOTAL" "$DOH_OURS" "$DOH_FOREIGN" "$DOH_UNKNOWN"
+    printf "  DNS-серверов: %s (по текущей схеме %s / вне схемы %s)\n" "$DOH_TOTAL" "$DOH_MATCH" "$DOH_OTHER"
     if [ "$DOH_TOTAL" -gt 0 ]; then
-        printf "  ${C_YELLOW}↻ После подтверждения старые DNS-серверы будут заменены выбранными.${C_NC}\n"
+        printf "  ${C_YELLOW}↻ После подтверждения ВСЕ существующие DNS-секции будут заменены выбранным набором DNS Manager.${C_NC}\n"
     fi
     printf "  ${C_CYAN}${C_NC}\n"
     validate_selected_slots || return 1
@@ -2741,7 +3097,9 @@ apply_settings() {
     baseline_capture_once || { err_msg "Не удалось сохранить исходную копию. Настройки не изменены."; return 1; }
     tx_snapshot_start || { err_msg "Не удалось сохранить копию настроек. Настройки не изменены."; return 1; }
     log_tx "PLAN" "all" "APPLY" "START" "version=$VERSION"
-    apply_ntp_host_ips || { err_msg "Не удалось подготовить серверы времени."; tx_restore_on_failure; return 1; }
+    if [ "$NTP_IP_FALLBACK" = 1 ]; then
+        apply_ntp_host_ips || { err_msg "Не удалось подготовить серверы времени."; tx_restore_on_failure; return 1; }
+    fi
     if [ "$DNS_PROFILE" = hybrid ] && [ "${HYBRID_STAGE_SKIP:-0}" != 1 ]; then
         validate_selected_slots || { err_msg "Выбранный набор DNS больше не соответствует последней полной проверке."; tx_restore_on_failure; return 1; }
         /etc/init.d/https-dns-proxy stop >/dev/null 2>&1 || true
@@ -2806,14 +3164,19 @@ apply_settings() {
         apply_quic || { err_msg "Не удалось применить блокировку QUIC."; tx_restore_on_failure; return 1; }
     fi
     if [ "$CORE_ONLY" != 1 ] && [ "$MTU_FIX" = 1 ]; then
-        uci -q set firewall.@defaults[0].mtu_fix=1
-        uci commit firewall
+        uci -q set firewall.@defaults[0].mtu_fix=1 || {
+            err_msg "Не удалось включить исправление MTU/MSS."
+            tx_restore_on_failure
+            return 1
+        }
+        uci commit firewall || {
+            err_msg "Не удалось сохранить исправление MTU/MSS."
+            tx_restore_on_failure
+            return 1
+        }
     fi
-    if [ "$CORE_ONLY" != 1 ] && [ "$SYSCTL_TUNING" = 1 ]; then
-        apply_sysctl || { err_msg "Не удалось применить sysctl."; tx_restore_on_failure; return 1; }
-    fi
-    if [ "$CORE_ONLY" != 1 ] && [ "$GO_OPTIMIZE" = 1 ]; then
-        apply_go || { err_msg "Не удалось применить оптимизацию Go."; tx_restore_on_failure; return 1; }
+    if [ "$CORE_ONLY" != 1 ] && { [ "$SYSCTL_TUNING" = 1 ] || [ "$SYSCTL_EXTENDED" = 1 ]; }; then
+        apply_sysctl_bundle "$SYSCTL_TUNING" "$SYSCTL_EXTENDED" || { err_msg "Не удалось применить общий пакет TCP/Conntrack sysctl."; tx_restore_on_failure; return 1; }
     fi
     if [ "$CORE_ONLY" != 1 ] && [ "$NTP_CLIENTS" = 1 ]; then
         apply_ntp_clients || { err_msg "Не удалось настроить NTP для клиентов."; tx_restore_on_failure; return 1; }
@@ -2824,22 +3187,13 @@ apply_settings() {
     if [ "$CORE_ONLY" != 1 ] && [ "$CLIENT_FIXES" = 1 ]; then
         apply_client_fixes || { err_msg "Не удалось применить клиентские DNS-фиксы."; tx_restore_on_failure; return 1; }
     fi
-    if [ "$CORE_ONLY" != 1 ] && [ "$SYSCTL_EXTENDED" = 1 ]; then
-        apply_sysctl_extended || { err_msg "Не удалось применить расширенный sysctl."; tx_restore_on_failure; return 1; }
-    fi
-    if [ "$CORE_ONLY" != 1 ] && [ "$TAILSCALE_HOTPLUG" = 1 ]; then
-        apply_tailscale_hotplug || { err_msg "Не удалось настроить автоматический запуск Tailscale."; tx_restore_on_failure; return 1; }
-    fi
-    if [ "$CORE_ONLY" != 1 ] && [ "$CRON_CLEANUP" = 1 ]; then
-        cleanup_manager_cron || { err_msg "Не удалось очистить cron DNS Manager."; tx_restore_on_failure; return 1; }
-    fi
     WATCHDOG_ENABLED="${WATCHDOG_ENABLED:-1}"
     apply_watchdog || { err_msg "Не удалось настроить cron Автопроверка."; tx_restore_on_failure; return 1; }
     /etc/init.d/https-dns-proxy restart 2>/dev/null || true
     /etc/init.d/dnsmasq restart 2>/dev/null || true
     sleep 2
     ensure_dnsmasq_balancer || { err_msg "Одновременный опрос DNS не включился после запуска. Изменения откатываются."; tx_restore_on_failure; return 1; }
-    reload_fw
+    reload_fw || { err_msg "Не удалось применить настройки firewall."; tx_restore_on_failure; return 1; }
     prepare_dns_path || { err_msg "Не удалось подготовить DNS для устройств сети."; tx_restore_on_failure; return 1; }
     run_discovery
     tx_snapshot_after_apply
@@ -2864,6 +3218,14 @@ apply_settings() {
     fi
     pause
 }
+apply_settings() {
+    acquire_mutation_lock || return 1
+    _rc=0
+    _apply_settings_impl "$@" || _rc=$?
+    release_mutation_lock
+    return "$_rc"
+}
+
 restore_hdp_control_from_baseline() {
     _bf="$BASELINE_DIR/files/etc_config_https-dns-proxy"
     [ -f "$_bf" ] || return 0
@@ -2881,7 +3243,7 @@ restore_hdp_control_from_baseline() {
     done
     uci commit https-dns-proxy 2>/dev/null || true
 }
-rollback_ours() {
+_rollback_ours_impl() {
 clear_screen
 WEB_ACCESS_ENABLED=0
 web_access_luci_remove
@@ -2907,71 +3269,64 @@ if baseline_restore_if_safe; then
     pause
     return 0
 fi
-i=0
-while uci -q get "https-dns-proxy.@https-dns-proxy[$i]" >/dev/null 2>&1; do
-m="$(uci -q get "https-dns-proxy.@https-dns-proxy[$i].dns_manager" 2>/dev/null)"
-if [ "$m" = 1 ]; then uci -q delete "https-dns-proxy.@https-dns-proxy[$i]"; else i=$((i+1)); fi
+while uci -q get "https-dns-proxy.@https-dns-proxy[0]" >/dev/null 2>&1; do
+uci -q delete "https-dns-proxy.@https-dns-proxy[0]" || break
 done
 uci commit https-dns-proxy 2>/dev/null
 restore_hdp_control_from_baseline
 sec="$(get_dnsmasq_section)"
-grep '^dnsmasq|server|' "$OWNERSHIP" 2>/dev/null | while IFS='|' read -r _type _key val _meta; do
-uci -q del_list "dhcp.$sec.server=$val" 2>/dev/null
-done
-uci commit dhcp 2>/dev/null
+# DNS Manager owns the active upstream-DNS zone. In legacy fallback mode
+# restore the captured pre-manager dnsmasq values when available; otherwise clear
+# the manager's canonical upstream list so a fresh apply starts cleanly.
 if [ -s "$PREV_DNSMASQ" ]; then
-    _prev_sec="$(sed -n 's/^SECTION=//p' "$PREV_DNSMASQ" | head -n1)"
-    [ -n "$_prev_sec" ] || _prev_sec="$sec"
-    while uci -q delete "dhcp.$_prev_sec.server" >/dev/null 2>&1; do :; done
-    _in_servers=0
-    while IFS= read -r _line; do
-        case "$_line" in
-            SERVER) _in_servers=1; continue ;;
-            ALLSERVERS=*) _in_servers=0; _v="${_line#ALLSERVERS=}"; [ -n "$_v" ] && uci set "dhcp.$_prev_sec.allservers=$_v" || uci -q delete "dhcp.$_prev_sec.allservers"; continue ;;
-            STRICTORDER=*) _v="${_line#STRICTORDER=}"; [ -n "$_v" ] && uci set "dhcp.$_prev_sec.strictorder=$_v" || uci -q delete "dhcp.$_prev_sec.strictorder"; continue ;;
-            NORESOLV=*) _v="${_line#NORESOLV=}"; [ -n "$_v" ] && uci set "dhcp.$_prev_sec.noresolv=$_v" || uci -q delete "dhcp.$_prev_sec.noresolv"; continue ;;
-            SECTION=*) continue ;;
-        esac
-        [ "$_in_servers" = 1 ] && [ -n "$_line" ] && uci add_list "dhcp.$_prev_sec.server=$_line" >/dev/null 2>&1 || true
-    done < "$PREV_DNSMASQ"
-    uci commit dhcp 2>/dev/null
+    _oldsec="$(sed -n 's/^SECTION=//p' "$PREV_DNSMASQ" 2>/dev/null | head -n1)"
+    [ -n "$_oldsec" ] && sec="$_oldsec"
+    while uci -q delete "dhcp.$sec.server" >/dev/null 2>&1; do :; done
+    _old_servers="$(sed -n '/^SERVER$/,/^ALLSERVERS=/p' "$PREV_DNSMASQ" 2>/dev/null | sed '1d;/^ALLSERVERS=/d')"
+    for _v in $_old_servers; do uci add_list "dhcp.$sec.server=$_v" 2>/dev/null || true; done
+    _as="$(sed -n 's/^ALLSERVERS=//p' "$PREV_DNSMASQ" 2>/dev/null | head -n1)"
+    _so="$(sed -n 's/^STRICTORDER=//p' "$PREV_DNSMASQ" 2>/dev/null | head -n1)"
+    _nr="$(sed -n 's/^NORESOLV=//p' "$PREV_DNSMASQ" 2>/dev/null | head -n1)"
+    [ -n "$_as" ] && uci set "dhcp.$sec.allservers=$_as" || uci -q delete "dhcp.$sec.allservers"
+    [ -n "$_so" ] && uci set "dhcp.$sec.strictorder=$_so" || uci -q delete "dhcp.$sec.strictorder"
+    [ -n "$_nr" ] && uci set "dhcp.$sec.noresolv=$_nr" || uci -q delete "dhcp.$sec.noresolv"
+    uci commit dhcp 2>/dev/null || true
     rm -f "$PREV_DNSMASQ" 2>/dev/null
+else
+    while uci -q delete "dhcp.$sec.server" >/dev/null 2>&1; do :; done
+    uci commit dhcp 2>/dev/null || true
 fi
-for r in Block_UDP_80 Block_UDP_443; do
-while :; do idx="$(uci show firewall 2>/dev/null | grep "name='$r'" | head -n1 | cut -d. -f2 | cut -d= -f1)"; [ -n "$idx" ] || break; uci -q delete "firewall.$idx"; done
-done
+quic_remove_managed_rules >/dev/null 2>&1 || true
 uci commit firewall 2>/dev/null
 remove_ntp_clients >/dev/null 2>&1 || true
 remove_client_fixes >/dev/null 2>&1 || true
 remove_dnsmasq_perf >/dev/null 2>&1 || true
 remove_sysctl_extended >/dev/null 2>&1 || true
-remove_tailscale_hotplug >/dev/null 2>&1 || true
-if [ -f /etc/sysctl.d/90-dns-manager.conf ]; then
-for kv in net.ipv4.tcp_fastopen net.ipv4.tcp_fin_timeout net.core.somaxconn; do
-old="$(awk -F'|' -v k="$kv" '$1==k{print $2;exit}' "$STATE_DIR/sysctl-before.conf" 2>/dev/null)"
-cur="$(sysctl -n "$kv" 2>/dev/null)"
-mgr="$(awk -F'=' -v k="$kv" '$1==k{print $2;exit}' /etc/sysctl.d/90-dns-manager.conf 2>/dev/null)"
-[ -n "$old" ] && [ -n "$mgr" ] && [ "$cur" = "$mgr" ] && [ "$old" != unknown ] && sysctl -w "$kv=$old" >/dev/null 2>&1
-done
-rm -f /etc/sysctl.d/90-dns-manager.conf "$STATE_DIR/sysctl-before.conf"
-fi
-for f in /etc/init.d/tg-ws-proxy-go /etc/init.d/tailscale; do
-bak="$f.dns-manager.bak"
-if [ -f "$bak" ]; then
-curh="$(file_hash "$f")"; managedh="$(cat "$STATE_DIR/$(basename "$f").managed.sha256" 2>/dev/null)"
-if [ -n "$managedh" ] && [ -n "$curh" ] && [ "$curh" != "$managedh" ]; then
-warn_msg "Не восстанавливаю $f: он изменён после последнего применения DNS Manager."
-else
-mv "$bak" "$f" 2>/dev/null
-fi
-fi
+for _sf in /etc/sysctl.d/90-dns-manager.conf; do
+    [ -f "$_sf" ] || continue
+    sysctl_base_file_owned "$_sf" || continue
+    for kv in net.ipv4.tcp_fastopen net.ipv4.tcp_fin_timeout net.core.somaxconn; do
+        old="$(awk -F'|' -v k="$kv" '$1==k{print $2;exit}' "$STATE_DIR/sysctl-before.conf" 2>/dev/null)"
+        cur="$(sysctl -n "$kv" 2>/dev/null)"
+        mgr="$(awk -F'=' -v k="$kv" '$1==k{print $2;exit}' "$_sf" 2>/dev/null)"
+        [ -n "$old" ] && [ -n "$mgr" ] && [ "$cur" = "$mgr" ] && [ "$old" != unknown ] && sysctl -w "$kv=$old" >/dev/null 2>&1
+    done
+    rm -f "$_sf" "$STATE_DIR/sysctl-before.conf"
 done
 /etc/init.d/https-dns-proxy restart 2>/dev/null
 /etc/init.d/dnsmasq restart 2>/dev/null
 printf "${C_GREEN}✓ Изменения обработаны.${C_NC}\n"
-printf "${C_YELLOW}! Ручные изменения не перезаписывались.${C_NC}\n"
+printf "${C_YELLOW}! Изменения вне зоны DNS Manager не затрагивались.${C_NC}\n"
 pause
 }
+rollback_ours() {
+    acquire_mutation_lock || return 1
+    _rc=0
+    _rollback_ours_impl "$@" || _rc=$?
+    release_mutation_lock
+    return "$_rc"
+}
+
 # ==========================================
 # ==========================================
 state_word() {
@@ -3018,21 +3373,6 @@ regional) printf '%s' 'Региональный';;
 *) printf '%s' "$1";;
 esac
 }
-owner_ru() {
-case "$1" in
-OURS) printf '%s' 'наш менеджер';;
-FOREIGN) printf '%s' 'другое приложение';;
-UNKNOWN) printf '%s' 'владелец не определён';;
-*) printf '%s' "$1";;
-esac
-}
-config_state_word() {
-if [ "$1" = 1 ]; then
-printf "${C_GREEN}ВКЛ • выбрано${C_NC}"
-else
-printf "${C_YELLOW}ВЫКЛ • не выбрано${C_NC}"
-fi
-}
 hybrid_runtime_state_word() {
     [ "${DNS_PROFILE:-}" = "hybrid" ] || return 0
     _expected=0
@@ -3043,7 +3383,7 @@ hybrid_runtime_state_word() {
         _expected=$((_expected+1))
         _hp="$(hybrid_desired_port "$_hs")"
         _hu="$(normalize_url "$(dns_url "$_hid")")"
-        if [ -s "${DOH_INV:-}" ] && awk -F'|' -v p="$_hp" -v u="$_hu" '$2==p && $3=="OURS" && $5=="yes" && $6==u {ok=1} END{exit !ok}' "$DOH_INV" 2>/dev/null; then
+        if [ -s "${DOH_INV:-}" ] && awk -F'|' -v p="$_hp" -v u="$_hu" '$2==p && $4=="yes" && $5==u {ok=1} END{exit !ok}' "$DOH_INV" 2>/dev/null; then
             _actual=$((_actual+1))
         fi
     done
@@ -3074,11 +3414,11 @@ third_party_running() {
         tgrs) pgrep -f 'tg-ws-proxy-rs' >/dev/null 2>&1 ;;
         tgmt) pgrep -f 'tg-ws-proxy-mtproto' >/dev/null 2>&1 ;;
         byedpi) pgrep -f 'byedpi' >/dev/null 2>&1 ;;
-        tailscale) pgrep -f 'tailscaled' >/dev/null 2>&1 || pgrep -f 'tailscale' >/dev/null 2>&1 ;;
         *) return 1 ;;
     esac
 }
 show_map() {
+sync_regional_dns_state
 menu_header "СОСТОЯНИЕ РОУТЕРА"
 menu_section "СИСТЕМА"
 printf "  OpenWrt:        ${C_WHITE}%s${C_NC}\n" "$SYS_OWRT"
@@ -3094,10 +3434,10 @@ printf "  dig:             %s\n" "$(state_word "$HAS_DIG")"
 printf "  ntpd:            %s\n" "$(state_word "$HAS_NTPD")"
 menu_section "DNS"
 printf "  dnsmasq:         %s\n" "$(state_word "$DNSMASQ_RUN")"
+refresh_doh_scheme_counts
 printf "  DNS-серверов всего:       ${C_WHITE}%s${C_NC}\n" "$DOH_TOTAL"
-printf "  наших:           ${C_WHITE}%s${C_NC}\n" "$DOH_OURS"
-printf "  Других:           ${C_WHITE}%s${C_NC}\n" "$DOH_FOREIGN"
-printf "  Без владельца:     ${C_WHITE}%s${C_NC}\n" "$DOH_UNKNOWN"
+printf "  По текущей схеме:         ${C_WHITE}%s${C_NC}\n" "$DOH_MATCH"
+printf "  Вне текущей схемы:        ${C_WHITE}%s${C_NC}\n" "$DOH_OTHER"
 hybrid_runtime_state_word | grep -q . && printf "  Гибридный DNS:    %s\n" "$(hybrid_runtime_state_word)"
 [ "$DNS_SMARTDNS" = yes ] && printf "  SmartDNS:         %s\n" "$(state_word "$DNS_SMARTDNS")"
 [ "$DNS_UNBOUND" = yes ] && printf "  Unbound:          %s\n" "$(state_word "$DNS_UNBOUND")"
@@ -3123,7 +3463,7 @@ if [ -n "${SLOT_RU_2:-}" ]; then
 fi
 menu_section "СТОРОННИЕ РЕШЕНИЯ"
 _side_found=0
-for _tp in  "zapret|Zapret" "zapret2|Zapret2" "netshift|NetShift" "splify|splify"  "mixomo|Mixomo" "magi|MagiTrickle" "hev|HevSocks5Tunnel" "awg|AWG"  "tggo|TG-Go" "tgrs|TG-Rust" "tgmt|TG-MTProto" "byedpi|ByeDPI" "tailscale|Tailscale"; do
+for _tp in  "zapret|Zapret" "zapret2|Zapret2" "netshift|NetShift" "splify|splify"  "mixomo|Mixomo" "magi|MagiTrickle" "hev|HevSocks5Tunnel" "awg|AWG"  "tggo|TG-Go" "tgrs|TG-Rust" "tgmt|TG-MTProto" "byedpi|ByeDPI"; do
     _kind="${_tp%%|*}"
     _label="${_tp#*|}"
     if third_party_running "$_kind"; then
@@ -3133,24 +3473,50 @@ for _tp in  "zapret|Zapret" "zapret2|Zapret2" "netshift|NetShift" "splify|splify
 done
 [ "$_side_found" = 1 ] || printf "  ${C_YELLOW}—${C_NC} Активных сторонних служб не обнаружено\n"
 menu_section "FIREWALL"
-printf "  QUIC нашего менеджера:      %s\n" "$(state_word "$QUIC_OURS")"
-printf "  Чужое эквивалентное правило: %s\n" "$(state_word "$QUIC_FOREIGN")"
+printf "  QUIC:                       %s\n" "$(module_state_word quic "$BLOCK_QUIC")"
 printf "  Активный nft:               %s\n" "$(state_word "$NFT_ACTIVE")"
 printf "  Аппаратное ускорение:       %s\n" "$(state_word "$FLOW_OFFLOAD")"
 menu_section "НАСТРОЙКИ DNS Manager"
 printf "  Настройка:                   ${C_YELLOW}%s${C_NC}\n" "$( [ "$DNS_PROFILE" = hybrid ] && printf '%s' 'Гибридный DNS — 6 серверов + Яндекс RU' || printf '%s' 'Своя настройка' )"
-printf "  Балансировка DNS:           %s\n" "$(config_state_word "$BALANCER_ENABLED")"
-printf "  Отдельный DNS (.ru/.su/.рф): %s\n" "$(config_state_word "$TLD_SPLIT")"
+printf "  Балансировка DNS:           %s\n" "$(module_state_word balance "$BALANCER_ENABLED")"
+printf "  Отдельный DNS (.ru/.su/.рф): %s\n" "$(module_state_word tld "$TLD_SPLIT")"
 printf "  Блокировка QUIC (DPI):      %s\n" "$(module_state_word quic "$BLOCK_QUIC")"
 printf "  Исправление сетевых параметров / MSS:      %s\n" "$(module_state_word mtu "$MTU_FIX")"
 printf "  Принудительный DNS:         %s\n" "$(module_state_word force "$FORCE_DOH")"
 printf "  Настройка сети:     %s\n" "$(module_state_word sysctl "$SYSCTL_TUNING")"
 printf "  Настройка DNS-кэша:             %s\n" "$(module_state_word dnsmasq_perf "$DNSMASQ_PERF")"
-printf "  Оптимизация Go-приложений:  %s\n" "$(module_state_word go "$GO_OPTIMIZE")"
 printf "  NTP для клиентов:           %s\n" "$(module_state_word ntp_clients "$NTP_CLIENTS")"
-printf "  Запуск Tailscale после сети:  %s\n" "$(module_state_word ts_hotplug "$TAILSCALE_HOTPLUG")"
 printf "  Связь системных служб:     %s\n" "$(module_state_word client_fixes "$CLIENT_FIXES")"
 printf "${C_GREEN}✓ Discovery завершён. Изменений в конфигурацию не внесено.${C_NC}\n"
+menu_section "ЖУРНАЛ"
+printf "${C_WHITE}Последние события:${C_NC}\n"
+if [ -s "$LOG_FILE" ]; then tail -15 "$LOG_FILE" | sed -e "s/ START / Запуск /" -e "s/ UPDATE / Обновление /" -e "s/ INFO / Информация: /" -e "s/ WARN / Внимание: /" -e "s/ ERROR / Ошибка: /"; else printf "${C_YELLOW}Журнал пока пуст.${C_NC}\n"; fi
+echo ""
+printf "${C_WHITE}Последняя проверка:${C_NC}\n"
+if [ -s "$TEST_RESULTS" ]; then
+    _status_total="$(count_dns)"
+    _status_ok="$(awk -F'|' 'NF>=5 && $5=="OK"{n++} END{print n+0}' "$TEST_RESULTS" 2>/dev/null)"
+    _status_fail=$((_status_total-_status_ok))
+    printf "  DNS: ${C_GREEN}%s работают${C_NC}, ${C_YELLOW}%s не прошли${C_NC}, всего %s\n" "$_status_ok" "$_status_fail" "$_status_total"
+else
+    printf "  ${C_YELLOW}Тест DNS ещё не запускался.${C_NC}\n"
+fi
+echo ""
+printf "${C_WHITE}Последние действия:${C_NC}\n"
+if [ -s "$TX_LOG" ]; then
+    tail -10 "$TX_LOG" | awk -F'|' 'NF>=7 {
+        phase=$4; obj=$5; act=$6; res=$7;
+        if (phase=="DISCOVER") phase="Проверка состояния";
+        else if (phase=="TEST") phase="Тест";
+        else if (phase=="PLAN") phase="Подготовка";
+        else if (phase=="APPLY") phase="Настройка";
+        else if (phase=="VERIFY") phase="Проверка результата";
+        if (res=="OK") res="успешно"; else if (res=="FAIL") res="ошибка";
+        printf "  %s: %s → %s → %s\n", phase,obj,act,res;
+    }'
+else
+    printf "  ${C_YELLOW}Транзакций пока нет.${C_NC}\n"
+fi
 pause
 }
 # ==========================================
@@ -3159,11 +3525,15 @@ show_doh() {
 menu_header "НАЙДЕННЫЕ DNS-СЕРВЕРЫ"
 [ -s "$DOH_INV" ] || { printf "${C_YELLOW}https-dns-proxy секции не найдены.${C_NC}\n"; pause; return; }
 menu_section "СЕКЦИИ"
-printf "  ${C_WHITE}%-4s %-8s %-12s %-8s %-12s${C_NC}\n" "#" "ПОРТ" "ВЛАДЕЛЕЦ" "СОСТ." "АДРЕС"
+printf "  ${C_WHITE}%-4s %-8s %-14s %-8s %-12s${C_NC}\n" "#" "ПОРТ" "СООТВЕТСТВИЕ" "СОСТ." "АДРЕС"
 printf "  ──────────────────────────────────────────────────────────\n"
-while IFS='|' read -r idx port owner addr running url; do
-printf "  ${C_YELLOW}%-4s${C_NC} %-8s %-12s %b %-12s\n" "#$idx" "$port" "$(owner_ru "$owner")" "$(state_word "$running")" "$addr:$port"
-printf "      ${C_CYAN}%s${C_NC}\n" "$url"
+while IFS='|' read -r idx port addr running url; do
+    _match="нет"
+    for _slot in 1 2 3 4 5 6 RU RU_2; do
+        if doh_slot_matches_current "$_slot" "$port" "$url"; then _match="да"; break; fi
+    done
+    printf "  ${C_YELLOW}%-4s${C_NC} %-8s %-14s %b %-12s\n" "#$idx" "$port" "$_match" "$(state_word "$running")" "$addr:$port"
+    printf "      ${C_CYAN}%s${C_NC}\n" "$url"
 done < "$DOH_INV"
 pause
 }
@@ -3187,35 +3557,65 @@ printf "%-28s %-18s %-9s %b\n" "$name" "$cat_text" "$time" "$status"
 done
 pause
 }
-show_best() {
+apply_profile_now() {
+goal="$1"
+case "$goal" in
+bypass)
+    quick_max_bypass
+    return
+    ;;
+clean|security|privacy|adblock|family|all)
+    DNS_PROFILE="custom"
+    DNS_SELECTION_MODE="profile"
+    DNS_SELECTION_CATEGORY="$goal"
+    TLD_RU_ENABLED=0
+    TLD_SPLIT=0
+    BALANCER_ENABLED=1
+    PORT_1="$HYBRID_PORT_1"; PORT_2="$HYBRID_PORT_2"; PORT_3="$HYBRID_PORT_3"
+    PORT_4="$HYBRID_PORT_4"; PORT_5="$HYBRID_PORT_5"; PORT_6="$HYBRID_PORT_6"
+    PORT_RU=""; PORT_RU_2=""
+    SLOT_RU=""; SLOT_RU_2=""
+    if auto_fill_slots "$goal"; then
+        CORE_ONLY=1
+        apply_settings
+        CORE_ONLY=0
+    fi
+    ;;
+*)
+    warn_msg "Неизвестный профиль DNS."
+    pause
+    ;;
+esac
+}
+menu_category_select() {
 while :; do
 menu_header "ВЫБОР DNS"
-menu_section "ГОТОВЫЕ ПРОФИЛИ"
-menu_item "[1]" "Гибридный DNS — 6 DNS-серверов + Яндекс RU"
-menu_item "[2]" "Чистый быстрый DNS"
-menu_item "[3]" "Максимальная безопасность"
-menu_item "[4]" "Максимальная приватность"
-menu_item "[5]" "Блокировка рекламы"
 menu_section "КАТЕГОРИИ"
-menu_item "[6]" "Обход блокировок"
-menu_item "[7]" "Семейный DNS"
-menu_item "[8]" "Все категории"
+menu_item "[1]" "Без фильтрации"
+menu_item "[2]" "Защита от угроз"
+menu_item "[3]" "Конфиденциальность"
+menu_item "[4]" "Блокировка рекламы"
+menu_item "[5]" "Обход блокировок"
+menu_item "[6]" "Семейная фильтрация"
+menu_item "[7]" "Все категории"
 menu_back
 menu_prompt
 safe_read goal
 [ -z "$goal" ] && return
 case "$goal" in
-1) show_hybrid_profile;;
-2) menu_best_actions clean "БЫСТРЫЙ DNS";;
-3) menu_best_actions security "МАКСИМАЛЬНАЯ БЕЗОПАСНОСТЬ";;
-4) menu_best_actions privacy "МАКСИМАЛЬНАЯ ПРИВАТНОСТЬ";;
-5) menu_best_actions adblock "БЛОКИРОВКА РЕКЛАМЫ";;
-6) menu_best_actions bypass "ОБХОД БЛОКИРОВОК";;
-7) menu_best_actions family "СЕМЕЙНЫЙ DNS";;
-8) menu_best_actions all "ВСЕ КАТЕГОРИИ";;
+1) apply_profile_now clean;;
+2) apply_profile_now security;;
+3) apply_profile_now privacy;;
+4) apply_profile_now adblock;;
+5) apply_profile_now bypass;;
+6) apply_profile_now family;;
+7) apply_profile_now all;;
 *) warn_msg "Неверный пункт."; pause;;
 esac
 done
+}
+show_best() {
+menu_category_select
 }
 auto_fill_slots() {
 _cat="$1"
@@ -3261,26 +3661,14 @@ while IFS='|' read -r _id _cat2 _name _ms _st; do
     i=$((i+1))
     [ "$i" -gt 6 ] && break
 done < "$_src"
+[ -s "$_pool" ] || { warn_msg "Не удалось сформировать набор DNS."; pause; return 1; }
 if [ "$_cat" = bypass ]; then
-    _n=0
-    [ -s "$_pool" ] && _n="$(awk 'END{print NR+0}' "$_pool")"
-    if [ "$_n" -lt 6 ]; then
-        _src_clean="$TMP_DIR/auto-clean-fallback"
-        : > "$_src_clean"
-        awk -F'|' 'NF>=5 && $2=="clean" && $5=="OK" && $4 ~ /^[0-9]+$/ {print}' "$TEST_RESULTS" 2>/dev/null | sort -t'|' -k4,4n > "$_src_clean"
-        while IFS='|' read -r _id _cat2 _name _ms _st; do
-            [ "$_n" -ge 6 ] && break
-            [ -n "$_id" ] || continue
-            _url="$(normalize_url "$(dns_url "$_id")")"
-            [ -n "$_url" ] || continue
-            grep -qxF "$_url" "$_seen_urls" 2>/dev/null && continue
-            printf '%s\n' "$_url" >> "$_seen_urls"
-            printf '%s\n' "$_id|$_cat2|$_name|$_ms|$_st" >> "$_pool"
-            _n=$((_n+1))
-        done < "$_src_clean"
+    _bypass_count="$(awk 'END{print NR+0}' "$_pool" 2>/dev/null)"
+    if [ "$_bypass_count" -lt 6 ]; then
+        warn_msg "В категории «Обход блокировок» подтверждено только $_bypass_count DNS из 6. Набор не применён."
+        return 1
     fi
 fi
-[ -s "$_pool" ] || { warn_msg "Не удалось сформировать набор DNS."; pause; return 1; }
 if [ "$_cat" = all ]; then
     _src2="$TMP_DIR/auto-candidates-all"
     : > "$_src2"
@@ -3303,14 +3691,11 @@ if [ "$_cat" = all ]; then
     done < "$_src2"
 fi
 i=1
-_n_bypass=0
-_n_clean_fallback=0
 while IFS='|' read -r _id _cat2 _name _ms _st; do
     [ -n "$_id" ] || continue
     eval "SLOT_$i=\"$_id\""
     if [ "$_cat" = bypass ]; then
         eval "SLOT_${i}_CAT=\"bypass\""
-        [ "$_cat2" = clean ] && _n_clean_fallback=$((_n_clean_fallback+1)) || _n_bypass=$((_n_bypass+1))
     else
         eval "SLOT_${i}_CAT=\"$_cat2\""
     fi
@@ -3322,9 +3707,6 @@ while [ "$i" -le 6 ]; do
     eval "SLOT_${i}_CAT=\"bypass\""
     i=$((i+1))
 done
-if [ "$_cat" = bypass ] && [ "$_n_clean_fallback" -gt 0 ]; then
-        warn_msg "Рабочих DNS обхода не хватило: $_n_bypass из 6. $_n_clean_fallback слота заполнены быстрыми clean DNS; менеджер пометил их как резерв обхода."
-fi
 _ru1=""
 _yandex_ok="$(awk -F'|' 'NF>=5 && $1=="yandex_ru" && $2=="regional" && $5=="OK" && $4 ~ /^[0-9]+$/ {print "yes";exit}' "$TEST_RESULTS" 2>/dev/null)"
 if [ "$_yandex_ok" = yes ]; then
@@ -3358,85 +3740,61 @@ return 0
 }
 # ==========================================
 # ==========================================
-menu_best_actions() {
-goal="$1"; title="$2"
-while :; do
-menu_header "$title"
-menu_section "ДЕЙСТВИЯ"
-menu_item "[1]" "Автонастройка: подобрать и применить безопасно"
-menu_item "[2]" "Показать лучшие варианты"
-menu_item "[3]" "Выбрать DNS вручную"
-menu_back
-menu_prompt
-safe_read a
-case "$a" in
-1)
-DNS_PROFILE="custom"
-DNS_SELECTION_MODE="profile"
-DNS_SELECTION_CATEGORY="$goal"
-TLD_RU_ENABLED=0
-TLD_SPLIT=0
-BALANCER_ENABLED=1
-PORT_1="$HYBRID_PORT_1"; PORT_2="$HYBRID_PORT_2"; PORT_3="$HYBRID_PORT_3"
-PORT_4="$HYBRID_PORT_4"; PORT_5="$HYBRID_PORT_5"; PORT_6="$HYBRID_PORT_6"
-PORT_RU=""; PORT_RU_2=""
-SLOT_RU=""; SLOT_RU_2=""
-if auto_fill_slots "$goal"; then
-CORE_ONLY=1
-apply_settings
-CORE_ONLY=0
-fi
-;;
-2)
-clear_screen
-menu_header "ЛУЧШИЕ ВАРИАНТЫ — $title"
-menu_section "ТОП-5 ПО ВРЕМЕНИ ОТВЕТА"
-show_best_category "$goal" 5 | while IFS='|' read -r _id _cat _name _ms _st; do
-printf "  ${C_CYAN}${C_BOLD}•${C_NC} ${C_GREEN}${C_BOLD}%-34s${C_NC} ${C_YELLOW}%s мс${C_NC}\n" "$_name" "$_ms"
-done
-pause
-;;
-3) menu_slots; return;;
-'') return;;
-*) warn_msg "Неверный пункт."; pause;;
-esac
-done
-}
-# ==========================================
-# ==========================================
 select_slot() {
-slot="$1"; clear_screen
-menu_header "ВЫБОР DNS-СЕРВЕРА $slot"
-n=1
-while IFS='|' read -r id cat prof name url region status; do
-case "$id" in ''|\#*) continue;; esac
-printf "  ${C_CYAN}${C_BOLD}[%3d]${C_NC} ${C_GREEN}${C_BOLD}%-24s${C_NC} ${C_CYAN}[%s]${C_NC}\n" "$n" "$name" "$cat"
-n=$((n+1))
-done < "$DNS_CATALOG"
-printf "\n"
-menu_item "[99]" "Очистить"
-menu_back
-menu_prompt
-safe_read c
-[ -z "$c" ] && return
-if [ "$c" = "99" ]; then
-eval "SLOT_$slot=''"
-eval "SLOT_${slot}_CAT=''"
-save_config
-return
-fi
-row="$(grep -v '^#' "$DNS_CATALOG" | sed -n "${c}p")"
-id="$(printf '%s' "$row" | cut -d'|' -f1)"
-[ -n "$id" ] || return
-DNS_PROFILE="custom"
-DNS_SELECTION_MODE="manual"
-eval "SLOT_$slot=\$id"
-_selected_cat="$(printf '%s' "$row" | cut -d'|' -f2)"
-DNS_SELECTION_CATEGORY="$_selected_cat"
-eval "SLOT_${slot}_CAT=\$_selected_cat"
-save_config
+    slot="$1"
+    clear_screen
+    menu_header "ВЫБОР DNS-СЕРВЕРА $slot"
+    _sel_catalog="$TMP_DIR/slot-catalog-${slot}-$$"
+    case "$slot" in
+        RU|RU_2) awk -F'|' 'NF>=5 && $1 !~ /^#/ && $2=="regional" {print}' "$DNS_CATALOG" > "$_sel_catalog" ;;
+        1|2|3|4|5|6) awk -F'|' 'NF>=5 && $1 !~ /^#/ && $2!="regional" {print}' "$DNS_CATALOG" > "$_sel_catalog" ;;
+        *) return 1 ;;
+    esac
+    n=1
+    while IFS='|' read -r id cat prof name url region status; do
+        [ -n "$id" ] || continue
+        printf "  ${C_CYAN}${C_BOLD}[%3d]${C_NC} ${C_GREEN}${C_BOLD}%-30s${C_NC} ${C_CYAN}[%s]${C_NC}\n" "$n" "$name" "$(category_ru "$cat")"
+        n=$((n+1))
+    done < "$_sel_catalog"
+    rm -f "$_sel_catalog" 2>/dev/null
+    printf "\n"
+    menu_item "[99]" "Очистить"
+    menu_back
+    menu_prompt
+    safe_read c
+    [ -z "$c" ] && return
+    if [ "$c" = "99" ]; then
+        eval "SLOT_$slot=''"
+        case "$slot" in
+            RU|RU_2) eval "SLOT_${slot}_CAT='regional'" ;;
+            *) eval "SLOT_${slot}_CAT=''" ;;
+        esac
+        sync_regional_dns_state
+        save_config
+        return
+    fi
+    case "$c" in ''|*[!0-9]*) warn_msg "Неверный номер."; pause; return;; esac
+    row=""
+    case "$slot" in
+        RU|RU_2) row="$(awk -F'|' -v n="$c" 'NF>=5 && $1 !~ /^#/ && $2=="regional" {i++; if(i==n){print; exit}}' "$DNS_CATALOG")" ;;
+        1|2|3|4|5|6) row="$(awk -F'|' -v n="$c" 'NF>=5 && $1 !~ /^#/ && $2!="regional" {i++; if(i==n){print; exit}}' "$DNS_CATALOG")" ;;
+    esac
+    id="$(printf '%s' "$row" | cut -d'|' -f1)"
+    [ -n "$id" ] || { warn_msg "Такого DNS нет в списке."; pause; return; }
+    _selected_cat="$(printf '%s' "$row" | cut -d'|' -f2)"
+    DNS_PROFILE="custom"
+    DNS_SELECTION_MODE="manual"
+    eval "SLOT_$slot=\$id"
+    eval "SLOT_${slot}_CAT=\$_selected_cat"
+    if [ "$slot" = RU ] || [ "$slot" = RU_2 ]; then
+        DNS_SELECTION_CATEGORY="regional"
+    else
+        DNS_SELECTION_CATEGORY="$_selected_cat"
+    fi
+    sync_regional_dns_state
+    save_config
 }
-# ==========================================
+
 # ==========================================
 menu_slots() {
 while :; do
@@ -3459,7 +3817,7 @@ menu_section "РЕГИОНАЛЬНЫЕ СЛОТЫ"
 printf "  ${C_CYAN}${C_BOLD}[7]${C_NC} ${C_GREEN}${C_BOLD}RU${C_NC}   ${C_GREEN}%-30s${C_NC} ${C_YELLOW}${C_BOLD}%s${C_NC}\n" "$(dns_name "$SLOT_RU")" "${PORT_RU:-$HYBRID_PORT_RU}"
 printf "  ${C_CYAN}${C_BOLD}[8]${C_NC} ${C_GREEN}${C_BOLD}RU2${C_NC}  ${C_GREEN}%-30s${C_NC} ${C_YELLOW}${C_BOLD}%s${C_NC}\n" "$(dns_name "$SLOT_RU_2")" "${PORT_RU_2:-авто}"
 menu_section "ДЕЙСТВИЯ"
-menu_item "[9]" "Автоподбор лучших"
+menu_item "[9]" "Сохранить и применить DNS"
 menu_item "[10]" "Восстановить стандартную настройку"
 menu_back
 menu_prompt
@@ -3469,119 +3827,242 @@ case "$c" in
 1|2|3|4|5|6) select_slot "$c";;
 7) select_slot RU;;
 8) select_slot RU_2;;
-9) show_best;;
+9) CORE_ONLY=1; apply_settings; _rc=$?; CORE_ONLY=0; [ "$_rc" -eq 0 ] || warn_msg "Не удалось применить выбранные DNS."; pause;;
 10) hybrid_set_defaults; save_config; ok_msg "Стандартный Гибридный DNS восстановлен: 5053–5058 + Yandex 5059."; pause;;
 *) warn_msg "Неверный пункт."; pause;;
 esac
 done
 }
-menu_bootstrap() {
-menu_header "DNS ДЛЯ ЗАПУСКА"
-BOOTSTRAP_DNS="$BOOTSTRAP_DNS_ALL"
-printf "${C_WHITE}Используются все встроенные DNS:${C_NC}\n"
-for _bs in $(printf '%s' "$BOOTSTRAP_DNS_ALL" | tr ',' ' '); do
-    printf "  ${C_GREEN}•${C_NC} %s\n" "$_bs"
-done
-save_config
-pause
-}
 menu_bogus() {
 apply_bogus
 }
-module_state() {
-key="$1"; val="$2"
-[ "$val" = 1 ] || { printf 'ВЫКЛ'; return; }
-case "$key" in
-balance) printf 'ВКЛ • ожидает применения';;
-tld) printf 'ВКЛ • ожидает применения';;
-quic) [ "$QUIC_OURS" = 1 ] || [ "$QUIC_FOREIGN" = 1 ] && printf 'ВКЛ • правило найдено' || printf 'ВКЛ • ожидает применения';;
-mtu) printf 'ВКЛ • ожидает применения';;
-ntp) printf 'ВКЛ • IP-профиль настроен';;
-sysctl) printf 'ВКЛ • ожидает применения';;
-go) printf 'ВКЛ • ожидает применения';;
-*) printf 'ВКЛ';;
-esac
-}
-toggle_and_apply_dnsmasq() {
-reconcile_dnsmasq >/dev/null 2>&1
-/etc/init.d/dnsmasq restart >/dev/null 2>&1
-save_config
-}
-apply_bootstrap_only() {
-    BOOTSTRAP_DNS="$BOOTSTRAP_DNS_ALL"
-    b_list="$(printf '%s' "$BOOTSTRAP_DNS")"
-    i=0; changed=0
-    while uci -q get "https-dns-proxy.@https-dns-proxy[$i]" >/dev/null 2>&1; do
-        if [ "$(uci -q get "https-dns-proxy.@https-dns-proxy[$i].dns_manager" 2>/dev/null)" = 1 ]; then
-            uci set "https-dns-proxy.@https-dns-proxy[$i].bootstrap_dns=$b_list" || return 1
-            changed=1
-        fi
-        i=$((i+1))
-    done
-    if [ "$changed" = 1 ]; then
-        uci commit https-dns-proxy 2>/dev/null || return 1
-        /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || return 1
-        ok_msg "Все встроенные DNS для запуска прописаны."
-    else
-        info_msg "DNS-серверов пока нет. Все встроенные DNS будут прописаны при следующей настройке."
-    fi
-    save_config
-}
 apply_quic_toggle() {
     if [ "$BLOCK_QUIC" != 1 ]; then
-        for _rname in Block_UDP_80 Block_UDP_443; do
-            while :; do
-                _ridx="$(uci show firewall 2>/dev/null | grep "name='$_rname'" | head -n1 | cut -d. -f2 | cut -d= -f1)"
-                [ -n "$_ridx" ] || break
-                uci -q delete "firewall.$_ridx" || break
-            done
-        done
+        quic_remove_managed_rules || return 1
     else
         apply_quic || return 1
     fi
     uci commit firewall >/dev/null 2>&1 || return 1
     if [ "$SYS_FW" = fw4 ]; then
-        /etc/init.d/firewall reload >/dev/null 2>&1 || /etc/init.d/firewall restart >/dev/null 2>&1
+        /etc/init.d/firewall reload >/dev/null 2>&1 || /etc/init.d/firewall restart >/dev/null 2>&1 || return 1
     else
-        /etc/init.d/firewall restart >/dev/null 2>&1
+        /etc/init.d/firewall restart >/dev/null 2>&1 || return 1
     fi
-    save_config
+    save_config || return 1
+    return 0
 }
 apply_mtu_toggle() {
-uci -q set firewall.@defaults[0].mtu_fix="$MTU_FIX"
-uci commit firewall >/dev/null 2>&1
-if [ "$SYS_FW" = "fw4" ]; then
-/etc/init.d/firewall reload >/dev/null 2>&1 || /etc/init.d/firewall restart >/dev/null 2>&1
-else
-/etc/init.d/firewall restart >/dev/null 2>&1
-fi
-save_config
+    if [ "${MTU_FIX:-0}" = 1 ]; then
+        if [ ! -s "$MTU_BEFORE" ]; then
+            printf '%s\n' "$(uci -q get firewall.@defaults[0].mtu_fix 2>/dev/null)" > "$MTU_BEFORE" || return 1
+        fi
+        uci set firewall.@defaults[0].mtu_fix=1 || return 1
+    else
+        if [ -s "$MTU_BEFORE" ]; then
+            _old="$(head -n1 "$MTU_BEFORE" 2>/dev/null)"
+            if [ -n "$_old" ]; then uci set firewall.@defaults[0].mtu_fix="$_old"; else uci -q delete firewall.@defaults[0].mtu_fix; fi
+            rm -f "$MTU_BEFORE"
+        else
+            uci -q delete firewall.@defaults[0].mtu_fix
+        fi
+    fi
+    uci commit firewall >/dev/null 2>&1 || return 1
+    if [ "$SYS_FW" = "fw4" ]; then
+        /etc/init.d/firewall reload >/dev/null 2>&1 || /etc/init.d/firewall restart >/dev/null 2>&1 || return 1
+    else
+        /etc/init.d/firewall restart >/dev/null 2>&1 || return 1
+    fi
+    return 0
 }
+
+client_fixes_file_owned() {
+    _f="$1"
+    [ -f "$_f" ] || return 1
+    return 0
+}
+
 check_module_state() {
-    sec="$(get_dnsmasq_section)"
+    _sec="$(get_dnsmasq_section)"
     case "$1" in
-        balance) [ "$(uci -q get "dhcp.$sec.allservers" 2>/dev/null)" = 1 ] && printf 1 || printf 0 ;;
-        tld) uci -q get "dhcp.$sec.server" 2>/dev/null | tr ' ' '\n' | grep -q '^/ru/' && printf 1 || printf 0 ;;
-        ntp) [ "$(uci -q get system.ntp.use_dhcp 2>/dev/null)" = 0 ] && uci -q get system.ntp.server 2>/dev/null | grep -qE '([0-9]{1,3}\.){3}[0-9]{1,3}' && printf 1 || printf 0 ;;
-        quic) [ "$QUIC_OURS" = 1 ] && printf 1 || printf 0 ;;
-        mtu) [ "$(uci -q get firewall.@defaults[0].mtu_fix 2>/dev/null)" = 1 ] && printf 1 || printf 0 ;;
-        sysctl) [ -f /etc/sysctl.d/90-dns-manager.conf ] && printf 1 || printf 0 ;;
-        sysctl_ext) [ -f /etc/sysctl.d/91-dns-manager-extended.conf ] && printf 1 || printf 0 ;;
-        go) grep -qs 'DNS_MANAGER_GOMEMLIMIT' /etc/init.d/tg-ws-proxy-go /etc/init.d/tailscale 2>/dev/null && printf 1 || printf 0 ;;
-        force) uci -q get firewall.dns_manager_dns_redirect >/dev/null 2>&1 && printf 1 || printf 0 ;;
-        ntp_clients) uci -q get firewall.dns_manager_ntp_client >/dev/null 2>&1 && printf 1 || printf 0 ;;
-        dnsmasq_perf) [ "$(uci -q get "dhcp.$sec.cachesize" 2>/dev/null)" = 1000 ] && printf 1 || printf 0 ;;
-        client_fixes) [ -f /etc/dnsmasq.d/91-dns-manager-client-fixes.conf ] && printf 1 || printf 0 ;;
-        ts_hotplug) [ -f /etc/hotplug.d/iface/99-dns-manager-tailscale ] && printf 1 || printf 0 ;;
-        cron) [ "${CRON_CLEANUP:-0}" = 1 ] && printf 1 || printf 0 ;;
-        watchdog) grep -qsE '^[[:space:]]*\*/[0-9]+[[:space:]]+\*[[:space:]]+\*[[:space:]]+\*[[:space:]]+\*.*dns-manager[[:space:]]+(watchdog|-w|--watchdog)([[:space:]]|$)' /etc/crontabs/root 2>/dev/null && printf 1 || printf 0 ;;
-        web) [ -x "$WEB_INIT" ] && uci -q get "ttyd.$WEB_TTYD_SECTION.command" 2>/dev/null | grep -qx "/usr/bin/dns-manager" && pgrep -f '[t]tyd.*dns-manager' >/dev/null 2>&1 && printf 1 || printf 0 ;;
-        *) printf 0 ;;
+        balance)
+            [ "$(uci -q get "dhcp.$_sec.allservers" 2>/dev/null)" = 1 ] || { printf 0; return; }
+            [ "$(uci -q get "dhcp.$_sec.strictorder" 2>/dev/null)" = 0 ] || { printf 0; return; }
+            [ "$(uci -q get "dhcp.$_sec.noresolv" 2>/dev/null)" = 1 ] && printf 1 || printf 0
+            ;;
+        tld)
+            _tld_ok=1
+            _tld_expected=0
+            _srv="$(uci -q get "dhcp.$_sec.server" 2>/dev/null | tr ' ' '\n')"
+            for _slot in RU RU_2; do
+                eval "_tid=\${SLOT_${_slot}:-}"
+                [ -n "$_tid" ] || continue
+                _tld_expected=1
+                eval "_tp=\${PORT_${_slot}:-}"
+                [ -n "$_tp" ] || _tp="$(hybrid_desired_port "$_slot")"
+                [ -n "$_tp" ] || { _tld_ok=0; continue; }
+                for _tld in /ru /su /xn--p1ai; do
+                    printf '%s\n' "$_srv" | grep -qxF "$_tld/127.0.0.1#$_tp" || _tld_ok=0
+                done
+            done
+            [ "$_tld_expected" = 1 ] && [ "$_tld_ok" = 1 ] && printf 1 || printf 0
+            ;;
+        ntp)
+            [ "$(uci -q get system.ntp.use_dhcp 2>/dev/null)" = 0 ] || { printf 0; return; }
+            [ "$(uci -q get system.ntp.enabled 2>/dev/null)" = 1 ] || { printf 0; return; }
+            _ntp_expected="$(ntp_servers_for_profile "$NTP_PRESET")"
+            [ -n "$_ntp_expected" ] || { printf 0; return; }
+            _ntp_cur="$(uci -q get system.ntp.server 2>/dev/null)"
+            for _ip in $_ntp_expected; do
+                printf '%s\n' $_ntp_cur | grep -qxF "$_ip" || { printf 0; return; }
+            done
+            printf 1
+            ;;
+        quic)
+            for _rname in Block_UDP_80 Block_UDP_443; do
+                _rsec="$(uci show firewall 2>/dev/null | sed -n "s/^firewall\.\([^.=]*\)=rule$/\1/p" | while read -r _x; do [ "$(uci -q get firewall.$_x.name 2>/dev/null)" = "$_rname" ] && { printf '%s' "$_x"; break; }; done)"
+                [ -n "$_rsec" ] || { printf 0; return; }
+                [ "$(uci -q get firewall.$_rsec.proto 2>/dev/null)" = "udp" ] || { printf 0; return; }
+                [ "$(uci -q get firewall.$_rsec.src 2>/dev/null)" = "lan" ] || { printf 0; return; }
+                [ "$(uci -q get firewall.$_rsec.dest 2>/dev/null)" = "wan" ] || { printf 0; return; }
+                case "$_rname" in
+                    Block_UDP_80) [ "$(uci -q get firewall.$_rsec.dest_port 2>/dev/null)" = 80 ] || { printf 0; return; } ;;
+                    Block_UDP_443) [ "$(uci -q get firewall.$_rsec.dest_port 2>/dev/null)" = 443 ] || { printf 0; return; } ;;
+                esac
+                [ "$(uci -q get firewall.$_rsec.target 2>/dev/null)" = REJECT ] || { printf 0; return; }
+            done
+            printf 1
+            ;;
+        mtu)
+            [ "$(uci -q get firewall.@defaults[0].mtu_fix 2>/dev/null)" = 1 ] && printf 1 || printf 0
+            ;;
+        sysctl)
+            f="$(sysctl_base_manager_path)"
+            [ -f "$f" ] || { printf 0; return; }
+            for _p in "net.ipv4.tcp_fastopen=3" "net.ipv4.tcp_fin_timeout=15" "net.core.somaxconn=1024"; do
+                _k="${_p%%=*}"; _v="${_p#*=}"
+                [ "$(sysctl -n "$_k" 2>/dev/null)" = "$_v" ] || { printf 0; return; }
+                grep -qxF "$_p" "$f" 2>/dev/null || { printf 0; return; }
+            done
+            if [ "${SYSCTL_EXTENDED:-0}" = 1 ]; then
+                f="$(sysctl_extended_manager_path)"
+                [ -f "$f" ] || { printf 0; return; }
+                while IFS= read -r _p; do
+                    _k="${_p%%=*}"; _v="${_p#*=}"
+                    [ "$(sysctl -n "$_k" 2>/dev/null)" = "$_v" ] || { printf 0; return; }
+                    grep -qxF "$_p" "$f" 2>/dev/null || { printf 0; return; }
+                done <<EOF_CHECK_EXT
+$(sysctl_extended_params)
+EOF_CHECK_EXT
+            fi
+            printf 1
+            ;;
+        sysctl_ext)
+            f="$(sysctl_extended_manager_path)"
+            [ -f "$f" ] || { printf 0; return; }
+            while IFS= read -r _p; do
+                _k="${_p%%=*}"; _v="${_p#*=}"
+                [ "$(sysctl -n "$_k" 2>/dev/null)" = "$_v" ] || { printf 0; return; }
+                grep -qxF "$_p" "$f" 2>/dev/null || { printf 0; return; }
+            done <<EOF_CHECK_EXT2
+$(sysctl_extended_params)
+EOF_CHECK_EXT2
+            printf 1
+            ;;
+        force)
+            if [ "${FORCE_DNS:-0}" = 1 ]; then
+                printf 2
+                return
+            fi
+            uci -q get firewall.dns_manager_dns_redirect >/dev/null 2>&1 || { printf 0; return; }
+            [ "$(uci -q get firewall.dns_manager_dns_redirect.src 2>/dev/null)" = lan ] || { printf 0; return; }
+            [ "$(uci -q get firewall.dns_manager_dns_redirect.proto 2>/dev/null)" = "tcp udp" ] || { printf 0; return; }
+            [ "$(uci -q get firewall.dns_manager_dns_redirect.src_dport 2>/dev/null)" = 53 ] || { printf 0; return; }
+            [ "$(uci -q get firewall.dns_manager_dns_redirect.dest_ip 2>/dev/null)" = "$LAN_IP" ] || { printf 0; return; }
+            [ "$(uci -q get firewall.dns_manager_dns_redirect.dest_port 2>/dev/null)" = 53 ] || { printf 0; return; }
+            [ "$(uci -q get firewall.dns_manager_dns_redirect.target 2>/dev/null)" = DNAT ] || { printf 0; return; }
+            uci -q get firewall.dns_manager_dot_block >/dev/null 2>&1 || { printf 0; return; }
+            [ "$(uci -q get firewall.dns_manager_dot_block.src 2>/dev/null)" = lan ] || { printf 0; return; }
+            [ "$(uci -q get firewall.dns_manager_dot_block.dest 2>/dev/null)" = wan ] || { printf 0; return; }
+            [ "$(uci -q get firewall.dns_manager_dot_block.proto 2>/dev/null)" = "tcp udp" ] || { printf 0; return; }
+            [ "$(uci -q get firewall.dns_manager_dot_block.dest_port 2>/dev/null)" = 853 ] || { printf 0; return; }
+            [ "$(uci -q get firewall.dns_manager_dot_block.target 2>/dev/null)" = REJECT ] && printf 1 || printf 0
+            ;;
+        ntp_clients)
+            _opt="42,$LAN_IP"
+            printf '%s\n' "$(uci -q get "dhcp.$_sec.dhcp_option" 2>/dev/null | tr ' ' '\n')" | grep -qxF "$_opt" || { printf 0; return; }
+            uci -q get firewall.dns_manager_ntp_client >/dev/null 2>&1 || { printf 0; return; }
+            [ "$(uci -q get firewall.dns_manager_ntp_client.src 2>/dev/null)" = lan ] || { printf 0; return; }
+            [ "$(uci -q get firewall.dns_manager_ntp_client.proto 2>/dev/null)" = udp ] || { printf 0; return; }
+            [ "$(uci -q get firewall.dns_manager_ntp_client.src_dport 2>/dev/null)" = 123 ] || { printf 0; return; }
+            [ "$(uci -q get firewall.dns_manager_ntp_client.dest_ip 2>/dev/null)" = "$LAN_IP" ] || { printf 0; return; }
+            [ "$(uci -q get firewall.dns_manager_ntp_client.dest_port 2>/dev/null)" = 123 ] || { printf 0; return; }
+            [ "$(uci -q get firewall.dns_manager_ntp_client.target 2>/dev/null)" = DNAT ] && printf 1 || printf 0
+            ;;
+        dnsmasq_perf)
+            [ "$(uci -q get "dhcp.$_sec.cachesize" 2>/dev/null)" = 1000 ] || { printf 0; return; }
+            [ "$(uci -q get "dhcp.$_sec.dnsforwardmax" 2>/dev/null)" = 300 ] || { printf 0; return; }
+            [ "$(uci -q get "dhcp.$_sec.max_cache_ttl" 2>/dev/null)" = 86400 ] || { printf 0; return; }
+            [ "$(uci -q get "dhcp.$_sec.boguspriv" 2>/dev/null)" = 1 ] || { printf 0; return; }
+            [ "$(uci -q get "dhcp.$_sec.domainneeded" 2>/dev/null)" = 1 ] || { printf 0; return; }
+            [ "$(uci -q get "dhcp.$_sec.quietdhcp" 2>/dev/null)" = 1 ] || { printf 0; return; }
+            if [ "$IPV6_ROUTE" != yes ]; then
+                [ "$(uci -q get "dhcp.$_sec.filter_aaaa" 2>/dev/null)" = 1 ] || { printf 0; return; }
+            fi
+            printf 1
+            ;;
+        client_fixes)
+            f="/etc/dnsmasq.d/91-dns-manager-client-fixes.conf"
+            for _fix in \
+                'local=/telemetry.mozilla.org/' \
+                'local=/telemetry.microsoft.com/' \
+                'local=/vortex.data.microsoft.com/' \
+                'local=/settings-win.data.microsoft.com/' \
+                'local=/metrics.android.com/' \
+                'local=/metrics.samsung.com/' \
+                'server=/clients3.google.com/77.88.8.8' \
+                'server=/clients3.google.com/77.88.8.1' \
+                'server=/connectivitycheck.gstatic.com/77.88.8.8' \
+                'server=/connectivitycheck.gstatic.com/77.88.8.1' \
+                'server=/connectivitycheck.android.com/77.88.8.8' \
+                'server=/connectivitycheck.android.com/77.88.8.1' \
+                'server=/connectivitycheck.samsung.com/77.88.8.8' \
+                'server=/connectivitycheck.samsung.com/77.88.8.1' \
+                'server=/connectivitycheck.platform.hicloud.com/77.88.8.8' \
+                'server=/connectivitycheck.platform.hicloud.com/77.88.8.1'; do
+                grep -qxF "$_fix" "$f" 2>/dev/null || { printf 0; return; }
+            done
+            printf 1
+            ;;
+        watchdog)
+            _wd_line="*/${WATCHDOG_INTERVAL:-15} * * * * ${MANAGER_PATH} watchdog >> ${LOG_FILE} 2>&1"
+            if [ "${WATCHDOG_ENABLED:-0}" = 1 ]; then
+                _wd_marker="# DNS_MANAGER_WATCHDOG_SPEC=${WATCHDOG_SPEC_VERSION}"
+                if grep -qxF "$_wd_marker" /etc/crontabs/root 2>/dev/null && awk -v want="$_wd_line" 'index($0,want)==1{ok=1} END{exit ok?0:1}' /etc/crontabs/root 2>/dev/null; then
+                    printf 1
+                else
+                    printf 0
+                fi
+            else
+                awk -v mp="${MANAGER_PATH}" '$0 ~ mp"[[:space:]]+(watchdog|-w|--watchdog)([[:space:]]|$)" {ok=1} END{exit ok?0:1}' /etc/crontabs/root 2>/dev/null && printf 1 || printf 0
+            fi
+            ;;
+        web)
+            web_access_real && printf 1 || printf 0
+            ;;
+        *)
+            printf 0
+            ;;
     esac
 }
+
 module_state_word() {
+    _module="$1"
     _desired="$2"
-    _real="$(check_module_state "$1")"
+    _real="$(check_module_state "$_module")"
+    if [ "$_module" = force ] && [ "$_real" = 2 ] && [ "$_desired" = 1 ]; then
+        printf "${C_BOLD}${C_GREEN}✓ ВКЛ${C_NC} ${C_CYAN}${C_BOLD}• внешний перехват${C_NC}"
+        return 0
+    fi
     if [ "$_desired" = 1 ] && [ "$_real" = 1 ]; then
         printf "${C_BOLD}${C_GREEN}✓ ВКЛ${C_NC} ${C_CYAN}${C_BOLD}• применено${C_NC}"
     elif [ "$_desired" = 1 ]; then
@@ -3663,47 +4144,39 @@ web_access_remove_firewall() {
     /etc/init.d/firewall reload >/dev/null 2>&1 || /etc/init.d/firewall restart >/dev/null 2>&1 || true
 }
 web_access_luci_install() {
-    mkdir -p /usr/share/luci/menu.d "$LUCI_VIEW_DIR" || return 1
-    cat > "$LUCI_MENU" <<'EOF_LUCI_MENU'
-{
-    "admin/services/dns_manager": {
-        "title": "DNS Manager",
-        "order": 70,
-        "action": { "type": "view", "path": "dns_manager/redirect" }
-    }
-}
-EOF_LUCI_MENU
-    cat > "$LUCI_VIEW" <<'EOF_LUCI_VIEW'
-'use strict';
-'require view';
-'require uci';
+    mkdir -p /usr/lib/lua/luci/controller || return 1
+    cat > "$LUCI_CONTROLLER" <<'EOF_LUCI'
+module("luci.controller.dns_manager", package.seeall)
 
-return view.extend({
-    load: function() {
-        return uci.load('ttyd');
-    },
+function index()
+    local uci = require "luci.model.uci".cursor()
+    if uci:get("ttyd", "dns_manager", "enable") ~= "1" then return end
+    if uci:get("ttyd", "dns_manager", "command") ~= "/usr/bin/dns-manager" then return end
+    local e = entry({"admin", "services", "dns_manager"}, call("redirect_to_manager"), _("DNS Manager"), 70)
+    e.leaf = true
+end
 
-    render: function() {
-        var port = uci.get('ttyd', 'dns_manager', 'port') || '7682';
-        var host = window.location.hostname;
-        var url = 'http://' + host + ':' + port + '/';
-        window.location.replace(url);
-        return E('div', { 'class': 'cbi-map' }, [
-            E('div', { 'class': 'cbi-section' }, _('Открываю DNS Manager...'))
-        ]);
-    }
-});
-EOF_LUCI_VIEW
-    chmod 0644 "$LUCI_MENU" "$LUCI_VIEW"
+function redirect_to_manager()
+    local uci = require "luci.model.uci".cursor()
+    local http = require "luci.http"
+    local ip = uci:get("network", "lan", "ipaddr") or "192.168.1.1"
+    local port = uci:get("ttyd", "dns_manager", "port") or "7682"
+    ip = ip:match("^[^/]+") or ip
+    if ip:find(":", 1, true) then
+        http.redirect("http://[" .. ip .. "]:" .. port .. "/")
+    else
+        http.redirect("http://" .. ip .. ":" .. port .. "/")
+    end
+end
+EOF_LUCI
+    chmod 0644 "$LUCI_CONTROLLER"
     rm -rf /tmp/luci-* /tmp/luci-indexcache* 2>/dev/null || true
     /etc/init.d/rpcd reload >/dev/null 2>&1 || true
-    /etc/init.d/uhttpd reload >/dev/null 2>&1 || /etc/init.d/uhttpd restart >/dev/null 2>&1 || true
 }
 web_access_luci_remove() {
-    rm -f "$LUCI_MENU" "$LUCI_VIEW"
+    rm -f "$LUCI_CONTROLLER"
     rm -rf /tmp/luci-* /tmp/luci-indexcache* 2>/dev/null || true
     /etc/init.d/rpcd reload >/dev/null 2>&1 || true
-    /etc/init.d/uhttpd reload >/dev/null 2>&1 || true
 }
 apply_web_access() {
     case "${WEB_ACCESS_ENABLED:-0}" in
@@ -3743,41 +4216,42 @@ menu_item_state "[3]" "Принудительный DNS" "$(module_state_word fo
 menu_section "ПРОИЗВОДИТЕЛЬНОСТЬ"
 menu_item_state "[4]" "Оптимизация TCP и Conntrack" "$(module_state_word sysctl "$SYSCTL_TUNING")"
 menu_item_state "[5]" "Кэширование DNS-запросов" "$(module_state_word dnsmasq_perf "$DNSMASQ_PERF")"
-menu_item_state "[6]" "Оптимизация Go-сервисов" "$(module_state_word go "$GO_OPTIMIZE")"
 menu_section "СЕРВИСЫ И КЛИЕНТЫ"
-menu_item_state "[7]" "Время для устройств сети" "$(module_state_word ntp_clients "$NTP_CLIENTS")"
-menu_item_state "[8]" "Tailscale при поднятии WAN" "$(module_state_word ts_hotplug "$TAILSCALE_HOTPLUG")"
-menu_item_state "[9]" "Исправления телеметрии и связи" "$(module_state_word client_fixes "$CLIENT_FIXES")"
+menu_item_state "[6]" "Время для устройств сети" "$(module_state_word ntp_clients "$NTP_CLIENTS")"
+menu_item_state "[7]" "Исправления телеметрии и связи" "$(module_state_word client_fixes "$CLIENT_FIXES")"
 menu_section "ОБСЛУЖИВАНИЕ"
-menu_item "[10]" "Очистка старых заданий"
-menu_item_state "[11]" "Автоматическая проверка DNS" "$(module_state_word watchdog "$WATCHDOG_ENABLED")"
-menu_item_state "[12]" "Доступ из браузера" "$(module_state_word web "$WEB_ACCESS_ENABLED")"
-menu_item "[13]" "IP-заглушки провайдера"
+menu_item_state "[8]" "Автоматическая проверка DNS" "$(module_state_word watchdog "$WATCHDOG_ENABLED")"
+menu_item_state "[9]" "Доступ из браузера" "$(module_state_word web "$WEB_ACCESS_ENABLED")"
 menu_back
 menu_prompt
 safe_read c
 case "$c" in
-1) [ "$BLOCK_QUIC" = 1 ] && BLOCK_QUIC=0 || BLOCK_QUIC=1; apply_extras_now quic; pause;;
-2) [ "$MTU_FIX" = 1 ] && MTU_FIX=0 || MTU_FIX=1; apply_extras_now mtu; pause;;
-3) [ "$FORCE_DOH" = 1 ] && FORCE_DOH=0 || FORCE_DOH=1; apply_extras_now force; pause;;
+1) _old="$BLOCK_QUIC"; [ "$BLOCK_QUIC" = 1 ] && BLOCK_QUIC=0 || BLOCK_QUIC=1; if ! apply_extras_now quic; then BLOCK_QUIC="$_old"; save_config >/dev/null 2>&1 || true; err_msg "Не удалось изменить блокировку QUIC."; fi; pause;;
+2) _old="$MTU_FIX"; [ "$MTU_FIX" = 1 ] && MTU_FIX=0 || MTU_FIX=1; if ! apply_extras_now mtu; then MTU_FIX="$_old"; save_config >/dev/null 2>&1 || true; err_msg "Не удалось изменить исправление сетевых параметров."; fi; pause;;
+3) _old="$FORCE_DOH"; [ "$FORCE_DOH" = 1 ] && FORCE_DOH=0 || FORCE_DOH=1; if ! apply_extras_now force; then FORCE_DOH="$_old"; save_config >/dev/null 2>&1 || true; err_msg "Не удалось изменить принудительный DNS."; fi; pause;;
 4)
+_old_sysctl="$SYSCTL_TUNING"
+_old_sysctl_ext="$SYSCTL_EXTENDED"
 if [ "$SYSCTL_TUNING" = 1 ]; then
-SYSCTL_TUNING=0; SYSCTL_EXTENDED=0
+    _new_sysctl=0
+    _new_sysctl_ext=0
 else
-SYSCTL_TUNING=1; SYSCTL_EXTENDED=1
+    _new_sysctl=1
+    _new_sysctl_ext=1
 fi
-apply_extras_now sysctl
-apply_extras_now sysctl_ext
+if ! apply_sysctl_bundle "$_new_sysctl" "$_new_sysctl_ext"; then
+    SYSCTL_TUNING="$_old_sysctl"
+    SYSCTL_EXTENDED="$_old_sysctl_ext"
+    save_config >/dev/null 2>&1 || true
+    err_msg "Оптимизация TCP и Conntrack не изменена: конфигурация возвращена."
+fi
 pause;;
-5) [ "$DNSMASQ_PERF" = 1 ] && DNSMASQ_PERF=0 || DNSMASQ_PERF=1; apply_extras_now dnsmasq_perf; pause;;
-6) [ "$GO_OPTIMIZE" = 1 ] && GO_OPTIMIZE=0 || GO_OPTIMIZE=1; apply_extras_now go; pause;;
-7) [ "$NTP_CLIENTS" = 1 ] && NTP_CLIENTS=0 || NTP_CLIENTS=1; apply_extras_now ntp_clients; pause;;
-8) [ "$TAILSCALE_HOTPLUG" = 1 ] && TAILSCALE_HOTPLUG=0 || TAILSCALE_HOTPLUG=1; apply_extras_now ts_hotplug; pause;;
-9) [ "$CLIENT_FIXES" = 1 ] && CLIENT_FIXES=0 || CLIENT_FIXES=1; apply_extras_now client_fixes; pause;;
-10) cleanup_manager_cron; CRON_CLEANUP=1; save_config; pause;;
-11) [ "$WATCHDOG_ENABLED" = 1 ] && WATCHDOG_ENABLED=0 || WATCHDOG_ENABLED=1; apply_watchdog; pause;;
-12) [ "$WEB_ACCESS_ENABLED" = 1 ] && WEB_ACCESS_ENABLED=0 || WEB_ACCESS_ENABLED=1; apply_web_access; pause;;
-13) menu_bogus;;
+5) _old="$DNSMASQ_PERF"; [ "$DNSMASQ_PERF" = 1 ] && DNSMASQ_PERF=0 || DNSMASQ_PERF=1; if ! apply_extras_now dnsmasq_perf; then DNSMASQ_PERF="$_old"; save_config >/dev/null 2>&1 || true; err_msg "Не удалось изменить кэширование DNS."; fi; pause;;
+6) _old="$NTP_CLIENTS"; [ "$NTP_CLIENTS" = 1 ] && NTP_CLIENTS=0 || NTP_CLIENTS=1; if ! apply_extras_now ntp_clients; then NTP_CLIENTS="$_old"; save_config >/dev/null 2>&1 || true; err_msg "Не удалось изменить NTP для клиентов."; fi; pause;;
+7) _old="$CLIENT_FIXES"; [ "$CLIENT_FIXES" = 1 ] && CLIENT_FIXES=0 || CLIENT_FIXES=1; if ! apply_extras_now client_fixes; then CLIENT_FIXES="$_old"; save_config >/dev/null 2>&1 || true; err_msg "Не удалось изменить клиентские DNS-фиксы."; fi; pause;;
+8) _old_watchdog="$WATCHDOG_ENABLED"; [ "$WATCHDOG_ENABLED" = 1 ] && WATCHDOG_ENABLED=0 || WATCHDOG_ENABLED=1; if ! apply_watchdog; then WATCHDOG_ENABLED="$_old_watchdog"; save_config >/dev/null 2>&1 || true; err_msg "Не удалось изменить автопроверку DNS."; fi; pause;;
+9) [ "$WEB_ACCESS_ENABLED" = 1 ] && WEB_ACCESS_ENABLED=0 || WEB_ACCESS_ENABLED=1; apply_web_access; pause;;
+10) return;;
 '') return;;
 *) warn_msg "Неизвестный пункт."; pause;;
 esac
@@ -3842,82 +4316,6 @@ install_missing_dependencies(){
 }
 # ==========================================
 # ==========================================
-menu_install() {
-menu_header "ПРОГРАММЫ"
-run_discovery >/dev/null 2>&1 || true
-printf "  curl              : %s\n" "$(state_word "$HAS_CURL")"
-printf "  dig (доп.)         : %s\n" "$(state_word "$HAS_DIG")"
-printf "  https-dns-proxy   : %s\n" "$(state_word "$HAS_HDP")"
-CA_OK=no
-[ -s /etc/ssl/certs/ca-certificates.crt ] && CA_OK=yes
-if [ "$CA_OK" != yes ]; then
-    if command -v apk >/dev/null 2>&1; then
-        apk info -e ca-certificates >/dev/null 2>&1 && CA_OK=yes
-        apk info -e ca-bundle >/dev/null 2>&1 && CA_OK=yes
-    elif command -v opkg >/dev/null 2>&1; then
-        opkg status ca-certificates 2>/dev/null | grep -q '^Status:.*installed' && CA_OK=yes
-        opkg status ca-bundle 2>/dev/null | grep -q '^Status:.*installed' && CA_OK=yes
-    fi
-fi
-printf "  CA-сертификаты    : %s\n" "$(state_word "$CA_OK")"
-printf "  dnsmasq           : %s\n" "$(state_word "$HAS_DNSMASQ")"
-need="$(ensure_dependencies)"
-if [ -z "$need" ]; then
-ok_msg "Все обязательные компоненты уже установлены."
-pause
-return
-fi
-printf "${C_YELLOW}Необходимо установить:${C_NC}\n"
-for pkg in $need; do
-printf "  ${C_PINK}↻${C_NC} %s\n" "$pkg"
-done
-printf "\n"
-if confirm_action "Установить недостающие компоненты сейчас?"; then
-if install_missing_dependencies; then
-ok_msg "Обязательные компоненты установлены."
-else
-warn_msg "После установки остались недостающие компоненты. Проверьте состояние."
-fi
-else
-info_msg "Установка отменена."
-fi
-pause
-}
-# ==========================================
-# ==========================================
-menu_status() {
-menu_header "СОСТОЯНИЕ И ЖУРНАЛ"
-_catalog_ver="$(dns_catalog_version)"
-_catalog_count="$(count_dns)"
-printf "${C_WHITE}Каталог DNS:${C_NC} ${C_GREEN}%s${C_NC} • ${C_CYAN}%s серверов${C_NC}\n" "${_catalog_ver:-не определён}" "${_catalog_count:-0}"
-printf "${C_WHITE}Последние события:${C_NC}\n"
-if [ -s "$LOG_FILE" ]; then tail -15 "$LOG_FILE" | sed -e "s/ START / Запуск /" -e "s/ UPDATE / Обновление /" -e "s/ INFO / Информация: /" -e "s/ WARN / Внимание: /" -e "s/ ERROR / Ошибка: /"; else printf "${C_YELLOW}Журнал пока пуст.${C_NC}\n"; fi
-echo ""
-printf "${C_WHITE}Последняя проверка:${C_NC}\n"
-if [ -s "$TEST_RESULTS" ]; then
-total="$(count_dns)"; okn="$(awk -F'|' 'NF>=5 && $5=="OK"{n++} END{print n+0}' "$TEST_RESULTS" 2>/dev/null)"; failn=$((total-okn))
-printf "  DNS: ${C_GREEN}%s работают${C_NC}, ${C_YELLOW}%s не прошли${C_NC}, всего %s\n" "$okn" "$failn" "$total"
-else
-printf "  ${C_YELLOW}Тест DNS ещё не запускался.${C_NC}\n"
-fi
-echo ""
-printf "${C_WHITE}Последние действия:${C_NC}\n"
-if [ -s "$TX_LOG" ]; then
-tail -10 "$TX_LOG" | awk -F'|' 'NF>=7 {
-phase=$4; obj=$5; act=$6; res=$7;
-if (phase=="DISCOVER") phase="Проверка состояния";
-else if (phase=="TEST") phase="Тест";
-else if (phase=="PLAN") phase="Подготовка";
-else if (phase=="APPLY") phase="Настройка";
-else if (phase=="VERIFY") phase="Проверка результата";
-if (res=="OK") res="успешно"; else if (res=="FAIL") res="ошибка";
-printf "  %s: %s → %s → %s\n", phase,obj,act,res;
-}'
-else
-printf "  ${C_YELLOW}Транзакций пока нет.${C_NC}\n"
-fi
-pause
-}
 # ==========================================
 # ==========================================
 quick_max_bypass() {
@@ -3999,12 +4397,8 @@ watchdog_desired_cat() {
 watchdog_candidate_categories() {
     _slot="$1"
     _desired="$(watchdog_desired_cat "$_slot")"
-    if [ "$DNS_SELECTION_MODE" = quick ]; then
-        printf '%s\n' bypass
-        printf '%s\n' clean
-    else
-        printf '%s\n' "$_desired"
-    fi
+    [ -n "$_desired" ] || return 1
+    printf '%s\n' "$_desired"
 }
 watchdog_enforce_hdp_control() {
     _changed=0
@@ -4017,32 +4411,31 @@ watchdog_enforce_hdp_control() {
     uci set https-dns-proxy.config.force_dns='0' || return 1
     uci set https-dns-proxy.config.notrack_dns='0' || return 1
     uci commit https-dns-proxy || return 1
-    /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || return 1
+    watchdog_restart_hdp || return 1
     return 0
 }
 watchdog_enforce_doh_authority() {
-    _foreign=0
+    [ "$DNS_PROFILE" = hybrid ] || [ "$DNS_PROFILE" = custom ] || return 0
+    _expected=0
+    for _s in 1 2 3 4 5 6 RU RU_2; do
+        eval "_id=\${SLOT_${_s}:-}"
+        [ -n "$_id" ] && _expected=$((_expected+1))
+    done
+    _actual=0
     _i=0
     while uci -q get "https-dns-proxy.@https-dns-proxy[$_i]" >/dev/null 2>&1; do
-        _m="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].dns_manager" 2>/dev/null)"
-        [ "$_m" = 1 ] || { _foreign=1; break; }
+        _actual=$((_actual+1))
         _i=$((_i+1))
     done
-    [ "$_foreign" = 1 ] || return 0
-    log_msg "Найден другой DNS-сервер. Его настройка будет удалена."
-    /etc/init.d/https-dns-proxy stop >/dev/null 2>&1 || true
-    _i=0
-    while uci -q get "https-dns-proxy.@https-dns-proxy[$_i]" >/dev/null 2>&1; do
-        _m="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].dns_manager" 2>/dev/null)"
-        if [ "$_m" = 1 ]; then
-            _i=$((_i+1))
-        else
-            uci -q delete "https-dns-proxy.@https-dns-proxy[$_i]" || return 1
-        fi
-    done
-    uci commit https-dns-proxy || return 1
-    /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || return 1
-    return 0
+    if [ "$_actual" != "$_expected" ]; then
+        log_msg "Количество DNS-секций отличается от выбранной схемы ($_actual вместо $_expected). Пересобираю полный набор DNS Manager."
+        rebuild_selected_hdp_sections || return 1
+        watchdog_restart_hdp || return 1
+        sleep 3
+        return 0
+    fi
+    # Even when the count matches, enforce the exact selected URLs/ports.
+    watchdog_hdp_guard
 }
 watchdog_expected_servers() {
     _out="$TMP_DIR/watchdog-expected-servers-$$"
@@ -4102,7 +4495,7 @@ watchdog_dnsmasq_guard() {
 watchdog_service_recover() {
     pgrep -f 'https-dns-proxy' >/dev/null 2>&1 && return 0
     log_msg "Служба DNS не запущена. Перезапускаю её."
-    /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || return 1
+    watchdog_restart_hdp || return 1
     sleep 3
     pgrep -f 'https-dns-proxy' >/dev/null 2>&1 || return 1
     return 0
@@ -4123,12 +4516,9 @@ watchdog_hdp_guard() {
     done
     _i=0
     while uci -q get "https-dns-proxy.@https-dns-proxy[$_i]" >/dev/null 2>&1; do
-        _m="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].dns_manager" 2>/dev/null)"
-        if [ "$_m" = 1 ]; then
-            _p="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].listen_port" 2>/dev/null)"
-            _u="$(normalize_url "$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].resolver_url" 2>/dev/null)")"
-            printf '%s|%s\n' "$_p" "$_u" >> "$_actual"
-        fi
+        _p="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].listen_port" 2>/dev/null)"
+        _u="$(normalize_url "$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].resolver_url" 2>/dev/null)")"
+        printf '%s|%s\n' "$_p" "$_u" >> "$_actual"
         _i=$((_i+1))
     done
     _expected_n="$(wc -l < "$_expected" 2>/dev/null | tr -d ' ')"
@@ -4142,7 +4532,7 @@ watchdog_hdp_guard() {
     if [ "$_bad" = 1 ]; then
         log_msg "Обнаружено изменение конфигурации DNS. Восстанавливаю выбранные серверы без изменения профиля."
         rebuild_selected_hdp_sections || { rm -f "$_expected" "$_actual"; return 1; }
-        /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || { rm -f "$_expected" "$_actual"; return 1; }
+        watchdog_restart_hdp || { rm -f "$_expected" "$_actual"; return 1; }
         sleep 3
     fi
     rm -f "$_expected" "$_actual" 2>/dev/null
@@ -4172,6 +4562,11 @@ watchdog_test_candidate() {
     _slot="$1"
     _id="$2"
     [ -n "$_id" ] || return 1
+    _port="$(hybrid_desired_port "$_slot")"
+    [ -n "$_port" ] || return 1
+    case "$_slot" in RU|RU_2) _domain="yandex.ru" ;; *) _domain="example.com" ;; esac
+    listener_port_exists "$_port" || return 1
+    local_dns_query_ok "$_port" "$_domain" || return 1
     return 0
 }
 watchdog_preferred_quick_candidate() {
@@ -4210,7 +4605,7 @@ watchdog_pick_replacement() {
             [ -n "$_rurl" ] || continue
             grep -qxF "$_rurl" "$_used" 2>/dev/null && continue
             grep -qxF "$_rid" "$_tried" 2>/dev/null && continue
-            if [ "$_rcat" = "$_need" ] || { [ "$_need" = bypass ] && [ "$_rcat" = clean ]; }; then
+            if [ "$_rcat" = "$_need" ]; then
                 printf '%s|%s\n' "$_rid" "$_rcat"
                 rm -f "$TMP_DIR/watchdog-categories-$$" 2>/dev/null
                 return 0
@@ -4226,138 +4621,462 @@ watchdog_apply_slot_candidate() {
     _slot="$1"; _new_id="$2"; _new_cat="$3"; _old_id="$4"; _old_cat="$5"
     [ -n "$_slot" ] && [ -n "$_new_id" ] || return 1
     eval "SLOT_${_slot}=\"$_new_id\""
-    if [ "$DNS_SELECTION_MODE" = quick ]; then
-        eval "SLOT_${_slot}_CAT=\"bypass\""
-    else
-        eval "SLOT_${_slot}_CAT=\"$_new_cat\""
-    fi
+    eval "SLOT_${_slot}_CAT=\"$_new_cat\""
     if ! rebuild_selected_hdp_sections >/dev/null 2>&1; then
         eval "SLOT_${_slot}=\"$_old_id\""
         eval "SLOT_${_slot}_CAT=\"$_old_cat\""
         rebuild_selected_hdp_sections >/dev/null 2>&1 || true
         return 1
     fi
-    /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || true
+    watchdog_restart_hdp || {
+        eval "SLOT_${_slot}=\"$_old_id\""
+        eval "SLOT_${_slot}_CAT=\"$_old_cat\""
+        rebuild_selected_hdp_sections >/dev/null 2>&1 || true
+        return 1
+    }
     sleep 3
     if watchdog_check_slot "$_slot"; then
-        save_config
+        save_config || return 1
         return 0
     fi
     eval "SLOT_${_slot}=\"$_old_id\""
     eval "SLOT_${_slot}_CAT=\"$_old_cat\""
-    rebuild_selected_hdp_sections >/dev/null 2>&1 || true
-    /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || true
+    rebuild_selected_hdp_sections >/dev/null 2>&1 || return 1
+    watchdog_restart_hdp || return 1
     sleep 2
     return 1
 }
 # ==========================================
+WATCHDOG_RESTART_COUNT=0
+watchdog_restart_hdp() {
+    _max="${WATCHDOG_MAX_RESTARTS:-2}"
+    [ "${WATCHDOG_RESTART_COUNT:-0}" -lt "$_max" ] || {
+        log_msg "Watchdog: лимит перезапусков https-dns-proxy за один цикл достигнут ($_max)."
+        return 1
+    }
+    /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || return 1
+    WATCHDOG_RESTART_COUNT=$((WATCHDOG_RESTART_COUNT+1))
+    return 0
+}
+watchdog_resource_guard() {
+    _mem="$(awk '/^MemAvailable:/{print $2; exit}' /proc/meminfo 2>/dev/null)"
+    case "$_mem" in ''|*[!0-9]*) ;; *)
+        if [ "$_mem" -lt 16384 ]; then
+            log_msg "Watchdog пропущен: доступная RAM ${_mem} KB (<16 MB)."
+            return 1
+        fi
+        ;;
+    esac
+    _load="$(awk '{print $1; exit}' /proc/loadavg 2>/dev/null)"
+    _load10="$(awk -v x="$_load" 'BEGIN{printf "%.0f", x*10}' 2>/dev/null)"
+    _cpu="$(grep -c '^processor' /proc/cpuinfo 2>/dev/null)"
+    case "$_cpu" in ''|*[!0-9]*) _cpu=1;; esac
+    case "$_load10" in ''|*[!0-9]*) return 0;; esac
+    _limit=$(( _cpu * 20 ))
+    if [ "$_load10" -gt "$_limit" ]; then
+        log_msg "Watchdog пропущен: высокая загрузка системы (load1=$_load, cpu=$_cpu)."
+        return 1
+    fi
+    return 0
+}
 run_watchdog() {
+    [ "${WATCHDOG_ENABLED:-0}" = 1 ] || return 0
     _lock="$STATE_DIR/watchdog.lock"
-    if [ -f "$_lock" ]; then
-        _pid="$(cat "$_lock" 2>/dev/null)"
+    if mkdir "$_lock" 2>/dev/null; then
+        printf '%s\n' "$$" > "$_lock/pid"
+    else
+        _pid="$(cat "$_lock/pid" 2>/dev/null)"
         if [ -n "$_pid" ] && kill -0 "$_pid" 2>/dev/null; then
             log_msg "Проверка DNS пропущена: предыдущая проверка ещё работает (PID $_pid)."
             return 0
         fi
+        rm -rf "$_lock" 2>/dev/null || true
+        mkdir "$_lock" 2>/dev/null || return 0
+        printf '%s\n' "$$" > "$_lock/pid"
     fi
-    printf '%s\n' "$$" > "$_lock" 2>/dev/null || return 1
     _wd_rc=0
-    run_discovery
+    _wd_repairs=0
+    WATCHDOG_RESTART_COUNT=0
+    if ! watchdog_resource_guard; then
+        rm -rf "$_lock" 2>/dev/null || true
+        return 0
+    fi
+    if ! acquire_mutation_lock; then
+        rm -rf "$_lock" 2>/dev/null || true
+        return 0
+    fi
     load_config
+    _managed_slots=0
+    for _s in 1 2 3 4 5 6 RU RU_2; do
+        eval "_mid=\${SLOT_${_s}:-}"
+        [ -n "$_mid" ] && _managed_slots=$((_managed_slots+1))
+    done
+    if [ "$_managed_slots" -eq 0 ]; then
+        log_msg "Watchdog: активная схема DNS Manager не настроена; сторонний https-dns-proxy не изменяю."
+        release_mutation_lock
+        rm -rf "$_lock" 2>/dev/null || true
+        return 0
+    fi
+    sync_regional_dns_state
+    cleanup_stale_tmp_dirs
+    cleanup_transaction_history
+    rotate_runtime_logs
     watchdog_enforce_hdp_control || log_msg "Не удалось полностью восстановить контроль над настройками https-dns-proxy."
-    watchdog_enforce_doh_authority || log_msg "Не удалось полностью очистить сторонние DNS-сервер."
+    watchdog_enforce_doh_authority || log_msg "Не удалось полностью синхронизировать набор DNS Manager."
     watchdog_service_recover || log_msg "Не удалось выполнить восстановительное перезапускание https-dns-proxy."
     watchdog_hdp_guard || log_msg "Не удалось проверить соответствие DNS-серверов выбранному набору."
     watchdog_dns_path_guard || log_msg "Обнаружен конфликт пути DNS в firewall."
     watchdog_dnsmasq_guard || log_msg "Не удалось полностью восстановить конфигурацию dnsmasq."
-    run_discovery
-    _age=999999999
-    if [ -f "$TEST_RESULTS" ]; then
-        _mtime="$(stat -c %Y "$TEST_RESULTS" 2>/dev/null || printf '0')"
-        case "$_mtime" in ''|*[!0-9]*) _mtime=0 ;; esac
-        _now="$(date +%s)"; _age=$(( _now - _mtime )); [ "$_age" -lt 0 ] && _age=999999999
+    if [ ! -s "$TEST_RESULTS" ]; then
+        log_msg "Watchdog: файл результатов DNS отсутствует; полный каталог не тестируется автоматически, чтобы не создавать нагрузку на CPU."
+        rm -f "$TMP_DIR"/watchdog-*-$$ 2>/dev/null || true
+        rm -rf "$_lock" 2>/dev/null || true
+        release_mutation_lock
+        return "$_wd_rc"
     fi
-    if [ "$_age" -gt 21600 ]; then
-        test_dns_catalog >/dev/null 2>&1 || true
-    fi
-    [ -s "$TEST_RESULTS" ] || { rm -f "$_lock"; return 1; }
-    _used="$TMP_DIR/watchdog-used-$$"; : > "$_used"
+    _used="$TMP_DIR/watchdog-used-$$"
+    : > "$_used"
     for _s in 1 2 3 4 5 6 RU RU_2; do
-        eval "_uid=\${SLOT_${_s}:-}"; [ -n "$_uid" ] || continue
-        _u="$(normalize_url "$(dns_url "$_uid")")"; [ -n "$_u" ] && printf '%s\n' "$_u" >> "$_used"
+        eval "_uid=\${SLOT_${_s}:-}"
+        [ -n "$_uid" ] || continue
+        _u="$(normalize_url "$(dns_url "$_uid")")"
+        [ -n "$_u" ] && printf '%s\n' "$_u" >> "$_used"
     done
     for _slot in 1 2 3 4 5 6 RU RU_2; do
-        eval "_id=\${SLOT_${_slot}:-}"; [ -n "$_id" ] || continue
-        [ "$_slot" != RU_2 ] || [ -n "${PORT_RU_2:-}" ] || continue
-        _desired="$(watchdog_desired_cat "$_slot")"; _current_cat="$(dns_cat "$_id")"
-        _need_return=0
-        if [ "$DNS_SELECTION_MODE" = quick ] && [ "$_slot" != RU ] && [ "$_slot" != RU_2 ] && [ "$_current_cat" = clean ]; then
-            _return_pref="$(watchdog_preferred_quick_candidate "$_slot" 2>/dev/null || true)"
-            [ -n "$_return_pref" ] && [ "$_id" != "$_return_pref" ] && _need_return=1
-        fi
-        if watchdog_check_slot "$_slot"; then
-            if [ "$_need_return" = 1 ]; then
-                _tried="$TMP_DIR/watchdog-tried-${_slot}-$$"; : > "$_tried"; printf '%s\n' "$_id" >> "$_tried"
-                _picked="$(watchdog_pick_replacement "$_slot" "$_used" "$_tried")"; _repl="${_picked%%|*}"; _repl_cat="${_picked#*|}"
-                if [ -n "$_repl" ] && [ "$_repl" != "$_id" ]; then
-                    printf "  ${C_YELLOW}↻ Слот %s: %s работает. Проверяю возврат %s.${C_NC}\n" "$_slot" "$(dns_name "$_id")" "$(dns_name "$_repl")"
-                    if watchdog_apply_slot_candidate "$_slot" "$_repl" "$_repl_cat" "$_id" "$_current_cat"; then
-                        _u="$(normalize_url "$(dns_url "$_repl")")"; grep -qxF "$_u" "$_used" 2>/dev/null || printf '%s\n' "$_u" >> "$_used"
-                        printf "  ${C_GREEN}✓ Слот %s: %s возвращён.${C_NC}\n" "$_slot" "$(dns_name "$_repl")"
-                    fi
+        [ "$_wd_repairs" -lt "${WATCHDOG_MAX_REPAIRS:-1}" ] || break
+        eval "_id=\${SLOT_${_slot}:-}"
+        [ -n "$_id" ] || continue
+        if [ "$_slot" = RU_2 ] && [ -z "${PORT_RU_2:-}" ]; then continue; fi
+        _desired="$(watchdog_desired_cat "$_slot")"
+        _current_cat="$(dns_cat "$_id")"
+        _force_replace=0
+        case "$_slot" in
+            RU|RU_2) ;;
+            *)
+                if [ -n "$_desired" ] && [ -n "$_current_cat" ] && [ "$_desired" != "$_current_cat" ]; then
+                    _force_replace=1
                 fi
-                rm -f "$_tried"
-            fi
-            continue
+                ;;
+        esac
+        if [ "$_force_replace" = 0 ] && watchdog_check_slot "$_slot"; then continue; fi
+        if [ "$_force_replace" = 0 ]; then
+            sleep 2
+            watchdog_check_slot "$_slot" && continue
+        else
+            log_msg "DNS в слоте $_slot не соответствует выбранной категории ($_current_cat вместо $_desired). Ищу замену."
         fi
-        sleep 5
-        watchdog_check_slot "$_slot" && continue
-        log_msg "DNS в слоте $_slot: $(dns_name "$_id") не отвечает двумя локальными проверками. Ищу замену."
-        _tried="$TMP_DIR/watchdog-tried-${_slot}-$$"; : > "$_tried"; _old="$_id"; _oldcat="$_current_cat"; _replacement_ok=0
-        for _attempt in 1 2 3 4 5 6 7 8; do
-            _picked="$(watchdog_pick_replacement "$_slot" "$_used" "$_tried")"; _repl="${_picked%%|*}"; _repl_cat="${_picked#*|}"
+        log_msg "DNS в слоте $_slot: $(dns_name "$_id") требует замены. Ищу подходящий DNS той же категории."
+        _tried="$TMP_DIR/watchdog-tried-${_slot}-$$"
+        : > "$_tried"
+        _old="$_id"
+        _oldcat="$_current_cat"
+        _replacement_ok=0
+        _attempt=0
+        while [ "$_attempt" -lt 2 ]; do
+            _attempt=$((_attempt+1))
+            _picked="$(watchdog_pick_replacement "$_slot" "$_used" "$_tried")"
+            _repl="${_picked%%|*}"
+            _repl_cat="${_picked#*|}"
             [ -n "$_repl" ] || break
             [ "$_repl" = "$_old" ] && { printf '%s\n' "$_repl" >> "$_tried"; continue; }
             printf '%s\n' "$_repl" >> "$_tried"
-            printf "  ${C_YELLOW}↻ Слот %s: %s не отвечает. Проверяю замену %s.${C_NC}\n" "$_slot" "$(dns_name "$_old")" "$(dns_name "$_repl")"
+            printf "  ${C_YELLOW}↻ Слот %s: %s не отвечает или не соответствует профилю. Проверяю замену %s.${C_NC}\n" "$_slot" "$(dns_name "$_old")" "$(dns_name "$_repl")"
             if watchdog_apply_slot_candidate "$_slot" "$_repl" "$_repl_cat" "$_old" "$_oldcat"; then
                 printf "  ${C_GREEN}✓ Слот %s: %s подтверждён на 127.0.0.1:%s.${C_NC}\n" "$_slot" "$(dns_name "$_repl")" "$(hybrid_desired_port "$_slot")"
-                _u="$(normalize_url "$(dns_url "$_repl")")"; grep -qxF "$_u" "$_used" 2>/dev/null || printf '%s\n' "$_u" >> "$_used"
-                _replacement_ok=1; break
+                _u="$(normalize_url "$(dns_url "$_repl")")"
+                grep -qxF "$_u" "$_used" 2>/dev/null || printf '%s\n' "$_u" >> "$_used"
+                _replacement_ok=1
+                _wd_repairs=$((_wd_repairs+1))
+                break
             fi
-            printf "  ${C_RED}✗ Слот %s: %s также не ответил через 127.0.0.1:%s. Больше его не пробую.${C_NC}\n" "$_slot" "$(dns_name "$_repl")" "$(hybrid_desired_port "$_slot")"
+            printf "  ${C_RED}✗ Слот %s: %s не подтвердился через 127.0.0.1:%s.${C_NC}\n" "$_slot" "$(dns_name "$_repl")" "$(hybrid_desired_port "$_slot")"
         done
         [ "$_replacement_ok" = 1 ] || _wd_rc=1
         rm -f "$_tried"
     done
-    rm -f "$_used" "$_lock"
+    rm -f "$TMP_DIR"/watchdog-*-$$ "$TMP_DIR"/watchdog-used-$$ "$TMP_DIR"/watchdog-categories-$$ 2>/dev/null
+    rm -rf "$_lock" 2>/dev/null || true
+    release_mutation_lock
+    rotate_runtime_logs
     return "$_wd_rc"
 }
-# ==========================================
 apply_watchdog() {
     f="/etc/crontabs/root"
+    mkdir -p "$(dirname "$f")" 2>/dev/null || true
     [ -f "$f" ] || : > "$f" || return 1
+    # Hybrid intentionally owns the watchdog: it is part of the profile contract.
+    # Other profiles keep the user's saved WATCHDOG_ENABLED state.
+    if [ "${DNS_PROFILE:-}" = "hybrid" ]; then
+        WATCHDOG_ENABLED=1
+    fi
     _interval="${WATCHDOG_INTERVAL:-15}"
-    case "$_interval" in
-        ''|*[!0-9]*) _interval=15 ;;
-    esac
+    case "$_interval" in ''|*[!0-9]*) _interval=15 ;; esac
     [ "$_interval" -ge 1 ] 2>/dev/null || _interval=15
     [ "$_interval" -le 59 ] 2>/dev/null || _interval=59
     WATCHDOG_INTERVAL="$_interval"
-    awk '!/^[[:space:]]*\*\/[0-9]+[[:space:]]+\*[[:space:]]+\*[[:space:]]+\*[[:space:]]+\*.*dns-manager[[:space:]]+(watchdog|-w|--watchdog)([[:space:]]|$)/{print}' "$f" > "$f.tmp" || return 1
-    mv "$f.tmp" "$f" || return 1
+    _marker="# DNS_MANAGER_WATCHDOG_SPEC=${WATCHDOG_SPEC_VERSION}"
+    _desired="*/${_interval} * * * * ${MANAGER_PATH} watchdog >> ${LOG_FILE} 2>&1"
+    _tmp="${f}.dns-manager.$$"
+    CRON_TMP_FILE="$_tmp"
+    awk -v mp="$MANAGER_PATH" '
+        /DNS_MANAGER_WATCHDOG_SPEC=/ {next}
+        /DNS_MANAGER_WATCHDOG:/ {next}
+        $0 ~ mp"[[:space:]]+(watchdog|-w|--watchdog)([[:space:]]|$)" {next}
+        /\/usr\/bin\/dns-manager[[:space:]]+(watchdog|-w|--watchdog)([[:space:]]|$)/ {next}
+        {print}
+    ' "$f" > "$_tmp" || { rm -f "$_tmp"; CRON_TMP_FILE=""; return 1; }
     if [ "${WATCHDOG_ENABLED:-0}" = 1 ]; then
-        printf '*/%s * * * * %s watchdog >> %s 2>&1\n' "$WATCHDOG_INTERVAL" "$MANAGER_PATH" "$LOG_FILE" >> "$f"
-        /etc/init.d/cron reload >/dev/null 2>&1 || true
-        ok_msg "Автоматическая проверка DNS включена: каждые ${WATCHDOG_INTERVAL} минут."
-    else
-        /etc/init.d/cron reload >/dev/null 2>&1 || true
-        ok_msg "Автоматическая проверка DNS выключена."
+        printf '%s\n%s\n' "$_marker" "$_desired" >> "$_tmp" || { rm -f "$_tmp"; CRON_TMP_FILE=""; return 1; }
     fi
+    if cmp -s "$_tmp" "$f" 2>/dev/null; then
+        rm -f "$_tmp"
+        CRON_TMP_FILE=""
+        return 0
+    fi
+    mv "$_tmp" "$f" || { rm -f "$_tmp"; CRON_TMP_FILE=""; return 1; }
+    CRON_TMP_FILE=""
+    /etc/init.d/cron reload >/dev/null 2>&1 || return 1
     save_config
+    if [ "${WATCHDOG_ENABLED:-0}" = 1 ]; then
+        ok_msg "Автопроверка DNS обновлена: каждые ${WATCHDOG_INTERVAL} минут."
+    else
+        ok_msg "Автопроверка DNS выключена."
+    fi
+    return 0
+}
+
+# ==========================================
+# ==========================================
+menu_dns() {
+while :; do
+menu_header "НАСТРОЙКА DNS"
+menu_section "ГОТОВЫЕ ПРОФИЛИ"
+menu_item "[1]" "Максимальный обход"
+menu_item "[2]" "Максимальная скорость"
+menu_item "[3]" "Максимальная безопасность"
+menu_item "[4]" "Максимальная приватность"
+menu_item "[5]" "Блокировка рекламы"
+menu_item "[6]" "Выбор по категориям"
+menu_section "РУЧНАЯ НАСТРОЙКА"
+menu_item "[7]" "Серверы DNS"
+menu_back
+menu_prompt
+safe_read c
+[ -z "$c" ] && return
+case "$c" in
+1) apply_profile_now bypass;;
+2) apply_profile_now clean;;
+3) apply_profile_now security;;
+4) apply_profile_now privacy;;
+5) apply_profile_now adblock;;
+6) menu_category_select;;
+7) menu_slots;;
+*) warn_msg "Неизвестный пункт."; pause;;
+esac
+done
 }
 # ==========================================
 # ==========================================
+
+# ==========================================
+# DNS Manager API for LuCI
+# Read-only API calls intentionally skip auto-update/dependency installation.
+# Mutating API calls reuse the Manager's existing transactional functions.
+# ==========================================
+api_json_escape() {
+    printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/[[:cntrl:]]/ /g'
+}
+api_bool() {
+    case "$1" in 1|yes|true|on|working|running) printf 'true';; *) printf 'false';; esac
+}
+api_number_or_zero() {
+    case "$1" in ''|*[!0-9]*) printf '0';; *) printf '%s' "$1";; esac
+}
+api_init() {
+    preflight_readonly >/dev/null 2>&1 || true
+    init_dirs >/dev/null 2>&1 || true
+    write_catalogs >/dev/null 2>&1 || true
+    load_config >/dev/null 2>&1 || true
+}
+api_status() {
+    api_init
+    run_discovery >/dev/null 2>&1 || true
+    _mem="$(awk '/^MemAvailable:/{print $2;exit}' /proc/meminfo 2>/dev/null)"
+    _load="$(awk '{print $1;exit}' /proc/loadavg 2>/dev/null)"
+    _test_total=0; _test_ok=0
+    if [ -s "$TEST_RESULTS" ]; then
+        _test_total="$(awk 'NF{n++}END{print n+0}' "$TEST_RESULTS" 2>/dev/null)"
+        _test_ok="$(awk -F'|' '$5=="OK"{n++}END{print n+0}' "$TEST_RESULTS" 2>/dev/null)"
+    fi
+    printf '{"ok":true,"version":"%s","profile":"%s","lan_ip":"%s","ipv4":"%s","ipv6":"%s","dnsmasq":"%s","doh_running":"%s","doh_total":%s,"quic":%s,"mtu":%s,"force_dns":%s,"sysctl":%s,"dnsmasq_perf":%s,"ntp_clients":%s,"client_fixes":%s,"balancer":%s,"tld_split":%s,"watchdog":%s,"watchdog_interval":%s,"web_access":%s,"nft":%s,"flow_offload":%s,"mem_available_kb":%s,"load1":"%s","test_ok":%s,"test_total":%s}\n' \
+        "$(api_json_escape "$VERSION")" "$(api_json_escape "$DNS_PROFILE")" "$(api_json_escape "$LAN_IP")" \
+        "$(api_bool "$IPV4_ROUTE")" "$(api_bool "$IPV6_ROUTE")" "$(api_bool "$DNSMASQ_RUN")" "$(api_bool "$HDP_RUNNING")" \
+        "$(api_number_or_zero "$DOH_TOTAL")" "$(api_bool "$BLOCK_QUIC")" "$(api_bool "$MTU_FIX")" "$(api_bool "$FORCE_DOH")" \
+        "$(api_bool "$SYSCTL_TUNING")" "$(api_bool "$DNSMASQ_PERF")" "$(api_bool "$NTP_CLIENTS")" "$(api_bool "$CLIENT_FIXES")" \
+        "$(api_bool "$BALANCER_ENABLED")" "$(api_bool "$TLD_SPLIT")" "$(api_bool "$WATCHDOG_ENABLED")" "$(api_number_or_zero "$WATCHDOG_INTERVAL")" \
+        "$(api_bool "$WEB_ACCESS_ENABLED")" "$(api_bool "$NFT_ACTIVE")" "$(api_bool "$FLOW_OFFLOAD")" \
+        "$(api_number_or_zero "$_mem")" "$(api_json_escape "$_load")" "$_test_ok" "$_test_total"
+}
+api_profiles() {
+    printf '{"ok":true,"items":['
+    printf '{"id":"bypass","title":"Максимальный обход"},{"id":"clean","title":"Максимальная скорость"},{"id":"security","title":"Максимальная безопасность"},{"id":"privacy","title":"Максимальная приватность"},{"id":"adblock","title":"Блокировка рекламы"},{"id":"family","title":"Семейная фильтрация"},{"id":"all","title":"Все категории"}'
+    printf ']}\n'
+}
+api_dns_catalog() {
+    api_init
+    _first=1
+    printf '{"ok":true,"items":['
+    while IFS='|' read -r _id _cat _name _url _src _region _tags; do
+        case "$_id" in ''|\#*) continue;; esac
+        [ "$_first" = 1 ] || printf ','
+        _first=0
+        printf '{"id":"%s","category":"%s","name":"%s","url":"%s"}' \
+            "$(api_json_escape "$_id")" "$(api_json_escape "$_cat")" "$(api_json_escape "$_name")" "$(api_json_escape "$_url")"
+    done < "$DNS_CATALOG"
+    printf ']}\n'
+}
+api_selected_dns() {
+    api_init
+    printf '{"ok":true,"items":['
+    _first=1
+    for _s in 1 2 3 4 5 6 RU RU_2; do
+        eval "_id=\${SLOT_${_s}:-}"
+        [ -n "$_id" ] || continue
+        eval "_port=\${PORT_${_s}:-}"
+        [ -n "$_port" ] || _port="$(hybrid_desired_port "$_s")"
+        [ "$_first" = 1 ] || printf ','
+        _first=0
+        printf '{"slot":"%s","id":"%s","name":"%s","port":%s}' \
+            "$_s" "$(api_json_escape "$_id")" "$(api_json_escape "$(dns_name "$_id")")" "$(api_number_or_zero "$_port")"
+    done
+    printf ']}\n'
+}
+api_profile_set() {
+    _goal="$1"
+    case "$_goal" in bypass|clean|security|privacy|adblock|family|all) ;; *) printf '{"ok":false,"error":"invalid_profile"}\n'; return 1;; esac
+    api_init
+    prepare_dns_operation >/dev/null 2>&1 || { printf '{"ok":false,"error":"prepare_failed"}\n'; return 1; }
+    if apply_profile_now "$_goal" >/tmp/dns-manager-luci-profile.log 2>&1; then
+        printf '{"ok":true,"profile":"%s"}\n' "$(api_json_escape "$DNS_PROFILE")"
+        return 0
+    fi
+    printf '{"ok":false,"error":"apply_failed"}\n'
+    return 1
+}
+api_slots_set() {
+    api_init
+    prepare_dns_operation >/dev/null 2>&1 || { printf '{"ok":false,"error":"prepare_failed"}\n'; return 1; }
+    _s1="$1"; _s2="$2"; _s3="$3"; _s4="$4"; _s5="$5"; _s6="$6"; _ru="$7"; _ru2="$8"
+    for _x in "$_s1" "$_s2" "$_s3" "$_s4" "$_s5" "$_s6" "$_ru" "$_ru2"; do
+        [ -z "$_x" ] && continue
+        dns_field "$_x" 1 | grep -q "^${_x}$" || { printf '{"ok":false,"error":"invalid_dns"}\n'; return 1; }
+    done
+    SLOT_1="$_s1"; SLOT_2="$_s2"; SLOT_3="$_s3"; SLOT_4="$_s4"; SLOT_5="$_s5"; SLOT_6="$_s6"
+    SLOT_RU="$_ru"; SLOT_RU_2="$_ru2"
+    for _s in 1 2 3 4 5 6; do
+        eval "_sid=\${SLOT_${_s}:-}"
+        _cat="$(dns_cat "$_sid")"
+        eval "SLOT_${_s}_CAT=\"$_cat\""
+    done
+    SLOT_RU_CAT="regional"; SLOT_RU_2_CAT="regional"
+    DNS_PROFILE="hybrid"; DNS_SELECTION_MODE="manual"; DNS_SELECTION_CATEGORY="bypass"
+    TLD_RU_ENABLED=1; TLD_SPLIT=1; BALANCER_ENABLED=1
+    PORT_1="$HYBRID_PORT_1"; PORT_2="$HYBRID_PORT_2"; PORT_3="$HYBRID_PORT_3"; PORT_4="$HYBRID_PORT_4"; PORT_5="$HYBRID_PORT_5"; PORT_6="$HYBRID_PORT_6"; PORT_RU="$HYBRID_PORT_RU"; PORT_RU_2="5060"
+    save_config
+    CORE_ONLY=1
+    if apply_settings >/tmp/dns-manager-luci-slots.log 2>&1; then
+        CORE_ONLY=0
+        printf '{"ok":true}\n'; return 0
+    fi
+    CORE_ONLY=0
+    printf '{"ok":false,"error":"apply_failed"}\n'; return 1
+}
+api_toggle() {
+    _name="$1"; _new="$2"
+    case "$_new" in 0|1) ;; *) printf '{"ok":false,"error":"invalid_value"}\n'; return 1;; esac
+    api_init
+    case "$_name" in
+        quic) BLOCK_QUIC="$_new"; apply_extras_now quic >/dev/null 2>&1 ;;
+        mtu) MTU_FIX="$_new"; apply_extras_now mtu >/dev/null 2>&1 ;;
+        force) FORCE_DOH="$_new"; apply_extras_now force >/dev/null 2>&1 ;;
+        sysctl) SYSCTL_TUNING="$_new"; [ "$_new" = 1 ] && SYSCTL_EXTENDED=1 || SYSCTL_EXTENDED=0; apply_sysctl_bundle "$SYSCTL_TUNING" "$SYSCTL_EXTENDED" >/dev/null 2>&1 ;;
+        dnsmasq_perf) DNSMASQ_PERF="$_new"; apply_extras_now dnsmasq_perf >/dev/null 2>&1 ;;
+        ntp_clients) NTP_CLIENTS="$_new"; apply_extras_now ntp_clients >/dev/null 2>&1 ;;
+        client_fixes) CLIENT_FIXES="$_new"; apply_extras_now client_fixes >/dev/null 2>&1 ;;
+        watchdog) WATCHDOG_ENABLED="$_new"; [ "$DNS_PROFILE" = hybrid ] && WATCHDOG_ENABLED=1; apply_watchdog >/dev/null 2>&1 ;;
+        web_access) WEB_ACCESS_ENABLED="$_new"; apply_web_access >/dev/null 2>&1 ;;
+        *) printf '{"ok":false,"error":"unknown_toggle"}\n'; return 1;;
+    esac
+    _rc=$?
+    save_config >/dev/null 2>&1 || true
+    [ "$_rc" -eq 0 ] || { printf '{"ok":false,"error":"apply_failed"}\n'; return 1; }
+    printf '{"ok":true,"name":"%s","enabled":%s}\n' "$_name" "$(api_bool "$_new")"
+}
+api_ntp_set() {
+    api_init
+    case "$1" in cf_ip|nist_ip|vniiftri_moscow|google_ip) NTP_PRESET="$1";; *) printf '{"ok":false,"error":"invalid_ntp"}\n'; return 1;; esac
+    if apply_ntp_ip_fallback >/dev/null 2>&1; then save_config >/dev/null 2>&1 || true; printf '{"ok":true,"preset":"%s"}\n' "$NTP_PRESET"; return 0; fi
+    printf '{"ok":false,"error":"ntp_apply_failed"}\n'; return 1
+}
+api_logs() {
+    api_init
+    _log="$(tail -n 80 "$LOG_FILE" 2>/dev/null)"
+    _tx="$(tail -n 80 "$TX_LOG" 2>/dev/null)"
+    printf '{"ok":true,"log":"%s","tx":"%s"}\n' "$(api_json_escape "$_log")" "$(api_json_escape "$_tx")"
+}
+api_test_start() {
+    api_init
+    _job="/tmp/dns-manager-luci-test"
+    if [ -f "$_job.pid" ] && kill -0 "$(cat "$_job.pid" 2>/dev/null)" 2>/dev/null; then printf '{"ok":true,"started":false,"running":true}\n'; return 0; fi
+    : > "$_job.log"; rm -f "$_job.rc"
+    ( DNS_MANAGER_NO_UPDATE=1 "$MANAGER_PATH" api-test-run >/dev/null 2>&1; printf '%s\n' "$?" > "$_job.rc"; rm -f "$_job.pid" ) &
+    printf '%s\n' "$!" > "$_job.pid"
+    printf '{"ok":true,"started":true}\n'
+}
+api_test_status() {
+    _job="/tmp/dns-manager-luci-test"
+    _running=false; _done=false; _rc=""
+    [ -f "$_job.pid" ] && kill -0 "$(cat "$_job.pid" 2>/dev/null)" 2>&1 && _running=true
+    [ -f "$_job.rc" ] && _done=true && _rc="$(cat "$_job.rc" 2>/dev/null)"
+    printf '{"ok":true,"running":%s,"done":%s,"rc":"%s"}\n' "$_running" "$_done" "$(api_json_escape "$_rc")"
+}
+api_test_log() {
+    _job="/tmp/dns-manager-luci-test"
+    _x="$(tail -n 120 "$_job.log" 2>/dev/null)"
+    printf '{"ok":true,"lines":"%s"}\n' "$(api_json_escape "$_x")"
+}
+api_test_run() {
+    api_init
+    test_dns_catalog >/tmp/dns-manager-luci-test.log 2>&1
+}
+api_rollback() {
+    api_init
+    if rollback_ours >/tmp/dns-manager-luci-rollback.log 2>&1; then printf '{"ok":true}\n'; else printf '{"ok":false,"error":"rollback_failed"}\n'; return 1; fi
+}
+api_dispatch() {
+    case "$1" in
+        api-status) api_status ;;
+        api-profiles) api_profiles ;;
+        api-dns-catalog) api_dns_catalog ;;
+        api-selected-dns) api_selected_dns ;;
+        api-profile-set) api_profile_set "$2" ;;
+        api-slots-set) shift; api_slots_set "$@" ;;
+        api-toggle) api_toggle "$2" "$3" ;;
+        api-ntp-set) api_ntp_set "$2" ;;
+        api-logs) api_logs ;;
+        api-test-start) api_test_start ;;
+        api-test-status) api_test_status ;;
+        api-test-log) api_test_log ;;
+        api-test-run) api_test_run ;;
+        api-rollback) api_rollback ;;
+        *) return 127 ;;
+    esac
+}
+if api_dispatch "${1:-}" 2>/dev/null; then
+    exit 0
+fi
+
+migrate_legacy_manager_files || { err_msg "Не удалось объединить старые файлы DNS Manager в единый namespace."; exit 1; }
 main_menu() {
 while :; do
 run_discovery
@@ -4367,59 +5086,37 @@ printf "  ${C_YELLOW}${C_BOLD}IPv4${C_NC}               %b\n" "$(state_word "$IP
 printf "  ${C_YELLOW}${C_BOLD}IPv6${C_NC}               %b\n" "$(state_word "$IPV6_ROUTE")"
 printf "  ${C_YELLOW}${C_BOLD}dnsmasq${C_NC}            %b\n" "$(state_word "$DNSMASQ_RUN")"
 printf "  ${C_YELLOW}${C_BOLD}Защищённый DNS${C_NC}     %b\n" "$(state_word "$HDP_RUNNING")"
-printf "  ${C_YELLOW}${C_BOLD}DNS-серверов найдено${C_NC} ${C_YELLOW}${C_BOLD}%s${C_NC}\n" "$DOH_TOTAL"
-printf "  ${C_YELLOW}${C_BOLD}Каталог DNS${C_NC}              ${C_CYAN}%s • %s серверов${C_NC}\n" "$(dns_catalog_version)" "$(count_dns)"
-printf "  ${C_YELLOW}${C_BOLD}Автопроверка${C_NC}            %b\n" "$(module_state_word watchdog "$WATCHDOG_ENABLED")"
-[ -s "$BASELINE_MANIFEST" ] && printf "  ${C_YELLOW}${C_BOLD}Исходная копия${C_NC}      ${C_GREEN}есть${C_NC}\n" || printf "  ${C_YELLOW}${C_BOLD}Исходная копия${C_NC}      ${C_YELLOW}нет${C_NC}\n"
-printf "  ${C_YELLOW}${C_BOLD}Web-доступ${C_NC}            %b\n" "$(module_state_word web "$WEB_ACCESS_ENABLED")"
+printf "  ${C_YELLOW}${C_BOLD}DNS-серверов найдено${C_NC} %s\n" "$DOH_TOTAL"
+printf "  ${C_YELLOW}${C_BOLD}Каталог DNS${C_NC}        ${C_CYAN}%s • %s серверов${C_NC}\n" "$(dns_catalog_version)" "$(count_dns)"
+printf "  ${C_YELLOW}${C_BOLD}Автопроверка${C_NC}       %b\n" "$(module_state_word watchdog "$WATCHDOG_ENABLED")"
+[ -s "$BASELINE_MANIFEST" ] && printf "  ${C_YELLOW}${C_BOLD}Исходная копия${C_NC}    ${C_GREEN}есть${C_NC}\n" || printf "  ${C_YELLOW}${C_BOLD}Исходная копия${C_NC}    ${C_YELLOW}нет${C_NC}\n"
+printf "  ${C_YELLOW}${C_BOLD}Web-доступ${C_NC}         %b\n" "$(module_state_word web "$WEB_ACCESS_ENABLED")"
 [ "$FORCE_DNS" = 1 ] && printf "  ${C_YELLOW}${C_BOLD}Принудительный DNS${C_NC} ${C_CYAN}включён${C_NC}\n"
-menu_section "БЫСТРЫЙ ЗАПУСК"
-menu_item "[1]" "МАКСИМАЛЬНЫЙ ОБХОД"
-menu_section "ПРОФИЛИ DNS"
-menu_item "[2]" "Максимальная скорость"
-menu_item "[3]" "Максимальная безопасность"
-menu_item "[4]" "Максимальная приватность"
-menu_item "[5]" "Блокировка рекламы"
-menu_item "[6]" "Выбор по категориям"
-menu_section "НАСТРОЙКА"
-menu_item "[7]" "Карта состояния"
-printf "  ${C_CYAN}${C_BOLD}%-5s${C_NC} ${C_YELLOW}${C_BOLD}%-38s${C_NC} ${C_CYAN}${C_BOLD}(%s)${C_NC}\n" "[8]" "Проверка DNS-серверов" "$(count_dns)"
-printf "  ${C_WHITE}      Каталог DNS: ${C_CYAN}%s${C_NC} • ${C_CYAN}%s серверов${C_NC}\n" "$(dns_catalog_version)" "$(count_dns)"
-printf "  ${C_CYAN}${C_BOLD}%-5s${C_NC} ${C_YELLOW}${C_BOLD}%-38s${C_NC} ${C_CYAN}${C_BOLD}(6+2)${C_NC}\n" "[9]" "Серверы DNS"
-menu_item "[10]" "DNS ДЛЯ ЗАПУСКА"
-menu_item "[11]" "СИНХРОНИЗАЦИЯ ВРЕМЕНИ"
-menu_item "[12]" "НАСТРОЙКИ"
-menu_item "[13]" "Состояние и журнал"
-menu_item "[14]" "Показать и применить"
-menu_item "[15]" "Установить недостающее"
-menu_item "[16]" "Удалить изменения"
+menu_section "НАСТРОЙКА DNS"
+menu_item "[1]" "Настроить DNS"
+menu_section "СЕРВИСЫ"
+menu_item "[2]" "Проверка DNS-серверов"
+menu_item "[3]" "Состояние и журнал"
+menu_item "[4]" "Серверы точного времени"
+menu_item "[5]" "НАСТРОЙКИ"
+menu_item "[6]" "Удалить изменения"
 menu_back
 menu_prompt
 safe_read c
 [ -z "$c" ] && { clear_screen; printf "${C_GREEN}DNS Manager завершён.${C_NC}\n"; exit 0; }
 case "$c" in
-1) prepare_dns_operation || { pause; continue; }; quick_max_bypass ;;
-2) prepare_dns_operation || { pause; continue; }; menu_best_actions clean "БЫСТРАЯ НАСТРОЙКА" ;;
-3) prepare_dns_operation || { pause; continue; }; menu_best_actions security "МАКСИМАЛЬНАЯ БЕЗОПАСНОСТЬ" ;;
-4) prepare_dns_operation || { pause; continue; }; menu_best_actions privacy "МАКСИМАЛЬНАЯ ПРИВАТНОСТЬ" ;;
-5) prepare_dns_operation || { pause; continue; }; menu_best_actions adblock "БЛОКИРОВКА РЕКЛАМЫ" ;;
-6) prepare_dns_operation || { pause; continue; }; show_best ;;
-7) show_map ;;
-8) prepare_dns_operation || { pause; continue; }; test_dns_catalog; show_tests ;;
-9) prepare_dns_operation || { pause; continue; }; menu_slots ;;
-10) prepare_dns_operation || { pause; continue; }; menu_bootstrap ;;
-11) prepare_dns_operation || { pause; continue; }; menu_ntp ;;
-12) prepare_dns_operation || { pause; continue; }; menu_extras ;;
-13) menu_status ;;
-14) prepare_dns_operation || { pause; continue; }; apply_settings ;;
-15) menu_install ;;
-16)
+1) prepare_dns_operation || { pause; continue; }; menu_dns;;
+2) prepare_dns_operation || { pause; continue; }; test_dns_catalog; show_tests;;
+3) show_map;;
+4) prepare_dns_operation || { pause; continue; }; menu_ntp;;
+5) prepare_dns_operation || { pause; continue; }; menu_extras;;
+6)
 clear_screen
 menu_header "УДАЛЕНИЕ ИЗМЕНЕНИЙ"
 warn_msg "Будут удалены только изменения DNS Manager."
 if confirm_action "Удалить изменения?"; then rollback_ours; else info_msg "Отменено."; fi
 ;;
-*) warn_msg "Неизвестный пункт."; pause ;;
+*) warn_msg "Неизвестный пункт."; pause;;
 esac
 done
 }
@@ -4427,10 +5124,9 @@ case "${1:-}" in
 watchdog|--watchdog|-w)
     preflight_readonly
     init_dirs
-    run_discovery
-    install_missing_dependencies || exit 1
-    write_catalogs
+    write_catalogs >/dev/null 2>&1 || true
     load_config
+    [ "${DNS_PROFILE:-}" = "hybrid" ] && WATCHDOG_ENABLED=1
     log_msg "Запуск автоматической проверки DNS."
     run_watchdog
     exit $?
@@ -4443,12 +5139,23 @@ install_missing_dependencies || exit 1
 auto_update_manager
 write_catalogs
 load_config
+if [ "${DNS_PROFILE:-}" = "hybrid" ]; then WATCHDOG_ENABLED=1; fi
+if acquire_mutation_lock; then
+    if ! apply_watchdog; then
+        release_mutation_lock
+        err_msg "Не удалось синхронизировать cron для автопроверки DNS."
+        exit 1
+    fi
+    release_mutation_lock
+else
+    err_msg "Не удалось получить блокировку для синхронизации watchdog."
+    exit 1
+fi
 if [ "${_had_dns_profile:-1}" = 0 ]; then
 hybrid_set_defaults
 save_config
 printf "${C_YELLOW}ℹ Обнаружена старая конфигурацию без профиля. Создан основной профиль Гибридный DNS (без изменения настроек роутера).${C_NC}\n"
 fi
-run_discovery
 printf "${C_GREEN}✓ Первый проход завершён. Настройки роутера не изменены.${C_NC}\n"
 printf "${C_YELLOW}ℹ DNS-серверов в списке: %s.${C_NC}\n" "$(count_dns)"
 log_msg "Запуск DNS Manager. Версия $VERSION. OpenWrt=$SYS_OWRT; платформа=$SYS_TARGET; архитектура=$SYS_ARCH; firewall=$SYS_FW"
