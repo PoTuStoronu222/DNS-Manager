@@ -2,7 +2,7 @@
 MANAGER_PATH="/usr/bin/dns-manager"
 # ==========================================
 # ==========================================
-VERSION="2.04"
+VERSION="2.05"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -15,7 +15,7 @@ BOOTSTRAP_CATALOG="$CFG_DIR/bootstrap-catalog.conf"
 BOGUS_CATALOG="$CFG_DIR/bogus-catalog.conf"
 BOOTSTRAP_DNS_ALL="77.88.8.8,77.88.8.1,94.140.14.14,1.1.1.1,1.0.0.1,8.8.8.8,8.8.4.4,9.9.9.9,149.112.112.112,208.67.222.222,208.67.220.220,149.112.121.10,149.112.122.10,76.76.2.0,76.76.10.0,194.242.2.2,194.242.2.3"
 DNSCAT_VERSION="8.5-RU-NOSOCIAL"
-WATCHDOG_SPEC_VERSION="4"
+WATCHDOG_SPEC_VERSION="5"
 # Resource-safety defaults for small OpenWrt routers.
 TEST_BATCH_DEFAULT=4
 WATCHDOG_MAX_REPAIRS=1
@@ -69,7 +69,11 @@ rotate_runtime_logs() {
 }
 cleanup_transaction_history() {
     [ -d "$STATE_DIR" ] || return 0
-    find "$STATE_DIR" -maxdepth 1 -type d -name 'tx-*' -mmin +"$TX_KEEP_MINUTES" -exec rm -rf {} \; 2>/dev/null || true
+    for _txd in "$STATE_DIR"/tx-*; do
+        [ -d "$_txd" ] || continue
+        [ "$_txd" = "${TX_DIR:-}" ] && continue
+        find "$_txd" -maxdepth 0 -mmin +"$TX_KEEP_MINUTES" -exec rm -rf {} \; 2>/dev/null || true
+    done
 }
 
 acquire_mutation_lock() {
@@ -234,6 +238,8 @@ if [ $((LOG_MSG_COUNT % 32)) -eq 0 ]; then rotate_runtime_logs; fi
 }
 log_tx() {
 printf 'TX|%s|%s|%s|%s|%s|%s\n' "$TX_ID" "$(date +%s)" "$1" "$2" "$3" "$4" "$5" >> "$TX_LOG" 2>/dev/null
+LOG_TX_COUNT=$(( ${LOG_TX_COUNT:-0} + 1 ))
+if [ $((LOG_TX_COUNT % 32)) -eq 0 ]; then rotate_runtime_logs; fi
 }
 ok_msg() { log_msg "Готово: $*"; printf "${C_GREEN}[✓] %s${C_NC}\n" "$*"; }
 info_msg() { log_msg "Информация: $*"; printf "${C_CYAN}[ℹ] %s${C_NC}\n" "$*"; }
@@ -704,7 +710,16 @@ FREE_OVERLAY="$(df -k /overlay 2>/dev/null | awk 'NR==2{print $4}')"
 }
 disc_network() {
 LAN_IP="$(uci -q get network.lan.ipaddr 2>/dev/null | cut -d/ -f1 | head -n1)"
-[ -n "$LAN_IP" ] || LAN_IP="$(ip -4 addr 2>/dev/null | awk '/inet /{print $2}' | cut -d/ -f1 | awk '/^192\.|^10\.|^172\.(1[6-9]|2[0-9]|3[0-1])\./{print; exit}')"
+if [ -z "$LAN_IP" ]; then
+    _lan_dev="$(uci -q get network.lan.device 2>/dev/null)"
+    _lan_if="$(uci -q get network.lan.ifname 2>/dev/null)"
+    if [ -n "$_lan_dev" ]; then
+        LAN_IP="$(ip -4 addr show dev "$_lan_dev" 2>/dev/null | awk '/inet /{print $2}' | cut -d/ -f1 | head -n1)"
+    fi
+    if [ -z "$LAN_IP" ] && [ -n "$_lan_if" ]; then
+        LAN_IP="$(ip -4 addr show dev "$_lan_if" 2>/dev/null | awk '/inet /{print $2}' | cut -d/ -f1 | head -n1)"
+    fi
+fi
 [ -n "$LAN_IP" ] || LAN_IP="192.168.1.1"
 WAN_PROTO="$(uci -q get network.wan.proto 2>/dev/null)"
 IP_RULES="$(ip rule show 2>/dev/null | wc -l)"
@@ -1270,6 +1285,7 @@ ok_msg "NTP: IP-профиль '$NTP_PRESET' добавлен без удале�
 log_tx "APPLY" "NTP" "ADD" "OK" "profile=$NTP_PRESET;servers=$servers"
 }
 apply_ntp_host_ips() {
+    [ "${NTP_IP_FALLBACK:-0}" = 1 ] || return 0
     [ -n "$(uci -q get system.ntp 2>/dev/null)" ] || return 0
     _ntp_servers="$(uci -q get system.ntp.server 2>/dev/null)"
     [ -n "$_ntp_servers" ] || return 0
@@ -4788,6 +4804,11 @@ apply_watchdog() {
     f="/etc/crontabs/root"
     mkdir -p "$(dirname "$f")" 2>/dev/null || true
     [ -f "$f" ] || : > "$f" || return 1
+    # Hybrid intentionally owns the watchdog: it is part of the profile contract.
+    # Other profiles keep the user's saved WATCHDOG_ENABLED state.
+    if [ "${DNS_PROFILE:-}" = "hybrid" ]; then
+        WATCHDOG_ENABLED=1
+    fi
     _interval="${WATCHDOG_INTERVAL:-15}"
     case "$_interval" in ''|*[!0-9]*) _interval=15 ;; esac
     [ "$_interval" -ge 1 ] 2>/dev/null || _interval=15
@@ -4906,6 +4927,7 @@ watchdog|--watchdog|-w)
     init_dirs
     write_catalogs >/dev/null 2>&1 || true
     load_config
+    [ "${DNS_PROFILE:-}" = "hybrid" ] && WATCHDOG_ENABLED=1
     log_msg "Запуск автоматической проверки DNS."
     run_watchdog
     exit $?
@@ -4918,13 +4940,23 @@ install_missing_dependencies || exit 1
 auto_update_manager
 write_catalogs
 load_config
-apply_watchdog || { err_msg "Не удалось синхронизировать cron для автопроверки DNS."; exit 1; }
+if [ "${DNS_PROFILE:-}" = "hybrid" ]; then WATCHDOG_ENABLED=1; fi
+if acquire_mutation_lock; then
+    if ! apply_watchdog; then
+        release_mutation_lock
+        err_msg "Не удалось синхронизировать cron для автопроверки DNS."
+        exit 1
+    fi
+    release_mutation_lock
+else
+    err_msg "Не удалось получить блокировку для синхронизации watchdog."
+    exit 1
+fi
 if [ "${_had_dns_profile:-1}" = 0 ]; then
 hybrid_set_defaults
 save_config
 printf "${C_YELLOW}ℹ Обнаружена старая конфигурацию без профиля. Создан основной профиль Гибридный DNS (без изменения настроек роутера).${C_NC}\n"
 fi
-run_discovery
 printf "${C_GREEN}✓ Первый проход завершён. Настройки роутера не изменены.${C_NC}\n"
 printf "${C_YELLOW}ℹ DNS-серверов в списке: %s.${C_NC}\n" "$(count_dns)"
 log_msg "Запуск DNS Manager. Версия $VERSION. OpenWrt=$SYS_OWRT; платформа=$SYS_TARGET; архитектура=$SYS_ARCH; firewall=$SYS_FW"
