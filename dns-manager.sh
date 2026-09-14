@@ -2,7 +2,7 @@
 MANAGER_PATH="/usr/bin/dns-manager"
 # ==========================================
 # ==========================================
-VERSION="2.11"
+VERSION="2.12"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -15,7 +15,7 @@ BOOTSTRAP_CATALOG="$CFG_DIR/bootstrap-catalog.conf"
 BOGUS_CATALOG="$CFG_DIR/bogus-catalog.conf"
 BOOTSTRAP_DNS_ALL="77.88.8.8,77.88.8.1,94.140.14.14,1.1.1.1,1.0.0.1,8.8.8.8,8.8.4.4,9.9.9.9,149.112.112.112,208.67.222.222,208.67.220.220,149.112.121.10,149.112.122.10,76.76.2.0,76.76.10.0,194.242.2.2,194.242.2.3"
 DNSCAT_VERSION="8.5-RU-NOSOCIAL"
-WATCHDOG_SPEC_VERSION="7"
+WATCHDOG_SPEC_VERSION="8"
 WATCHDOG_RESTART_COOLDOWN=300
 WATCHDOG_LAST_RESTART_FILE="$STATE_DIR/watchdog-last-restart"
 TEST_RESULTS_META="$STATE_DIR/dns-test-results.meta"
@@ -40,6 +40,8 @@ MTU_BEFORE="$STATE_DIR/mtu-before.conf"
 NTP_CLIENTS_BEFORE="$STATE_DIR/ntp-clients-before.conf"
 FORCE_DNS_BEFORE="$STATE_DIR/force-dns-before.conf"
 TEST_RESULTS="$STATE_DIR/dns-test-results.conf"
+TEST_LOCK_DIR="$STATE_DIR/dns-test.lock"
+TEST_LOCK_HELD=0
 WEB_INIT="/etc/init.d/ttyd"
 WEB_ACCESS_PORT="7682"
 WEB_ACCESS_ENABLED=0
@@ -141,6 +143,28 @@ TX_PRE_SLOTS=""
 CORE_ONLY=0
 CRON_TMP_FILE=""
 UPDATE_TMP_FILE=""
+acquire_test_lock() {
+    mkdir -p "$STATE_DIR" 2>/dev/null || return 1
+    if mkdir "$TEST_LOCK_DIR" 2>/dev/null; then
+        printf '%s\n' "$$" > "$TEST_LOCK_DIR/pid" 2>/dev/null || true
+        TEST_LOCK_HELD=1
+        return 0
+    fi
+    _tpid="$(cat "$TEST_LOCK_DIR/pid" 2>/dev/null)"
+    if [ -n "$_tpid" ] && kill -0 "$_tpid" 2>/dev/null; then
+        return 1
+    fi
+    rm -rf "$TEST_LOCK_DIR" 2>/dev/null || true
+    mkdir "$TEST_LOCK_DIR" 2>/dev/null || return 1
+    printf '%s\n' "$$" > "$TEST_LOCK_DIR/pid" 2>/dev/null || true
+    TEST_LOCK_HELD=1
+    return 0
+}
+release_test_lock() {
+    [ "${TEST_LOCK_HELD:-0}" = 1 ] || return 0
+    rm -rf "$TEST_LOCK_DIR" 2>/dev/null || true
+    TEST_LOCK_HELD=0
+}
 cleanup_runtime() {
     if [ -n "${STAGE_PIDS:-}" ]; then
         for _pid in ${STAGE_PIDS:-}; do
@@ -156,6 +180,7 @@ cleanup_runtime() {
     [ -n "${CRON_TMP_FILE:-}" ] && rm -f "$CRON_TMP_FILE" 2>/dev/null || true
     [ -n "${UPDATE_TMP_FILE:-}" ] && rm -f "$UPDATE_TMP_FILE" 2>/dev/null || true
     release_mutation_lock 2>/dev/null || true
+    release_test_lock 2>/dev/null || true
     [ -n "${TMP_DIR:-}" ] && rm -rf "$TMP_DIR" 2>/dev/null || true
 }
 trap cleanup_runtime EXIT
@@ -416,6 +441,7 @@ rm -f "$DNS_CATALOG.previous" "$NTP_CATALOG.previous" "$BOOTSTRAP_CATALOG.previo
 _old_dnscatver="$(sed -n 's/^# DNSCATVER=//p' "$DNS_CATALOG" 2>/dev/null | head -n1)"
 if [ ! -s "$DNS_CATALOG" ] || [ "$_old_dnscatver" != "$DNSCAT_VERSION" ]; then
 cat > "$DNS_CATALOG" <<'EOF_DNS'
+# DNSCATVER=8.5-RU-NOSOCIAL
 # ==========================================
 # ==========================================
 mafioznik|bypass|geo+services|Mafioznik DNS|https://dns.mafioznik.com/dns-query|ru/global|verified-current
@@ -1042,71 +1068,131 @@ rm -f "$q" "$body" "$hdr"
 # ==========================================
 # ==========================================
 test_dns_catalog() {
-rotate_runtime_logs
-[ "$HAS_CURL" = yes ] || { warn_msg "curl не установлен. Сначала установите его через пункт I."; return 1; }
-rm -f "$TMP_DIR/t."* "$TMP_DIR/q."* "$TMP_DIR/body."* "$TMP_DIR/h."* "$TEST_RESULTS" 2>/dev/null
-total="$(count_dns)"
-printf "${C_WHITE}Проверяю %s DNS-серверов. Это может занять до 5 минут...${C_NC}\n" "$total"
-test_progress() {
-    _done=0
-    _ok=0
-    for _f in "$TMP_DIR"/t.*; do
-        [ -f "$_f" ] || continue
-        _done=$((_done+1))
-        grep -q '|OK$' "$_f" 2>/dev/null && _ok=$((_ok+1))
-    done
-    _bad=$((_done-_ok))
-    printf "  ${C_CYAN}Промежуточный результат:${C_NC} проверено %s из %s | работают %s | ошибки %s\n" "$_done" "$total" "$_ok" "$_bad"
-}
-n=0
-batch="${TEST_BATCH:-$TEST_BATCH_DEFAULT}"
-case "$batch" in ''|*[!0-9]*) batch="$TEST_BATCH_DEFAULT";; esac
-[ "$batch" -ge 1 ] 2>/dev/null || batch=1
-[ "$batch" -le 6 ] 2>/dev/null || batch=6
-if [ -r /proc/meminfo ]; then
-    _mem_avail="$(awk '/^MemAvailable:/{print $2; exit}' /proc/meminfo 2>/dev/null)"
-    case "$_mem_avail" in ''|*[!0-9]*) ;; *)
-        [ "$_mem_avail" -lt 16384 ] && batch=1
-        [ "$_mem_avail" -ge 16384 ] && [ "$_mem_avail" -lt 32768 ] && [ "$batch" -gt 2 ] && batch=2
-        ;;
-    esac
-fi
-_load="$(awk '{print $1; exit}' /proc/loadavg 2>/dev/null)"
-_cpu="$(grep -c '^processor' /proc/cpuinfo 2>/dev/null)"
-case "$_cpu" in ''|*[!0-9]*) _cpu=1;; esac
-_load10="$(awk -v x="$_load" 'BEGIN{printf "%.0f", x*10}' 2>/dev/null)"
-case "$_load10" in ''|*[!0-9]*) ;; *) [ "$_load10" -gt $((_cpu*20)) ] && batch=1;; esac
-while IFS='|' read -r id _rest; do
-    case "$id" in ''|\#*) continue;; esac
-    test_one_dns "$id" &
-    n=$((n+1))
-    if [ $((n % batch)) -eq 0 ]; then
-        wait
-        if [ $((n % TEST_PROGRESS_EVERY)) -eq 0 ] || [ "$n" -eq "$total" ]; then
-            test_progress
-        fi
+    rotate_runtime_logs
+    [ "$HAS_CURL" = yes ] || { warn_msg "curl не установлен. Сначала установите его через пункт I."; return 1; }
+    acquire_test_lock || { warn_msg "Полная проверка DNS уже выполняется другим процессом. Текущая проверка отменена."; return 1; }
+    rm -f "$TMP_DIR/t."* "$TMP_DIR/q."* "$TMP_DIR/body."* "$TMP_DIR/h."* 2>/dev/null
+    total="$(count_dns)"
+    [ "$total" -gt 0 ] || { release_test_lock; warn_msg "Каталог DNS пуст."; return 1; }
+    printf "${C_WHITE}Проверяю %s DNS-серверов. Это может занять до 5 минут...${C_NC}\n" "$total"
+    test_progress() {
+        _done=0
+        _ok=0
+        for _f in "$TMP_DIR"/t.*; do
+            [ -f "$_f" ] || continue
+            _done=$((_done+1))
+            grep -q '|OK$' "$_f" 2>/dev/null && _ok=$((_ok+1))
+        done
+        _bad=$((_done-_ok))
+        printf "  ${C_CYAN}Промежуточный результат:${C_NC} проверено %s из %s | работают %s | ошибки %s\n" "$_done" "$total" "$_ok" "$_bad"
+    }
+    n=0
+    batch="${TEST_BATCH:-$TEST_BATCH_DEFAULT}"
+    case "$batch" in ''|*[!0-9]*) batch="$TEST_BATCH_DEFAULT";; esac
+    [ "$batch" -ge 1 ] 2>/dev/null || batch=1
+    [ "$batch" -le 6 ] 2>/dev/null || batch=6
+    if [ -r /proc/meminfo ]; then
+        _mem_avail="$(awk '/^MemAvailable:/{print $2; exit}' /proc/meminfo 2>/dev/null)"
+        case "$_mem_avail" in ''|*[!0-9]*) ;; *)
+            [ "$_mem_avail" -lt 16384 ] && batch=1
+            [ "$_mem_avail" -ge 16384 ] && [ "$_mem_avail" -lt 32768 ] && [ "$batch" -gt 2 ] && batch=2
+            ;;
+        esac
     fi
-done < "$DNS_CATALOG"
-wait
-test_progress
-cat "$TMP_DIR"/t.* > "$TEST_RESULTS" 2>/dev/null
-{
-    printf 'timestamp=%s\n' "$(date +%s)"
-    printf 'catalog_version=%s\n' "$(dns_catalog_version)"
-    printf 'catalog_count=%s\n' "$(count_dns)"
-    printf 'catalog_hash=%s\n' "$(file_hash "$DNS_CATALOG")"
-} > "$TEST_RESULTS_META" 2>/dev/null || true
-okn="$(awk -F'|' 'NF>=5 && $5=="OK"{n++} END{print n+0}' "$TEST_RESULTS" 2>/dev/null)"
-failn=$((total-okn))
-printf "${C_GREEN}✓ Успешно: %s${C_NC} | ${C_YELLOW}Проблемные: %s${C_NC} | Всего: %s\n" "$okn" "$failn" "$total"
-printf "${C_CYAN}Время ответа — сколько занял полный запрос к DNS. Чем меньше число, тем быстрее сервер. Знак «—» означает, что ответ не получен.${C_NC}\n"
-if [ "$okn" -eq 0 ]; then
-    warn_msg "Не удалось проверить ни одного DNS-сервера. Настройки не изменены."
-    log_tx "TEST" "dns-catalog" "RUN" "FAIL" "ok=$okn,total=$total"
-    return 1
-fi
-log_tx "TEST" "dns-catalog" "RUN" "OK" "ok=$okn,total=$total"
+    _load="$(awk '{print $1; exit}' /proc/loadavg 2>/dev/null)"
+    _cpu="$(grep -c '^processor' /proc/cpuinfo 2>/dev/null)"
+    case "$_cpu" in ''|*[!0-9]*) _cpu=1;; esac
+    _load10="$(awk -v x="$_load" 'BEGIN{printf "%.0f", x*10}' 2>/dev/null)"
+    case "$_load10" in ''|*[!0-9]*) ;; *) [ "$_load10" -gt $((_cpu*20)) ] && batch=1;; esac
+    while IFS='|' read -r id _rest; do
+        case "$id" in ''|\#*) continue;; esac
+        test_one_dns "$id" &
+        n=$((n+1))
+        if [ $((n % batch)) -eq 0 ]; then
+            wait
+            if [ $((n % TEST_PROGRESS_EVERY)) -eq 0 ] || [ "$n" -eq "$total" ]; then
+                test_progress
+            fi
+        fi
+    done < "$DNS_CATALOG"
+    wait
+    test_progress
+
+    _result_tmp="$TMP_DIR/test-results-$$"
+    _meta_tmp="$TMP_DIR/test-results-meta-$$"
+    rm -f "$_result_tmp" "$_meta_tmp" 2>/dev/null
+    cat "$TMP_DIR"/t.* > "$_result_tmp" 2>/dev/null || {
+        release_test_lock
+        warn_msg "Не удалось собрать результаты полной проверки DNS."
+        return 1
+    }
+    _result_count="$(wc -l < "$_result_tmp" 2>/dev/null | tr -d ' ')"
+    case "$_result_count" in ''|*[!0-9]*) _result_count=0;; esac
+    [ "$_result_count" -eq "$total" ] || {
+        rm -f "$_result_tmp" "$_meta_tmp" 2>/dev/null
+        release_test_lock
+        warn_msg "Полная проверка завершилась с неполным набором результатов: $_result_count из $total."
+        return 1
+    }
+    _catalog_version="$(dns_catalog_version)"
+    [ -n "$_catalog_version" ] || {
+        rm -f "$_result_tmp" "$_meta_tmp" 2>/dev/null
+        release_test_lock
+        warn_msg "Каталог DNS не содержит версии DNSCATVER. Результат не принят watchdog."
+        return 1
+    }
+    _catalog_hash="$(file_hash "$DNS_CATALOG")"
+    [ -n "$_catalog_hash" ] || {
+        rm -f "$_result_tmp" "$_meta_tmp" 2>/dev/null
+        release_test_lock
+        warn_msg "Не удалось вычислить хеш каталога DNS. Результат не сохранён."
+        return 1
+    }
+    {
+        printf 'timestamp=%s\n' "$(date +%s)"
+        printf 'catalog_version=%s\n' "$_catalog_version"
+        printf 'catalog_count=%s\n' "$total"
+        printf 'catalog_hash=%s\n' "$_catalog_hash"
+    } > "$_meta_tmp" 2>/dev/null || {
+        rm -f "$_result_tmp" "$_meta_tmp" 2>/dev/null
+        release_test_lock
+        warn_msg "Не удалось создать метаданные полной проверки DNS."
+        return 1
+    }
+    [ -s "$_meta_tmp" ] || {
+        rm -f "$_result_tmp" "$_meta_tmp" 2>/dev/null
+        release_test_lock
+        warn_msg "Метаданные полной проверки DNS пусты."
+        return 1
+    }
+    mv "$_result_tmp" "$TEST_RESULTS" 2>/dev/null || {
+        rm -f "$_result_tmp" "$_meta_tmp" 2>/dev/null
+        release_test_lock
+        warn_msg "Не удалось сохранить результаты полной проверки DNS."
+        return 1
+    }
+    mv "$_meta_tmp" "$TEST_RESULTS_META" 2>/dev/null || {
+        rm -f "$_meta_tmp" 2>/dev/null
+        rm -f "$TEST_RESULTS" 2>/dev/null
+        release_test_lock
+        warn_msg "Не удалось сохранить метаданные полной проверки DNS."
+        return 1
+    }
+    okn="$(awk -F'|' 'NF>=5 && $5=="OK"{n++} END{print n+0}' "$TEST_RESULTS" 2>/dev/null)"
+    failn=$((total-okn))
+    printf "${C_GREEN}✓ Успешно: %s${C_NC} | ${C_YELLOW}Проблемные: %s${C_NC} | Всего: %s\n" "$okn" "$failn" "$total"
+    printf "${C_CYAN}Время ответа — сколько занял полный запрос к DNS. Чем меньше число, тем быстрее сервер. Знак «—» означает, что ответ не получен.${C_NC}\n"
+    if [ "$okn" -eq 0 ]; then
+        warn_msg "Не удалось проверить ни одного DNS-сервера. Настройки не изменены."
+        log_tx "TEST" "dns-catalog" "RUN" "FAIL" "ok=$okn,total=$total"
+        release_test_lock
+        return 1
+    fi
+    log_tx "TEST" "dns-catalog" "RUN" "OK" "ok=$okn,total=$total"
+    release_test_lock
+    return 0
 }
+
 # ==========================================
 # ==========================================
 show_best_category() {
@@ -1430,7 +1516,10 @@ clear_all_doh_for_apply() {
     disc_dns
     printf "${C_GREEN}✓ Старых DNS-секций удалено: %s. Устанавливается полный набор DNS Manager.${C_NC}\n" "$_removed"
 }
-record_own() { printf '%s|%s|%s|%s\n' "$1" "$2" "$3" "$4" >> "$OWNERSHIP"; }
+record_own() {
+    _own_line="$(printf '%s|%s|%s|%s' "$1" "$2" "$3" "$4")"
+    grep -Fqx -- "$_own_line" "$OWNERSHIP" 2>/dev/null || printf '%s\n' "$_own_line" >> "$OWNERSHIP"
+}
 configure_hdp_manager_control() {
     uci set https-dns-proxy.config.dnsmasq_config_update='-' || return 1
     uci set https-dns-proxy.config.force_dns='0' || return 1
@@ -1623,13 +1712,61 @@ ensure_dnsmasq_balancer() {
     [ "$(uci -q get "dhcp.$_sec.noresolv" 2>/dev/null)" = 1 ] || return 1
     return 0
 }
+normalize_ownership_snapshot() {
+    [ -f "$OWNERSHIP" ] || return 0
+    _own_tmp="$TMP_DIR/ownership-normalized-$$"
+    : > "$_own_tmp" || return 1
+    while IFS='|' read -r _ot _ok _ov _od; do
+        [ -n "$_ot" ] || continue
+        case "$_ot|$_ok" in
+            dnsmasq\|server)
+                dnsmasq_manager_server_owned "$_ov" && printf '%s|%s|%s|%s\n' "$_ot" "$_ok" "$_ov" "$_od" >> "$_own_tmp"
+                ;;
+            doh)
+                _live=0
+                for _os in 1 2 3 4 5 6 RU RU_2; do
+                    eval "_oid=\${SLOT_${_os}:-}"
+                    eval "_op=\${PORT_${_os}:-}"
+                    [ -n "$_oid" ] && [ -n "$_op" ] || continue
+                    _ou="$(normalize_url "$(dns_url "$_oid")")"
+                    _norm_ov="$(normalize_url "$_ov")"
+                    if [ "$_op" = "$_ok" ] && [ "$_ou" = "$_norm_ov" ]; then
+                        _live=1
+                        break
+                    fi
+                done
+                [ "$_live" = 1 ] && printf '%s|%s|%s|%s\n' "$_ot" "$_ok" "$_ov" "$_od" >> "$_own_tmp"
+                ;;
+            *)
+                printf '%s|%s|%s|%s\n' "$_ot" "$_ok" "$_ov" "$_od" >> "$_own_tmp"
+                ;;
+        esac
+    done < "$OWNERSHIP"
+    mv "$_own_tmp" "$OWNERSHIP" 2>/dev/null || rm -f "$_own_tmp" 2>/dev/null
+    return 0
+}
 dnsmasq_manager_server_owned() {
     _val="$1"
     [ -n "$_val" ] || return 1
-    # Prefer the persistent ownership journal from all previous manager versions.
-    awk -F'|' -v v="$_val" '$1=="dnsmasq" && $2=="server" && $3==v {found=1; exit} END{exit found?0:1}' "$OWNERSHIP" 2>/dev/null && return 0
-    # Legacy manager versions did not always leave a reliable journal. These are
-    # the manager's dedicated local DoH ports and regional routes.
+    # Ownership is derived from the current DNS Manager selection. The
+    # persistent journal is audit state and must never make an old server
+    # value appear manager-owned after a slot/port replacement.
+    for _s in 1 2 3 4 5 6; do
+        eval "_p=\${PORT_$_s:-}"
+        [ -n "$_p" ] && [ "$_val" = "127.0.0.1#$_p" ] && return 0
+    done
+    if [ -n "${PORT_RU:-}" ]; then
+        case "$_val" in
+            /ru/127.0.0.1#${PORT_RU}|/su/127.0.0.1#${PORT_RU}|/xn--p1ai/127.0.0.1#${PORT_RU}) return 0 ;;
+        esac
+    fi
+    if [ -n "${PORT_RU_2:-}" ]; then
+        case "$_val" in
+            /ru/127.0.0.1#${PORT_RU_2}|/su/127.0.0.1#${PORT_RU_2}|/xn--p1ai/127.0.0.1#${PORT_RU_2}) return 0 ;;
+        esac
+    fi
+    # Legacy Hybrid ports remain recognised so an upgrade can safely clean
+    # an older manager installation without trusting its stale journal.
     case "$_val" in
         127.0.0.1#505[3-9]|127.0.0.1#5060|/ru/127.0.0.1#505[3-9]|/ru/127.0.0.1#5060|/su/127.0.0.1#505[3-9]|/su/127.0.0.1#5060|/xn--p1ai/127.0.0.1#505[3-9]|/xn--p1ai/127.0.0.1#5060) return 0 ;;
     esac
@@ -2711,7 +2848,7 @@ TX_DIR="$STATE_DIR/tx-$TX_ID"
 rm -rf "$TX_DIR" 2>/dev/null
 mkdir -p "$TX_DIR/files" || return 1
 TX_ACTIVE=1
-for f in "$CONFIG_FILE" /etc/config/dhcp /etc/config/https-dns-proxy /etc/config/firewall /etc/config/system /etc/sysctl.d/90-dns-manager.conf /etc/sysctl.d/91-dns-manager-extended.conf /etc/dnsmasq.d/90-dns-manager-bogus.conf /etc/dnsmasq.d/91-dns-manager-client-fixes.conf /etc/crontabs/root; do
+for f in "$CONFIG_FILE" "$OWNERSHIP" /etc/config/dhcp /etc/config/https-dns-proxy /etc/config/firewall /etc/config/system /etc/sysctl.d/90-dns-manager.conf /etc/sysctl.d/91-dns-manager-extended.conf /etc/dnsmasq.d/90-dns-manager-bogus.conf /etc/dnsmasq.d/91-dns-manager-client-fixes.conf /etc/crontabs/root; do
 key="$(printf '%s' "$f" | sed 's#^/##; s#[/ ]#_#g')"
 if [ -f "$f" ]; then cp -p "$f" "$TX_DIR/files/$key"; file_hash "$f" > "$TX_DIR/$key.before"; printf '%s|%s|1\n' "$f" "$key" >> "$TX_DIR/manifest"; else printf '%s|%s|0\n' "$f" "$key" >> "$TX_DIR/manifest"; fi
 done
@@ -3105,6 +3242,7 @@ _apply_settings_impl() {
     TX_RESERVED_PORTS=""
     baseline_capture_once || { err_msg "Не удалось сохранить исходную копию. Настройки не изменены."; return 1; }
     tx_snapshot_start || { err_msg "Не удалось сохранить копию настроек. Настройки не изменены."; return 1; }
+    : > "$OWNERSHIP" || { err_msg "Не удалось подготовить снимок ownership для текущего применения."; tx_restore_on_failure; return 1; }
     log_tx "PLAN" "all" "APPLY" "START" "version=$VERSION"
     if [ "$NTP_IP_FALLBACK" = 1 ]; then
         apply_ntp_host_ips || { err_msg "Не удалось подготовить серверы времени."; tx_restore_on_failure; return 1; }
@@ -4385,9 +4523,11 @@ watchdog_test_results_fresh() {
     case "$_ts" in ''|*[!0-9]*) return 1;; esac
     case "$_now" in ''|*[!0-9]*) return 1;; esac
     case "$_cc" in ''|*[!0-9]*) return 1;; esac
+    [ -n "$_cv" ] || return 1
     [ -n "$_ch" ] || return 1
     [ "$_cv" = "$(dns_catalog_version)" ] || return 1
     [ "$_cc" = "$(count_dns)" ] || return 1
+    [ "$(wc -l < "$TEST_RESULTS" 2>/dev/null | tr -d " ")" = "$_cc" ] || return 1
     [ "$_ch" = "$(file_hash "$DNS_CATALOG")" ] || return 1
     [ "$(( _now - _ts ))" -ge 0 ] 2>/dev/null || return 1
     [ "$(( _now - _ts ))" -le "${TEST_RESULTS_MAX_AGE:-21600}" ] 2>/dev/null || return 1
@@ -4971,6 +5111,7 @@ watchdog|--watchdog|-w)
     init_dirs
     write_catalogs >/dev/null 2>&1 || true
     load_config
+    normalize_ownership_snapshot 2>/dev/null || true
     if [ "${DNS_PROFILE:-}" = "hybrid" ]; then WATCHDOG_ENABLED=1; fi
     log_msg "Запуск автоматической проверки DNS."
     run_watchdog
@@ -4982,6 +5123,7 @@ init_dirs
 auto_update_manager
 write_catalogs
 load_config
+normalize_ownership_snapshot 2>/dev/null || true
 if [ "${DNS_PROFILE:-}" = "hybrid" ]; then WATCHDOG_ENABLED=1; fi
 if acquire_mutation_lock; then
     if ! apply_watchdog; then
