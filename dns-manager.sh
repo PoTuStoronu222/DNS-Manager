@@ -2,7 +2,7 @@
 MANAGER_PATH="/usr/bin/dns-manager"
 # ==========================================
 # ==========================================
-VERSION="2.08"
+VERSION="2.10"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -15,7 +15,9 @@ BOOTSTRAP_CATALOG="$CFG_DIR/bootstrap-catalog.conf"
 BOGUS_CATALOG="$CFG_DIR/bogus-catalog.conf"
 BOOTSTRAP_DNS_ALL="77.88.8.8,77.88.8.1,94.140.14.14,1.1.1.1,1.0.0.1,8.8.8.8,8.8.4.4,9.9.9.9,149.112.112.112,208.67.222.222,208.67.220.220,149.112.121.10,149.112.122.10,76.76.2.0,76.76.10.0,194.242.2.2,194.242.2.3"
 DNSCAT_VERSION="8.5-RU-NOSOCIAL"
-WATCHDOG_SPEC_VERSION="5"
+WATCHDOG_SPEC_VERSION="6"
+WATCHDOG_RESTART_COOLDOWN=300
+WATCHDOG_LAST_RESTART_FILE="$STATE_DIR/watchdog-last-restart"
 # Resource-safety defaults for small OpenWrt routers.
 TEST_BATCH_DEFAULT=4
 WATCHDOG_MAX_REPAIRS=1
@@ -197,22 +199,23 @@ else
   wget -q -T 15 -O "$_upd_tmp" "$UPDATE_URL" >/dev/null 2>&1
 fi
 if [ ! -s "$_upd_tmp" ]; then
-  printf "${C_CYAN}ℹ Проверка обновления: источник недоступен. Запуск продолжается.${C_NC}\n"
   rm -f "$_upd_tmp" 2>/dev/null; UPDATE_TMP_FILE=""; return 0
 fi
-head -n 1 "$_upd_tmp" 2>/dev/null | grep -q '^#!/bin/sh' || { rm -f "$_upd_tmp"; return 0; }
+head -n 1 "$_upd_tmp" 2>/dev/null | grep -q '^#!/bin/sh' || { rm -f "$_upd_tmp"; UPDATE_TMP_FILE=""; return 0; }
 _new_version="$(sed -n 's/^VERSION="\([^"]*\)"$/\1/p' "$_upd_tmp" 2>/dev/null | head -n1)"
-if [ -z "$_new_version" ]; then rm -f "$_upd_tmp"; return 0; fi
-sh -n "$_upd_tmp" 2>/dev/null || { rm -f "$_upd_tmp"; return 0; }
-if [ "$_new_version" = "$VERSION" ]; then
-  printf "${C_GREEN}✓ Проверка обновления: версия %s актуальна.${C_NC}\n" "$VERSION"
+[ -n "$_new_version" ] || { rm -f "$_upd_tmp"; UPDATE_TMP_FILE=""; return 0; }
+sh -n "$_upd_tmp" 2>/dev/null || { rm -f "$_upd_tmp"; UPDATE_TMP_FILE=""; return 0; }
+_new_hash="$(file_hash "$_upd_tmp")"
+_old_hash="$(file_hash "$MANAGER_PATH")"
+if [ "$_new_version" = "$VERSION" ] && { [ -z "$_new_hash" ] || [ -z "$_old_hash" ] || [ "$_new_hash" = "$_old_hash" ]; }; then
   rm -f "$_upd_tmp" 2>/dev/null; UPDATE_TMP_FILE=""; return 0
 fi
 if ! _ver_newer "$_new_version" "$VERSION"; then
-  printf "${C_CYAN}ℹ Версия %s не новее установленной %s. Обновление не требуется.${C_NC}\n" "$_new_version" "$VERSION"
-  rm -f "$_upd_tmp" 2>/dev/null; UPDATE_TMP_FILE=""; return 0
+  if [ "$_new_version" != "$VERSION" ]; then
+    rm -f "$_upd_tmp" 2>/dev/null; UPDATE_TMP_FILE=""; return 0
+  fi
 fi
-printf "${C_PINK}↻ Доступна версия %s. Обновление...${C_NC}\n" "$_new_version"
+printf "${C_PINK}↻ Найдены изменения DNS Manager: %s → %s. Обновление...${C_NC}\n" "$VERSION" "$_new_version"
 if cp -f "$_upd_tmp" "$MANAGER_PATH" 2>/dev/null && chmod 755 "$MANAGER_PATH" 2>/dev/null; then
   rm -f "$_upd_tmp" 2>/dev/null
   UPDATE_TMP_FILE=""
@@ -973,40 +976,15 @@ return 1
 # ==========================================
 # ==========================================
 validate_dns_message() {
+    # Compatibility stub kept for callers: DoH availability uses HTTP 200,
+    # application/dns-message and a body of at least 12 bytes. No DNS flag parsing.
     _file="$1"
     [ -s "$_file" ] || return 1
-
-    # BusyBox/OpenWrt-safe DNS wire-format check.
-    # Do NOT use awk bitwise operators here: BusyBox awk may reject '&'.
-    # We only require a real DNS response for our request:
-    #   - transaction ID = 0x1234
-    #   - QR=1 and opcode=0 (flags high byte 128..159)
-    #   - minimum DNS header is present
-    # QDCOUNT is allowed to be 0 or 1 because some DoH implementations
-    # legitimately omit the echoed question section.
-    set -- $(od -An -tu1 -N12 "$_file" 2>/dev/null)
-    [ "$#" -ge 12 ] || return 1
-    case "$1:$2:$3:$4:$5:$6" in
-        18:52:*:*:*:*) ;;
-        *) return 1 ;;
-    esac
-
-    # Flags high byte: QR=1 + opcode=0 => 128..159.
-    case "$3" in
-        ''|*[!0-9]*) return 1 ;;
-    esac
-    [ "$3" -ge 128 ] 2>/dev/null || return 1
-    [ "$3" -le 159 ] 2>/dev/null || return 1
-
-    # RCODE is the low nibble of flags-low; all 0..15 are valid.
-    case "$4" in
-        ''|*[!0-9]*) return 1 ;;
-    esac
-    [ "$4" -ge 0 ] 2>/dev/null && [ "$4" -le 255 ] 2>/dev/null || return 1
-
+    _n="$(wc -c < "$_file" 2>/dev/null | tr -d " ")"
+    case "$_n" in ''|*[!0-9]*) return 1;; esac
+    [ "$_n" -ge 12 ] || return 1
     return 0
 }
-
 test_one_dns() {
 id="$1"; url="$(normalize_url "$(dns_url "$id")")"; name="$(dns_name "$id")"; cat="$(dns_cat "$id")"
 host="$(url_host "$url")"
@@ -1034,8 +1012,8 @@ while IFS= read -r ipx; do
     case "$tim" in ''|0) ms=-1;; *) ms="$(awk -v t="$tim" 'BEGIN{v=t*1000; if(v<1)v=1; printf "%.0f", v}')";; esac
     case "$code" in
     200)
-        case "$ctype" in *application/dns-message*|*application/octet-stream*|'' ) ct_ok=yes;; *) ct_ok=no;; esac
-        if [ "$bytes" -ge 12 ] && [ "$ct_ok" = yes ] && validate_dns_message "$body"; then
+        case "$ctype" in *application/dns-message*) ct_ok=yes;; *) ct_ok=no;; esac
+        if [ "$bytes" -ge 12 ] && [ "$ct_ok" = yes ]; then
             if [ "$_best_ms" -lt 0 ] || { [ "$ms" -ge 0 ] && [ "$ms" -lt "$_best_ms" ]; }; then _best_ms="$ms"; fi
             st=OK
         else st=BAD_DOH_RESPONSE; fi ;;
@@ -3237,6 +3215,7 @@ _apply_settings_impl() {
     pause
 }
 apply_settings() {
+    install_missing_dependencies || return 1
     acquire_mutation_lock || return 1
     _rc=0
     _apply_settings_impl "$@" || _rc=$?
@@ -4297,15 +4276,12 @@ fi
 printf '%s\n' "$missing"
 }
 prepare_dns_operation(){
-    run_discovery >/dev/null 2>&1 || true
-    install_missing_dependencies || return 1
     write_catalogs
     load_config
     run_discovery >/dev/null 2>&1 || true
     return 0
 }
 install_missing_dependencies(){
-    run_discovery >/dev/null 2>&1 || true
     _need="$(ensure_dependencies)"
     if [ -z "$_need" ]; then
         return 0
@@ -4672,8 +4648,17 @@ watchdog_restart_hdp() {
         log_msg "Watchdog: лимит перезапусков https-dns-proxy за один цикл достигнут ($_max)."
         return 1
     }
+    _now="$(date +%s 2>/dev/null)"
+    _last="$(cat "$WATCHDOG_LAST_RESTART_FILE" 2>/dev/null)"
+    case "$_now" in ''|*[!0-9]*) _now=0;; esac
+    case "$_last" in ''|*[!0-9]*) _last=0;; esac
+    if [ "$_last" -gt 0 ] && [ $((_now-_last)) -lt "${WATCHDOG_RESTART_COOLDOWN:-300}" ]; then
+        log_msg "Watchdog: рестарт https-dns-proxy отложен (cooldown ${WATCHDOG_RESTART_COOLDOWN:-300} сек)."
+        return 1
+    fi
     /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || return 1
     WATCHDOG_RESTART_COUNT=$((WATCHDOG_RESTART_COUNT+1))
+    printf '%s\n' "$_now" > "$WATCHDOG_LAST_RESTART_FILE" 2>/dev/null || true
     return 0
 }
 watchdog_resource_guard() {
@@ -4897,8 +4882,12 @@ done
 # ==========================================
 migrate_legacy_manager_files || { err_msg "Не удалось объединить старые файлы DNS Manager в единый namespace."; exit 1; }
 main_menu() {
+MAIN_STATE_STALE=1
 while :; do
-run_discovery
+if [ "${MAIN_STATE_STALE:-1}" = 1 ]; then
+    run_discovery
+    MAIN_STATE_STALE=0
+fi
 menu_header "DNS Manager $VERSION"
 menu_section "СОСТОЯНИЕ РОУТЕРА"
 printf "  ${C_YELLOW}${C_BOLD}IPv4${C_NC}               %b\n" "$(state_word "$IPV4_ROUTE")"
@@ -4924,12 +4913,12 @@ menu_prompt
 safe_read c
 [ -z "$c" ] && { clear_screen; printf "${C_GREEN}DNS Manager завершён.${C_NC}\n"; exit 0; }
 case "$c" in
-1) prepare_dns_operation || { pause; continue; }; menu_dns;;
-2) prepare_dns_operation || { pause; continue; }; test_dns_catalog; show_tests;;
+1) MAIN_STATE_STALE=1; prepare_dns_operation || { pause; continue; }; menu_dns;;
+2) test_dns_catalog; show_tests;;
 3) show_map;;
-4) prepare_dns_operation || { pause; continue; }; menu_ntp;;
-5) prepare_dns_operation || { pause; continue; }; menu_extras;;
-6)
+4) MAIN_STATE_STALE=1; prepare_dns_operation || { pause; continue; }; menu_ntp;;
+5) MAIN_STATE_STALE=1; prepare_dns_operation || { pause; continue; }; menu_extras;;
+6) MAIN_STATE_STALE=1;
 clear_screen
 menu_header "УДАЛЕНИЕ ИЗМЕНЕНИЙ"
 warn_msg "Будут удалены только изменения DNS Manager."
@@ -4945,7 +4934,7 @@ watchdog|--watchdog|-w)
     init_dirs
     write_catalogs >/dev/null 2>&1 || true
     load_config
-    [ "${DNS_PROFILE:-}" = "hybrid" ] && WATCHDOG_ENABLED=1
+    if [ "${DNS_PROFILE:-}" = "hybrid" ]; then WATCHDOG_ENABLED=1; fi
     log_msg "Запуск автоматической проверки DNS."
     run_watchdog
     exit $?
@@ -4953,8 +4942,6 @@ watchdog|--watchdog|-w)
 esac
 preflight_readonly
 init_dirs
-run_discovery
-install_missing_dependencies || exit 1
 auto_update_manager
 write_catalogs
 load_config
@@ -4975,6 +4962,7 @@ hybrid_set_defaults
 save_config
 printf "${C_YELLOW}ℹ Обнаружена старая конфигурацию без профиля. Создан основной профиль Гибридный DNS (без изменения настроек роутера).${C_NC}\n"
 fi
+run_discovery
 printf "${C_GREEN}✓ Первый проход завершён. Настройки роутера не изменены.${C_NC}\n"
 printf "${C_YELLOW}ℹ DNS-серверов в списке: %s.${C_NC}\n" "$(count_dns)"
 log_msg "Запуск DNS Manager. Версия $VERSION. OpenWrt=$SYS_OWRT; платформа=$SYS_TARGET; архитектура=$SYS_ARCH; firewall=$SYS_FW"
