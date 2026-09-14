@@ -2,7 +2,7 @@
 MANAGER_PATH="/usr/bin/dns-manager"
 # ==========================================
 # ==========================================
-VERSION="2.07"
+VERSION="2.08"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -975,29 +975,38 @@ return 1
 validate_dns_message() {
     _file="$1"
     [ -s "$_file" ] || return 1
-    _hdr="$(od -An -tu1 -N12 "$_file" 2>/dev/null | awk '
-        {for(i=1;i<=NF;i++) printf "%s ", $i}
-    ' )"
-    awk -v h="$_hdr" 'BEGIN{
-        n=split(h,a," "); if(n<12) exit 1;
-        for(i=1;i<=12;i++) if(a[i]!~ /^[0-9]+$/) exit 1;
 
-        # DNS wire-format sanity checks:
-        # byte 0-1: transaction ID (our probe uses 0x1234 = 18,52)
-        # byte 2: flags high byte, QR must be 1; opcode must be 0.
-        # byte 3: flags low byte, RCODE may be any standard 4-bit value.
-        # byte 4-5: QDCOUNT; DoH response to our single question should keep 1.
-        if(a[1]!=18 || a[2]!=52) exit 1;
-        if((int(a[3]/128)%2)==0) exit 1;
-        if((int(a[3]/8)%16)!=0) exit 1;
-        if((a[4]%16)!=0) exit 1;
-        if((a[5]*256+a[6])!=1) exit 1;
+    # BusyBox/OpenWrt-safe DNS wire-format check.
+    # Do NOT use awk bitwise operators here: BusyBox awk may reject '&'.
+    # We only require a real DNS response for our request:
+    #   - transaction ID = 0x1234
+    #   - QR=1 and opcode=0 (flags high byte 128..159)
+    #   - minimum DNS header is present
+    # QDCOUNT is allowed to be 0 or 1 because some DoH implementations
+    # legitimately omit the echoed question section.
+    set -- $(od -An -tu1 -N12 "$_file" 2>/dev/null)
+    [ "$#" -ge 12 ] || return 1
+    case "$1:$2:$3:$4:$5:$6" in
+        18:52:*:*:*:*) ;;
+        *) return 1 ;;
+    esac
 
-        # Must have at least one answer/authority/additional section count byte pair;
-        # zero values are valid, so only validate that the fields exist (already done).
-        exit 0;
-    }'
+    # Flags high byte: QR=1 + opcode=0 => 128..159.
+    case "$3" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    [ "$3" -ge 128 ] 2>/dev/null || return 1
+    [ "$3" -le 159 ] 2>/dev/null || return 1
+
+    # RCODE is the low nibble of flags-low; all 0..15 are valid.
+    case "$4" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    [ "$4" -ge 0 ] 2>/dev/null && [ "$4" -le 255 ] 2>/dev/null || return 1
+
+    return 0
 }
+
 test_one_dns() {
 id="$1"; url="$(normalize_url "$(dns_url "$id")")"; name="$(dns_name "$id")"; cat="$(dns_cat "$id")"
 host="$(url_host "$url")"
@@ -1025,7 +1034,7 @@ while IFS= read -r ipx; do
     case "$tim" in ''|0) ms=-1;; *) ms="$(awk -v t="$tim" 'BEGIN{v=t*1000; if(v<1)v=1; printf "%.0f", v}')";; esac
     case "$code" in
     200)
-        case "$ctype" in *application/dns-message*) ct_ok=yes;; *) ct_ok=no;; esac
+        case "$ctype" in *application/dns-message*|*application/octet-stream*|'' ) ct_ok=yes;; *) ct_ok=no;; esac
         if [ "$bytes" -ge 12 ] && [ "$ct_ok" = yes ] && validate_dns_message "$body"; then
             if [ "$_best_ms" -lt 0 ] || { [ "$ms" -ge 0 ] && [ "$ms" -lt "$_best_ms" ]; }; then _best_ms="$ms"; fi
             st=OK
