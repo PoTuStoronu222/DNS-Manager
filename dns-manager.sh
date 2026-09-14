@@ -2,7 +2,7 @@
 MANAGER_PATH="/usr/bin/dns-manager"
 # ==========================================
 # ==========================================
-VERSION="2.12"
+VERSION="2.13"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -15,7 +15,7 @@ BOOTSTRAP_CATALOG="$CFG_DIR/bootstrap-catalog.conf"
 BOGUS_CATALOG="$CFG_DIR/bogus-catalog.conf"
 BOOTSTRAP_DNS_ALL="77.88.8.8,77.88.8.1,94.140.14.14,1.1.1.1,1.0.0.1,8.8.8.8,8.8.4.4,9.9.9.9,149.112.112.112,208.67.222.222,208.67.220.220,149.112.121.10,149.112.122.10,76.76.2.0,76.76.10.0,194.242.2.2,194.242.2.3"
 DNSCAT_VERSION="8.5-RU-NOSOCIAL"
-WATCHDOG_SPEC_VERSION="8"
+WATCHDOG_SPEC_VERSION="9"
 WATCHDOG_RESTART_COOLDOWN=300
 WATCHDOG_LAST_RESTART_FILE="$STATE_DIR/watchdog-last-restart"
 TEST_RESULTS_META="$STATE_DIR/dns-test-results.meta"
@@ -1201,13 +1201,13 @@ awk -F'|' -v c="$cat" '$2==c && $5=="OK"{print}' "$TEST_RESULTS" 2>/dev/null | s
 }
 # ==========================================
 # ==========================================
-HYBRID_PORT_1=5053
-HYBRID_PORT_2=5054
-HYBRID_PORT_3=5055
-HYBRID_PORT_4=5056
-HYBRID_PORT_5=5057
-HYBRID_PORT_6=5058
-HYBRID_PORT_RU=5059
+HYBRID_PORT_1=5054
+HYBRID_PORT_2=5055
+HYBRID_PORT_3=5056
+HYBRID_PORT_4=5057
+HYBRID_PORT_5=5058
+HYBRID_PORT_6=5059
+HYBRID_PORT_RU=5060
 # ==========================================
 # ==========================================
 hybrid_set_defaults() {
@@ -1749,8 +1749,8 @@ dnsmasq_manager_server_owned() {
     _val="$1"
     [ -n "$_val" ] || return 1
     # Ownership is derived from the current DNS Manager selection. The
-    # persistent journal is audit state and must never make an old server
-    # value appear manager-owned after a slot/port replacement.
+    # Ownership is derived only from the current manager selection; historical
+    # journal entries must never make an old server appear manager-owned.
     for _s in 1 2 3 4 5 6; do
         eval "_p=\${PORT_$_s:-}"
         [ -n "$_p" ] && [ "$_val" = "127.0.0.1#$_p" ] && return 0
@@ -1765,11 +1765,6 @@ dnsmasq_manager_server_owned() {
             /ru/127.0.0.1#${PORT_RU_2}|/su/127.0.0.1#${PORT_RU_2}|/xn--p1ai/127.0.0.1#${PORT_RU_2}) return 0 ;;
         esac
     fi
-    # Legacy Hybrid ports remain recognised so an upgrade can safely clean
-    # an older manager installation without trusting its stale journal.
-    case "$_val" in
-        127.0.0.1#505[3-9]|127.0.0.1#5060|/ru/127.0.0.1#505[3-9]|/ru/127.0.0.1#5060|/su/127.0.0.1#505[3-9]|/su/127.0.0.1#5060|/xn--p1ai/127.0.0.1#505[3-9]|/xn--p1ai/127.0.0.1#5060) return 0 ;;
-    esac
     return 1
 }
 reconcile_dnsmasq() {
@@ -3973,7 +3968,7 @@ case "$c" in
 7) select_slot RU;;
 8) select_slot RU_2;;
 9) CORE_ONLY=1; apply_settings; _rc=$?; CORE_ONLY=0; [ "$_rc" -eq 0 ] || warn_msg "Не удалось применить выбранные DNS."; pause;;
-10) hybrid_set_defaults; save_config; ok_msg "Стандартный Гибридный DNS восстановлен: 5053–5058 + Yandex 5059."; pause;;
+10) hybrid_set_defaults; save_config; ok_msg "Стандартный Гибридный DNS восстановлен: 5054–5059 + Yandex 5060."; pause;;
 *) warn_msg "Неверный пункт."; pause;;
 esac
 done
@@ -4790,33 +4785,54 @@ EOF_CANDIDATES
 }
 watchdog_apply_slot_candidate() {
     _slot="$1"; _new_id="$2"; _new_cat="$3"; _old_id="$4"; _old_cat="$5"
+    eval "_port=\${PORT_${_slot}:-}"
     [ -n "$_slot" ] && [ -n "$_new_id" ] || return 1
     eval "SLOT_${_slot}=\"$_new_id\""
     eval "SLOT_${_slot}_CAT=\"$_new_cat\""
-    if ! rebuild_selected_hdp_sections >/dev/null 2>&1; then
+
+    # Candidate application is transactional. A failed candidate must never
+    # remain live merely because the watchdog restart cooldown is active.
+    # Rollback is a safety action and therefore uses a direct service restart.
+    watchdog_candidate_rollback() {
         eval "SLOT_${_slot}=\"$_old_id\""
         eval "SLOT_${_slot}_CAT=\"$_old_cat\""
-        rebuild_selected_hdp_sections >/dev/null 2>&1 || true
+        if ! rebuild_selected_hdp_sections >/dev/null 2>&1; then
+            log_msg "Watchdog: не удалось пересобрать старую конфигурацию после неудачной замены слота $_slot."
+            return 1
+        fi
+        /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || {
+            log_msg "Watchdog: не удалось перезапустить https-dns-proxy после отката слота $_slot."
+            return 1
+        }
+        sleep 3
+        watchdog_check_slot "$_slot"
+    }
+
+    if ! rebuild_selected_hdp_sections >/dev/null 2>&1; then
+        watchdog_candidate_rollback >/dev/null 2>&1 || true
         return 1
     fi
-    watchdog_restart_hdp || {
-        eval "SLOT_${_slot}=\"$_old_id\""
-        eval "SLOT_${_slot}_CAT=\"$_old_cat\""
-        rebuild_selected_hdp_sections >/dev/null 2>&1 || true
+    if ! watchdog_restart_hdp; then
+        watchdog_candidate_rollback >/dev/null 2>&1 || true
         return 1
-    }
+    fi
     sleep 3
     if watchdog_check_slot "$_slot"; then
-        save_config || return 1
+        if ! save_config; then
+            watchdog_candidate_rollback >/dev/null 2>&1 || true
+            return 1
+        fi
+        # Replace the stale historical ownership entry with the candidate's
+        # current live URL/port record after a successful save.
+        normalize_ownership_snapshot >/dev/null 2>&1 || true
+        _new_url="$(normalize_url "$(dns_url "$_new_id")")"
+        [ -n "$_new_url" ] && record_own "doh" "$_port" "$_new_url" "slot=$_slot;name=$(dns_name "$_new_id")"
         return 0
     fi
-    eval "SLOT_${_slot}=\"$_old_id\""
-    eval "SLOT_${_slot}_CAT=\"$_old_cat\""
-    rebuild_selected_hdp_sections >/dev/null 2>&1 || return 1
-    watchdog_restart_hdp || return 1
-    sleep 2
+    watchdog_candidate_rollback >/dev/null 2>&1 || true
     return 1
 }
+
 # ==========================================
 WATCHDOG_RESTART_COUNT=0
 watchdog_restart_hdp() {
@@ -4962,14 +4978,14 @@ run_watchdog() {
             printf '%s\n' "$_repl" >> "$_tried"
             printf "  ${C_YELLOW}↻ Слот %s: %s не отвечает или не соответствует профилю. Проверяю замену %s.${C_NC}\n" "$_slot" "$(dns_name "$_old")" "$(dns_name "$_repl")"
             if watchdog_apply_slot_candidate "$_slot" "$_repl" "$_repl_cat" "$_old" "$_oldcat"; then
-                printf "  ${C_GREEN}✓ Слот %s: %s подтверждён на 127.0.0.1:%s.${C_NC}\n" "$_slot" "$(dns_name "$_repl")" "$(hybrid_desired_port "$_slot")"
+                printf "  ${C_GREEN}✓ Слот %s: %s подтверждён на 127.0.0.1:%s.${C_NC}\n" "$_slot" "$(dns_name "$_repl")" "$(eval "printf %s \"\${PORT_${_slot}:-}\"")"
                 _u="$(normalize_url "$(dns_url "$_repl")")"
                 grep -qxF "$_u" "$_used" 2>/dev/null || printf '%s\n' "$_u" >> "$_used"
                 _replacement_ok=1
                 _wd_repairs=$((_wd_repairs+1))
                 break
             fi
-            printf "  ${C_RED}✗ Слот %s: %s не подтвердился через 127.0.0.1:%s.${C_NC}\n" "$_slot" "$(dns_name "$_repl")" "$(hybrid_desired_port "$_slot")"
+            printf "  ${C_RED}✗ Слот %s: %s не подтвердился через 127.0.0.1:%s.${C_NC}\n" "$_slot" "$(dns_name "$_repl")" "$(eval "printf %s \"\${PORT_${_slot}:-}\"")"
         done
         [ "$_replacement_ok" = 1 ] || _wd_rc=1
         rm -f "$_tried"
