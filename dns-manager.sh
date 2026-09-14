@@ -2,7 +2,7 @@
 MANAGER_PATH="/usr/bin/dns-manager"
 # ==========================================
 # ==========================================
-VERSION="2.10"
+VERSION="2.11"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -15,9 +15,12 @@ BOOTSTRAP_CATALOG="$CFG_DIR/bootstrap-catalog.conf"
 BOGUS_CATALOG="$CFG_DIR/bogus-catalog.conf"
 BOOTSTRAP_DNS_ALL="77.88.8.8,77.88.8.1,94.140.14.14,1.1.1.1,1.0.0.1,8.8.8.8,8.8.4.4,9.9.9.9,149.112.112.112,208.67.222.222,208.67.220.220,149.112.121.10,149.112.122.10,76.76.2.0,76.76.10.0,194.242.2.2,194.242.2.3"
 DNSCAT_VERSION="8.5-RU-NOSOCIAL"
-WATCHDOG_SPEC_VERSION="6"
+WATCHDOG_SPEC_VERSION="7"
 WATCHDOG_RESTART_COOLDOWN=300
 WATCHDOG_LAST_RESTART_FILE="$STATE_DIR/watchdog-last-restart"
+TEST_RESULTS_META="$STATE_DIR/dns-test-results.meta"
+TEST_RESULTS_MAX_AGE=21600
+TEST_PROGRESS_EVERY=20
 # Resource-safety defaults for small OpenWrt routers.
 TEST_BATCH_DEFAULT=4
 WATCHDOG_MAX_REPAIRS=1
@@ -584,7 +587,7 @@ sys_loop|system|127.0.0.1|Системное значение: только вр
 EOF_BOGUS
 fi
 if [ "${_old_dnscatver:-}" != "$DNSCAT_VERSION" ]; then
-    rm -f "$TEST_RESULTS"
+    rm -f "$TEST_RESULTS" "$TEST_RESULTS_META"
     printf '%s\n' "$DNSCAT_VERSION" > "$STATE_DIR/dns-catalog.version" 2>/dev/null
 fi
 }
@@ -1079,12 +1082,20 @@ while IFS='|' read -r id _rest; do
     n=$((n+1))
     if [ $((n % batch)) -eq 0 ]; then
         wait
-        test_progress
+        if [ $((n % TEST_PROGRESS_EVERY)) -eq 0 ] || [ "$n" -eq "$total" ]; then
+            test_progress
+        fi
     fi
 done < "$DNS_CATALOG"
 wait
 test_progress
 cat "$TMP_DIR"/t.* > "$TEST_RESULTS" 2>/dev/null
+{
+    printf 'timestamp=%s\n' "$(date +%s)"
+    printf 'catalog_version=%s\n' "$(dns_catalog_version)"
+    printf 'catalog_count=%s\n' "$(count_dns)"
+    printf 'catalog_hash=%s\n' "$(file_hash "$DNS_CATALOG")"
+} > "$TEST_RESULTS_META" 2>/dev/null || true
 okn="$(awk -F'|' 'NF>=5 && $5=="OK"{n++} END{print n+0}' "$TEST_RESULTS" 2>/dev/null)"
 failn=$((total-okn))
 printf "${C_GREEN}✓ Успешно: %s${C_NC} | ${C_YELLOW}Проблемные: %s${C_NC} | Всего: %s\n" "$okn" "$failn" "$total"
@@ -1168,7 +1179,8 @@ PORT_1="$HYBRID_PORT_1"; PORT_2="$HYBRID_PORT_2"; PORT_3="$HYBRID_PORT_3"
 PORT_4="$HYBRID_PORT_4"; PORT_5="$HYBRID_PORT_5"; PORT_6="$HYBRID_PORT_6"
 [ -n "$SLOT_RU" ] && PORT_RU="$HYBRID_PORT_RU"
 fi
-if [ "${HYBRID_AUTO_REPAIR:-0}" = 1 ] && [ -s "$TEST_RESULTS" ]; then
+if [ "${HYBRID_AUTO_REPAIR:-0}" = 1 ]; then
+ensure_test_results_fresh || return 1
 : > "$TMP_DIR/hybrid-used"
 for _s in 1 2 3 4 5 6; do
 eval "_id=\${SLOT_$_s}"
@@ -1551,7 +1563,8 @@ validate_selected_slots() {
         [ -n "$_id" ] || continue
         _u="$(normalize_url "$(dns_url "$_id")")"
         [ -n "$_u" ] || { err_msg "Слот $s содержит DNS без URL."; return 1; }
-        if [ "$DNS_PROFILE" = hybrid ] && [ -s "$TEST_RESULTS" ]; then
+        if [ "$DNS_PROFILE" = hybrid ]; then
+            ensure_test_results_fresh || return 1
             _tested_ok="$(awk -F'|' -v id="$_id" 'NF>=5 && $1==id && $5=="OK" && $4 ~ /^[0-9]+$/ {print "yes"; exit}' "$TEST_RESULTS" 2>/dev/null)"
             if [ "$_tested_ok" != yes ]; then
                 err_msg "DNS «$(dns_name "$_id")» не прошёл последнюю полную проверку. Он не может быть применён."
@@ -2513,7 +2526,7 @@ replace_failed_slot_from_test() {
     _port="$FAILED_SLOT_PORT"
     _cat="$FAILED_SLOT_CAT"
     [ -n "$_slot" ] || return 1
-    [ -s "$TEST_RESULTS" ] || return 1
+    ensure_test_results_fresh || return 1
     case "$_slot" in RU|RU_2) _cat="regional" ;; esac
     _slot_tried="$TMP_DIR/repair-tried-$$-$_slot"
     _used="$TMP_DIR/repair-used-$$-$_slot"
@@ -2698,7 +2711,7 @@ TX_DIR="$STATE_DIR/tx-$TX_ID"
 rm -rf "$TX_DIR" 2>/dev/null
 mkdir -p "$TX_DIR/files" || return 1
 TX_ACTIVE=1
-for f in /etc/config/dhcp /etc/config/https-dns-proxy /etc/config/firewall /etc/config/system /etc/sysctl.d/90-dns-manager.conf /etc/sysctl.d/91-dns-manager-extended.conf /etc/dnsmasq.d/90-dns-manager-bogus.conf /etc/dnsmasq.d/91-dns-manager-client-fixes.conf /etc/crontabs/root; do
+for f in "$CONFIG_FILE" /etc/config/dhcp /etc/config/https-dns-proxy /etc/config/firewall /etc/config/system /etc/sysctl.d/90-dns-manager.conf /etc/sysctl.d/91-dns-manager-extended.conf /etc/dnsmasq.d/90-dns-manager-bogus.conf /etc/dnsmasq.d/91-dns-manager-client-fixes.conf /etc/crontabs/root; do
 key="$(printf '%s' "$f" | sed 's#^/##; s#[/ ]#_#g')"
 if [ -f "$f" ]; then cp -p "$f" "$TX_DIR/files/$key"; file_hash "$f" > "$TX_DIR/$key.before"; printf '%s|%s|1\n' "$f" "$key" >> "$TX_DIR/manifest"; else printf '%s|%s|0\n' "$f" "$key" >> "$TX_DIR/manifest"; fi
 done
@@ -3621,10 +3634,7 @@ if ! case "$_cat" in bypass|clean|security|privacy|adblock|family|all) true;; *)
     pause
     return 1
 fi
-if [ ! -s "$TEST_RESULTS" ]; then
-    info_msg "Результатов теста ещё нет. Запускаю один полный тест каталога..."
-    test_dns_catalog
-fi
+ensure_test_results_fresh || { warn_msg "Не удалось получить свежие результаты теста."; pause; return 1; }
 [ -s "$TEST_RESULTS" ] || { warn_msg "Не удалось получить результаты теста."; pause; return 1; }
 _pool="$TMP_DIR/auto-slots"
 _src="$TMP_DIR/auto-candidates"
@@ -4364,6 +4374,33 @@ fi
 # ==========================================
 # ==========================================
 # ==========================================
+watchdog_test_results_fresh() {
+    [ -s "$TEST_RESULTS" ] || return 1
+    [ -s "$TEST_RESULTS_META" ] || return 1
+    _ts="$(sed -n 's/^timestamp=//p' "$TEST_RESULTS_META" 2>/dev/null | head -n1)"
+    _cv="$(sed -n 's/^catalog_version=//p' "$TEST_RESULTS_META" 2>/dev/null | head -n1)"
+    _cc="$(sed -n 's/^catalog_count=//p' "$TEST_RESULTS_META" 2>/dev/null | head -n1)"
+    _ch="$(sed -n 's/^catalog_hash=//p' "$TEST_RESULTS_META" 2>/dev/null | head -n1)"
+    _now="$(date +%s 2>/dev/null)"
+    case "$_ts" in ''|*[!0-9]*) return 1;; esac
+    case "$_now" in ''|*[!0-9]*) return 1;; esac
+    case "$_cc" in ''|*[!0-9]*) return 1;; esac
+    [ -n "$_ch" ] || return 1
+    [ "$_cv" = "$(dns_catalog_version)" ] || return 1
+    [ "$_cc" = "$(count_dns)" ] || return 1
+    [ "$_ch" = "$(file_hash "$DNS_CATALOG")" ] || return 1
+    [ "$(( _now - _ts ))" -ge 0 ] 2>/dev/null || return 1
+    [ "$(( _now - _ts ))" -le "${TEST_RESULTS_MAX_AGE:-21600}" ] 2>/dev/null || return 1
+    return 0
+}
+ensure_test_results_fresh() {
+    if watchdog_test_results_fresh; then
+        return 0
+    fi
+    info_msg "Результаты проверки DNS отсутствуют или устарели. Запускаю свежую проверку каталога."
+    test_dns_catalog || return 1
+    watchdog_test_results_fresh
+}
 watchdog_desired_cat() {
     _slot="$1"
     case "$DNS_SELECTION_MODE" in
@@ -4730,8 +4767,8 @@ run_watchdog() {
     watchdog_hdp_guard || log_msg "Не удалось проверить соответствие DNS-серверов выбранному набору."
     watchdog_dns_path_guard || log_msg "Обнаружен конфликт пути DNS в firewall."
     watchdog_dnsmasq_guard || log_msg "Не удалось полностью восстановить конфигурацию dnsmasq."
-    if [ ! -s "$TEST_RESULTS" ]; then
-        log_msg "Watchdog: файл результатов DNS отсутствует; полный каталог не тестируется автоматически, чтобы не создавать нагрузку на CPU."
+    if ! watchdog_test_results_fresh; then
+        log_msg "Watchdog: результаты общей проверки DNS отсутствуют или устарели; замена серверов по старому результату запрещена."
         rm -f "$TMP_DIR"/watchdog-*-$$ 2>/dev/null || true
         rm -rf "$_lock" 2>/dev/null || true
         release_mutation_lock
@@ -4839,7 +4876,7 @@ apply_watchdog() {
     mv "$_tmp" "$f" || { rm -f "$_tmp"; CRON_TMP_FILE=""; return 1; }
     CRON_TMP_FILE=""
     /etc/init.d/cron reload >/dev/null 2>&1 || return 1
-    save_config
+    save_config || return 1
     if [ "${WATCHDOG_ENABLED:-0}" = 1 ]; then
         ok_msg "Автопроверка DNS обновлена: каждые ${WATCHDOG_INTERVAL} минут."
     else
