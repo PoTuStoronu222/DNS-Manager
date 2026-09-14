@@ -2,7 +2,7 @@
 MANAGER_PATH="/usr/bin/dns-manager"
 # ==========================================
 # ==========================================
-VERSION="2.05"
+VERSION="2.06"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -981,11 +981,20 @@ validate_dns_message() {
     awk -v h="$_hdr" 'BEGIN{
         n=split(h,a," "); if(n<12) exit 1;
         for(i=1;i<=12;i++) if(a[i]!~ /^[0-9]+$/) exit 1;
+
+        # DNS wire-format sanity checks:
+        # byte 0-1: transaction ID (our probe uses 0x1234 = 18,52)
+        # byte 2: flags high byte, QR must be 1; opcode must be 0.
+        # byte 3: flags low byte, RCODE may be any standard 4-bit value.
+        # byte 4-5: QDCOUNT; DoH response to our single question should keep 1.
         if(a[1]!=18 || a[2]!=52) exit 1;
-        if(int(a[3]/128)%2==0) exit 1;
-        if(int(a[3]/8)%16!=0) exit 1;
-        if(a[4]%16!=0) exit 1;
+        if((a[3] & 128)==0) exit 1;
+        if((a[3] & 120)!=0) exit 1;
+        if((a[4] & 15)!=0) exit 1;
         if((a[5]*256+a[6])!=1) exit 1;
+
+        # Must have at least one answer/authority/additional section count byte pair;
+        # zero values are valid, so only validate that the fields exist (already done).
         exit 0;
     }'
 }
