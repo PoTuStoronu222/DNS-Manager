@@ -2,7 +2,7 @@
 MANAGER_PATH="/usr/bin/dns-manager"
 # ==========================================
 # ==========================================
-VERSION="2.06"
+VERSION="2.07"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -988,9 +988,9 @@ validate_dns_message() {
         # byte 3: flags low byte, RCODE may be any standard 4-bit value.
         # byte 4-5: QDCOUNT; DoH response to our single question should keep 1.
         if(a[1]!=18 || a[2]!=52) exit 1;
-        if((a[3] & 128)==0) exit 1;
-        if((a[3] & 120)!=0) exit 1;
-        if((a[4] & 15)!=0) exit 1;
+        if((int(a[3]/128)%2)==0) exit 1;
+        if((int(a[3]/8)%16)!=0) exit 1;
+        if((a[4]%16)!=0) exit 1;
         if((a[5]*256+a[6])!=1) exit 1;
 
         # Must have at least one answer/authority/additional section count byte pair;
