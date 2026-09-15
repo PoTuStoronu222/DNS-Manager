@@ -28,7 +28,7 @@ WATCHDOG_MAX_RESTARTS=2
 LOG_MAX_BYTES=262144
 TX_LOG_MAX_BYTES=262144
 OWNERSHIP_MAX_BYTES=131072
-TX_KEEP_MINUTES=60
+TX_KEEP_MINUTES=15
 PREV_DNSMASQ="$CFG_DIR/dnsmasq-previous.conf"
 PREV_SERVICES="$CFG_DIR/services-previous.conf"
 BASELINE_DIR="$BASE_DIR/baseline"
@@ -109,22 +109,40 @@ release_mutation_lock() {
 
 cleanup_stale_tmp_dirs() {
     _self_tmp="${TMP_DIR:-}"
+
     find /tmp -maxdepth 1 -type d -name 'dnsmgr.*' -print 2>/dev/null | while IFS= read -r _old_dir; do
         [ -n "$_old_dir" ] || continue
         [ "$_old_dir" = "$_self_tmp" ] && continue
+
         case "$_old_dir" in
             /tmp/dnsmgr.[A-Za-z0-9._-]*) ;;
             *) continue ;;
         esac
+
         _base="${_old_dir##*/}"
         _pid="${_base#dnsmgr.}"
         _pid="${_pid%%-*}"
+
         if printf '%s' "$_pid" | grep -Eq '^[0-9]+$'; then
             if kill -0 "$_pid" 2>/dev/null; then
                 _cmd=""
-                [ -r "/proc/$_pid/cmdline" ] && _cmd="$(tr '\0' ' ' < "/proc/$_pid/cmdline" 2>/dev/null)"
-                case "$_cmd" in *dns-manager*) continue;; esac
+
+                if [ -r "/proc/$_pid/cmdline" ]; then
+                    _cmd="$(tr '\0' ' ' < "/proc/$_pid/cmdline" 2>/dev/null)"
+                fi
+
+                if [ -n "$_cmd" ]; then
+                    case "$_cmd" in
+                        *dns-manager*) continue ;;
+                    esac
+                fi
+
+                # Процесс живой, но не похож на DNS Manager.
+                # Удаляем только действительно старые каталоги.
+                find "$_old_dir" -maxdepth 0 -mmin +30 -exec rm -rf {} \; 2>/dev/null || true
+                continue
             fi
+
             rm -rf "$_old_dir" 2>/dev/null || true
         else
             find "$_old_dir" -maxdepth 0 -mmin +30 -exec rm -rf {} \; 2>/dev/null || true
@@ -767,22 +785,32 @@ netstat -lntup 2>/dev/null >> "$LISTENERS"
 fi
 }
 doh_slot_matches_current() {
-    _slot="$1"; _port="$2"; _url="$3"
+    _slot="$1"
+    _port="$2"
+    _url="$3"
+
     [ -n "$_url" ] || return 1
+
     case "$_slot" in
         1|2|3|4|5|6|RU|RU_2) ;;
         *) return 1 ;;
     esac
+
     eval "_sid=\${SLOT_${_slot}:-}"
     [ -n "$_sid" ] || return 1
+
     _expected_url="$(normalize_url "$(dns_url "$_sid")")"
     [ "$_url" = "$_expected_url" ] || return 1
+
     eval "_expected_port=\${PORT_${_slot}:-}"
-    if [ "$DNS_PROFILE" = hybrid ]; then
+
+    if [ -z "$_expected_port" ] && [ "$DNS_PROFILE" = hybrid ]; then
         _expected_port="$(hybrid_desired_port "$_slot")"
     fi
+
     [ -n "$_expected_port" ] || return 1
     [ "$_port" = "$_expected_port" ] || return 1
+
     return 0
 }
 refresh_doh_scheme_counts() {
@@ -805,27 +833,58 @@ refresh_doh_scheme_counts() {
     done < "$DOH_INV"
     rm -f "$_used_slots" 2>/dev/null
 }
-disc_dns() {
-DNSMASQ_RUN="no"; if /etc/init.d/dnsmasq status >/dev/null 2>&1; then DNSMASQ_RUN="yes"; elif pgrep -x dnsmasq >/dev/null 2>&1; then DNSMASQ_RUN="yes"; fi
-DOH_INV="$TMP_DIR/doh_inventory"; : > "$DOH_INV"
-DOH_TOTAL=0; DOH_MATCH=0; DOH_OTHER=0
-FORCE_DNS="$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null)"
-i=0
-while uci -q get "https-dns-proxy.@https-dns-proxy[$i]" >/dev/null 2>&1; do
-p="$(uci -q get "https-dns-proxy.@https-dns-proxy[$i].listen_port" 2>/dev/null)"
-a="$(uci -q get "https-dns-proxy.@https-dns-proxy[$i].listen_addr" 2>/dev/null)"
-u="$(normalize_url "$(uci -q get "https-dns-proxy.@https-dns-proxy[$i].resolver_url" 2>/dev/null)")"
-running="no"
-if [ -n "$p" ] && [ -s "$LISTENERS" ] && grep -qE "(:|\])$p([[:space:]]|$)" "$LISTENERS" 2>/dev/null; then running="yes"; fi
-printf '%s|%s|%s|%s|%s\n' "$i" "$p" "$a" "$running" "$u" >> "$DOH_INV"
-i=$((i+1)); DOH_TOTAL=$((DOH_TOTAL+1))
-done
-refresh_doh_scheme_counts
-DNS_SMARTDNS="no"; [ -x /etc/init.d/smartdns ] && DNS_SMARTDNS="yes"
-DNS_UNBOUND="no"; [ -x /etc/init.d/unbound ] && DNS_UNBOUND="yes"
-DNS_ADGUARD="no"; [ -x /etc/init.d/adguardhome ] && DNS_ADGUARD="yes"
-DNS_MOSDNS="no"; [ -x /etc/init.d/mosdns ] && DNS_MOSDNS="yes"
-DNS_SINGBOX="no"; [ -x /etc/init.d/sing-box ] && DNS_SINGBOX="yes"
+install_missing_dependencies(){
+    _need="$(ensure_dependencies)"
+
+    if [ -n "$_need" ]; then
+        printf "
+${C_YELLOW}↻ Обнаружены недостающие компоненты. Устанавливаю...${C_NC}
+"
+        for _pkg in $_need; do
+            printf "  ${C_PINK}↻${C_NC} %s
+" "$_pkg"
+        done
+        printf "
+"
+
+        if [ "$PKG_MGR" = "apk" ]; then
+            apk update >/dev/null 2>&1 && apk add $_need
+        else
+            opkg update >/dev/null 2>&1 && opkg install $_need
+        fi
+    fi
+
+    if [ "${HAS_DIG:-no}" != yes ]; then
+        printf "  ${C_PINK}↻${C_NC} dig (bind-dig/knot-dig)
+"
+
+        if [ "$PKG_MGR" = "apk" ]; then
+            apk update >/dev/null 2>&1 || true
+            apk add bind-dig >/dev/null 2>&1 || apk add knot-dig >/dev/null 2>&1 || true
+        else
+            opkg update >/dev/null 2>&1 || true
+            opkg install bind-dig >/dev/null 2>&1 || opkg install knot-dig >/dev/null 2>&1 || true
+        fi
+    fi
+
+    run_discovery >/dev/null 2>&1 || true
+
+    _left="$(ensure_dependencies)"
+    if [ -n "$_left" ]; then
+        err_msg "Не удалось установить все необходимые компоненты: $_left"
+        return 1
+    fi
+
+    if [ "${HAS_DIG:-no}" != yes ]; then
+        err_msg "Не удалось установить dig (bind-dig или knot-dig). Локальные проверки DNS-портов могут работать неверно."
+        return 1
+    fi
+
+    if [ -n "$_need" ]; then
+        ok_msg "Все необходимые компоненты установлены."
+    fi
+
+    return 0
 }
 disc_clients() {
 OTHER_ZAPRET="no"; { [ -f /etc/init.d/zapret ] || [ -f /usr/bin/zms ]; } && OTHER_ZAPRET="yes"
@@ -1189,8 +1248,9 @@ test_dns_catalog() {
         return 1
     fi
     log_tx "TEST" "dns-catalog" "RUN" "OK" "ok=$okn,total=$total"
-    release_test_lock
-    return 0
+save_persistent_test_results
+release_test_lock
+return 0
 }
 
 # ==========================================
@@ -1208,6 +1268,7 @@ HYBRID_PORT_4=5057
 HYBRID_PORT_5=5058
 HYBRID_PORT_6=5059
 HYBRID_PORT_RU=5060
+HYBRID_PORT_RU_2=5061
 # ==========================================
 # ==========================================
 hybrid_set_defaults() {
@@ -1241,17 +1302,17 @@ BALANCER_ENABLED=1
 TLD_SPLIT=1
 }
 hybrid_desired_port() {
-case "$1" in
-1) printf '%s' "$HYBRID_PORT_1";;
-2) printf '%s' "$HYBRID_PORT_2";;
-3) printf '%s' "$HYBRID_PORT_3";;
-4) printf '%s' "$HYBRID_PORT_4";;
-5) printf '%s' "$HYBRID_PORT_5";;
-6) printf '%s' "$HYBRID_PORT_6";;
-RU) printf '%s' "$HYBRID_PORT_RU";;
-RU_2) printf '%s' "5060";;
-*) printf '';;
-esac
+    case "$1" in
+        1) printf '%s' "$HYBRID_PORT_1";;
+        2) printf '%s' "$HYBRID_PORT_2";;
+        3) printf '%s' "$HYBRID_PORT_3";;
+        4) printf '%s' "$HYBRID_PORT_4";;
+        5) printf '%s' "$HYBRID_PORT_5";;
+        6) printf '%s' "$HYBRID_PORT_6";;
+        RU) printf '%s' "$HYBRID_PORT_RU";;
+        RU_2) printf '%s' "${HYBRID_PORT_RU_2:-5061}";;
+        *) printf '';;
+    esac
 }
 hybrid_prepare_selection() {
 if [ -z "$SLOT_1$SLOT_2$SLOT_3$SLOT_4$SLOT_5$SLOT_6$SLOT_RU" ]; then
@@ -1460,10 +1521,18 @@ find_doh_by_port() {
     awk -F'|' -v p="$1" '$2==p{print $1"|"$2"|"$3"|"$4"|"$5;exit}' "$DOH_INV"
 }
 port_used_anywhere() {
-p="$1"
-[ -s "$LISTENERS" ] || return 2
-grep -qE ":$p([[:space:]]|$)" "$LISTENERS" 2>/dev/null && return 0
-awk -F'|' -v p="$p" '$2==p{found=1} END{exit found?0:1}' "$DOH_INV"
+    p="$1"
+    [ -n "$p" ] || return 1
+
+    if [ -s "$LISTENERS" ] && grep -qE "(:|\])$p([[:space:]]|$)" "$LISTENERS" 2>/dev/null; then
+        return 0
+    fi
+
+    if listener_port_exists "$p"; then
+        return 0
+    fi
+
+    awk -F'|' -v p="$p" '$2==p{found=1} END{exit found?0:1}' "$DOH_INV" 2>/dev/null
 }
 port_reserved_tx() {
 p="$1"
@@ -3069,7 +3138,7 @@ return 1
 }
 adaptive_hybrid_prepare() {
     [ "$DNS_PROFILE" = hybrid ] || return 0
-    [ -s "$TEST_RESULTS" ] || test_dns_catalog || return 1
+    ensure_test_results_fresh || return 1
     _success=0
     _tried="$TMP_DIR/hybrid-selected-tried-$$"
     _selected_urls="$TMP_DIR/hybrid-selected-urls-$$"
@@ -3518,18 +3587,26 @@ esac
 }
 hybrid_runtime_state_word() {
     [ "${DNS_PROFILE:-}" = "hybrid" ] || return 0
+
     _expected=0
     _actual=0
+
     for _hs in 1 2 3 4 5 6 RU RU_2; do
         eval "_hid=\${SLOT_${_hs}:-}"
         [ -n "$_hid" ] || continue
-        _expected=$((_expected+1))
-        _hp="$(hybrid_desired_port "$_hs")"
+
+        _expected=$((_expected + 1))
+
+        eval "_hp=\${PORT_${_hs}:-}"
+        [ -n "$_hp" ] || _hp="$(hybrid_desired_port "$_hs")"
+
         _hu="$(normalize_url "$(dns_url "$_hid")")"
+
         if [ -s "${DOH_INV:-}" ] && awk -F'|' -v p="$_hp" -v u="$_hu" '$2==p && $4=="yes" && $5==u {ok=1} END{exit !ok}' "$DOH_INV" 2>/dev/null; then
-            _actual=$((_actual+1))
+            _actual=$((_actual + 1))
         fi
     done
+
     if [ "$_expected" -eq 0 ]; then
         printf "${C_YELLOW}ВЫКЛ • не настроен${C_NC}"
     elif [ "$_actual" -eq "$_expected" ]; then
@@ -3602,7 +3679,8 @@ else
     printf "  %-6s %s\n" "RU" "не выбран"
 fi
 if [ -n "${SLOT_RU_2:-}" ]; then
-    printf "  %-6s %-32s 127.0.0.1:%s\n" "RU2" "$(dns_name "$SLOT_RU_2")" "${PORT_RU_2:-5060}"
+    printf "  %-6s %-32s 127.0.0.1:%s
+" "RU2" "$(dns_name "$SLOT_RU_2")" "${PORT_RU_2:-${HYBRID_PORT_RU_2:-5061}}"
 fi
 menu_section "СТОРОННИЕ РЕШЕНИЯ"
 _side_found=0
@@ -3647,7 +3725,7 @@ fi
 echo ""
 printf "${C_WHITE}Последние действия:${C_NC}\n"
 if [ -s "$TX_LOG" ]; then
-    tail -10 "$TX_LOG" | awk -F'|' 'NF>=7 {
+    tail -10 "$TX_LOG" | awk -F'|' 'NF>=8 && $4 != "" {
         phase=$4; obj=$5; act=$6; res=$7;
         if (phase=="DISCOVER") phase="Проверка состояния";
         else if (phase=="TEST") phase="Тест";
@@ -4335,7 +4413,7 @@ apply_web_access() {
             ;;
         *)
             WEB_ACCESS_ENABLED=0
-            web_access_remove_luci
+            web_access_luci_remove
             web_access_remove_config
             web_access_remove_firewall
             /etc/init.d/ttyd restart >/dev/null 2>&1 || true
@@ -4379,11 +4457,14 @@ else
     _new_sysctl=1
     _new_sysctl_ext=1
 fi
-if ! apply_sysctl_bundle "$_new_sysctl" "$_new_sysctl_ext"; then
-    SYSCTL_TUNING="$_old_sysctl"
-    SYSCTL_EXTENDED="$_old_sysctl_ext"
-    save_config >/dev/null 2>&1 || true
-    err_msg "Оптимизация TCP и Conntrack не изменена: конфигурация возвращена."
+SYSCTL_TUNING="$_new_sysctl"
+SYSCTL_EXTENDED="$_new_sysctl_ext"
+
+if ! apply_extras_now sysctl; then
+SYSCTL_TUNING="$_old_sysctl"
+SYSCTL_EXTENDED="$_old_sysctl_ext"
+save_config >/dev/null 2>&1 || true
+err_msg "Оптимизация TCP и Conntrack не изменена: конфигурация возвращена."
 fi
 pause;;
 5) _old="$DNSMASQ_PERF"; [ "$DNSMASQ_PERF" = 1 ] && DNSMASQ_PERF=0 || DNSMASQ_PERF=1; if ! apply_extras_now dnsmasq_perf; then DNSMASQ_PERF="$_old"; save_config >/dev/null 2>&1 || true; err_msg "Не удалось изменить кэширование DNS."; fi; pause;;
@@ -4421,35 +4502,63 @@ printf '%s\n' "$missing"
 prepare_dns_operation(){
     write_catalogs
     load_config
+    normalize_hybrid_ports 2>/dev/null || true
+    restore_persistent_test_results 2>/dev/null || true
     run_discovery >/dev/null 2>&1 || true
     return 0
 }
 install_missing_dependencies(){
     _need="$(ensure_dependencies)"
-    if [ -z "$_need" ]; then
-        return 0
-    fi
-    printf "\n${C_YELLOW}↻ Обнаружены недостающие компоненты. Устанавливаю...${C_NC}\n"
-    for _pkg in $_need; do
-        printf "  ${C_PINK}↻${C_NC} %s\n" "$_pkg"
-    done
-    printf "\n"
-    if [ "$PKG_MGR" = "apk" ]; then
-        apk update >/dev/null 2>&1 && apk add $_need
-    else
-        opkg update >/dev/null 2>&1 && opkg install $_need
-    fi
-    _rc=$?
-    run_discovery >/dev/null 2>&1 || true
-    if [ "$_rc" -eq 0 ]; then
-        _left="$(ensure_dependencies)"
-        if [ -z "$_left" ]; then
-            ok_msg "Все необходимые компоненты установлены."
-            return 0
+
+    if [ -n "$_need" ]; then
+        printf "
+${C_YELLOW}↻ Обнаружены недостающие компоненты. Устанавливаю...${C_NC}
+"
+        for _pkg in $_need; do
+            printf "  ${C_PINK}↻${C_NC} %s
+" "$_pkg"
+        done
+        printf "
+"
+
+        if [ "$PKG_MGR" = "apk" ]; then
+            apk update >/dev/null 2>&1 && apk add $_need
+        else
+            opkg update >/dev/null 2>&1 && opkg install $_need
         fi
     fi
-    err_msg "Не удалось установить все необходимые компоненты. Настройка остановлена."
-    return 1
+
+    if [ "${HAS_DIG:-no}" != yes ]; then
+        printf "  ${C_PINK}↻${C_NC} dig (bind-dig/knot-dig)
+"
+
+        if [ "$PKG_MGR" = "apk" ]; then
+            apk update >/dev/null 2>&1 || true
+            apk add bind-dig >/dev/null 2>&1 || apk add knot-dig >/dev/null 2>&1 || true
+        else
+            opkg update >/dev/null 2>&1 || true
+            opkg install bind-dig >/dev/null 2>&1 || opkg install knot-dig >/dev/null 2>&1 || true
+        fi
+    fi
+
+    run_discovery >/dev/null 2>&1 || true
+
+    _left="$(ensure_dependencies)"
+    if [ -n "$_left" ]; then
+        err_msg "Не удалось установить все необходимые компоненты: $_left"
+        return 1
+    fi
+
+    if [ "${HAS_DIG:-no}" != yes ]; then
+        err_msg "Не удалось установить dig (bind-dig или knot-dig). Локальные проверки DNS-портов могут работать неверно."
+        return 1
+    fi
+
+    if [ -n "$_need" ]; then
+        ok_msg "Все необходимые компоненты установлены."
+    fi
+
+    return 0
 }
 # ==========================================
 # ==========================================
@@ -4923,13 +5032,17 @@ run_watchdog() {
     watchdog_hdp_guard || log_msg "Не удалось проверить соответствие DNS-серверов выбранному набору."
     watchdog_dns_path_guard || log_msg "Обнаружен конфликт пути DNS в firewall."
     watchdog_dnsmasq_guard || log_msg "Не удалось полностью восстановить конфигурацию dnsmasq."
-    if ! watchdog_test_results_fresh; then
-        log_msg "Watchdog: результаты общей проверки DNS отсутствуют или устарели; замена серверов по старому результату запрещена."
+   if ! watchdog_test_results_fresh; then
+    log_msg "Watchdog: результаты общей проверки DNS отсутствуют или устарели. Запускаю свежую проверку."
+
+    if ! ensure_test_results_fresh; then
+        log_msg "Watchdog: не удалось получить свежие результаты проверки DNS. Замена серверов запрещена."
         rm -f "$TMP_DIR"/watchdog-*-$$ 2>/dev/null || true
         rm -rf "$_lock" 2>/dev/null || true
         release_mutation_lock
         return "$_wd_rc"
     fi
+fi
     _used="$TMP_DIR/watchdog-used-$$"
     : > "$_used"
     for _s in 1 2 3 4 5 6 RU RU_2; do
@@ -5025,10 +5138,11 @@ apply_watchdog() {
         printf '%s\n%s\n' "$_marker" "$_desired" >> "$_tmp" || { rm -f "$_tmp"; CRON_TMP_FILE=""; return 1; }
     fi
     if cmp -s "$_tmp" "$f" 2>/dev/null; then
-        rm -f "$_tmp"
-        CRON_TMP_FILE=""
-        return 0
-    fi
+    rm -f "$_tmp"
+    CRON_TMP_FILE=""
+    save_config || return 1
+    return 0
+fi
     mv "$_tmp" "$f" || { rm -f "$_tmp"; CRON_TMP_FILE=""; return 1; }
     CRON_TMP_FILE=""
     /etc/init.d/cron reload >/dev/null 2>&1 || return 1
@@ -5121,26 +5235,221 @@ if confirm_action "Удалить изменения?"; then rollback_ours; else
 esac
 done
 }
+# ==========================================
+# FIX PACK: self-heal, persistence, ports
+# ==========================================
+
+expected_managed_slots() {
+    _n=0
+    for _s in 1 2 3 4 5 6 RU RU_2; do
+        eval "_id=\${SLOT_${_s}:-}"
+        [ -n "$_id" ] && _n=$((_n + 1))
+    done
+    printf '%s' "$_n"
+}
+
+normalize_hybrid_ports() {
+    [ "${DNS_PROFILE:-}" = "hybrid" ] || return 0
+
+    _changed=0
+
+    for _s in 1 2 3 4 5 6 RU; do
+        eval "_id=\${SLOT_${_s}:-}"
+
+        if [ -n "$_id" ]; then
+            _want="$(hybrid_desired_port "$_s")"
+            eval "_cur=\${PORT_${_s}:-}"
+
+            if [ -z "$_cur" ]; then
+                eval "PORT_${_s}=\"$_want\""
+                _changed=1
+            fi
+        else
+            eval "_cur=\${PORT_${_s}:-}"
+
+            if [ -n "$_cur" ]; then
+                eval "PORT_${_s}=''"
+                _changed=1
+            fi
+        fi
+    done
+
+    if [ -n "${SLOT_RU_2:-}" ]; then
+        _want="$(hybrid_desired_port RU_2)"
+        if [ -z "${PORT_RU_2:-}" ]; then
+            PORT_RU_2="$_want"
+            _changed=1
+        fi
+    else
+        if [ -n "${PORT_RU_2:-}" ]; then
+            PORT_RU_2=""
+            _changed=1
+        fi
+    fi
+
+    if [ "$_changed" = 1 ]; then
+        save_config >/dev/null 2>&1 || true
+    fi
+
+    return 0
+}
+
+restore_persistent_test_results() {
+    mkdir -p "$BASE_DIR/state" 2>/dev/null || return 0
+
+    _cur_cat_ver="$(dns_catalog_version 2>/dev/null)"
+    _saved_cat_ver="$(sed -n 's/^catalog_version=//p' "$BASE_DIR/state/dns-test-results.meta" 2>/dev/null | head -n1)"
+
+    if [ -n "$_cur_cat_ver" ] && [ -n "$_saved_cat_ver" ] && [ "$_cur_cat_ver" != "$_saved_cat_ver" ]; then
+        return 0
+    fi
+
+    if [ ! -s "$TEST_RESULTS" ] && [ -s "$BASE_DIR/state/dns-test-results.conf" ]; then
+        cp -f "$BASE_DIR/state/dns-test-results.conf" "$TEST_RESULTS" 2>/dev/null || true
+    fi
+
+    if [ ! -s "$TEST_RESULTS_META" ] && [ -s "$BASE_DIR/state/dns-test-results.meta" ]; then
+        cp -f "$BASE_DIR/state/dns-test-results.meta" "$TEST_RESULTS_META" 2>/dev/null || true
+    fi
+
+    return 0
+}
+
+save_persistent_test_results() {
+    mkdir -p "$BASE_DIR/state" 2>/dev/null || return 0
+
+    if [ -s "$TEST_RESULTS" ]; then
+        cp -f "$TEST_RESULTS" "$BASE_DIR/state/dns-test-results.conf" 2>/dev/null || true
+    fi
+
+    if [ -s "$TEST_RESULTS_META" ]; then
+        cp -f "$TEST_RESULTS_META" "$BASE_DIR/state/dns-test-results.meta" 2>/dev/null || true
+    fi
+
+    return 0
+}
+
+startup_self_repair() {
+    [ "${DNS_MANAGER_NO_STARTUP_REPAIR:-0}" = 1 ] && return 0
+
+    case "${DNS_PROFILE:-}" in
+        hybrid|custom) ;;
+        *) return 0 ;;
+    esac
+
+    normalize_hybrid_ports
+    restore_persistent_test_results
+
+    run_discovery >/dev/null 2>&1 || true
+
+    _expected="$(expected_managed_slots)"
+    [ "$_expected" -gt 0 ] || return 0
+
+    _need=0
+
+    if [ "$DOH_TOTAL" != "$_expected" ] || [ "$DOH_MATCH" != "$_expected" ]; then
+        _need=1
+    fi
+
+    if [ "$DOH_TOTAL" -gt 0 ] && [ "${HDP_RUNNING:-no}" != yes ]; then
+        _need=1
+    fi
+
+    if [ "$_need" = 0 ]; then
+        _sec="$(get_dnsmasq_section)"
+        if [ -n "$_sec" ]; then
+            _exp="$(watchdog_expected_servers)"
+            _act="$TMP_DIR/startup-actual-servers-$$"
+            : > "$_act"
+
+            uci -q get "dhcp.$_sec.server" 2>/dev/null | tr ' ' '
+' | sed '/^$/d' | sort -u > "$_act"
+
+            if [ -s "$_exp" ] && ! cmp -s "$_act" "$_exp" 2>/dev/null; then
+                _need=1
+            fi
+
+            rm -f "$_act" "$_exp" 2>/dev/null
+        fi
+    fi
+
+    [ "$_need" = 1 ] || return 0
+
+    info_msg "Запуск: найдено расхождение конфигурации. Пробую восстановить автоматически."
+
+    # При старте можно сбросить cooldown перезапуска, иначе ремонт может быть отложен.
+    rm -f "$WATCHDOG_LAST_RESTART_FILE" 2>/dev/null || true
+
+    if acquire_mutation_lock; then
+        watchdog_enforce_hdp_control || true
+        watchdog_enforce_doh_authority || true
+        watchdog_service_recover || true
+        watchdog_hdp_guard || true
+        watchdog_dns_path_guard || true
+        watchdog_dnsmasq_guard || true
+        release_mutation_lock
+    fi
+
+    run_discovery >/dev/null 2>&1 || true
+
+    _expected2="$(expected_managed_slots)"
+    if [ "$_expected2" -gt 0 ] && { [ "$DOH_TOTAL" != "$_expected2" ] || [ "$DOH_MATCH" != "$_expected2" ]; }; then
+        info_msg "Запуск: дрейф не устранён полностью. Запускаю полный прогон автопроверки."
+        WATCHDOG_ENABLED=1
+        run_watchdog || true
+        run_discovery >/dev/null 2>&1 || true
+    fi
+
+    return 0
+}
+
+# ==========================================
+# END FIX PACK
+# ==========================================
 case "${1:-}" in
 watchdog|--watchdog|-w)
     preflight_readonly
     init_dirs
     write_catalogs >/dev/null 2>&1 || true
     load_config
+    normalize_hybrid_ports 2>/dev/null || true
     normalize_ownership_snapshot 2>/dev/null || true
-    if [ "${DNS_PROFILE:-}" = "hybrid" ]; then WATCHDOG_ENABLED=1; fi
+    restore_persistent_test_results 2>/dev/null || true
+
+    if [ "${DNS_PROFILE:-}" = "hybrid" ]; then
+        WATCHDOG_ENABLED=1
+    fi
+
     log_msg "Запуск автоматической проверки DNS."
     run_watchdog
     exit $?
     ;;
 esac
+
 preflight_readonly
 init_dirs
-auto_update_manager
+
+# Автообновление специально отключено, чтобы не затирать фикс-пак.
+# Если нужно вернуть автообновление, раскомментируй строку ниже.
+# auto_update_manager
+
 write_catalogs
 load_config
+normalize_hybrid_ports 2>/dev/null || true
 normalize_ownership_snapshot 2>/dev/null || true
-if [ "${DNS_PROFILE:-}" = "hybrid" ]; then WATCHDOG_ENABLED=1; fi
+restore_persistent_test_results 2>/dev/null || true
+
+if [ "${DNS_PROFILE:-}" = "hybrid" ]; then
+    WATCHDOG_ENABLED=1
+fi
+
+run_discovery
+
+if [ "${DNS_MANAGER_NO_INSTALL:-0}" != 1 ]; then
+    install_missing_dependencies >/dev/null 2>&1 || warn_msg "Не удалось автоматически установить все зависимости. Проверь пакеты вручную."
+    run_discovery
+fi
+
 if acquire_mutation_lock; then
     if ! apply_watchdog; then
         release_mutation_lock
@@ -5152,13 +5461,22 @@ else
     err_msg "Не удалось получить блокировку для синхронизации watchdog."
     exit 1
 fi
+
 if [ "${_had_dns_profile:-1}" = 0 ]; then
-hybrid_set_defaults
-save_config
-printf "${C_YELLOW}ℹ Обнаружена старая конфигурацию без профиля. Создан основной профиль Гибридный DNS (без изменения настроек роутера).${C_NC}\n"
+    hybrid_set_defaults
+    save_config
+    printf "${C_YELLOW}ℹ Обнаружена старая конфигурация без профиля. Создан основной профиль Гибридный DNS (без изменения настроек роутера).${C_NC}
+"
 fi
+
 run_discovery
-printf "${C_GREEN}✓ Первый проход завершён. Настройки роутера не изменены.${C_NC}\n"
-printf "${C_YELLOW}ℹ DNS-серверов в списке: %s.${C_NC}\n" "$(count_dns)"
+startup_self_repair
+
+printf "${C_GREEN}✓ Первый проход завершён.${C_NC}
+"
+printf "${C_YELLOW}ℹ DNS-серверов в списке: %s.${C_NC}
+" "$(count_dns)"
+
 log_msg "Запуск DNS Manager. Версия $VERSION. OpenWrt=$SYS_OWRT; платформа=$SYS_TARGET; архитектура=$SYS_ARCH; firewall=$SYS_FW"
+
 main_menu
