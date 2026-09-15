@@ -5558,7 +5558,6 @@ update-check|--update-check)
     DNS_MANAGER_FORCE_UPDATE=1 DNS_MANAGER_UPDATE_NO_EXEC=1 auto_update_manager --force
     exit 0
     ;;
-esac
 watchdog|--watchdog|-w)
     preflight_readonly
     init_dirs
