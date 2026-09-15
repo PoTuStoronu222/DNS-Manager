@@ -25,9 +25,9 @@ TEST_PROGRESS_EVERY=20
 TEST_BATCH_DEFAULT=4
 WATCHDOG_MAX_REPAIRS=1
 WATCHDOG_MAX_RESTARTS=2
-LOG_MAX_BYTES=262144
-TX_LOG_MAX_BYTES=262144
-OWNERSHIP_MAX_BYTES=131072
+LOG_MAX_BYTES=65536
+TX_LOG_MAX_BYTES=65536
+OWNERSHIP_MAX_BYTES=32768
 TX_KEEP_MINUTES=15
 PREV_DNSMASQ="$CFG_DIR/dnsmasq-previous.conf"
 PREV_SERVICES="$CFG_DIR/services-previous.conf"
@@ -189,16 +189,38 @@ cleanup_runtime() {
             [ -n "$_pid" ] || continue
             kill "$_pid" 2>/dev/null || true
         done
+
         sleep 1 2>/dev/null || true
+
         for _pid in ${STAGE_PIDS:-}; do
             [ -n "$_pid" ] || continue
             kill -9 "$_pid" 2>/dev/null || true
         done
     fi
+
+    # Добить все дочерние процессы текущего скрипта,
+    # чтобы не оставались висеть curl / test_one_dns / фоновые проверки.
+    _children="$(pgrep -P $$ 2>/dev/null || true)"
+    if [ -n "$_children" ]; then
+        for _pid in $_children; do
+            [ "$_pid" = "$$" ] && continue
+            kill "$_pid" 2>/dev/null || true
+        done
+
+        sleep 1 2>/dev/null || true
+
+        for _pid in $_children; do
+            [ "$_pid" = "$$" ] && continue
+            kill -9 "$_pid" 2>/dev/null || true
+        done
+    fi
+
     [ -n "${CRON_TMP_FILE:-}" ] && rm -f "$CRON_TMP_FILE" 2>/dev/null || true
     [ -n "${UPDATE_TMP_FILE:-}" ] && rm -f "$UPDATE_TMP_FILE" 2>/dev/null || true
+
     release_mutation_lock 2>/dev/null || true
     release_test_lock 2>/dev/null || true
+
     [ -n "${TMP_DIR:-}" ] && rm -rf "$TMP_DIR" 2>/dev/null || true
 }
 trap cleanup_runtime EXIT
@@ -230,52 +252,119 @@ _ver_newer() {
     }'
 }
 auto_update_manager() {
-[ "$#" -eq 0 ] || return 0
-[ "${DNS_MANAGER_NO_UPDATE:-0}" = "1" ] && return 0
-[ "$0" = "$MANAGER_PATH" ] || return 0
-[ -f "$MANAGER_PATH" ] || return 0
-[ -w "${MANAGER_PATH%/*}" ] || return 0
-command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1 || return 0
-_upd_tmp="/tmp/dns-manager-update-$$"
-UPDATE_TMP_FILE="$_upd_tmp"
-rm -f "$_upd_tmp" 2>/dev/null
-if command -v curl >/dev/null 2>&1; then
-  curl -fsSL --connect-timeout 4 --max-time 15 -o "$_upd_tmp" "$UPDATE_URL" >/dev/null 2>&1
-else
-  wget -q -T 15 -O "$_upd_tmp" "$UPDATE_URL" >/dev/null 2>&1
-fi
-if [ ! -s "$_upd_tmp" ]; then
-  rm -f "$_upd_tmp" 2>/dev/null; UPDATE_TMP_FILE=""; return 0
-fi
-head -n 1 "$_upd_tmp" 2>/dev/null | grep -q '^#!/bin/sh' || { rm -f "$_upd_tmp"; UPDATE_TMP_FILE=""; return 0; }
-_new_version="$(sed -n 's/^VERSION="\([^"]*\)"$/\1/p' "$_upd_tmp" 2>/dev/null | head -n1)"
-[ -n "$_new_version" ] || { rm -f "$_upd_tmp"; UPDATE_TMP_FILE=""; return 0; }
-sh -n "$_upd_tmp" 2>/dev/null || { rm -f "$_upd_tmp"; UPDATE_TMP_FILE=""; return 0; }
-_new_hash="$(file_hash "$_upd_tmp")"
-_old_hash="$(file_hash "$MANAGER_PATH")"
-if [ "$_new_version" = "$VERSION" ] && { [ -z "$_new_hash" ] || [ -z "$_old_hash" ] || [ "$_new_hash" = "$_old_hash" ]; }; then
-  rm -f "$_upd_tmp" 2>/dev/null; UPDATE_TMP_FILE=""; return 0
-fi
-if ! _ver_newer "$_new_version" "$VERSION"; then
-  if [ "$_new_version" != "$VERSION" ]; then
-    rm -f "$_upd_tmp" 2>/dev/null; UPDATE_TMP_FILE=""; return 0
-  fi
-fi
-printf "${C_PINK}↻ Найдены изменения DNS Manager: %s → %s. Обновление...${C_NC}\n" "$VERSION" "$_new_version"
-if cp -f "$_upd_tmp" "$MANAGER_PATH" 2>/dev/null && chmod 755 "$MANAGER_PATH" 2>/dev/null; then
-  rm -f "$_upd_tmp" 2>/dev/null
-  UPDATE_TMP_FILE=""
-  printf "${C_GREEN}✓ DNS Manager обновлён: %s → %s${C_NC}\n" "$VERSION" "$_new_version"
-  mkdir -p "$STATE_DIR" 2>/dev/null
-  log_msg "Обновление $VERSION -> $_new_version"
-  [ -n "${TMP_DIR:-}" ] && rm -rf "$TMP_DIR" 2>/dev/null || true
-  TMP_DIR=""
-  DNS_MANAGER_NO_UPDATE=1 exec "$MANAGER_PATH"
-fi
-printf "${C_YELLOW}! Не удалось заменить %s. Запуск продолжается на %s.${C_NC}\n" "$MANAGER_PATH" "$VERSION"
-rm -f "$_upd_tmp" 2>/dev/null
-UPDATE_TMP_FILE=""
-return 0
+    if [ "${DNS_MANAGER_FORCE_UPDATE:-0}" != 1 ] && [ "$#" -ne 0 ]; then
+        return 0
+    fi
+
+    if [ "${DNS_MANAGER_NO_UPDATE:-0}" = "1" ] && [ "${DNS_MANAGER_FORCE_UPDATE:-0}" != 1 ]; then
+        return 0
+    fi
+
+    case "$0" in
+        "$MANAGER_PATH"|*/dns-manager|dns-manager) ;;
+        *)
+            log_msg "Автообновление: запуск не из $MANAGER_PATH (0=$0), проверка пропущена."
+            return 0
+            ;;
+    esac
+
+    [ -f "$MANAGER_PATH" ] || {
+        log_msg "Автообновление: файл $MANAGER_PATH не найден."
+        return 0
+    }
+
+    [ -w "${MANAGER_PATH%/*}" ] || {
+        log_msg "Автообновление: каталог ${MANAGER_PATH%/*} недоступен для записи."
+        return 0
+    }
+
+    if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
+        log_msg "Автообновление: нет curl или wget, проверка пропущена."
+        return 0
+    fi
+
+    _upd_tmp="/tmp/dns-manager-update-$$"
+    UPDATE_TMP_FILE="$_upd_tmp"
+    rm -f "$_upd_tmp" 2>/dev/null
+
+    log_msg "Автообновление: проверяю $UPDATE_URL"
+
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL --connect-timeout 4 --max-time 20 -o "$_upd_tmp" "$UPDATE_URL" >/dev/null 2>&1
+    else
+        wget -q -T 20 -O "$_upd_tmp" "$UPDATE_URL" >/dev/null 2>&1
+    fi
+
+    if [ ! -s "$_upd_tmp" ]; then
+        log_msg "Автообновление: файл не получен. Нет связи, блокировка, нет curl/wget или сервер недоступен. Продолжаю работу без обновления."
+        rm -f "$_upd_tmp" 2>/dev/null
+        UPDATE_TMP_FILE=""
+        return 0
+    fi
+
+    head -n 1 "$_upd_tmp" 2>/dev/null | grep -q '^#!/bin/sh' || {
+        log_msg "Автообновление: загруженный файл не является sh-скриптом."
+        rm -f "$_upd_tmp" 2>/dev/null
+        UPDATE_TMP_FILE=""
+        return 0
+    }
+
+    _new_version="$(sed -n 's/^VERSION="\([^"]*\)"$/\1/p' "$_upd_tmp" 2>/dev/null | head -n1)"
+    [ -n "$_new_version" ] || {
+        log_msg "Автообновление: в загруженном файле не найдена строка VERSION."
+        rm -f "$_upd_tmp" 2>/dev/null
+        UPDATE_TMP_FILE=""
+        return 0
+    }
+
+    if ! sh -n "$_upd_tmp" 2>/dev/null; then
+        log_msg "Автообновление: синтаксическая проверка загруженного файла не пройдена."
+        rm -f "$_upd_tmp" 2>/dev/null
+        UPDATE_TMP_FILE=""
+        return 0
+    fi
+
+    _new_hash="$(file_hash "$_upd_tmp")"
+    _old_hash="$(file_hash "$MANAGER_PATH")"
+
+    if [ "$_new_version" = "$VERSION" ]; then
+        if [ -z "$_new_hash" ] || [ -z "$_old_hash" ] || [ "$_new_hash" = "$_old_hash" ]; then
+            log_msg "Автообновление: текущая версия $VERSION актуальна."
+            rm -f "$_upd_tmp" 2>/dev/null
+            UPDATE_TMP_FILE=""
+            return 0
+        fi
+    else
+        if ! _ver_newer "$_new_version" "$VERSION"; then
+            log_msg "Автообновление: удалённая версия $_new_version не новее текущей $VERSION."
+            rm -f "$_upd_tmp" 2>/dev/null
+            UPDATE_TMP_FILE=""
+            return 0
+        fi
+    fi
+
+    log_msg "Автообновление: найдено обновление $VERSION → $_new_version. Устанавливаю."
+
+    if cp -f "$_upd_tmp" "$MANAGER_PATH" 2>/dev/null && chmod 755 "$MANAGER_PATH" 2>/dev/null; then
+        sync 2>/dev/null || true
+        rm -f "$_upd_tmp" 2>/dev/null
+        UPDATE_TMP_FILE=""
+
+        log_msg "Автообновление: файл заменён на версию $_new_version."
+
+        if [ "${DNS_MANAGER_UPDATE_NO_EXEC:-0}" = 1 ]; then
+            return 0
+        fi
+
+        [ -n "${TMP_DIR:-}" ] && rm -rf "$TMP_DIR" 2>/dev/null || true
+        TMP_DIR=""
+        DNS_MANAGER_NO_UPDATE=1 exec "$MANAGER_PATH"
+    fi
+
+    log_msg "Автообновление: не удалось заменить $MANAGER_PATH."
+    rm -f "$_upd_tmp" 2>/dev/null
+    UPDATE_TMP_FILE=""
+    return 0
 }
 # ==========================================
 # ==========================================
@@ -5461,6 +5550,15 @@ startup_self_repair() {
 # END FIX PACK
 # ==========================================
 case "${1:-}" in
+update-check|--update-check)
+    preflight_readonly
+    init_dirs
+    write_catalogs >/dev/null 2>&1 || true
+    load_config
+    DNS_MANAGER_FORCE_UPDATE=1 DNS_MANAGER_UPDATE_NO_EXEC=1 auto_update_manager --force
+    exit 0
+    ;;
+esac
 watchdog|--watchdog|-w)
     preflight_readonly
     init_dirs
