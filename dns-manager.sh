@@ -5485,7 +5485,7 @@ init_dirs
 
 # Автообновление специально отключено, чтобы не затирать фикс-пак.
 # Если нужно вернуть автообновление, раскомментируй строку ниже.
-# auto_update_manager
+auto_update_manager
 
 write_catalogs
 load_config
