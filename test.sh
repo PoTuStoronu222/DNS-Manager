@@ -1106,7 +1106,7 @@ test_dns_catalog() {
     case "$_load10" in ''|*[!0-9]*) ;; *) [ "$_load10" -gt $((_cpu*20)) ] && batch=1;; esac
     while IFS='|' read -r id _rest; do
         case "$id" in ''|\#*) continue;; esac
-        test_one_dns "$id" &
+        (trap - EXIT; test_one_dns "$id") &
         n=$((n+1))
         if [ $((n % batch)) -eq 0 ]; then
             wait
