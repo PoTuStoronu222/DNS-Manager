@@ -910,6 +910,9 @@ ${C_YELLOW}↻ Обнаружены недостающие компоненты.
     fi
 
     run_discovery >/dev/null 2>&1 || true
+        if [ "${HAS_HDP:-no}" = yes ] && [ -x /etc/init.d/https-dns-proxy ]; then
+        /etc/init.d/https-dns-proxy enable >/dev/null 2>&1 || true
+    fi
 
     _left="$(ensure_dependencies)"
     if [ -n "$_left" ]; then
@@ -1291,6 +1294,7 @@ test_dns_catalog() {
     fi
     log_tx "TEST" "dns-catalog" "RUN" "OK" "ok=$okn,total=$total"
 save_persistent_test_results
+    rm -f "$TMP_DIR"/t.* "$TMP_DIR"/q.* "$TMP_DIR"/body.* "$TMP_DIR"/h.* 2>/dev/null || true
 release_test_lock
 return 0
 }
@@ -2550,7 +2554,6 @@ verify_doh_endpoint() {
         err_msg "DNS «$_name»: не удалось определить адрес $_host через bootstrap DNS."; return 1;
     }
     [ -n "$_ips" ] || _ips="$_one"
-    _suffix="$$-$(date +%s%N | cut -c1-8)"
     _q="$TMP_DIR/verify-q.$_suffix"
     _b="$TMP_DIR/verify-b.$_suffix"
     _h="$TMP_DIR/verify-h.$_suffix"
@@ -3722,7 +3725,7 @@ else
 fi
 if [ -n "${SLOT_RU_2:-}" ]; then
     printf "  %-6s %-32s 127.0.0.1:%s
-" "RU2" "$(dns_name "$SLOT_RU_2")" "${PORT_RU_2:-${HYBRID_PORT_RU_2:-5061}}"
+" "RU2" "$(dns_name "$SLOT_RU_2")" "${PORT_RU_2:-${HYBRID_PORT_RU_2:-5060}}"
 fi
 menu_section "СТОРОННИЕ РЕШЕНИЯ"
 _side_found=0
@@ -4088,7 +4091,7 @@ case "$c" in
 7) select_slot RU;;
 8) select_slot RU_2;;
 9) CORE_ONLY=1; apply_settings; _rc=$?; CORE_ONLY=0; [ "$_rc" -eq 0 ] || warn_msg "Не удалось применить выбранные DNS."; pause;;
-10) hybrid_set_defaults; save_config; ok_msg "Стандартный Гибридный DNS восстановлен: 5053–5058 + Yandex 5059."; pause;;
+10) hybrid_set_defaults; save_config; ok_msg "Стандартный Гибридный DNS восстановлен: 5054–5059 + Yandex 5059."; pause;;
 *) warn_msg "Неверный пункт."; pause;;
 esac
 done
@@ -4344,7 +4347,7 @@ web_access_real() {
     if command -v netstat >/dev/null 2>&1; then
         netstat -lnt 2>/dev/null | grep -qE '(^|[[:space:]])[^[:space:]]*:7682([[:space:]]|$)' && return 0
     fi
-    return 1
+    listener_port_exists "$WEB_ACCESS_PORT"
 }
 web_access_own_port() {
     uci -q get "ttyd.$WEB_TTYD_SECTION.command" 2>/dev/null | grep -qx '/usr/bin/dns-manager' && pgrep -f '[t]tyd.*dns-manager' >/dev/null 2>&1
@@ -4355,6 +4358,10 @@ web_access_port_busy() {
         return 0
     fi
     if command -v netstat >/dev/null 2>&1 && netstat -lnt 2>/dev/null | grep -qE '(^|[[:space:]])[^[:space:]]*:7682([[:space:]]|$)'; then
+        web_access_own_port && return 1
+        return 0
+    fi
+     if listener_port_exists "$WEB_ACCESS_PORT"; then
         web_access_own_port && return 1
         return 0
     fi
@@ -4636,10 +4643,15 @@ PORT_1="$HYBRID_PORT_1"; PORT_2="$HYBRID_PORT_2"; PORT_3="$HYBRID_PORT_3"
 PORT_4="$HYBRID_PORT_4"; PORT_5="$HYBRID_PORT_5"; PORT_6="$HYBRID_PORT_6"
 PORT_RU="$HYBRID_PORT_RU"; PORT_RU_2=""
 HYBRID_FORCE_RESELECT=1
-CORE_ONLY=1
-apply_settings
-CORE_ONLY=0
-HYBRID_FORCE_RESELECT=0
+   CORE_ONLY=1
+    apply_settings
+    _rc=$?
+    CORE_ONLY=0
+    HYBRID_FORCE_RESELECT=0
+    if [ "$_rc" -eq 0 ] && [ "${DNSMASQ_PERF:-0}" = 1 ]; then
+        apply_extras_now dnsmasq_perf || true
+    fi
+    return "$_rc"
 }
 # ==========================================
 # ==========================================
@@ -5291,7 +5303,7 @@ expected_managed_slots() {
 }
 
 normalize_hybrid_ports() {
-    [ "${DNS_PROFILE:-}" = "hybrid" ] || return 0
+    case "${DNS_PROFILE:-}" in hybrid|custom) ;; *) return 0 ;; esac
 
     _changed=0
 
