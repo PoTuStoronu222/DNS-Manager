@@ -833,6 +833,48 @@ refresh_doh_scheme_counts() {
     done < "$DOH_INV"
     rm -f "$_used_slots" 2>/dev/null
 }
+disc_dns() {
+    DNSMASQ_RUN="no"
+    if /etc/init.d/dnsmasq status >/dev/null 2>&1; then
+        DNSMASQ_RUN="yes"
+    elif pgrep -x dnsmasq >/dev/null 2>&1; then
+        DNSMASQ_RUN="yes"
+    fi
+
+    DOH_INV="$TMP_DIR/doh_inventory"
+    : > "$DOH_INV"
+    DOH_TOTAL=0
+    DOH_MATCH=0
+    DOH_OTHER=0
+    
+    FORCE_DNS="$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null)"
+    
+    i=0
+    while uci -q get "https-dns-proxy.@https-dns-proxy[$i]" >/dev/null 2>&1; do
+        p="$(uci -q get "https-dns-proxy.@https-dns-proxy[$i].listen_port" 2>/dev/null)"
+        a="$(uci -q get "https-dns-proxy.@https-dns-proxy[$i].listen_addr" 2>/dev/null)"
+        u="$(normalize_url "$(uci -q get "https-dns-proxy.@https-dns-proxy[$i].resolver_url" 2>/dev/null)")"
+        
+        running="no"
+        if listener_port_exists "$p"; then
+            running="yes"
+        elif [ -n "$p" ] && [ -s "$LISTENERS" ] && grep -qE "(:|\])$p([[:space:]]|$)" "$LISTENERS" 2>/dev/null; then
+            running="yes"
+        fi
+        
+        printf '%s|%s|%s|%s|%s\n' "$i" "$p" "$a" "$running" "$u" >> "$DOH_INV"
+        i=$((i+1))
+        DOH_TOTAL=$((DOH_TOTAL+1))
+    done
+    
+    refresh_doh_scheme_counts
+    
+    DNS_SMARTDNS="no"; [ -x /etc/init.d/smartdns ] && DNS_SMARTDNS="yes"
+    DNS_UNBOUND="no"; [ -x /etc/init.d/unbound ] && DNS_UNBOUND="yes"
+    DNS_ADGUARD="no"; [ -x /etc/init.d/adguardhome ] && DNS_ADGUARD="yes"
+    DNS_MOSDNS="no"; [ -x /etc/init.d/mosdns ] && DNS_MOSDNS="yes"
+    DNS_SINGBOX="no"; [ -x /etc/init.d/sing-box ] && DNS_SINGBOX="yes"
+}
 install_missing_dependencies(){
     _need="$(ensure_dependencies)"
 
