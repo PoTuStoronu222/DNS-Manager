@@ -1207,7 +1207,7 @@ test_dns_catalog() {
     case "$_load10" in ''|*[!0-9]*) ;; *) [ "$_load10" -gt $((_cpu*20)) ] && batch=1;; esac
     while IFS='|' read -r id _rest; do
         case "$id" in ''|\#*) continue;; esac
-        test_one_dns "$id" &
+        (trap - EXIT; test_one_dns "$id") &
         n=$((n+1))
         if [ $((n % batch)) -eq 0 ]; then
             wait
@@ -1303,14 +1303,14 @@ awk -F'|' -v c="$cat" '$2==c && $5=="OK"{print}' "$TEST_RESULTS" 2>/dev/null | s
 }
 # ==========================================
 # ==========================================
-HYBRID_PORT_1=5054
-HYBRID_PORT_2=5055
-HYBRID_PORT_3=5056
-HYBRID_PORT_4=5057
-HYBRID_PORT_5=5058
-HYBRID_PORT_6=5059
-HYBRID_PORT_RU=5060
-HYBRID_PORT_RU_2=5061
+HYBRID_PORT_1=5053
+HYBRID_PORT_2=5054
+HYBRID_PORT_3=5055
+HYBRID_PORT_4=5056
+HYBRID_PORT_5=5057
+HYBRID_PORT_6=5058
+HYBRID_PORT_RU=5059
+HYBRID_PORT_RU_2=5060
 # ==========================================
 # ==========================================
 hybrid_set_defaults() {
@@ -1352,7 +1352,7 @@ hybrid_desired_port() {
         5) printf '%s' "$HYBRID_PORT_5";;
         6) printf '%s' "$HYBRID_PORT_6";;
         RU) printf '%s' "$HYBRID_PORT_RU";;
-        RU_2) printf '%s' "${HYBRID_PORT_RU_2:-5061}";;
+        RU_2) printf '%s' "${HYBRID_PORT_RU_2:-5060}";;
         *) printf '';;
     esac
 }
@@ -4088,7 +4088,7 @@ case "$c" in
 7) select_slot RU;;
 8) select_slot RU_2;;
 9) CORE_ONLY=1; apply_settings; _rc=$?; CORE_ONLY=0; [ "$_rc" -eq 0 ] || warn_msg "Не удалось применить выбранные DNS."; pause;;
-10) hybrid_set_defaults; save_config; ok_msg "Стандартный Гибридный DNS восстановлен: 5054–5059 + Yandex 5060."; pause;;
+10) hybrid_set_defaults; save_config; ok_msg "Стандартный Гибридный DNS восстановлен: 5053–5058 + Yandex 5059."; pause;;
 *) warn_msg "Неверный пункт."; pause;;
 esac
 done
