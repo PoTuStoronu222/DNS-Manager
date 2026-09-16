@@ -2,7 +2,7 @@
 MANAGER_PATH="/usr/bin/dns-manager"
 # ==========================================
 # ==========================================
-VERSION="2.17"
+VERSION="2.18"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -15,7 +15,7 @@ BOOTSTRAP_CATALOG="$CFG_DIR/bootstrap-catalog.conf"
 BOGUS_CATALOG="$CFG_DIR/bogus-catalog.conf"
 BOOTSTRAP_DNS_ALL="77.88.8.8,77.88.8.1,94.140.14.14,1.1.1.1,1.0.0.1,8.8.8.8,8.8.4.4,9.9.9.9,149.112.112.112,208.67.222.222,208.67.220.220,149.112.121.10,149.112.122.10,76.76.2.0,76.76.10.0,194.242.2.2,194.242.2.3"
 DNSCAT_VERSION="8.5-RU-NOSOCIAL"
-WATCHDOG_SPEC_VERSION="10"
+WATCHDOG_SPEC_VERSION="11"
 WATCHDOG_RESTART_COOLDOWN=300
 WATCHDOG_LAST_RESTART_FILE="$STATE_DIR/watchdog-last-restart"
 AUTO_UPDATE_LAST_CHECK_FILE="$STATE_DIR/auto-update-last-check"
@@ -4381,34 +4381,67 @@ module_state_word() {
 }
 # ==========================================
 # ==========================================
-web_access_real() {
-    uci -q get "ttyd.$WEB_TTYD_SECTION.command" 2>/dev/null | grep -qx '/usr/bin/dns-manager' || return 1
-    pgrep -f '[t]tyd.*dns-manager' >/dev/null 2>&1 || return 1
+web_access_listener_exists() {
+    _wp="$1"
+    [ -n "$_wp" ] || return 1
     if command -v ss >/dev/null 2>&1; then
-        ss -lnt 2>/dev/null | grep -qE '(^|[[:space:]])[^[:space:]]*:7682([[:space:]]|$)' && return 0
+        ss -lntp 2>/dev/null | grep -qE "(^|[[:space:]])[^[:space:]]*:$_wp([[:space:]]|$)" && return 0
     fi
     if command -v netstat >/dev/null 2>&1; then
-        netstat -lnt 2>/dev/null | grep -qE '(^|[[:space:]])[^[:space:]]*:7682([[:space:]]|$)' && return 0
+        netstat -lntp 2>/dev/null | grep -qE "(^|[[:space:]])[^[:space:]]*:$_wp([[:space:]]|$)" && return 0
     fi
-    listener_port_exists "$WEB_ACCESS_PORT"
+    listener_port_exists "$_wp"
 }
-web_access_own_port() {
-    uci -q get "ttyd.$WEB_TTYD_SECTION.command" 2>/dev/null | grep -qx '/usr/bin/dns-manager' && pgrep -f '[t]tyd.*dns-manager' >/dev/null 2>&1
-}
-web_access_port_busy() {
-    if command -v ss >/dev/null 2>&1 && ss -lnt 2>/dev/null | grep -qE '(^|[[:space:]])[^[:space:]]*:7682([[:space:]]|$)'; then
-        web_access_own_port && return 1
-        return 0
+web_access_owner_pid() {
+    _wp="$1"
+    [ -n "$_wp" ] || return 1
+    if command -v ss >/dev/null 2>&1; then
+        _line="$(ss -lntp 2>/dev/null | grep -E "(^|[[:space:]])[^[:space:]]*:$_wp([[:space:]]|$)" | head -n1)"
+        _pid="$(printf '%s\n' "$_line" | sed -n 's/.*pid=[0-9][0-9]*,\?\([^)]*\)).*/\\1/p' | sed 's/.*pid=//; s/,.*//')"
+        case "$_pid" in ''|*[!0-9]*) ;; *) printf '%s\n' "$_pid"; return 0;; esac
     fi
-    if command -v netstat >/dev/null 2>&1 && netstat -lnt 2>/dev/null | grep -qE '(^|[[:space:]])[^[:space:]]*:7682([[:space:]]|$)'; then
-        web_access_own_port && return 1
-        return 0
-    fi
-     if listener_port_exists "$WEB_ACCESS_PORT"; then
-        web_access_own_port && return 1
-        return 0
+    if command -v netstat >/dev/null 2>&1; then
+        _line="$(netstat -lntp 2>/dev/null | grep -E "(^|[[:space:]])[^[:space:]]*:$_wp([[:space:]]|$)" | head -n1)"
+        _pid="$(printf '%s\n' "$_line" | sed -n 's/.*[[:space:]]\([0-9][0-9]*\)\/.*/\1/p' | head -n1)"
+        case "$_pid" in ''|*[!0-9]*) ;; *) printf '%s\n' "$_pid"; return 0;; esac
     fi
     return 1
+}
+web_access_real() {
+    _wp="${WEB_ACCESS_PORT:-7682}"
+    uci -q get "ttyd.$WEB_TTYD_SECTION.command" 2>/dev/null | grep -qx '/usr/bin/dns-manager' || return 1
+    if ! web_access_listener_exists "$_wp"; then
+        return 1
+    fi
+    # Prefer the ttyd command line check; it must expose the manager command and port.
+    for _tp in $(pgrep -x ttyd 2>/dev/null || true); do
+        _cmd=""
+        [ -r "/proc/$_tp/cmdline" ] && _cmd="$(tr '\0' ' ' < "/proc/$_tp/cmdline" 2>/dev/null)"
+        case "$_cmd" in
+            *"/usr/bin/dns-manager"*"$_wp"*) return 0;;
+        esac
+    done
+    # OpenWrt ttyd init scripts can hide arguments; the UCI ownership plus listener is sufficient fallback.
+    return 0
+}
+web_access_own_port() {
+    _wp="${WEB_ACCESS_PORT:-7682}"
+    uci -q get "ttyd.$WEB_TTYD_SECTION.command" 2>/dev/null | grep -qx '/usr/bin/dns-manager' || return 1
+    web_access_listener_exists "$_wp" || return 1
+    return 0
+}
+web_access_port_busy() {
+    _wp="${WEB_ACCESS_PORT:-7682}"
+    web_access_listener_exists "$_wp" || return 1
+    web_access_own_port && return 1
+    _owner="$(web_access_owner_pid "$_wp" 2>/dev/null || true)"
+    if [ -n "$_owner" ] && [ -r "/proc/$_owner/cmdline" ]; then
+        _ocmd="$(tr '\0' ' ' < "/proc/$_owner/cmdline" 2>/dev/null)"
+        case "$_ocmd" in
+            *ttyd*"/usr/bin/dns-manager"*) return 1;;
+        esac
+    fi
+    return 0
 }
 web_access_install() {
     command -v ttyd >/dev/null 2>&1 && [ -x /etc/init.d/ttyd ] && return 0
@@ -5509,7 +5542,7 @@ startup_self_repair() {
 
     [ "$_need" = 1 ] || return 0
 
-    info_msg "Запуск: найдено расхождение конфигурации. Пробую восстановить автоматически."
+    log_msg "Startup: обнаружено расхождение конфигурации. Выполняю автоматическое восстановление."
 
     rm -f "$WATCHDOG_LAST_RESTART_FILE" 2>/dev/null || true
 
@@ -5527,9 +5560,9 @@ startup_self_repair() {
 
     _expected2="$(expected_managed_slots)"
     if [ "$_expected2" -gt 0 ] && { [ "$DOH_TOTAL" != "$_expected2" ] || [ "$DOH_MATCH" != "$_expected2" ]; }; then
-        info_msg "Запуск: дрейф не устранён полностью. Запускаю полный прогон автопроверки."
+        log_msg "Startup: после восстановления набор DNS ещё не синхронизирован; запускаю один контрольный watchdog-проход."
         WATCHDOG_ENABLED=1
-        run_watchdog || true
+        run_watchdog >/dev/null 2>&1 || true
         run_discovery >/dev/null 2>&1 || true
     fi
 
