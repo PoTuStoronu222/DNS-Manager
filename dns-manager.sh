@@ -2,7 +2,7 @@
 MANAGER_PATH="/usr/bin/dns-manager"
 # ==========================================
 # ==========================================
-VERSION="2.15"
+VERSION="2.16"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -15,11 +15,15 @@ BOOTSTRAP_CATALOG="$CFG_DIR/bootstrap-catalog.conf"
 BOGUS_CATALOG="$CFG_DIR/bogus-catalog.conf"
 BOOTSTRAP_DNS_ALL="77.88.8.8,77.88.8.1,94.140.14.14,1.1.1.1,1.0.0.1,8.8.8.8,8.8.4.4,9.9.9.9,149.112.112.112,208.67.222.222,208.67.220.220,149.112.121.10,149.112.122.10,76.76.2.0,76.76.10.0,194.242.2.2,194.242.2.3"
 DNSCAT_VERSION="8.5-RU-NOSOCIAL"
-WATCHDOG_SPEC_VERSION="9"
+WATCHDOG_SPEC_VERSION="10"
 WATCHDOG_RESTART_COOLDOWN=300
 WATCHDOG_LAST_RESTART_FILE="$STATE_DIR/watchdog-last-restart"
+AUTO_UPDATE_LAST_CHECK_FILE="$STATE_DIR/auto-update-last-check"
+AUTO_UPDATE_CHECK_MAX_AGE=21600
 TEST_RESULTS_META="$STATE_DIR/dns-test-results.meta"
 TEST_RESULTS_MAX_AGE=21600
+TEST_DEPENDENCY_WARNING_FILE="$STATE_DIR/dns-test-dependency-warning"
+TEST_DEPENDENCY_WARNING_MAX_AGE=3600
 TEST_PROGRESS_EVERY=20
 # Resource-safety defaults for small OpenWrt routers.
 TEST_BATCH_DEFAULT=4
@@ -281,6 +285,17 @@ auto_update_manager() {
     if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
         log_msg "Автообновление: нет curl или wget, проверка пропущена."
         return 0
+    fi
+
+    if [ "${DNS_MANAGER_FORCE_UPDATE:-0}" != 1 ]; then
+        _upd_now="$(date +%s 2>/dev/null)"
+        _upd_last="$(cat "$AUTO_UPDATE_LAST_CHECK_FILE" 2>/dev/null)"
+        case "$_upd_now" in ''|*[!0-9]*) _upd_now="";; esac
+        case "$_upd_last" in ''|*[!0-9]*) _upd_last="";; esac
+        if [ -n "$_upd_now" ] && [ -n "$_upd_last" ] && [ "$((_upd_now-_upd_last))" -ge 0 ] 2>/dev/null && [ "$((_upd_now-_upd_last))" -lt "$AUTO_UPDATE_CHECK_MAX_AGE" ] 2>/dev/null; then
+            return 0
+        fi
+        [ -n "$_upd_now" ] && printf '%s\n' "$_upd_now" > "$AUTO_UPDATE_LAST_CHECK_FILE" 2>/dev/null || true
     fi
 
     _upd_tmp="/tmp/dns-manager-update-$$"
@@ -964,62 +979,6 @@ disc_dns() {
     DNS_MOSDNS="no"; [ -x /etc/init.d/mosdns ] && DNS_MOSDNS="yes"
     DNS_SINGBOX="no"; [ -x /etc/init.d/sing-box ] && DNS_SINGBOX="yes"
 }
-install_missing_dependencies(){
-    _need="$(ensure_dependencies)"
-
-    if [ -n "$_need" ]; then
-        printf "
-${C_YELLOW}↻ Обнаружены недостающие компоненты. Устанавливаю...${C_NC}
-"
-        for _pkg in $_need; do
-            printf "  ${C_PINK}↻${C_NC} %s
-" "$_pkg"
-        done
-        printf "
-"
-
-        if [ "$PKG_MGR" = "apk" ]; then
-            apk update >/dev/null 2>&1 && apk add $_need
-        else
-            opkg update >/dev/null 2>&1 && opkg install $_need
-        fi
-    fi
-
-    if [ "${HAS_DIG:-no}" != yes ]; then
-        printf "  ${C_PINK}↻${C_NC} dig (bind-dig/knot-dig)
-"
-
-        if [ "$PKG_MGR" = "apk" ]; then
-            apk update >/dev/null 2>&1 || true
-            apk add bind-dig >/dev/null 2>&1 || apk add knot-dig >/dev/null 2>&1 || true
-        else
-            opkg update >/dev/null 2>&1 || true
-            opkg install bind-dig >/dev/null 2>&1 || opkg install knot-dig >/dev/null 2>&1 || true
-        fi
-    fi
-
-    run_discovery >/dev/null 2>&1 || true
-        if [ "${HAS_HDP:-no}" = yes ] && [ -x /etc/init.d/https-dns-proxy ]; then
-        /etc/init.d/https-dns-proxy enable >/dev/null 2>&1 || true
-    fi
-
-    _left="$(ensure_dependencies)"
-    if [ -n "$_left" ]; then
-        err_msg "Не удалось установить все необходимые компоненты: $_left"
-        return 1
-    fi
-
-    if [ "${HAS_DIG:-no}" != yes ]; then
-        err_msg "Не удалось установить dig (bind-dig или knot-dig). Локальные проверки DNS-портов могут работать неверно."
-        return 1
-    fi
-
-    if [ -n "$_need" ]; then
-        ok_msg "Все необходимые компоненты установлены."
-    fi
-
-    return 0
-}
 disc_clients() {
 OTHER_ZAPRET="no"; { [ -f /etc/init.d/zapret ] || [ -f /usr/bin/zms ]; } && OTHER_ZAPRET="yes"
 OTHER_ZAPRET2="no"; [ -f /etc/init.d/zapret2 ] && OTHER_ZAPRET2="yes"
@@ -1140,6 +1099,12 @@ disc_clients
 disc_firewall
 log_tx "DISCOVER" "router" "READ" "OK" "OpenWrt=$SYS_OWRT;fw=$SYS_FW;dns=$DNSMASQ_RUN;doh=$DOH_TOTAL"
 }
+refresh_runtime_capabilities() {
+    disc_system
+    disc_network
+    disc_listeners
+    disc_dns
+}
 # ==========================================
 # ==========================================
 dns_field() { awk -F'|' -v id="$1" -v f="$2" '$1==id{print $f;exit}' "$DNS_CATALOG"; }
@@ -1198,8 +1163,6 @@ return 1
 # ==========================================
 # ==========================================
 validate_dns_message() {
-    # Compatibility stub kept for callers: DoH availability uses HTTP 200,
-    # application/dns-message and a body of at least 12 bytes. No DNS flag parsing.
     _file="$1"
     [ -s "$_file" ] || return 1
     _n="$(wc -c < "$_file" 2>/dev/null | tr -d " ")"
@@ -1235,7 +1198,7 @@ while IFS= read -r ipx; do
     case "$code" in
     200)
         case "$ctype" in *application/dns-message*) ct_ok=yes;; *) ct_ok=no;; esac
-        if [ "$bytes" -ge 12 ] && [ "$ct_ok" = yes ]; then
+        if [ "$ct_ok" = yes ] && validate_dns_message "$body"; then
             if [ "$_best_ms" -lt 0 ] || { [ "$ms" -ge 0 ] && [ "$ms" -lt "$_best_ms" ]; }; then _best_ms="$ms"; fi
             st=OK
         else st=BAD_DOH_RESPONSE; fi ;;
@@ -1262,7 +1225,7 @@ rm -f "$q" "$body" "$hdr"
 # ==========================================
 test_dns_catalog() {
     rotate_runtime_logs
-    [ "$HAS_CURL" = yes ] || { warn_msg "curl не установлен. Сначала установите его через пункт I."; return 1; }
+    [ "$HAS_CURL" = yes ] || { warn_msg "Полную проверку DNS нельзя выполнить: curl не установлен."; return 1; }
     acquire_test_lock || { warn_msg "Полная проверка DNS уже выполняется другим процессом. Текущая проверка отменена."; return 1; }
     rm -f "$TMP_DIR/t."* "$TMP_DIR/q."* "$TMP_DIR/body."* "$TMP_DIR/h."* 2>/dev/null
     total="$(count_dns)"
@@ -1953,8 +1916,6 @@ dnsmasq_manager_server_owned() {
     _val="$1"
     [ -n "$_val" ] || return 1
     # Ownership is derived from the current DNS Manager selection. The
-    # Ownership is derived only from the current manager selection; historical
-    # journal entries must never make an old server appear manager-owned.
     for _s in 1 2 3 4 5 6; do
         eval "_p=\${PORT_$_s:-}"
         [ -n "$_p" ] && [ "$_val" = "127.0.0.1#$_p" ] && return 0
@@ -2084,9 +2045,6 @@ sysctl_extended_managed_files() {
 }
 
 migrate_legacy_manager_files() {
-    # 1.70 introduced 98/99 names unnecessarily. Collapse them back to the
-    # single canonical Manager namespace. Only exact Manager-owned content is
-    # migrated; canonical files always remain authoritative.
     _src="/etc/sysctl.d/98-dns-manager.conf"
     _dst="/etc/sysctl.d/90-dns-manager.conf"
     if [ -f "$_src" ] && [ ! -f "$_dst" ] && sysctl_base_file_owned "$_src"; then
@@ -2160,8 +2118,6 @@ remove_sysctl_base() {
 # ==========================================
 # ==========================================
 apply_sysctl_bundle() {
-    # Apply/restore base + extended sysctl as one menu operation.
-    # Each low-level function remains responsible for its own ownership and rollback.
     _want_base="$1"
     _want_ext="$2"
     _saved_base="$SYSCTL_TUNING"
@@ -2187,8 +2143,6 @@ apply_sysctl_bundle() {
 
     if [ "$_want_ext" = 1 ]; then
         apply_sysctl_extended || {
-            # Do not report success for a partial bundle. Restore the just-applied
-            # base layer when the extended layer fails.
             remove_sysctl_base >/dev/null 2>&1 || true
             SYSCTL_TUNING="$_saved_base"
             SYSCTL_EXTENDED="$_saved_ext"
@@ -4180,7 +4134,7 @@ case "$c" in
 7) select_slot RU;;
 8) select_slot RU_2;;
 9) CORE_ONLY=1; apply_settings; _rc=$?; CORE_ONLY=0; [ "$_rc" -eq 0 ] || warn_msg "Не удалось применить выбранные DNS."; pause;;
-10) hybrid_set_defaults; save_config; ok_msg "Стандартный Гибридный DNS восстановлен: 5054–5059 + Yandex 5059."; pause;;
+10) hybrid_set_defaults; save_config; ok_msg "Стандартный Гибридный DNS восстановлен: 5053–5058 + Yandex 5059."; pause;;
 *) warn_msg "Неверный пункт."; pause;;
 esac
 done
@@ -4620,8 +4574,8 @@ done
 # ==========================================
 ensure_dependencies(){
 missing=""
-[ "$HAS_CURL" = yes ] || missing="$missing curl"
-[ "$HAS_HDP" = yes ] || missing="$missing https-dns-proxy"
+command -v curl >/dev/null 2>&1 || missing="$missing curl"
+command -v https-dns-proxy >/dev/null 2>&1 || missing="$missing https-dns-proxy"
 CA_OK=no
 [ -s /etc/ssl/certs/ca-certificates.crt ] && CA_OK=yes
 if [ "$CA_OK" != yes ]; then
@@ -4784,6 +4738,17 @@ ensure_test_results_fresh() {
     if watchdog_test_results_fresh; then
         return 0
     fi
+    if [ "${HAS_CURL:-no}" != yes ]; then
+        _dep_now="$(date +%s 2>/dev/null)"
+        _dep_last="$(cat "$TEST_DEPENDENCY_WARNING_FILE" 2>/dev/null)"
+        case "$_dep_now" in ''|*[!0-9]*) _dep_now="";; esac
+        case "$_dep_last" in ''|*[!0-9]*) _dep_last="";; esac
+        if [ -z "$_dep_now" ] || [ -z "$_dep_last" ] || [ "$((_dep_now-_dep_last))" -lt 0 ] 2>/dev/null || [ "$((_dep_now-_dep_last))" -ge "$TEST_DEPENDENCY_WARNING_MAX_AGE" ] 2>/dev/null; then
+            warn_msg "Полную проверку DNS нельзя выполнить: curl не установлен."
+            [ -n "$_dep_now" ] && printf '%s\n' "$_dep_now" > "$TEST_DEPENDENCY_WARNING_FILE" 2>/dev/null || true
+        fi
+        return 1
+    fi
     info_msg "Результаты проверки DNS отсутствуют или устарели. Запускаю свежую проверку каталога."
     test_dns_catalog || return 1
     watchdog_test_results_fresh
@@ -4852,7 +4817,6 @@ watchdog_enforce_doh_authority() {
         sleep 3
         return 0
     fi
-    # Even when the count matches, enforce the exact selected URLs/ports.
     watchdog_hdp_guard
 }
 watchdog_expected_servers() {
@@ -4911,12 +4875,38 @@ watchdog_dnsmasq_guard() {
     return 0
 }
 watchdog_service_recover() {
-    pgrep -f 'https-dns-proxy' >/dev/null 2>&1 && return 0
-    log_msg "Служба DNS не запущена. Перезапускаю её."
+    local _bad=0 _rs _rid _rport _rdomain
+    for _rs in 1 2 3 4 5 6 RU RU_2; do
+        eval "_rid=\${SLOT_${_rs}:-}"
+        [ -n "$_rid" ] || continue
+        eval "_rport=\${PORT_${_rs}:-}"
+        [ -n "$_rport" ] || { _bad=1; break; }
+        case "$_rs" in RU|RU_2) _rdomain="yandex.ru" ;; *) _rdomain="example.com" ;; esac
+        if ! listener_port_exists "$_rport" || ! local_dns_query_ok "$_rport" "$_rdomain"; then
+            _bad=1
+            break
+        fi
+    done
+    [ "$_bad" = 0 ] && return 0
+    log_msg "Обнаружен неработающий экземпляр https-dns-proxy. Выполняю восстановительный перезапуск."
     watchdog_restart_hdp || return 1
-    sleep 3
-    pgrep -f 'https-dns-proxy' >/dev/null 2>&1 || return 1
     return 0
+}
+process_matches_doh_slot() {
+    _pm_port="$1"
+    _pm_url="$(normalize_url "$2")"
+    [ -n "$_pm_port" ] && [ -n "$_pm_url" ] || return 1
+    if [ -r /proc ]; then
+        for _pm_pid in $(pgrep -f '[h]ttps-dns-proxy' 2>/dev/null); do
+            _pm_cmd=""
+            [ -r "/proc/$_pm_pid/cmdline" ] && _pm_cmd="$(tr '\0' ' ' < "/proc/$_pm_pid/cmdline" 2>/dev/null)"
+            case "$_pm_cmd" in
+                *" -p $_pm_port "*" -r $_pm_url"*) return 0 ;;
+                *" -p $_pm_port"*" -r $_pm_url"*) return 0 ;;
+            esac
+        done
+    fi
+    return 1
 }
 watchdog_hdp_guard() {
     _expected="$TMP_DIR/watchdog-hdp-expected-$$"
@@ -4937,6 +4927,9 @@ watchdog_hdp_guard() {
         _p="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].listen_port" 2>/dev/null)"
         _u="$(normalize_url "$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].resolver_url" 2>/dev/null)")"
         printf '%s|%s\n' "$_p" "$_u" >> "$_actual"
+        if [ -n "$_p" ] && [ -n "$_u" ] && ! process_matches_doh_slot "$_p" "$_u"; then
+            _bad=1
+        fi
         _i=$((_i+1))
     done
     _expected_n="$(wc -l < "$_expected" 2>/dev/null | tr -d ' ')"
@@ -5042,9 +5035,6 @@ watchdog_apply_slot_candidate() {
     eval "SLOT_${_slot}=\"$_new_id\""
     eval "SLOT_${_slot}_CAT=\"$_new_cat\""
 
-    # Candidate application is transactional. A failed candidate must never
-    # remain live merely because the watchdog restart cooldown is active.
-    # Rollback is a safety action and therefore uses a direct service restart.
     watchdog_candidate_rollback() {
         eval "SLOT_${_slot}=\"$_old_id\""
         eval "SLOT_${_slot}_CAT=\"$_old_cat\""
@@ -5074,8 +5064,6 @@ watchdog_apply_slot_candidate() {
             watchdog_candidate_rollback >/dev/null 2>&1 || true
             return 1
         fi
-        # Replace the stale historical ownership entry with the candidate's
-        # current live URL/port record after a successful save.
         normalize_ownership_snapshot >/dev/null 2>&1 || true
         _new_url="$(normalize_url "$(dns_url "$_new_id")")"
         [ -n "$_new_url" ] && record_own "doh" "$_port" "$_new_url" "slot=$_slot;name=$(dns_name "$_new_id")"
@@ -5098,12 +5086,28 @@ watchdog_restart_hdp() {
     case "$_now" in ''|*[!0-9]*) _now=0;; esac
     case "$_last" in ''|*[!0-9]*) _last=0;; esac
     if [ "$_last" -gt 0 ] && [ $((_now-_last)) -lt "${WATCHDOG_RESTART_COOLDOWN:-300}" ]; then
-        log_msg "Watchdog: рестарт https-dns-proxy отложен (cooldown ${WATCHDOG_RESTART_COOLDOWN:-300} сек)."
         return 1
     fi
-    /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || return 1
+
+    /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || true
     WATCHDOG_RESTART_COUNT=$((WATCHDOG_RESTART_COUNT+1))
     printf '%s\n' "$_now" > "$WATCHDOG_LAST_RESTART_FILE" 2>/dev/null || true
+    sleep 3
+    refresh_runtime_capabilities
+
+    _expected="$(expected_managed_slots 2>/dev/null)"
+    case "$_expected" in ''|*[!0-9]*) _expected=0;; esac
+    [ "$_expected" -gt 0 ] || return 0
+    [ "$DOH_TOTAL" = "$_expected" ] || return 1
+    [ "$HDP_RUNNING" = yes ] || return 1
+
+    for _rs in 1 2 3 4 5 6 RU RU_2; do
+        eval "_rid=\${SLOT_${_rs}:-}"
+        [ -n "$_rid" ] || continue
+        eval "_rport=\${PORT_${_rs}:-}"
+        [ -n "$_rport" ] || return 1
+        listener_port_exists "$_rport" || return 1
+    done
     return 0
 }
 watchdog_resource_guard() {
@@ -5379,9 +5383,6 @@ esac
 done
 }
 # ==========================================
-# FIX PACK: self-heal, persistence, ports
-# ==========================================
-
 expected_managed_slots() {
     _n=0
     for _s in 1 2 3 4 5 6 RU RU_2; do
@@ -5398,36 +5399,29 @@ normalize_hybrid_ports() {
 
     for _s in 1 2 3 4 5 6 RU; do
         eval "_id=\${SLOT_${_s}:-}"
+        eval "_cur=\${PORT_${_s}:-}"
 
         if [ -n "$_id" ]; then
             _want="$(hybrid_desired_port "$_s")"
-            eval "_cur=\${PORT_${_s}:-}"
-
-            if [ -z "$_cur" ]; then
+            if [ "$_cur" != "$_want" ]; then
                 eval "PORT_${_s}=\"$_want\""
                 _changed=1
             fi
-        else
-            eval "_cur=\${PORT_${_s}:-}"
-
-            if [ -n "$_cur" ]; then
-                eval "PORT_${_s}=''"
-                _changed=1
-            fi
+        elif [ -n "$_cur" ]; then
+            eval "PORT_${_s}=''"
+            _changed=1
         fi
     done
 
     if [ -n "${SLOT_RU_2:-}" ]; then
         _want="$(hybrid_desired_port RU_2)"
-        if [ -z "${PORT_RU_2:-}" ]; then
+        if [ "${PORT_RU_2:-}" != "$_want" ]; then
             PORT_RU_2="$_want"
             _changed=1
         fi
-    else
-        if [ -n "${PORT_RU_2:-}" ]; then
-            PORT_RU_2=""
-            _changed=1
-        fi
+    elif [ -n "${PORT_RU_2:-}" ]; then
+        PORT_RU_2=""
+        _changed=1
     fi
 
     if [ "$_changed" = 1 ]; then
@@ -5520,7 +5514,6 @@ startup_self_repair() {
 
     info_msg "Запуск: найдено расхождение конфигурации. Пробую восстановить автоматически."
 
-    # При старте можно сбросить cooldown перезапуска, иначе ремонт может быть отложен.
     rm -f "$WATCHDOG_LAST_RESTART_FILE" 2>/dev/null || true
 
     if acquire_mutation_lock; then
@@ -5547,7 +5540,6 @@ startup_self_repair() {
 }
 
 # ==========================================
-# END FIX PACK
 # ==========================================
 case "${1:-}" in
 update-check|--update-check)
@@ -5566,6 +5558,7 @@ watchdog|--watchdog|-w)
     normalize_hybrid_ports 2>/dev/null || true
     normalize_ownership_snapshot 2>/dev/null || true
     restore_persistent_test_results 2>/dev/null || true
+    refresh_runtime_capabilities
 
     if [ "${DNS_PROFILE:-}" = "hybrid" ]; then
         WATCHDOG_ENABLED=1
