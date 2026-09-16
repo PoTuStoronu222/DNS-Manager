@@ -2,7 +2,7 @@
 MANAGER_PATH="/usr/bin/dns-manager"
 # ==========================================
 # ==========================================
-VERSION="2.20"
+VERSION="2.21"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -4476,10 +4476,9 @@ start_service() {
     procd_close_instance
 }
 
-stop_service() {
-    service_stop "$PROG"
-    rm -f "$PIDFILE" 2>/dev/null || true
-}
+# procd owns the instance started by this service. Do not call service_stop
+# for /usr/bin/ttyd here because another manager (for example Zapret) may
+# legitimately run its own ttyd instance on another port.
 EOF_WEB_INIT
     chmod 0755 "$WEB_SERVICE_CONFIG" || return 1
     return 0
