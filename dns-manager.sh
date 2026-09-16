@@ -2,7 +2,7 @@
 MANAGER_PATH="/usr/bin/dns-manager"
 # ==========================================
 # ==========================================
-VERSION="2.19"
+VERSION="2.20"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -15,7 +15,7 @@ BOOTSTRAP_CATALOG="$CFG_DIR/bootstrap-catalog.conf"
 BOGUS_CATALOG="$CFG_DIR/bogus-catalog.conf"
 BOOTSTRAP_DNS_ALL="77.88.8.8,77.88.8.1,94.140.14.14,1.1.1.1,1.0.0.1,8.8.8.8,8.8.4.4,9.9.9.9,149.112.112.112,208.67.222.222,208.67.220.220,149.112.121.10,149.112.122.10,76.76.2.0,76.76.10.0,194.242.2.2,194.242.2.3"
 DNSCAT_VERSION="8.5-RU-NOSOCIAL"
-WATCHDOG_SPEC_VERSION="11"
+WATCHDOG_SPEC_VERSION="12"
 WATCHDOG_RESTART_COOLDOWN=300
 WATCHDOG_LAST_RESTART_FILE="$STATE_DIR/watchdog-last-restart"
 AUTO_UPDATE_LAST_CHECK_FILE="$STATE_DIR/auto-update-last-check"
@@ -51,6 +51,7 @@ WEB_ACCESS_PORT="7682"
 WEB_ACCESS_ENABLED=0
 WEB_TTYD_SECTION="dns_manager"
 WEB_SERVICE_CONFIG="/etc/init.d/dns-manager-web"
+WEB_PIDFILE="/var/run/dns-manager-web.pid"
 LUCI_CONTROLLER="/usr/lib/lua/luci/controller/dns_manager.lua"
 MUTATION_LOCK_DIR="$STATE_DIR/mutation.lock"
 MUTATION_LOCK_HELD=0
@@ -3550,14 +3551,12 @@ WEB_ACCESS_ENABLED=0
 web_access_luci_remove
 web_access_remove_config
 web_access_remove_firewall
-web_access_restart >/dev/null 2>&1 || true
 printf "${C_YELLOW}=== 🔄 Удаление изменений DNS Manager ===${C_NC}\n"
 if baseline_restore_if_safe; then
     WEB_ACCESS_ENABLED=0
     web_access_luci_remove
     web_access_remove_config
     web_access_remove_firewall
-    web_access_restart >/dev/null 2>&1 || true
     /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || true
     /etc/init.d/dnsmasq restart >/dev/null 2>&1 || true
     if [ "$SYS_FW" = fw4 ]; then
@@ -4396,6 +4395,18 @@ web_access_listener_exists() {
 web_access_owner_pid() {
     _wp="$1"
     [ -n "$_wp" ] || return 1
+    if [ -s "$WEB_PIDFILE" ]; then
+        _pid="$(cat "$WEB_PIDFILE" 2>/dev/null)"
+        case "$_pid" in
+            ''|*[!0-9]*) ;;
+            *)
+                if kill -0 "$_pid" 2>/dev/null && web_access_cmdline_is_ours "$_pid"; then
+                    printf '%s\n' "$_pid"
+                    return 0
+                fi
+                ;;
+        esac
+    fi
     for _pid in $(pgrep -x ttyd 2>/dev/null || true); do
         if web_access_cmdline_is_ours "$_pid"; then
             printf '%s\n' "$_pid"
@@ -4436,6 +4447,7 @@ web_access_write_service() {
     mkdir -p /etc/init.d /var/run 2>/dev/null || return 1
     cat > "$WEB_SERVICE_CONFIG" <<'EOF_WEB_INIT'
 #!/bin/sh /etc/rc.common
+
 START=95
 STOP=10
 USE_PROCD=1
@@ -4444,13 +4456,29 @@ PROG=/usr/bin/ttyd
 PORT=7682
 IFACE=br-lan
 CMD=/usr/bin/dns-manager
+PIDFILE=/var/run/dns-manager-web.pid
 
 start_service() {
     [ -x "$PROG" ] || return 1
+    [ -x "$CMD" ] || return 1
+
     procd_open_instance
-    procd_set_param command "$PROG" -p "$PORT" -i "$IFACE" -W -t fontSize=15 "$CMD"
+    procd_set_param command "$PROG"
+    procd_append_param command -p "$PORT"
+    procd_append_param command -i "$IFACE"
+    procd_append_param command -W
+    procd_append_param command -t fontSize=15
+    procd_append_param command "$CMD"
+    procd_set_param pidfile "$PIDFILE"
     procd_set_param respawn 3600 5 5
+    procd_set_param stdout 1
+    procd_set_param stderr 1
     procd_close_instance
+}
+
+stop_service() {
+    service_stop "$PROG"
+    rm -f "$PIDFILE" 2>/dev/null || true
 }
 EOF_WEB_INIT
     chmod 0755 "$WEB_SERVICE_CONFIG" || return 1
@@ -4459,9 +4487,22 @@ EOF_WEB_INIT
 web_access_real() {
     _wp="${WEB_ACCESS_PORT:-7682}"
     [ -x "$WEB_SERVICE_CONFIG" ] || return 1
+    web_access_listener_exists "$_wp" || return 1
+
+    if [ -s "$WEB_PIDFILE" ]; then
+        _pid="$(cat "$WEB_PIDFILE" 2>/dev/null)"
+        case "$_pid" in
+            ''|*[!0-9]*) ;;
+            *)
+                kill -0 "$_pid" 2>/dev/null || return 1
+                web_access_cmdline_is_ours "$_pid" && return 0
+                ;;
+        esac
+    fi
+
     for _pid in $(pgrep -x ttyd 2>/dev/null || true); do
         web_access_cmdline_is_ours "$_pid" || continue
-        web_access_listener_exists "$_wp" && return 0
+        return 0
     done
     return 1
 }
@@ -4503,9 +4544,10 @@ web_access_remove_config() {
 }
 web_access_start() {
     [ -x "$WEB_SERVICE_CONFIG" ] || web_access_write_service || return 1
+    web_access_stop || true
     "$WEB_SERVICE_CONFIG" enable >/dev/null 2>&1 || true
     "$WEB_SERVICE_CONFIG" start >/dev/null 2>&1 || return 1
-    sleep 1
+    sleep 2
     web_access_real
 }
 web_access_stop() {
@@ -4522,6 +4564,7 @@ web_access_stop() {
         web_access_cmdline_is_ours "$_pid" || continue
         kill -9 "$_pid" 2>/dev/null || true
     done
+    rm -f "$WEB_PIDFILE" 2>/dev/null || true
     return 0
 }
 web_access_restart() {
@@ -4596,7 +4639,7 @@ apply_web_access() {
         1)
             WEB_ACCESS_PORT=7682
             if web_access_port_busy; then WEB_ACCESS_ENABLED=0; save_config; err_msg "Порт web-доступа $WEB_ACCESS_PORT уже занят."; return 1; fi
-            if ! web_access_install; then WEB_ACCESS_ENABLED=0; save_config; err_msg 'Не удалось установить ttyd.'; return 1; fi
+            if ! web_access_install; then WEB_ACCESS_ENABLED=0; save_config; err_msg 'Не удалось подготовить web-службу DNS Manager.'; return 1; fi
             if ! web_access_write_config; then WEB_ACCESS_ENABLED=0; save_config; err_msg 'Не удалось подготовить web-службу.'; return 1; fi
             if ! web_access_firewall; then WEB_ACCESS_ENABLED=0; web_access_remove_firewall; web_access_remove_config; save_config; err_msg 'Не удалось открыть web-доступ в LAN.'; return 1; fi
             if ! web_access_luci_install; then WEB_ACCESS_ENABLED=0; web_access_remove_firewall; web_access_remove_config; save_config; err_msg 'Не удалось добавить пункт DNS Manager в LuCI.'; return 1; fi
