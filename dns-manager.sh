@@ -2,7 +2,7 @@
 MANAGER_PATH="/usr/bin/dns-manager"
 # ==========================================
 # ==========================================
-VERSION="2.16"
+VERSION="2.17"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -4934,7 +4934,6 @@ watchdog_hdp_guard() {
     done
     _expected_n="$(wc -l < "$_expected" 2>/dev/null | tr -d ' ')"
     _actual_n="$(wc -l < "$_actual" 2>/dev/null | tr -d ' ')"
-    _bad=0
     [ "$_expected_n" = "$_actual_n" ] || _bad=1
     while IFS='|' read -r _slot _port _url; do
         [ -n "$_url" ] || continue
@@ -5179,10 +5178,8 @@ run_watchdog() {
     watchdog_hdp_guard || log_msg "Не удалось проверить соответствие DNS-серверов выбранному набору."
     watchdog_dns_path_guard || log_msg "Обнаружен конфликт пути DNS в firewall."
     watchdog_dnsmasq_guard || log_msg "Не удалось полностью восстановить конфигурацию dnsmasq."
-   if ! watchdog_test_results_fresh; then
-    log_msg "Watchdog: результаты общей проверки DNS отсутствуют или устарели. Запускаю свежую проверку."
-
-    if ! ensure_test_results_fresh; then
+    if ! watchdog_test_results_fresh; then
+        if ! ensure_test_results_fresh; then
         log_msg "Watchdog: не удалось получить свежие результаты проверки DNS. Замена серверов запрещена."
         rm -f "$TMP_DIR"/watchdog-*-$$ 2>/dev/null || true
         rm -rf "$_lock" 2>/dev/null || true
