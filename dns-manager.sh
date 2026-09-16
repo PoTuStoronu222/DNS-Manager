@@ -2,7 +2,7 @@
 MANAGER_PATH="/usr/bin/dns-manager"
 # ==========================================
 # ==========================================
-VERSION="2.18"
+VERSION="2.19"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -46,10 +46,11 @@ FORCE_DNS_BEFORE="$STATE_DIR/force-dns-before.conf"
 TEST_RESULTS="$STATE_DIR/dns-test-results.conf"
 TEST_LOCK_DIR="$STATE_DIR/dns-test.lock"
 TEST_LOCK_HELD=0
-WEB_INIT="/etc/init.d/ttyd"
+WEB_INIT="/etc/init.d/dns-manager-web"
 WEB_ACCESS_PORT="7682"
 WEB_ACCESS_ENABLED=0
 WEB_TTYD_SECTION="dns_manager"
+WEB_SERVICE_CONFIG="/etc/init.d/dns-manager-web"
 LUCI_CONTROLLER="/usr/lib/lua/luci/controller/dns_manager.lua"
 MUTATION_LOCK_DIR="$STATE_DIR/mutation.lock"
 MUTATION_LOCK_HELD=0
@@ -3549,14 +3550,14 @@ WEB_ACCESS_ENABLED=0
 web_access_luci_remove
 web_access_remove_config
 web_access_remove_firewall
-/etc/init.d/ttyd restart >/dev/null 2>&1 || true
+web_access_restart >/dev/null 2>&1 || true
 printf "${C_YELLOW}=== 🔄 Удаление изменений DNS Manager ===${C_NC}\n"
 if baseline_restore_if_safe; then
     WEB_ACCESS_ENABLED=0
     web_access_luci_remove
     web_access_remove_config
     web_access_remove_firewall
-    /etc/init.d/ttyd restart >/dev/null 2>&1 || true
+    web_access_restart >/dev/null 2>&1 || true
     /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || true
     /etc/init.d/dnsmasq restart >/dev/null 2>&1 || true
     if [ "$SYS_FW" = fw4 ]; then
@@ -4385,90 +4386,150 @@ web_access_listener_exists() {
     _wp="$1"
     [ -n "$_wp" ] || return 1
     if command -v ss >/dev/null 2>&1; then
-        ss -lntp 2>/dev/null | grep -qE "(^|[[:space:]])[^[:space:]]*:$_wp([[:space:]]|$)" && return 0
+        ss -lntp 2>/dev/null | grep -qE "(^|[[:space:]])[^[:space:]]*:[0-9]+.*:${_wp}([[:space:]]|$)" && return 0
     fi
     if command -v netstat >/dev/null 2>&1; then
-        netstat -lntp 2>/dev/null | grep -qE "(^|[[:space:]])[^[:space:]]*:$_wp([[:space:]]|$)" && return 0
+        netstat -lntp 2>/dev/null | grep -qE "(^|[[:space:]])[^[:space:]]*:${_wp}([[:space:]]|$)" && return 0
     fi
     listener_port_exists "$_wp"
 }
 web_access_owner_pid() {
     _wp="$1"
     [ -n "$_wp" ] || return 1
+    for _pid in $(pgrep -x ttyd 2>/dev/null || true); do
+        if web_access_cmdline_is_ours "$_pid"; then
+            printf '%s\n' "$_pid"
+            return 0
+        fi
+    done
     if command -v ss >/dev/null 2>&1; then
-        _line="$(ss -lntp 2>/dev/null | grep -E "(^|[[:space:]])[^[:space:]]*:$_wp([[:space:]]|$)" | head -n1)"
-        _pid="$(printf '%s\n' "$_line" | sed -n 's/.*pid=[0-9][0-9]*,\?\([^)]*\)).*/\\1/p' | sed 's/.*pid=//; s/,.*//')"
+        _line="$(ss -lntp 2>/dev/null | grep -E "(^|[[:space:]])[^[:space:]]*:${_wp}([[:space:]]|$)" | head -n1)"
+        _pid="$(printf '%s\n' "$_line" | sed -n 's/.*pid=\([0-9][0-9]*\),.*/\1/p')"
         case "$_pid" in ''|*[!0-9]*) ;; *) printf '%s\n' "$_pid"; return 0;; esac
     fi
     if command -v netstat >/dev/null 2>&1; then
-        _line="$(netstat -lntp 2>/dev/null | grep -E "(^|[[:space:]])[^[:space:]]*:$_wp([[:space:]]|$)" | head -n1)"
-        _pid="$(printf '%s\n' "$_line" | sed -n 's/.*[[:space:]]\([0-9][0-9]*\)\/.*/\1/p' | head -n1)"
+        _line="$(netstat -lntp 2>/dev/null | grep -E "(^|[[:space:]])[^[:space:]]*:${_wp}([[:space:]]|$)" | head -n1)"
+        _pid="$(printf '%s\n' "$_line" | sed -n 's/.*[[:space:]]\([0-9][0-9]*\)\/[^[:space:]]*.*/\1/p' | head -n1)"
         case "$_pid" in ''|*[!0-9]*) ;; *) printf '%s\n' "$_pid"; return 0;; esac
     fi
     return 1
 }
+web_access_cmdline_is_ours() {
+    _pid="$1"
+    [ -n "$_pid" ] || return 1
+    [ -r "/proc/$_pid/cmdline" ] || return 1
+    _cmd="$(tr '\0' ' ' < "/proc/$_pid/cmdline" 2>/dev/null)"
+    case "$_cmd" in
+        *ttyd*"-p ${WEB_ACCESS_PORT}"*"/usr/bin/dns-manager"*) return 0;;
+        *ttyd*"${WEB_ACCESS_PORT}"*"/usr/bin/dns-manager"*) return 0;;
+    esac
+    return 1
+}
+web_access_cleanup_legacy_uci() {
+    _legacy_cmd="$(uci -q get "ttyd.$WEB_TTYD_SECTION.command" 2>/dev/null || true)"
+    if [ "$_legacy_cmd" = "/usr/bin/dns-manager" ]; then
+        uci -q delete "ttyd.$WEB_TTYD_SECTION" || true
+        uci commit ttyd >/dev/null 2>&1 || true
+    fi
+}
+web_access_write_service() {
+    mkdir -p /etc/init.d /var/run 2>/dev/null || return 1
+    cat > "$WEB_SERVICE_CONFIG" <<'EOF_WEB_INIT'
+#!/bin/sh /etc/rc.common
+START=95
+STOP=10
+USE_PROCD=1
+
+PROG=/usr/bin/ttyd
+PORT=7682
+IFACE=br-lan
+CMD=/usr/bin/dns-manager
+
+start_service() {
+    [ -x "$PROG" ] || return 1
+    procd_open_instance
+    procd_set_param command "$PROG" -p "$PORT" -i "$IFACE" -W -t fontSize=15 "$CMD"
+    procd_set_param respawn 3600 5 5
+    procd_close_instance
+}
+EOF_WEB_INIT
+    chmod 0755 "$WEB_SERVICE_CONFIG" || return 1
+    return 0
+}
 web_access_real() {
     _wp="${WEB_ACCESS_PORT:-7682}"
-    uci -q get "ttyd.$WEB_TTYD_SECTION.command" 2>/dev/null | grep -qx '/usr/bin/dns-manager' || return 1
-    if ! web_access_listener_exists "$_wp"; then
-        return 1
-    fi
-    # Prefer the ttyd command line check; it must expose the manager command and port.
-    for _tp in $(pgrep -x ttyd 2>/dev/null || true); do
-        _cmd=""
-        [ -r "/proc/$_tp/cmdline" ] && _cmd="$(tr '\0' ' ' < "/proc/$_tp/cmdline" 2>/dev/null)"
-        case "$_cmd" in
-            *"/usr/bin/dns-manager"*"$_wp"*) return 0;;
-        esac
+    [ -x "$WEB_SERVICE_CONFIG" ] || return 1
+    for _pid in $(pgrep -x ttyd 2>/dev/null || true); do
+        web_access_cmdline_is_ours "$_pid" || continue
+        web_access_listener_exists "$_wp" && return 0
     done
-    # OpenWrt ttyd init scripts can hide arguments; the UCI ownership plus listener is sufficient fallback.
-    return 0
+    return 1
 }
 web_access_own_port() {
     _wp="${WEB_ACCESS_PORT:-7682}"
-    uci -q get "ttyd.$WEB_TTYD_SECTION.command" 2>/dev/null | grep -qx '/usr/bin/dns-manager' || return 1
-    web_access_listener_exists "$_wp" || return 1
-    return 0
+    _pid="$(web_access_owner_pid "$_wp" 2>/dev/null || true)"
+    [ -n "$_pid" ] || return 1
+    web_access_cmdline_is_ours "$_pid"
 }
 web_access_port_busy() {
     _wp="${WEB_ACCESS_PORT:-7682}"
     web_access_listener_exists "$_wp" || return 1
     web_access_own_port && return 1
-    _owner="$(web_access_owner_pid "$_wp" 2>/dev/null || true)"
-    if [ -n "$_owner" ] && [ -r "/proc/$_owner/cmdline" ]; then
-        _ocmd="$(tr '\0' ' ' < "/proc/$_owner/cmdline" 2>/dev/null)"
-        case "$_ocmd" in
-            *ttyd*"/usr/bin/dns-manager"*) return 1;;
-        esac
-    fi
     return 0
 }
 web_access_install() {
-    command -v ttyd >/dev/null 2>&1 && [ -x /etc/init.d/ttyd ] && return 0
-    if [ "$PKG_MGR" = "apk" ]; then
-        apk update >/dev/null 2>&1 || return 1
-        apk add ttyd >/dev/null 2>&1 || return 1
-    else
-        opkg update >/dev/null 2>&1 || return 1
-        opkg install ttyd >/dev/null 2>&1 || return 1
+    if ! command -v ttyd >/dev/null 2>&1; then
+        if [ "$PKG_MGR" = "apk" ]; then
+            apk update >/dev/null 2>&1 || return 1
+            apk add ttyd >/dev/null 2>&1 || return 1
+        else
+            opkg update >/dev/null 2>&1 || return 1
+            opkg install ttyd >/dev/null 2>&1 || return 1
+        fi
     fi
-    command -v ttyd >/dev/null 2>&1 && [ -x /etc/init.d/ttyd ]
+    command -v ttyd >/dev/null 2>&1 || return 1
+    web_access_write_service || return 1
+    web_access_cleanup_legacy_uci
+    return 0
 }
 web_access_write_config() {
-    uci -q get "ttyd.$WEB_TTYD_SECTION" >/dev/null 2>&1 && uci -q delete "ttyd.$WEB_TTYD_SECTION"
-    uci set "ttyd.$WEB_TTYD_SECTION=ttyd" || return 1
-    uci set "ttyd.$WEB_TTYD_SECTION.enable=1" || return 1
-    uci set "ttyd.$WEB_TTYD_SECTION.port=$WEB_ACCESS_PORT" || return 1
-    uci set "ttyd.$WEB_TTYD_SECTION.interface=@lan" || return 1
-    uci set "ttyd.$WEB_TTYD_SECTION.readonly=0" || return 1
-    uci set "ttyd.$WEB_TTYD_SECTION.check_origin=0" || return 1
-    uci set "ttyd.$WEB_TTYD_SECTION.command=/usr/bin/dns-manager" || return 1
-    uci add_list "ttyd.$WEB_TTYD_SECTION.client_option=fontSize=15" || return 1
-    uci commit ttyd || return 1
+    web_access_write_service
 }
 web_access_remove_config() {
-    uci -q delete "ttyd.$WEB_TTYD_SECTION"
-    uci commit ttyd >/dev/null 2>&1 || true
+    web_access_stop
+    web_access_cleanup_legacy_uci
+    rm -f "$WEB_SERVICE_CONFIG" 2>/dev/null || true
+    return 0
+}
+web_access_start() {
+    [ -x "$WEB_SERVICE_CONFIG" ] || web_access_write_service || return 1
+    "$WEB_SERVICE_CONFIG" enable >/dev/null 2>&1 || true
+    "$WEB_SERVICE_CONFIG" start >/dev/null 2>&1 || return 1
+    sleep 1
+    web_access_real
+}
+web_access_stop() {
+    if [ -x "$WEB_SERVICE_CONFIG" ]; then
+        "$WEB_SERVICE_CONFIG" stop >/dev/null 2>&1 || true
+        sleep 1
+    fi
+    for _pid in $(pgrep -x ttyd 2>/dev/null || true); do
+        web_access_cmdline_is_ours "$_pid" || continue
+        kill "$_pid" 2>/dev/null || true
+    done
+    sleep 1
+    for _pid in $(pgrep -x ttyd 2>/dev/null || true); do
+        web_access_cmdline_is_ours "$_pid" || continue
+        kill -9 "$_pid" 2>/dev/null || true
+    done
+    return 0
+}
+web_access_restart() {
+    [ -x "$WEB_SERVICE_CONFIG" ] || return 0
+    web_access_stop || true
+    "$WEB_SERVICE_CONFIG" start >/dev/null 2>&1 || return 1
+    sleep 1
+    web_access_real
 }
 web_access_firewall() {
     uci -q delete firewall.dns_manager_web_ttyd
@@ -4491,10 +4552,15 @@ web_access_luci_install() {
     cat > "$LUCI_CONTROLLER" <<'EOF_LUCI'
 module("luci.controller.dns_manager", package.seeall)
 
+function manager_web_enabled()
+    local fs = require "nixio.fs"
+    local p = "/etc/dns-manager/config/manager.conf"
+    local data = fs.readfile(p) or ""
+    return data:match('WEB_ACCESS_ENABLED=["\']1["\']') ~= nil
+end
+
 function index()
-    local uci = require "luci.model.uci".cursor()
-    if uci:get("ttyd", "dns_manager", "enable") ~= "1" then return end
-    if uci:get("ttyd", "dns_manager", "command") ~= "/usr/bin/dns-manager" then return end
+    if not manager_web_enabled() then return end
     local e = entry({"admin", "services", "dns_manager"}, call("redirect_to_manager"), _("DNS Manager"), 70)
     e.leaf = true
 end
@@ -4503,7 +4569,11 @@ function redirect_to_manager()
     local uci = require "luci.model.uci".cursor()
     local http = require "luci.http"
     local ip = uci:get("network", "lan", "ipaddr") or "192.168.1.1"
-    local port = uci:get("ttyd", "dns_manager", "port") or "7682"
+    local port = "7682"
+    local fs = require "nixio.fs"
+    local data = fs.readfile("/etc/dns-manager/config/manager.conf") or ""
+    local found = data:match('WEB_ACCESS_PORT=["\']([0-9]+)["\']')
+    if found then port = found end
     ip = ip:match("^[^/]+") or ip
     if ip:find(":", 1, true) then
         http.redirect("http://[" .. ip .. "]:" .. port .. "/")
@@ -4527,21 +4597,28 @@ apply_web_access() {
             WEB_ACCESS_PORT=7682
             if web_access_port_busy; then WEB_ACCESS_ENABLED=0; save_config; err_msg "Порт web-доступа $WEB_ACCESS_PORT уже занят."; return 1; fi
             if ! web_access_install; then WEB_ACCESS_ENABLED=0; save_config; err_msg 'Не удалось установить ttyd.'; return 1; fi
-            if ! web_access_write_config; then WEB_ACCESS_ENABLED=0; save_config; err_msg 'Не удалось настроить web-доступ.'; return 1; fi
-            if ! web_access_firewall; then WEB_ACCESS_ENABLED=0; web_access_remove_config; save_config; /etc/init.d/ttyd restart >/dev/null 2>&1 || true; err_msg 'Не удалось открыть web-доступ в LAN.'; return 1; fi
-            if ! web_access_luci_install; then WEB_ACCESS_ENABLED=0; web_access_remove_firewall; web_access_remove_config; save_config; /etc/init.d/ttyd restart >/dev/null 2>&1 || true; err_msg 'Не удалось добавить пункт DNS Manager в LuCI.'; return 1; fi
-            /etc/init.d/ttyd enable >/dev/null 2>&1 || true
-            /etc/init.d/ttyd restart >/dev/null 2>&1 || true
-            sleep 1
-            if web_access_real; then save_config; _web_ip="$(uci -q get network.lan.ipaddr 2>/dev/null | cut -d/ -f1)"; ok_msg "Доступ из браузера включён: http://${_web_ip:-192.168.1.1}:$WEB_ACCESS_PORT"; return 0; fi
-            WEB_ACCESS_ENABLED=0; web_access_remove_firewall; web_access_remove_config; web_access_luci_remove; save_config; /etc/init.d/ttyd restart >/dev/null 2>&1 || true; err_msg 'Web-доступ не запустился.'; return 1
+            if ! web_access_write_config; then WEB_ACCESS_ENABLED=0; save_config; err_msg 'Не удалось подготовить web-службу.'; return 1; fi
+            if ! web_access_firewall; then WEB_ACCESS_ENABLED=0; web_access_remove_firewall; web_access_remove_config; save_config; err_msg 'Не удалось открыть web-доступ в LAN.'; return 1; fi
+            if ! web_access_luci_install; then WEB_ACCESS_ENABLED=0; web_access_remove_firewall; web_access_remove_config; save_config; err_msg 'Не удалось добавить пункт DNS Manager в LuCI.'; return 1; fi
+            if ! web_access_start; then
+                WEB_ACCESS_ENABLED=0
+                web_access_remove_firewall
+                web_access_remove_config
+                web_access_luci_remove
+                save_config
+                err_msg 'Web-доступ не запустился.'
+                return 1
+            fi
+            save_config
+            _web_ip="$(uci -q get network.lan.ipaddr 2>/dev/null | cut -d/ -f1)"
+            ok_msg "Доступ из браузера включён: http://${_web_ip:-192.168.1.1}:$WEB_ACCESS_PORT"
+            return 0
             ;;
         *)
             WEB_ACCESS_ENABLED=0
             web_access_luci_remove
-            web_access_remove_config
             web_access_remove_firewall
-            /etc/init.d/ttyd restart >/dev/null 2>&1 || true
+            web_access_remove_config
             save_config
             ok_msg 'Доступ из браузера выключен.'
             return 0
