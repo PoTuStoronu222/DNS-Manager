@@ -2,7 +2,7 @@
 MANAGER_PATH="/usr/bin/dns-manager"
 # ==========================================
 # ==========================================
-VERSION="2.21"
+VERSION="2.22"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -4969,7 +4969,7 @@ watchdog_enforce_doh_authority() {
         sleep 3
         return 0
     fi
-    watchdog_hdp_guard
+    return 0
 }
 watchdog_expected_servers() {
     _out="$TMP_DIR/watchdog-expected-servers-$$"
@@ -5048,19 +5048,22 @@ process_matches_doh_slot() {
     _pm_port="$1"
     _pm_url="$(normalize_url "$2")"
     [ -n "$_pm_port" ] && [ -n "$_pm_url" ] || return 1
-    if [ -r /proc ]; then
-        for _pm_pid in $(pgrep -f '[h]ttps-dns-proxy' 2>/dev/null); do
-            _pm_cmd=""
-            [ -r "/proc/$_pm_pid/cmdline" ] && _pm_cmd="$(tr '\0' ' ' < "/proc/$_pm_pid/cmdline" 2>/dev/null)"
-            case "$_pm_cmd" in
-                *" -p $_pm_port "*" -r $_pm_url"*) return 0 ;;
-                *" -p $_pm_port"*" -r $_pm_url"*) return 0 ;;
-            esac
-        done
-    fi
+    for _pm_pid in $(pgrep -f '[h]ttps-dns-proxy' 2>/dev/null); do
+        [ -r "/proc/$_pm_pid/cmdline" ] || continue
+        if tr '\0' '\n' < "/proc/$_pm_pid/cmdline" 2>/dev/null | awk -v want_p="$_pm_port" -v want_r="$_pm_url" '
+            $0 == "-p" { need_p=1; next }
+            $0 == "-r" { need_r=1; next }
+            need_p { if ($0 == want_p) ok_p=1; need_p=0; next }
+            need_r { if ($0 == want_r) ok_r=1; need_r=0; next }
+            END { exit (ok_p && ok_r) ? 0 : 1 }
+        ' >/dev/null 2>&1; then
+            return 0
+        fi
+    done
     return 1
 }
 watchdog_hdp_guard() {
+    _bad=0
     _expected="$TMP_DIR/watchdog-hdp-expected-$$"
     _actual="$TMP_DIR/watchdog-hdp-actual-$$"
     : > "$_expected" || return 1
