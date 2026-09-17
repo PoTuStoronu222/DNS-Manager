@@ -2,7 +2,7 @@
 MANAGER_PATH="/usr/bin/dns-manager"
 # ==========================================
 # ==========================================
-VERSION="2.22"
+VERSION="2.25"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -15,11 +15,12 @@ BOOTSTRAP_CATALOG="$CFG_DIR/bootstrap-catalog.conf"
 BOGUS_CATALOG="$CFG_DIR/bogus-catalog.conf"
 BOOTSTRAP_DNS_ALL="77.88.8.8,77.88.8.1,94.140.14.14,1.1.1.1,1.0.0.1,8.8.8.8,8.8.4.4,9.9.9.9,149.112.112.112,208.67.222.222,208.67.220.220,149.112.121.10,149.112.122.10,76.76.2.0,76.76.10.0,194.242.2.2,194.242.2.3"
 DNSCAT_VERSION="8.5-RU-NOSOCIAL"
-WATCHDOG_SPEC_VERSION="12"
+WATCHDOG_SPEC_VERSION="14"
 WATCHDOG_RESTART_COOLDOWN=300
 WATCHDOG_LAST_RESTART_FILE="$STATE_DIR/watchdog-last-restart"
 AUTO_UPDATE_LAST_CHECK_FILE="$STATE_DIR/auto-update-last-check"
-AUTO_UPDATE_CHECK_MAX_AGE=21600
+AUTO_UPDATE_CHECK_MAX_AGE=43200
+AUTO_UPDATE_LOCK_DIR="$STATE_DIR/auto-update.lock"
 TEST_RESULTS_META="$STATE_DIR/dns-test-results.meta"
 TEST_RESULTS_MAX_AGE=21600
 TEST_DEPENDENCY_WARNING_FILE="$STATE_DIR/dns-test-dependency-warning"
@@ -257,47 +258,74 @@ _ver_newer() {
         exit 1;
     }'
 }
+acquire_auto_update_lock() {
+    mkdir -p "$STATE_DIR" 2>/dev/null || return 1
+    if mkdir "$AUTO_UPDATE_LOCK_DIR" 2>/dev/null; then
+        printf '%s\n' "$$" > "$AUTO_UPDATE_LOCK_DIR/pid" 2>/dev/null || true
+        return 0
+    fi
+    _au_pid="$(cat "$AUTO_UPDATE_LOCK_DIR/pid" 2>/dev/null)"
+    if [ -n "$_au_pid" ] && kill -0 "$_au_pid" 2>/dev/null; then
+        return 1
+    fi
+    rm -rf "$AUTO_UPDATE_LOCK_DIR" 2>/dev/null || true
+    mkdir "$AUTO_UPDATE_LOCK_DIR" 2>/dev/null || return 1
+    printf '%s\n' "$$" > "$AUTO_UPDATE_LOCK_DIR/pid" 2>/dev/null || true
+    return 0
+}
+release_auto_update_lock() {
+    rm -rf "$AUTO_UPDATE_LOCK_DIR" 2>/dev/null || true
+}
 auto_update_manager() {
-    if [ "${DNS_MANAGER_FORCE_UPDATE:-0}" != 1 ] && [ "$#" -ne 0 ]; then
+    if [ "${DNS_MANAGER_NO_UPDATE:-0}" = "1" ] && [ "${DNS_MANAGER_FORCE_UPDATE:-0}" != 1 ]; then
         return 0
     fi
 
-    if [ "${DNS_MANAGER_NO_UPDATE:-0}" = "1" ] && [ "${DNS_MANAGER_FORCE_UPDATE:-0}" != 1 ]; then
-        return 0
+    [ -n "${AUTO_UPDATE_LOCK_DIR:-}" ] || AUTO_UPDATE_LOCK_DIR="$STATE_DIR/auto-update.lock"
+    acquire_auto_update_lock || return 0
+
+    _scheduled=0
+    [ "${DNS_MANAGER_SCHEDULED_UPDATE:-0}" = "1" ] && _scheduled=1
+    if [ "$_scheduled" = 1 ] && [ "${DNS_MANAGER_FORCE_UPDATE:-0}" != 1 ]; then
+        _upd_now="$(date +%s 2>/dev/null)"
+        _upd_last="$(cat "$AUTO_UPDATE_LAST_CHECK_FILE" 2>/dev/null)"
+        case "$_upd_now" in ''|*[!0-9]*) _upd_now="";; esac
+        case "$_upd_last" in ''|*[!0-9]*) _upd_last="";; esac
+        if [ -n "$_upd_now" ] && [ -n "$_upd_last" ]; then
+            _upd_age=$((_upd_now-_upd_last))
+            if [ "$_upd_age" -ge 0 ] 2>/dev/null && [ "$_upd_age" -lt "$AUTO_UPDATE_CHECK_MAX_AGE" ] 2>/dev/null; then
+                release_auto_update_lock
+                return 0
+            fi
+        fi
+        [ -n "$_upd_now" ] && printf '%s\n' "$_upd_now" > "$AUTO_UPDATE_LAST_CHECK_FILE" 2>/dev/null || true
     fi
 
     case "$0" in
         "$MANAGER_PATH"|*/dns-manager|dns-manager) ;;
         *)
             log_msg "Автообновление: запуск не из $MANAGER_PATH (0=$0), проверка пропущена."
+            release_auto_update_lock
             return 0
             ;;
     esac
 
     [ -f "$MANAGER_PATH" ] || {
         log_msg "Автообновление: файл $MANAGER_PATH не найден."
+        release_auto_update_lock
         return 0
     }
 
     [ -w "${MANAGER_PATH%/*}" ] || {
         log_msg "Автообновление: каталог ${MANAGER_PATH%/*} недоступен для записи."
+        release_auto_update_lock
         return 0
     }
 
     if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
         log_msg "Автообновление: нет curl или wget, проверка пропущена."
+        release_auto_update_lock
         return 0
-    fi
-
-    if [ "${DNS_MANAGER_FORCE_UPDATE:-0}" != 1 ]; then
-        _upd_now="$(date +%s 2>/dev/null)"
-        _upd_last="$(cat "$AUTO_UPDATE_LAST_CHECK_FILE" 2>/dev/null)"
-        case "$_upd_now" in ''|*[!0-9]*) _upd_now="";; esac
-        case "$_upd_last" in ''|*[!0-9]*) _upd_last="";; esac
-        if [ -n "$_upd_now" ] && [ -n "$_upd_last" ] && [ "$((_upd_now-_upd_last))" -ge 0 ] 2>/dev/null && [ "$((_upd_now-_upd_last))" -lt "$AUTO_UPDATE_CHECK_MAX_AGE" ] 2>/dev/null; then
-            return 0
-        fi
-        [ -n "$_upd_now" ] && printf '%s\n' "$_upd_now" > "$AUTO_UPDATE_LAST_CHECK_FILE" 2>/dev/null || true
     fi
 
     _upd_tmp="/tmp/dns-manager-update-$$"
@@ -316,6 +344,7 @@ auto_update_manager() {
         log_msg "Автообновление: файл не получен. Нет связи, блокировка, нет curl/wget или сервер недоступен. Продолжаю работу без обновления."
         rm -f "$_upd_tmp" 2>/dev/null
         UPDATE_TMP_FILE=""
+        release_auto_update_lock
         return 0
     fi
 
@@ -323,6 +352,7 @@ auto_update_manager() {
         log_msg "Автообновление: загруженный файл не является sh-скриптом."
         rm -f "$_upd_tmp" 2>/dev/null
         UPDATE_TMP_FILE=""
+        release_auto_update_lock
         return 0
     }
 
@@ -331,6 +361,7 @@ auto_update_manager() {
         log_msg "Автообновление: в загруженном файле не найдена строка VERSION."
         rm -f "$_upd_tmp" 2>/dev/null
         UPDATE_TMP_FILE=""
+        release_auto_update_lock
         return 0
     }
 
@@ -338,6 +369,7 @@ auto_update_manager() {
         log_msg "Автообновление: синтаксическая проверка загруженного файла не пройдена."
         rm -f "$_upd_tmp" 2>/dev/null
         UPDATE_TMP_FILE=""
+        release_auto_update_lock
         return 0
     fi
 
@@ -349,6 +381,7 @@ auto_update_manager() {
             log_msg "Автообновление: текущая версия $VERSION актуальна."
             rm -f "$_upd_tmp" 2>/dev/null
             UPDATE_TMP_FILE=""
+            release_auto_update_lock
             return 0
         fi
     else
@@ -356,6 +389,7 @@ auto_update_manager() {
             log_msg "Автообновление: удалённая версия $_new_version не новее текущей $VERSION."
             rm -f "$_upd_tmp" 2>/dev/null
             UPDATE_TMP_FILE=""
+            release_auto_update_lock
             return 0
         fi
     fi
@@ -366,21 +400,27 @@ auto_update_manager() {
         sync 2>/dev/null || true
         rm -f "$_upd_tmp" 2>/dev/null
         UPDATE_TMP_FILE=""
-
         log_msg "Автообновление: файл заменён на версию $_new_version."
 
         if [ "${DNS_MANAGER_UPDATE_NO_EXEC:-0}" = 1 ]; then
+            release_auto_update_lock
             return 0
         fi
 
         [ -n "${TMP_DIR:-}" ] && rm -rf "$TMP_DIR" 2>/dev/null || true
         TMP_DIR=""
-        DNS_MANAGER_NO_UPDATE=1 exec "$MANAGER_PATH"
+        release_auto_update_lock
+        if [ "${DNS_MANAGER_UPDATE_REEXEC_COMMAND:-}" = "watchdog" ]; then
+            DNS_MANAGER_NO_UPDATE=1 exec "$MANAGER_PATH" watchdog
+        else
+            DNS_MANAGER_NO_UPDATE=1 exec "$MANAGER_PATH"
+        fi
     fi
 
     log_msg "Автообновление: не удалось заменить $MANAGER_PATH."
     rm -f "$_upd_tmp" 2>/dev/null
     UPDATE_TMP_FILE=""
+    release_auto_update_lock
     return 0
 }
 # ==========================================
@@ -5702,9 +5742,16 @@ update-check|--update-check)
     DNS_MANAGER_FORCE_UPDATE=1 DNS_MANAGER_UPDATE_NO_EXEC=1 auto_update_manager --force
     exit 0
     ;;
+auto-update|--auto-update)
+    preflight_readonly
+    init_dirs
+    DNS_MANAGER_SCHEDULED_UPDATE=1 DNS_MANAGER_UPDATE_NO_EXEC=1 auto_update_manager --scheduled
+    exit 0
+    ;;
 watchdog|--watchdog|-w)
     preflight_readonly
     init_dirs
+    DNS_MANAGER_SCHEDULED_UPDATE=1 DNS_MANAGER_UPDATE_REEXEC_COMMAND=watchdog auto_update_manager --scheduled
     write_catalogs >/dev/null 2>&1 || true
     load_config
     normalize_hybrid_ports 2>/dev/null || true
