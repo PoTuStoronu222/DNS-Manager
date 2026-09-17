@@ -2,7 +2,7 @@
 MANAGER_PATH="/usr/bin/dns-manager"
 # ==========================================
 # ==========================================
-VERSION="2.25"
+VERSION="2.26"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -15,7 +15,7 @@ BOOTSTRAP_CATALOG="$CFG_DIR/bootstrap-catalog.conf"
 BOGUS_CATALOG="$CFG_DIR/bogus-catalog.conf"
 BOOTSTRAP_DNS_ALL="77.88.8.8,77.88.8.1,94.140.14.14,1.1.1.1,1.0.0.1,8.8.8.8,8.8.4.4,9.9.9.9,149.112.112.112,208.67.222.222,208.67.220.220,149.112.121.10,149.112.122.10,76.76.2.0,76.76.10.0,194.242.2.2,194.242.2.3"
 DNSCAT_VERSION="8.5-RU-NOSOCIAL"
-WATCHDOG_SPEC_VERSION="14"
+WATCHDOG_SPEC_VERSION="15"
 WATCHDOG_RESTART_COOLDOWN=300
 WATCHDOG_LAST_RESTART_FILE="$STATE_DIR/watchdog-last-restart"
 AUTO_UPDATE_LAST_CHECK_FILE="$STATE_DIR/auto-update-last-check"
@@ -53,6 +53,8 @@ WEB_ACCESS_ENABLED=0
 WEB_TTYD_SECTION="dns_manager"
 WEB_SERVICE_CONFIG="/etc/init.d/dns-manager-web"
 WEB_PIDFILE="/var/run/dns-manager-web.pid"
+WATCHDOG_CRON_STATE="$STATE_DIR/watchdog-cron.state"
+WATCHDOG_CRON_MARKER="# DNS_MANAGER_MANAGED_WATCHDOG=1"
 LUCI_CONTROLLER="/usr/lib/lua/luci/controller/dns_manager.lua"
 MUTATION_LOCK_DIR="$STATE_DIR/mutation.lock"
 MUTATION_LOCK_HELD=0
@@ -509,11 +511,23 @@ SYS_ARCH="$(sed -n "s/^DISTRIB_ARCH='\([^']*\)'.*/\1/p" /etc/openwrt_release | h
 init_dirs() {
 mkdir -p "$CFG_DIR" "$STATE_DIR" "$TMP_DIR" "$BASELINE_DIR" 2>/dev/null
 touch "$LOG_FILE" "$TX_LOG" "$OWNERSHIP" 2>/dev/null
+sanitize_baseline_shared_files 2>/dev/null || true
 }
 # ==========================================
 # ==========================================
 baseline_files() {
-printf '%s\n'  /etc/config/dhcp  /etc/config/https-dns-proxy  /etc/config/firewall  /etc/config/system  /etc/sysctl.d/90-dns-manager.conf /etc/sysctl.d/91-dns-manager-extended.conf  /etc/dnsmasq.d/90-dns-manager-bogus.conf  /etc/dnsmasq.d/91-dns-manager-client-fixes.conf   /etc/crontabs/root  
+printf '%s\n'  /etc/config/dhcp  /etc/config/https-dns-proxy  /etc/config/firewall  /etc/config/system  /etc/sysctl.d/90-dns-manager.conf /etc/sysctl.d/91-dns-manager-extended.conf  /etc/dnsmasq.d/90-dns-manager-bogus.conf  /etc/dnsmasq.d/91-dns-manager-client-fixes.conf  
+}
+sanitize_baseline_shared_files() {
+    [ -s "$BASELINE_MANIFEST" ] && {
+        _bf_tmp="${BASELINE_MANIFEST}.tmp.$$"
+        sed '\|^/etc/crontabs/root|d' "$BASELINE_MANIFEST" > "$_bf_tmp" 2>/dev/null && mv "$_bf_tmp" "$BASELINE_MANIFEST" 2>/dev/null || rm -f "$_bf_tmp" 2>/dev/null
+    }
+    [ -s "$BASELINE_LAST" ] && {
+        _bl_tmp="${BASELINE_LAST}.tmp.$$"
+        sed '\|^/etc/crontabs/root|d' "$BASELINE_LAST" > "$_bl_tmp" 2>/dev/null && mv "$_bl_tmp" "$BASELINE_LAST" 2>/dev/null || rm -f "$_bl_tmp" 2>/dev/null
+    }
+    rm -f "$BASELINE_DIR/files/etc_crontabs_root" 2>/dev/null || true
 }
 baseline_key() {
 printf '%s' "$1" | sed 's#^/##; s#[/ ]#_#g'
@@ -3042,7 +3056,7 @@ TX_DIR="$STATE_DIR/tx-$TX_ID"
 rm -rf "$TX_DIR" 2>/dev/null
 mkdir -p "$TX_DIR/files" || return 1
 TX_ACTIVE=1
-for f in "$CONFIG_FILE" "$OWNERSHIP" /etc/config/dhcp /etc/config/https-dns-proxy /etc/config/firewall /etc/config/system /etc/sysctl.d/90-dns-manager.conf /etc/sysctl.d/91-dns-manager-extended.conf /etc/dnsmasq.d/90-dns-manager-bogus.conf /etc/dnsmasq.d/91-dns-manager-client-fixes.conf /etc/crontabs/root; do
+for f in "$CONFIG_FILE" "$OWNERSHIP" /etc/config/dhcp /etc/config/https-dns-proxy /etc/config/firewall /etc/config/system /etc/sysctl.d/90-dns-manager.conf /etc/sysctl.d/91-dns-manager-extended.conf /etc/dnsmasq.d/90-dns-manager-bogus.conf /etc/dnsmasq.d/91-dns-manager-client-fixes.conf; do
 key="$(printf '%s' "$f" | sed 's#^/##; s#[/ ]#_#g')"
 if [ -f "$f" ]; then cp -p "$f" "$TX_DIR/files/$key"; file_hash "$f" > "$TX_DIR/$key.before"; printf '%s|%s|1\n' "$f" "$key" >> "$TX_DIR/manifest"; else printf '%s|%s|0\n' "$f" "$key" >> "$TX_DIR/manifest"; fi
 done
@@ -3065,6 +3079,9 @@ done < "$TX_DIR/manifest"
 tx_restore_on_failure() {
 [ "$TX_ACTIVE" = 1 ] || return 0
 warn_msg "Применение не прошло проверку. Выполняю автоматический откат этой транзакции."
+# Cron is shared infrastructure. Never restore the whole crontab on rollback;
+# remove only a DNS Manager-owned entry and preserve everything else.
+watchdog_cron_remove_owned_block >/dev/null 2>&1 || true
 if [ -f "$TX_DIR/manifest" ]; then
 while IFS='|' read -r f key existed; do
 [ -n "$f" ] || continue
@@ -3591,6 +3608,7 @@ WEB_ACCESS_ENABLED=0
 web_access_luci_remove
 web_access_remove_config
 web_access_remove_firewall
+watchdog_cron_remove_owned_block >/dev/null 2>&1 || true
 printf "${C_YELLOW}=== 🔄 Удаление изменений DNS Manager ===${C_NC}\n"
 if baseline_restore_if_safe; then
     WEB_ACCESS_ENABLED=0
@@ -4381,15 +4399,16 @@ EOF_CHECK_EXT2
             ;;
         watchdog)
             _wd_line="*/${WATCHDOG_INTERVAL:-15} * * * * ${MANAGER_PATH} watchdog >> ${LOG_FILE} 2>&1"
-            if [ "${WATCHDOG_ENABLED:-0}" = 1 ]; then
-                _wd_marker="# DNS_MANAGER_WATCHDOG_SPEC=${WATCHDOG_SPEC_VERSION}"
-                if grep -qxF "$_wd_marker" /etc/crontabs/root 2>/dev/null && awk -v want="$_wd_line" 'index($0,want)==1{ok=1} END{exit ok?0:1}' /etc/crontabs/root 2>/dev/null; then
-                    printf 1
+            if watchdog_cron_line_exists "$_wd_line"; then
+                printf 1
+            elif [ "${WATCHDOG_ENABLED:-0}" = 1 ] && watchdog_cron_owned_block_status "$_wd_line"; then
+                printf 1
+            else
+                if [ "${WATCHDOG_ENABLED:-0}" = 0 ]; then
+                    awk -v mp="${MANAGER_PATH}" '$0 !~ /^[[:space:]]*#/ && $0 ~ mp"[[:space:]]+(watchdog|-w|--watchdog)([[:space:]]|$)" {ok=1} END{exit ok?0:1}' /etc/crontabs/root 2>/dev/null && printf 1 || printf 0
                 else
                     printf 0
                 fi
-            else
-                awk -v mp="${MANAGER_PATH}" '$0 ~ mp"[[:space:]]+(watchdog|-w|--watchdog)([[:space:]]|$)" {ok=1} END{exit ok?0:1}' /etc/crontabs/root 2>/dev/null && printf 1 || printf 0
             fi
             ;;
         web)
@@ -5448,43 +5467,251 @@ fi
     rotate_runtime_logs
     return "$_wd_rc"
 }
-apply_watchdog() {
+watchdog_cron_read_state() {
+    WATCHDOG_CRON_STATE_MODE="$(sed -n 's/^mode=//p' "$WATCHDOG_CRON_STATE" 2>/dev/null | head -n1)"
+    WATCHDOG_CRON_STATE_LINE="$(sed -n 's/^line=//p' "$WATCHDOG_CRON_STATE" 2>/dev/null | head -n1)"
+    case "$WATCHDOG_CRON_STATE_MODE" in
+        owned|external|conflict) ;;
+        *) WATCHDOG_CRON_STATE_MODE="";;
+    esac
+}
+watchdog_cron_write_state() {
+    _mode="$1"
+    _line="$2"
+    _tmp="${WATCHDOG_CRON_STATE}.tmp.$$"
+    {
+        printf 'version=1\n'
+        printf 'mode=%s\n' "$_mode"
+        printf 'line=%s\n' "$_line"
+    } > "$_tmp" 2>/dev/null || { rm -f "$_tmp" 2>/dev/null; return 1; }
+    mv "$_tmp" "$WATCHDOG_CRON_STATE" 2>/dev/null || { rm -f "$_tmp" 2>/dev/null; return 1; }
+    return 0
+}
+watchdog_cron_desired_line() {
+    printf '%s\n' "*/${WATCHDOG_INTERVAL:-15} * * * * ${MANAGER_PATH} watchdog >> ${LOG_FILE} 2>&1"
+}
+watchdog_cron_line_exists() {
+    _line="$1"
+    [ -n "$_line" ] || return 1
+    grep -Fqx -- "$_line" /etc/crontabs/root 2>/dev/null
+}
+watchdog_cron_owned_block_status() {
+    _want_line="$1"
+    [ -f /etc/crontabs/root ] || return 1
+    awk -v marker="$WATCHDOG_CRON_MARKER" -v want="$_want_line" '
+        $0==marker {seen=1; next}
+        seen==1 {
+            if ($0==want) {found=1; exit}
+            seen=0
+        }
+        END {exit found?0:1}
+    ' /etc/crontabs/root 2>/dev/null
+}
+watchdog_cron_marker_exists() {
+    grep -Fqx -- "$WATCHDOG_CRON_MARKER" /etc/crontabs/root 2>/dev/null
+}
+watchdog_cron_legacy_count() {
+    [ -f /etc/crontabs/root ] || { printf '0\n'; return 0; }
+    awk -v mp="$MANAGER_PATH" '
+        $0 ~ /^# DNS_MANAGER_WATCHDOG_SPEC=[0-9][0-9]*$/ {seen=1; next}
+        seen==1 {
+            if ($0 !~ /^[[:space:]]*#/ && $0 ~ mp"[[:space:]]+(watchdog|-w|--watchdog)([[:space:]]|$)") count++
+            seen=0
+        }
+        END {print count+0}
+    ' /etc/crontabs/root 2>/dev/null
+}
+watchdog_cron_migrate_legacy_owned_block() {
+    _desired="$1"
+    _count="$(watchdog_cron_legacy_count)"
+    case "$_count" in ''|*[!0-9]*) _count=0;; esac
+    [ "$_count" -eq 1 ] || return 1
+    _tmp="/etc/crontabs/root.dns-manager.$$"
+    awk -v mp="$MANAGER_PATH" -v marker="$WATCHDOG_CRON_MARKER" -v desired="$_desired" '
+        $0 ~ /^# DNS_MANAGER_WATCHDOG_SPEC=[0-9][0-9]*$/ && !replaced {
+            old_marker=$0; seen=1; next
+        }
+        seen==1 {
+            if ($0 !~ /^[[:space:]]*#/ && $0 ~ mp"[[:space:]]+(watchdog|-w|--watchdog)([[:space:]]|$)") {
+                print marker
+                print desired
+                seen=0
+                replaced=1
+                next
+            }
+            print old_marker
+            print
+            old_marker=""
+            seen=0
+            next
+        }
+        {print}
+        END {if (seen==1 && old_marker!="") print old_marker}
+    ' /etc/crontabs/root > "$_tmp" 2>/dev/null || { rm -f "$_tmp"; return 1; }
+    mv "$_tmp" /etc/crontabs/root 2>/dev/null || { rm -f "$_tmp"; return 1; }
+    return 0
+}
+watchdog_cron_remove_legacy_owned_block() {
+    [ -f /etc/crontabs/root ] || return 0
+    _count="$(watchdog_cron_legacy_count)"
+    case "$_count" in ''|*[!0-9]*) _count=0;; esac
+    [ "$_count" -eq 1 ] || return 0
+    _tmp="/etc/crontabs/root.dns-manager.$$"
+    awk -v mp="$MANAGER_PATH" '
+        $0 ~ /^# DNS_MANAGER_WATCHDOG_SPEC=[0-9][0-9]*$/ && !removed {
+            old_marker=$0; seen=1; next
+        }
+        seen==1 {
+            if ($0 !~ /^[[:space:]]*#/ && $0 ~ mp"[[:space:]]+(watchdog|-w|--watchdog)([[:space:]]|$)") {
+                seen=0
+                old_marker=""
+                removed=1
+                next
+            }
+            print old_marker
+            print
+            old_marker=""
+            seen=0
+            next
+        }
+        {print}
+        END {if (seen==1 && old_marker!="") print old_marker}
+    ' /etc/crontabs/root > "$_tmp" 2>/dev/null || { rm -f "$_tmp"; return 1; }
+    if ! cmp -s "$_tmp" /etc/crontabs/root 2>/dev/null; then
+        mv "$_tmp" /etc/crontabs/root 2>/dev/null || { rm -f "$_tmp"; return 1; }
+        /etc/init.d/cron reload >/dev/null 2>&1 || true
+    else
+        rm -f "$_tmp" 2>/dev/null || true
+    fi
+    return 0
+}
+watchdog_cron_remove_owned_block() {
+    [ -f /etc/crontabs/root ] || { rm -f "$WATCHDOG_CRON_STATE" 2>/dev/null || true; return 0; }
+    watchdog_cron_read_state
+    _state_line="${WATCHDOG_CRON_STATE_LINE:-}"
+    if watchdog_cron_marker_exists; then
+        if [ -n "$_state_line" ] && watchdog_cron_owned_block_status "$_state_line"; then
+            _tmp="/etc/crontabs/root.dns-manager.$$"
+            awk -v marker="$WATCHDOG_CRON_MARKER" -v state_line="$_state_line" '
+                $0==marker {skip=1; next}
+                skip==1 {
+                    if ($0==state_line) {skip=0; next}
+                    print marker
+                    print
+                    skip=0
+                    next
+                }
+                {print}
+            ' /etc/crontabs/root > "$_tmp" 2>/dev/null || { rm -f "$_tmp"; return 1; }
+            mv "$_tmp" /etc/crontabs/root 2>/dev/null || { rm -f "$_tmp"; return 1; }
+            rm -f "$WATCHDOG_CRON_STATE" 2>/dev/null || true
+            /etc/init.d/cron reload >/dev/null 2>&1 || true
+            return 0
+        fi
+        log_msg "Cron: запись DNS Manager была изменена. Не удаляю изменённую запись."
+        return 2
+    fi
+    rm -f "$WATCHDOG_CRON_STATE" 2>/dev/null || true
+    watchdog_cron_remove_legacy_owned_block || true
+    return 0
+}
+watchdog_cron_sync() {
     f="/etc/crontabs/root"
-    mkdir -p "$(dirname "$f")" 2>/dev/null || true
-    [ -f "$f" ] || : > "$f" || return 1
-    # Hybrid intentionally owns the watchdog: it is part of the profile contract.
-    # Other profiles keep the user's saved WATCHDOG_ENABLED state.
+    if [ ! -f "$f" ]; then
+        [ "${WATCHDOG_ENABLED:-0}" = 1 ] || return 0
+        mkdir -p "$(dirname "$f")" 2>/dev/null || return 1
+        : > "$f" || return 1
+    fi
     if [ "${DNS_PROFILE:-}" = "hybrid" ]; then
         WATCHDOG_ENABLED=1
     fi
     _interval="${WATCHDOG_INTERVAL:-15}"
-    case "$_interval" in ''|*[!0-9]*) _interval=15 ;; esac
+    case "$_interval" in ''|*[!0-9]*) _interval=15;; esac
     [ "$_interval" -ge 1 ] 2>/dev/null || _interval=15
     [ "$_interval" -le 59 ] 2>/dev/null || _interval=59
     WATCHDOG_INTERVAL="$_interval"
-    _marker="# DNS_MANAGER_WATCHDOG_SPEC=${WATCHDOG_SPEC_VERSION}"
-    _desired="*/${_interval} * * * * ${MANAGER_PATH} watchdog >> ${LOG_FILE} 2>&1"
-    _tmp="${f}.dns-manager.$$"
-    CRON_TMP_FILE="$_tmp"
-    awk -v mp="$MANAGER_PATH" '
-        /DNS_MANAGER_WATCHDOG_SPEC=/ {next}
-        /DNS_MANAGER_WATCHDOG:/ {next}
-        $0 ~ mp"[[:space:]]+(watchdog|-w|--watchdog)([[:space:]]|$)" {next}
-        /\/usr\/bin\/dns-manager[[:space:]]+(watchdog|-w|--watchdog)([[:space:]]|$)/ {next}
-        {print}
-    ' "$f" > "$_tmp" || { rm -f "$_tmp"; CRON_TMP_FILE=""; return 1; }
+    _desired="$(watchdog_cron_desired_line)"
+    watchdog_cron_read_state
+
     if [ "${WATCHDOG_ENABLED:-0}" = 1 ]; then
-        printf '%s\n%s\n' "$_marker" "$_desired" >> "$_tmp" || { rm -f "$_tmp"; CRON_TMP_FILE=""; return 1; }
+        if watchdog_cron_legacy_count | grep -q '^1$' && ! watchdog_cron_marker_exists; then
+            if watchdog_cron_migrate_legacy_owned_block "$_desired"; then
+                watchdog_cron_write_state owned "$_desired" || return 1
+                /etc/init.d/cron reload >/dev/null 2>&1 || return 1
+                return 0
+            fi
+            log_msg "Cron: обнаружена старая запись DNS Manager, но безопасная миграция не выполнена. Чужие записи не изменяю."
+            watchdog_cron_write_state conflict "" || true
+            return 2
+        fi
+        if watchdog_cron_owned_block_status "$_desired"; then
+            watchdog_cron_write_state owned "$_desired" || return 1
+            return 0
+        fi
+        if watchdog_cron_marker_exists; then
+            if [ -n "${WATCHDOG_CRON_STATE_LINE:-}" ] && watchdog_cron_owned_block_status "$WATCHDOG_CRON_STATE_LINE"; then
+                _old_line="$WATCHDOG_CRON_STATE_LINE"
+                _tmp="${f}.dns-manager.$$"
+                awk -v marker="$WATCHDOG_CRON_MARKER" -v old_line="$_old_line" -v new_line="$_desired" '
+                    $0==marker {print; seen=1; next}
+                    seen==1 {
+                        if ($0==old_line) {print new_line; seen=0; next}
+                        print
+                        seen=0
+                        next
+                    }
+                    {print}
+                ' "$f" > "$_tmp" 2>/dev/null || { rm -f "$_tmp"; return 1; }
+                mv "$_tmp" "$f" 2>/dev/null || { rm -f "$_tmp"; return 1; }
+                watchdog_cron_write_state owned "$_desired" || return 1
+                /etc/init.d/cron reload >/dev/null 2>&1 || return 1
+                return 0
+            fi
+            log_msg "Cron: управляемая запись DNS Manager изменена. Не перезаписываю чужие изменения."
+            watchdog_cron_write_state conflict "${WATCHDOG_CRON_STATE_LINE:-}" || true
+            return 2
+        fi
+
+        # Точную чужую запись не присваиваем себе. Если она уже существует,
+        # используем её без изменения и не удаляем при последующем отключении.
+        if watchdog_cron_line_exists "$_desired"; then
+            watchdog_cron_write_state external "$_desired" || return 1
+            return 0
+        fi
+
+        _tmp="${f}.dns-manager.$$"
+        cp -p "$f" "$_tmp" 2>/dev/null || return 1
+        {
+            printf '%s\n' "$WATCHDOG_CRON_MARKER"
+            printf '%s\n' "$_desired"
+        } >> "$_tmp" 2>/dev/null || { rm -f "$_tmp"; return 1; }
+        mv "$_tmp" "$f" 2>/dev/null || { rm -f "$_tmp"; return 1; }
+        watchdog_cron_write_state owned "$_desired" || return 1
+        /etc/init.d/cron reload >/dev/null 2>&1 || return 1
+        return 0
     fi
-    if cmp -s "$_tmp" "$f" 2>/dev/null; then
-    rm -f "$_tmp"
-    CRON_TMP_FILE=""
-    save_config || return 1
-    return 0
-fi
-    mv "$_tmp" "$f" || { rm -f "$_tmp"; CRON_TMP_FILE=""; return 1; }
-    CRON_TMP_FILE=""
-    /etc/init.d/cron reload >/dev/null 2>&1 || return 1
+
+    watchdog_cron_remove_owned_block
+    _rc=$?
+    case "$_rc" in
+        0) return 0;;
+        2) return 2;;
+        *) return "$_rc";;
+    esac
+}
+apply_watchdog() {
+    watchdog_cron_sync
+    _rc=$?
+    case "$_rc" in
+        0) ;;
+        2)
+            warn_msg "Cron автопроверки изменён вручную/внешним сервисом. Чужие записи сохранены, DNS Manager их не перезаписывает."
+            ;;
+        *)
+            err_msg "Не удалось безопасно синхронизировать cron автопроверки. Чужие записи cron не изменены."
+            return 1
+            ;;
+    esac
     save_config || return 1
     if [ "${WATCHDOG_ENABLED:-0}" = 1 ]; then
         ok_msg "Автопроверка DNS обновлена: каждые ${WATCHDOG_INTERVAL} минут."
