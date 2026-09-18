@@ -2,7 +2,7 @@
 MANAGER_PATH="/usr/bin/dns-manager"
 # ==========================================
 # ==========================================
-VERSION="2.57"
+VERSION="2.58"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -5116,32 +5116,17 @@ web_access_listener_exists() {
 web_access_owner_pid() {
     _wp="$1"
     [ -n "$_wp" ] || return 1
-    if [ -s "$WEB_PIDFILE" ]; then
-        _pid="$(cat "$WEB_PIDFILE" 2>/dev/null)"
+    _pid=""
+    if command -v ps >/dev/null 2>&1; then
+        _pid="$(ps w 2>/dev/null | awk -v p="$_wp" '$1 ~ /^[0-9]+$/ && index($0,"ttyd") && index($0,"/usr/bin/dns-manager") && (index($0,"-p " p) || index($0," " p " ")) {print $1; exit}')"
         case "$_pid" in
             ''|*[!0-9]*) ;;
-            *)
-                if kill -0 "$_pid" 2>/dev/null && web_access_cmdline_is_ours "$_pid"; then
-                    printf '%s\n' "$_pid"
-                    return 0
-                fi
-                ;;
+            *) printf '%s\n' "$_pid"; return 0;;
         esac
     fi
-    for _pid in $(pgrep -x ttyd 2>/dev/null || true); do
-        if web_access_cmdline_is_ours "$_pid"; then
-            printf '%s\n' "$_pid"
-            return 0
-        fi
-    done
     if command -v ss >/dev/null 2>&1; then
         _line="$(ss -lntp 2>/dev/null | grep -E "(^|[[:space:]])[^[:space:]]*:${_wp}([[:space:]]|$)" | head -n1)"
         _pid="$(printf '%s\n' "$_line" | sed -n 's/.*pid=\([0-9][0-9]*\),.*/\1/p')"
-        case "$_pid" in ''|*[!0-9]*) ;; *) printf '%s\n' "$_pid"; return 0;; esac
-    fi
-    if command -v netstat >/dev/null 2>&1; then
-        _line="$(netstat -lntp 2>/dev/null | grep -E "(^|[[:space:]])[^[:space:]]*:${_wp}([[:space:]]|$)" | head -n1)"
-        _pid="$(printf '%s\n' "$_line" | sed -n 's/.*[[:space:]]\([0-9][0-9]*\)\/[^[:space:]]*.*/\1/p' | head -n1)"
         case "$_pid" in ''|*[!0-9]*) ;; *) printf '%s\n' "$_pid"; return 0;; esac
     fi
     return 1
@@ -5190,7 +5175,6 @@ start_service() {
     procd_append_param command -W
     procd_append_param command -t fontSize=15
     procd_append_param command "$CMD"
-    procd_set_param pidfile "$PIDFILE"
     procd_set_param respawn 3600 5 5
     procd_set_param stdout 1
     procd_set_param stderr 1
@@ -5202,35 +5186,22 @@ EOF_WEB_INIT
     return 0
 }
 web_access_pid_count() {
+    _wp="${WEB_ACCESS_PORT:-7682}"
     _n=0
-    for _pid in $(pgrep -x ttyd 2>/dev/null || true); do
-        web_access_cmdline_is_ours "$_pid" || continue
+    for _pid in $(ps w 2>/dev/null | awk -v p="$_wp" '$1 ~ /^[0-9]+$/ && index($0,"ttyd") && index($0,"/usr/bin/dns-manager") && (index($0,"-p " p) || index($0," " p " ")) {print $1}'); do
+        kill -0 "$_pid" 2>/dev/null || continue
         _n=$((_n + 1))
     done
     printf '%s\n' "$_n"
 }
 web_access_real() {
     _wp="${WEB_ACCESS_PORT:-7682}"
-    [ -x "$WEB_SERVICE_CONFIG" ] || return 1
     web_access_listener_exists "$_wp" || return 1
     [ "$(web_access_pid_count 2>/dev/null || printf 0)" -eq 1 ] || return 1
-
-    if [ -s "$WEB_PIDFILE" ]; then
-        _pid="$(cat "$WEB_PIDFILE" 2>/dev/null)"
-        case "$_pid" in
-            ''|*[!0-9]*) ;;
-            *)
-                kill -0 "$_pid" 2>/dev/null || return 1
-                web_access_cmdline_is_ours "$_pid" && return 0
-                ;;
-        esac
-    fi
-
-    for _pid in $(pgrep -x ttyd 2>/dev/null || true); do
-        web_access_cmdline_is_ours "$_pid" || continue
-        return 0
-    done
-    return 1
+    _pid="$(web_access_owner_pid "$_wp" 2>/dev/null || true)"
+    [ -n "$_pid" ] || return 1
+    kill -0 "$_pid" 2>/dev/null || return 1
+    web_access_cmdline_is_ours "$_pid"
 }
 web_access_own_port() {
     _wp="${WEB_ACCESS_PORT:-7682}"
@@ -5270,32 +5241,10 @@ web_access_remove_config() {
 }
 web_access_start() {
     [ -x "$WEB_SERVICE_CONFIG" ] || web_access_write_service || return 1
-    "$WEB_SERVICE_CONFIG" disable >/dev/null 2>&1 || true
+    "$WEB_SERVICE_CONFIG" enable >/dev/null 2>&1 || true
     web_access_stop || true
     "$WEB_SERVICE_CONFIG" start >/dev/null 2>&1 || return 1
     sleep 2
-    _keep=""
-    if [ -s "$WEB_PIDFILE" ]; then
-        _pid="$(cat "$WEB_PIDFILE" 2>/dev/null)"
-        case "$_pid" in ''|*[!0-9]*) ;; *) web_access_cmdline_is_ours "$_pid" && _keep="$_pid" ;; esac
-    fi
-    for _pid in $(pgrep -x ttyd 2>/dev/null || true); do
-        web_access_cmdline_is_ours "$_pid" || continue
-        [ -n "$_keep" ] && [ "$_pid" = "$_keep" ] && continue
-        [ -n "$_keep" ] || _keep="$_pid"
-    done
-    for _pid in $(pgrep -x ttyd 2>/dev/null || true); do
-        web_access_cmdline_is_ours "$_pid" || continue
-        [ -n "$_keep" ] && [ "$_pid" = "$_keep" ] && continue
-        kill "$_pid" 2>/dev/null || true
-    done
-    sleep 1
-    for _pid in $(pgrep -x ttyd 2>/dev/null || true); do
-        web_access_cmdline_is_ours "$_pid" || continue
-        [ -n "$_keep" ] && [ "$_pid" = "$_keep" ] && continue
-        kill -9 "$_pid" 2>/dev/null || true
-    done
-    "$WEB_SERVICE_CONFIG" enable >/dev/null 2>&1 || true
     _count="$(web_access_pid_count 2>/dev/null || printf 0)"
     [ "$_count" -eq 1 ] && web_access_real
 }
@@ -5304,13 +5253,11 @@ web_access_stop() {
         "$WEB_SERVICE_CONFIG" stop >/dev/null 2>&1 || true
         sleep 1
     fi
-    for _pid in $(pgrep -x ttyd 2>/dev/null || true); do
-        web_access_cmdline_is_ours "$_pid" || continue
+    for _pid in $(ps w 2>/dev/null | awk -v p="${WEB_ACCESS_PORT:-7682}" '$1 ~ /^[0-9]+$/ && index($0,"ttyd") && index($0,"/usr/bin/dns-manager") && (index($0,"-p " p) || index($0," " p " ")) {print $1}'); do
         kill "$_pid" 2>/dev/null || true
     done
     sleep 1
-    for _pid in $(pgrep -x ttyd 2>/dev/null || true); do
-        web_access_cmdline_is_ours "$_pid" || continue
+    for _pid in $(ps w 2>/dev/null | awk -v p="${WEB_ACCESS_PORT:-7682}" '$1 ~ /^[0-9]+$/ && index($0,"ttyd") && index($0,"/usr/bin/dns-manager") && (index($0,"-p " p) || index($0," " p " ")) {print $1}'); do
         kill -9 "$_pid" 2>/dev/null || true
     done
     rm -f "$WEB_PIDFILE" 2>/dev/null || true
