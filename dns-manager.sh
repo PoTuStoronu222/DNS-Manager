@@ -2,7 +2,7 @@
 MANAGER_PATH="/usr/bin/dns-manager"
 # ==========================================
 # ==========================================
-VERSION="2.38"
+VERSION="2.39"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -15,7 +15,7 @@ BOOTSTRAP_CATALOG="$CFG_DIR/bootstrap-catalog.conf"
 BOGUS_CATALOG="$CFG_DIR/bogus-catalog.conf"
 BOOTSTRAP_DNS_ALL="77.88.8.8,77.88.8.1,94.140.14.14,1.1.1.1,1.0.0.1,8.8.8.8,8.8.4.4,9.9.9.9,149.112.112.112,208.67.222.222,208.67.220.220,149.112.121.10,149.112.122.10,76.76.2.0,76.76.10.0,194.242.2.2,194.242.2.3"
 DNSCAT_VERSION="8.5-RU-NOSOCIAL"
-WATCHDOG_SPEC_VERSION="15"
+WATCHDOG_SPEC_VERSION="16"
 WATCHDOG_RESTART_COOLDOWN=300
 WATCHDOG_LAST_RESTART_FILE="$STATE_DIR/watchdog-last-restart"
 AUTO_UPDATE_LAST_CHECK_FILE="$STATE_DIR/auto-update-last-check"
@@ -69,6 +69,18 @@ FIREWALL_LAN_ZONE=""
 FIREWALL_WAN_ZONE=""
 WATCHDOG_CRON_STATE="$STATE_DIR/watchdog-cron.state"
 WATCHDOG_CRON_MARKER="# DNS_MANAGER_MANAGED_WATCHDOG=1"
+WATCHDOG_CRON_FILE=""
+WATCHDOG_CRON_DIR=""
+WATCHDOG_CRON_INIT=""
+WATCHDOG_CRON_DAEMON=""
+WATCHDOG_CRON_PID=""
+WATCHDOG_CRON_AVAILABLE="no"
+WATCHDOG_CRON_RUNNING="no"
+WATCHDOG_CRON_AMBIGUOUS="no"
+WATCHDOG_CRON_PID_COUNT=0
+WATCHDOG_CRON_BOOT_ENABLED="unknown"
+WATCHDOG_CRON_DETECT_SOURCE="none"
+WATCHDOG_CRON_SCHEDULER_STATE="$STATE_DIR/watchdog-scheduler.state"
 LUCI_CONTROLLER="/usr/lib/lua/luci/controller/dns_manager.lua"
 MUTATION_LOCK_DIR="$STATE_DIR/mutation.lock"
 MUTATION_LOCK_HELD=0
@@ -1353,8 +1365,9 @@ disc_dns
 disc_clients
 firewall_resolve_zones
 disc_firewall
+watchdog_cron_scheduler_detect >/dev/null 2>&1 || true
 firewall_migrate_legacy_owned >/dev/null 2>&1 || true
-log_tx "DISCOVER" "router" "READ" "OK" "OpenWrt=$SYS_OWRT;fw=$SYS_FW;fw_source=$FIREWALL_DETECT_SOURCE;dns=$DNSMASQ_RUN;doh=$DOH_TOTAL"
+log_tx "DISCOVER" "router" "READ" "OK" "OpenWrt=$SYS_OWRT;fw=$SYS_FW;fw_source=$FIREWALL_DETECT_SOURCE;dns=$DNSMASQ_RUN;doh=$DOH_TOTAL;cron=$WATCHDOG_CRON_AVAILABLE;crond=$WATCHDOG_CRON_RUNNING;cron_ambiguous=$WATCHDOG_CRON_AMBIGUOUS"
 }
 refresh_runtime_capabilities() {
     disc_system
@@ -1384,6 +1397,7 @@ printf '%s' "$_u"
 file_hash() {
 if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" 2>/dev/null | awk '{print $1}'
 elif command -v md5sum >/dev/null 2>&1; then md5sum "$1" 2>/dev/null | awk '{print $1}'
+elif command -v cksum >/dev/null 2>&1; then cksum "$1" 2>/dev/null | awk '{print $1":"$2}'
 else printf ''
 fi
 }
@@ -4314,6 +4328,8 @@ menu_section "СИСТЕМА"
 printf "  OpenWrt:        ${C_WHITE}%s${C_NC}\n" "$SYS_OWRT"
 printf "  Платформа:      ${C_WHITE}%s${C_NC}\n" "$SYS_TARGET"
 printf "  Архитектура:    ${C_WHITE}%s${C_NC}\n" "$SYS_ARCH"
+printf "  Scheduler:      ${C_WHITE}%s${C_NC}\n" "$WATCHDOG_CRON_AVAILABLE"
+printf "  Crond:          ${C_WHITE}%s${C_NC}\n" "$WATCHDOG_CRON_RUNNING"
 printf "  Firewall:       ${C_WHITE}%s${C_NC}\n" "$SYS_FW"
 printf "  Backend:        ${C_WHITE}%s${C_NC}\n" "$FIREWALL_BACKEND"
 printf "  LAN:            ${C_WHITE}%s${C_NC}\n" "$LAN_IP"
@@ -4921,7 +4937,7 @@ EOF_CHECK_EXT2
                 printf 1
             else
                 if [ "${WATCHDOG_ENABLED:-0}" = 0 ]; then
-                    awk -v mp="${MANAGER_PATH}" '$0 !~ /^[[:space:]]*#/ && $0 ~ mp"[[:space:]]+(watchdog|-w|--watchdog)([[:space:]]|$)" {ok=1} END{exit ok?0:1}' /etc/crontabs/root 2>/dev/null && printf 1 || printf 0
+                    watchdog_cron_scheduler_require >/dev/null 2>&1 && awk -v mp="${MANAGER_PATH}" '$0 !~ /^[[:space:]]*#/ && $0 ~ mp"[[:space:]]+(watchdog|-w|--watchdog)([[:space:]]|$)" {ok=1} END{exit ok?0:1}' "$WATCHDOG_CRON_FILE" 2>/dev/null && printf 1 || printf 0
                 else
                     printf 0
                 fi
@@ -6056,6 +6072,236 @@ fi
     rotate_runtime_logs
     return "$_wd_rc"
 }
+watchdog_cron_scheduler_detect_pid() {
+    WATCHDOG_CRON_PID=""
+    WATCHDOG_CRON_PID_COUNT=0
+    WATCHDOG_CRON_AMBIGUOUS="no"
+    if command -v pidof >/dev/null 2>&1; then
+        _pids="$(pidof crond 2>/dev/null)"
+        for _p in $_pids; do
+            case "$_p" in ''|*[!0-9]*) continue;; esac
+            WATCHDOG_CRON_PID_COUNT=$((WATCHDOG_CRON_PID_COUNT+1))
+            [ -n "$WATCHDOG_CRON_PID" ] || WATCHDOG_CRON_PID="$_p"
+        done
+    fi
+    if [ "$WATCHDOG_CRON_PID_COUNT" -eq 0 ]; then
+        _pscount=0
+        _pspid=""
+        while IFS= read -r _p; do
+            case "$_p" in ''|*[!0-9]*) continue;; esac
+            _pscount=$((_pscount+1))
+            [ -n "$_pspid" ] || _pspid="$_p"
+        done <<EOF
+$(ps w 2>/dev/null | awk 'NR>1 && $0 ~ /(^|[[:space:]])([^[:space:]]*\/)?crond([[:space:]]|$)/ {print $1}')
+EOF
+        WATCHDOG_CRON_PID_COUNT="$_pscount"
+        [ "$WATCHDOG_CRON_PID_COUNT" -gt 0 ] && WATCHDOG_CRON_PID="$_pspid"
+    fi
+    [ "$WATCHDOG_CRON_PID_COUNT" -gt 1 ] && WATCHDOG_CRON_AMBIGUOUS="yes"
+    [ "$WATCHDOG_CRON_PID_COUNT" -gt 0 ] && WATCHDOG_CRON_RUNNING="yes" || WATCHDOG_CRON_RUNNING="no"
+}
+watchdog_cron_extract_cdir() {
+    _src="$1"
+    [ -f "$_src" ] || return 1
+    _v="$(awk '{for(i=1;i<NF;i++) if($i=="-c" && $(i+1) ~ /^\//) {print $(i+1); exit}}' "$_src" 2>/dev/null)"
+    case "$_v" in
+        /*) printf '%s\n' "$_v"; return 0;;
+    esac
+    return 1
+}
+watchdog_cron_atomic_replace() {
+    _src="$1"
+    _tmp="$2"
+    _before="$3"
+    [ -f "$_tmp" ] || return 1
+    [ -L "$_src" ] 2>/dev/null && return 2
+    if [ -n "$_before" ] && [ -f "$_src" ]; then
+        _current="$(file_hash "$_src" 2>/dev/null)"
+        if [ -n "$_current" ] && [ "$_current" != "$_before" ]; then
+            rm -f "$_tmp" 2>/dev/null || true
+            return 2
+        fi
+    fi
+    mv "$_tmp" "$_src" 2>/dev/null || { rm -f "$_tmp" 2>/dev/null || true; return 1; }
+    return 0
+}
+watchdog_cron_preserve_attrs() {
+    _src="$1"
+    _tmp="$2"
+    [ -f "$_src" ] && [ -f "$_tmp" ] || return 0
+    if command -v stat >/dev/null 2>&1; then
+        _mode="$(stat -c '%a' "$_src" 2>/dev/null)"
+        case "$_mode" in ''|*[!0-9]*) _mode="";; esac
+        [ -n "$_mode" ] && chmod "$_mode" "$_tmp" 2>/dev/null || true
+        _ug="$(stat -c '%u:%g' "$_src" 2>/dev/null)"
+        case "$_ug" in *:*) chown "$_ug" "$_tmp" 2>/dev/null || true;; esac
+    fi
+}
+watchdog_cron_scheduler_detect() {
+    WATCHDOG_CRON_FILE=""
+    WATCHDOG_CRON_DIR=""
+    WATCHDOG_CRON_INIT=""
+    WATCHDOG_CRON_DAEMON=""
+    WATCHDOG_CRON_PID=""
+    WATCHDOG_CRON_AVAILABLE="no"
+    WATCHDOG_CRON_RUNNING="no"
+    WATCHDOG_CRON_AMBIGUOUS="no"
+    WATCHDOG_CRON_PID_COUNT=0
+    WATCHDOG_CRON_BOOT_ENABLED="unknown"
+    WATCHDOG_CRON_DETECT_SOURCE="none"
+
+    for _ci in /etc/init.d/cron /etc/init.d/crond; do
+        [ -x "$_ci" ] || continue
+        WATCHDOG_CRON_INIT="$_ci"
+        break
+    done
+
+    if [ -n "$WATCHDOG_CRON_INIT" ]; then
+        if "$WATCHDOG_CRON_INIT" enabled >/dev/null 2>&1; then
+            WATCHDOG_CRON_BOOT_ENABLED="yes"
+        else
+            WATCHDOG_CRON_BOOT_ENABLED="no"
+        fi
+    fi
+
+    if command -v crond >/dev/null 2>&1; then
+        WATCHDOG_CRON_DAEMON="$(command -v crond)"
+    elif [ -x /usr/sbin/crond ]; then
+        WATCHDOG_CRON_DAEMON="/usr/sbin/crond"
+    elif [ -x /sbin/crond ]; then
+        WATCHDOG_CRON_DAEMON="/sbin/crond"
+    fi
+
+    watchdog_cron_scheduler_detect_pid
+
+    _cdir=""
+    if [ "$WATCHDOG_CRON_RUNNING" = yes ]; then
+        _psline="$(ps w 2>/dev/null | awk 'NR>1 && $0 ~ /(^|[[:space:]])([^[:space:]]*\/)?crond([[:space:]]|$)/ {print; exit}')"
+        _cdir="$(printf '%s\n' "$_psline" | awk '{for(i=1;i<NF;i++) if($i=="-c" && $(i+1) ~ /^\//) {print $(i+1); exit}}')"
+        case "$_cdir" in /*) ;; *) _cdir="";; esac
+    fi
+    [ -n "$_cdir" ] || [ -z "$WATCHDOG_CRON_INIT" ] || _cdir="$(watchdog_cron_extract_cdir "$WATCHDOG_CRON_INIT" 2>/dev/null)"
+
+    _base="${TMP_DIR:-/tmp}"
+    mkdir -p "$_base" 2>/dev/null || true
+    _candidates="$_base/watchdog-cron-candidates-$$"
+    : > "$_candidates" 2>/dev/null || _candidates=""
+    [ -n "$_cdir" ] && printf '%s\n' "$_cdir" >> "$_candidates"
+    if [ -f "$WATCHDOG_CRON_SCHEDULER_STATE" ]; then
+        _saved_dir="$(sed -n 's/^dir=//p' "$WATCHDOG_CRON_SCHEDULER_STATE" 2>/dev/null | head -n1)"
+        case "$_saved_dir" in /*) printf '%s\n' "$_saved_dir" >> "$_candidates";; esac
+    fi
+    printf '%s\n' "/etc/crontabs" "/var/spool/cron/crontabs" "/var/spool/cron" >> "$_candidates"
+    [ -n "$WATCHDOG_CRON_INIT" ] && printf '%s\n' "/etc/crontabs" >> "$_candidates"
+    if [ -n "$_candidates" ]; then
+        awk 'NF && !seen[$0]++' "$_candidates" > "${_candidates}.u" 2>/dev/null && mv "${_candidates}.u" "$_candidates" 2>/dev/null || true
+    fi
+
+    _found=0
+    if [ -n "$_candidates" ] && [ -f "$_candidates" ]; then
+        while IFS= read -r _d; do
+            [ -n "$_d" ] || continue
+            [ -f "$_d/root" ] || continue
+            if grep -Fqx -- "$WATCHDOG_CRON_MARKER" "$_d/root" 2>/dev/null; then
+                WATCHDOG_CRON_DIR="$_d"
+                WATCHDOG_CRON_FILE="$_d/root"
+                _found=1
+                WATCHDOG_CRON_DETECT_SOURCE="existing-marker"
+                break
+            fi
+        done < "$_candidates"
+    fi
+    if [ "$_found" = 0 ] && [ -n "$_candidates" ] && [ -f "$_candidates" ]; then
+        while IFS= read -r _d; do
+            [ -n "$_d" ] || continue
+            [ -f "$_d/root" ] || continue
+            WATCHDOG_CRON_DIR="$_d"
+            WATCHDOG_CRON_FILE="$_d/root"
+            _found=1
+            WATCHDOG_CRON_DETECT_SOURCE="existing-root"
+            break
+        done < "$_candidates"
+    fi
+    if [ "$_found" = 0 ] && [ -n "$_cdir" ]; then
+        WATCHDOG_CRON_DIR="$_cdir"
+        WATCHDOG_CRON_FILE="$_cdir/root"
+        _found=1
+        WATCHDOG_CRON_DETECT_SOURCE="process-cdir"
+    fi
+    if [ "$_found" = 0 ] && [ -n "$WATCHDOG_CRON_INIT" ]; then
+        _vdir="$(watchdog_cron_extract_cdir "$WATCHDOG_CRON_INIT" 2>/dev/null)"
+        case "$_vdir" in
+            /*) WATCHDOG_CRON_DIR="$_vdir"; WATCHDOG_CRON_FILE="$_vdir/root"; _found=1; WATCHDOG_CRON_DETECT_SOURCE="init-cdir";;
+        esac
+    fi
+    if [ "$_found" = 0 ] && [ -n "$WATCHDOG_CRON_INIT" ]; then
+        WATCHDOG_CRON_DIR="/etc/crontabs"
+        WATCHDOG_CRON_FILE="/etc/crontabs/root"
+        _found=1
+        WATCHDOG_CRON_DETECT_SOURCE="openwrt-default"
+    fi
+
+    if [ -n "$WATCHDOG_CRON_INIT" ] || [ -n "$WATCHDOG_CRON_DAEMON" ] || [ "$WATCHDOG_CRON_RUNNING" = yes ]; then
+        WATCHDOG_CRON_AVAILABLE="yes"
+    fi
+
+    [ -z "$_candidates" ] || rm -f "$_candidates" "${_candidates}.u" 2>/dev/null || true
+
+    if [ "$WATCHDOG_CRON_AVAILABLE" = yes ] && [ -n "$WATCHDOG_CRON_DIR" ]; then
+        _st="${WATCHDOG_CRON_SCHEDULER_STATE}.tmp.$$"
+        {
+            printf 'version=1\n'
+            printf 'backend=crond\n'
+            printf 'init=%s\n' "$WATCHDOG_CRON_INIT"
+            printf 'daemon=%s\n' "$WATCHDOG_CRON_DAEMON"
+            printf 'pid=%s\n' "$WATCHDOG_CRON_PID"
+            printf 'pid_count=%s\n' "$WATCHDOG_CRON_PID_COUNT"
+            printf 'ambiguous=%s\n' "$WATCHDOG_CRON_AMBIGUOUS"
+            printf 'dir=%s\n' "$WATCHDOG_CRON_DIR"
+            printf 'boot_enabled=%s\n' "$WATCHDOG_CRON_BOOT_ENABLED"
+            printf 'source=%s\n' "$WATCHDOG_CRON_DETECT_SOURCE"
+        } > "$_st" 2>/dev/null && mv "$_st" "$WATCHDOG_CRON_SCHEDULER_STATE" 2>/dev/null || rm -f "$_st" 2>/dev/null
+    fi
+    return 0
+}
+watchdog_cron_scheduler_require() {
+    watchdog_cron_scheduler_detect
+    [ "$WATCHDOG_CRON_AMBIGUOUS" != yes ] || {
+        log_msg "Cron автопроверки недоступен: обнаружено несколько одновременно работающих crond. Scheduler неоднозначен, изменения не применяются."
+        return 1
+    }
+    [ "$WATCHDOG_CRON_AVAILABLE" = yes ] || {
+        log_msg "Cron автопроверки недоступен: не найден init-сервис cron и не обнаружен демон crond."
+        return 1
+    }
+    [ -n "$WATCHDOG_CRON_FILE" ] || {
+        log_msg "Cron автопроверки недоступен: не удалось определить crontab root."
+        return 1
+    }
+    return 0
+}
+watchdog_cron_scheduler_start() {
+    watchdog_cron_scheduler_detect
+    [ "$WATCHDOG_CRON_AVAILABLE" = yes ] || return 1
+    [ "$WATCHDOG_CRON_RUNNING" = yes ] && return 0
+    if [ -n "$WATCHDOG_CRON_INIT" ]; then
+        log_msg "Cron не запущен. Запускаю scheduler для работы автопроверки DNS; существующие cron-задания не изменяю."
+        "$WATCHDOG_CRON_INIT" start >/dev/null 2>&1 || return 1
+        sleep 1
+        watchdog_cron_scheduler_detect
+        [ "$WATCHDOG_CRON_RUNNING" = yes ] && return 0
+    fi
+    return 1
+}
+watchdog_cron_scheduler_apply() {
+    watchdog_cron_scheduler_detect
+    if [ -n "$WATCHDOG_CRON_INIT" ] && [ -x "$WATCHDOG_CRON_INIT" ]; then
+        "$WATCHDOG_CRON_INIT" restart >/dev/null 2>&1 && return 0
+        return 1
+    fi
+    [ "$WATCHDOG_CRON_RUNNING" = yes ] && return 0
+    return 1
+}
 watchdog_cron_read_state() {
     WATCHDOG_CRON_STATE_MODE="$(sed -n 's/^mode=//p' "$WATCHDOG_CRON_STATE" 2>/dev/null | head -n1)"
     WATCHDOG_CRON_STATE_LINE="$(sed -n 's/^line=//p' "$WATCHDOG_CRON_STATE" 2>/dev/null | head -n1)"
@@ -6073,7 +6319,24 @@ watchdog_cron_write_state() {
         printf 'mode=%s\n' "$_mode"
         printf 'line=%s\n' "$_line"
     } > "$_tmp" 2>/dev/null || { rm -f "$_tmp" 2>/dev/null; return 1; }
+    chmod 600 "$_tmp" 2>/dev/null || true
     mv "$_tmp" "$WATCHDOG_CRON_STATE" 2>/dev/null || { rm -f "$_tmp" 2>/dev/null; return 1; }
+    return 0
+}
+watchdog_cron_file_prepare() {
+    watchdog_cron_scheduler_require || return 1
+    if [ -L "$WATCHDOG_CRON_FILE" ] 2>/dev/null; then
+        log_msg "Cron автопроверки: crontab root является симлинком. Изменение через DNS Manager остановлено, чтобы не заменить чужой путь."
+        return 1
+    fi
+    if [ ! -f "$WATCHDOG_CRON_FILE" ]; then
+        [ "${WATCHDOG_ENABLED:-0}" = 1 ] || return 0
+        mkdir -p "$WATCHDOG_CRON_DIR" 2>/dev/null || return 1
+        (umask 077; : > "$WATCHDOG_CRON_FILE") || return 1
+        chmod 600 "$WATCHDOG_CRON_FILE" 2>/dev/null || true
+        chown root:root "$WATCHDOG_CRON_FILE" 2>/dev/null || true
+    fi
+    [ -r "$WATCHDOG_CRON_FILE" ] && [ -w "$WATCHDOG_CRON_FILE" ] || return 1
     return 0
 }
 watchdog_cron_desired_line() {
@@ -6082,11 +6345,14 @@ watchdog_cron_desired_line() {
 watchdog_cron_line_exists() {
     _line="$1"
     [ -n "$_line" ] || return 1
-    grep -Fqx -- "$_line" /etc/crontabs/root 2>/dev/null
+    watchdog_cron_scheduler_detect
+    [ -n "$WATCHDOG_CRON_FILE" ] && [ -f "$WATCHDOG_CRON_FILE" ] || return 1
+    grep -Fqx -- "$_line" "$WATCHDOG_CRON_FILE" 2>/dev/null
 }
 watchdog_cron_owned_block_status() {
     _want_line="$1"
-    [ -f /etc/crontabs/root ] || return 1
+    watchdog_cron_scheduler_detect
+    [ -n "$WATCHDOG_CRON_FILE" ] && [ -f "$WATCHDOG_CRON_FILE" ] || return 1
     awk -v marker="$WATCHDOG_CRON_MARKER" -v want="$_want_line" '
         $0==marker {seen=1; next}
         seen==1 {
@@ -6094,13 +6360,16 @@ watchdog_cron_owned_block_status() {
             seen=0
         }
         END {exit found?0:1}
-    ' /etc/crontabs/root 2>/dev/null
+    ' "$WATCHDOG_CRON_FILE" 2>/dev/null
 }
 watchdog_cron_marker_exists() {
-    grep -Fqx -- "$WATCHDOG_CRON_MARKER" /etc/crontabs/root 2>/dev/null
+    watchdog_cron_scheduler_detect
+    [ -n "$WATCHDOG_CRON_FILE" ] && [ -f "$WATCHDOG_CRON_FILE" ] || return 1
+    grep -Fqx -- "$WATCHDOG_CRON_MARKER" "$WATCHDOG_CRON_FILE" 2>/dev/null
 }
 watchdog_cron_legacy_count() {
-    [ -f /etc/crontabs/root ] || { printf '0\n'; return 0; }
+    watchdog_cron_scheduler_detect
+    [ -n "$WATCHDOG_CRON_FILE" ] && [ -f "$WATCHDOG_CRON_FILE" ] || { printf '0\n'; return 0; }
     awk -v mp="$MANAGER_PATH" '
         $0 ~ /^# DNS_MANAGER_WATCHDOG_SPEC=[0-9][0-9]*$/ {seen=1; next}
         seen==1 {
@@ -6108,14 +6377,17 @@ watchdog_cron_legacy_count() {
             seen=0
         }
         END {print count+0}
-    ' /etc/crontabs/root 2>/dev/null
+    ' "$WATCHDOG_CRON_FILE" 2>/dev/null
 }
 watchdog_cron_migrate_legacy_owned_block() {
     _desired="$1"
+    watchdog_cron_scheduler_detect
+    [ -n "$WATCHDOG_CRON_FILE" ] && [ -f "$WATCHDOG_CRON_FILE" ] || return 1
     _count="$(watchdog_cron_legacy_count)"
     case "$_count" in ''|*[!0-9]*) _count=0;; esac
     [ "$_count" -eq 1 ] || return 1
-    _tmp="/etc/crontabs/root.dns-manager.$$"
+    _cron_before="$(file_hash "$WATCHDOG_CRON_FILE" 2>/dev/null)"
+    _tmp="$WATCHDOG_CRON_FILE.dns-manager.$$"
     awk -v mp="$MANAGER_PATH" -v marker="$WATCHDOG_CRON_MARKER" -v desired="$_desired" '
         $0 ~ /^# DNS_MANAGER_WATCHDOG_SPEC=[0-9][0-9]*$/ && !replaced {
             old_marker=$0; seen=1; next
@@ -6136,16 +6408,21 @@ watchdog_cron_migrate_legacy_owned_block() {
         }
         {print}
         END {if (seen==1 && old_marker!="") print old_marker}
-    ' /etc/crontabs/root > "$_tmp" 2>/dev/null || { rm -f "$_tmp"; return 1; }
-    mv "$_tmp" /etc/crontabs/root 2>/dev/null || { rm -f "$_tmp"; return 1; }
+    ' "$WATCHDOG_CRON_FILE" > "$_tmp" 2>/dev/null || { rm -f "$_tmp"; return 1; }
+    watchdog_cron_preserve_attrs "$WATCHDOG_CRON_FILE" "$_tmp"
+    watchdog_cron_atomic_replace "$WATCHDOG_CRON_FILE" "$_tmp" "$_cron_before"
+    _ar=$?
+    [ "$_ar" -eq 0 ] || { rm -f "$_tmp" 2>/dev/null || true; return "$_ar"; }
     return 0
 }
 watchdog_cron_remove_legacy_owned_block() {
-    [ -f /etc/crontabs/root ] || return 0
+    watchdog_cron_scheduler_detect
+    [ -n "$WATCHDOG_CRON_FILE" ] && [ -f "$WATCHDOG_CRON_FILE" ] || return 0
     _count="$(watchdog_cron_legacy_count)"
     case "$_count" in ''|*[!0-9]*) _count=0;; esac
     [ "$_count" -eq 1 ] || return 0
-    _tmp="/etc/crontabs/root.dns-manager.$$"
+    _cron_before="$(file_hash "$WATCHDOG_CRON_FILE" 2>/dev/null)"
+    _tmp="$WATCHDOG_CRON_FILE.dns-manager.$$"
     awk -v mp="$MANAGER_PATH" '
         $0 ~ /^# DNS_MANAGER_WATCHDOG_SPEC=[0-9][0-9]*$/ && !removed {
             old_marker=$0; seen=1; next
@@ -6165,22 +6442,27 @@ watchdog_cron_remove_legacy_owned_block() {
         }
         {print}
         END {if (seen==1 && old_marker!="") print old_marker}
-    ' /etc/crontabs/root > "$_tmp" 2>/dev/null || { rm -f "$_tmp"; return 1; }
-    if ! cmp -s "$_tmp" /etc/crontabs/root 2>/dev/null; then
-        mv "$_tmp" /etc/crontabs/root 2>/dev/null || { rm -f "$_tmp"; return 1; }
-        /etc/init.d/cron reload >/dev/null 2>&1 || true
+    ' "$WATCHDOG_CRON_FILE" > "$_tmp" 2>/dev/null || { rm -f "$_tmp"; return 1; }
+    if ! cmp -s "$_tmp" "$WATCHDOG_CRON_FILE" 2>/dev/null; then
+        watchdog_cron_preserve_attrs "$WATCHDOG_CRON_FILE" "$_tmp"
+        watchdog_cron_atomic_replace "$WATCHDOG_CRON_FILE" "$_tmp" "$_cron_before"
+        _ar=$?
+        [ "$_ar" -eq 0 ] || { rm -f "$_tmp" 2>/dev/null || true; return "$_ar"; }
+        watchdog_cron_scheduler_apply >/dev/null 2>&1 || true
     else
         rm -f "$_tmp" 2>/dev/null || true
     fi
     return 0
 }
 watchdog_cron_remove_owned_block() {
-    [ -f /etc/crontabs/root ] || { rm -f "$WATCHDOG_CRON_STATE" 2>/dev/null || true; return 0; }
+    watchdog_cron_scheduler_detect
+    [ -n "$WATCHDOG_CRON_FILE" ] && [ -f "$WATCHDOG_CRON_FILE" ] || { rm -f "$WATCHDOG_CRON_STATE" 2>/dev/null || true; return 0; }
     watchdog_cron_read_state
     _state_line="${WATCHDOG_CRON_STATE_LINE:-}"
     if watchdog_cron_marker_exists; then
         if [ -n "$_state_line" ] && watchdog_cron_owned_block_status "$_state_line"; then
-            _tmp="/etc/crontabs/root.dns-manager.$$"
+            _cron_before="$(file_hash "$WATCHDOG_CRON_FILE" 2>/dev/null)"
+            _tmp="$WATCHDOG_CRON_FILE.dns-manager.$$"
             awk -v marker="$WATCHDOG_CRON_MARKER" -v state_line="$_state_line" '
                 $0==marker {skip=1; next}
                 skip==1 {
@@ -6191,10 +6473,13 @@ watchdog_cron_remove_owned_block() {
                     next
                 }
                 {print}
-            ' /etc/crontabs/root > "$_tmp" 2>/dev/null || { rm -f "$_tmp"; return 1; }
-            mv "$_tmp" /etc/crontabs/root 2>/dev/null || { rm -f "$_tmp"; return 1; }
+            ' "$WATCHDOG_CRON_FILE" > "$_tmp" 2>/dev/null || { rm -f "$_tmp"; return 1; }
+            watchdog_cron_preserve_attrs "$WATCHDOG_CRON_FILE" "$_tmp"
+            watchdog_cron_atomic_replace "$WATCHDOG_CRON_FILE" "$_tmp" "$_cron_before"
+            _ar=$?
+            [ "$_ar" -eq 0 ] || { rm -f "$_tmp" 2>/dev/null || true; return "$_ar"; }
             rm -f "$WATCHDOG_CRON_STATE" 2>/dev/null || true
-            /etc/init.d/cron reload >/dev/null 2>&1 || true
+            watchdog_cron_scheduler_apply >/dev/null 2>&1 || true
             return 0
         fi
         log_msg "Cron: запись DNS Manager была изменена. Не удаляю изменённую запись."
@@ -6205,12 +6490,30 @@ watchdog_cron_remove_owned_block() {
     return 0
 }
 watchdog_cron_sync() {
-    f="/etc/crontabs/root"
-    if [ ! -f "$f" ]; then
-        [ "${WATCHDOG_ENABLED:-0}" = 1 ] || return 0
-        mkdir -p "$(dirname "$f")" 2>/dev/null || return 1
-        : > "$f" || return 1
+    watchdog_cron_scheduler_detect
+    if [ "${WATCHDOG_ENABLED:-0}" = 1 ]; then
+        watchdog_cron_scheduler_require || return 1
+        watchdog_cron_file_prepare || return 1
+        watchdog_cron_scheduler_start || return 1
+    else
+        [ -n "$WATCHDOG_CRON_FILE" ] || { rm -f "$WATCHDOG_CRON_STATE" 2>/dev/null || true; return 0; }
+        if [ ! -f "$WATCHDOG_CRON_FILE" ]; then
+            rm -f "$WATCHDOG_CRON_STATE" 2>/dev/null || true
+            return 0
+        fi
     fi
+
+    f="$WATCHDOG_CRON_FILE"
+    if [ ! -f "$f" ] && [ "${WATCHDOG_ENABLED:-0}" = 1 ]; then
+        mkdir -p "$WATCHDOG_CRON_DIR" 2>/dev/null || return 1
+        (umask 077; : > "$f") || return 1
+        chmod 600 "$f" 2>/dev/null || true
+        chown root:root "$f" 2>/dev/null || true
+    fi
+    if [ ! -f "$f" ]; then
+        return 0
+    fi
+
     if [ "${DNS_PROFILE:-}" = "hybrid" ]; then
         WATCHDOG_ENABLED=1
     fi
@@ -6226,7 +6529,7 @@ watchdog_cron_sync() {
         if watchdog_cron_legacy_count | grep -q '^1$' && ! watchdog_cron_marker_exists; then
             if watchdog_cron_migrate_legacy_owned_block "$_desired"; then
                 watchdog_cron_write_state owned "$_desired" || return 1
-                /etc/init.d/cron reload >/dev/null 2>&1 || return 1
+                watchdog_cron_scheduler_apply >/dev/null 2>&1 || return 1
                 return 0
             fi
             log_msg "Cron: обнаружена старая запись DNS Manager, но безопасная миграция не выполнена. Чужие записи не изменяю."
@@ -6240,6 +6543,7 @@ watchdog_cron_sync() {
         if watchdog_cron_marker_exists; then
             if [ -n "${WATCHDOG_CRON_STATE_LINE:-}" ] && watchdog_cron_owned_block_status "$WATCHDOG_CRON_STATE_LINE"; then
                 _old_line="$WATCHDOG_CRON_STATE_LINE"
+                _cron_before="$(file_hash "$f" 2>/dev/null)"
                 _tmp="${f}.dns-manager.$$"
                 awk -v marker="$WATCHDOG_CRON_MARKER" -v old_line="$_old_line" -v new_line="$_desired" '
                     $0==marker {print; seen=1; next}
@@ -6251,32 +6555,35 @@ watchdog_cron_sync() {
                     }
                     {print}
                 ' "$f" > "$_tmp" 2>/dev/null || { rm -f "$_tmp"; return 1; }
-                mv "$_tmp" "$f" 2>/dev/null || { rm -f "$_tmp"; return 1; }
+                watchdog_cron_preserve_attrs "$f" "$_tmp"
+                watchdog_cron_atomic_replace "$f" "$_tmp" "$_cron_before"
+                _ar=$?
+                [ "$_ar" -eq 0 ] || { rm -f "$_tmp" 2>/dev/null || true; return "$_ar"; }
                 watchdog_cron_write_state owned "$_desired" || return 1
-                /etc/init.d/cron reload >/dev/null 2>&1 || return 1
+                watchdog_cron_scheduler_apply >/dev/null 2>&1 || return 1
                 return 0
             fi
             log_msg "Cron: управляемая запись DNS Manager изменена. Не перезаписываю чужие изменения."
             watchdog_cron_write_state conflict "${WATCHDOG_CRON_STATE_LINE:-}" || true
             return 2
         fi
-
-        # Точную чужую запись не присваиваем себе. Если она уже существует,
-        # используем её без изменения и не удаляем при последующем отключении.
         if watchdog_cron_line_exists "$_desired"; then
             watchdog_cron_write_state external "$_desired" || return 1
             return 0
         fi
 
+        _cron_before="$(file_hash "$f" 2>/dev/null)"
         _tmp="${f}.dns-manager.$$"
         cp -p "$f" "$_tmp" 2>/dev/null || return 1
         {
             printf '%s\n' "$WATCHDOG_CRON_MARKER"
             printf '%s\n' "$_desired"
         } >> "$_tmp" 2>/dev/null || { rm -f "$_tmp"; return 1; }
-        mv "$_tmp" "$f" 2>/dev/null || { rm -f "$_tmp"; return 1; }
+        watchdog_cron_atomic_replace "$f" "$_tmp" "$_cron_before"
+        _ar=$?
+        [ "$_ar" -eq 0 ] || { rm -f "$_tmp" 2>/dev/null || true; return "$_ar"; }
         watchdog_cron_write_state owned "$_desired" || return 1
-        /etc/init.d/cron reload >/dev/null 2>&1 || return 1
+        watchdog_cron_scheduler_apply >/dev/null 2>&1 || return 1
         return 0
     fi
 
@@ -6293,7 +6600,11 @@ apply_watchdog() {
     watchdog_cron_sync
     _rc=$?
     case "$_rc" in
-        0) ;;
+        0)
+            if [ "${WATCHDOG_ENABLED:-0}" = 1 ] && [ "${WATCHDOG_CRON_BOOT_ENABLED:-unknown}" = no ]; then
+                warn_msg "Cron работает, но не включён в автозапуск. DNS Manager не включает общий cron автоматически, чтобы не менять чужую политику запуска."
+            fi
+            ;;
         2)
             warn_msg "Cron автопроверки изменён вручную/внешним сервисом. Чужие записи сохранены, DNS Manager их не перезаписывает."
             ;;
