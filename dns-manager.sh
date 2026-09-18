@@ -2,7 +2,7 @@
 MANAGER_PATH="/usr/bin/dns-manager"
 # ==========================================
 # ==========================================
-VERSION="2.58"
+VERSION="2.59"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -84,6 +84,10 @@ WATCHDOG_CRON_BOOT_ENABLED="unknown"
 WATCHDOG_CRON_DETECT_SOURCE="none"
 WATCHDOG_CRON_SCHEDULER_STATE="$STATE_DIR/watchdog-scheduler.state"
 LUCI_CONTROLLER="/usr/lib/lua/luci/controller/dns_manager.lua"
+# Persistent marker: /var/run is tmpfs, so the first-run decision must survive reboot.
+FIRST_RUN_MARKER="$CFG_DIR/.first-run.done"
+FIRST_RUN=0
+[ -f "$FIRST_RUN_MARKER" ] || FIRST_RUN=1
 MUTATION_LOCK_DIR="$STATE_DIR/mutation.lock"
 MUTATION_LOCK_HELD=0
 rotate_small_file() {
@@ -5316,7 +5320,7 @@ web_access_luci_install() {
     cat > "$LUCI_CONTROLLER" <<'EOF_LUCI'
 module("luci.controller.dns_manager", package.seeall)
 
-function manager_web_enabled()
+local function manager_web_enabled()
     local fs = require "nixio.fs"
     local p = "/etc/dns-manager/config/manager.conf"
     local data = fs.readfile(p) or ""
@@ -6698,6 +6702,10 @@ watchdog_cron_remove_owned_block() {
     return 0
 }
 watchdog_cron_sync() {
+    if [ "${FIRST_RUN:-0}" = 1 ] && [ "${DNS_MANAGER_ALLOW_FIRST_RUN_CRON:-0}" != 1 ]; then
+        log_msg "Cron: синхронизация пропущена на первом запуске."
+        return 0
+    fi
     watchdog_cron_scheduler_detect
     if [ "${WATCHDOG_ENABLED:-0}" = 1 ]; then
         watchdog_cron_scheduler_require || return 1
@@ -6804,6 +6812,11 @@ watchdog_cron_sync() {
     esac
 }
 apply_watchdog() {
+    if [ "${FIRST_RUN:-0}" = 1 ] && [ "${DNS_MANAGER_ALLOW_FIRST_RUN_CRON:-0}" != 1 ]; then
+        info_msg "Первый запуск: изменение cron запрещено. Автопроверка будет синхронизирована после завершения первичной инициализации."
+        save_config || return 1
+        return 0
+    fi
     apply_wait_message "$( [ "${WATCHDOG_ENABLED:-0}" = 1 ] && printf '%s' 'Настраиваю автопроверку DNS и cron' || printf '%s' 'Отключаю автопроверку DNS и cron' )"
     watchdog_cron_sync
     _rc=$?
@@ -7130,16 +7143,25 @@ if [ "${DNS_MANAGER_NO_INSTALL:-0}" != 1 ]; then
     run_discovery
 fi
 
-if acquire_mutation_lock; then
-    if ! apply_watchdog; then
+if [ "${FIRST_RUN:-0}" = 1 ]; then
+    # First launch is initialization only.
+    # Do NOT inspect/start/restart cron and do NOT create/modify crontab here.
+    # The saved watchdog setting is preserved; cron is synchronized only after
+    # the first-run marker has been committed and the user starts the manager again
+    # or explicitly changes the watchdog setting.
+    info_msg "Первый запуск: системный cron не изменяю."
+else
+    if acquire_mutation_lock; then
+        if ! apply_watchdog; then
+            release_mutation_lock
+            err_msg "Не удалось синхронизировать cron для автопроверки DNS."
+            exit 1
+        fi
         release_mutation_lock
-        err_msg "Не удалось синхронизировать cron для автопроверки DNS."
+    else
+        err_msg "Не удалось получить блокировку для синхронизации watchdog."
         exit 1
     fi
-    release_mutation_lock
-else
-    err_msg "Не удалось получить блокировку для синхронизации watchdog."
-    exit 1
 fi
 
 if [ "${_had_dns_profile:-1}" = 0 ]; then
@@ -7151,6 +7173,25 @@ fi
 
 run_discovery
 startup_self_repair
+
+if [ "${FIRST_RUN:-0}" = 1 ]; then
+    if mkdir -p "$CFG_DIR" 2>/dev/null && {
+        printf 'version=%s\n' "$VERSION"
+        printf 'completed_at=%s\n' "$(date +%s)"
+    } > "${FIRST_RUN_MARKER}.tmp.$$" 2>/dev/null; then
+        chmod 600 "${FIRST_RUN_MARKER}.tmp.$$" 2>/dev/null || true
+        if mv "${FIRST_RUN_MARKER}.tmp.$$" "$FIRST_RUN_MARKER" 2>/dev/null; then
+            FIRST_RUN=0
+            info_msg "Первичная инициализация завершена. Cron оставлен без изменений."
+        else
+            rm -f "${FIRST_RUN_MARKER}.tmp.$$" 2>/dev/null || true
+            warn_msg "Не удалось сохранить маркер первого запуска. В следующий запуск cron снова будет защищён от автоматического изменения."
+        fi
+    else
+        rm -f "${FIRST_RUN_MARKER}.tmp.$$" 2>/dev/null || true
+        warn_msg "Не удалось сохранить маркер первого запуска. В следующий запуск cron снова будет защищён от автоматического изменения."
+    fi
+fi
 
 printf "${C_GREEN}✓ Первый проход завершён.${C_NC}
 "
