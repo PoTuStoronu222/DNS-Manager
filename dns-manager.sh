@@ -2,7 +2,7 @@
 MANAGER_PATH="/usr/bin/dns-manager"
 # ==========================================
 # ==========================================
-VERSION="2.51"
+VERSION="2.53"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -40,15 +40,11 @@ BASELINE_DIR="$BASE_DIR/baseline"
 BASELINE_MANIFEST="$BASELINE_DIR/manifest"
 BASELINE_LAST="$BASELINE_DIR/last-applied.manifest"
 BASELINE_META="$BASELINE_DIR/meta"
-OWNERSHIP="$CFG_DIR/ownership.conf"
-LEGACY_RUNTIME_OWNERSHIP="$STATE_DIR/ownership.conf"
-MTU_BEFORE="$CFG_DIR/mtu-before-zone.conf"
-LEGACY_MTU_BEFORE="$CFG_DIR/mtu-before.conf"
-NTP_CLIENTS_BEFORE="$CFG_DIR/ntp-clients-before.conf"
-FORCE_DNS_BEFORE="$CFG_DIR/force-dns-before.conf"
-DNSMASQ_PERF_BEFORE="$CFG_DIR/dnsmasq-perf-before.conf"
-SYSCTL_BASE_BEFORE="$CFG_DIR/sysctl-before.conf"
-SYSCTL_EXT_BEFORE="$CFG_DIR/sysctl-extended-before.conf"
+OWNERSHIP="$STATE_DIR/ownership.conf"
+MTU_BEFORE="$STATE_DIR/mtu-before-zone.conf"
+LEGACY_MTU_BEFORE="$STATE_DIR/mtu-before.conf"
+NTP_CLIENTS_BEFORE="$STATE_DIR/ntp-clients-before.conf"
+FORCE_DNS_BEFORE="$STATE_DIR/force-dns-before.conf"
 TEST_RESULTS="$STATE_DIR/dns-test-results.conf"
 TEST_LOCK_DIR="$STATE_DIR/dns-test.lock"
 TEST_LOCK_HELD=0
@@ -58,6 +54,9 @@ WEB_ACCESS_ENABLED=0
 WEB_TTYD_SECTION="dns_manager"
 WEB_SERVICE_CONFIG="/etc/init.d/dns-manager-web"
 WEB_PIDFILE="/var/run/dns-manager-web.pid"
+SYSCTL_BASE_MARKER="# DNS_MANAGER_MANAGED_SYSCTL=1"
+SYSCTL_EXTENDED_MARKER="# DNS_MANAGER_MANAGED_SYSCTL_EXTENDED=1"
+CLIENT_FIXES_MARKER="# DNS_MANAGER_MANAGED_CLIENT_FIXES=1"
 CLIENT_FIXES_FILE=""
 FIREWALL_OWNERSHIP="$CFG_DIR/firewall-ownership.conf"
 FW_NTP_SECTION="dns_manager_ntp_client"
@@ -85,6 +84,7 @@ WATCHDOG_CRON_SCHEDULER_STATE="$STATE_DIR/watchdog-scheduler.state"
 LUCI_CONTROLLER="/usr/lib/lua/luci/controller/dns_manager.lua"
 MUTATION_LOCK_DIR="$STATE_DIR/mutation.lock"
 MUTATION_LOCK_HELD=0
+FORCE_APPLY_SETTINGS=0
 rotate_small_file() {
     _rf="$1"
     _max="$2"
@@ -96,21 +96,6 @@ rotate_small_file() {
     tail -n 1200 "$_rf" > "$_tmp" 2>/dev/null || { rm -f "$_tmp"; return 0; }
     mv "$_tmp" "$_rf" 2>/dev/null || { rm -f "$_tmp"; }
 }
-migrate_runtime_ownership() {
-    [ -n "$LEGACY_RUNTIME_OWNERSHIP" ] || return 0
-    [ -f "$LEGACY_RUNTIME_OWNERSHIP" ] || return 0
-    mkdir -p "$CFG_DIR" 2>/dev/null || return 1
-    if [ ! -f "$OWNERSHIP" ]; then
-        cp "$LEGACY_RUNTIME_OWNERSHIP" "$OWNERSHIP" 2>/dev/null || return 1
-    else
-        _tmp="${OWNERSHIP}.merge.$$"
-        { cat "$OWNERSHIP"; cat "$LEGACY_RUNTIME_OWNERSHIP"; } 2>/dev/null | awk 'NF && !seen[$0]++' > "$_tmp" || { rm -f "$_tmp"; return 1; }
-        mv "$_tmp" "$OWNERSHIP" 2>/dev/null || { rm -f "$_tmp"; return 1; }
-    fi
-    rm -f "$LEGACY_RUNTIME_OWNERSHIP" 2>/dev/null || true
-    return 0
-}
-
 rotate_runtime_logs() {
     rotate_small_file "$LOG_FILE" "$LOG_MAX_BYTES"
     rotate_small_file "$TX_LOG" "$TX_LOG_MAX_BYTES"
@@ -201,7 +186,6 @@ cleanup_stale_tmp_dirs() {
     done
 }
 TMP_DIR="$(mktemp -d "/tmp/dnsmgr.$$-XXXXXX" 2>/dev/null || { d="/tmp/dnsmgr.$$"; n=0; while ! mkdir "$d" 2>/dev/null; do n=$((n+1)); d="/tmp/dnsmgr.$$-$n"; [ "$n" -lt 20 ] || break; done; [ -d "$d" ] || exit 1; printf "%s" "$d"; })"
-migrate_runtime_ownership 2>/dev/null || true
 cleanup_stale_tmp_dirs
 cleanup_transaction_history
 rotate_runtime_logs
@@ -500,7 +484,7 @@ confirm_action() {
         log_msg "Автоматическое подтверждение: $_prompt"
         return 0
     fi
-    printf "\n${C_WHITE}${C_BOLD}%s${C_NC}\n" "$_prompt"
+    printf "\n${C_WHITE}%s${C_NC}\n" "$_prompt"
     printf "  ${C_GREEN}[Y / Н] — Да, выполнить${C_NC}\n"
     printf "  ${C_RED}[N / Т / Enter] — Нет, отменить${C_NC}\n"
     menu_prompt
@@ -508,46 +492,9 @@ confirm_action() {
     case "$_ans" in
         y|Y|н|Н) return 0 ;;
         n|N|т|Т|"") return 1 ;;
-        *) warn_msg "Неверный выбор. Используйте Y/Н для подтверждения или N/Т для отмены."; return 1 ;;
+        *) warn_msg "Используйте Y/Н для подтверждения или N/Т для отмены."; return 1 ;;
     esac
 }
-toggle_confirm() {
-    _label="$1"
-    _current="$2"
-    _new="$3"
-    _details="$4"
-    if [ "${SILENT_APPLY:-0}" = 1 ]; then
-        log_msg "Подтверждение: ${_label}: ${_new}"
-        return 0
-    fi
-    printf "\n${C_WHITE}${C_BOLD}Настройка: %s${C_NC}\n" "$_label"
-    printf "  Состояние: %s\n" "$_current"
-    printf "  Действие:  ${C_YELLOW}${C_BOLD}%s${C_NC}\n" "$_new"
-    [ -n "$_details" ] && printf "  %s\n" "$_details"
-    case "$_new" in
-        ВКЛЮЧИТЬ) confirm_action "Включить «$_label»?";;
-        ВЫКЛЮЧИТЬ) confirm_action "Выключить «$_label» и вернуть стоковое состояние?";;
-        *) return 1;;
-    esac
-}
-override_toggle_confirm() {
-    _label="$1"
-    _current="$2"
-    _new="$3"
-    _details="$4"
-    if [ "${SILENT_APPLY:-0}" = 1 ]; then
-        log_msg "Принудительное подтверждение: ${_label}: ${_new}"
-        return 0
-    fi
-    printf "\n${C_WHITE}${C_BOLD}Настройка: %s${C_NC}\n" "$_label"
-    printf "  Состояние: %s${C_NC}\n" "$_current"
-    printf "  Действие:  ${C_YELLOW}${C_BOLD}%s${C_NC}\n" "$_new"
-    [ -n "$_details" ] && printf "  %s\n" "$_details"
-    printf "  ${C_YELLOW}Текущее значение отличается от целевого.${C_NC}\n"
-    printf "  ${C_WHITE}После подтверждения менеджер заменит только параметры этой функции; остальные настройки не затрагиваются.${C_NC}\n"
-    confirm_action "Применить настройку DNS Manager поверх текущих параметров «$_label»?"
-}
-
 pause() { [ "${SILENT_APPLY:-0}" = 1 ] && return 0; printf "\n${C_WHITE}Нажмите Enter...${C_NC}"; safe_read _dummy; }
 clear_screen() { command -v clear >/dev/null 2>&1 && clear || printf '\033[2J\033[H'; printf '\033[1;37m'; }
 menu_header() {
@@ -901,7 +848,7 @@ BOOTSTRAP_DNS="$BOOTSTRAP_DNS_ALL"
 : "${NTP_IP_FALLBACK:=1}"; : "${SYSCTL_TUNING:=0}"; : "${DNSMASQ_PERF:=0}"; : "${NTP_CLIENTS:=0}"; : "${CLIENT_FIXES:=0}"; : "${SYSCTL_EXTENDED:=0}"
 : "${BALANCER_ENABLED:=1}"; : "${NTP_PRESET:=cf_ip}"; : "${DNS_PROFILE:=hybrid}"; : "${DNS_SELECTION_MODE:=quick}"; : "${DNS_SELECTION_CATEGORY:=bypass}"
 : "${QUICK_PREF_1:=}"; : "${QUICK_PREF_2:=}"; : "${QUICK_PREF_3:=}"; : "${QUICK_PREF_4:=}"; : "${QUICK_PREF_5:=}"; : "${QUICK_PREF_6:=}"
-: "${WATCHDOG_ENABLED:=1}"; : "${WATCHDOG_INTERVAL:=15}"; : "${FORCE_APPLY_SETTINGS:=0}"
+: "${WATCHDOG_ENABLED:=1}"; : "${WATCHDOG_INTERVAL:=15}"
 : "${WEB_ACCESS_ENABLED:=0}"; : "${WEB_ACCESS_PORT:=7682}"; : "${CLIENT_FIXES_FILE:=}"
 TLD_SPLIT="$TLD_RU_ENABLED"
 if [ "$_had_dns_profile" = 0 ] && [ -z "$DNS_PROFILE" ]; then
@@ -2169,103 +2116,6 @@ _s="$(printf '%s\n' $_secs | head -n1)"
 [ -n "$_s" ] && { printf '%s' "$_s"; return; }
 printf '%s' "@dnsmasq[0]"
 }
-rom_dnsmasq_section() {
-_rom_conf="/rom/etc/config/dhcp"
-[ -r "$_rom_conf" ] || { printf '%s' "@dnsmasq[0]"; return 0; }
-_rom_secs="$(uci -c /rom/etc/config show dhcp 2>/dev/null | sed -n 's/^dhcp\.\([^.=]*\)=dnsmasq$/\1/p')"
-for _rs in $_rom_secs; do
-    _ri="$(uci -c /rom/etc/config -q get "dhcp.$_rs.interface" 2>/dev/null)"
-    [ "$_ri" = "lan" ] && { printf '%s' "$_rs"; return 0; }
-done
-_rs="$(printf '%s\n' $_rom_secs | head -n1)"
-[ -n "$_rs" ] && printf '%s' "$_rs" || printf '%s' "@dnsmasq[0]"
-}
-uci_live_value_or_absent() {
-_v="$(uci -q get "$1" 2>/dev/null)"
-if uci -q get "$1" >/dev/null 2>&1; then printf '%s' "$_v"; else printf '__ABSENT__'; fi
-}
-uci_rom_value_or_absent() {
-_pkg="$1"; _path="$2"
-[ -r "/rom/etc/config/$_pkg" ] || { printf '__NO_ROM__'; return 0; }
-_v="$(uci -c /rom/etc/config -q get "$_path" 2>/dev/null)"
-if uci -c /rom/etc/config -q get "$_path" >/dev/null 2>&1; then printf '%s' "$_v"; else printf '__ABSENT__'; fi
-}
-uci_option_state() {
-_pkg="$1"; _live_path="$2"; _rom_path="$3"; _desired="$4"
-_live="$(uci_live_value_or_absent "$_live_path")"
-_stock="$(uci_rom_value_or_absent "$_pkg" "$_rom_path")"
-[ "$_live" = "$_desired" ] && { printf 1; return; }
-if [ "$_stock" = '__NO_ROM__' ]; then
-    [ "$_live" = '__ABSENT__' ] && printf 0 || printf 2
-else
-    [ "$_live" = "$_stock" ] && printf 0 || printf 2
-fi
-}
-dnsmasq_target_state() {
-_sec="$1"; _key="$2"; _desired="$3"
-_rom_sec="$(rom_dnsmasq_section)"
-uci_option_state dhcp "dhcp.$_sec.$_key" "dhcp.$_rom_sec.$_key" "$_desired"
-}
-dnsmasq_balance_state() {
-_sec="$(get_dnsmasq_section)"
-[ -n "$_sec" ] || { printf 2; return; }
-_total=0; _desired_count=0; _stock_count=0; _other=0
-for _kv in "allservers|1" "strictorder|0" "noresolv|1"; do
-    _total=$((_total+1))
-    _k="${_kv%%|*}"; _v="${_kv#*|}"
-    _s="$(dnsmasq_target_state "$_sec" "$_k" "$_v")"
-    case "$_s" in
-        1) _desired_count=$((_desired_count+1));;
-        0) _stock_count=$((_stock_count+1));;
-        *) _other=1;;
-    esac
-done
-[ "$_other" = 1 ] && { printf 2; return; }
-[ "$_desired_count" -eq "$_total" ] && printf 1 && return
-[ "$_stock_count" -eq "$_total" ] && printf 0 && return
-printf 2
-}
-dnsmasq_perf_state() {
-_sec="$(get_dnsmasq_section)"
-[ -n "$_sec" ] || { printf 2; return; }
-_total=0; _desired_count=0; _stock_count=0; _other=0
-for _kv in "cachesize|1000" "dnsforwardmax|300" "max_cache_ttl|86400" "boguspriv|1" "domainneeded|1" "quietdhcp|1"; do
-    _total=$((_total+1))
-    _k="${_kv%%|*}"; _v="${_kv#*|}"
-    _s="$(dnsmasq_target_state "$_sec" "$_k" "$_v")"
-    case "$_s" in
-        1) _desired_count=$((_desired_count+1));;
-        0) _stock_count=$((_stock_count+1));;
-        *) _other=1;;
-    esac
-done
-if [ "$IPV6_ROUTE" != yes ]; then
-    _total=$((_total+1))
-    _s="$(dnsmasq_target_state "$_sec" filter_aaaa 1)"
-    case "$_s" in
-        1) _desired_count=$((_desired_count+1));;
-        0) _stock_count=$((_stock_count+1));;
-        *) _other=1;;
-    esac
-fi
-[ "$_other" = 1 ] && { printf 2; return; }
-[ "$_desired_count" -eq "$_total" ] && printf 1 && return
-[ "$_stock_count" -eq "$_total" ] && printf 0 && return
-printf 2
-}
-wan_mtu_state() {
-_wan_zone="$(firewall_wan_zone 2>/dev/null)"
-[ -n "$_wan_zone" ] || { printf 2; return; }
-_live="$(uci_live_value_or_absent "firewall.$_wan_zone.mtu_fix")"
-_stock="$(uci_rom_value_or_absent firewall "firewall.$_wan_zone.mtu_fix")"
-[ "$_live" = 1 ] && { printf 1; return; }
-if [ "$_stock" = '__NO_ROM__' ]; then
-    [ "$_live" = '__ABSENT__' ] && printf 0 || printf 2
-else
-    [ "$_live" = "$_stock" ] && printf 0 || printf 2
-fi
-}
-
 exact_list_has() {
 target="$1"; val="$2"
 uci -q get "$target" 2>/dev/null | tr ' ' '\n' | sed "s/^['\"]//; s/['\"]$//" | grep -qxF "$val"
@@ -2273,14 +2123,6 @@ uci -q get "$target" 2>/dev/null | tr ' ' '\n' | sed "s/^['\"]//; s/['\"]$//" | 
 ensure_dnsmasq_balancer() {
     _sec="$(get_dnsmasq_section)"
     [ -n "$_sec" ] || return 1
-    _state="$(dnsmasq_balance_state)"
-    case "$_state" in
-        1) return 0;;
-        2)
-            err_msg "Балансировка DNS: обнаружены сторонние значения allservers/strictorder/noresolv. DNS Manager их не перезаписывает."
-            return 2
-            ;;
-    esac
     _changed=0
     if [ "$(uci -q get "dhcp.$_sec.allservers" 2>/dev/null)" != 1 ]; then
         uci set "dhcp.$_sec.allservers=1" || return 1
@@ -2303,7 +2145,9 @@ ensure_dnsmasq_balancer() {
         sleep 2
         ok_msg "Одновременный опрос DNS включён и проверен."
     fi
-    [ "$(dnsmasq_balance_state)" = 1 ] || return 1
+    [ "$(uci -q get "dhcp.$_sec.allservers" 2>/dev/null)" = 1 ] || return 1
+    [ "$(uci -q get "dhcp.$_sec.strictorder" 2>/dev/null)" = 0 ] || return 1
+    [ "$(uci -q get "dhcp.$_sec.noresolv" 2>/dev/null)" = 1 ] || return 1
     return 0
 }
 normalize_ownership_snapshot() {
@@ -2362,10 +2206,6 @@ dnsmasq_manager_server_owned() {
 reconcile_dnsmasq() {
     sec="$(get_dnsmasq_section)"
     uci -q get "dhcp.$sec" >/dev/null 2>&1 || return 1
-    if [ "${BALANCER_ENABLED:-1}" = 1 ]; then
-        _bal_state="$(dnsmasq_balance_state)"
-        [ "$_bal_state" != 2 ] || { err_msg "Балансировка DNS: текущие allservers/strictorder/noresolv отличаются от стока или настройки DNS Manager. Перезапись запрещена."; return 2; }
-    fi
     [ -s "$PREV_DNSMASQ" ] || {
       {
         printf 'SERVER\n'
@@ -2430,6 +2270,20 @@ firewall_quic_rule_matches() {
     [ "$(uci -q get "firewall.$_rsec.target" 2>/dev/null)" = REJECT ] || return 1
     return 0
 }
+firewall_quic_any_rule() {
+    _port="$1"
+    _secs="$(uci show firewall 2>/dev/null | sed -n 's/^firewall\.\([^.=]*\)=rule$/\1/p')"
+    for _sec in $_secs; do
+        [ "$(uci -q get "firewall.$_sec.disabled" 2>/dev/null)" = 1 ] && continue
+        [ "$(uci -q get "firewall.$_sec.src" 2>/dev/null)" = "$FIREWALL_LAN_ZONE" ] || continue
+        [ "$(uci -q get "firewall.$_sec.dest" 2>/dev/null)" = "$FIREWALL_WAN_ZONE" ] || continue
+        [ "$(uci -q get "firewall.$_sec.proto" 2>/dev/null)" = udp ] || continue
+        [ "$(uci -q get "firewall.$_sec.dest_port" 2>/dev/null)" = "$_port" ] || continue
+        printf '%s\n' "$_sec"
+        return 0
+    done
+    return 1
+}
 firewall_owner_has() {
     _sec="$1"
     [ -n "$_sec" ] || return 1
@@ -2458,8 +2312,8 @@ firewall_ownership_sync() {
     while IFS= read -r _sec; do
         [ -n "$_sec" ] || continue
         case "$_sec" in
-            "$FW_NTP_SECTION") (firewall_section_owned_redirect "$FW_NTP_SECTION" "$FIREWALL_LAN_ZONE" udp 123 "$LAN_IP" 123 DNAT || ntp_firewall_rule_is_manager_signature) && printf '%s\n' "$_sec" >> "$_tmp";;
-            "$FW_DNS_REDIRECT_SECTION") (firewall_section_owned_redirect "$FW_DNS_REDIRECT_SECTION" "$FIREWALL_LAN_ZONE" 'tcp udp' 53 "$LAN_IP" 53 DNAT || dns_force_redirect_is_manager_signature) && printf '%s\n' "$_sec" >> "$_tmp";;
+            "$FW_NTP_SECTION") firewall_section_owned_redirect "$FW_NTP_SECTION" "$FIREWALL_LAN_ZONE" udp 123 "$LAN_IP" 123 DNAT && printf '%s\n' "$_sec" >> "$_tmp";;
+            "$FW_DNS_REDIRECT_SECTION") firewall_section_owned_redirect "$FW_DNS_REDIRECT_SECTION" "$FIREWALL_LAN_ZONE" 'tcp udp' 53 "$LAN_IP" 53 DNAT && printf '%s\n' "$_sec" >> "$_tmp";;
             "$FW_DOT_SECTION")
                 [ "$(uci -q get "firewall.$FW_DOT_SECTION" 2>/dev/null)" = rule ] || continue
                 [ "$(uci -q get "firewall.$FW_DOT_SECTION.src" 2>/dev/null)" = "$FIREWALL_LAN_ZONE" ] || continue
@@ -2484,8 +2338,10 @@ firewall_ownership_sync() {
 }
 firewall_migrate_legacy_owned() {
     mkdir -p "$CFG_DIR" 2>/dev/null || return 0
-    (firewall_section_owned_redirect "$FW_NTP_SECTION" "$FIREWALL_LAN_ZONE" udp 123 "$LAN_IP" 123 DNAT || ntp_firewall_rule_is_manager_signature) && firewall_owner_add "$FW_NTP_SECTION"
-    (firewall_section_owned_redirect "$FW_DNS_REDIRECT_SECTION" "$FIREWALL_LAN_ZONE" 'tcp udp' 53 "$LAN_IP" 53 DNAT || dns_force_redirect_is_manager_signature) && firewall_owner_add "$FW_DNS_REDIRECT_SECTION"
+    # Previous DNS Manager versions used reserved section IDs without an ownership registry.
+    # Migrate only when the full rule signature matches the known manager rule.
+    firewall_section_owned_redirect "$FW_NTP_SECTION" "$FIREWALL_LAN_ZONE" udp 123 "$LAN_IP" 123 DNAT && firewall_owner_add "$FW_NTP_SECTION"
+    firewall_section_owned_redirect "$FW_DNS_REDIRECT_SECTION" "$FIREWALL_LAN_ZONE" 'tcp udp' 53 "$LAN_IP" 53 DNAT && firewall_owner_add "$FW_DNS_REDIRECT_SECTION"
     firewall_quic_rule_matches "$FW_QUIC80_SECTION" 80 && firewall_owner_add "$FW_QUIC80_SECTION"
     firewall_quic_rule_matches "$FW_QUIC443_SECTION" 443 && firewall_owner_add "$FW_QUIC443_SECTION"
     if [ "$(uci -q get "firewall.$FW_DOT_SECTION" 2>/dev/null)" = rule ] && [ "$(uci -q get "firewall.$FW_DOT_SECTION.src" 2>/dev/null)" = "$FIREWALL_LAN_ZONE" ] && [ "$(uci -q get "firewall.$FW_DOT_SECTION.dest" 2>/dev/null)" = "$FIREWALL_WAN_ZONE" ] && [ "$(uci -q get "firewall.$FW_DOT_SECTION.proto" 2>/dev/null)" = 'tcp udp' ] && [ "$(uci -q get "firewall.$FW_DOT_SECTION.dest_port" 2>/dev/null)" = 853 ] && [ "$(uci -q get "firewall.$FW_DOT_SECTION.target" 2>/dev/null)" = REJECT ]; then firewall_owner_add "$FW_DOT_SECTION"; fi
@@ -2510,7 +2366,6 @@ firewall_find_exact_rule_signature() {
     _secs="$(uci show firewall 2>/dev/null | sed -n 's/^firewall\.\([^.=]*\)=rule$/\1/p')"
     for _sec in $_secs; do
         [ "$_sec" = "$_skip" ] && continue
-        [ "$(uci -q get "firewall.$_sec.disabled" 2>/dev/null)" = 1 ] && continue
         case "$_type" in
             dot)
                 [ "$(uci -q get "firewall.$_sec.src" 2>/dev/null)" = "$FIREWALL_LAN_ZONE" ] || continue
@@ -2538,47 +2393,35 @@ firewall_quic_rule_owned() {
     firewall_quic_rule_matches "$_rsec" "$_port" || return 1
     firewall_owner_has "$_rsec"
 }
-firewall_quic_rule_exact_exists() {
-    _port="$1"; _skip="${2:-}"
-    firewall_find_exact_quic "$_port" "$_skip" >/dev/null 2>&1
-}
 quic_remove_managed_rules() {
-    firewall_resolve_zones
-    [ -n "$FIREWALL_LAN_ZONE" ] || return 1
-    [ -n "$FIREWALL_WAN_ZONE" ] || return 1
+    firewall_resolve_zones >/dev/null 2>&1 || true
     for _pair in "$FW_QUIC80_SECTION|80" "$FW_QUIC443_SECTION|443"; do
-        _rsec="${_pair%%|*}"; _port="${_pair#*|}"
-        uci -q get "firewall.$_rsec" >/dev/null 2>&1 || continue
-        if firewall_quic_rule_matches "$_rsec" "$_port"; then
+        _rsec="${_pair%%|*}"
+        _port="${_pair#*|}"
+        if uci -q get "firewall.$_rsec" >/dev/null 2>&1 && firewall_quic_rule_matches "$_rsec" "$_port"; then
             uci -q delete "firewall.$_rsec" || return 1
-            firewall_owner_remove "$_rsec" || true
-        elif [ "${FORCE_APPLY_SETTINGS:-0}" = 1 ]; then
-            # The deterministic DNS Manager section is explicitly confirmed by the user.
-            # Remove only this section; never delete an arbitrary foreign rule.
-            uci -q delete "firewall.$_rsec" || return 1
-            firewall_owner_remove "$_rsec" || true
+            firewall_owner_remove "$_rsec" >/dev/null 2>&1 || true
         fi
     done
     return 0
 }
-
 quic_ensure_rule() {
     _rsec="$1"; _port="$2"; _label="$3"
     if uci -q get "firewall.$_rsec" >/dev/null 2>&1; then
-        firewall_quic_rule_matches "$_rsec" "$_port" && { firewall_owner_add "$_rsec" || true; return 0; }
-        firewall_quic_rule_exact_exists "$_port" "$_rsec" && return 3
-        if [ "${FORCE_APPLY_SETTINGS:-0}" = 1 ]; then
-            uci set "firewall.$_rsec=rule" || return 1
-            uci set "firewall.$_rsec.name=$_label" || return 1
-            uci set "firewall.$_rsec.proto=udp" || return 1
-            uci set "firewall.$_rsec.src=$FIREWALL_LAN_ZONE" || return 1
-            uci set "firewall.$_rsec.dest=$FIREWALL_WAN_ZONE" || return 1
-            uci set "firewall.$_rsec.dest_port=$_port" || return 1
-            uci set "firewall.$_rsec.target=REJECT" || return 1
-            firewall_owner_add "$_rsec" || return 1
+        if firewall_quic_rule_matches "$_rsec" "$_port"; then
+            firewall_owner_add "$_rsec" >/dev/null 2>&1 || true
             return 0
         fi
-        return 2
+        [ "${FORCE_APPLY_SETTINGS:-0}" = 1 ] || return 2
+        uci set "firewall.$_rsec=rule" || return 1
+        uci set "firewall.$_rsec.name=$_label" || return 1
+        uci set "firewall.$_rsec.proto=udp" || return 1
+        uci set "firewall.$_rsec.src=$FIREWALL_LAN_ZONE" || return 1
+        uci set "firewall.$_rsec.dest=$FIREWALL_WAN_ZONE" || return 1
+        uci set "firewall.$_rsec.dest_port=$_port" || return 1
+        uci set "firewall.$_rsec.target=REJECT" || return 1
+        firewall_owner_add "$_rsec" >/dev/null 2>&1 || true
+        return 0
     fi
     if firewall_find_exact_quic "$_port" "$_rsec" >/dev/null 2>&1; then
         return 3
@@ -2590,7 +2433,7 @@ quic_ensure_rule() {
     uci set "firewall.$_rsec.dest=$FIREWALL_WAN_ZONE" || return 1
     uci set "firewall.$_rsec.dest_port=$_port" || return 1
     uci set "firewall.$_rsec.target=REJECT" || return 1
-    firewall_owner_add "$_rsec" || return 1
+    firewall_owner_add "$_rsec" >/dev/null 2>&1 || true
     return 0
 }
 apply_quic() {
@@ -2645,91 +2488,36 @@ EOF_SYSCTL_BASE_EXPECTED
 }
 
 sysctl_file_state() {
-    _f="$1"; _expected="$2"
+    _f="$1"; _marker="$2"; _expected="$3"
     [ -f "$_f" ] || { printf '0'; return 0; }
+    _managed="$(printf '%s\n%s' "$_marker" "$_expected")"
     _actual="$(cat "$_f" 2>/dev/null)"
+    [ "$_actual" = "$_managed" ] && { printf '1'; return 0; }
     [ "$_actual" = "$_expected" ] && { printf '1'; return 0; }
-    _legacy="$(sed '1{/^#/d;}; /^[[:space:]]*$/d' "$_f" 2>/dev/null)"
-    [ "$_legacy" = "$_expected" ] && { printf '1'; return 0; }
-    printf '2'
-}
-sysctl_explicit_value() {
-    _key="$1"; _root="$2"
-    _found=""
-    [ -r "$_root/sysctl.conf" ] && _v="$(awk -v k="$_key" '$0 !~ /^[[:space:]]*#/ && $0 ~ "^[[:space:]]*" k "[[:space:]]*=" {v=$0; sub(/^[^=]*=[[:space:]]*/,"",v); gsub(/[[:space:]]+$/, "", v)} END{if(v!="") print v}' "$_root/sysctl.conf" 2>/dev/null)" || _v=""
-    [ -n "$_v" ] && { printf '%s' "$_v"; return 0; }
-    for _f in "$_root"/sysctl.d/*.conf; do
-        [ -f "$_f" ] || continue
-        _v="$(awk -v k="$_key" '$0 !~ /^[[:space:]]*#/ && $0 ~ "^[[:space:]]*" k "[[:space:]]*=" {v=$0; sub(/^[^=]*=[[:space:]]*/,"",v); gsub(/[[:space:]]+$/, "", v)} END{if(v!="") print v}' "$_f" 2>/dev/null)"
-        [ -n "$_v" ] && _found="$_v"
-    done
-    [ -n "$_found" ] && printf '%s' "$_found" || return 1
-}
-sysctl_key_manager_owned() {
-    _key="$1"; _desired="$2"
-    case "$_key" in
-        net.ipv4.tcp_fastopen|net.ipv4.tcp_fin_timeout|net.core.somaxconn)
-            _f="$(sysctl_base_manager_path)"
-            [ "$(sysctl_file_state "$_f" "$(sysctl_base_expected)")" = 1 ] || return 1
-            grep -qxF "$_key=$_desired" "$_f" 2>/dev/null
-            ;;
-        net.netfilter.nf_conntrack_max|net.ipv4.tcp_keepalive_time|net.ipv4.tcp_keepalive_intvl|net.ipv4.tcp_keepalive_probes|net.core.rmem_max|net.core.wmem_max|net.core.rmem_default|net.core.wmem_default)
-            _f="$(sysctl_extended_manager_path)"
-            [ "$(sysctl_file_state "$_f" "$(sysctl_extended_params)")" = 1 ] || return 1
-            grep -qxF "$_key=$_desired" "$_f" 2>/dev/null
-            ;;
-        *) return 1;;
-    esac
-}
-sysctl_key_state() {
-    _key="$1"; _desired="$2"
-    _cur="$(sysctl -n "$_key" 2>/dev/null)"
-    [ "$_cur" = "$_desired" ] && { printf 1; return; }
-    _stock="$(sysctl_explicit_value "$_key" /rom/etc 2>/dev/null || true)"
-    _live_cfg="$(sysctl_explicit_value "$_key" /etc 2>/dev/null || true)"
-    if [ -n "$_stock" ] && [ "$_cur" = "$_stock" ] && { [ -z "$_live_cfg" ] || [ "$_live_cfg" = "$_stock" ]; }; then
-        printf 0
-        return
-    fi
-    if [ -z "$_live_cfg" ] && [ -z "$_stock" ]; then
-        printf 0
-        return
-    fi
-    printf 2
+    _first="$(sed -n '1p' "$_f" 2>/dev/null)"
+    [ "$_first" = "$_marker" ] && printf '2' || printf '3'
 }
 
 sysctl_base_file_owned() {
     _f="$1"
     [ -f "$_f" ] || return 1
-    _state="$(sysctl_file_state "$_f" "$(sysctl_base_expected)")"
+    _state="$(sysctl_file_state "$_f" "$SYSCTL_BASE_MARKER" "$(sysctl_base_expected)")"
     [ "$_state" = 1 ]
 }
 apply_sysctl() {
     f="$(sysctl_base_manager_path)"
-    sf="$SYSCTL_BASE_BEFORE"
+    sf="$STATE_DIR/sysctl-before.conf"
     _expected="$(sysctl_base_expected)"
     [ "${SYSCTL_TUNING:-0}" = 1 ] || return 0
 
     if [ -f "$f" ]; then
-        _state="$(sysctl_file_state "$f" "$_expected")"
+        _state="$(sysctl_file_state "$f" "$SYSCTL_BASE_MARKER" "$_expected")"
         case "$_state" in
-            2) err_msg "Файл $f содержит другие параметры. DNS Manager его не перезаписывает."; return 2;;
+            2) err_msg "Файл $f содержит маркер DNS Manager, но был изменён извне. Перезапись запрещена."; return 2;;
+            3) err_msg "Файл $f уже используется другой настройкой. DNS Manager его не перезаписывает."; return 2;;
         esac
     fi
 
-    while IFS= read -r _p; do
-        [ -n "$_p" ] || continue
-        _k="${_p%%=*}"; _v="${_p#*=}"
-        _ks="$(sysctl_key_state "$_k" "$_v")"
-        case "$_ks" in
-            1) continue;;
-            2) err_msg "sysctl $_k имеет другое значение или принадлежит другой настройке: текущее=$(sysctl -n "$_k" 2>/dev/null), требуется=$_v. Значение извне не перезаписывается."; return 2;;
-        esac
-    done <<EOF_SYSCTL_PRECHECK
-$_expected
-EOF_SYSCTL_PRECHECK
-
-    mkdir -p "$CFG_DIR" 2>/dev/null || return 1
     if [ ! -s "$sf" ]; then : > "$sf" || return 1; fi
     while IFS= read -r _p; do
         [ -n "$_p" ] || continue
@@ -2741,7 +2529,10 @@ $_expected
 EOF_SYSCTL_BASE_SAVE
 
     _tmp="$f.tmp.$$"
-    printf '%s\n' "$_expected" > "$_tmp" || { rm -f "$_tmp"; return 1; }
+    {
+        printf '%s\n' "$SYSCTL_BASE_MARKER"
+        printf '%s\n' "$_expected"
+    } > "$_tmp" || { rm -f "$_tmp"; return 1; }
 
     while IFS= read -r _p; do
         [ -n "$_p" ] || continue
@@ -2775,12 +2566,13 @@ sysctl_restore_key_if_unchanged() {
 }
 
 remove_sysctl_base() {
-    sf="$SYSCTL_BASE_BEFORE"
+    sf="$STATE_DIR/sysctl-before.conf"
     _f="$(sysctl_base_manager_path)"
     _state=0
-    [ -f "$_f" ] && _state="$(sysctl_file_state "$_f" "$(sysctl_base_expected)")"
+    [ -f "$_f" ] && _state="$(sysctl_file_state "$_f" "$SYSCTL_BASE_MARKER" "$(sysctl_base_expected)")"
     case "$_state" in
-        2) warn_msg "Базовый sysctl-файл содержит другие параметры: $_f. Файл сохранён."; rm -f "$sf"; return 0;;
+        2) warn_msg "Базовый sysctl-файл изменён извне: $_f. Файл сохранён."; rm -f "$sf"; return 0;;
+        3) warn_msg "Базовый sysctl-файл не принадлежит DNS Manager: $_f. Файл сохранён."; rm -f "$sf"; return 0;;
     esac
     if [ -s "$sf" ]; then
         for _kv in "net.ipv4.tcp_fastopen|3" "net.ipv4.tcp_fin_timeout|15" "net.core.somaxconn|1024"; do
@@ -2891,10 +2683,8 @@ _apply_extras_now_impl() {
         client_fixes)
             if [ "${CLIENT_FIXES:-0}" = 1 ]; then
                 apply_client_fixes || return $?
-                /etc/init.d/dnsmasq restart >/dev/null 2>&1 || return 1
             else
                 remove_client_fixes || return 1
-                /etc/init.d/dnsmasq restart >/dev/null 2>&1 || return 1
             fi
             ;;
         sysctl_ext)
@@ -2943,90 +2733,58 @@ apply_extras_now() {
 # ==========================================
 # ==========================================
 # ==========================================
-ntp_firewall_rule_owned() {
-    firewall_lan_zone_require >/dev/null || return 1
-    firewall_section_owned_redirect "$FW_NTP_SECTION" "$FIREWALL_LAN_ZONE" udp 123 "$LAN_IP" 123 DNAT
-}
-ntp_firewall_rule_is_manager_signature() {
-    firewall_lan_zone_require >/dev/null || return 1
-    [ "$(uci -q get "firewall.$FW_NTP_SECTION" 2>/dev/null)" = redirect ] || return 1
-    [ "$(uci -q get "firewall.$FW_NTP_SECTION.src" 2>/dev/null)" = "$FIREWALL_LAN_ZONE" ] || return 1
-    _dest_zone="$(uci -q get "firewall.$FW_NTP_SECTION.dest" 2>/dev/null)"
-    [ -z "$_dest_zone" ] || [ "$_dest_zone" = "$FIREWALL_LAN_ZONE" ] || return 1
-    [ "$(uci -q get "firewall.$FW_NTP_SECTION.proto" 2>/dev/null)" = udp ] || return 1
-    [ "$(uci -q get "firewall.$FW_NTP_SECTION.src_dport" 2>/dev/null)" = 123 ] || return 1
-    [ "$(uci -q get "firewall.$FW_NTP_SECTION.dest_ip" 2>/dev/null)" = "$LAN_IP" ] || return 1
-    [ "$(uci -q get "firewall.$FW_NTP_SECTION.dest_port" 2>/dev/null)" = 123 ] || return 1
-    [ "$(uci -q get "firewall.$FW_NTP_SECTION.target" 2>/dev/null)" = DNAT ] || return 1
+ntp_firewall_rule_matches() {
+    _sec="$1"
+    firewall_resolve_zones >/dev/null 2>&1 || true
+    [ "$(uci -q get "firewall.$_sec" 2>/dev/null)" = redirect ] || return 1
+    [ "$(uci -q get "firewall.$_sec.disabled" 2>/dev/null)" != 1 ] || return 1
+    [ "$(uci -q get "firewall.$_sec.src" 2>/dev/null)" = "$FIREWALL_LAN_ZONE" ] || return 1
+    [ "$(uci -q get "firewall.$_sec.proto" 2>/dev/null)" = udp ] || return 1
+    [ "$(uci -q get "firewall.$_sec.src_dport" 2>/dev/null)" = 123 ] || return 1
+    [ "$(uci -q get "firewall.$_sec.dest_ip" 2>/dev/null)" = "$LAN_IP" ] || return 1
+    [ "$(uci -q get "firewall.$_sec.dest_port" 2>/dev/null)" = 123 ] || return 1
+    [ "$(uci -q get "firewall.$_sec.target" 2>/dev/null)" = DNAT ] || return 1
+    _dest="$(uci -q get "firewall.$_sec.dest" 2>/dev/null)"
+    [ -z "$_dest" ] || [ "$_dest" = "$FIREWALL_LAN_ZONE" ] || return 1
     return 0
 }
-ntp_clients_state() {
-    firewall_resolve_zones
-    [ -n "$FIREWALL_LAN_ZONE" ] || { printf 2; return; }
-    _opt="42,$LAN_IP"
-    _has_opt=0
-    _stock_has=0
-    _secs="$(uci show dhcp 2>/dev/null | sed -n 's/^dhcp\.\([^.=]*\)=dnsmasq$/\1/p')"
-    for _sec in $_secs; do
-        if exact_list_has "dhcp.$_sec.dhcp_option" "$_opt"; then
-            _has_opt=1
-            break
-        fi
-    done
-    _romsecs="$(uci -c /rom/etc/config show dhcp 2>/dev/null | sed -n 's/^dhcp\.\([^.=]*\)=dnsmasq$/\1/p')"
-    for _rsec in $_romsecs; do
-        printf '%s\n' "$(uci -c /rom/etc/config -q get "dhcp.$_rsec.dhcp_option" 2>/dev/null)" | tr ' ' '\n' | sed "s/^['\"]//; s/['\"]$//" | grep -qxF "$_opt" 2>/dev/null && { _stock_has=1; break; }
-    done
-    _rule=0
-    ntp_firewall_rule_is_manager_signature && _rule=1
-    [ "$_rule" -eq 0 ] && firewall_find_exact_redirect "$FIREWALL_LAN_ZONE" udp 123 "$LAN_IP" 123 DNAT "" >/dev/null 2>&1 && _rule=1
-    if [ "$_has_opt" = 1 ] && [ "$_rule" = 1 ]; then
-        printf 1; return
-    fi
-    if [ "$_has_opt" = 0 ] && [ "$_rule" = 0 ] && [ "$_stock_has" = 0 ]; then
-        printf 0; return
-    fi
-    printf 2
+ntp_firewall_rule_exact_external() {
+    firewall_find_exact_redirect "$FIREWALL_LAN_ZONE" udp 123 "$LAN_IP" 123 DNAT "$FW_NTP_SECTION" >/dev/null 2>&1
 }
 apply_ntp_clients() {
     [ "${NTP_CLIENTS:-0}" = 1 ] || return 0
     firewall_lan_zone_require >/dev/null || return 1
     sec="$(get_dnsmasq_section)"; [ -n "$sec" ] || return 1
-    _state="$(ntp_clients_state)"
-    case "$_state" in
-        2) [ "${FORCE_APPLY_SETTINGS:-0}" = 1 ] || { err_msg "NTP клиентов: обнаружена другая конфигурация DHCP 42 или NTP redirect. Без подтверждения она не изменяется."; return 2; };;
-    esac
-    if [ "$_state" = 1 ] && ntp_firewall_rule_is_manager_signature; then
-        exact_list_has "dhcp.$sec.dhcp_option" "42,$LAN_IP" || uci add_list "dhcp.$sec.dhcp_option=42,$LAN_IP" || return 1
-        [ "$(uci -q get "firewall.$FW_NTP_SECTION.dest" 2>/dev/null)" = "$FIREWALL_LAN_ZONE" ] || uci set "firewall.$FW_NTP_SECTION.dest=$FIREWALL_LAN_ZONE" || return 1
-        firewall_owner_add "$FW_NTP_SECTION" || true
-        uci commit dhcp >/dev/null 2>&1 || return 1
-        uci commit firewall >/dev/null 2>&1 || return 1
-        return 0
+
+    if [ -s "$NTP_CLIENTS_BEFORE" ] && [ "$(sed -n 's/^state_version|//p' "$NTP_CLIENTS_BEFORE" 2>/dev/null | head -n1)" = 2 ]; then
+        if ntp_firewall_rule_matches "$FW_NTP_SECTION" && exact_list_has "dhcp.$sec.dhcp_option" "42,$LAN_IP"; then
+            {
+                printf 'state_version|3\n'
+                printf 'section|%s\n' "$sec"
+                printf 'dhcp_added|1\n'
+            } > "$NTP_CLIENTS_BEFORE" || return 1
+        fi
     fi
+
     if [ ! -s "$NTP_CLIENTS_BEFORE" ]; then
-        mkdir -p "$CFG_DIR" 2>/dev/null || return 1
         {
-            printf 'state_version|2\n'
+            printf 'state_version|3\n'
             printf 'section|%s\n' "$sec"
             if exact_list_has "dhcp.$sec.dhcp_option" "42,$LAN_IP"; then
                 printf 'dhcp_added|0\n'
-                printf 'dhcp_added_option|\n'
             else
                 printf 'dhcp_added|1\n'
-                printf 'dhcp_added_option|42,%s\n' "$LAN_IP"
             fi
-            if ntp_firewall_rule_owned && firewall_owner_has "$FW_NTP_SECTION"; then printf 'fw_manager_owned|1\n'; else printf 'fw_manager_owned|0\n'; fi
         } > "$NTP_CLIENTS_BEFORE" || return 1
     fi
+
     _opt="42,$LAN_IP"
     exact_list_has "dhcp.$sec.dhcp_option" "$_opt" || uci add_list "dhcp.$sec.dhcp_option=$_opt" || return 1
+
     if uci -q get "firewall.$FW_NTP_SECTION" >/dev/null 2>&1; then
-        if ntp_firewall_rule_is_manager_signature; then
-            [ "$(uci -q get "firewall.$FW_NTP_SECTION.dest" 2>/dev/null)" = "$FIREWALL_LAN_ZONE" ] || uci set "firewall.$FW_NTP_SECTION.dest=$FIREWALL_LAN_ZONE" || return 1
-            firewall_owner_add "$FW_NTP_SECTION" || return 1
-        elif firewall_find_exact_redirect "$FIREWALL_LAN_ZONE" udp 123 "$LAN_IP" 123 DNAT "$FW_NTP_SECTION" >/dev/null 2>&1; then
-            :
+        if ntp_firewall_rule_matches "$FW_NTP_SECTION"; then
+            uci set "firewall.$FW_NTP_SECTION.dest=$FIREWALL_LAN_ZONE" || return 1
+            firewall_owner_add "$FW_NTP_SECTION" >/dev/null 2>&1 || true
         elif [ "${FORCE_APPLY_SETTINGS:-0}" = 1 ]; then
             uci set "firewall.$FW_NTP_SECTION=redirect" || return 1
             uci set "firewall.$FW_NTP_SECTION.name=DNS Manager: NTP клиентов в роутер" || return 1
@@ -3037,13 +2795,11 @@ apply_ntp_clients() {
             uci set "firewall.$FW_NTP_SECTION.dest_ip=$LAN_IP" || return 1
             uci set "firewall.$FW_NTP_SECTION.dest_port=123" || return 1
             uci set "firewall.$FW_NTP_SECTION.target=DNAT" || return 1
-            firewall_owner_add "$FW_NTP_SECTION" || return 1
+            firewall_owner_add "$FW_NTP_SECTION" >/dev/null 2>&1 || true
         else
-            err_msg "Секция firewall.$FW_NTP_SECTION содержит другие параметры. Без подтверждения она не изменяется."; return 2
+            return 2
         fi
-    elif firewall_find_exact_redirect "$FIREWALL_LAN_ZONE" udp 123 "$LAN_IP" 123 DNAT "$FW_NTP_SECTION" >/dev/null 2>&1; then
-        :
-    else
+    elif ! ntp_firewall_rule_exact_external; then
         uci set "firewall.$FW_NTP_SECTION=redirect" || return 1
         uci set "firewall.$FW_NTP_SECTION.name=DNS Manager: NTP клиентов в роутер" || return 1
         uci set "firewall.$FW_NTP_SECTION.src=$FIREWALL_LAN_ZONE" || return 1
@@ -3053,36 +2809,36 @@ apply_ntp_clients() {
         uci set "firewall.$FW_NTP_SECTION.dest_ip=$LAN_IP" || return 1
         uci set "firewall.$FW_NTP_SECTION.dest_port=123" || return 1
         uci set "firewall.$FW_NTP_SECTION.target=DNAT" || return 1
-        firewall_owner_add "$FW_NTP_SECTION" || return 1
+        firewall_owner_add "$FW_NTP_SECTION" >/dev/null 2>&1 || true
     fi
+
     uci commit dhcp || return 1
     uci commit firewall || return 1
-    return 0
 }
 remove_ntp_clients() {
+    sec="$(get_dnsmasq_section)"
+    [ -n "$sec" ] || return 1
     _opt="42,$LAN_IP"
-    _romsecs="$(uci -c /rom/etc/config show dhcp 2>/dev/null | sed -n 's/^dhcp\.\([^.=]*\)=dnsmasq$/\1/p')"
-    _secs="$(uci show dhcp 2>/dev/null | sed -n 's/^dhcp\.\([^.=]*\)=dnsmasq$/\1/p')"
-    for _sec in $_secs; do
-        _stock_has=0
-        for _rsec in $_romsecs; do
-            _li="$(uci -q get "dhcp.$_sec.interface" 2>/dev/null)"
-            _ri="$(uci -c /rom/etc/config -q get "dhcp.$_rsec.interface" 2>/dev/null)"
-            [ -n "$_li" ] && [ "$_li" = "$_ri" ] || continue
-            printf '%s\n' "$(uci -c /rom/etc/config -q get "dhcp.$_rsec.dhcp_option" 2>/dev/null)" | tr ' ' '\n' | sed "s/^['\"]//; s/['\"]$//" | grep -qxF "$_opt" 2>/dev/null && { _stock_has=1; break; }
-        done
-        if [ "$_stock_has" = 0 ]; then
-            uci -q del_list "dhcp.$_sec.dhcp_option=$_opt"
+    _fw_exact=0
+    ntp_firewall_rule_matches "$FW_NTP_SECTION" && _fw_exact=1
+
+    if [ -s "$NTP_CLIENTS_BEFORE" ]; then
+        _version="$(sed -n 's/^state_version|//p' "$NTP_CLIENTS_BEFORE" 2>/dev/null | head -n1)"
+        _added="$(sed -n 's/^dhcp_added|//p' "$NTP_CLIENTS_BEFORE" 2>/dev/null | head -n1)"
+        if [ "$_version" = 3 ] && [ "$_added" = 1 ]; then
+            uci -q del_list "dhcp.$sec.dhcp_option=$_opt"
+        elif [ "$_version" = 2 ] && [ "$_fw_exact" = 1 ]; then
+            uci -q del_list "dhcp.$sec.dhcp_option=$_opt"
         fi
-    done
-    firewall_resolve_zones
-    _secs="$(uci show firewall 2>/dev/null | sed -n 's/^firewall\.\([^.=]*\)=redirect$/\1/p')"
-    for _sec in $_secs; do
-        [ "$(uci -q get "firewall.$_sec.disabled" 2>/dev/null)" = 1 ] && continue
-        dns_redirect_rule_matches "$_sec" "$FIREWALL_LAN_ZONE" udp 123 "$LAN_IP" 123 DNAT || continue
-        uci -q delete "firewall.$_sec"
-        firewall_owner_remove "$_sec" || true
-    done
+    elif [ "$_fw_exact" = 1 ]; then
+        uci -q del_list "dhcp.$sec.dhcp_option=$_opt"
+    fi
+
+    if [ "$_fw_exact" = 1 ]; then
+        uci -q delete "firewall.$FW_NTP_SECTION"
+        firewall_owner_remove "$FW_NTP_SECTION" >/dev/null 2>&1 || true
+    fi
+
     rm -f "$NTP_CLIENTS_BEFORE"
     uci commit dhcp >/dev/null 2>&1 || return 1
     uci commit firewall >/dev/null 2>&1 || return 1
@@ -3092,14 +2848,8 @@ apply_dnsmasq_perf() {
     [ "${DNSMASQ_PERF:-0}" = 1 ] || return 0
     sec="$(get_dnsmasq_section)"
     [ -n "$sec" ] || return 1
-    _state="$(dnsmasq_perf_state)"
-    case "$_state" in
-        1) return 0;;
-        2) [ "${FORCE_APPLY_SETTINGS:-0}" = 1 ] || { err_msg "DNS-кэш: обнаружены другие значения управляемых параметров dnsmasq. Без подтверждения они не изменяются."; return 2; };;
-    esac
-    _f="$DNSMASQ_PERF_BEFORE"
+    _f="$STATE_DIR/dnsmasq-perf-before.conf"
     if [ ! -s "$_f" ]; then
-        mkdir -p "$CFG_DIR" 2>/dev/null || return 1
         : > "$_f" || return 1
         for _k in cachesize dnsforwardmax max_cache_ttl boguspriv domainneeded quietdhcp filter_aaaa; do
             _v="$(uci -q get "dhcp.$sec.$_k" 2>/dev/null)"
@@ -3118,7 +2868,7 @@ apply_dnsmasq_perf() {
 remove_dnsmasq_perf() {
     sec="$(get_dnsmasq_section)"
     [ -n "$sec" ] || return 0
-    _f="$DNSMASQ_PERF_BEFORE"
+    _f="$STATE_DIR/dnsmasq-perf-before.conf"
     [ -s "$_f" ] || return 0
     _changed=0
     while IFS='|' read -r _k _old; do
@@ -3164,11 +2914,10 @@ EOF_CLIENT_FIXES_BODY
 client_fixes_file_state() {
     _f="$1"
     [ -f "$_f" ] || { printf '0'; return 0; }
-    _actual="$(cat "$_f" 2>/dev/null)"
-    _expected="$(client_fixes_expected_body)"
-    [ "$_actual" = "$_expected" ] && { printf '1'; return 0; }
-    _legacy="$(sed -e '1{/^# DNS_MANAGER_MANAGED_CLIENT_FIXES=1$/d;}' -e '1{/^# DNS_MANAGER_CLIENT_FIXES=1$/d;}' -e '/^[[:space:]]*$/d' "$_f" 2>/dev/null)"
-    [ "$_legacy" = "$_expected" ] && { printf '1'; return 0; }
+    _actual="$(sed -e '1{/^# DNS_MANAGER_MANAGED_CLIENT_FIXES=1$/d;}' \
+                    -e '1{/^# DNS_MANAGER_CLIENT_FIXES=1$/d;}' \
+                    -e '/^[[:space:]]*$/d' "$_f" 2>/dev/null)"
+    [ "$_actual" = "$(client_fixes_expected_body)" ] && { printf '1'; return 0; }
     printf '2'
 }
 client_fixes_file_owned() {
@@ -3190,61 +2939,43 @@ client_fixes_find_modified_owned() {
 }
 apply_client_fixes() {
     [ "${CLIENT_FIXES:-0}" = 1 ] || return 0
+    _managed="$(client_fixes_find_owned 2>/dev/null || true)"
+    if [ -n "$_managed" ]; then
+        CLIENT_FIXES_FILE="$_managed"
+        return 0
+    fi
     _modified="$(client_fixes_find_modified_owned 2>/dev/null || true)"
     if [ -n "$_modified" ] && [ "${FORCE_APPLY_SETTINGS:-0}" != 1 ]; then
-        err_msg "Файл DNS Manager client-fixes изменён: $_modified. Без подтверждения он не перезаписывается."
         return 2
     fi
-    if [ -n "$_modified" ] && [ "${FORCE_APPLY_SETTINGS:-0}" = 1 ] && [ -f "$_modified" ]; then
-        cp -p "$_modified" "${_modified}.before-force.$$.bak" 2>/dev/null || return 1
-    fi
-    for _cand in /etc/dnsmasq.d/*dns-manager-client-fixes*.conf; do
-        [ -f "$_cand" ] || continue
-        case "$(client_fixes_file_state "$_cand")" in
-            2) [ "${FORCE_APPLY_SETTINGS:-0}" = 1 ] || { err_msg "Файл $_cand содержит другие параметры. Без подтверждения он не изменяется."; return 2; };;
-        esac
-    done
-    _managed="$(client_fixes_find_owned 2>/dev/null || true)"
-    [ -n "$_managed" ] || _managed="${CLIENT_FIXES_FILE:-}"
-    if [ -n "$_managed" ] && [ -e "$_managed" ] && [ "$(client_fixes_file_state "$_managed")" != 1 ]; then _managed=""; fi
+    [ -n "$_modified" ] && [ "${FORCE_APPLY_SETTINGS:-0}" = 1 ] && _managed="$_modified"
     if [ -z "$_managed" ]; then
         _n=91
         while :; do
             _candidate="/etc/dnsmasq.d/${_n}-dns-manager-client-fixes.conf"
             [ ! -e "$_candidate" ] && { _managed="$_candidate"; break; }
-            _n=$((_n+1)); [ "$_n" -le 99 ] || { err_msg "Нет свободного имени для DNS Manager client-fixes; чужие файлы не перезаписываются."; return 2; }
+            _n=$((_n+1)); [ "$_n" -le 99 ] || return 2
         done
     fi
     CLIENT_FIXES_FILE="$_managed"
-    _new_file=0
-    [ -e "$_managed" ] || _new_file=1
     client_fixes_expected_body > "$_managed.tmp.$$" || return 1
-    [ "$_new_file" = 1 ] && record_own "file" "$_managed" "created" "client-fixes"
     mv "$_managed.tmp.$$" "$_managed" || { rm -f "$_managed.tmp.$$"; return 1; }
+    /etc/init.d/dnsmasq restart >/dev/null 2>&1 || return 1
     return 0
 }
 remove_client_fixes() {
-    _managed="${CLIENT_FIXES_FILE:-}"
-    if [ -z "$_managed" ] && [ -f "$OWNERSHIP" ]; then
-        _managed="$(awk -F'|' '$1=="file" && $4=="client-fixes" {p=$2} END{if(p!="") print p}' "$OWNERSHIP" 2>/dev/null)"
-    fi
-    if [ -n "$_managed" ] && [ -f "$_managed" ]; then
-        case "$(client_fixes_file_state "$_managed")" in
-            1) rm -f "$_managed" || return 1;;
-            2) warn_msg "Файл client-fixes изменён извне: $_managed. Файл сохранён.";;
+    _removed=0
+    for _f in /etc/dnsmasq.d/*dns-manager-client-fixes*.conf; do
+        [ -f "$_f" ] || continue
+        case "$(client_fixes_file_state "$_f")" in
+            1) rm -f "$_f" || return 1; _removed=1 ;;
+            2) ;;
         esac
-    else
-        for _f in /etc/dnsmasq.d/*dns-manager-client-fixes*.conf; do
-            [ -f "$_f" ] || continue
-            if [ "$(client_fixes_file_state "$_f")" = 1 ]; then
-                rm -f "$_f" || return 1
-            fi
-        done
-    fi
+    done
     CLIENT_FIXES_FILE=""
+    [ "$_removed" = 1 ] && /etc/init.d/dnsmasq restart >/dev/null 2>&1 || true
     return 0
 }
-
 recommended_conntrack_max() {
     _mem="$(awk '/^MemTotal:/{print $2; exit}' /proc/meminfo 2>/dev/null)"
     case "$_mem" in ''|*[!0-9]*) printf '16384'; return;; esac
@@ -3276,43 +3007,34 @@ EOF_SYSCTL_VALUES
 }
 apply_sysctl_extended() {
     f="$(sysctl_extended_manager_path)"
-    sf="$SYSCTL_EXT_BEFORE"
+    sf="$STATE_DIR/sysctl-extended-before.conf"
     _params="$(sysctl_extended_params)"
     [ "${SYSCTL_EXTENDED:-0}" = 1 ] || return 0
     if [ -f "$f" ]; then
-        _state="$(sysctl_file_state "$f" "$_params")"
+        _state="$(sysctl_file_state "$f" "$SYSCTL_EXTENDED_MARKER" "$_params")"
         case "$_state" in
-            2) err_msg "Файл $f содержит другие параметры. DNS Manager его не перезаписывает."; return 2;;
+            2) err_msg "Файл $f содержит маркер DNS Manager, но был изменён извне. Перезапись запрещена."; return 2;;
+            3) err_msg "Файл $f уже используется другой настройкой. DNS Manager его не перезаписывает."; return 2;;
         esac
     fi
-    while IFS= read -r _p; do
-        [ -n "$_p" ] || continue
-        _k="${_p%%=*}"; _v="${_p#*=}"
-        _ks="$(sysctl_key_state "$_k" "$_v")"
-        case "$_ks" in
-            1) continue;;
-            2) err_msg "sysctl $_k имеет другое значение: текущее=$(sysctl -n "$_k" 2>/dev/null), требуется=$_v. Значение извне не перезаписывается."; return 2;;
-        esac
-    done <<EOF_SYSCTL_EXT_PRECHECK
-$_params
-EOF_SYSCTL_EXT_PRECHECK
-    mkdir -p "$CFG_DIR" 2>/dev/null || return 1
     [ -s "$sf" ] || : > "$sf" || return 1
-    while IFS= read -r _p; do
-        [ -n "$_p" ] || continue
-        _k="${_p%%=*}"; _old="$(sysctl -n "$_k" 2>/dev/null)"
+    while IFS= read -r p; do
+        [ -n "$p" ] || continue
+        _k="${p%%=*}"; _old="$(sysctl -n "$_k" 2>/dev/null)"
         grep -q "^${_k}|" "$sf" 2>/dev/null || printf '%s|%s\n' "$_k" "${_old:-unknown}" >> "$sf" || return 1
     done <<EOF_SYSCTL_EXT
 $_params
 EOF_SYSCTL_EXT
     if command -v modprobe >/dev/null 2>&1; then modprobe nf_conntrack >/dev/null 2>&1 || true; fi
     _tmp="$f.tmp.$$"
-    printf '%s\n' "$_params" > "$_tmp" || { rm -f "$_tmp"; return 1; }
+    {
+        printf '%s\n' "$SYSCTL_EXTENDED_MARKER"
+        printf '%s\n' "$_params"
+    } > "$_tmp" || { rm -f "$_tmp"; return 1; }
     while IFS= read -r _p; do
         [ -n "$_p" ] || continue
         _out="$(sysctl -w "$_p" 2>&1)"
-        _rc=$?
-        [ "$_rc" -eq 0 ] || {
+        [ $? -eq 0 ] || {
             [ -n "$_out" ] && err_msg "Не удалось применить расширенный sysctl: $_p: $_out" || err_msg "Не удалось применить расширенный sysctl: $_p"
             rm -f "$_tmp"
             while IFS='|' read -r _k _v; do
@@ -3330,16 +3052,17 @@ EOF_SYSCTL_APPLY
 sysctl_extended_file_owned() {
     _f="$1"
     [ -f "$_f" ] || return 1
-    _state="$(sysctl_file_state "$_f" "$(sysctl_extended_params)")"
+    _state="$(sysctl_file_state "$_f" "$SYSCTL_EXTENDED_MARKER" "$(sysctl_extended_params)")"
     [ "$_state" = 1 ]
 }
 remove_sysctl_extended() {
-    sf="$SYSCTL_EXT_BEFORE"
+    sf="$STATE_DIR/sysctl-extended-before.conf"
     _f="$(sysctl_extended_manager_path)"
     _state=0
-    [ -f "$_f" ] && _state="$(sysctl_file_state "$_f" "$(sysctl_extended_params)")"
+    [ -f "$_f" ] && _state="$(sysctl_file_state "$_f" "$SYSCTL_EXTENDED_MARKER" "$(sysctl_extended_params)")"
     case "$_state" in
-        2) warn_msg "Расширенный sysctl-файл содержит другие параметры: $_f. Файл сохранён."; rm -f "$sf"; return 0;;
+        2) warn_msg "Расширенный sysctl-файл изменён извне: $_f. Файл сохранён."; rm -f "$sf"; return 0;;
+        3) warn_msg "Расширенный sysctl-файл не принадлежит DNS Manager: $_f. Файл сохранён."; rm -f "$sf"; return 0;;
     esac
     if [ -s "$sf" ]; then
         while IFS='|' read -r _k _old; do
@@ -3353,74 +3076,49 @@ remove_sysctl_extended() {
     rm -f "$sf"
     return 0
 }
-dns_force_redirect_is_manager_signature() {
-    firewall_lan_zone_require >/dev/null || return 1
-    [ "$(uci -q get "firewall.$FW_DNS_REDIRECT_SECTION" 2>/dev/null)" = redirect ] || return 1
-    [ "$(uci -q get "firewall.$FW_DNS_REDIRECT_SECTION.src" 2>/dev/null)" = "$FIREWALL_LAN_ZONE" ] || return 1
-    _dest_zone="$(uci -q get "firewall.$FW_DNS_REDIRECT_SECTION.dest" 2>/dev/null)"
-    [ -z "$_dest_zone" ] || [ "$_dest_zone" = "$FIREWALL_LAN_ZONE" ] || return 1
-    [ "$(uci -q get "firewall.$FW_DNS_REDIRECT_SECTION.proto" 2>/dev/null)" = 'tcp udp' ] || return 1
-    [ "$(uci -q get "firewall.$FW_DNS_REDIRECT_SECTION.src_dport" 2>/dev/null)" = 53 ] || return 1
-    [ "$(uci -q get "firewall.$FW_DNS_REDIRECT_SECTION.dest_ip" 2>/dev/null)" = "$LAN_IP" ] || return 1
-    [ "$(uci -q get "firewall.$FW_DNS_REDIRECT_SECTION.dest_port" 2>/dev/null)" = 53 ] || return 1
-    [ "$(uci -q get "firewall.$FW_DNS_REDIRECT_SECTION.target" 2>/dev/null)" = DNAT ] || return 1
-    return 0
+force_dns_redirect_matches() {
+    _sec="$1"
+    firewall_resolve_zones >/dev/null 2>&1 || true
+    [ "$(uci -q get "firewall.$_sec" 2>/dev/null)" = redirect ] || return 1
+    dns_redirect_rule_matches "$_sec" "$FIREWALL_LAN_ZONE" 'tcp udp' 53 "$LAN_IP" 53 DNAT || return 1
+    _dest="$(uci -q get "firewall.$_sec.dest" 2>/dev/null)"
+    [ -z "$_dest" ] || [ "$_dest" = "$FIREWALL_LAN_ZONE" ]
 }
-force_dns_state() {
-    firewall_resolve_zones
-    [ -n "$FIREWALL_LAN_ZONE" ] || { printf 2; return; }
-    [ -n "$FIREWALL_WAN_ZONE" ] || { printf 2; return; }
-    _redir=0; _dot=0
-    dns_force_redirect_is_manager_signature && _redir=1
-    [ "$_redir" -eq 0 ] && firewall_find_exact_redirect "$FIREWALL_LAN_ZONE" 'tcp udp' 53 "$LAN_IP" 53 DNAT "" >/dev/null 2>&1 && _redir=1
-    firewall_find_exact_rule_signature dot "" >/dev/null 2>&1 && _dot=1
-    _f1="$(uci_live_value_or_absent https-dns-proxy.config.force_dns)"
-    _f2="$(uci_live_value_or_absent https-dns-proxy.config.notrack_dns)"
-    _f3="$(uci_live_value_or_absent https-dns-proxy.config.dnsmasq_config_update)"
-    _r1="$(uci_rom_value_or_absent https-dns-proxy https-dns-proxy.config.force_dns)"
-    _r2="$(uci_rom_value_or_absent https-dns-proxy https-dns-proxy.config.notrack_dns)"
-    _r3="$(uci_rom_value_or_absent https-dns-proxy https-dns-proxy.config.dnsmasq_config_update)"
-    _f1_target=0; _f2_target=0; _f3_target=0
-    case "$_f1" in 0|__ABSENT__) _f1_target=1;; esac
-    case "$_f2" in 0|__ABSENT__) _f2_target=1;; esac
-    case "$_f3" in -|__ABSENT__) _f3_target=1;; esac
-    [ "$_redir" -eq 1 ] && [ "$_dot" -eq 1 ] && [ "$_f1_target" -eq 1 ] && [ "$_f2_target" -eq 1 ] && [ "$_f3_target" -eq 1 ] && { printf 1; return; }
-    [ "$_redir" -eq 0 ] && [ "$_dot" -eq 0 ] && [ "$_f1" = "$_r1" ] && [ "$_f2" = "$_r2" ] && { [ "$_f3" = "$_r3" ] || [ "$_f3_target" = 1 ]; } && { printf 0; return; }
-    printf 2
+force_dns_dot_matches() {
+    _sec="$1"
+    firewall_resolve_zones >/dev/null 2>&1 || true
+    [ "$(uci -q get "firewall.$_sec" 2>/dev/null)" = rule ] || return 1
+    [ "$(uci -q get "firewall.$_sec.src" 2>/dev/null)" = "$FIREWALL_LAN_ZONE" ] || return 1
+    [ "$(uci -q get "firewall.$_sec.dest" 2>/dev/null)" = "$FIREWALL_WAN_ZONE" ] || return 1
+    [ "$(uci -q get "firewall.$_sec.proto" 2>/dev/null)" = 'tcp udp' ] || return 1
+    [ "$(uci -q get "firewall.$_sec.dest_port" 2>/dev/null)" = 853 ] || return 1
+    [ "$(uci -q get "firewall.$_sec.target" 2>/dev/null)" = REJECT ] || return 1
+}
+force_dns_proxy_target_matches() {
+    [ "$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null)" = 0 ] || return 1
+    [ "$(uci -q get https-dns-proxy.config.notrack_dns 2>/dev/null)" = 0 ] || return 1
+    [ "$(uci -q get https-dns-proxy.config.dnsmasq_config_update 2>/dev/null)" = - ] || return 1
 }
 apply_dns_force() {
     [ "${FORCE_DOH:-0}" = 1 ] || return 0
     firewall_lan_zone_require >/dev/null || return 1
     firewall_wan_zone_require >/dev/null || return 1
-    _state="$(force_dns_state)"
-    case "$_state" in
-        2) [ "${FORCE_APPLY_SETTINGS:-0}" = 1 ] || { err_msg "Принудительный DNS: обнаружена другая DNS-конфигурация. Без подтверждения она не изменяется."; return 2; };;
-    esac
-    if [ "$_state" = 1 ]; then
-        if dns_force_redirect_is_manager_signature; then
-            [ "$(uci -q get "firewall.$FW_DNS_REDIRECT_SECTION.dest" 2>/dev/null)" = "$FIREWALL_LAN_ZONE" ] || uci set "firewall.$FW_DNS_REDIRECT_SECTION.dest=$FIREWALL_LAN_ZONE" || return 1
-        fi
-        uci commit firewall >/dev/null 2>&1 || return 1
-        return 0
-    fi
+
     if [ ! -s "$FORCE_DNS_BEFORE" ]; then
-        mkdir -p "$CFG_DIR" 2>/dev/null || return 1
         {
             printf 'force_dns|%s\n' "$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null)"
             printf 'notrack_dns|%s\n' "$(uci -q get https-dns-proxy.config.notrack_dns 2>/dev/null)"
             printf 'dnsmasq_config_update|%s\n' "$(uci -q get https-dns-proxy.config.dnsmasq_config_update 2>/dev/null)"
         } > "$FORCE_DNS_BEFORE" || return 1
     fi
+
     uci set https-dns-proxy.config.force_dns=0 || return 1
     uci set https-dns-proxy.config.notrack_dns=0 || return 1
     uci set https-dns-proxy.config.dnsmasq_config_update=- || return 1
-    _external_dns_redirect="$(firewall_find_exact_redirect "$FIREWALL_LAN_ZONE" 'tcp udp' 53 "$LAN_IP" 53 DNAT "$FW_DNS_REDIRECT_SECTION" 2>/dev/null || true)"
+
     if uci -q get "firewall.$FW_DNS_REDIRECT_SECTION" >/dev/null 2>&1; then
-        if dns_force_redirect_is_manager_signature; then
-            [ "$(uci -q get "firewall.$FW_DNS_REDIRECT_SECTION.dest" 2>/dev/null)" = "$FIREWALL_LAN_ZONE" ] || uci set "firewall.$FW_DNS_REDIRECT_SECTION.dest=$FIREWALL_LAN_ZONE" || return 1
-            firewall_owner_add "$FW_DNS_REDIRECT_SECTION" || return 1
-        elif [ -n "$_external_dns_redirect" ]; then
-            :
+        if force_dns_redirect_matches "$FW_DNS_REDIRECT_SECTION"; then
+            uci set "firewall.$FW_DNS_REDIRECT_SECTION.dest=$FIREWALL_LAN_ZONE" || return 1
         elif [ "${FORCE_APPLY_SETTINGS:-0}" = 1 ]; then
             uci set "firewall.$FW_DNS_REDIRECT_SECTION=redirect" || return 1
             uci set "firewall.$FW_DNS_REDIRECT_SECTION.name=DNS Manager: перенаправление DNS" || return 1
@@ -3431,14 +3129,12 @@ apply_dns_force() {
             uci set "firewall.$FW_DNS_REDIRECT_SECTION.dest_ip=$LAN_IP" || return 1
             uci set "firewall.$FW_DNS_REDIRECT_SECTION.dest_port=53" || return 1
             uci set "firewall.$FW_DNS_REDIRECT_SECTION.target=DNAT" || return 1
-            firewall_owner_add "$FW_DNS_REDIRECT_SECTION" || return 1
+        elif firewall_find_exact_redirect "$FIREWALL_LAN_ZONE" 'tcp udp' 53 "$LAN_IP" 53 DNAT "$FW_DNS_REDIRECT_SECTION" >/dev/null 2>&1; then
+            :
         else
-            err_msg "Секция firewall.$FW_DNS_REDIRECT_SECTION содержит другие параметры. Без подтверждения она не изменяется."
             return 2
         fi
-    elif [ -n "$_external_dns_redirect" ]; then
-        :
-    else
+    elif ! firewall_find_exact_redirect "$FIREWALL_LAN_ZONE" 'tcp udp' 53 "$LAN_IP" 53 DNAT "$FW_DNS_REDIRECT_SECTION" >/dev/null 2>&1; then
         uci set "firewall.$FW_DNS_REDIRECT_SECTION=redirect" || return 1
         uci set "firewall.$FW_DNS_REDIRECT_SECTION.name=DNS Manager: перенаправление DNS" || return 1
         uci set "firewall.$FW_DNS_REDIRECT_SECTION.src=$FIREWALL_LAN_ZONE" || return 1
@@ -3448,18 +3144,11 @@ apply_dns_force() {
         uci set "firewall.$FW_DNS_REDIRECT_SECTION.dest_ip=$LAN_IP" || return 1
         uci set "firewall.$FW_DNS_REDIRECT_SECTION.dest_port=53" || return 1
         uci set "firewall.$FW_DNS_REDIRECT_SECTION.target=DNAT" || return 1
-        firewall_owner_add "$FW_DNS_REDIRECT_SECTION" || return 1
     fi
-    _external_dot="$(firewall_find_exact_rule_signature dot "$FW_DOT_SECTION" 2>/dev/null || true)"
+
     if uci -q get "firewall.$FW_DOT_SECTION" >/dev/null 2>&1; then
-        if firewall_owner_has "$FW_DOT_SECTION"; then
-            [ "$(uci -q get "firewall.$FW_DOT_SECTION.src" 2>/dev/null)" = "$FIREWALL_LAN_ZONE" ] || return 2
-            [ "$(uci -q get "firewall.$FW_DOT_SECTION.dest" 2>/dev/null)" = "$FIREWALL_WAN_ZONE" ] || return 2
-            [ "$(uci -q get "firewall.$FW_DOT_SECTION.proto" 2>/dev/null)" = 'tcp udp' ] || return 2
-            [ "$(uci -q get "firewall.$FW_DOT_SECTION.dest_port" 2>/dev/null)" = 853 ] || return 2
-            [ "$(uci -q get "firewall.$FW_DOT_SECTION.target" 2>/dev/null)" = REJECT ] || return 2
-        elif [ -n "$_external_dot" ]; then
-            :
+        if force_dns_dot_matches "$FW_DOT_SECTION"; then
+            firewall_owner_add "$FW_DOT_SECTION" >/dev/null 2>&1 || true
         elif [ "${FORCE_APPLY_SETTINGS:-0}" = 1 ]; then
             uci set "firewall.$FW_DOT_SECTION=rule" || return 1
             uci set "firewall.$FW_DOT_SECTION.name=DNS Manager: блокировка DoT" || return 1
@@ -3468,13 +3157,12 @@ apply_dns_force() {
             uci set "firewall.$FW_DOT_SECTION.proto=tcp udp" || return 1
             uci set "firewall.$FW_DOT_SECTION.dest_port=853" || return 1
             uci set "firewall.$FW_DOT_SECTION.target=REJECT" || return 1
-            firewall_owner_add "$FW_DOT_SECTION" || return 1
+        elif firewall_find_exact_rule_signature dot "$FW_DOT_SECTION" >/dev/null 2>&1; then
+            :
         else
-            err_msg "Секция firewall.$FW_DOT_SECTION содержит другие параметры. Без подтверждения она не изменяется."; return 2
+            return 2
         fi
-    elif [ -n "$_external_dot" ]; then
-        :
-    else
+    elif ! firewall_find_exact_rule_signature dot "$FW_DOT_SECTION" >/dev/null 2>&1; then
         uci set "firewall.$FW_DOT_SECTION=rule" || return 1
         uci set "firewall.$FW_DOT_SECTION.name=DNS Manager: блокировка DoT" || return 1
         uci set "firewall.$FW_DOT_SECTION.src=$FIREWALL_LAN_ZONE" || return 1
@@ -3482,32 +3170,25 @@ apply_dns_force() {
         uci set "firewall.$FW_DOT_SECTION.proto=tcp udp" || return 1
         uci set "firewall.$FW_DOT_SECTION.dest_port=853" || return 1
         uci set "firewall.$FW_DOT_SECTION.target=REJECT" || return 1
-        firewall_owner_add "$FW_DOT_SECTION" || return 1
     fi
+
+    firewall_owner_add "$FW_DNS_REDIRECT_SECTION" >/dev/null 2>&1 || true
+    firewall_owner_add "$FW_DOT_SECTION" >/dev/null 2>&1 || true
     uci commit https-dns-proxy || return 1
     uci commit firewall || return 1
     return 0
 }
 remove_dns_force() {
-    firewall_resolve_zones
-    _secs="$(uci show firewall 2>/dev/null | sed -n 's/^firewall\.\([^.=]*\)=redirect$/\1/p')"
-    for _sec in $_secs; do
-        [ "$(uci -q get "firewall.$_sec.disabled" 2>/dev/null)" = 1 ] && continue
-        dns_redirect_rule_matches "$_sec" "$FIREWALL_LAN_ZONE" 'tcp udp' 53 "$LAN_IP" 53 DNAT || continue
-        uci -q delete "firewall.$_sec"
-        firewall_owner_remove "$_sec" || true
-    done
-    _secs="$(uci show firewall 2>/dev/null | sed -n 's/^firewall\.\([^.=]*\)=rule$/\1/p')"
-    for _sec in $_secs; do
-        [ "$(uci -q get "firewall.$_sec.disabled" 2>/dev/null)" = 1 ] && continue
-        [ "$(uci -q get "firewall.$_sec.src" 2>/dev/null)" = "$FIREWALL_LAN_ZONE" ] || continue
-        [ "$(uci -q get "firewall.$_sec.dest" 2>/dev/null)" = "$FIREWALL_WAN_ZONE" ] || continue
-        [ "$(uci -q get "firewall.$_sec.proto" 2>/dev/null)" = 'tcp udp' ] || continue
-        [ "$(uci -q get "firewall.$_sec.dest_port" 2>/dev/null)" = 853 ] || continue
-        [ "$(uci -q get "firewall.$_sec.target" 2>/dev/null)" = REJECT ] || continue
-        uci -q delete "firewall.$_sec"
-        firewall_owner_remove "$_sec" || true
-    done
+    firewall_resolve_zones >/dev/null 2>&1 || true
+    if force_dns_redirect_matches "$FW_DNS_REDIRECT_SECTION"; then
+        uci -q delete "firewall.$FW_DNS_REDIRECT_SECTION"
+        firewall_owner_remove "$FW_DNS_REDIRECT_SECTION" >/dev/null 2>&1 || true
+    fi
+    if force_dns_dot_matches "$FW_DOT_SECTION"; then
+        uci -q delete "firewall.$FW_DOT_SECTION"
+        firewall_owner_remove "$FW_DOT_SECTION" >/dev/null 2>&1 || true
+    fi
+
     if [ -s "$FORCE_DNS_BEFORE" ]; then
         while IFS='|' read -r _k _v; do
             case "$_k" in
@@ -3524,12 +3205,21 @@ remove_dns_force() {
             esac
         done < "$FORCE_DNS_BEFORE"
         rm -f "$FORCE_DNS_BEFORE"
+    else
+        for _k in force_dns notrack_dns dnsmasq_config_update; do
+            case "$_k" in
+                force_dns|notrack_dns) _mgr=0;;
+                dnsmasq_config_update) _mgr=-;;
+            esac
+            _cur="$(uci -q get "https-dns-proxy.config.$_k" 2>/dev/null)"
+            [ "$_cur" = "$_mgr" ] && uci -q delete "https-dns-proxy.config.$_k"
+        done
     fi
+
     uci commit https-dns-proxy >/dev/null 2>&1 || return 1
     uci commit firewall >/dev/null 2>&1 || return 1
     return 0
 }
-# ==========================================
 apply_bogus() {
 clear_screen
 printf "${C_RED}=== IP-заглушки / bogus-nxdomain ===${C_NC}\n"
@@ -4532,14 +4222,8 @@ _apply_settings_impl() {
     pause
 }
 firewall_backend_require() {
-    detect_firewall_backend
     case "$SYS_FW" in
-        fw4|fw3)
-            firewall_resolve_zones
-            [ -n "$FIREWALL_LAN_ZONE" ] || { err_msg "Не удалось однозначно определить firewall-зону LAN. Настройка не применена."; return 1; }
-            [ -n "$FIREWALL_WAN_ZONE" ] || { err_msg "Не удалось однозначно определить firewall-зону WAN. Настройка не применена."; return 1; }
-            return 0
-            ;;
+        fw4|fw3) firewall_resolve_zones; return 0 ;;
     esac
     err_msg "Не удалось однозначно определить активный firewall backend (fw4/fw3). Firewall-зависимые изменения не применяются."
     return 1
@@ -4630,12 +4314,12 @@ for _sf in /etc/sysctl.d/90-dns-manager.conf; do
     [ -f "$_sf" ] || continue
     sysctl_base_file_owned "$_sf" || continue
     for kv in net.ipv4.tcp_fastopen net.ipv4.tcp_fin_timeout net.core.somaxconn; do
-        old="$(awk -F'|' -v k="$kv" '$1==k{print $2;exit}' "$SYSCTL_BASE_BEFORE" 2>/dev/null)"
+        old="$(awk -F'|' -v k="$kv" '$1==k{print $2;exit}' "$STATE_DIR/sysctl-before.conf" 2>/dev/null)"
         cur="$(sysctl -n "$kv" 2>/dev/null)"
         mgr="$(awk -F'=' -v k="$kv" '$1==k{print $2;exit}' "$_sf" 2>/dev/null)"
         [ -n "$old" ] && [ -n "$mgr" ] && [ "$cur" = "$mgr" ] && [ "$old" != unknown ] && sysctl -w "$kv=$old" >/dev/null 2>&1
     done
-    rm -f "$_sf" "$SYSCTL_BASE_BEFORE"
+    rm -f "$_sf" "$STATE_DIR/sysctl-before.conf"
 done
 /etc/init.d/https-dns-proxy restart 2>/dev/null
 /etc/init.d/dnsmasq restart 2>/dev/null
@@ -5171,11 +4855,6 @@ menu_bogus() {
 apply_bogus
 }
 apply_quic_toggle() {
-    _quic_state="$(check_module_state quic 2>/dev/null || printf 2)"
-    if [ "$BLOCK_QUIC" = 1 ] && [ "$_quic_state" = 2 ] && [ "${FORCE_APPLY_SETTINGS:-0}" != 1 ]; then
-        err_msg "QUIC: обнаружены другие параметры блокировки UDP 80/443. Без подтверждения они не изменяются."
-        return 2
-    fi
     if [ "$BLOCK_QUIC" != 1 ]; then
         quic_remove_managed_rules || return 1
     else
@@ -5201,33 +4880,13 @@ cleanup_legacy_mtu_default() {
 
 apply_mtu_toggle() {
     _wan_zone="$(firewall_wan_zone 2>/dev/null)" || return 1
-    _state="$(wan_mtu_state)"
     if [ "${MTU_FIX:-0}" = 1 ]; then
-        case "$_state" in
-            1) return 0;;
-            2) [ "${FORCE_APPLY_SETTINGS:-0}" = 1 ] || { err_msg "MTU/MSS: в WAN-зоне задано другое значение mtu_fix. Без подтверждения оно не изменяется."; return 2; };;
-        esac
         if [ ! -s "$MTU_BEFORE" ]; then
             printf '%s\n' "$(uci -q get "firewall.$_wan_zone.mtu_fix" 2>/dev/null)" > "$MTU_BEFORE" || return 1
         fi
         uci -q set "firewall.$_wan_zone.mtu_fix=1" || return 1
         cleanup_legacy_mtu_default || return 1
     else
-        case "$_state" in
-            0) cleanup_legacy_mtu_default || return 1; return 0;;
-            2)
-                if [ "${FORCE_APPLY_SETTINGS:-0}" = 1 ]; then
-                    _stock="$(uci_rom_value_or_absent firewall "firewall.$_wan_zone.mtu_fix")"
-                    case "$_stock" in
-                        __NO_ROM__|__ABSENT__|"") uci -q delete "firewall.$_wan_zone.mtu_fix" || true;;
-                        *) uci set "firewall.$_wan_zone.mtu_fix=$_stock" || return 1;;
-                    esac
-                    rm -f "$MTU_BEFORE"
-                else
-                    warn_msg "MTU/MSS: обнаружено другое значение mtu_fix. Оно сохранено."; cleanup_legacy_mtu_default || return 1; return 0
-                fi
-                ;;
-        esac
         if [ -s "$MTU_BEFORE" ]; then
             _old="$(head -n1 "$MTU_BEFORE" 2>/dev/null)"
             _cur_mtu="$(uci -q get "firewall.$_wan_zone.mtu_fix" 2>/dev/null)"
@@ -5238,12 +4897,16 @@ apply_mtu_toggle() {
                     uci -q delete "firewall.$_wan_zone.mtu_fix" || true
                 fi
             else
-                warn_msg "MTU/MSS: значение WAN mtu_fix изменено извне после применения. Текущее значение сохранено."
+                warn_msg "MTU/MSS: значение в WAN-зоне изменено извне после применения. Текущее значение сохранено."
             fi
             rm -f "$MTU_BEFORE"
+        else
+            _cur_mtu="$(uci -q get "firewall.$_wan_zone.mtu_fix" 2>/dev/null)"
+            [ "$_cur_mtu" = 1 ] && uci -q delete "firewall.$_wan_zone.mtu_fix" || true
         fi
         cleanup_legacy_mtu_default || return 1
     fi
+    rm -f "$LEGACY_MTU_BEFORE" 2>/dev/null || true
     uci commit firewall >/dev/null 2>&1 || return 1
     reload_fw >/dev/null 2>&1 || return 1
     return 0
@@ -5251,32 +4914,31 @@ apply_mtu_toggle() {
 
 check_module_state() {
     _sec="$(get_dnsmasq_section)"
+    firewall_resolve_zones >/dev/null 2>&1 || true
     case "$1" in
         balance)
-            dnsmasq_balance_state
+            [ "$(uci -q get "dhcp.$_sec.allservers" 2>/dev/null)" = 1 ] &&
+            [ "$(uci -q get "dhcp.$_sec.strictorder" 2>/dev/null)" = 0 ] &&
+            [ "$(uci -q get "dhcp.$_sec.noresolv" 2>/dev/null)" = 1 ] && printf 1 || {
+                [ -n "$(uci -q get "dhcp.$_sec.allservers" 2>/dev/null)" ] ||
+                [ -n "$(uci -q get "dhcp.$_sec.noresolv" 2>/dev/null)" ] && printf 2 || printf 0
+            }
             ;;
         tld)
-            _tld_expected=0; _have=0; _relevant=0
+            _tld_ok=1
+            _tld_seen=0
             _srv="$(uci -q get "dhcp.$_sec.server" 2>/dev/null | tr ' ' '\n')"
             for _slot in RU RU_2; do
                 eval "_tid=\${SLOT_${_slot}:-}"
                 [ -n "$_tid" ] || continue
+                _tld_seen=1
                 eval "_tp=\${PORT_${_slot}:-}"
                 [ -n "$_tp" ] || _tp="$(hybrid_desired_port "$_slot")"
-                [ -n "$_tp" ] || { _relevant=1; continue; }
-                _tld_expected=$((_tld_expected+3))
                 for _tld in /ru /su /xn--p1ai; do
-                    printf '%s\n' "$_srv" | grep -qxF "$_tld/127.0.0.1#$_tp" 2>/dev/null && _have=$((_have+1))
+                    printf '%s\n' "$_srv" | grep -qxF "$_tld/127.0.0.1#$_tp" || _tld_ok=0
                 done
             done
-            printf '%s\n' "$_srv" | grep -Eq '^/(ru|su|xn--p1ai)/' && _relevant=1 || true
-            if [ "$_tld_expected" -eq 0 ]; then
-                [ "$_relevant" = 1 ] && printf 2 || printf 0
-            elif [ "$_have" -eq "$_tld_expected" ]; then
-                printf 1
-            else
-                printf 2
-            fi
+            [ "$_tld_seen" = 1 ] && [ "$_tld_ok" = 1 ] && printf 1 || printf 0
             ;;
         ntp)
             [ "$(uci -q get system.ntp.use_dhcp 2>/dev/null)" = 0 ] || { printf 0; return; }
@@ -5284,21 +4946,28 @@ check_module_state() {
             _ntp_expected="$(ntp_servers_for_profile "$NTP_PRESET")"
             [ -n "$_ntp_expected" ] || { printf 0; return; }
             _ntp_cur="$(uci -q get system.ntp.server 2>/dev/null)"
-            _all=1
             for _ip in $_ntp_expected; do
-                printf '%s\n' $_ntp_cur | grep -qxF "$_ip" || _all=0
+                printf '%s\n' $_ntp_cur | grep -qxF "$_ip" || { printf 0; return; }
             done
-            [ "$_all" = 1 ] && printf 1 || printf 2
+            printf 1
             ;;
         quic)
-            firewall_resolve_zones
-            [ -n "$FIREWALL_LAN_ZONE" ] || { printf 2; return; }
-            [ -n "$FIREWALL_WAN_ZONE" ] || { printf 2; return; }
-            _q80=0; _q443=0; _q_partial=0
-            firewall_quic_rule_matches "$FW_QUIC80_SECTION" 80 2>/dev/null && _q80=1
-            [ "$_q80" = 0 ] && firewall_find_exact_quic 80 "$FW_QUIC80_SECTION" >/dev/null 2>&1 && _q80=1
-            firewall_quic_rule_matches "$FW_QUIC443_SECTION" 443 2>/dev/null && _q443=1
-            [ "$_q443" = 0 ] && firewall_find_exact_quic 443 "$FW_QUIC443_SECTION" >/dev/null 2>&1 && _q443=1
+            _q80=0; _q443=0; _other=0
+            if uci -q get "firewall.$FW_QUIC80_SECTION" >/dev/null 2>&1; then
+                firewall_quic_rule_matches "$FW_QUIC80_SECTION" 80 && _q80=1 || _other=1
+            elif firewall_find_exact_quic 80 "$FW_QUIC80_SECTION" >/dev/null 2>&1; then
+                _q80=1
+            elif firewall_quic_any_rule 80 >/dev/null 2>&1; then
+                _other=1
+            fi
+            if uci -q get "firewall.$FW_QUIC443_SECTION" >/dev/null 2>&1; then
+                firewall_quic_rule_matches "$FW_QUIC443_SECTION" 443 && _q443=1 || _other=1
+            elif firewall_find_exact_quic 443 "$FW_QUIC443_SECTION" >/dev/null 2>&1; then
+                _q443=1
+            elif firewall_quic_any_rule 443 >/dev/null 2>&1; then
+                _other=1
+            fi
+            [ "$_other" = 1 ] && { printf 2; return; }
             if [ "$_q80" = 1 ] && [ "$_q443" = 1 ]; then
                 printf 1
             elif [ "$_q80" = 1 ] || [ "$_q443" = 1 ]; then
@@ -5308,91 +4977,121 @@ check_module_state() {
             fi
             ;;
         mtu)
-            wan_mtu_state
+            _wan_zone="$(firewall_wan_zone 2>/dev/null)" || { printf 0; return; }
+            _v="$(uci -q get "firewall.$_wan_zone.mtu_fix" 2>/dev/null)"
+            [ "$_v" = 1 ] && printf 1 || { [ -n "$_v" ] && printf 2 || printf 0; }
             ;;
         sysctl)
-            _total=0; _desired_count=0; _stock_count=0; _other=0
+            _base_file="$(sysctl_base_manager_path)"
+            _base_values=1
+            _base_present=0
             for _p in "net.ipv4.tcp_fastopen=3" "net.ipv4.tcp_fin_timeout=15" "net.core.somaxconn=1024"; do
-                _total=$((_total+1)); _k="${_p%%=*}"; _v="${_p#*=}"
-                _ks="$(sysctl_key_state "$_k" "$_v")"
-                case "$_ks" in
-                    1) _desired_count=$((_desired_count+1));;
-                    0) _stock_count=$((_stock_count+1));;
-                    *) _other=1;;
-                esac
+                _k="${_p%%=*}"; _v="${_p#*=}"
+                [ "$(sysctl -n "$_k" 2>/dev/null)" = "$_v" ] && _base_present=1 || _base_values=0
+                [ -f "$_base_file" ] || _base_values=0
+                [ -f "$_base_file" ] && grep -qxF "$_p" "$_base_file" 2>/dev/null || _base_values=0
             done
-            [ "$_other" = 1 ] && { printf 2; return; }
-            if [ "$_desired_count" -eq "$_total" ]; then
-                if [ "${SYSCTL_EXTENDED:-0}" = 1 ]; then
-                    [ "$(check_module_state sysctl_ext)" = 1 ] || { printf 2; return; }
-                fi
-                printf 1
-            elif [ "$_stock_count" -eq "$_total" ]; then
-                printf 0
-            else
-                printf 2
+            _ext_values=1
+            if [ "${SYSCTL_EXTENDED:-0}" = 1 ]; then
+                [ -f "$(sysctl_extended_manager_path)" ] || _ext_values=0
+                while IFS= read -r _p; do
+                    [ -n "$_p" ] || continue
+                    _k="${_p%%=*}"; _v="${_p#*=}"
+                    [ "$(sysctl -n "$_k" 2>/dev/null)" = "$_v" ] || _ext_values=0
+                    grep -qxF "$_p" "$(sysctl_extended_manager_path)" 2>/dev/null || _ext_values=0
+                done <<EOF_STATE_EXT
+$(sysctl_extended_params)
+EOF_STATE_EXT
             fi
+            [ "$_base_values" = 1 ] && [ "$_ext_values" = 1 ] && printf 1 || {
+                [ "$_base_present" = 1 ] || [ -f "$_base_file" ] || { printf 0; return; }
+                printf 2
+            }
             ;;
         sysctl_ext)
-            _f="$(sysctl_extended_manager_path)"; _total=0; _desired_count=0; _stock_count=0; _other=0
+            [ -f "$(sysctl_extended_manager_path)" ] || { printf 0; return; }
+            _ok=1
             while IFS= read -r _p; do
                 [ -n "$_p" ] || continue
-                _total=$((_total+1)); _k="${_p%%=*}"; _v="${_p#*=}"
-                _ks="$(sysctl_key_state "$_k" "$_v")"
-                case "$_ks" in
-                    1) _desired_count=$((_desired_count+1));;
-                    0) _stock_count=$((_stock_count+1));;
-                    *) _other=1;;
-                esac
-            done <<EOF_CHECK_EXT3
+                _k="${_p%%=*}"; _v="${_p#*=}"
+                [ "$(sysctl -n "$_k" 2>/dev/null)" = "$_v" ] || _ok=0
+                grep -qxF "$_p" "$(sysctl_extended_manager_path)" 2>/dev/null || _ok=0
+            done <<EOF_STATE_EXT2
 $(sysctl_extended_params)
-EOF_CHECK_EXT3
-            [ "$_other" = 1 ] && { printf 2; return; }
-            [ "$_desired_count" -eq "$_total" ] && [ "$_total" -gt 0 ] && printf 1 && return
-            [ "$_stock_count" -eq "$_total" ] && printf 0 || printf 2
+EOF_STATE_EXT2
+            [ "$_ok" = 1 ] && printf 1 || printf 2
             ;;
         force)
-            force_dns_state
+            _proxy_ok=0; _dns_ok=0; _dot_ok=0
+            force_dns_proxy_target_matches && _proxy_ok=1
+            if uci -q get "firewall.$FW_DNS_REDIRECT_SECTION" >/dev/null 2>&1; then
+                force_dns_redirect_matches "$FW_DNS_REDIRECT_SECTION" && _dns_ok=1
+            elif firewall_find_exact_redirect "$FIREWALL_LAN_ZONE" 'tcp udp' 53 "$LAN_IP" 53 DNAT "$FW_DNS_REDIRECT_SECTION" >/dev/null 2>&1; then
+                _dns_ok=1
+            fi
+            if uci -q get "firewall.$FW_DOT_SECTION" >/dev/null 2>&1; then
+                force_dns_dot_matches "$FW_DOT_SECTION" && _dot_ok=1
+            elif firewall_find_exact_rule_signature dot "$FW_DOT_SECTION" >/dev/null 2>&1; then
+                _dot_ok=1
+            fi
+            if [ "$_proxy_ok" = 1 ] && [ "$_dns_ok" = 1 ] && [ "$_dot_ok" = 1 ]; then
+                printf 1
+            elif [ "$_proxy_ok" = 1 ] || [ "$_dns_ok" = 1 ] || [ "$_dot_ok" = 1 ] ||
+                 [ -n "$(uci -q get "firewall.$FW_DNS_REDIRECT_SECTION" 2>/dev/null)" ] ||
+                 [ -n "$(uci -q get "firewall.$FW_DOT_SECTION" 2>/dev/null)" ]; then
+                printf 2
+            else
+                printf 0
+            fi
             ;;
         ntp_clients)
-            ntp_clients_state
+            _opt="42,$LAN_IP"; _dhcp_ok=0; _fw_ok=0
+            exact_list_has "dhcp.$_sec.dhcp_option" "$_opt" && _dhcp_ok=1
+            ntp_firewall_rule_matches "$FW_NTP_SECTION" && _fw_ok=1
+            [ "$_fw_ok" = 1 ] || ntp_firewall_rule_exact_external && _fw_ok=1
+            if [ "$_dhcp_ok" = 1 ] && [ "$_fw_ok" = 1 ]; then
+                printf 1
+            elif [ "$_dhcp_ok" = 1 ] || [ "$_fw_ok" = 1 ]; then
+                printf 2
+            else
+                printf 0
+            fi
             ;;
         dnsmasq_perf)
-            dnsmasq_perf_state
+            _all=1; _seen=0
+            for _kv in "cachesize|1000" "dnsforwardmax|300" "max_cache_ttl|86400" "boguspriv|1" "domainneeded|1" "quietdhcp|1"; do
+                _k="${_kv%%|*}"; _v="${_kv#*|}"
+                _cur="$(uci -q get "dhcp.$_sec.$_k" 2>/dev/null)"
+                [ "$_cur" = "$_v" ] && _seen=1 || _all=0
+            done
+            if [ "$IPV6_ROUTE" != yes ]; then
+                [ "$(uci -q get "dhcp.$_sec.filter_aaaa" 2>/dev/null)" = 1 ] || _all=0
+            fi
+            [ "$_all" = 1 ] && printf 1 || { [ "$_seen" = 1 ] && printf 2 || printf 0; }
             ;;
         client_fixes)
-            for _f in /etc/dnsmasq.d/*dns-manager-client-fixes*.conf; do
-                [ -f "$_f" ] || continue
-                case "$(client_fixes_file_state "$_f")" in
-                    1) printf 1; return;;
-                    2) printf 2; return;;
-                esac
-            done
-            printf 0
+            client_fixes_find_owned >/dev/null 2>&1 && printf 1 || {
+                client_fixes_find_modified_owned >/dev/null 2>&1 && printf 2 || printf 0
+            }
             ;;
         watchdog)
             _wd_line="*/${WATCHDOG_INTERVAL:-15} * * * * ${MANAGER_PATH} watchdog >> ${LOG_FILE} 2>&1"
-            if watchdog_cron_line_exists "$_wd_line"; then
-                printf 1
-            elif [ "${WATCHDOG_ENABLED:-0}" = 0 ]; then
-                watchdog_cron_scheduler_require >/dev/null 2>&1 && awk -v mp="${MANAGER_PATH}" '$0 !~ /^[[:space:]]*#/ && $0 ~ mp"[[:space:]]+(watchdog|-w|--watchdog)([[:space:]]|$)" {ok=1} END{exit ok?0:1}' "$WATCHDOG_CRON_FILE" 2>/dev/null && printf 2 || printf 0
-            else
-                printf 0
+            watchdog_cron_line_exists "$_wd_line" || watchdog_cron_owned_block_status "$_wd_line"
+            if [ $? -eq 0 ]; then printf 1
+            elif [ "${WATCHDOG_ENABLED:-0}" = 1 ]; then printf 2
+            else printf 0
             fi
             ;;
         web)
-            web_access_real && printf 1 || printf 0
+            web_access_real && printf 1 || { [ "${WEB_ACCESS_ENABLED:-0}" = 1 ] && printf 2 || printf 0; }
             ;;
         *)
             printf 0
             ;;
     esac
 }
-
 module_state_word() {
-    _module="$1"
-    _desired="$2"
-    _real="$(check_module_state "$_module")"
+    _real="$(check_module_state "$1")"
     case "$_real" in
         1) printf "${C_BOLD}${C_GREEN}✓ ВКЛ${C_NC} ${C_CYAN}${C_BOLD}• настроено${C_NC}" ;;
         2) printf "${C_BOLD}${C_YELLOW}⚠ ДРУГОЕ${C_NC} ${C_CYAN}${C_BOLD}• текущее значение отличается от целевого${C_NC}" ;;
@@ -5712,208 +5411,147 @@ apply_web_access() {
     esac
 }
 # ==========================================
+setting_process() {
+    _module="$1"
+    _title="$2"
+    _var="$3"
+    _state="$(check_module_state "$_module")"
+    _old_value="$(eval "printf '%s' \"\${$_var:-0}\"")"
+    _old_ext="$SYSCTL_EXTENDED"
+
+    case "$_state" in
+        0) _prompt="Включить «$_title»?";;
+        1) _prompt="Выключить «$_title» и вернуть стоковое состояние?";;
+        2) _prompt="Исправить «$_title» и применить целевую настройку DNS Manager?";;
+        *) err_msg "Не удалось определить состояние: $_title."; pause; return;;
+    esac
+
+    printf "\n${C_WHITE}Настройка: %s${C_NC}\n" "$_title"
+    printf "  Состояние: %s\n" "$(module_state_word "$_module")"
+    case "$_state" in
+        0) printf "  Действие:  ВКЛЮЧИТЬ\n";;
+        1) printf "  Действие:  ВЫКЛЮЧИТЬ\n";;
+        2) printf "  Действие:  ИСПРАВИТЬ\n";;
+    esac
+
+    case "$_module" in
+        quic) printf "  Блокируются UDP-порты 80 и 443 из LAN.\n" ;;
+        mtu) printf "  Для WAN-зоны применяется исправление MTU/MSS.\n" ;;
+        force) printf "  DNS TCP/UDP 53 направляется на DNS роутера; DoT TCP/UDP 853 блокируется.\n" ;;
+        sysctl) printf "  Применяются целевые параметры TCP и Conntrack.\n" ;;
+        dnsmasq_perf) printf "  Применяются целевые параметры DNS-кэша dnsmasq.\n" ;;
+        ntp_clients) printf "  Устройства получают адрес роутера как NTP-сервер через DHCP и локальное перенаправление UDP/123.\n" ;;
+        client_fixes) printf "  Применяется целевой набор DNS-правил для телеметрии и проверок подключения.\n" ;;
+        watchdog) printf "  Автопроверка DNS работает через cron.\n" ;;
+        web) printf "  Используется отдельный web-доступ DNS Manager на порту 7682.\n" ;;
+    esac
+
+    confirm_action "$_prompt" || return 0
+
+    FORCE_APPLY_SETTINGS=0
+    case "$_state" in
+        0|2)
+            eval "$_var=1"
+            [ "$_module" = sysctl ] && SYSCTL_EXTENDED=1
+            [ "$_state" = 2 ] && FORCE_APPLY_SETTINGS=1
+            ;;
+        1)
+            eval "$_var=0"
+            [ "$_module" = sysctl ] && SYSCTL_EXTENDED=0
+            ;;
+    esac
+
+    if [ "$_module" = watchdog ]; then
+        if ! apply_watchdog; then
+            eval "$_var=\$_old_value"
+            save_config >/dev/null 2>&1 || true
+            err_msg "Не удалось изменить автопроверку DNS."
+        fi
+        FORCE_APPLY_SETTINGS=0
+        pause
+        return
+    fi
+
+    if [ "$_module" = web ]; then
+        if ! apply_web_access; then
+            eval "$_var=\$_old_value"
+            save_config >/dev/null 2>&1 || true
+            err_msg "Не удалось изменить web-доступ."
+        fi
+        FORCE_APPLY_SETTINGS=0
+        pause
+        return
+    fi
+
+    if apply_extras_now "$_module"; then
+        case "$_module:$_state" in
+            quic:0|quic:2) ok_msg "Блокировка QUIC включена." ;;
+            quic:1) ok_msg "Блокировка QUIC выключена, стоковое состояние восстановлено." ;;
+            mtu:0|mtu:2) ok_msg "MTU/MSS настроено." ;;
+            mtu:1) ok_msg "MTU/MSS возвращено к стоку." ;;
+            force:0|force:2) ok_msg "Принудительный DNS настроен." ;;
+            force:1) ok_msg "Принудительный DNS выключен, стоковое состояние восстановлено." ;;
+            sysctl:0|sysctl:2) ok_msg "TCP и Conntrack настроены." ;;
+            sysctl:1) ok_msg "TCP и Conntrack возвращены к стоку." ;;
+            dnsmasq_perf:0|dnsmasq_perf:2) ok_msg "DNS-кэш настроен." ;;
+            dnsmasq_perf:1) ok_msg "DNS-кэш возвращён к стоку." ;;
+            ntp_clients:0|ntp_clients:2) ok_msg "NTP для устройств настроен." ;;
+            ntp_clients:1) ok_msg "NTP для устройств выключен." ;;
+            client_fixes:0|client_fixes:2) ok_msg "Исправления телеметрии и связи настроены." ;;
+            client_fixes:1) ok_msg "Исправления телеметрии и связи выключены." ;;
+        esac
+    else
+        eval "$_var=\$_old_value"
+        SYSCTL_EXTENDED="$_old_ext"
+        save_config >/dev/null 2>&1 || true
+        case "$_module" in
+            quic) err_msg "Не удалось изменить блокировку QUIC." ;;
+            mtu) err_msg "Не удалось изменить исправление сетевых параметров." ;;
+            force) err_msg "Не удалось изменить принудительный DNS." ;;
+            sysctl) err_msg "Не удалось изменить TCP и Conntrack." ;;
+            dnsmasq_perf) err_msg "Не удалось изменить кэширование DNS." ;;
+            ntp_clients) err_msg "Не удалось изменить NTP для устройств." ;;
+            client_fixes) err_msg "Не удалось изменить исправления телеметрии и связи." ;;
+        esac
+    fi
+    FORCE_APPLY_SETTINGS=0
+    pause
+}
 menu_extras() {
 while :; do
 menu_header "НАСТРОЙКИ"
 menu_section "СЕТЬ И ОБХОД"
-menu_item_state "[1]" "Блокировка QUIC" "$(module_state_word quic "$BLOCK_QUIC")"
-menu_item_state "[2]" "Исправление сетевых параметров / MSS" "$(module_state_word mtu "$MTU_FIX")"
-menu_item_state "[3]" "Принудительный DNS" "$(module_state_word force "$FORCE_DOH")"
+menu_item_state "[1]" "Блокировка QUIC" "$(module_state_word quic)"
+menu_item_state "[2]" "Исправление сетевых параметров / MSS" "$(module_state_word mtu)"
+menu_item_state "[3]" "Принудительный DNS" "$(module_state_word force)"
 menu_section "ПРОИЗВОДИТЕЛЬНОСТЬ"
-menu_item_state "[4]" "Оптимизация TCP и Conntrack" "$(module_state_word sysctl "$SYSCTL_TUNING")"
-menu_item_state "[5]" "Кэширование DNS-запросов" "$(module_state_word dnsmasq_perf "$DNSMASQ_PERF")"
+menu_item_state "[4]" "Оптимизация TCP и Conntrack" "$(module_state_word sysctl)"
+menu_item_state "[5]" "Кэширование DNS-запросов" "$(module_state_word dnsmasq_perf)"
 menu_section "СЕРВИСЫ И КЛИЕНТЫ"
-menu_item_state "[6]" "Время для устройств сети" "$(module_state_word ntp_clients "$NTP_CLIENTS")"
-menu_item_state "[7]" "Исправления телеметрии и связи" "$(module_state_word client_fixes "$CLIENT_FIXES")"
+menu_item_state "[6]" "Время для устройств сети" "$(module_state_word ntp_clients)"
+menu_item_state "[7]" "Исправления телеметрии и связи" "$(module_state_word client_fixes)"
 menu_section "ОБСЛУЖИВАНИЕ"
-menu_item_state "[8]" "Автоматическая проверка DNS" "$(module_state_word watchdog "$WATCHDOG_ENABLED")"
-menu_item_state "[9]" "Доступ из браузера" "$(module_state_word web "$WEB_ACCESS_ENABLED")"
+menu_item_state "[8]" "Автоматическая проверка DNS" "$(module_state_word watchdog)"
+menu_item_state "[9]" "Доступ из браузера" "$(module_state_word web)"
 menu_back
 menu_prompt
 safe_read c
 case "$c" in
-1)
-    _old="$BLOCK_QUIC"
-    FORCE_APPLY_SETTINGS=0
-    _state="$(check_module_state quic 2>/dev/null || printf 2)"
-    case "$_state" in
-        0) _new=1; _action="ВКЛЮЧИТЬ";;
-        1) _new=0; _action="ВЫКЛЮЧИТЬ";;
-        2)
-            if [ "$BLOCK_QUIC" = 1 ]; then _new=1; _action="ВКЛЮЧИТЬ"; else _new=0; _action="ВЫКЛЮЧИТЬ"; fi
-            override_toggle_confirm "Блокировка QUIC" "$(module_state_word quic "$BLOCK_QUIC")" "$_action" "Обнаружены другие параметры. После подтверждения будут изменены только правила UDP 80/443 этой функции." || continue
-            FORCE_APPLY_SETTINGS=1
-            ;;
-        *) err_msg "Не удалось определить состояние блокировки QUIC."; pause; continue;;
-    esac
-    if [ "${FORCE_APPLY_SETTINGS:-0}" != 1 ]; then
-        toggle_confirm "Блокировка QUIC" "$(module_state_word quic "$BLOCK_QUIC")" "$_action" "Блокируются UDP-порты 80 и 443 из LAN. Другие правила не перезаписываются." || continue
-    fi
-    BLOCK_QUIC="$_new"
-    if ! apply_extras_now quic; then BLOCK_QUIC="$_old"; save_config >/dev/null 2>&1 || true; err_msg "Блокировка QUIC не изменена."; fi
-    FORCE_APPLY_SETTINGS=0
-    pause;;
-2)
-    _old="$MTU_FIX"
-    FORCE_APPLY_SETTINGS=0
-    _state="$(check_module_state mtu 2>/dev/null || printf 2)"
-    case "$_state" in
-        0) _new=1; _action="ВКЛЮЧИТЬ";;
-        1) _new=0; _action="ВЫКЛЮЧИТЬ";;
-        2)
-            if [ "$MTU_FIX" = 1 ]; then _new=1; _action="ВКЛЮЧИТЬ"; else _new=0; _action="ВЫКЛЮЧИТЬ"; fi
-            override_toggle_confirm "Исправление сетевых параметров / MSS" "$(module_state_word mtu "$MTU_FIX")" "$_action" "Будет изменён только mtu_fix реальной WAN-зоны. Остальные параметры не затрагиваются." || continue
-            FORCE_APPLY_SETTINGS=1
-            ;;
-        *) err_msg "Не удалось определить состояние MTU/MSS."; pause; continue;;
-    esac
-    if [ "${FORCE_APPLY_SETTINGS:-0}" != 1 ]; then
-        toggle_confirm "Исправление сетевых параметров / MSS" "$(module_state_word mtu "$MTU_FIX")" "$_action" "Настройка применяется к реальной WAN-зоне. Другое значение не перезаписывается." || continue
-    fi
-    MTU_FIX="$_new"
-    if ! apply_extras_now mtu; then MTU_FIX="$_old"; save_config >/dev/null 2>&1 || true; err_msg "Исправление сетевых параметров не изменено."; fi
-    FORCE_APPLY_SETTINGS=0
-    pause;;
-3)
-    _old="$FORCE_DOH"
-    FORCE_APPLY_SETTINGS=0
-    _state="$(check_module_state force 2>/dev/null || printf 2)"
-    case "$_state" in
-        0) _new=1; _action="ВКЛЮЧИТЬ";;
-        1) _new=0; _action="ВЫКЛЮЧИТЬ";;
-        2)
-            if [ "$FORCE_DOH" = 1 ]; then _new=1; _action="ВКЛЮЧИТЬ"; else _new=0; _action="ВЫКЛЮЧИТЬ"; fi
-            override_toggle_confirm "Принудительный DNS" "$(module_state_word force "$FORCE_DOH")" "$_action" "Будут затронуты только правила DNS/DoT и параметры этой функции." || continue
-            FORCE_APPLY_SETTINGS=1
-            ;;
-        *) err_msg "Не удалось определить состояние принудительного DNS."; pause; continue;;
-    esac
-    if [ "${FORCE_APPLY_SETTINGS:-0}" != 1 ]; then
-        toggle_confirm "Принудительный DNS" "$(module_state_word force "$FORCE_DOH")" "$_action" "DNS TCP/UDP 53 из LAN направляется на DNS роутера; DoT TCP/UDP 853 блокируется." || continue
-    fi
-    FORCE_DOH="$_new"
-    if ! apply_extras_now force; then FORCE_DOH="$_old"; save_config >/dev/null 2>&1 || true; err_msg "Принудительный DNS не изменён."; fi
-    FORCE_APPLY_SETTINGS=0
-    pause;;
-4)
-    _old_sysctl="$SYSCTL_TUNING"; _old_sysctl_ext="$SYSCTL_EXTENDED"
-    FORCE_APPLY_SETTINGS=0
-    _state="$(check_module_state sysctl 2>/dev/null || printf 2)"
-    case "$_state" in
-        0) _new_sysctl=1; _new_sysctl_ext=1; _action="ВКЛЮЧИТЬ";;
-        1) _new_sysctl=0; _new_sysctl_ext=0; _action="ВЫКЛЮЧИТЬ";;
-        2)
-            if [ "$SYSCTL_TUNING" = 1 ]; then _new_sysctl=1; _new_sysctl_ext=1; _action="ВКЛЮЧИТЬ"; else _new_sysctl=0; _new_sysctl_ext=0; _action="ВЫКЛЮЧИТЬ"; fi
-            override_toggle_confirm "Оптимизация TCP и Conntrack" "$(module_state_word sysctl "$SYSCTL_TUNING")" "$_action" "Будут изменены только параметры TCP/Conntrack, которые задаёт функция." || continue
-            FORCE_APPLY_SETTINGS=1
-            ;;
-        *) err_msg "Не удалось определить состояние TCP/Conntrack."; pause; continue;;
-    esac
-    if [ "${FORCE_APPLY_SETTINGS:-0}" != 1 ]; then
-        toggle_confirm "Оптимизация TCP и Conntrack" "$(module_state_word sysctl "$SYSCTL_TUNING")" "$_action" "Изменяются только параметры целевого тюнинга. Другие значения сохраняются." || continue
-    fi
-    SYSCTL_TUNING="$_new_sysctl"; SYSCTL_EXTENDED="$_new_sysctl_ext"
-    if ! apply_extras_now sysctl; then SYSCTL_TUNING="$_old_sysctl"; SYSCTL_EXTENDED="$_old_sysctl_ext"; save_config >/dev/null 2>&1 || true; err_msg "Оптимизация TCP и Conntrack не изменена."; fi
-    FORCE_APPLY_SETTINGS=0
-    pause;;
-5)
-    _old="$DNSMASQ_PERF"
-    FORCE_APPLY_SETTINGS=0
-    _state="$(check_module_state dnsmasq_perf 2>/dev/null || printf 2)"
-    case "$_state" in
-        0) _new=1; _action="ВКЛЮЧИТЬ";;
-        1) _new=0; _action="ВЫКЛЮЧИТЬ";;
-        2)
-            if [ "$DNSMASQ_PERF" = 1 ]; then _new=1; _action="ВКЛЮЧИТЬ"; else _new=0; _action="ВЫКЛЮЧИТЬ"; fi
-            override_toggle_confirm "Кэширование DNS-запросов" "$(module_state_word dnsmasq_perf "$DNSMASQ_PERF")" "$_action" "Будут изменены только параметры кэша dnsmasq, которые задаёт функция." || continue
-            FORCE_APPLY_SETTINGS=1
-            ;;
-        *) err_msg "Не удалось определить состояние DNS-кэша."; pause; continue;;
-    esac
-    if [ "${FORCE_APPLY_SETTINGS:-0}" != 1 ]; then
-        toggle_confirm "Кэширование DNS-запросов" "$(module_state_word dnsmasq_perf "$DNSMASQ_PERF")" "$_action" "Изменяются только целевые параметры кэша dnsmasq; другие значения сохраняются." || continue
-    fi
-    DNSMASQ_PERF="$_new"
-    if ! apply_extras_now dnsmasq_perf; then DNSMASQ_PERF="$_old"; save_config >/dev/null 2>&1 || true; err_msg "Кэширование DNS не изменено."; fi
-    FORCE_APPLY_SETTINGS=0
-    pause;;
-6)
-    _old="$NTP_CLIENTS"
-    FORCE_APPLY_SETTINGS=0
-    _state="$(check_module_state ntp_clients 2>/dev/null || printf 2)"
-    case "$_state" in
-        0) _new=1; _action="ВКЛЮЧИТЬ";;
-        1) _new=0; _action="ВЫКЛЮЧИТЬ";;
-        2)
-            if [ "$NTP_CLIENTS" = 1 ]; then _new=1; _action="ВКЛЮЧИТЬ"; else _new=0; _action="ВЫКЛЮЧИТЬ"; fi
-            override_toggle_confirm "Время для устройств сети" "$(module_state_word ntp_clients "$NTP_CLIENTS")" "$_action" "Будут изменены только DHCP/NTP-параметры этой функции." || continue
-            FORCE_APPLY_SETTINGS=1
-            ;;
-        *) err_msg "Не удалось определить состояние NTP для устройств."; pause; continue;;
-    esac
-    if [ "${FORCE_APPLY_SETTINGS:-0}" != 1 ]; then
-        toggle_confirm "Время для устройств сети" "$(module_state_word ntp_clients "$NTP_CLIENTS")" "$_action" "Устройства получают адрес роутера как NTP-сервер через DHCP и локальное перенаправление UDP/123." || continue
-    fi
-    NTP_CLIENTS="$_new"
-    if ! apply_extras_now ntp_clients; then NTP_CLIENTS="$_old"; save_config >/dev/null 2>&1 || true; err_msg "Настройка времени для устройств не изменена."; fi
-    FORCE_APPLY_SETTINGS=0
-    pause;;
-7)
-    _old="$CLIENT_FIXES"
-    FORCE_APPLY_SETTINGS=0
-    _state="$(check_module_state client_fixes 2>/dev/null || printf 2)"
-    case "$_state" in
-        0) _new=1; _action="ВКЛЮЧИТЬ";;
-        1) _new=0; _action="ВЫКЛЮЧИТЬ";;
-        2)
-            if [ "$CLIENT_FIXES" = 1 ]; then _new=1; _action="ВКЛЮЧИТЬ"; else _new=0; _action="ВЫКЛЮЧИТЬ"; fi
-            override_toggle_confirm "Исправления телеметрии и связи" "$(module_state_word client_fixes "$CLIENT_FIXES")" "$_action" "Будет изменён только набор DNS-правил этой функции." || continue
-            FORCE_APPLY_SETTINGS=1
-            ;;
-        *) err_msg "Не удалось определить состояние клиентских исправлений."; pause; continue;;
-    esac
-    if [ "${FORCE_APPLY_SETTINGS:-0}" != 1 ]; then
-        toggle_confirm "Исправления телеметрии и связи" "$(module_state_word client_fixes "$CLIENT_FIXES")" "$_action" "Используется только точный набор DNS-правил этой функции." || continue
-    fi
-    CLIENT_FIXES="$_new"
-    if ! apply_extras_now client_fixes; then CLIENT_FIXES="$_old"; save_config >/dev/null 2>&1 || true; err_msg "Клиентские исправления не изменены."; fi
-    FORCE_APPLY_SETTINGS=0
-    pause;;
-8)
-    _old_watchdog="$WATCHDOG_ENABLED"
-    _state="$(check_module_state watchdog 2>/dev/null || printf 2)"
-    case "$_state" in
-        0) _new=1; _action="ВКЛЮЧИТЬ";;
-        1) _new=0; _action="ВЫКЛЮЧИТЬ";;
-        2) info_msg "Автоматическая проверка DNS: обнаружена другая cron-запись. Она не изменяется."; pause; continue;;
-        *) err_msg "Не удалось определить состояние watchdog."; pause; continue;;
-    esac
-    toggle_confirm "Автоматическая проверка DNS" "$(module_state_word watchdog "$WATCHDOG_ENABLED")" "$_action" "DNS Manager изменяет только свою запись проверки в найденном crontab." || continue
-    WATCHDOG_ENABLED="$_new"
-    if ! apply_watchdog; then WATCHDOG_ENABLED="$_old_watchdog"; save_config >/dev/null 2>&1 || true; err_msg "Автоматическая проверка DNS не изменена."; fi
-    pause;;
-9)
-    _old_web="$WEB_ACCESS_ENABLED"
-    _state="$(check_module_state web 2>/dev/null || printf 2)"
-    case "$_state" in
-        0) _new=1; _action="ВКЛЮЧИТЬ";;
-        1) _new=0; _action="ВЫКЛЮЧИТЬ";;
-        2) info_msg "Доступ из браузера: обнаружена другая конфигурация. Она не изменяется."; pause; continue;;
-        *) err_msg "Не удалось определить состояние web-доступа."; pause; continue;;
-    esac
-    toggle_confirm "Доступ из браузера" "$(module_state_word web "$WEB_ACCESS_ENABLED")" "$_action" "Отдельный web-сервис DNS Manager работает на порту 7682 и не управляет чужим ttyd." || continue
-    WEB_ACCESS_ENABLED="$_new"
-    if ! apply_web_access; then WEB_ACCESS_ENABLED="$_old_web"; save_config >/dev/null 2>&1 || true; err_msg "Web-доступ не изменён."; fi
-    pause;;
+1) setting_process quic "Блокировка QUIC" BLOCK_QUIC;;
+2) setting_process mtu "Исправление сетевых параметров / MSS" MTU_FIX;;
+3) setting_process force "Принудительный DNS" FORCE_DOH;;
+4) setting_process sysctl "Оптимизация TCP и Conntrack" SYSCTL_TUNING;;
+5) setting_process dnsmasq_perf "Кэширование DNS-запросов" DNSMASQ_PERF;;
+6) setting_process ntp_clients "Время для устройств сети" NTP_CLIENTS;;
+7) setting_process client_fixes "Исправления телеметрии и связи" CLIENT_FIXES;;
+8) setting_process watchdog "Автоматическая проверка DNS" WATCHDOG_ENABLED;;
+9) setting_process web "Доступ из браузера" WEB_ACCESS_ENABLED;;
 10) return;;
 '') return;;
-*) warn_msg "Неверный пункт."; pause;;
+*) warn_msg "Неизвестный пункт."; pause;;
 esac
 done
 }
-
-# ==========================================
-# ==========================================
 ensure_dependencies(){
 missing=""
 command -v curl >/dev/null 2>&1 || missing="$missing curl"
