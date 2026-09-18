@@ -2,7 +2,7 @@
 MANAGER_PATH="/usr/bin/dns-manager"
 # ==========================================
 # ==========================================
-VERSION="2.54"
+VERSION="2.55"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -2382,9 +2382,9 @@ quic_remove_managed_rules() {
         _rsec="${_pair%%|*}"
         _port="${_pair#*|}"
         if uci -q get "firewall.$_rsec" >/dev/null 2>&1; then
-            if firewall_quic_rule_owned "$_rsec" "$_port"; then
+            if firewall_quic_rule_matches "$_rsec" "$_port"; then
                 uci -q delete "firewall.$_rsec" || return 1
-                firewall_owner_remove "$_rsec"
+                firewall_owner_remove "$_rsec" >/dev/null 2>&1 || true
             fi
         fi
     done
@@ -2393,8 +2393,22 @@ quic_remove_managed_rules() {
 quic_ensure_rule() {
     _rsec="$1"; _port="$2"; _label="$3"
     if uci -q get "firewall.$_rsec" >/dev/null 2>&1; then
-        firewall_quic_rule_owned "$_rsec" "$_port" || return 2
-        return 0
+        if firewall_quic_rule_matches "$_rsec" "$_port"; then
+            firewall_owner_add "$_rsec" >/dev/null 2>&1 || true
+            return 0
+        fi
+        if [ "${FORCE_APPLY_SETTINGS:-0}" = 1 ]; then
+            uci set "firewall.$_rsec=rule" || return 1
+            uci set "firewall.$_rsec.name=$_label" || return 1
+            uci set "firewall.$_rsec.proto=udp" || return 1
+            uci set "firewall.$_rsec.src=$FIREWALL_LAN_ZONE" || return 1
+            uci set "firewall.$_rsec.dest=$FIREWALL_WAN_ZONE" || return 1
+            uci set "firewall.$_rsec.dest_port=$_port" || return 1
+            uci set "firewall.$_rsec.target=REJECT" || return 1
+            firewall_owner_add "$_rsec" || return 1
+            return 0
+        fi
+        return 2
     fi
     if firewall_find_exact_quic "$_port" "$_rsec" >/dev/null 2>&1; then
         return 3
@@ -2607,6 +2621,7 @@ apply_sysctl_bundle() {
 apply_wait_message() {
     _label="$1"
     printf "\n${C_YELLOW}${C_BOLD}⏳ ПОДОЖДИТЕ${C_NC}: %s...\n" "${_label:-Применяю настройки}"
+    printf ""
 }
 _apply_extras_now_impl() {
 
@@ -2708,13 +2723,13 @@ ntp_firewall_rule_owned() {
     firewall_lan_zone_require >/dev/null || return 1
     firewall_section_owned_redirect "$FW_NTP_SECTION" "$FIREWALL_LAN_ZONE" udp 123 "$LAN_IP" 123 DNAT
 }
+ntp_firewall_rule_exact_external() {
+    firewall_find_exact_redirect "$FIREWALL_LAN_ZONE" udp 123 "$LAN_IP" 123 DNAT "$FW_NTP_SECTION" >/dev/null 2>&1
+}
 apply_ntp_clients() {
     [ "${NTP_CLIENTS:-0}" = 1 ] || return 0
     firewall_lan_zone_require >/dev/null || return 1
-    sec="$(get_dnsmasq_section)" || return 1
-    [ -n "$sec" ] || return 1
-
-    # Keep the existing snapshot format for compatibility.
+    sec="$(get_dnsmasq_section)"; [ -n "$sec" ] || return 1
     if [ ! -s "$NTP_CLIENTS_BEFORE" ]; then
         {
             printf 'state_version|2\n'
@@ -2726,7 +2741,7 @@ apply_ntp_clients() {
                 printf 'dhcp_added|1\n'
                 printf 'dhcp_added_option|42,%s\n' "$LAN_IP"
             fi
-            if ntp_firewall_rule_owned; then
+            if ntp_firewall_rule_owned && firewall_owner_has "$FW_NTP_SECTION"; then
                 printf 'fw_manager_owned|1\n'
             else
                 printf 'fw_manager_owned|0\n'
@@ -2735,16 +2750,12 @@ apply_ntp_clients() {
     fi
 
     _opt="42,$LAN_IP"
-    exact_list_has "dhcp.$sec.dhcp_option" "$_opt" || \
-        uci add_list "dhcp.$sec.dhcp_option=$_opt" || return 1
+    exact_list_has "dhcp.$sec.dhcp_option" "$_opt" ||         uci add_list "dhcp.$sec.dhcp_option=$_opt" || return 1
 
-    # The fixed manager section is treated as legacy manager state when its
-    # functional signature already matches, even if runtime ownership metadata
-    # was lost after reboot. If the section is different, only an explicit
-    # forced apply may normalize it.
     if uci -q get "firewall.$FW_NTP_SECTION" >/dev/null 2>&1; then
         if ntp_firewall_rule_owned; then
-            :
+            uci -q set "firewall.$FW_NTP_SECTION.dest=$FIREWALL_LAN_ZONE" || return 1
+            firewall_owner_add "$FW_NTP_SECTION" >/dev/null 2>&1 || true
         elif [ "${FORCE_APPLY_SETTINGS:-0}" = 1 ]; then
             uci set "firewall.$FW_NTP_SECTION=redirect" || return 1
             uci set "firewall.$FW_NTP_SECTION.name=DNS Manager: NTP клиентов в роутер" || return 1
@@ -2755,10 +2766,11 @@ apply_ntp_clients() {
             uci set "firewall.$FW_NTP_SECTION.dest_ip=$LAN_IP" || return 1
             uci set "firewall.$FW_NTP_SECTION.dest_port=123" || return 1
             uci set "firewall.$FW_NTP_SECTION.target=DNAT" || return 1
+            firewall_owner_add "$FW_NTP_SECTION" || return 1
         else
             return 2
         fi
-    elif firewall_find_exact_redirect "$FIREWALL_LAN_ZONE" udp 123 "$LAN_IP" 123 DNAT "$FW_NTP_SECTION" >/dev/null 2>&1; then
+    elif ntp_firewall_rule_exact_external; then
         :
     else
         uci set "firewall.$FW_NTP_SECTION=redirect" || return 1
@@ -2770,33 +2782,11 @@ apply_ntp_clients() {
         uci set "firewall.$FW_NTP_SECTION.dest_ip=$LAN_IP" || return 1
         uci set "firewall.$FW_NTP_SECTION.dest_port=123" || return 1
         uci set "firewall.$FW_NTP_SECTION.target=DNAT" || return 1
+        firewall_owner_add "$FW_NTP_SECTION" || return 1
     fi
 
     uci commit dhcp || return 1
     uci commit firewall || return 1
-}
-
-remove_ntp_clients() {
-    _sec="$(sed -n 's/^section|//p' "$NTP_CLIENTS_BEFORE" 2>/dev/null | head -n1)"
-    [ -n "$_sec" ] || _sec="$(get_dnsmasq_section)"
-    if [ -s "$NTP_CLIENTS_BEFORE" ] && [ "$(sed -n 's/^state_version|//p' "$NTP_CLIENTS_BEFORE" 2>/dev/null | head -n1)" = 2 ]; then
-        if [ "$(sed -n 's/^dhcp_added|//p' "$NTP_CLIENTS_BEFORE" 2>/dev/null | head -n1)" = 1 ]; then
-            _added_opt="$(sed -n 's/^dhcp_added_option|//p' "$NTP_CLIENTS_BEFORE" 2>/dev/null | head -n1)"
-            [ -n "$_added_opt" ] || _added_opt="42,$LAN_IP"
-            uci -q del_list "dhcp.$_sec.dhcp_option=$_added_opt"
-        fi
-    elif [ -s "$NTP_CLIENTS_BEFORE" ]; then
-        warn_msg "Старый снимок NTP-клиентов: исходный dhcp_option целиком не восстанавливается, чтобы не затереть изменения других служб."
-    else
-        warn_msg "NTP-клиенты: нет снимка, подтверждающего владение DHCP-опцией 42. Внешнее значение сохранено."
-    fi
-    if ntp_firewall_rule_owned && firewall_owner_has "$FW_NTP_SECTION"; then
-        uci -q delete "firewall.$FW_NTP_SECTION"
-    fi
-    rm -f "$NTP_CLIENTS_BEFORE"
-    uci commit dhcp >/dev/null 2>&1 || return 1
-    uci commit firewall >/dev/null 2>&1 || return 1
-    return 0
 }
 apply_dnsmasq_perf() {
     [ "${DNSMASQ_PERF:-0}" = 1 ] || return 0
@@ -2868,13 +2858,8 @@ EOF_CLIENT_FIXES_BODY
 client_fixes_file_state() {
     _f="$1"
     [ -f "$_f" ] || { printf '0'; return 0; }
-    _first="$(sed -n '1p' "$_f" 2>/dev/null)"
-    _actual="$(sed '1{/^# DNS_MANAGER_MANAGED_CLIENT_FIXES=1$/d;}; /^[[:space:]]*$/d' "$_f" 2>/dev/null)"
-    if [ "$_first" = "$CLIENT_FIXES_MARKER" ]; then
-        [ "$_actual" = "$(client_fixes_expected_body)" ] && printf '1' || printf '2'
-    else
-        printf '3'
-    fi
+    _actual="$(sed         -e '1{/^# DNS_MANAGER_MANAGED_CLIENT_FIXES=1$/d;}'         -e '1{/^# DNS_MANAGER_CLIENT_FIXES=1$/d;}'         -e '/^[[:space:]]*$/d' "$_f" 2>/dev/null)"
+    [ "$_actual" = "$(client_fixes_expected_body)" ] && printf '1' || printf '2'
 }
 client_fixes_file_owned() {
     [ "$(client_fixes_file_state "$1")" = 1 ]
@@ -3034,7 +3019,6 @@ apply_dns_force() {
     [ "${FORCE_DOH:-0}" = 1 ] || return 0
     firewall_lan_zone_require >/dev/null || return 1
     firewall_wan_zone_require >/dev/null || return 1
-
     if [ ! -s "$FORCE_DNS_BEFORE" ]; then
         {
             printf 'force_dns|%s\n' "$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null)"
@@ -3050,6 +3034,7 @@ apply_dns_force() {
     if uci -q get "firewall.$FW_DNS_REDIRECT_SECTION" >/dev/null 2>&1; then
         if firewall_section_owned_redirect "$FW_DNS_REDIRECT_SECTION" "$FIREWALL_LAN_ZONE" 'tcp udp' 53 "$LAN_IP" 53 DNAT; then
             uci -q set "firewall.$FW_DNS_REDIRECT_SECTION.dest=$FIREWALL_LAN_ZONE" || return 1
+            firewall_owner_add "$FW_DNS_REDIRECT_SECTION" >/dev/null 2>&1 || true
         elif [ "${FORCE_APPLY_SETTINGS:-0}" = 1 ]; then
             uci set "firewall.$FW_DNS_REDIRECT_SECTION=redirect" || return 1
             uci set "firewall.$FW_DNS_REDIRECT_SECTION.name=DNS Manager: перенаправление DNS" || return 1
@@ -3060,6 +3045,7 @@ apply_dns_force() {
             uci set "firewall.$FW_DNS_REDIRECT_SECTION.dest_ip=$LAN_IP" || return 1
             uci set "firewall.$FW_DNS_REDIRECT_SECTION.dest_port=53" || return 1
             uci set "firewall.$FW_DNS_REDIRECT_SECTION.target=DNAT" || return 1
+            firewall_owner_add "$FW_DNS_REDIRECT_SECTION" || return 1
         else
             return 2
         fi
@@ -3075,6 +3061,7 @@ apply_dns_force() {
         uci set "firewall.$FW_DNS_REDIRECT_SECTION.dest_ip=$LAN_IP" || return 1
         uci set "firewall.$FW_DNS_REDIRECT_SECTION.dest_port=53" || return 1
         uci set "firewall.$FW_DNS_REDIRECT_SECTION.target=DNAT" || return 1
+        firewall_owner_add "$FW_DNS_REDIRECT_SECTION" || return 1
     fi
 
     if uci -q get "firewall.$FW_DOT_SECTION" >/dev/null 2>&1; then
@@ -3084,7 +3071,7 @@ apply_dns_force() {
            [ "$(uci -q get "firewall.$FW_DOT_SECTION.proto" 2>/dev/null)" = 'tcp udp' ] &&
            [ "$(uci -q get "firewall.$FW_DOT_SECTION.dest_port" 2>/dev/null)" = 853 ] &&
            [ "$(uci -q get "firewall.$FW_DOT_SECTION.target" 2>/dev/null)" = REJECT ]; then
-            :
+            firewall_owner_add "$FW_DOT_SECTION" >/dev/null 2>&1 || true
         elif [ "${FORCE_APPLY_SETTINGS:-0}" = 1 ]; then
             uci set "firewall.$FW_DOT_SECTION=rule" || return 1
             uci set "firewall.$FW_DOT_SECTION.name=DNS Manager: блокировка DoT" || return 1
@@ -3093,6 +3080,7 @@ apply_dns_force() {
             uci set "firewall.$FW_DOT_SECTION.proto=tcp udp" || return 1
             uci set "firewall.$FW_DOT_SECTION.dest_port=853" || return 1
             uci set "firewall.$FW_DOT_SECTION.target=REJECT" || return 1
+            firewall_owner_add "$FW_DOT_SECTION" || return 1
         else
             return 2
         fi
@@ -3106,15 +3094,13 @@ apply_dns_force() {
         uci set "firewall.$FW_DOT_SECTION.proto=tcp udp" || return 1
         uci set "firewall.$FW_DOT_SECTION.dest_port=853" || return 1
         uci set "firewall.$FW_DOT_SECTION.target=REJECT" || return 1
+        firewall_owner_add "$FW_DOT_SECTION" || return 1
     fi
 
-    firewall_owner_add "$FW_DNS_REDIRECT_SECTION" >/dev/null 2>&1 || true
-    firewall_owner_add "$FW_DOT_SECTION" >/dev/null 2>&1 || true
     uci commit https-dns-proxy || return 1
     uci commit firewall || return 1
     return 0
 }
-
 remove_dns_force() {
     firewall_resolve_zones
     if firewall_section_owned_redirect "$FW_DNS_REDIRECT_SECTION" "$FIREWALL_LAN_ZONE" 'tcp udp' 53 "$LAN_IP" 53 DNAT && firewall_owner_has "$FW_DNS_REDIRECT_SECTION"; then
@@ -4842,7 +4828,7 @@ apply_mtu_toggle() {
     return 0
 }
 
-force_dns_dot_matches() {
+firewall_dot_rule_matches() {
     _sec="$1"
     firewall_resolve_zones >/dev/null 2>&1 || true
     [ "$(uci -q get "firewall.$_sec" 2>/dev/null)" = rule ] || return 1
@@ -4853,14 +4839,13 @@ force_dns_dot_matches() {
     [ "$(uci -q get "firewall.$_sec.target" 2>/dev/null)" = REJECT ] || return 1
     return 0
 }
-
 check_module_state() {
     _sec="$(get_dnsmasq_section)"
     firewall_resolve_zones >/dev/null 2>&1 || true
     case "$1" in
         balance)
-            [ "$(uci -q get "dhcp.$_sec.allservers" 2>/dev/null)" = 1 ] &&
-            [ "$(uci -q get "dhcp.$_sec.strictorder" 2>/dev/null)" = 0 ] &&
+            [ "$(uci -q get "dhcp.$_sec.allservers" 2>/dev/null)" = 1 ] || { printf 0; return; }
+            [ "$(uci -q get "dhcp.$_sec.strictorder" 2>/dev/null)" = 0 ] || { printf 0; return; }
             [ "$(uci -q get "dhcp.$_sec.noresolv" 2>/dev/null)" = 1 ] && printf 1 || printf 0
             ;;
         tld)
@@ -4872,6 +4857,7 @@ check_module_state() {
                 _seen=1
                 eval "_tp=\${PORT_${_slot}:-}"
                 [ -n "$_tp" ] || _tp="$(hybrid_desired_port "$_slot")"
+                [ -n "$_tp" ] || { _ok=0; continue; }
                 for _t in /ru /su /xn--p1ai; do
                     printf '%s\n' "$_srv" | grep -qxF "$_t/127.0.0.1#$_tp" || _ok=0
                 done
@@ -4890,19 +4876,18 @@ check_module_state() {
             printf 1
             ;;
         quic)
-            _q80=0; _q443=0; _other=0
-            if firewall_quic_rule_matches "$FW_QUIC80_SECTION" 80 2>/dev/null; then _q80=1
-            elif firewall_find_exact_quic 80 "$FW_QUIC80_SECTION" >/dev/null 2>&1; then _q80=1
-            elif uci -q get "firewall.$FW_QUIC80_SECTION" >/dev/null 2>&1; then _other=1
+            _q80=0; _q443=0
+            firewall_quic_rule_matches "$FW_QUIC80_SECTION" 80 2>/dev/null && _q80=1
+            [ "$_q80" = 1 ] || firewall_find_exact_quic 80 "$FW_QUIC80_SECTION" >/dev/null 2>&1 && _q80=1
+            firewall_quic_rule_matches "$FW_QUIC443_SECTION" 443 2>/dev/null && _q443=1
+            [ "$_q443" = 1 ] || firewall_find_exact_quic 443 "$FW_QUIC443_SECTION" >/dev/null 2>&1 && _q443=1
+            if [ "$_q80" = 1 ] && [ "$_q443" = 1 ]; then
+                printf 1
+            elif [ "$_q80" = 1 ] || [ "$_q443" = 1 ]; then
+                printf 2
+            else
+                printf 0
             fi
-            if firewall_quic_rule_matches "$FW_QUIC443_SECTION" 443 2>/dev/null; then _q443=1
-            elif firewall_find_exact_quic 443 "$FW_QUIC443_SECTION" >/dev/null 2>&1; then _q443=1
-            elif uci -q get "firewall.$FW_QUIC443_SECTION" >/dev/null 2>&1; then _other=1
-            fi
-            [ "$_other" = 1 ] && { printf 2; return; }
-            [ "$_q80" = 1 ] && [ "$_q443" = 1 ] && printf 1 || {
-                [ "$_q80" = 1 ] || [ "$_q443" = 1 ] && printf 2 || printf 0
-            }
             ;;
         mtu)
             _wan_zone="$(firewall_wan_zone 2>/dev/null)" || { printf 0; return; }
@@ -4914,25 +4899,44 @@ check_module_state() {
             _all=1; _any=0
             for _p in "net.ipv4.tcp_fastopen=3" "net.ipv4.tcp_fin_timeout=15" "net.core.somaxconn=1024"; do
                 _k="${_p%%=*}"; _v="${_p#*=}"
-                [ "$(sysctl -n "$_k" 2>/dev/null)" = "$_v" ] || _all=0
-                [ "$(sysctl -n "$_k" 2>/dev/null)" = "$_v" ] && _any=1
+                _cur="$(sysctl -n "$_k" 2>/dev/null)"
+                [ "$_cur" = "$_v" ] && _any=1
+                [ "$_cur" = "$_v" ] || _all=0
                 [ -f "$_base" ] || _all=0
                 [ -f "$_base" ] && grep -qxF "$_p" "$_base" 2>/dev/null || _all=0
             done
+            if [ "${SYSCTL_EXTENDED:-0}" = 1 ]; then
+                _ext="$(sysctl_extended_manager_path)"
+                [ -f "$_ext" ] || _all=0
+                while IFS= read -r _p; do
+                    [ -n "$_p" ] || continue
+                    _k="${_p%%=*}"; _v="${_p#*=}"
+                    _cur="$(sysctl -n "$_k" 2>/dev/null)"
+                    [ "$_cur" = "$_v" ] && _any=1
+                    [ "$_cur" = "$_v" ] || _all=0
+                    [ -f "$_ext" ] && grep -qxF "$_p" "$_ext" 2>/dev/null || _all=0
+                done <<EOF_CHECK_EXT
+$(sysctl_extended_params)
+EOF_CHECK_EXT
+            fi
             [ "$_all" = 1 ] && printf 1 || { [ "$_any" = 1 ] || [ -f "$_base" ] && printf 2 || printf 0; }
             ;;
         force)
             _proxy=0; _dns=0; _dot=0
-            [ "$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null)" = 0 ] && \
-            [ "$(uci -q get https-dns-proxy.config.notrack_dns 2>/dev/null)" = 0 ] && \
+            [ "$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null)" = 0 ] &&
+            [ "$(uci -q get https-dns-proxy.config.notrack_dns 2>/dev/null)" = 0 ] &&
             { [ "$(uci -q get https-dns-proxy.config.dnsmasq_config_update 2>/dev/null)" = - ] ||
               [ -z "$(uci -q get https-dns-proxy.config.dnsmasq_config_update 2>/dev/null)" ]; } && _proxy=1
             firewall_section_owned_redirect "$FW_DNS_REDIRECT_SECTION" "$FIREWALL_LAN_ZONE" 'tcp udp' 53 "$LAN_IP" 53 DNAT 2>/dev/null && _dns=1
             firewall_find_exact_redirect "$FIREWALL_LAN_ZONE" 'tcp udp' 53 "$LAN_IP" 53 DNAT "$FW_DNS_REDIRECT_SECTION" >/dev/null 2>&1 && _dns=1
-            force_dns_dot_matches "$FW_DOT_SECTION" && _dot=1
-            if [ "$_proxy" = 1 ] && [ "$_dns" = 1 ] && [ "$_dot" = 1 ]; then printf 1
-            elif [ "$_proxy" = 1 ] || [ "$_dns" = 1 ] || [ "$_dot" = 1 ]; then printf 2
-            else printf 0
+            firewall_dot_rule_matches "$FW_DOT_SECTION" && _dot=1
+            firewall_find_exact_rule_signature dot "$FW_DOT_SECTION" >/dev/null 2>&1 && _dot=1
+            if [ "$_proxy" = 1 ] && [ "$_dns" = 1 ] && [ "$_dot" = 1 ]; then
+                printf 1
+            elif [ "$_proxy" = 1 ] || [ "$_dns" = 1 ] || [ "$_dot" = 1 ]; then
+                printf 2
+            else
+                printf 0
             fi
             ;;
         ntp_clients)
@@ -4940,16 +4944,20 @@ check_module_state() {
             exact_list_has "dhcp.$_sec.dhcp_option" "$_opt" && _dhcp=1
             ntp_firewall_rule_owned && _fw=1
             ntp_firewall_rule_exact_external && _fw=1
-            if [ "$_dhcp" = 1 ] && [ "$_fw" = 1 ]; then printf 1
-            elif [ "$_dhcp" = 1 ] || [ "$_fw" = 1 ]; then printf 2
-            else printf 0
+            if [ "$_dhcp" = 1 ] && [ "$_fw" = 1 ]; then
+                printf 1
+            elif [ "$_dhcp" = 1 ] || [ "$_fw" = 1 ]; then
+                printf 2
+            else
+                printf 0
             fi
             ;;
         dnsmasq_perf)
             _all=1; _any=0
             for _kv in "cachesize|1000" "dnsforwardmax|300" "max_cache_ttl|86400" "boguspriv|1" "domainneeded|1" "quietdhcp|1"; do
                 _k="${_kv%%|*}"; _v="${_kv#*|}"
-                [ "$(uci -q get "dhcp.$_sec.$_k" 2>/dev/null)" = "$_v" ] && _any=1 || _all=0
+                _cur="$(uci -q get "dhcp.$_sec.$_k" 2>/dev/null)"
+                [ "$_cur" = "$_v" ] && _any=1 || _all=0
             done
             if [ "$IPV6_ROUTE" != yes ]; then
                 [ "$(uci -q get "dhcp.$_sec.filter_aaaa" 2>/dev/null)" = 1 ] || _all=0
@@ -4957,7 +4965,7 @@ check_module_state() {
             [ "$_all" = 1 ] && printf 1 || { [ "$_any" = 1 ] && printf 2 || printf 0; }
             ;;
         client_fixes)
-            _f="/etc/dnsmasq.d/91-dns-manager-client-fixes.conf"
+            _f="${CLIENT_FIXES_FILE:-/etc/dnsmasq.d/91-dns-manager-client-fixes.conf}"
             [ -f "$_f" ] || { printf 0; return; }
             _ok=1
             for _fix in \
@@ -4983,7 +4991,13 @@ check_module_state() {
             ;;
         watchdog)
             _wd_line="*/${WATCHDOG_INTERVAL:-15} * * * * ${MANAGER_PATH} watchdog >> ${LOG_FILE} 2>&1"
-            watchdog_cron_line_exists "$_wd_line" && printf 1 || printf 0
+            if watchdog_cron_line_exists "$_wd_line"; then
+                printf 1
+            elif [ "${WATCHDOG_ENABLED:-0}" = 0 ]; then
+                printf 0
+            else
+                printf 0
+            fi
             ;;
         web)
             web_access_real && printf 1 || printf 0
@@ -5002,7 +5016,7 @@ module_state_word() {
         *) printf "${C_BOLD}${C_RED}✗ ВЫКЛ${C_NC} ${C_CYAN}${C_BOLD}• сток${C_NC}" ;;
     esac
 }
-
+# ==========================================
 web_access_listener_exists() {
     _wp="$1"
     [ -n "$_wp" ] || return 1
@@ -5324,33 +5338,17 @@ setting_process() {
     printf "  Состояние: %s\n" "$(module_state_word "$_module")"
 
     case "$_state" in
-        0)
-            printf "  Действие:  ВКЛЮЧИТЬ\n"
-            ;;
-        1)
-            printf "  Действие:  ВЫКЛЮЧИТЬ\n"
-            ;;
-        2)
-            printf "  Действие:  ИСПРАВИТЬ\n"
-            ;;
-        *)
-            err_msg "Не удалось определить состояние настройки."
-            pause
-            return 1
-            ;;
+        0) printf "  Действие:  ВКЛЮЧИТЬ\n" ;;
+        1) printf "  Действие:  ВЫКЛЮЧИТЬ\n" ;;
+        2) printf "  Действие:  ИСПРАВИТЬ\n" ;;
+        *) err_msg "Не удалось определить состояние настройки."; pause; return 1 ;;
     esac
     [ -n "$_description" ] && printf "  %s\n" "$_description"
 
     case "$_state" in
-        0)
-            confirm_action "Включить «$_title»?" || return 0
-            ;;
-        1)
-            confirm_action "Выключить «$_title» и вернуть стоковое состояние?" || return 0
-            ;;
-        2)
-            confirm_action "Исправить «$_title» и применить целевую настройку DNS Manager?" || return 0
-            ;;
+        0) confirm_action "Включить «$_title»?" || return 0 ;;
+        1) confirm_action "Выключить «$_title» и вернуть стоковое состояние?" || return 0 ;;
+        2) confirm_action "Исправить «$_title» и применить целевую настройку DNS Manager?" || return 0 ;;
     esac
 
     _old_force="$FORCE_APPLY_SETTINGS"
@@ -5361,14 +5359,17 @@ setting_process() {
     esac
 
     case "$_module" in
-        sysctl) _old="$SYSCTL_TUNING"; _old_ext="$SYSCTL_EXTENDED"; SYSCTL_TUNING="$_new"; [ "$_new" = 1 ] && SYSCTL_EXTENDED=1 || SYSCTL_EXTENDED=0 ;;
+        sysctl)
+            _old="$SYSCTL_TUNING"; _old_ext="$SYSCTL_EXTENDED"
+            SYSCTL_TUNING="$_new"
+            [ "$_new" = 1 ] && SYSCTL_EXTENDED=1 || SYSCTL_EXTENDED=0
+            ;;
         quic) _old="$BLOCK_QUIC"; BLOCK_QUIC="$_new" ;;
         mtu) _old="$MTU_FIX"; MTU_FIX="$_new" ;;
         force) _old="$FORCE_DOH"; FORCE_DOH="$_new" ;;
         dnsmasq_perf) _old="$DNSMASQ_PERF"; DNSMASQ_PERF="$_new" ;;
         ntp_clients) _old="$NTP_CLIENTS"; NTP_CLIENTS="$_new" ;;
         client_fixes) _old="$CLIENT_FIXES"; CLIENT_FIXES="$_new" ;;
-        *) _old_force="$FORCE_APPLY_SETTINGS"; FORCE_APPLY_SETTINGS="$_old_force" ;;
     esac
 
     case "$_module" in
@@ -5417,9 +5418,13 @@ setting_process() {
             0:dnsmasq_perf|2:dnsmasq_perf) ok_msg "DNS-кэш настроен." ;;
             1:dnsmasq_perf) ok_msg "DNS-кэш возвращён к стоку." ;;
             0:ntp_clients|2:ntp_clients) ok_msg "NTP для устройств настроен." ;;
-            1:ntp_clients) ok_msg "NTP для устройств выключен." ;;
+            1:ntp_clients) ok_msg "NTP для устройств выключен, стоковое состояние восстановлено." ;;
             0:client_fixes|2:client_fixes) ok_msg "Исправления телеметрии и связи настроены." ;;
             1:client_fixes) ok_msg "Исправления телеметрии и связи выключены." ;;
+            0:watchdog|2:watchdog) ok_msg "Автопроверка DNS включена." ;;
+            1:watchdog) ok_msg "Автопроверка DNS выключена." ;;
+            0:web|2:web) ok_msg "Web-доступ включён." ;;
+            1:web) ok_msg "Web-доступ выключен." ;;
         esac
     else
         case "$_module" in
@@ -5464,15 +5469,15 @@ while :; do
         4) setting_process sysctl "Оптимизация TCP и Conntrack" "Применяются параметры TCP и Conntrack." ;;
         5) setting_process dnsmasq_perf "Кэширование DNS-запросов" "Применяются параметры DNS-кэша dnsmasq." ;;
         6) setting_process ntp_clients "Время для устройств сети" "DHCP выдаёт адрес роутера как NTP-сервер, LAN UDP/123 направляется на роутер." ;;
-        7) setting_process client_fixes "Исправления телеметрии и связи" "Применяется целевой набор DNS-правил." ;;
-        8) setting_process watchdog "Автоматическая проверка DNS" "Автопроверка DNS выполняется через cron." ;;
-        9) setting_process web "Доступ из браузера" "Используется отдельный web-доступ DNS Manager на порту 7682." ;;
-        10|'') return ;;
+        7) setting_process client_fixes "Исправления телеметрии и связи" "Добавляются DNS-правила для телеметрии и проверок подключения некоторых устройств." ;;
+        8) setting_process watchdog "Автоматическая проверка DNS" "Watchdog запускает проверку DNS по расписанию." ;;
+        9) setting_process web "Доступ из браузера" "DNS Manager доступен в LAN через web-интерфейс." ;;
+        '') return ;;
         *) warn_msg "Неизвестный пункт."; pause ;;
     esac
 done
 }
-
+# ==========================================
 ensure_dependencies(){
 missing=""
 command -v curl >/dev/null 2>&1 || missing="$missing curl"
