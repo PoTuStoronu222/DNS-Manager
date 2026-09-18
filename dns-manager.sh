@@ -2,7 +2,7 @@
 MANAGER_PATH="/usr/bin/dns-manager"
 # ==========================================
 # ==========================================
-VERSION="2.36"
+VERSION="2.38"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -65,6 +65,8 @@ FW_DOT_SECTION="dns_manager_dot_block"
 FW_WEB_SECTION="dns_manager_web_ttyd"
 FW_QUIC80_SECTION="dns_manager_quic_udp_80"
 FW_QUIC443_SECTION="dns_manager_quic_udp_443"
+FIREWALL_LAN_ZONE=""
+FIREWALL_WAN_ZONE=""
 WATCHDOG_CRON_STATE="$STATE_DIR/watchdog-cron.state"
 WATCHDOG_CRON_MARKER="# DNS_MANAGER_MANAGED_WATCHDOG=1"
 LUCI_CONTROLLER="/usr/lib/lua/luci/controller/dns_manager.lua"
@@ -915,6 +917,45 @@ mv "$_cfg_tmp" "$CONFIG_FILE" || { rm -f "$_cfg_tmp"; return 1; }
 }
 # ==========================================
 # ==========================================
+firewall_resolve_zones() {
+    FIREWALL_LAN_ZONE=""
+    FIREWALL_WAN_ZONE=""
+    _lan_zone=""
+    _wan_zone=""
+    _lan_count=0
+    _wan_count=0
+    _zones="$(uci show firewall 2>/dev/null | sed -n 's/^firewall\.\([^.=]*\)=zone$/\1/p')"
+    for _z in $_zones; do
+        _nets="$(uci -q get "firewall.$_z.network" 2>/dev/null)"
+        printf '%s\n' "$_nets" | tr ' ' '\n' | grep -qxF lan 2>/dev/null && {
+            _lan_zone="$_z"
+            _lan_count=$((_lan_count+1))
+        }
+        printf '%s\n' "$_nets" | tr ' ' '\n' | grep -qxF wan 2>/dev/null && {
+            _wan_zone="$_z"
+            _wan_count=$((_wan_count+1))
+        }
+    done
+    [ "$_lan_count" -eq 1 ] && FIREWALL_LAN_ZONE="$_lan_zone"
+    [ "$_wan_count" -eq 1 ] && FIREWALL_WAN_ZONE="$_wan_zone"
+    return 0
+}
+firewall_lan_zone_require() {
+    firewall_resolve_zones
+    [ -n "$FIREWALL_LAN_ZONE" ] || {
+        err_msg "Не удалось однозначно определить firewall-зону LAN. Настройка LAN-зависимого модуля не применена."
+        return 1
+    }
+    printf '%s\n' "$FIREWALL_LAN_ZONE"
+}
+firewall_wan_zone_require() {
+    firewall_resolve_zones
+    [ -n "$FIREWALL_WAN_ZONE" ] || {
+        err_msg "Не удалось однозначно определить firewall-зону WAN. Настройка WAN-зависимого модуля не применена."
+        return 1
+    }
+    printf '%s\n' "$FIREWALL_WAN_ZONE"
+}
 detect_firewall_backend() {
     SYS_FW="unknown"
     FIREWALL_BACKEND="unknown"
@@ -1310,6 +1351,7 @@ disc_network
 disc_listeners
 disc_dns
 disc_clients
+firewall_resolve_zones
 disc_firewall
 firewall_migrate_legacy_owned >/dev/null 2>&1 || true
 log_tx "DISCOVER" "router" "READ" "OK" "OpenWrt=$SYS_OWRT;fw=$SYS_FW;fw_source=$FIREWALL_DETECT_SOURCE;dns=$DNSMASQ_RUN;doh=$DOH_TOTAL"
@@ -2206,8 +2248,8 @@ reconcile_dnsmasq() {
 firewall_quic_rule_matches() {
     _rsec="$1"; _port="$2"
     [ "$(uci -q get "firewall.$_rsec" 2>/dev/null)" = rule ] || return 1
-    [ "$(uci -q get "firewall.$_rsec.src" 2>/dev/null)" = lan ] || return 1
-    [ "$(uci -q get "firewall.$_rsec.dest" 2>/dev/null)" = wan ] || return 1
+    [ "$(uci -q get "firewall.$_rsec.src" 2>/dev/null)" = "$FIREWALL_LAN_ZONE" ] || return 1
+    [ "$(uci -q get "firewall.$_rsec.dest" 2>/dev/null)" = "$FIREWALL_WAN_ZONE" ] || return 1
     [ "$(uci -q get "firewall.$_rsec.proto" 2>/dev/null)" = udp ] || return 1
     [ "$(uci -q get "firewall.$_rsec.dest_port" 2>/dev/null)" = "$_port" ] || return 1
     [ "$(uci -q get "firewall.$_rsec.target" 2>/dev/null)" = REJECT ] || return 1
@@ -2241,19 +2283,19 @@ firewall_ownership_sync() {
     while IFS= read -r _sec; do
         [ -n "$_sec" ] || continue
         case "$_sec" in
-            "$FW_NTP_SECTION") firewall_section_owned_redirect "$FW_NTP_SECTION" lan udp 123 "$LAN_IP" 123 DNAT && printf '%s\n' "$_sec" >> "$_tmp";;
-            "$FW_DNS_REDIRECT_SECTION") firewall_section_owned_redirect "$FW_DNS_REDIRECT_SECTION" lan 'tcp udp' 53 "$LAN_IP" 53 DNAT && printf '%s\n' "$_sec" >> "$_tmp";;
+            "$FW_NTP_SECTION") firewall_section_owned_redirect "$FW_NTP_SECTION" "$FIREWALL_LAN_ZONE" udp 123 "$LAN_IP" 123 DNAT && printf '%s\n' "$_sec" >> "$_tmp";;
+            "$FW_DNS_REDIRECT_SECTION") firewall_section_owned_redirect "$FW_DNS_REDIRECT_SECTION" "$FIREWALL_LAN_ZONE" 'tcp udp' 53 "$LAN_IP" 53 DNAT && printf '%s\n' "$_sec" >> "$_tmp";;
             "$FW_DOT_SECTION")
                 [ "$(uci -q get "firewall.$FW_DOT_SECTION" 2>/dev/null)" = rule ] || continue
-                [ "$(uci -q get "firewall.$FW_DOT_SECTION.src" 2>/dev/null)" = lan ] || continue
-                [ "$(uci -q get "firewall.$FW_DOT_SECTION.dest" 2>/dev/null)" = wan ] || continue
+                [ "$(uci -q get "firewall.$FW_DOT_SECTION.src" 2>/dev/null)" = "$FIREWALL_LAN_ZONE" ] || continue
+                [ "$(uci -q get "firewall.$FW_DOT_SECTION.dest" 2>/dev/null)" = "$FIREWALL_WAN_ZONE" ] || continue
                 [ "$(uci -q get "firewall.$FW_DOT_SECTION.proto" 2>/dev/null)" = 'tcp udp' ] || continue
                 [ "$(uci -q get "firewall.$FW_DOT_SECTION.dest_port" 2>/dev/null)" = 853 ] || continue
                 [ "$(uci -q get "firewall.$FW_DOT_SECTION.target" 2>/dev/null)" = REJECT ] || continue
                 printf '%s\n' "$_sec" >> "$_tmp";;
             "$FW_WEB_SECTION")
                 [ "$(uci -q get "firewall.$FW_WEB_SECTION" 2>/dev/null)" = rule ] || continue
-                [ "$(uci -q get "firewall.$FW_WEB_SECTION.src" 2>/dev/null)" = lan ] || continue
+                [ "$(uci -q get "firewall.$FW_WEB_SECTION.src" 2>/dev/null)" = "$FIREWALL_LAN_ZONE" ] || continue
                 [ "$(uci -q get "firewall.$FW_WEB_SECTION.proto" 2>/dev/null)" = tcp ] || continue
                 [ "$(uci -q get "firewall.$FW_WEB_SECTION.dest_port" 2>/dev/null)" = "$WEB_ACCESS_PORT" ] || continue
                 [ "$(uci -q get "firewall.$FW_WEB_SECTION.target" 2>/dev/null)" = ACCEPT ] || continue
@@ -2269,12 +2311,12 @@ firewall_migrate_legacy_owned() {
     mkdir -p "$CFG_DIR" 2>/dev/null || return 0
     # Previous DNS Manager versions used reserved section IDs without an ownership registry.
     # Migrate only when the full rule signature matches the known manager rule.
-    firewall_section_owned_redirect "$FW_NTP_SECTION" lan udp 123 "$LAN_IP" 123 DNAT && firewall_owner_add "$FW_NTP_SECTION"
-    firewall_section_owned_redirect "$FW_DNS_REDIRECT_SECTION" lan 'tcp udp' 53 "$LAN_IP" 53 DNAT && firewall_owner_add "$FW_DNS_REDIRECT_SECTION"
+    firewall_section_owned_redirect "$FW_NTP_SECTION" "$FIREWALL_LAN_ZONE" udp 123 "$LAN_IP" 123 DNAT && firewall_owner_add "$FW_NTP_SECTION"
+    firewall_section_owned_redirect "$FW_DNS_REDIRECT_SECTION" "$FIREWALL_LAN_ZONE" 'tcp udp' 53 "$LAN_IP" 53 DNAT && firewall_owner_add "$FW_DNS_REDIRECT_SECTION"
     firewall_quic_rule_matches "$FW_QUIC80_SECTION" 80 && firewall_owner_add "$FW_QUIC80_SECTION"
     firewall_quic_rule_matches "$FW_QUIC443_SECTION" 443 && firewall_owner_add "$FW_QUIC443_SECTION"
-    if [ "$(uci -q get "firewall.$FW_DOT_SECTION" 2>/dev/null)" = rule ] && [ "$(uci -q get "firewall.$FW_DOT_SECTION.src" 2>/dev/null)" = lan ] && [ "$(uci -q get "firewall.$FW_DOT_SECTION.dest" 2>/dev/null)" = wan ] && [ "$(uci -q get "firewall.$FW_DOT_SECTION.proto" 2>/dev/null)" = 'tcp udp' ] && [ "$(uci -q get "firewall.$FW_DOT_SECTION.dest_port" 2>/dev/null)" = 853 ] && [ "$(uci -q get "firewall.$FW_DOT_SECTION.target" 2>/dev/null)" = REJECT ]; then firewall_owner_add "$FW_DOT_SECTION"; fi
-    if [ "$(uci -q get "firewall.$FW_WEB_SECTION" 2>/dev/null)" = rule ] && [ "$(uci -q get "firewall.$FW_WEB_SECTION.src" 2>/dev/null)" = lan ] && [ "$(uci -q get "firewall.$FW_WEB_SECTION.proto" 2>/dev/null)" = tcp ] && [ "$(uci -q get "firewall.$FW_WEB_SECTION.dest_port" 2>/dev/null)" = "$WEB_ACCESS_PORT" ] && [ "$(uci -q get "firewall.$FW_WEB_SECTION.target" 2>/dev/null)" = ACCEPT ]; then firewall_owner_add "$FW_WEB_SECTION"; fi
+    if [ "$(uci -q get "firewall.$FW_DOT_SECTION" 2>/dev/null)" = rule ] && [ "$(uci -q get "firewall.$FW_DOT_SECTION.src" 2>/dev/null)" = "$FIREWALL_LAN_ZONE" ] && [ "$(uci -q get "firewall.$FW_DOT_SECTION.dest" 2>/dev/null)" = "$FIREWALL_WAN_ZONE" ] && [ "$(uci -q get "firewall.$FW_DOT_SECTION.proto" 2>/dev/null)" = 'tcp udp' ] && [ "$(uci -q get "firewall.$FW_DOT_SECTION.dest_port" 2>/dev/null)" = 853 ] && [ "$(uci -q get "firewall.$FW_DOT_SECTION.target" 2>/dev/null)" = REJECT ]; then firewall_owner_add "$FW_DOT_SECTION"; fi
+    if [ "$(uci -q get "firewall.$FW_WEB_SECTION" 2>/dev/null)" = rule ] && [ "$(uci -q get "firewall.$FW_WEB_SECTION.src" 2>/dev/null)" = "$FIREWALL_LAN_ZONE" ] && [ "$(uci -q get "firewall.$FW_WEB_SECTION.proto" 2>/dev/null)" = tcp ] && [ "$(uci -q get "firewall.$FW_WEB_SECTION.dest_port" 2>/dev/null)" = "$WEB_ACCESS_PORT" ] && [ "$(uci -q get "firewall.$FW_WEB_SECTION.target" 2>/dev/null)" = ACCEPT ]; then firewall_owner_add "$FW_WEB_SECTION"; fi
     firewall_ownership_sync
     return 0
 }
@@ -2297,14 +2339,14 @@ firewall_find_exact_rule_signature() {
         [ "$_sec" = "$_skip" ] && continue
         case "$_type" in
             dot)
-                [ "$(uci -q get "firewall.$_sec.src" 2>/dev/null)" = lan ] || continue
-                [ "$(uci -q get "firewall.$_sec.dest" 2>/dev/null)" = wan ] || continue
+                [ "$(uci -q get "firewall.$_sec.src" 2>/dev/null)" = "$FIREWALL_LAN_ZONE" ] || continue
+                [ "$(uci -q get "firewall.$_sec.dest" 2>/dev/null)" = "$FIREWALL_WAN_ZONE" ] || continue
                 [ "$(uci -q get "firewall.$_sec.proto" 2>/dev/null)" = 'tcp udp' ] || continue
                 [ "$(uci -q get "firewall.$_sec.dest_port" 2>/dev/null)" = 853 ] || continue
                 [ "$(uci -q get "firewall.$_sec.target" 2>/dev/null)" = REJECT ] || continue
                 ;;
             web)
-                [ "$(uci -q get "firewall.$_sec.src" 2>/dev/null)" = lan ] || continue
+                [ "$(uci -q get "firewall.$_sec.src" 2>/dev/null)" = "$FIREWALL_LAN_ZONE" ] || continue
                 [ "$(uci -q get "firewall.$_sec.proto" 2>/dev/null)" = tcp ] || continue
                 [ "$(uci -q get "firewall.$_sec.dest_port" 2>/dev/null)" = "$_port" ] || continue
                 [ "$(uci -q get "firewall.$_sec.target" 2>/dev/null)" = ACCEPT ] || continue
@@ -2347,8 +2389,8 @@ quic_ensure_rule() {
     uci set "firewall.$_rsec=rule" || return 1
     uci set "firewall.$_rsec.name=$_label" || return 1
     uci set "firewall.$_rsec.proto=udp" || return 1
-    uci set "firewall.$_rsec.src=lan" || return 1
-    uci set "firewall.$_rsec.dest=wan" || return 1
+    uci set "firewall.$_rsec.src=$FIREWALL_LAN_ZONE" || return 1
+    uci set "firewall.$_rsec.dest=$FIREWALL_WAN_ZONE" || return 1
     uci set "firewall.$_rsec.dest_port=$_port" || return 1
     uci set "firewall.$_rsec.target=REJECT" || return 1
     firewall_owner_add "$_rsec" || return 1
@@ -2356,6 +2398,8 @@ quic_ensure_rule() {
 }
 apply_quic() {
     [ "$BLOCK_QUIC" = 1 ] || return 0
+    firewall_lan_zone_require >/dev/null || return 1
+    firewall_wan_zone_require >/dev/null || return 1
     quic_remove_managed_rules || return 1
     quic_ensure_rule "$FW_QUIC80_SECTION" 80 'DNS Manager: Block UDP 80'
     _rc=$?
@@ -2649,10 +2693,12 @@ apply_extras_now() {
 # ==========================================
 # ==========================================
 ntp_firewall_rule_owned() {
-    firewall_section_owned_redirect "$FW_NTP_SECTION" lan udp 123 "$LAN_IP" 123 DNAT
+    firewall_lan_zone_require >/dev/null || return 1
+    firewall_section_owned_redirect "$FW_NTP_SECTION" "$FIREWALL_LAN_ZONE" udp 123 "$LAN_IP" 123 DNAT
 }
 apply_ntp_clients() {
     [ "${NTP_CLIENTS:-0}" = 1 ] || return 0
+    firewall_lan_zone_require >/dev/null || return 1
     sec="$(get_dnsmasq_section)"; [ -n "$sec" ] || return 1
     if [ ! -s "$NTP_CLIENTS_BEFORE" ]; then
         {
@@ -2670,7 +2716,7 @@ apply_ntp_clients() {
     fi
     _opt="42,$LAN_IP"
     exact_list_has "dhcp.$sec.dhcp_option" "$_opt" || uci add_list "dhcp.$sec.dhcp_option=$_opt" || return 1
-    _external="$(firewall_find_exact_redirect lan udp 123 "$LAN_IP" 123 DNAT "$FW_NTP_SECTION" 2>/dev/null)"
+    _external="$(firewall_find_exact_redirect "$FIREWALL_LAN_ZONE" udp 123 "$LAN_IP" 123 DNAT "$FW_NTP_SECTION" 2>/dev/null)"
     if ntp_firewall_rule_owned && firewall_owner_has "$FW_NTP_SECTION"; then
         if [ -n "$_external" ]; then
             uci -q delete "firewall.$FW_NTP_SECTION" || return 1
@@ -2683,7 +2729,7 @@ apply_ntp_clients() {
     else
         uci set "firewall.$FW_NTP_SECTION=redirect" || return 1
         uci set "firewall.$FW_NTP_SECTION.name=DNS Manager: NTP клиентов в роутер" || return 1
-        uci set "firewall.$FW_NTP_SECTION.src=lan" || return 1
+        uci set "firewall.$FW_NTP_SECTION.src=$FIREWALL_LAN_ZONE" || return 1
         uci set "firewall.$FW_NTP_SECTION.proto=udp" || return 1
         uci set "firewall.$FW_NTP_SECTION.src_dport=123" || return 1
         uci set "firewall.$FW_NTP_SECTION.dest_ip=$LAN_IP" || return 1
@@ -2950,6 +2996,8 @@ remove_sysctl_extended() {
 }
 apply_dns_force() {
     [ "${FORCE_DOH:-0}" = 1 ] || return 0
+    firewall_lan_zone_require >/dev/null || return 1
+    firewall_wan_zone_require >/dev/null || return 1
     if [ ! -s "$FORCE_DNS_BEFORE" ]; then
         {
             printf 'force_dns|%s\n' "$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null)"
@@ -2960,8 +3008,8 @@ apply_dns_force() {
     uci set https-dns-proxy.config.force_dns=0 || return 1
     uci set https-dns-proxy.config.notrack_dns=0 || return 1
     uci set https-dns-proxy.config.dnsmasq_config_update=- || return 1
-    _external_dns_redirect="$(firewall_find_exact_redirect lan 'tcp udp' 53 "$LAN_IP" 53 DNAT "$FW_DNS_REDIRECT_SECTION" 2>/dev/null)"
-    if firewall_section_owned_redirect "$FW_DNS_REDIRECT_SECTION" lan 'tcp udp' 53 "$LAN_IP" 53 DNAT && firewall_owner_has "$FW_DNS_REDIRECT_SECTION"; then
+    _external_dns_redirect="$(firewall_find_exact_redirect "$FIREWALL_LAN_ZONE" 'tcp udp' 53 "$LAN_IP" 53 DNAT "$FW_DNS_REDIRECT_SECTION" 2>/dev/null)"
+    if firewall_section_owned_redirect "$FW_DNS_REDIRECT_SECTION" "$FIREWALL_LAN_ZONE" 'tcp udp' 53 "$LAN_IP" 53 DNAT && firewall_owner_has "$FW_DNS_REDIRECT_SECTION"; then
         if [ -n "$_external_dns_redirect" ]; then
             uci -q delete "firewall.$FW_DNS_REDIRECT_SECTION" || return 1
             firewall_owner_remove "$FW_DNS_REDIRECT_SECTION" || return 1
@@ -2974,7 +3022,7 @@ apply_dns_force() {
         fi
         uci set "firewall.$FW_DNS_REDIRECT_SECTION=redirect" || return 1
         uci set "firewall.$FW_DNS_REDIRECT_SECTION.name=DNS Manager: перенаправление DNS" || return 1
-        uci set "firewall.$FW_DNS_REDIRECT_SECTION.src=lan" || return 1
+        uci set "firewall.$FW_DNS_REDIRECT_SECTION.src=$FIREWALL_LAN_ZONE" || return 1
         uci set "firewall.$FW_DNS_REDIRECT_SECTION.proto=tcp udp" || return 1
         uci set "firewall.$FW_DNS_REDIRECT_SECTION.src_dport=53" || return 1
         uci set "firewall.$FW_DNS_REDIRECT_SECTION.dest_ip=$LAN_IP" || return 1
@@ -2985,8 +3033,8 @@ apply_dns_force() {
     _external_dot="$(firewall_find_exact_rule_signature dot "$FW_DOT_SECTION" 2>/dev/null)"
     if uci -q get "firewall.$FW_DOT_SECTION" >/dev/null 2>&1; then
         firewall_owner_has "$FW_DOT_SECTION" || return 2
-        [ "$(uci -q get "firewall.$FW_DOT_SECTION.src" 2>/dev/null)" = lan ] || return 1
-        [ "$(uci -q get "firewall.$FW_DOT_SECTION.dest" 2>/dev/null)" = wan ] || return 1
+        [ "$(uci -q get "firewall.$FW_DOT_SECTION.src" 2>/dev/null)" = "$FIREWALL_LAN_ZONE" ] || return 1
+        [ "$(uci -q get "firewall.$FW_DOT_SECTION.dest" 2>/dev/null)" = "$FIREWALL_WAN_ZONE" ] || return 1
         [ "$(uci -q get "firewall.$FW_DOT_SECTION.proto" 2>/dev/null)" = 'tcp udp' ] || return 1
         [ "$(uci -q get "firewall.$FW_DOT_SECTION.dest_port" 2>/dev/null)" = 853 ] || return 1
         [ "$(uci -q get "firewall.$FW_DOT_SECTION.target" 2>/dev/null)" = REJECT ] || return 1
@@ -2999,8 +3047,8 @@ apply_dns_force() {
     else
         uci set "firewall.$FW_DOT_SECTION=rule" || return 1
         uci set "firewall.$FW_DOT_SECTION.name=DNS Manager: блокировка DoT" || return 1
-        uci set "firewall.$FW_DOT_SECTION.src=lan" || return 1
-        uci set "firewall.$FW_DOT_SECTION.dest=wan" || return 1
+        uci set "firewall.$FW_DOT_SECTION.src=$FIREWALL_LAN_ZONE" || return 1
+        uci set "firewall.$FW_DOT_SECTION.dest=$FIREWALL_WAN_ZONE" || return 1
         uci set "firewall.$FW_DOT_SECTION.proto=tcp udp" || return 1
         uci set "firewall.$FW_DOT_SECTION.dest_port=853" || return 1
         uci set "firewall.$FW_DOT_SECTION.target=REJECT" || return 1
@@ -3011,12 +3059,13 @@ apply_dns_force() {
     return 0
 }
 remove_dns_force() {
-    if firewall_section_owned_redirect "$FW_DNS_REDIRECT_SECTION" lan 'tcp udp' 53 "$LAN_IP" 53 DNAT && firewall_owner_has "$FW_DNS_REDIRECT_SECTION"; then
+    firewall_resolve_zones
+    if firewall_section_owned_redirect "$FW_DNS_REDIRECT_SECTION" "$FIREWALL_LAN_ZONE" 'tcp udp' 53 "$LAN_IP" 53 DNAT && firewall_owner_has "$FW_DNS_REDIRECT_SECTION"; then
         uci -q delete "firewall.$FW_DNS_REDIRECT_SECTION"
         firewall_owner_remove "$FW_DNS_REDIRECT_SECTION"
     fi
     if uci -q get "firewall.$FW_DOT_SECTION" >/dev/null 2>&1; then
-        if firewall_owner_has "$FW_DOT_SECTION" && [ "$(uci -q get "firewall.$FW_DOT_SECTION.src" 2>/dev/null)" = lan ] && [ "$(uci -q get "firewall.$FW_DOT_SECTION.dest" 2>/dev/null)" = wan ] && [ "$(uci -q get "firewall.$FW_DOT_SECTION.proto" 2>/dev/null)" = 'tcp udp' ] && [ "$(uci -q get "firewall.$FW_DOT_SECTION.dest_port" 2>/dev/null)" = 853 ] && [ "$(uci -q get "firewall.$FW_DOT_SECTION.target" 2>/dev/null)" = REJECT ]; then
+        if firewall_owner_has "$FW_DOT_SECTION" && [ "$(uci -q get "firewall.$FW_DOT_SECTION.src" 2>/dev/null)" = "$FIREWALL_LAN_ZONE" ] && [ "$(uci -q get "firewall.$FW_DOT_SECTION.dest" 2>/dev/null)" = "$FIREWALL_WAN_ZONE" ] && [ "$(uci -q get "firewall.$FW_DOT_SECTION.proto" 2>/dev/null)" = 'tcp udp' ] && [ "$(uci -q get "firewall.$FW_DOT_SECTION.dest_port" 2>/dev/null)" = 853 ] && [ "$(uci -q get "firewall.$FW_DOT_SECTION.target" 2>/dev/null)" = REJECT ]; then
             uci -q delete "firewall.$FW_DOT_SECTION"
             firewall_owner_remove "$FW_DOT_SECTION"
         fi
@@ -4048,7 +4097,7 @@ _apply_settings_impl() {
 }
 firewall_backend_require() {
     case "$SYS_FW" in
-        fw4|fw3) return 0 ;;
+        fw4|fw3) firewall_resolve_zones; return 0 ;;
     esac
     err_msg "Не удалось однозначно определить активный firewall backend (fw4/fw3). Firewall-зависимые изменения не применяются."
     return 1
@@ -4689,46 +4738,7 @@ apply_quic_toggle() {
     return 0
 }
 firewall_wan_zone() {
-    _fw_wan_sec="$(
-        uci show firewall 2>/dev/null |
-        sed -n 's/^firewall\.\([^.=]*\)=zone$/\1/p' |
-        while IFS= read -r _fw_z; do
-            _nets="$(uci -q get "firewall.$_fw_z.network" 2>/dev/null)"
-            for _n in $_nets; do
-                [ "$_n" = wan ] || continue
-                printf '%s\n' "$_fw_z"
-                exit 0
-            done
-        done
-    )"
-    if [ -z "$_fw_wan_sec" ]; then
-        _fw_wan_sec="$(
-            uci show firewall 2>/dev/null |
-            sed -n 's/^firewall\.\([^.=]*\)=zone$/\1/p' |
-            while IFS= read -r _fw_z; do
-                _nets="$(uci -q get "firewall.$_fw_z.network" 2>/dev/null)"
-                for _n in $_nets; do
-                    [ "$_n" = wan6 ] || continue
-                    printf '%s\n' "$_fw_z"
-                    exit 0
-                done
-            done
-        )"
-    fi
-    # Last-resort compatibility for old/custom configs that only expose a named WAN zone.
-    if [ -z "$_fw_wan_sec" ]; then
-        _fw_wan_sec="$(
-            uci show firewall 2>/dev/null |
-            sed -n 's/^firewall\.\([^.=]*\)=zone$/\1/p' |
-            while IFS= read -r _fw_z; do
-                [ "$(uci -q get "firewall.$_fw_z.name" 2>/dev/null)" = wan ] || continue
-                printf '%s\n' "$_fw_z"
-                exit 0
-            done
-        )"
-    fi
-    [ -n "$_fw_wan_sec" ] || return 1
-    printf '%s\n' "$_fw_wan_sec"
+    firewall_wan_zone_require
 }
 
 cleanup_legacy_mtu_default() {
@@ -4861,12 +4871,12 @@ EOF_CHECK_EXT2
                 printf 2
                 return
             fi
-            if ! firewall_section_owned_redirect "$FW_DNS_REDIRECT_SECTION" lan 'tcp udp' 53 "$LAN_IP" 53 DNAT 2>/dev/null; then
-                firewall_find_exact_redirect lan 'tcp udp' 53 "$LAN_IP" 53 DNAT "$FW_DNS_REDIRECT_SECTION" >/dev/null 2>&1 || { printf 0; return; }
+            if ! firewall_section_owned_redirect "$FW_DNS_REDIRECT_SECTION" "$FIREWALL_LAN_ZONE" 'tcp udp' 53 "$LAN_IP" 53 DNAT 2>/dev/null; then
+                firewall_find_exact_redirect "$FIREWALL_LAN_ZONE" 'tcp udp' 53 "$LAN_IP" 53 DNAT "$FW_DNS_REDIRECT_SECTION" >/dev/null 2>&1 || { printf 0; return; }
             fi
             if uci -q get "firewall.$FW_DOT_SECTION" >/dev/null 2>&1; then
-                [ "$(uci -q get "firewall.$FW_DOT_SECTION.src" 2>/dev/null)" = lan ] || { printf 0; return; }
-                [ "$(uci -q get "firewall.$FW_DOT_SECTION.dest" 2>/dev/null)" = wan ] || { printf 0; return; }
+                [ "$(uci -q get "firewall.$FW_DOT_SECTION.src" 2>/dev/null)" = "$FIREWALL_LAN_ZONE" ] || { printf 0; return; }
+                [ "$(uci -q get "firewall.$FW_DOT_SECTION.dest" 2>/dev/null)" = "$FIREWALL_WAN_ZONE" ] || { printf 0; return; }
                 [ "$(uci -q get "firewall.$FW_DOT_SECTION.proto" 2>/dev/null)" = 'tcp udp' ] || { printf 0; return; }
                 [ "$(uci -q get "firewall.$FW_DOT_SECTION.dest_port" 2>/dev/null)" = 853 ] || { printf 0; return; }
                 [ "$(uci -q get "firewall.$FW_DOT_SECTION.target" 2>/dev/null)" = REJECT ] || { printf 0; return; }
@@ -4880,7 +4890,7 @@ EOF_CHECK_EXT2
             printf '%s\n' "$(uci -q get "dhcp.$_sec.dhcp_option" 2>/dev/null | tr ' ' '\n')" | grep -qxF "$_opt" || { printf 0; return; }
             if ntp_firewall_rule_owned; then
                 printf 1
-            elif firewall_find_exact_redirect lan udp 123 "$LAN_IP" 123 DNAT "$FW_NTP_SECTION" >/dev/null 2>&1; then
+            elif firewall_find_exact_redirect "$FIREWALL_LAN_ZONE" udp 123 "$LAN_IP" 123 DNAT "$FW_NTP_SECTION" >/dev/null 2>&1; then
                 printf 1
             else
                 printf 0
@@ -5139,10 +5149,11 @@ web_access_restart() {
     web_access_real
 }
 web_access_firewall() {
+    firewall_lan_zone_require >/dev/null || return 1
     _external_web="$(firewall_find_exact_rule_signature web "$FW_WEB_SECTION" "$WEB_ACCESS_PORT" 2>/dev/null)"
     if uci -q get "firewall.$FW_WEB_SECTION" >/dev/null 2>&1; then
         firewall_owner_has "$FW_WEB_SECTION" || return 2
-        [ "$(uci -q get "firewall.$FW_WEB_SECTION.src" 2>/dev/null)" = lan ] || return 1
+        [ "$(uci -q get "firewall.$FW_WEB_SECTION.src" 2>/dev/null)" = "$FIREWALL_LAN_ZONE" ] || return 1
         [ "$(uci -q get "firewall.$FW_WEB_SECTION.proto" 2>/dev/null)" = tcp ] || return 1
         [ "$(uci -q get "firewall.$FW_WEB_SECTION.dest_port" 2>/dev/null)" = "$WEB_ACCESS_PORT" ] || return 1
         [ "$(uci -q get "firewall.$FW_WEB_SECTION.target" 2>/dev/null)" = ACCEPT ] || return 1
@@ -5155,7 +5166,7 @@ web_access_firewall() {
     else
         uci set "firewall.$FW_WEB_SECTION=rule" || return 1
         uci set "firewall.$FW_WEB_SECTION.name=DNS Manager Web" || return 1
-        uci set "firewall.$FW_WEB_SECTION.src=lan" || return 1
+        uci set "firewall.$FW_WEB_SECTION.src=$FIREWALL_LAN_ZONE" || return 1
         uci set "firewall.$FW_WEB_SECTION.proto=tcp" || return 1
         uci set "firewall.$FW_WEB_SECTION.dest_port=$WEB_ACCESS_PORT" || return 1
         uci set "firewall.$FW_WEB_SECTION.target=ACCEPT" || return 1
@@ -5165,8 +5176,9 @@ web_access_firewall() {
     reload_fw >/dev/null 2>&1 || return 1
 }
 web_access_remove_firewall() {
+    firewall_resolve_zones
     if uci -q get "firewall.$FW_WEB_SECTION" >/dev/null 2>&1; then
-        if firewall_owner_has "$FW_WEB_SECTION" && [ "$(uci -q get "firewall.$FW_WEB_SECTION.src" 2>/dev/null)" = lan ] && [ "$(uci -q get "firewall.$FW_WEB_SECTION.proto" 2>/dev/null)" = tcp ] && [ "$(uci -q get "firewall.$FW_WEB_SECTION.dest_port" 2>/dev/null)" = "$WEB_ACCESS_PORT" ] && [ "$(uci -q get "firewall.$FW_WEB_SECTION.target" 2>/dev/null)" = ACCEPT ]; then
+        if firewall_owner_has "$FW_WEB_SECTION" && [ "$(uci -q get "firewall.$FW_WEB_SECTION.src" 2>/dev/null)" = "$FIREWALL_LAN_ZONE" ] && [ "$(uci -q get "firewall.$FW_WEB_SECTION.proto" 2>/dev/null)" = tcp ] && [ "$(uci -q get "firewall.$FW_WEB_SECTION.dest_port" 2>/dev/null)" = "$WEB_ACCESS_PORT" ] && [ "$(uci -q get "firewall.$FW_WEB_SECTION.target" 2>/dev/null)" = ACCEPT ]; then
             uci -q delete "firewall.$FW_WEB_SECTION"
             firewall_owner_remove "$FW_WEB_SECTION"
         fi
@@ -5890,15 +5902,15 @@ normalize_managed_firewall_duplicates() {
     # NTP: if an equivalent external redirect already exists, drop only our exact
     # manager rule. The external rule remains untouched.
     if ntp_firewall_rule_owned && firewall_owner_has "$FW_NTP_SECTION"; then
-        _ext="$(firewall_find_exact_redirect lan udp 123 "$LAN_IP" 123 DNAT "$FW_NTP_SECTION" 2>/dev/null)"
+        _ext="$(firewall_find_exact_redirect "$FIREWALL_LAN_ZONE" udp 123 "$LAN_IP" 123 DNAT "$FW_NTP_SECTION" 2>/dev/null)"
         if [ -n "$_ext" ]; then
             uci -q delete "firewall.$FW_NTP_SECTION" && { firewall_owner_remove "$FW_NTP_SECTION"; _removed=1; } || true
         fi
     fi
 
     # Forced DNS redirect: same ownership rule.
-    if firewall_section_owned_redirect "$FW_DNS_REDIRECT_SECTION" lan 'tcp udp' 53 "$LAN_IP" 53 DNAT && firewall_owner_has "$FW_DNS_REDIRECT_SECTION"; then
-        _ext="$(firewall_find_exact_redirect lan 'tcp udp' 53 "$LAN_IP" 53 DNAT "$FW_DNS_REDIRECT_SECTION" 2>/dev/null)"
+    if firewall_section_owned_redirect "$FW_DNS_REDIRECT_SECTION" "$FIREWALL_LAN_ZONE" 'tcp udp' 53 "$LAN_IP" 53 DNAT && firewall_owner_has "$FW_DNS_REDIRECT_SECTION"; then
+        _ext="$(firewall_find_exact_redirect "$FIREWALL_LAN_ZONE" 'tcp udp' 53 "$LAN_IP" 53 DNAT "$FW_DNS_REDIRECT_SECTION" 2>/dev/null)"
         if [ -n "$_ext" ]; then
             uci -q delete "firewall.$FW_DNS_REDIRECT_SECTION" && { firewall_owner_remove "$FW_DNS_REDIRECT_SECTION"; _removed=1; } || true
         fi
