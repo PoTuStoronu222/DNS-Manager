@@ -2,7 +2,7 @@
 MANAGER_PATH="/usr/bin/dns-manager"
 # ==========================================
 # ==========================================
-VERSION="2.39"
+VERSION="2.40"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -2656,9 +2656,13 @@ _apply_extras_now_impl() {
             /etc/init.d/dnsmasq restart >/dev/null 2>&1 || return 1
             ;;
         client_fixes)
-            f="$(client_fixes_find_owned 2>/dev/null || true)"
-            [ -n "$f" ] || { printf 0; return; }
-            client_fixes_file_owned "$f" && printf 1 || printf 0
+            if [ "${CLIENT_FIXES:-0}" = 1 ]; then
+                apply_client_fixes || return $?
+                /etc/init.d/dnsmasq restart >/dev/null 2>&1 || return 1
+            else
+                remove_client_fixes || return 1
+                /etc/init.d/dnsmasq restart >/dev/null 2>&1 || return 1
+            fi
             ;;
         sysctl_ext)
             if [ "$SYSCTL_EXTENDED" = 1 ]; then
@@ -2710,6 +2714,19 @@ ntp_firewall_rule_owned() {
     firewall_lan_zone_require >/dev/null || return 1
     firewall_section_owned_redirect "$FW_NTP_SECTION" "$FIREWALL_LAN_ZONE" udp 123 "$LAN_IP" 123 DNAT
 }
+ntp_firewall_rule_is_manager_signature() {
+    firewall_lan_zone_require >/dev/null || return 1
+    [ "$(uci -q get "firewall.$FW_NTP_SECTION" 2>/dev/null)" = redirect ] || return 1
+    [ "$(uci -q get "firewall.$FW_NTP_SECTION.name" 2>/dev/null)" = 'DNS Manager: NTP клиентов в роутер' ] || return 1
+    [ "$(uci -q get "firewall.$FW_NTP_SECTION.src" 2>/dev/null)" = "$FIREWALL_LAN_ZONE" ] || return 1
+    [ "$(uci -q get "firewall.$FW_NTP_SECTION.dest" 2>/dev/null)" = "$FIREWALL_LAN_ZONE" ] || return 1
+    [ "$(uci -q get "firewall.$FW_NTP_SECTION.proto" 2>/dev/null)" = udp ] || return 1
+    [ "$(uci -q get "firewall.$FW_NTP_SECTION.src_dport" 2>/dev/null)" = 123 ] || return 1
+    [ "$(uci -q get "firewall.$FW_NTP_SECTION.dest_ip" 2>/dev/null)" = "$LAN_IP" ] || return 1
+    [ "$(uci -q get "firewall.$FW_NTP_SECTION.dest_port" 2>/dev/null)" = 123 ] || return 1
+    [ "$(uci -q get "firewall.$FW_NTP_SECTION.target" 2>/dev/null)" = DNAT ] || return 1
+    return 0
+}
 apply_ntp_clients() {
     [ "${NTP_CLIENTS:-0}" = 1 ] || return 0
     firewall_lan_zone_require >/dev/null || return 1
@@ -2737,13 +2754,21 @@ apply_ntp_clients() {
             firewall_owner_remove "$FW_NTP_SECTION" || return 1
         fi
     elif uci -q get "firewall.$FW_NTP_SECTION" >/dev/null 2>&1; then
-        [ -n "$_external" ] || return 2
+        if ntp_firewall_rule_is_manager_signature; then
+            firewall_owner_add "$FW_NTP_SECTION" || return 1
+        elif [ -n "$_external" ]; then
+            :
+        else
+            err_msg "Секция firewall.$FW_NTP_SECTION существует, но не соответствует DNS Manager. Изменение запрещено."
+            return 2
+        fi
     elif [ -n "$_external" ]; then
         :
     else
         uci set "firewall.$FW_NTP_SECTION=redirect" || return 1
         uci set "firewall.$FW_NTP_SECTION.name=DNS Manager: NTP клиентов в роутер" || return 1
         uci set "firewall.$FW_NTP_SECTION.src=$FIREWALL_LAN_ZONE" || return 1
+        uci set "firewall.$FW_NTP_SECTION.dest=$FIREWALL_LAN_ZONE" || return 1
         uci set "firewall.$FW_NTP_SECTION.proto=udp" || return 1
         uci set "firewall.$FW_NTP_SECTION.src_dport=123" || return 1
         uci set "firewall.$FW_NTP_SECTION.dest_ip=$LAN_IP" || return 1
@@ -3008,6 +3033,19 @@ remove_sysctl_extended() {
     rm -f "$sf"
     return 0
 }
+dns_force_redirect_is_manager_signature() {
+    firewall_lan_zone_require >/dev/null || return 1
+    [ "$(uci -q get "firewall.$FW_DNS_REDIRECT_SECTION" 2>/dev/null)" = redirect ] || return 1
+    [ "$(uci -q get "firewall.$FW_DNS_REDIRECT_SECTION.name" 2>/dev/null)" = 'DNS Manager: перенаправление DNS' ] || return 1
+    [ "$(uci -q get "firewall.$FW_DNS_REDIRECT_SECTION.src" 2>/dev/null)" = "$FIREWALL_LAN_ZONE" ] || return 1
+    [ "$(uci -q get "firewall.$FW_DNS_REDIRECT_SECTION.dest" 2>/dev/null)" = "$FIREWALL_LAN_ZONE" ] || return 1
+    [ "$(uci -q get "firewall.$FW_DNS_REDIRECT_SECTION.proto" 2>/dev/null)" = 'tcp udp' ] || return 1
+    [ "$(uci -q get "firewall.$FW_DNS_REDIRECT_SECTION.src_dport" 2>/dev/null)" = 53 ] || return 1
+    [ "$(uci -q get "firewall.$FW_DNS_REDIRECT_SECTION.dest_ip" 2>/dev/null)" = "$LAN_IP" ] || return 1
+    [ "$(uci -q get "firewall.$FW_DNS_REDIRECT_SECTION.dest_port" 2>/dev/null)" = 53 ] || return 1
+    [ "$(uci -q get "firewall.$FW_DNS_REDIRECT_SECTION.target" 2>/dev/null)" = DNAT ] || return 1
+    return 0
+}
 apply_dns_force() {
     [ "${FORCE_DOH:-0}" = 1 ] || return 0
     firewall_lan_zone_require >/dev/null || return 1
@@ -3028,15 +3066,22 @@ apply_dns_force() {
             uci -q delete "firewall.$FW_DNS_REDIRECT_SECTION" || return 1
             firewall_owner_remove "$FW_DNS_REDIRECT_SECTION" || return 1
         fi
+    elif uci -q get "firewall.$FW_DNS_REDIRECT_SECTION" >/dev/null 2>&1; then
+        if dns_force_redirect_is_manager_signature; then
+            firewall_owner_add "$FW_DNS_REDIRECT_SECTION" || return 1
+        elif [ -n "$_external_dns_redirect" ]; then
+            :
+        else
+            err_msg "Секция firewall.$FW_DNS_REDIRECT_SECTION существует, но не соответствует DNS Manager. Изменение запрещено."
+            return 2
+        fi
     elif [ -n "$_external_dns_redirect" ]; then
         :
     else
-        if uci -q get "firewall.$FW_DNS_REDIRECT_SECTION" >/dev/null 2>&1; then
-            return 1
-        fi
         uci set "firewall.$FW_DNS_REDIRECT_SECTION=redirect" || return 1
         uci set "firewall.$FW_DNS_REDIRECT_SECTION.name=DNS Manager: перенаправление DNS" || return 1
         uci set "firewall.$FW_DNS_REDIRECT_SECTION.src=$FIREWALL_LAN_ZONE" || return 1
+        uci set "firewall.$FW_DNS_REDIRECT_SECTION.dest=$FIREWALL_LAN_ZONE" || return 1
         uci set "firewall.$FW_DNS_REDIRECT_SECTION.proto=tcp udp" || return 1
         uci set "firewall.$FW_DNS_REDIRECT_SECTION.src_dport=53" || return 1
         uci set "firewall.$FW_DNS_REDIRECT_SECTION.dest_ip=$LAN_IP" || return 1
