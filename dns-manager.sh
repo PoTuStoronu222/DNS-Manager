@@ -2,7 +2,7 @@
 MANAGER_PATH="/usr/bin/dns-manager"
 # ==========================================
 # ==========================================
-VERSION="2.46"
+VERSION="2.49"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -517,19 +517,20 @@ toggle_confirm() {
     _new="$3"
     _details="$4"
     if [ "${SILENT_APPLY:-0}" = 1 ]; then
-        log_msg "Автоматическое подтверждение: ${_label}: ${_new}"
+        log_msg "Подтверждение: ${_label}: ${_new}"
         return 0
     fi
     printf "\n${C_WHITE}${C_BOLD}Настройка: %s${C_NC}\n" "$_label"
-    printf "  Сейчас:   %s\n" "$_current"
-    printf "  Действие: ${C_YELLOW}${C_BOLD}%s${C_NC}\n" "$_new"
+    printf "  Состояние: %s\n" "$_current"
+    printf "  Действие:  ${C_YELLOW}${C_BOLD}%s${C_NC}\n" "$_new"
     [ -n "$_details" ] && printf "  %s\n" "$_details"
     case "$_new" in
         ВКЛЮЧИТЬ) confirm_action "Включить «$_label»?";;
-        ВЫКЛЮЧИТЬ) confirm_action "Выключить «$_label»?";;
-        *) confirm_action "Применить изменение «$_label»?";;
+        ВЫКЛЮЧИТЬ) confirm_action "Выключить «$_label» и вернуть стоковое состояние?";;
+        *) return 1;;
     esac
 }
+
 pause() { [ "${SILENT_APPLY:-0}" = 1 ] && return 0; printf "\n${C_WHITE}Нажмите Enter...${C_NC}"; safe_read _dummy; }
 clear_screen() { command -v clear >/dev/null 2>&1 && clear || printf '\033[2J\033[H'; printf '\033[1;37m'; }
 menu_header() {
@@ -2404,6 +2405,7 @@ reconcile_dnsmasq() {
 firewall_quic_rule_matches() {
     _rsec="$1"; _port="$2"
     [ "$(uci -q get "firewall.$_rsec" 2>/dev/null)" = rule ] || return 1
+    [ "$(uci -q get "firewall.$_rsec.disabled" 2>/dev/null)" != 1 ] || return 1
     [ "$(uci -q get "firewall.$_rsec.src" 2>/dev/null)" = "$FIREWALL_LAN_ZONE" ] || return 1
     [ "$(uci -q get "firewall.$_rsec.dest" 2>/dev/null)" = "$FIREWALL_WAN_ZONE" ] || return 1
     [ "$(uci -q get "firewall.$_rsec.proto" 2>/dev/null)" = udp ] || return 1
@@ -2491,6 +2493,7 @@ firewall_find_exact_rule_signature() {
     _secs="$(uci show firewall 2>/dev/null | sed -n 's/^firewall\.\([^.=]*\)=rule$/\1/p')"
     for _sec in $_secs; do
         [ "$_sec" = "$_skip" ] && continue
+        [ "$(uci -q get "firewall.$_sec.disabled" 2>/dev/null)" = 1 ] && continue
         case "$_type" in
             dot)
                 [ "$(uci -q get "firewall.$_sec.src" 2>/dev/null)" = "$FIREWALL_LAN_ZONE" ] || continue
@@ -2527,7 +2530,7 @@ quic_remove_managed_rules() {
         _rsec="${_pair%%|*}"
         _port="${_pair#*|}"
         if uci -q get "firewall.$_rsec" >/dev/null 2>&1; then
-            if firewall_quic_rule_owned "$_rsec" "$_port"; then
+            if firewall_quic_rule_matches "$_rsec" "$_port"; then
                 uci -q delete "firewall.$_rsec" || return 1
                 firewall_owner_remove "$_rsec"
             fi
@@ -2646,14 +2649,7 @@ sysctl_key_manager_owned() {
 sysctl_key_state() {
     _key="$1"; _desired="$2"
     _cur="$(sysctl -n "$_key" 2>/dev/null)"
-    if [ "$_cur" = "$_desired" ] && sysctl_key_manager_owned "$_key" "$_desired"; then
-        printf 1
-        return
-    fi
-    if [ "$_cur" = "$_desired" ]; then
-        printf 2
-        return
-    fi
+    [ "$_cur" = "$_desired" ] && { printf 1; return; }
     _stock="$(sysctl_explicit_value "$_key" /rom/etc 2>/dev/null || true)"
     _live_cfg="$(sysctl_explicit_value "$_key" /etc 2>/dev/null || true)"
     if [ -n "$_stock" ] && [ "$_cur" = "$_stock" ] && { [ -z "$_live_cfg" ] || [ "$_live_cfg" = "$_stock" ]; }; then
@@ -2919,7 +2915,6 @@ ntp_firewall_rule_owned() {
 ntp_firewall_rule_is_manager_signature() {
     firewall_lan_zone_require >/dev/null || return 1
     [ "$(uci -q get "firewall.$FW_NTP_SECTION" 2>/dev/null)" = redirect ] || return 1
-    [ "$(uci -q get "firewall.$FW_NTP_SECTION.name" 2>/dev/null)" = 'DNS Manager: NTP клиентов в роутер' ] || return 1
     [ "$(uci -q get "firewall.$FW_NTP_SECTION.src" 2>/dev/null)" = "$FIREWALL_LAN_ZONE" ] || return 1
     _dest_zone="$(uci -q get "firewall.$FW_NTP_SECTION.dest" 2>/dev/null)"
     [ -z "$_dest_zone" ] || [ "$_dest_zone" = "$FIREWALL_LAN_ZONE" ] || return 1
@@ -2959,9 +2954,13 @@ apply_ntp_clients() {
     sec="$(get_dnsmasq_section)"; [ -n "$sec" ] || return 1
     _state="$(ntp_clients_state)"
     case "$_state" in
-        1) return 0;;
         2) err_msg "NTP клиентов: обнаружена другая конфигурация DHCP 42 или NTP redirect. DNS Manager её не перезаписывает."; return 2;;
     esac
+    if [ "$_state" = 1 ] && ntp_firewall_rule_is_manager_signature; then
+        [ "$(uci -q get "firewall.$FW_NTP_SECTION.dest" 2>/dev/null)" = "$FIREWALL_LAN_ZONE" ] || uci set "firewall.$FW_NTP_SECTION.dest=$FIREWALL_LAN_ZONE" || return 1
+        uci commit firewall >/dev/null 2>&1 || return 1
+        return 0
+    fi
     if [ ! -s "$NTP_CLIENTS_BEFORE" ]; then
         mkdir -p "$CFG_DIR" 2>/dev/null || return 1
         {
@@ -3020,8 +3019,9 @@ remove_ntp_clients() {
     else
         warn_msg "NTP-клиенты: нет снимка, подтверждающего владение DHCP-опцией 42. Внешнее значение сохранено."
     fi
-    if ntp_firewall_rule_owned && firewall_owner_has "$FW_NTP_SECTION"; then
+    if ntp_firewall_rule_is_manager_signature; then
         uci -q delete "firewall.$FW_NTP_SECTION"
+        firewall_owner_remove "$FW_NTP_SECTION"
     fi
     rm -f "$NTP_CLIENTS_BEFORE"
     uci commit dhcp >/dev/null 2>&1 || return 1
@@ -3174,7 +3174,7 @@ remove_client_fixes() {
         for _f in /etc/dnsmasq.d/*dns-manager-client-fixes*.conf; do
             [ -f "$_f" ] || continue
             if [ "$(client_fixes_file_state "$_f")" = 1 ]; then
-                warn_msg "Найдено точное совпадение client-fixes, но его принадлежность DNS Manager не подтверждена: $_f. Файл сохранён."
+                rm -f "$_f" || return 1
             fi
         done
     fi
@@ -3293,7 +3293,6 @@ remove_sysctl_extended() {
 dns_force_redirect_is_manager_signature() {
     firewall_lan_zone_require >/dev/null || return 1
     [ "$(uci -q get "firewall.$FW_DNS_REDIRECT_SECTION" 2>/dev/null)" = redirect ] || return 1
-    [ "$(uci -q get "firewall.$FW_DNS_REDIRECT_SECTION.name" 2>/dev/null)" = 'DNS Manager: перенаправление DNS' ] || return 1
     [ "$(uci -q get "firewall.$FW_DNS_REDIRECT_SECTION.src" 2>/dev/null)" = "$FIREWALL_LAN_ZONE" ] || return 1
     _dest_zone="$(uci -q get "firewall.$FW_DNS_REDIRECT_SECTION.dest" 2>/dev/null)"
     [ -z "$_dest_zone" ] || [ "$_dest_zone" = "$FIREWALL_LAN_ZONE" ] || return 1
@@ -3344,9 +3343,15 @@ apply_dns_force() {
     firewall_wan_zone_require >/dev/null || return 1
     _state="$(force_dns_state)"
     case "$_state" in
-        1) return 0;;
         2) err_msg "Принудительный DNS: обнаружена другая DNS-конфигурация. DNS Manager её не перезаписывает."; return 2;;
     esac
+    if [ "$_state" = 1 ]; then
+        if dns_force_redirect_is_manager_signature; then
+            [ "$(uci -q get "firewall.$FW_DNS_REDIRECT_SECTION.dest" 2>/dev/null)" = "$FIREWALL_LAN_ZONE" ] || uci set "firewall.$FW_DNS_REDIRECT_SECTION.dest=$FIREWALL_LAN_ZONE" || return 1
+        fi
+        uci commit firewall >/dev/null 2>&1 || return 1
+        return 0
+    fi
     if [ ! -s "$FORCE_DNS_BEFORE" ]; then
         mkdir -p "$CFG_DIR" 2>/dev/null || return 1
         {
@@ -3414,12 +3419,12 @@ apply_dns_force() {
 }
 remove_dns_force() {
     firewall_resolve_zones
-    if firewall_section_owned_redirect "$FW_DNS_REDIRECT_SECTION" "$FIREWALL_LAN_ZONE" 'tcp udp' 53 "$LAN_IP" 53 DNAT && firewall_owner_has "$FW_DNS_REDIRECT_SECTION"; then
+    if dns_force_redirect_is_manager_signature; then
         uci -q delete "firewall.$FW_DNS_REDIRECT_SECTION"
         firewall_owner_remove "$FW_DNS_REDIRECT_SECTION"
     fi
     if uci -q get "firewall.$FW_DOT_SECTION" >/dev/null 2>&1; then
-        if firewall_owner_has "$FW_DOT_SECTION" && [ "$(uci -q get "firewall.$FW_DOT_SECTION.src" 2>/dev/null)" = "$FIREWALL_LAN_ZONE" ] && [ "$(uci -q get "firewall.$FW_DOT_SECTION.dest" 2>/dev/null)" = "$FIREWALL_WAN_ZONE" ] && [ "$(uci -q get "firewall.$FW_DOT_SECTION.proto" 2>/dev/null)" = 'tcp udp' ] && [ "$(uci -q get "firewall.$FW_DOT_SECTION.dest_port" 2>/dev/null)" = 853 ] && [ "$(uci -q get "firewall.$FW_DOT_SECTION.target" 2>/dev/null)" = REJECT ]; then
+        if [ "$(uci -q get "firewall.$FW_DOT_SECTION" 2>/dev/null)" = rule ] && [ "$(uci -q get "firewall.$FW_DOT_SECTION.src" 2>/dev/null)" = "$FIREWALL_LAN_ZONE" ] && [ "$(uci -q get "firewall.$FW_DOT_SECTION.dest" 2>/dev/null)" = "$FIREWALL_WAN_ZONE" ] && [ "$(uci -q get "firewall.$FW_DOT_SECTION.proto" 2>/dev/null)" = 'tcp udp' ] && [ "$(uci -q get "firewall.$FW_DOT_SECTION.dest_port" 2>/dev/null)" = 853 ] && [ "$(uci -q get "firewall.$FW_DOT_SECTION.target" 2>/dev/null)" = REJECT ]; then
             uci -q delete "firewall.$FW_DOT_SECTION"
             firewall_owner_remove "$FW_DOT_SECTION"
         fi
@@ -5226,7 +5231,7 @@ check_module_state() {
                 esac
             done
             [ "$_other" = 1 ] && { printf 2; return; }
-            if [ -f "$(sysctl_base_manager_path)" ] && [ "$_desired_count" -eq "$_total" ]; then
+            if [ "$_desired_count" -eq "$_total" ]; then
                 if [ "${SYSCTL_EXTENDED:-0}" = 1 ]; then
                     [ "$(check_module_state sysctl_ext)" = 1 ] || { printf 2; return; }
                 fi
@@ -5252,7 +5257,7 @@ check_module_state() {
 $(sysctl_extended_params)
 EOF_CHECK_EXT3
             [ "$_other" = 1 ] && { printf 2; return; }
-            [ -f "$_f" ] && [ "$_desired_count" -eq "$_total" ] && [ "$_total" -gt 0 ] && printf 1 && return
+            [ "$_desired_count" -eq "$_total" ] && [ "$_total" -gt 0 ] && printf 1 && return
             [ "$_stock_count" -eq "$_total" ] && printf 0 || printf 2
             ;;
         force)
@@ -5299,7 +5304,7 @@ module_state_word() {
     _real="$(check_module_state "$_module")"
     case "$_real" in
         1) printf "${C_BOLD}${C_GREEN}✓ ВКЛ${C_NC} ${C_CYAN}${C_BOLD}• настроено${C_NC}" ;;
-        2) printf "${C_BOLD}${C_YELLOW}⚠ ДРУГОЕ${C_NC} ${C_CYAN}${C_BOLD}• не совпадает с настройкой менеджера${C_NC}" ;;
+        2) printf "${C_BOLD}${C_YELLOW}⚠ ДРУГОЕ${C_NC} ${C_CYAN}${C_BOLD}• текущее значение отличается от целевого${C_NC}" ;;
         *) printf "${C_BOLD}${C_RED}✗ ВЫКЛ${C_NC} ${C_CYAN}${C_BOLD}• сток${C_NC}" ;;
     esac
 }
@@ -5637,65 +5642,119 @@ menu_prompt
 safe_read c
 case "$c" in
 1)
-    _old="$BLOCK_QUIC"; [ "$BLOCK_QUIC" = 1 ] && _new=0 || _new=1
-    if [ "$_new" = 1 ]; then _action="ВКЛЮЧИТЬ"; else _action="ВЫКЛЮЧИТЬ"; fi
-    toggle_confirm "Блокировка QUIC" "$(module_state_word quic "$BLOCK_QUIC")" "$_action" "Блокируются UDP-порты 80 и 443 из LAN. Чужие правила не перезаписываются." || continue
+    _old="$BLOCK_QUIC"
+    _state="$(check_module_state quic 2>/dev/null || printf 2)"
+    case "$_state" in
+        0) _new=1; _action="ВКЛЮЧИТЬ";;
+        1) _new=0; _action="ВЫКЛЮЧИТЬ";;
+        2) info_msg "Блокировка QUIC: обнаружено другое правило. Оно не изменяется."; pause; continue;;
+        *) err_msg "Не удалось определить состояние блокировки QUIC."; pause; continue;;
+    esac
+    toggle_confirm "Блокировка QUIC" "$(module_state_word quic "$BLOCK_QUIC")" "$_action" "Блокируются UDP-порты 80 и 443 из LAN. Другие правила не перезаписываются." || continue
     BLOCK_QUIC="$_new"
     if ! apply_extras_now quic; then BLOCK_QUIC="$_old"; save_config >/dev/null 2>&1 || true; err_msg "Блокировка QUIC не изменена."; fi
     pause;;
 2)
-    _old="$MTU_FIX"; [ "$MTU_FIX" = 1 ] && _new=0 || _new=1
-    if [ "$_new" = 1 ]; then _action="ВКЛЮЧИТЬ"; else _action="ВЫКЛЮЧИТЬ"; fi
-    toggle_confirm "Исправление сетевых параметров / MSS" "$(module_state_word mtu "$MTU_FIX")" "$_action" "Настройка применяется к реальной WAN-зоне. Чужое значение не перезаписывается." || continue
+    _old="$MTU_FIX"
+    _state="$(check_module_state mtu 2>/dev/null || printf 2)"
+    case "$_state" in
+        0) _new=1; _action="ВКЛЮЧИТЬ";;
+        1) _new=0; _action="ВЫКЛЮЧИТЬ";;
+        2) info_msg "Исправление сетевых параметров / MSS: обнаружено другое значение. Оно не изменяется."; pause; continue;;
+        *) err_msg "Не удалось определить состояние MTU/MSS."; pause; continue;;
+    esac
+    toggle_confirm "Исправление сетевых параметров / MSS" "$(module_state_word mtu "$MTU_FIX")" "$_action" "Настройка применяется к реальной WAN-зоне. Другое значение не перезаписывается." || continue
     MTU_FIX="$_new"
     if ! apply_extras_now mtu; then MTU_FIX="$_old"; save_config >/dev/null 2>&1 || true; err_msg "Исправление сетевых параметров не изменено."; fi
     pause;;
 3)
-    _old="$FORCE_DOH"; [ "$FORCE_DOH" = 1 ] && _new=0 || _new=1
-    if [ "$_new" = 1 ]; then _action="ВКЛЮЧИТЬ"; else _action="ВЫКЛЮЧИТЬ"; fi
+    _old="$FORCE_DOH"
+    _state="$(check_module_state force 2>/dev/null || printf 2)"
+    case "$_state" in
+        0) _new=1; _action="ВКЛЮЧИТЬ";;
+        1) _new=0; _action="ВЫКЛЮЧИТЬ";;
+        2) info_msg "Принудительный DNS: обнаружена другая конфигурация. Она не изменяется."; pause; continue;;
+        *) err_msg "Не удалось определить состояние принудительного DNS."; pause; continue;;
+    esac
     toggle_confirm "Принудительный DNS" "$(module_state_word force "$FORCE_DOH")" "$_action" "DNS TCP/UDP 53 из LAN направляется на DNS роутера; DoT TCP/UDP 853 блокируется." || continue
     FORCE_DOH="$_new"
     if ! apply_extras_now force; then FORCE_DOH="$_old"; save_config >/dev/null 2>&1 || true; err_msg "Принудительный DNS не изменён."; fi
     pause;;
 4)
     _old_sysctl="$SYSCTL_TUNING"; _old_sysctl_ext="$SYSCTL_EXTENDED"
-    if [ "$SYSCTL_TUNING" = 1 ]; then _new_sysctl=0; _new_sysctl_ext=0; _action="ВЫКЛЮЧИТЬ"; else _new_sysctl=1; _new_sysctl_ext=1; _action="ВКЛЮЧИТЬ"; fi
-    toggle_confirm "Оптимизация TCP и Conntrack" "$(module_state_word sysctl "$SYSCTL_TUNING")" "$_action" "Изменяются только значения, заданные тюнингом менеджера. Другие текущие значения сохраняются." || continue
+    _state="$(check_module_state sysctl 2>/dev/null || printf 2)"
+    case "$_state" in
+        0) _new_sysctl=1; _new_sysctl_ext=1; _action="ВКЛЮЧИТЬ";;
+        1) _new_sysctl=0; _new_sysctl_ext=0; _action="ВЫКЛЮЧИТЬ";;
+        2) info_msg "Оптимизация TCP и Conntrack: обнаружены другие значения. Они не изменяются."; pause; continue;;
+        *) err_msg "Не удалось определить состояние TCP/Conntrack."; pause; continue;;
+    esac
+    toggle_confirm "Оптимизация TCP и Conntrack" "$(module_state_word sysctl "$SYSCTL_TUNING")" "$_action" "Изменяются только параметры целевого тюнинга. Другие текущие значения сохраняются." || continue
     SYSCTL_TUNING="$_new_sysctl"; SYSCTL_EXTENDED="$_new_sysctl_ext"
     if ! apply_extras_now sysctl; then SYSCTL_TUNING="$_old_sysctl"; SYSCTL_EXTENDED="$_old_sysctl_ext"; save_config >/dev/null 2>&1 || true; err_msg "Оптимизация TCP и Conntrack не изменена."; fi
     pause;;
 5)
-    _old="$DNSMASQ_PERF"; [ "$DNSMASQ_PERF" = 1 ] && _new=0 || _new=1
-    if [ "$_new" = 1 ]; then _action="ВКЛЮЧИТЬ"; else _action="ВЫКЛЮЧИТЬ"; fi
-    toggle_confirm "Кэширование DNS-запросов" "$(module_state_word dnsmasq_perf "$DNSMASQ_PERF")" "$_action" "Изменяются только параметры кэша dnsmasq; внешние изменения при выключении сохраняются." || continue
+    _old="$DNSMASQ_PERF"
+    _state="$(check_module_state dnsmasq_perf 2>/dev/null || printf 2)"
+    case "$_state" in
+        0) _new=1; _action="ВКЛЮЧИТЬ";;
+        1) _new=0; _action="ВЫКЛЮЧИТЬ";;
+        2) info_msg "Кэширование DNS: обнаружены другие значения. Они не изменяются."; pause; continue;;
+        *) err_msg "Не удалось определить состояние DNS-кэша."; pause; continue;;
+    esac
+    toggle_confirm "Кэширование DNS-запросов" "$(module_state_word dnsmasq_perf "$DNSMASQ_PERF")" "$_action" "Изменяются только целевые параметры кэша dnsmasq; другие значения сохраняются." || continue
     DNSMASQ_PERF="$_new"
     if ! apply_extras_now dnsmasq_perf; then DNSMASQ_PERF="$_old"; save_config >/dev/null 2>&1 || true; err_msg "Кэширование DNS не изменено."; fi
     pause;;
 6)
-    _old="$NTP_CLIENTS"; [ "$NTP_CLIENTS" = 1 ] && _new=0 || _new=1
-    if [ "$_new" = 1 ]; then _action="ВКЛЮЧИТЬ"; else _action="ВЫКЛЮЧИТЬ"; fi
+    _old="$NTP_CLIENTS"
+    _state="$(check_module_state ntp_clients 2>/dev/null || printf 2)"
+    case "$_state" in
+        0) _new=1; _action="ВКЛЮЧИТЬ";;
+        1) _new=0; _action="ВЫКЛЮЧИТЬ";;
+        2) info_msg "Время для устройств: обнаружена другая DHCP/NTP-конфигурация. Она не изменяется."; pause; continue;;
+        *) err_msg "Не удалось определить состояние NTP для устройств."; pause; continue;;
+    esac
     toggle_confirm "Время для устройств сети" "$(module_state_word ntp_clients "$NTP_CLIENTS")" "$_action" "Устройства получают адрес роутера как NTP-сервер через DHCP и локальное перенаправление UDP/123." || continue
     NTP_CLIENTS="$_new"
     if ! apply_extras_now ntp_clients; then NTP_CLIENTS="$_old"; save_config >/dev/null 2>&1 || true; err_msg "Настройка времени для устройств не изменена."; fi
     pause;;
 7)
-    _old="$CLIENT_FIXES"; [ "$CLIENT_FIXES" = 1 ] && _new=0 || _new=1
-    if [ "$_new" = 1 ]; then _action="ВКЛЮЧИТЬ"; else _action="ВЫКЛЮЧИТЬ"; fi
-    toggle_confirm "Исправления телеметрии и связи" "$(module_state_word client_fixes "$CLIENT_FIXES")" "$_action" "Добавляются DNS-правила для телеметрии и проверок подключения некоторых устройств." || continue
+    _old="$CLIENT_FIXES"
+    _state="$(check_module_state client_fixes 2>/dev/null || printf 2)"
+    case "$_state" in
+        0) _new=1; _action="ВКЛЮЧИТЬ";;
+        1) _new=0; _action="ВЫКЛЮЧИТЬ";;
+        2) info_msg "Исправления телеметрии и связи: обнаружен другой набор DNS-правил. Он не изменяется."; pause; continue;;
+        *) err_msg "Не удалось определить состояние клиентских исправлений."; pause; continue;;
+    esac
+    toggle_confirm "Исправления телеметрии и связи" "$(module_state_word client_fixes "$CLIENT_FIXES")" "$_action" "Используется только точный набор DNS-правил этой функции." || continue
     CLIENT_FIXES="$_new"
     if ! apply_extras_now client_fixes; then CLIENT_FIXES="$_old"; save_config >/dev/null 2>&1 || true; err_msg "Клиентские исправления не изменены."; fi
     pause;;
 8)
-    _old_watchdog="$WATCHDOG_ENABLED"; [ "$WATCHDOG_ENABLED" = 1 ] && _new=0 || _new=1
-    if [ "$_new" = 1 ]; then _action="ВКЛЮЧИТЬ"; else _action="ВЫКЛЮЧИТЬ"; fi
-    toggle_confirm "Автоматическая проверка DNS" "$(module_state_word watchdog "$WATCHDOG_ENABLED")" "$_action" "DNS Manager добавляет или удаляет только свою запись проверки в найденном crontab." || continue
+    _old_watchdog="$WATCHDOG_ENABLED"
+    _state="$(check_module_state watchdog 2>/dev/null || printf 2)"
+    case "$_state" in
+        0) _new=1; _action="ВКЛЮЧИТЬ";;
+        1) _new=0; _action="ВЫКЛЮЧИТЬ";;
+        2) info_msg "Автоматическая проверка DNS: найдена другая cron-запись. Она не изменяется."; pause; continue;;
+        *) err_msg "Не удалось определить состояние watchdog."; pause; continue;;
+    esac
+    toggle_confirm "Автоматическая проверка DNS" "$(module_state_word watchdog "$WATCHDOG_ENABLED")" "$_action" "DNS Manager изменяет только свою запись проверки в найденном crontab." || continue
     WATCHDOG_ENABLED="$_new"
     if ! apply_watchdog; then WATCHDOG_ENABLED="$_old_watchdog"; save_config >/dev/null 2>&1 || true; err_msg "Автоматическая проверка DNS не изменена."; fi
     pause;;
 9)
-    _old_web="$WEB_ACCESS_ENABLED"; [ "$WEB_ACCESS_ENABLED" = 1 ] && _new=0 || _new=1
-    if [ "$_new" = 1 ]; then _action="ВКЛЮЧИТЬ"; else _action="ВЫКЛЮЧИТЬ"; fi
-    toggle_confirm "Доступ из браузера" "$(module_state_word web "$WEB_ACCESS_ENABLED")" "$_action" "Отдельный web-сервис DNS Manager запускается на порту 7682 и не управляет чужим ttyd." || continue
+    _old_web="$WEB_ACCESS_ENABLED"
+    _state="$(check_module_state web 2>/dev/null || printf 2)"
+    case "$_state" in
+        0) _new=1; _action="ВКЛЮЧИТЬ";;
+        1) _new=0; _action="ВЫКЛЮЧИТЬ";;
+        2) info_msg "Доступ из браузера: обнаружена другая конфигурация. Она не изменяется."; pause; continue;;
+        *) err_msg "Не удалось определить состояние web-доступа."; pause; continue;;
+    esac
+    toggle_confirm "Доступ из браузера" "$(module_state_word web "$WEB_ACCESS_ENABLED")" "$_action" "Отдельный web-сервис DNS Manager работает на порту 7682 и не управляет чужим ttyd." || continue
     WEB_ACCESS_ENABLED="$_new"
     if ! apply_web_access; then WEB_ACCESS_ENABLED="$_old_web"; save_config >/dev/null 2>&1 || true; err_msg "Web-доступ не изменён."; fi
     pause;;
