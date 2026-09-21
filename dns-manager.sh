@@ -2,7 +2,7 @@
 MANAGER_PATH="/usr/bin/dns-manager"
 # ==========================================
 # ==========================================
-VERSION="2.62"
+VERSION="2.63"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -34,15 +34,12 @@ LOG_MAX_BYTES=65536
 TX_LOG_MAX_BYTES=65536
 OWNERSHIP_MAX_BYTES=32768
 TX_KEEP_MINUTES=15
-PREV_DNSMASQ="$CFG_DIR/dnsmasq-previous.conf"
-PREV_SERVICES="$CFG_DIR/services-previous.conf"
 BASELINE_DIR="$BASE_DIR/baseline"
 BASELINE_MANIFEST="$BASELINE_DIR/manifest"
 BASELINE_LAST="$BASELINE_DIR/last-applied.manifest"
 BASELINE_META="$BASELINE_DIR/meta"
 OWNERSHIP="$STATE_DIR/ownership.conf"
 MTU_BEFORE="$STATE_DIR/mtu-before-zone.conf"
-LEGACY_MTU_BEFORE="$STATE_DIR/mtu-before.conf"
 NTP_CLIENTS_BEFORE="$STATE_DIR/ntp-clients-before.conf"
 FORCE_DNS_BEFORE="$STATE_DIR/force-dns-before.conf"
 TEST_RESULTS="$STATE_DIR/dns-test-results.conf"
@@ -590,9 +587,6 @@ baseline_capture_once() {
     [ -s "$BASELINE_MANIFEST" ] && return 0
     mkdir -p "$BASELINE_DIR/files" || return 1
     : > "$BASELINE_MANIFEST"
-    _legacy=0
-    [ -s "$OWNERSHIP" ] && _legacy=1
-    [ -s "$PREV_DNSMASQ" ] && _legacy=1
     while IFS= read -r _f; do
         [ -n "$_f" ] || continue
         _k="$(baseline_key "$_f")"
@@ -608,15 +602,11 @@ $(baseline_files)
 EOF_BASELINE
     printf 'created_at=%s\n' "$(date +%s)" > "$BASELINE_META"
     printf 'manager_version=%s\n' "$VERSION" >> "$BASELINE_META"
-    printf 'legacy=%s\n' "$_legacy" >> "$BASELINE_META"
-    if [ "$_legacy" = 1 ]; then
-        printf 'restorable=0\n' >> "$BASELINE_META"
-        warn_msg "Найдена старая настройка. Полное автоматическое восстановление недоступно."
-    else
-        printf 'restorable=1\n' >> "$BASELINE_META"
-        info_msg "Исходная копия сохранена."
-    fi
-    log_tx "BASELINE" "router" "CAPTURE" "OK" "dir=$BASELINE_DIR;legacy=$_legacy"
+    printf 'clean_profile=1\n' >> "$BASELINE_META"
+    printf 'openwrt_release=%s\n' "$SYS_OWRT" >> "$BASELINE_META"
+    printf 'firewall=%s\n' "$SYS_FW" >> "$BASELINE_META"
+    info_msg "Исходная конфигурация чистого OpenWrt сохранена."
+    log_tx "BASELINE" "router" "CAPTURE" "OK" "dir=$BASELINE_DIR;clean_profile=1"
 }
 baseline_mark_applied() {
     [ -s "$BASELINE_MANIFEST" ] || return 1
@@ -635,7 +625,7 @@ baseline_mark_applied() {
 baseline_restore_if_safe() {
     [ -s "$BASELINE_MANIFEST" ] || return 1
     [ -s "$BASELINE_LAST" ] || return 1
-    grep -q '^restorable=1$' "$BASELINE_META" 2>/dev/null || return 1
+    grep -q '^clean_profile=1$' "$BASELINE_META" 2>/dev/null || return 1
     _conflict=0
     while IFS='|' read -r _f _k _last_existed _last_hash; do
         [ -n "$_f" ] || continue
@@ -1085,23 +1075,6 @@ firewall_ref_matches_zone() {
     _aname="$(firewall_zone_name "$_actual" 2>/dev/null)"
     _ename="$(firewall_zone_name "$_expected" 2>/dev/null)"
     [ -n "$_aname" ] && [ -n "$_ename" ] && [ "$_aname" = "$_ename" ]
-}
-firewall_cleanup_legacy_web_rule() {
-    firewall_resolve_zones
-    [ -n "$FIREWALL_LAN_ZONE" ] || return 0
-    [ -n "$FIREWALL_WAN_ZONE" ] || return 0
-    if [ "$(uci -q get "firewall.$FW_WEB_SECTION" 2>/dev/null)" = rule ]; then
-        if firewall_ref_matches_zone "$(uci -q get "firewall.$FW_WEB_SECTION.src" 2>/dev/null)" "$FIREWALL_LAN_ZONE" \
-           && firewall_ref_matches_zone "$(uci -q get "firewall.$FW_WEB_SECTION.dest" 2>/dev/null)" "$FIREWALL_WAN_ZONE" \
-           && [ "$(uci -q get "firewall.$FW_WEB_SECTION.proto" 2>/dev/null)" = udp ] \
-           && [ "$(uci -q get "firewall.$FW_WEB_SECTION.dest_port" 2>/dev/null)" = 443 ] \
-           && [ "$(uci -q get "firewall.$FW_WEB_SECTION.target" 2>/dev/null)" = REJECT ]; then
-            uci -q delete "firewall.$FW_WEB_SECTION" || return 1
-            firewall_owner_remove "$FW_WEB_SECTION" >/dev/null 2>&1 || true
-            return 2
-        fi
-    fi
-    return 0
 }
 firewall_lan_zone_require() {
     firewall_resolve_zones
@@ -2376,19 +2349,9 @@ dnsmasq_manager_server_owned() {
 reconcile_dnsmasq() {
     sec="$(get_dnsmasq_section)"
     uci -q get "dhcp.$sec" >/dev/null 2>&1 || return 1
-    [ -s "$PREV_DNSMASQ" ] || {
-      {
-        printf 'SERVER\n'
-        uci -q get "dhcp.$sec.server" 2>/dev/null | tr ' ' '\n'
-        printf 'ALLSERVERS=%s\n' "$(uci -q get "dhcp.$sec.allservers" 2>/dev/null)"
-        printf 'STRICTORDER=%s\n' "$(uci -q get "dhcp.$sec.strictorder" 2>/dev/null)"
-        printf 'NORESOLV=%s\n' "$(uci -q get "dhcp.$sec.noresolv" 2>/dev/null)"
-        printf 'SECTION=%s\n' "$sec"
-      } > "$PREV_DNSMASQ" 2>/dev/null || true
-    }
-    # DNS Manager is authoritative for upstream DNS in this profile.
-    # Rebuild the server list from scratch so stale/foreign DNS entries cannot
-    # survive an apply. The original values are preserved in PREV_DNSMASQ.
+    # On a clean OpenWrt baseline DNS Manager is authoritative for upstream DNS.
+    # Rebuild the server list from scratch so stale entries from an earlier apply
+    # cannot survive. Full rollback is handled by the baseline snapshot.
     while uci -q delete "dhcp.$sec.server" >/dev/null 2>&1; do :; done
     for s in 1 2 3 4 5 6; do
         eval "id=\${SLOT_$s}"; eval "p=\${PORT_$s}"
@@ -2489,19 +2452,6 @@ firewall_ownership_sync() {
         esac
     done < "$FIREWALL_OWNERSHIP"
     mv "$_tmp" "$FIREWALL_OWNERSHIP" 2>/dev/null || rm -f "$_tmp"
-    return 0
-}
-firewall_migrate_legacy_owned() {
-    mkdir -p "$CFG_DIR" 2>/dev/null || return 0
-    # Previous DNS Manager versions used reserved section IDs without an ownership registry.
-    # Migrate only when the full rule signature matches the known manager rule.
-    firewall_section_owned_redirect "$FW_NTP_SECTION" "$FIREWALL_LAN_ZONE" udp 123 "$LAN_IP" 123 DNAT && firewall_owner_add "$FW_NTP_SECTION"
-    firewall_section_owned_redirect "$FW_DNS_REDIRECT_SECTION" "$FIREWALL_LAN_ZONE" 'tcp udp' 53 "$LAN_IP" 53 DNAT && firewall_owner_add "$FW_DNS_REDIRECT_SECTION"
-    firewall_quic_rule_matches "$FW_QUIC80_SECTION" 80 && firewall_owner_add "$FW_QUIC80_SECTION"
-    firewall_quic_rule_matches "$FW_QUIC443_SECTION" 443 && firewall_owner_add "$FW_QUIC443_SECTION"
-    if [ "$(uci -q get "firewall.$FW_DOT_SECTION" 2>/dev/null)" = rule ] && firewall_ref_matches_zone "$(uci -q get "firewall.$FW_DOT_SECTION.src" 2>/dev/null)" "$FIREWALL_LAN_ZONE" && firewall_ref_matches_zone "$(uci -q get "firewall.$FW_DOT_SECTION.dest" 2>/dev/null)" "$FIREWALL_WAN_ZONE" && [ "$(uci -q get "firewall.$FW_DOT_SECTION.proto" 2>/dev/null)" = 'tcp udp' ] && [ "$(uci -q get "firewall.$FW_DOT_SECTION.dest_port" 2>/dev/null)" = 853 ] && [ "$(uci -q get "firewall.$FW_DOT_SECTION.target" 2>/dev/null)" = REJECT ]; then firewall_owner_add "$FW_DOT_SECTION"; fi
-    if [ "$(uci -q get "firewall.$FW_WEB_SECTION" 2>/dev/null)" = rule ] && firewall_ref_matches_zone "$(uci -q get "firewall.$FW_WEB_SECTION.src" 2>/dev/null)" "$FIREWALL_LAN_ZONE" && [ "$(uci -q get "firewall.$FW_WEB_SECTION.proto" 2>/dev/null)" = tcp ] && [ "$(uci -q get "firewall.$FW_WEB_SECTION.dest_port" 2>/dev/null)" = "$WEB_ACCESS_PORT" ] && [ "$(uci -q get "firewall.$FW_WEB_SECTION.target" 2>/dev/null)" = ACCEPT ]; then firewall_owner_add "$FW_WEB_SECTION"; fi
-    firewall_ownership_sync
     return 0
 }
 firewall_find_exact_quic() {
@@ -2643,25 +2593,6 @@ sysctl_extended_managed_files() {
     [ -f "/etc/sysctl.d/91-dns-manager-extended.conf" ] && printf '%s\n' "/etc/sysctl.d/91-dns-manager-extended.conf"
 }
 
-migrate_legacy_manager_files() {
-    _src="/etc/sysctl.d/98-dns-manager.conf"
-    _dst="/etc/sysctl.d/90-dns-manager.conf"
-    if [ -f "$_src" ] && [ ! -f "$_dst" ] && sysctl_base_file_owned "$_src"; then
-        cp -p "$_src" "$_dst" 2>/dev/null || return 1
-        rm -f "$_src" 2>/dev/null || return 1
-    elif [ -f "$_src" ] && [ -f "$_dst" ] && sysctl_base_file_owned "$_src"; then
-        rm -f "$_src" 2>/dev/null || return 1
-    fi
-    _src="/etc/sysctl.d/99-dns-manager-extended.conf"
-    _dst="/etc/sysctl.d/91-dns-manager-extended.conf"
-    if [ -f "$_src" ] && [ ! -f "$_dst" ] && sysctl_extended_file_owned "$_src"; then
-        cp -p "$_src" "$_dst" 2>/dev/null || return 1
-        rm -f "$_src" 2>/dev/null || return 1
-    elif [ -f "$_src" ] && [ -f "$_dst" ] && sysctl_extended_file_owned "$_src"; then
-        rm -f "$_src" 2>/dev/null || return 1
-    fi
-    return 0
-}
 
 sysctl_base_expected() {
     cat <<EOF_SYSCTL_BASE_EXPECTED
@@ -4235,9 +4166,7 @@ _apply_settings_impl() {
     baseline_capture_once || { err_msg "Не удалось сохранить исходную копию. Настройки не изменены."; return 1; }
     tx_snapshot_start || { err_msg "Не удалось сохранить копию настроек. Настройки не изменены."; return 1; }
     DEFER_CONFIG_SAVE=1
-    migrate_legacy_manager_files || { err_msg "Не удалось обновить внутренние файлы DNS Manager."; tx_restore_on_failure; return 1; }
     : > "$OWNERSHIP" || { err_msg "Не удалось подготовить снимок ownership для текущего применения."; tx_restore_on_failure; return 1; }
-    firewall_migrate_legacy_owned >/dev/null 2>&1 || true
     log_tx "PLAN" "all" "APPLY" "START" "version=$VERSION"
     if [ "$NTP_IP_FALLBACK" = 1 ]; then
         apply_ntp_host_ips || { err_msg "Не удалось подготовить серверы времени."; tx_restore_on_failure; return 1; }
@@ -4392,77 +4321,31 @@ restore_hdp_control_from_baseline() {
     uci commit https-dns-proxy 2>/dev/null || true
 }
 _rollback_ours_impl() {
-clear_screen
-WEB_ACCESS_ENABLED=0
-web_access_luci_remove
-web_access_remove_config
-web_access_remove_firewall
-watchdog_cron_remove_owned_block >/dev/null 2>&1 || true
-printf "${C_YELLOW}=== 🔄 Удаление изменений DNS Manager ===${C_NC}\n"
-if baseline_restore_if_safe; then
+    clear_screen
     WEB_ACCESS_ENABLED=0
     web_access_luci_remove
     web_access_remove_config
     web_access_remove_firewall
-    /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || true
-    /etc/init.d/dnsmasq restart >/dev/null 2>&1 || true
-    reload_fw >/dev/null 2>&1 || true
-    rm -f "$BASELINE_LAST" 2>/dev/null
-    firewall_ownership_sync >/dev/null 2>&1 || true
-    ok_msg "Исходное состояние до первого захвата DNS Manager восстановлено. Исходная копия сохранён для аудита и повторного применения."
+    watchdog_cron_remove_owned_block >/dev/null 2>&1 || true
+    printf "${C_YELLOW}=== 🔄 Восстановление чистого состояния OpenWrt ===${C_NC}\n"
+
+    if baseline_restore_if_safe; then
+        /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || true
+        /etc/init.d/dnsmasq restart >/dev/null 2>&1 || true
+        reload_fw >/dev/null 2>&1 || true
+        rm -f "$BASELINE_LAST" 2>/dev/null || true
+        firewall_ownership_sync >/dev/null 2>&1 || true
+        ok_msg "Исходное состояние чистого OpenWrt восстановлено."
+        pause
+        return 0
+    fi
+
+    err_msg "Безопасный откат невозможен: отсутствует или повреждён снимок чистого OpenWrt."
+    err_msg "Ничего чужого автоматически не удаляю."
     pause
-    return 0
-fi
-while uci -q get "https-dns-proxy.@https-dns-proxy[0]" >/dev/null 2>&1; do
-uci -q delete "https-dns-proxy.@https-dns-proxy[0]" || break
-done
-uci commit https-dns-proxy 2>/dev/null
-restore_hdp_control_from_baseline
-sec="$(get_dnsmasq_section)"
-# DNS Manager owns the active upstream-DNS zone. In legacy fallback mode
-# restore the captured pre-manager dnsmasq values when available; otherwise clear
-# the manager's canonical upstream list so a fresh apply starts cleanly.
-if [ -s "$PREV_DNSMASQ" ]; then
-    _oldsec="$(sed -n 's/^SECTION=//p' "$PREV_DNSMASQ" 2>/dev/null | head -n1)"
-    [ -n "$_oldsec" ] && sec="$_oldsec"
-    while uci -q delete "dhcp.$sec.server" >/dev/null 2>&1; do :; done
-    _old_servers="$(sed -n '/^SERVER$/,/^ALLSERVERS=/p' "$PREV_DNSMASQ" 2>/dev/null | sed '1d;/^ALLSERVERS=/d')"
-    for _v in $_old_servers; do uci add_list "dhcp.$sec.server=$_v" 2>/dev/null || true; done
-    _as="$(sed -n 's/^ALLSERVERS=//p' "$PREV_DNSMASQ" 2>/dev/null | head -n1)"
-    _so="$(sed -n 's/^STRICTORDER=//p' "$PREV_DNSMASQ" 2>/dev/null | head -n1)"
-    _nr="$(sed -n 's/^NORESOLV=//p' "$PREV_DNSMASQ" 2>/dev/null | head -n1)"
-    [ -n "$_as" ] && uci set "dhcp.$sec.allservers=$_as" || uci -q delete "dhcp.$sec.allservers"
-    [ -n "$_so" ] && uci set "dhcp.$sec.strictorder=$_so" || uci -q delete "dhcp.$sec.strictorder"
-    [ -n "$_nr" ] && uci set "dhcp.$sec.noresolv=$_nr" || uci -q delete "dhcp.$sec.noresolv"
-    uci commit dhcp 2>/dev/null || true
-    rm -f "$PREV_DNSMASQ" 2>/dev/null
-else
-    while uci -q delete "dhcp.$sec.server" >/dev/null 2>&1; do :; done
-    uci commit dhcp 2>/dev/null || true
-fi
-quic_remove_managed_rules >/dev/null 2>&1 || true
-uci commit firewall 2>/dev/null
-remove_ntp_clients >/dev/null 2>&1 || true
-remove_client_fixes >/dev/null 2>&1 || true
-remove_dnsmasq_perf >/dev/null 2>&1 || true
-remove_sysctl_extended >/dev/null 2>&1 || true
-for _sf in /etc/sysctl.d/90-dns-manager.conf; do
-    [ -f "$_sf" ] || continue
-    sysctl_base_file_owned "$_sf" || continue
-    for kv in net.ipv4.tcp_fastopen net.ipv4.tcp_fin_timeout net.core.somaxconn; do
-        old="$(awk -F'|' -v k="$kv" '$1==k{print $2;exit}' "$STATE_DIR/sysctl-before.conf" 2>/dev/null)"
-        cur="$(sysctl -n "$kv" 2>/dev/null)"
-        mgr="$(awk -F'=' -v k="$kv" '$1==k{print $2;exit}' "$_sf" 2>/dev/null)"
-        [ -n "$old" ] && [ -n "$mgr" ] && [ "$cur" = "$mgr" ] && [ "$old" != unknown ] && sysctl -w "$kv=$old" >/dev/null 2>&1
-    done
-    rm -f "$_sf" "$STATE_DIR/sysctl-before.conf"
-done
-/etc/init.d/https-dns-proxy restart 2>/dev/null
-/etc/init.d/dnsmasq restart 2>/dev/null
-printf "${C_GREEN}✓ Изменения обработаны.${C_NC}\n"
-printf "${C_YELLOW}! Изменения вне зоны DNS Manager не затрагивались.${C_NC}\n"
-pause
+    return 1
 }
+
 rollback_ours() {
     acquire_mutation_lock || return 1
     _rc=0
@@ -5018,14 +4901,6 @@ firewall_wan_zone() {
     firewall_wan_zone_require
 }
 
-cleanup_legacy_mtu_default() {
-    _legacy_mtu="$(uci -q get firewall.@defaults[0].mtu_fix 2>/dev/null)"
-    [ "$_legacy_mtu" = 1 ] || return 0
-    uci -q delete firewall.@defaults[0].mtu_fix || return 1
-    rm -f "$LEGACY_MTU_BEFORE" 2>/dev/null || true
-    log_msg "Миграция MTU/MSS: удалена устаревшая firewall.@defaults[0].mtu_fix; параметр управляется через WAN-зону."
-    return 0
-}
 
 apply_mtu_toggle() {
     _wan_zone="$(firewall_wan_zone 2>/dev/null)" || return 1
@@ -5034,7 +4909,6 @@ apply_mtu_toggle() {
             printf '%s\n' "$(uci -q get "firewall.$_wan_zone.mtu_fix" 2>/dev/null)" > "$MTU_BEFORE" || return 1
         fi
         uci -q set "firewall.$_wan_zone.mtu_fix=1" || return 1
-        cleanup_legacy_mtu_default || return 1
     else
         if [ -s "$MTU_BEFORE" ]; then
             _old="$(head -n1 "$MTU_BEFORE" 2>/dev/null)"
@@ -5052,9 +4926,7 @@ apply_mtu_toggle() {
         else
             warn_msg "MTU/MSS: нет снимка владения DNS Manager. Текущее значение WAN mtu_fix сохранено."
         fi
-        cleanup_legacy_mtu_default || return 1
     fi
-    rm -f "$LEGACY_MTU_BEFORE" 2>/dev/null || true
     uci commit firewall >/dev/null 2>&1 || return 1
     reload_fw >/dev/null 2>&1 || return 1
     return 0
@@ -5294,13 +5166,6 @@ web_access_cmdline_is_ours() {
     esac
     return 1
 }
-web_access_cleanup_legacy_uci() {
-    _legacy_cmd="$(uci -q get "ttyd.$WEB_TTYD_SECTION.command" 2>/dev/null || true)"
-    if [ "$_legacy_cmd" = "/usr/bin/dns-manager" ]; then
-        uci -q delete "ttyd.$WEB_TTYD_SECTION" || true
-        uci commit ttyd >/dev/null 2>&1 || true
-    fi
-}
 web_access_write_service() {
     mkdir -p /etc/init.d /var/run 2>/dev/null || return 1
     cat > "$WEB_SERVICE_CONFIG" <<'EOF_WEB_INIT'
@@ -5384,7 +5249,6 @@ web_access_install() {
     fi
     command -v ttyd >/dev/null 2>&1 || return 1
     web_access_write_service || return 1
-    web_access_cleanup_legacy_uci
     return 0
 }
 web_access_write_config() {
@@ -5395,7 +5259,6 @@ web_access_remove_config() {
         "$WEB_SERVICE_CONFIG" disable >/dev/null 2>&1 || true
     fi
     web_access_stop
-    web_access_cleanup_legacy_uci
     rm -f "$WEB_SERVICE_CONFIG" 2>/dev/null || true
     return 0
 }
@@ -5432,7 +5295,6 @@ web_access_restart() {
 }
 web_access_firewall() {
     firewall_lan_zone_require >/dev/null || return 1
-    firewall_cleanup_legacy_web_rule >/dev/null 2>&1 || true
     _external_web="$(firewall_find_exact_rule_signature web "$FW_WEB_SECTION" "$WEB_ACCESS_PORT" 2>/dev/null)"
     if uci -q get "firewall.$FW_WEB_SECTION" >/dev/null 2>&1; then
         firewall_owner_has "$FW_WEB_SECTION" || return 2
@@ -5459,7 +5321,6 @@ web_access_firewall() {
     reload_fw >/dev/null 2>&1 || return 1
 }
 web_access_remove_firewall() {
-    firewall_cleanup_legacy_web_rule >/dev/null 2>&1 || true
     firewall_resolve_zones
     if uci -q get "firewall.$FW_WEB_SECTION" >/dev/null 2>&1; then
         if firewall_owner_has "$FW_WEB_SECTION" && firewall_ref_matches_zone "$(uci -q get "firewall.$FW_WEB_SECTION.src" 2>/dev/null)" "$FIREWALL_LAN_ZONE" && [ "$(uci -q get "firewall.$FW_WEB_SECTION.proto" 2>/dev/null)" = tcp ] && [ "$(uci -q get "firewall.$FW_WEB_SECTION.dest_port" 2>/dev/null)" = "$WEB_ACCESS_PORT" ] && [ "$(uci -q get "firewall.$FW_WEB_SECTION.target" 2>/dev/null)" = ACCEPT ]; then
@@ -6731,93 +6592,6 @@ watchdog_cron_marker_exists() {
     [ -n "$WATCHDOG_CRON_FILE" ] && [ -f "$WATCHDOG_CRON_FILE" ] || return 1
     grep -Fqx -- "$WATCHDOG_CRON_MARKER" "$WATCHDOG_CRON_FILE" 2>/dev/null
 }
-watchdog_cron_legacy_count() {
-    watchdog_cron_scheduler_detect
-    [ -n "$WATCHDOG_CRON_FILE" ] && [ -f "$WATCHDOG_CRON_FILE" ] || { printf '0\n'; return 0; }
-    awk -v mp="$MANAGER_PATH" '
-        $0 ~ /^# DNS_MANAGER_WATCHDOG_SPEC=[0-9][0-9]*$/ {seen=1; next}
-        seen==1 {
-            if ($0 !~ /^[[:space:]]*#/ && $0 ~ mp"[[:space:]]+(watchdog|-w|--watchdog)([[:space:]]|$)") count++
-            seen=0
-        }
-        END {print count+0}
-    ' "$WATCHDOG_CRON_FILE" 2>/dev/null
-}
-watchdog_cron_migrate_legacy_owned_block() {
-    _desired="$1"
-    watchdog_cron_scheduler_detect
-    [ -n "$WATCHDOG_CRON_FILE" ] && [ -f "$WATCHDOG_CRON_FILE" ] || return 1
-    _count="$(watchdog_cron_legacy_count)"
-    case "$_count" in ''|*[!0-9]*) _count=0;; esac
-    [ "$_count" -eq 1 ] || return 1
-    _cron_before="$(file_hash "$WATCHDOG_CRON_FILE" 2>/dev/null)"
-    _tmp="$WATCHDOG_CRON_FILE.dns-manager.$$"
-    awk -v mp="$MANAGER_PATH" -v marker="$WATCHDOG_CRON_MARKER" -v desired="$_desired" '
-        $0 ~ /^# DNS_MANAGER_WATCHDOG_SPEC=[0-9][0-9]*$/ && !replaced {
-            old_marker=$0; seen=1; next
-        }
-        seen==1 {
-            if ($0 !~ /^[[:space:]]*#/ && $0 ~ mp"[[:space:]]+(watchdog|-w|--watchdog)([[:space:]]|$)") {
-                print marker
-                print desired
-                seen=0
-                replaced=1
-                next
-            }
-            print old_marker
-            print
-            old_marker=""
-            seen=0
-            next
-        }
-        {print}
-        END {if (seen==1 && old_marker!="") print old_marker}
-    ' "$WATCHDOG_CRON_FILE" > "$_tmp" 2>/dev/null || { rm -f "$_tmp"; return 1; }
-    watchdog_cron_preserve_attrs "$WATCHDOG_CRON_FILE" "$_tmp"
-    watchdog_cron_atomic_replace "$WATCHDOG_CRON_FILE" "$_tmp" "$_cron_before"
-    _ar=$?
-    [ "$_ar" -eq 0 ] || { rm -f "$_tmp" 2>/dev/null || true; return "$_ar"; }
-    return 0
-}
-watchdog_cron_remove_legacy_owned_block() {
-    watchdog_cron_scheduler_detect
-    [ -n "$WATCHDOG_CRON_FILE" ] && [ -f "$WATCHDOG_CRON_FILE" ] || return 0
-    _count="$(watchdog_cron_legacy_count)"
-    case "$_count" in ''|*[!0-9]*) _count=0;; esac
-    [ "$_count" -eq 1 ] || return 0
-    _cron_before="$(file_hash "$WATCHDOG_CRON_FILE" 2>/dev/null)"
-    _tmp="$WATCHDOG_CRON_FILE.dns-manager.$$"
-    awk -v mp="$MANAGER_PATH" '
-        $0 ~ /^# DNS_MANAGER_WATCHDOG_SPEC=[0-9][0-9]*$/ && !removed {
-            old_marker=$0; seen=1; next
-        }
-        seen==1 {
-            if ($0 !~ /^[[:space:]]*#/ && $0 ~ mp"[[:space:]]+(watchdog|-w|--watchdog)([[:space:]]|$)") {
-                seen=0
-                old_marker=""
-                removed=1
-                next
-            }
-            print old_marker
-            print
-            old_marker=""
-            seen=0
-            next
-        }
-        {print}
-        END {if (seen==1 && old_marker!="") print old_marker}
-    ' "$WATCHDOG_CRON_FILE" > "$_tmp" 2>/dev/null || { rm -f "$_tmp"; return 1; }
-    if ! cmp -s "$_tmp" "$WATCHDOG_CRON_FILE" 2>/dev/null; then
-        watchdog_cron_preserve_attrs "$WATCHDOG_CRON_FILE" "$_tmp"
-        watchdog_cron_atomic_replace "$WATCHDOG_CRON_FILE" "$_tmp" "$_cron_before"
-        _ar=$?
-        [ "$_ar" -eq 0 ] || { rm -f "$_tmp" 2>/dev/null || true; return "$_ar"; }
-        watchdog_cron_scheduler_apply >/dev/null 2>&1 || true
-    else
-        rm -f "$_tmp" 2>/dev/null || true
-    fi
-    return 0
-}
 watchdog_cron_remove_owned_block() {
     watchdog_cron_scheduler_detect
     [ -n "$WATCHDOG_CRON_FILE" ] && [ -f "$WATCHDOG_CRON_FILE" ] || { rm -f "$WATCHDOG_CRON_STATE" 2>/dev/null || true; return 0; }
@@ -6850,7 +6624,6 @@ watchdog_cron_remove_owned_block() {
         return 2
     fi
     rm -f "$WATCHDOG_CRON_STATE" 2>/dev/null || true
-    watchdog_cron_remove_legacy_owned_block || true
     return 0
 }
 watchdog_cron_sync() {
@@ -6887,16 +6660,6 @@ watchdog_cron_sync() {
     watchdog_cron_read_state
 
     if [ "${WATCHDOG_ENABLED:-0}" = 1 ]; then
-        if watchdog_cron_legacy_count | grep -q '^1$' && ! watchdog_cron_marker_exists; then
-            if watchdog_cron_migrate_legacy_owned_block "$_desired"; then
-                watchdog_cron_write_state owned "$_desired" || return 1
-                watchdog_cron_scheduler_apply >/dev/null 2>&1 || return 1
-                return 0
-            fi
-            log_msg "Cron: обнаружена старая запись DNS Manager, но безопасная миграция не выполнена. Чужие записи не изменяю."
-            watchdog_cron_write_state conflict "" || true
-            return 2
-        fi
         if watchdog_cron_owned_block_status "$_desired"; then
             watchdog_cron_write_state owned "$_desired" || return 1
             return 0
