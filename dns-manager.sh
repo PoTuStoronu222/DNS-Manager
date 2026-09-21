@@ -2,7 +2,7 @@
 MANAGER_PATH="/usr/bin/dns-manager"
 # ==========================================
 # ==========================================
-VERSION="2.60"
+VERSION="2.62"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -69,6 +69,7 @@ FIREWALL_LAN_ZONE=""
 FIREWALL_WAN_ZONE=""
 FIREWALL_LAN_NAME=""
 FIREWALL_WAN_NAME=""
+FIREWALL_WAN_NETWORK=""
 WATCHDOG_CRON_STATE="$STATE_DIR/watchdog-cron.state"
 WATCHDOG_CRON_MARKER="# DNS_MANAGER_MANAGED_WATCHDOG=1"
 WATCHDOG_CRON_FILE=""
@@ -176,9 +177,7 @@ cleanup_stale_tmp_dirs() {
                     esac
                 fi
 
-                # Процесс живой, но не похож на DNS Manager.
-                # Удаляем только действительно старые каталоги.
-                find "$_old_dir" -maxdepth 0 -mmin +30 -exec rm -rf {} \; 2>/dev/null || true
+                # PID жив: каталог не трогаем. Это безопаснее при переиспользовании PID.
                 continue
             fi
 
@@ -527,15 +526,41 @@ printf "${C_YELLOW}${C_BOLD}Выберите пункт: ${C_NC}"
 # ==========================================
 # ==========================================
 preflight_readonly() {
-[ "$(id -u 2>/dev/null)" = 0 ] || { err_msg "Нужны права root."; exit 1; }
-[ -f /etc/openwrt_release ] || { err_msg "Это не OpenWrt."; exit 1; }
-if command -v apk >/dev/null 2>&1; then PKG_MGR="apk"; else PKG_MGR="opkg"; fi
-command -v timeout >/dev/null 2>&1 && HAVE_TIMEOUT=yes || HAVE_TIMEOUT=no
-SYS_OWRT="$(sed -n "s/^DISTRIB_RELEASE='\([^']*\)'.*/\1/p" /etc/openwrt_release | head -n1)"
-SYS_REV="$(sed -n "s/^DISTRIB_REVISION='\([^']*\)'.*/\1/p" /etc/openwrt_release | head -n1)"
-SYS_TARGET="$(sed -n "s/^DISTRIB_TARGET='\([^']*\)'.*/\1/p" /etc/openwrt_release | head -n1)"
-SYS_ARCH="$(sed -n "s/^DISTRIB_ARCH='\([^']*\)'.*/\1/p" /etc/openwrt_release | head -n1)"
+    [ "$(id -u 2>/dev/null)" = 0 ] || { err_msg "Нужны права root."; exit 1; }
+    [ -f /etc/openwrt_release ] || { err_msg "Это не OpenWrt."; exit 1; }
+    command -v timeout >/dev/null 2>&1 && HAVE_TIMEOUT=yes || HAVE_TIMEOUT=no
+    SYS_OWRT="$(sed -n "s/^DISTRIB_RELEASE='\([^']*\)'.*/\1/p" /etc/openwrt_release | head -n1)"
+    SYS_REV="$(sed -n "s/^DISTRIB_REVISION='\([^']*\)'.*/\1/p" /etc/openwrt_release | head -n1)"
+    SYS_TARGET="$(sed -n "s/^DISTRIB_TARGET='\([^']*\)'.*/\1/p" /etc/openwrt_release | head -n1)"
+    SYS_ARCH="$(sed -n "s/^DISTRIB_ARCH='\([^']*\)'.*/\1/p" /etc/openwrt_release | head -n1)"
+
+    # OpenWrt 24.10 and older use opkg; 25.12+ uses apk. Prefer the
+    # release-native manager when a custom image contains both tools.
+    case "$SYS_OWRT" in
+        25.*|26.*|27.*|[3-9][0-9].*)
+            if command -v apk >/dev/null 2>&1; then
+                PKG_MGR="apk"
+            elif command -v opkg >/dev/null 2>&1; then
+                PKG_MGR="opkg"
+                log_msg "Предупреждение: OpenWrt $SYS_OWRT ожидает apk, но найден только opkg; использую доступный менеджер пакетов."
+            else
+                PKG_MGR="unknown"
+            fi
+            ;;
+        *)
+            if command -v opkg >/dev/null 2>&1; then
+                PKG_MGR="opkg"
+            elif command -v apk >/dev/null 2>&1; then
+                PKG_MGR="apk"
+                log_msg "Предупреждение: OpenWrt $SYS_OWRT ожидает opkg, но найден только apk; использую доступный менеджер пакетов."
+            else
+                PKG_MGR="unknown"
+            fi
+            ;;
+    esac
+    [ "$PKG_MGR" != unknown ] || { err_msg "Не найден менеджер пакетов opkg/apk."; exit 1; }
 }
+
 # ==========================================
 # ==========================================
 init_dirs() {
@@ -778,6 +803,7 @@ EOF_DNS
 fi
 if [ ! -s "$NTP_CATALOG" ] || ! grep -q '^# NTPCATVER=6.6-FINAL-HYBRID' "$NTP_CATALOG" 2>/dev/null; then
 cat > "$NTP_CATALOG" <<'EOF_NTP'
+# NTPCATVER=6.6-FINAL-HYBRID
 cf_ip|global|Cloudflare|162.159.200.1 162.159.200.123|2606:4700:f1::1 2606:4700:f1::123|ip-first|no-smear|verified-current
 nist_ip|global|NIST|129.6.15.28 129.6.15.29 129.6.15.30 129.6.15.27 129.6.15.26|2610:20:6f15:15::27 2610:20:6f15:15::26|ip-first|no-smear|verified-current
 google_ip|special|Google Public NTP|216.239.35.0 216.239.35.4 216.239.35.8 216.239.35.12||ip-only|smear|verified-current
@@ -792,6 +818,7 @@ EOF_NTP
 fi
 if [ ! -s "$BOOTSTRAP_CATALOG" ] || ! grep -q '^# BOOTSTRAPCATVER=6.6-FIX13' "$BOOTSTRAP_CATALOG" 2>/dev/null; then
 cat > "$BOOTSTRAP_CATALOG" <<'EOF_BOOT'
+# BOOTSTRAPCATVER=6.6-FIX13
 yandex|Yandex|77.88.8.8,77.88.8.1|2a02:6b8::feed:0ff,2a02:6b8:0:1::feed:0ff|bootstrap|verified-current
 adguard|AdGuard|94.140.14.14,94.140.15.15|2a10:50c0::ad1:ff,2a10:50c0::ad2:ff|bootstrap|verified-current
 cloudflare|Cloudflare|1.1.1.1,1.0.0.1|2606:4700:4700::1111,2606:4700:4700::1001|bootstrap|verified-current
@@ -805,6 +832,7 @@ EOF_BOOT
 fi
 if [ ! -s "$BOGUS_CATALOG" ] || ! grep -q '^# BOGUSCATVER=6.6-FIX13' "$BOGUS_CATALOG" 2>/dev/null; then
 cat > "$BOGUS_CATALOG" <<'EOF_BOGUS'
+# BOGUSCATVER=6.6-FIX13
 rtk_95_167|hijack|95.167.13.50|Ростелеком: исторически подтвержденная заглушка|high|historical-confirmed
 ttk_62_33|hijack|62.33.207.195|ТТК: исторически указанный адрес|medium|historical-confirmed
 onlime_77_37|hijack|77.37.254.90|Онлайм: исторически указанный адрес|medium|historical-confirmed
@@ -938,13 +966,20 @@ firewall_resolve_zones() {
     FIREWALL_WAN_ZONE=""
     FIREWALL_LAN_NAME=""
     FIREWALL_WAN_NAME=""
+    FIREWALL_WAN_NETWORK=""
+
     _lan_zone=""
-    _wan_zone=""
     _lan_name=""
-    _wan_name=""
     _lan_count=0
+    _wan_zone=""
+    _wan_name=""
+    _wan_net=""
     _wan_count=0
+
     _zones="$(uci show firewall 2>/dev/null | sed -n 's/^firewall\.\([^.=]*\)=zone$/\1/p')"
+
+    # LAN is deliberately resolved from the logical network name "lan".
+    # This works on both old and new OpenWrt syntax and avoids assuming br-lan.
     for _z in $_zones; do
         _nets="$(uci -q get "firewall.$_z.network" 2>/dev/null)"
         printf '%s\n' "$_nets" | tr ' ' '\n' | grep -qxF lan 2>/dev/null && {
@@ -952,14 +987,80 @@ firewall_resolve_zones() {
             _lan_name="$(uci -q get "firewall.$_z.name" 2>/dev/null)"
             _lan_count=$((_lan_count+1))
         }
-        printf '%s\n' "$_nets" | tr ' ' '\n' | grep -qxF wan 2>/dev/null && {
+    done
+
+    # Prefer the conventional WAN logical network first. A modem router may use
+    # wwan/cellular/lte/5g/modem instead, so the resolver also maps the firewall
+    # zone to the interface carrying the current default route.
+    _preferred_wan_nets="wan wwan wwan0 cellular mobile lte lte0 5g 5g0 modem usbwan"
+    for _z in $_zones; do
+        _nets="$(uci -q get "firewall.$_z.network" 2>/dev/null)"
+        for _n in $_preferred_wan_nets; do
+            printf '%s\n' "$_nets" | tr ' ' '\n' | grep -qxF "$_n" 2>/dev/null || continue
+            _wan_count=$((_wan_count+1))
             _wan_zone="$_z"
             _wan_name="$(uci -q get "firewall.$_z.name" 2>/dev/null)"
-            _wan_count=$((_wan_count+1))
-        }
+            _wan_net="$_n"
+            break
+        done
     done
-    [ "$_lan_count" -eq 1 ] && { FIREWALL_LAN_ZONE="$_lan_zone"; FIREWALL_LAN_NAME="$_lan_name"; }
-    [ "$_wan_count" -eq 1 ] && { FIREWALL_WAN_ZONE="$_wan_zone"; FIREWALL_WAN_NAME="$_wan_name"; }
+
+    # If the conventional-name scan is ambiguous or empty, resolve from the
+    # live default-route device. This is important for QMI/MBIM, PPPoE and other
+    # modem uplinks where the firewall network can be named differently.
+    if [ "$_wan_count" -ne 1 ]; then
+        _wan_zone=""
+        _wan_name=""
+        _wan_net=""
+        _wan_count=0
+        _default_devs="$(ip -4 route show default 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev" && (i+1)<=NF){print $(i+1)}}' | sort -u)"
+        [ -n "$_default_devs" ] || _default_devs="$(ip -4 route show 0.0.0.0/0 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev" && (i+1)<=NF){print $(i+1)}}' | sort -u)"
+
+        for _z in $_zones; do
+            _nets="$(uci -q get "firewall.$_z.network" 2>/dev/null)"
+            for _n in $_nets; do
+                [ -n "$_n" ] || continue
+                _matched=0
+
+                if command -v ubus >/dev/null 2>&1; then
+                    _ustatus="$(ubus call network.interface.$_n status 2>/dev/null)"
+                    _l3="$(printf '%s\n' "$_ustatus" | sed -n 's/.*"l3_device"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)"
+                    _udev="$(printf '%s\n' "$_ustatus" | sed -n 's/.*"device"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)"
+                    for _d in $_default_devs; do
+                        [ -n "$_d" ] || continue
+                        [ "$_d" = "$_l3" ] || [ "$_d" = "$_udev" ] || continue
+                        _matched=1
+                        break
+                    done
+                fi
+
+                if [ "$_matched" = 0 ]; then
+                    _udev="$(uci -q get "network.$_n.device" 2>/dev/null)"
+                    [ -n "$_udev" ] || _udev="$(uci -q get "network.$_n.ifname" 2>/dev/null)"
+                    for _d in $_default_devs; do
+                        [ -n "$_d" ] || continue
+                        printf '%s\n' "$_udev" | tr ' ' '\n' | grep -qxF "$_d" 2>/dev/null && { _matched=1; break; }
+                    done
+                fi
+
+                [ "$_matched" = 1 ] || continue
+                _wan_count=$((_wan_count+1))
+                _wan_zone="$_z"
+                _wan_name="$(uci -q get "firewall.$_z.name" 2>/dev/null)"
+                _wan_net="$_n"
+            done
+        done
+    fi
+
+    [ "$_lan_count" -eq 1 ] && {
+        FIREWALL_LAN_ZONE="$_lan_zone"
+        FIREWALL_LAN_NAME="$_lan_name"
+    }
+    [ "$_wan_count" -eq 1 ] && {
+        FIREWALL_WAN_ZONE="$_wan_zone"
+        FIREWALL_WAN_NAME="$_wan_name"
+        FIREWALL_WAN_NETWORK="$_wan_net"
+    }
     return 0
 }
 firewall_zone_name() {
@@ -1022,34 +1123,43 @@ detect_firewall_backend() {
     SYS_FW="unknown"
     FIREWALL_BACKEND="unknown"
     FIREWALL_DETECT_SOURCE="none"
-    _fw_init="/etc/init.d/firewall"
-    if [ -x "$_fw_init" ]; then
-        if grep -Eq '(^|[[:space:];])fw4([[:space:];]|$)' "$_fw_init" 2>/dev/null; then
-            SYS_FW="fw4"
-            FIREWALL_BACKEND="fw4"
-            FIREWALL_DETECT_SOURCE="init"
-        elif grep -Eq '(^|[[:space:];])fw3([[:space:];]|$)' "$_fw_init" 2>/dev/null; then
-            SYS_FW="fw3"
-            FIREWALL_BACKEND="fw3"
-            FIREWALL_DETECT_SOURCE="init"
+
+    _has_fw4=0
+    _has_fw3=0
+    command -v fw4 >/dev/null 2>&1 && _has_fw4=1
+    command -v fw3 >/dev/null 2>&1 && _has_fw3=1
+    if [ -x /sbin/fw4 ] || [ -x /usr/sbin/fw4 ]; then _has_fw4=1; fi
+    if [ -x /sbin/fw3 ] || [ -x /usr/sbin/fw3 ]; then _has_fw3=1; fi
+
+    # Detect the backend that is actually loaded before falling back to which
+    # binary is installed. This avoids preferring fw4 merely because a helper
+    # binary happens to exist on a customized image.
+    if _has_fw4=1 && command -v nft >/dev/null 2>&1 && nft list table inet fw4 >/dev/null 2>&1; then
+        SYS_FW="fw4"
+        FIREWALL_BACKEND="fw4"
+        FIREWALL_DETECT_SOURCE="runtime"
+    elif _has_fw3=1 && [ -f /var/run/fw3.state ]; then
+        SYS_FW="fw3"
+        FIREWALL_BACKEND="fw3"
+        FIREWALL_DETECT_SOURCE="runtime"
+    fi
+
+    if [ "$SYS_FW" = unknown ]; then
+        _fw_init="/etc/init.d/firewall"
+        if [ -x "$_fw_init" ]; then
+            if [ "$_has_fw4" = 1 ] && grep -Eq '(^|[[:space:];/])fw4([[:space:];]|$)' "$_fw_init" 2>/dev/null; then
+                SYS_FW="fw4"
+                FIREWALL_BACKEND="fw4"
+                FIREWALL_DETECT_SOURCE="init"
+            elif [ "$_has_fw3" = 1 ] && grep -Eq '(^|[[:space:];/])fw3([[:space:];]|$)' "$_fw_init" 2>/dev/null; then
+                SYS_FW="fw3"
+                FIREWALL_BACKEND="fw3"
+                FIREWALL_DETECT_SOURCE="init"
+            fi
         fi
     fi
+
     if [ "$SYS_FW" = unknown ]; then
-        if [ -f /var/run/fw4.state ] && command -v nft >/dev/null 2>&1 && nft list table inet fw4 >/dev/null 2>&1; then
-            SYS_FW="fw4"
-            FIREWALL_BACKEND="fw4"
-            FIREWALL_DETECT_SOURCE="runtime"
-        elif [ -f /var/run/fw3.state ] && (command -v fw3 >/dev/null 2>&1 || [ -x /sbin/fw3 ] || [ -x /usr/sbin/fw3 ]); then
-            SYS_FW="fw3"
-            FIREWALL_BACKEND="fw3"
-            FIREWALL_DETECT_SOURCE="runtime"
-        fi
-    fi
-    if [ "$SYS_FW" = unknown ]; then
-        _has_fw4=0
-        _has_fw3=0
-        if command -v fw4 >/dev/null 2>&1 || [ -x /sbin/fw4 ] || [ -x /usr/sbin/fw4 ]; then _has_fw4=1; fi
-        if command -v fw3 >/dev/null 2>&1 || [ -x /sbin/fw3 ] || [ -x /usr/sbin/fw3 ]; then _has_fw3=1; fi
         if [ "$_has_fw4" = 1 ] && [ "$_has_fw3" = 0 ]; then
             SYS_FW="fw4"
             FIREWALL_BACKEND="fw4"
@@ -1089,6 +1199,10 @@ if [ -z "$LAN_IP" ]; then
 fi
 [ -n "$LAN_IP" ] || LAN_IP="192.168.1.1"
 WAN_PROTO="$(uci -q get network.wan.proto 2>/dev/null)"
+[ -n "$WAN_PROTO" ] || {
+    firewall_resolve_zones >/dev/null 2>&1 || true
+    [ -n "${FIREWALL_WAN_NETWORK:-}" ] && WAN_PROTO="$(uci -q get "network.$FIREWALL_WAN_NETWORK.proto" 2>/dev/null)"
+}
 IP_RULES="$(ip rule show 2>/dev/null | wc -l)"
 IP6_RULES="$(ip -6 rule show 2>/dev/null | wc -l)"
 }
@@ -1256,10 +1370,13 @@ firewall_section_owned_redirect() {
 }
 dns_redirect_conflict_uci() {
     _conflict=0
+    firewall_resolve_zones >/dev/null 2>&1 || true
+    [ -n "${FIREWALL_LAN_ZONE:-}" ] || { printf '0\n'; return 0; }
     _secs="$(uci show firewall 2>/dev/null | sed -n 's/^firewall\.\([^.=]*\)=redirect$/\1/p')"
     for _sec in $_secs; do
         [ "$_sec" = "$FW_DNS_REDIRECT_SECTION" ] && continue
         [ "$(uci -q get "firewall.$_sec.disabled" 2>/dev/null)" = 1 ] && continue
+        firewall_ref_matches_zone "$(uci -q get "firewall.$_sec.src" 2>/dev/null)" "$FIREWALL_LAN_ZONE" || continue
         _sd="$(uci -q get "firewall.$_sec.src_dport" 2>/dev/null)"
         printf '%s' "$_sd" | tr ' ' '\n' | grep -qxF '53' || continue
         _target="$(uci -q get "firewall.$_sec.target" 2>/dev/null)"
@@ -1313,8 +1430,7 @@ dns_path_conflict_iptables() {
     elif command -v fw3 >/dev/null 2>&1 || [ -x /sbin/fw3 ] || [ -x /usr/sbin/fw3 ]; then
         _rules="$(fw3 -4 -q print 2>/dev/null)" || return 1
         if [ -f /etc/firewall.user ]; then
-            _rules="$_rules
-$(cat /etc/firewall.user 2>/dev/null)"
+            _rules="$_rules\n$(cat /etc/firewall.user 2>/dev/null)"
         fi
     else
         return 1
@@ -1323,11 +1439,16 @@ $(cat /etc/firewall.user 2>/dev/null)"
     _lan_dev="$(uci -q get network.lan.device 2>/dev/null)"
     _lan_if="$(uci -q get network.lan.ifname 2>/dev/null)"
     printf '%s\n' "$_rules" | awk -v ld="$_lan_dev" -v li="$_lan_if" '
+        function has_input_dev(    i) {
+            for (i=1; i<NF; i++) {
+                if ($i=="-i" && $(i+1)!="") {
+                    if ($(i+1)=="br-lan" || (ld!="" && $(i+1)==ld) || (li!="" && $(i+1)==li)) return 1
+                }
+            }
+            return 0
+        }
         /-A PREROUTING / {
-            devok = ($0 ~ / -i br-lan([[:space:]]|$)/)
-            if (ld != "") { pat=" -i " ld "([[:space:]]|$)"; if ($0 ~ pat) devok=1 }
-            if (li != "") { pat2=" -i " li "([[:space:]]|$)"; if ($0 ~ pat2) devok=1 }
-            if (!devok || $0 !~ / --dport 53([[:space:]]|$)/) next
+            if (!has_input_dev() || $0 !~ /--dport 53([[:space:]]|$)/) next
             if ($0 ~ / -j REDIRECT([[:space:]]|$)/ && $0 ~ /--to-ports[[:space:]]+[0-9]+/) {
                 if ($0 ~ /--to-ports[[:space:]]+53([[:space:]]|$)/) next
                 print; found=1; next
@@ -1363,19 +1484,15 @@ reload_fw() {
     return 1
 }
 prepare_dns_path() {
-    _cfg_result="$(dns_redirect_conflict_uci 2>/dev/null || true)"
-    _cfg_changed="${_cfg_result%%|*}"
-    _cfg_conflict="${_cfg_result#*|}"
-    case "$_cfg_changed" in 0|1) ;; *) _cfg_changed=0;; esac
-    case "$_cfg_conflict" in 0|1) ;; *) _cfg_conflict=0;; esac
-    if [ "$_cfg_changed" = 1 ]; then
-        uci commit firewall >/dev/null 2>&1 || return 1
-        reload_fw || return 1
-    fi
-    if [ "$_cfg_conflict" = 1 ]; then
-        warn_msg "Обнаружено стороннее перенаправление DNS с LAN:53. DNS Manager его не изменяет."
-        return 1
-    fi
+    _cfg_conflict="$(dns_redirect_conflict_uci 2>/dev/null || true)"
+    case "$_cfg_conflict" in
+        1)
+            warn_msg "Обнаружено стороннее перенаправление DNS с LAN:53. DNS Manager его не изменяет."
+            return 1
+            ;;
+        0) ;;
+        *) return 1 ;;
+    esac
     if [ "$SYS_FW" = fw4 ]; then
         dns_path_conflict_nft >/dev/null 2>&1 && return 1
     elif [ "$SYS_FW" = fw3 ]; then
@@ -2014,6 +2131,7 @@ configure_hdp_manager_control() {
     uci set https-dns-proxy.config.dnsmasq_config_update='-' || return 1
     uci set https-dns-proxy.config.force_dns='0' || return 1
     uci set https-dns-proxy.config.notrack_dns='0' || return 1
+    uci set https-dns-proxy.config.force_ip_family='ipv4' || return 1
     uci commit https-dns-proxy || return 1
 }
 ensure_doh_slot() {
@@ -2748,9 +2866,15 @@ _apply_extras_now_impl() {
             /etc/init.d/dnsmasq restart >/dev/null 2>&1 || return 1
             ;;
         client_fixes)
-            f="$(client_fixes_find_owned 2>/dev/null || true)"
-            [ -n "$f" ] || { printf 0; return; }
-            client_fixes_file_owned "$f" && printf 1 || printf 0
+            if [ "${CLIENT_FIXES:-0}" = 1 ]; then
+                apply_client_fixes || return 1
+            else
+                remove_client_fixes || return 1
+            fi
+            /etc/init.d/dnsmasq restart >/dev/null 2>&1 || return 1
+            ;;
+        web)
+            apply_web_access || return 1
             ;;
         sysctl_ext)
             if [ "$SYSCTL_EXTENDED" = 1 ]; then
@@ -2781,6 +2905,7 @@ apply_extras_now() {
             ntp_clients) _label="Применяю NTP для устройств сети";;
             dnsmasq_perf) _label="Применяю кэширование DNS";;
             client_fixes) _label="Применяю клиентские исправления";;
+            web) _label="Применяю терминальный доступ LuCI";;
             sysctl_ext) _label="Применяю расширенный sysctl";;
             *) _label="Применяю настройки";;
         esac
@@ -2833,13 +2958,15 @@ apply_ntp_clients() {
 
     if uci -q get "firewall.$FW_NTP_SECTION" >/dev/null 2>&1; then
         if ntp_firewall_rule_owned; then
-            uci -q set "firewall.$FW_NTP_SECTION.dest=$FIREWALL_LAN_NAME" || return 1
+            uci -q delete "firewall.$FW_NTP_SECTION.dest" || true
+            uci -q set "firewall.$FW_NTP_SECTION.family=ipv4" || return 1
             firewall_owner_add "$FW_NTP_SECTION" >/dev/null 2>&1 || true
         elif [ "${FORCE_APPLY_SETTINGS:-0}" = 1 ]; then
             uci set "firewall.$FW_NTP_SECTION=redirect" || return 1
             uci set "firewall.$FW_NTP_SECTION.name=DNS Manager: NTP клиентов в роутер" || return 1
             uci set "firewall.$FW_NTP_SECTION.src=$FIREWALL_LAN_NAME" || return 1
-            uci set "firewall.$FW_NTP_SECTION.dest=$FIREWALL_LAN_NAME" || return 1
+            uci -q delete "firewall.$FW_NTP_SECTION.dest" || true
+            uci set "firewall.$FW_NTP_SECTION.family=ipv4" || return 1
             uci set "firewall.$FW_NTP_SECTION.proto=udp" || return 1
             uci set "firewall.$FW_NTP_SECTION.src_dport=123" || return 1
             uci set "firewall.$FW_NTP_SECTION.dest_ip=$LAN_IP" || return 1
@@ -2855,7 +2982,8 @@ apply_ntp_clients() {
         uci set "firewall.$FW_NTP_SECTION=redirect" || return 1
         uci set "firewall.$FW_NTP_SECTION.name=DNS Manager: NTP клиентов в роутер" || return 1
         uci set "firewall.$FW_NTP_SECTION.src=$FIREWALL_LAN_NAME" || return 1
-        uci set "firewall.$FW_NTP_SECTION.dest=$FIREWALL_LAN_NAME" || return 1
+        uci -q delete "firewall.$FW_NTP_SECTION.dest" || true
+        uci set "firewall.$FW_NTP_SECTION.family=ipv4" || return 1
         uci set "firewall.$FW_NTP_SECTION.proto=udp" || return 1
         uci set "firewall.$FW_NTP_SECTION.src_dport=123" || return 1
         uci set "firewall.$FW_NTP_SECTION.dest_ip=$LAN_IP" || return 1
@@ -3112,13 +3240,15 @@ apply_dns_force() {
 
     if uci -q get "firewall.$FW_DNS_REDIRECT_SECTION" >/dev/null 2>&1; then
         if firewall_section_owned_redirect "$FW_DNS_REDIRECT_SECTION" "$FIREWALL_LAN_ZONE" 'tcp udp' 53 "$LAN_IP" 53 DNAT; then
-            uci -q set "firewall.$FW_DNS_REDIRECT_SECTION.dest=$FIREWALL_LAN_NAME" || return 1
+            uci -q delete "firewall.$FW_DNS_REDIRECT_SECTION.dest" || true
+            uci -q set "firewall.$FW_DNS_REDIRECT_SECTION.family=ipv4" || return 1
             firewall_owner_add "$FW_DNS_REDIRECT_SECTION" >/dev/null 2>&1 || true
         elif [ "${FORCE_APPLY_SETTINGS:-0}" = 1 ]; then
             uci set "firewall.$FW_DNS_REDIRECT_SECTION=redirect" || return 1
             uci set "firewall.$FW_DNS_REDIRECT_SECTION.name=DNS Manager: перенаправление DNS" || return 1
             uci set "firewall.$FW_DNS_REDIRECT_SECTION.src=$FIREWALL_LAN_NAME" || return 1
-            uci set "firewall.$FW_DNS_REDIRECT_SECTION.dest=$FIREWALL_LAN_NAME" || return 1
+            uci -q delete "firewall.$FW_DNS_REDIRECT_SECTION.dest" || true
+            uci set "firewall.$FW_DNS_REDIRECT_SECTION.family=ipv4" || return 1
             uci set "firewall.$FW_DNS_REDIRECT_SECTION.proto=tcp udp" || return 1
             uci set "firewall.$FW_DNS_REDIRECT_SECTION.src_dport=53" || return 1
             uci set "firewall.$FW_DNS_REDIRECT_SECTION.dest_ip=$LAN_IP" || return 1
@@ -3134,7 +3264,8 @@ apply_dns_force() {
         uci set "firewall.$FW_DNS_REDIRECT_SECTION=redirect" || return 1
         uci set "firewall.$FW_DNS_REDIRECT_SECTION.name=DNS Manager: перенаправление DNS" || return 1
         uci set "firewall.$FW_DNS_REDIRECT_SECTION.src=$FIREWALL_LAN_NAME" || return 1
-        uci set "firewall.$FW_DNS_REDIRECT_SECTION.dest=$FIREWALL_LAN_NAME" || return 1
+        uci -q delete "firewall.$FW_DNS_REDIRECT_SECTION.dest" || true
+        uci set "firewall.$FW_DNS_REDIRECT_SECTION.family=ipv4" || return 1
         uci set "firewall.$FW_DNS_REDIRECT_SECTION.proto=tcp udp" || return 1
         uci set "firewall.$FW_DNS_REDIRECT_SECTION.src_dport=53" || return 1
         uci set "firewall.$FW_DNS_REDIRECT_SECTION.dest_ip=$LAN_IP" || return 1
@@ -3346,6 +3477,10 @@ EOF_VERIFY_IPS
     return 0
 }
 verify_applied_doh_config() {
+    [ "$(uci -q get https-dns-proxy.config.force_ip_family 2>/dev/null)" = "ipv4" ] || {
+        err_msg "https-dns-proxy не переведён в режим IPv4-only."
+        return 1
+    }
     _expected="$TMP_DIR/expected-doh-map"
     _actual="$TMP_DIR/actual-doh-map"
     : > "$_expected" || return 1
@@ -3813,8 +3948,8 @@ stage_start_one() {
     [ -n "$_bin" ] || return 1
     _log="$TMP_DIR/stage-${_slot}-${_port}.log"
     _b="$(stage_bootstrap_for_ipv4)"
-    _family_args=""
-    [ "${IPV6_ROUTE:-no}" != "yes" ] && _family_args="-4"
+    # Upstream DoH transport is deliberately IPv4-only.
+    _family_args="-4"
     _host="$(url_host "$_url")"
     _resolved_ip="$(resolve_host_fallback "$_host" 2>/dev/null || true)"
     [ -n "$_resolved_ip" ] || _resolved_ip="$(resolve_host "$_host" 2>/dev/null || true)"
@@ -4222,6 +4357,7 @@ _apply_settings_impl() {
     pause
 }
 firewall_backend_require() {
+    detect_firewall_backend
     case "$SYS_FW" in
         fw4|fw3) firewall_resolve_zones; return 0 ;;
     esac
@@ -5176,13 +5312,18 @@ USE_PROCD=1
 
 PROG=/usr/bin/ttyd
 PORT=7682
-IFACE=br-lan
 CMD=/usr/bin/dns-manager
 PIDFILE=/var/run/dns-manager-web.pid
 
 start_service() {
     [ -x "$PROG" ] || return 1
     [ -x "$CMD" ] || return 1
+
+    IFACE="$(uci -q get network.lan.device 2>/dev/null)"
+    [ -n "$IFACE" ] || IFACE="$(uci -q get network.lan.ifname 2>/dev/null)"
+    case "$IFACE" in
+        ''|*[!A-Za-z0-9_.:@/-]*) IFACE="br-lan" ;;
+    esac
 
     procd_open_instance
     procd_set_param command "$PROG"
@@ -5250,6 +5391,9 @@ web_access_write_config() {
     web_access_write_service
 }
 web_access_remove_config() {
+    if [ -x "$WEB_SERVICE_CONFIG" ]; then
+        "$WEB_SERVICE_CONFIG" disable >/dev/null 2>&1 || true
+    fi
     web_access_stop
     web_access_cleanup_legacy_uci
     rm -f "$WEB_SERVICE_CONFIG" 2>/dev/null || true
@@ -5328,6 +5472,12 @@ web_access_remove_firewall() {
 }
 
 web_access_luci_install() {
+    # LuCI is optional for the terminal feature: on a CLI-only OpenWrt image
+    # ttyd must still work even when LuCI itself is not installed.
+    if [ ! -d /usr/lib/lua/luci ]; then
+        log_msg "LuCI не установлен. Терминальный доступ DNS Manager остаётся доступен напрямую по LAN; пункт в LuCI не создаётся."
+        return 0
+    fi
     mkdir -p /usr/lib/lua/luci/controller || return 1
     cat > "$LUCI_CONTROLLER" <<'EOF_LUCI'
 module("luci.controller.dns_manager", package.seeall)
@@ -5343,6 +5493,7 @@ function index()
     if not manager_web_enabled() then return end
     local e = entry({"admin", "services", "dns_manager"}, call("redirect_to_manager"), _("DNS Manager"), 70)
     e.leaf = true
+    e.dependent = false
 end
 
 function redirect_to_manager()
@@ -5372,14 +5523,14 @@ web_access_luci_remove() {
     /etc/init.d/rpcd reload >/dev/null 2>&1 || true
 }
 apply_web_access() {
-    apply_wait_message "$( [ "${WEB_ACCESS_ENABLED:-0}" = 1 ] && printf '%s' 'Включаю web-доступ DNS Manager' || printf '%s' 'Выключаю web-доступ DNS Manager' )"
+    apply_wait_message "$( [ "${WEB_ACCESS_ENABLED:-0}" = 1 ] && printf '%s' 'Включаю терминальный доступ DNS Manager' || printf '%s' 'Выключаю терминальный доступ DNS Manager' )"
     case "${WEB_ACCESS_ENABLED:-0}" in
         1)
             WEB_ACCESS_PORT=7682
-            if web_access_port_busy; then WEB_ACCESS_ENABLED=0; save_config; err_msg "Порт web-доступа $WEB_ACCESS_PORT уже занят."; return 1; fi
+            if web_access_port_busy; then WEB_ACCESS_ENABLED=0; save_config; err_msg "Порт терминального доступа $WEB_ACCESS_PORT уже занят."; return 1; fi
             if ! web_access_install; then WEB_ACCESS_ENABLED=0; save_config; err_msg 'Не удалось подготовить web-службу DNS Manager.'; return 1; fi
             if ! web_access_write_config; then WEB_ACCESS_ENABLED=0; save_config; err_msg 'Не удалось подготовить web-службу.'; return 1; fi
-            if ! web_access_firewall; then WEB_ACCESS_ENABLED=0; web_access_remove_firewall; web_access_remove_config; save_config; err_msg 'Не удалось открыть web-доступ в LAN.'; return 1; fi
+            if ! web_access_firewall; then WEB_ACCESS_ENABLED=0; web_access_remove_firewall; web_access_remove_config; save_config; err_msg 'Не удалось открыть терминальный доступ в LAN.'; return 1; fi
             if ! web_access_luci_install; then WEB_ACCESS_ENABLED=0; web_access_remove_firewall; web_access_remove_config; save_config; err_msg 'Не удалось добавить пункт DNS Manager в LuCI.'; return 1; fi
             if ! web_access_start; then
                 WEB_ACCESS_ENABLED=0
@@ -5392,7 +5543,7 @@ apply_web_access() {
             fi
             save_config
             _web_ip="$(uci -q get network.lan.ipaddr 2>/dev/null | cut -d/ -f1)"
-            ok_msg "Доступ из браузера включён: http://${_web_ip:-192.168.1.1}:$WEB_ACCESS_PORT"
+            ok_msg "Терминал DNS Manager: http://${_web_ip:-192.168.1.1}:$WEB_ACCESS_PORT"
             return 0
             ;;
         *)
@@ -5401,7 +5552,7 @@ apply_web_access() {
             web_access_remove_firewall
             web_access_remove_config
             save_config
-            ok_msg 'Доступ из браузера выключен.'
+            ok_msg 'Терминальный доступ LuCI выключен.'
             return 0
             ;;
     esac
@@ -5449,6 +5600,7 @@ setting_process() {
         dnsmasq_perf) _old="$DNSMASQ_PERF"; DNSMASQ_PERF="$_new" ;;
         ntp_clients) _old="$NTP_CLIENTS"; NTP_CLIENTS="$_new" ;;
         client_fixes) _old="$CLIENT_FIXES"; CLIENT_FIXES="$_new" ;;
+        web) _old="$WEB_ACCESS_ENABLED"; WEB_ACCESS_ENABLED="$_new" ;;
     esac
 
     case "$_module" in
@@ -5470,6 +5622,7 @@ setting_process() {
                     dnsmasq_perf) DNSMASQ_PERF="$_old" ;;
                     ntp_clients) NTP_CLIENTS="$_old" ;;
                     client_fixes) CLIENT_FIXES="$_old" ;;
+                    web) WEB_ACCESS_ENABLED="$_old" ;;
                 esac
                 save_config >/dev/null 2>&1 || true
             fi
@@ -5500,6 +5653,8 @@ setting_process() {
             1:ntp_clients) ok_msg "NTP для устройств выключен, стоковое состояние восстановлено." ;;
             0:client_fixes|2:client_fixes) ok_msg "Исправления телеметрии и связи настроены." ;;
             1:client_fixes) ok_msg "Исправления телеметрии и связи выключены." ;;
+            0:web|2:web) ok_msg "Терминальный доступ LuCI включён: пункт LuCI ведёт в ttyd DNS Manager." ;;
+            1:web) ok_msg "Терминальный доступ LuCI выключен, пункт DNS Manager удалён." ;;
             0:watchdog|2:watchdog) ok_msg "Автопроверка DNS включена." ;;
             1:watchdog) ok_msg "Автопроверка DNS выключена." ;;
         esac
@@ -5512,6 +5667,7 @@ setting_process() {
             dnsmasq_perf) err_msg "Не удалось изменить кэширование DNS." ;;
             ntp_clients) err_msg "Не удалось изменить NTP для устройств." ;;
             client_fixes) err_msg "Не удалось изменить исправления телеметрии и связи." ;;
+            web) err_msg "Не удалось изменить терминальный доступ LuCI." ;;
             watchdog) err_msg "Не удалось изменить автопроверку DNS." ;;
         esac
     fi
@@ -5534,6 +5690,8 @@ while :; do
     menu_item_state "[7]" "Исправления телеметрии и связи" "$(module_state_word client_fixes)"
     menu_section "ОБСЛУЖИВАНИЕ"
     menu_item_state "[8]" "Автоматическая проверка DNS" "$(module_state_word watchdog)"
+    menu_section "LUCI"
+    menu_item_state "[9]" "Терминал DNS Manager (ttyd)" "$(module_state_word web)"
     menu_back
     menu_prompt
     safe_read c
@@ -5546,6 +5704,7 @@ while :; do
         6) setting_process ntp_clients "Время для устройств сети" "DHCP выдаёт адрес роутера как NTP-сервер, LAN UDP/123 направляется на роутер." ;;
         7) setting_process client_fixes "Исправления телеметрии и связи" "Добавляются DNS-правила для телеметрии и проверок подключения некоторых устройств." ;;
         8) setting_process watchdog "Автоматическая проверка DNS" "Watchdog запускает проверку DNS по расписанию." ;;
+        9) setting_process web "Терминал DNS Manager (ttyd)" "В LuCI будет только переход к терминалу DNS Manager; отдельного веб-интерфейса DNS Manager нет." ;;
         '') return ;;
         *) warn_msg "Неизвестный пункт."; pause ;;
     esac
@@ -5557,17 +5716,17 @@ missing=""
 command -v curl >/dev/null 2>&1 || missing="$missing curl"
 command -v https-dns-proxy >/dev/null 2>&1 || missing="$missing https-dns-proxy"
 CA_OK=no
-[ -s /etc/ssl/certs/ca-certificates.crt ] && CA_OK=yes
+[ -s /etc/ssl/certs/ca-certificates.crt ] || [ -s /etc/ssl/certs/ca-bundle.crt ] && CA_OK=yes
 if [ "$CA_OK" != yes ]; then
     if command -v apk >/dev/null 2>&1; then
-        apk info -e ca-certificates >/dev/null 2>&1 && CA_OK=yes
         apk info -e ca-bundle >/dev/null 2>&1 && CA_OK=yes
+        apk info -e ca-certificates >/dev/null 2>&1 && CA_OK=yes
     elif command -v opkg >/dev/null 2>&1; then
-        opkg status ca-certificates 2>/dev/null | grep -q '^Status:.*installed' && CA_OK=yes
         opkg status ca-bundle 2>/dev/null | grep -q '^Status:.*installed' && CA_OK=yes
+        opkg status ca-certificates 2>/dev/null | grep -q '^Status:.*installed' && CA_OK=yes
     fi
 fi
-[ "$CA_OK" = yes ] || missing="$missing ca-certificates"
+[ "$CA_OK" = yes ] || missing="$missing ca-bundle"
 [ "$HAS_DNSMASQ" = yes ] || missing="$missing dnsmasq"
 printf '%s\n' "$missing"
 }
@@ -5592,7 +5751,7 @@ ${C_YELLOW}↻ Обнаружены недостающие компоненты.
         printf "
 "
 
-        if [ "$PKG_MGR" = "apk" ]; then
+            if [ "$PKG_MGR" = "apk" ]; then
             apk update >/dev/null 2>&1 && apk add $_need
         else
             opkg update >/dev/null 2>&1 && opkg install $_need
@@ -5682,7 +5841,7 @@ printf "${C_TITLE} ПРОВЕРКА ЗАВИСИМОСТЕЙ${C_NC}\n"
 printf '  curl              : %b\n' "$(state_word "$HAS_CURL")"
 printf '  dig               : %b\n' "$(state_word "$HAS_DIG")"
 printf '  https-dns-proxy   : %b\n' "$(state_word "$HAS_HDP")"
-if [ -s /etc/ssl/certs/ca-certificates.crt ]; then
+if [ -s /etc/ssl/certs/ca-certificates.crt ] || [ -s /etc/ssl/certs/ca-bundle.crt ]; then
 printf '  CA-сертификаты    : %b✓ ВКЛ%b\n' "$C_GREEN" "$C_NC"
 else
 printf '  CA-сертификаты    : %b✗ НЕТ%b\n' "$C_RED" "$C_NC"
@@ -5818,16 +5977,12 @@ watchdog_expected_servers() {
     printf '%s\n' "$_out"
 }
 watchdog_dns_path_guard() {
-    _cfg_result="$(dns_redirect_conflict_uci 2>/dev/null || true)"
-    _cfg_changed="${_cfg_result%%|*}"
-    _cfg_conflict="${_cfg_result#*|}"
-    case "$_cfg_changed" in 0|1) ;; *) _cfg_changed=0;; esac
-    case "$_cfg_conflict" in 0|1) ;; *) _cfg_conflict=0;; esac
-    if [ "$_cfg_changed" = 1 ]; then
-        uci commit firewall >/dev/null 2>&1 || return 1
-        reload_fw || return 1
-    fi
-    [ "$_cfg_conflict" = 1 ] && return 1
+    _cfg_conflict="$(dns_redirect_conflict_uci 2>/dev/null || true)"
+    case "$_cfg_conflict" in
+        1) return 1 ;;
+        0) ;;
+        *) return 1 ;;
+    esac
     if [ "$SYS_FW" = fw4 ]; then
         dns_path_conflict_nft >/dev/null 2>&1 && return 1
     elif [ "$SYS_FW" = fw3 ]; then
@@ -6874,6 +7029,8 @@ printf "  ${C_YELLOW}${C_BOLD}IPv6${C_NC}               %b\n" "$(state_word "$IP
 printf "  ${C_YELLOW}${C_BOLD}dnsmasq${C_NC}            %b\n" "$(state_word "$DNSMASQ_RUN")"
 printf "  ${C_YELLOW}${C_BOLD}Защищённый DNS${C_NC}     %b\n" "$(state_word "$HDP_RUNNING")"
 printf "  ${C_YELLOW}${C_BOLD}DNS-серверов найдено${C_NC} %s\n" "$DOH_TOTAL"
+printf "  ${C_YELLOW}${C_BOLD}Firewall${C_NC}            ${C_CYAN}%s${C_NC}\n" "${SYS_FW:-не определён}"
+[ -n "${FIREWALL_WAN_NETWORK:-}" ] && printf "  ${C_YELLOW}${C_BOLD}WAN-сеть${C_NC}           ${C_CYAN}%s${C_NC}\n" "$FIREWALL_WAN_NETWORK"
 printf "  ${C_YELLOW}${C_BOLD}Каталог DNS${C_NC}        ${C_CYAN}%s • %s серверов${C_NC}\n" "$(dns_catalog_version)" "$(count_dns)"
 printf "  ${C_YELLOW}${C_BOLD}Автопроверка${C_NC}       %b\n" "$(module_state_word watchdog "$WATCHDOG_ENABLED")"
 [ -s "$BASELINE_MANIFEST" ] && printf "  ${C_YELLOW}${C_BOLD}Исходная копия${C_NC}    ${C_GREEN}есть${C_NC}\n" || printf "  ${C_YELLOW}${C_BOLD}Исходная копия${C_NC}    ${C_YELLOW}нет${C_NC}\n"
@@ -7096,6 +7253,6 @@ load_config
 restore_persistent_test_results 2>/dev/null || true
 run_discovery
 
-log_msg "Запуск DNS Manager. Версия $VERSION. OpenWrt=$SYS_OWRT; платформа=$SYS_TARGET; архитектура=$SYS_ARCH; firewall=$SYS_FW; backend=$FIREWALL_BACKEND"
+log_msg "Запуск DNS Manager. Версия $VERSION. OpenWrt=$SYS_OWRT; платформа=$SYS_TARGET; архитектура=$SYS_ARCH; firewall=$SYS_FW; backend=$FIREWALL_BACKEND; wan_network=${FIREWALL_WAN_NETWORK:-unknown}"
 
 main_menu
