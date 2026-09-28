@@ -2,7 +2,7 @@
 MANAGER_PATH="/usr/bin/dns-manager"
 # ==========================================
 # ==========================================
-VERSION="2.65"
+VERSION="2.66"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -2416,6 +2416,65 @@ reconcile_dnsmasq() {
 }
 # ==========================================
 # ==========================================
+firewall_owner_has() {
+    _sec="$1"
+    [ -n "$_sec" ] || return 1
+    [ -f "$FIREWALL_OWNERSHIP" ] || return 1
+    grep -Fqx -- "$_sec" "$FIREWALL_OWNERSHIP" 2>/dev/null
+}
+firewall_owner_add() {
+    _sec="$1"
+    [ -n "$_sec" ] || return 1
+    mkdir -p "$CFG_DIR" 2>/dev/null || return 1
+    firewall_owner_has "$_sec" || printf '%s\n' "$_sec" >> "$FIREWALL_OWNERSHIP" || return 1
+    return 0
+}
+firewall_owner_remove() {
+    _sec="$1"
+    [ -f "$FIREWALL_OWNERSHIP" ] || return 0
+    _tmp="$FIREWALL_OWNERSHIP.tmp.$$"
+    grep -Fvx -- "$_sec" "$FIREWALL_OWNERSHIP" > "$_tmp" 2>/dev/null || :
+    mv "$_tmp" "$FIREWALL_OWNERSHIP" 2>/dev/null || { rm -f "$_tmp"; return 1; }
+    return 0
+}
+firewall_ownership_sync() {
+    [ -f "$FIREWALL_OWNERSHIP" ] || return 0
+    _tmp="$FIREWALL_OWNERSHIP.tmp.$$"
+    : > "$_tmp" || return 1
+    while IFS= read -r _sec; do
+        [ -n "$_sec" ] || continue
+        case "$_sec" in
+            "$FW_NTP_SECTION") firewall_section_owned_redirect "$FW_NTP_SECTION" "$FIREWALL_LAN_ZONE" udp 123 "$LAN_IP" 123 DNAT && printf '%s\n' "$_sec" >> "$_tmp";;
+            "$FW_DNS_REDIRECT_SECTION") firewall_section_owned_redirect "$FW_DNS_REDIRECT_SECTION" "$FIREWALL_LAN_ZONE" 'tcp udp' 53 "$LAN_IP" 53 DNAT && printf '%s\n' "$_sec" >> "$_tmp";;
+            "$FW_DOT_SECTION")
+                [ "$(uci -q get "firewall.$FW_DOT_SECTION" 2>/dev/null)" = rule ] || continue
+                firewall_ref_matches_zone "$(uci -q get "firewall.$FW_DOT_SECTION.src" 2>/dev/null)" "$FIREWALL_LAN_ZONE" || continue
+                firewall_ref_matches_zone "$(uci -q get "firewall.$FW_DOT_SECTION.dest" 2>/dev/null)" "$FIREWALL_WAN_ZONE" || continue
+                [ "$(uci -q get "firewall.$FW_DOT_SECTION.proto" 2>/dev/null)" = 'tcp udp' ] || continue
+                [ "$(uci -q get "firewall.$FW_DOT_SECTION.dest_port" 2>/dev/null)" = 853 ] || continue
+                [ "$(uci -q get "firewall.$FW_DOT_SECTION.target" 2>/dev/null)" = REJECT ] || continue
+                printf '%s\n' "$_sec" >> "$_tmp";;
+            "$FW_WEB_SECTION")
+                [ "$(uci -q get "firewall.$FW_WEB_SECTION" 2>/dev/null)" = rule ] || continue
+                firewall_ref_matches_zone "$(uci -q get "firewall.$FW_WEB_SECTION.src" 2>/dev/null)" "$FIREWALL_LAN_ZONE" || continue
+                [ "$(uci -q get "firewall.$FW_WEB_SECTION.proto" 2>/dev/null)" = tcp ] || continue
+                [ "$(uci -q get "firewall.$FW_WEB_SECTION.dest_port" 2>/dev/null)" = "$WEB_ACCESS_PORT" ] || continue
+                [ "$(uci -q get "firewall.$FW_WEB_SECTION.target" 2>/dev/null)" = ACCEPT ] || continue
+                printf '%s\n' "$_sec" >> "$_tmp";;
+        esac
+    done < "$FIREWALL_OWNERSHIP"
+    mv "$_tmp" "$FIREWALL_OWNERSHIP" 2>/dev/null || { rm -f "$_tmp"; return 1; }
+    return 0
+}
+firewall_migrate_legacy_owned() {
+    mkdir -p "$CFG_DIR" 2>/dev/null || return 0
+    firewall_section_owned_redirect "$FW_NTP_SECTION" "$FIREWALL_LAN_ZONE" udp 123 "$LAN_IP" 123 DNAT && firewall_owner_add "$FW_NTP_SECTION" >/dev/null 2>&1 || true
+    firewall_section_owned_redirect "$FW_DNS_REDIRECT_SECTION" "$FIREWALL_LAN_ZONE" 'tcp udp' 53 "$LAN_IP" 53 DNAT && firewall_owner_add "$FW_DNS_REDIRECT_SECTION" >/dev/null 2>&1 || true
+    if [ "$(uci -q get "firewall.$FW_DOT_SECTION" 2>/dev/null)" = rule ] && firewall_ref_matches_zone "$(uci -q get "firewall.$FW_DOT_SECTION.src" 2>/dev/null)" "$FIREWALL_LAN_ZONE" && firewall_ref_matches_zone "$(uci -q get "firewall.$FW_DOT_SECTION.dest" 2>/dev/null)" "$FIREWALL_WAN_ZONE" && [ "$(uci -q get "firewall.$FW_DOT_SECTION.proto" 2>/dev/null)" = 'tcp udp' ] && [ "$(uci -q get "firewall.$FW_DOT_SECTION.dest_port" 2>/dev/null)" = 853 ] && [ "$(uci -q get "firewall.$FW_DOT_SECTION.target" 2>/dev/null)" = REJECT ]; then firewall_owner_add "$FW_DOT_SECTION" >/dev/null 2>&1 || true; fi
+    if [ "$(uci -q get "firewall.$FW_WEB_SECTION" 2>/dev/null)" = rule ] && firewall_ref_matches_zone "$(uci -q get "firewall.$FW_WEB_SECTION.src" 2>/dev/null)" "$FIREWALL_LAN_ZONE" && [ "$(uci -q get "firewall.$FW_WEB_SECTION.proto" 2>/dev/null)" = tcp ] && [ "$(uci -q get "firewall.$FW_WEB_SECTION.dest_port" 2>/dev/null)" = "$WEB_ACCESS_PORT" ] && [ "$(uci -q get "firewall.$FW_WEB_SECTION.target" 2>/dev/null)" = ACCEPT ]; then firewall_owner_add "$FW_WEB_SECTION" >/dev/null 2>&1 || true; fi
+    firewall_ownership_sync >/dev/null 2>&1 || true
+    return 0
+}
 firewall_find_exact_rule_signature() {
     _type="$1"; _skip="$2"; _port="$3"
     _secs="$(uci show firewall 2>/dev/null | sed -n 's/^firewall\.\([^.=]*\)=rule$/\1/p')"
@@ -6593,6 +6652,17 @@ esac
 done
 }
 # ==========================================
+# INTERNAL SELF-CHECK
+# ==========================================
+manager_selfcheck() {
+    _fn="firewall_owner_has firewall_owner_add firewall_owner_remove firewall_ownership_sync firewall_migrate_legacy_owned firewall_find_exact_rule_signature"
+    for _f in $_fn; do
+        command -v "$_f" >/dev/null 2>&1 || { err_msg "Внутренняя ошибка DNS Manager: отсутствует функция $_f."; return 1; }
+    done
+    return 0
+}
+
+# ==========================================
 # ==========================================
 main_menu() {
 MAIN_STATE_STALE=1
@@ -6838,6 +6908,7 @@ if [ "${FIRST_RUN:-0}" = 1 ]; then
 fi
 
 log_msg "Запуск DNS Manager. Версия $VERSION. OpenWrt=$SYS_OWRT; платформа=$SYS_TARGET; архитектура=$SYS_ARCH; firewall=$SYS_FW; backend=$FIREWALL_BACKEND; wan_network=${FIREWALL_WAN_NETWORK:-unknown}"
+manager_selfcheck || exit 1
 
 if [ "${FIRST_RUN:-0}" = 1 ]; then
     if mkdir -p "$CFG_DIR" 2>/dev/null && {
