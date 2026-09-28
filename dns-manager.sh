@@ -2,7 +2,7 @@
 MANAGER_PATH="/usr/bin/dns-manager"
 # ==========================================
 # ==========================================
-VERSION="2.74"
+VERSION="2.75"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -2190,6 +2190,83 @@ done
 return 1
 }
 # ==========================================
+# DNSMASQ / UCI LIST HELPERS
+# ==========================================
+validate_selected_slots() {
+    _urls="$TMP_DIR/selected-urls"
+    _ports="$TMP_DIR/selected-ports"
+    : > "$_urls"; : > "$_ports"
+    for s in 1 2 3 4 5 6 RU RU_2; do
+        eval "_id=\${SLOT_$s}"
+        [ -n "$_id" ] || continue
+        _u="$(normalize_url "$(dns_url "$_id")")"
+        [ -n "$_u" ] || { err_msg "Слот $s содержит DNS без URL."; return 1; }
+        if [ "$DNS_PROFILE" = hybrid ]; then
+            ensure_test_results_fresh || return 1
+            _tested_ok="$(awk -F'|' -v id="$_id" 'NF>=5 && $1==id && $5=="OK" && $4 ~ /^[0-9]+$/ {print "yes"; exit}' "$TEST_RESULTS" 2>/dev/null)"
+            if [ "$_tested_ok" != yes ]; then
+                err_msg "DNS «$(dns_name "$_id")» не прошёл последнюю полную проверку. Он не может быть применён."
+                return 1
+            fi
+        fi
+        if grep -qxF "$_u" "$_urls" 2>/dev/null; then
+            err_msg "Один и тот же адрес DNS-сервера выбран несколько раз: $(dns_name "$_id")."
+            return 1
+        fi
+        printf '%s\n' "$_u" >> "$_urls"
+    done
+    return 0
+}
+
+ensure_dnsmasq_balancer() {
+    _sec="$(get_dnsmasq_section)"
+    [ -n "$_sec" ] || return 1
+    _changed=0
+    if [ "$(uci -q get "dhcp.$_sec.allservers" 2>/dev/null)" != 1 ]; then
+        uci set "dhcp.$_sec.allservers=1" || return 1
+        _changed=1
+        record_own "dnsmasq" "allservers" 1 "section=$_sec"
+    fi
+    if [ "$(uci -q get "dhcp.$_sec.strictorder" 2>/dev/null)" != 0 ]; then
+        uci set "dhcp.$_sec.strictorder=0" || return 1
+        _changed=1
+        record_own "dnsmasq" "strictorder" 0 "section=$_sec"
+    fi
+    if [ "$(uci -q get "dhcp.$_sec.noresolv" 2>/dev/null)" != 1 ]; then
+        uci set "dhcp.$_sec.noresolv=1" || return 1
+        _changed=1
+        record_own "dnsmasq" "noresolv" 1 "section=$_sec"
+    fi
+    if [ "$_changed" = 1 ]; then
+        uci commit dhcp || return 1
+        /etc/init.d/dnsmasq restart >/dev/null 2>&1 || return 1
+        sleep 2
+        ok_msg "Одновременный опрос DNS включён и проверен."
+    fi
+    [ "$(uci -q get "dhcp.$_sec.allservers" 2>/dev/null)" = 1 ] || return 1
+    [ "$(uci -q get "dhcp.$_sec.strictorder" 2>/dev/null)" = 0 ] || return 1
+    [ "$(uci -q get "dhcp.$_sec.noresolv" 2>/dev/null)" = 1 ] || return 1
+    return 0
+}
+
+get_dnsmasq_section() {
+    _secs="$(uci show dhcp 2>/dev/null | sed -n 's/^dhcp\.\([^.=]*\)=dnsmasq$/\1/p')"
+    for _s in $_secs; do
+        _iface="$(uci -q get "dhcp.$_s.interface" 2>/dev/null)"
+        [ "$_iface" = "lan" ] && { printf '%s' "$_s"; return 0; }
+    done
+    _s="$(printf '%s\n' $_secs | head -n1)"
+    [ -n "$_s" ] && { printf '%s' "$_s"; return 0; }
+    printf '%s' '@dnsmasq[0]'
+}
+exact_list_has() {
+    _target="$1"
+    _val="$2"
+    [ -n "$_target" ] || return 1
+    [ -n "$_val" ] || return 1
+    uci -q get "$_target" 2>/dev/null | tr ' ' '\n' | sed 's/^['"'"'\"]//; s/['"'"'\"]$//' | grep -qxF -- "$_val"
+}
+# ==========================================
 # ==========================================
 clear_all_doh_for_apply() {
     # DNS Manager is the authoritative owner of the DoH configuration.
@@ -2224,8 +2301,8 @@ configure_hdp_manager_control() {
 
     if [ "${FORCE_DOH:-0}" = 1 ]; then
         if [ "${FORCED_DNS_EXTERNAL:-0}" = 1 ]; then
-            log_msg "Внешний forced-DNS обнаружен: DNS Manager не перехватывает и не перезаписывает его глобальные параметры."
-            return 2
+            log_msg "Внешний forced-DNS обнаружен: DNS Manager не перехватывает и не перезаписывает его глобальные параметры; настройка DNS/DoH продолжается."
+            return 0
         fi
         uci set https-dns-proxy.config.dnsmasq_config_update='-' || return 1
         uci set https-dns-proxy.config.force_dns='1' || return 1
@@ -3133,8 +3210,13 @@ apply_dns_force() {
     # Protect against an existing Zapret/other transparent DNS proxy before
     # changing https-dns-proxy state. A non-53 redirect means another service
     # is already the LAN:53 owner.
-    hdp_force_external_conflict && return 2
-    prepare_dns_path || return 2
+    if hdp_force_external_conflict; then
+        log_msg "Внешний forced-DNS уже активен ($FORCED_DNS_SOURCE). DNS Manager оставляет его без изменений."
+        return 0
+    fi
+    if ! prepare_dns_path; then
+        return 0
+    fi
 
     if [ ! -s "$FORCE_DNS_BEFORE" ]; then
         {
@@ -4011,8 +4093,9 @@ _apply_settings_impl() {
         firewall_backend_require || return 1
     fi
     if [ "$CORE_ONLY" != 1 ] && [ "${FORCE_DOH:-0}" = 1 ]; then
-        hdp_force_external_conflict && { err_msg "Принудительный DNS уже контролируется другим сервисом. DNS Manager не изменяет его."; return 1; }
-        prepare_dns_path || { err_msg "Обнаружен внешний перехват LAN:53. DNS Manager его не изменяет."; return 1; }
+        if hdp_force_external_conflict; then
+            info_msg "Внешний forced-DNS ($FORCED_DNS_SOURCE) обнаружен. Правила forced-DNS не изменяю; применение DNS/DoH продолжается."
+        fi
     fi
     if [ "${HYBRID_FORCE_RESELECT:-0}" = 1 ] && [ "$DNS_PROFILE" = hybrid ]; then
         SLOT_1=""; SLOT_2=""; SLOT_3=""; SLOT_4=""; SLOT_5=""; SLOT_6=""
@@ -5051,6 +5134,16 @@ web_access_owner_pid() {
     fi
     return 1
 }
+web_access_pid_count() {
+    _wp="${WEB_ACCESS_PORT:-7682}"
+    _n=0
+    for _pid in $(ps w 2>/dev/null | awk -v p="$_wp" '$1 ~ /^[0-9]+$/ && index($0,"ttyd") && index($0,"/usr/bin/dns-manager") && (index($0,"-p " p) || index($0," " p " ")) {print $1}'); do
+        kill -0 "$_pid" 2>/dev/null || continue
+        _n=$((_n + 1))
+    done
+    printf '%s\n' "$_n"
+}
+
 web_access_real() {
     _wp="${WEB_ACCESS_PORT:-7682}"
     web_access_listener_exists "$_wp" || return 1
@@ -5621,8 +5714,9 @@ watchdog_expected_servers() {
 watchdog_dns_path_guard() {
     detect_forced_dns_path >/dev/null 2>&1 || true
     if [ "${FORCED_DNS_EXTERNAL:-0}" = 1 ]; then
-        log_msg "Watchdog: обнаружен внешний forced-DNS ($FORCED_DNS_SOURCE). Firewall-правила внешнего сервиса не изменяю."
-        return 1
+        # External forced-DNS is a valid coexistence state (for example Zapret).
+        # It is reported by discovery/status, but it is not a watchdog error.
+        return 0
     fi
     return 0
 }
@@ -5957,7 +6051,7 @@ run_watchdog() {
     watchdog_enforce_doh_authority || log_msg "Не удалось полностью синхронизировать набор DNS Manager."
     watchdog_service_recover || log_msg "Не удалось выполнить восстановительное перезапускание https-dns-proxy."
     watchdog_hdp_guard || log_msg "Не удалось проверить соответствие DNS-серверов выбранному набору."
-    watchdog_dns_path_guard || log_msg "Обнаружен конфликт пути DNS в firewall."
+    watchdog_dns_path_guard || log_msg "Не удалось проверить путь forced-DNS в firewall."
     watchdog_dnsmasq_guard || log_msg "Не удалось полностью восстановить конфигурацию dnsmasq."
     if ! watchdog_test_results_fresh; then
         if ! ensure_test_results_fresh; then
@@ -6538,7 +6632,7 @@ printf "  ${C_YELLOW}${C_BOLD}Firewall${C_NC}            ${C_CYAN}%s${C_NC}\n" "
 printf "  ${C_YELLOW}${C_BOLD}Каталог DNS${C_NC}        ${C_CYAN}%s • %s серверов${C_NC}\n" "$(dns_catalog_version)" "$(count_dns)"
 printf "  ${C_YELLOW}${C_BOLD}Автопроверка${C_NC}       %b\n" "$(module_state_word watchdog "$WATCHDOG_ENABLED")"
 [ -s "$BASELINE_MANIFEST" ] && printf "  ${C_YELLOW}${C_BOLD}Исходная копия${C_NC}    ${C_GREEN}есть${C_NC}\n" || printf "  ${C_YELLOW}${C_BOLD}Исходная копия${C_NC}    ${C_YELLOW}нет${C_NC}\n"
-[ "$FORCE_DNS" = 1 ] && printf "  ${C_YELLOW}${C_BOLD}Принудительный DNS${C_NC} ${C_CYAN}включён${C_NC}\n"
+printf "  ${C_YELLOW}${C_BOLD}Принудительный DNS${C_NC} %b\n" "$(force_state_word)"
 menu_section "НАСТРОЙКА DNS"
 menu_item "[1]" "Настроить DNS"
 menu_section "СЕРВИСЫ"
@@ -6738,7 +6832,7 @@ startup_update_check() {
 # STARTUP REQUIRED FUNCTION CHECK
 # ==========================================
 startup_required_function_check() {
-    for _fn in detect_forced_dns_path clear_all_doh_for_apply rebuild_selected_hdp_sections reconcile_dnsmasq apply_ntp_clients apply_ntp_ip_fallback; do
+    for _fn in get_dnsmasq_section exact_list_has validate_selected_slots ensure_dnsmasq_balancer web_access_pid_count detect_forced_dns_path clear_all_doh_for_apply rebuild_selected_hdp_sections reconcile_dnsmasq apply_ntp_clients apply_ntp_ip_fallback; do
         type "$_fn" >/dev/null 2>&1 || {
             printf "${C_RED}[✗] Критическая ошибка: отсутствует функция $_fn. Запуск остановлен до изменения настроек роутера.${C_NC}\n"
             return 1
