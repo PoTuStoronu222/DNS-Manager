@@ -2,7 +2,7 @@
 MANAGER_PATH="/usr/bin/dns-manager"
 # ==========================================
 # ==========================================
-VERSION="2.68"
+VERSION="2.74"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -39,19 +39,16 @@ BASELINE_MANIFEST="$BASELINE_DIR/manifest"
 BASELINE_LAST="$BASELINE_DIR/last-applied.manifest"
 BASELINE_META="$BASELINE_DIR/meta"
 OWNERSHIP="$CFG_DIR/ownership.conf"
-LEGACY_OWNERSHIP="$STATE_DIR/ownership.conf"
 MTU_BEFORE="$STATE_DIR/mtu-before-zone.conf"
 NTP_CLIENTS_BEFORE="$STATE_DIR/ntp-clients-before.conf"
 FORCE_DNS_BEFORE="$CFG_DIR/force-dns-before.conf"
 TEST_RESULTS="$STATE_DIR/dns-test-results.conf"
 TEST_LOCK_DIR="$STATE_DIR/dns-test.lock"
 TEST_LOCK_HELD=0
-WEB_INIT="/etc/init.d/dns-manager-web"
 WEB_ACCESS_PORT="7682"
 WEB_ACCESS_ENABLED=0
-WEB_TTYD_SECTION="dns_manager"
-WEB_SERVICE_CONFIG="/etc/init.d/dns-manager-web"
-WEB_PIDFILE="/var/run/dns-manager-web.pid"
+TTYD_CONFIG="/etc/config/ttyd"
+WEB_SERVICE_CONFIG="/etc/init.d/ttyd"
 SYSCTL_BASE_MARKER="# DNS_MANAGER_MANAGED_SYSCTL=1"
 SYSCTL_EXTENDED_MARKER="# DNS_MANAGER_MANAGED_SYSCTL_EXTENDED=1"
 CLIENT_FIXES_MARKER="# DNS_MANAGER_MANAGED_CLIENT_FIXES=1"
@@ -60,7 +57,6 @@ FIREWALL_OWNERSHIP="$CFG_DIR/firewall-ownership.conf"
 FW_NTP_SECTION="dns_manager_ntp_client"
 FW_DNS_REDIRECT_SECTION="dns_manager_dns_redirect"
 FW_DOT_SECTION="dns_manager_dot_block"
-FW_WEB_SECTION="dns_manager_web_ttyd"
 FIREWALL_LAN_ZONE=""
 FIREWALL_WAN_ZONE=""
 FIREWALL_LAN_NAME=""
@@ -561,32 +557,10 @@ preflight_readonly() {
 
 # ==========================================
 # ==========================================
-migrate_persistent_ownership() {
-    mkdir -p "$CFG_DIR" 2>/dev/null || return 1
-    if [ ! -f "$OWNERSHIP" ] && [ -s "$LEGACY_OWNERSHIP" ]; then
-        cp -p "$LEGACY_OWNERSHIP" "$OWNERSHIP" 2>/dev/null || return 1
-        chmod 600 "$OWNERSHIP" 2>/dev/null || true
-        rm -f "$LEGACY_OWNERSHIP" 2>/dev/null || true
-        log_msg "Ownership: перенесён из runtime-хранилища в постоянный файл $OWNERSHIP."
-    fi
-    if [ ! -f "$OWNERSHIP" ]; then
-        (umask 077; : > "$OWNERSHIP") 2>/dev/null || return 1
-    fi
-    chmod 600 "$OWNERSHIP" 2>/dev/null || true
-    if [ -f "$CONFIG_FILE" ]; then
-        _cfg_tmp="${CONFIG_FILE}.legacy-clean.$$"
-        if grep -q '^BLOCK_QUIC=' "$CONFIG_FILE" 2>/dev/null; then
-            sed '/^BLOCK_QUIC=/d' "$CONFIG_FILE" > "$_cfg_tmp" 2>/dev/null &&
-                mv "$_cfg_tmp" "$CONFIG_FILE" 2>/dev/null || rm -f "$_cfg_tmp" 2>/dev/null
-        else
-            rm -f "$_cfg_tmp" 2>/dev/null || true
-        fi
-    fi
-    return 0
-}
 init_dirs() {
-mkdir -p "$CFG_DIR" "$STATE_DIR" "$TMP_DIR" "$BASELINE_DIR" 2>/dev/null || return 1
-migrate_persistent_ownership || return 1
+    mkdir -p "$CFG_DIR" "$STATE_DIR" "$TMP_DIR" "$BASELINE_DIR" 2>/dev/null || return 1
+    [ -f "$OWNERSHIP" ] || { (umask 077; : > "$OWNERSHIP") 2>/dev/null || return 1; }
+    chmod 600 "$OWNERSHIP" 2>/dev/null || true
 }
 # ==========================================
 # ==========================================
@@ -684,7 +658,6 @@ clear_baseline_for_reacquire() {
     info_msg "Исходная копия удалена. При следующем применении будет создана новая."
 }
 write_catalogs() {
-rm -f "$DNS_CATALOG.previous" "$NTP_CATALOG.previous" "$BOOTSTRAP_CATALOG.previous" "$BOGUS_CATALOG.previous" 2>/dev/null
 _old_dnscatver="$(sed -n 's/^# DNSCATVER=//p' "$DNS_CATALOG" 2>/dev/null | head -n1)"
 if [ ! -s "$DNS_CATALOG" ] || [ "$_old_dnscatver" != "$DNSCAT_VERSION" ]; then
 cat > "$DNS_CATALOG" <<'EOF_DNS'
@@ -1377,7 +1350,6 @@ dns_redirect_conflict_uci() {
     [ -n "${FIREWALL_LAN_ZONE:-}" ] || { printf '0\n'; return 0; }
     _secs="$(uci show firewall 2>/dev/null | sed -n 's/^firewall\.\([^.=]*\)=redirect$/\1/p')"
     for _sec in $_secs; do
-        [ "$_sec" = "$FW_DNS_REDIRECT_SECTION" ] && continue
         [ "$(uci -q get "firewall.$_sec.disabled" 2>/dev/null)" = 1 ] && continue
         firewall_ref_matches_zone "$(uci -q get "firewall.$_sec.src" 2>/dev/null)" "$FIREWALL_LAN_ZONE" || continue
         _sd="$(uci -q get "firewall.$_sec.src_dport" 2>/dev/null)"
@@ -1402,14 +1374,17 @@ dns_path_conflict_nft() {
     _lan_if="$(uci -q get network.lan.ifname 2>/dev/null)"
     nft -a list ruleset 2>/dev/null | awk -v ld="$_lan_dev" -v li="$_lan_if" '
         /^[[:space:]]*chain[[:space:]][^ {]+[[:space:]]*\{/ { c=$2; gsub(/[^A-Za-z0-9_.-]/,"",c); next }
-        /iifname[[:space:]]+"[^"]+"/ && /dport[[:space:]]+53/ && /redirect[[:space:]]+to[[:space:]]+:[0-9]+/ && /#[[:space:]]*handle[[:space:]]+[0-9]+/ {
+        /iifname[[:space:]]+"[^"]+"/ && /dport[[:space:]]+53/ && /#[[:space:]]*handle[[:space:]]+[0-9]+/ {
             ok=0; if ($0 ~ /iifname[[:space:]]+"br-lan"/) ok=1
             if (ld != "" && index($0,"iifname \"" ld "\"")>0) ok=1
             if (li != "" && index($0,"iifname \"" li "\"")>0) ok=1
             if (!ok) next
-            line=$0
-            sub(/^.*redirect[[:space:]]+to[[:space:]]+:/,"",line)
-            port=line; sub(/[^0-9].*$/,"",port)
+            port=""
+            if ($0 ~ /redirect[[:space:]]+to[[:space:]]+:[0-9]+/) {
+                line=$0; sub(/^.*redirect[[:space:]]+to[[:space:]]+:/,"",line); port=line; sub(/[^0-9].*$/,"",port)
+            } else if ($0 ~ /dnat[[:space:]]+to[[:space:]]+[^[:space:]]+:[0-9]+/) {
+                line=$0; sub(/^.*dnat[[:space:]]+to[[:space:]]+[^:[:space:]]*:/,"",line); port=line; sub(/[^0-9].*$/,"",port)
+            }
             if (port == "53" || port == "") next
             h=$0; sub(/^.*#[[:space:]]*handle[[:space:]]+/,"",h); sub(/[^0-9].*$/,"",h)
             if (c != "" && h != "") print c "|" h "|" $0
@@ -1486,20 +1461,140 @@ reload_fw() {
     esac
     return 1
 }
-prepare_dns_path() {
-    _cfg_conflict="$(dns_redirect_conflict_uci 2>/dev/null || true)"
-    case "$_cfg_conflict" in
-        1)
-            warn_msg "Обнаружено стороннее перенаправление DNS с LAN:53. DNS Manager его не изменяет."
-            return 1
+dns_manager_force_port() {
+    _fp="$1"
+    [ -n "$_fp" ] || return 1
+    for _fs in 1 2 3 4 5 6 RU RU_2; do
+        eval "_fport=\${PORT_${_fs}:-}"
+        [ -n "$_fport" ] || continue
+        [ "$_fport" = "$_fp" ] && return 0
+    done
+    return 1
+}
+
+# Read-only discovery of the actual LAN DNS interception path. This is used
+# to separate DNS Manager from Zapret/other external forced-DNS without
+# consulting ownership files.
+detect_forced_dns_path() {
+    FORCED_DNS_ACTIVE=0
+    FORCED_DNS_EXTERNAL=0
+    FORCED_DNS_SOURCE="none"
+    FORCED_DNS_TARGETS=""
+    _manager_force_cfg=0
+    _external=0
+    _zapret=0
+
+    [ "${FORCE_DOH:-0}" = 1 ] &&
+        [ "$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null)" = 1 ] &&
+        [ "$(uci -q get https-dns-proxy.config.notrack_dns 2>/dev/null)" = 1 ] &&
+        _manager_force_cfg=1
+
+    # UCI redirect/DNAT rules. We inspect every real rule; section names and
+    # ownership registries are deliberately ignored as authority.
+    firewall_resolve_zones >/dev/null 2>&1 || true
+    _secs="$(uci show firewall 2>/dev/null | sed -n 's/^firewall\.\([^.=]*\)=redirect$/\1/p')"
+    for _sec in $_secs; do
+        [ "$(uci -q get "firewall.$_sec.disabled" 2>/dev/null)" = 1 ] && continue
+        firewall_ref_matches_zone "$(uci -q get "firewall.$_sec.src" 2>/dev/null)" "$FIREWALL_LAN_ZONE" || continue
+        _sd="$(uci -q get "firewall.$_sec.src_dport" 2>/dev/null)"
+        printf '%s\n' "$_sd" | tr ' ' '\n' | grep -qxF '53' || continue
+        _target="$(uci -q get "firewall.$_sec.target" 2>/dev/null)"
+        case "$_target" in DNAT|dnat|REDIRECT|redirect) ;; *) continue ;; esac
+        _dp="$(uci -q get "firewall.$_sec.dest_port" 2>/dev/null)"
+        [ -n "$_dp" ] || continue
+        case "$_dp" in 53|53-53) continue ;; esac
+        FORCED_DNS_ACTIVE=1
+        case "$FORCED_DNS_TARGETS" in *"|$_dp|"*|"$_dp"|*) ;; esac
+        FORCED_DNS_TARGETS="${FORCED_DNS_TARGETS}${_dp} "
+        if dns_manager_force_port "$_dp" && [ "$_manager_force_cfg" = 1 ]; then
+            :
+        else
+            _external=1
+        fi
+    done
+
+    # Runtime fw4/fw3 rules catch generated rules that do not exist as UCI
+    # sections. Existing helpers return only LAN:53 interceptions to another
+    # local port.
+    case "$SYS_FW" in
+        fw4)
+            _rt="$(dns_path_conflict_nft 2>/dev/null || true)"
+            while IFS='|' read -r _chain _handle _line; do
+                [ -n "$_line" ] || continue
+                _rp="$(printf '%s\n' "$_line" | sed -n 's/.*redirect[[:space:]]\+to[[:space:]]\+:[[:space:]]*\([0-9][0-9]*\).*/\1/p' | head -n1)"
+                [ -n "$_rp" ] || continue
+                FORCED_DNS_ACTIVE=1
+                FORCED_DNS_TARGETS="${FORCED_DNS_TARGETS}${_rp} "
+                if dns_manager_force_port "$_rp" && [ "$_manager_force_cfg" = 1 ]; then
+                    :
+                else
+                    _external=1
+                fi
+            done <<EOF_FORCE_NFT
+$_rt
+EOF_FORCE_NFT
             ;;
-        0) ;;
-        *) return 1 ;;
+        fw3)
+            _rt="$(dns_path_conflict_iptables 2>/dev/null || true)"
+            while IFS= read -r _line; do
+                [ -n "$_line" ] || continue
+                _rp="$(printf '%s\n' "$_line" | sed -n 's/.*--to-ports[[:space:]]\+\([0-9][0-9]*\).*/\1/p; s/.*--to-destination[[:space:]]\+[^[:space:]]*:\([0-9][0-9]*\).*/\1/p' | head -n1)"
+                [ -n "$_rp" ] || continue
+                FORCED_DNS_ACTIVE=1
+                FORCED_DNS_TARGETS="${FORCED_DNS_TARGETS}${_rp} "
+                if dns_manager_force_port "$_rp" && [ "$_manager_force_cfg" = 1 ]; then
+                    :
+                else
+                    _external=1
+                fi
+            done <<EOF_FORCE_IPT
+$_rt
+EOF_FORCE_IPT
+            ;;
     esac
-    if [ "$SYS_FW" = fw4 ]; then
-        dns_path_conflict_nft >/dev/null 2>&1 && return 1
-    elif [ "$SYS_FW" = fw3 ]; then
-        dns_path_conflict_iptables >/dev/null 2>&1 && return 1
+
+    # Attribute an already detected external path to Zapret only from the
+    # actual running Zapret process, never from a firewall section/chain name.
+    # This keeps source reporting fact-based and independent of ownership files.
+    if [ "$_external" = 1 ] && type third_party_running >/dev/null 2>&1; then
+        third_party_running zapret >/dev/null 2>&1 && _zapret=1
+        third_party_running zapret2 >/dev/null 2>&1 && _zapret=1
+    fi
+
+    # A package-level force_dns=1 is also a real external state when the
+    # manager itself is not configured to own forced-DNS. This covers Zapret
+    # setups where the package generates the runtime redirect after startup.
+    if [ "$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null)" = 1 ] && [ "$_manager_force_cfg" != 1 ]; then
+        FORCED_DNS_ACTIVE=1
+        _external=1
+        { [ "${OTHER_ZAPRET:-no}" = yes ] || [ "${OTHER_ZAPRET2:-no}" = yes ]; } && _zapret=1
+    fi
+
+    if [ "$_external" = 1 ]; then
+        FORCED_DNS_EXTERNAL=1
+        if [ "$_zapret" = 1 ]; then
+            FORCED_DNS_SOURCE="Zapret / внешний"
+        else
+            FORCED_DNS_SOURCE="внешний сервис"
+        fi
+    elif [ "$_manager_force_cfg" = 1 ]; then
+        FORCED_DNS_ACTIVE=1
+        FORCED_DNS_SOURCE="DNS Manager"
+    elif [ "$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null)" = 1 ]; then
+        FORCED_DNS_ACTIVE=1
+        FORCED_DNS_EXTERNAL=1
+        FORCED_DNS_SOURCE="внешний сервис"
+    fi
+
+    FORCED_DNS_TARGETS="$(printf '%s\n' "$FORCED_DNS_TARGETS" | tr ' ' '\n' | sed '/^$/d' | sort -n -u | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+    return 0
+}
+
+prepare_dns_path() {
+    detect_forced_dns_path >/dev/null 2>&1 || true
+    if [ "${FORCED_DNS_EXTERNAL:-0}" = 1 ]; then
+        warn_msg "Обнаружен внешний forced-DNS ($FORCED_DNS_SOURCE). DNS Manager его не изменяет."
+        return 1
     fi
     return 0
 }
@@ -1513,16 +1608,12 @@ disc_firewall() {
         IPTABLES_ACTIVE="yes"
     fi
     DNS_PATH_CONFLICT="no"
-    if [ "$SYS_FW" = fw4 ]; then
-        dns_path_conflict_nft >/dev/null 2>&1 && DNS_PATH_CONFLICT="yes"
-    elif [ "$SYS_FW" = fw3 ]; then
-        dns_path_conflict_iptables >/dev/null 2>&1 && DNS_PATH_CONFLICT="yes"
-    fi
+    detect_forced_dns_path >/dev/null 2>&1 || true
+    [ "${FORCED_DNS_EXTERNAL:-0}" = 1 ] && DNS_PATH_CONFLICT="yes"
 }
 run_discovery() {
 init_dirs
 disc_system
-cleanup_legacy_manager_udp_rules >/dev/null 2>&1 || true
 disc_network
 disc_listeners
 disc_dns
@@ -1951,23 +2042,22 @@ vniiftri_all) echo "89.109.251.21 89.109.251.22 89.109.251.23 89.109.251.24 89.1
 esac
 }
 apply_ntp_ip_fallback() {
-servers="$(grep -v '^#' "$NTP_CATALOG" 2>/dev/null | grep "^${NTP_PRESET}|" | head -1 | cut -d'|' -f4)"
-[ -n "$servers" ] || { warn_msg "NTP-профиль '$NTP_PRESET' не найден в каталоге."; return 1; }
-[ -n "$(uci -q get system.ntp 2>/dev/null)" ] || uci -q set system.ntp=timeserver || return 1
-for ipx in $servers; do
-    _exists=0
-    for _cur_ntp in $(uci -q get system.ntp.server 2>/dev/null); do
-        [ "$_cur_ntp" = "$ipx" ] && _exists=1
+    servers="$(grep -v '^#' "$NTP_CATALOG" 2>/dev/null | grep "^${NTP_PRESET}|" | head -1 | cut -d'|' -f4)"
+    [ -n "$servers" ] || { warn_msg "NTP-профиль '$NTP_PRESET' не найден в каталоге."; return 1; }
+    [ -n "$(uci -q get system.ntp 2>/dev/null)" ] || uci -q set system.ntp=timeserver || return 1
+
+    # The selected profile is authoritative for the NTP upstream list.
+    # Replace the list instead of accumulating servers from previous profiles.
+    uci -q delete system.ntp.server || true
+    for ipx in $servers; do
+        uci add_list system.ntp.server="$ipx" || return 1
     done
-    [ "$_exists" = 1 ] || uci add_list system.ntp.server="$ipx" || return 1
-done
-uci set system.ntp.enabled='1' || return 1
-uci set system.ntp.use_dhcp='0' || return 1
-uci commit system || return 1
-/etc/init.d/sysntpd restart >/dev/null 2>&1
-record_own "ntp" "system.ntp.server" "$servers" "profile=$NTP_PRESET"
-ok_msg "NTP: IP-профиль '$NTP_PRESET' добавлен без удаления существующих серверов."
-log_tx "APPLY" "NTP" "ADD" "OK" "profile=$NTP_PRESET;servers=$servers"
+    uci set system.ntp.enabled='1' || return 1
+    uci set system.ntp.use_dhcp='0' || return 1
+    uci commit system || return 1
+    /etc/init.d/sysntpd restart >/dev/null 2>&1 || return 1
+    log_tx "APPLY" "NTP" "SERVER_PROFILE" "OK" "profile=$NTP_PRESET;servers=$servers"
+    ok_msg "NTP: выбран профиль '$NTP_PRESET'. Источники времени роутера установлены точно по выбранному набору."
 }
 apply_ntp_host_ips() {
     [ "${NTP_IP_FALLBACK:-0}" = 1 ] || return 0
@@ -2127,15 +2217,33 @@ record_own() {
     grep -Fqx -- "$_own_line" "$OWNERSHIP" 2>/dev/null || printf '%s\n' "$_own_line" >> "$OWNERSHIP"
 }
 configure_hdp_manager_control() {
-    # DNS Manager owns the upstream list; https-dns-proxy owns forced-DNS
-    # firewall integration through procd/fw4. The manager never creates a
-    # second independent DNS redirect when force_dns is enabled.
-    uci set https-dns-proxy.config.dnsmasq_config_update='-' || return 1
-    uci set https-dns-proxy.config.force_ip_family='auto' || return 1
+    # DNS Manager is authoritative for the DoH sections themselves. Global
+    # force-DNS settings are different: when an external forced-DNS path is
+    # already present (for example Zapret), do not seize or rewrite it.
+    detect_forced_dns_path >/dev/null 2>&1 || true
+
     if [ "${FORCE_DOH:-0}" = 1 ]; then
+        if [ "${FORCED_DNS_EXTERNAL:-0}" = 1 ]; then
+            log_msg "Внешний forced-DNS обнаружен: DNS Manager не перехватывает и не перезаписывает его глобальные параметры."
+            return 2
+        fi
+        uci set https-dns-proxy.config.dnsmasq_config_update='-' || return 1
         uci set https-dns-proxy.config.force_dns='1' || return 1
         uci set https-dns-proxy.config.notrack_dns='1' || return 1
+        uci set https-dns-proxy.config.force_ip_family='auto' || return 1
+        uci commit https-dns-proxy || return 1
+        return 0
     fi
+
+    if [ "${FORCED_DNS_EXTERNAL:-0}" = 1 ]; then
+        log_msg "Внешний forced-DNS обнаружен: глобальные параметры https-dns-proxy не изменяю."
+        return 0
+    fi
+
+    # No external forced-DNS owner is detected. Keep dnsmasq authoritative
+    # for the upstream list and let the manager control address family.
+    uci set https-dns-proxy.config.dnsmasq_config_update='-' || return 1
+    uci set https-dns-proxy.config.force_ip_family='auto' || return 1
     uci commit https-dns-proxy || return 1
 }
 ensure_doh_slot() {
@@ -2233,96 +2341,6 @@ done <<EOF_DUP
 $(awk -F'|' -v p="$p" '$2==p{print $1"|"$5}' "$DOH_INV")
 EOF_DUP
 done < "$dup_ports"
-}
-reconcile_selected_own_doh() {
-    _keep="$TMP_DIR/keep-own-doh"
-    : > "$_keep"
-    for s in 1 2 3 4 5 6 RU RU_2; do
-        eval "_id=\${SLOT_$s}"
-        [ -n "$_id" ] || continue
-        _u="$(normalize_url "$(dns_url "$_id")")"
-        [ -n "$_u" ] && printf '%s\n' "$_u" >> "$_keep"
-    done
-    sort -u "$_keep" -o "$_keep" 2>/dev/null || true
-    i=0
-    while uci -q get "https-dns-proxy.@https-dns-proxy[$i]" >/dev/null 2>&1; do
-        _u="$(normalize_url "$(uci -q get "https-dns-proxy.@https-dns-proxy[$i].resolver_url" 2>/dev/null)")"
-        if [ -z "$_u" ] || ! grep -qxF "$_u" "$_keep" 2>/dev/null; then
-            uci -q delete "https-dns-proxy.@https-dns-proxy[$i]" || return 1
-            continue
-        fi
-        i=$((i+1))
-    done
-    return 0
-}
-validate_selected_slots() {
-    _urls="$TMP_DIR/selected-urls"
-    _ports="$TMP_DIR/selected-ports"
-    : > "$_urls"; : > "$_ports"
-    for s in 1 2 3 4 5 6 RU RU_2; do
-        eval "_id=\${SLOT_$s}"
-        [ -n "$_id" ] || continue
-        _u="$(normalize_url "$(dns_url "$_id")")"
-        [ -n "$_u" ] || { err_msg "Слот $s содержит DNS без URL."; return 1; }
-        if [ "$DNS_PROFILE" = hybrid ]; then
-            ensure_test_results_fresh || return 1
-            _tested_ok="$(awk -F'|' -v id="$_id" 'NF>=5 && $1==id && $5=="OK" && $4 ~ /^[0-9]+$/ {print "yes"; exit}' "$TEST_RESULTS" 2>/dev/null)"
-            if [ "$_tested_ok" != yes ]; then
-                err_msg "DNS «$(dns_name "$_id")» не прошёл последнюю полную проверку. Он не может быть применён."
-                return 1
-            fi
-        fi
-        if grep -qxF "$_u" "$_urls" 2>/dev/null; then
-            err_msg "Один и тот же адрес DNS-сервера выбран несколько раз: $(dns_name "$_id")."
-            return 1
-        fi
-        printf '%s\n' "$_u" >> "$_urls"
-    done
-    return 0
-}
-get_dnsmasq_section() {
-_secs="$(uci show dhcp 2>/dev/null | sed -n 's/^dhcp\.\([^.=]*\)=dnsmasq$/\1/p')"
-for _s in $_secs; do
-_iface="$(uci -q get "dhcp.$_s.interface" 2>/dev/null)"
-[ "$_iface" = "lan" ] && { printf '%s' "$_s"; return; }
-done
-_s="$(printf '%s\n' $_secs | head -n1)"
-[ -n "$_s" ] && { printf '%s' "$_s"; return; }
-printf '%s' "@dnsmasq[0]"
-}
-exact_list_has() {
-target="$1"; val="$2"
-uci -q get "$target" 2>/dev/null | tr ' ' '\n' | sed "s/^['\"]//; s/['\"]$//" | grep -qxF "$val"
-}
-ensure_dnsmasq_balancer() {
-    _sec="$(get_dnsmasq_section)"
-    [ -n "$_sec" ] || return 1
-    _changed=0
-    if [ "$(uci -q get "dhcp.$_sec.allservers" 2>/dev/null)" != 1 ]; then
-        uci set "dhcp.$_sec.allservers=1" || return 1
-        _changed=1
-        record_own "dnsmasq" "allservers" 1 "section=$_sec"
-    fi
-    if [ "$(uci -q get "dhcp.$_sec.strictorder" 2>/dev/null)" != 0 ]; then
-        uci set "dhcp.$_sec.strictorder=0" || return 1
-        _changed=1
-        record_own "dnsmasq" "strictorder" 0 "section=$_sec"
-    fi
-    if [ "$(uci -q get "dhcp.$_sec.noresolv" 2>/dev/null)" != 1 ]; then
-        uci set "dhcp.$_sec.noresolv=1" || return 1
-        _changed=1
-        record_own "dnsmasq" "noresolv" 1 "section=$_sec"
-    fi
-    if [ "$_changed" = 1 ]; then
-        uci commit dhcp || return 1
-        /etc/init.d/dnsmasq restart >/dev/null 2>&1 || return 1
-        sleep 2
-        ok_msg "Одновременный опрос DNS включён и проверен."
-    fi
-    [ "$(uci -q get "dhcp.$_sec.allservers" 2>/dev/null)" = 1 ] || return 1
-    [ "$(uci -q get "dhcp.$_sec.strictorder" 2>/dev/null)" = 0 ] || return 1
-    [ "$(uci -q get "dhcp.$_sec.noresolv" 2>/dev/null)" = 1 ] || return 1
-    return 0
 }
 normalize_ownership_snapshot() {
     [ -f "$OWNERSHIP" ] || return 0
@@ -2422,11 +2440,10 @@ reconcile_dnsmasq() {
     uci commit dhcp || return 1
 }
 # ==========================================
-# FIREWALL OWNERSHIP
+# FIREWALL AUDIT HELPERS
 # ==========================================
-# The ownership registry is deliberately separate from UCI itself.
-# A section can be removed/modified by DNS Manager only after its exact
-# signature is confirmed AND the section is recorded as manager-owned.
+# These helpers are bookkeeping only. Runtime decisions are made from the
+# actual UCI/fw4/fw3 configuration, never from this registry as authority.
 firewall_owner_has() {
     _sec="$1"
     [ -n "$_sec" ] || return 1
@@ -2456,9 +2473,6 @@ firewall_ownership_sync() {
     while IFS= read -r _sec; do
         [ -n "$_sec" ] || continue
         case "$_sec" in
-            "$FW_NTP_SECTION")
-                ntp_firewall_rule_owned && printf '%s\n' "$_sec" >> "$_tmp"
-                ;;
             "$FW_DNS_REDIRECT_SECTION")
                 firewall_resolve_zones >/dev/null 2>&1 || true
                 firewall_section_owned_redirect "$FW_DNS_REDIRECT_SECTION" "$FIREWALL_LAN_ZONE" 'tcp udp' 53 "$LAN_IP" 53 DNAT && printf '%s\n' "$_sec" >> "$_tmp"
@@ -2471,15 +2485,6 @@ firewall_ownership_sync() {
                 [ "$(uci -q get "firewall.$FW_DOT_SECTION.proto" 2>/dev/null)" = 'tcp udp' ] || continue
                 [ "$(uci -q get "firewall.$FW_DOT_SECTION.dest_port" 2>/dev/null)" = 853 ] || continue
                 [ "$(uci -q get "firewall.$FW_DOT_SECTION.target" 2>/dev/null)" = REJECT ] || continue
-                printf '%s\n' "$_sec" >> "$_tmp"
-                ;;
-            "$FW_WEB_SECTION")
-                firewall_resolve_zones >/dev/null 2>&1 || true
-                [ "$(uci -q get "firewall.$FW_WEB_SECTION" 2>/dev/null)" = rule ] || continue
-                firewall_ref_matches_zone "$(uci -q get "firewall.$FW_WEB_SECTION.src" 2>/dev/null)" "$FIREWALL_LAN_ZONE" || continue
-                [ "$(uci -q get "firewall.$FW_WEB_SECTION.proto" 2>/dev/null)" = tcp ] || continue
-                [ "$(uci -q get "firewall.$FW_WEB_SECTION.dest_port" 2>/dev/null)" = "$WEB_ACCESS_PORT" ] || continue
-                [ "$(uci -q get "firewall.$FW_WEB_SECTION.target" 2>/dev/null)" = ACCEPT ] || continue
                 printf '%s\n' "$_sec" >> "$_tmp"
                 ;;
         esac
@@ -2701,12 +2706,18 @@ _apply_extras_now_impl() {
             apply_sysctl_bundle "$SYSCTL_TUNING" "$SYSCTL_EXTENDED" || return 1
             ;;
         force)
-            if [ "$FORCE_DOH" = 1 ]; then
-                apply_dns_force || return 1
+            detect_forced_dns_path >/dev/null 2>&1 || true
+            _cfg_ok=0
+            [ "$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null)" = 1 ] &&
+            [ "$(uci -q get https-dns-proxy.config.notrack_dns 2>/dev/null)" = 1 ] &&
+            [ "$(uci -q get https-dns-proxy.config.force_ip_family 2>/dev/null)" = auto ] && _cfg_ok=1
+            if [ "${FORCE_DOH:-0}" = 1 ] && [ "$_cfg_ok" = 1 ] && [ "${FORCED_DNS_EXTERNAL:-0}" != 1 ]; then
+                printf 1
+            elif [ "${FORCED_DNS_EXTERNAL:-0}" = 1 ] || [ "$_cfg_ok" = 1 ]; then
+                printf 2
             else
-                remove_dns_force || return 1
+                printf 0
             fi
-            reload_fw || return 1
             ;;
         ntp_clients)
             if [ "$NTP_CLIENTS" = 1 ]; then
@@ -2761,7 +2772,7 @@ apply_extras_now() {
             mtu) _label="Применяю MTU/MSS";;
             sysctl) _label="Применяю тюнинг TCP и Conntrack";;
             force) _label="Применяю принудительный DNS";;
-            ntp_clients) _label="Применяю NTP для устройств сети";;
+            ntp_clients) _label="Применяю NTP-сервер роутера для устройств сети";;
             dnsmasq_perf) _label="Применяю кэширование DNS";;
             client_fixes) _label="Применяю клиентские исправления";;
             web) _label="Применяю терминальный доступ LuCI";;
@@ -2782,78 +2793,102 @@ apply_extras_now() {
 # ==========================================
 # ==========================================
 # ==========================================
-ntp_firewall_rule_owned() {
-    firewall_lan_zone_require >/dev/null || return 1
-    firewall_section_owned_redirect "$FW_NTP_SECTION" "$FIREWALL_LAN_ZONE" udp 123 "$LAN_IP" 123 DNAT
-}
-ntp_firewall_rule_exact_external() {
-    firewall_find_exact_redirect "$FIREWALL_LAN_ZONE" udp 123 "$LAN_IP" 123 DNAT "$FW_NTP_SECTION" >/dev/null 2>&1
-}
 apply_ntp_clients() {
     [ "${NTP_CLIENTS:-0}" = 1 ] || return 0
-    firewall_lan_zone_require >/dev/null || return 1
-    sec="$(get_dnsmasq_section)"; [ -n "$sec" ] || return 1
-    if [ ! -s "$NTP_CLIENTS_BEFORE" ]; then
+    sec="$(get_dnsmasq_section)" || return 1
+    [ -n "$sec" ] || return 1
+    [ -n "$(uci -q get system.ntp 2>/dev/null)" ] || uci -q set system.ntp=timeserver || return 1
+
+    # Versioned state belongs to this feature only. It remembers values that
+    # existed before the current feature was enabled; it is not a legacy
+    # scanner and it does not inspect/delete unrelated firewall objects.
+    _need_snapshot=1
+    if [ -s "$NTP_CLIENTS_BEFORE" ]; then
+        _sv="$(sed -n 's/^state_version=//p' "$NTP_CLIENTS_BEFORE" 2>/dev/null | head -n1)"
+        [ "$_sv" = 3 ] && _need_snapshot=0
+    fi
+    if [ "$_need_snapshot" = 1 ]; then
         {
-            printf 'state_version|2\n'
-            printf 'section|%s\n' "$sec"
+            printf 'state_version=3\\n'
+            printf 'section=%s\\n' "$sec"
+            _es="$(uci -q get system.ntp.enable_server 2>/dev/null)"
+            [ -n "$_es" ] && printf 'enable_server_before=%s\\n' "$_es" || printf 'enable_server_before=__unset__\\n'
             if exact_list_has "dhcp.$sec.dhcp_option" "42,$LAN_IP"; then
-                printf 'dhcp_added|0\n'
-                printf 'dhcp_added_option|\n'
+                printf 'dhcp42_added=0\\n'
             else
-                printf 'dhcp_added|1\n'
-                printf 'dhcp_added_option|42,%s\n' "$LAN_IP"
-            fi
-            if ntp_firewall_rule_owned && firewall_owner_has "$FW_NTP_SECTION"; then
-                printf 'fw_manager_owned|1\n'
-            else
-                printf 'fw_manager_owned|0\n'
+                printf 'dhcp42_added=1\\n'
             fi
         } > "$NTP_CLIENTS_BEFORE" || return 1
     fi
 
+    # Enable BusyBox ntpd server mode. The router supplies its own current
+    # time to peers on UDP/123. No NTP redirect/DNAT/TPROXY is created.
+    uci set system.ntp.enable_server='1' || return 1
     _opt="42,$LAN_IP"
-    exact_list_has "dhcp.$sec.dhcp_option" "$_opt" ||         uci add_list "dhcp.$sec.dhcp_option=$_opt" || return 1
+    exact_list_has "dhcp.$sec.dhcp_option" "$_opt" || \
+        uci add_list "dhcp.$sec.dhcp_option=$_opt" || return 1
 
-    if uci -q get "firewall.$FW_NTP_SECTION" >/dev/null 2>&1; then
-        if ntp_firewall_rule_owned; then
-            uci -q delete "firewall.$FW_NTP_SECTION.dest" || true
-            uci -q set "firewall.$FW_NTP_SECTION.family=ipv4" || return 1
-            firewall_owner_add "$FW_NTP_SECTION" >/dev/null 2>&1 || true
-        elif [ "${FORCE_APPLY_SETTINGS:-0}" = 1 ]; then
-            uci set "firewall.$FW_NTP_SECTION=redirect" || return 1
-            uci set "firewall.$FW_NTP_SECTION.name=DNS Manager: NTP клиентов в роутер" || return 1
-            uci set "firewall.$FW_NTP_SECTION.src=$FIREWALL_LAN_NAME" || return 1
-            uci -q delete "firewall.$FW_NTP_SECTION.dest" || true
-            uci set "firewall.$FW_NTP_SECTION.family=ipv4" || return 1
-            uci set "firewall.$FW_NTP_SECTION.proto=udp" || return 1
-            uci set "firewall.$FW_NTP_SECTION.src_dport=123" || return 1
-            uci set "firewall.$FW_NTP_SECTION.dest_ip=$LAN_IP" || return 1
-            uci set "firewall.$FW_NTP_SECTION.dest_port=123" || return 1
-            uci set "firewall.$FW_NTP_SECTION.target=DNAT" || return 1
-            firewall_owner_add "$FW_NTP_SECTION" || return 1
-        else
-            return 2
+    uci commit system || return 1
+    uci commit dhcp || return 1
+    /etc/init.d/sysntpd restart >/dev/null 2>&1 || return 1
+    /etc/init.d/dnsmasq restart >/dev/null 2>&1 || return 1
+
+    if ! listener_port_exists 123 >/dev/null 2>&1; then
+        warn_msg "NTP-сервер включён в UCI, но UDP/123 сейчас не слушается."
+        return 1
+    fi
+    log_tx "APPLY" "NTP" "SERVER" "OK" "router_server=1;dhcp_option=42,$LAN_IP;forced_redirect=0"
+    ok_msg "NTP-сервер роутера включён. Клиенты получают $LAN_IP через DHCP (Option 42). Принудительного перехвата NTP нет."
+    return 0
+}
+
+remove_ntp_clients() {
+    sec="$(get_dnsmasq_section)" || return 1
+    [ -n "$sec" ] || return 1
+
+    _restore_server="__unset__"
+    _dhcp_remove=0
+    if [ -s "$NTP_CLIENTS_BEFORE" ]; then
+        _sv="$(sed -n 's/^state_version=//p' "$NTP_CLIENTS_BEFORE" 2>/dev/null | head -n1)"
+        if [ "$_sv" = 3 ]; then
+            _restore_server="$(sed -n 's/^enable_server_before=//p' "$NTP_CLIENTS_BEFORE" 2>/dev/null | head -n1)"
+            _dhcp_remove="$(sed -n 's/^dhcp42_added=//p' "$NTP_CLIENTS_BEFORE" 2>/dev/null | head -n1)"
         fi
-    elif ntp_firewall_rule_exact_external; then
-        :
-    else
-        uci set "firewall.$FW_NTP_SECTION=redirect" || return 1
-        uci set "firewall.$FW_NTP_SECTION.name=DNS Manager: NTP клиентов в роутер" || return 1
-        uci set "firewall.$FW_NTP_SECTION.src=$FIREWALL_LAN_NAME" || return 1
-        uci -q delete "firewall.$FW_NTP_SECTION.dest" || true
-        uci set "firewall.$FW_NTP_SECTION.family=ipv4" || return 1
-        uci set "firewall.$FW_NTP_SECTION.proto=udp" || return 1
-        uci set "firewall.$FW_NTP_SECTION.src_dport=123" || return 1
-        uci set "firewall.$FW_NTP_SECTION.dest_ip=$LAN_IP" || return 1
-        uci set "firewall.$FW_NTP_SECTION.dest_port=123" || return 1
-        uci set "firewall.$FW_NTP_SECTION.target=DNAT" || return 1
-        firewall_owner_add "$FW_NTP_SECTION" || return 1
     fi
 
+    # Restore only the specific settings of this feature. If another actor
+    # changed enable_server after we enabled it, do not overwrite that change.
+    _cur_server="$(uci -q get system.ntp.enable_server 2>/dev/null)"
+    if [ "$_cur_server" = 1 ]; then
+        case "$_restore_server" in
+            __unset__) uci -q delete system.ntp.enable_server || true ;;
+            0|1) uci set system.ntp.enable_server="$_restore_server" || return 1 ;;
+            *) ;;
+        esac
+    fi
+
+    if [ "$_dhcp_remove" = 1 ]; then
+        _tmp="$(mktemp /tmp/dns-manager-ntp.XXXXXX 2>/dev/null)" || return 1
+        : > "$_tmp" || { rm -f "$_tmp"; return 1; }
+        for _v in $(uci -q get "dhcp.$sec.dhcp_option" 2>/dev/null); do
+            [ "$_v" = "42,$LAN_IP" ] || printf '%s\\n' "$_v" >> "$_tmp"
+        done
+        uci -q delete "dhcp.$sec.dhcp_option" || true
+        while IFS= read -r _v; do
+            [ -n "$_v" ] && uci add_list "dhcp.$sec.dhcp_option=$_v" || true
+        done < "$_tmp"
+        rm -f "$_tmp"
+    fi
+
+    uci commit system || return 1
     uci commit dhcp || return 1
-    uci commit firewall || return 1
+    /etc/init.d/sysntpd restart >/dev/null 2>&1 || true
+    /etc/init.d/dnsmasq restart >/dev/null 2>&1 || true
+    rm -f "$NTP_CLIENTS_BEFORE" 2>/dev/null || true
+    log_tx "APPLY" "NTP" "SERVER_OFF" "OK" "router_server=0;forced_redirect=0"
+    return 0
 }
+
 apply_dnsmasq_perf() {
     [ "${DNSMASQ_PERF:-0}" = 1 ] || return 0
     sec="$(get_dnsmasq_section)"
@@ -3081,32 +3116,11 @@ remove_sysctl_extended() {
     rm -f "$sf"
     return 0
 }
-remove_legacy_force_firewall_rules() {
-    firewall_resolve_zones >/dev/null 2>&1 || true
-    _changed=0
-    if firewall_section_owned_redirect "$FW_DNS_REDIRECT_SECTION" "$FIREWALL_LAN_ZONE" 'tcp udp' 53 "$LAN_IP" 53 DNAT && firewall_owner_has "$FW_DNS_REDIRECT_SECTION"; then
-        uci -q delete "firewall.$FW_DNS_REDIRECT_SECTION" && { firewall_owner_remove "$FW_DNS_REDIRECT_SECTION"; _changed=1; } || true
-    fi
-    if uci -q get "firewall.$FW_DOT_SECTION" >/dev/null 2>&1 && firewall_owner_has "$FW_DOT_SECTION"; then
-        if firewall_ref_matches_zone "$(uci -q get "firewall.$FW_DOT_SECTION.src" 2>/dev/null)" "$FIREWALL_LAN_ZONE" &&
-           firewall_ref_matches_zone "$(uci -q get "firewall.$FW_DOT_SECTION.dest" 2>/dev/null)" "$FIREWALL_WAN_ZONE" &&
-           [ "$(uci -q get "firewall.$FW_DOT_SECTION.proto" 2>/dev/null)" = 'tcp udp' ] &&
-           [ "$(uci -q get "firewall.$FW_DOT_SECTION.dest_port" 2>/dev/null)" = 853 ] &&
-           [ "$(uci -q get "firewall.$FW_DOT_SECTION.target" 2>/dev/null)" = REJECT ]; then
-            uci -q delete "firewall.$FW_DOT_SECTION" && { firewall_owner_remove "$FW_DOT_SECTION"; _changed=1; } || true
-        fi
-    fi
-    if [ "$_changed" = 1 ]; then
-        uci commit firewall >/dev/null 2>&1 || return 1
-    fi
-    return 0
-}
-
 hdp_force_external_conflict() {
     [ "${FORCE_DOH:-0}" = 1 ] || return 1
-    [ -s "$FORCE_DNS_BEFORE" ] && return 1
-    if [ "$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null)" = 1 ]; then
-        warn_msg "https-dns-proxy уже используется сторонним принудительным DNS. DNS Manager не перехватывает управление автоматически."
+    detect_forced_dns_path >/dev/null 2>&1 || true
+    if [ "${FORCED_DNS_EXTERNAL:-0}" = 1 ]; then
+        warn_msg "Обнаружен сторонний forced-DNS ($FORCED_DNS_SOURCE). DNS Manager не перехватывает его автоматически."
         return 0
     fi
     return 1
@@ -3139,15 +3153,11 @@ apply_dns_force() {
     uci set https-dns-proxy.config.force_ip_family='auto' || return 1
     uci commit https-dns-proxy || return 1
 
-    # Delete only legacy DNS Manager firewall objects we own.
-    remove_legacy_force_firewall_rules || return 1
     return 0
 }
 
 remove_dns_force() {
     firewall_resolve_zones >/dev/null 2>&1 || true
-    remove_legacy_force_firewall_rules || true
-
     if [ -s "$FORCE_DNS_BEFORE" ]; then
         _unsafe=0
 
@@ -3997,7 +4007,7 @@ reset_hybrid_runtime_ports() {
 _apply_settings_impl() {
     clear_screen
     run_discovery
-    if [ "$CORE_ONLY" != 1 ] && { [ "${MTU_FIX:-0}" = 1 ] || [ "${FORCE_DOH:-0}" = 1 ] || [ "${NTP_CLIENTS:-0}" = 1 ]; }; then
+    if [ "$CORE_ONLY" != 1 ] && { [ "${MTU_FIX:-0}" = 1 ] || [ "${FORCE_DOH:-0}" = 1 ]; }; then
         firewall_backend_require || return 1
     fi
     if [ "$CORE_ONLY" != 1 ] && [ "${FORCE_DOH:-0}" = 1 ]; then
@@ -4058,7 +4068,7 @@ _apply_settings_impl() {
         [ "$MTU_FIX" = 1 ] && printf "  ${C_GREEN}✓${C_NC} Исправление сетевых параметров\n" || printf "  ${C_YELLOW}—${C_NC} MTU не изменяется\n"
         [ "$SYSCTL_TUNING" = 1 ] && printf "  ${C_GREEN}✓${C_NC} Настройка сети\n" || printf "  ${C_YELLOW}—${C_NC} sysctl не изменяется\n"
         [ "${FORCE_DOH:-0}" = 1 ] && printf "  ${C_GREEN}✓${C_NC} Принудительный локальный DNS\n" || printf "  ${C_YELLOW}—${C_NC} Принудительный локальный DNS не изменяется\n"
-        [ "$NTP_CLIENTS" = 1 ] && printf "  ${C_GREEN}✓${C_NC} Время для устройств сети (DHCP 42 + DNAT 123)\n" || printf "  ${C_YELLOW}—${C_NC} NTP клиентов не изменяется\n"
+        [ "$NTP_CLIENTS" = 1 ] && printf "  ${C_GREEN}✓${C_NC} NTP-сервер роутера + DHCP 42 (без принудительного перехвата)\n" || printf "  ${C_YELLOW}—${C_NC} NTP для клиентов не изменяется\n"
         [ "$DNSMASQ_PERF" = 1 ] && printf "  ${C_GREEN}✓${C_NC} Настройка DNS-кэша\n" || printf "  ${C_YELLOW}—${C_NC} Настройка DNS-кэша не изменяется\n"
         [ "$CLIENT_FIXES" = 1 ] && printf "  ${C_GREEN}✓${C_NC} Клиентские DNS-фиксы\n" || printf "  ${C_YELLOW}—${C_NC} Клиентские фиксы не изменяются\n"
         [ "$SYSCTL_EXTENDED" = 1 ] && printf "  ${C_GREEN}✓${C_NC} Расширенная настройка сети\n" || printf "  ${C_YELLOW}—${C_NC} Расширенный sysctl не изменяется\n"
@@ -4079,7 +4089,6 @@ _apply_settings_impl() {
     baseline_capture_once || { err_msg "Не удалось сохранить исходную копию. Настройки не изменены."; return 1; }
     tx_snapshot_start || { err_msg "Не удалось сохранить копию настроек. Настройки не изменены."; return 1; }
     DEFER_CONFIG_SAVE=1
-    migrate_persistent_ownership || { err_msg "Не удалось подготовить постоянный ownership DNS Manager."; tx_restore_on_failure; return 1; }
     log_tx "PLAN" "all" "APPLY" "START" "version=$VERSION"
     if [ "$NTP_IP_FALLBACK" = 1 ]; then
         apply_ntp_host_ips || { err_msg "Не удалось подготовить серверы времени."; tx_restore_on_failure; return 1; }
@@ -4170,9 +4179,6 @@ _apply_settings_impl() {
     sleep 2
     ensure_dnsmasq_balancer || { err_msg "Одновременный опрос DNS не включился после запуска. Изменения откатываются."; tx_restore_on_failure; return 1; }
     reload_fw || { err_msg "Не удалось применить настройки firewall."; tx_restore_on_failure; return 1; }
-    if [ "$CORE_ONLY" != 1 ] && [ "${FORCE_DOH:-0}" = 1 ]; then
-        prepare_dns_path || { err_msg "Не удалось подтвердить отсутствие внешнего перехвата LAN:53."; tx_restore_on_failure; return 1; }
-    fi
     run_discovery
     tx_snapshot_after_apply
     if verify_after_apply_with_repair; then
@@ -4237,7 +4243,6 @@ _rollback_ours_impl() {
     WEB_ACCESS_ENABLED=0
     web_access_luci_remove
     web_access_remove_config
-    web_access_remove_firewall
     watchdog_cron_remove_owned_block >/dev/null 2>&1 || true
     printf "${C_YELLOW}=== 🔄 Восстановление чистого состояния OpenWrt ===${C_NC}\n"
 
@@ -4247,7 +4252,6 @@ _rollback_ours_impl() {
         reload_fw >/dev/null 2>&1 || true
         rm -f "$BASELINE_LAST" 2>/dev/null || true
         rm -f "$FORCE_DNS_BEFORE" 2>/dev/null || true
-        firewall_ownership_sync >/dev/null 2>&1 || true
         ok_msg "Исходное состояние чистого OpenWrt восстановлено."
         pause
         return 0
@@ -4795,33 +4799,6 @@ firewall_wan_zone() {
     firewall_wan_zone_require
 }
 
-cleanup_legacy_manager_udp_rules() {
-    _marker="$CFG_DIR/legacy-udp-cleanup-v1"
-    [ -f "$_marker" ] && return 0
-    _changed=0
-    for _pair in "dns_manager_quic_udp_80|80|DNS Manager: Block UDP 80" "dns_manager_quic_udp_443|443|DNS Manager: Block UDP 443"; do
-        _sec="${_pair%%|*}"
-        _rest="${_pair#*|}"
-        _port="${_rest%%|*}"
-        _name="${_rest#*|}"
-        [ "$(uci -q get "firewall.$_sec" 2>/dev/null)" = rule ] || continue
-        [ "$(uci -q get "firewall.$_sec.name" 2>/dev/null)" = "$_name" ] || continue
-        [ "$(uci -q get "firewall.$_sec.proto" 2>/dev/null)" = udp ] || continue
-        [ "$(uci -q get "firewall.$_sec.dest_port" 2>/dev/null)" = "$_port" ] || continue
-        [ "$(uci -q get "firewall.$_sec.target" 2>/dev/null)" = REJECT ] || continue
-        uci -q delete "firewall.$_sec" && { firewall_owner_remove "$_sec" >/dev/null 2>&1 || true; _changed=1; }
-    done
-    if [ "$_changed" = 1 ]; then
-        uci commit firewall >/dev/null 2>&1 || return 1
-        reload_fw >/dev/null 2>&1 || return 1
-        log_msg "Старые правила UDP 80/443 DNS Manager удалены; эти правила больше не управляются DNS Manager."
-    fi
-    printf 'version=1\n' > "$_marker" 2>/dev/null || true
-    chmod 600 "$_marker" 2>/dev/null || true
-    return 0
-}
-
-
 apply_mtu_toggle() {
     _wan_zone="$(firewall_wan_zone 2>/dev/null)" || return 1
     if [ "${MTU_FIX:-0}" = 1 ]; then
@@ -4948,13 +4925,13 @@ EOF_CHECK_EXT
             fi
             ;;
         ntp_clients)
-            _opt="42,$LAN_IP"; _dhcp=0; _fw=0
+            _opt="42,$LAN_IP"; _dhcp=0; _srv=0; _listen=0
             exact_list_has "dhcp.$_sec.dhcp_option" "$_opt" && _dhcp=1
-            ntp_firewall_rule_owned && _fw=1
-            ntp_firewall_rule_exact_external && _fw=1
-            if [ "$_dhcp" = 1 ] && [ "$_fw" = 1 ]; then
+            [ "$(uci -q get system.ntp.enable_server 2>/dev/null)" = 1 ] && _srv=1
+            listener_port_exists 123 >/dev/null 2>&1 && _listen=1
+            if [ "$_dhcp" = 1 ] && [ "$_srv" = 1 ] && [ "$_listen" = 1 ]; then
                 printf 1
-            elif [ "$_dhcp" = 1 ] || [ "$_fw" = 1 ]; then
+            elif [ "$_dhcp" = 1 ] || [ "$_srv" = 1 ] || [ "$_listen" = 1 ]; then
                 printf 2
             else
                 printf 0
@@ -5022,6 +4999,23 @@ EOF_CHECK_EXT
     esac
 }
 
+force_state_word() {
+    detect_forced_dns_path >/dev/null 2>&1 || true
+    if [ "${FORCED_DNS_EXTERNAL:-0}" = 1 ]; then
+        if [ -n "${FORCED_DNS_TARGETS:-}" ]; then
+            printf "${C_BOLD}${C_YELLOW}⚠ ВНЕШНИЙ${C_NC} ${C_CYAN}${C_BOLD}• %s • порты %s${C_NC}" "$FORCED_DNS_SOURCE" "$FORCED_DNS_TARGETS"
+        else
+            printf "${C_BOLD}${C_YELLOW}⚠ ВНЕШНИЙ${C_NC} ${C_CYAN}${C_BOLD}• %s${C_NC}" "$FORCED_DNS_SOURCE"
+        fi
+        return 0
+    fi
+    _real="$(check_module_state force)"
+    case "$_real" in
+        1) printf "${C_BOLD}${C_GREEN}✓ ВКЛ${C_NC} ${C_CYAN}${C_BOLD}• DNS Manager${C_NC}" ;;
+        2) printf "${C_BOLD}${C_YELLOW}⚠ ДРУГОЕ${C_NC} ${C_CYAN}${C_BOLD}• отличается от целевой настройки${C_NC}" ;;
+        *) printf "${C_BOLD}${C_RED}✗ ВЫКЛ${C_NC} ${C_CYAN}${C_BOLD}• не включён${C_NC}" ;;
+    esac
+}
 module_state_word() {
     _real="$(check_module_state "$1")"
     case "$_real" in
@@ -5035,241 +5029,121 @@ web_access_listener_exists() {
     _wp="$1"
     [ -n "$_wp" ] || return 1
     if command -v ss >/dev/null 2>&1; then
-        ss -lntp 2>/dev/null | grep -qE "(^|[[:space:]])[^[:space:]]*:[0-9]+.*:${_wp}([[:space:]]|$)" && return 0
+        ss -lnt 2>/dev/null | grep -qE "(^|[[:space:]])[^[:space:]]*:${_wp}([[:space:]]|$)" && return 0
     fi
     if command -v netstat >/dev/null 2>&1; then
-        netstat -lntp 2>/dev/null | grep -qE "(^|[[:space:]])[^[:space:]]*:${_wp}([[:space:]]|$)" && return 0
+        netstat -lnt 2>/dev/null | grep -qE "(^|[[:space:]])[^[:space:]]*:${_wp}([[:space:]]|$)" && return 0
     fi
     listener_port_exists "$_wp"
 }
 web_access_owner_pid() {
     _wp="$1"
     [ -n "$_wp" ] || return 1
-    _pid=""
-    if command -v ps >/dev/null 2>&1; then
-        _pid="$(ps w 2>/dev/null | awk -v p="$_wp" '$1 ~ /^[0-9]+$/ && index($0,"ttyd") && index($0,"/usr/bin/dns-manager") && (index($0,"-p " p) || index($0," " p " ")) {print $1; exit}')"
-        case "$_pid" in
-            ''|*[!0-9]*) ;;
-            *) printf '%s\n' "$_pid"; return 0;;
-        esac
-    fi
-    if command -v ss >/dev/null 2>&1; then
-        _line="$(ss -lntp 2>/dev/null | grep -E "(^|[[:space:]])[^[:space:]]*:${_wp}([[:space:]]|$)" | head -n1)"
-        _pid="$(printf '%s\n' "$_line" | sed -n 's/.*pid=\([0-9][0-9]*\),.*/\1/p')"
-        case "$_pid" in ''|*[!0-9]*) ;; *) printf '%s\n' "$_pid"; return 0;; esac
+    if command -v pidof >/dev/null 2>&1; then
+        for _pid in $(pidof ttyd 2>/dev/null); do
+            [ -r "/proc/$_pid/cmdline" ] || continue
+            _cmd="$(tr '\0' ' ' < "/proc/$_pid/cmdline" 2>/dev/null)"
+            case "$_cmd" in
+                *ttyd*"-p $_wp"*"/usr/bin/dns-manager"*) printf '%s\n' "$_pid"; return 0;;
+                *ttyd*"/usr/bin/dns-manager"*) printf '%s\n' "$_pid"; return 0;;
+            esac
+        done
     fi
     return 1
-}
-web_access_cmdline_is_ours() {
-    _pid="$1"
-    [ -n "$_pid" ] || return 1
-    [ -r "/proc/$_pid/cmdline" ] || return 1
-    _cmd="$(tr '\0' ' ' < "/proc/$_pid/cmdline" 2>/dev/null)"
-    case "$_cmd" in
-        *ttyd*"-p ${WEB_ACCESS_PORT}"*"/usr/bin/dns-manager"*) return 0;;
-        *ttyd*"${WEB_ACCESS_PORT}"*"/usr/bin/dns-manager"*) return 0;;
-    esac
-    return 1
-}
-web_access_write_service() {
-    mkdir -p /etc/init.d /var/run 2>/dev/null || return 1
-    cat > "$WEB_SERVICE_CONFIG" <<'EOF_WEB_INIT'
-#!/bin/sh /etc/rc.common
-
-START=95
-STOP=10
-USE_PROCD=1
-
-PROG=/usr/bin/ttyd
-PORT=7682
-CMD=/usr/bin/dns-manager
-PIDFILE=/var/run/dns-manager-web.pid
-
-start_service() {
-    [ -x "$PROG" ] || return 1
-    [ -x "$CMD" ] || return 1
-
-    IFACE="$(uci -q get network.lan.device 2>/dev/null)"
-    [ -n "$IFACE" ] || IFACE="$(uci -q get network.lan.ifname 2>/dev/null)"
-    case "$IFACE" in
-        ''|*[!A-Za-z0-9_.:@/-]*) IFACE="br-lan" ;;
-    esac
-
-    procd_open_instance
-    procd_set_param command "$PROG"
-    procd_append_param command -p "$PORT"
-    procd_append_param command -i "$IFACE"
-    procd_append_param command -W
-    procd_append_param command -t fontSize=15
-    procd_append_param command "$CMD"
-    procd_set_param respawn 3600 5 5
-    procd_set_param stdout 1
-    procd_set_param stderr 1
-    procd_close_instance
-}
-
-EOF_WEB_INIT
-    chmod 0755 "$WEB_SERVICE_CONFIG" || return 1
-    return 0
-}
-web_access_pid_count() {
-    _wp="${WEB_ACCESS_PORT:-7682}"
-    _n=0
-    for _pid in $(ps w 2>/dev/null | awk -v p="$_wp" '$1 ~ /^[0-9]+$/ && index($0,"ttyd") && index($0,"/usr/bin/dns-manager") && (index($0,"-p " p) || index($0," " p " ")) {print $1}'); do
-        kill -0 "$_pid" 2>/dev/null || continue
-        _n=$((_n + 1))
-    done
-    printf '%s\n' "$_n"
 }
 web_access_real() {
     _wp="${WEB_ACCESS_PORT:-7682}"
     web_access_listener_exists "$_wp" || return 1
-    [ "$(web_access_pid_count 2>/dev/null || printf 0)" -eq 1 ] || return 1
     _pid="$(web_access_owner_pid "$_wp" 2>/dev/null || true)"
     [ -n "$_pid" ] || return 1
-    kill -0 "$_pid" 2>/dev/null || return 1
-    web_access_cmdline_is_ours "$_pid"
-}
-web_access_own_port() {
-    _wp="${WEB_ACCESS_PORT:-7682}"
-    _pid="$(web_access_owner_pid "$_wp" 2>/dev/null || true)"
-    [ -n "$_pid" ] || return 1
-    web_access_cmdline_is_ours "$_pid"
+    kill -0 "$_pid" 2>/dev/null
 }
 web_access_port_busy() {
     _wp="${WEB_ACCESS_PORT:-7682}"
     web_access_listener_exists "$_wp" || return 1
-    web_access_own_port && return 1
+    web_access_real && return 1
     return 0
 }
 web_access_install() {
-    if ! command -v ttyd >/dev/null 2>&1; then
+    _need=""
+    command -v ttyd >/dev/null 2>&1 || _need="ttyd"
+    if [ ! -f "$TTYD_CONFIG" ] && [ -n "$_need" ]; then :; fi
+    if [ -n "$_need" ] || [ ! -x "$WEB_SERVICE_CONFIG" ]; then
         if [ "$PKG_MGR" = "apk" ]; then
             apk update >/dev/null 2>&1 || return 1
             apk add ttyd >/dev/null 2>&1 || return 1
-        else
+        elif [ "$PKG_MGR" = "opkg" ]; then
             opkg update >/dev/null 2>&1 || return 1
             opkg install ttyd >/dev/null 2>&1 || return 1
+        else
+            return 1
         fi
     fi
     command -v ttyd >/dev/null 2>&1 || return 1
-    web_access_write_service || return 1
-    return 0
+    [ -x "$WEB_SERVICE_CONFIG" ] || return 1
 }
 web_access_write_config() {
-    web_access_write_service
+    mkdir -p /etc/config 2>/dev/null || return 1
+    _ipv6="0"
+    [ "${IPV6_ROUTE:-no}" = yes ] && _ipv6="1"
+
+    # Stable UCI section: ttyd.dns_manager. Never rewrite the whole ttyd
+    # configuration, so other ttyd instances remain untouched.
+    uci -q set "ttyd.dns_manager=ttyd" || return 1
+    uci set "ttyd.dns_manager.enable=1" || return 1
+    uci set "ttyd.dns_manager.port=${WEB_ACCESS_PORT:-7682}" || return 1
+    uci set "ttyd.dns_manager.interface=@lan" || return 1
+    uci set "ttyd.dns_manager.command=/usr/bin/dns-manager" || return 1
+    uci set "ttyd.dns_manager.readonly=0" || return 1
+    uci set "ttyd.dns_manager.check_origin=1" || return 1
+    uci set "ttyd.dns_manager.ipv6=$_ipv6" || return 1
+    uci commit ttyd || return 1
+    return 0
 }
 web_access_remove_config() {
-    if [ -x "$WEB_SERVICE_CONFIG" ]; then
-        "$WEB_SERVICE_CONFIG" disable >/dev/null 2>&1 || true
-    fi
-    web_access_stop
-    rm -f "$WEB_SERVICE_CONFIG" 2>/dev/null || true
+    # Remove only the stable DNS Manager section. Do not disable the global
+    # ttyd service and do not touch any other ttyd sections.
+    uci -q delete "ttyd.dns_manager" || true
+    uci commit ttyd >/dev/null 2>&1 || true
+    [ -x "$WEB_SERVICE_CONFIG" ] && "$WEB_SERVICE_CONFIG" restart >/dev/null 2>&1 || true
     return 0
 }
 web_access_start() {
-    [ -x "$WEB_SERVICE_CONFIG" ] || web_access_write_service || return 1
+    [ -x "$WEB_SERVICE_CONFIG" ] || return 1
     "$WEB_SERVICE_CONFIG" enable >/dev/null 2>&1 || true
-    web_access_stop || true
-    "$WEB_SERVICE_CONFIG" start >/dev/null 2>&1 || return 1
+    "$WEB_SERVICE_CONFIG" restart >/dev/null 2>&1 || "$WEB_SERVICE_CONFIG" start >/dev/null 2>&1 || return 1
     sleep 2
-    _count="$(web_access_pid_count 2>/dev/null || printf 0)"
-    [ "$_count" -eq 1 ] && web_access_real
-}
-web_access_stop() {
-    if [ -x "$WEB_SERVICE_CONFIG" ]; then
-        "$WEB_SERVICE_CONFIG" stop >/dev/null 2>&1 || true
-        sleep 1
-    fi
-    for _pid in $(ps w 2>/dev/null | awk -v p="${WEB_ACCESS_PORT:-7682}" '$1 ~ /^[0-9]+$/ && index($0,"ttyd") && index($0,"/usr/bin/dns-manager") && (index($0,"-p " p) || index($0," " p " ")) {print $1}'); do
-        kill "$_pid" 2>/dev/null || true
-    done
-    sleep 1
-    for _pid in $(ps w 2>/dev/null | awk -v p="${WEB_ACCESS_PORT:-7682}" '$1 ~ /^[0-9]+$/ && index($0,"ttyd") && index($0,"/usr/bin/dns-manager") && (index($0,"-p " p) || index($0," " p " ")) {print $1}'); do
-        kill -9 "$_pid" 2>/dev/null || true
-    done
-    rm -f "$WEB_PIDFILE" 2>/dev/null || true
-    return 0
-}
-web_access_restart() {
-    [ -x "$WEB_SERVICE_CONFIG" ] || return 0
-    web_access_stop || true
-    "$WEB_SERVICE_CONFIG" start >/dev/null 2>&1 || return 1
-    sleep 1
     web_access_real
 }
-web_access_firewall() {
-    firewall_lan_zone_require >/dev/null || return 1
-    _external_web="$(firewall_find_exact_rule_signature web "$FW_WEB_SECTION" "$WEB_ACCESS_PORT" 2>/dev/null)"
-    if uci -q get "firewall.$FW_WEB_SECTION" >/dev/null 2>&1; then
-        firewall_owner_has "$FW_WEB_SECTION" || return 2
-        firewall_ref_matches_zone "$(uci -q get "firewall.$FW_WEB_SECTION.src" 2>/dev/null)" "$FIREWALL_LAN_ZONE" || return 1
-        [ "$(uci -q get "firewall.$FW_WEB_SECTION.proto" 2>/dev/null)" = tcp ] || return 1
-        [ "$(uci -q get "firewall.$FW_WEB_SECTION.dest_port" 2>/dev/null)" = "$WEB_ACCESS_PORT" ] || return 1
-        [ "$(uci -q get "firewall.$FW_WEB_SECTION.target" 2>/dev/null)" = ACCEPT ] || return 1
-        if [ -n "$_external_web" ]; then
-            uci -q delete "firewall.$FW_WEB_SECTION" || return 1
-            firewall_owner_remove "$FW_WEB_SECTION" || return 1
-        fi
-    elif [ -n "$_external_web" ]; then
-        :
-    else
-        uci set "firewall.$FW_WEB_SECTION=rule" || return 1
-        uci set "firewall.$FW_WEB_SECTION.name=DNS Manager Web" || return 1
-        uci set "firewall.$FW_WEB_SECTION.src=$FIREWALL_LAN_NAME" || return 1
-        uci set "firewall.$FW_WEB_SECTION.proto=tcp" || return 1
-        uci set "firewall.$FW_WEB_SECTION.dest_port=$WEB_ACCESS_PORT" || return 1
-        uci set "firewall.$FW_WEB_SECTION.target=ACCEPT" || return 1
-        firewall_owner_add "$FW_WEB_SECTION" || return 1
-    fi
-    uci commit firewall || return 1
-    reload_fw >/dev/null 2>&1 || return 1
+web_access_stop() {
+    [ -x "$WEB_SERVICE_CONFIG" ] && "$WEB_SERVICE_CONFIG" stop >/dev/null 2>&1 || true
+    return 0
 }
-web_access_remove_firewall() {
-    firewall_resolve_zones
-    if uci -q get "firewall.$FW_WEB_SECTION" >/dev/null 2>&1; then
-        if firewall_owner_has "$FW_WEB_SECTION" && firewall_ref_matches_zone "$(uci -q get "firewall.$FW_WEB_SECTION.src" 2>/dev/null)" "$FIREWALL_LAN_ZONE" && [ "$(uci -q get "firewall.$FW_WEB_SECTION.proto" 2>/dev/null)" = tcp ] && [ "$(uci -q get "firewall.$FW_WEB_SECTION.dest_port" 2>/dev/null)" = "$WEB_ACCESS_PORT" ] && [ "$(uci -q get "firewall.$FW_WEB_SECTION.target" 2>/dev/null)" = ACCEPT ]; then
-            uci -q delete "firewall.$FW_WEB_SECTION"
-            firewall_owner_remove "$FW_WEB_SECTION"
-        fi
-    fi
-    uci commit firewall >/dev/null 2>&1 || true
-    reload_fw >/dev/null 2>&1 || true
-}
-
 web_access_luci_install() {
-    # LuCI is optional for the terminal feature: on a CLI-only OpenWrt image
-    # ttyd must still work even when LuCI itself is not installed.
-    if [ ! -d /usr/lib/lua/luci ]; then
-        log_msg "LuCI не установлен. Терминальный доступ DNS Manager остаётся доступен напрямую по LAN; пункт в LuCI не создаётся."
-        return 0
-    fi
+    # Small LuCI launcher only: the terminal itself is the stock ttyd service.
+    # No firewall rule and no second init script are created by DNS Manager.
+    [ -d /usr/lib/lua/luci ] || return 0
     mkdir -p /usr/lib/lua/luci/controller || return 1
     cat > "$LUCI_CONTROLLER" <<'EOF_LUCI'
 module("luci.controller.dns_manager", package.seeall)
 
-local function manager_web_enabled()
-    local fs = require "nixio.fs"
-    local p = "/etc/dns-manager/config/manager.conf"
-    local data = fs.readfile(p) or ""
-    return data:match('WEB_ACCESS_ENABLED=["\']1["\']') ~= nil
-end
-
 function index()
-    if not manager_web_enabled() then return end
-    local e = entry({"admin", "services", "dns_manager"}, call("redirect_to_manager"), _("DNS Manager"), 70)
+    local fs = require "nixio.fs"
+    local data = fs.readfile("/etc/dns-manager/config/manager.conf") or ""
+    if not data:match("WEB_ACCESS_ENABLED=[\"\']1[\"\']") then return end
+    local e = entry({"admin", "services", "dns_manager"}, call("redirect_to_ttyd"), _("DNS Manager Terminal"), 71)
     e.leaf = true
     e.dependent = false
 end
 
-function redirect_to_manager()
-    local uci = require "luci.model.uci".cursor()
+function redirect_to_ttyd()
     local http = require "luci.http"
+    local uci = require "luci.model.uci".cursor()
     local ip = uci:get("network", "lan", "ipaddr") or "192.168.1.1"
     local port = "7682"
     local fs = require "nixio.fs"
     local data = fs.readfile("/etc/dns-manager/config/manager.conf") or ""
-    local found = data:match('WEB_ACCESS_PORT=["\']([0-9]+)["\']')
+    local found = data:match("WEB_ACCESS_PORT=[\"\']([0-9]+)[\"\']")
     if found then port = found end
     ip = ip:match("^[^/]+") or ip
     if ip:find(":", 1, true) then
@@ -5293,37 +5167,44 @@ apply_web_access() {
     case "${WEB_ACCESS_ENABLED:-0}" in
         1)
             WEB_ACCESS_PORT=7682
-            if web_access_port_busy; then WEB_ACCESS_ENABLED=0; save_config; err_msg "Порт терминального доступа $WEB_ACCESS_PORT уже занят."; return 1; fi
-            if ! web_access_install; then WEB_ACCESS_ENABLED=0; save_config; err_msg 'Не удалось подготовить web-службу DNS Manager.'; return 1; fi
-            if ! web_access_write_config; then WEB_ACCESS_ENABLED=0; save_config; err_msg 'Не удалось подготовить web-службу.'; return 1; fi
-            if ! web_access_firewall; then WEB_ACCESS_ENABLED=0; web_access_remove_firewall; web_access_remove_config; save_config; err_msg 'Не удалось открыть терминальный доступ в LAN.'; return 1; fi
-            if ! web_access_luci_install; then WEB_ACCESS_ENABLED=0; web_access_remove_firewall; web_access_remove_config; save_config; err_msg 'Не удалось добавить пункт DNS Manager в LuCI.'; return 1; fi
-            if ! web_access_start; then
+            if web_access_install >/dev/null 2>&1; then :; else
                 WEB_ACCESS_ENABLED=0
-                web_access_remove_firewall
-                web_access_remove_config
-                web_access_luci_remove
                 save_config
-                err_msg 'Web-доступ не запустился.'
+                err_msg 'Не удалось установить/подготовить штатный ttyd.'
                 return 1
             fi
+            if web_access_port_busy; then
+                WEB_ACCESS_ENABLED=0
+                save_config
+                err_msg "Порт терминала $WEB_ACCESS_PORT уже занят другим процессом."
+                return 1
+            fi
+            if ! web_access_write_config; then
+                WEB_ACCESS_ENABLED=0; save_config
+                err_msg 'Не удалось записать /etc/config/ttyd.'
+                return 1
+            fi
+            if ! web_access_start; then
+                WEB_ACCESS_ENABLED=0
+                save_config
+                err_msg 'Штатный ttyd не запустился. Проверьте: /etc/init.d/ttyd status и logread -e ttyd.'
+                return 1
+            fi
+            web_access_luci_install || true
             save_config
-            _web_ip="$(uci -q get network.lan.ipaddr 2>/dev/null | cut -d/ -f1)"
-            ok_msg "Терминал DNS Manager: http://${_web_ip:-192.168.1.1}:$WEB_ACCESS_PORT"
+            ok_msg "Терминал DNS Manager работает через штатный ttyd на LAN: http://$(uci -q get network.lan.ipaddr 2>/dev/null | cut -d/ -f1 | head -n1):$WEB_ACCESS_PORT"
             return 0
             ;;
         *)
             WEB_ACCESS_ENABLED=0
             web_access_luci_remove
-            web_access_remove_firewall
             web_access_remove_config
             save_config
-            ok_msg 'Терминальный доступ LuCI выключен.'
+            ok_msg 'Терминальный доступ DNS Manager выключен.'
             return 0
             ;;
     esac
 }
-# ==========================================
 setting_process() {
     _module="$1"
     _title="$2"
@@ -5405,8 +5286,8 @@ setting_process() {
             1:sysctl) ok_msg "TCP и Conntrack возвращены к стоку." ;;
             0:dnsmasq_perf|2:dnsmasq_perf) ok_msg "DNS-кэш настроен." ;;
             1:dnsmasq_perf) ok_msg "DNS-кэш возвращён к стоку." ;;
-            0:ntp_clients|2:ntp_clients) ok_msg "NTP для устройств настроен." ;;
-            1:ntp_clients) ok_msg "NTP для устройств выключен, стоковое состояние восстановлено." ;;
+            0:ntp_clients|2:ntp_clients) ok_msg "NTP-сервер роутера для устройств включён (DHCP 42, без принудительного перехвата)." ;;
+            1:ntp_clients) ok_msg "NTP-сервер роутера для устройств выключен." ;;
             0:client_fixes|2:client_fixes) ok_msg "Исправления телеметрии и связи настроены." ;;
             1:client_fixes) ok_msg "Исправления телеметрии и связи выключены." ;;
             0:web|2:web) ok_msg "Терминальный доступ LuCI включён: пункт LuCI ведёт в ttyd DNS Manager." ;;
@@ -5420,7 +5301,7 @@ setting_process() {
             force) err_msg "Не удалось изменить принудительный DNS." ;;
             sysctl) err_msg "Не удалось изменить TCP и Conntrack." ;;
             dnsmasq_perf) err_msg "Не удалось изменить кэширование DNS." ;;
-            ntp_clients) err_msg "Не удалось изменить NTP для устройств." ;;
+            ntp_clients) err_msg "Не удалось изменить NTP-сервер роутера для устройств." ;;
             client_fixes) err_msg "Не удалось изменить исправления телеметрии и связи." ;;
             web) err_msg "Не удалось изменить терминальный доступ LuCI." ;;
             watchdog) err_msg "Не удалось изменить автопроверку DNS." ;;
@@ -5440,7 +5321,7 @@ while :; do
     menu_item_state "[3]" "Оптимизация TCP и Conntrack" "$(module_state_word sysctl)"
     menu_item_state "[4]" "Кэширование DNS-запросов" "$(module_state_word dnsmasq_perf)"
     menu_section "СЕРВИСЫ И КЛИЕНТЫ"
-    menu_item_state "[5]" "Время для устройств сети" "$(module_state_word ntp_clients)"
+    menu_item_state "[5]" "NTP-сервер роутера для устройств сети" "$(module_state_word ntp_clients)"
     menu_item_state "[6]" "Исправления телеметрии и связи" "$(module_state_word client_fixes)"
     menu_section "ОБСЛУЖИВАНИЕ"
     menu_item_state "[7]" "Автоматическая проверка DNS" "$(module_state_word watchdog)"
@@ -5454,7 +5335,7 @@ while :; do
         2) setting_process force "Принудительный DNS" "DNS TCP/UDP 53 направляется на DNS роутера; DoT TCP/UDP 853 блокируется." ;;
         3) setting_process sysctl "Оптимизация TCP и Conntrack" "Применяются параметры TCP и Conntrack." ;;
         4) setting_process dnsmasq_perf "Кэширование DNS-запросов" "Применяются параметры DNS-кэша dnsmasq." ;;
-        5) setting_process ntp_clients "Время для устройств сети" "DHCP выдаёт адрес роутера как NTP-сервер, LAN UDP/123 направляется на роутер." ;;
+        5) setting_process ntp_clients "NTP-сервер роутера для устройств сети" "Роутер отвечает клиентам по UDP/123, а DHCP сообщает его адрес как NTP-сервер. Принудительный перехват NTP не используется." ;;
         6) setting_process client_fixes "Исправления телеметрии и связи" "Добавляются DNS-правила для телеметрии и проверок подключения некоторых устройств." ;;
         7) setting_process watchdog "Автоматическая проверка DNS" "Watchdog запускает проверку DNS по расписанию." ;;
         8) setting_process web "Терминал DNS Manager (ttyd)" "В LuCI будет только переход к терминалу DNS Manager; отдельного веб-интерфейса DNS Manager нет." ;;
@@ -5675,6 +5556,11 @@ watchdog_candidate_categories() {
 }
 watchdog_enforce_hdp_control() {
     [ "${FORCE_DOH:-0}" = 1 ] || return 0
+    detect_forced_dns_path >/dev/null 2>&1 || true
+    if [ "${FORCED_DNS_EXTERNAL:-0}" = 1 ]; then
+        log_msg "Watchdog: внешний forced-DNS ($FORCED_DNS_SOURCE) обнаружен. Глобальные параметры https-dns-proxy не изменяю."
+        return 1
+    fi
     _changed=0
     [ "$(uci -q get https-dns-proxy.config.dnsmasq_config_update 2>/dev/null)" = "-" ] || _changed=1
     [ "$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null)" = "1" ] || _changed=1
@@ -5733,16 +5619,10 @@ watchdog_expected_servers() {
     printf '%s\n' "$_out"
 }
 watchdog_dns_path_guard() {
-    _cfg_conflict="$(dns_redirect_conflict_uci 2>/dev/null || true)"
-    case "$_cfg_conflict" in
-        1) return 1 ;;
-        0) ;;
-        *) return 1 ;;
-    esac
-    if [ "$SYS_FW" = fw4 ]; then
-        dns_path_conflict_nft >/dev/null 2>&1 && return 1
-    elif [ "$SYS_FW" = fw3 ]; then
-        dns_path_conflict_iptables >/dev/null 2>&1 && return 1
+    detect_forced_dns_path >/dev/null 2>&1 || true
+    if [ "${FORCED_DNS_EXTERNAL:-0}" = 1 ]; then
+        log_msg "Watchdog: обнаружен внешний forced-DNS ($FORCED_DNS_SOURCE). Firewall-правила внешнего сервиса не изменяю."
+        return 1
     fi
     return 0
 }
@@ -6031,33 +5911,6 @@ watchdog_resource_guard() {
 }
 # ==========================================
 # ==========================================
-normalize_managed_firewall_duplicates() {
-    disc_network >/dev/null 2>&1 || true
-    _removed=0
-
-    # NTP: if an equivalent external redirect already exists, drop only our exact
-    # manager rule. The external rule remains untouched.
-    if ntp_firewall_rule_owned && firewall_owner_has "$FW_NTP_SECTION"; then
-        _ext="$(firewall_find_exact_redirect "$FIREWALL_LAN_ZONE" udp 123 "$LAN_IP" 123 DNAT "$FW_NTP_SECTION" 2>/dev/null)"
-        if [ -n "$_ext" ]; then
-            uci -q delete "firewall.$FW_NTP_SECTION" && { firewall_owner_remove "$FW_NTP_SECTION"; _removed=1; } || true
-        fi
-    fi
-
-    # Forced DNS is now owned by https-dns-proxy/procd/fw4. Remove only
-    # legacy DNS Manager objects that are explicitly owned by this manager.
-    if remove_legacy_force_firewall_rules >/dev/null 2>&1; then
-        :
-    fi
-
-    if [ "$_removed" = 1 ]; then
-        uci commit firewall >/dev/null 2>&1 || return 1
-        reload_fw >/dev/null 2>&1 || return 1
-        log_msg "Firewall: удалены только дубли, принадлежащие DNS Manager; внешние правила сохранены."
-    fi
-    return 0
-}
-
 run_watchdog() {
     [ "${WATCHDOG_ENABLED:-0}" = 1 ] || return 0
     _lock="$STATE_DIR/watchdog.lock"
@@ -6085,7 +5938,6 @@ run_watchdog() {
         return 0
     fi
     load_config
-    normalize_managed_firewall_duplicates || log_msg "Firewall: не удалось безопасно убрать дубли менеджера."
     _managed_slots=0
     for _s in 1 2 3 4 5 6 RU RU_2; do
         eval "_mid=\${SLOT_${_s}:-}"
@@ -6846,7 +6698,6 @@ startup_self_repair() {
     rm -f "$WATCHDOG_LAST_RESTART_FILE" 2>/dev/null || true
 
     if acquire_mutation_lock; then
-        normalize_managed_firewall_duplicates || true
         watchdog_enforce_hdp_control || true
         watchdog_enforce_doh_authority || true
         watchdog_service_recover || true
@@ -6887,7 +6738,7 @@ startup_update_check() {
 # STARTUP REQUIRED FUNCTION CHECK
 # ==========================================
 startup_required_function_check() {
-    for _fn in firewall_owner_has firewall_owner_add firewall_owner_remove firewall_ownership_sync; do
+    for _fn in detect_forced_dns_path clear_all_doh_for_apply rebuild_selected_hdp_sections reconcile_dnsmasq apply_ntp_clients apply_ntp_ip_fallback; do
         type "$_fn" >/dev/null 2>&1 || {
             printf "${C_RED}[✗] Критическая ошибка: отсутствует функция $_fn. Запуск остановлен до изменения настроек роутера.${C_NC}\n"
             return 1
