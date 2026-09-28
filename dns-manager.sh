@@ -2,7 +2,7 @@
 MANAGER_PATH="/usr/bin/dns-manager"
 # ==========================================
 # ==========================================
-VERSION="2.67"
+VERSION="2.68"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -816,9 +816,9 @@ iijjp|family|child-protection|IIJ.JP DNS|https://public.dns.iij.jp/dns-query|jap
 dnsforge_youth|family|youth-protection|dnsforge Youth Protection|https://clean.dnsforge.de/dns-query|germany|verified-published-current
 EOF_DNS
 fi
-if [ ! -s "$NTP_CATALOG" ] || ! grep -q '^# NTPCATVER=6.6-FINAL-HYBRID' "$NTP_CATALOG" 2>/dev/null; then
+if [ ! -s "$NTP_CATALOG" ] || ! grep -q '^# NTPCATVER=6.8-RU-VNIIFTRI-DEFAULT' "$NTP_CATALOG" 2>/dev/null; then
 cat > "$NTP_CATALOG" <<'EOF_NTP'
-# NTPCATVER=6.6-FINAL-HYBRID
+# NTPCATVER=6.8-RU-VNIIFTRI-DEFAULT
 cf_ip|global|Cloudflare|162.159.200.1 162.159.200.123|2606:4700:f1::1 2606:4700:f1::123|ip-first|no-smear|verified-current
 nist_ip|global|NIST|129.6.15.28 129.6.15.29 129.6.15.30 129.6.15.27 129.6.15.26|2610:20:6f15:15::27 2610:20:6f15:15::26|ip-first|no-smear|verified-current
 google_ip|special|Google Public NTP|216.239.35.0 216.239.35.4 216.239.35.8 216.239.35.12||ip-only|smear|verified-current
@@ -892,7 +892,7 @@ BOOTSTRAP_DNS="$BOOTSTRAP_DNS_ALL"
 : "${BOOTSTRAP_DNS:=$BOOTSTRAP_DNS_ALL}"
 : "${TLD_RU_ENABLED:=1}"; : "${MTU_FIX:=0}"; : "${FORCE_DOH:=0}"
 : "${NTP_IP_FALLBACK:=1}"; : "${SYSCTL_TUNING:=0}"; : "${DNSMASQ_PERF:=0}"; : "${NTP_CLIENTS:=0}"; : "${CLIENT_FIXES:=0}"; : "${SYSCTL_EXTENDED:=0}"
-: "${BALANCER_ENABLED:=1}"; : "${NTP_PRESET:=cf_ip}"; : "${DNS_PROFILE:=hybrid}"; : "${DNS_SELECTION_MODE:=quick}"; : "${DNS_SELECTION_CATEGORY:=bypass}"
+: "${BALANCER_ENABLED:=1}"; : "${NTP_PRESET:=vniiftri_moscow}"; : "${NTP_PRESET_USER_SET:=0}"; : "${DNS_PROFILE:=hybrid}"; : "${DNS_SELECTION_MODE:=quick}"; : "${DNS_SELECTION_CATEGORY:=bypass}"
 : "${QUICK_PREF_1:=}"; : "${QUICK_PREF_2:=}"; : "${QUICK_PREF_3:=}"; : "${QUICK_PREF_4:=}"; : "${QUICK_PREF_5:=}"; : "${QUICK_PREF_6:=}"
 : "${WATCHDOG_ENABLED:=0}"; : "${WATCHDOG_INTERVAL:=15}"
 : "${WEB_ACCESS_ENABLED:=0}"; : "${WEB_ACCESS_PORT:=7682}"; : "${CLIENT_FIXES_FILE:=}"
@@ -910,6 +910,11 @@ if [ "$DNS_PROFILE" = "hybrid" ]; then
             eval "SLOT_${_slot}_CAT=\"$_scat\""
         fi
     done
+fi
+# Старые версии имели Cloudflare как неявный NTP-профиль по умолчанию.
+# Если пользователь явно не выбирал профиль, переводим старый неявный default на ВНИИФТРИ.
+if [ "${NTP_PRESET_USER_SET:-0}" != 1 ] && [ "${NTP_PRESET:-}" = "cf_ip" ]; then
+    NTP_PRESET="vniiftri_moscow"
 fi
 sync_regional_dns_state
 }
@@ -957,6 +962,7 @@ CLIENT_FIXES_FILE="$CLIENT_FIXES_FILE"
 SYSCTL_EXTENDED="$SYSCTL_EXTENDED"
 BALANCER_ENABLED="$BALANCER_ENABLED"
 NTP_PRESET="$NTP_PRESET"
+NTP_PRESET_USER_SET="$NTP_PRESET_USER_SET"
 DNS_PROFILE="$DNS_PROFILE"
 DNS_SELECTION_MODE="$DNS_SELECTION_MODE"
 DNS_SELECTION_CATEGORY="$DNS_SELECTION_CATEGORY"
@@ -2011,18 +2017,18 @@ else
 printf "  ${C_YELLOW}(не настроены)${C_NC}\n"
 fi
 printf "\n${C_YELLOW}${C_BOLD}Выбранный набор:${C_NC} ${C_YELLOW}${C_BOLD}%s${C_NC}\n\n" "$(case "$NTP_PRESET" in cf_ip) printf "Cloudflare";; nist_ip) printf "NIST";; vniiftri_moscow) printf "ВНИИФТРИ";; google_ip) printf "Google";; *) printf "%s" "$NTP_PRESET";; esac)"
-menu_item "[1]" "Cloudflare — серверы времени по IP"
+menu_item "[1]" "ВНИИФТРИ — российские серверы времени (по IP)"
 menu_item "[2]" "NIST — серверы точного времени"
-menu_item "[3]" "ВНИИФТРИ — российские серверы времени"
+menu_item "[3]" "Cloudflare — серверы времени по IP"
 menu_item "[4]" "Google — серверы времени по IP"
 menu_back
 menu_prompt
 safe_read c
 _old_ntp_preset="$NTP_PRESET"
 case "$c" in
-1) NTP_PRESET="cf_ip";;
+1) NTP_PRESET="vniiftri_moscow";;
 2) NTP_PRESET="nist_ip";;
-3) NTP_PRESET="vniiftri_moscow";;
+3) NTP_PRESET="cf_ip";;
 4) NTP_PRESET="google_ip";;
 *) return;;
 esac
@@ -2033,6 +2039,7 @@ if ! confirm_action "Применить выбранный набор NTP?"; the
     return
 fi
 if apply_ntp_ip_fallback; then
+    NTP_PRESET_USER_SET=1
     save_config
 else
     NTP_PRESET="$_old_ntp_preset"
