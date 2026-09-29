@@ -2,7 +2,7 @@
 MANAGER_PATH="/usr/bin/dns-manager"
 # ==========================================
 # ==========================================
-VERSION="2.75"
+VERSION="2.76"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -5652,7 +5652,7 @@ watchdog_enforce_hdp_control() {
     detect_forced_dns_path >/dev/null 2>&1 || true
     if [ "${FORCED_DNS_EXTERNAL:-0}" = 1 ]; then
         log_msg "Watchdog: внешний forced-DNS ($FORCED_DNS_SOURCE) обнаружен. Глобальные параметры https-dns-proxy не изменяю."
-        return 1
+        return 0
     fi
     _changed=0
     [ "$(uci -q get https-dns-proxy.config.dnsmasq_config_update 2>/dev/null)" = "-" ] || _changed=1
