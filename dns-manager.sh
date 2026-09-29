@@ -2,7 +2,7 @@
 MANAGER_PATH="/usr/bin/dns-manager"
 # ==========================================
 # ==========================================
-VERSION="2.76"
+VERSION="2.77"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -621,36 +621,83 @@ baseline_mark_applied() {
     done < "$BASELINE_MANIFEST"
     return 0
 }
-baseline_restore_if_safe() {
-    [ -s "$BASELINE_MANIFEST" ] || return 1
-    [ -s "$BASELINE_LAST" ] || return 1
-    grep -q '^clean_profile=1$' "$BASELINE_META" 2>/dev/null || return 1
-    _conflict=0
-    while IFS='|' read -r _f _k _last_existed _last_hash; do
-        [ -n "$_f" ] || continue
-        if [ "$_last_existed" = 1 ]; then
-            _cur="$(file_hash "$_f")"
-        else
-            _cur="NONE"
-            [ -f "$_f" ] && _cur="$(file_hash "$_f")"
-        fi
-        [ "$_cur" = "$_last_hash" ] || { _conflict=1; break; }
-    done < "$BASELINE_LAST"
-    if [ "$_conflict" = 1 ]; then
-        warn_msg "Исходное состояние изменилось после последнего применения. Выполняю только безопасное удаление изменений DNS Manager."
+baseline_restore_path_if_safe() {
+    _path="$1"
+    [ -n "$_path" ] || return 3
+    [ -s "$BASELINE_MANIFEST" ] || return 3
+    [ -s "$BASELINE_LAST" ] || return 3
+
+    _last_line="$(awk -F'|' -v f="$_path" '$1==f{print;exit}' "$BASELINE_LAST" 2>/dev/null)"
+    _base_line="$(awk -F'|' -v f="$_path" '$1==f{print;exit}' "$BASELINE_MANIFEST" 2>/dev/null)"
+    [ -n "$_last_line" ] && [ -n "$_base_line" ] || return 3
+
+    IFS='|' read -r _lf _lk _last_existed _last_hash <<EOF_RB_LAST
+$_last_line
+EOF_RB_LAST
+    IFS='|' read -r _bf _bk _base_existed _base_hash <<EOF_RB_BASE
+$_base_line
+EOF_RB_BASE
+
+    if [ "$_last_existed" = 1 ]; then
+        _cur_hash="$(file_hash "$_path" 2>/dev/null)"
+        [ -n "$_cur_hash" ] || _cur_hash="NONE"
+    else
+        _cur_hash="NONE"
+        [ -f "$_path" ] && _cur_hash="$(file_hash "$_path" 2>/dev/null)"
+    fi
+
+    if [ "$_cur_hash" != "$_last_hash" ]; then
+        warn_msg "Не откатываю $_path: файл изменён после последнего применения DNS Manager. Чужие изменения сохранены."
         return 2
     fi
-    while IFS='|' read -r _f _k _existed _basehash; do
-        [ -n "$_f" ] || continue
-        if [ "$_existed" = 1 ]; then
-            cp -p "$BASELINE_DIR/files/$_k" "$_f" 2>/dev/null || return 1
-        else
-            rm -f "$_f" 2>/dev/null
-        fi
-    done < "$BASELINE_MANIFEST"
-    log_tx "BASELINE" "router" "RESTORE" "OK" "safe=yes"
+
+    if [ "$_base_existed" = 1 ]; then
+        [ -f "$BASELINE_DIR/files/$_bk" ] || return 3
+        cp -p "$BASELINE_DIR/files/$_bk" "$_path" 2>/dev/null || return 1
+    else
+        rm -f "$_path" 2>/dev/null || return 1
+    fi
     return 0
 }
+
+baseline_restore_if_safe() {
+    BASELINE_RESTORED_DHCP=0
+    BASELINE_RESTORED_HDP=0
+    BASELINE_RESTORED_FIREWALL=0
+    BASELINE_RESTORED_SYSTEM=0
+    BASELINE_RESTORED_SYSCTL_BASE=0
+    BASELINE_RESTORED_SYSCTL_EXT=0
+    BASELINE_RESTORED_BOGUS=0
+    BASELINE_RESTORED_CLIENT_FIXES=0
+    BASELINE_RESTORE_COUNT=0
+
+    [ -s "$BASELINE_MANIFEST" ] || return 2
+    [ -s "$BASELINE_LAST" ] || return 2
+    grep -q '^clean_profile=1$' "$BASELINE_META" 2>/dev/null || return 2
+
+    for _f in $(baseline_files); do
+        [ -n "$_f" ] || continue
+        _r=3
+        baseline_restore_path_if_safe "$_f" && _r=0 || _r=$?
+        [ "$_r" -eq 0 ] || continue
+        BASELINE_RESTORE_COUNT=$((BASELINE_RESTORE_COUNT+1))
+        case "$_f" in
+            /etc/config/dhcp) BASELINE_RESTORED_DHCP=1;;
+            /etc/config/https-dns-proxy) BASELINE_RESTORED_HDP=1;;
+            /etc/config/firewall) BASELINE_RESTORED_FIREWALL=1;;
+            /etc/config/system) BASELINE_RESTORED_SYSTEM=1;;
+            /etc/sysctl.d/90-dns-manager.conf) BASELINE_RESTORED_SYSCTL_BASE=1;;
+            /etc/sysctl.d/91-dns-manager-extended.conf) BASELINE_RESTORED_SYSCTL_EXT=1;;
+            /etc/dnsmasq.d/90-dns-manager-bogus.conf) BASELINE_RESTORED_BOGUS=1;;
+            /etc/dnsmasq.d/91-dns-manager-client-fixes.conf) BASELINE_RESTORED_CLIENT_FIXES=1;;
+        esac
+    done
+
+    [ "$BASELINE_RESTORE_COUNT" -gt 0 ] || return 2
+    log_tx "BASELINE" "router" "RESTORE" "OK" "files=$BASELINE_RESTORE_COUNT;per_file=yes"
+    return 0
+}
+
 clear_baseline_for_reacquire() {
     rm -rf "$BASELINE_DIR" 2>/dev/null
     mkdir -p "$BASELINE_DIR/files" 2>/dev/null || return 1
@@ -4321,27 +4368,326 @@ restore_hdp_control_from_baseline() {
     done
     uci commit https-dns-proxy 2>/dev/null || true
 }
+rollback_ownership_has() {
+    _t="$1"; _k="$2"; _v="$3"
+    [ -f "$OWNERSHIP" ] || return 1
+    awk -F'|' -v t="$_t" -v k="$_k" -v v="$_v" '$1==t && $2==k && $3==v{found=1;exit} END{exit found?0:1}' "$OWNERSHIP" 2>/dev/null
+}
+
+rollback_dnsmasq_targeted() {
+    sec="$(get_dnsmasq_section 2>/dev/null)"
+    [ -n "$sec" ] || return 0
+    _changed=0
+
+    # Remove only DNS Manager-owned upstream entries. Unrelated server= entries
+    # are left intact, including entries introduced by another package.
+    _cur="$(uci -q get "dhcp.$sec.server" 2>/dev/null | tr ' ' '\n')"
+    while IFS= read -r _val; do
+        [ -n "$_val" ] || continue
+        rollback_ownership_has dnsmasq server "$_val" || continue
+        if uci -q del_list "dhcp.$sec.server=$_val" >/dev/null 2>&1; then
+            _changed=1
+            printf '  - dnsmasq server: %s\n' "$_val"
+        fi
+    done <<EOF_RB_DNSMASQ
+$_cur
+EOF_RB_DNSMASQ
+
+    # Restore only scalar settings that DNS Manager explicitly recorded as
+    # changed. If the value was subsequently changed by somebody else, keep it.
+    for _kv in 'allservers|1' 'strictorder|0' 'noresolv|1'; do
+        _k="${_kv%%|*}"; _managed="${_kv#*|}"
+        rollback_ownership_has dnsmasq "$_k" "$_managed" || continue
+        _curv="$(uci -q get "dhcp.$sec.$_k" 2>/dev/null)"
+        if [ "$_curv" = "$_managed" ]; then
+            uci -q delete "dhcp.$sec.$_k" || true
+            _changed=1
+        else
+            warn_msg "dnsmasq: $_k изменён после применения DNS Manager. Текущее значение сохранено."
+        fi
+    done
+
+    if rollback_ownership_has dnsmasq confdir /etc/dnsmasq.d; then
+        _baseline_confdir=0
+        # If the clean baseline explicitly contained /etc/dnsmasq.d, it belongs
+        # to the original system and must remain. Otherwise remove only the
+        # manager-added list item.
+        if [ -s "$BASELINE_DIR/files/etc_config_dhcp" ]; then
+            _tmpbase="$TMP_DIR/rb-baseline-uci-$$"
+            rm -rf "$_tmpbase" 2>/dev/null || true
+            mkdir -p "$_tmpbase" 2>/dev/null && cp -p "$BASELINE_DIR/files/etc_config_dhcp" "$_tmpbase/dhcp" 2>/dev/null || true
+            if [ -f "$_tmpbase/dhcp" ]; then
+                uci -c "$_tmpbase" -q get "dhcp.$sec.confdir" 2>/dev/null | tr ' ' '\n' | grep -qxF /etc/dnsmasq.d 2>/dev/null && _baseline_confdir=1
+            fi
+            rm -rf "$_tmpbase" 2>/dev/null || true
+        fi
+        if [ "$_baseline_confdir" -eq 0 ]; then
+            _cur_conf="$(uci -q get "dhcp.$sec.confdir" 2>/dev/null | tr ' ' '\n')"
+            if printf '%s\n' "$_cur_conf" | grep -qxF /etc/dnsmasq.d 2>/dev/null; then
+                uci -q del_list "dhcp.$sec.confdir=/etc/dnsmasq.d" >/dev/null 2>&1 && _changed=1
+            fi
+        fi
+    fi
+
+    if [ "$_changed" = 1 ]; then
+        uci commit dhcp >/dev/null 2>&1 || return 1
+        /etc/init.d/dnsmasq restart >/dev/null 2>&1 || true
+    fi
+    return 0
+}
+
+rollback_hdp_targeted() {
+    _changed=0
+    _sections="$(uci show https-dns-proxy 2>/dev/null | sed -n 's/^https-dns-proxy\.\([^.=]*\)=https-dns-proxy$/\1/p')"
+    for _sec in $_sections; do
+        _url="$(uci -q get "https-dns-proxy.$_sec.resolver_url" 2>/dev/null)"
+        _port="$(uci -q get "https-dns-proxy.$_sec.listen_port" 2>/dev/null)"
+        _own=0
+        if rollback_ownership_has doh "$_port" "$_url"; then
+            _own=1
+        else
+            for _slot in 1 2 3 4 5 6 RU RU_2; do
+                eval "_sid=\${SLOT_${_slot}:-}"
+                eval "_sport=\${PORT_${_slot}:-}"
+                [ -n "$_sid" ] && [ -n "$_sport" ] || continue
+                _surl="$(normalize_url "$(dns_url "$_sid")")"
+                _nurl="$(normalize_url "$_url")"
+                if [ "$_sport" = "$_port" ] && [ "$_surl" = "$_nurl" ]; then
+                    _own=1
+                    break
+                fi
+            done
+        fi
+        [ "$_own" = 1 ] || continue
+        # A section modified by hand no longer matches both recorded URL/port;
+        # ownership fallback is therefore intentionally conservative.
+        uci -q delete "https-dns-proxy.$_sec" || continue
+        _changed=1
+    done
+
+    if [ -s "$FORCE_DNS_BEFORE" ]; then
+        remove_dns_force || return 1
+        _changed=1
+    fi
+
+    if [ "$_changed" = 1 ]; then
+        uci commit https-dns-proxy >/dev/null 2>&1 || return 1
+        /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || true
+    fi
+    return 0
+}
+
+rollback_firewall_targeted() {
+    firewall_resolve_zones >/dev/null 2>&1 || true
+    _changed=0
+
+    if [ "$(uci -q get "firewall.$FW_DNS_REDIRECT_SECTION" 2>/dev/null)" = redirect ] && \
+       [ -n "${FIREWALL_LAN_ZONE:-}" ] && \
+       firewall_section_owned_redirect "$FW_DNS_REDIRECT_SECTION" "$FIREWALL_LAN_ZONE" 'tcp udp' 53 "$LAN_IP" 53 DNAT; then
+        uci -q delete "firewall.$FW_DNS_REDIRECT_SECTION" || return 1
+        firewall_owner_remove "$FW_DNS_REDIRECT_SECTION" || true
+        _changed=1
+    fi
+
+    if [ "$(uci -q get "firewall.$FW_DOT_SECTION" 2>/dev/null)" = rule ] && firewall_dot_rule_matches "$FW_DOT_SECTION"; then
+        uci -q delete "firewall.$FW_DOT_SECTION" || return 1
+        firewall_owner_remove "$FW_DOT_SECTION" || true
+        _changed=1
+    fi
+
+    # Also handle legacy manager ownership records, but only after the complete
+    # runtime signature has been confirmed. Never remove a rule by name alone.
+    if [ -f "$FIREWALL_OWNERSHIP" ]; then
+        while IFS= read -r _sec; do
+            [ -n "$_sec" ] || continue
+            case "$_sec" in
+                "$FW_DNS_REDIRECT_SECTION") continue;;
+                "$FW_DOT_SECTION") continue;;
+            esac
+            case "$(uci -q get "firewall.$_sec" 2>/dev/null)" in
+                redirect)
+                    if [ -n "${FIREWALL_LAN_ZONE:-}" ] && firewall_section_owned_redirect "$_sec" "$FIREWALL_LAN_ZONE" 'tcp udp' 53 "$LAN_IP" 53 DNAT; then
+                        uci -q delete "firewall.$_sec" || continue
+                        firewall_owner_remove "$_sec" || true
+                        _changed=1
+                    fi
+                    ;;
+                rule)
+                    if firewall_dot_rule_matches "$_sec"; then
+                        uci -q delete "firewall.$_sec" || continue
+                        firewall_owner_remove "$_sec" || true
+                        _changed=1
+                    fi
+                    ;;
+            esac
+        done < "$FIREWALL_OWNERSHIP"
+    fi
+
+    if [ "$_changed" = 1 ]; then
+        uci commit firewall >/dev/null 2>&1 || return 1
+        reload_fw >/dev/null 2>&1 || true
+    fi
+    return 0
+}
+
+reset_manager_runtime_state_after_rollback() {
+    SLOT_1=""; SLOT_2=""; SLOT_3=""; SLOT_4=""; SLOT_5=""; SLOT_6=""
+    SLOT_RU=""; SLOT_RU_2=""
+    PORT_1=""; PORT_2=""; PORT_3=""; PORT_4=""; PORT_5=""; PORT_6=""
+    PORT_RU=""; PORT_RU_2=""
+    SLOT_1_CAT=""; SLOT_2_CAT=""; SLOT_3_CAT=""; SLOT_4_CAT=""; SLOT_5_CAT=""; SLOT_6_CAT=""
+    SLOT_RU_CAT=""; SLOT_RU_2_CAT=""
+    TLD_RU_ENABLED=0
+    TLD_SPLIT=0
+    BALANCER_ENABLED=0
+    NTP_IP_FALLBACK=0
+    SYSCTL_TUNING=0
+    DNSMASQ_PERF=0
+    NTP_CLIENTS=0
+    CLIENT_FIXES=0
+    SYSCTL_EXTENDED=0
+    FORCE_DOH=0
+    WATCHDOG_ENABLED=0
+    WEB_ACCESS_ENABLED=0
+    DNS_PROFILE="custom"
+    DNS_SELECTION_MODE="quick"
+    DNS_SELECTION_CATEGORY="bypass"
+    save_config >/dev/null 2>&1 || return 1
+    return 0
+}
+
+cleanup_manager_rollback_state() {
+    rm -f "$MTU_BEFORE" "$NTP_CLIENTS_BEFORE" "$FORCE_DNS_BEFORE" \
+          "$STATE_DIR/sysctl-before.conf" "$STATE_DIR/sysctl-extended-before.conf" \
+          "$STATE_DIR/dnsmasq-perf-before.conf" "$WATCHDOG_CRON_STATE" \
+          "$FIREWALL_OWNERSHIP" 2>/dev/null || true
+    : > "$OWNERSHIP" 2>/dev/null || true
+    chmod 600 "$OWNERSHIP" 2>/dev/null || true
+    rm -f "$BASELINE_LAST" "$BASELINE_MANIFEST" "$BASELINE_META" 2>/dev/null || true
+    rm -rf "$BASELINE_DIR/files" 2>/dev/null || true
+    rmdir "$BASELINE_DIR" 2>/dev/null || true
+    rm -rf "$TX_DIR" 2>/dev/null || true
+    TX_DIR=""
+    TX_ACTIVE=0
+}
+
 _rollback_ours_impl() {
     clear_screen
     WEB_ACCESS_ENABLED=0
     web_access_luci_remove
     web_access_remove_config
     watchdog_cron_remove_owned_block >/dev/null 2>&1 || true
-    printf "${C_YELLOW}=== 🔄 Восстановление чистого состояния OpenWrt ===${C_NC}\n"
+    printf "${C_YELLOW}=== 🔄 Удаление изменений DNS Manager ===${C_NC}\n"
 
-    if baseline_restore_if_safe; then
-        /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || true
-        /etc/init.d/dnsmasq restart >/dev/null 2>&1 || true
-        reload_fw >/dev/null 2>&1 || true
-        rm -f "$BASELINE_LAST" 2>/dev/null || true
-        rm -f "$FORCE_DNS_BEFORE" 2>/dev/null || true
-        ok_msg "Исходное состояние чистого OpenWrt восстановлено."
+    BASELINE_RESTORED_DHCP=0
+    BASELINE_RESTORED_HDP=0
+    BASELINE_RESTORED_FIREWALL=0
+    BASELINE_RESTORED_SYSTEM=0
+    BASELINE_RESTORED_SYSCTL_BASE=0
+    BASELINE_RESTORED_SYSCTL_EXT=0
+    BASELINE_RESTORED_BOGUS=0
+    BASELINE_RESTORED_CLIENT_FIXES=0
+
+    _rollback_fail=0
+    _baseline_rc=2
+    baseline_restore_if_safe || _baseline_rc=$?
+
+    # Shared UCI files are restored independently. A change made by another
+    # component therefore blocks only that file, not the whole rollback.
+    if [ "$BASELINE_RESTORED_DHCP" != 1 ]; then
+        if ! rollback_dnsmasq_targeted; then
+            _rollback_fail=1
+            warn_msg "Не удалось полностью очистить собственные изменения dnsmasq."
+        fi
+    fi
+
+    if [ "$BASELINE_RESTORED_HDP" != 1 ]; then
+        if ! rollback_hdp_targeted; then
+            _rollback_fail=1
+            warn_msg "Не удалось полностью очистить собственные изменения https-dns-proxy."
+        fi
+    fi
+
+    if [ "$BASELINE_RESTORED_FIREWALL" != 1 ]; then
+        if [ -s "$MTU_BEFORE" ]; then
+            MTU_FIX=0
+            if ! apply_mtu_toggle >/dev/null 2>&1; then
+                _rollback_fail=1
+                warn_msg "Не удалось безопасно восстановить mtu_fix WAN."
+            fi
+        fi
+        if ! rollback_firewall_targeted; then
+            _rollback_fail=1
+            warn_msg "Не удалось полностью очистить собственные правила firewall."
+        fi
+    fi
+
+    if [ "$BASELINE_RESTORED_DHCP" != 1 ] && [ "$BASELINE_RESTORED_SYSTEM" != 1 ]; then
+        if [ -s "$NTP_CLIENTS_BEFORE" ] && ! remove_ntp_clients; then
+            _rollback_fail=1
+            warn_msg "Не удалось полностью отключить NTP-сервер DNS Manager для клиентов."
+        fi
+    else
+        rm -f "$NTP_CLIENTS_BEFORE" 2>/dev/null || true
+    fi
+
+    if [ "$BASELINE_RESTORED_DHCP" != 1 ] && [ -s "$STATE_DIR/dnsmasq-perf-before.conf" ]; then
+        DNSMASQ_PERF=0
+        if ! remove_dnsmasq_perf; then
+            _rollback_fail=1
+            warn_msg "Не удалось полностью восстановить параметры dnsmasq performance."
+        fi
+    else
+        rm -f "$STATE_DIR/dnsmasq-perf-before.conf" 2>/dev/null || true
+    fi
+
+    if [ "$BASELINE_RESTORED_CLIENT_FIXES" != 1 ]; then
+        if ! remove_client_fixes; then
+            _rollback_fail=1
+            warn_msg "Не удалось полностью убрать client-fixes."
+        fi
+    fi
+
+    if [ "$BASELINE_RESTORED_SYSCTL_BASE" != 1 ]; then
+        SYSCTL_TUNING=0
+        if ! remove_sysctl_base; then
+            _rollback_fail=1
+            warn_msg "Не удалось полностью восстановить базовый sysctl."
+        fi
+    fi
+    if [ "$BASELINE_RESTORED_SYSCTL_EXT" != 1 ]; then
+        SYSCTL_EXTENDED=0
+        if ! remove_sysctl_extended; then
+            _rollback_fail=1
+            warn_msg "Не удалось полностью восстановить расширенный sysctl."
+        fi
+    fi
+
+
+    /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || true
+    /etc/init.d/dnsmasq restart >/dev/null 2>&1 || true
+    reload_fw >/dev/null 2>&1 || true
+
+    # The manager itself remains installed, but its persistent state must no
+    # longer claim that an active DNS Manager configuration exists.
+    if ! reset_manager_runtime_state_after_rollback; then
+        _rollback_fail=1
+        warn_msg "Не удалось полностью сбросить сохранённое состояние DNS Manager."
+    fi
+    cleanup_manager_rollback_state
+
+    # Any hard failure in a targeted cleanup is reported as such. A missing
+    # baseline by itself is not a hard failure: the ownership-based cleanup
+    # can still remove artifacts from the current manager version safely.
+    if [ "${_rollback_fail:-0}" -eq 0 ]; then
+        ok_msg "Изменения DNS Manager удалены. Внешние изменения, обнаруженные после применения, сохранены."
+        log_tx "ROLLBACK" "manager" "REMOVE" "OK" "baseline_files=${BASELINE_RESTORE_COUNT:-0};per_file=yes;baseline_rc=${_baseline_rc:-2}"
         pause
         return 0
     fi
 
-    err_msg "Безопасный откат невозможен: отсутствует или повреждён снимок чистого OpenWrt."
-    err_msg "Ничего чужого автоматически не удаляю."
+    err_msg "Удаление завершилось не полностью. Сторонние настройки автоматически не удалялись; проверьте журнал DNS Manager."
+    log_tx "ROLLBACK" "manager" "REMOVE" "FAIL" "baseline_files=${BASELINE_RESTORE_COUNT:-0};per_file=yes"
     pause
     return 1
 }
@@ -5194,13 +5540,17 @@ web_access_write_config() {
     return 0
 }
 web_access_remove_config() {
-    # Remove only the stable DNS Manager section. Do not disable the global
-    # ttyd service and do not touch any other ttyd sections.
+    # Do not restart the shared ttyd service when DNS Manager has no section.
+    _had_section=0
+    uci -q get "ttyd.dns_manager" >/dev/null 2>&1 && _had_section=1
     uci -q delete "ttyd.dns_manager" || true
-    uci commit ttyd >/dev/null 2>&1 || true
-    [ -x "$WEB_SERVICE_CONFIG" ] && "$WEB_SERVICE_CONFIG" restart >/dev/null 2>&1 || true
+    if [ "$_had_section" = 1 ]; then
+        uci commit ttyd >/dev/null 2>&1 || true
+        [ -x "$WEB_SERVICE_CONFIG" ] && "$WEB_SERVICE_CONFIG" restart >/dev/null 2>&1 || true
+    fi
     return 0
 }
+
 web_access_start() {
     [ -x "$WEB_SERVICE_CONFIG" ] || return 1
     "$WEB_SERVICE_CONFIG" enable >/dev/null 2>&1 || true
@@ -5251,10 +5601,15 @@ EOF_LUCI
     /etc/init.d/rpcd reload >/dev/null 2>&1 || true
 }
 web_access_luci_remove() {
+    _had_controller=0
+    [ -f "$LUCI_CONTROLLER" ] && _had_controller=1
     rm -f "$LUCI_CONTROLLER"
-    rm -rf /tmp/luci-* /tmp/luci-indexcache* 2>/dev/null || true
-    /etc/init.d/rpcd reload >/dev/null 2>&1 || true
+    if [ "$_had_controller" = 1 ]; then
+        rm -rf /tmp/luci-* /tmp/luci-indexcache* 2>/dev/null || true
+        /etc/init.d/rpcd reload >/dev/null 2>&1 || true
+    fi
 }
+
 apply_web_access() {
     apply_wait_message "$( [ "${WEB_ACCESS_ENABLED:-0}" = 1 ] && printf '%s' 'Включаю терминальный доступ DNS Manager' || printf '%s' 'Выключаю терминальный доступ DNS Manager' )"
     case "${WEB_ACCESS_ENABLED:-0}" in
@@ -6428,35 +6783,55 @@ watchdog_cron_remove_owned_block() {
     [ -n "$WATCHDOG_CRON_FILE" ] && [ -f "$WATCHDOG_CRON_FILE" ] || { rm -f "$WATCHDOG_CRON_STATE" 2>/dev/null || true; return 0; }
     watchdog_cron_read_state
     _state_line="${WATCHDOG_CRON_STATE_LINE:-}"
-    if watchdog_cron_marker_exists; then
-        if [ -n "$_state_line" ] && watchdog_cron_owned_block_status "$_state_line"; then
-            _cron_before="$(file_hash "$WATCHDOG_CRON_FILE" 2>/dev/null)"
-            _tmp="$WATCHDOG_CRON_FILE.dns-manager.$$"
-            awk -v marker="$WATCHDOG_CRON_MARKER" -v state_line="$_state_line" '
-                $0==marker {skip=1; next}
-                skip==1 {
-                    if ($0==state_line) {skip=0; next}
-                    print marker
-                    print
-                    skip=0
-                    next
-                }
-                {print}
-            ' "$WATCHDOG_CRON_FILE" > "$_tmp" 2>/dev/null || { rm -f "$_tmp"; return 1; }
-            watchdog_cron_preserve_attrs "$WATCHDOG_CRON_FILE" "$_tmp"
-            watchdog_cron_atomic_replace "$WATCHDOG_CRON_FILE" "$_tmp" "$_cron_before"
-            _ar=$?
-            [ "$_ar" -eq 0 ] || { rm -f "$_tmp" 2>/dev/null || true; return "$_ar"; }
-            rm -f "$WATCHDOG_CRON_STATE" 2>/dev/null || true
-            watchdog_cron_scheduler_apply >/dev/null 2>&1 || true
-            return 0
-        fi
-        log_msg "Cron: запись DNS Manager была изменена. Не удаляю изменённую запись."
+    if ! watchdog_cron_marker_exists; then
+        rm -f "$WATCHDOG_CRON_STATE" 2>/dev/null || true
+        return 0
+    fi
+
+    _cron_before="$(file_hash "$WATCHDOG_CRON_FILE" 2>/dev/null)"
+    _tmp="$WATCHDOG_CRON_FILE.dns-manager.$$"
+    _owner_suffix="${MANAGER_PATH} watchdog >> ${LOG_FILE} 2>&1"
+
+    awk -v marker="$WATCHDOG_CRON_MARKER" -v state_line="$_state_line" -v suffix="$_owner_suffix" '
+        $0==marker { pending=1; next }
+        pending==1 {
+            # A current-version state file identifies the exact owned line.
+            # For older installations, the marker plus the exact DNS Manager
+            # command is sufficient to remove the legacy block safely.
+            if ((state_line!="" && $0==state_line) || (index($0,suffix)>0 && $0 ~ /^\*\/[0-9]+[[:space:]]+\*[[:space:]]+\*[[:space:]]+\*[[:space:]]+\*/)) {
+                pending=0
+                removed=1
+                next
+            }
+            print marker
+            print
+            pending=0
+            next
+        }
+        {print}
+        END {
+            if (pending==1) print marker
+            if (removed!=1) exit 7
+        }
+    ' "$WATCHDOG_CRON_FILE" > "$_tmp" 2>/dev/null
+    _awk_rc=$?
+    if [ "$_awk_rc" -eq 7 ]; then
+        rm -f "$_tmp" 2>/dev/null || true
+        log_msg "Cron: маркер DNS Manager найден, но принадлежащая ему команда не подтверждена. Запись сохранена."
         return 2
     fi
+    [ "$_awk_rc" -eq 0 ] || { rm -f "$_tmp" 2>/dev/null || true; return 1; }
+
+    watchdog_cron_preserve_attrs "$WATCHDOG_CRON_FILE" "$_tmp"
+    watchdog_cron_atomic_replace "$WATCHDOG_CRON_FILE" "$_tmp" "$_cron_before"
+    _ar=$?
+    [ "$_ar" -eq 0 ] || { rm -f "$_tmp" 2>/dev/null || true; return "$_ar"; }
     rm -f "$WATCHDOG_CRON_STATE" 2>/dev/null || true
+    watchdog_cron_scheduler_apply >/dev/null 2>&1 || true
+    log_tx "ROLLBACK" "watchdog" "CRON_REMOVE" "OK" "file=$WATCHDOG_CRON_FILE"
     return 0
 }
+
 watchdog_cron_sync() {
     if [ "${FIRST_RUN:-0}" = 1 ] && [ "${DNS_MANAGER_ALLOW_FIRST_RUN_CRON:-0}" != 1 ]; then
         log_msg "Первый запуск: watchdog cron не изменяю."
