@@ -2,7 +2,7 @@
 MANAGER_PATH="/usr/bin/dns-manager"
 # ==========================================
 # ==========================================
-VERSION="2.77"
+VERSION="2.78"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -39,6 +39,7 @@ BASELINE_MANIFEST="$BASELINE_DIR/manifest"
 BASELINE_LAST="$BASELINE_DIR/last-applied.manifest"
 BASELINE_META="$BASELINE_DIR/meta"
 OWNERSHIP="$CFG_DIR/ownership.conf"
+PACKAGE_OWNERSHIP="$CFG_DIR/package-ownership.conf"
 MTU_BEFORE="$STATE_DIR/mtu-before-zone.conf"
 NTP_CLIENTS_BEFORE="$STATE_DIR/ntp-clients-before.conf"
 FORCE_DNS_BEFORE="$CFG_DIR/force-dns-before.conf"
@@ -565,7 +566,7 @@ init_dirs() {
 # ==========================================
 # ==========================================
 baseline_files() {
-printf '%s\n'  /etc/config/dhcp  /etc/config/https-dns-proxy  /etc/config/firewall  /etc/config/system  /etc/sysctl.d/90-dns-manager.conf /etc/sysctl.d/91-dns-manager-extended.conf  /etc/dnsmasq.d/90-dns-manager-bogus.conf  /etc/dnsmasq.d/91-dns-manager-client-fixes.conf  
+printf '%s\n'  /etc/config/dhcp  /etc/config/https-dns-proxy  /etc/config/firewall  /etc/config/system  /etc/config/ttyd  /etc/sysctl.d/90-dns-manager.conf /etc/sysctl.d/91-dns-manager-extended.conf  /etc/dnsmasq.d/90-dns-manager-bogus.conf  /etc/dnsmasq.d/91-dns-manager-client-fixes.conf  
 }
 sanitize_baseline_shared_files() {
     [ -s "$BASELINE_MANIFEST" ] && {
@@ -703,6 +704,113 @@ clear_baseline_for_reacquire() {
     mkdir -p "$BASELINE_DIR/files" 2>/dev/null || return 1
     rm -f "$BASELINE_MANIFEST" "$BASELINE_LAST" "$BASELINE_META" 2>/dev/null
     info_msg "Исходная копия удалена. При следующем применении будет создана новая."
+}
+baseline_uninstall_validate() {
+    [ -s "$BASELINE_MANIFEST" ] || return 1
+    [ -d "$BASELINE_DIR/files" ] || return 1
+
+    # We intentionally do not require BASELINE_LAST here. Uninstall returns
+    # the router to the immutable state captured BEFORE DNS Manager first
+    # modified it. A later Apply must never redefine that state.
+    _valid=0
+    while IFS='|' read -r _f _k _existed _hash; do
+        [ -n "$_f" ] || continue
+        case "$_f" in
+            /etc/config/dhcp|/etc/config/https-dns-proxy|/etc/config/firewall|/etc/config/system|/etc/config/ttyd|/etc/sysctl.d/90-dns-manager.conf|/etc/sysctl.d/91-dns-manager-extended.conf|/etc/dnsmasq.d/90-dns-manager-bogus.conf|/etc/dnsmasq.d/91-dns-manager-client-fixes.conf) ;;
+            *) return 1 ;;
+        esac
+        case "$_existed" in
+            0) ;;
+            1) [ -f "$BASELINE_DIR/files/$_k" ] || return 1 ;;
+            *) return 1 ;;
+        esac
+        _valid=$((_valid+1))
+    done < "$BASELINE_MANIFEST"
+    [ "$_valid" -gt 0 ] || return 1
+    return 0
+}
+
+baseline_restore_path_for_uninstall() {
+    _path="$1"
+    [ -n "$_path" ] || return 1
+    [ -s "$BASELINE_MANIFEST" ] || return 1
+
+    _line="$(awk -F'|' -v f="$_path" '$1==f{print;exit}' "$BASELINE_MANIFEST" 2>/dev/null)"
+    [ -n "$_line" ] || return 2
+    IFS='|' read -r _f _k _existed _base_hash <<EOF_UNINST
+$_line
+EOF_UNINST
+
+    if [ "$_existed" = 1 ]; then
+        [ -f "$BASELINE_DIR/files/$_k" ] || return 1
+        mkdir -p "$(dirname "$_path")" 2>/dev/null || return 1
+        cp -p "$BASELINE_DIR/files/$_k" "$_path" 2>/dev/null || return 1
+    else
+        rm -f "$_path" 2>/dev/null || return 1
+    fi
+    return 0
+}
+
+manager_state_requires_original_restore() {
+    # When no immutable baseline exists, never guess what "stock" means.
+    # Return success when there is evidence that DNS Manager had an active
+    # configuration which therefore requires the missing original snapshot.
+    [ -s "$OWNERSHIP" ] && return 0
+    [ -s "$FIREWALL_OWNERSHIP" ] && return 0
+    [ -s "$WATCHDOG_CRON_STATE" ] && return 0
+    [ -s "$CONFIG_FILE" ] && {
+        for _v in SLOT_1 SLOT_2 SLOT_3 SLOT_4 SLOT_5 SLOT_6 SLOT_RU SLOT_RU_2 PORT_1 PORT_2 PORT_3 PORT_4 PORT_5 PORT_6 PORT_RU PORT_RU_2; do
+            eval "_mv=\${$_v:-}"
+            [ -n "$_mv" ] && return 0
+        done
+        for _v in FORCE_DOH MTU_FIX NTP_IP_FALLBACK SYSCTL_TUNING DNSMASQ_PERF NTP_CLIENTS CLIENT_FIXES SYSCTL_EXTENDED WATCHDOG_ENABLED WEB_ACCESS_ENABLED; do
+            eval "_mv=\${$_v:-0}"
+            [ "$_mv" = 1 ] && return 0
+        done
+    }
+    return 1
+}
+
+baseline_restore_for_uninstall() {
+    baseline_uninstall_validate || {
+        warn_msg "Исходная копия DNS Manager отсутствует или повреждена. Без неё удаление остановлено, чтобы не угадывать исходные настройки."
+        return 1
+    }
+
+    UNINSTALL_RESTORED_DHCP=0
+    UNINSTALL_RESTORED_HDP=0
+    UNINSTALL_RESTORED_FIREWALL=0
+    UNINSTALL_RESTORED_SYSTEM=0
+    UNINSTALL_RESTORED_TTYD=0
+    UNINSTALL_RESTORED_SYSCTL_BASE=0
+    UNINSTALL_RESTORED_SYSCTL_EXT=0
+    UNINSTALL_RESTORED_BOGUS=0
+    UNINSTALL_RESTORED_CLIENT_FIXES=0
+    UNINSTALL_RESTORE_COUNT=0
+
+    # Restore every path from the original manifest WITHOUT the normal
+    # post-Apply hash guard. Uninstall explicitly means: return to the
+    # pre-DNS-Manager state, including user-tuned DoH.
+    while IFS='|' read -r _f _k _existed _base_hash; do
+        [ -n "$_f" ] || continue
+        baseline_restore_path_for_uninstall "$_f" || return 1
+        UNINSTALL_RESTORE_COUNT=$((UNINSTALL_RESTORE_COUNT+1))
+        case "$_f" in
+            /etc/config/dhcp) UNINSTALL_RESTORED_DHCP=1 ;;
+            /etc/config/https-dns-proxy) UNINSTALL_RESTORED_HDP=1 ;;
+            /etc/config/firewall) UNINSTALL_RESTORED_FIREWALL=1 ;;
+            /etc/config/system) UNINSTALL_RESTORED_SYSTEM=1 ;;
+            /etc/config/ttyd) UNINSTALL_RESTORED_TTYD=1 ;;
+            /etc/sysctl.d/90-dns-manager.conf) UNINSTALL_RESTORED_SYSCTL_BASE=1 ;;
+            /etc/sysctl.d/91-dns-manager-extended.conf) UNINSTALL_RESTORED_SYSCTL_EXT=1 ;;
+            /etc/dnsmasq.d/90-dns-manager-bogus.conf) UNINSTALL_RESTORED_BOGUS=1 ;;
+            /etc/dnsmasq.d/91-dns-manager-client-fixes.conf) UNINSTALL_RESTORED_CLIENT_FIXES=1 ;;
+        esac
+    done < "$BASELINE_MANIFEST"
+
+    [ "$UNINSTALL_RESTORE_COUNT" -gt 0 ] || return 1
+    log_tx "UNINSTALL" "baseline" "RESTORE" "OK" "files=$UNINSTALL_RESTORE_COUNT;original_state=yes;guard=disabled"
+    return 0
 }
 write_catalogs() {
 _old_dnscatver="$(sed -n 's/^# DNSCATVER=//p' "$DNS_CATALOG" 2>/dev/null | head -n1)"
@@ -3819,7 +3927,7 @@ TX_DIR="$STATE_DIR/tx-$TX_ID"
 rm -rf "$TX_DIR" 2>/dev/null
 mkdir -p "$TX_DIR/files" || return 1
 TX_ACTIVE=1
-for f in "$CONFIG_FILE" "$OWNERSHIP" /etc/config/dhcp /etc/config/https-dns-proxy /etc/config/firewall /etc/config/system /etc/sysctl.d/90-dns-manager.conf /etc/sysctl.d/91-dns-manager-extended.conf /etc/dnsmasq.d/90-dns-manager-bogus.conf /etc/dnsmasq.d/91-dns-manager-client-fixes.conf; do
+for f in "$CONFIG_FILE" "$OWNERSHIP" /etc/config/dhcp /etc/config/https-dns-proxy /etc/config/firewall /etc/config/system /etc/config/ttyd /etc/sysctl.d/90-dns-manager.conf /etc/sysctl.d/91-dns-manager-extended.conf /etc/dnsmasq.d/90-dns-manager-bogus.conf /etc/dnsmasq.d/91-dns-manager-client-fixes.conf; do
 key="$(printf '%s' "$f" | sed 's#^/##; s#[/ ]#_#g')"
 if [ -f "$f" ]; then cp -p "$f" "$TX_DIR/files/$key"; file_hash "$f" > "$TX_DIR/$key.before"; printf '%s|%s|1\n' "$f" "$key" >> "$TX_DIR/manifest"; else printf '%s|%s|0\n' "$f" "$key" >> "$TX_DIR/manifest"; fi
 done
@@ -4700,6 +4808,107 @@ rollback_ours() {
     return "$_rc"
 }
 
+uninstall_manager_impl() {
+    clear_screen
+    menu_header "УДАЛЕНИЕ DNS MANAGER"
+    warn_msg "Будет удалён DNS Manager, а настройки роутера будут возвращены в состояние, сохранённое ДО первого применения DNS Manager."
+    printf "\n${C_YELLOW}Это включает сохранённую конфигурацию DoH: она вернётся к той, что была до DNS Manager.${C_NC}\n"
+    printf "${C_YELLOW}Текущие изменения, сделанные самим DNS Manager после этого, будут отменены.${C_NC}\n"
+    printf "${C_RED}Если исходная копия отсутствует или повреждена, удаление не продолжится.${C_NC}\n\n"
+    confirm_action "Полностью удалить DNS Manager и восстановить исходное состояние?" || { info_msg "Отменено."; pause; return 0; }
+
+    # Validate BEFORE touching any live configuration.
+    if [ -s "$BASELINE_MANIFEST" ]; then
+        baseline_uninstall_validate || {
+            err_msg "Удаление остановлено: исходная копия отсутствует/повреждена."
+            pause
+            return 1
+        }
+    fi
+
+    acquire_mutation_lock || return 1
+    _rc=0
+    WEB_ACCESS_SECTION_REMOVED=0
+
+    # No baseline means the manager was installed but never performed a
+    # state-changing Apply. In that case there is nothing to restore.
+    if [ -s "$BASELINE_MANIFEST" ]; then
+        # Remove cron first so no scheduled process can race with restoration.
+        watchdog_cron_remove_owned_block >/dev/null 2>&1 || true
+
+        # Remove manager's LuCI launcher before the final service reloads.
+        web_access_luci_remove >/dev/null 2>&1 || true
+
+        # Restore the complete pre-manager state, including user-tuned DoH.
+        if ! baseline_restore_for_uninstall; then
+            err_msg "Удаление остановлено: не удалось полностью восстановить исходное состояние. Сам менеджер НЕ удалён."
+            release_mutation_lock
+            pause
+            return 1
+        fi
+
+        # Restoring ttyd config is enough on disk. Do NOT restart ttyd yet:
+        # when the manager is running through ttyd, an early restart can kill
+        # the very shell which is performing this uninstall.
+        if [ "${UNINSTALL_RESTORED_TTYD:-0}" != 1 ]; then
+            # Compatibility with older DNS Manager baselines that did not
+            # snapshot ttyd. Older versions used the same stable section.
+            web_access_remove_config_no_restart >/dev/null 2>&1 || true
+        fi
+    else
+        if manager_state_requires_original_restore; then
+            err_msg "Удаление остановлено: менеджер имеет признаки активной конфигурации, но исходная копия отсутствует. Настройки не угадываю и сам менеджер не удаляю."
+            release_mutation_lock
+            pause
+            return 1
+        fi
+        watchdog_cron_remove_owned_block >/dev/null 2>&1 || true
+        web_access_luci_remove >/dev/null 2>&1 || true
+        web_access_remove_config_no_restart >/dev/null 2>&1 || true
+        # No Apply (or an already clean rollback) => no live manager
+        # configuration needs an original snapshot.
+    fi
+
+    # Only packages explicitly recorded as DNS Manager-owned may be removed.
+    package_owner_remove_owned >/dev/null 2>&1 || true
+
+    # Remove all manager state and persistent test data.
+    rm -rf "$BASE_DIR" 2>/dev/null || _rc=1
+    rm -f "$LOG_FILE" "$TX_LOG" 2>/dev/null || true
+    rm -rf "$STATE_DIR" 2>/dev/null || true
+
+    # Finally remove the executable itself. The running shell can safely
+    # finish after unlinking its own executable path.
+    rm -f "$MANAGER_PATH" 2>/dev/null || _rc=1
+
+    # Runtime reloads happen only after every persistent uninstall operation
+    # has completed. This is important when the menu itself runs under ttyd.
+    [ "${UNINSTALL_RESTORED_HDP:-0}" = 1 ] && /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || true
+    [ "${UNINSTALL_RESTORED_DHCP:-0}" = 1 ] && /etc/init.d/dnsmasq restart >/dev/null 2>&1 || true
+    [ "${UNINSTALL_RESTORED_SYSTEM:-0}" = 1 ] && /etc/init.d/sysntpd restart >/dev/null 2>&1 || true
+    [ "${UNINSTALL_RESTORED_FIREWALL:-0}" = 1 ] && reload_fw >/dev/null 2>&1 || true
+    if [ "${UNINSTALL_RESTORED_TTYD:-0}" = 1 ] || [ "${WEB_ACCESS_SECTION_REMOVED:-0}" = 1 ]; then
+        [ -x "$WEB_SERVICE_CONFIG" ] && "$WEB_SERVICE_CONFIG" restart >/dev/null 2>&1 || true
+    fi
+
+    release_mutation_lock
+    if [ "$_rc" -eq 0 ]; then
+        printf "\n${C_GREEN}${C_BOLD}DNS Manager полностью удалён.${C_NC}\n"
+        printf "${C_GREEN}Исходное состояние роутера восстановлено; сохранённый DoH также возвращён.${C_NC}\n"
+        printf "${C_YELLOW}Возвращаемся в shell.${C_NC}\n"
+        exit 0
+    fi
+
+    err_msg "Менеджер удалён не полностью. Проверьте /var/log/dns-manager.log, если файл ещё существует."
+    pause
+    return 1
+}
+
+uninstall_manager() {
+    # Directly invoked from the installed executable or menu.
+    uninstall_manager_impl "$@"
+}
+
 # ==========================================
 # ==========================================
 state_word() {
@@ -5503,11 +5712,48 @@ web_access_port_busy() {
     web_access_real && return 1
     return 0
 }
+package_is_installed() {
+    _pkg="$1"
+    [ -n "$_pkg" ] || return 1
+    if [ "$PKG_MGR" = apk ]; then
+        apk info -e "$_pkg" >/dev/null 2>&1
+    elif [ "$PKG_MGR" = opkg ]; then
+        opkg status "$_pkg" 2>/dev/null | grep -q '^Status:.*installed'
+    else
+        return 1
+    fi
+}
+package_owner_record_if_new() {
+    _pkg="$1"
+    [ -n "$_pkg" ] || return 0
+    package_is_installed "$_pkg" && return 0
+    mkdir -p "$CFG_DIR" 2>/dev/null || return 1
+    touch "$PACKAGE_OWNERSHIP" 2>/dev/null || return 1
+    grep -Fqx -- "$_pkg" "$PACKAGE_OWNERSHIP" 2>/dev/null || printf '%s\n' "$_pkg" >> "$PACKAGE_OWNERSHIP" || return 1
+    return 0
+}
+package_owner_remove_owned() {
+    [ -f "$PACKAGE_OWNERSHIP" ] || return 0
+    while IFS= read -r _pkg; do
+        [ -n "$_pkg" ] || continue
+        case "$_pkg" in
+            *[!A-Za-z0-9._+:-]*) continue ;;
+        esac
+        if [ "$PKG_MGR" = apk ]; then
+            apk info -e "$_pkg" >/dev/null 2>&1 && apk del "$_pkg" >/dev/null 2>&1 || true
+        elif [ "$PKG_MGR" = opkg ]; then
+            opkg status "$_pkg" 2>/dev/null | grep -q '^Status:.*installed' && opkg remove "$_pkg" >/dev/null 2>&1 || true
+        fi
+    done < "$PACKAGE_OWNERSHIP"
+    return 0
+}
+
 web_access_install() {
     _need=""
     command -v ttyd >/dev/null 2>&1 || _need="ttyd"
     if [ ! -f "$TTYD_CONFIG" ] && [ -n "$_need" ]; then :; fi
     if [ -n "$_need" ] || [ ! -x "$WEB_SERVICE_CONFIG" ]; then
+        [ -n "$_need" ] && package_owner_record_if_new ttyd || true
         if [ "$PKG_MGR" = "apk" ]; then
             apk update >/dev/null 2>&1 || return 1
             apk add ttyd >/dev/null 2>&1 || return 1
@@ -5547,6 +5793,19 @@ web_access_remove_config() {
     if [ "$_had_section" = 1 ]; then
         uci commit ttyd >/dev/null 2>&1 || true
         [ -x "$WEB_SERVICE_CONFIG" ] && "$WEB_SERVICE_CONFIG" restart >/dev/null 2>&1 || true
+    fi
+    return 0
+}
+web_access_remove_config_no_restart() {
+    # Remove only DNS Manager's stable ttyd section. Used by uninstall so the
+    # running terminal is not killed before the manager has removed itself.
+    WEB_ACCESS_SECTION_REMOVED=0
+    _had_section=0
+    uci -q get "ttyd.dns_manager" >/dev/null 2>&1 && _had_section=1
+    uci -q delete "ttyd.dns_manager" || true
+    if [ "$_had_section" = 1 ]; then
+        uci commit ttyd >/dev/null 2>&1 || return 1
+        WEB_ACCESS_SECTION_REMOVED=1
     fi
     return 0
 }
@@ -5829,11 +6088,12 @@ ${C_YELLOW}↻ Обнаружены недостающие компоненты.
         for _pkg in $_need; do
             printf "  ${C_PINK}↻${C_NC} %s
 " "$_pkg"
+            package_owner_record_if_new "$_pkg" >/dev/null 2>&1 || true
         done
         printf "
 "
 
-            if [ "$PKG_MGR" = "apk" ]; then
+        if [ "$PKG_MGR" = "apk" ]; then
             apk update >/dev/null 2>&1 && apk add $_need
         else
             opkg update >/dev/null 2>&1 && opkg install $_need
@@ -5843,6 +6103,8 @@ ${C_YELLOW}↻ Обнаружены недостающие компоненты.
     if [ "${HAS_DIG:-no}" != yes ]; then
         printf "  ${C_PINK}↻${C_NC} dig (bind-dig/knot-dig)
 "
+        package_owner_record_if_new bind-dig >/dev/null 2>&1 || true
+        package_owner_record_if_new knot-dig >/dev/null 2>&1 || true
 
         if [ "$PKG_MGR" = "apk" ]; then
             apk update >/dev/null 2>&1 || true
@@ -7015,7 +7277,7 @@ menu_item "[2]" "Проверка DNS-серверов"
 menu_item "[3]" "Состояние и журнал"
 menu_item "[4]" "Серверы точного времени"
 menu_item "[5]" "НАСТРОЙКИ"
-menu_item "[6]" "Удалить изменения"
+menu_item "[6]" "Удалить DNS Manager"
 menu_back
 menu_prompt
 safe_read c
@@ -7026,12 +7288,7 @@ case "$c" in
 3) show_map;;
 4) MAIN_STATE_STALE=1; prepare_dns_operation || { pause; continue; }; menu_ntp;;
 5) MAIN_STATE_STALE=1; prepare_dns_operation || { pause; continue; }; menu_extras;;
-6) MAIN_STATE_STALE=1;
-clear_screen
-menu_header "УДАЛЕНИЕ ИЗМЕНЕНИЙ"
-warn_msg "Будут удалены только изменения DNS Manager."
-if confirm_action "Удалить изменения?"; then rollback_ours; else info_msg "Отменено."; fi
-;;
+6) uninstall_manager;;
 *) warn_msg "Неизвестный пункт."; pause;;
 esac
 done
@@ -7232,6 +7489,14 @@ auto-update|--auto-update)
     init_dirs
     DNS_MANAGER_SCHEDULED_UPDATE=1 DNS_MANAGER_UPDATE_NO_EXEC=1 auto_update_manager --scheduled
     exit 0
+    ;;
+uninstall|--uninstall|remove|--remove)
+    preflight_readonly
+    init_dirs
+    write_catalogs >/dev/null 2>&1 || true
+    load_config
+    uninstall_manager
+    exit $?
     ;;
 watchdog|--watchdog|-w)
     preflight_readonly
