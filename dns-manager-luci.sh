@@ -912,7 +912,7 @@ var CATEGORY = [
   ['all','Все DNS'], ['bypass','Обход блокировок'], ['security','Безопасность'], ['privacy','Приватность'],
   ['adblock','Блокировка рекламы'], ['family','Семейный'], ['clean','Без фильтрации'], ['regional','Региональные']
 ];
-var state = { category:'all', offset:0, limit:18, catalogLoaded:false, catalogLoading:false, advanced:true, logLoaded:false, logLoading:false, busy:false, busySetting:'', settingMessage:'', settingMessageType:'', pageNotice:{}, updateKick:false, activeTab:'dashboard', jobRunning:false, lastJob:null, checking:{}, fullTest:null, versionCheck:null, autoRefreshRoot:null };
+var state = { category:'all', offset:0, limit:18, catalogLoaded:false, catalogLoading:false, advanced:true, logLoaded:false, logLoading:false, busy:false, busySetting:'', settingMessage:'', settingMessageType:'', pageNotice:{}, statusError:'', updateKick:false, activeTab:'dashboard', jobRunning:false, lastJob:null, checking:{}, fullTest:null, versionCheck:null, autoRefreshRoot:null };
 
 function profileName(p){ var x=PROFILE.filter(function(v){return v[0]===p;})[0]; return x?x[1]:(p||'—'); }
 function catName(c){ var x=CATEGORY.filter(function(v){return v[0]===c;})[0]; return x?x[1]:(c||'—'); }
@@ -1017,7 +1017,6 @@ function setActiveTab(root,name){
     var panel=root.querySelector('#dm-'+id);
     if(panel) panel.style.display='block';
   });
-  renderPageNav(root);
   if(state.activeTab==='catalog'&&!window.dmCatalog&&!state.catalogLoading)loadCatalog(root);
   if(state.activeTab==='log'&&!state.logLoaded&&!state.logLoading)showLog(root);
 }
@@ -1047,6 +1046,7 @@ function checkInfo(id,d){
 }
 function renderOverview(root,st){
   var e=root.querySelector('#dm-overview');if(!e)return;e.innerHTML='';
+  if(state.statusError)e.appendChild(E('div',{'class':'dm-inline-msg error'},state.statusError+' Проверьте: ubus call dns_manager status.'));
   var doh=st.doh==='yes'?badge('dm-ok','работает'):Number(st.doh_total||0)>0?badge('dm-bad','служба остановлена'):badge('dm-off','не установлен');
   var force=yes(st.force_both)?badge('dm-warn','DNS Manager + внешний'):st.force_owner==='external'?badge('dm-warn','внешний · '+shortVal(st.force_source)):yes(st.force_manager)?badge('dm-ok','DNS Manager'):badge('dm-off','выключен');
   var wd=yes(st.watchdog)?(st.watchdog_service==='yes'?badge('dm-ok','работает'):badge('dm-warn','включён, служба не запущена')):badge('dm-off','выключен');
@@ -1298,9 +1298,15 @@ function refresh(root,keepPosition){
   if(!rootAlive(root))return Promise.resolve();
   return callStatus().then(function(st){
     if(!rootAlive(root))return;
+    state.statusError='';
     window.dmState=st||{};
     render(root,st||{});
-  }).catch(function(){});
+  }).catch(function(err){
+    if(!rootAlive(root))return;
+    state.statusError='Не удалось получить состояние DNS Manager через RPC (status).';
+    window.dmState=window.dmState||{};
+    render(root,window.dmState||{});
+  });
 }
 function startAutoRefresh(root){
   if(state.autoRefreshRoot)clearInterval(state.autoRefreshRoot);
@@ -1441,7 +1447,7 @@ function showLog(root){
 
 return view.extend({
   load:function(){return callStatus().then(function(st){return st||{};});},
-  render:function(st){var root=E('div',{'class':'dm-wrap'});['dm-header','dm-page-nav','dm-overview','dm-doh','dm-slots','dm-profiles','dm-settings','dm-job','dm-catalog','dm-log'].forEach(function(id){root.appendChild(E('section',{'id':id}));});injectStyle(root);window.dmState=st||{};state.activeTab=currentRoute();render(root,st||{});startAutoRefresh(root);return root;}
+  render:function(st){var root=E('div',{'class':'dm-wrap'});['dm-header','dm-overview','dm-doh','dm-slots','dm-profiles','dm-settings','dm-job','dm-catalog','dm-log'].forEach(function(id){root.appendChild(E('section',{'id':id}));});injectStyle(root);window.dmState=st||{};state.activeTab=currentRoute();render(root,st||{});startAutoRefresh(root);return root;}
 });
 EOF_JS
     chmod 0644 "$MENU_FILE" "$ACL_FILE" "$VIEW_FILE"
