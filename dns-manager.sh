@@ -7496,8 +7496,8 @@ run_watchdog() {
         fi
         log_msg "DNS в слоте $_slot: $(dns_name "$_id") требует замены. Ищу подходящий DNS той же категории."
         if [ "$_force_replace" = 0 ]; then
-            if ! ensure_test_results_fresh "$_current_cat"; then
-                log_msg "Watchdog: не удалось получить свежие результаты проверки DNS для категории $_current_cat. Замена слота $_slot запрещена."
+            if ! ensure_test_results_fresh "$_desired"; then
+                log_msg "Watchdog: не удалось получить свежие результаты проверки DNS для категории $_desired. Замена слота $_slot запрещена."
                 continue
             fi
         fi
