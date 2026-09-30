@@ -1150,25 +1150,25 @@ firewall_resolve_zones() {
     _wan_net=""
     _wan_count=0
 
-    _zones="$(uci show firewall 2>/dev/null | sed -n "s/^firewall\\.//p" | sed -n "/=zone$/s/=zone$//p")"
+    _zones=$(uci show firewall 2>/dev/null | sed -n 's/^firewall\\.//p' | sed -n '/=zone$/s/=zone$//p')
 
     for _z in $_zones; do
-        _nets="$(uci -q get "firewall.$_z.network" 2>/dev/null)"
-        if printf "%s\n" "$_nets" | tr " " "\n" | grep -qxF lan 2>/dev/null; then
+        _nets=$(uci -q get "firewall.$_z.network" 2>/dev/null)
+        if printf '%s\n' "$_nets" | tr ' ' '\n' | grep -qxF lan 2>/dev/null; then
             _lan_zone="$_z"
-            _lan_name="$(uci -q get "firewall.$_z.name" 2>/dev/null)"
+            _lan_name=$(uci -q get "firewall.$_z.name" 2>/dev/null)
             _lan_count=$((_lan_count + 1))
         fi
     done
 
     _preferred_wan_nets="wan wwan wwan0 cellular mobile lte lte0 5g 5g0 modem usbwan"
     for _z in $_zones; do
-        _nets="$(uci -q get "firewall.$_z.network" 2>/dev/null)"
+        _nets=$(uci -q get "firewall.$_z.network" 2>/dev/null)
         for _n in $_preferred_wan_nets; do
-            if printf "%s\n" "$_nets" | tr " " "\n" | grep -qxF "$_n" 2>/dev/null; then
+            if printf '%s\n' "$_nets" | tr ' ' '\n' | grep -qxF "$_n" 2>/dev/null; then
                 _wan_count=$((_wan_count + 1))
                 _wan_zone="$_z"
-                _wan_name="$(uci -q get "firewall.$_z.name" 2>/dev/null)"
+                _wan_name=$(uci -q get "firewall.$_z.name" 2>/dev/null)
                 _wan_net="$_n"
                 break
             fi
@@ -1180,32 +1180,35 @@ firewall_resolve_zones() {
         _wan_name=""
         _wan_net=""
         _wan_count=0
-        _default_devs="$(ip -4 route show default 2>/dev/null | sed -n "s/.*[[:space:]]dev[[:space:]]\([^[:space:]]*\).*/\1/p" | sort -u)"
+
+        _default_devs=$(ip -4 route show default 2>/dev/null | sed -n 's/.*[[:space:]]dev[[:space:]]\([^[:space:]]*\).*/\1/p' | sort -u)
         if [ -z "$_default_devs" ]; then
-            _default_devs="$(ip -4 route show 0.0.0.0/0 2>/dev/null | sed -n "s/.*[[:space:]]dev[[:space:]]\([^[:space:]]*\).*/\1/p" | sort -u)"
+            _default_devs=$(ip -4 route show 0.0.0.0/0 2>/dev/null | sed -n 's/.*[[:space:]]dev[[:space:]]\([^[:space:]]*\).*/\1/p' | sort -u)
         fi
 
         for _z in $_zones; do
-            _nets="$(uci -q get "firewall.$_z.network" 2>/dev/null)"
+            _nets=$(uci -q get "firewall.$_z.network" 2>/dev/null)
             for _n in $_nets; do
                 [ -n "$_n" ] || continue
-                _udev="$(uci -q get "network.$_n.device" 2>/dev/null)"
+                _udev=$(uci -q get "network.$_n.device" 2>/dev/null)
                 if [ -z "$_udev" ]; then
-                    _udev="$(uci -q get "network.$_n.ifname" 2>/dev/null)"
+                    _udev=$(uci -q get "network.$_n.ifname" 2>/dev/null)
                 fi
                 [ -n "$_udev" ] || continue
+
                 _matched=0
                 for _d in $_default_devs; do
                     [ -n "$_d" ] || continue
-                    if printf "%s\n" "$_udev" | tr " " "\n" | grep -qxF "$_d" 2>/dev/null; then
+                    if printf '%s\n' "$_udev" | tr ' ' '\n' | grep -qxF "$_d" 2>/dev/null; then
                         _matched=1
                         break
                     fi
                 done
+
                 if [ "$_matched" = 1 ]; then
                     _wan_count=$((_wan_count + 1))
                     _wan_zone="$_z"
-                    _wan_name="$(uci -q get "firewall.$_z.name" 2>/dev/null)"
+                    _wan_name=$(uci -q get "firewall.$_z.name" 2>/dev/null)
                     _wan_net="$_n"
                 fi
             done
@@ -1216,11 +1219,13 @@ firewall_resolve_zones() {
         FIREWALL_LAN_ZONE="$_lan_zone"
         FIREWALL_LAN_NAME="$_lan_name"
     fi
+
     if [ "$_wan_count" -eq 1 ]; then
         FIREWALL_WAN_ZONE="$_wan_zone"
         FIREWALL_WAN_NAME="$_wan_name"
         FIREWALL_WAN_NETWORK="$_wan_net"
     fi
+
     return 0
 }
 firewall_zone_name() {
