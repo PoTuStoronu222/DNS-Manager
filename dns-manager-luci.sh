@@ -238,8 +238,7 @@ update_json() {
         rm -f "$_tmp" 2>/dev/null || true
         json_error "Новой версии нет"; return
     fi
-    _log="$TMP_ROOT/companion-update.$ .log"
-    _log=$(printf '%s' "$_log" | sed 's/ //')
+    _log="$TMP_ROOT/companion-update.$.log"
     rm -f "$_log" 2>/dev/null || true
     if ! DNS_MANAGER_LUCI_SKIP_RPC_RELOAD=1 sh "$_tmp" update >"$_log" 2>&1; then
         _detail="$(tail -n 12 "$_log" 2>/dev/null | tr '\\n' ' ' | cut -c1-900)"
