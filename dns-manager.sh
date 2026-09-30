@@ -2,8 +2,8 @@
 MANAGER_PATH="/usr/bin/dns-manager"
 # ==========================================
 # ==========================================
-VERSION="2.92"
-# 2.92: shell-portable firewall zone resolver; removes fragile inline command-group syntax.
+VERSION="2.93"
+# 2.93: simplify firewall zone resolver to explicit ash-safe control flow.
 # 2.88: native LuCI companion compatibility, idempotent procd watchdog migration,
 # first-run cron protection, and exact https-dns-proxy forced-DNS ports/interfaces
 # while keeping DNS Manager authoritative over its own dnsmasq upstream list.
@@ -32,8 +32,8 @@ WATCHDOG_SERVICE_PATH="/etc/init.d/dns-watchdog"
 WATCHDOG_RUNTIME_DIR="/var/run/dns-watchdog"
 WATCHDOG_DAEMON_MARKER="# DNS_MANAGER_WATCHDOG_DAEMON=1"
 WATCHDOG_SERVICE_MARKER="# DNS_MANAGER_WATCHDOG_SERVICE=1"
-WATCHDOG_DAEMON_VERSION_MARKER="# DNS_MANAGER_WATCHDOG_DAEMON_VERSION=2.92"
-WATCHDOG_SERVICE_VERSION_MARKER="# DNS_MANAGER_WATCHDOG_SERVICE_VERSION=2.92"
+WATCHDOG_DAEMON_VERSION_MARKER="# DNS_MANAGER_WATCHDOG_DAEMON_VERSION=2.93"
+WATCHDOG_SERVICE_VERSION_MARKER="# DNS_MANAGER_WATCHDOG_SERVICE_VERSION=2.93"
 WATCHDOG_LAST_RESTART_FILE="$STATE_DIR/watchdog-last-restart"
 AUTO_UPDATE_LAST_CHECK_FILE="$STATE_DIR/auto-update-last-check"
 AUTO_UPDATE_CHECK_MAX_AGE=43200
@@ -1150,81 +1150,70 @@ firewall_resolve_zones() {
     _wan_net=""
     _wan_count=0
 
-    _zones="$(uci show firewall 2>/dev/null | sed -n 's/^firewall\.\([^.=]*\)=zone$/\1/p')"
+    _zones="$(uci show firewall 2>/dev/null | sed -n 's/^firewall\\.\\([^.=]*\\)=zone$/\\1/p')"
 
-    # LAN is deliberately resolved from the logical network name "lan".
-    # This works on both old and new OpenWrt syntax and avoids assuming br-lan.
     for _z in $_zones; do
         _nets="$(uci -q get "firewall.$_z.network" 2>/dev/null)"
-        if printf '%s\n' "$_nets" | tr ' ' '\n' | grep -qxF lan 2>/dev/null; then
+        _has_lan="$(printf '%s\\n' "$_nets" | tr ' ' '\\n' | grep -qxF lan 2>/dev/null; printf '%s' "$?")"
+        if [ "$_has_lan" = 0 ]; then
             _lan_zone="$_z"
             _lan_name="$(uci -q get "firewall.$_z.name" 2>/dev/null)"
-            _lan_count=$((_lan_count+1))
+            _lan_count=$((_lan_count + 1))
         fi
     done
 
-    # Prefer the conventional WAN logical network first. A modem router may use
-    # wwan/cellular/lte/5g/modem instead, so the resolver also maps the firewall
-    # zone to the interface carrying the current default route.
     _preferred_wan_nets="wan wwan wwan0 cellular mobile lte lte0 5g 5g0 modem usbwan"
     for _z in $_zones; do
         _nets="$(uci -q get "firewall.$_z.network" 2>/dev/null)"
         for _n in $_preferred_wan_nets; do
-            printf '%s\n' "$_nets" | tr ' ' '\n' | grep -qxF "$_n" 2>/dev/null || continue
-            _wan_count=$((_wan_count+1))
-            _wan_zone="$_z"
-            _wan_name="$(uci -q get "firewall.$_z.name" 2>/dev/null)"
-            _wan_net="$_n"
-            break
+            _is_wan="$(printf '%s\\n' "$_nets" | tr ' ' '\\n' | grep -qxF "$_n" 2>/dev/null; printf '%s' "$?")"
+            if [ "$_is_wan" = 0 ]; then
+                _wan_count=$((_wan_count + 1))
+                _wan_zone="$_z"
+                _wan_name="$(uci -q get "firewall.$_z.name" 2>/dev/null)"
+                _wan_net="$_n"
+                break
+            fi
         done
     done
 
-    # If the conventional-name scan is ambiguous or empty, resolve from the
-    # live default-route device. This is important for QMI/MBIM, PPPoE and other
-    # modem uplinks where the firewall network can be named differently.
     if [ "$_wan_count" -ne 1 ]; then
         _wan_zone=""
         _wan_name=""
         _wan_net=""
         _wan_count=0
-        _default_devs="$(ip -4 route show default 2>/dev/null | sed -n 's/.*[[:space:]]dev[[:space:]]\([^[:space:]]*\).*/\1/p' | sort -u)"
-        [ -n "$_default_devs" ] || _default_devs="$(ip -4 route show 0.0.0.0/0 2>/dev/null | sed -n 's/.*[[:space:]]dev[[:space:]]\([^[:space:]]*\).*/\1/p' | sort -u)"
+        _default_devs="$(ip -4 route show default 2>/dev/null | sed -n 's/.*[[:space:]]dev[[:space:]]\\([^[:space:]]*\\).*/\\1/p' | sort -u)"
+        if [ -z "$_default_devs" ]; then
+            _default_devs="$(ip -4 route show 0.0.0.0/0 2>/dev/null | sed -n 's/.*[[:space:]]dev[[:space:]]\\([^[:space:]]*\\).*/\\1/p' | sort -u)"
+        fi
 
         for _z in $_zones; do
             _nets="$(uci -q get "firewall.$_z.network" 2>/dev/null)"
             for _n in $_nets; do
                 [ -n "$_n" ] || continue
-                _matched=0
+                _udev="$(uci -q get "network.$_n.device" 2>/dev/null)"
+                if [ -z "$_udev" ]; then
+                    _udev="$(uci -q get "network.$_n.ifname" 2>/dev/null)"
+                fi
+                [ -n "$_udev" ] || continue
 
-                if command -v ubus >/dev/null 2>&1; then
-                    _ustatus="$(ubus call network.interface.$_n status 2>/dev/null)"
-                    _l3="$(printf '%s\n' "$_ustatus" | sed -n 's/.*"l3_device"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)"
-                    _udev="$(printf '%s\n' "$_ustatus" | sed -n 's/.*"device"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)"
-                    for _d in $_default_devs; do
-                        [ -n "$_d" ] || continue
-                        [ "$_d" = "$_l3" ] || [ "$_d" = "$_udev" ] || continue
+                _matched=0
+                for _d in $_default_devs; do
+                    [ -n "$_d" ] || continue
+                    _udev_words="$(printf '%s\\n' "$_udev" | tr ' ' '\\n')"
+                    _is_match="$(printf '%s\\n' "$_udev_words" | grep -qxF "$_d" 2>/dev/null; printf '%s' "$?")"
+                    if [ "$_is_match" = 0 ]; then
                         _matched=1
                         break
-                    done
-                fi
+                    fi
+                done
 
-                if [ "$_matched" = 0 ]; then
-                    _udev="$(uci -q get "network.$_n.device" 2>/dev/null)"
-                    [ -n "$_udev" ] || _udev="$(uci -q get "network.$_n.ifname" 2>/dev/null)"
-                    for _d in $_default_devs; do
-                        [ -n "$_d" ] || continue
-                        if printf '%s\n' "$_udev" | tr ' ' '\n' | grep -qxF "$_d" 2>/dev/null; then
-                            _matched=1
-                            break
-                        fi
-                    done
+                if [ "$_matched" = 1 ]; then
+                    _wan_count=$((_wan_count + 1))
+                    _wan_zone="$_z"
+                    _wan_name="$(uci -q get "firewall.$_z.name" 2>/dev/null)"
+                    _wan_net="$_n"
                 fi
-
-                [ "$_matched" = 1 ] || continue
-                _wan_count=$((_wan_count+1))
-                _wan_zone="$_z"
-                _wan_name="$(uci -q get "firewall.$_z.name" 2>/dev/null)"
-                _wan_net="$_n"
             done
         done
     fi
@@ -1233,11 +1222,13 @@ firewall_resolve_zones() {
         FIREWALL_LAN_ZONE="$_lan_zone"
         FIREWALL_LAN_NAME="$_lan_name"
     fi
+
     if [ "$_wan_count" -eq 1 ]; then
         FIREWALL_WAN_ZONE="$_wan_zone"
         FIREWALL_WAN_NAME="$_wan_name"
         FIREWALL_WAN_NETWORK="$_wan_net"
     fi
+
     return 0
 }
 firewall_zone_name() {
@@ -7921,7 +7912,7 @@ watchdog_service_install_files() {
         cat > "$_dtmp" <<'EOF_DNS_WATCHDOG_DAEMON'
 #!/bin/sh
 # DNS_MANAGER_WATCHDOG_DAEMON=1
-# DNS_MANAGER_WATCHDOG_DAEMON_VERSION=2.92
+# DNS_MANAGER_WATCHDOG_DAEMON_VERSION=2.93
 
 MANAGER_PATH="/usr/bin/dns-manager"
 CONFIG_FILE="/etc/dns-manager/config/manager.conf"
@@ -8255,7 +8246,7 @@ EOF_DNS_WATCHDOG_DAEMON
         cat > "$_stmp" <<'EOF_DNS_WATCHDOG_SERVICE'
 #!/bin/sh /etc/rc.common
 # DNS_MANAGER_WATCHDOG_SERVICE=1
-# DNS_MANAGER_WATCHDOG_SERVICE_VERSION=2.92
+# DNS_MANAGER_WATCHDOG_SERVICE_VERSION=2.93
 
 USE_PROCD=1
 START=95
