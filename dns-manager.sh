@@ -3,6 +3,10 @@ MANAGER_PATH="/usr/bin/dns-manager"
 # ==========================================
 # ==========================================
 VERSION="2.95"
+# 2.94: remove fragile resolver quoting and keep firewall detection BusyBox-ash-safe.
+# 2.88: native LuCI companion compatibility, idempotent procd watchdog migration,
+# first-run cron protection, and exact https-dns-proxy forced-DNS ports/interfaces
+# while keeping DNS Manager authoritative over its own dnsmasq upstream list.
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -16,7 +20,7 @@ BOGUS_CATALOG="$CFG_DIR/bogus-catalog.conf"
 BOOTSTRAP_DNS_ALL="77.88.8.8,77.88.8.1,94.140.14.14,1.1.1.1,1.0.0.1,8.8.8.8,8.8.4.4,9.9.9.9,149.112.112.112,208.67.222.222,208.67.220.220,149.112.121.10,149.112.122.10,76.76.2.0,76.76.10.0,194.242.2.2,194.242.2.3,2606:4700:4700::1111,2606:4700:4700::1001,2001:4860:4860::8888,2001:4860:4860::8844,2620:fe::fe,2620:fe::9"
 DNSCAT_VERSION="8.6-RU-NOSOCIAL"
 DNSCAT_REVISION="1"
-DNSCAT_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/catalogs/dns-8.6-RU-NOSOCIAL.conf"
+DNSCAT_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/catalogs/dns-8.5-RU-NOSOCIAL.conf"
 WATCHDOG_SPEC_VERSION="19"
 WATCHDOG_RESTART_COOLDOWN=300
 WATCHDOG_BACKEND="procd"
