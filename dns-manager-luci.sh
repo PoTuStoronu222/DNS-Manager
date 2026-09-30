@@ -717,7 +717,7 @@ function setActiveTab(root,name){
     log:['log']
   };
   state.activeTab=groups[name]?name:'overview';
-  ['overview','doh','slots','profiles','settings','job','catalog','log'].forEach(function(id){
+  ['overview','doh','slots','profiles','settings','job','catalog','log','test-inline'].forEach(function(id){
     var panel=root.querySelector('#dm-'+id);
     if(panel) panel.style.display='none';
   });
