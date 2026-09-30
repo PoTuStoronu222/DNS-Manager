@@ -2,7 +2,8 @@
 MANAGER_PATH="/usr/bin/dns-manager"
 # ==========================================
 # ==========================================
-VERSION="2.88"
+VERSION="2.89"
+# 2.89: reliable update-check reporting/cache busting and LuCI companion install diagnostics.
 # 2.88: native LuCI companion compatibility, idempotent procd watchdog migration,
 # first-run cron protection, and exact https-dns-proxy forced-DNS ports/interfaces
 # while keeping DNS Manager authoritative over its own dnsmasq upstream list.
@@ -29,8 +30,8 @@ WATCHDOG_SERVICE_PATH="/etc/init.d/dns-watchdog"
 WATCHDOG_RUNTIME_DIR="/var/run/dns-watchdog"
 WATCHDOG_DAEMON_MARKER="# DNS_MANAGER_WATCHDOG_DAEMON=1"
 WATCHDOG_SERVICE_MARKER="# DNS_MANAGER_WATCHDOG_SERVICE=1"
-WATCHDOG_DAEMON_VERSION_MARKER="# DNS_MANAGER_WATCHDOG_DAEMON_VERSION=2.88"
-WATCHDOG_SERVICE_VERSION_MARKER="# DNS_MANAGER_WATCHDOG_SERVICE_VERSION=2.88"
+WATCHDOG_DAEMON_VERSION_MARKER="# DNS_MANAGER_WATCHDOG_DAEMON_VERSION=2.89"
+WATCHDOG_SERVICE_VERSION_MARKER="# DNS_MANAGER_WATCHDOG_SERVICE_VERSION=2.89"
 WATCHDOG_LAST_RESTART_FILE="$STATE_DIR/watchdog-last-restart"
 AUTO_UPDATE_LAST_CHECK_FILE="$STATE_DIR/auto-update-last-check"
 AUTO_UPDATE_CHECK_MAX_AGE=43200
@@ -341,12 +342,17 @@ release_auto_update_lock() {
     rm -rf "$AUTO_UPDATE_LOCK_DIR" 2>/dev/null || true
 }
 auto_update_manager() {
+    AUTO_UPDATE_RESULT="disabled"
     if [ "${DNS_MANAGER_NO_UPDATE:-0}" = "1" ] && [ "${DNS_MANAGER_FORCE_UPDATE:-0}" != 1 ]; then
         return 0
     fi
+    AUTO_UPDATE_RESULT="started"
 
     [ -n "${AUTO_UPDATE_LOCK_DIR:-}" ] || AUTO_UPDATE_LOCK_DIR="$STATE_DIR/auto-update.lock"
-    acquire_auto_update_lock || return 0
+    if ! acquire_auto_update_lock; then
+        AUTO_UPDATE_RESULT="busy"
+        return 0
+    fi
 
     _scheduled=0
     [ "${DNS_MANAGER_SCHEDULED_UPDATE:-0}" = "1" ] && _scheduled=1
@@ -363,16 +369,17 @@ auto_update_manager() {
         if [ -n "$_upd_now" ] && [ -n "$_upd_last" ]; then
             _upd_age=$((_upd_now-_upd_last))
             if [ "$_upd_age" -ge 0 ] 2>/dev/null && [ "$_upd_age" -lt "$AUTO_UPDATE_CHECK_MAX_AGE" ] 2>/dev/null; then
+                AUTO_UPDATE_RESULT="throttled"
                 release_auto_update_lock
                 return 0
             fi
         fi
-        [ -n "$_upd_now" ] && printf '%s\n' "$_upd_now" > "$AUTO_UPDATE_LAST_CHECK_FILE" 2>/dev/null || true
     fi
 
     case "$0" in
         "$MANAGER_PATH"|*/dns-manager|dns-manager) ;;
         *)
+            AUTO_UPDATE_RESULT="skipped"
             log_msg "Автообновление: запуск не из $MANAGER_PATH (0=$0), проверка пропущена."
             release_auto_update_lock
             return 0
@@ -381,17 +388,20 @@ auto_update_manager() {
 
     [ -f "$MANAGER_PATH" ] || {
         log_msg "Автообновление: файл $MANAGER_PATH не найден."
+        AUTO_UPDATE_RESULT="skipped"
         release_auto_update_lock
         return 0
     }
 
     [ -w "${MANAGER_PATH%/*}" ] || {
         log_msg "Автообновление: каталог ${MANAGER_PATH%/*} недоступен для записи."
+        AUTO_UPDATE_RESULT="skipped"
         release_auto_update_lock
         return 0
     }
 
     if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1 && ! command -v uclient-fetch >/dev/null 2>&1; then
+        AUTO_UPDATE_RESULT="skipped"
         log_msg "Автообновление: нет curl, wget или uclient-fetch, проверка пропущена."
         release_auto_update_lock
         return 0
@@ -402,17 +412,19 @@ auto_update_manager() {
     rm -f "$_upd_tmp" 2>/dev/null
 
     log_msg "Автообновление: проверяю $UPDATE_URL"
+    _update_url="${UPDATE_URL}?_dmcb=$(date +%s 2>/dev/null || printf 0)-$$"
 
     if command -v curl >/dev/null 2>&1; then
-        curl -fsSL --connect-timeout 4 --max-time 20 -o "$_upd_tmp" "$UPDATE_URL" >/dev/null 2>&1
+        curl -fsSL --connect-timeout 4 --max-time 20 -o "$_upd_tmp" "$_update_url" >/dev/null 2>&1
     elif command -v wget >/dev/null 2>&1; then
-        wget -q -T 20 -O "$_upd_tmp" "$UPDATE_URL" >/dev/null 2>&1
+        wget -q -T 20 -O "$_upd_tmp" "$_update_url" >/dev/null 2>&1
     else
-        uclient-fetch -q -O "$_upd_tmp" "$UPDATE_URL" >/dev/null 2>&1
+        uclient-fetch -q -O "$_upd_tmp" "$_update_url" >/dev/null 2>&1
     fi
 
     if [ ! -s "$_upd_tmp" ]; then
         log_msg "Автообновление: файл не получен. Нет связи, блокировка, нет curl/wget или сервер недоступен. Продолжаю работу без обновления."
+        AUTO_UPDATE_RESULT="failed"
         rm -f "$_upd_tmp" 2>/dev/null
         UPDATE_TMP_FILE=""
         release_auto_update_lock
@@ -421,6 +433,7 @@ auto_update_manager() {
 
     head -n 1 "$_upd_tmp" 2>/dev/null | grep -q '^#!/bin/sh' || {
         log_msg "Автообновление: загруженный файл не является sh-скриптом."
+        AUTO_UPDATE_RESULT="failed"
         rm -f "$_upd_tmp" 2>/dev/null
         UPDATE_TMP_FILE=""
         release_auto_update_lock
@@ -430,6 +443,7 @@ auto_update_manager() {
     _new_version="$(sed -n 's/^VERSION="\([^"]*\)"$/\1/p' "$_upd_tmp" 2>/dev/null | head -n1)"
     [ -n "$_new_version" ] || {
         log_msg "Автообновление: в загруженном файле не найдена строка VERSION."
+        AUTO_UPDATE_RESULT="failed"
         rm -f "$_upd_tmp" 2>/dev/null
         UPDATE_TMP_FILE=""
         release_auto_update_lock
@@ -438,17 +452,23 @@ auto_update_manager() {
 
     if ! sh -n "$_upd_tmp" 2>/dev/null; then
         log_msg "Автообновление: синтаксическая проверка загруженного файла не пройдена."
+        AUTO_UPDATE_RESULT="failed"
         rm -f "$_upd_tmp" 2>/dev/null
         UPDATE_TMP_FILE=""
         release_auto_update_lock
         return 0
     fi
 
+    # A network fetch + shell/version validation completed successfully; only now
+    # advance the throttle timestamp. Failed/blocked checks must be retryable.
+    [ -n "$_upd_now" ] && printf '%s\n' "$_upd_now" > "$AUTO_UPDATE_LAST_CHECK_FILE" 2>/dev/null || true
+
     _new_hash="$(file_hash "$_upd_tmp")"
     _old_hash="$(file_hash "$MANAGER_PATH")"
 
     if [ "$_new_version" = "$VERSION" ]; then
         if [ -z "$_new_hash" ] || [ -z "$_old_hash" ] || [ "$_new_hash" = "$_old_hash" ]; then
+            AUTO_UPDATE_RESULT="current"
             log_msg "Автообновление: текущая версия $VERSION актуальна."
             rm -f "$_upd_tmp" 2>/dev/null
             UPDATE_TMP_FILE=""
@@ -457,6 +477,7 @@ auto_update_manager() {
         fi
     else
         if ! _ver_newer "$_new_version" "$VERSION"; then
+            AUTO_UPDATE_RESULT="current"
             log_msg "Автообновление: удалённая версия $_new_version не новее текущей $VERSION."
             rm -f "$_upd_tmp" 2>/dev/null
             UPDATE_TMP_FILE=""
@@ -471,6 +492,7 @@ auto_update_manager() {
         sync 2>/dev/null || true
         rm -f "$_upd_tmp" 2>/dev/null
         UPDATE_TMP_FILE=""
+        AUTO_UPDATE_RESULT="updated"
         log_msg "Автообновление: файл заменён на версию $_new_version."
 
         if [ "${DNS_MANAGER_UPDATE_NO_EXEC:-0}" = 1 ]; then
@@ -488,6 +510,7 @@ auto_update_manager() {
         fi
     fi
 
+    AUTO_UPDATE_RESULT="failed"
     log_msg "Автообновление: не удалось заменить $MANAGER_PATH."
     rm -f "$_upd_tmp" 2>/dev/null
     UPDATE_TMP_FILE=""
@@ -6334,10 +6357,13 @@ luci_companion_install() {
     fi
     chmod 700 "$LUCI_COMPANION_CACHE" 2>/dev/null || true
 
-    if ! sh "$LUCI_COMPANION_CACHE" install >/dev/null 2>&1; then
+    sh "$LUCI_COMPANION_CACHE" install >"$TMP_DIR/luci-install.log" 2>&1
+    _luci_rc=$?
+    if [ "$_luci_rc" -ne 0 ]; then
+        [ -s "$TMP_DIR/luci-install.log" ] && while IFS= read -r _luci_line; do [ -n "$_luci_line" ] && log_msg "LuCI installer: $_luci_line"; done < "$TMP_DIR/luci-install.log"
         rm -f "$LUCI_COMPANION_CACHE" 2>/dev/null || true
         rm -f "$_tmp" 2>/dev/null || true
-        err_msg "Установщик LuCI завершился с ошибкой. Основной DNS Manager не изменён."
+        err_msg "Установщик LuCI завершился с ошибкой (код $_luci_rc). Подробность записана в журнал DNS Manager."
         return 1
     fi
     rm -f "$_tmp" 2>/dev/null || true
@@ -8888,11 +8914,15 @@ startup_update_check() {
     printf "\n${C_CYAN}${C_BOLD}↻ Проверяю обновление DNS Manager...${C_NC}\n"
     auto_update_manager
     _rc=$?
-    if [ "$_rc" -eq 0 ]; then
-        info_msg "Проверка обновления завершена. Используется версия $VERSION."
-    else
-        warn_msg "Проверка обновления завершилась с кодом $_rc. Продолжаю запуск текущей версии."
-    fi
+    case "${AUTO_UPDATE_RESULT:-unknown}" in
+        current) info_msg "Проверка обновления: версия $VERSION актуальна." ;;
+        updated) info_msg "DNS Manager обновлён до версии $VERSION." ;;
+        throttled|disabled) info_msg "Проверка обновления пропущена по ограничению частоты." ;;
+        skipped) info_msg "Проверка обновления пропущена: условия обновления не выполнены." ;;
+        failed) warn_msg "Проверка обновления не удалась. Продолжаю запуск текущей версии $VERSION." ;;
+        busy) info_msg "Проверка обновления уже выполняется другим процессом; продолжаю запуск версии $VERSION." ;;
+        *) [ "$_rc" -eq 0 ] && info_msg "Проверка обновления завершена. Используется версия $VERSION." || warn_msg "Проверка обновления завершилась с кодом $_rc. Продолжаю запуск текущей версии." ;;
+    esac
     return 0
 }
 # ==========================================
