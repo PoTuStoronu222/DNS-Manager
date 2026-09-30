@@ -44,16 +44,56 @@ install_files() {
 
     cat > "$MENU_FILE" <<'EOF_MENU'
 {
-  "admin/services/dns_manager": {
+  "admin/services/dns-manager": {
     "title": "DNS Manager",
     "order": 71,
     "action": {
-      "type": "view",
-      "path": "dns_manager/overview"
+      "type": "alias",
+      "path": "admin/services/dns-manager/dashboard"
     },
     "depends": {
       "acl": [ "luci-app-dns-manager" ]
     }
+  },
+  "admin/services/dns-manager/dashboard": {
+    "title": "Дашборд",
+    "order": 10,
+    "action": { "type": "view", "path": "dns_manager/overview" }
+  },
+  "admin/services/dns-manager/doh": {
+    "title": "DNS over HTTPS",
+    "order": 20,
+    "action": { "type": "view", "path": "dns_manager/overview" }
+  },
+  "admin/services/dns-manager/dns": {
+    "title": "Текущие DNS",
+    "order": 30,
+    "action": { "type": "view", "path": "dns_manager/overview" }
+  },
+  "admin/services/dns-manager/profiles": {
+    "title": "Профили",
+    "order": 40,
+    "action": { "type": "view", "path": "dns_manager/overview" }
+  },
+  "admin/services/dns-manager/settings": {
+    "title": "Настройки",
+    "order": 50,
+    "action": { "type": "view", "path": "dns_manager/overview" }
+  },
+  "admin/services/dns-manager/catalog": {
+    "title": "Каталог DNS",
+    "order": 60,
+    "action": { "type": "view", "path": "dns_manager/overview" }
+  },
+  "admin/services/dns-manager/test": {
+    "title": "Проверка",
+    "order": 70,
+    "action": { "type": "view", "path": "dns_manager/overview" }
+  },
+  "admin/services/dns-manager/log": {
+    "title": "Журнал",
+    "order": 80,
+    "action": { "type": "view", "path": "dns_manager/overview" }
   }
 }
 EOF_MENU
@@ -861,7 +901,7 @@ var CATEGORY = [
   ['all','Все DNS'], ['bypass','Обход блокировок'], ['security','Безопасность'], ['privacy','Приватность'],
   ['adblock','Блокировка рекламы'], ['family','Семейный'], ['clean','Без фильтрации'], ['regional','Региональные']
 ];
-var state = { category:'all', offset:0, limit:18, catalogLoaded:false, catalogLoading:false, advanced:true, logLoaded:false, logLoading:false, busy:false, busySetting:'', settingMessage:'', settingMessageType:'', pageNotice:{}, updateKick:false, activeTab:'overview', jobRunning:false, lastJob:null, checking:{}, fullTest:null, autoRefreshRoot:null };
+var state = { category:'all', offset:0, limit:18, catalogLoaded:false, catalogLoading:false, advanced:true, logLoaded:false, logLoading:false, busy:false, busySetting:'', settingMessage:'', settingMessageType:'', pageNotice:{}, updateKick:false, activeTab:'dashboard', jobRunning:false, lastJob:null, checking:{}, fullTest:null, autoRefreshRoot:null };
 
 function profileName(p){ var x=PROFILE.filter(function(v){return v[0]===p;})[0]; return x?x[1]:(p||'—'); }
 function catName(c){ var x=CATEGORY.filter(function(v){return v[0]===c;})[0]; return x?x[1]:(c||'—'); }
@@ -914,7 +954,7 @@ function catalogVersionState(v,rev,total,available,latest,latestRev){
 function injectStyle(root){
   var css = ''+
   '.dm-wrap{display:flex;flex-direction:column;gap:12px;max-width:1100px;padding-bottom:28px}'+
-  '.dm-header{display:flex;align-items:center;gap:9px;flex-wrap:wrap}.dm-header h2{margin:0;font-size:22px;font-weight:700}.dm-header-v{font-size:13px;opacity:.55}.dm-header-actions{display:flex;gap:7px;margin-left:auto;flex-wrap:wrap}.dm-header-actions .cbi-button{padding:5px 11px;font-size:12.5px}'+
+  '.dm-header{display:flex;align-items:center;gap:9px;flex-wrap:wrap}.dm-header h2{margin:0;font-size:22px;font-weight:700}.dm-header-by{font-size:13px;opacity:.60}.dm-header-actions{display:flex;gap:7px;margin-left:auto;flex-wrap:wrap}.dm-header-actions .cbi-button{padding:5px 11px;font-size:12.5px}'+
   '.dm-card{min-width:0;box-sizing:border-box;background:var(--background-color-medium,#fff);border:1px solid rgba(0,0,0,.08);border-radius:11px;padding:15px 18px;box-shadow:0 1px 3px rgba(0,0,0,.04),0 1px 2px rgba(0,0,0,.03);overflow-wrap:break-word}.dm-card:hover{box-shadow:0 2px 7px rgba(0,0,0,.06)}'+
   'html.dm-theme-dark .dm-card{background:#1c2128;border-color:rgba(255,255,255,.10);box-shadow:0 1px 3px rgba(0,0,0,.22)}'+
   '.dm-card h3{margin:0 0 10px;font-size:15px;font-weight:600;display:flex;align-items:center;gap:7px}.dm-row{display:flex;align-items:center;gap:10px;margin:6px 0;font-size:13px;flex-wrap:wrap}.dm-label{opacity:.65;flex-shrink:0}.dm-row-value{overflow-wrap:anywhere}'+
@@ -940,38 +980,48 @@ function globalUpdateNotice(msg,type){var id='dm-global-update-notice',old=docum
 function renderHeader(root,st){
   var e=root.querySelector('#dm-header');if(!e)return;e.innerHTML='';
   e.appendChild(E('div',{'class':'dm-header'},[
-    E('h2',{},'DNS Manager'),E('span',{'class':'dm-header-v'},'LuCI v'+shortVal(st.luci_version))
+    E('h2',{},'DNS Manager LuCI'),
+    E('span',{'class':'dm-header-by'},'v'+shortVal(st.luci_version))
   ]));
 }
 function setActiveTab(root,name){
   var groups={
-    overview:['overview','test-inline'],
-    profiles:['profiles','settings','catalog','test-inline'],
-    job:['job','test-inline'],
+    dashboard:['overview','test-inline'],
+    doh:['doh'],
+    dns:['slots'],
+    profiles:['profiles'],
+    settings:['settings'],
+    catalog:['catalog'],
+    test:['job','test-inline'],
     log:['log']
   };
-  state.activeTab=groups[name]?name:'overview';
+  state.activeTab=groups[name]?name:'dashboard';
   ['overview','doh','slots','profiles','settings','job','catalog','log','test-inline'].forEach(function(id){
     var panel=root.querySelector('#dm-'+id);
     if(panel) panel.style.display='none';
   });
-  (groups[state.activeTab]||groups.overview).forEach(function(id){
+  (groups[state.activeTab]||groups.dashboard).forEach(function(id){
     var panel=root.querySelector('#dm-'+id);
     if(panel) panel.style.display='block';
   });
   renderPageNav(root);
-  if(state.activeTab==='profiles'&&!window.dmCatalog&&!state.catalogLoading)loadCatalog(root);
+  if(state.activeTab==='catalog'&&!window.dmCatalog&&!state.catalogLoading)loadCatalog(root);
   if(state.activeTab==='log'&&!state.logLoaded&&!state.logLoading)showLog(root);
+}
+function routeUrl(name){return '/cgi-bin/luci/admin/services/dns-manager/'+name;}
+function currentRoute(){
+  var p=String((window.location&&window.location.pathname)||'');
+  var m=p.match(/\/admin\/services\/dns-manager\/([^/?#]+)/);
+  return m&&m[1]?m[1]:'dashboard';
 }
 function renderPageNav(root){
   var e=root.querySelector('#dm-page-nav');if(!e)return;e.innerHTML='';
-  var tabs=[['overview','Обзор'],['profiles','Профили и сервисы'],['job','Проверка'],['log','Журнал']];
+  var tabs=[['dashboard','Дашборд'],['doh','DNS over HTTPS'],['dns','Текущие DNS'],['profiles','Профили'],['settings','Настройки'],['catalog','Каталог DNS'],['test','Проверка'],['log','Журнал']];
+  var route=currentRoute();
   var nav=E('nav',{'class':'dm-page-nav'});
   var bar=E('div',{'class':'dm-page-tabs'});
   tabs.forEach(function(x){
-    bar.appendChild(btn(x[1],(state.activeTab===x[0]?'dm-page-tab active':'dm-page-tab'),function(){
-      setActiveTab(root,x[0]);
-    }));
+    bar.appendChild(E('a',{'class':'dm-page-tab '+(route===x[0]?'active':''),'href':routeUrl(x[0])},x[1]));
   });
   nav.appendChild(bar);
   e.appendChild(nav);
@@ -1219,15 +1269,17 @@ function renderJobIdle(root,st){
 }
 function render(root,st){
   renderHeader(root,st);
-  renderPageNav(root);
   renderOverview(root,st);
+  renderDoH(root,st);
+  renderSlots(root,st);
   renderProfiles(root,st);
   renderSettings(root,st);
   renderCatalog(root);
   renderLog(root);
   renderJobIdle(root,st);
+  state.activeTab=currentRoute();
   setActiveTab(root,state.activeTab);
-  if(!state.updateKick && Number(st.luci_update_checked||0)===0){state.updateKick=true;setTimeout(function(){refresh(root,true);},2200);}
+  if(!state.updateKick && Number(st.components_checked_at||0)===0){state.updateKick=true;setTimeout(function(){refresh(root,true);},2200);}
 }
 function refresh(root,keepPosition){
   if(!rootAlive(root))return Promise.resolve();
@@ -1363,7 +1415,7 @@ function showLog(root){
 
 return view.extend({
   load:function(){return callStatus().then(function(st){return st||{};});},
-  render:function(st){var root=E('div',{'class':'dm-wrap'});['dm-header','dm-page-nav','dm-overview','dm-profiles','dm-settings','dm-job','dm-catalog','dm-log'].forEach(function(id){root.appendChild(E('section',{'id':id}));});injectStyle(root);window.dmState=st||{};render(root,st||{});startAutoRefresh(root);return root;}
+  render:function(st){var root=E('div',{'class':'dm-wrap'});['dm-header','dm-page-nav','dm-overview','dm-doh','dm-slots','dm-profiles','dm-settings','dm-job','dm-catalog','dm-log'].forEach(function(id){root.appendChild(E('section',{'id':id}));});injectStyle(root);window.dmState=st||{};state.activeTab=currentRoute();render(root,st||{});startAutoRefresh(root);return root;}
 });
 EOF_JS
     chmod 0644 "$MENU_FILE" "$ACL_FILE" "$VIEW_FILE"
