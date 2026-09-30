@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 0.9.9
+# Version: 0.9.10
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -21,7 +21,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 RUNTIME_UPDATE_STATE="$BACKUP_DIR/update.state"
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="0.9.9"
+VERSION="0.9.10"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -95,7 +95,7 @@ UPDATE_STATE="/etc/dns-manager-luci/update.state"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="0.9.9"
+SELF_VERSION="0.9.10"
 
 umask 077
 mkdir -p "$RUNTIME_DIR" "$JOB_DIR" "$CHECK_DIR" "$TMP_ROOT" 2>/dev/null || exit 1
@@ -629,7 +629,7 @@ EOF_RPC
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 0.9.9
+// DNS Manager LuCI version: 0.9.10
 var callStatus = rpc.declare({ object:'dns_manager', method:'status', expect:{} });
 var callCatalog = rpc.declare({ object:'dns_manager', method:'catalog', params:['category','offset','limit','only_ok'], expect:{} });
 var callUpdateCheck = rpc.declare({ object:'dns_manager', method:'update_check', expect:{} });
@@ -651,12 +651,12 @@ var CATEGORY = [
   ['all','Все DNS'], ['bypass','Обход блокировок'], ['security','Безопасность'], ['privacy','Приватность'],
   ['adblock','Блокировка рекламы'], ['family','Семейный'], ['clean','Без фильтрации'], ['regional','Региональные']
 ];
-var state = { category:'all', offset:0, limit:18, catalogLoaded:false, catalogLoading:false, advanced:true, logLoaded:false, logLoading:false, busy:false, busySetting:'', settingMessage:'', settingMessageType:'', pageNotice:{}, updateKick:false, activeTab:'overview', jobRunning:false, lastJob:null, autoRefreshRoot:null };
+var state = { category:'all', offset:0, limit:18, catalogLoaded:false, catalogLoading:false, advanced:true, logLoaded:false, logLoading:false, busy:false, busySetting:'', settingMessage:'', settingMessageType:'', pageNotice:{}, updateKick:false, activeTab:'overview', jobRunning:false, lastJob:null, testInline:false, testOrigin:'overview', autoRefreshRoot:null };
 
 function profileName(p){ var x=PROFILE.filter(function(v){return v[0]===p;})[0]; return x?x[1]:(p||'—'); }
 function catName(c){ var x=CATEGORY.filter(function(v){return v[0]===c;})[0]; return x?x[1]:(c||'—'); }
 function ping(v){ return v && /^\d+$/.test(String(v)) ? v+' мс' : '—'; }
-function uptime(sec){ var n=Number(sec||0); if(!isFinite(n)||n<=0)return '—'; var d=Math.floor(n/86400); n%=86400; var h=Math.floor(n/3600); n%=3600; var m=Math.floor(n/60); return (d?d+' дн ':'')+(d||h?h+' ч ':'')+m+' мин'; }
+function uptime(sec){ var n=Number(sec||0); if(!isFinite(n)||n<0)return '—'; var d=Math.floor(n/86400); n%=86400; var h=Math.floor(n/3600); n%=3600; var m=Math.floor(n/60); var s=Math.floor(n%60); return (d?d+' дн ':'')+(d||h?h+' ч ':'')+m+' мин '+s+' с';}
 function memory(total,avail){ var t=Number(total||0),a=Number(avail||0); if(!t)return '—'; return Math.max(0,Math.round((t-a)/1024))+' / '+Math.round(t/1024)+' МБ'; }
 function badge(kind,text){ return E('span',{'class':'dm-badge '+kind},[E('span',{'class':'dm-dot'}),text]); }
 function btn(label,cls,fn,extra){ var a={'class':'cbi-button '+(cls||''),'click':fn}; Object.keys(extra||{}).forEach(function(k){ if(k==='disabled'){ if(extra[k]) a.disabled=true; } else { a[k]=extra[k]; } }); return E('button',a,label); }
@@ -701,7 +701,7 @@ function injectStyle(root){
   root.appendChild(E('style',{},css));
 }
 
-function rootAlive(root){return !!root&&!!root.isConnected;}
+function rootAlive(root){return !!root&&!!document&&!!document.documentElement&&document.documentElement.contains(root);}
 function globalUpdateNotice(msg,type){var id='dm-global-update-notice',old=document.getElementById(id);if(old)old.remove();if(!msg)return;var n=E('div',{'id':id,'class':'dm-inline-msg '+(type||'info')},msg);n.style.position='fixed';n.style.left='50%';n.style.top='18px';n.style.transform='translateX(-50%)';n.style.zIndex='99999';n.style.maxWidth='min(760px,calc(100vw - 32px))';n.style.boxShadow='0 6px 24px rgba(0,0,0,.18)';document.body.appendChild(n);}
 function renderHeader(root,st){
   var e=root.querySelector('#dm-header');if(!e)return;e.innerHTML='';
@@ -711,13 +711,13 @@ function renderHeader(root,st){
 }
 function setActiveTab(root,name){
   var groups={
-    overview:['overview'],
-    profiles:['profiles','settings','catalog'],
-    job:['job'],
+    overview:['overview','test-inline'],
+    profiles:['profiles','settings','catalog','test-inline'],
+    job:['job','test-inline'],
     log:['log']
   };
   state.activeTab=groups[name]?name:'overview';
-  ['overview','doh','slots','profiles','settings','job','catalog','log'].forEach(function(id){
+  ['overview','doh','slots','profiles','settings','job','catalog','log','test-inline'].forEach(function(id){
     var panel=root.querySelector('#dm-'+id);
     if(panel) panel.style.display='none';
   });
@@ -946,8 +946,9 @@ function renderLog(root){
   e.appendChild(card('Журнал',ch));
 }
 
+function testPanel(root){return root.querySelector('#dm-test-inline');}
 function renderJobResult(root,j,st){
-  var e=root.querySelector('#dm-job');if(!e)return;e.innerHTML='';state.lastJob=j||null;
+  var e=testPanel(root);if(!e)return;e.innerHTML='';state.lastJob=j||null;
   var one=j&&j.mode==='one'&&j.dns_id;
   var title=one?'Результат проверки DNS':'Результат полной проверки';
   var body=[];
@@ -960,8 +961,7 @@ function renderJobResult(root,j,st){
     body.push(row('Задача',badge(j.result==='ok'?'dm-ok':'dm-bad',j.result==='ok'?'завершена':'ошибка')));
     if(j.output)body.push(E('pre',{'class':'dm-log'},stripAnsi(j.output)));
     body.push(E('div',{'class':'dm-actions'},[
-      btn('Проверить ещё раз','cbi-button-action',function(){testOne(j.dns_id,root);}),
-      btn('К текущим DNS','cbi-button-neutral',function(){setActiveTab(root,'overview');})
+      btn('Проверить ещё раз','cbi-button-action',function(){testOne(j.dns_id,root,state.testOrigin||state.activeTab);})
     ]));
   }else{
     body.push(row('Результат',j.result==='ok'?badge('dm-ok','полная проверка завершена'):badge('dm-bad','проверка завершилась с ошибкой')));
@@ -974,12 +974,12 @@ function renderJobResult(root,j,st){
     ]));});
     if(rows.length)body.push(E('div',{'class':'dm-slot-table'},rows));
     if(j.output)body.push(E('pre',{'class':'dm-log'},stripAnsi(j.output)));
-    body.push(E('div',{'class':'dm-actions'},[btn('К текущим DNS','cbi-button-neutral',function(){setActiveTab(root,'overview');})]));
+    body.push(E('div',{'class':'dm-actions'},[]));
   }
   e.appendChild(card(title,body));
 }
 function renderJob(root,job,meta){
-  var e=root.querySelector('#dm-job');if(!e)return;e.innerHTML='';state.jobRunning=true;state.lastJob=null;
+  var e=testPanel(root);if(!e)return;e.innerHTML='';state.jobRunning=true;state.lastJob=null;
   var jobId=(typeof job==='string')?job:(job&&job.id)||'';
   var mode=(meta&&meta.mode)||(job&&job.mode)||'';
   var dnsId=(meta&&meta.dns_id)||(job&&job.dns_id)||'';
@@ -1032,22 +1032,8 @@ function renderJobIdle(root,st){
   e.appendChild(card('Проверка DNS',ch));
 }
 function render(root,st){
-  renderHeader(root,st);
-  renderPageNav(root);
-  renderOverview(root,st);
-  renderProfiles(root,st);
-  renderSettings(root,st);
-  renderCatalog(root);
-  renderLog(root);
-  if(!state.jobRunning){
-    if(state.lastJob)renderJobResult(root,state.lastJob,st);
-    else renderJobIdle(root,st);
-  }
-  setActiveTab(root,state.activeTab);
-  if(!state.updateKick && Number(st.luci_update_checked||0)===0){
-    state.updateKick=true;
-    setTimeout(function(){refresh(root,true);},2200);
-  }
+  renderHeader(root,st);renderPageNav(root);renderOverview(root,st);renderProfiles(root,st);renderSettings(root,st);renderCatalog(root);renderLog(root);renderJobIdle(root,st);renderTestInline(root,st);setActiveTab(root,state.activeTab);
+  if(!state.updateKick && Number(st.luci_update_checked||0)===0){state.updateKick=true;setTimeout(function(){refresh(root,true);},2200);}
 }
 function refresh(root,keepPosition){
   if(!rootAlive(root))return Promise.resolve();
@@ -1062,9 +1048,8 @@ function startAutoRefresh(root){
   state.autoRefreshRoot=root;
   function tick(){
     if(!rootAlive(root)){if(state.autoRefreshRoot===root)state.autoRefreshRoot=null;return;}
-    if(!state.jobRunning&&!state.busy){
-      refresh(root,true).then(function(){setTimeout(tick,3000);}).catch(function(){setTimeout(tick,3000);});
-    }else setTimeout(tick,3000);
+    if(!state.jobRunning&&!state.busy)refresh(root,true).then(function(){setTimeout(tick,3000);},function(){setTimeout(tick,3000);});
+    else setTimeout(tick,3000);
   }
   setTimeout(tick,3000);
 }
@@ -1095,46 +1080,41 @@ function setForceMode(mode,root){
     refresh(root,true);
   });
 }
-function testAll(root){
+function testAll(root,origin){
   if(state.jobRunning||state.busy)return;
-  state.lastJob=null;state.jobRunning=true;
-  state.activeTab='job';
+  state.lastJob=null;state.jobRunning=true;state.testInline=true;state.testOrigin=origin||state.activeTab||'overview';
   state.pageNotice.job='Запускаю полную проверку DNS-каталога…';
-  setActiveTab(root,'job');
-  renderJobIdle(root,window.dmState||{});
+  renderTestInline(root,window.dmState||{});
   callTestAll().then(function(r){
-    if(r&&r.ok){
-      renderJob(root,r.job,{mode:'all'});
-    }else{
-      state.pageNotice.job=(r&&r.error)||'Не удалось запустить полную проверку.';
-      state.jobRunning=false;
-      renderJobIdle(root,window.dmState||{});
-    }
-  }).catch(function(){
-    state.pageNotice.job='Не удалось запустить полную проверку.';
-    state.jobRunning=false;
-    renderJobIdle(root,window.dmState||{});
-  });
+    if(r&&r.ok)renderJob(root,r.job,{mode:'all'});
+    else{state.pageNotice.job=(r&&r.error)||'Не удалось запустить полную проверку.';state.jobRunning=false;renderTestInline(root,window.dmState||{});}
+  }).catch(function(){state.pageNotice.job='Не удалось запустить полную проверку.';state.jobRunning=false;renderTestInline(root,window.dmState||{});});
 }
-function testOne(id,root){
+function testOne(id,root,origin){
   if(state.jobRunning||state.busy)return;
-  state.lastJob=null;state.jobRunning=true;
-  state.activeTab='job';
+  state.lastJob=null;state.jobRunning=true;state.testInline=true;state.testOrigin=origin||state.activeTab||'overview';
   state.pageNotice.job='Запускаю проверку DNS…';
-  setActiveTab(root,'job');
-  renderJobIdle(root,window.dmState||{});
+  renderTestInline(root,window.dmState||{});
   callTestOne(id).then(function(r){
     if(r&&r.ok)renderJob(root,r.job,{mode:'one',dns_id:id});
-    else{
-      state.pageNotice.job=(r&&r.error)||'Не удалось запустить проверку.';
-      state.jobRunning=false;
-      renderJobIdle(root,window.dmState||{});
-    }
-  }).catch(function(){
-    state.pageNotice.job='Не удалось запустить проверку.';
-    state.jobRunning=false;
-    renderJobIdle(root,window.dmState||{});
-  });
+    else{state.pageNotice.job=(r&&r.error)||'Не удалось запустить проверку.';state.jobRunning=false;renderTestInline(root,window.dmState||{});}
+  }).catch(function(){state.pageNotice.job='Не удалось запустить проверку.';state.jobRunning=false;renderTestInline(root,window.dmState||{});});
+}
+
+function renderTestInline(root,st){
+  var e=root.querySelector('#dm-test-inline');if(!e)return;
+  e.innerHTML='';
+  if(!state.testInline)return;
+  if(state.jobRunning){
+    var target=state.testOrigin==='overview'?'Обзор':state.testOrigin==='profiles'?'Профили и сервисы':state.testOrigin==='job'?'Проверка':'текущая вкладка';
+    e.appendChild(card('Проверка DNS',[
+      row('Состояние',badge('dm-warn','выполняется')),
+      E('div',{'class':'dm-hint'},'Проверка выполняется в разделе «'+target+'», без перехода на другую вкладку.'),
+      E('div',{'class':'dm-log'},'Проверяется DNS…')
+    ]));
+  } else if(state.lastJob){
+    renderJobResult(root,state.lastJob,st||{});
+  }
 }
 
 function loadCatalog(root){
@@ -1154,7 +1134,7 @@ function showLog(root){
 
 return view.extend({
   load:function(){return callStatus().then(function(st){return st||{};});},
-  render:function(st){var root=E('div',{'class':'dm-wrap'});['dm-header','dm-page-nav','dm-overview','dm-profiles','dm-settings','dm-job','dm-catalog','dm-log'].forEach(function(id){root.appendChild(E('section',{'id':id}));});injectStyle(root);window.dmState=st||{};render(root,st||{});startAutoRefresh(root);return root;}
+  render:function(st){var root=E('div',{'class':'dm-wrap'});['dm-header','dm-page-nav','dm-test-inline','dm-overview','dm-profiles','dm-settings','dm-job','dm-catalog','dm-log'].forEach(function(id){root.appendChild(E('section',{'id':id}));});injectStyle(root);window.dmState=st||{};render(root,st||{});startAutoRefresh(root);return root;}
 });
 EOF_JS
     chmod 0644 "$MENU_FILE" "$ACL_FILE" "$VIEW_FILE"
