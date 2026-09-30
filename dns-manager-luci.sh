@@ -110,7 +110,7 @@ EOF_MENU
     },
     "write": {
       "ubus": {
-        "dns_manager": [ "set_profile", "set_slot", "set_setting", "test_all", "test_one", "update" ]
+        "dns_manager": [ "set_profile", "set_slot", "set_setting", "test_all", "test_current", "test_one", "update" ]
       }
     }
   }
@@ -804,6 +804,69 @@ job_start_test_all() {
     printf '{"ok":true,"job":'; json_quote "$_jid"; printf '}'
 }
 
+job_start_test_current() {
+    _jid="$(new_job_id)"
+    mkdir -p "$JOB_DIR/$_jid" 2>/dev/null || { json_error "Не удалось создать задачу"; return; }
+    : > "$JOB_DIR/$_jid/state"
+    printf "status=running\nstarted=%s\nmode=current\n" "$(date +%s)" > "$JOB_DIR/$_jid/state"
+    (
+        exec >>"$JOB_DIR/$_jid/output" 2>&1
+        if ! load_manager; then
+            job_write "$_jid" status failed; job_write "$_jid" result fail; job_write "$_jid" finished "$(date +%s)"; exit 1
+        fi
+        acquire_test_lock || { job_write "$_jid" status failed; job_write "$_jid" result fail; job_write "$_jid" finished "$(date +%s)"; exit 1; }
+        _ids="$TMP_ROOT/current-dns-ids.$$"
+        _cat="$TMP_ROOT/current-dns-catalog.$$"
+        _results="$TMP_ROOT/current-test-results.$$"
+        _meta="$TMP_ROOT/current-test-meta.$$"
+        : > "$_ids"; : > "$_cat"
+        for _s in 1 2 3 4 5 6 RU RU_2; do
+            _id="$(cfg_get "SLOT_$_s")"
+            [ -n "$_id" ] || continue
+            grep -qxF "$_id" "$_ids" 2>/dev/null && continue
+            printf "%s\n" "$_id" >> "$_ids"
+            if [ -r "$DNS_CATALOG" ]; then
+                awk -F"|" -v id="$_id" '$1==id {print; exit}' "$DNS_CATALOG" >> "$_cat" 2>/dev/null || true
+            fi
+        done
+        _total="$(wc -l < "$_ids" 2>/dev/null | tr -d " ")"
+        case "$_total" in ""|*[!0-9]*) _total=0;; esac
+        if [ "$_total" -eq 0 ]; then
+            rm -f "$_ids" "$_cat" "$_results" "$_meta"
+            release_test_lock
+            job_write "$_jid" status failed; job_write "$_jid" result fail; job_write "$_jid" finished "$(date +%s)"; exit 1
+        fi
+        _old_catalog="$DNS_CATALOG"
+        _old_results="$TEST_RESULTS"
+        _old_meta="${TEST_RESULTS_META:-}"
+        DNS_CATALOG="$_cat"
+        TEST_RESULTS="$_results"
+        [ -n "$_old_meta" ] || TEST_RESULTS_META="$TMP_ROOT/current-test-results-meta.$$"
+        if ! test_dns_catalog; then
+            DNS_CATALOG="$_old_catalog"; TEST_RESULTS="$_old_results"; [ -n "$_old_meta" ] && TEST_RESULTS_META="$_old_meta"
+            rm -f "$_ids" "$_cat" "$_results" "$_meta"
+            release_test_lock
+            job_write "$_jid" status failed; job_write "$_jid" result fail; job_write "$_jid" finished "$(date +%s)"; exit 1
+        fi
+        DNS_CATALOG="$_old_catalog"
+        TEST_RESULTS="$_old_results"
+        [ -n "$_old_meta" ] && TEST_RESULTS_META="$_old_meta"
+        _merged="$TMP_ROOT/current-merged.$$"
+        : > "$_merged"
+        if [ -s "$TEST_RESULTS" ]; then
+            awk -F"|" -v ids_file="$_ids" 'BEGIN { while ((getline x < ids_file)>0) ids[x]=1 } !($1 in ids) { print }' "$TEST_RESULTS" > "$_merged" 2>/dev/null || true
+        fi
+        [ -s "$_results" ] && cat "$_results" >> "$_merged"
+        mv "$_merged" "$TEST_RESULTS" 2>/dev/null || { rm -f "$_ids" "$_cat" "$_results" "$_meta"; release_test_lock; job_write "$_jid" status failed; job_write "$_jid" result fail; job_write "$_jid" finished "$(date +%s)"; exit 1; }
+        save_persistent_test_results >/dev/null 2>&1 || true
+        _stamp="$(date +%s)"
+        while IFS="|" read -r _id _rest; do [ -n "$_id" ] && set_check_stamp "$_id" "$_stamp"; done < "$_results"
+        rm -f "$_ids" "$_cat" "$_results" "$_meta" "${TEST_RESULTS_META:-}"
+        release_test_lock
+        job_write "$_jid" status done; job_write "$_jid" result ok; job_write "$_jid" finished "$_stamp"
+    ) &
+    printf '{"ok":true,"job":'; json_quote "$_jid"; printf '}'
+}
 job_start_test_one() {
     _id="$1"; case "$_id" in ''|*[!A-Za-z0-9_-]*) json_error "Неверный ID DNS"; return;; esac
     _jid="$(new_job_id)"; mkdir -p "$JOB_DIR/$_jid" 2>/dev/null || { json_error "Не удалось создать задачу"; return; }
@@ -918,7 +981,7 @@ case "${1:-}" in
             update_check) update_check_json;;
             update) update_json;;
             set_profile|set_slot|set_setting) INPUT="$(cat 2>/dev/null || true)"; RPC_METHOD="$2"; run_action;;
-            test_all|test_one) INPUT="$(cat 2>/dev/null || true)"; RPC_METHOD="$2"; test_json;;
+            test_all|test_current|test_one) INPUT="$(cat 2>/dev/null || true)"; RPC_METHOD="$2"; test_json;;
             job) INPUT="$(cat 2>/dev/null || true)"; job_json "$(jget id)";;
             log) INPUT="$(cat 2>/dev/null || true)"; log_json "$(jget lines)";;
             *) json_error "Недопустимый метод";;
