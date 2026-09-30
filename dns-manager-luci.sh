@@ -329,6 +329,103 @@ package_version_cmp() {
     awk -F'[^0-9]+' -v a="$_a" -v b="$_b" 'BEGIN{split(a,A);split(b,B);for(i=1;i<=8;i++){x=A[i]+0;y=B[i]+0;if(x>y){exit 0}if(x<y){exit 1}}exit 1}'
 }
 
+runtime_lan_input_match() {
+    _ref="$1"
+    [ -n "$_ref" ] || return 1
+    case "$_ref" in
+        lan) return 0 ;;
+        @zone\[*\]) _nets="$(uci -q get "firewall.$_ref.network" 2>/dev/null || true)" ;;
+        *) _nets="$(uci -q get "firewall.$_ref.network" 2>/dev/null || true)" ;;
+    esac
+    printf '%s\n' "$_nets" | tr ' ' '\n' | grep -qxF lan 2>/dev/null
+}
+runtime_zapret_running() {
+    ps w 2>/dev/null | grep -Eq '[z]ms([[:space:]]|/)|[z]apret([[:space:]]|/)|[z]apret2([[:space:]]|/)|[z]aproxy2([[:space:]]|/)'
+}
+detect_runtime_force_state() {
+    FORCE_RUNTIME_ACTIVE=0
+    FORCE_RUNTIME_EXTERNAL=0
+    FORCE_RUNTIME_SOURCE="none"
+    FORCE_RUNTIME_TARGETS=""
+    _manager_force=0
+    _cfg_force="$(cfg_get FORCE_DOH)"
+    [ "$_cfg_force" = 1 ] && [ "$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null || true)" = 1 ] && [ "$(uci -q get https-dns-proxy.config.notrack_dns 2>/dev/null || true)" = 1 ] && _manager_force=1
+    _external=0
+    _lan_dev="$(uci -q get network.lan.device 2>/dev/null || true)"
+    _lan_if="$(uci -q get network.lan.ifname 2>/dev/null || true)"
+    _secs="$(uci show firewall 2>/dev/null | sed -n 's/^firewall\.\([^.=]*\)=redirect$/\1/p')"
+    for _sec in $_secs; do
+        [ "$(uci -q get "firewall.$_sec.disabled" 2>/dev/null)" = 1 ] && continue
+        runtime_lan_input_match "$(uci -q get "firewall.$_sec.src" 2>/dev/null || true)" || continue
+        _sd="$(uci -q get "firewall.$_sec.src_dport" 2>/dev/null || true)"
+        printf '%s\n' "$_sd" | tr ' ' '\n' | grep -qxF 53 2>/dev/null || continue
+        _target="$(uci -q get "firewall.$_sec.target" 2>/dev/null || true)"
+        case "$_target" in DNAT|dnat|REDIRECT|redirect) ;; *) continue ;; esac
+        _dp="$(uci -q get "firewall.$_sec.dest_port" 2>/dev/null || true)"
+        [ -n "$_dp" ] || continue
+        case "$_dp" in 53|53-53) continue ;; esac
+        FORCE_RUNTIME_ACTIVE=1
+        FORCE_RUNTIME_TARGETS="$FORCE_RUNTIME_TARGETS $_dp"
+        [ "$_manager_force" = 1 ] || _external=1
+    done
+    if command -v nft >/dev/null 2>&1 && nft list table inet fw4 >/dev/null 2>&1; then
+        _rt="$(nft -a list ruleset 2>/dev/null || true)"
+        _nft_ports="$(printf '%s\n' "$_rt" | awk -v ld="$_lan_dev" -v li="$_lan_if" '
+            /iifname[[:space:]]+"[^"]+"/ && /dport[[:space:]]+53/ && /(redirect[[:space:]]+to[[:space:]]+:[0-9]+|dnat[[:space:]]+to[[:space:]]+[^[:space:]]+:[0-9]+)/ {
+                ok=0
+                if ($0 ~ /iifname[[:space:]]+"br-lan"/) ok=1
+                if (ld != "" && index($0,"iifname \"" ld "\"")>0) ok=1
+                if (li != "" && index($0,"iifname \"" li "\"")>0) ok=1
+                if (!ok) next
+                line=$0
+                if ($0 ~ /redirect[[:space:]]+to[[:space:]]+:[0-9]+/) sub(/^.*redirect[[:space:]]+to[[:space:]]+:/,"",line)
+                else sub(/^.*dnat[[:space:]]+to[[:space:]]+[^:[:space:]]+:/,"",line)
+                sub(/[^0-9].*$/,"",line)
+                if (line != "" && line != 53) print line
+            }' | sort -n -u)"
+        if [ -n "$_nft_ports" ]; then
+            FORCE_RUNTIME_ACTIVE=1
+            for _p in $_nft_ports; do FORCE_RUNTIME_TARGETS="$FORCE_RUNTIME_TARGETS $_p"; done
+            [ "$_manager_force" = 1 ] || _external=1
+        fi
+    elif command -v iptables-save >/dev/null 2>&1; then
+        _rt="$(iptables-save -t nat 2>/dev/null || true)"
+        _ipt_ports="$(printf '%s\n' "$_rt" | awk -v ld="$_lan_dev" -v li="$_lan_if" '
+            function has_input_dev(    i) {
+                for(i=1;i<NF;i++) if($i=="-i" && $(i+1)!="") {
+                    if($(i+1)=="br-lan" || (ld!="" && $(i+1)==ld) || (li!="" && $(i+1)==li)) return 1
+                }
+                return 0
+            }
+            /-A PREROUTING / {
+                if(!has_input_dev() || $0 !~ /--dport 53([[:space:]]|$)/) next
+                if($0 ~ / -j REDIRECT([[:space:]]|$)/ && $0 ~ /--to-ports[[:space:]]+[0-9]+/ && $0 !~ /--to-ports[[:space:]]+53([[:space:]]|$)/) {
+                    line=$0; sub(/^.*--to-ports[[:space:]]+/,"",line); sub(/[^0-9].*$/,"",line); print line; next
+                }
+                if($0 ~ / -j DNAT([[:space:]]|$)/ && $0 ~ /--to-destination[[:space:]]+[^[:space:]]+:[0-9]+/ && $0 !~ /--to-destination[[:space:]]+[^[:space:]]+:53([[:space:]]|$)/) {
+                    line=$0; sub(/^.*:/,"",line); sub(/[^0-9].*$/,"",line); if(line ~ /^[0-9]+$/) print line
+                }
+            }' | sort -n -u)"
+        if [ -n "$_ipt_ports" ]; then
+            FORCE_RUNTIME_ACTIVE=1
+            for _p in $_ipt_ports; do FORCE_RUNTIME_TARGETS="$FORCE_RUNTIME_TARGETS $_p"; done
+            [ "$_manager_force" = 1 ] || _external=1
+        fi
+    fi
+    [ "$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null || true)" = 1 ] && {
+        FORCE_RUNTIME_ACTIVE=1
+        [ "$_manager_force" = 1 ] || _external=1
+    }
+    if [ "$_external" = 1 ]; then
+        FORCE_RUNTIME_EXTERNAL=1
+        if runtime_zapret_running; then FORCE_RUNTIME_SOURCE="Zapret / внешний"; else FORCE_RUNTIME_SOURCE="внешний сервис"; fi
+    elif [ "$_manager_force" = 1 ]; then
+        FORCE_RUNTIME_ACTIVE=1
+        FORCE_RUNTIME_SOURCE="DNS Manager"
+    fi
+    FORCE_RUNTIME_TARGETS="$(printf '%s\n' "$FORCE_RUNTIME_TARGETS" | tr ' ' '\n' | sed '/^$/d' | sort -n -u | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+}
+
 openwrt_release() { sed -n "s/^DISTRIB_RELEASE='\([^']*\)'.*/\1/p" /etc/openwrt_release 2>/dev/null | head -n1; }
 
 status_json() {
@@ -371,8 +468,8 @@ status_json() {
             _j=$((_j + 1))
         done
     done
-    _force_cfg="$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null || true)"; _external=0
-    [ "$_force_cfg" = 1 ] && [ "$_force" != 1 ] && _external=1
+    detect_runtime_force_state
+    _force_cfg="$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null || true)"; _external="$FORCE_RUNTIME_EXTERNAL"
     _force_notrack="$(uci -q get https-dns-proxy.config.notrack_dns 2>/dev/null || true)"
     _force_update="$(uci -q get https-dns-proxy.config.dnsmasq_config_update 2>/dev/null || true)"
     _force_family="$(uci -q get https-dns-proxy.config.force_ip_family 2>/dev/null || true)"
@@ -441,7 +538,7 @@ status_json() {
     printf '{"ok":true,"manager_version":'; json_quote "$_mv"; printf ',"luci_version":'; json_quote "$_luciv"; printf ',"luci_latest_version":'; json_quote "$_luci_latest"; printf ',"luci_update_available":%s,"luci_update_checked":%s' "$_luci_avail" "${_luci_checked:-0}"
     printf ',"ipv4":'; json_quote "$_ipv4"; printf ',"ipv6":'; json_quote "$_ipv6"; printf ',"dnsmasq":'; json_quote "$_dnsmasq"; printf ',"doh":'; json_quote "$_doh"; printf ',"firewall":'; json_quote "$_fw"; printf ',"openwrt":'; json_quote "$(openwrt_release)"; printf ',"lan":'; json_quote "$_lan"
     printf ',"profile":'; json_quote "$_profile"; printf ',"profile_mode":'; json_quote "$_mode"; printf ',"watchdog":'; json_quote "$_watchdog"; printf ',"watchdog_service":'; json_quote "$( [ -x /etc/init.d/dns-watchdog ] && /etc/init.d/dns-watchdog running >/dev/null 2>&1 && printf yes || printf no )"; printf ',"watchdog_interval":'; json_quote "$_watchdog_interval"
-    printf ',"force":'; json_quote "$_force"; printf ',"force_external":'; json_quote "$_external"; printf ',"force_owner":'; json_quote "$( [ "$_external" = 1 ] && printf external || [ "$_force" = 1 ] && printf manager || printf none )"; printf ',"force_source":'; json_quote "$_force_source"; printf ',"force_notrack":'; json_quote "$_force_notrack"; printf ',"force_update":'; json_quote "$_force_update"; printf ',"force_family":'; json_quote "$_force_family"; printf ',"force_ports":'; json_quote "$_force_ports"; printf ',"force_src":'; json_quote "$_force_src"; printf ',"force_canary_icloud":'; json_quote "$_force_canary_i"; printf ',"force_canary_mozilla":'; json_quote "$_force_canary_m"; printf ',"force_procd_trigger_wan6":'; json_quote "$_force_procd"; printf ',"force_heartbeat_domain":'; json_quote "$_force_heartbeat_domain"; printf ',"force_heartbeat_sleep":'; json_quote "$_force_heartbeat_sleep"; printf ',"force_heartbeat_wait":'; json_quote "$_force_heartbeat_wait"; printf ',"force_user":'; json_quote "$_force_user"; printf ',"force_group":'; json_quote "$_force_group"; printf ',"force_listen":'; json_quote "$_force_listen"; printf ',"force_consistent":%s' "$_force_consistent"; printf ',"mtu":'; json_quote "$_mtu"; printf ',"sysctl":'; json_quote "$_sysctl"; printf ',"sysctl_ext":'; json_quote "$_sysctl_ext"; printf ',"ntp_clients":'; json_quote "$_ntp"; printf ',"dnsmasq_perf":'; json_quote "$_perf"; printf ',"client_fixes":'; json_quote "$_fix"
+    printf ',"force":'; json_quote "$_force"; printf ',"force_external":'; json_quote "$_external"; printf ',"force_owner":'; json_quote "$( [ "$_external" = 1 ] && printf external || [ "$_force" = 1 ] && printf manager || printf none )"; printf ',"force_source":'; json_quote "$FORCE_RUNTIME_SOURCE"; printf ',"force_notrack":'; json_quote "$_force_notrack"; printf ',"force_update":'; json_quote "$_force_update"; printf ',"force_family":'; json_quote "$_force_family"; printf ',"force_ports":'; json_quote "$_force_ports"; printf ',"force_src":'; json_quote "$_force_src"; printf ',"force_canary_icloud":'; json_quote "$_force_canary_i"; printf ',"force_canary_mozilla":'; json_quote "$_force_canary_m"; printf ',"force_procd_trigger_wan6":'; json_quote "$_force_procd"; printf ',"force_heartbeat_domain":'; json_quote "$_force_heartbeat_domain"; printf ',"force_heartbeat_sleep":'; json_quote "$_force_heartbeat_sleep"; printf ',"force_heartbeat_wait":'; json_quote "$_force_heartbeat_wait"; printf ',"force_user":'; json_quote "$_force_user"; printf ',"force_group":'; json_quote "$_force_group"; printf ',"force_listen":'; json_quote "$_force_listen"; printf ',"force_consistent":%s' "$_force_consistent"; printf ',"mtu":'; json_quote "$_mtu"; printf ',"sysctl":'; json_quote "$_sysctl"; printf ',"sysctl_ext":'; json_quote "$_sysctl_ext"; printf ',"ntp_clients":'; json_quote "$_ntp"; printf ',"dnsmasq_perf":'; json_quote "$_perf"; printf ',"client_fixes":'; json_quote "$_fix"
     printf ',"doh_total":%s,"doh_match":%s,"configured_dns":%s,"average_ping":' "$_doh_total" "$_match" "$_expected"; json_quote "$(average_selected_ping)"; printf ',"last_full_test":'; json_quote "$_last"
     printf ',"hostname":'; json_quote "$_host"; printf ',"uptime":'; json_quote "$_uptime"; printf ',"load1":'; json_quote "$_load"; printf ',"memory_total_kb":%s,"memory_available_kb":%s' "${_mem_t:-0}" "${_mem_a:-0}"
     printf ',"catalog_total":%s,"catalog_version":' "$_cat_total"; json_quote "$(catalog_version)"; printf ',"hdp_version":'; json_quote "$_hdp_installed"; printf ',"hdp_latest_version":'; json_quote "$_hdp_candidate"; printf ',"hdp_update_available":%s' "$_hdp_update"; printf ',"force_status":'; json_quote "$([ "$_external" = 1 ] && printf external || [ "$_force_manager" = 1 ] && printf manager || printf off)"; printf ',"force_owner":'; json_quote "$([ "$_external" = 1 ] && printf 'внешний' || [ "$_force_manager" = 1 ] && printf 'DNS Manager' || printf 'нет')"; printf ',"force_manager":%s,"force_both":%s,"zapret_running":%s' "$_force_manager" "$_force_both" "$_zapret_running"; printf ',"force_source":'; json_quote "$_force_source"; printf ',"slots":['
