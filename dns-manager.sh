@@ -2,9 +2,10 @@
 MANAGER_PATH="/usr/bin/dns-manager"
 # ==========================================
 # ==========================================
-VERSION="2.86"
-# 2.86: uninstall hardening, best-effort package cleanup, firewall-first restore,
-# ttyd-safe deferred restart/stop, runtime/cache cleanup, and TMP_DIR guard.
+VERSION="2.87"
+# 2.87: native LuCI companion installer, idempotent procd watchdog migration,
+# first-run cron protection, clearer watchdog status/log wording, and legacy ttyd
+# compatibility retained without using ttyd as the DNS Manager web interface.
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -28,8 +29,8 @@ WATCHDOG_SERVICE_PATH="/etc/init.d/dns-watchdog"
 WATCHDOG_RUNTIME_DIR="/var/run/dns-watchdog"
 WATCHDOG_DAEMON_MARKER="# DNS_MANAGER_WATCHDOG_DAEMON=1"
 WATCHDOG_SERVICE_MARKER="# DNS_MANAGER_WATCHDOG_SERVICE=1"
-WATCHDOG_DAEMON_VERSION_MARKER="# DNS_MANAGER_WATCHDOG_DAEMON_VERSION=2.86"
-WATCHDOG_SERVICE_VERSION_MARKER="# DNS_MANAGER_WATCHDOG_SERVICE_VERSION=2.86"
+WATCHDOG_DAEMON_VERSION_MARKER="# DNS_MANAGER_WATCHDOG_DAEMON_VERSION=2.87"
+WATCHDOG_SERVICE_VERSION_MARKER="# DNS_MANAGER_WATCHDOG_SERVICE_VERSION=2.87"
 WATCHDOG_LAST_RESTART_FILE="$STATE_DIR/watchdog-last-restart"
 AUTO_UPDATE_LAST_CHECK_FILE="$STATE_DIR/auto-update-last-check"
 AUTO_UPDATE_CHECK_MAX_AGE=43200
@@ -91,10 +92,19 @@ WATCHDOG_CRON_BOOT_ENABLED="unknown"
 WATCHDOG_CRON_DETECT_SOURCE="none"
 WATCHDOG_CRON_SCHEDULER_STATE="$STATE_DIR/watchdog-scheduler.state"
 LUCI_CONTROLLER="/usr/lib/lua/luci/controller/dns_manager.lua"
+LUCI_COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
+LUCI_COMPANION_MIN_VERSION="0.2"
+LUCI_COMPANION_CACHE="$BASE_DIR/dns-manager-luci.sh"
+LUCI_STATE_FILE="$CFG_DIR/luci-state.conf"
+LUCI_MENU_FILE="/usr/share/luci/menu.d/luci-app-dns-manager.json"
+LUCI_ACL_FILE="/usr/share/rpcd/acl.d/luci-app-dns-manager.json"
+LUCI_RPC_PLUGIN="/usr/libexec/rpcd/dns_manager"
+LUCI_VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
 # Persistent marker: /var/run is tmpfs, so the first-run decision must survive reboot.
 FIRST_RUN_MARKER="$CFG_DIR/.first-run.done"
 FIRST_RUN=0
 [ -f "$FIRST_RUN_MARKER" ] || FIRST_RUN=1
+FIRST_RUN_INITIAL="$FIRST_RUN"
 MUTATION_LOCK_DIR="$STATE_DIR/mutation.lock"
 MUTATION_LOCK_HELD=0
 rotate_small_file() {
@@ -1492,6 +1502,19 @@ refresh_doh_scheme_counts() {
     done < "$DOH_INV"
     rm -f "$_used_slots" 2>/dev/null
 }
+doh_selected_config_current() {
+    # Idempotent Apply guard: do not stop/recreate https-dns-proxy when every
+    # selected slot already points to the exact expected URL and local port.
+    # A complete rebuild is still performed whenever the current UCI scheme
+    # differs from the selected manager scheme.
+    _expected="$(expected_managed_slots 2>/dev/null || printf 0)"
+    case "$_expected" in ''|*[!0-9]*) _expected=0;; esac
+    refresh_doh_scheme_counts
+    [ "${DOH_TOTAL:-0}" -eq "$_expected" ] 2>/dev/null || return 1
+    [ "${DOH_MATCH:-0}" -eq "$_expected" ] 2>/dev/null || return 1
+    [ "${DOH_OTHER:-0}" -eq 0 ] 2>/dev/null || return 1
+    return 0
+}
 disc_dns() {
     DNSMASQ_RUN="no"
     if /etc/init.d/dnsmasq status >/dev/null 2>&1; then
@@ -1873,7 +1896,7 @@ disc_clients
 firewall_resolve_zones
 disc_firewall
 watchdog_cron_scheduler_detect >/dev/null 2>&1 || true
-log_tx "DISCOVER" "router" "READ" "OK" "OpenWrt=$SYS_OWRT;fw=$SYS_FW;fw_source=$FIREWALL_DETECT_SOURCE;dns=$DNSMASQ_RUN;doh=$DOH_TOTAL;cron=$WATCHDOG_CRON_AVAILABLE;crond=$WATCHDOG_CRON_RUNNING;cron_ambiguous=$WATCHDOG_CRON_AMBIGUOUS"
+log_tx "DISCOVER" "router" "READ" "OK" "OpenWrt=$SYS_OWRT;fw=$SYS_FW;fw_source=$FIREWALL_DETECT_SOURCE;dns=$DNSMASQ_RUN;doh=$DOH_TOTAL;watchdog_backend=${WATCHDOG_BACKEND:-procd};legacy_cron=$WATCHDOG_CRON_AVAILABLE;crond=$WATCHDOG_CRON_RUNNING;cron_ambiguous=$WATCHDOG_CRON_AMBIGUOUS"
 }
 refresh_runtime_capabilities() {
     disc_system
@@ -2551,9 +2574,9 @@ exact_list_has() {
 # ==========================================
 clear_all_doh_for_apply() {
     # DNS Manager is the authoritative owner of the DoH configuration.
-    # Before every apply, remove ALL existing https-dns-proxy sections and
-    # rebuild the complete selected set from the manager configuration.
-    printf "${C_PINK}↻ Все существующие DNS-секции https-dns-proxy будут удалены и заменены выбранной схемой DNS Manager.${C_NC}\n"
+    # This function is called only after doh_selected_config_current() found
+    # a real difference, so a repeated Apply does not rebuild an identical set.
+    printf "${C_PINK}↻ Текущая схема DNS отличается от выбранной. Пересобираю DNS-секции https-dns-proxy.${C_NC}\n"
     _removed=0
     while uci -q get "https-dns-proxy.@https-dns-proxy[0]" >/dev/null 2>&1; do
         _u="$(uci -q get "https-dns-proxy.@https-dns-proxy[0].resolver_url" 2>/dev/null)"
@@ -4550,8 +4573,12 @@ _apply_settings_impl() {
     printf "\n${C_WHITE}Текущее состояние до применения:${C_NC}\n"
     printf "  dnsmasq: %b\n" "$(state_word "$DNSMASQ_RUN")"
     printf "  DNS-серверов: %s (по текущей схеме %s / вне схемы %s)\n" "$DOH_TOTAL" "$DOH_MATCH" "$DOH_OTHER"
-    if [ "$DOH_TOTAL" -gt 0 ]; then
-        printf "  ${C_YELLOW}↻ После подтверждения ВСЕ существующие DNS-секции будут заменены выбранным набором DNS Manager.${C_NC}\n"
+    if doh_selected_config_current; then
+        printf "  ${C_GREEN}✓ Текущая схема уже совпадает с выбранной. DNS-секции будут сохранены.${C_NC}\n"
+    elif [ "$DOH_TOTAL" -gt 0 ]; then
+        printf "  ${C_YELLOW}↻ Текущая схема отличается. После подтверждения будет пересобран только необходимый набор DNS Manager.${C_NC}\n"
+    else
+        printf "  ${C_YELLOW}↻ Текущих DNS-секций нет. После подтверждения будет установлен выбранный набор DNS Manager.${C_NC}\n"
     fi
     printf "  ${C_CYAN}${C_NC}\n"
     validate_selected_slots || return 1
@@ -4559,6 +4586,17 @@ _apply_settings_impl() {
     printf "\n${C_CYAN}Начинаю применение. Это может занять немного времени...${C_NC}\n"
     TX_ID="$(date +%Y%m%d-%H%M%S)-$$"
     TX_RESERVED_PORTS=""
+    DOH_REBUILD_NEEDED=1
+    # Re-check the live UCI state after confirmation. Another process may have
+    # changed https-dns-proxy since the plan was displayed.
+    disc_listeners
+    disc_dns
+    if doh_selected_config_current; then
+        DOH_REBUILD_NEEDED=0
+        printf "${C_GREEN}✓ Выбранная DNS-схема уже установлена. Пересоздание DNS-секций не требуется.${C_NC}\n"
+    else
+        printf "${C_YELLOW}↻ Текущая DNS-схема отличается. Выполню только необходимый rebuild выбранного набора.${C_NC}\n"
+    fi
     baseline_capture_once || { err_msg "Не удалось сохранить исходную копию. Настройки не изменены."; return 1; }
     tx_snapshot_start || { err_msg "Не удалось сохранить копию настроек. Настройки не изменены."; return 1; }
     DEFER_CONFIG_SAVE=1
@@ -4568,9 +4606,10 @@ _apply_settings_impl() {
     fi
     if [ "$DNS_PROFILE" = hybrid ] && [ "${HYBRID_STAGE_SKIP:-0}" != 1 ]; then
         validate_selected_slots || { err_msg "Выбранный набор DNS больше не соответствует последней полной проверке."; tx_restore_on_failure; return 1; }
-        /etc/init.d/https-dns-proxy stop >/dev/null 2>&1 || true
-        sleep 1
-    elif [ "$DOH_TOTAL" -gt 0 ]; then
+    else
+        validate_selected_slots || { err_msg "Выбранный набор DNS больше не соответствует последней полной проверке."; tx_restore_on_failure; return 1; }
+    fi
+    if [ "$DOH_REBUILD_NEEDED" = 1 ] && [ "${DOH_TOTAL:-0}" -gt 0 ]; then
         /etc/init.d/https-dns-proxy stop >/dev/null 2>&1 || true
         sleep 1
     fi
@@ -4579,34 +4618,36 @@ _apply_settings_impl() {
         tx_restore_on_failure
         return 1
     }
-    disc_listeners
-    disc_dns
-    clear_all_doh_for_apply || {
-        err_msg "Не удалось очистить старые DNS-серверы перед настройкой."
-        tx_restore_on_failure
-        return 1
-    }
-    disc_listeners
-    disc_dns
-    for s in 1 2 3 4 5 6; do
-        eval "v=\${SLOT_$s:-}"
-        [ -n "$v" ] || continue
-        ensure_doh_slot "$s" "$v" || {
-            err_msg "Не удалось настроить DNS-сервер для слота $s."
+    if [ "$DOH_REBUILD_NEEDED" = 1 ]; then
+        disc_listeners
+        disc_dns
+        clear_all_doh_for_apply || {
+            err_msg "Не удалось пересобрать DNS-серверы выбранной схемы."
             tx_restore_on_failure
             return 1
         }
-    done
-    ensure_doh_slot RU "${SLOT_RU:-}" || {
-        err_msg "Не удалось настроить DNS для доменов .ru/.su/.рф."
-        tx_restore_on_failure
-        return 1
-    }
-    ensure_doh_slot RU_2 "${SLOT_RU_2:-}" || {
-        err_msg "Не удалось настроить резервный DNS для доменов .ru/.su/.рф."
-        tx_restore_on_failure
-        return 1
-    }
+        disc_listeners
+        disc_dns
+        for s in 1 2 3 4 5 6; do
+            eval "v=\${SLOT_$s:-}"
+            [ -n "$v" ] || continue
+            ensure_doh_slot "$s" "$v" || {
+                err_msg "Не удалось настроить DNS-сервер для слота $s."
+                tx_restore_on_failure
+                return 1
+            }
+        done
+        ensure_doh_slot RU "${SLOT_RU:-}" || {
+            err_msg "Не удалось настроить DNS для доменов .ru/.su/.рф."
+            tx_restore_on_failure
+            return 1
+        }
+        ensure_doh_slot RU_2 "${SLOT_RU_2:-}" || {
+            err_msg "Не удалось настроить резервный DNS для доменов .ru/.su/.рф."
+            tx_restore_on_failure
+            return 1
+        }
+    fi
     plan_dup="$(for s in 1 2 3 4 5 6 RU RU_2; do eval "p=\${PORT_$s:-}"; [ -n "$p" ] && printf '%s\n' "$p"; done | sort | uniq -d | head -n1)"
     if [ -n "$plan_dup" ]; then
         err_msg "План отменён: порт $plan_dup назначен нескольким DNS одновременно."
@@ -5272,6 +5313,16 @@ uninstall_manager_impl() {
         log_msg "Uninstall: package removal returned an error; continuing with configuration/state cleanup."
     fi
 
+    # Remove the native LuCI companion only when this DNS Manager installation owns it.
+    # A failure is treated as a cleanup error; network/DNS configuration restoration is already complete.
+    if ! luci_companion_remove >/dev/null 2>&1; then
+        if [ -s "$LUCI_STATE_FILE" ]; then
+            UNINSTALL_LUCI_WARNING=1
+            warn_msg "Нативный интерфейс LuCI DNS Manager не удалось удалить автоматически; основной DNS Manager продолжаю удалять после восстановления конфигурации."
+            log_msg "Uninstall: LuCI companion cleanup did not complete."
+        fi
+    fi
+
     # Remove all manager state and persistent test data.
     rm -rf "$BASE_DIR" 2>/dev/null || _rc=1
     rm -f "$LOG_FILE" "$TX_LOG" 2>/dev/null || true
@@ -5299,6 +5350,9 @@ uninstall_manager_impl() {
         printf "${C_GREEN}Исходное состояние роутера восстановлено; сохранённый DoH также возвращён.${C_NC}\n"
         if [ "${UNINSTALL_PACKAGE_WARNING:-0}" = 1 ]; then
             printf "${C_YELLOW}Некоторые необязательные пакеты не удалились; это не повлияло на восстановление конфигурации.${C_NC}\n"
+        fi
+        if [ "${UNINSTALL_LUCI_WARNING:-0}" = 1 ]; then
+            printf "${C_YELLOW}Нативный интерфейс LuCI мог остаться установленным: удаление companion не подтвердилось автоматически.${C_NC}\n"
         fi
         printf "${C_YELLOW}Возвращаемся в shell.${C_NC}\n"
         exit 0
@@ -5421,8 +5475,8 @@ printf "  Платформа:      ${C_WHITE}%s${C_NC}\n" "$SYS_TARGET"
 printf "  Архитектура:    ${C_WHITE}%s${C_NC}\n" "$SYS_ARCH"
 printf "  DNS Watchdog:   %s\n" "$(module_state_word watchdog)"
 printf "  Watchdog core:  ${C_WHITE}procd${C_NC}\n"
-printf "  Scheduler:      ${C_WHITE}%s${C_NC}\n" "$WATCHDOG_CRON_AVAILABLE"
-printf "  Crond:          ${C_WHITE}%s${C_NC}\n" "$WATCHDOG_CRON_RUNNING"
+printf "  Watchdog scheduler: ${C_WHITE}procd${C_NC}\n"
+printf "  Crond:          ${C_WHITE}%s${C_NC} ${C_DGRAY}(DNS Watchdog не использует)${C_NC}\n" "$WATCHDOG_CRON_RUNNING"
 printf "  Firewall:       ${C_WHITE}%s${C_NC}\n" "$SYS_FW"
 printf "  Backend:        ${C_WHITE}%s${C_NC}\n" "$FIREWALL_BACKEND"
 printf "  LAN:            ${C_WHITE}%s${C_NC}\n" "$LAN_IP"
@@ -5434,6 +5488,7 @@ printf "  dig:             %s\n" "$(state_word "$HAS_DIG")"
 printf "  ntpd:            %s\n" "$(state_word "$HAS_NTPD")"
 menu_section "DNS"
 printf "  dnsmasq:         %s\n" "$(state_word "$DNSMASQ_RUN")"
+printf "  LuCI DNS Manager: %s\n" "$(module_state_word luci)"
 refresh_doh_scheme_counts
 printf "  DNS-серверов всего:       ${C_WHITE}%s${C_NC}\n" "$DOH_TOTAL"
 printf "  По текущей схеме:         ${C_WHITE}%s${C_NC}\n" "$DOH_MATCH"
@@ -6088,6 +6143,9 @@ EOF_CHECK_EXT
         watchdog)
             watchdog_state_word_procd
             ;;
+        luci)
+            luci_component_state
+            ;;
         web)
             if web_access_real; then
                 printf 1
@@ -6121,6 +6179,17 @@ force_state_word() {
     esac
 }
 module_state_word() {
+    case "$1" in
+        luci)
+            _real="$(check_module_state luci)"
+            case "$_real" in
+                1) printf "${C_BOLD}${C_GREEN}✓ ВКЛ${C_NC} ${C_CYAN}${C_BOLD}• установлено${C_NC}" ;;
+                2) printf "${C_BOLD}${C_YELLOW}⚠ ВКЛ${C_NC} ${C_CYAN}${C_BOLD}• требует восстановления${C_NC}" ;;
+                *) printf "${C_BOLD}${C_RED}✗ ВЫКЛ${C_NC} ${C_CYAN}${C_BOLD}• не установлено${C_NC}" ;;
+            esac
+            return 0
+            ;;
+    esac
     _real="$(check_module_state "$1")"
     case "$_real" in
         1) printf "${C_BOLD}${C_GREEN}✓ ВКЛ${C_NC} ${C_CYAN}${C_BOLD}• настроено${C_NC}" ;;
@@ -6128,6 +6197,168 @@ module_state_word() {
         *) printf "${C_BOLD}${C_RED}✗ ВЫКЛ${C_NC} ${C_CYAN}${C_BOLD}• сток${C_NC}" ;;
     esac
 }
+# ==========================================
+luci_component_files_present() {
+    [ -f "$LUCI_MENU_FILE" ] || return 1
+    [ -f "$LUCI_ACL_FILE" ] || return 1
+    [ -x "$LUCI_RPC_PLUGIN" ] || return 1
+    [ -f "$LUCI_VIEW_FILE" ] || return 1
+    grep -Fq 'admin/services/dns_manager' "$LUCI_MENU_FILE" 2>/dev/null || return 1
+    grep -Fq 'luci-app-dns-manager' "$LUCI_ACL_FILE" 2>/dev/null || return 1
+    grep -Fq 'DNS Manager LuCI rpcd plugin' "$LUCI_RPC_PLUGIN" 2>/dev/null || return 1
+    grep -Fq 'DNS Manager' "$LUCI_VIEW_FILE" 2>/dev/null || return 1
+    return 0
+}
+
+luci_component_state() {
+    if ! luci_component_files_present; then
+        printf '0\n'
+        return 0
+    fi
+    if command -v ubus >/dev/null 2>&1; then
+        if ubus -S list dns_manager 2>/dev/null | grep -q '^dns_manager$'; then
+            printf '1\n'
+            return 0
+        fi
+    fi
+    printf '2\n'
+    return 0
+}
+
+luci_companion_fetch() {
+    mkdir -p "$CFG_DIR" "$STATE_DIR" "$TMP_DIR" 2>/dev/null || return 1
+    _tmp="$TMP_DIR/dns-manager-luci-$$"
+    rm -f "$_tmp" 2>/dev/null || true
+
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL --connect-timeout 5 --max-time 30 -o "$_tmp" "$LUCI_COMPANION_URL" >/dev/null 2>&1 || {
+            rm -f "$_tmp" 2>/dev/null || true
+            return 1
+        }
+    elif command -v wget >/dev/null 2>&1; then
+        wget -q -T 30 -O "$_tmp" "$LUCI_COMPANION_URL" >/dev/null 2>&1 || {
+            rm -f "$_tmp" 2>/dev/null || true
+            return 1
+        }
+    elif command -v uclient-fetch >/dev/null 2>&1; then
+        uclient-fetch -q -O "$_tmp" "$LUCI_COMPANION_URL" >/dev/null 2>&1 || {
+            rm -f "$_tmp" 2>/dev/null || true
+            return 1
+        }
+    else
+        rm -f "$_tmp" 2>/dev/null || true
+        return 1
+    fi
+
+    [ -s "$_tmp" ] || { rm -f "$_tmp"; return 1; }
+    head -n 1 "$_tmp" 2>/dev/null | grep -q '^#!/bin/sh' || { rm -f "$_tmp"; return 1; }
+    grep -Fq '# DNS Manager LuCI companion' "$_tmp" 2>/dev/null || { rm -f "$_tmp"; return 1; }
+    grep -Fq '/usr/libexec/rpcd/dns_manager' "$_tmp" 2>/dev/null || { rm -f "$_tmp"; return 1; }
+    grep -Fq 'admin/services/dns_manager' "$_tmp" 2>/dev/null || { rm -f "$_tmp"; return 1; }
+    sh -n "$_tmp" >/dev/null 2>&1 || { rm -f "$_tmp"; return 1; }
+
+    LUCI_COMPANION_FETCH_FILE="$_tmp"
+    LUCI_COMPANION_FETCH_VERSION="$(sed -n 's/^# Version:[[:space:]]*//p' "$_tmp" 2>/dev/null | head -n1)"
+    [ -n "${LUCI_COMPANION_FETCH_VERSION:-}" ] || { rm -f "$_tmp"; return 1; }
+    if _ver_newer "$LUCI_COMPANION_MIN_VERSION" "$LUCI_COMPANION_FETCH_VERSION"; then
+        log_msg "LuCI: найден слишком старый companion (version=${LUCI_COMPANION_FETCH_VERSION}); требуется версия не ниже $LUCI_COMPANION_MIN_VERSION."
+        rm -f "$_tmp" 2>/dev/null || true
+        return 1
+    fi
+    return 0
+}
+
+luci_companion_install() {
+    luci_companion_fetch || {
+        err_msg "Не удалось безопасно получить dns-manager-luci.sh с GitHub. Основной DNS Manager не изменён."
+        return 1
+    }
+
+    _tmp="${LUCI_COMPANION_FETCH_FILE:-}"
+    [ -s "$_tmp" ] || return 1
+    mkdir -p "$BASE_DIR" "$CFG_DIR" 2>/dev/null || { rm -f "$_tmp"; return 1; }
+
+    if ! cp -f "$_tmp" "$LUCI_COMPANION_CACHE" 2>/dev/null; then
+        rm -f "$_tmp" 2>/dev/null || true
+        err_msg "Не удалось сохранить локальную копию установщика LuCI."
+        return 1
+    fi
+    chmod 700 "$LUCI_COMPANION_CACHE" 2>/dev/null || true
+
+    if ! sh "$LUCI_COMPANION_CACHE" install >/dev/null 2>&1; then
+        rm -f "$LUCI_COMPANION_CACHE" 2>/dev/null || true
+        rm -f "$_tmp" 2>/dev/null || true
+        err_msg "Установщик LuCI завершился с ошибкой. Основной DNS Manager не изменён."
+        return 1
+    fi
+    rm -f "$_tmp" 2>/dev/null || true
+
+    luci_component_files_present || {
+        err_msg "LuCI-установщик завершился, но комплект файлов интерфейса не прошёл контроль."
+        return 1
+    }
+
+    _ver="${LUCI_COMPANION_FETCH_VERSION:-unknown}"
+    {
+        printf 'installed=1\n'
+        printf 'version=%s\n' "$_ver"
+        printf 'installed_at=%s\n' "$(date +%s 2>/dev/null)"
+        printf 'source=%s\n' "$LUCI_COMPANION_URL"
+    } > "${LUCI_STATE_FILE}.tmp.$$" 2>/dev/null || true
+    if [ -s "${LUCI_STATE_FILE}.tmp.$$" ]; then
+        chmod 600 "${LUCI_STATE_FILE}.tmp.$$" 2>/dev/null || true
+        mv "${LUCI_STATE_FILE}.tmp.$$" "$LUCI_STATE_FILE" 2>/dev/null || rm -f "${LUCI_STATE_FILE}.tmp.$$"
+    fi
+
+    # A legacy 2.86 ttyd section is no longer the DNS Manager web interface.
+    # Remove only the exact stable DNS Manager section; do not stop/remove shared ttyd.
+    if uci -q get 'ttyd.dns_manager.command' 2>/dev/null | grep -qx '/usr/bin/dns-manager'; then
+        WEB_ACCESS_ENABLED=0
+        if manager_running_under_ttyd; then
+            # Do not restart ttyd from inside its own session. Remove the manager-owned
+            # section now and defer the shared ttyd restart until this shell has exited.
+            web_access_remove_config_no_restart >/dev/null 2>&1 || true
+            defer_ttyd_action restart 0 "${PKG_MGR:-}"
+        else
+            web_access_remove_config >/dev/null 2>&1 || true
+        fi
+        save_config >/dev/null 2>&1 || true
+        log_msg "LuCI: устаревший ttyd-раздел DNS Manager удалён; общий ttyd не изменён."
+    fi
+
+    if [ -x /etc/init.d/rpcd ]; then
+        /etc/init.d/rpcd reload >/dev/null 2>&1 || /etc/init.d/rpcd restart >/dev/null 2>&1 || true
+    fi
+    if [ "$(luci_component_state)" = 1 ]; then
+        log_msg "LuCI: нативный интерфейс DNS Manager установлен${_ver:+, companion=$_ver}."
+        return 0
+    fi
+
+    log_msg "LuCI: файлы нативного интерфейса установлены, но rpcd ещё не зарегистрировал dns_manager."
+    return 2
+}
+
+luci_companion_remove() {
+    # Only remove an interface which this DNS Manager installation explicitly installed.
+    [ -s "$LUCI_STATE_FILE" ] || return 0
+    [ "$(sed -n 's/^installed=//p' "$LUCI_STATE_FILE" 2>/dev/null | head -n1)" = 1 ] || return 0
+
+    if [ -x "$LUCI_COMPANION_CACHE" ]; then
+        sh "$LUCI_COMPANION_CACHE" remove >/dev/null 2>&1 || return 1
+    else
+        # No cached installer: refuse destructive guessing.
+        err_msg "Локальная копия установщика LuCI отсутствует; интерфейс автоматически не удаляю."
+        return 1
+    fi
+
+    if luci_component_files_present; then
+        err_msg "После удаления LuCI её файлы всё ещё присутствуют; очистку не считаю завершённой."
+        return 1
+    fi
+    rm -f "$LUCI_COMPANION_CACHE" "$LUCI_STATE_FILE" 2>/dev/null || true
+    return 0
+}
+
 # ==========================================
 web_access_listener_exists() {
     _wp="$1"
@@ -6411,8 +6642,33 @@ setting_process() {
     case "$_state" in
         0) confirm_action "Включить «$_title»?" || return 0 ;;
         1) confirm_action "Выключить «$_title» и вернуть стоковое состояние?" || return 0 ;;
-        2) confirm_action "Исправить «$_title» и применить целевую настройку DNS Manager?" || return 0 ;;
+        2) confirm_action "Исправить «$_title» и применить целевую настройку DNS Manager?" || return 0 ;
     esac
+
+    if [ "$_module" = luci ]; then
+        case "$_state" in
+            1)
+                luci_companion_remove
+                _rc=$?
+                ;;
+            *)
+                luci_companion_install
+                _rc=$?
+                ;;
+        esac
+        if [ "$_rc" -eq 0 ]; then
+            case "$_state" in
+                1) ok_msg "Нативный интерфейс LuCI DNS Manager удалён. Сам DNS Manager и его DNS-настройки не изменены." ;;
+                *) ok_msg "Нативный интерфейс LuCI DNS Manager установлен: LuCI → Службы → DNS Manager." ;;
+            esac
+        elif [ "$_rc" -eq 2 ]; then
+            warn_msg "Файлы LuCI установлены, но rpcd ещё не зарегистрировал интерфейс. Обновите страницу LuCI после перезагрузки rpcd." 
+        else
+            err_msg "Не удалось изменить нативный интерфейс LuCI DNS Manager."
+        fi
+        pause
+        return "$_rc"
+    fi
 
     ensure_baseline_captured || {
         err_msg "Не удалось сохранить исходное состояние перед изменением настройки."
@@ -6484,6 +6740,8 @@ setting_process() {
             1:client_fixes) ok_msg "Исправления телеметрии и связи выключены." ;;
             0:web|2:web) ok_msg "Терминальный доступ LuCI включён: пункт LuCI ведёт в ttyd DNS Manager." ;;
             1:web) ok_msg "Терминальный доступ LuCI выключен, пункт DNS Manager удалён." ;;
+            0:luci|2:luci) ok_msg "Нативный интерфейс LuCI DNS Manager установлен: LuCI → Службы → DNS Manager." ;;
+            1:luci) ok_msg "Нативный интерфейс LuCI DNS Manager удалён." ;;
             0:watchdog|2:watchdog) ok_msg "Фоновая автопроверка DNS включена через procd." ;;
             1:watchdog) ok_msg "Фоновая автопроверка DNS выключена." ;;
         esac
@@ -6496,6 +6754,7 @@ setting_process() {
             ntp_clients) err_msg "Не удалось изменить NTP-сервер роутера для устройств." ;;
             client_fixes) err_msg "Не удалось изменить исправления телеметрии и связи." ;;
             web) err_msg "Не удалось изменить терминальный доступ LuCI." ;;
+            luci) err_msg "Не удалось изменить нативный интерфейс LuCI DNS Manager." ;;
             watchdog) err_msg "Не удалось изменить фоновую автопроверку DNS." ;;
         esac
     fi
@@ -6518,7 +6777,7 @@ while :; do
     menu_section "ОБСЛУЖИВАНИЕ"
     menu_item_state "[7]" "Фоновая автопроверка DNS (procd)" "$(module_state_word watchdog)"
     menu_section "LUCI"
-    menu_item_state "[8]" "Терминал DNS Manager (ttyd)" "$(module_state_word web)"
+    menu_item_state "[8]" "Нативный интерфейс DNS Manager" "$(module_state_word luci)"
     menu_back
     menu_prompt
     safe_read c
@@ -6530,7 +6789,7 @@ while :; do
         5) setting_process ntp_clients "NTP-сервер роутера для устройств сети" "Роутер отвечает клиентам по UDP/123, а DHCP сообщает его адрес как NTP-сервер. Принудительный перехват NTP не используется." ;;
         6) setting_process client_fixes "Исправления телеметрии и связи" "Добавляются DNS-правила для телеметрии и проверок подключения некоторых устройств." ;;
         7) setting_process watchdog "Фоновая автопроверка DNS (procd)" "Watchdog запускает проверку DNS по расписанию." ;;
-        8) setting_process web "Терминал DNS Manager (ttyd)" "В LuCI будет только переход к терминалу DNS Manager; отдельного веб-интерфейса DNS Manager нет." ;;
+        8) setting_process luci "Нативный интерфейс DNS Manager" "Устанавливает отдельный файл dns-manager-luci.sh из GitHub и добавляет только LuCI → Службы → DNS Manager. ttyd и дополнительный HTTP-порт не используются." ;;
         '') return ;;
         *) warn_msg "Неизвестный пункт."; pause ;;
     esac
@@ -7658,7 +7917,7 @@ watchdog_service_install_files() {
         cat > "$_dtmp" <<'EOF_DNS_WATCHDOG_DAEMON'
 #!/bin/sh
 # DNS_MANAGER_WATCHDOG_DAEMON=1
-# DNS_MANAGER_WATCHDOG_DAEMON_VERSION=2.86
+# DNS_MANAGER_WATCHDOG_DAEMON_VERSION=2.87
 
 MANAGER_PATH="/usr/bin/dns-manager"
 CONFIG_FILE="/etc/dns-manager/config/manager.conf"
@@ -7992,7 +8251,7 @@ EOF_DNS_WATCHDOG_DAEMON
         cat > "$_stmp" <<'EOF_DNS_WATCHDOG_SERVICE'
 #!/bin/sh /etc/rc.common
 # DNS_MANAGER_WATCHDOG_SERVICE=1
-# DNS_MANAGER_WATCHDOG_SERVICE_VERSION=2.86
+# DNS_MANAGER_WATCHDOG_SERVICE_VERSION=2.87
 
 USE_PROCD=1
 START=95
@@ -8102,12 +8361,44 @@ watchdog_apply_restore_previous_state() {
     return 0
 }
 watchdog_service_migrate_legacy() {
-    [ "${FIRST_RUN:-0}" = 1 ] && return 0
+    [ "${FIRST_RUN_INITIAL:-0}" = 1 ] && return 0
     [ "${WATCHDOG_ENABLED:-0}" = 1 ] || return 0
     [ -s "$BASELINE_MANIFEST" ] || {
-        log_msg "Watchdog migration: исходный baseline отсутствует; автозапуск procd не включаю, чтобы не закреплять текущее состояние как исходное."
+        log_msg "Watchdog: исходный baseline отсутствует; procd автоматически не включаю, чтобы не закреплять текущее состояние как исходное."
         return 1
     }
+
+    _legacy=0
+    watchdog_cron_marker_exists >/dev/null 2>&1 && _legacy=1
+
+    _service_ready=0
+    if watchdog_service_file_matches "$WATCHDOG_SERVICE_PATH" "$WATCHDOG_SERVICE_MARKER" "$WATCHDOG_SERVICE_VERSION_MARKER"; then
+        _service_ready=1
+    fi
+
+    if [ "$_legacy" = 0 ] && [ "$_service_ready" = 1 ]; then
+        if watchdog_service_enabled && watchdog_service_running; then
+            # Normal steady state: do nothing and do not emit a fake migration message.
+            return 0
+        fi
+        if ! watchdog_service_enabled; then
+            "$WATCHDOG_SERVICE_PATH" enable >/dev/null 2>&1 || return 1
+            log_msg "Watchdog: существующая procd-служба включена после проверки состояния."
+        fi
+        if ! watchdog_service_running; then
+            "$WATCHDOG_SERVICE_PATH" start >/dev/null 2>&1 || return 1
+            sleep 1
+            watchdog_service_running || return 1
+            log_msg "Watchdog: существующая procd-служба запущена после проверки состояния."
+        fi
+        return 0
+    fi
+
+    # If the managed procd files are being refreshed, stop the old instance first.
+    if [ "$_service_ready" != 1 ] && watchdog_service_running >/dev/null 2>&1; then
+        "$WATCHDOG_SERVICE_PATH" stop >/dev/null 2>&1 || return 1
+        sleep 1
+    fi
 
     watchdog_service_install_files || return 1
     "$WATCHDOG_SERVICE_PATH" enable >/dev/null 2>&1 || return 1
@@ -8115,24 +8406,32 @@ watchdog_service_migrate_legacy() {
     sleep 1
     watchdog_service_running || return 1
 
-    if watchdog_cron_marker_exists >/dev/null 2>&1; then
+    if [ "$_legacy" = 1 ]; then
+        log_msg "Watchdog: обнаружен старый cron DNS Manager; выполняю однократную миграцию на procd."
         watchdog_cron_remove_owned_block >/dev/null 2>&1 || {
-            log_msg "Watchdog migration: старый cron DNS Manager не удалось удалить; новый procd watchdog остановлен, чтобы не было двойного запуска."
+            log_msg "Watchdog: старый cron DNS Manager не удалось удалить; новый procd watchdog остановлен, чтобы не было двойного запуска."
             "$WATCHDOG_SERVICE_PATH" stop >/dev/null 2>&1 || true
             "$WATCHDOG_SERVICE_PATH" disable >/dev/null 2>&1 || true
             return 1
         }
         watchdog_cron_scheduler_detect >/dev/null 2>&1 || true
         watchdog_cron_marker_exists >/dev/null 2>&1 && {
-            log_msg "Watchdog migration: старый cron-маркер всё ещё присутствует; procd watchdog оставляю выключенным."
+            log_msg "Watchdog: старый cron-маркер всё ещё присутствует; procd watchdog оставляю выключенным."
             "$WATCHDOG_SERVICE_PATH" stop >/dev/null 2>&1 || true
             "$WATCHDOG_SERVICE_PATH" disable >/dev/null 2>&1 || true
             return 1
         }
+        log_msg "Watchdog: однократная миграция с cron на procd завершена."
+    else
+        if [ "$_service_ready" = 0 ]; then
+            log_msg "Watchdog: служба procd DNS Manager установлена и запущена."
+        else
+            log_msg "Watchdog: служба procd DNS Manager восстановлена и запущена."
+        fi
     fi
-    log_msg "Watchdog migration: переход с cron на procd завершён."
     return 0
 }
+
 watchdog_state_word_procd() {
     if [ "${WATCHDOG_ENABLED:-0}" != 1 ]; then
         printf '0'
@@ -8534,7 +8833,7 @@ startup_update_check() {
 # STARTUP REQUIRED FUNCTION CHECK
 # ==========================================
 startup_required_function_check() {
-    for _fn in get_dnsmasq_section exact_list_has validate_selected_slots ensure_dnsmasq_balancer web_access_pid_count detect_forced_dns_path clear_all_doh_for_apply rebuild_selected_hdp_sections reconcile_dnsmasq apply_ntp_clients apply_ntp_ip_fallback; do
+    for _fn in get_dnsmasq_section exact_list_has doh_selected_config_current validate_selected_slots ensure_dnsmasq_balancer web_access_pid_count detect_forced_dns_path clear_all_doh_for_apply rebuild_selected_hdp_sections reconcile_dnsmasq apply_ntp_clients apply_ntp_ip_fallback luci_component_state luci_companion_install luci_companion_remove; do
         type "$_fn" >/dev/null 2>&1 || {
             printf "${C_RED}[✗] Критическая ошибка: отсутствует функция $_fn. Запуск остановлен до изменения настроек роутера.${C_NC}\n"
             return 1
@@ -8613,14 +8912,14 @@ restore_persistent_test_results 2>/dev/null || true
 startup_update_check
 run_discovery
 
-if [ "${FIRST_RUN:-0}" = 1 ]; then
+if [ "${FIRST_RUN_INITIAL:-0}" = 1 ]; then
     # Initialization only: do not synchronize or mutate cron on first launch.
     info_msg "Первый запуск: watchdog-служба procd не запускается и cron не изменяю."
 fi
 
 log_msg "Запуск DNS Manager. Версия $VERSION. OpenWrt=$SYS_OWRT; платформа=$SYS_TARGET; архитектура=$SYS_ARCH; firewall=$SYS_FW; backend=$FIREWALL_BACKEND; wan_network=${FIREWALL_WAN_NETWORK:-unknown}"
 
-if [ "${FIRST_RUN:-0}" = 1 ]; then
+if [ "${FIRST_RUN_INITIAL:-0}" = 1 ]; then
     if mkdir -p "$CFG_DIR" 2>/dev/null && {
         printf 'version=%s\n' "$VERSION"
         printf 'completed_at=%s\n' "$(date +%s)"
@@ -8640,7 +8939,8 @@ if [ "${FIRST_RUN:-0}" = 1 ]; then
 fi
 
 # Existing installations: move watchdog from cron to procd only after a valid baseline exists.
-if [ "${FIRST_RUN:-0}" = 0 ] && [ "${WATCHDOG_ENABLED:-0}" = 1 ]; then
+# FIRST_RUN_INITIAL is immutable for this invocation, so first launch never migrates cron.
+if [ "${FIRST_RUN_INITIAL:-0}" = 0 ] && [ "${WATCHDOG_ENABLED:-0}" = 1 ]; then
     watchdog_service_migrate_legacy >/dev/null 2>&1 || warn_msg "Не удалось завершить переход watchdog с cron на procd. Состояние watchdog оставлено без самовольной ротации DNS."
 fi
 
