@@ -2,8 +2,8 @@
 MANAGER_PATH="/usr/bin/dns-manager"
 # ==========================================
 # ==========================================
-VERSION="2.91"
-# 2.91: catalog reference updated to 8.6-RU-NOSOCIAL; syntax-safe rebuild/release.
+VERSION="2.92"
+# 2.92: shell-portable firewall zone resolver; removes fragile inline command-group syntax.
 # 2.88: native LuCI companion compatibility, idempotent procd watchdog migration,
 # first-run cron protection, and exact https-dns-proxy forced-DNS ports/interfaces
 # while keeping DNS Manager authoritative over its own dnsmasq upstream list.
@@ -32,8 +32,8 @@ WATCHDOG_SERVICE_PATH="/etc/init.d/dns-watchdog"
 WATCHDOG_RUNTIME_DIR="/var/run/dns-watchdog"
 WATCHDOG_DAEMON_MARKER="# DNS_MANAGER_WATCHDOG_DAEMON=1"
 WATCHDOG_SERVICE_MARKER="# DNS_MANAGER_WATCHDOG_SERVICE=1"
-WATCHDOG_DAEMON_VERSION_MARKER="# DNS_MANAGER_WATCHDOG_DAEMON_VERSION=2.91"
-WATCHDOG_SERVICE_VERSION_MARKER="# DNS_MANAGER_WATCHDOG_SERVICE_VERSION=2.91"
+WATCHDOG_DAEMON_VERSION_MARKER="# DNS_MANAGER_WATCHDOG_DAEMON_VERSION=2.92"
+WATCHDOG_SERVICE_VERSION_MARKER="# DNS_MANAGER_WATCHDOG_SERVICE_VERSION=2.92"
 WATCHDOG_LAST_RESTART_FILE="$STATE_DIR/watchdog-last-restart"
 AUTO_UPDATE_LAST_CHECK_FILE="$STATE_DIR/auto-update-last-check"
 AUTO_UPDATE_CHECK_MAX_AGE=43200
@@ -986,7 +986,7 @@ write_catalogs() {
         mkdir -p "$CFG_DIR" 2>/dev/null || true
         if mv -f "$_catalog_tmp" "$DNS_CATALOG" 2>/dev/null; then
             chmod 600 "$DNS_CATALOG" 2>/dev/null || true
-            log_msg "Каталог DNS: загружен внешний $DNSCAT_VERSION (revision $DNSCAT_REVISION, 111 записей)."
+            log_msg "Каталог DNS: загружен внешний $DNSCAT_VERSION (revision $DNSCAT_REVISION, 105 записей)."
             return 0
         fi
     fi
@@ -1156,11 +1156,11 @@ firewall_resolve_zones() {
     # This works on both old and new OpenWrt syntax and avoids assuming br-lan.
     for _z in $_zones; do
         _nets="$(uci -q get "firewall.$_z.network" 2>/dev/null)"
-        printf '%s\n' "$_nets" | tr ' ' '\n' | grep -qxF lan 2>/dev/null && {
+        if printf '%s\n' "$_nets" | tr ' ' '\n' | grep -qxF lan 2>/dev/null; then
             _lan_zone="$_z"
             _lan_name="$(uci -q get "firewall.$_z.name" 2>/dev/null)"
             _lan_count=$((_lan_count+1))
-        }
+        fi
     done
 
     # Prefer the conventional WAN logical network first. A modem router may use
@@ -1213,7 +1213,10 @@ firewall_resolve_zones() {
                     [ -n "$_udev" ] || _udev="$(uci -q get "network.$_n.ifname" 2>/dev/null)"
                     for _d in $_default_devs; do
                         [ -n "$_d" ] || continue
-                        printf '%s\n' "$_udev" | tr ' ' '\n' | grep -qxF "$_d" 2>/dev/null && { _matched=1; break; }
+                        if printf '%s\n' "$_udev" | tr ' ' '\n' | grep -qxF "$_d" 2>/dev/null; then
+                            _matched=1
+                            break
+                        fi
                     done
                 fi
 
@@ -1226,15 +1229,15 @@ firewall_resolve_zones() {
         done
     fi
 
-    [ "$_lan_count" -eq 1 ] && {
+    if [ "$_lan_count" -eq 1 ]; then
         FIREWALL_LAN_ZONE="$_lan_zone"
         FIREWALL_LAN_NAME="$_lan_name"
-    }
-    [ "$_wan_count" -eq 1 ] && {
+    fi
+    if [ "$_wan_count" -eq 1 ]; then
         FIREWALL_WAN_ZONE="$_wan_zone"
         FIREWALL_WAN_NAME="$_wan_name"
         FIREWALL_WAN_NETWORK="$_wan_net"
-    }
+    fi
     return 0
 }
 firewall_zone_name() {
@@ -7918,7 +7921,7 @@ watchdog_service_install_files() {
         cat > "$_dtmp" <<'EOF_DNS_WATCHDOG_DAEMON'
 #!/bin/sh
 # DNS_MANAGER_WATCHDOG_DAEMON=1
-# DNS_MANAGER_WATCHDOG_DAEMON_VERSION=2.91
+# DNS_MANAGER_WATCHDOG_DAEMON_VERSION=2.92
 
 MANAGER_PATH="/usr/bin/dns-manager"
 CONFIG_FILE="/etc/dns-manager/config/manager.conf"
@@ -8252,7 +8255,7 @@ EOF_DNS_WATCHDOG_DAEMON
         cat > "$_stmp" <<'EOF_DNS_WATCHDOG_SERVICE'
 #!/bin/sh /etc/rc.common
 # DNS_MANAGER_WATCHDOG_SERVICE=1
-# DNS_MANAGER_WATCHDOG_SERVICE_VERSION=2.91
+# DNS_MANAGER_WATCHDOG_SERVICE_VERSION=2.92
 
 USE_PROCD=1
 START=95
