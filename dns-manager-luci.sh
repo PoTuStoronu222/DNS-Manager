@@ -155,6 +155,22 @@ version_gt() {
     awk -F. -v a="$_a" -v b="$_b" 'BEGIN { split(a,A,"."); split(b,B,"."); for(i=1;i<=5;i++){ ai=(A[i]==""?0:A[i]+0); bi=(B[i]==""?0:B[i]+0); if(ai>bi){print 1;exit} if(ai<bi){print 0;exit} } print 0 }'
 }
 
+fetch_raw_url() {
+    _out="$1"; _url="$2"
+    rm -f "$_out" 2>/dev/null || true
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL --connect-timeout 5 --max-time 20 -o "$_out" "$_url" >/dev/null 2>&1
+    elif command -v wget >/dev/null 2>&1; then
+        wget -q -T 20 -O "$_out" "$_url" >/dev/null 2>&1
+    elif command -v uclient-fetch >/dev/null 2>&1; then
+        uclient-fetch -q -O "$_out" "$_url" >/dev/null 2>&1
+    else
+        return 1
+    fi
+    [ -s "$_out" ] || return 1
+    [ "$(wc -c < "$_out" 2>/dev/null | tr -d ' ')" -le 300000 ] 2>/dev/null || return 1
+    return 0
+}
 fetch_url() {
     _out="$1"
     rm -f "$_out" 2>/dev/null || true
@@ -185,7 +201,7 @@ validate_candidate() {
     return 0
 }
 
-update_check_json() {
+update_check_json_luci() {
     _installed="$(read_installed_luci_version)"
     _tmp="$TMP_ROOT/companion-check.$$"
     if ! fetch_url "$_tmp" || ! validate_candidate "$_tmp"; then
@@ -206,6 +222,62 @@ update_check_json() {
     [ -s "${UPDATE_STATE}.tmp.$$" ] && mv "${UPDATE_STATE}.tmp.$$" "$UPDATE_STATE" 2>/dev/null || rm -f "${UPDATE_STATE}.tmp.$$" 2>/dev/null || true
     rm -f "$_tmp" 2>/dev/null || true
     printf '{"ok":true,"installed_version":'; json_quote "$_installed"; printf ',"latest_version":'; json_quote "$_latest"; printf ',"available":%s,"checked_at":%s}' "$_available" "$_ts"
+}
+
+component_update_check() {
+    _ts="$(date +%s 2>/dev/null || printf 0)"
+    _manager_installed="$(manager_version 2>/dev/null || true)"
+    _manager_latest=""; _manager_available=0; _manager_ok=0
+    _tmp="$TMP_ROOT/manager-check.$$"
+    if [ -n "$_manager_installed" ] && fetch_raw_url "$_tmp" "https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager.sh?_dmcb=$_ts-$$"; then
+        _manager_latest="$(sed -n 's/^VERSION="\([^"]*\)"$/\1/p' "$_tmp" 2>/dev/null | head -n1)"
+        [ -n "$_manager_latest" ] && _manager_ok=1
+        [ -n "$_manager_latest" ] && [ "$(version_gt "$_manager_latest" "$_manager_installed")" = 1 ] && _manager_available=1
+    fi
+    rm -f "$_tmp" 2>/dev/null || true
+
+    _catalog_latest=""; _catalog_latest_rev=""; _catalog_latest_total=0; _catalog_available=0; _catalog_ok=0
+    _tmp="$TMP_ROOT/catalog-check.$$"
+    if fetch_raw_url "$_tmp" "https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/catalogs/dns-8.5-RU-NOSOCIAL.conf?_dmcb=$_ts-$$"; then
+        _catalog_latest="$(sed -n 's/^# DNSCATVER=//p' "$_tmp" 2>/dev/null | head -n1)"
+        _catalog_latest_rev="$(sed -n 's/^# DNSCATREV=//p' "$_tmp" 2>/dev/null | head -n1)"
+        _catalog_latest_total="$(grep -v '^#' "$_tmp" 2>/dev/null | grep -c '^[^|][^|]*|' 2>/dev/null || printf 0)"
+        [ -n "$_catalog_latest" ] && _catalog_ok=1
+        _local_rev="$(sed -n 's/^# DNSCATREV=//p' "$CATALOG_FILE" 2>/dev/null | head -n1)"
+        _local_total="$(grep -v '^#' "$CATALOG_FILE" 2>/dev/null | grep -c '^[^|][^|]*|' 2>/dev/null || printf 0)"
+        [ "$_catalog_latest" != "$(catalog_version)" ] && [ -n "$_catalog_latest" ] && _catalog_available=1
+        [ -n "$_catalog_latest_rev" ] && [ "$_catalog_latest_rev" != "$_local_rev" ] && _catalog_available=1
+        [ "$_catalog_latest_total" != "$_local_total" ] && _catalog_available=1
+    fi
+    rm -f "$_tmp" 2>/dev/null || true
+
+    _hdp_installed="$(package_version https-dns-proxy 2>/dev/null || true)"
+    _hdp_candidate="$(package_candidate_version https-dns-proxy 2>/dev/null || true)"
+    _hdp_available=0
+    [ -n "$_hdp_installed" ] && [ -n "$_hdp_candidate" ] && package_version_cmp "$_hdp_candidate" "$_hdp_installed" && _hdp_available=1
+
+    _state_tmp="$UPDATE_STATE.tmp.$$"
+    if [ -r "$UPDATE_STATE" ]; then
+        sed '/^manager_/d;/^catalog_latest/d;/^catalog_available/d;/^catalog_checked/d;/^hdp_latest/d;/^hdp_available/d' "$UPDATE_STATE" > "$_state_tmp" 2>/dev/null || true
+    else
+        : > "$_state_tmp"
+    fi
+    printf 'manager_latest=%s\n' "$_manager_latest" >> "$_state_tmp"
+    printf 'manager_available=%s\n' "$_manager_available" >> "$_state_tmp"
+    printf 'manager_checked=%s\n' "$_manager_ok" >> "$_state_tmp"
+    printf 'catalog_latest=%s\n' "$_catalog_latest" >> "$_state_tmp"
+    printf 'catalog_latest_rev=%s\n' "$_catalog_latest_rev" >> "$_state_tmp"
+    printf 'catalog_latest_total=%s\n' "$_catalog_latest_total" >> "$_state_tmp"
+    printf 'catalog_available=%s\n' "$_catalog_available" >> "$_state_tmp"
+    printf 'catalog_checked=%s\n' "$_catalog_ok" >> "$_state_tmp"
+    printf 'hdp_latest=%s\n' "$_hdp_candidate" >> "$_state_tmp"
+    printf 'hdp_available=%s\n' "$_hdp_available" >> "$_state_tmp"
+    mv "$_state_tmp" "$UPDATE_STATE" 2>/dev/null || rm -f "$_state_tmp" 2>/dev/null || true
+}
+update_check_json() {
+    _result="$(update_check_json_luci)"
+    component_update_check || true
+    printf '%s\n' "$_result"
 }
 
 maybe_background_update_check() {
@@ -534,14 +606,22 @@ status_json() {
     [ "$_force_manager" = 1 ] && [ "$_external" = 1 ] && _force_both=1
     _luci_avail="$(sed -n 's/^available=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"; [ -n "$_luci_avail" ] || _luci_avail=0
     _luci_checked="$(sed -n 's/^checked_at=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"
+    _manager_latest_state="$(sed -n 's/^manager_latest=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"
+    _manager_avail_state="$(sed -n 's/^manager_available=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"; [ -n "$_manager_avail_state" ] || _manager_avail_state=0
+    _catalog_latest_state="$(sed -n 's/^catalog_latest=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"
+    _catalog_rev_state="$(sed -n 's/^catalog_latest_rev=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"
+    _catalog_total_state="$(sed -n 's/^catalog_latest_total=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"; [ -n "$_catalog_total_state" ] || _catalog_total_state=0
+    _catalog_avail_state="$(sed -n 's/^catalog_available=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"; [ -n "$_catalog_avail_state" ] || _catalog_avail_state=0
 
     printf '{"ok":true,"manager_version":'; json_quote "$_mv"; printf ',"luci_version":'; json_quote "$_luciv"; printf ',"luci_latest_version":'; json_quote "$_luci_latest"; printf ',"luci_update_available":%s,"luci_update_checked":%s' "$_luci_avail" "${_luci_checked:-0}"
+    printf ',"manager_latest_version":'; json_quote "$_manager_latest_state"; printf ',"manager_update_available":%s' "$_manager_avail_state"
+    printf ',"catalog_latest_version":'; json_quote "$_catalog_latest_state"; printf ',"catalog_latest_rev":'; json_quote "$_catalog_rev_state"; printf ',"catalog_latest_total":%s,"catalog_update_available":%s' "$_catalog_total_state" "$_catalog_avail_state"
     printf ',"ipv4":'; json_quote "$_ipv4"; printf ',"ipv6":'; json_quote "$_ipv6"; printf ',"dnsmasq":'; json_quote "$_dnsmasq"; printf ',"doh":'; json_quote "$_doh"; printf ',"firewall":'; json_quote "$_fw"; printf ',"openwrt":'; json_quote "$(openwrt_release)"; printf ',"lan":'; json_quote "$_lan"
     printf ',"profile":'; json_quote "$_profile"; printf ',"profile_mode":'; json_quote "$_mode"; printf ',"watchdog":'; json_quote "$_watchdog"; printf ',"watchdog_service":'; json_quote "$( [ -x /etc/init.d/dns-watchdog ] && /etc/init.d/dns-watchdog running >/dev/null 2>&1 && printf yes || printf no )"; printf ',"watchdog_interval":'; json_quote "$_watchdog_interval"
-    printf ',"force":'; json_quote "$_force"; printf ',"force_external":'; json_quote "$_external"; printf ',"force_owner":'; json_quote "$( [ "$_external" = 1 ] && printf external || [ "$_force" = 1 ] && printf manager || printf none )"; printf ',"force_source":'; json_quote "$FORCE_RUNTIME_SOURCE"; printf ',"force_notrack":'; json_quote "$_force_notrack"; printf ',"force_update":'; json_quote "$_force_update"; printf ',"force_family":'; json_quote "$_force_family"; printf ',"force_ports":'; json_quote "$_force_ports"; printf ',"force_src":'; json_quote "$_force_src"; printf ',"force_canary_icloud":'; json_quote "$_force_canary_i"; printf ',"force_canary_mozilla":'; json_quote "$_force_canary_m"; printf ',"force_procd_trigger_wan6":'; json_quote "$_force_procd"; printf ',"force_heartbeat_domain":'; json_quote "$_force_heartbeat_domain"; printf ',"force_heartbeat_sleep":'; json_quote "$_force_heartbeat_sleep"; printf ',"force_heartbeat_wait":'; json_quote "$_force_heartbeat_wait"; printf ',"force_user":'; json_quote "$_force_user"; printf ',"force_group":'; json_quote "$_force_group"; printf ',"force_listen":'; json_quote "$_force_listen"; printf ',"force_consistent":%s' "$_force_consistent"; printf ',"mtu":'; json_quote "$_mtu"; printf ',"sysctl":'; json_quote "$_sysctl"; printf ',"sysctl_ext":'; json_quote "$_sysctl_ext"; printf ',"ntp_clients":'; json_quote "$_ntp"; printf ',"dnsmasq_perf":'; json_quote "$_perf"; printf ',"client_fixes":'; json_quote "$_fix"
+    printf ',"force":'; json_quote "$_force"; printf ',"force_external":'; json_quote "$_external"; printf ',"force_owner":'; json_quote "$( [ "$_external" = 1 ] && printf external || [ "$_force" = 1 ] && printf manager || printf none )"; printf ',"force_source":'; json_quote "$FORCE_RUNTIME_SOURCE"; printf ',"force_targets":'; json_quote "$FORCE_RUNTIME_TARGETS"; printf ',"force_notrack":'; json_quote "$_force_notrack"; printf ',"force_update":'; json_quote "$_force_update"; printf ',"force_family":'; json_quote "$_force_family"; printf ',"force_ports":'; json_quote "$_force_ports"; printf ',"force_src":'; json_quote "$_force_src"; printf ',"force_canary_icloud":'; json_quote "$_force_canary_i"; printf ',"force_canary_mozilla":'; json_quote "$_force_canary_m"; printf ',"force_procd_trigger_wan6":'; json_quote "$_force_procd"; printf ',"force_heartbeat_domain":'; json_quote "$_force_heartbeat_domain"; printf ',"force_heartbeat_sleep":'; json_quote "$_force_heartbeat_sleep"; printf ',"force_heartbeat_wait":'; json_quote "$_force_heartbeat_wait"; printf ',"force_user":'; json_quote "$_force_user"; printf ',"force_group":'; json_quote "$_force_group"; printf ',"force_listen":'; json_quote "$_force_listen"; printf ',"force_consistent":%s' "$_force_consistent"; printf ',"mtu":'; json_quote "$_mtu"; printf ',"sysctl":'; json_quote "$_sysctl"; printf ',"sysctl_ext":'; json_quote "$_sysctl_ext"; printf ',"ntp_clients":'; json_quote "$_ntp"; printf ',"dnsmasq_perf":'; json_quote "$_perf"; printf ',"client_fixes":'; json_quote "$_fix"
     printf ',"doh_total":%s,"doh_match":%s,"configured_dns":%s,"average_ping":' "$_doh_total" "$_match" "$_expected"; json_quote "$(average_selected_ping)"; printf ',"last_full_test":'; json_quote "$_last"
     printf ',"hostname":'; json_quote "$_host"; printf ',"uptime":'; json_quote "$_uptime"; printf ',"load1":'; json_quote "$_load"; printf ',"memory_total_kb":%s,"memory_available_kb":%s' "${_mem_t:-0}" "${_mem_a:-0}"
-    printf ',"catalog_total":%s,"catalog_version":' "$_cat_total"; json_quote "$(catalog_version)"; printf ',"hdp_version":'; json_quote "$_hdp_installed"; printf ',"hdp_latest_version":'; json_quote "$_hdp_candidate"; printf ',"hdp_update_available":%s' "$_hdp_update"; printf ',"force_status":'; json_quote "$([ "$_external" = 1 ] && printf external || [ "$_force_manager" = 1 ] && printf manager || printf off)"; printf ',"force_owner":'; json_quote "$([ "$_external" = 1 ] && printf 'внешний' || [ "$_force_manager" = 1 ] && printf 'DNS Manager' || printf 'нет')"; printf ',"force_manager":%s,"force_both":%s,"zapret_running":%s' "$_force_manager" "$_force_both" "$_zapret_running"; printf ',"force_source":'; json_quote "$_force_source"; printf ',"slots":['
+    printf ',"catalog_total":%s,"catalog_version":' "$_cat_total"; json_quote "$(catalog_version)"; printf ',"hdp_version":'; json_quote "$_hdp_installed"; printf ',"hdp_latest_version":'; json_quote "$_hdp_candidate"; printf ',"hdp_update_available":%s' "$_hdp_update"; printf ',"force_status":'; json_quote "$([ "$_external" = 1 ] && printf external || [ "$_force_manager" = 1 ] && printf manager || printf off)"; printf ',"force_owner":'; json_quote "$([ "$_external" = 1 ] && printf 'внешний' || [ "$_force_manager" = 1 ] && printf 'DNS Manager' || printf 'нет')"; printf ',"force_manager":%s,"force_both":%s,"zapret_running":%s' "$_force_manager" "$_force_both" "$_zapret_running"; printf ',"force_source":'; json_quote "$FORCE_RUNTIME_SOURCE"; printf ',"slots":['
     _first=1
     for _s in 1 2 3 4 5 6 RU RU_2; do
         _id="$(cfg_get "SLOT_$_s")"; _cat="$(cfg_get "SLOT_${_s}_CAT")"; _port="$(cfg_get "PORT_$_s")"
@@ -773,6 +853,22 @@ function stripAnsi(s){
 }
 function stateBadge(status){ var s=String(status||'').toUpperCase(); if(s==='OK')return badge('dm-ok','доступен'); if(s==='RUNNING')return badge('dm-warn','выполняется'); if(s==='FAIL'||s==='FAILED')return badge('dm-bad','ошибка'); return badge('dm-off','нет данных'); }
 function settingName(n){ var m={watchdog:'Автопроверка DNS',mtu:'Настройка MTU и MSS',sysctl:'Оптимизация TCP и соединений',sysctl_ext:'Расширенные параметры сети',ntp_clients:'Время для устройств сети',dnsmasq_perf:'Кэш DNS',client_fixes:'Исправления для устройств'}; return m[n]||n; }
+function versionState(v,available,latest,okWord){
+  if(!v)return badge('dm-bad','не установлена');
+  if(yes(available))return badge('dm-warn',shortVal(v)+' → '+shortVal(latest)+' · неактуальна');
+  if(latest)return badge('dm-ok',shortVal(v)+' · '+okWord);
+  return badge('dm-off',shortVal(v)+' · проверка не выполнена');
+}
+function catalogVersionState(v,total,available,latest,latestRev){
+  if(!v)return badge('dm-bad','не установлен');
+  if(yes(available)){
+    var tail=latest?shortVal(latest):'новая версия';
+    if(latestRev)tail+=' rev.'+shortVal(latestRev);
+    return badge('dm-warn',shortVal(v)+' → '+tail+' · неактуален');
+  }
+  if(latest)return badge('dm-ok',shortVal(v)+' · актуален');
+  return badge('dm-off',shortVal(v)+' · проверка не выполнена');
+}
 
 function injectStyle(root){
   var css = ''+
@@ -892,20 +988,20 @@ function renderOverview(root,st){
     row('LAN',shortVal(st.lan))
   ]);
   var verCard=card('Версии',[
-    row('DNS Manager',shortVal(st.manager_version)),
-    row('LuCI',shortVal(st.luci_version)),
-    row('https-dns-proxy',st.hdp_update_available?badge('dm-warn',shortVal(st.hdp_version)+' → '+shortVal(st.hdp_latest_version)):badge('dm-ok',shortVal(st.hdp_version)+' · актуальна')),
-    row('Каталог DNS',shortVal(st.catalog_version)+' · '+String(st.catalog_total||0)),
+    row('DNS Manager',versionState(st.manager_version,st.manager_update_available,st.manager_latest_version,'актуальна')),
+    row('LuCI',versionState(st.luci_version,st.luci_update_available,st.luci_latest_version,'актуальна')),
+    row('https-dns-proxy',versionState(st.hdp_version,st.hdp_update_available,st.hdp_latest_version,'актуальна')),
+    row('Каталог DNS',catalogVersionState(st.catalog_version,st.catalog_total,st.catalog_update_available,st.catalog_latest_version,st.catalog_latest_rev)),
     row('Последняя проверка',dateText(st.last_full_test)),
-    E('div',{'class':'dm-actions'},[btn('Проверить обновления','cbi-button-neutral',function(){checkUpdate(root);}),yes(st.luci_update_available)?btn('Обновить LuCI','cbi-button-positive',function(){doUpdate(root);}):E('span',{})])
+    E('div',{'class':'dm-actions'},[btn('Проверить актуальность','cbi-button-neutral',function(){checkUpdate(root);}),yes(st.luci_update_available)?btn('Обновить LuCI','cbi-button-positive',function(){doUpdate(root);}):E('span',{})])
   ]);
   var forceBox=E('div',{'class':'dm-actions'},[
-    btn(st.force==='1'?'Перехват DNS включён':'Перехватывать DNS',st.force==='1'?'cbi-button-positive':'cbi-button-neutral',function(){setForceMode('auto',root);},{disabled:st.force_owner==='external'||state.busy||state.jobRunning}),
+    btn(st.force_owner==='external'?(st.force_source==='Zapret / внешний'?'Перехват DNS · Zapret':'Перехват DNS · внешний сервис'):(st.force==='1'?'Перехват DNS включён':'Перехватывать DNS'),st.force==='1'?'cbi-button-positive':'cbi-button-neutral',function(){setForceMode('auto',root);},{disabled:st.force_owner==='external'||state.busy||state.jobRunning}),
     btn(st.force==='1'?'Выключить перехват':'Не перехватывать',st.force==='1'?'cbi-button-neutral':'cbi-button-action',function(){setForceMode('off',root);},{disabled:st.force_owner==='external'||state.busy||state.jobRunning})
   ]);
   e.appendChild(stateCard);
   e.appendChild(E('div',{'class':'dm-grid2'},[sysCard,verCard]));
-  e.appendChild(card('Перехват DNS устройств',[row('Текущее состояние',force),st.force_owner==='external'?E('div',{'class':'dm-force-external'},'Обнаружен внешний forced-DNS: '+shortVal(st.force_source)+'. DNS Manager его не изменяет.'):E('div',{'class':'dm-hint'},'При включении DNS Manager перенаправляет DNS-запросы устройств на локальный DoH-прокси.'),forceBox,state.pageNotice.doh?E('div',{'class':'dm-inline-msg info'},state.pageNotice.doh):E('span',{})]));
+  e.appendChild(card('Перехват DNS устройств',[row('Текущее состояние',force),st.force_owner==='external'?E('div',{'class':'dm-force-external'},'Обнаружен внешний forced-DNS: '+shortVal(st.force_source)+(st.force_targets?' · порты '+shortVal(st.force_targets):'')+'. DNS Manager его не изменяет.'):E('div',{'class':'dm-hint'},'При включении DNS Manager перенаправляет DNS-запросы устройств на локальный DoH-прокси.'),forceBox,state.pageNotice.doh?E('div',{'class':'dm-inline-msg info'},state.pageNotice.doh):E('span',{})]));
 }
 function resolverRows(st){
   var out=[],seen=0;
@@ -1103,7 +1199,7 @@ function startAutoRefresh(root){
   },1000);
 }
 function toast(msg,type){}
-function checkUpdate(root){globalUpdateNotice('Проверяю обновления LuCI…','info');state.pageNotice.overview='Проверяю обновления LuCI…';if(rootAlive(root))renderOverview(root,window.dmState||{});return callUpdateCheck().then(function(r){var ok=!!(r&&r.ok);var msg=!ok?'Проверка обновлений не выполнена.':(yes(r.available)?'Доступна новая версия LuCI: v'+r.latest_version:'Установлена актуальная версия LuCI.');state.pageNotice.overview=msg;globalUpdateNotice(msg,ok?'ok':'error');return refresh(root,true);}).catch(function(){var msg='Проверка обновлений не выполнена.';state.pageNotice.overview=msg;globalUpdateNotice(msg,'error');return refresh(root,true);});}
+function checkUpdate(root){globalUpdateNotice('Проверяю актуальность версий…','info');state.pageNotice.overview='Проверяю обновления LuCI…';if(rootAlive(root))renderOverview(root,window.dmState||{});return callUpdateCheck().then(function(r){var ok=!!(r&&r.ok);var msg=!ok?'Проверка актуальности версий не выполнена.':(yes(r.available)?'Доступна новая версия LuCI: v'+r.latest_version:'Установлена актуальная версия LuCI.');state.pageNotice.overview=msg;globalUpdateNotice(msg,ok?'ok':'error');return refresh(root,true);}).catch(function(){var msg='Проверка актуальности версий не выполнена.';state.pageNotice.overview=msg;globalUpdateNotice(msg,'error');return refresh(root,true);});}
 function doUpdate(root){if(state.busy)return;var v=(window.dmState&&window.dmState.luci_latest_version)||'новой версии';if(!confirm('Обновить только LuCI до v'+v+'? DNS Manager и настройки не изменятся.'))return;state.busy=true;state.pageNotice.overview='Обновляю LuCI…';globalUpdateNotice('Обновляю LuCI до v'+v+'…','info');if(rootAlive(root))renderOverview(root,window.dmState||{});callUpdate().then(function(r){state.busy=false;if(r&&r.ok&&r.updated){var msg='LuCI обновлена до v'+r.version+'. Перезагружаю страницу…';state.pageNotice.overview=msg;globalUpdateNotice(msg,'ok');if(rootAlive(root))renderOverview(root,window.dmState||{});setTimeout(function(){location.reload();},1600);}else{var msg=(r&&r.error)||'LuCI не удалось обновить.';state.pageNotice.overview=msg;globalUpdateNotice(msg,'error');if(rootAlive(root))renderOverview(root,window.dmState||{});}}).catch(function(){state.busy=false;var msg='Не удалось выполнить RPC-обновление LuCI. Попробуйте ещё раз; причина будет показана в сообщении RPC.';state.pageNotice.overview=msg;globalUpdateNotice(msg,'error');if(rootAlive(root))renderOverview(root,window.dmState||{});});}
 function applyProfile(name,root){if(state.busy)return;state.busy=true;state.pageNotice.profiles='Применяю профиль «'+profileName(name)+'»…';renderProfiles(root,window.dmState||{});callProfile(name).then(function(r){state.busy=false;state.pageNotice.profiles=(r&&r.ok)?'Профиль «'+profileName(name)+'» применён.':(r&&r.error)||'Профиль не удалось применить.';refresh(root,true);}).catch(function(){state.busy=false;state.pageNotice.profiles='Профиль не удалось применить.';refresh(root,true);});}
 function setSetting(name,en,root){if(state.busy)return;state.busy=true;state.busySetting=name;state.settingMessage='Изменение «'+settingName(name)+'»…';state.settingMessageType='info';renderSettings(root,window.dmState||{});callSetting(name,en).then(function(r){state.busy=false;state.busySetting='';state.settingMessage=(r&&r.ok)?('Настройка «'+settingName(name)+'»: '+(en?'включена.':'выключена.')):((r&&r.error)||'Настройку не удалось изменить.');state.settingMessageType=(r&&r.ok)?'ok':'error';refresh(root,true);}).catch(function(){state.busy=false;state.busySetting='';state.settingMessage='Настройку не удалось изменить.';state.settingMessageType='error';refresh(root,true);});}
