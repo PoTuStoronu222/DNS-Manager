@@ -323,7 +323,7 @@ component_update_check() {
 
     _state_tmp="$UPDATE_STATE.tmp.$$"
     if [ -r "$UPDATE_STATE" ]; then
-        sed '/^manager_/d;/^catalog_latest/d;/^catalog_available/d;/^catalog_checked/d;/^hdp_latest/d;/^hdp_available/d' "$UPDATE_STATE" > "$_state_tmp" 2>/dev/null || true
+        sed '/^installed=/d;/^latest=/d;/^available=/d;/^checked_at=/d;/^manager_/d;/^catalog_/d;/^hdp_/d;/^components_checked_at=/d' "$UPDATE_STATE" > "$_state_tmp" 2>/dev/null || true
     else
         : > "$_state_tmp"
     fi
@@ -808,65 +808,61 @@ job_start_test_current() {
     _jid="$(new_job_id)"
     mkdir -p "$JOB_DIR/$_jid" 2>/dev/null || { json_error "Не удалось создать задачу"; return; }
     : > "$JOB_DIR/$_jid/state"
-    printf "status=running\nstarted=%s\nmode=current\n" "$(date +%s)" > "$JOB_DIR/$_jid/state"
+    printf 'status=running\nstarted=%s\nmode=current\n' "$(date +%s)" > "$JOB_DIR/$_jid/state"
     (
         exec >>"$JOB_DIR/$_jid/output" 2>&1
         if ! load_manager; then
             job_write "$_jid" status failed; job_write "$_jid" result fail; job_write "$_jid" finished "$(date +%s)"; exit 1
         fi
-        acquire_test_lock || { job_write "$_jid" status failed; job_write "$_jid" result fail; job_write "$_jid" finished "$(date +%s)"; exit 1; }
         _ids="$TMP_ROOT/current-dns-ids.$$"
         _cat="$TMP_ROOT/current-dns-catalog.$$"
         _results="$TMP_ROOT/current-test-results.$$"
-        _meta="$TMP_ROOT/current-test-meta.$$"
+        _meta="$TMP_ROOT/current-test-results-meta.$$"
         : > "$_ids"; : > "$_cat"
         for _s in 1 2 3 4 5 6 RU RU_2; do
             _id="$(cfg_get "SLOT_$_s")"
             [ -n "$_id" ] || continue
             grep -qxF "$_id" "$_ids" 2>/dev/null && continue
-            printf "%s\n" "$_id" >> "$_ids"
-            if [ -r "$DNS_CATALOG" ]; then
-                awk -F"|" -v id="$_id" '$1==id {print; exit}' "$DNS_CATALOG" >> "$_cat" 2>/dev/null || true
-            fi
+            printf '%s\n' "$_id" >> "$_ids"
+            awk -F"|" -v id="$_id" '$1==id {print; exit}' "$DNS_CATALOG" >> "$_cat" 2>/dev/null || true
         done
-        _total="$(wc -l < "$_ids" 2>/dev/null | tr -d " ")"
-        case "$_total" in ""|*[!0-9]*) _total=0;; esac
-        if [ "$_total" -eq 0 ]; then
+        _total="$(wc -l < "$_ids" 2>/dev/null | tr -d ' ')"
+        case "$_total" in ''|*[!0-9]*) _total=0;; esac
+        [ "$_total" -gt 0 ] || {
             rm -f "$_ids" "$_cat" "$_results" "$_meta"
-            release_test_lock
             job_write "$_jid" status failed; job_write "$_jid" result fail; job_write "$_jid" finished "$(date +%s)"; exit 1
-        fi
+        }
         _old_catalog="$DNS_CATALOG"
         _old_results="$TEST_RESULTS"
-        _old_meta="${TEST_RESULTS_META:-}"
+        _old_meta="$TEST_RESULTS_META"
         DNS_CATALOG="$_cat"
         TEST_RESULTS="$_results"
-        [ -n "$_old_meta" ] || TEST_RESULTS_META="$TMP_ROOT/current-test-results-meta.$$"
+        TEST_RESULTS_META="$_meta"
         if ! test_dns_catalog; then
-            DNS_CATALOG="$_old_catalog"; TEST_RESULTS="$_old_results"; [ -n "$_old_meta" ] && TEST_RESULTS_META="$_old_meta"
+            DNS_CATALOG="$_old_catalog"; TEST_RESULTS="$_old_results"; TEST_RESULTS_META="$_old_meta"
             rm -f "$_ids" "$_cat" "$_results" "$_meta"
-            release_test_lock
             job_write "$_jid" status failed; job_write "$_jid" result fail; job_write "$_jid" finished "$(date +%s)"; exit 1
         fi
-        DNS_CATALOG="$_old_catalog"
-        TEST_RESULTS="$_old_results"
-        [ -n "$_old_meta" ] && TEST_RESULTS_META="$_old_meta"
+        DNS_CATALOG="$_old_catalog"; TEST_RESULTS="$_old_results"; TEST_RESULTS_META="$_old_meta"
         _merged="$TMP_ROOT/current-merged.$$"
         : > "$_merged"
         if [ -s "$TEST_RESULTS" ]; then
             awk -F"|" -v ids_file="$_ids" 'BEGIN { while ((getline x < ids_file)>0) ids[x]=1 } !($1 in ids) { print }' "$TEST_RESULTS" > "$_merged" 2>/dev/null || true
         fi
         [ -s "$_results" ] && cat "$_results" >> "$_merged"
-        mv "$_merged" "$TEST_RESULTS" 2>/dev/null || { rm -f "$_ids" "$_cat" "$_results" "$_meta"; release_test_lock; job_write "$_jid" status failed; job_write "$_jid" result fail; job_write "$_jid" finished "$(date +%s)"; exit 1; }
+        mv "$_merged" "$TEST_RESULTS" 2>/dev/null || {
+            rm -f "$_ids" "$_cat" "$_results" "$_meta"
+            job_write "$_jid" status failed; job_write "$_jid" result fail; job_write "$_jid" finished "$(date +%s)"; exit 1
+        }
         save_persistent_test_results >/dev/null 2>&1 || true
         _stamp="$(date +%s)"
-        while IFS="|" read -r _id _rest; do [ -n "$_id" ] && set_check_stamp "$_id" "$_stamp"; done < "$_results"
-        rm -f "$_ids" "$_cat" "$_results" "$_meta" "${TEST_RESULTS_META:-}"
-        release_test_lock
+        while IFS='|' read -r _id _rest; do [ -n "$_id" ] && set_check_stamp "$_id" "$_stamp"; done < "$_results"
+        rm -f "$_ids" "$_cat" "$_results" "$_meta"
         job_write "$_jid" status done; job_write "$_jid" result ok; job_write "$_jid" finished "$_stamp"
     ) &
     printf '{"ok":true,"job":'; json_quote "$_jid"; printf '}'
 }
+
 job_start_test_one() {
     _id="$1"; case "$_id" in ''|*[!A-Za-z0-9_-]*) json_error "Неверный ID DNS"; return;; esac
     _jid="$(new_job_id)"; mkdir -p "$JOB_DIR/$_jid" 2>/dev/null || { json_error "Не удалось создать задачу"; return; }
@@ -1004,11 +1000,14 @@ EOF_RPC
 var callStatus = rpc.declare({ object:'dns_manager', method:'status', expect:{} });
 var callCatalog = rpc.declare({ object:'dns_manager', method:'catalog', params:['category','offset','limit','only_ok'], expect:{} });
 var callUpdateCheck = rpc.declare({ object:'dns_manager', method:'update_check', expect:{} });
+var callVersionCheckStart = rpc.declare({ object:'dns_manager', method:'update_check_job', expect:{} });
+var callVersionCheckStatus = rpc.declare({ object:'dns_manager', method:'update_check_job_status', params:['id'], expect:{} });
 var callUpdate = rpc.declare({ object:'dns_manager', method:'update', expect:{} });
 var callProfile = rpc.declare({ object:'dns_manager', method:'set_profile', params:['profile'], expect:{} });
 var callSlot = rpc.declare({ object:'dns_manager', method:'set_slot', params:['slot','id'], expect:{} });
 var callSetting = rpc.declare({ object:'dns_manager', method:'set_setting', params:['name','enabled'], expect:{} });
 var callTestAll = rpc.declare({ object:'dns_manager', method:'test_all', expect:{} });
+var callTestCurrent = rpc.declare({ object:'dns_manager', method:'test_current', expect:{} });
 var callTestOne = rpc.declare({ object:'dns_manager', method:'test_one', params:['id'], expect:{} });
 var callJob = rpc.declare({ object:'dns_manager', method:'job', params:['id'], expect:{} });
 var callLog = rpc.declare({ object:'dns_manager', method:'log', params:['lines'], expect:{} });
@@ -1216,7 +1215,17 @@ function renderOverview(root,st){
   ]);
   e.appendChild(stateCard);
   e.appendChild(E('div',{'class':'dm-grid2'},[sysCard,verCard]));
-  e.appendChild(card('Перехват DNS устройств',[row('Текущее состояние',force),st.force_owner==='external'?E('div',{'class':'dm-force-external'},'Обнаружен внешний forced-DNS: '+shortVal(st.force_source)+(st.force_targets?' · порты '+shortVal(st.force_targets):'')+'. DNS Manager его не изменяет.'):E('div',{'class':'dm-hint'},'При включении DNS Manager перенаправляет DNS-запросы устройств на локальный DoH-прокси.'),forceBox,state.pageNotice.doh?E('div',{'class':'dm-inline-msg info'},state.pageNotice.doh):E('span',{})]));
+  var forceChildren=[];
+  if(st.force_owner==='external'){
+    forceChildren.push(row('Состояние',badge('dm-warn',shortVal(st.force_source||'внешний'))));
+    forceChildren.push(E('div',{'class':'dm-hint'},'DNS Manager не изменяет внешний перехват.'));
+  }else{
+    forceChildren.push(row('Состояние',force));
+    forceChildren.push(E('div',{'class':'dm-hint'},'DNS Manager перенаправляет DNS-запросы устройств на локальный DoH-прокси.'));
+    forceChildren.push(forceBox);
+  }
+  if(state.pageNotice.doh)forceChildren.push(E('div',{'class':'dm-inline-msg info'},state.pageNotice.doh));
+  e.appendChild(card('Перехват DNS устройств',forceChildren));
 }
 function resolverRows(st){
   var out=[],seen=0;
@@ -1430,17 +1439,34 @@ function startAutoRefresh(root){
 function toast(msg,type){}
 function checkUpdate(root){
   if(state.versionCheck&&state.versionCheck.running)return;
-  state.versionCheck={running:true,manager:'running',luci:'running',hdp:'running',catalog:'running',started:Date.now()};
+  state.versionCheck={running:true,manager:'running',luci:'running',hdp:'running',catalog:'running',started:Date.now(),job:''};
   renderOverview(root,window.dmState||{});
-  return callUpdateCheck().then(function(r){
-    state.versionCheck.running=false;
-    if(!r||!r.ok)state.versionCheck.error=true;
-    return refresh(root,true);
-  }).catch(function(){
-    state.versionCheck.running=false;
-    state.versionCheck.error=true;
-    return refresh(root,true);
-  });
+  callVersionCheckStart().then(function(r){
+    if(!r||!r.ok||!r.job){state.versionCheck.running=false;state.versionCheck.error=true;refresh(root,true);return;}
+    state.versionCheck.job=r.job;
+    var ticks=0;
+    function pollVersion(){
+      if(!rootAlive(root))return;
+      callVersionCheckStatus(r.job).then(function(s){
+        var st=String(s&&s.status||'running').toLowerCase();
+        if(st==='done'||st==='failed'){
+          state.versionCheck.running=false;
+          state.versionCheck.error=st==='failed'||!(s&&s.ok);
+          refresh(root,true);return;
+        }
+        if(ticks++>=120){
+          state.versionCheck.running=false;state.versionCheck.error=true;
+          globalUpdateNotice('Проверка версий не завершилась.','error');
+          refresh(root,true);return;
+        }
+        setTimeout(pollVersion,500);
+      }).catch(function(){
+        if(ticks++>=20){state.versionCheck.running=false;state.versionCheck.error=true;refresh(root,true);return;}
+        setTimeout(pollVersion,700);
+      });
+    }
+    pollVersion();
+  }).catch(function(){state.versionCheck.running=false;state.versionCheck.error=true;refresh(root,true);});
 }
 function doUpdate(root){if(state.busy)return;var v=(window.dmState&&window.dmState.luci_latest_version)||'новой версии';if(!confirm('Обновить только LuCI до v'+v+'? DNS Manager и настройки не изменятся.'))return;state.busy=true;state.pageNotice.overview='Обновляю LuCI…';globalUpdateNotice('Обновляю LuCI до v'+v+'…','info');if(rootAlive(root))renderOverview(root,window.dmState||{});callUpdate().then(function(r){state.busy=false;if(r&&r.ok&&r.updated){var msg='LuCI обновлена до v'+r.version+'. Перезагружаю страницу…';state.pageNotice.overview=msg;globalUpdateNotice(msg,'ok');if(rootAlive(root))renderOverview(root,window.dmState||{});setTimeout(function(){location.reload();},1600);}else{var msg=(r&&r.error)||'LuCI не удалось обновить.';state.pageNotice.overview=msg;globalUpdateNotice(msg,'error');if(rootAlive(root))renderOverview(root,window.dmState||{});}}).catch(function(){state.busy=false;var msg='Не удалось выполнить RPC-обновление LuCI. Попробуйте ещё раз; причина будет показана в сообщении RPC.';state.pageNotice.overview=msg;globalUpdateNotice(msg,'error');if(rootAlive(root))renderOverview(root,window.dmState||{});});}
 function applyProfile(name,root){if(state.busy)return;state.busy=true;state.pageNotice.profiles='Применяю профиль «'+profileName(name)+'»…';renderProfiles(root,window.dmState||{});callProfile(name).then(function(r){state.busy=false;state.pageNotice.profiles=(r&&r.ok)?'Профиль «'+profileName(name)+'» применён.':(r&&r.error)||'Профиль не удалось применить.';refresh(root,true);}).catch(function(){state.busy=false;state.pageNotice.profiles='Профиль не удалось применить.';refresh(root,true);});}
@@ -1496,27 +1522,17 @@ function testOne(id,root,origin,done){
 
 function testCurrent(root){
   if(state.jobRunning||state.busy)return;
-  var ids=[];
-  (window.dmState&&window.dmState.slots||[]).forEach(function(d){if(d&&d.id&&ids.indexOf(d.id)<0)ids.push(d.id);});
-  if(!ids.length){state.currentTest={status:'FAILED',index:0,total:0};render(root,window.dmState||{});return;}
-  state.currentTest={status:'RUNNING',index:0,total:ids.length,started:Date.now()};
+  var total=(window.dmState&&window.dmState.slots||[]).filter(function(d){return d&&d.id;}).length;
+  if(!total){state.currentTest={status:'FAILED',total:0};render(root,window.dmState||{});return;}
+  state.currentTest={status:'RUNNING',total:total,started:Date.now()};
   state.jobRunning=true;
-  function next(){
-    if(!rootAlive(root))return;
-    if(state.currentTest.index>=ids.length){
-      state.currentTest.status='DONE';state.jobRunning=false;render(root,window.dmState||{});return;
-    }
-    var id=ids[state.currentTest.index++];
-    state.checking[id]={status:'RUNNING',ping:'',started:Date.now()};
-    render(root,window.dmState||{});
-    callTestOne(id).then(function(r){
-      if(r&&r.ok)pollJob(root,r.job,{mode:'one',dns_id:id},function(){setTimeout(next,50);});
-      else{state.checking[id]={status:'FAIL',ping:''};setTimeout(next,50);}
-    }).catch(function(){state.checking[id]={status:'FAIL',ping:''};setTimeout(next,50);});
-  }
-  next();
+  (window.dmState&&window.dmState.slots||[]).forEach(function(d){if(d&&d.id)state.checking[d.id]={status:'RUNNING',ping:'',started:Date.now()};});
+  render(root,window.dmState||{});
+  callTestCurrent().then(function(r){
+    if(r&&r.ok)pollJob(root,r.job,{mode:'current'},null);
+    else{state.currentTest={status:'FAILED',total:total};state.jobRunning=false;refresh(root,true);}
+  }).catch(function(){state.currentTest={status:'FAILED',total:total};state.jobRunning=false;refresh(root,true);});
 }
-
 function pollJob(root,job,meta,done){
   var jobId=(typeof job==='string')?job:(job&&job.id)||'';var ticks=0;
   function finish(j){
@@ -1527,7 +1543,7 @@ function pollJob(root,job,meta,done){
         state.checking[meta.dns_id]={status:d&&d.status?d.status:(j.result==='ok'?'OK':'FAIL'),ping:d&&d.ping?d.ping:''};
       }
       if(done)done(ns);
-      else{state.jobRunning=false;if(meta&&meta.mode==='all')state.fullTest={status:String(j.status||'').toUpperCase()==='DONE'?'DONE':'FAILED',result:j.result||'fail',finished:Date.now()};render(root,ns);}
+      else{state.jobRunning=false;if(meta&&meta.mode==='all')state.fullTest={status:String(j.status||'').toUpperCase()==='DONE'?'DONE':'FAILED',result:j.result||'fail',finished:Date.now()};if(meta&&meta.mode==='current')state.currentTest={status:String(j.status||'').toUpperCase()==='DONE'?'DONE':'FAILED',result:j.result||'fail',finished:Date.now()};render(root,ns);}
     }).catch(function(){
       if(meta&&meta.mode==='one'&&meta.dns_id)state.checking[meta.dns_id]={status:j.result==='ok'?'OK':'FAIL',ping:''};
       if(done)done(window.dmState||{});
