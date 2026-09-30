@@ -962,7 +962,7 @@ catalog_validate_file() {
     [ "$_ver" = "$DNSCAT_VERSION" ] || return 1
     if [ "$_mode" != "legacy" ]; then
         grep -Fqx "# DNSCATREV=$DNSCAT_REVISION" "$_f" 2>/dev/null || return 1
-        grep -Fqx "# ENTRIES=111" "$_f" 2>/dev/null || return 1
+        grep -Fqx "# ENTRIES=105" "$_f" 2>/dev/null || return 1
     fi
     awk -F'|' '
         /^[[:space:]]*#/ || /^[[:space:]]*$/ { next }
@@ -972,7 +972,7 @@ catalog_validate_file() {
             ids[$1]++
             if (ids[$1] > 1) bad=1
         }
-        END { if (bad || count != 111) exit 1 }
+        END { if (bad || count != 105) exit 1 }
     "$_f" >/dev/null 2>&1 || return 1
     return 0
 }
