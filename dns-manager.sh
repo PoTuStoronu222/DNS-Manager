@@ -40,6 +40,15 @@ AUTO_UPDATE_CHECK_MAX_AGE=43200
 AUTO_UPDATE_LOCK_DIR="$STATE_DIR/auto-update.lock"
 TEST_RESULTS_META="$STATE_DIR/dns-test-results.meta"
 TEST_RESULTS_MAX_AGE=21600
+# Freshness window for DNS test results, by catalog category.
+# Values are stored in seconds and exposed in LuCI as hours.
+TEST_RESULTS_MAX_AGE_BYPASS=21600
+TEST_RESULTS_MAX_AGE_CLEAN=21600
+TEST_RESULTS_MAX_AGE_SECURITY=21600
+TEST_RESULTS_MAX_AGE_PRIVACY=21600
+TEST_RESULTS_MAX_AGE_ADBLOCK=21600
+TEST_RESULTS_MAX_AGE_FAMILY=21600
+TEST_RESULTS_MAX_AGE_REGIONAL=21600
 TEST_DEPENDENCY_WARNING_FILE="$STATE_DIR/dns-test-dependency-warning"
 TEST_DEPENDENCY_WARNING_MAX_AGE=3600
 TEST_PROGRESS_EVERY=20
@@ -1026,6 +1035,10 @@ esac
 : "${BALANCER_ENABLED:=1}"; : "${NTP_PRESET:=vniiftri_moscow}"; : "${NTP_PRESET_USER_SET:=0}"; : "${DNS_PROFILE:=hybrid}"; : "${DNS_SELECTION_MODE:=quick}"; : "${DNS_SELECTION_CATEGORY:=bypass}"
 : "${QUICK_PREF_1:=}"; : "${QUICK_PREF_2:=}"; : "${QUICK_PREF_3:=}"; : "${QUICK_PREF_4:=}"; : "${QUICK_PREF_5:=}"; : "${QUICK_PREF_6:=}"
 : "${WATCHDOG_ENABLED:=0}"; : "${WATCHDOG_INTERVAL:=90}"; : "${WATCHDOG_BACKEND:=procd}"
+: "${TEST_RESULTS_MAX_AGE_BYPASS:=21600}"; : "${TEST_RESULTS_MAX_AGE_CLEAN:=21600}"
+: "${TEST_RESULTS_MAX_AGE_SECURITY:=21600}"; : "${TEST_RESULTS_MAX_AGE_PRIVACY:=21600}"
+: "${TEST_RESULTS_MAX_AGE_ADBLOCK:=21600}"; : "${TEST_RESULTS_MAX_AGE_FAMILY:=21600}"
+: "${TEST_RESULTS_MAX_AGE_REGIONAL:=21600}"
 : "${WEB_ACCESS_ENABLED:=0}"; : "${WEB_ACCESS_PORT:=7682}"; : "${CLIENT_FIXES_FILE:=}"
 TLD_SPLIT="$TLD_RU_ENABLED"
 if [ "$_had_dns_profile" = 0 ] && [ -z "$DNS_PROFILE" ]; then
@@ -1106,6 +1119,13 @@ QUICK_PREF_6="$QUICK_PREF_6"
 WATCHDOG_ENABLED="$WATCHDOG_ENABLED"
 WATCHDOG_INTERVAL="$WATCHDOG_INTERVAL"
 WATCHDOG_BACKEND="$WATCHDOG_BACKEND"
+TEST_RESULTS_MAX_AGE_BYPASS="$TEST_RESULTS_MAX_AGE_BYPASS"
+TEST_RESULTS_MAX_AGE_CLEAN="$TEST_RESULTS_MAX_AGE_CLEAN"
+TEST_RESULTS_MAX_AGE_SECURITY="$TEST_RESULTS_MAX_AGE_SECURITY"
+TEST_RESULTS_MAX_AGE_PRIVACY="$TEST_RESULTS_MAX_AGE_PRIVACY"
+TEST_RESULTS_MAX_AGE_ADBLOCK="$TEST_RESULTS_MAX_AGE_ADBLOCK"
+TEST_RESULTS_MAX_AGE_FAMILY="$TEST_RESULTS_MAX_AGE_FAMILY"
+TEST_RESULTS_MAX_AGE_REGIONAL="$TEST_RESULTS_MAX_AGE_REGIONAL"
 WEB_ACCESS_ENABLED="$WEB_ACCESS_ENABLED"
 WEB_ACCESS_PORT="$WEB_ACCESS_PORT"
 EOF_CFG
@@ -6910,7 +6930,22 @@ fi
 # ==========================================
 # ==========================================
 # ==========================================
+test_results_max_age_for_category() {
+    case "$1" in
+        bypass) printf '%s' "${TEST_RESULTS_MAX_AGE_BYPASS:-$TEST_RESULTS_MAX_AGE}" ;;
+        clean) printf '%s' "${TEST_RESULTS_MAX_AGE_CLEAN:-$TEST_RESULTS_MAX_AGE}" ;;
+        security) printf '%s' "${TEST_RESULTS_MAX_AGE_SECURITY:-$TEST_RESULTS_MAX_AGE}" ;;
+        privacy) printf '%s' "${TEST_RESULTS_MAX_AGE_PRIVACY:-$TEST_RESULTS_MAX_AGE}" ;;
+        adblock) printf '%s' "${TEST_RESULTS_MAX_AGE_ADBLOCK:-$TEST_RESULTS_MAX_AGE}" ;;
+        family) printf '%s' "${TEST_RESULTS_MAX_AGE_FAMILY:-$TEST_RESULTS_MAX_AGE}" ;;
+        regional) printf '%s' "${TEST_RESULTS_MAX_AGE_REGIONAL:-$TEST_RESULTS_MAX_AGE}" ;;
+        *) printf '%s' "${TEST_RESULTS_MAX_AGE:-21600}" ;;
+    esac
+}
 watchdog_test_results_fresh() {
+    _fresh_cat="${1:-}"
+    _fresh_max="$(test_results_max_age_for_category "$_fresh_cat")"
+    case "$_fresh_max" in ''|*[!0-9]*) _fresh_max="${TEST_RESULTS_MAX_AGE:-21600}";; esac
     [ -s "$TEST_RESULTS" ] || return 1
     [ -s "$TEST_RESULTS_META" ] || return 1
     _ts="$(sed -n 's/^timestamp=//p' "$TEST_RESULTS_META" 2>/dev/null | head -n1)"
@@ -6928,11 +6963,12 @@ watchdog_test_results_fresh() {
     [ "$(wc -l < "$TEST_RESULTS" 2>/dev/null | tr -d " ")" = "$_cc" ] || return 1
     [ "$_ch" = "$(file_hash "$DNS_CATALOG")" ] || return 1
     [ "$(( _now - _ts ))" -ge 0 ] 2>/dev/null || return 1
-    [ "$(( _now - _ts ))" -le "${TEST_RESULTS_MAX_AGE:-21600}" ] 2>/dev/null || return 1
+    [ "$(( _now - _ts ))" -le "$_fresh_max" ] 2>/dev/null || return 1
     return 0
 }
 ensure_test_results_fresh() {
-    if watchdog_test_results_fresh; then
+    _fresh_cat="${1:-}"
+    if watchdog_test_results_fresh "$_fresh_cat"; then
         return 0
     fi
     if [ "${HAS_CURL:-no}" != yes ]; then
@@ -7200,7 +7236,7 @@ watchdog_pick_replacement() {
     _used="$2"
     _tried="$3"
     _have_fresh=0
-    if watchdog_test_results_fresh; then
+    if watchdog_test_results_fresh "$_desired_for_pick"; then
         _have_fresh=1
     fi
     _desired_for_pick="$(watchdog_desired_cat "$_slot")"
@@ -7460,8 +7496,8 @@ run_watchdog() {
         fi
         log_msg "DNS в слоте $_slot: $(dns_name "$_id") требует замены. Ищу подходящий DNS той же категории."
         if [ "$_force_replace" = 0 ]; then
-            if ! ensure_test_results_fresh; then
-                log_msg "Watchdog: не удалось получить свежие результаты проверки DNS. Замена слота $_slot запрещена."
+            if ! ensure_test_results_fresh "$_current_cat"; then
+                log_msg "Watchdog: не удалось получить свежие результаты проверки DNS для категории $_current_cat. Замена слота $_slot запрещена."
                 continue
             fi
         fi
