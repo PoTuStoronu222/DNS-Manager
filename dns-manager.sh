@@ -924,7 +924,11 @@ baseline_restore_for_uninstall() {
         esac
     done < "$BASELINE_MANIFEST"
 
-    [ "$UNINSTALL_RESTORE_COUNT" -gt 0 ] || return catalog_download() {
+    [ "$UNINSTALL_RESTORE_COUNT" -gt 0 ] || return 1
+    log_tx "UNINSTALL" "baseline" "RESTORE" "OK" "files=$UNINSTALL_RESTORE_COUNT;original_state=yes;guard=disabled"
+    return 0
+}
+catalog_download() {
     _out="$1"
     _url="${DNSCAT_URL}?_dmcb=$(date +%s 2>/dev/null || printf 0)-$$"
     rm -f "$_out" 2>/dev/null || true
@@ -985,7 +989,8 @@ write_catalogs() {
     err_msg "Каталог DNS $DNSCAT_VERSION не удалось получить и локальная копия отсутствует/повреждена."
     return 1
 }
-"${SLOT_RU_2:-}" ]; then
+sync_regional_dns_state() {
+    if [ -n "${SLOT_RU:-}" ] || [ -n "${SLOT_RU_2:-}" ]; then
         TLD_RU_ENABLED=1
         TLD_SPLIT=1
     else
