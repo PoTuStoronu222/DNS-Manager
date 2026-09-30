@@ -256,8 +256,12 @@ update_json() {
     fi
     rm -f "$_log" 2>/dev/null || true
     printf 'installed=%s\nlatest=%s\navailable=0\nchecked_at=%s\n' "$_after" "$_after" "$(date +%s 2>/dev/null || printf 0)" > "$UPDATE_STATE" 2>/dev/null || true
-    [ -x /etc/init.d/rpcd ] && /etc/init.d/rpcd reload >/dev/null 2>&1 || true
     printf '{"ok":true,"updated":true,"version":'; json_quote "$_after"; printf '}'
+    # Return the RPC response first. Reloading rpcd before writing the response can
+    # terminate the current rpcd worker and make LuCI report a false update failure.
+    if [ -x /etc/init.d/rpcd ]; then
+        ( sleep 1; /etc/init.d/rpcd reload >/dev/null 2>&1 || true ) >/dev/null 2>&1 &
+    fi
 }
 
 result_for_id() {
