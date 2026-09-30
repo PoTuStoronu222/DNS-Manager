@@ -544,9 +544,9 @@ confirm_action() {
     menu_prompt
     safe_read _ans
     case "$_ans" in
-        y|Y|н|Н|yes|YES|Yes|да|ДА|Да) return 0 ;;
-        n|N|т|Т|no|NO|No|нет|НЕТ|Нет|"") return 1 ;;
-        *) warn_msg "Используйте Y/Н — Да или N/Т — Нет."; return 1 ;;
+        y|Y|н|Н) return 0 ;;
+        n|N|т|Т|"") return 1 ;;
+        *) warn_msg "Используйте Y/Н — Да или N/Т/Enter — Нет."; return 1 ;;
     esac
 }
 pause() { [ "${SILENT_APPLY:-0}" = 1 ] && return 0; printf "\n${C_WHITE}Нажмите Enter...${C_NC}"; safe_read _dummy; }
@@ -6183,9 +6183,9 @@ module_state_word() {
         luci)
             _real="$(check_module_state luci)"
             case "$_real" in
-                1) printf "${C_BOLD}${C_GREEN}✓ ВКЛ${C_NC} ${C_CYAN}${C_BOLD}• установлено${C_NC}" ;;
-                2) printf "${C_BOLD}${C_YELLOW}⚠ ВКЛ${C_NC} ${C_CYAN}${C_BOLD}• требует восстановления${C_NC}" ;;
-                *) printf "${C_BOLD}${C_RED}✗ ВЫКЛ${C_NC} ${C_CYAN}${C_BOLD}• не установлено${C_NC}" ;;
+                1) printf "${C_BOLD}${C_GREEN}✓ УСТАНОВЛЕНО${C_NC} ${C_CYAN}${C_BOLD}• LuCI${C_NC}" ;;
+                2) printf "${C_BOLD}${C_YELLOW}⚠ ТРЕБУЕТ ВОССТАНОВЛЕНИЯ${C_NC} ${C_CYAN}${C_BOLD}• LuCI${C_NC}" ;;
+                *) printf "${C_BOLD}${C_RED}✗ НЕ УСТАНОВЛЕНО${C_NC} ${C_CYAN}${C_BOLD}• LuCI${C_NC}" ;;
             esac
             return 0
             ;;
@@ -6226,42 +6226,48 @@ luci_component_state() {
 }
 
 luci_companion_fetch() {
-    mkdir -p "$CFG_DIR" "$STATE_DIR" "$TMP_DIR" 2>/dev/null || return 1
+    LUCI_COMPANION_FETCH_ERROR=""
+    mkdir -p "$CFG_DIR" "$STATE_DIR" "$TMP_DIR" 2>/dev/null || { LUCI_COMPANION_FETCH_ERROR="Не удалось подготовить каталог временных файлов."; return 1; }
     _tmp="$TMP_DIR/dns-manager-luci-$$"
     rm -f "$_tmp" 2>/dev/null || true
 
     if command -v curl >/dev/null 2>&1; then
         curl -fsSL --connect-timeout 5 --max-time 30 -o "$_tmp" "$LUCI_COMPANION_URL" >/dev/null 2>&1 || {
+            LUCI_COMPANION_FETCH_ERROR="Ошибка загрузки companion через curl."
             rm -f "$_tmp" 2>/dev/null || true
             return 1
         }
     elif command -v wget >/dev/null 2>&1; then
         wget -q -T 30 -O "$_tmp" "$LUCI_COMPANION_URL" >/dev/null 2>&1 || {
+            LUCI_COMPANION_FETCH_ERROR="Ошибка загрузки companion через wget."
             rm -f "$_tmp" 2>/dev/null || true
             return 1
         }
     elif command -v uclient-fetch >/dev/null 2>&1; then
         uclient-fetch -q -O "$_tmp" "$LUCI_COMPANION_URL" >/dev/null 2>&1 || {
+            LUCI_COMPANION_FETCH_ERROR="Ошибка загрузки companion через uclient-fetch."
             rm -f "$_tmp" 2>/dev/null || true
             return 1
         }
     else
+        LUCI_COMPANION_FETCH_ERROR="Не найден curl, wget или uclient-fetch."
         rm -f "$_tmp" 2>/dev/null || true
         return 1
     fi
 
-    [ -s "$_tmp" ] || { rm -f "$_tmp"; return 1; }
-    head -n 1 "$_tmp" 2>/dev/null | grep -q '^#!/bin/sh' || { rm -f "$_tmp"; return 1; }
-    grep -Fq '# DNS Manager LuCI companion' "$_tmp" 2>/dev/null || { rm -f "$_tmp"; return 1; }
-    grep -Fq '/usr/libexec/rpcd/dns_manager' "$_tmp" 2>/dev/null || { rm -f "$_tmp"; return 1; }
-    grep -Fq 'admin/services/dns_manager' "$_tmp" 2>/dev/null || { rm -f "$_tmp"; return 1; }
-    sh -n "$_tmp" >/dev/null 2>&1 || { rm -f "$_tmp"; return 1; }
+    [ -s "$_tmp" ] || { LUCI_COMPANION_FETCH_ERROR="GitHub вернул пустой companion."; rm -f "$_tmp"; return 1; }
+    head -n 1 "$_tmp" 2>/dev/null | grep -q '^#!/bin/sh' || { LUCI_COMPANION_FETCH_ERROR="Companion не похож на штатный POSIX shell-установщик."; rm -f "$_tmp"; return 1; }
+    grep -Fq '# DNS Manager LuCI companion' "$_tmp" 2>/dev/null || { LUCI_COMPANION_FETCH_ERROR="Не найден маркер DNS Manager LuCI companion."; rm -f "$_tmp"; return 1; }
+    grep -Fq '/usr/libexec/rpcd/dns_manager' "$_tmp" 2>/dev/null || { LUCI_COMPANION_FETCH_ERROR="В companion отсутствует ожидаемый RPC backend."; rm -f "$_tmp"; return 1; }
+    grep -Fq 'admin/services/dns_manager' "$_tmp" 2>/dev/null || { LUCI_COMPANION_FETCH_ERROR="В companion отсутствует меню LuCI Службы → DNS Manager."; rm -f "$_tmp"; return 1; }
+    sh -n "$_tmp" >/dev/null 2>&1 || { LUCI_COMPANION_FETCH_ERROR="Companion не прошёл проверку shell-синтаксиса."; rm -f "$_tmp"; return 1; }
 
     LUCI_COMPANION_FETCH_FILE="$_tmp"
     LUCI_COMPANION_FETCH_VERSION="$(sed -n 's/^# Version:[[:space:]]*//p' "$_tmp" 2>/dev/null | head -n1)"
-    [ -n "${LUCI_COMPANION_FETCH_VERSION:-}" ] || { rm -f "$_tmp"; return 1; }
+    [ -n "${LUCI_COMPANION_FETCH_VERSION:-}" ] || { LUCI_COMPANION_FETCH_ERROR="В companion отсутствует строка версии '# Version:'."; rm -f "$_tmp"; return 1; }
     if _ver_newer "$LUCI_COMPANION_MIN_VERSION" "$LUCI_COMPANION_FETCH_VERSION"; then
-        log_msg "LuCI: найден слишком старый companion (version=${LUCI_COMPANION_FETCH_VERSION}); требуется версия не ниже $LUCI_COMPANION_MIN_VERSION."
+        LUCI_COMPANION_FETCH_ERROR="На GitHub находится companion версии ${LUCI_COMPANION_FETCH_VERSION}; требуется не ниже ${LUCI_COMPANION_MIN_VERSION}."
+        log_msg "LuCI: $LUCI_COMPANION_FETCH_ERROR"
         rm -f "$_tmp" 2>/dev/null || true
         return 1
     fi
@@ -6270,7 +6276,8 @@ luci_companion_fetch() {
 
 luci_companion_install() {
     luci_companion_fetch || {
-        err_msg "Не удалось безопасно получить dns-manager-luci.sh с GitHub. Основной DNS Manager не изменён."
+        [ -n "${LUCI_COMPANION_FETCH_ERROR:-}" ] && err_msg "LuCI: ${LUCI_COMPANION_FETCH_ERROR}" || err_msg "LuCI: не удалось безопасно получить dns-manager-luci.sh с GitHub."
+        err_msg "Основной DNS Manager не изменён."
         return 1
     }
 
@@ -6631,19 +6638,36 @@ setting_process() {
     printf "\n${C_WHITE}Настройка: %s${C_NC}\n" "$_title"
     printf "  Состояние: %s\n" "$(module_state_word "$_module")"
 
-    case "$_state" in
-        0) printf "  Действие:  ВКЛЮЧИТЬ\n" ;;
-        1) printf "  Действие:  ВЫКЛЮЧИТЬ\n" ;;
-        2) printf "  Действие:  ИСПРАВИТЬ\n" ;;
-        *) err_msg "Не удалось определить состояние настройки."; pause; return 1 ;;
-    esac
+    if [ "$_module" = luci ]; then
+        case "$_state" in
+            0) printf "  Действие:  УСТАНОВИТЬ\n" ;;
+            1) printf "  Действие:  УДАЛИТЬ\n" ;;
+            2) printf "  Действие:  ВОССТАНОВИТЬ\n" ;;
+            *) err_msg "Не удалось определить состояние настройки."; pause; return 1 ;;
+        esac
+    else
+        case "$_state" in
+            0) printf "  Действие:  ВКЛЮЧИТЬ\n" ;;
+            1) printf "  Действие:  ВЫКЛЮЧИТЬ\n" ;;
+            2) printf "  Действие:  ИСПРАВИТЬ\n" ;;
+            *) err_msg "Не удалось определить состояние настройки."; pause; return 1 ;;
+        esac
+    fi
     [ -n "$_description" ] && printf "  %s\n" "$_description"
 
-    case "$_state" in
-        0) confirm_action "Включить «$_title»?" || return 0 ;;
-        1) confirm_action "Выключить «$_title» и вернуть стоковое состояние?" || return 0 ;;
-        2) confirm_action "Исправить «$_title» и применить целевую настройку DNS Manager?" || return 0 ;
-    esac
+    if [ "$_module" = luci ]; then
+        case "$_state" in
+            0) confirm_action "Установить нативный интерфейс LuCI DNS Manager?" || return 0 ;;
+            1) confirm_action "Удалить нативный интерфейс LuCI DNS Manager? Сам DNS Manager и его DNS-настройки не изменятся." || return 0 ;;
+            2) confirm_action "Восстановить нативный интерфейс LuCI DNS Manager?" || return 0 ;;
+        esac
+    else
+        case "$_state" in
+            0) confirm_action "Включить «$_title»?" || return 0 ;;
+            1) confirm_action "Выключить «$_title» и вернуть стоковое состояние?" || return 0 ;;
+            2) confirm_action "Исправить «$_title» и применить целевую настройку DNS Manager?" || return 0 ;;
+        esac
+    fi
 
     if [ "$_module" = luci ]; then
         case "$_state" in
