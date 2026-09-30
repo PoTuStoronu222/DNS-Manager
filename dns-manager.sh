@@ -7427,15 +7427,6 @@ run_watchdog() {
     watchdog_hdp_guard || log_msg "Не удалось проверить соответствие DNS-серверов выбранному набору."
     watchdog_dns_path_guard || log_msg "Не удалось проверить путь forced-DNS в firewall."
     watchdog_dnsmasq_guard || log_msg "Не удалось полностью восстановить конфигурацию dnsmasq."
-    if ! watchdog_test_results_fresh; then
-        if ! ensure_test_results_fresh; then
-        log_msg "Watchdog: не удалось получить свежие результаты проверки DNS. Замена серверов запрещена."
-        rm -f "$TMP_DIR"/watchdog-*-$$ 2>/dev/null || true
-        rm -rf "$_lock" 2>/dev/null || true
-        release_mutation_lock
-        return "$_wd_rc"
-    fi
-fi
     _used="$TMP_DIR/watchdog-used-$$"
     : > "$_used"
     for _s in 1 2 3 4 5 6 RU RU_2; do
@@ -7468,7 +7459,13 @@ fi
             log_msg "DNS в слоте $_slot не соответствует выбранной категории ($_current_cat вместо $_desired). Ищу замену."
         fi
         log_msg "DNS в слоте $_slot: $(dns_name "$_id") требует замены. Ищу подходящий DNS той же категории."
-        _tried="$TMP_DIR/watchdog-tried-${_slot}-$$"
+        if [ "$_force_replace" = 0 ]; then
+            if ! ensure_test_results_fresh; then
+                log_msg "Watchdog: не удалось получить свежие результаты проверки DNS. Замена слота $_slot запрещена."
+                continue
+            fi
+        fi
+        _tried="$TMP_DIR/watchdog-tried-${_slot}-$"
         : > "$_tried"
         _old="$_id"
         _oldcat="$_current_cat"
@@ -7885,7 +7882,7 @@ watchdog_service_install_files() {
         cat > "$_dtmp" <<'EOF_DNS_WATCHDOG_DAEMON'
 #!/bin/sh
 # DNS_MANAGER_WATCHDOG_DAEMON=1
-# DNS_MANAGER_WATCHDOG_DAEMON_VERSION=2.87
+# DNS_MANAGER_WATCHDOG_DAEMON_VERSION=2.90
 
 MANAGER_PATH="/usr/bin/dns-manager"
 CONFIG_FILE="/etc/dns-manager/config/manager.conf"
@@ -8219,7 +8216,7 @@ EOF_DNS_WATCHDOG_DAEMON
         cat > "$_stmp" <<'EOF_DNS_WATCHDOG_SERVICE'
 #!/bin/sh /etc/rc.common
 # DNS_MANAGER_WATCHDOG_SERVICE=1
-# DNS_MANAGER_WATCHDOG_SERVICE_VERSION=2.87
+# DNS_MANAGER_WATCHDOG_SERVICE_VERSION=2.90
 
 USE_PROCD=1
 START=95
