@@ -235,7 +235,7 @@ validate_candidate() {
     head -n1 "$_f" 2>/dev/null | grep -q '^#!/bin/sh$' || return 1
     grep -Fq '# DNS Manager LuCI companion' "$_f" 2>/dev/null || return 1
     grep -Fq '/usr/libexec/rpcd/dns_manager' "$_f" 2>/dev/null || return 1
-    grep -Eq 'admin/services/dns-manager(/|" )' "$_f" 2>/dev/null || grep -Fq 'admin/services/dns_manager' "$_f" 2>/dev/null || return 1
+    grep -Fq 'admin/services/dns-manager' "$_f" 2>/dev/null || return 1
     grep -Fq '"update_check"' "$_f" 2>/dev/null || return 1
     grep -Fq 'Version:' "$_f" 2>/dev/null || return 1
     sh -n "$_f" >/dev/null 2>&1 || return 1
