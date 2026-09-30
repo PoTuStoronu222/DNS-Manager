@@ -19,6 +19,7 @@ BACKUP_DIR="/etc/dns-manager-luci"
 CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
+# Legacy update compatibility: admin/services/dns_manager
 RUNTIME_UPDATE_STATE="$BACKUP_DIR/update.state"
 VERSION_FILE="$BACKUP_DIR/version"
 VERSION="0.9.14"
@@ -235,7 +236,7 @@ validate_candidate() {
     head -n1 "$_f" 2>/dev/null | grep -q '^#!/bin/sh$' || return 1
     grep -Fq '# DNS Manager LuCI companion' "$_f" 2>/dev/null || return 1
     grep -Fq '/usr/libexec/rpcd/dns_manager' "$_f" 2>/dev/null || return 1
-    grep -Fq 'admin/services/dns-manager' "$_f" 2>/dev/null || return 1
+    grep -Eq 'admin/services/dns-manager|admin/services/dns_manager' "$_f" 2>/dev/null || return 1
     grep -Fq '"update_check"' "$_f" 2>/dev/null || return 1
     grep -Fq 'Version:' "$_f" 2>/dev/null || return 1
     sh -n "$_f" >/dev/null 2>&1 || return 1
