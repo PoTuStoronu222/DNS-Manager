@@ -272,6 +272,7 @@ component_update_check() {
     printf 'catalog_checked=%s\n' "$_catalog_ok" >> "$_state_tmp"
     printf 'hdp_latest=%s\n' "$_hdp_candidate" >> "$_state_tmp"
     printf 'hdp_available=%s\n' "$_hdp_available" >> "$_state_tmp"
+    printf 'components_checked_at=%s\n' "$_ts"
     mv "$_state_tmp" "$UPDATE_STATE" 2>/dev/null || rm -f "$_state_tmp" 2>/dev/null || true
 }
 update_check_json() {
@@ -283,7 +284,7 @@ update_check_json() {
 maybe_background_update_check() {
     [ -d "$RUNTIME_DIR" ] || return 0
     _now="$(date +%s 2>/dev/null || printf 0)"
-    _last="$(sed -n 's/^checked_at=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"
+    _last="$(sed -n 's/^components_checked_at=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"
     case "$_last" in ''|*[!0-9]*) _last=0;; esac
     [ "$_now" -gt 0 ] || return 0
     [ $((_now - _last)) -ge 43200 ] || return 0
@@ -327,7 +328,15 @@ update_json() {
         json_error "LuCI обновление не подтверждено: $_detail"; return
     fi
     rm -f "$_log" 2>/dev/null || true
-    printf 'installed=%s\nlatest=%s\navailable=0\nchecked_at=%s\n' "$_after" "$_after" "$(date +%s 2>/dev/null || printf 0)" > "$UPDATE_STATE" 2>/dev/null || true
+    _state_tmp="$UPDATE_STATE.tmp.$$"
+    if [ -r "$UPDATE_STATE" ]; then
+        sed '/^installed=/d;/^latest=/d;/^available=/d;/^checked_at=/d' "$UPDATE_STATE" > "$_state_tmp" 2>/dev/null || true
+    else
+        : > "$_state_tmp"
+    fi
+    _update_ts="$(date +%s 2>/dev/null || printf 0)"
+    printf 'installed=%s\nlatest=%s\navailable=0\nchecked_at=%s\n' "$_after" "$_after" "$_update_ts" >> "$_state_tmp"
+    mv "$_state_tmp" "$UPDATE_STATE" 2>/dev/null || rm -f "$_state_tmp" 2>/dev/null || true
     printf '{"ok":true,"updated":true,"version":'; json_quote "$_after"; printf '}'
     # Return the RPC response first. Reloading rpcd before writing the response can
     # terminate the current rpcd worker and make LuCI report a false update failure.
