@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 0.9.5
+# Version: 0.9.6
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -21,7 +21,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 RUNTIME_UPDATE_STATE="$BACKUP_DIR/update.state"
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="0.9.5"
+VERSION="0.9.6"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -95,7 +95,7 @@ UPDATE_STATE="/etc/dns-manager-luci/update.state"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="0.9.5"
+SELF_VERSION="0.9.6"
 
 umask 077
 mkdir -p "$RUNTIME_DIR" "$JOB_DIR" "$CHECK_DIR" "$TMP_ROOT" 2>/dev/null || exit 1
@@ -620,7 +620,7 @@ EOF_RPC
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 0.9.5
+// DNS Manager LuCI version: 0.9.6
 var callStatus = rpc.declare({ object:'dns_manager', method:'status', expect:{} });
 var callCatalog = rpc.declare({ object:'dns_manager', method:'catalog', params:['category','offset','limit','only_ok'], expect:{} });
 var callUpdateCheck = rpc.declare({ object:'dns_manager', method:'update_check', expect:{} });
@@ -695,6 +695,15 @@ function renderHeader(root,st){
     E('div',{'class':'dm-header-actions'},[btn('Обновить состояние','cbi-button-neutral',function(){refresh(root,true);})])
   ]));
 }
+function setActiveTab(root,name){
+  var tabs=['overview','doh','slots','profiles','settings','job','catalog','log'];
+  state.activeTab=tabs.indexOf(name)>=0?name:'overview';
+  tabs.forEach(function(id){
+    var panel=root.querySelector('#dm-'+id);
+    if(panel) panel.style.display=(id===state.activeTab?'block':'none');
+  });
+  renderPageNav(root);
+}
 function renderPageNav(root){
   var e=root.querySelector('#dm-page-nav');if(!e)return;e.innerHTML='';
   var tabs=[['overview','Обзор'],['doh','DNS'],['slots','Серверы'],['profiles','Профили'],['settings','Настройки'],['job','Проверка'],['catalog','Каталог'],['log','Журнал']];
@@ -702,16 +711,12 @@ function renderPageNav(root){
   var bar=E('div',{'class':'dm-page-tabs'});
   tabs.forEach(function(x){
     bar.appendChild(btn(x[1],(state.activeTab===x[0]?'dm-page-tab active':'dm-page-tab'),function(){
-      state.activeTab=x[0];
-      renderPageNav(root);
-      var t=root.querySelector('#dm-'+x[0]);
-      if(t){try{t.scrollIntoView({behavior:'smooth',block:'start'});}catch(e){t.scrollIntoView();}}
+      setActiveTab(root,x[0]);
     }));
   });
   nav.appendChild(bar);
   e.appendChild(nav);
 }
-
 function renderOverview(root,st){
   var e=root.querySelector('#dm-overview');if(!e)return;e.innerHTML='';
   var doh = st.doh==='yes' ? badge('dm-ok','включён') : Number(st.doh_total||0)>0 ? badge('dm-bad','остановлен') : badge('dm-off','не установлен');
@@ -779,11 +784,9 @@ function renderDoH(root,st){
   if(yes(st.zapret_running)){
     ch.push(E('div',{'class':'dm-force-external'},'Zapret: процесс запущен. Это не означает автоматически, что его forced-DNS включён; выше показан фактически обнаруженный путь DNS-перехвата.'));
   }
-  ch.push(E('div',{'class':'dm-force-note'},'Схема совместимости: 53/853 · LAN · notrack_dns=1 · dnsmasq_config_update=- · force_ip_family=auto · procd_trigger_wan6=0.'));
-  ch.push(E('div',{'class':'dm-actions'},[
-    btn('Показать параметры','cbi-button-neutral',function(){openForceDetails(root,st);}),
-    btn('Обновить состояние','cbi-button-neutral',function(){refresh(root,true);})
-  ]));
+  if(yes(st.zapret_running) && st.force_owner!=='external'){
+    ch.push(E('div',{'class':'dm-force-external'},'Zapret: процесс запущен. Фактический forced-DNS выше не обнаружен.'));
+  }
   if(state.pageNotice.doh)ch.push(E('div',{'class':'dm-inline-msg info'},state.pageNotice.doh));
   e.appendChild(card('DNS over HTTPS',ch));
 }
@@ -905,10 +908,31 @@ function renderJobIdle(root,st){
   e.appendChild(card('Проверка DNS',ch));
 }
 function render(root,st){
-  renderHeader(root,st);renderPageNav(root);renderOverview(root,st);renderDoH(root,st);renderSlots(root,st);renderProfiles(root,st);renderSettings(root,st);renderCatalog(root);renderLog(root);if(!state.jobRunning)renderJobIdle(root,st);
-  if(!state.updateKick && Number(st.luci_update_checked||0)===0){state.updateKick=true;setTimeout(function(){refresh(root,true);},2200);}
+  renderHeader(root,st);
+  renderPageNav(root);
+  renderOverview(root,st);
+  renderDoH(root,st);
+  renderSlots(root,st);
+  renderProfiles(root,st);
+  renderSettings(root,st);
+  renderCatalog(root);
+  renderLog(root);
+  if(!state.jobRunning)renderJobIdle(root,st);
+  setActiveTab(root,state.activeTab);
+  if(!state.updateKick && Number(st.luci_update_checked||0)===0){
+    state.updateKick=true;
+    setTimeout(function(){refresh(root,true);},2200);
+  }
 }
-function refresh(root,keepPosition){if(!rootAlive(root))return Promise.resolve();var y=keepPosition?window.scrollY:0;return callStatus().then(function(st){if(!rootAlive(root))return;window.dmState=st||{};render(root,st||{});if(state.catalogLoaded&&rootAlive(root))loadCatalog(root);if(keepPosition&&rootAlive(root))setTimeout(function(){if(rootAlive(root))window.scrollTo(0,y);},0);}).catch(function(){});}
+function refresh(root,keepPosition){
+  if(!rootAlive(root))return Promise.resolve();
+  return callStatus().then(function(st){
+    if(!rootAlive(root))return;
+    window.dmState=st||{};
+    render(root,st||{});
+    if(state.catalogLoaded&&state.activeTab==='catalog'&&rootAlive(root))loadCatalog(root);
+  }).catch(function(){});
+}
 function toast(msg,type){}
 function checkUpdate(root){globalUpdateNotice('Проверяю обновления LuCI…','info');state.pageNotice.overview='Проверяю обновления LuCI…';if(rootAlive(root))renderOverview(root,window.dmState||{});return callUpdateCheck().then(function(r){var ok=!!(r&&r.ok);var msg=!ok?'Проверка обновлений не выполнена.':(yes(r.available)?'Доступна новая версия LuCI: v'+r.latest_version:'Установлена актуальная версия LuCI.');state.pageNotice.overview=msg;globalUpdateNotice(msg,ok?'ok':'error');return refresh(root,true);}).catch(function(){var msg='Проверка обновлений не выполнена.';state.pageNotice.overview=msg;globalUpdateNotice(msg,'error');return refresh(root,true);});}
 function doUpdate(root){if(state.busy)return;var v=(window.dmState&&window.dmState.luci_latest_version)||'новой версии';if(!confirm('Обновить только LuCI до v'+v+'? DNS Manager и настройки не изменятся.'))return;state.busy=true;state.pageNotice.overview='Обновляю LuCI…';globalUpdateNotice('Обновляю LuCI до v'+v+'…','info');if(rootAlive(root))renderOverview(root,window.dmState||{});callUpdate().then(function(r){state.busy=false;if(r&&r.ok&&r.updated){var msg='LuCI обновлена до v'+r.version+'. Перезагружаю страницу…';state.pageNotice.overview=msg;globalUpdateNotice(msg,'ok');if(rootAlive(root))renderOverview(root,window.dmState||{});setTimeout(function(){location.reload();},1600);}else{var msg=(r&&r.error)||'LuCI не удалось обновить.';state.pageNotice.overview=msg;globalUpdateNotice(msg,'error');if(rootAlive(root))renderOverview(root,window.dmState||{});}}).catch(function(){state.busy=false;var msg='Не удалось выполнить RPC-обновление LuCI. Попробуйте ещё раз; причина будет показана в сообщении RPC.';state.pageNotice.overview=msg;globalUpdateNotice(msg,'error');if(rootAlive(root))renderOverview(root,window.dmState||{});});}
@@ -918,8 +942,45 @@ function setForceMode(mode,root){if(state.busy)return;if(window.dmState&&window.
 function assign(id,slot,root){if(state.busy)return;state.busy=true;state.pageNotice.slots='Назначаю DNS в слот '+slot+'…';renderSlots(root,window.dmState||{});callSlot(slot,id).then(function(r){state.busy=false;state.pageNotice.slots=(r&&r.ok)?'DNS назначен в слот '+slot+'.':(r&&r.error)||'DNS не удалось применить.';refresh(root,true);}).catch(function(){state.busy=false;state.pageNotice.slots='DNS не удалось применить.';refresh(root,true);});}
 function openAssign(id,cat,root){var slots=cat==='regional'?['RU','RU_2']:['1','2','3','4','5','6'];var box=E('div',{});slots.forEach(function(slot){box.appendChild(btn(slot,'cbi-button-neutral',function(){ui.hideModal();assign(id,slot,root);}));});ui.showModal('Назначить DNS',[box,E('div',{'class':'right'},[btn('Отмена','cbi-button-negative',ui.hideModal)])]);}
 function openSlotPicker(slot,root){if(state.busy)return;var regional=slot==='RU'||slot==='RU_2';callCatalog(regional?'regional':'all',0,48,0).then(function(d){var rows=(d.servers||[]).filter(function(x){return regional?x.category==='regional':x.category!=='regional';});var sel=E('select',{'class':'cbi-input-select'});rows.forEach(function(x){sel.appendChild(E('option',{value:x.id},x.name+' — '+catName(x.category)));});ui.showModal('Выбор DNS для '+slot,[sel,E('div',{'class':'right'},[btn('Отмена','cbi-button-negative',ui.hideModal),btn('Применить','cbi-button-apply',function(){var id=sel.value;ui.hideModal();assign(id,slot,root);})])]);}).catch(function(){state.pageNotice.slots='Не удалось открыть список DNS.';renderSlots(root,window.dmState||{});});}
-function testAll(root){if(state.jobRunning||state.busy)return;callTestAll().then(function(r){if(r&&r.ok)renderJob(root,r.job);else{state.pageNotice.job=(r&&r.error)||'Не удалось запустить проверку.';renderJobIdle(root,window.dmState||{});}}).catch(function(){state.pageNotice.job='Не удалось запустить проверку.';renderJobIdle(root,window.dmState||{});});}
-function testOne(id,root){if(state.jobRunning||state.busy)return;callTestOne(id).then(function(r){if(r&&r.ok)renderJob(root,r.job);else{state.pageNotice.job=(r&&r.error)||'Не удалось запустить проверку.';renderJobIdle(root,window.dmState||{});}}).catch(function(){state.pageNotice.job='Не удалось запустить проверку.';renderJobIdle(root,window.dmState||{});});}
+function testAll(root){
+  if(state.jobRunning||state.busy)return;
+  state.activeTab='job';
+  state.pageNotice.job='Запускаю полную проверку DNS…';
+  setActiveTab(root,'job');
+  renderJobIdle(root,window.dmState||{});
+  callTestAll().then(function(r){
+    if(r&&r.ok)renderJob(root,r.job);
+    else{
+      state.pageNotice.job=(r&&r.error)||'Не удалось запустить проверку.';
+      state.jobRunning=false;
+      renderJobIdle(root,window.dmState||{});
+    }
+  }).catch(function(){
+    state.pageNotice.job='Не удалось запустить проверку.';
+    state.jobRunning=false;
+    renderJobIdle(root,window.dmState||{});
+  });
+}
+function testOne(id,root){
+  if(state.jobRunning||state.busy)return;
+  state.activeTab='job';
+  state.pageNotice.job='Запускаю проверку DNS…';
+  setActiveTab(root,'job');
+  renderJobIdle(root,window.dmState||{});
+  callTestOne(id).then(function(r){
+    if(r&&r.ok)renderJob(root,r.job);
+    else{
+      state.pageNotice.job=(r&&r.error)||'Не удалось запустить проверку.';
+      state.jobRunning=false;
+      renderJobIdle(root,window.dmState||{});
+    }
+  }).catch(function(){
+    state.pageNotice.job='Не удалось запустить проверку.';
+    state.jobRunning=false;
+    renderJobIdle(root,window.dmState||{});
+  });
+}
+
 function loadCatalog(root){return callCatalog(state.category,state.offset,state.limit,0).then(function(d){window.dmCatalog=d||{};renderCatalog(root);renderCatalogBody(root,window.dmCatalog);}).catch(function(){state.pageNotice.catalog='Не удалось загрузить каталог DNS.';renderCatalog(root);});}
 function showLog(root){callLog(160).then(function(r){state.logLoaded=true;state.logText=stripAnsi(r.log||'');renderLog(root);}).catch(function(){state.pageNotice.log='Не удалось загрузить журнал.';renderLog(root);});}
 
