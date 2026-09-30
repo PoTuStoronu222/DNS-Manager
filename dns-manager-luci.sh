@@ -1434,7 +1434,7 @@ function startAutoRefresh(root){
     if(state.refreshBusy)return;
     state.refreshBusy=true;
     refresh(root,true).then(function(){state.refreshBusy=false;},function(){state.refreshBusy=false;});
-  },1000);
+  },3000);
 }
 function toast(msg,type){}
 function checkUpdate(root){
