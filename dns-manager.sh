@@ -2,8 +2,8 @@
 MANAGER_PATH="/usr/bin/dns-manager"
 # ==========================================
 # ==========================================
-VERSION="2.89"
-# 2.89: reliable update-check reporting/cache busting and LuCI companion install diagnostics.
+VERSION="2.90"
+# 2.90: updater always checks GitHub on interactive startup; 12-hour throttle remains for scheduled updates.
 # 2.88: native LuCI companion compatibility, idempotent procd watchdog migration,
 # first-run cron protection, and exact https-dns-proxy forced-DNS ports/interfaces
 # while keeping DNS Manager authoritative over its own dnsmasq upstream list.
@@ -30,8 +30,8 @@ WATCHDOG_SERVICE_PATH="/etc/init.d/dns-watchdog"
 WATCHDOG_RUNTIME_DIR="/var/run/dns-watchdog"
 WATCHDOG_DAEMON_MARKER="# DNS_MANAGER_WATCHDOG_DAEMON=1"
 WATCHDOG_SERVICE_MARKER="# DNS_MANAGER_WATCHDOG_SERVICE=1"
-WATCHDOG_DAEMON_VERSION_MARKER="# DNS_MANAGER_WATCHDOG_DAEMON_VERSION=2.89"
-WATCHDOG_SERVICE_VERSION_MARKER="# DNS_MANAGER_WATCHDOG_SERVICE_VERSION=2.89"
+WATCHDOG_DAEMON_VERSION_MARKER="# DNS_MANAGER_WATCHDOG_DAEMON_VERSION=2.90"
+WATCHDOG_SERVICE_VERSION_MARKER="# DNS_MANAGER_WATCHDOG_SERVICE_VERSION=2.90"
 WATCHDOG_LAST_RESTART_FILE="$STATE_DIR/watchdog-last-restart"
 AUTO_UPDATE_LAST_CHECK_FILE="$STATE_DIR/auto-update-last-check"
 AUTO_UPDATE_CHECK_MAX_AGE=43200
@@ -357,11 +357,9 @@ auto_update_manager() {
     _scheduled=0
     [ "${DNS_MANAGER_SCHEDULED_UPDATE:-0}" = "1" ] && _scheduled=1
 
-    # Normal interactive starts are throttled so a blocked/slow GitHub endpoint
-    # cannot stall the menu every time the manager is launched. Explicit
-    # update-check uses FORCE_UPDATE=1 and bypasses this gate; scheduled/update
-    # compatibility paths use the same 12-hour throttle unless explicitly forced.
-    if [ "${DNS_MANAGER_FORCE_UPDATE:-0}" != 1 ]; then
+    # Interactive startup and explicit update-check must perform a real GitHub
+    # check. The 12-hour throttle is reserved for scheduled/background updates.
+    if [ "$_scheduled" = 1 ] && [ "${DNS_MANAGER_FORCE_UPDATE:-0}" != 1 ]; then
         _upd_now="$(date +%s 2>/dev/null)"
         _upd_last="$(cat "$AUTO_UPDATE_LAST_CHECK_FILE" 2>/dev/null)"
         case "$_upd_now" in ''|*[!0-9]*) _upd_now="";; esac
@@ -411,7 +409,7 @@ auto_update_manager() {
     UPDATE_TMP_FILE="$_upd_tmp"
     rm -f "$_upd_tmp" 2>/dev/null
 
-    log_msg "Автообновление: проверяю $UPDATE_URL"
+    log_msg "Автообновление: выполняю реальную проверку GitHub: $UPDATE_URL"
     _update_url="${UPDATE_URL}?_dmcb=$(date +%s 2>/dev/null || printf 0)-$$"
 
     if command -v curl >/dev/null 2>&1; then
@@ -442,8 +440,8 @@ auto_update_manager() {
 
     _new_version="$(sed -n 's/^VERSION="\([^"]*\)"$/\1/p' "$_upd_tmp" 2>/dev/null | head -n1)"
     [ -n "$_new_version" ] || {
-        log_msg "Автообновление: в загруженном файле не найдена строка VERSION."
         AUTO_UPDATE_RESULT="failed"
+        log_msg "Автообновление: в загруженном файле не найдена строка VERSION."
         rm -f "$_upd_tmp" 2>/dev/null
         UPDATE_TMP_FILE=""
         release_auto_update_lock
