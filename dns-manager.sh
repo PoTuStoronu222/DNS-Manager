@@ -2,10 +2,10 @@
 MANAGER_PATH="/usr/bin/dns-manager"
 # ==========================================
 # ==========================================
-VERSION="2.87"
-# 2.87: native LuCI companion installer, idempotent procd watchdog migration,
-# first-run cron protection, clearer watchdog status/log wording, and legacy ttyd
-# compatibility retained without using ttyd as the DNS Manager web interface.
+VERSION="2.88"
+# 2.88: native LuCI companion compatibility, idempotent procd watchdog migration,
+# first-run cron protection, and exact https-dns-proxy forced-DNS ports/interfaces
+# while keeping DNS Manager authoritative over its own dnsmasq upstream list.
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -29,8 +29,8 @@ WATCHDOG_SERVICE_PATH="/etc/init.d/dns-watchdog"
 WATCHDOG_RUNTIME_DIR="/var/run/dns-watchdog"
 WATCHDOG_DAEMON_MARKER="# DNS_MANAGER_WATCHDOG_DAEMON=1"
 WATCHDOG_SERVICE_MARKER="# DNS_MANAGER_WATCHDOG_SERVICE=1"
-WATCHDOG_DAEMON_VERSION_MARKER="# DNS_MANAGER_WATCHDOG_DAEMON_VERSION=2.87"
-WATCHDOG_SERVICE_VERSION_MARKER="# DNS_MANAGER_WATCHDOG_SERVICE_VERSION=2.87"
+WATCHDOG_DAEMON_VERSION_MARKER="# DNS_MANAGER_WATCHDOG_DAEMON_VERSION=2.88"
+WATCHDOG_SERVICE_VERSION_MARKER="# DNS_MANAGER_WATCHDOG_SERVICE_VERSION=2.88"
 WATCHDOG_LAST_RESTART_FILE="$STATE_DIR/watchdog-last-restart"
 AUTO_UPDATE_LAST_CHECK_FILE="$STATE_DIR/auto-update-last-check"
 AUTO_UPDATE_CHECK_MAX_AGE=43200
@@ -1746,6 +1746,48 @@ dns_manager_force_port() {
     done
     return 1
 }
+force_dns_expected_src_interfaces() {
+    firewall_resolve_zones >/dev/null 2>&1 || true
+    _nets="$(uci -q get "firewall.${FIREWALL_LAN_ZONE}.network" 2>/dev/null || true)"
+    [ -n "$_nets" ] || _nets="lan"
+    printf '%s\n' $_nets
+}
+force_dns_list_normalize() {
+    printf '%s\n' "${1:-}" | awk '{gsub(/["\047,]/," "); for(i=1;i<=NF;i++) print $i}' |
+        sed '/^$/d' | sort -u | tr '\n' ' ' | sed 's/[[:space:]]*$//'
+}
+force_dns_src_matches_expected() {
+    _exp="$(force_dns_expected_src_interfaces | force_dns_list_normalize)"
+    _cur="$(uci -q get https-dns-proxy.config.force_dns_src_interface 2>/dev/null | force_dns_list_normalize)"
+    [ -n "$_exp" ] && [ "$_cur" = "$_exp" ]
+}
+force_dns_ports_match_expected() {
+    _cur="$(uci -q get https-dns-proxy.config.force_dns_port 2>/dev/null | force_dns_list_normalize)"
+    [ "$_cur" = "53 853" ]
+}
+force_dns_snapshot_value() {
+    _v="$(uci -q get "$1" 2>/dev/null || true)"
+    [ -n "$_v" ] && printf '%s' "$_v" || printf '__unset__'
+}
+force_dns_restore_scalar() {
+    _target="$1"; _key="$2"
+    _old="$(sed -n "s/^${_key}|//p" "$FORCE_DNS_BEFORE" 2>/dev/null | head -n1)"
+    case "$_old" in
+        __unset__|'') uci -q delete "$_target" >/dev/null 2>&1 || true ;;
+        *) uci set "$_target=$_old" || return 1 ;;
+    esac
+}
+force_dns_restore_list() {
+    _target="$1"; _key="$2"
+    _old="$(sed -n "s/^${_key}|//p" "$FORCE_DNS_BEFORE" 2>/dev/null | head -n1)"
+    uci -q delete "$_target" >/dev/null 2>&1 || true
+    [ "$_old" = "__unset__" ] || [ -z "$_old" ] && return 0
+    for _v in $_old; do
+        [ -n "$_v" ] || continue
+        uci add_list "$_target=$_v" || return 1
+    done
+    return 0
+}
 
 # Read-only discovery of the actual LAN DNS interception path. This is used
 # to separate DNS Manager from Zapret/other external forced-DNS without
@@ -2598,21 +2640,16 @@ record_own() {
     grep -Fqx -- "$_own_line" "$OWNERSHIP" 2>/dev/null || printf '%s\n' "$_own_line" >> "$OWNERSHIP"
 }
 configure_hdp_manager_control() {
-    # DNS Manager is authoritative for the DoH sections themselves. Global
-    # force-DNS settings are different: when an external forced-DNS path is
-    # already present (for example Zapret), do not seize or rewrite it.
+    # DNS Manager owns the DoH resolver sections. Forced-DNS is deliberately
+    # applied only by apply_dns_force(), after its one-shot ownership snapshot
+    # has been taken. This prevents a pre-snapshot mutation from corrupting
+    # rollback/remove semantics.
     detect_forced_dns_path >/dev/null 2>&1 || true
 
     if [ "${FORCE_DOH:-0}" = 1 ]; then
         if [ "${FORCED_DNS_EXTERNAL:-0}" = 1 ]; then
             log_msg "Внешний forced-DNS обнаружен: DNS Manager не перехватывает и не перезаписывает его глобальные параметры; настройка DNS/DoH продолжается."
-            return 0
         fi
-        uci set https-dns-proxy.config.dnsmasq_config_update='-' || return 1
-        uci set https-dns-proxy.config.force_dns='1' || return 1
-        uci set https-dns-proxy.config.notrack_dns='1' || return 1
-        uci set https-dns-proxy.config.force_ip_family='auto' || return 1
-        uci commit https-dns-proxy || return 1
         return 0
     fi
 
@@ -2621,11 +2658,12 @@ configure_hdp_manager_control() {
         return 0
     fi
 
-    # No external forced-DNS owner is detected. Keep dnsmasq authoritative
-    # for the upstream list and let the manager control address family.
+    # With forced-DNS disabled, leave the package's client interception off
+    # and keep DNS Manager authoritative over dnsmasq itself.
     uci set https-dns-proxy.config.dnsmasq_config_update='-' || return 1
     uci set https-dns-proxy.config.force_ip_family='auto' || return 1
     uci commit https-dns-proxy || return 1
+    return 0
 }
 ensure_doh_slot() {
 slot="$1"; id="$2"; [ -n "$id" ] || return 0
@@ -3533,9 +3571,7 @@ apply_dns_force() {
     [ "${FORCE_DOH:-0}" = 1 ] || return 0
     firewall_resolve_zones >/dev/null 2>&1 || return 1
 
-    # Protect against an existing Zapret/other transparent DNS proxy before
-    # changing https-dns-proxy state. A non-53 redirect means another service
-    # is already the LAN:53 owner.
+    # Do not seize a forced-DNS path already owned by Zapret/another service.
     if hdp_force_external_conflict; then
         log_msg "Внешний forced-DNS уже активен ($FORCED_DNS_SOURCE). DNS Manager оставляет его без изменений."
         return 0
@@ -3544,73 +3580,78 @@ apply_dns_force() {
         return 0
     fi
 
+    # Snapshot once, before changing any force-DNS option. Keep dnsmasq_config_update
+    # at '-' because reconcile_dnsmasq() is the sole owner of upstream dnsmasq state.
     if [ ! -s "$FORCE_DNS_BEFORE" ]; then
         {
-            printf 'force_dns|%s\n' "$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null)"
-            printf 'notrack_dns|%s\n' "$(uci -q get https-dns-proxy.config.notrack_dns 2>/dev/null)"
-            printf 'dnsmasq_config_update|%s\n' "$(uci -q get https-dns-proxy.config.dnsmasq_config_update 2>/dev/null)"
-            printf 'force_ip_family|%s\n' "$(uci -q get https-dns-proxy.config.force_ip_family 2>/dev/null)"
+            printf 'force_dns|%s\n' "$(force_dns_snapshot_value https-dns-proxy.config.force_dns)"
+            printf 'notrack_dns|%s\n' "$(force_dns_snapshot_value https-dns-proxy.config.notrack_dns)"
+            printf 'dnsmasq_config_update|%s\n' "$(force_dns_snapshot_value https-dns-proxy.config.dnsmasq_config_update)"
+            printf 'force_ip_family|%s\n' "$(force_dns_snapshot_value https-dns-proxy.config.force_ip_family)"
+            printf 'force_dns_port|%s\n' "$(force_dns_snapshot_value https-dns-proxy.config.force_dns_port)"
+            printf 'force_dns_src_interface|%s\n' "$(force_dns_snapshot_value https-dns-proxy.config.force_dns_src_interface)"
         } > "$FORCE_DNS_BEFORE" || return 1
     fi
 
-    # Let the current https-dns-proxy implementation create the actual
-    # redirect/reject rules via procd/fw4. Defaults are 53/853 on LAN.
+    # Match the actual https-dns-proxy forced-DNS contract: outbound client
+    # DNS (53) and DoT (853) from LAN interfaces are redirected to local DoH.
     uci set https-dns-proxy.config.force_dns='1' || return 1
     uci set https-dns-proxy.config.notrack_dns='1' || return 1
-    uci set https-dns-proxy.config.dnsmasq_config_update='-' || return 1
     uci set https-dns-proxy.config.force_ip_family='auto' || return 1
-    uci commit https-dns-proxy || return 1
 
+    uci -q delete https-dns-proxy.config.force_dns_port >/dev/null 2>&1 || true
+    for _p in 53 853; do
+        uci add_list https-dns-proxy.config.force_dns_port="$_p" || return 1
+    done
+
+    uci -q delete https-dns-proxy.config.force_dns_src_interface >/dev/null 2>&1 || true
+    _force_src_nets="$(force_dns_expected_src_interfaces)"
+    for _n in $_force_src_nets; do
+        [ -n "$_n" ] || continue
+        uci add_list https-dns-proxy.config.force_dns_src_interface="$_n" || return 1
+    done
+
+    # Deliberately different from the stock package default: do not let
+    # https-dns-proxy modify dnsmasq entries that DNS Manager owns.
+    uci set https-dns-proxy.config.dnsmasq_config_update='-' || return 1
+    uci commit https-dns-proxy || return 1
     return 0
 }
 
 remove_dns_force() {
     firewall_resolve_zones >/dev/null 2>&1 || true
-    if [ -s "$FORCE_DNS_BEFORE" ]; then
-        _unsafe=0
+    [ -s "$FORCE_DNS_BEFORE" ] || return 0
 
-        _cur="$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null)"
-        if [ "$_cur" = 1 ]; then
-            _v="$(sed -n 's/^force_dns|//p' "$FORCE_DNS_BEFORE" | head -n1)"
-            if [ -n "$_v" ]; then uci set https-dns-proxy.config.force_dns="$_v"; else uci -q delete https-dns-proxy.config.force_dns; fi
-        else
-            _unsafe=1
-            warn_msg "https-dns-proxy: force_dns изменён извне; текущее значение сохранено."
-        fi
+    _cur="$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null)"
+    if [ "$_cur" = 1 ]; then force_dns_restore_scalar https-dns-proxy.config.force_dns force_dns || return 1
+    else warn_msg "https-dns-proxy: force_dns изменён извне; текущее значение сохранено."; fi
 
-        _cur="$(uci -q get https-dns-proxy.config.notrack_dns 2>/dev/null)"
-        if [ "$_cur" = 1 ]; then
-            _v="$(sed -n 's/^notrack_dns|//p' "$FORCE_DNS_BEFORE" | head -n1)"
-            if [ -n "$_v" ]; then uci set https-dns-proxy.config.notrack_dns="$_v"; else uci -q delete https-dns-proxy.config.notrack_dns; fi
-        else
-            _unsafe=1
-            warn_msg "https-dns-proxy: notrack_dns изменён извне; текущее значение сохранено."
-        fi
+    _cur="$(uci -q get https-dns-proxy.config.notrack_dns 2>/dev/null)"
+    if [ "$_cur" = 1 ]; then force_dns_restore_scalar https-dns-proxy.config.notrack_dns notrack_dns || return 1
+    else warn_msg "https-dns-proxy: notrack_dns изменён извне; текущее значение сохранено."; fi
 
-        _cur="$(uci -q get https-dns-proxy.config.dnsmasq_config_update 2>/dev/null)"
-        if [ "$_cur" = - ]; then
-            _v="$(sed -n 's/^dnsmasq_config_update|//p' "$FORCE_DNS_BEFORE" | head -n1)"
-            if [ -n "$_v" ]; then uci set https-dns-proxy.config.dnsmasq_config_update="$_v"; else uci -q delete https-dns-proxy.config.dnsmasq_config_update; fi
-        else
-            _unsafe=1
-            warn_msg "https-dns-proxy: dnsmasq_config_update изменён извне; текущее значение сохранено."
-        fi
+    _cur="$(uci -q get https-dns-proxy.config.dnsmasq_config_update 2>/dev/null)"
+    if [ "$_cur" = - ]; then force_dns_restore_scalar https-dns-proxy.config.dnsmasq_config_update dnsmasq_config_update || return 1
+    else warn_msg "https-dns-proxy: dnsmasq_config_update изменён извне; текущее значение сохранено."; fi
 
-        _cur="$(uci -q get https-dns-proxy.config.force_ip_family 2>/dev/null)"
-        if [ "$_cur" = auto ]; then
-            _v="$(sed -n 's/^force_ip_family|//p' "$FORCE_DNS_BEFORE" | head -n1)"
-            if [ -n "$_v" ]; then uci set https-dns-proxy.config.force_ip_family="$_v"; else uci -q delete https-dns-proxy.config.force_ip_family; fi
-        else
-            _unsafe=1
-            warn_msg "https-dns-proxy: force_ip_family изменён извне; текущее значение сохранено."
-        fi
+    _cur="$(uci -q get https-dns-proxy.config.force_ip_family 2>/dev/null)"
+    if [ "$_cur" = auto ]; then force_dns_restore_scalar https-dns-proxy.config.force_ip_family force_ip_family || return 1
+    else warn_msg "https-dns-proxy: force_ip_family изменён извне; текущее значение сохранено."; fi
 
-        uci commit https-dns-proxy >/dev/null 2>&1 || return 1
-        # The snapshot is one-shot ownership state. If an external change was
-        # detected, current values are intentionally preserved and ownership
-        # is dropped so a later run cannot silently seize control again.
-        rm -f "$FORCE_DNS_BEFORE" 2>/dev/null || true
+    if force_dns_ports_match_expected; then
+        force_dns_restore_list https-dns-proxy.config.force_dns_port force_dns_port || return 1
+    else
+        warn_msg "https-dns-proxy: force_dns_port изменён извне; текущее значение сохранено."
     fi
+
+    if force_dns_src_matches_expected; then
+        force_dns_restore_list https-dns-proxy.config.force_dns_src_interface force_dns_src_interface || return 1
+    else
+        warn_msg "https-dns-proxy: force_dns_src_interface изменён извне; текущее значение сохранено."
+    fi
+
+    uci commit https-dns-proxy >/dev/null 2>&1 || return 1
+    rm -f "$FORCE_DNS_BEFORE" 2>/dev/null || true
     return 0
 }
 # ==========================================
@@ -6079,9 +6120,10 @@ EOF_CHECK_EXT
             _ok=1
             [ "$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null)" = 1 ] || _ok=0
             [ "$(uci -q get https-dns-proxy.config.notrack_dns 2>/dev/null)" = 1 ] || _ok=0
-            { [ "$(uci -q get https-dns-proxy.config.dnsmasq_config_update 2>/dev/null)" = - ] ||
-              [ -z "$(uci -q get https-dns-proxy.config.dnsmasq_config_update 2>/dev/null)" ]; } || _ok=0
+            [ "$(uci -q get https-dns-proxy.config.dnsmasq_config_update 2>/dev/null)" = - ] || _ok=0
             [ "$(uci -q get https-dns-proxy.config.force_ip_family 2>/dev/null)" = auto ] || _ok=0
+            force_dns_ports_match_expected || _ok=0
+            force_dns_src_matches_expected || _ok=0
             [ -s "$FORCE_DNS_BEFORE" ] || _ok=0
             if [ "$_ok" = 1 ]; then
                 prepare_dns_path >/dev/null 2>&1 && printf 1 || printf 2
