@@ -2,8 +2,8 @@
 MANAGER_PATH="/usr/bin/dns-manager"
 # ==========================================
 # ==========================================
-VERSION="2.90"
-# 2.90: updater always checks GitHub on interactive startup; 12-hour throttle remains for scheduled updates.
+VERSION="2.91"
+# 2.91: catalog reference updated to 8.6-RU-NOSOCIAL; syntax-safe rebuild/release.
 # 2.88: native LuCI companion compatibility, idempotent procd watchdog migration,
 # first-run cron protection, and exact https-dns-proxy forced-DNS ports/interfaces
 # while keeping DNS Manager authoritative over its own dnsmasq upstream list.
@@ -32,8 +32,8 @@ WATCHDOG_SERVICE_PATH="/etc/init.d/dns-watchdog"
 WATCHDOG_RUNTIME_DIR="/var/run/dns-watchdog"
 WATCHDOG_DAEMON_MARKER="# DNS_MANAGER_WATCHDOG_DAEMON=1"
 WATCHDOG_SERVICE_MARKER="# DNS_MANAGER_WATCHDOG_SERVICE=1"
-WATCHDOG_DAEMON_VERSION_MARKER="# DNS_MANAGER_WATCHDOG_DAEMON_VERSION=2.90"
-WATCHDOG_SERVICE_VERSION_MARKER="# DNS_MANAGER_WATCHDOG_SERVICE_VERSION=2.90"
+WATCHDOG_DAEMON_VERSION_MARKER="# DNS_MANAGER_WATCHDOG_DAEMON_VERSION=2.91"
+WATCHDOG_SERVICE_VERSION_MARKER="# DNS_MANAGER_WATCHDOG_SERVICE_VERSION=2.91"
 WATCHDOG_LAST_RESTART_FILE="$STATE_DIR/watchdog-last-restart"
 AUTO_UPDATE_LAST_CHECK_FILE="$STATE_DIR/auto-update-last-check"
 AUTO_UPDATE_CHECK_MAX_AGE=43200
@@ -7918,7 +7918,7 @@ watchdog_service_install_files() {
         cat > "$_dtmp" <<'EOF_DNS_WATCHDOG_DAEMON'
 #!/bin/sh
 # DNS_MANAGER_WATCHDOG_DAEMON=1
-# DNS_MANAGER_WATCHDOG_DAEMON_VERSION=2.90
+# DNS_MANAGER_WATCHDOG_DAEMON_VERSION=2.91
 
 MANAGER_PATH="/usr/bin/dns-manager"
 CONFIG_FILE="/etc/dns-manager/config/manager.conf"
@@ -8252,7 +8252,7 @@ EOF_DNS_WATCHDOG_DAEMON
         cat > "$_stmp" <<'EOF_DNS_WATCHDOG_SERVICE'
 #!/bin/sh /etc/rc.common
 # DNS_MANAGER_WATCHDOG_SERVICE=1
-# DNS_MANAGER_WATCHDOG_SERVICE_VERSION=2.90
+# DNS_MANAGER_WATCHDOG_SERVICE_VERSION=2.91
 
 USE_PROCD=1
 START=95
