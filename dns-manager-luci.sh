@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 0.9.13
+# Version: 0.9.14
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -21,7 +21,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 RUNTIME_UPDATE_STATE="$BACKUP_DIR/update.state"
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="0.9.13"
+VERSION="0.9.14"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -95,7 +95,7 @@ UPDATE_STATE="/etc/dns-manager-luci/update.state"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="0.9.13"
+SELF_VERSION="0.9.14"
 
 umask 077
 mkdir -p "$RUNTIME_DIR" "$JOB_DIR" "$CHECK_DIR" "$TMP_ROOT" 2>/dev/null || exit 1
@@ -140,6 +140,7 @@ catalog_field() {
 }
 
 catalog_version() { sed -n 's/^# DNSCATVER=//p' "$CATALOG_FILE" 2>/dev/null | head -n1; }
+catalog_revision() { sed -n 's/^# DNSCATREV=//p' "$CATALOG_FILE" 2>/dev/null | head -n1; }
 
 read_installed_luci_version() {
     _v=""
@@ -168,7 +169,7 @@ fetch_raw_url() {
         return 1
     fi
     [ -s "$_out" ] || return 1
-    [ "$(wc -c < "$_out" 2>/dev/null | tr -d ' ')" -le 300000 ] 2>/dev/null || return 1
+    [ "$(wc -c < "$_out" 2>/dev/null | tr -d ' ')" -le 600000 ] 2>/dev/null || return 1
     return 0
 }
 fetch_url() {
@@ -245,9 +246,24 @@ component_update_check() {
         [ -n "$_catalog_latest" ] && _catalog_ok=1
         _local_rev="$(sed -n 's/^# DNSCATREV=//p' "$CATALOG_FILE" 2>/dev/null | head -n1)"
         _local_total="$(grep -v '^#' "$CATALOG_FILE" 2>/dev/null | grep -c '^[^|][^|]*|' 2>/dev/null || printf 0)"
-        [ "$_catalog_latest" != "$(catalog_version)" ] && [ -n "$_catalog_latest" ] && _catalog_available=1
-        [ -n "$_catalog_latest_rev" ] && [ "$_catalog_latest_rev" != "$_local_rev" ] && _catalog_available=1
-        [ "$_catalog_latest_total" != "$_local_total" ] && _catalog_available=1
+        _catalog_same=0
+        _remote_body="$TMP_ROOT/catalog-remote-body.$"
+        _local_body="$TMP_ROOT/catalog-local-body.$"
+        sed '/^[[:space:]]*#/d;/^[[:space:]]*$/d' "$_tmp" > "$_remote_body" 2>/dev/null || true
+        if [ -r "$CATALOG_FILE" ]; then
+            sed '/^[[:space:]]*#/d;/^[[:space:]]*$/d' "$CATALOG_FILE" > "$_local_body" 2>/dev/null || true
+            if cmp -s "$_remote_body" "$_local_body" 2>/dev/null; then
+                _catalog_same=1
+            fi
+        fi
+        if [ "$_catalog_same" != 1 ]; then
+            [ "$_catalog_latest" != "$(catalog_version)" ] && [ -n "$_catalog_latest" ] && _catalog_available=1
+            [ -n "$_catalog_latest_rev" ] && [ "$_catalog_latest_rev" != "$_local_rev" ] && _catalog_available=1
+            [ "$_catalog_latest_total" != "$_local_total" ] && _catalog_available=1
+        else
+            _catalog_available=0
+        fi
+        rm -f "$_remote_body" "$_local_body" 2>/dev/null || true
     fi
     rm -f "$_tmp" 2>/dev/null || true
 
@@ -623,6 +639,7 @@ status_json() {
     _catalog_rev_state="$(sed -n 's/^catalog_latest_rev=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"
     _catalog_total_state="$(sed -n 's/^catalog_latest_total=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"; [ -n "$_catalog_total_state" ] || _catalog_total_state=0
     _catalog_avail_state="$(sed -n 's/^catalog_available=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"; [ -n "$_catalog_avail_state" ] || _catalog_avail_state=0
+    _components_checked_at="$(sed -n 's/^components_checked_at=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"
 
     printf '{"ok":true,"manager_version":'; json_quote "$_mv"; printf ',"luci_version":'; json_quote "$_luciv"; printf ',"luci_latest_version":'; json_quote "$_luci_latest"; printf ',"luci_update_available":%s,"luci_update_checked":%s' "$_luci_avail" "${_luci_checked:-0}"
     printf ',"manager_latest_version":'; json_quote "$_manager_latest_state"; printf ',"manager_update_available":%s' "$_manager_avail_state"
@@ -630,16 +647,21 @@ status_json() {
     printf ',"ipv4":'; json_quote "$_ipv4"; printf ',"ipv6":'; json_quote "$_ipv6"; printf ',"dnsmasq":'; json_quote "$_dnsmasq"; printf ',"doh":'; json_quote "$_doh"; printf ',"firewall":'; json_quote "$_fw"; printf ',"openwrt":'; json_quote "$(openwrt_release)"; printf ',"lan":'; json_quote "$_lan"
     printf ',"profile":'; json_quote "$_profile"; printf ',"profile_mode":'; json_quote "$_mode"; printf ',"watchdog":'; json_quote "$_watchdog"; printf ',"watchdog_service":'; json_quote "$( [ -x /etc/init.d/dns-watchdog ] && /etc/init.d/dns-watchdog running >/dev/null 2>&1 && printf yes || printf no )"; printf ',"watchdog_interval":'; json_quote "$_watchdog_interval"
     printf ',"force":'; json_quote "$_force"; printf ',"force_external":'; json_quote "$_external"; printf ',"force_owner":'; json_quote "$( [ "$_external" = 1 ] && printf external || [ "$_force" = 1 ] && printf manager || printf none )"; printf ',"force_source":'; json_quote "$FORCE_RUNTIME_SOURCE"; printf ',"force_targets":'; json_quote "$FORCE_RUNTIME_TARGETS"; printf ',"force_notrack":'; json_quote "$_force_notrack"; printf ',"force_update":'; json_quote "$_force_update"; printf ',"force_family":'; json_quote "$_force_family"; printf ',"force_ports":'; json_quote "$_force_ports"; printf ',"force_src":'; json_quote "$_force_src"; printf ',"force_canary_icloud":'; json_quote "$_force_canary_i"; printf ',"force_canary_mozilla":'; json_quote "$_force_canary_m"; printf ',"force_procd_trigger_wan6":'; json_quote "$_force_procd"; printf ',"force_heartbeat_domain":'; json_quote "$_force_heartbeat_domain"; printf ',"force_heartbeat_sleep":'; json_quote "$_force_heartbeat_sleep"; printf ',"force_heartbeat_wait":'; json_quote "$_force_heartbeat_wait"; printf ',"force_user":'; json_quote "$_force_user"; printf ',"force_group":'; json_quote "$_force_group"; printf ',"force_listen":'; json_quote "$_force_listen"; printf ',"force_consistent":%s' "$_force_consistent"; printf ',"mtu":'; json_quote "$_mtu"; printf ',"sysctl":'; json_quote "$_sysctl"; printf ',"sysctl_ext":'; json_quote "$_sysctl_ext"; printf ',"ntp_clients":'; json_quote "$_ntp"; printf ',"dnsmasq_perf":'; json_quote "$_perf"; printf ',"client_fixes":'; json_quote "$_fix"
-    printf ',"doh_total":%s,"doh_match":%s,"configured_dns":%s,"average_ping":' "$_doh_total" "$_match" "$_expected"; json_quote "$(average_selected_ping)"; printf ',"last_full_test":'; json_quote "$_last"
+    printf ',"doh_total":%s,"doh_match":%s,"configured_dns":%s,"average_ping":' "$_doh_total" "$_match" "$_expected"; json_quote "$(average_selected_ping)"; printf ',"last_full_test":'; json_quote "$_last"; printf ',"components_checked_at":'; json_quote "$_components_checked_at"
     printf ',"hostname":'; json_quote "$_host"; printf ',"uptime":'; json_quote "$_uptime"; printf ',"load1":'; json_quote "$_load"; printf ',"memory_total_kb":%s,"memory_available_kb":%s' "${_mem_t:-0}" "${_mem_a:-0}"
-    printf ',"catalog_total":%s,"catalog_version":' "$_cat_total"; json_quote "$(catalog_version)"; printf ',"hdp_version":'; json_quote "$_hdp_installed"; printf ',"hdp_latest_version":'; json_quote "$_hdp_candidate"; printf ',"hdp_update_available":%s' "$_hdp_update"; printf ',"force_status":'; json_quote "$([ "$_external" = 1 ] && printf external || [ "$_force_manager" = 1 ] && printf manager || printf off)"; printf ',"force_owner":'; json_quote "$([ "$_external" = 1 ] && printf 'внешний' || [ "$_force_manager" = 1 ] && printf 'DNS Manager' || printf 'нет')"; printf ',"force_manager":%s,"force_both":%s,"zapret_running":%s' "$_force_manager" "$_force_both" "$_zapret_running"; printf ',"force_source":'; json_quote "$FORCE_RUNTIME_SOURCE"; printf ',"slots":['
+    printf ',"catalog_total":%s,"catalog_version":' "$_cat_total"; json_quote "$(catalog_version)"; printf ',"catalog_revision":'; json_quote "$(catalog_revision)"; printf ',"hdp_version":'; json_quote "$_hdp_installed"; printf ',"hdp_latest_version":'; json_quote "$_hdp_candidate"; printf ',"hdp_update_available":%s' "$_hdp_update"; printf ',"force_status":'; json_quote "$([ "$_external" = 1 ] && printf external || [ "$_force_manager" = 1 ] && printf manager || printf off)"; printf ',"force_owner_label":'; json_quote "$([ "$_external" = 1 ] && printf 'внешний' || [ "$_force_manager" = 1 ] && printf 'DNS Manager' || printf 'нет')";
     _first=1
     for _s in 1 2 3 4 5 6 RU RU_2; do
         _id="$(cfg_get "SLOT_$_s")"; _cat="$(cfg_get "SLOT_${_s}_CAT")"; _port="$(cfg_get "PORT_$_s")"
         [ -n "$_cat" ] || [ -z "$_id" ] || _cat="$(catalog_field "$_id" 2 2>/dev/null || true)"
         _name="$(catalog_field "$_id" 4 2>/dev/null || true)"; [ -n "$_name" ] || _name="Не задан"
-        _r="$(result_for_id "$_id" 2>/dev/null || true)"; _ms="$(printf '%s' "$_r" | awk -F'|' 'NF>=5 {print $4;exit}')"; _st="$(printf '%s' "$_r" | awk -F'|' 'NF>=5 {print $5;exit}')"
-        [ "$_st" = OK ] || [ "$_st" = FAIL ] || _st=""
+        _r="$(result_for_id "$_id" 2>/dev/null || true)"; _ms="$(printf '%s' "$_r" | awk -F'|' 'NF>=5 {print $4;exit}')"; _rawst="$(printf '%s' "$_r" | awk -F'|' 'NF>=5 {print $5;exit}')"; _st=""
+        case "$_rawst" in
+            OK) case "$_ms" in ''|*[!0-9]*) _st=FAIL;; *) _st=OK;; esac ;;
+            RUNNING) _st=RUNNING ;;
+            '') _st="" ;;
+            *) _st=FAIL ;;
+        esac
         [ "$_first" = 1 ] || printf ','; _first=0
         printf '{"slot":'; json_quote "$_s"; printf ',"id":'; json_quote "$_id"; printf ',"name":'; json_quote "$_name"; printf ',"category":'; json_quote "$_cat"; printf ',"port":'; json_quote "$_port"; printf ',"ping":'; json_quote "$_ms"; printf ',"status":'; json_quote "$_st"; printf ',"last_check":'; json_quote "$(last_check_for_id "$_id")"; printf '}'
     done
@@ -817,7 +839,7 @@ EOF_RPC
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 0.9.13
+// DNS Manager LuCI version: 0.9.14
 var callStatus = rpc.declare({ object:'dns_manager', method:'status', expect:{} });
 var callCatalog = rpc.declare({ object:'dns_manager', method:'catalog', params:['category','offset','limit','only_ok'], expect:{} });
 var callUpdateCheck = rpc.declare({ object:'dns_manager', method:'update_check', expect:{} });
@@ -862,7 +884,14 @@ function stripAnsi(s){
     .replace(/[0-9]+(?:;[0-9]+)*m/g,'')
     .replace(/\r/g,'');
 }
-function stateBadge(status){ var s=String(status||'').toUpperCase(); if(s==='OK')return badge('dm-ok','доступен'); if(s==='RUNNING')return badge('dm-warn','выполняется'); if(s==='FAIL'||s==='FAILED')return badge('dm-bad','ошибка'); return badge('dm-off','нет данных'); }
+function hasPing(v){ return /^\d+$/.test(String(v===undefined||v===null?'':v)); }
+function stateBadge(status,pingValue){
+  var s=String(status||'').toUpperCase();
+  if(s==='RUNNING')return badge('dm-warn','проверяется');
+  if(s==='OK'&&hasPing(pingValue))return badge('dm-ok','доступен');
+  if(s==='OK'||s==='FAIL'||s==='FAILED'||s.indexOf('_FAIL')>0||s.indexOf('TIMEOUT')>=0||s.indexOf('ERROR')>=0||s.indexOf('HTTP_')===0||!hasPing(pingValue))return badge('dm-bad','недоступен');
+  return badge('dm-off','нет данных');
+}
 function settingName(n){ var m={watchdog:'Автопроверка DNS',mtu:'Настройка MTU и MSS',sysctl:'Оптимизация TCP и соединений',sysctl_ext:'Расширенные параметры сети',ntp_clients:'Время для устройств сети',dnsmasq_perf:'Кэш DNS',client_fixes:'Исправления для устройств'}; return m[n]||n; }
 function versionState(v,available,latest,okWord){
   if(!v)return badge('dm-bad','не установлена');
@@ -870,15 +899,16 @@ function versionState(v,available,latest,okWord){
   if(latest)return badge('dm-ok',shortVal(v)+' · '+okWord);
   return badge('dm-off',shortVal(v)+' · проверка не выполнена');
 }
-function catalogVersionState(v,total,available,latest,latestRev){
+function catalogVersionState(v,rev,total,available,latest,latestRev){
   if(!v)return badge('dm-bad','не установлен');
+  var local=shortVal(v)+(rev?' rev.'+shortVal(rev):'');
   if(yes(available)){
     var tail=latest?shortVal(latest):'новая версия';
     if(latestRev)tail+=' rev.'+shortVal(latestRev);
-    return badge('dm-warn',shortVal(v)+' → '+tail+' · неактуален');
+    return badge('dm-warn',local+' → '+tail+' · неактуален');
   }
-  if(latest)return badge('dm-ok',shortVal(v)+' · актуален');
-  return badge('dm-off',shortVal(v)+' · проверка не выполнена');
+  if(latest)return badge('dm-ok',local+' · актуален');
+  return badge('dm-off',local+' · проверка не выполнена');
 }
 
 function injectStyle(root){
@@ -896,7 +926,7 @@ function injectStyle(root){
   '.dm-seg{display:flex;flex-wrap:wrap;gap:6px;margin:5px 0}.dm-seg .cbi-button{padding:5px 11px;border-radius:7px;font-size:12.5px;font-weight:600}.dm-seg .active{background:#1a7f37;color:#fff;border-color:#1a7f37}'+
   '.dm-force-note{font-size:12px;line-height:1.55;opacity:.72}.dm-inline-msg{display:block;margin:8px 0 0;padding:7px 10px;border-radius:7px;font-size:12px;line-height:1.4}.dm-inline-msg.info{background:rgba(9,105,218,.08);border:1px solid rgba(9,105,218,.16)}.dm-inline-msg.ok{background:rgba(26,127,55,.08);border:1px solid rgba(26,127,55,.16)}.dm-inline-msg.error{background:rgba(207,34,46,.08);border:1px solid rgba(207,34,46,.16)}.dm-setting{padding:11px 12px}.dm-setting-title{font-size:13px;font-weight:600}.dm-setting-desc{font-size:11.5px;line-height:1.45;opacity:.68;margin-top:3px}.dm-setting-line{display:flex;align-items:center;justify-content:space-between;gap:10px}.dm-setting-actions{display:flex;align-items:center;gap:7px;flex-shrink:0}.dm-setting-actions .cbi-button{padding:4px 9px;font-size:12px}.dm-setting-saving{opacity:.7}.dm-force-external{padding:8px 10px;border-radius:8px;background:rgba(191,135,0,.10);border:1px solid rgba(191,135,0,.22);font-size:12.5px;line-height:1.5;margin-top:8px}'+
   '.dm-doh-list{display:flex;flex-direction:column}.dm-doh-row{display:grid;grid-template-columns:140px minmax(180px,1fr) 80px 100px;gap:10px;align-items:center;padding:7px 0;border-top:1px solid rgba(0,0,0,.07);font-size:13px}.dm-doh-row:first-child{border-top:0}.dm-doh-name{font-weight:600}.dm-doh-url{overflow-wrap:anywhere;opacity:.88}.dm-doh-port,.dm-doh-ping{font-size:12px;opacity:.7;white-space:nowrap}'+
-  '.dm-slot-table{display:flex;flex-direction:column}.dm-slot-row{display:grid;grid-template-columns:55px 135px minmax(180px,1fr) 85px 115px minmax(175px,auto);gap:14px;align-items:center;padding:7px 0;border-top:1px solid rgba(0,0,0,.07);font-size:13px}.dm-slot-row:first-child{border-top:0}.dm-slot-id{font-weight:700;opacity:.62}.dm-slot-name{font-weight:600;overflow-wrap:anywhere}.dm-slot-endpoint,.dm-slot-ping{font-size:12px;opacity:.72;white-space:nowrap}.dm-inline{display:flex;gap:6px;justify-content:flex-end}.dm-inline .cbi-button{padding:4px 9px;font-size:12px}'+
+  '.dm-slot-table{display:flex;flex-direction:column}.dm-slot-row{display:grid;grid-template-columns:55px 135px minmax(180px,1fr) 85px 115px minmax(175px,auto);gap:14px;align-items:center;padding:7px 0;border-top:1px solid rgba(0,0,0,.07);font-size:13px}.dm-slot-row:first-child{border-top:0}.dm-slot-id{font-weight:700;opacity:.62}.dm-slot-name{font-weight:600;overflow-wrap:anywhere}.dm-slot-endpoint,.dm-slot-ping{font-size:12px;opacity:.72;white-space:nowrap}.dm-inline{display:flex;gap:6px;justify-content:flex-end}.dm-inline .cbi-button{padding:4px 9px;font-size:12px}.dm-assign-list{display:flex;flex-direction:column;gap:7px;min-width:min(430px,calc(100vw - 70px))}.dm-assign-item{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:9px 10px;border:1px solid rgba(0,0,0,.08);border-radius:8px}.dm-assign-info{min-width:0;flex:1}.dm-assign-slot{font-weight:700}.dm-assign-current{font-size:12px;opacity:.7;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}'+
   '.dm-catalog{display:grid;grid-template-columns:repeat(3,minmax(210px,1fr));gap:8px;margin-top:8px}.dm-catalog-item{padding:10px 11px}.dm-catalog-item h4{margin:0 0 4px;font-size:13px}.dm-page{display:flex;justify-content:center;align-items:center;gap:7px;margin-top:9px}.dm-log{white-space:pre-wrap;max-height:360px;overflow:auto;font:11px/1.45 monospace;padding:10px;background:#111820;color:#dbe4ec;border-radius:8px;margin-top:8px}'+
   '.dm-page-nav{position:sticky;top:0;z-index:20;padding:7px 0;background:var(--background-color-base,#fff);border-bottom:1px solid rgba(0,0,0,.08)}.dm-page-nav::before,.dm-page-nav::after{content:"";position:absolute;left:0;right:0;height:7px;background:var(--background-color-base,#fff);pointer-events:none}.dm-page-nav::before{top:-7px}.dm-page-nav::after{bottom:-7px}.dm-page-tabs{display:flex;align-items:stretch;gap:4px;overflow-x:auto;scrollbar-width:none;padding:0 2px}.dm-page-tabs::-webkit-scrollbar{display:none}.dm-page-tab{flex:0 0 auto;padding:7px 12px!important;border-radius:8px 8px 0 0!important;font-size:12.5px!important;font-weight:600!important;border:1px solid transparent!important;background:transparent!important;box-shadow:none!important}.dm-page-tab:hover{background:rgba(0,0,0,.05)!important}.dm-page-tab.active{background:var(--background-color-medium,#fff)!important;border-color:rgba(0,0,0,.12)!important;border-bottom-color:var(--background-color-medium,#fff)!important}.dm-page-nav-title{display:none}.dm-wrap>section{scroll-margin-top:58px}'+
   '.dm-section-title{font-size:12px;letter-spacing:.02em;text-transform:none;opacity:.62;margin:3px 0 0;padding:0 2px}'+
@@ -948,9 +978,9 @@ function renderPageNav(root){
 }
 function checkInfo(id,d){
   var x=state.checking&&state.checking[id];
-  if(x&&x.status==='RUNNING')return {status:'RUNNING',ping:''};
-  if(x&&x.status)return {status:x.status,ping:x.ping||''};
-  return {status:d&&d.status?d.status:'',ping:d&&d.ping?d.ping:''};
+  var r=x&&x.status?{status:x.status,ping:x.ping||''}:{status:d&&d.status?d.status:'',ping:d&&d.ping?d.ping:''};
+  if(String(r.status||'').toUpperCase()==='OK'&&!hasPing(r.ping))r.status='FAIL';
+  return r;
 }
 function renderOverview(root,st){
   var e=root.querySelector('#dm-overview');if(!e)return;e.innerHTML='';
@@ -966,7 +996,7 @@ function renderOverview(root,st){
       E('span',{'class':'dm-slot-name'},d.name||d.id),
       E('span',{'class':'dm-slot-endpoint'},d.port?'127.0.0.1:'+d.port:'—'),
       E('span',{'class':'dm-slot-ping'},ci.status==='RUNNING'?badge('dm-warn','проверяется'):ping(ci.ping)),
-      E('span',{'class':'dm-slot-state'},ci.status==='RUNNING'?badge('dm-warn','проверяется'):stateBadge(ci.status)),
+      E('span',{'class':'dm-slot-state'},ci.status==='RUNNING'?badge('dm-warn','проверяется'):stateBadge(ci.status,ci.ping)),
       E('span',{'class':'dm-inline'},[
         btn('Выбрать','cbi-button-neutral',function(){openSlotPicker(d.slot,root);}),
         btn(ci.status==='RUNNING'?'Проверяется':'Проверить','cbi-button-neutral',function(){testOne(d.id,root,'overview');},{disabled:ci.status==='RUNNING'})
@@ -1002,8 +1032,9 @@ function renderOverview(root,st){
     row('DNS Manager',versionState(st.manager_version,st.manager_update_available,st.manager_latest_version,'актуальна')),
     row('LuCI',versionState(st.luci_version,st.luci_update_available,st.luci_latest_version,'актуальна')),
     row('https-dns-proxy',st.hdp_update_available?versionState(st.hdp_version,1,st.hdp_latest_version,'актуальна'):badge('dm-ok',shortVal(st.hdp_version)+' · актуальна')),
-    row('Каталог DNS',catalogVersionState(st.catalog_version,st.catalog_total,st.catalog_update_available,st.catalog_latest_version,st.catalog_latest_rev)),
-    row('Последняя проверка',dateText(st.last_full_test)),
+    row('Каталог DNS',catalogVersionState(st.catalog_version,st.catalog_revision,st.catalog_total,st.catalog_update_available,st.catalog_latest_version,st.catalog_latest_rev)),
+    row('Последний тест DNS',dateText(st.last_full_test)),
+    row('Актуальность версий',dateText(st.components_checked_at)),
     E('div',{'class':'dm-actions'},[btn('Проверить актуальность','cbi-button-neutral',function(){checkUpdate(root);}),yes(st.luci_update_available)?btn('Обновить LuCI','cbi-button-positive',function(){doUpdate(root);}):E('span',{})])
   ]);
   var forceBox=E('div',{'class':'dm-actions'},[
@@ -1018,7 +1049,7 @@ function resolverRows(st){
   var out=[],seen=0;
   (st.slots||[]).forEach(function(d){if(!d.id)return;seen++;out.push(E('div',{'class':'dm-doh-row'},[
     E('span',{'class':'dm-doh-slot'},d.slot||'—'),E('span',{'class':'dm-doh-name'},d.name||d.id),E('span',{'class':'dm-doh-url'},d.url||'—'),
-    E('span',{'class':'dm-doh-port'},d.port?'порт '+d.port:'—'),E('span',{'class':'dm-doh-ping'},ping(d.ping)),E('span',{'class':'dm-doh-state'},stateBadge(d.status))
+    E('span',{'class':'dm-doh-port'},d.port?'порт '+d.port:'—'),E('span',{'class':'dm-doh-ping'},ping(d.ping)),E('span',{'class':'dm-doh-state'},stateBadge(d.status,d.ping))
   ]));});
   return [out,seen];
 }
@@ -1052,6 +1083,12 @@ function renderDoH(root,st){
   e.appendChild(card('DNS over HTTPS',ch));
 }
 
+function slotLabel(slot){var m={'1':'DNS 1','2':'DNS 2','3':'DNS 3','4':'DNS 4','5':'DNS 5','6':'DNS 6','RU':'Региональный DNS 1','RU_2':'Региональный DNS 2'};return m[slot]||('DNS '+slot);}
+function slotCurrentName(slot){var st=window.dmState||{};for(var i=0;i<(st.slots||[]).length;i++){if(String(st.slots[i].slot)===String(slot))return st.slots[i].name||st.slots[i].id||'не назначен';}return 'не назначен';}
+function assign(id,slot,root){if(state.busy)return;state.busy=true;state.pageNotice.slots='Назначаю «'+slotLabel(slot)+'»…';renderSlots(root,window.dmState||{});callSlot(slot,id).then(function(r){state.busy=false;state.pageNotice.slots=(r&&r.ok)?'DNS назначен в '+slotLabel(slot)+'.':(r&&r.error)||'DNS не удалось применить.';refresh(root,true);}).catch(function(){state.busy=false;state.pageNotice.slots='DNS не удалось применить.';refresh(root,true);});}
+function openAssign(id,cat,root){var slots=cat==='regional'?['RU','RU_2']:['1','2','3','4','5','6'];var targetName=((window.dmCatalog&&window.dmCatalog.servers)||[]).filter(function(x){return x.id===id;})[0];var box=E('div',{'class':'dm-assign-list'});slots.forEach(function(slot){box.appendChild(E('div',{'class':'dm-assign-item'},[E('div',{'class':'dm-assign-info'},[E('div',{'class':'dm-assign-slot'},slotLabel(slot)),E('div',{'class':'dm-assign-current'},'Сейчас: '+slotCurrentName(slot))]),btn('Назначить сюда','cbi-button-neutral',function(){ui.hideModal();assign(id,slot,root);})]));});ui.showModal('Назначить DNS «'+(targetName&&targetName.name?targetName.name:id)+'»',[box,E('div',{'class':'right'},[btn('Отмена','cbi-button-negative',ui.hideModal)])]);}
+function openSlotPicker(slot,root){if(state.busy)return;var regional=slot==='RU'||slot==='RU_2';callCatalog(regional?'regional':'all',0,48,0).then(function(d){var rows=(d.servers||[]).filter(function(x){return regional?x.category==='regional':x.category!=='regional';});var cur=slotCurrentName(slot);var sel=E('select',{'class':'cbi-input-select'});rows.forEach(function(x){sel.appendChild(E('option',{value:x.id},x.name+' — '+catName(x.category)+(x.name===cur?' · сейчас':'')));});ui.showModal('Выбор DNS для '+slotLabel(slot)+' · сейчас: '+cur,[sel,E('div',{'class':'right'},[btn('Отмена','cbi-button-negative',ui.hideModal),btn('Применить','cbi-button-apply',function(){var picked=sel.value;ui.hideModal();assign(picked,slot,root);})])]);}).catch(function(){state.pageNotice.slots='Не удалось открыть список DNS.';renderSlots(root,window.dmState||{});});}
+
 function openForceDetails(root,st){
   var vals=[
     ['force_dns',shortVal(st.force)],['notrack_dns',shortVal(st.force_notrack)],['dnsmasq_config_update',shortVal(st.force_update)],
@@ -1077,7 +1114,7 @@ function renderSlots(root,st){
   var e=root.querySelector('#dm-slots');if(!e)return;e.innerHTML='';var rows=[];
   (st.slots||[]).forEach(function(d){if(!d.id)return;rows.push(E('div',{'class':'dm-slot-row'},[
     E('span',{'class':'dm-slot-id'},d.slot),E('span',{'class':'dm-slot-name'},d.name||d.id),
-    E('span',{'class':'dm-slot-endpoint'},d.port?'127.0.0.1:'+d.port:'—'),E('span',{'class':'dm-slot-ping'},ping(d.ping)),E('span',{'class':'dm-slot-state'},stateBadge(d.status)),
+    E('span',{'class':'dm-slot-endpoint'},d.port?'127.0.0.1:'+d.port:'—'),E('span',{'class':'dm-slot-ping'},ping(d.ping)),E('span',{'class':'dm-slot-state'},stateBadge(d.status,d.ping)),
     E('span',{'class':'dm-inline'},[btn('Выбрать','cbi-button-neutral',function(){openSlotPicker(d.slot,root);}),btn('Проверить','cbi-button-neutral',function(){testOne(d.id,root);})])
   ]));});
   if(!rows.length)rows.push(E('div',{'class':'dm-hint'},'DNS пока не настроены.'));
@@ -1136,7 +1173,7 @@ function renderCatalogBody(root,data){
       E('div',{'class':'dm-meta'},catName(d.category)),
       E('div',{'class':'dm-row'},[
         E('span',{'class':'dm-slot-ping'},ci.status==='RUNNING'?badge('dm-warn','проверяется'):ping(ci.ping)),
-        E('span',{'class':'dm-slot-state'},ci.status==='RUNNING'?badge('dm-warn','проверяется'):stateBadge(ci.status)),
+        E('span',{'class':'dm-slot-state'},ci.status==='RUNNING'?badge('dm-warn','проверяется'):stateBadge(ci.status,ci.ping)),
         E('span',{'class':'dm-inline'},[
           btn(ci.status==='RUNNING'?'Проверяется':'Проверить','cbi-button-neutral',function(){testOne(d.id,root,'profiles');},{disabled:ci.status==='RUNNING'})
         ])
@@ -1210,7 +1247,7 @@ function startAutoRefresh(root){
   },1000);
 }
 function toast(msg,type){}
-function checkUpdate(root){globalUpdateNotice('Проверяю актуальность версий…','info');state.pageNotice.overview='Проверяю обновления LuCI…';if(rootAlive(root))renderOverview(root,window.dmState||{});return callUpdateCheck().then(function(r){var ok=!!(r&&r.ok);var msg=!ok?'Проверка актуальности версий не выполнена.':(yes(r.available)?'Доступна новая версия LuCI: v'+r.latest_version:'Установлена актуальная версия LuCI.');state.pageNotice.overview=msg;globalUpdateNotice(msg,ok?'ok':'error');return refresh(root,true);}).catch(function(){var msg='Проверка актуальности версий не выполнена.';state.pageNotice.overview=msg;globalUpdateNotice(msg,'error');return refresh(root,true);});}
+function checkUpdate(root){globalUpdateNotice('Проверяю актуальность DNS Manager, LuCI, https-dns-proxy и каталога DNS…','info');state.pageNotice.overview='Проверяю актуальность всех компонентов…';if(rootAlive(root))renderOverview(root,window.dmState||{});return callUpdateCheck().then(function(r){var ok=!!(r&&r.ok);var msg=!ok?'Проверка актуальности версий не выполнена.':(yes(r.available)?'Доступна новая версия LuCI: v'+r.latest_version:'Актуальность компонентов проверена.');state.pageNotice.overview=msg;globalUpdateNotice(msg,ok?'ok':'error');return refresh(root,true);}).catch(function(){var msg='Проверка актуальности версий не выполнена.';state.pageNotice.overview=msg;globalUpdateNotice(msg,'error');return refresh(root,true);});}
 function doUpdate(root){if(state.busy)return;var v=(window.dmState&&window.dmState.luci_latest_version)||'новой версии';if(!confirm('Обновить только LuCI до v'+v+'? DNS Manager и настройки не изменятся.'))return;state.busy=true;state.pageNotice.overview='Обновляю LuCI…';globalUpdateNotice('Обновляю LuCI до v'+v+'…','info');if(rootAlive(root))renderOverview(root,window.dmState||{});callUpdate().then(function(r){state.busy=false;if(r&&r.ok&&r.updated){var msg='LuCI обновлена до v'+r.version+'. Перезагружаю страницу…';state.pageNotice.overview=msg;globalUpdateNotice(msg,'ok');if(rootAlive(root))renderOverview(root,window.dmState||{});setTimeout(function(){location.reload();},1600);}else{var msg=(r&&r.error)||'LuCI не удалось обновить.';state.pageNotice.overview=msg;globalUpdateNotice(msg,'error');if(rootAlive(root))renderOverview(root,window.dmState||{});}}).catch(function(){state.busy=false;var msg='Не удалось выполнить RPC-обновление LuCI. Попробуйте ещё раз; причина будет показана в сообщении RPC.';state.pageNotice.overview=msg;globalUpdateNotice(msg,'error');if(rootAlive(root))renderOverview(root,window.dmState||{});});}
 function applyProfile(name,root){if(state.busy)return;state.busy=true;state.pageNotice.profiles='Применяю профиль «'+profileName(name)+'»…';renderProfiles(root,window.dmState||{});callProfile(name).then(function(r){state.busy=false;state.pageNotice.profiles=(r&&r.ok)?'Профиль «'+profileName(name)+'» применён.':(r&&r.error)||'Профиль не удалось применить.';refresh(root,true);}).catch(function(){state.busy=false;state.pageNotice.profiles='Профиль не удалось применить.';refresh(root,true);});}
 function setSetting(name,en,root){if(state.busy)return;state.busy=true;state.busySetting=name;state.settingMessage='Изменение «'+settingName(name)+'»…';state.settingMessageType='info';renderSettings(root,window.dmState||{});callSetting(name,en).then(function(r){state.busy=false;state.busySetting='';state.settingMessage=(r&&r.ok)?('Настройка «'+settingName(name)+'»: '+(en?'включена.':'выключена.')):((r&&r.error)||'Настройку не удалось изменить.');state.settingMessageType=(r&&r.ok)?'ok':'error';refresh(root,true);}).catch(function(){state.busy=false;state.busySetting='';state.settingMessage='Настройку не удалось изменить.';state.settingMessageType='error';refresh(root,true);});}
