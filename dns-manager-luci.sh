@@ -110,7 +110,7 @@ EOF_MENU
     },
     "write": {
       "ubus": {
-        "dns_manager": [ "set_profile", "set_slot", "set_setting", "test_all", "test_current", "test_one", "update" ]
+        "dns_manager": [ "set_profile", "set_slot", "set_setting", "set_test_age", "test_all", "test_current", "test_one", "update" ]
       }
     }
   }
@@ -734,6 +734,12 @@ status_json() {
     printf ',"catalog_latest_version":'; json_quote "$_catalog_latest_state"; printf ',"catalog_latest_rev":'; json_quote "$_catalog_rev_state"; printf ',"catalog_latest_total":%s,"catalog_update_available":%s,"catalog_check_ok":%s' "$_catalog_total_state" "$_catalog_avail_state" "$_catalog_check_state"
     printf ',"ipv4":'; json_quote "$_ipv4"; printf ',"ipv6":'; json_quote "$_ipv6"; printf ',"dnsmasq":'; json_quote "$_dnsmasq"; printf ',"doh":'; json_quote "$_doh"; printf ',"firewall":'; json_quote "$_fw"; printf ',"openwrt":'; json_quote "$(openwrt_release)"; printf ',"lan":'; json_quote "$_lan"
     printf ',"profile":'; json_quote "$_profile"; printf ',"profile_mode":'; json_quote "$_mode"; printf ',"watchdog":'; json_quote "$_watchdog"; printf ',"watchdog_service":'; json_quote "$( [ -x /etc/init.d/dns-watchdog ] && /etc/init.d/dns-watchdog running >/dev/null 2>&1 && printf yes || printf no )"; printf ',"watchdog_interval":'; json_quote "$_watchdog_interval"
+    for _age_cat in bypass clean security privacy adblock family regional; do
+        _age_v="$(cfg_get "TEST_RESULTS_MAX_AGE_$(printf '%s' "$_age_cat" | tr '[:lower:]' '[:upper:]')")"
+        case "$_age_v" in ''|*[!0-9]*) _age_h=6;; *) _age_h=$((_age_v/3600)); [ "$_age_h" -ge 1 ] || _age_h=1;; esac
+        eval "_test_age_$_age_cat=\"$_age_h\""
+    done
+    printf ',"test_age_bypass":%s,"test_age_clean":%s,"test_age_security":%s,"test_age_privacy":%s,"test_age_adblock":%s,"test_age_family":%s,"test_age_regional":%s'         "$_test_age_bypass" "$_test_age_clean" "$_test_age_security" "$_test_age_privacy" "$_test_age_adblock" "$_test_age_family" "$_test_age_regional"
     _force_owner="none"
     [ "$_external" = 1 ] && _force_owner="external"
     [ "$_external" != 1 ] && [ "$_force_manager" = 1 ] && _force_owner="manager"
@@ -945,6 +951,16 @@ run_action() {
             DNS_PROFILE=custom DNS_SELECTION_MODE=manual DNS_SELECTION_CATEGORY="$_cat"; eval "SLOT_$_slot=\"$_id\""; eval "SLOT_${_slot}_CAT=\"$_cat\""; [ "$_slot" = RU ] || [ "$_slot" = RU_2 ] && DNS_SELECTION_CATEGORY=regional || true
             sync_regional_dns_state >/dev/null 2>&1 || true; SILENT_APPLY=1 CORE_ONLY=1 DNS_MANAGER_NO_UPDATE=1 apply_settings >/dev/null 2>&1 && json_ok || json_error "DNS не удалось применить"
             ;;
+        set_test_age)
+            _category="$(jget category)"; _hours="$(jget hours)"
+            case "$_category" in bypass|clean|security|privacy|adblock|family|regional) ;; *) json_error "Неверная категория DNS"; return;; esac
+            case "$_hours" in ''|*[!0-9]*) json_error "Неверный срок проверки"; return;; esac
+            [ "$_hours" -ge 1 ] 2>/dev/null && [ "$_hours" -le 168 ] 2>/dev/null || { json_error "Срок проверки должен быть от 1 до 168 часов"; return; }
+            load_manager || { json_error "DNS Manager недоступен"; return; }
+            _var="TEST_RESULTS_MAX_AGE_$(printf '%s' "$_category" | tr '[:lower:]' '[:upper:]')"
+            eval "$_var=$((_hours*3600))"
+            save_config >/dev/null 2>&1 && json_ok || json_error "Срок проверки не удалось сохранить"
+            ;;
         set_setting)
             _name="$(jget name)"; _enabled="$(jget enabled)"; case "$_enabled" in 0|1) ;; *) json_error "Неверное значение enabled"; return;; esac; case "$_name" in watchdog|force|mtu|sysctl|sysctl_ext|ntp_clients|dnsmasq_perf|client_fixes) ;; *) json_error "Недопустимая настройка"; return;; esac
             load_manager || { json_error "DNS Manager недоступен"; return; }
@@ -968,7 +984,7 @@ test_json() { case "${RPC_METHOD:-}" in test_all) job_start_test_all;; test_curr
 
 case "${1:-}" in
     list)
-        printf '{"status":{},"catalog":{"category":"String","offset":0,"limit":0,"only_ok":0},"update_check":{},"update":{},"set_profile":{"profile":"String"},"set_slot":{"slot":"String","id":"String"},"set_setting":{"name":"String","enabled":0},"test_all":{},"test_current":{},"test_one":{"id":"String"},"job":{"id":"String"},"log":{"lines":0}}\n'
+        printf '{"status":{},"catalog":{"category":"String","offset":0,"limit":0,"only_ok":0},"update_check":{},"update":{},"set_profile":{"profile":"String"},"set_slot":{"slot":"String","id":"String"},"set_setting":{"name":"String","enabled":0},"set_test_age":{"category":"String","hours":0},"test_all":{},"test_current":{},"test_one":{"id":"String"},"job":{"id":"String"},"log":{"lines":0}}\n'
         ;;
     call)
         case "${2:-}" in
@@ -1006,6 +1022,7 @@ var callUpdate = rpc.declare({ object:'dns_manager', method:'update', expect:{} 
 var callProfile = rpc.declare({ object:'dns_manager', method:'set_profile', params:['profile'], expect:{} });
 var callSlot = rpc.declare({ object:'dns_manager', method:'set_slot', params:['slot','id'], expect:{} });
 var callSetting = rpc.declare({ object:'dns_manager', method:'set_setting', params:['name','enabled'], expect:{} });
+var callTestAge = rpc.declare({ object:'dns_manager', method:'set_test_age', params:['category','hours'], expect:{} });
 var callTestAll = rpc.declare({ object:'dns_manager', method:'test_all', expect:{} });
 var callTestCurrent = rpc.declare({ object:'dns_manager', method:'test_current', expect:{} });
 var callTestOne = rpc.declare({ object:'dns_manager', method:'test_one', params:['id'], expect:{} });
@@ -1312,6 +1329,18 @@ function settingCard(root,x,st){
     ])
   ]);
 }
+function testAgeCard(root,st,category,label){
+  var key='test_age_'+category, busy=state.busySetting===key;
+  var value=String(st[key]||6);
+  var input=E('input',{'type':'number','min':'1','max':'168','step':'1','value':value,'class':'dm-input','style':'width:90px'});
+  var save=btn(busy?'Сохраняю…':'Сохранить','cbi-button-neutral',function(){setTestAge(category,input.value,root);},{disabled:!!state.busy});
+  return E('div',{'class':'dm-card dm-setting '+(busy?'dm-setting-saving':'')},[
+    E('div',{'class':'dm-setting-line'},[
+      E('div',{},[E('div',{'class':'dm-setting-title'},label),E('div',{'class':'dm-setting-desc'},'Результаты полной проверки считаются устаревшими после этого срока.')]),
+      E('div',{'class':'dm-setting-actions'},[input,E('span',{'class':'dm-inline'},'ч'),save])
+    ])
+  ]);
+}
 function renderSettings(root,st){
   var e=root.querySelector('#dm-settings');if(!e)return;e.innerHTML='';
   var body=[];
@@ -1329,6 +1358,10 @@ function renderSettings(root,st){
     g[1].forEach(function(x){grid.appendChild(settingCard(root,x,st));});
     body.push(grid);
   });
+  body.push(E('div',{'class':'dm-section-title'},'Срок результатов проверки'));
+  var ages=E('div',{'class':'dm-grid2'});
+  [['bypass','Обход'],['clean','Чистый'],['security','Безопасность'],['privacy','Приватность'],['adblock','Блокировка рекламы'],['family','Семейный'],['regional','Региональный']].forEach(function(x){ages.appendChild(testAgeCard(root,st,x[0],x[1]));});
+  body.push(ages);
   e.appendChild(card('Настройки',body));
 }
 
@@ -1470,6 +1503,15 @@ function checkUpdate(root){
 }
 function doUpdate(root){if(state.busy)return;var v=(window.dmState&&window.dmState.luci_latest_version)||'новой версии';if(!confirm('Обновить только LuCI до v'+v+'? DNS Manager и настройки не изменятся.'))return;state.busy=true;state.pageNotice.overview='Обновляю LuCI…';globalUpdateNotice('Обновляю LuCI до v'+v+'…','info');if(rootAlive(root))renderOverview(root,window.dmState||{});callUpdate().then(function(r){state.busy=false;if(r&&r.ok&&r.updated){var msg='LuCI обновлена до v'+r.version+'. Перезагружаю страницу…';state.pageNotice.overview=msg;globalUpdateNotice(msg,'ok');if(rootAlive(root))renderOverview(root,window.dmState||{});setTimeout(function(){location.reload();},1600);}else{var msg=(r&&r.error)||'LuCI не удалось обновить.';state.pageNotice.overview=msg;globalUpdateNotice(msg,'error');if(rootAlive(root))renderOverview(root,window.dmState||{});}}).catch(function(){state.busy=false;var msg='Не удалось выполнить RPC-обновление LuCI. Попробуйте ещё раз; причина будет показана в сообщении RPC.';state.pageNotice.overview=msg;globalUpdateNotice(msg,'error');if(rootAlive(root))renderOverview(root,window.dmState||{});});}
 function applyProfile(name,root){if(state.busy)return;state.busy=true;state.pageNotice.profiles='Применяю профиль «'+profileName(name)+'»…';renderProfiles(root,window.dmState||{});callProfile(name).then(function(r){state.busy=false;state.pageNotice.profiles=(r&&r.ok)?'Профиль «'+profileName(name)+'» применён.':(r&&r.error)||'Профиль не удалось применить.';refresh(root,true);}).catch(function(){state.busy=false;state.pageNotice.profiles='Профиль не удалось применить.';refresh(root,true);});}
+function setTestAge(category,hours,root){
+  if(state.busy)return;
+  var n=String(hours||'').trim();
+  if(!/^\d+$/.test(n)||Number(n)<1||Number(n)>168){state.settingMessage='Срок должен быть от 1 до 168 часов.';state.settingMessageType='error';renderSettings(root,window.dmState||{});return;}
+  state.busy=true;state.busySetting='testage_'+category;state.settingMessage='Сохраняю срок проверки…';state.settingMessageType='info';renderSettings(root,window.dmState||{});
+  callTestAge(category,Number(n)).then(function(r){
+    state.busy=false;state.busySetting='';state.settingMessage=(r&&r.ok)?'Срок проверки сохранён.':((r&&r.error)||'Срок проверки не удалось сохранить.');state.settingMessageType=(r&&r.ok)?'ok':'error';refresh(root,true);
+  }).catch(function(){state.busy=false;state.busySetting='';state.settingMessage='Срок проверки не удалось сохранить.';state.settingMessageType='error';refresh(root,true);});
+}
 function setSetting(name,en,root){if(state.busy)return;state.busy=true;state.busySetting=name;state.settingMessage='Изменение «'+settingName(name)+'»…';state.settingMessageType='info';renderSettings(root,window.dmState||{});callSetting(name,en).then(function(r){state.busy=false;state.busySetting='';state.settingMessage=(r&&r.ok)?('Настройка «'+settingName(name)+'»: '+(en?'включена.':'выключена.')):((r&&r.error)||'Настройку не удалось изменить.');state.settingMessageType=(r&&r.ok)?'ok':'error';refresh(root,true);}).catch(function(){state.busy=false;state.busySetting='';state.settingMessage='Настройку не удалось изменить.';state.settingMessageType='error';refresh(root,true);});}
 function setForceMode(mode,root){
   if(state.busy)return;
