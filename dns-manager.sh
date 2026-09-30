@@ -2,7 +2,7 @@
 MANAGER_PATH="/usr/bin/dns-manager"
 # ==========================================
 # ==========================================
-VERSION="2.95"
+VERSION="2.96"
 # 2.94: remove fragile resolver quoting and keep firewall detection BusyBox-ash-safe.
 # 2.88: native LuCI companion compatibility, idempotent procd watchdog migration,
 # first-run cron protection, and exact https-dns-proxy forced-DNS ports/interfaces
