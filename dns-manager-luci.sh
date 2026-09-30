@@ -253,8 +253,9 @@ component_update_check() {
 
     _hdp_installed="$(package_version https-dns-proxy 2>/dev/null || true)"
     _hdp_candidate="$(package_candidate_version https-dns-proxy 2>/dev/null || true)"
+    _hdp_checked=0
+    [ -n "$_hdp_installed" ] && _hdp_checked=1
     _hdp_available=0
-    [ -n "$_hdp_installed" ] && [ -n "$_hdp_candidate" ] && package_version_cmp "$_hdp_candidate" "$_hdp_installed" && _hdp_available=1
 
     _state_tmp="$UPDATE_STATE.tmp.$$"
     if [ -r "$UPDATE_STATE" ]; then
@@ -272,7 +273,8 @@ component_update_check() {
     printf 'catalog_checked=%s\n' "$_catalog_ok" >> "$_state_tmp"
     printf 'hdp_latest=%s\n' "$_hdp_candidate" >> "$_state_tmp"
     printf 'hdp_available=%s\n' "$_hdp_available" >> "$_state_tmp"
-    printf 'components_checked_at=%s\n' "$_ts"
+    printf 'hdp_checked=%s\n' "$_hdp_checked" >> "$_state_tmp"
+    printf 'components_checked_at=%s\n' "$_ts" >> "$_state_tmp"
     mv "$_state_tmp" "$UPDATE_STATE" 2>/dev/null || rm -f "$_state_tmp" 2>/dev/null || true
 }
 update_check_json() {
