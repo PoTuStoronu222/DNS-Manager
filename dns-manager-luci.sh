@@ -341,6 +341,43 @@ component_update_check() {
     printf 'components_checked_at=%s\n' "$_ts" >> "$_state_tmp"
     mv "$_state_tmp" "$UPDATE_STATE" 2>/dev/null || rm -f "$_state_tmp" 2>/dev/null || true
 }
+version_check_job_start() {
+    _active="$RUNTIME_DIR/version-check.active"
+    if [ -r "$_active" ]; then
+        _ajid="$(cat "$_active" 2>/dev/null || true)"
+        if [ -n "$_ajid" ] && [ -r "$JOB_DIR/$_ajid/state" ]; then
+            _as="$(sed -n 's/^status=//p' "$JOB_DIR/$_ajid/state" 2>/dev/null | tail -n1)"
+            [ "$_as" = running ] && { printf '{"ok":true,"job":'; json_quote "$_ajid"; printf ',"status":"running"}'; return; }
+        fi
+    fi
+    _jid="vc-$(date +%s)-$"
+    mkdir -p "$JOB_DIR/$_jid" 2>/dev/null || { json_error "Не удалось создать проверку версий"; return; }
+    printf 'status=running\nstarted=%s\n' "$(date +%s 2>/dev/null || printf 0)" > "$JOB_DIR/$_jid/state"
+    printf '%s' "$_jid" > "$_active" 2>/dev/null || true
+    (
+        _rc=0
+        update_check_json > "$JOB_DIR/$_jid/result" 2>&1 || _rc=$?
+        if [ "$_rc" = 0 ]; then
+            printf 'status=done\nfinished=%s\n' "$(date +%s 2>/dev/null || printf 0)" >> "$JOB_DIR/$_jid/state"
+        else
+            printf 'status=failed\nfinished=%s\n' "$(date +%s 2>/dev/null || printf 0)" >> "$JOB_DIR/$_jid/state"
+        fi
+        rm -f "$_active" 2>/dev/null || true
+    ) >/dev/null 2>&1 &
+    printf '{"ok":true,"job":'; json_quote "$_jid"; printf ',"status":"running"}'
+}
+
+version_check_job_status() {
+    _jid="$1"
+    case "$_jid" in ''|vc-[!A-Za-z0-9_-]*) json_error "Неверный ID проверки"; return;; esac
+    _d="$JOB_DIR/$_jid"
+    [ -d "$_d" ] || { json_error "Проверка не найдена"; return; }
+    _status="$(sed -n 's/^status=//p' "$_d/state" 2>/dev/null | tail -n1)"
+    [ -n "$_status" ] || _status=running
+    printf '{"ok":true,"job":'; json_quote "$_jid"; printf ',"status":'; json_quote "$_status"
+    [ -r "$_d/result" ] && { printf ',"result":'; json_quote "$(cat "$_d/result" 2>/dev/null)"; }
+    printf '}'
+}
 update_check_json() {
     _result="$(update_check_json_luci)"
     component_update_check || true
