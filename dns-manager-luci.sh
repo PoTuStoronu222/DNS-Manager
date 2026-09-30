@@ -16,7 +16,7 @@ VIEW_DIR="/www/luci-static/resources/view/dns_manager"
 VIEW_FILE="$VIEW_DIR/overview.js"
 RUNTIME_DIR="/var/run/dns-manager-luci"
 BACKUP_DIR="/etc/dns-manager-luci"
-VERSION="0.1"
+VERSION="0.2"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -412,7 +412,7 @@ var callCatalog = rpc.declare({ object: 'dns_manager', method: 'catalog', expect
 var callProfile = rpc.declare({ object: 'dns_manager', method: 'set_profile', params: ['profile'], expect: {} });
 var callSlot = rpc.declare({ object: 'dns_manager', method: 'set_slot', params: ['slot', 'id'], expect: {} });
 var callSetting = rpc.declare({ object: 'dns_manager', method: 'set_setting', params: ['name', 'enabled'], expect: {} });
-var callTestAll = rpc.declare({ object: 'dns_manager', method: 'test_all', params: {}, expect: {} });
+var callTestAll = rpc.declare({ object: 'dns_manager', method: 'test_all', expect: {} });
 var callTestOne = rpc.declare({ object: 'dns_manager', method: 'test_one', params: ['id'], expect: {} });
 var callJob = rpc.declare({ object: 'dns_manager', method: 'job', params: ['id'], expect: {} });
 var callLog = rpc.declare({ object: 'dns_manager', method: 'log', params: ['lines'], expect: {} });
@@ -657,7 +657,7 @@ return view.extend({
     var self = this, box = root.querySelector('#dns-job-section');
     var ticks = 0;
     function poll(){
-      callJob({id:job}).then(function(r){
+      callJob(job).then(function(r){
         box.innerHTML = '<h3>' + _('Проверка') + '</h3><div class="dns-job dns-card"><b>' + esc(r.status||'—') + '</b><div class="dns-meta">' + esc((r.output||'').slice(-2000)) + '</div></div>';
         if (r.status === 'done' || r.status === 'failed' || ticks++ > 120) { self.refresh(root); return; }
         setTimeout(poll, 1500);
@@ -667,7 +667,7 @@ return view.extend({
   },
   showLog: function(root) {
     var box = root.querySelector('#dns-log-section');
-    callLog({lines:120}).then(function(r){
+    callLog(120).then(function(r){
       box.innerHTML = '<h3>' + _('Журнал DNS Manager') + '</h3><div class="dns-log">' + esc(r.log || '') + '</div>';
     });
   }
