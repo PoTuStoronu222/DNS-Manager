@@ -675,21 +675,24 @@ status_json() {
     _luci_checked="$(sed -n 's/^checked_at=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"
     _manager_latest_state="$(sed -n 's/^manager_latest=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"
     _manager_avail_state="$(sed -n 's/^manager_available=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"; [ -n "$_manager_avail_state" ] || _manager_avail_state=0
+    _manager_check_state="$(sed -n 's/^manager_checked=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"; [ -n "$_manager_check_state" ] || _manager_check_state=0
     _catalog_latest_state="$(sed -n 's/^catalog_latest=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"
     _catalog_rev_state="$(sed -n 's/^catalog_latest_rev=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"
     _catalog_total_state="$(sed -n 's/^catalog_latest_total=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"; [ -n "$_catalog_total_state" ] || _catalog_total_state=0
     _catalog_avail_state="$(sed -n 's/^catalog_available=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"; [ -n "$_catalog_avail_state" ] || _catalog_avail_state=0
+    _catalog_check_state="$(sed -n 's/^catalog_checked=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"; [ -n "$_catalog_check_state" ] || _catalog_check_state=0
+    _hdp_check_state="$(sed -n 's/^hdp_checked=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"; [ -n "$_hdp_check_state" ] || _hdp_check_state=0
     _components_checked_at="$(sed -n 's/^components_checked_at=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"
 
     printf '{"ok":true,"manager_version":'; json_quote "$_mv"; printf ',"luci_version":'; json_quote "$_luciv"; printf ',"luci_latest_version":'; json_quote "$_luci_latest"; printf ',"luci_update_available":%s,"luci_update_checked":%s' "$_luci_avail" "${_luci_checked:-0}"
-    printf ',"manager_latest_version":'; json_quote "$_manager_latest_state"; printf ',"manager_update_available":%s' "$_manager_avail_state"
-    printf ',"catalog_latest_version":'; json_quote "$_catalog_latest_state"; printf ',"catalog_latest_rev":'; json_quote "$_catalog_rev_state"; printf ',"catalog_latest_total":%s,"catalog_update_available":%s' "$_catalog_total_state" "$_catalog_avail_state"
+    printf ',"manager_latest_version":'; json_quote "$_manager_latest_state"; printf ',"manager_update_available":%s,"manager_check_ok":%s' "$_manager_avail_state" "$_manager_check_state"
+    printf ',"catalog_latest_version":'; json_quote "$_catalog_latest_state"; printf ',"catalog_latest_rev":'; json_quote "$_catalog_rev_state"; printf ',"catalog_latest_total":%s,"catalog_update_available":%s,"catalog_check_ok":%s' "$_catalog_total_state" "$_catalog_avail_state" "$_catalog_check_state"
     printf ',"ipv4":'; json_quote "$_ipv4"; printf ',"ipv6":'; json_quote "$_ipv6"; printf ',"dnsmasq":'; json_quote "$_dnsmasq"; printf ',"doh":'; json_quote "$_doh"; printf ',"firewall":'; json_quote "$_fw"; printf ',"openwrt":'; json_quote "$(openwrt_release)"; printf ',"lan":'; json_quote "$_lan"
     printf ',"profile":'; json_quote "$_profile"; printf ',"profile_mode":'; json_quote "$_mode"; printf ',"watchdog":'; json_quote "$_watchdog"; printf ',"watchdog_service":'; json_quote "$( [ -x /etc/init.d/dns-watchdog ] && /etc/init.d/dns-watchdog running >/dev/null 2>&1 && printf yes || printf no )"; printf ',"watchdog_interval":'; json_quote "$_watchdog_interval"
     printf ',"force":'; json_quote "$_force"; printf ',"force_external":'; json_quote "$_external"; printf ',"force_owner":'; json_quote "$( [ "$_external" = 1 ] && printf external || [ "$_force" = 1 ] && printf manager || printf none )"; printf ',"force_source":'; json_quote "$FORCE_RUNTIME_SOURCE"; printf ',"force_targets":'; json_quote "$FORCE_RUNTIME_TARGETS"; printf ',"force_notrack":'; json_quote "$_force_notrack"; printf ',"force_update":'; json_quote "$_force_update"; printf ',"force_family":'; json_quote "$_force_family"; printf ',"force_ports":'; json_quote "$_force_ports"; printf ',"force_src":'; json_quote "$_force_src"; printf ',"force_canary_icloud":'; json_quote "$_force_canary_i"; printf ',"force_canary_mozilla":'; json_quote "$_force_canary_m"; printf ',"force_procd_trigger_wan6":'; json_quote "$_force_procd"; printf ',"force_heartbeat_domain":'; json_quote "$_force_heartbeat_domain"; printf ',"force_heartbeat_sleep":'; json_quote "$_force_heartbeat_sleep"; printf ',"force_heartbeat_wait":'; json_quote "$_force_heartbeat_wait"; printf ',"force_user":'; json_quote "$_force_user"; printf ',"force_group":'; json_quote "$_force_group"; printf ',"force_listen":'; json_quote "$_force_listen"; printf ',"force_consistent":%s' "$_force_consistent"; printf ',"mtu":'; json_quote "$_mtu"; printf ',"sysctl":'; json_quote "$_sysctl"; printf ',"sysctl_ext":'; json_quote "$_sysctl_ext"; printf ',"ntp_clients":'; json_quote "$_ntp"; printf ',"dnsmasq_perf":'; json_quote "$_perf"; printf ',"client_fixes":'; json_quote "$_fix"
     printf ',"doh_total":%s,"doh_match":%s,"configured_dns":%s,"average_ping":' "$_doh_total" "$_match" "$_expected"; json_quote "$(average_selected_ping)"; printf ',"last_full_test":'; json_quote "$_last"; printf ',"components_checked_at":'; json_quote "$_components_checked_at"
     printf ',"hostname":'; json_quote "$_host"; printf ',"uptime":'; json_quote "$_uptime"; printf ',"load1":'; json_quote "$_load"; printf ',"memory_total_kb":%s,"memory_available_kb":%s' "${_mem_t:-0}" "${_mem_a:-0}"
-    printf ',"catalog_total":%s,"catalog_version":' "$_cat_total"; json_quote "$(catalog_version)"; printf ',"catalog_revision":'; json_quote "$(catalog_revision)"; printf ',"hdp_version":'; json_quote "$_hdp_installed"; printf ',"hdp_latest_version":'; json_quote "$_hdp_candidate"; printf ',"hdp_update_available":%s' "$_hdp_update"; printf ',"force_status":'; json_quote "$([ "$_external" = 1 ] && printf external || [ "$_force_manager" = 1 ] && printf manager || printf off)"; printf ',"force_owner_label":'; json_quote "$([ "$_external" = 1 ] && printf 'внешний' || [ "$_force_manager" = 1 ] && printf 'DNS Manager' || printf 'нет')";
+    printf ',"catalog_total":%s,"catalog_version":' "$_cat_total"; json_quote "$(catalog_version)"; printf ',"catalog_revision":'; json_quote "$(catalog_revision)"; printf ',"hdp_version":'; json_quote "$_hdp_installed"; printf ',"hdp_latest_version":'; json_quote "$_hdp_candidate"; printf ',"hdp_update_available":%s,"hdp_check_ok":%s' "$_hdp_update" "$_hdp_check_state"; printf ',"force_status":'; json_quote "$([ "$_external" = 1 ] && printf external || [ "$_force_manager" = 1 ] && printf manager || printf off)"; printf ',"force_owner_label":'; json_quote "$([ "$_external" = 1 ] && printf 'внешний' || [ "$_force_manager" = 1 ] && printf 'DNS Manager' || printf 'нет')";
     _first=1
     for _s in 1 2 3 4 5 6 RU RU_2; do
         _id="$(cfg_get "SLOT_$_s")"; _cat="$(cfg_get "SLOT_${_s}_CAT")"; _port="$(cfg_get "PORT_$_s")"
@@ -901,7 +904,7 @@ var CATEGORY = [
   ['all','Все DNS'], ['bypass','Обход блокировок'], ['security','Безопасность'], ['privacy','Приватность'],
   ['adblock','Блокировка рекламы'], ['family','Семейный'], ['clean','Без фильтрации'], ['regional','Региональные']
 ];
-var state = { category:'all', offset:0, limit:18, catalogLoaded:false, catalogLoading:false, advanced:true, logLoaded:false, logLoading:false, busy:false, busySetting:'', settingMessage:'', settingMessageType:'', pageNotice:{}, updateKick:false, activeTab:'dashboard', jobRunning:false, lastJob:null, checking:{}, fullTest:null, autoRefreshRoot:null };
+var state = { category:'all', offset:0, limit:18, catalogLoaded:false, catalogLoading:false, advanced:true, logLoaded:false, logLoading:false, busy:false, busySetting:'', settingMessage:'', settingMessageType:'', pageNotice:{}, updateKick:false, activeTab:'dashboard', jobRunning:false, lastJob:null, checking:{}, fullTest:null, versionCheck:null, autoRefreshRoot:null };
 
 function profileName(p){ var x=PROFILE.filter(function(v){return v[0]===p;})[0]; return x?x[1]:(p||'—'); }
 function catName(c){ var x=CATEGORY.filter(function(v){return v[0]===c;})[0]; return x?x[1]:(c||'—'); }
@@ -933,13 +936,15 @@ function stateBadge(status,pingValue){
   return badge('dm-off','нет данных');
 }
 function settingName(n){ var m={watchdog:'Автопроверка DNS',mtu:'Настройка MTU и MSS',sysctl:'Оптимизация TCP и соединений',sysctl_ext:'Расширенные параметры сети',ntp_clients:'Время для устройств сети',dnsmasq_perf:'Кэш DNS',client_fixes:'Исправления для устройств'}; return m[n]||n; }
-function versionState(v,available,latest,okWord){
+function versionState(v,available,latest,checked,okWord,pending){
+  if(pending)return badge('dm-warn','проверяется…');
   if(!v)return badge('dm-bad','не установлена');
-  if(yes(available))return badge('dm-warn',shortVal(v)+' → '+shortVal(latest)+' · неактуальна');
-  if(latest)return badge('dm-ok',shortVal(v)+' · '+okWord);
+  if(yes(available))return badge('dm-warn',shortVal(v)+' → '+shortVal(latest||'новая версия')+' · неактуальна');
+  if(yes(checked)&&latest)return badge('dm-ok',shortVal(v)+' · '+okWord);
   return badge('dm-off',shortVal(v)+' · проверка не выполнена');
 }
-function catalogVersionState(v,rev,total,available,latest,latestRev){
+function catalogVersionState(v,rev,total,available,latest,latestRev,checked,pending){
+  if(pending)return badge('dm-warn','проверяется…');
   if(!v)return badge('dm-bad','не установлен');
   var local=shortVal(v)+(rev?' rev.'+shortVal(rev):'');
   if(yes(available)){
@@ -947,7 +952,7 @@ function catalogVersionState(v,rev,total,available,latest,latestRev){
     if(latestRev)tail+=' rev.'+shortVal(latestRev);
     return badge('dm-warn',local+' → '+tail+' · неактуален');
   }
-  if(latest)return badge('dm-ok',local+' · актуален');
+  if(yes(checked)&&latest)return badge('dm-ok',local+' · актуален');
   return badge('dm-off',local+' · проверка не выполнена');
 }
 
@@ -1068,7 +1073,7 @@ function renderOverview(root,st){
     E('div',{'class':'dm-slot-table'},dnsRows),
     E('div',{'class':'dm-actions'},[btn('Проверить текущие DNS','cbi-button-action',function(){testCurrent(root);},{disabled:!!state.busy||state.jobRunning})]),
     fullState,
-    state.pageNotice.overview?E('div',{'class':'dm-inline-msg info'},state.pageNotice.overview):E('span',{})
+    E('span',{})
   ]);
   var sysCard=card('Система',[
     row('Устройство',shortVal(st.hostname)),
@@ -1079,10 +1084,10 @@ function renderOverview(root,st){
     row('LAN',shortVal(st.lan))
   ]);
   var verCard=card('Версии',[
-    row('DNS Manager',versionState(st.manager_version,st.manager_update_available,st.manager_latest_version,'актуальна')),
-    row('LuCI',versionState(st.luci_version,st.luci_update_available,st.luci_latest_version,'актуальна')),
-    row('https-dns-proxy',st.hdp_update_available?versionState(st.hdp_version,1,st.hdp_latest_version,'актуальна'):badge('dm-ok',shortVal(st.hdp_version)+' · актуальна')),
-    row('Каталог DNS',catalogVersionState(st.catalog_version,st.catalog_revision,st.catalog_total,st.catalog_update_available,st.catalog_latest_version,st.catalog_latest_rev)),
+    row('DNS Manager',versionState(st.manager_version,st.manager_update_available,st.manager_latest_version,st.manager_check_ok,'актуальна',state.versionCheck&&state.versionCheck.manager==='running')),
+    row('LuCI',versionState(st.luci_version,st.luci_update_available,st.luci_latest_version,st.luci_update_checked,'актуальна',state.versionCheck&&state.versionCheck.luci==='running')),
+    row('https-dns-proxy',versionState(st.hdp_version,st.hdp_update_available,st.hdp_latest_version,st.hdp_check_ok,'актуальна',state.versionCheck&&state.versionCheck.hdp==='running')),
+    row('Каталог DNS',catalogVersionState(st.catalog_version,st.catalog_revision,st.catalog_total,st.catalog_update_available,st.catalog_latest_version,st.catalog_latest_rev,st.catalog_check_ok,state.versionCheck&&state.versionCheck.catalog==='running')),
     row('Последний тест DNS',dateText(st.last_full_test)),
     row('Актуальность версий',dateText(st.components_checked_at)),
     E('div',{'class':'dm-actions'},[btn('Проверить актуальность','cbi-button-neutral',function(){checkUpdate(root);}),yes(st.luci_update_available)?btn('Обновить LuCI','cbi-button-positive',function(){doUpdate(root);}):E('span',{})])
@@ -1299,7 +1304,20 @@ function startAutoRefresh(root){
   },1000);
 }
 function toast(msg,type){}
-function checkUpdate(root){globalUpdateNotice('Проверяю актуальность DNS Manager, LuCI, https-dns-proxy и каталога DNS…','info');state.pageNotice.overview='Проверяю актуальность всех компонентов…';if(rootAlive(root))renderOverview(root,window.dmState||{});return callUpdateCheck().then(function(r){var ok=!!(r&&r.ok);var msg=!ok?'Проверка актуальности версий не выполнена.':(yes(r.available)?'Доступна новая версия LuCI: v'+r.latest_version:'Актуальность компонентов проверена.');state.pageNotice.overview=msg;globalUpdateNotice(msg,ok?'ok':'error');return refresh(root,true);}).catch(function(){var msg='Проверка актуальности версий не выполнена.';state.pageNotice.overview=msg;globalUpdateNotice(msg,'error');return refresh(root,true);});}
+function checkUpdate(root){
+  if(state.versionCheck&&state.versionCheck.running)return;
+  state.versionCheck={running:true,manager:'running',luci:'running',hdp:'running',catalog:'running',started:Date.now()};
+  renderOverview(root,window.dmState||{});
+  return callUpdateCheck().then(function(r){
+    state.versionCheck.running=false;
+    if(!r||!r.ok)state.versionCheck.error=true;
+    return refresh(root,true);
+  }).catch(function(){
+    state.versionCheck.running=false;
+    state.versionCheck.error=true;
+    return refresh(root,true);
+  });
+}
 function doUpdate(root){if(state.busy)return;var v=(window.dmState&&window.dmState.luci_latest_version)||'новой версии';if(!confirm('Обновить только LuCI до v'+v+'? DNS Manager и настройки не изменятся.'))return;state.busy=true;state.pageNotice.overview='Обновляю LuCI…';globalUpdateNotice('Обновляю LuCI до v'+v+'…','info');if(rootAlive(root))renderOverview(root,window.dmState||{});callUpdate().then(function(r){state.busy=false;if(r&&r.ok&&r.updated){var msg='LuCI обновлена до v'+r.version+'. Перезагружаю страницу…';state.pageNotice.overview=msg;globalUpdateNotice(msg,'ok');if(rootAlive(root))renderOverview(root,window.dmState||{});setTimeout(function(){location.reload();},1600);}else{var msg=(r&&r.error)||'LuCI не удалось обновить.';state.pageNotice.overview=msg;globalUpdateNotice(msg,'error');if(rootAlive(root))renderOverview(root,window.dmState||{});}}).catch(function(){state.busy=false;var msg='Не удалось выполнить RPC-обновление LuCI. Попробуйте ещё раз; причина будет показана в сообщении RPC.';state.pageNotice.overview=msg;globalUpdateNotice(msg,'error');if(rootAlive(root))renderOverview(root,window.dmState||{});});}
 function applyProfile(name,root){if(state.busy)return;state.busy=true;state.pageNotice.profiles='Применяю профиль «'+profileName(name)+'»…';renderProfiles(root,window.dmState||{});callProfile(name).then(function(r){state.busy=false;state.pageNotice.profiles=(r&&r.ok)?'Профиль «'+profileName(name)+'» применён.':(r&&r.error)||'Профиль не удалось применить.';refresh(root,true);}).catch(function(){state.busy=false;state.pageNotice.profiles='Профиль не удалось применить.';refresh(root,true);});}
 function setSetting(name,en,root){if(state.busy)return;state.busy=true;state.busySetting=name;state.settingMessage='Изменение «'+settingName(name)+'»…';state.settingMessageType='info';renderSettings(root,window.dmState||{});callSetting(name,en).then(function(r){state.busy=false;state.busySetting='';state.settingMessage=(r&&r.ok)?('Настройка «'+settingName(name)+'»: '+(en?'включена.':'выключена.')):((r&&r.error)||'Настройку не удалось изменить.');state.settingMessageType=(r&&r.ok)?'ok':'error';refresh(root,true);}).catch(function(){state.busy=false;state.busySetting='';state.settingMessage='Настройку не удалось изменить.';state.settingMessageType='error';refresh(root,true);});}
