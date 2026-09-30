@@ -238,10 +238,10 @@ update_json() {
         rm -f "$_tmp" 2>/dev/null || true
         json_error "Новой версии нет"; return
     fi
-    _log="$TMP_ROOT/companion-update.$.log"
+    _log="$TMP_ROOT/companion-update.log"
     rm -f "$_log" 2>/dev/null || true
     if ! DNS_MANAGER_LUCI_SKIP_RPC_RELOAD=1 sh "$_tmp" update >"$_log" 2>&1; then
-        _detail="$(tail -n 12 "$_log" 2>/dev/null | tr '\\n' ' ' | cut -c1-900)"
+        _detail="$(tail -n 12 "$_log" 2>/dev/null | awk 'BEGIN{ORS=" "} {print}' | cut -c1-900)"
         rm -f "$_tmp" "$_log" 2>/dev/null || true
         [ -n "$_detail" ] || _detail="Установщик завершился с ненулевым кодом."
         json_error "LuCI не обновлена: $_detail"; return
@@ -249,7 +249,7 @@ update_json() {
     rm -f "$_tmp" 2>/dev/null || true
     _after="$(read_installed_luci_version)"
     if [ "$_after" != "$_latest" ]; then
-        _detail="$(tail -n 12 "$_log" 2>/dev/null | tr '\\n' ' ' | cut -c1-900)"
+        _detail="$(tail -n 12 "$_log" 2>/dev/null | awk 'BEGIN{ORS=" "} {print}' | cut -c1-900)"
         rm -f "$_log" 2>/dev/null || true
         [ -n "$_detail" ] || _detail="Установленная версия не совпала с ожидаемой."
         json_error "LuCI обновление не подтверждено: $_detail"; return
