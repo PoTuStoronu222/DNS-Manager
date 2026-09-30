@@ -1087,7 +1087,7 @@ function testAll(root){
   renderJobIdle(root,window.dmState||{});
   callTestAll().then(function(r){
     if(r&&r.ok){
-      renderJob(root,{job:r.job,mode:'all'});
+      renderJob(root,r.job);
     }else{
       state.pageNotice.job=(r&&r.error)||'Не удалось запустить полную проверку.';
       state.jobRunning=false;
