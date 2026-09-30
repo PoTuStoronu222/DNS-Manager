@@ -2,7 +2,7 @@
 MANAGER_PATH="/usr/bin/dns-manager"
 # ==========================================
 # ==========================================
-VERSION="2.94"
+VERSION="2.95"
 # 2.94: remove fragile resolver quoting and keep firewall detection BusyBox-ash-safe.
 # 2.88: native LuCI companion compatibility, idempotent procd watchdog migration,
 # first-run cron protection, and exact https-dns-proxy forced-DNS ports/interfaces
@@ -1295,11 +1295,11 @@ detect_firewall_backend() {
     if [ "$SYS_FW" = unknown ]; then
         _fw_init="/etc/init.d/firewall"
         if [ -x "$_fw_init" ]; then
-            if [ "$_has_fw4" = 1 ] && grep -Eq '(^|[[:space:];/])fw4([[:space:];]|$)' "$_fw_init" 2>/dev/null; then
+            if [ "$_has_fw4" = 1 ] && grep -q 'fw4' "$_fw_init" 2>/dev/null; then
                 SYS_FW="fw4"
                 FIREWALL_BACKEND="fw4"
                 FIREWALL_DETECT_SOURCE="init"
-            elif [ "$_has_fw3" = 1 ] && grep -Eq '(^|[[:space:];/])fw3([[:space:];]|$)' "$_fw_init" 2>/dev/null; then
+            elif [ "$_has_fw3" = 1 ] && grep -q 'fw3' "$_fw_init" 2>/dev/null; then
                 SYS_FW="fw3"
                 FIREWALL_BACKEND="fw3"
                 FIREWALL_DETECT_SOURCE="init"
