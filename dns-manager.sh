@@ -973,7 +973,7 @@ catalog_validate_file() {
             if (ids[$1] > 1) bad=1
         }
         END { if (bad || count != 105) exit 1 }
-    "$_f" >/dev/null 2>&1 || return 1
+    '"$_f" >/dev/null 2>&1 || return 1
     return 0
 }
 write_catalogs() {
