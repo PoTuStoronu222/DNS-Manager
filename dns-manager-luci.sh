@@ -246,9 +246,16 @@ validate_candidate() {
 update_check_json_luci() {
     _installed="$(read_installed_luci_version)"
     _tmp="$TMP_ROOT/companion-check.$$"
-    if ! fetch_url "$_tmp" || ! validate_candidate "$_tmp"; then
+    if ! fetch_url "$_tmp"; then
         rm -f "$_tmp" 2>/dev/null || true
-        printf '{"ok":true,"installed_version":'; json_quote "$_installed"; printf ',"latest_version":"","available":false,"checked_at":%s,"error":' "$(date +%s 2>/dev/null || printf 0)"; json_quote "Не удалось проверить новую версию"; printf '}'
+        _ts="$(date +%s 2>/dev/null || printf 0)"
+        printf '{"ok":false,"installed_version":'; json_quote "$_installed"; printf ',"latest_version":"","available":false,"checked_at":%s,"error":' "$_ts"; json_quote "Не удалось получить DNS Manager LuCI с GitHub"; printf '}'
+        return 0
+    fi
+    if ! validate_candidate "$_tmp"; then
+        rm -f "$_tmp" 2>/dev/null || true
+        _ts="$(date +%s 2>/dev/null || printf 0)"
+        printf '{"ok":false,"installed_version":'; json_quote "$_installed"; printf ',"latest_version":"","available":false,"checked_at":%s,"error":' "$_ts"; json_quote "Полученный файл DNS Manager LuCI не прошёл проверку"; printf '}'
         return 0
     fi
     _latest="$(sed -n 's/^# Version:[[:space:]]*//p' "$_tmp" 2>/dev/null | head -n1)"
