@@ -1079,6 +1079,26 @@ function setForceMode(mode,root){
     refresh(root,true);
   });
 }
+function testAll(root){
+  if(state.jobRunning||state.busy)return;
+  state.activeTab='job';
+  state.pageNotice.job='Запускаю полную проверку DNS-каталога…';
+  setActiveTab(root,'job');
+  renderJobIdle(root,window.dmState||{});
+  callTestAll().then(function(r){
+    if(r&&r.ok){
+      renderJob(root,{job:r.job,mode:'all'});
+    }else{
+      state.pageNotice.job=(r&&r.error)||'Не удалось запустить полную проверку.';
+      state.jobRunning=false;
+      renderJobIdle(root,window.dmState||{});
+    }
+  }).catch(function(){
+    state.pageNotice.job='Не удалось запустить полную проверку.';
+    state.jobRunning=false;
+    renderJobIdle(root,window.dmState||{});
+  });
+}
 function testOne(id,root){
   if(state.jobRunning||state.busy)return;
   state.activeTab='job';
