@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 0.7
+# Version: 0.8
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -21,7 +21,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 RUNTIME_UPDATE_STATE="$BACKUP_DIR/update.state"
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="0.7"
+VERSION="0.8"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -39,7 +39,7 @@ require_manager() {
 install_files() {
     require_manager || return 1
 
-    command -v jsonfilter >/dev/null 2>&1 || { err "Не найден jsonfilter, требуемый штатным rpcd-адаптером LuCI."; return 1; }
+    command -v jsonfilter >/dev/null 2>&1 || say "ℹ jsonfilter не найден — используется встроенный обработчик RPC-параметров."
     mkdir -p "$VIEW_DIR" /usr/libexec/rpcd /usr/share/rpcd/acl.d /usr/share/luci/menu.d "$RUNTIME_DIR/checks" "$BACKUP_DIR" "$(dirname "$STATE_FILE")" || return 1
 
     cat > "$MENU_FILE" <<'EOF_MENU'
@@ -95,7 +95,7 @@ UPDATE_STATE="/etc/dns-manager-luci/update.state"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="0.7"
+SELF_VERSION="0.8"
 
 umask 077
 mkdir -p "$RUNTIME_DIR" "$JOB_DIR" "$CHECK_DIR" "$TMP_ROOT" 2>/dev/null || exit 1
@@ -111,7 +111,15 @@ json_ok() { printf '{"ok":true}'; }
 jget() {
     _key="$1"
     [ -n "${INPUT:-}" ] || return 0
-    printf %s "$INPUT" | jsonfilter -q -e "@.$_key" 2>/dev/null || true
+    if command -v jsonfilter >/dev/null 2>&1; then
+        printf %s "$INPUT" | jsonfilter -q -e "@.$_key" 2>/dev/null || true
+        return 0
+    fi
+    # Minimal fallback for this RPC's controlled scalar arguments.
+    # Allowed keys are fixed by the rpcd list/call dispatch below.
+    printf '%s\n' "$INPUT" | sed -n \
+        -e 's/.*"'"$_key"'"[[:space:]]*:[[:space:]]*"\([^"\\]*\)".*/\1/p' \
+        -e 's/.*"'"$_key"'"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' | head -n1
 }
 
 manager_version() {
@@ -150,12 +158,13 @@ version_gt() {
 fetch_url() {
     _out="$1"
     rm -f "$_out" 2>/dev/null || true
+    _url="${COMPANION_URL}?_dmcb=$(date +%s 2>/dev/null || printf 0)-$$"
     if command -v curl >/dev/null 2>&1; then
-        curl -fsSL --connect-timeout 5 --max-time 30 -o "$_out" "$COMPANION_URL" >/dev/null 2>&1
+        curl -fsSL --connect-timeout 5 --max-time 30 -o "$_out" "$_url" >/dev/null 2>&1
     elif command -v wget >/dev/null 2>&1; then
-        wget -q -T 30 -O "$_out" "$COMPANION_URL" >/dev/null 2>&1
+        wget -q -T 30 -O "$_out" "$_url" >/dev/null 2>&1
     elif command -v uclient-fetch >/dev/null 2>&1; then
-        uclient-fetch -q -O "$_out" "$COMPANION_URL" >/dev/null 2>&1
+        uclient-fetch -q -O "$_out" "$_url" >/dev/null 2>&1
     else
         return 1
     fi
@@ -356,7 +365,7 @@ status_json() {
     _force_src_expected_norm="$(printf '%s\n' "$_force_src_expected" | tr ' ' '\n' | sed '/^$/d' | sort | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
     _force_consistent=0
     _force_common=0
-    [ "$_force_notrack" = 1 ] && [ "$_force_update" = \* ] && [ "$_force_family" = auto ] && [ "$_force_ports_norm" = '53 853' ] && [ "$_force_src_norm" = "$_force_src_expected_norm" ] && [ "$_force_procd" = 0 ] && [ "$_force_heartbeat_domain" = heartbeat.mossdef.org ] && [ "$_force_heartbeat_sleep" = 10 ] && [ "$_force_heartbeat_wait" = 10 ] && [ "$_force_user" = nobody ] && [ "$_force_group" = nogroup ] && [ "$_force_listen" = 127.0.0.1 ] && _force_common=1
+    [ "$_force_notrack" = 1 ] && [ "$_force_update" = - ] && [ "$_force_family" = auto ] && [ "$_force_ports_norm" = '53 853' ] && [ "$_force_src_norm" = "$_force_src_expected_norm" ] && [ "$_force_procd" = 0 ] && [ "$_force_heartbeat_domain" = heartbeat.mossdef.org ] && [ "$_force_heartbeat_sleep" = 10 ] && [ "$_force_heartbeat_wait" = 10 ] && [ "$_force_user" = nobody ] && [ "$_force_group" = nogroup ] && [ "$_force_listen" = 127.0.0.1 ] && _force_common=1
     if [ "$_force" = 1 ] && [ "$_force_cfg" = 1 ] && [ "$_force_canary_i" = 1 ] && [ "$_force_canary_m" = 1 ] && [ "$_force_common" = 1 ]; then _force_consistent=1; fi
     if [ "$_force" = 0 ] && [ "$_force_cfg" != 1 ] && [ "$_force_common" = 1 ]; then _force_consistent=1; fi
 
@@ -560,7 +569,7 @@ EOF_RPC
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 0.7
+// DNS Manager LuCI version: 0.8
 var callStatus = rpc.declare({ object:'dns_manager', method:'status', expect:{} });
 var callCatalog = rpc.declare({ object:'dns_manager', method:'catalog', params:['category','offset','limit','only_ok'], expect:{} });
 var callUpdateCheck = rpc.declare({ object:'dns_manager', method:'update_check', expect:{} });
@@ -707,7 +716,7 @@ function renderDoH(root,st){
   if(st.force_owner==='external'){
     ch.push(E('div',{'class':'dm-force-external'},'Обнаружен '+shortVal(st.force_source)+'. DNS Manager не изменяет внешний forced-DNS и не создаёт второй перехват.'));
   }
-  ch.push(E('div',{'class':'dm-force-note'},'Схема совместимости: 53/853 · LAN · notrack_dns=1 · dnsmasq_config_update=* · force_ip_family=auto · procd_trigger_wan6=0.'));
+  ch.push(E('div',{'class':'dm-force-note'},'Схема совместимости: 53/853 · LAN · notrack_dns=1 · dnsmasq_config_update=- · force_ip_family=auto · procd_trigger_wan6=0.'));
   ch.push(E('div',{'class':'dm-actions'},[
     btn('Показать параметры','cbi-button-neutral',function(){openForceDetails(root,st);}),
     btn('Обновить состояние','cbi-button-neutral',function(){refresh(root);})
