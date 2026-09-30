@@ -2,7 +2,7 @@
 MANAGER_PATH="/usr/bin/dns-manager"
 # ==========================================
 # ==========================================
-VERSION="2.78"
+VERSION="2.79"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -126,6 +126,13 @@ acquire_mutation_lock() {
         return 0
     fi
     _mpid="$(cat "$MUTATION_LOCK_DIR/pid" 2>/dev/null)"
+    if [ -z "$_mpid" ]; then
+        for _try in 1 2 3 4 5; do
+            sleep 1
+            _mpid="$(cat "$MUTATION_LOCK_DIR/pid" 2>/dev/null)"
+            [ -n "$_mpid" ] && break
+        done
+    fi
     if [ -n "$_mpid" ] && kill -0 "$_mpid" 2>/dev/null; then
         log_msg "Операция пропущена: другой процесс DNS Manager уже изменяет конфигурацию (PID $_mpid)."
         return 1
@@ -203,6 +210,13 @@ acquire_test_lock() {
         return 0
     fi
     _tpid="$(cat "$TEST_LOCK_DIR/pid" 2>/dev/null)"
+    if [ -z "$_tpid" ]; then
+        for _try in 1 2 3 4 5; do
+            sleep 1
+            _tpid="$(cat "$TEST_LOCK_DIR/pid" 2>/dev/null)"
+            [ -n "$_tpid" ] && break
+        done
+    fi
     if [ -n "$_tpid" ] && kill -0 "$_tpid" 2>/dev/null; then
         return 1
     fi
@@ -349,8 +363,8 @@ auto_update_manager() {
         return 0
     }
 
-    if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
-        log_msg "Автообновление: нет curl или wget, проверка пропущена."
+    if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1 && ! command -v uclient-fetch >/dev/null 2>&1; then
+        log_msg "Автообновление: нет curl, wget или uclient-fetch, проверка пропущена."
         release_auto_update_lock
         return 0
     fi
@@ -363,8 +377,10 @@ auto_update_manager() {
 
     if command -v curl >/dev/null 2>&1; then
         curl -fsSL --connect-timeout 4 --max-time 20 -o "$_upd_tmp" "$UPDATE_URL" >/dev/null 2>&1
-    else
+    elif command -v wget >/dev/null 2>&1; then
         wget -q -T 20 -O "$_upd_tmp" "$UPDATE_URL" >/dev/null 2>&1
+    else
+        uclient-fetch -q -O "$_upd_tmp" "$UPDATE_URL" >/dev/null 2>&1
     fi
 
     if [ ! -s "$_upd_tmp" ]; then
@@ -582,6 +598,18 @@ sanitize_baseline_shared_files() {
 baseline_key() {
 printf '%s' "$1" | sed 's#^/##; s#[/ ]#_#g'
 }
+ensure_baseline_captured() {
+    [ -s "$BASELINE_MANIFEST" ] && return 0
+    if [ "${MUTATION_LOCK_HELD:-0}" = 1 ]; then
+        baseline_capture_once
+        return $?
+    fi
+    acquire_mutation_lock || return 1
+    baseline_capture_once
+    _rc=$?
+    release_mutation_lock
+    return "$_rc"
+}
 baseline_capture_once() {
     sanitize_baseline_shared_files 2>/dev/null || true
     [ -s "$BASELINE_MANIFEST" ] && return 0
@@ -605,7 +633,27 @@ EOF_BASELINE
     printf 'clean_profile=1\n' >> "$BASELINE_META"
     printf 'openwrt_release=%s\n' "$SYS_OWRT" >> "$BASELINE_META"
     printf 'firewall=%s\n' "$SYS_FW" >> "$BASELINE_META"
-    info_msg "Исходная конфигурация чистого OpenWrt сохранена."
+    # Snapshot relevant service/package state before the first manager mutation.
+    for _svc in https-dns-proxy dnsmasq sysntpd ttyd; do
+        if [ -x "/etc/init.d/$_svc" ]; then
+            "/etc/init.d/$_svc" enabled >/dev/null 2>&1 && _en=yes || _en=no
+        else
+            _en=unknown
+        fi
+        case "$_svc" in
+            https-dns-proxy) pidof https-dns-proxy >/dev/null 2>&1 && _run=yes || _run=no ;;
+            dnsmasq) pidof dnsmasq >/dev/null 2>&1 && _run=yes || _run=no ;;
+            sysntpd) [ -x /etc/init.d/sysntpd ] && /etc/init.d/sysntpd status >/dev/null 2>&1 && _run=yes || _run=no ;;
+            ttyd) pidof ttyd >/dev/null 2>&1 && _run=yes || _run=no ;;
+        esac
+        printf 'service_%s_enabled=%s\n' "$_svc" "$_en" >> "$BASELINE_META"
+        printf 'service_%s_running=%s\n' "$_svc" "$_run" >> "$BASELINE_META"
+    done
+    for _pkg in curl https-dns-proxy ca-bundle dnsmasq bind-dig knot-dig ttyd luci-app-https-dns-proxy; do
+        package_is_installed "$_pkg" && _pst=1 || _pst=0
+        printf 'package_%s=%s\n' "$_pkg" "$_pst" >> "$BASELINE_META"
+    done
+    info_msg "Исходная конфигурация до первого изменения DNS Manager сохранена."
     log_tx "BASELINE" "router" "CAPTURE" "OK" "dir=$BASELINE_DIR;clean_profile=1"
 }
 baseline_mark_applied() {
@@ -708,10 +756,8 @@ clear_baseline_for_reacquire() {
 baseline_uninstall_validate() {
     [ -s "$BASELINE_MANIFEST" ] || return 1
     [ -d "$BASELINE_DIR/files" ] || return 1
+    grep -q '^clean_profile=1$' "$BASELINE_META" 2>/dev/null || return 1
 
-    # We intentionally do not require BASELINE_LAST here. Uninstall returns
-    # the router to the immutable state captured BEFORE DNS Manager first
-    # modified it. A later Apply must never redefine that state.
     _valid=0
     while IFS='|' read -r _f _k _existed _hash; do
         [ -n "$_f" ] || continue
@@ -719,9 +765,14 @@ baseline_uninstall_validate() {
             /etc/config/dhcp|/etc/config/https-dns-proxy|/etc/config/firewall|/etc/config/system|/etc/config/ttyd|/etc/sysctl.d/90-dns-manager.conf|/etc/sysctl.d/91-dns-manager-extended.conf|/etc/dnsmasq.d/90-dns-manager-bogus.conf|/etc/dnsmasq.d/91-dns-manager-client-fixes.conf) ;;
             *) return 1 ;;
         esac
+        [ "$_k" = "$(baseline_key "$_f")" ] || return 1
         case "$_existed" in
-            0) ;;
-            1) [ -f "$BASELINE_DIR/files/$_k" ] || return 1 ;;
+            0) [ "$_hash" = NONE ] || return 1 ;;
+            1)
+                [ -f "$BASELINE_DIR/files/$_k" ] || return 1
+                _saved_hash="$(file_hash "$BASELINE_DIR/files/$_k" 2>/dev/null)"
+                [ -n "$_saved_hash" ] && [ "$_saved_hash" = "$_hash" ] || return 1
+                ;;
             *) return 1 ;;
         esac
         _valid=$((_valid+1))
@@ -729,7 +780,6 @@ baseline_uninstall_validate() {
     [ "$_valid" -gt 0 ] || return 1
     return 0
 }
-
 baseline_restore_path_for_uninstall() {
     _path="$1"
     [ -n "$_path" ] || return 1
@@ -1049,9 +1099,9 @@ sync_regional_dns_state
 save_config() {
     [ "${TX_ACTIVE:-0}" = 1 ] && [ "${DEFER_CONFIG_SAVE:-0}" = 1 ] && return 0
 sync_regional_dns_state
-umask 077
 mkdir -p "$CFG_DIR" 2>/dev/null || return 1
 _cfg_tmp="${CONFIG_FILE}.tmp.$$"
+( umask 077
 cat > "$_cfg_tmp" <<EOF_CFG
 SLOT_1="$SLOT_1"
 SLOT_2="$SLOT_2"
@@ -1105,6 +1155,8 @@ WATCHDOG_INTERVAL="$WATCHDOG_INTERVAL"
 WEB_ACCESS_ENABLED="$WEB_ACCESS_ENABLED"
 WEB_ACCESS_PORT="$WEB_ACCESS_PORT"
 EOF_CFG
+) || { rm -f "$_cfg_tmp"; return 1; }
+chmod 600 "$_cfg_tmp" 2>/dev/null || true
 mv "$_cfg_tmp" "$CONFIG_FILE" || { rm -f "$_cfg_tmp"; return 1; }
 }
 # ==========================================
@@ -1265,11 +1317,11 @@ detect_firewall_backend() {
     # Detect the backend that is actually loaded before falling back to which
     # binary is installed. This avoids preferring fw4 merely because a helper
     # binary happens to exist on a customized image.
-    if _has_fw4=1 && command -v nft >/dev/null 2>&1 && nft list table inet fw4 >/dev/null 2>&1; then
+    if [ "$_has_fw4" = 1 ] && command -v nft >/dev/null 2>&1 && nft list table inet fw4 >/dev/null 2>&1; then
         SYS_FW="fw4"
         FIREWALL_BACKEND="fw4"
         FIREWALL_DETECT_SOURCE="runtime"
-    elif _has_fw3=1 && [ -f /var/run/fw3.state ]; then
+    elif [ "$_has_fw3" = 1 ] && [ -f /var/run/fw3.state ]; then
         SYS_FW="fw3"
         FIREWALL_BACKEND="fw3"
         FIREWALL_DETECT_SOURCE="runtime"
@@ -1786,7 +1838,22 @@ refresh_runtime_capabilities() {
 }
 # ==========================================
 # ==========================================
-dns_field() { awk -F'|' -v id="$1" -v f="$2" '$1==id{print $f;exit}' "$DNS_CATALOG"; }
+dns_field() {
+    _target_id="$1"
+    _f_idx="$2"
+    while IFS='|' read -r _c1 _c2 _c3 _c4 _c5 _c6 _c7; do
+        case "$_c1" in ''|\#*) continue ;; esac
+        [ "$_c1" = "$_target_id" ] || continue
+        case "$_f_idx" in
+            2) printf '%s' "$_c2" ;;
+            4) printf '%s' "$_c4" ;;
+            5) printf '%s' "$_c5" ;;
+            *) return 1 ;;
+        esac
+        return 0
+    done < "$DNS_CATALOG"
+    return 1
+}
 dns_name() { dns_field "$1" 4 | sed 's/\\\\\././g'; }
 dns_url() { dns_field "$1" 5; }
 dns_cat() { dns_field "$1" 2; }
@@ -1854,9 +1921,9 @@ test_one_dns() {
 id="$1"; url="$(normalize_url "$(dns_url "$id")")"; name="$(dns_name "$id")"; cat="$(dns_cat "$id")"
 host="$(url_host "$url")"
 port="$(url_port "$url")"
-q="$TMP_DIR/q.$id"; body="$TMP_DIR/body.$id"; hdr="$TMP_DIR/h.$id"
+q="$TMP_DIR/dns_query.bin"; body="$TMP_DIR/body.$id"; hdr="$TMP_DIR/h.$id"
 : > "$body"; : > "$hdr"
-printf '\022\064\001\000\000\001\000\000\000\000\000\000\007example\003com\000\000\001\000\001' > "$q"
+[ -s "$q" ] || printf '\022\064\001\000\000\001\000\000\000\000\000\000\007example\003com\000\000\001\000\001' > "$q"
 _ips=""
 if [ "$HAS_DIG" = yes ]; then
     _chunk="$(dig +short +time=3 +tries=1 "$host" A 2>/dev/null | awk '/^[0-9]+(\.[0-9]+){3}$/{print}' | head -n 4)"
@@ -1899,7 +1966,7 @@ $_ips
 EOF_IPS
 [ "$st" = OK ] && ms="$_best_ms" || ms=-1
 printf '%s|%s|%s|%s|%s\n' "$id" "$cat" "$name" "$ms" "$st" > "$TMP_DIR/t.$id"
-rm -f "$q" "$body" "$hdr"
+rm -f "$body" "$hdr"
 }
 # ==========================================
 # ==========================================
@@ -1907,7 +1974,7 @@ test_dns_catalog() {
     rotate_runtime_logs
     [ "$HAS_CURL" = yes ] || { warn_msg "Полную проверку DNS нельзя выполнить: curl не установлен."; return 1; }
     acquire_test_lock || { warn_msg "Полная проверка DNS уже выполняется другим процессом. Текущая проверка отменена."; return 1; }
-    rm -f "$TMP_DIR/t."* "$TMP_DIR/q."* "$TMP_DIR/body."* "$TMP_DIR/h."* 2>/dev/null
+    rm -f "$TMP_DIR/t."* "$TMP_DIR/q."* "$TMP_DIR/dns_query.bin" "$TMP_DIR/body."* "$TMP_DIR/h."* 2>/dev/null
     total="$(count_dns)"
     [ "$total" -gt 0 ] || { release_test_lock; warn_msg "Каталог DNS пуст."; return 1; }
     printf "${C_WHITE}Проверяю %s DNS-серверов. Это может занять до 5 минут...${C_NC}\n" "$total"
@@ -2633,7 +2700,7 @@ reconcile_dnsmasq() {
     # On a clean OpenWrt baseline DNS Manager is authoritative for upstream DNS.
     # Rebuild the server list from scratch so stale entries from an earlier apply
     # cannot survive. Full rollback is handled by the baseline snapshot.
-    while uci -q delete "dhcp.$sec.server" >/dev/null 2>&1; do :; done
+    uci -q delete "dhcp.$sec.server" >/dev/null 2>&1 || true
     for s in 1 2 3 4 5 6; do
         eval "id=\${SLOT_$s}"; eval "p=\${PORT_$s}"
         [ -n "$id" ] && [ -n "$p" ] || continue
@@ -2938,18 +3005,12 @@ _apply_extras_now_impl() {
             apply_sysctl_bundle "$SYSCTL_TUNING" "$SYSCTL_EXTENDED" || return 1
             ;;
         force)
-            detect_forced_dns_path >/dev/null 2>&1 || true
-            _cfg_ok=0
-            [ "$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null)" = 1 ] &&
-            [ "$(uci -q get https-dns-proxy.config.notrack_dns 2>/dev/null)" = 1 ] &&
-            [ "$(uci -q get https-dns-proxy.config.force_ip_family 2>/dev/null)" = auto ] && _cfg_ok=1
-            if [ "${FORCE_DOH:-0}" = 1 ] && [ "$_cfg_ok" = 1 ] && [ "${FORCED_DNS_EXTERNAL:-0}" != 1 ]; then
-                printf 1
-            elif [ "${FORCED_DNS_EXTERNAL:-0}" = 1 ] || [ "$_cfg_ok" = 1 ]; then
-                printf 2
+            if [ "${FORCE_DOH:-0}" = 1 ]; then
+                apply_dns_force || return 1
             else
-                printf 0
+                remove_dns_force || return 1
             fi
+            reload_fw || return 1
             ;;
         ntp_clients)
             if [ "$NTP_CLIENTS" = 1 ]; then
@@ -3400,7 +3461,7 @@ remove_dns_force() {
 
         _cur="$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null)"
         if [ "$_cur" = 1 ]; then
-            _v="$(sed -n 's/^force_dns=//p' "$FORCE_DNS_BEFORE" | head -n1)"
+            _v="$(sed -n 's/^force_dns|//p' "$FORCE_DNS_BEFORE" | head -n1)"
             if [ -n "$_v" ]; then uci set https-dns-proxy.config.force_dns="$_v"; else uci -q delete https-dns-proxy.config.force_dns; fi
         else
             _unsafe=1
@@ -3409,7 +3470,7 @@ remove_dns_force() {
 
         _cur="$(uci -q get https-dns-proxy.config.notrack_dns 2>/dev/null)"
         if [ "$_cur" = 1 ]; then
-            _v="$(sed -n 's/^notrack_dns=//p' "$FORCE_DNS_BEFORE" | head -n1)"
+            _v="$(sed -n 's/^notrack_dns|//p' "$FORCE_DNS_BEFORE" | head -n1)"
             if [ -n "$_v" ]; then uci set https-dns-proxy.config.notrack_dns="$_v"; else uci -q delete https-dns-proxy.config.notrack_dns; fi
         else
             _unsafe=1
@@ -3418,7 +3479,7 @@ remove_dns_force() {
 
         _cur="$(uci -q get https-dns-proxy.config.dnsmasq_config_update 2>/dev/null)"
         if [ "$_cur" = - ]; then
-            _v="$(sed -n 's/^dnsmasq_config_update=//p' "$FORCE_DNS_BEFORE" | head -n1)"
+            _v="$(sed -n 's/^dnsmasq_config_update|//p' "$FORCE_DNS_BEFORE" | head -n1)"
             if [ -n "$_v" ]; then uci set https-dns-proxy.config.dnsmasq_config_update="$_v"; else uci -q delete https-dns-proxy.config.dnsmasq_config_update; fi
         else
             _unsafe=1
@@ -3427,7 +3488,7 @@ remove_dns_force() {
 
         _cur="$(uci -q get https-dns-proxy.config.force_ip_family 2>/dev/null)"
         if [ "$_cur" = auto ]; then
-            _v="$(sed -n 's/^force_ip_family=//p' "$FORCE_DNS_BEFORE" | head -n1)"
+            _v="$(sed -n 's/^force_ip_family|//p' "$FORCE_DNS_BEFORE" | head -n1)"
             if [ -n "$_v" ]; then uci set https-dns-proxy.config.force_ip_family="$_v"; else uci -q delete https-dns-proxy.config.force_ip_family; fi
         else
             _unsafe=1
@@ -3477,26 +3538,30 @@ apply_ntp_if_needed() {
     return 0
 }
 url_host() {
-    _u="$1"
-    _h="${_u#https://}"
-    _h="${_h%%/*}"
-    case "$_h" in
-        *:*) printf '%s' "${_h%%:*}" ;;
-        *) printf '%s' "$_h" ;;
+    _u="${1#https://}"
+    _u="${_u%%/*}"
+    case "$_u" in
+        \[* )
+            _rest="${_u#\[}"
+            _h="${_rest%%\]*}"
+            printf '%s' "$_h"
+            ;;
+        *:*) printf '%s' "${_u%%:*}" ;;
+        *) printf '%s' "$_u" ;;
     esac
 }
 url_port() {
-    _u="$1"
-    _h="${_u#https://}"
-    _h="${_h%%/*}"
-    case "$_h" in
-        *:*)
-            _p="${_h##*:}"
-            case "$_p" in
-                ''|*[!0-9]*) printf '443' ;;
-                *) printf '%s' "$_p" ;;
+    _u="${1#https://}"
+    _u="${_u%%/*}"
+    case "$_u" in
+        \[* )
+            _rest="${_u#\[}"
+            case "$_rest" in
+                *\]:[0-9]*) printf '%s' "${_rest##*:}" ;;
+                *) printf '443' ;;
             esac
             ;;
+        *:[0-9]*) printf '%s' "${_u##*:}" ;;
         *) printf '443' ;;
     esac
 }
@@ -4451,14 +4516,20 @@ firewall_backend_require() {
 }
 apply_settings() {
     apply_wait_message "Применяю выбранную конфигурацию DNS и дополнительные настройки"
-    install_missing_dependencies || return 1
     acquire_mutation_lock || return 1
     _rc=0
-    _apply_settings_impl "$@" || _rc=$?
+    ensure_baseline_captured || {
+        release_mutation_lock
+        err_msg "Не удалось сохранить исходное состояние до установки зависимостей."
+        return 1
+    }
+    install_missing_dependencies || _rc=$?
+    if [ "$_rc" -eq 0 ]; then
+        _apply_settings_impl "$@" || _rc=$?
+    fi
     release_mutation_lock
     return "$_rc"
 }
-
 restore_hdp_control_from_baseline() {
     _bf="$BASELINE_DIR/files/etc_config_https-dns-proxy"
     [ -f "$_bf" ] || return 0
@@ -4834,12 +4905,39 @@ uninstall_manager_impl() {
     # state-changing Apply. In that case there is nothing to restore.
     if [ -s "$BASELINE_MANIFEST" ]; then
         # Remove cron first so no scheduled process can race with restoration.
-        watchdog_cron_remove_owned_block >/dev/null 2>&1 || true
+        if ! watchdog_cron_remove_owned_block >/dev/null 2>&1; then
+            err_msg "Удаление остановлено: cron-запись DNS Manager не удалось удалить безопасно."
+            release_mutation_lock
+            pause
+            return 1
+        fi
+        watchdog_cron_scheduler_detect >/dev/null 2>&1 || true
+        if watchdog_cron_marker_exists >/dev/null 2>&1; then
+            err_msg "Удаление остановлено: собственная cron-запись DNS Manager всё ещё присутствует."
+            release_mutation_lock
+            pause
+            return 1
+        fi
 
         # Remove manager's LuCI launcher before the final service reloads.
         web_access_luci_remove >/dev/null 2>&1 || true
+        [ ! -f "$LUCI_CONTROLLER" ] || {
+            err_msg "Удаление остановлено: LuCI-контроллер DNS Manager не удалось удалить."
+            release_mutation_lock
+            pause
+            return 1
+        }
 
-        # Restore the complete pre-manager state, including user-tuned DoH.
+        # Remove only packages proven absent before the first mutation.
+        if ! package_owner_remove_owned >/dev/null 2>&1; then
+            err_msg "Удаление остановлено: не удалось удалить один из пакетов, установленных DNS Manager."
+            release_mutation_lock
+            pause
+            return 1
+        fi
+
+        # Restore the complete pre-manager state after package removal, so a package
+        # uninstall cannot remove or rewrite a baseline file that must be preserved.
         if ! baseline_restore_for_uninstall; then
             err_msg "Удаление остановлено: не удалось полностью восстановить исходное состояние. Сам менеджер НЕ удалён."
             release_mutation_lock
@@ -4862,15 +4960,49 @@ uninstall_manager_impl() {
             pause
             return 1
         fi
-        watchdog_cron_remove_owned_block >/dev/null 2>&1 || true
+        if ! watchdog_cron_remove_owned_block >/dev/null 2>&1; then
+            err_msg "Удаление остановлено: cron-запись DNS Manager не удалось удалить безопасно."
+            release_mutation_lock
+            pause
+            return 1
+        fi
+        watchdog_cron_scheduler_detect >/dev/null 2>&1 || true
+        if watchdog_cron_marker_exists >/dev/null 2>&1; then
+            err_msg "Удаление остановлено: собственная cron-запись DNS Manager всё ещё присутствует."
+            release_mutation_lock
+            pause
+            return 1
+        fi
         web_access_luci_remove >/dev/null 2>&1 || true
+        [ ! -f "$LUCI_CONTROLLER" ] || {
+            err_msg "Удаление остановлено: LuCI-контроллер DNS Manager не удалось удалить."
+            release_mutation_lock
+            pause
+            return 1
+        }
         web_access_remove_config_no_restart >/dev/null 2>&1 || true
         # No Apply (or an already clean rollback) => no live manager
         # configuration needs an original snapshot.
     fi
 
-    # Only packages explicitly recorded as DNS Manager-owned may be removed.
-    package_owner_remove_owned >/dev/null 2>&1 || true
+    # Restore the real service enabled/running state while the baseline metadata
+    # still exists. This avoids the previous ordering bug where BASE_DIR was
+    # deleted before its service-state snapshot was read.
+    for _svc in https-dns-proxy dnsmasq sysntpd ttyd; do
+        [ -s "$BASELINE_META" ] || break
+        _en="$(sed -n "s/^service_${_svc}_enabled=//p" "$BASELINE_META" 2>/dev/null | head -n1)"
+        _run="$(sed -n "s/^service_${_svc}_running=//p" "$BASELINE_META" 2>/dev/null | head -n1)"
+        [ -x "/etc/init.d/$_svc" ] || continue
+        case "$_en" in
+            yes) "/etc/init.d/$_svc" enable >/dev/null 2>&1 || true ;;
+            no) "/etc/init.d/$_svc" disable >/dev/null 2>&1 || true ;;
+        esac
+        case "$_run" in
+            yes) "/etc/init.d/$_svc" restart >/dev/null 2>&1 || "/etc/init.d/$_svc" start >/dev/null 2>&1 || true ;;
+            no) "/etc/init.d/$_svc" stop >/dev/null 2>&1 || true ;;
+        esac
+    done
+    [ "${UNINSTALL_RESTORED_FIREWALL:-0}" = 1 ] && reload_fw >/dev/null 2>&1 || true
 
     # Remove all manager state and persistent test data.
     rm -rf "$BASE_DIR" 2>/dev/null || _rc=1
@@ -4880,16 +5012,6 @@ uninstall_manager_impl() {
     # Finally remove the executable itself. The running shell can safely
     # finish after unlinking its own executable path.
     rm -f "$MANAGER_PATH" 2>/dev/null || _rc=1
-
-    # Runtime reloads happen only after every persistent uninstall operation
-    # has completed. This is important when the menu itself runs under ttyd.
-    [ "${UNINSTALL_RESTORED_HDP:-0}" = 1 ] && /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || true
-    [ "${UNINSTALL_RESTORED_DHCP:-0}" = 1 ] && /etc/init.d/dnsmasq restart >/dev/null 2>&1 || true
-    [ "${UNINSTALL_RESTORED_SYSTEM:-0}" = 1 ] && /etc/init.d/sysntpd restart >/dev/null 2>&1 || true
-    [ "${UNINSTALL_RESTORED_FIREWALL:-0}" = 1 ] && reload_fw >/dev/null 2>&1 || true
-    if [ "${UNINSTALL_RESTORED_TTYD:-0}" = 1 ] || [ "${WEB_ACCESS_SECTION_REMOVED:-0}" = 1 ]; then
-        [ -x "$WEB_SERVICE_CONFIG" ] && "$WEB_SERVICE_CONFIG" restart >/dev/null 2>&1 || true
-    fi
 
     release_mutation_lock
     if [ "$_rc" -eq 0 ]; then
@@ -5052,8 +5174,7 @@ else
     printf "  %-6s %s\n" "RU" "не выбран"
 fi
 if [ -n "${SLOT_RU_2:-}" ]; then
-    printf "  %-6s %-32s 127.0.0.1:%s
-" "RU2" "$(dns_name "$SLOT_RU_2")" "${PORT_RU_2:-${HYBRID_PORT_RU_2:-5060}}"
+    printf "  %-6s %-32s 127.0.0.1:%s\n" "RU2" "$(dns_name "$SLOT_RU_2")" "${PORT_RU_2:-${HYBRID_PORT_RU_2:-5060}}"
 fi
 menu_section "СТОРОННИЕ РЕШЕНИЯ"
 _side_found=0
@@ -5734,18 +5855,25 @@ package_owner_record_if_new() {
 }
 package_owner_remove_owned() {
     [ -f "$PACKAGE_OWNERSHIP" ] || return 0
+    _pkg_rc=0
     while IFS= read -r _pkg; do
         [ -n "$_pkg" ] || continue
         case "$_pkg" in
             *[!A-Za-z0-9._+:-]*) continue ;;
         esac
+        _baseline_pkg="$(sed -n "s/^package_${_pkg}=//p" "$BASELINE_META" 2>/dev/null | head -n1)"
+        [ "$_baseline_pkg" = 0 ] || continue
         if [ "$PKG_MGR" = apk ]; then
-            apk info -e "$_pkg" >/dev/null 2>&1 && apk del "$_pkg" >/dev/null 2>&1 || true
+            if apk info -e "$_pkg" >/dev/null 2>&1; then
+                apk del "$_pkg" >/dev/null 2>&1 || _pkg_rc=1
+            fi
         elif [ "$PKG_MGR" = opkg ]; then
-            opkg status "$_pkg" 2>/dev/null | grep -q '^Status:.*installed' && opkg remove "$_pkg" >/dev/null 2>&1 || true
+            if opkg status "$_pkg" 2>/dev/null | grep -q '^Status:.*installed'; then
+                opkg remove "$_pkg" >/dev/null 2>&1 || _pkg_rc=1
+            fi
         fi
     done < "$PACKAGE_OWNERSHIP"
-    return 0
+    return "$_pkg_rc"
 }
 
 web_access_install() {
@@ -5934,6 +6062,12 @@ setting_process() {
         1) confirm_action "Выключить «$_title» и вернуть стоковое состояние?" || return 0 ;;
         2) confirm_action "Исправить «$_title» и применить целевую настройку DNS Manager?" || return 0 ;;
     esac
+
+    ensure_baseline_captured || {
+        err_msg "Не удалось сохранить исходное состояние перед изменением настройки."
+        pause
+        return 1
+    }
 
     _old_force="$FORCE_APPLY_SETTINGS"
     case "$_state" in
@@ -7362,11 +7496,11 @@ restore_persistent_test_results() {
 save_persistent_test_results() {
     mkdir -p "$BASE_DIR/state" 2>/dev/null || return 0
 
-    if [ -s "$TEST_RESULTS" ]; then
+    if [ -s "$TEST_RESULTS" ] && ! cmp -s "$TEST_RESULTS" "$BASE_DIR/state/dns-test-results.conf" 2>/dev/null; then
         cp -f "$TEST_RESULTS" "$BASE_DIR/state/dns-test-results.conf" 2>/dev/null || true
     fi
 
-    if [ -s "$TEST_RESULTS_META" ]; then
+    if [ -s "$TEST_RESULTS_META" ] && ! cmp -s "$TEST_RESULTS_META" "$BASE_DIR/state/dns-test-results.meta" 2>/dev/null; then
         cp -f "$TEST_RESULTS_META" "$BASE_DIR/state/dns-test-results.meta" 2>/dev/null || true
     fi
 
@@ -7406,8 +7540,7 @@ startup_self_repair() {
             _act="$TMP_DIR/startup-actual-servers-$$"
             : > "$_act"
 
-            uci -q get "dhcp.$_sec.server" 2>/dev/null | tr ' ' '
-' | sed '/^$/d' | sort -u > "$_act"
+            uci -q get "dhcp.$_sec.server" 2>/dev/null | tr ' ' '\n' | sed '/^$/d' | sort -u > "$_act"
 
             if [ -s "$_exp" ] && ! cmp -s "$_act" "$_exp" 2>/dev/null; then
                 _need=1
