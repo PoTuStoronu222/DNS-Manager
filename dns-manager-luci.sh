@@ -1001,7 +1001,7 @@ function renderOverview(root,st){
   var verCard=card('Версии',[
     row('DNS Manager',versionState(st.manager_version,st.manager_update_available,st.manager_latest_version,'актуальна')),
     row('LuCI',versionState(st.luci_version,st.luci_update_available,st.luci_latest_version,'актуальна')),
-    row('https-dns-proxy',versionState(st.hdp_version,st.hdp_update_available,st.hdp_latest_version,'актуальна')),
+    row('https-dns-proxy',st.hdp_update_available?versionState(st.hdp_version,1,st.hdp_latest_version,'актуальна'):badge('dm-ok',shortVal(st.hdp_version)+' · актуальна')),
     row('Каталог DNS',catalogVersionState(st.catalog_version,st.catalog_total,st.catalog_update_available,st.catalog_latest_version,st.catalog_latest_rev)),
     row('Последняя проверка',dateText(st.last_full_test)),
     E('div',{'class':'dm-actions'},[btn('Проверить актуальность','cbi-button-neutral',function(){checkUpdate(root);}),yes(st.luci_update_available)?btn('Обновить LuCI','cbi-button-positive',function(){doUpdate(root);}):E('span',{})])
