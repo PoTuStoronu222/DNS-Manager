@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 0.2
+# Version: 0.3
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -16,7 +16,7 @@ VIEW_DIR="/www/luci-static/resources/view/dns_manager"
 VIEW_FILE="$VIEW_DIR/overview.js"
 RUNTIME_DIR="/var/run/dns-manager-luci"
 BACKUP_DIR="/etc/dns-manager-luci"
-VERSION="0.2"
+VERSION="0.3"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -122,7 +122,6 @@ load_manager() {
     rm -f "$_src"
     preflight_readonly >/dev/null 2>&1 || return 1
     init_dirs >/dev/null 2>&1 || return 1
-    write_catalogs >/dev/null 2>&1 || return 1
     load_config >/dev/null 2>&1 || return 1
     restore_persistent_test_results >/dev/null 2>&1 || true
     refresh_runtime_capabilities >/dev/null 2>&1 || true
@@ -159,18 +158,36 @@ average_selected_ping() {
     [ "$_n" -gt 0 ] && printf '%s' "$((_sum / _n))" || printf ''
 }
 
+
+package_version() {
+    _pkg="$1"
+    [ -n "$_pkg" ] || return 0
+    if command -v apk >/dev/null 2>&1; then
+        apk list -I "$_pkg" 2>/dev/null | sed -n 's/^[^ ]*\-\([0-9][^ ]*\)$/\1/p' | head -n1
+    elif command -v opkg >/dev/null 2>&1; then
+        opkg status "$_pkg" 2>/dev/null | sed -n 's/^Version:[[:space:]]*//p' | head -n1
+    fi
+}
+
 status_json() {
     load_manager || { json_error "DNS Manager недоступен"; return; }
+    [ -s "$DNS_CATALOG" ] || write_catalogs >/dev/null 2>&1 || true
     printf '{"ok":true,"manager_version":'; json_quote "$(manager_version)"
     printf ',"ipv4":'; json_quote "${IPV4_ROUTE:-unknown}"
     printf ',"ipv6":'; json_quote "${IPV6_ROUTE:-unknown}"
     printf ',"dnsmasq":'; json_quote "${DNSMASQ_RUN:-unknown}"
     printf ',"doh":'; json_quote "${HDP_RUNNING:-unknown}"
     printf ',"firewall":'; json_quote "${SYS_FW:-unknown}"
+    printf ',"openwrt":'; json_quote "${SYS_OWRT:-unknown}"
+    printf ',"lan":'; json_quote "${LAN_IP:-unknown}"
     printf ',"profile":'; json_quote "${DNS_PROFILE:-unknown}"
     printf ',"profile_mode":'; json_quote "${DNS_SELECTION_MODE:-unknown}"
     printf ',"watchdog":'; json_quote "${WATCHDOG_ENABLED:-0}"
+    _force_cfg="$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null || true)"
+    _force_external=0
+    [ "$_force_cfg" = 1 ] && [ "${FORCE_DOH:-0}" != 1 ] && _force_external=1
     printf ',"force":'; json_quote "${FORCE_DOH:-0}"
+    printf ',"force_external":'; json_quote "$_force_external"
     printf ',"mtu":'; json_quote "${MTU_FIX:-0}"
     printf ',"sysctl":'; json_quote "${SYSCTL_TUNING:-0}"
     printf ',"sysctl_ext":'; json_quote "${SYSCTL_EXTENDED:-0}"
@@ -180,6 +197,15 @@ status_json() {
     printf ',"watchdog_interval":'; json_quote "${WATCHDOG_INTERVAL:-90}"
     printf ',"doh_total":${DOH_TOTAL:-0},"doh_match":${DOH_MATCH:-0},"average_ping":'; json_quote "$(average_selected_ping)"
     printf ',"last_full_test":'; json_quote "$(sed -n 's/^timestamp=//p' "$TEST_RESULTS_META" 2>/dev/null | head -n1)"
+    printf ',"hostname":'; json_quote "$(uci -q get system.@system[0].hostname 2>/dev/null || cat /proc/sys/kernel/hostname 2>/dev/null || true)"
+    printf ',"uptime":'; json_quote "$(awk '{printf "%s",int($1)}' /proc/uptime 2>/dev/null)"
+    printf ',"load1":'; json_quote "$(awk '{printf "%s",$1}' /proc/loadavg 2>/dev/null)"
+    printf ',"memory_total_kb":'; printf '%s' "$(awk '/MemTotal:/ {print $2;exit}' /proc/meminfo 2>/dev/null)"
+    printf ',"memory_available_kb":'; printf '%s' "$(awk '/MemAvailable:/ {print $2;exit}' /proc/meminfo 2>/dev/null)"
+    _catalog_total="$(grep -v '^#' "$DNS_CATALOG" 2>/dev/null | grep -c '^[^|][^|]*|' 2>/dev/null || printf 0)"
+    printf ',"catalog_total":%s' "$_catalog_total"
+    printf ',"hdp_version":'; json_quote "$(package_version https-dns-proxy)"
+    printf ',"catalog_version":'; json_quote "$(dns_catalog_version 2>/dev/null || true)"
     printf ',"slots":['
     _first=1
     for _s in 1 2 3 4 5 6 RU RU_2; do
@@ -197,11 +223,54 @@ status_json() {
 }
 
 catalog_json() {
+    INPUT="${INPUT:-}"
     load_manager || { json_error "DNS Manager недоступен"; return; }
-    printf '{"ok":true,"version":'; json_quote "$(dns_catalog_version)"; printf ',"servers":['
-    _first=1
+    [ -s "$DNS_CATALOG" ] || write_catalogs >/dev/null 2>&1 || true
+    [ -s "$DNS_CATALOG" ] || { json_error "Каталог DNS недоступен"; return; }
+
+    _category="$(jget category)"
+    _offset="$(jget offset)"
+    _limit="$(jget limit)"
+    _only_ok="$(jget only_ok)"
+    case "$_offset" in ''|*[!0-9]*) _offset=0;; esac
+    case "$_limit" in ''|*[!0-9]*) _limit=18;; esac
+    [ "$_limit" -gt 48 ] && _limit=48
+    [ -n "$_category" ] || _category="all"
+    case "$_category" in
+        all|bypass|security|privacy|adblock|family|clean|regional) ;;
+        *) json_error "Неверная категория DNS"; return;;
+    esac
+    case "$_only_ok" in 1|0) ;; *) _only_ok=0;; esac
+
+    _filtered="$TMP_ROOT/catalog-filtered.$$"
+    _paged="$TMP_ROOT/catalog-page.$$"
+    : > "$_filtered"
+    : > "$_paged"
     while IFS='|' read -r _id _cat _prof _name _url _region _status; do
         case "$_id" in ''|\#*) continue;; esac
+        if [ "$_category" != all ] && [ "$_cat" != "$_category" ]; then
+            continue
+        fi
+        if [ "$_only_ok" = 1 ]; then
+            _r="$(result_for_id "$_id" 2>/dev/null || true)"
+            _st="$(printf '%s' "$_r" | awk -F'|' 'NF>=5 {print $5;exit}')"
+            [ "$_st" = OK ] || continue
+        fi
+        printf '%s|%s|%s|%s|%s|%s|%s\n' "$_id" "$_cat" "$_prof" "$_name" "$_url" "$_region" "$_status" >> "$_filtered"
+    done < "$DNS_CATALOG"
+
+    _total="$(wc -l < "$_filtered" 2>/dev/null | tr -d ' ')"
+    case "$_total" in ''|*[!0-9]*) _total=0;; esac
+    if [ "$_total" -gt "$_offset" ]; then
+        sed -n "$((_offset+1)),$((_offset+_limit))p" "$_filtered" > "$_paged" 2>/dev/null || true
+    fi
+
+    printf '{"ok":true,"version":'; json_quote "$(dns_catalog_version)"
+    printf ',"category":'; json_quote "$_category"
+    printf ',"offset":%s,"limit":%s,"total":%s,"servers":[' "$_offset" "$_limit" "$_total"
+    _first=1
+    while IFS='|' read -r _id _cat _prof _name _url _region _status; do
+        [ -n "$_id" ] || continue
         [ "$_first" = 1 ] || printf ','
         _first=0
         _r="$(result_for_id "$_id" 2>/dev/null || true)"
@@ -209,8 +278,9 @@ catalog_json() {
         _st="$(printf '%s' "$_r" | awk -F'|' 'NF>=5 {print $5;exit}')"
         _last="$(last_check_for_id "$_id")"
         printf '{"id":'; json_quote "$_id"; printf ',"category":'; json_quote "$_cat"; printf ',"name":'; json_quote "$_name"; printf ',"url":'; json_quote "$_url"; printf ',"region":'; json_quote "$_region"; printf ',"catalog_status":'; json_quote "$_status"; printf ',"ping":'; json_quote "$_ms"; printf ',"status":'; json_quote "$_st"; printf ',"last_check":'; json_quote "$_last"; printf '}'
-    done < "$DNS_CATALOG"
+    done < "$_paged"
     printf ']}'
+    rm -f "$_filtered" "$_paged" 2>/dev/null || true
 }
 
 set_check_stamp() {
@@ -382,12 +452,12 @@ test_json() {
 
 case "${1:-}" in
     list)
-        printf '{"status":{},"catalog":{},"set_profile":{"profile":"String"},"set_slot":{"slot":"String","id":"String"},"set_setting":{"name":"String","enabled":0},"test_all":{},"test_one":{"id":"String"},"job":{"id":"String"},"log":{"lines":0}}\n'
+        printf '{"status":{},"catalog":{"category":"String","offset":0,"limit":0,"only_ok":0},"set_profile":{"profile":"String"},"set_slot":{"slot":"String","id":"String"},"set_setting":{"name":"String","enabled":0},"test_all":{},"test_one":{"id":"String"},"job":{"id":"String"},"log":{"lines":0}}\n'
         ;;
     call)
         case "${2:-}" in
             status) status_json;;
-            catalog) catalog_json;;
+            catalog) INPUT="$(cat 2>/dev/null || true)"; catalog_json;;
             set_profile|set_slot|set_setting) INPUT="$(cat 2>/dev/null || true)"; RPC_METHOD="$2"; run_action;;
             test_all|test_one) INPUT="$(cat 2>/dev/null || true)"; RPC_METHOD="$2"; test_json;;
             job) INPUT="$(cat 2>/dev/null || true)"; job_json "$(jget id)";;
@@ -408,7 +478,7 @@ EOF_RPC
 'require dom';
 
 var callStatus = rpc.declare({ object: 'dns_manager', method: 'status', expect: {} });
-var callCatalog = rpc.declare({ object: 'dns_manager', method: 'catalog', expect: {} });
+var callCatalog = rpc.declare({ object: 'dns_manager', method: 'catalog', params: ['category','offset','limit','only_ok'], expect: {} });
 var callProfile = rpc.declare({ object: 'dns_manager', method: 'set_profile', params: ['profile'], expect: {} });
 var callSlot = rpc.declare({ object: 'dns_manager', method: 'set_slot', params: ['slot', 'id'], expect: {} });
 var callSetting = rpc.declare({ object: 'dns_manager', method: 'set_setting', params: ['name', 'enabled'], expect: {} });
@@ -418,19 +488,23 @@ var callJob = rpc.declare({ object: 'dns_manager', method: 'job', params: ['id']
 var callLog = rpc.declare({ object: 'dns_manager', method: 'log', params: ['lines'], expect: {} });
 
 var PROFILE = [
-  ['bypass', 'Максимальный обход', '6 DNS + региональный маршрут', 'var(--warn)'],
-  ['clean', 'Максимальная скорость', 'чистый DNS без фильтрации', 'var(--ok)'],
-  ['clean2', 'Чистый DNS', 'без специальных фильтров DNS', 'var(--ok)'],
-  ['security', 'Максимальная безопасность', 'защита от угроз', 'var(--blue)'],
-  ['privacy', 'Максимальная приватность', 'минимизация лишних фильтров', 'var(--violet)'],
-  ['adblock', 'Блокировка рекламы', 'DNS-фильтрация рекламы', 'var(--red)'],
-  ['family', 'Семейная фильтрация', 'фильтрация семейного профиля', 'var(--pink)'],
-  ['all', 'Все категории', 'смешанный набор по категориям', 'var(--cyan)']
+  ['bypass', 'Максимальный обход', '6 рабочих DNS + региональные слоты'],
+  ['clean', 'Максимальная скорость', 'минимум фильтрации и лишних правил'],
+  ['security', 'Максимальная безопасность', 'DNS с защитой от угроз'],
+  ['privacy', 'Максимальная приватность', 'DNS с акцентом на приватность'],
+  ['adblock', 'Блокировка рекламы', 'фильтрация рекламы и трекеров'],
+  ['all', 'Выбор по категориям', 'смешанный набор из каталога']
 ];
+var CATEGORY = [
+  ['all','Все DNS'], ['bypass','Обход блокировок'], ['security','Безопасность'],
+  ['privacy','Приватность'], ['adblock','Блокировка рекламы'], ['family','Семейный'],
+  ['clean','Без фильтрации'], ['regional','Региональные']
+];
+var state = { category:'all', offset:0, limit:18, total:0, catalogLoaded:false };
 
 function esc(s) {
   s = s == null ? '' : String(s);
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 function humanTime(ts) {
   if (!ts) return '—';
@@ -438,239 +512,287 @@ function humanTime(ts) {
   if (!isFinite(n) || n <= 0) return '—';
   try { return new Date(n * 1000).toLocaleString(); } catch (e) { return '—'; }
 }
-function pingValue(v) {
-  return v && /^\d+$/.test(String(v)) ? esc(v + ' мс') : '—';
+function uptimeText(sec) {
+  var n = Number(sec || 0);
+  if (!isFinite(n) || n <= 0) return '—';
+  var d = Math.floor(n / 86400); n %= 86400;
+  var h = Math.floor(n / 3600); n %= 3600;
+  var m = Math.floor(n / 60);
+  return (d ? d + ' д ' : '') + h + ' ч ' + m + ' мин';
 }
 function profileName(p) {
-  var m = PROFILE.filter(function(x) { return x[0] === p; })[0];
-  return m ? m[1] : (p || '—');
+  var x = PROFILE.filter(function(v){ return v[0] === p; })[0];
+  return x ? x[1] : (p || '—');
 }
 function catName(c) {
-  return ({ bypass: 'Обход блокировок', security: 'Безопасность', privacy: 'Приватность', adblock: 'Реклама', family: 'Семейный', clean: 'Без фильтрации', regional: 'Региональные' })[c] || c || '—';
+  var x = CATEGORY.filter(function(v){ return v[0] === c; })[0];
+  return x ? x[1] : (c || '—');
 }
-function stateBadge(v) {
-  if (v === 'yes' || v === '1' || v === 'OK') return '<span class="badge ok">● Работает</span>';
-  if (v === 'no' || v === '0') return '<span class="badge off">● Выкл.</span>';
-  return '<span class="badge warn">● Нет данных</span>';
+function ping(v) { return v && /^\d+$/.test(String(v)) ? esc(v + ' мс') : '—'; }
+function stateText(v) {
+  if (v === 'yes' || v === '1' || v === 'OK') return 'Работает';
+  if (v === 'no' || v === '0') return 'ВЫКЛ';
+  return v || '—';
 }
-function toast(msg, type) {
-  ui.addNotification(null, E('p', { 'class': 'dns-toast ' + (type || 'info') }, msg), 'info');
+function stateClass(v) {
+  return (v === 'yes' || v === '1' || v === 'OK') ? 'ok' : (v === 'no' || v === '0' ? 'off' : 'warn');
 }
-function el(tag, cls, html) {
-  return E(tag, { 'class': cls }, html);
+function E2(tag, cls, text) { return E(tag, {'class':cls}, text == null ? '' : text); }
+function btn(label, cls, fn) {
+  var b = E('button', {'class':'cbi-button ' + (cls || 'cbi-button-neutral'), 'click':fn}, label);
+  return b;
+}
+function card(title, value, sub, cls) {
+  var c = E('div', {'class':'dm-card dm-stat ' + (cls || '')});
+  c.appendChild(E2('div','dm-label',title));
+  c.appendChild(E2('div','dm-value',value));
+  if (sub) c.appendChild(E2('div','dm-sub',sub));
+  return c;
+}
+function toast(msg, type) { ui.addNotification(null, E2('p','dm-toast ' + (type || 'info'),msg), 'info'); }
+function memoryText(total, avail) {
+  var t=Number(total||0), a=Number(avail||0);
+  if (!t) return '—';
+  var used=t-a;
+  return Math.round(used/1024) + ' / ' + Math.round(t/1024) + ' МБ';
+}
+function insertStyle(root) {
+  var css = '' +
+  '.dm-wrap{max-width:1450px}.dm-hero{padding:22px 24px;border-radius:14px;margin-bottom:18px;background:linear-gradient(135deg,var(--background-color-high),var(--background-color-medium));border:1px solid var(--border-color-medium);box-shadow:0 6px 18px rgba(0,0,0,.08)}' +
+  '.dm-hero h2{margin:0 0 5px;font-size:25px}.dm-muted{opacity:.68}.dm-toolbar{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}' +
+  '.dm-section{margin:22px 0}.dm-section h3{margin:0 0 11px;font-size:19px}.dm-grid6{display:grid;grid-template-columns:repeat(6,minmax(130px,1fr));gap:10px}.dm-grid4{display:grid;grid-template-columns:repeat(4,minmax(200px,1fr));gap:12px}.dm-grid3{display:grid;grid-template-columns:repeat(3,minmax(230px,1fr));gap:12px}' +
+  '.dm-card{background:var(--background-color-high);border:1px solid var(--border-color-medium);border-radius:13px;padding:15px;box-shadow:0 3px 10px rgba(0,0,0,.06);transition:transform .12s,box-shadow .12s}.dm-click{cursor:pointer}.dm-click:hover{transform:translateY(-1px);box-shadow:0 6px 15px rgba(0,0,0,.10)}.dm-click:active{transform:translateY(1px);box-shadow:inset 0 2px 6px rgba(0,0,0,.12)}' +
+  '.dm-stat{min-height:76px}.dm-label{font-size:12px;opacity:.68}.dm-value{font-size:18px;font-weight:700;margin-top:5px}.dm-sub{font-size:12px;opacity:.68;margin-top:4px}.dm-component{min-height:100px}.dm-component-title{font-size:17px;font-weight:700}.dm-status{margin-top:7px;font-size:13px}.dm-status.ok{color:#16884b}.dm-status.warn{color:#b56b00}.dm-status.off{color:#b52f3c}' +
+  '.dm-profile{min-height:105px}.dm-profile.active{outline:2px solid #2d7dd2;box-shadow:0 0 0 4px rgba(45,125,210,.11)}.dm-profile-title{font-size:17px;font-weight:700}.dm-profile-sub{font-size:13px;opacity:.7;margin-top:7px}.dm-slot{min-height:150px}.dm-slot-top{display:flex;justify-content:space-between;gap:8px;align-items:center}.dm-slot-num{font-size:15px;font-weight:700}.dm-slot-name{font-size:16px;font-weight:700;margin:10px 0 6px}.dm-meta{font-size:12px;line-height:1.6;opacity:.74}.dm-actions{display:flex;gap:7px;flex-wrap:wrap;margin-top:11px}' +
+  '.dm-dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:6px;background:#999}.dm-dot.ok{background:#1a9850}.dm-dot.warn{background:#d48b00}.dm-dot.bad{background:#c83d4c}.dm-section-head{display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap}.dm-filters{display:flex;gap:7px;flex-wrap:wrap}.dm-filter.active{box-shadow:0 0 0 2px #2d7dd2 inset}.dm-catalog-tools{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.dm-catalog{display:grid;grid-template-columns:repeat(3,minmax(280px,1fr));gap:11px;margin-top:12px}.dm-dns-title{font-weight:700;font-size:16px}.dm-dns-cat{font-size:12px;opacity:.67;margin-top:4px}.dm-page{display:flex;justify-content:center;align-items:center;gap:8px;margin-top:13px}.dm-settings{display:grid;grid-template-columns:repeat(4,minmax(190px,1fr));gap:10px}.dm-setting{min-height:86px}.dm-setting-title{font-weight:700}.dm-log{white-space:pre-wrap;font:12px/1.5 monospace;max-height:390px;overflow:auto;background:#0e141a;color:#dbe4ec;border-radius:10px;padding:12px}.dm-job{white-space:pre-wrap;max-height:280px;overflow:auto;font:12px/1.5 monospace}.dm-empty{padding:22px;border:1px dashed var(--border-color-medium);border-radius:12px;text-align:center;opacity:.7}.dm-legend{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;opacity:.73}.dm-inline{display:inline-flex;align-items:center;gap:6px}' +
+  '@media(max-width:1100px){.dm-grid6{grid-template-columns:repeat(3,1fr)}.dm-grid4,.dm-settings{grid-template-columns:repeat(2,1fr)}.dm-grid3,.dm-catalog{grid-template-columns:repeat(2,minmax(230px,1fr))}}' +
+  '@media(max-width:700px){.dm-grid6,.dm-grid4,.dm-grid3,.dm-catalog,.dm-settings{grid-template-columns:1fr}}';
+  root.appendChild(E('style', {}, css));
 }
 
-function renderStyle() {
-  return '<style>' +
-    ':root{--ok:#159957;--warn:#d89000;--blue:#2878d8;--violet:#7a55c7;--red:#c33b45;--pink:#c65386;--cyan:#198da2}' +
-    '.dns-wrap{max-width:1400px}.dns-head{padding:20px 22px;margin-bottom:18px;border-radius:14px;background:linear-gradient(135deg,#1d2733,#111820);color:#fff;box-shadow:0 8px 20px rgba(0,0,0,.18)}' +
-    '.dns-head h2{margin:0 0 6px}.dns-sub{opacity:.8}.dns-dashboard{display:grid;grid-template-columns:repeat(6,minmax(130px,1fr));gap:10px;margin:15px 0}.dns-stat{padding:13px;border-radius:12px;background:var(--background-color-high);border:1px solid var(--border-color-medium);box-shadow:inset 0 1px 0 rgba(255,255,255,.45),0 3px 8px rgba(0,0,0,.06)}.dns-stat b{display:block;font-size:18px;margin-top:4px}.dns-section{margin:20px 0}.dns-section h3{margin-bottom:10px}.dns-profiles{display:grid;grid-template-columns:repeat(3,minmax(220px,1fr));gap:12px}.dns-card,.dns-profile{position:relative;padding:16px;border:1px solid var(--border-color-medium);border-radius:14px;background:var(--background-color-high);box-shadow:0 5px 12px rgba(0,0,0,.08),inset 0 1px 0 rgba(255,255,255,.55);transition:.12s}.dns-card.clickable,.dns-profile{cursor:pointer}.dns-card.clickable:hover,.dns-profile:hover{transform:translateY(-1px);box-shadow:0 7px 15px rgba(0,0,0,.12),inset 0 1px 0 rgba(255,255,255,.55)}.dns-card.clickable:active,.dns-profile:active{transform:translateY(1px);box-shadow:inset 0 3px 7px rgba(0,0,0,.14)}.dns-profile-title{font-size:17px;font-weight:700;margin-bottom:5px}.dns-profile-desc{font-size:13px;opacity:.72}.dns-slots{display:grid;grid-template-columns:repeat(4,minmax(230px,1fr));gap:12px}.dns-slot-title{display:flex;justify-content:space-between;align-items:center;font-weight:700}.dns-slot-name{font-size:16px;margin:7px 0}.dns-meta{font-size:12px;opacity:.72;line-height:1.55}.dns-actions{display:flex;gap:7px;flex-wrap:wrap;margin-top:11px}.dns-actions button{cursor:pointer}.dns-catalog{display:grid;grid-template-columns:repeat(3,minmax(280px,1fr));gap:12px}.dns-dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:6px;background:#888}.dns-dot.ok{background:var(--ok);box-shadow:0 0 0 3px rgba(21,153,87,.15)}.dns-dot.bad{background:var(--red)}.dns-dot.na{background:#888}.badge{display:inline-block;padding:3px 8px;border-radius:999px;font-size:11px}.badge.ok{background:rgba(21,153,87,.12);color:var(--ok)}.badge.off{background:rgba(195,59,69,.12);color:var(--red)}.badge.warn{background:rgba(216,144,0,.12);color:var(--warn)}.dns-tools{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.dns-muted{opacity:.7}.dns-log{white-space:pre-wrap;max-height:420px;overflow:auto;font:12px/1.5 monospace;padding:12px;border-radius:10px;background:#0e1319;color:#dce6ee}.dns-job{margin-top:8px}.dns-small{font-size:12px}.dns-row{display:flex;align-items:center;justify-content:space-between;gap:10px}.dns-empty{padding:25px;text-align:center;opacity:.7;border:1px dashed var(--border-color-medium);border-radius:12px}.dns-advanced{display:grid;grid-template-columns:repeat(4,minmax(180px,1fr));gap:10px}.dns-toggle{min-height:74px;cursor:pointer}.dns-toggle strong{display:block}.dns-catalog-head{display:flex;justify-content:space-between;gap:10px;align-items:center;margin-bottom:10px}' +
-    '@media(max-width:1100px){.dns-dashboard{grid-template-columns:repeat(3,1fr)}.dns-profiles,.dns-slots,.dns-catalog{grid-template-columns:repeat(2,minmax(220px,1fr))}.dns-advanced{grid-template-columns:repeat(2,1fr)}}' +
-    '@media(max-width:700px){.dns-dashboard,.dns-profiles,.dns-slots,.dns-catalog,.dns-advanced{grid-template-columns:1fr}}' +
-  '</style>';
+function renderDashboard(root, st) {
+  var d = root.querySelector('#dm-dashboard'); d.innerHTML='';
+  d.appendChild(card('Профиль',profileName(st.profile),'текущая схема'));
+  d.appendChild(card('DoH',stateText(st.doh),st.doh_total + ' секций'));
+  d.appendChild(card('DNS',String(st.doh_match || st.doh_total || 0),'активных в схеме'));
+  d.appendChild(card('Watchdog',st.watchdog === '1' ? 'Работает' : 'ВЫКЛ',(st.watchdog_interval || '90') + ' сек'));
+  d.appendChild(card('Последняя проверка',humanTime(st.last_full_test),'полный каталог'));
+  d.appendChild(card('Средний ping',st.average_ping ? st.average_ping + ' мс' : '—','выбранные DNS'));
+}
+function renderComponents(root, st) {
+  var s=root.querySelector('#dm-components'); s.innerHTML='<h3>Компоненты</h3>';
+  var g=E('div',{'class':'dm-grid4'});
+  [
+    ['dnsmasq','DNSMasq',stateText(st.dnsmasq)],
+    ['doh','Защищённый DNS',stateText(st.doh)],
+    ['watchdog','Watchdog',st.watchdog==='1'?'procd':'ВЫКЛ'],
+    ['force','Принудительный DNS',st.force==='1'?'DNS Manager':((st.force_external==='1'||st.force_external===1)?'Внешний':'ВЫКЛ')],
+    ['mtu','MTU / MSS',st.mtu==='1'?'ВКЛ':'ВЫКЛ'],
+    ['cache','Кэш DNS',st.dnsmasq_perf==='1'?'ВКЛ':'ВЫКЛ'],
+    ['ntp','NTP для клиентов',st.ntp_clients==='1'?'ВКЛ':'ВЫКЛ'],
+    ['fix','Клиентские фиксы',st.client_fixes==='1'?'ВКЛ':'ВЫКЛ']
+  ].forEach(function(x){
+    var cls=(x[2]==='Работает'||x[2]==='procd'||x[2]==='DNS Manager'||x[2]==='ВКЛ')?'ok':(x[2]==='ВЫКЛ'?'off':'warn');
+    var c=E2('div','dm-card dm-component');
+    c.appendChild(E2('div','dm-component-title',x[1]));
+    c.appendChild(E2('div','dm-status '+cls,'● '+x[2]));
+    g.appendChild(c);
+  });
+  s.appendChild(g);
+}
+function renderSystem(root, st) {
+  var s=root.querySelector('#dm-system'); s.innerHTML='<h3>Система</h3>';
+  var g=E('div',{'class':'dm-grid6'});
+  [
+    ['Устройство',st.hostname || 'AX3000T'],
+    ['OpenWrt',st.openwrt || '—'],
+    ['Uptime',uptimeText(st.uptime)],
+    ['Нагрузка',st.load1 || '—'],
+    ['RAM',memoryText(st.memory_total_kb,st.memory_available_kb)],
+    ['LAN',st.lan || '—']
+  ].forEach(function(x){ g.appendChild(card(x[0],x[1])); });
+  s.appendChild(g);
+}
+
+function renderVersions(root, st) {
+  var s=root.querySelector('#dm-versions'); s.innerHTML='<h3>Версии</h3>';
+  var g=E('div',{'class':'dm-grid3'});
+  [['DNS Manager',st.manager_version||'—'],['https-dns-proxy',st.hdp_version||'—'],['Каталог DNS',st.catalog_version||'—']].forEach(function(x){g.appendChild(card(x[0],x[1],''));});
+  s.appendChild(g);
+}
+function renderProfiles(root, st) {
+  var s=root.querySelector('#dm-profiles'); s.innerHTML='<h3>Профили DNS</h3>';
+  var g=E('div',{'class':'dm-grid3'});
+  PROFILE.forEach(function(p){
+    var c=E2('div','dm-card dm-click dm-profile'+(st.profile===p[0]?' active':''));
+    c.appendChild(E2('div','dm-profile-title',p[1]));
+    c.appendChild(E2('div','dm-profile-sub',p[2]));
+    c.addEventListener('click',function(){ applyProfile(p[0],root); });
+    g.appendChild(c);
+  });
+  s.appendChild(g);
+}
+function renderSlots(root, st) {
+  var s=root.querySelector('#dm-slots'); s.innerHTML='';
+  var head=E('div',{'class':'dm-section-head'},[E('h3',{},'Текущие DNS'),E('div',{'class':'dm-legend'},'Ping и время берутся из последней проверки; обновление страницы не запускает новый тест.')]);
+  s.appendChild(head);
+  var g=E('div',{'class':'dm-grid4'});
+  (st.slots||[]).forEach(function(x){
+    var ok=x.status==='OK';
+    var c=E2('div','dm-card dm-slot');
+    c.appendChild(E('div',{'class':'dm-slot-top'},[E2('span','dm-slot-num','SLOT '+x.slot),E2('span','dm-inline',''+(ok?'● Работает':(x.status||'Нет данных')))]));
+    c.appendChild(E2('div','dm-slot-name',x.name||'Не выбран'));
+    c.appendChild(E2('div','dm-meta','Категория: '+catName(x.category)+'\nPing: '+(x.ping ? x.ping+' мс':'—')+'\nПоследняя проверка: '+humanTime(x.last_check)));
+    var a=E('div',{'class':'dm-actions'});
+    a.appendChild(btn('Выбрать','cbi-button-action',function(){openSlotPicker(x.slot,root);}));
+    if(x.id)a.appendChild(btn('Проверить','cbi-button-neutral',function(){testOne(x.id,root);}));
+    c.appendChild(a);g.appendChild(c);
+  });
+  s.appendChild(g);
+}
+function renderCatalog(root, data) {
+  var s=root.querySelector('#dm-catalog');
+  s.innerHTML='';
+  var head=E('div',{'class':'dm-section-head'});
+  head.appendChild(E('h3',{},'Каталог DNS'));
+  if(!state.catalogLoaded){
+    head.appendChild(btn('Открыть каталог','cbi-button-neutral',function(){loadCatalog(root,true);}));
+    s.appendChild(head);
+    s.appendChild(E2('div','dm-empty','Каталог из 111 DNS загружается только после открытия, чтобы LuCI запускалась быстро.'));
+    return;
+  }
+  var tools=E('div',{'class':'dm-catalog-tools'});
+  CATEGORY.forEach(function(cat){
+    var b=btn(cat[1],'cbi-button-neutral dm-filter'+(state.category===cat[0]?' active':''),function(){state.category=cat[0];state.offset=0;loadCatalog(root,false);});
+    tools.appendChild(b);
+  });
+  head.appendChild(tools);
+  s.appendChild(head);
+  var count=E2('div','dm-muted','Показано '+((data.servers||[]).length)+' из '+(data.total||0)); s.appendChild(count);
+  var g=E('div',{'class':'dm-catalog'});
+  (data.servers||[]).forEach(function(d){
+    var c=E2('div','dm-card');
+    var dot=d.status==='OK'?'ok':(d.status?'bad':'warn');
+    c.appendChild(E2('div','dm-dns-title','● '+d.name));
+    c.appendChild(E2('div','dm-dns-cat',catName(d.category)));
+    c.appendChild(E2('div','dm-meta','Ping: '+ping(d.ping)+'\nСтатус: '+(d.status||'—')+'\nПоследняя проверка: '+humanTime(d.last_check)));
+    var a=E('div',{'class':'dm-actions'});
+    a.appendChild(btn('Проверить','cbi-button-neutral',function(){testOne(d.id,root);}));
+    a.appendChild(btn('Назначить','cbi-button-action',function(){openAssign(d.id,d.category,root);}));
+    c.appendChild(a);g.appendChild(c);
+  });
+  s.appendChild(g);
+  var page=E('div',{'class':'dm-page'});
+  page.appendChild(btn('←','cbi-button-neutral',function(){if(state.offset>0){state.offset=Math.max(0,state.offset-state.limit);loadCatalog(root,false);}}));
+  page.appendChild(E2('span','dm-muted',(Math.floor(state.offset/state.limit)+1)+' / '+Math.max(1,Math.ceil((data.total||0)/state.limit))));
+  page.appendChild(btn('→','cbi-button-neutral',function(){if(state.offset+state.limit<(data.total||0)){state.offset+=state.limit;loadCatalog(root,false);}}));
+  s.appendChild(page);
+}
+function renderSettings(root, st) {
+  var s=root.querySelector('#dm-settings'); s.innerHTML='<h3>Настройки</h3>';
+  var g=E('div',{'class':'dm-settings'});
+  [
+    ['watchdog','Watchdog','Фоновая проверка DNS',st.watchdog==='1'],
+    ['force','Принудительный DNS','Перехват 53/DoT',st.force==='1'],
+    ['mtu','MTU / MSS','Исправление сетевых параметров',st.mtu==='1'],
+    ['sysctl','TCP / Conntrack','Системный тюнинг',st.sysctl==='1'],
+    ['sysctl_ext','Расширенный sysctl','Дополнительный тюнинг',st.sysctl_ext==='1'],
+    ['ntp_clients','NTP для клиентов','DHCP Option 42',st.ntp_clients==='1'],
+    ['dnsmasq_perf','Кэш DNS','Параметры dnsmasq',st.dnsmasq_perf==='1'],
+    ['client_fixes','Клиентские фиксы','Телеметрия / connectivity',st.client_fixes==='1']
+  ].forEach(function(x){
+    var c=E2('div','dm-card dm-setting');
+    c.appendChild(E2('div','dm-setting-title',x[1]));
+    c.appendChild(E2('div','dm-muted',x[2]));
+    c.appendChild(btn(x[3]?'Выключить':'Включить',x[3]?'cbi-button-remove':'cbi-button-add',function(){setSetting(x[0],x[3]?0:1,root);}));
+    g.appendChild(c);
+  });
+  s.appendChild(g);
+}
+function renderLog(root){
+  var s=root.querySelector('#dm-log'); s.innerHTML='';
+  var h=E('div',{'class':'dm-section-head'},[E('h3',{},'Журнал'),btn('Показать','cbi-button-neutral',function(){showLog(root);})]);
+  s.appendChild(h);
+  s.appendChild(E2('div','dm-empty','Журнал загружается только по запросу.'));
+}
+
+function paint(root,st,cat){
+  renderDashboard(root,st);renderComponents(root,st);renderSystem(root,st);renderVersions(root,st);renderProfiles(root,st);renderSlots(root,st);renderCatalog(root,cat||{});renderSettings(root,st);renderLog(root);
+}
+function baseRoot(){
+  var root=E('div',{'class':'dm-wrap'});
+  root.appendChild(E('div',{'class':'dm-hero'},[
+    E('h2',{},_('DNS Manager')),
+    E2('div','dm-muted','Нативный интерфейс LuCI · основной /usr/bin/dns-manager остаётся авторитетным backend.'),
+    E('div',{'class':'dm-toolbar'},[
+      btn('Обновить','cbi-button-neutral',function(){refresh(root);}),
+      btn('Проверить все DNS','cbi-button-apply',function(){testAll(root);})
+    ])
+  ]));
+  root.appendChild(E('div',{'class':'dm-grid6','id':'dm-dashboard'}));
+  ['dm-components','dm-system','dm-versions','dm-profiles','dm-slots','dm-catalog','dm-settings','dm-job','dm-log'].forEach(function(id){root.appendChild(E('section',{'class':'dm-section','id':id}));});
+  insertStyle(root);
+  return root;
+}
+function refresh(root){
+  return callStatus().then(function(st){
+    paint(root,st||{},state.catalogLoaded ? window.dmCatalog : null);
+    if(state.catalogLoaded) loadCatalog(root,false);
+  }).catch(function(e){toast('Не удалось обновить DNS Manager','error');});
+}
+function loadCatalog(root,first){
+  if(first){state.catalogLoaded=true;state.offset=0;}
+  return callCatalog(state.category,state.offset,state.limit,0).then(function(data){window.dmCatalog=data||{};renderCatalog(root,window.dmCatalog);}).catch(function(){toast('Не удалось загрузить каталог DNS','error');});
+}
+function applyProfile(name,root){
+  if(!confirm('Применить профиль «'+profileName(name)+'»?'))return;
+  callProfile(name).then(function(r){if(r&&r.ok){toast('Профиль применён','success');refresh(root);}else toast((r&&r.error)||'Профиль не применён','error');});
+}
+function setSetting(name,enabled,root){
+  if(!confirm((enabled?'Включить ':'Выключить ')+name+'?'))return;
+  callSetting(name,enabled).then(function(r){if(r&&r.ok){toast('Настройка изменена','success');refresh(root);}else toast((r&&r.error)||'Настройку изменить не удалось','error');});
+}
+function assign(id,slot,root){
+  if(!confirm('Назначить DNS «'+id+'» в '+slot+' и применить?'))return;
+  callSlot(slot,id).then(function(r){if(r&&r.ok){toast('DNS назначен в '+slot,'success');refresh(root);}else toast((r&&r.error)||'DNS не удалось применить','error');});
+}
+function openAssign(id,cat,root){
+  var slots=cat==='regional'?['RU','RU_2']:['1','2','3','4','5','6'];
+  var modal=E('div',{},[E('h3',{},'Назначить DNS')]);
+  slots.forEach(function(slot){modal.appendChild(btn(slot,'cbi-button-neutral',function(){ui.hideModal();assign(id,slot,root);}));});
+  ui.showModal('DNS Manager',[modal,E('div',{'class':'right'},[btn('Отмена','cbi-button-negative',ui.hideModal)])]);
+}
+function openSlotPicker(slot,root){
+  var regional=slot==='RU'||slot==='RU_2';
+  callCatalog(regional?'regional':'all',0,48,0).then(function(data){
+    var rows=(data.servers||[]).filter(function(x){return regional?x.category==='regional':x.category!=='regional';});
+    var sel=E('select',{'class':'cbi-input-select'});
+    rows.forEach(function(x){sel.appendChild(E('option',{value:x.id},x.name+' — '+catName(x.category)+(x.ping?' — '+x.ping+' мс':'')));});
+    ui.showModal('DNS Manager',[E('div',{},[E('h3',{},'Выбор DNS для '+slot),sel]),E('div',{'class':'right'},[btn('Отмена','cbi-button-negative',ui.hideModal),btn('Применить','cbi-button-apply',function(){var id=sel.value;ui.hideModal();assign(id,slot,root);})])]);
+  });
+}
+function testAll(root){
+  callTestAll().then(function(r){if(r&&r.ok)watchJob(r.job,root);else toast((r&&r.error)||'Не удалось запустить проверку','error');});
+}
+function testOne(id,root){
+  callTestOne(id).then(function(r){if(r&&r.ok)watchJob(r.job,root);else toast((r&&r.error)||'Не удалось запустить проверку','error');});
+}
+function watchJob(job,root){
+  var box=root.querySelector('#dm-job');var ticks=0;
+  box.innerHTML='<h3>Проверка</h3>';
+  var out=E2('div','dm-card dm-job','Запущено…');box.appendChild(out);
+  function poll(){
+    callJob(job).then(function(r){out.textContent=(r.output||'')+'\n\nСтатус: '+(r.status||'—');if(r.status==='done'||r.status==='failed'||ticks++>120){refresh(root);return;}setTimeout(poll,1200);});
+  }
+  poll();
+}
+function showLog(root){
+  callLog(160).then(function(r){var s=root.querySelector('#dm-log');s.innerHTML='<h3>Журнал DNS Manager</h3>';s.appendChild(E2('div','dm-log',r.log||''));});
 }
 
 return view.extend({
-  load: function() { return Promise.all([callStatus(), callCatalog()]); },
-
-  render: function(data) {
-    var self = this;
-    var st = data[0] || {};
-    var cat = data[1] || {};
-    var root = E('div', { 'class': 'dns-wrap' });
-    root.appendChild(E('div', { 'class': 'dns-head' }, [
-      E('h2', {}, _('DNS Manager')),
-      E('div', { 'class': 'dns-sub' }, _('Нативный интерфейс LuCI • основной DNS Manager остаётся неизменным')),
-      E('div', { 'class': 'dns-tools' }, [
-        E('button', { 'class': 'cbi-button cbi-button-neutral', 'click': function(){ self.refresh(root); } }, _('Обновить')),
-        E('button', { 'class': 'cbi-button cbi-button-apply', 'click': function(){ self.testAll(root); } }, _('Проверить все DNS'))
-      ])
-    ]));
-    root.appendChild(E('div', { 'class': 'dns-dashboard', 'id': 'dns-dashboard' }));
-    root.appendChild(E('div', { 'class': 'dns-section', 'id': 'dns-profiles-section' }));
-    root.appendChild(E('div', { 'class': 'dns-section', 'id': 'dns-slots-section' }));
-    root.appendChild(E('div', { 'class': 'dns-section', 'id': 'dns-catalog-section' }));
-    root.appendChild(E('div', { 'class': 'dns-section', 'id': 'dns-advanced-section' }));
-    root.appendChild(E('div', { 'class': 'dns-section', 'id': 'dns-job-section' }));
-    root.appendChild(E('div', { 'class': 'dns-section', 'id': 'dns-log-section' }));
-    root.appendChild(E('div', { 'class': 'dns-style-holder', 'html': renderStyle() }));
-
-    self.paint(root, st, cat);
-    return root;
-  },
-
-  paint: function(root, st, cat) {
-    var self = this;
-    var dash = root.querySelector('#dns-dashboard');
-    dash.innerHTML = '';
-    [
-      ['Профиль', profileName(st.profile)],
-      ['DoH', st.doh === 'yes' ? 'Работает' : (st.doh || '—')],
-      ['DNS-серверов', String(st.doh_match || st.doh_total || 0)],
-      ['Watchdog', st.watchdog === '1' ? ('ВКЛ · ' + (st.watchdog_interval || '90') + ' c') : 'ВЫКЛ'],
-      ['Последняя полная проверка', humanTime(st.last_full_test)],
-      ['Средний ping', st.average_ping ? st.average_ping + ' мс' : '—']
-    ].forEach(function(x){ dash.appendChild(el('div','dns-stat',[E('div',{'class':'dns-small dns-muted'},_(x[0])),E('b',{},x[1])])); });
-
-    var ps = root.querySelector('#dns-profiles-section');
-    ps.innerHTML = '<h3>' + _('Профили DNS') + '</h3>';
-    var pg = E('div', {'class':'dns-profiles'});
-    PROFILE.forEach(function(p){
-      var c = el('div','dns-profile clickable');
-      c.style.borderTop = '4px solid ' + p[3];
-      c.appendChild(el('div','dns-profile-title',p[1]));
-      c.appendChild(el('div','dns-profile-desc',p[2]));
-      c.addEventListener('click', function(){ self.profile(p[0], root); });
-      pg.appendChild(c);
-    });
-    ps.appendChild(pg);
-
-    var ss = root.querySelector('#dns-slots-section');
-    ss.innerHTML = '<h3>' + _('Текущие DNS-слоты') + '</h3>';
-    var sg = E('div', {'class':'dns-slots'});
-    (st.slots || []).forEach(function(s){
-      var c = el('div','dns-card');
-      var ok = s.status === 'OK';
-      var dot = E('span', {'class':'dns-dot ' + (ok?'ok':(s.status?'bad':'na'))});
-      var tt = E('div', {'class':'dns-slot-title'}, [E('span',{},'SLOT ' + s.slot), E('span',{},[dot, stateBadge(s.status)])]);
-      c.appendChild(tt);
-      c.appendChild(el('div','dns-slot-name',s.name || 'Не выбран'));
-      c.appendChild(el('div','dns-meta',
-        _('Категория: ') + catName(s.category) + '<br>' +
-        _('Ping: ') + pingValue(s.ping) + '<br>' +
-        _('Последняя проверка: ') + humanTime(s.last_check)));
-      var a = E('div', {'class':'dns-actions'});
-      a.appendChild(E('button', {'class':'cbi-button cbi-button-action', 'click': function(){ self.openSlotPicker(s.slot, root); }}, _('Выбрать')));
-      if (s.id) a.appendChild(E('button', {'class':'cbi-button cbi-button-neutral', 'click': function(){ self.testOne(s.id, root); }}, _('Проверить')));
-      c.appendChild(a); sg.appendChild(c);
-    });
-    ss.appendChild(sg);
-
-    var cs = root.querySelector('#dns-catalog-section');
-    cs.innerHTML = '<div class="dns-catalog-head"><h3>' + _('Каталог DNS') + '</h3><span class="dns-small dns-muted">' + esc(cat.version || '') + '</span></div>';
-    var cg = E('div', {'class':'dns-catalog'});
-    (cat.servers || []).forEach(function(d){
-      var c = el('div','dns-card');
-      var dotClass = d.status === 'OK' ? 'ok' : (d.status ? 'bad' : 'na');
-      c.appendChild(el('div','dns-row', [E('div',{},[E('span',{'class':'dns-dot ' + dotClass}),E('b',{},d.name)]), el('span','dns-small dns-muted',catName(d.category))]));
-      c.appendChild(el('div','dns-meta',
-        _('Ping: ') + pingValue(d.ping) + '<br>' +
-        _('Статус: ') + (d.status || '—') + '<br>' +
-        _('Последняя проверка: ') + humanTime(d.last_check)));
-      var a = E('div', {'class':'dns-actions'});
-      a.appendChild(E('button', {'class':'cbi-button cbi-button-neutral', 'click': function(){ self.testOne(d.id, root); }}, _('Проверить')));
-      ['1','2','3','4','5','6'].forEach(function(slot){
-        if (d.category !== 'regional') {
-          a.appendChild(E('button', {'class':'cbi-button cbi-button-small', 'click': function(){ self.setSlot(slot, d.id, root); }}, _('S') + slot));
-        }
-      });
-      if (d.category === 'regional') {
-        a.appendChild(E('button', {'class':'cbi-button cbi-button-small', 'click': function(){ self.setSlot('RU', d.id, root); }}, _('RU')));
-        a.appendChild(E('button', {'class':'cbi-button cbi-button-small', 'click': function(){ self.setSlot('RU_2', d.id, root); }}, _('RU-2')));
-      }
-      c.appendChild(a); cg.appendChild(c);
-    });
-    cs.appendChild(cg);
-
-    var as = root.querySelector('#dns-advanced-section');
-    as.innerHTML = '<h3>' + _('Дополнительные функции') + '</h3>';
-    var ag = E('div', {'class':'dns-advanced'});
-    [
-      ['watchdog','Watchdog','Фоновая автопроверка DNS', st.watchdog === '1'],
-      ['force','Принудительный DNS','Перехват DNS-запросов на роутер', st.force === '1'],
-      ['mtu','MTU / MSS','Исправление сетевых параметров', st.mtu === '1'],
-      ['sysctl','TCP / Conntrack','Общий тюнинг сети', st.sysctl === '1'],
-      ['sysctl_ext','Расширенный sysctl','Дополнительные TCP-параметры', st.sysctl_ext === '1'],
-      ['ntp_clients','NTP для клиентов','DHCP Option 42 без принудительного перехвата', st.ntp_clients === '1'],
-      ['dnsmasq_perf','Производительность DNS','DNS-кэш и параметры dnsmasq', st.dnsmasq_perf === '1'],
-      ['client_fixes','Клиентские фиксы','Исправления для отдельных клиентов', st.client_fixes === '1']
-    ].forEach(function(x){
-      var c = el('div','dns-card dns-toggle');
-      c.appendChild(el('div','dns-profile-title',x[1]));
-      c.appendChild(el('div','dns-profile-desc',x[2]));
-      c.appendChild(E('div', {'class':'dns-actions'}, [E('button', {'class':'cbi-button ' + (x[3]?'cbi-button-remove':'cbi-button-add'), 'click': function(){ self.setting(x[0], x[3] ? 0 : 1, root); }}, x[3] ? _('Выключить') : _('Включить'))]));
-      ag.appendChild(c);
-    });
-    as.appendChild(ag);
-
-    root.querySelector('#dns-job-section').innerHTML = '';
-    root.querySelector('#dns-log-section').innerHTML = '<h3>' + _('Журнал DNS Manager') + '</h3>' + '<button class="cbi-button cbi-button-neutral">' + _('Показать последние строки') + '</button>';
-    root.querySelector('#dns-log-section').querySelector('button').addEventListener('click', function(){ self.showLog(root); });
-  },
-
-  refresh: function(root) {
-    var self = this;
-    Promise.all([callStatus(), callCatalog()]).then(function(d){ self.paint(root, d[0] || {}, d[1] || {}); });
-  },
-  confirm: function(msg) { return confirm(msg); },
-  profile: function(name, root) {
-    var self = this;
-    if (!self.confirm(_('Применить профиль «') + profileName(name) + _('»?\n\nDNS Manager выполнит обычное безопасное применение своей конфигурации.'))) return;
-    callProfile(name).then(function(r){
-      if (r && r.ok) { toast(_('Профиль применён'), 'success'); self.refresh(root); }
-      else toast((r && r.error) || _('Профиль не применён'), 'error');
-    });
-  },
-  setting: function(name, enabled, root) {
-    var self = this;
-    if (!self.confirm((enabled ? _('Включить') : _('Выключить')) + '?')) return;
-    callSetting(name, enabled).then(function(r){
-      if (r && r.ok) { toast(_('Настройка изменена'), 'success'); self.refresh(root); }
-      else toast((r && r.error) || _('Не удалось изменить настройку'), 'error');
-    });
-  },
-  setSlot: function(slot, id, root) {
-    var self = this;
-    if (!self.confirm(_('Назначить «') + id + _('» в ') + slot + _(' и применить DNS?'))) return;
-    callSlot(slot, id).then(function(r){
-      if (r && r.ok) { toast(_('DNS применён в слоте ') + slot, 'success'); self.refresh(root); }
-      else toast((r && r.error) || _('Не удалось применить DNS'), 'error');
-    });
-  },
-  openSlotPicker: function(slot, root) {
-    var self = this;
-    Promise.all([callCatalog()]).then(function(d){
-      var cat = d[0] || {}, regional = slot === 'RU' || slot === 'RU_2';
-      var rows = (cat.servers || []).filter(function(x){ return regional ? x.category === 'regional' : x.category !== 'regional'; });
-      var opts = rows.map(function(x){ return E('option', {value:x.id}, x.name + ' — ' + catName(x.category) + ' — ' + pingValue(x.ping)); });
-      var sel = E('select', {'class':'cbi-input-select'}); opts.forEach(function(o){ sel.appendChild(o); });
-      var box = E('div', {style:'padding:18px'}, [E('h3',{},_('Выбор DNS для ') + slot), sel]);
-      var dlg = ui.showModal(_('DNS Manager'), [box, E('div', {'class':'right'}, [E('button', {'class':'cbi-button cbi-button-negative', 'click':ui.hideModal}, _('Отмена')), E('button', {'class':'cbi-button cbi-button-apply', 'click':function(){ var v=sel.value; ui.hideModal(); self.setSlot(slot,v,root); }}, _('Применить'))])]);
-      return dlg;
-    });
-  },
-  testAll: function(root) {
-    var self = this;
-    callTestAll().then(function(r){
-      if (!(r && r.ok)) { toast((r && r.error)||_('Не удалось запустить проверку'),'error'); return; }
-      self.watchJob(r.job, root);
-    });
-  },
-  testOne: function(id, root) {
-    var self = this;
-    callTestOne(id).then(function(r){
-      if (!(r && r.ok)) { toast((r && r.error)||_('Не удалось запустить проверку'),'error'); return; }
-      self.watchJob(r.job, root);
-    });
-  },
-  watchJob: function(job, root) {
-    var self = this, box = root.querySelector('#dns-job-section');
-    var ticks = 0;
-    function poll(){
-      callJob(job).then(function(r){
-        box.innerHTML = '<h3>' + _('Проверка') + '</h3><div class="dns-job dns-card"><b>' + esc(r.status||'—') + '</b><div class="dns-meta">' + esc((r.output||'').slice(-2000)) + '</div></div>';
-        if (r.status === 'done' || r.status === 'failed' || ticks++ > 120) { self.refresh(root); return; }
-        setTimeout(poll, 1500);
-      });
-    }
-    poll();
-  },
-  showLog: function(root) {
-    var box = root.querySelector('#dns-log-section');
-    callLog(120).then(function(r){
-      box.innerHTML = '<h3>' + _('Журнал DNS Manager') + '</h3><div class="dns-log">' + esc(r.log || '') + '</div>';
-    });
-  }
+  load:function(){ return callStatus().then(function(st){return [st||{},null];}); },
+  render:function(data){ var root=baseRoot(); var st=data[0]||{}; window.dmCatalog=null; paint(root,st,null); return root; }
 });
 EOF_JS
     chmod 0644 "$MENU_FILE" "$ACL_FILE" "$VIEW_FILE"
