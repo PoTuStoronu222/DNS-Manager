@@ -300,8 +300,7 @@ package_candidate_version() {
     _pkg="$1"
     [ -n "$_pkg" ] || return 0
     if command -v apk >/dev/null 2>&1; then
-        _v="$(apk policy "$_pkg" 2>/dev/null | awk '/^  [0-9]/{print $1; exit}')"
-        [ -n "$_v" ] || _v="$(apk list "$_pkg" 2>/dev/null | awk -v p="$_pkg" '$1 ~ "^"p"-" {sub("^"p"-","",$1); print $1; exit}')"
+        _v="$(apk list --upgradeable "$_pkg" 2>/dev/null | awk -v p="$_pkg" '$1 ~ "^"p"-" {sub("^"p"-","",$1); print $1; exit}')"
         printf '%s' "$_v"
     elif command -v opkg >/dev/null 2>&1; then
         opkg list-upgradable 2>/dev/null | awk -v p="$_pkg" '$1==p {print $3; exit}'
@@ -721,7 +720,7 @@ function renderOverview(root,st){
   var verCard=card('Версии',[
     row('DNS Manager',shortVal(st.manager_version)),
     row('LuCI',shortVal(st.luci_version)),
-    row('https-dns-proxy',st.hdp_update_available ? badge('dm-warn',shortVal(st.hdp_version)+' → '+shortVal(st.hdp_latest_version)) : shortVal(st.hdp_version)),
+    row('https-dns-proxy',st.hdp_update_available ? badge('dm-warn',shortVal(st.hdp_version)+' → '+shortVal(st.hdp_latest_version)) : badge('dm-ok',shortVal(st.hdp_version)+' · актуальна')),
     row('Каталог DNS',shortVal(st.catalog_version)+' · '+String(st.catalog_total||0)),
     row('Последняя проверка',dateText(st.last_full_test)),E('div',{'class':'dm-actions'},[btn('Проверить обновления','cbi-button-neutral',function(){checkUpdate(root);}),yes(st.luci_update_available)?btn('Обновить LuCI','cbi-button-positive',function(){doUpdate(root);}):E('span',{},'')]),E('div',{'id':'dm-overview-msg'})
   ]);
