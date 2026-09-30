@@ -105,7 +105,7 @@ EOF_MENU
     "description": "DNS Manager native LuCI interface",
     "read": {
       "ubus": {
-        "dns_manager": [ "status", "catalog", "job", "log", "update_check" ]
+        "dns_manager": [ "status", "catalog", "job", "log", "update_check", "update_check_job", "update_check_job_status" ]
       }
     },
     "write": {
@@ -968,17 +968,19 @@ run_action() {
     esac
 }
 
-test_json() { case "${RPC_METHOD:-}" in test_all) job_start_test_all;; test_one) job_start_test_one "$(jget id)";; *) json_error "Недопустимый метод проверки";; esac; }
+test_json() { case "${RPC_METHOD:-}" in test_all) job_start_test_all;; test_current) job_start_test_current;; test_one) job_start_test_one "$(jget id)";; *) json_error "Недопустимый метод проверки";; esac; }
 
 case "${1:-}" in
     list)
-        printf '{"status":{},"catalog":{"category":"String","offset":0,"limit":0,"only_ok":0},"update_check":{},"update":{},"set_profile":{"profile":"String"},"set_slot":{"slot":"String","id":"String"},"set_setting":{"name":"String","enabled":0},"test_all":{},"test_one":{"id":"String"},"job":{"id":"String"},"log":{"lines":0}}\n'
+        printf '{"status":{},"catalog":{"category":"String","offset":0,"limit":0,"only_ok":0},"update_check":{},"update":{},"set_profile":{"profile":"String"},"set_slot":{"slot":"String","id":"String"},"set_setting":{"name":"String","enabled":0},"test_all":{},"test_current":{},"test_one":{"id":"String"},"job":{"id":"String"},"log":{"lines":0}}\n'
         ;;
     call)
         case "${2:-}" in
             status) status_json;;
             catalog) INPUT="$(cat 2>/dev/null || true)"; catalog_json;;
-            update_check) update_check_json;;
+            update_check) version_check_job_start;;
+            update_check_job) version_check_job_start;;
+            update_check_job_status) INPUT="$(cat 2>/dev/null || true)"; version_check_job_status "$(jget id)";;
             update) update_json;;
             set_profile|set_slot|set_setting) INPUT="$(cat 2>/dev/null || true)"; RPC_METHOD="$2"; run_action;;
             test_all|test_current|test_one) INPUT="$(cat 2>/dev/null || true)"; RPC_METHOD="$2"; test_json;;
