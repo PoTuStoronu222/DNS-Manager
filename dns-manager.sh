@@ -1167,8 +1167,8 @@ firewall_resolve_zones() {
         _wan_name=""
         _wan_net=""
         _wan_count=0
-        _default_devs="$(ip -4 route show default 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev" && (i+1)<=NF){print $(i+1)}}' | sort -u)"
-        [ -n "$_default_devs" ] || _default_devs="$(ip -4 route show 0.0.0.0/0 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev" && (i+1)<=NF){print $(i+1)}}' | sort -u)"
+        _default_devs="$(ip -4 route show default 2>/dev/null | sed -n 's/.*[[:space:]]dev[[:space:]]\([^[:space:]]*\).*/\1/p' | sort -u)"
+        [ -n "$_default_devs" ] || _default_devs="$(ip -4 route show 0.0.0.0/0 2>/dev/null | sed -n 's/.*[[:space:]]dev[[:space:]]\([^[:space:]]*\).*/\1/p' | sort -u)"
 
         for _z in $_zones; do
             _nets="$(uci -q get "firewall.$_z.network" 2>/dev/null)"
