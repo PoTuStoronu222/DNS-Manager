@@ -669,12 +669,11 @@ function dateText(v){ if(!v || !/^\d+$/.test(String(v))) return '—'; try { ret
 function shortVal(v){ return (v===undefined || v===null || v==='') ? '—' : String(v); }
 function stripAnsi(s){
   return String(s||'')
-    .replace(/[[0-?]*[ -/]*[@-~]/g,'')
-    .replace(/[[0-9;?]*[ -/]*[@-~]/g,'')
+    .replace(/\x1B\[[0-?]*[ -\/]*[@-~]/g,'')
+    .replace(/\[[0-9;?]*[ -\/]*[@-~]/g,'')
     .replace(/[0-9]+(?:;[0-9]+)*m/g,'')
-    .replace(//g,'');
+    .replace(/\r/g,'');
 }
-function stateBadge(status){
 function stateBadge(status){ var s=String(status||'').toUpperCase(); if(s==='OK')return badge('dm-ok','доступен'); if(s==='RUNNING')return badge('dm-warn','выполняется'); if(s==='FAIL'||s==='FAILED')return badge('dm-bad','ошибка'); return badge('dm-off','нет данных'); }
 function settingName(n){ var m={watchdog:'Автопроверка DNS',mtu:'Настройка MTU и MSS',sysctl:'Оптимизация TCP и соединений',sysctl_ext:'Расширенные параметры сети',ntp_clients:'Время для устройств сети',dnsmasq_perf:'Кэш DNS',client_fixes:'Исправления для устройств'}; return m[n]||n; }
 
