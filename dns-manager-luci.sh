@@ -238,7 +238,7 @@ update_json() {
         rm -f "$_tmp" 2>/dev/null || true
         json_error "Новой версии нет"; return
     fi
-    if ! sh "$_tmp" update >/dev/null 2>&1; then
+    if ! DNS_MANAGER_LUCI_SKIP_RPC_RELOAD=1 sh "$_tmp" update >/dev/null 2>&1; then
         rm -f "$_tmp" 2>/dev/null || true
         json_error "Установка новой версии завершилась ошибкой; текущая конфигурация DNS Manager не изменена"; return
     fi
@@ -890,7 +890,9 @@ EOF_JS
     } > "${STATE_FILE}.tmp.$$" 2>/dev/null || true
     [ -s "${STATE_FILE}.tmp.$$" ] && chmod 600 "${STATE_FILE}.tmp.$$" 2>/dev/null || true
     [ -s "${STATE_FILE}.tmp.$$" ] && mv "${STATE_FILE}.tmp.$$" "$STATE_FILE" 2>/dev/null || rm -f "${STATE_FILE}.tmp.$$" 2>/dev/null || true
-    [ -x /etc/init.d/rpcd ] && /etc/init.d/rpcd reload >/dev/null 2>&1 || true
+    if [ "${DNS_MANAGER_LUCI_SKIP_RPC_RELOAD:-0}" != 1 ]; then
+        [ -x /etc/init.d/rpcd ] && /etc/init.d/rpcd reload >/dev/null 2>&1 || true
+    fi
     say "DNS Manager LuCI $VERSION обновлён/установлен."
     say "Меню: LuCI → Службы → DNS Manager"
 }
