@@ -1071,12 +1071,12 @@ status_json() {
     printf ',"watchdog_interval":'; json_quote "$_watchdog_interval"; printf ',"watchdog_fail_threshold":%s' "$_watchdog_fail_threshold"
     printf ',"watchdog_repair_cooldown":%s,"watchdog_guard_interval":%s' "$_watchdog_repair_cooldown" "$_watchdog_guard_interval"
     printf ',"watchdog_max_repairs":%s,"watchdog_max_restarts":%s,"watchdog_max_candidates":%s,"watchdog_restart_cooldown":%s' "$_watchdog_max_repairs" "$_watchdog_max_restarts" "$_watchdog_max_candidates" "$_watchdog_restart_cooldown"
-    for _age_cat in bypass clean security privacy adblock family regional; do
-        _age_v="$(cfg_get "TEST_RESULTS_MAX_AGE_$(printf '%s' "$_age_cat" | tr '[:lower:]' '[:upper:]')")"
-        case "$_age_v" in ''|*[!0-9]*) _age_h=6;; *) _age_h=$((_age_v/3600)); [ "$_age_h" -ge 1 ] || _age_h=1;; esac
-        eval "_test_age_$_age_cat=\"$_age_h\""
-    done
-    printf ',"test_age_bypass":%s,"test_age_clean":%s,"test_age_security":%s,"test_age_privacy":%s,"test_age_adblock":%s,"test_age_family":%s,"test_age_regional":%s'         "$_test_age_bypass" "$_test_age_clean" "$_test_age_security" "$_test_age_privacy" "$_test_age_adblock" "$_test_age_family" "$_test_age_regional"
+    _age_common_v="$(cfg_get TEST_RESULTS_MAX_AGE)"
+    case "$_age_common_v" in
+        ''|*[!0-9]*) _age_common_h=6;;
+        *) _age_common_h=$((_age_common_v/3600)); [ "$_age_common_h" -ge 1 ] || _age_common_h=1;;
+    esac
+    printf ',"test_age_common":%s' "$_age_common_h"
     _force_owner="none"
     [ "$_external" = 1 ] && _force_owner="external"
     [ "$_external" != 1 ] && [ "$_force_manager" = 1 ] && _force_owner="manager"
@@ -1698,7 +1698,7 @@ function injectStyle(root){
   '.dm-catalog{display:grid;grid-template-columns:repeat(3,minmax(210px,1fr));gap:9px;margin-top:8px}.dm-catalog-item{padding:11px 12px}.dm-catalog-item h4{margin:0 0 4px;font-size:13px;line-height:1.35}.dm-catalog-toolbar{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:8px}.dm-assign-inline{display:flex;align-items:center;gap:6px;min-width:0}.dm-assign-inline select{height:30px;min-width:210px;max-width:100%;padding:3px 8px;border-radius:7px;border:1px solid rgba(110,118,129,.32);background:var(--background-color-medium,#fff);color:inherit;font-size:12px;box-shadow:none}.dm-assign-inline select:focus{outline:none;box-shadow:none}.dm-assign-inline .cbi-button{padding:5px 10px;font-size:12px}.dm-page{display:flex;justify-content:center;align-items:center;gap:7px;margin-top:9px}.dm-log{white-space:pre-wrap;max-height:360px;overflow:auto;font:11px/1.45 monospace;padding:10px;background:#111820;color:#dbe4ec;border-radius:8px;margin-top:8px}'+
   '.dm-page-nav{position:sticky;top:0;z-index:20;padding:7px 0;background:var(--background-color-base,#fff);border-bottom:1px solid rgba(0,0,0,.08)}.dm-page-nav::before,.dm-page-nav::after{content:"";position:absolute;left:0;right:0;height:7px;background:var(--background-color-base,#fff);pointer-events:none}.dm-page-nav::before{top:-7px}.dm-page-nav::after{bottom:-7px}.dm-page-tabs{display:flex;align-items:stretch;gap:4px;overflow-x:auto;scrollbar-width:none;padding:0 2px}.dm-page-tabs::-webkit-scrollbar{display:none}.dm-page-tab{flex:0 0 auto;padding:7px 12px!important;border-radius:8px 8px 0 0!important;font-size:12.5px!important;font-weight:600!important;border:1px solid transparent!important;background:transparent!important;box-shadow:none!important}.dm-page-tab:hover{background:rgba(0,0,0,.05)!important}.dm-page-tab.active{background:var(--background-color-medium,#fff)!important;border-color:rgba(0,0,0,.12)!important;border-bottom-color:var(--background-color-medium,#fff)!important}.dm-page-nav-title{display:none}.dm-wrap>section{scroll-margin-top:58px}'+
   '.dm-section-title{font-size:12px;letter-spacing:.02em;text-transform:none;opacity:.62;margin:3px 0 0;padding:0 2px}'+
-  '@media(max-width:850px){.dm-grid2{grid-template-columns:1fr}.dm-grid4{grid-template-columns:repeat(2,minmax(0,1fr))}.dm-doh-row{grid-template-columns:120px minmax(140px,1fr) 70px}.dm-doh-ping{display:none}.dm-slot-row{grid-template-columns:48px 115px minmax(130px,1fr) 85px 105px auto}.dm-slot-ping{display:none}.dm-catalog{grid-template-columns:repeat(2,minmax(0,1fr))}}'+
+  '@media(max-width:850px){.dm-test-age-common{flex-wrap:wrap}.dm-grid2{grid-template-columns:1fr}.dm-grid4{grid-template-columns:repeat(2,minmax(0,1fr))}.dm-doh-row{grid-template-columns:120px minmax(140px,1fr) 70px}.dm-doh-ping{display:none}.dm-slot-row{grid-template-columns:48px 115px minmax(130px,1fr) 85px 105px auto}.dm-slot-ping{display:none}.dm-catalog{grid-template-columns:repeat(2,minmax(0,1fr))}}'+
   '@media(max-width:560px){.dm-grid3,.dm-grid4,.dm-catalog{grid-template-columns:1fr}.dm-header-actions{margin-left:0}.dm-doh-row{grid-template-columns:1fr auto}.dm-doh-url{grid-column:1/3}.dm-doh-port{grid-column:1}.dm-slot-row{grid-template-columns:40px minmax(0,1fr) auto}.dm-slot-endpoint{display:none}.dm-slot-state{display:none}.dm-inline{grid-column:2/4;justify-content:flex-start}}';
   root.appendChild(E('style',{},css));
   root.appendChild(E('style',{},
@@ -2304,9 +2304,8 @@ function watchdogField(root,st,key,label,unit,min,max){
   var feedback=settingFeedback(label,msgKey);
   return E('div',{'class':'dm-watchdog-row '+(busy?'dm-setting-saving':'')},[
     E('div',{'class':'dm-setting-title'},label),
-    E('span',{'class':'dm-setting-range'},min+'–'+max),
+    E('span',{'class':'dm-setting-range'},min+'–'+max+(unit?' '+unit:'')),
     input,
-    E('span',{'class':'dm-watchdog-unit'},unit||''),
     save,
     feedback||E('span',{})
   ]);
@@ -2378,7 +2377,7 @@ function renderSettings(root,st){
   },{disabled:!!state.busy});
   body.push(card('Срок результатов проверки',[
     E('div',{'class':'dm-hint'},'Общий срок свежести результатов полной проверки DNS.'),
-    E('div',{'class':'dm-setting-line'},[ageInput,E('span',{'class':'dm-test-age-unit'},'ч'),ageSave,ageFeedback||E('span',{})])
+    E('div',{'class':'dm-test-age-common'},[ageInput,E('span',{'class':'dm-test-age-unit'},'ч'),ageSave,ageFeedback||E('span',{})])
   ]));
   body.forEach(function(x){e.appendChild(x);});
 }
