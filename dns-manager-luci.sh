@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.5.34
+# Version: 1.5.35
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -22,7 +22,7 @@ COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main
 # Legacy update compatibility: admin/services/dns_manager
 RUNTIME_UPDATE_STATE="$BACKUP_DIR/update.state"
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.5.34"
+VERSION="1.5.35"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -163,7 +163,7 @@ UPDATE_STATE="/etc/dns-manager-luci/update.state"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.5.34"
+SELF_VERSION="1.5.35"
 
 umask 077
 mkdir -p "$RUNTIME_DIR" "$JOB_DIR" "$CHECK_DIR" "$TMP_ROOT" 2>/dev/null || exit 1
@@ -2129,17 +2129,62 @@ function settingCard(root,x,st){
     ])
   ]);
 }
-function testAgeCard(root,st,category,label){
-  var key='test_age_'+category, busy=state.busySetting===key;
-  var value=String(st[key]||6);
-  var input=E('input',{'type':'number','min':'1','max':'168','step':'1','value':value,'class':'dm-input','style':'width:90px'});
-  var save=btn(busy?'Сохраняю…':'Сохранить','cbi-button-neutral',function(){setTestAge(category,input.value,root);},{disabled:!!state.busy});
-  return E('div',{'class':'dm-card dm-setting '+(busy?'dm-setting-saving':'')},[
-    E('div',{'class':'dm-setting-line'},[
-      E('div',{},[E('div',{'class':'dm-setting-title'},label),E('div',{'class':'dm-setting-desc'},'Результаты полной проверки считаются устаревшими после этого срока.')]),
-      E('div',{'class':'dm-setting-actions'},[input,E('span',{'class':'dm-inline'},'ч'),save])
+function testAgeRow(root,st,category,label,inputs){
+  var key='test_age_'+category;
+  var input=E('input',{'type':'number','min':'1','max':'168','step':'1','value':String(st[key]||6),'class':'dm-input','style':'width:90px'});
+  inputs.push({category:category,input:input,label:label});
+  return E('div',{'class':'dm-test-age-row'},[
+    E('div',{'class':'dm-setting-title'},label),
+    E('div',{'class':'dm-setting-actions'},[
+      input,
+      E('span',{'style':'display:inline-block;min-width:16px;text-align:left;margin-left:4px'},'ч')
     ])
   ]);
+}
+function saveTestAges(root,inputs){
+  if(state.busy)return;
+  var values=[],invalid='';
+  inputs.forEach(function(x){
+    var n=String(x.input.value||'').trim();
+    if(!/^\d+$/.test(n)||Number(n)<1||Number(n)>168){invalid=invalid||x.label;return;}
+    values.push({category:x.category,hours:Number(n),label:x.label});
+  });
+  if(invalid){
+    state.settingMessage='«'+invalid+'»: срок должен быть от 1 до 168 часов.';
+    state.settingMessageType='error';
+    renderSettings(root,window.dmState||{});
+    return;
+  }
+  state.busy=true;
+  state.busySetting='testages';
+  state.settingMessage='Сохраняю сроки проверки…';
+  state.settingMessageType='info';
+  renderSettings(root,window.dmState||{});
+  var index=0,failed=[];
+  function next(){
+    if(index>=values.length){
+      state.busy=false;
+      state.busySetting='';
+      if(failed.length){
+        state.settingMessage='Не удалось сохранить: '+failed.join(', ')+'. Остальные значения сохранены.';
+        state.settingMessageType='error';
+      }else{
+        state.settingMessage='Сроки проверки сохранены.';
+        state.settingMessageType='ok';
+      }
+      refresh(root,true);
+      return;
+    }
+    var x=values[index++];
+    callTestAge(x.category,x.hours).then(function(r){
+      if(!(r&&r.ok))failed.push(x.label);
+      next();
+    }).catch(function(){
+      failed.push(x.label);
+      next();
+    });
+  }
+  next();
 }
 function watchdogField(root,st,key,label,unit,min,max){
   var value=Number(st[key]||min), busy=state.busySetting==='wd_'+key;
@@ -2208,10 +2253,19 @@ function renderSettings(root,st){
     g[1].forEach(function(x){grid.appendChild(settingCard(root,x,st));});
     body.push(grid);
   });
-  body.push(E('div',{'class':'dm-section-title'},'Срок результатов проверки'));
-  var ages=E('div',{'class':'dm-grid2'});
-  [['bypass','Обход'],['clean','Чистый'],['security','Безопасность'],['privacy','Приватность'],['adblock','Блокировка рекламы'],['family','Семейный'],['regional','Региональный']].forEach(function(x){ages.appendChild(testAgeCard(root,st,x[0],x[1]));});
-  body.push(card('Срок результатов проверки',[E('div',{'class':'dm-hint'},'Сколько часов результаты полной проверки DNS считаются свежими.'),ages]));
+  var ageInputs=[];
+  var ages=E('div',{'class':'dm-test-age-list'});
+  [['bypass','Обход'],['clean','Чистый'],['security','Безопасность'],['privacy','Приватность'],['adblock','Блокировка рекламы'],['family','Семейный'],['regional','Региональный']].forEach(function(x){
+    ages.appendChild(testAgeRow(root,st,x[0],x[1],ageInputs));
+  });
+  var ageActions=E('div',{'class':'dm-actions'},[
+    btn(state.busySetting==='testages'?'Сохраняю…':'Сохранить','cbi-button-neutral',function(){saveTestAges(root,ageInputs);},{disabled:!!state.busy})
+  ]);
+  body.push(card('Срок результатов проверки',[
+    E('div',{'class':'dm-hint'},'Сколько часов результаты полной проверки DNS считаются свежими.'),
+    ages,
+    ageActions
+  ]));
   e.appendChild(card('Настройки',body));
 }
 
