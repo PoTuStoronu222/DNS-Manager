@@ -1,12 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-# ==========================================
-# ==========================================
-VERSION="2.96"
-# 2.94: remove fragile resolver quoting and keep firewall detection BusyBox-ash-safe.
-# 2.88: native LuCI companion compatibility, idempotent procd watchdog migration,
-# first-run cron protection, and exact https-dns-proxy forced-DNS ports/interfaces
-# while keeping DNS Manager authoritative over its own dnsmasq upstream list.
+VERSION="2.97"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -32,8 +26,8 @@ WATCHDOG_SERVICE_PATH="/etc/init.d/dns-watchdog"
 WATCHDOG_RUNTIME_DIR="/var/run/dns-watchdog"
 WATCHDOG_DAEMON_MARKER="# DNS_MANAGER_WATCHDOG_DAEMON=1"
 WATCHDOG_SERVICE_MARKER="# DNS_MANAGER_WATCHDOG_SERVICE=1"
-WATCHDOG_DAEMON_VERSION_MARKER="# DNS_MANAGER_WATCHDOG_DAEMON_VERSION=2.94"
-WATCHDOG_SERVICE_VERSION_MARKER="# DNS_MANAGER_WATCHDOG_SERVICE_VERSION=2.94"
+WATCHDOG_DAEMON_VERSION_MARKER="# DNS_MANAGER_WATCHDOG_DAEMON_VERSION=2.96"
+WATCHDOG_SERVICE_VERSION_MARKER="# DNS_MANAGER_WATCHDOG_SERVICE_VERSION=2.96"
 WATCHDOG_LAST_RESTART_FILE="$STATE_DIR/watchdog-last-restart"
 AUTO_UPDATE_LAST_CHECK_FILE="$STATE_DIR/auto-update-last-check"
 AUTO_UPDATE_CHECK_MAX_AGE=43200
@@ -1148,84 +1142,140 @@ firewall_resolve_zones() {
     _wan_zone=""
     _wan_name=""
     _wan_net=""
-    _wan_count=0
 
-    _zones=$(uci show firewall 2>/dev/null | sed -n 's/^firewall\\.//p' | sed -n '/=zone$/s/=zone$//p')
+    _zones="$(uci show firewall 2>/dev/null | sed -n 's/^firewall\.\([^.=]*\)=zone$/\1/p')"
 
+    # LAN: exactly the zone containing network=lan.
     for _z in $_zones; do
-        _nets=$(uci -q get "firewall.$_z.network" 2>/dev/null)
+        _nets="$(uci -q get "firewall.$_z.network" 2>/dev/null)"
         if printf '%s\n' "$_nets" | tr ' ' '\n' | grep -qxF lan 2>/dev/null; then
-            _lan_zone="$_z"
-            _lan_name=$(uci -q get "firewall.$_z.name" 2>/dev/null)
             _lan_count=$((_lan_count + 1))
+            _lan_zone="$_z"
+            _lan_name="$(uci -q get "firewall.$_z.name" 2>/dev/null)"
         fi
     done
 
-    _preferred_wan_nets="wan wwan wwan0 cellular mobile lte lte0 5g 5g0 modem usbwan"
+    # WAN resolution is deliberately deterministic:
+    # 1) a zone containing network=wan wins;
+    # 2) otherwise a zone literally named wan wins;
+    # 3) otherwise use the zone whose network/device carries the active default route;
+    # 4) finally use a single preferred WAN-like network as a last resort.
+    _wan_exact_count=0
+    _wan_exact_zone=""
+    _wan_exact_name=""
+    _wan_exact_net=""
     for _z in $_zones; do
-        _nets=$(uci -q get "firewall.$_z.network" 2>/dev/null)
-        for _n in $_preferred_wan_nets; do
-            if printf '%s\n' "$_nets" | tr ' ' '\n' | grep -qxF "$_n" 2>/dev/null; then
-                _wan_count=$((_wan_count + 1))
-                _wan_zone="$_z"
-                _wan_name=$(uci -q get "firewall.$_z.name" 2>/dev/null)
-                _wan_net="$_n"
-                break
-            fi
-        done
-    done
-
-    if [ "$_wan_count" -ne 1 ]; then
-        _wan_zone=""
-        _wan_name=""
-        _wan_net=""
-        _wan_count=0
-
-        _default_devs=$(ip -4 route show default 2>/dev/null | sed -n 's/.*[[:space:]]dev[[:space:]]\([^[:space:]]*\).*/\1/p' | sort -u)
-        if [ -z "$_default_devs" ]; then
-            _default_devs=$(ip -4 route show 0.0.0.0/0 2>/dev/null | sed -n 's/.*[[:space:]]dev[[:space:]]\([^[:space:]]*\).*/\1/p' | sort -u)
+        _nets="$(uci -q get "firewall.$_z.network" 2>/dev/null)"
+        if printf '%s\n' "$_nets" | tr ' ' '\n' | grep -qxF wan 2>/dev/null; then
+            _wan_exact_count=$((_wan_exact_count + 1))
+            _wan_exact_zone="$_z"
+            _wan_exact_name="$(uci -q get "firewall.$_z.name" 2>/dev/null)"
+            _wan_exact_net="wan"
         fi
-
+    done
+    if [ "$_wan_exact_count" = 1 ]; then
+        _wan_zone="$_wan_exact_zone"
+        _wan_name="$_wan_exact_name"
+        _wan_net="$_wan_exact_net"
+    else
+        _wan_named_count=0
+        _wan_named_zone=""
+        _wan_named_name=""
+        _wan_named_net=""
         for _z in $_zones; do
-            _nets=$(uci -q get "firewall.$_z.network" 2>/dev/null)
+            _zname="$(uci -q get "firewall.$_z.name" 2>/dev/null)"
+            case "$_z|$_zname" in
+                wan|wan\|wan)
+                    _wan_named_count=$((_wan_named_count + 1))
+                    _wan_named_zone="$_z"
+                    _wan_named_name="$_zname"
+                    _wn="$(uci -q get "firewall.$_z.network" 2>/dev/null)"
+                    _wan_named_net="$(printf '%s\n' "$_wn" | tr ' ' '\n' | head -n1)"
+                    ;;
+            esac
+        done
+        if [ "$_wan_named_count" = 1 ]; then
+            _wan_zone="$_wan_named_zone"
+            _wan_name="$_wan_named_name"
+            _wan_net="$_wan_named_net"
+        fi
+    fi
+
+    if [ -z "$_wan_zone" ]; then
+        _default_devs="$(ip -4 route show default 2>/dev/null | sed -n 's/.*[[:space:]]dev[[:space:]]\([^[:space:]]*\).*/\1/p' | sort -u)"
+        [ -n "$_default_devs" ] || _default_devs="$(ip -4 route show 0.0.0.0/0 2>/dev/null | sed -n 's/.*[[:space:]]dev[[:space:]]\([^[:space:]]*\).*/\1/p' | sort -u)"
+        _route_count=0
+        _route_zone=""
+        _route_name=""
+        _route_net=""
+        for _z in $_zones; do
+            _zname="$(uci -q get "firewall.$_z.name" 2>/dev/null)"
+            _nets="$(uci -q get "firewall.$_z.network" 2>/dev/null)"
             for _n in $_nets; do
                 [ -n "$_n" ] || continue
-                _udev=$(uci -q get "network.$_n.device" 2>/dev/null)
-                if [ -z "$_udev" ]; then
-                    _udev=$(uci -q get "network.$_n.ifname" 2>/dev/null)
-                fi
+                case "$_n|$_z|$_zname" in
+                    *'|zmvpn|'*|*'|zmvpn|zmvpn'*) continue ;;
+                esac
+                _udev="$(uci -q get "network.$_n.device" 2>/dev/null)"
+                [ -n "$_udev" ] || _udev="$(uci -q get "network.$_n.ifname" 2>/dev/null)"
                 [ -n "$_udev" ] || continue
-
-                _matched=0
                 for _d in $_default_devs; do
                     [ -n "$_d" ] || continue
                     if printf '%s\n' "$_udev" | tr ' ' '\n' | grep -qxF "$_d" 2>/dev/null; then
-                        _matched=1
+                        _route_count=$((_route_count + 1))
+                        _route_zone="$_z"
+                        _route_name="$_zname"
+                        _route_net="$_n"
                         break
                     fi
                 done
+            done
+        done
+        if [ "$_route_count" = 1 ]; then
+            _wan_zone="$_route_zone"
+            _wan_name="$_route_name"
+            _wan_net="$_route_net"
+        fi
+    fi
 
-                if [ "$_matched" = 1 ]; then
-                    _wan_count=$((_wan_count + 1))
-                    _wan_zone="$_z"
-                    _wan_name=$(uci -q get "firewall.$_z.name" 2>/dev/null)
-                    _wan_net="$_n"
+    if [ -z "$_wan_zone" ]; then
+        _preferred_wan_nets="wwan wwan0 cellular mobile lte lte0 5g 5g0 modem usbwan"
+        _fallback_count=0
+        _fallback_zone=""
+        _fallback_name=""
+        _fallback_net=""
+        for _z in $_zones; do
+            _zname="$(uci -q get "firewall.$_z.name" 2>/dev/null)"
+            case "$_z|$_zname" in
+                *'zmvpn|'*|*'|zmvpn'*) continue ;;
+            esac
+            _nets="$(uci -q get "firewall.$_z.network" 2>/dev/null)"
+            for _n in $_preferred_wan_nets; do
+                if printf '%s\n' "$_nets" | tr ' ' '\n' | grep -qxF "$_n" 2>/dev/null; then
+                    _fallback_count=$((_fallback_count + 1))
+                    _fallback_zone="$_z"
+                    _fallback_name="$_zname"
+                    _fallback_net="$_n"
+                    break
                 fi
             done
         done
+        if [ "$_fallback_count" = 1 ]; then
+            _wan_zone="$_fallback_zone"
+            _wan_name="$_fallback_name"
+            _wan_net="$_fallback_net"
+        fi
     fi
 
-    if [ "$_lan_count" -eq 1 ]; then
+    [ "$_lan_count" = 1 ] && {
         FIREWALL_LAN_ZONE="$_lan_zone"
         FIREWALL_LAN_NAME="$_lan_name"
-    fi
-
-    if [ "$_wan_count" -eq 1 ]; then
+    }
+    [ -n "$_wan_zone" ] && {
         FIREWALL_WAN_ZONE="$_wan_zone"
         FIREWALL_WAN_NAME="$_wan_name"
         FIREWALL_WAN_NETWORK="$_wan_net"
-    fi
-
+    }
     return 0
 }
 firewall_zone_name() {
@@ -2299,11 +2349,13 @@ esac
 }
 apply_ntp_ip_fallback() {
     servers="$(grep -v '^#' "$NTP_CATALOG" 2>/dev/null | grep "^${NTP_PRESET}|" | head -1 | cut -d'|' -f4)"
-    [ -n "$servers" ] || { warn_msg "NTP-профиль '$NTP_PRESET' не найден в каталоге."; return 1; }
+    if [ -z "$servers" ]; then
+        servers="$(ntp_servers_for_profile "$NTP_PRESET")"
+        [ -n "$servers" ] && log_msg "NTP: локальный catalog для '$NTP_PRESET' отсутствует; использую встроенный профиль."
+    fi
+    [ -n "$servers" ] || { warn_msg "NTP-профиль '$NTP_PRESET' не найден ни в каталоге, ни во встроенных профилях."; return 1; }
     [ -n "$(uci -q get system.ntp 2>/dev/null)" ] || uci -q set system.ntp=timeserver || return 1
 
-    # The selected profile is authoritative for the NTP upstream list.
-    # Replace the list instead of accumulating servers from previous profiles.
     uci -q delete system.ntp.server || true
     for ipx in $servers; do
         uci add_list system.ntp.server="$ipx" || return 1
