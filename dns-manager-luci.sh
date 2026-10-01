@@ -160,6 +160,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 CATALOG_FILE="/etc/dns-manager/config/dns-catalog.conf"
 STATE_DIR="/var/run/dns-manager"
 PERSIST_STATE_DIR="/etc/dns-manager/state"
+CURRENT_TEST_SUMMARY="$STATE_DIR/current-dns-test-summary.conf"
 RUNTIME_DIR="/var/run/dns-manager-luci"
 JOB_DIR="$RUNTIME_DIR/jobs"
 CHECK_DIR="$RUNTIME_DIR/checks"
@@ -748,16 +749,55 @@ last_check_for_id() {
     [ -n "$_ts" ] && result_for_id "$_id" >/dev/null 2>&1 && printf '%s' "$_ts"
 }
 
-average_selected_ping() {
-    _sum=0; _n=0
+current_slots_signature() {
+    _sig=""
     for _s in 1 2 3 4 5 6 RU RU_2; do
         _id="$(cfg_get "SLOT_$_s")"
+        _port="$(cfg_get "PORT_$_s")"
         [ -n "$_id" ] || continue
-        _ms="$(result_for_id "$_id" 2>/dev/null | awk -F'|' '$5=="OK" && $4 ~ /^[0-9]+$/ {print $4; exit}')"
-        case "$_ms" in ''|*[!0-9]*) continue;; esac
-        _sum=$((_sum + _ms)); _n=$((_n + 1))
+        _sig="${_sig}${_s}=${_id}@${_port};"
     done
-    [ "$_n" -gt 0 ] && printf '%s' "$((_sum / _n))" || printf ''
+    printf '%s' "$_sig"
+}
+write_current_test_summary() {
+    _ts="$1"
+    _results="$2"
+    _sig="$(current_slots_signature)"
+    _sum=0
+    _n=0
+    while IFS='|' read -r _id _cat _name _ms _st; do
+        [ -n "$_id" ] || continue
+        [ "$_st" = "OK" ] || continue
+        case "$_ms" in ''|*[!0-9]*) continue;; esac
+        _sum=$((_sum + _ms))
+        _n=$((_n + 1))
+    done < "$_results"
+    {
+        printf 'signature=%s\n' "$_sig"
+        printf 'timestamp=%s\n' "$_ts"
+        printf 'count=%s\n' "$_n"
+        if [ "$_n" -gt 0 ]; then
+            printf 'average=%s\n' "$((_sum / _n))"
+        else
+            printf 'average=\n'
+        fi
+    } > "${CURRENT_TEST_SUMMARY}.tmp.$" 2>/dev/null || return 1
+    mv -f "${CURRENT_TEST_SUMMARY}.tmp.$" "$CURRENT_TEST_SUMMARY" 2>/dev/null || {
+        rm -f "${CURRENT_TEST_SUMMARY}.tmp.$" 2>/dev/null || true
+        return 1
+    }
+    chmod 600 "$CURRENT_TEST_SUMMARY" 2>/dev/null || true
+}
+current_test_average_ping() {
+    [ -r "$CURRENT_TEST_SUMMARY" ] || return 0
+    _saved_sig="$(sed -n 's/^signature=//p' "$CURRENT_TEST_SUMMARY" 2>/dev/null | head -n1)"
+    _current_sig="$(current_slots_signature)"
+    [ -n "$_saved_sig" ] && [ "$_saved_sig" = "$_current_sig" ] || return 0
+    _avg="$(sed -n 's/^average=//p' "$CURRENT_TEST_SUMMARY" 2>/dev/null | head -n1)"
+    case "$_avg" in
+        ''|*[!0-9]*) return 0 ;;
+        *) printf '%s' "$_avg" ;;
+    esac
 }
 
 package_version() {
@@ -1058,7 +1098,7 @@ status_json() {
     [ "$_external" = 1 ] && _force_owner="external"
     [ "$_external" != 1 ] && [ "$_force_manager" = 1 ] && _force_owner="manager"
     printf ',"force":'; json_quote "$_force"; printf ',"force_external":'; json_quote "$_external"; printf ',"force_owner":'; json_quote "$_force_owner"; printf ',"force_manager":%s,"force_both":%s,"zapret_running":%s' "$_force_manager" "$_force_both" "$_zapret_running"; printf ',"force_source":'; json_quote "$FORCE_RUNTIME_SOURCE"; printf ',"force_targets":'; json_quote "$FORCE_RUNTIME_TARGETS"; printf ',"force_notrack":'; json_quote "$_force_notrack"; printf ',"force_update":'; json_quote "$_force_update"; printf ',"force_family":'; json_quote "$_force_family"; printf ',"force_ports":'; json_quote "$_force_ports"; printf ',"force_src":'; json_quote "$_force_src"; printf ',"force_canary_icloud":'; json_quote "$_force_canary_i"; printf ',"force_canary_mozilla":'; json_quote "$_force_canary_m"; printf ',"force_procd_trigger_wan6":'; json_quote "$_force_procd"; printf ',"force_heartbeat_domain":'; json_quote "$_force_heartbeat_domain"; printf ',"force_heartbeat_sleep":'; json_quote "$_force_heartbeat_sleep"; printf ',"force_heartbeat_wait":'; json_quote "$_force_heartbeat_wait"; printf ',"force_user":'; json_quote "$_force_user"; printf ',"force_group":'; json_quote "$_force_group"; printf ',"force_listen":'; json_quote "$_force_listen"; printf ',"force_consistent":%s' "$_force_consistent"; printf ',"mtu":'; json_quote "$_mtu"; printf ',"sysctl":'; json_quote "$_sysctl"; printf ',"sysctl_ext":'; json_quote "$_sysctl_ext"; printf ',"ntp_clients":'; json_quote "$_ntp"; printf ',"dnsmasq_perf":'; json_quote "$_perf"; printf ',"client_fixes":'; json_quote "$_fix"
-    printf ',"doh_total":%s,"doh_match":%s,"configured_dns":%s,"average_ping":' "$_doh_total" "$_match" "$_expected"; json_quote "$(average_selected_ping)"; printf ',"last_full_test":'; json_quote "$_last"; printf ',"components_checked_at":'; json_quote "$_components_checked_at"
+    printf ',"doh_total":%s,"doh_match":%s,"configured_dns":%s,"average_ping":' "$_doh_total" "$_match" "$_expected"; json_quote "$(current_test_average_ping)"; printf ',"last_full_test":'; json_quote "$_last"; printf ',"components_checked_at":'; json_quote "$_components_checked_at"
     printf ',"hostname":'; json_quote "$_host"; printf ',"uptime":'; json_quote "$_uptime"; printf ',"load1":'; json_quote "$_load"; printf ',"cpu_count":%s,"memory_total_kb":%s,"memory_available_kb":%s' "$_cpu_count" "${_mem_t:-0}" "${_mem_a:-0}"
     printf ',"catalog_total":%s,"catalog_version":' "$_cat_total"; json_quote "$(catalog_version)"; printf ',"catalog_revision":'; json_quote "$(catalog_revision)"; printf ',"hdp_version":'; json_quote "$_hdp_installed"; printf ',"hdp_latest_version":'; json_quote "$_hdp_candidate"; printf ',"hdp_update_available":%s,"hdp_check_ok":%s' "$_hdp_update" "$_hdp_check_state"
     _force_status="off"; _force_owner_label="нет"
@@ -1177,6 +1217,7 @@ job_start_test_current() {
         save_persistent_test_results >/dev/null 2>&1 || true
         _stamp="$(date +%s)"
         while IFS='|' read -r _id _rest; do [ -n "$_id" ] && set_check_stamp "$_id" "$_stamp"; done < "$_results"
+        write_current_test_summary "$_stamp" "$_results" || true
         rm -f "$_ids" "$_cat" "$_results" "$_meta"
         job_write "$_jid" status done; job_write "$_jid" result ok; job_write "$_jid" finished "$_stamp"
     ) &
