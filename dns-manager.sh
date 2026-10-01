@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="2.97"
+VERSION="2.98"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -26,8 +26,8 @@ WATCHDOG_SERVICE_PATH="/etc/init.d/dns-watchdog"
 WATCHDOG_RUNTIME_DIR="/var/run/dns-watchdog"
 WATCHDOG_DAEMON_MARKER="# DNS_MANAGER_WATCHDOG_DAEMON=1"
 WATCHDOG_SERVICE_MARKER="# DNS_MANAGER_WATCHDOG_SERVICE=1"
-WATCHDOG_DAEMON_VERSION_MARKER="# DNS_MANAGER_WATCHDOG_DAEMON_VERSION=2.96"
-WATCHDOG_SERVICE_VERSION_MARKER="# DNS_MANAGER_WATCHDOG_SERVICE_VERSION=2.96"
+WATCHDOG_DAEMON_VERSION_MARKER="# DNS_MANAGER_WATCHDOG_DAEMON_VERSION=2.97"
+WATCHDOG_SERVICE_VERSION_MARKER="# DNS_MANAGER_WATCHDOG_SERVICE_VERSION=2.97"
 WATCHDOG_LAST_RESTART_FILE="$STATE_DIR/watchdog-last-restart"
 AUTO_UPDATE_LAST_CHECK_FILE="$STATE_DIR/auto-update-last-check"
 AUTO_UPDATE_CHECK_MAX_AGE=43200
@@ -3751,10 +3751,15 @@ EOF_VERIFY_IPS
     return 0
 }
 verify_applied_doh_config() {
-    [ "$(uci -q get https-dns-proxy.config.force_ip_family 2>/dev/null)" = "auto" ] || {
-        err_msg "https-dns-proxy не переведён в режим auto (dual-stack по возможности)."
-        return 1
-    }
+    detect_forced_dns_path >/dev/null 2>&1 || true
+    if [ "${FORCED_DNS_EXTERNAL:-0}" = 1 ]; then
+        log_msg "Проверка force_ip_family пропущена: внешний forced-DNS ($FORCED_DNS_SOURCE) находится вне контроля DNS Manager."
+    else
+        [ "$(uci -q get https-dns-proxy.config.force_ip_family 2>/dev/null)" = "auto" ] || {
+            err_msg "https-dns-proxy не переведён в режим auto (dual-stack по возможности)."
+            return 1
+        }
+    fi
     _expected="$TMP_DIR/expected-doh-map"
     _actual="$TMP_DIR/actual-doh-map"
     : > "$_expected" || return 1
@@ -6263,7 +6268,7 @@ luci_companion_fetch() {
     head -n 1 "$_tmp" 2>/dev/null | grep -q '^#!/bin/sh' || { LUCI_COMPANION_FETCH_ERROR="Companion не похож на штатный POSIX shell-установщик."; rm -f "$_tmp"; return 1; }
     grep -Fq '# DNS Manager LuCI companion' "$_tmp" 2>/dev/null || { LUCI_COMPANION_FETCH_ERROR="Не найден маркер DNS Manager LuCI companion."; rm -f "$_tmp"; return 1; }
     grep -Fq '/usr/libexec/rpcd/dns_manager' "$_tmp" 2>/dev/null || { LUCI_COMPANION_FETCH_ERROR="В companion отсутствует ожидаемый RPC backend."; rm -f "$_tmp"; return 1; }
-    grep -Fq 'admin/services/dns_manager' "$_tmp" 2>/dev/null || { LUCI_COMPANION_FETCH_ERROR="В companion отсутствует меню LuCI Службы → DNS Manager."; rm -f "$_tmp"; return 1; }
+    grep -Eq 'admin/services/dns-manager|admin/services/dns_manager' "$_tmp" 2>/dev/null || { LUCI_COMPANION_FETCH_ERROR="В companion отсутствует меню LuCI Службы → DNS Manager."; rm -f "$_tmp"; return 1; }
     sh -n "$_tmp" >/dev/null 2>&1 || { LUCI_COMPANION_FETCH_ERROR="Companion не прошёл проверку shell-синтаксиса."; rm -f "$_tmp"; return 1; }
 
     LUCI_COMPANION_FETCH_FILE="$_tmp"
@@ -7961,7 +7966,7 @@ watchdog_service_install_files() {
         cat > "$_dtmp" <<'EOF_DNS_WATCHDOG_DAEMON'
 #!/bin/sh
 # DNS_MANAGER_WATCHDOG_DAEMON=1
-# DNS_MANAGER_WATCHDOG_DAEMON_VERSION=2.94
+# DNS_MANAGER_WATCHDOG_DAEMON_VERSION=2.97
 
 MANAGER_PATH="/usr/bin/dns-manager"
 CONFIG_FILE="/etc/dns-manager/config/manager.conf"
@@ -8295,7 +8300,7 @@ EOF_DNS_WATCHDOG_DAEMON
         cat > "$_stmp" <<'EOF_DNS_WATCHDOG_SERVICE'
 #!/bin/sh /etc/rc.common
 # DNS_MANAGER_WATCHDOG_SERVICE=1
-# DNS_MANAGER_WATCHDOG_SERVICE_VERSION=2.94
+# DNS_MANAGER_WATCHDOG_SERVICE_VERSION=2.97
 
 USE_PROCD=1
 START=95
