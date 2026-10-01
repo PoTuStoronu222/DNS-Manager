@@ -6019,6 +6019,36 @@ remove_ntp_ip_fallback() {
     warn_msg "NTP по IP изменён извне или не совпадает с выбранным профилем; текущее состояние сохранено."
     return 0
 }
+check_sysctl_extended_state() {
+    _f="$(sysctl_extended_manager_path)"
+    _expected="$(sysctl_extended_params)"
+    _all=1
+    _supported=0
+    while IFS= read -r _p; do
+        [ -n "$_p" ] || continue
+        _k="$(printf "%s" "$_p" | cut -d= -f1)"
+        _v="$(printf "%s" "$_p" | cut -d= -f2-)"
+        if ! sysctl -n "$_k" >/dev/null 2>&1; then
+            continue
+        fi
+        _supported=$((_supported + 1))
+        _cur="$(sysctl -n "$_k" 2>/dev/null)"
+        [ "$_cur" = "$_v" ] || _all=0
+    done <<EOF_CHECK_EXT_STATE
+$_expected
+EOF_CHECK_EXT_STATE
+    _file_state=0
+    [ -f "$_f" ] && _file_state="$(sysctl_file_state "$_f" "$SYSCTL_EXTENDED_MARKER" "$_expected")"
+    if [ "$_all" = 1 ] && { [ "$_supported" -eq 0 ] || [ "$_file_state" = 1 ]; }; then
+        printf "1"
+        return 0
+    fi
+    if [ "$_file_state" = 2 ] || [ "$_file_state" = 3 ]; then
+        printf "2"
+    else
+        printf "0"
+    fi
+}
 check_module_state() {
     _sec="$(get_dnsmasq_section)"
     firewall_resolve_zones >/dev/null 2>&1 || true
