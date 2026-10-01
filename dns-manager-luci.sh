@@ -2505,7 +2505,7 @@ function render(root,st){
   renderJobIdle(root,st);
   state.activeTab=currentRoute();
   setActiveTab(root,state.activeTab);
-  if(!state.updateKick && Number(st.components_checked_at||0)===0){state.updateKick=true;setTimeout(function(){refresh(root,true);},2200);}
+  if(currentRoute()==='dashboard' && !state.updateKick && Number(st.components_checked_at||0)===0){state.updateKick=true;setTimeout(function(){refresh(root,true);},2200);}
 }
 function refresh(root,keepPosition){
   if(!rootAlive(root))return Promise.resolve();
