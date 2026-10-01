@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.4.5
+# Version: 1.4.6
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -22,7 +22,7 @@ COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main
 # Legacy update compatibility: admin/services/dns_manager
 RUNTIME_UPDATE_STATE="$BACKUP_DIR/update.state"
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.4.5"
+VERSION="1.4.6"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -73,6 +73,7 @@ install_files() {
 
     command -v jsonfilter >/dev/null 2>&1 || say "ℹ jsonfilter не найден — используется встроенный обработчик RPC-параметров."
     mkdir -p "$VIEW_DIR" /usr/libexec/rpcd /usr/share/rpcd/acl.d /usr/share/luci/menu.d "$RUNTIME_DIR/checks" "$BACKUP_DIR" "$(dirname "$STATE_FILE")" || return 1
+    rm -f "/etc/dns-manager/state/current-dns-test-summary.conf" 2>/dev/null || true
 
     cat > "$MENU_FILE" <<'EOF_MENU'
 {
@@ -160,7 +161,6 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 CATALOG_FILE="/etc/dns-manager/config/dns-catalog.conf"
 STATE_DIR="/var/run/dns-manager"
 PERSIST_STATE_DIR="/etc/dns-manager/state"
-CURRENT_TEST_SUMMARY="$PERSIST_STATE_DIR/current-dns-test-summary.conf"
 RUNTIME_DIR="/var/run/dns-manager-luci"
 JOB_DIR="$RUNTIME_DIR/jobs"
 CHECK_DIR="$RUNTIME_DIR/checks"
@@ -169,7 +169,7 @@ UPDATE_STATE="/etc/dns-manager-luci/update.state"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.4.5"
+SELF_VERSION="1.4.6"
 
 umask 077
 mkdir -p "$RUNTIME_DIR" "$JOB_DIR" "$CHECK_DIR" "$TMP_ROOT" 2>/dev/null || exit 1
@@ -749,58 +749,6 @@ last_check_for_id() {
     [ -n "$_ts" ] && result_for_id "$_id" >/dev/null 2>&1 && printf '%s' "$_ts"
 }
 
-current_slots_signature() {
-    _sig=""
-    for _s in 1 2 3 4 5 6 RU RU_2; do
-        _id="$(cfg_get "SLOT_$_s")"
-        _port="$(cfg_get "PORT_$_s")"
-        [ -n "$_id" ] || continue
-        _sig="${_sig}${_s}=${_id}@${_port};"
-    done
-    printf '%s' "$_sig"
-}
-write_current_test_summary() {
-    _ts="$1"
-    _results="$2"
-    mkdir -p "$PERSIST_STATE_DIR" 2>/dev/null || return 1
-    _sig="$(current_slots_signature)"
-    _sum=0
-    _n=0
-    while IFS='|' read -r _id _cat _name _ms _st; do
-        [ -n "$_id" ] || continue
-        [ "$_st" = "OK" ] || continue
-        case "$_ms" in ''|*[!0-9]*) continue;; esac
-        _sum=$((_sum + _ms))
-        _n=$((_n + 1))
-    done < "$_results"
-    {
-        printf 'signature=%s\n' "$_sig"
-        printf 'timestamp=%s\n' "$_ts"
-        printf 'count=%s\n' "$_n"
-        if [ "$_n" -gt 0 ]; then
-            printf 'average=%s\n' "$((_sum / _n))"
-        else
-            printf 'average=\n'
-        fi
-    } > "${CURRENT_TEST_SUMMARY}.tmp.$$" 2>/dev/null || return 1
-    mv -f "${CURRENT_TEST_SUMMARY}.tmp.$$" "$CURRENT_TEST_SUMMARY" 2>/dev/null || {
-        rm -f "${CURRENT_TEST_SUMMARY}.tmp.$$" 2>/dev/null || true
-        return 1
-    }
-    chmod 600 "$CURRENT_TEST_SUMMARY" 2>/dev/null || true
-}
-current_test_average_ping() {
-    [ -r "$CURRENT_TEST_SUMMARY" ] || return 0
-    _saved_sig="$(sed -n 's/^signature=//p' "$CURRENT_TEST_SUMMARY" 2>/dev/null | head -n1)"
-    _current_sig="$(current_slots_signature)"
-    [ -n "$_saved_sig" ] && [ "$_saved_sig" = "$_current_sig" ] || return 0
-    _avg="$(sed -n 's/^average=//p' "$CURRENT_TEST_SUMMARY" 2>/dev/null | head -n1)"
-    case "$_avg" in
-        ''|*[!0-9]*) return 0 ;;
-        *) printf '%s' "$_avg" ;;
-    esac
-}
-
 package_version() {
     _pkg="$1"
     [ -n "$_pkg" ] || return 0
@@ -1099,7 +1047,7 @@ status_json() {
     [ "$_external" = 1 ] && _force_owner="external"
     [ "$_external" != 1 ] && [ "$_force_manager" = 1 ] && _force_owner="manager"
     printf ',"force":'; json_quote "$_force"; printf ',"force_external":'; json_quote "$_external"; printf ',"force_owner":'; json_quote "$_force_owner"; printf ',"force_manager":%s,"force_both":%s,"zapret_running":%s' "$_force_manager" "$_force_both" "$_zapret_running"; printf ',"force_source":'; json_quote "$FORCE_RUNTIME_SOURCE"; printf ',"force_targets":'; json_quote "$FORCE_RUNTIME_TARGETS"; printf ',"force_notrack":'; json_quote "$_force_notrack"; printf ',"force_update":'; json_quote "$_force_update"; printf ',"force_family":'; json_quote "$_force_family"; printf ',"force_ports":'; json_quote "$_force_ports"; printf ',"force_src":'; json_quote "$_force_src"; printf ',"force_canary_icloud":'; json_quote "$_force_canary_i"; printf ',"force_canary_mozilla":'; json_quote "$_force_canary_m"; printf ',"force_procd_trigger_wan6":'; json_quote "$_force_procd"; printf ',"force_heartbeat_domain":'; json_quote "$_force_heartbeat_domain"; printf ',"force_heartbeat_sleep":'; json_quote "$_force_heartbeat_sleep"; printf ',"force_heartbeat_wait":'; json_quote "$_force_heartbeat_wait"; printf ',"force_user":'; json_quote "$_force_user"; printf ',"force_group":'; json_quote "$_force_group"; printf ',"force_listen":'; json_quote "$_force_listen"; printf ',"force_consistent":%s' "$_force_consistent"; printf ',"mtu":'; json_quote "$_mtu"; printf ',"sysctl":'; json_quote "$_sysctl"; printf ',"sysctl_ext":'; json_quote "$_sysctl_ext"; printf ',"ntp_clients":'; json_quote "$_ntp"; printf ',"dnsmasq_perf":'; json_quote "$_perf"; printf ',"client_fixes":'; json_quote "$_fix"
-    printf ',"doh_total":%s,"doh_match":%s,"configured_dns":%s,"average_ping":' "$_doh_total" "$_match" "$_expected"; json_quote "$(current_test_average_ping)"; printf ',"last_full_test":'; json_quote "$_last"; printf ',"components_checked_at":'; json_quote "$_components_checked_at"
+    printf ',"doh_total":%s,"doh_match":%s,"configured_dns":%s' "$_doh_total" "$_match" "$_expected"; printf ',"last_full_test":'; json_quote "$_last"; printf ',"components_checked_at":'; json_quote "$_components_checked_at"
     printf ',"hostname":'; json_quote "$_host"; printf ',"uptime":'; json_quote "$_uptime"; printf ',"load1":'; json_quote "$_load"; printf ',"cpu_count":%s,"memory_total_kb":%s,"memory_available_kb":%s' "$_cpu_count" "${_mem_t:-0}" "${_mem_a:-0}"
     printf ',"catalog_total":%s,"catalog_version":' "$_cat_total"; json_quote "$(catalog_version)"; printf ',"catalog_revision":'; json_quote "$(catalog_revision)"; printf ',"hdp_version":'; json_quote "$_hdp_installed"; printf ',"hdp_latest_version":'; json_quote "$_hdp_candidate"; printf ',"hdp_update_available":%s,"hdp_check_ok":%s' "$_hdp_update" "$_hdp_check_state"
     _force_status="off"; _force_owner_label="нет"
@@ -1218,7 +1166,6 @@ job_start_test_current() {
         save_persistent_test_results >/dev/null 2>&1 || true
         _stamp="$(date +%s)"
         while IFS='|' read -r _id _rest; do [ -n "$_id" ] && set_check_stamp "$_id" "$_stamp"; done < "$_results"
-        write_current_test_summary "$_stamp" "$_results" || true
         rm -f "$_ids" "$_cat" "$_results" "$_meta"
         job_write "$_jid" status done; job_write "$_jid" result ok; job_write "$_jid" finished "$_stamp"
     ) &
@@ -1510,7 +1457,7 @@ function injectStyle(root){
   '.dm-badge{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:999px;font-size:12px;font-weight:600;white-space:nowrap}.dm-dot{width:8px;height:8px;border-radius:50%;display:inline-block;flex-shrink:0}'+
   '.dm-ok{background:rgba(46,160,67,.12);color:#1a7f37}.dm-ok .dm-dot{background:#1a7f37}.dm-bad{background:rgba(207,34,46,.10);color:#cf222e}.dm-bad .dm-dot{background:#cf222e}.dm-warn{background:rgba(191,135,0,.12);color:#9a6700}.dm-warn .dm-dot{background:#9a6700}.dm-off{background:rgba(110,118,129,.12);color:#57606a}.dm-off .dm-dot{background:#57606a}'+
   '.dm-grid2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.dm-grid3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}.dm-grid4{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}'+
-  '.dm-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:11px}.dm-component-item{padding:8px 0;border-bottom:1px solid rgba(110,118,129,.14)}.dm-component-group{padding:8px 0;border-bottom:1px solid rgba(110,118,129,.14)}.dm-component-dns-list{margin-top:6px;display:flex;flex-direction:column;gap:5px}.dm-component-dns{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:6px 0;border-top:1px solid rgba(110,118,129,.08);flex-wrap:wrap}.dm-component-dns:first-child{border-top:0}.dm-component-dns-main{display:flex;align-items:center;gap:8px;min-width:0;flex:1 1 260px}.dm-component-dns-slot{font-size:11.5px;font-weight:700;opacity:.62;min-width:118px}.dm-component-dns-name{font-size:12.5px;font-weight:600;overflow-wrap:anywhere}.dm-component-dns-meta{display:flex;align-items:center;gap:9px;font-size:11.5px;opacity:.78;flex:0 0 auto}.dm-component-item:last-of-type{border-bottom:0}.dm-component-head{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}.dm-component-title{font-size:13px;font-weight:600}.dm-component-details{font-size:11.5px;line-height:1.45;opacity:.66;margin-top:3px;overflow-wrap:anywhere}.dm-component-date{font-size:12.5px;opacity:.82}.dm-actions .cbi-button{margin:0;padding:5px 11px;font-size:12.5px}'+
+  '.dm-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:11px}.dm-component-item{padding:8px 0;border-bottom:1px solid rgba(110,118,129,.14)}.dm-component-group{padding:8px 0;border-bottom:1px solid rgba(110,118,129,.14)}.dm-component-dns-list{margin-top:6px;display:flex;flex-direction:column;gap:5px}.dm-component-dns{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:6px 0;border-top:1px solid rgba(110,118,129,.08);flex-wrap:wrap}.dm-component-dns:first-child{border-top:0}.dm-component-dns-main{display:flex;align-items:center;gap:8px;min-width:0;flex:1 1 260px}.dm-component-dns-slot{font-size:11.5px;font-weight:700;opacity:.62;min-width:118px}.dm-component-dns-name{font-size:12.5px;font-weight:600;overflow-wrap:anywhere}.dm-component-dns-meta{display:flex;align-items:center;gap:9px;font-size:11.5px;opacity:.78;flex:0 0 auto}.dm-component-dns-ping{font-size:12px;white-space:nowrap;opacity:.8}.dm-component-item:last-of-type{border-bottom:0}.dm-component-head{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}.dm-component-title{font-size:13px;font-weight:600}.dm-component-details{font-size:11.5px;line-height:1.45;opacity:.66;margin-top:3px;overflow-wrap:anywhere}.dm-component-date{font-size:12.5px;opacity:.82}.dm-actions .cbi-button{margin:0;padding:5px 11px;font-size:12.5px}'+
   '.dm-hint{font-size:12.5px;opacity:.68;line-height:1.5;margin:0 0 8px}.dm-mini{font-size:11px;opacity:.62}.dm-meta{font-size:11px;line-height:1.45;opacity:.66}.dm-update{padding:8px 10px;border-radius:8px;background:rgba(26,127,55,.08);border:1px solid rgba(26,127,55,.18);font-size:12.5px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}'+
   '.dm-seg{display:flex;flex-wrap:wrap;gap:6px;margin:5px 0}.dm-seg .cbi-button{padding:5px 11px;border-radius:7px;font-size:12.5px;font-weight:600}.dm-seg .active{background:#1a7f37;color:#fff;border-color:#1a7f37}'+
   '.dm-force-note{font-size:12px;line-height:1.55;opacity:.72}.dm-inline-msg{display:block;margin:8px 0 0;padding:7px 10px;border-radius:7px;font-size:12px;line-height:1.4}.dm-inline-msg.info{background:rgba(9,105,218,.08);border:1px solid rgba(9,105,218,.16)}.dm-inline-msg.ok{background:rgba(26,127,55,.08);border:1px solid rgba(26,127,55,.16)}.dm-inline-msg.error{background:rgba(207,34,46,.08);border:1px solid rgba(207,34,46,.16)}.dm-applied{display:flex;align-items:center;gap:9px;padding:9px 11px;border-radius:8px;font-size:12.5px;line-height:1.45}.dm-applied.ok{background:rgba(26,127,55,.08);border:1px solid rgba(26,127,55,.18)}.dm-applied.error{background:rgba(207,34,46,.08);border:1px solid rgba(207,34,46,.18)}.dm-applied strong{font-weight:700}.dm-confirm-body{min-width:min(440px,calc(100vw - 70px))}.dm-setting{padding:11px 12px}.dm-setting-title{font-size:13px;font-weight:600}.dm-setting-desc{font-size:11.5px;line-height:1.45;opacity:.68;margin-top:3px}.dm-setting-line{display:flex;align-items:center;justify-content:space-between;gap:10px}.dm-setting-actions{display:flex;align-items:center;gap:7px;flex-shrink:0}.dm-setting-actions .cbi-button{padding:4px 9px;font-size:12px}.dm-setting-saving{opacity:.7}.dm-force-external{padding:8px 10px;border-radius:8px;background:rgba(191,135,0,.10);border:1px solid rgba(191,135,0,.22);font-size:12.5px;line-height:1.5;margin-top:8px}'+
@@ -1633,6 +1580,7 @@ function renderOverview(root,st){
         E('span',{'class':'dm-component-dns-name'},name)
       ]),
       E('div',{'class':'dm-component-dns-meta'},[
+        E('span',{'class':'dm-component-dns-ping'},ping(ci.ping||d.ping)),
         statusNode
       ])
     ]));
@@ -1655,7 +1603,6 @@ function renderOverview(root,st){
 
   var ipv4=st.ipv4==='yes'?badge('dm-ok','есть'):badge('dm-bad','нет');
   var ipv6=st.ipv6==='yes'?badge('dm-ok','есть'):badge('dm-off','выключен');
-  var selectedPing=st.average_ping&&/^[0-9]+$/.test(String(st.average_ping))?String(st.average_ping)+' мс':'—';
 
   var sysCard=card('Система',[
     row('Модель',shortVal(st.hostname)),
@@ -1663,7 +1610,6 @@ function renderOverview(root,st){
     row('Время работы',E('span',{'class':'dm-uptime'},uptime(st.uptime))),
     row('IPv4',ipv4),
     row('IPv6',ipv6),
-    row('Пинг DNS · последний тест',shortVal(selectedPing)),
     row('Нагрузка',loadBar(st.load1,st.cpu_count)),
     row('RAM',memoryBar(st.memory_total_kb,st.memory_available_kb)),
     row('LAN',shortVal(st.lan))
