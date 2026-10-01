@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.5.35
+# Version: 1.5.36
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -22,7 +22,7 @@ COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main
 # Legacy update compatibility: admin/services/dns_manager
 RUNTIME_UPDATE_STATE="$BACKUP_DIR/update.state"
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.5.35"
+VERSION="1.5.36"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -163,7 +163,7 @@ UPDATE_STATE="/etc/dns-manager-luci/update.state"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.5.35"
+SELF_VERSION="1.5.36"
 
 umask 077
 mkdir -p "$RUNTIME_DIR" "$JOB_DIR" "$CHECK_DIR" "$TMP_ROOT" 2>/dev/null || exit 1
@@ -2111,13 +2111,31 @@ function renderProfiles(root,st){
 
 function renderSlots(root,st){
   var e=root.querySelector('#dm-slots');if(!e)return;e.innerHTML='';var rows=[];
-  (st.slots||[]).forEach(function(d){if(!d.id)return;rows.push(E('div',{'class':'dm-slot-row'},[
-    E('span',{'class':'dm-slot-id'},d.slot),E('span',{'class':'dm-slot-name'},d.name||d.id),
-    E('span',{'class':'dm-slot-endpoint'},d.port?'127.0.0.1:'+d.port:'—'),E('span',{'class':'dm-slot-ping'},ping(d.ping)),E('span',{'class':'dm-slot-state'},stateBadge(d.status,d.ping)),
-    E('span',{'class':'dm-inline'},[btn('Выбрать','cbi-button-neutral',function(){openSlotPicker(d.slot,root);}),btn('Проверить','cbi-button-neutral',function(){testOne(d.id,root);})])
-  ]));});
+  (st.slots||[]).forEach(function(d){
+    if(!d.id)return;
+    var checking=state.checking&&state.checking[d.id];
+    var running=checking&&String(checking.status||'').toUpperCase()==='RUNNING';
+    var shownStatus=running?'RUNNING':d.status;
+    var shownPing=running?'':(checking&&checking.ping?checking.ping:d.ping);
+    rows.push(E('div',{'class':'dm-slot-row '+(running?'dm-slot-checking':'')},[
+      E('span',{'class':'dm-slot-id'},d.slot),
+      E('span',{'class':'dm-slot-name'},d.name||d.id),
+      E('span',{'class':'dm-slot-endpoint'},d.port?'127.0.0.1:'+d.port:'—'),
+      E('span',{'class':'dm-slot-ping'},running?'—':ping(shownPing)),
+      E('span',{'class':'dm-slot-state'},running
+        ?badge('dm-warn','проверяется…')
+        :stateBadge(shownStatus,shownPing)),
+      E('span',{'class':'dm-inline'},[
+        btn('Выбрать','cbi-button-neutral',function(){openSlotPicker(d.slot,root);},{disabled:running||!!state.busy||!!state.jobRunning}),
+        btn(running?'Проверяю…':'Проверить',running?'cbi-button-neutral':'cbi-button-neutral',function(){testOne(d.id,root);},{disabled:running||!!state.busy||!!state.jobRunning})
+      ])
+    ]));
+  });
   if(!rows.length)rows.push(E('div',{'class':'dm-hint'},'DNS пока не настроены.'));
-  var sch=[E('div',{'class':'dm-slot-table'},rows)];if(state.pageNotice.slots)sch.push(E('div',{'class':'dm-inline-msg info'},state.pageNotice.slots));e.appendChild(card('Выбранные DNS',sch));
+  var sch=[E('div',{'class':'dm-slot-table'},rows)];
+  if(state.jobRunning)sch.push(E('div',{'class':'dm-inline-msg info'},'Проверка DNS выполняется. Результат появится в строке после завершения.'));
+  if(state.pageNotice.slots)sch.push(E('div',{'class':'dm-inline-msg info'},state.pageNotice.slots));
+  e.appendChild(card('Выбранные DNS',sch));
 }
 
 function settingCard(root,x,st){
