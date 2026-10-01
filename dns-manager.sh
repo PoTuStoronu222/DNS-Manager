@@ -3012,7 +3012,7 @@ remove_sysctl_base() {
             [ -n "$_p" ] || continue
             _k="$(printf "%s" "$_p" | cut -d= -f1)"
             _v="$(printf "%s" "$_p" | cut -d= -f2-)"
-            sysctl_restore_stock_key "$_k" "$_v" "$_force" || warn_msg "Не удалось вернуть $_k к stock."
+            sysctl_restore_stock_key "$_k" "$_v" "$_force" || warn_msg "Не удалось восстановить $_k к исходному значению."
         done <<EOF_SYSCTL_BASE_STOCK
 $(sysctl_base_expected)
 EOF_SYSCTL_BASE_STOCK
@@ -3445,7 +3445,7 @@ remove_sysctl_extended() {
             [ -n "$_p" ] || continue
             _k="$(printf "%s" "$_p" | cut -d= -f1)"
             _v="$(printf "%s" "$_p" | cut -d= -f2-)"
-            sysctl_restore_stock_key "$_k" "$_v" "$_force" || warn_msg "Не удалось вернуть $_k к stock."
+            sysctl_restore_stock_key "$_k" "$_v" "$_force" || warn_msg "Не удалось восстановить $_k к исходному значению."
         done <<EOF_SYSCTL_EXT_STOCK
 $_expected
 EOF_SYSCTL_EXT_STOCK
@@ -4889,7 +4889,7 @@ _rollback_ours_impl() {
         fi
         if [ "$(check_module_state dnsmasq_perf 2>/dev/null)" = 1 ]; then
             DNSMASQ_PERF=0
-            remove_dnsmasq_perf || { _rollback_fail=1; warn_msg "Не удалось вернуть настройки DNS-кэша к стоку."; }
+            remove_dnsmasq_perf || { _rollback_fail=1; warn_msg "Не удалось восстановить настройки DNS-кэша."; }
         fi
     fi
 
@@ -4899,7 +4899,7 @@ _rollback_ours_impl() {
             warn_msg "Не удалось полностью очистить собственные изменения https-dns-proxy."
         fi
         if [ "$(check_module_state force 2>/dev/null)" = 1 ]; then
-            remove_dns_force || { _rollback_fail=1; warn_msg "Не удалось вернуть принудительный DNS к стоку."; }
+            remove_dns_force || { _rollback_fail=1; warn_msg "Не удалось восстановить принудительный DNS."; }
         fi
     fi
 
@@ -4908,7 +4908,7 @@ _rollback_ours_impl() {
             MTU_FIX=0
             if ! apply_mtu_toggle >/dev/null 2>&1; then
                 _rollback_fail=1
-                warn_msg "Не удалось вернуть mtu_fix WAN к стоку."
+                warn_msg "Не удалось восстановить mtu_fix WAN."
             fi
         fi
         if ! rollback_firewall_targeted; then
@@ -6842,17 +6842,17 @@ setting_process() {
     if [ "$_rc" -eq 0 ]; then
         case "$_state:$_module" in
             0:mtu|2:mtu) ok_msg "Исправление MTU и MSS для WAN настроено." ;;
-            1:mtu) ok_msg "Исправление MTU и MSS для WAN выключено; штатное состояние WAN восстановлено." ;;
+            1:mtu) ok_msg "Исправление MTU и MSS для WAN выключено." ;;
             0:force|2:force) ok_msg "Принудительный DNS для устройств настроен." ;;
-            1:force) ok_msg "Принудительный DNS для устройств выключен, стоковое состояние восстановлено." ;;
+            1:force) ok_msg "Принудительный DNS для устройств выключен." ;;
             0:sysctl|2:sysctl) ok_msg "Оптимизация TCP и таблицы соединений настроена." ;;
-            1:sysctl) ok_msg "Оптимизация TCP и таблиц соединений выключена; штатные значения OpenWrt восстановлены." ;;
+            1:sysctl) ok_msg "Оптимизация TCP и таблиц соединений выключена." ;;
             0:dnsmasq_perf|2:dnsmasq_perf) ok_msg "Увеличенный кэш DNS настроен." ;;
-            1:dnsmasq_perf) ok_msg "Увеличенный кэш DNS выключен; штатная конфигурация dnsmasq восстановлена." ;;
+            1:dnsmasq_perf) ok_msg "Увеличенный кэш DNS выключен." ;;
             0:ntp_clients|2:ntp_clients) ok_msg "Время для устройств в локальной сети включено (DHCP 42, без принудительного перехвата)." ;;
             1:ntp_clients) ok_msg "Время для устройств в локальной сети выключено." ;;
             0:client_fixes|2:client_fixes) ok_msg "DNS для проверки подключения и совместимости устройств настроен." ;;
-            1:client_fixes) ok_msg "DNS для проверки подключения и совместимости устройств выключен; штатная конфигурация OpenWrt восстановлена." ;;
+            1:client_fixes) ok_msg "DNS для проверки подключения и совместимости устройств выключен." ;;
             0:web|2:web) ok_msg "Терминальный доступ LuCI включён: пункт LuCI ведёт в ttyd DNS Manager." ;;
             1:web) ok_msg "Терминальный доступ LuCI выключен, пункт DNS Manager удалён." ;;
         esac
