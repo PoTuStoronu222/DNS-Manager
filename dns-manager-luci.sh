@@ -970,7 +970,17 @@ status_json() {
     _ntp="$(cfg_get NTP_CLIENTS)"; [ -n "$_ntp" ] || _ntp=0
     _perf="$(cfg_get DNSMASQ_PERF)"; [ -n "$_perf" ] || _perf=0
     _fix="$(cfg_get CLIENT_FIXES)"; [ -n "$_fix" ] || _fix=0
-    _mtu_state="$(check_module_state mtu 2>/dev/null || true)"; case "$_mtu_state" in 0|1|2) ;; *) _mtu_state=0;; esac
+    _detail="$(jget detail 2>/dev/null || true)"
+    _mtu_state=0
+    _sysctl_state=0
+    _sysctl_ext_state=0
+    _dnsmasq_perf_state=0
+    _mtu_stock=0
+    _sysctl_stock=0
+    _sysctl_ext_stock=0
+    _dnsmasq_perf_stock=0
+    if [ "$_detail" = 1 ] && load_manager >/dev/null 2>&1; then
+        _mtu_state="$(check_module_state mtu 2>/dev/null || true)"; case "$_mtu_state" in 0|1|2) ;; *) _mtu_state=0;; esac
     _sysctl_state="$(check_module_state sysctl 2>/dev/null || true)"; case "$_sysctl_state" in 0|1|2) ;; *) _sysctl_state=0;; esac
     _sysctl_ext_state="$(check_sysctl_extended_state 2>/dev/null || true)"; case "$_sysctl_ext_state" in 0|1|2) ;; *) _sysctl_ext_state=0;; esac
     _dnsmasq_perf_state="$(check_module_state dnsmasq_perf 2>/dev/null || true)"; case "$_dnsmasq_perf_state" in 0|1|2) ;; *) _dnsmasq_perf_state=0;; esac
@@ -991,6 +1001,7 @@ status_json() {
         for _k in cachesize dnsforwardmax max_cache_ttl boguspriv domainneeded quietdhcp filter_aaaa; do
             [ -z "$(uci -q get "dhcp.$_dns_sec.$_k" 2>/dev/null || true)" ] || _dnsmasq_perf_stock=0
         done
+    fi
     fi
 
     _doh_total=0; _doh_running=0
@@ -1517,7 +1528,7 @@ case "${1:-}" in
         ;;
     call)
         case "${2:-}" in
-            status) status_json;;
+            status) INPUT="$(cat 2>/dev/null || true)"; status_json;;
             catalog) INPUT="$(cat 2>/dev/null || true)"; catalog_json;;
             update_check) update_check_json;;            update_catalog) update_catalog_json;;            update_all) update_all_json;;            update) update_json;;            update_manager) update_manager_json;;            update_hdp) update_hdp_json;;
             set_profile|set_slot|set_setting|set_watchdog_setting) INPUT="$(cat 2>/dev/null || true)"; RPC_METHOD="$2"; run_action;;
@@ -1539,7 +1550,8 @@ EOF_RPC
 'require ui';
 
 // DNS Manager LuCI version: 1.5.51
-var callStatus = rpc.declare({ object:'dns_manager', method:'status', expect:{} });
+var callStatus = rpc.declare({ object:'dns_manager', method:'status', params:['detail'], expect:{} });
+function statusDetail(){return currentRoute()==='network'?1:0;}
 var callCatalog = rpc.declare({ object:'dns_manager', method:'catalog', params:['category','offset','limit','only_ok'], expect:{} });
 var callUpdateCheck = rpc.declare({ object:'dns_manager', method:'update_check', expect:{} });
 var callUpdate = rpc.declare({ object:'dns_manager', method:'update', expect:{} });
@@ -2562,7 +2574,7 @@ function render(root,st){
 }
 function refresh(root,keepPosition){
   if(!rootAlive(root))return Promise.resolve();
-  return callStatus().then(function(st){
+  return callStatus(statusDetail()).then(function(st){
     if(!rootAlive(root))return;
     state.statusError='';
     window.dmState=st||{};
@@ -2912,7 +2924,7 @@ function pollJob(root,job,meta,done){
       }
       profileFinish(j);
     }
-    callStatus().then(function(ns){
+    callStatus(statusDetail()).then(function(ns){
       ns=ns||{};window.dmState=ns;
       if(meta&&meta.mode==='one'&&meta.dns_id){
         var d=null;(ns.slots||[]).forEach(function(x){if(x.id===meta.dns_id)d=x;});
@@ -3038,7 +3050,7 @@ function showLog(root){
 }
 
 return view.extend({
-  load:function(){return callStatus().then(function(st){return st||{};});},
+  load:function(){return callStatus(statusDetail()).then(function(st){return st||{};});},
   render:function(st){var root=E('div',{'class':'dm-wrap'});['dm-header','dm-overview','dm-doh','dm-profiles','dm-slots','dm-settings','dm-network','dm-job','dm-catalog','dm-log'].forEach(function(id){root.appendChild(E('section',{'id':id}));});injectStyle(root);window.dmState=st||{};state.activeTab=currentRoute();render(root,st||{});startAutoRefresh(root);return root;}
 });
 EOF_JS
