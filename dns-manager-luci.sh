@@ -1177,7 +1177,7 @@ function globalUpdateNotice(msg,type){var id='dm-global-update-notice',old=docum
 function renderHeader(root,st){
   var e=root.querySelector('#dm-header');if(!e)return;e.innerHTML='';
   e.appendChild(E('div',{'class':'dm-header'},[
-    E('h2',{},'DNS Manager LuCI'),
+    E('h2',{},'DNS Manager by PoTuStoronu222'),
     E('span',{'class':'dm-header-by'},'v'+shortVal(st.luci_version))
   ]));
 }
