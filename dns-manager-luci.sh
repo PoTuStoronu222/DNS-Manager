@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.4.4
+# Version: 1.4.5
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -22,7 +22,7 @@ COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main
 # Legacy update compatibility: admin/services/dns_manager
 RUNTIME_UPDATE_STATE="$BACKUP_DIR/update.state"
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.4.4"
+VERSION="1.4.5"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -160,7 +160,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 CATALOG_FILE="/etc/dns-manager/config/dns-catalog.conf"
 STATE_DIR="/var/run/dns-manager"
 PERSIST_STATE_DIR="/etc/dns-manager/state"
-CURRENT_TEST_SUMMARY="$STATE_DIR/current-dns-test-summary.conf"
+CURRENT_TEST_SUMMARY="$PERSIST_STATE_DIR/current-dns-test-summary.conf"
 RUNTIME_DIR="/var/run/dns-manager-luci"
 JOB_DIR="$RUNTIME_DIR/jobs"
 CHECK_DIR="$RUNTIME_DIR/checks"
@@ -169,7 +169,7 @@ UPDATE_STATE="/etc/dns-manager-luci/update.state"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.4.4"
+SELF_VERSION="1.4.5"
 
 umask 077
 mkdir -p "$RUNTIME_DIR" "$JOB_DIR" "$CHECK_DIR" "$TMP_ROOT" 2>/dev/null || exit 1
@@ -762,6 +762,7 @@ current_slots_signature() {
 write_current_test_summary() {
     _ts="$1"
     _results="$2"
+    mkdir -p "$PERSIST_STATE_DIR" 2>/dev/null || return 1
     _sig="$(current_slots_signature)"
     _sum=0
     _n=0
@@ -1640,12 +1641,13 @@ function renderOverview(root,st){
 
   var components=card('Компоненты',[
     componentItem('Профиль',profile,profileDetails),
-    componentItem('DNS over HTTPS',doh,E('div',{},[
-      E('div',{'class':'dm-component-details'},dohDetails),
-      E('div',{'class':'dm-component-dns-list'},dnsItems)
-    ])),
+    componentItem('DNS over HTTPS',doh,dohDetails),
     componentItem('Автопроверка DNS',wd,wdDetails),
-    componentItem('Принудительный DNS',force,forceDetails),
+    componentItem('Принудительный DNS',force,forceDetails)
+  ]);
+
+  var dnsSlotsCard=card('DNS в слотах',[
+    E('div',{'class':'dm-component-dns-list'},dnsItems),
     E('div',{'class':'dm-actions'},[
       btn('Проверить DNS в слотах','cbi-button-action',function(){testCurrent(root);},{disabled:!!state.busy||state.jobRunning})
     ])
@@ -1694,6 +1696,7 @@ function renderOverview(root,st){
   ]);
 
   e.appendChild(components);
+  e.appendChild(dnsSlotsCard);
   e.appendChild(E('div',{'class':'dm-grid2'},[sysCard,verCard]));
 
   var fullState='';
