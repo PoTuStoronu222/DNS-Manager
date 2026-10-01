@@ -2935,7 +2935,6 @@ sysctl_restore_stock_key() {
 }
 
 sysctl_file_state() {
-sysctl_file_state() {
     _f="$1"; _marker="$2"; _expected="$3"
     [ -f "$_f" ] || { printf '0'; return 0; }
     _managed="$(printf '%s\n%s' "$_marker" "$_expected")"
