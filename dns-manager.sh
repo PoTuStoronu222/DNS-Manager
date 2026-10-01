@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.19"
+VERSION="3.20"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -15,7 +15,7 @@ BOOTSTRAP_DNS_ALL="77.88.8.8,77.88.8.1,94.140.14.14,1.1.1.1,1.0.0.1,8.8.8.8,8.8.
 DNSCAT_VERSION="8.6-RU-NOSOCIAL"
 DNSCAT_REVISION="1"
 DNSCAT_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/catalogs/dns-8.5-RU-NOSOCIAL.conf"
-WATCHDOG_SPEC_VERSION="21"
+WATCHDOG_SPEC_VERSION="22"
 WATCHDOG_RESTART_COOLDOWN=300
 WATCHDOG_BACKEND="procd"
 WATCHDOG_CHECK_INTERVAL_DEFAULT=90
@@ -1032,6 +1032,18 @@ case "$WATCHDOG_INTERVAL" in
         [ "$WATCHDOG_INTERVAL" -le 600 ] 2>/dev/null || WATCHDOG_INTERVAL="${WATCHDOG_CHECK_INTERVAL_DEFAULT:-90}"
         ;;
 esac
+: "${WATCHDOG_FAIL_THRESHOLD:=2}"
+case "$WATCHDOG_FAIL_THRESHOLD" in ''|*[!0-9]*) WATCHDOG_FAIL_THRESHOLD=2;; *) [ "$WATCHDOG_FAIL_THRESHOLD" -ge 1 ] 2>/dev/null && [ "$WATCHDOG_FAIL_THRESHOLD" -le 10 ] 2>/dev/null || WATCHDOG_FAIL_THRESHOLD=2;; esac
+: "${WATCHDOG_REPAIR_COOLDOWN:=300}"
+case "$WATCHDOG_REPAIR_COOLDOWN" in ''|*[!0-9]*) WATCHDOG_REPAIR_COOLDOWN=300;; *) [ "$WATCHDOG_REPAIR_COOLDOWN" -ge 60 ] 2>/dev/null && [ "$WATCHDOG_REPAIR_COOLDOWN" -le 3600 ] 2>/dev/null || WATCHDOG_REPAIR_COOLDOWN=300;; esac
+: "${WATCHDOG_GUARD_INTERVAL:=900}"
+case "$WATCHDOG_GUARD_INTERVAL" in ''|*[!0-9]*) WATCHDOG_GUARD_INTERVAL=900;; *) [ "$WATCHDOG_GUARD_INTERVAL" -ge 300 ] 2>/dev/null && [ "$WATCHDOG_GUARD_INTERVAL" -le 3600 ] 2>/dev/null || WATCHDOG_GUARD_INTERVAL=900;; esac
+: "${WATCHDOG_MAX_REPAIRS:=1}"
+case "$WATCHDOG_MAX_REPAIRS" in ''|*[!0-9]*) WATCHDOG_MAX_REPAIRS=1;; *) [ "$WATCHDOG_MAX_REPAIRS" -ge 1 ] 2>/dev/null && [ "$WATCHDOG_MAX_REPAIRS" -le 3 ] 2>/dev/null || WATCHDOG_MAX_REPAIRS=1;; esac
+: "${WATCHDOG_MAX_RESTARTS:=2}"
+case "$WATCHDOG_MAX_RESTARTS" in ''|*[!0-9]*) WATCHDOG_MAX_RESTARTS=2;; *) [ "$WATCHDOG_MAX_RESTARTS" -ge 1 ] 2>/dev/null && [ "$WATCHDOG_MAX_RESTARTS" -le 3 ] 2>/dev/null || WATCHDOG_MAX_RESTARTS=2;; esac
+: "${WATCHDOG_MAX_CANDIDATES:=3}"
+case "$WATCHDOG_MAX_CANDIDATES" in ''|*[!0-9]*) WATCHDOG_MAX_CANDIDATES=3;; *) [ "$WATCHDOG_MAX_CANDIDATES" -ge 1 ] 2>/dev/null && [ "$WATCHDOG_MAX_CANDIDATES" -le 5 ] 2>/dev/null || WATCHDOG_MAX_CANDIDATES=3;; esac
 : "${SLOT_1:=}"; : "${SLOT_2:=}"; : "${SLOT_3:=}"; : "${SLOT_4:=}"; : "${SLOT_5:=}"; : "${SLOT_6:=}"
 : "${SLOT_RU:=}"; : "${SLOT_RU_2:=}"
 : "${SLOT_1_CAT:=}"; : "${SLOT_2_CAT:=}"; : "${SLOT_3_CAT:=}"; : "${SLOT_4_CAT:=}"; : "${SLOT_5_CAT:=}"; : "${SLOT_6_CAT:=}"
@@ -1128,6 +1140,12 @@ QUICK_PREF_6="$QUICK_PREF_6"
 WATCHDOG_ENABLED="$WATCHDOG_ENABLED"
 WATCHDOG_INTERVAL="$WATCHDOG_INTERVAL"
 WATCHDOG_BACKEND="$WATCHDOG_BACKEND"
+WATCHDOG_FAIL_THRESHOLD="$WATCHDOG_FAIL_THRESHOLD"
+WATCHDOG_REPAIR_COOLDOWN="$WATCHDOG_REPAIR_COOLDOWN"
+WATCHDOG_GUARD_INTERVAL="$WATCHDOG_GUARD_INTERVAL"
+WATCHDOG_MAX_REPAIRS="$WATCHDOG_MAX_REPAIRS"
+WATCHDOG_MAX_RESTARTS="$WATCHDOG_MAX_RESTARTS"
+WATCHDOG_MAX_CANDIDATES="$WATCHDOG_MAX_CANDIDATES"
 TEST_RESULTS_MAX_AGE_BYPASS="$TEST_RESULTS_MAX_AGE_BYPASS"
 TEST_RESULTS_MAX_AGE_CLEAN="$TEST_RESULTS_MAX_AGE_CLEAN"
 TEST_RESULTS_MAX_AGE_SECURITY="$TEST_RESULTS_MAX_AGE_SECURITY"
@@ -8499,6 +8517,16 @@ apply_watchdog() {
     else
         watchdog_cron_marker_exists >/dev/null 2>&1 && watchdog_cron_remove_owned_block >/dev/null 2>&1 || true
         watchdog_service_remove_files || return 1
+    fi
+    return 0
+}
+
+apply_watchdog_tuning() {
+    # Save bounded watchdog parameters and restart only the watchdog process.
+    save_config || return 1
+    if [ "${WATCHDOG_ENABLED:-0}" = 1 ]; then
+        watchdog_service_stop_disable || return 1
+        watchdog_service_start_enable || return 1
     fi
     return 0
 }
