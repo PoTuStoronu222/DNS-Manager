@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.3.3
+# Version: 1.3.4
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -22,7 +22,7 @@ COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main
 # Legacy update compatibility: admin/services/dns_manager
 RUNTIME_UPDATE_STATE="$BACKUP_DIR/update.state"
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.3.3"
+VERSION="1.3.4"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -168,7 +168,7 @@ UPDATE_STATE="/etc/dns-manager-luci/update.state"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.3.3"
+SELF_VERSION="1.3.4"
 
 umask 077
 mkdir -p "$RUNTIME_DIR" "$JOB_DIR" "$CHECK_DIR" "$TMP_ROOT" 2>/dev/null || exit 1
@@ -547,67 +547,65 @@ update_all_json() {
     fi
     _message=""
     _failed=""
-    _updated=0
 
     _old_m="$(manager_version 2>/dev/null || true)"
-    _old_l="$(read_installed_luci_version)"
+    _mr="$(update_manager_json 2>/dev/null || true)"
+    _new_m="$(manager_version 2>/dev/null || true)"
+    if [ -n "$_old_m" ] && [ -n "$_new_m" ] && [ "$_new_m" != "$_old_m" ]; then
+        append_update_message "DNS Manager $_old_m → $_new_m"
+    elif printf "%s\n" "$_mr" | grep -q "Новой\|актуал\|не новее" 2>/dev/null; then
+        append_update_message "DNS Manager $_old_m · актуален"
+    else
+        append_failure_message "DNS Manager: не удалось обновить"
+    fi
+
     _old_h="$(package_version https-dns-proxy 2>/dev/null || true)"
+    _hr="$(update_hdp_json 2>/dev/null || true)"
+    _new_h="$(package_version https-dns-proxy 2>/dev/null || true)"
+    if [ -n "$_old_h" ] && [ -n "$_new_h" ] && [ "$_new_h" != "$_old_h" ]; then
+        append_update_message "Защищённый DNS $_old_h → $_new_h"
+    elif printf "%s\n" "$_hr" | grep -q "Новой\|актуал\|не найдено" 2>/dev/null; then
+        append_update_message "Защищённый DNS $_old_h · актуален"
+    else
+        append_failure_message "Защищённый DNS: не удалось обновить"
+    fi
+
     _old_cv="$(catalog_version 2>/dev/null || true)"
     _old_cr="$(catalog_revision 2>/dev/null || true)"
-
-    update_manager_direct
-    _rc=$?
-    _new_m="$(manager_version 2>/dev/null || true)"
-    case "$_rc" in
-        0) append_update_message "DNS Manager $_old_m → $_new_m"; _updated=1 ;;
-        2) append_update_message "DNS Manager $_old_m · актуален" ;;
-        *) append_failure_message "DNS Manager: не удалось обновить" ;;
-    esac
-
-    update_hdp_direct
-    _rc=$?
-    _new_h="$(package_version https-dns-proxy 2>/dev/null || true)"
-    case "$_rc" in
-        0) append_update_message "Защищённый DNS $_old_h → $_new_h"; _updated=1 ;;
-        2) append_update_message "Защищённый DNS $_old_h · актуален" ;;
-        *) append_failure_message "Защищённый DNS: не удалось обновить" ;;
-    esac
-
     update_catalog_direct
     _rc=$?
     _new_cv="$(catalog_version 2>/dev/null || true)"
     _new_cr="$(catalog_revision 2>/dev/null || true)"
     case "$_rc" in
-        0) append_update_message "Каталог DNS $_old_cv rev.$_old_cr → $_new_cv rev.$_new_cr"; _updated=1 ;;
+        0) append_update_message "Каталог DNS $_old_cv rev.$_old_cr → $_new_cv rev.$_new_cr" ;;
         2) append_update_message "Каталог DNS $_old_cv rev.$_old_cr · актуален" ;;
         *) append_failure_message "Каталог DNS: не удалось обновить" ;;
     esac
 
-    update_luci_direct
-    _rc=$?
+    _old_l="$(read_installed_luci_version)"
+    _lr="$(update_json 2>/dev/null || true)"
     _new_l="$(read_installed_luci_version)"
-    case "$_rc" in
-        0) append_update_message "LuCI $_old_l → $_new_l"; _updated=1 ;;
-        2) append_update_message "LuCI $_old_l · актуальна" ;;
-        *) append_failure_message "LuCI: не удалось обновить" ;;
-    esac
+    if [ -n "$_old_l" ] && [ -n "$_new_l" ] && [ "$_new_l" != "$_old_l" ]; then
+        append_update_message "LuCI $_old_l → $_new_l"
+    elif printf "%s\n" "$_lr" | grep -q "Новой\|актуал\|не новее" 2>/dev/null; then
+        append_update_message "LuCI $_old_l · актуальна"
+    else
+        append_failure_message "LuCI: не удалось обновить"
+    fi
 
     rm -rf "$RUNTIME_DIR/update-all.lock" 2>/dev/null || true
-
     if [ -n "$_failed" ]; then
         [ -n "$_message" ] && _message="$_message; "
         _message="$_message""Ошибки: $_failed"
-        printf '{"ok":false,"updated":%s,"message":' "$_updated"
+        printf '%s' '{"ok":false,"updated":false,"message":'
         json_quote "$_message"
-        printf '}'
-        return
+        printf '%s' '}'
+    else
+        printf '%s' '{"ok":true,"updated":true,"message":'
+        json_quote "${_message:-Обновление завершено.}"
+        printf '%s' '}'
     fi
-
-    printf '{"ok":true,"updated":%s,"message":' "$_updated"
-    json_quote "$_message"
-    printf '}'
 }
-
 update_manager_json() {
     if ! mkdir "$RUNTIME_DIR/manager-update.lock" 2>/dev/null; then
         json_error "Обновление DNS Manager уже выполняется"; return
@@ -1273,7 +1271,7 @@ EOF_RPC
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.3.3
+// DNS Manager LuCI version: 1.3.4
 var callStatus = rpc.declare({ object:'dns_manager', method:'status', expect:{} });
 var callCatalog = rpc.declare({ object:'dns_manager', method:'catalog', params:['category','offset','limit','only_ok'], expect:{} });
 var callUpdateCheck = rpc.declare({ object:'dns_manager', method:'update_check', expect:{} });
