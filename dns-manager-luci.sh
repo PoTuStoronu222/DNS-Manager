@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.2.8
+# Version: 1.2.9
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -22,7 +22,7 @@ COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main
 # Legacy update compatibility: admin/services/dns_manager
 RUNTIME_UPDATE_STATE="$BACKUP_DIR/update.state"
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.2.8"
+VERSION="1.2.9"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -167,7 +167,7 @@ UPDATE_STATE="/etc/dns-manager-luci/update.state"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.2.8"
+SELF_VERSION="1.2.9"
 
 umask 077
 mkdir -p "$RUNTIME_DIR" "$JOB_DIR" "$CHECK_DIR" "$TMP_ROOT" 2>/dev/null || exit 1
@@ -418,47 +418,6 @@ component_update_check() {
     printf 'components_checked_at=%s\n' "$_ts" >> "$_state_tmp"
     mv "$_state_tmp" "$UPDATE_STATE" 2>/dev/null || rm -f "$_state_tmp" 2>/dev/null || true
 }
-version_check_job_start() {
-    _active="$RUNTIME_DIR/version-check.active"
-    if [ -r "$_active" ]; then
-        _ajid="$(cat "$_active" 2>/dev/null || true)"
-        if [ -n "$_ajid" ] && [ -r "$JOB_DIR/$_ajid/state" ]; then
-            _ad="$JOB_DIR/$_ajid/state"
-            _as="$(sed -n 's/^status=//p' "$_ad" 2>/dev/null | tail -n1)"
-            if [ "$_as" = running ]; then
-                _started="$(sed -n 's/^started=//p' "$_ad" 2>/dev/null | head -n1)"
-                _now="$(date +%s 2>/dev/null || printf 0)"
-                case "$_started" in ''|*[!0-9]*) _started=0;; esac
-                if [ "$_started" -gt 0 ] 2>/dev/null && [ "$_now" -gt 0 ] && [ $((_now-_started)) -lt 180 ]; then
-                    printf '{"ok":true,"job":'; json_quote "$_ajid"; printf ',"status":"running"}'
-                    return
-                fi
-                printf 'status=failed\nfinished=%s\nerror=Проверка версий зависла и была сброшена\n' "$_now" >> "$_ad"
-                rm -f "$_active" 2>/dev/null || true
-            fi
-        else
-            rm -f "$_active" 2>/dev/null || true
-        fi
-    fi
-    _jid="vc-$(date +%s)-$$"
-    mkdir -p "$JOB_DIR/$_jid" 2>/dev/null || { json_error "Не удалось создать проверку версий"; return; }
-    _started="$(date +%s 2>/dev/null || printf 0)"
-    printf 'status=running\nstarted=%s\n' "$_started" > "$JOB_DIR/$_jid/state"
-    printf '%s' "$_jid" > "$_active" 2>/dev/null || true
-    (
-        _rc=0
-        update_check_json > "$JOB_DIR/$_jid/result" 2>&1 || _rc=$?
-        if [ "$_rc" = 0 ]; then
-            printf 'status=done\nfinished=%s\n' "$(date +%s 2>/dev/null || printf 0)" >> "$JOB_DIR/$_jid/state"
-        else
-            printf 'status=failed\nfinished=%s\n' "$(date +%s 2>/dev/null || printf 0)" >> "$JOB_DIR/$_jid/state"
-        fi
-        rm -f "$_active" 2>/dev/null || true
-    ) >/dev/null 2>&1 &
-    _pid=$!
-    printf 'pid=%s\n' "$_pid" >> "$JOB_DIR/$_jid/state"
-    printf '{"ok":true,"job":'; json_quote "$_jid"; printf ',"status":"running"}'
-}
 
 update_hdp_json() {
     if ! mkdir "$RUNTIME_DIR/hdp-update.lock" 2>/dev/null; then
@@ -477,30 +436,7 @@ update_hdp_json() {
     [ -n "$_after" ] || { json_error "Не удалось определить версию после обновления"; return; }
     printf '{"ok":true,"updated":true,"version":'; json_quote "$_after"; printf '}'
 }
-version_check_job_status() {
-    _jid="$1"
-    printf '%s\n' "$_jid" | grep -Eq '^vc-[A-Za-z0-9_-]+$' || { json_error "Неверный ID проверки"; return; }
-    _d="$JOB_DIR/$_jid"
-    [ -d "$_d" ] || { json_error "Проверка не найдена"; return; }
-    _status="$(sed -n 's/^status=//p' "$_d/state" 2>/dev/null | tail -n1)"
-    [ -n "$_status" ] || _status=running
-    if [ "$_status" = running ]; then
-        _pid="$(sed -n 's/^pid=//p' "$_d/state" 2>/dev/null | tail -n1)"
-        _started="$(sed -n 's/^started=//p' "$_d/state" 2>/dev/null | head -n1)"
-        _now="$(date +%s 2>/dev/null || printf 0)"
-        _dead=0
-        case "$_pid" in ''|*[!0-9]*) _dead=1;; *) kill -0 "$_pid" >/dev/null 2>&1 || _dead=1;; esac
-        case "$_started" in ''|*[!0-9]*) _started=0;; esac
-        if [ "$_dead" = 1 ] && [ "$_started" -gt 0 ] 2>/dev/null && [ "$_now" -gt 0 ] && [ $((_now-_started)) -ge 10 ]; then
-            printf 'status=failed\nfinished=%s\nerror=Процесс проверки версий завершился неожиданно\n' "$_now" >> "$_d/state"
-            _status=failed
-            rm -f "$RUNTIME_DIR/version-check.active" 2>/dev/null || true
-        fi
-    fi
-    printf '{"ok":true,"job":'; json_quote "$_jid"; printf ',"status":'; json_quote "$_status"
-    [ -r "$_d/result" ] && { printf ',"result":'; json_quote "$(cat "$_d/result" 2>/dev/null)"; }
-    printf '}'
-}
+
 update_check_json() {
     _result="$(update_check_json_luci)"
     component_update_check || true
@@ -519,6 +455,28 @@ maybe_background_update_check() {
         trap 'rm -rf "$RUNTIME_DIR/update-check.lock" 2>/dev/null || true' EXIT INT TERM
         update_check_json >/dev/null 2>&1 || true
     ) </dev/null >/dev/null 2>&1 &
+}
+
+update_manager_json() {
+    if ! mkdir "$RUNTIME_DIR/manager-update.lock" 2>/dev/null; then
+        json_error "Обновление DNS Manager уже выполняется"; return
+    fi
+    trap 'rm -rf "$RUNTIME_DIR/manager-update.lock" 2>/dev/null || true' EXIT INT TERM
+    _installed="$(manager_version 2>/dev/null || true)"
+    [ -n "$_installed" ] || { json_error "DNS Manager не найден"; return; }
+    _out="$TMP_ROOT/manager-update.log"
+    rm -f "$_out" 2>/dev/null || true
+    DNS_MANAGER_FORCE_UPDATE=1 DNS_MANAGER_UPDATE_NO_EXEC=1 "$MANAGER_PATH" update-check >"$_out" 2>&1 || true
+    _after="$(manager_version 2>/dev/null || true)"
+    if [ -n "$_after" ] && [ "$_after" != "$_installed" ]; then
+        printf '{"ok":true,"updated":true,"version":'; json_quote "$_after"; printf '}'
+        rm -f "$_out" 2>/dev/null || true
+        return
+    fi
+    _detail="$(tail -n 8 "$_out" 2>/dev/null | awk 'BEGIN{ORS=" "} {print}' | cut -c1-700)"
+    rm -f "$_out" 2>/dev/null || true
+    [ -n "$_detail" ] || _detail="Новой версии DNS Manager не найдено."
+    json_error "$_detail"
 }
 
 update_json() {
@@ -1145,9 +1103,7 @@ case "${1:-}" in
         case "${2:-}" in
             status) status_json;;
             catalog) INPUT="$(cat 2>/dev/null || true)"; catalog_json;;
-            update_check) update_check_json;;
-            update_check_job) version_check_job_start;;
-            update_check_job_status) INPUT="$(cat 2>/dev/null || true)"; version_check_job_status "$(jget id)";;            update) update_json;;            update_hdp) update_hdp_json;;
+            update_check) update_check_json;;            update) update_json;;            update_manager) update_manager_json;;            update_hdp) update_hdp_json;;
             set_profile|set_slot|set_setting) INPUT="$(cat 2>/dev/null || true)"; RPC_METHOD="$2"; run_action;;
             test_all|test_current|test_one) INPUT="$(cat 2>/dev/null || true)"; RPC_METHOD="$2"; test_json;;
             job) INPUT="$(cat 2>/dev/null || true)"; job_json "$(jget id)";;
@@ -1166,13 +1122,12 @@ EOF_RPC
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.2.8
+// DNS Manager LuCI version: 1.2.9
 var callStatus = rpc.declare({ object:'dns_manager', method:'status', expect:{} });
 var callCatalog = rpc.declare({ object:'dns_manager', method:'catalog', params:['category','offset','limit','only_ok'], expect:{} });
 var callUpdateCheck = rpc.declare({ object:'dns_manager', method:'update_check', expect:{} });
-var callVersionCheckStart = rpc.declare({ object:'dns_manager', method:'update_check_job', expect:{} });
-var callVersionCheckStatus = rpc.declare({ object:'dns_manager', method:'update_check_job_status', params:['id'], expect:{} });
 var callUpdate = rpc.declare({ object:'dns_manager', method:'update', expect:{} });
+var callManagerUpdate = rpc.declare({ object:'dns_manager', method:'update_manager', expect:{} });
 var callHdpUpdate = rpc.declare({ object:'dns_manager', method:'update_hdp', expect:{} });
 var callProfile = rpc.declare({ object:'dns_manager', method:'set_profile', params:['profile'], expect:{} });
 var callSlot = rpc.declare({ object:'dns_manager', method:'set_slot', params:['slot','id'], expect:{} });
@@ -1193,7 +1148,7 @@ var CATEGORY = [
   ['all','Все DNS'], ['bypass','Обход блокировок'], ['security','Безопасность'], ['privacy','Приватность'],
   ['adblock','Блокировка рекламы'], ['family','Семейный'], ['clean','Без фильтрации'], ['regional','Региональные']
 ];
-var state = { hdpUpdating:false, category:'all', offset:0, limit:18, catalogLoaded:false, catalogLoading:false, advanced:true, logLoaded:false, logLoading:false, busy:false, busySetting:'', settingMessage:'', settingMessageType:'', pageNotice:{}, statusError:'', updateKick:false, activeTab:'dashboard', jobRunning:false, lastJob:null, checking:{}, fullTest:null, versionCheck:null, autoRefreshRoot:null, lastAction:null };
+var state = { hdpUpdating:false, managerUpdating:false, category:'all', offset:0, limit:18, catalogLoaded:false, catalogLoading:false, advanced:true, logLoaded:false, logLoading:false, busy:false, busySetting:'', settingMessage:'', settingMessageType:'', pageNotice:{}, statusError:'', updateKick:false, activeTab:'dashboard', jobRunning:false, lastJob:null, checking:{}, fullTest:null, versionCheck:null, autoRefreshRoot:null, lastAction:null };
 
 function profileName(p){
   var x=PROFILE.filter(function(v){return v[0]===p;})[0];
@@ -1472,18 +1427,23 @@ function renderOverview(root,st){
   ]);
 
   var verCard=card('Версии',[
-    row('DNS Manager',versionState(st.manager_version,st.manager_update_available,st.manager_latest_version,st.manager_check_ok,'актуальна',state.versionCheck&&state.versionCheck.manager==='running')),
-    row('LuCI',versionState(st.luci_version,st.luci_update_available,st.luci_latest_version,st.luci_update_checked,'актуальна',state.versionCheck&&state.versionCheck.luci==='running')),
+    E('div',{'class':'dm-version-action'},[
+      versionState(st.manager_version,st.manager_update_available,st.manager_latest_version,st.manager_check_ok,'актуальна',state.versionCheck&&state.versionCheck.manager==='running'),
+      yes(st.manager_update_available)?btn(state.managerUpdating?'Обновляю…':'Обновить','cbi-button-positive',function(){updateManager(root);},{disabled:!!state.managerUpdating||!!state.busy}):E('span',{})
+    ]),
+    E('div',{'class':'dm-version-action'},[
+      versionState(st.luci_version,st.luci_update_available,st.luci_latest_version,st.luci_update_checked,'актуальна',state.versionCheck&&state.versionCheck.luci==='running'),
+      yes(st.luci_update_available)?btn(state.busy?'Обновляю…':'Обновить','cbi-button-positive',function(){doUpdate(root);},{disabled:!!state.busy}):E('span',{})
+    ]),
     st.luci_update_error?E('div',{'class':'dm-inline-msg error'},String(st.luci_update_error)):E('span',{}),
     E('div',{'class':'dm-version-action'},[
-      versionState(st.hdp_version,st.hdp_update_available,st.hdp_latest_version,st.hdp_check_ok,'актуальна',state.versionCheck&&state.versionCheck.hdp==='running'),
+      row('Защищённый DNS (https-dns-proxy)',versionState(st.hdp_version,st.hdp_update_available,st.hdp_latest_version,st.hdp_check_ok,'актуальна',state.versionCheck&&state.versionCheck.hdp==='running')),
       yes(st.hdp_update_available)?btn(state.hdpUpdating?'Обновляю…':'Обновить','cbi-button-positive',function(){updateHdp(root);},{disabled:!!state.hdpUpdating||!!state.busy}):E('span',{})
     ]),
     row('Каталог DNS',catalogVersionState(st.catalog_version,st.catalog_revision,st.catalog_total,st.catalog_update_available,st.catalog_latest_version,st.catalog_latest_rev,st.catalog_check_ok,state.versionCheck&&state.versionCheck.catalog==='running')),
     row('Проверено',dateText(st.components_checked_at)),
     E('div',{'class':'dm-actions'},[
-      btn('Проверить актуальность','cbi-button-neutral',function(){checkUpdate(root);}),
-      yes(st.luci_update_available)?btn('Обновить LuCI','cbi-button-positive',function(){doUpdate(root);}):E('span',{})
+      btn('Проверить актуальность','cbi-button-neutral',function(){checkUpdate(root);})
     ])
   ]);
 
@@ -1786,6 +1746,22 @@ function checkUpdate(root){
     state.versionCheck.running=false;
     state.versionCheck.error=true;
     globalUpdateNotice('Проверка версий не выполнена.','error');
+    refresh(root,true);
+  });
+}
+
+function updateManager(root){
+  if(state.managerUpdating||state.busy)return;
+  state.managerUpdating=true;
+  renderOverview(root,window.dmState||{});
+  callManagerUpdate().then(function(r){
+    state.managerUpdating=false;
+    if(r&&r.ok&&r.updated)state.pageNotice.overview='DNS Manager обновлён до '+r.version+'.';
+    else state.pageNotice.overview=(r&&r.error)||'DNS Manager не удалось обновить.';
+    refresh(root,true);
+  }).catch(function(){
+    state.managerUpdating=false;
+    state.pageNotice.overview='Не удалось выполнить обновление DNS Manager.';
     refresh(root,true);
   });
 }
