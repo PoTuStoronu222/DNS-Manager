@@ -3092,12 +3092,12 @@ apply_extras_now() {
     if [ -z "$_label" ]; then
         case "$1" in
             balance|tld) _label="Применяю DNS и перезапускаю dnsmasq";;
-            ntp) _label="Применяю настройку времени";;
-            mtu) _label="Применяю MTU/MSS";;
-            sysctl) _label="Применяю тюнинг TCP и Conntrack";;
-            force) _label="Применяю принудительный DNS";;
+            ntp) _label="Применяю время для устройств в локальной сети";;
+            mtu) _label="Применяю исправление MTU и MSS для WAN";;
+            sysctl) _label="Применяю оптимизацию TCP и таблиц соединений";;
+            force) _label="Применяю принудительный DNS для устройств";;
             ntp_clients) _label="Применяю Время для устройств в локальной сети";;
-            dnsmasq_perf) _label="Применяю кэширование DNS";;
+            dnsmasq_perf) _label="Применяю увеличенный кэш DNS";;
             client_fixes) _label="Применяю DNS для проверки подключения и совместимости устройств";;
             web) _label="Применяю терминальный доступ LuCI";;
             sysctl_ext) _label="Применяю расширенные параметры TCP и сетевых буферов";;
@@ -6775,7 +6775,7 @@ setting_process() {
             0:force|2:force) ok_msg "Принудительный DNS для устройств настроен." ;;
             1:force) ok_msg "Принудительный DNS для устройств выключен, стоковое состояние восстановлено." ;;
             0:sysctl|2:sysctl) ok_msg "Оптимизация TCP и таблицы соединений настроена." ;;
-            1:sysctl) ok_msg "TCP и Conntrack возвращены к стоку." ;;
+            1:sysctl) ok_msg "Оптимизация TCP и таблиц соединений выключена." ;;
             0:dnsmasq_perf|2:dnsmasq_perf) ok_msg "Увеличенный кэш DNS настроен." ;;
             1:dnsmasq_perf) ok_msg "Увеличенный кэш DNS выключен." ;;
             0:ntp_clients|2:ntp_clients) ok_msg "Время для устройств в локальной сети включено (DHCP 42, без принудительного перехвата)." ;;
@@ -6790,11 +6790,11 @@ setting_process() {
             mtu) err_msg "Не удалось изменить исправление сетевых параметров." ;;
             force) err_msg "Не удалось изменить принудительный DNS для устройств." ;;
             sysctl) err_msg "Не удалось изменить TCP и Conntrack." ;;
-            dnsmasq_perf) err_msg "Не удалось изменить кэширование DNS." ;;
-            ntp_clients) err_msg "Не удалось изменить Время для устройств в локальной сети." ;;
-            client_fixes) err_msg "Не удалось изменить исправления телеметрии и связи." ;;
+            dnsmasq_perf) err_msg "Не удалось изменить увеличенный кэш DNS." ;;
+            ntp_clients) err_msg "Не удалось изменить время для устройств в локальной сети." ;;
+            client_fixes) err_msg "Не удалось изменить DNS для проверки подключения и совместимости устройств." ;;
             web) err_msg "Не удалось изменить терминальный доступ LuCI." ;;
-            watchdog) err_msg "Не удалось изменить фоновую автопроверку DNS." ;;
+            watchdog) err_msg "Не удалось изменить автопроверку и замену DNS." ;;
         esac
     fi
     pause
@@ -6820,13 +6820,13 @@ while :; do
     menu_prompt
     safe_read c
     case "$c" in
-        1) setting_process mtu "Исправление MTU и MSS для WAN" "MTU/MSS исправление применяется только к реальной WAN-зоне." ;;
+        1) setting_process mtu "Исправление MTU и MSS для WAN" "Исправление действует только на фактическую WAN-зону." ;;
         2) setting_process watchdog "Автопроверка и замена DNS" "Каждые ${WATCHDOG_INTERVAL:-90}с проверяет только выбранные DNS-порты. Замена выполняется после двух последовательных сбоев; полный каталог из 105 DNS в фоне не запускается." ;;
-        3) setting_process force "Принудительный DNS" "DNS TCP/UDP 53 направляется на DNS роутера; DoT TCP/UDP 853 блокируется." ;;
-        4) setting_process sysctl "Оптимизация TCP и таблицы соединений" "Применяются параметры TCP и Conntrack." ;;
-        5) setting_process dnsmasq_perf "Увеличенный кэш DNS" "Применяются параметры DNS-кэша dnsmasq." ;;
-        6) setting_process ntp_clients "Время для устройств в локальной сети" "Роутер отвечает клиентам по UDP/123, а DHCP сообщает его адрес как NTP-сервер. Принудительный перехват NTP не используется." ;;
-        7) setting_process client_fixes "DNS для проверки подключения и совместимости устройств" "Добавляются DNS-правила для телеметрии и проверок подключения некоторых устройств." ;;
+        3) setting_process force "Принудительный DNS для устройств" "DNS-запросы устройств на портах 53 направляются на DNS роутера; DoT на 853 блокируется." ;;
+        4) setting_process sysctl "Оптимизация TCP и таблицы соединений" "Настраиваются TCP и таблица соединений." ;;
+        5) setting_process dnsmasq_perf "Увеличенный кэш DNS" "Кэш dnsmasq увеличивается и настраивается для повторных запросов." ;;
+        6) setting_process ntp_clients "Время для устройств в локальной сети" "Роутер сообщает устройствам свой адрес как сервер точного времени по DHCP." ;;
+        7) setting_process client_fixes "DNS для проверки подключения и совместимости устройств" "DNS-правила используются для системных проверок подключения и совместимости некоторых устройств." ;;
         8) setting_process luci "Нативный интерфейс DNS Manager" "Устанавливает отдельный файл dns-manager-luci.sh из GitHub и добавляет только LuCI → Службы → DNS Manager. ttyd и дополнительный HTTP-порт не используются." ;;
         '') return ;;
         *) warn_msg "Неизвестный пункт."; pause ;;
@@ -8554,7 +8554,7 @@ printf "  ${C_YELLOW}${C_BOLD}Firewall${C_NC}            ${C_CYAN}%s${C_NC}\n" "
 printf "  ${C_YELLOW}${C_BOLD}Каталог DNS${C_NC}        ${C_CYAN}%s • %s серверов${C_NC}\n" "$(dns_catalog_version)" "$(count_dns)"
 printf "  ${C_YELLOW}${C_BOLD}Автопроверка и замена DNS${C_NC} %b\n" "$(module_state_word watchdog "$WATCHDOG_ENABLED")"
 [ -s "$BASELINE_MANIFEST" ] && printf "  ${C_YELLOW}${C_BOLD}Исходная копия${C_NC}    ${C_GREEN}есть${C_NC}\n" || printf "  ${C_YELLOW}${C_BOLD}Исходная копия${C_NC}    ${C_YELLOW}нет${C_NC}\n"
-printf "  ${C_YELLOW}${C_BOLD}Принудительный DNS${C_NC} %b\n" "$(force_state_word)"
+printf "  ${C_YELLOW}${C_BOLD}Принудительный DNS для устройств${C_NC} %b\n" "$(force_state_word)"
 menu_section "НАСТРОЙКА DNS"
 menu_item "[1]" "Настроить DNS"
 menu_section "СЕРВИСЫ"
