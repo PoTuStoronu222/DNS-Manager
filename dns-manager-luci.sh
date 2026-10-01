@@ -1894,8 +1894,8 @@ function checkUpdate(root){
     state.versionCheck.error=!(r&&r.ok);
     if(r&&r.ok){
       window.dmState=r;
-      state.pageNotice.overview='Проверка актуальности завершена.';
-      globalUpdateNotice('Проверка актуальности завершена.','ok');
+      state.pageNotice.overview='';
+      globalUpdateNotice('', '');
       renderOverview(root,r);
     }else{
       state.pageNotice.overview=(r&&r.error)||'Проверка актуальности не выполнена.';
