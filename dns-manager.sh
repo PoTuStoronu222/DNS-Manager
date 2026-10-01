@@ -1829,14 +1829,6 @@ EOF_FORCE_IPT
         third_party_running zapret2 >/dev/null 2>&1 && _zapret=1
     fi
 
-    # A package-level force_dns=1 is also a real external state when the
-    # manager itself is not configured to own forced-DNS. This covers Zapret
-    # setups where the package generates the runtime redirect after startup.
-    if [ "$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null)" = 1 ] && [ "$_manager_force_cfg" != 1 ]; then
-        FORCED_DNS_ACTIVE=1
-        _external=1
-        { [ "${OTHER_ZAPRET:-no}" = yes ] || [ "${OTHER_ZAPRET2:-no}" = yes ]; } && _zapret=1
-    fi
 
     if [ "$_external" = 1 ]; then
         FORCED_DNS_EXTERNAL=1
@@ -1848,10 +1840,6 @@ EOF_FORCE_IPT
     elif [ "$_manager_force_cfg" = 1 ]; then
         FORCED_DNS_ACTIVE=1
         FORCED_DNS_SOURCE="DNS Manager"
-    elif [ "$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null)" = 1 ]; then
-        FORCED_DNS_ACTIVE=1
-        FORCED_DNS_EXTERNAL=1
-        FORCED_DNS_SOURCE="внешний сервис"
     fi
 
     FORCED_DNS_TARGETS="$(printf '%s\n' "$FORCED_DNS_TARGETS" | tr ' ' '\n' | sed '/^$/d' | sort -n -u | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
