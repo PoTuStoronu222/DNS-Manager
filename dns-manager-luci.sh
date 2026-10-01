@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.1.0
+# Version: 1.1.1
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -22,7 +22,7 @@ COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main
 # Legacy update compatibility: admin/services/dns_manager
 RUNTIME_UPDATE_STATE="$BACKUP_DIR/update.state"
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.1.0"
+VERSION="1.1.1"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -160,7 +160,7 @@ UPDATE_STATE="/etc/dns-manager-luci/update.state"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.1.0"
+SELF_VERSION="1.1.1"
 
 umask 077
 mkdir -p "$RUNTIME_DIR" "$JOB_DIR" "$CHECK_DIR" "$TMP_ROOT" 2>/dev/null || exit 1
@@ -1110,7 +1110,7 @@ EOF_RPC
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.1.0
+// DNS Manager LuCI version: 1.1.1
 var callStatus = rpc.declare({ object:'dns_manager', method:'status', expect:{} });
 var callCatalog = rpc.declare({ object:'dns_manager', method:'catalog', params:['category','offset','limit','only_ok'], expect:{} });
 var callUpdateCheck = rpc.declare({ object:'dns_manager', method:'update_check', expect:{} });
@@ -1157,7 +1157,7 @@ function loadBar(load1,cores){
   if(p===null)return E('span',{},'—');
   return E('div',{'class':'dm-load-wrap'},[
     E('div',{'class':'dm-load-line'},[
-      E('div',{'class':'dm-load-track'},[E('div',{'class':'dm-load-fill','style':'width:'+p+'%'}]),
+      E('div',{'class':'dm-load-track'},[E('div',{'class':'dm-load-fill','style':'width:'+p+'%'})]),
       E('span',{'class':'dm-load-value'},p+'%')
     ]),
     E('div',{'class':'dm-load-meta'},'load '+shortVal(load1)+' · '+String(cores||1)+' '+(Number(cores||1)===1?'ядро':'ядра'))
@@ -1356,7 +1356,7 @@ function renderOverview(root,st){
   var verCard=card('Версии',[
     row('DNS Manager',versionState(st.manager_version,st.manager_update_available,st.manager_latest_version,st.manager_check_ok,'актуальна',state.versionCheck&&state.versionCheck.manager==='running')),
     row('LuCI',versionState(st.luci_version,st.luci_update_available,st.luci_latest_version,st.luci_update_checked,'актуальна',state.versionCheck&&state.versionCheck.luci==='running')),
-    st.luci_update_error?E({'class':'dm-inline-msg error'},String(st.luci_update_error)):E('span',{}),
+    st.luci_update_error?E('div',{'class':'dm-inline-msg error'},String(st.luci_update_error)):E('span',{}),
     row('https-dns-proxy',versionState(st.hdp_version,st.hdp_update_available,st.hdp_latest_version,st.hdp_check_ok,'актуальна',state.versionCheck&&state.versionCheck.hdp==='running')),
     row('Каталог DNS',catalogVersionState(st.catalog_version,st.catalog_revision,st.catalog_total,st.catalog_update_available,st.catalog_latest_version,st.catalog_latest_rev,st.catalog_check_ok,state.versionCheck&&state.versionCheck.catalog==='running')),
     row('Последний тест DNS',dateText(st.last_full_test)),
