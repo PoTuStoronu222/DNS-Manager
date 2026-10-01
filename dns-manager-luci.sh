@@ -100,12 +100,12 @@ install_files() {
   },
   "admin/services/dns-manager/settings": {
     "title": "Настройки",
-    "order": 50,
+    "order": 60,
     "action": { "type": "view", "path": "dns_manager/overview" }
   },
   "admin/services/dns-manager/catalog": {
     "title": "Каталог DNS",
-    "order": 60,
+    "order": 50,
     "action": { "type": "view", "path": "dns_manager/overview" }
   },
   "admin/services/dns-manager/log": {
