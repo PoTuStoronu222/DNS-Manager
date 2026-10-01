@@ -596,6 +596,7 @@ menu_item_action() {
     _title="$2"
     _module="$3"
     _state="$(check_module_state "$_module")"
+
     case "$_module" in
         luci)
             case "$_state" in
@@ -614,13 +615,10 @@ menu_item_action() {
             esac
             ;;
     esac
-    if [ "$_module" = force ]; then
-        _state_text="$(force_state_word)"
-    else
-        _state_text="$(module_state_word "$_module")"
-    fi
-    printf "  ${C_CYAN}${C_BOLD}%-5s${C_NC} ${C_YELLOW}${C_BOLD}%-10s${C_NC} %-42s %b\n" "$_key" "$_action" "$_title" "$_state_text"
+
+    printf "  ${C_CYAN}${C_BOLD}%-5s${C_NC} ${C_YELLOW}${C_BOLD}%-13s${C_NC} %s\n" "$_key" "$_action" "$_title"
 }
+
 menu_back() {
 printf "\n${C_GREEN}${C_BOLD}[Enter]${C_NC} ${C_CYAN}Назад${C_NC}\n\n"
 }
@@ -6542,48 +6540,45 @@ setting_process() {
     _state="$(check_module_state "$_module")"
 
     printf "\n${C_WHITE}Настройка: %s${C_NC}\n" "$_title"
-    printf "  Состояние: %s\n" "$(module_state_word "$_module")"
 
     if [ "$_module" = luci ]; then
         case "$_state" in
-            0) printf "  Действие:  УСТАНОВИТЬ\n" ;;
-            1) printf "  Действие:  УДАЛИТЬ\n" ;;
-            2) printf "  Действие:  ВОССТАНОВИТЬ\n" ;;
-            *) err_msg "Не удалось определить состояние настройки."; pause; return 1 ;;
-        esac
-    else
-        case "$_state" in
-            0) printf "  Действие:  ВКЛЮЧИТЬ\n" ;;
-            1) printf "  Действие:  ВЫКЛЮЧИТЬ\n" ;;
-            2)
-                if [ "$_module" = force ]; then
-                    printf "  Действие:  НЕ ТРОГАТЬ\n"
-                else
-                    printf "  Действие:  ИСПРАВИТЬ\n"
-                fi
+            0)
+                confirm_action "Установить нативный интерфейс LuCI DNS Manager?" || return 0
                 ;;
-            *) err_msg "Не удалось определить состояние настройки."; pause; return 1 ;;
-        esac
-    fi
-    [ -n "$_description" ] && printf "  %s\n" "$_description"
-
-    if [ "$_module" = luci ]; then
-        case "$_state" in
-            0) confirm_action "Установить нативный интерфейс LuCI DNS Manager?" || return 0 ;;
-            1) confirm_action "Удалить нативный интерфейс LuCI DNS Manager? Сам DNS Manager и его DNS-настройки не изменятся." || return 0 ;;
-            2) confirm_action "Восстановить нативный интерфейс LuCI DNS Manager?" || return 0 ;;
+            1)
+                confirm_action "Удалить нативный интерфейс LuCI DNS Manager? Сам DNS Manager и его DNS-настройки не изменятся." || return 0
+                ;;
+            2)
+                confirm_action "Восстановить нативный интерфейс LuCI DNS Manager?" || return 0
+                ;;
+            *)
+                err_msg "Не удалось определить состояние настройки."
+                pause
+                return 1
+                ;;
         esac
     else
+        if [ "$_state" = 2 ] && [ "$_module" = force ]; then
+            detect_forced_dns_path >/dev/null 2>&1 || true
+            printf "  ${C_YELLOW}Обнаружен внешний forced-DNS${C_NC}"
+            if [ -n "${FORCED_DNS_SOURCE:-}" ]; then
+                printf " (${C_WHITE}%s${C_NC})" "$FORCED_DNS_SOURCE"
+            fi
+            printf ".\n"
+            info_msg "DNS Manager этот внешний перехват не изменяет."
+            pause
+            return 0
+        fi
+
         case "$_state" in
-            0) confirm_action "Включить «$_title»?" || return 0 ;;
-            1) confirm_action "Выключить «$_title» и вернуть штатное состояние?" || return 0 ;;
-            2)
-                if [ "$_module" = force ]; then
-                    info_msg "Обнаружен внешний forced-DNS. DNS Manager его не изменяет."
-                    pause
-                    return 0
-                fi
-                confirm_action "Исправить «$_title» и привести к целевой настройке DNS Manager?" || return 0
+            0) printf "Включаю...\n" ;;
+            1) printf "Выключаю...\n" ;;
+            2) printf "Исправляю...\n" ;;
+            *)
+                err_msg "Не удалось определить состояние настройки."
+                pause
+                return 1
                 ;;
         esac
     fi
@@ -6605,7 +6600,7 @@ setting_process() {
                 *) ok_msg "Нативный интерфейс LuCI DNS Manager установлен: LuCI → Службы → DNS Manager." ;;
             esac
         elif [ "$_rc" -eq 2 ]; then
-            warn_msg "Файлы LuCI установлены, но rpcd ещё не зарегистрировал интерфейс. Обновите страницу LuCI после перезагрузки rpcd." 
+            warn_msg "Файлы LuCI установлены, но rpcd ещё не зарегистрировал интерфейс. Обновите страницу LuCI после перезагрузки rpcd."
         else
             err_msg "Не удалось изменить нативный интерфейс LuCI DNS Manager."
         fi
@@ -6677,8 +6672,6 @@ setting_process() {
             1:client_fixes) ok_msg "Исправления телеметрии и связи выключены." ;;
             0:web|2:web) ok_msg "Терминальный доступ LuCI включён: пункт LuCI ведёт в ttyd DNS Manager." ;;
             1:web) ok_msg "Терминальный доступ LuCI выключен, пункт DNS Manager удалён." ;;
-            0:luci|2:luci) ok_msg "Нативный интерфейс LuCI DNS Manager установлен: LuCI → Службы → DNS Manager." ;;
-            1:luci) ok_msg "Нативный интерфейс LuCI DNS Manager удалён." ;;
             0:watchdog|2:watchdog) ok_msg "Фоновая автопроверка DNS включена через procd." ;;
             1:watchdog) ok_msg "Фоновая автопроверка DNS выключена." ;;
         esac
@@ -6691,7 +6684,6 @@ setting_process() {
             ntp_clients) err_msg "Не удалось изменить NTP-сервер роутера для устройств." ;;
             client_fixes) err_msg "Не удалось изменить исправления телеметрии и связи." ;;
             web) err_msg "Не удалось изменить терминальный доступ LuCI." ;;
-            luci) err_msg "Не удалось изменить нативный интерфейс LuCI DNS Manager." ;;
             watchdog) err_msg "Не удалось изменить фоновую автопроверку DNS." ;;
         esac
     fi
