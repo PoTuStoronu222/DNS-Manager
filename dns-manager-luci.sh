@@ -1527,7 +1527,6 @@ function checkUpdate(root){
           refresh(root,true);return;
         }
         if(ticks++>=120){state.versionCheck.manager='done';state.versionCheck.luci='done';state.versionCheck.hdp='done';state.versionCheck.catalog='done';state.versionCheck.running=false;state.versionCheck.error=true;
-          state.versionCheck.running=false;state.versionCheck.error=true;
           globalUpdateNotice('Проверка версий не завершилась.','error');
           refresh(root,true);return;
         }
