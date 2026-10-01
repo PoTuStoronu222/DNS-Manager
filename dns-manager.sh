@@ -686,7 +686,24 @@ init_dirs() {
 # ==========================================
 # ==========================================
 baseline_files() {
-printf '%s\n'  /etc/config/dhcp  /etc/config/https-dns-proxy  /etc/config/firewall  /etc/config/system  /etc/config/ttyd  /etc/sysctl.d/90-dns-manager.conf /etc/sysctl.d/91-dns-manager-extended.conf  /etc/dnsmasq.d/90-dns-manager-bogus.conf  /etc/dnsmasq.d/91-dns-manager-client-fixes.conf  
+printf '%s\n' \
+ /etc/config/dhcp \
+ /etc/config/https-dns-proxy \
+ /etc/config/firewall \
+ /etc/config/system \
+ /etc/config/ttyd \
+ /etc/sysctl.d/90-dns-manager.conf \
+ /etc/sysctl.d/91-dns-manager-extended.conf \
+ /etc/dnsmasq.d/90-dns-manager-bogus.conf \
+ /etc/dnsmasq.d/91-dns-manager-client-fixes.conf \
+ /etc/dnsmasq.d/92-dns-manager-client-fixes.conf \
+ /etc/dnsmasq.d/93-dns-manager-client-fixes.conf \
+ /etc/dnsmasq.d/94-dns-manager-client-fixes.conf \
+ /etc/dnsmasq.d/95-dns-manager-client-fixes.conf \
+ /etc/dnsmasq.d/96-dns-manager-client-fixes.conf \
+ /etc/dnsmasq.d/97-dns-manager-client-fixes.conf \
+ /etc/dnsmasq.d/98-dns-manager-client-fixes.conf \
+ /etc/dnsmasq.d/99-dns-manager-client-fixes.conf
 }
 sanitize_baseline_shared_files() {
     [ -s "$BASELINE_MANIFEST" ] && {
@@ -842,7 +859,7 @@ baseline_restore_if_safe() {
             /etc/sysctl.d/90-dns-manager.conf) BASELINE_RESTORED_SYSCTL_BASE=1;;
             /etc/sysctl.d/91-dns-manager-extended.conf) BASELINE_RESTORED_SYSCTL_EXT=1;;
             /etc/dnsmasq.d/90-dns-manager-bogus.conf) BASELINE_RESTORED_BOGUS=1;;
-            /etc/dnsmasq.d/91-dns-manager-client-fixes.conf) BASELINE_RESTORED_CLIENT_FIXES=1;;
+            /etc/dnsmasq.d/*-dns-manager-client-fixes.conf) BASELINE_RESTORED_CLIENT_FIXES=1;;
         esac
     done
 
@@ -866,7 +883,7 @@ baseline_uninstall_validate() {
     while IFS='|' read -r _f _k _existed _hash; do
         [ -n "$_f" ] || continue
         case "$_f" in
-            /etc/config/dhcp|/etc/config/https-dns-proxy|/etc/config/firewall|/etc/config/system|/etc/config/ttyd|/etc/sysctl.d/90-dns-manager.conf|/etc/sysctl.d/91-dns-manager-extended.conf|/etc/dnsmasq.d/90-dns-manager-bogus.conf|/etc/dnsmasq.d/91-dns-manager-client-fixes.conf) ;;
+            /etc/config/dhcp|/etc/config/https-dns-proxy|/etc/config/firewall|/etc/config/system|/etc/config/ttyd|/etc/sysctl.d/90-dns-manager.conf|/etc/sysctl.d/91-dns-manager-extended.conf|/etc/dnsmasq.d/90-dns-manager-bogus.conf|/etc/dnsmasq.d/*-dns-manager-client-fixes.conf) ;;
             *) return 1 ;;
         esac
         [ "$_k" = "$(baseline_key "$_f")" ] || return 1
@@ -934,7 +951,7 @@ baseline_restore_for_uninstall() {
                 /etc/sysctl.d/90-dns-manager.conf) UNINSTALL_RESTORED_SYSCTL_BASE=1 ;;
                 /etc/sysctl.d/91-dns-manager-extended.conf) UNINSTALL_RESTORED_SYSCTL_EXT=1 ;;
                 /etc/dnsmasq.d/90-dns-manager-bogus.conf) UNINSTALL_RESTORED_BOGUS=1 ;;
-                /etc/dnsmasq.d/91-dns-manager-client-fixes.conf) UNINSTALL_RESTORED_CLIENT_FIXES=1 ;;
+                /etc/dnsmasq.d/*-dns-manager-client-fixes.conf) UNINSTALL_RESTORED_CLIENT_FIXES=1 ;;
             esac
         else
             _r=$?
@@ -4040,7 +4057,7 @@ if [ -x "$WATCHDOG_SERVICE_PATH" ]; then
     "$WATCHDOG_SERVICE_PATH" enabled >/dev/null 2>&1 && TX_WD_ENABLED=yes || TX_WD_ENABLED=no
     "$WATCHDOG_SERVICE_PATH" running >/dev/null 2>&1 && TX_WD_RUNNING=yes || TX_WD_RUNNING=no
 fi
-for f in "$CONFIG_FILE" "$OWNERSHIP" "$WATCHDOG_SERVICE_PATH" "$WATCHDOG_LEGACY_DAEMON_PATH" /etc/config/dhcp /etc/config/https-dns-proxy /etc/config/firewall /etc/config/system /etc/config/ttyd /etc/sysctl.d/90-dns-manager.conf /etc/sysctl.d/91-dns-manager-extended.conf /etc/dnsmasq.d/90-dns-manager-bogus.conf /etc/dnsmasq.d/91-dns-manager-client-fixes.conf; do
+for f in "$CONFIG_FILE" "$OWNERSHIP" "$EXTRA_STATE_DIR/mtu.conf" "$EXTRA_STATE_DIR/dnsmasq_perf.conf" "$EXTRA_STATE_DIR/ntp_clients.conf" "$WATCHDOG_SERVICE_PATH" "$WATCHDOG_LEGACY_DAEMON_PATH" /etc/config/dhcp /etc/config/https-dns-proxy /etc/config/firewall /etc/config/system /etc/config/ttyd /etc/sysctl.d/90-dns-manager.conf /etc/sysctl.d/91-dns-manager-extended.conf /etc/dnsmasq.d/90-dns-manager-bogus.conf /etc/dnsmasq.d/91-dns-manager-client-fixes.conf; do
 key="$(printf '%s' "$f" | sed 's#^/##; s#[/ ]#_#g')"
 if [ -f "$f" ]; then cp -p "$f" "$TX_DIR/files/$key"; file_hash "$f" > "$TX_DIR/$key.before"; printf '%s|%s|1\n' "$f" "$key" >> "$TX_DIR/manifest"; else printf '%s|%s|0\n' "$f" "$key" >> "$TX_DIR/manifest"; fi
 done
@@ -6069,10 +6086,23 @@ firewall_wan_zone() {
 
 apply_mtu_toggle() {
     _wan_zone="$(firewall_wan_zone 2>/dev/null)" || return 1
-    if [ "${MTU_FIX:-0}" = 1 ]; then
-        uci -q set "firewall.$_wan_zone.mtu_fix=1" || return 1
+    _target="firewall.$_wan_zone.mtu_fix"
+    if [ "\${MTU_FIX:-0}" = 1 ]; then
+        if [ -s "$(module_state_path mtu)" ]; then
+            module_state_matches mtu || { err_msg "Параметр $_target изменён извне; DNS Manager его не перезаписывает."; return 2; }
+        else
+            _cur="$(uci -q get "$_target" 2>/dev/null || true)"
+            [ -z "$_cur" ] || { err_msg "Параметр $_target уже задан извне; DNS Manager его не перезаписывает."; return 2; }
+            module_state_record_current mtu "$_target" scalar 1 || return 1
+        fi
+        uci -q set "$_target=1" || return 1
     else
-        uci -q delete "firewall.$_wan_zone.mtu_fix" || true
+        [ -s "$(module_state_path mtu)" ] || {
+            [ -z "$(uci -q get "$_target" 2>/dev/null || true)" ] || { err_msg "Параметр $_target изменён извне; DNS Manager его сохраняет."; return 2; }
+            return 0
+        }
+        module_state_restore mtu; _r=$?
+        [ "$_r" = 0 ] || return "$_r"
     fi
     uci commit firewall >/dev/null 2>&1 || return 1
     reload_fw >/dev/null 2>&1 || return 1
@@ -6177,56 +6207,19 @@ check_module_state() {
             ;;
         mtu)
             _wan_zone="$(firewall_wan_zone 2>/dev/null)" || { printf 0; return; }
-            _v="$(uci -q get "firewall.$_wan_zone.mtu_fix" 2>/dev/null)"
-            [ "$_v" = 1 ] && printf 1 || { [ -n "$_v" ] && printf 2 || printf 0; }
-            ;;
-        sysctl)
-            _base="$(sysctl_base_manager_path)"
-            _ext="$(sysctl_extended_manager_path)"
-            _base_all=1
-            for _p in "net.ipv4.tcp_fastopen=3" "net.ipv4.tcp_fin_timeout=15" "net.core.somaxconn=1024"; do
-                _k="${_p%%=*}"; _v="${_p#*=}"
-                _cur="$(sysctl -n "$_k" 2>/dev/null)"
-                [ "$_cur" = "$_v" ] || _base_all=0
-            done
-            _base_file_state=0
-            [ -f "$_base" ] && _base_file_state="$(sysctl_file_state "$_base" "$SYSCTL_BASE_MARKER" "$(sysctl_base_expected)")"
-
-            _ext_all=1
-            _ext_supported=0
-            while IFS= read -r _p; do
-                [ -n "$_p" ] || continue
-                _k="${_p%%=*}"; _v="${_p#*=}"
-                if ! sysctl -n "$_k" >/dev/null 2>&1; then
-                    continue
-                fi
-                _ext_supported=$((_ext_supported + 1))
-                _cur="$(sysctl -n "$_k" 2>/dev/null)"
-                [ "$_cur" = "$_v" ] || _ext_all=0
-            done <<EOF_CHECK_EXT_FACT
-$(sysctl_extended_params)
-EOF_CHECK_EXT_FACT
-            _ext_file_state=0
-            [ -f "$_ext" ] && _ext_file_state="$(sysctl_file_state "$_ext" "$SYSCTL_EXTENDED_MARKER" "$(sysctl_extended_params)")"
-
-            # The Manager is considered ON only when its own persistent sysctl
-            # file is owned by the Manager and the live kernel values match.
-            # Runtime values alone are deliberately not enough: stock OpenWrt
-            # or another package may already have one or more identical values.
-            if [ "$_base_all" = 1 ] && [ "$_base_file_state" = 1 ] && [ "$_ext_all" = 1 ]; then
-                if [ "$_ext_supported" -eq 0 ] || [ "$_ext_file_state" = 1 ]; then
-                    printf 1
-                    return 0
-                fi
+            _target="firewall.$_wan_zone.mtu_fix"
+            if [ -s "$(module_state_path mtu)" ]; then
+                module_state_matches mtu && printf 1 || printf 2
+                return
             fi
-
-            # A foreign/modified file at the Manager-owned path is a real
-            # conflict. A missing Manager file with coincidentally matching
-            # runtime values is simply OFF, not OTHER.
-            if [ "$_base_file_state" = 2 ] || [ "$_base_file_state" = 3 ] || [ "$_ext_file_state" = 2 ] || [ "$_ext_file_state" = 3 ]; then
-                printf 2
-            else
+            _v="$(uci -q get "$_target" 2>/dev/null || true)"
+            if [ -z "$_v" ]; then
                 printf 0
+            elif [ "\${MTU_FIX:-0}" = 1 ] && [ "$_v" = 1 ]; then
+                module_state_record_explicit mtu "$_target" scalar 0 "" 1 >/dev/null 2>&1 || true
+                printf 1
+            else
+                printf 2
             fi
             ;;
         force)
