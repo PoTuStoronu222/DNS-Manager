@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.0.0
+# Version: 1.0.2
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -22,7 +22,7 @@ COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main
 # Legacy update compatibility: admin/services/dns_manager
 RUNTIME_UPDATE_STATE="$BACKUP_DIR/update.state"
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.0.0"
+VERSION="1.0.2"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -136,7 +136,7 @@ UPDATE_STATE="/etc/dns-manager-luci/update.state"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.0.0"
+SELF_VERSION="1.0.2"
 
 umask 077
 mkdir -p "$RUNTIME_DIR" "$JOB_DIR" "$CHECK_DIR" "$TMP_ROOT" 2>/dev/null || exit 1
@@ -171,7 +171,7 @@ manager_version() {
 cfg_get() {
     _key="$1"
     [ -r "$CONFIG_FILE" ] || return 0
-    awk -v k="$_key" 'index($0,k"=")==1 { v=substr($0,length(k)+2); sub(/^\"/,"",v); sub(/\"$/, "", v); sub(/^\047/,"",v); sub(/\047$/, "", v); print v; exit }' "$CONFIG_FILE" 2>/dev/null
+    awk -v k="$_key" 'BEGIN { q=sprintf("%c",39) } index($0,k"=")==1 { v=substr($0,length(k)+2); sub(/^"/,"",v); sub(/"$/,"",v); sub("^" q,"",v); sub(q "$","",v); print v; exit }' "$CONFIG_FILE" 2>/dev/null
 }
 
 catalog_field() {
@@ -323,7 +323,7 @@ component_update_check() {
 
     _state_tmp="$UPDATE_STATE.tmp.$$"
     if [ -r "$UPDATE_STATE" ]; then
-        sed '/^installed=/d;/^latest=/d;/^available=/d;/^checked_at=/d;/^manager_/d;/^catalog_/d;/^hdp_/d;/^components_checked_at=/d' "$UPDATE_STATE" > "$_state_tmp" 2>/dev/null || true
+        sed '/^manager_/d;/^catalog_/d;/^hdp_/d;/^components_checked_at=/d' "$UPDATE_STATE" > "$_state_tmp" 2>/dev/null || true
     else
         : > "$_state_tmp"
     fi
@@ -674,8 +674,8 @@ status_json() {
     _force_user="$(uci -q get https-dns-proxy.config.user 2>/dev/null || true)"
     _force_group="$(uci -q get https-dns-proxy.config.group 2>/dev/null || true)"
     _force_listen="$(uci -q get https-dns-proxy.config.listen_addr 2>/dev/null || true)"
-    _force_ports_norm="$(printf '%s\n' "$_force_ports" | awk '{gsub(/[\"\047,]/," "); for(i=1;i<=NF;i++) print $i}' | sort -n | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
-    _force_src_norm="$(printf '%s\n' "$_force_src" | awk '{gsub(/[\"\047,]/," "); for(i=1;i<=NF;i++) print $i}' | sort | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+    _force_ports_norm="$(printf '%s\n' "$_force_ports" | awk '{gsub(/["\047,]/," "); for(i=1;i<=NF;i++) print $i}' | sort -n | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+    _force_src_norm="$(printf '%s\n' "$_force_src" | awk '{gsub(/["\047,]/," "); for(i=1;i<=NF;i++) print $i}' | sort | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
     _force_src_expected="lan"
     _fz="$(uci show firewall 2>/dev/null | sed -n 's/^firewall\.\([^.=]*\)=zone$/\1/p')"
     for _z in $_fz; do
@@ -1017,7 +1017,7 @@ EOF_RPC
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.0.0
+// DNS Manager LuCI version: 1.0.2
 var callStatus = rpc.declare({ object:'dns_manager', method:'status', expect:{} });
 var callCatalog = rpc.declare({ object:'dns_manager', method:'catalog', params:['category','offset','limit','only_ok'], expect:{} });
 var callUpdateCheck = rpc.declare({ object:'dns_manager', method:'update_check', expect:{} });
@@ -1037,7 +1037,7 @@ var callLog = rpc.declare({ object:'dns_manager', method:'log', params:['lines']
 var PROFILE = [
   ['bypass','Максимальный обход'], ['clean','Максимальная скорость'],
   ['security','Максимальная безопасность'], ['privacy','Максимальная приватность'],
-  ['adblock','Блокировка рекламы'], ['all','Выбор по категориям']
+  ['adblock','Блокировка рекламы'], ['family','Семейный'], ['all','Выбор по категориям']
 ];
 var CATEGORY = [
   ['all','Все DNS'], ['bypass','Обход блокировок'], ['security','Безопасность'], ['privacy','Приватность'],
