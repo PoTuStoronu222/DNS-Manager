@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.4.8
+# Version: 1.4.9
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -22,7 +22,7 @@ COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main
 # Legacy update compatibility: admin/services/dns_manager
 RUNTIME_UPDATE_STATE="$BACKUP_DIR/update.state"
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.4.8"
+VERSION="1.4.9"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -169,7 +169,7 @@ UPDATE_STATE="/etc/dns-manager-luci/update.state"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.4.8"
+SELF_VERSION="1.4.9"
 
 umask 077
 mkdir -p "$RUNTIME_DIR" "$JOB_DIR" "$CHECK_DIR" "$TMP_ROOT" 2>/dev/null || exit 1
@@ -1060,7 +1060,9 @@ status_json() {
         _id="$(cfg_get "SLOT_$_s")"; _cat="$(cfg_get "SLOT_${_s}_CAT")"; _port="$(cfg_get "PORT_$_s")"
         [ -n "$_cat" ] || [ -z "$_id" ] || _cat="$(catalog_field "$_id" 2 2>/dev/null || true)"
         _name="$(catalog_field "$_id" 4 2>/dev/null || true)"; [ -n "$_name" ] || _name="Не задан"
-        _r="$(result_for_id "$_id" 2>/dev/null || true)"; _ms="$(printf '%s' "$_r" | awk -F'|' 'NF>=5 {print $4;exit}')"; _rawst="$(printf '%s' "$_r" | awk -F'|' 'NF>=5 {print $5;exit}')"; _st=""
+        _r="$(last_check_result_for_id "$_id" 2>/dev/null || true)"
+        [ -n "$_r" ] || _r="$(result_for_id "$_id" 2>/dev/null || true)"
+        _ms="$(printf '%s' "$_r" | awk -F'|' 'NF>=5 {print $4;exit}')"; _rawst="$(printf '%s' "$_r" | awk -F'|' 'NF>=5 {print $5;exit}')"; _st=""
         case "$_rawst" in
             OK) case "$_ms" in ''|*[!0-9]*) _st=FAIL;; *) _st=OK;; esac ;;
             RUNNING) _st=RUNNING ;;
@@ -1564,7 +1566,6 @@ function renderOverview(root,st){
 
   var doh=st.doh==='yes'?badge('dm-ok','запущен'):Number(st.doh_total||0)>0?badge('dm-bad','остановлен'):badge('dm-off','не установлен');
   var dohNames=joinDnsNames(st);
-  var dohDetails=dohNames||'резолверы не настроены';
 
   var force=yes(st.force_both)?badge('dm-warn','DNS Manager + внешний'):st.force_owner==='external'?badge('dm-warn','внешний сервис'):yes(st.force_manager)?badge('dm-ok','DNS Manager'):badge('dm-off','выключен');
   var forceDetails=st.force_owner==='external'?'Источник: '+shortVal(st.force_source||'внешний сервис'):st.force_both?'Одновременно DNS Manager и внешний перехват':yes(st.force_manager)?'Перехват выполняет DNS Manager':'перехват отключён';
@@ -1598,7 +1599,6 @@ function renderOverview(root,st){
 
   var components=card('Компоненты',[
     componentItem('Профиль',profile,profileDetails),
-    componentItem('DNS over HTTPS',doh,dohDetails),
     componentItem('Автопроверка DNS',wd,wdDetails),
     componentItem('Принудительный DNS',force,forceDetails)
   ]);
