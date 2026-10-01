@@ -2341,20 +2341,35 @@ function renderSettings(root,st){
   var e=root.querySelector('#dm-settings');if(!e)return;e.innerHTML='';
   var body=[];
   body.push(watchdogCard(root,st));
-  var ageInputs=[];
-  var ages=E('div',{'class':'dm-test-age-list'});
-  [['bypass','Обход'],['clean','Чистый'],['security','Безопасность'],['privacy','Приватность'],['adblock','Блокировка рекламы'],['family','Семейный'],['regional','Региональный']].forEach(function(x){
-    ages.appendChild(testAgeRow(root,st,x[0],x[1],ageInputs));
-  });
+  var ageValue=Number(st.test_age_common||6);
+  var ageInput=E('input',{'type':'number','min':'1','max':'168','step':'1','value':String(ageValue),'class':'dm-input'});
+  var ageBusy=state.busySetting==='testages';
   var ageFeedback=settingFeedback('', 'testages');
-  var ageActions=E('div',{'class':'dm-actions'},[
-    btn(state.busySetting==='testages'?'Сохраняю…':'Сохранить','cbi-button-neutral',function(){saveTestAges(root,ageInputs);},{disabled:!!state.busy}),
-    ageFeedback
-  ].filter(function(x){return !!x;}));
+  var ageSave=btn(ageBusy?'Сохраняю…':'Сохранить','cbi-button-neutral',function(){
+    if(state.busy)return;
+    var n=String(ageInput.value||'').trim();
+    if(!/^\d+$/.test(n)||Number(n)<1||Number(n)>168){
+      setSettingFeedback('testages','Срок: от 1 до 168 часов.','error');
+      renderSettings(root,window.dmState||{});
+      return;
+    }
+    clearSettingFeedback();
+    state.busy=true; state.busySetting='testages';
+    renderSettings(root,window.dmState||{});
+    callTestAge('all',Number(n)).then(function(r){
+      state.busy=false; state.busySetting='';
+      if(r&&r.ok)setSettingFeedback('testages','Срок результатов проверки сохранён.','ok');
+      else setSettingFeedback('testages',(r&&r.error)||'Срок результатов проверки не удалось сохранить.','error');
+      refresh(root,true);
+    }).catch(function(){
+      state.busy=false; state.busySetting='';
+      setSettingFeedback('testages','Срок результатов проверки не удалось сохранить.','error');
+      refresh(root,true);
+    });
+  },{disabled:!!state.busy});
   body.push(card('Срок результатов проверки',[
-    E('div',{'class':'dm-hint'},'Сколько часов результаты полной проверки DNS считаются свежими.'),
-    ages,
-    ageActions
+    E('div',{'class':'dm-hint'},'Общий срок свежести результатов полной проверки DNS.'),
+    E('div',{'class':'dm-setting-line'},[ageInput,E('span',{'class':'dm-test-age-unit'},'ч'),ageSave,ageFeedback||E('span',{})])
   ]));
   body.forEach(function(x){e.appendChild(x);});
 }
