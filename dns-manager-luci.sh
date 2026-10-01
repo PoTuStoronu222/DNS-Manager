@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.5.3
+# Version: 1.5.4
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -22,7 +22,7 @@ COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main
 # Legacy update compatibility: admin/services/dns_manager
 RUNTIME_UPDATE_STATE="$BACKUP_DIR/update.state"
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.5.3"
+VERSION="1.5.4"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -170,7 +170,7 @@ UPDATE_STATE="/etc/dns-manager-luci/update.state"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.5.3"
+SELF_VERSION="1.5.4"
 
 umask 077
 mkdir -p "$RUNTIME_DIR" "$JOB_DIR" "$CHECK_DIR" "$TMP_ROOT" 2>/dev/null || exit 1
@@ -1560,7 +1560,7 @@ function componentItem(title,statusNode,details){
 }
 function componentSettingItem(title,key){
   var en=yes((window.dmState||{})[key]);
-  return componentItem(title,badge(en?'dm-ok':'dm-off',en?'включено':'выключено'),en?'Настройка активна':'Настройка выключена');
+  return componentItem(title,badge(en?'dm-ok':'dm-off',en?'включено':'выключено'));
 }
 function renderOverview(root,st){
   var e=root.querySelector('#dm-overview');if(!e)return;e.innerHTML='';
@@ -1576,7 +1576,7 @@ function renderOverview(root,st){
   var wdDetails=yes(st.watchdog)?'procd · интервал '+shortVal(st.watchdog_interval)+' с · порог '+shortVal(st.watchdog_fail_threshold)+' цикла':'автопроверка отключена';
 
   var profile=badge('dm-ok',profileName(st.profile));
-  var profileDetails=st.profile==='custom'?'Собственный выбор DNS по слотам':st.profile==='hybrid'?'Автоматический выбор DNS для обхода блокировок':'активная схема выбора DNS';
+
 
   var dnsItems=[];
   (st.slots||[]).forEach(function(d){
@@ -1600,7 +1600,7 @@ function renderOverview(root,st){
   if(!dnsItems.length)dnsItems.push(E('div',{'class':'dm-hint'},'DNS в слоты не назначены.'));
 
   var components=card('Компоненты',[
-    componentItem('Профиль',profile,profileDetails),
+    componentItem('Профиль',profile),
     componentItem('Автопроверка DNS',wd,wdDetails),
     componentItem('Принудительный DNS',force,forceDetails),
     componentSettingItem('Исправление MTU/MSS','mtu'),
