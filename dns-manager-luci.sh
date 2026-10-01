@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.5.31
+# Version: 1.5.32
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -22,7 +22,7 @@ COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main
 # Legacy update compatibility: admin/services/dns_manager
 RUNTIME_UPDATE_STATE="$BACKUP_DIR/update.state"
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.5.31"
+VERSION="1.5.32"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -98,6 +98,11 @@ install_files() {
     "order": 20,
     "action": { "type": "view", "path": "dns_manager/overview" }
   },
+  "admin/services/dns-manager/network": {
+    "title": "Сеть",
+    "order": 30,
+    "action": { "type": "view", "path": "dns_manager/overview" }
+  },
   "admin/services/dns-manager/settings": {
     "title": "Настройки",
     "order": 60,
@@ -155,7 +160,7 @@ UPDATE_STATE="/etc/dns-manager-luci/update.state"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.5.31"
+SELF_VERSION="1.5.32"
 
 umask 077
 mkdir -p "$RUNTIME_DIR" "$JOB_DIR" "$CHECK_DIR" "$TMP_ROOT" 2>/dev/null || exit 1
@@ -1618,12 +1623,13 @@ function setActiveTab(root,name){
   var groups={
     dashboard:['overview','test-inline'],
     doh:['profiles','slots'],
+    network:['network'],
     settings:['settings'],
     catalog:['catalog'],
     log:['log']
   };
   state.activeTab=groups[name]?name:'dashboard';
-  ['overview','doh','slots','profiles','settings','job','catalog','log','test-inline'].forEach(function(id){
+  ['overview','doh','slots','profiles','settings','network','job','catalog','log','test-inline'].forEach(function(id){
     var panel=root.querySelector('#dm-'+id);
     if(panel) panel.style.display='none';
   });
@@ -1642,7 +1648,7 @@ function currentRoute(){
 }
 function renderPageNav(root){
   var e=root.querySelector('#dm-page-nav');if(!e)return;e.innerHTML='';
-  var tabs=[['dashboard','Дашборд'],['doh','DNS over HTTPS'],['settings','Настройки'],['catalog','Каталог DNS'],['log','Журнал']];
+  var tabs=[['dashboard','Дашборд'],['doh','DNS over HTTPS'],['network','Сеть'],['settings','Настройки'],['catalog','Каталог DNS'],['log','Журнал']];
   var route=currentRoute();
   var nav=E('nav',{'class':'dm-page-nav'});
   var bar=E('div',{'class':'dm-page-tabs'});
@@ -2148,9 +2154,8 @@ function renderSettings(root,st){
   body.push(E('div',{'class':'dm-section-title'},'Фоновая проверка DNS'));
   body.push(watchdogCard(root,st));
   var groups=[
-    ['Сеть',[['mtu','Исправление MTU / MSS','Нужно только при проблемах с размером пакетов, отдельными сайтами, VPN или туннелями. На исправной сети обычно не требуется.'],['sysctl','Оптимизация TCP и таблицы соединений','Настраивает TCP Fast Open, таймаут TCP и очередь соединений.'],['sysctl_ext','Расширенная настройка сети','Дополнительно настраивает TCP, соединения и сетевые буферы. Для обычной работы не обязательна.']]],
     ['Производительность',[['dnsmasq_perf','Увеличенный кэш DNS','Хранит больше DNS-ответов, чтобы повторные запросы выполнялись быстрее.']]],
-    ['Устройства сети',[['ntp_clients','Синхронизация времени устройств','Роутер сообщает устройствам свой адрес как сервер точного времени по DHCP.'],['client_fixes','Совместимость и проверки подключения','Исправляет системные DNS-проверки подключения у некоторых устройств. Обычно не требуется, если всё работает.']]]
+    ['Устройства сети',[['ntp_clients','Синхронизация времени устройств','Роутер сообщает устройствам свой адрес как сервер точного времени по DHCP.'],['client_fixes','Совместимость и проверки подключения','Исправляет системные DNS-проверки подключения у некоторых устройств.']]]
   ];
   groups.forEach(function(g){
     body.push(E('div',{'class':'dm-section-title'},g[0]));
@@ -2163,6 +2168,22 @@ function renderSettings(root,st){
   [['bypass','Обход'],['clean','Чистый'],['security','Безопасность'],['privacy','Приватность'],['adblock','Блокировка рекламы'],['family','Семейный'],['regional','Региональный']].forEach(function(x){ages.appendChild(testAgeCard(root,st,x[0],x[1]));});
   body.push(ages);
   e.appendChild(card('Настройки',body));
+}
+
+function renderNetwork(root,st){
+  var e=root.querySelector('#dm-network');if(!e)return;e.innerHTML='';
+  var body=[];
+  if(state.settingMessage)body.push(E('div',{'class':'dm-inline-msg '+(state.settingMessageType||'info')},state.settingMessage));
+  body.push(E('div',{'class':'dm-hint'},'Сетевые параметры вынесены отдельно, чтобы не перегружать основные настройки DNS Manager.'));
+  body.push(E('div',{'class':'dm-section-title'},'Сеть'));
+  var grid=E('div',{'class':'dm-grid2'});
+  [
+    ['mtu','Исправление MTU / MSS','Нужно только при проблемах с размером пакетов, отдельными сайтами, VPN или туннелями. На исправной сети обычно не требуется.'],
+    ['sysctl','Оптимизация TCP и таблицы соединений','Настраивает TCP Fast Open, таймаут TCP и очередь соединений.'],
+    ['sysctl_ext','Расширенная настройка сети','Дополнительно настраивает TCP, соединения и сетевые буферы. Для обычной работы не обязательна.']
+  ].forEach(function(x){grid.appendChild(settingCard(root,x,st));});
+  body.push(grid);
+  e.appendChild(card('Сетевые настройки',body));
 }
 
 function renderCatalog(root){
@@ -2258,6 +2279,7 @@ function render(root,st){
   renderSlots(root,st);
   renderProfiles(root,st);
   renderSettings(root,st);
+  renderNetwork(root,st);
   renderCatalog(root);
   renderLog(root);
   renderJobIdle(root,st);
@@ -2450,7 +2472,7 @@ function setTestAge(category,hours,root){
     state.busy=false;state.busySetting='';state.settingMessage=(r&&r.ok)?'Срок проверки сохранён.':((r&&r.error)||'Срок проверки не удалось сохранить.');state.settingMessageType=(r&&r.ok)?'ok':'error';refresh(root,true);
   }).catch(function(){state.busy=false;state.busySetting='';state.settingMessage='Срок проверки не удалось сохранить.';state.settingMessageType='error';refresh(root,true);});
 }
-function setSetting(name,en,root){if(state.busy)return;state.busy=true;state.busySetting=name;state.settingMessage='Изменение «'+settingName(name)+'»…';state.settingMessageType='info';renderSettings(root,window.dmState||{});callSetting(name,en).then(function(r){state.busy=false;state.busySetting='';state.settingMessage=(r&&r.ok)?('Настройка «'+settingName(name)+'»: '+(en?'включена.':'выключена.')):((r&&r.error)||'Настройку не удалось изменить.');state.settingMessageType=(r&&r.ok)?'ok':'error';refresh(root,true);}).catch(function(){state.busy=false;state.busySetting='';state.settingMessage='Настройку не удалось изменить.';state.settingMessageType='error';refresh(root,true);});}
+function setSetting(name,en,root){if(state.busy)return;state.busy=true;state.busySetting=name;state.settingMessage='Изменение «'+settingName(name)+'»…';state.settingMessageType='info';renderSettings(root,window.dmState||{});if(state.activeTab==='network')renderNetwork(root,window.dmState||{});callSetting(name,en).then(function(r){state.busy=false;state.busySetting='';state.settingMessage=(r&&r.ok)?('Настройка «'+settingName(name)+'»: '+(en?'включена.':'выключена.')):((r&&r.error)||'Настройку не удалось изменить.');state.settingMessageType=(r&&r.ok)?'ok':'error';refresh(root,true);}).catch(function(){state.busy=false;state.busySetting='';state.settingMessage='Настройку не удалось изменить.';state.settingMessageType='error';refresh(root,true);});}
 function setForceMode(mode,root){
   if(state.busy)return;
   if(window.dmState&&window.dmState.force_owner==='external'){
@@ -2722,7 +2744,7 @@ function showLog(root){
 
 return view.extend({
   load:function(){return callStatus().then(function(st){return st||{};});},
-  render:function(st){var root=E('div',{'class':'dm-wrap'});['dm-header','dm-overview','dm-doh','dm-profiles','dm-slots','dm-settings','dm-job','dm-catalog','dm-log'].forEach(function(id){root.appendChild(E('section',{'id':id}));});injectStyle(root);window.dmState=st||{};state.activeTab=currentRoute();render(root,st||{});startAutoRefresh(root);return root;}
+  render:function(st){var root=E('div',{'class':'dm-wrap'});['dm-header','dm-overview','dm-doh','dm-profiles','dm-slots','dm-settings','dm-network','dm-job','dm-catalog','dm-log'].forEach(function(id){root.appendChild(E('section',{'id':id}));});injectStyle(root);window.dmState=st||{};state.activeTab=currentRoute();render(root,st||{});startAutoRefresh(root);return root;}
 });
 EOF_JS
     chmod 0644 "$MENU_FILE" "$ACL_FILE" "$VIEW_FILE"
