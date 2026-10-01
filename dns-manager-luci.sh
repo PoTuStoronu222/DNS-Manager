@@ -1510,7 +1510,7 @@ function checkUpdate(root){
   state.versionCheck={running:true,manager:'running',luci:'running',hdp:'running',catalog:'running',started:Date.now(),job:''};
   renderOverview(root,window.dmState||{});
   callVersionCheckStart().then(function(r){
-    if(!r||!r.ok||!r.job){state.versionCheck.running=false;state.versionCheck.error=true;refresh(root,true);return;}
+    if(!r||!r.ok||!r.job){state.versionCheck.manager='done';state.versionCheck.luci='done';state.versionCheck.hdp='done';state.versionCheck.catalog='done';state.versionCheck.running=false;state.versionCheck.error=true;refresh(root,true);return;}
     state.versionCheck.job=r.job;
     var ticks=0;
     function pollVersion(){
@@ -1526,14 +1526,14 @@ function checkUpdate(root){
           state.versionCheck.error=st==='failed'||!(s&&s.ok);
           refresh(root,true);return;
         }
-        if(ticks++>=120){
+        if(ticks++>=120){state.versionCheck.manager='done';state.versionCheck.luci='done';state.versionCheck.hdp='done';state.versionCheck.catalog='done';state.versionCheck.running=false;state.versionCheck.error=true;
           state.versionCheck.running=false;state.versionCheck.error=true;
           globalUpdateNotice('Проверка версий не завершилась.','error');
           refresh(root,true);return;
         }
         setTimeout(pollVersion,500);
       }).catch(function(){
-        if(ticks++>=20){state.versionCheck.running=false;state.versionCheck.error=true;refresh(root,true);return;}
+        if(ticks++>=20){state.versionCheck.manager='done';state.versionCheck.luci='done';state.versionCheck.hdp='done';state.versionCheck.catalog='done';state.versionCheck.running=false;state.versionCheck.error=true;refresh(root,true);return;}
         setTimeout(pollVersion,700);
       });
     }
