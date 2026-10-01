@@ -1756,8 +1756,8 @@ dnsmasq_manager_server_owned() {
     # Legacy Hybrid ports remain recognised so an upgrade can safely clean
     # an older manager installation without trusting its stale journal.
     case "$_val" in
-
-    esac
+        127.0.0.1#505[3-9]|/ru/127.0.0.1#505[3-9]|/su/127.0.0.1#505[3-9]|/xn--p1ai/127.0.0.1#505[3-9]) return 0 ;;
+esac
     return 1
 }
 reconcile_dnsmasq() {
@@ -2773,6 +2773,11 @@ verify_after_apply() {
             err_msg "dnsmasq: strictorder=0 не применён."; return 1;
         }
     fi
+    if [ -n "${SLOT_RU:-}" ]; then
+        [ "$(check_module_state tld 2>/dev/null)" = 1 ] || {
+            err_msg "Маршрут .ru/.su/.рф после применения не соответствует выбранному DNS."; return 1;
+        }
+    fi
     if [ "$CORE_ONLY" != 1 ]; then
         if [ "${FORCE_DOH:-0}" = 1 ]; then
             [ "$(check_module_state force 2>/dev/null)" = 1 ] || { err_msg "Принудительный DNS после применения не подтверждён."; return 1; }
@@ -3667,8 +3672,8 @@ clean|security|privacy|adblock|family|all)
     BALANCER_ENABLED=1
     PORT_1="$HYBRID_PORT_1"; PORT_2="$HYBRID_PORT_2"; PORT_3="$HYBRID_PORT_3"
     PORT_4="$HYBRID_PORT_4"; PORT_5="$HYBRID_PORT_5"; PORT_6="$HYBRID_PORT_6"
-    PORT_RU="";=""
-    SLOT_RU="";=""
+    PORT_RU=""
+    SLOT_RU=""
     if auto_fill_slots "$goal"; then
         CORE_ONLY=1
         apply_settings
