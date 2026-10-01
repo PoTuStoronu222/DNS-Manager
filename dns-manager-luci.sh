@@ -1401,15 +1401,24 @@ run_action() {
             ;;
         set_test_age)
             _category="$(jget category)"; _hours="$(jget hours)"
-            case "$_category" in bypass|clean|security|privacy|adblock|family|regional) ;; *) json_error "Неверная категория DNS"; return;; esac
+            case "$_category" in all|bypass|clean|security|privacy|adblock|family|regional) ;; *) json_error "Неверная категория DNS"; return;; esac
             case "$_hours" in ''|*[!0-9]*) json_error "Неверный срок проверки"; return;; esac
             [ "$_hours" -ge 1 ] 2>/dev/null && [ "$_hours" -le 168 ] 2>/dev/null || { json_error "Срок проверки должен быть от 1 до 168 часов"; return; }
             load_manager || { json_error "DNS Manager недоступен"; return; }
-            _var="TEST_RESULTS_MAX_AGE_$(printf '%s' "$_category" | tr '[:lower:]' '[:upper:]')"
             _expected="$((_hours*3600))"
-            eval "$_var=$_expected"
-            save_config >/dev/null 2>&1 || { json_error "Срок проверки не удалось сохранить"; return; }
-            _saved="$(cfg_get "$_var")"
+            if [ "$_category" = all ]; then
+                TEST_RESULTS_MAX_AGE="$_expected"
+                for _age_var in TEST_RESULTS_MAX_AGE_BYPASS TEST_RESULTS_MAX_AGE_CLEAN TEST_RESULTS_MAX_AGE_SECURITY TEST_RESULTS_MAX_AGE_PRIVACY TEST_RESULTS_MAX_AGE_ADBLOCK TEST_RESULTS_MAX_AGE_FAMILY TEST_RESULTS_MAX_AGE_REGIONAL; do
+                    eval "$_age_var=$_expected"
+                done
+                save_config >/dev/null 2>&1 || { json_error "Срок проверки не удалось сохранить"; return; }
+                _saved="$(cfg_get TEST_RESULTS_MAX_AGE)"
+            else
+                _var="TEST_RESULTS_MAX_AGE_$(printf '%s' "$_category" | tr '[:lower:]' '[:upper:]')"
+                eval "$_var=$_expected"
+                save_config >/dev/null 2>&1 || { json_error "Срок проверки не удалось сохранить"; return; }
+                _saved="$(cfg_get "$_var")"
+            fi
             [ "$_saved" = "$_expected" ] || { json_error "Срок проверки не сохранился"; return; }
             json_ok
             ;;
