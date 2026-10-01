@@ -1,6 +1,8 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.08"
+# ==========================================
+# ==========================================
+VERSION="3.10"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -5355,7 +5357,7 @@ printf "  Архитектура:    ${C_WHITE}%s${C_NC}\n" "$SYS_ARCH"
 printf "  DNS Watchdog:   %s\n" "$(module_state_word watchdog)"
 printf "  Watchdog core:  ${C_WHITE}procd${C_NC}\n"
 printf "  Watchdog scheduler: ${C_WHITE}procd${C_NC}\n"
-printf "  Crond:          ${C_WHITE}%s${C_NC} ${C_DGRAY}(DNS Watchdog не использует)${C_NC}\n" "$WATCHDOG_CRON_RUNNING"
+printf "  Crond:          %s\n" "$(state_word "$WATCHDOG_CRON_RUNNING")"
 printf "  Firewall:       ${C_WHITE}%s${C_NC}\n" "$SYS_FW"
 printf "  Backend:        ${C_WHITE}%s${C_NC}\n" "$FIREWALL_BACKEND"
 printf "  LAN:            ${C_WHITE}%s${C_NC}\n" "$LAN_IP"
@@ -5412,14 +5414,14 @@ printf "  Активный iptables:          %s\n" "$(state_word "$IPTABLES_ACT
 printf "  Аппаратное ускорение:       %s\n" "$(state_word "$FLOW_OFFLOAD")"
 menu_section "НАСТРОЙКИ DNS Manager"
 printf "  Настройка:                   ${C_YELLOW}%s${C_NC}\n" "$( [ "$DNS_PROFILE" = hybrid ] && printf '%s' 'Гибридный DNS — до 6 серверов + RU' || printf '%s' 'Своя настройка' )"
-printf "  Балансировка DNS:           %s\n" "$(module_state_word balance "$BALANCER_ENABLED")"
-printf "  Отдельный DNS (.ru/.su/.рф): %s\n" "$(module_state_word tld "$TLD_SPLIT")"
-printf "  Исправление сетевых параметров / MSS:      %s\n" "$(module_state_word mtu "$MTU_FIX")"
+printf "  Балансировка DNS:            %s\n" "$(module_state_word balance "$BALANCER_ENABLED")"
+printf "  Отдельный DNS (.ru/.su/.рф):  %s\n" "$(module_state_word tld "$TLD_SPLIT")"
+printf "  Исправление сетевых параметров / MSS: %s\n" "$(module_state_word mtu "$MTU_FIX")"
 printf "  Принудительный DNS:         %s\n" "$(module_state_word force "$FORCE_DOH")"
-printf "  Настройка сети:     %s\n" "$(module_state_word sysctl "$SYSCTL_TUNING")"
+printf "  Настройка сети:                %s\n" "$(module_state_word sysctl "$SYSCTL_TUNING")"
 printf "  Настройка DNS-кэша:             %s\n" "$(module_state_word dnsmasq_perf "$DNSMASQ_PERF")"
-printf "  NTP для клиентов:           %s\n" "$(module_state_word ntp_clients "$NTP_CLIENTS")"
-printf "  Связь системных служб:     %s\n" "$(module_state_word client_fixes "$CLIENT_FIXES")"
+printf "  NTP для клиентов:              %s\n" "$(module_state_word ntp_clients "$NTP_CLIENTS")"
+printf "  Связь системных служб:         %s\n" "$(module_state_word client_fixes "$CLIENT_FIXES")"
 printf "${C_GREEN}✓ Discovery завершён. Изменений в конфигурацию не внесено.${C_NC}\n"
 menu_section "ЖУРНАЛ"
 printf "${C_WHITE}Последние события:${C_NC}\n"
@@ -6065,18 +6067,14 @@ EOF_CHECK_EXT_FACT
 force_state_word() {
     detect_forced_dns_path >/dev/null 2>&1 || true
     if [ "${FORCED_DNS_EXTERNAL:-0}" = 1 ]; then
-        if [ -n "${FORCED_DNS_TARGETS:-}" ]; then
-            printf "${C_BOLD}${C_YELLOW}⚠ ВНЕШНИЙ${C_NC} ${C_CYAN}${C_BOLD}• %s • порты %s${C_NC}" "$FORCED_DNS_SOURCE" "$FORCED_DNS_TARGETS"
-        else
-            printf "${C_BOLD}${C_YELLOW}⚠ ВНЕШНИЙ${C_NC} ${C_CYAN}${C_BOLD}• %s${C_NC}" "$FORCED_DNS_SOURCE"
-        fi
+        printf "${C_BOLD}${C_YELLOW}⚠ ВНЕШНИЙ${C_NC}"
         return 0
     fi
     _real="$(check_module_state force)"
     case "$_real" in
-        1) printf "${C_BOLD}${C_GREEN}✓ ВКЛ${C_NC} ${C_CYAN}${C_BOLD}• DNS Manager${C_NC}" ;;
-        2) printf "${C_BOLD}${C_YELLOW}⚠ ДРУГОЕ${C_NC} ${C_CYAN}${C_BOLD}• отличается от целевой настройки${C_NC}" ;;
-        *) printf "${C_BOLD}${C_RED}✗ ВЫКЛ${C_NC} ${C_CYAN}${C_BOLD}• не включён${C_NC}" ;;
+        1) printf "${C_BOLD}${C_GREEN}✓ ВКЛ${C_NC}" ;;
+        2) printf "${C_BOLD}${C_YELLOW}⚠ ДРУГОЕ${C_NC}" ;;
+        *) printf "${C_BOLD}${C_YELLOW}○ ВЫКЛ${C_NC}" ;;
     esac
 }
 module_state_word() {
@@ -6084,18 +6082,18 @@ module_state_word() {
         luci)
             _real="$(check_module_state luci)"
             case "$_real" in
-                1) printf "${C_BOLD}${C_GREEN}✓ УСТАНОВЛЕНО${C_NC} ${C_CYAN}${C_BOLD}• LuCI${C_NC}" ;;
-                2) printf "${C_BOLD}${C_YELLOW}⚠ ТРЕБУЕТ ВОССТАНОВЛЕНИЯ${C_NC} ${C_CYAN}${C_BOLD}• LuCI${C_NC}" ;;
-                *) printf "${C_BOLD}${C_RED}✗ НЕ УСТАНОВЛЕНО${C_NC} ${C_CYAN}${C_BOLD}• LuCI${C_NC}" ;;
+                1) printf "${C_BOLD}${C_GREEN}✓ УСТАНОВЛЕНО${C_NC}" ;;
+                2) printf "${C_BOLD}${C_YELLOW}⚠ ТРЕБУЕТ ВОССТАНОВЛЕНИЯ${C_NC}" ;;
+                *) printf "${C_BOLD}${C_RED}✗ НЕ УСТАНОВЛЕНО${C_NC}" ;;
             esac
             return 0
             ;;
     esac
     _real="$(check_module_state "$1")"
     case "$_real" in
-        1) printf "${C_BOLD}${C_GREEN}✓ ВКЛ${C_NC} ${C_CYAN}${C_BOLD}• фактически${C_NC}" ;;
-        2) printf "${C_BOLD}${C_YELLOW}⚠ ДРУГОЕ${C_NC} ${C_CYAN}${C_BOLD}• отличается от целевой настройки${C_NC}" ;;
-        *) printf "${C_BOLD}${C_RED}✗ ВЫКЛ${C_NC} ${C_CYAN}${C_BOLD}• фактически${C_NC}" ;;
+        1) printf "${C_BOLD}${C_GREEN}✓ ВКЛ${C_NC}" ;;
+        2) printf "${C_BOLD}${C_YELLOW}⚠ ДРУГОЕ${C_NC}" ;;
+        *) printf "${C_BOLD}${C_YELLOW}○ ВЫКЛ${C_NC}" ;;
     esac
 }
 # ==========================================
@@ -6572,9 +6570,9 @@ setting_process() {
         fi
 
         case "$_state" in
-            0) printf "Включаю...\n" ;;
-            1) printf "Выключаю...\n" ;;
-            2) printf "Исправляю...\n" ;;
+            0) printf "${C_GREEN}Включаю...${C_NC}\n" ;;
+            1) printf "${C_GREEN}Выключаю...${C_NC}\n" ;;
+            2) printf "${C_GREEN}Исправляю...${C_NC}\n" ;;
             *)
                 err_msg "Не удалось определить состояние настройки."
                 pause
@@ -6672,8 +6670,6 @@ setting_process() {
             1:client_fixes) ok_msg "Исправления телеметрии и связи выключены." ;;
             0:web|2:web) ok_msg "Терминальный доступ LuCI включён: пункт LuCI ведёт в ttyd DNS Manager." ;;
             1:web) ok_msg "Терминальный доступ LuCI выключен, пункт DNS Manager удалён." ;;
-            0:watchdog|2:watchdog) ok_msg "Фоновая автопроверка DNS включена через procd." ;;
-            1:watchdog) ok_msg "Фоновая автопроверка DNS выключена." ;;
         esac
     else
         case "$_module" in
@@ -6703,10 +6699,8 @@ while :; do
     menu_section "СЕРВИСЫ И КЛИЕНТЫ"
     menu_item_action "[5]" "NTP-сервер роутера для устройств сети" ntp_clients
     menu_item_action "[6]" "Исправления телеметрии и связи" client_fixes
-    menu_section "ОБСЛУЖИВАНИЕ"
-    menu_item_action "[7]" "Фоновая автопроверка DNS (procd)" watchdog
     menu_section "LUCI"
-    menu_item_action "[8]" "Нативный интерфейс DNS Manager" luci
+    menu_item_action "[7]" "Нативный интерфейс DNS Manager" luci
     menu_back
     menu_prompt
     safe_read c
@@ -6717,8 +6711,7 @@ while :; do
         4) setting_process dnsmasq_perf "Кэширование DNS-запросов" "Применяются параметры DNS-кэша dnsmasq." ;;
         5) setting_process ntp_clients "NTP-сервер роутера для устройств сети" "Роутер отвечает клиентам по UDP/123, а DHCP сообщает его адрес как NTP-сервер. Принудительный перехват NTP не используется." ;;
         6) setting_process client_fixes "Исправления телеметрии и связи" "Добавляются DNS-правила для телеметрии и проверок подключения некоторых устройств." ;;
-        7) setting_process watchdog "Фоновая автопроверка DNS (procd)" "Watchdog запускает проверку DNS по расписанию." ;;
-        8) setting_process luci "Нативный интерфейс DNS Manager" "Устанавливает отдельный файл dns-manager-luci.sh из GitHub и добавляет только LuCI → Службы → DNS Manager. ttyd и дополнительный HTTP-порт не используются." ;;
+        7) setting_process luci "Нативный интерфейс DNS Manager" "Устанавливает отдельный файл dns-manager-luci.sh из GitHub и добавляет только LuCI → Службы → DNS Manager. ttyd и дополнительный HTTP-порт не используются." ;;
         '') return ;;
         *) warn_msg "Неизвестный пункт."; pause ;;
     esac
@@ -8475,14 +8468,12 @@ apply_watchdog() {
         WATCHDOG_BACKEND="procd"
         : "${WATCHDOG_INTERVAL:=${WATCHDOG_CHECK_INTERVAL_DEFAULT:-90}}"
         save_config || return 1
-        ok_msg "Фоновая автопроверка DNS включена через procd."
     else
         watchdog_service_stop_disable || return 1
         watchdog_cron_marker_exists >/dev/null 2>&1 && watchdog_cron_remove_owned_block >/dev/null 2>&1 || true
         watchdog_service_remove_files || return 1
         WATCHDOG_BACKEND="procd"
         save_config || return 1
-        ok_msg "Фоновая автопроверка DNS выключена. Procd-служба удалена, cron watchdog не используется."
     fi
     return 0
 }
