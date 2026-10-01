@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.5.44
+# Version: 1.5.45
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -22,7 +22,7 @@ COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main
 # Legacy update compatibility: admin/services/dns_manager
 RUNTIME_UPDATE_STATE="$BACKUP_DIR/update.state"
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.5.44"
+VERSION="1.5.45"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -37,15 +37,15 @@ manager_const_num() {
     _fallback="$2"
     case "$_key" in
         WATCHDOG_FAIL_THRESHOLD|WATCHDOG_REPAIR_COOLDOWN|WATCHDOG_GUARD_INTERVAL|WATCHDOG_MAX_REPAIRS|WATCHDOG_MAX_RESTARTS|WATCHDOG_MAX_CANDIDATES|WATCHDOG_RESTART_COOLDOWN) ;;
-        *) printf "%s" "$_fallback"; return 0 ;;
+        *) printf '%s' "$_fallback"; return 0 ;;
     esac
     _v="$(sed -n "s/^${_key}=\\([0-9][0-9]*\\)$/\\1/p" "$CONFIG_FILE" 2>/dev/null | head -n1)"
     case "$_v" in
         ''|*[!0-9]*) _v="$(sed -n "s/^${_key}=\\([0-9][0-9]*\\)$/\\1/p" "$MANAGER" 2>/dev/null | head -n1)" ;;
     esac
     case "$_v" in
-        ''|*[!0-9]*) printf "%s" "$_fallback" ;;
-        *) printf "%s" "$_v" ;;
+        ''|*[!0-9]*) printf '%s' "$_fallback" ;;
+        *) printf '%s' "$_v" ;;
     esac
 }
 
@@ -163,7 +163,7 @@ UPDATE_STATE="/etc/dns-manager-luci/update.state"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.5.44"
+SELF_VERSION="1.5.45"
 
 umask 077
 mkdir -p "$RUNTIME_DIR" "$JOB_DIR" "$CHECK_DIR" "$TMP_ROOT" 2>/dev/null || exit 1
@@ -1479,7 +1479,7 @@ EOF_RPC
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.5.44
+// DNS Manager LuCI version: 1.5.45
 var callStatus = rpc.declare({ object:'dns_manager', method:'status', expect:{} });
 var callCatalog = rpc.declare({ object:'dns_manager', method:'catalog', params:['category','offset','limit','only_ok'], expect:{} });
 var callUpdateCheck = rpc.declare({ object:'dns_manager', method:'update_check', expect:{} });
@@ -1668,6 +1668,17 @@ function injectStyle(root){
   '@media(max-width:850px){.dm-grid2{grid-template-columns:1fr}.dm-grid4{grid-template-columns:repeat(2,minmax(0,1fr))}.dm-doh-row{grid-template-columns:120px minmax(140px,1fr) 70px}.dm-doh-ping{display:none}.dm-slot-row{grid-template-columns:48px 115px minmax(130px,1fr) 85px 105px auto}.dm-slot-ping{display:none}.dm-catalog{grid-template-columns:repeat(2,minmax(0,1fr))}}'+
   '@media(max-width:560px){.dm-grid3,.dm-grid4,.dm-catalog{grid-template-columns:1fr}.dm-header-actions{margin-left:0}.dm-doh-row{grid-template-columns:1fr auto}.dm-doh-url{grid-column:1/3}.dm-doh-port{grid-column:1}.dm-slot-row{grid-template-columns:40px minmax(0,1fr) auto}.dm-slot-endpoint{display:none}.dm-slot-state{display:none}.dm-inline{grid-column:2/4;justify-content:flex-start}}';
   root.appendChild(E('style',{},css));
+  root.appendChild(E('style',{},
+    '.dm-test-age-list{display:flex;flex-direction:column;gap:1px;margin-top:2px}'+
+    '.dm-test-age-row{display:grid;grid-template-columns:minmax(0,1fr) 90px 20px;align-items:center;gap:8px;min-height:34px}'+
+    '.dm-test-age-label{font-size:13px;font-weight:600}.dm-test-age-unit{font-size:12px;opacity:.62}'+
+    '.dm-test-age-row .dm-input{width:90px!important;margin:0;box-sizing:border-box}'+
+    '.dm-watchdog-list{display:flex;flex-direction:column;gap:1px;margin-top:5px}'+
+    '.dm-watchdog-row{display:grid;grid-template-columns:minmax(170px,1fr) 70px 105px 42px auto minmax(150px,auto);align-items:center;gap:7px;min-height:34px;padding:2px 0}'+
+    '.dm-watchdog-row .dm-setting-title{font-size:12.5px}.dm-setting-range{font-size:11px;opacity:.55;white-space:nowrap}'+
+    '.dm-watchdog-row .dm-input{width:105px!important;margin:0;box-sizing:border-box}.dm-watchdog-row .cbi-button{padding:4px 8px;font-size:11.5px}'+
+    '.dm-setting-feedback{font-size:11.5px;line-height:1.3;opacity:.82}.dm-setting-feedback.ok{color:#1a7f37}.dm-setting-feedback.error{color:#cf222e}.dm-setting-feedback.info{opacity:.65}'
+  ));
 }
 
 function rootAlive(root){return !!root&&!!document&&!!document.documentElement&&document.documentElement.contains(root);}
@@ -2192,15 +2203,9 @@ function settingCard(root,x,st){
 }
 function testAgeRow(root,st,category,label,inputs){
   var key='test_age_'+category;
-  var input=E('input',{'type':'number','min':'1','max':'168','step':'1','value':String(st[key]||6),'class':'dm-input','style':'width:90px'});
+  var input=E('input',{'type':'number','min':'1','max':'168','step':'1','value':String(st[key]||6),'class':'dm-input'});
   inputs.push({category:category,input:input,label:label});
-  return E('div',{'class':'dm-test-age-row'},[
-    E('div',{'class':'dm-setting-title'},label),
-    E('div',{'class':'dm-setting-actions'},[
-      input,
-      E('span',{'style':'display:inline-block;min-width:16px;text-align:left;margin-left:4px'},'ч')
-    ])
-  ]);
+  return E('div',{'class':'dm-test-age-row'},[E('span',{'class':'dm-test-age-label'},label),input,E('span',{'class':'dm-test-age-unit'},'ч')]);
 }
 function saveTestAges(root,inputs){
   if(state.busy)return;
@@ -2261,9 +2266,6 @@ function watchdogField(root,st,key,label,unit,min,max){
     }
     state.busy=true;
     state.busySetting='wd_'+key;
-    state.settingMessage='Сохраняю '+label+'…';
-    state.settingMessageType='info';
-    renderSettings(root,window.dmState||{});
     callWatchdogSetting(key,Number(n)).then(function(r){
       state.busy=false;
       state.busySetting='';
@@ -2294,7 +2296,7 @@ function watchdogCard(root,st){
   var detail=[
     row('Режим',badge(st.watchdog_backend==='procd'?'dm-ok':'dm-warn',st.watchdog_backend==='procd'?'штатный':'неизвестен')),
     row('Служба',badge(service?'dm-ok':'dm-warn',service?'работает':'не работает')),
-    row('Проверка',badge(loop?'dm-ok':service?'dm-warn':'dm-off',loop?'активна':service?'ждёт запуска':'не работает')),
+    row('Проверка DNS',badge(loop?'dm-ok':service?'dm-warn':'dm-off',loop?'активна':service?'ждёт запуска':'не работает')),
     row('Автозапуск',badge(enabled?'dm-ok':'dm-warn',enabled?'включён':'выключен'))
   ];
   var action=E('div',{'class':'dm-setting '+(busy?'dm-setting-saving':'')},[
@@ -2318,50 +2320,7 @@ function watchdogCard(root,st){
     watchdogField(root,st,'max_candidates','Кандидатов на замену','шт.',1,5),
     watchdogField(root,st,'max_restarts','Перезапуски HDP','шт.',1,3)
   ]);
-  return E('div',{},[
-    action,
-    E('div',{'class':'dm-grid2'},detail),
-    E('div',{'class':'dm-section-title'},'Параметры проверки'),
-    settings
-  ]);
-}
-function watchdogCard(root,st){
-  var en=yes(st.watchdog), busy=state.busySetting==='watchdog';
-  var service=Number(st.watchdog_service||0)===1, enabled=Number(st.watchdog_service_enabled||0)===1, loop=Number(st.watchdog_loop||0)===1;
-  var detail=[
-    row('Режим',badge(st.watchdog_backend==='procd'?'dm-ok':'dm-warn',st.watchdog_backend==='procd'?'штатный':'неизвестен')),
-    row('Служба',badge(service?'dm-ok':'dm-warn',service?'работает':'не работает')),
-    row('Проверка DNS',badge(loop?'dm-ok':service?'dm-warn':'dm-off',loop?'активна':service?'ждёт запуска':'не работает')),
-    row('Автозапуск',badge(enabled?'dm-ok':'dm-warn',enabled?'включён':'выключен'))
-  ];
-  var action=E('div',{'class':'dm-setting '+(busy?'dm-setting-saving':'')},[
-    E('div',{'class':'dm-setting-line'},[
-      E('div',{},[
-        E('div',{'class':'dm-setting-title'},'Автопроверка DNS'),
-        E('div',{'class':'dm-setting-desc'},'DNS Manager автоматически проверяет выбранные DNS и при сбоях восстанавливает или заменяет проблемный сервер.')
-      ]),
-      E('div',{'class':'dm-setting-actions'},[
-        badge(busy?'dm-warn':(en?'dm-ok':'dm-off'),busy?'изменение':(en?'включено':'выключено')),
-        btn(busy?'Сохраняю…':(en?'Выключить':'Включить'),busy?'cbi-button-neutral':(en?'cbi-button-remove':'cbi-button-add'),function(){setSetting('watchdog',en?0:1,root);},{disabled:!!state.busy})
-      ])
-    ])
-  ]);
-  var body=[
-    action,
-    E('div',{'class':'dm-hint'},'Если DNS долго не отвечает, сначала проверяется восстановление. При необходимости сервер заменяется. Нагрузка на роутер ограничивается автоматически.'),
-    E('div',{'class':'dm-grid2'},detail),
-    E('div',{'class':'dm-section-title'},'Параметры проверки и восстановления'),
-    E('div',{'class':'dm-grid2'},[
-      watchdogField(root,st,'interval','Интервал проверки','с',30,600),
-      watchdogField(root,st,'fail_threshold','Порог сбоя','циклов',1,10),
-      watchdogField(root,st,'repair_cooldown','Cooldown замены','с',60,3600),
-      watchdogField(root,st,'guard_interval','Контроль конфигурации','с',300,3600),
-      watchdogField(root,st,'max_repairs','Замены за проход','шт.',1,3),
-      watchdogField(root,st,'max_candidates','Кандидаты на замену','шт.',1,5),
-      watchdogField(root,st,'max_restarts','Перезапуски HDP за операцию','шт.',1,3)
-    ])
-  ];
-  return E('div',{},body);
+  return E('div',{},[action,E('div',{'class':'dm-grid2'},detail),E('div',{'class':'dm-section-title'},'Параметры проверки'),settings]);
 }
 function renderSettings(root,st){
   var e=root.querySelector('#dm-settings');if(!e)return;e.innerHTML='';
