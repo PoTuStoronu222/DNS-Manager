@@ -457,60 +457,142 @@ maybe_background_update_check() {
     ) </dev/null >/dev/null 2>&1 &
 }
 
-update_catalog_json() {
-    _tmp="$TMP_ROOT/catalog-update.$$"
-    fetch_raw_url "$_tmp" "https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/catalogs/dns-8.5-RU-NOSOCIAL.conf" || { rm -f "$_tmp" 2>/dev/null || true; return 1; }
-    _expected_ver="$(sed -n 's/^DNSCAT_VERSION="\([^"]*\)"$/\1/p' "$MANAGER_PATH" 2>/dev/null | head -n1)"
-    _expected_rev="$(sed -n 's/^DNSCAT_REVISION="\([^"]*\)"$/\1/p' "$MANAGER_PATH" 2>/dev/null | head -n1)"
-    _remote_ver="$(sed -n 's/^# DNSCATVER=//p' "$_tmp" 2>/dev/null | head -n1)"
-    _remote_rev="$(sed -n 's/^# DNSCATREV=//p' "$_tmp" 2>/dev/null | head -n1)"
-    _count="$(grep -v '^[[:space:]]*#' "$_tmp" 2>/dev/null | grep -v '^[[:space:]]*$' | wc -l | tr -d ' ')"
-    case "$_count" in ''|*[!0-9]*) _count=0;; esac
-    [ -n "$_expected_ver" ] && [ "$_remote_ver" = "$_expected_ver" ] || { rm -f "$_tmp" 2>/dev/null || true; return 1; }
-    [ -z "$_expected_rev" ] || [ "$_remote_rev" = "$_expected_rev" ] || { rm -f "$_tmp" 2>/dev/null || true; return 1; }
-    [ "$_count" -gt 0 ] || { rm -f "$_tmp" 2>/dev/null || true; return 1; }
-    awk -F'|' '/^[[:space:]]*#/ || /^[[:space:]]*$/ { next } { count++; if (NF != 7 || $1 == "" || $4 == "" || $5 !~ /^https:\/\//) bad=1; ids[$1]++; if (ids[$1] > 1) bad=1 } END { if (bad || count < 1) exit 1 }' "$_tmp" >/dev/null 2>&1 || { rm -f "$_tmp" 2>/dev/null || true; return 1; }
-    _rbody="$TMP_ROOT/catalog-remote.$$"
-    _lbody="$TMP_ROOT/catalog-local.$$"
-    sed '/^[[:space:]]*#/d;/^[[:space:]]*$/d' "$_tmp" > "$_rbody" 2>/dev/null || true
-    sed '/^[[:space:]]*#/d;/^[[:space:]]*$/d' "$CATALOG_FILE" > "$_lbody" 2>/dev/null || true
-    if cmp -s "$_rbody" "$_lbody" 2>/dev/null; then
-        rm -f "$_tmp" "$_rbody" "$_lbody" 2>/dev/null || true
-        return 2
-    fi
-    mv -f "$_tmp" "$CATALOG_FILE" 2>/dev/null || { rm -f "$_tmp" "$_rbody" "$_lbody" 2>/dev/null || true; return 1; }
-    chmod 600 "$CATALOG_FILE" 2>/dev/null || true
-    rm -f "$_rbody" "$_lbody" 2>/dev/null || true
+
+update_manager_direct() {
+    _installed="$(manager_version 2>/dev/null || true)"
+    _tmp="$TMP_ROOT/manager-update-all.$$"
+    fetch_raw_url "$_tmp" "https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager.sh" || { rm -f "$_tmp" 2>/dev/null || true; return 3; }
+    head -n1 "$_tmp" 2>/dev/null | grep -q '^#!/bin/sh$' || { rm -f "$_tmp" 2>/dev/null || true; return 4; }
+    _latest="$(sed -n 's/^VERSION="\([^"]*\)"$/\1/p' "$_tmp" 2>/dev/null | head -n1)"
+    [ -n "$_latest" ] || { rm -f "$_tmp" 2>/dev/null || true; return 4; }
+    sh -n "$_tmp" >/dev/null 2>&1 || { rm -f "$_tmp" 2>/dev/null || true; return 4; }
+    [ "$(version_gt "$_latest" "$_installed")" = 1 ] || { rm -f "$_tmp" 2>/dev/null || true; return 2; }
+    cp -f "$_tmp" "$MANAGER" 2>/dev/null || { rm -f "$_tmp" 2>/dev/null || true; return 5; }
+    chmod 755 "$MANAGER" 2>/dev/null || { rm -f "$_tmp" 2>/dev/null || true; return 5; }
+    sync 2>/dev/null || true
+    rm -f "$_tmp" 2>/dev/null || true
     return 0
 }
 
+update_hdp_direct() {
+    _installed="$(package_version https-dns-proxy 2>/dev/null || true)"
+    _candidate="$(package_candidate_version https-dns-proxy 2>/dev/null || true)"
+    [ -n "$_installed" ] && [ -n "$_candidate" ] && package_version_cmp "$_candidate" "$_installed" || return 2
+    package_update_hdp || return 5
+    _after="$(package_version https-dns-proxy 2>/dev/null || true)"
+    [ -n "$_after" ] && [ "$_after" != "$_installed" ] || return 6
+    return 0
+}
+
+update_catalog_direct() {
+    _tmp="$TMP_ROOT/catalog-update-all.$$"
+    fetch_raw_url "$_tmp" "https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/catalogs/dns-8.5-RU-NOSOCIAL.conf" || { rm -f "$_tmp" 2>/dev/null || true; return 3; }
+    _remote_ver="$(sed -n 's/^# DNSCATVER=//p' "$_tmp" 2>/dev/null | head -n1)"
+    _remote_rev="$(sed -n 's/^# DNSCATREV=//p' "$_tmp" 2>/dev/null | head -n1)"
+    _decl="$(sed -n 's/^# ENTRIES=//p' "$_tmp" 2>/dev/null | head -n1)"
+    _count="$(grep -v '^[[:space:]]*#' "$_tmp" 2>/dev/null | grep -v '^[[:space:]]*$' | wc -l | tr -d ' ')"
+    case "$_count" in ''|*[!0-9]*) _count=0;; esac
+    [ -n "$_remote_ver" ] && [ -n "$_remote_rev" ] && [ "$_decl" = "$_count" ] && [ "$_count" -gt 0 ] || { rm -f "$_tmp" 2>/dev/null || true; return 4; }
+    awk -F'|' '/^[[:space:]]*#/ || /^[[:space:]]*$/ {next} {if(NF!=7 || $1=="" || $4=="" || $5 !~ /^https:\\/\\//) bad=1; ids[$1]++; if(ids[$1]>1) bad=1; n++} END{if(bad || n<1) exit 1}' "$_tmp" >/dev/null 2>&1 || { rm -f "$_tmp" 2>/dev/null || true; return 4; }
+    _rb="$TMP_ROOT/catalog-remote-all.$$"
+    _lb="$TMP_ROOT/catalog-local-all.$$"
+    sed '/^[[:space:]]*#/d;/^[[:space:]]*$/d' "$_tmp" > "$_rb" 2>/dev/null || true
+    sed '/^[[:space:]]*#/d;/^[[:space:]]*$/d' "$CATALOG_FILE" > "$_lb" 2>/dev/null || true
+    if cmp -s "$_rb" "$_lb" 2>/dev/null; then rm -f "$_tmp" "$_rb" "$_lb" 2>/dev/null || true; return 2; fi
+    mv -f "$_tmp" "$CATALOG_FILE" 2>/dev/null || { rm -f "$_rb" "$_lb" 2>/dev/null || true; return 5; }
+    chmod 600 "$CATALOG_FILE" 2>/dev/null || true
+    rm -f "$_rb" "$_lb" 2>/dev/null || true
+    return 0
+}
+
+update_luci_direct() {
+    _installed="$(read_installed_luci_version)"
+    _tmp="$TMP_ROOT/companion-update-all.$$"
+    fetch_raw_url "$_tmp" "$COMPANION_URL" || { rm -f "$_tmp" 2>/dev/null || true; return 3; }
+    validate_candidate "$_tmp" || { rm -f "$_tmp" 2>/dev/null || true; return 4; }
+    _latest="$(sed -n 's/^# Version:[[:space:]]*//p' "$_tmp" 2>/dev/null | head -n1)"
+    [ -n "$_latest" ] && [ "$(version_gt "$_latest" "$_installed")" = 1 ] || { rm -f "$_tmp" 2>/dev/null || true; return 2; }
+    DNS_MANAGER_LUCI_SKIP_RPC_RELOAD=1 sh "$_tmp" update >/dev/null 2>&1 || { rm -f "$_tmp" 2>/dev/null || true; return 5; }
+    rm -f "$_tmp" 2>/dev/null || true
+    _after="$(read_installed_luci_version)"
+    [ "$_after" = "$_latest" ] || return 6
+    return 0
+}
+
+append_update_message() {
+    if [ -n "$_message" ]; then _message="$_message; $1"; else _message="$1"; fi
+}
+
+append_failure_message() {
+    if [ -n "$_failed" ]; then _failed="$_failed; $1"; else _failed="$1"; fi
+}
+
 update_all_json() {
-    if ! mkdir "$RUNTIME_DIR/update-all.lock" 2>/dev/null; then json_error "Обновление уже выполняется"; return; fi
+    if ! mkdir "$RUNTIME_DIR/update-all.lock" 2>/dev/null; then
+        json_error "Обновление уже выполняется"
+        return
+    fi
+    _message=""
+    _failed=""
+    _updated=0
+
     _old_m="$(manager_version 2>/dev/null || true)"
     _old_l="$(read_installed_luci_version)"
     _old_h="$(package_version https-dns-proxy 2>/dev/null || true)"
     _old_cv="$(catalog_version 2>/dev/null || true)"
     _old_cr="$(catalog_revision 2>/dev/null || true)"
-    _changed=""
-    if [ -x "$MANAGER_PATH" ]; then DNS_MANAGER_FORCE_UPDATE=1 DNS_MANAGER_UPDATE_NO_EXEC=1 "$MANAGER_PATH" update-check >/dev/null 2>&1 || true; fi
-    update_hdp_json >/dev/null 2>&1 || true
-    update_catalog_json >/dev/null 2>&1 || true
-    update_json >/dev/null 2>&1 || true
+
+    update_manager_direct
+    _rc=$?
     _new_m="$(manager_version 2>/dev/null || true)"
-    _new_l="$(read_installed_luci_version)"
+    case "$_rc" in
+        0) append_update_message "DNS Manager $_old_m → $_new_m"; _updated=1 ;;
+        2) append_update_message "DNS Manager $_old_m · актуален" ;;
+        *) append_failure_message "DNS Manager: не удалось обновить" ;;
+    esac
+
+    update_hdp_direct
+    _rc=$?
     _new_h="$(package_version https-dns-proxy 2>/dev/null || true)"
+    case "$_rc" in
+        0) append_update_message "Защищённый DNS $_old_h → $_new_h"; _updated=1 ;;
+        2) append_update_message "Защищённый DNS $_old_h · актуален" ;;
+        *) append_failure_message "Защищённый DNS: не удалось обновить" ;;
+    esac
+
+    update_catalog_direct
+    _rc=$?
     _new_cv="$(catalog_version 2>/dev/null || true)"
     _new_cr="$(catalog_revision 2>/dev/null || true)"
-    if [ -n "$_new_m" ] && [ "$_new_m" != "$_old_m" ]; then _changed="DNS Manager $_old_m → $_new_m"; fi
-    if [ -n "$_new_l" ] && [ "$_new_l" != "$_old_l" ]; then [ -n "$_changed" ] && _changed="$_changed; "; _changed="$_changed""LuCI $_old_l → $_new_l"; fi
-    if [ -n "$_new_h" ] && [ "$_new_h" != "$_old_h" ]; then [ -n "$_changed" ] && _changed="$_changed; "; _changed="$_changed""Защищённый DNS $_old_h → $_new_h"; fi
-    if [ -n "$_new_cv" ] && { [ "$_new_cv" != "$_old_cv" ] || [ "$_new_cr" != "$_old_cr" ]; }; then [ -n "$_changed" ] && _changed="$_changed; "; _changed="$_changed""Каталог DNS $_old_cv rev.$_old_cr → $_new_cv rev.$_new_cr"; fi
-    rm -rf "$RUNTIME_DIR/update-all.lock" "$RUNTIME_DIR/manager-update.lock" "$RUNTIME_DIR/hdp-update.lock" "$RUNTIME_DIR/update.lock" 2>/dev/null || true
-    if [ -n "$_changed" ]; then
-        printf '{"ok":true,"updated":true,"message":'; json_quote "$_changed"; printf '}'
-    else
-        printf '{"ok":true,"updated":false,"message":'; json_quote "Новых обновлений не найдено."; printf '}'
+    case "$_rc" in
+        0) append_update_message "Каталог DNS $_old_cv rev.$_old_cr → $_new_cv rev.$_new_cr"; _updated=1 ;;
+        2) append_update_message "Каталог DNS $_old_cv rev.$_old_cr · актуален" ;;
+        *) append_failure_message "Каталог DNS: не удалось обновить" ;;
+    esac
+
+    update_luci_direct
+    _rc=$?
+    _new_l="$(read_installed_luci_version)"
+    case "$_rc" in
+        0) append_update_message "LuCI $_old_l → $_new_l"; _updated=1 ;;
+        2) append_update_message "LuCI $_old_l · актуальна" ;;
+        *) append_failure_message "LuCI: не удалось обновить" ;;
+    esac
+
+    rm -rf "$RUNTIME_DIR/update-all.lock" 2>/dev/null || true
+
+    if [ -n "$_failed" ]; then
+        [ -n "$_message" ] && _message="$_message; "
+        _message="$_message""Ошибки: $_failed"
+        printf '{"ok":false,"updated":%s,"message":' "$_updated"
+        json_quote "$_message"
+        printf '}'
+        return
     fi
+
+    printf '{"ok":true,"updated":%s,"message":' "$_updated"
+    json_quote "$_message"
+    printf '}'
 }
 
 update_manager_json() {
