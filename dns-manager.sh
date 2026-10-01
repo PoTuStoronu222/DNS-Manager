@@ -3274,22 +3274,52 @@ apply_extras_now() {
 # ==========================================
 # ==========================================
 # ==========================================
+ntp_clients_stock_match() {
+    sec="$(get_dnsmasq_section)" || return 1
+    stock_uci_matches system "system.ntp.enable_server" 0 "" || return 1
+    stock_uci_matches dhcp "dhcp.@dnsmasq[0].dhcp_option" 0 "" || return 1
+    return 0
+}
+ntp_clients_legacy_adopt() {
+    sec="$(get_dnsmasq_section)" || return 1
+    [ "${NTP_CLIENTS:-0}" = 1 ] || return 1
+    [ "$(uci -q get system.ntp.enable_server 2>/dev/null)" = 1 ] || return 1
+    _opt="42,$LAN_IP"
+    _cur="$(uci -q get "dhcp.$sec.dhcp_option" 2>/dev/null || true)"
+    _without="$(printf '%s\n' "$_cur" | tr ' ' '\n' | sed -e 's/^['"'"'\"]//;s/['"'"'\"]$//' -e '/^[[:space:]]*$/d' | grep -vxF -- "$_opt" | sort | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+    _stock="$(stock_uci_capture dhcp "dhcp.@dnsmasq[0].dhcp_option" 0 "")"
+    _sv="${_stock#*|}"
+    [ "$_without" = "$_sv" ] || return 1
+    rm -f "$(module_state_path ntp_clients)" 2>/dev/null || true
+    _stock="$(stock_uci_capture system "system.ntp.enable_server" 0 "")"
+    _sp="${_stock%%|*}"; _sv="${_stock#*|}"
+    module_state_record_explicit ntp_clients "system.ntp.enable_server" scalar "$_sp" "$_sv" 1 || return 1
+    _stock="$(stock_uci_capture dhcp "dhcp.@dnsmasq[0].dhcp_option" 0 "")"
+    _sp="${_stock%%|*}"; _sv="${_stock#*|}"
+    module_state_record_explicit ntp_clients "dhcp.$sec.dhcp_option" list "$_sp" "$_sv" "$_sv 42,$LAN_IP" || return 1
+    return 0
+}
 apply_ntp_clients() {
     [ "${NTP_CLIENTS:-0}" = 1 ] || return 0
     sec="$(get_dnsmasq_section)" || return 1
     [ -n "$sec" ] || return 1
     [ -n "$(uci -q get system.ntp 2>/dev/null)" ] || uci -q set system.ntp=timeserver || return 1
-
+    if [ -s "$(module_state_path ntp_clients)" ]; then
+        module_state_matches ntp_clients || { err_msg "Настройки времени для клиентов изменены извне; DNS Manager их не перезаписывает."; return 2; }
+    else
+        ntp_clients_stock_match || { err_msg "Настройки времени для клиентов уже заданы извне; DNS Manager их не перезаписывает."; return 2; }
+        rm -f "$(module_state_path ntp_clients)" 2>/dev/null || true
+        module_state_record_current ntp_clients "system.ntp.enable_server" scalar 1 || return 1
+        _cur="$(uci -q get "dhcp.$sec.dhcp_option" 2>/dev/null || true)"
+        module_state_record_current ntp_clients "dhcp.$sec.dhcp_option" list "$_cur 42,$LAN_IP" || return 1
+    fi
     uci set system.ntp.enable_server='1' || return 1
     _opt="42,$LAN_IP"
-    exact_list_has "dhcp.$sec.dhcp_option" "$_opt" || \
-        uci add_list "dhcp.$sec.dhcp_option=$_opt" || return 1
-
+    exact_list_has "dhcp.$sec.dhcp_option" "$_opt" || uci add_list "dhcp.$sec.dhcp_option=$_opt" || return 1
     uci commit system || return 1
     uci commit dhcp || return 1
     /etc/init.d/sysntpd restart >/dev/null 2>&1 || return 1
     /etc/init.d/dnsmasq restart >/dev/null 2>&1 || return 1
-
     if ! listener_port_exists 123 >/dev/null 2>&1; then
         warn_msg "NTP-сервер включён в UCI, но UDP/123 сейчас не слушается."
         return 1
@@ -3300,21 +3330,12 @@ apply_ntp_clients() {
 }
 
 remove_ntp_clients() {
-    sec="$(get_dnsmasq_section)" || return 1
-    [ -n "$sec" ] || return 1
-
-    uci -q delete system.ntp.enable_server || true
-    _tmp="$(mktemp /tmp/dns-manager-ntp.XXXXXX 2>/dev/null)" || return 1
-    : > "$_tmp" || { rm -f "$_tmp"; return 1; }
-    for _v in $(uci -q get "dhcp.$sec.dhcp_option" 2>/dev/null); do
-        [ "$_v" = "42,$LAN_IP" ] || printf '%s\n' "$_v" >> "$_tmp"
-    done
-    uci -q delete "dhcp.$sec.dhcp_option" || true
-    while IFS= read -r _v; do
-        [ -n "$_v" ] && uci add_list "dhcp.$sec.dhcp_option=$_v" || true
-    done < "$_tmp"
-    rm -f "$_tmp"
-
+    if [ -s "$(module_state_path ntp_clients)" ]; then
+        module_state_restore ntp_clients; _r=$?
+        [ "$_r" = 0 ] || return "$_r"
+    else
+        ntp_clients_stock_match || { warn_msg "Настройки времени для клиентов изменены извне; DNS Manager их сохраняет."; return 2; }
+    fi
     uci commit system || return 1
     uci commit dhcp || return 1
     /etc/init.d/sysntpd restart >/dev/null 2>&1 || true
@@ -6288,17 +6309,19 @@ check_module_state() {
             fi
             ;;
         ntp_clients)
-            _opt="42,$LAN_IP"; _dhcp=0; _srv=0; _listen=0
-            exact_list_has "dhcp.$_sec.dhcp_option" "$_opt" && _dhcp=1
-            [ "$(uci -q get system.ntp.enable_server 2>/dev/null)" = 1 ] && _srv=1
-            listener_port_exists 123 >/dev/null 2>&1 && _listen=1
-            if [ "$_dhcp" = 1 ] && [ "$_srv" = 1 ] && [ "$_listen" = 1 ]; then
-                printf 1
-            elif [ "$_dhcp" = 1 ] || [ "$_srv" = 1 ] || [ "$_listen" = 1 ]; then
-                printf 2
-            else
-                printf 0
+            if [ -s "$(module_state_path ntp_clients)" ]; then
+                if module_state_matches ntp_clients && listener_port_exists 123 >/dev/null 2>&1; then printf 1; else printf 2; fi
+                return
             fi
+            if ntp_clients_stock_match; then
+                printf 0
+                return
+            fi
+            if [ "${NTP_CLIENTS:-0}" = 1 ] && ntp_clients_legacy_adopt; then
+                if listener_port_exists 123 >/dev/null 2>&1; then printf 1; else printf 2; fi
+                return
+            fi
+            printf 2
             ;;
         dnsmasq_perf)
             if [ -s "$(module_state_path dnsmasq_perf)" ]; then
