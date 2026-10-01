@@ -295,8 +295,8 @@ component_update_check() {
         _local_rev="$(sed -n 's/^# DNSCATREV=//p' "$CATALOG_FILE" 2>/dev/null | head -n1)"
         _local_total="$(grep -v '^#' "$CATALOG_FILE" 2>/dev/null | grep -c '^[^|][^|]*|' 2>/dev/null || printf 0)"
         _catalog_same=0
-        _remote_body="$TMP_ROOT/catalog-remote-body.$"
-        _local_body="$TMP_ROOT/catalog-local-body.$"
+        _remote_body="$TMP_ROOT/catalog-remote-body.$$"
+        _local_body="$TMP_ROOT/catalog-local-body.$$"
         sed '/^[[:space:]]*#/d;/^[[:space:]]*$/d' "$_tmp" > "$_remote_body" 2>/dev/null || true
         if [ -r "$CATALOG_FILE" ]; then
             sed '/^[[:space:]]*#/d;/^[[:space:]]*$/d' "$CATALOG_FILE" > "$_local_body" 2>/dev/null || true
@@ -350,7 +350,7 @@ version_check_job_start() {
             [ "$_as" = running ] && { printf '{"ok":true,"job":'; json_quote "$_ajid"; printf ',"status":"running"}'; return; }
         fi
     fi
-    _jid="vc-$(date +%s)-$"
+    _jid="vc-$(date +%s)-$$"
     mkdir -p "$JOB_DIR/$_jid" 2>/dev/null || { json_error "Не удалось создать проверку версий"; return; }
     printf 'status=running\nstarted=%s\n' "$(date +%s 2>/dev/null || printf 0)" > "$JOB_DIR/$_jid/state"
     printf '%s' "$_jid" > "$_active" 2>/dev/null || true
