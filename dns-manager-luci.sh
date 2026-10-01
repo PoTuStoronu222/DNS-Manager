@@ -1343,7 +1343,7 @@ function loadBar(load1,cores){
   ]);
 }
 function badge(kind,text){ return E('span',{'class':'dm-badge '+kind},[E('span',{'class':'dm-dot'}),text]); }
-function btn(label,cls,fn,extra){ var a={'class':'cbi-button '+(cls||''),'click':fn}; Object.keys(extra||{}).forEach(function(k){ if(k==='disabled'){ if(extra[k]) a.disabled=true; } else { a[k]=extra[k]; } }); return E('button',a,label); }
+function btn(label,cls,fn,extra){ var a={'class':'cbi-button '+(cls||''),'type':'button','click':function(ev){ if(ev&&ev.preventDefault)ev.preventDefault(); return fn?fn.call(this,ev):undefined; }}; Object.keys(extra||{}).forEach(function(k){ if(k==='disabled'){ if(extra[k]) a.disabled=true; } else { a[k]=extra[k]; } }); return E('button',a,label); }
 function row(label,node){ return E('div',{'class':'dm-row'},[E('span',{'class':'dm-label'},label),E('span',{'class':'dm-row-value'},node)]); }
 function card(title,children,cls){ return E('div',{'class':'dm-card '+(cls||'')},[E('h3',{},title)].concat(children||[])); }
 function forceMode(st){ return st.force==='1' ? 'auto' : 'off'; }
@@ -1872,8 +1872,10 @@ function refresh(root,keepPosition){
 }
 function startAutoRefresh(root){
   if(state.autoRefreshRoot)clearInterval(state.autoRefreshRoot);
-  state.autoRefreshRoot=setInterval(function(){    if(!rootAlive(root)){clearInterval(state.autoRefreshRoot);state.autoRefreshRoot=null;return;}
+  state.autoRefreshRoot=setInterval(function(){
+    if(!rootAlive(root)){clearInterval(state.autoRefreshRoot);state.autoRefreshRoot=null;return;}
     if(state.refreshBusy)return;
+    if(state.busy||state.updatingAll||(state.versionCheck&&state.versionCheck.running))return;
     state.refreshBusy=true;
     refresh(root,true).then(function(){state.refreshBusy=false;},function(){state.refreshBusy=false;});
   },3000);
