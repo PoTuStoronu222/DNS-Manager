@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.5.20
+# Version: 1.5.21
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -22,7 +22,7 @@ COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main
 # Legacy update compatibility: admin/services/dns_manager
 RUNTIME_UPDATE_STATE="$BACKUP_DIR/update.state"
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.5.20"
+VERSION="1.5.21"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -155,7 +155,7 @@ UPDATE_STATE="/etc/dns-manager-luci/update.state"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.5.20"
+SELF_VERSION="1.5.21"
 
 umask 077
 mkdir -p "$RUNTIME_DIR" "$JOB_DIR" "$CHECK_DIR" "$TMP_ROOT" 2>/dev/null || exit 1
@@ -1402,7 +1402,7 @@ EOF_RPC
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.5.20
+// DNS Manager LuCI version: 1.5.21
 var callStatus = rpc.declare({ object:'dns_manager', method:'status', expect:{} });
 var callCatalog = rpc.declare({ object:'dns_manager', method:'catalog', params:['category','offset','limit','only_ok'], expect:{} });
 var callUpdateCheck = rpc.declare({ object:'dns_manager', method:'update_check', expect:{} });
@@ -2433,14 +2433,21 @@ function pollJob(root,job,meta,done){
         var pout=stripAnsi(j.output||'');
         var lines=pout.split('\n').filter(function(x){return String(x||'').trim();});
         var lastProgress='';
+        var pd=0,pt=0,po=0,pf=0;
         for(var pi=lines.length-1;pi>=0;pi--){
-          if(lines[pi].indexOf('Промежуточный результат:')>=0){lastProgress=lines[pi].trim();break;}
+          var pl=String(lines[pi]||'').trim();
+          if(pl.indexOf('Промежуточный результат:')>=0){
+            lastProgress=pl;
+            var pm=pl.match(/Промежуточный результат:\s*проверено\s+(\d+)\s+из\s+(\d+)\s*\|\s*работают\s+(\d+)\s*\|\s*ошибки\s+(\d+)/i);
+            if(pm){pd=Number(pm[1]||0);pt=Number(pm[2]||0);po=Number(pm[3]||0);pf=Number(pm[4]||0);}
+            break;
+          }
         }
         state.catalogProgress={
-          done:Number(j.progress_done||0),
-          total:Number(j.progress_total||((window.dmCatalog&&window.dmCatalog.total)||0)),
-          ok:Number(j.progress_ok||0),
-          fail:Number(j.progress_fail||0),
+          done:pd||Number(j.progress_done||0),
+          total:pt||Number(j.progress_total||0)||Number((window.dmCatalog&&window.dmCatalog.total)||0),
+          ok:po||Number(j.progress_ok||0),
+          fail:pf||Number(j.progress_fail||0),
           detail:lastProgress||(
             Number(j.progress_done||0)>0
               ? 'Проверено '+Number(j.progress_done||0)+' DNS. Ожидаю следующий результат…'
