@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.5.19
+# Version: 1.5.20
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -22,7 +22,7 @@ COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main
 # Legacy update compatibility: admin/services/dns_manager
 RUNTIME_UPDATE_STATE="$BACKUP_DIR/update.state"
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.5.19"
+VERSION="1.5.20"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -155,7 +155,7 @@ UPDATE_STATE="/etc/dns-manager-luci/update.state"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.5.19"
+SELF_VERSION="1.5.20"
 
 umask 077
 mkdir -p "$RUNTIME_DIR" "$JOB_DIR" "$CHECK_DIR" "$TMP_ROOT" 2>/dev/null || exit 1
@@ -1402,7 +1402,7 @@ EOF_RPC
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.5.19
+// DNS Manager LuCI version: 1.5.20
 var callStatus = rpc.declare({ object:'dns_manager', method:'status', expect:{} });
 var callCatalog = rpc.declare({ object:'dns_manager', method:'catalog', params:['category','offset','limit','only_ok'], expect:{} });
 var callUpdateCheck = rpc.declare({ object:'dns_manager', method:'update_check', expect:{} });
@@ -1429,7 +1429,7 @@ var CATEGORY = [
   ['all','Все DNS'], ['bypass','Обход блокировок'], ['security','Безопасность'], ['privacy','Приватность'],
   ['adblock','Блокировка рекламы'], ['family','Семейный'], ['clean','Без фильтрации'], ['regional','Региональные']
 ];
-var state = { hdpUpdating:false, managerUpdating:false, updatingAll:false, category:'all', offset:0, limit:18, catalogLoaded:false, catalogLoading:false, advanced:true, logLoaded:false, logLoading:false, busy:false, busySetting:'', settingMessage:'', settingMessageType:'', pageNotice:{}, statusError:'', updateKick:false, activeTab:'dashboard', jobRunning:false, lastJob:null, checking:{}, fullTest:null, versionCheck:null, autoRefreshRoot:null, lastAction:null };
+var state = { hdpUpdating:false, managerUpdating:false, updatingAll:false, category:'all', offset:0, limit:18, catalogLoaded:false, catalogLoading:false, advanced:true, logLoaded:false, logLoading:false, busy:false, busySetting:'', settingMessage:'', settingMessageType:'', pageNotice:{}, statusError:'', updateKick:false, activeTab:'dashboard', jobRunning:false, lastJob:null, checking:{}, fullTest:null, catalogProgress:null, versionCheck:null, autoRefreshRoot:null, lastAction:null };
 
 function profileName(p){
   var x=PROFILE.filter(function(v){return v[0]===p;})[0];
@@ -1996,9 +1996,33 @@ function renderCatalog(root){
     E('div',{'class':'dm-mini'},'Каталог DNS отображается постоянно. Выбор категории и назначение доступны ниже.'),
     E('div',{'class':'dm-actions'},[
       btn(state.jobRunning&&state.fullTest&&state.fullTest.origin==='catalog'?'Проверяю…':'Проверить все DNS','cbi-button-action',function(){testAll(root,'catalog');},{disabled:!!state.busy||!!state.jobRunning})
-    ]),
-    body
+    ])
   ];
+
+  if(state.fullTest&&state.fullTest.origin==='catalog'&&state.catalogProgress){
+    var p=state.catalogProgress;
+    var total=Number(p.total||0),done=Number(p.done||0),okn=Number(p.ok||0),failn=Number(p.fail||0);
+    var pct=total>0?Math.max(0,Math.min(100,Math.round(done*100/total))):0;
+    var running=state.jobRunning&&state.fullTest.status==='RUNNING';
+    var title=running?'Проверка каталога DNS выполняется':'Результат полной проверки каталога';
+    var summary=total>0
+      ? 'Проверено '+done+' из '+total+' · доступно '+okn+' · ошибки '+failn
+      : 'Подготавливаю список DNS-серверов…';
+    var method=[
+      E('div',{'class':'dm-mini'},title),
+      E('div',{'class':'dm-mem-line'},[
+        E('div',{'class':'dm-mem-track'},[E('div',{'class':'dm-mem-fill','style':'width:'+pct+'%'})]),
+        E('span',{'class':'dm-mem-value'},pct+'%')
+      ]),
+      E('div',{'class':'dm-mem-meta'},summary),
+      E('div',{'class':'dm-inline-msg info'},String(p.detail||'Проверка запущена…')),
+      E('div',{'class':'dm-hint'},'Что проверяется для каждого DNS: DNS-имя DoH резолвится через доверенный bootstrap → выполняется HTTPS-запрос к /dns-query → проверяется HTTP 200, Content-Type application/dns-message и корректность DNS-ответа → измеряется время ответа.'),
+      E('div',{'class':'dm-hint'},'Это проверка доступности DoH и скорости ответа. Фильтрация, блокировка рекламы и содержимое сайтов здесь не проверяются.')
+    ];
+    ch.push(card('Ход проверки',method));
+  }
+
+  ch.push(body);
   if(state.pageNotice.catalog)ch.push(E('div',{'class':'dm-inline-msg '+(state.fullTest&&state.fullTest.status==='FAILED'?'error':'info')},state.pageNotice.catalog));
   e.appendChild(card('Каталог DNS',ch));
   if(window.dmCatalog)renderCatalogBody(root,window.dmCatalog);
@@ -2275,7 +2299,16 @@ function testAll(root,origin){
   var from=origin||state.activeTab||'overview';
   state.jobRunning=true;
   state.fullTest={status:'RUNNING',origin:from,started:Date.now()};
-  state.pageNotice.catalog=from==='catalog'?'Проверяю весь каталог DNS…':state.pageNotice.catalog;
+  if(from==='catalog'){
+    state.catalogProgress={
+      done:0,
+      total:Number(window.dmCatalog&&window.dmCatalog.total||0),
+      ok:0,
+      fail:0,
+      detail:'Запускаю полную проверку каталога…'
+    };
+  }
+  state.pageNotice.catalog=from==='catalog'?'Проверяю каталог: каждый DNS проверяется напрямую по HTTPS DoH…':state.pageNotice.catalog;
   if(from==='catalog')renderCatalog(root);else renderOverview(root,window.dmState||{});
   callTestAll().then(function(r){
     if(r&&r.ok)pollJob(root,r.job,{mode:'all',origin:from});
@@ -2361,6 +2394,14 @@ function pollJob(root,job,meta,done){
           var allOk=String(j.status||'').toUpperCase()==='DONE'&&j.result==='ok';
           state.fullTest={status:allOk?'DONE':'FAILED',result:j.result||'fail',finished:Date.now(),origin:meta.origin||''};
           if(meta.origin==='catalog'){
+            if(!state.catalogProgress)state.catalogProgress={done:0,total:0,ok:0,fail:0,detail:''};
+            state.catalogProgress.done=Number(j.progress_done||state.catalogProgress.done||0);
+            state.catalogProgress.total=Number(j.progress_total||state.catalogProgress.total||0);
+            state.catalogProgress.ok=Number(j.progress_ok||state.catalogProgress.ok||0);
+            state.catalogProgress.fail=Number(j.progress_fail||state.catalogProgress.fail||0);
+            state.catalogProgress.detail=allOk
+              ? 'Проверка завершена. Все результаты собраны и записаны в каталог.'
+              : (state.catalogProgress.detail||'Проверка завершилась с ошибкой.');
             state.pageNotice.catalog=allOk?'Полная проверка каталога завершена.':((j.output&&stripAnsi(j.output).split('\n').filter(function(x){return String(x||'').trim();}).pop())||'Полная проверка DNS завершилась с ошибкой.');
             window.dmCatalog=null;
             state.catalogLoaded=false;
@@ -2388,6 +2429,26 @@ function pollJob(root,job,meta,done){
   function poll(){
     callJob(jobId).then(function(j){
       j=j||{};
+      if(meta&&meta.mode==='all'&&meta.origin==='catalog'){
+        var pout=stripAnsi(j.output||'');
+        var lines=pout.split('\n').filter(function(x){return String(x||'').trim();});
+        var lastProgress='';
+        for(var pi=lines.length-1;pi>=0;pi--){
+          if(lines[pi].indexOf('Промежуточный результат:')>=0){lastProgress=lines[pi].trim();break;}
+        }
+        state.catalogProgress={
+          done:Number(j.progress_done||0),
+          total:Number(j.progress_total||((window.dmCatalog&&window.dmCatalog.total)||0)),
+          ok:Number(j.progress_ok||0),
+          fail:Number(j.progress_fail||0),
+          detail:lastProgress||(
+            Number(j.progress_done||0)>0
+              ? 'Проверено '+Number(j.progress_done||0)+' DNS. Ожидаю следующий результат…'
+              : 'Проверяю: разрешение адреса → TLS/HTTPS → DNS wire-ответ → время ответа'
+          )
+        };
+        renderCatalog(root);
+      }
       var s=String(j.status||'running').toUpperCase();
       if(s==='DONE'||s==='FAILED'){finish(j);return;}
       if(ticks++>maxTicks){finish({status:'FAILED',result:'fail',output:'Превышено время ожидания фоновой задачи.'});return;}
