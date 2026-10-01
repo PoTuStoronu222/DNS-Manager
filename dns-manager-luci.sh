@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.5.17
+# Version: 1.5.18
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -22,7 +22,7 @@ COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main
 # Legacy update compatibility: admin/services/dns_manager
 RUNTIME_UPDATE_STATE="$BACKUP_DIR/update.state"
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.5.17"
+VERSION="1.5.18"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -155,7 +155,7 @@ UPDATE_STATE="/etc/dns-manager-luci/update.state"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.5.17"
+SELF_VERSION="1.5.18"
 
 umask 077
 mkdir -p "$RUNTIME_DIR" "$JOB_DIR" "$CHECK_DIR" "$TMP_ROOT" 2>/dev/null || exit 1
@@ -1392,7 +1392,7 @@ EOF_RPC
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.5.17
+// DNS Manager LuCI version: 1.5.18
 var callStatus = rpc.declare({ object:'dns_manager', method:'status', expect:{} });
 var callCatalog = rpc.declare({ object:'dns_manager', method:'catalog', params:['category','offset','limit','only_ok'], expect:{} });
 var callUpdateCheck = rpc.declare({ object:'dns_manager', method:'update_check', expect:{} });
@@ -1982,8 +1982,15 @@ function renderCatalog(root){
   var e=root.querySelector('#dm-catalog');if(!e)return;e.innerHTML='';
   var body=E('div',{'id':'dm-cat-body'});
   if(!window.dmCatalog)body.appendChild(E('div',{'class':'dm-hint'},'Загрузка каталога DNS…'));
-  var ch=[E('div',{'class':'dm-mini'},'Каталог DNS отображается постоянно. Выбор категории и назначение доступны ниже.'),body];
-  if(state.pageNotice.catalog)ch.push(E('div',{'class':'dm-inline-msg info'},state.pageNotice.catalog));e.appendChild(card('Каталог DNS',ch));
+  var ch=[
+    E('div',{'class':'dm-mini'},'Каталог DNS отображается постоянно. Выбор категории и назначение доступны ниже.'),
+    E('div',{'class':'dm-actions'},[
+      btn(state.jobRunning&&state.fullTest&&state.fullTest.origin==='catalog'?'Проверяю…':'Проверить все DNS','cbi-button-action',function(){testAll(root,'catalog');},{disabled:!!state.busy||!!state.jobRunning})
+    ]),
+    body
+  ];
+  if(state.pageNotice.catalog)ch.push(E('div',{'class':'dm-inline-msg '+(state.fullTest&&state.fullTest.status==='FAILED'?'error':'info')},state.pageNotice.catalog));
+  e.appendChild(card('Каталог DNS',ch));
   if(window.dmCatalog)renderCatalogBody(root,window.dmCatalog);
 }
 
@@ -2255,13 +2262,25 @@ function setForceMode(mode,root){
 }
 function testAll(root,origin){
   if(state.jobRunning||state.busy)return;
+  var from=origin||state.activeTab||'overview';
   state.jobRunning=true;
-  state.fullTest={status:'RUNNING',origin:origin||state.activeTab||'overview',started:Date.now()};
-  renderOverview(root,window.dmState||{});
+  state.fullTest={status:'RUNNING',origin:from,started:Date.now()};
+  state.pageNotice.catalog=from==='catalog'?'Проверяю весь каталог DNS…':state.pageNotice.catalog;
+  if(from==='catalog')renderCatalog(root);else renderOverview(root,window.dmState||{});
   callTestAll().then(function(r){
-    if(r&&r.ok)pollJob(root,r.job,{mode:'all'});
-    else{state.fullTest={status:'FAILED'};state.jobRunning=false;refresh(root,true);}
-  }).catch(function(){state.fullTest={status:'FAILED'};state.jobRunning=false;refresh(root,true);});
+    if(r&&r.ok)pollJob(root,r.job,{mode:'all',origin:from});
+    else{
+      state.fullTest={status:'FAILED',origin:from};
+      state.jobRunning=false;
+      state.pageNotice.catalog=from==='catalog'?'Полная проверка DNS не запущена.':state.pageNotice.catalog;
+      refresh(root,true);
+    }
+  }).catch(function(){
+    state.fullTest={status:'FAILED',origin:from};
+    state.jobRunning=false;
+    state.pageNotice.catalog=from==='catalog'?'Не удалось запустить полную проверку DNS.':state.pageNotice.catalog;
+    refresh(root,true);
+  });
 }
 function testOne(id,root,origin,done){
   if(state.jobRunning||state.busy||!id)return;
@@ -2327,7 +2346,22 @@ function pollJob(root,job,meta,done){
       if(meta&&meta.mode==='current')state.checking={};
       state.jobRunning=false;
       if(done)done(ns);
-      else{if(meta&&meta.mode==='all')state.fullTest={status:String(j.status||'').toUpperCase()==='DONE'?'DONE':'FAILED',result:j.result||'fail',finished:Date.now()};if(meta&&meta.mode==='current')state.currentTest={status:String(j.status||'').toUpperCase()==='DONE'?'DONE':'FAILED',result:j.result||'fail',finished:Date.now()};render(root,ns);}
+      else{
+        if(meta&&meta.mode==='all'){
+          var allOk=String(j.status||'').toUpperCase()==='DONE'&&j.result==='ok';
+          state.fullTest={status:allOk?'DONE':'FAILED',result:j.result||'fail',finished:Date.now(),origin:meta.origin||''};
+          if(meta.origin==='catalog'){
+            state.pageNotice.catalog=allOk?'Полная проверка каталога завершена.':((j.output&&stripAnsi(j.output).split('\n').filter(function(x){return String(x||'').trim();}).pop())||'Полная проверка DNS завершилась с ошибкой.');
+            window.dmCatalog=null;
+            state.catalogLoaded=false;
+          }
+        }
+        if(meta&&meta.mode==='current')state.currentTest={status:String(j.status||'').toUpperCase()==='DONE'?'DONE':'FAILED',result:j.result||'fail',finished:Date.now()};
+        render(root,ns);
+        if(meta&&meta.mode==='all'&&meta.origin==='catalog'&&state.activeTab==='catalog'){
+          loadCatalog(root);
+        }
+      }
     }).catch(function(){
       if(meta&&meta.mode==='profile'){
         state.busy=false;
