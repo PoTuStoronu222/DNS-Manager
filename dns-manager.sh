@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.27"
+VERSION="3.28"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -72,6 +72,7 @@ SYSCTL_BASE_MARKER="# DNS_MANAGER_MANAGED_SYSCTL=1"
 SYSCTL_EXTENDED_MARKER="# DNS_MANAGER_MANAGED_SYSCTL_EXTENDED=1"
 CLIENT_FIXES_MARKER="# DNS_MANAGER_MANAGED_CLIENT_FIXES=1"
 CLIENT_FIXES_FILE=""
+EXTRA_STATE_DIR="$CFG_DIR/module-state"
 FIREWALL_OWNERSHIP="$CFG_DIR/firewall-ownership.conf"
 FW_NTP_SECTION="dns_manager_ntp_client"
 FW_DNS_REDIRECT_SECTION="dns_manager_dns_redirect"
@@ -675,7 +676,7 @@ preflight_readonly() {
 # ==========================================
 # ==========================================
 init_dirs() {
-    mkdir -p "$CFG_DIR" "$STATE_DIR" "$BASELINE_DIR" 2>/dev/null || return 1
+    mkdir -p "$CFG_DIR" "$STATE_DIR" "$BASELINE_DIR" "$EXTRA_STATE_DIR" 2>/dev/null || return 1
     if [ -n "${TMP_DIR:-}" ]; then
         mkdir -p "$TMP_DIR" 2>/dev/null || return 1
     fi
@@ -2564,6 +2565,88 @@ exact_list_has() {
     [ -n "$_val" ] || return 1
     uci -q get "$_target" 2>/dev/null | tr ' ' '\n' | sed 's/^['"'"'\"]//; s/['"'"'\"]$//' | grep -qxF -- "$_val"
 }
+module_state_path() {
+    printf '%s/%s.conf' "$EXTRA_STATE_DIR" "$1"
+}
+module_state_normalize_value() {
+    printf '%s\n' "\${1:-}" | tr ' ' '\n' | sed -e 's/^['"'"'\"]//;s/['"'"'\"]$//' -e '/^[[:space:]]*$/d' | sort | tr '\n' ' ' | sed 's/[[:space:]]*$//'
+}
+module_state_record_current() {
+    _ms_module="$1"; _ms_target="$2"; _ms_type="$3"; _ms_managed="$4"
+    _ms_path="$(module_state_path "$_ms_module")"
+    mkdir -p "$EXTRA_STATE_DIR" 2>/dev/null || return 1
+    grep -Fq -- "$_ms_target|$_ms_type|" "$_ms_path" 2>/dev/null && return 0
+    _ms_raw="$(uci -q get "$_ms_target" 2>/dev/null || true)"
+    _ms_norm="$(module_state_normalize_value "$_ms_raw")"
+    _ms_present=0; [ -n "$_ms_norm" ] && _ms_present=1
+    printf '%s|%s|%s|%s|%s\n' "$_ms_target" "$_ms_type" "$_ms_present" "$_ms_norm" "$(module_state_normalize_value "$_ms_managed")" >> "$_ms_path" || return 1
+}
+module_state_record_explicit() {
+    _ms_module="$1"; _ms_target="$2"; _ms_type="$3"; _ms_present="$4"; _ms_original="$5"; _ms_managed="$6"
+    _ms_path="$(module_state_path "$_ms_module")"
+    mkdir -p "$EXTRA_STATE_DIR" 2>/dev/null || return 1
+    printf '%s|%s|%s|%s|%s\n' "$_ms_target" "$_ms_type" "$_ms_present" "$(module_state_normalize_value "$_ms_original")" "$(module_state_normalize_value "$_ms_managed")" >> "$_ms_path" || return 1
+}
+module_state_matches() {
+    _ms_module="$1"; _ms_path="$(module_state_path "$_ms_module")"
+    [ -s "$_ms_path" ] || return 1
+    _ms_all=1
+    while IFS='|' read -r _ms_target _ms_type _ms_present _ms_original _ms_managed; do
+        [ -n "$_ms_target" ] || continue
+        _ms_cur="$(uci -q get "$_ms_target" 2>/dev/null || true)"
+        _ms_cur="$(module_state_normalize_value "$_ms_cur")"
+        [ "$_ms_cur" = "$_ms_managed" ] || _ms_all=0
+    done < "$_ms_path"
+    [ "$_ms_all" = 1 ]
+}
+module_state_restore() {
+    _ms_module="$1"; _ms_path="$(module_state_path "$_ms_module")"
+    [ -s "$_ms_path" ] || return 0
+    _ms_conflict=0
+    while IFS='|' read -r _ms_target _ms_type _ms_present _ms_original _ms_managed; do
+        [ -n "$_ms_target" ] || continue
+        _ms_cur="$(uci -q get "$_ms_target" 2>/dev/null || true)"
+        _ms_cur="$(module_state_normalize_value "$_ms_cur")"
+        if [ "$_ms_cur" != "$_ms_managed" ]; then
+            _ms_conflict=1
+            continue
+        fi
+        if [ "$_ms_present" = 1 ]; then
+            uci -q delete "$_ms_target" || return 1
+            if [ "$_ms_type" = list ]; then
+                for _ms_v in $_ms_original; do
+                    [ -n "$_ms_v" ] && uci add_list "$_ms_target=$_ms_v" || return 1
+                done
+            else
+                uci set "$_ms_target=$_ms_original" || return 1
+            fi
+        else
+            uci -q delete "$_ms_target" || true
+        fi
+    done < "$_ms_path"
+    [ "$_ms_conflict" = 0 ] || return 2
+    rm -f "$_ms_path" 2>/dev/null || return 1
+    return 0
+}
+stock_uci_capture() {
+    _su_pkg="$1"; _su_target="$2"; _su_fallback_present="$3"; _su_fallback_value="$4"
+    if [ -r "/rom/etc/config/$_su_pkg" ] && uci -q -c /rom/etc/config get "$_su_target" >/dev/null 2>&1; then
+        _su_raw="$(uci -q -c /rom/etc/config get "$_su_target" 2>/dev/null || true)"
+        printf '1|%s' "$(module_state_normalize_value "$_su_raw")"
+        return 0
+    fi
+    printf '%s|%s' "$_su_fallback_present" "$(module_state_normalize_value "$_su_fallback_value")"
+}
+stock_uci_matches() {
+    _sm_pkg="$1"; _sm_target="$2"; _sm_fallback_present="$3"; _sm_fallback_value="$4"
+    _sm_stock="$(stock_uci_capture "$_sm_pkg" "$_sm_target" "$_sm_fallback_present" "$_sm_fallback_value")"
+    _sm_sp="\${_sm_stock%%|*}"; _sm_sv="\${_sm_stock#*|}"
+    _sm_cur="$(uci -q get "$_sm_target" 2>/dev/null || true)"
+    _sm_cur="$(module_state_normalize_value "$_sm_cur")"
+    _sm_cp=0; [ -n "$_sm_cur" ] && _sm_cp=1
+    [ "$_sm_cp" = "$_sm_sp" ] && [ "$_sm_cur" = "$_sm_sv" ]
+}
+
 # ==========================================
 # ==========================================
 clear_all_doh_for_apply() {
