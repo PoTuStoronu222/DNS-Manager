@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.1.4
+# Version: 1.1.5
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -22,7 +22,7 @@ COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main
 # Legacy update compatibility: admin/services/dns_manager
 RUNTIME_UPDATE_STATE="$BACKUP_DIR/update.state"
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.1.4"
+VERSION="1.1.5"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -53,7 +53,14 @@ watchdog_service_enabled() {
     [ -x /etc/init.d/dns-watchdog ] && /etc/init.d/dns-watchdog enabled >/dev/null 2>&1
 }
 watchdog_loop_running() {
-    ps w 2>/dev/null | grep -F -- "$MANAGER __watchdog-loop" | grep -v 'grep -F' >/dev/null 2>&1
+    for _p in /proc/[0-9]*; do
+        [ -r "$_p/cmdline" ] || continue
+        _cmd="$(tr '\000' ' ' < "$_p/cmdline" 2>/dev/null || true)"
+        case "$_cmd" in
+            *dns-manager*__watchdog-loop*) return 0 ;;
+        esac
+    done
+    return 1
 }
 
 require_manager() {
@@ -160,7 +167,7 @@ UPDATE_STATE="/etc/dns-manager-luci/update.state"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.1.4"
+SELF_VERSION="1.1.5"
 
 umask 077
 mkdir -p "$RUNTIME_DIR" "$JOB_DIR" "$CHECK_DIR" "$TMP_ROOT" 2>/dev/null || exit 1
@@ -213,7 +220,14 @@ watchdog_service_enabled() {
     [ -x /etc/init.d/dns-watchdog ] && /etc/init.d/dns-watchdog enabled >/dev/null 2>&1
 }
 watchdog_loop_running() {
-    ps w 2>/dev/null | awk '$0 ~ /[[:space:]]dns-manager[[:space:]]__watchdog-loop([[:space:]]|$)/ {found=1} END {exit found ? 0 : 1}'
+    for _p in /proc/[0-9]*; do
+        [ -r "$_p/cmdline" ] || continue
+        _cmd="$(tr '\000' ' ' < "$_p/cmdline" 2>/dev/null || true)"
+        case "$_cmd" in
+            *dns-manager*__watchdog-loop*) return 0 ;;
+        esac
+    done
+    return 1
 }
 
 cfg_get() {
@@ -1109,7 +1123,7 @@ EOF_RPC
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.1.4
+// DNS Manager LuCI version: 1.1.5
 var callStatus = rpc.declare({ object:'dns_manager', method:'status', expect:{} });
 var callCatalog = rpc.declare({ object:'dns_manager', method:'catalog', params:['category','offset','limit','only_ok'], expect:{} });
 var callUpdateCheck = rpc.declare({ object:'dns_manager', method:'update_check', expect:{} });
@@ -1145,6 +1159,23 @@ function catName(c){ var x=CATEGORY.filter(function(v){return v[0]===c;})[0]; re
 function ping(v){ return v && /^\d+$/.test(String(v)) ? v+' мс' : '—'; }
 function uptime(sec){ var n=Number(sec||0); if(!isFinite(n)||n<0)return '—'; var d=Math.floor(n/86400); n%=86400; var h=Math.floor(n/3600); n%=3600; var m=Math.floor(n/60); var s=Math.floor(n%60); return (d?d+' дн ':'')+(d||h?h+' ч ':'')+m+' мин '+s+' с';}
 function memory(total,avail){ var t=Number(total||0),a=Number(avail||0); if(!t)return '—'; return Math.max(0,Math.round((t-a)/1024))+' / '+Math.round(t/1024)+' МБ'; }
+function memoryPercent(total,avail){
+  var t=Number(total||0),a=Number(avail||0);
+  if(!isFinite(t)||t<=0||!isFinite(a))return null;
+  var p=Math.round(((t-Math.max(0,a))/t)*100);
+  return Math.max(0,Math.min(100,p));
+}
+function memoryBar(total,avail){
+  var p=memoryPercent(total,avail);
+  if(p===null)return E('span',{},'—');
+  return E('div',{'class':'dm-mem-wrap'},[
+    E('div',{'class':'dm-mem-line'},[
+      E('div',{'class':'dm-mem-track'},[E('div',{'class':'dm-mem-fill','style':'width:'+p+'%'})]),
+      E('span',{'class':'dm-mem-value'},memory(total,avail))
+    ]),
+    E('div',{'class':'dm-mem-meta'},p+'% занято')
+  ]);
+}
 function loadPercent(load1,cores){
   var n=Number(load1),c=Number(cores||1);
   if(!isFinite(n)||n<0||!isFinite(c)||c<1)return null;
@@ -1228,6 +1259,7 @@ function injectStyle(root){
   '.dm-wrap{display:flex;flex-direction:column;gap:12px;max-width:1100px;padding-bottom:28px}'+
   '.dm-header{display:flex;align-items:center;gap:9px;flex-wrap:wrap}.dm-header h2{margin:0;font-size:22px;font-weight:700}.dm-header-by{font-size:13px;opacity:.60}.dm-header-actions{display:flex;gap:7px;margin-left:auto;flex-wrap:wrap}.dm-header-actions .cbi-button{padding:5px 11px;font-size:12.5px}'+
   '.dm-load-wrap{min-width:220px;max-width:430px;width:100%}.dm-load-line{display:flex;align-items:center;gap:9px}.dm-load-track{height:8px;flex:1;min-width:120px;border-radius:999px;background:rgba(110,118,129,.16);overflow:hidden}.dm-load-fill{height:100%;border-radius:999px;background:#1a7f37;transition:width .25s ease}.dm-load-value{min-width:38px;font-size:12px;font-weight:700;text-align:right}.dm-load-meta{font-size:10.5px;opacity:.58;margin-top:3px}'+
+  '.dm-mem-wrap{min-width:220px;max-width:430px;width:100%}.dm-mem-line{display:flex;align-items:center;gap:9px}.dm-mem-track{height:8px;flex:1;min-width:120px;border-radius:999px;background:rgba(110,118,129,.16);overflow:hidden}.dm-mem-fill{height:100%;border-radius:999px;background:#1a7f37;transition:width .25s ease}.dm-mem-value{font-size:12px;font-weight:700;white-space:nowrap}.dm-mem-meta{font-size:10.5px;opacity:.58;margin-top:3px}'+
   '.dm-card{min-width:0;box-sizing:border-box;background:var(--background-color-medium,#fff);border:1px solid rgba(0,0,0,.08);border-radius:11px;padding:15px 18px;box-shadow:0 1px 3px rgba(0,0,0,.04),0 1px 2px rgba(0,0,0,.03);overflow-wrap:break-word}.dm-card:hover{box-shadow:0 2px 7px rgba(0,0,0,.06)}'+
   'html.dm-theme-dark .dm-card{background:#1c2128;border-color:rgba(255,255,255,.10);box-shadow:0 1px 3px rgba(0,0,0,.22)}'+
   '.dm-card h3{margin:0 0 10px;font-size:15px;font-weight:600;display:flex;align-items:center;gap:7px}.dm-row{display:flex;align-items:center;gap:10px;margin:6px 0;font-size:13px;flex-wrap:wrap}.dm-label{opacity:.65;flex-shrink:0}.dm-row-value{overflow-wrap:anywhere}'+
@@ -1349,7 +1381,7 @@ function renderOverview(root,st){
     row('OpenWrt',shortVal(st.openwrt)),
     row('Время работы',E('span',{'class':'dm-uptime'},uptime(st.uptime))),
     row('Нагрузка',loadBar(st.load1,st.cpu_count)),
-    row('RAM',memory(st.memory_total_kb,st.memory_available_kb)),
+    row('RAM',memoryBar(st.memory_total_kb,st.memory_available_kb)),
     row('LAN',shortVal(st.lan))
   ]);
   var verCard=card('Версии',[
