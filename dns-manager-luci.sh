@@ -506,12 +506,27 @@ update_hdp_direct() {
 }
 
 update_catalog_direct() {
-    _tmp="$TMP_ROOT/catalog-update-all.$"
+    _pid="$(printf "%s" "$$")"
+    _tmp="$TMP_ROOT/catalog-update-all-${_pid}"
     fetch_raw_url "$_tmp" "https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/catalogs/dns-8.5-RU-NOSOCIAL.conf" || { rm -f "$_tmp" 2>/dev/null || true; return 3; }
-    _remote_ver="$(sed -n 's/^# DNSCATVER=//p' "$_tmp" 2>/dev/null | head -n1)"
-    _remote_rev="$(sed -n 's/^# DNSCATREV=//p' "$_tmp" 2>/dev/null | head -n1)"
-    _decl="$(sed -n 's/^# ENTRIES=//p' "$_tmp" 2>/dev/null | head -n1)"
-    _count="$(grep -v '^[[:space:]]*#' "$_tmp" 2>/dev/null | grep -v '^[[:space:]]*append_update_message() {
+    _remote_ver="$(sed -n "s/^# DNSCATVER=//p" "$_tmp" 2>/dev/null | head -n1)"
+    _remote_rev="$(sed -n "s/^# DNSCATREV=//p" "$_tmp" 2>/dev/null | head -n1)"
+    _decl="$(sed -n "s/^# ENTRIES=//p" "$_tmp" 2>/dev/null | head -n1)"
+    _count="$(grep -v "^[[:space:]]*#" "$_tmp" 2>/dev/null | grep -v "^[[:space:]]*$" | wc -l | tr -d " ")"
+    case "$_count" in ""|*[!0-9]*) _count=0;; esac
+    [ -n "$_remote_ver" ] && [ -n "$_remote_rev" ] && [ "$_decl" = "$_count" ] && [ "$_count" -gt 0 ] || { rm -f "$_tmp" 2>/dev/null || true; return 4; }
+    awk -F"|" "/^[[:space:]]*#/ || /^[[:space:]]*$/ {next} {if(NF!=7 || $1=="" || $4=="" || $5 !~ /^https:\\/\\/\//) bad=1; ids[$1]++; if(ids[$1]>1) bad=1; n++} END{if(bad || n<1) exit 1}" "$_tmp" >/dev/null 2>&1 || { rm -f "$_tmp" 2>/dev/null || true; return 4; }
+    _rb="$TMP_ROOT/catalog-remote-all-${_pid}"
+    _lb="$TMP_ROOT/catalog-local-all-${_pid}"
+    sed "/^[[:space:]]*#/d;/^[[:space:]]*$/d" "$_tmp" > "$_rb" 2>/dev/null || true
+    sed "/^[[:space:]]*#/d;/^[[:space:]]*$/d" "$CATALOG_FILE" > "$_lb" 2>/dev/null || true
+    if cmp -s "$_rb" "$_lb" 2>/dev/null; then rm -f "$_tmp" "$_rb" "$_lb" 2>/dev/null || true; return 2; fi
+    mv -f "$_tmp" "$CATALOG_FILE" 2>/dev/null || { rm -f "$_rb" "$_lb" 2>/dev/null || true; return 5; }
+    chmod 600 "$CATALOG_FILE" 2>/dev/null || true
+    rm -f "$_rb" "$_lb" 2>/dev/null || true
+    return 0
+}
+append_update_message() {
     if [ -n "$_message" ]; then _message="$_message; $1"; else _message="$1"; fi
 }
 
