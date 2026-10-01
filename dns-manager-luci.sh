@@ -1099,9 +1099,9 @@ set_check_stamp() {
 write_current_slot_results() {
     _results="$1"
     [ -s "$_results" ] || return 1
-    cat "$_results" > "${CURRENT_SLOT_RESULTS}.tmp.$" 2>/dev/null || return 1
-    mv -f "${CURRENT_SLOT_RESULTS}.tmp.$" "$CURRENT_SLOT_RESULTS" 2>/dev/null || {
-        rm -f "${CURRENT_SLOT_RESULTS}.tmp.$" 2>/dev/null || true
+    cat "$_results" > "${CURRENT_SLOT_RESULTS}.tmp.$$" 2>/dev/null || return 1
+    mv -f "${CURRENT_SLOT_RESULTS}.tmp.$$" "$CURRENT_SLOT_RESULTS" 2>/dev/null || {
+        rm -f "${CURRENT_SLOT_RESULTS}.tmp.$$" 2>/dev/null || true
         return 1
     }
     chmod 600 "$CURRENT_SLOT_RESULTS" 2>/dev/null || true
