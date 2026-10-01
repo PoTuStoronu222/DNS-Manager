@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.04"
+VERSION="3.07"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -60,9 +60,6 @@ BASELINE_LAST="$BASELINE_DIR/last-applied.manifest"
 BASELINE_META="$BASELINE_DIR/meta"
 OWNERSHIP="$CFG_DIR/ownership.conf"
 PACKAGE_OWNERSHIP="$CFG_DIR/package-ownership.conf"
-MTU_BEFORE="$STATE_DIR/mtu-before-zone.conf"
-NTP_CLIENTS_BEFORE="$STATE_DIR/ntp-clients-before.conf"
-FORCE_DNS_BEFORE="$CFG_DIR/force-dns-before.conf"
 TEST_RESULTS="$STATE_DIR/dns-test-results.conf"
 TEST_LOCK_DIR="$STATE_DIR/dns-test.lock"
 TEST_LOCK_HELD=0
@@ -879,50 +876,25 @@ baseline_uninstall_validate() {
     [ "$_valid" -gt 0 ] || return 1
     return 0
 }
-baseline_restore_path_for_uninstall() {
-    _path="$1"
-    [ -n "$_path" ] || return 1
-    [ -s "$BASELINE_MANIFEST" ] || return 1
-
-    _line="$(awk -F'|' -v f="$_path" '$1==f{print;exit}' "$BASELINE_MANIFEST" 2>/dev/null)"
-    [ -n "$_line" ] || return 2
-    IFS='|' read -r _f _k _existed _base_hash <<EOF_UNINST
-$_line
-EOF_UNINST
-
-    if [ "$_existed" = 1 ]; then
-        [ -f "$BASELINE_DIR/files/$_k" ] || return 1
-        mkdir -p "$(dirname "$_path")" 2>/dev/null || return 1
-        cp -p "$BASELINE_DIR/files/$_k" "$_path" 2>/dev/null || return 1
-    else
-        rm -f "$_path" 2>/dev/null || return 1
-    fi
-    return 0
-}
-
 manager_state_requires_original_restore() {
-    # When no immutable baseline exists, never guess what "stock" means.
-    # Return success when there is evidence that DNS Manager had an active
-    # configuration which therefore requires the missing original snapshot.
-    [ -s "$OWNERSHIP" ] && return 0
-    [ -s "$FIREWALL_OWNERSHIP" ] && return 0
-    [ -s "$WATCHDOG_CRON_STATE" ] && return 0
+    # A baseline is required only when DNS Manager changed the core DNS path.
+    # Standalone additional modules are reverted directly to their stock state.
+    [ -s "$OWNERSHIP" ] && grep -Eq '^(doh|dnsmasq)\|' "$OWNERSHIP" 2>/dev/null && return 0
     [ -s "$CONFIG_FILE" ] && {
         for _v in SLOT_1 SLOT_2 SLOT_3 SLOT_4 SLOT_5 SLOT_6 SLOT_RU SLOT_RU_2 PORT_1 PORT_2 PORT_3 PORT_4 PORT_5 PORT_6 PORT_RU PORT_RU_2; do
             eval "_mv=\${$_v:-}"
             [ -n "$_mv" ] && return 0
         done
-        for _v in FORCE_DOH MTU_FIX NTP_IP_FALLBACK SYSCTL_TUNING DNSMASQ_PERF NTP_CLIENTS CLIENT_FIXES SYSCTL_EXTENDED WATCHDOG_ENABLED WEB_ACCESS_ENABLED; do
-            eval "_mv=\${$_v:-0}"
-            [ "$_mv" = 1 ] && return 0
-        done
     }
     return 1
 }
-
 baseline_restore_for_uninstall() {
     baseline_uninstall_validate || {
         warn_msg "Исходная копия DNS Manager отсутствует или повреждена. Без неё удаление остановлено, чтобы не угадывать исходные настройки."
+        return 1
+    }
+    [ -s "$BASELINE_LAST" ] || {
+        warn_msg "Контрольный снимок последнего применения отсутствует. Без него удаление общих UCI-файлов не выполняю."
         return 1
     }
 
@@ -936,29 +908,35 @@ baseline_restore_for_uninstall() {
     UNINSTALL_RESTORED_BOGUS=0
     UNINSTALL_RESTORED_CLIENT_FIXES=0
     UNINSTALL_RESTORE_COUNT=0
+    UNINSTALL_SKIPPED_COUNT=0
 
-    # Restore every path from the original manifest WITHOUT the normal
-    # post-Apply hash guard. Uninstall explicitly means: return to the
-    # pre-DNS-Manager state, including user-tuned DoH.
+    # Restore the original file only when it still matches the state recorded
+    # after the last successful DNS Manager Apply. Otherwise preserve the file
+    # and let the targeted cleanup remove only manager-owned artifacts.
     while IFS='|' read -r _f _k _existed _base_hash; do
         [ -n "$_f" ] || continue
-        baseline_restore_path_for_uninstall "$_f" || return 1
-        UNINSTALL_RESTORE_COUNT=$((UNINSTALL_RESTORE_COUNT+1))
-        case "$_f" in
-            /etc/config/dhcp) UNINSTALL_RESTORED_DHCP=1 ;;
-            /etc/config/https-dns-proxy) UNINSTALL_RESTORED_HDP=1 ;;
-            /etc/config/firewall) UNINSTALL_RESTORED_FIREWALL=1 ;;
-            /etc/config/system) UNINSTALL_RESTORED_SYSTEM=1 ;;
-            /etc/config/ttyd) UNINSTALL_RESTORED_TTYD=1 ;;
-            /etc/sysctl.d/90-dns-manager.conf) UNINSTALL_RESTORED_SYSCTL_BASE=1 ;;
-            /etc/sysctl.d/91-dns-manager-extended.conf) UNINSTALL_RESTORED_SYSCTL_EXT=1 ;;
-            /etc/dnsmasq.d/90-dns-manager-bogus.conf) UNINSTALL_RESTORED_BOGUS=1 ;;
-            /etc/dnsmasq.d/91-dns-manager-client-fixes.conf) UNINSTALL_RESTORED_CLIENT_FIXES=1 ;;
-        esac
+        if baseline_restore_path_if_safe "$_f"; then
+            UNINSTALL_RESTORE_COUNT=$((UNINSTALL_RESTORE_COUNT+1))
+            case "$_f" in
+                /etc/config/dhcp) UNINSTALL_RESTORED_DHCP=1 ;;
+                /etc/config/https-dns-proxy) UNINSTALL_RESTORED_HDP=1 ;;
+                /etc/config/firewall) UNINSTALL_RESTORED_FIREWALL=1 ;;
+                /etc/config/system) UNINSTALL_RESTORED_SYSTEM=1 ;;
+                /etc/config/ttyd) UNINSTALL_RESTORED_TTYD=1 ;;
+                /etc/sysctl.d/90-dns-manager.conf) UNINSTALL_RESTORED_SYSCTL_BASE=1 ;;
+                /etc/sysctl.d/91-dns-manager-extended.conf) UNINSTALL_RESTORED_SYSCTL_EXT=1 ;;
+                /etc/dnsmasq.d/90-dns-manager-bogus.conf) UNINSTALL_RESTORED_BOGUS=1 ;;
+                /etc/dnsmasq.d/91-dns-manager-client-fixes.conf) UNINSTALL_RESTORED_CLIENT_FIXES=1 ;;
+            esac
+        else
+            _r=$?
+            UNINSTALL_SKIPPED_COUNT=$((UNINSTALL_SKIPPED_COUNT+1))
+            [ "$_r" = 2 ] || return 1
+        fi
     done < "$BASELINE_MANIFEST"
 
-    [ "$UNINSTALL_RESTORE_COUNT" -gt 0 ] || return 1
-    log_tx "UNINSTALL" "baseline" "RESTORE" "OK" "files=$UNINSTALL_RESTORE_COUNT;original_state=yes;guard=disabled"
+    [ "$UNINSTALL_RESTORE_COUNT" -gt 0 ] || [ "$UNINSTALL_SKIPPED_COUNT" -gt 0 ] || return 1
+    log_tx "UNINSTALL" "baseline" "RESTORE" "OK" "restored=$UNINSTALL_RESTORE_COUNT;skipped=$UNINSTALL_SKIPPED_COUNT;guard=enabled"
     return 0
 }
 catalog_download() {
@@ -1755,30 +1733,6 @@ force_dns_ports_match_expected() {
     _cur="$(uci -q get https-dns-proxy.config.force_dns_port 2>/dev/null | force_dns_list_normalize)"
     [ "$_cur" = "53 853" ]
 }
-force_dns_snapshot_value() {
-    _v="$(uci -q get "$1" 2>/dev/null || true)"
-    [ -n "$_v" ] && printf '%s' "$_v" || printf '__unset__'
-}
-force_dns_restore_scalar() {
-    _target="$1"; _key="$2"
-    _old="$(sed -n "s/^${_key}|//p" "$FORCE_DNS_BEFORE" 2>/dev/null | head -n1)"
-    case "$_old" in
-        __unset__|'') uci -q delete "$_target" >/dev/null 2>&1 || true ;;
-        *) uci set "$_target=$_old" || return 1 ;;
-    esac
-}
-force_dns_restore_list() {
-    _target="$1"; _key="$2"
-    _old="$(sed -n "s/^${_key}|//p" "$FORCE_DNS_BEFORE" 2>/dev/null | head -n1)"
-    uci -q delete "$_target" >/dev/null 2>&1 || true
-    [ "$_old" = "__unset__" ] || [ -z "$_old" ] && return 0
-    for _v in $_old; do
-        [ -n "$_v" ] || continue
-        uci add_list "$_target=$_v" || return 1
-    done
-    return 0
-}
-
 # Read-only discovery of the actual LAN DNS interception path. This is used
 # to separate DNS Manager from Zapret/other external forced-DNS without
 # consulting ownership files.
@@ -2632,10 +2586,7 @@ record_own() {
     grep -Fqx -- "$_own_line" "$OWNERSHIP" 2>/dev/null || printf '%s\n' "$_own_line" >> "$OWNERSHIP"
 }
 configure_hdp_manager_control() {
-    # DNS Manager owns the DoH resolver sections. Forced-DNS is deliberately
-    # applied only by apply_dns_force(), after its one-shot ownership snapshot
-    # has been taken. This prevents a pre-snapshot mutation from corrupting
-    # rollback/remove semantics.
+    # DNS Manager owns the DoH resolver sections. Forced-DNS is applied only by apply_dns_force().
     detect_forced_dns_path >/dev/null 2>&1 || true
 
     if [ "${FORCE_DOH:-0}" = 1 ]; then
@@ -3009,7 +2960,6 @@ remove_sysctl_base() {
         }
         rm -f "$_f" || return 1
     fi
-    rm -f "$STATE_DIR/sysctl-before.conf" 2>/dev/null || true
     if [ -x /etc/init.d/sysctl ]; then
         /etc/init.d/sysctl reload >/dev/null 2>&1 || /etc/init.d/sysctl restart >/dev/null 2>&1 || true
     elif [ -x /sbin/sysctl ]; then
@@ -3189,7 +3139,6 @@ apply_ntp_clients() {
     fi
     log_tx "APPLY" "NTP" "SERVER" "OK" "router_server=1;dhcp_option=42,$LAN_IP;forced_redirect=0"
     ok_msg "NTP-сервер роутера включён. Клиенты получают $LAN_IP через DHCP (Option 42). Принудительного перехвата NTP нет."
-    rm -f "$NTP_CLIENTS_BEFORE" 2>/dev/null || true
     return 0
 }
 
@@ -3213,7 +3162,6 @@ remove_ntp_clients() {
     uci commit dhcp || return 1
     /etc/init.d/sysntpd restart >/dev/null 2>&1 || true
     /etc/init.d/dnsmasq restart >/dev/null 2>&1 || true
-    rm -f "$NTP_CLIENTS_BEFORE" 2>/dev/null || true
     log_tx "APPLY" "NTP" "SERVER_OFF" "OK" "router_server=0;forced_redirect=0"
     return 0
 }
@@ -3230,16 +3178,34 @@ apply_dnsmasq_perf() {
     uci set "dhcp.$sec.quietdhcp=1" || return 1
     if [ "$IPV6_ROUTE" != yes ]; then uci set "dhcp.$sec.filter_aaaa=1" || return 1; fi
     uci commit dhcp || return 1
-    rm -f "$STATE_DIR/dnsmasq-perf-before.conf" 2>/dev/null || true
 }
 remove_dnsmasq_perf() {
     sec="$(get_dnsmasq_section)"
     [ -n "$sec" ] || return 0
-    for _k in cachesize dnsforwardmax max_cache_ttl boguspriv domainneeded quietdhcp filter_aaaa; do
-        uci -q delete "dhcp.$sec.$_k" || true
+    _changed=0
+    for _kv in "cachesize|1000" "dnsforwardmax|300" "max_cache_ttl|86400" "boguspriv|1" "domainneeded|1" "quietdhcp|1"; do
+        _k="${_kv%%|*}"; _want="${_kv#*|}"
+        _cur="$(uci -q get "dhcp.$sec.$_k" 2>/dev/null)"
+        if [ "$_cur" = "$_want" ]; then
+            uci -q delete "dhcp.$sec.$_k" || true
+            _changed=1
+        elif [ -n "$_cur" ]; then
+            warn_msg "DNS-кэш: параметр $_k изменён извне; значение сохранено."
+        fi
     done
-    uci commit dhcp >/dev/null 2>&1 || return 1
-    rm -f "$STATE_DIR/dnsmasq-perf-before.conf" 2>/dev/null || true
+    if [ "${IPV6_ROUTE:-no}" != yes ]; then
+        _cur="$(uci -q get "dhcp.$sec.filter_aaaa" 2>/dev/null)"
+        if [ "$_cur" = 1 ]; then
+            uci -q delete "dhcp.$sec.filter_aaaa" || true
+            _changed=1
+        elif [ -n "$_cur" ]; then
+            warn_msg "DNS-кэш: filter_aaaa изменён извне; значение сохранено."
+        fi
+    fi
+    if [ "$_changed" = 1 ]; then
+        uci commit dhcp >/dev/null 2>&1 || return 1
+    fi
+    return 0
 }
 client_fixes_expected_body() {
     cat <<EOF_CLIENT_FIXES_BODY
@@ -3310,11 +3276,18 @@ apply_client_fixes() {
     return 0
 }
 remove_client_fixes() {
+    _found=0
     for _f in /etc/dnsmasq.d/*dns-manager-client-fixes*.conf; do
         [ -f "$_f" ] || continue
-        rm -f "$_f" || return 1
+        _found=1
+        _state="$(client_fixes_file_state "$_f")"
+        case "$_state" in
+            1) rm -f "$_f" || return 1 ;;
+            2) warn_msg "Client-fixes: файл $_f изменён после установки; сохраняю его." ;;
+        esac
     done
     CLIENT_FIXES_FILE=""
+    [ "$_found" = 0 ] || return 0
     return 0
 }
 recommended_conntrack_max() {
@@ -3455,7 +3428,6 @@ remove_dns_force() {
         uci -q delete "https-dns-proxy.config.$_k" || true
     done
     uci commit https-dns-proxy >/dev/null 2>&1 || return 1
-    rm -f "$FORCE_DNS_BEFORE" 2>/dev/null || true
     return 0
 }
 # ==========================================
@@ -4711,11 +4683,6 @@ rollback_hdp_targeted() {
         _changed=1
     done
 
-    if [ -s "$FORCE_DNS_BEFORE" ]; then
-        remove_dns_force || return 1
-        _changed=1
-    fi
-
     if [ "$_changed" = 1 ]; then
         uci commit https-dns-proxy >/dev/null 2>&1 || return 1
         /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || true
@@ -4803,9 +4770,7 @@ reset_manager_runtime_state_after_rollback() {
 }
 
 cleanup_manager_rollback_state() {
-    rm -f "$MTU_BEFORE" "$NTP_CLIENTS_BEFORE" "$FORCE_DNS_BEFORE" \
-          "$STATE_DIR/sysctl-before.conf" "$STATE_DIR/sysctl-extended-before.conf" \
-          "$STATE_DIR/dnsmasq-perf-before.conf" "$WATCHDOG_CRON_STATE" \
+    rm -f "$STATE_DIR/sysctl-extended-before.conf" "$WATCHDOG_CRON_STATE" \
           "$FIREWALL_OWNERSHIP" 2>/dev/null || true
     : > "$OWNERSHIP" 2>/dev/null || true
     chmod 600 "$OWNERSHIP" 2>/dev/null || true
@@ -4851,6 +4816,13 @@ _rollback_ours_impl() {
             _rollback_fail=1
             warn_msg "Не удалось полностью очистить собственные изменения dnsmasq."
         fi
+        if [ "$(check_module_state ntp_clients 2>/dev/null)" != 0 ]; then
+            remove_ntp_clients || { _rollback_fail=1; warn_msg "Не удалось отключить NTP для клиентов."; }
+        fi
+        if [ "$(check_module_state dnsmasq_perf 2>/dev/null)" = 1 ]; then
+            DNSMASQ_PERF=0
+            remove_dnsmasq_perf || { _rollback_fail=1; warn_msg "Не удалось вернуть настройки DNS-кэша к стоку."; }
+        fi
     fi
 
     if [ "$BASELINE_RESTORED_HDP" != 1 ]; then
@@ -4858,39 +4830,23 @@ _rollback_ours_impl() {
             _rollback_fail=1
             warn_msg "Не удалось полностью очистить собственные изменения https-dns-proxy."
         fi
+        if [ "$(check_module_state force 2>/dev/null)" = 1 ]; then
+            remove_dns_force || { _rollback_fail=1; warn_msg "Не удалось вернуть принудительный DNS к стоку."; }
+        fi
     fi
 
     if [ "$BASELINE_RESTORED_FIREWALL" != 1 ]; then
-        if [ -s "$MTU_BEFORE" ]; then
+        if [ "$(check_module_state mtu 2>/dev/null)" = 1 ]; then
             MTU_FIX=0
             if ! apply_mtu_toggle >/dev/null 2>&1; then
                 _rollback_fail=1
-                warn_msg "Не удалось безопасно восстановить mtu_fix WAN."
+                warn_msg "Не удалось вернуть mtu_fix WAN к стоку."
             fi
         fi
         if ! rollback_firewall_targeted; then
             _rollback_fail=1
             warn_msg "Не удалось полностью очистить собственные правила firewall."
         fi
-    fi
-
-    if [ "$BASELINE_RESTORED_DHCP" != 1 ] && [ "$BASELINE_RESTORED_SYSTEM" != 1 ]; then
-        if [ -s "$NTP_CLIENTS_BEFORE" ] && ! remove_ntp_clients; then
-            _rollback_fail=1
-            warn_msg "Не удалось полностью отключить NTP-сервер DNS Manager для клиентов."
-        fi
-    else
-        rm -f "$NTP_CLIENTS_BEFORE" 2>/dev/null || true
-    fi
-
-    if [ "$BASELINE_RESTORED_DHCP" != 1 ] && [ -s "$STATE_DIR/dnsmasq-perf-before.conf" ]; then
-        DNSMASQ_PERF=0
-        if ! remove_dnsmasq_perf; then
-            _rollback_fail=1
-            warn_msg "Не удалось полностью восстановить параметры dnsmasq performance."
-        fi
-    else
-        rm -f "$STATE_DIR/dnsmasq-perf-before.conf" 2>/dev/null || true
     fi
 
     if [ "$BASELINE_RESTORED_CLIENT_FIXES" != 1 ]; then
@@ -4912,6 +4868,18 @@ _rollback_ours_impl() {
         if ! remove_sysctl_extended; then
             _rollback_fail=1
             warn_msg "Не удалось полностью восстановить расширенный sysctl."
+        fi
+    fi
+    if [ "$BASELINE_RESTORED_BOGUS" != 1 ]; then
+        if rollback_ownership_has file /etc/dnsmasq.d/90-dns-manager-bogus.conf created; then
+            rm -f /etc/dnsmasq.d/90-dns-manager-bogus.conf || { _rollback_fail=1; warn_msg "Не удалось удалить manager-owned bogus-nxdomain."; }
+        fi
+    fi
+    if [ "$BASELINE_RESTORED_SYSTEM" != 1 ]; then
+        if [ "$(check_module_state ntp 2>/dev/null)" = 1 ]; then
+            remove_ntp_ip_fallback || _rollback_fail=1
+        else
+            [ "$(check_module_state ntp 2>/dev/null)" = 2 ] && warn_msg "Системный NTP изменён извне; /etc/config/system сохраняю."
         fi
     fi
 
@@ -5082,10 +5050,56 @@ uninstall_manager_impl() {
         # Restore the complete pre-manager state before attempting package removal.
         # Package-manager failures must never block network/config restoration.
         if ! baseline_restore_for_uninstall; then
-            err_msg "Удаление остановлено: не удалось полностью восстановить исходное состояние. Сам менеджер НЕ удалён."
+            err_msg "Удаление остановлено: не удалось безопасно восстановить исходное состояние. Сам менеджер НЕ удалён."
             release_mutation_lock
             pause
             return 1
+        fi
+
+        # Files changed after the last Apply are kept intact; remove only manager-owned artifacts.
+        if [ "$UNINSTALL_RESTORED_DHCP" != 1 ]; then
+            rollback_dnsmasq_targeted >/dev/null 2>&1 || true
+            if [ "$(check_module_state ntp_clients 2>/dev/null)" = 1 ]; then
+                remove_ntp_clients >/dev/null 2>&1 || true
+            fi
+            if [ "$(check_module_state dnsmasq_perf 2>/dev/null)" = 1 ]; then
+                DNSMASQ_PERF=0
+                remove_dnsmasq_perf >/dev/null 2>&1 || true
+            fi
+        fi
+        if [ "$UNINSTALL_RESTORED_HDP" != 1 ]; then
+            rollback_hdp_targeted >/dev/null 2>&1 || true
+            if [ "$(check_module_state force 2>/dev/null)" = 1 ]; then
+                remove_dns_force >/dev/null 2>&1 || true
+            fi
+        fi
+        if [ "$UNINSTALL_RESTORED_FIREWALL" != 1 ]; then
+            if [ "$(check_module_state mtu 2>/dev/null)" = 1 ]; then
+                MTU_FIX=0
+                apply_mtu_toggle >/dev/null 2>&1 || true
+            fi
+            rollback_firewall_targeted >/dev/null 2>&1 || true
+        fi
+        if [ "$UNINSTALL_RESTORED_SYSCTL_BASE" != 1 ]; then
+            SYSCTL_TUNING=0
+            remove_sysctl_base >/dev/null 2>&1 || true
+        fi
+        if [ "$UNINSTALL_RESTORED_SYSCTL_EXT" != 1 ]; then
+            SYSCTL_EXTENDED=0
+            remove_sysctl_extended >/dev/null 2>&1 || true
+        fi
+        if [ "$UNINSTALL_RESTORED_SYSTEM" != 1 ]; then
+            if [ "$(check_module_state ntp 2>/dev/null)" = 1 ]; then
+                remove_ntp_ip_fallback >/dev/null 2>&1 || true
+            elif [ "$(check_module_state ntp 2>/dev/null)" = 2 ]; then
+                warn_msg "Системный NTP изменён извне; /etc/config/system сохранён."
+            fi
+        fi
+        if [ "$UNINSTALL_RESTORED_CLIENT_FIXES" != 1 ]; then
+            remove_client_fixes >/dev/null 2>&1 || true
+        fi
+        if [ "$UNINSTALL_RESTORED_BOGUS" != 1 ] && rollback_ownership_has file /etc/dnsmasq.d/90-dns-manager-bogus.conf created; then
+            rm -f /etc/dnsmasq.d/90-dns-manager-bogus.conf >/dev/null 2>&1 || true
         fi
 
         # Restoring ttyd config is enough on disk. Do NOT restart ttyd yet:
@@ -5118,8 +5132,19 @@ uninstall_manager_impl() {
             return 1
         }
         web_access_remove_config_no_restart >/dev/null 2>&1 || true
-        # No Apply (or an already clean rollback) => no live manager
-        # configuration needs an original snapshot.
+
+        # No core DNS Apply: additional modules are independent and return to stock directly.
+        if [ "$(check_module_state ntp 2>/dev/null)" = 1 ]; then remove_ntp_ip_fallback >/dev/null 2>&1 || true; fi
+        if [ "$(check_module_state ntp_clients 2>/dev/null)" = 1 ]; then remove_ntp_clients >/dev/null 2>&1 || true; fi
+        if [ "$(check_module_state dnsmasq_perf 2>/dev/null)" = 1 ]; then DNSMASQ_PERF=0; remove_dnsmasq_perf >/dev/null 2>&1 || true; fi
+        if [ "$(check_module_state force 2>/dev/null)" = 1 ]; then remove_dns_force >/dev/null 2>&1 || true; fi
+        if [ "$(check_module_state mtu 2>/dev/null)" = 1 ]; then MTU_FIX=0; apply_mtu_toggle >/dev/null 2>&1 || true; fi
+        if [ "$(check_module_state sysctl 2>/dev/null)" != 0 ]; then SYSCTL_TUNING=0; SYSCTL_EXTENDED=0; remove_sysctl_base >/dev/null 2>&1 || true; remove_sysctl_extended >/dev/null 2>&1 || true; fi
+        remove_client_fixes >/dev/null 2>&1 || true
+        if rollback_ownership_has file /etc/dnsmasq.d/90-dns-manager-bogus.conf created; then rm -f /etc/dnsmasq.d/90-dns-manager-bogus.conf >/dev/null 2>&1 || true; fi
+        /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || true
+        /etc/init.d/dnsmasq restart >/dev/null 2>&1 || true
+        reload_fw >/dev/null 2>&1 || true
     fi
 
     # FIRST restore the live firewall from the restored baseline, so any manager
@@ -5203,7 +5228,7 @@ uninstall_manager_impl() {
     release_mutation_lock
     if [ "$_rc" -eq 0 ]; then
         printf "\n${C_GREEN}${C_BOLD}DNS Manager полностью удалён.${C_NC}\n"
-        printf "${C_GREEN}Исходное состояние роутера восстановлено; сохранённый DoH также возвращён.${C_NC}\n"
+        printf "${C_GREEN}Исходное состояние роутера восстановлено там, где файлы не менялись после последнего Apply; изменённые извне файлы сохранены, их manager-owned настройки очищены.${C_NC}\n"
         if [ "${UNINSTALL_PACKAGE_WARNING:-0}" = 1 ]; then
             printf "${C_YELLOW}Некоторые необязательные пакеты не удалились; это не повлияло на восстановление конфигурации.${C_NC}\n"
         fi
@@ -5841,6 +5866,26 @@ firewall_dot_rule_matches() {
     [ "$(uci -q get "firewall.$_sec.target" 2>/dev/null)" = REJECT ] || return 1
     return 0
 }
+ntp_profile_matches_current() {
+    _exp="$(ntp_servers_for_profile "$NTP_PRESET" 2>/dev/null)"
+    [ -n "$_exp" ] || return 1
+    [ "$(uci -q get system.ntp.use_dhcp 2>/dev/null)" = 0 ] || return 1
+    [ "$(uci -q get system.ntp.enabled 2>/dev/null)" = 1 ] || return 1
+    _expected_sorted="$(printf '%s\n' $_exp | sort -u)"
+    _current_sorted="$(uci -q get system.ntp.server 2>/dev/null | tr ' ' '\n' | sed '/^$/d' | sort -u)"
+    [ "$_current_sorted" = "$_expected_sorted" ]
+}
+remove_ntp_ip_fallback() {
+    if ntp_profile_matches_current; then
+        uci -q delete system.ntp.server || true
+        uci -q set system.ntp.use_dhcp=1 || return 1
+        uci commit system || return 1
+        /etc/init.d/sysntpd restart >/dev/null 2>&1 || true
+        return 0
+    fi
+    warn_msg "NTP по IP изменён извне или не совпадает с выбранным профилем; текущее состояние сохранено."
+    return 0
+}
 check_module_state() {
     _sec="$(get_dnsmasq_section)"
     firewall_resolve_zones >/dev/null 2>&1 || true
@@ -5867,15 +5912,12 @@ check_module_state() {
             [ "$_seen" = 1 ] && [ "$_ok" = 1 ] && printf 1 || printf 0
             ;;
         ntp)
-            [ "$(uci -q get system.ntp.use_dhcp 2>/dev/null)" = 0 ] || { printf 0; return; }
-            [ "$(uci -q get system.ntp.enabled 2>/dev/null)" = 1 ] || { printf 0; return; }
-            _exp="$(ntp_servers_for_profile "$NTP_PRESET")"
-            [ -n "$_exp" ] || { printf 0; return; }
-            _cur="$(uci -q get system.ntp.server 2>/dev/null)"
-            for _ip in $_exp; do
-                printf '%s\n' $_cur | grep -qxF "$_ip" || { printf 0; return; }
-            done
-            printf 1
+            ntp_profile_matches_current && printf 1 || {
+                _use="$(uci -q get system.ntp.use_dhcp 2>/dev/null)"
+                _en="$(uci -q get system.ntp.enabled 2>/dev/null)"
+                _srv="$(uci -q get system.ntp.server 2>/dev/null)"
+                if [ "$_use" = 0 ] || [ "$_en" = 1 ] || [ -n "$_srv" ]; then printf 2; else printf 0; fi
+            }
             ;;
         mtu)
             _wan_zone="$(firewall_wan_zone 2>/dev/null)" || { printf 0; return; }
