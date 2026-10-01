@@ -1608,6 +1608,14 @@ function clearSettingFeedback(){
   state.settingMessage='';
   state.settingMessageType='';
 }
+function setSettingFeedback(key,msg,type){
+  state.settingMessageKey=String(key||'');
+  state.settingMessage=String(msg||'');
+  state.settingMessageType=type||'info';
+}
+function clearSettingFeedback(){
+  state.settingMessageKey=''; state.settingMessage=''; state.settingMessageType='';
+}
 function settingFeedback(label,key){
   if(String(state.settingMessageKey||'')!==String(key||''))return null;
   var msg=String(state.settingMessage||'');
