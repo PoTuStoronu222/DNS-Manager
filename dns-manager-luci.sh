@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.5.39
+# Version: 1.5.40
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -22,7 +22,7 @@ COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main
 # Legacy update compatibility: admin/services/dns_manager
 RUNTIME_UPDATE_STATE="$BACKUP_DIR/update.state"
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.5.39"
+VERSION="1.5.40"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -163,7 +163,7 @@ UPDATE_STATE="/etc/dns-manager-luci/update.state"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.5.39"
+SELF_VERSION="1.5.40"
 
 umask 077
 mkdir -p "$RUNTIME_DIR" "$JOB_DIR" "$CHECK_DIR" "$TMP_ROOT" 2>/dev/null || exit 1
@@ -1562,6 +1562,13 @@ function confirmAction(title, rows, onConfirm){
     btn('Применить','cbi-button-apply',function(){ui.hideModal();onConfirm();})
   ])]);
 }
+function settingFeedback(label,key){
+  var msg=String(state.settingMessage||'');
+  if(!msg)return null;
+  if(key==='testages')return E('span',{'class':'dm-setting-feedback '+(state.settingMessageType||'info')},msg);
+  if(String(msg).indexOf(String(label||''))<0)return null;
+  return E('span',{'class':'dm-setting-feedback '+(state.settingMessageType||'info')},msg);
+}
 function setAction(ok,text){state.lastAction={ok:!!ok,text:String(text||'')};}
 function renderActionStatus(){
   if(!state.lastAction||!state.lastAction.text)return null;
@@ -2134,11 +2141,16 @@ function renderSlots(root,st){
 }
 
 function settingCard(root,x,st){
-  var en=yes(st[x[0]]),busy=state.busySetting===x[0];
+  var en=yes(st[x[0]]),busy=state.busySetting===x[0],feedback=settingFeedback(x[1],x[0]);
+  var actions=[
+    badge(busy?'dm-warn':(en?'dm-ok':'dm-off'),busy?'изменение':(en?'включено':'выключено')),
+    btn(busy?'Сохраняю…':(en?'Выключить':'Включить'),busy?'cbi-button-neutral':(en?'cbi-button-remove':'cbi-button-add'),function(){setSetting(x[0],en?0:1,root);},{disabled:!!state.busy})
+  ];
+  if(feedback)actions.push(feedback);
   return E('div',{'class':'dm-card dm-setting '+(busy?'dm-setting-saving':'')},[
     E('div',{'class':'dm-setting-line'},[
       E('div',{},[E('div',{'class':'dm-setting-title'},x[1]),E('div',{'class':'dm-setting-desc'},x[2])]),
-      E('div',{'class':'dm-setting-actions'},[badge(busy?'dm-warn':(en?'dm-ok':'dm-off'),busy?'изменение':(en?'включено':'выключено')),btn(busy?'Сохраняю…':(en?'Выключить':'Включить'),busy?'cbi-button-neutral':(en?'cbi-button-remove':'cbi-button-add'),function(){setSetting(x[0],en?0:1,root);},{disabled:!!state.busy})])
+      E('div',{'class':'dm-setting-actions'},actions)
     ])
   ]);
 }
@@ -2201,15 +2213,19 @@ function saveTestAges(root,inputs){
 }
 function watchdogField(root,st,key,label,unit,min,max){
   var value=Number(st[key]||min), busy=state.busySetting==='wd_'+key;
+
   var input=E('input',{'type':'number','min':String(min),'max':String(max),'step':'1','value':String(value),'class':'dm-input','style':'width:105px'});
   var save=btn(busy?'Сохраняю…':'Сохранить','cbi-button-neutral',function(){
     if(state.busy)return;
     var n=String(input.value||'').trim();
     if(!/^\d+$/.test(n)||Number(n)<min||Number(n)>max){state.settingMessage=label+': допустимо от '+min+' до '+max+(unit?' '+unit:'')+'.';state.settingMessageType='error';renderSettings(root,window.dmState||{});return;}
     state.busy=true;state.busySetting='wd_'+key;state.settingMessage='Сохраняю «'+label+'»…';state.settingMessageType='info';renderSettings(root,window.dmState||{});
-    callWatchdogSetting(key,Number(n)).then(function(r){state.busy=false;state.busySetting='';state.settingMessage=(r&&r.ok)?label+' сохранён.':((r&&r.error)||'Параметр watchdog не удалось сохранить.');state.settingMessageType=(r&&r.ok)?'ok':'error';refresh(root,true);}).catch(function(){state.busy=false;state.busySetting='';state.settingMessage='Параметр watchdog не удалось сохранить.';state.settingMessageType='error';refresh(root,true);});
+    callWatchdogSetting(key,Number(n)).then(function(r){state.busy=false;state.busySetting='';state.settingMessage=(r&&r.ok)?label+' сохранён.':(label+': '+((r&&r.error)||'не удалось сохранить.'));state.settingMessageType=(r&&r.ok)?'ok':'error';refresh(root,true);}).catch(function(){state.busy=false;state.busySetting='';state.settingMessage=label+': не удалось сохранить.';state.settingMessageType='error';refresh(root,true);});
   },{disabled:!!state.busy});
-  return E('div',{'class':'dm-card dm-setting '+(busy?'dm-setting-saving':'')},[E('div',{'class':'dm-setting-line'},[E('div',{},[E('div',{'class':'dm-setting-title'},label),E('div',{'class':'dm-setting-desc'},'Допустимо: '+min+'–'+max+(unit?' '+unit:''))]),E('div',{'class':'dm-setting-actions'},[input,unit?E('span',{'class':'dm-inline'},unit):E('span',{}),save])])]);
+  var feedback=settingFeedback(label,'wd_'+key);
+  var actions=[input,unit?E('span',{'class':'dm-inline'},unit):E('span',{}),save];
+  if(feedback)actions.push(feedback);
+  return E('div',{'class':'dm-card dm-setting '+(busy?'dm-setting-saving':'')},[E('div',{'class':'dm-setting-line'},[E('div',{},[E('div',{'class':'dm-setting-title'},label),E('div',{'class':'dm-setting-desc'},'Допустимо: '+min+'–'+max+(unit?' '+unit:''))]),E('div',{'class':'dm-setting-actions'},actions)])]);
 }
 function watchdogCard(root,st){
   var en=yes(st.watchdog), busy=state.busySetting==='watchdog';
@@ -2252,8 +2268,6 @@ function watchdogCard(root,st){
 function renderSettings(root,st){
   var e=root.querySelector('#dm-settings');if(!e)return;e.innerHTML='';
   var body=[];
-  if(state.settingMessage)body.push(E('div',{'class':'dm-inline-msg '+(state.settingMessageType||'info')},state.settingMessage));
-  body.push(E('div',{'class':'dm-hint'},'Каждый пункт меняет одну настройку. Результат показывается здесь, без всплывающих сообщений.'));
   body.push(E('div',{'class':'dm-section-title'},'Фоновая проверка DNS'));
   body.push(watchdogCard(root,st));
   var ageInputs=[];
@@ -2261,9 +2275,11 @@ function renderSettings(root,st){
   [['bypass','Обход'],['clean','Чистый'],['security','Безопасность'],['privacy','Приватность'],['adblock','Блокировка рекламы'],['family','Семейный'],['regional','Региональный']].forEach(function(x){
     ages.appendChild(testAgeRow(root,st,x[0],x[1],ageInputs));
   });
+  var ageFeedback=settingFeedback('', 'testages');
   var ageActions=E('div',{'class':'dm-actions'},[
-    btn(state.busySetting==='testages'?'Сохраняю…':'Сохранить','cbi-button-neutral',function(){saveTestAges(root,ageInputs);},{disabled:!!state.busy})
-  ]);
+    btn(state.busySetting==='testages'?'Сохраняю…':'Сохранить','cbi-button-neutral',function(){saveTestAges(root,ageInputs);},{disabled:!!state.busy}),
+    ageFeedback
+  ].filter(function(x){return !!x;}));
   body.push(card('Срок результатов проверки',[
     E('div',{'class':'dm-hint'},'Сколько часов результаты полной проверки DNS считаются свежими.'),
     ages,
@@ -2275,7 +2291,6 @@ function renderSettings(root,st){
 function renderNetwork(root,st){
   var e=root.querySelector('#dm-network');if(!e)return;e.innerHTML='';
   var body=[];
-  if(state.settingMessage)body.push(E('div',{'class':'dm-inline-msg '+(state.settingMessageType||'info')},state.settingMessage));
   body.push(E('div',{'class':'dm-hint'},'Сетевые параметры вынесены отдельно, чтобы не перегружать основные настройки DNS Manager.'));
   body.push(E('div',{'class':'dm-section-title'},'Сеть'));
   var groups=[
@@ -2585,7 +2600,7 @@ function setTestAge(category,hours,root){
     state.busy=false;state.busySetting='';state.settingMessage=(r&&r.ok)?'Срок проверки сохранён.':((r&&r.error)||'Срок проверки не удалось сохранить.');state.settingMessageType=(r&&r.ok)?'ok':'error';refresh(root,true);
   }).catch(function(){state.busy=false;state.busySetting='';state.settingMessage='Срок проверки не удалось сохранить.';state.settingMessageType='error';refresh(root,true);});
 }
-function setSetting(name,en,root){if(state.busy)return;state.busy=true;state.busySetting=name;state.settingMessage='Изменение «'+settingName(name)+'»…';state.settingMessageType='info';renderSettings(root,window.dmState||{});if(state.activeTab==='network')renderNetwork(root,window.dmState||{});callSetting(name,en).then(function(r){state.busy=false;state.busySetting='';state.settingMessage=(r&&r.ok)?('Настройка «'+settingName(name)+'»: '+(en?'включена.':'выключена.')):((r&&r.error)||'Настройку не удалось изменить.');state.settingMessageType=(r&&r.ok)?'ok':'error';refresh(root,true);}).catch(function(){state.busy=false;state.busySetting='';state.settingMessage='Настройку не удалось изменить.';state.settingMessageType='error';refresh(root,true);});}
+function setSetting(name,en,root){if(state.busy)return;state.busy=true;state.busySetting=name;state.settingMessage='Изменение «'+settingName(name)+'»…';state.settingMessageType='info';renderSettings(root,window.dmState||{});if(state.activeTab==='network')renderNetwork(root,window.dmState||{});callSetting(name,en).then(function(r){state.busy=false;state.busySetting='';state.settingMessage=(r&&r.ok)?('Настройка «'+settingName(name)+'»: '+(en?'включена.':'выключена.')):('Настройка «'+settingName(name)+'»: '+((r&&r.error)||'не удалось изменить.'));state.settingMessageType=(r&&r.ok)?'ok':'error';refresh(root,true);}).catch(function(){state.busy=false;state.busySetting='';state.settingMessage='Настройка «'+settingName(name)+'»: не удалось изменить.';state.settingMessageType='error';refresh(root,true);});}
 function setForceMode(mode,root){
   if(state.busy)return;
   if(window.dmState&&window.dmState.force_owner==='external'){
