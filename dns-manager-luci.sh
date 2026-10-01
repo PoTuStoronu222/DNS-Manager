@@ -1931,7 +1931,7 @@ function renderDoH(root,st){
   e.appendChild(card('DNS over HTTPS',ch));
 }
 
-function slotLabel(slot){var m={'1':'DNS 1','2':'DNS 2','3':'DNS 3','4':'DNS 4' ,'5':'DNS 5','RU':'Региональный DNS'};return m[slot]||('DNS '+slot);}
+function slotLabel(slot){var m={'1':'DNS 1','2':'DNS 2','3':'DNS 3','4':'DNS 4','5':'DNS 5','6':'DNS 6','RU':'Региональный DNS'};return m[slot]||('DNS '+slot);}
 function slotCurrentName(slot){var st=window.dmState||{};for(var i=0;i<(st.slots||[]).length;i++){if(String(st.slots[i].slot)===String(slot))return st.slots[i].name||st.slots[i].id||'не назначен';}return 'не назначен';}
 function assignedSlotInfo(id,excludeSlot){
   var st=window.dmState||{},out=null;
