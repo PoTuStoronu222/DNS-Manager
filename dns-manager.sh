@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.22"
+VERSION="3.23"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -888,7 +888,7 @@ manager_state_requires_original_restore() {
     # Standalone additional modules are reverted directly to their stock state.
     [ -s "$OWNERSHIP" ] && grep -Eq '^(doh|dnsmasq)\|' "$OWNERSHIP" 2>/dev/null && return 0
     [ -s "$CONFIG_FILE" ] && {
-        for _v in SLOT_1 SLOT_2 SLOT_3 SLOT_4 SLOT_5 SLOT_6 SLOT_RU SLOT_RU_2 PORT_1 PORT_2 PORT_3 PORT_4 PORT_5 PORT_6 PORT_RU PORT_RU_2; do
+        for _v in SLOT_1 SLOT_2 SLOT_3 SLOT_4 SLOT_5 SLOT_6 SLOT_RU PORT_1 PORT_2 PORT_3 PORT_4 PORT_5 PORT_6 PORT_RU; do
             eval "_mv=\${$_v:-}"
             [ -n "$_mv" ] && return 0
         done
@@ -1008,7 +1008,7 @@ write_catalogs() {
     return 1
 }
 sync_regional_dns_state() {
-    if [ -n "${SLOT_RU:-}" ] || [ -n "${SLOT_RU_2:-}" ]; then
+    if [ -n "${SLOT_RU:-}" ]; then
         TLD_RU_ENABLED=1
         TLD_SPLIT=1
     else
@@ -1045,11 +1045,11 @@ case "$WATCHDOG_MAX_RESTARTS" in ''|*[!0-9]*) WATCHDOG_MAX_RESTARTS=2;; *) [ "$W
 : "${WATCHDOG_MAX_CANDIDATES:=3}"
 case "$WATCHDOG_MAX_CANDIDATES" in ''|*[!0-9]*) WATCHDOG_MAX_CANDIDATES=3;; *) [ "$WATCHDOG_MAX_CANDIDATES" -ge 1 ] 2>/dev/null && [ "$WATCHDOG_MAX_CANDIDATES" -le 5 ] 2>/dev/null || WATCHDOG_MAX_CANDIDATES=3;; esac
 : "${SLOT_1:=}"; : "${SLOT_2:=}"; : "${SLOT_3:=}"; : "${SLOT_4:=}"; : "${SLOT_5:=}"; : "${SLOT_6:=}"
-: "${SLOT_RU:=}"; : "${SLOT_RU_2:=}"
+: "${SLOT_RU:=}"
 : "${SLOT_1_CAT:=}"; : "${SLOT_2_CAT:=}"; : "${SLOT_3_CAT:=}"; : "${SLOT_4_CAT:=}"; : "${SLOT_5_CAT:=}"; : "${SLOT_6_CAT:=}"
-: "${SLOT_RU_CAT:=}"; : "${SLOT_RU_2_CAT:=}"
+: "${SLOT_RU_CAT:=}"
 : "${PORT_1:=}"; : "${PORT_2:=}"; : "${PORT_3:=}"; : "${PORT_4:=}"; : "${PORT_5:=}"; : "${PORT_6:=}"
-: "${PORT_RU:=}"; : "${PORT_RU_2:=}"
+: "${PORT_RU:=}"
 : "${BOOTSTRAP_DNS:=$BOOTSTRAP_DNS_ALL}"
 : "${TLD_RU_ENABLED:=1}"; : "${MTU_FIX:=0}"; : "${FORCE_DOH:=0}"
 : "${NTP_IP_FALLBACK:=1}"; : "${SYSCTL_TUNING:=0}"; : "${DNSMASQ_PERF:=0}"; : "${NTP_CLIENTS:=0}"; : "${CLIENT_FIXES:=0}"; : "${SYSCTL_EXTENDED:=0}"
@@ -1066,12 +1066,12 @@ if [ "$_had_dns_profile" = 0 ] && [ -z "$DNS_PROFILE" ]; then
 DNS_PROFILE="hybrid"
 fi
 if [ "$DNS_PROFILE" = "hybrid" ]; then
-    for _slot in 1 2 3 4 5 6 RU RU_2; do
+    for _slot in 1 2 3 4 5 6 RU; do
         eval "_sid=\${SLOT_${_slot}:-}"
         eval "_scat=\${SLOT_${_slot}_CAT:-}"
         if [ -n "$_sid" ] && [ -z "$_scat" ]; then
             _scat="$(dns_cat "$_sid")"
-            case "$_slot" in RU|RU_2) [ -n "$_scat" ] || _scat="regional" ;; esac
+            case "$_slot" in RU) [ -n "$_scat" ] || _scat="regional" ;; esac
             eval "SLOT_${_slot}_CAT=\"$_scat\""
         fi
     done
@@ -1097,7 +1097,6 @@ SLOT_4="$SLOT_4"
 SLOT_5="$SLOT_5"
 SLOT_6="$SLOT_6"
 SLOT_RU="$SLOT_RU"
-SLOT_RU_2="$SLOT_RU_2"
 SLOT_1_CAT="$SLOT_1_CAT"
 SLOT_2_CAT="$SLOT_2_CAT"
 SLOT_3_CAT="$SLOT_3_CAT"
@@ -1105,7 +1104,6 @@ SLOT_4_CAT="$SLOT_4_CAT"
 SLOT_5_CAT="$SLOT_5_CAT"
 SLOT_6_CAT="$SLOT_6_CAT"
 SLOT_RU_CAT="$SLOT_RU_CAT"
-SLOT_RU_2_CAT="$SLOT_RU_2_CAT"
 PORT_1="$PORT_1"
 PORT_2="$PORT_2"
 PORT_3="$PORT_3"
@@ -1113,7 +1111,6 @@ PORT_4="$PORT_4"
 PORT_5="$PORT_5"
 PORT_6="$PORT_6"
 PORT_RU="$PORT_RU"
-PORT_RU_2="$PORT_RU_2"
 BOOTSTRAP_DNS="$BOOTSTRAP_DNS_ALL"
 TLD_RU_ENABLED="$TLD_RU_ENABLED"
 MTU_FIX="$MTU_FIX"
@@ -1455,7 +1452,7 @@ doh_slot_matches_current() {
     [ -n "$_url" ] || return 1
 
     case "$_slot" in
-        1|2|3|4|5|6|RU|RU_2) ;;
+        1|2|3|4|5|6|RU) ;;
         *) return 1 ;;
     esac
 
@@ -1484,7 +1481,7 @@ refresh_doh_scheme_counts() {
     : > "$_used_slots"
     while IFS='|' read -r _idx _port _addr _running _url; do
         _matched=0
-        for _slot in 1 2 3 4 5 6 RU RU_2; do
+        for _slot in 1 2 3 4 5 6 RU; do
             grep -qxF "$_slot" "$_used_slots" 2>/dev/null && continue
             if doh_slot_matches_current "$_slot" "$_port" "$_url"; then
                 _matched=1
@@ -1733,7 +1730,7 @@ reload_fw() {
 dns_manager_force_port() {
     _fp="$1"
     [ -n "$_fp" ] || return 1
-    for _fs in 1 2 3 4 5 6 RU RU_2; do
+    for _fs in 1 2 3 4 5 6 RU; do
         eval "_fport=\${PORT_${_fs}:-}"
         [ -n "$_fport" ] || continue
         [ "$_fport" = "$_fp" ] && return 0
@@ -2195,7 +2192,6 @@ HYBRID_PORT_4=5056
 HYBRID_PORT_5=5057
 HYBRID_PORT_6=5058
 HYBRID_PORT_RU=5059
-HYBRID_PORT_RU_2=5060
 # ==========================================
 # ==========================================
 hybrid_set_defaults() {
@@ -2206,7 +2202,6 @@ SLOT_4="malw_link"
 SLOT_5="comss_ru"
 SLOT_6="vppay"
 SLOT_RU="yandex_ru"
-SLOT_RU_2=""
 SLOT_1_CAT="bypass"
 SLOT_2_CAT="bypass"
 SLOT_3_CAT="bypass"
@@ -2214,7 +2209,6 @@ SLOT_4_CAT="bypass"
 SLOT_5_CAT="bypass"
 SLOT_6_CAT="bypass"
 SLOT_RU_CAT="regional"
-SLOT_RU_2_CAT="regional"
 PORT_1="$HYBRID_PORT_1"
 PORT_2="$HYBRID_PORT_2"
 PORT_3="$HYBRID_PORT_3"
@@ -2222,7 +2216,6 @@ PORT_4="$HYBRID_PORT_4"
 PORT_5="$HYBRID_PORT_5"
 PORT_6="$HYBRID_PORT_6"
 PORT_RU="$HYBRID_PORT_RU"
-PORT_RU_2=""
 DNS_PROFILE="hybrid"
 TLD_RU_ENABLED=1
 BALANCER_ENABLED=1
@@ -2237,7 +2230,6 @@ hybrid_desired_port() {
         5) printf '%s' "$HYBRID_PORT_5";;
         6) printf '%s' "$HYBRID_PORT_6";;
         RU) printf '%s' "$HYBRID_PORT_RU";;
-        RU_2) printf '%s' "${HYBRID_PORT_RU_2:-5060}";;
         *) printf '';;
     esac
 }
@@ -2502,7 +2494,7 @@ validate_selected_slots() {
     _urls="$TMP_DIR/selected-urls"
     _ports="$TMP_DIR/selected-ports"
     : > "$_urls"; : > "$_ports"
-    for s in 1 2 3 4 5 6 RU RU_2; do
+    for s in 1 2 3 4 5 6 RU; do
         eval "_id=\${SLOT_$s}"
         [ -n "$_id" ] || continue
         _u="$(normalize_url "$(dns_url "$_id")")"
@@ -2730,7 +2722,7 @@ normalize_ownership_snapshot() {
                 ;;
             doh)
                 _live=0
-                for _os in 1 2 3 4 5 6 RU RU_2; do
+                for _os in 1 2 3 4 5 6 RU; do
                     eval "_oid=\${SLOT_${_os}:-}"
                     eval "_op=\${PORT_${_os}:-}"
                     [ -n "$_oid" ] && [ -n "$_op" ] || continue
@@ -2764,11 +2756,6 @@ dnsmasq_manager_server_owned() {
             /ru/127.0.0.1#${PORT_RU}|/su/127.0.0.1#${PORT_RU}|/xn--p1ai/127.0.0.1#${PORT_RU}) return 0 ;;
         esac
     fi
-    if [ -n "${PORT_RU_2:-}" ]; then
-        case "$_val" in
-            /ru/127.0.0.1#${PORT_RU_2}|/su/127.0.0.1#${PORT_RU_2}|/xn--p1ai/127.0.0.1#${PORT_RU_2}) return 0 ;;
-        esac
-    fi
     return 1
 }
 reconcile_dnsmasq() {
@@ -2790,13 +2777,6 @@ reconcile_dnsmasq() {
     if [ "$TLD_RU_ENABLED" = 1 ] && [ -n "$SLOT_RU" ] && [ -n "$PORT_RU" ]; then
         for t in /ru /su /xn--p1ai; do
             val="$t/127.0.0.1#$PORT_RU"
-            exact_list_has "dhcp.$sec.server" "$val" || uci add_list "dhcp.$sec.server=$val" || return 1
-            record_own "dnsmasq" "server" "$val" "section=$sec"
-        done
-    fi
-    if [ "$TLD_RU_ENABLED" = 1 ] && [ -n "$SLOT_RU_2" ] && [ -n "$PORT_RU_2" ]; then
-        for t in /ru /su /xn--p1ai; do
-            val="$t/127.0.0.1#$PORT_RU_2"
             exact_list_has "dhcp.$sec.server" "$val" || uci add_list "dhcp.$sec.server=$val" || return 1
             record_own "dnsmasq" "server" "$val" "section=$sec"
         done
@@ -3597,7 +3577,7 @@ verify_applied_doh_config() {
     _actual="$TMP_DIR/actual-doh-map"
     : > "$_expected" || return 1
     : > "$_actual" || return 1
-    for s in 1 2 3 4 5 6 RU RU_2; do
+    for s in 1 2 3 4 5 6 RU; do
         eval "_id=\${SLOT_${s}:-}"
         eval "_p=\${PORT_${s}:-}"
         [ -n "$_id" ] || continue
@@ -3701,20 +3681,6 @@ verify_selected_doh() {
             return 1
         fi
     fi
-    if [ -n "${SLOT_RU_2:-}" ]; then
-        [ -n "${PORT_RU_2:-}" ] || { err_msg "RU2: боевой порт не определён."; return 1; }
-        if listener_port_exists "$PORT_RU_2" && local_dns_query_ok "$PORT_RU_2" "yandex.ru"; then
-            [ "${APPLY_OUTPUT_QUIET:-0}" = 1 ] || printf "  ${C_GREEN}✓${C_NC} RU2 работает: 127.0.0.1:%s ← %s\n" "$PORT_RU_2" "$(dns_name "$SLOT_RU_2")"
-            _checked=$((_checked+1))
-        else
-            FAILED_SLOT="RU_2"
-            FAILED_SLOT_ID="$SLOT_RU_2"
-            FAILED_SLOT_PORT="$PORT_RU_2"
-            FAILED_SLOT_CAT="regional"
-            err_msg "RU2 ($(dns_name "$SLOT_RU_2")): DNS не ответил через 127.0.0.1:$PORT_RU_2."
-            return 1
-        fi
-    fi
     [ "$_checked" -gt 0 ] || { err_msg "После применения не найдено ни одного рабочего локального DNS-порта."; return 1; }
     return 0
 }
@@ -3722,7 +3688,7 @@ rebuild_selected_hdp_sections() {
     case "$DNS_PROFILE" in hybrid|custom) ;; *) return 1 ;; esac
     _keep_file="$TMP_DIR/rebuild-keep-$$"
     : > "$_keep_file" || return 1
-    for _rs in 1 2 3 4 5 6 RU RU_2; do
+    for _rs in 1 2 3 4 5 6 RU; do
         eval "_rid=\${SLOT_${_rs}:-}"
         [ -n "$_rid" ] || continue
         eval "_rport=\${PORT_${_rs}:-}"
@@ -3760,14 +3726,14 @@ replace_failed_slot_from_test() {
     _port="$FAILED_SLOT_PORT"
     _cat="$FAILED_SLOT_CAT"
     [ -n "$_slot" ] || return 1
-    case "$_slot" in RU|RU_2) _cat="regional" ;; esac
+    case "$_slot" in RU) _cat="regional" ;; esac
     _slot_tried="$TMP_DIR/repair-tried-$$-$_slot"
     _used="$TMP_DIR/repair-used-$$-$_slot"
     : > "$_slot_tried" || return 1
     : > "$_used" || { rm -f "$_slot_tried"; return 1; }
     [ -n "${REPAIR_BAD_IDS:-}" ] || REPAIR_BAD_IDS="$TMP_DIR/repair-bad-ids-$$"
     [ -f "$REPAIR_BAD_IDS" ] || : > "$REPAIR_BAD_IDS"
-    for _s in 1 2 3 4 5 6 RU RU_2; do
+    for _s in 1 2 3 4 5 6 RU; do
         eval "_u_id=\${SLOT_${_s}:-}"
         [ -n "$_u_id" ] || continue
         _u="$(normalize_url "$(dns_url "$_u_id")")"
@@ -3779,7 +3745,7 @@ replace_failed_slot_from_test() {
     _old_display="$(dns_name "$_old_id")"
     [ -n "$_old_display" ] || _old_display="выбранный DNS"
     _domain="example.com"
-    case "$_slot" in RU|RU_2) _domain="yandex.ru" ;; esac
+    case "$_slot" in RU) _domain="yandex.ru" ;; esac
 
     _attempt=0
     while [ "$_attempt" -lt 2 ]; do
@@ -3857,11 +3823,6 @@ verify_after_apply() {
         }
         [ "$(uci -q get "dhcp.$_sec.strictorder" 2>/dev/null)" = 0 ] || {
             err_msg "dnsmasq: strictorder=0 не применён."; return 1;
-        }
-    fi
-    if [ -n "${SLOT_RU:-}" ] || [ -n "${SLOT_RU_2:-}" ]; then
-        [ "$(check_module_state tld 2>/dev/null)" = 1 ] || {
-            err_msg "Маршрут .ru/.su/.рф после применения не соответствует выбранному DNS."; return 1;
         }
     fi
     if [ "$CORE_ONLY" != 1 ]; then
@@ -4132,7 +4093,7 @@ stage_drop_by_url() {
 }
 candidate_already_used() {
 _id="$1"
-for _slot in 1 2 3 4 5 6 RU RU_2; do eval "_v=\${SLOT_$_slot:-}"; [ "$_v" = "$_id" ] && return 0; done
+for _slot in 1 2 3 4 5 6 RU; do eval "_v=\${SLOT_$_slot:-}"; [ "$_v" = "$_id" ] && return 0; done
 return 1
 }
 next_hybrid_candidate() {
@@ -4260,14 +4221,11 @@ adaptive_hybrid_prepare() {
             warn_msg "Проверенного регионального DNS нет. RU-маршрут оставлен без нового назначения."
         fi
     fi
-    SLOT_RU_2=""
-    SLOT_RU_2_CAT="regional"
     _ru_skip="${SLOT_RU:-}"
-    SLOT_RU_2="$(awk -F'|' -v skip="$_ru_skip" 'NF>=5 && $2=="regional" && $5=="OK" && $4 ~ /^[0-9]+$/ && $1!=skip{print $1;exit}' "$TEST_RESULTS" 2>/dev/null)"
 
     PORT_1="$HYBRID_PORT_1"; PORT_2="$HYBRID_PORT_2"; PORT_3="$HYBRID_PORT_3"
     PORT_4="$HYBRID_PORT_4"; PORT_5="$HYBRID_PORT_5"; PORT_6="$HYBRID_PORT_6"
-    PORT_RU="$HYBRID_PORT_RU"; PORT_RU_2=""
+    PORT_RU="$HYBRID_PORT_RU"
     DNS_SELECTION_MODE="quick"
     DNS_SELECTION_CATEGORY="bypass"
     rm -f "$_pool" "$_tried" "$_selected_urls" 2>/dev/null
@@ -4287,11 +4245,6 @@ reset_hybrid_runtime_ports() {
         PORT_RU="$(hybrid_desired_port RU)"
     else
         PORT_RU=""
-    fi
-    if [ -n "${SLOT_RU_2:-}" ]; then
-        PORT_RU_2="$(hybrid_desired_port RU_2)"
-    else
-        PORT_RU_2=""
     fi
     return 0
 }
@@ -4313,11 +4266,11 @@ _apply_settings_impl() {
     fi
     if [ "${HYBRID_FORCE_RESELECT:-0}" = 1 ] && [ "$DNS_PROFILE" = hybrid ]; then
         SLOT_1=""; SLOT_2=""; SLOT_3=""; SLOT_4=""; SLOT_5=""; SLOT_6=""
-        SLOT_RU=""; SLOT_RU_2=""
+        SLOT_RU=""
         QUICK_PREF_1=""; QUICK_PREF_2=""; QUICK_PREF_3=""; QUICK_PREF_4=""; QUICK_PREF_5=""; QUICK_PREF_6=""
         SLOT_1_CAT="bypass"; SLOT_2_CAT="bypass"; SLOT_3_CAT="bypass"
         SLOT_4_CAT="bypass"; SLOT_5_CAT="bypass"; SLOT_6_CAT="bypass"
-        SLOT_RU_CAT="regional"; SLOT_RU_2_CAT="regional"
+        SLOT_RU_CAT="regional"
     fi
     BOOTSTRAP_DNS="$BOOTSTRAP_DNS_ALL"
     BALANCER_ENABLED=1
@@ -4339,7 +4292,7 @@ _apply_settings_impl() {
     printf "${C_TITLE}===  ПОДГОТОВКА И ПЛАН ПРИМЕНЕНИЯ ===${C_NC}\n"
     printf "${C_WHITE}Будет настроено:${C_NC}\n"
     if [ "$DNS_PROFILE" = hybrid ]; then
-        printf "  ${C_YELLOW}Гибридный DNS — до 6 серверов + RU/RU2${C_NC}\n"
+        printf "  ${C_YELLOW}Гибридный DNS — до 6 серверов + RU${C_NC}\n"
         printf "${C_WHITE}DNS-серверы:${C_NC}\n"
         for _s in 1 2 3 4 5 6; do
             eval "_v=\${SLOT_$_s:-}"
@@ -4450,13 +4403,8 @@ _apply_settings_impl() {
             tx_restore_on_failure
             return 1
         }
-        ensure_doh_slot RU_2 "${SLOT_RU_2:-}" || {
-            err_msg "Не удалось настроить резервный DNS для доменов .ru/.su/.рф."
-            tx_restore_on_failure
-            return 1
-        }
     fi
-    plan_dup="$(for s in 1 2 3 4 5 6 RU RU_2; do eval "p=\${PORT_$s:-}"; [ -n "$p" ] && printf '%s\n' "$p"; done | sort | uniq -d | head -n1)"
+    plan_dup="$(for s in 1 2 3 4 5 6 RU; do eval "p=\${PORT_$s:-}"; [ -n "$p" ] && printf '%s\n' "$p"; done | sort | uniq -d | head -n1)"
     if [ -n "$plan_dup" ]; then
         err_msg "План отменён: порт $plan_dup назначен нескольким DNS одновременно."
         tx_restore_on_failure
@@ -4570,7 +4518,6 @@ _apply_settings_impl() {
             [ -n "$_v" ] && printf "  ${C_GREEN}✓${C_NC} Слот %s: 127.0.0.1:%s ← %s\n" "$_s" "$_p" "$(dns_name "$_v")"
         done
         [ -n "${SLOT_RU:-}" ] && printf "  ${C_GREEN}✓${C_NC} RU: 127.0.0.1:%s ← %s (.ru/.su/.рф)\n" "$PORT_RU" "$(dns_name "$SLOT_RU")"
-        [ -n "${SLOT_RU_2:-}" ] && printf "  ${C_GREEN}✓${C_NC} RU2: 127.0.0.1:%s ← %s (.ru/.su/.рф)\n" "$PORT_RU_2" "$(dns_name "$SLOT_RU_2")"
         ok_msg "Готово. Выбранная схема реально развернута и проверена."
         log_tx "VERIFY" "all" "VERIFY" "OK" "dnsmasq=$DNSMASQ_RUN,doh=$DOH_TOTAL"
     pause
@@ -4698,7 +4645,7 @@ rollback_hdp_targeted() {
         if rollback_ownership_has doh "$_port" "$_url"; then
             _own=1
         else
-            for _slot in 1 2 3 4 5 6 RU RU_2; do
+            for _slot in 1 2 3 4 5 6 RU; do
                 eval "_sid=\${SLOT_${_slot}:-}"
                 eval "_sport=\${PORT_${_slot}:-}"
                 [ -n "$_sid" ] && [ -n "$_sport" ] || continue
@@ -4779,11 +4726,11 @@ rollback_firewall_targeted() {
 
 reset_manager_runtime_state_after_rollback() {
     SLOT_1=""; SLOT_2=""; SLOT_3=""; SLOT_4=""; SLOT_5=""; SLOT_6=""
-    SLOT_RU=""; SLOT_RU_2=""
+
     PORT_1=""; PORT_2=""; PORT_3=""; PORT_4=""; PORT_5=""; PORT_6=""
-    PORT_RU=""; PORT_RU_2=""
+
     SLOT_1_CAT=""; SLOT_2_CAT=""; SLOT_3_CAT=""; SLOT_4_CAT=""; SLOT_5_CAT=""; SLOT_6_CAT=""
-    SLOT_RU_CAT=""; SLOT_RU_2_CAT=""
+    SLOT_RU_CAT="";=""
     TLD_RU_ENABLED=0
     TLD_SPLIT=0
     BALANCER_ENABLED=0
@@ -5337,7 +5284,7 @@ hybrid_runtime_state_word() {
     _expected=0
     _actual=0
 
-    for _hs in 1 2 3 4 5 6 RU RU_2; do
+    for _hs in 1 2 3 4 5 6 RU; do
         eval "_hid=\${SLOT_${_hs}:-}"
         [ -n "$_hid" ] || continue
 
@@ -5429,9 +5376,6 @@ if [ -n "${SLOT_RU:-}" ]; then
     printf "  %-6s %-32s 127.0.0.1:%s (.ru/.su/.рф)\n" "RU" "$(dns_name "$SLOT_RU")" "${PORT_RU:-$HYBRID_PORT_RU}"
 else
     printf "  %-6s %s\n" "RU" "не выбран"
-fi
-if [ -n "${SLOT_RU_2:-}" ]; then
-    printf "  %-6s %-32s 127.0.0.1:%s (.ru/.su/.рф)\n" "RU2" "$(dns_name "$SLOT_RU_2")" "${PORT_RU_2:-${HYBRID_PORT_RU_2:-5060}}"
 fi
 menu_section "СТОРОННИЕ РЕШЕНИЯ"
 _side_found=0
@@ -5549,7 +5493,7 @@ printf "  ${C_WHITE}%-4s %-8s %-14s %-8s %-12s${C_NC}\n" "#" "ПОРТ" "СОО�
 printf "  ──────────────────────────────────────────────────────────\n"
 while IFS='|' read -r idx port addr running url; do
     _match="нет"
-    for _slot in 1 2 3 4 5 6 RU RU_2; do
+    for _slot in 1 2 3 4 5 6 RU; do
         if doh_slot_matches_current "$_slot" "$port" "$url"; then _match="да"; break; fi
     done
     printf "  ${C_YELLOW}%-4s${C_NC} %-8s %-14s %b %-12s\n" "#$idx" "$port" "$_match" "$(state_word "$running")" "$addr:$port"
@@ -5617,13 +5561,13 @@ clean|security|privacy|adblock|family|all)
     # Profile selection changes only the DNS selection. Preserve the operator's
     # current regional DNS where requested, while the Hybrid DNS core remains on.
     _profile_old_ru="${SLOT_RU:-}"
-    _profile_old_ru2="${SLOT_RU_2:-}"
+
     _profile_old_ru_cat="${SLOT_RU_CAT:-regional}"
-    _profile_old_ru2_cat="${SLOT_RU_2_CAT:-regional}"
+
     _profile_old_tld="${TLD_RU_ENABLED:-0}"
     # Every ready-made category uses the same Hybrid DNS engine.
     # The category changes only which DNS candidates are selected; Hybrid remains
-    # the core layout with general slots plus regional RU/RU2 routing.
+    # the core layout with general slots plus regional RU routing.
     DNS_PROFILE="hybrid"
     DNS_SELECTION_MODE="profile"
     DNS_SELECTION_CATEGORY="$goal"
@@ -5638,14 +5582,12 @@ clean|security|privacy|adblock|family|all)
         # the old RU state when it actually existed before this profile change.
         if [ -n "$_profile_old_ru" ]; then
             SLOT_RU="$_profile_old_ru"
-            SLOT_RU_2="$_profile_old_ru2"
             SLOT_RU_CAT="$_profile_old_ru_cat"
-            SLOT_RU_2_CAT="$_profile_old_ru2_cat"
             # Hybrid core always keeps regional routing enabled for every category.
             TLD_RU_ENABLED=1
             TLD_SPLIT=1
             PORT_RU="$HYBRID_PORT_RU"
-            [ -n "$_profile_old_ru2" ] && PORT_RU_2="$HYBRID_PORT_RU_2" || PORT_RU_2=""
+
         fi
         CORE_ONLY=1
         apply_settings
@@ -5797,17 +5739,6 @@ else
         SLOT_RU_CAT="regional"
     fi
 fi
-SLOT_RU_2="$(awk -F'|' -v skip="$_ru1" 'NF>=5 && $2=="regional" && $5=="OK" && $4 ~ /^[0-9]+$/ && $1!=skip{print $1;exit}' "$TEST_RESULTS" 2>/dev/null)"
-if [ -n "$SLOT_RU_2" ]; then SLOT_RU_2_CAT="regional"; else SLOT_RU_2_CAT="regional"; fi
-if [ "${HYBRID_SELECTION_QUIET:-0}" != 1 ]; then
-    printf "${C_GREEN}✓ Автоматически выбран набор DNS без дублей.${C_NC}\n"
-    for i in 1 2 3 4 5 6; do
-        eval "_v=\${SLOT_$i}"
-        [ -n "$_v" ] && printf "  ${C_WHITE}Слот %s: %s${C_NC}\n" "$i" "$(dns_name "$_v")"
-    done
-    [ -n "$SLOT_RU" ] && printf "  ${C_WHITE}RU: %s${C_NC}\n" "$(dns_name "$SLOT_RU")"
-    [ -n "$SLOT_RU_2" ] && printf "  ${C_WHITE}RU2: %s${C_NC}\n" "$(dns_name "$SLOT_RU_2")"
-fi
 return 0
 }
 # ==========================================
@@ -5818,7 +5749,7 @@ select_slot() {
     menu_header "ВЫБОР DNS-СЕРВЕРА $slot"
     _sel_catalog="$TMP_DIR/slot-catalog-${slot}-$$"
     case "$slot" in
-        RU|RU_2) awk -F'|' 'NF>=5 && $1 !~ /^#/ && $2=="regional" {print}' "$DNS_CATALOG" > "$_sel_catalog" ;;
+        RU) awk -F'|' 'NF>=5 && $1 !~ /^#/ && $2=="regional" {print}' "$DNS_CATALOG" > "$_sel_catalog" ;;
         1|2|3|4|5|6) awk -F'|' 'NF>=5 && $1 !~ /^#/ && $2!="regional" {print}' "$DNS_CATALOG" > "$_sel_catalog" ;;
         *) return 1 ;;
     esac
@@ -5838,7 +5769,7 @@ select_slot() {
     if [ "$c" = "99" ]; then
         eval "SLOT_$slot=''"
         case "$slot" in
-            RU|RU_2) eval "SLOT_${slot}_CAT='regional'" ;;
+            RU) eval "SLOT_${slot}_CAT='regional'" ;;
             *) eval "SLOT_${slot}_CAT=''" ;;
         esac
         sync_regional_dns_state
@@ -5848,7 +5779,7 @@ select_slot() {
     case "$c" in ''|*[!0-9]*) warn_msg "Неверный номер."; pause; return;; esac
     row=""
     case "$slot" in
-        RU|RU_2) row="$(awk -F'|' -v n="$c" 'NF>=5 && $1 !~ /^#/ && $2=="regional" {i++; if(i==n){print; exit}}' "$DNS_CATALOG")" ;;
+        RU) row="$(awk -F'|' -v n="$c" 'NF>=5 && $1 !~ /^#/ && $2=="regional" {i++; if(i==n){print; exit}}' "$DNS_CATALOG")" ;;
         1|2|3|4|5|6) row="$(awk -F'|' -v n="$c" 'NF>=5 && $1 !~ /^#/ && $2!="regional" {i++; if(i==n){print; exit}}' "$DNS_CATALOG")" ;;
     esac
     id="$(printf '%s' "$row" | cut -d'|' -f1)"
@@ -5858,7 +5789,7 @@ select_slot() {
     DNS_SELECTION_MODE="manual"
     eval "SLOT_$slot=\$id"
     eval "SLOT_${slot}_CAT=\$_selected_cat"
-    if [ "$slot" = RU ] || [ "$slot" = RU_2 ]; then
+    if [ "$slot" = RU ]; then
         DNS_SELECTION_CATEGORY="regional"
     else
         DNS_SELECTION_CATEGORY="$_selected_cat"
@@ -5877,7 +5808,7 @@ cfg_value() {
 
 # ==========================================
 dns_slots_pending_changes() {
-    for _v in SLOT_1 SLOT_2 SLOT_3 SLOT_4 SLOT_5 SLOT_6 SLOT_RU SLOT_RU_2              SLOT_1_CAT SLOT_2_CAT SLOT_3_CAT SLOT_4_CAT SLOT_5_CAT SLOT_6_CAT SLOT_RU_CAT SLOT_RU_2_CAT; do
+
         eval "_mem=\${$_v:-}"
         _disk="$(cfg_value "$_v")"
         [ "$_mem" = "$_disk" ] || return 0
@@ -5914,10 +5845,10 @@ printf "  ${C_CYAN}${C_BOLD}%-4s${C_NC} ${C_GREEN}${C_BOLD}%-34s${C_NC} ${C_YELL
 done
 menu_section "РЕГИОНАЛЬНЫЕ СЛОТЫ"
 printf "  ${C_CYAN}${C_BOLD}[7]${C_NC} ${C_GREEN}${C_BOLD}RU${C_NC}   ${C_GREEN}%-30s${C_NC} ${C_YELLOW}${C_BOLD}%s${C_NC}\n" "$(dns_name "$SLOT_RU")" "${PORT_RU:-$HYBRID_PORT_RU}"
-printf "  ${C_CYAN}${C_BOLD}[8]${C_NC} ${C_GREEN}${C_BOLD}RU2${C_NC}  ${C_GREEN}%-30s${C_NC} ${C_YELLOW}${C_BOLD}%s${C_NC}\n" "$(dns_name "$SLOT_RU_2")" "${PORT_RU_2:-авто}"
+
 menu_section "ДЕЙСТВИЯ"
-menu_item "[9]" "Сохранить и применить DNS"
-menu_item "[10]" "Восстановить стандартную настройку"
+menu_item "[8]" "Сохранить и применить DNS"
+menu_item "[9]" "Восстановить стандартную настройку"
 menu_back
 menu_prompt
 safe_read c
@@ -5944,9 +5875,8 @@ fi
 case "$c" in
 1|2|3|4|5|6) select_slot "$c";;
 7) select_slot RU;;
-8) select_slot RU_2;;
-9) CORE_ONLY=1; apply_settings; _rc=$?; CORE_ONLY=0; [ "$_rc" -eq 0 ] || warn_msg "Не удалось применить выбранные DNS."; pause;;
-10)
+8) CORE_ONLY=1; apply_settings; _rc=$?; CORE_ONLY=0;
+9)
     hybrid_set_defaults
     CORE_ONLY=1
     apply_settings
@@ -6022,7 +5952,7 @@ check_module_state() {
         tld)
             _ok=1; _seen=0
             _srv="$(uci -q get "dhcp.$_sec.server" 2>/dev/null | tr ' ' '\n')"
-            for _slot in RU RU_2; do
+            for _slot in RU; do
                 eval "_tid=\${SLOT_${_slot}:-}"
                 [ -n "$_tid" ] || continue
                 _seen=1
@@ -6961,17 +6891,17 @@ DNS_PROFILE="hybrid"
 DNS_SELECTION_MODE="quick"
 DNS_SELECTION_CATEGORY="bypass"
 SLOT_1=""; SLOT_2=""; SLOT_3=""; SLOT_4=""; SLOT_5=""; SLOT_6=""
-SLOT_RU=""; SLOT_RU_2=""
+
 SLOT_1_CAT="bypass"; SLOT_2_CAT="bypass"; SLOT_3_CAT="bypass"
 SLOT_4_CAT="bypass"; SLOT_5_CAT="bypass"; SLOT_6_CAT="bypass"
-SLOT_RU_CAT="regional"; SLOT_RU_2_CAT="regional"
+
 TLD_RU_ENABLED=1
 TLD_SPLIT=1
 BALANCER_ENABLED=1
 BOOTSTRAP_DNS="$BOOTSTRAP_DNS_ALL"
 PORT_1="$HYBRID_PORT_1"; PORT_2="$HYBRID_PORT_2"; PORT_3="$HYBRID_PORT_3"
 PORT_4="$HYBRID_PORT_4"; PORT_5="$HYBRID_PORT_5"; PORT_6="$HYBRID_PORT_6"
-PORT_RU="$HYBRID_PORT_RU"; PORT_RU_2=""
+
 HYBRID_FORCE_RESELECT=1
    CORE_ONLY=1
     apply_settings
@@ -7062,14 +6992,14 @@ watchdog_desired_cat() {
     _slot="$1"
     case "$DNS_SELECTION_MODE" in
         quick)
-            case "$_slot" in RU|RU_2) printf '%s\n' regional ;; *) printf '%s\n' bypass ;; esac
+            case "$_slot" in RU) printf '%s\n' regional ;; *) printf '%s\n' bypass ;; esac
             return 0
             ;;
         profile|manual)
             _cat=""
             eval "_cat=\${SLOT_${_slot}_CAT:-}"
             [ -n "$_cat" ] || { eval "_id=\${SLOT_${_slot}:-}"; [ -n "$_id" ] && _cat="$(dns_cat "$_id")"; }
-            case "$_slot" in RU|RU_2) [ -n "$_cat" ] || _cat="regional" ;; esac
+            case "$_slot" in RU) [ -n "$_cat" ] || _cat="regional" ;; esac
             printf '%s\n' "$_cat"
             return 0
             ;;
@@ -7077,7 +7007,7 @@ watchdog_desired_cat() {
             _cat=""
             eval "_cat=\${SLOT_${_slot}_CAT:-}"
             [ -n "$_cat" ] || _cat="$(dns_cat "$(eval "printf '%s' \"\${SLOT_${_slot}:-}\"")")"
-            case "$_slot" in RU|RU_2) [ -n "$_cat" ] || _cat="regional" ;; *) [ -n "$_cat" ] || _cat="bypass" ;; esac
+            case "$_slot" in RU) [ -n "$_cat" ] || _cat="regional" ;; *) [ -n "$_cat" ] || _cat="bypass" ;; esac
             printf '%s\n' "$_cat"
             ;;
     esac
@@ -7113,7 +7043,7 @@ watchdog_enforce_hdp_control() {
 watchdog_enforce_doh_authority() {
     [ "$DNS_PROFILE" = hybrid ] || [ "$DNS_PROFILE" = custom ] || return 0
     _expected=0
-    for _s in 1 2 3 4 5 6 RU RU_2; do
+    for _s in 1 2 3 4 5 6 RU; do
         eval "_id=\${SLOT_${_s}:-}"
         [ -n "$_id" ] && _expected=$((_expected+1))
     done
@@ -7136,7 +7066,7 @@ watchdog_expected_servers() {
     _out="$TMP_DIR/watchdog-expected-servers-$$"
     : > "$_out"
     for _ws in 1 2 3 4 5 6; do
-        case "$_ws" in 1) _wid="${SLOT_1:-}"; _wp="${PORT_1:-}";; 2) _wid="${SLOT_2:-}"; _wp="${PORT_2:-}";; 3) _wid="${SLOT_3:-}"; _wp="${PORT_3:-}";; 4) _wid="${SLOT_4:-}"; _wp="${PORT_4:-}";; 5) _wid="${SLOT_5:-}"; _wp="${PORT_5:-}";; 6) _wid="${SLOT_6:-}"; _wp="${PORT_6:-}";; RU) _wid="${SLOT_RU:-}"; _wp="${PORT_RU:-}";; RU_2) _wid="${SLOT_RU_2:-}"; _wp="${PORT_RU_2:-}";; esac
+
         [ -n "$_wid" ] || continue
         [ -n "$_wp" ] || continue
         printf '127.0.0.1#%s\n' "$_wp" >> "$_out"
@@ -7144,9 +7074,6 @@ watchdog_expected_servers() {
     if [ "${TLD_RU_ENABLED:-0}" = 1 ]; then
         if [ -n "$SLOT_RU" ] && [ -n "$PORT_RU" ]; then
             for _t in /ru /su /xn--p1ai; do printf '%s/127.0.0.1#%s\n' "$_t" "$PORT_RU" >> "$_out"; done
-        fi
-        if [ -n "$SLOT_RU_2" ] && [ -n "$PORT_RU_2" ]; then
-            for _t in /ru /su /xn--p1ai; do printf '%s/127.0.0.1#%s\n' "$_t" "$PORT_RU_2" >> "$_out"; done
         fi
     fi
     sort -u "$_out" -o "$_out" 2>/dev/null || true
@@ -7187,12 +7114,12 @@ watchdog_dnsmasq_guard() {
 }
 watchdog_service_recover() {
     local _bad=0 _rs _rid _rport _rdomain
-    for _rs in 1 2 3 4 5 6 RU RU_2; do
+    for _rs in 1 2 3 4 5 6 RU; do
         eval "_rid=\${SLOT_${_rs}:-}"
         [ -n "$_rid" ] || continue
         eval "_rport=\${PORT_${_rs}:-}"
         [ -n "$_rport" ] || { _bad=1; break; }
-        case "$_rs" in RU|RU_2) _rdomain="yandex.ru" ;; *) _rdomain="example.com" ;; esac
+        case "$_rs" in RU) _rdomain="yandex.ru" ;; *) _rdomain="example.com" ;; esac
         if ! listener_port_exists "$_rport" || ! local_dns_query_ok "$_rport" "$_rdomain"; then
             _bad=1
             break
@@ -7227,7 +7154,7 @@ watchdog_hdp_guard() {
     _actual="$TMP_DIR/watchdog-hdp-actual-$$"
     : > "$_expected" || return 1
     : > "$_actual" || { rm -f "$_expected"; return 1; }
-    for _s in 1 2 3 4 5 6 RU RU_2; do
+    for _s in 1 2 3 4 5 6 RU; do
         eval "_id=\${SLOT_${_s}:-}"
         [ -n "$_id" ] || continue
         eval "_p=\${PORT_${_s}:-}"
@@ -7272,7 +7199,6 @@ watchdog_check_slot() {
         5) _id="${SLOT_5:-}"; _port="${PORT_5:-}"; _domain="example.com";;
         6) _id="${SLOT_6:-}"; _port="${PORT_6:-}"; _domain="example.com";;
         RU) _id="${SLOT_RU:-}"; _port="${PORT_RU:-}"; _domain="yandex.ru";;
-        RU_2) _id="${SLOT_RU_2:-}"; _port="${PORT_RU_2:-}"; _domain="yandex.ru";;
         *) return 1;;
     esac
     [ -n "$_id" ] || return 1
@@ -7288,7 +7214,7 @@ watchdog_test_candidate() {
     [ -n "$_id" ] || return 1
     _port="$(hybrid_desired_port "$_slot")"
     [ -n "$_port" ] || return 1
-    case "$_slot" in RU|RU_2) _domain="yandex.ru" ;; *) _domain="example.com" ;; esac
+    case "$_slot" in RU) _domain="yandex.ru" ;; *) _domain="example.com" ;; esac
     listener_port_exists "$_port" || return 1
     local_dns_query_ok "$_port" "$_domain" || return 1
     return 0
@@ -7363,7 +7289,7 @@ watchdog_pick_replacement() {
     _desired_for_pick="$(watchdog_desired_cat "$_slot")"
     [ -n "$_desired_for_pick" ] || return 1
     case "$_slot" in
-        RU|RU_2) _probe_domain="yandex.ru" ;;
+        RU) _probe_domain="yandex.ru" ;;
         *) _probe_domain="example.com" ;;
     esac
 
@@ -7497,7 +7423,7 @@ watchdog_restart_hdp() {
     [ "$DOH_TOTAL" = "$_expected" ] || return 1
     [ "$HDP_RUNNING" = yes ] || return 1
 
-    for _rs in 1 2 3 4 5 6 RU RU_2; do
+    for _rs in 1 2 3 4 5 6 RU; do
         eval "_rid=\${SLOT_${_rs}:-}"
         [ -n "$_rid" ] || continue
         eval "_rport=\${PORT_${_rs}:-}"
@@ -7616,7 +7542,7 @@ watchdog_embedded_loop() {
     load_config
     refresh_runtime_capabilities
 
-    for _slot in 1 2 3 4 5 6 RU RU_2; do
+    for _slot in 1 2 3 4 5 6 RU; do
         eval "WD_FAIL_${_slot}=0"
         eval "WD_MISSING_${_slot}=0"
         eval "WD_REPAIR_TS_${_slot}=0"
@@ -7665,13 +7591,12 @@ watchdog_embedded_loop() {
 
         watchdog_refresh_listener_snapshot
 
-        for _slot in 1 2 3 4 5 6 RU RU_2; do
+        for _slot in 1 2 3 4 5 6 RU; do
             eval "_id=\${SLOT_${_slot}:-}"
             [ -n "$_id" ] || continue
             eval "_port=\${PORT_${_slot}:-}"
             [ -n "$_port" ] || continue
-            case "$_slot" in RU_2) [ -n "${PORT_RU_2:-}" ] || continue;; esac
-            case "$_slot" in RU|RU_2) _domain="yandex.ru" ;; *) _domain="example.com" ;; esac
+            case "$_slot" in RU) _domain="yandex.ru" ;; *) _domain="example.com" ;; esac
 
             _checked=$((_checked+1))
             if ! watchdog_listener_snapshot_has_port "$_port"; then
@@ -7711,7 +7636,7 @@ watchdog_embedded_loop() {
         _watchdog_action=0
 
         if [ "$_missing" -eq "$_checked" ] && [ "$_checked" -gt 0 ]; then
-            for _slot in 1 2 3 4 5 6 RU RU_2; do watchdog_loop_reset_slot "$_slot"; done
+            for _slot in 1 2 3 4 5 6 RU; do watchdog_loop_reset_slot "$_slot"; done
             log_msg "Все локальные DoH-listener одновременно отсутствуют. Запрашиваю восстановление https-dns-proxy без ротации DNS."
             watchdog_service_recover_run >/dev/null 2>&1 || true
             _watchdog_action=1
@@ -7727,12 +7652,12 @@ watchdog_embedded_loop() {
             load_config
             refresh_runtime_capabilities
             WD_LAST_GUARD_TS="$(date +%s 2>/dev/null)"
-            for _slot in 1 2 3 4 5 6 RU RU_2; do watchdog_loop_reset_slot "$_slot"; done
+            for _slot in 1 2 3 4 5 6 RU; do watchdog_loop_reset_slot "$_slot"; done
             sleep 5
         elif [ "$_live" -gt 0 ] && [ "$_failed" -eq "$_live" ] && [ "$_missing" -eq 0 ]; then
             # All live DNS paths failed together: treat as WAN/upstream outage.
             # Never rotate healthy DNS choices during a common outage.
-            for _slot in 1 2 3 4 5 6 RU RU_2; do watchdog_loop_reset_slot "$_slot"; done
+            for _slot in 1 2 3 4 5 6 RU; do watchdog_loop_reset_slot "$_slot"; done
         else
             _trigger=""
             for _slot in $_threshold_slots; do
@@ -7777,7 +7702,7 @@ run_watchdog() {
     fi
     load_config
     _managed_slots=0
-    for _s in 1 2 3 4 5 6 RU RU_2; do
+    for _s in 1 2 3 4 5 6 RU; do
         eval "_mid=\${SLOT_${_s}:-}"
         [ -n "$_mid" ] && _managed_slots=$((_managed_slots+1))
     done
@@ -7796,22 +7721,20 @@ run_watchdog() {
     watchdog_dnsmasq_guard || log_msg "Не удалось полностью восстановить конфигурацию dnsmasq."
     _used="$TMP_DIR/watchdog-used-$$"
     : > "$_used"
-    for _s in 1 2 3 4 5 6 RU RU_2; do
+    for _s in 1 2 3 4 5 6 RU; do
         eval "_uid=\${SLOT_${_s}:-}"
         [ -n "$_uid" ] || continue
         _u="$(normalize_url "$(dns_url "$_uid")")"
         [ -n "$_u" ] && printf '%s\n' "$_u" >> "$_used"
     done
-    for _slot in 1 2 3 4 5 6 RU RU_2; do
+    for _slot in 1 2 3 4 5 6 RU; do
         [ "$_wd_repairs" -lt "${WATCHDOG_MAX_REPAIRS:-1}" ] || break
         eval "_id=\${SLOT_${_slot}:-}"
         [ -n "$_id" ] || continue
-        if [ "$_slot" = RU_2 ] && [ -z "${PORT_RU_2:-}" ]; then continue; fi
-        _desired="$(watchdog_desired_cat "$_slot")"
         _current_cat="$(dns_cat "$_id")"
         _force_replace=0
         case "$_slot" in
-            RU|RU_2) ;;
+            RU) ;;
             *)
                 if [ -n "$_desired" ] && [ -n "$_current_cat" ] && [ "$_desired" != "$_current_cat" ]; then
                     _force_replace=1
@@ -8432,7 +8355,7 @@ watchdog_state_word_procd() {
 }
 watchdog_slot_target_run() {
     _slot="$1"
-    case "$_slot" in 1|2|3|4|5|6|RU|RU_2) ;; *) return 2 ;; esac
+    case "$_slot" in 1|2|3|4|5|6|RU) ;; *) return 2 ;; esac
     [ "${WATCHDOG_ENABLED:-0}" = 1 ] || return 0
     eval "_target_id=\${SLOT_${_slot}:-}"
     eval "_target_port=\${PORT_${_slot}:-}"
@@ -8446,7 +8369,7 @@ watchdog_slot_target_run() {
     _slot_rc=0
     _old_id="$_target_id"
     _old_cat="$(dns_cat "$_old_id" 2>/dev/null)"
-    case "$_slot" in RU|RU_2) _domain="yandex.ru" ;; *) _domain="example.com" ;; esac
+    case "$_slot" in RU) _domain="yandex.ru" ;; *) _domain="example.com" ;; esac
 
     # The daemon has already seen two failures; re-check once before touching config.
     if watchdog_check_slot "$_slot"; then
@@ -8458,7 +8381,7 @@ watchdog_slot_target_run() {
     _tried="$TMP_DIR/watchdog-slot-tried-$$"
     : > "$_used" || { release_mutation_lock; return 1; }
     : > "$_tried" || { rm -f "$_used"; release_mutation_lock; return 1; }
-    for _s in 1 2 3 4 5 6 RU RU_2; do
+    for _s in 1 2 3 4 5 6 RU; do
         eval "_uid=\${SLOT_${_s}:-}"
         [ -n "$_uid" ] || continue
         _u="$(normalize_url "$(dns_url "$_uid")")"
@@ -8619,7 +8542,7 @@ done
 # ==========================================
 expected_managed_slots() {
     _n=0
-    for _s in 1 2 3 4 5 6 RU RU_2; do
+    for _s in 1 2 3 4 5 6 RU; do
         eval "_id=\${SLOT_${_s}:-}"
         [ -n "$_id" ] && _n=$((_n + 1))
     done
@@ -8647,16 +8570,6 @@ normalize_hybrid_ports() {
         fi
     done
 
-    if [ -n "${SLOT_RU_2:-}" ]; then
-        _want="$(hybrid_desired_port RU_2)"
-        if [ "${PORT_RU_2:-}" != "$_want" ]; then
-            PORT_RU_2="$_want"
-            _changed=1
-        fi
-    elif [ -n "${PORT_RU_2:-}" ]; then
-        PORT_RU_2=""
-        _changed=1
-    fi
 
     return 0
 }
