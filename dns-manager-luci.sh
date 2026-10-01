@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.5.10
+# Version: 1.5.11
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -22,7 +22,7 @@ COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main
 # Legacy update compatibility: admin/services/dns_manager
 RUNTIME_UPDATE_STATE="$BACKUP_DIR/update.state"
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.5.10"
+VERSION="1.5.11"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -98,16 +98,6 @@ install_files() {
     "order": 20,
     "action": { "type": "view", "path": "dns_manager/overview" }
   },
-  "admin/services/dns-manager/dns": {
-    "title": "Текущие DNS",
-    "order": 30,
-    "action": { "type": "view", "path": "dns_manager/overview" }
-  },
-  "admin/services/dns-manager/profiles": {
-    "title": "Профили",
-    "order": 40,
-    "action": { "type": "view", "path": "dns_manager/overview" }
-  },
   "admin/services/dns-manager/settings": {
     "title": "Настройки",
     "order": 50,
@@ -170,7 +160,7 @@ UPDATE_STATE="/etc/dns-manager-luci/update.state"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.5.10"
+SELF_VERSION="1.5.11"
 
 umask 077
 mkdir -p "$RUNTIME_DIR" "$JOB_DIR" "$CHECK_DIR" "$TMP_ROOT" 2>/dev/null || exit 1
@@ -1505,9 +1495,7 @@ function renderHeader(root,st){
 function setActiveTab(root,name){
   var groups={
     dashboard:['overview','test-inline'],
-    doh:['doh'],
-    dns:['slots'],
-    profiles:['profiles'],
+    doh:['doh','slots','profiles'],
     settings:['settings'],
     catalog:['catalog'],
     test:['job','test-inline'],
@@ -1533,7 +1521,7 @@ function currentRoute(){
 }
 function renderPageNav(root){
   var e=root.querySelector('#dm-page-nav');if(!e)return;e.innerHTML='';
-  var tabs=[['dashboard','Дашборд'],['doh','DNS over HTTPS'],['dns','Текущие DNS'],['profiles','Профили'],['settings','Настройки'],['catalog','Каталог DNS'],['test','Проверка'],['log','Журнал']];
+  var tabs=[['dashboard','Дашборд'],['doh','DNS over HTTPS'],['settings','Настройки'],['catalog','Каталог DNS'],['test','Проверка'],['log','Журнал']];
   var route=currentRoute();
   var nav=E('nav',{'class':'dm-page-nav'});
   var bar=E('div',{'class':'dm-page-tabs'});
