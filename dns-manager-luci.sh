@@ -27,6 +27,26 @@ VERSION="1.5.50"
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
 
+stock_sysctl_values() {
+    _all=1
+    _supported=0
+    while IFS= read -r _p; do
+        [ -n "$_p" ] || continue
+        _k="$(printf "%s" "$_p" | cut -d= -f1)"
+        if ! sysctl -n "$_k" >/dev/null 2>&1; then
+            continue
+        fi
+        _supported=$((_supported + 1))
+        _cur="$(sysctl -n "$_k" 2>/dev/null)"
+        _stock="$(sysctl_stock_value "$_k" 2>/dev/null || true)"
+        [ -n "$_stock" ] || { _all=0; continue; }
+        [ "$_cur" = "$_stock" ] || _all=0
+    done <<EOF_STOCK_SYSCTL
+$1
+EOF_STOCK_SYSCTL
+    [ "$_supported" -gt 0 ] && [ "$_all" = 1 ]
+}
+
 manager_version() {
     [ -r "$MANAGER" ] || return 1
     awk -F'"' '/^VERSION="/ { print $2; exit }' "$MANAGER" 2>/dev/null
@@ -163,7 +183,7 @@ UPDATE_STATE="/etc/dns-manager-luci/update.state"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.5.50"
+SELF_VERSION="1.5.51"
 
 umask 077
 mkdir -p "$RUNTIME_DIR" "$JOB_DIR" "$CHECK_DIR" "$TMP_ROOT" 2>/dev/null || exit 1
@@ -950,6 +970,28 @@ status_json() {
     _ntp="$(cfg_get NTP_CLIENTS)"; [ -n "$_ntp" ] || _ntp=0
     _perf="$(cfg_get DNSMASQ_PERF)"; [ -n "$_perf" ] || _perf=0
     _fix="$(cfg_get CLIENT_FIXES)"; [ -n "$_fix" ] || _fix=0
+    _mtu_state="$(check_module_state mtu 2>/dev/null || true)"; case "$_mtu_state" in 0|1|2) ;; *) _mtu_state=0;; esac
+    _sysctl_state="$(check_module_state sysctl 2>/dev/null || true)"; case "$_sysctl_state" in 0|1|2) ;; *) _sysctl_state=0;; esac
+    _sysctl_ext_state="$(check_sysctl_extended_state 2>/dev/null || true)"; case "$_sysctl_ext_state" in 0|1|2) ;; *) _sysctl_ext_state=0;; esac
+    _dnsmasq_perf_state="$(check_module_state dnsmasq_perf 2>/dev/null || true)"; case "$_dnsmasq_perf_state" in 0|1|2) ;; *) _dnsmasq_perf_state=0;; esac
+
+    _mtu_stock=0
+    _mtu_zone="$(firewall_wan_zone 2>/dev/null || true)"
+    if [ -n "$_mtu_zone" ]; then
+        [ -z "$(uci -q get "firewall.$_mtu_zone.mtu_fix" 2>/dev/null || true)" ] && _mtu_stock=1
+    fi
+    _sysctl_stock=0
+    stock_sysctl_values "$(sysctl_base_expected)" && _sysctl_stock=1
+    _sysctl_ext_stock=0
+    stock_sysctl_values "$(sysctl_extended_params)" && _sysctl_ext_stock=1
+    _dnsmasq_perf_stock=0
+    _dns_sec="$(get_dnsmasq_section 2>/dev/null || true)"
+    if [ -n "$_dns_sec" ]; then
+        _dnsmasq_perf_stock=1
+        for _k in cachesize dnsforwardmax max_cache_ttl boguspriv domainneeded quietdhcp filter_aaaa; do
+            [ -z "$(uci -q get "dhcp.$_dns_sec.$_k" 2>/dev/null || true)" ] || _dnsmasq_perf_stock=0
+        done
+    fi
 
     _doh_total=0; _doh_running=0
     _i=0
@@ -1080,7 +1122,9 @@ status_json() {
     _force_owner="none"
     [ "$_external" = 1 ] && _force_owner="external"
     [ "$_external" != 1 ] && [ "$_force_manager" = 1 ] && _force_owner="manager"
-    printf ',"force":'; json_quote "$_force"; printf ',"force_external":'; json_quote "$_external"; printf ',"force_owner":'; json_quote "$_force_owner"; printf ',"force_manager":%s,"force_both":%s,"zapret_running":%s' "$_force_manager" "$_force_both" "$_zapret_running"; printf ',"force_source":'; json_quote "$FORCE_RUNTIME_SOURCE"; printf ',"force_targets":'; json_quote "$FORCE_RUNTIME_TARGETS"; printf ',"force_notrack":'; json_quote "$_force_notrack"; printf ',"force_update":'; json_quote "$_force_update"; printf ',"force_family":'; json_quote "$_force_family"; printf ',"force_ports":'; json_quote "$_force_ports"; printf ',"force_src":'; json_quote "$_force_src"; printf ',"force_canary_icloud":'; json_quote "$_force_canary_i"; printf ',"force_canary_mozilla":'; json_quote "$_force_canary_m"; printf ',"force_procd_trigger_wan6":'; json_quote "$_force_procd"; printf ',"force_heartbeat_domain":'; json_quote "$_force_heartbeat_domain"; printf ',"force_heartbeat_sleep":'; json_quote "$_force_heartbeat_sleep"; printf ',"force_heartbeat_wait":'; json_quote "$_force_heartbeat_wait"; printf ',"force_user":'; json_quote "$_force_user"; printf ',"force_group":'; json_quote "$_force_group"; printf ',"force_listen":'; json_quote "$_force_listen"; printf ',"force_consistent":%s' "$_force_consistent"; printf ',"mtu":'; json_quote "$_mtu"; printf ',"sysctl":'; json_quote "$_sysctl"; printf ',"sysctl_ext":'; json_quote "$_sysctl_ext"; printf ',"ntp_clients":'; json_quote "$_ntp"; printf ',"dnsmasq_perf":'; json_quote "$_perf"; printf ',"client_fixes":'; json_quote "$_fix"
+    printf ',"force":'; json_quote "$_force"; printf ',"force_external":'; json_quote "$_external"; printf ',"force_owner":'; json_quote "$_force_owner"; printf ',"force_manager":%s,"force_both":%s,"zapret_running":%s' "$_force_manager" "$_force_both" "$_zapret_running";
+    printf ',"mtu_state":%s,"sysctl_state":%s,"sysctl_ext_state":%s,"dnsmasq_perf_state":%s' "$_mtu_state" "$_sysctl_state" "$_sysctl_ext_state" "$_dnsmasq_perf_state";
+    printf ',"mtu_stock":%s,"sysctl_stock":%s,"sysctl_ext_stock":%s,"dnsmasq_perf_stock":%s' "$_mtu_stock" "$_sysctl_stock" "$_sysctl_ext_stock" "$_dnsmasq_perf_stock"; printf ',"force_source":'; json_quote "$FORCE_RUNTIME_SOURCE"; printf ',"force_targets":'; json_quote "$FORCE_RUNTIME_TARGETS"; printf ',"force_notrack":'; json_quote "$_force_notrack"; printf ',"force_update":'; json_quote "$_force_update"; printf ',"force_family":'; json_quote "$_force_family"; printf ',"force_ports":'; json_quote "$_force_ports"; printf ',"force_src":'; json_quote "$_force_src"; printf ',"force_canary_icloud":'; json_quote "$_force_canary_i"; printf ',"force_canary_mozilla":'; json_quote "$_force_canary_m"; printf ',"force_procd_trigger_wan6":'; json_quote "$_force_procd"; printf ',"force_heartbeat_domain":'; json_quote "$_force_heartbeat_domain"; printf ',"force_heartbeat_sleep":'; json_quote "$_force_heartbeat_sleep"; printf ',"force_heartbeat_wait":'; json_quote "$_force_heartbeat_wait"; printf ',"force_user":'; json_quote "$_force_user"; printf ',"force_group":'; json_quote "$_force_group"; printf ',"force_listen":'; json_quote "$_force_listen"; printf ',"force_consistent":%s' "$_force_consistent"; printf ',"mtu":'; json_quote "$_mtu"; printf ',"sysctl":'; json_quote "$_sysctl"; printf ',"sysctl_ext":'; json_quote "$_sysctl_ext"; printf ',"ntp_clients":'; json_quote "$_ntp"; printf ',"dnsmasq_perf":'; json_quote "$_perf"; printf ',"client_fixes":'; json_quote "$_fix"
     printf ',"doh_total":%s,"doh_match":%s,"configured_dns":%s' "$_doh_total" "$_match" "$_expected"; printf ',"last_full_test":'; json_quote "$_last"; printf ',"components_checked_at":'; json_quote "$_components_checked_at"
     printf ',"hostname":'; json_quote "$_host"; printf ',"uptime":'; json_quote "$_uptime"; printf ',"load1":'; json_quote "$_load"; printf ',"cpu_count":%s,"memory_total_kb":%s,"memory_available_kb":%s' "$_cpu_count" "${_mem_t:-0}" "${_mem_a:-0}"
     printf ',"catalog_total":%s,"catalog_version":' "$_cat_total"; json_quote "$(catalog_version)"; printf ',"catalog_revision":'; json_quote "$(catalog_revision)"; printf ',"hdp_version":'; json_quote "$_hdp_installed"; printf ',"hdp_latest_version":'; json_quote "$_hdp_candidate"; printf ',"hdp_update_available":%s,"hdp_check_ok":%s' "$_hdp_update" "$_hdp_check_state"
@@ -1617,14 +1661,6 @@ function clearSettingFeedback(){
   state.settingMessage='';
   state.settingMessageType='';
 }
-function setSettingFeedback(key,msg,type){
-  state.settingMessageKey=String(key||'');
-  state.settingMessage=String(msg||'');
-  state.settingMessageType=type||'info';
-}
-function clearSettingFeedback(){
-  state.settingMessageKey=''; state.settingMessage=''; state.settingMessageType='';
-}
 function settingFeedback(label,key){
   if(String(state.settingMessageKey||'')!==String(key||''))return null;
   var msg=String(state.settingMessage||'');
@@ -1655,6 +1691,20 @@ function stateBadge(status,pingValue){
   return badge('dm-off','нет данных');
 }
 function settingName(n){ var m={watchdog:'Автопроверка и замена DNS',mtu:'Исправление MTU и MSS для WAN',sysctl:'Оптимизация TCP и таблицы соединений',sysctl_ext:'Расширенные параметры TCP и сетевых буферов',ntp_clients:'Время для устройств в локальной сети',dnsmasq_perf:'Увеличенный кэш DNS',client_fixes:'DNS для проверки подключения и совместимости устройств'}; return m[n]||n; }
+function settingModuleState(st,key){
+  var raw=st[key+'_state'];
+  if(raw===undefined||raw===null||raw==='')return -1;
+  var n=Number(raw);
+  return n===1?1:n===2?2:0;
+}
+function settingStateView(st,key){
+  var ms=settingModuleState(st,key);
+  if(ms===1)return {kind:'dm-ok',text:'включено'};
+  if(ms===2)return {kind:'dm-warn',text:'требует внимания'};
+  if(ms===0&&yes(st[key+'_stock']))return {kind:'dm-off',text:'выключено · stock OpenWrt'};
+  if(ms===0)return {kind:'dm-off',text:'выключено'};
+  return yes(st[key])?{kind:'dm-ok',text:'включено'}:{kind:'dm-off',text:'выключено'};
+}
 function versionState(v,available,latest,checked,okWord,pending){
   if(pending)return badge('dm-warn','проверяется…');
   if(!v)return badge('dm-bad','не установлена');
@@ -2221,10 +2271,13 @@ function renderSlots(root,st){
 }
 
 function settingCard(root,x,st){
-  var en=yes(st[x[0]]),busy=state.busySetting===x[0],feedback=settingFeedback(x[1],x[0]);
+  var en=yes(st[x[0]]),busy=state.busySetting===x[0],feedback=settingFeedback(x[1],x[0]),sv=settingStateView(st,x[0]);
+  var active=(settingModuleState(st,x[0])===1)||((settingModuleState(st,x[0])===-1)&&en);
+  var actionLabel=sv.text==='требует внимания'?'Исправить':(active?'Выключить':'Включить');
+  var actionEnabled=sv.text==='требует внимания'?1:(active?0:1);
   var actions=[
-    badge(busy?'dm-warn':(en?'dm-ok':'dm-off'),busy?'изменение':(en?'включено':'выключено')),
-    btn(busy?'Сохраняю…':(en?'Выключить':'Включить'),busy?'cbi-button-neutral':(en?'cbi-button-remove':'cbi-button-add'),function(){setSetting(x[0],en?0:1,root);},{disabled:!!state.busy})
+    badge(busy?'dm-warn':sv.kind,busy?'изменение':sv.text),
+    btn(busy?'Сохраняю…':actionLabel,busy?'cbi-button-neutral':(actionEnabled?'cbi-button-add':'cbi-button-remove'),function(){setSetting(x[0],actionEnabled,root);},{disabled:!!state.busy})
   ];
   if(feedback)actions.push(feedback);
   return E('div',{'class':'dm-card dm-setting '+(busy?'dm-setting-saving':'')},[
@@ -2704,7 +2757,7 @@ function setSetting(name,en,root){
     state.busy=false;state.busySetting='';
     if(r&&r.ok){
       if(window.dmState)window.dmState[name]=String(en);
-      setSettingFeedback(name,'Настройка «'+settingName(name)+'»: '+(en?'включена.':'выключена.'),'ok');
+      setSettingFeedback(name,'Настройка «'+settingName(name)+'»: '+(en?'включена.':'выключена; штатное состояние OpenWrt восстановлено.'),'ok');
     }else{
       setSettingFeedback(name,'Настройка «'+settingName(name)+'»: '+((r&&r.error)||'не удалось изменить.'),'error');
     }
