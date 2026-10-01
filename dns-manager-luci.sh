@@ -782,9 +782,9 @@ write_current_test_summary() {
         else
             printf 'average=\n'
         fi
-    } > "${CURRENT_TEST_SUMMARY}.tmp.$" 2>/dev/null || return 1
-    mv -f "${CURRENT_TEST_SUMMARY}.tmp.$" "$CURRENT_TEST_SUMMARY" 2>/dev/null || {
-        rm -f "${CURRENT_TEST_SUMMARY}.tmp.$" 2>/dev/null || true
+    } > "${CURRENT_TEST_SUMMARY}.tmp.$$" 2>/dev/null || return 1
+    mv -f "${CURRENT_TEST_SUMMARY}.tmp.$$" "$CURRENT_TEST_SUMMARY" 2>/dev/null || {
+        rm -f "${CURRENT_TEST_SUMMARY}.tmp.$$" 2>/dev/null || true
         return 1
     }
     chmod 600 "$CURRENT_TEST_SUMMARY" 2>/dev/null || true
