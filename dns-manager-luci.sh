@@ -248,15 +248,33 @@ version_gt() {
 fetch_raw_url() {
     _out="$1"; _url="$2"
     rm -f "$_out" 2>/dev/null || true
-    if command -v curl >/dev/null 2>&1; then
-        curl -fsSL --connect-timeout 5 --max-time 20 -o "$_out" "$_url" >/dev/null 2>&1
-    elif command -v wget >/dev/null 2>&1; then
-        wget -q -T 20 -O "$_out" "$_url" >/dev/null 2>&1
-    elif command -v uclient-fetch >/dev/null 2>&1; then
-        uclient-fetch -q -O "$_out" "$_url" >/dev/null 2>&1
-    else
-        return 1
-    fi
+    _cb="$(date +%s 2>/dev/null || printf 0)-$$"
+    case "$_url" in
+        https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/*)
+            _path="${_url#https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/}"
+            _api="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/${_path}?ref=main&cb=$_cb"
+            if command -v curl >/dev/null 2>&1; then
+                curl -fsSL --connect-timeout 5 --max-time 20 -H 'Accept: application/vnd.github.raw+json' -H 'User-Agent: DNS-Manager-LuCI' -o "$_out" "$_api" >/dev/null 2>&1
+            elif command -v wget >/dev/null 2>&1; then
+                wget -q -T 20 --header='Accept: application/vnd.github.raw+json' --header='User-Agent: DNS-Manager-LuCI' -O "$_out" "$_api" >/dev/null 2>&1
+            elif command -v uclient-fetch >/dev/null 2>&1; then
+                uclient-fetch -q -O "$_out" "$_url?_dmcb=$_cb" >/dev/null 2>&1
+            else
+                return 1
+            fi
+            ;;
+        *)
+            if command -v curl >/dev/null 2>&1; then
+                curl -fsSL --connect-timeout 5 --max-time 20 -o "$_out" "$_url" >/dev/null 2>&1
+            elif command -v wget >/dev/null 2>&1; then
+                wget -q -T 20 -O "$_out" "$_url" >/dev/null 2>&1
+            elif command -v uclient-fetch >/dev/null 2>&1; then
+                uclient-fetch -q -O "$_out" "$_url" >/dev/null 2>&1
+            else
+                return 1
+            fi
+            ;;
+    esac
     [ -s "$_out" ] || return 1
     [ "$(wc -c < "$_out" 2>/dev/null | tr -d ' ')" -le 600000 ] 2>/dev/null || return 1
     return 0
