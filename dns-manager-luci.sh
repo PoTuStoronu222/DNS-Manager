@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.0.4
+# Version: 1.0.5
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -22,7 +22,7 @@ COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main
 # Legacy update compatibility: admin/services/dns_manager
 RUNTIME_UPDATE_STATE="$BACKUP_DIR/update.state"
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.0.4"
+VERSION="1.0.5"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -160,7 +160,7 @@ UPDATE_STATE="/etc/dns-manager-luci/update.state"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.0.4"
+SELF_VERSION="1.0.5"
 
 umask 077
 mkdir -p "$RUNTIME_DIR" "$JOB_DIR" "$CHECK_DIR" "$TMP_ROOT" 2>/dev/null || exit 1
@@ -1054,7 +1054,7 @@ EOF_RPC
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.0.4
+// DNS Manager LuCI version: 1.0.5
 var callStatus = rpc.declare({ object:'dns_manager', method:'status', expect:{} });
 var callCatalog = rpc.declare({ object:'dns_manager', method:'catalog', params:['category','offset','limit','only_ok'], expect:{} });
 var callUpdateCheck = rpc.declare({ object:'dns_manager', method:'update_check', expect:{} });
@@ -1233,7 +1233,7 @@ function renderOverview(root,st){
   var applied=renderActionStatus();if(applied)e.appendChild(applied);
   if(state.statusError)e.appendChild(E('div',{'class':'dm-inline-msg error'},state.statusError+' Проверьте: ubus call dns_manager status.'));
   var doh=st.doh==='yes'?badge('dm-ok','работает'):Number(st.doh_total||0)>0?badge('dm-bad','служба остановлена'):badge('dm-off','не установлен');
-  var force=yes(st.force_both)?badge('dm-warn','DNS Manager + внешний'):st.force_owner==='external'?badge('dm-warn','внешний · '+shortVal(st.force_source)):yes(st.force_manager)?badge('dm-ok','DNS Manager'):badge('dm-off','выключен');
+  var force=yes(st.force_both)?badge('dm-warn','DNS Manager + внешний'):st.force_owner==='external'?badge('dm-warn','внешний сервис'):yes(st.force_manager)?badge('dm-ok','DNS Manager'):badge('dm-off','выключен');
   var wd=yes(st.watchdog)?(st.watchdog_backend==='procd'?(Number(st.watchdog_loop||0)===1?badge('dm-ok','procd · работает'):Number(st.watchdog_service||0)===1?badge('dm-warn','procd · запускается'):badge('dm-warn','procd · служба не запущена')):badge('dm-warn','неизвестный механизм')):badge('dm-off','выключен');
   var dnsRows=[];
   (st.slots||[]).forEach(function(d){
@@ -1285,23 +1285,8 @@ function renderOverview(root,st){
     row('Актуальность версий',dateText(st.components_checked_at)),
     E('div',{'class':'dm-actions'},[btn('Проверить актуальность','cbi-button-neutral',function(){checkUpdate(root);}),yes(st.luci_update_available)?btn('Обновить LuCI','cbi-button-positive',function(){doUpdate(root);}):E('span',{})])
   ]);
-  var forceBox=E('div',{'class':'dm-actions'},[
-    btn(st.force_owner==='external'?(st.force_source==='Zapret / внешний'?'Перехват DNS · Zapret':'Перехват DNS · внешний сервис'):(st.force==='1'?'Перехват DNS включён':'Перехватывать DNS'),st.force==='1'?'cbi-button-positive':'cbi-button-neutral',function(){setForceMode('auto',root);},{disabled:st.force_owner==='external'||state.busy||state.jobRunning}),
-    btn(st.force==='1'?'Выключить перехват':'Не перехватывать',st.force==='1'?'cbi-button-neutral':'cbi-button-action',function(){setForceMode('off',root);},{disabled:st.force_owner==='external'||state.busy||state.jobRunning})
-  ]);
   e.appendChild(stateCard);
   e.appendChild(E('div',{'class':'dm-grid2'},[sysCard,verCard]));
-  var forceChildren=[];
-  if(st.force_owner==='external'){
-    forceChildren.push(row('Состояние',badge('dm-warn',shortVal(st.force_source||'внешний'))));
-    forceChildren.push(E('div',{'class':'dm-hint'},'DNS Manager не изменяет внешний перехват.'));
-  }else{
-    forceChildren.push(row('Состояние',force));
-    forceChildren.push(E('div',{'class':'dm-hint'},'DNS Manager перенаправляет DNS-запросы устройств на локальный DoH-прокси.'));
-    forceChildren.push(forceBox);
-  }
-  if(state.pageNotice.doh)forceChildren.push(E('div',{'class':'dm-inline-msg info'},state.pageNotice.doh));
-  e.appendChild(card('Перехват DNS устройств',forceChildren));
 }
 function resolverRows(st){
   var out=[],seen=0;
