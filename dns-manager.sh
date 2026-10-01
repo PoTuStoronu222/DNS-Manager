@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.20"
+VERSION="3.21"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -4532,9 +4532,18 @@ _apply_settings_impl() {
     apply_progress_ok "Итоговое обнаружение завершено. Начинаю локальную проверку всех выбранных DNS."
     tx_snapshot_after_apply
     apply_progress "Проверяю dnsmasq, все локальные DoH-порты, .ru/.su/.рф и дополнительные настройки."
-    if verify_after_apply_with_repair; then
+    if [ "${SKIP_POST_APPLY_VERIFY:-0}" = 1 ]; then
+        apply_progress_ok "Конфигурация применена без проверки доступности выбранных DNS."
+    elif verify_after_apply_with_repair; then
         apply_progress_ok "Все локальные проверки после применения пройдены."
-        baseline_mark_applied || warn_msg "Не удалось обновить контрольный снимок."
+    else
+        log_tx "VERIFY" "all" "VERIFY" "FAIL" "dnsmasq=$DNSMASQ_RUN,doh=$DOH_TOTAL"
+        tx_restore_on_failure
+        err_msg "Конфигурация не прошла локальную проверку после запуска. Изменения этой транзакции откатаны, где это безопасно возможно."
+        pause
+        return 1
+    fi
+    baseline_mark_applied || warn_msg "Не удалось обновить контрольный снимок."
         DEFER_CONFIG_SAVE=0
         save_config || {
             err_msg "Не удалось сохранить итоговую конфигурацию DNS Manager. Изменения откатываются."
@@ -4563,11 +4572,6 @@ _apply_settings_impl() {
         [ -n "${SLOT_RU_2:-}" ] && printf "  ${C_GREEN}✓${C_NC} RU2: 127.0.0.1:%s ← %s (.ru/.su/.рф)\n" "$PORT_RU_2" "$(dns_name "$SLOT_RU_2")"
         ok_msg "Готово. Выбранная схема реально развернута и проверена."
         log_tx "VERIFY" "all" "VERIFY" "OK" "dnsmasq=$DNSMASQ_RUN,doh=$DOH_TOTAL"
-    else
-        log_tx "VERIFY" "all" "VERIFY" "FAIL" "dnsmasq=$DNSMASQ_RUN,doh=$DOH_TOTAL"
-        tx_restore_on_failure
-        err_msg "Конфигурация не прошла локальную проверку после запуска. Изменения этой транзакции откатаны, где это безопасно возможно."
-    fi
     pause
 }
 firewall_backend_require() {
