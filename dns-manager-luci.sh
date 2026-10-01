@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.2.7
+# Version: 1.2.8
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -22,7 +22,7 @@ COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main
 # Legacy update compatibility: admin/services/dns_manager
 RUNTIME_UPDATE_STATE="$BACKUP_DIR/update.state"
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.2.7"
+VERSION="1.2.8"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -167,7 +167,7 @@ UPDATE_STATE="/etc/dns-manager-luci/update.state"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.2.7"
+SELF_VERSION="1.2.8"
 
 umask 077
 mkdir -p "$RUNTIME_DIR" "$JOB_DIR" "$CHECK_DIR" "$TMP_ROOT" 2>/dev/null || exit 1
@@ -264,35 +264,23 @@ fetch_raw_url() {
     rm -f "$_out" 2>/dev/null || true
     _cb="$(date +%s 2>/dev/null || printf 0)-$$"
     case "$_url" in
-        https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/*)
-            _path="${_url#https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/}"
-            _api="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/${_path}?ref=main&cb=$_cb"
-            if command -v curl >/dev/null 2>&1; then
-                curl -fsSL --connect-timeout 5 --max-time 20 -H 'Accept: application/vnd.github.raw+json' -H 'User-Agent: DNS-Manager-LuCI' -o "$_out" "$_api" >/dev/null 2>&1
-            elif command -v wget >/dev/null 2>&1; then
-                wget -q -T 20 --header='Accept: application/vnd.github.raw+json' --header='User-Agent: DNS-Manager-LuCI' -O "$_out" "$_api" >/dev/null 2>&1
-            elif command -v uclient-fetch >/dev/null 2>&1; then
-                uclient-fetch -q -O "$_out" "$_url?_dmcb=$_cb" >/dev/null 2>&1
-            else
-                return 1
-            fi
-            ;;
-        *)
-            if command -v curl >/dev/null 2>&1; then
-                curl -fsSL --connect-timeout 5 --max-time 20 -o "$_out" "$_url" >/dev/null 2>&1
-            elif command -v wget >/dev/null 2>&1; then
-                wget -q -T 20 -O "$_out" "$_url" >/dev/null 2>&1
-            elif command -v uclient-fetch >/dev/null 2>&1; then
-                uclient-fetch -q -O "$_out" "$_url" >/dev/null 2>&1
-            else
-                return 1
-            fi
-            ;;
+        *\?*) _fetch_url="$_url&_dmcb=$_cb" ;;
+        *) _fetch_url="$_url?_dmcb=$_cb" ;;
     esac
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL --connect-timeout 4 --max-time 20 -o "$_out" "$_fetch_url" >/dev/null 2>&1
+    elif command -v wget >/dev/null 2>&1; then
+        wget -q -T 20 -O "$_out" "$_fetch_url" >/dev/null 2>&1
+    elif command -v uclient-fetch >/dev/null 2>&1; then
+        uclient-fetch -q -O "$_out" "$_fetch_url" >/dev/null 2>&1
+    else
+        return 1
+    fi
     [ -s "$_out" ] || return 1
     [ "$(wc -c < "$_out" 2>/dev/null | tr -d ' ')" -le 600000 ] 2>/dev/null || return 1
     return 0
 }
+
 fetch_url() {
     _out="$1"
     rm -f "$_out" 2>/dev/null || true
@@ -1157,7 +1145,7 @@ case "${1:-}" in
         case "${2:-}" in
             status) status_json;;
             catalog) INPUT="$(cat 2>/dev/null || true)"; catalog_json;;
-            update_check) version_check_job_start;;
+            update_check) update_check_json;;
             update_check_job) version_check_job_start;;
             update_check_job_status) INPUT="$(cat 2>/dev/null || true)"; version_check_job_status "$(jget id)";;            update) update_json;;            update_hdp) update_hdp_json;;
             set_profile|set_slot|set_setting) INPUT="$(cat 2>/dev/null || true)"; RPC_METHOD="$2"; run_action;;
@@ -1178,7 +1166,7 @@ EOF_RPC
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.2.7
+// DNS Manager LuCI version: 1.2.8
 var callStatus = rpc.declare({ object:'dns_manager', method:'status', expect:{} });
 var callCatalog = rpc.declare({ object:'dns_manager', method:'catalog', params:['category','offset','limit','only_ok'], expect:{} });
 var callUpdateCheck = rpc.declare({ object:'dns_manager', method:'update_check', expect:{} });
@@ -1782,36 +1770,26 @@ function checkUpdate(root){
   if(state.versionCheck&&state.versionCheck.running)return;
   state.versionCheck={running:true,manager:'running',luci:'running',hdp:'running',catalog:'running',started:Date.now(),job:''};
   renderOverview(root,window.dmState||{});
-  callVersionCheckStart().then(function(r){
-    if(!r||!r.ok||!r.job){state.versionCheck.manager='done';state.versionCheck.luci='done';state.versionCheck.hdp='done';state.versionCheck.catalog='done';state.versionCheck.running=false;state.versionCheck.error=true;refresh(root,true);return;}
-    state.versionCheck.job=r.job;
-    var ticks=0;
-    function pollVersion(){
-      if(!rootAlive(root))return;
-      callVersionCheckStatus(r.job).then(function(s){
-        var st=String(s&&s.status||'running').toLowerCase();
-        if(st==='done'||st==='failed'){
-          state.versionCheck.manager='done';
-          state.versionCheck.luci='done';
-          state.versionCheck.hdp='done';
-          state.versionCheck.catalog='done';
-          state.versionCheck.running=false;
-          state.versionCheck.error=st==='failed'||!(s&&s.ok);
-          refresh(root,true);return;
-        }
-        if(ticks++>=120){state.versionCheck.manager='done';state.versionCheck.luci='done';state.versionCheck.hdp='done';state.versionCheck.catalog='done';state.versionCheck.running=false;state.versionCheck.error=true;
-          globalUpdateNotice('Проверка версий не завершилась.','error');
-          refresh(root,true);return;
-        }
-        setTimeout(pollVersion,500);
-      }).catch(function(){
-        if(ticks++>=20){state.versionCheck.manager='done';state.versionCheck.luci='done';state.versionCheck.hdp='done';state.versionCheck.catalog='done';state.versionCheck.running=false;state.versionCheck.error=true;refresh(root,true);return;}
-        setTimeout(pollVersion,700);
-      });
-    }
-    pollVersion();
-  }).catch(function(){state.versionCheck.running=false;state.versionCheck.error=true;refresh(root,true);});
+  callUpdateCheck().then(function(r){
+    state.versionCheck.manager='done';
+    state.versionCheck.luci='done';
+    state.versionCheck.hdp='done';
+    state.versionCheck.catalog='done';
+    state.versionCheck.running=false;
+    state.versionCheck.error=!(r&&r.ok);
+    refresh(root,true);
+  }).catch(function(){
+    state.versionCheck.manager='done';
+    state.versionCheck.luci='done';
+    state.versionCheck.hdp='done';
+    state.versionCheck.catalog='done';
+    state.versionCheck.running=false;
+    state.versionCheck.error=true;
+    globalUpdateNotice('Проверка версий не выполнена.','error');
+    refresh(root,true);
+  });
 }
+
 function updateHdp(root){
   if(state.hdpUpdating||state.busy)return;
   var v=(window.dmState&&window.dmState.hdp_latest_version)||'новой версии';
