@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.0.5
+# Version: 1.0.6
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -22,7 +22,7 @@ COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main
 # Legacy update compatibility: admin/services/dns_manager
 RUNTIME_UPDATE_STATE="$BACKUP_DIR/update.state"
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.0.5"
+VERSION="1.0.6"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -160,7 +160,7 @@ UPDATE_STATE="/etc/dns-manager-luci/update.state"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.0.5"
+SELF_VERSION="1.0.6"
 
 umask 077
 mkdir -p "$RUNTIME_DIR" "$JOB_DIR" "$CHECK_DIR" "$TMP_ROOT" 2>/dev/null || exit 1
@@ -190,6 +190,30 @@ jget() {
 manager_version() {
     [ -r "$MANAGER" ] || return 1
     sed -n 's/^VERSION="\([0-9][0-9.]*\)"$/\1/p' "$MANAGER" 2>/dev/null | head -n1
+}
+
+manager_const_num() {
+    _key="$1"
+    _fallback="$2"
+    case "$_key" in
+        WATCHDOG_FAIL_THRESHOLD|WATCHDOG_REPAIR_COOLDOWN|WATCHDOG_GUARD_INTERVAL|WATCHDOG_MAX_REPAIRS|WATCHDOG_MAX_RESTARTS|WATCHDOG_MAX_CANDIDATES|WATCHDOG_RESTART_COOLDOWN) ;;
+        *) printf '%s' "$_fallback"; return 0 ;;
+    esac
+    _v="$(sed -n "s/^${_key}=\([0-9][0-9]*\)$/\1/p" "$MANAGER" 2>/dev/null | head -n1)"
+    case "$_v" in
+        ''|*[!0-9]*) printf '%s' "$_fallback" ;;
+        *) printf '%s' "$_v" ;;
+    esac
+}
+
+watchdog_service_running() {
+    [ -x /etc/init.d/dns-watchdog ] && /etc/init.d/dns-watchdog running >/dev/null 2>&1
+}
+watchdog_service_enabled() {
+    [ -x /etc/init.d/dns-watchdog ] && /etc/init.d/dns-watchdog enabled >/dev/null 2>&1
+}
+watchdog_loop_running() {
+    ps w 2>/dev/null | awk '$0 ~ /[[:space:]]dns-manager[[:space:]]__watchdog-loop([[:space:]]|$)/ {found=1} END {exit found ? 0 : 1}'
 }
 
 cfg_get() {
@@ -1054,7 +1078,7 @@ EOF_RPC
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.0.5
+// DNS Manager LuCI version: 1.0.6
 var callStatus = rpc.declare({ object:'dns_manager', method:'status', expect:{} });
 var callCatalog = rpc.declare({ object:'dns_manager', method:'catalog', params:['category','offset','limit','only_ok'], expect:{} });
 var callUpdateCheck = rpc.declare({ object:'dns_manager', method:'update_check', expect:{} });
