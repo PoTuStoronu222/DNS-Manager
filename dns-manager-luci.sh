@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.5.12
+# Version: 1.5.13
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -22,7 +22,7 @@ COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main
 # Legacy update compatibility: admin/services/dns_manager
 RUNTIME_UPDATE_STATE="$BACKUP_DIR/update.state"
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.5.12"
+VERSION="1.5.13"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -108,11 +108,6 @@ install_files() {
     "order": 60,
     "action": { "type": "view", "path": "dns_manager/overview" }
   },
-  "admin/services/dns-manager/test": {
-    "title": "Проверка",
-    "order": 70,
-    "action": { "type": "view", "path": "dns_manager/overview" }
-  },
   "admin/services/dns-manager/log": {
     "title": "Журнал",
     "order": 80,
@@ -160,7 +155,7 @@ UPDATE_STATE="/etc/dns-manager-luci/update.state"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.5.12"
+SELF_VERSION="1.5.13"
 
 umask 077
 mkdir -p "$RUNTIME_DIR" "$JOB_DIR" "$CHECK_DIR" "$TMP_ROOT" 2>/dev/null || exit 1
@@ -1342,7 +1337,7 @@ var callLog = rpc.declare({ object:'dns_manager', method:'log', params:['lines']
 var PROFILE = [
   ['bypass','Максимальный обход'], ['clean','Максимальная скорость'],
   ['security','Максимальная безопасность'], ['privacy','Максимальная приватность'],
-  ['adblock','Блокировка рекламы'], ['family','Семейный'], ['all','Выбор по категориям']
+  ['adblock','Блокировка рекламы'], ['family','Семейный']
 ];
 var CATEGORY = [
   ['all','Все DNS'], ['bypass','Обход блокировок'], ['security','Безопасность'], ['privacy','Приватность'],
@@ -1498,7 +1493,6 @@ function setActiveTab(root,name){
     doh:['profiles','slots'],
     settings:['settings'],
     catalog:['catalog'],
-    test:['job','test-inline'],
     log:['log']
   };
   state.activeTab=groups[name]?name:'dashboard';
@@ -1521,7 +1515,7 @@ function currentRoute(){
 }
 function renderPageNav(root){
   var e=root.querySelector('#dm-page-nav');if(!e)return;e.innerHTML='';
-  var tabs=[['dashboard','Дашборд'],['doh','DNS over HTTPS'],['settings','Настройки'],['catalog','Каталог DNS'],['test','Проверка'],['log','Журнал']];
+  var tabs=[['dashboard','Дашборд'],['doh','DNS over HTTPS'],['settings','Настройки'],['catalog','Каталог DNS'],['log','Журнал']];
   var route=currentRoute();
   var nav=E('nav',{'class':'dm-page-nav'});
   var bar=E('div',{'class':'dm-page-tabs'});
@@ -1886,18 +1880,6 @@ function renderJobResult(root,j,st){return;}
 function renderJob(root,job,meta){return;}
 function renderJobIdle(root,st){
   var e=root.querySelector('#dm-job');if(!e)return;e.innerHTML='';
-  var n=(window.dmState&&window.dmState.slots||[]).filter(function(d){return d&&d.id;}).length;
-  var ch=[
-    E('p',{'class':'dm-hint'},'Здесь проверяются только DNS, которые сейчас назначены в текущие слоты. Полный каталог из 111 DNS не запускается.'),
-    E('div',{'class':'dm-actions'},[
-      btn(state.jobRunning?'Проверка выполняется…':'Проверить текущие DNS','cbi-button-action',function(){testCurrent(root);},{disabled:!!state.busy||state.jobRunning})
-    ]),
-    E('div',{'class':'dm-mini'},'Текущих DNS: '+n)
-  ];
-  if(state.currentTest&&state.currentTest.status==='RUNNING')ch.push(E('div',{'class':'dm-inline-msg info'},'Проверено '+String(Math.max(0,(state.currentTest.index||1)-1))+' из '+String(state.currentTest.total||0)+'.'));
-  if(state.currentTest&&state.currentTest.status==='DONE')ch.push(E('div',{'class':'dm-inline-msg ok'},'Проверка текущих DNS завершена.'));
-  if(state.currentTest&&state.currentTest.status==='FAILED')ch.push(E('div',{'class':'dm-inline-msg error'},'Проверка текущих DNS завершилась с ошибкой.'));
-  e.appendChild(card('Проверка текущих DNS',ch));
 }
 function render(root,st){
   renderHeader(root,st);
