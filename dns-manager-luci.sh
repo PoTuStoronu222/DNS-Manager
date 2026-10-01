@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.3.5
+# Version: 1.3.6
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -22,7 +22,7 @@ COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main
 # Legacy update compatibility: admin/services/dns_manager
 RUNTIME_UPDATE_STATE="$BACKUP_DIR/update.state"
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.3.5"
+VERSION="1.3.6"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -141,7 +141,7 @@ EOF_MENU
     },
     "write": {
       "ubus": {
-        "dns_manager": [ "set_profile", "set_slot", "set_setting", "set_test_age", "test_all", "test_current", "test_one", "update", "update_hdp", "update_all" ]
+        "dns_manager": [ "set_profile", "set_slot", "set_setting", "set_test_age", "test_all", "test_current", "test_one", "update", "update_hdp", "update_catalog", "update_all" ]
       }
     }
   }
@@ -168,7 +168,7 @@ UPDATE_STATE="/etc/dns-manager-luci/update.state"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.3.5"
+SELF_VERSION="1.3.6"
 
 umask 077
 mkdir -p "$RUNTIME_DIR" "$JOB_DIR" "$CHECK_DIR" "$TMP_ROOT" 2>/dev/null || exit 1
@@ -438,6 +438,38 @@ update_hdp_json() {
     printf '{"ok":true,"updated":true,"version":'; json_quote "$_after"; printf '}'
 }
 
+update_catalog_json() {
+    if ! mkdir "$RUNTIME_DIR/catalog-update.lock" 2>/dev/null; then
+        json_error "Обновление каталога DNS уже выполняется"
+        return
+    fi
+    _old_v="$(catalog_version 2>/dev/null || true)"
+    _old_r="$(catalog_revision 2>/dev/null || true)"
+    update_catalog_direct
+    _rc=$?
+    _new_v="$(catalog_version 2>/dev/null || true)"
+    _new_r="$(catalog_revision 2>/dev/null || true)"
+    rm -rf "$RUNTIME_DIR/catalog-update.lock" 2>/dev/null || true
+    case "$_rc" in
+        0)
+            printf "{\"ok\":true,\"updated\":true,\"version\":"
+            json_quote "$_new_v"
+            printf ",\"revision\":"
+            json_quote "$_new_r"
+            printf "}"
+            ;;
+        2)
+            printf "{\"ok\":true,\"updated\":false,\"version\":"
+            json_quote "$_old_v"
+            printf ",\"revision\":"
+            json_quote "$_old_r"
+            printf ",\"message\":"
+            json_quote "Каталог DNS уже актуален"
+            printf "}"
+            ;;
+        *) json_error "Каталог DNS не удалось обновить" ;;
+    esac
+}
 update_check_json() {
     update_check_json_luci >/dev/null 2>&1 || true
     component_update_check || true
@@ -1246,13 +1278,13 @@ test_json() { case "${RPC_METHOD:-}" in test_all) job_start_test_all;; test_curr
 
 case "${1:-}" in
     list)
-        printf '{"status":{},"catalog":{"category":"String","offset":0,"limit":0,"only_ok":0},"update_check":{},"update":{},"set_profile":{"profile":"String"},"set_slot":{"slot":"String","id":"String"},"set_setting":{"name":"String","enabled":0},"set_test_age":{"category":"String","hours":0},"test_all":{},"test_current":{},"test_one":{"id":"String"},"job":{"id":"String"},"log":{"lines":0}}\n'
+        printf '{"status":{},"catalog":{"category":"String","offset":0,"limit":0,"only_ok":0},"update_check":{},"update":{},"update_catalog":{},"set_profile":{"profile":"String"},"set_slot":{"slot":"String","id":"String"},"set_setting":{"name":"String","enabled":0},"set_test_age":{"category":"String","hours":0},"test_all":{},"test_current":{},"test_one":{"id":"String"},"job":{"id":"String"},"log":{"lines":0}}\n'
         ;;
     call)
         case "${2:-}" in
             status) status_json;;
             catalog) INPUT="$(cat 2>/dev/null || true)"; catalog_json;;
-            update_check) update_check_json;;            update_all) update_all_json;;            update) update_json;;            update_manager) update_manager_json;;            update_hdp) update_hdp_json;;
+            update_check) update_check_json;;            update_catalog) update_catalog_json;;            update_all) update_all_json;;            update) update_json;;            update_manager) update_manager_json;;            update_hdp) update_hdp_json;;
             set_profile|set_slot|set_setting) INPUT="$(cat 2>/dev/null || true)"; RPC_METHOD="$2"; run_action;;
             test_all|test_current|test_one) INPUT="$(cat 2>/dev/null || true)"; RPC_METHOD="$2"; test_json;;
             job) INPUT="$(cat 2>/dev/null || true)"; job_json "$(jget id)";;
@@ -1271,14 +1303,14 @@ EOF_RPC
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.3.5
+// DNS Manager LuCI version: 1.3.6
 var callStatus = rpc.declare({ object:'dns_manager', method:'status', expect:{} });
 var callCatalog = rpc.declare({ object:'dns_manager', method:'catalog', params:['category','offset','limit','only_ok'], expect:{} });
 var callUpdateCheck = rpc.declare({ object:'dns_manager', method:'update_check', expect:{} });
 var callUpdate = rpc.declare({ object:'dns_manager', method:'update', expect:{} });
 var callManagerUpdate = rpc.declare({ object:'dns_manager', method:'update_manager', expect:{} });
 var callHdpUpdate = rpc.declare({ object:'dns_manager', method:'update_hdp', expect:{} });
-var callUpdateAll = rpc.declare({ object:'dns_manager', method:'update_all', expect:{} });
+var callUpdateCatalog = rpc.declare({ object:'dns_manager', method:'update_catalog', expect:{} });
 var callProfile = rpc.declare({ object:'dns_manager', method:'set_profile', params:['profile'], expect:{} });
 var callSlot = rpc.declare({ object:'dns_manager', method:'set_slot', params:['slot','id'], expect:{} });
 var callSetting = rpc.declare({ object:'dns_manager', method:'set_setting', params:['name','enabled'], expect:{} });
@@ -1938,18 +1970,50 @@ function updateAll(root){
   state.updatingAll=true;
   globalUpdateNotice('Обновляю доступные компоненты…','info');
   renderOverview(root,window.dmState||{});
-  callUpdateAll().then(function(r){
+
+  var results=[];
+  var anyUpdate=false;
+  var luciUpdated=false;
+
+  function textOf(r){return r&&String(r.message||r.error||'')||'';}
+  function isCurrent(r){var t=textOf(r);return /Новой версии|актуал|не новее|уже актуален/.test(t);}
+  function add(name,r){
+    if(r&&r.ok&&r.updated){
+      anyUpdate=true;
+      results.push(name+' обновлён');
+      if(name==='LuCI')luciUpdated=true;
+    }else if(isCurrent(r)){
+      results.push(name+' уже актуален');
+    }else{
+      results.push(name+': '+(textOf(r)||'не удалось обновить'));
+    }
+  }
+
+  return callManagerUpdate().then(function(r){
+    add('DNS Manager',r);
+    return callHdpUpdate();
+  }).then(function(r){
+    add('Защищённый DNS',r);
+    return callUpdateCatalog();
+  }).then(function(r){
+    add('Каталог DNS',r);
+    return callUpdate();
+  }).then(function(r){
+    add('LuCI',r);
     state.updatingAll=false;
-    var msg=(r&&r.message)||(r&&r.error)||'Обновление завершено.';
-    globalUpdateNotice(msg,r&&r.ok?(r.updated?'ok':'info'):'error');
-    refresh(root,true);
+    var msg=results.join('; ');
+    globalUpdateNotice(msg,anyUpdate?'ok':'info');
+    if(luciUpdated){
+      setTimeout(function(){location.reload();},1200);
+    }else{
+      refresh(root,true);
+    }
   }).catch(function(){
     state.updatingAll=false;
     globalUpdateNotice('Обновление не выполнено.','error');
     refresh(root,true);
   });
 }
-
 function updateHdp(root){
   if(state.hdpUpdating||state.busy)return;
   var v=(window.dmState&&window.dmState.hdp_latest_version)||'новой версии';
