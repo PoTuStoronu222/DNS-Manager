@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.1.6
+# Version: 1.1.7
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -22,7 +22,7 @@ COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main
 # Legacy update compatibility: admin/services/dns_manager
 RUNTIME_UPDATE_STATE="$BACKUP_DIR/update.state"
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.1.6"
+VERSION="1.1.7"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -167,7 +167,7 @@ UPDATE_STATE="/etc/dns-manager-luci/update.state"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.1.6"
+SELF_VERSION="1.1.7"
 
 umask 077
 mkdir -p "$RUNTIME_DIR" "$JOB_DIR" "$CHECK_DIR" "$TMP_ROOT" 2>/dev/null || exit 1
@@ -435,13 +435,27 @@ version_check_job_start() {
     if [ -r "$_active" ]; then
         _ajid="$(cat "$_active" 2>/dev/null || true)"
         if [ -n "$_ajid" ] && [ -r "$JOB_DIR/$_ajid/state" ]; then
-            _as="$(sed -n 's/^status=//p' "$JOB_DIR/$_ajid/state" 2>/dev/null | tail -n1)"
-            [ "$_as" = running ] && { printf '{"ok":true,"job":'; json_quote "$_ajid"; printf ',"status":"running"}'; return; }
+            _ad="$JOB_DIR/$_ajid/state"
+            _as="$(sed -n 's/^status=//p' "$_ad" 2>/dev/null | tail -n1)"
+            if [ "$_as" = running ]; then
+                _started="$(sed -n 's/^started=//p' "$_ad" 2>/dev/null | head -n1)"
+                _now="$(date +%s 2>/dev/null || printf 0)"
+                case "$_started" in ''|*[!0-9]*) _started=0;; esac
+                if [ "$_started" -gt 0 ] 2>/dev/null && [ "$_now" -gt 0 ] && [ $((_now-_started)) -lt 180 ]; then
+                    printf '{"ok":true,"job":'; json_quote "$_ajid"; printf ',"status":"running"}'
+                    return
+                fi
+                printf 'status=failed\nfinished=%s\nerror=Проверка версий зависла и была сброшена\n' "$_now" >> "$_ad"
+                rm -f "$_active" 2>/dev/null || true
+            fi
+        else
+            rm -f "$_active" 2>/dev/null || true
         fi
     fi
-    _jid="vc-$(date +%s)-$$"
+    _jid="vc-$(date +%s)-$"
     mkdir -p "$JOB_DIR/$_jid" 2>/dev/null || { json_error "Не удалось создать проверку версий"; return; }
-    printf 'status=running\nstarted=%s\n' "$(date +%s 2>/dev/null || printf 0)" > "$JOB_DIR/$_jid/state"
+    _started="$(date +%s 2>/dev/null || printf 0)"
+    printf 'status=running\nstarted=%s\n' "$_started" > "$JOB_DIR/$_jid/state"
     printf '%s' "$_jid" > "$_active" 2>/dev/null || true
     (
         _rc=0
@@ -453,6 +467,8 @@ version_check_job_start() {
         fi
         rm -f "$_active" 2>/dev/null || true
     ) >/dev/null 2>&1 &
+    _pid=$!
+    printf 'pid=%s\n' "$_pid" >> "$JOB_DIR/$_jid/state"
     printf '{"ok":true,"job":'; json_quote "$_jid"; printf ',"status":"running"}'
 }
 
@@ -463,6 +479,19 @@ version_check_job_status() {
     [ -d "$_d" ] || { json_error "Проверка не найдена"; return; }
     _status="$(sed -n 's/^status=//p' "$_d/state" 2>/dev/null | tail -n1)"
     [ -n "$_status" ] || _status=running
+    if [ "$_status" = running ]; then
+        _pid="$(sed -n 's/^pid=//p' "$_d/state" 2>/dev/null | tail -n1)"
+        _started="$(sed -n 's/^started=//p' "$_d/state" 2>/dev/null | head -n1)"
+        _now="$(date +%s 2>/dev/null || printf 0)"
+        _dead=0
+        case "$_pid" in ''|*[!0-9]*) _dead=1;; *) kill -0 "$_pid" >/dev/null 2>&1 || _dead=1;; esac
+        case "$_started" in ''|*[!0-9]*) _started=0;; esac
+        if [ "$_dead" = 1 ] && [ "$_started" -gt 0 ] 2>/dev/null && [ "$_now" -gt 0 ] && [ $((_now-_started)) -ge 10 ]; then
+            printf 'status=failed\nfinished=%s\nerror=Процесс проверки версий завершился неожиданно\n' "$_now" >> "$_d/state"
+            _status=failed
+            rm -f "$RUNTIME_DIR/version-check.active" 2>/dev/null || true
+        fi
+    fi
     printf '{"ok":true,"job":'; json_quote "$_jid"; printf ',"status":'; json_quote "$_status"
     [ -r "$_d/result" ] && { printf ',"result":'; json_quote "$(cat "$_d/result" 2>/dev/null)"; }
     printf '}'
@@ -1123,7 +1152,7 @@ EOF_RPC
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.1.6
+// DNS Manager LuCI version: 1.1.7
 var callStatus = rpc.declare({ object:'dns_manager', method:'status', expect:{} });
 var callCatalog = rpc.declare({ object:'dns_manager', method:'catalog', params:['category','offset','limit','only_ok'], expect:{} });
 var callUpdateCheck = rpc.declare({ object:'dns_manager', method:'update_check', expect:{} });
