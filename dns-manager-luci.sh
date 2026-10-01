@@ -961,9 +961,9 @@ status_json() {
     _doh="no"; [ "$_doh_running" -gt 0 ] && _doh="yes"
 
     _expected=0
-    for _s in 1 2 3 4 5 6 RU RU_2; do [ -n "$(cfg_get "SLOT_$_s")" ] && _expected=$((_expected + 1)); done
+    for _s in 1 2 3 4 5 6 RU; do [ -n "$(cfg_get "SLOT_$_s")" ] && _expected=$((_expected + 1)); done
     _match=0
-    for _s in 1 2 3 4 5 6 RU RU_2; do
+    for _s in 1 2 3 4 5 6 RU; do
         _id="$(cfg_get "SLOT_$_s")"; _port="$(cfg_get "PORT_$_s")"
         [ -n "$_id" ] || continue
         [ -n "$_port" ] || continue
@@ -1090,7 +1090,7 @@ status_json() {
     printf ',"force_status":'; json_quote "$_force_status"; printf ',"force_owner_label":'; json_quote "$_force_owner_label"
     printf ',"slots":['
     _first=1
-    for _s in 1 2 3 4 5 6 RU RU_2; do
+    for _s in 1 2 3 4 5 6 RU; do
         _id="$(cfg_get "SLOT_$_s")"; _cat="$(cfg_get "SLOT_${_s}_CAT")"; _port="$(cfg_get "PORT_$_s")"
         [ -n "$_cat" ] || [ -z "$_id" ] || _cat="$(catalog_field "$_id" 2 2>/dev/null || true)"
         _name="$(catalog_field "$_id" 4 2>/dev/null || true)"; [ -n "$_name" ] || _name="Не задан"
@@ -1245,7 +1245,7 @@ job_start_test_current() {
         _meta="$TMP_ROOT/current-test-results-meta.$$"
         : > "$_ids"; : > "$_cat"
         sed -n '/^# DNSCATVER=/p;/^# DNSCATREV=/p' "$DNS_CATALOG" >> "$_cat" 2>/dev/null || true
-        for _s in 1 2 3 4 5 6 RU RU_2; do
+        for _s in 1 2 3 4 5 6 RU; do
             _id="$(cfg_get "SLOT_$_s")"
             [ -n "$_id" ] || continue
             grep -qxF "$_id" "$_ids" 2>/dev/null && continue
@@ -1382,12 +1382,12 @@ run_action() {
             ;;
         set_slot)
             RPC_SLOT="$(jget slot)"; RPC_ID="$(jget id)"
-            case "$RPC_SLOT" in 1|2|3|4|5|6|RU|RU_2) ;; *) json_error "Неверный слот"; return;; esac
+            case "$RPC_SLOT" in 1|2|3|4|5|6|RU) ;; *) json_error "Неверный слот"; return;; esac
             case "$RPC_ID" in ''|*[!A-Za-z0-9_-]*) json_error "Неверный DNS ID"; return;; esac
             load_manager || { json_error "DNS Manager недоступен"; return; }
             _slot="$RPC_SLOT"; _id="$RPC_ID"
             _cat="$(dns_cat "$RPC_ID" 2>/dev/null || true)"; [ -n "$_cat" ] || { json_error "DNS не найден в каталоге"; return; }
-            for _check_slot in 1 2 3 4 5 6 RU RU_2; do
+            for _check_slot in 1 2 3 4 5 6 RU; do
                 [ "$_check_slot" = "$RPC_SLOT" ] && continue
                 _check_id="$(cfg_get "SLOT_$_check_slot")"
                 if [ -n "$_check_id" ] && [ "$_check_id" = "$RPC_ID" ]; then
@@ -1395,8 +1395,8 @@ run_action() {
                     return
                 fi
             done
-            case "$RPC_SLOT" in RU|RU_2) [ "$_cat" = regional ] || { json_error "Этот DNS нельзя поставить в региональный слот"; return; } ;; *) [ "$_cat" != regional ] || { json_error "Региональный DNS нельзя поставить в общий слот"; return; } ;; esac
-            DNS_PROFILE=custom DNS_SELECTION_MODE=manual DNS_SELECTION_CATEGORY="$_cat"; eval "SLOT_${RPC_SLOT}=\"$RPC_ID\""; eval "SLOT_${RPC_SLOT}_CAT=\"$_cat\""; [ "$RPC_SLOT" = RU ] || [ "$RPC_SLOT" = RU_2 ] && DNS_SELECTION_CATEGORY=regional || true
+            case "$RPC_SLOT" in RU) [ "$_cat" = regional ] || { json_error "Этот DNS нельзя поставить в региональный слот"; return; } ;; *) [ "$_cat" != regional ] || { json_error "Региональный DNS нельзя поставить в общий слот"; return; } ;; esac
+            DNS_PROFILE=custom DNS_SELECTION_MODE=manual DNS_SELECTION_CATEGORY="$_cat"; eval "SLOT_${RPC_SLOT}=\"$RPC_ID\""; eval "SLOT_${RPC_SLOT}_CAT=\"$_cat\""; [ "$RPC_SLOT" = RU ] && DNS_SELECTION_CATEGORY=regional || true
             sync_regional_dns_state >/dev/null 2>&1 || true; SILENT_APPLY=1 CORE_ONLY=1 SKIP_POST_APPLY_VERIFY=1 DNS_MANAGER_NO_UPDATE=1 apply_settings >/dev/null 2>&1 && json_ok || json_error "DNS не удалось применить"
             ;;
         set_test_age)
@@ -1931,7 +1931,7 @@ function renderDoH(root,st){
   e.appendChild(card('DNS over HTTPS',ch));
 }
 
-function slotLabel(slot){var m={'1':'DNS 1','2':'DNS 2','3':'DNS 3','4':'DNS 4','5':'DNS 5','6':'DNS 6','RU':'Региональный DNS 1','RU_2':'Региональный DNS 2'};return m[slot]||('DNS '+slot);}
+function slotLabel(slot){var m={'1':'DNS 1','2':'DNS 2','3':'DNS 3','4':'DNS 4','5':'DNS 5','6':'DNS 6','RU':'Региональный DNS'};return m[slot]||('DNS '+slot);}
 function slotCurrentName(slot){var st=window.dmState||{};for(var i=0;i<(st.slots||[]).length;i++){if(String(st.slots[i].slot)===String(slot))return st.slots[i].name||st.slots[i].id||'не назначен';}return 'не назначен';}
 function assignedSlotInfo(id,excludeSlot){
   var st=window.dmState||{},out=null;
@@ -1961,7 +1961,7 @@ function assign(id,slot,root,nextName){
   });
 }
 function slotOptionsForCatalog(cat){
-  return String(cat||'').toLowerCase()==='regional'?['RU','RU_2']:['1','2','3','4','5','6'];
+  return String(cat||'').toLowerCase()==='regional'?['RU']:['1','2','3','4','5','6'];
 }
 function slotCatalogInfo(slot){
   var st=window.dmState||{},d=null;
@@ -2030,7 +2030,7 @@ function openSlotPicker(slot,root){
   var st=window.dmState||{};
   var currentSlot=null;
   (st.slots||[]).forEach(function(d){if(String(d.slot)===String(slot))currentSlot=d;});
-  var regional=slot==='RU'||slot==='RU_2';
+  var regional=slot==='RU';
   var currentCategory=String(currentSlot&&currentSlot.category||'').toLowerCase();
   var selectedCategory=String(st.selection_category||'').toLowerCase();
   var category=regional
