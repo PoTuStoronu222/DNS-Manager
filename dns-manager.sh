@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="2.99"
+VERSION="3.04"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -26,8 +26,8 @@ WATCHDOG_SERVICE_PATH="/etc/init.d/dns-watchdog"
 WATCHDOG_RUNTIME_DIR="/var/run/dns-watchdog"
 WATCHDOG_DAEMON_MARKER="# DNS_MANAGER_WATCHDOG_DAEMON=1"
 WATCHDOG_SERVICE_MARKER="# DNS_MANAGER_WATCHDOG_SERVICE=1"
-WATCHDOG_DAEMON_VERSION_MARKER="# DNS_MANAGER_WATCHDOG_DAEMON_VERSION=2.98"
-WATCHDOG_SERVICE_VERSION_MARKER="# DNS_MANAGER_WATCHDOG_SERVICE_VERSION=2.98"
+WATCHDOG_DAEMON_VERSION_MARKER="# DNS_MANAGER_WATCHDOG_DAEMON_VERSION=3.00"
+WATCHDOG_SERVICE_VERSION_MARKER="# DNS_MANAGER_WATCHDOG_SERVICE_VERSION=3.00"
 WATCHDOG_LAST_RESTART_FILE="$STATE_DIR/watchdog-last-restart"
 AUTO_UPDATE_LAST_CHECK_FILE="$STATE_DIR/auto-update-last-check"
 AUTO_UPDATE_CHECK_MAX_AGE=43200
@@ -617,7 +617,12 @@ menu_item_action() {
             esac
             ;;
     esac
-    printf "  ${C_CYAN}${C_BOLD}%-5s${C_NC} ${C_YELLOW}${C_BOLD}%s${C_NC} %s\n" "$_key" "$_action" "$_title"
+    if [ "$_module" = force ]; then
+        _state_text="$(force_state_word)"
+    else
+        _state_text="$(module_state_word "$_module")"
+    fi
+    printf "  ${C_CYAN}${C_BOLD}%-5s${C_NC} ${C_YELLOW}${C_BOLD}%-10s${C_NC} %-42s %b\n" "$_key" "$_action" "$_title" "$_state_text"
 }
 menu_back() {
 printf "\n${C_GREEN}${C_BOLD}[Enter]${C_NC} ${C_CYAN}Назад${C_NC}\n\n"
@@ -2964,34 +2969,20 @@ sysctl_base_file_owned() {
 }
 apply_sysctl() {
     f="$(sysctl_base_manager_path)"
-    sf="$STATE_DIR/sysctl-before.conf"
     _expected="$(sysctl_base_expected)"
     [ "${SYSCTL_TUNING:-0}" = 1 ] || return 0
-
     if [ -f "$f" ]; then
         _state="$(sysctl_file_state "$f" "$SYSCTL_BASE_MARKER" "$_expected")"
-        case "$_state" in
-            2) err_msg "Файл $f содержит маркер DNS Manager, но был изменён извне. Перезапись запрещена."; return 2;;
-            3) err_msg "Файл $f уже используется другой настройкой. DNS Manager его не перезаписывает."; return 2;;
-        esac
+        [ "$_state" != 3 ] || {
+            err_msg "Файл $f используется другой настройкой; DNS Manager его не перезаписывает."
+            return 2
+        }
     fi
-
-    if [ ! -s "$sf" ]; then : > "$sf" || return 1; fi
-    while IFS= read -r _p; do
-        [ -n "$_p" ] || continue
-        _k="${_p%%=*}"
-        _old="$(sysctl -n "$_k" 2>/dev/null)"
-        grep -q "^${_k}|" "$sf" 2>/dev/null || printf '%s|%s\n' "$_k" "${_old:-unknown}" >> "$sf" || return 1
-    done <<EOF_SYSCTL_BASE_SAVE
-$_expected
-EOF_SYSCTL_BASE_SAVE
-
     _tmp="$f.tmp.$$"
     {
         printf '%s\n' "$SYSCTL_BASE_MARKER"
         printf '%s\n' "$_expected"
-    } > "$_tmp" || { rm -f "$_tmp"; return 1; }
-
+    } > "$_tmp" || return 1
     while IFS= read -r _p; do
         [ -n "$_p" ] || continue
         _out="$(sysctl -w "$_p" 2>&1)"
@@ -2999,48 +2990,31 @@ EOF_SYSCTL_BASE_SAVE
         [ "$_rc" -eq 0 ] || {
             [ -n "$_out" ] && err_msg "Не удалось применить $_p: $_out" || err_msg "Не удалось применить $_p."
             rm -f "$_tmp"
-            while IFS='|' read -r _k _v; do
-                [ -n "$_k" ] && [ "$_v" != unknown ] && sysctl -w "$_k=$_v" >/dev/null 2>&1 || true
-            done < "$sf"
             return 1
         }
-        record_own "sysctl" "${_p%%=*}" "${_p#*=}" "base-applied"
     done <<EOF_SYSCTL_BASE_APPLY
 $_expected
 EOF_SYSCTL_BASE_APPLY
-
     mv "$_tmp" "$f" || { rm -f "$_tmp"; return 1; }
     return 0
 }
-sysctl_restore_key_if_unchanged() {
-    _k="$1"; _old="$2"; _managed="$3"
-    [ -n "$_old" ] && [ "$_old" != unknown ] || return 0
-    _cur="$(sysctl -n "$_k" 2>/dev/null)"
-    if [ "$_cur" = "$_managed" ]; then
-        sysctl -w "$_k=$_old" >/dev/null 2>&1 || true
-    else
-        warn_msg "sysctl: $_k изменён извне после применения DNS Manager. Текущее значение сохранено."
-    fi
-}
 
 remove_sysctl_base() {
-    sf="$STATE_DIR/sysctl-before.conf"
     _f="$(sysctl_base_manager_path)"
-    _state=0
-    [ -f "$_f" ] && _state="$(sysctl_file_state "$_f" "$SYSCTL_BASE_MARKER" "$(sysctl_base_expected)")"
-    case "$_state" in
-        2) warn_msg "Базовый sysctl-файл изменён извне: $_f. Файл сохранён."; rm -f "$sf"; return 0;;
-        3) warn_msg "Базовый sysctl-файл не принадлежит DNS Manager: $_f. Файл сохранён."; rm -f "$sf"; return 0;;
-    esac
-    if [ -s "$sf" ]; then
-        for _kv in "net.ipv4.tcp_fastopen|3" "net.ipv4.tcp_fin_timeout|15" "net.core.somaxconn|1024"; do
-            _k="${_kv%%|*}"; _m="${_kv#*|}"
-            _old="$(awk -F'|' -v k="$_k" '$1==k{print $2;exit}' "$sf" 2>/dev/null)"
-            sysctl_restore_key_if_unchanged "$_k" "$_old" "$_m"
-        done
+    if [ -f "$_f" ]; then
+        _state="$(sysctl_file_state "$_f" "$SYSCTL_BASE_MARKER" "$(sysctl_base_expected)")"
+        [ "$_state" != 3 ] || {
+            warn_msg "Файл $_f используется другой настройкой; файл сохранён."
+            return 0
+        }
+        rm -f "$_f" || return 1
     fi
-    [ -f "$_f" ] && rm -f "$_f" || true
-    rm -f "$sf"
+    rm -f "$STATE_DIR/sysctl-before.conf" 2>/dev/null || true
+    if [ -x /etc/init.d/sysctl ]; then
+        /etc/init.d/sysctl reload >/dev/null 2>&1 || /etc/init.d/sysctl restart >/dev/null 2>&1 || true
+    elif [ -x /sbin/sysctl ]; then
+        sysctl -p /etc/sysctl.conf >/dev/null 2>&1 || true
+    fi
     return 0
 }
 apply_sysctl_bundle() {
@@ -3199,30 +3173,6 @@ apply_ntp_clients() {
     [ -n "$sec" ] || return 1
     [ -n "$(uci -q get system.ntp 2>/dev/null)" ] || uci -q set system.ntp=timeserver || return 1
 
-    # Versioned state belongs to this feature only. It remembers values that
-    # existed before the current feature was enabled; it is not a legacy
-    # scanner and it does not inspect/delete unrelated firewall objects.
-    _need_snapshot=1
-    if [ -s "$NTP_CLIENTS_BEFORE" ]; then
-        _sv="$(sed -n 's/^state_version=//p' "$NTP_CLIENTS_BEFORE" 2>/dev/null | head -n1)"
-        [ "$_sv" = 3 ] && _need_snapshot=0
-    fi
-    if [ "$_need_snapshot" = 1 ]; then
-        {
-            printf 'state_version=3\\n'
-            printf 'section=%s\\n' "$sec"
-            _es="$(uci -q get system.ntp.enable_server 2>/dev/null)"
-            [ -n "$_es" ] && printf 'enable_server_before=%s\\n' "$_es" || printf 'enable_server_before=__unset__\\n'
-            if exact_list_has "dhcp.$sec.dhcp_option" "42,$LAN_IP"; then
-                printf 'dhcp42_added=0\\n'
-            else
-                printf 'dhcp42_added=1\\n'
-            fi
-        } > "$NTP_CLIENTS_BEFORE" || return 1
-    fi
-
-    # Enable BusyBox ntpd server mode. The router supplies its own current
-    # time to peers on UDP/123. No NTP redirect/DNAT/TPROXY is created.
     uci set system.ntp.enable_server='1' || return 1
     _opt="42,$LAN_IP"
     exact_list_has "dhcp.$sec.dhcp_option" "$_opt" || \
@@ -3239,6 +3189,7 @@ apply_ntp_clients() {
     fi
     log_tx "APPLY" "NTP" "SERVER" "OK" "router_server=1;dhcp_option=42,$LAN_IP;forced_redirect=0"
     ok_msg "NTP-сервер роутера включён. Клиенты получают $LAN_IP через DHCP (Option 42). Принудительного перехвата NTP нет."
+    rm -f "$NTP_CLIENTS_BEFORE" 2>/dev/null || true
     return 0
 }
 
@@ -3246,39 +3197,17 @@ remove_ntp_clients() {
     sec="$(get_dnsmasq_section)" || return 1
     [ -n "$sec" ] || return 1
 
-    _restore_server="__unset__"
-    _dhcp_remove=0
-    if [ -s "$NTP_CLIENTS_BEFORE" ]; then
-        _sv="$(sed -n 's/^state_version=//p' "$NTP_CLIENTS_BEFORE" 2>/dev/null | head -n1)"
-        if [ "$_sv" = 3 ]; then
-            _restore_server="$(sed -n 's/^enable_server_before=//p' "$NTP_CLIENTS_BEFORE" 2>/dev/null | head -n1)"
-            _dhcp_remove="$(sed -n 's/^dhcp42_added=//p' "$NTP_CLIENTS_BEFORE" 2>/dev/null | head -n1)"
-        fi
-    fi
-
-    # Restore only the specific settings of this feature. If another actor
-    # changed enable_server after we enabled it, do not overwrite that change.
-    _cur_server="$(uci -q get system.ntp.enable_server 2>/dev/null)"
-    if [ "$_cur_server" = 1 ]; then
-        case "$_restore_server" in
-            __unset__) uci -q delete system.ntp.enable_server || true ;;
-            0|1) uci set system.ntp.enable_server="$_restore_server" || return 1 ;;
-            *) ;;
-        esac
-    fi
-
-    if [ "$_dhcp_remove" = 1 ]; then
-        _tmp="$(mktemp /tmp/dns-manager-ntp.XXXXXX 2>/dev/null)" || return 1
-        : > "$_tmp" || { rm -f "$_tmp"; return 1; }
-        for _v in $(uci -q get "dhcp.$sec.dhcp_option" 2>/dev/null); do
-            [ "$_v" = "42,$LAN_IP" ] || printf '%s\\n' "$_v" >> "$_tmp"
-        done
-        uci -q delete "dhcp.$sec.dhcp_option" || true
-        while IFS= read -r _v; do
-            [ -n "$_v" ] && uci add_list "dhcp.$sec.dhcp_option=$_v" || true
-        done < "$_tmp"
-        rm -f "$_tmp"
-    fi
+    uci -q delete system.ntp.enable_server || true
+    _tmp="$(mktemp /tmp/dns-manager-ntp.XXXXXX 2>/dev/null)" || return 1
+    : > "$_tmp" || { rm -f "$_tmp"; return 1; }
+    for _v in $(uci -q get "dhcp.$sec.dhcp_option" 2>/dev/null); do
+        [ "$_v" = "42,$LAN_IP" ] || printf '%s\n' "$_v" >> "$_tmp"
+    done
+    uci -q delete "dhcp.$sec.dhcp_option" || true
+    while IFS= read -r _v; do
+        [ -n "$_v" ] && uci add_list "dhcp.$sec.dhcp_option=$_v" || true
+    done < "$_tmp"
+    rm -f "$_tmp"
 
     uci commit system || return 1
     uci commit dhcp || return 1
@@ -3293,14 +3222,6 @@ apply_dnsmasq_perf() {
     [ "${DNSMASQ_PERF:-0}" = 1 ] || return 0
     sec="$(get_dnsmasq_section)"
     [ -n "$sec" ] || return 1
-    _f="$STATE_DIR/dnsmasq-perf-before.conf"
-    if [ ! -s "$_f" ]; then
-        : > "$_f" || return 1
-        for _k in cachesize dnsforwardmax max_cache_ttl boguspriv domainneeded quietdhcp filter_aaaa; do
-            _v="$(uci -q get "dhcp.$sec.$_k" 2>/dev/null)"
-            printf '%s|%s\n' "$_k" "$_v" >> "$_f" || return 1
-        done
-    fi
     uci set "dhcp.$sec.cachesize=1000" || return 1
     uci set "dhcp.$sec.dnsforwardmax=300" || return 1
     uci set "dhcp.$sec.max_cache_ttl=86400" || return 1
@@ -3309,32 +3230,16 @@ apply_dnsmasq_perf() {
     uci set "dhcp.$sec.quietdhcp=1" || return 1
     if [ "$IPV6_ROUTE" != yes ]; then uci set "dhcp.$sec.filter_aaaa=1" || return 1; fi
     uci commit dhcp || return 1
+    rm -f "$STATE_DIR/dnsmasq-perf-before.conf" 2>/dev/null || true
 }
 remove_dnsmasq_perf() {
     sec="$(get_dnsmasq_section)"
     [ -n "$sec" ] || return 0
-    _f="$STATE_DIR/dnsmasq-perf-before.conf"
-    [ -s "$_f" ] || return 0
-    _changed=0
-    while IFS='|' read -r _k _old; do
-        [ -n "$_k" ] || continue
-        case "$_k" in
-            cachesize) _mgr=1000;;
-            dnsforwardmax) _mgr=300;;
-            max_cache_ttl) _mgr=86400;;
-            boguspriv|domainneeded|quietdhcp|filter_aaaa) _mgr=1;;
-            *) continue;;
-        esac
-        _cur="$(uci -q get "dhcp.$sec.$_k" 2>/dev/null)"
-        if [ "$_cur" = "$_mgr" ]; then
-            if [ -n "$_old" ]; then uci set "dhcp.$sec.$_k=$_old"; else uci -q delete "dhcp.$sec.$_k"; fi
-            _changed=1
-        else
-            warn_msg "dnsmasq: $_k изменён извне после применения DNS Manager. Текущее значение сохранено."
-        fi
-    done < "$_f"
-    [ "$_changed" = 1 ] && uci commit dhcp >/dev/null 2>&1 || true
-    rm -f "$_f"
+    for _k in cachesize dnsforwardmax max_cache_ttl boguspriv domainneeded quietdhcp filter_aaaa; do
+        uci -q delete "dhcp.$sec.$_k" || true
+    done
+    uci commit dhcp >/dev/null 2>&1 || return 1
+    rm -f "$STATE_DIR/dnsmasq-perf-before.conf" 2>/dev/null || true
 }
 client_fixes_expected_body() {
     cat <<EOF_CLIENT_FIXES_BODY
@@ -3381,22 +3286,21 @@ client_fixes_find_modified_owned() {
 }
 apply_client_fixes() {
     [ "${CLIENT_FIXES:-0}" = 1 ] || return 0
-    _modified="$(client_fixes_find_modified_owned 2>/dev/null || true)"
-    if [ -n "$_modified" ]; then
-        err_msg "Файл DNS Manager client-fixes изменён извне: $_modified. Перезапись и создание второго файла запрещены."
-        return 2
+    _managed="${CLIENT_FIXES_FILE:-}"
+    if [ -n "$_managed" ] && [ -e "$_managed" ] && [ "$(client_fixes_file_state "$_managed")" = 1 ]; then
+        :
+    else
+        _managed=""
+        _owned="$(client_fixes_find_owned 2>/dev/null || true)"
+        [ -n "$_owned" ] && _managed="$_owned"
     fi
-    _managed="$(client_fixes_find_owned 2>/dev/null || true)"
-    [ -n "$_managed" ] || _managed="${CLIENT_FIXES_FILE:-}"
-    if [ -n "$_managed" ] && [ -e "$_managed" ] && [ "$(client_fixes_file_state "$_managed")" != 1 ]; then _managed=""; fi
     if [ -z "$_managed" ]; then
-        _n=91
-        while :; do
+        for _n in 91 92 93 94 95 96 97 98 99; do
             _candidate="/etc/dnsmasq.d/${_n}-dns-manager-client-fixes.conf"
             [ ! -e "$_candidate" ] && { _managed="$_candidate"; break; }
-            _n=$((_n+1)); [ "$_n" -le 99 ] || { err_msg "Нет свободного имени для DNS Manager client-fixes; чужие файлы не перезаписываются."; return 2; }
         done
     fi
+    [ -n "$_managed" ] || { err_msg "Нет свободного файла для DNS Manager client-fixes."; return 2; }
     CLIENT_FIXES_FILE="$_managed"
     {
         printf '%s\n' "$CLIENT_FIXES_MARKER"
@@ -3408,10 +3312,7 @@ apply_client_fixes() {
 remove_client_fixes() {
     for _f in /etc/dnsmasq.d/*dns-manager-client-fixes*.conf; do
         [ -f "$_f" ] || continue
-        case "$(client_fixes_file_state "$_f")" in
-            1) rm -f "$_f" || return 1;;
-            2) warn_msg "Файл DNS Manager client-fixes изменён извне: $_f. Файл сохранён.";;
-        esac
+        rm -f "$_f" || return 1
     done
     CLIENT_FIXES_FILE=""
     return 0
@@ -3447,101 +3348,53 @@ EOF_SYSCTL_VALUES
 }
 apply_sysctl_extended() {
     f="$(sysctl_extended_manager_path)"
-    sf="$STATE_DIR/sysctl-extended-before.conf"
     _params="$(sysctl_extended_params)"
     [ "${SYSCTL_EXTENDED:-0}" = 1 ] || return 0
-    if [ -f "$f" ]; then
-        _state="$(sysctl_file_state "$f" "$SYSCTL_EXTENDED_MARKER" "$_params")"
-        case "$_state" in
-            2) err_msg "Файл $f содержит маркер DNS Manager, но был изменён извне. Перезапись запрещена."; return 2;;
-            3) err_msg "Файл $f уже используется другой настройкой. DNS Manager его не перезаписывает."; return 2;;
-        esac
-    fi
-
-    # nf_conntrack may be modular on minimal OpenWrt builds. Try to load it,
-    # but never make the whole transaction fail if the kernel does not expose
-    # the sysctl at all.
     if command -v modprobe >/dev/null 2>&1; then
         modprobe nf_conntrack >/dev/null 2>&1 || true
     fi
-
-    [ -s "$sf" ] || : > "$sf" || return 1
-    while IFS= read -r p; do
-        [ -n "$p" ] || continue
-        _k="${p%%=*}"
-        _old="$(sysctl -n "$_k" 2>/dev/null)"
-        grep -q "^${_k}|" "$sf" 2>/dev/null || printf '%s|%s\n' "$_k" "${_old:-unknown}" >> "$sf" || return 1
-    done <<EOF_SYSCTL_EXT
-$_params
-EOF_SYSCTL_EXT
-
     _tmp="$f.tmp.$$"
     {
         printf '%s\n' "$SYSCTL_EXTENDED_MARKER"
         printf '%s\n' "$_params"
-    } > "$_tmp" || { rm -f "$_tmp"; return 1; }
-
+    } > "$_tmp" || return 1
     while IFS= read -r _p; do
         [ -n "$_p" ] || continue
         _k="${_p%%=*}"
-        [ -n "$_k" ] || {
-            warn_msg "Обнаружен пустой ключ расширенного sysctl; параметр пропускаю."
-            continue
-        }
-        # Prefer the sysctl interface itself as the availability check.
-        # /proc/sys is used only as a diagnostic because older kernels/modules
-        # may expose compatibility names differently.
+        [ -n "$_k" ] || continue
         if ! sysctl -n "$_k" >/dev/null 2>&1; then
-            warn_msg "Ядро не предоставляет sysctl $_k; параметр пропускаю без отката остальных TCP/sysctl настроек."
+            warn_msg "Ядро не предоставляет sysctl $_k; параметр пропускаю."
             continue
-        fi
-        _proc_key="$(printf '%s' "$_k" | tr '.' '/')"
-        if [ ! -e "/proc/sys/$_proc_key" ]; then
-            warn_msg "sysctl $_k доступен через sysctl, но путь /proc/sys/$_proc_key не найден; применяю через sysctl."
         fi
         _out="$(sysctl -w "$_p" 2>&1)"
         [ $? -eq 0 ] || {
             [ -n "$_out" ] && err_msg "Не удалось применить расширенный sysctl: $_p: $_out" || err_msg "Не удалось применить расширенный sysctl: $_p"
             rm -f "$_tmp"
-            while IFS='|' read -r _k _v; do
-                [ -n "$_k" ] && [ "$_v" != unknown ] && sysctl -w "$_k=$_v" >/dev/null 2>&1 || true
-            done < "$sf"
             return 1
         }
-        record_own "sysctl" "${_p%%=*}" "${_p#*=}" "extended-applied"
-    done <<EOF_SYSCTL_APPLY
+    done <<EOF_SYSCTL_EXT_APPLY
 $_params
-EOF_SYSCTL_APPLY
-
+EOF_SYSCTL_EXT_APPLY
     mv "$_tmp" "$f" || { rm -f "$_tmp"; return 1; }
     return 0
 }
 
-sysctl_extended_file_owned() {
-    _f="$1"
-    [ -f "$_f" ] || return 1
-    _state="$(sysctl_file_state "$_f" "$SYSCTL_EXTENDED_MARKER" "$(sysctl_extended_params)")"
-    [ "$_state" = 1 ]
-}
 remove_sysctl_extended() {
-    sf="$STATE_DIR/sysctl-extended-before.conf"
     _f="$(sysctl_extended_manager_path)"
-    _state=0
-    [ -f "$_f" ] && _state="$(sysctl_file_state "$_f" "$SYSCTL_EXTENDED_MARKER" "$(sysctl_extended_params)")"
-    case "$_state" in
-        2) warn_msg "Расширенный sysctl-файл изменён извне: $_f. Файл сохранён."; rm -f "$sf"; return 0;;
-        3) warn_msg "Расширенный sysctl-файл не принадлежит DNS Manager: $_f. Файл сохранён."; rm -f "$sf"; return 0;;
-    esac
-    if [ -s "$sf" ]; then
-        while IFS='|' read -r _k _old; do
-            [ -n "$_k" ] || continue
-            _managed="$(sysctl_extended_params | awk -F'=' -v k="$_k" '$1==k{print $2;exit}')"
-            [ -n "$_managed" ] || continue
-            sysctl_restore_key_if_unchanged "$_k" "$_old" "$_managed"
-        done < "$sf"
+    if [ -f "$_f" ]; then
+        _state="$(sysctl_file_state "$_f" "$SYSCTL_EXTENDED_MARKER" "$(sysctl_extended_params)")"
+        [ "$_state" != 3 ] || {
+            warn_msg "Файл $_f используется другой настройкой; файл сохранён."
+            return 0
+        }
+        rm -f "$_f" || return 1
     fi
-    [ -f "$_f" ] && rm -f "$_f" || true
-    rm -f "$sf"
+    rm -f "$STATE_DIR/sysctl-extended-before.conf" 2>/dev/null || true
+    if [ -x /etc/init.d/sysctl ]; then
+        /etc/init.d/sysctl reload >/dev/null 2>&1 || /etc/init.d/sysctl restart >/dev/null 2>&1 || true
+    elif [ -x /sbin/sysctl ]; then
+        sysctl -p /etc/sysctl.conf >/dev/null 2>&1 || true
+    fi
     return 0
 }
 hdp_force_external_conflict() {
@@ -3565,19 +3418,6 @@ apply_dns_force() {
     fi
     if ! prepare_dns_path; then
         return 0
-    fi
-
-    # Snapshot once, before changing any force-DNS option. Keep dnsmasq_config_update
-    # at '-' because reconcile_dnsmasq() is the sole owner of upstream dnsmasq state.
-    if [ ! -s "$FORCE_DNS_BEFORE" ]; then
-        {
-            printf 'force_dns|%s\n' "$(force_dns_snapshot_value https-dns-proxy.config.force_dns)"
-            printf 'notrack_dns|%s\n' "$(force_dns_snapshot_value https-dns-proxy.config.notrack_dns)"
-            printf 'dnsmasq_config_update|%s\n' "$(force_dns_snapshot_value https-dns-proxy.config.dnsmasq_config_update)"
-            printf 'force_ip_family|%s\n' "$(force_dns_snapshot_value https-dns-proxy.config.force_ip_family)"
-            printf 'force_dns_port|%s\n' "$(force_dns_snapshot_value https-dns-proxy.config.force_dns_port)"
-            printf 'force_dns_src_interface|%s\n' "$(force_dns_snapshot_value https-dns-proxy.config.force_dns_src_interface)"
-        } > "$FORCE_DNS_BEFORE" || return 1
     fi
 
     # Match the actual https-dns-proxy forced-DNS contract: outbound client
@@ -3606,37 +3446,14 @@ apply_dns_force() {
 }
 
 remove_dns_force() {
-    firewall_resolve_zones >/dev/null 2>&1 || true
-    [ -s "$FORCE_DNS_BEFORE" ] || return 0
-
-    _cur="$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null)"
-    if [ "$_cur" = 1 ]; then force_dns_restore_scalar https-dns-proxy.config.force_dns force_dns || return 1
-    else warn_msg "https-dns-proxy: force_dns изменён извне; текущее значение сохранено."; fi
-
-    _cur="$(uci -q get https-dns-proxy.config.notrack_dns 2>/dev/null)"
-    if [ "$_cur" = 1 ]; then force_dns_restore_scalar https-dns-proxy.config.notrack_dns notrack_dns || return 1
-    else warn_msg "https-dns-proxy: notrack_dns изменён извне; текущее значение сохранено."; fi
-
-    _cur="$(uci -q get https-dns-proxy.config.dnsmasq_config_update 2>/dev/null)"
-    if [ "$_cur" = - ]; then force_dns_restore_scalar https-dns-proxy.config.dnsmasq_config_update dnsmasq_config_update || return 1
-    else warn_msg "https-dns-proxy: dnsmasq_config_update изменён извне; текущее значение сохранено."; fi
-
-    _cur="$(uci -q get https-dns-proxy.config.force_ip_family 2>/dev/null)"
-    if [ "$_cur" = auto ]; then force_dns_restore_scalar https-dns-proxy.config.force_ip_family force_ip_family || return 1
-    else warn_msg "https-dns-proxy: force_ip_family изменён извне; текущее значение сохранено."; fi
-
-    if force_dns_ports_match_expected; then
-        force_dns_restore_list https-dns-proxy.config.force_dns_port force_dns_port || return 1
-    else
-        warn_msg "https-dns-proxy: force_dns_port изменён извне; текущее значение сохранено."
+    detect_forced_dns_path >/dev/null 2>&1 || true
+    if [ "${FORCED_DNS_EXTERNAL:-0}" = 1 ]; then
+        warn_msg "Обнаружен внешний forced-DNS ($FORCED_DNS_SOURCE). DNS Manager его не изменяет."
+        return 0
     fi
-
-    if force_dns_src_matches_expected; then
-        force_dns_restore_list https-dns-proxy.config.force_dns_src_interface force_dns_src_interface || return 1
-    else
-        warn_msg "https-dns-proxy: force_dns_src_interface изменён извне; текущее значение сохранено."
-    fi
-
+    for _k in force_dns notrack_dns force_ip_family dnsmasq_config_update force_dns_port force_dns_src_interface; do
+        uci -q delete "https-dns-proxy.config.$_k" || true
+    done
     uci commit https-dns-proxy >/dev/null 2>&1 || return 1
     rm -f "$FORCE_DNS_BEFORE" 2>/dev/null || true
     return 0
@@ -6003,27 +5820,9 @@ firewall_wan_zone() {
 apply_mtu_toggle() {
     _wan_zone="$(firewall_wan_zone 2>/dev/null)" || return 1
     if [ "${MTU_FIX:-0}" = 1 ]; then
-        if [ ! -s "$MTU_BEFORE" ]; then
-            printf '%s\n' "$(uci -q get "firewall.$_wan_zone.mtu_fix" 2>/dev/null)" > "$MTU_BEFORE" || return 1
-        fi
         uci -q set "firewall.$_wan_zone.mtu_fix=1" || return 1
     else
-        if [ -s "$MTU_BEFORE" ]; then
-            _old="$(head -n1 "$MTU_BEFORE" 2>/dev/null)"
-            _cur_mtu="$(uci -q get "firewall.$_wan_zone.mtu_fix" 2>/dev/null)"
-            if [ "$_cur_mtu" = 1 ]; then
-                if [ -n "$_old" ]; then
-                    uci -q set "firewall.$_wan_zone.mtu_fix=$_old" || return 1
-                else
-                    uci -q delete "firewall.$_wan_zone.mtu_fix" || true
-                fi
-            else
-                warn_msg "MTU/MSS: значение в WAN-зоне изменено извне после применения. Текущее значение сохранено."
-            fi
-            rm -f "$MTU_BEFORE"
-        else
-            warn_msg "MTU/MSS: нет снимка владения DNS Manager. Текущее значение WAN mtu_fix сохранено."
-        fi
+        uci -q delete "firewall.$_wan_zone.mtu_fix" || true
     fi
     uci commit firewall >/dev/null 2>&1 || return 1
     reload_fw >/dev/null 2>&1 || return 1
@@ -6085,36 +5884,58 @@ check_module_state() {
             ;;
         sysctl)
             _base="$(sysctl_base_manager_path)"
-            _all=1; _any=0
+            _ext="$(sysctl_extended_manager_path)"
+            _base_all=1; _base_any=0
             for _p in "net.ipv4.tcp_fastopen=3" "net.ipv4.tcp_fin_timeout=15" "net.core.somaxconn=1024"; do
                 _k="${_p%%=*}"; _v="${_p#*=}"
                 _cur="$(sysctl -n "$_k" 2>/dev/null)"
-                [ "$_cur" = "$_v" ] && _any=1
-                [ "$_cur" = "$_v" ] || _all=0
-                [ -f "$_base" ] || _all=0
-                [ -f "$_base" ] && grep -qxF "$_p" "$_base" 2>/dev/null || _all=0
+                if [ "$_cur" = "$_v" ]; then
+                    _base_any=1
+                else
+                    _base_all=0
+                fi
             done
-            if [ "${SYSCTL_EXTENDED:-0}" = 1 ]; then
-                _ext="$(sysctl_extended_manager_path)"
-                [ -f "$_ext" ] || _all=0
-                while IFS= read -r _p; do
-                    [ -n "$_p" ] || continue
-                    _k="${_p%%=*}"; _v="${_p#*=}"
-                    # Optional extended sysctls may be absent on minimal kernels.
-                    # apply_sysctl_extended() deliberately skips those keys, so
-                    # verification must treat them as unsupported rather than failed.
-                    sysctl -n "$_k" >/dev/null 2>&1 || continue
-                    _cur="$(sysctl -n "$_k" 2>/dev/null)"
-                    [ "$_cur" = "$_v" ] && _any=1
-                    [ "$_cur" = "$_v" ] || _all=0
-                    [ -f "$_ext" ] && grep -qxF "$_p" "$_ext" 2>/dev/null || _all=0
-                done <<EOF_CHECK_EXT
+            _base_file_state=0
+            [ -f "$_base" ] && _base_file_state="$(sysctl_file_state "$_base" "$SYSCTL_BASE_MARKER" "$(sysctl_base_expected)")"
+
+            _ext_all=1; _ext_any=0; _ext_supported=0
+            while IFS= read -r _p; do
+                [ -n "$_p" ] || continue
+                _k="${_p%%=*}"; _v="${_p#*=}"
+                if ! sysctl -n "$_k" >/dev/null 2>&1; then
+                    continue
+                fi
+                _ext_supported=$((_ext_supported + 1))
+                _cur="$(sysctl -n "$_k" 2>/dev/null)"
+                if [ "$_cur" = "$_v" ]; then
+                    _ext_any=1
+                else
+                    _ext_all=0
+                fi
+            done <<EOF_CHECK_EXT_FACT
 $(sysctl_extended_params)
-EOF_CHECK_EXT
+EOF_CHECK_EXT_FACT
+            _ext_file_state=0
+            [ -f "$_ext" ] && _ext_file_state="$(sysctl_file_state "$_ext" "$SYSCTL_EXTENDED_MARKER" "$(sysctl_extended_params)")"
+
+            if [ "$_base_all" = 1 ] && [ "$_base_file_state" = 1 ] && [ "$_ext_all" = 1 ]; then
+                if [ "$_ext_supported" -eq 0 ] || [ "$_ext_file_state" = 1 ]; then
+                    printf 1
+                    return 0
+                fi
             fi
-            [ "$_all" = 1 ] && printf 1 || { [ "$_any" = 1 ] || [ -f "$_base" ] && printf 2 || printf 0; }
+            if [ "$_base_any" = 1 ] || [ "$_ext_any" = 1 ] || [ "$_base_file_state" != 0 ] || [ "$_ext_file_state" != 0 ]; then
+                printf 2
+            else
+                printf 0
+            fi
             ;;
         force)
+            detect_forced_dns_path >/dev/null 2>&1 || true
+            if [ "${FORCED_DNS_EXTERNAL:-0}" = 1 ]; then
+                printf 2
+                return 0
+            fi
             _ok=1
             [ "$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null)" = 1 ] || _ok=0
             [ "$(uci -q get https-dns-proxy.config.notrack_dns 2>/dev/null)" = 1 ] || _ok=0
@@ -6122,12 +5943,12 @@ EOF_CHECK_EXT
             [ "$(uci -q get https-dns-proxy.config.force_ip_family 2>/dev/null)" = auto ] || _ok=0
             force_dns_ports_match_expected || _ok=0
             force_dns_src_matches_expected || _ok=0
-            [ -s "$FORCE_DNS_BEFORE" ] || _ok=0
             if [ "$_ok" = 1 ]; then
-                prepare_dns_path >/dev/null 2>&1 && printf 1 || printf 2
+                printf 1
+            elif [ "$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null)" = 1 ] || [ "$(uci -q get https-dns-proxy.config.notrack_dns 2>/dev/null)" = 1 ]; then
+                printf 2
             else
-                [ "$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null)" = 1 ] ||
-                [ "$(uci -q get https-dns-proxy.config.notrack_dns 2>/dev/null)" = 1 ] && printf 2 || printf 0
+                printf 0
             fi
             ;;
         ntp_clients)
@@ -6232,9 +6053,9 @@ module_state_word() {
     esac
     _real="$(check_module_state "$1")"
     case "$_real" in
-        1) printf "${C_BOLD}${C_GREEN}✓ ВКЛ${C_NC} ${C_CYAN}${C_BOLD}• настроено${C_NC}" ;;
+        1) printf "${C_BOLD}${C_GREEN}✓ ВКЛ${C_NC} ${C_CYAN}${C_BOLD}• фактически${C_NC}" ;;
         2) printf "${C_BOLD}${C_YELLOW}⚠ ДРУГОЕ${C_NC} ${C_CYAN}${C_BOLD}• отличается от целевой настройки${C_NC}" ;;
-        *) printf "${C_BOLD}${C_RED}✗ ВЫКЛ${C_NC} ${C_CYAN}${C_BOLD}• сток${C_NC}" ;;
+        *) printf "${C_BOLD}${C_RED}✗ ВЫКЛ${C_NC} ${C_CYAN}${C_BOLD}• фактически${C_NC}" ;;
     esac
 }
 # ==========================================
@@ -6692,7 +6513,13 @@ setting_process() {
         case "$_state" in
             0) printf "  Действие:  ВКЛЮЧИТЬ\n" ;;
             1) printf "  Действие:  ВЫКЛЮЧИТЬ\n" ;;
-            2) printf "  Действие:  ИСПРАВИТЬ\n" ;;
+            2)
+                if [ "$_module" = force ]; then
+                    printf "  Действие:  НЕ ТРОГАТЬ\n"
+                else
+                    printf "  Действие:  ИСПРАВИТЬ\n"
+                fi
+                ;;
             *) err_msg "Не удалось определить состояние настройки."; pause; return 1 ;;
         esac
     fi
@@ -6707,8 +6534,15 @@ setting_process() {
     else
         case "$_state" in
             0) confirm_action "Включить «$_title»?" || return 0 ;;
-            1) confirm_action "Выключить «$_title» и вернуть стоковое состояние?" || return 0 ;;
-            2) confirm_action "Исправить «$_title» и применить целевую настройку DNS Manager?" || return 0 ;;
+            1) confirm_action "Выключить «$_title» и вернуть штатное состояние?" || return 0 ;;
+            2)
+                if [ "$_module" = force ]; then
+                    info_msg "Обнаружен внешний forced-DNS. DNS Manager его не изменяет."
+                    pause
+                    return 0
+                fi
+                confirm_action "Исправить «$_title» и привести к целевой настройке DNS Manager?" || return 0
+                ;;
         esac
     fi
 
@@ -6736,12 +6570,6 @@ setting_process() {
         pause
         return "$_rc"
     fi
-
-    ensure_baseline_captured || {
-        err_msg "Не удалось сохранить исходное состояние перед изменением настройки."
-        pause
-        return 1
-    }
 
     _old_force="$FORCE_APPLY_SETTINGS"
     case "$_state" in
@@ -6794,7 +6622,7 @@ setting_process() {
     if [ "$_rc" -eq 0 ]; then
         case "$_state:$_module" in
             0:mtu|2:mtu) ok_msg "MTU/MSS настроено." ;;
-            1:mtu) ok_msg "MTU/MSS возвращено к стоку." ;;
+            1:mtu) ok_msg "MTU/MSS выключено в фактической WAN-зоне." ;;
             0:force|2:force) ok_msg "Принудительный DNS настроен." ;;
             1:force) ok_msg "Принудительный DNS выключен, стоковое состояние восстановлено." ;;
             0:sysctl|2:sysctl) ok_msg "TCP и Conntrack настроены." ;;
@@ -7997,7 +7825,7 @@ watchdog_service_install_files() {
         cat > "$_dtmp" <<'EOF_DNS_WATCHDOG_DAEMON'
 #!/bin/sh
 # DNS_MANAGER_WATCHDOG_DAEMON=1
-# DNS_MANAGER_WATCHDOG_DAEMON_VERSION=2.98
+# DNS_MANAGER_WATCHDOG_DAEMON_VERSION=3.00
 
 MANAGER_PATH="/usr/bin/dns-manager"
 CONFIG_FILE="/etc/dns-manager/config/manager.conf"
@@ -8331,7 +8159,7 @@ EOF_DNS_WATCHDOG_DAEMON
         cat > "$_stmp" <<'EOF_DNS_WATCHDOG_SERVICE'
 #!/bin/sh /etc/rc.common
 # DNS_MANAGER_WATCHDOG_SERVICE=1
-# DNS_MANAGER_WATCHDOG_SERVICE_VERSION=2.98
+# DNS_MANAGER_WATCHDOG_SERVICE_VERSION=3.00
 
 USE_PROCD=1
 START=95
@@ -8513,13 +8341,19 @@ watchdog_service_migrate_legacy() {
 }
 
 watchdog_state_word_procd() {
-    if [ "${WATCHDOG_ENABLED:-0}" != 1 ]; then
-        printf '0'
-        return 0
-    fi
-    if watchdog_service_enabled && watchdog_service_running; then
+    _service=0
+    _enabled=0
+    _running=0
+    _daemon=0
+    _service_file=0
+    [ -x "$WATCHDOG_DAEMON_PATH" ] && watchdog_service_file_owned "$WATCHDOG_DAEMON_PATH" "$WATCHDOG_DAEMON_MARKER" && _daemon=1
+    [ -x "$WATCHDOG_SERVICE_PATH" ] && watchdog_service_file_owned "$WATCHDOG_SERVICE_PATH" "$WATCHDOG_SERVICE_MARKER" && _service_file=1
+    if watchdog_service_enabled; then _enabled=1; fi
+    if watchdog_service_running; then _running=1; fi
+    [ "$_daemon" = 1 ] && [ "$_service_file" = 1 ] && _service=1
+    if [ "$_service" = 1 ] && [ "$_enabled" = 1 ] && [ "$_running" = 1 ]; then
         printf '1'
-    elif [ -x "$WATCHDOG_SERVICE_PATH" ]; then
+    elif [ "$_service" = 1 ] || [ "$_enabled" = 1 ] || [ "$_running" = 1 ]; then
         printf '2'
     else
         printf '0'
@@ -8596,73 +8430,24 @@ watchdog_service_recover_run() {
     return "$_rc"
 }
 apply_watchdog() {
-    _old_disk_enabled=0
-    if [ -f "$CONFIG_FILE" ] && grep -q '^WATCHDOG_ENABLED="1"$' "$CONFIG_FILE" 2>/dev/null; then
-        _old_disk_enabled=1
-    fi
-
-    WATCHDOG_APPLY_OLD_INTERVAL="${WATCHDOG_INTERVAL:-${WATCHDOG_CHECK_INTERVAL_DEFAULT:-90}}"
-    WATCHDOG_APPLY_OLD_SERVICE_PRESENT=0
-    WATCHDOG_APPLY_OLD_SERVICE_ENABLED=0
-    WATCHDOG_APPLY_OLD_SERVICE_RUNNING=0
-    if [ -f "$WATCHDOG_SERVICE_PATH" ] && watchdog_service_file_owned "$WATCHDOG_SERVICE_PATH" "$WATCHDOG_SERVICE_MARKER"; then
-        WATCHDOG_APPLY_OLD_SERVICE_PRESENT=1
-        watchdog_service_enabled && WATCHDOG_APPLY_OLD_SERVICE_ENABLED=1
-        watchdog_service_running && WATCHDOG_APPLY_OLD_SERVICE_RUNNING=1
-    fi
-
-    apply_wait_message "$( [ "${WATCHDOG_ENABLED:-0}" = 1 ] && printf '%s' 'Настраиваю фоновый watchdog procd' || printf '%s' 'Отключаю фоновый watchdog procd' )"
-
+    apply_wait_message "$( [ "${WATCHDOG_ENABLED:-0}" = 1 ] && printf '%s' 'Включаю фоновый watchdog procd' || printf '%s' 'Выключаю фоновый watchdog procd' )"
     if [ "${WATCHDOG_ENABLED:-0}" = 1 ]; then
         watchdog_service_install_files || return 1
-        # Start the new service before removing an old cron entry, so migration
-        # never leaves a protection gap.
-        "$WATCHDOG_SERVICE_PATH" enable >/dev/null 2>&1 || { watchdog_apply_restore_previous_state; return 1; }
-        "$WATCHDOG_SERVICE_PATH" start >/dev/null 2>&1 || { watchdog_apply_restore_previous_state; return 1; }
+        "$WATCHDOG_SERVICE_PATH" enable >/dev/null 2>&1 || return 1
+        "$WATCHDOG_SERVICE_PATH" start >/dev/null 2>&1 || return 1
         sleep 1
-        watchdog_service_running || { watchdog_apply_restore_previous_state; return 1; }
+        watchdog_service_running || return 1
+        watchdog_cron_marker_exists >/dev/null 2>&1 && watchdog_cron_remove_owned_block >/dev/null 2>&1 || true
+        WATCHDOG_BACKEND="procd"
+        : "${WATCHDOG_INTERVAL:=${WATCHDOG_CHECK_INTERVAL_DEFAULT:-90}}"
+        save_config || return 1
+        ok_msg "Фоновая автопроверка DNS включена через procd."
     else
-        # Keep the manager-owned procd files on disk until the legacy cron has
-        # been removed successfully. This makes disabling transactional: if the
-        # cron cleanup fails, the previous watchdog can be restored immediately.
-        watchdog_service_stop_disable || { watchdog_apply_restore_previous_state; return 1; }
-    fi
-
-    WATCHDOG_BACKEND="procd"
-    : "${WATCHDOG_INTERVAL:=${WATCHDOG_CHECK_INTERVAL_DEFAULT:-90}}"
-
-    # Persist the new state while the old cron entry is still present. If this
-    # fails, the legacy cron remains available and the previous service state is restored.
-    if ! save_config; then
-        watchdog_apply_restore_previous_state
-        return 1
-    fi
-
-    if watchdog_cron_marker_exists >/dev/null 2>&1; then
-        watchdog_cron_remove_owned_block >/dev/null 2>&1 || {
-            watchdog_apply_restore_previous_state
-            return 1
-        }
-        watchdog_cron_scheduler_detect >/dev/null 2>&1 || true
-        if watchdog_cron_marker_exists >/dev/null 2>&1; then
-            watchdog_apply_restore_previous_state
-            return 1
-        fi
-    fi
-
-    if [ "${WATCHDOG_ENABLED:-0}" != 1 ]; then
-        # No old cron remains, so the stopped manager-owned procd service can
-        # now be removed without creating a protection race.
-        watchdog_service_remove_files || {
-            watchdog_apply_restore_previous_state
-            return 1
-        }
-    fi
-
-
-    if [ "${WATCHDOG_ENABLED:-0}" = 1 ]; then
-        ok_msg "Фоновая автопроверка DNS включена: procd, каждые ${WATCHDOG_INTERVAL} секунд. Замена — после двух последовательных сбоев конкретного слота."
-    else
+        watchdog_service_stop_disable || return 1
+        watchdog_cron_marker_exists >/dev/null 2>&1 && watchdog_cron_remove_owned_block >/dev/null 2>&1 || true
+        watchdog_service_remove_files || return 1
+        WATCHDOG_BACKEND="procd"
+        save_config || return 1
         ok_msg "Фоновая автопроверка DNS выключена. Procd-служба удалена, cron watchdog не используется."
     fi
     return 0
