@@ -4558,7 +4558,7 @@ watchdog_expected_servers() {
     _out="$TMP_DIR/watchdog-expected-servers-$$"
     : > "$_out"
     for _ws in 1 2 3 4 5 6; do
-
+        case "$_ws" in 1) _wid="${SLOT_1:-}"; _wp="${PORT_1:-}";; 2) _wid="${SLOT_2:-}"; _wp="${PORT_2:-}";; 3) _wid="${SLOT_3:-}"; _wp="${PORT_3:-}";; 4) _wid="${SLOT_4:-}"; _wp="${PORT_4:-}";; 5) _wid="${SLOT_5:-}"; _wp="${PORT_5:-}";; 6) _wid="${SLOT_6:-}"; _wp="${PORT_6:-}";; esac
         [ -n "$_wid" ] || continue
         [ -n "$_wp" ] || continue
         printf '127.0.0.1#%s\n' "$_wp" >> "$_out"
