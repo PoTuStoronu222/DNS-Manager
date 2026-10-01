@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.4.6
+# Version: 1.4.7
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -22,7 +22,7 @@ COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main
 # Legacy update compatibility: admin/services/dns_manager
 RUNTIME_UPDATE_STATE="$BACKUP_DIR/update.state"
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.4.6"
+VERSION="1.4.7"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -169,7 +169,7 @@ UPDATE_STATE="/etc/dns-manager-luci/update.state"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.4.6"
+SELF_VERSION="1.4.7"
 
 umask 077
 mkdir -p "$RUNTIME_DIR" "$JOB_DIR" "$CHECK_DIR" "$TMP_ROOT" 2>/dev/null || exit 1
@@ -1090,9 +1090,18 @@ load_manager() {
 }
 
 set_check_stamp() {
-    _id="$1"; _ts="$2"
+    _id="$1"; _ts="$2"; _result="$3"
     case "$_id" in ''|*[!A-Za-z0-9_-]*) return 1;; esac
-    printf '%s\n' "$_ts" > "$CHECK_DIR/$_id" 2>/dev/null
+    {
+        printf '%s\n' "$_ts"
+        [ -n "$_result" ] && printf '%s\n' "$_result"
+    } > "$CHECK_DIR/$_id" 2>/dev/null
+}
+last_check_result_for_id() {
+    _id="$1"
+    _f="$CHECK_DIR/$_id"
+    [ -r "$_f" ] || return 1
+    sed -n '2p' "$_f" 2>/dev/null
 }
 new_job_id() { printf '%s-%s' "$(date +%s)" "$$"; }
 job_write() { _id="$1"; _key="$2"; _value="$3"; mkdir -p "$JOB_DIR/$_id" 2>/dev/null || return 1; printf '%s=%s\n' "$_key" "$_value" >> "$JOB_DIR/$_id/state" 2>/dev/null; }
@@ -1165,7 +1174,7 @@ job_start_test_current() {
         }
         save_persistent_test_results >/dev/null 2>&1 || true
         _stamp="$(date +%s)"
-        while IFS='|' read -r _id _rest; do [ -n "$_id" ] && set_check_stamp "$_id" "$_stamp"; done < "$_results"
+        while IFS='|' read -r _id _rest; do [ -n "$_id" ] && set_check_stamp "$_id" "$_stamp" "$_id|$_rest"; done < "$_results"
         rm -f "$_ids" "$_cat" "$_results" "$_meta"
         job_write "$_jid" status done; job_write "$_jid" result ok; job_write "$_jid" finished "$_stamp"
     ) &
@@ -1186,7 +1195,7 @@ job_start_test_one() {
                     _tmp="$TMP_ROOT/results.$$"; _stamp="$(date +%s)"; : > "$_tmp"
                     [ -s "$TEST_RESULTS" ] && awk -F'|' -v id="$_id" '$1!=id {print}' "$TEST_RESULTS" > "$_tmp" 2>/dev/null || true
                     cat "$TMP_DIR/t.$_id" >> "$_tmp" 2>/dev/null || true; mv "$_tmp" "$TEST_RESULTS" 2>/dev/null || true
-                    save_persistent_test_results >/dev/null 2>&1 || true; set_check_stamp "$_id" "$_stamp"; release_test_lock || true
+                    save_persistent_test_results >/dev/null 2>&1 || true; set_check_stamp "$_id" "$_stamp" "$(<"$TMP_DIR/t.$_id")"; release_test_lock || true
                     job_write "$_jid" status done; job_write "$_jid" result ok; job_write "$_jid" finished "$_stamp"; exit 0
                 fi
                 release_test_lock || true
@@ -1594,7 +1603,11 @@ function renderOverview(root,st){
     componentItem('Принудительный DNS',force,forceDetails)
   ]);
 
-  var dnsSlotsCard=card('DNS в слотах',[
+  var dnsSlotsCard=E('div',{'class':'dm-card'},[
+    E('h3',{},[
+      E('span',{},'DNS over HTTPS'),
+      doh
+    ]),
     E('div',{'class':'dm-component-dns-list'},dnsItems),
     E('div',{'class':'dm-actions'},[
       btn('Проверить DNS в слотах','cbi-button-action',function(){testCurrent(root);},{disabled:!!state.busy||state.jobRunning})
