@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.5.18
+# Version: 1.5.19
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -22,7 +22,7 @@ COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main
 # Legacy update compatibility: admin/services/dns_manager
 RUNTIME_UPDATE_STATE="$BACKUP_DIR/update.state"
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.5.18"
+VERSION="1.5.19"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -155,7 +155,7 @@ UPDATE_STATE="/etc/dns-manager-luci/update.state"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.5.18"
+SELF_VERSION="1.5.19"
 
 umask 077
 mkdir -p "$RUNTIME_DIR" "$JOB_DIR" "$CHECK_DIR" "$TMP_ROOT" 2>/dev/null || exit 1
@@ -272,13 +272,23 @@ fetch_raw_url() {
 fetch_url() {
     _out="$1"
     rm -f "$_out" 2>/dev/null || true
-    _api="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
+    _cb="$(date +%s 2>/dev/null || printf 0)-$$"
+    _fetch_url="${COMPANION_URL}?_dmcb=$_cb"
+    # Use the raw GitHub file directly. The contents API can serve a cached
+    # revision after rapid sequential commits, which makes version detection
+    # falsely report an older LuCI version as current.
     if command -v curl >/dev/null 2>&1; then
-        curl -fsSL --connect-timeout 5 --max-time 30 -H 'Accept: application/vnd.github.raw+json' -H 'User-Agent: DNS-Manager-LuCI' -H 'Cache-Control: no-cache' -o "$_out" "$_api" >/dev/null 2>&1
+        curl -fsSL --connect-timeout 5 --max-time 30 \
+            -H 'User-Agent: DNS-Manager-LuCI' \
+            -H 'Cache-Control: no-cache' \
+            -o "$_out" "$_fetch_url" >/dev/null 2>&1
     elif command -v wget >/dev/null 2>&1; then
-        wget -q -T 30 --header='Accept: application/vnd.github.raw+json' --header='User-Agent: DNS-Manager-LuCI' --header='Cache-Control: no-cache' -O "$_out" "$_api" >/dev/null 2>&1
+        wget -q -T 30 \
+            --header='User-Agent: DNS-Manager-LuCI' \
+            --header='Cache-Control: no-cache' \
+            -O "$_out" "$_fetch_url" >/dev/null 2>&1
     elif command -v uclient-fetch >/dev/null 2>&1; then
-        uclient-fetch -q -O "$_out" "${COMPANION_URL}?_dmcb=$(date +%s 2>/dev/null || printf 0)" >/dev/null 2>&1
+        uclient-fetch -q -O "$_out" "$_fetch_url" >/dev/null 2>&1
     else
         return 1
     fi
@@ -1392,7 +1402,7 @@ EOF_RPC
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.5.18
+// DNS Manager LuCI version: 1.5.19
 var callStatus = rpc.declare({ object:'dns_manager', method:'status', expect:{} });
 var callCatalog = rpc.declare({ object:'dns_manager', method:'catalog', params:['category','offset','limit','only_ok'], expect:{} });
 var callUpdateCheck = rpc.declare({ object:'dns_manager', method:'update_check', expect:{} });
