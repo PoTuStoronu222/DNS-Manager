@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.1.5
+# Version: 1.1.6
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -22,7 +22,7 @@ COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main
 # Legacy update compatibility: admin/services/dns_manager
 RUNTIME_UPDATE_STATE="$BACKUP_DIR/update.state"
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.1.5"
+VERSION="1.1.6"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -167,7 +167,7 @@ UPDATE_STATE="/etc/dns-manager-luci/update.state"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.1.5"
+SELF_VERSION="1.1.6"
 
 umask 077
 mkdir -p "$RUNTIME_DIR" "$JOB_DIR" "$CHECK_DIR" "$TMP_ROOT" 2>/dev/null || exit 1
@@ -1123,7 +1123,7 @@ EOF_RPC
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.1.5
+// DNS Manager LuCI version: 1.1.6
 var callStatus = rpc.declare({ object:'dns_manager', method:'status', expect:{} });
 var callCatalog = rpc.declare({ object:'dns_manager', method:'catalog', params:['category','offset','limit','only_ok'], expect:{} });
 var callUpdateCheck = rpc.declare({ object:'dns_manager', method:'update_check', expect:{} });
@@ -1340,62 +1340,68 @@ function renderOverview(root,st){
   var e=root.querySelector('#dm-overview');if(!e)return;e.innerHTML='';
   var applied=renderActionStatus();if(applied)e.appendChild(applied);
   if(state.statusError)e.appendChild(E('div',{'class':'dm-inline-msg error'},state.statusError+' Проверьте: ubus call dns_manager status.'));
-  var doh=st.doh==='yes'?badge('dm-ok','работает'):Number(st.doh_total||0)>0?badge('dm-bad','служба остановлена'):badge('dm-off','не установлен');
+
+  var doh=st.doh==='yes'?badge('dm-ok','запущен'):Number(st.doh_total||0)>0?badge('dm-bad','остановлен'):badge('dm-off','не установлен');
   var force=yes(st.force_both)?badge('dm-warn','DNS Manager + внешний'):st.force_owner==='external'?badge('dm-warn','внешний сервис'):yes(st.force_manager)?badge('dm-ok','DNS Manager'):badge('dm-off','выключен');
-  var wd=yes(st.watchdog)?(st.watchdog_backend==='procd'?(Number(st.watchdog_loop||0)===1?badge('dm-ok','procd · работает'):Number(st.watchdog_service||0)===1?badge('dm-warn','procd · запускается'):badge('dm-warn','procd · служба не запущена')):badge('dm-warn','неизвестный механизм')):badge('dm-off','выключен');
-  var dnsRows=[];
-  (st.slots||[]).forEach(function(d){
-    if(!d.id)return;
-    var ci=checkInfo(d.id,d);
-    dnsRows.push(E('div',{'class':'dm-slot-row'},[
-      E('span',{'class':'dm-slot-id'},d.slot||'—'),
-      E('span',{'class':'dm-slot-name'},d.name||d.id),
-      E('span',{'class':'dm-slot-endpoint'},d.port?'127.0.0.1:'+d.port:'—'),
-      E('span',{'class':'dm-slot-ping'},ci.status==='RUNNING'?badge('dm-warn','проверяется'):ping(ci.ping)),
-      E('span',{'class':'dm-slot-state'},ci.status==='RUNNING'?badge('dm-warn','проверяется'):stateBadge(ci.status,ci.ping)),
-      E('span',{'class':'dm-inline'},[
-        btn('Выбрать','cbi-button-neutral',function(){openSlotPicker(d.slot,root);}),
-        btn(ci.status==='RUNNING'?'Проверяется':'Проверить','cbi-button-neutral',function(){testOne(d.id,root,'overview');},{disabled:ci.status==='RUNNING'})
-      ])
-    ]));
-  });
-  if(!dnsRows.length)dnsRows.push(E('div',{'class':'dm-hint'},'DNS пока не настроены.'));
-  var fullState='';
-  if(state.fullTest&&state.fullTest.status==='RUNNING')fullState=E('div',{'class':'dm-inline-msg info'},'Полная проверка DNS выполняется. Интерфейс обновляется автоматически.');
-  else if(state.fullTest&&state.fullTest.status==='DONE')fullState=E('div',{'class':'dm-inline-msg ok'},'Полная проверка DNS завершена.');
-  else if(state.fullTest&&state.fullTest.status==='FAILED')fullState=E('div',{'class':'dm-inline-msg error'},'Полная проверка DNS завершилась с ошибкой.');
-  var stateCard=card('Состояние',[
-    row('Профиль',badge('dm-ok',profileName(st.profile))),
-    row('Защищённый DNS (DoH)',doh),
-    row('Принудительный DNS',force),
+  var wd=yes(st.watchdog)?(st.watchdog_backend==='procd'?(Number(st.watchdog_loop||0)===1?badge('dm-ok','работает · procd'):Number(st.watchdog_service||0)===1?badge('dm-warn','служба запущена, цикл не найден'):badge('dm-bad','служба не запущена')):badge('dm-warn','неизвестный механизм')):badge('dm-off','выключена');
+
+  var profile=badge('dm-ok',profileName(st.profile));
+  var dnsCount=String(st.configured_dns||0)+' настроено · '+String(st.doh_match||0)+' DoH совпадает';
+  var lastTest=dateText(st.last_full_test);
+  var dnsTest=lastTest==='—'?badge('dm-off','не выполнялся'):E('span',{},lastTest);
+
+  var componentRows=[
+    row('Профиль',profile),
+    row('DNS over HTTPS',doh),
     row('Автопроверка DNS',wd),
-    E('div',{'class':'dm-section-title'},'Текущие DNS'),
-    E('div',{'class':'dm-mini'},String(st.configured_dns||0)+' DNS настроено · '+String(st.doh_match||0)+' DoH совпадает'),
-    E('div',{'class':'dm-slot-table'},dnsRows),
-    E('div',{'class':'dm-actions'},[btn('Проверить текущие DNS','cbi-button-action',function(){testCurrent(root);},{disabled:!!state.busy||state.jobRunning})]),
-    fullState,
-    E('span',{})
+    row('Принудительный DNS',force),
+    row('DNS в слотах',E('span',{},dnsCount)),
+    row('Последний тест DNS',dnsTest)
+  ];
+
+  var componentActions=E('div',{'class':'dm-actions'},[
+    btn('Текущие DNS','cbi-button-neutral',function(){window.location.href=routeUrl('dns');}),
+    btn('Проверить текущие DNS','cbi-button-action',function(){testCurrent(root);},{disabled:!!state.busy||state.jobRunning})
   ]);
+  var components=card('Компоненты',componentRows.concat([componentActions]));
+
+  var ipv4=st.ipv4==='yes'?badge('dm-ok','есть'):badge('dm-bad','нет');
+  var ipv6=st.ipv6==='yes'?badge('dm-ok','есть'):badge('dm-off','выключен');
+  var selectedPing=st.average_ping&&/^[0-9]+$/.test(String(st.average_ping))?String(st.average_ping)+' мс':'—';
+
   var sysCard=card('Система',[
-    row('Устройство',shortVal(st.hostname)),
+    row('Модель',shortVal(st.hostname)),
     row('OpenWrt',shortVal(st.openwrt)),
     row('Время работы',E('span',{'class':'dm-uptime'},uptime(st.uptime))),
+    row('IPv4',ipv4),
+    row('IPv6',ipv6),
+    row('Пинг DNS',shortVal(selectedPing)),
     row('Нагрузка',loadBar(st.load1,st.cpu_count)),
     row('RAM',memoryBar(st.memory_total_kb,st.memory_available_kb)),
     row('LAN',shortVal(st.lan))
   ]);
+
   var verCard=card('Версии',[
     row('DNS Manager',versionState(st.manager_version,st.manager_update_available,st.manager_latest_version,st.manager_check_ok,'актуальна',state.versionCheck&&state.versionCheck.manager==='running')),
     row('LuCI',versionState(st.luci_version,st.luci_update_available,st.luci_latest_version,st.luci_update_checked,'актуальна',state.versionCheck&&state.versionCheck.luci==='running')),
     st.luci_update_error?E('div',{'class':'dm-inline-msg error'},String(st.luci_update_error)):E('span',{}),
     row('https-dns-proxy',versionState(st.hdp_version,st.hdp_update_available,st.hdp_latest_version,st.hdp_check_ok,'актуальна',state.versionCheck&&state.versionCheck.hdp==='running')),
     row('Каталог DNS',catalogVersionState(st.catalog_version,st.catalog_revision,st.catalog_total,st.catalog_update_available,st.catalog_latest_version,st.catalog_latest_rev,st.catalog_check_ok,state.versionCheck&&state.versionCheck.catalog==='running')),
-    row('Последний тест DNS',dateText(st.last_full_test)),
-    row('Актуальность версий',dateText(st.components_checked_at)),
-    E('div',{'class':'dm-actions'},[btn('Проверить актуальность','cbi-button-neutral',function(){checkUpdate(root);}),yes(st.luci_update_available)?btn('Обновить LuCI','cbi-button-positive',function(){doUpdate(root);}):E('span',{})])
+    row('Проверено',dateText(st.components_checked_at)),
+    E('div',{'class':'dm-actions'},[
+      btn('Проверить актуальность','cbi-button-neutral',function(){checkUpdate(root);}),
+      yes(st.luci_update_available)?btn('Обновить LuCI','cbi-button-positive',function(){doUpdate(root);}):E('span',{})
+    ])
   ]);
+
+  e.appendChild(components);
   e.appendChild(E('div',{'class':'dm-grid2'},[sysCard,verCard]));
-  e.appendChild(stateCard);
+
+  var fullState='';
+  if(state.fullTest&&state.fullTest.status==='RUNNING')fullState=E('div',{'class':'dm-inline-msg info'},'Полная проверка DNS выполняется. Интерфейс обновляется автоматически.');
+  else if(state.fullTest&&state.fullTest.status==='DONE')fullState=E('div',{'class':'dm-inline-msg ok'},'Полная проверка DNS завершена.');
+  else if(state.fullTest&&state.fullTest.status==='FAILED')fullState=E('div',{'class':'dm-inline-msg error'},'Полная проверка DNS завершилась с ошибкой.');
+  if(fullState)e.appendChild(fullState);
 }
 function resolverRows(st){
   var out=[],seen=0;
