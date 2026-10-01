@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.25"
+VERSION="3.26"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -2902,7 +2902,10 @@ EOF_SYSCTL_BASE_EXPECTED
 
 sysctl_stock_value() {
     _k="$1"
-    _v="$(awk -F= -v k="$_k" '$1 ~ "^[[:space:]]*" k "[[:space:]]*$" {v=$2; gsub(/[[:space:]]/,"",v); if(v!=""){print v; exit}}' /etc/sysctl.d/10-default.conf 2>/dev/null)"
+    _v="$(awk -F= -v k="$_k" '
+        { _name=$1; gsub(/^[[:space:]]+|[[:space:]]+$/, "", _name);
+          if (_name==k) { v=$2; gsub(/[[:space:]]/,"",v); if (v!="") { print v; exit } } }
+        ' /etc/sysctl.d/10-default.conf 2>/dev/null)
     [ -n "$_v" ] && { printf '%s' "$_v"; return 0; }
     case "$_k" in
         net.ipv4.tcp_fastopen) printf '1' ;;
