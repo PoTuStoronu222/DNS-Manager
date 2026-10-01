@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.5.32
+# Version: 1.5.33
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -22,7 +22,7 @@ COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main
 # Legacy update compatibility: admin/services/dns_manager
 RUNTIME_UPDATE_STATE="$BACKUP_DIR/update.state"
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.5.32"
+VERSION="1.5.33"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -39,7 +39,10 @@ manager_const_num() {
         WATCHDOG_FAIL_THRESHOLD|WATCHDOG_REPAIR_COOLDOWN|WATCHDOG_GUARD_INTERVAL|WATCHDOG_MAX_REPAIRS|WATCHDOG_MAX_RESTARTS|WATCHDOG_MAX_CANDIDATES|WATCHDOG_RESTART_COOLDOWN) ;;
         *) printf "%s" "$_fallback"; return 0 ;;
     esac
-    _v="$(sed -n "s/^${_key}=\\([0-9][0-9]*\\)$/\\1/p" "$MANAGER" 2>/dev/null | head -n1)"
+    _v="$(sed -n "s/^${_key}=\\([0-9][0-9]*\\)$/\\1/p" "$CONFIG_FILE" 2>/dev/null | head -n1)"
+    case "$_v" in
+        ''|*[!0-9]*) _v="$(sed -n "s/^${_key}=\\([0-9][0-9]*\\)$/\\1/p" "$MANAGER" 2>/dev/null | head -n1)" ;;
+    esac
     case "$_v" in
         ''|*[!0-9]*) printf "%s" "$_fallback" ;;
         *) printf "%s" "$_v" ;;
@@ -132,7 +135,7 @@ EOF_MENU
     },
     "write": {
       "ubus": {
-        "dns_manager": [ "set_profile", "set_slot", "set_setting", "set_test_age", "test_all", "test_current", "test_one", "update", "update_manager", "update_hdp", "update_catalog", "update_all" ]
+        "dns_manager": [ "set_profile", "set_slot", "set_setting", "set_watchdog_setting", "set_test_age", "test_all", "test_current", "test_one", "update", "update_manager", "update_hdp", "update_catalog", "update_all" ]
       }
     }
   }
@@ -160,7 +163,7 @@ UPDATE_STATE="/etc/dns-manager-luci/update.state"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.5.32"
+SELF_VERSION="1.5.33"
 
 umask 077
 mkdir -p "$RUNTIME_DIR" "$JOB_DIR" "$CHECK_DIR" "$TMP_ROOT" 2>/dev/null || exit 1
@@ -1391,6 +1394,28 @@ run_action() {
             esac
             [ "$?" -eq 0 ] && json_ok || json_error "Настройку не удалось изменить"
             ;;
+        set_watchdog_setting)
+            _name="$(jget name)"; _value="$(jget value)"
+            case "$_name" in
+                interval) _key=WATCHDOG_INTERVAL; _min=30; _max=600;;
+                fail_threshold) _key=WATCHDOG_FAIL_THRESHOLD; _min=1; _max=10;;
+                repair_cooldown) _key=WATCHDOG_REPAIR_COOLDOWN; _min=60; _max=3600;;
+                guard_interval) _key=WATCHDOG_GUARD_INTERVAL; _min=300; _max=3600;;
+                max_repairs) _key=WATCHDOG_MAX_REPAIRS; _min=1; _max=3;;
+                max_candidates) _key=WATCHDOG_MAX_CANDIDATES; _min=1; _max=5;;
+                max_restarts) _key=WATCHDOG_MAX_RESTARTS; _min=1; _max=3;;
+                *) json_error "Недопустимый параметр watchdog"; return;;
+            esac
+            case "$_value" in ''|*[!0-9]*) json_error "Значение должно быть целым числом"; return;; esac
+            [ "$_value" -ge "$_min" ] 2>/dev/null && [ "$_value" -le "$_max" ] 2>/dev/null || { json_error "Значение вне допустимого диапазона"; return; }
+            eval "$_key=\"$_value\""
+            save_config >/dev/null 2>&1 || { json_error "Параметр watchdog не удалось сохранить"; return; }
+            if [ "${WATCHDOG_ENABLED:-0}" = 1 ]; then
+                watchdog_service_stop_disable >/dev/null 2>&1 || { json_error "Не удалось безопасно остановить watchdog"; return; }
+                watchdog_service_start_enable >/dev/null 2>&1 || { json_error "Параметр сохранён, но watchdog не удалось снова запустить"; return; }
+            fi
+            json_ok
+            ;;
         *) json_error "Недопустимый метод";;
     esac
 }
@@ -1399,14 +1424,14 @@ test_json() { case "${RPC_METHOD:-}" in test_all) job_start_test_all;; test_curr
 
 case "${1:-}" in
     list)
-        printf '{"status":{},"catalog":{"category":"String","offset":0,"limit":0,"only_ok":0},"update_check":{},"update":{},"update_manager":{},"update_hdp":{},"update_catalog":{},"update_all":{},"set_profile":{"profile":"String"},"set_slot":{"slot":"String","id":"String"},"set_setting":{"name":"String","enabled":0},"set_test_age":{"category":"String","hours":0},"test_all":{},"test_current":{},"test_one":{"id":"String"},"job":{"id":"String"},"log":{"lines":0}}\n'
+        printf '{"status":{},"catalog":{"category":"String","offset":0,"limit":0,"only_ok":0},"update_check":{},"update":{},"update_manager":{},"update_hdp":{},"update_catalog":{},"update_all":{},"set_profile":{"profile":"String"},"set_slot":{"slot":"String","id":"String"},"set_setting":{"name":"String","enabled":0},"set_watchdog_setting":{"name":"String","value":0},"set_test_age":{"category":"String","hours":0},"test_all":{},"test_current":{},"test_one":{"id":"String"},"job":{"id":"String"},"log":{"lines":0}}\n'
         ;;
     call)
         case "${2:-}" in
             status) status_json;;
             catalog) INPUT="$(cat 2>/dev/null || true)"; catalog_json;;
             update_check) update_check_json;;            update_catalog) update_catalog_json;;            update_all) update_all_json;;            update) update_json;;            update_manager) update_manager_json;;            update_hdp) update_hdp_json;;
-            set_profile|set_slot|set_setting) INPUT="$(cat 2>/dev/null || true)"; RPC_METHOD="$2"; run_action;;
+            set_profile|set_slot|set_setting|set_watchdog_setting) INPUT="$(cat 2>/dev/null || true)"; RPC_METHOD="$2"; run_action;;
             test_all|test_current|test_one) INPUT="$(cat 2>/dev/null || true)"; RPC_METHOD="$2"; test_json;;
             job) INPUT="$(cat 2>/dev/null || true)"; job_json "$(jget id)";;
             log) INPUT="$(cat 2>/dev/null || true)"; log_json "$(jget lines)";;
@@ -1435,6 +1460,7 @@ var callUpdateCatalog = rpc.declare({ object:'dns_manager', method:'update_catal
 var callProfile = rpc.declare({ object:'dns_manager', method:'set_profile', params:['profile'], expect:{} });
 var callSlot = rpc.declare({ object:'dns_manager', method:'set_slot', params:['slot','id'], expect:{} });
 var callSetting = rpc.declare({ object:'dns_manager', method:'set_setting', params:['name','enabled'], expect:{} });
+var callWatchdogSetting = rpc.declare({ object:'dns_manager', method:'set_watchdog_setting', params:['name','value'], expect:{} });
 var callTestAge = rpc.declare({ object:'dns_manager', method:'set_test_age', params:['category','hours'], expect:{} });
 var callTestAll = rpc.declare({ object:'dns_manager', method:'test_all', expect:{} });
 var callTestCurrent = rpc.declare({ object:'dns_manager', method:'test_current', expect:{} });
@@ -2115,35 +2141,24 @@ function testAgeCard(root,st,category,label){
     ])
   ]);
 }
+function watchdogField(root,st,key,label,unit,min,max){
+  var value=Number(st[key]||min), busy=state.busySetting==='wd_'+key;
+  var input=E('input',{'type':'number','min':String(min),'max':String(max),'step':'1','value':String(value),'class':'dm-input','style':'width:105px'});
+  var save=btn(busy?'Сохраняю…':'Сохранить','cbi-button-neutral',function(){
+    if(state.busy)return;
+    var n=String(input.value||'').trim();
+    if(!/^\d+$/.test(n)||Number(n)<min||Number(n)>max){state.settingMessage=label+': допустимо от '+min+' до '+max+(unit?' '+unit:'')+'.';state.settingMessageType='error';renderSettings(root,window.dmState||{});return;}
+    state.busy=true;state.busySetting='wd_'+key;state.settingMessage='Сохраняю «'+label+'»…';state.settingMessageType='info';renderSettings(root,window.dmState||{});
+    callWatchdogSetting(key,Number(n)).then(function(r){state.busy=false;state.busySetting='';state.settingMessage=(r&&r.ok)?label+' сохранён.':((r&&r.error)||'Параметр watchdog не удалось сохранить.');state.settingMessageType=(r&&r.ok)?'ok':'error';refresh(root,true);}).catch(function(){state.busy=false;state.busySetting='';state.settingMessage='Параметр watchdog не удалось сохранить.';state.settingMessageType='error';refresh(root,true);});
+  },{disabled:!!state.busy});
+  return E('div',{'class':'dm-card dm-setting '+(busy?'dm-setting-saving':'')},[E('div',{'class':'dm-setting-line'},[E('div',{},[E('div',{'class':'dm-setting-title'},label),E('div',{'class':'dm-setting-desc'},'Допустимо: '+min+'–'+max+(unit?' '+unit:''))]),E('div',{'class':'dm-setting-actions'},[input,unit?E('span',{'class':'dm-inline'},unit):E('span',{}),save])])]);
+}
 function watchdogCard(root,st){
   var en=yes(st.watchdog), busy=state.busySetting==='watchdog';
   var service=Number(st.watchdog_service||0)===1, enabled=Number(st.watchdog_service_enabled||0)===1, loop=Number(st.watchdog_loop||0)===1;
-  var detail=[
-    row('Механизм',badge(st.watchdog_backend==='procd'?'dm-ok':'dm-warn',shortVal(st.watchdog_backend||'—'))),
-    row('Служба',badge(service?'dm-ok':'dm-warn',service?'запущена':'не запущена')),
-    row('Embedded loop',badge(loop?'dm-ok':service?'dm-warn':'dm-off',loop?'активен':service?'ожидает запуска':'не запущен')),
-    row('Автозапуск',badge(enabled?'dm-ok':'dm-warn',enabled?'включён':'выключен')),
-    row('Интервал',shortVal(st.watchdog_interval)+' с'),
-    row('Порог сбоя',shortVal(st.watchdog_fail_threshold)+' цикла'),
-    row('Cooldown замены',shortVal(st.watchdog_repair_cooldown)+' с'),
-    row('Контроль конфигурации',shortVal(st.watchdog_guard_interval)+' с'),
-    row('Замены за проход',shortVal(st.watchdog_max_repairs)),
-    row('Кандидаты на замену',shortVal(st.watchdog_max_candidates)),
-    row('Перезапуски HDP за операцию',shortVal(st.watchdog_max_restarts))
-  ];
-  var action=E('div',{'class':'dm-setting '+(busy?'dm-setting-saving':'')},[
-    E('div',{'class':'dm-setting-line'},[
-      E('div',{},[
-        E('div',{'class':'dm-setting-title'},'Автопроверка DNS'),
-        E('div',{'class':'dm-setting-desc'},'Фоновый watchdog DNS Manager работает через procd и встроенный цикл /usr/bin/dns-manager __watchdog-loop.')
-      ]),
-      E('div',{'class':'dm-setting-actions'},[
-        badge(busy?'dm-warn':(en?'dm-ok':'dm-off'),busy?'изменение':(en?'включено':'выключено')),
-        btn(busy?'Сохраняю…':(en?'Выключить':'Включить'),busy?'cbi-button-neutral':(en?'cbi-button-remove':'cbi-button-add'),function(){setSetting('watchdog',en?0:1,root);},{disabled:!!state.busy})
-      ])
-    ])
-  ]);
-  var body=[action,E('div',{'class':'dm-hint'},'После двух последовательных сбоев конкретного DNS выполняется точечная замена. При одновременном сбое всех DNS ротация не запускается; сначала проверяется восстановление сервиса. Ограничения по RAM и нагрузке применяются самим backend.'),E('div',{'class':'dm-grid2'},detail)];
+  var detail=[row('Механизм',badge(st.watchdog_backend==='procd'?'dm-ok':'dm-warn',shortVal(st.watchdog_backend||'—'))),row('Служба',badge(service?'dm-ok':'dm-warn',service?'запущена':'не запущена')),row('Embedded loop',badge(loop?'dm-ok':service?'dm-warn':'dm-off',loop?'активен':service?'ожидает запуска':'не запущен')),row('Автозапуск',badge(enabled?'dm-ok':'dm-warn',enabled?'включён':'выключен'))];
+  var action=E('div',{'class':'dm-setting '+(busy?'dm-setting-saving':'')},[E('div',{'class':'dm-setting-line'},[E('div',{},[E('div',{'class':'dm-setting-title'},'Автопроверка DNS'),E('div',{'class':'dm-setting-desc'},'Фоновый watchdog DNS Manager работает через procd и встроенный цикл /usr/bin/dns-manager __watchdog-loop.')]),E('div',{'class':'dm-setting-actions'},[badge(busy?'dm-warn':(en?'dm-ok':'dm-off'),busy?'изменение':(en?'включено':'выключено')),btn(busy?'Сохраняю…':(en?'Выключить':'Включить'),busy?'cbi-button-neutral':(en?'cbi-button-remove':'cbi-button-add'),function(){setSetting('watchdog',en?0:1,root);},{disabled:!!state.busy})])])]);
+  var body=[action,E('div',{'class':'dm-hint'},'После двух последовательных сбоев конкретного DNS выполняется точечная замена. При одновременном сбое всех DNS ротация не запускается; сначала проверяется восстановление сервиса. Ограничения по RAM и нагрузке применяются самим backend.'),E('div',{'class':'dm-grid2'},detail),E('div',{'class':'dm-section-title'},'Параметры проверки и восстановления'),E('div',{'class':'dm-grid2'},[watchdogField(root,st,'interval','Интервал проверки','с',30,600),watchdogField(root,st,'fail_threshold','Порог сбоя','циклов',1,10),watchdogField(root,st,'repair_cooldown','Cooldown замены','с',60,3600),watchdogField(root,st,'guard_interval','Контроль конфигурации','с',300,3600),watchdogField(root,st,'max_repairs','Замены за проход','шт.',1,3),watchdogField(root,st,'max_candidates','Кандидаты на замену','шт.',1,5),watchdogField(root,st,'max_restarts','Перезапуски HDP за операцию','шт.',1,3)])];
   return E('div',{},body);
 }
 function renderSettings(root,st){
@@ -2166,7 +2181,7 @@ function renderSettings(root,st){
   body.push(E('div',{'class':'dm-section-title'},'Срок результатов проверки'));
   var ages=E('div',{'class':'dm-grid2'});
   [['bypass','Обход'],['clean','Чистый'],['security','Безопасность'],['privacy','Приватность'],['adblock','Блокировка рекламы'],['family','Семейный'],['regional','Региональный']].forEach(function(x){ages.appendChild(testAgeCard(root,st,x[0],x[1]));});
-  body.push(ages);
+  body.push(card('Срок результатов проверки',[E('div',{'class':'dm-hint'},'Сколько часов результаты полной проверки DNS считаются свежими.'),ages]));
   e.appendChild(card('Настройки',body));
 }
 
