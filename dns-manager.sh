@@ -5818,7 +5818,7 @@ cfg_value() {
 
 # ==========================================
 dns_slots_pending_changes() {
-
+    for _v in SLOT_1 SLOT_2 SLOT_3 SLOT_4 SLOT_5 SLOT_6 SLOT_RU SLOT_1_CAT SLOT_2_CAT SLOT_3_CAT SLOT_4_CAT SLOT_5_CAT SLOT_6_CAT SLOT_RU_CAT; do
         eval "_mem=\${$_v:-}"
         _disk="$(cfg_value "$_v")"
         [ "$_mem" = "$_disk" ] || return 0
