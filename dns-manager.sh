@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.16"
+VERSION="3.17"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -6027,9 +6027,10 @@ check_module_state() {
         ntp)
             ntp_profile_matches_current && printf 1 || {
                 _use="$(uci -q get system.ntp.use_dhcp 2>/dev/null)"
-                _en="$(uci -q get system.ntp.enabled 2>/dev/null)"
                 _srv="$(uci -q get system.ntp.server 2>/dev/null)"
-                if [ "$_use" = 0 ] || [ "$_en" = 1 ] || [ -n "$_srv" ]; then printf 2; else printf 0; fi
+                # system.ntp.enabled=1 is normal stock behavior and is not
+                # evidence that the DNS Manager NTP-by-IP module is active.
+                if [ "$_use" = 0 ] || [ -n "$_srv" ]; then printf 2; else printf 0; fi
             }
             ;;
         mtu)
@@ -6040,20 +6041,17 @@ check_module_state() {
         sysctl)
             _base="$(sysctl_base_manager_path)"
             _ext="$(sysctl_extended_manager_path)"
-            _base_all=1; _base_any=0
+            _base_all=1
             for _p in "net.ipv4.tcp_fastopen=3" "net.ipv4.tcp_fin_timeout=15" "net.core.somaxconn=1024"; do
                 _k="${_p%%=*}"; _v="${_p#*=}"
                 _cur="$(sysctl -n "$_k" 2>/dev/null)"
-                if [ "$_cur" = "$_v" ]; then
-                    _base_any=1
-                else
-                    _base_all=0
-                fi
+                [ "$_cur" = "$_v" ] || _base_all=0
             done
             _base_file_state=0
             [ -f "$_base" ] && _base_file_state="$(sysctl_file_state "$_base" "$SYSCTL_BASE_MARKER" "$(sysctl_base_expected)")"
 
-            _ext_all=1; _ext_any=0; _ext_supported=0
+            _ext_all=1
+            _ext_supported=0
             while IFS= read -r _p; do
                 [ -n "$_p" ] || continue
                 _k="${_p%%=*}"; _v="${_p#*=}"
@@ -6062,24 +6060,28 @@ check_module_state() {
                 fi
                 _ext_supported=$((_ext_supported + 1))
                 _cur="$(sysctl -n "$_k" 2>/dev/null)"
-                if [ "$_cur" = "$_v" ]; then
-                    _ext_any=1
-                else
-                    _ext_all=0
-                fi
+                [ "$_cur" = "$_v" ] || _ext_all=0
             done <<EOF_CHECK_EXT_FACT
 $(sysctl_extended_params)
 EOF_CHECK_EXT_FACT
             _ext_file_state=0
             [ -f "$_ext" ] && _ext_file_state="$(sysctl_file_state "$_ext" "$SYSCTL_EXTENDED_MARKER" "$(sysctl_extended_params)")"
 
+            # The Manager is considered ON only when its own persistent sysctl
+            # file is owned by the Manager and the live kernel values match.
+            # Runtime values alone are deliberately not enough: stock OpenWrt
+            # or another package may already have one or more identical values.
             if [ "$_base_all" = 1 ] && [ "$_base_file_state" = 1 ] && [ "$_ext_all" = 1 ]; then
                 if [ "$_ext_supported" -eq 0 ] || [ "$_ext_file_state" = 1 ]; then
                     printf 1
                     return 0
                 fi
             fi
-            if [ "$_base_any" = 1 ] || [ "$_ext_any" = 1 ] || [ "$_base_file_state" != 0 ] || [ "$_ext_file_state" != 0 ]; then
+
+            # A foreign/modified file at the Manager-owned path is a real
+            # conflict. A missing Manager file with coincidentally matching
+            # runtime values is simply OFF, not OTHER.
+            if [ "$_base_file_state" = 2 ] || [ "$_base_file_state" = 3 ] || [ "$_ext_file_state" = 2 ] || [ "$_ext_file_state" = 3 ]; then
                 printf 2
             else
                 printf 0
@@ -6120,16 +6122,27 @@ EOF_CHECK_EXT_FACT
             fi
             ;;
         dnsmasq_perf)
-            _all=1; _any=0
-            for _kv in "cachesize|1000" "dnsforwardmax|300" "max_cache_ttl|86400" "boguspriv|1" "domainneeded|1" "quietdhcp|1"; do
+            _all=1
+            _signature=0
+            # These three values form the Manager-specific cache signature.
+            # Do not use generic dnsmasq defaults such as boguspriv=1 or
+            # domainneeded=1 to decide that the module is partially active.
+            for _kv in "cachesize|1000" "dnsforwardmax|300" "max_cache_ttl|86400"; do
                 _k="${_kv%%|*}"; _v="${_kv#*|}"
                 _cur="$(uci -q get "dhcp.$_sec.$_k" 2>/dev/null)"
-                [ "$_cur" = "$_v" ] && _any=1 || _all=0
+                [ -n "$_cur" ] && _signature=1
+                [ "$_cur" = "$_v" ] || _all=0
+            done
+            for _kv in "boguspriv|1" "domainneeded|1" "quietdhcp|1"; do
+                _k="${_kv%%|*}"; _v="${_kv#*|}"
+                _cur="$(uci -q get "dhcp.$_sec.$_k" 2>/dev/null)"
+                [ "$_cur" = "$_v" ] || _all=0
             done
             if [ "$IPV6_ROUTE" != yes ]; then
-                [ "$(uci -q get "dhcp.$_sec.filter_aaaa" 2>/dev/null)" = 1 ] || _all=0
+                _cur="$(uci -q get "dhcp.$_sec.filter_aaaa" 2>/dev/null)"
+                [ "$_cur" = 1 ] || _all=0
             fi
-            [ "$_all" = 1 ] && printf 1 || { [ "$_any" = 1 ] && printf 2 || printf 0; }
+            [ "$_all" = 1 ] && printf 1 || { [ "$_signature" = 1 ] && printf 2 || printf 0; }
             ;;
         client_fixes)
             _f="${CLIENT_FIXES_FILE:-/etc/dnsmasq.d/91-dns-manager-client-fixes.conf}"
