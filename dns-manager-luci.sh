@@ -452,7 +452,7 @@ version_check_job_start() {
             rm -f "$_active" 2>/dev/null || true
         fi
     fi
-    _jid="vc-$(date +%s)-$"
+    _jid="vc-$(date +%s)-$$"
     mkdir -p "$JOB_DIR/$_jid" 2>/dev/null || { json_error "Не удалось создать проверку версий"; return; }
     _started="$(date +%s 2>/dev/null || printf 0)"
     printf 'status=running\nstarted=%s\n' "$_started" > "$JOB_DIR/$_jid/state"
@@ -488,9 +488,11 @@ update_hdp_json() {
     _after="$(package_version https-dns-proxy 2>/dev/null || true)"
     [ -n "$_after" ] || { json_error "Не удалось определить версию после обновления"; return; }
     printf '{"ok":true,"updated":true,"version":'; json_quote "$_after"; printf '}'
-}version_check_job_status() {
+}
+version_check_job_status() {
     _jid="$1"
-    printf '%s\n' "$_jid" | grep -Eq '^vc-[A-Za-z0-9_-]+
+    printf '%s\n' "$_jid" | grep -Eq '^vc-[A-Za-z0-9_-]+$' || { json_error "Неверный ID проверки"; return; }
+    _d="$JOB_DIR/$_jid"
     [ -d "$_d" ] || { json_error "Проверка не найдена"; return; }
     _status="$(sed -n 's/^status=//p' "$_d/state" 2>/dev/null | tail -n1)"
     [ -n "$_status" ] || _status=running
