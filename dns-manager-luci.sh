@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.0.3
+# Version: 1.0.4
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -22,14 +22,38 @@ COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main
 # Legacy update compatibility: admin/services/dns_manager
 RUNTIME_UPDATE_STATE="$BACKUP_DIR/update.state"
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.0.3"
+VERSION="1.0.4"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
 
 manager_version() {
     [ -r "$MANAGER" ] || return 1
-    sed -n 's/^VERSION="\([0-9][0-9.]*\)"$/\1/p' "$MANAGER" 2>/dev/null | head -n1
+    sed -n 's/^VERSION="\\([0-9][0-9.]*\\)"$/\\1/p' "$MANAGER" 2>/dev/null | head -n1
+}
+
+manager_const_num() {
+    _key="$1"
+    _fallback="$2"
+    case "$_key" in
+        WATCHDOG_FAIL_THRESHOLD|WATCHDOG_REPAIR_COOLDOWN|WATCHDOG_GUARD_INTERVAL|WATCHDOG_MAX_REPAIRS|WATCHDOG_MAX_RESTARTS|WATCHDOG_MAX_CANDIDATES|WATCHDOG_RESTART_COOLDOWN) ;;
+        *) printf "%s" "$_fallback"; return 0 ;;
+    esac
+    _v="$(sed -n "s/^${_key}=\\([0-9][0-9]*\\)$/\\1/p" "$MANAGER" 2>/dev/null | head -n1)"
+    case "$_v" in
+        ''|*[!0-9]*) printf "%s" "$_fallback" ;;
+        *) printf "%s" "$_v" ;;
+    esac
+}
+
+watchdog_service_running() {
+    [ -x /etc/init.d/dns-watchdog ] && /etc/init.d/dns-watchdog running >/dev/null 2>&1
+}
+watchdog_service_enabled() {
+    [ -x /etc/init.d/dns-watchdog ] && /etc/init.d/dns-watchdog enabled >/dev/null 2>&1
+}
+watchdog_loop_running() {
+    ps w 2>/dev/null | awk '$0 ~ /[[:space:]]dns-manager[[:space:]]__watchdog-loop([[:space:]]|$)/ {found=1} END {exit found ? 0 : 1}'
 }
 
 require_manager() {
@@ -136,7 +160,7 @@ UPDATE_STATE="/etc/dns-manager-luci/update.state"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.0.3"
+SELF_VERSION="1.0.4"
 
 umask 077
 mkdir -p "$RUNTIME_DIR" "$JOB_DIR" "$CHECK_DIR" "$TMP_ROOT" 2>/dev/null || exit 1
@@ -618,6 +642,17 @@ status_json() {
     _mode="$(cfg_get DNS_SELECTION_MODE)"; [ -n "$_mode" ] || _mode="quick"
     _watchdog="$(cfg_get WATCHDOG_ENABLED)"; [ -n "$_watchdog" ] || _watchdog=0
     _watchdog_interval="$(cfg_get WATCHDOG_INTERVAL)"; [ -n "$_watchdog_interval" ] || _watchdog_interval=90
+    _watchdog_backend="$(cfg_get WATCHDOG_BACKEND)"; [ -n "$_watchdog_backend" ] || _watchdog_backend=procd
+    _watchdog_fail_threshold="$(manager_const_num WATCHDOG_FAIL_THRESHOLD 2)"
+    _watchdog_repair_cooldown="$(manager_const_num WATCHDOG_REPAIR_COOLDOWN 300)"
+    _watchdog_guard_interval="$(manager_const_num WATCHDOG_GUARD_INTERVAL 900)"
+    _watchdog_max_repairs="$(manager_const_num WATCHDOG_MAX_REPAIRS 1)"
+    _watchdog_max_restarts="$(manager_const_num WATCHDOG_MAX_RESTARTS 2)"
+    _watchdog_max_candidates="$(manager_const_num WATCHDOG_MAX_CANDIDATES 3)"
+    _watchdog_restart_cooldown="$(manager_const_num WATCHDOG_RESTART_COOLDOWN 300)"
+    _watchdog_service_enabled=0; watchdog_service_enabled && _watchdog_service_enabled=1 || true
+    _watchdog_service_running=0; watchdog_service_running && _watchdog_service_running=1 || true
+    _watchdog_loop_running=0; watchdog_loop_running && _watchdog_loop_running=1 || true
     _force="$(cfg_get FORCE_DOH)"; [ -n "$_force" ] || _force=0
     _mtu="$(cfg_get MTU_FIX)"; [ -n "$_mtu" ] || _mtu=0
     _sysctl="$(cfg_get SYSCTL_TUNING)"; [ -n "$_sysctl" ] || _sysctl=0
@@ -737,7 +772,11 @@ status_json() {
     printf ',"manager_latest_version":'; json_quote "$_manager_latest_state"; printf ',"manager_update_available":%s,"manager_check_ok":%s' "$_manager_avail_state" "$_manager_check_state"
     printf ',"catalog_latest_version":'; json_quote "$_catalog_latest_state"; printf ',"catalog_latest_rev":'; json_quote "$_catalog_rev_state"; printf ',"catalog_latest_total":%s,"catalog_update_available":%s,"catalog_check_ok":%s' "$_catalog_total_state" "$_catalog_avail_state" "$_catalog_check_state"
     printf ',"ipv4":'; json_quote "$_ipv4"; printf ',"ipv6":'; json_quote "$_ipv6"; printf ',"dnsmasq":'; json_quote "$_dnsmasq"; printf ',"doh":'; json_quote "$_doh"; printf ',"firewall":'; json_quote "$_fw"; printf ',"openwrt":'; json_quote "$(openwrt_release)"; printf ',"lan":'; json_quote "$_lan"
-    printf ',"profile":'; json_quote "$_profile"; printf ',"profile_mode":'; json_quote "$_mode"; printf ',"watchdog":'; json_quote "$_watchdog"; printf ',"watchdog_service":'; json_quote "$( [ -x /etc/init.d/dns-watchdog ] && /etc/init.d/dns-watchdog running >/dev/null 2>&1 && printf yes || printf no )"; printf ',"watchdog_interval":'; json_quote "$_watchdog_interval"
+    printf ',"profile":'; json_quote "$_profile"; printf ',"profile_mode":'; json_quote "$_mode"; printf ',"watchdog":'; json_quote "$_watchdog"
+    printf ',"watchdog_backend":'; json_quote "$_watchdog_backend"; printf ',"watchdog_service":%s,"watchdog_service_enabled":%s,"watchdog_loop":%s' "$_watchdog_service_running" "$_watchdog_service_enabled" "$_watchdog_loop_running"
+    printf ',"watchdog_interval":'; json_quote "$_watchdog_interval"; printf ',"watchdog_fail_threshold":%s' "$_watchdog_fail_threshold"
+    printf ',"watchdog_repair_cooldown":%s,"watchdog_guard_interval":%s' "$_watchdog_repair_cooldown" "$_watchdog_guard_interval"
+    printf ',"watchdog_max_repairs":%s,"watchdog_max_restarts":%s,"watchdog_max_candidates":%s,"watchdog_restart_cooldown":%s' "$_watchdog_max_repairs" "$_watchdog_max_restarts" "$_watchdog_max_candidates" "$_watchdog_restart_cooldown"
     for _age_cat in bypass clean security privacy adblock family regional; do
         _age_v="$(cfg_get "TEST_RESULTS_MAX_AGE_$(printf '%s' "$_age_cat" | tr '[:lower:]' '[:upper:]')")"
         case "$_age_v" in ''|*[!0-9]*) _age_h=6;; *) _age_h=$((_age_v/3600)); [ "$_age_h" -ge 1 ] || _age_h=1;; esac
@@ -1015,7 +1054,7 @@ EOF_RPC
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.0.3
+// DNS Manager LuCI version: 1.0.4
 var callStatus = rpc.declare({ object:'dns_manager', method:'status', expect:{} });
 var callCatalog = rpc.declare({ object:'dns_manager', method:'catalog', params:['category','offset','limit','only_ok'], expect:{} });
 var callUpdateCheck = rpc.declare({ object:'dns_manager', method:'update_check', expect:{} });
@@ -1195,7 +1234,7 @@ function renderOverview(root,st){
   if(state.statusError)e.appendChild(E('div',{'class':'dm-inline-msg error'},state.statusError+' Проверьте: ubus call dns_manager status.'));
   var doh=st.doh==='yes'?badge('dm-ok','работает'):Number(st.doh_total||0)>0?badge('dm-bad','служба остановлена'):badge('dm-off','не установлен');
   var force=yes(st.force_both)?badge('dm-warn','DNS Manager + внешний'):st.force_owner==='external'?badge('dm-warn','внешний · '+shortVal(st.force_source)):yes(st.force_manager)?badge('dm-ok','DNS Manager'):badge('dm-off','выключен');
-  var wd=yes(st.watchdog)?(st.watchdog_service==='yes'?badge('dm-ok','работает'):badge('dm-warn','включён, служба не запущена')):badge('dm-off','выключен');
+  var wd=yes(st.watchdog)?(st.watchdog_backend==='procd'?(Number(st.watchdog_loop||0)===1?badge('dm-ok','procd · работает'):Number(st.watchdog_service||0)===1?badge('dm-warn','procd · запускается'):badge('dm-warn','procd · служба не запущена')):badge('dm-warn','неизвестный механизм')):badge('dm-off','выключен');
   var dnsRows=[];
   (st.slots||[]).forEach(function(d){
     if(!d.id)return;
@@ -1374,13 +1413,45 @@ function testAgeCard(root,st,category,label){
     ])
   ]);
 }
+function watchdogCard(root,st){
+  var en=yes(st.watchdog), busy=state.busySetting==='watchdog';
+  var service=Number(st.watchdog_service||0)===1, enabled=Number(st.watchdog_service_enabled||0)===1, loop=Number(st.watchdog_loop||0)===1;
+  var detail=[
+    row('Механизм',badge(st.watchdog_backend==='procd'?'dm-ok':'dm-warn',shortVal(st.watchdog_backend||'—'))),
+    row('Служба',badge(service?'dm-ok':'dm-warn',service?'запущена':'не запущена')),
+    row('Embedded loop',badge(loop?'dm-ok':service?'dm-warn':'dm-off',loop?'активен':service?'ожидает запуска':'не запущен')),
+    row('Автозапуск',badge(enabled?'dm-ok':'dm-warn',enabled?'включён':'выключен')),
+    row('Интервал',shortVal(st.watchdog_interval)+' с'),
+    row('Порог сбоя',shortVal(st.watchdog_fail_threshold)+' цикла'),
+    row('Cooldown замены',shortVal(st.watchdog_repair_cooldown)+' с'),
+    row('Контроль конфигурации',shortVal(st.watchdog_guard_interval)+' с'),
+    row('Замены за проход',shortVal(st.watchdog_max_repairs)),
+    row('Кандидаты на замену',shortVal(st.watchdog_max_candidates)),
+    row('Перезапуски HDP за операцию',shortVal(st.watchdog_max_restarts))
+  ];
+  var action=E('div',{'class':'dm-setting '+(busy?'dm-setting-saving':'')},[
+    E('div',{'class':'dm-setting-line'},[
+      E('div',{},[
+        E('div',{'class':'dm-setting-title'},'Автопроверка DNS'),
+        E('div',{'class':'dm-setting-desc'},'Фоновый watchdog DNS Manager работает через procd и встроенный цикл /usr/bin/dns-manager __watchdog-loop.')
+      ]),
+      E('div',{'class':'dm-setting-actions'},[
+        badge(busy?'dm-warn':(en?'dm-ok':'dm-off'),busy?'изменение':(en?'включено':'выключено')),
+        btn(busy?'Сохраняю…':(en?'Выключить':'Включить'),busy?'cbi-button-neutral':(en?'cbi-button-remove':'cbi-button-add'),function(){setSetting('watchdog',en?0:1,root);},{disabled:!!state.busy})
+      ])
+    ])
+  ]);
+  var body=[action,E('div',{'class':'dm-hint'},'После двух последовательных сбоев конкретного DNS выполняется точечная замена. При одновременном сбое всех DNS ротация не запускается; сначала проверяется восстановление сервиса. Ограничения по RAM и нагрузке применяются самим backend.'),E('div',{'class':'dm-grid2'},detail)];
+  return E('div',{},body);
+}
 function renderSettings(root,st){
   var e=root.querySelector('#dm-settings');if(!e)return;e.innerHTML='';
   var body=[];
   if(state.settingMessage)body.push(E('div',{'class':'dm-inline-msg '+(state.settingMessageType||'info')},state.settingMessage));
   body.push(E('div',{'class':'dm-hint'},'Каждый пункт меняет одну настройку. Результат показывается здесь, без всплывающих сообщений.'));
+  body.push(E('div',{'class':'dm-section-title'},'Фоновая проверка DNS'));
+  body.push(watchdogCard(root,st));
   var groups=[
-    ['Проверка DNS',[['watchdog','Автопроверка DNS','Проверяет доступность DNS через заданный интервал.']]],
     ['Сеть',[['mtu','Настройка MTU и MSS','Изменяет размеры пакетов и TCP-сегментов для соединения.'],['sysctl','Оптимизация TCP и соединений','Изменяет параметры TCP и таблицы соединений.'],['sysctl_ext','Расширенные параметры сети','Добавляет дополнительные системные параметры сети.']]],
     ['Производительность',[['dnsmasq_perf','Кэш DNS','Сохраняет ответы DNS для повторных запросов.']]],
     ['Устройства сети',[['ntp_clients','Время для устройств сети','Передаёт устройствам адрес роутера как сервер времени по DHCP.'],['client_fixes','Исправления для устройств','Добавляет совместимые настройки для отдельных устройств и сервисов.']]]
