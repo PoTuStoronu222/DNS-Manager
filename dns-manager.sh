@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.11"
+VERSION="3.12"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -546,6 +546,14 @@ ok_msg() { log_msg "Готово: $*"; printf "${C_GREEN}[✓] %s${C_NC}\n" "$*"
 info_msg() { log_msg "Информация: $*"; printf "${C_CYAN}[ℹ] %s${C_NC}\n" "$*"; }
 warn_msg() { log_msg "Внимание: $*"; printf "${C_YELLOW}[!] %s${C_NC}\n" "$*"; }
 err_msg() { log_msg "Ошибка: $*"; printf "${C_RED}[✗] %s${C_NC}\n" "$*"; }
+apply_progress() {
+    log_msg "$*"
+    [ "${APPLY_OUTPUT_QUIET:-0}" = 1 ] || printf "  ${C_CYAN}↻${C_NC} %s\n" "$*"
+}
+apply_progress_ok() {
+    log_msg "$*"
+    [ "${APPLY_OUTPUT_QUIET:-0}" = 1 ] || printf "  ${C_GREEN}✓${C_NC} %s\n" "$*"
+}
 safe_read() {
     if [ -t 0 ]; then
         read -r "$@"
@@ -2562,11 +2570,11 @@ clear_all_doh_for_apply() {
     # DNS Manager is the authoritative owner of the DoH configuration.
     # This function is called only after doh_selected_config_current() found
     # a real difference, so a repeated Apply does not rebuild an identical set.
-    log_msg "Пересборка DNS-секций https-dns-proxy: текущая схема отличается от выбранной."
+    apply_progress "Пересобираю DNS-секции https-dns-proxy: текущая схема отличается от выбранной."
     _removed=0
     while uci -q get "https-dns-proxy.@https-dns-proxy[0]" >/dev/null 2>&1; do
         _u="$(uci -q get "https-dns-proxy.@https-dns-proxy[0].resolver_url" 2>/dev/null)"
-        [ -n "$_u" ] && log_msg "Удаляется DNS-секция: $_u"
+        [ -n "$_u" ] && apply_progress "Удаляется DNS-секция: $_u"
         uci -q delete "https-dns-proxy.@https-dns-proxy[0]" || return 1
         _removed=$((_removed+1))
     done
@@ -2577,7 +2585,7 @@ clear_all_doh_for_apply() {
     DOH_OTHER=0
     disc_listeners
     disc_dns
-    log_msg "Старых DNS-секций удалено: $_removed. Устанавливается полный набор DNS Manager."
+    apply_progress_ok "Старых DNS-секций удалено: $_removed. Устанавливается полный набор DNS Manager."
 }
 record_own() {
     _own_line="$(printf '%s|%s|%s|%s' "$1" "$2" "$3" "$4")"
@@ -4405,7 +4413,7 @@ _apply_settings_impl() {
     validate_selected_slots || return 1
     confirm_action "Применить показанную выше конфигурацию?" || return
     APPLY_OUTPUT_QUIET=0
-    clear_screen
+    printf "\n${C_CYAN}Начинаю применение. Это может занять немного времени...${C_NC}\n"
     TX_ID="$(date +%Y%m%d-%H%M%S)-$$"
     TX_RESERVED_PORTS=""
     DOH_REBUILD_NEEDED=1
@@ -4415,9 +4423,9 @@ _apply_settings_impl() {
     disc_dns
     if doh_selected_config_current; then
         DOH_REBUILD_NEEDED=0
-        log_msg "Выбранная DNS-схема уже установлена; пересоздание DNS-секций не требуется."
+        apply_progress_ok "Выбранная DNS-схема уже установлена; пересоздание DNS-секций не требуется."
     else
-        log_msg "Текущая DNS-схема отличается; выполняется rebuild выбранного набора DNS Manager."
+        apply_progress "Текущая DNS-схема отличается; выполняется пересборка выбранного набора DNS Manager."
     fi
     baseline_capture_once || { err_msg "Не удалось сохранить исходную копию. Настройки не изменены."; return 1; }
     tx_snapshot_start || { err_msg "Не удалось сохранить копию настроек. Настройки не изменены."; return 1; }
@@ -4432,7 +4440,9 @@ _apply_settings_impl() {
         validate_selected_slots || { err_msg "Выбранный набор DNS больше не соответствует последней полной проверке."; tx_restore_on_failure; return 1; }
     fi
     if [ "$DOH_REBUILD_NEEDED" = 1 ] && [ "${DOH_TOTAL:-0}" -gt 0 ]; then
+        apply_progress "Останавливаю текущие экземпляры https-dns-proxy перед пересборкой."
         /etc/init.d/https-dns-proxy stop >/dev/null 2>&1 || true
+        apply_progress_ok "Текущие экземпляры https-dns-proxy остановлены."
         sleep 1
     fi
     configure_hdp_manager_control || {
@@ -4481,45 +4491,74 @@ _apply_settings_impl() {
         tx_restore_on_failure
         return 1
     }
+    apply_progress_ok "Конфигурация https-dns-proxy сохранена."
+    apply_progress "Обновляю конфигурацию dnsmasq."
     reconcile_dnsmasq || { err_msg "Не удалось настроить dnsmasq."; tx_restore_on_failure; return 1; }
+    apply_progress_ok "Конфигурация dnsmasq обновлена."
+    apply_progress "Включаю одновременный опрос DNS (allservers)."
     ensure_dnsmasq_balancer || { err_msg "Не удалось включить одновременный опрос DNS."; tx_restore_on_failure; return 1; }
     if [ "$CORE_ONLY" != 1 ] && [ "$NTP_IP_FALLBACK" = 1 ]; then
+        apply_progress "Применяю NTP по IP."
         apply_ntp_ip_fallback || { err_msg "Не удалось настроить NTP по IP."; tx_restore_on_failure; return 1; }
+        apply_progress_ok "NTP по IP применён."
     fi
     if [ "$CORE_ONLY" != 1 ] && [ "${FORCE_DOH:-0}" = 1 ]; then
+        apply_progress "Применяю принудительный локальный DNS."
         apply_dns_force || { err_msg "Не удалось применить принудительный DNS."; tx_restore_on_failure; return 1; }
+        apply_progress_ok "Принудительный DNS применён."
     fi
     if [ "$CORE_ONLY" != 1 ] && [ "$MTU_FIX" = 1 ]; then
+        apply_progress "Применяю исправление сетевых параметров / MSS."
         apply_mtu_toggle || {
             err_msg "Не удалось включить исправление MTU/MSS."
             tx_restore_on_failure
             return 1
         }
+        apply_progress_ok "Исправление сетевых параметров / MSS применено."
     fi
     if [ "$CORE_ONLY" != 1 ] && { [ "$SYSCTL_TUNING" = 1 ] || [ "$SYSCTL_EXTENDED" = 1 ]; }; then
+        apply_progress "Применяю настройки TCP/Conntrack sysctl."
         apply_sysctl_bundle "$SYSCTL_TUNING" "$SYSCTL_EXTENDED" || { err_msg "Не удалось применить общий пакет TCP/Conntrack sysctl."; tx_restore_on_failure; return 1; }
+        apply_progress_ok "Настройки TCP/Conntrack sysctl применены."
     fi
     if [ "$CORE_ONLY" != 1 ] && [ "$NTP_CLIENTS" = 1 ]; then
+        apply_progress "Настраиваю NTP-сервер роутера и DHCP 42 для клиентов."
         apply_ntp_clients || { err_msg "Не удалось настроить NTP для клиентов."; tx_restore_on_failure; return 1; }
+        apply_progress_ok "NTP для клиентов настроен."
     fi
     if [ "$CORE_ONLY" != 1 ] && [ "$DNSMASQ_PERF" = 1 ]; then
+        apply_progress "Настраиваю производительность DNS-кэша dnsmasq."
         apply_dnsmasq_perf || { err_msg "Не удалось настроить производительность dnsmasq."; tx_restore_on_failure; return 1; }
+        apply_progress_ok "Настройка DNS-кэша применена."
     fi
     if [ "$CORE_ONLY" != 1 ] && [ "$CLIENT_FIXES" = 1 ]; then
+        apply_progress "Применяю клиентские DNS-фиксы."
         apply_client_fixes || { err_msg "Не удалось применить клиентские DNS-фиксы."; tx_restore_on_failure; return 1; }
+        apply_progress_ok "Клиентские DNS-фиксы применены."
     fi
     if [ "$CORE_ONLY" != 1 ]; then
         WATCHDOG_ENABLED="${WATCHDOG_ENABLED:-0}"
+        apply_progress "Проверяю и применяю фоновую автопроверку DNS (procd)."
         apply_watchdog || { err_msg "Не удалось настроить фоновую автопроверку DNS."; tx_restore_on_failure; return 1; }
+        apply_progress_ok "Фоновая автопроверка DNS обработана."
     fi
-    /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || true
-    /etc/init.d/dnsmasq restart >/dev/null 2>&1 || true
+    apply_progress "Запускаю https-dns-proxy с выбранными экземплярами."
+    /etc/init.d/https-dns-proxy restart || true
+    apply_progress "Перезапускаю dnsmasq."
+    /etc/init.d/dnsmasq restart || true
     sleep 2
+    apply_progress "Повторно проверяю параметры dnsmasq после запуска."
     ensure_dnsmasq_balancer || { err_msg "Одновременный опрос DNS не включился после запуска. Изменения откатываются."; tx_restore_on_failure; return 1; }
+    apply_progress "Обновляю правила firewall."
     reload_fw || { err_msg "Не удалось применить настройки firewall."; tx_restore_on_failure; return 1; }
+    apply_progress_ok "Firewall обновлён."
+    apply_progress "Выполняю итоговое обнаружение состояния системы."
     run_discovery
+    apply_progress_ok "Итоговое обнаружение завершено. Начинаю локальную проверку всех выбранных DNS."
     tx_snapshot_after_apply
+    apply_progress "Проверяю dnsmasq, все локальные DoH-порты, .ru/.su/.рф и дополнительные настройки."
     if verify_after_apply_with_repair; then
+        apply_progress_ok "Все локальные проверки после применения пройдены."
         baseline_mark_applied || warn_msg "Не удалось обновить контрольный снимок."
         tx_commit
         DEFER_CONFIG_SAVE=0
