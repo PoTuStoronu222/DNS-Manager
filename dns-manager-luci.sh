@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.5.26
+# Version: 1.5.27
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -22,7 +22,7 @@ COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main
 # Legacy update compatibility: admin/services/dns_manager
 RUNTIME_UPDATE_STATE="$BACKUP_DIR/update.state"
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.5.26"
+VERSION="1.5.27"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -155,7 +155,7 @@ UPDATE_STATE="/etc/dns-manager-luci/update.state"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.5.26"
+SELF_VERSION="1.5.27"
 
 umask 077
 mkdir -p "$RUNTIME_DIR" "$JOB_DIR" "$CHECK_DIR" "$TMP_ROOT" 2>/dev/null || exit 1
@@ -1402,7 +1402,7 @@ EOF_RPC
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.5.26
+// DNS Manager LuCI version: 1.5.27
 var callStatus = rpc.declare({ object:'dns_manager', method:'status', expect:{} });
 var callCatalog = rpc.declare({ object:'dns_manager', method:'catalog', params:['category','offset','limit','only_ok'], expect:{} });
 var callUpdateCheck = rpc.declare({ object:'dns_manager', method:'update_check', expect:{} });
@@ -1961,11 +1961,21 @@ function profileProgressUpdate(j){
     {p:98,keys:['Все локальные проверки после применения'],label:'Проверка применения завершена'}
   ];
   var best={p:0,label:'Подготавливаю применение профиля…',detail:''};
+  var mlines=text.split('\n'),mprog='';
+  for(var mi=mlines.length-1;mi>=0;mi--){
+    if(mlines[mi].indexOf('Промежуточный результат:')>=0){mprog=String(mlines[mi]);break;}
+  }
+  var mp=mprog.match(/Промежуточный результат:\s*проверено\s+(\d+)\s+из\s+(\d+)\s*\|\s*работают\s+(\d+)\s*\|\s*ошибки\s+(\d+)/i);
+  if(mp){
+    var md=Number(mp[1]||0),mt=Number(mp[2]||0),mo=Number(mp[3]||0),mf=Number(mp[4]||0);
+    var mpp=mt>0?8+Math.round(md*14/mt):8;
+    best={p:Math.max(8,Math.min(22,mpp)),label:'Обновляю результаты проверки DNS — проверено '+md+' из '+mt,detail:''};
+  }
   stages.forEach(function(s){
     var hit=false,at=-1;
     s.keys.forEach(function(k){var x=text.lastIndexOf(k);if(x>at){at=x;hit=x>=0;}});
     if(hit&&s.p>=best.p){
-      best={p:s.p,label:s.label,detail:String(text.slice(Math.max(0,at),Math.min(text.length,at+320)).split('\n')[0]||'').trim()};
+      best={p:s.p,label:s.label,detail:''};
     }
   });
   var done=String(j&&j.status||'').toUpperCase()==='DONE', ok=String(j&&j.result||'')==='ok';
@@ -2467,7 +2477,7 @@ function testCurrent(root){
 function pollJob(root,job,meta,done){
   var jobId=(typeof job==='string')?job:(job&&job.id)||'';
   var ticks=0;
-  var maxTicks=(meta&&meta.mode==='profile')?900:180;
+  var maxTicks=(meta&&meta.mode==='profile')||!!(meta&&meta.afterProfile)?900:180;
   var maxErrors=(meta&&meta.mode==='profile')?30:8;
   function profileFinish(j){
     if(!meta||meta.mode!=='profile')return;
