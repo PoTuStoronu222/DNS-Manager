@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.5.29
+# Version: 1.5.30
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -22,7 +22,7 @@ COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main
 # Legacy update compatibility: admin/services/dns_manager
 RUNTIME_UPDATE_STATE="$BACKUP_DIR/update.state"
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.5.29"
+VERSION="1.5.30"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -155,7 +155,7 @@ UPDATE_STATE="/etc/dns-manager-luci/update.state"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.5.29"
+SELF_VERSION="1.5.30"
 
 umask 077
 mkdir -p "$RUNTIME_DIR" "$JOB_DIR" "$CHECK_DIR" "$TMP_ROOT" 2>/dev/null || exit 1
@@ -1340,6 +1340,14 @@ run_action() {
             case "$_id" in ''|*[!A-Za-z0-9_-]*) json_error "Неверный DNS ID"; return;; esac
             load_manager || { json_error "DNS Manager недоступен"; return; }
             _cat="$(dns_cat "$_id" 2>/dev/null || true)"; [ -n "$_cat" ] || { json_error "DNS не найден в каталоге"; return; }
+            for _check_slot in 1 2 3 4 5 6 RU RU_2; do
+                [ "$_check_slot" = "$_slot" ] && continue
+                _check_id="$(cfg_get "SLOT_$_check_slot")"
+                if [ -n "$_check_id" ] && [ "$_check_id" = "$_id" ]; then
+                    json_error "DNS уже назначен в слоте $_check_slot"
+                    return
+                fi
+            done
             case "$_slot" in RU|RU_2) [ "$_cat" = regional ] || { json_error "Этот DNS нельзя поставить в региональный слот"; return; } ;; *) [ "$_cat" != regional ] || { json_error "Региональный DNS нельзя поставить в общий слот"; return; } ;; esac
             DNS_PROFILE=custom DNS_SELECTION_MODE=manual DNS_SELECTION_CATEGORY="$_cat"; eval "SLOT_$_slot=\"$_id\""; eval "SLOT_${_slot}_CAT=\"$_cat\""; [ "$_slot" = RU ] || [ "$_slot" = RU_2 ] && DNS_SELECTION_CATEGORY=regional || true
             sync_regional_dns_state >/dev/null 2>&1 || true; SILENT_APPLY=1 CORE_ONLY=1 DNS_MANAGER_NO_UPDATE=1 apply_settings >/dev/null 2>&1 && json_ok || json_error "DNS не удалось применить"
@@ -1402,7 +1410,7 @@ EOF_RPC
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.5.29
+// DNS Manager LuCI version: 1.5.30
 var callStatus = rpc.declare({ object:'dns_manager', method:'status', expect:{} });
 var callCatalog = rpc.declare({ object:'dns_manager', method:'catalog', params:['category','offset','limit','only_ok'], expect:{} });
 var callUpdateCheck = rpc.declare({ object:'dns_manager', method:'update_check', expect:{} });
@@ -1429,7 +1437,7 @@ var CATEGORY = [
   ['all','Все DNS'], ['bypass','Обход блокировок'], ['security','Безопасность'], ['privacy','Приватность'],
   ['adblock','Блокировка рекламы'], ['family','Семейный'], ['clean','Без фильтрации'], ['regional','Региональные']
 ];
-var state = { hdpUpdating:false, managerUpdating:false, updatingAll:false, category:'all', offset:0, limit:18, catalogLoaded:false, catalogLoading:false, advanced:true, logLoaded:false, logLoading:false, busy:false, busySetting:'', settingMessage:'', settingMessageType:'', pageNotice:{}, statusError:'', updateKick:false, activeTab:'dashboard', jobRunning:false, lastJob:null, checking:{}, fullTest:null, catalogProgress:null, profileProgress:null, versionCheck:null, autoRefreshRoot:null, lastAction:null };
+var state = { hdpUpdating:false, managerUpdating:false, updatingAll:false, category:'all', offset:0, limit:18, catalogLoaded:false, catalogLoading:false, advanced:true, logLoaded:false, logLoading:false, busy:false, busySetting:'', settingMessage:'', settingMessageType:'', pageNotice:{}, statusError:'', updateKick:false, activeTab:'dashboard', jobRunning:false, lastJob:null, checking:{}, fullTest:null, catalogProgress:null, profileProgress:null, catalogCheckNotice:'', versionCheck:null, autoRefreshRoot:null, lastAction:null };
 
 function profileName(p){
   var x=PROFILE.filter(function(v){return v[0]===p;})[0];
@@ -1807,8 +1815,21 @@ function renderDoH(root,st){
 
 function slotLabel(slot){var m={'1':'DNS 1','2':'DNS 2','3':'DNS 3','4':'DNS 4','5':'DNS 5','6':'DNS 6','RU':'Региональный DNS 1','RU_2':'Региональный DNS 2'};return m[slot]||('DNS '+slot);}
 function slotCurrentName(slot){var st=window.dmState||{};for(var i=0;i<(st.slots||[]).length;i++){if(String(st.slots[i].slot)===String(slot))return st.slots[i].name||st.slots[i].id||'не назначен';}return 'не назначен';}
+function assignedSlotInfo(id,excludeSlot){
+  var st=window.dmState||{},out=null;
+  (st.slots||[]).forEach(function(d){
+    if(d&&d.id===id&&String(d.slot)!==String(excludeSlot))out={slot:String(d.slot||''),name:d.name||id,port:String(d.port||'')};
+  });
+  return out;
+}
 function assign(id,slot,root,nextName){
   if(state.busy)return;
+  var occupied=assignedSlotInfo(id,slot);
+  if(occupied){
+    state.pageNotice.slots='DNS «'+(nextName||id)+'» уже назначен в '+slotLabel(occupied.slot)+(occupied.port?' · 127.0.0.1:'+occupied.port:'')+'. Сначала освободите тот слот.';
+    renderSlots(root,window.dmState||{});
+    return;
+  }
   var current=slotCurrentName(slot),next=nextName||id;
   if(current===next)return;
   confirmAction('Подтвердить назначение DNS',[['Слот',slotLabel(slot)],['Сейчас',current],['Новый DNS',next]],function(){
@@ -1841,6 +1862,12 @@ function slotCatalogOptionLabel(slot){
 }
 function assignDirect(id,slot,root,nextName){
   if(state.busy||!id||!slot)return;
+  var occupied=assignedSlotInfo(id,slot);
+  if(occupied){
+    state.pageNotice.catalog='«'+(nextName||id)+'» уже назначен в '+slotLabel(occupied.slot)+(occupied.port?' · 127.0.0.1:'+occupied.port:'')+'. Дублирование не разрешено.';
+    renderCatalog(root);
+    return;
+  }
   var current=slotCurrentName(slot),next=nextName||id;
   if(current===next)return;
   state.busy=true;
@@ -1900,11 +1927,24 @@ function openSlotPicker(slot,root){
         var status=ci.status==='RUNNING'?badge('dm-warn','проверяется'):stateBadge(ci.status,ci.ping);
         var pingNode=ping(ci.ping);
         var currentMark=x.name===cur?badge('dm-ok','выбран'):null;
-        var action=btn(x.name===cur?'Выбран':'Выбрать','cbi-button-neutral',function(){
+        var assignedSlot='',assignedPort='';
+        (st.slots||[]).forEach(function(sd){
+          if(sd&&sd.id===x.id){
+            assignedSlot=String(sd.slot||'');
+            assignedPort=String(sd.port||'');
+          }
+        });
+        var elsewhere=assignedSlot && assignedSlot!==String(slot);
+        var occupiedMark=elsewhere
+          ? badge('dm-warn','занят в '+slotLabel(assignedSlot)+(assignedPort?' · 127.0.0.1:'+assignedPort:''))
+          : null;
+        var actionLabel=elsewhere?('Уже в '+slotLabel(assignedSlot)):((x.name===cur)?'Выбран':'Выбрать');
+        var action=btn(actionLabel,'cbi-button-neutral',function(){
+          if(elsewhere)return;
           if(x.name===cur){ui.hideModal();return;}
           ui.hideModal();
           assign(x.id,slot,root,x.name);
-        },{disabled:!!state.busy});
+        },{disabled:!!state.busy||!!elsewhere});
         var check=btn(ci.status==='RUNNING'?'Проверяется':'Проверить','cbi-button-neutral',function(){
           if(state.jobRunning||state.busy)return;
           testOne(x.id,root,'doh',function(){openSlotPicker(slot,root);});
@@ -1915,15 +1955,21 @@ function openSlotPicker(slot,root){
             E('div',{'class':'dm-picker-meta'},[
               E('span',{},pingNode),
               status,
-              currentMark||E('span',{})
+              occupiedMark||currentMark||E('span',{})
             ])
           ]),
           E('div',{'class':'dm-picker-actions'},[check,action])
         ]));
       });
     }
+    var slotPort=currentSlot&&currentSlot.port?currentSlot.port:'';
+    var occupied=currentSlot&&currentSlot.id;
+    var slotInfo=occupied
+      ? 'Слот '+slotLabel(slot)+' занят: '+cur+(slotPort?' · 127.0.0.1:'+slotPort:'')
+      : 'Слот '+slotLabel(slot)+' свободен';
     ui.showModal('DNS для профиля «'+profile+'» · '+slotLabel(slot),[
-      E('div',{'class':'dm-mini'},'Категория: '+catName(category)+' · текущий: '+cur),
+      E('div',{'class':'dm-slot-occupied-note'},slotInfo),
+      E('div',{'class':'dm-mini'},'Категория: '+catName(category)),
       list,
       E('div',{'class':'right'},[btn('Закрыть','cbi-button-negative',ui.hideModal)])
     ]);
@@ -2116,6 +2162,7 @@ function renderCatalog(root){
   if(!window.dmCatalog)body.appendChild(E('div',{'class':'dm-hint'},'Загрузка каталога DNS…'));
   var ch=[
     E('div',{'class':'dm-mini'},'Каталог DNS отображается постоянно. Выбор категории и назначение доступны ниже.'),
+    state.catalogCheckNotice?E('div',{'class':'dm-inline-msg '+(state.jobRunning?'info':((state.catalogCheckNotice.indexOf('недоступен')>=0||state.catalogCheckNotice.indexOf('Не удалось')>=0)?'error':'ok'))},state.catalogCheckNotice):E('span',{}),
     E('div',{'class':'dm-actions'},[
       btn(state.jobRunning&&state.fullTest&&state.fullTest.origin==='catalog'?'Проверяю…':'Проверить все DNS','cbi-button-action',function(){testAll(root,'catalog');},{disabled:!!state.busy||!!state.jobRunning})
     ])
@@ -2165,7 +2212,7 @@ function renderCatalogBody(root,data){
         E('span',{'class':'dm-slot-ping'},ci.status==='RUNNING'?badge('dm-warn','проверяется'):ping(ci.ping)),
         E('span',{'class':'dm-slot-state'},typeof statusText==='string'?statusText:statusText),
         E('span',{'class':'dm-inline'},[
-          btn(ci.status==='RUNNING'?'Проверяется':'Проверить','cbi-button-neutral',function(){testOne(d.id,root,'catalog');},{disabled:ci.status==='RUNNING'||!!state.busy||!!state.jobRunning})
+          btn(ci.status==='RUNNING'?'Проверяю…':'Проверить','cbi-button-neutral',function(){testOne(d.id,root,'catalog');},{disabled:ci.status==='RUNNING'||!!state.busy||!!state.jobRunning})
         ])
       ]),
       E('div',{'class':'dm-catalog-toolbar'},[
@@ -2452,15 +2499,26 @@ function testOne(id,root,origin,done){
   if(state.jobRunning||state.busy||!id)return;
   state.lastJob=null;state.jobRunning=true;
   state.checking[id]={status:'RUNNING',ping:'',started:Date.now()};
+  if(origin==='catalog'){
+    var testName=id;
+    (window.dmCatalog&&window.dmCatalog.servers||[]).forEach(function(x){if(x&&x.id===id)testName=x.name||x.id;});
+    state.catalogCheckNotice='Проверяю «'+testName+'»…';
+  }
   render(root,window.dmState||{});
   callTestOne(id).then(function(r){
-    if(r&&r.ok)pollJob(root,r.job,{mode:'one',dns_id:id},done);
+    if(r&&r.ok)pollJob(root,r.job,{mode:'one',dns_id:id,origin:origin||''},done);
     else{
-      state.checking[id]={status:'FAIL',ping:''};state.jobRunning=false;render(root,window.dmState||{});
+      state.checking[id]={status:'FAIL',ping:''};
+      state.jobRunning=false;
+      if(origin==='catalog')state.catalogCheckNotice='Не удалось запустить проверку DNS.';
+      render(root,window.dmState||{});
       if(done)done(window.dmState||{});
     }
   }).catch(function(){
-    state.checking[id]={status:'FAIL',ping:''};state.jobRunning=false;render(root,window.dmState||{});
+    state.checking[id]={status:'FAIL',ping:''};
+    state.jobRunning=false;
+    if(origin==='catalog')state.catalogCheckNotice='Не удалось выполнить проверку DNS.';
+    render(root,window.dmState||{});
     if(done)done(window.dmState||{});
   });
 }
@@ -2533,6 +2591,12 @@ function pollJob(root,job,meta,done){
       if(meta&&meta.mode==='one'&&meta.dns_id){
         var d=null;(ns.slots||[]).forEach(function(x){if(x.id===meta.dns_id)d=x;});
         state.checking[meta.dns_id]={status:d&&d.status?d.status:(j.result==='ok'?'OK':'FAIL'),ping:d&&d.ping?d.ping:''};
+        if(meta.origin==='catalog'){
+          var nn=meta.dns_id;
+          (window.dmCatalog&&window.dmCatalog.servers||[]).forEach(function(x){if(x&&x.id===meta.dns_id)nn=x.name||x.id;});
+          var cc=state.checking[meta.dns_id],ss=String(cc.status||'').toUpperCase();
+          state.catalogCheckNotice=(ss==='OK'&&hasPing(cc.ping))?'«'+nn+'» проверен: доступен · '+cc.ping+' мс':'«'+nn+'» проверен: недоступен';
+        }
       }
       if(meta&&meta.mode==='current')state.checking={};
       state.jobRunning=false;
