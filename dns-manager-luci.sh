@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.2.2
+# Version: 1.2.3
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -22,7 +22,7 @@ COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main
 # Legacy update compatibility: admin/services/dns_manager
 RUNTIME_UPDATE_STATE="$BACKUP_DIR/update.state"
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.2.2"
+VERSION="1.2.3"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -141,7 +141,7 @@ EOF_MENU
     },
     "write": {
       "ubus": {
-        "dns_manager": [ "set_profile", "set_slot", "set_setting", "set_test_age", "test_all", "test_current", "test_one", "update" ]
+        "dns_manager": [ "set_profile", "set_slot", "set_setting", "set_test_age", "test_all", "test_current", "test_one", "update", "update_hdp" ]
       }
     }
   }
@@ -167,7 +167,7 @@ UPDATE_STATE="/etc/dns-manager-luci/update.state"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.2.2"
+SELF_VERSION="1.2.3"
 
 umask 077
 mkdir -p "$RUNTIME_DIR" "$JOB_DIR" "$CHECK_DIR" "$TMP_ROOT" 2>/dev/null || exit 1
@@ -472,7 +472,23 @@ version_check_job_start() {
     printf '{"ok":true,"job":'; json_quote "$_jid"; printf ',"status":"running"}'
 }
 
-version_check_job_status() {
+update_hdp_json() {
+    if ! mkdir "$RUNTIME_DIR/hdp-update.lock" 2>/dev/null; then
+        json_error "Обновление https-dns-proxy уже выполняется"; return
+    fi
+    trap 'rm -rf "$RUNTIME_DIR/hdp-update.lock" 2>/dev/null || true' EXIT INT TERM
+    _installed="$(package_version https-dns-proxy 2>/dev/null || true)"
+    _candidate="$(package_candidate_version https-dns-proxy 2>/dev/null || true)"
+    [ -n "$_installed" ] || { json_error "https-dns-proxy не установлен"; return; }
+    [ -n "$_candidate" ] || { json_error "Новой версии https-dns-proxy не найдено"; return; }
+    package_version_cmp "$_candidate" "$_installed" || { json_error "Новой версии https-dns-proxy не найдено"; return; }
+    if ! package_update_hdp; then
+        json_error "https-dns-proxy не удалось обновить"; return
+    fi
+    _after="$(package_version https-dns-proxy 2>/dev/null || true)"
+    [ -n "$_after" ] || { json_error "Не удалось определить версию после обновления"; return; }
+    printf '{"ok":true,"updated":true,"version":'; json_quote "$_after"; printf '}'
+}version_check_job_status() {
     _jid="$1"
     printf '%s\n' "$_jid" | grep -Eq '^vc-[A-Za-z0-9_-]+
     _d="$JOB_DIR/$_jid"
@@ -628,6 +644,19 @@ package_version_cmp() {
         apk version -t "$_a" "$_b" 2>/dev/null | grep -q '^>' && return 0 || return 1
     fi
     awk -F'[^0-9]+' -v a="$_a" -v b="$_b" 'BEGIN{split(a,A);split(b,B);for(i=1;i<=8;i++){x=A[i]+0;y=B[i]+0;if(x>y){exit 0}if(x<y){exit 1}}exit 1}'
+}
+package_update_hdp() {
+    if command -v apk >/dev/null 2>&1; then
+        apk update >/dev/null 2>&1 || return 1
+        apk upgrade https-dns-proxy >/dev/null 2>&1 || return 1
+    elif command -v opkg >/dev/null 2>&1; then
+        opkg update >/dev/null 2>&1 || return 1
+        opkg upgrade https-dns-proxy >/dev/null 2>&1 || return 1
+    else
+        return 1
+    fi
+    /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || return 1
+    return 0
 }
 
 runtime_lan_input_match() {
@@ -1133,7 +1162,7 @@ case "${1:-}" in
             catalog) INPUT="$(cat 2>/dev/null || true)"; catalog_json;;
             update_check) version_check_job_start;;
             update_check_job) version_check_job_start;;
-            update_check_job_status) INPUT="$(cat 2>/dev/null || true)"; version_check_job_status "$(jget id)";;            update) update_json;;
+            update_check_job_status) INPUT="$(cat 2>/dev/null || true)"; version_check_job_status "$(jget id)";;            update) update_json;;            update_hdp) update_hdp_json;;
             set_profile|set_slot|set_setting) INPUT="$(cat 2>/dev/null || true)"; RPC_METHOD="$2"; run_action;;
             test_all|test_current|test_one) INPUT="$(cat 2>/dev/null || true)"; RPC_METHOD="$2"; test_json;;
             job) INPUT="$(cat 2>/dev/null || true)"; job_json "$(jget id)";;
@@ -1152,13 +1181,14 @@ EOF_RPC
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.2.2
+// DNS Manager LuCI version: 1.2.3
 var callStatus = rpc.declare({ object:'dns_manager', method:'status', expect:{} });
 var callCatalog = rpc.declare({ object:'dns_manager', method:'catalog', params:['category','offset','limit','only_ok'], expect:{} });
 var callUpdateCheck = rpc.declare({ object:'dns_manager', method:'update_check', expect:{} });
 var callVersionCheckStart = rpc.declare({ object:'dns_manager', method:'update_check_job', expect:{} });
 var callVersionCheckStatus = rpc.declare({ object:'dns_manager', method:'update_check_job_status', params:['id'], expect:{} });
 var callUpdate = rpc.declare({ object:'dns_manager', method:'update', expect:{} });
+var callHdpUpdate = rpc.declare({ object:'dns_manager', method:'update_hdp', expect:{} });
 var callProfile = rpc.declare({ object:'dns_manager', method:'set_profile', params:['profile'], expect:{} });
 var callSlot = rpc.declare({ object:'dns_manager', method:'set_slot', params:['slot','id'], expect:{} });
 var callSetting = rpc.declare({ object:'dns_manager', method:'set_setting', params:['name','enabled'], expect:{} });
@@ -1178,7 +1208,7 @@ var CATEGORY = [
   ['all','Все DNS'], ['bypass','Обход блокировок'], ['security','Безопасность'], ['privacy','Приватность'],
   ['adblock','Блокировка рекламы'], ['family','Семейный'], ['clean','Без фильтрации'], ['regional','Региональные']
 ];
-var state = { category:'all', offset:0, limit:18, catalogLoaded:false, catalogLoading:false, advanced:true, logLoaded:false, logLoading:false, busy:false, busySetting:'', settingMessage:'', settingMessageType:'', pageNotice:{}, statusError:'', updateKick:false, activeTab:'dashboard', jobRunning:false, lastJob:null, checking:{}, fullTest:null, versionCheck:null, autoRefreshRoot:null, lastAction:null };
+var state = { hdpUpdating:false, category:'all', offset:0, limit:18, catalogLoaded:false, catalogLoading:false, advanced:true, logLoaded:false, logLoading:false, busy:false, busySetting:'', settingMessage:'', settingMessageType:'', pageNotice:{}, statusError:'', updateKick:false, activeTab:'dashboard', jobRunning:false, lastJob:null, checking:{}, fullTest:null, versionCheck:null, autoRefreshRoot:null, lastAction:null };
 
 function profileName(p){
   var x=PROFILE.filter(function(v){return v[0]===p;})[0];
@@ -1291,7 +1321,7 @@ function injectStyle(root){
   '.dm-mem-wrap{min-width:220px;max-width:430px;width:100%}.dm-mem-line{display:flex;align-items:center;gap:9px}.dm-mem-track{height:8px;flex:1;min-width:120px;border-radius:999px;background:rgba(110,118,129,.16);overflow:hidden}.dm-mem-fill{height:100%;border-radius:999px;background:#1a7f37;transition:width .25s ease}.dm-mem-value{font-size:12px;font-weight:700;white-space:nowrap}.dm-mem-meta{font-size:10.5px;opacity:.58;margin-top:3px}'+
   '.dm-card{min-width:0;box-sizing:border-box;background:var(--background-color-medium,#fff);border:1px solid rgba(0,0,0,.08);border-radius:11px;padding:15px 18px;box-shadow:0 1px 3px rgba(0,0,0,.04),0 1px 2px rgba(0,0,0,.03);overflow-wrap:break-word}.dm-card:hover{box-shadow:0 2px 7px rgba(0,0,0,.06)}'+
   'html.dm-theme-dark .dm-card{background:#1c2128;border-color:rgba(255,255,255,.10);box-shadow:0 1px 3px rgba(0,0,0,.22)}'+
-  '.dm-card h3{margin:0 0 10px;font-size:15px;font-weight:600;display:flex;align-items:center;gap:7px}.dm-row{display:flex;align-items:center;gap:10px;margin:6px 0;font-size:13px;flex-wrap:wrap}.dm-label{opacity:.65;flex-shrink:0}.dm-row-value{overflow-wrap:anywhere}'+
+  '.dm-version-action{display:flex;align-items:center;gap:7px;flex-wrap:wrap}.dm-version-action .cbi-button{padding:4px 9px;font-size:12px}.dm-card h3{margin:0 0 10px;font-size:15px;font-weight:600;display:flex;align-items:center;gap:7px}.dm-row{display:flex;align-items:center;gap:10px;margin:6px 0;font-size:13px;flex-wrap:wrap}.dm-label{opacity:.65;flex-shrink:0}.dm-row-value{overflow-wrap:anywhere}'+
   '.dm-badge{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:999px;font-size:12px;font-weight:600;white-space:nowrap}.dm-dot{width:8px;height:8px;border-radius:50%;display:inline-block;flex-shrink:0}'+
   '.dm-ok{background:rgba(46,160,67,.12);color:#1a7f37}.dm-ok .dm-dot{background:#1a7f37}.dm-bad{background:rgba(207,34,46,.10);color:#cf222e}.dm-bad .dm-dot{background:#cf222e}.dm-warn{background:rgba(191,135,0,.12);color:#9a6700}.dm-warn .dm-dot{background:#9a6700}.dm-off{background:rgba(110,118,129,.12);color:#57606a}.dm-off .dm-dot{background:#57606a}'+
   '.dm-grid2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.dm-grid3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}.dm-grid4{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}'+
@@ -1460,7 +1490,10 @@ function renderOverview(root,st){
     row('DNS Manager',versionState(st.manager_version,st.manager_update_available,st.manager_latest_version,st.manager_check_ok,'актуальна',state.versionCheck&&state.versionCheck.manager==='running')),
     row('LuCI',versionState(st.luci_version,st.luci_update_available,st.luci_latest_version,st.luci_update_checked,'актуальна',state.versionCheck&&state.versionCheck.luci==='running')),
     st.luci_update_error?E('div',{'class':'dm-inline-msg error'},String(st.luci_update_error)):E('span',{}),
-    row('https-dns-proxy',versionState(st.hdp_version,st.hdp_update_available,st.hdp_latest_version,st.hdp_check_ok,'актуальна',state.versionCheck&&state.versionCheck.hdp==='running')),
+    E('div',{'class':'dm-version-action'},[
+      versionState(st.hdp_version,st.hdp_update_available,st.hdp_latest_version,st.hdp_check_ok,'актуальна',state.versionCheck&&state.versionCheck.hdp==='running'),
+      yes(st.hdp_update_available)?btn(state.hdpUpdating?'Обновляю…':'Обновить','cbi-button-positive',function(){updateHdp(root);},{disabled:!!state.hdpUpdating||!!state.busy}):E('span',{})
+    ]),
     row('Каталог DNS',catalogVersionState(st.catalog_version,st.catalog_revision,st.catalog_total,st.catalog_update_available,st.catalog_latest_version,st.catalog_latest_rev,st.catalog_check_ok,state.versionCheck&&state.versionCheck.catalog==='running')),
     row('Проверено',dateText(st.components_checked_at)),
     E('div',{'class':'dm-actions'},[
@@ -1781,6 +1814,23 @@ function checkUpdate(root){
     }
     pollVersion();
   }).catch(function(){state.versionCheck.running=false;state.versionCheck.error=true;refresh(root,true);});
+}
+function updateHdp(root){
+  if(state.hdpUpdating||state.busy)return;
+  var v=(window.dmState&&window.dmState.hdp_latest_version)||'новой версии';
+  if(!confirm('Обновить только https-dns-proxy до '+v+'?'))return;
+  state.hdpUpdating=true;
+  renderOverview(root,window.dmState||{});
+  callHdpUpdate().then(function(r){
+    state.hdpUpdating=false;
+    if(r&&r.ok&&r.updated)state.pageNotice.overview='https-dns-proxy обновлён до '+r.version+'.';
+    else state.pageNotice.overview=(r&&r.error)||'https-dns-proxy не удалось обновить.';
+    refresh(root,true);
+  }).catch(function(){
+    state.hdpUpdating=false;
+    state.pageNotice.overview='Не удалось выполнить обновление https-dns-proxy.';
+    refresh(root,true);
+  });
 }
 function doUpdate(root){if(state.busy)return;var v=(window.dmState&&window.dmState.luci_latest_version)||'новой версии';if(!confirm('Обновить только LuCI до v'+v+'? DNS Manager и настройки не изменятся.'))return;state.busy=true;state.pageNotice.overview='Обновляю LuCI…';globalUpdateNotice('Обновляю LuCI до v'+v+'…','info');if(rootAlive(root))renderOverview(root,window.dmState||{});callUpdate().then(function(r){state.busy=false;if(r&&r.ok&&r.updated){var msg='LuCI обновлена до v'+r.version+'. Перезагружаю страницу…';state.pageNotice.overview=msg;globalUpdateNotice(msg,'ok');if(rootAlive(root))renderOverview(root,window.dmState||{});setTimeout(function(){location.reload();},1600);}else{var msg=(r&&r.error)||'LuCI не удалось обновить.';state.pageNotice.overview=msg;globalUpdateNotice(msg,'error');if(rootAlive(root))renderOverview(root,window.dmState||{});}}).catch(function(){state.busy=false;var msg='Не удалось выполнить RPC-обновление LuCI. Попробуйте ещё раз; причина будет показана в сообщении RPC.';state.pageNotice.overview=msg;globalUpdateNotice(msg,'error');if(rootAlive(root))renderOverview(root,window.dmState||{});});}
 function applyProfile(name,root){
@@ -2644,7 +2694,7 @@ EOF_RPC
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.2.2
+// DNS Manager LuCI version: 1.2.3
 var callStatus = rpc.declare({ object:'dns_manager', method:'status', expect:{} });
 var callCatalog = rpc.declare({ object:'dns_manager', method:'catalog', params:['category','offset','limit','only_ok'], expect:{} });
 var callUpdateCheck = rpc.declare({ object:'dns_manager', method:'update_check', expect:{} });
