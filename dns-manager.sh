@@ -2756,6 +2756,11 @@ dnsmasq_manager_server_owned() {
             /ru/127.0.0.1#${PORT_RU}|/su/127.0.0.1#${PORT_RU}|/xn--p1ai/127.0.0.1#${PORT_RU}) return 0 ;;
         esac
     fi
+    # Legacy Hybrid ports remain recognised so an upgrade can safely clean
+    # an older manager installation without trusting its stale journal.
+    case "$_val" in
+        127.0.0.1#505[3-9]|/ru/127.0.0.1#505[3-9]|/su/127.0.0.1#505[3-9]|/xn--p1ai/127.0.0.1#505[3-9]) return 0 ;;
+    esac
     return 1
 }
 reconcile_dnsmasq() {
