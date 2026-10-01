@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.4.1
+# Version: 1.4.2
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -22,7 +22,7 @@ COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main
 # Legacy update compatibility: admin/services/dns_manager
 RUNTIME_UPDATE_STATE="$BACKUP_DIR/update.state"
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.4.1"
+VERSION="1.4.2"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -168,7 +168,7 @@ UPDATE_STATE="/etc/dns-manager-luci/update.state"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.4.1"
+SELF_VERSION="1.4.2"
 
 umask 077
 mkdir -p "$RUNTIME_DIR" "$JOB_DIR" "$CHECK_DIR" "$TMP_ROOT" 2>/dev/null || exit 1
@@ -1486,9 +1486,12 @@ function rootAlive(root){return !!root&&!!document&&!!document.documentElement&&
 function globalUpdateNotice(msg,type){var id='dm-global-update-notice',old=document.getElementById(id);if(old)old.remove();if(!msg)return;var n=E('div',{'id':id,'class':'dm-inline-msg '+(type||'info')},msg);n.style.position='fixed';n.style.left='50%';n.style.top='18px';n.style.transform='translateX(-50%)';n.style.zIndex='99999';n.style.maxWidth='min(760px,calc(100vw - 32px))';n.style.boxShadow='0 6px 24px rgba(0,0,0,.18)';document.body.appendChild(n);}
 function renderHeader(root,st){
   var e=root.querySelector('#dm-header');if(!e)return;e.innerHTML='';
+  var lastTest=dateText(st.last_full_test);
+  var testText=lastTest==='—'?'Последняя полная проверка DNS: не выполнялась':'Последняя полная проверка DNS: '+lastTest;
   e.appendChild(E('div',{'class':'dm-header'},[
     E('h2',{},'DNS Manager by PoTuStoronu222'),
-    E('span',{'class':'dm-header-by'},'v'+shortVal(st.luci_version))
+    E('span',{'class':'dm-header-by'},'v'+shortVal(st.luci_version)),
+    E('span',{'class':'dm-header-by'},'· '+testText)
   ]));
 }
 function setActiveTab(root,name){
@@ -1594,10 +1597,6 @@ function renderOverview(root,st){
   });
   if(!dnsItems.length)dnsItems.push(E('div',{'class':'dm-hint'},'DNS в слоты не назначены.'));
 
-  var lastTest=dateText(st.last_full_test);
-  var fullTestValue=lastTest==='—' ? badge('dm-off','не выполнялась') : E('span',{'class':'dm-component-date'},lastTest);
-  var fullTestDetails=lastTest==='—' ? 'каталог DNS ещё не проверялся' : 'полная проверка каталога · '+shortVal(st.catalog_total||0)+' DNS-серверов';
-
   var components=card('Компоненты',[
     componentItem('Профиль',profile,profileDetails),
     componentItem('DNS over HTTPS',doh,dohDetails),
@@ -1607,7 +1606,6 @@ function renderOverview(root,st){
       E('div',{'class':'dm-component-title'},'DNS в слотах'),
       E('div',{'class':'dm-component-dns-list'},dnsItems)
     ]),
-    componentItem('Последняя полная проверка DNS',fullTestValue,fullTestDetails),
     E('div',{'class':'dm-actions'},[
       btn('Проверить DNS в слотах','cbi-button-action',function(){testCurrent(root);},{disabled:!!state.busy||state.jobRunning})
     ])
@@ -1623,7 +1621,7 @@ function renderOverview(root,st){
     row('Время работы',E('span',{'class':'dm-uptime'},uptime(st.uptime))),
     row('IPv4',ipv4),
     row('IPv6',ipv6),
-    row('Пинг DNS',shortVal(selectedPing)),
+    row('Пинг DNS · последний тест',shortVal(selectedPing)),
     row('Нагрузка',loadBar(st.load1,st.cpu_count)),
     row('RAM',memoryBar(st.memory_total_kb,st.memory_available_kb)),
     row('LAN',shortVal(st.lan))
