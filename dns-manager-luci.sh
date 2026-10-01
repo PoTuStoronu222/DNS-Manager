@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.2.9
+# Version: 1.3.0
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -22,7 +22,7 @@ COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main
 # Legacy update compatibility: admin/services/dns_manager
 RUNTIME_UPDATE_STATE="$BACKUP_DIR/update.state"
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.2.9"
+VERSION="1.3.0"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -167,7 +167,7 @@ UPDATE_STATE="/etc/dns-manager-luci/update.state"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.2.9"
+SELF_VERSION="1.3.0"
 
 umask 077
 mkdir -p "$RUNTIME_DIR" "$JOB_DIR" "$CHECK_DIR" "$TMP_ROOT" 2>/dev/null || exit 1
@@ -438,9 +438,9 @@ update_hdp_json() {
 }
 
 update_check_json() {
-    _result="$(update_check_json_luci)"
+    update_check_json_luci >/dev/null 2>&1 || true
     component_update_check || true
-    printf '%s\n' "$_result"
+    status_json
 }
 
 maybe_background_update_check() {
@@ -1122,7 +1122,7 @@ EOF_RPC
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.2.9
+// DNS Manager LuCI version: 1.3.0
 var callStatus = rpc.declare({ object:'dns_manager', method:'status', expect:{} });
 var callCatalog = rpc.declare({ object:'dns_manager', method:'catalog', params:['category','offset','limit','only_ok'], expect:{} });
 var callUpdateCheck = rpc.declare({ object:'dns_manager', method:'update_check', expect:{} });
@@ -1729,6 +1729,8 @@ function toast(msg,type){}
 function checkUpdate(root){
   if(state.versionCheck&&state.versionCheck.running)return;
   state.versionCheck={running:true,manager:'running',luci:'running',hdp:'running',catalog:'running',started:Date.now(),job:''};
+  state.pageNotice.overview='Проверяю актуальность…';
+  globalUpdateNotice('Проверяю актуальность…','info');
   renderOverview(root,window.dmState||{});
   callUpdateCheck().then(function(r){
     state.versionCheck.manager='done';
@@ -1737,7 +1739,16 @@ function checkUpdate(root){
     state.versionCheck.catalog='done';
     state.versionCheck.running=false;
     state.versionCheck.error=!(r&&r.ok);
-    refresh(root,true);
+    if(r&&r.ok){
+      window.dmState=r;
+      state.pageNotice.overview='Проверка актуальности завершена.';
+      globalUpdateNotice('Проверка актуальности завершена.','ok');
+      renderOverview(root,r);
+    }else{
+      state.pageNotice.overview=(r&&r.error)||'Проверка актуальности не выполнена.';
+      globalUpdateNotice(state.pageNotice.overview,'error');
+      renderOverview(root,window.dmState||{});
+    }
   }).catch(function(){
     state.versionCheck.manager='done';
     state.versionCheck.luci='done';
@@ -1745,8 +1756,9 @@ function checkUpdate(root){
     state.versionCheck.catalog='done';
     state.versionCheck.running=false;
     state.versionCheck.error=true;
-    globalUpdateNotice('Проверка версий не выполнена.','error');
-    refresh(root,true);
+    state.pageNotice.overview='Проверка актуальности не выполнена.';
+    globalUpdateNotice('Проверка актуальности не выполнена.','error');
+    renderOverview(root,window.dmState||{});
   });
 }
 
