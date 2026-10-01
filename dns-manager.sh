@@ -3825,6 +3825,11 @@ verify_after_apply() {
             err_msg "dnsmasq: strictorder=0 не применён."; return 1;
         }
     fi
+    if [ -n "${SLOT_RU:-}" ]; then
+        [ "$(check_module_state tld 2>/dev/null)" = 1 ] || {
+            err_msg "Маршрут .ru/.su/.рф после применения не соответствует выбранному DNS."; return 1;
+        }
+    fi
     if [ "$CORE_ONLY" != 1 ]; then
         if [ "${FORCE_DOH:-0}" = 1 ]; then
             [ "$(check_module_state force 2>/dev/null)" = 1 ] || { err_msg "Принудительный DNS после применения не подтверждён."; return 1; }
@@ -4730,7 +4735,7 @@ reset_manager_runtime_state_after_rollback() {
     PORT_1=""; PORT_2=""; PORT_3=""; PORT_4=""; PORT_5=""; PORT_6=""
 
     SLOT_1_CAT=""; SLOT_2_CAT=""; SLOT_3_CAT=""; SLOT_4_CAT=""; SLOT_5_CAT=""; SLOT_6_CAT=""
-    SLOT_RU_CAT="";=""
+    SLOT_RU_CAT=""
     TLD_RU_ENABLED=0
     TLD_SPLIT=0
     BALANCER_ENABLED=0
