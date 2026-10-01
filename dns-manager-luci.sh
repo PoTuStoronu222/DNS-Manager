@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.5.9
+# Version: 1.5.10
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -22,7 +22,7 @@ COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main
 # Legacy update compatibility: admin/services/dns_manager
 RUNTIME_UPDATE_STATE="$BACKUP_DIR/update.state"
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.5.9"
+VERSION="1.5.10"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -170,7 +170,7 @@ UPDATE_STATE="/etc/dns-manager-luci/update.state"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.5.9"
+SELF_VERSION="1.5.10"
 
 umask 077
 mkdir -p "$RUNTIME_DIR" "$JOB_DIR" "$CHECK_DIR" "$TMP_ROOT" 2>/dev/null || exit 1
@@ -1570,7 +1570,6 @@ function renderOverview(root,st){
   var doh=st.doh==='yes'?badge('dm-ok','запущен'):Number(st.doh_total||0)>0?badge('dm-bad','остановлен'):badge('dm-off','не установлен');
 
   var force=yes(st.force_both)?badge('dm-warn','DNS Manager + внешний'):st.force_owner==='external'?badge('dm-warn','внешний сервис'):yes(st.force_manager)?badge('dm-ok','DNS Manager'):badge('dm-off','выключен');
-  var forceDetails=st.force_owner==='external'?'Источник: '+shortVal(st.force_source||'внешний сервис'):st.force_both?'Одновременно DNS Manager и внешний перехват':yes(st.force_manager)?'DNS Manager':'выключен';
 
   var wd=yes(st.watchdog)?(st.watchdog_backend==='procd'?(Number(st.watchdog_loop||0)===1?badge('dm-ok','работает'):Number(st.watchdog_service||0)===1?badge('dm-warn','служба запущена, цикл не найден'):badge('dm-bad','служба не запущена')):badge('dm-warn','неизвестный механизм')):badge('dm-off','выключена');
   var wdDetails=yes(st.watchdog)?'интервал '+shortVal(st.watchdog_interval)+' с · порог '+shortVal(st.watchdog_fail_threshold)+' цикла':'автопроверка отключена';
@@ -1602,7 +1601,7 @@ function renderOverview(root,st){
   var components=card('Компоненты',[
     componentItem('Профиль DNS',profile),
     componentItem('Автопроверка и замена DNS',wd,wdDetails),
-    componentItem('Принудительный DNS для устройств',force,forceDetails),
+    componentItem('Принудительный DNS для устройств',force),
     componentSettingItem('Исправление MTU и MSS для WAN','mtu'),
     componentSettingItem('Оптимизация TCP и таблицы соединений','sysctl'),
     componentSettingItem('Расширенные параметры TCP и сетевых буферов','sysctl_ext'),
@@ -1821,9 +1820,9 @@ function renderSettings(root,st){
   body.push(E('div',{'class':'dm-section-title'},'Фоновая проверка DNS'));
   body.push(watchdogCard(root,st));
   var groups=[
-    ['Сеть',[['mtu','Исправление MTU и MSS для WAN','Исправляет размеры пакетов и TCP-сегментов для WAN-соединения.'],['sysctl','Оптимизация TCP и таблицы соединений','Настраивает TCP Fast Open, таймаут TCP и очередь соединений.'],['sysctl_ext','Расширенные параметры TCP и сетевых буферов','Настраивает таблицу соединений, keepalive и сетевые буферы.']]],
-    ['Производительность',[['dnsmasq_perf','Увеличенный кэш DNS','Увеличивает кэш dnsmasq до 1000 записей и настраивает связанные параметры.']]],
-    ['Устройства сети',[['ntp_clients','Время для устройств в локальной сети','Выдаёт устройствам локальной сети адрес роутера как сервер времени по DHCP.'],['client_fixes','DNS для проверки подключения и совместимости устройств','Настраивает DNS для системных проверок подключения и совместимости устройств.']]]
+    ['Сеть',[['mtu','Исправление MTU / MSS','Нужно только при проблемах с размером пакетов, отдельными сайтами, VPN или туннелями. На исправной сети обычно не требуется.'],['sysctl','Оптимизация TCP и таблицы соединений','Настраивает TCP Fast Open, таймаут TCP и очередь соединений.'],['sysctl_ext','Расширенная настройка сети','Дополнительно настраивает TCP, соединения и сетевые буферы. Для обычной работы не обязательна.']]],
+    ['Производительность',[['dnsmasq_perf','Увеличенный кэш DNS','Хранит больше DNS-ответов, чтобы повторные запросы выполнялись быстрее.']]],
+    ['Устройства сети',[['ntp_clients','Синхронизация времени устройств','Роутер сообщает устройствам свой адрес как сервер точного времени по DHCP.'],['client_fixes','Совместимость и проверки подключения','Исправляет системные DNS-проверки подключения у некоторых устройств. Обычно не требуется, если всё работает.']]]
   ];
   groups.forEach(function(g){
     body.push(E('div',{'class':'dm-section-title'},g[0]));
