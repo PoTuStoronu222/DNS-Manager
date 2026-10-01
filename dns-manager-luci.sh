@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.5.15
+# Version: 1.5.16
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -22,7 +22,7 @@ COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main
 # Legacy update compatibility: admin/services/dns_manager
 RUNTIME_UPDATE_STATE="$BACKUP_DIR/update.state"
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.5.15"
+VERSION="1.5.16"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -155,7 +155,7 @@ UPDATE_STATE="/etc/dns-manager-luci/update.state"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.5.15"
+SELF_VERSION="1.5.16"
 
 umask 077
 mkdir -p "$RUNTIME_DIR" "$JOB_DIR" "$CHECK_DIR" "$TMP_ROOT" 2>/dev/null || exit 1
@@ -1100,6 +1100,58 @@ current_slot_result_for_id() {
 new_job_id() { printf '%s-%s' "$(date +%s)" "$$"; }
 job_write() { _id="$1"; _key="$2"; _value="$3"; mkdir -p "$JOB_DIR/$_id" 2>/dev/null || return 1; printf '%s=%s\n' "$_key" "$_value" >> "$JOB_DIR/$_id/state" 2>/dev/null; }
 
+profile_job_running() {
+    for _jd in "$JOB_DIR"/*; do
+        [ -d "$_jd" ] || continue
+        _st="$(sed -n 's/^status=//p' "$_jd/state" 2>/dev/null | tail -n1)"
+        _mode="$(sed -n 's/^mode=//p' "$_jd/state" 2>/dev/null | head -n1)"
+        if [ "$_mode" = "profile" ] && [ "$_st" = "running" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+job_start_profile() {
+    _profile="$1"
+    case "$_profile" in
+        clean2) _profile=clean ;;
+        bypass|clean|security|privacy|adblock|family|all) ;;
+        *) json_error "Неверный профиль"; return ;;
+    esac
+
+    profile_job_running && { json_error "Другое применение профиля уже выполняется"; return; }
+
+    _jid="$(new_job_id)"
+    mkdir -p "$JOB_DIR/$_jid" 2>/dev/null || { json_error "Не удалось создать задачу"; return; }
+    : > "$JOB_DIR/$_jid/state"
+    printf 'status=running\nstarted=%s\nmode=profile\nprofile=%s\n' "$(date +%s)" "$_profile" > "$JOB_DIR/$_jid/state"
+
+    (
+        exec >>"$JOB_DIR/$_jid/output" 2>&1
+        if load_manager; then
+            DNS_MANAGER_NO_UPDATE=1 SILENT_APPLY=1 HYBRID_SELECTION_QUIET=1 apply_profile_now "$_profile"
+            _rc=$?
+        else
+            _rc=1
+            printf '%s\n' "DNS Manager недоступен."
+        fi
+
+        _now="$(date +%s)"
+        if [ "$_rc" -eq 0 ]; then
+            job_write "$_jid" status done
+            job_write "$_jid" result ok
+        else
+            job_write "$_jid" status failed
+            job_write "$_jid" result fail
+        fi
+        job_write "$_jid" finished "$_now"
+        exit "$_rc"
+    ) &
+
+    printf '{"ok":true,"job":'; json_quote "$_jid"; printf '}'
+}
+
 job_start_test_all() {
     _jid="$(new_job_id)"; mkdir -p "$JOB_DIR/$_jid" 2>/dev/null || { json_error "Не удалось создать задачу"; return; }
     : > "$JOB_DIR/$_jid/state"; printf 'status=running\nstarted=%s\nmode=all\n' "$(date +%s)" > "$JOB_DIR/$_jid/state"
@@ -1218,6 +1270,7 @@ job_json() {
     printf ',"status":'; json_quote "$(sed -n 's/^status=//p' "$_d/state" 2>/dev/null | tail -n1)"
     printf ',"result":'; json_quote "$(sed -n 's/^result=//p' "$_d/state" 2>/dev/null | tail -n1)"
     printf ',"mode":'; json_quote "$(sed -n 's/^mode=//p' "$_d/state" 2>/dev/null | head -n1)"
+    printf ',"profile":'; json_quote "$(sed -n 's/^profile=//p' "$_d/state" 2>/dev/null | head -n1)"
     printf ',"dns_id":'; json_quote "$(sed -n 's/^dns_id=//p' "$_d/state" 2>/dev/null | head -n1)"
     printf ',"started":'; json_quote "$(sed -n 's/^started=//p' "$_d/state" 2>/dev/null | head -n1)"
     printf ',"finished":'; json_quote "$(sed -n 's/^finished=//p' "$_d/state" 2>/dev/null | tail -n1)"
@@ -1255,8 +1308,7 @@ run_action() {
     case "${RPC_METHOD:-}" in
         set_profile)
             case "$_profile" in clean2) _profile=clean;; bypass|clean|security|privacy|adblock|family|all) ;; *) json_error "Неверный профиль"; return;; esac
-            load_manager || { json_error "DNS Manager недоступен"; return; }
-            DNS_MANAGER_NO_UPDATE=1 SILENT_APPLY=1 HYBRID_SELECTION_QUIET=1 apply_profile_now "$_profile" >/dev/null 2>&1 && json_ok || json_error "Профиль не удалось применить"
+            job_start_profile "$_profile"
             ;;
         set_slot)
             _slot="$(jget slot)"; _id="$(jget id)"
@@ -1326,7 +1378,7 @@ EOF_RPC
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.3.6
+// DNS Manager LuCI version: 1.5.16
 var callStatus = rpc.declare({ object:'dns_manager', method:'status', expect:{} });
 var callCatalog = rpc.declare({ object:'dns_manager', method:'catalog', params:['category','offset','limit','only_ok'], expect:{} });
 var callUpdateCheck = rpc.declare({ object:'dns_manager', method:'update_check', expect:{} });
@@ -1358,6 +1410,30 @@ var state = { hdpUpdating:false, managerUpdating:false, updatingAll:false, categ
 function profileName(p){
   var x=PROFILE.filter(function(v){return v[0]===p;})[0];
   return x?x[1]:(p==='hybrid'?'Максимальный обход':p==='custom'?'Собственный выбор':(p||'—'));
+}
+function isProfileId(p){
+  for(var i=0;i<PROFILE.length;i++)if(PROFILE[i][0]===p)return true;
+  return false;
+}
+function activeProfileId(st){
+  st=st||{};
+  var mode=String(st.profile_mode||'').toLowerCase();
+  var category=String(st.selection_category||'').toLowerCase();
+  if(mode==='profile' && isProfileId(category))return category;
+  var profile=String(st.profile||'').toLowerCase();
+  if(isProfileId(profile))return profile;
+  if(profile==='hybrid' && category==='bypass')return 'bypass';
+  return '';
+}
+function activeProfileLabel(st){
+  st=st||{};
+  var id=activeProfileId(st);
+  if(id)return profileName(id);
+  if(String(st.profile_mode||'').toLowerCase()==='profile'){
+    var category=String(st.selection_category||'').toLowerCase();
+    if(category==='all')return 'Все категории';
+  }
+  return profileName(st.profile);
 }
 function catName(c){ var x=CATEGORY.filter(function(v){return v[0]===c;})[0]; return x?x[1]:(c||'—'); }
 function ping(v){ return v && /^\d+$/.test(String(v)) ? v+' мс' : '—'; }
@@ -1566,7 +1642,7 @@ function renderOverview(root,st){
   var wd=yes(st.watchdog)?(st.watchdog_backend==='procd'?(Number(st.watchdog_loop||0)===1?badge('dm-ok','работает'):Number(st.watchdog_service||0)===1?badge('dm-warn','служба запущена, цикл не найден'):badge('dm-bad','служба не запущена')):badge('dm-warn','неизвестный механизм')):badge('dm-off','выключена');
   var wdDetails=yes(st.watchdog)?'интервал '+shortVal(st.watchdog_interval)+' с · порог '+shortVal(st.watchdog_fail_threshold)+' цикла':'автопроверка отключена';
 
-  var profile=badge('dm-ok',profileName(st.profile));
+  var profile=badge('dm-ok',activeProfileLabel(st));
 
 
   var dnsItems=[];
@@ -1788,8 +1864,9 @@ function openForceDetails(root,st){
 function renderProfiles(root,st){
   var e=root.querySelector('#dm-profiles');if(!e)return;e.innerHTML='';
   var g=E('div',{'class':'dm-seg dm-profile-seg'});
-  PROFILE.forEach(function(p){g.appendChild(btn(p[1],st.profile===p[0]?'active cbi-button':'cbi-button',function(){applyProfile(p[0],root);},{disabled:!!state.busy}));});
-  var current=profileName(st.profile);
+  var currentId=activeProfileId(st);
+  PROFILE.forEach(function(p){g.appendChild(btn(p[1],currentId===p[0]?'active cbi-button':'cbi-button',function(){applyProfile(p[0],root);},{disabled:!!state.busy}));});
+  var current=activeProfileLabel(st);
   var pch=[
     row('Работает сейчас',badge('dm-ok',current)),
     g,
@@ -2101,16 +2178,33 @@ function updateHdp(root){
 function doUpdate(root){if(state.busy)return;var v=(window.dmState&&window.dmState.luci_latest_version)||'новой версии';state.busy=true;state.pageNotice.overview='Обновляю LuCI…';globalUpdateNotice('Обновляю LuCI до v'+v+'…','info');if(rootAlive(root))renderOverview(root,window.dmState||{});callUpdate().then(function(r){state.busy=false;if(r&&r.ok&&r.updated){var msg='LuCI обновлена до v'+r.version+'. Перезагружаю страницу…';state.pageNotice.overview=msg;globalUpdateNotice(msg,'ok');if(rootAlive(root))renderOverview(root,window.dmState||{});setTimeout(function(){location.reload();},1600);}else{var msg=(r&&r.error)||'LuCI не удалось обновить.';state.pageNotice.overview=msg;globalUpdateNotice(msg,'error');if(rootAlive(root))renderOverview(root,window.dmState||{});}}).catch(function(){state.busy=false;var msg='Не удалось выполнить RPC-обновление LuCI. Попробуйте ещё раз; причина будет показана в сообщении RPC.';state.pageNotice.overview=msg;globalUpdateNotice(msg,'error');if(rootAlive(root))renderOverview(root,window.dmState||{});});}
 function applyProfile(name,root){
   if(state.busy)return;
-  var current=profileName((window.dmState||{}).profile),next=profileName(name);
-  if(current===next)return;
+  var st=window.dmState||{};
+  var currentId=activeProfileId(st),current=currentId?profileName(currentId):activeProfileLabel(st),next=profileName(name);
+  if(currentId===name)return;
   confirmAction('Подтвердить изменение профиля',[['Сейчас',current],['Новый профиль',next]],function(){
-    state.busy=true;state.pageNotice.profiles='Применяю профиль «'+next+'»…';renderProfiles(root,window.dmState||{});
+    state.busy=true;
+    state.pageNotice.profiles='Запускаю применение профиля «'+next+'»…';
+    renderProfiles(root,window.dmState||{});
     callProfile(name).then(function(r){
+      if(r&&r.ok&&r.job){
+        pollJob(root,r.job,{mode:'profile',profile:name});
+        return;
+      }
       state.busy=false;
-      if(r&&r.ok){setAction(true,'Профиль: «'+next+'».');state.pageNotice.profiles='Профиль «'+next+'» применён.';}
-      else{setAction(false,(r&&r.error)||'Профиль не удалось применить.');state.pageNotice.profiles=(r&&r.error)||'Профиль не удалось применить.';}
+      if(r&&r.ok){
+        setAction(true,'Профиль: «'+next+'».');
+        state.pageNotice.profiles='Профиль «'+next+'» применён.';
+      }else{
+        setAction(false,(r&&r.error)||'Профиль не удалось запустить.');
+        state.pageNotice.profiles=(r&&r.error)||'Профиль не удалось запустить.';
+      }
       refresh(root,true);
-    }).catch(function(){state.busy=false;setAction(false,'Профиль не удалось применить.');state.pageNotice.profiles='Профиль не удалось применить.';refresh(root,true);});
+    }).catch(function(){
+      state.busy=false;
+      setAction(false,'Не удалось запустить применение профиля.');
+      state.pageNotice.profiles='Не удалось запустить применение профиля.';
+      refresh(root,true);
+    });
   });
 }
 function setTestAge(category,hours,root){
@@ -2186,8 +2280,30 @@ function testCurrent(root){
   }).catch(function(){state.currentTest={status:'FAILED',total:total};state.checking={};state.jobRunning=false;refresh(root,true);});
 }
 function pollJob(root,job,meta,done){
-  var jobId=(typeof job==='string')?job:(job&&job.id)||'';var ticks=0;
+  var jobId=(typeof job==='string')?job:(job&&job.id)||'';
+  var ticks=0;
+  var maxTicks=(meta&&meta.mode==='profile')?900:180;
+  var maxErrors=(meta&&meta.mode==='profile')?30:8;
+  function profileFinish(j){
+    if(!meta||meta.mode!=='profile')return;
+    var label=profileName(meta.profile||'');
+    var ok=String(j&&j.status||'').toUpperCase()==='DONE' && String(j&&j.result||'')==='ok';
+    state.busy=false;
+    if(ok){
+      setAction(true,'Профиль: «'+label+'».');
+      state.pageNotice.profiles='Профиль «'+label+'» применён.';
+    }else{
+      var out=stripAnsi(j&&j.output||'').trim().split('\n').filter(function(x){return String(x||'').trim();});
+      var detail=out.length?String(out[out.length-1]).trim():'';
+      if(detail.length>360)detail=detail.slice(0,357)+'…';
+      var msg='Профиль «'+label+'» не удалось применить.';
+      if(detail)msg+=' '+detail;
+      setAction(false,msg);
+      state.pageNotice.profiles=msg;
+    }
+  }
   function finish(j){
+    if(meta&&meta.mode==='profile')profileFinish(j);
     callStatus().then(function(ns){
       ns=ns||{};window.dmState=ns;
       if(meta&&meta.mode==='one'&&meta.dns_id){
@@ -2199,6 +2315,11 @@ function pollJob(root,job,meta,done){
       if(done)done(ns);
       else{if(meta&&meta.mode==='all')state.fullTest={status:String(j.status||'').toUpperCase()==='DONE'?'DONE':'FAILED',result:j.result||'fail',finished:Date.now()};if(meta&&meta.mode==='current')state.currentTest={status:String(j.status||'').toUpperCase()==='DONE'?'DONE':'FAILED',result:j.result||'fail',finished:Date.now()};render(root,ns);}
     }).catch(function(){
+      if(meta&&meta.mode==='profile'){
+        state.busy=false;
+        setAction(false,'Применение профиля завершилось, но состояние роутера не удалось обновить.');
+        state.pageNotice.profiles='Применение профиля завершилось, но состояние роутера не удалось обновить.';
+      }
       if(meta&&meta.mode==='one'&&meta.dns_id)state.checking[meta.dns_id]={status:j.result==='ok'?'OK':'FAIL',ping:''};
       if(meta&&meta.mode==='current')state.checking={};
       state.jobRunning=false;
@@ -2207,7 +2328,16 @@ function pollJob(root,job,meta,done){
     });
   }
   function poll(){
-    callJob(jobId).then(function(j){j=j||{};var s=String(j.status||'running').toUpperCase();if(s==='DONE'||s==='FAILED'){finish(j);return;}if(ticks++>180){finish({status:'FAILED',result:'fail'});return;}setTimeout(poll,700);}).catch(function(){if(ticks++>8){finish({status:'FAILED',result:'fail'});return;}setTimeout(poll,1000);});
+    callJob(jobId).then(function(j){
+      j=j||{};
+      var s=String(j.status||'running').toUpperCase();
+      if(s==='DONE'||s==='FAILED'){finish(j);return;}
+      if(ticks++>maxTicks){finish({status:'FAILED',result:'fail',output:'Превышено время ожидания фоновой задачи.'});return;}
+      setTimeout(poll,700);
+    }).catch(function(){
+      if(ticks++>maxErrors){finish({status:'FAILED',result:'fail',output:'RPC job временно недоступен.'});return;}
+      setTimeout(poll,1000);
+    });
   }
   poll();
 }
