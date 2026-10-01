@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.5.43
+# Version: 1.5.44
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -22,7 +22,7 @@ COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main
 # Legacy update compatibility: admin/services/dns_manager
 RUNTIME_UPDATE_STATE="$BACKUP_DIR/update.state"
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.5.43"
+VERSION="1.5.44"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -163,7 +163,7 @@ UPDATE_STATE="/etc/dns-manager-luci/update.state"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.5.43"
+SELF_VERSION="1.5.44"
 
 umask 077
 mkdir -p "$RUNTIME_DIR" "$JOB_DIR" "$CHECK_DIR" "$TMP_ROOT" 2>/dev/null || exit 1
@@ -1381,21 +1381,22 @@ run_action() {
             job_start_profile "$_profile"
             ;;
         set_slot)
-            _slot="$(jget slot)"; _id="$(jget id)"
-            case "$_slot" in 1|2|3|4|5|6|RU|RU_2) ;; *) json_error "Неверный слот"; return;; esac
-            case "$_id" in ''|*[!A-Za-z0-9_-]*) json_error "Неверный DNS ID"; return;; esac
+            RPC_SLOT="$(jget slot)"; RPC_ID="$(jget id)"
+            case "$RPC_SLOT" in 1|2|3|4|5|6|RU|RU_2) ;; *) json_error "Неверный слот"; return;; esac
+            case "$RPC_ID" in ''|*[!A-Za-z0-9_-]*) json_error "Неверный DNS ID"; return;; esac
             load_manager || { json_error "DNS Manager недоступен"; return; }
-            _cat="$(dns_cat "$_id" 2>/dev/null || true)"; [ -n "$_cat" ] || { json_error "DNS не найден в каталоге"; return; }
+            _slot="$RPC_SLOT"; _id="$RPC_ID"
+            _cat="$(dns_cat "$RPC_ID" 2>/dev/null || true)"; [ -n "$_cat" ] || { json_error "DNS не найден в каталоге"; return; }
             for _check_slot in 1 2 3 4 5 6 RU RU_2; do
-                [ "$_check_slot" = "$_slot" ] && continue
+                [ "$_check_slot" = "$RPC_SLOT" ] && continue
                 _check_id="$(cfg_get "SLOT_$_check_slot")"
-                if [ -n "$_check_id" ] && [ "$_check_id" = "$_id" ]; then
+                if [ -n "$_check_id" ] && [ "$_check_id" = "$RPC_ID" ]; then
                     json_error "DNS уже назначен в слоте $_check_slot"
                     return
                 fi
             done
-            case "$_slot" in RU|RU_2) [ "$_cat" = regional ] || { json_error "Этот DNS нельзя поставить в региональный слот"; return; } ;; *) [ "$_cat" != regional ] || { json_error "Региональный DNS нельзя поставить в общий слот"; return; } ;; esac
-            DNS_PROFILE=custom DNS_SELECTION_MODE=manual DNS_SELECTION_CATEGORY="$_cat"; eval "SLOT_$_slot=\"$_id\""; eval "SLOT_${_slot}_CAT=\"$_cat\""; [ "$_slot" = RU ] || [ "$_slot" = RU_2 ] && DNS_SELECTION_CATEGORY=regional || true
+            case "$RPC_SLOT" in RU|RU_2) [ "$_cat" = regional ] || { json_error "Этот DNS нельзя поставить в региональный слот"; return; } ;; *) [ "$_cat" != regional ] || { json_error "Региональный DNS нельзя поставить в общий слот"; return; } ;; esac
+            DNS_PROFILE=custom DNS_SELECTION_MODE=manual DNS_SELECTION_CATEGORY="$_cat"; eval "SLOT_${RPC_SLOT}=\"$RPC_ID\""; eval "SLOT_${RPC_SLOT}_CAT=\"$_cat\""; [ "$RPC_SLOT" = RU ] || [ "$RPC_SLOT" = RU_2 ] && DNS_SELECTION_CATEGORY=regional || true
             sync_regional_dns_state >/dev/null 2>&1 || true; SILENT_APPLY=1 CORE_ONLY=1 DNS_MANAGER_NO_UPDATE=1 apply_settings >/dev/null 2>&1 && json_ok || json_error "DNS не удалось применить"
             ;;
         set_test_age)
@@ -1478,7 +1479,7 @@ EOF_RPC
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.5.43
+// DNS Manager LuCI version: 1.5.44
 var callStatus = rpc.declare({ object:'dns_manager', method:'status', expect:{} });
 var callCatalog = rpc.declare({ object:'dns_manager', method:'catalog', params:['category','offset','limit','only_ok'], expect:{} });
 var callUpdateCheck = rpc.declare({ object:'dns_manager', method:'update_check', expect:{} });
