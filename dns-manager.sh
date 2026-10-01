@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.14"
+VERSION="3.15"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -24,7 +24,7 @@ WATCHDOG_REPAIR_COOLDOWN=300
 WATCHDOG_GUARD_INTERVAL=900
 WATCHDOG_SERVICE_PATH="/etc/init.d/dns-watchdog"
 WATCHDOG_SERVICE_MARKER="# DNS_MANAGER_WATCHDOG_SERVICE=2"
-WATCHDOG_SERVICE_VERSION_MARKER="# DNS_MANAGER_WATCHDOG_SERVICE_VERSION=3.11.3"
+WATCHDOG_SERVICE_VERSION_MARKER="# DNS_MANAGER_WATCHDOG_SERVICE_VERSION=3.11.6"
 WATCHDOG_LEGACY_DAEMON_PATH="/usr/bin/dns-watchdog-daemon.sh"
 WATCHDOG_LEGACY_DAEMON_MARKER="# DNS_MANAGER_WATCHDOG_DAEMON=1"
 WATCHDOG_LEGACY_RUNTIME_DIR="/var/run/dns-watchdog"
@@ -3095,6 +3095,11 @@ _apply_extras_now_impl() {
 }
 
 apply_extras_now() {
+    # Profiles never apply independent Settings modules.
+    if [ "${PROFILE_APPLY:-0}" = 1 ]; then
+        log_msg "Профиль DNS не может применять дополнительные настройки; операция отклонена."
+        return 1
+    fi
     _label="$2"
     if [ -z "$_label" ]; then
         case "$1" in
@@ -4284,6 +4289,10 @@ reset_hybrid_runtime_ports() {
     return 0
 }
 _apply_settings_impl() {
+    # Hard contract: profile application can touch DNS core only.
+    if [ "${PROFILE_APPLY:-0}" = 1 ]; then
+        CORE_ONLY=1
+    fi
     local APPLY_OUTPUT_QUIET=0
     clear_screen
     run_discovery
@@ -5309,7 +5318,10 @@ regional) printf '%s' 'Региональный';;
 esac
 }
 hybrid_runtime_state_word() {
-    [ "${DNS_PROFILE:-}" = "hybrid" ] || return 0
+    case "${DNS_PROFILE:-}" in
+        hybrid|custom) ;;
+        *) return 0 ;;
+    esac
 
     _expected=0
     _actual=0
@@ -5387,7 +5399,7 @@ refresh_doh_scheme_counts
 printf "  DNS-серверов всего:       ${C_WHITE}%s${C_NC}\n" "$DOH_TOTAL"
 printf "  По текущей схеме:         ${C_WHITE}%s${C_NC}\n" "$DOH_MATCH"
 printf "  Вне текущей схемы:        ${C_WHITE}%s${C_NC}\n" "$DOH_OTHER"
-hybrid_runtime_state_word | grep -q . && printf "  Гибридный DNS:    %s\n" "$(hybrid_runtime_state_word)"
+hybrid_runtime_state_word | grep -q . && printf "  Локальный DoH:   %s\n" "$(hybrid_runtime_state_word)"
 [ "$DNS_SMARTDNS" = yes ] && printf "  SmartDNS:         %s\n" "$(state_word "$DNS_SMARTDNS")"
 [ "$DNS_UNBOUND" = yes ] && printf "  Unbound:          %s\n" "$(state_word "$DNS_UNBOUND")"
 [ "$DNS_ADGUARD" = yes ] && printf "  AdGuard Home:     %s\n" "$(state_word "$DNS_ADGUARD")"
@@ -5426,9 +5438,32 @@ printf "  Активный nft:               %s\n" "$(state_word "$NFT_ACTIVE")
 printf "  Активный iptables:          %s\n" "$(state_word "$IPTABLES_ACTIVE")"
 printf "  Аппаратное ускорение:       %s\n" "$(state_word "$FLOW_OFFLOAD")"
 menu_section "НАСТРОЙКИ DNS Manager"
-case "${DNS_PROFILE:-}" in
-hybrid) _profile_name="Гибридный DNS";;
-custom)
+case "${DNS_SELECTION_MODE:-}:${DNS_SELECTION_CATEGORY:-}" in
+quick:bypass)
+    _profile_name="Максимальный обход"
+    ;;
+profile:clean)
+    _profile_name="Максимальная скорость"
+    ;;
+profile:security)
+    _profile_name="Максимальная безопасность"
+    ;;
+profile:privacy)
+    _profile_name="Максимальная приватность"
+    ;;
+profile:adblock)
+    _profile_name="Блокировка рекламы"
+    ;;
+profile:family)
+    _profile_name="Семейный DNS"
+    ;;
+profile:all)
+    _profile_name="Все категории"
+    ;;
+hybrid:)
+    _profile_name="Гибридный DNS"
+    ;;
+*)
     case "${DNS_SELECTION_CATEGORY:-}" in
         bypass) _profile_name="Максимальный обход";;
         clean) _profile_name="Максимальная скорость";;
@@ -5440,13 +5475,12 @@ custom)
         *) _profile_name="Ручная настройка";;
     esac
     ;;
-*) _profile_name="Ручная настройка";;
 esac
 printf "  Текущий профиль:              ${C_YELLOW}%s${C_NC}\n" "$_profile_name"
 printf "  Балансировка DNS:            %s\n" "$(module_state_word balance "$BALANCER_ENABLED")"
 printf "  Отдельный DNS (.ru/.su/.рф):  %s\n" "$(module_state_word tld "$TLD_SPLIT")"
 printf "  Исправление сетевых параметров / MSS: %s\n" "$(module_state_word mtu "$MTU_FIX")"
-printf "  Принудительный DNS:         %s\n" "$(module_state_word force "$FORCE_DOH")"
+printf "  Принудительный DNS:         %s\n" "$(force_state_word)"
 printf "  Настройка сети:                %s\n" "$(module_state_word sysctl "$SYSCTL_TUNING")"
 printf "  Настройка DNS-кэша:             %s\n" "$(module_state_word dnsmasq_perf "$DNSMASQ_PERF")"
 printf "  NTP для клиентов:              %s\n" "$(module_state_word ntp_clients "$NTP_CLIENTS")"
@@ -5528,25 +5562,58 @@ printf "%-28s %-18s %-9s %b\n" "$name" "$cat_text" "$time" "$status"
 done
 pause
 }
+profile_apply_begin() {
+    PROFILE_APPLY=1
+    PROFILE_OLD_MTU_FIX="${MTU_FIX:-0}"
+    PROFILE_OLD_NTP_IP_FALLBACK="${NTP_IP_FALLBACK:-0}"
+    PROFILE_OLD_SYSCTL_TUNING="${SYSCTL_TUNING:-0}"
+    PROFILE_OLD_SYSCTL_EXTENDED="${SYSCTL_EXTENDED:-0}"
+    PROFILE_OLD_FORCE_DOH="${FORCE_DOH:-0}"
+    PROFILE_OLD_DNSMASQ_PERF="${DNSMASQ_PERF:-0}"
+    PROFILE_OLD_NTP_CLIENTS="${NTP_CLIENTS:-0}"
+    PROFILE_OLD_CLIENT_FIXES="${CLIENT_FIXES:-0}"
+    PROFILE_OLD_WATCHDOG_ENABLED="${WATCHDOG_ENABLED:-0}"
+}
+profile_apply_end() {
+    MTU_FIX="$PROFILE_OLD_MTU_FIX"
+    NTP_IP_FALLBACK="$PROFILE_OLD_NTP_IP_FALLBACK"
+    SYSCTL_TUNING="$PROFILE_OLD_SYSCTL_TUNING"
+    SYSCTL_EXTENDED="$PROFILE_OLD_SYSCTL_EXTENDED"
+    FORCE_DOH="$PROFILE_OLD_FORCE_DOH"
+    DNSMASQ_PERF="$PROFILE_OLD_DNSMASQ_PERF"
+    NTP_CLIENTS="$PROFILE_OLD_NTP_CLIENTS"
+    CLIENT_FIXES="$PROFILE_OLD_CLIENT_FIXES"
+    WATCHDOG_ENABLED="$PROFILE_OLD_WATCHDOG_ENABLED"
+    PROFILE_APPLY=0
+}
+
 apply_profile_now() {
 goal="$1"
 case "$goal" in
 bypass)
+    profile_apply_begin
     quick_max_bypass
-    return
+    _profile_rc=$?
+    profile_apply_end
+    return "$_profile_rc"
     ;;
 clean|security|privacy|adblock|family|all)
-    # Profile selection must not silently destroy an already configured
-    # regional RU route. Preserve the operator's current RU state across
-    # auto-fill; the profile only changes the general slots.
+    profile_apply_begin
+    # Profile selection changes only the DNS selection. Preserve the operator's
+    # current regional DNS where requested, while the Hybrid DNS core remains on.
     _profile_old_ru="${SLOT_RU:-}"
     _profile_old_ru2="${SLOT_RU_2:-}"
     _profile_old_ru_cat="${SLOT_RU_CAT:-regional}"
     _profile_old_ru2_cat="${SLOT_RU_2_CAT:-regional}"
     _profile_old_tld="${TLD_RU_ENABLED:-0}"
-    DNS_PROFILE="custom"
+    # Every ready-made category uses the same Hybrid DNS engine.
+    # The category changes only which DNS candidates are selected; Hybrid remains
+    # the core layout with general slots plus regional RU/RU2 routing.
+    DNS_PROFILE="hybrid"
     DNS_SELECTION_MODE="profile"
     DNS_SELECTION_CATEGORY="$goal"
+    TLD_RU_ENABLED=1
+    TLD_SPLIT=1
     BALANCER_ENABLED=1
     PORT_1="$HYBRID_PORT_1"; PORT_2="$HYBRID_PORT_2"; PORT_3="$HYBRID_PORT_3"
     PORT_4="$HYBRID_PORT_4"; PORT_5="$HYBRID_PORT_5"; PORT_6="$HYBRID_PORT_6"
@@ -5559,15 +5626,21 @@ clean|security|privacy|adblock|family|all)
             SLOT_RU_2="$_profile_old_ru2"
             SLOT_RU_CAT="$_profile_old_ru_cat"
             SLOT_RU_2_CAT="$_profile_old_ru2_cat"
-            TLD_RU_ENABLED="$_profile_old_tld"
-            TLD_SPLIT="$_profile_old_tld"
+            # Hybrid core always keeps regional routing enabled for every category.
+            TLD_RU_ENABLED=1
+            TLD_SPLIT=1
             PORT_RU="$HYBRID_PORT_RU"
             [ -n "$_profile_old_ru2" ] && PORT_RU_2="$HYBRID_PORT_RU_2" || PORT_RU_2=""
         fi
         CORE_ONLY=1
         apply_settings
+        _profile_rc=$?
         CORE_ONLY=0
+    else
+        _profile_rc=1
     fi
+    profile_apply_end
+    return "$_profile_rc"
     ;;
 *)
     warn_msg "Неизвестный профиль DNS."
@@ -6847,8 +6920,7 @@ printf "  ${C_GREEN}✓${C_NC} отдельный DNS для .ru / .su / .рф\n
 printf "  ${C_GREEN}✓${C_NC} автоматическая замена неработающих серверов\n"
 printf "  ${C_GREEN}✓${C_NC} одновременная работа выбранных DNS\n"
 printf "  ${C_GREEN}✓${C_NC} проверка после настройки\n"
-printf "  ${C_GREEN}✓${C_NC} сохранение исходных настроек для отката\n"
-printf "  ${C_GREEN}✓${C_NC} кэш DNS для более быстрых повторных запросов\n\n"
+printf "  ${C_GREEN}✓${C_NC} сохранение исходных настроек для отката\n\n"
 if watchdog_test_results_fresh; then
     info_msg "Использую свежие результаты полной проверки DNS; повторный тест не требуется."
 else
@@ -6866,7 +6938,6 @@ SLOT_RU_CAT="regional"; SLOT_RU_2_CAT="regional"
 TLD_RU_ENABLED=1
 TLD_SPLIT=1
 BALANCER_ENABLED=1
-DNSMASQ_PERF=1
 BOOTSTRAP_DNS="$BOOTSTRAP_DNS_ALL"
 PORT_1="$HYBRID_PORT_1"; PORT_2="$HYBRID_PORT_2"; PORT_3="$HYBRID_PORT_3"
 PORT_4="$HYBRID_PORT_4"; PORT_5="$HYBRID_PORT_5"; PORT_6="$HYBRID_PORT_6"
@@ -6877,9 +6948,6 @@ HYBRID_FORCE_RESELECT=1
     _rc=$?
     CORE_ONLY=0
     HYBRID_FORCE_RESELECT=0
-    if [ "$_rc" -eq 0 ] && [ "${DNSMASQ_PERF:-0}" = 1 ]; then
-        apply_extras_now dnsmasq_perf || true
-    fi
     return "$_rc"
 }
 # ==========================================
@@ -8135,7 +8203,7 @@ watchdog_service_install_files() {
     cat > "$_stmp" <<'EOF_DNS_WATCHDOG_SERVICE'
 #!/bin/sh /etc/rc.common
 # DNS_MANAGER_WATCHDOG_SERVICE=2
-# DNS_MANAGER_WATCHDOG_SERVICE_VERSION=3.11.3
+# DNS_MANAGER_WATCHDOG_SERVICE_VERSION=3.11.6
 
 USE_PROCD=1
 START=95
