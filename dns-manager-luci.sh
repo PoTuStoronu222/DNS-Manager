@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.5.5
+# Version: 1.5.6
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -22,7 +22,7 @@ COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main
 # Legacy update compatibility: admin/services/dns_manager
 RUNTIME_UPDATE_STATE="$BACKUP_DIR/update.state"
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.5.5"
+VERSION="1.5.6"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -170,7 +170,7 @@ UPDATE_STATE="/etc/dns-manager-luci/update.state"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.5.5"
+SELF_VERSION="1.5.6"
 
 umask 077
 mkdir -p "$RUNTIME_DIR" "$JOB_DIR" "$CHECK_DIR" "$TMP_ROOT" 2>/dev/null || exit 1
@@ -1442,7 +1442,7 @@ function stateBadge(status,pingValue){
   if(s==='OK'||s==='FAIL'||s==='FAILED'||s.indexOf('_FAIL')>0||s.indexOf('TIMEOUT')>=0||s.indexOf('ERROR')>=0||s.indexOf('HTTP_')===0||!hasPing(pingValue))return badge('dm-bad','недоступен');
   return badge('dm-off','нет данных');
 }
-function settingName(n){ var m={watchdog:'Автопроверка DNS',mtu:'Исправление MTU и MSS для WAN',sysctl:'Оптимизация TCP и Conntrack',sysctl_ext:'Расширенные параметры TCP и буферов',ntp_clients:'Время для устройств в локальной сети',dnsmasq_perf:'Увеличенный кэш DNS',client_fixes:'Совместимость устройств и DNS-проверок'}; return m[n]||n; }
+function settingName(n){ var m={watchdog:'Автопроверка и замена DNS',mtu:'Исправление MTU и MSS для WAN',sysctl:'Оптимизация TCP и таблицы соединений',sysctl_ext:'Расширенные параметры TCP и сетевых буферов',ntp_clients:'Время для устройств в локальной сети',dnsmasq_perf:'Увеличенный кэш DNS',client_fixes:'DNS для проверки подключения и совместимости устройств'}; return m[n]||n; }
 function versionState(v,available,latest,checked,okWord,pending){
   if(pending)return badge('dm-warn','проверяется…');
   if(!v)return badge('dm-bad','не установлена');
@@ -1600,15 +1600,15 @@ function renderOverview(root,st){
   if(!dnsItems.length)dnsItems.push(E('div',{'class':'dm-hint'},'DNS в слоты не назначены.'));
 
   var components=card('Компоненты',[
-    componentItem('Профиль',profile),
-    componentItem('Автопроверка DNS',wd,wdDetails),
-    componentItem('Принудительный DNS',force,forceDetails),
+    componentItem('Профиль DNS',profile),
+    componentItem('Автопроверка и замена DNS',wd,wdDetails),
+    componentItem('Принудительный DNS для устройств',force,forceDetails),
     componentSettingItem('Исправление MTU и MSS для WAN','mtu'),
-    componentSettingItem('Оптимизация TCP и Conntrack','sysctl'),
-    componentSettingItem('Расширенные параметры TCP и буферов','sysctl_ext'),
+    componentSettingItem('Оптимизация TCP и таблицы соединений','sysctl'),
+    componentSettingItem('Расширенные параметры TCP и сетевых буферов','sysctl_ext'),
     componentSettingItem('Увеличенный кэш DNS','dnsmasq_perf'),
     componentSettingItem('Время для устройств в локальной сети','ntp_clients'),
-    componentSettingItem('Совместимость устройств и DNS-проверок','client_fixes')
+    componentSettingItem('DNS для проверки подключения и совместимости устройств','client_fixes')
   ]);
 
   var dnsSlotsCard=E('div',{'class':'dm-card'},[
@@ -1821,9 +1821,9 @@ function renderSettings(root,st){
   body.push(E('div',{'class':'dm-section-title'},'Фоновая проверка DNS'));
   body.push(watchdogCard(root,st));
   var groups=[
-    ['Сеть',[['mtu','Исправление MTU и MSS для WAN','Исправляет размеры пакетов и TCP-сегментов для WAN-соединения.'],['sysctl','Оптимизация TCP и Conntrack','Настраивает TCP Fast Open, таймаут TCP и очередь соединений.'],['sysctl_ext','Расширенные параметры TCP и буферов','Настраивает Conntrack, keepalive и сетевые буферы.']]],
+    ['Сеть',[['mtu','Исправление MTU и MSS для WAN','Исправляет размеры пакетов и TCP-сегментов для WAN-соединения.'],['sysctl','Оптимизация TCP и таблицы соединений','Настраивает TCP Fast Open, таймаут TCP и очередь соединений.'],['sysctl_ext','Расширенные параметры TCP и сетевых буферов','Настраивает таблицу соединений, keepalive и сетевые буферы.']]],
     ['Производительность',[['dnsmasq_perf','Увеличенный кэш DNS','Увеличивает кэш dnsmasq до 1000 записей и настраивает связанные параметры.']]],
-    ['Устройства сети',[['ntp_clients','Время для устройств в локальной сети','Выдаёт устройствам локальной сети адрес роутера как сервер времени по DHCP.'],['client_fixes','Совместимость устройств и DNS-проверок','Настраивает DNS для системных проверок соединения и совместимости устройств.']]]
+    ['Устройства сети',[['ntp_clients','Время для устройств в локальной сети','Выдаёт устройствам локальной сети адрес роутера как сервер времени по DHCP.'],['client_fixes','DNS для проверки подключения и совместимости устройств','Настраивает DNS для системных проверок подключения и совместимости устройств.']]]
   ];
   groups.forEach(function(g){
     body.push(E('div',{'class':'dm-section-title'},g[0]));
