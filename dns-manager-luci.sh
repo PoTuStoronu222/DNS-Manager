@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.5.13
+# Version: 1.5.14
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -22,7 +22,7 @@ COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main
 # Legacy update compatibility: admin/services/dns_manager
 RUNTIME_UPDATE_STATE="$BACKUP_DIR/update.state"
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.5.13"
+VERSION="1.5.14"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -155,7 +155,7 @@ UPDATE_STATE="/etc/dns-manager-luci/update.state"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.5.13"
+SELF_VERSION="1.5.14"
 
 umask 077
 mkdir -p "$RUNTIME_DIR" "$JOB_DIR" "$CHECK_DIR" "$TMP_ROOT" 2>/dev/null || exit 1
@@ -882,6 +882,7 @@ status_json() {
     _mv="$(manager_version 2>/dev/null || true)"
     _profile="$(cfg_get DNS_PROFILE)"; [ -n "$_profile" ] || _profile="hybrid"
     _mode="$(cfg_get DNS_SELECTION_MODE)"; [ -n "$_mode" ] || _mode="quick"
+    _selection_category="$(cfg_get DNS_SELECTION_CATEGORY)"; [ -n "$_selection_category" ] || _selection_category="bypass"
     _watchdog="$(cfg_get WATCHDOG_ENABLED)"; [ -n "$_watchdog" ] || _watchdog=0
     _watchdog_interval="$(cfg_get WATCHDOG_INTERVAL)"; [ -n "$_watchdog_interval" ] || _watchdog_interval=90
     _watchdog_backend="$(cfg_get WATCHDOG_BACKEND)"; [ -n "$_watchdog_backend" ] || _watchdog_backend=procd
@@ -1018,7 +1019,7 @@ status_json() {
     printf ',"manager_latest_version":'; json_quote "$_manager_latest_state"; printf ',"manager_update_available":%s,"manager_check_ok":%s' "$_manager_avail_state" "$_manager_check_state"
     printf ',"catalog_latest_version":'; json_quote "$_catalog_latest_state"; printf ',"catalog_latest_rev":'; json_quote "$_catalog_rev_state"; printf ',"catalog_latest_total":%s,"catalog_update_available":%s,"catalog_check_ok":%s' "$_catalog_total_state" "$_catalog_avail_state" "$_catalog_check_state"
     printf ',"ipv4":'; json_quote "$_ipv4"; printf ',"ipv6":'; json_quote "$_ipv6"; printf ',"dnsmasq":'; json_quote "$_dnsmasq"; printf ',"doh":'; json_quote "$_doh"; printf ',"firewall":'; json_quote "$_fw"; printf ',"openwrt":'; json_quote "$(openwrt_release)"; printf ',"lan":'; json_quote "$_lan"
-    printf ',"profile":'; json_quote "$_profile"; printf ',"profile_mode":'; json_quote "$_mode"; printf ',"watchdog":'; json_quote "$_watchdog"
+    printf ',"profile":'; json_quote "$_profile"; printf ',"profile_mode":'; json_quote "$_mode"; printf ',"selection_category":'; json_quote "$_selection_category"; printf ',"watchdog":'; json_quote "$_watchdog"
     printf ',"watchdog_backend":'; json_quote "$_watchdog_backend"; printf ',"watchdog_service":%s,"watchdog_service_enabled":%s,"watchdog_loop":%s' "$_watchdog_service_running" "$_watchdog_service_enabled" "$_watchdog_loop_running"
     printf ',"watchdog_interval":'; json_quote "$_watchdog_interval"; printf ',"watchdog_fail_threshold":%s' "$_watchdog_fail_threshold"
     printf ',"watchdog_repair_cooldown":%s,"watchdog_guard_interval":%s' "$_watchdog_repair_cooldown" "$_watchdog_guard_interval"
@@ -1190,7 +1191,16 @@ job_start_test_one() {
                     _tmp="$TMP_ROOT/results.$$"; _stamp="$(date +%s)"; : > "$_tmp"
                     [ -s "$TEST_RESULTS" ] && awk -F'|' -v id="$_id" '$1!=id {print}' "$TEST_RESULTS" > "$_tmp" 2>/dev/null || true
                     cat "$TMP_DIR/t.$_id" >> "$_tmp" 2>/dev/null || true; mv "$_tmp" "$TEST_RESULTS" 2>/dev/null || true
-                    save_persistent_test_results >/dev/null 2>&1 || true; set_check_stamp "$_id" "$_stamp" "$(cat "$TMP_DIR/t.$_id" 2>/dev/null || true)"; release_test_lock || true
+                    save_persistent_test_results >/dev/null 2>&1 || true
+                    _cur="$TMP_ROOT/current-slot-one.$"; : > "$_cur"
+                    if [ -s "$CURRENT_SLOT_RESULTS" ]; then
+                        awk -F'|' -v id="$_id" '$1!=id {print}' "$CURRENT_SLOT_RESULTS" > "$_cur" 2>/dev/null || true
+                    fi
+                    cat "$TMP_DIR/t.$_id" >> "$_cur" 2>/dev/null || true
+                    write_current_slot_results "$_cur" || true
+                    rm -f "$_cur" 2>/dev/null || true
+                    set_check_stamp "$_id" "$_stamp"
+                    release_test_lock || true
                     job_write "$_jid" status done; job_write "$_jid" result ok; job_write "$_jid" finished "$_stamp"; exit 0
                 fi
                 release_test_lock || true
@@ -1461,7 +1471,7 @@ function injectStyle(root){
   '.dm-badge{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:999px;font-size:12px;font-weight:600;white-space:nowrap}.dm-dot{width:8px;height:8px;border-radius:50%;display:inline-block;flex-shrink:0}'+
   '.dm-ok{background:rgba(46,160,67,.12);color:#1a7f37}.dm-ok .dm-dot{background:#1a7f37}.dm-bad{background:rgba(207,34,46,.10);color:#cf222e}.dm-bad .dm-dot{background:#cf222e}.dm-warn{background:rgba(191,135,0,.12);color:#9a6700}.dm-warn .dm-dot{background:#9a6700}.dm-off{background:rgba(110,118,129,.12);color:#57606a}.dm-off .dm-dot{background:#57606a}'+
   '.dm-grid2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.dm-grid3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}.dm-grid4{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}'+
-  '.dm-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:11px}.dm-component-item{padding:8px 0;border-bottom:1px solid rgba(110,118,129,.14)}.dm-component-group{padding:8px 0;border-bottom:1px solid rgba(110,118,129,.14)}.dm-component-dns-list{margin-top:6px;display:flex;flex-direction:column;gap:5px}.dm-component-dns{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:6px 0;border-top:1px solid rgba(110,118,129,.08);flex-wrap:wrap}.dm-component-dns:first-child{border-top:0}.dm-component-dns-main{display:flex;align-items:center;gap:8px;min-width:0;flex:1 1 260px}.dm-component-dns-slot{font-size:11.5px;font-weight:700;opacity:.62;min-width:118px}.dm-component-dns-name{font-size:12.5px;font-weight:600;overflow-wrap:anywhere}.dm-component-dns-meta{display:flex;align-items:center;gap:9px;font-size:11.5px;opacity:.78;flex:0 0 auto}.dm-component-dns-ping{font-size:12px;white-space:nowrap;opacity:.8}.dm-component-item:last-of-type{border-bottom:0}.dm-component-head{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}.dm-component-title{font-size:13px;font-weight:600}.dm-component-details{font-size:11.5px;line-height:1.45;opacity:.66;margin-top:3px;overflow-wrap:anywhere}.dm-component-date{font-size:12.5px;opacity:.82}.dm-actions .cbi-button{margin:0;padding:5px 11px;font-size:12.5px}'+
+  '.dm-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:11px}.dm-picker-list{display:flex;flex-direction:column;gap:7px;max-height:60vh;overflow:auto}.dm-picker-item{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 0;border-bottom:1px solid rgba(110,118,129,.14)}.dm-picker-main{min-width:0;flex:1}.dm-picker-name{font-size:13px;font-weight:600;overflow-wrap:anywhere}.dm-picker-meta{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:3px}.dm-picker-actions{display:flex;gap:6px;flex-shrink:0;flex-wrap:wrap}.dm-component-item{padding:8px 0;border-bottom:1px solid rgba(110,118,129,.14)}.dm-component-group{padding:8px 0;border-bottom:1px solid rgba(110,118,129,.14)}.dm-component-dns-list{margin-top:6px;display:flex;flex-direction:column;gap:5px}.dm-component-dns{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:6px 0;border-top:1px solid rgba(110,118,129,.08);flex-wrap:wrap}.dm-component-dns:first-child{border-top:0}.dm-component-dns-main{display:flex;align-items:center;gap:8px;min-width:0;flex:1 1 260px}.dm-component-dns-slot{font-size:11.5px;font-weight:700;opacity:.62;min-width:118px}.dm-component-dns-name{font-size:12.5px;font-weight:600;overflow-wrap:anywhere}.dm-component-dns-meta{display:flex;align-items:center;gap:9px;font-size:11.5px;opacity:.78;flex:0 0 auto}.dm-component-dns-ping{font-size:12px;white-space:nowrap;opacity:.8}.dm-component-item:last-of-type{border-bottom:0}.dm-component-head{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}.dm-component-title{font-size:13px;font-weight:600}.dm-component-details{font-size:11.5px;line-height:1.45;opacity:.66;margin-top:3px;overflow-wrap:anywhere}.dm-component-date{font-size:12.5px;opacity:.82}.dm-actions .cbi-button{margin:0;padding:5px 11px;font-size:12.5px}'+
   '.dm-hint{font-size:12.5px;opacity:.68;line-height:1.5;margin:0 0 8px}.dm-mini{font-size:11px;opacity:.62}.dm-meta{font-size:11px;line-height:1.45;opacity:.66}.dm-update{padding:8px 10px;border-radius:8px;background:rgba(26,127,55,.08);border:1px solid rgba(26,127,55,.18);font-size:12.5px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}'+
   '.dm-seg{display:flex;flex-wrap:wrap;gap:6px;margin:5px 0}.dm-profile-seg{flex-wrap:nowrap;overflow-x:auto;padding-bottom:2px}.dm-seg .cbi-button{padding:5px 11px;border-radius:7px;font-size:12.5px;font-weight:600}.dm-seg .active{background:#1a7f37;color:#fff;border-color:#1a7f37}'+
   '.dm-force-note{font-size:12px;line-height:1.55;opacity:.72}.dm-inline-msg{display:block;margin:8px 0 0;padding:7px 10px;border-radius:7px;font-size:12px;line-height:1.4}.dm-inline-msg.info{background:rgba(9,105,218,.08);border:1px solid rgba(9,105,218,.16)}.dm-inline-msg.ok{background:rgba(26,127,55,.08);border:1px solid rgba(26,127,55,.16)}.dm-inline-msg.error{background:rgba(207,34,46,.08);border:1px solid rgba(207,34,46,.16)}.dm-applied{display:flex;align-items:center;gap:9px;padding:9px 11px;border-radius:8px;font-size:12.5px;line-height:1.45}.dm-applied.ok{background:rgba(26,127,55,.08);border:1px solid rgba(26,127,55,.18)}.dm-applied.error{background:rgba(207,34,46,.08);border:1px solid rgba(207,34,46,.18)}.dm-applied strong{font-weight:700}.dm-confirm-body{min-width:min(440px,calc(100vw - 70px))}.dm-setting{padding:11px 12px}.dm-setting-title{font-size:13px;font-weight:600}.dm-setting-desc{font-size:11.5px;line-height:1.45;opacity:.68;margin-top:3px}.dm-setting-line{display:flex;align-items:center;justify-content:space-between;gap:10px}.dm-setting-actions{display:flex;align-items:center;gap:7px;flex-shrink:0}.dm-setting-actions .cbi-button{padding:4px 9px;font-size:12px}.dm-setting-saving{opacity:.7}.dm-force-external{padding:8px 10px;border-radius:8px;background:rgba(191,135,0,.10);border:1px solid rgba(191,135,0,.22);font-size:12.5px;line-height:1.5;margin-top:8px}'+
@@ -1708,7 +1718,59 @@ function assign(id,slot,root,nextName){
   });
 }
 function openAssign(id,cat,root){var slots=cat==='regional'?['RU','RU_2']:['1','2','3','4','5','6'];var targetName=((window.dmCatalog&&window.dmCatalog.servers)||[]).filter(function(x){return x.id===id;})[0];var box=E('div',{'class':'dm-assign-list'});slots.forEach(function(slot){box.appendChild(E('div',{'class':'dm-assign-item'},[E('div',{'class':'dm-assign-info'},[E('div',{'class':'dm-assign-slot'},slotLabel(slot)),E('div',{'class':'dm-assign-current'},'Сейчас: '+slotCurrentName(slot))]),btn('Далее','cbi-button-neutral',function(){ui.hideModal();assign(id,slot,root,targetName&&targetName.name);})]));});ui.showModal('Назначить DNS «'+(targetName&&targetName.name?targetName.name:id)+'»',[box,E('div',{'class':'right'},[btn('Отмена','cbi-button-negative',ui.hideModal)])]);}
-function openSlotPicker(slot,root){if(state.busy)return;var regional=slot==='RU'||slot==='RU_2';callCatalog(regional?'regional':'all',0,48,0).then(function(d){var rows=(d.servers||[]).filter(function(x){return regional?x.category==='regional':x.category!=='regional';});var cur=slotCurrentName(slot);var sel=E('select',{'class':'cbi-input-select'});rows.forEach(function(x){sel.appendChild(E('option',{value:x.id},x.name+' — '+catName(x.category)+(x.name===cur?' · сейчас':'')));});ui.showModal('Выбор DNS для '+slotLabel(slot)+' · сейчас: '+cur,[sel,E('div',{'class':'right'},[btn('Отмена','cbi-button-negative',ui.hideModal),btn('Далее','cbi-button-apply',function(){var picked=sel.value,pickedName=sel.options[sel.selectedIndex]?sel.options[sel.selectedIndex].text.split(' — ')[0]:picked;ui.hideModal();assign(picked,slot,root,pickedName);})])]);}).catch(function(){state.pageNotice.slots='Не удалось открыть список DNS.';renderSlots(root,window.dmState||{});});}
+function openSlotPicker(slot,root){
+  if(state.busy)return;
+  var st=window.dmState||{};
+  var currentSlot=null;
+  (st.slots||[]).forEach(function(d){if(String(d.slot)===String(slot))currentSlot=d;});
+  var regional=slot==='RU'||slot==='RU_2';
+  var category=regional?'regional':((st.selection_category&&CATEGORY.some(function(x){return x[0]===st.selection_category;}))?st.selection_category:(currentSlot&&currentSlot.category)||'bypass');
+  var profile=profileName(st.profile);
+  callCatalog(category,0,48,0).then(function(d){
+    var rows=d&&d.servers||[];
+    var cur=currentSlot&&currentSlot.name?currentSlot.name:slotCurrentName(slot);
+    var list=E('div',{'class':'dm-picker-list'});
+    if(!rows.length){
+      list.appendChild(E('div',{'class':'dm-hint'},'В этой категории DNS не найдены.'));
+    }else{
+      rows.forEach(function(x){
+        var ci=checkInfo(x.id,x);
+        var status=ci.status==='RUNNING'?badge('dm-warn','проверяется'):stateBadge(ci.status,ci.ping);
+        var pingNode=ping(ci.ping);
+        var currentMark=x.name===cur?badge('dm-ok','выбран'):null;
+        var action=btn(x.name===cur?'Выбран':'Выбрать','cbi-button-neutral',function(){
+          if(x.name===cur){ui.hideModal();return;}
+          ui.hideModal();
+          assign(x.id,slot,root,x.name);
+        },{disabled:!!state.busy});
+        var check=btn(ci.status==='RUNNING'?'Проверяется':'Проверить','cbi-button-neutral',function(){
+          if(state.jobRunning||state.busy)return;
+          ui.hideModal();
+          testOne(x.id,root,'doh',function(){openSlotPicker(slot,root);});
+        },{disabled:ci.status==='RUNNING'||!!state.busy});
+        list.appendChild(E('div',{'class':'dm-picker-item'},[
+          E('div',{'class':'dm-picker-main'},[
+            E('div',{'class':'dm-picker-name'},x.name||x.id),
+            E('div',{'class':'dm-picker-meta'},[
+              E('span',{},pingNode),
+              status,
+              currentMark||E('span',{})
+            ])
+          ]),
+          E('div',{'class':'dm-picker-actions'},[check,action])
+        ]));
+      });
+    }
+    ui.showModal('DNS для профиля «'+profile+'» · '+slotLabel(slot),[
+      E('div',{'class':'dm-mini'},'Категория: '+catName(category)+' · текущий: '+cur),
+      list,
+      E('div',{'class':'right'},[btn('Закрыть','cbi-button-negative',ui.hideModal)])
+    ]);
+  }).catch(function(){
+    state.pageNotice.slots='Не удалось открыть список DNS.';
+    renderSlots(root,window.dmState||{});
+  });
+}
 
 function openForceDetails(root,st){
   var vals=[
@@ -2134,13 +2196,15 @@ function pollJob(root,job,meta,done){
         state.checking[meta.dns_id]={status:d&&d.status?d.status:(j.result==='ok'?'OK':'FAIL'),ping:d&&d.ping?d.ping:''};
       }
       if(meta&&meta.mode==='current')state.checking={};
+      state.jobRunning=false;
       if(done)done(ns);
-      else{state.jobRunning=false;if(meta&&meta.mode==='all')state.fullTest={status:String(j.status||'').toUpperCase()==='DONE'?'DONE':'FAILED',result:j.result||'fail',finished:Date.now()};if(meta&&meta.mode==='current')state.currentTest={status:String(j.status||'').toUpperCase()==='DONE'?'DONE':'FAILED',result:j.result||'fail',finished:Date.now()};render(root,ns);}
+      else{if(meta&&meta.mode==='all')state.fullTest={status:String(j.status||'').toUpperCase()==='DONE'?'DONE':'FAILED',result:j.result||'fail',finished:Date.now()};if(meta&&meta.mode==='current')state.currentTest={status:String(j.status||'').toUpperCase()==='DONE'?'DONE':'FAILED',result:j.result||'fail',finished:Date.now()};render(root,ns);}
     }).catch(function(){
       if(meta&&meta.mode==='one'&&meta.dns_id)state.checking[meta.dns_id]={status:j.result==='ok'?'OK':'FAIL',ping:''};
       if(meta&&meta.mode==='current')state.checking={};
+      state.jobRunning=false;
       if(done)done(window.dmState||{});
-      else{state.jobRunning=false;if(meta&&meta.mode==='all')state.fullTest={status:'FAILED',result:'fail'};if(meta&&meta.mode==='current')state.currentTest={status:'FAILED',result:'fail'};render(root,window.dmState||{});}
+      else{if(meta&&meta.mode==='all')state.fullTest={status:'FAILED',result:'fail'};if(meta&&meta.mode==='current')state.currentTest={status:'FAILED',result:'fail'};render(root,window.dmState||{});}
     });
   }
   function poll(){
