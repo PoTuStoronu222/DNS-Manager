@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.24"
+VERSION="3.25"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -2902,11 +2902,13 @@ EOF_SYSCTL_BASE_EXPECTED
 
 sysctl_stock_value() {
     _k="$1"
-    _v="$(awk -F= -v k="$_k" '$1==k{print $2; exit}' /etc/sysctl.d/10-default.conf 2>/dev/null)"
+    _v="$(awk -F= -v k="$_k" '$1 ~ "^[[:space:]]*" k "[[:space:]]*$" {v=$2; gsub(/[[:space:]]/,"",v); if(v!=""){print v; exit}}' /etc/sysctl.d/10-default.conf 2>/dev/null)"
     [ -n "$_v" ] && { printf '%s' "$_v"; return 0; }
     case "$_k" in
         net.ipv4.tcp_fastopen) printf '1' ;;
+        net.ipv4.tcp_fin_timeout) printf '30' ;;
         net.core.somaxconn) printf '4096' ;;
+        net.ipv4.tcp_keepalive_time) printf '120' ;;
         net.ipv4.tcp_keepalive_intvl) printf '75' ;;
         net.ipv4.tcp_keepalive_probes) printf '9' ;;
         net.core.rmem_max|net.core.wmem_max|net.core.rmem_default|net.core.wmem_default) printf '212992' ;;
@@ -2914,13 +2916,12 @@ sysctl_stock_value() {
             _hash="$(cat /sys/module/nf_conntrack/parameters/hashsize 2>/dev/null)"
             case "$_hash" in
                 ''|*[!0-9]*) return 1 ;;
-                *) printf "%s" "$_hash" ;;
+                *) printf '%s' "$_hash" ;;
             esac
             ;;
         *) return 1 ;;
     esac
 }
-
 sysctl_restore_stock_key() {
     _k="$1"
     _managed_value="$2"
@@ -2991,7 +2992,7 @@ remove_sysctl_base() {
         _state="$(sysctl_file_state "$_f" "$SYSCTL_BASE_MARKER" "$(sysctl_base_expected)")"
         [ "$_state" != 3 ] || {
             warn_msg "Файл $_f используется другой настройкой; файл сохранён."
-            return 0
+            return 2
         }
         rm -f "$_f" || return 1
         _managed=1
@@ -3001,12 +3002,14 @@ remove_sysctl_base() {
     elif [ -x /sbin/sysctl ]; then
         sysctl -p /etc/sysctl.conf >/dev/null 2>&1 || true
     fi
-    if [ "$_stock_reset" = 1 ] && [ "$_managed" = 1 ]; then
+    if [ "$_stock_reset" = 1 ]; then
+        _force=0
+        [ "$_managed" = 1 ] && _force=1
         while IFS= read -r _p; do
             [ -n "$_p" ] || continue
-            _k="${_p%%=*}"
-            _v="${_p#*=}"
-            sysctl_restore_stock_key "$_k" "$_v" 1 || warn_msg "Не удалось вернуть $_k к stock."
+            _k="$(printf "%s" "$_p" | cut -d= -f1)"
+            _v="$(printf "%s" "$_p" | cut -d= -f2-)"
+            sysctl_restore_stock_key "$_k" "$_v" "$_force" || warn_msg "Не удалось вернуть $_k к stock."
         done <<EOF_SYSCTL_BASE_STOCK
 $(sysctl_base_expected)
 EOF_SYSCTL_BASE_STOCK
@@ -3370,7 +3373,14 @@ EOF_SYSCTL_VALUES
 apply_sysctl_extended() {
     f="$(sysctl_extended_manager_path)"
     _params="$(sysctl_extended_params)"
-    [ "${SYSCTL_EXTENDED:-0}" = 1 ] || return 0
+    [ "$SYSCTL_EXTENDED" = 1 ] || return 0
+    if [ -f "$f" ]; then
+        _state="$(sysctl_file_state "$f" "$SYSCTL_EXTENDED_MARKER" "$_params")"
+        [ "$_state" != 3 ] || {
+            err_msg "Файл $f используется другой настройкой; DNS Manager его не перезаписывает."
+            return 2
+        }
+    fi
     if command -v modprobe >/dev/null 2>&1; then
         modprobe nf_conntrack >/dev/null 2>&1 || true
     fi
@@ -3381,7 +3391,7 @@ apply_sysctl_extended() {
     } > "$_tmp" || return 1
     while IFS= read -r _p; do
         [ -n "$_p" ] || continue
-        _k="${_p%%=*}"
+        _k="$(printf "%s" "$_p" | cut -d= -f1)"
         [ -n "$_k" ] || continue
         if ! sysctl -n "$_k" >/dev/null 2>&1; then
             warn_msg "Ядро не предоставляет sysctl $_k; параметр пропускаю."
@@ -3399,7 +3409,6 @@ EOF_SYSCTL_EXT_APPLY
     mv "$_tmp" "$f" || { rm -f "$_tmp"; return 1; }
     return 0
 }
-
 remove_sysctl_extended() {
     _stock_reset="${1:-0}"
     _f="$(sysctl_extended_manager_path)"
@@ -3409,7 +3418,7 @@ remove_sysctl_extended() {
         _state="$(sysctl_file_state "$_f" "$SYSCTL_EXTENDED_MARKER" "$_expected")"
         [ "$_state" != 3 ] || {
             warn_msg "Файл $_f используется другой настройкой; файл сохранён."
-            return 0
+            return 2
         }
         rm -f "$_f" || return 1
         _managed=1
@@ -3420,12 +3429,14 @@ remove_sysctl_extended() {
     elif [ -x /sbin/sysctl ]; then
         sysctl -p /etc/sysctl.conf >/dev/null 2>&1 || true
     fi
-    if [ "$_stock_reset" = 1 ] && [ "$_managed" = 1 ]; then
+    if [ "$_stock_reset" = 1 ]; then
+        _force=0
+        [ "$_managed" = 1 ] && _force=1
         while IFS= read -r _p; do
             [ -n "$_p" ] || continue
-            _k="${_p%%=*}"
-            _v="${_p#*=}"
-            sysctl_restore_stock_key "$_k" "$_v" 1 || warn_msg "Не удалось вернуть $_k к stock."
+            _k="$(printf "%s" "$_p" | cut -d= -f1)"
+            _v="$(printf "%s" "$_p" | cut -d= -f2-)"
+            sysctl_restore_stock_key "$_k" "$_v" "$_force" || warn_msg "Не удалось вернуть $_k к stock."
         done <<EOF_SYSCTL_EXT_STOCK
 $_expected
 EOF_SYSCTL_EXT_STOCK
@@ -6792,13 +6803,13 @@ setting_process() {
     if [ "$_rc" -eq 0 ]; then
         case "$_state:$_module" in
             0:mtu|2:mtu) ok_msg "Исправление MTU и MSS для WAN настроено." ;;
-            1:mtu) ok_msg "Исправление MTU и MSS для WAN выключено в фактической WAN-зоне." ;;
+            1:mtu) ok_msg "Исправление MTU и MSS для WAN выключено; штатное состояние WAN восстановлено." ;;
             0:force|2:force) ok_msg "Принудительный DNS для устройств настроен." ;;
             1:force) ok_msg "Принудительный DNS для устройств выключен, стоковое состояние восстановлено." ;;
             0:sysctl|2:sysctl) ok_msg "Оптимизация TCP и таблицы соединений настроена." ;;
-            1:sysctl) ok_msg "Оптимизация TCP и таблиц соединений выключена." ;;
+            1:sysctl) ok_msg "Оптимизация TCP и таблиц соединений выключена; штатные значения OpenWrt восстановлены." ;;
             0:dnsmasq_perf|2:dnsmasq_perf) ok_msg "Увеличенный кэш DNS настроен." ;;
-            1:dnsmasq_perf) ok_msg "Увеличенный кэш DNS выключен." ;;
+            1:dnsmasq_perf) ok_msg "Увеличенный кэш DNS выключен; штатная конфигурация dnsmasq восстановлена." ;;
             0:ntp_clients|2:ntp_clients) ok_msg "Время для устройств в локальной сети включено (DHCP 42, без принудительного перехвата)." ;;
             1:ntp_clients) ok_msg "Время для устройств в локальной сети выключено." ;;
             0:client_fixes|2:client_fixes) ok_msg "DNS для проверки подключения и совместимости устройств настроен." ;;
