@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.1.7
+# Version: 1.1.8
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -22,7 +22,7 @@ COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main
 # Legacy update compatibility: admin/services/dns_manager
 RUNTIME_UPDATE_STATE="$BACKUP_DIR/update.state"
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.1.7"
+VERSION="1.1.8"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -167,7 +167,7 @@ UPDATE_STATE="/etc/dns-manager-luci/update.state"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.1.7"
+SELF_VERSION="1.1.8"
 
 umask 077
 mkdir -p "$RUNTIME_DIR" "$JOB_DIR" "$CHECK_DIR" "$TMP_ROOT" 2>/dev/null || exit 1
@@ -1152,7 +1152,7 @@ EOF_RPC
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.1.7
+// DNS Manager LuCI version: 1.1.8
 var callStatus = rpc.declare({ object:'dns_manager', method:'status', expect:{} });
 var callCatalog = rpc.declare({ object:'dns_manager', method:'catalog', params:['category','offset','limit','only_ok'], expect:{} });
 var callUpdateCheck = rpc.declare({ object:'dns_manager', method:'update_check', expect:{} });
@@ -1295,7 +1295,7 @@ function injectStyle(root){
   '.dm-badge{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:999px;font-size:12px;font-weight:600;white-space:nowrap}.dm-dot{width:8px;height:8px;border-radius:50%;display:inline-block;flex-shrink:0}'+
   '.dm-ok{background:rgba(46,160,67,.12);color:#1a7f37}.dm-ok .dm-dot{background:#1a7f37}.dm-bad{background:rgba(207,34,46,.10);color:#cf222e}.dm-bad .dm-dot{background:#cf222e}.dm-warn{background:rgba(191,135,0,.12);color:#9a6700}.dm-warn .dm-dot{background:#9a6700}.dm-off{background:rgba(110,118,129,.12);color:#57606a}.dm-off .dm-dot{background:#57606a}'+
   '.dm-grid2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.dm-grid3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}.dm-grid4{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}'+
-  '.dm-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:11px}.dm-actions .cbi-button{margin:0;padding:5px 11px;font-size:12.5px}'+
+  '.dm-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:11px}.dm-component-item{padding:8px 0;border-bottom:1px solid rgba(110,118,129,.14)}.dm-component-item:last-of-type{border-bottom:0}.dm-component-head{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}.dm-component-title{font-size:13px;font-weight:600}.dm-component-details{font-size:11.5px;line-height:1.45;opacity:.66;margin-top:3px;overflow-wrap:anywhere}.dm-component-date{font-size:12.5px;opacity:.82}.dm-actions .cbi-button{margin:0;padding:5px 11px;font-size:12.5px}'+
   '.dm-hint{font-size:12.5px;opacity:.68;line-height:1.5;margin:0 0 8px}.dm-mini{font-size:11px;opacity:.62}.dm-meta{font-size:11px;line-height:1.45;opacity:.66}.dm-update{padding:8px 10px;border-radius:8px;background:rgba(26,127,55,.08);border:1px solid rgba(26,127,55,.18);font-size:12.5px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}'+
   '.dm-seg{display:flex;flex-wrap:wrap;gap:6px;margin:5px 0}.dm-seg .cbi-button{padding:5px 11px;border-radius:7px;font-size:12.5px;font-weight:600}.dm-seg .active{background:#1a7f37;color:#fff;border-color:#1a7f37}'+
   '.dm-force-note{font-size:12px;line-height:1.55;opacity:.72}.dm-inline-msg{display:block;margin:8px 0 0;padding:7px 10px;border-radius:7px;font-size:12px;line-height:1.4}.dm-inline-msg.info{background:rgba(9,105,218,.08);border:1px solid rgba(9,105,218,.16)}.dm-inline-msg.ok{background:rgba(26,127,55,.08);border:1px solid rgba(26,127,55,.16)}.dm-inline-msg.error{background:rgba(207,34,46,.08);border:1px solid rgba(207,34,46,.16)}.dm-applied{display:flex;align-items:center;gap:9px;padding:9px 11px;border-radius:8px;font-size:12.5px;line-height:1.45}.dm-applied.ok{background:rgba(26,127,55,.08);border:1px solid rgba(26,127,55,.18)}.dm-applied.error{background:rgba(207,34,46,.08);border:1px solid rgba(207,34,46,.18)}.dm-applied strong{font-weight:700}.dm-confirm-body{min-width:min(440px,calc(100vw - 70px))}.dm-setting{padding:11px 12px}.dm-setting-title{font-size:13px;font-weight:600}.dm-setting-desc{font-size:11.5px;line-height:1.45;opacity:.68;margin-top:3px}.dm-setting-line{display:flex;align-items:center;justify-content:space-between;gap:10px}.dm-setting-actions{display:flex;align-items:center;gap:7px;flex-shrink:0}.dm-setting-actions .cbi-button{padding:4px 9px;font-size:12px}.dm-setting-saving{opacity:.7}.dm-force-external{padding:8px 10px;border-radius:8px;background:rgba(191,135,0,.10);border:1px solid rgba(191,135,0,.22);font-size:12.5px;line-height:1.5;margin-top:8px}'+
@@ -1365,34 +1365,58 @@ function checkInfo(id,d){
   if(String(r.status||'').toUpperCase()==='OK'&&!hasPing(r.ping))r.status='FAIL';
   return r;
 }
+function componentItem(title,statusNode,details){
+  return E('div',{'class':'dm-component-item'},[
+    E('div',{'class':'dm-component-head'},[
+      E('span',{'class':'dm-component-title'},title),
+      statusNode
+    ]),
+    details?E('div',{'class':'dm-component-details'},details):E('span',{})
+  ]);
+}
+function joinDnsNames(st){
+  var names=[],seen={};
+  (st.slots||[]).forEach(function(d){
+    if(!d||!d.id)return;
+    var n=String(d.name||d.id).trim();
+    if(n&&!seen[n]){seen[n]=1;names.push(n);}
+  });
+  return names.join(' + ');
+}
 function renderOverview(root,st){
   var e=root.querySelector('#dm-overview');if(!e)return;e.innerHTML='';
   var applied=renderActionStatus();if(applied)e.appendChild(applied);
   if(state.statusError)e.appendChild(E('div',{'class':'dm-inline-msg error'},state.statusError+' Проверьте: ubus call dns_manager status.'));
 
   var doh=st.doh==='yes'?badge('dm-ok','запущен'):Number(st.doh_total||0)>0?badge('dm-bad','остановлен'):badge('dm-off','не установлен');
+  var dohNames=joinDnsNames(st);
+  var dohDetails=dohNames||'резолверы не настроены';
+
   var force=yes(st.force_both)?badge('dm-warn','DNS Manager + внешний'):st.force_owner==='external'?badge('dm-warn','внешний сервис'):yes(st.force_manager)?badge('dm-ok','DNS Manager'):badge('dm-off','выключен');
-  var wd=yes(st.watchdog)?(st.watchdog_backend==='procd'?(Number(st.watchdog_loop||0)===1?badge('dm-ok','работает · procd'):Number(st.watchdog_service||0)===1?badge('dm-warn','служба запущена, цикл не найден'):badge('dm-bad','служба не запущена')):badge('dm-warn','неизвестный механизм')):badge('dm-off','выключена');
+  var forceDetails=st.force_owner==='external'?'Источник: '+shortVal(st.force_source||'внешний сервис'):st.force_both?'Одновременно DNS Manager и внешний перехват':yes(st.force_manager)?'Перехват выполняет DNS Manager':'перехват отключён';
+
+  var wd=yes(st.watchdog)?(st.watchdog_backend==='procd'?(Number(st.watchdog_loop||0)===1?badge('dm-ok','работает'):Number(st.watchdog_service||0)===1?badge('dm-warn','служба запущена, цикл не найден'):badge('dm-bad','служба не запущена')):badge('dm-warn','неизвестный механизм')):badge('dm-off','выключена');
+  var wdDetails=yes(st.watchdog)?'procd · интервал '+shortVal(st.watchdog_interval)+' с · порог '+shortVal(st.watchdog_fail_threshold)+' цикла':'автопроверка отключена';
 
   var profile=badge('dm-ok',profileName(st.profile));
+  var profileDetails=st.profile==='custom'?'Собственный выбор DNS по слотам':st.profile==='hybrid'?'Автоматический выбор DNS для обхода блокировок':'активная схема выбора DNS';
+
   var dnsCount=String(st.configured_dns||0)+' настроено · '+String(st.doh_match||0)+' DoH совпадает';
   var lastTest=dateText(st.last_full_test);
-  var dnsTest=lastTest==='—'?badge('dm-off','не выполнялся'):E('span',{},lastTest);
+  var dnsTest=lastTest==='—'?'проверка ещё не выполнялась':lastTest;
 
-  var componentRows=[
-    row('Профиль',profile),
-    row('DNS over HTTPS',doh),
-    row('Автопроверка DNS',wd),
-    row('Принудительный DNS',force),
-    row('DNS в слотах',E('span',{},dnsCount)),
-    row('Последний тест DNS',dnsTest)
-  ];
-
-  var componentActions=E('div',{'class':'dm-actions'},[
-    btn('Текущие DNS','cbi-button-neutral',function(){window.location.href=routeUrl('dns');}),
-    btn('Проверить текущие DNS','cbi-button-action',function(){testCurrent(root);},{disabled:!!state.busy||state.jobRunning})
+  var components=card('Компоненты',[
+    componentItem('Профиль',profile,profileDetails),
+    componentItem('DNS over HTTPS',doh,dohDetails),
+    componentItem('Автопроверка DNS',wd,wdDetails),
+    componentItem('Принудительный DNS',force,forceDetails),
+    componentItem('DNS в слотах',badge('dm-ok',dnsCount),null),
+    componentItem('Последний тест DNS',lastTest==='проверка ещё не выполнялась'?badge('dm-off','не выполнялся'):E('span',{'class':'dm-component-date'},lastTest),null),
+    E('div',{'class':'dm-actions'},[
+      btn('Текущие DNS','cbi-button-neutral',function(){window.location.href=routeUrl('dns');}),
+      btn('Проверить текущие DNS','cbi-button-action',function(){testCurrent(root);},{disabled:!!state.busy||state.jobRunning})
+    ])
   ]);
-  var components=card('Компоненты',componentRows.concat([componentActions]));
 
   var ipv4=st.ipv4==='yes'?badge('dm-ok','есть'):badge('dm-bad','нет');
   var ipv6=st.ipv6==='yes'?badge('dm-ok','есть'):badge('dm-off','выключен');
