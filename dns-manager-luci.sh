@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.4.9
+# Version: 1.5.0
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -22,7 +22,7 @@ COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main
 # Legacy update compatibility: admin/services/dns_manager
 RUNTIME_UPDATE_STATE="$BACKUP_DIR/update.state"
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.4.9"
+VERSION="1.5.0"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -164,12 +164,13 @@ PERSIST_STATE_DIR="/etc/dns-manager/state"
 RUNTIME_DIR="/var/run/dns-manager-luci"
 JOB_DIR="$RUNTIME_DIR/jobs"
 CHECK_DIR="$RUNTIME_DIR/checks"
+CURRENT_SLOT_RESULTS="$RUNTIME_DIR/current-slot-results.conf"
 TMP_ROOT="$RUNTIME_DIR/tmp"
 UPDATE_STATE="/etc/dns-manager-luci/update.state"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.4.9"
+SELF_VERSION="1.5.0"
 
 umask 077
 mkdir -p "$RUNTIME_DIR" "$JOB_DIR" "$CHECK_DIR" "$TMP_ROOT" 2>/dev/null || exit 1
@@ -1060,8 +1061,7 @@ status_json() {
         _id="$(cfg_get "SLOT_$_s")"; _cat="$(cfg_get "SLOT_${_s}_CAT")"; _port="$(cfg_get "PORT_$_s")"
         [ -n "$_cat" ] || [ -z "$_id" ] || _cat="$(catalog_field "$_id" 2 2>/dev/null || true)"
         _name="$(catalog_field "$_id" 4 2>/dev/null || true)"; [ -n "$_name" ] || _name="Не задан"
-        _r="$(last_check_result_for_id "$_id" 2>/dev/null || true)"
-        [ -n "$_r" ] || _r="$(result_for_id "$_id" 2>/dev/null || true)"
+        _r="$(current_slot_result_for_id "$_id" 2>/dev/null || true)"
         _ms="$(printf '%s' "$_r" | awk -F'|' 'NF>=5 {print $4;exit}')"; _rawst="$(printf '%s' "$_r" | awk -F'|' 'NF>=5 {print $5;exit}')"; _st=""
         case "$_rawst" in
             OK) case "$_ms" in ''|*[!0-9]*) _st=FAIL;; *) _st=OK;; esac ;;
@@ -1092,18 +1092,24 @@ load_manager() {
 }
 
 set_check_stamp() {
-    _id="$1"; _ts="$2"; _result="$3"
+    _id="$1"; _ts="$2"
     case "$_id" in ''|*[!A-Za-z0-9_-]*) return 1;; esac
-    {
-        printf '%s\n' "$_ts"
-        [ -n "$_result" ] && printf '%s\n' "$_result"
-    } > "$CHECK_DIR/$_id" 2>/dev/null
+    printf '%s\n' "$_ts" > "$CHECK_DIR/$_id" 2>/dev/null
 }
-last_check_result_for_id() {
+write_current_slot_results() {
+    _results="$1"
+    [ -s "$_results" ] || return 1
+    cat "$_results" > "${CURRENT_SLOT_RESULTS}.tmp.$" 2>/dev/null || return 1
+    mv -f "${CURRENT_SLOT_RESULTS}.tmp.$" "$CURRENT_SLOT_RESULTS" 2>/dev/null || {
+        rm -f "${CURRENT_SLOT_RESULTS}.tmp.$" 2>/dev/null || true
+        return 1
+    }
+    chmod 600 "$CURRENT_SLOT_RESULTS" 2>/dev/null || true
+}
+current_slot_result_for_id() {
     _id="$1"
-    _f="$CHECK_DIR/$_id"
-    [ -r "$_f" ] || return 1
-    sed -n '2p' "$_f" 2>/dev/null
+    [ -r "$CURRENT_SLOT_RESULTS" ] || return 1
+    awk -F'|' -v id="$_id" '$1==id {print; exit}' "$CURRENT_SLOT_RESULTS" 2>/dev/null
 }
 new_job_id() { printf '%s-%s' "$(date +%s)" "$$"; }
 job_write() { _id="$1"; _key="$2"; _value="$3"; mkdir -p "$JOB_DIR/$_id" 2>/dev/null || return 1; printf '%s=%s\n' "$_key" "$_value" >> "$JOB_DIR/$_id/state" 2>/dev/null; }
@@ -1115,7 +1121,7 @@ job_start_test_all() {
         exec >>"$JOB_DIR/$_jid/output" 2>&1
         trap 'job_write "$_jid" status failed; job_write "$_jid" finished "$(date +%s)"; exit 1' INT TERM
         if load_manager && SILENT_APPLY=1 test_dns_catalog; then
-            now="$(date +%s)"; while IFS='|' read -r _id _rest; do [ -n "$_id" ] && set_check_stamp "$_id" "$now" "$_id|$_rest"; done < "$TEST_RESULTS"
+            now="$(date +%s)"; while IFS='|' read -r _id _rest; do [ -n "$_id" ] && set_check_stamp "$_id" "$now"; done < "$TEST_RESULTS"
             job_write "$_jid" status done; job_write "$_jid" result ok; job_write "$_jid" finished "$now"
         else
             job_write "$_jid" status failed; job_write "$_jid" result fail; job_write "$_jid" finished "$(date +%s)"
@@ -1176,7 +1182,8 @@ job_start_test_current() {
         }
         save_persistent_test_results >/dev/null 2>&1 || true
         _stamp="$(date +%s)"
-        while IFS='|' read -r _id _rest; do [ -n "$_id" ] && set_check_stamp "$_id" "$_stamp" "$_id|$_rest"; done < "$_results"
+        while IFS='|' read -r _id _rest; do [ -n "$_id" ] && set_check_stamp "$_id" "$_stamp"; done < "$_results"
+        write_current_slot_results "$_results" || true
         rm -f "$_ids" "$_cat" "$_results" "$_meta"
         job_write "$_jid" status done; job_write "$_jid" result ok; job_write "$_jid" finished "$_stamp"
     ) &
@@ -1549,15 +1556,6 @@ function componentItem(title,statusNode,details){
     ]),
     details?E('div',{'class':'dm-component-details'},details):E('span',{})
   ]);
-}
-function joinDnsNames(st){
-  var names=[],seen={};
-  (st.slots||[]).forEach(function(d){
-    if(!d||!d.id)return;
-    var n=String(d.name||d.id).trim();
-    if(n&&!seen[n]){seen[n]=1;names.push(n);}
-  });
-  return names.join(' + ');
 }
 function renderOverview(root,st){
   var e=root.querySelector('#dm-overview');if(!e)return;e.innerHTML='';
