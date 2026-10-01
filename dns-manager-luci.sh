@@ -29,7 +29,7 @@ err() { printf 'ERROR: %s\n' "$*" >&2; }
 
 manager_version() {
     [ -r "$MANAGER" ] || return 1
-    sed -n 's/^VERSION="\\([0-9][0-9.]*\\)"$/\\1/p' "$MANAGER" 2>/dev/null | head -n1
+    sed -n 's/^VERSION="\([0-9][0-9.]*\)"$/\1/p' "$MANAGER" 2>/dev/null | head -n1
 }
 
 manager_const_num() {
