@@ -2900,6 +2900,41 @@ net.core.somaxconn=1024
 EOF_SYSCTL_BASE_EXPECTED
 }
 
+sysctl_stock_value() {
+    _k="$1"
+    _v="$(awk -F= -v k="$_k" '$1==k{print $2; exit}' /etc/sysctl.d/10-default.conf 2>/dev/null)"
+    [ -n "$_v" ] && { printf '%s' "$_v"; return 0; }
+    case "$_k" in
+        net.ipv4.tcp_fastopen) printf '1' ;;
+        net.core.somaxconn) printf '4096' ;;
+        net.ipv4.tcp_keepalive_intvl) printf '75' ;;
+        net.ipv4.tcp_keepalive_probes) printf '9' ;;
+        net.core.rmem_max|net.core.wmem_max|net.core.rmem_default|net.core.wmem_default) printf '212992' ;;
+        net.netfilter.nf_conntrack_max)
+            _hash="$(cat /sys/module/nf_conntrack/parameters/hashsize 2>/dev/null)"
+            case "$_hash" in
+                ''|*[!0-9]*) return 1 ;;
+                *) printf "%s" "$_hash" ;;
+            esac
+            ;;
+        *) return 1 ;;
+    esac
+}
+
+sysctl_restore_stock_key() {
+    _k="$1"
+    _managed_value="$2"
+    _force="$3"
+    _cur="$(sysctl -n "$_k" 2>/dev/null)" || return 0
+    [ "$_force" = 1 ] || [ "$_cur" = "$_managed_value" ] || return 0
+    _stock="$(sysctl_stock_value "$_k" 2>/dev/null)" || return 0
+    [ -n "$_stock" ] || return 0
+    [ "$_cur" = "$_stock" ] && return 0
+    sysctl -w "$_k=$_stock" >/dev/null 2>&1 || return 1
+    return 0
+}
+
+sysctl_file_state() {
 sysctl_file_state() {
     _f="$1"; _marker="$2"; _expected="$3"
     [ -f "$_f" ] || { printf '0'; return 0; }
@@ -2950,7 +2985,9 @@ EOF_SYSCTL_BASE_APPLY
 }
 
 remove_sysctl_base() {
+    _stock_reset="${1:-0}"
     _f="$(sysctl_base_manager_path)"
+    _managed=0
     if [ -f "$_f" ]; then
         _state="$(sysctl_file_state "$_f" "$SYSCTL_BASE_MARKER" "$(sysctl_base_expected)")"
         [ "$_state" != 3 ] || {
@@ -2958,11 +2995,22 @@ remove_sysctl_base() {
             return 0
         }
         rm -f "$_f" || return 1
+        _managed=1
     fi
     if [ -x /etc/init.d/sysctl ]; then
         /etc/init.d/sysctl reload >/dev/null 2>&1 || /etc/init.d/sysctl restart >/dev/null 2>&1 || true
     elif [ -x /sbin/sysctl ]; then
         sysctl -p /etc/sysctl.conf >/dev/null 2>&1 || true
+    fi
+    if [ "$_stock_reset" = 1 ] && [ "$_managed" = 1 ]; then
+        while IFS= read -r _p; do
+            [ -n "$_p" ] || continue
+            _k="${_p%%=*}"
+            _v="${_p#*=}"
+            sysctl_restore_stock_key "$_k" "$_v" 1 || warn_msg "Не удалось вернуть $_k к stock."
+        done <<EOF_SYSCTL_BASE_STOCK
+$(sysctl_base_expected)
+EOF_SYSCTL_BASE_STOCK
     fi
     return 0
 }
@@ -2982,7 +3030,7 @@ apply_sysctl_bundle() {
             return 1
         }
     else
-        remove_sysctl_base || {
+        remove_sysctl_base 1 || {
             SYSCTL_TUNING="$_saved_base"
             SYSCTL_EXTENDED="$_saved_ext"
             err_msg "Не удалось отключить базовый sysctl."
@@ -2992,14 +3040,14 @@ apply_sysctl_bundle() {
 
     if [ "$_want_ext" = 1 ]; then
         apply_sysctl_extended || {
-            remove_sysctl_base >/dev/null 2>&1 || true
+            remove_sysctl_base 1 >/dev/null 2>&1 || true
             SYSCTL_TUNING="$_saved_base"
             SYSCTL_EXTENDED="$_saved_ext"
             err_msg "Расширенные параметры TCP и сетевых буферов не применён. Проверьте nf_conntrack и параметры TCP/buffer. Базовый слой откатан."
             return 1
         }
     else
-        remove_sysctl_extended || {
+        remove_sysctl_extended 1 || {
             SYSCTL_TUNING="$_saved_base"
             SYSCTL_EXTENDED="$_saved_ext"
             err_msg "Не удалось отключить расширенные параметры TCP и сетевых буферов."
@@ -3055,7 +3103,7 @@ _apply_extras_now_impl() {
             if [ "$DNSMASQ_PERF" = 1 ]; then
                 apply_dnsmasq_perf || return 1
             else
-                remove_dnsmasq_perf || return 1
+                remove_dnsmasq_perf 1 || return 1
             fi
             /etc/init.d/dnsmasq restart >/dev/null 2>&1 || return 1
             ;;
@@ -3074,7 +3122,7 @@ _apply_extras_now_impl() {
             if [ "$SYSCTL_EXTENDED" = 1 ]; then
                 apply_sysctl_extended || return 1
             else
-                remove_sysctl_extended || return 1
+                remove_sysctl_extended 1 || return 1
             fi
             ;;
         *)
@@ -3184,28 +3232,25 @@ apply_dnsmasq_perf() {
     uci commit dhcp || return 1
 }
 remove_dnsmasq_perf() {
+    _stock_reset="${1:-0}"
     sec="$(get_dnsmasq_section)"
     [ -n "$sec" ] || return 0
     _changed=0
-    for _kv in "cachesize|1000" "dnsforwardmax|300" "max_cache_ttl|86400" "boguspriv|1" "domainneeded|1" "quietdhcp|1"; do
+    for _kv in "cachesize|1000" "dnsforwardmax|300" "max_cache_ttl|86400" "boguspriv|1" "domainneeded|1" "quietdhcp|1" "filter_aaaa|1"; do
         _k="${_kv%%|*}"; _want="${_kv#*|}"
         _cur="$(uci -q get "dhcp.$sec.$_k" 2>/dev/null)"
-        if [ "$_cur" = "$_want" ]; then
+        if [ "$_stock_reset" = 1 ]; then
+            if [ -n "$_cur" ]; then
+                uci -q delete "dhcp.$sec.$_k" || true
+                _changed=1
+            fi
+        elif [ "$_cur" = "$_want" ]; then
             uci -q delete "dhcp.$sec.$_k" || true
             _changed=1
         elif [ -n "$_cur" ]; then
             warn_msg "DNS-кэш: параметр $_k изменён извне; значение сохранено."
         fi
     done
-    if [ "${IPV6_ROUTE:-no}" != yes ]; then
-        _cur="$(uci -q get "dhcp.$sec.filter_aaaa" 2>/dev/null)"
-        if [ "$_cur" = 1 ]; then
-            uci -q delete "dhcp.$sec.filter_aaaa" || true
-            _changed=1
-        elif [ -n "$_cur" ]; then
-            warn_msg "DNS-кэш: filter_aaaa изменён извне; значение сохранено."
-        fi
-    fi
     if [ "$_changed" = 1 ]; then
         uci commit dhcp >/dev/null 2>&1 || return 1
     fi
@@ -3357,20 +3402,34 @@ EOF_SYSCTL_EXT_APPLY
 }
 
 remove_sysctl_extended() {
+    _stock_reset="${1:-0}"
     _f="$(sysctl_extended_manager_path)"
+    _managed=0
+    _expected="$(sysctl_extended_params)"
     if [ -f "$_f" ]; then
-        _state="$(sysctl_file_state "$_f" "$SYSCTL_EXTENDED_MARKER" "$(sysctl_extended_params)")"
+        _state="$(sysctl_file_state "$_f" "$SYSCTL_EXTENDED_MARKER" "$_expected")"
         [ "$_state" != 3 ] || {
             warn_msg "Файл $_f используется другой настройкой; файл сохранён."
             return 0
         }
         rm -f "$_f" || return 1
+        _managed=1
     fi
     rm -f "$STATE_DIR/sysctl-extended-before.conf" 2>/dev/null || true
     if [ -x /etc/init.d/sysctl ]; then
         /etc/init.d/sysctl reload >/dev/null 2>&1 || /etc/init.d/sysctl restart >/dev/null 2>&1 || true
     elif [ -x /sbin/sysctl ]; then
         sysctl -p /etc/sysctl.conf >/dev/null 2>&1 || true
+    fi
+    if [ "$_stock_reset" = 1 ] && [ "$_managed" = 1 ]; then
+        while IFS= read -r _p; do
+            [ -n "$_p" ] || continue
+            _k="${_p%%=*}"
+            _v="${_p#*=}"
+            sysctl_restore_stock_key "$_k" "$_v" 1 || warn_msg "Не удалось вернуть $_k к stock."
+        done <<EOF_SYSCTL_EXT_STOCK
+$_expected
+EOF_SYSCTL_EXT_STOCK
     fi
     return 0
 }
