@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.21"
+VERSION="3.22"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -1146,6 +1146,7 @@ WATCHDOG_GUARD_INTERVAL="$WATCHDOG_GUARD_INTERVAL"
 WATCHDOG_MAX_REPAIRS="$WATCHDOG_MAX_REPAIRS"
 WATCHDOG_MAX_RESTARTS="$WATCHDOG_MAX_RESTARTS"
 WATCHDOG_MAX_CANDIDATES="$WATCHDOG_MAX_CANDIDATES"
+TEST_RESULTS_MAX_AGE="$TEST_RESULTS_MAX_AGE"
 TEST_RESULTS_MAX_AGE_BYPASS="$TEST_RESULTS_MAX_AGE_BYPASS"
 TEST_RESULTS_MAX_AGE_CLEAN="$TEST_RESULTS_MAX_AGE_CLEAN"
 TEST_RESULTS_MAX_AGE_SECURITY="$TEST_RESULTS_MAX_AGE_SECURITY"
@@ -6997,17 +6998,22 @@ fi
 # ==========================================
 # ==========================================
 test_results_max_age_for_category() {
+    case "${TEST_RESULTS_MAX_AGE:-}" in
+        ''|*[!0-9]*) ;;
+        *) printf '%s' "$TEST_RESULTS_MAX_AGE"; return 0 ;;
+    esac
     case "$1" in
-        bypass) printf '%s' "${TEST_RESULTS_MAX_AGE_BYPASS:-$TEST_RESULTS_MAX_AGE}" ;;
-        clean) printf '%s' "${TEST_RESULTS_MAX_AGE_CLEAN:-$TEST_RESULTS_MAX_AGE}" ;;
-        security) printf '%s' "${TEST_RESULTS_MAX_AGE_SECURITY:-$TEST_RESULTS_MAX_AGE}" ;;
-        privacy) printf '%s' "${TEST_RESULTS_MAX_AGE_PRIVACY:-$TEST_RESULTS_MAX_AGE}" ;;
-        adblock) printf '%s' "${TEST_RESULTS_MAX_AGE_ADBLOCK:-$TEST_RESULTS_MAX_AGE}" ;;
-        family) printf '%s' "${TEST_RESULTS_MAX_AGE_FAMILY:-$TEST_RESULTS_MAX_AGE}" ;;
-        regional) printf '%s' "${TEST_RESULTS_MAX_AGE_REGIONAL:-$TEST_RESULTS_MAX_AGE}" ;;
+        bypass) printf '%s' "${TEST_RESULTS_MAX_AGE_BYPASS:-21600}" ;;
+        clean) printf '%s' "${TEST_RESULTS_MAX_AGE_CLEAN:-21600}" ;;
+        security) printf '%s' "${TEST_RESULTS_MAX_AGE_SECURITY:-21600}" ;;
+        privacy) printf '%s' "${TEST_RESULTS_MAX_AGE_PRIVACY:-21600}" ;;
+        adblock) printf '%s' "${TEST_RESULTS_MAX_AGE_ADBLOCK:-21600}" ;;
+        family) printf '%s' "${TEST_RESULTS_MAX_AGE_FAMILY:-21600}" ;;
+        regional) printf '%s' "${TEST_RESULTS_MAX_AGE_REGIONAL:-21600}" ;;
         *) printf '%s' "${TEST_RESULTS_MAX_AGE:-21600}" ;;
     esac
 }
+
 watchdog_test_results_fresh() {
     _fresh_cat="${1:-}"
     _fresh_max="$(test_results_max_age_for_category "$_fresh_cat")"
