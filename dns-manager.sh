@@ -3472,12 +3472,24 @@ client_fixes_find_modified_owned() {
 apply_client_fixes() {
     [ "${CLIENT_FIXES:-0}" = 1 ] || return 0
     _managed="${CLIENT_FIXES_FILE:-}"
+    _other=0
+    _owned=""
+    for _f in /etc/dnsmasq.d/*dns-manager-client-fixes*.conf; do
+        [ -f "$_f" ] || continue
+        _st="$(client_fixes_file_state "$_f")"
+        case "$_st" in
+            1) [ -n "$_owned" ] || _owned="$_f" ;;
+            2) _other=1 ;;
+        esac
+    done
+    [ "$_other" = 0 ] || {
+        err_msg "Файл client-fixes изменён извне; DNS Manager его не перезаписывает."
+        return 2
+    }
     if [ -n "$_managed" ] && [ -e "$_managed" ] && [ "$(client_fixes_file_state "$_managed")" = 1 ]; then
         :
     else
-        _managed=""
-        _owned="$(client_fixes_find_owned 2>/dev/null || true)"
-        [ -n "$_owned" ] && _managed="$_owned"
+        _managed="$_owned"
     fi
     if [ -z "$_managed" ]; then
         for _n in 91 92 93 94 95 96 97 98 99; do
@@ -3490,30 +3502,23 @@ apply_client_fixes() {
     {
         printf '%s\n' "$CLIENT_FIXES_MARKER"
         client_fixes_expected_body
-    } > "$_managed.tmp.$$" || return 1
-    mv "$_managed.tmp.$$" "$_managed" || { rm -f "$_managed.tmp.$$"; return 1; }
+    } > "$_managed.tmp.$" || return 1
+    mv "$_managed.tmp.$" "$_managed" || { rm -f "$_managed.tmp.$"; return 1; }
     return 0
 }
 remove_client_fixes() {
     _stock_reset="${1:-0}"
-    _found=0
+    _conflict=0
     for _f in /etc/dnsmasq.d/*dns-manager-client-fixes*.conf; do
         [ -f "$_f" ] || continue
-        _found=1
-        _state="$(client_fixes_file_state "$_f")"
-        case "$_state" in
+        case "$(client_fixes_file_state "$_f")" in
             1) rm -f "$_f" || return 1 ;;
-            2)
-                if [ "$_stock_reset" = 1 ]; then
-                    rm -f "$_f" || return 1
-                else
-                    warn_msg "Client-fixes: файл $_f изменён после установки; сохраняю его."
-                fi
-                ;;
+            2) _conflict=1; warn_msg "Client-fixes: файл $_f изменён после установки; сохраняю его." ;;
         esac
     done
     CLIENT_FIXES_FILE=""
-    [ "$_found" = 0 ] || return 0
+    if [ "$_conflict" = 1 ] && [ "$_stock_reset" = 1 ]; then return 2; fi
+    return 0
 }
 recommended_conntrack_max() {
     _mem="$(awk '/^MemTotal:/{print $2; exit}' /proc/meminfo 2>/dev/null)"
@@ -4122,7 +4127,7 @@ if [ -x "$WATCHDOG_SERVICE_PATH" ]; then
     "$WATCHDOG_SERVICE_PATH" enabled >/dev/null 2>&1 && TX_WD_ENABLED=yes || TX_WD_ENABLED=no
     "$WATCHDOG_SERVICE_PATH" running >/dev/null 2>&1 && TX_WD_RUNNING=yes || TX_WD_RUNNING=no
 fi
-for f in "$CONFIG_FILE" "$OWNERSHIP" "$EXTRA_STATE_DIR/mtu.conf" "$EXTRA_STATE_DIR/dnsmasq_perf.conf" "$EXTRA_STATE_DIR/ntp_clients.conf" "$WATCHDOG_SERVICE_PATH" "$WATCHDOG_LEGACY_DAEMON_PATH" /etc/config/dhcp /etc/config/https-dns-proxy /etc/config/firewall /etc/config/system /etc/config/ttyd /etc/sysctl.d/90-dns-manager.conf /etc/sysctl.d/91-dns-manager-extended.conf /etc/dnsmasq.d/90-dns-manager-bogus.conf /etc/dnsmasq.d/91-dns-manager-client-fixes.conf; do
+for f in "$CONFIG_FILE" "$OWNERSHIP" "$EXTRA_STATE_DIR/mtu.conf" "$EXTRA_STATE_DIR/dnsmasq_perf.conf" "$EXTRA_STATE_DIR/ntp_clients.conf" "$WATCHDOG_SERVICE_PATH" "$WATCHDOG_LEGACY_DAEMON_PATH" /etc/config/dhcp /etc/config/https-dns-proxy /etc/config/firewall /etc/config/system /etc/config/ttyd /etc/sysctl.d/90-dns-manager.conf /etc/sysctl.d/91-dns-manager-extended.conf /etc/dnsmasq.d/90-dns-manager-bogus.conf /etc/dnsmasq.d/91-dns-manager-client-fixes.conf /etc/dnsmasq.d/92-dns-manager-client-fixes.conf /etc/dnsmasq.d/93-dns-manager-client-fixes.conf /etc/dnsmasq.d/94-dns-manager-client-fixes.conf /etc/dnsmasq.d/95-dns-manager-client-fixes.conf /etc/dnsmasq.d/96-dns-manager-client-fixes.conf /etc/dnsmasq.d/97-dns-manager-client-fixes.conf /etc/dnsmasq.d/98-dns-manager-client-fixes.conf /etc/dnsmasq.d/99-dns-manager-client-fixes.conf; do
 key="$(printf '%s' "$f" | sed 's#^/##; s#[/ ]#_#g')"
 if [ -f "$f" ]; then cp -p "$f" "$TX_DIR/files/$key"; file_hash "$f" > "$TX_DIR/$key.before"; printf '%s|%s|1\n' "$f" "$key" >> "$TX_DIR/manifest"; else printf '%s|%s|0\n' "$f" "$key" >> "$TX_DIR/manifest"; fi
 done
@@ -6339,29 +6344,15 @@ check_module_state() {
             printf 2
             ;;
         client_fixes)
-            _f="${CLIENT_FIXES_FILE:-/etc/dnsmasq.d/91-dns-manager-client-fixes.conf}"
-            [ -f "$_f" ] || { printf 0; return; }
-            _ok=1
-            for _fix in \
-                'local=/telemetry.mozilla.org/' \
-                'local=/telemetry.microsoft.com/' \
-                'local=/vortex.data.microsoft.com/' \
-                'local=/settings-win.data.microsoft.com/' \
-                'local=/metrics.android.com/' \
-                'local=/metrics.samsung.com/' \
-                'server=/clients3.google.com/77.88.8.8' \
-                'server=/clients3.google.com/77.88.8.1' \
-                'server=/connectivitycheck.gstatic.com/77.88.8.8' \
-                'server=/connectivitycheck.gstatic.com/77.88.8.1' \
-                'server=/connectivitycheck.android.com/77.88.8.8' \
-                'server=/connectivitycheck.android.com/77.88.8.1' \
-                'server=/connectivitycheck.samsung.com/77.88.8.8' \
-                'server=/connectivitycheck.samsung.com/77.88.8.1' \
-                'server=/connectivitycheck.platform.hicloud.com/77.88.8.8' \
-                'server=/connectivitycheck.platform.hicloud.com/77.88.8.1'; do
-                grep -qxF "$_fix" "$_f" 2>/dev/null || _ok=0
+            _owned=0; _other=0
+            for _f in /etc/dnsmasq.d/*dns-manager-client-fixes*.conf; do
+                [ -f "$_f" ] || continue
+                case "$(client_fixes_file_state "$_f")" in
+                    1) _owned=1 ;;
+                    2) _other=1 ;;
+                esac
             done
-            [ "$_ok" = 1 ] && printf 1 || printf 2
+            [ "$_other" = 1 ] && printf 2 || { [ "$_owned" = 1 ] && printf 1 || printf 0; }
             ;;
         watchdog)
             watchdog_state_word_procd
