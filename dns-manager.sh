@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.15"
+VERSION="3.16"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -5508,10 +5508,14 @@ else
     printf "${C_WHITE}Последняя проверка${C_NC}\n"
     printf "  ${C_YELLOW}Тест DNS ещё не запускался.${C_NC}\n"
 fi
+_tx_meaningful=0
 if [ -s "$TX_LOG" ]; then
+    awk -F'|' 'NF>=8 && $4 != "" && $5 != "" && $6 != "" && $7 != "" {found=1; exit} END{exit found?0:1}' "$TX_LOG" >/dev/null 2>&1 && _tx_meaningful=1
+fi
+if [ "$_tx_meaningful" = 1 ]; then
     echo ""
     printf "${C_WHITE}Последние действия:${C_NC}\n"
-    tail -10 "$TX_LOG" | awk -F'|' 'NF>=8 && $4 != "" {
+    tail -10 "$TX_LOG" | awk -F'|' 'NF>=8 && $4 != "" && $5 != "" && $6 != "" && $7 != "" {
         phase=$4; obj=$5; act=$6; res=$7;
         if (phase=="DISCOVER") phase="Проверка состояния";
         else if (phase=="TEST") phase="Тест";
@@ -6799,28 +6803,30 @@ setting_process() {
 menu_extras() {
 while :; do
     menu_header "НАСТРОЙКИ"
-    menu_section "СЕТЬ И ОБХОД"
+    menu_section "DNS И ОБХОД"
     menu_item_action "[1]" "Исправление сетевых параметров / MSS" mtu
-    menu_item_action "[2]" "Принудительный DNS" force
+    menu_item_action "[2]" "Автопроверка мёртвых DNS-портов" watchdog
+    menu_item_action "[3]" "Принудительный DNS" force
     menu_section "ПРОИЗВОДИТЕЛЬНОСТЬ"
-    menu_item_action "[3]" "Оптимизация TCP и Conntrack" sysctl
-    menu_item_action "[4]" "Кэширование DNS-запросов" dnsmasq_perf
+    menu_item_action "[4]" "Оптимизация TCP и Conntrack" sysctl
+    menu_item_action "[5]" "Кэширование DNS-запросов" dnsmasq_perf
     menu_section "СЕРВИСЫ И КЛИЕНТЫ"
-    menu_item_action "[5]" "NTP-сервер роутера для устройств сети" ntp_clients
-    menu_item_action "[6]" "Исправления телеметрии и связи" client_fixes
+    menu_item_action "[6]" "NTP-сервер роутера для устройств сети" ntp_clients
+    menu_item_action "[7]" "Исправления телеметрии и связи" client_fixes
     menu_section "LUCI"
-    menu_item_action "[7]" "Нативный интерфейс DNS Manager" luci
+    menu_item_action "[8]" "Нативный интерфейс DNS Manager" luci
     menu_back
     menu_prompt
     safe_read c
     case "$c" in
         1) setting_process mtu "Исправление сетевых параметров / MSS" "MTU/MSS исправление применяется только к реальной WAN-зоне." ;;
-        2) setting_process force "Принудительный DNS" "DNS TCP/UDP 53 направляется на DNS роутера; DoT TCP/UDP 853 блокируется." ;;
-        3) setting_process sysctl "Оптимизация TCP и Conntrack" "Применяются параметры TCP и Conntrack." ;;
-        4) setting_process dnsmasq_perf "Кэширование DNS-запросов" "Применяются параметры DNS-кэша dnsmasq." ;;
-        5) setting_process ntp_clients "NTP-сервер роутера для устройств сети" "Роутер отвечает клиентам по UDP/123, а DHCP сообщает его адрес как NTP-сервер. Принудительный перехват NTP не используется." ;;
-        6) setting_process client_fixes "Исправления телеметрии и связи" "Добавляются DNS-правила для телеметрии и проверок подключения некоторых устройств." ;;
-        7) setting_process luci "Нативный интерфейс DNS Manager" "Устанавливает отдельный файл dns-manager-luci.sh из GitHub и добавляет только LuCI → Службы → DNS Manager. ttyd и дополнительный HTTP-порт не используются." ;;
+        2) setting_process watchdog "Автопроверка мёртвых DNS-портов" "Каждые ${WATCHDOG_INTERVAL:-90}с проверяет только выбранные DNS-порты. Замена выполняется после двух последовательных сбоев; полный каталог из 105 DNS в фоне не запускается." ;;
+        3) setting_process force "Принудительный DNS" "DNS TCP/UDP 53 направляется на DNS роутера; DoT TCP/UDP 853 блокируется." ;;
+        4) setting_process sysctl "Оптимизация TCP и Conntrack" "Применяются параметры TCP и Conntrack." ;;
+        5) setting_process dnsmasq_perf "Кэширование DNS-запросов" "Применяются параметры DNS-кэша dnsmasq." ;;
+        6) setting_process ntp_clients "NTP-сервер роутера для устройств сети" "Роутер отвечает клиентам по UDP/123, а DHCP сообщает его адрес как NTP-сервер. Принудительный перехват NTP не используется." ;;
+        7) setting_process client_fixes "Исправления телеметрии и связи" "Добавляются DNS-правила для телеметрии и проверок подключения некоторых устройств." ;;
+        8) setting_process luci "Нативный интерфейс DNS Manager" "Устанавливает отдельный файл dns-manager-luci.sh из GitHub и добавляет только LuCI → Службы → DNS Manager. ttyd и дополнительный HTTP-порт не используются." ;;
         '') return ;;
         *) warn_msg "Неизвестный пункт."; pause ;;
     esac
