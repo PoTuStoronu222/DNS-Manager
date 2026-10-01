@@ -1518,6 +1518,10 @@ function checkUpdate(root){
       callVersionCheckStatus(r.job).then(function(s){
         var st=String(s&&s.status||'running').toLowerCase();
         if(st==='done'||st==='failed'){
+          state.versionCheck.manager='done';
+          state.versionCheck.luci='done';
+          state.versionCheck.hdp='done';
+          state.versionCheck.catalog='done';
           state.versionCheck.running=false;
           state.versionCheck.error=st==='failed'||!(s&&s.ok);
           refresh(root,true);return;
