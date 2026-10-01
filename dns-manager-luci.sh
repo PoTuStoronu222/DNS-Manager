@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.0.2
+# Version: 1.0.3
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -22,7 +22,7 @@ COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main
 # Legacy update compatibility: admin/services/dns_manager
 RUNTIME_UPDATE_STATE="$BACKUP_DIR/update.state"
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.0.2"
+VERSION="1.0.3"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -136,7 +136,7 @@ UPDATE_STATE="/etc/dns-manager-luci/update.state"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.0.2"
+SELF_VERSION="1.0.3"
 
 umask 077
 mkdir -p "$RUNTIME_DIR" "$JOB_DIR" "$CHECK_DIR" "$TMP_ROOT" 2>/dev/null || exit 1
@@ -497,8 +497,7 @@ package_version() {
 package_candidate_version() {
     _pkg="$1"
     [ -n "$_pkg" ] || return 0
-    if command -v apk >/dev/null 2>&1; then
-        _v="$(apk list --upgradeable "$_pkg" 2>/dev/null | awk -v p="$_pkg" '$1 ~ "^"p"-" {sub("^"p"-","",$1); print $1; exit}')"
+    if command -v apk >/dev/null 2>&1; then        _v="$(apk list --upgradeable "$_pkg" 2>/dev/null | awk -v p="$_pkg" '$1 ~ "^"p"-" {sub("^"p"-","",$1); print $1; exit}')"
         printf '%s' "$_v"
     elif command -v opkg >/dev/null 2>&1; then
         opkg list-upgradable 2>/dev/null | awk -v p="$_pkg" '$1==p {print $3; exit}'
@@ -997,8 +996,7 @@ case "${1:-}" in
             catalog) INPUT="$(cat 2>/dev/null || true)"; catalog_json;;
             update_check) version_check_job_start;;
             update_check_job) version_check_job_start;;
-            update_check_job_status) INPUT="$(cat 2>/dev/null || true)"; version_check_job_status "$(jget id)";;
-            update) update_json;;
+            update_check_job_status) INPUT="$(cat 2>/dev/null || true)"; version_check_job_status "$(jget id)";;            update) update_json;;
             set_profile|set_slot|set_setting) INPUT="$(cat 2>/dev/null || true)"; RPC_METHOD="$2"; run_action;;
             test_all|test_current|test_one) INPUT="$(cat 2>/dev/null || true)"; RPC_METHOD="$2"; test_json;;
             job) INPUT="$(cat 2>/dev/null || true)"; job_json "$(jget id)";;
@@ -1017,7 +1015,7 @@ EOF_RPC
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.0.2
+// DNS Manager LuCI version: 1.0.3
 var callStatus = rpc.declare({ object:'dns_manager', method:'status', expect:{} });
 var callCatalog = rpc.declare({ object:'dns_manager', method:'catalog', params:['category','offset','limit','only_ok'], expect:{} });
 var callUpdateCheck = rpc.declare({ object:'dns_manager', method:'update_check', expect:{} });
@@ -1497,8 +1495,7 @@ function refresh(root,keepPosition){
 }
 function startAutoRefresh(root){
   if(state.autoRefreshRoot)clearInterval(state.autoRefreshRoot);
-  state.autoRefreshRoot=setInterval(function(){
-    if(!rootAlive(root)){clearInterval(state.autoRefreshRoot);state.autoRefreshRoot=null;return;}
+  state.autoRefreshRoot=setInterval(function(){    if(!rootAlive(root)){clearInterval(state.autoRefreshRoot);state.autoRefreshRoot=null;return;}
     if(state.refreshBusy)return;
     state.refreshBusy=true;
     refresh(root,true).then(function(){state.refreshBusy=false;},function(){state.refreshBusy=false;});
@@ -1616,15 +1613,15 @@ function testOne(id,root,origin,done){
 function testCurrent(root){
   if(state.jobRunning||state.busy)return;
   var total=(window.dmState&&window.dmState.slots||[]).filter(function(d){return d&&d.id;}).length;
-  if(!total){state.currentTest={status:'FAILED',total:0};render(root,window.dmState||{});return;}
+  if(!total){state.currentTest={status:'FAILED',total:0};state.checking={};render(root,window.dmState||{});return;}
   state.currentTest={status:'RUNNING',total:total,started:Date.now()};
   state.jobRunning=true;
   (window.dmState&&window.dmState.slots||[]).forEach(function(d){if(d&&d.id)state.checking[d.id]={status:'RUNNING',ping:'',started:Date.now()};});
   render(root,window.dmState||{});
   callTestCurrent().then(function(r){
     if(r&&r.ok)pollJob(root,r.job,{mode:'current'},null);
-    else{state.currentTest={status:'FAILED',total:total};state.jobRunning=false;refresh(root,true);}
-  }).catch(function(){state.currentTest={status:'FAILED',total:total};state.jobRunning=false;refresh(root,true);});
+    else{state.currentTest={status:'FAILED',total:total};state.checking={};state.jobRunning=false;refresh(root,true);}
+  }).catch(function(){state.currentTest={status:'FAILED',total:total};state.checking={};state.jobRunning=false;refresh(root,true);});
 }
 function pollJob(root,job,meta,done){
   var jobId=(typeof job==='string')?job:(job&&job.id)||'';var ticks=0;
@@ -1635,12 +1632,14 @@ function pollJob(root,job,meta,done){
         var d=null;(ns.slots||[]).forEach(function(x){if(x.id===meta.dns_id)d=x;});
         state.checking[meta.dns_id]={status:d&&d.status?d.status:(j.result==='ok'?'OK':'FAIL'),ping:d&&d.ping?d.ping:''};
       }
+      if(meta&&meta.mode==='current')state.checking={};
       if(done)done(ns);
       else{state.jobRunning=false;if(meta&&meta.mode==='all')state.fullTest={status:String(j.status||'').toUpperCase()==='DONE'?'DONE':'FAILED',result:j.result||'fail',finished:Date.now()};if(meta&&meta.mode==='current')state.currentTest={status:String(j.status||'').toUpperCase()==='DONE'?'DONE':'FAILED',result:j.result||'fail',finished:Date.now()};render(root,ns);}
     }).catch(function(){
       if(meta&&meta.mode==='one'&&meta.dns_id)state.checking[meta.dns_id]={status:j.result==='ok'?'OK':'FAIL',ping:''};
+      if(meta&&meta.mode==='current')state.checking={};
       if(done)done(window.dmState||{});
-      else{state.jobRunning=false;if(meta&&meta.mode==='all')state.fullTest={status:'FAILED',result:'fail'};render(root,window.dmState||{});}
+      else{state.jobRunning=false;if(meta&&meta.mode==='all')state.fullTest={status:'FAILED',result:'fail'};if(meta&&meta.mode==='current')state.currentTest={status:'FAILED',result:'fail'};render(root,window.dmState||{});}
     });
   }
   function poll(){
