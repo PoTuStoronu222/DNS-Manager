@@ -3323,42 +3323,86 @@ remove_ntp_clients() {
     return 0
 }
 
+dnsmasq_perf_stock_match() {
+    sec="$(get_dnsmasq_section)" || return 1
+    stock_uci_matches dhcp "dhcp.@dnsmasq[0].cachesize" 1 150 || return 1
+    stock_uci_matches dhcp "dhcp.@dnsmasq[0].dnsforwardmax" 1 150 || return 1
+    stock_uci_matches dhcp "dhcp.@dnsmasq[0].max_cache_ttl" 0 "" || return 1
+    stock_uci_matches dhcp "dhcp.@dnsmasq[0].boguspriv" 1 1 || return 1
+    stock_uci_matches dhcp "dhcp.@dnsmasq[0].domainneeded" 1 1 || return 1
+    stock_uci_matches dhcp "dhcp.@dnsmasq[0].quietdhcp" 0 0 || return 1
+    if [ "$IPV6_ROUTE" != yes ]; then
+        stock_uci_matches dhcp "dhcp.@dnsmasq[0].filter_aaaa" 1 0 || return 1
+    fi
+    return 0
+}
+dnsmasq_perf_desired_match() {
+    sec="$(get_dnsmasq_section)" || return 1
+    [ "$(uci -q get "dhcp.${sec}.cachesize" 2>/dev/null)" = 1000 ] || return 1
+    [ "$(uci -q get "dhcp.${sec}.dnsforwardmax" 2>/dev/null)" = 300 ] || return 1
+    [ "$(uci -q get "dhcp.${sec}.max_cache_ttl" 2>/dev/null)" = 86400 ] || return 1
+    [ "$(uci -q get "dhcp.${sec}.boguspriv" 2>/dev/null)" = 1 ] || return 1
+    [ "$(uci -q get "dhcp.${sec}.domainneeded" 2>/dev/null)" = 1 ] || return 1
+    [ "$(uci -q get "dhcp.${sec}.quietdhcp" 2>/dev/null)" = 1 ] || return 1
+    if [ "$IPV6_ROUTE" != yes ]; then
+        [ "$(uci -q get "dhcp.${sec}.filter_aaaa" 2>/dev/null)" = 1 ] || return 1
+    fi
+    return 0
+}
+dnsmasq_perf_legacy_adopt() {
+    [ "${DNSMASQ_PERF:-0}" = 1 ] || return 1
+    sec="$(get_dnsmasq_section)" || return 1
+    [ -n "$sec" ] || return 1
+    dnsmasq_perf_desired_match || return 1
+    dnsmasq_perf_stock_match && return 1
+    rm -f "$(module_state_path dnsmasq_perf)" 2>/dev/null || true
+    for _spec in "cachesize|1|150|1000" "dnsforwardmax|1|150|300" "max_cache_ttl|0||86400" "boguspriv|1|1|1" "domainneeded|1|1|1" "quietdhcp|0|0|1"; do
+        _k="${_spec%%|*}"; _r="${_spec#*|}"; _fp="${_r%%|*}"; _r="${_r#*|}"; _fv="${_r%%|*}"; _m="${_r#*|}"
+        _stock="$(stock_uci_capture dhcp "dhcp.@dnsmasq[0].${_k}" "$_fp" "$_fv")"
+        _sp="${_stock%%|*}"; _sv="${_stock#*|}"
+        module_state_record_explicit dnsmasq_perf "dhcp.${sec}.${_k}" scalar "$_sp" "$_sv" "$_m" || return 1
+    done
+    if [ "$IPV6_ROUTE" != yes ]; then
+        _stock="$(stock_uci_capture dhcp "dhcp.@dnsmasq[0].filter_aaaa" 1 0)"
+        _sp="${_stock%%|*}"; _sv="${_stock#*|}"
+        module_state_record_explicit dnsmasq_perf "dhcp.${sec}.filter_aaaa" scalar "$_sp" "$_sv" 1 || return 1
+    fi
+    return 0
+}
 apply_dnsmasq_perf() {
     [ "${DNSMASQ_PERF:-0}" = 1 ] || return 0
-    sec="$(get_dnsmasq_section)"
+    sec="$(get_dnsmasq_section)" || return 1
     [ -n "$sec" ] || return 1
-    uci set "dhcp.$sec.cachesize=1000" || return 1
-    uci set "dhcp.$sec.dnsforwardmax=300" || return 1
-    uci set "dhcp.$sec.max_cache_ttl=86400" || return 1
-    uci set "dhcp.$sec.boguspriv=1" || return 1
-    uci set "dhcp.$sec.domainneeded=1" || return 1
-    uci set "dhcp.$sec.quietdhcp=1" || return 1
-    if [ "$IPV6_ROUTE" != yes ]; then uci set "dhcp.$sec.filter_aaaa=1" || return 1; fi
+    if [ -s "$(module_state_path dnsmasq_perf)" ]; then
+        module_state_matches dnsmasq_perf || { err_msg "Параметры DNS-кэша изменены извне; DNS Manager их не перезаписывает."; return 2; }
+    else
+        dnsmasq_perf_stock_match || { err_msg "Параметры DNS-кэша уже заданы извне; DNS Manager их не перезаписывает."; return 2; }
+        rm -f "$(module_state_path dnsmasq_perf)" 2>/dev/null || true
+        module_state_record_current dnsmasq_perf "dhcp.${sec}.cachesize" scalar 1000 || return 1
+        module_state_record_current dnsmasq_perf "dhcp.${sec}.dnsforwardmax" scalar 300 || return 1
+        module_state_record_current dnsmasq_perf "dhcp.${sec}.max_cache_ttl" scalar 86400 || return 1
+        module_state_record_current dnsmasq_perf "dhcp.${sec}.boguspriv" scalar 1 || return 1
+        module_state_record_current dnsmasq_perf "dhcp.${sec}.domainneeded" scalar 1 || return 1
+        module_state_record_current dnsmasq_perf "dhcp.${sec}.quietdhcp" scalar 1 || return 1
+        if [ "$IPV6_ROUTE" != yes ]; then module_state_record_current dnsmasq_perf "dhcp.${sec}.filter_aaaa" scalar 1 || return 1; fi
+    fi
+    uci set "dhcp.${sec}.cachesize=1000" || return 1
+    uci set "dhcp.${sec}.dnsforwardmax=300" || return 1
+    uci set "dhcp.${sec}.max_cache_ttl=86400" || return 1
+    uci set "dhcp.${sec}.boguspriv=1" || return 1
+    uci set "dhcp.${sec}.domainneeded=1" || return 1
+    uci set "dhcp.${sec}.quietdhcp=1" || return 1
+    if [ "$IPV6_ROUTE" != yes ]; then uci set "dhcp.${sec}.filter_aaaa=1" || return 1; fi
     uci commit dhcp || return 1
 }
 remove_dnsmasq_perf() {
-    _stock_reset="${1:-0}"
-    sec="$(get_dnsmasq_section)"
-    [ -n "$sec" ] || return 0
-    _changed=0
-    for _kv in "cachesize|1000" "dnsforwardmax|300" "max_cache_ttl|86400" "boguspriv|1" "domainneeded|1" "quietdhcp|1" "filter_aaaa|1"; do
-        _k="${_kv%%|*}"; _want="${_kv#*|}"
-        _cur="$(uci -q get "dhcp.$sec.$_k" 2>/dev/null)"
-        if [ "$_stock_reset" = 1 ]; then
-            if [ -n "$_cur" ]; then
-                uci -q delete "dhcp.$sec.$_k" || true
-                _changed=1
-            fi
-        elif [ "$_cur" = "$_want" ]; then
-            uci -q delete "dhcp.$sec.$_k" || true
-            _changed=1
-        elif [ -n "$_cur" ]; then
-            warn_msg "DNS-кэш: параметр $_k изменён извне; значение сохранено."
-        fi
-    done
-    if [ "$_changed" = 1 ]; then
-        uci commit dhcp >/dev/null 2>&1 || return 1
+    if [ -s "$(module_state_path dnsmasq_perf)" ]; then
+        module_state_restore dnsmasq_perf; _r=$?
+        [ "$_r" = 0 ] || return "$_r"
+    else
+        dnsmasq_perf_stock_match || { warn_msg "Параметры DNS-кэша изменены извне; DNS Manager их сохраняет."; return 2; }
     fi
+    uci commit dhcp >/dev/null 2>&1 || return 1
     return 0
 }
 client_fixes_expected_body() {
@@ -6257,27 +6301,19 @@ check_module_state() {
             fi
             ;;
         dnsmasq_perf)
-            _all=1
-            _signature=0
-            # These three values form the Manager-specific cache signature.
-            # Do not use generic dnsmasq defaults such as boguspriv=1 or
-            # domainneeded=1 to decide that the module is partially active.
-            for _kv in "cachesize|1000" "dnsforwardmax|300" "max_cache_ttl|86400"; do
-                _k="${_kv%%|*}"; _v="${_kv#*|}"
-                _cur="$(uci -q get "dhcp.$_sec.$_k" 2>/dev/null)"
-                [ -n "$_cur" ] && _signature=1
-                [ "$_cur" = "$_v" ] || _all=0
-            done
-            for _kv in "boguspriv|1" "domainneeded|1" "quietdhcp|1"; do
-                _k="${_kv%%|*}"; _v="${_kv#*|}"
-                _cur="$(uci -q get "dhcp.$_sec.$_k" 2>/dev/null)"
-                [ "$_cur" = "$_v" ] || _all=0
-            done
-            if [ "$IPV6_ROUTE" != yes ]; then
-                _cur="$(uci -q get "dhcp.$_sec.filter_aaaa" 2>/dev/null)"
-                [ "$_cur" = 1 ] || _all=0
+            if [ -s "$(module_state_path dnsmasq_perf)" ]; then
+                module_state_matches dnsmasq_perf && printf 1 || printf 2
+                return
             fi
-            [ "$_all" = 1 ] && printf 1 || { [ "$_signature" = 1 ] && printf 2 || printf 0; }
+            if dnsmasq_perf_stock_match; then
+                printf 0
+                return
+            fi
+            if [ "${DNSMASQ_PERF:-0}" = 1 ] && dnsmasq_perf_legacy_adopt; then
+                printf 1
+                return
+            fi
+            printf 2
             ;;
         client_fixes)
             _f="${CLIENT_FIXES_FILE:-/etc/dnsmasq.d/91-dns-manager-client-fixes.conf}"
