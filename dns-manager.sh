@@ -2916,7 +2916,7 @@ sysctl_stock_value() {
         net.ipv4.tcp_keepalive_probes) printf '9' ;;
         net.core.rmem_max|net.core.wmem_max|net.core.rmem_default|net.core.wmem_default) printf '212992' ;;
         net.netfilter.nf_conntrack_max)
-            _hash="$(cat /sys/module/nf_conntrack/parameters/hashsize 2>/dev/null)"
+            _hash="$(sysctl -n net.netfilter.nf_conntrack_buckets 2>/dev/null)"
             case "$_hash" in
                 ''|*[!0-9]*) return 1 ;;
                 *) printf '%s' "$_hash" ;;
