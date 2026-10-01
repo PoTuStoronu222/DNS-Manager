@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.4.2
+# Version: 1.4.3
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -22,7 +22,7 @@ COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main
 # Legacy update compatibility: admin/services/dns_manager
 RUNTIME_UPDATE_STATE="$BACKUP_DIR/update.state"
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.4.2"
+VERSION="1.4.3"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -168,7 +168,7 @@ UPDATE_STATE="/etc/dns-manager-luci/update.state"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.4.2"
+SELF_VERSION="1.4.3"
 
 umask 077
 mkdir -p "$RUNTIME_DIR" "$JOB_DIR" "$CHECK_DIR" "$TMP_ROOT" 2>/dev/null || exit 1
@@ -1599,13 +1599,12 @@ function renderOverview(root,st){
 
   var components=card('Компоненты',[
     componentItem('Профиль',profile,profileDetails),
-    componentItem('DNS over HTTPS',doh,dohDetails),
+    componentItem('DNS over HTTPS',doh,E('div',{},[
+      E('div',{'class':'dm-component-details'},dohDetails),
+      E('div',{'class':'dm-component-dns-list'},dnsItems)
+    ])),
     componentItem('Автопроверка DNS',wd,wdDetails),
     componentItem('Принудительный DNS',force,forceDetails),
-    E('div',{'class':'dm-component-group'},[
-      E('div',{'class':'dm-component-title'},'DNS в слотах'),
-      E('div',{'class':'dm-component-dns-list'},dnsItems)
-    ]),
     E('div',{'class':'dm-actions'},[
       btn('Проверить DNS в слотах','cbi-button-action',function(){testCurrent(root);},{disabled:!!state.busy||state.jobRunning})
     ])
