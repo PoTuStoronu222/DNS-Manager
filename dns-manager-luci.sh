@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.5.38
+# Version: 1.5.39
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -22,7 +22,7 @@ COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main
 # Legacy update compatibility: admin/services/dns_manager
 RUNTIME_UPDATE_STATE="$BACKUP_DIR/update.state"
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.5.38"
+VERSION="1.5.39"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -163,7 +163,7 @@ UPDATE_STATE="/etc/dns-manager-luci/update.state"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.5.38"
+SELF_VERSION="1.5.39"
 
 umask 077
 mkdir -p "$RUNTIME_DIR" "$JOB_DIR" "$CHECK_DIR" "$TMP_ROOT" 2>/dev/null || exit 1
@@ -2256,16 +2256,6 @@ function renderSettings(root,st){
   body.push(E('div',{'class':'dm-hint'},'Каждый пункт меняет одну настройку. Результат показывается здесь, без всплывающих сообщений.'));
   body.push(E('div',{'class':'dm-section-title'},'Фоновая проверка DNS'));
   body.push(watchdogCard(root,st));
-  var groups=[
-    ['Производительность',[['dnsmasq_perf','Увеличенный кэш DNS','Хранит больше DNS-ответов, чтобы повторные запросы выполнялись быстрее.']]],
-    ['Устройства сети',[['ntp_clients','Синхронизация времени устройств','Роутер сообщает устройствам свой адрес как сервер точного времени по DHCP.'],['client_fixes','Совместимость и проверки подключения','Исправляет системные DNS-проверки подключения у некоторых устройств.']]]
-  ];
-  groups.forEach(function(g){
-    body.push(E('div',{'class':'dm-section-title'},g[0]));
-    var grid=E('div',{'class':'dm-grid2'});
-    g[1].forEach(function(x){grid.appendChild(settingCard(root,x,st));});
-    body.push(grid);
-  });
   var ageInputs=[];
   var ages=E('div',{'class':'dm-test-age-list'});
   [['bypass','Обход'],['clean','Чистый'],['security','Безопасность'],['privacy','Приватность'],['adblock','Блокировка рекламы'],['family','Семейный'],['regional','Региональный']].forEach(function(x){
@@ -2288,13 +2278,24 @@ function renderNetwork(root,st){
   if(state.settingMessage)body.push(E('div',{'class':'dm-inline-msg '+(state.settingMessageType||'info')},state.settingMessage));
   body.push(E('div',{'class':'dm-hint'},'Сетевые параметры вынесены отдельно, чтобы не перегружать основные настройки DNS Manager.'));
   body.push(E('div',{'class':'dm-section-title'},'Сеть'));
-  var grid=E('div',{'class':'dm-grid2'});
-  [
-    ['mtu','Исправление MTU / MSS','Нужно только при проблемах с размером пакетов, отдельными сайтами, VPN или туннелями. На исправной сети обычно не требуется.'],
-    ['sysctl','Оптимизация TCP и таблицы соединений','Настраивает TCP Fast Open, таймаут TCP и очередь соединений.'],
-    ['sysctl_ext','Расширенная настройка сети','Дополнительно настраивает TCP, соединения и сетевые буферы. Для обычной работы не обязательна.']
-  ].forEach(function(x){grid.appendChild(settingCard(root,x,st));});
-  body.push(grid);
+  var groups=[
+    ['Сетевые параметры',[
+      ['mtu','Исправление MTU / MSS','Нужно только при проблемах с размером пакетов, отдельными сайтами, VPN или туннелями. На исправной сети обычно не требуется.'],
+      ['sysctl','Оптимизация TCP и таблицы соединений','Настраивает TCP Fast Open, таймаут TCP и очередь соединений.'],
+      ['sysctl_ext','Расширенная настройка сети','Дополнительно настраивает TCP, соединения и сетевые буферы. Для обычной работы не обязательна.']
+    ]],
+    ['Устройства и DNS',[
+      ['dnsmasq_perf','Увеличенный кэш DNS','Хранит больше DNS-ответов, чтобы повторные запросы выполнялись быстрее.'],
+      ['ntp_clients','Синхронизация времени устройств','Роутер сообщает устройствам свой адрес как сервер точного времени по DHCP.'],
+      ['client_fixes','Совместимость и проверки подключения','Исправляет системные DNS-проверки подключения у некоторых устройств.']
+    ]]
+  ];
+  groups.forEach(function(g){
+    body.push(E('div',{'class':'dm-section-title'},g[0]));
+    var grid=E('div',{'class':'dm-grid2'});
+    g[1].forEach(function(x){grid.appendChild(settingCard(root,x,st));});
+    body.push(grid);
+  });
   e.appendChild(card('Сетевые настройки',body));
 }
 
