@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.5.8
+# Version: 1.5.9
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -22,7 +22,7 @@ COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main
 # Legacy update compatibility: admin/services/dns_manager
 RUNTIME_UPDATE_STATE="$BACKUP_DIR/update.state"
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.5.8"
+VERSION="1.5.9"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -170,7 +170,7 @@ UPDATE_STATE="/etc/dns-manager-luci/update.state"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.5.8"
+SELF_VERSION="1.5.9"
 
 umask 077
 mkdir -p "$RUNTIME_DIR" "$JOB_DIR" "$CHECK_DIR" "$TMP_ROOT" 2>/dev/null || exit 1
@@ -1570,10 +1570,10 @@ function renderOverview(root,st){
   var doh=st.doh==='yes'?badge('dm-ok','запущен'):Number(st.doh_total||0)>0?badge('dm-bad','остановлен'):badge('dm-off','не установлен');
 
   var force=yes(st.force_both)?badge('dm-warn','DNS Manager + внешний'):st.force_owner==='external'?badge('dm-warn','внешний сервис'):yes(st.force_manager)?badge('dm-ok','DNS Manager'):badge('dm-off','выключен');
-  var forceDetails=st.force_owner==='external'?'Источник: '+shortVal(st.force_source||'внешний сервис'):st.force_both?'Одновременно DNS Manager и внешний перехват':yes(st.force_manager)?'Перехват выполняет DNS Manager':'перехват отключён';
+  var forceDetails=st.force_owner==='external'?'Источник: '+shortVal(st.force_source||'внешний сервис'):st.force_both?'Одновременно DNS Manager и внешний перехват':yes(st.force_manager)?'DNS Manager':'выключен';
 
   var wd=yes(st.watchdog)?(st.watchdog_backend==='procd'?(Number(st.watchdog_loop||0)===1?badge('dm-ok','работает'):Number(st.watchdog_service||0)===1?badge('dm-warn','служба запущена, цикл не найден'):badge('dm-bad','служба не запущена')):badge('dm-warn','неизвестный механизм')):badge('dm-off','выключена');
-  var wdDetails=yes(st.watchdog)?'procd · интервал '+shortVal(st.watchdog_interval)+' с · порог '+shortVal(st.watchdog_fail_threshold)+' цикла':'автопроверка отключена';
+  var wdDetails=yes(st.watchdog)?'интервал '+shortVal(st.watchdog_interval)+' с · порог '+shortVal(st.watchdog_fail_threshold)+' цикла':'автопроверка отключена';
 
   var profile=badge('dm-ok',profileName(st.profile));
 
