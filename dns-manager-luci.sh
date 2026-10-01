@@ -429,12 +429,32 @@ update_hdp_json() {
     _candidate="$(package_candidate_version https-dns-proxy 2>/dev/null || true)"
     [ -n "$_installed" ] || { json_error "https-dns-proxy не установлен"; return; }
     [ -n "$_candidate" ] || { json_error "Новой версии https-dns-proxy не найдено"; return; }
-    package_version_cmp "$_candidate" "$_installed" || { json_error "Новой версии https-dns-proxy не найдено"; return; }
+    if ! package_version_cmp "$_candidate" "$_installed"; then
+        _state_tmp="$UPDATE_STATE.tmp.$"
+        if [ -r "$UPDATE_STATE" ]; then
+            sed '/^hdp_latest=/d;/^hdp_available=/d;/^hdp_checked=/d;/^components_checked_at=/d' "$UPDATE_STATE" > "$_state_tmp" 2>/dev/null || true
+        else
+            : > "$_state_tmp"
+        fi
+        _ts="$(date +%s 2>/dev/null || printf 0)"
+        printf 'hdp_latest=%s\nhdp_available=0\nhdp_checked=1\ncomponents_checked_at=%s\n' "$_installed" "$_ts" >> "$_state_tmp"
+        mv "$_state_tmp" "$UPDATE_STATE" 2>/dev/null || rm -f "$_state_tmp" 2>/dev/null || true
+        json_error "Новой версии https-dns-proxy не найдено"; return
+    fi
     if ! package_update_hdp; then
         json_error "https-dns-proxy не удалось обновить"; return
     fi
     _after="$(package_version https-dns-proxy 2>/dev/null || true)"
     [ -n "$_after" ] || { json_error "Не удалось определить версию после обновления"; return; }
+    _state_tmp="$UPDATE_STATE.tmp.$"
+    if [ -r "$UPDATE_STATE" ]; then
+        sed '/^hdp_latest=/d;/^hdp_available=/d;/^hdp_checked=/d;/^components_checked_at=/d' "$UPDATE_STATE" > "$_state_tmp" 2>/dev/null || true
+    else
+        : > "$_state_tmp"
+    fi
+    _ts="$(date +%s 2>/dev/null || printf 0)"
+    printf 'hdp_latest=%s\nhdp_available=0\nhdp_checked=1\ncomponents_checked_at=%s\n' "$_after" "$_ts" >> "$_state_tmp"
+    mv "$_state_tmp" "$UPDATE_STATE" 2>/dev/null || rm -f "$_state_tmp" 2>/dev/null || true
     printf '{"ok":true,"updated":true,"version":'; json_quote "$_after"; printf '}'
 }
 
