@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.3.8
+# Version: 1.3.9
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -22,7 +22,7 @@ COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main
 # Legacy update compatibility: admin/services/dns_manager
 RUNTIME_UPDATE_STATE="$BACKUP_DIR/update.state"
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.3.8"
+VERSION="1.3.9"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -168,7 +168,7 @@ UPDATE_STATE="/etc/dns-manager-luci/update.state"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.3.8"
+SELF_VERSION="1.3.9"
 
 umask 077
 mkdir -p "$RUNTIME_DIR" "$JOB_DIR" "$CHECK_DIR" "$TMP_ROOT" 2>/dev/null || exit 1
@@ -1439,6 +1439,7 @@ function versionState(v,available,latest,checked,okWord,pending){
   if(pending)return badge('dm-warn','проверяется…');
   if(!v)return badge('dm-bad','не установлена');
   if(yes(available))return badge('dm-warn',shortVal(v)+' → '+shortVal(latest||'новая версия')+' · неактуальна');
+  if(latest&&String(v)===String(latest))return badge('dm-ok',shortVal(v)+' · '+okWord);
   if(yes(checked)&&latest)return badge('dm-ok',shortVal(v)+' · '+okWord);
   return badge('dm-off',shortVal(v)+' · проверка не выполнена');
 }
@@ -1648,8 +1649,10 @@ function renderOverview(root,st){
     row('Проверено',dateText(st.components_checked_at)),
     E('div',{'class':'dm-actions'},[
       btn('Проверить актуальность','cbi-button-neutral',function(){checkUpdate(root);}),
-      btn(state.updatingAll?'Обновляю…':'Обновить','cbi-button-positive',function(){updateAll(root);},{disabled:!!state.updatingAll||!!state.busy})
-    ])
+      (yes(st.manager_update_available)||yes(st.luci_update_available)||yes(st.hdp_update_available)||yes(st.catalog_update_available)) ?
+        btn(state.updatingAll?'Обновляю…':'Обновить','cbi-button-positive',function(){updateAll(root);},{disabled:!!state.updatingAll||!!state.busy}) :
+        null
+    ].filter(Boolean))
   ]);
 
   e.appendChild(components);
