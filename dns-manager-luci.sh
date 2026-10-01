@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.5.33
+# Version: 1.5.34
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -22,7 +22,7 @@ COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main
 # Legacy update compatibility: admin/services/dns_manager
 RUNTIME_UPDATE_STATE="$BACKUP_DIR/update.state"
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.5.33"
+VERSION="1.5.34"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -163,7 +163,7 @@ UPDATE_STATE="/etc/dns-manager-luci/update.state"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.5.33"
+SELF_VERSION="1.5.34"
 
 umask 077
 mkdir -p "$RUNTIME_DIR" "$JOB_DIR" "$CHECK_DIR" "$TMP_ROOT" 2>/dev/null || exit 1
@@ -2156,9 +2156,39 @@ function watchdogField(root,st,key,label,unit,min,max){
 function watchdogCard(root,st){
   var en=yes(st.watchdog), busy=state.busySetting==='watchdog';
   var service=Number(st.watchdog_service||0)===1, enabled=Number(st.watchdog_service_enabled||0)===1, loop=Number(st.watchdog_loop||0)===1;
-  var detail=[row('Механизм',badge(st.watchdog_backend==='procd'?'dm-ok':'dm-warn',shortVal(st.watchdog_backend||'—'))),row('Служба',badge(service?'dm-ok':'dm-warn',service?'запущена':'не запущена')),row('Embedded loop',badge(loop?'dm-ok':service?'dm-warn':'dm-off',loop?'активен':service?'ожидает запуска':'не запущен')),row('Автозапуск',badge(enabled?'dm-ok':'dm-warn',enabled?'включён':'выключен'))];
-  var action=E('div',{'class':'dm-setting '+(busy?'dm-setting-saving':'')},[E('div',{'class':'dm-setting-line'},[E('div',{},[E('div',{'class':'dm-setting-title'},'Автопроверка DNS'),E('div',{'class':'dm-setting-desc'},'Фоновый watchdog DNS Manager работает через procd и встроенный цикл /usr/bin/dns-manager __watchdog-loop.')]),E('div',{'class':'dm-setting-actions'},[badge(busy?'dm-warn':(en?'dm-ok':'dm-off'),busy?'изменение':(en?'включено':'выключено')),btn(busy?'Сохраняю…':(en?'Выключить':'Включить'),busy?'cbi-button-neutral':(en?'cbi-button-remove':'cbi-button-add'),function(){setSetting('watchdog',en?0:1,root);},{disabled:!!state.busy})])])]);
-  var body=[action,E('div',{'class':'dm-hint'},'После двух последовательных сбоев конкретного DNS выполняется точечная замена. При одновременном сбое всех DNS ротация не запускается; сначала проверяется восстановление сервиса. Ограничения по RAM и нагрузке применяются самим backend.'),E('div',{'class':'dm-grid2'},detail),E('div',{'class':'dm-section-title'},'Параметры проверки и восстановления'),E('div',{'class':'dm-grid2'},[watchdogField(root,st,'interval','Интервал проверки','с',30,600),watchdogField(root,st,'fail_threshold','Порог сбоя','циклов',1,10),watchdogField(root,st,'repair_cooldown','Cooldown замены','с',60,3600),watchdogField(root,st,'guard_interval','Контроль конфигурации','с',300,3600),watchdogField(root,st,'max_repairs','Замены за проход','шт.',1,3),watchdogField(root,st,'max_candidates','Кандидаты на замену','шт.',1,5),watchdogField(root,st,'max_restarts','Перезапуски HDP за операцию','шт.',1,3)])];
+  var detail=[
+    row('Режим',badge(st.watchdog_backend==='procd'?'dm-ok':'dm-warn',st.watchdog_backend==='procd'?'штатный':'неизвестен')),
+    row('Служба',badge(service?'dm-ok':'dm-warn',service?'работает':'не работает')),
+    row('Проверка DNS',badge(loop?'dm-ok':service?'dm-warn':'dm-off',loop?'активна':service?'ждёт запуска':'не работает')),
+    row('Автозапуск',badge(enabled?'dm-ok':'dm-warn',enabled?'включён':'выключен'))
+  ];
+  var action=E('div',{'class':'dm-setting '+(busy?'dm-setting-saving':'')},[
+    E('div',{'class':'dm-setting-line'},[
+      E('div',{},[
+        E('div',{'class':'dm-setting-title'},'Автопроверка DNS'),
+        E('div',{'class':'dm-setting-desc'},'DNS Manager автоматически проверяет выбранные DNS и при сбоях восстанавливает или заменяет проблемный сервер.')
+      ]),
+      E('div',{'class':'dm-setting-actions'},[
+        badge(busy?'dm-warn':(en?'dm-ok':'dm-off'),busy?'изменение':(en?'включено':'выключено')),
+        btn(busy?'Сохраняю…':(en?'Выключить':'Включить'),busy?'cbi-button-neutral':(en?'cbi-button-remove':'cbi-button-add'),function(){setSetting('watchdog',en?0:1,root);},{disabled:!!state.busy})
+      ])
+    ])
+  ]);
+  var body=[
+    action,
+    E('div',{'class':'dm-hint'},'Если DNS долго не отвечает, сначала проверяется восстановление. При необходимости сервер заменяется. Нагрузка на роутер ограничивается автоматически.'),
+    E('div',{'class':'dm-grid2'},detail),
+    E('div',{'class':'dm-section-title'},'Параметры проверки и восстановления'),
+    E('div',{'class':'dm-grid2'},[
+      watchdogField(root,st,'interval','Интервал проверки','с',30,600),
+      watchdogField(root,st,'fail_threshold','Порог сбоя','циклов',1,10),
+      watchdogField(root,st,'repair_cooldown','Cooldown замены','с',60,3600),
+      watchdogField(root,st,'guard_interval','Контроль конфигурации','с',300,3600),
+      watchdogField(root,st,'max_repairs','Замены за проход','шт.',1,3),
+      watchdogField(root,st,'max_candidates','Кандидаты на замену','шт.',1,5),
+      watchdogField(root,st,'max_restarts','Перезапуски HDP за операцию','шт.',1,3)
+    ])
+  ];
   return E('div',{},body);
 }
 function renderSettings(root,st){
