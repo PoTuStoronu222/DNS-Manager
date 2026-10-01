@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.13"
+VERSION="3.14"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -24,7 +24,7 @@ WATCHDOG_REPAIR_COOLDOWN=300
 WATCHDOG_GUARD_INTERVAL=900
 WATCHDOG_SERVICE_PATH="/etc/init.d/dns-watchdog"
 WATCHDOG_SERVICE_MARKER="# DNS_MANAGER_WATCHDOG_SERVICE=2"
-WATCHDOG_SERVICE_VERSION_MARKER="# DNS_MANAGER_WATCHDOG_SERVICE_VERSION=3.11.2"
+WATCHDOG_SERVICE_VERSION_MARKER="# DNS_MANAGER_WATCHDOG_SERVICE_VERSION=3.11.3"
 WATCHDOG_LEGACY_DAEMON_PATH="/usr/bin/dns-watchdog-daemon.sh"
 WATCHDOG_LEGACY_DAEMON_MARKER="# DNS_MANAGER_WATCHDOG_DAEMON=1"
 WATCHDOG_LEGACY_RUNTIME_DIR="/var/run/dns-watchdog"
@@ -4316,10 +4316,14 @@ _apply_settings_impl() {
         HYBRID_SELECTION_READY=1
     fi
     sync_regional_dns_state
+    # Refresh live counts after any auto-selection/normalization so the plan
+    # never shows stale DOH_MATCH/DOH_OTHER values from the pre-selection scan.
+    disc_listeners
+    disc_dns
     printf "${C_TITLE}===  ПОДГОТОВКА И ПЛАН ПРИМЕНЕНИЯ ===${C_NC}\n"
     printf "${C_WHITE}Будет настроено:${C_NC}\n"
     if [ "$DNS_PROFILE" = hybrid ]; then
-        printf "  ${C_YELLOW}Гибридный DNS — до 6 серверов + RU${C_NC}\n"
+        printf "  ${C_YELLOW}Гибридный DNS — до 6 серверов + RU/RU2${C_NC}\n"
         printf "${C_WHITE}DNS-серверы:${C_NC}\n"
         for _s in 1 2 3 4 5 6; do
             eval "_v=\${SLOT_$_s:-}"
@@ -4531,7 +4535,10 @@ _apply_settings_impl() {
             watchdog_cron_marker_exists >/dev/null 2>&1 && watchdog_cron_remove_owned_block >/dev/null 2>&1 || true
         fi
         tx_commit
-        printf "\n${C_WHITE}Фактическая применённая схема:${C_NC}\n"
+        # Keep the complete live Apply progress visible while the operation runs.
+        # After success, present a clean final screen with only the actual scheme.
+        clear_screen
+        printf "${C_WHITE}Фактическая применённая схема:${C_NC}\n"
         for _s in 1 2 3 4 5 6; do
             eval "_v=\${SLOT_$_s:-}"
             eval "_p=\${PORT_$_s:-}"
@@ -8128,7 +8135,7 @@ watchdog_service_install_files() {
     cat > "$_stmp" <<'EOF_DNS_WATCHDOG_SERVICE'
 #!/bin/sh /etc/rc.common
 # DNS_MANAGER_WATCHDOG_SERVICE=2
-# DNS_MANAGER_WATCHDOG_SERVICE_VERSION=3.11.2
+# DNS_MANAGER_WATCHDOG_SERVICE_VERSION=3.11.3
 
 USE_PROCD=1
 START=95
