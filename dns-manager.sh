@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="2.98"
+VERSION="2.99"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -26,8 +26,8 @@ WATCHDOG_SERVICE_PATH="/etc/init.d/dns-watchdog"
 WATCHDOG_RUNTIME_DIR="/var/run/dns-watchdog"
 WATCHDOG_DAEMON_MARKER="# DNS_MANAGER_WATCHDOG_DAEMON=1"
 WATCHDOG_SERVICE_MARKER="# DNS_MANAGER_WATCHDOG_SERVICE=1"
-WATCHDOG_DAEMON_VERSION_MARKER="# DNS_MANAGER_WATCHDOG_DAEMON_VERSION=2.97"
-WATCHDOG_SERVICE_VERSION_MARKER="# DNS_MANAGER_WATCHDOG_SERVICE_VERSION=2.97"
+WATCHDOG_DAEMON_VERSION_MARKER="# DNS_MANAGER_WATCHDOG_DAEMON_VERSION=2.98"
+WATCHDOG_SERVICE_VERSION_MARKER="# DNS_MANAGER_WATCHDOG_SERVICE_VERSION=2.98"
 WATCHDOG_LAST_RESTART_FILE="$STATE_DIR/watchdog-last-restart"
 AUTO_UPDATE_LAST_CHECK_FILE="$STATE_DIR/auto-update-last-check"
 AUTO_UPDATE_CHECK_MAX_AGE=43200
@@ -593,6 +593,31 @@ printf "  ${C_CYAN}${C_BOLD}%-5s${C_NC} ${C_YELLOW}${C_BOLD}%s${C_NC}\n" "$1" "$
 }
 menu_item_state() {
 printf "  ${C_CYAN}${C_BOLD}%-5s${C_NC} ${C_YELLOW}${C_BOLD}%-38s${C_NC} %b\n" "$1" "$2" "$3"
+}
+menu_item_action() {
+    _key="$1"
+    _title="$2"
+    _module="$3"
+    _state="$(check_module_state "$_module")"
+    case "$_module" in
+        luci)
+            case "$_state" in
+                0) _action="Установить" ;;
+                1) _action="Удалить" ;;
+                2) _action="Восстановить" ;;
+                *) _action="Изменить" ;;
+            esac
+            ;;
+        *)
+            case "$_state" in
+                0) _action="Включить" ;;
+                1) _action="Выключить" ;;
+                2) _action="Исправить" ;;
+                *) _action="Изменить" ;;
+            esac
+            ;;
+    esac
+    printf "  ${C_CYAN}${C_BOLD}%-5s${C_NC} ${C_YELLOW}${C_BOLD}%s${C_NC} %s\n" "$_key" "$_action" "$_title"
 }
 menu_back() {
 printf "\n${C_GREEN}${C_BOLD}[Enter]${C_NC} ${C_CYAN}Назад${C_NC}\n\n"
@@ -4566,8 +4591,8 @@ _apply_settings_impl() {
     printf "\n${C_WHITE}Основные настройки DNS:${C_NC}\n"
     [ "$TLD_RU_ENABLED" = 1 ] && printf "  ${C_GREEN}✓${C_NC} Отдельный DNS для .ru/.su/.рф\n" || printf "  ${C_YELLOW}—${C_NC} Раздельный DNS не выбран\n"
     [ "$BALANCER_ENABLED" = 1 ] && printf "  ${C_GREEN}✓${C_NC} Одновременный опрос DNS\n" || printf "  ${C_YELLOW}—${C_NC} Одновременный опрос не выбран\n"
-    [ "$NTP_IP_FALLBACK" = 1 ] && printf "  ${C_GREEN}✓${C_NC} Время по IP\n" || printf "  ${C_YELLOW}—${C_NC} NTP не изменяется\n"
     if [ "$CORE_ONLY" != 1 ]; then
+        [ "$NTP_IP_FALLBACK" = 1 ] && printf "  ${C_GREEN}✓${C_NC} Время по IP\n" || printf "  ${C_YELLOW}—${C_NC} NTP не изменяется\n"
         printf "\n${C_WHITE}Дополнительные настройки:${C_NC}\n"
         [ "$MTU_FIX" = 1 ] && printf "  ${C_GREEN}✓${C_NC} Исправление сетевых параметров\n" || printf "  ${C_YELLOW}—${C_NC} MTU не изменяется\n"
         [ "$SYSCTL_TUNING" = 1 ] && printf "  ${C_GREEN}✓${C_NC} Настройка сети\n" || printf "  ${C_YELLOW}—${C_NC} sysctl не изменяется\n"
@@ -4609,7 +4634,7 @@ _apply_settings_impl() {
     tx_snapshot_start || { err_msg "Не удалось сохранить копию настроек. Настройки не изменены."; return 1; }
     DEFER_CONFIG_SAVE=1
     log_tx "PLAN" "all" "APPLY" "START" "version=$VERSION"
-    if [ "$NTP_IP_FALLBACK" = 1 ]; then
+    if [ "$CORE_ONLY" != 1 ] && [ "$NTP_IP_FALLBACK" = 1 ]; then
         apply_ntp_host_ips || { err_msg "Не удалось подготовить серверы времени."; tx_restore_on_failure; return 1; }
     fi
     if [ "$DNS_PROFILE" = hybrid ] && [ "${HYBRID_STAGE_SKIP:-0}" != 1 ]; then
@@ -4669,7 +4694,7 @@ _apply_settings_impl() {
     }
     reconcile_dnsmasq || { err_msg "Не удалось настроить dnsmasq."; tx_restore_on_failure; return 1; }
     ensure_dnsmasq_balancer || { err_msg "Не удалось включить одновременный опрос DNS."; tx_restore_on_failure; return 1; }
-    if [ "$NTP_IP_FALLBACK" = 1 ]; then
+    if [ "$CORE_ONLY" != 1 ] && [ "$NTP_IP_FALLBACK" = 1 ]; then
         apply_ntp_ip_fallback || { err_msg "Не удалось настроить NTP по IP."; tx_restore_on_failure; return 1; }
     fi
     if [ "$CORE_ONLY" != 1 ] && [ "${FORCE_DOH:-0}" = 1 ]; then
@@ -4694,8 +4719,10 @@ _apply_settings_impl() {
     if [ "$CORE_ONLY" != 1 ] && [ "$CLIENT_FIXES" = 1 ]; then
         apply_client_fixes || { err_msg "Не удалось применить клиентские DNS-фиксы."; tx_restore_on_failure; return 1; }
     fi
-    WATCHDOG_ENABLED="${WATCHDOG_ENABLED:-0}"
-    apply_watchdog || { err_msg "Не удалось настроить фоновую автопроверку DNS."; tx_restore_on_failure; return 1; }
+    if [ "$CORE_ONLY" != 1 ]; then
+        WATCHDOG_ENABLED="${WATCHDOG_ENABLED:-0}"
+        apply_watchdog || { err_msg "Не удалось настроить фоновую автопроверку DNS."; tx_restore_on_failure; return 1; }
+    fi
     /etc/init.d/https-dns-proxy restart 2>/dev/null || true
     /etc/init.d/dnsmasq restart 2>/dev/null || true
     sleep 2
@@ -4734,7 +4761,11 @@ firewall_backend_require() {
     return 1
 }
 apply_settings() {
-    apply_wait_message "Применяю выбранную конфигурацию DNS и дополнительные настройки"
+    if [ "${CORE_ONLY:-0}" = 1 ]; then
+        apply_wait_message "Применяю выбранную конфигурацию DNS"
+    else
+        apply_wait_message "Применяю выбранную конфигурацию DNS и дополнительные настройки"
+    fi
     acquire_mutation_lock || return 1
     _rc=0
     ensure_baseline_captured || {
@@ -6802,18 +6833,18 @@ menu_extras() {
 while :; do
     menu_header "НАСТРОЙКИ"
     menu_section "СЕТЬ И ОБХОД"
-    menu_item_state "[1]" "Исправление сетевых параметров / MSS" "$(module_state_word mtu)"
-    menu_item_state "[2]" "Принудительный DNS" "$(module_state_word force)"
+    menu_item_action "[1]" "Исправление сетевых параметров / MSS" mtu
+    menu_item_action "[2]" "Принудительный DNS" force
     menu_section "ПРОИЗВОДИТЕЛЬНОСТЬ"
-    menu_item_state "[3]" "Оптимизация TCP и Conntrack" "$(module_state_word sysctl)"
-    menu_item_state "[4]" "Кэширование DNS-запросов" "$(module_state_word dnsmasq_perf)"
+    menu_item_action "[3]" "Оптимизация TCP и Conntrack" sysctl
+    menu_item_action "[4]" "Кэширование DNS-запросов" dnsmasq_perf
     menu_section "СЕРВИСЫ И КЛИЕНТЫ"
-    menu_item_state "[5]" "NTP-сервер роутера для устройств сети" "$(module_state_word ntp_clients)"
-    menu_item_state "[6]" "Исправления телеметрии и связи" "$(module_state_word client_fixes)"
+    menu_item_action "[5]" "NTP-сервер роутера для устройств сети" ntp_clients
+    menu_item_action "[6]" "Исправления телеметрии и связи" client_fixes
     menu_section "ОБСЛУЖИВАНИЕ"
-    menu_item_state "[7]" "Фоновая автопроверка DNS (procd)" "$(module_state_word watchdog)"
+    menu_item_action "[7]" "Фоновая автопроверка DNS (procd)" watchdog
     menu_section "LUCI"
-    menu_item_state "[8]" "Нативный интерфейс DNS Manager" "$(module_state_word luci)"
+    menu_item_action "[8]" "Нативный интерфейс DNS Manager" luci
     menu_back
     menu_prompt
     safe_read c
@@ -7966,7 +7997,7 @@ watchdog_service_install_files() {
         cat > "$_dtmp" <<'EOF_DNS_WATCHDOG_DAEMON'
 #!/bin/sh
 # DNS_MANAGER_WATCHDOG_DAEMON=1
-# DNS_MANAGER_WATCHDOG_DAEMON_VERSION=2.97
+# DNS_MANAGER_WATCHDOG_DAEMON_VERSION=2.98
 
 MANAGER_PATH="/usr/bin/dns-manager"
 CONFIG_FILE="/etc/dns-manager/config/manager.conf"
@@ -8300,7 +8331,7 @@ EOF_DNS_WATCHDOG_DAEMON
         cat > "$_stmp" <<'EOF_DNS_WATCHDOG_SERVICE'
 #!/bin/sh /etc/rc.common
 # DNS_MANAGER_WATCHDOG_SERVICE=1
-# DNS_MANAGER_WATCHDOG_SERVICE_VERSION=2.97
+# DNS_MANAGER_WATCHDOG_SERVICE_VERSION=2.98
 
 USE_PROCD=1
 START=95
