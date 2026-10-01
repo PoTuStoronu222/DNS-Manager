@@ -1722,7 +1722,6 @@ function settingStateView(st,key){
   var ms=settingModuleState(st,key);
   if(ms===1)return {kind:'dm-ok',text:'включено'};
   if(ms===2)return {kind:'dm-warn',text:'требует внимания'};
-  if(ms===0&&yes(st[key+'_stock']))return {kind:'dm-off',text:'выключено · stock OpenWrt'};
   if(ms===0)return {kind:'dm-off',text:'выключено'};
   return yes(st[key])?{kind:'dm-ok',text:'включено'}:{kind:'dm-off',text:'выключено'};
 }
@@ -2778,9 +2777,7 @@ function setSetting(name,en,root){
     state.busy=false;state.busySetting='';
     if(r&&r.ok){
       if(window.dmState)window.dmState[name]=String(en);
-      var stockReset=name==='mtu'||name==='sysctl'||name==='sysctl_ext'||name==='dnsmasq_perf'||name==='client_fixes';
-      var offMessage=stockReset?'выключена; штатное состояние OpenWrt восстановлено.':'выключена.';
-      setSettingFeedback(name,'Настройка «'+settingName(name)+'»: '+(en?'включена.':offMessage),'ok');
+      setSettingFeedback(name,'Настройка «'+settingName(name)+'»: '+(en?'включена.':'выключена.'),'ok');
     }else{
       setSettingFeedback(name,'Настройка «'+settingName(name)+'»: '+((r&&r.error)||'не удалось изменить.'),'error');
     }
