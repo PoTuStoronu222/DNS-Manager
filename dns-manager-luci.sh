@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.5.52
+# Version: 1.5.53
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -22,7 +22,7 @@ COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main
 # Legacy update compatibility: admin/services/dns_manager
 RUNTIME_UPDATE_STATE="$BACKUP_DIR/update.state"
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.5.52"
+VERSION="1.5.53"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -183,7 +183,7 @@ UPDATE_STATE="/etc/dns-manager-luci/update.state"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.5.52"
+SELF_VERSION="1.5.53"
 
 umask 077
 mkdir -p "$RUNTIME_DIR" "$JOB_DIR" "$CHECK_DIR" "$TMP_ROOT" 2>/dev/null || exit 1
@@ -970,6 +970,14 @@ status_json() {
     _ntp="$(cfg_get NTP_CLIENTS)"; [ -n "$_ntp" ] || _ntp=0
     _perf="$(cfg_get DNSMASQ_PERF)"; [ -n "$_perf" ] || _perf=0
     _fix="$(cfg_get CLIENT_FIXES)"; [ -n "$_fix" ] || _fix=0
+    _client_fix_state=0
+    _client_fix_stock=1
+    for _cf in /etc/dnsmasq.d/*dns-manager-client-fixes*.conf; do
+        [ -f "$_cf" ] || continue
+        _client_fix_state=1
+        _client_fix_stock=0
+        break
+    done
     _detail="$(jget detail 2>/dev/null || true)"
     _mtu_state=0
     _sysctl_state=0
@@ -1133,6 +1141,7 @@ status_json() {
     _force_owner="none"
     [ "$_external" = 1 ] && _force_owner="external"
     [ "$_external" != 1 ] && [ "$_force_manager" = 1 ] && _force_owner="manager"
+    printf ',"client_fixes_state":%s,"client_fixes_stock":%s' "$_client_fix_state" "$_client_fix_stock";
     printf ',"force":'; json_quote "$_force"; printf ',"force_external":'; json_quote "$_external"; printf ',"force_owner":'; json_quote "$_force_owner"; printf ',"force_manager":%s,"force_both":%s,"zapret_running":%s' "$_force_manager" "$_force_both" "$_zapret_running";
     printf ',"mtu_state":%s,"sysctl_state":%s,"sysctl_ext_state":%s,"dnsmasq_perf_state":%s' "$_mtu_state" "$_sysctl_state" "$_sysctl_ext_state" "$_dnsmasq_perf_state";
     printf ',"mtu_stock":%s,"sysctl_stock":%s,"sysctl_ext_stock":%s,"dnsmasq_perf_stock":%s' "$_mtu_stock" "$_sysctl_stock" "$_sysctl_ext_stock" "$_dnsmasq_perf_stock"; printf ',"force_source":'; json_quote "$FORCE_RUNTIME_SOURCE"; printf ',"force_targets":'; json_quote "$FORCE_RUNTIME_TARGETS"; printf ',"force_notrack":'; json_quote "$_force_notrack"; printf ',"force_update":'; json_quote "$_force_update"; printf ',"force_family":'; json_quote "$_force_family"; printf ',"force_ports":'; json_quote "$_force_ports"; printf ',"force_src":'; json_quote "$_force_src"; printf ',"force_canary_icloud":'; json_quote "$_force_canary_i"; printf ',"force_canary_mozilla":'; json_quote "$_force_canary_m"; printf ',"force_procd_trigger_wan6":'; json_quote "$_force_procd"; printf ',"force_heartbeat_domain":'; json_quote "$_force_heartbeat_domain"; printf ',"force_heartbeat_sleep":'; json_quote "$_force_heartbeat_sleep"; printf ',"force_heartbeat_wait":'; json_quote "$_force_heartbeat_wait"; printf ',"force_user":'; json_quote "$_force_user"; printf ',"force_group":'; json_quote "$_force_group"; printf ',"force_listen":'; json_quote "$_force_listen"; printf ',"force_consistent":%s' "$_force_consistent"; printf ',"mtu":'; json_quote "$_mtu"; printf ',"sysctl":'; json_quote "$_sysctl"; printf ',"sysctl_ext":'; json_quote "$_sysctl_ext"; printf ',"ntp_clients":'; json_quote "$_ntp"; printf ',"dnsmasq_perf":'; json_quote "$_perf"; printf ',"client_fixes":'; json_quote "$_fix"
@@ -1549,7 +1558,7 @@ EOF_RPC
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.5.52
+// DNS Manager LuCI version: 1.5.53
 var callStatus = rpc.declare({ object:'dns_manager', method:'status', params:['detail'], expect:{} });
 function statusDetail(){return currentRoute()==='network'?1:0;}
 var callCatalog = rpc.declare({ object:'dns_manager', method:'catalog', params:['category','offset','limit','only_ok'], expect:{} });
@@ -2769,7 +2778,7 @@ function setSetting(name,en,root){
     state.busy=false;state.busySetting='';
     if(r&&r.ok){
       if(window.dmState)window.dmState[name]=String(en);
-      var stockReset=name==='mtu'||name==='sysctl'||name==='sysctl_ext'||name==='dnsmasq_perf';
+      var stockReset=name==='mtu'||name==='sysctl'||name==='sysctl_ext'||name==='dnsmasq_perf'||name==='client_fixes';
       var offMessage=stockReset?'выключена; штатное состояние OpenWrt восстановлено.':'выключена.';
       setSettingFeedback(name,'Настройка «'+settingName(name)+'»: '+(en?'включена.':offMessage),'ok');
     }else{

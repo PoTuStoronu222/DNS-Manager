@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.26"
+VERSION="3.27"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -3116,7 +3116,7 @@ _apply_extras_now_impl() {
             if [ "${CLIENT_FIXES:-0}" = 1 ]; then
                 apply_client_fixes || return 1
             else
-                remove_client_fixes || return 1
+                remove_client_fixes 1 || return 1
             fi
             /etc/init.d/dnsmasq restart >/dev/null 2>&1 || return 1
             ;;
@@ -3330,6 +3330,7 @@ apply_client_fixes() {
     return 0
 }
 remove_client_fixes() {
+    _stock_reset="${1:-0}"
     _found=0
     for _f in /etc/dnsmasq.d/*dns-manager-client-fixes*.conf; do
         [ -f "$_f" ] || continue
@@ -3337,12 +3338,17 @@ remove_client_fixes() {
         _state="$(client_fixes_file_state "$_f")"
         case "$_state" in
             1) rm -f "$_f" || return 1 ;;
-            2) warn_msg "Client-fixes: файл $_f изменён после установки; сохраняю его." ;;
+            2)
+                if [ "$_stock_reset" = 1 ]; then
+                    rm -f "$_f" || return 1
+                else
+                    warn_msg "Client-fixes: файл $_f изменён после установки; сохраняю его."
+                fi
+                ;;
         esac
     done
     CLIENT_FIXES_FILE=""
     [ "$_found" = 0 ] || return 0
-    return 0
 }
 recommended_conntrack_max() {
     _mem="$(awk '/^MemTotal:/{print $2; exit}' /proc/meminfo 2>/dev/null)"
@@ -6846,7 +6852,7 @@ setting_process() {
             0:ntp_clients|2:ntp_clients) ok_msg "Время для устройств в локальной сети включено (DHCP 42, без принудительного перехвата)." ;;
             1:ntp_clients) ok_msg "Время для устройств в локальной сети выключено." ;;
             0:client_fixes|2:client_fixes) ok_msg "DNS для проверки подключения и совместимости устройств настроен." ;;
-            1:client_fixes) ok_msg "DNS для проверки подключения и совместимости устройств выключен." ;;
+            1:client_fixes) ok_msg "DNS для проверки подключения и совместимости устройств выключен; штатная конфигурация OpenWrt восстановлена." ;;
             0:web|2:web) ok_msg "Терминальный доступ LuCI включён: пункт LuCI ведёт в ttyd DNS Manager." ;;
             1:web) ok_msg "Терминальный доступ LuCI выключен, пункт DNS Manager удалён." ;;
         esac
