@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.2.0
+# Version: 1.2.1
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -22,7 +22,7 @@ COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main
 # Legacy update compatibility: admin/services/dns_manager
 RUNTIME_UPDATE_STATE="$BACKUP_DIR/update.state"
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.2.0"
+VERSION="1.2.1"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -167,7 +167,7 @@ UPDATE_STATE="/etc/dns-manager-luci/update.state"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.2.0"
+SELF_VERSION="1.2.1"
 
 umask 077
 mkdir -p "$RUNTIME_DIR" "$JOB_DIR" "$CHECK_DIR" "$TMP_ROOT" 2>/dev/null || exit 1
@@ -474,7 +474,7 @@ version_check_job_start() {
 
 version_check_job_status() {
     _jid="$1"
-    case "$_jid" in ''|vc-[!A-Za-z0-9_-]*) json_error "Неверный ID проверки"; return;; esac
+    case "$_jid" in ''|*[^A-Za-z0-9_-]*) json_error "Неверный ID проверки"; return;; esac
     _d="$JOB_DIR/$_jid"
     [ -d "$_d" ] || { json_error "Проверка не найдена"; return; }
     _status="$(sed -n 's/^status=//p' "$_d/state" 2>/dev/null | tail -n1)"
@@ -1152,7 +1152,7 @@ EOF_RPC
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.2.0
+// DNS Manager LuCI version: 1.2.1
 var callStatus = rpc.declare({ object:'dns_manager', method:'status', expect:{} });
 var callCatalog = rpc.declare({ object:'dns_manager', method:'catalog', params:['category','offset','limit','only_ok'], expect:{} });
 var callUpdateCheck = rpc.declare({ object:'dns_manager', method:'update_check', expect:{} });
