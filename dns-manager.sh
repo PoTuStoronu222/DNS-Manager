@@ -2991,14 +2991,14 @@ apply_sysctl_bundle() {
             remove_sysctl_base >/dev/null 2>&1 || true
             SYSCTL_TUNING="$_saved_base"
             SYSCTL_EXTENDED="$_saved_ext"
-            err_msg "Расширенный sysctl не применён. Проверьте nf_conntrack и параметры TCP/buffer. Базовый слой откатан."
+            err_msg "Расширенные параметры TCP и сетевых буферов не применён. Проверьте nf_conntrack и параметры TCP/buffer. Базовый слой откатан."
             return 1
         }
     else
         remove_sysctl_extended || {
             SYSCTL_TUNING="$_saved_base"
             SYSCTL_EXTENDED="$_saved_ext"
-            err_msg "Не удалось отключить расширенный sysctl."
+            err_msg "Не удалось отключить расширенные параметры TCP и сетевых буферов."
             return 1
         }
     fi
@@ -3096,11 +3096,11 @@ apply_extras_now() {
             mtu) _label="Применяю MTU/MSS";;
             sysctl) _label="Применяю тюнинг TCP и Conntrack";;
             force) _label="Применяю принудительный DNS";;
-            ntp_clients) _label="Применяю NTP-сервер роутера для устройств сети";;
+            ntp_clients) _label="Применяю Время для устройств в локальной сети";;
             dnsmasq_perf) _label="Применяю кэширование DNS";;
-            client_fixes) _label="Применяю клиентские исправления";;
+            client_fixes) _label="Применяю DNS для проверки подключения и совместимости устройств";;
             web) _label="Применяю терминальный доступ LuCI";;
-            sysctl_ext) _label="Применяю расширенный sysctl";;
+            sysctl_ext) _label="Применяю расширенные параметры TCP и сетевых буферов";;
             *) _label="Применяю настройки";;
         esac
     fi
@@ -3341,7 +3341,7 @@ apply_sysctl_extended() {
         fi
         _out="$(sysctl -w "$_p" 2>&1)"
         [ $? -eq 0 ] || {
-            [ -n "$_out" ] && err_msg "Не удалось применить расширенный sysctl: $_p: $_out" || err_msg "Не удалось применить расширенный sysctl: $_p"
+            [ -n "$_out" ] && err_msg "Не удалось применить расширенные параметры TCP и сетевых буферов: $_p: $_out" || err_msg "Не удалось применить расширенные параметры TCP и сетевых буферов: $_p"
             rm -f "$_tmp"
             return 1
         }
@@ -3856,10 +3856,10 @@ verify_after_apply() {
             [ "$(check_module_state sysctl 2>/dev/null)" = 1 ] || { err_msg "Настройка сети (sysctl) после применения не подтверждена."; return 1; }
         fi
         if [ "${NTP_CLIENTS:-0}" = 1 ]; then
-            [ "$(check_module_state ntp_clients 2>/dev/null)" = 1 ] || { err_msg "NTP для клиентов после применения не подтверждён."; return 1; }
+            [ "$(check_module_state ntp_clients 2>/dev/null)" = 1 ] || { err_msg "Время для устройств в локальной сети после применения не подтверждён."; return 1; }
         fi
         if [ "${DNSMASQ_PERF:-0}" = 1 ]; then
-            [ "$(check_module_state dnsmasq_perf 2>/dev/null)" = 1 ] || { err_msg "Настройка DNS-кэша после применения не подтверждена."; return 1; }
+            [ "$(check_module_state dnsmasq_perf 2>/dev/null)" = 1 ] || { err_msg "Увеличенный кэш DNS после применения не подтверждена."; return 1; }
         fi
         if [ "${CLIENT_FIXES:-0}" = 1 ]; then
             [ "$(check_module_state client_fixes 2>/dev/null)" = 1 ] || { err_msg "Клиентские DNS-фиксы после применения не подтверждены."; return 1; }
@@ -4349,11 +4349,11 @@ _apply_settings_impl() {
         printf "\n${C_WHITE}Дополнительные настройки:${C_NC}\n"
         [ "$MTU_FIX" = 1 ] && printf "  ${C_GREEN}✓${C_NC} Исправление сетевых параметров\n" || printf "  ${C_YELLOW}—${C_NC} MTU не изменяется\n"
         [ "$SYSCTL_TUNING" = 1 ] && printf "  ${C_GREEN}✓${C_NC} Настройка сети\n" || printf "  ${C_YELLOW}—${C_NC} sysctl не изменяется\n"
-        [ "${FORCE_DOH:-0}" = 1 ] && printf "  ${C_GREEN}✓${C_NC} Принудительный локальный DNS\n" || printf "  ${C_YELLOW}—${C_NC} Принудительный локальный DNS не изменяется\n"
-        [ "$NTP_CLIENTS" = 1 ] && printf "  ${C_GREEN}✓${C_NC} NTP-сервер роутера + DHCP 42 (без принудительного перехвата)\n" || printf "  ${C_YELLOW}—${C_NC} NTP для клиентов не изменяется\n"
-        [ "$DNSMASQ_PERF" = 1 ] && printf "  ${C_GREEN}✓${C_NC} Настройка DNS-кэша\n" || printf "  ${C_YELLOW}—${C_NC} Настройка DNS-кэша не изменяется\n"
+        [ "${FORCE_DOH:-0}" = 1 ] && printf "  ${C_GREEN}✓${C_NC} Принудительный DNS для устройств\n" || printf "  ${C_YELLOW}—${C_NC} Принудительный DNS для устройств не изменяется\n"
+        [ "$NTP_CLIENTS" = 1 ] && printf "  ${C_GREEN}✓${C_NC} NTP-сервер роутера + DHCP 42 (без принудительного перехвата)\n" || printf "  ${C_YELLOW}—${C_NC} Время для устройств в локальной сети не изменяется\n"
+        [ "$DNSMASQ_PERF" = 1 ] && printf "  ${C_GREEN}✓${C_NC} Увеличенный кэш DNS\n" || printf "  ${C_YELLOW}—${C_NC} Увеличенный кэш DNS не изменяется\n"
         [ "$CLIENT_FIXES" = 1 ] && printf "  ${C_GREEN}✓${C_NC} Клиентские DNS-фиксы\n" || printf "  ${C_YELLOW}—${C_NC} Клиентские фиксы не изменяются\n"
-        [ "$SYSCTL_EXTENDED" = 1 ] && printf "  ${C_GREEN}✓${C_NC} Расширенная настройка сети\n" || printf "  ${C_YELLOW}—${C_NC} Расширенный sysctl не изменяется\n"
+        [ "$SYSCTL_EXTENDED" = 1 ] && printf "  ${C_GREEN}✓${C_NC} Расширенная настройка сети\n" || printf "  ${C_YELLOW}—${C_NC} Расширенные параметры TCP и сетевых буферов не изменяется\n"
         [ "$WATCHDOG_ENABLED" = 1 ] && printf "  ${C_GREEN}✓${C_NC} Фоновая автопроверка DNS: каждые %s сек\n" "$WATCHDOG_INTERVAL" || printf "  ${C_YELLOW}—${C_NC} Автоматическая проверка DNS не изменяется\n"
     fi
     printf "\n${C_WHITE}Текущее состояние до применения:${C_NC}\n"
@@ -4461,8 +4461,8 @@ _apply_settings_impl() {
     fi
     if [ "$CORE_ONLY" != 1 ] && [ "${FORCE_DOH:-0}" = 1 ]; then
         apply_progress "Применяю принудительный локальный DNS."
-        apply_dns_force || { err_msg "Не удалось применить принудительный DNS."; tx_restore_on_failure; return 1; }
-        apply_progress_ok "Принудительный DNS применён."
+        apply_dns_force || { err_msg "Не удалось применить принудительный DNS для устройств."; tx_restore_on_failure; return 1; }
+        apply_progress_ok "Принудительный DNS для устройств применён."
     fi
     if [ "$CORE_ONLY" != 1 ] && [ "$MTU_FIX" = 1 ]; then
         apply_progress "Применяю исправление сетевых параметров / MSS."
@@ -4471,26 +4471,26 @@ _apply_settings_impl() {
             tx_restore_on_failure
             return 1
         }
-        apply_progress_ok "Исправление сетевых параметров / MSS применено."
+        apply_progress_ok "Исправление MTU и MSS для WAN применено."
     fi
     if [ "$CORE_ONLY" != 1 ] && { [ "$SYSCTL_TUNING" = 1 ] || [ "$SYSCTL_EXTENDED" = 1 ]; }; then
         apply_progress "Применяю настройки TCP/Conntrack sysctl."
-        apply_sysctl_bundle "$SYSCTL_TUNING" "$SYSCTL_EXTENDED" || { err_msg "Не удалось применить общий пакет TCP/Conntrack sysctl."; tx_restore_on_failure; return 1; }
-        apply_progress_ok "Настройки TCP/Conntrack sysctl применены."
+        apply_sysctl_bundle "$SYSCTL_TUNING" "$SYSCTL_EXTENDED" || { err_msg "Не удалось применить Оптимизация TCP и таблицы соединений."; tx_restore_on_failure; return 1; }
+        apply_progress_ok "Оптимизация TCP и таблицы соединений применены."
     fi
     if [ "$CORE_ONLY" != 1 ] && [ "$NTP_CLIENTS" = 1 ]; then
         apply_progress "Настраиваю NTP-сервер роутера и DHCP 42 для клиентов."
-        apply_ntp_clients || { err_msg "Не удалось настроить NTP для клиентов."; tx_restore_on_failure; return 1; }
-        apply_progress_ok "NTP для клиентов настроен."
+        apply_ntp_clients || { err_msg "Не удалось настроить Время для устройств в локальной сети."; tx_restore_on_failure; return 1; }
+        apply_progress_ok "Время для устройств в локальной сети настроено."
     fi
     if [ "$CORE_ONLY" != 1 ] && [ "$DNSMASQ_PERF" = 1 ]; then
-        apply_progress "Настраиваю производительность DNS-кэша dnsmasq."
+        apply_progress "Настраиваю Увеличенный кэш DNS."
         apply_dnsmasq_perf || { err_msg "Не удалось настроить производительность dnsmasq."; tx_restore_on_failure; return 1; }
-        apply_progress_ok "Настройка DNS-кэша применена."
+        apply_progress_ok "Увеличенный кэш DNS применена."
     fi
     if [ "$CORE_ONLY" != 1 ] && [ "$CLIENT_FIXES" = 1 ]; then
-        apply_progress "Применяю клиентские DNS-фиксы."
-        apply_client_fixes || { err_msg "Не удалось применить клиентские DNS-фиксы."; tx_restore_on_failure; return 1; }
+        apply_progress "Применяю DNS для проверки подключения и совместимости устройств."
+        apply_client_fixes || { err_msg "Не удалось применить DNS для проверки подключения и совместимости устройств."; tx_restore_on_failure; return 1; }
         apply_progress_ok "Клиентские DNS-фиксы применены."
     fi
     if [ "$CORE_ONLY" != 1 ]; then
@@ -4827,7 +4827,7 @@ _rollback_ours_impl() {
             warn_msg "Не удалось полностью очистить собственные изменения dnsmasq."
         fi
         if [ "$(check_module_state ntp_clients 2>/dev/null)" != 0 ]; then
-            remove_ntp_clients || { _rollback_fail=1; warn_msg "Не удалось отключить NTP для клиентов."; }
+            remove_ntp_clients || { _rollback_fail=1; warn_msg "Не удалось отключить Время для устройств в локальной сети."; }
         fi
         if [ "$(check_module_state dnsmasq_perf 2>/dev/null)" = 1 ]; then
             DNSMASQ_PERF=0
@@ -4877,7 +4877,7 @@ _rollback_ours_impl() {
         SYSCTL_EXTENDED=0
         if ! remove_sysctl_extended; then
             _rollback_fail=1
-            warn_msg "Не удалось полностью восстановить расширенный sysctl."
+            warn_msg "Не удалось полностью восстановить расширенные параметры TCP и сетевых буферов."
         fi
     fi
     if [ "$BASELINE_RESTORED_BOGUS" != 1 ]; then
@@ -5467,11 +5467,11 @@ esac
 printf "  Текущий профиль:              ${C_YELLOW}%s${C_NC}\n" "$_profile_name"
 printf "  Балансировка DNS:            %s\n" "$(module_state_word balance "$BALANCER_ENABLED")"
 printf "  Отдельный DNS (.ru/.su/.рф):  %s\n" "$(module_state_word tld "$TLD_SPLIT")"
-printf "  Исправление сетевых параметров / MSS: %s\n" "$(module_state_word mtu "$MTU_FIX")"
+printf "  Исправление MTU и MSS для WAN: %s\n" "$(module_state_word mtu "$MTU_FIX")"
 printf "  Принудительный DNS:         %s\n" "$(force_state_word)"
 printf "  Настройка сети:                %s\n" "$(module_state_word sysctl "$SYSCTL_TUNING")"
-printf "  Настройка DNS-кэша:             %s\n" "$(module_state_word dnsmasq_perf "$DNSMASQ_PERF")"
-printf "  NTP для клиентов:              %s\n" "$(module_state_word ntp_clients "$NTP_CLIENTS")"
+printf "  Увеличенный кэш DNS:             %s\n" "$(module_state_word dnsmasq_perf "$DNSMASQ_PERF")"
+printf "  Время для устройств в локальной сети:              %s\n" "$(module_state_word ntp_clients "$NTP_CLIENTS")"
 printf "  Связь системных служб:         %s\n" "$(module_state_word client_fixes "$CLIENT_FIXES")"
 menu_section "ЖУРНАЛ"
 printf "${C_WHITE}Последние события:${C_NC}\n"
@@ -6770,28 +6770,28 @@ setting_process() {
 
     if [ "$_rc" -eq 0 ]; then
         case "$_state:$_module" in
-            0:mtu|2:mtu) ok_msg "MTU/MSS настроено." ;;
-            1:mtu) ok_msg "MTU/MSS выключено в фактической WAN-зоне." ;;
-            0:force|2:force) ok_msg "Принудительный DNS настроен." ;;
-            1:force) ok_msg "Принудительный DNS выключен, стоковое состояние восстановлено." ;;
-            0:sysctl|2:sysctl) ok_msg "TCP и Conntrack настроены." ;;
+            0:mtu|2:mtu) ok_msg "Исправление MTU и MSS для WAN настроено." ;;
+            1:mtu) ok_msg "Исправление MTU и MSS для WAN выключено в фактической WAN-зоне." ;;
+            0:force|2:force) ok_msg "Принудительный DNS для устройств настроен." ;;
+            1:force) ok_msg "Принудительный DNS для устройств выключен, стоковое состояние восстановлено." ;;
+            0:sysctl|2:sysctl) ok_msg "Оптимизация TCP и таблицы соединений настроена." ;;
             1:sysctl) ok_msg "TCP и Conntrack возвращены к стоку." ;;
-            0:dnsmasq_perf|2:dnsmasq_perf) ok_msg "DNS-кэш настроен." ;;
-            1:dnsmasq_perf) ok_msg "DNS-кэш возвращён к стоку." ;;
-            0:ntp_clients|2:ntp_clients) ok_msg "NTP-сервер роутера для устройств включён (DHCP 42, без принудительного перехвата)." ;;
-            1:ntp_clients) ok_msg "NTP-сервер роутера для устройств выключен." ;;
-            0:client_fixes|2:client_fixes) ok_msg "Исправления телеметрии и связи настроены." ;;
-            1:client_fixes) ok_msg "Исправления телеметрии и связи выключены." ;;
+            0:dnsmasq_perf|2:dnsmasq_perf) ok_msg "Увеличенный кэш DNS настроен." ;;
+            1:dnsmasq_perf) ok_msg "Увеличенный кэш DNS выключен." ;;
+            0:ntp_clients|2:ntp_clients) ok_msg "Время для устройств в локальной сети включено (DHCP 42, без принудительного перехвата)." ;;
+            1:ntp_clients) ok_msg "Время для устройств в локальной сети выключено." ;;
+            0:client_fixes|2:client_fixes) ok_msg "DNS для проверки подключения и совместимости устройств настроены." ;;
+            1:client_fixes) ok_msg "DNS для проверки подключения и совместимости устройств выключены." ;;
             0:web|2:web) ok_msg "Терминальный доступ LuCI включён: пункт LuCI ведёт в ttyd DNS Manager." ;;
             1:web) ok_msg "Терминальный доступ LuCI выключен, пункт DNS Manager удалён." ;;
         esac
     else
         case "$_module" in
             mtu) err_msg "Не удалось изменить исправление сетевых параметров." ;;
-            force) err_msg "Не удалось изменить принудительный DNS." ;;
+            force) err_msg "Не удалось изменить принудительный DNS для устройств." ;;
             sysctl) err_msg "Не удалось изменить TCP и Conntrack." ;;
             dnsmasq_perf) err_msg "Не удалось изменить кэширование DNS." ;;
-            ntp_clients) err_msg "Не удалось изменить NTP-сервер роутера для устройств." ;;
+            ntp_clients) err_msg "Не удалось изменить Время для устройств в локальной сети." ;;
             client_fixes) err_msg "Не удалось изменить исправления телеметрии и связи." ;;
             web) err_msg "Не удалось изменить терминальный доступ LuCI." ;;
             watchdog) err_msg "Не удалось изменить фоновую автопроверку DNS." ;;
@@ -6805,28 +6805,28 @@ menu_extras() {
 while :; do
     menu_header "НАСТРОЙКИ"
     menu_section "DNS И ОБХОД"
-    menu_item_action "[1]" "Исправление сетевых параметров / MSS" mtu
-    menu_item_action "[2]" "Автопроверка мёртвых DNS-портов" watchdog
-    menu_item_action "[3]" "Принудительный DNS" force
+    menu_item_action "[1]" "Исправление MTU и MSS для WAN" mtu
+    menu_item_action "[2]" "Автопроверка и замена DNS" watchdog
+    menu_item_action "[3]" "Принудительный DNS для устройств" force
     menu_section "ПРОИЗВОДИТЕЛЬНОСТЬ"
-    menu_item_action "[4]" "Оптимизация TCP и Conntrack" sysctl
-    menu_item_action "[5]" "Кэширование DNS-запросов" dnsmasq_perf
+    menu_item_action "[4]" "Оптимизация TCP и таблицы соединений" sysctl
+    menu_item_action "[5]" "Увеличенный кэш DNS" dnsmasq_perf
     menu_section "СЕРВИСЫ И КЛИЕНТЫ"
-    menu_item_action "[6]" "NTP-сервер роутера для устройств сети" ntp_clients
-    menu_item_action "[7]" "Исправления телеметрии и связи" client_fixes
+    menu_item_action "[6]" "Время для устройств в локальной сети" ntp_clients
+    menu_item_action "[7]" "DNS для проверки подключения и совместимости устройств" client_fixes
     menu_section "LUCI"
     menu_item_action "[8]" "Нативный интерфейс DNS Manager" luci
     menu_back
     menu_prompt
     safe_read c
     case "$c" in
-        1) setting_process mtu "Исправление сетевых параметров / MSS" "MTU/MSS исправление применяется только к реальной WAN-зоне." ;;
-        2) setting_process watchdog "Автопроверка мёртвых DNS-портов" "Каждые ${WATCHDOG_INTERVAL:-90}с проверяет только выбранные DNS-порты. Замена выполняется после двух последовательных сбоев; полный каталог из 105 DNS в фоне не запускается." ;;
+        1) setting_process mtu "Исправление MTU и MSS для WAN" "MTU/MSS исправление применяется только к реальной WAN-зоне." ;;
+        2) setting_process watchdog "Автопроверка и замена DNS" "Каждые ${WATCHDOG_INTERVAL:-90}с проверяет только выбранные DNS-порты. Замена выполняется после двух последовательных сбоев; полный каталог из 105 DNS в фоне не запускается." ;;
         3) setting_process force "Принудительный DNS" "DNS TCP/UDP 53 направляется на DNS роутера; DoT TCP/UDP 853 блокируется." ;;
-        4) setting_process sysctl "Оптимизация TCP и Conntrack" "Применяются параметры TCP и Conntrack." ;;
-        5) setting_process dnsmasq_perf "Кэширование DNS-запросов" "Применяются параметры DNS-кэша dnsmasq." ;;
-        6) setting_process ntp_clients "NTP-сервер роутера для устройств сети" "Роутер отвечает клиентам по UDP/123, а DHCP сообщает его адрес как NTP-сервер. Принудительный перехват NTP не используется." ;;
-        7) setting_process client_fixes "Исправления телеметрии и связи" "Добавляются DNS-правила для телеметрии и проверок подключения некоторых устройств." ;;
+        4) setting_process sysctl "Оптимизация TCP и таблицы соединений" "Применяются параметры TCP и Conntrack." ;;
+        5) setting_process dnsmasq_perf "Увеличенный кэш DNS" "Применяются параметры DNS-кэша dnsmasq." ;;
+        6) setting_process ntp_clients "Время для устройств в локальной сети" "Роутер отвечает клиентам по UDP/123, а DHCP сообщает его адрес как NTP-сервер. Принудительный перехват NTP не используется." ;;
+        7) setting_process client_fixes "DNS для проверки подключения и совместимости устройств" "Добавляются DNS-правила для телеметрии и проверок подключения некоторых устройств." ;;
         8) setting_process luci "Нативный интерфейс DNS Manager" "Устанавливает отдельный файл dns-manager-luci.sh из GitHub и добавляет только LuCI → Службы → DNS Manager. ttyd и дополнительный HTTP-порт не используются." ;;
         '') return ;;
         *) warn_msg "Неизвестный пункт."; pause ;;
@@ -8552,7 +8552,7 @@ printf "  ${C_YELLOW}${C_BOLD}DNS-серверов найдено${C_NC} %s\n" "
 printf "  ${C_YELLOW}${C_BOLD}Firewall${C_NC}            ${C_CYAN}%s${C_NC}\n" "${SYS_FW:-не определён}"
 [ -n "${FIREWALL_WAN_NETWORK:-}" ] && printf "  ${C_YELLOW}${C_BOLD}WAN-сеть${C_NC}           ${C_CYAN}%s${C_NC}\n" "$FIREWALL_WAN_NETWORK"
 printf "  ${C_YELLOW}${C_BOLD}Каталог DNS${C_NC}        ${C_CYAN}%s • %s серверов${C_NC}\n" "$(dns_catalog_version)" "$(count_dns)"
-printf "  ${C_YELLOW}${C_BOLD}Автопроверка${C_NC}       %b\n" "$(module_state_word watchdog "$WATCHDOG_ENABLED")"
+printf "  ${C_YELLOW}${C_BOLD}Автопроверка и замена DNS${C_NC} %b\n" "$(module_state_word watchdog "$WATCHDOG_ENABLED")"
 [ -s "$BASELINE_MANIFEST" ] && printf "  ${C_YELLOW}${C_BOLD}Исходная копия${C_NC}    ${C_GREEN}есть${C_NC}\n" || printf "  ${C_YELLOW}${C_BOLD}Исходная копия${C_NC}    ${C_YELLOW}нет${C_NC}\n"
 printf "  ${C_YELLOW}${C_BOLD}Принудительный DNS${C_NC} %b\n" "$(force_state_word)"
 menu_section "НАСТРОЙКА DNS"
