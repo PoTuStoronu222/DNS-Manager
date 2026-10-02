@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.5.63
+# Version: 1.5.64
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -22,7 +22,8 @@ COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/
 # Legacy update compatibility: admin/services/dns_manager
 RUNTIME_UPDATE_STATE="$BACKUP_DIR/update.state"
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.5.63"
+ROLLBACK_DIR="$BACKUP_DIR/rollback"
+VERSION="1.5.64"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -41,7 +42,14 @@ install_files() {
     require_manager || return 1
 
     command -v jsonfilter >/dev/null 2>&1 || say "ℹ jsonfilter не найден — используется встроенный обработчик RPC-параметров."
-    mkdir -p "$VIEW_DIR" /usr/libexec/rpcd /usr/share/rpcd/acl.d /usr/share/luci/menu.d "$RUNTIME_DIR/checks" "$BACKUP_DIR" "$(dirname "$STATE_FILE")" || return 1
+    mkdir -p "$VIEW_DIR" /usr/libexec/rpcd /usr/share/luci/acl.d /usr/share/luci/menu.d "$RUNTIME_DIR/checks" "$BACKUP_DIR" "$ROLLBACK_DIR" "$(dirname "$STATE_FILE")" || return 1
+
+    # Keep one known-good LuCI snapshot for a safe rollback.
+    [ -r "$RPC_PLUGIN" ] && [ ! -r "$ROLLBACK_DIR/rpc_dns_manager" ] && cp -f "$RPC_PLUGIN" "$ROLLBACK_DIR/rpc_dns_manager" 2>/dev/null || true
+    [ -r "$ACL_FILE" ] && [ ! -r "$ROLLBACK_DIR/luci-app-dns-manager.json" ] && cp -f "$ACL_FILE" "$ROLLBACK_DIR/luci-app-dns-manager.json" 2>/dev/null || true
+    [ -r "$MENU_FILE" ] && [ ! -r "$ROLLBACK_DIR/luci-app-dns-manager.json.menu" ] && cp -f "$MENU_FILE" "$ROLLBACK_DIR/luci-app-dns-manager.json.menu" 2>/dev/null || true
+    [ -r "$VIEW_FILE" ] && [ ! -r "$ROLLBACK_DIR/overview.js" ] && cp -f "$VIEW_FILE" "$ROLLBACK_DIR/overview.js" 2>/dev/null || true
+
     rm -f "/etc/dns-manager/state/current-dns-test-summary.conf" 2>/dev/null || true
 
     cat > "$MENU_FILE" <<'EOF_MENU'
@@ -96,7 +104,7 @@ EOF_MENU
     "description": "DNS Manager native LuCI interface",
     "read": {
       "ubus": {
-        "dns_manager": [ "status", "system_info", "catalog", "job", "log", "update_check", "update_check_job", "update_check_job_status" ]
+        "dns_manager": [ "status", "system_info", "rollback_luci", "catalog", "job", "log", "update_check", "update_check_job", "update_check_job_status" ]
       }
     },
     "write": {
@@ -129,7 +137,7 @@ UPDATE_STATE="/etc/dns-manager-luci/update.state"
 COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.5.63"
+SELF_VERSION="1.5.64"
 
 umask 077
 mkdir -p "$RUNTIME_DIR" "$JOB_DIR" "$CHECK_DIR" "$TMP_ROOT" 2>/dev/null || exit 1
@@ -141,6 +149,41 @@ json_quote() {
 }
 json_error() { printf '{"ok":false,"error":'; json_quote "$1"; printf '}'; }
 json_ok() { printf '{"ok":true}'; }
+
+rollback_luci() {
+    _rollback_dir="/etc/dns-manager-luci/rollback"
+    [ -r "$_rollback_dir/rpc_dns_manager" ] &&
+    [ -r "$_rollback_dir/luci-app-dns-manager.json" ] &&
+    [ -r "$_rollback_dir/luci-app-dns-manager.json.menu" ] &&
+    [ -r "$_rollback_dir/overview.js" ] || {
+        json_error "Точка отката LuCI не найдена."
+        return 0
+    }
+
+    cp -f "$_rollback_dir/rpc_dns_manager" "/usr/libexec/rpcd/dns_manager" 2>/dev/null || {
+        json_error "Не удалось восстановить RPC DNS Manager."
+        return 0
+    }
+    cp -f "$_rollback_dir/luci-app-dns-manager.json" "/usr/share/rpcd/acl.d/luci-app-dns-manager.json" 2>/dev/null || {
+        json_error "Не удалось восстановить ACL LuCI."
+        return 0
+    }
+    cp -f "$_rollback_dir/luci-app-dns-manager.json.menu" "/usr/share/luci/menu.d/luci-app-dns-manager.json" 2>/dev/null || {
+        json_error "Не удалось восстановить меню LuCI."
+        return 0
+    }
+    cp -f "$_rollback_dir/overview.js" "/www/luci-static/resources/view/dns_manager/overview.js" 2>/dev/null || {
+        json_error "Не удалось восстановить страницу LuCI."
+        return 0
+    }
+    chmod 0755 "/usr/libexec/rpcd/dns_manager" 2>/dev/null || true
+    chmod 0644 "/usr/share/rpcd/acl.d/luci-app-dns-manager.json" "/usr/share/luci/menu.d/luci-app-dns-manager.json" "/www/luci-static/resources/view/dns_manager/overview.js" 2>/dev/null || true
+    [ -x /etc/init.d/rpcd ] && /etc/init.d/rpcd reload >/dev/null 2>&1 || {
+        json_error "LuCI восстановлена, но rpcd не удалось перезагрузить."
+        return 0
+    }
+    printf '{"ok":true,"rolled_back":true}'
+}
 
 jget() {
     _key="$1"
@@ -1526,6 +1569,7 @@ case "${1:-}" in
         case "${2:-}" in
             status) INPUT="$(cat 2>/dev/null || true)"; status_json;;
             system_info) system_info_json;;
+            rollback_luci) rollback_luci;;
             catalog) INPUT="$(cat 2>/dev/null || true)"; catalog_json;;
             update_check) update_check_json;;            update_catalog) update_catalog_json;;            update_all) update_all_json;;            update) update_json;;            update_manager) update_manager_json;;            update_hdp) update_hdp_json;;
             set_profile|set_slot|set_setting|set_watchdog_setting) INPUT="$(cat 2>/dev/null || true)"; RPC_METHOD="$2"; run_action;;
@@ -1546,9 +1590,10 @@ EOF_RPC
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.5.63
+// DNS Manager LuCI version: 1.5.64
 var callStatus = rpc.declare({ object:'dns_manager', method:'status', params:['detail'], expect:{} });
 var callSystemInfo = rpc.declare({ object:'dns_manager', method:'system_info', expect:{} });
+var callRollbackLuci = rpc.declare({ object:'dns_manager', method:'rollback_luci', expect:{} });
 function statusDetail(){return currentRoute()==='network'?1:0;}
 var callCatalog = rpc.declare({ object:'dns_manager', method:'catalog', params:['category','offset','limit','only_ok'], expect:{} });
 var callUpdateCheck = rpc.declare({ object:'dns_manager', method:'update_check', expect:{} });
@@ -1938,6 +1983,7 @@ function renderOverview(root,st){
     row('Проверено',dateText(st.components_checked_at)),
     E('div',{'class':'dm-actions'},[
       btn('Проверить актуальность','cbi-button-neutral',function(){checkUpdate(root);}),
+      btn('Откатить LuCI','cbi-button-neutral',function(){rollbackLuci(root);},{disabled:!!state.busy||!!state.updatingAll}),
       (yes(st.manager_update_available)||yes(st.luci_update_available)||yes(st.hdp_update_available)||yes(st.catalog_update_available)) ?
         btn(state.updatingAll?'Обновляю…':'Обновить','cbi-button-positive',function(){updateAll(root);},{disabled:!!state.updatingAll||!!state.busy}) :
         null
@@ -2560,19 +2606,26 @@ function renderJobIdle(root,st){
   var e=root.querySelector('#dm-job');if(!e)return;e.innerHTML='';
 }
 function render(root,st){
-  renderHeader(root,st);
-  renderOverview(root,st);
-  renderDoH(root,st);
-  renderSlots(root,st);
-  renderProfiles(root,st);
-  renderSettings(root,st);
-  renderNetwork(root,st);
-  renderCatalog(root);
-  renderLog(root);
-  renderJobIdle(root,st);
   state.activeTab=currentRoute();
+  renderHeader(root,st);
+  if(state.activeTab==='dashboard'){
+    renderOverview(root,st);
+    renderJobIdle(root,st);
+  }else if(state.activeTab==='doh'){
+    renderDoH(root,st);
+    renderSlots(root,st);
+    renderProfiles(root,st);
+  }else if(state.activeTab==='network'){
+    renderNetwork(root,st);
+  }else if(state.activeTab==='settings'){
+    renderSettings(root,st);
+  }else if(state.activeTab==='catalog'){
+    renderCatalog(root);
+  }else if(state.activeTab==='log'){
+    renderLog(root);
+  }
   setActiveTab(root,state.activeTab);
-  if(currentRoute()==='dashboard' && !state.updateKick && Number(st.components_checked_at||0)===0){state.updateKick=true;setTimeout(function(){refresh(root,true);},2200);}
+  if(state.activeTab==='dashboard' && !state.updateKick && Number(st.components_checked_at||0)===0){state.updateKick=true;setTimeout(function(){refresh(root,true);},2200);}
 }
 function refresh(root,keepPosition){
   if(!rootAlive(root))return Promise.resolve();
@@ -2651,6 +2704,27 @@ function startAutoRefresh(root){
   },5000);
 }
 function toast(msg,type){}
+function rollbackLuci(root){
+  if(state.busy||state.updatingAll)return;
+  confirmAction('Откатить LuCI DNS Manager',[['Действие','Восстановить последнюю сохранённую версию LuCI'] ],function(){
+    state.busy=true;
+    state.pageNotice.overview='Восстанавливаю предыдущую версию LuCI…';
+    renderOverview(root,window.dmState||{});
+    callRollbackLuci().then(function(r){
+      state.busy=false;
+      if(r&&r.ok&&r.rolled_back){
+        location.reload();
+      }else{
+        state.pageNotice.overview=(r&&r.error)||'Откат LuCI не выполнен.';
+        renderOverview(root,window.dmState||{});
+      }
+    }).catch(function(){
+      state.busy=false;
+      state.pageNotice.overview='Не удалось выполнить откат LuCI.';
+      renderOverview(root,window.dmState||{});
+    });
+  });
+}
 function checkUpdate(root){
   if(state.versionCheck&&state.versionCheck.running)return;
   state.versionCheck={running:true,manager:'running',luci:'running',hdp:'running',catalog:'running',started:Date.now(),job:''};
