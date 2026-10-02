@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.34.2"
+VERSION="3.35.0"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -72,6 +72,8 @@ FIREWALL_OWNERSHIP="$CFG_DIR/firewall-ownership.conf"
 FW_NTP_SECTION="dns_manager_ntp_client"
 FW_DNS_REDIRECT_SECTION="dns_manager_dns_redirect"
 FW_DOT_SECTION="dns_manager_dot_block"
+STEER_DNS_ACTIVE=0
+STEER_DNS_SOURCE="none"
 FIREWALL_LAN_ZONE=""
 FIREWALL_WAN_ZONE=""
 FIREWALL_LAN_NAME=""
@@ -1718,6 +1720,39 @@ dns_path_conflict_iptables() {
         END { exit(found ? 0 : 1) }
     '
 }
+detect_steer_dns_path() {
+    STEER_DNS_ACTIVE=0
+    STEER_DNS_SOURCE="none"
+
+    if [ -x /etc/init.d/steer ] && /etc/init.d/steer running >/dev/null 2>&1; then
+        :
+    elif pgrep -x steer >/dev/null 2>&1; then
+        :
+    else
+        return 0
+    fi
+
+    case "$SYS_FW" in
+        fw4)
+            nft -a list ruleset 2>/dev/null | awk '
+                /chain[[:space:]]+prerouting_dns[[:space:]]*\{/ { indns=1; next }
+                indns && /^[[:space:]]*\}/ { indns=0 }
+                indns && /dport[[:space:]]+53/ && /redirect[[:space:]]+to[[:space:]]*:[[:space:]]*5300([[:space:]]|$)/ { found=1 }
+                END { exit(found ? 0 : 1) }
+            ' >/dev/null 2>&1 && {
+                STEER_DNS_ACTIVE=1
+                STEER_DNS_SOURCE="Steer"
+            }
+            ;;
+        fw3)
+            iptables -t nat -S PREROUTING 2>/dev/null | grep -qE -- '--dport[[:space:]]+53.*(REDIRECT.*--to-ports[[:space:]]+5300([[:space:]]|$)|DNAT.*:[[:space:]]*5300([[:space:]]|$))' && {
+                STEER_DNS_ACTIVE=1
+                STEER_DNS_SOURCE="Steer"
+            }
+            ;;
+    esac
+    return 0
+}
 reload_fw() {
     if [ -x /etc/init.d/firewall ]; then
         /etc/init.d/firewall reload >/dev/null 2>&1 && return 0
@@ -1769,6 +1804,61 @@ force_dns_ports_match_expected() {
     _cur="$(uci -q get https-dns-proxy.config.force_dns_port 2>/dev/null | force_dns_list_normalize)"
     [ "$_cur" = "53 853" ]
 }
+steer_dns_upstream_ready() {
+    [ "${STEER_DNS_ACTIVE:-0}" = 1 ] || return 1
+    _sec="$(get_dnsmasq_section)"
+    [ -n "$_sec" ] || return 1
+    _expected="$(watchdog_expected_servers 2>/dev/null || true)"
+    [ -n "$_expected" ] || return 1
+    _actual="$TMP_DIR/steer-dns-actual-$$"
+    printf "%s\n" "$(uci -q get "dhcp.$_sec.server" 2>/dev/null)" | tr " " "\n" | sed "/^$/d" | sort -u > "$_actual"
+    _want="$(sort -u "$_expected" 2>/dev/null)"
+    _ok=0; [ "$_want" = "$(cat "$_actual" 2>/dev/null)" ] && _ok=1
+    rm -f "$_actual" "$_expected" 2>/dev/null || true
+    [ "$_ok" = 1 ]
+}
+dns_dot_block_ready() {
+    firewall_resolve_zones >/dev/null 2>&1 || true
+    if [ "$(uci -q get "firewall.$FW_DOT_SECTION" 2>/dev/null)" = rule ] && firewall_dot_rule_matches "$FW_DOT_SECTION"; then
+        return 0
+    fi
+    firewall_find_exact_rule_signature dot "$FW_DOT_SECTION" 853 >/dev/null 2>&1
+}
+ensure_dns_dot_block() {
+    firewall_resolve_zones >/dev/null 2>&1 || return 1
+    [ -n "${FIREWALL_LAN_ZONE:-}" ] && [ -n "${FIREWALL_WAN_ZONE:-}" ] || return 1
+    if dns_dot_block_ready; then return 0; fi
+    if [ "$(uci -q get "firewall.$FW_DOT_SECTION" 2>/dev/null)" = rule ]; then
+        firewall_dot_rule_matches "$FW_DOT_SECTION" || return 1
+        return 0
+    fi
+    uci set "firewall.$FW_DOT_SECTION=rule" || return 1
+    uci set "firewall.$FW_DOT_SECTION.name=DNS Manager: block DoT" || return 1
+    uci set "firewall.$FW_DOT_SECTION.src=$FIREWALL_LAN_ZONE" || return 1
+    uci set "firewall.$FW_DOT_SECTION.dest=$FIREWALL_WAN_ZONE" || return 1
+    uci set "firewall.$FW_DOT_SECTION.proto=tcp udp" || return 1
+    uci set "firewall.$FW_DOT_SECTION.dest_port=853" || return 1
+    uci set "firewall.$FW_DOT_SECTION.target=REJECT" || return 1
+    uci commit firewall || return 1
+    firewall_owner_add "$FW_DOT_SECTION" || return 1
+    reload_fw || return 1
+    return 0
+}
+remove_dns_dot_block() {
+    if [ "$(uci -q get "firewall.$FW_DOT_SECTION" 2>/dev/null)" != rule ]; then
+        firewall_owner_remove "$FW_DOT_SECTION" >/dev/null 2>&1 || true
+        return 0
+    fi
+    firewall_dot_rule_matches "$FW_DOT_SECTION" || return 0
+    _name="$(uci -q get "firewall.$FW_DOT_SECTION.name" 2>/dev/null)"
+    if firewall_owner_has "$FW_DOT_SECTION" || [ "$_name" = "DNS Manager: block DoT" ]; then
+        uci -q delete "firewall.$FW_DOT_SECTION" || return 1
+        firewall_owner_remove "$FW_DOT_SECTION" || true
+        uci commit firewall || return 1
+        reload_fw || return 1
+    fi
+    return 0
+}
 # Read-only discovery of the actual LAN DNS interception path. This is used
 # to separate DNS Manager from Zapret/other external forced-DNS without
 # consulting ownership files.
@@ -1780,6 +1870,10 @@ detect_forced_dns_path() {
     _manager_force_cfg=0
     _external=0
     _zapret=0
+    _steer=0
+
+    detect_steer_dns_path >/dev/null 2>&1 || true
+    [ "${STEER_DNS_ACTIVE:-0}" = 1 ] && _steer=1
 
     [ "${FORCE_DOH:-0}" = 1 ] &&
         [ "$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null)" = 1 ] &&
@@ -1803,7 +1897,9 @@ detect_forced_dns_path() {
         FORCED_DNS_ACTIVE=1
         case "$FORCED_DNS_TARGETS" in *"|$_dp|"*|"$_dp"|*) ;; esac
         FORCED_DNS_TARGETS="${FORCED_DNS_TARGETS}${_dp} "
-        if dns_manager_force_port "$_dp" && [ "$_manager_force_cfg" = 1 ]; then
+        if [ "$_steer" = 1 ] && [ "$_dp" = 5300 ]; then
+            :
+        elif dns_manager_force_port "$_dp" && [ "$_manager_force_cfg" = 1 ]; then
             :
         else
             _external=1
@@ -1865,6 +1961,13 @@ EOF_FORCE_IPT
             FORCED_DNS_SOURCE="Zapret / внешний"
         else
             FORCED_DNS_SOURCE="внешний сервис"
+        fi
+    elif [ "$_steer" = 1 ]; then
+        FORCED_DNS_ACTIVE=1
+        if [ "$_manager_force_cfg" = 1 ]; then
+            FORCED_DNS_SOURCE="Steer + DNS Manager"
+        else
+            FORCED_DNS_SOURCE="Steer"
         fi
     elif [ "$_manager_force_cfg" = 1 ]; then
         FORCED_DNS_ACTIVE=1
@@ -3464,42 +3567,45 @@ remove_sysctl_extended() {
 apply_dns_force() {
     [ "${FORCE_DOH:-0}" = 1 ] || return 0
     firewall_resolve_zones >/dev/null 2>&1 || return 1
+    detect_steer_dns_path >/dev/null 2>&1 || true
 
-    if [ "${FORCED_DNS_EXTERNAL:-0}" = 1 ]; then
+    if [ "${FORCED_DNS_EXTERNAL:-0}" = 1 ] && [ "${STEER_DNS_ACTIVE:-0}" != 1 ]; then
         log_msg "Исправляю внешний forced-DNS ($FORCED_DNS_SOURCE) настройками DNS Manager."
     fi
-    if ! prepare_dns_path; then
+
+    if [ "${STEER_DNS_ACTIVE:-0}" = 1 ]; then
+        log_msg "Steer перехватывает DNS на 53. Второй перехват DNS Manager не создаю; обычный DNS идёт через dnsmasq."
+        for _k in force_dns notrack_dns force_dns_port force_dns_src_interface; do
+            uci -q delete "https-dns-proxy.config.$_k" || true
+        done
+        uci set https-dns-proxy.config.force_ip_family="auto" || return 1
+        uci set https-dns-proxy.config.dnsmasq_config_update="-" || return 1
+        uci commit https-dns-proxy || return 1
+        /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || true
+        ensure_dns_dot_block || return 1
+        reconcile_dnsmasq || return 1
+        /etc/init.d/dnsmasq restart >/dev/null 2>&1 || return 1
         return 0
     fi
 
-    # Match the actual https-dns-proxy forced-DNS contract: outbound client
-    # DNS (53) and DoT (853) from LAN interfaces are redirected to local DoH.
-    uci set https-dns-proxy.config.force_dns='1' || return 1
-    uci set https-dns-proxy.config.notrack_dns='1' || return 1
-    uci set https-dns-proxy.config.force_ip_family='auto' || return 1
-
+    if ! prepare_dns_path; then return 0; fi
+    uci set https-dns-proxy.config.force_dns="1" || return 1
+    uci set https-dns-proxy.config.notrack_dns="1" || return 1
+    uci set https-dns-proxy.config.force_ip_family="auto" || return 1
     uci -q delete https-dns-proxy.config.force_dns_port >/dev/null 2>&1 || true
-    for _p in 53 853; do
-        uci add_list https-dns-proxy.config.force_dns_port="$_p" || return 1
-    done
-
+    for _p in 53 853; do uci add_list https-dns-proxy.config.force_dns_port="$_p" || return 1; done
     uci -q delete https-dns-proxy.config.force_dns_src_interface >/dev/null 2>&1 || true
     _force_src_nets="$(force_dns_expected_src_interfaces)"
-    for _n in $_force_src_nets; do
-        [ -n "$_n" ] || continue
-        uci add_list https-dns-proxy.config.force_dns_src_interface="$_n" || return 1
-    done
-
-    # Deliberately different from the stock package default: do not let
-    # https-dns-proxy modify dnsmasq entries that DNS Manager owns.
-    uci set https-dns-proxy.config.dnsmasq_config_update='-' || return 1
+    for _n in $_force_src_nets; do [ -n "$_n" ] || continue; uci add_list https-dns-proxy.config.force_dns_src_interface="$_n" || return 1; done
+    uci set https-dns-proxy.config.dnsmasq_config_update="-" || return 1
     uci commit https-dns-proxy || return 1
     return 0
 }
 
 remove_dns_force() {
     detect_forced_dns_path >/dev/null 2>&1 || true
-    if [ "${FORCED_DNS_EXTERNAL:-0}" = 1 ]; then
+    detect_steer_dns_path >/dev/null 2>&1 || true
+    if [ "${FORCED_DNS_EXTERNAL:-0}" = 1 ] && [ "${STEER_DNS_ACTIVE:-0}" != 1 ]; then
         warn_msg "Обнаружен внешний forced-DNS ($FORCED_DNS_SOURCE). DNS Manager его не изменяет."
         return 0
     fi
@@ -3507,8 +3613,13 @@ remove_dns_force() {
         uci -q delete "https-dns-proxy.config.$_k" || true
     done
     uci commit https-dns-proxy >/dev/null 2>&1 || return 1
+    if [ "${STEER_DNS_ACTIVE:-0}" = 1 ]; then
+        remove_dns_dot_block || return 1
+        /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || true
+    fi
     return 0
 }
+
 # ==========================================
 apply_bogus() {
 clear_screen
@@ -6124,33 +6235,31 @@ EOF_CHECK_BASE_STATE
             ;;
         force)
             detect_forced_dns_path >/dev/null 2>&1 || true
-            if [ "${FORCED_DNS_EXTERNAL:-0}" = 1 ]; then
-                printf 2
-                return 0
-            fi
-
-            # Package defaults are not an active DNS Manager feature.
-            # Activation requires the manager flag and a real LAN DNS redirect.
+            detect_steer_dns_path >/dev/null 2>&1 || true
+            if [ "${FORCED_DNS_EXTERNAL:-0}" = 1 ]; then printf 2; return 0; fi
             if [ "${FORCE_DOH:-0}" = 1 ]; then
                 _ok=1
-                [ "$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null)" = 1 ] || _ok=0
-                [ "$(uci -q get https-dns-proxy.config.notrack_dns 2>/dev/null)" = 1 ] || _ok=0
-                [ "$(uci -q get https-dns-proxy.config.dnsmasq_config_update 2>/dev/null)" = - ] || _ok=0
-                [ "$(uci -q get https-dns-proxy.config.force_ip_family 2>/dev/null)" = auto ] || _ok=0
-                force_dns_ports_match_expected || _ok=0
-                force_dns_src_matches_expected || _ok=0
-                if [ "$_ok" = 1 ] && [ "${FORCED_DNS_ACTIVE:-0}" = 1 ]; then
-                    printf 1
+                if [ "${STEER_DNS_ACTIVE:-0}" = 1 ]; then
+                    [ "$(uci -q get https-dns-proxy.config.dnsmasq_config_update 2>/dev/null)" = - ] || _ok=0
+                    [ "$(uci -q get https-dns-proxy.config.force_ip_family 2>/dev/null)" = auto ] || _ok=0
+                    [ -z "$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null)" ] || _ok=0
+                    [ -z "$(uci -q get https-dns-proxy.config.notrack_dns 2>/dev/null)" ] || _ok=0
+                    [ -z "$(uci -q get https-dns-proxy.config.force_dns_port 2>/dev/null)" ] || _ok=0
+                    [ -z "$(uci -q get https-dns-proxy.config.force_dns_src_interface 2>/dev/null)" ] || _ok=0
+                    steer_dns_upstream_ready || _ok=0
+                    dns_dot_block_ready || _ok=0
+                    [ "$_ok" = 1 ] && printf 1 || printf 2
                 else
-                    printf 2
+                    [ "$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null)" = 1 ] || _ok=0
+                    [ "$(uci -q get https-dns-proxy.config.notrack_dns 2>/dev/null)" = 1 ] || _ok=0
+                    [ "$(uci -q get https-dns-proxy.config.dnsmasq_config_update 2>/dev/null)" = - ] || _ok=0
+                    [ "$(uci -q get https-dns-proxy.config.force_ip_family 2>/dev/null)" = auto ] || _ok=0
+                    force_dns_ports_match_expected || _ok=0
+                    force_dns_src_matches_expected || _ok=0
+                    if [ "$_ok" = 1 ] && [ "${FORCED_DNS_ACTIVE:-0}" = 1 ]; then printf 1; else printf 2; fi
                 fi
             else
-                # No manager activation and no real external redirect = stock/off.
-                if [ "${FORCED_DNS_ACTIVE:-0}" = 1 ]; then
-                    printf 2
-                else
-                    printf 0
-                fi
+                if [ "${STEER_DNS_ACTIVE:-0}" = 1 ] || [ "${FORCED_DNS_ACTIVE:-0}" = 1 ]; then printf 2; else printf 0; fi
             fi
             ;;
         ntp_clients)
@@ -6238,17 +6347,23 @@ EOF_CHECK_BASE_STATE
 
 force_state_word() {
     detect_forced_dns_path >/dev/null 2>&1 || true
+    detect_steer_dns_path >/dev/null 2>&1 || true
     if [ "${FORCED_DNS_EXTERNAL:-0}" = 1 ]; then
         printf "${C_BOLD}${C_RED}ВНЕШНИЙ${C_NC}"
         return 0
     fi
     _real="$(check_module_state force)"
+    if [ "${STEER_DNS_ACTIVE:-0}" = 1 ] && [ "$_real" != 1 ]; then
+        printf "${C_BOLD}${C_YELLOW}ДРУГОЕ • Steer${C_NC}"
+        return 0
+    fi
     case "$_real" in
         1) printf "${C_BOLD}${C_GREEN}ВКЛ${C_NC}" ;;
         2) printf "${C_BOLD}${C_RED}ДРУГОЕ${C_NC}" ;;
         *) printf "${C_BOLD}${C_CYAN}ВЫКЛ${C_NC}" ;;
     esac
 }
+
 module_state_word() {
     case "$1" in
         luci)
@@ -7150,6 +7265,24 @@ watchdog_candidate_categories() {
 watchdog_enforce_hdp_control() {
     [ "${FORCE_DOH:-0}" = 1 ] || return 0
     detect_forced_dns_path >/dev/null 2>&1 || true
+    detect_steer_dns_path >/dev/null 2>&1 || true
+    if [ "${STEER_DNS_ACTIVE:-0}" = 1 ]; then
+        _changed=0
+        for _k in force_dns notrack_dns force_dns_port force_dns_src_interface; do
+            uci -q get "https-dns-proxy.config.$_k" >/dev/null 2>&1 && _changed=1
+            uci -q delete "https-dns-proxy.config.$_k" || true
+        done
+        [ "$(uci -q get https-dns-proxy.config.dnsmasq_config_update 2>/dev/null)" = "-" ] || _changed=1
+        [ "$(uci -q get https-dns-proxy.config.force_ip_family 2>/dev/null)" = "auto" ] || _changed=1
+        uci set https-dns-proxy.config.dnsmasq_config_update="-" || return 1
+        uci set https-dns-proxy.config.force_ip_family="auto" || return 1
+        if [ "$_changed" = 1 ]; then
+            uci commit https-dns-proxy || return 1
+            watchdog_restart_hdp || return 1
+        fi
+        ensure_dns_dot_block || return 1
+        return 0
+    fi
     if [ "${FORCED_DNS_EXTERNAL:-0}" = 1 ]; then
         log_msg "Watchdog: внешний forced-DNS ($FORCED_DNS_SOURCE) обнаружен. Глобальные параметры https-dns-proxy не изменяю."
         return 0
@@ -7161,14 +7294,15 @@ watchdog_enforce_hdp_control() {
     [ "$(uci -q get https-dns-proxy.config.force_ip_family 2>/dev/null)" = "auto" ] || _changed=1
     [ "$_changed" = 0 ] && return 0
     log_msg "Обнаружен drift настроек https-dns-proxy. Возвращаю контроль DNS Manager."
-    uci set https-dns-proxy.config.dnsmasq_config_update='-' || return 1
-    uci set https-dns-proxy.config.force_dns='1' || return 1
-    uci set https-dns-proxy.config.notrack_dns='1' || return 1
-    uci set https-dns-proxy.config.force_ip_family='auto' || return 1
+    uci set https-dns-proxy.config.dnsmasq_config_update="-" || return 1
+    uci set https-dns-proxy.config.force_dns="1" || return 1
+    uci set https-dns-proxy.config.notrack_dns="1" || return 1
+    uci set https-dns-proxy.config.force_ip_family="auto" || return 1
     uci commit https-dns-proxy || return 1
     watchdog_restart_hdp || return 1
     return 0
 }
+
 watchdog_enforce_doh_authority() {
     [ "$DNS_PROFILE" = hybrid ] || [ "$DNS_PROFILE" = custom ] || return 0
     _expected=0
