@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.5.72
+# Version: 1.5.73
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -22,7 +22,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.5.72"
+VERSION="1.5.73"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -96,7 +96,8 @@ EOF_MENU
     "description": "DNS Manager native LuCI interface",
     "read": {
       "ubus": {
-        "dns_manager": [ "status", "runtime", "catalog", "job", "log", "update_check", "update_check_job", "update_check_job_status" ]
+        "dns_manager": [ "status", "catalog", "job", "log", "update_check", "update_check_job", "update_check_job_status" ],
+        "system": [ "info" ]
       }
     },
     "write": {
@@ -129,7 +130,7 @@ UPDATE_STATE="/etc/dns-manager-luci/update.state"
 COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.5.72"
+SELF_VERSION="1.5.73"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -882,23 +883,6 @@ detect_runtime_force_state() {
 
 openwrt_release() { sed -n "s/^DISTRIB_RELEASE='\([^']*\)'.*/\1/p" /etc/openwrt_release 2>/dev/null | head -n1; }
 
-runtime_json() {
-    _uptime="$(awk '{printf "%s",int($1)}' /proc/uptime 2>/dev/null || true)"
-    _load="$(awk '{printf "%s",$1}' /proc/loadavg 2>/dev/null || true)"
-    _mem_t="$(awk '/MemTotal:/ {print $2;exit}' /proc/meminfo 2>/dev/null || true)"; [ -n "$_mem_t" ] || _mem_t=0
-    _mem_a="$(awk '/MemAvailable:/ {print $2;exit}' /proc/meminfo 2>/dev/null || true)"; [ -n "$_mem_a" ] || _mem_a=0
-    _ipv4=no; ip -4 route show default 2>/dev/null | grep -q . && _ipv4=yes
-    _ipv6=no; ip -6 route show default 2>/dev/null | grep -q . && _ipv6=yes
-    _dnsmasq=no; pgrep -x dnsmasq >/dev/null 2>&1 && _dnsmasq=yes
-    _doh=no; pgrep -x https-dns-proxy >/dev/null 2>&1 && _doh=yes
-    printf '{"ok":true,"ipv4":'; json_quote "$_ipv4"
-    printf ',"ipv6":'; json_quote "$_ipv6"
-    printf ',"dnsmasq":'; json_quote "$_dnsmasq"
-    printf ',"doh":'; json_quote "$_doh"
-    printf ',"uptime":'; json_quote "$_uptime"
-    printf ',"load1":'; json_quote "$_load"
-    printf ',"memory_total_kb":%s,"memory_available_kb":%s}' "$_mem_t" "$_mem_a"
-}
 status_json() {
     _mv="$(manager_version 2>/dev/null || true)"
     # Do not use load_config() defaults here. An untouched OpenWrt router must
@@ -1491,12 +1475,11 @@ test_json() { case "${RPC_METHOD:-}" in test_all) job_start_test_all;; test_curr
 
 case "${1:-}" in
     list)
-        printf '{"status":{},"runtime":{},"catalog":{"category":"String","offset":0,"limit":0,"only_ok":0},"update_check":{},"update":{},"update_manager":{},"update_hdp":{},"update_catalog":{},"update_all":{},"set_profile":{"profile":"String"},"set_slot":{"slot":"String","id":"String"},"set_setting":{"name":"String","enabled":0},"set_watchdog_setting":{"name":"String","value":0},"set_test_age":{"category":"String","hours":0},"test_all":{},"test_current":{},"test_one":{"id":"String"},"job":{"id":"String"},"log":{"lines":0}}\n'
+        printf '{"status":{},"catalog":{"category":"String","offset":0,"limit":0,"only_ok":0},"update_check":{},"update":{},"update_manager":{},"update_hdp":{},"update_catalog":{},"update_all":{},"set_profile":{"profile":"String"},"set_slot":{"slot":"String","id":"String"},"set_setting":{"name":"String","enabled":0},"set_watchdog_setting":{"name":"String","value":0},"set_test_age":{"category":"String","hours":0},"test_all":{},"test_current":{},"test_one":{"id":"String"},"job":{"id":"String"},"log":{"lines":0}}\n'
         ;;
     call)
         case "${2:-}" in
             status) INPUT="$(cat 2>/dev/null || true)"; status_json;;
-            runtime) runtime_json;;
             catalog) INPUT="$(cat 2>/dev/null || true)"; catalog_json;;
             update_check) update_check_json;;            update_catalog) update_catalog_json;;            update_all) update_all_json;;            update) update_json;;            update_manager) update_manager_json;;            update_hdp) update_hdp_json;;
             set_profile|set_slot|set_setting|set_watchdog_setting) INPUT="$(cat 2>/dev/null || true)"; RPC_METHOD="$2"; run_action;;
@@ -1526,9 +1509,29 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.5.72
+// DNS Manager LuCI version: 1.5.73
 var callStatus = rpc.declare({ object:'dns_manager', method:'status', params:['detail'], expect:{} });
-var callRuntime = rpc.declare({ object:'dns_manager', method:'runtime', expect:{} });
+var callBoardInfo = rpc.declare({ object:'system', method:'info', expect:{} });
+var runtimeMemo = null;
+function callRuntime(){
+  var now=Date.now();
+  if(runtimeMemo&&now-runtimeMemo.t<3000)return runtimeMemo.p;
+  var p=callBoardInfo().then(function(i){
+    i=i||{};
+    var load=Array.isArray(i.load)&&i.load.length?Number(i.load[0])/65536:NaN;
+    var mem=i.memory||{}, total=Number(mem.total||0), avail=mem.available!=null?Number(mem.available):Number(mem.free||0)+Number(mem.buffered||0)+Number(mem.cached||0);
+    return {
+      ok:true,
+      uptime:i.uptime,
+      load1:isFinite(load)?String(Math.round(load*100)/100):'',
+      memory_total_kb:total>0?Math.round(total/1024):0,
+      memory_available_kb:avail>=0?Math.round(avail/1024):0
+    };
+  });
+  runtimeMemo={t:now,p:p};
+  p.catch(function(){if(runtimeMemo&&runtimeMemo.p===p)runtimeMemo=null;});
+  return p;
+}
 function statusDetail(){return currentRoute()==='network'?1:0;}
 var callCatalog = rpc.declare({ object:'dns_manager', method:'catalog', params:['category','offset','limit','only_ok'], expect:{} });
 var callUpdateCheck = rpc.declare({ object:'dns_manager', method:'update_check', expect:{} });
