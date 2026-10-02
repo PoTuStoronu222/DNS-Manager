@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.5.86
+# Version: 1.5.87
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -23,7 +23,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.5.86"
+VERSION="1.5.87"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -141,7 +141,7 @@ UPDATE_STATE="/etc/dns-manager-luci/update.state"
 COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.5.86"
+SELF_VERSION="1.5.87"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -892,6 +892,14 @@ detect_runtime_force_state() {
     FORCE_RUNTIME_TARGETS="$(printf '%s\n' "$FORCE_RUNTIME_TARGETS" | tr ' ' '\n' | sed '/^$/d' | sort -n -u | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
 }
 
+device_model() {
+    _model="$(cat /tmp/sysinfo/model 2>/dev/null | tr -d "\000\r\n" || true)"
+    [ -n "$_model" ] || _model="$(cat /sys/firmware/devicetree/base/model 2>/dev/null | tr -d "\000\r\n" || true)"
+    [ -n "$_model" ] || _model="$(cat /proc/device-tree/model 2>/dev/null | tr -d "\000\r\n" || true)"
+    [ -n "$_model" ] || _model="неизвестно"
+    printf "%s" "$_model"
+}
+
 openwrt_release() { sed -n "s/^DISTRIB_RELEASE='\([^']*\)'.*/\1/p" /etc/openwrt_release 2>/dev/null | head -n1; }
 
 cpu_stat() {
@@ -1050,6 +1058,7 @@ status_json() {
     _dnsmasq=no; pgrep -x dnsmasq >/dev/null 2>&1 && _dnsmasq=yes
     _fw=unknown; command -v fw4 >/dev/null 2>&1 && _fw=fw4; command -v fw3 >/dev/null 2>&1 && [ "$_fw" = unknown ] && _fw=fw3
     _lan="$(uci -q get network.lan.ipaddr 2>/dev/null | cut -d/ -f1 | head -n1)"; [ -n "$_lan" ] || _lan=—
+    _model="$(device_model)"
     _host="$(uci -q get system.@system[0].hostname 2>/dev/null || cat /proc/sys/kernel/hostname 2>/dev/null || true)"
     _uptime="$(awk '{printf "%s",int($1)}' /proc/uptime 2>/dev/null || true)"
     _load="$(awk '{printf "%s",$1}' /proc/loadavg 2>/dev/null || true)"
@@ -1089,7 +1098,7 @@ status_json() {
     printf ',"luci_update_error":'; json_quote "$_luci_error"
     printf ',"manager_latest_version":'; json_quote "$_manager_latest"; printf ',"manager_update_available":%s,"manager_check_ok":%s' "$_manager_avail" "$_manager_checked"
     printf ',"catalog_latest_version":'; json_quote "$_catalog_latest"; printf ',"catalog_latest_rev":'; json_quote "$_catalog_latest_rev"; printf ',"catalog_latest_total":%s,"catalog_update_available":%s,"catalog_check_ok":%s' "$_catalog_latest_total" "$_catalog_avail" "$_catalog_checked"
-    printf ',"ipv4":'; json_quote "$_ipv4"; printf ',"ipv6":'; json_quote "$_ipv6"; printf ',"dnsmasq":'; json_quote "$_dnsmasq"; printf ',"doh":'; json_quote "$_doh"; printf ',"firewall":'; json_quote "$_fw"; printf ',"openwrt":'; json_quote "$(openwrt_release)"; printf ',"lan":'; json_quote "$_lan"
+    printf ',"model":'; json_quote "$_model"; printf ',"ipv4":'; json_quote "$_ipv4"; printf ',"ipv6":'; json_quote "$_ipv6"; printf ',"dnsmasq":'; json_quote "$_dnsmasq"; printf ',"doh":'; json_quote "$_doh"; printf ',"firewall":'; json_quote "$_fw"; printf ',"openwrt":'; json_quote "$(openwrt_release)"; printf ',"lan":'; json_quote "$_lan"
     printf ',"profile":'; json_quote "$_profile"; printf ',"profile_mode":'; json_quote "$_mode"; printf ',"selection_category":'; json_quote "$_selection_category"
     printf ',"watchdog":'; json_quote "$_watchdog"; printf ',"watchdog_backend":'; json_quote "$_watchdog_backend"
     _watchdog_service_enabled=0; watchdog_service_enabled && _watchdog_service_enabled=1 || true
@@ -1593,7 +1602,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.5.86
+// DNS Manager LuCI version: 1.5.87
 var callStatus = rpc.declare({ object:'dns_manager', method:'status', params:['detail'], expect:{} });
 var callRuntime = rpc.declare({ object:'dns_manager', method:'runtime', expect:{} });
 function statusDetail(){return currentRoute()==='network'?1:0;}
@@ -1972,7 +1981,7 @@ function renderOverview(root,st){
   var loadNode=cpuLoadBar(isFinite(initialCpuLoad)?initialCpuLoad:0);loadNode.id='dm-runtime-load';
   var memNode=memoryBar(st.memory_total_kb,st.memory_available_kb);memNode.id='dm-runtime-memory';
   var sysCard=card('Система',[
-    row('Модель',shortVal(st.hostname)),
+    row('Модель',shortVal(st.model)),
     row('OpenWrt',shortVal(st.openwrt)),
     row('Время работы',E('span',{'id':'dm-runtime-uptime','class':'dm-uptime'},uptime(st.uptime))),
     row('IPv4',E('span',{'id':'dm-runtime-ipv4'},ipv4)),
