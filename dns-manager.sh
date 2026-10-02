@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.32.6"
+VERSION="3.32.7"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -593,7 +593,7 @@ menu_item() {
 printf "  ${C_CYAN}${C_BOLD}%-5s${C_NC} ${C_YELLOW}${C_BOLD}%s${C_NC}\n" "$1" "$2"
 }
 menu_item_state() {
-printf "  ${C_CYAN}${C_BOLD}%-5s${C_NC} ${C_YELLOW}${C_BOLD}%-38s${C_NC} %b\n" "$1" "$2" "$3"
+printf "  ${C_CYAN}${C_BOLD}%-5s${C_NC} ${C_YELLOW}${C_BOLD}%-42s${C_NC} %b\n" "$1" "$2" "$3"
 }
 menu_item_action() {
     _key="$1"
@@ -8611,17 +8611,17 @@ if [ "${MAIN_STATE_STALE:-1}" = 1 ]; then
 fi
 menu_header "DNS Manager $VERSION"
 menu_section "СОСТОЯНИЕ РОУТЕРА"
-printf "  ${C_YELLOW}${C_BOLD}%-38s${C_NC}  %b\n" "IPv4" "$(state_word "$IPV4_ROUTE")"
-printf "  ${C_YELLOW}${C_BOLD}%-38s${C_NC}  %b\n" "IPv6" "$(state_word "$IPV6_ROUTE")"
-printf "  ${C_YELLOW}${C_BOLD}%-38s${C_NC}  %b\n" "dnsmasq" "$(state_word "$DNSMASQ_RUN")"
-printf "  ${C_YELLOW}${C_BOLD}%-38s${C_NC}  %b\n" "Защищённый DNS" "$(state_word "$HDP_RUNNING")"
-printf "  ${C_YELLOW}${C_BOLD}%-38s${C_NC}  ${C_WHITE}%s${C_NC}\n" "DNS-серверов найдено" "$DOH_TOTAL"
-printf "  ${C_YELLOW}${C_BOLD}%-38s${C_NC}  ${C_CYAN}%s${C_NC}\n" "Firewall" "${SYS_FW:-не определён}"
-[ -n "${FIREWALL_WAN_NETWORK:-}" ] && printf "  ${C_YELLOW}${C_BOLD}%-38s${C_NC}  ${C_CYAN}%s${C_NC}\n" "WAN-сеть" "$FIREWALL_WAN_NETWORK"
-printf "  ${C_YELLOW}${C_BOLD}%-38s${C_NC}  ${C_CYAN}%s • %s серверов${C_NC}\n" "Каталог DNS" "$(dns_catalog_version)" "$(count_dns)"
-printf "  ${C_YELLOW}${C_BOLD}%-38s${C_NC}  %b\n" "Автопроверка и замена DNS" "$(module_state_word watchdog "$WATCHDOG_ENABLED")"
-[ -s "$BASELINE_MANIFEST" ] && printf "  ${C_YELLOW}${C_BOLD}%-38s${C_NC}  ${C_GREEN}есть${C_NC}\n" "Исходная копия" || printf "  ${C_YELLOW}${C_BOLD}%-38s${C_NC}  ${C_YELLOW}нет${C_NC}\n" "Исходная копия"
-printf "  ${C_YELLOW}${C_BOLD}%-38s${C_NC}  %b\n" "Принудительный DNS для устройств" "$(force_state_word)"
+printf "  ${C_YELLOW}${C_BOLD}%-42s${C_NC}  %b\n" "IPv4" "$(state_word "$IPV4_ROUTE")"
+printf "  ${C_YELLOW}${C_BOLD}%-42s${C_NC}  %b\n" "IPv6" "$(state_word "$IPV6_ROUTE")"
+printf "  ${C_YELLOW}${C_BOLD}%-42s${C_NC}  %b\n" "dnsmasq" "$(state_word "$DNSMASQ_RUN")"
+printf "  ${C_YELLOW}${C_BOLD}%-42s${C_NC}  %b\n" "Защищённый DNS" "$(state_word "$HDP_RUNNING")"
+printf "  ${C_YELLOW}${C_BOLD}%-42s${C_NC}  ${C_WHITE}%s${C_NC}\n" "DNS-серверов найдено" "$DOH_TOTAL"
+printf "  ${C_YELLOW}${C_BOLD}%-42s${C_NC}  ${C_CYAN}%s${C_NC}\n" "Firewall" "${SYS_FW:-не определён}"
+[ -n "${FIREWALL_WAN_NETWORK:-}" ] && printf "  ${C_YELLOW}${C_BOLD}%-42s${C_NC}  ${C_CYAN}%s${C_NC}\n" "WAN-сеть" "$FIREWALL_WAN_NETWORK"
+printf "  ${C_YELLOW}${C_BOLD}%-42s${C_NC}  ${C_CYAN}%s • %s серверов${C_NC}\n" "Каталог DNS" "$(dns_catalog_version)" "$(count_dns)"
+printf "  ${C_YELLOW}${C_BOLD}%-42s${C_NC}  %b\n" "Автопроверка и замена DNS" "$(module_state_word watchdog "$WATCHDOG_ENABLED")"
+[ -s "$BASELINE_MANIFEST" ] && printf "  ${C_YELLOW}${C_BOLD}%-42s${C_NC}  ${C_GREEN}есть${C_NC}\n" "Исходная копия" || printf "  ${C_YELLOW}${C_BOLD}%-42s${C_NC}  ${C_YELLOW}нет${C_NC}\n" "Исходная копия"
+printf "  ${C_YELLOW}${C_BOLD}%-42s${C_NC}  %b\n" "Принудительный DNS для устройств" "$(force_state_word)"
 menu_section "НАСТРОЙКА DNS"
 menu_item "[1]" "Настроить DNS"
 menu_section "СЕРВИСЫ"
