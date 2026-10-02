@@ -5443,7 +5443,7 @@ hybrid_runtime_state_word | grep -q . && printf_plain_row "Локальный Do
 [ "$DNS_ADGUARD" = yes ] && printf_plain_row "AdGuard Home" "$(state_word "$DNS_ADGUARD")"
 [ "$DNS_MOSDNS" = yes ] && printf_plain_row "MosDNS" "$(state_word "$DNS_MOSDNS")"
 [ "$DNS_SINGBOX" = yes ] && printf_plain_row "Sing-box" "$(state_word "$DNS_SINGBOX")"
-menu_section "ВЫБРАННЫЕ DNS"
+menu_section "DNS В СЛОТАХ"
 printf "  ${C_WHITE}%-6s %s${C_NC}\n" "СЛОТ" "DNS"
 for _s in 1 2 3 4 5 6; do
     eval "_v=\${SLOT_$_s:-}"
@@ -5454,6 +5454,25 @@ if [ -n "${SLOT_RU:-}" ]; then
     printf "  %-6s %s\n" "RU" "$(dns_name "$SLOT_RU")"
 else
     printf "  %-6s %s\n" "RU" "не выбран"
+fi
+if [ "${DOH_TOTAL:-0}" -gt 0 ]; then
+    menu_section "ФАКТИЧЕСКИЕ DNS"
+    while IFS="|" read -r _idx _port _addr _running _url; do
+        [ -n "$_url" ] || continue
+        _name="$(awk -F"|" -v u="$_url" '$5==u{print $4;exit}' "$DNS_CATALOG" 2>/dev/null)"
+        [ -n "$_name" ] || _name="Пользовательский DNS"
+        _slot="";
+        for _s in 1 2 3 4 5 6 RU; do
+            eval "_sid=\${SLOT_${_s}:-}"; eval "_sport=\${PORT_${_s}:-}"
+            [ -n "$_sid" ] && [ -n "$_sport" ] || continue
+            [ "$_sport" = "$_port" ] || continue
+            [ "$(normalize_url "$(dns_url "$_sid")")" = "$_url" ] || continue
+            _slot="$_s"; break
+        done
+        [ -n "$_slot" ] && _where="слот $_slot" || _where="вне слотов"
+        [ "$_running" = yes ] && _state="запущен" || _state="остановлен"
+        printf "  %-30s %s · %s\n" "$_name" "$_where" "$_state"
+    done < "$DOH_INV"
 fi
 menu_section "FIREWALL"
 printf_plain_row "Активный nft" "$(state_word "$NFT_ACTIVE")"
