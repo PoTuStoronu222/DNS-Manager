@@ -27,64 +27,6 @@ VERSION="1.5.54"
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
 
-stock_sysctl_values() {
-    _all=1
-    _supported=0
-    while IFS= read -r _p; do
-        [ -n "$_p" ] || continue
-        _k="$(printf "%s" "$_p" | cut -d= -f1)"
-        if ! sysctl -n "$_k" >/dev/null 2>&1; then
-            continue
-        fi
-        _supported=$((_supported + 1))
-        _cur="$(sysctl -n "$_k" 2>/dev/null)"
-        _stock="$(sysctl_stock_value "$_k" 2>/dev/null || true)"
-        [ -n "$_stock" ] || { _all=0; continue; }
-        [ "$_cur" = "$_stock" ] || _all=0
-    done <<EOF_STOCK_SYSCTL
-$1
-EOF_STOCK_SYSCTL
-    [ "$_supported" -gt 0 ] && [ "$_all" = 1 ]
-}
-
-manager_version() {
-    [ -r "$MANAGER" ] || return 1
-    awk -F'"' '/^VERSION="/ { print $2; exit }' "$MANAGER" 2>/dev/null
-}
-
-manager_const_num() {
-    _key="$1"
-    _fallback="$2"
-    case "$_key" in
-        WATCHDOG_FAIL_THRESHOLD|WATCHDOG_REPAIR_COOLDOWN|WATCHDOG_GUARD_INTERVAL|WATCHDOG_MAX_REPAIRS|WATCHDOG_MAX_RESTARTS|WATCHDOG_MAX_CANDIDATES|WATCHDOG_RESTART_COOLDOWN) ;;
-        *) printf '%s' "$_fallback"; return 0 ;;
-    esac
-    _v="$(sed -n "s/^${_key}=\\([0-9][0-9]*\\)$/\\1/p" "$CONFIG_FILE" 2>/dev/null | head -n1)"
-    case "$_v" in
-        ''|*[!0-9]*) _v="$(sed -n "s/^${_key}=\\([0-9][0-9]*\\)$/\\1/p" "$MANAGER" 2>/dev/null | head -n1)" ;;
-    esac
-    case "$_v" in
-        ''|*[!0-9]*) printf '%s' "$_fallback" ;;
-        *) printf '%s' "$_v" ;;
-    esac
-}
-
-watchdog_service_running() {
-    [ -x /etc/init.d/dns-watchdog ] && /etc/init.d/dns-watchdog running >/dev/null 2>&1
-}
-watchdog_service_enabled() {
-    [ -x /etc/init.d/dns-watchdog ] && /etc/init.d/dns-watchdog enabled >/dev/null 2>&1
-}
-watchdog_loop_running() {
-    for _p in /proc/[0-9]*; do
-        [ -r "$_p/cmdline" ] || continue
-        _cmd="$(tr '\000' ' ' < "$_p/cmdline" 2>/dev/null || true)"
-        case "$_cmd" in
-            *dns-manager*__watchdog-loop*) return 0 ;;
-        esac
-    done
-    return 1
-}
 
 require_manager() {
     [ -x "$MANAGER" ] || { err "Не найден $MANAGER. Сначала установите DNS Manager."; return 1; }
