@@ -1070,7 +1070,14 @@ status_json() {
         _a="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].listen_addr" 2>/dev/null || true)"
         _u="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].resolver_url" 2>/dev/null | sed 's:/*$::' || true)"
         _n="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].name" 2>/dev/null || true)"
-        [ -n "$_n" ] || _n="Экземпляр $((_i + 1))"
+        if [ -z "$_n" ] && [ -n "$_u" ]; then
+            _n="$(awk -F'|' -v u="$_u" '$5==u {print $4; exit}' "$CATALOG_FILE" 2>/dev/null)"
+        fi
+        case "$_u" in
+            https://cloudflare-dns.com/dns-query) [ -n "$_n" ] && [ "$_n" = "Cloudflare" ] && _n="Cloudflare (Стандарт)" ;;
+            https://dns.google/dns-query) [ -n "$_n" ] && [ "$_n" = "Google Public DNS" ] && _n="Google" ;;
+        esac
+        [ -n "$_n" ] || _n="Пользовательский DNS"
         _run=0
         [ -n "$_p" ] && printf '%s\n' "$_listen" | grep -qE "(^|[[:space:]])[^[:space:]]*:$_p([[:space:]]|$)" && _run=1
         _slot=""
@@ -1813,17 +1820,14 @@ function renderOverview(root,st){
   (st.doh_instances||[]).forEach(function(d){
     if(!d)return;
     var slot=d.slot?slotLabel(d.slot):'вне слотов';
-    var name=d.name||d.url||('Экземпляр '+(d.index||''));
+    var name=d.name||'Пользовательский DNS';
     var statusNode=Number(d.running||0)===1?badge('dm-ok','запущен'):badge('dm-bad','остановлен');
     dnsItems.push(E('div',{'class':'dm-component-dns'},[
       E('div',{'class':'dm-component-dns-main'},[
         E('span',{'class':'dm-component-dns-slot'},slot),
         E('span',{'class':'dm-component-dns-name'},name)
       ]),
-      E('div',{'class':'dm-component-dns-meta'},[
-        E('span',{'class':'dm-component-dns-ping'},d.port?'127.0.0.1:'+d.port:'—'),
-        statusNode
-      ])
+      E('div',{'class':'dm-component-dns-meta'},[statusNode])
     ]));
   });
   if(!dnsItems.length)dnsItems.push(E('div',{'class':'dm-hint'},'DNS в слоты не назначены.'));
@@ -1909,14 +1913,10 @@ function resolverRows(st){
     if(!d)return;
     seen++;
     var slot=d.slot?slotLabel(d.slot):'вне слотов';
-    var name=d.name||d.url||('Экземпляр '+(d.index||''));
-    var status=Number(d.running||0)===1?'RUNNING':'FAIL';
+    var name=d.name||'Пользовательский DNS';
     out.push(E('div',{'class':'dm-doh-row'},[
       E('span',{'class':'dm-doh-slot'},slot),
       E('span',{'class':'dm-doh-name'},name),
-      E('span',{'class':'dm-doh-url'},d.url||'—'),
-      E('span',{'class':'dm-doh-port'},d.port?'порт '+d.port:'—'),
-      E('span',{'class':'dm-doh-ping'},d.listen_addr?'bind '+d.listen_addr:'—'),
       E('span',{'class':'dm-doh-state'},Number(d.running||0)===1?badge('dm-ok','запущен'):badge('dm-bad','остановлен'))
     ]));
   });
