@@ -1066,6 +1066,8 @@ status_json() {
     _manager_latest_state="$(sed -n 's/^manager_latest=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"
     _manager_avail_state="$(sed -n 's/^manager_available=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"; [ -n "$_manager_avail_state" ] || _manager_avail_state=0
     _manager_check_state="$(sed -n 's/^manager_checked=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"; [ -n "$_manager_check_state" ] || _manager_check_state=0
+    if [ -n "$_luci_latest" ] && [ "$_luciv" = "$_luci_latest" ]; then _luci_avail=0; fi
+    if [ -n "$_manager_latest_state" ] && [ "$_mv" = "$_manager_latest_state" ]; then _manager_avail_state=0; fi
     _catalog_latest_state="$(sed -n 's/^catalog_latest=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"
     _catalog_rev_state="$(sed -n 's/^catalog_latest_rev=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"
     _catalog_total_state="$(sed -n 's/^catalog_latest_total=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"; [ -n "$_catalog_total_state" ] || _catalog_total_state=0
