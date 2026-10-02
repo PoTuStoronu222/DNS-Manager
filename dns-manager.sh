@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.33.8"
+VERSION="3.33.9"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -3333,18 +3333,24 @@ apply_client_fixes() {
     [ "${CLIENT_FIXES:-0}" = 1 ] || return 0
     _path_state=0
     _path="$(client_fixes_desired_path 2>/dev/null)" || _path_state=$?
-    if [ "$_path_state" -eq 2 ]; then
-        err_msg "Client-fixes содержит сторонние настройки; DNS Manager их не перезаписывает."
-        return 2
-    fi
     if [ "$_path_state" -eq 0 ] && [ -n "$_path" ]; then
         return 0
     fi
     _f=""
-    for _n in 91 92 93 94 95 96 97 98 99; do
-        _candidate="/etc/dnsmasq.d/${_n}-dns-manager-client-fixes.conf"
-        [ -e "$_candidate" ] || { _f="$_candidate"; break; }
-    done
+    if [ "$_path_state" -eq 2 ]; then
+        for _n in 91 92 93 94 95 96 97 98 99; do
+            _candidate="/etc/dnsmasq.d/${_n}-dns-manager-client-fixes.conf"
+            [ -f "$_candidate" ] || continue
+            _cur="$(settings_file_normalized "$_candidate")"
+            [ "$_cur" = "$(client_fixes_expected_body)" ] || { _f="$_candidate"; break; }
+        done
+    fi
+    if [ -z "$_f" ]; then
+        for _n in 91 92 93 94 95 96 97 98 99; do
+            _candidate="/etc/dnsmasq.d/${_n}-dns-manager-client-fixes.conf"
+            [ -e "$_candidate" ] || { _f="$_candidate"; break; }
+        done
+    fi
     [ -n "$_f" ] || {
         err_msg "Нет свободного файла для client-fixes; сторонние настройки не изменены."
         return 2
@@ -3460,10 +3466,8 @@ apply_dns_force() {
     [ "${FORCE_DOH:-0}" = 1 ] || return 0
     firewall_resolve_zones >/dev/null 2>&1 || return 1
 
-    # Do not seize a forced-DNS path already owned by Zapret/another service.
-    if hdp_force_external_conflict; then
-        log_msg "Внешний forced-DNS уже активен ($FORCED_DNS_SOURCE). DNS Manager оставляет его без изменений."
-        return 0
+    if [ "${FORCED_DNS_EXTERNAL:-0}" = 1 ]; then
+        log_msg "Исправляю внешний forced-DNS ($FORCED_DNS_SOURCE) настройками DNS Manager."
     fi
     if ! prepare_dns_path; then
         return 0
