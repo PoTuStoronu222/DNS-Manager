@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.33.9"
+VERSION="3.34.0"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -3453,16 +3453,6 @@ remove_sysctl_extended() {
     fi
     return 0
 }
-hdp_force_external_conflict() {
-    [ "${FORCE_DOH:-0}" = 1 ] || return 1
-    detect_forced_dns_path >/dev/null 2>&1 || true
-    if [ "${FORCED_DNS_EXTERNAL:-0}" = 1 ]; then
-        warn_msg "Обнаружен сторонний forced-DNS ($FORCED_DNS_SOURCE). DNS Manager не перехватывает его автоматически."
-        return 0
-    fi
-    return 1
-}
-
 apply_dns_force() {
     [ "${FORCE_DOH:-0}" = 1 ] || return 0
     firewall_resolve_zones >/dev/null 2>&1 || return 1
@@ -4345,11 +4335,6 @@ _apply_settings_impl() {
     run_discovery
     if [ "$CORE_ONLY" != 1 ] && { [ "${MTU_FIX:-0}" = 1 ] || [ "${FORCE_DOH:-0}" = 1 ]; }; then
         firewall_backend_require || return 1
-    fi
-    if [ "$CORE_ONLY" != 1 ] && [ "${FORCE_DOH:-0}" = 1 ]; then
-        if hdp_force_external_conflict; then
-            info_msg "Внешний forced-DNS ($FORCED_DNS_SOURCE) обнаружен. Правила forced-DNS не изменяю; применение DNS/DoH продолжается."
-        fi
     fi
     if [ "${HYBRID_FORCE_RESELECT:-0}" = 1 ] && [ "$DNS_PROFILE" = hybrid ]; then
         SLOT_1=""; SLOT_2=""; SLOT_3=""; SLOT_4=""; SLOT_5=""; SLOT_6=""
