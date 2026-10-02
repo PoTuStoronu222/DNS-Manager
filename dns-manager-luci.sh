@@ -3169,8 +3169,33 @@ EOF_JS
     } > "${STATE_FILE}.tmp.$$" 2>/dev/null || true
     [ -s "${STATE_FILE}.tmp.$$" ] && chmod 600 "${STATE_FILE}.tmp.$$" 2>/dev/null || true
     [ -s "${STATE_FILE}.tmp.$$" ] && mv "${STATE_FILE}.tmp.$$" "$STATE_FILE" 2>/dev/null || rm -f "${STATE_FILE}.tmp.$$" 2>/dev/null || true
-    if [ "${DNS_MANAGER_LUCI_SKIP_RPC_RELOAD:-0}" != 1 ]; then
-        [ -x /etc/init.d/rpcd ] && /etc/init.d/rpcd reload >/dev/null 2>&1 || true
+    if [ "${DNS_MANAGER_LUCI_SKIP_RPC_RELOAD:-0}" != 1 ] && [ -x /etc/init.d/rpcd ]; then
+        /etc/init.d/rpcd reload >/dev/null 2>&1 || /etc/init.d/rpcd restart >/dev/null 2>&1 || true
+        if command -v ubus >/dev/null 2>&1; then
+            _rpcd_ok=0
+            _rpcd_i=0
+            while [ "$_rpcd_i" -lt 10 ]; do
+                if ubus -t 5 list dns_manager >/dev/null 2>&1; then
+                    _rpcd_ok=1
+                    break
+                fi
+                sleep 1
+                _rpcd_i=$((_rpcd_i + 1))
+            done
+            if [ "$_rpcd_ok" != 1 ]; then
+                /etc/init.d/rpcd restart >/dev/null 2>&1 || true
+                _rpcd_i=0
+                while [ "$_rpcd_i" -lt 15 ]; do
+                    if ubus -t 5 list dns_manager >/dev/null 2>&1; then
+                        _rpcd_ok=1
+                        break
+                    fi
+                    sleep 1
+                    _rpcd_i=$((_rpcd_i + 1))
+                done
+            fi
+            [ "$_rpcd_ok" = 1 ] || say "ПРЕДУПРЕЖДЕНИЕ: rpcd не зарегистрировал DNS Manager. Выполните: /etc/init.d/rpcd restart"
+        fi
     fi
     say "DNS Manager LuCI $VERSION обновлён/установлен."
     say "Меню: LuCI → Службы → DNS Manager"
