@@ -3073,7 +3073,7 @@ function showLog(root){
 
 var autoStatusTimer=null;
 function stopAutoStatus(){
-  if(autoStatusTimer){clearTimeout(autoStatusTimer);autoStatusTimer=null;}
+  if(autoStatusTimer){clearInterval(autoStatusTimer);autoStatusTimer=null;}
 }
 function updateRuntimeBadge(node,kind,text){
   if(!node)return;
