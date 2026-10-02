@@ -92,7 +92,7 @@ WATCHDOG_CRON_BOOT_ENABLED="unknown"
 WATCHDOG_CRON_DETECT_SOURCE="none"
 WATCHDOG_CRON_SCHEDULER_STATE="$STATE_DIR/watchdog-scheduler.state"
 LUCI_CONTROLLER="/usr/lib/lua/luci/controller/dns_manager.lua"
-LUCI_COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
+LUCI_COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 LUCI_COMPANION_CACHE="$BASE_DIR/dns-manager-luci.sh"
 LUCI_STATE_FILE="$CFG_DIR/luci-state.conf"
 LUCI_MENU_FILE="/usr/share/luci/menu.d/luci-app-dns-manager.json"
@@ -6312,7 +6312,7 @@ luci_companion_fetch() {
     rm -f "$_tmp" 2>/dev/null || true
 
     if command -v curl >/dev/null 2>&1; then
-        curl -fsSL --connect-timeout 5 --max-time 30 -o "$_tmp" "$LUCI_COMPANION_URL" >/dev/null 2>&1 || {
+        curl -fsSL --connect-timeout 5 --max-time 30 -H 'Accept: application/vnd.github.raw+json' -H 'Cache-Control: no-cache' -o "$_tmp" "$LUCI_COMPANION_URL&_dmcb=$(date +%s 2>/dev/null || printf 0)-$$" >/dev/null 2>&1 || {
             LUCI_COMPANION_FETCH_ERROR="Ошибка загрузки companion через curl."
             rm -f "$_tmp" 2>/dev/null || true
             return 1
@@ -6345,6 +6345,25 @@ luci_companion_fetch() {
     LUCI_COMPANION_FETCH_FILE="$_tmp"
     LUCI_COMPANION_FETCH_VERSION="$(sed -n 's/^# Version:[[:space:]]*//p' "$_tmp" 2>/dev/null | head -n1)"
     return 0
+}
+
+luci_companion_sync() {
+    luci_component_files_present || return 0
+    luci_companion_fetch || return 0
+    _remote_ver="${LUCI_COMPANION_FETCH_VERSION:-}"
+    _installed_ver="$(sed -n 's/^version=//p' "$LUCI_STATE_FILE" 2>/dev/null | head -n1)"
+    [ -n "$_remote_ver" ] || return 0
+    if [ -z "$_installed_ver" ] || [ "$(version_gt "$_remote_ver" "$_installed_ver")" = 1 ]; then
+        _synced_ver="$_remote_ver"
+        rm -f "${LUCI_COMPANION_FETCH_FILE:-}" 2>/dev/null || true
+        if luci_companion_install >/dev/null 2>&1; then
+            log_msg "LuCI: обновлён до версии $_synced_ver."
+        fi
+    else
+        rm -f "${LUCI_COMPANION_FETCH_FILE:-}" 2>/dev/null || true
+    fi
+    LUCI_COMPANION_FETCH_FILE=""
+    LUCI_COMPANION_FETCH_VERSION=""
 }
 
 luci_companion_install() {
@@ -8794,6 +8813,7 @@ startup_update_check() {
         busy) info_msg "Проверка обновления уже выполняется другим процессом; продолжаю запуск версии $VERSION." ;;
         *) [ "$_rc" -eq 0 ] && info_msg "Проверка обновления завершена. Используется версия $VERSION." || warn_msg "Проверка обновления завершилась с кодом $_rc. Продолжаю запуск текущей версии." ;;
     esac
+    luci_companion_sync >/dev/null 2>&1 || true
     return 0
 }
 # ==========================================
