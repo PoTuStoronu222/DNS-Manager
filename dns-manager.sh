@@ -2930,7 +2930,7 @@ sysctl_stock_value() {
     _k="$1"
     _v=""
     if [ -r "/rom/etc/sysctl.d/10-default.conf" ]; then
-        _v="$(awk -F= -v k=""$_k"" '
+        _v="$(awk -F= -v k="$_k" '
             { _name=$1; gsub(/^[[:space:]]+|[[:space:]]+$/, "", _name);
               if (_name==k) { v=$2; gsub(/[[:space:]]/,"",v); if (v!="") { print v; exit } } }
             ' /rom/etc/sysctl.d/10-default.conf 2>/dev/null)"
@@ -2977,7 +2977,7 @@ sysctl_restore_stock_key() {
 apply_sysctl() {
     f="$(sysctl_base_manager_path)"
     _expected="$(sysctl_base_expected)"
-    [ "\${SYSCTL_TUNING:-0}" = 1 ] || return 0
+    [ "${SYSCTL_TUNING:-0}" = 1 ] || return 0
     _tmp="$f.tmp.$"
     printf '%s\n' "$_expected" > "$_tmp" || return 1
     while IFS= read -r _p; do
