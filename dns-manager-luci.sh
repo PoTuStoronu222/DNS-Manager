@@ -18,7 +18,7 @@ RUNTIME_DIR="/var/run/dns-manager-luci"
 BACKUP_DIR="/etc/dns-manager-luci"
 CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
-COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
+COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 # Legacy update compatibility: admin/services/dns_manager
 RUNTIME_UPDATE_STATE="$BACKUP_DIR/update.state"
 VERSION_FILE="$BACKUP_DIR/version"
@@ -126,7 +126,7 @@ CHECK_DIR="$RUNTIME_DIR/checks"
 CURRENT_SLOT_RESULTS="$RUNTIME_DIR/current-slot-results.conf"
 TMP_ROOT="$RUNTIME_DIR/tmp"
 UPDATE_STATE="/etc/dns-manager-luci/update.state"
-COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
+COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
 SELF_VERSION="1.5.62"
@@ -276,7 +276,7 @@ fetch_url() {
     _out="$1"
     rm -f "$_out" 2>/dev/null || true
     _cb="$(date +%s 2>/dev/null || printf 0)-$$"
-    _fetch_url="${COMPANION_URL}?_dmcb=$_cb"
+    _fetch_url="${COMPANION_URL}&_dmcb=$_cb"
     # Use the raw GitHub file directly. The contents API can serve a cached
     # revision after rapid sequential commits, which makes version detection
     # falsely report an older LuCI version as current.
