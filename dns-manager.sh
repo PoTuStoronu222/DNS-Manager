@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.34.3"
+VERSION="3.34.4"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -98,6 +98,7 @@ LUCI_STATE_FILE="$CFG_DIR/luci-state.conf"
 LUCI_MENU_FILE="/usr/share/luci/menu.d/luci-app-dns-manager.json"
 LUCI_ACL_FILE="/usr/share/rpcd/acl.d/luci-app-dns-manager.json"
 LUCI_RPC_PLUGIN="/usr/libexec/rpcd/dns_manager"
+LUCI_BACKEND_FILE="/usr/lib/dns-manager-luci/backend.sh"
 LUCI_VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
 # Persistent marker: /var/run is tmpfs, so the first-run decision must survive reboot.
 FIRST_RUN_MARKER="$CFG_DIR/.first-run.done"
@@ -6298,9 +6299,21 @@ luci_component_files_present() {
     return 0
 }
 
+luci_component_runtime_valid() {
+    [ -x "$LUCI_RPC_PLUGIN" ] || return 1
+    [ -f "$LUCI_BACKEND_FILE" ] || return 1
+    sh -n "$LUCI_RPC_PLUGIN" >/dev/null 2>&1 || return 1
+    sh -n "$LUCI_BACKEND_FILE" >/dev/null 2>&1 || return 1
+    return 0
+}
+
 luci_component_state() {
     if ! luci_component_files_present; then
         printf '0\n'
+        return 0
+    fi
+    if ! luci_component_runtime_valid; then
+        printf '2\n'
         return 0
     fi
     if command -v ubus >/dev/null 2>&1; then
@@ -6402,6 +6415,11 @@ luci_companion_install() {
         return 1
     fi
     rm -f "$_tmp" 2>/dev/null || true
+
+    if ! luci_component_runtime_valid; then
+        err_msg "LuCI-установщик завершился, но сгенерированный RPC backend не прошёл shell-проверку."
+        return 1
+    fi
 
     luci_component_files_present || {
         err_msg "LuCI-установщик завершился, но комплект файлов интерфейса не прошёл контроль."
