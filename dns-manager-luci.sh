@@ -16,6 +16,7 @@ MENU_FILE="/usr/share/luci/menu.d/luci-app-dns-manager.json"
 VIEW_DIR="/www/luci-static/resources/view/dns_manager"
 VIEW_FILE="$VIEW_DIR/overview.js"
 RUNTIME_DIR="/var/run/dns-manager-luci"
+JOB_DIR="$RUNTIME_DIR/jobs"
 BACKUP_DIR="/etc/dns-manager-luci"
 CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
@@ -41,7 +42,7 @@ install_files() {
     require_manager || return 1
 
     command -v jsonfilter >/dev/null 2>&1 || say "ℹ jsonfilter не найден — используется встроенный обработчик RPC-параметров."
-    mkdir -p "$VIEW_DIR" /usr/libexec/rpcd /usr/lib/dns-manager-luci /usr/share/rpcd/acl.d /usr/share/luci/menu.d "$RUNTIME_DIR/checks" "$BACKUP_DIR" "$(dirname "$STATE_FILE")" || return 1
+    mkdir -p "$VIEW_DIR" /usr/libexec/rpcd /usr/lib/dns-manager-luci /usr/share/rpcd/acl.d /usr/share/luci/menu.d "$RUNTIME_DIR/checks" "$JOB_DIR" "$BACKUP_DIR" "$(dirname "$STATE_FILE")" || return 1
     if [ -d "$JOB_DIR" ]; then
         for _jd in "$JOB_DIR"/*; do
             [ -d "$_jd" ] || continue
