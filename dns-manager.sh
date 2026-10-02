@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.33.7"
+VERSION="3.33.8"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -2977,7 +2977,7 @@ sysctl_stock_value() {
     case "$_k" in
         net.ipv4.tcp_fastopen) printf '1' ;;
         net.ipv4.tcp_fin_timeout) printf '30' ;;
-        net.core.somaxconn) printf '4096' ;;
+        net.core.somaxconn) printf '128' ;;
         net.ipv4.tcp_keepalive_time) printf '120' ;;
         net.ipv4.tcp_keepalive_intvl) printf '75' ;;
         net.ipv4.tcp_keepalive_probes) printf '9' ;;
