@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.5.89
+# Version: 1.5.90
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -23,7 +23,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.5.89"
+VERSION="1.5.90"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -141,7 +141,7 @@ UPDATE_STATE="/etc/dns-manager-luci/update.state"
 COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.5.89"
+SELF_VERSION="1.5.90"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -924,12 +924,15 @@ cpu_load_percent() {
     [ -d "$RUNTIME_DIR" ] || mkdir -p "$RUNTIME_DIR" 2>/dev/null || return 0
     now="$(cpu_stat)"
     [ -n "$now" ] || return 0
-    if [ -s "$f" ] && [ -z "$(find "$f" -mmin +1 2>/dev/null)" ]; then
+    if [ -s "$f" ]; then
         prev="$(cat "$f" 2>/dev/null || true)"
     else
-        prev="$now"
-        sleep 1
-        now="$(cpu_stat)"
+        printf '%s
+' "$now" > "$f" 2>/dev/null || true
+        printf '0'
+        printf '%s
+' '0' > "$f.pct" 2>/dev/null || true
+        return 0
     fi
     set -- $prev $now
     t1=$1; i1=$2; t2=$3; i2=$4
@@ -1647,7 +1650,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.5.89
+// DNS Manager LuCI version: 1.5.90
 var callStatus = rpc.declare({ object:'dns_manager', method:'status', params:['detail'], expect:{} });
 var callRuntime = rpc.declare({ object:'dns_manager', method:'runtime', expect:{} });
 function statusDetail(){return currentRoute()==='network'?1:0;}
@@ -3248,11 +3251,21 @@ function refreshDashboard(root){
     if(!rootAlive(root))return;
     state.statusError='';
     var next=st||{};
+    var prev=window.dmState||{};
+    if((next.model===undefined||next.model===null||next.model==='')&&prev.model)next.model=prev.model;
+    if((next.openwrt===undefined||next.openwrt===null||next.openwrt==='')&&prev.openwrt)next.openwrt=prev.openwrt;
+    if((next.lan===undefined||next.lan===null||next.lan==='')&&prev.lan)next.lan=prev.lan;
+    if((next.cpu_count===undefined||next.cpu_count===null||next.cpu_count==='')&&prev.cpu_count)next.cpu_count=prev.cpu_count;
     if(isFinite(state.runtimeCpuLoad))next.cpu_load=state.runtimeCpuLoad;
+    else if((next.cpu_load===undefined||next.cpu_load===null||next.cpu_load==='')&&prev.cpu_load!==undefined)next.cpu_load=prev.cpu_load;
     if(isFinite(state.runtimeMemoryTotal))next.memory_total_kb=state.runtimeMemoryTotal;
+    else if((next.memory_total_kb===undefined||next.memory_total_kb===null||next.memory_total_kb==='')&&prev.memory_total_kb!==undefined)next.memory_total_kb=prev.memory_total_kb;
     if(isFinite(state.runtimeMemoryAvailable))next.memory_available_kb=state.runtimeMemoryAvailable;
+    else if((next.memory_available_kb===undefined||next.memory_available_kb===null||next.memory_available_kb==='')&&prev.memory_available_kb!==undefined)next.memory_available_kb=prev.memory_available_kb;
     if(state.runtimeUptimeAt){
       next.uptime=Math.floor(state.runtimeUptimeBase+Math.max(0,Math.floor((Date.now()-state.runtimeUptimeAt)/1000)));
+    }else if((next.uptime===undefined||next.uptime===null||next.uptime==='')&&prev.uptime!==undefined){
+      next.uptime=prev.uptime;
     }
     window.dmState=next;
     renderOverview(root,next);
@@ -3284,7 +3297,7 @@ function startAutoStatus(root){
     tick++;
     tickLocalUptime(root);
     if(tick%5===0)pollRuntime();
-    if(tick%15===0&&!statusBusy){
+    if(tick%30===0&&!statusBusy){
       statusBusy=true;
       refreshDashboard(root).catch(function(){}).then(function(){
         statusBusy=false;
@@ -3292,7 +3305,16 @@ function startAutoStatus(root){
     }
   },1000);
 }return view.extend({
-  load:function(){return callStatus(statusDetail()).then(function(st){return st||{};});},
+  load:function(){
+    return Promise.all([callStatus(statusDetail()),callRuntime()]).then(function(v){
+      var st=v[0]||{},rt=v[1]||{};
+      if(rt&&rt.cpu_load!==undefined&&rt.cpu_load!==null&&String(rt.cpu_load)!=='')st.cpu_load=rt.cpu_load;
+      if(rt&&rt.memory_total_kb!==undefined&&rt.memory_total_kb!==null&&String(rt.memory_total_kb)!=='')st.memory_total_kb=rt.memory_total_kb;
+      if(rt&&rt.memory_available_kb!==undefined&&rt.memory_available_kb!==null&&String(rt.memory_available_kb)!=='')st.memory_available_kb=rt.memory_available_kb;
+      if(rt&&rt.uptime!==undefined&&rt.uptime!==null&&String(rt.uptime)!=='')st.uptime=rt.uptime;
+      return st;
+    }).catch(function(){return callStatus(statusDetail()).then(function(st){return st||{};});});
+  },
   render:function(st){
     var root=E('div',{'class':'dm-wrap'});
     ['dm-header','dm-overview','dm-doh','dm-profiles','dm-slots','dm-settings','dm-network','dm-job','dm-catalog','dm-log'].forEach(function(id){root.appendChild(E('section',{'id':id}));});
