@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.32.8"
+VERSION="3.32.9"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -5448,17 +5448,6 @@ if [ -n "${SLOT_RU:-}" ]; then
 else
     printf "  %-6s %s\n" "RU" "не выбран"
 fi
-menu_section "СТОРОННИЕ РЕШЕНИЯ"
-_side_found=0
-for _tp in  "zapret|Zapret" "zapret2|Zapret2" "netshift|NetShift" "splify|splify"  "mixomo|Mixomo" "magi|MagiTrickle" "hev|HevSocks5Tunnel" "awg|AWG"  "tggo|TG-Go" "tgrs|TG-Rust" "tgmt|TG-MTProto" "byedpi|ByeDPI"; do
-    _kind="${_tp%%|*}"
-    _label="${_tp#*|}"
-    if third_party_running "$_kind"; then
-        printf "  ${C_GREEN}✓${C_NC} %s — работает\n" "$_label"
-        _side_found=1
-    fi
-done
-[ "$_side_found" = 1 ] || printf "  ${C_YELLOW}—${C_NC} Активных сторонних служб не обнаружено\n"
 menu_section "FIREWALL"
 printf "  %-42s %s\n" "Активный nft:" "$(state_word "$NFT_ACTIVE")"
 printf "  %-42s %s\n" "Активный iptables:" "$(state_word "$IPTABLES_ACTIVE")"
