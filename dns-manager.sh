@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.30"
+VERSION="3.31"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -2589,6 +2589,16 @@ stock_uci_list_normalized() {
     _sl_raw="$(stock_uci_value_normalized "$1" "$2" "$3")"
     [ "$_sl_raw" = "__DM_UNSET__" ] && { printf ''; return 0; }
     uci_list_normalized "$_sl_raw"
+}
+# Effective stock value: an unset option in the immutable OpenWrt image is
+# replaced by the caller-supplied protocol default for state detection.
+stock_effective_uci_value() {
+    _ep_pkg="$1"
+    _ep_target="$2"
+    _ep_default="$3"
+    _ep="$(stock_uci_value_normalized "$_ep_pkg" "$_ep_target" "__DM_UNSET__")"
+    [ "$_ep" = "__DM_UNSET__" ] && _ep="$_ep_default"
+    printf '%s' "$_ep"
 }
 
 # ==========================================
@@ -6074,10 +6084,16 @@ check_module_state() {
             }
             ;;
         mtu)
-            _v="$(uci -q get "firewall.$(firewall_wan_zone 2>/dev/null).mtu_fix" 2>/dev/null || true)"
-            if [ -z "$_v" ]; then printf 0
-            elif [ "$_v" = 1 ]; then printf 1
-            else printf 2
+            _zone="$(firewall_wan_zone 2>/dev/null)" || { printf 2; return; }
+            _cur="$(uci_value_normalized "firewall.$_zone.mtu_fix")"
+            _stock_v="$(stock_effective_uci_value firewall "firewall.$_zone.mtu_fix" 1)"
+            _manager_v="${MTU_FIX:-0}"
+            if [ "$_cur" = "$_stock_v" ] && [ "$_manager_v" = 0 ]; then
+                printf 0
+            elif [ "$_cur" = 1 ] && [ "$_manager_v" = 1 ]; then
+                printf 1
+            else
+                printf 2
             fi
             ;;
         sysctl)
@@ -6108,24 +6124,34 @@ EOF_CHECK_BASE_STATE
                 printf 2
                 return 0
             fi
-            _ok=1
-            [ "$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null)" = 1 ] || _ok=0
-            [ "$(uci -q get https-dns-proxy.config.notrack_dns 2>/dev/null)" = 1 ] || _ok=0
-            [ "$(uci -q get https-dns-proxy.config.dnsmasq_config_update 2>/dev/null)" = - ] || _ok=0
-            [ "$(uci -q get https-dns-proxy.config.force_ip_family 2>/dev/null)" = auto ] || _ok=0
-            force_dns_ports_match_expected || _ok=0
-            force_dns_src_matches_expected || _ok=0
-            if [ "$_ok" = 1 ]; then
-                printf 1
-            elif [ "$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null)" = 1 ] || [ "$(uci -q get https-dns-proxy.config.notrack_dns 2>/dev/null)" = 1 ]; then
-                printf 2
+
+            # Package defaults are not an active DNS Manager feature.
+            # Activation requires the manager flag and a real LAN DNS redirect.
+            if [ "${FORCE_DOH:-0}" = 1 ]; then
+                _ok=1
+                [ "$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null)" = 1 ] || _ok=0
+                [ "$(uci -q get https-dns-proxy.config.notrack_dns 2>/dev/null)" = 1 ] || _ok=0
+                [ "$(uci -q get https-dns-proxy.config.dnsmasq_config_update 2>/dev/null)" = - ] || _ok=0
+                [ "$(uci -q get https-dns-proxy.config.force_ip_family 2>/dev/null)" = auto ] || _ok=0
+                force_dns_ports_match_expected || _ok=0
+                force_dns_src_matches_expected || _ok=0
+                if [ "$_ok" = 1 ] && [ "${FORCED_DNS_ACTIVE:-0}" = 1 ]; then
+                    printf 1
+                else
+                    printf 2
+                fi
             else
-                printf 0
+                # No manager activation and no real external redirect = stock/off.
+                if [ "${FORCED_DNS_ACTIVE:-0}" = 1 ]; then
+                    printf 2
+                else
+                    printf 0
+                fi
             fi
             ;;
         ntp_clients)
             _cur_server="$(uci_value_normalized "system.ntp.enable_server")"
-            _stock_server="$(stock_uci_value_normalized system "system.ntp.enable_server" "__DM_UNSET__")"
+            _stock_server="$(stock_effective_uci_value system "system.ntp.enable_server" 0)"
             _cur_opt="$(uci_list_current_normalized "dhcp.$_sec.dhcp_option")"
             _stock_opt="$(stock_uci_list_normalized dhcp "dhcp.@dnsmasq[0].dhcp_option" "")"
             _desired_opt="$(uci_list_normalized "$_stock_opt 42,$LAN_IP")"
@@ -6678,7 +6704,7 @@ setting_process() {
     _state="$4"
     [ -n "$_state" ] || _state="$(check_module_state "$_module")"
 
-    printf "\n${C_WHITE}Настройка: %s${C_NC}\n" "$_title"
+    printf "\n${C_WHITE}%s${C_NC}\n" "$_title"
 
     if [ "$_module" = luci ]; then
         case "$_state" in
@@ -6698,16 +6724,23 @@ setting_process() {
                 ;;
         esac
     else
-        if [ "$_state" = 2 ] && [ "$_module" = force ]; then
+        if [ "$_module" = force ]; then
             detect_forced_dns_path >/dev/null 2>&1 || true
-            printf "  ${C_YELLOW}Обнаружен внешний forced-DNS${C_NC}"
-            if [ -n "${FORCED_DNS_SOURCE:-}" ]; then
-                printf " (${C_WHITE}%s${C_NC})" "$FORCED_DNS_SOURCE"
+            if [ "${FORCED_DNS_EXTERNAL:-0}" = 1 ]; then
+                printf "  ${C_YELLOW}Обнаружен внешний forced-DNS${C_NC}"
+                if [ -n "${FORCED_DNS_SOURCE:-}" ] && [ "${FORCED_DNS_SOURCE:-none}" != "none" ]; then
+                    printf " (${C_WHITE}%s${C_NC})" "$FORCED_DNS_SOURCE"
+                fi
+                printf ".\n"
+                info_msg "DNS Manager этот внешний перехват не изменяет."
+                pause
+                return 0
             fi
-            printf ".\n"
-            info_msg "DNS Manager этот внешний перехват не изменяет."
-            pause
-            return 0
+            if [ "$_state" = 2 ]; then
+                printf "  ${C_YELLOW}Обнаружены другие настройки forced-DNS.${C_NC}\n"
+                info_msg "Активный внешний перехват DNS не обнаружен. Текущие отличающиеся настройки будут исправлены."
+                printf "\n"
+            fi
         fi
 
         case "$_state" in
