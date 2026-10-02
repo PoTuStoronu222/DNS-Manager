@@ -881,247 +881,186 @@ detect_runtime_force_state() {
 openwrt_release() { sed -n "s/^DISTRIB_RELEASE='\([^']*\)'.*/\1/p" /etc/openwrt_release 2>/dev/null | head -n1; }
 
 status_json() {
-    maybe_background_update_check
     _mv="$(manager_version 2>/dev/null || true)"
-    _profile="$(cfg_get DNS_PROFILE)"; [ -n "$_profile" ] || _profile="hybrid"
-    _mode="$(cfg_get DNS_SELECTION_MODE)"; [ -n "$_mode" ] || _mode="quick"
-    _selection_category="$(cfg_get DNS_SELECTION_CATEGORY)"; [ -n "$_selection_category" ] || _selection_category="bypass"
+    _profile="$(cfg_get DNS_PROFILE)"; [ -n "$_profile" ] || _profile=hybrid
+    _mode="$(cfg_get DNS_SELECTION_MODE)"; [ -n "$_mode" ] || _mode=quick
+    _selection_category="$(cfg_get DNS_SELECTION_CATEGORY)"; [ -n "$_selection_category" ] || _selection_category=bypass
     _watchdog="$(cfg_get WATCHDOG_ENABLED)"; [ -n "$_watchdog" ] || _watchdog=0
     _watchdog_interval="$(cfg_get WATCHDOG_INTERVAL)"; [ -n "$_watchdog_interval" ] || _watchdog_interval=90
     _watchdog_backend="$(cfg_get WATCHDOG_BACKEND)"; [ -n "$_watchdog_backend" ] || _watchdog_backend=procd
-    _watchdog_fail_threshold="$(manager_const_num WATCHDOG_FAIL_THRESHOLD 2)"
-    _watchdog_repair_cooldown="$(manager_const_num WATCHDOG_REPAIR_COOLDOWN 300)"
-    _watchdog_guard_interval="$(manager_const_num WATCHDOG_GUARD_INTERVAL 900)"
-    _watchdog_max_repairs="$(manager_const_num WATCHDOG_MAX_REPAIRS 1)"
-    _watchdog_max_restarts="$(manager_const_num WATCHDOG_MAX_RESTARTS 2)"
-    _watchdog_max_candidates="$(manager_const_num WATCHDOG_MAX_CANDIDATES 3)"
-    _watchdog_restart_cooldown="$(manager_const_num WATCHDOG_RESTART_COOLDOWN 300)"
-    _watchdog_service_enabled=0; watchdog_service_enabled && _watchdog_service_enabled=1 || true
-    _watchdog_service_running=0; watchdog_service_running && _watchdog_service_running=1 || true
-    _watchdog_loop_running=0; watchdog_loop_running && _watchdog_loop_running=1 || true
-    _force="$(cfg_get FORCE_DOH)"; [ -n "$_force" ] || _force=0
-    _mtu="$(cfg_get MTU_FIX)"; [ -n "$_mtu" ] || _mtu=0
-    _sysctl="$(cfg_get SYSCTL_TUNING)"; [ -n "$_sysctl" ] || _sysctl=0
-    _sysctl_ext="$(cfg_get SYSCTL_EXTENDED)"; [ -n "$_sysctl_ext" ] || _sysctl_ext=0
-    _ntp="$(cfg_get NTP_CLIENTS)"; [ -n "$_ntp" ] || _ntp=0
-    _perf="$(cfg_get DNSMASQ_PERF)"; [ -n "$_perf" ] || _perf=0
-    _fix="$(cfg_get CLIENT_FIXES)"; [ -n "$_fix" ] || _fix=0
-    _client_fix_state=2
-    _mtu_state=2
-    _sysctl_state=2
-    _sysctl_ext_state=2
-    _dnsmasq_perf_state=2
-    _ntp_clients_state=2
-    if load_manager >/dev/null 2>&1; then
-        _client_fix_state="$(check_module_state client_fixes 2>/dev/null || true)"; case "$_client_fix_state" in 0|1|2) ;; *) _client_fix_state=0;; esac
-        _mtu_state="$(check_module_state mtu 2>/dev/null || true)"; case "$_mtu_state" in 0|1|2) ;; *) _mtu_state=0;; esac
-        _sysctl_state="$(check_module_state sysctl 2>/dev/null || true)"; case "$_sysctl_state" in 0|1|2) ;; *) _sysctl_state=0;; esac
-        _sysctl_ext_state="$(check_sysctl_extended_state 2>/dev/null || true)"; case "$_sysctl_ext_state" in 0|1|2) ;; *) _sysctl_ext_state=0;; esac
-        _dnsmasq_perf_state="$(check_module_state dnsmasq_perf 2>/dev/null || true)"; case "$_dnsmasq_perf_state" in 0|1|2) ;; *) _dnsmasq_perf_state=0;; esac
-        _ntp_clients_state="$(check_module_state ntp_clients 2>/dev/null || true)"; case "$_ntp_clients_state" in 0|1|2) ;; *) _ntp_clients_state=0;; esac
-    fi
 
-    _doh_total=0; _doh_running=0
+    _client_fix_state="$(cfg_get CLIENT_FIXES)"; [ "$_client_fix_state" = 1 ] && _client_fix_state=1 || _client_fix_state=0
+    _mtu_state="$(cfg_get MTU_FIX)"; [ "$_mtu_state" = 1 ] && _mtu_state=1 || _mtu_state=0
+    _sysctl_state="$(cfg_get SYSCTL_TUNING)"; [ "$_sysctl_state" = 1 ] && _sysctl_state=1 || _sysctl_state=0
+    _sysctl_ext_state="$(cfg_get SYSCTL_EXTENDED)"; [ "$_sysctl_ext_state" = 1 ] && _sysctl_ext_state=1 || _sysctl_ext_state=0
+    _dnsmasq_perf_state="$(cfg_get DNSMASQ_PERF)"; [ "$_dnsmasq_perf_state" = 1 ] && _dnsmasq_perf_state=1 || _dnsmasq_perf_state=0
+    _ntp_clients_state="$(cfg_get NTP_CLIENTS)"; [ "$_ntp_clients_state" = 1 ] && _ntp_clients_state=1 || _ntp_clients_state=0
+
+    _force="$(cfg_get FORCE_DOH)"; [ -n "$_force" ] || _force=0
+    _force_cfg="$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null || true)"
+    _force_notrack="$(uci -q get https-dns-proxy.config.notrack_dns 2>/dev/null || true)"
+    _force_manager=0
+    [ "$_force" = 1 ] && [ "$_force_cfg" = 1 ] && [ "$_force_notrack" = 1 ] && _force_manager=1
+
+    _force_external=0
+    _force_targets=""
+    _fw_secs="$(uci show firewall 2>/dev/null | sed -n 's/^firewall\.\\([^.=]*\\)=redirect$/\\1/p')"
+    for _sec in $_fw_secs; do
+        [ "$(uci -q get "firewall.$_sec.disabled" 2>/dev/null)" = 1 ] && continue
+        runtime_lan_input_match "$(uci -q get "firewall.$_sec.src" 2>/dev/null || true)" || continue
+        _sd="$(uci -q get "firewall.$_sec.src_dport" 2>/dev/null || true)"
+        printf '%s\n' "$_sd" | tr ' ' '\n' | grep -qxF 53 2>/dev/null || continue
+        _target="$(uci -q get "firewall.$_sec.target" 2>/dev/null || true)"
+        case "$_target" in DNAT|dnat|REDIRECT|redirect) ;; *) continue;; esac
+        _dp="$(uci -q get "firewall.$_sec.dest_port" 2>/dev/null || true)"
+        [ -n "$_dp" ] || continue
+        case "$_dp" in 53|53-53) continue;; esac
+        if [ "$_force_manager" != 1 ]; then
+            _force_external=1
+            _force_targets="$_force_targets $_dp"
+        fi
+    done
+
+    _zapret_running=0
+    ps w 2>/dev/null | grep -Eq '[z]ms([[:space:]]|/)|[z]apret([[:space:]]|/)|[z]apret2([[:space:]]|/)|[z]aproxy2([[:space:]]|/)' && _zapret_running=1
+
+    _force_owner=none
+    _force_status=off
+    _force_source=none
+    if [ "$_force_external" = 1 ] || { [ "$_force_manager" != 1 ] && [ "$_force_cfg" = 1 ]; }; then
+        _force_external=1
+        _force_owner=external
+        _force_status=external
+        [ "$_zapret_running" = 1 ] && _force_source='Zapret / внешний' || _force_source='внешний сервис'
+    elif [ "$_force_manager" = 1 ]; then
+        _force_owner=manager
+        _force_status=manager
+        _force_source='DNS Manager'
+    fi
+    _force_targets="$(printf '%s\n' "$_force_targets" | tr ' ' '\n' | sed '/^$/d' | sort -n -u | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+    _force_both=0
+    [ "$_force_manager" = 1 ] && [ "$_force_external" = 1 ] && _force_both=1
+
+    _doh_total=0
+    _doh_running=0
+    _listen="$(ss -lnt 2>/dev/null || netstat -lnt 2>/dev/null || true)"
     _i=0
     while uci -q get "https-dns-proxy.@https-dns-proxy[$_i]" >/dev/null 2>&1; do
-        _doh_total=$((_doh_total + 1)); _p="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].listen_port" 2>/dev/null || true)"
-        [ -n "$_p" ] && { ss -lnt 2>/dev/null | grep -qE "(:|\])$_p([[:space:]]|$)" || netstat -lnt 2>/dev/null | grep -qE "(:|\])$_p([[:space:]]|$)"; } && _doh_running=$((_doh_running + 1)) || true
+        _doh_total=$((_doh_total + 1))
+        _p="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].listen_port" 2>/dev/null || true)"
+        if [ -n "$_p" ] && printf '%s\n' "$_listen" | grep -qE "(^|[[:space:]])[^[:space:]]*:\${_p}([[:space:]]|$)"; then _doh_running=$((_doh_running + 1)); fi
         _i=$((_i + 1))
     done
-    _doh="no"; [ "$_doh_running" -gt 0 ] && _doh="yes"
+    _doh=no; [ "$_doh_running" -gt 0 ] && _doh=yes
 
     _expected=0
-    for _s in 1 2 3 4 5 6 RU; do [ -n "$(cfg_get "SLOT_$_s")" ] && _expected=$((_expected + 1)); done
+    for _s in 1 2 3 4 5 6 RU; do [ -n "$(cfg_get "SLOT_\${_s}")" ] && _expected=$((_expected + 1)); done
     _match=0
     for _s in 1 2 3 4 5 6 RU; do
-        _id="$(cfg_get "SLOT_$_s")"; _port="$(cfg_get "PORT_$_s")"
-        [ -n "$_id" ] || continue
-        [ -n "$_port" ] || continue
+        _id="$(cfg_get "SLOT_\${_s}")"; _port="$(cfg_get "PORT_\${_s}")"
+        [ -n "$_id" ] && [ -n "$_port" ] || continue
         _url="$(catalog_field "$_id" 5 2>/dev/null || true)"
         [ -n "$_url" ] || continue
-        _j=0; while uci -q get "https-dns-proxy.@https-dns-proxy[$_j]" >/dev/null 2>&1; do
+        _url_cmp="$(printf '%s' "$_url" | sed 's:/*$::')"
+        _j=0
+        while uci -q get "https-dns-proxy.@https-dns-proxy[$_j]" >/dev/null 2>&1; do
             _up="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_j].listen_port" 2>/dev/null || true)"
             _uu="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_j].resolver_url" 2>/dev/null | sed 's:/*$::')"
-            if [ "$_up" = "$_port" ] && [ "$_uu" = "${_url%/}" ]; then _match=$((_match + 1)); break; fi
+            if [ "$_up" = "$_port" ] && [ "$_uu" = "$_url_cmp" ]; then _match=$((_match + 1)); break; fi
             _j=$((_j + 1))
         done
     done
-    # A saved profile is informational only. It is active only while the real
-    # https-dns-proxy configuration exactly matches the selected Manager scheme.
-    if [ "$_doh_total" -gt 0 ] && [ "$_expected" -gt 0 ] && [ "$_match" -eq "$_expected" ] && [ "$_doh_total" -eq "$_expected" ]; then
-        :
-    else
-        _profile="none"
-        _mode="none"
-        _selection_category="none"
-    fi
-    detect_runtime_force_state
-    _force_cfg="$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null || true)"; _external="$FORCE_RUNTIME_EXTERNAL"
-    _force_notrack="$(uci -q get https-dns-proxy.config.notrack_dns 2>/dev/null || true)"
-    _force_update="$(uci -q get https-dns-proxy.config.dnsmasq_config_update 2>/dev/null || true)"
-    _force_family="$(uci -q get https-dns-proxy.config.force_ip_family 2>/dev/null || true)"
-    _force_ports="$(uci -q get https-dns-proxy.config.force_dns_port 2>/dev/null || true)"
-    _force_src="$(uci -q get https-dns-proxy.config.force_dns_src_interface 2>/dev/null || true)"
-    _force_source="none"
-    if [ "$_external" = 1 ]; then
-        if ps w 2>/dev/null | grep -Eq '[z]apret([[:space:]]|/)|[z]apret2([[:space:]]|/)'; then _force_source="Zapret / внешний"; else _force_source="внешний сервис"; fi
-    elif [ "$_force" = 1 ]; then
-        _force_source="DNS Manager"
-    fi
-    _force_canary_i="$(uci -q get https-dns-proxy.config.canary_domains_icloud 2>/dev/null || true)"
-    _force_canary_m="$(uci -q get https-dns-proxy.config.canary_domains_mozilla 2>/dev/null || true)"
-    _force_procd="$(uci -q get https-dns-proxy.config.procd_trigger_wan6 2>/dev/null || true)"
-    _force_heartbeat_domain="$(uci -q get https-dns-proxy.config.heartbeat_domain 2>/dev/null || true)"
-    _force_heartbeat_sleep="$(uci -q get https-dns-proxy.config.heartbeat_sleep_timeout 2>/dev/null || true)"
-    _force_heartbeat_wait="$(uci -q get https-dns-proxy.config.heartbeat_wait_timeout 2>/dev/null || true)"
-    _force_user="$(uci -q get https-dns-proxy.config.user 2>/dev/null || true)"
-    _force_group="$(uci -q get https-dns-proxy.config.group 2>/dev/null || true)"
-    _force_listen="$(uci -q get https-dns-proxy.config.listen_addr 2>/dev/null || true)"
-    _force_ports_norm="$(printf '%s\n' "$_force_ports" | awk '{gsub(/["\047,]/," "); for(i=1;i<=NF;i++) print $i}' | sort -n | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
-    _force_src_norm="$(printf '%s\n' "$_force_src" | awk '{gsub(/["\047,]/," "); for(i=1;i<=NF;i++) print $i}' | sort | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
-    _force_src_expected="lan"
-    _fz="$(uci show firewall 2>/dev/null | sed -n 's/^firewall\.\([^.=]*\)=zone$/\1/p')"
-    for _z in $_fz; do
-        _nets="$(uci -q get "firewall.$_z.network" 2>/dev/null || true)"
-        printf '%s\n' $_nets | grep -qx lan && { _force_src_expected="$_nets"; break; }
-    done
-    _force_src_expected_norm="$(printf '%s\n' "$_force_src_expected" | tr ' ' '\n' | sed '/^$/d' | sort | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
-    _force_consistent=0
-    _force_common=0
-    [ "$_force_notrack" = 1 ] && [ "$_force_update" = - ] && [ "$_force_family" = auto ] && [ "$_force_ports_norm" = '53 853' ] && [ "$_force_src_norm" = "$_force_src_expected_norm" ] && [ "$_force_procd" = 0 ] && [ "$_force_heartbeat_domain" = heartbeat.mossdef.org ] && [ "$_force_heartbeat_sleep" = 10 ] && [ "$_force_heartbeat_wait" = 10 ] && [ "$_force_user" = nobody ] && [ "$_force_group" = nogroup ] && [ "$_force_listen" = 127.0.0.1 ] && _force_common=1
-    if [ "$_force" = 1 ] && [ "$_force_cfg" = 1 ] && [ "$_force_canary_i" = 1 ] && [ "$_force_canary_m" = 1 ] && [ "$_force_common" = 1 ]; then _force_consistent=1; fi
-    if [ "$_force" = 0 ] && [ "$_force_cfg" != 1 ] && [ "$_force_common" = 1 ]; then _force_consistent=1; fi
 
-    _dnsmasq="no"; /etc/init.d/dnsmasq status >/dev/null 2>&1 && _dnsmasq="yes"; pgrep -x dnsmasq >/dev/null 2>&1 && _dnsmasq="yes"
-    _fw="unknown"; command -v fw4 >/dev/null 2>&1 && _fw="fw4"; command -v fw3 >/dev/null 2>&1 && [ "$_fw" = unknown ] && _fw="fw3"
-    _lan="$(uci -q get network.lan.ipaddr 2>/dev/null | cut -d/ -f1 | head -n1)"
-    [ -n "$_lan" ] || _lan="—"
+    _ipv4=no; ip -4 route show default 2>/dev/null | grep -q . && _ipv4=yes
+    _ipv6=no; ip -6 route show default 2>/dev/null | grep -q . && _ipv6=yes
+    _dnsmasq=no; pgrep -x dnsmasq >/dev/null 2>&1 && _dnsmasq=yes
+    _fw=unknown; command -v fw4 >/dev/null 2>&1 && _fw=fw4; command -v fw3 >/dev/null 2>&1 && [ "$_fw" = unknown ] && _fw=fw3
+    _lan="$(uci -q get network.lan.ipaddr 2>/dev/null | cut -d/ -f1 | head -n1)"; [ -n "$_lan" ] || _lan=—
     _host="$(uci -q get system.@system[0].hostname 2>/dev/null || cat /proc/sys/kernel/hostname 2>/dev/null || true)"
     _uptime="$(awk '{printf "%s",int($1)}' /proc/uptime 2>/dev/null || true)"
     _load="$(awk '{printf "%s",$1}' /proc/loadavg 2>/dev/null || true)"
-    _mem_t="$(awk '/MemTotal:/ {print $2;exit}' /proc/meminfo 2>/dev/null || true)"
-    _mem_a="$(awk '/MemAvailable:/ {print $2;exit}' /proc/meminfo 2>/dev/null || true)"
-    _cpu_count="$(awk '/^processor[[:space:]]*:/ {n++} END {print n+0}' /proc/cpuinfo 2>/dev/null)"
-    case "$_cpu_count" in ''|*[!0-9]*|0) _cpu_count=1;; esac
-    _ipv4="no"; ip -4 route show default 2>/dev/null | grep -q . && _ipv4="yes"
-    _ipv6="no"; ip -6 route show default 2>/dev/null | grep -q . && _ipv6="yes"
+    _mem_t="$(awk '/MemTotal:/ {print $2;exit}' /proc/meminfo 2>/dev/null || true)"; [ -n "$_mem_t" ] || _mem_t=0
+    _mem_a="$(awk '/MemAvailable:/ {print $2;exit}' /proc/meminfo 2>/dev/null || true)"; [ -n "$_mem_a" ] || _mem_a=0
+    _cpu_count="$(awk '/^processor[[:space:]]*:/ {n++} END {print n+0}' /proc/cpuinfo 2>/dev/null)"; case "$_cpu_count" in ''|*[!0-9]*|0) _cpu_count=1;; esac
+
     _last=""; _meta="$STATE_DIR/dns-test-results.meta"; [ -r "$_meta" ] || _meta="$PERSIST_STATE_DIR/dns-test-results.meta"; _last="$(sed -n 's/^timestamp=//p' "$_meta" 2>/dev/null | head -n1)"
     _cat_total="$(grep -v '^#' "$CATALOG_FILE" 2>/dev/null | grep -c '^[^|][^|]*|' 2>/dev/null || printf 0)"
+
     _luciv="$(read_installed_luci_version)"
     _luci_latest="$(sed -n 's/^latest=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"
-    _hdp_installed="$(package_version https-dns-proxy 2>/dev/null || true)"
-    _hdp_candidate="$(package_candidate_version https-dns-proxy 2>/dev/null || true)"
-    _hdp_update=0
-    if [ -n "$_hdp_installed" ] && [ -n "$_hdp_candidate" ] && package_version_cmp "$_hdp_candidate" "$_hdp_installed"; then
-        _hdp_update=1
-    fi
-    _force_manager=0
-    [ "$_force" = 1 ] && [ "$_force_cfg" = 1 ] && _force_manager=1
-    _zapret_running=0
-    ps w 2>/dev/null | grep -Eq '[z]ms([[:space:]]|/)|[z]apret([[:space:]]|/)|[z]apret2([[:space:]]|/)|[z]aproxy2([[:space:]]|/)' && _zapret_running=1
-    _force_both=0
-    [ "$_force_manager" = 1 ] && [ "$_external" = 1 ] && _force_both=1
-    # Re-read effective module state from the authoritative DNS Manager backend.
-    # This keeps LuCI consistent with the shell UI and avoids treating package defaults as Manager state.
-    if [ -n "${_mtu_state:-}" ] && [ -n "${_ntp_clients_state:-}" ]; then
-        detect_forced_dns_path >/dev/null 2>&1 || true
-        _force_state="$(check_module_state force 2>/dev/null || true)"
-        case "$_force_state" in 0|1|2) ;; *) _force_state=0;; esac
-        _external="${FORCED_DNS_EXTERNAL:-0}"
-        _force_manager=0
-        [ "$_force_state" = 1 ] && _force_manager=1
-        _force_both=0
-        if [ "$_external" = 1 ]; then
-            _force_source="${FORCED_DNS_SOURCE:-none}"
-        elif [ "$_force_manager" = 1 ]; then
-            _force_source="DNS Manager"
-        else
-            _force_source="none"
-        fi
-    else
-        _force_state=0
-        _external=0
-        _force_manager=0
-        _force_both=0
-        _force_source="none"
-    fi
     _luci_avail="$(sed -n 's/^available=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"; [ -n "$_luci_avail" ] || _luci_avail=0
-    _luci_checked_at="$(sed -n 's/^checked_at=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"
+    _luci_checked_at="$(sed -n 's/^checked_at=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"; [ -n "$_luci_checked_at" ] || _luci_checked_at=0
     _luci_error="$(sed -n 's/^error=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"
-    _luci_checked=0
-    case "$_luci_checked_at" in
-        ''|*[!0-9]*) ;;
-        *) [ "$_luci_checked_at" -gt 0 ] 2>/dev/null && _luci_checked=1 || true ;;
-    esac
-    _manager_latest_state="$(sed -n 's/^manager_latest=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"
-    _manager_avail_state="$(sed -n 's/^manager_available=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"; [ -n "$_manager_avail_state" ] || _manager_avail_state=0
-    _manager_check_state="$(sed -n 's/^manager_checked=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"; [ -n "$_manager_check_state" ] || _manager_check_state=0
-    if [ -n "$_luci_latest" ] && [ "$_luciv" = "$_luci_latest" ]; then _luci_avail=0; fi
-    if [ -n "$_manager_latest_state" ] && [ "$_mv" = "$_manager_latest_state" ]; then _manager_avail_state=0; fi
-    _catalog_latest_state="$(sed -n 's/^catalog_latest=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"
-    _catalog_rev_state="$(sed -n 's/^catalog_latest_rev=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"
-    _catalog_total_state="$(sed -n 's/^catalog_latest_total=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"; [ -n "$_catalog_total_state" ] || _catalog_total_state=0
-    _catalog_avail_state="$(sed -n 's/^catalog_available=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"; [ -n "$_catalog_avail_state" ] || _catalog_avail_state=0
-    _catalog_check_state="$(sed -n 's/^catalog_checked=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"; [ -n "$_catalog_check_state" ] || _catalog_check_state=0
-    _hdp_check_state="$(sed -n 's/^hdp_checked=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"; [ -n "$_hdp_check_state" ] || _hdp_check_state=0
+    _luci_checked=0; [ "$_luci_checked_at" -gt 0 ] 2>/dev/null && _luci_checked=1 || true
+    _manager_latest="$(sed -n 's/^manager_latest=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"
+    _manager_avail="$(sed -n 's/^manager_available=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"; [ -n "$_manager_avail" ] || _manager_avail=0
+    _manager_checked="$(sed -n 's/^manager_checked=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"; [ -n "$_manager_checked" ] || _manager_checked=0
+    [ -n "$_manager_latest" ] && [ "$_manager_latest" = "$_mv" ] && _manager_avail=0
+    _catalog_latest="$(sed -n 's/^catalog_latest=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"
+    _catalog_latest_rev="$(sed -n 's/^catalog_latest_rev=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"
+    _catalog_latest_total="$(sed -n 's/^catalog_latest_total=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"; [ -n "$_catalog_latest_total" ] || _catalog_latest_total=0
+    _catalog_avail="$(sed -n 's/^catalog_available=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"; [ -n "$_catalog_avail" ] || _catalog_avail=0
+    _catalog_checked="$(sed -n 's/^catalog_checked=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"; [ -n "$_catalog_checked" ] || _catalog_checked=0
+    _hdp_installed="$(package_version https-dns-proxy 2>/dev/null || true)"
+    _hdp_latest="$(sed -n 's/^hdp_latest=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"
+    _hdp_avail="$(sed -n 's/^hdp_available=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"; [ -n "$_hdp_avail" ] || _hdp_avail=0
+    _hdp_checked="$(sed -n 's/^hdp_checked=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"; [ -n "$_hdp_checked" ] || _hdp_checked=0
     _components_checked_at="$(sed -n 's/^components_checked_at=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"
+    _test_age_v="$(cfg_get TEST_RESULTS_MAX_AGE)"
+    case "$_test_age_v" in ''|*[!0-9]*) _test_age_h=6;; *) _test_age_h=$((_test_age_v/3600)); [ "$_test_age_h" -ge 1 ] || _test_age_h=1;; esac
 
-    printf '{"ok":true,"manager_version":'; json_quote "$_mv"; printf ',"luci_version":'; json_quote "$_luciv"; printf ',"luci_latest_version":'; json_quote "$_luci_latest"; printf ',"luci_update_available":%s,"luci_update_checked":%s,"luci_update_checked_at":%s' "$_luci_avail" "$_luci_checked" "${_luci_checked_at:-0}"
+    printf '{"ok":true,"manager_version":'; json_quote "$_mv"
+    printf ',"luci_version":'; json_quote "$_luciv"; printf ',"luci_latest_version":'; json_quote "$_luci_latest"
+    printf ',"luci_update_available":%s,"luci_update_checked":%s,"luci_update_checked_at":%s' "$_luci_avail" "$_luci_checked" "$_luci_checked_at"
     printf ',"luci_update_error":'; json_quote "$_luci_error"
-    printf ',"manager_latest_version":'; json_quote "$_manager_latest_state"; printf ',"manager_update_available":%s,"manager_check_ok":%s' "$_manager_avail_state" "$_manager_check_state"
-    printf ',"catalog_latest_version":'; json_quote "$_catalog_latest_state"; printf ',"catalog_latest_rev":'; json_quote "$_catalog_rev_state"; printf ',"catalog_latest_total":%s,"catalog_update_available":%s,"catalog_check_ok":%s' "$_catalog_total_state" "$_catalog_avail_state" "$_catalog_check_state"
+    printf ',"manager_latest_version":'; json_quote "$_manager_latest"; printf ',"manager_update_available":%s,"manager_check_ok":%s' "$_manager_avail" "$_manager_checked"
+    printf ',"catalog_latest_version":'; json_quote "$_catalog_latest"; printf ',"catalog_latest_rev":'; json_quote "$_catalog_latest_rev"; printf ',"catalog_latest_total":%s,"catalog_update_available":%s,"catalog_check_ok":%s' "$_catalog_latest_total" "$_catalog_avail" "$_catalog_checked"
     printf ',"ipv4":'; json_quote "$_ipv4"; printf ',"ipv6":'; json_quote "$_ipv6"; printf ',"dnsmasq":'; json_quote "$_dnsmasq"; printf ',"doh":'; json_quote "$_doh"; printf ',"firewall":'; json_quote "$_fw"; printf ',"openwrt":'; json_quote "$(openwrt_release)"; printf ',"lan":'; json_quote "$_lan"
-    printf ',"profile":'; json_quote "$_profile"; printf ',"profile_mode":'; json_quote "$_mode"; printf ',"selection_category":'; json_quote "$_selection_category"; printf ',"watchdog":'; json_quote "$_watchdog"
-    printf ',"watchdog_backend":'; json_quote "$_watchdog_backend"; printf ',"watchdog_service":%s,"watchdog_service_enabled":%s,"watchdog_loop":%s' "$_watchdog_service_running" "$_watchdog_service_enabled" "$_watchdog_loop_running"
-    printf ',"watchdog_interval":'; json_quote "$_watchdog_interval"; printf ',"watchdog_fail_threshold":%s' "$_watchdog_fail_threshold"
-    printf ',"watchdog_repair_cooldown":%s,"watchdog_guard_interval":%s' "$_watchdog_repair_cooldown" "$_watchdog_guard_interval"
-    printf ',"watchdog_max_repairs":%s,"watchdog_max_restarts":%s,"watchdog_max_candidates":%s,"watchdog_restart_cooldown":%s' "$_watchdog_max_repairs" "$_watchdog_max_restarts" "$_watchdog_max_candidates" "$_watchdog_restart_cooldown"
-    _age_common_v="$(cfg_get TEST_RESULTS_MAX_AGE)"
-    case "$_age_common_v" in
-        ''|*[!0-9]*) _age_common_h=6;;
-        *) _age_common_h=$((_age_common_v/3600)); [ "$_age_common_h" -ge 1 ] || _age_common_h=1;;
-    esac
-    printf ',"test_age_common":%s' "$_age_common_h"
-    _force_owner="none"
-    [ "$_external" = 1 ] && _force_owner="external"
-    [ "$_external" != 1 ] && [ "$_force_manager" = 1 ] && _force_owner="manager"
-    printf ',"client_fixes_state":%s' "$_client_fix_state";
-    printf ',"force":'; json_quote "$_force"; printf ',"force_external":'; json_quote "$_external"; printf ',"force_owner":'; json_quote "$_force_owner"; printf ',"force_manager":%s,"force_both":%s,"zapret_running":%s' "$_force_manager" "$_force_both" "$_zapret_running";
-    printf ',"mtu_state":%s,"sysctl_state":%s,"sysctl_ext_state":%s,"dnsmasq_perf_state":%s,"ntp_clients_state":%s' "$_mtu_state" "$_sysctl_state" "$_sysctl_ext_state" "$_dnsmasq_perf_state" "$_ntp_clients_state";
-    printf ',"force_source":'; json_quote "$FORCE_RUNTIME_SOURCE"; printf ',"force_targets":'; json_quote "$FORCE_RUNTIME_TARGETS"; printf ',"force_notrack":'; json_quote "$_force_notrack"; printf ',"force_update":'; json_quote "$_force_update"; printf ',"force_family":'; json_quote "$_force_family"; printf ',"force_ports":'; json_quote "$_force_ports"; printf ',"force_src":'; json_quote "$_force_src"; printf ',"force_canary_icloud":'; json_quote "$_force_canary_i"; printf ',"force_canary_mozilla":'; json_quote "$_force_canary_m"; printf ',"force_procd_trigger_wan6":'; json_quote "$_force_procd"; printf ',"force_heartbeat_domain":'; json_quote "$_force_heartbeat_domain"; printf ',"force_heartbeat_sleep":'; json_quote "$_force_heartbeat_sleep"; printf ',"force_heartbeat_wait":'; json_quote "$_force_heartbeat_wait"; printf ',"force_user":'; json_quote "$_force_user"; printf ',"force_group":'; json_quote "$_force_group"; printf ',"force_listen":'; json_quote "$_force_listen"; printf ',"force_consistent":%s' "$_force_consistent"; printf ',"mtu":'; json_quote "$_mtu"; printf ',"sysctl":'; json_quote "$_sysctl"; printf ',"sysctl_ext":'; json_quote "$_sysctl_ext"; printf ',"ntp_clients":'; json_quote "$_ntp"; printf ',"dnsmasq_perf":'; json_quote "$_perf"; printf ',"client_fixes":'; json_quote "$_fix"
-    printf ',"doh_total":%s,"doh_match":%s,"configured_dns":%s' "$_doh_total" "$_match" "$_expected"; printf ',"last_full_test":'; json_quote "$_last"; printf ',"components_checked_at":'; json_quote "$_components_checked_at"
-    printf ',"hostname":'; json_quote "$_host"; printf ',"uptime":'; json_quote "$_uptime"; printf ',"load1":'; json_quote "$_load"; printf ',"cpu_count":%s,"memory_total_kb":%s,"memory_available_kb":%s' "$_cpu_count" "${_mem_t:-0}" "${_mem_a:-0}"
-    printf ',"catalog_total":%s,"catalog_version":' "$_cat_total"; json_quote "$(catalog_version)"; printf ',"catalog_revision":'; json_quote "$(catalog_revision)"; printf ',"hdp_version":'; json_quote "$_hdp_installed"; printf ',"hdp_latest_version":'; json_quote "$_hdp_candidate"; printf ',"hdp_update_available":%s,"hdp_check_ok":%s' "$_hdp_update" "$_hdp_check_state"
-    _force_status="off"; _force_owner_label="нет"
-    if [ "$_external" = 1 ]; then
-        _force_status="external"; _force_owner_label="внешний"
-    elif [ "$_force_state" = 1 ]; then
-        _force_status="manager"; _force_owner_label="DNS Manager"
-    elif [ "$_force_state" = 2 ]; then
-        _force_status="other"; _force_owner_label="другое"
-    fi
-    printf ',"force_state":%s'; json_quote "$_force_state"
-    printf ',"force_status":'; json_quote "$_force_status"; printf ',"force_owner_label":'; json_quote "$_force_owner_label"
+    printf ',"profile":'; json_quote "$_profile"; printf ',"profile_mode":'; json_quote "$_mode"; printf ',"selection_category":'; json_quote "$_selection_category"
+    printf ',"watchdog":'; json_quote "$_watchdog"; printf ',"watchdog_backend":'; json_quote "$_watchdog_backend"
+    _watchdog_service_enabled=0; watchdog_service_enabled && _watchdog_service_enabled=1 || true
+    _watchdog_service_running=0; watchdog_service_running && _watchdog_service_running=1 || true
+    _watchdog_loop_running=0; watchdog_loop_running && _watchdog_loop_running=1 || true
+    printf ',"watchdog_service":%s,"watchdog_service_enabled":%s,"watchdog_loop":%s' "$_watchdog_service_running" "$_watchdog_service_enabled" "$_watchdog_loop_running"
+    printf ',"watchdog_interval":'; json_quote "$_watchdog_interval"; printf ',"watchdog_fail_threshold":2,"watchdog_repair_cooldown":300,"watchdog_guard_interval":900'
+    printf ',"watchdog_max_repairs":1,"watchdog_max_restarts":2,"watchdog_max_candidates":3,"watchdog_restart_cooldown":300'
+    printf ',"test_age_common":%s' "$_test_age_h"
+    printf ',"client_fixes_state":%s,"mtu_state":%s,"sysctl_state":%s,"sysctl_ext_state":%s,"dnsmasq_perf_state":%s,"ntp_clients_state":%s' "$_client_fix_state" "$_mtu_state" "$_sysctl_state" "$_sysctl_ext_state" "$_dnsmasq_perf_state" "$_ntp_clients_state"
+    printf ',"force":'; json_quote "$_force"; printf ',"force_external":'; json_quote "$_force_external"; printf ',"force_owner":'; json_quote "$_force_owner"; printf ',"force_manager":%s,"force_both":%s' "$_force_manager" "$_force_both"
+    printf ',"force_source":'; json_quote "$_force_source"; printf ',"force_targets":'; json_quote "$_force_targets"
+    printf ',"force_notrack":'; json_quote "$_force_notrack"; printf ',"force_update":'; json_quote "$(uci -q get https-dns-proxy.config.dnsmasq_config_update 2>/dev/null || true)"
+    printf ',"force_family":'; json_quote "$(uci -q get https-dns-proxy.config.force_ip_family 2>/dev/null || true)"; printf ',"force_ports":'; json_quote "$(uci -q get https-dns-proxy.config.force_dns_port 2>/dev/null || true)"
+    printf ',"force_src":'; json_quote "$(uci -q get https-dns-proxy.config.force_dns_src_interface 2>/dev/null || true)"; printf ',"force_canary_icloud":'; json_quote "$(uci -q get https-dns-proxy.config.canary_domains_icloud 2>/dev/null || true)"
+    printf ',"force_canary_mozilla":'; json_quote "$(uci -q get https-dns-proxy.config.canary_domains_mozilla 2>/dev/null || true)"; printf ',"force_procd_trigger_wan6":'; json_quote "$(uci -q get https-dns-proxy.config.procd_trigger_wan6 2>/dev/null || true)"
+    printf ',"force_heartbeat_domain":'; json_quote "$(uci -q get https-dns-proxy.config.heartbeat_domain 2>/dev/null || true)"; printf ',"force_heartbeat_sleep":'; json_quote "$(uci -q get https-dns-proxy.config.heartbeat_sleep_timeout 2>/dev/null || true)"
+    printf ',"force_heartbeat_wait":'; json_quote "$(uci -q get https-dns-proxy.config.heartbeat_wait_timeout 2>/dev/null || true)"; printf ',"force_user":'; json_quote "$(uci -q get https-dns-proxy.config.user 2>/dev/null || true)"
+    printf ',"force_group":'; json_quote "$(uci -q get https-dns-proxy.config.group 2>/dev/null || true)"; printf ',"force_listen":'; json_quote "$(uci -q get https-dns-proxy.config.listen_addr 2>/dev/null || true)"
+    printf ',"force_consistent":%s' "$([ "$_force_manager" = 1 ] && printf 1 || printf 0)"
+    printf ',"mtu":'; json_quote "$(cfg_get MTU_FIX)"; printf ',"sysctl":'; json_quote "$(cfg_get SYSCTL_TUNING)"; printf ',"sysctl_ext":'; json_quote "$(cfg_get SYSCTL_EXTENDED)"; printf ',"ntp_clients":'; json_quote "$(cfg_get NTP_CLIENTS)"; printf ',"dnsmasq_perf":'; json_quote "$(cfg_get DNSMASQ_PERF)"; printf ',"client_fixes":'; json_quote "$(cfg_get CLIENT_FIXES)"
+    printf ',"force_state":%s' "$([ "$_force_manager" = 1 ] && printf 1 || [ "$_force_external" = 1 ] && printf 2 || printf 0)"
+    printf ',"force_status":'; json_quote "$_force_status"
+    _owner_label=нет; [ "$_force_owner" = manager ] && _owner_label='DNS Manager'; [ "$_force_owner" = external ] && _owner_label=внешний
+    printf ',"force_owner_label":'; json_quote "$_owner_label"; printf ',"zapret_running":%s' "$_zapret_running"
+    printf ',"doh_total":%s,"doh_match":%s,"configured_dns":%s' "$_doh_total" "$_match" "$_expected"
+    printf ',"last_full_test":'; json_quote "$_last"; printf ',"components_checked_at":'; json_quote "$_components_checked_at"
+    printf ',"hostname":'; json_quote "$_host"; printf ',"uptime":'; json_quote "$_uptime"; printf ',"load1":'; json_quote "$_load"
+    printf ',"cpu_count":%s,"memory_total_kb":%s,"memory_available_kb":%s' "$_cpu_count" "$_mem_t" "$_mem_a"
+    printf ',"catalog_total":%s,"catalog_version":' "$_cat_total"; json_quote "$(catalog_version)"; printf ',"catalog_revision":'; json_quote "$(catalog_revision)"
+    printf ',"hdp_version":'; json_quote "$_hdp_installed"; printf ',"hdp_latest_version":'; json_quote "$_hdp_latest"; printf ',"hdp_update_available":%s,"hdp_check_ok":%s' "$_hdp_avail" "$_hdp_checked"
     printf ',"slots":['
     _first=1
     for _s in 1 2 3 4 5 6 RU; do
-        _id="$(cfg_get "SLOT_$_s")"; _cat="$(cfg_get "SLOT_${_s}_CAT")"; _port="$(cfg_get "PORT_$_s")"
+        _id="$(cfg_get "SLOT_\${_s}")"; _cat="$(cfg_get "SLOT_\${_s}_CAT")"; _port="$(cfg_get "PORT_\${_s}")"
         [ -n "$_cat" ] || [ -z "$_id" ] || _cat="$(catalog_field "$_id" 2 2>/dev/null || true)"
-        _name="$(catalog_field "$_id" 4 2>/dev/null || true)"; [ -n "$_name" ] || _name="Не задан"
+        _name="$(catalog_field "$_id" 4 2>/dev/null || true)"; [ -n "$_name" ] || _name='Не задан'
         _r="$(current_slot_result_for_id "$_id" 2>/dev/null || true)"
-        _ms="$(printf '%s' "$_r" | awk -F'|' 'NF>=5 {print $4;exit}')"; _rawst="$(printf '%s' "$_r" | awk -F'|' 'NF>=5 {print $5;exit}')"; _st=""
-        case "$_rawst" in
-            OK) case "$_ms" in ''|*[!0-9]*) _st=FAIL;; *) _st=OK;; esac ;;
-            RUNNING) _st=RUNNING ;;
-            '') _st="" ;;
-            *) _st=FAIL ;;
-        esac
+        _ms="$(printf '%s' "$_r" | awk -F'|' 'NF>=5 {print $4;exit}')"; _rawst="$(printf '%s' "$_r" | awk -F'|' 'NF>=5 {print $5;exit}')"
+        _st=""; case "$_rawst" in OK) case "$_ms" in ''|*[!0-9]*) _st=FAIL;; *) _st=OK;; esac;; RUNNING) _st=RUNNING;; '') ;; *) _st=FAIL;; esac
         [ "$_first" = 1 ] || printf ','; _first=0
         printf '{"slot":'; json_quote "$_s"; printf ',"id":'; json_quote "$_id"; printf ',"name":'; json_quote "$_name"; printf ',"category":'; json_quote "$_cat"; printf ',"port":'; json_quote "$_port"; printf ',"ping":'; json_quote "$_ms"; printf ',"status":'; json_quote "$_st"; printf ',"last_check":'; json_quote "$(last_check_for_id "$_id")"; printf '}'
     done
     printf ']}'
 }
-
 # ---------- Heavy/authoritative path below ----------
 INPUT=""
 load_manager() {
