@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.5.63
+# Version: 1.5.64
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -22,7 +22,7 @@ COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/
 # Legacy update compatibility: admin/services/dns_manager
 RUNTIME_UPDATE_STATE="$BACKUP_DIR/update.state"
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.5.63"
+VERSION="1.5.64"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -1523,7 +1523,7 @@ EOF_RPC
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.5.62
+// DNS Manager LuCI version: 1.5.64
 var callStatus = rpc.declare({ object:'dns_manager', method:'status', params:['detail'], expect:{} });
 function statusDetail(){return currentRoute()==='network'?1:0;}
 var callCatalog = rpc.declare({ object:'dns_manager', method:'catalog', params:['category','offset','limit','only_ok'], expect:{} });
@@ -2571,7 +2571,7 @@ function startAutoRefresh(root){
     if(state.busy||state.updatingAll||(state.versionCheck&&state.versionCheck.running))return;
     state.refreshBusy=true;
     refresh(root,true).then(function(){state.refreshBusy=false;},function(){state.refreshBusy=false;});
-  },3000);
+  },15000);
 }
 function toast(msg,type){}
 function checkUpdate(root){
