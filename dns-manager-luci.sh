@@ -912,12 +912,12 @@ status_json() {
     _ntp="$(cfg_get NTP_CLIENTS)"; [ -n "$_ntp" ] || _ntp=0
     _perf="$(cfg_get DNSMASQ_PERF)"; [ -n "$_perf" ] || _perf=0
     _fix="$(cfg_get CLIENT_FIXES)"; [ -n "$_fix" ] || _fix=0
-    _client_fix_state=0
-    _mtu_state=0
-    _sysctl_state=0
-    _sysctl_ext_state=0
-    _dnsmasq_perf_state=0
-    _ntp_clients_state=0
+    _client_fix_state=2
+    _mtu_state=2
+    _sysctl_state=2
+    _sysctl_ext_state=2
+    _dnsmasq_perf_state=2
+    _ntp_clients_state=2
     if load_manager >/dev/null 2>&1; then
         _client_fix_state="$(check_module_state client_fixes 2>/dev/null || true)"; case "$_client_fix_state" in 0|1|2) ;; *) _client_fix_state=0;; esac
         _mtu_state="$(check_module_state mtu 2>/dev/null || true)"; case "$_mtu_state" in 0|1|2) ;; *) _mtu_state=0;; esac
