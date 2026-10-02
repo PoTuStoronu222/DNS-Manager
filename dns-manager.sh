@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.32.0"
+VERSION="3.32.1"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -6236,14 +6236,14 @@ EOF_CHECK_BASE_STATE
 force_state_word() {
     detect_forced_dns_path >/dev/null 2>&1 || true
     if [ "${FORCED_DNS_EXTERNAL:-0}" = 1 ]; then
-        printf "${C_BOLD}${C_RED}ВНЕШНИЙ • активен${C_NC}"
+        printf "${C_BOLD}${C_RED}ВНЕШНИЙ${C_NC}"
         return 0
     fi
     _real="$(check_module_state force)"
     case "$_real" in
-        1) printf "${C_BOLD}${C_GREEN}ВКЛ • работает${C_NC}" ;;
-        2) printf "${C_BOLD}${C_RED}ДРУГОЕ • отличается${C_NC}" ;;
-        *) printf "${C_BOLD}${C_CYAN}ВЫКЛ •${C_NC}" ;;
+        1) printf "${C_BOLD}${C_GREEN}ВКЛ${C_NC}" ;;
+        2) printf "${C_BOLD}${C_RED}ДРУГОЕ${C_NC}" ;;
+        *) printf "${C_BOLD}${C_CYAN}ВЫКЛ${C_NC}" ;;
     esac
 }
 module_state_word() {
@@ -6251,7 +6251,7 @@ module_state_word() {
         luci)
             _real="$(check_module_state luci)"
             case "$_real" in
-                1) printf "${C_BOLD}${C_GREEN}УСТАНОВЛЕНО • работает${C_NC}" ;;
+                1) printf "${C_BOLD}${C_GREEN}УСТАНОВЛЕНО${C_NC}" ;;
                 2) printf "${C_BOLD}${C_YELLOW}ТРЕБУЕТ ВОССТАНОВЛЕНИЯ${C_NC}" ;;
                 *) printf "${C_BOLD}${C_RED}НЕ УСТАНОВЛЕНО${C_NC}" ;;
             esac
@@ -6262,7 +6262,7 @@ module_state_word() {
     case "$_real" in
         1) printf "${C_BOLD}${C_GREEN}ВКЛ • работает${C_NC}" ;;
         2) printf "${C_BOLD}${C_RED}ДРУГОЕ • отличается${C_NC}" ;;
-        *) printf "${C_BOLD}${C_CYAN}ВЫКЛ • нет${C_NC}" ;;
+        *) printf "${C_BOLD}${C_CYAN}ВЫКЛ${C_NC}" ;;
     esac
 }
 # ==========================================
