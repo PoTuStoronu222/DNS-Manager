@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.33.2"
+VERSION="3.33.3"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -253,17 +253,26 @@ release_test_lock() {
     rm -rf "$TEST_LOCK_DIR" 2>/dev/null || true
     TEST_LOCK_HELD=0
 }
+aligned_label_width() {
+    _label="$1"
+    _bytes="$(printf '%s' "$_label" | wc -c 2>/dev/null | tr -d ' ')"
+    _multibyte="$(printf '%s' "$_label" | LC_ALL=C od -An -t x1 2>/dev/null | awk 'BEGIN{n=0} {for(i=1;i<=NF;i++) if ($i ~ /^(c[2-9a-f]|d[0-9a-f]|e[0-9a-f]|f[0-4])$/) n++} END{print n+0}')"
+    case "$_bytes" in ''|*[!0-9]*) _bytes=0;; esac
+    case "$_multibyte" in ''|*[!0-9]*) _multibyte=0;; esac
+    _width=$((42+_multibyte))
+    printf '%s' "$_width"
+}
 printf_state_row() {
     _label="$1"
     _value="$2"
-    _bytes="$(printf '%s' "$_label" | wc -c 2>/dev/null | tr -d ' ')"
-    _utf8="$(printf '%s' "$_label" | LC_ALL=C od -An -t x1 2>/dev/null | awk 'BEGIN{n=0} {for(i=1;i<=NF;i++) if ($i ~ /^(c[2-9a-f]|d[0-9a-f]|e[0-9a-f]|f[0-4])$/) n++} END{print n+0}')"
-    case "$_bytes" in ''|*[!0-9]*) _bytes=0;; esac
-    case "$_utf8" in ''|*[!0-9]*) _utf8=0;; esac
-    _extra="$_utf8"
-    [ "$_extra" -lt 0 ] && _extra=0
-    _width=$((42+_extra))
+    _width="$(aligned_label_width "$_label")"
     printf "  ${C_YELLOW}${C_BOLD}%-${_width}s${C_NC}  %b\n" "$_label" "$_value"
+}
+printf_plain_row() {
+    _label="$1"
+    _value="$2"
+    _width="$(aligned_label_width "$_label")"
+    printf "  %-${_width}s  %b\n" "$_label" "$_value"
 }
 cleanup_runtime() {
     if [ -n "${STAGE_PIDS:-}" ]; then
@@ -419,7 +428,6 @@ auto_update_manager() {
     UPDATE_TMP_FILE="$_upd_tmp"
     rm -f "$_upd_tmp" 2>/dev/null
 
-    log_msg "Автообновление: выполняю реальную проверку GitHub: $UPDATE_URL"
     _update_url="${UPDATE_URL}?_dmcb=$(date +%s 2>/dev/null || printf 0)-$$"
 
     if command -v curl >/dev/null 2>&1; then
@@ -5417,35 +5425,35 @@ show_map() {
 sync_regional_dns_state
 menu_header "СОСТОЯНИЕ РОУТЕРА"
 menu_section "СИСТЕМА"
-printf "  %-42s ${C_WHITE}%s${C_NC}\n" "OpenWrt" "$SYS_OWRT"
-printf "  %-42s ${C_WHITE}%s${C_NC}\n" "Платформа" "$SYS_TARGET"
-printf "  %-42s ${C_WHITE}%s${C_NC}\n" "Архитектура" "$SYS_ARCH"
-printf "  %-42s %s\n" "DNS Watchdog" "$(module_state_word watchdog)"
-printf "  %-42s ${C_WHITE}%s${C_NC}\n" "Watchdog core" "procd"
-printf "  %-42s ${C_WHITE}%s${C_NC}\n" "Watchdog scheduler" "procd"
-printf "  %-42s %s\n" "Crond" "$(state_word "$WATCHDOG_CRON_RUNNING")"
-printf "  %-42s ${C_WHITE}%s${C_NC}\n" "Firewall" "$SYS_FW"
-printf "  %-42s ${C_WHITE}%s${C_NC}\n" "Backend" "$FIREWALL_BACKEND"
-printf "  %-42s ${C_WHITE}%s${C_NC}\n" "LAN" "$LAN_IP"
-printf "  %-42s ${C_WHITE}%s${C_NC}\n" "WAN" "$WAN_PROTO"
-printf "  %-42s %s\n" "IPv4" "$(state_word "$IPV4_ROUTE")"
-printf "  %-42s %s\n" "IPv6" "$(state_word "$IPV6_ROUTE")"
-printf "  %-42s %s\n" "curl" "$(state_word "$HAS_CURL")"
-printf "  %-42s %s\n" "dig" "$(state_word "$HAS_DIG")"
-printf "  %-42s %s\n" "ntpd" "$(state_word "$HAS_NTPD")"
+printf_plain_row "OpenWrt" "$SYS_OWRT"
+printf_plain_row "Платформа" "$SYS_TARGET"
+printf_plain_row "Архитектура" "$SYS_ARCH"
+printf_plain_row "DNS Watchdog" "$(module_state_word watchdog)"
+printf_plain_row "Watchdog core" "procd"
+printf_plain_row "Watchdog scheduler" "procd"
+printf_plain_row "Crond" "$(state_word "$WATCHDOG_CRON_RUNNING")"
+printf_plain_row "Firewall" "$SYS_FW"
+printf_plain_row "Backend" "$FIREWALL_BACKEND"
+printf_plain_row "LAN" "$LAN_IP"
+printf_plain_row "WAN" "$WAN_PROTO"
+printf_plain_row "IPv4" "$(state_word "$IPV4_ROUTE")"
+printf_plain_row "IPv6" "$(state_word "$IPV6_ROUTE")"
+printf_plain_row "curl" "$(state_word "$HAS_CURL")"
+printf_plain_row "dig" "$(state_word "$HAS_DIG")"
+printf_plain_row "ntpd" "$(state_word "$HAS_NTPD")"
 menu_section "DNS"
-printf "  %-42s %s\n" "dnsmasq" "$(state_word "$DNSMASQ_RUN")"
-printf "  %-42s %s\n" "LuCI DNS Manager" "$(module_state_word luci)"
+printf_plain_row "dnsmasq" "$(state_word "$DNSMASQ_RUN")"
+printf_plain_row "LuCI DNS Manager" "$(module_state_word luci)"
 refresh_doh_scheme_counts
-printf "  %-42s ${C_WHITE}%s${C_NC}\n" "DNS-серверов всего" "$DOH_TOTAL"
-printf "  %-42s ${C_WHITE}%s${C_NC}\n" "По текущей схеме" "$DOH_MATCH"
-printf "  %-42s ${C_WHITE}%s${C_NC}\n" "Вне текущей схемы" "$DOH_OTHER"
-hybrid_runtime_state_word | grep -q . && printf "  %-42s %s\n" "Локальный DoH" "$(hybrid_runtime_state_word)"
-[ "$DNS_SMARTDNS" = yes ] && printf "  %-42s %s\n" "SmartDNS" "$(state_word "$DNS_SMARTDNS")"
-[ "$DNS_UNBOUND" = yes ] && printf "  %-42s %s\n" "Unbound" "$(state_word "$DNS_UNBOUND")"
-[ "$DNS_ADGUARD" = yes ] && printf "  %-42s %s\n" "AdGuard Home" "$(state_word "$DNS_ADGUARD")"
-[ "$DNS_MOSDNS" = yes ] && printf "  %-42s %s\n" "MosDNS" "$(state_word "$DNS_MOSDNS")"
-[ "$DNS_SINGBOX" = yes ] && printf "  %-42s %s\n" "Sing-box" "$(state_word "$DNS_SINGBOX")"
+printf_plain_row "DNS-серверов всего" "$DOH_TOTAL"
+printf_plain_row "По текущей схеме" "$DOH_MATCH"
+printf_plain_row "Вне текущей схемы" "$DOH_OTHER"
+hybrid_runtime_state_word | grep -q . && printf_plain_row "Локальный DoH" "$(hybrid_runtime_state_word)"
+[ "$DNS_SMARTDNS" = yes ] && printf_plain_row "SmartDNS" "$(state_word "$DNS_SMARTDNS")"
+[ "$DNS_UNBOUND" = yes ] && printf_plain_row "Unbound" "$(state_word "$DNS_UNBOUND")"
+[ "$DNS_ADGUARD" = yes ] && printf_plain_row "AdGuard Home" "$(state_word "$DNS_ADGUARD")"
+[ "$DNS_MOSDNS" = yes ] && printf_plain_row "MosDNS" "$(state_word "$DNS_MOSDNS")"
+[ "$DNS_SINGBOX" = yes ] && printf_plain_row "Sing-box" "$(state_word "$DNS_SINGBOX")"
 menu_section "ВЫБРАННЫЕ DNS"
 printf "  ${C_WHITE}%-6s %-32s %s${C_NC}\n" "СЛОТ" "DNS" "ФАКТИЧЕСКИЙ ПОРТ"
 for _s in 1 2 3 4 5 6; do
@@ -5461,9 +5469,9 @@ else
     printf "  %-6s %s\n" "RU" "не выбран"
 fi
 menu_section "FIREWALL"
-printf "  %-42s %s\n" "Активный nft:" "$(state_word "$NFT_ACTIVE")"
-printf "  %-42s %s\n" "Активный iptables:" "$(state_word "$IPTABLES_ACTIVE")"
-printf "  %-42s %s\n" "Аппаратное ускорение:" "$(state_word "$FLOW_OFFLOAD")"
+printf_plain_row "Активный nft" "$(state_word "$NFT_ACTIVE")"
+printf_plain_row "Активный iptables" "$(state_word "$IPTABLES_ACTIVE")"
+printf_plain_row "Аппаратное ускорение" "$(state_word "$FLOW_OFFLOAD")"
 menu_section "НАСТРОЙКИ DNS Manager"
 _profile_name="Не выбран"
 # A saved DNS_PROFILE is not enough to call a profile active. The profile
@@ -5509,18 +5517,18 @@ hybrid:)
     ;;
 esac
 fi
-printf "  %-42s ${C_YELLOW}%s${C_NC}\n" "Текущий профиль:" "$_profile_name"
-printf "  %-42s %s\n" "Балансировка DNS:" "$(module_state_word balance "$BALANCER_ENABLED")"
-printf "  %-42s %s\n" "Отдельный DNS (.ru/.su/.рф):" "$(module_state_word tld "$TLD_SPLIT")"
-printf "  %-42s %s\n" "Исправление MTU и MSS для WAN:" "$(module_state_word mtu "$MTU_FIX")"
-printf "  %-42s %s\n" "Принудительный DNS:" "$(force_state_word)"
-printf "  %-42s %s\n" "Настройка сети:" "$(module_state_word sysctl "$SYSCTL_TUNING")"
-printf "  %-42s %s\n" "Увеличенный кэш DNS:" "$(module_state_word dnsmasq_perf "$DNSMASQ_PERF")"
-printf "  %-42s %s\n" "Время для устройств в локальной сети:" "$(module_state_word ntp_clients "$NTP_CLIENTS")"
-printf "  %-42s %s\n" "Связь системных служб:" "$(module_state_word client_fixes "$CLIENT_FIXES")"
+printf_state_row "Текущий профиль" "$_profile_name"
+printf_state_row "Балансировка DNS" "$(module_state_word balance "$BALANCER_ENABLED")"
+printf_state_row "Отдельный DNS (.ru/.su/.рф)" "$(module_state_word tld "$TLD_SPLIT")"
+printf_state_row "Исправление MTU и MSS для WAN" "$(module_state_word mtu "$MTU_FIX")"
+printf_state_row "Принудительный DNS" "$(force_state_word)"
+printf_state_row "Настройка сети" "$(module_state_word sysctl "$SYSCTL_TUNING")"
+printf_state_row "Увеличенный кэш DNS" "$(module_state_word dnsmasq_perf "$DNSMASQ_PERF")"
+printf_state_row "Время для устройств в локальной сети" "$(module_state_word ntp_clients "$NTP_CLIENTS")"
+printf_state_row "Связь системных служб" "$(module_state_word client_fixes "$CLIENT_FIXES")"
 menu_section "ЖУРНАЛ"
 printf "${C_WHITE}Последние события:${C_NC}\n"
-if [ -s "$LOG_FILE" ]; then tail -15 "$LOG_FILE" | sed -e "s/ START / Запуск /" -e "s/ UPDATE / Обновление /" -e "s/ INFO / Информация: /" -e "s/ WARN / Внимание: /" -e "s/ ERROR / Ошибка: /"; else printf "${C_YELLOW}Журнал пока пуст.${C_NC}\n"; fi
+if [ -s "$LOG_FILE" ]; then grep -v "Автообновление: выполняю реальную проверку GitHub:" "$LOG_FILE" | tail -15 | sed -e "s/ START / Запуск /" -e "s/ UPDATE / Обновление /" -e "s/ INFO / Информация: /" -e "s/ WARN / Внимание: /" -e "s/ ERROR / Ошибка: /"; else printf "${C_YELLOW}Журнал пока пуст.${C_NC}\n"; fi
 echo ""
 if [ -s "$TEST_RESULTS" ]; then
     _last_test_ts="$(sed -n 's/^timestamp=\([0-9][0-9]*\)$/\1/p' "$TEST_RESULTS_META" 2>/dev/null | head -n1)"
