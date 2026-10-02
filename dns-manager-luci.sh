@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.5.90
+# Version: 1.5.91
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -23,7 +23,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.5.90"
+VERSION="1.5.91"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -141,7 +141,7 @@ UPDATE_STATE="/etc/dns-manager-luci/update.state"
 COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.5.90"
+SELF_VERSION="1.5.91"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -1076,6 +1076,8 @@ status_json() {
     _fw=unknown; command -v fw4 >/dev/null 2>&1 && _fw=fw4; command -v fw3 >/dev/null 2>&1 && [ "$_fw" = unknown ] && _fw=fw3
     _lan="$(uci -q get network.lan.ipaddr 2>/dev/null | cut -d/ -f1 | head -n1)"; [ -n "$_lan" ] || _lan=—
     _model="$(device_model)"
+    _arch="$(sed -n "s/^DISTRIB_ARCH='\([^']*\)'.*/\1/p" /etc/openwrt_release 2>/dev/null | head -n1)"
+    _target="$(sed -n "s/^DISTRIB_TARGET='\([^']*\)'.*/\1/p" /etc/openwrt_release 2>/dev/null | head -n1)"
     _host="$(uci -q get system.@system[0].hostname 2>/dev/null || cat /proc/sys/kernel/hostname 2>/dev/null || true)"
     _uptime="$(awk '{printf "%s",int($1)}' /proc/uptime 2>/dev/null || true)"
     _load="$(awk '{printf "%s",$1}' /proc/loadavg 2>/dev/null || true)"
@@ -1115,7 +1117,7 @@ status_json() {
     printf ',"luci_update_error":'; json_quote "$_luci_error"
     printf ',"manager_latest_version":'; json_quote "$_manager_latest"; printf ',"manager_update_available":%s,"manager_check_ok":%s' "$_manager_avail" "$_manager_checked"
     printf ',"catalog_latest_version":'; json_quote "$_catalog_latest"; printf ',"catalog_latest_rev":'; json_quote "$_catalog_latest_rev"; printf ',"catalog_latest_total":%s,"catalog_update_available":%s,"catalog_check_ok":%s' "$_catalog_latest_total" "$_catalog_avail" "$_catalog_checked"
-    printf ',"model":'; json_quote "$_model"; printf ',"ipv4":'; json_quote "$_ipv4"; printf ',"ipv6":'; json_quote "$_ipv6"; printf ',"dnsmasq":'; json_quote "$_dnsmasq"; printf ',"doh":'; json_quote "$_doh"; printf ',"firewall":'; json_quote "$_fw"; printf ',"openwrt":'; json_quote "$(openwrt_release)"; printf ',"lan":'; json_quote "$_lan"
+    printf ',"model":'; json_quote "$_model"; printf ',"arch":'; json_quote "$_arch"; printf ',"target":'; json_quote "$_target"; printf ',"ipv4":'; json_quote "$_ipv4"; printf ',"ipv6":'; json_quote "$_ipv6"; printf ',"dnsmasq":'; json_quote "$_dnsmasq"; printf ',"doh":'; json_quote "$_doh"; printf ',"firewall":'; json_quote "$_fw"; printf ',"openwrt":'; json_quote "$(openwrt_release)"; printf ',"lan":'; json_quote "$_lan"
     printf ',"profile":'; json_quote "$_profile"; printf ',"profile_mode":'; json_quote "$_mode"; printf ',"selection_category":'; json_quote "$_selection_category"
     printf ',"watchdog":'; json_quote "$_watchdog"; printf ',"watchdog_backend":'; json_quote "$_watchdog_backend"
     _watchdog_service_enabled=0; watchdog_service_enabled && _watchdog_service_enabled=1 || true
@@ -1650,8 +1652,9 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.5.90
+// DNS Manager LuCI version: 1.5.91
 var callStatus = rpc.declare({ object:'dns_manager', method:'status', params:['detail'], expect:{} });
+var callBoardInfo = rpc.declare({ object:'system', method:'info', expect:{} });
 var callRuntime = rpc.declare({ object:'dns_manager', method:'runtime', expect:{} });
 function statusDetail(){return currentRoute()==='network'?1:0;}
 var callCatalog = rpc.declare({ object:'dns_manager', method:'catalog', params:['category','offset','limit','only_ok'], expect:{} });
@@ -1680,7 +1683,7 @@ var CATEGORY = [
   ['all','Все DNS'], ['bypass','Обход блокировок'], ['security','Безопасность'], ['privacy','Приватность'],
   ['adblock','Блокировка рекламы'], ['family','Семейный'], ['clean','Без фильтрации'], ['regional','Региональные']
 ];
-var state = { hdpUpdating:false, managerUpdating:false, updatingAll:false, category:'all', offset:0, limit:18, catalogLoaded:false, catalogLoading:false, advanced:true, logLoaded:false, logLoading:false, busy:false, busySetting:'', settingMessage:'', settingMessageType:'', settingMessageKey:'', pageNotice:{}, statusError:'', activeTab:'dashboard', jobRunning:false, lastJob:null, checking:{}, fullTest:null, catalogProgress:null, profileProgress:null, catalogCheckNotice:'', versionCheck:null, lastAction:null, runtimeCpuLoad:null, runtimeMemoryTotal:null, runtimeMemoryAvailable:null };
+var state = { hdpUpdating:false, managerUpdating:false, updatingAll:false, category:'all', offset:0, limit:18, catalogLoaded:false, catalogLoading:false, advanced:true, logLoaded:false, logLoading:false, busy:false, busySetting:'', settingMessage:'', settingMessageType:'', settingMessageKey:'', pageNotice:{}, statusError:'', activeTab:'dashboard', jobRunning:false, lastJob:null, checking:{}, fullTest:null, catalogProgress:null, profileProgress:null, catalogCheckNotice:'', versionCheck:null, lastAction:null, runtimeCpuLoad:null, runtimeMemoryTotal:null, runtimeMemoryAvailable:null, boardInfo:null, systemPollBusy:false };
 
 function profileName(p){
   var x=PROFILE.filter(function(v){return v[0]===p;})[0];
@@ -1871,7 +1874,7 @@ function injectStyle(root){
   '.dm-version-action{display:flex;align-items:center;gap:7px;flex-wrap:wrap}.dm-version-action .cbi-button{padding:4px 9px;font-size:12px}.dm-version-line{display:flex;align-items:center;gap:9px;margin:7px 0;flex-wrap:wrap}.dm-version-name{font-size:13px;font-weight:600;flex:0 1 160px;min-width:135px}.dm-version-state{min-width:0;flex:1 1 auto}.dm-card h3{margin:0 0 10px;font-size:15px;font-weight:600;display:flex;align-items:center;gap:7px;flex-wrap:wrap}.dm-doh-profile{display:inline-flex;align-items:center;gap:5px;margin-left:auto;padding:4px 9px;border:1px solid rgba(110,118,129,.18);border-radius:999px;background:rgba(110,118,129,.06);font-size:11.5px;font-weight:500;white-space:nowrap}.dm-doh-profile-label{opacity:.62}.dm-doh-profile-value{font-weight:650}.dm-row{display:flex;align-items:center;gap:10px;margin:6px 0;font-size:13px;flex-wrap:wrap}.dm-label{opacity:.65;flex-shrink:0}.dm-row-value{overflow-wrap:anywhere}'+
   '.dm-badge{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:999px;font-size:12px;font-weight:600;white-space:nowrap}.dm-dot{width:8px;height:8px;border-radius:50%;display:inline-block;flex-shrink:0}'+
   '.dm-ok{background:rgba(46,160,67,.12);color:#1a7f37}.dm-ok .dm-dot{background:#1a7f37}.dm-bad{background:rgba(207,34,46,.10);color:#cf222e}.dm-bad .dm-dot{background:#cf222e}.dm-warn{background:rgba(191,135,0,.12);color:#9a6700}.dm-warn .dm-dot{background:#9a6700}.dm-off{background:rgba(9,105,218,.10);color:#0969da}.dm-off .dm-dot{background:#0969da}'+
-  '.dm-grid2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.dm-grid3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}.dm-grid4{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}'+
+  '.dm-grid2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.dm-system-card{margin-bottom:0}.dm-system-layout{display:grid;grid-template-columns:minmax(0,1fr) minmax(220px,.85fr);gap:14px}.dm-system-meters{min-width:0}.dm-system-meter{padding:7px 0}.dm-system-meter-head{display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:12.5px}.dm-system-meter-head strong{font-size:12px;white-space:nowrap}.dm-system-meter-track{height:8px;margin-top:6px;border-radius:999px;background:rgba(110,118,129,.16);overflow:hidden}.dm-system-meter-track i{display:block;height:100%;border-radius:999px;background:#1a7f37;transition:width .25s ease}.dm-system-hint{font-size:10.5px;opacity:.58;margin-top:3px}.dm-grid3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}.dm-grid4{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}'+
   '.dm-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:11px}.dm-picker-list{display:flex;flex-direction:column;gap:7px;max-height:60vh;overflow:auto}.dm-picker-item{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 0;border-bottom:1px solid rgba(110,118,129,.14)}.dm-picker-main{min-width:0;flex:1}.dm-picker-name{font-size:13px;font-weight:600;overflow-wrap:anywhere}.dm-picker-meta{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:3px}.dm-picker-actions{display:flex;gap:6px;flex-shrink:0;flex-wrap:wrap}.dm-component-item{padding:8px 0;border-bottom:1px solid rgba(110,118,129,.14)}.dm-component-group{padding:8px 0;border-bottom:1px solid rgba(110,118,129,.14)}.dm-component-dns-list{margin-top:6px;display:flex;flex-direction:column;gap:5px}.dm-component-dns{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:6px 0;border-top:1px solid rgba(110,118,129,.08);flex-wrap:wrap}.dm-component-dns:first-child{border-top:0}.dm-component-dns-main{display:flex;align-items:center;gap:8px;min-width:0;flex:1 1 260px}.dm-component-dns-slot{font-size:11.5px;font-weight:700;opacity:.62;min-width:118px}.dm-component-dns-name{font-size:12.5px;font-weight:600;overflow-wrap:anywhere}.dm-component-dns-meta{display:flex;align-items:center;gap:9px;font-size:11.5px;opacity:.78;flex:0 0 auto}.dm-component-dns-ping{font-size:12px;white-space:nowrap;opacity:.8}.dm-component-item:last-of-type{border-bottom:0}.dm-component-head{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}.dm-component-title{font-size:13px;font-weight:600}.dm-component-details{font-size:11.5px;line-height:1.45;opacity:.66;margin-top:3px;overflow-wrap:anywhere}.dm-component-date{font-size:12.5px;opacity:.82}.dm-profile-progress{margin-top:11px}.dm-profile-progress-status{font-size:12.5px;font-weight:600;margin-top:8px}.dm-profile-progress-detail{font-size:11px;opacity:.62;margin-top:4px;overflow-wrap:anywhere}'+'.dm-actions .cbi-button{margin:0;padding:5px 11px;font-size:12.5px}'+
   '.dm-hint{font-size:12.5px;opacity:.68;line-height:1.5;margin:0 0 8px}.dm-mini{font-size:11px;opacity:.62}.dm-meta{font-size:11px;line-height:1.45;opacity:.66}.dm-update{padding:8px 10px;border-radius:8px;background:rgba(26,127,55,.08);border:1px solid rgba(26,127,55,.18);font-size:12.5px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}'+
   '.dm-seg{display:flex;flex-wrap:wrap;gap:6px;margin:5px 0}.dm-profile-seg{flex-wrap:nowrap;overflow-x:auto;padding-bottom:2px}.dm-seg .cbi-button{padding:5px 11px;border-radius:7px;font-size:12.5px;font-weight:600}.dm-seg .active{background:#1a7f37;color:#fff;border-color:#1a7f37}'+
@@ -1969,6 +1972,73 @@ function componentSettingItem(title,key){
   var node=n===1?badge('dm-ok','включено'):n===2?badge('dm-bad','другое'):badge('dm-off','выключено');
   return componentItem(title,node);
 }
+function boardMemoryKb(board,key){
+  var m=board&&board.memory||{},v=m[key];
+  if(v===undefined||v===null||v==='')return null;
+  v=Number(v);
+  return isFinite(v)&&v>=0?v/1024:null;
+}
+function boardMemoryAvailableKb(board){
+  var m=board&&board.memory||{},v=m.available;
+  if(v===undefined||v===null||v==='')v=(Number(m.free)||0)+(Number(m.buffered)||0)+(Number(m.cached)||0);
+  v=Number(v);
+  return isFinite(v)&&v>=0?v/1024:null;
+}
+function systemMeter(label,val,pct){
+  var p=Number(pct);
+  if(!isFinite(p))p=0;
+  p=Math.max(0,Math.min(100,Math.round(p)));
+  return E('div',{'class':'dm-system-meter'},[
+    E('div',{'class':'dm-system-meter-head'},[
+      E('span',{},label),
+      E('strong',{},val)
+    ]),
+    E('div',{'class':'dm-system-meter-track'},[E('i',{'style':'width:'+p+'%'})])
+  ]);
+}
+function buildSystemCard(st){
+  st=st||{};
+  var b=state.boardInfo||{};
+  var memTotal=boardMemoryKb(b,'total');
+  var memAvail=boardMemoryAvailableKb(b);
+  if(memTotal===null&&st.memory_total_kb!==undefined)memTotal=Number(st.memory_total_kb);
+  if(memAvail===null&&st.memory_available_kb!==undefined)memAvail=Number(st.memory_available_kb);
+  var up=(b&&b.uptime!==undefined&&b.uptime!==null)?Number(b.uptime):Number(st.uptime);
+  var cpu=isFinite(state.runtimeCpuLoad)?state.runtimeCpuLoad:loadPercent(st.load1,st.cpu_count);
+  var ipv4=st.ipv4==='yes'?badge('dm-ok','есть'):badge('dm-bad','нет');
+  var ipv6=st.ipv6==='yes'?badge('dm-ok','есть'):badge('dm-off','выключен');
+  var left=[
+    row('Модель',shortVal(st.model)),
+    row('Архитектура',shortVal(st.arch)),
+    row('Платформа',shortVal(st.target)),
+    row('OpenWrt',shortVal(st.openwrt)),
+    row('Время работы',E('span',{'id':'dm-runtime-uptime','class':'dm-uptime'},uptime(up))),
+    row('IPv4',E('span',{'id':'dm-runtime-ipv4'},ipv4)),
+    row('IPv6',E('span',{'id':'dm-runtime-ipv6'},ipv6)),
+    row('LAN',shortVal(st.lan))
+  ];
+  var meters=[];
+  if(isFinite(cpu))meters.push(systemMeter('Нагрузка ЦП',Math.round(cpu)+'%',cpu));
+  if(isFinite(memTotal)&&memTotal>0&&isFinite(memAvail)){
+    var mp=memoryPercent(memTotal,memAvail);
+    if(mp!==null)meters.push(systemMeter('ОЗУ',memory(memTotal,memAvail),mp));
+  }
+  if(!meters.length)meters.push(E('div',{'class':'dm-system-hint'},'Системные метрики пока недоступны.'));
+  return E('div',{'class':'dm-card dm-system-card','id':'dm-system-card'},[
+    E('h3',{},'Система'),
+    E('div',{'class':'dm-system-layout'},[
+      E('div',{'class':'dm-system-rows'},left),
+      E('div',{'class':'dm-system-meters'},meters)
+    ])
+  ]);
+}
+function renderSystemCard(root){
+  if(!rootAlive(root))return;
+  var old=root.querySelector('#dm-system-card');
+  if(!old)return;
+  old.replaceWith(buildSystemCard(window.dmState||{}));
+  tickLocalUptime(root);
+}
 function renderOverview(root,st){
   var e=root.querySelector('#dm-overview');if(!e)return;e.innerHTML='';
   var applied=renderActionStatus();if(applied)e.appendChild(applied);
@@ -2022,52 +2092,11 @@ function renderOverview(root,st){
     ])
   ]);
 
-  var ipv4=st.ipv4==='yes'?badge('dm-ok','есть'):badge('dm-bad','нет');
-  var ipv6=st.ipv6==='yes'?badge('dm-ok','есть'):badge('dm-off','выключен');
-
-  var initialCpuLoad=st.cpu_load!==undefined&&st.cpu_load!==null&&String(st.cpu_load)!==''?Number(st.cpu_load):loadPercent(st.load1,st.cpu_count);
-  var loadNode=cpuLoadBar(isFinite(initialCpuLoad)?initialCpuLoad:0);loadNode.id='dm-runtime-load';
-  var memNode=memoryBar(st.memory_total_kb,st.memory_available_kb);memNode.id='dm-runtime-memory';
-  var sysCard=card('Система',[
-    row('Модель',shortVal(st.model)),
-    row('OpenWrt',shortVal(st.openwrt)),
-    row('Время работы',E('span',{'id':'dm-runtime-uptime','class':'dm-uptime'},uptime(st.uptime))),
-    row('IPv4',E('span',{'id':'dm-runtime-ipv4'},ipv4)),
-    row('IPv6',E('span',{'id':'dm-runtime-ipv6'},ipv6)),
-    row('Нагрузка',loadNode),
-    row('RAM',memNode),
-    row('LAN',shortVal(st.lan))
-  ]);
-
-  var verCard=card('Версии',[
-    E('div',{'class':'dm-version-line'},[
-      E('span',{'class':'dm-version-name'},'DNS Manager'),
-      E('span',{'class':'dm-version-state'},versionState(st.manager_version,st.manager_update_available,st.manager_latest_version,st.manager_check_ok,'актуальна',state.versionCheck&&state.versionCheck.manager==='running'))
-    ]),
-    E('div',{'class':'dm-version-line'},[
-      E('span',{'class':'dm-version-name'},'LuCI'),
-      E('span',{'class':'dm-version-state'},versionState(st.luci_version,st.luci_update_available,st.luci_latest_version,st.luci_update_checked,'актуальна',state.versionCheck&&state.versionCheck.luci==='running'))
-    ]),
-    E('div',{'class':'dm-version-line'},[
-      E('span',{'class':'dm-version-name'},'Защищённый DNS'),
-      E('span',{'class':'dm-version-state'},versionState(st.hdp_version,st.hdp_update_available,st.hdp_latest_version,true,'актуальна',state.versionCheck&&state.versionCheck.hdp==='running'))
-    ]),
-    E('div',{'class':'dm-version-line'},[
-      E('span',{'class':'dm-version-name'},'Каталог DNS'),
-      E('span',{'class':'dm-version-state'},catalogVersionState(st.catalog_version,st.catalog_revision,st.catalog_total,st.catalog_update_available,st.catalog_latest_version,st.catalog_latest_rev,st.catalog_check_ok,state.versionCheck&&state.versionCheck.catalog==='running'))
-    ]),
-    row('Проверено',dateText(st.components_checked_at)),
-    E('div',{'class':'dm-actions'},[
-      btn('Проверить актуальность','cbi-button-neutral',function(){checkUpdate(root);}),
-      (yes(st.manager_update_available)||yes(st.luci_update_available)||yes(st.hdp_update_available)||yes(st.catalog_update_available)) ?
-        btn(state.updatingAll?'Обновляю…':'Обновить','cbi-button-positive',function(){updateAll(root);},{disabled:!!state.updatingAll||!!state.busy}) :
-        null
-    ].filter(Boolean))
-  ]);
-
+  var sysCard=buildSystemCard(st);
   e.appendChild(E('div',{'class':'dm-grid2'},[sysCard,verCard]));
   e.appendChild(dnsSlotsCard);
   e.appendChild(components);
+
 
   var fullState='';
   if(state.fullTest&&state.fullTest.status==='RUNNING')fullState=E('div',{'class':'dm-inline-msg info'},'Полная проверка DNS выполняется. Интерфейс обновляется автоматически.');
@@ -3209,40 +3238,34 @@ function tickLocalUptime(root){
   var node=root.querySelector('#dm-runtime-uptime');
   if(node)node.textContent=uptime(value);
 }
-function updateRuntimeBadge(node,kind,text){
-  if(!node)return;
-  node.className='dm-badge '+kind;
-  if(node.lastChild&&node.lastChild.nodeType===3)node.lastChild.nodeValue=text;
-}
-function updateRuntime(root,rt){
-  if(!rootAlive(root)||!rt)return;
-  var us=rt.uptime_seconds!==undefined?rt.uptime_seconds:rt.uptime;
+function applyRuntime(rt){
+  if(!rt)return;
   var cl=Number(rt.cpu_load);
-  var mt=Number(rt.memory_total_kb),ma=Number(rt.memory_available_kb);
-  if(isFinite(cl)){
-    state.runtimeCpuLoad=Math.max(0,Math.min(100,cl));
-  }
-  if(isFinite(mt)&&mt>0)state.runtimeMemoryTotal=mt;
-  if(isFinite(ma)&&ma>=0)state.runtimeMemoryAvailable=ma;
-  syncLocalUptime(root,us);
-  var n=root.querySelector('#dm-runtime-load');
-  if(n&&isFinite(state.runtimeCpuLoad)){
-    var lp=Math.max(0,Math.min(100,Math.round(state.runtimeCpuLoad)));
-    var fill=n.querySelector('.dm-load-fill'),val=n.querySelector('.dm-load-value'),meta=n.querySelector('.dm-load-meta');
-    if(fill)fill.style.width=lp+'%';
-    if(val)val.textContent=lp+'%';
-    if(meta)meta.textContent='Нагрузка процессора';
-  }
-  n=root.querySelector('#dm-runtime-memory');
-  if(n&&isFinite(state.runtimeMemoryTotal)&&isFinite(state.runtimeMemoryAvailable)){
-    var mp=memoryPercent(state.runtimeMemoryTotal,state.runtimeMemoryAvailable);
-    if(mp!==null){
-      var mf=n.querySelector('.dm-mem-fill'),mv=n.querySelector('.dm-mem-value'),mm=n.querySelector('.dm-mem-meta');
-      if(mf)mf.style.width=mp+'%';
-      if(mv)mv.textContent=memory(state.runtimeMemoryTotal,state.runtimeMemoryAvailable);
-      if(mm)mm.textContent=mp+'% занято';
-    }
-  }
+  if(isFinite(cl))state.runtimeCpuLoad=Math.max(0,Math.min(100,cl));
+}
+function applyBoardInfo(root,b){
+  if(!b||typeof b!=='object')return;
+  state.boardInfo=b;
+  var up=Number(b.uptime);
+  if(isFinite(up)&&up>=0)syncLocalUptime(root,up);
+  var totalKb=boardMemoryKb(b,'total'),availKb=boardMemoryAvailableKb(b);
+  if(isFinite(totalKb)&&totalKb>0)state.runtimeMemoryTotal=totalKb;
+  if(isFinite(availKb)&&availKb>=0)state.runtimeMemoryAvailable=availKb;
+}
+function pollSystem(root){
+  if(!rootAlive(root)||document.hidden||currentRoute()!=='dashboard'||state.systemPollBusy)return Promise.resolve();
+  state.systemPollBusy=true;
+  return Promise.all([
+    callBoardInfo().catch(function(){return null;}),
+    callRuntime().catch(function(){return null;})
+  ]).then(function(v){
+    if(!rootAlive(root))return;
+    if(v[0])applyBoardInfo(root,v[0]);
+    if(v[1])applyRuntime(v[1]);
+    renderSystemCard(root);
+  }).catch(function(){}).then(function(){
+    state.systemPollBusy=false;
+  });
 }
 function refreshDashboard(root){
   if(!rootAlive(root)||currentRoute()!=='dashboard')return Promise.resolve();
@@ -3250,44 +3273,19 @@ function refreshDashboard(root){
   return callStatus(statusDetail()).then(function(st){
     if(!rootAlive(root))return;
     state.statusError='';
-    var next=st||{};
-    var prev=window.dmState||{};
-    if((next.model===undefined||next.model===null||next.model==='')&&prev.model)next.model=prev.model;
-    if((next.openwrt===undefined||next.openwrt===null||next.openwrt==='')&&prev.openwrt)next.openwrt=prev.openwrt;
-    if((next.lan===undefined||next.lan===null||next.lan==='')&&prev.lan)next.lan=prev.lan;
-    if((next.cpu_count===undefined||next.cpu_count===null||next.cpu_count==='')&&prev.cpu_count)next.cpu_count=prev.cpu_count;
-    if(isFinite(state.runtimeCpuLoad))next.cpu_load=state.runtimeCpuLoad;
-    else if((next.cpu_load===undefined||next.cpu_load===null||next.cpu_load==='')&&prev.cpu_load!==undefined)next.cpu_load=prev.cpu_load;
-    if(isFinite(state.runtimeMemoryTotal))next.memory_total_kb=state.runtimeMemoryTotal;
-    else if((next.memory_total_kb===undefined||next.memory_total_kb===null||next.memory_total_kb==='')&&prev.memory_total_kb!==undefined)next.memory_total_kb=prev.memory_total_kb;
-    if(isFinite(state.runtimeMemoryAvailable))next.memory_available_kb=state.runtimeMemoryAvailable;
-    else if((next.memory_available_kb===undefined||next.memory_available_kb===null||next.memory_available_kb==='')&&prev.memory_available_kb!==undefined)next.memory_available_kb=prev.memory_available_kb;
-    if(state.runtimeUptimeAt){
-      next.uptime=Math.floor(state.runtimeUptimeBase+Math.max(0,Math.floor((Date.now()-state.runtimeUptimeAt)/1000)));
-    }else if((next.uptime===undefined||next.uptime===null||next.uptime==='')&&prev.uptime!==undefined){
-      next.uptime=prev.uptime;
-    }
+    var next=st||{},prev=window.dmState||{};
+    ['model','arch','target','openwrt','lan','cpu_count','ipv4','ipv6'].forEach(function(k){
+      if((next[k]===undefined||next[k]===null||next[k]==='')&&prev[k]!==undefined)next[k]=prev[k];
+    });
     window.dmState=next;
     renderOverview(root,next);
-  }).catch(function(){
-    if(!rootAlive(root))return;
-  });
+  }).catch(function(){});
 }
-var dashboardPollTimer=null;
 function startAutoStatus(root){
   stopAutoStatus();
-  var runtimeBusy=false,statusBusy=false,tick=0;
-  function pollRuntime(){
-    if(!rootAlive(root)||document.hidden||currentRoute()!=='dashboard'||runtimeBusy)return;
-    runtimeBusy=true;
-    callRuntime().then(function(rt){
-      if(!rootAlive(root))return;
-      updateRuntime(root,rt||{});
-    }).catch(function(){}).then(function(){
-      runtimeBusy=false;
-    });
-  }
-  pollRuntime();
+  state.systemPollBusy=false;
+  var tick=0;
+  pollSystem(root);
   dashboardPollTimer=setInterval(function(){
     if(!rootAlive(root)){
       stopAutoStatus();
@@ -3296,24 +3294,26 @@ function startAutoStatus(root){
     if(document.hidden||currentRoute()!=='dashboard')return;
     tick++;
     tickLocalUptime(root);
-    if(tick%5===0)pollRuntime();
-    if(tick%30===0&&!statusBusy){
-      statusBusy=true;
-      refreshDashboard(root).catch(function(){}).then(function(){
-        statusBusy=false;
-      });
-    }
+    if(tick%5===0)pollSystem(root);
+    if(tick%30===0)refreshDashboard(root);
   },1000);
-}return view.extend({
+}
+return view.extend({
   load:function(){
-    return Promise.all([callStatus(statusDetail()),callRuntime()]).then(function(v){
-      var st=v[0]||{},rt=v[1]||{};
-      if(rt&&rt.cpu_load!==undefined&&rt.cpu_load!==null&&String(rt.cpu_load)!=='')st.cpu_load=rt.cpu_load;
-      if(rt&&rt.memory_total_kb!==undefined&&rt.memory_total_kb!==null&&String(rt.memory_total_kb)!=='')st.memory_total_kb=rt.memory_total_kb;
-      if(rt&&rt.memory_available_kb!==undefined&&rt.memory_available_kb!==null&&String(rt.memory_available_kb)!=='')st.memory_available_kb=rt.memory_available_kb;
-      if(rt&&rt.uptime!==undefined&&rt.uptime!==null&&String(rt.uptime)!=='')st.uptime=rt.uptime;
+    return Promise.all([
+      callStatus(statusDetail()),
+      callBoardInfo().catch(function(){return {};})
+    ]).then(function(v){
+      var st=v[0]||{},b=v[1]||{};
+      state.boardInfo=b;
+      if(b&&b.uptime!==undefined&&b.uptime!==null)st.uptime=b.uptime;
+      var totalKb=boardMemoryKb(b,'total'),availKb=boardMemoryAvailableKb(b);
+      if(isFinite(totalKb)&&totalKb>0)st.memory_total_kb=totalKb;
+      if(isFinite(availKb)&&availKb>=0)st.memory_available_kb=availKb;
       return st;
-    }).catch(function(){return callStatus(statusDetail()).then(function(st){return st||{};});});
+    }).catch(function(){
+      return callStatus(statusDetail()).then(function(st){return st||{};});
+    });
   },
   render:function(st){
     var root=E('div',{'class':'dm-wrap'});
