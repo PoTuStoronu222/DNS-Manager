@@ -1116,7 +1116,7 @@ repair_catalog_category_state() {
     done
 
     if [ -s "$TEST_RESULTS" ]; then
-        _results_tmp="$TMP_DIR/catalog-category-repair.$"
+        _results_tmp="$TMP_DIR/catalog-category-repair.${PPID}"
         awk -F'|' -v OFS='|' '
             $1=="doh_lacontrevoie" { $2="clean" }
             { print }
