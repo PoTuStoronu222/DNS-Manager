@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.29"
+VERSION="3.30"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -3146,23 +3146,6 @@ apply_extras_now() {
         log_msg "Профиль DNS не может применять дополнительные настройки; операция отклонена."
         return 1
     fi
-    _label="$2"
-    if [ -z "$_label" ]; then
-        case "$1" in
-            balance|tld) _label="Применяю DNS и перезапускаю dnsmasq";;
-            ntp) _label="Применяю время для устройств в локальной сети";;
-            mtu) _label="Применяю исправление MTU и MSS для WAN";;
-            sysctl) _label="Применяю оптимизацию TCP и таблиц соединений";;
-            force) _label="Применяю принудительный DNS для устройств";;
-            ntp_clients) _label="Применяю Время для устройств в локальной сети";;
-            dnsmasq_perf) _label="Применяю увеличенный кэш DNS";;
-            client_fixes) _label="Применяю DNS для проверки подключения и совместимости устройств";;
-            web) _label="Применяю терминальный доступ LuCI";;
-            sysctl_ext) _label="Применяю расширенные параметры TCP и сетевых буферов";;
-            *) _label="Применяю настройки";;
-        esac
-    fi
-    apply_wait_message "$_label"
     acquire_mutation_lock || return 1
     _rc=0
     _apply_extras_now_impl "$1" || _rc=$?
@@ -6647,7 +6630,6 @@ web_access_luci_remove() {
 }
 
 apply_web_access() {
-    apply_wait_message "$( [ "${WEB_ACCESS_ENABLED:-0}" = 1 ] && printf '%s' 'Включаю терминальный доступ DNS Manager' || printf '%s' 'Выключаю терминальный доступ DNS Manager' )"
     case "${WEB_ACCESS_ENABLED:-0}" in
         1)
             WEB_ACCESS_PORT=7682
@@ -8525,8 +8507,6 @@ watchdog_service_recover_run() {
     return "$_rc"
 }
 apply_watchdog() {
-    apply_wait_message "$( [ "${WATCHDOG_ENABLED:-0}" = 1 ] && printf '%s' 'Включаю фоновый watchdog procd' || printf '%s' 'Выключаю фоновый watchdog procd' )"
-
     # Stop first so a running watchdog cannot race an in-progress Apply.
     watchdog_service_stop_disable || return 1
 
