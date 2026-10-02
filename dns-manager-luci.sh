@@ -1449,57 +1449,62 @@ job_start_test_current() {
         if ! load_manager; then
             job_write "$_jid" status failed; job_write "$_jid" result fail; job_write "$_jid" finished "$(date +%s)"; exit 1
         fi
-        _ids="$TMP_ROOT/current-dns-ids.$$"
-        _cat="$TMP_ROOT/current-dns-catalog.$$"
-        _results="$TMP_ROOT/current-test-results.$$"
-        _meta="$TMP_ROOT/current-test-results-meta.$$"
-        : > "$_ids"; : > "$_cat"
-        sed -n '/^# DNSCATVER=/p;/^# DNSCATREV=/p' "$DNS_CATALOG" >> "$_cat" 2>/dev/null || true
-        for _s in 1 2 3 4 5 6 RU; do
-            _id="$(cfg_get "SLOT_$_s")"
-            [ -n "$_id" ] || continue
-            grep -qxF "$_id" "$_ids" 2>/dev/null && continue
-            printf '%s\n' "$_id" >> "$_ids"
-            awk -F"|" -v id="$_id" '$1==id {print; exit}' "$DNS_CATALOG" >> "$_cat" 2>/dev/null || true
-        done
-        _total="$(wc -l < "$_ids" 2>/dev/null | tr -d ' ')"
-        case "$_total" in ''|*[!0-9]*) _total=0;; esac
-        [ "$_total" -gt 0 ] || {
-            rm -f "$_ids" "$_cat" "$_results" "$_meta"
-            job_write "$_jid" status failed; job_write "$_jid" result fail; job_write "$_jid" finished "$(date +%s)"; exit 1
-        }
-        _old_catalog="$DNS_CATALOG"
-        _old_results="$TEST_RESULTS"
-        _old_meta="$TEST_RESULTS_META"
-        DNS_CATALOG="$_cat"
-        TEST_RESULTS="$_results"
-        TEST_RESULTS_META="$_meta"
-        if ! test_dns_catalog; then
-            DNS_CATALOG="$_old_catalog"; TEST_RESULTS="$_old_results"; TEST_RESULTS_META="$_old_meta"
-            rm -f "$_ids" "$_cat" "$_results" "$_meta"
+        if ! acquire_test_lock; then
             job_write "$_jid" status failed; job_write "$_jid" result fail; job_write "$_jid" finished "$(date +%s)"; exit 1
         fi
-        DNS_CATALOG="$_old_catalog"; TEST_RESULTS="$_old_results"; TEST_RESULTS_META="$_old_meta"
+        _ids="$TMP_ROOT/current-dns-ids.$$"
+        _results="$TMP_ROOT/current-test-results.$$"
         _merged="$TMP_ROOT/current-merged.$$"
+        : > "$_ids"
+        : > "$_results"
+        _total=0
+        _done=0
+        _fail=0
+        for _s in 1 2 3 4 5 6 RU RU_2; do
+            _id="$(cfg_get "SLOT_$_s" 2>/dev/null || true)"
+            [ -n "$_id" ] || continue
+            _port="$(cfg_get "PORT_$_s" 2>/dev/null || true)"
+            printf "%s\n" "$_id" >> "$_ids"
+            _total=$((_total+1))
+            if local_slot_test_one "$_id" "$_port" "$_s"; then
+                :
+            else
+                _fail=$((_fail+1))
+            fi
+            _done=$((_done+1))
+            cat "$TMP_DIR/t.$_id" >> "$_results" 2>/dev/null || true
+            printf "Проверка выбранных DNS: %s из %s | ошибки %s\n" "$_done" "$_total" "$_fail"
+        done
+        if [ "$_total" -eq 0 ]; then
+            release_test_lock
+            rm -f "$_ids" "$_results" "$_merged"
+            job_write "$_jid" status failed; job_write "$_jid" result fail; job_write "$_jid" finished "$(date +%s)"
+            exit 1
+        fi
         : > "$_merged"
         if [ -s "$TEST_RESULTS" ]; then
             awk -F"|" -v ids_file="$_ids" 'BEGIN { while ((getline x < ids_file)>0) ids[x]=1 } !($1 in ids) { print }' "$TEST_RESULTS" > "$_merged" 2>/dev/null || true
         fi
         [ -s "$_results" ] && cat "$_results" >> "$_merged"
-        mv "$_merged" "$TEST_RESULTS" 2>/dev/null || {
-            rm -f "$_ids" "$_cat" "$_results" "$_meta"
-            job_write "$_jid" status failed; job_write "$_jid" result fail; job_write "$_jid" finished "$(date +%s)"; exit 1
+        mv -f "$_merged" "$TEST_RESULTS" 2>/dev/null || {
+            release_test_lock
+            rm -f "$_ids" "$_results" "$_merged"
+            job_write "$_jid" status failed; job_write "$_jid" result fail; job_write "$_jid" finished "$(date +%s)"
+            exit 1
         }
-        save_persistent_test_results >/dev/null 2>&1 || true
-        _stamp="$(date +%s)"
-        while IFS='|' read -r _id _rest; do [ -n "$_id" ] && set_check_stamp "$_id" "$_stamp"; done < "$_results"
         write_current_slot_results "$_results" || true
-        rm -f "$_ids" "$_cat" "$_results" "$_meta"
-        job_write "$_jid" status done; job_write "$_jid" result ok; job_write "$_jid" finished "$_stamp"
+        _stamp="$(date +%s)"
+        while IFS="|" read -r _id _rest; do
+            [ -n "$_id" ] && set_check_stamp "$_id" "$_stamp"
+        done < "$_results"
+        rm -f "$_ids" "$_results" "$_merged" "$TMP_DIR/t."* 2>/dev/null || true
+        release_test_lock
+        job_write "$_jid" status done
+        job_write "$_jid" result ok
+        job_write "$_jid" finished "$_stamp"
     ) &
     printf '{"ok":true,"job":'; json_quote "$_jid"; printf '}'
 }
-
 job_start_test_one() {
     _id="$1"; case "$_id" in ''|*[!A-Za-z0-9_-]*) json_error "Неверный ID DNS"; return;; esac
     _jid="$(new_job_id test_one)"
@@ -1509,33 +1514,55 @@ job_start_test_one() {
     job_write "$_jid" dns_id "$_id"
     (
         exec >>"$JOB_DIR/$_jid/output" 2>&1
-        if load_manager; then
-            q="$TMP_ROOT/dns_query.bin"; [ -s "$q" ] || printf '\022\064\001\000\000\001\000\000\000\000\000\000\007example\003com\000\000\001\000\001' > "$q"
-            if acquire_test_lock; then
-                if test_one_dns "$_id"; then
-                    _tmp="$TMP_ROOT/results.$$"; _stamp="$(date +%s)"; : > "$_tmp"
-                    [ -s "$TEST_RESULTS" ] && awk -F'|' -v id="$_id" '$1!=id {print}' "$TEST_RESULTS" > "$_tmp" 2>/dev/null || true
-                    cat "$TMP_DIR/t.$_id" >> "$_tmp" 2>/dev/null || true; mv "$_tmp" "$TEST_RESULTS" 2>/dev/null || true
-                    save_persistent_test_results >/dev/null 2>&1 || true
-                    _cur="$TMP_ROOT/current-slot-one.$"; : > "$_cur"
-                    if [ -s "$CURRENT_SLOT_RESULTS" ]; then
-                        awk -F'|' -v id="$_id" '$1!=id {print}' "$CURRENT_SLOT_RESULTS" > "$_cur" 2>/dev/null || true
-                    fi
-                    cat "$TMP_DIR/t.$_id" >> "$_cur" 2>/dev/null || true
-                    write_current_slot_results "$_cur" || true
-                    rm -f "$_cur" 2>/dev/null || true
-                    set_check_stamp "$_id" "$_stamp"
-                    release_test_lock || true
-                    job_write "$_jid" status done; job_write "$_jid" result ok; job_write "$_jid" finished "$_stamp"; exit 0
-                fi
-                release_test_lock || true
-            fi
+        if ! load_manager; then
+            job_write "$_jid" status failed; job_write "$_jid" result fail; job_write "$_jid" finished "$(date +%s)"; exit 1
         fi
-        job_write "$_jid" status failed; job_write "$_jid" result fail; job_write "$_jid" finished "$(date +%s)"
+        if ! acquire_test_lock; then
+            job_write "$_jid" status failed; job_write "$_jid" result fail; job_write "$_jid" finished "$(date +%s)"; exit 1
+        fi
+        _assigned="$(assigned_port_for_id "$_id" 2>/dev/null || true)"
+        if [ -n "$_assigned" ]; then
+            _slot="$(printf "%s" "$_assigned" | cut -d"|" -f1)"
+            _port="$(printf "%s" "$_assigned" | cut -d"|" -f2)"
+            printf "Проверяю назначенный DNS через 127.0.0.1:%s.\n" "$_port"
+            local_slot_test_one "$_id" "$_port" "$_slot" || true
+        else
+            q="$TMP_ROOT/dns_query.bin"
+            [ -s "$q" ] || printf '\022\064\001\000\000\001\000\000\000\000\000\000\007example\003com\000\000\001\000\001' > "$q"
+            test_one_dns "$_id" || true
+        fi
+        _result_file="$TMP_DIR/t.$_id"
+        if [ -s "$_result_file" ]; then
+            _tmp="$TMP_ROOT/results.$$"
+            : > "$_tmp"
+            [ -s "$TEST_RESULTS" ] && awk -F"|" -v id="$_id" '$1!=id {print}' "$TEST_RESULTS" > "$_tmp" 2>/dev/null || true
+            cat "$_result_file" >> "$_tmp" 2>/dev/null || true
+            mv "$_tmp" "$TEST_RESULTS" 2>/dev/null || true
+            save_persistent_test_results >/dev/null 2>&1 || true
+            _cur="$TMP_ROOT/current-slot-one.$$"
+            : > "$_cur"
+            if [ -s "$CURRENT_SLOT_RESULTS" ]; then
+                awk -F"|" -v id="$_id" '$1!=id {print}' "$CURRENT_SLOT_RESULTS" > "$_cur" 2>/dev/null || true
+            fi
+            cat "$_result_file" >> "$_cur" 2>/dev/null || true
+            write_current_slot_results "$_cur" || true
+            rm -f "$_cur" 2>/dev/null || true
+            _stamp="$(date +%s)"
+            set_check_stamp "$_id" "$_stamp"
+            rm -f "$_result_file" 2>/dev/null || true
+            release_test_lock
+            job_write "$_jid" status done
+            job_write "$_jid" result ok
+            job_write "$_jid" finished "$_stamp"
+            exit 0
+        fi
+        release_test_lock
+        job_write "$_jid" status failed
+        job_write "$_jid" result fail
+        job_write "$_jid" finished "$(date +%s)"
     ) &
     printf '{"ok":true,"job":'; json_quote "$_jid"; printf '}'
 }
-
 job_json() {
     _jid="$1"; case "$_jid" in ''|*[!A-Za-z0-9_-]*) json_error "Неверный job ID"; return;; esac
     _d="$JOB_DIR/$_jid"; [ -d "$_d" ] || { json_error "Задача не найдена"; return; }
