@@ -917,12 +917,14 @@ status_json() {
     _sysctl_state=0
     _sysctl_ext_state=0
     _dnsmasq_perf_state=0
+    _ntp_clients_state=0
     if load_manager >/dev/null 2>&1; then
         _client_fix_state="$(check_module_state client_fixes 2>/dev/null || true)"; case "$_client_fix_state" in 0|1|2) ;; *) _client_fix_state=0;; esac
         _mtu_state="$(check_module_state mtu 2>/dev/null || true)"; case "$_mtu_state" in 0|1|2) ;; *) _mtu_state=0;; esac
         _sysctl_state="$(check_module_state sysctl 2>/dev/null || true)"; case "$_sysctl_state" in 0|1|2) ;; *) _sysctl_state=0;; esac
         _sysctl_ext_state="$(check_sysctl_extended_state 2>/dev/null || true)"; case "$_sysctl_ext_state" in 0|1|2) ;; *) _sysctl_ext_state=0;; esac
         _dnsmasq_perf_state="$(check_module_state dnsmasq_perf 2>/dev/null || true)"; case "$_dnsmasq_perf_state" in 0|1|2) ;; *) _dnsmasq_perf_state=0;; esac
+        _ntp_clients_state="$(check_module_state ntp_clients 2>/dev/null || true)"; case "$_ntp_clients_state" in 0|1|2) ;; *) _ntp_clients_state=0;; esac
     fi
 
     _doh_total=0; _doh_running=0
@@ -1056,7 +1058,7 @@ status_json() {
     [ "$_external" != 1 ] && [ "$_force_manager" = 1 ] && _force_owner="manager"
     printf ',"client_fixes_state":%s' "$_client_fix_state";
     printf ',"force":'; json_quote "$_force"; printf ',"force_external":'; json_quote "$_external"; printf ',"force_owner":'; json_quote "$_force_owner"; printf ',"force_manager":%s,"force_both":%s,"zapret_running":%s' "$_force_manager" "$_force_both" "$_zapret_running";
-    printf ',"mtu_state":%s,"sysctl_state":%s,"sysctl_ext_state":%s,"dnsmasq_perf_state":%s' "$_mtu_state" "$_sysctl_state" "$_sysctl_ext_state" "$_dnsmasq_perf_state";
+    printf ',"mtu_state":%s,"sysctl_state":%s,"sysctl_ext_state":%s,"dnsmasq_perf_state":%s,"ntp_clients_state":%s' "$_mtu_state" "$_sysctl_state" "$_sysctl_ext_state" "$_dnsmasq_perf_state" "$_ntp_clients_state";
     printf ',"force_source":'; json_quote "$FORCE_RUNTIME_SOURCE"; printf ',"force_targets":'; json_quote "$FORCE_RUNTIME_TARGETS"; printf ',"force_notrack":'; json_quote "$_force_notrack"; printf ',"force_update":'; json_quote "$_force_update"; printf ',"force_family":'; json_quote "$_force_family"; printf ',"force_ports":'; json_quote "$_force_ports"; printf ',"force_src":'; json_quote "$_force_src"; printf ',"force_canary_icloud":'; json_quote "$_force_canary_i"; printf ',"force_canary_mozilla":'; json_quote "$_force_canary_m"; printf ',"force_procd_trigger_wan6":'; json_quote "$_force_procd"; printf ',"force_heartbeat_domain":'; json_quote "$_force_heartbeat_domain"; printf ',"force_heartbeat_sleep":'; json_quote "$_force_heartbeat_sleep"; printf ',"force_heartbeat_wait":'; json_quote "$_force_heartbeat_wait"; printf ',"force_user":'; json_quote "$_force_user"; printf ',"force_group":'; json_quote "$_force_group"; printf ',"force_listen":'; json_quote "$_force_listen"; printf ',"force_consistent":%s' "$_force_consistent"; printf ',"mtu":'; json_quote "$_mtu"; printf ',"sysctl":'; json_quote "$_sysctl"; printf ',"sysctl_ext":'; json_quote "$_sysctl_ext"; printf ',"ntp_clients":'; json_quote "$_ntp"; printf ',"dnsmasq_perf":'; json_quote "$_perf"; printf ',"client_fixes":'; json_quote "$_fix"
     printf ',"doh_total":%s,"doh_match":%s,"configured_dns":%s' "$_doh_total" "$_match" "$_expected"; printf ',"last_full_test":'; json_quote "$_last"; printf ',"components_checked_at":'; json_quote "$_components_checked_at"
     printf ',"hostname":'; json_quote "$_host"; printf ',"uptime":'; json_quote "$_uptime"; printf ',"load1":'; json_quote "$_load"; printf ',"cpu_count":%s,"memory_total_kb":%s,"memory_available_kb":%s' "$_cpu_count" "${_mem_t:-0}" "${_mem_a:-0}"
