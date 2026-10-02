@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.5.81
+# Version: 1.5.82
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -22,7 +22,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.5.81"
+VERSION="1.5.82"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -129,7 +129,7 @@ UPDATE_STATE="/etc/dns-manager-luci/update.state"
 COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.5.81"
+SELF_VERSION="1.5.82"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -1194,7 +1194,26 @@ current_slot_result_for_id() {
     [ -r "$CURRENT_SLOT_RESULTS" ] || return 1
     awk -F'|' -v id="$_id" '$1==id {print; exit}' "$CURRENT_SLOT_RESULTS" 2>/dev/null
 }
-new_job_id() { printf '%s-%s' "$(date +%s)" "$$"; }
+new_job_id() {
+    case "${1:-}" in
+        profile) printf 'profile' ;;
+        test_all) printf 'test_all' ;;
+        test_current) printf 'test_current' ;;
+        test_one) printf 'test_one' ;;
+        *) printf 'job' ;;
+    esac
+}
+job_active() {
+    _id="$1"
+    [ -r "$JOB_DIR/$_id/state" ] || return 1
+    [ "$(sed -n 's/^status=//p' "$JOB_DIR/$_id/state" 2>/dev/null | tail -n1)" = running ]
+}
+job_prepare() {
+    _id="$1"
+    mkdir -p "$JOB_DIR/$_id" 2>/dev/null || return 1
+    : > "$JOB_DIR/$_id/state" || return 1
+    : > "$JOB_DIR/$_id/output" || return 1
+}
 job_write() { _id="$1"; _key="$2"; _value="$3"; mkdir -p "$JOB_DIR/$_id" 2>/dev/null || return 1; printf '%s=%s\n' "$_key" "$_value" >> "$JOB_DIR/$_id/state" 2>/dev/null; }
 
 profile_job_running() {
@@ -1219,9 +1238,9 @@ job_start_profile() {
 
     profile_job_running && { json_error "Другое применение профиля уже выполняется"; return; }
 
-    _jid="$(new_job_id)"
-    mkdir -p "$JOB_DIR/$_jid" 2>/dev/null || { json_error "Не удалось создать задачу"; return; }
-    : > "$JOB_DIR/$_jid/state"
+    _jid="$(new_job_id profile)"
+    job_active "$_jid" && { json_error "Другая операция применения профиля уже выполняется"; return; }
+    job_prepare "$_jid" || { json_error "Не удалось подготовить задачу"; return; }
     printf 'status=running\nstarted=%s\nmode=profile\nprofile=%s\n' "$(date +%s)" "$_profile" > "$JOB_DIR/$_jid/state"
 
     (
@@ -1264,8 +1283,10 @@ job_start_profile() {
 }
 
 job_start_test_all() {
-    _jid="$(new_job_id)"; mkdir -p "$JOB_DIR/$_jid" 2>/dev/null || { json_error "Не удалось создать задачу"; return; }
-    : > "$JOB_DIR/$_jid/state"; printf 'status=running\nstarted=%s\nmode=all\n' "$(date +%s)" > "$JOB_DIR/$_jid/state"
+    _jid="$(new_job_id test_all)"
+    job_active "$_jid" && { json_error "Полная проверка уже выполняется"; return; }
+    job_prepare "$_jid" || { json_error "Не удалось подготовить задачу"; return; }
+    printf 'status=running\nstarted=%s\nmode=all\n' "$(date +%s)" > "$JOB_DIR/$_jid/state"
     (
         exec >>"$JOB_DIR/$_jid/output" 2>&1
         trap 'job_write "$_jid" status failed; job_write "$_jid" finished "$(date +%s)"; exit 1' INT TERM
@@ -1280,9 +1301,9 @@ job_start_test_all() {
 }
 
 job_start_test_current() {
-    _jid="$(new_job_id)"
-    mkdir -p "$JOB_DIR/$_jid" 2>/dev/null || { json_error "Не удалось создать задачу"; return; }
-    : > "$JOB_DIR/$_jid/state"
+    _jid="$(new_job_id test_current)"
+    job_active "$_jid" && { json_error "Проверка выбранных DNS уже выполняется"; return; }
+    job_prepare "$_jid" || { json_error "Не удалось подготовить задачу"; return; }
     printf 'status=running\nstarted=%s\nmode=current\n' "$(date +%s)" > "$JOB_DIR/$_jid/state"
     (
         exec >>"$JOB_DIR/$_jid/output" 2>&1
@@ -1342,8 +1363,10 @@ job_start_test_current() {
 
 job_start_test_one() {
     _id="$1"; case "$_id" in ''|*[!A-Za-z0-9_-]*) json_error "Неверный ID DNS"; return;; esac
-    _jid="$(new_job_id)"; mkdir -p "$JOB_DIR/$_jid" 2>/dev/null || { json_error "Не удалось создать задачу"; return; }
-    : > "$JOB_DIR/$_jid/state"; printf 'status=running\nstarted=%s\nmode=one\n' "$(date +%s)" > "$JOB_DIR/$_jid/state"
+    _jid="$(new_job_id test_one)"
+    job_active "$_jid" && { json_error "Проверка DNS уже выполняется"; return; }
+    job_prepare "$_jid" || { json_error "Не удалось подготовить задачу"; return; }
+    printf 'status=running\nstarted=%s\nmode=one\n' "$(date +%s)" > "$JOB_DIR/$_jid/state"
     job_write "$_jid" dns_id "$_id"
     (
         exec >>"$JOB_DIR/$_jid/output" 2>&1
@@ -1558,7 +1581,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.5.81
+// DNS Manager LuCI version: 1.5.82
 var callStatus = rpc.declare({ object:'dns_manager', method:'status', params:['detail'], expect:{} });
 var callRuntime = rpc.declare({ object:'dns_manager', method:'runtime', expect:{} });
 function statusDetail(){return currentRoute()==='network'?1:0;}
