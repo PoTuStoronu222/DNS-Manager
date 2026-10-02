@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.28"
+VERSION="3.29"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -6055,6 +6055,8 @@ EOF_CHECK_EXT_STATE
     fi
 }
 check_module_state() {
+    # State detection must use current network values, not a stale discovery snapshot.
+    disc_network >/dev/null 2>&1 || true
     _sec="$(get_dnsmasq_section)"
     firewall_resolve_zones >/dev/null 2>&1 || true
     case "$1" in
