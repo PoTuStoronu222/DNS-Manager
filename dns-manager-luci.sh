@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.5.54
+# Version: 1.5.55
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -22,7 +22,7 @@ COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main
 # Legacy update compatibility: admin/services/dns_manager
 RUNTIME_UPDATE_STATE="$BACKUP_DIR/update.state"
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.5.54"
+VERSION="1.5.55"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -125,7 +125,7 @@ UPDATE_STATE="/etc/dns-manager-luci/update.state"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.5.54"
+SELF_VERSION="1.5.55"
 
 umask 077
 mkdir -p "$RUNTIME_DIR" "$JOB_DIR" "$CHECK_DIR" "$TMP_ROOT" 2>/dev/null || exit 1
@@ -925,99 +925,15 @@ status_json() {
         _sysctl_ext_state="$(check_sysctl_extended_state 2>/dev/null || true)"; case "$_sysctl_ext_state" in 0|1|2) ;; *) _sysctl_ext_state=0;; esac
         _dnsmasq_perf_state="$(check_module_state dnsmasq_perf 2>/dev/null || true)"; case "$_dnsmasq_perf_state" in 0|1|2) ;; *) _dnsmasq_perf_state=0;; esac
         _ntp_clients_state="$(check_module_state ntp_clients 2>/dev/null || true)"; case "$_ntp_clients_state" in 0|1|2) ;; *) _ntp_clients_state=0;; esac
-    fi
-
-    _doh_total=0; _doh_running=0
-    _i=0
-    while uci -q get "https-dns-proxy.@https-dns-proxy[$_i]" >/dev/null 2>&1; do
-        _doh_total=$((_doh_total + 1)); _p="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].listen_port" 2>/dev/null || true)"
-        [ -n "$_p" ] && { ss -lnt 2>/dev/null | grep -qE "(:|\])$_p([[:space:]]|$)" || netstat -lnt 2>/dev/null | grep -qE "(:|\])$_p([[:space:]]|$)"; } && _doh_running=$((_doh_running + 1)) || true
-        _i=$((_i + 1))
-    done
-    _doh="no"; [ "$_doh_running" -gt 0 ] && _doh="yes"
-
-    _expected=0
-    for _s in 1 2 3 4 5 6 RU; do [ -n "$(cfg_get "SLOT_$_s")" ] && _expected=$((_expected + 1)); done
-    _match=0
-    for _s in 1 2 3 4 5 6 RU; do
-        _id="$(cfg_get "SLOT_$_s")"; _port="$(cfg_get "PORT_$_s")"
-        [ -n "$_id" ] || continue
-        [ -n "$_port" ] || continue
-        _url="$(catalog_field "$_id" 5 2>/dev/null || true)"
-        [ -n "$_url" ] || continue
-        _j=0; while uci -q get "https-dns-proxy.@https-dns-proxy[$_j]" >/dev/null 2>&1; do
-            _up="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_j].listen_port" 2>/dev/null || true)"
-            _uu="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_j].resolver_url" 2>/dev/null | sed 's:/*$::')"
-            if [ "$_up" = "$_port" ] && [ "$_uu" = "${_url%/}" ]; then _match=$((_match + 1)); break; fi
-            _j=$((_j + 1))
-        done
-    done
-    detect_runtime_force_state
-    _force_cfg="$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null || true)"; _external="$FORCE_RUNTIME_EXTERNAL"
-    _force_notrack="$(uci -q get https-dns-proxy.config.notrack_dns 2>/dev/null || true)"
-    _force_update="$(uci -q get https-dns-proxy.config.dnsmasq_config_update 2>/dev/null || true)"
-    _force_family="$(uci -q get https-dns-proxy.config.force_ip_family 2>/dev/null || true)"
-    _force_ports="$(uci -q get https-dns-proxy.config.force_dns_port 2>/dev/null || true)"
-    _force_src="$(uci -q get https-dns-proxy.config.force_dns_src_interface 2>/dev/null || true)"
-    _force_source="none"
-    if [ "$_external" = 1 ]; then
-        if ps w 2>/dev/null | grep -Eq '[z]apret([[:space:]]|/)|[z]apret2([[:space:]]|/)'; then _force_source="Zapret / внешний"; else _force_source="внешний сервис"; fi
-    elif [ "$_force" = 1 ]; then
-        _force_source="DNS Manager"
-    fi
-    _force_canary_i="$(uci -q get https-dns-proxy.config.canary_domains_icloud 2>/dev/null || true)"
-    _force_canary_m="$(uci -q get https-dns-proxy.config.canary_domains_mozilla 2>/dev/null || true)"
-    _force_procd="$(uci -q get https-dns-proxy.config.procd_trigger_wan6 2>/dev/null || true)"
-    _force_heartbeat_domain="$(uci -q get https-dns-proxy.config.heartbeat_domain 2>/dev/null || true)"
-    _force_heartbeat_sleep="$(uci -q get https-dns-proxy.config.heartbeat_sleep_timeout 2>/dev/null || true)"
-    _force_heartbeat_wait="$(uci -q get https-dns-proxy.config.heartbeat_wait_timeout 2>/dev/null || true)"
-    _force_user="$(uci -q get https-dns-proxy.config.user 2>/dev/null || true)"
-    _force_group="$(uci -q get https-dns-proxy.config.group 2>/dev/null || true)"
-    _force_listen="$(uci -q get https-dns-proxy.config.listen_addr 2>/dev/null || true)"
-    _force_ports_norm="$(printf '%s\n' "$_force_ports" | awk '{gsub(/["\047,]/," "); for(i=1;i<=NF;i++) print $i}' | sort -n | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
-    _force_src_norm="$(printf '%s\n' "$_force_src" | awk '{gsub(/["\047,]/," "); for(i=1;i<=NF;i++) print $i}' | sort | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
-    _force_src_expected="lan"
-    _fz="$(uci show firewall 2>/dev/null | sed -n 's/^firewall\.\([^.=]*\)=zone$/\1/p')"
-    for _z in $_fz; do
-        _nets="$(uci -q get "firewall.$_z.network" 2>/dev/null || true)"
-        printf '%s\n' $_nets | grep -qx lan && { _force_src_expected="$_nets"; break; }
-    done
-    _force_src_expected_norm="$(printf '%s\n' "$_force_src_expected" | tr ' ' '\n' | sed '/^$/d' | sort | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
-    _force_consistent=0
-    _force_common=0
-    [ "$_force_notrack" = 1 ] && [ "$_force_update" = - ] && [ "$_force_family" = auto ] && [ "$_force_ports_norm" = '53 853' ] && [ "$_force_src_norm" = "$_force_src_expected_norm" ] && [ "$_force_procd" = 0 ] && [ "$_force_heartbeat_domain" = heartbeat.mossdef.org ] && [ "$_force_heartbeat_sleep" = 10 ] && [ "$_force_heartbeat_wait" = 10 ] && [ "$_force_user" = nobody ] && [ "$_force_group" = nogroup ] && [ "$_force_listen" = 127.0.0.1 ] && _force_common=1
-    if [ "$_force" = 1 ] && [ "$_force_cfg" = 1 ] && [ "$_force_canary_i" = 1 ] && [ "$_force_canary_m" = 1 ] && [ "$_force_common" = 1 ]; then _force_consistent=1; fi
-    if [ "$_force" = 0 ] && [ "$_force_cfg" != 1 ] && [ "$_force_common" = 1 ]; then _force_consistent=1; fi
-
-    _dnsmasq="no"; /etc/init.d/dnsmasq status >/dev/null 2>&1 && _dnsmasq="yes"; pgrep -x dnsmasq >/dev/null 2>&1 && _dnsmasq="yes"
-    _fw="unknown"; command -v fw4 >/dev/null 2>&1 && _fw="fw4"; command -v fw3 >/dev/null 2>&1 && [ "$_fw" = unknown ] && _fw="fw3"
-    _lan="$(uci -q get network.lan.ipaddr 2>/dev/null | cut -d/ -f1 | head -n1)"
-    [ -n "$_lan" ] || _lan="—"
-    _host="$(uci -q get system.@system[0].hostname 2>/dev/null || cat /proc/sys/kernel/hostname 2>/dev/null || true)"
-    _uptime="$(awk '{printf "%s",int($1)}' /proc/uptime 2>/dev/null || true)"
-    _load="$(awk '{printf "%s",$1}' /proc/loadavg 2>/dev/null || true)"
-    _mem_t="$(awk '/MemTotal:/ {print $2;exit}' /proc/meminfo 2>/dev/null || true)"
-    _mem_a="$(awk '/MemAvailable:/ {print $2;exit}' /proc/meminfo 2>/dev/null || true)"
-    _cpu_count="$(awk '/^processor[[:space:]]*:/ {n++} END {print n+0}' /proc/cpuinfo 2>/dev/null)"
-    case "$_cpu_count" in ''|*[!0-9]*|0) _cpu_count=1;; esac
-    _ipv4="no"; ip -4 route show default 2>/dev/null | grep -q . && _ipv4="yes"
-    _ipv6="no"; ip -6 route show default 2>/dev/null | grep -q . && _ipv6="yes"
-    _last=""; _meta="$STATE_DIR/dns-test-results.meta"; [ -r "$_meta" ] || _meta="$PERSIST_STATE_DIR/dns-test-results.meta"; _last="$(sed -n 's/^timestamp=//p' "$_meta" 2>/dev/null | head -n1)"
-    _cat_total="$(grep -v '^#' "$CATALOG_FILE" 2>/dev/null | grep -c '^[^|][^|]*|' 2>/dev/null || printf 0)"
-    _luciv="$(read_installed_luci_version)"
-    _luci_latest="$(sed -n 's/^latest=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"
-    _hdp_installed="$(package_version https-dns-proxy 2>/dev/null || true)"
-    _hdp_candidate="$(package_candidate_version https-dns-proxy 2>/dev/null || true)"
-    _hdp_update=0
-    if [ -n "$_hdp_installed" ] && [ -n "$_hdp_candidate" ] && package_version_cmp "$_hdp_candidate" "$_hdp_installed"; then
-        _hdp_update=1
-    fi
-    _force_manager=0
-    [ "$_force" = 1 ] && [ "$_force_cfg" = 1 ] && _force_manager=1
-    _zapret_running=0
+        # Backend is authoritative for effective setting state.
+        # Package defaults alone must not be reported as a Manager feature.
+        detect_forced_dns_path >/dev/null 2>&1 || true
+        _force_state="$(check_module_state force 2>/dev/null || true)"
+        case "$_force_state" in 0|1|2) ;; *) _force_state=0;; esac
+        _external="${FORCED_DNS_EXTERNAL:-0}"
+        _zapret_running=0
     ps w 2>/dev/null | grep -Eq '[z]ms([[:space:]]|/)|[z]apret([[:space:]]|/)|[z]apret2([[:space:]]|/)|[z]aproxy2([[:space:]]|/)' && _zapret_running=1
-    _force_both=0
-    [ "$_force_manager" = 1 ] && [ "$_external" = 1 ] && _force_both=1
+    # Force ownership is resolved from backend effective state above.
     _luci_avail="$(sed -n 's/^available=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"; [ -n "$_luci_avail" ] || _luci_avail=0
     _luci_checked_at="$(sed -n 's/^checked_at=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"
     _luci_error="$(sed -n 's/^error=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"
@@ -1064,8 +980,14 @@ status_json() {
     printf ',"hostname":'; json_quote "$_host"; printf ',"uptime":'; json_quote "$_uptime"; printf ',"load1":'; json_quote "$_load"; printf ',"cpu_count":%s,"memory_total_kb":%s,"memory_available_kb":%s' "$_cpu_count" "${_mem_t:-0}" "${_mem_a:-0}"
     printf ',"catalog_total":%s,"catalog_version":' "$_cat_total"; json_quote "$(catalog_version)"; printf ',"catalog_revision":'; json_quote "$(catalog_revision)"; printf ',"hdp_version":'; json_quote "$_hdp_installed"; printf ',"hdp_latest_version":'; json_quote "$_hdp_candidate"; printf ',"hdp_update_available":%s,"hdp_check_ok":%s' "$_hdp_update" "$_hdp_check_state"
     _force_status="off"; _force_owner_label="нет"
-    [ "$_force_manager" = 1 ] && _force_status="manager" && _force_owner_label="DNS Manager"
-    [ "$_external" = 1 ] && _force_status="external" && _force_owner_label="внешний"
+    if [ "$_external" = 1 ]; then
+        _force_status="external"; _force_owner_label="внешний"
+    elif [ "$_force_state" = 1 ]; then
+        _force_status="manager"; _force_owner_label="DNS Manager"
+    elif [ "$_force_state" = 2 ]; then
+        _force_status="other"; _force_owner_label="другое"
+    fi
+    printf ',"force_status":'; json_quote "$_force_status"; printf ',"force_owner_label":'; json_quote "$_force_owner_label"
     printf ',"force_status":'; json_quote "$_force_status"; printf ',"force_owner_label":'; json_quote "$_force_owner_label"
     printf ',"slots":['
     _first=1
@@ -1473,7 +1395,7 @@ EOF_RPC
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.5.54
+// DNS Manager LuCI version: 1.5.55
 var callStatus = rpc.declare({ object:'dns_manager', method:'status', params:['detail'], expect:{} });
 function statusDetail(){return currentRoute()==='network'?1:0;}
 var callCatalog = rpc.declare({ object:'dns_manager', method:'catalog', params:['category','offset','limit','only_ok'], expect:{} });
