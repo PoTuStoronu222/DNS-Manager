@@ -1442,6 +1442,8 @@ EOF_RPC
     chmod 0755 "$BACKEND_FILE"
     cat > "$RPC_PLUGIN" <<'EOF_RPC_WRAPPER'
 #!/bin/sh
+# DNS Manager LuCI rpcd plugin
+# Thin bridge; all DNS Manager logic lives in the dedicated backend.
 BACKEND="/usr/lib/dns-manager-luci/backend.sh"
 [ -x "$BACKEND" ] || { printf '{"ok":false,"error":"DNS Manager LuCI backend not found"}'; exit 1; }
 exec "$BACKEND" "$@"
