@@ -1,0 +1,16 @@
+name: DNS Manager syntax audit
+on:
+  push:
+    branches:
+      - audit/syntax-and-state-20261002
+jobs:
+  syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: POSIX shell syntax
+        run: |
+          set -eu
+          sh -n dns-manager.sh
+          sh -n dns-manager-luci.sh
+          echo "shell syntax OK"
