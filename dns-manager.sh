@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.34.5"
+VERSION="3.34.6"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -2079,6 +2079,8 @@ EOF_IPS
 [ "$st" = OK ] && ms="$_best_ms" || ms=-1
 printf '%s|%s|%s|%s|%s\n' "$id" "$cat" "$name" "$ms" "$st" > "$TMP_DIR/t.$id"
 rm -f "$body" "$hdr"
+[ "$st" = OK ] && return 0
+return 1
 }
 # ==========================================
 # ==========================================
