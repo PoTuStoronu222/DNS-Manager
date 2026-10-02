@@ -3287,21 +3287,67 @@ EOF_CLIENT_FIXES_BODY
 
 
 
+client_fixes_normalized_body() {
+    _cf="$1"
+    settings_file_normalized "$_cf"
+}
+client_fixes_desired_path() {
+    _found=""
+    _count=0
+    for _n in 91 92 93 94 95 96 97 98 99; do
+        _cf="/etc/dnsmasq.d/${_n}-dns-manager-client-fixes.conf"
+        [ -f "$_cf" ] || continue
+        _body="$(client_fixes_normalized_body "$_cf")"
+        [ -n "$_body" ] || continue
+        if [ "$_body" = "$(client_fixes_expected_body)" ]; then
+            _found="$_cf"
+            _count=$((_count + 1))
+        else
+            return 2
+        fi
+    done
+    [ "$_count" -eq 1 ] || return 1
+    printf "%s" "$_found"
+}
+
 apply_client_fixes() {
     [ "${CLIENT_FIXES:-0}" = 1 ] || return 0
-    _f="/etc/dnsmasq.d/91-dns-manager-client-fixes.conf"
-    {
-        client_fixes_expected_body
-    } > "$_f.tmp.$$" || return 1
-    mv "$_f.tmp.$$" "$_f" || { rm -f "$_f.tmp.$$"; return 1; }
+    _path_state=0
+    _path="$(client_fixes_desired_path 2>/dev/null)" || _path_state=$?
+    if [ "$_path_state" -eq 2 ]; then
+        err_msg "Client-fixes содержит сторонние настройки; DNS Manager их не перезаписывает."
+        return 2
+    fi
+    if [ "$_path_state" -eq 0 ] && [ -n "$_path" ]; then
+        return 0
+    fi
+    _f=""
+    for _n in 91 92 93 94 95 96 97 98 99; do
+        _candidate="/etc/dnsmasq.d/${_n}-dns-manager-client-fixes.conf"
+        [ -e "$_candidate" ] || { _f="$_candidate"; break; }
+    done
+    [ -n "$_f" ] || {
+        err_msg "Нет свободного файла для client-fixes; сторонние настройки не изменены."
+        return 2
+    }
+    client_fixes_expected_body > "$_f.tmp.$" || return 1
+    mv "$_f.tmp.$" "$_f" || { rm -f "$_f.tmp.$"; return 1; }
     return 0
 }
 remove_client_fixes() {
     _state="$(check_module_state client_fixes 2>/dev/null || printf 2)"
     case "$_state" in
         0) return 0 ;;
-        1) rm -f /etc/dnsmasq.d/91-dns-manager-client-fixes.conf || return 1; return 0 ;;
-        2) warn_msg "Client-fixes изменены извне; текущие настройки сохранены."; return 2 ;;
+        1)
+            _f="$(client_fixes_desired_path 2>/dev/null || true)"
+            [ -n "$_f" ] || { warn_msg "Не удалось определить текущий файл client-fixes; настройки сохранены."; return 2; }
+            rm -f "$_f" || return 1
+            return 0
+            ;;
+        2)
+            warn_msg "Client-fixes изменены извне; текущие настройки сохранены."
+            return 2
+            ;;
     esac
     return 2
 }
@@ -6129,13 +6175,29 @@ EOF_CHECK_BASE_STATE
             ;;
 
         client_fixes)
-            _f="/etc/dnsmasq.d/91-dns-manager-client-fixes.conf"
-            if [ ! -f "$_f" ]; then printf 0; return; fi
-            _cur="$(sed -e '/^[[:space:]]*#/d' -e '/^[[:space:]]*$/d' "$_f" 2>/dev/null)"
-            _desired="$(client_fixes_expected_body | sed -e '/^[[:space:]]*#/d' -e '/^[[:space:]]*$/d')"
-            [ "$_cur" = "$_desired" ] && printf 1 || printf 2
+            _found=""
+            _other=0
+            _count=0
+            for _n in 91 92 93 94 95 96 97 98 99; do
+                _f="/etc/dnsmasq.d/${_n}-dns-manager-client-fixes.conf"
+                [ -f "$_f" ] || continue
+                _cur="$(settings_file_normalized "$_f")"
+                [ -n "$_cur" ] || continue
+                if [ "$_cur" = "$(client_fixes_expected_body)" ]; then
+                    _found="$_f"
+                    _count=$((_count + 1))
+                else
+                    _other=1
+                fi
+            done
+            if [ "$_other" = 1 ] || [ "$_count" -gt 1 ]; then
+                printf 2
+            elif [ "$_count" -eq 1 ]; then
+                printf 1
+            else
+                printf 0
+            fi
             ;;
-
         watchdog)
             watchdog_state_word_procd
             ;;
