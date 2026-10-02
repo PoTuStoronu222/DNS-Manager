@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.32.5"
+VERSION="3.32.6"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -93,7 +93,6 @@ WATCHDOG_CRON_DETECT_SOURCE="none"
 WATCHDOG_CRON_SCHEDULER_STATE="$STATE_DIR/watchdog-scheduler.state"
 LUCI_CONTROLLER="/usr/lib/lua/luci/controller/dns_manager.lua"
 LUCI_COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
-LUCI_COMPANION_MIN_VERSION="0.2"
 LUCI_COMPANION_CACHE="$BASE_DIR/dns-manager-luci.sh"
 LUCI_STATE_FILE="$CFG_DIR/luci-state.conf"
 LUCI_MENU_FILE="/usr/share/luci/menu.d/luci-app-dns-manager.json"
@@ -6332,13 +6331,6 @@ luci_companion_fetch() {
 
     LUCI_COMPANION_FETCH_FILE="$_tmp"
     LUCI_COMPANION_FETCH_VERSION="$(sed -n 's/^# Version:[[:space:]]*//p' "$_tmp" 2>/dev/null | head -n1)"
-    [ -n "${LUCI_COMPANION_FETCH_VERSION:-}" ] || { LUCI_COMPANION_FETCH_ERROR="В companion отсутствует строка версии '# Version:'."; rm -f "$_tmp"; return 1; }
-    if _ver_newer "$LUCI_COMPANION_MIN_VERSION" "$LUCI_COMPANION_FETCH_VERSION"; then
-        LUCI_COMPANION_FETCH_ERROR="На GitHub находится companion версии ${LUCI_COMPANION_FETCH_VERSION}; требуется не ниже ${LUCI_COMPANION_MIN_VERSION}."
-        log_msg "LuCI: $LUCI_COMPANION_FETCH_ERROR"
-        rm -f "$_tmp" 2>/dev/null || true
-        return 1
-    fi
     return 0
 }
 
