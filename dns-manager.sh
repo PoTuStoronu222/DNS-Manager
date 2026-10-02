@@ -2935,7 +2935,7 @@ sysctl_stock_value() {
               if (_name==k) { v=$2; gsub(/[[:space:]]/,"",v); if (v!="") { print v; exit } } }
             ' /rom/etc/sysctl.d/10-default.conf 2>/dev/null)"
     fi
-    [ -n "$_v" ] || _v="$(awk -F= -v k=""$_k"" '
+    [ -n "$_v" ] || _v="$(awk -F= -v k="$_k" '
         { _name=$1; gsub(/^[[:space:]]+|[[:space:]]+$/, "", _name);
           if (_name==k) { v=$2; gsub(/[[:space:]]/,"",v); if (v!="") { print v; exit } } }
         ' /etc/sysctl.d/10-default.conf 2>/dev/null)"
@@ -2978,7 +2978,7 @@ apply_sysctl() {
     f="$(sysctl_base_manager_path)"
     _expected="$(sysctl_base_expected)"
     [ "${SYSCTL_TUNING:-0}" = 1 ] || return 0
-    _tmp="$f.tmp.$"
+    _tmp="$f.tmp.$$"
     printf '%s\n' "$_expected" > "$_tmp" || return 1
     while IFS= read -r _p; do
         [ -n "$_p" ] || continue
@@ -3289,8 +3289,8 @@ apply_client_fixes() {
     _f="/etc/dnsmasq.d/91-dns-manager-client-fixes.conf"
     {
         client_fixes_expected_body
-    } > "$_f.tmp.$" || return 1
-    mv "$_f.tmp.$" "$_f" || { rm -f "$_f.tmp.$"; return 1; }
+    } > "$_f.tmp.$$" || return 1
+    mv "$_f.tmp.$$" "$_f" || { rm -f "$_f.tmp.$$"; return 1; }
     return 0
 }
 remove_client_fixes() {
@@ -3338,7 +3338,7 @@ apply_sysctl_extended() {
     if command -v modprobe >/dev/null 2>&1; then
         modprobe nf_conntrack >/dev/null 2>&1 || true
     fi
-    _tmp="$f.tmp.$"
+    _tmp="$f.tmp.$$"
     printf '%s\n' "$_params" > "$_tmp" || return 1
     while IFS= read -r _p; do
         [ -n "$_p" ] || continue
