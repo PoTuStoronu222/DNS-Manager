@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.5.74
+# Version: 1.5.75
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -886,22 +886,30 @@ cpu_stat() {
     awk '/^cpu / { t=0; for(i=2;i<=NF;i++) t+=$i; print t, $5+$6; exit }' /proc/stat 2>/dev/null
 }
 cpu_load_percent() {
-    local f="$RUNTIME_DIR/cpu.stat" p t1 i1 t2 i2 now
-    mkdir -p "$RUNTIME_DIR" 2>/dev/null || return 0
+    local f="$RUNTIME_DIR/cpu.stat" now prev t1 i1 t2 i2
+    [ -d "$RUNTIME_DIR" ] || mkdir -p "$RUNTIME_DIR" 2>/dev/null || return 0
     now="$(cpu_stat)"
-    [ -n "$now" ] || { printf '0'; return 0; }
-    if [ -s "$f" ]; then
-        p="$(cat "$f" 2>/dev/null || true)"
+    [ -n "$now" ] || return 0
+    if [ -s "$f" ] && [ -z "$(find "$f" -mmin +1 2>/dev/null)" ]; then
+        prev="$(cat "$f" 2>/dev/null || true)"
     else
-        p="$now"
+        prev="$now"
+        sleep 1
+        now="$(cpu_stat)"
     fi
-    printf '%s\n' "$now" > "$f" 2>/dev/null || true
-    set -- $p $now
+    set -- $prev $now
     t1=$1; i1=$2; t2=$3; i2=$4
-    [ -n "$t1" ] && [ -n "$i1" ] && [ -n "$t2" ] && [ -n "$i2" ] || { printf '0'; return 0; }
+    if [ -z "$t1" ] || [ -z "$i1" ] || [ -z "$t2" ] || [ -z "$i2" ]; then
+        printf '0'
+        return 0
+    fi
+    if [ $((t2 - t1)) -lt 50 ] 2>/dev/null && [ -s "$f.pct" ]; then
+        cat "$f.pct" 2>/dev/null
+        return 0
+    fi
     [ "$t2" -gt "$t1" ] 2>/dev/null || { printf '0'; return 0; }
-    printf '%s' "$(( (100 * ((t2-t1) - (i2-i1)) + (t2-t1)/2) / (t2-t1) ))"
-}
+    printf '%s\n' "$now" > "$f" 2>/dev/null || true
+    printf '%s\n' "$(( (100 * ((t2-t1) - (i2-i1)) + (t2-t1)/2) / (t2-t1) ))" | tee "$f.pct"
 runtime_json() {
     _uptime="$(awk '{printf "%s",int($1)}' /proc/uptime 2>/dev/null || true)"
     _load="$(cpu_load_percent)"
@@ -1537,18 +1545,9 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.5.74
+// DNS Manager LuCI version: 1.5.75
 var callStatus = rpc.declare({ object:'dns_manager', method:'status', params:['detail'], expect:{} });
 var callRuntime = rpc.declare({ object:'dns_manager', method:'runtime', expect:{} });
-var runtimeMemo = null;
-function callRuntimeMemo(){
-  var now=Date.now();
-  if(runtimeMemo&&now-runtimeMemo.t<3000)return runtimeMemo.p;
-  var p=callRuntime();
-  runtimeMemo={t:now,p:p};
-  p.catch(function(){if(runtimeMemo&&runtimeMemo.p===p)runtimeMemo=null;});
-  return p;
-}
 function statusDetail(){return currentRoute()==='network'?1:0;}
 var callCatalog = rpc.declare({ object:'dns_manager', method:'catalog', params:['category','offset','limit','only_ok'], expect:{} });
 var callUpdateCheck = rpc.declare({ object:'dns_manager', method:'update_check', expect:{} });
@@ -3083,13 +3082,7 @@ function updateRuntimeBadge(node,kind,text){
 }
 function updateRuntime(root,rt){
   if(!rootAlive(root)||!rt)return;
-  var n=root.querySelector('#dm-runtime-doh .dm-badge');
-  updateRuntimeBadge(n,rt.doh==='yes'?'dm-ok':'dm-off',rt.doh==='yes'?'запущен':'остановлен');
-  n=root.querySelector('#dm-runtime-uptime');if(n)n.textContent=uptime(rt.uptime);
-  n=root.querySelector('#dm-runtime-ipv4 .dm-badge');
-  updateRuntimeBadge(n,rt.ipv4==='yes'?'dm-ok':'dm-bad',rt.ipv4==='yes'?'есть':'нет');
-  n=root.querySelector('#dm-runtime-ipv6 .dm-badge');
-  updateRuntimeBadge(n,rt.ipv6==='yes'?'dm-ok':'dm-off',rt.ipv6==='yes'?'есть':'выключен');
+  var n=root.querySelector('#dm-runtime-uptime');if(n)n.textContent=uptime(rt.uptime);
   n=root.querySelector('#dm-runtime-load');
   if(n){
     var lp=Number(rt.cpu_load);
@@ -3112,28 +3105,37 @@ function updateRuntime(root,rt){
     }
   }
 }
+function refreshDashboard(root){
+  if(!rootAlive(root)||currentRoute()!=='dashboard')return Promise.resolve();
+  if(state.busy||state.versionCheck&&state.versionCheck.running)return Promise.resolve();
+  return callStatus(statusDetail()).then(function(st){
+    if(!rootAlive(root))return;
+    state.statusError='';
+    window.dmState=st||{};
+    renderOverview(root,st||{});
+  }).catch(function(){
+    if(!rootAlive(root))return;
+  });
+}
 function startAutoStatus(root){
   stopAutoStatus();
-  function schedule(){
-    if(!rootAlive(root)){stopAutoStatus();return;}
-    autoStatusTimer=setTimeout(function(){
-      autoStatusTimer=null;
-      if(!rootAlive(root)){return;}
-      if(document.hidden||currentRoute()!=='dashboard'||state.busy||state.versionCheck&&state.versionCheck.running){
-        schedule();
-        return;
-      }
-      if(state.statusRefreshing){schedule();return;}
-      state.statusRefreshing=true;
-      callRuntimeMemo().then(function(rt){
-        if(rootAlive(root))updateRuntime(root,rt||{});
-      }).catch(function(){}).then(function(){
-        state.statusRefreshing=false;
-        schedule();
-      });
-    },3000);
-  }
-  schedule();
+  var sysTick=0,sysBusy=false;
+  autoStatusTimer=setInterval(function(){
+    if(!rootAlive(root)){
+      stopAutoStatus();
+      return;
+    }
+    if(document.hidden||currentRoute()!=='dashboard'||sysBusy)return;
+    sysBusy=true;
+    sysTick++;
+    callRuntime().then(function(rt){
+      if(!rootAlive(root))return;
+      updateRuntime(root,rt||{});
+      if(sysTick%3===0)return refreshDashboard(root);
+    }).catch(function(){}).then(function(){
+      sysBusy=false;
+    });
+  },5000);
 }return view.extend({
   load:function(){return callStatus(statusDetail()).then(function(st){return st||{};});},
   render:function(st){
