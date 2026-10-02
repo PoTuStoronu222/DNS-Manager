@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.27"
+VERSION="3.28"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -2564,6 +2564,37 @@ exact_list_has() {
     [ -n "$_val" ] || return 1
     uci -q get "$_target" 2>/dev/null | tr ' ' '\n' | sed 's/^['"'"'\"]//; s/['"'"'\"]$//' | grep -qxF -- "$_val"
 }
+# Module state is determined only from STOCK OpenWrt, CURRENT values and DESIRED values.
+uci_value_normalized() {
+    _uv="$(uci -q get "$1" 2>/dev/null || true)"
+    [ -n "$_uv" ] && printf '%s' "$_uv" || printf '__DM_UNSET__'
+}
+stock_uci_value_normalized() {
+    _sv_pkg="$1"
+    _sv_target="$2"
+    _sv_fallback="$3"
+    if [ -r "/rom/etc/config/$_sv_pkg" ]; then
+        _sv="$(uci -q -c /rom/etc/config get "$_sv_target" 2>/dev/null || true)"
+        [ -n "$_sv" ] && { printf '%s' "$_sv"; return 0; }
+        printf '__DM_UNSET__'
+        return 0
+    fi
+    printf '%s' "$_sv_fallback"
+}
+uci_list_normalized() {
+    printf '%s\n' "$1" | tr ' ' '\n' |
+        sed -e 's/^['"'"'\"]//;s/['"'"'\"]$//' -e '/^[[:space:]]*$/d' |
+        sort -u | tr '\n' ' ' | sed 's/[[:space:]]*$//'
+}
+uci_list_current_normalized() {
+    uci_list_normalized "$(uci -q get "$1" 2>/dev/null || true)"
+}
+stock_uci_list_normalized() {
+    _sl_raw="$(stock_uci_value_normalized "$1" "$2" "$3")"
+    [ "$_sl_raw" = "__DM_UNSET__" ] && { printf ''; return 0; }
+    uci_list_normalized "$_sl_raw"
+}
+
 # ==========================================
 # ==========================================
 clear_all_doh_for_apply() {
@@ -2988,34 +3019,22 @@ EOF_SYSCTL_BASE_APPLY
 }
 
 remove_sysctl_base() {
-    _stock_reset="${1:-0}"
+    _state="$(check_module_state sysctl 2>/dev/null || printf 2)"
+    case "$_state" in
+        0) return 0 ;;
+        2) warn_msg "Базовые sysctl-параметры изменены извне; текущие значения сохранены."; return 2 ;;
+    esac
     _f="$(sysctl_base_manager_path)"
-    _managed=0
-    if [ -f "$_f" ]; then
-        _state="$(sysctl_file_state "$_f" "$SYSCTL_BASE_MARKER" "$(sysctl_base_expected)")"
-        [ "$_state" != 3 ] || {
-            warn_msg "Файл $_f используется другой настройкой; файл сохранён."
-            return 2
-        }
-        rm -f "$_f" || return 1
-        _managed=1
-    fi
-    if [ -x /etc/init.d/sysctl ]; then
-        /etc/init.d/sysctl reload >/dev/null 2>&1 || /etc/init.d/sysctl restart >/dev/null 2>&1 || true
-    elif [ -x /sbin/sysctl ]; then
-        sysctl -p /etc/sysctl.conf >/dev/null 2>&1 || true
-    fi
-    if [ "$_stock_reset" = 1 ]; then
-        _force=0
-        [ "$_managed" = 1 ] && _force=1
-        while IFS= read -r _p; do
-            [ -n "$_p" ] || continue
-            _k="$(printf "%s" "$_p" | cut -d= -f1)"
-            _v="$(printf "%s" "$_p" | cut -d= -f2-)"
-            sysctl_restore_stock_key "$_k" "$_v" "$_force" || warn_msg "Не удалось восстановить $_k к исходному значению."
-        done <<EOF_SYSCTL_BASE_STOCK
+    rm -f "$_f" 2>/dev/null || return 1
+    while IFS= read -r _p; do
+        [ -n "$_p" ] || continue
+        _k="${_p%%=*}"; _stock="$(sysctl_stock_value "$_k" 2>/dev/null || true)"
+        [ -n "$_stock" ] && sysctl -w "$_k=$_stock" >/dev/null 2>&1 || true
+    done <<EOF_SYSCTL_BASE_STOCK
 $(sysctl_base_expected)
 EOF_SYSCTL_BASE_STOCK
+    if [ -x /etc/init.d/sysctl ]; then
+        /etc/init.d/sysctl reload >/dev/null 2>&1 || /etc/init.d/sysctl restart >/dev/null 2>&1 || true
     fi
     return 0
 }
@@ -3200,26 +3219,28 @@ apply_ntp_clients() {
 }
 
 remove_ntp_clients() {
+    _state="$(check_module_state ntp_clients 2>/dev/null || printf 2)"
+    case "$_state" in
+        0) return 0 ;;
+        2) warn_msg "Настройки времени для клиентов изменены извне; текущие значения сохранены."; return 2 ;;
+    esac
     sec="$(get_dnsmasq_section)" || return 1
-    [ -n "$sec" ] || return 1
-
-    uci -q delete system.ntp.enable_server || true
-    _tmp="$(mktemp /tmp/dns-manager-ntp.XXXXXX 2>/dev/null)" || return 1
-    : > "$_tmp" || { rm -f "$_tmp"; return 1; }
-    for _v in $(uci -q get "dhcp.$sec.dhcp_option" 2>/dev/null); do
-        [ "$_v" = "42,$LAN_IP" ] || printf '%s\n' "$_v" >> "$_tmp"
-    done
+    _stock_server="$(stock_uci_value_normalized system "system.ntp.enable_server" "__DM_UNSET__")"
+    if [ "$_stock_server" = "__DM_UNSET__" ]; then uci -q delete system.ntp.enable_server || true
+    else uci set system.ntp.enable_server="$_stock_server" || return 1
+    fi
     uci -q delete "dhcp.$sec.dhcp_option" || true
-    while IFS= read -r _v; do
-        [ -n "$_v" ] && uci add_list "dhcp.$sec.dhcp_option=$_v" || true
-    done < "$_tmp"
-    rm -f "$_tmp"
-
+    _stock_opt="$(stock_uci_value_normalized dhcp "dhcp.@dnsmasq[0].dhcp_option" "__DM_UNSET__")"
+    if [ "$_stock_opt" != "__DM_UNSET__" ]; then
+        _vals="$(uci_list_normalized "$_stock_opt")"
+        for _v in $_vals; do
+            uci add_list "dhcp.$sec.dhcp_option=$_v" || return 1
+        done
+    fi
     uci commit system || return 1
     uci commit dhcp || return 1
     /etc/init.d/sysntpd restart >/dev/null 2>&1 || true
     /etc/init.d/dnsmasq restart >/dev/null 2>&1 || true
-    log_tx "APPLY" "NTP" "SERVER_OFF" "OK" "router_server=0;forced_redirect=0"
     return 0
 }
 
@@ -3237,28 +3258,28 @@ apply_dnsmasq_perf() {
     uci commit dhcp || return 1
 }
 remove_dnsmasq_perf() {
-    _stock_reset="${1:-0}"
-    sec="$(get_dnsmasq_section)"
-    [ -n "$sec" ] || return 0
-    _changed=0
-    for _kv in "cachesize|1000" "dnsforwardmax|300" "max_cache_ttl|86400" "boguspriv|1" "domainneeded|1" "quietdhcp|1" "filter_aaaa|1"; do
-        _k="${_kv%%|*}"; _want="${_kv#*|}"
-        _cur="$(uci -q get "dhcp.$sec.$_k" 2>/dev/null)"
-        if [ "$_stock_reset" = 1 ]; then
-            if [ -n "$_cur" ]; then
-                uci -q delete "dhcp.$sec.$_k" || true
-                _changed=1
-            fi
-        elif [ "$_cur" = "$_want" ]; then
+    _state="$(check_module_state dnsmasq_perf 2>/dev/null || printf 2)"
+    case "$_state" in
+        0) return 0 ;;
+        2) warn_msg "Настройки DNS-кэша изменены извне; текущие значения сохранены."; return 2 ;;
+    esac
+    sec="$(get_dnsmasq_section)" || return 1
+    for _spec in "cachesize|150" "dnsforwardmax|150" "max_cache_ttl|__DM_UNSET__" "boguspriv|1" "domainneeded|1" "quietdhcp|__DM_UNSET__"; do
+        _k="${_spec%%|*}"; _fallback="${_spec#*|}"
+        _stock_v="$(stock_uci_value_normalized dhcp "dhcp.@dnsmasq[0].$_k" "$_fallback")"
+        if [ "$_stock_v" = "__DM_UNSET__" ]; then
             uci -q delete "dhcp.$sec.$_k" || true
-            _changed=1
-        elif [ -n "$_cur" ]; then
-            warn_msg "DNS-кэш: параметр $_k изменён извне; значение сохранено."
+        else
+            uci set "dhcp.$sec.$_k=$_stock_v" || return 1
         fi
     done
-    if [ "$_changed" = 1 ]; then
-        uci commit dhcp >/dev/null 2>&1 || return 1
+    if [ "$IPV6_ROUTE" != yes ]; then
+        _stock_v="$(stock_uci_value_normalized dhcp "dhcp.@dnsmasq[0].filter_aaaa" "0")"
+        if [ "$_stock_v" = "__DM_UNSET__" ]; then uci -q delete "dhcp.$sec.filter_aaaa" || true
+        else uci set "dhcp.$sec.filter_aaaa=$_stock_v" || return 1
+        fi
     fi
+    uci commit dhcp >/dev/null 2>&1 || return 1
     return 0
 }
 client_fixes_expected_body() {
@@ -3305,50 +3326,22 @@ client_fixes_find_modified_owned() {
     return 1
 }
 apply_client_fixes() {
-    [ "${CLIENT_FIXES:-0}" = 1 ] || return 0
-    _managed="${CLIENT_FIXES_FILE:-}"
-    if [ -n "$_managed" ] && [ -e "$_managed" ] && [ "$(client_fixes_file_state "$_managed")" = 1 ]; then
-        :
-    else
-        _managed=""
-        _owned="$(client_fixes_find_owned 2>/dev/null || true)"
-        [ -n "$_owned" ] && _managed="$_owned"
-    fi
-    if [ -z "$_managed" ]; then
-        for _n in 91 92 93 94 95 96 97 98 99; do
-            _candidate="/etc/dnsmasq.d/${_n}-dns-manager-client-fixes.conf"
-            [ ! -e "$_candidate" ] && { _managed="$_candidate"; break; }
-        done
-    fi
-    [ -n "$_managed" ] || { err_msg "Нет свободного файла для DNS Manager client-fixes."; return 2; }
-    CLIENT_FIXES_FILE="$_managed"
+    [ "\${CLIENT_FIXES:-0}" = 1 ] || return 0
+    _f="/etc/dnsmasq.d/91-dns-manager-client-fixes.conf"
     {
-        printf '%s\n' "$CLIENT_FIXES_MARKER"
         client_fixes_expected_body
-    } > "$_managed.tmp.$$" || return 1
-    mv "$_managed.tmp.$$" "$_managed" || { rm -f "$_managed.tmp.$$"; return 1; }
+    } > "$_f.tmp.$" || return 1
+    mv "$_f.tmp.$" "$_f" || { rm -f "$_f.tmp.$"; return 1; }
     return 0
 }
 remove_client_fixes() {
-    _stock_reset="${1:-0}"
-    _found=0
-    for _f in /etc/dnsmasq.d/*dns-manager-client-fixes*.conf; do
-        [ -f "$_f" ] || continue
-        _found=1
-        _state="$(client_fixes_file_state "$_f")"
-        case "$_state" in
-            1) rm -f "$_f" || return 1 ;;
-            2)
-                if [ "$_stock_reset" = 1 ]; then
-                    rm -f "$_f" || return 1
-                else
-                    warn_msg "Client-fixes: файл $_f изменён после установки; сохраняю его."
-                fi
-                ;;
-        esac
-    done
-    CLIENT_FIXES_FILE=""
-    [ "$_found" = 0 ] || return 0
+    _state="$(check_module_state client_fixes 2>/dev/null || printf 2)"
+    case "$_state" in
+        0) return 0 ;;
+        1) rm -f /etc/dnsmasq.d/91-dns-manager-client-fixes.conf || return 1; return 0 ;;
+        2) warn_msg "Client-fixes изменены извне; текущие настройки сохранены."; return 2 ;;
+    esac
+    return 2
 }
 recommended_conntrack_max() {
     _mem="$(awk '/^MemTotal:/{print $2; exit}' /proc/meminfo 2>/dev/null)"
@@ -3419,36 +3412,24 @@ EOF_SYSCTL_EXT_APPLY
     return 0
 }
 remove_sysctl_extended() {
-    _stock_reset="${1:-0}"
+    _state="$(check_sysctl_extended_state 2>/dev/null || printf 2)"
+    case "$_state" in
+        0) return 0 ;;
+        2) warn_msg "Расширенные sysctl-параметры изменены извне; текущие значения сохранены."; return 2 ;;
+    esac
     _f="$(sysctl_extended_manager_path)"
-    _managed=0
+    rm -f "$_f" 2>/dev/null || return 1
     _expected="$(sysctl_extended_params)"
-    if [ -f "$_f" ]; then
-        _state="$(sysctl_file_state "$_f" "$SYSCTL_EXTENDED_MARKER" "$_expected")"
-        [ "$_state" != 3 ] || {
-            warn_msg "Файл $_f используется другой настройкой; файл сохранён."
-            return 2
-        }
-        rm -f "$_f" || return 1
-        _managed=1
-    fi
+    while IFS= read -r _p; do
+        [ -n "$_p" ] || continue
+        _k="${_p%%=*}"; _stock="$(sysctl_stock_value "$_k" 2>/dev/null || true)"
+        [ -n "$_stock" ] && sysctl -w "$_k=$_stock" >/dev/null 2>&1 || true
+    done <<EOF_SYSCTL_EXT_STOCK
+$_expected
+EOF_SYSCTL_EXT_STOCK
     rm -f "$STATE_DIR/sysctl-extended-before.conf" 2>/dev/null || true
     if [ -x /etc/init.d/sysctl ]; then
         /etc/init.d/sysctl reload >/dev/null 2>&1 || /etc/init.d/sysctl restart >/dev/null 2>&1 || true
-    elif [ -x /sbin/sysctl ]; then
-        sysctl -p /etc/sysctl.conf >/dev/null 2>&1 || true
-    fi
-    if [ "$_stock_reset" = 1 ]; then
-        _force=0
-        [ "$_managed" = 1 ] && _force=1
-        while IFS= read -r _p; do
-            [ -n "$_p" ] || continue
-            _k="$(printf "%s" "$_p" | cut -d= -f1)"
-            _v="$(printf "%s" "$_p" | cut -d= -f2-)"
-            sysctl_restore_stock_key "$_k" "$_v" "$_force" || warn_msg "Не удалось восстановить $_k к исходному значению."
-        done <<EOF_SYSCTL_EXT_STOCK
-$_expected
-EOF_SYSCTL_EXT_STOCK
     fi
     return 0
 }
@@ -6029,34 +6010,29 @@ remove_ntp_ip_fallback() {
     return 0
 }
 check_sysctl_extended_state() {
-    _f="$(sysctl_extended_manager_path)"
     _expected="$(sysctl_extended_params)"
-    _all=1
+    _stock=1
+    _desired=1
     _supported=0
     while IFS= read -r _p; do
         [ -n "$_p" ] || continue
-        _k="$(printf "%s" "$_p" | cut -d= -f1)"
-        _v="$(printf "%s" "$_p" | cut -d= -f2-)"
+        _k="${_p%%=*}"
+        _desired_v="${_p#*=}"
         if ! sysctl -n "$_k" >/dev/null 2>&1; then
             continue
         fi
         _supported=$((_supported + 1))
         _cur="$(sysctl -n "$_k" 2>/dev/null)"
-        [ "$_cur" = "$_v" ] || _all=0
+        [ "$_cur" = "$_desired_v" ] || _desired=0
+        _stock_v="$(sysctl_stock_value "$_k" 2>/dev/null || true)"
+        [ -n "$_stock_v" ] && [ "$_cur" = "$_stock_v" ] || _stock=0
     done <<EOF_CHECK_EXT_STATE
 $_expected
 EOF_CHECK_EXT_STATE
-    _file_state=0
-    [ -f "$_f" ] && _file_state="$(sysctl_file_state "$_f" "$SYSCTL_EXTENDED_MARKER" "$_expected")"
-    if [ "$_all" = 1 ] && { [ "$_supported" -eq 0 ] || [ "$_file_state" = 1 ]; }; then
-        printf "1"
-        return 0
-    fi
-    if [ "$_file_state" = 2 ] || [ "$_file_state" = 3 ]; then
-        printf "2"
-    else
-        printf "0"
-    fi
+    [ "$_supported" -gt 0 ] || { printf "0"; return 0; }
+    [ "$_stock" = 1 ] && { printf "0"; return 0; }
+    [ "$_desired" = 1 ] && { printf "1"; return 0; }
+    printf "2"
 }
 check_module_state() {
     _sec="$(get_dnsmasq_section)"
@@ -6093,59 +6069,32 @@ check_module_state() {
             }
             ;;
         mtu)
-            _wan_zone="$(firewall_wan_zone 2>/dev/null)" || { printf 0; return; }
-            _v="$(uci -q get "firewall.$_wan_zone.mtu_fix" 2>/dev/null)"
-            [ "$_v" = 1 ] && printf 1 || { [ -n "$_v" ] && printf 2 || printf 0; }
+            _v="$(uci -q get "firewall.$(firewall_wan_zone 2>/dev/null).mtu_fix" 2>/dev/null || true)"
+            if [ -z "$_v" ]; then printf 0
+            elif [ "$_v" = 1 ]; then printf 1
+            else printf 2
+            fi
             ;;
         sysctl)
-            _base="$(sysctl_base_manager_path)"
-            _ext="$(sysctl_extended_manager_path)"
-            _base_all=1
-            for _p in "net.ipv4.tcp_fastopen=3" "net.ipv4.tcp_fin_timeout=15" "net.core.somaxconn=1024"; do
-                _k="${_p%%=*}"; _v="${_p#*=}"
-                _cur="$(sysctl -n "$_k" 2>/dev/null)"
-                [ "$_cur" = "$_v" ] || _base_all=0
-            done
-            _base_file_state=0
-            [ -f "$_base" ] && _base_file_state="$(sysctl_file_state "$_base" "$SYSCTL_BASE_MARKER" "$(sysctl_base_expected)")"
-
-            _ext_all=1
-            _ext_supported=0
+            _stock=1
+            _desired=1
             while IFS= read -r _p; do
                 [ -n "$_p" ] || continue
-                _k="${_p%%=*}"; _v="${_p#*=}"
-                if ! sysctl -n "$_k" >/dev/null 2>&1; then
-                    continue
-                fi
-                _ext_supported=$((_ext_supported + 1))
-                _cur="$(sysctl -n "$_k" 2>/dev/null)"
-                [ "$_cur" = "$_v" ] || _ext_all=0
-            done <<EOF_CHECK_EXT_FACT
-$(sysctl_extended_params)
-EOF_CHECK_EXT_FACT
-            _ext_file_state=0
-            [ -f "$_ext" ] && _ext_file_state="$(sysctl_file_state "$_ext" "$SYSCTL_EXTENDED_MARKER" "$(sysctl_extended_params)")"
-
-            # The Manager is considered ON only when its own persistent sysctl
-            # file is owned by the Manager and the live kernel values match.
-            # Runtime values alone are deliberately not enough: stock OpenWrt
-            # or another package may already have one or more identical values.
-            if [ "$_base_all" = 1 ] && [ "$_base_file_state" = 1 ] && [ "$_ext_all" = 1 ]; then
-                if [ "$_ext_supported" -eq 0 ] || [ "$_ext_file_state" = 1 ]; then
-                    printf 1
-                    return 0
-                fi
-            fi
-
-            # A foreign/modified file at the Manager-owned path is a real
-            # conflict. A missing Manager file with coincidentally matching
-            # runtime values is simply OFF, not OTHER.
-            if [ "$_base_file_state" = 2 ] || [ "$_base_file_state" = 3 ] || [ "$_ext_file_state" = 2 ] || [ "$_ext_file_state" = 3 ]; then
-                printf 2
-            else
-                printf 0
+                _k="${_p%%=*}"
+                _desired_v="${_p#*=}"
+                _cur="$(sysctl -n "$_k" 2>/dev/null || true)"
+                _stock_v="$(sysctl_stock_value "$_k" 2>/dev/null || true)"
+                [ -n "$_cur" ] && [ -n "$_stock_v" ] && [ "$_cur" = "$_stock_v" ] || _stock=0
+                [ "$_cur" = "$_desired_v" ] || _desired=0
+            done <<EOF_CHECK_BASE_STATE
+$(sysctl_base_expected)
+EOF_CHECK_BASE_STATE
+            if [ "$_stock" = 1 ]; then printf 0
+            elif [ "$_desired" = 1 ]; then printf 1
+            else printf 2
             fi
             ;;
+
         force)
             detect_forced_dns_path >/dev/null 2>&1 || true
             if [ "${FORCED_DNS_EXTERNAL:-0}" = 1 ]; then
@@ -6168,66 +6117,50 @@ EOF_CHECK_EXT_FACT
             fi
             ;;
         ntp_clients)
-            _opt="42,$LAN_IP"; _dhcp=0; _srv=0; _listen=0
-            exact_list_has "dhcp.$_sec.dhcp_option" "$_opt" && _dhcp=1
-            [ "$(uci -q get system.ntp.enable_server 2>/dev/null)" = 1 ] && _srv=1
-            listener_port_exists 123 >/dev/null 2>&1 && _listen=1
-            if [ "$_dhcp" = 1 ] && [ "$_srv" = 1 ] && [ "$_listen" = 1 ]; then
-                printf 1
-            elif [ "$_dhcp" = 1 ] || [ "$_srv" = 1 ] || [ "$_listen" = 1 ]; then
-                printf 2
-            else
+            _cur_server="$(uci_value_normalized "system.ntp.enable_server")"
+            _stock_server="$(stock_uci_value_normalized system "system.ntp.enable_server" "__DM_UNSET__")"
+            _cur_opt="$(uci_list_current_normalized "dhcp.$_sec.dhcp_option")"
+            _stock_opt="$(stock_uci_list_normalized dhcp "dhcp.@dnsmasq[0].dhcp_option" "")"
+            _desired_opt="$(uci_list_normalized "$_stock_opt 42,$LAN_IP")"
+            if [ "$_cur_server" = "$_stock_server" ] && [ "$_cur_opt" = "$_stock_opt" ]; then
                 printf 0
+            elif [ "$_cur_server" = 1 ] && [ "$_cur_opt" = "$_desired_opt" ] && listener_port_exists 123 >/dev/null 2>&1; then
+                printf 1
+            else
+                printf 2
             fi
             ;;
+
         dnsmasq_perf)
-            _all=1
-            _signature=0
-            # These three values form the Manager-specific cache signature.
-            # Do not use generic dnsmasq defaults such as boguspriv=1 or
-            # domainneeded=1 to decide that the module is partially active.
-            for _kv in "cachesize|1000" "dnsforwardmax|300" "max_cache_ttl|86400"; do
-                _k="${_kv%%|*}"; _v="${_kv#*|}"
-                _cur="$(uci -q get "dhcp.$_sec.$_k" 2>/dev/null)"
-                [ -n "$_cur" ] && _signature=1
-                [ "$_cur" = "$_v" ] || _all=0
-            done
-            for _kv in "boguspriv|1" "domainneeded|1" "quietdhcp|1"; do
-                _k="${_kv%%|*}"; _v="${_kv#*|}"
-                _cur="$(uci -q get "dhcp.$_sec.$_k" 2>/dev/null)"
-                [ "$_cur" = "$_v" ] || _all=0
+            _stock=1
+            _desired=1
+            for _spec in "cachesize|150|1000" "dnsforwardmax|150|300" "max_cache_ttl|__DM_UNSET__|86400" "boguspriv|1|1" "domainneeded|1|1" "quietdhcp|__DM_UNSET__|1"; do
+                _k="${_spec%%|*}"; _r="${_spec#*|}"; _fallback="${_r%%|*}"; _desired_v="${_r#*|}"
+                _cur="$(uci_value_normalized "dhcp.$_sec.$_k")"
+                _stock_v="$(stock_uci_value_normalized dhcp "dhcp.@dnsmasq[0].$_k" "$_fallback")"
+                [ "$_cur" = "$_stock_v" ] || _stock=0
+                [ "$_cur" = "$_desired_v" ] || _desired=0
             done
             if [ "$IPV6_ROUTE" != yes ]; then
-                _cur="$(uci -q get "dhcp.$_sec.filter_aaaa" 2>/dev/null)"
-                [ "$_cur" = 1 ] || _all=0
+                _cur="$(uci_value_normalized "dhcp.$_sec.filter_aaaa")"
+                _stock_v="$(stock_uci_value_normalized dhcp "dhcp.@dnsmasq[0].filter_aaaa" "0")"
+                [ "$_cur" = "$_stock_v" ] || _stock=0
+                [ "$_cur" = 1 ] || _desired=0
             fi
-            [ "$_all" = 1 ] && printf 1 || { [ "$_signature" = 1 ] && printf 2 || printf 0; }
+            if [ "$_stock" = 1 ]; then printf 0
+            elif [ "$_desired" = 1 ]; then printf 1
+            else printf 2
+            fi
             ;;
+
         client_fixes)
-            _f="${CLIENT_FIXES_FILE:-/etc/dnsmasq.d/91-dns-manager-client-fixes.conf}"
-            [ -f "$_f" ] || { printf 0; return; }
-            _ok=1
-            for _fix in \
-                'local=/telemetry.mozilla.org/' \
-                'local=/telemetry.microsoft.com/' \
-                'local=/vortex.data.microsoft.com/' \
-                'local=/settings-win.data.microsoft.com/' \
-                'local=/metrics.android.com/' \
-                'local=/metrics.samsung.com/' \
-                'server=/clients3.google.com/77.88.8.8' \
-                'server=/clients3.google.com/77.88.8.1' \
-                'server=/connectivitycheck.gstatic.com/77.88.8.8' \
-                'server=/connectivitycheck.gstatic.com/77.88.8.1' \
-                'server=/connectivitycheck.android.com/77.88.8.8' \
-                'server=/connectivitycheck.android.com/77.88.8.1' \
-                'server=/connectivitycheck.samsung.com/77.88.8.8' \
-                'server=/connectivitycheck.samsung.com/77.88.8.1' \
-                'server=/connectivitycheck.platform.hicloud.com/77.88.8.8' \
-                'server=/connectivitycheck.platform.hicloud.com/77.88.8.1'; do
-                grep -qxF "$_fix" "$_f" 2>/dev/null || _ok=0
-            done
-            [ "$_ok" = 1 ] && printf 1 || printf 2
+            _f="/etc/dnsmasq.d/91-dns-manager-client-fixes.conf"
+            if [ ! -f "$_f" ]; then printf 0; return; fi
+            _cur="$(sed -e '/^[[:space:]]*#/d' -e '/^[[:space:]]*$/d' "$_f" 2>/dev/null)"
+            _desired="$(client_fixes_expected_body | sed -e '/^[[:space:]]*#/d' -e '/^[[:space:]]*$/d')"
+            [ "$_cur" = "$_desired" ] && printf 1 || printf 2
             ;;
+
         watchdog)
             watchdog_state_word_procd
             ;;
