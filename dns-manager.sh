@@ -68,9 +68,6 @@ WEB_ACCESS_PORT="7682"
 WEB_ACCESS_ENABLED=0
 TTYD_CONFIG="/etc/config/ttyd"
 WEB_SERVICE_CONFIG="/etc/init.d/ttyd"
-SYSCTL_BASE_MARKER="# DNS_MANAGER_MANAGED_SYSCTL=1"
-SYSCTL_EXTENDED_MARKER="# DNS_MANAGER_MANAGED_SYSCTL_EXTENDED=1"
-CLIENT_FIXES_FILE=""
 FIREWALL_OWNERSHIP="$CFG_DIR/firewall-ownership.conf"
 FW_NTP_SECTION="dns_manager_ntp_client"
 FW_DNS_REDIRECT_SECTION="dns_manager_dns_redirect"
@@ -2931,10 +2928,17 @@ EOF_SYSCTL_BASE_EXPECTED
 
 sysctl_stock_value() {
     _k="$1"
-    _v="$(awk -F= -v k="$_k" '
+    _v=""
+    if [ -r "/rom/etc/sysctl.d/10-default.conf" ]; then
+        _v="$(awk -F= -v k=""$_k"" '
+            { _name=$1; gsub(/^[[:space:]]+|[[:space:]]+$/, "", _name);
+              if (_name==k) { v=$2; gsub(/[[:space:]]/,"",v); if (v!="") { print v; exit } } }
+            ' /rom/etc/sysctl.d/10-default.conf 2>/dev/null)"
+    fi
+    [ -n "$_v" ] || _v="$(awk -F= -v k=""$_k"" '
         { _name=$1; gsub(/^[[:space:]]+|[[:space:]]+$/, "", _name);
           if (_name==k) { v=$2; gsub(/[[:space:]]/,"",v); if (v!="") { print v; exit } } }
-        ' /etc/sysctl.d/10-default.conf 2>/dev/null)
+        ' /etc/sysctl.d/10-default.conf 2>/dev/null)"
     [ -n "$_v" ] && { printf '%s' "$_v"; return 0; }
     case "$_k" in
         net.ipv4.tcp_fastopen) printf '1' ;;
@@ -2967,39 +2971,15 @@ sysctl_restore_stock_key() {
     return 0
 }
 
-sysctl_file_state() {
-    _f="$1"; _marker="$2"; _expected="$3"
-    [ -f "$_f" ] || { printf '0'; return 0; }
-    _managed="$(printf '%s\n%s' "$_marker" "$_expected")"
-    _actual="$(cat "$_f" 2>/dev/null)"
-    [ "$_actual" = "$_managed" ] && { printf '1'; return 0; }
-    [ "$_actual" = "$_expected" ] && { printf '1'; return 0; }
-    _first="$(sed -n '1p' "$_f" 2>/dev/null)"
-    [ "$_first" = "$_marker" ] && printf '2' || printf '3'
-}
 
-sysctl_base_file_owned() {
-    _f="$1"
-    [ -f "$_f" ] || return 1
-    _state="$(sysctl_file_state "$_f" "$SYSCTL_BASE_MARKER" "$(sysctl_base_expected)")"
-    [ "$_state" = 1 ]
-}
+
+
 apply_sysctl() {
     f="$(sysctl_base_manager_path)"
     _expected="$(sysctl_base_expected)"
-    [ "${SYSCTL_TUNING:-0}" = 1 ] || return 0
-    if [ -f "$f" ]; then
-        _state="$(sysctl_file_state "$f" "$SYSCTL_BASE_MARKER" "$_expected")"
-        [ "$_state" != 3 ] || {
-            err_msg "Файл $f используется другой настройкой; DNS Manager его не перезаписывает."
-            return 2
-        }
-    fi
-    _tmp="$f.tmp.$$"
-    {
-        printf '%s\n' "$SYSCTL_BASE_MARKER"
-        printf '%s\n' "$_expected"
-    } > "$_tmp" || return 1
+    [ "\${SYSCTL_TUNING:-0}" = 1 ] || return 0
+    _tmp="$f.tmp.$"
+    printf '%s\n' "$_expected" > "$_tmp" || return 1
     while IFS= read -r _p; do
         [ -n "$_p" ] || continue
         _out="$(sysctl -w "$_p" 2>&1)"
@@ -3355,21 +3335,11 @@ apply_sysctl_extended() {
     f="$(sysctl_extended_manager_path)"
     _params="$(sysctl_extended_params)"
     [ "$SYSCTL_EXTENDED" = 1 ] || return 0
-    if [ -f "$f" ]; then
-        _state="$(sysctl_file_state "$f" "$SYSCTL_EXTENDED_MARKER" "$_params")"
-        [ "$_state" != 3 ] || {
-            err_msg "Файл $f используется другой настройкой; DNS Manager его не перезаписывает."
-            return 2
-        }
-    fi
     if command -v modprobe >/dev/null 2>&1; then
         modprobe nf_conntrack >/dev/null 2>&1 || true
     fi
-    _tmp="$f.tmp.$$"
-    {
-        printf '%s\n' "$SYSCTL_EXTENDED_MARKER"
-        printf '%s\n' "$_params"
-    } > "$_tmp" || return 1
+    _tmp="$f.tmp.$"
+    printf '%s\n' "$_params" > "$_tmp" || return 1
     while IFS= read -r _p; do
         [ -n "$_p" ] || continue
         _k="$(printf "%s" "$_p" | cut -d= -f1)"
