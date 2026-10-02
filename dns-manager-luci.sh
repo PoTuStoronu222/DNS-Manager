@@ -2953,9 +2953,49 @@ function showLog(root){
   return callLog(160).then(function(r){state.logLoading=false;state.logLoaded=true;state.logText=stripAnsi(r.log||'');renderLog(root);}).catch(function(){state.logLoading=false;state.pageNotice.log='Не удалось загрузить журнал.';renderLog(root);});
 }
 
+var autoStatusTimer=null;
+function startAutoStatus(root){
+  if(autoStatusTimer)clearInterval(autoStatusTimer);
+  autoStatusTimer=setInterval(function(){
+    if(!rootAlive(root)){clearInterval(autoStatusTimer);autoStatusTimer=null;return;}
+    if(state.busy||state.versionCheck&&state.versionCheck.running)return;
+    var a=document.activeElement;
+    if(a&&root.contains(a)&&/^(INPUT|TEXTAREA|SELECT|BUTTON)$/.test(a.tagName))return;
+    if(state.statusRefreshing)return;
+    state.statusRefreshing=true;
+    callStatus(statusDetail()).then(function(st){
+      if(!rootAlive(root))return;
+      state.statusError='';
+      window.dmState=st||{};
+      renderHeader(root,st||{});
+      renderOverview(root,st||{});
+      renderDoH(root,st||{});
+      renderSlots(root,st||{});
+      renderProfiles(root,st||{});
+      renderSettings(root,st||{});
+      renderNetwork(root,st||{});
+      state.activeTab=currentRoute();
+      setActiveTab(root,state.activeTab);
+    }).catch(function(){
+      if(rootAlive(root)){
+        state.statusError='Не удалось получить состояние DNS Manager через RPC (status).';
+      }
+    }).then(function(){
+      state.statusRefreshing=false;
+    });
+  },3000);
+}
 return view.extend({
   load:function(){return callStatus(statusDetail()).then(function(st){return st||{};});},
-  render:function(st){var root=E('div',{'class':'dm-wrap'});['dm-header','dm-overview','dm-doh','dm-profiles','dm-slots','dm-settings','dm-network','dm-job','dm-catalog','dm-log'].forEach(function(id){root.appendChild(E('section',{'id':id}));});injectStyle(root);window.dmState=st||{};state.activeTab=currentRoute();render(root,st||{});removeLegacyCbiActions();if(window.setTimeout)window.setTimeout(removeLegacyCbiActions,0);return root;}
+  render:function(st){
+    var root=E('div',{'class':'dm-wrap'});
+    ['dm-header','dm-overview','dm-doh','dm-profiles','dm-slots','dm-settings','dm-network','dm-job','dm-catalog','dm-log'].forEach(function(id){root.appendChild(E('section',{'id':id}));});
+    injectStyle(root);window.dmState=st||{};state.activeTab=currentRoute();
+    render(root,st||{});
+    removeLegacyCbiActions();if(window.setTimeout)window.setTimeout(removeLegacyCbiActions,0);
+    startAutoStatus(root);
+    return root;
+  }
 });
 EOF_JS
     chmod 0644 "$MENU_FILE" "$ACL_FILE" "$VIEW_FILE"
