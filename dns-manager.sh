@@ -485,7 +485,6 @@ auto_update_manager() {
     if [ "$_new_version" = "$VERSION" ]; then
         if [ -z "$_new_hash" ] || [ -z "$_old_hash" ] || [ "$_new_hash" = "$_old_hash" ]; then
             AUTO_UPDATE_RESULT="current"
-            log_msg "Автообновление: текущая версия $VERSION актуальна."
             rm -f "$_upd_tmp" 2>/dev/null
             UPDATE_TMP_FILE=""
             release_auto_update_lock
@@ -494,7 +493,6 @@ auto_update_manager() {
     else
         if ! _ver_newer "$_new_version" "$VERSION"; then
             AUTO_UPDATE_RESULT="current"
-            log_msg "Автообновление: удалённая версия $_new_version не новее текущей $VERSION."
             rm -f "$_upd_tmp" 2>/dev/null
             UPDATE_TMP_FILE=""
             release_auto_update_lock
@@ -5528,7 +5526,7 @@ printf_state_row "Время для устройств в локальной с�
 printf_state_row "Связь системных служб" "$(module_state_word client_fixes "$CLIENT_FIXES")"
 menu_section "ЖУРНАЛ"
 printf "${C_WHITE}Последние события:${C_NC}\n"
-if [ -s "$LOG_FILE" ]; then grep -v "Автообновление: выполняю реальную проверку GitHub:" "$LOG_FILE" | tail -15 | sed -e "s/ START / Запуск /" -e "s/ UPDATE / Обновление /" -e "s/ INFO / Информация: /" -e "s/ WARN / Внимание: /" -e "s/ ERROR / Ошибка: /"; else printf "${C_YELLOW}Журнал пока пуст.${C_NC}\n"; fi
+if [ -s "$LOG_FILE" ]; then grep -v -E "Автообновление: выполняю реальную проверку GitHub:|Автообновление: текущая версия .* актуальна\.|Автообновление: удалённая версия .* не новее текущей" "$LOG_FILE" | tail -15 | sed -e "s/ START / Запуск /" -e "s/ UPDATE / Обновление /" -e "s/ INFO / Информация: /" -e "s/ WARN / Внимание: /" -e "s/ ERROR / Ошибка: /"; else printf "${C_YELLOW}Журнал пока пуст.${C_NC}\n"; fi
 echo ""
 if [ -s "$TEST_RESULTS" ]; then
     _last_test_ts="$(sed -n 's/^timestamp=\([0-9][0-9]*\)$/\1/p' "$TEST_RESULTS_META" 2>/dev/null | head -n1)"
