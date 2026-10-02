@@ -3042,18 +3042,40 @@ function stopAutoStatus(){
   if(autoStatusTimer){clearInterval(autoStatusTimer);autoStatusTimer=null;}
   if(fullStatusTimer){clearInterval(fullStatusTimer);fullStatusTimer=null;}
 }
+function updateRuntimeBadge(node,kind,text){
+  if(!node)return;
+  node.className='dm-badge '+kind;
+  if(node.lastChild&&node.lastChild.nodeType===3)node.lastChild.nodeValue=text;
+}
 function updateRuntime(root,rt){
   if(!rootAlive(root)||!rt)return;
-  var n=root.querySelector('#dm-runtime-doh');
-  if(n)n.innerHTML='';
-  if(n)n.appendChild(rt.doh==='yes'?badge('dm-ok','запущен'):badge('dm-off','остановлен'));
+  var n=root.querySelector('#dm-runtime-doh .dm-badge');
+  updateRuntimeBadge(n,rt.doh==='yes'?'dm-ok':'dm-off',rt.doh==='yes'?'запущен':'остановлен');
   n=root.querySelector('#dm-runtime-uptime');if(n)n.textContent=uptime(rt.uptime);
-  n=root.querySelector('#dm-runtime-ipv4');if(n)n.innerHTML='';
-  if(n)n.appendChild(rt.ipv4==='yes'?badge('dm-ok','есть'):badge('dm-bad','нет'));
-  n=root.querySelector('#dm-runtime-ipv6');if(n)n.innerHTML='';
-  if(n)n.appendChild(rt.ipv6==='yes'?badge('dm-ok','есть'):badge('dm-off','выключен'));
-  n=root.querySelector('#dm-runtime-load');if(n){n.innerHTML='';n.appendChild(loadBar(rt.load1,(window.dmState&&window.dmState.cpu_count)||1));}
-  n=root.querySelector('#dm-runtime-memory');if(n){n.innerHTML='';n.appendChild(memoryBar(rt.memory_total_kb,rt.memory_available_kb));}
+  n=root.querySelector('#dm-runtime-ipv4 .dm-badge');
+  updateRuntimeBadge(n,rt.ipv4==='yes'?'dm-ok':'dm-bad',rt.ipv4==='yes'?'есть':'нет');
+  n=root.querySelector('#dm-runtime-ipv6 .dm-badge');
+  updateRuntimeBadge(n,rt.ipv6==='yes'?'dm-ok':'dm-off',rt.ipv6==='yes'?'есть':'выключен');
+  n=root.querySelector('#dm-runtime-load');
+  if(n){
+    var lp=loadPercent(rt.load1,(window.dmState&&window.dmState.cpu_count)||1);
+    if(lp!==null){
+      var fill=n.querySelector('.dm-load-fill'),val=n.querySelector('.dm-load-value'),meta=n.querySelector('.dm-load-meta');
+      if(fill)fill.style.width=lp+'%';
+      if(val)val.textContent=lp+'%';
+      if(meta)meta.textContent='load '+shortVal(rt.load1)+' · '+String((window.dmState&&window.dmState.cpu_count)||1)+' '+(Number((window.dmState&&window.dmState.cpu_count)||1)===1?'ядро':'ядра');
+    }
+  }
+  n=root.querySelector('#dm-runtime-memory');
+  if(n){
+    var mp=memoryPercent(rt.memory_total_kb,rt.memory_available_kb);
+    if(mp!==null){
+      var mf=n.querySelector('.dm-mem-fill'),mv=n.querySelector('.dm-mem-value'),mm=n.querySelector('.dm-mem-meta');
+      if(mf)mf.style.width=mp+'%';
+      if(mv)mv.textContent=memory(rt.memory_total_kb,rt.memory_available_kb);
+      if(mm)mm.textContent=mp+'% занято';
+    }
+  }
 }
 function startAutoStatus(root){
   stopAutoStatus();
@@ -3068,6 +3090,8 @@ function startAutoStatus(root){
   fullStatusTimer=setInterval(function(){
     if(!rootAlive(root)){stopAutoStatus();return;}
     if(document.hidden||state.busy||state.versionCheck&&state.versionCheck.running)return;
+    var a=document.activeElement;
+    if(a&&root.contains(a)&&/^(INPUT|TEXTAREA|SELECT|BUTTON)$/.test(a.tagName))return;
     refresh(root,true);
   },30000);
 }
