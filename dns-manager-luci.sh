@@ -882,9 +882,14 @@ openwrt_release() { sed -n "s/^DISTRIB_RELEASE='\([^']*\)'.*/\1/p" /etc/openwrt_
 
 status_json() {
     _mv="$(manager_version 2>/dev/null || true)"
-    _profile="$(cfg_get DNS_PROFILE)"; [ -n "$_profile" ] || _profile=hybrid
-    _mode="$(cfg_get DNS_SELECTION_MODE)"; [ -n "$_mode" ] || _mode=quick
-    _selection_category="$(cfg_get DNS_SELECTION_CATEGORY)"; [ -n "$_selection_category" ] || _selection_category=bypass
+    # Do not use load_config() defaults here. An untouched OpenWrt router must
+    # remain "not selected", not appear as the Manager's default bypass profile.
+    _profile_cfg="$(cfg_get DNS_PROFILE)"
+    _mode_cfg="$(cfg_get DNS_SELECTION_MODE)"
+    _selection_category_cfg="$(cfg_get DNS_SELECTION_CATEGORY)"
+    _profile=none
+    _mode=none
+    _selection_category=none
     _watchdog="$(cfg_get WATCHDOG_ENABLED)"; [ -n "$_watchdog" ] || _watchdog=0
     _watchdog_interval="$(cfg_get WATCHDOG_INTERVAL)"; [ -n "$_watchdog_interval" ] || _watchdog_interval=90
     _watchdog_backend="$(cfg_get WATCHDOG_BACKEND)"; [ -n "$_watchdog_backend" ] || _watchdog_backend=procd
@@ -965,11 +970,21 @@ status_json() {
         _j=0
         while uci -q get "https-dns-proxy.@https-dns-proxy[$_j]" >/dev/null 2>&1; do
             _up="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_j].listen_port" 2>/dev/null || true)"
-            _uu="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_j].resolver_url" 2>/dev/null | sed 's:/*$::')"
+            _uu="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_j].resolver_url" 2>/dev/null | sed 's:/*$::' )"
             if [ "$_up" = "$_port" ] && [ "$_uu" = "$_url_cmp" ]; then _match=$((_match + 1)); break; fi
             _j=$((_j + 1))
         done
     done
+
+    # A profile is active only when the real DoH scheme matches completely.
+    if [ "$_doh_total" -gt 0 ] 2>/dev/null && [ "$_match" -eq "$_doh_total" ] 2>/dev/null; then
+        _profile="$_profile_cfg"
+        _mode="$_mode_cfg"
+        _selection_category="$_selection_category_cfg"
+        [ -n "$_profile" ] || _profile=hybrid
+        [ -n "$_mode" ] || _mode=quick
+        [ -n "$_selection_category" ] || _selection_category=bypass
+    fi
 
     _ipv4=no; ip -4 route show default 2>/dev/null | grep -q . && _ipv4=yes
     _ipv6=no; ip -6 route show default 2>/dev/null | grep -q . && _ipv6=yes
