@@ -1905,13 +1905,36 @@ function renderOverview(root,st){
 }
 function resolverRows(st){
   var out=[],seen=0;
-  (st.slots||[]).forEach(function(d){if(!d.id)return;seen++;out.push(E('div',{'class':'dm-doh-row'},[
-    E('span',{'class':'dm-doh-slot'},d.slot||'—'),E('span',{'class':'dm-doh-name'},d.name||d.id),E('span',{'class':'dm-doh-url'},d.url||'—'),
-    E('span',{'class':'dm-doh-port'},d.port?'порт '+d.port:'—'),E('span',{'class':'dm-doh-ping'},ping(d.ping)),E('span',{'class':'dm-doh-state'},stateBadge(d.status,d.ping))
-  ]));});
+  (st.doh_instances||[]).forEach(function(d){
+    if(!d)return;
+    seen++;
+    var slot=d.slot?slotLabel(d.slot):'вне слотов';
+    var name=d.name||d.url||('Экземпляр '+(d.index||''));
+    var status=Number(d.running||0)===1?'RUNNING':'FAIL';
+    out.push(E('div',{'class':'dm-doh-row'},[
+      E('span',{'class':'dm-doh-slot'},slot),
+      E('span',{'class':'dm-doh-name'},name),
+      E('span',{'class':'dm-doh-url'},d.url||'—'),
+      E('span',{'class':'dm-doh-port'},d.port?'порт '+d.port:'—'),
+      E('span',{'class':'dm-doh-ping'},d.listen_addr?'bind '+d.listen_addr:'—'),
+      E('span',{'class':'dm-doh-state'},Number(d.running||0)===1?badge('dm-ok','запущен'):badge('dm-bad','остановлен'))
+    ]));
+  });
+  if(!seen)(st.slots||[]).forEach(function(d){
+    if(!d||!d.id)return;
+    seen++;
+    var ci=checkInfo(d.id,d),status=String(ci.status||d.status||'').toUpperCase();
+    out.push(E('div',{'class':'dm-doh-row'},[
+      E('span',{'class':'dm-doh-slot'},slotLabel(d.slot||'—')),
+      E('span',{'class':'dm-doh-name'},d.name||d.id),
+      E('span',{'class':'dm-doh-url'},'—'),
+      E('span',{'class':'dm-doh-port'},d.port?'порт '+d.port:'—'),
+      E('span',{'class':'dm-doh-ping'},ping(ci.ping||d.ping)),
+      E('span',{'class':'dm-doh-state'},stateBadge(status,ci.ping||d.ping))
+    ]));
+  });
   return [out,seen];
 }
-
 function renderDoH(root,st){
   var e=root.querySelector('#dm-doh');if(!e)return;e.innerHTML='';
   var rr=resolverRows(st), rows=rr[0], count=rr[1];
