@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.5.77
+# Version: 1.5.78
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -22,7 +22,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.5.77"
+VERSION="1.5.78"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -912,8 +912,15 @@ cpu_load_percent() {
     printf '%s\n' "$(( (100 * ((t2-t1) - (i2-i1)) + (t2-t1)/2) / (t2-t1) ))" | tee "$f.pct"
 }
 
+runtime_uptime_seconds() {
+    _u="$(awk 'NR==1 {v=int($1); if(v>=0) print v; exit}' /proc/uptime 2>/dev/null || true)"
+    case "$_u" in ''|*[!0-9]*) return 1;; esac
+    printf '%s' "$_u"
+}
+
 runtime_json() {
-    _uptime="$(awk '{printf "%s",int($1)}' /proc/uptime 2>/dev/null || true)"
+    _uptime="$(runtime_uptime_seconds 2>/dev/null || true)"
+    [ -n "$_uptime" ] || _uptime=0
     _load="$(cpu_load_percent)"
     _mem_t="$(awk '/MemTotal:/ {print $2;exit}' /proc/meminfo 2>/dev/null || true)"; [ -n "$_mem_t" ] || _mem_t=0
     _mem_a="$(awk '/MemAvailable:/ {print $2;exit}' /proc/meminfo 2>/dev/null || true)"; [ -n "$_mem_a" ] || _mem_a=0
@@ -1551,7 +1558,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.5.77
+// DNS Manager LuCI version: 1.5.78
 var callStatus = rpc.declare({ object:'dns_manager', method:'status', params:['detail'], expect:{} });
 var callRuntime = rpc.declare({ object:'dns_manager', method:'runtime', expect:{} });
 function statusDetail(){return currentRoute()==='network'?1:0;}
@@ -1613,7 +1620,15 @@ function activeProfileLabel(st){
 }
 function catName(c){ var x=CATEGORY.filter(function(v){return v[0]===c;})[0]; return x?x[1]:(c||'—'); }
 function ping(v){ return v && /^\d+$/.test(String(v)) ? v+' мс' : '—'; }
-function uptime(sec){ var n=Number(sec||0); if(!isFinite(n)||n<0)return '—'; var d=Math.floor(n/86400); n%=86400; var h=Math.floor(n/3600); n%=3600; var m=Math.floor(n/60); var s=Math.floor(n%60); return (d?d+' дн ':'')+(d||h?h+' ч ':'')+m+' мин '+s+' с';}
+function uptime(sec){
+  var n=Number(sec);
+  if(!isFinite(n)||n<0)return '—';
+  n=Math.floor(n);
+  var d=Math.floor(n/86400);n%=86400;
+  var h=Math.floor(n/3600);n%=3600;
+  var m=Math.floor(n/60);var s=Math.floor(n%60);
+  return (d?d+' дн ':'')+(d||h?h+' ч ':'')+m+' мин '+s+' с';
+}
 function memory(total,avail){ var t=Number(total||0),a=Number(avail||0); if(!t)return '—'; return Math.max(0,Math.round((t-a)/1024))+' / '+Math.round(t/1024)+' МБ'; }
 function memoryPercent(total,avail){
   var t=Number(total||0),a=Number(avail||0);
@@ -3078,8 +3093,25 @@ function showLog(root){
 }
 
 var autoStatusTimer=null;
+var uptimeTimer=null;
 function stopAutoStatus(){
   if(autoStatusTimer){clearInterval(autoStatusTimer);autoStatusTimer=null;}
+  if(uptimeTimer){clearInterval(uptimeTimer);uptimeTimer=null;}
+}
+function syncLocalUptime(root,sec){
+  var n=Number(sec);
+  if(!isFinite(n)||n<0)return;
+  state.runtimeUptimeBase=Math.floor(n);
+  state.runtimeUptimeAt=Date.now();
+  var node=root&&root.querySelector?root.querySelector('#dm-runtime-uptime'):null;
+  if(node)node.textContent=uptime(state.runtimeUptimeBase);
+}
+function tickLocalUptime(root){
+  if(!rootAlive(root)||!state.runtimeUptimeAt)return;
+  var elapsed=Math.max(0,Math.floor((Date.now()-state.runtimeUptimeAt)/1000));
+  var value=state.runtimeUptimeBase+elapsed;
+  var node=root.querySelector('#dm-runtime-uptime');
+  if(node)node.textContent=uptime(value);
 }
 function updateRuntimeBadge(node,kind,text){
   if(!node)return;
@@ -3088,7 +3120,8 @@ function updateRuntimeBadge(node,kind,text){
 }
 function updateRuntime(root,rt){
   if(!rootAlive(root)||!rt)return;
-  var n=root.querySelector('#dm-runtime-uptime');if(n)n.textContent=uptime(rt.uptime);
+  syncLocalUptime(root,rt.uptime_seconds!==undefined?rt.uptime_seconds:rt.uptime);
+  var n=root.querySelector('#dm-runtime-uptime');
   n=root.querySelector('#dm-runtime-load');
   if(n){
     var lp=Number(rt.cpu_load);
@@ -3126,6 +3159,7 @@ function refreshDashboard(root){
 function startAutoStatus(root){
   stopAutoStatus();
   var sysTick=0,sysBusy=false;
+  uptimeTimer=setInterval(function(){tickLocalUptime(root);},1000);
   autoStatusTimer=setInterval(function(){
     if(!rootAlive(root)){
       stopAutoStatus();
