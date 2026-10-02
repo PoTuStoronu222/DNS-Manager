@@ -1096,6 +1096,9 @@ fi
 if [ "${NTP_PRESET_USER_SET:-0}" != 1 ] && [ "${NTP_PRESET:-}" = "cf_ip" ]; then
     NTP_PRESET="vniiftri_moscow"
 fi
+repair_catalog_category_state
+sync_regional_dns_state
+}
 repair_catalog_category_state() {
     _id="doh_lacontrevoie"
     _cat="$(dns_cat "$_id" 2>/dev/null || true)"
@@ -1124,8 +1127,6 @@ repair_catalog_category_state() {
     return 0
 }
 
-sync_regional_dns_state
-}
 save_config() {
     [ "${TX_ACTIVE:-0}" = 1 ] && [ "${DEFER_CONFIG_SAVE:-0}" = 1 ] && return 0
 sync_regional_dns_state
