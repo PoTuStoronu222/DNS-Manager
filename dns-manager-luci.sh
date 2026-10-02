@@ -892,6 +892,26 @@ detect_runtime_force_state() {
 
 openwrt_release() { sed -n "s/^DISTRIB_RELEASE='\([^']*\)'.*/\1/p" /etc/openwrt_release 2>/dev/null | head -n1; }
 
+# Lightweight system metrics path. This path does not load the DNS Manager backend.
+system_info_json() {
+    _host="$(uci -q get system.@system[0].hostname 2>/dev/null || cat /proc/sys/kernel/hostname 2>/dev/null || true)"
+    _uptime="$(awk '{printf "%s",int($1)}' /proc/uptime 2>/dev/null || true)"
+    _load="$(awk '{printf "%s",$1}' /proc/loadavg 2>/dev/null || true)"
+    _mem_t="$(awk '/MemTotal:/ {print $2;exit}' /proc/meminfo 2>/dev/null || true)"
+    _mem_a="$(awk '/MemAvailable:/ {print $2;exit}' /proc/meminfo 2>/dev/null || true)"
+    _cpu_count="$(awk '/^processor[[:space:]]*:/ {n++} END {print n+0}' /proc/cpuinfo 2>/dev/null)"
+    case "$_cpu_count" in ''|*[!0-9]*|0) _cpu_count=1;; esac
+    case "$_mem_t" in ''|*[!0-9]*) _mem_t=0;; esac
+    case "$_mem_a" in ''|*[!0-9]*) _mem_a=0;; esac
+
+    printf '{"ok":true,"hostname":'; json_quote "$_host"
+    printf ',"uptime":'; json_quote "$_uptime"
+    printf ',"load1":'; json_quote "$_load"
+    printf ',"cpu_count":%s' "$_cpu_count"
+    printf ',"memory_total_kb":%s,"memory_available_kb":%s' "$_mem_t" "$_mem_a"
+    printf '}'
+}
+
 status_json() {
     maybe_background_update_check
     _mv="$(manager_version 2>/dev/null || true)"
