@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.32.9"
+VERSION="3.33.0"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -5453,6 +5453,11 @@ printf "  %-42s %s\n" "Активный nft:" "$(state_word "$NFT_ACTIVE")"
 printf "  %-42s %s\n" "Активный iptables:" "$(state_word "$IPTABLES_ACTIVE")"
 printf "  %-42s %s\n" "Аппаратное ускорение:" "$(state_word "$FLOW_OFFLOAD")"
 menu_section "НАСТРОЙКИ DNS Manager"
+_profile_name="Не выбран"
+# A saved DNS_PROFILE is not enough to call a profile active. The profile
+# must still be present in the real https-dns-proxy configuration and match
+# the current Manager scheme exactly.
+if [ "${DOH_TOTAL:-0}" -gt 0 ] 2>/dev/null && [ "${DOH_MATCH:-0}" -eq "${DOH_TOTAL:-0}" ] 2>/dev/null; then
 case "${DNS_SELECTION_MODE:-}:${DNS_SELECTION_CATEGORY:-}" in
 quick:bypass)
     _profile_name="Максимальный обход"
@@ -5491,6 +5496,7 @@ hybrid:)
     esac
     ;;
 esac
+fi
 printf "  %-42s ${C_YELLOW}%s${C_NC}\n" "Текущий профиль:" "$_profile_name"
 printf "  %-42s %s\n" "Балансировка DNS:" "$(module_state_word balance "$BALANCER_ENABLED")"
 printf "  %-42s %s\n" "Отдельный DNS (.ru/.su/.рф):" "$(module_state_word tld "$TLD_SPLIT")"
