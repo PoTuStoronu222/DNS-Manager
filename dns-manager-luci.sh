@@ -282,6 +282,7 @@ fetch_url() {
     if command -v curl >/dev/null 2>&1; then
         curl -fsSL --connect-timeout 5 --max-time 30 \
             -H 'User-Agent: DNS-Manager-LuCI' \
+            -H 'Accept: application/vnd.github.raw+json' \
             -H 'Cache-Control: no-cache' \
             -o "$_out" "$_fetch_url" >/dev/null 2>&1
     elif command -v wget >/dev/null 2>&1; then
@@ -289,11 +290,13 @@ fetch_url() {
             --header='User-Agent: DNS-Manager-LuCI' \
             --header='Accept: application/vnd.github.raw+json' \
             --header='Cache-Control: no-cache' \
-            --header='User-Agent: DNS-Manager-LuCI' \
-            --header='Cache-Control: no-cache' \
             -O "$_out" "$_fetch_url" >/dev/null 2>&1
     elif command -v uclient-fetch >/dev/null 2>&1; then
-        uclient-fetch -q -O "$_out" "$_fetch_url" >/dev/null 2>&1
+        uclient-fetch -q \
+            --header='User-Agent: DNS-Manager-LuCI' \
+            --header='Accept: application/vnd.github.raw+json' \
+            --header='Cache-Control: no-cache' \
+            -O "$_out" "$_fetch_url" >/dev/null 2>&1
     else
         return 1
     fi
