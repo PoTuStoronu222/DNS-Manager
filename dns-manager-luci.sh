@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.5.102
+# Version: 1.5.103
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -23,7 +23,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.5.102"
+VERSION="1.5.103"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -1271,6 +1271,67 @@ current_slot_result_for_id() {
     [ -n "$_luci_result" ] && { printf '%s' "$_luci_result"; return 0; }
     [ -n "$_manager_result" ] && { printf '%s' "$_manager_result"; return 0; }
     return 1
+}
+# Assigned DNS checks use the real local listener port. Unassigned catalog DNS
+# keeps the remote DoH check until the DNS is assigned to a slot.
+assigned_port_for_id() {
+    _id="$1"
+    [ -n "$_id" ] || return 1
+    for _s in 1 2 3 4 5 6 RU RU_2; do
+        _sid="$(cfg_get "SLOT_$_s" 2>/dev/null || true)"
+        [ "$_sid" = "$_id" ] || continue
+        _port="$(cfg_get "PORT_$_s" 2>/dev/null || true)"
+        [ -n "$_port" ] || return 1
+        printf "%s|%s" "$_s" "$_port"
+        return 0
+    done
+    return 1
+}
+
+local_slot_test_one() {
+    _id="$1"
+    _port="$2"
+    _slot="$3"
+    _cat="$(dns_cat "$_id" 2>/dev/null || true)"
+    _name="$(dns_name "$_id" 2>/dev/null || printf "%s" "$_id")"
+    _domain="example.com"
+    case "$_slot" in
+        RU|RU_2) _domain="yandex.ru" ;;
+    esac
+    _out="$TMP_ROOT/local-dns-test.$$.out"
+    _ms=""
+    _status="LOCAL_DNS_ERROR"
+    if [ -z "$_port" ]; then
+        _status="LOCAL_PORT_NOT_ASSIGNED"
+    elif ! listener_port_exists "$_port"; then
+        _status="LOCAL_PORT_CLOSED"
+    elif ! command -v dig >/dev/null 2>&1; then
+        _status="DIG_NOT_INSTALLED"
+    else
+        rm -f "$_out" 2>/dev/null || true
+        if ! dig @127.0.0.1 -p "$_port" "$_domain" A +time=2 +tries=1 +stats >"$_out" 2>&1; then
+            _status="LOCAL_DNS_NO_RESPONSE"
+        else
+            _ms="$(sed -n "s/^;; Query time: \\([0-9][0-9]*\\) msec$/\\1/p" "$_out" 2>/dev/null | head -n1)"
+            _dns_rcode="$(sed -n "s/^;; ->>HEADER<<- opcode: QUERY, status: \\([^,][^,]*\\),.*/\\1/p" "$_out" 2>/dev/null | head -n1)"
+            case "$_dns_rcode" in
+                NOERROR)
+                    case "$_ms" in
+                        ""|*[!0-9]*) _status="LOCAL_DNS_BAD_TIMING" ;;
+                        *) _status="OK" ;;
+                    esac
+                    ;;
+                SERVFAIL) _status="LOCAL_DNS_SERVFAIL" ;;
+                REFUSED) _status="LOCAL_DNS_REFUSED" ;;
+                "") _status="LOCAL_DNS_NO_RESPONSE" ;;
+                *) _status="LOCAL_DNS_$_dns_rcode" ;;
+            esac
+        fi
+    fi
+    case "$_ms" in ""|*[!0-9]*) _ms=-1;; esac
+    printf "%s|%s|%s|%s|%s\n" "$_id" "$_cat" "$_name" "$_ms" "$_status" > "$TMP_DIR/t.$_id"
+    rm -f "$_out" 2>/dev/null || true
+    [ "$_status" = OK ]
 }
 new_job_id() {
     case "${1:-}" in
