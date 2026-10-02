@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.34.0"
+VERSION="3.34.1"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -6741,13 +6741,11 @@ setting_process() {
                     printf " (${C_WHITE}%s${C_NC})" "$FORCED_DNS_SOURCE"
                 fi
                 printf ".\n"
-                info_msg "DNS Manager этот внешний перехват не изменяет."
-                pause
-                return 0
-            fi
-            if [ "$_state" = 2 ]; then
+                info_msg "Настройка будет приведена к конфигурации DNS Manager."
+                printf "\n"
+            elif [ "$_state" = 2 ]; then
                 printf "  ${C_YELLOW}Обнаружены другие настройки forced-DNS.${C_NC}\n"
-                info_msg "Активный внешний перехват DNS не обнаружен. Текущие отличающиеся настройки будут исправлены."
+                info_msg "Текущие отличающиеся настройки будут исправлены."
                 printf "\n"
             fi
         fi
