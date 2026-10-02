@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.33.6"
+VERSION="3.33.7"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -2994,8 +2994,28 @@ sysctl_stock_value() {
 }
 
 
-
-
+restore_sysctl_stock() {
+    _expected="$1"
+    while IFS= read -r _p; do
+        [ -n "$_p" ] || continue
+        _k="${_p%%=*}"
+        if ! sysctl -n "$_k" >/dev/null 2>&1; then
+            continue
+        fi
+        _stock="$(sysctl_stock_value "$_k" 2>/dev/null || true)"
+        [ -n "$_stock" ] || {
+            warn_msg "Не удалось определить штатное значение $_k; файл DNS Manager сохранён."
+            return 1
+        }
+        sysctl -w "$_k=$_stock" >/dev/null 2>&1 || {
+            warn_msg "Не удалось восстановить штатное значение $_k; файл DNS Manager сохранён."
+            return 1
+        }
+    done <<EOF_SYSCTL_STOCK
+$_expected
+EOF_SYSCTL_STOCK
+    return 0
+}
 apply_sysctl() {
     f="$(sysctl_base_manager_path)"
     _expected="$(sysctl_base_expected)"
@@ -3027,19 +3047,7 @@ remove_sysctl_base() {
         warn_msg "Базовые sysctl-параметры изменены извне; текущие значения сохранены."
         return 2
     fi
-    while IFS= read -r _p; do
-        [ -n "$_p" ] || continue
-        _k="${_p%%=*}"
-        _stock="$(sysctl_stock_value "$_k" 2>/dev/null || true)"
-        [ -n "$_stock" ] || {
-            warn_msg "Не удалось определить штатное значение $_k; файл DNS Manager сохранён."
-            return 1
-        }
-        sysctl -w "$_k=$_stock" >/dev/null 2>&1 || {
-            warn_msg "Не удалось восстановить штатное значение $_k; файл DNS Manager сохранён."
-            return 1
-        }
-    done <<EOF_SYSCTL_BASE_STOCK
+    restore_sysctl_stock "$_expected" || return 1
 $_expected
 EOF_SYSCTL_BASE_STOCK
     _f="$(sysctl_base_manager_path)"
@@ -3431,22 +3439,7 @@ remove_sysctl_extended() {
         warn_msg "Расширенные sysctl-параметры изменены извне; текущие значения сохранены."
         return 2
     fi
-    while IFS= read -r _p; do
-        [ -n "$_p" ] || continue
-        _k="${_p%%=*}"
-        if ! sysctl -n "$_k" >/dev/null 2>&1; then
-            continue
-        fi
-        _stock="$(sysctl_stock_value "$_k" 2>/dev/null || true)"
-        [ -n "$_stock" ] || {
-            warn_msg "Не удалось определить штатное значение $_k; файл DNS Manager сохранён."
-            return 1
-        }
-        sysctl -w "$_k=$_stock" >/dev/null 2>&1 || {
-            warn_msg "Не удалось восстановить штатное значение $_k; файл DNS Manager сохранён."
-            return 1
-        }
-    done <<EOF_SYSCTL_EXT_STOCK
+    restore_sysctl_stock "$_expected" || return 1
 $_expected
 EOF_SYSCTL_EXT_STOCK
     _f="$(sysctl_extended_manager_path)"
