@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.5.64
+# Version: 1.5.65
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -10,6 +10,7 @@ set -eu
 APP="dns-manager-luci"
 MANAGER="/usr/bin/dns-manager"
 RPC_PLUGIN="/usr/libexec/rpcd/dns_manager"
+BACKEND_FILE="/usr/lib/dns-manager-luci/backend.sh"
 ACL_FILE="/usr/share/rpcd/acl.d/luci-app-dns-manager.json"
 MENU_FILE="/usr/share/luci/menu.d/luci-app-dns-manager.json"
 VIEW_DIR="/www/luci-static/resources/view/dns_manager"
@@ -20,9 +21,8 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 # Legacy update compatibility: admin/services/dns_manager
-RUNTIME_UPDATE_STATE="$BACKUP_DIR/update.state"
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.5.64"
+VERSION="1.5.65"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -41,7 +41,7 @@ install_files() {
     require_manager || return 1
 
     command -v jsonfilter >/dev/null 2>&1 || say "ℹ jsonfilter не найден — используется встроенный обработчик RPC-параметров."
-    mkdir -p "$VIEW_DIR" /usr/libexec/rpcd /usr/share/rpcd/acl.d /usr/share/luci/menu.d "$RUNTIME_DIR/checks" "$BACKUP_DIR" "$(dirname "$STATE_FILE")" || return 1
+    mkdir -p "$VIEW_DIR" /usr/libexec/rpcd /usr/lib/dns-manager-luci /usr/share/rpcd/acl.d /usr/share/luci/menu.d "$RUNTIME_DIR/checks" "$BACKUP_DIR" "$(dirname "$STATE_FILE")" || return 1
     rm -f "/etc/dns-manager/state/current-dns-test-summary.conf" 2>/dev/null || true
 
     cat > "$MENU_FILE" <<'EOF_MENU'
@@ -108,7 +108,7 @@ EOF_MENU
 }
 EOF_ACL
 
-    cat > "$RPC_PLUGIN" <<'EOF_RPC'
+    cat > "$BACKEND_FILE" <<'EOF_RPC'
 #!/bin/sh
 # DNS Manager LuCI rpcd plugin
 # Lightweight read path for dashboard; mutations and DNS tests use the
@@ -500,21 +500,6 @@ update_check_json() {
     component_update_check || true
     status_json
 }
-
-maybe_background_update_check() {
-    [ -d "$RUNTIME_DIR" ] || return 0
-    _now="$(date +%s 2>/dev/null || printf 0)"
-    _last="$(sed -n 's/^components_checked_at=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"
-    case "$_last" in ''|*[!0-9]*) _last=0;; esac
-    [ "$_now" -gt 0 ] || return 0
-    [ $((_now - _last)) -ge 43200 ] || return 0
-    mkdir "$RUNTIME_DIR/update-check.lock" 2>/dev/null || return 0
-    (
-        trap 'rm -rf "$RUNTIME_DIR/update-check.lock" 2>/dev/null || true' EXIT INT TERM
-        update_check_json >/dev/null 2>&1 || true
-    ) </dev/null >/dev/null 2>&1 &
-}
-
 
 update_manager_direct() {
     _installed="$(manager_version 2>/dev/null || true)"
@@ -1515,6 +1500,13 @@ case "${1:-}" in
     *) exit 1;;
 esac
 EOF_RPC
+    chmod 0755 "$BACKEND_FILE"
+    cat > "$RPC_PLUGIN" <<'EOF_RPC_WRAPPER'
+#!/bin/sh
+BACKEND="/usr/lib/dns-manager-luci/backend.sh"
+[ -x "$BACKEND" ] || { printf '{"ok":false,"error":"DNS Manager LuCI backend not found"}'; exit 1; }
+exec "$BACKEND" "$@"
+EOF_RPC_WRAPPER
     chmod 0755 "$RPC_PLUGIN"
 
     cat > "$VIEW_FILE" <<'EOF_JS'
@@ -1523,7 +1515,7 @@ EOF_RPC
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.5.64
+// DNS Manager LuCI version: 1.5.65
 var callStatus = rpc.declare({ object:'dns_manager', method:'status', params:['detail'], expect:{} });
 function statusDetail(){return currentRoute()==='network'?1:0;}
 var callCatalog = rpc.declare({ object:'dns_manager', method:'catalog', params:['category','offset','limit','only_ok'], expect:{} });
@@ -2545,7 +2537,6 @@ function render(root,st){
   renderJobIdle(root,st);
   state.activeTab=currentRoute();
   setActiveTab(root,state.activeTab);
-  if(currentRoute()==='dashboard' && !state.updateKick && Number(st.components_checked_at||0)===0){state.updateKick=true;setTimeout(function(){refresh(root,true);},2200);}
 }
 function refresh(root,keepPosition){
   if(!rootAlive(root))return Promise.resolve();
@@ -2560,18 +2551,6 @@ function refresh(root,keepPosition){
     window.dmState=window.dmState||{};
     render(root,window.dmState||{});
   });
-}
-function startAutoRefresh(root){
-  if(state.autoRefreshRoot)clearInterval(state.autoRefreshRoot);
-  state.autoRefreshRoot=null;
-  if(currentRoute()!=='dashboard')return;
-  state.autoRefreshRoot=setInterval(function(){
-    if(!rootAlive(root)){clearInterval(state.autoRefreshRoot);state.autoRefreshRoot=null;return;}
-    if(state.refreshBusy)return;
-    if(state.busy||state.updatingAll||(state.versionCheck&&state.versionCheck.running))return;
-    state.refreshBusy=true;
-    refresh(root,true).then(function(){state.refreshBusy=false;},function(){state.refreshBusy=false;});
-  },15000);
 }
 function toast(msg,type){}
 function checkUpdate(root){
@@ -3000,10 +2979,10 @@ function pollJob(root,job,meta,done){
       var s=String(j.status||'running').toUpperCase();
       if(s==='DONE'||s==='FAILED'){finish(j);return;}
       if(ticks++>maxTicks){finish({status:'FAILED',result:'fail',output:'Превышено время ожидания фоновой задачи.'});return;}
-      setTimeout(poll,700);
+      setTimeout(poll,1200);
     }).catch(function(){
       if(ticks++>maxErrors){finish({status:'FAILED',result:'fail',output:'RPC job временно недоступен.'});return;}
-      setTimeout(poll,1000);
+      setTimeout(poll,1200);
     });
   }
   poll();
@@ -3035,7 +3014,7 @@ function showLog(root){
 
 return view.extend({
   load:function(){return callStatus(statusDetail()).then(function(st){return st||{};});},
-  render:function(st){var root=E('div',{'class':'dm-wrap'});['dm-header','dm-overview','dm-doh','dm-profiles','dm-slots','dm-settings','dm-network','dm-job','dm-catalog','dm-log'].forEach(function(id){root.appendChild(E('section',{'id':id}));});injectStyle(root);window.dmState=st||{};state.activeTab=currentRoute();render(root,st||{});removeLegacyCbiActions();if(window.setTimeout)window.setTimeout(removeLegacyCbiActions,0);startAutoRefresh(root);return root;}
+  render:function(st){var root=E('div',{'class':'dm-wrap'});['dm-header','dm-overview','dm-doh','dm-profiles','dm-slots','dm-settings','dm-network','dm-job','dm-catalog','dm-log'].forEach(function(id){root.appendChild(E('section',{'id':id}));});injectStyle(root);window.dmState=st||{};state.activeTab=currentRoute();render(root,st||{});removeLegacyCbiActions();if(window.setTimeout)window.setTimeout(removeLegacyCbiActions,0);return root;}
 });
 EOF_JS
     chmod 0644 "$MENU_FILE" "$ACL_FILE" "$VIEW_FILE"
@@ -3065,7 +3044,7 @@ EOF_JS
 }
 
 uninstall_files() {
-    rm -f "$RPC_PLUGIN" "$ACL_FILE" "$MENU_FILE" "$VIEW_FILE" 2>/dev/null || true
+    rm -f "$RPC_PLUGIN" "$BACKEND_FILE" "$ACL_FILE" "$MENU_FILE" "$VIEW_FILE" 2>/dev/null || true
     rm -rf "$VIEW_DIR" "$RUNTIME_DIR" "$BACKUP_DIR" 2>/dev/null || true
     rm -f "$STATE_FILE" 2>/dev/null || true
     # the former dns_manager Lua controller. Remove only that DNS Manager-owned
