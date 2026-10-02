@@ -2958,18 +2958,6 @@ sysctl_stock_value() {
         *) return 1 ;;
     esac
 }
-sysctl_restore_stock_key() {
-    _k="$1"
-    _managed_value="$2"
-    _force="$3"
-    _cur="$(sysctl -n "$_k" 2>/dev/null)" || return 0
-    [ "$_force" = 1 ] || [ "$_cur" = "$_managed_value" ] || return 0
-    _stock="$(sysctl_stock_value "$_k" 2>/dev/null)" || return 0
-    [ -n "$_stock" ] || return 0
-    [ "$_cur" = "$_stock" ] && return 0
-    sysctl -w "$_k=$_stock" >/dev/null 2>&1 || return 1
-    return 0
-}
 
 
 
