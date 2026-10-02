@@ -1878,8 +1878,7 @@ EOF_FORCE_IPT
 prepare_dns_path() {
     detect_forced_dns_path >/dev/null 2>&1 || true
     if [ "${FORCED_DNS_EXTERNAL:-0}" = 1 ]; then
-        warn_msg "Обнаружен внешний forced-DNS ($FORCED_DNS_SOURCE). DNS Manager его не изменяет."
-        return 1
+        log_msg "Исправляю внешний forced-DNS ($FORCED_DNS_SOURCE) настройками DNS Manager."
     fi
     return 0
 }
