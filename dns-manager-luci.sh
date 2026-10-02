@@ -1062,7 +1062,35 @@ status_json() {
     printf ',"cpu_count":%s,"memory_total_kb":%s,"memory_available_kb":%s' "$_cpu_count" "$_mem_t" "$_mem_a"
     printf ',"catalog_total":%s,"catalog_version":' "$_cat_total"; json_quote "$(catalog_version)"; printf ',"catalog_revision":'; json_quote "$(catalog_revision)"
     printf ',"hdp_version":'; json_quote "$_hdp_installed"; printf ',"hdp_latest_version":'; json_quote "$_hdp_latest"; printf ',"hdp_update_available":%s,"hdp_check_ok":%s' "$_hdp_avail" "$_hdp_checked"
-    printf ',"slots":['
+    printf ',"doh_instances":['
+    _doh_first=1
+    _i=0
+    while uci -q get "https-dns-proxy.@https-dns-proxy[$_i]" >/dev/null 2>&1; do
+        _p="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].listen_port" 2>/dev/null || true)"
+        _a="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].listen_addr" 2>/dev/null || true)"
+        _u="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].resolver_url" 2>/dev/null | sed 's:/*$::' || true)"
+        _n="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].name" 2>/dev/null || true)"
+        [ -n "$_n" ] || _n="Экземпляр $((_i + 1))"
+        _run=0
+        [ -n "$_p" ] && printf '%s\n' "$_listen" | grep -qE "(^|[[:space:]])[^[:space:]]*:$p([[:space:]]|$)" && _run=1
+        _slot=""
+        for _s in 1 2 3 4 5 6 RU; do
+            _sid="$(cfg_get "SLOT_$_s")"; _sport="$(cfg_get "PORT_$_s")"
+            [ -n "$_sid" ] && [ -n "$_sport" ] || continue
+            _surl="$(catalog_field "$_sid" 5 2>/dev/null | sed 's:/*$::' || true)"
+            if [ "$_sport" = "$_p" ] && [ "$_surl" = "$_u" ]; then _slot="$_s"; break; fi
+        done
+        [ "$_doh_first" = 1 ] || printf ','
+        _doh_first=0
+        printf '{"index":%s,"name":' "$((_i + 1))"; json_quote "$_n"
+        printf ',"port":'; json_quote "$_p"
+        printf ',"listen_addr":'; json_quote "$_a"
+        printf ',"url":'; json_quote "$_u"
+        printf ',"running":%s,"slot":' "$_run"; json_quote "$_slot"
+        printf '}'
+        _i=$((_i + 1))
+    done
+    printf '],"slots":['
     _first=1
     for _s in 1 2 3 4 5 6 RU; do
         _id="$(cfg_get "SLOT_${_s}")"; _cat="$(cfg_get "SLOT_${_s}_CAT")"; _port="$(cfg_get "PORT_${_s}")"
@@ -1782,26 +1810,23 @@ function renderOverview(root,st){
   var wdDetails=yes(st.watchdog)?'интервал '+shortVal(st.watchdog_interval)+' с · порог '+shortVal(st.watchdog_fail_threshold)+' цикла':'автопроверка отключена';
 
   var dnsItems=[];
-  (st.slots||[]).forEach(function(d){
-    if(!d||!d.id)return;
-    var slot=d.slot||'—';
-    var name=d.name||d.id;
-    var ci=checkInfo(d.id,d);
-    var sn=String(ci.status||d.status||'').toUpperCase();
-    var statusNode=sn==='RUNNING'?badge('dm-warn','проверяется'):sn==='OK'&&hasPing(ci.ping||d.ping)?badge('dm-ok','доступен'):sn==='OK'?badge('dm-off','есть, но без пинга'):sn?badge('dm-bad','недоступен'):badge('dm-off','нет данных');
+  (st.doh_instances||[]).forEach(function(d){
+    if(!d)return;
+    var slot=d.slot?slotLabel(d.slot):'вне слотов';
+    var name=d.name||d.url||('Экземпляр '+(d.index||''));
+    var statusNode=Number(d.running||0)===1?badge('dm-ok','запущен'):badge('dm-bad','остановлен');
     dnsItems.push(E('div',{'class':'dm-component-dns'},[
       E('div',{'class':'dm-component-dns-main'},[
-        E('span',{'class':'dm-component-dns-slot'},slotLabel(slot)),
+        E('span',{'class':'dm-component-dns-slot'},slot),
         E('span',{'class':'dm-component-dns-name'},name)
       ]),
       E('div',{'class':'dm-component-dns-meta'},[
-        E('span',{'class':'dm-component-dns-ping'},ping(ci.ping||d.ping)),
+        E('span',{'class':'dm-component-dns-ping'},d.port?'127.0.0.1:'+d.port:'—'),
         statusNode
       ])
     ]));
   });
   if(!dnsItems.length)dnsItems.push(E('div',{'class':'dm-hint'},'DNS в слоты не назначены.'));
-
   var components=card('Компоненты',[
     componentItem('Автопроверка и замена DNS',wd,wdDetails),
     componentItem('Принудительный DNS для устройств',force),
