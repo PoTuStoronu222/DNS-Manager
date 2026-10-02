@@ -1636,7 +1636,7 @@ function settingModuleState(st,key){
 function settingStateView(st,key){
   var ms=settingModuleState(st,key);
   if(ms===1)return {kind:'dm-ok',text:'включено'};
-  if(ms===2)return {kind:'dm-warn',text:'требует внимания'};
+  if(ms===2)return {kind:'dm-warn',text:'другое'};
   if(ms===0)return {kind:'dm-off',text:'выключено'};
   return yes(st[key])?{kind:'dm-ok',text:'включено'}:{kind:'dm-off',text:'выключено'};
 }
@@ -2210,8 +2210,8 @@ function renderSlots(root,st){
 function settingCard(root,x,st){
   var en=yes(st[x[0]]),busy=state.busySetting===x[0],feedback=settingFeedback(x[1],x[0]),sv=settingStateView(st,x[0]);
   var active=(settingModuleState(st,x[0])===1)||((settingModuleState(st,x[0])===-1)&&en);
-  var actionLabel=sv.text==='требует внимания'?'Исправить':(active?'Выключить':'Включить');
-  var actionEnabled=sv.text==='требует внимания'?1:(active?0:1);
+  var actionLabel=sv.text==='другое'?'Исправить':(active?'Выключить':'Включить');
+  var actionEnabled=sv.text==='другое'?1:(active?0:1);
   var actions=[
     badge(busy?'dm-warn':sv.kind,busy?'изменение':sv.text),
     btn(busy?'Сохраняю…':actionLabel,busy?'cbi-button-neutral':(actionEnabled?'cbi-button-add':'cbi-button-remove'),function(){setSetting(x[0],actionEnabled,root);},{disabled:!!state.busy})
