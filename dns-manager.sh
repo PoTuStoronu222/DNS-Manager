@@ -2908,6 +2908,12 @@ firewall_find_exact_rule_signature() {
     done
     return 1
 }
+settings_file_normalized() {
+    _sf="$1"
+    [ -f "$_sf" ] || { printf ''; return 0; }
+    sed -e '/^[[:space:]]*#/d' -e '/^[[:space:]]*$/d' "$_sf" 2>/dev/null
+}
+
 sysctl_base_manager_path() { printf '%s' "/etc/sysctl.d/90-dns-manager.conf"; }
 sysctl_extended_manager_path() { printf '%s' "/etc/sysctl.d/91-dns-manager-extended.conf"; }
 sysctl_base_managed_files() {
@@ -5956,20 +5962,30 @@ check_sysctl_extended_state() {
         _k="${_p%%=*}"
         _desired_v="${_p#*=}"
         if ! sysctl -n "$_k" >/dev/null 2>&1; then
+            _stock=0
+            _desired=0
             continue
         fi
         _supported=$((_supported + 1))
         _cur="$(sysctl -n "$_k" 2>/dev/null)"
-        [ "$_cur" = "$_desired_v" ] || _desired=0
         _stock_v="$(sysctl_stock_value "$_k" 2>/dev/null || true)"
         [ -n "$_stock_v" ] && [ "$_cur" = "$_stock_v" ] || _stock=0
+        [ "$_cur" = "$_desired_v" ] || _desired=0
     done <<EOF_CHECK_EXT_STATE
 $_expected
 EOF_CHECK_EXT_STATE
-    [ "$_supported" -gt 0 ] || { printf "0"; return 0; }
-    [ "$_stock" = 1 ] && { printf "0"; return 0; }
-    [ "$_desired" = 1 ] && { printf "1"; return 0; }
-    printf "2"
+    _file="/etc/sysctl.d/91-dns-manager-extended.conf"
+    _file_current="$(settings_file_normalized "$_file")"
+    _file_desired="$(printf '%s\n' "$_expected" | sed -e '/^[[:space:]]*#/d' -e '/^[[:space:]]*$/d')"
+    if [ "$_supported" -eq 0 ]; then
+        printf "2"
+    elif [ "$_stock" = 1 ] && [ ! -f "$_file" ]; then
+        printf "0"
+    elif [ "$_desired" = 1 ] && [ "$_file_current" = "$_file_desired" ]; then
+        printf "1"
+    else
+        printf "2"
+    fi
 }
 check_module_state() {
     _sec="$(get_dnsmasq_section)"
@@ -6026,12 +6042,14 @@ check_module_state() {
             done <<EOF_CHECK_BASE_STATE
 $(sysctl_base_expected)
 EOF_CHECK_BASE_STATE
-            if [ "$_stock" = 1 ]; then printf 0
-            elif [ "$_desired" = 1 ]; then printf 1
+            _file="/etc/sysctl.d/90-dns-manager.conf"
+            _file_current="$(settings_file_normalized "$_file")"
+            _file_desired="$(sysctl_base_expected)"
+            if [ "$_stock" = 1 ] && [ ! -f "$_file" ]; then printf 0
+            elif [ "$_desired" = 1 ] && [ "$_file_current" = "$_file_desired" ]; then printf 1
             else printf 2
             fi
             ;;
-
         force)
             detect_forced_dns_path >/dev/null 2>&1 || true
             if [ "${FORCED_DNS_EXTERNAL:-0}" = 1 ]; then
