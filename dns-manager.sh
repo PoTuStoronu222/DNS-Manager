@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.34.4"
+VERSION="3.34.5"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -1096,6 +1096,34 @@ fi
 if [ "${NTP_PRESET_USER_SET:-0}" != 1 ] && [ "${NTP_PRESET:-}" = "cf_ip" ]; then
     NTP_PRESET="vniiftri_moscow"
 fi
+repair_catalog_category_state() {
+    _id="doh_lacontrevoie"
+    _cat="$(dns_cat "$_id" 2>/dev/null || true)"
+    [ "$_cat" = "clean" ] || return 0
+
+    _changed=0
+    for _slot in 1 2 3 4 5 6 RU RU_2; do
+        eval "_sid=\${SLOT_${_slot}:-}"
+        [ "$_sid" = "$_id" ] || continue
+        eval "_scat=\${SLOT_${_slot}_CAT:-}"
+        if [ "$_scat" != "clean" ]; then
+            eval "SLOT_${_slot}_CAT=\"clean\""
+            _changed=1
+        fi
+    done
+
+    if [ -s "$TEST_RESULTS" ]; then
+        _results_tmp="$TMP_DIR/catalog-category-repair.$"
+        awk -F'|' -v OFS='|' '
+            $1=="doh_lacontrevoie" { $2="clean" }
+            { print }
+        ' "$TEST_RESULTS" > "$_results_tmp" 2>/dev/null && mv -f "$_results_tmp" "$TEST_RESULTS" 2>/dev/null || rm -f "$_results_tmp" 2>/dev/null || true
+    fi
+
+    [ "$_changed" = 1 ] && save_config >/dev/null 2>&1 || true
+    return 0
+}
+
 sync_regional_dns_state
 }
 save_config() {
