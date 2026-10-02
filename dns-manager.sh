@@ -3341,7 +3341,9 @@ apply_client_fixes() {
             _candidate="/etc/dnsmasq.d/${_n}-dns-manager-client-fixes.conf"
             [ -f "$_candidate" ] || continue
             _cur="$(settings_file_normalized "$_candidate")"
-            [ "$_cur" = "$(client_fixes_expected_body)" ] || { _f="$_candidate"; break; }
+            if [ "$_cur" != "$(client_fixes_expected_body)" ]; then
+                rm -f "$_candidate" || return 1
+            fi
         done
     fi
     if [ -z "$_f" ]; then
