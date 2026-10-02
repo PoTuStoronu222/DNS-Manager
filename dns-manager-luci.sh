@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.5.87
+# Version: 1.5.88
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -23,7 +23,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.5.87"
+VERSION="1.5.88"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -141,7 +141,7 @@ UPDATE_STATE="/etc/dns-manager-luci/update.state"
 COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.5.87"
+SELF_VERSION="1.5.88"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -1168,8 +1168,8 @@ status_json() {
     printf '],"slots":['
     _first=1
     for _s in 1 2 3 4 5 6 RU; do
-        _id="$(cfg_get "SLOT_${_s}")"; _cat="$(cfg_get "SLOT_${_s}_CAT")"; _port="$(cfg_get "PORT_${_s}")"
-        [ -n "$_cat" ] || [ -z "$_id" ] || _cat="$(catalog_field "$_id" 2 2>/dev/null || true)"
+        _id="$(cfg_get "SLOT_${_s}")"; _cat="$(catalog_field "$_id" 2>/dev/null || true)"; _port="$(cfg_get "PORT_${_s}")"
+        [ -n "$_cat" ] || [ -z "$_id" ] || _cat="$(cfg_get "SLOT_${_s}_CAT")"
         _name="$(catalog_field "$_id" 4 2>/dev/null || true)"; [ -n "$_name" ] || _name='Не задан'
         _r="$(current_slot_result_for_id "$_id" 2>/dev/null || true)"
         _ms="$(printf '%s' "$_r" | awk -F'|' 'NF>=5 {print $4;exit}')"; _rawst="$(printf '%s' "$_r" | awk -F'|' 'NF>=5 {print $5;exit}')"
@@ -1212,8 +1212,39 @@ write_current_slot_results() {
 }
 current_slot_result_for_id() {
     _id="$1"
-    [ -r "$CURRENT_SLOT_RESULTS" ] || return 1
-    awk -F'|' -v id="$_id" '$1==id {print; exit}' "$CURRENT_SLOT_RESULTS" 2>/dev/null
+    [ -n "$_id" ] || return 1
+
+    # The DNS Manager test result is authoritative for the selected DNS.
+    # LuCI keeps a runtime copy, but it may belong to an older UI test.
+    _manager_result="$(result_for_id "$_id" 2>/dev/null || true)"
+    _manager_ts=""
+    _manager_meta="$STATE_DIR/dns-test-results.meta"
+    [ -r "$_manager_meta" ] || _manager_meta="$PERSIST_STATE_DIR/dns-test-results.meta"
+    _manager_ts="$(sed -n 's/^timestamp=//p' "$_manager_meta" 2>/dev/null | head -n1)"
+    case "$_manager_ts" in ''|*[!0-9]*) _manager_ts="";; esac
+
+    _luci_result=""
+    _luci_ts=""
+    if [ -r "$CURRENT_SLOT_RESULTS" ]; then
+        _luci_result="$(awk -F'|' -v id="$_id" '$1==id {print; exit}' "$CURRENT_SLOT_RESULTS" 2>/dev/null)"
+    fi
+    _luci_ts="$(cat "$CHECK_DIR/$_id" 2>/dev/null | head -n1)"
+    case "$_luci_ts" in ''|*[!0-9]*) _luci_ts="";; esac
+
+    if [ -n "$_manager_result" ]; then
+        if [ -z "$_luci_result" ]; then
+            printf '%s' "$_manager_result"
+            return 0
+        fi
+        if [ -n "$_manager_ts" ] && [ -n "$_luci_ts" ] && [ "$_manager_ts" -gt "$_luci_ts" ] 2>/dev/null; then
+            printf '%s' "$_manager_result"
+            return 0
+        fi
+    fi
+
+    [ -n "$_luci_result" ] && { printf '%s' "$_luci_result"; return 0; }
+    [ -n "$_manager_result" ] && { printf '%s' "$_manager_result"; return 0; }
+    return 1
 }
 new_job_id() {
     case "${1:-}" in
@@ -1602,7 +1633,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.5.87
+// DNS Manager LuCI version: 1.5.88
 var callStatus = rpc.declare({ object:'dns_manager', method:'status', params:['detail'], expect:{} });
 var callRuntime = rpc.declare({ object:'dns_manager', method:'runtime', expect:{} });
 function statusDetail(){return currentRoute()==='network'?1:0;}
