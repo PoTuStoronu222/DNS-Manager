@@ -3330,8 +3330,8 @@ apply_client_fixes() {
         err_msg "Нет свободного файла для client-fixes; сторонние настройки не изменены."
         return 2
     }
-    client_fixes_expected_body > "$_f.tmp.$" || return 1
-    mv "$_f.tmp.$" "$_f" || { rm -f "$_f.tmp.$"; return 1; }
+    client_fixes_expected_body > "$_f.tmp.$$" || return 1
+    mv "$_f.tmp.$$" "$_f" || { rm -f "$_f.tmp.$$"; return 1; }
     return 0
 }
 remove_client_fixes() {
