@@ -956,6 +956,15 @@ status_json() {
             _j=$((_j + 1))
         done
     done
+    # A saved profile is informational only. It is active only while the real
+    # https-dns-proxy configuration exactly matches the selected Manager scheme.
+    if [ "$_doh_total" -gt 0 ] && [ "$_expected" -gt 0 ] && [ "$_match" -eq "$_expected" ] && [ "$_doh_total" -eq "$_expected" ]; then
+        :
+    else
+        _profile="none"
+        _mode="none"
+        _selection_category="none"
+    fi
     detect_runtime_force_state
     _force_cfg="$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null || true)"; _external="$FORCE_RUNTIME_EXTERNAL"
     _force_notrack="$(uci -q get https-dns-proxy.config.notrack_dns 2>/dev/null || true)"
@@ -1540,7 +1549,7 @@ var state = { hdpUpdating:false, managerUpdating:false, updatingAll:false, categ
 
 function profileName(p){
   var x=PROFILE.filter(function(v){return v[0]===p;})[0];
-  return x?x[1]:(p==='hybrid'?'Максимальный обход':p==='custom'?'Собственный выбор':(p||'—'));
+  return x?x[1]:(p==='hybrid'?'Максимальный обход':p==='custom'?'Собственный выбор':p==='none'?'Не выбран':(p||'—'));
 }
 function isProfileId(p){
   for(var i=0;i<PROFILE.length;i++)if(PROFILE[i][0]===p)return true;
