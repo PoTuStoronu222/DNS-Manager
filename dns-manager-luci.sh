@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.5.85
+# Version: 1.5.86
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -23,7 +23,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.5.85"
+VERSION="1.5.86"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -141,7 +141,7 @@ UPDATE_STATE="/etc/dns-manager-luci/update.state"
 COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.5.85"
+SELF_VERSION="1.5.86"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -1593,7 +1593,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.5.85
+// DNS Manager LuCI version: 1.5.86
 var callStatus = rpc.declare({ object:'dns_manager', method:'status', params:['detail'], expect:{} });
 var callRuntime = rpc.declare({ object:'dns_manager', method:'runtime', expect:{} });
 function statusDetail(){return currentRoute()==='network'?1:0;}
@@ -1623,7 +1623,7 @@ var CATEGORY = [
   ['all','Все DNS'], ['bypass','Обход блокировок'], ['security','Безопасность'], ['privacy','Приватность'],
   ['adblock','Блокировка рекламы'], ['family','Семейный'], ['clean','Без фильтрации'], ['regional','Региональные']
 ];
-var state = { hdpUpdating:false, managerUpdating:false, updatingAll:false, category:'all', offset:0, limit:18, catalogLoaded:false, catalogLoading:false, advanced:true, logLoaded:false, logLoading:false, busy:false, busySetting:'', settingMessage:'', settingMessageType:'', settingMessageKey:'', pageNotice:{}, statusError:'', activeTab:'dashboard', jobRunning:false, lastJob:null, checking:{}, fullTest:null, catalogProgress:null, profileProgress:null, catalogCheckNotice:'', versionCheck:null, lastAction:null };
+var state = { hdpUpdating:false, managerUpdating:false, updatingAll:false, category:'all', offset:0, limit:18, catalogLoaded:false, catalogLoading:false, advanced:true, logLoaded:false, logLoading:false, busy:false, busySetting:'', settingMessage:'', settingMessageType:'', settingMessageKey:'', pageNotice:{}, statusError:'', activeTab:'dashboard', jobRunning:false, lastJob:null, checking:{}, fullTest:null, catalogProgress:null, profileProgress:null, catalogCheckNotice:'', versionCheck:null, lastAction:null, runtimeCpuLoad:null, runtimeMemoryTotal:null, runtimeMemoryAvailable:null };
 
 function profileName(p){
   var x=PROFILE.filter(function(v){return v[0]===p;})[0];
@@ -3130,10 +3130,12 @@ function showLog(root){
 var autoStatusTimer=null;
 var uptimeTimer=null;
 var fullStatusTimer=null;
+var dashboardPollTimer=null;
 function stopAutoStatus(){
   if(autoStatusTimer){clearInterval(autoStatusTimer);autoStatusTimer=null;}
   if(uptimeTimer){clearInterval(uptimeTimer);uptimeTimer=null;}
   if(fullStatusTimer){clearInterval(fullStatusTimer);fullStatusTimer=null;}
+  if(dashboardPollTimer){clearInterval(dashboardPollTimer);dashboardPollTimer=null;}
 }
 function syncLocalUptime(root,sec){
   var n=Number(sec);
@@ -3157,26 +3159,30 @@ function updateRuntimeBadge(node,kind,text){
 }
 function updateRuntime(root,rt){
   if(!rootAlive(root)||!rt)return;
-  syncLocalUptime(root,rt.uptime_seconds!==undefined?rt.uptime_seconds:rt.uptime);
-  var n=root.querySelector('#dm-runtime-uptime');
-  n=root.querySelector('#dm-runtime-load');
-  if(n){
-    var lp=Number(rt.cpu_load);
-    if(isFinite(lp)){
-      lp=Math.max(0,Math.min(100,Math.round(lp)));
-      var fill=n.querySelector('.dm-load-fill'),val=n.querySelector('.dm-load-value'),meta=n.querySelector('.dm-load-meta');
-      if(fill)fill.style.width=lp+'%';
-      if(val)val.textContent=lp+'%';
-      if(meta)meta.textContent='Нагрузка процессора';
-    }
+  var us=rt.uptime_seconds!==undefined?rt.uptime_seconds:rt.uptime;
+  var cl=Number(rt.cpu_load);
+  var mt=Number(rt.memory_total_kb),ma=Number(rt.memory_available_kb);
+  if(isFinite(cl)){
+    state.runtimeCpuLoad=Math.max(0,Math.min(100,cl));
+  }
+  if(isFinite(mt)&&mt>0)state.runtimeMemoryTotal=mt;
+  if(isFinite(ma)&&ma>=0)state.runtimeMemoryAvailable=ma;
+  syncLocalUptime(root,us);
+  var n=root.querySelector('#dm-runtime-load');
+  if(n&&isFinite(state.runtimeCpuLoad)){
+    var lp=Math.max(0,Math.min(100,Math.round(state.runtimeCpuLoad)));
+    var fill=n.querySelector('.dm-load-fill'),val=n.querySelector('.dm-load-value'),meta=n.querySelector('.dm-load-meta');
+    if(fill)fill.style.width=lp+'%';
+    if(val)val.textContent=lp+'%';
+    if(meta)meta.textContent='Нагрузка процессора';
   }
   n=root.querySelector('#dm-runtime-memory');
-  if(n){
-    var mp=memoryPercent(rt.memory_total_kb,rt.memory_available_kb);
+  if(n&&isFinite(state.runtimeMemoryTotal)&&isFinite(state.runtimeMemoryAvailable)){
+    var mp=memoryPercent(state.runtimeMemoryTotal,state.runtimeMemoryAvailable);
     if(mp!==null){
       var mf=n.querySelector('.dm-mem-fill'),mv=n.querySelector('.dm-mem-value'),mm=n.querySelector('.dm-mem-meta');
       if(mf)mf.style.width=mp+'%';
-      if(mv)mv.textContent=memory(rt.memory_total_kb,rt.memory_available_kb);
+      if(mv)mv.textContent=memory(state.runtimeMemoryTotal,state.runtimeMemoryAvailable);
       if(mm)mm.textContent=mp+'% занято';
     }
   }
@@ -3187,22 +3193,25 @@ function refreshDashboard(root){
   return callStatus(statusDetail()).then(function(st){
     if(!rootAlive(root))return;
     state.statusError='';
-    window.dmState=st||{};
-    renderOverview(root,st||{});
+    var next=st||{};
+    if(isFinite(state.runtimeCpuLoad))next.cpu_load=state.runtimeCpuLoad;
+    if(isFinite(state.runtimeMemoryTotal))next.memory_total_kb=state.runtimeMemoryTotal;
+    if(isFinite(state.runtimeMemoryAvailable))next.memory_available_kb=state.runtimeMemoryAvailable;
+    if(state.runtimeUptimeAt){
+      next.uptime=Math.floor(state.runtimeUptimeBase+Math.max(0,Math.floor((Date.now()-state.runtimeUptimeAt)/1000)));
+    }
+    window.dmState=next;
+    renderOverview(root,next);
   }).catch(function(){
     if(!rootAlive(root))return;
   });
 }
+var dashboardPollTimer=null;
 function startAutoStatus(root){
   stopAutoStatus();
-  var runtimeBusy=false,statusBusy=false;
-  uptimeTimer=setInterval(function(){tickLocalUptime(root);},1000);
-  autoStatusTimer=setInterval(function(){
-    if(!rootAlive(root)){
-      stopAutoStatus();
-      return;
-    }
-    if(document.hidden||currentRoute()!=='dashboard'||runtimeBusy)return;
+  var runtimeBusy=false,statusBusy=false,tick=0;
+  function pollRuntime(){
+    if(!rootAlive(root)||document.hidden||currentRoute()!=='dashboard'||runtimeBusy)return;
     runtimeBusy=true;
     callRuntime().then(function(rt){
       if(!rootAlive(root))return;
@@ -3210,14 +3219,24 @@ function startAutoStatus(root){
     }).catch(function(){}).then(function(){
       runtimeBusy=false;
     });
-  },2500);
-  fullStatusTimer=setInterval(function(){
-    if(!rootAlive(root)||document.hidden||currentRoute()!=='dashboard'||statusBusy)return;
-    statusBusy=true;
-    refreshDashboard(root).catch(function(){}).then(function(){
-      statusBusy=false;
-    });
-  },15000);
+  }
+  pollRuntime();
+  dashboardPollTimer=setInterval(function(){
+    if(!rootAlive(root)){
+      stopAutoStatus();
+      return;
+    }
+    if(document.hidden||currentRoute()!=='dashboard')return;
+    tick++;
+    tickLocalUptime(root);
+    if(tick%5===0)pollRuntime();
+    if(tick%15===0&&!statusBusy){
+      statusBusy=true;
+      refreshDashboard(root).catch(function(){}).then(function(){
+        statusBusy=false;
+      });
+    }
+  },1000);
 }return view.extend({
   load:function(){return callStatus(statusDetail()).then(function(st){return st||{};});},
   render:function(st){
