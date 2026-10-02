@@ -8800,7 +8800,7 @@ startup_self_repair() {
 # STARTUP UPDATE CHECK
 # ==========================================
 startup_update_check() {
-    [ "${DNS_MANAGER_NO_UPDATE:-0}" = 1 ] && return 0
+    if [ "${DNS_MANAGER_NO_UPDATE:-0}" = 1 ]; then luci_companion_sync >/dev/null 2>&1 || true; return 0; fi
     printf "\n${C_CYAN}${C_BOLD}↻ Проверяю обновление DNS Manager...${C_NC}\n"
     auto_update_manager
     _rc=$?
