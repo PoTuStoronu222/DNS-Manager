@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.5.76
+# Version: 1.5.77
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -22,7 +22,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.5.76"
+VERSION="1.5.77"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -129,7 +129,7 @@ UPDATE_STATE="/etc/dns-manager-luci/update.state"
 COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.5.76"
+SELF_VERSION="1.5.77"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -910,6 +910,8 @@ cpu_load_percent() {
     [ "$t2" -gt "$t1" ] 2>/dev/null || { printf '0'; return 0; }
     printf '%s\n' "$now" > "$f" 2>/dev/null || true
     printf '%s\n' "$(( (100 * ((t2-t1) - (i2-i1)) + (t2-t1)/2) / (t2-t1) ))" | tee "$f.pct"
+}
+
 runtime_json() {
     _uptime="$(awk '{printf "%s",int($1)}' /proc/uptime 2>/dev/null || true)"
     _load="$(cpu_load_percent)"
@@ -1528,6 +1530,10 @@ case "${1:-}" in
     *) exit 1;;
 esac
 EOF_RPC
+    if ! sh -n "$BACKEND_FILE" >/dev/null 2>&1; then
+        err "Сгенерированный LuCI backend не прошёл shell-проверку."
+        return 1
+    fi
     chmod 0755 "$BACKEND_FILE"
     cat > "$RPC_PLUGIN" <<'EOF_RPC_WRAPPER'
 #!/bin/sh
@@ -1545,7 +1551,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.5.76
+// DNS Manager LuCI version: 1.5.77
 var callStatus = rpc.declare({ object:'dns_manager', method:'status', params:['detail'], expect:{} });
 var callRuntime = rpc.declare({ object:'dns_manager', method:'runtime', expect:{} });
 function statusDetail(){return currentRoute()==='network'?1:0;}
