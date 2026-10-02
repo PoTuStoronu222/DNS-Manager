@@ -1072,7 +1072,7 @@ status_json() {
         _n="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].name" 2>/dev/null || true)"
         [ -n "$_n" ] || _n="Экземпляр $((_i + 1))"
         _run=0
-        [ -n "$_p" ] && printf '%s\n' "$_listen" | grep -qE "(^|[[:space:]])[^[:space:]]*:$p([[:space:]]|$)" && _run=1
+        [ -n "$_p" ] && printf '%s\n' "$_listen" | grep -qE "(^|[[:space:]])[^[:space:]]*:$_p([[:space:]]|$)" && _run=1
         _slot=""
         for _s in 1 2 3 4 5 6 RU; do
             _sid="$(cfg_get "SLOT_$_s")"; _sport="$(cfg_get "PORT_$_s")"
