@@ -5444,16 +5444,14 @@ hybrid_runtime_state_word | grep -q . && printf_plain_row "Локальный Do
 [ "$DNS_MOSDNS" = yes ] && printf_plain_row "MosDNS" "$(state_word "$DNS_MOSDNS")"
 [ "$DNS_SINGBOX" = yes ] && printf_plain_row "Sing-box" "$(state_word "$DNS_SINGBOX")"
 menu_section "ВЫБРАННЫЕ DNS"
-printf "  ${C_WHITE}%-6s %-32s %s${C_NC}\n" "СЛОТ" "DNS" "ФАКТИЧЕСКИЙ ПОРТ"
+printf "  ${C_WHITE}%-6s %s${C_NC}\n" "СЛОТ" "DNS"
 for _s in 1 2 3 4 5 6; do
     eval "_v=\${SLOT_$_s:-}"
-    eval "_p=\${PORT_$_s:-}"
     [ -n "$_v" ] || continue
-    [ -n "$_p" ] || _p="$(hybrid_desired_port "$_s")"
-    printf "  %-6s %-32s 127.0.0.1:%s\n" "$_s" "$(dns_name "$_v")" "$_p"
+    printf "  %-6s %s\n" "$_s" "$(dns_name "$_v")"
 done
 if [ -n "${SLOT_RU:-}" ]; then
-    printf "  %-6s %-32s 127.0.0.1:%s (.ru/.su/.рф)\n" "RU" "$(dns_name "$SLOT_RU")" "${PORT_RU:-$HYBRID_PORT_RU}"
+    printf "  %-6s %s\n" "RU" "$(dns_name "$SLOT_RU")"
 else
     printf "  %-6s %s\n" "RU" "не выбран"
 fi
