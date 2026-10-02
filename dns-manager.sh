@@ -2564,6 +2564,56 @@ exact_list_has() {
     [ -n "$_val" ] || return 1
     uci -q get "$_target" 2>/dev/null | tr ' ' '\n' | sed 's/^['"'"'\"]//; s/['"'"'\"]$//' | grep -qxF -- "$_val"
 }
+# Compare the effective/current settings against the OpenWrt defaults
+# and the exact settings DNS Manager wants. No ownership markers are used.
+uci_value_normalized() {
+    _uv="$(uci -q get "$1" 2>/dev/null || true)"
+    [ -n "$_uv" ] && printf '%s' "$_uv" || printf '__DM_UNSET__'
+}
+stock_uci_value_normalized() {
+    _sv_pkg="$1"
+    _sv_target="$2"
+    _sv_fallback="$3"
+    if [ -r "/rom/etc/config/$_sv_pkg" ]; then
+        _sv="$(uci -q -c /rom/etc/config get "$_sv_target" 2>/dev/null || true)"
+        [ -n "$_sv" ] && { printf '%s' "$_sv"; return 0; }
+        printf '__DM_UNSET__'
+        return 0
+    fi
+    printf '%s' "$_sv_fallback"
+}
+uci_list_normalized() {
+    printf '%s\n' "$1" | tr ' ' '\n' |
+        sed -e 's/^['"'"'\"]//;s/['"'"'\"]$//' -e '/^[[:space:]]*$/d' |
+        sort -u | tr '\n' ' ' | sed 's/[[:space:]]*$//'
+}
+uci_list_current_normalized() {
+    uci_list_normalized "$(uci -q get "$1" 2>/dev/null || true)"
+}
+stock_uci_list_normalized() {
+    _sl_pkg="$1"
+    _sl_target="$2"
+    _sl_fallback="$3"
+    _sl_raw="$(stock_uci_value_normalized "$_sl_pkg" "$_sl_target" "$_sl_fallback")"
+    [ "$_sl_raw" = "__DM_UNSET__" ] && { printf ''; return 0; }
+    uci_list_normalized "$_sl_raw"
+}
+stock_plus_list_item_normalized() {
+    _spl="$1"
+    _spl_item="$2"
+    uci_list_normalized "$(_spl=$(uci_list_normalized "$_spl"); printf '%s %s' "$_spl" "$_spl_item")"
+}
+three_state_scalar() {
+    [ "$1" = "$2" ] && { printf 0; return 0; }
+    [ "$1" = "$3" ] && { printf 1; return 0; }
+    printf 2
+}
+three_state_list() {
+    [ "$1" = "$2" ] && { printf 0; return 0; }
+    [ "$1" = "$3" ] && { printf 1; return 0; }
+    printf 2
+}
+
 # ==========================================
 # ==========================================
 clear_all_doh_for_apply() {
