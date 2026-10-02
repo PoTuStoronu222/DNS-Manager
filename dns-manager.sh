@@ -257,10 +257,10 @@ printf_state_row() {
     _label="$1"
     _value="$2"
     _bytes="$(printf '%s' "$_label" | wc -c 2>/dev/null | tr -d ' ')"
-    _chars="$(printf '%s' "$_label" | wc -m 2>/dev/null | tr -d ' ')"
+    _utf8="$(printf '%s' "$_label" | LC_ALL=C od -An -t x1 2>/dev/null | awk 'BEGIN{n=0} {for(i=1;i<=NF;i++) if ($i ~ /^(c[2-9a-f]|d[0-9a-f]|e[0-9a-f]|f[0-4])$/) n++} END{print n+0}')"
     case "$_bytes" in ''|*[!0-9]*) _bytes=0;; esac
-    case "$_chars" in ''|*[!0-9]*) _chars="$_bytes";; esac
-    _extra=$((_bytes-_chars))
+    case "$_utf8" in ''|*[!0-9]*) _utf8=0;; esac
+    _extra="$_utf8"
     [ "$_extra" -lt 0 ] && _extra=0
     _width=$((42+_extra))
     printf "  ${C_YELLOW}${C_BOLD}%-${_width}s${C_NC}  %b\n" "$_label" "$_value"
