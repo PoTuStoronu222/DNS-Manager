@@ -948,16 +948,16 @@ status_json() {
     while uci -q get "https-dns-proxy.@https-dns-proxy[$_i]" >/dev/null 2>&1; do
         _doh_total=$((_doh_total + 1))
         _p="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].listen_port" 2>/dev/null || true)"
-        if [ -n "$_p" ] && printf '%s\n' "$_listen" | grep -qE "(^|[[:space:]])[^[:space:]]*:\${_p}([[:space:]]|$)"; then _doh_running=$((_doh_running + 1)); fi
+        if [ -n "$_p" ] && printf '%s\n' "$_listen" | grep -qE "(^|[[:space:]])[^[:space:]]*:${_p}([[:space:]]|$)"; then _doh_running=$((_doh_running + 1)); fi
         _i=$((_i + 1))
     done
     _doh=no; [ "$_doh_running" -gt 0 ] && _doh=yes
 
     _expected=0
-    for _s in 1 2 3 4 5 6 RU; do [ -n "$(cfg_get "SLOT_\${_s}")" ] && _expected=$((_expected + 1)); done
+    for _s in 1 2 3 4 5 6 RU; do [ -n "$(cfg_get "SLOT_${_s}")" ] && _expected=$((_expected + 1)); done
     _match=0
     for _s in 1 2 3 4 5 6 RU; do
-        _id="$(cfg_get "SLOT_\${_s}")"; _port="$(cfg_get "PORT_\${_s}")"
+        _id="$(cfg_get "SLOT_${_s}")"; _port="$(cfg_get "PORT_${_s}")"
         [ -n "$_id" ] && [ -n "$_port" ] || continue
         _url="$(catalog_field "$_id" 5 2>/dev/null || true)"
         [ -n "$_url" ] || continue
@@ -1050,7 +1050,7 @@ status_json() {
     printf ',"slots":['
     _first=1
     for _s in 1 2 3 4 5 6 RU; do
-        _id="$(cfg_get "SLOT_\${_s}")"; _cat="$(cfg_get "SLOT_\${_s}_CAT")"; _port="$(cfg_get "PORT_\${_s}")"
+        _id="$(cfg_get "SLOT_${_s}")"; _cat="$(cfg_get "SLOT_${_s}_CAT")"; _port="$(cfg_get "PORT_${_s}")"
         [ -n "$_cat" ] || [ -z "$_id" ] || _cat="$(catalog_field "$_id" 2 2>/dev/null || true)"
         _name="$(catalog_field "$_id" 4 2>/dev/null || true)"; [ -n "$_name" ] || _name='Не задан'
         _r="$(current_slot_result_for_id "$_id" 2>/dev/null || true)"
