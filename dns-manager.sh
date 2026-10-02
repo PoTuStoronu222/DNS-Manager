@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.31.4"
+VERSION="3.31.5"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -5306,7 +5306,7 @@ uninstall_manager() {
 state_word() {
 case "$1" in
 yes|1|on|working|running) printf "${C_GREEN}ВКЛ • работает${C_NC}";;
-no|0|off|stopped|missing) printf "${C_YELLOW}ВЫКЛ • нет${C_NC}";;
+no|0|off|stopped|missing) printf "${C_CYAN}ВЫКЛ • нет${C_NC}";;
 warn|warning) printf "${C_YELLOW}ВНИМАНИЕ${C_NC}";;
 error|fail) printf "${C_RED}ОШИБКА${C_NC}";;
 *) printf "${C_WHITE}%s${C_NC}" "$1";;
@@ -5373,7 +5373,7 @@ hybrid_runtime_state_word() {
     done
 
     if [ "$_expected" -eq 0 ]; then
-        printf "${C_YELLOW}ВЫКЛ • не настроен${C_NC}"
+        printf "${C_CYAN}ВЫКЛ • не настроен${C_NC}"
     elif [ "$_actual" -eq "$_expected" ]; then
         printf "${C_GREEN}ВКЛ • работает${C_NC}"
     elif [ "$_actual" -gt 0 ]; then
