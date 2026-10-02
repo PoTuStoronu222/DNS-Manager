@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.33.5"
+VERSION="3.33.6"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -3019,12 +3019,14 @@ EOF_SYSCTL_BASE_APPLY
 }
 
 remove_sysctl_base() {
-    _state="$(check_module_state sysctl 2>/dev/null || printf 2)"
-    case "$_state" in
-        0) return 0 ;;
-        2) warn_msg "Базовые sysctl-параметры изменены извне; текущие значения сохранены."; return 2 ;;
-    esac
+    _f="$(sysctl_base_manager_path)"
     _expected="$(sysctl_base_expected)"
+    _file_current="$(settings_file_normalized "$_f")"
+    _file_desired="$(printf '%s\n' "$_expected" | sed -e '/^[[:space:]]*#/d' -e '/^[[:space:]]*$/d')"
+    if [ ! -f "$_f" ] || [ "$_file_current" != "$_file_desired" ]; then
+        warn_msg "Базовые sysctl-параметры изменены извне; текущие значения сохранены."
+        return 2
+    fi
     while IFS= read -r _p; do
         [ -n "$_p" ] || continue
         _k="${_p%%=*}"
