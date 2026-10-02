@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.31"
+VERSION="3.31.1"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -6085,8 +6085,9 @@ check_module_state() {
             ;;
         mtu)
             _zone="$(firewall_wan_zone 2>/dev/null)" || { printf 2; return; }
-            _cur="$(uci_value_normalized "firewall.$_zone.mtu_fix")"
             _stock_v="$(stock_effective_uci_value firewall "firewall.$_zone.mtu_fix" 1)"
+            _cur="$(uci_value_normalized "firewall.$_zone.mtu_fix")"
+            [ "$_cur" = "__DM_UNSET__" ] && _cur="$_stock_v"
             _manager_v="${MTU_FIX:-0}"
             if [ "$_cur" = "$_stock_v" ] && [ "$_manager_v" = 0 ]; then
                 printf 0
@@ -6150,8 +6151,9 @@ EOF_CHECK_BASE_STATE
             fi
             ;;
         ntp_clients)
-            _cur_server="$(uci_value_normalized "system.ntp.enable_server")"
             _stock_server="$(stock_effective_uci_value system "system.ntp.enable_server" 0)"
+            _cur_server="$(uci_value_normalized "system.ntp.enable_server")"
+            [ "$_cur_server" = "__DM_UNSET__" ] && _cur_server="$_stock_server"
             _cur_opt="$(uci_list_current_normalized "dhcp.$_sec.dhcp_option")"
             _stock_opt="$(stock_uci_list_normalized dhcp "dhcp.@dnsmasq[0].dhcp_option" "")"
             _desired_opt="$(uci_list_normalized "$_stock_opt 42,$LAN_IP")"
