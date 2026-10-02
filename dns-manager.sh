@@ -70,7 +70,6 @@ TTYD_CONFIG="/etc/config/ttyd"
 WEB_SERVICE_CONFIG="/etc/init.d/ttyd"
 SYSCTL_BASE_MARKER="# DNS_MANAGER_MANAGED_SYSCTL=1"
 SYSCTL_EXTENDED_MARKER="# DNS_MANAGER_MANAGED_SYSCTL_EXTENDED=1"
-CLIENT_FIXES_MARKER="# DNS_MANAGER_MANAGED_CLIENT_FIXES=1"
 CLIENT_FIXES_FILE=""
 FIREWALL_OWNERSHIP="$CFG_DIR/firewall-ownership.conf"
 FW_NTP_SECTION="dns_manager_ntp_client"
@@ -1060,7 +1059,7 @@ case "$WATCHDOG_MAX_CANDIDATES" in ''|*[!0-9]*) WATCHDOG_MAX_CANDIDATES=3;; *) [
 : "${TEST_RESULTS_MAX_AGE_SECURITY:=21600}"; : "${TEST_RESULTS_MAX_AGE_PRIVACY:=21600}"
 : "${TEST_RESULTS_MAX_AGE_ADBLOCK:=21600}"; : "${TEST_RESULTS_MAX_AGE_FAMILY:=21600}"
 : "${TEST_RESULTS_MAX_AGE_REGIONAL:=21600}"
-: "${WEB_ACCESS_ENABLED:=0}"; : "${WEB_ACCESS_PORT:=7682}"; : "${CLIENT_FIXES_FILE:=}"
+: "${WEB_ACCESS_ENABLED:=0}"; : "${WEB_ACCESS_PORT:=7682}"
 TLD_SPLIT="$TLD_RU_ENABLED"
 if [ "$_had_dns_profile" = 0 ] && [ -z "$DNS_PROFILE" ]; then
 DNS_PROFILE="hybrid"
@@ -1120,7 +1119,6 @@ FORCE_DOH="$FORCE_DOH"
 DNSMASQ_PERF="$DNSMASQ_PERF"
 NTP_CLIENTS="$NTP_CLIENTS"
 CLIENT_FIXES="$CLIENT_FIXES"
-CLIENT_FIXES_FILE="$CLIENT_FIXES_FILE"
 SYSCTL_EXTENDED="$SYSCTL_EXTENDED"
 BALANCER_ENABLED="$BALANCER_ENABLED"
 NTP_PRESET="$NTP_PRESET"
@@ -3302,31 +3300,12 @@ server=/connectivitycheck.platform.hicloud.com/77.88.8.8
 server=/connectivitycheck.platform.hicloud.com/77.88.8.1
 EOF_CLIENT_FIXES_BODY
 }
-client_fixes_file_state() {
-    _f="$1"
-    [ -f "$_f" ] || { printf '0'; return 0; }
-    _actual="$(sed         -e '1{/^# DNS_MANAGER_MANAGED_CLIENT_FIXES=1$/d;}'         -e '1{/^# DNS_MANAGER_CLIENT_FIXES=1$/d;}'         -e '/^[[:space:]]*$/d' "$_f" 2>/dev/null)"
-    [ "$_actual" = "$(client_fixes_expected_body)" ] && printf '1' || printf '2'
-}
-client_fixes_file_owned() {
-    [ "$(client_fixes_file_state "$1")" = 1 ]
-}
-client_fixes_find_owned() {
-    for _cand in /etc/dnsmasq.d/*dns-manager-client-fixes*.conf; do
-        [ -f "$_cand" ] || continue
-        [ "$(client_fixes_file_state "$_cand")" = 1 ] && { printf '%s\n' "$_cand"; return 0; }
-    done
-    return 1
-}
-client_fixes_find_modified_owned() {
-    for _cand in /etc/dnsmasq.d/*dns-manager-client-fixes*.conf; do
-        [ -f "$_cand" ] || continue
-        [ "$(client_fixes_file_state "$_cand")" = 2 ] && { printf '%s\n' "$_cand"; return 0; }
-    done
-    return 1
-}
+
+
+
+
 apply_client_fixes() {
-    [ "\${CLIENT_FIXES:-0}" = 1 ] || return 0
+    [ "${CLIENT_FIXES:-0}" = 1 ] || return 0
     _f="/etc/dnsmasq.d/91-dns-manager-client-fixes.conf"
     {
         client_fixes_expected_body
