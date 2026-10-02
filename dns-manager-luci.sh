@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.5.61
+# Version: 1.5.62
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -3002,6 +3002,15 @@ function pollJob(root,job,meta,done){
   poll();
 }
 
+function removeLegacyCbiActions(){
+  var nodes=document.querySelectorAll('.cbi-page-actions');
+  Array.prototype.forEach.call(nodes,function(n){
+    if(n.closest && n.closest('.dm-wrap'))return;
+    var t=String(n.textContent||'').replace(/\\s+/g,' ').trim();
+    if(/(Применить|Сохранить|Сброс|Save & Apply|Save|Reset)/i.test(t))n.remove();
+  });
+}
+
 function loadCatalog(root){
   if(state.catalogLoading)return Promise.resolve();
   state.catalogLoading=true;
@@ -3019,15 +3028,15 @@ function showLog(root){
 
 return view.extend({
   load:function(){return callStatus(statusDetail()).then(function(st){return st||{};});},
-  render:function(st){var root=E('div',{'class':'dm-wrap'});['dm-header','dm-overview','dm-doh','dm-profiles','dm-slots','dm-settings','dm-network','dm-job','dm-catalog','dm-log'].forEach(function(id){root.appendChild(E('section',{'id':id}));});injectStyle(root);window.dmState=st||{};state.activeTab=currentRoute();render(root,st||{});startAutoRefresh(root);return root;}
+  render:function(st){var root=E('div',{'class':'dm-wrap'});['dm-header','dm-overview','dm-doh','dm-profiles','dm-slots','dm-settings','dm-network','dm-job','dm-catalog','dm-log'].forEach(function(id){root.appendChild(E('section',{'id':id}));});injectStyle(root);window.dmState=st||{};state.activeTab=currentRoute();render(root,st||{});removeLegacyCbiActions();if(window.setTimeout)window.setTimeout(removeLegacyCbiActions,0);startAutoRefresh(root);return root;}
 });
 EOF_JS
     chmod 0644 "$MENU_FILE" "$ACL_FILE" "$VIEW_FILE"
 
-    # Remove remnants of the former DNS Manager ttyd launcher only when that
-    # exact old controller belongs to DNS Manager. The ttyd package/config is
-    # never touched by this companion installer.
-    if [ -f /usr/lib/lua/luci/controller/dns_manager.lua ] && grep -q 'module("luci.controller.dns_manager"' /usr/lib/lua/luci/controller/dns_manager.lua 2>/dev/null && grep -q 'redirect_to_ttyd' /usr/lib/lua/luci/controller/dns_manager.lua 2>/dev/null; then
+    # The current native LuCI page is a JavaScript view and no longer uses
+    # the former dns_manager Lua controller. Remove only that DNS Manager-owned
+    # controller so an old CBI/redirect route cannot shadow the native view.
+    if [ -f /usr/lib/lua/luci/controller/dns_manager.lua ] && grep -q 'module("luci.controller.dns_manager"' /usr/lib/lua/luci/controller/dns_manager.lua 2>/dev/null; then
         rm -f /usr/lib/lua/luci/controller/dns_manager.lua
     fi
     rm -rf /tmp/luci-* /tmp/luci-indexcache* /tmp/luci-modulecache* 2>/dev/null || true
@@ -3052,7 +3061,9 @@ uninstall_files() {
     rm -f "$RPC_PLUGIN" "$ACL_FILE" "$MENU_FILE" "$VIEW_FILE" 2>/dev/null || true
     rm -rf "$VIEW_DIR" "$RUNTIME_DIR" "$BACKUP_DIR" 2>/dev/null || true
     rm -f "$STATE_FILE" 2>/dev/null || true
-    if [ -f /usr/lib/lua/luci/controller/dns_manager.lua ] && grep -q 'module("luci.controller.dns_manager"' /usr/lib/lua/luci/controller/dns_manager.lua 2>/dev/null && grep -q 'redirect_to_ttyd' /usr/lib/lua/luci/controller/dns_manager.lua 2>/dev/null; then
+    # the former dns_manager Lua controller. Remove only that DNS Manager-owned
+    # controller so an old CBI/redirect route cannot shadow the native view.
+    if [ -f /usr/lib/lua/luci/controller/dns_manager.lua ] && grep -q 'module("luci.controller.dns_manager"' /usr/lib/lua/luci/controller/dns_manager.lua 2>/dev/null; then
         rm -f /usr/lib/lua/luci/controller/dns_manager.lua
     fi
     rm -rf /tmp/luci-* /tmp/luci-indexcache* /tmp/luci-modulecache* 2>/dev/null || true
