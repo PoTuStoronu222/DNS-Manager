@@ -42,7 +42,7 @@ install_files() {
     require_manager || return 1
 
     command -v jsonfilter >/dev/null 2>&1 || say "ℹ jsonfilter не найден — используется встроенный обработчик RPC-параметров."
-    mkdir -p "$VIEW_DIR" /usr/libexec/rpcd /usr/share/luci/acl.d /usr/share/luci/menu.d "$RUNTIME_DIR/checks" "$BACKUP_DIR" "$ROLLBACK_DIR" "$(dirname "$STATE_FILE")" || return 1
+    mkdir -p "$VIEW_DIR" /usr/libexec/rpcd /usr/share/rpcd/acl.d /usr/share/luci/menu.d "$RUNTIME_DIR/checks" "$BACKUP_DIR" "$ROLLBACK_DIR" "$(dirname "$STATE_FILE")" || return 1
 
     # Keep one known-good LuCI snapshot for a safe rollback.
     [ -r "$RPC_PLUGIN" ] && [ ! -r "$ROLLBACK_DIR/rpc_dns_manager" ] && cp -f "$RPC_PLUGIN" "$ROLLBACK_DIR/rpc_dns_manager" 2>/dev/null || true
