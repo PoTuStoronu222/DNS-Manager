@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.33.4"
+VERSION="3.33.5"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -3421,12 +3421,14 @@ EOF_SYSCTL_EXT_APPLY
     return 0
 }
 remove_sysctl_extended() {
-    _state="$(check_sysctl_extended_state 2>/dev/null || printf 2)"
-    case "$_state" in
-        0) return 0 ;;
-        2) warn_msg "Расширенные sysctl-параметры изменены извне; текущие значения сохранены."; return 2 ;;
-    esac
+    _f="$(sysctl_extended_manager_path)"
     _expected="$(sysctl_extended_params)"
+    _file_current="$(settings_file_normalized "$_f")"
+    _file_desired="$(printf '%s\n' "$_expected" | sed -e '/^[[:space:]]*#/d' -e '/^[[:space:]]*$/d')"
+    if [ ! -f "$_f" ] || [ "$_file_current" != "$_file_desired" ]; then
+        warn_msg "Расширенные sysctl-параметры изменены извне; текущие значения сохранены."
+        return 2
+    fi
     while IFS= read -r _p; do
         [ -n "$_p" ] || continue
         _k="${_p%%=*}"
