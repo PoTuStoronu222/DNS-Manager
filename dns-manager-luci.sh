@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.5.68
+# Version: 1.5.69
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -22,7 +22,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.5.68"
+VERSION="1.5.69"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -96,7 +96,7 @@ EOF_MENU
     "description": "DNS Manager native LuCI interface",
     "read": {
       "ubus": {
-        "dns_manager": [ "status", "catalog", "job", "log", "update_check", "update_check_job", "update_check_job_status" ]
+        "dns_manager": [ "status", "runtime", "catalog", "job", "log", "update_check", "update_check_job", "update_check_job_status" ]
       }
     },
     "write": {
@@ -129,7 +129,7 @@ UPDATE_STATE="/etc/dns-manager-luci/update.state"
 COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.5.68"
+SELF_VERSION="1.5.69"
 
 umask 077
 mkdir -p "$RUNTIME_DIR" "$JOB_DIR" "$CHECK_DIR" "$TMP_ROOT" 2>/dev/null || exit 1
@@ -880,6 +880,23 @@ detect_runtime_force_state() {
 
 openwrt_release() { sed -n "s/^DISTRIB_RELEASE='\([^']*\)'.*/\1/p" /etc/openwrt_release 2>/dev/null | head -n1; }
 
+runtime_json() {
+    _uptime="$(awk '{printf "%s",int($1)}' /proc/uptime 2>/dev/null || true)"
+    _load="$(awk '{printf "%s",$1}' /proc/loadavg 2>/dev/null || true)"
+    _mem_t="$(awk '/MemTotal:/ {print $2;exit}' /proc/meminfo 2>/dev/null || true)"; [ -n "$_mem_t" ] || _mem_t=0
+    _mem_a="$(awk '/MemAvailable:/ {print $2;exit}' /proc/meminfo 2>/dev/null || true)"; [ -n "$_mem_a" ] || _mem_a=0
+    _ipv4=no; ip -4 route show default 2>/dev/null | grep -q . && _ipv4=yes
+    _ipv6=no; ip -6 route show default 2>/dev/null | grep -q . && _ipv6=yes
+    _dnsmasq=no; pgrep -x dnsmasq >/dev/null 2>&1 && _dnsmasq=yes
+    _doh=no; pgrep -x https-dns-proxy >/dev/null 2>&1 && _doh=yes
+    printf '{"ok":true,"ipv4":'; json_quote "$_ipv4"
+    printf ',"ipv6":'; json_quote "$_ipv6"
+    printf ',"dnsmasq":'; json_quote "$_dnsmasq"
+    printf ',"doh":'; json_quote "$_doh"
+    printf ',"uptime":'; json_quote "$_uptime"
+    printf ',"load1":'; json_quote "$_load"
+    printf ',"memory_total_kb":%s,"memory_available_kb":%s}' "$_mem_t" "$_mem_a"
+}
 status_json() {
     _mv="$(manager_version 2>/dev/null || true)"
     # Do not use load_config() defaults here. An untouched OpenWrt router must
@@ -1477,6 +1494,7 @@ case "${1:-}" in
     call)
         case "${2:-}" in
             status) INPUT="$(cat 2>/dev/null || true)"; status_json;;
+            runtime) runtime_json;;
             catalog) INPUT="$(cat 2>/dev/null || true)"; catalog_json;;
             update_check) update_check_json;;            update_catalog) update_catalog_json;;            update_all) update_all_json;;            update) update_json;;            update_manager) update_manager_json;;            update_hdp) update_hdp_json;;
             set_profile|set_slot|set_setting|set_watchdog_setting) INPUT="$(cat 2>/dev/null || true)"; RPC_METHOD="$2"; run_action;;
@@ -1506,8 +1524,9 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.5.68
+// DNS Manager LuCI version: 1.5.69
 var callStatus = rpc.declare({ object:'dns_manager', method:'status', params:['detail'], expect:{} });
+var callRuntime = rpc.declare({ object:'dns_manager', method:'runtime', expect:{} });
 function statusDetail(){return currentRoute()==='network'?1:0;}
 var callCatalog = rpc.declare({ object:'dns_manager', method:'catalog', params:['category','offset','limit','only_ok'], expect:{} });
 var callUpdateCheck = rpc.declare({ object:'dns_manager', method:'update_check', expect:{} });
@@ -1809,7 +1828,7 @@ function renderOverview(root,st){
   var applied=renderActionStatus();if(applied)e.appendChild(applied);
   if(state.statusError)e.appendChild(E('div',{'class':'dm-inline-msg error'},state.statusError+' Проверьте: ubus call dns_manager status.'));
 
-  var doh=st.doh==='yes'?badge('dm-ok','запущен'):Number(st.doh_total||0)>0?badge('dm-bad','остановлен'):badge('dm-off','не установлен');
+  var doh=E('span',{'id':'dm-runtime-doh'},st.doh==='yes'?badge('dm-ok','запущен'):Number(st.doh_total||0)>0?badge('dm-bad','остановлен'):badge('dm-off','не установлен'));
 
   var force=yes(st.force_both)?badge('dm-bad','DNS Manager + внешний'):st.force_owner==='external'?badge('dm-bad','внешний сервис'):yes(st.force_manager)?badge('dm-ok','DNS Manager'):badge('dm-off','выключен');
 
@@ -1859,14 +1878,16 @@ function renderOverview(root,st){
   var ipv4=st.ipv4==='yes'?badge('dm-ok','есть'):badge('dm-bad','нет');
   var ipv6=st.ipv6==='yes'?badge('dm-ok','есть'):badge('dm-off','выключен');
 
+  var loadNode=loadBar(st.load1,st.cpu_count);loadNode.id='dm-runtime-load';
+  var memNode=memoryBar(st.memory_total_kb,st.memory_available_kb);memNode.id='dm-runtime-memory';
   var sysCard=card('Система',[
     row('Модель',shortVal(st.hostname)),
     row('OpenWrt',shortVal(st.openwrt)),
-    row('Время работы',E('span',{'class':'dm-uptime'},uptime(st.uptime))),
-    row('IPv4',ipv4),
-    row('IPv6',ipv6),
-    row('Нагрузка',loadBar(st.load1,st.cpu_count)),
-    row('RAM',memoryBar(st.memory_total_kb,st.memory_available_kb)),
+    row('Время работы',E('span',{'id':'dm-runtime-uptime','class':'dm-uptime'},uptime(st.uptime))),
+    row('IPv4',E('span',{'id':'dm-runtime-ipv4'},ipv4)),
+    row('IPv6',E('span',{'id':'dm-runtime-ipv6'},ipv6)),
+    row('Нагрузка',loadNode),
+    row('RAM',memNode),
     row('LAN',shortVal(st.lan))
   ]);
 
@@ -3016,36 +3037,39 @@ function showLog(root){
 }
 
 var autoStatusTimer=null;
+var fullStatusTimer=null;
+function stopAutoStatus(){
+  if(autoStatusTimer){clearInterval(autoStatusTimer);autoStatusTimer=null;}
+  if(fullStatusTimer){clearInterval(fullStatusTimer);fullStatusTimer=null;}
+}
+function updateRuntime(root,rt){
+  if(!rootAlive(root)||!rt)return;
+  var n=root.querySelector('#dm-runtime-doh');
+  if(n)n.innerHTML='';
+  if(n)n.appendChild(rt.doh==='yes'?badge('dm-ok','запущен'):badge('dm-off','остановлен'));
+  n=root.querySelector('#dm-runtime-uptime');if(n)n.textContent=uptime(rt.uptime);
+  n=root.querySelector('#dm-runtime-ipv4');if(n)n.innerHTML='';
+  if(n)n.appendChild(rt.ipv4==='yes'?badge('dm-ok','есть'):badge('dm-bad','нет'));
+  n=root.querySelector('#dm-runtime-ipv6');if(n)n.innerHTML='';
+  if(n)n.appendChild(rt.ipv6==='yes'?badge('dm-ok','есть'):badge('dm-off','выключен'));
+  n=root.querySelector('#dm-runtime-load');if(n){n.innerHTML='';n.appendChild(loadBar(rt.load1,(window.dmState&&window.dmState.cpu_count)||1));}
+  n=root.querySelector('#dm-runtime-memory');if(n){n.innerHTML='';n.appendChild(memoryBar(rt.memory_total_kb,rt.memory_available_kb));}
+}
 function startAutoStatus(root){
-  if(autoStatusTimer)clearInterval(autoStatusTimer);
+  stopAutoStatus();
   autoStatusTimer=setInterval(function(){
-    if(!rootAlive(root)){clearInterval(autoStatusTimer);autoStatusTimer=null;return;}
-    if(state.busy||state.versionCheck&&state.versionCheck.running)return;
-    var a=document.activeElement;
-    if(a&&root.contains(a)&&/^(INPUT|TEXTAREA|SELECT|BUTTON)$/.test(a.tagName))return;
-    if(state.statusRefreshing)return;
+    if(!rootAlive(root)){stopAutoStatus();return;}
+    if(document.hidden||state.busy||state.versionCheck&&state.versionCheck.running||state.statusRefreshing)return;
     state.statusRefreshing=true;
-    callStatus(statusDetail()).then(function(st){
-      if(!rootAlive(root))return;
-      state.statusError='';
-      window.dmState=st||{};
-      renderHeader(root,st||{});
-      renderOverview(root,st||{});
-      renderDoH(root,st||{});
-      renderSlots(root,st||{});
-      renderProfiles(root,st||{});
-      renderSettings(root,st||{});
-      renderNetwork(root,st||{});
-      state.activeTab=currentRoute();
-      setActiveTab(root,state.activeTab);
-    }).catch(function(){
-      if(rootAlive(root)){
-        state.statusError='Не удалось получить состояние DNS Manager через RPC (status).';
-      }
-    }).then(function(){
-      state.statusRefreshing=false;
-    });
+    callRuntime().then(function(rt){
+      if(rootAlive(root))updateRuntime(root,rt||{});
+    }).catch(function(){}).then(function(){state.statusRefreshing=false;});
   },3000);
+  fullStatusTimer=setInterval(function(){
+    if(!rootAlive(root)){stopAutoStatus();return;}
+    if(document.hidden||state.busy||state.versionCheck&&state.versionCheck.running)return;
+    refresh(root,true);
+  },30000);
 }
 return view.extend({
   load:function(){return callStatus(statusDetail()).then(function(st){return st||{};});},
@@ -3057,7 +3081,8 @@ return view.extend({
     removeLegacyCbiActions();if(window.setTimeout)window.setTimeout(removeLegacyCbiActions,0);
     startAutoStatus(root);
     return root;
-  }
+  },
+  remove:function(){stopAutoStatus();}
 });
 EOF_JS
     chmod 0644 "$MENU_FILE" "$ACL_FILE" "$VIEW_FILE"
