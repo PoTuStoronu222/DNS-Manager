@@ -3048,8 +3048,6 @@ remove_sysctl_base() {
         return 2
     fi
     restore_sysctl_stock "$_expected" || return 1
-$_expected
-EOF_SYSCTL_BASE_STOCK
     _f="$(sysctl_base_manager_path)"
     rm -f "$_f" 2>/dev/null || return 1
     if [ -x /etc/init.d/sysctl ]; then
@@ -3440,8 +3438,6 @@ remove_sysctl_extended() {
         return 2
     fi
     restore_sysctl_stock "$_expected" || return 1
-$_expected
-EOF_SYSCTL_EXT_STOCK
     _f="$(sysctl_extended_manager_path)"
     rm -f "$_f" 2>/dev/null || return 1
     rm -f "$STATE_DIR/sysctl-extended-before.conf" 2>/dev/null || true
