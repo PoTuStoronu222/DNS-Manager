@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.5.88
+# Version: 1.5.89
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -23,7 +23,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.5.88"
+VERSION="1.5.89"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -141,7 +141,7 @@ UPDATE_STATE="/etc/dns-manager-luci/update.state"
 COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.5.88"
+SELF_VERSION="1.5.89"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -744,12 +744,26 @@ result_for_id() {
 
 last_check_for_id() {
     _id="$1"
-    _f="$CHECK_DIR/$_id"
-    if [ -r "$_f" ]; then cat "$_f" 2>/dev/null | head -n1; return 0; fi
-    _meta="$STATE_DIR/dns-test-results.meta"
-    [ -r "$_meta" ] || _meta="$PERSIST_STATE_DIR/dns-test-results.meta"
-    _ts="$(sed -n 's/^timestamp=//p' "$_meta" 2>/dev/null | head -n1)"
-    [ -n "$_ts" ] && result_for_id "$_id" >/dev/null 2>&1 && printf '%s' "$_ts"
+    [ -n "$_id" ] || return 1
+
+    _luci_ts="$(cat "$CHECK_DIR/$_id" 2>/dev/null | head -n1)"
+    case "$_luci_ts" in ''|*[!0-9]*) _luci_ts="";; esac
+
+    _manager_meta="$STATE_DIR/dns-test-results.meta"
+    [ -r "$_manager_meta" ] || _manager_meta="$PERSIST_STATE_DIR/dns-test-results.meta"
+    _manager_ts="$(sed -n 's/^timestamp=//p' "$_manager_meta" 2>/dev/null | head -n1)"
+    case "$_manager_ts" in ''|*[!0-9]*) _manager_ts="";; esac
+
+    _manager_has=0
+    result_for_id "$_id" >/dev/null 2>&1 && _manager_has=1
+    if [ "$_manager_has" = 1 ] && [ -n "$_manager_ts" ]; then
+        if [ -z "$_luci_ts" ] || [ "$_manager_ts" -gt "$_luci_ts" ] 2>/dev/null; then
+            printf '%s' "$_manager_ts"
+            return 0
+        fi
+    fi
+    [ -n "$_luci_ts" ] && { printf '%s' "$_luci_ts"; return 0; }
+    [ "$_manager_has" = 1 ] && [ -n "$_manager_ts" ] && printf '%s' "$_manager_ts"
 }
 
 package_version() {
@@ -1633,7 +1647,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.5.88
+// DNS Manager LuCI version: 1.5.89
 var callStatus = rpc.declare({ object:'dns_manager', method:'status', params:['detail'], expect:{} });
 var callRuntime = rpc.declare({ object:'dns_manager', method:'runtime', expect:{} });
 function statusDetail(){return currentRoute()==='network'?1:0;}
