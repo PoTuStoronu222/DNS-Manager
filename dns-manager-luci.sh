@@ -44,30 +44,34 @@ install_files() {
     command -v jsonfilter >/dev/null 2>&1 || say "ℹ jsonfilter не найден — используется встроенный обработчик RPC-параметров."
     mkdir -p "$VIEW_DIR" /usr/libexec/rpcd /usr/share/rpcd/acl.d /usr/share/luci/menu.d "$RUNTIME_DIR/checks" "$BACKUP_DIR" "$ROLLBACK_DIR" "$(dirname "$STATE_FILE")" || return 1
 
-    #!/bin/sh
-    
-    ROLLBACK_DIR="/etc/dns-manager-luci/rollback"
-    RPC_PLUGIN="/usr/libexec/rpcd/dns_manager"
-    ACL_FILE="/usr/share/rpcd/acl.d/luci-app-dns-manager.json"
-    MENU_FILE="/usr/share/luci/menu.d/luci-app-dns-manager.json"
-    VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-    
-    fail() { printf 'Откат LuCI не выполнен: %s\n' "$1" >&2; exit 1; }
-    
-    [ -r "$ROLLBACK_DIR/rpc_dns_manager" ] || fail "нет резервной копии RPC."
-    [ -r "$ROLLBACK_DIR/luci-app-dns-manager.json" ] || fail "нет резервной копии ACL."
-    [ -r "$ROLLBACK_DIR/luci-app-dns-manager.json.menu" ] || fail "нет резервной копии меню."
-    [ -r "$ROLLBACK_DIR/overview.js" ] || fail "нет резервной копии страницы."
-    
-    install -m 0755 "$ROLLBACK_DIR/rpc_dns_manager" "$RPC_PLUGIN" || fail "не удалось восстановить RPC."
-    install -m 0644 "$ROLLBACK_DIR/luci-app-dns-manager.json" "$ACL_FILE" || fail "не удалось восстановить ACL."
-    install -m 0644 "$ROLLBACK_DIR/luci-app-dns-manager.json.menu" "$MENU_FILE" || fail "не удалось восстановить меню."
-    install -m 0644 "$ROLLBACK_DIR/overview.js" "$VIEW_FILE" || fail "не удалось восстановить страницу."
-    
-    rm -rf /tmp/luci-* /tmp/luci-indexcache* /tmp/luci-modulecache* 2>/dev/null || true
-    [ -x /etc/init.d/rpcd ] && /etc/init.d/rpcd reload >/dev/null 2>&1 || fail "не удалось перезагрузить rpcd."
-    printf 'LuCI DNS Manager восстановлена из резервной копии.\n'
-    
+    cat > "$ROLLBACK_CMD" <<'EOF_ROLLBACK'
+#!/bin/sh
+
+ROLLBACK_DIR="/etc/dns-manager-luci/rollback"
+RPC_PLUGIN="/usr/libexec/rpcd/dns_manager"
+ACL_FILE="/usr/share/rpcd/acl.d/luci-app-dns-manager.json"
+MENU_FILE="/usr/share/luci/menu.d/luci-app-dns-manager.json"
+VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
+
+fail() { printf 'Откат LuCI не выполнен: %s\n' "$1" >&2; exit 1; }
+
+[ -r "$ROLLBACK_DIR/rpc_dns_manager" ] || fail "нет резервной копии RPC."
+[ -r "$ROLLBACK_DIR/luci-app-dns-manager.json" ] || fail "нет резервной копии ACL."
+[ -r "$ROLLBACK_DIR/luci-app-dns-manager.json.menu" ] || fail "нет резервной копии меню."
+[ -r "$ROLLBACK_DIR/overview.js" ] || fail "нет резервной копии страницы."
+
+install -m 0755 "$ROLLBACK_DIR/rpc_dns_manager" "$RPC_PLUGIN" || fail "не удалось восстановить RPC."
+install -m 0644 "$ROLLBACK_DIR/luci-app-dns-manager.json" "$ACL_FILE" || fail "не удалось восстановить ACL."
+install -m 0644 "$ROLLBACK_DIR/luci-app-dns-manager.json.menu" "$MENU_FILE" || fail "не удалось восстановить меню."
+install -m 0644 "$ROLLBACK_DIR/overview.js" "$VIEW_FILE" || fail "не удалось восстановить страницу."
+
+rm -rf /tmp/luci-* /tmp/luci-indexcache* /tmp/luci-modulecache* 2>/dev/null || true
+[ -x /etc/init.d/rpcd ] && /etc/init.d/rpcd reload >/dev/null 2>&1 || fail "не удалось перезагрузить rpcd."
+printf 'LuCI DNS Manager восстановлена из резервной копии.\n'
+EOF_ROLLBACK
+    chmod 0755 "$ROLLBACK_CMD" 2>/dev/null || return 1
+
+
 
     # Keep one known-good LuCI snapshot for a safe rollback.
     [ -r "$RPC_PLUGIN" ] && [ ! -r "$ROLLBACK_DIR/rpc_dns_manager" ] && cp -f "$RPC_PLUGIN" "$ROLLBACK_DIR/rpc_dns_manager" 2>/dev/null || true
@@ -162,6 +166,7 @@ UPDATE_STATE="/etc/dns-manager-luci/update.state"
 COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
+ROLLBACK_CMD="/usr/bin/dns-manager-luci-rollback"
 SELF_VERSION="1.5.65"
 
 umask 077
@@ -186,8 +191,6 @@ rollback_luci() {
     }
     printf '{"ok":true,"rolled_back":true}'
 }
-
-legacy_rollback_luci() { return 1; }
 
 
 jget() {
