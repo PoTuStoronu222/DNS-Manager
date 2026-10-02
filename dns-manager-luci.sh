@@ -2588,6 +2588,56 @@ function refresh(root,keepPosition){
     render(root,window.dmState||{});
   });
 }
+function refreshSystemInfo(root){
+  if(!rootAlive(root))return Promise.resolve();
+  return callSystemInfo().then(function(si){
+    if(!rootAlive(root)||!si||si.ok===false)return;
+    var st=window.dmState||{};
+    if(si.uptime!==undefined)st.uptime=si.uptime;
+    if(si.load1!==undefined)st.load1=si.load1;
+    if(si.cpu_count!==undefined)st.cpu_count=si.cpu_count;
+    if(si.memory_total_kb!==undefined)st.memory_total_kb=si.memory_total_kb;
+    if(si.memory_available_kb!==undefined)st.memory_available_kb=si.memory_available_kb;
+    window.dmState=st;
+
+    var u=root.querySelector('#dm-overview .dm-uptime');
+    if(u)u.textContent=uptime(st.uptime);
+
+    var lw=root.querySelector('#dm-overview .dm-load-wrap');
+    if(lw){
+      var lp=loadPercent(st.load1,st.cpu_count);
+      var lf=lw.querySelector('.dm-load-fill');
+      var lv=lw.querySelector('.dm-load-value');
+      var lm=lw.querySelector('.dm-load-meta');
+      if(lp===null){
+        if(lf)lf.style.width='0%';
+        if(lv)lv.textContent='—';
+        if(lm)lm.textContent='—';
+      }else{
+        if(lf)lf.style.width=lp+'%';
+        if(lv)lv.textContent=lp+'%';
+        if(lm)lm.textContent='load '+shortVal(st.load1)+' · '+String(st.cpu_count||1)+' '+(Number(st.cpu_count||1)===1?'ядро':'ядра');
+      }
+    }
+
+    var mw=root.querySelector('#dm-overview .dm-mem-wrap');
+    if(mw){
+      var mp=memoryPercent(st.memory_total_kb,st.memory_available_kb);
+      var mf=mw.querySelector('.dm-mem-fill');
+      var mv=mw.querySelector('.dm-mem-value');
+      var mm=mw.querySelector('.dm-mem-meta');
+      if(mp===null){
+        if(mf)mf.style.width='0%';
+        if(mv)mv.textContent='—';
+        if(mm)mm.textContent='—';
+      }else{
+        if(mf)mf.style.width=mp+'%';
+        if(mv)mv.textContent=memory(st.memory_total_kb,st.memory_available_kb);
+        if(mm)mm.textContent=mp+'% занято';
+      }
+    }
+  }).catch(function(){});
+}
 function startAutoRefresh(root){
   if(state.autoRefreshRoot)clearInterval(state.autoRefreshRoot);
   state.autoRefreshRoot=null;
@@ -2597,8 +2647,8 @@ function startAutoRefresh(root){
     if(state.refreshBusy)return;
     if(state.busy||state.updatingAll||(state.versionCheck&&state.versionCheck.running))return;
     state.refreshBusy=true;
-    refresh(root,true).then(function(){state.refreshBusy=false;},function(){state.refreshBusy=false;});
-  },3000);
+    refreshSystemInfo(root).then(function(){state.refreshBusy=false;},function(){state.refreshBusy=false;});
+  },5000);
 }
 function toast(msg,type){}
 function checkUpdate(root){
