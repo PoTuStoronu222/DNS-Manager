@@ -1768,7 +1768,7 @@ function componentItem(title,statusNode,details){
 function componentSettingItem(title,key){
   var st=window.dmState||{}, raw=st[key+'_state'];
   var n=(raw===undefined||raw===null||raw==='')?-1:Number(raw);
-  var node=n===1?badge('dm-ok','включено'):n===2?badge('dm-warn','требует внимания'):badge('dm-off','выключено');
+  var node=n===1?badge('dm-ok','включено'):n===2?badge('dm-warn','другое'):badge('dm-off','выключено');
   return componentItem(title,node);
 }
 function renderOverview(root,st){
