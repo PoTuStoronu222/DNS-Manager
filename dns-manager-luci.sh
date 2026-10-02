@@ -277,8 +277,7 @@ fetch_url() {
     rm -f "$_out" 2>/dev/null || true
     _cb="$(date +%s 2>/dev/null || printf 0)-$$"
     _fetch_url="${COMPANION_URL}&_dmcb=$_cb"
-    # Use the raw GitHub file directly. The contents API can serve a cached
-    # revision after rapid sequential commits, which makes version detection
+    # GitHub Contents API with a raw response avoids stale raw-host revisions.
     # falsely report an older LuCI version as current.
     if command -v curl >/dev/null 2>&1; then
         curl -fsSL --connect-timeout 5 --max-time 30 \
@@ -287,6 +286,9 @@ fetch_url() {
             -o "$_out" "$_fetch_url" >/dev/null 2>&1
     elif command -v wget >/dev/null 2>&1; then
         wget -q -T 30 \
+            --header='User-Agent: DNS-Manager-LuCI' \
+            --header='Accept: application/vnd.github.raw+json' \
+            --header='Cache-Control: no-cache' \
             --header='User-Agent: DNS-Manager-LuCI' \
             --header='Cache-Control: no-cache' \
             -O "$_out" "$_fetch_url" >/dev/null 2>&1
