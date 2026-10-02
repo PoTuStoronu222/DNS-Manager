@@ -1918,7 +1918,9 @@ detect_forced_dns_path() {
                 [ -n "$_rp" ] || continue
                 FORCED_DNS_ACTIVE=1
                 FORCED_DNS_TARGETS="${FORCED_DNS_TARGETS}${_rp} "
-                if dns_manager_force_port "$_rp" && [ "$_manager_force_cfg" = 1 ]; then
+                if [ "$_steer" = 1 ] && [ "$_rp" = 5300 ]; then
+                    :
+                elif dns_manager_force_port "$_rp" && [ "$_manager_force_cfg" = 1 ]; then
                     :
                 else
                     _external=1
@@ -1935,7 +1937,9 @@ EOF_FORCE_NFT
                 [ -n "$_rp" ] || continue
                 FORCED_DNS_ACTIVE=1
                 FORCED_DNS_TARGETS="${FORCED_DNS_TARGETS}${_rp} "
-                if dns_manager_force_port "$_rp" && [ "$_manager_force_cfg" = 1 ]; then
+                if [ "$_steer" = 1 ] && [ "$_rp" = 5300 ]; then
+                    :
+                elif dns_manager_force_port "$_rp" && [ "$_manager_force_cfg" = 1 ]; then
                     :
                 else
                     _external=1
