@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.34.1"
+VERSION="3.34.2"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -3336,15 +3336,23 @@ apply_client_fixes() {
         return 0
     fi
     _f=""
+    _keeper=""
     if [ "$_path_state" -eq 2 ]; then
         for _n in 91 92 93 94 95 96 97 98 99; do
             _candidate="/etc/dnsmasq.d/${_n}-dns-manager-client-fixes.conf"
             [ -f "$_candidate" ] || continue
             _cur="$(settings_file_normalized "$_candidate")"
-            if [ "$_cur" != "$(client_fixes_expected_body)" ]; then
+            if [ "$_cur" = "$(client_fixes_expected_body)" ]; then
+                if [ -z "$_keeper" ]; then
+                    _keeper="$_candidate"
+                else
+                    rm -f "$_candidate" || return 1
+                fi
+            else
                 rm -f "$_candidate" || return 1
             fi
         done
+        [ -n "$_keeper" ] && _f="$_keeper"
     fi
     if [ -z "$_f" ]; then
         for _n in 91 92 93 94 95 96 97 98 99; do
