@@ -2996,17 +2996,26 @@ remove_sysctl_base() {
         0) return 0 ;;
         2) warn_msg "Базовые sysctl-параметры изменены извне; текущие значения сохранены."; return 2 ;;
     esac
-    _f="$(sysctl_base_manager_path)"
-    rm -f "$_f" 2>/dev/null || return 1
+    _expected="$(sysctl_base_expected)"
     while IFS= read -r _p; do
         [ -n "$_p" ] || continue
-        _k="${_p%%=*}"; _stock="$(sysctl_stock_value "$_k" 2>/dev/null || true)"
-        [ -n "$_stock" ] && sysctl -w "$_k=$_stock" >/dev/null 2>&1 || true
+        _k="${_p%%=*}"
+        _stock="$(sysctl_stock_value "$_k" 2>/dev/null || true)"
+        [ -n "$_stock" ] || {
+            warn_msg "Не удалось определить штатное значение $_k; файл DNS Manager сохранён."
+            return 1
+        }
+        sysctl -w "$_k=$_stock" >/dev/null 2>&1 || {
+            warn_msg "Не удалось восстановить штатное значение $_k; файл DNS Manager сохранён."
+            return 1
+        }
     done <<EOF_SYSCTL_BASE_STOCK
-$(sysctl_base_expected)
+$_expected
 EOF_SYSCTL_BASE_STOCK
+    _f="$(sysctl_base_manager_path)"
+    rm -f "$_f" 2>/dev/null || return 1
     if [ -x /etc/init.d/sysctl ]; then
-        /etc/init.d/sysctl reload >/dev/null 2>&1 || /etc/init.d/sysctl restart >/dev/null 2>&1 || true
+        /etc/init.d/sysctl reload >/dev/null 2>&1 || true
     fi
     return 0
 }
@@ -3360,19 +3369,30 @@ remove_sysctl_extended() {
         0) return 0 ;;
         2) warn_msg "Расширенные sysctl-параметры изменены извне; текущие значения сохранены."; return 2 ;;
     esac
-    _f="$(sysctl_extended_manager_path)"
-    rm -f "$_f" 2>/dev/null || return 1
     _expected="$(sysctl_extended_params)"
     while IFS= read -r _p; do
         [ -n "$_p" ] || continue
-        _k="${_p%%=*}"; _stock="$(sysctl_stock_value "$_k" 2>/dev/null || true)"
-        [ -n "$_stock" ] && sysctl -w "$_k=$_stock" >/dev/null 2>&1 || true
+        _k="${_p%%=*}"
+        if ! sysctl -n "$_k" >/dev/null 2>&1; then
+            continue
+        fi
+        _stock="$(sysctl_stock_value "$_k" 2>/dev/null || true)"
+        [ -n "$_stock" ] || {
+            warn_msg "Не удалось определить штатное значение $_k; файл DNS Manager сохранён."
+            return 1
+        }
+        sysctl -w "$_k=$_stock" >/dev/null 2>&1 || {
+            warn_msg "Не удалось восстановить штатное значение $_k; файл DNS Manager сохранён."
+            return 1
+        }
     done <<EOF_SYSCTL_EXT_STOCK
 $_expected
 EOF_SYSCTL_EXT_STOCK
+    _f="$(sysctl_extended_manager_path)"
+    rm -f "$_f" 2>/dev/null || return 1
     rm -f "$STATE_DIR/sysctl-extended-before.conf" 2>/dev/null || true
     if [ -x /etc/init.d/sysctl ]; then
-        /etc/init.d/sysctl reload >/dev/null 2>&1 || /etc/init.d/sysctl restart >/dev/null 2>&1 || true
+        /etc/init.d/sysctl reload >/dev/null 2>&1 || true
     fi
     return 0
 }
