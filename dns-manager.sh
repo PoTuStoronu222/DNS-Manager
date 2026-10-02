@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.31.1"
+VERSION="3.31.2"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -6885,8 +6885,6 @@ while :; do
     menu_section "СЕРВИСЫ И КЛИЕНТЫ"
     menu_item_action "[6]" "Время для устройств в локальной сети" ntp_clients "$_state_ntp_clients"
     menu_item_action "[7]" "DNS для проверки подключения и совместимости устройств" client_fixes "$_state_client_fixes"
-    menu_section "LUCI"
-    menu_item_action "[8]" "Нативный интерфейс DNS Manager" luci "$_state_luci"
     menu_back
     menu_prompt
     safe_read c
@@ -8640,6 +8638,8 @@ menu_item "[3]" "Состояние и журнал"
 menu_item "[4]" "Серверы точного времени"
 menu_item "[5]" "НАСТРОЙКИ"
 menu_item "[6]" "Удалить DNS Manager"
+menu_section "LUCI"
+menu_item_action "[7]" "Нативный интерфейс DNS Manager" luci "$(check_module_state luci)"
 menu_back
 menu_prompt
 safe_read c
@@ -8651,6 +8651,7 @@ case "$c" in
 4) MAIN_STATE_STALE=1; prepare_dns_operation || { pause; continue; }; menu_ntp;;
 5) MAIN_STATE_STALE=1; prepare_dns_operation || { pause; continue; }; menu_extras;;
 6) uninstall_manager;;
+7) MAIN_STATE_STALE=1; setting_process luci "Нативный интерфейс DNS Manager" "Нативный интерфейс DNS Manager в LuCI." "$(check_module_state luci)"; MAIN_STATE_STALE=1;;
 *) warn_msg "Неизвестный пункт."; pause;;
 esac
 done
