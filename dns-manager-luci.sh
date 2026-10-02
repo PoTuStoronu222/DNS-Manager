@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.5.80
+# Version: 1.5.81
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -22,7 +22,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.5.80"
+VERSION="1.5.81"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -129,7 +129,7 @@ UPDATE_STATE="/etc/dns-manager-luci/update.state"
 COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.5.80"
+SELF_VERSION="1.5.81"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -1558,7 +1558,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.5.80
+// DNS Manager LuCI version: 1.5.81
 var callStatus = rpc.declare({ object:'dns_manager', method:'status', params:['detail'], expect:{} });
 var callRuntime = rpc.declare({ object:'dns_manager', method:'runtime', expect:{} });
 function statusDetail(){return currentRoute()==='network'?1:0;}
@@ -3094,9 +3094,11 @@ function showLog(root){
 
 var autoStatusTimer=null;
 var uptimeTimer=null;
+var fullStatusTimer=null;
 function stopAutoStatus(){
   if(autoStatusTimer){clearInterval(autoStatusTimer);autoStatusTimer=null;}
   if(uptimeTimer){clearInterval(uptimeTimer);uptimeTimer=null;}
+  if(fullStatusTimer){clearInterval(fullStatusTimer);fullStatusTimer=null;}
 }
 function syncLocalUptime(root,sec){
   var n=Number(sec);
@@ -3158,24 +3160,29 @@ function refreshDashboard(root){
 }
 function startAutoStatus(root){
   stopAutoStatus();
-  var sysTick=0,sysBusy=false;
+  var runtimeBusy=false,statusBusy=false;
   uptimeTimer=setInterval(function(){tickLocalUptime(root);},1000);
   autoStatusTimer=setInterval(function(){
     if(!rootAlive(root)){
       stopAutoStatus();
       return;
     }
-    if(document.hidden||currentRoute()!=='dashboard'||sysBusy)return;
-    sysBusy=true;
-    sysTick++;
+    if(document.hidden||currentRoute()!=='dashboard'||runtimeBusy)return;
+    runtimeBusy=true;
     callRuntime().then(function(rt){
       if(!rootAlive(root))return;
       updateRuntime(root,rt||{});
-      if(sysTick%3===0)return refreshDashboard(root);
     }).catch(function(){}).then(function(){
-      sysBusy=false;
+      runtimeBusy=false;
     });
   },2500);
+  fullStatusTimer=setInterval(function(){
+    if(!rootAlive(root)||document.hidden||currentRoute()!=='dashboard'||statusBusy)return;
+    statusBusy=true;
+    refreshDashboard(root).catch(function(){}).then(function(){
+      statusBusy=false;
+    });
+  },30000);
 }return view.extend({
   load:function(){return callStatus(statusDetail()).then(function(st){return st||{};});},
   render:function(st){
