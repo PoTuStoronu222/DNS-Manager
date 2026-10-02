@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.5.69
+# Version: 1.5.70
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -22,7 +22,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.5.69"
+VERSION="1.5.70"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -129,7 +129,7 @@ UPDATE_STATE="/etc/dns-manager-luci/update.state"
 COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.5.69"
+SELF_VERSION="1.5.70"
 
 umask 077
 mkdir -p "$RUNTIME_DIR" "$JOB_DIR" "$CHECK_DIR" "$TMP_ROOT" 2>/dev/null || exit 1
@@ -1524,7 +1524,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.5.69
+// DNS Manager LuCI version: 1.5.70
 var callStatus = rpc.declare({ object:'dns_manager', method:'status', params:['detail'], expect:{} });
 var callRuntime = rpc.declare({ object:'dns_manager', method:'runtime', expect:{} });
 function statusDetail(){return currentRoute()==='network'?1:0;}
@@ -3037,10 +3037,8 @@ function showLog(root){
 }
 
 var autoStatusTimer=null;
-var fullStatusTimer=null;
 function stopAutoStatus(){
-  if(autoStatusTimer){clearInterval(autoStatusTimer);autoStatusTimer=null;}
-  if(fullStatusTimer){clearInterval(fullStatusTimer);fullStatusTimer=null;}
+  if(autoStatusTimer){clearTimeout(autoStatusTimer);autoStatusTimer=null;}
 }
 function updateRuntimeBadge(node,kind,text){
   if(!node)return;
@@ -3079,23 +3077,27 @@ function updateRuntime(root,rt){
 }
 function startAutoStatus(root){
   stopAutoStatus();
-  autoStatusTimer=setInterval(function(){
+  function schedule(){
     if(!rootAlive(root)){stopAutoStatus();return;}
-    if(document.hidden||state.busy||state.versionCheck&&state.versionCheck.running||state.statusRefreshing)return;
-    state.statusRefreshing=true;
-    callRuntime().then(function(rt){
-      if(rootAlive(root))updateRuntime(root,rt||{});
-    }).catch(function(){}).then(function(){state.statusRefreshing=false;});
-  },3000);
-  fullStatusTimer=setInterval(function(){
-    if(!rootAlive(root)){stopAutoStatus();return;}
-    if(document.hidden||state.busy||state.versionCheck&&state.versionCheck.running)return;
-    var a=document.activeElement;
-    if(a&&root.contains(a)&&/^(INPUT|TEXTAREA|SELECT|BUTTON)$/.test(a.tagName))return;
-    refresh(root,true);
-  },30000);
-}
-return view.extend({
+    autoStatusTimer=setTimeout(function(){
+      autoStatusTimer=null;
+      if(!rootAlive(root)){return;}
+      if(document.hidden||currentRoute()!=='dashboard'||state.busy||state.versionCheck&&state.versionCheck.running){
+        schedule();
+        return;
+      }
+      if(state.statusRefreshing){schedule();return;}
+      state.statusRefreshing=true;
+      callRuntime().then(function(rt){
+        if(rootAlive(root))updateRuntime(root,rt||{});
+      }).catch(function(){}).then(function(){
+        state.statusRefreshing=false;
+        schedule();
+      });
+    },3000);
+  }
+  schedule();
+}return view.extend({
   load:function(){return callStatus(statusDetail()).then(function(st){return st||{};});},
   render:function(st){
     var root=E('div',{'class':'dm-wrap'});
