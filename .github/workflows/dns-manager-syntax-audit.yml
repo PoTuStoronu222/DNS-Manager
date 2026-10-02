@@ -1,8 +1,8 @@
 name: DNS Manager syntax audit
 on:
-  push:
+  pull_request:
     branches:
-      - audit/syntax-and-state-20261002
+      - main
 jobs:
   syntax:
     runs-on: ubuntu-latest
