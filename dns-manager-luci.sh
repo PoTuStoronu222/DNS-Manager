@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.5.73
+# Version: 1.5.74
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -22,7 +22,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.5.73"
+VERSION="1.5.74"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -96,8 +96,7 @@ EOF_MENU
     "description": "DNS Manager native LuCI interface",
     "read": {
       "ubus": {
-        "dns_manager": [ "status", "catalog", "job", "log", "update_check", "update_check_job", "update_check_job_status" ],
-        "system": [ "info" ]
+        "dns_manager": [ "status", "runtime", "catalog", "job", "log", "update_check", "update_check_job", "update_check_job_status" ]
       }
     },
     "write": {
@@ -130,7 +129,7 @@ UPDATE_STATE="/etc/dns-manager-luci/update.state"
 COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.5.73"
+SELF_VERSION="1.5.74"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -883,6 +882,34 @@ detect_runtime_force_state() {
 
 openwrt_release() { sed -n "s/^DISTRIB_RELEASE='\([^']*\)'.*/\1/p" /etc/openwrt_release 2>/dev/null | head -n1; }
 
+cpu_stat() {
+    awk '/^cpu / { t=0; for(i=2;i<=NF;i++) t+=$i; print t, $5+$6; exit }' /proc/stat 2>/dev/null
+}
+cpu_load_percent() {
+    local f="$RUNTIME_DIR/cpu.stat" p t1 i1 t2 i2 now
+    mkdir -p "$RUNTIME_DIR" 2>/dev/null || return 0
+    now="$(cpu_stat)"
+    [ -n "$now" ] || { printf '0'; return 0; }
+    if [ -s "$f" ]; then
+        p="$(cat "$f" 2>/dev/null || true)"
+    else
+        p="$now"
+    fi
+    printf '%s\n' "$now" > "$f" 2>/dev/null || true
+    set -- $p $now
+    t1=$1; i1=$2; t2=$3; i2=$4
+    [ -n "$t1" ] && [ -n "$i1" ] && [ -n "$t2" ] && [ -n "$i2" ] || { printf '0'; return 0; }
+    [ "$t2" -gt "$t1" ] 2>/dev/null || { printf '0'; return 0; }
+    printf '%s' "$(( (100 * ((t2-t1) - (i2-i1)) + (t2-t1)/2) / (t2-t1) ))"
+}
+runtime_json() {
+    _uptime="$(awk '{printf "%s",int($1)}' /proc/uptime 2>/dev/null || true)"
+    _load="$(cpu_load_percent)"
+    _mem_t="$(awk '/MemTotal:/ {print $2;exit}' /proc/meminfo 2>/dev/null || true)"; [ -n "$_mem_t" ] || _mem_t=0
+    _mem_a="$(awk '/MemAvailable:/ {print $2;exit}' /proc/meminfo 2>/dev/null || true)"; [ -n "$_mem_a" ] || _mem_a=0
+    printf '{"ok":true,"uptime":'; json_quote "$_uptime"
+    printf ',"cpu_load":%s,"memory_total_kb":%s,"memory_available_kb":%s}' "$_load" "$_mem_t" "$_mem_a"
+}
 status_json() {
     _mv="$(manager_version 2>/dev/null || true)"
     # Do not use load_config() defaults here. An untouched OpenWrt router must
@@ -1480,6 +1507,7 @@ case "${1:-}" in
     call)
         case "${2:-}" in
             status) INPUT="$(cat 2>/dev/null || true)"; status_json;;
+            runtime) runtime_json;;
             catalog) INPUT="$(cat 2>/dev/null || true)"; catalog_json;;
             update_check) update_check_json;;            update_catalog) update_catalog_json;;            update_all) update_all_json;;            update) update_json;;            update_manager) update_manager_json;;            update_hdp) update_hdp_json;;
             set_profile|set_slot|set_setting|set_watchdog_setting) INPUT="$(cat 2>/dev/null || true)"; RPC_METHOD="$2"; run_action;;
@@ -1509,25 +1537,14 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.5.73
+// DNS Manager LuCI version: 1.5.74
 var callStatus = rpc.declare({ object:'dns_manager', method:'status', params:['detail'], expect:{} });
-var callBoardInfo = rpc.declare({ object:'system', method:'info', expect:{} });
+var callRuntime = rpc.declare({ object:'dns_manager', method:'runtime', expect:{} });
 var runtimeMemo = null;
-function callRuntime(){
+function callRuntimeMemo(){
   var now=Date.now();
   if(runtimeMemo&&now-runtimeMemo.t<3000)return runtimeMemo.p;
-  var p=callBoardInfo().then(function(i){
-    i=i||{};
-    var load=Array.isArray(i.load)&&i.load.length?Number(i.load[0])/65536:NaN;
-    var mem=i.memory||{}, total=Number(mem.total||0), avail=mem.available!=null?Number(mem.available):Number(mem.free||0)+Number(mem.buffered||0)+Number(mem.cached||0);
-    return {
-      ok:true,
-      uptime:i.uptime,
-      load1:isFinite(load)?String(Math.round(load*100)/100):'',
-      memory_total_kb:total>0?Math.round(total/1024):0,
-      memory_available_kb:avail>=0?Math.round(avail/1024):0
-    };
-  });
+  var p=callRuntime();
   runtimeMemo={t:now,p:p};
   p.catch(function(){if(runtimeMemo&&runtimeMemo.p===p)runtimeMemo=null;});
   return p;
@@ -1626,7 +1643,19 @@ function loadBar(load1,cores){
     ]),
     E('div',{'class':'dm-load-meta'},'load '+shortVal(load1)+' · '+String(cores||1)+' '+(Number(cores||1)===1?'ядро':'ядра'))
   ]);
+}function cpuLoadBar(pct){
+  var p=Number(pct);
+  if(!isFinite(p)||p<0)p=0;
+  p=Math.max(0,Math.min(100,Math.round(p)));
+  return E('div',{'class':'dm-load-wrap'},[
+    E('div',{'class':'dm-load-line'},[
+      E('div',{'class':'dm-load-track'},[E('div',{'class':'dm-load-fill','style':'width:'+p+'%','id':'dm-runtime-load-fill'})]),
+      E('span',{'class':'dm-load-value','id':'dm-runtime-load-value'},p+'%')
+    ]),
+    E('div',{'class':'dm-load-meta','id':'dm-runtime-load-meta'},'Нагрузка процессора')
+  ]);
 }
+
 function badge(kind,text){ return E('span',{'class':'dm-badge '+kind},[E('span',{'class':'dm-dot'}),text]); }
 function btn(label,cls,fn,extra){ var a={'class':'cbi-button '+(cls||''),'type':'button','click':function(ev){ if(ev&&ev.preventDefault)ev.preventDefault(); return fn?fn.call(this,ev):undefined; }}; Object.keys(extra||{}).forEach(function(k){ if(k==='disabled'){ if(extra[k]) a.disabled=true; } else { a[k]=extra[k]; } }); return E('button',a,label); }
 function row(label,node){ return E('div',{'class':'dm-row'},[E('span',{'class':'dm-label'},label),E('span',{'class':'dm-row-value'},node)]); }
@@ -1884,7 +1913,8 @@ function renderOverview(root,st){
   var ipv4=st.ipv4==='yes'?badge('dm-ok','есть'):badge('dm-bad','нет');
   var ipv6=st.ipv6==='yes'?badge('dm-ok','есть'):badge('dm-off','выключен');
 
-  var loadNode=loadBar(st.load1,st.cpu_count);loadNode.id='dm-runtime-load';
+  var initialCpuLoad=st.cpu_load!==undefined&&st.cpu_load!==null&&String(st.cpu_load)!==''?Number(st.cpu_load):loadPercent(st.load1,st.cpu_count);
+  var loadNode=cpuLoadBar(isFinite(initialCpuLoad)?initialCpuLoad:0);loadNode.id='dm-runtime-load';
   var memNode=memoryBar(st.memory_total_kb,st.memory_available_kb);memNode.id='dm-runtime-memory';
   var sysCard=card('Система',[
     row('Модель',shortVal(st.hostname)),
@@ -3062,12 +3092,13 @@ function updateRuntime(root,rt){
   updateRuntimeBadge(n,rt.ipv6==='yes'?'dm-ok':'dm-off',rt.ipv6==='yes'?'есть':'выключен');
   n=root.querySelector('#dm-runtime-load');
   if(n){
-    var lp=loadPercent(rt.load1,(window.dmState&&window.dmState.cpu_count)||1);
-    if(lp!==null){
+    var lp=Number(rt.cpu_load);
+    if(isFinite(lp)){
+      lp=Math.max(0,Math.min(100,Math.round(lp)));
       var fill=n.querySelector('.dm-load-fill'),val=n.querySelector('.dm-load-value'),meta=n.querySelector('.dm-load-meta');
       if(fill)fill.style.width=lp+'%';
       if(val)val.textContent=lp+'%';
-      if(meta)meta.textContent='load '+shortVal(rt.load1)+' · '+String((window.dmState&&window.dmState.cpu_count)||1)+' '+(Number((window.dmState&&window.dmState.cpu_count)||1)===1?'ядро':'ядра');
+      if(meta)meta.textContent='Нагрузка процессора';
     }
   }
   n=root.querySelector('#dm-runtime-memory');
@@ -3094,7 +3125,7 @@ function startAutoStatus(root){
       }
       if(state.statusRefreshing){schedule();return;}
       state.statusRefreshing=true;
-      callRuntime().then(function(rt){
+      callRuntimeMemo().then(function(rt){
         if(rootAlive(root))updateRuntime(root,rt||{});
       }).catch(function(){}).then(function(){
         state.statusRefreshing=false;
