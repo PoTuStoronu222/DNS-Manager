@@ -46,7 +46,15 @@ install_files() {
         for _jd in "$JOB_DIR"/*; do
             [ -d "$_jd" ] || continue
             _bn="${_jd##*/}"
-            printf '%s' "$_bn" | grep -Eq '^[0-9]+-[0-9]+
+            case "$_bn" in
+                [0-9]*-[0-9]*) ;;
+                *) continue ;;
+            esac
+            _st="$(sed -n 's/^status=//p' "$_jd/state" 2>/dev/null | tail -n1)"
+            [ "$_st" = running ] && continue
+            rm -rf "$_jd" 2>/dev/null || true
+        done
+    fi
     cat > "$MENU_FILE" <<'EOF_MENU'
 {
   "admin/services/dns-manager": {
