@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.5.53
+# Version: 1.5.54
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -22,69 +22,11 @@ COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main
 # Legacy update compatibility: admin/services/dns_manager
 RUNTIME_UPDATE_STATE="$BACKUP_DIR/update.state"
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.5.53"
+VERSION="1.5.54"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
 
-stock_sysctl_values() {
-    _all=1
-    _supported=0
-    while IFS= read -r _p; do
-        [ -n "$_p" ] || continue
-        _k="$(printf "%s" "$_p" | cut -d= -f1)"
-        if ! sysctl -n "$_k" >/dev/null 2>&1; then
-            continue
-        fi
-        _supported=$((_supported + 1))
-        _cur="$(sysctl -n "$_k" 2>/dev/null)"
-        _stock="$(sysctl_stock_value "$_k" 2>/dev/null || true)"
-        [ -n "$_stock" ] || { _all=0; continue; }
-        [ "$_cur" = "$_stock" ] || _all=0
-    done <<EOF_STOCK_SYSCTL
-$1
-EOF_STOCK_SYSCTL
-    [ "$_supported" -gt 0 ] && [ "$_all" = 1 ]
-}
-
-manager_version() {
-    [ -r "$MANAGER" ] || return 1
-    awk -F'"' '/^VERSION="/ { print $2; exit }' "$MANAGER" 2>/dev/null
-}
-
-manager_const_num() {
-    _key="$1"
-    _fallback="$2"
-    case "$_key" in
-        WATCHDOG_FAIL_THRESHOLD|WATCHDOG_REPAIR_COOLDOWN|WATCHDOG_GUARD_INTERVAL|WATCHDOG_MAX_REPAIRS|WATCHDOG_MAX_RESTARTS|WATCHDOG_MAX_CANDIDATES|WATCHDOG_RESTART_COOLDOWN) ;;
-        *) printf '%s' "$_fallback"; return 0 ;;
-    esac
-    _v="$(sed -n "s/^${_key}=\\([0-9][0-9]*\\)$/\\1/p" "$CONFIG_FILE" 2>/dev/null | head -n1)"
-    case "$_v" in
-        ''|*[!0-9]*) _v="$(sed -n "s/^${_key}=\\([0-9][0-9]*\\)$/\\1/p" "$MANAGER" 2>/dev/null | head -n1)" ;;
-    esac
-    case "$_v" in
-        ''|*[!0-9]*) printf '%s' "$_fallback" ;;
-        *) printf '%s' "$_v" ;;
-    esac
-}
-
-watchdog_service_running() {
-    [ -x /etc/init.d/dns-watchdog ] && /etc/init.d/dns-watchdog running >/dev/null 2>&1
-}
-watchdog_service_enabled() {
-    [ -x /etc/init.d/dns-watchdog ] && /etc/init.d/dns-watchdog enabled >/dev/null 2>&1
-}
-watchdog_loop_running() {
-    for _p in /proc/[0-9]*; do
-        [ -r "$_p/cmdline" ] || continue
-        _cmd="$(tr '\000' ' ' < "$_p/cmdline" 2>/dev/null || true)"
-        case "$_cmd" in
-            *dns-manager*__watchdog-loop*) return 0 ;;
-        esac
-    done
-    return 1
-}
 
 require_manager() {
     [ -x "$MANAGER" ] || { err "Не найден $MANAGER. Сначала установите DNS Manager."; return 1; }
@@ -183,7 +125,7 @@ UPDATE_STATE="/etc/dns-manager-luci/update.state"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.5.53"
+SELF_VERSION="1.5.54"
 
 umask 077
 mkdir -p "$RUNTIME_DIR" "$JOB_DIR" "$CHECK_DIR" "$TMP_ROOT" 2>/dev/null || exit 1
@@ -484,7 +426,7 @@ update_hdp_json() {
     [ -n "$_installed" ] || { json_error "https-dns-proxy не установлен"; return; }
     [ -n "$_candidate" ] || { json_error "Новой версии https-dns-proxy не найдено"; return; }
     if ! package_version_cmp "$_candidate" "$_installed"; then
-        _state_tmp="$UPDATE_STATE.tmp.$"
+        _state_tmp="$UPDATE_STATE.tmp.$$"
         if [ -r "$UPDATE_STATE" ]; then
             sed '/^hdp_latest=/d;/^hdp_available=/d;/^hdp_checked=/d;/^components_checked_at=/d' "$UPDATE_STATE" > "$_state_tmp" 2>/dev/null || true
         else
@@ -500,7 +442,7 @@ update_hdp_json() {
     fi
     _after="$(package_version https-dns-proxy 2>/dev/null || true)"
     [ -n "$_after" ] || { json_error "Не удалось определить версию после обновления"; return; }
-    _state_tmp="$UPDATE_STATE.tmp.$"
+    _state_tmp="$UPDATE_STATE.tmp.$$"
     if [ -r "$UPDATE_STATE" ]; then
         sed '/^hdp_latest=/d;/^hdp_available=/d;/^hdp_checked=/d;/^components_checked_at=/d' "$UPDATE_STATE" > "$_state_tmp" 2>/dev/null || true
     else
@@ -970,46 +912,19 @@ status_json() {
     _ntp="$(cfg_get NTP_CLIENTS)"; [ -n "$_ntp" ] || _ntp=0
     _perf="$(cfg_get DNSMASQ_PERF)"; [ -n "$_perf" ] || _perf=0
     _fix="$(cfg_get CLIENT_FIXES)"; [ -n "$_fix" ] || _fix=0
-    _client_fix_state=0
-    _client_fix_stock=1
-    for _cf in /etc/dnsmasq.d/*dns-manager-client-fixes*.conf; do
-        [ -f "$_cf" ] || continue
-        _client_fix_state=1
-        _client_fix_stock=0
-        break
-    done
-    _detail="$(jget detail 2>/dev/null || true)"
-    _mtu_state=0
-    _sysctl_state=0
-    _sysctl_ext_state=0
-    _dnsmasq_perf_state=0
-    _mtu_stock=0
-    _sysctl_stock=0
-    _sysctl_ext_stock=0
-    _dnsmasq_perf_stock=0
-    if [ "$_detail" = 1 ] && load_manager >/dev/null 2>&1; then
+    _client_fix_state=2
+    _mtu_state=2
+    _sysctl_state=2
+    _sysctl_ext_state=2
+    _dnsmasq_perf_state=2
+    _ntp_clients_state=2
+    if load_manager >/dev/null 2>&1; then
+        _client_fix_state="$(check_module_state client_fixes 2>/dev/null || true)"; case "$_client_fix_state" in 0|1|2) ;; *) _client_fix_state=0;; esac
         _mtu_state="$(check_module_state mtu 2>/dev/null || true)"; case "$_mtu_state" in 0|1|2) ;; *) _mtu_state=0;; esac
-    _sysctl_state="$(check_module_state sysctl 2>/dev/null || true)"; case "$_sysctl_state" in 0|1|2) ;; *) _sysctl_state=0;; esac
-    _sysctl_ext_state="$(check_sysctl_extended_state 2>/dev/null || true)"; case "$_sysctl_ext_state" in 0|1|2) ;; *) _sysctl_ext_state=0;; esac
-    _dnsmasq_perf_state="$(check_module_state dnsmasq_perf 2>/dev/null || true)"; case "$_dnsmasq_perf_state" in 0|1|2) ;; *) _dnsmasq_perf_state=0;; esac
-
-    _mtu_stock=0
-    _mtu_zone="$(firewall_wan_zone 2>/dev/null || true)"
-    if [ -n "$_mtu_zone" ]; then
-        [ -z "$(uci -q get "firewall.$_mtu_zone.mtu_fix" 2>/dev/null || true)" ] && _mtu_stock=1
-    fi
-    _sysctl_stock=0
-    stock_sysctl_values "$(sysctl_base_expected)" && _sysctl_stock=1
-    _sysctl_ext_stock=0
-    stock_sysctl_values "$(sysctl_extended_params)" && _sysctl_ext_stock=1
-    _dnsmasq_perf_stock=0
-    _dns_sec="$(get_dnsmasq_section 2>/dev/null || true)"
-    if [ -n "$_dns_sec" ]; then
-        _dnsmasq_perf_stock=1
-        for _k in cachesize dnsforwardmax max_cache_ttl boguspriv domainneeded quietdhcp filter_aaaa; do
-            [ -z "$(uci -q get "dhcp.$_dns_sec.$_k" 2>/dev/null || true)" ] || _dnsmasq_perf_stock=0
-        done
-    fi
+        _sysctl_state="$(check_module_state sysctl 2>/dev/null || true)"; case "$_sysctl_state" in 0|1|2) ;; *) _sysctl_state=0;; esac
+        _sysctl_ext_state="$(check_sysctl_extended_state 2>/dev/null || true)"; case "$_sysctl_ext_state" in 0|1|2) ;; *) _sysctl_ext_state=0;; esac
+        _dnsmasq_perf_state="$(check_module_state dnsmasq_perf 2>/dev/null || true)"; case "$_dnsmasq_perf_state" in 0|1|2) ;; *) _dnsmasq_perf_state=0;; esac
+        _ntp_clients_state="$(check_module_state ntp_clients 2>/dev/null || true)"; case "$_ntp_clients_state" in 0|1|2) ;; *) _ntp_clients_state=0;; esac
     fi
 
     _doh_total=0; _doh_running=0
@@ -1141,10 +1056,10 @@ status_json() {
     _force_owner="none"
     [ "$_external" = 1 ] && _force_owner="external"
     [ "$_external" != 1 ] && [ "$_force_manager" = 1 ] && _force_owner="manager"
-    printf ',"client_fixes_state":%s,"client_fixes_stock":%s' "$_client_fix_state" "$_client_fix_stock";
+    printf ',"client_fixes_state":%s' "$_client_fix_state";
     printf ',"force":'; json_quote "$_force"; printf ',"force_external":'; json_quote "$_external"; printf ',"force_owner":'; json_quote "$_force_owner"; printf ',"force_manager":%s,"force_both":%s,"zapret_running":%s' "$_force_manager" "$_force_both" "$_zapret_running";
-    printf ',"mtu_state":%s,"sysctl_state":%s,"sysctl_ext_state":%s,"dnsmasq_perf_state":%s' "$_mtu_state" "$_sysctl_state" "$_sysctl_ext_state" "$_dnsmasq_perf_state";
-    printf ',"mtu_stock":%s,"sysctl_stock":%s,"sysctl_ext_stock":%s,"dnsmasq_perf_stock":%s' "$_mtu_stock" "$_sysctl_stock" "$_sysctl_ext_stock" "$_dnsmasq_perf_stock"; printf ',"force_source":'; json_quote "$FORCE_RUNTIME_SOURCE"; printf ',"force_targets":'; json_quote "$FORCE_RUNTIME_TARGETS"; printf ',"force_notrack":'; json_quote "$_force_notrack"; printf ',"force_update":'; json_quote "$_force_update"; printf ',"force_family":'; json_quote "$_force_family"; printf ',"force_ports":'; json_quote "$_force_ports"; printf ',"force_src":'; json_quote "$_force_src"; printf ',"force_canary_icloud":'; json_quote "$_force_canary_i"; printf ',"force_canary_mozilla":'; json_quote "$_force_canary_m"; printf ',"force_procd_trigger_wan6":'; json_quote "$_force_procd"; printf ',"force_heartbeat_domain":'; json_quote "$_force_heartbeat_domain"; printf ',"force_heartbeat_sleep":'; json_quote "$_force_heartbeat_sleep"; printf ',"force_heartbeat_wait":'; json_quote "$_force_heartbeat_wait"; printf ',"force_user":'; json_quote "$_force_user"; printf ',"force_group":'; json_quote "$_force_group"; printf ',"force_listen":'; json_quote "$_force_listen"; printf ',"force_consistent":%s' "$_force_consistent"; printf ',"mtu":'; json_quote "$_mtu"; printf ',"sysctl":'; json_quote "$_sysctl"; printf ',"sysctl_ext":'; json_quote "$_sysctl_ext"; printf ',"ntp_clients":'; json_quote "$_ntp"; printf ',"dnsmasq_perf":'; json_quote "$_perf"; printf ',"client_fixes":'; json_quote "$_fix"
+    printf ',"mtu_state":%s,"sysctl_state":%s,"sysctl_ext_state":%s,"dnsmasq_perf_state":%s,"ntp_clients_state":%s' "$_mtu_state" "$_sysctl_state" "$_sysctl_ext_state" "$_dnsmasq_perf_state" "$_ntp_clients_state";
+    printf ',"force_source":'; json_quote "$FORCE_RUNTIME_SOURCE"; printf ',"force_targets":'; json_quote "$FORCE_RUNTIME_TARGETS"; printf ',"force_notrack":'; json_quote "$_force_notrack"; printf ',"force_update":'; json_quote "$_force_update"; printf ',"force_family":'; json_quote "$_force_family"; printf ',"force_ports":'; json_quote "$_force_ports"; printf ',"force_src":'; json_quote "$_force_src"; printf ',"force_canary_icloud":'; json_quote "$_force_canary_i"; printf ',"force_canary_mozilla":'; json_quote "$_force_canary_m"; printf ',"force_procd_trigger_wan6":'; json_quote "$_force_procd"; printf ',"force_heartbeat_domain":'; json_quote "$_force_heartbeat_domain"; printf ',"force_heartbeat_sleep":'; json_quote "$_force_heartbeat_sleep"; printf ',"force_heartbeat_wait":'; json_quote "$_force_heartbeat_wait"; printf ',"force_user":'; json_quote "$_force_user"; printf ',"force_group":'; json_quote "$_force_group"; printf ',"force_listen":'; json_quote "$_force_listen"; printf ',"force_consistent":%s' "$_force_consistent"; printf ',"mtu":'; json_quote "$_mtu"; printf ',"sysctl":'; json_quote "$_sysctl"; printf ',"sysctl_ext":'; json_quote "$_sysctl_ext"; printf ',"ntp_clients":'; json_quote "$_ntp"; printf ',"dnsmasq_perf":'; json_quote "$_perf"; printf ',"client_fixes":'; json_quote "$_fix"
     printf ',"doh_total":%s,"doh_match":%s,"configured_dns":%s' "$_doh_total" "$_match" "$_expected"; printf ',"last_full_test":'; json_quote "$_last"; printf ',"components_checked_at":'; json_quote "$_components_checked_at"
     printf ',"hostname":'; json_quote "$_host"; printf ',"uptime":'; json_quote "$_uptime"; printf ',"load1":'; json_quote "$_load"; printf ',"cpu_count":%s,"memory_total_kb":%s,"memory_available_kb":%s' "$_cpu_count" "${_mem_t:-0}" "${_mem_a:-0}"
     printf ',"catalog_total":%s,"catalog_version":' "$_cat_total"; json_quote "$(catalog_version)"; printf ',"catalog_revision":'; json_quote "$(catalog_revision)"; printf ',"hdp_version":'; json_quote "$_hdp_installed"; printf ',"hdp_latest_version":'; json_quote "$_hdp_candidate"; printf ',"hdp_update_available":%s,"hdp_check_ok":%s' "$_hdp_update" "$_hdp_check_state"
@@ -1558,7 +1473,7 @@ EOF_RPC
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.5.53
+// DNS Manager LuCI version: 1.5.54
 var callStatus = rpc.declare({ object:'dns_manager', method:'status', params:['detail'], expect:{} });
 function statusDetail(){return currentRoute()==='network'?1:0;}
 var callCatalog = rpc.declare({ object:'dns_manager', method:'catalog', params:['category','offset','limit','only_ok'], expect:{} });
@@ -1721,7 +1636,7 @@ function settingModuleState(st,key){
 function settingStateView(st,key){
   var ms=settingModuleState(st,key);
   if(ms===1)return {kind:'dm-ok',text:'включено'};
-  if(ms===2)return {kind:'dm-warn',text:'требует внимания'};
+  if(ms===2)return {kind:'dm-warn',text:'другое'};
   if(ms===0)return {kind:'dm-off',text:'выключено'};
   return yes(st[key])?{kind:'dm-ok',text:'включено'}:{kind:'dm-off',text:'выключено'};
 }
@@ -1851,8 +1766,10 @@ function componentItem(title,statusNode,details){
   ]);
 }
 function componentSettingItem(title,key){
-  var en=yes((window.dmState||{})[key]);
-  return componentItem(title,badge(en?'dm-ok':'dm-off',en?'включено':'выключено'));
+  var st=window.dmState||{}, raw=st[key+'_state'];
+  var n=(raw===undefined||raw===null||raw==='')?-1:Number(raw);
+  var node=n===1?badge('dm-ok','включено'):n===2?badge('dm-warn','другое'):badge('dm-off','выключено');
+  return componentItem(title,node);
 }
 function renderOverview(root,st){
   var e=root.querySelector('#dm-overview');if(!e)return;e.innerHTML='';
@@ -2293,8 +2210,8 @@ function renderSlots(root,st){
 function settingCard(root,x,st){
   var en=yes(st[x[0]]),busy=state.busySetting===x[0],feedback=settingFeedback(x[1],x[0]),sv=settingStateView(st,x[0]);
   var active=(settingModuleState(st,x[0])===1)||((settingModuleState(st,x[0])===-1)&&en);
-  var actionLabel=sv.text==='требует внимания'?'Исправить':(active?'Выключить':'Включить');
-  var actionEnabled=sv.text==='требует внимания'?1:(active?0:1);
+  var actionLabel=sv.text==='другое'?'Исправить':(active?'Выключить':'Включить');
+  var actionEnabled=sv.text==='другое'?1:(active?0:1);
   var actions=[
     badge(busy?'dm-warn':sv.kind,busy?'изменение':sv.text),
     btn(busy?'Сохраняю…':actionLabel,busy?'cbi-button-neutral':(actionEnabled?'cbi-button-add':'cbi-button-remove'),function(){setSetting(x[0],actionEnabled,root);},{disabled:!!state.busy})
