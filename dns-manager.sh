@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.31.9"
+VERSION="3.32.0"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -5306,7 +5306,7 @@ uninstall_manager() {
 state_word() {
 case "$1" in
 yes|1|on|working|running) printf "${C_GREEN}ВКЛ • работает${C_NC}";;
-no|0|off|stopped|missing) printf "${C_YELLOW}ВЫКЛ • нет${C_NC}";;
+no|0|off|stopped|missing) printf "${C_YELLOW}ВЫКЛ •${C_NC}";;
 warn|warning) printf "${C_YELLOW}ВНИМАНИЕ${C_NC}";;
 error|fail) printf "${C_RED}ОШИБКА${C_NC}";;
 *) printf "${C_WHITE}%s${C_NC}" "$1";;
@@ -6243,7 +6243,7 @@ force_state_word() {
     case "$_real" in
         1) printf "${C_BOLD}${C_GREEN}ВКЛ • работает${C_NC}" ;;
         2) printf "${C_BOLD}${C_RED}ДРУГОЕ • отличается${C_NC}" ;;
-        *) printf "${C_BOLD}${C_CYAN}ВЫКЛ • нет${C_NC}" ;;
+        *) printf "${C_BOLD}${C_CYAN}ВЫКЛ •${C_NC}" ;;
     esac
 }
 module_state_word() {
