@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.34.8"
+VERSION="3.34.9"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -1002,11 +1002,6 @@ _had_dns_profile=0
 [ -f "$CONFIG_FILE" ] && grep -q '^DNS_PROFILE=' "$CONFIG_FILE" 2>/dev/null && _had_dns_profile=1
 [ -f "$CONFIG_FILE" ] && . "$CONFIG_FILE" 2>/dev/null
 # Deprecated tuning flags from older releases are ignored by the active manager.
-MTU_FIX=0
-SYSCTL_TUNING=0
-SYSCTL_EXTENDED=0
-NTP_CLIENTS=0
-CLIENT_FIXES=0
 BOOTSTRAP_DNS="$BOOTSTRAP_DNS_ALL"
 # procd watchdog: only the operator-facing interval is configurable.
 # All repair/guard limits are fixed internal safeguards.
@@ -2953,12 +2948,12 @@ _apply_extras_now_impl() {
             reload_fw || return 1
             ;;
         dnsmasq_perf)
-            _cur="$(uci_value_normalized "dhcp.$_sec.cachesize")"
-            _stock_v="$(stock_uci_value_normalized dhcp "dhcp.@dnsmasq[0].cachesize" "150")"
-            if [ "$_cur" = "$_stock_v" ]; then printf 0
-            elif [ "$_cur" = 1000 ]; then printf 1
-            else printf 2
+            if [ "$DNSMASQ_PERF" = 1 ]; then
+                apply_dnsmasq_perf || return 1
+            else
+                remove_dnsmasq_perf || return 1
             fi
+            /etc/init.d/dnsmasq restart >/dev/null 2>&1 || return 1
             ;;
         web)
             apply_web_access || return 1
@@ -4309,11 +4304,7 @@ reset_manager_runtime_state_after_rollback() {
     TLD_SPLIT=0
     BALANCER_ENABLED=0
     NTP_IP_FALLBACK=0
-    SYSCTL_TUNING=0
     DNSMASQ_PERF=0
-    NTP_CLIENTS=0
-    CLIENT_FIXES=0
-    SYSCTL_EXTENDED=0
     FORCE_DOH=0
     WATCHDOG_ENABLED=0
     WEB_ACCESS_ENABLED=0
@@ -4396,13 +4387,11 @@ _rollback_ours_impl() {
         fi
     fi
 
-        SYSCTL_TUNING=0
         if ! remove_sysctl_base; then
             _rollback_fail=1
             warn_msg "Не удалось полностью восстановить базовый sysctl."
         fi
     fi
-        SYSCTL_EXTENDED=0
         if ! remove_sysctl_extended; then
             _rollback_fail=1
             warn_msg "Не удалось полностью восстановить расширенные параметры TCP и сетевых буферов."
@@ -4611,10 +4600,8 @@ uninstall_manager_impl() {
         if [ "$UNINSTALL_RESTORED_FIREWALL" != 1 ]; then
             rollback_firewall_targeted >/dev/null 2>&1 || true
         fi
-            SYSCTL_TUNING=0
             remove_sysctl_base >/dev/null 2>&1 || true
         fi
-            SYSCTL_EXTENDED=0
             remove_sysctl_extended >/dev/null 2>&1 || true
         fi
         if [ "$UNINSTALL_RESTORED_SYSTEM" != 1 ]; then
@@ -6162,17 +6149,6 @@ setting_process() {
     esac
 
     case "$_module" in
-        sysctl)
-            _old="$SYSCTL_TUNING"; _old_ext="$SYSCTL_EXTENDED"
-            SYSCTL_TUNING="$_new"
-            [ "$_new" = 1 ] && SYSCTL_EXTENDED=1 || SYSCTL_EXTENDED=0
-            ;;
-        mtu) _old="$MTU_FIX"; MTU_FIX="$_new" ;;
-        force) _old="$FORCE_DOH"; FORCE_DOH="$_new" ;;
-        dnsmasq_perf) _old="$DNSMASQ_PERF"; DNSMASQ_PERF="$_new" ;;
-        ntp_clients) _old="$NTP_CLIENTS"; NTP_CLIENTS="$_new" ;;
-        client_fixes) _old="$CLIENT_FIXES"; CLIENT_FIXES="$_new" ;;
-        web) _old="$WEB_ACCESS_ENABLED"; WEB_ACCESS_ENABLED="$_new" ;;
     esac
 
     case "$_module" in
@@ -6187,13 +6163,6 @@ setting_process() {
             _rc=$?
             if [ "$_rc" -ne 0 ]; then
                 case "$_module" in
-                    sysctl) SYSCTL_TUNING="$_old"; SYSCTL_EXTENDED="$_old_ext" ;;
-                    mtu) MTU_FIX="$_old" ;;
-                    force) FORCE_DOH="$_old" ;;
-                    dnsmasq_perf) DNSMASQ_PERF="$_old" ;;
-                    ntp_clients) NTP_CLIENTS="$_old" ;;
-                    client_fixes) CLIENT_FIXES="$_old" ;;
-                    web) WEB_ACCESS_ENABLED="$_old" ;;
                 esac
                 save_config >/dev/null 2>&1 || true
             fi
@@ -6213,14 +6182,8 @@ setting_process() {
         esac
     else
         case "$_module" in
-            mtu) err_msg "Не удалось изменить исправление MTU и MSS для WAN." ;;
             force) err_msg "Не удалось изменить принудительный DNS для устройств." ;;
-            sysctl) err_msg "Не удалось изменить оптимизацию TCP и таблиц соединений." ;;
             dnsmasq_perf) err_msg "Не удалось изменить увеличенный кэш DNS." ;;
-            ntp_clients) err_msg "Не удалось изменить время для устройств в локальной сети." ;;
-            client_fixes) err_msg "Не удалось изменить DNS для проверки подключения и совместимости устройств." ;;
-            web) err_msg "Не удалось изменить терминальный доступ LuCI." ;;
-            watchdog) err_msg "Не удалось изменить автопроверку и замену DNS." ;;
         esac
     fi
     pause
@@ -8137,7 +8100,7 @@ startup_update_check() {
 # STARTUP REQUIRED FUNCTION CHECK
 # ==========================================
 startup_required_function_check() {
-    for _fn in get_dnsmasq_section exact_list_has doh_selected_config_current validate_selected_slots ensure_dnsmasq_balancer web_access_pid_count detect_forced_dns_path clear_all_doh_for_apply rebuild_selected_hdp_sections reconcile_dnsmasq apply_ntp_clients apply_ntp_ip_fallback luci_component_state luci_companion_install luci_companion_remove watchdog_embedded_loop watchdog_service_install_files watchdog_service_remove_files; do
+    for _fn in get_dnsmasq_section exact_list_has doh_selected_config_current validate_selected_slots ensure_dnsmasq_balancer web_access_pid_count detect_forced_dns_path clear_all_doh_for_apply rebuild_selected_hdp_sections reconcile_dnsmasq apply_ntp_ip_fallback luci_component_state luci_companion_install luci_companion_remove watchdog_embedded_loop watchdog_service_install_files watchdog_service_remove_files; do
         type "$_fn" >/dev/null 2>&1 || {
             printf "${C_RED}[✗] Критическая ошибка: отсутствует функция $_fn. Запуск остановлен до изменения настроек роутера.${C_NC}\n"
             return 1
