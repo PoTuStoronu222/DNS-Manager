@@ -2643,6 +2643,15 @@ sync_hdp_force_contract() {
     # is deliberately replaced with this shared configuration.
     firewall_resolve_zones >/dev/null 2>&1 || true
 
+    # Rebuild the main section from the shared contract so stray/foreign
+    # options cannot leave a configuration that only partially matches Zapret.
+    _main_opts="$(uci -q show https-dns-proxy.config 2>/dev/null | sed -n 's/^https-dns-proxy\.config\.\([^.=]*\)=.*/\1/p' | sort -u)"
+    for _opt in $_main_opts; do
+        case "$_opt" in
+            dnsmasq_config_update|force_dns|notrack_dns|force_dns_port|force_dns_src_interface|procd_trigger_wan6|heartbeat_domain|heartbeat_sleep_timeout|heartbeat_wait_timeout|user|group|listen_addr|force_ip_family|canary_domains_icloud|canary_domains_mozilla) ;;
+            *) uci -q delete "https-dns-proxy.config.$_opt" || true ;;
+        esac
+    done
     uci set https-dns-proxy.config.dnsmasq_config_update='*' || return 1
     uci set https-dns-proxy.config.force_dns="$_want" || return 1
     uci set https-dns-proxy.config.notrack_dns='1' || return 1
@@ -5459,7 +5468,16 @@ check_module_state() {
                 [ "$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null)" = 1 ] || _ok=0
                 [ "$(uci -q get https-dns-proxy.config.notrack_dns 2>/dev/null)" = 1 ] || _ok=0
                 [ "$(uci -q get https-dns-proxy.config.dnsmasq_config_update 2>/dev/null)" = '*' ] || _ok=0
+                [ "$(uci -q get https-dns-proxy.config.procd_trigger_wan6 2>/dev/null)" = 0 ] || _ok=0
+                [ "$(uci -q get https-dns-proxy.config.heartbeat_domain 2>/dev/null)" = heartbeat.mossdef.org ] || _ok=0
+                [ "$(uci -q get https-dns-proxy.config.heartbeat_sleep_timeout 2>/dev/null)" = 10 ] || _ok=0
+                [ "$(uci -q get https-dns-proxy.config.heartbeat_wait_timeout 2>/dev/null)" = 10 ] || _ok=0
+                [ "$(uci -q get https-dns-proxy.config.user 2>/dev/null)" = nobody ] || _ok=0
+                [ "$(uci -q get https-dns-proxy.config.group 2>/dev/null)" = nogroup ] || _ok=0
+                [ "$(uci -q get https-dns-proxy.config.listen_addr 2>/dev/null)" = 127.0.0.1 ] || _ok=0
                 [ "$(uci -q get https-dns-proxy.config.force_ip_family 2>/dev/null)" = auto ] || _ok=0
+                [ "$(uci -q get https-dns-proxy.config.canary_domains_icloud 2>/dev/null)" = 1 ] || _ok=0
+                [ "$(uci -q get https-dns-proxy.config.canary_domains_mozilla 2>/dev/null)" = 1 ] || _ok=0
                 force_dns_ports_match_expected || _ok=0
                 force_dns_src_matches_expected || _ok=0
                 if [ "$_ok" = 1 ] && [ "${FORCED_DNS_ACTIVE:-0}" = 1 ]; then
