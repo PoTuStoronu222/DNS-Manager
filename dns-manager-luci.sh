@@ -2215,17 +2215,16 @@ function renderDoH(root,st){
   } else ch.push(row('Сейчас используется',E('span',{},'резолверы не настроены')));
 
   var fm=forceMode(st);
-  var external=st.force_owner==='external';
   var forceButtons=E('div',{'class':'dm-seg'},[
-    btn('Перехватывать DNS',fm==='auto'?'active cbi-button':'cbi-button',function(){setForceMode('auto',root);},{disabled:external||state.busy}),
-    btn('Не перехватывать',fm==='off'?'active cbi-button':'cbi-button',function(){setForceMode('off',root);},{disabled:external||state.busy})
+    btn('Авто (рекомендуется)',fm==='auto'?'active cbi-button':'cbi-button',function(){setForceMode('auto',root);},{disabled:state.busy}),
+    btn('Не перехватывать',fm==='off'?'active cbi-button':'cbi-button',function(){setForceMode('off',root);},{disabled:state.busy})
   ]);
   ch.push(E('div',{'style':'margin-top:9px'},[E('div',{'class':'dm-row'},[E('span',{'class':'dm-label'},'Перехват DNS устройств'),badge(st.force_status==='external'||st.force_status==='other'?'dm-bad':st.force_status==='manager'?'dm-ok':'dm-off',st.force_status==='external'?'внешний':st.force_status==='other'?'другое':st.force_status==='manager'?'включён':'выключен')]),forceButtons]));
 
   if(st.force_both){
-    ch.push(E('div',{'class':'dm-force-external'},'Принудительный DNS активен одновременно в DNS Manager и во внешнем перехвате. Источник внешнего перехвата: '+shortVal(st.force_source)+'. DNS Manager не отключает и не переназначает внешний путь.'));
+    ch.push(E('div',{'class':'dm-force-external'},'Принудительный DNS обнаружен одновременно с внешним перехватом. Источник: '+shortVal(st.force_source)+'. При переключении DNS Manager приведёт общую конфигурацию forced-DNS к своей схеме.'));
   } else if(st.force_owner==='external'){
-    ch.push(E('div',{'class':'dm-force-external'},'Обнаружен '+shortVal(st.force_source)+'. DNS Manager не изменяет внешний forced-DNS и не создаёт второй перехват.'));
+    ch.push(E('div',{'class':'dm-force-external'},'Обнаружен '+shortVal(st.force_source)+'. Переключение выше может заменить его общей конфигурацией forced-DNS DNS Manager.'));
   }
   if(state.pageNotice.doh)ch.push(E('div',{'class':'dm-inline-msg info'},state.pageNotice.doh));
   e.appendChild(card('DNS over HTTPS',ch));
@@ -2970,11 +2969,6 @@ function setSetting(name,en,root){
 }
 function setForceMode(mode,root){
   if(state.busy)return;
-  if(window.dmState&&window.dmState.force_owner==='external'){
-    state.pageNotice.doh='Внешний forced-DNS обнаружен. DNS Manager его не изменяет.';
-    renderOverview(root,window.dmState);
-    return;
-  }
   var en=mode==='auto'?1:0;
   state.busy=true;
   state.busySetting='force';
