@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.35.0"
+VERSION="3.35.1"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -22,6 +22,7 @@ WATCHDOG_CHECK_INTERVAL_DEFAULT=90
 WATCHDOG_FAIL_THRESHOLD=2
 WATCHDOG_REPAIR_COOLDOWN=300
 WATCHDOG_GUARD_INTERVAL=900
+DNSMASQ_CACHE_SIZE=4096
 WATCHDOG_SERVICE_PATH="/etc/init.d/dns-watchdog"
 WATCHDOG_SERVICE_MARKER="# DNS_MANAGER_WATCHDOG_SERVICE=2"
 WATCHDOG_SERVICE_VERSION_MARKER="# DNS_MANAGER_WATCHDOG_SERVICE_VERSION=3.11.6"
@@ -3170,7 +3171,7 @@ apply_dnsmasq_perf() {
     [ "${DNSMASQ_PERF:-0}" = 1 ] || return 0
     sec="$(get_dnsmasq_section)"
     [ -n "$sec" ] || return 1
-    uci set "dhcp.$sec.cachesize=1000" || return 1
+    uci set "dhcp.$sec.cachesize=$DNSMASQ_CACHE_SIZE" || return 1
     uci commit dhcp || return 1
 }
 remove_dnsmasq_perf() {
@@ -5653,7 +5654,7 @@ check_module_state() {
         dnsmasq_perf)
             _stock=1
             _desired=1
-            for _spec in "cachesize|150|1000" "dnsforwardmax|150|300" "max_cache_ttl|__DM_UNSET__|86400" "boguspriv|1|1" "domainneeded|1|1" "quietdhcp|__DM_UNSET__|1"; do
+            for _spec in "cachesize|150|$DNSMASQ_CACHE_SIZE" "dnsforwardmax|150|300" "max_cache_ttl|__DM_UNSET__|86400" "boguspriv|1|1" "domainneeded|1|1" "quietdhcp|__DM_UNSET__|1"; do
                 _k="${_spec%%|*}"; _r="${_spec#*|}"; _fallback="${_r%%|*}"; _desired_v="${_r#*|}"
                 _cur="$(uci_value_normalized "dhcp.$_sec.$_k")"
                 _stock_v="$(stock_uci_value_normalized dhcp "dhcp.@dnsmasq[0].$_k" "$_fallback")"
