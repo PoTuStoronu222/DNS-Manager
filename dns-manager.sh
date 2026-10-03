@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.34.9"
+VERSION="3.35.0"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -6328,16 +6328,12 @@ while :; do
     _state_watchdog="$(check_module_state watchdog)"
     _state_force="$(check_module_state force)"
     _state_dnsmasq_perf="$(check_module_state dnsmasq_perf)"
-    _state_luci="$(check_module_state luci)"
-
-    menu_header "НАСТРОЙКИ"
-    menu_section "DNS И ОБХОД"
+    menu_header "СЕТЕВОЙ ТЮНИНГ"
+    menu_section "DNS И СЕТЬ"
     menu_item_action "[1]" "Автопроверка и замена DNS" watchdog "$_state_watchdog"
     menu_item_action "[2]" "Принудительный DNS для устройств" force "$_state_force"
     menu_section "ТЮНИНГ DNS"
     menu_item_action "[3]" "Увеличенный кэш DNS" dnsmasq_perf "$_state_dnsmasq_perf"
-    menu_section "ИНТЕРФЕЙС"
-    menu_item_action "[4]" "Нативный интерфейс DNS Manager" luci "$_state_luci"
     menu_back
     menu_prompt
     safe_read c
@@ -6345,7 +6341,6 @@ while :; do
         1) setting_process watchdog "Автопроверка и замена DNS" "Проверяет только выбранные DNS-порты. При повторном подтверждённом сбое автоматически восстанавливает рабочий вариант." "$_state_watchdog" ;;
         2) setting_process force "Принудительный DNS для устройств" "DNS-запросы устройств на портах 53 направляются на DNS роутера; DoT на 853 блокируется." "$_state_force" ;;
         3) setting_process dnsmasq_perf "Увеличенный кэш DNS" "Увеличивает только кэш dnsmasq для повторных DNS-запросов." "$_state_dnsmasq_perf" ;;
-        4) setting_process luci "Нативный интерфейс DNS Manager" "Устанавливает отдельный файл dns-manager-luci.sh из GitHub и добавляет только LuCI → Службы → DNS Manager. ttyd и дополнительный HTTP-порт не используются." "$_state_luci" ;;
         '') return ;;
         *) warn_msg "Неизвестный пункт."; pause ;;
     esac
@@ -8079,7 +8074,7 @@ menu_section "СЕРВИСЫ"
 menu_item "[2]" "Проверка DNS-серверов"
 menu_item "[3]" "Состояние и журнал"
 menu_item "[4]" "Серверы точного времени"
-menu_item "[5]" "НАСТРОЙКИ"
+menu_item "[5]" "Сетевой тюнинг"
 menu_item "[6]" "Удалить DNS Manager"
 menu_section "LUCI"
 menu_item_action "[7]" "Нативный интерфейс DNS Manager" luci "$(check_module_state luci)"
