@@ -3920,23 +3920,8 @@ verify_after_apply() {
         if [ "${FORCE_DOH:-0}" = 1 ]; then
             [ "$(check_module_state force 2>/dev/null)" = 1 ] || { err_msg "Принудительный DNS после применения не подтверждён."; return 1; }
         fi
-        if [ "${MTU_FIX:-0}" = 1 ]; then
-            [ "$(check_module_state mtu 2>/dev/null)" = 1 ] || { err_msg "Исправление MTU/MSS после применения не подтверждено."; return 1; }
-        fi
-        if [ "${SYSCTL_TUNING:-0}" = 1 ]; then
-            [ "$(check_module_state sysctl 2>/dev/null)" = 1 ] || { err_msg "Настройка сети (sysctl) после применения не подтверждена."; return 1; }
-        fi
-        if [ "${NTP_CLIENTS:-0}" = 1 ]; then
-            [ "$(check_module_state ntp_clients 2>/dev/null)" = 1 ] || { err_msg "Время для устройств в локальной сети после применения не подтверждён."; return 1; }
-        fi
         if [ "${DNSMASQ_PERF:-0}" = 1 ]; then
             [ "$(check_module_state dnsmasq_perf 2>/dev/null)" = 1 ] || { err_msg "Увеличенный кэш DNS после применения не подтверждена."; return 1; }
-        fi
-        if [ "${CLIENT_FIXES:-0}" = 1 ]; then
-            [ "$(check_module_state client_fixes 2>/dev/null)" = 1 ] || { err_msg "Клиентские DNS-фиксы после применения не подтверждены."; return 1; }
-        fi
-        if [ "${SYSCTL_EXTENDED:-0}" = 1 ]; then
-            [ "$(check_module_state sysctl_ext 2>/dev/null)" = 1 ] || { err_msg "Расширенная настройка сети после применения не подтверждена."; return 1; }
         fi
         if [ "${NTP_IP_FALLBACK:-0}" = 1 ]; then
             [ "$(check_module_state ntp 2>/dev/null)" = 1 ] || { err_msg "NTP по IP после применения не подтверждён."; return 1; }
@@ -4347,7 +4332,7 @@ _apply_settings_impl() {
     local APPLY_OUTPUT_QUIET=0
     clear_screen
     run_discovery
-    if [ "$CORE_ONLY" != 1 ] && { [ "${MTU_FIX:-0}" = 1 ] || [ "${FORCE_DOH:-0}" = 1 ]; }; then
+    if [ "$CORE_ONLY" != 1 ] && [ "${FORCE_DOH:-0}" = 1 ]; then
         firewall_backend_require || return 1
     fi
     if [ "${HYBRID_FORCE_RESELECT:-0}" = 1 ] && [ "$DNS_PROFILE" = hybrid ]; then
@@ -4405,13 +4390,8 @@ _apply_settings_impl() {
     if [ "$CORE_ONLY" != 1 ]; then
         [ "$NTP_IP_FALLBACK" = 1 ] && printf "  ${C_GREEN}✓${C_NC} Время по IP\n" || printf "  ${C_YELLOW}—${C_NC} NTP не изменяется\n"
         printf "\n${C_WHITE}Дополнительные настройки:${C_NC}\n"
-        [ "$MTU_FIX" = 1 ] && printf "  ${C_GREEN}✓${C_NC} Исправление сетевых параметров\n" || printf "  ${C_YELLOW}—${C_NC} MTU не изменяется\n"
-        [ "$SYSCTL_TUNING" = 1 ] && printf "  ${C_GREEN}✓${C_NC} Настройка сети\n" || printf "  ${C_YELLOW}—${C_NC} sysctl не изменяется\n"
         [ "${FORCE_DOH:-0}" = 1 ] && printf "  ${C_GREEN}✓${C_NC} Принудительный DNS для устройств\n" || printf "  ${C_YELLOW}—${C_NC} Принудительный DNS для устройств не изменяется\n"
-        [ "$NTP_CLIENTS" = 1 ] && printf "  ${C_GREEN}✓${C_NC} NTP-сервер роутера + DHCP 42 (без принудительного перехвата)\n" || printf "  ${C_YELLOW}—${C_NC} Время для устройств в локальной сети не изменяется\n"
         [ "$DNSMASQ_PERF" = 1 ] && printf "  ${C_GREEN}✓${C_NC} Увеличенный кэш DNS\n" || printf "  ${C_YELLOW}—${C_NC} Увеличенный кэш DNS не изменяется\n"
-        [ "$CLIENT_FIXES" = 1 ] && printf "  ${C_GREEN}✓${C_NC} Клиентские DNS-фиксы\n" || printf "  ${C_YELLOW}—${C_NC} Клиентские фиксы не изменяются\n"
-        [ "$SYSCTL_EXTENDED" = 1 ] && printf "  ${C_GREEN}✓${C_NC} Расширенная настройка сети\n" || printf "  ${C_YELLOW}—${C_NC} Расширенные параметры TCP и сетевых буферов не изменяется\n"
         [ "$WATCHDOG_ENABLED" = 1 ] && printf "  ${C_GREEN}✓${C_NC} Фоновая автопроверка DNS: каждые %s сек\n" "$WATCHDOG_INTERVAL" || printf "  ${C_YELLOW}—${C_NC} Автоматическая проверка DNS не изменяется\n"
     fi
     printf "\n${C_WHITE}Текущее состояние до применения:${C_NC}\n"
@@ -4517,34 +4497,10 @@ _apply_settings_impl() {
         apply_dns_force || { err_msg "Не удалось применить принудительный DNS для устройств."; tx_restore_on_failure; return 1; }
         apply_progress_ok "Принудительный DNS для устройств применён."
     fi
-    if [ "$CORE_ONLY" != 1 ] && [ "$MTU_FIX" = 1 ]; then
-        apply_progress "Применяю исправление сетевых параметров / MSS."
-        apply_mtu_toggle || {
-            err_msg "Не удалось включить исправление MTU/MSS."
-            tx_restore_on_failure
-            return 1
-        }
-        apply_progress_ok "Исправление MTU и MSS для WAN применено."
-    fi
-    if [ "$CORE_ONLY" != 1 ] && { [ "$SYSCTL_TUNING" = 1 ] || [ "$SYSCTL_EXTENDED" = 1 ]; }; then
-        apply_progress "Применяю настройки TCP/Conntrack sysctl."
-        apply_sysctl_bundle "$SYSCTL_TUNING" "$SYSCTL_EXTENDED" || { err_msg "Не удалось применить Оптимизация TCP и таблицы соединений."; tx_restore_on_failure; return 1; }
-        apply_progress_ok "Оптимизация TCP и таблицы соединений применены."
-    fi
-    if [ "$CORE_ONLY" != 1 ] && [ "$NTP_CLIENTS" = 1 ]; then
-        apply_progress "Настраиваю NTP-сервер роутера и DHCP 42 для клиентов."
-        apply_ntp_clients || { err_msg "Не удалось настроить Время для устройств в локальной сети."; tx_restore_on_failure; return 1; }
-        apply_progress_ok "Время для устройств в локальной сети настроено."
-    fi
     if [ "$CORE_ONLY" != 1 ] && [ "$DNSMASQ_PERF" = 1 ]; then
         apply_progress "Настраиваю Увеличенный кэш DNS."
         apply_dnsmasq_perf || { err_msg "Не удалось настроить производительность dnsmasq."; tx_restore_on_failure; return 1; }
         apply_progress_ok "Увеличенный кэш DNS применена."
-    fi
-    if [ "$CORE_ONLY" != 1 ] && [ "$CLIENT_FIXES" = 1 ]; then
-        apply_progress "Применяю DNS для проверки подключения и совместимости устройств."
-        apply_client_fixes || { err_msg "Не удалось применить DNS для проверки подключения и совместимости устройств."; tx_restore_on_failure; return 1; }
-        apply_progress_ok "Клиентские DNS-фиксы применены."
     fi
     if [ "$CORE_ONLY" != 1 ]; then
         WATCHDOG_ENABLED="${WATCHDOG_ENABLED:-0}"
@@ -5532,12 +5488,8 @@ fi
 printf_state_row "Текущий профиль" "$_profile_name"
 printf_state_row "Балансировка DNS" "$(module_state_word balance "$BALANCER_ENABLED")"
 printf_state_row "Отдельный DNS (.ru/.su/.рф)" "$(module_state_word tld "$TLD_SPLIT")"
-printf_state_row "Исправление MTU и MSS для WAN" "$(module_state_word mtu "$MTU_FIX")"
 printf_state_row "Принудительный DNS" "$(force_state_word)"
-printf_state_row "Настройка сети" "$(module_state_word sysctl "$SYSCTL_TUNING")"
 printf_state_row "Увеличенный кэш DNS" "$(module_state_word dnsmasq_perf "$DNSMASQ_PERF")"
-printf_state_row "Время для устройств в локальной сети" "$(module_state_word ntp_clients "$NTP_CLIENTS")"
-printf_state_row "Связь системных служб" "$(module_state_word client_fixes "$CLIENT_FIXES")"
 menu_section "ЖУРНАЛ"
 printf "${C_WHITE}Последние события:${C_NC}\n"
 if [ -s "$LOG_FILE" ]; then grep -v -E "Автообновление: выполняю реальную проверку GitHub:|Автообновление: текущая версия .* актуальна\.|Автообновление: удалённая версия .* не новее текущей" "$LOG_FILE" | tail -15 | sed -e "s/ START / Запуск /" -e "s/ UPDATE / Обновление /" -e "s/ INFO / Информация: /" -e "s/ WARN / Внимание: /" -e "s/ ERROR / Ошибка: /"; else printf "${C_YELLOW}Журнал пока пуст.${C_NC}\n"; fi
