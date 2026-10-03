@@ -3146,12 +3146,12 @@ _apply_extras_now_impl() {
             reload_fw || return 1
             ;;
         dnsmasq_perf)
-            if [ "$DNSMASQ_PERF" = 1 ]; then
-                apply_dnsmasq_perf || return 1
-            else
-                remove_dnsmasq_perf 1 || return 1
+            _cur="$(uci_value_normalized "dhcp.$_sec.cachesize")"
+            _stock_v="$(stock_uci_value_normalized dhcp "dhcp.@dnsmasq[0].cachesize" "150")"
+            if [ "$_cur" = "$_stock_v" ]; then printf 0
+            elif [ "$_cur" = 1000 ]; then printf 1
+            else printf 2
             fi
-            /etc/init.d/dnsmasq restart >/dev/null 2>&1 || return 1
             ;;
         web)
             apply_web_access || return 1
