@@ -789,6 +789,12 @@ baseline_mark_applied() {
     return 0
 }
 baseline_restore_path() {
+    case "$1" in
+        /etc/sysctl.d/90-dns-manager.conf|/etc/sysctl.d/91-dns-manager-extended.conf|/etc/dnsmasq.d/91-dns-manager-client-fixes.conf)
+            rm -f "$1" >/dev/null 2>&1 || true
+            return 0
+            ;;
+    esac
     _path="$1"
     [ -n "$_path" ] || return 3
     [ -s "$BASELINE_MANIFEST" ] || return 3
@@ -852,7 +858,11 @@ baseline_uninstall_validate() {
     while IFS='|' read -r _f _k _existed _hash; do
         [ -n "$_f" ] || continue
         case "$_f" in
-            /etc/config/dhcp|/etc/config/https-dns-proxy|/etc/config/firewall|/etc/config/system|/etc/config/ttyd|||/etc/dnsmasq.d/90-dns-manager-bogus.conf|) ;;
+            /etc/sysctl.d/90-dns-manager.conf|/etc/sysctl.d/91-dns-manager-extended.conf|/etc/dnsmasq.d/91-dns-manager-client-fixes.conf)
+                continue
+                ;;
+            /etc/config/dhcp|/etc/config/https-dns-proxy|/etc/config/firewall|/etc/config/system|/etc/config/ttyd|/etc/dnsmasq.d/90-dns-manager-bogus.conf)
+                ;;
             *) return 1 ;;
         esac
         [ "$_k" = "$(baseline_key "$_f")" ] || return 1
@@ -3514,34 +3524,25 @@ tx_restore_watchdog_state() {
 tx_restore_on_failure() {
 [ "$TX_ACTIVE" = 1 ] || return 0
 warn_msg "Применение не прошло проверку. Выполняю автоматический откат этой транзакции."
-# Cron is shared infrastructure. Never restore the whole crontab on rollback;
-# remove only a DNS Manager-owned entry and preserve everything else.
 watchdog_cron_remove_owned_block >/dev/null 2>&1 || true
 if [ -f "$TX_DIR/manifest" ]; then
-while IFS='|' read -r f key existed; do
-[ -n "$f" ] || continue
-cur="$(file_hash "$f")"
-before="$(cat "$TX_DIR/$key.before" 2>/dev/null)"
-after="$(cat "$TX_DIR/$key.after" 2>/dev/null)"
-if [ -n "$after" ] && [ "$cur" != "$after" ]; then
-warn_msg "Не откатываю $f: обнаружено изменение после применения. Чужие изменения сохранены. Проверьте конфигурацию вручную."
-continue
-fi
-if [ "$existed" = 1 ]; then
-if [ -f "$TX_DIR/files/$key" ]; then
-cp -p "$TX_DIR/files/$key" "$f" 2>/dev/null || warn_msg "Не удалось восстановить $f"
-fi
-else
-rm -f "$f" 2>/dev/null
-fi
-done < "$TX_DIR/manifest"
+    while IFS='|' read -r f key existed; do
+        [ -n "$f" ] || continue
+        if [ "$existed" = 1 ]; then
+            if [ -f "$TX_DIR/files/$key" ]; then
+                cp -p "$TX_DIR/files/$key" "$f" 2>/dev/null || warn_msg "Не удалось восстановить $f"
+            fi
+        else
+            rm -f "$f" 2>/dev/null || true
+        fi
+    done < "$TX_DIR/manifest"
 fi
 tx_restore_watchdog_state
 /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || true
 /etc/init.d/dnsmasq restart >/dev/null 2>&1 || true
 reload_fw >/dev/null 2>&1 || true
 TX_ACTIVE=0
-log_tx "ROLLBACK" "transaction" "RESTORE" "OK" "dir=$TX_DIR;guarded=yes"
+log_tx "ROLLBACK" "transaction" "RESTORE" "OK" "dir=$TX_DIR;guarded=no"
 rm -rf "$TX_DIR" 2>/dev/null || true
 TX_DIR=""
 }
@@ -4712,7 +4713,7 @@ uninstall_manager_impl() {
     release_mutation_lock
     if [ "$_rc" -eq 0 ]; then
         printf "\n${C_GREEN}${C_BOLD}DNS Manager полностью удалён.${C_NC}\n"
-        printf "${C_GREEN}Исходное состояние роутера восстановлено там, где файлы не менялись после последнего Apply; изменённые извне файлы сохранены, их manager-owned настройки очищены.${C_NC}\n"
+        printf "${C_GREEN}Исходное состояние роутера восстановлено по сохранённой штатной копии; изменения, сделанные после Apply, перезаписаны этой копией.${C_NC}\n"
         if [ "${UNINSTALL_PACKAGE_WARNING:-0}" = 1 ]; then
             printf "${C_YELLOW}Некоторые необязательные пакеты не удалились; это не повлияло на восстановление конфигурации.${C_NC}\n"
         fi
