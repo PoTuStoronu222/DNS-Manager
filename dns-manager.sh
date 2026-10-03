@@ -3176,7 +3176,7 @@ apply_dnsmasq_perf() {
 }
 remove_dnsmasq_perf() {
     sec="$(get_dnsmasq_section)" || return 1
-    _stock_v="$(stock_uci_value_normalized dhcp "dhcp.@dnsmasq[0].cachesize" "150")"
+    _stock_v="$(stock_uci_value_normalized dhcp "dhcp.@dnsmasq[0].cachesize" "1000")"
     if [ "$_stock_v" = "__DM_UNSET__" ]; then
         uci -q delete "dhcp.$sec.cachesize" || true
     else
@@ -5654,7 +5654,7 @@ check_module_state() {
         dnsmasq_perf)
             _stock=1
             _desired=1
-            for _spec in "cachesize|150|$DNSMASQ_CACHE_SIZE" "dnsforwardmax|150|300" "max_cache_ttl|__DM_UNSET__|86400" "boguspriv|1|1" "domainneeded|1|1" "quietdhcp|__DM_UNSET__|1"; do
+            for _spec in "cachesize|1000|$DNSMASQ_CACHE_SIZE" "dnsforwardmax|150|300" "max_cache_ttl|__DM_UNSET__|86400" "boguspriv|1|1" "domainneeded|1|1" "quietdhcp|__DM_UNSET__|1"; do
                 _k="${_spec%%|*}"; _r="${_spec#*|}"; _fallback="${_r%%|*}"; _desired_v="${_r#*|}"
                 _cur="$(uci_value_normalized "dhcp.$_sec.$_k")"
                 _stock_v="$(stock_uci_value_normalized dhcp "dhcp.@dnsmasq[0].$_k" "$_fallback")"
