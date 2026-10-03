@@ -4381,22 +4381,6 @@ _rollback_ours_impl() {
         fi
     fi
 
-        if ! remove_client_fixes; then
-            _rollback_fail=1
-            warn_msg "Не удалось полностью убрать client-fixes."
-        fi
-    fi
-
-        if ! remove_sysctl_base; then
-            _rollback_fail=1
-            warn_msg "Не удалось полностью восстановить базовый sysctl."
-        fi
-    fi
-        if ! remove_sysctl_extended; then
-            _rollback_fail=1
-            warn_msg "Не удалось полностью восстановить расширенные параметры TCP и сетевых буферов."
-        fi
-    fi
     if [ "$BASELINE_RESTORED_BOGUS" != 1 ]; then
         if rollback_ownership_has file /etc/dnsmasq.d/90-dns-manager-bogus.conf created; then
             rm -f /etc/dnsmasq.d/90-dns-manager-bogus.conf || { _rollback_fail=1; warn_msg "Не удалось удалить manager-owned bogus-nxdomain."; }
@@ -4600,9 +4584,7 @@ uninstall_manager_impl() {
         if [ "$UNINSTALL_RESTORED_FIREWALL" != 1 ]; then
             rollback_firewall_targeted >/dev/null 2>&1 || true
         fi
-            remove_sysctl_base >/dev/null 2>&1 || true
         fi
-            remove_sysctl_extended >/dev/null 2>&1 || true
         fi
         if [ "$UNINSTALL_RESTORED_SYSTEM" != 1 ]; then
             if [ "$(check_module_state ntp 2>/dev/null)" = 1 ]; then
@@ -4611,15 +4593,10 @@ uninstall_manager_impl() {
                 warn_msg "Системный NTP изменён извне; /etc/config/system сохранён."
             fi
         fi
-            remove_client_fixes >/dev/null 2>&1 || true
         fi
         if [ "$UNINSTALL_RESTORED_BOGUS" != 1 ] && rollback_ownership_has file /etc/dnsmasq.d/90-dns-manager-bogus.conf created; then
             rm -f /etc/dnsmasq.d/90-dns-manager-bogus.conf >/dev/null 2>&1 || true
         fi
-
-        # Restoring ttyd config is enough on disk. Do NOT restart ttyd yet:
-        # when the manager is running through ttyd, an early restart can kill
-        # the very shell which is performing this uninstall.
         if [ "${UNINSTALL_RESTORED_TTYD:-0}" != 1 ]; then
             # Compatibility with older DNS Manager baselines that did not
             # snapshot ttyd. Older versions used the same stable section.
@@ -4631,8 +4608,6 @@ uninstall_manager_impl() {
             release_mutation_lock
             pause
             return 1
-        fi
-        watchdog_cron_scheduler_detect >/dev/null 2>&1 || true
         if watchdog_cron_marker_exists >/dev/null 2>&1; then
             err_msg "Удаление остановлено: собственная cron-запись DNS Manager всё ещё присутствует."
             release_mutation_lock
@@ -4652,8 +4627,6 @@ uninstall_manager_impl() {
         if [ "$(check_module_state ntp 2>/dev/null)" = 1 ]; then remove_ntp_ip_fallback >/dev/null 2>&1 || true; fi
         if [ "$(check_module_state dnsmasq_perf 2>/dev/null)" = 1 ]; then DNSMASQ_PERF=0; remove_dnsmasq_perf >/dev/null 2>&1 || true; fi
         if [ "$(check_module_state force 2>/dev/null)" = 1 ]; then remove_dns_force >/dev/null 2>&1 || true; fi
-        if [ "$(check_module_state sysctl 2>/dev/null)" != 0 ]; then SYSCTL_TUNING=0; SYSCTL_EXTENDED=0; remove_sysctl_base >/dev/null 2>&1 || true; remove_sysctl_extended >/dev/null 2>&1 || true; fi
-        remove_client_fixes >/dev/null 2>&1 || true
         if rollback_ownership_has file /etc/dnsmasq.d/90-dns-manager-bogus.conf created; then rm -f /etc/dnsmasq.d/90-dns-manager-bogus.conf >/dev/null 2>&1 || true; fi
         /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || true
         /etc/init.d/dnsmasq restart >/dev/null 2>&1 || true
@@ -4674,8 +4647,6 @@ uninstall_manager_impl() {
         [ -x "/etc/init.d/$_svc" ] || continue
         case "$_en" in
             yes) "/etc/init.d/$_svc" enable >/dev/null 2>&1 || true ;;
-            no) "/etc/init.d/$_svc" disable >/dev/null 2>&1 || true ;;
-        esac
         if [ "$_svc" = ttyd ] && [ "${UNINSTALL_UNDER_TTYD:-0}" = 1 ]; then
             case "$_run" in
                 yes) UNINSTALL_TTYD_ACTION="restart" ;;
