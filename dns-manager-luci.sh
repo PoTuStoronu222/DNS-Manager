@@ -2703,7 +2703,7 @@ function renderNetwork(root,st){
 }
 function renderCatalog(root){
   var e=root.querySelector('#dm-catalog');if(!e)return;e.innerHTML='';
-  var ageCard=renderTestAgeCommon(root,st);
+  var ageCard=renderTestAgeCommon(root,window.dmState||{});
   var body=E('div',{'id':'dm-cat-body'});
   if(!window.dmCatalog)body.appendChild(E('div',{'class':'dm-hint'},'Загрузка каталога DNS…'));
   var ch=[
