@@ -212,35 +212,6 @@ cfg_get() {
     awk -v k="$_key" 'BEGIN { q=sprintf("%c",39) } index($0,k"=")==1 { v=substr($0,length(k)+2); sub(/^"/,"",v); sub(/"$/,"",v); sub("^" q,"",v); sub(q "$","",v); print v; exit }' "$CONFIG_FILE" 2>/dev/null
 }
 
-save_watchdog_config_key() {
-    _key="$1"
-    _value="$2"
-    [ -n "$_key" ] || return 1
-    [ -r "$CONFIG_FILE" ] || return 1
-    _tmp="$TMP_ROOT/watchdog-config.$"
-    if ! awk -v key="$_key" -v value="$_value" '
-        BEGIN { dq=sprintf("%c",34); done=0 }
-        index($0,key "=")==1 {
-            print key "=" dq value dq
-            done=1
-            next
-        }
-        { print }
-        END {
-            if (!done) print key "=" dq value dq
-        }
-    ' "$CONFIG_FILE" > "$_tmp" 2>/dev/null; then
-        rm -f "$_tmp" 2>/dev/null || true
-        return 1
-    fi
-    chmod 600 "$_tmp" 2>/dev/null || true
-    mv -f "$_tmp" "$CONFIG_FILE" 2>/dev/null || {
-        rm -f "$_tmp" 2>/dev/null || true
-        return 1
-    }
-    return 0
-}
-
 catalog_field() {
     _id="$1"; _n="$2"
     [ -r "$CATALOG_FILE" ] || return 1
@@ -1653,23 +1624,12 @@ run_action() {
             json_ok
             ;;
         set_setting)
-            _name="$(jget name)"; _enabled="$(jget enabled)"; case "$_enabled" in 0|1) ;; *) json_error "Неверное значение enabled"; return;; esac; case "$_name" in watchdog|force|mtu|sysctl|sysctl_ext|ntp_clients|dnsmasq_perf|client_fixes) ;; *) json_error "Недопустимая настройка"; return;; esac
+            _name="$(jget name)"; _enabled="$(jget enabled)"; case "$_enabled" in 0|1) ;; *) json_error "Неверное значение enabled"; return;; esac; case "$_name" in watchdog|force|dnsmasq_perf) ;; *) json_error "Недопустимая настройка"; return;; esac
             load_manager || { json_error "DNS Manager недоступен"; return; }
             case "$_name" in
                 watchdog) WATCHDOG_ENABLED="$_enabled"; SILENT_APPLY=1 apply_watchdog >/dev/null 2>&1 ;;
                 force) FORCE_DOH="$_enabled"; SILENT_APPLY=1 apply_extras_now force >/dev/null 2>&1 ;;
-                mtu) MTU_FIX="$_enabled"; SILENT_APPLY=1 apply_extras_now mtu >/dev/null 2>&1 ;;
-                sysctl) SYSCTL_TUNING="$_enabled"; [ "$_enabled" = 1 ] && SYSCTL_EXTENDED=1 || SYSCTL_EXTENDED=0; SILENT_APPLY=1 apply_extras_now sysctl >/dev/null 2>&1 ;;
-                sysctl_ext) SYSCTL_EXTENDED="$_enabled"; SILENT_APPLY=1 apply_extras_now sysctl_ext >/dev/null 2>&1 ;;
-                ntp_clients) NTP_CLIENTS="$_enabled"; SILENT_APPLY=1 apply_extras_now ntp_clients >/dev/null 2>&1 ;;
                 dnsmasq_perf) DNSMASQ_PERF="$_enabled"; SILENT_APPLY=1 apply_extras_now dnsmasq_perf >/dev/null 2>&1 ;;
-                client_fixes) CLIENT_FIXES="$_enabled"; SILENT_APPLY=1 apply_extras_now client_fixes >/dev/null 2>&1 ;;
-            esac
-            [ "$?" -eq 0 ] && json_ok || json_error "Настройку не удалось изменить"
-            ;;
-        set_watchdog_setting)
-            _name="$(jget name)"; _value="$(jget value)"
-            case "$_name" in
                 interval) _key=WATCHDOG_INTERVAL; _min=30; _max=600;;
                 *) json_error "Недопустимый параметр watchdog"; return;;
             esac
