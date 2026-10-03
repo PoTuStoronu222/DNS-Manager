@@ -7548,18 +7548,8 @@ watchdog_service_file_matches() {
     grep -Fqx -- "$_version" "$_wf" 2>/dev/null || return 1
     return 0
 }
-watchdog_service_conflict_check() {
-    if [ -e "$WATCHDOG_SERVICE_PATH" ] && ! watchdog_service_file_owned "$WATCHDOG_SERVICE_PATH" "$WATCHDOG_SERVICE_MARKER"; then
-        # Accept an older manager-owned service during migration; reject only foreign files.
-        if ! grep -Fqx -- "# DNS_MANAGER_WATCHDOG_SERVICE=1" "$WATCHDOG_SERVICE_PATH" 2>/dev/null; then
-            err_msg "Путь $WATCHDOG_SERVICE_PATH уже занят чужим init-скриптом. DNS Manager его не перезаписывает."
-            return 1
-        fi
-    fi
-    return 0
-}
 watchdog_service_install_files() {
-    watchdog_service_conflict_check || return 1
+    # DNS Manager owns this path and may replace an older or external file when enabled.
     mkdir -p "$(dirname "$WATCHDOG_SERVICE_PATH")" || return 1
     _stmp="${WATCHDOG_SERVICE_PATH}.tmp.$$"
     cat > "$_stmp" <<'EOF_DNS_WATCHDOG_SERVICE'
