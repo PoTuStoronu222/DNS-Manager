@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.5.103
+# Version: 1.5.104
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -23,7 +23,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.5.103"
+VERSION="1.5.104"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -978,12 +978,7 @@ status_json() {
     _watchdog_interval="$(cfg_get WATCHDOG_INTERVAL)"; [ -n "$_watchdog_interval" ] || _watchdog_interval=90
     _watchdog_backend="$(cfg_get WATCHDOG_BACKEND)"; [ -n "$_watchdog_backend" ] || _watchdog_backend=procd
 
-    _client_fix_state="$(cfg_get CLIENT_FIXES)"; [ "$_client_fix_state" = 1 ] && _client_fix_state=1 || _client_fix_state=0
-    _mtu_state="$(cfg_get MTU_FIX)"; [ "$_mtu_state" = 1 ] && _mtu_state=1 || _mtu_state=0
-    _sysctl_state="$(cfg_get SYSCTL_TUNING)"; [ "$_sysctl_state" = 1 ] && _sysctl_state=1 || _sysctl_state=0
-    _sysctl_ext_state="$(cfg_get SYSCTL_EXTENDED)"; [ "$_sysctl_ext_state" = 1 ] && _sysctl_ext_state=1 || _sysctl_ext_state=0
     _dnsmasq_perf_state="$(cfg_get DNSMASQ_PERF)"; [ "$_dnsmasq_perf_state" = 1 ] && _dnsmasq_perf_state=1 || _dnsmasq_perf_state=0
-    _ntp_clients_state="$(cfg_get NTP_CLIENTS)"; [ "$_ntp_clients_state" = 1 ] && _ntp_clients_state=1 || _ntp_clients_state=0
 
     _force="$(cfg_get FORCE_DOH)"; [ -n "$_force" ] || _force=0
     _force_cfg="$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null || true)"
@@ -1124,10 +1119,7 @@ status_json() {
     _watchdog_service_running=0; watchdog_service_running && _watchdog_service_running=1 || true
     _watchdog_loop_running=0; watchdog_loop_running && _watchdog_loop_running=1 || true
     printf ',"watchdog_service":%s,"watchdog_service_enabled":%s,"watchdog_loop":%s' "$_watchdog_service_running" "$_watchdog_service_enabled" "$_watchdog_loop_running"
-    printf ',"watchdog_interval":'; json_quote "$_watchdog_interval"; printf ',"watchdog_fail_threshold":2,"watchdog_repair_cooldown":300,"watchdog_guard_interval":900'
-    printf ',"watchdog_max_repairs":1,"watchdog_max_restarts":2,"watchdog_max_candidates":3,"watchdog_restart_cooldown":300'
     printf ',"test_age_common":%s' "$_test_age_h"
-    printf ',"client_fixes_state":%s,"mtu_state":%s,"sysctl_state":%s,"sysctl_ext_state":%s,"dnsmasq_perf_state":%s,"ntp_clients_state":%s' "$_client_fix_state" "$_mtu_state" "$_sysctl_state" "$_sysctl_ext_state" "$_dnsmasq_perf_state" "$_ntp_clients_state"
     printf ',"force":'; json_quote "$_force"; printf ',"force_external":'; json_quote "$_force_external"; printf ',"force_owner":'; json_quote "$_force_owner"; printf ',"force_manager":%s,"force_both":%s' "$_force_manager" "$_force_both"
     printf ',"force_source":'; json_quote "$_force_source"; printf ',"force_targets":'; json_quote "$_force_targets"
     printf ',"force_notrack":'; json_quote "$_force_notrack"; printf ',"force_update":'; json_quote "$(uci -q get https-dns-proxy.config.dnsmasq_config_update 2>/dev/null || true)"
@@ -1138,7 +1130,6 @@ status_json() {
     printf ',"force_heartbeat_wait":'; json_quote "$(uci -q get https-dns-proxy.config.heartbeat_wait_timeout 2>/dev/null || true)"; printf ',"force_user":'; json_quote "$(uci -q get https-dns-proxy.config.user 2>/dev/null || true)"
     printf ',"force_group":'; json_quote "$(uci -q get https-dns-proxy.config.group 2>/dev/null || true)"; printf ',"force_listen":'; json_quote "$(uci -q get https-dns-proxy.config.listen_addr 2>/dev/null || true)"
     printf ',"force_consistent":%s' "$([ "$_force_manager" = 1 ] && printf 1 || printf 0)"
-    printf ',"mtu":'; json_quote "$(cfg_get MTU_FIX)"; printf ',"sysctl":'; json_quote "$(cfg_get SYSCTL_TUNING)"; printf ',"sysctl_ext":'; json_quote "$(cfg_get SYSCTL_EXTENDED)"; printf ',"ntp_clients":'; json_quote "$(cfg_get NTP_CLIENTS)"; printf ',"dnsmasq_perf":'; json_quote "$(cfg_get DNSMASQ_PERF)"; printf ',"client_fixes":'; json_quote "$(cfg_get CLIENT_FIXES)"
     printf ',"force_state":%s' "$([ "$_force_manager" = 1 ] && printf 1 || [ "$_force_external" = 1 ] && printf 2 || printf 0)"
     printf ',"force_status":'; json_quote "$_force_status"
     _owner_label=нет; [ "$_force_owner" = manager ] && _owner_label='DNS Manager'; [ "$_force_owner" = external ] && _owner_label=внешний
@@ -2139,7 +2130,6 @@ function renderOverview(root,st){
   var force=yes(st.force_both)?badge('dm-bad','DNS Manager + внешний'):st.force_owner==='external'?badge('dm-bad','внешний сервис'):yes(st.force_manager)?badge('dm-ok','DNS Manager'):badge('dm-off','выключен');
 
   var wd=yes(st.watchdog)?(st.watchdog_backend==='procd'?(Number(st.watchdog_loop||0)===1?badge('dm-ok','работает'):Number(st.watchdog_service||0)===1?badge('dm-warn','служба запущена, цикл не найден'):badge('dm-bad','служба не запущена')):badge('dm-warn','неизвестный механизм')):badge('dm-off','выключена');
-  var wdDetails=yes(st.watchdog)?'интервал '+shortVal(st.watchdog_interval)+' с · порог '+shortVal(st.watchdog_fail_threshold)+' цикла':'автопроверка отключена';
 
   var dnsItems=[];
   (st.doh_instances||[]).forEach(function(d){
