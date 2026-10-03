@@ -960,7 +960,6 @@ status_json() {
         esac
     fi
     _force="$(cfg_get FORCE_DOH)"; [ -n "$_force" ] || _force=0
-    _force="$(cfg_get FORCE_DOH)"; [ -n "$_force" ] || _force=0
     _force_cfg="$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null || true)"
     _force_notrack="$(uci -q get https-dns-proxy.config.notrack_dns 2>/dev/null || true)"
     _force_manager=0
