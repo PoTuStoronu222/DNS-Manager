@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.6.1
+# Version: 1.6.2
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -23,7 +23,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.6.1"
+VERSION="1.6.2"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -136,7 +136,7 @@ UPDATE_STATE="/etc/dns-manager-luci/update.state"
 COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.6.1"
+SELF_VERSION="1.6.2"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -966,6 +966,7 @@ status_json() {
     _watchdog="$(cfg_get WATCHDOG_ENABLED)"; [ -n "$_watchdog" ] || _watchdog=0
     _watchdog_interval="$(cfg_get WATCHDOG_INTERVAL)"; [ -n "$_watchdog_interval" ] || _watchdog_interval=90
     _watchdog_backend="$(cfg_get WATCHDOG_BACKEND)"; [ -n "$_watchdog_backend" ] || _watchdog_backend=procd
+    _watchdog_threshold="$(manager_const_num WATCHDOG_FAIL_THRESHOLD 2)"
 
     _dnsmasq_perf_cfg="$(cfg_get DNSMASQ_PERF)"; [ "$_dnsmasq_perf_cfg" = 1 ] || _dnsmasq_perf_cfg=0
     _dnsmasq_cache_cur="$(uci -q get "dhcp.@dnsmasq[0].cachesize" 2>/dev/null || true)"
@@ -1124,7 +1125,7 @@ status_json() {
     _watchdog_service_enabled=0; watchdog_service_enabled && _watchdog_service_enabled=1 || true
     _watchdog_service_running=0; watchdog_service_running && _watchdog_service_running=1 || true
     _watchdog_loop_running=0; watchdog_loop_running && _watchdog_loop_running=1 || true
-    printf ',"watchdog_service":%s,"watchdog_service_enabled":%s,"watchdog_loop":%s' "$_watchdog_service_running" "$_watchdog_service_enabled" "$_watchdog_loop_running"
+    printf ',"watchdog_service":%s,"watchdog_service_enabled":%s,"watchdog_loop":%s,"watchdog_fail_threshold":%s' "$_watchdog_service_running" "$_watchdog_service_enabled" "$_watchdog_loop_running" "$_watchdog_threshold"
      printf ',"dnsmasq_perf_state":%s' "$_dnsmasq_perf_state"
     printf ',"test_age_common":%s' "$_test_age_h"
     printf ',"force":'; json_quote "$_force"; printf ',"force_external":'; json_quote "$_force_external"; printf ',"force_owner":'; json_quote "$_force_owner"; printf ',"force_manager":%s,"force_both":%s' "$_force_manager" "$_force_both"
@@ -1728,7 +1729,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.6.1
+// DNS Manager LuCI version: 1.6.2
 var callStatus = rpc.declare({ object:'dns_manager', method:'status', params:['detail'], expect:{} });
 var callBoardInfo = rpc.declare({ object:'system', method:'info', expect:{} });
 var callRuntime = rpc.declare({ object:'dns_manager', method:'runtime', expect:{} });
@@ -2125,6 +2126,7 @@ function renderOverview(root,st){
   var force=yes(st.force_both)?badge('dm-bad','DNS Manager + внешний'):st.force_owner==='external'?badge('dm-bad','внешний сервис'):yes(st.force_manager)?badge('dm-ok','DNS Manager'):badge('dm-off','выключен');
 
   var wd=yes(st.watchdog)?(st.watchdog_backend==='procd'?(Number(st.watchdog_loop||0)===1?badge('dm-ok','работает'):Number(st.watchdog_service||0)===1?badge('dm-warn','служба запущена, цикл не найден'):badge('dm-bad','служба не запущена')):badge('dm-warn','неизвестный механизм')):badge('dm-off','выключена');
+  var wdDetails='Интервал — '+Number(st.watchdog_interval||90)+' с · порог — '+Number(st.watchdog_fail_threshold||2)+' цикла';
 
   var dnsItems=[];
   (st.doh_instances||[]).forEach(function(d){
