@@ -4585,15 +4585,8 @@ uninstall_manager_impl() {
         if [ "$UNINSTALL_RESTORED_FIREWALL" != 1 ]; then
             rollback_firewall_targeted >/dev/null 2>&1 || true
         fi
-        fi
-        fi
         if [ "$UNINSTALL_RESTORED_SYSTEM" != 1 ]; then
-            if [ "$(check_module_state ntp 2>/dev/null)" = 1 ]; then
-                remove_ntp_ip_fallback >/dev/null 2>&1 || true
-            elif [ "$(check_module_state ntp 2>/dev/null)" = 2 ]; then
-                warn_msg "Системный NTP изменён извне; /etc/config/system сохранён."
-            fi
-        fi
+            remove_ntp_ip_fallback >/dev/null 2>&1 || true
         fi
         if [ "$UNINSTALL_RESTORED_BOGUS" != 1 ] && rollback_ownership_has file /etc/dnsmasq.d/90-dns-manager-bogus.conf created; then
             rm -f /etc/dnsmasq.d/90-dns-manager-bogus.conf >/dev/null 2>&1 || true
@@ -4609,6 +4602,7 @@ uninstall_manager_impl() {
             release_mutation_lock
             pause
             return 1
+        fi
         if watchdog_cron_marker_exists >/dev/null 2>&1; then
             err_msg "Удаление остановлено: собственная cron-запись DNS Manager всё ещё присутствует."
             release_mutation_lock
@@ -4648,6 +4642,7 @@ uninstall_manager_impl() {
         [ -x "/etc/init.d/$_svc" ] || continue
         case "$_en" in
             yes) "/etc/init.d/$_svc" enable >/dev/null 2>&1 || true ;;
+        esac
         if [ "$_svc" = ttyd ] && [ "${UNINSTALL_UNDER_TTYD:-0}" = 1 ]; then
             case "$_run" in
                 yes) UNINSTALL_TTYD_ACTION="restart" ;;
@@ -4713,7 +4708,7 @@ uninstall_manager_impl() {
     release_mutation_lock
     if [ "$_rc" -eq 0 ]; then
         printf "\n${C_GREEN}${C_BOLD}DNS Manager полностью удалён.${C_NC}\n"
-        printf "${C_GREEN}Исходное состояние роутера восстановлено по сохранённой штатной копии; изменения, сделанные после Apply, перезаписаны этой копией.${C_NC}\n"
+        printf "${C_GREEN}Исходное состояние роутера восстановлено по сохранённой штатной копии; изменения после Apply не сохраняются.${C_NC}\n"
         if [ "${UNINSTALL_PACKAGE_WARNING:-0}" = 1 ]; then
             printf "${C_YELLOW}Некоторые необязательные пакеты не удалились; это не повлияло на восстановление конфигурации.${C_NC}\n"
         fi
@@ -7635,16 +7630,11 @@ watchdog_service_start_enable() {
     return 0
 }
 watchdog_service_remove_files() {
-    if [ -f "$WATCHDOG_SERVICE_PATH" ]; then
-        watchdog_service_file_owned "$WATCHDOG_SERVICE_PATH" "$WATCHDOG_SERVICE_MARKER" || {
-            # Older manager-owned service is also safe to remove during migration/uninstall.
-            grep -Fqx -- "# DNS_MANAGER_WATCHDOG_SERVICE=1" "$WATCHDOG_SERVICE_PATH" 2>/dev/null || {
-                err_msg "Чужой/изменённый файл $WATCHDOG_SERVICE_PATH обнаружен; не удаляю его автоматически."
-                return 1
-            }
-        }
+    if [ -x "$WATCHDOG_SERVICE_PATH" ]; then
+        "$WATCHDOG_SERVICE_PATH" stop >/dev/null 2>&1 || true
+        "$WATCHDOG_SERVICE_PATH" disable >/dev/null 2>&1 || true
     fi
-    watchdog_remove_legacy_daemon || return 1
+    watchdog_remove_legacy_daemon >/dev/null 2>&1 || true
     rm -f "$WATCHDOG_SERVICE_PATH" 2>/dev/null || return 1
     rm -rf "$WATCHDOG_LEGACY_RUNTIME_DIR" 2>/dev/null || true
     return 0
