@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.5.102
+# Version: 1.6
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -23,7 +23,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.5.102"
+VERSION="1.6"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -141,7 +141,7 @@ UPDATE_STATE="/etc/dns-manager-luci/update.state"
 COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.5.102"
+SELF_VERSION="1.6"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -210,35 +210,6 @@ cfg_get() {
     _key="$1"
     [ -r "$CONFIG_FILE" ] || return 0
     awk -v k="$_key" 'BEGIN { q=sprintf("%c",39) } index($0,k"=")==1 { v=substr($0,length(k)+2); sub(/^"/,"",v); sub(/"$/,"",v); sub("^" q,"",v); sub(q "$","",v); print v; exit }' "$CONFIG_FILE" 2>/dev/null
-}
-
-save_watchdog_config_key() {
-    _key="$1"
-    _value="$2"
-    [ -n "$_key" ] || return 1
-    [ -r "$CONFIG_FILE" ] || return 1
-    _tmp="$TMP_ROOT/watchdog-config.$"
-    if ! awk -v key="$_key" -v value="$_value" '
-        BEGIN { dq=sprintf("%c",34); done=0 }
-        index($0,key "=")==1 {
-            print key "=" dq value dq
-            done=1
-            next
-        }
-        { print }
-        END {
-            if (!done) print key "=" dq value dq
-        }
-    ' "$CONFIG_FILE" > "$_tmp" 2>/dev/null; then
-        rm -f "$_tmp" 2>/dev/null || true
-        return 1
-    fi
-    chmod 600 "$_tmp" 2>/dev/null || true
-    mv -f "$_tmp" "$CONFIG_FILE" 2>/dev/null || {
-        rm -f "$_tmp" 2>/dev/null || true
-        return 1
-    }
-    return 0
 }
 
 catalog_field() {
@@ -978,13 +949,16 @@ status_json() {
     _watchdog_interval="$(cfg_get WATCHDOG_INTERVAL)"; [ -n "$_watchdog_interval" ] || _watchdog_interval=90
     _watchdog_backend="$(cfg_get WATCHDOG_BACKEND)"; [ -n "$_watchdog_backend" ] || _watchdog_backend=procd
 
-    _client_fix_state="$(cfg_get CLIENT_FIXES)"; [ "$_client_fix_state" = 1 ] && _client_fix_state=1 || _client_fix_state=0
-    _mtu_state="$(cfg_get MTU_FIX)"; [ "$_mtu_state" = 1 ] && _mtu_state=1 || _mtu_state=0
-    _sysctl_state="$(cfg_get SYSCTL_TUNING)"; [ "$_sysctl_state" = 1 ] && _sysctl_state=1 || _sysctl_state=0
-    _sysctl_ext_state="$(cfg_get SYSCTL_EXTENDED)"; [ "$_sysctl_ext_state" = 1 ] && _sysctl_ext_state=1 || _sysctl_ext_state=0
-    _dnsmasq_perf_state="$(cfg_get DNSMASQ_PERF)"; [ "$_dnsmasq_perf_state" = 1 ] && _dnsmasq_perf_state=1 || _dnsmasq_perf_state=0
-    _ntp_clients_state="$(cfg_get NTP_CLIENTS)"; [ "$_ntp_clients_state" = 1 ] && _ntp_clients_state=1 || _ntp_clients_state=0
-
+    _dnsmasq_perf_cfg="$(cfg_get DNSMASQ_PERF)"; [ "$_dnsmasq_perf_cfg" = 1 ] || _dnsmasq_perf_cfg=0
+    _dnsmasq_cache_cur="$(uci -q get "dhcp.@dnsmasq[0].cachesize" 2>/dev/null || true)"
+    if [ "$_dnsmasq_perf_cfg" = 1 ]; then
+        [ "$_dnsmasq_cache_cur" = 1000 ] && _dnsmasq_perf_state=1 || _dnsmasq_perf_state=2
+    else
+        case "$_dnsmasq_cache_cur" in
+            ""|150) _dnsmasq_perf_state=0 ;;
+            *) _dnsmasq_perf_state=2 ;;
+        esac
+    fi
     _force="$(cfg_get FORCE_DOH)"; [ -n "$_force" ] || _force=0
     _force_cfg="$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null || true)"
     _force_notrack="$(uci -q get https-dns-proxy.config.notrack_dns 2>/dev/null || true)"
@@ -1124,10 +1098,8 @@ status_json() {
     _watchdog_service_running=0; watchdog_service_running && _watchdog_service_running=1 || true
     _watchdog_loop_running=0; watchdog_loop_running && _watchdog_loop_running=1 || true
     printf ',"watchdog_service":%s,"watchdog_service_enabled":%s,"watchdog_loop":%s' "$_watchdog_service_running" "$_watchdog_service_enabled" "$_watchdog_loop_running"
-    printf ',"watchdog_interval":'; json_quote "$_watchdog_interval"; printf ',"watchdog_fail_threshold":2,"watchdog_repair_cooldown":300,"watchdog_guard_interval":900'
-    printf ',"watchdog_max_repairs":1,"watchdog_max_restarts":2,"watchdog_max_candidates":3,"watchdog_restart_cooldown":300'
+     printf ',"dnsmasq_perf_state":%s' "$_dnsmasq_perf_state"
     printf ',"test_age_common":%s' "$_test_age_h"
-    printf ',"client_fixes_state":%s,"mtu_state":%s,"sysctl_state":%s,"sysctl_ext_state":%s,"dnsmasq_perf_state":%s,"ntp_clients_state":%s' "$_client_fix_state" "$_mtu_state" "$_sysctl_state" "$_sysctl_ext_state" "$_dnsmasq_perf_state" "$_ntp_clients_state"
     printf ',"force":'; json_quote "$_force"; printf ',"force_external":'; json_quote "$_force_external"; printf ',"force_owner":'; json_quote "$_force_owner"; printf ',"force_manager":%s,"force_both":%s' "$_force_manager" "$_force_both"
     printf ',"force_source":'; json_quote "$_force_source"; printf ',"force_targets":'; json_quote "$_force_targets"
     printf ',"force_notrack":'; json_quote "$_force_notrack"; printf ',"force_update":'; json_quote "$(uci -q get https-dns-proxy.config.dnsmasq_config_update 2>/dev/null || true)"
@@ -1138,7 +1110,6 @@ status_json() {
     printf ',"force_heartbeat_wait":'; json_quote "$(uci -q get https-dns-proxy.config.heartbeat_wait_timeout 2>/dev/null || true)"; printf ',"force_user":'; json_quote "$(uci -q get https-dns-proxy.config.user 2>/dev/null || true)"
     printf ',"force_group":'; json_quote "$(uci -q get https-dns-proxy.config.group 2>/dev/null || true)"; printf ',"force_listen":'; json_quote "$(uci -q get https-dns-proxy.config.listen_addr 2>/dev/null || true)"
     printf ',"force_consistent":%s' "$([ "$_force_manager" = 1 ] && printf 1 || printf 0)"
-    printf ',"mtu":'; json_quote "$(cfg_get MTU_FIX)"; printf ',"sysctl":'; json_quote "$(cfg_get SYSCTL_TUNING)"; printf ',"sysctl_ext":'; json_quote "$(cfg_get SYSCTL_EXTENDED)"; printf ',"ntp_clients":'; json_quote "$(cfg_get NTP_CLIENTS)"; printf ',"dnsmasq_perf":'; json_quote "$(cfg_get DNSMASQ_PERF)"; printf ',"client_fixes":'; json_quote "$(cfg_get CLIENT_FIXES)"
     printf ',"force_state":%s' "$([ "$_force_manager" = 1 ] && printf 1 || [ "$_force_external" = 1 ] && printf 2 || printf 0)"
     printf ',"force_status":'; json_quote "$_force_status"
     _owner_label=нет; [ "$_force_owner" = manager ] && _owner_label='DNS Manager'; [ "$_force_owner" = external ] && _owner_label=внешний
@@ -1272,6 +1243,67 @@ current_slot_result_for_id() {
     [ -n "$_manager_result" ] && { printf '%s' "$_manager_result"; return 0; }
     return 1
 }
+# Assigned DNS checks use the real local listener port. Unassigned catalog DNS
+# keeps the remote DoH check until the DNS is assigned to a slot.
+assigned_port_for_id() {
+    _id="$1"
+    [ -n "$_id" ] || return 1
+    for _s in 1 2 3 4 5 6 RU RU_2; do
+        _sid="$(cfg_get "SLOT_$_s" 2>/dev/null || true)"
+        [ "$_sid" = "$_id" ] || continue
+        _port="$(cfg_get "PORT_$_s" 2>/dev/null || true)"
+        [ -n "$_port" ] || return 1
+        printf "%s|%s" "$_s" "$_port"
+        return 0
+    done
+    return 1
+}
+
+local_slot_test_one() {
+    _id="$1"
+    _port="$2"
+    _slot="$3"
+    _cat="$(dns_cat "$_id" 2>/dev/null || true)"
+    _name="$(dns_name "$_id" 2>/dev/null || printf "%s" "$_id")"
+    _domain="example.com"
+    case "$_slot" in
+        RU|RU_2) _domain="yandex.ru" ;;
+    esac
+    _out="$TMP_ROOT/local-dns-test.$$.out"
+    _ms=""
+    _status="LOCAL_DNS_ERROR"
+    if [ -z "$_port" ]; then
+        _status="LOCAL_PORT_NOT_ASSIGNED"
+    elif ! listener_port_exists "$_port"; then
+        _status="LOCAL_PORT_CLOSED"
+    elif ! command -v dig >/dev/null 2>&1; then
+        _status="DIG_NOT_INSTALLED"
+    else
+        rm -f "$_out" 2>/dev/null || true
+        if ! dig @127.0.0.1 -p "$_port" "$_domain" A +time=2 +tries=1 +stats >"$_out" 2>&1; then
+            _status="LOCAL_DNS_NO_RESPONSE"
+        else
+            _ms="$(sed -n "s/^;; Query time: \\([0-9][0-9]*\\) msec$/\\1/p" "$_out" 2>/dev/null | head -n1)"
+            _dns_rcode="$(sed -n "s/^;; ->>HEADER<<- opcode: QUERY, status: \\([^,][^,]*\\),.*/\\1/p" "$_out" 2>/dev/null | head -n1)"
+            case "$_dns_rcode" in
+                NOERROR)
+                    case "$_ms" in
+                        ""|*[!0-9]*) _status="LOCAL_DNS_BAD_TIMING" ;;
+                        *) _status="OK" ;;
+                    esac
+                    ;;
+                SERVFAIL) _status="LOCAL_DNS_SERVFAIL" ;;
+                REFUSED) _status="LOCAL_DNS_REFUSED" ;;
+                "") _status="LOCAL_DNS_NO_RESPONSE" ;;
+                *) _status="LOCAL_DNS_$_dns_rcode" ;;
+            esac
+        fi
+    fi
+    case "$_ms" in ""|*[!0-9]*) _ms=-1;; esac
+    printf "%s|%s|%s|%s|%s\n" "$_id" "$_cat" "$_name" "$_ms" "$_status" > "$TMP_DIR/t.$_id"
+    rm -f "$_out" 2>/dev/null || true
+    [ "$_status" = OK ]
+}
 new_job_id() {
     case "${1:-}" in
         profile) printf 'profile' ;;
@@ -1388,57 +1420,62 @@ job_start_test_current() {
         if ! load_manager; then
             job_write "$_jid" status failed; job_write "$_jid" result fail; job_write "$_jid" finished "$(date +%s)"; exit 1
         fi
-        _ids="$TMP_ROOT/current-dns-ids.$$"
-        _cat="$TMP_ROOT/current-dns-catalog.$$"
-        _results="$TMP_ROOT/current-test-results.$$"
-        _meta="$TMP_ROOT/current-test-results-meta.$$"
-        : > "$_ids"; : > "$_cat"
-        sed -n '/^# DNSCATVER=/p;/^# DNSCATREV=/p' "$DNS_CATALOG" >> "$_cat" 2>/dev/null || true
-        for _s in 1 2 3 4 5 6 RU; do
-            _id="$(cfg_get "SLOT_$_s")"
-            [ -n "$_id" ] || continue
-            grep -qxF "$_id" "$_ids" 2>/dev/null && continue
-            printf '%s\n' "$_id" >> "$_ids"
-            awk -F"|" -v id="$_id" '$1==id {print; exit}' "$DNS_CATALOG" >> "$_cat" 2>/dev/null || true
-        done
-        _total="$(wc -l < "$_ids" 2>/dev/null | tr -d ' ')"
-        case "$_total" in ''|*[!0-9]*) _total=0;; esac
-        [ "$_total" -gt 0 ] || {
-            rm -f "$_ids" "$_cat" "$_results" "$_meta"
-            job_write "$_jid" status failed; job_write "$_jid" result fail; job_write "$_jid" finished "$(date +%s)"; exit 1
-        }
-        _old_catalog="$DNS_CATALOG"
-        _old_results="$TEST_RESULTS"
-        _old_meta="$TEST_RESULTS_META"
-        DNS_CATALOG="$_cat"
-        TEST_RESULTS="$_results"
-        TEST_RESULTS_META="$_meta"
-        if ! test_dns_catalog; then
-            DNS_CATALOG="$_old_catalog"; TEST_RESULTS="$_old_results"; TEST_RESULTS_META="$_old_meta"
-            rm -f "$_ids" "$_cat" "$_results" "$_meta"
+        if ! acquire_test_lock; then
             job_write "$_jid" status failed; job_write "$_jid" result fail; job_write "$_jid" finished "$(date +%s)"; exit 1
         fi
-        DNS_CATALOG="$_old_catalog"; TEST_RESULTS="$_old_results"; TEST_RESULTS_META="$_old_meta"
+        _ids="$TMP_ROOT/current-dns-ids.$$"
+        _results="$TMP_ROOT/current-test-results.$$"
         _merged="$TMP_ROOT/current-merged.$$"
+        : > "$_ids"
+        : > "$_results"
+        _total=0
+        _done=0
+        _fail=0
+        for _s in 1 2 3 4 5 6 RU RU_2; do
+            _id="$(cfg_get "SLOT_$_s" 2>/dev/null || true)"
+            [ -n "$_id" ] || continue
+            _port="$(cfg_get "PORT_$_s" 2>/dev/null || true)"
+            printf "%s\n" "$_id" >> "$_ids"
+            _total=$((_total+1))
+            if local_slot_test_one "$_id" "$_port" "$_s"; then
+                :
+            else
+                _fail=$((_fail+1))
+            fi
+            _done=$((_done+1))
+            cat "$TMP_DIR/t.$_id" >> "$_results" 2>/dev/null || true
+            printf "Проверка выбранных DNS: %s из %s | ошибки %s\n" "$_done" "$_total" "$_fail"
+        done
+        if [ "$_total" -eq 0 ]; then
+            release_test_lock
+            rm -f "$_ids" "$_results" "$_merged"
+            job_write "$_jid" status failed; job_write "$_jid" result fail; job_write "$_jid" finished "$(date +%s)"
+            exit 1
+        fi
         : > "$_merged"
         if [ -s "$TEST_RESULTS" ]; then
             awk -F"|" -v ids_file="$_ids" 'BEGIN { while ((getline x < ids_file)>0) ids[x]=1 } !($1 in ids) { print }' "$TEST_RESULTS" > "$_merged" 2>/dev/null || true
         fi
         [ -s "$_results" ] && cat "$_results" >> "$_merged"
-        mv "$_merged" "$TEST_RESULTS" 2>/dev/null || {
-            rm -f "$_ids" "$_cat" "$_results" "$_meta"
-            job_write "$_jid" status failed; job_write "$_jid" result fail; job_write "$_jid" finished "$(date +%s)"; exit 1
+        mv -f "$_merged" "$TEST_RESULTS" 2>/dev/null || {
+            release_test_lock
+            rm -f "$_ids" "$_results" "$_merged"
+            job_write "$_jid" status failed; job_write "$_jid" result fail; job_write "$_jid" finished "$(date +%s)"
+            exit 1
         }
-        save_persistent_test_results >/dev/null 2>&1 || true
-        _stamp="$(date +%s)"
-        while IFS='|' read -r _id _rest; do [ -n "$_id" ] && set_check_stamp "$_id" "$_stamp"; done < "$_results"
         write_current_slot_results "$_results" || true
-        rm -f "$_ids" "$_cat" "$_results" "$_meta"
-        job_write "$_jid" status done; job_write "$_jid" result ok; job_write "$_jid" finished "$_stamp"
+        _stamp="$(date +%s)"
+        while IFS="|" read -r _id _rest; do
+            [ -n "$_id" ] && set_check_stamp "$_id" "$_stamp"
+        done < "$_results"
+        rm -f "$_ids" "$_results" "$_merged" "$TMP_DIR/t."* 2>/dev/null || true
+        release_test_lock
+        job_write "$_jid" status done
+        job_write "$_jid" result ok
+        job_write "$_jid" finished "$_stamp"
     ) &
     printf '{"ok":true,"job":'; json_quote "$_jid"; printf '}'
 }
-
 job_start_test_one() {
     _id="$1"; case "$_id" in ''|*[!A-Za-z0-9_-]*) json_error "Неверный ID DNS"; return;; esac
     _jid="$(new_job_id test_one)"
@@ -1448,33 +1485,55 @@ job_start_test_one() {
     job_write "$_jid" dns_id "$_id"
     (
         exec >>"$JOB_DIR/$_jid/output" 2>&1
-        if load_manager; then
-            q="$TMP_ROOT/dns_query.bin"; [ -s "$q" ] || printf '\022\064\001\000\000\001\000\000\000\000\000\000\007example\003com\000\000\001\000\001' > "$q"
-            if acquire_test_lock; then
-                if test_one_dns "$_id"; then
-                    _tmp="$TMP_ROOT/results.$$"; _stamp="$(date +%s)"; : > "$_tmp"
-                    [ -s "$TEST_RESULTS" ] && awk -F'|' -v id="$_id" '$1!=id {print}' "$TEST_RESULTS" > "$_tmp" 2>/dev/null || true
-                    cat "$TMP_DIR/t.$_id" >> "$_tmp" 2>/dev/null || true; mv "$_tmp" "$TEST_RESULTS" 2>/dev/null || true
-                    save_persistent_test_results >/dev/null 2>&1 || true
-                    _cur="$TMP_ROOT/current-slot-one.$"; : > "$_cur"
-                    if [ -s "$CURRENT_SLOT_RESULTS" ]; then
-                        awk -F'|' -v id="$_id" '$1!=id {print}' "$CURRENT_SLOT_RESULTS" > "$_cur" 2>/dev/null || true
-                    fi
-                    cat "$TMP_DIR/t.$_id" >> "$_cur" 2>/dev/null || true
-                    write_current_slot_results "$_cur" || true
-                    rm -f "$_cur" 2>/dev/null || true
-                    set_check_stamp "$_id" "$_stamp"
-                    release_test_lock || true
-                    job_write "$_jid" status done; job_write "$_jid" result ok; job_write "$_jid" finished "$_stamp"; exit 0
-                fi
-                release_test_lock || true
-            fi
+        if ! load_manager; then
+            job_write "$_jid" status failed; job_write "$_jid" result fail; job_write "$_jid" finished "$(date +%s)"; exit 1
         fi
-        job_write "$_jid" status failed; job_write "$_jid" result fail; job_write "$_jid" finished "$(date +%s)"
+        if ! acquire_test_lock; then
+            job_write "$_jid" status failed; job_write "$_jid" result fail; job_write "$_jid" finished "$(date +%s)"; exit 1
+        fi
+        _assigned="$(assigned_port_for_id "$_id" 2>/dev/null || true)"
+        if [ -n "$_assigned" ]; then
+            _slot="$(printf "%s" "$_assigned" | cut -d"|" -f1)"
+            _port="$(printf "%s" "$_assigned" | cut -d"|" -f2)"
+            printf "Проверяю назначенный DNS через 127.0.0.1:%s.\n" "$_port"
+            local_slot_test_one "$_id" "$_port" "$_slot" || true
+        else
+            q="$TMP_ROOT/dns_query.bin"
+            [ -s "$q" ] || printf '\022\064\001\000\000\001\000\000\000\000\000\000\007example\003com\000\000\001\000\001' > "$q"
+            test_one_dns "$_id" || true
+        fi
+        _result_file="$TMP_DIR/t.$_id"
+        if [ -s "$_result_file" ]; then
+            _tmp="$TMP_ROOT/results.$$"
+            : > "$_tmp"
+            [ -s "$TEST_RESULTS" ] && awk -F"|" -v id="$_id" '$1!=id {print}' "$TEST_RESULTS" > "$_tmp" 2>/dev/null || true
+            cat "$_result_file" >> "$_tmp" 2>/dev/null || true
+            mv "$_tmp" "$TEST_RESULTS" 2>/dev/null || true
+            save_persistent_test_results >/dev/null 2>&1 || true
+            _cur="$TMP_ROOT/current-slot-one.$$"
+            : > "$_cur"
+            if [ -s "$CURRENT_SLOT_RESULTS" ]; then
+                awk -F"|" -v id="$_id" '$1!=id {print}' "$CURRENT_SLOT_RESULTS" > "$_cur" 2>/dev/null || true
+            fi
+            cat "$_result_file" >> "$_cur" 2>/dev/null || true
+            write_current_slot_results "$_cur" || true
+            rm -f "$_cur" 2>/dev/null || true
+            _stamp="$(date +%s)"
+            set_check_stamp "$_id" "$_stamp"
+            rm -f "$_result_file" 2>/dev/null || true
+            release_test_lock
+            job_write "$_jid" status done
+            job_write "$_jid" result ok
+            job_write "$_jid" finished "$_stamp"
+            exit 0
+        fi
+        release_test_lock
+        job_write "$_jid" status failed
+        job_write "$_jid" result fail
+        job_write "$_jid" finished "$(date +%s)"
     ) &
     printf '{"ok":true,"job":'; json_quote "$_jid"; printf '}'
 }
-
 job_json() {
     _jid="$1"; case "$_jid" in ''|*[!A-Za-z0-9_-]*) json_error "Неверный job ID"; return;; esac
     _d="$JOB_DIR/$_jid"; [ -d "$_d" ] || { json_error "Задача не найдена"; return; }
@@ -1574,36 +1633,19 @@ run_action() {
             json_ok
             ;;
         set_setting)
-            _name="$(jget name)"; _enabled="$(jget enabled)"; case "$_enabled" in 0|1) ;; *) json_error "Неверное значение enabled"; return;; esac; case "$_name" in watchdog|force|mtu|sysctl|sysctl_ext|ntp_clients|dnsmasq_perf|client_fixes) ;; *) json_error "Недопустимая настройка"; return;; esac
+            _name="$(jget name)"; _enabled="$(jget enabled)"; case "$_enabled" in 0|1) ;; *) json_error "Неверное значение enabled"; return;; esac; case "$_name" in watchdog|force|dnsmasq_perf) ;; *) json_error "Недопустимая настройка"; return;; esac
             load_manager || { json_error "DNS Manager недоступен"; return; }
             case "$_name" in
                 watchdog) WATCHDOG_ENABLED="$_enabled"; SILENT_APPLY=1 apply_watchdog >/dev/null 2>&1 ;;
                 force) FORCE_DOH="$_enabled"; SILENT_APPLY=1 apply_extras_now force >/dev/null 2>&1 ;;
-                mtu) MTU_FIX="$_enabled"; SILENT_APPLY=1 apply_extras_now mtu >/dev/null 2>&1 ;;
-                sysctl) SYSCTL_TUNING="$_enabled"; [ "$_enabled" = 1 ] && SYSCTL_EXTENDED=1 || SYSCTL_EXTENDED=0; SILENT_APPLY=1 apply_extras_now sysctl >/dev/null 2>&1 ;;
-                sysctl_ext) SYSCTL_EXTENDED="$_enabled"; SILENT_APPLY=1 apply_extras_now sysctl_ext >/dev/null 2>&1 ;;
-                ntp_clients) NTP_CLIENTS="$_enabled"; SILENT_APPLY=1 apply_extras_now ntp_clients >/dev/null 2>&1 ;;
                 dnsmasq_perf) DNSMASQ_PERF="$_enabled"; SILENT_APPLY=1 apply_extras_now dnsmasq_perf >/dev/null 2>&1 ;;
-                client_fixes) CLIENT_FIXES="$_enabled"; SILENT_APPLY=1 apply_extras_now client_fixes >/dev/null 2>&1 ;;
-            esac
-            [ "$?" -eq 0 ] && json_ok || json_error "Настройку не удалось изменить"
-            ;;
-        set_watchdog_setting)
-            _name="$(jget name)"; _value="$(jget value)"
-            case "$_name" in
                 interval) _key=WATCHDOG_INTERVAL; _min=30; _max=600;;
-                fail_threshold) _key=WATCHDOG_FAIL_THRESHOLD; _min=1; _max=10;;
-                repair_cooldown) _key=WATCHDOG_REPAIR_COOLDOWN; _min=60; _max=3600;;
-                guard_interval) _key=WATCHDOG_GUARD_INTERVAL; _min=300; _max=3600;;
-                max_repairs) _key=WATCHDOG_MAX_REPAIRS; _min=1; _max=3;;
-                max_candidates) _key=WATCHDOG_MAX_CANDIDATES; _min=1; _max=5;;
-                max_restarts) _key=WATCHDOG_MAX_RESTARTS; _min=1; _max=3;;
                 *) json_error "Недопустимый параметр watchdog"; return;;
             esac
             case "$_value" in ''|*[!0-9]*) json_error "Значение должно быть целым числом"; return;; esac
             [ "$_value" -ge "$_min" ] 2>/dev/null && [ "$_value" -le "$_max" ] 2>/dev/null || { json_error "Значение вне допустимого диапазона"; return; }
             eval "$_key=\"$_value\""
-            save_watchdog_config_key "$_key" "$_value" || { json_error "Не удалось сохранить параметр watchdog"; return; }
+            save_config >/dev/null 2>&1 || { json_error "Не удалось сохранить параметр watchdog"; return; }
             _saved="$(cfg_get "$_key")"
             [ "$_saved" = "$_value" ] || { json_error "Параметр watchdog не сохранился"; return; }
             if [ "${WATCHDOG_ENABLED:-0}" = 1 ]; then
@@ -1659,7 +1701,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.5.102
+// DNS Manager LuCI version: 1.6
 var callStatus = rpc.declare({ object:'dns_manager', method:'status', params:['detail'], expect:{} });
 var callBoardInfo = rpc.declare({ object:'system', method:'info', expect:{} });
 var callRuntime = rpc.declare({ object:'dns_manager', method:'runtime', expect:{} });
@@ -1834,7 +1876,7 @@ function stateBadge(status,pingValue){
   if(s==='OK'||s==='FAIL'||s==='FAILED'||s.indexOf('_FAIL')>0||s.indexOf('TIMEOUT')>=0||s.indexOf('ERROR')>=0||s.indexOf('HTTP_')===0||!hasPing(pingValue))return badge('dm-bad','недоступен');
   return badge('dm-off','нет данных');
 }
-function settingName(n){ var m={watchdog:'Автопроверка и замена DNS',mtu:'Исправление MTU и MSS для WAN',sysctl:'Оптимизация TCP и таблицы соединений',sysctl_ext:'Расширенные параметры TCP и сетевых буферов',ntp_clients:'Время для устройств в локальной сети',dnsmasq_perf:'Увеличенный кэш DNS',client_fixes:'DNS для проверки подключения и совместимости устройств'}; return m[n]||n; }
+function settingName(n){ var m={watchdog:'Контроль DNS',dnsmasq_perf:'Увеличенный кэш DNS'}; return m[n]||n; }
 function settingModuleState(st,key){
   var raw=st[key+'_state'];
   if(raw===undefined||raw===null||raw==='')return -1;
@@ -2057,7 +2099,6 @@ function renderOverview(root,st){
   var force=yes(st.force_both)?badge('dm-bad','DNS Manager + внешний'):st.force_owner==='external'?badge('dm-bad','внешний сервис'):yes(st.force_manager)?badge('dm-ok','DNS Manager'):badge('dm-off','выключен');
 
   var wd=yes(st.watchdog)?(st.watchdog_backend==='procd'?(Number(st.watchdog_loop||0)===1?badge('dm-ok','работает'):Number(st.watchdog_service||0)===1?badge('dm-warn','служба запущена, цикл не найден'):badge('dm-bad','служба не запущена')):badge('dm-warn','неизвестный механизм')):badge('dm-off','выключена');
-  var wdDetails=yes(st.watchdog)?'интервал '+shortVal(st.watchdog_interval)+' с · порог '+shortVal(st.watchdog_fail_threshold)+' цикла':'автопроверка отключена';
 
   var dnsItems=[];
   (st.doh_instances||[]).forEach(function(d){
@@ -2077,12 +2118,7 @@ function renderOverview(root,st){
   var components=card('Компоненты',[
     componentItem('Автопроверка и замена DNS',wd,wdDetails),
     componentItem('Принудительный DNS для устройств',force),
-    componentSettingItem('Исправление MTU и MSS для WAN','mtu'),
-    componentSettingItem('Оптимизация TCP и таблицы соединений','sysctl'),
-    componentSettingItem('Расширенные параметры TCP и сетевых буферов','sysctl_ext'),
     componentSettingItem('Увеличенный кэш DNS','dnsmasq_perf'),
-    componentSettingItem('Время для устройств в локальной сети','ntp_clients'),
-    componentSettingItem('DNS для проверки подключения и совместимости устройств','client_fixes')
   ]);
 
   var dnsSlotsCard=E('div',{'class':'dm-card'},[
@@ -2179,17 +2215,16 @@ function renderDoH(root,st){
   } else ch.push(row('Сейчас используется',E('span',{},'резолверы не настроены')));
 
   var fm=forceMode(st);
-  var external=st.force_owner==='external';
   var forceButtons=E('div',{'class':'dm-seg'},[
-    btn('Перехватывать DNS',fm==='auto'?'active cbi-button':'cbi-button',function(){setForceMode('auto',root);},{disabled:external||state.busy}),
-    btn('Не перехватывать',fm==='off'?'active cbi-button':'cbi-button',function(){setForceMode('off',root);},{disabled:external||state.busy})
+    btn('Авто (рекомендуется)',fm==='auto'?'active cbi-button':'cbi-button',function(){setForceMode('auto',root);},{disabled:state.busy}),
+    btn('Не перехватывать',fm==='off'?'active cbi-button':'cbi-button',function(){setForceMode('off',root);},{disabled:state.busy})
   ]);
   ch.push(E('div',{'style':'margin-top:9px'},[E('div',{'class':'dm-row'},[E('span',{'class':'dm-label'},'Перехват DNS устройств'),badge(st.force_status==='external'||st.force_status==='other'?'dm-bad':st.force_status==='manager'?'dm-ok':'dm-off',st.force_status==='external'?'внешний':st.force_status==='other'?'другое':st.force_status==='manager'?'включён':'выключен')]),forceButtons]));
 
   if(st.force_both){
-    ch.push(E('div',{'class':'dm-force-external'},'Принудительный DNS активен одновременно в DNS Manager и во внешнем перехвате. Источник внешнего перехвата: '+shortVal(st.force_source)+'. DNS Manager не отключает и не переназначает внешний путь.'));
+    ch.push(E('div',{'class':'dm-force-external'},'Принудительный DNS обнаружен одновременно с внешним перехватом. Источник: '+shortVal(st.force_source)+'. При переключении DNS Manager приведёт общую конфигурацию forced-DNS к своей схеме.'));
   } else if(st.force_owner==='external'){
-    ch.push(E('div',{'class':'dm-force-external'},'Обнаружен '+shortVal(st.force_source)+'. DNS Manager не изменяет внешний forced-DNS и не создаёт второй перехват.'));
+    ch.push(E('div',{'class':'dm-force-external'},'Обнаружен '+shortVal(st.force_source)+'. Переключение выше может заменить его общей конфигурацией forced-DNS DNS Manager.'));
   }
   if(state.pageNotice.doh)ch.push(E('div',{'class':'dm-inline-msg info'},state.pageNotice.doh));
   e.appendChild(card('DNS over HTTPS',ch));
@@ -2543,79 +2578,63 @@ function saveTestAges(root,inputs){
   }
   next();
 }
-function watchdogField(root,st,key,label,unit,min,max){
-  var value=Number(st[key]||min), msgKey='wd_'+key, busy=state.busySetting===msgKey;
-  var input=E('input',{'type':'number','min':String(min),'max':String(max),'step':'1','value':String(value),'class':'dm-input'});
-  var save=btn(busy?'Сохраняю…':'Сохранить','cbi-button-neutral',function(){
+function watchdogCard(root,st){
+  var en=yes(st.watchdog), busy=state.busySetting==='watchdog', intervalBusy=state.busySetting==='wd_interval';
+  var service=Number(st.watchdog_service||0)===1, loop=Number(st.watchdog_loop||0)===1;
+  var input=E('input',{'type':'number','min':'30','max':'600','step':'1','value':String(Number(st.watchdog_interval||90)),'class':'dm-input'});
+  var save=btn(intervalBusy?'Сохраняю…':'Сохранить','cbi-button-neutral',function(){
     if(state.busy)return;
     var n=String(input.value||'').trim();
-    if(!/^\d+$/.test(n)||Number(n)<min||Number(n)>max){
-      setSettingFeedback(msgKey,label+': от '+min+' до '+max+'.','error');
-      renderSettings(root,window.dmState||{});
+    if(!/^\d+$/.test(n)||Number(n)<30||Number(n)>600){
+      setSettingFeedback('wd_interval','Интервал: от 30 до 600 с.','error');
+      renderNetwork(root,window.dmState||{});
       return;
     }
     clearSettingFeedback();
-    state.busy=true;state.busySetting=msgKey;
-    renderSettings(root,window.dmState||{});
-    callWatchdogSetting(key,Number(n)).then(function(r){
-      state.busy=false;state.busySetting='';
-      if(r&&r.ok)setSettingFeedback(msgKey,label+' сохранён.','ok');
-      else setSettingFeedback(msgKey,label+': '+((r&&r.error)||'не удалось сохранить.'),'error');
+    state.busy=true; state.busySetting='wd_interval';
+    renderNetwork(root,window.dmState||{});
+    callWatchdogSetting('interval',Number(n)).then(function(r){
+      state.busy=false; state.busySetting='';
+      if(r&&r.ok)setSettingFeedback('wd_interval','Интервал проверки сохранён.','ok');
+      else setSettingFeedback('wd_interval',(r&&r.error)||'Интервал проверки не удалось сохранить.','error');
       refresh(root,true);
     }).catch(function(){
-      state.busy=false;state.busySetting='';
-      setSettingFeedback(msgKey,label+': не удалось сохранить.','error');
+      state.busy=false; state.busySetting='';
+      setSettingFeedback('wd_interval','Интервал проверки не удалось сохранить.','error');
       refresh(root,true);
     });
   },{disabled:!!state.busy});
-  var feedback=settingFeedback(label,msgKey);
-  return E('div',{'class':'dm-watchdog-row '+(busy?'dm-setting-saving':'')},[
-    E('div',{'class':'dm-setting-title'},label),
-    E('span',{'class':'dm-setting-range'},min+'–'+max+(unit?' '+unit:'')),
-    input,
-    save,
-    feedback||E('span',{})
-  ]);
-}
-function watchdogCard(root,st){
-  var en=yes(st.watchdog), busy=state.busySetting==='watchdog';
-  var service=Number(st.watchdog_service||0)===1, enabled=Number(st.watchdog_service_enabled||0)===1, loop=Number(st.watchdog_loop||0)===1;
-  var detail=[
-    row('Режим',badge(st.watchdog_backend==='procd'?'dm-ok':'dm-warn',st.watchdog_backend==='procd'?'штатный':'неизвестен')),
-    row('Служба',badge(service?'dm-ok':'dm-warn',service?'работает':'не работает')),
-    row('Проверка DNS',badge(loop?'dm-ok':service?'dm-warn':'dm-off',loop?'активна':service?'ждёт запуска':'не работает')),
-    row('Автозапуск',badge(enabled?'dm-ok':'dm-warn',enabled?'включён':'выключен'))
-  ];
+  var feedback=settingFeedback('', 'wd_interval');
   var action=E('div',{'class':'dm-setting '+(busy?'dm-setting-saving':'')},[
     E('div',{'class':'dm-setting-line'},[
       E('div',{},[
-        E('div',{'class':'dm-setting-title'},'Автопроверка DNS'),
-        E('div',{'class':'dm-setting-desc'},'Автоматически проверяет DNS и при сбое заменяет проблемный сервер.')
+        E('div',{'class':'dm-setting-title'},'Контроль DNS'),
+        E('div',{'class':'dm-setting-desc'},'Автоматически проверяет выбранные DNS и при подтверждённом сбое восстанавливает рабочий вариант.')
       ]),
       E('div',{'class':'dm-setting-actions'},[
         badge(busy?'dm-warn':(en?'dm-ok':'dm-off'),busy?'изменение':(en?'включено':'выключено')),
         btn(busy?'Сохраняю…':(en?'Выключить':'Включить'),busy?'cbi-button-neutral':(en?'cbi-button-remove':'cbi-button-add'),function(){
-          var cur=yes((window.dmState||{}).watchdog);
-          setSetting('watchdog',cur?0:1,root);
+          var cur=yes((window.dmState||{}).watchdog); setSetting('watchdog',cur?0:1,root);
         },{disabled:!!state.busy})
       ])
     ])
   ]);
-  var settings=E('div',{'class':'dm-watchdog-list'},[
-    watchdogField(root,st,'interval','Интервал проверки','с',30,600),
-    watchdogField(root,st,'fail_threshold','Порог сбоя','циклов',1,10),
-    watchdogField(root,st,'repair_cooldown','Пауза замены','с',60,3600),
-    watchdogField(root,st,'guard_interval','Проверка конфигурации','с',300,3600),
-    watchdogField(root,st,'max_repairs','Максимум замен','шт.',1,3),
-    watchdogField(root,st,'max_candidates','Кандидатов на замену','шт.',1,5),
-    watchdogField(root,st,'max_restarts','Перезапуски HDP','шт.',1,3)
+  var status=E('div',{'class':'dm-grid2'},[
+    row('Служба',badge(service?'dm-ok':'dm-warn',service?'работает':'не работает')),
+    row('Проверка DNS',badge(loop?'dm-ok':service?'dm-warn':'dm-off',loop?'активна':service?'ждёт запуска':'не работает'))
   ]);
-  return E('div',{},[action,E('div',{'class':'dm-grid2'},detail),E('div',{'class':'dm-section-title'},'Параметры проверки'),settings]);
+  var controls=E('div',{'class':'dm-watchdog-list'},[
+    E('div',{'class':'dm-watchdog-row'},[
+      E('div',{'class':'dm-setting-title'},'Интервал проверки'),
+      E('span',{'class':'dm-setting-range'},'30–600 с'),
+      input,save,feedback||E('span',{})
+    ])
+  ]);
+  return E('div',{},[action,status,E('div',{'class':'dm-section-title'},'Параметр'),controls]);
 }
 function renderSettings(root,st){
   var e=root.querySelector('#dm-settings');if(!e)return;e.innerHTML='';
   var body=[];
-  body.push(watchdogCard(root,st));
   var ageValue=Number(st.test_age_common||6);
   var ageInput=E('input',{'type':'number','min':'1','max':'168','step':'1','value':String(ageValue),'class':'dm-input'});
   var ageBusy=state.busySetting==='testages';
@@ -2651,28 +2670,12 @@ function renderSettings(root,st){
 
 function renderNetwork(root,st){
   var e=root.querySelector('#dm-network');if(!e)return;e.innerHTML='';
-  var body=[];
-  var groups=[
-    ['Сетевые параметры',[
-      ['mtu','Исправление MTU / MSS','Нужно только при проблемах с размером пакетов, отдельными сайтами, VPN или туннелями. На исправной сети обычно не требуется.'],
-      ['sysctl','Оптимизация TCP и таблицы соединений','Настраивает TCP Fast Open, таймаут TCP и очередь соединений.'],
-      ['sysctl_ext','Расширенная настройка сети','Дополнительно настраивает TCP, соединения и сетевые буферы. Для обычной работы не обязательна.']
-    ]],
-    ['Устройства и DNS',[
-      ['dnsmasq_perf','Увеличенный кэш DNS','Хранит больше DNS-ответов, чтобы повторные запросы выполнялись быстрее.'],
-      ['ntp_clients','Синхронизация времени устройств','Роутер сообщает устройствам свой адрес как сервер точного времени по DHCP.'],
-      ['client_fixes','Совместимость и проверки подключения','Исправляет системные DNS-проверки подключения у некоторых устройств.']
-    ]]
+  var body=[
+    watchdogCard(root,st),
+    settingCard(root,['dnsmasq_perf','Увеличенный кэш DNS','Увеличивает только кэш dnsmasq для повторных DNS-запросов.'],st)
   ];
-  groups.forEach(function(g){
-    body.push(E('div',{'class':'dm-section-title'},g[0]));
-    var grid=E('div',{'class':'dm-grid2'});
-    g[1].forEach(function(x){grid.appendChild(settingCard(root,x,st));});
-    body.push(grid);
-  });
-  e.appendChild(card('Сетевые настройки',body));
+  e.appendChild(card('Сетевой тюнинг',body));
 }
-
 function renderCatalog(root){
   var e=root.querySelector('#dm-catalog');if(!e)return;e.innerHTML='';
   var body=E('div',{'id':'dm-cat-body'});
@@ -2966,11 +2969,6 @@ function setSetting(name,en,root){
 }
 function setForceMode(mode,root){
   if(state.busy)return;
-  if(window.dmState&&window.dmState.force_owner==='external'){
-    state.pageNotice.doh='Внешний forced-DNS обнаружен. DNS Manager его не изменяет.';
-    renderOverview(root,window.dmState);
-    return;
-  }
   var en=mode==='auto'?1:0;
   state.busy=true;
   state.busySetting='force';
