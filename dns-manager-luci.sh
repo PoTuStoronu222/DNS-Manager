@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.6
+# Version: 1.6.1
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -84,11 +84,6 @@ install_files() {
     "order": 30,
     "action": { "type": "view", "path": "dns_manager/overview" }
   },
-  "admin/services/dns-manager/settings": {
-    "title": "Настройки",
-    "order": 60,
-    "action": { "type": "view", "path": "dns_manager/overview" }
-  },
   "admin/services/dns-manager/catalog": {
     "title": "Каталог DNS",
     "order": 50,
@@ -141,7 +136,7 @@ UPDATE_STATE="/etc/dns-manager-luci/update.state"
 COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.6"
+SELF_VERSION="1.6.1"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -1999,12 +1994,11 @@ function setActiveTab(root,name){
     dashboard:['overview','test-inline'],
     doh:['profiles','slots'],
     network:['network'],
-    settings:['settings'],
     catalog:['catalog'],
     log:['log']
   };
   state.activeTab=groups[name]?name:'dashboard';
-  ['overview','doh','slots','profiles','settings','network','job','catalog','log','test-inline'].forEach(function(id){
+  ['overview','doh','slots','profiles','network','job','catalog','log','test-inline'].forEach(function(id){
     var panel=root.querySelector('#dm-'+id);
     if(panel) panel.style.display='none';
   });
@@ -2023,7 +2017,7 @@ function currentRoute(){
 }
 function renderPageNav(root){
   var e=root.querySelector('#dm-page-nav');if(!e)return;e.innerHTML='';
-  var tabs=[['dashboard','Дашборд'],['doh','DNS over HTTPS'],['network','Сеть'],['settings','Настройки'],['catalog','Каталог DNS'],['log','Журнал']];
+  var tabs=[['dashboard','Дашборд'],['doh','DNS over HTTPS'],['network','Сеть'],['catalog','Каталог DNS'],['log','Журнал']];
   var route=currentRoute();
   var nav=E('nav',{'class':'dm-page-nav'});
   var bar=E('div',{'class':'dm-page-tabs'});
@@ -2586,12 +2580,12 @@ function saveTestAges(root,inputs){
   });
   if(invalid){
     setSettingFeedback('testages','«'+invalid+'»: срок должен быть от 1 до 168 часов.','error');
-    renderSettings(root,window.dmState||{});
+    renderCatalog(root);
     return;
   }
   clearSettingFeedback();
   state.busy=true;state.busySetting='testages';
-  renderSettings(root,window.dmState||{});
+  renderCatalog(root);
   var index=0,failed=[];
   function next(){
     if(index>=values.length){
@@ -2666,9 +2660,7 @@ function watchdogCard(root,st){
   ]);
   return E('div',{},[action,status,E('div',{'class':'dm-section-title'},'Параметр'),controls]);
 }
-function renderSettings(root,st){
-  var e=root.querySelector('#dm-settings');if(!e)return;e.innerHTML='';
-  var body=[];
+function renderTestAgeCommon(root,st){
   var ageValue=Number(st.test_age_common||6);
   var ageInput=E('input',{'type':'number','min':'1','max':'168','step':'1','value':String(ageValue),'class':'dm-input'});
   var ageBusy=state.busySetting==='testages';
@@ -2678,28 +2670,27 @@ function renderSettings(root,st){
     var n=String(ageInput.value||'').trim();
     if(!/^\d+$/.test(n)||Number(n)<1||Number(n)>168){
       setSettingFeedback('testages','Срок: от 1 до 168 часов.','error');
-      renderSettings(root,window.dmState||{});
+      renderCatalog(root);
       return;
     }
     clearSettingFeedback();
-    state.busy=true; state.busySetting='testages';
-    renderSettings(root,window.dmState||{});
+    state.busy=true;state.busySetting='testages';
+    renderCatalog(root);
     callTestAge('all',Number(n)).then(function(r){
-      state.busy=false; state.busySetting='';
+      state.busy=false;state.busySetting='';
       if(r&&r.ok)setSettingFeedback('testages','Срок результатов проверки сохранён.','ok');
       else setSettingFeedback('testages',(r&&r.error)||'Срок результатов проверки не удалось сохранить.','error');
       refresh(root,true);
     }).catch(function(){
-      state.busy=false; state.busySetting='';
+      state.busy=false;state.busySetting='';
       setSettingFeedback('testages','Срок результатов проверки не удалось сохранить.','error');
       refresh(root,true);
     });
   },{disabled:!!state.busy});
-  body.push(card('Срок результатов проверки',[
+  return card('Срок результатов проверки',[
     E('div',{'class':'dm-hint'},'Общий срок свежести результатов полной проверки DNS.'),
     E('div',{'class':'dm-test-age-common'},[ageInput,E('span',{'class':'dm-test-age-unit'},'ч'),ageSave,ageFeedback||E('span',{})])
-  ]));
-  body.forEach(function(x){e.appendChild(x);});
+  ]);
 }
 
 function renderNetwork(root,st){
@@ -2712,6 +2703,7 @@ function renderNetwork(root,st){
 }
 function renderCatalog(root){
   var e=root.querySelector('#dm-catalog');if(!e)return;e.innerHTML='';
+  var ageCard=renderTestAgeCommon(root,st);
   var body=E('div',{'id':'dm-cat-body'});
   if(!window.dmCatalog)body.appendChild(E('div',{'class':'dm-hint'},'Загрузка каталога DNS…'));
   var ch=[
@@ -2743,6 +2735,7 @@ function renderCatalog(root){
     ch.push(card('Ход проверки',method));
   }
 
+  ch.push(ageCard);
   ch.push(body);
   if(state.fullTest&&state.fullTest.status==='FAILED'&&state.pageNotice.catalog)ch.push(E('div',{'class':'dm-inline-msg error'},state.pageNotice.catalog));
   e.appendChild(card('Каталог DNS',ch));
@@ -2802,7 +2795,6 @@ function render(root,st){
   renderDoH(root,st);
   renderSlots(root,st);
   renderProfiles(root,st);
-  renderSettings(root,st);
   renderNetwork(root,st);
   renderCatalog(root);
   renderLog(root);
@@ -2974,8 +2966,8 @@ function applyProfile(name,root){
 function setTestAge(category,hours,root){
   if(state.busy)return;
   var n=String(hours||'').trim();
-  if(!/^\d+$/.test(n)||Number(n)<1||Number(n)>168){state.settingMessage='Срок должен быть от 1 до 168 часов.';state.settingMessageType='error';renderSettings(root,window.dmState||{});return;}
-  state.busy=true;state.busySetting='testage_'+category;state.settingMessage='Сохраняю срок проверки…';state.settingMessageType='info';renderSettings(root,window.dmState||{});
+  if(!/^\d+$/.test(n)||Number(n)<1||Number(n)>168){state.settingMessage='Срок должен быть от 1 до 168 часов.';state.settingMessageType='error';renderCatalog(root);return;}
+  state.busy=true;state.busySetting='testage_'+category;state.settingMessage='Сохраняю срок проверки…';state.settingMessageType='info';renderCatalog(root);
   callTestAge(category,Number(n)).then(function(r){
     state.busy=false;state.busySetting='';state.settingMessage=(r&&r.ok)?'Срок проверки сохранён.':((r&&r.error)||'Срок проверки не удалось сохранить.');state.settingMessageType=(r&&r.ok)?'ok':'error';refresh(root,true);
   }).catch(function(){state.busy=false;state.busySetting='';state.settingMessage='Срок проверки не удалось сохранить.';state.settingMessageType='error';refresh(root,true);});
@@ -2984,8 +2976,8 @@ function setSetting(name,en,root){
   if(state.busy)return;
   clearSettingFeedback();
   state.busy=true;state.busySetting=name;
-  renderSettings(root,window.dmState||{});
   if(state.activeTab==='network')renderNetwork(root,window.dmState||{});
+  else if(state.activeTab==='catalog')renderCatalog(root);
   callSetting(name,en).then(function(r){
     state.busy=false;state.busySetting='';
     if(r&&r.ok){
@@ -3377,7 +3369,7 @@ return view.extend({
   },
   render:function(st){
     var root=E('div',{'class':'dm-wrap'});
-    ['dm-header','dm-overview','dm-doh','dm-profiles','dm-slots','dm-settings','dm-network','dm-job','dm-catalog','dm-log'].forEach(function(id){root.appendChild(E('section',{'id':id}));});
+    ['dm-header','dm-overview','dm-doh','dm-profiles','dm-slots','dm-network','dm-job','dm-catalog','dm-log'].forEach(function(id){root.appendChild(E('section',{'id':id}));});
     injectStyle(root);window.dmState=st||{};state.activeTab=currentRoute();
     render(root,st||{});
     removeLegacyCbiActions();if(window.setTimeout)window.setTimeout(removeLegacyCbiActions,0);
