@@ -1680,18 +1680,12 @@ run_action() {
             _name="$(jget name)"; _value="$(jget value)"
             case "$_name" in
                 interval) _key=WATCHDOG_INTERVAL; _min=30; _max=600;;
-                fail_threshold) _key=WATCHDOG_FAIL_THRESHOLD; _min=1; _max=10;;
-                repair_cooldown) _key=WATCHDOG_REPAIR_COOLDOWN; _min=60; _max=3600;;
-                guard_interval) _key=WATCHDOG_GUARD_INTERVAL; _min=300; _max=3600;;
-                max_repairs) _key=WATCHDOG_MAX_REPAIRS; _min=1; _max=3;;
-                max_candidates) _key=WATCHDOG_MAX_CANDIDATES; _min=1; _max=5;;
-                max_restarts) _key=WATCHDOG_MAX_RESTARTS; _min=1; _max=3;;
                 *) json_error "Недопустимый параметр watchdog"; return;;
             esac
             case "$_value" in ''|*[!0-9]*) json_error "Значение должно быть целым числом"; return;; esac
             [ "$_value" -ge "$_min" ] 2>/dev/null && [ "$_value" -le "$_max" ] 2>/dev/null || { json_error "Значение вне допустимого диапазона"; return; }
             eval "$_key=\"$_value\""
-            save_watchdog_config_key "$_key" "$_value" || { json_error "Не удалось сохранить параметр watchdog"; return; }
+            save_config >/dev/null 2>&1 || { json_error "Не удалось сохранить параметр watchdog"; return; }
             _saved="$(cfg_get "$_key")"
             [ "$_saved" = "$_value" ] || { json_error "Параметр watchdog не сохранился"; return; }
             if [ "${WATCHDOG_ENABLED:-0}" = 1 ]; then
