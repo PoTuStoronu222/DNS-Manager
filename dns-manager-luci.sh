@@ -1867,7 +1867,7 @@ function stateBadge(status,pingValue){
   if(s==='OK'||s==='FAIL'||s==='FAILED'||s.indexOf('_FAIL')>0||s.indexOf('TIMEOUT')>=0||s.indexOf('ERROR')>=0||s.indexOf('HTTP_')===0||!hasPing(pingValue))return badge('dm-bad','недоступен');
   return badge('dm-off','нет данных');
 }
-function settingName(n){ var m={watchdog:'Автопроверка и замена DNS',mtu:'Исправление MTU и MSS для WAN',sysctl:'Оптимизация TCP и таблицы соединений',sysctl_ext:'Расширенные параметры TCP и сетевых буферов',ntp_clients:'Время для устройств в локальной сети',dnsmasq_perf:'Увеличенный кэш DNS',client_fixes:'DNS для проверки подключения и совместимости устройств'}; return m[n]||n; }
+function settingName(n){ var m={watchdog:'Контроль DNS',dnsmasq_perf:'Увеличенный кэш DNS'}; return m[n]||n; }
 function settingModuleState(st,key){
   var raw=st[key+'_state'];
   if(raw===undefined||raw===null||raw==='')return -1;
@@ -2109,12 +2109,7 @@ function renderOverview(root,st){
   var components=card('Компоненты',[
     componentItem('Автопроверка и замена DNS',wd,wdDetails),
     componentItem('Принудительный DNS для устройств',force),
-    componentSettingItem('Исправление MTU и MSS для WAN','mtu'),
-    componentSettingItem('Оптимизация TCP и таблицы соединений','sysctl'),
-    componentSettingItem('Расширенные параметры TCP и сетевых буферов','sysctl_ext'),
     componentSettingItem('Увеличенный кэш DNS','dnsmasq_perf'),
-    componentSettingItem('Время для устройств в локальной сети','ntp_clients'),
-    componentSettingItem('DNS для проверки подключения и совместимости устройств','client_fixes')
   ]);
 
   var dnsSlotsCard=E('div',{'class':'dm-card'},[
@@ -2575,79 +2570,63 @@ function saveTestAges(root,inputs){
   }
   next();
 }
-function watchdogField(root,st,key,label,unit,min,max){
-  var value=Number(st[key]||min), msgKey='wd_'+key, busy=state.busySetting===msgKey;
-  var input=E('input',{'type':'number','min':String(min),'max':String(max),'step':'1','value':String(value),'class':'dm-input'});
-  var save=btn(busy?'Сохраняю…':'Сохранить','cbi-button-neutral',function(){
+function watchdogCard(root,st){
+  var en=yes(st.watchdog), busy=state.busySetting==='watchdog', intervalBusy=state.busySetting==='wd_interval';
+  var service=Number(st.watchdog_service||0)===1, loop=Number(st.watchdog_loop||0)===1;
+  var input=E('input',{'type':'number','min':'30','max':'600','step':'1','value':String(Number(st.watchdog_interval||90)),'class':'dm-input'});
+  var save=btn(intervalBusy?'Сохраняю…':'Сохранить','cbi-button-neutral',function(){
     if(state.busy)return;
     var n=String(input.value||'').trim();
-    if(!/^\d+$/.test(n)||Number(n)<min||Number(n)>max){
-      setSettingFeedback(msgKey,label+': от '+min+' до '+max+'.','error');
-      renderSettings(root,window.dmState||{});
+    if(!/^\d+$/.test(n)||Number(n)<30||Number(n)>600){
+      setSettingFeedback('wd_interval','Интервал: от 30 до 600 с.','error');
+      renderNetwork(root,window.dmState||{});
       return;
     }
     clearSettingFeedback();
-    state.busy=true;state.busySetting=msgKey;
-    renderSettings(root,window.dmState||{});
-    callWatchdogSetting(key,Number(n)).then(function(r){
-      state.busy=false;state.busySetting='';
-      if(r&&r.ok)setSettingFeedback(msgKey,label+' сохранён.','ok');
-      else setSettingFeedback(msgKey,label+': '+((r&&r.error)||'не удалось сохранить.'),'error');
+    state.busy=true; state.busySetting='wd_interval';
+    renderNetwork(root,window.dmState||{});
+    callWatchdogSetting('interval',Number(n)).then(function(r){
+      state.busy=false; state.busySetting='';
+      if(r&&r.ok)setSettingFeedback('wd_interval','Интервал проверки сохранён.','ok');
+      else setSettingFeedback('wd_interval',(r&&r.error)||'Интервал проверки не удалось сохранить.','error');
       refresh(root,true);
     }).catch(function(){
-      state.busy=false;state.busySetting='';
-      setSettingFeedback(msgKey,label+': не удалось сохранить.','error');
+      state.busy=false; state.busySetting='';
+      setSettingFeedback('wd_interval','Интервал проверки не удалось сохранить.','error');
       refresh(root,true);
     });
   },{disabled:!!state.busy});
-  var feedback=settingFeedback(label,msgKey);
-  return E('div',{'class':'dm-watchdog-row '+(busy?'dm-setting-saving':'')},[
-    E('div',{'class':'dm-setting-title'},label),
-    E('span',{'class':'dm-setting-range'},min+'–'+max+(unit?' '+unit:'')),
-    input,
-    save,
-    feedback||E('span',{})
-  ]);
-}
-function watchdogCard(root,st){
-  var en=yes(st.watchdog), busy=state.busySetting==='watchdog';
-  var service=Number(st.watchdog_service||0)===1, enabled=Number(st.watchdog_service_enabled||0)===1, loop=Number(st.watchdog_loop||0)===1;
-  var detail=[
-    row('Режим',badge(st.watchdog_backend==='procd'?'dm-ok':'dm-warn',st.watchdog_backend==='procd'?'штатный':'неизвестен')),
-    row('Служба',badge(service?'dm-ok':'dm-warn',service?'работает':'не работает')),
-    row('Проверка DNS',badge(loop?'dm-ok':service?'dm-warn':'dm-off',loop?'активна':service?'ждёт запуска':'не работает')),
-    row('Автозапуск',badge(enabled?'dm-ok':'dm-warn',enabled?'включён':'выключен'))
-  ];
+  var feedback=settingFeedback('', 'wd_interval');
   var action=E('div',{'class':'dm-setting '+(busy?'dm-setting-saving':'')},[
     E('div',{'class':'dm-setting-line'},[
       E('div',{},[
-        E('div',{'class':'dm-setting-title'},'Автопроверка DNS'),
-        E('div',{'class':'dm-setting-desc'},'Автоматически проверяет DNS и при сбое заменяет проблемный сервер.')
+        E('div',{'class':'dm-setting-title'},'Контроль DNS'),
+        E('div',{'class':'dm-setting-desc'},'Автоматически проверяет выбранные DNS и при подтверждённом сбое восстанавливает рабочий вариант.')
       ]),
       E('div',{'class':'dm-setting-actions'},[
         badge(busy?'dm-warn':(en?'dm-ok':'dm-off'),busy?'изменение':(en?'включено':'выключено')),
         btn(busy?'Сохраняю…':(en?'Выключить':'Включить'),busy?'cbi-button-neutral':(en?'cbi-button-remove':'cbi-button-add'),function(){
-          var cur=yes((window.dmState||{}).watchdog);
-          setSetting('watchdog',cur?0:1,root);
+          var cur=yes((window.dmState||{}).watchdog); setSetting('watchdog',cur?0:1,root);
         },{disabled:!!state.busy})
       ])
     ])
   ]);
-  var settings=E('div',{'class':'dm-watchdog-list'},[
-    watchdogField(root,st,'interval','Интервал проверки','с',30,600),
-    watchdogField(root,st,'fail_threshold','Порог сбоя','циклов',1,10),
-    watchdogField(root,st,'repair_cooldown','Пауза замены','с',60,3600),
-    watchdogField(root,st,'guard_interval','Проверка конфигурации','с',300,3600),
-    watchdogField(root,st,'max_repairs','Максимум замен','шт.',1,3),
-    watchdogField(root,st,'max_candidates','Кандидатов на замену','шт.',1,5),
-    watchdogField(root,st,'max_restarts','Перезапуски HDP','шт.',1,3)
+  var status=E('div',{'class':'dm-grid2'},[
+    row('Служба',badge(service?'dm-ok':'dm-warn',service?'работает':'не работает')),
+    row('Проверка DNS',badge(loop?'dm-ok':service?'dm-warn':'dm-off',loop?'активна':service?'ждёт запуска':'не работает'))
   ]);
-  return E('div',{},[action,E('div',{'class':'dm-grid2'},detail),E('div',{'class':'dm-section-title'},'Параметры проверки'),settings]);
+  var controls=E('div',{'class':'dm-watchdog-list'},[
+    E('div',{'class':'dm-watchdog-row'},[
+      E('div',{'class':'dm-setting-title'},'Интервал проверки'),
+      E('span',{'class':'dm-setting-range'},'30–600 с'),
+      input,save,feedback||E('span',{})
+    ])
+  ]);
+  return E('div',{},[action,status,E('div',{'class':'dm-section-title'},'Параметр'),controls]);
 }
 function renderSettings(root,st){
   var e=root.querySelector('#dm-settings');if(!e)return;e.innerHTML='';
   var body=[];
-  body.push(watchdogCard(root,st));
   var ageValue=Number(st.test_age_common||6);
   var ageInput=E('input',{'type':'number','min':'1','max':'168','step':'1','value':String(ageValue),'class':'dm-input'});
   var ageBusy=state.busySetting==='testages';
@@ -2683,28 +2662,12 @@ function renderSettings(root,st){
 
 function renderNetwork(root,st){
   var e=root.querySelector('#dm-network');if(!e)return;e.innerHTML='';
-  var body=[];
-  var groups=[
-    ['Сетевые параметры',[
-      ['mtu','Исправление MTU / MSS','Нужно только при проблемах с размером пакетов, отдельными сайтами, VPN или туннелями. На исправной сети обычно не требуется.'],
-      ['sysctl','Оптимизация TCP и таблицы соединений','Настраивает TCP Fast Open, таймаут TCP и очередь соединений.'],
-      ['sysctl_ext','Расширенная настройка сети','Дополнительно настраивает TCP, соединения и сетевые буферы. Для обычной работы не обязательна.']
-    ]],
-    ['Устройства и DNS',[
-      ['dnsmasq_perf','Увеличенный кэш DNS','Хранит больше DNS-ответов, чтобы повторные запросы выполнялись быстрее.'],
-      ['ntp_clients','Синхронизация времени устройств','Роутер сообщает устройствам свой адрес как сервер точного времени по DHCP.'],
-      ['client_fixes','Совместимость и проверки подключения','Исправляет системные DNS-проверки подключения у некоторых устройств.']
-    ]]
+  var body=[
+    watchdogCard(root,st),
+    settingCard(root,['dnsmasq_perf','Увеличенный кэш DNS','Увеличивает только кэш dnsmasq для повторных DNS-запросов.'],st)
   ];
-  groups.forEach(function(g){
-    body.push(E('div',{'class':'dm-section-title'},g[0]));
-    var grid=E('div',{'class':'dm-grid2'});
-    g[1].forEach(function(x){grid.appendChild(settingCard(root,x,st));});
-    body.push(grid);
-  });
-  e.appendChild(card('Сетевые настройки',body));
+  e.appendChild(card('Сетевой тюнинг',body));
 }
-
 function renderCatalog(root){
   var e=root.querySelector('#dm-catalog');if(!e)return;e.innerHTML='';
   var body=E('div',{'id':'dm-cat-body'});
