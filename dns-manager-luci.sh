@@ -935,6 +935,29 @@ runtime_json() {
     printf '{"ok":true,"uptime":'; json_quote "$_uptime"
     printf ',"cpu_load":%s,"memory_total_kb":%s,"memory_available_kb":%s}' "$_load" "$_mem_t" "$_mem_a"
 }
+detect_steer_dns_runtime() {
+    STEER_DNS_ACTIVE=0
+    STEER_DNS_SOURCE="none"
+    if [ -x /etc/init.d/steer ] && /etc/init.d/steer running >/dev/null 2>&1; then
+        :
+    elif ps w 2>/dev/null | grep -Eq '[s]teer([[:space:]]|/)' ; then
+        :
+    else
+        return 0
+    fi
+    if command -v nft >/dev/null 2>&1 && nft -a list ruleset 2>/dev/null | awk '
+        /dport[[:space:]]+53/ && /redirect[[:space:]]+to[[:space:]]*:[[:space:]]*5300([[:space:]]|$)/ { found=1 }
+        END { exit(found ? 0 : 1) }
+    ' >/dev/null 2>&1; then
+        STEER_DNS_ACTIVE=1
+        STEER_DNS_SOURCE="Steer"
+    elif command -v iptables >/dev/null 2>&1 && iptables -t nat -S PREROUTING 2>/dev/null | grep -qE -- '--dport[[:space:]]+53.*(REDIRECT.*--to-ports[[:space:]]+5300([[:space:]]|$)|DNAT.*:[[:space:]]*5300([[:space:]]|$))'; then
+        STEER_DNS_ACTIVE=1
+        STEER_DNS_SOURCE="Steer"
+    fi
+    return 0
+}
+
 status_json() {
     _mv="$(manager_version 2>/dev/null || true)"
     # Do not use load_config() defaults here. An untouched OpenWrt router must
@@ -964,6 +987,7 @@ status_json() {
     _force_notrack="$(uci -q get https-dns-proxy.config.notrack_dns 2>/dev/null || true)"
     _force_manager=0
     [ "$_force" = 1 ] && [ "$_force_cfg" = 1 ] && [ "$_force_notrack" = 1 ] && _force_manager=1
+    detect_steer_dns_runtime >/dev/null 2>&1 || true
 
     _force_external=0
     _force_targets=""
@@ -978,7 +1002,7 @@ status_json() {
         _dp="$(uci -q get "firewall.$_sec.dest_port" 2>/dev/null || true)"
         [ -n "$_dp" ] || continue
         case "$_dp" in 53|53-53) continue;; esac
-        if [ "$_force_manager" != 1 ]; then
+        if [ "$_force_manager" != 1 ] && { [ "${STEER_DNS_ACTIVE:-0}" != 1 ] || [ "$_dp" != 5300 ]; }; then
             _force_external=1
             _force_targets="$_force_targets $_dp"
         fi
@@ -995,6 +1019,14 @@ status_json() {
         _force_owner=external
         _force_status=external
         [ "$_zapret_running" = 1 ] && _force_source='Zapret / внешний' || _force_source='внешний сервис'
+    elif [ "${STEER_DNS_ACTIVE:-0}" = 1 ]; then
+        _force_owner=steer
+        _force_source='Steer'
+        if [ "$_force" = 1 ]; then
+            _force_status=steer
+        else
+            _force_status=other
+        fi
     elif [ "$_force_manager" = 1 ]; then
         _force_owner=manager
         _force_status=manager
@@ -1109,10 +1141,10 @@ status_json() {
     printf ',"force_heartbeat_domain":'; json_quote "$(uci -q get https-dns-proxy.config.heartbeat_domain 2>/dev/null || true)"; printf ',"force_heartbeat_sleep":'; json_quote "$(uci -q get https-dns-proxy.config.heartbeat_sleep_timeout 2>/dev/null || true)"
     printf ',"force_heartbeat_wait":'; json_quote "$(uci -q get https-dns-proxy.config.heartbeat_wait_timeout 2>/dev/null || true)"; printf ',"force_user":'; json_quote "$(uci -q get https-dns-proxy.config.user 2>/dev/null || true)"
     printf ',"force_group":'; json_quote "$(uci -q get https-dns-proxy.config.group 2>/dev/null || true)"; printf ',"force_listen":'; json_quote "$(uci -q get https-dns-proxy.config.listen_addr 2>/dev/null || true)"
-    printf ',"force_consistent":%s' "$([ "$_force_manager" = 1 ] && printf 1 || printf 0)"
-    printf ',"force_state":%s' "$([ "$_force_manager" = 1 ] && printf 1 || [ "$_force_external" = 1 ] && printf 2 || printf 0)"
+    printf ',"force_consistent":%s' "$([ "$_force_manager" = 1 ] && printf 1 || [ "$_force_owner" = steer ] && [ "$_force" = 1 ] && printf 1 || printf 0)"
+    printf ',"force_state":%s' "$([ "$_force_manager" = 1 ] && printf 1 || [ "$_force_owner" = steer ] && [ "$_force" = 1 ] && printf 1 || [ "$_force_owner" = steer ] && printf 2 || [ "$_force_external" = 1 ] && printf 2 || printf 0)"
     printf ',"force_status":'; json_quote "$_force_status"
-    _owner_label=нет; [ "$_force_owner" = manager ] && _owner_label='DNS Manager'; [ "$_force_owner" = external ] && _owner_label=внешний
+    _owner_label=нет; [ "$_force_owner" = manager ] && _owner_label='DNS Manager'; [ "$_force_owner" = steer ] && _owner_label='Steer'; [ "$_force_owner" = external ] && _owner_label=внешний
     printf ',"force_owner_label":'; json_quote "$_owner_label"; printf ',"zapret_running":%s' "$_zapret_running"
     printf ',"doh_total":%s,"doh_match":%s,"configured_dns":%s' "$_doh_total" "$_match" "$_expected"
     printf ',"last_full_test":'; json_quote "$_last"; printf ',"components_checked_at":'; json_quote "$_components_checked_at"
@@ -1824,7 +1856,7 @@ function badge(kind,text){ return E('span',{'class':'dm-badge '+kind},[E('span',
 function btn(label,cls,fn,extra){ var a={'class':'cbi-button '+(cls||''),'type':'button','click':function(ev){ if(ev&&ev.preventDefault)ev.preventDefault(); return fn?fn.call(this,ev):undefined; }}; Object.keys(extra||{}).forEach(function(k){ if(k==='disabled'){ if(extra[k]) a.disabled=true; } else { a[k]=extra[k]; } }); return E('button',a,label); }
 function row(label,node){ return E('div',{'class':'dm-row'},[E('span',{'class':'dm-label'},label),E('span',{'class':'dm-row-value'},node)]); }
 function card(title,children,cls){ return E('div',{'class':'dm-card '+(cls||'')},[E('h3',{},title)].concat(children||[])); }
-function forceMode(st){ return st.force_status==='manager' ? 'auto' : 'off'; }
+function forceMode(st){ return (st.force_status==='manager'||st.force_status==='steer'||(st.force_status==='other'&&st.force_owner==='steer')) ? 'auto' : 'off'; }
 function forceModeLabel(m){ return m==='auto' ? 'Авто (рекомендуется)' : 'Не перехватывать'; }
 function yes(v){ return v===1 || v==='1' || v===true; }
 function dateText(v){ if(!v || !/^\d+$/.test(String(v))) return '—'; try { return new Date(Number(v)*1000).toLocaleString(); } catch(e){ return '—'; } }
@@ -2219,12 +2251,14 @@ function renderDoH(root,st){
     btn('Авто (рекомендуется)',fm==='auto'?'active cbi-button':'cbi-button',function(){setForceMode('auto',root);},{disabled:state.busy}),
     btn('Не перехватывать',fm==='off'?'active cbi-button':'cbi-button',function(){setForceMode('off',root);},{disabled:state.busy})
   ]);
-  ch.push(E('div',{'style':'margin-top:9px'},[E('div',{'class':'dm-row'},[E('span',{'class':'dm-label'},'Перехват DNS устройств'),badge(st.force_status==='external'||st.force_status==='other'?'dm-bad':st.force_status==='manager'?'dm-ok':'dm-off',st.force_status==='external'?'внешний':st.force_status==='other'?'другое':st.force_status==='manager'?'включён':'выключен')]),forceButtons]));
-
+  var steer=st.force_owner==='steer';
+  ch.push(E('div',{'style':'margin-top:9px'},[E('div',{'class':'dm-row'},[E('span',{'class':'dm-label'},'Перехват DNS устройств'),badge(st.force_status==='external'||st.force_status==='other'?'dm-bad':(st.force_status==='manager'||st.force_status==='steer')?'dm-ok':'dm-off',st.force_status==='external'?'внешний':st.force_status==='other'?'другое':st.force_status==='steer'?'включён • Steer':st.force_status==='manager'?'включён':'выключен')]),forceButtons]));
   if(st.force_both){
     ch.push(E('div',{'class':'dm-force-external'},'Принудительный DNS обнаружен одновременно с внешним перехватом. Источник: '+shortVal(st.force_source)+'. При переключении DNS Manager приведёт общую конфигурацию forced-DNS к своей схеме.'));
   } else if(st.force_owner==='external'){
     ch.push(E('div',{'class':'dm-force-external'},'Обнаружен '+shortVal(st.force_source)+'. Переключение выше может заменить его общей конфигурацией forced-DNS DNS Manager.'));
+  } else if(steer){
+    ch.push(E('div',{'class':'dm-inline-msg info'},'Steer перехватывает DNS :53. DNS Manager не создаёт второй перехват: обычные DNS-запросы идут через dnsmasq к выбранному DoH, а DNS-over-TLS :853 блокируется.'));
   }
   if(state.pageNotice.doh)ch.push(E('div',{'class':'dm-inline-msg info'},state.pageNotice.doh));
   e.appendChild(card('DNS over HTTPS',ch));
