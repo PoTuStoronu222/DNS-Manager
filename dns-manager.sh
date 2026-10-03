@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.34.6"
+VERSION="3.34.7"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -1035,9 +1035,15 @@ load_config() {
 _had_dns_profile=0
 [ -f "$CONFIG_FILE" ] && grep -q '^DNS_PROFILE=' "$CONFIG_FILE" 2>/dev/null && _had_dns_profile=1
 [ -f "$CONFIG_FILE" ] && . "$CONFIG_FILE" 2>/dev/null
+# Deprecated tuning flags from older releases are ignored by the active manager.
+MTU_FIX=0
+SYSCTL_TUNING=0
+SYSCTL_EXTENDED=0
+NTP_CLIENTS=0
+CLIENT_FIXES=0
 BOOTSTRAP_DNS="$BOOTSTRAP_DNS_ALL"
-# 2.80+ watchdog is supervised by procd and uses seconds, not cron minutes.
-# Preserve a valid operator-selected interval; otherwise use the safe default.
+# procd watchdog: only the operator-facing interval is configurable.
+# All repair/guard limits are fixed internal safeguards.
 WATCHDOG_BACKEND="procd"
 : "${WATCHDOG_INTERVAL:=${WATCHDOG_CHECK_INTERVAL_DEFAULT:-90}}"
 case "$WATCHDOG_INTERVAL" in
@@ -1047,18 +1053,12 @@ case "$WATCHDOG_INTERVAL" in
         [ "$WATCHDOG_INTERVAL" -le 600 ] 2>/dev/null || WATCHDOG_INTERVAL="${WATCHDOG_CHECK_INTERVAL_DEFAULT:-90}"
         ;;
 esac
-: "${WATCHDOG_FAIL_THRESHOLD:=2}"
-case "$WATCHDOG_FAIL_THRESHOLD" in ''|*[!0-9]*) WATCHDOG_FAIL_THRESHOLD=2;; *) [ "$WATCHDOG_FAIL_THRESHOLD" -ge 1 ] 2>/dev/null && [ "$WATCHDOG_FAIL_THRESHOLD" -le 10 ] 2>/dev/null || WATCHDOG_FAIL_THRESHOLD=2;; esac
-: "${WATCHDOG_REPAIR_COOLDOWN:=300}"
-case "$WATCHDOG_REPAIR_COOLDOWN" in ''|*[!0-9]*) WATCHDOG_REPAIR_COOLDOWN=300;; *) [ "$WATCHDOG_REPAIR_COOLDOWN" -ge 60 ] 2>/dev/null && [ "$WATCHDOG_REPAIR_COOLDOWN" -le 3600 ] 2>/dev/null || WATCHDOG_REPAIR_COOLDOWN=300;; esac
-: "${WATCHDOG_GUARD_INTERVAL:=900}"
-case "$WATCHDOG_GUARD_INTERVAL" in ''|*[!0-9]*) WATCHDOG_GUARD_INTERVAL=900;; *) [ "$WATCHDOG_GUARD_INTERVAL" -ge 300 ] 2>/dev/null && [ "$WATCHDOG_GUARD_INTERVAL" -le 3600 ] 2>/dev/null || WATCHDOG_GUARD_INTERVAL=900;; esac
-: "${WATCHDOG_MAX_REPAIRS:=1}"
-case "$WATCHDOG_MAX_REPAIRS" in ''|*[!0-9]*) WATCHDOG_MAX_REPAIRS=1;; *) [ "$WATCHDOG_MAX_REPAIRS" -ge 1 ] 2>/dev/null && [ "$WATCHDOG_MAX_REPAIRS" -le 3 ] 2>/dev/null || WATCHDOG_MAX_REPAIRS=1;; esac
-: "${WATCHDOG_MAX_RESTARTS:=2}"
-case "$WATCHDOG_MAX_RESTARTS" in ''|*[!0-9]*) WATCHDOG_MAX_RESTARTS=2;; *) [ "$WATCHDOG_MAX_RESTARTS" -ge 1 ] 2>/dev/null && [ "$WATCHDOG_MAX_RESTARTS" -le 3 ] 2>/dev/null || WATCHDOG_MAX_RESTARTS=2;; esac
-: "${WATCHDOG_MAX_CANDIDATES:=3}"
-case "$WATCHDOG_MAX_CANDIDATES" in ''|*[!0-9]*) WATCHDOG_MAX_CANDIDATES=3;; *) [ "$WATCHDOG_MAX_CANDIDATES" -ge 1 ] 2>/dev/null && [ "$WATCHDOG_MAX_CANDIDATES" -le 5 ] 2>/dev/null || WATCHDOG_MAX_CANDIDATES=3;; esac
+WATCHDOG_FAIL_THRESHOLD=2
+WATCHDOG_REPAIR_COOLDOWN=300
+WATCHDOG_GUARD_INTERVAL=900
+WATCHDOG_MAX_REPAIRS=1
+WATCHDOG_MAX_RESTARTS=2
+WATCHDOG_MAX_CANDIDATES=3
 : "${SLOT_1:=}"; : "${SLOT_2:=}"; : "${SLOT_3:=}"; : "${SLOT_4:=}"; : "${SLOT_5:=}"; : "${SLOT_6:=}"
 : "${SLOT_RU:=}"
 : "${SLOT_1_CAT:=}"; : "${SLOT_2_CAT:=}"; : "${SLOT_3_CAT:=}"; : "${SLOT_4_CAT:=}"; : "${SLOT_5_CAT:=}"; : "${SLOT_6_CAT:=}"
@@ -1066,8 +1066,8 @@ case "$WATCHDOG_MAX_CANDIDATES" in ''|*[!0-9]*) WATCHDOG_MAX_CANDIDATES=3;; *) [
 : "${PORT_1:=}"; : "${PORT_2:=}"; : "${PORT_3:=}"; : "${PORT_4:=}"; : "${PORT_5:=}"; : "${PORT_6:=}"
 : "${PORT_RU:=}"
 : "${BOOTSTRAP_DNS:=$BOOTSTRAP_DNS_ALL}"
-: "${TLD_RU_ENABLED:=1}"; : "${MTU_FIX:=0}"; : "${FORCE_DOH:=0}"
-: "${NTP_IP_FALLBACK:=1}"; : "${SYSCTL_TUNING:=0}"; : "${DNSMASQ_PERF:=0}"; : "${NTP_CLIENTS:=0}"; : "${CLIENT_FIXES:=0}"; : "${SYSCTL_EXTENDED:=0}"
+: "${TLD_RU_ENABLED:=1}"; : "${FORCE_DOH:=0}"
+: "${NTP_IP_FALLBACK:=1}"; : "${DNSMASQ_PERF:=0}"
 : "${BALANCER_ENABLED:=1}"; : "${NTP_PRESET:=vniiftri_moscow}"; : "${NTP_PRESET_USER_SET:=0}"; : "${DNS_PROFILE:=hybrid}"; : "${DNS_SELECTION_MODE:=quick}"; : "${DNS_SELECTION_CATEGORY:=bypass}"
 : "${QUICK_PREF_1:=}"; : "${QUICK_PREF_2:=}"; : "${QUICK_PREF_3:=}"; : "${QUICK_PREF_4:=}"; : "${QUICK_PREF_5:=}"; : "${QUICK_PREF_6:=}"
 : "${WATCHDOG_ENABLED:=0}"; : "${WATCHDOG_INTERVAL:=90}"; : "${WATCHDOG_BACKEND:=procd}"
@@ -1157,14 +1157,9 @@ PORT_6="$PORT_6"
 PORT_RU="$PORT_RU"
 BOOTSTRAP_DNS="$BOOTSTRAP_DNS_ALL"
 TLD_RU_ENABLED="$TLD_RU_ENABLED"
-MTU_FIX="$MTU_FIX"
 NTP_IP_FALLBACK="$NTP_IP_FALLBACK"
-SYSCTL_TUNING="$SYSCTL_TUNING"
 FORCE_DOH="$FORCE_DOH"
 DNSMASQ_PERF="$DNSMASQ_PERF"
-NTP_CLIENTS="$NTP_CLIENTS"
-CLIENT_FIXES="$CLIENT_FIXES"
-SYSCTL_EXTENDED="$SYSCTL_EXTENDED"
 BALANCER_ENABLED="$BALANCER_ENABLED"
 NTP_PRESET="$NTP_PRESET"
 NTP_PRESET_USER_SET="$NTP_PRESET_USER_SET"
@@ -1180,12 +1175,6 @@ QUICK_PREF_6="$QUICK_PREF_6"
 WATCHDOG_ENABLED="$WATCHDOG_ENABLED"
 WATCHDOG_INTERVAL="$WATCHDOG_INTERVAL"
 WATCHDOG_BACKEND="$WATCHDOG_BACKEND"
-WATCHDOG_FAIL_THRESHOLD="$WATCHDOG_FAIL_THRESHOLD"
-WATCHDOG_REPAIR_COOLDOWN="$WATCHDOG_REPAIR_COOLDOWN"
-WATCHDOG_GUARD_INTERVAL="$WATCHDOG_GUARD_INTERVAL"
-WATCHDOG_MAX_REPAIRS="$WATCHDOG_MAX_REPAIRS"
-WATCHDOG_MAX_RESTARTS="$WATCHDOG_MAX_RESTARTS"
-WATCHDOG_MAX_CANDIDATES="$WATCHDOG_MAX_CANDIDATES"
 TEST_RESULTS_MAX_AGE="$TEST_RESULTS_MAX_AGE"
 TEST_RESULTS_MAX_AGE_BYPASS="$TEST_RESULTS_MAX_AGE_BYPASS"
 TEST_RESULTS_MAX_AGE_CLEAN="$TEST_RESULTS_MAX_AGE_CLEAN"
@@ -3280,12 +3269,6 @@ apply_dnsmasq_perf() {
     sec="$(get_dnsmasq_section)"
     [ -n "$sec" ] || return 1
     uci set "dhcp.$sec.cachesize=1000" || return 1
-    uci set "dhcp.$sec.dnsforwardmax=300" || return 1
-    uci set "dhcp.$sec.max_cache_ttl=86400" || return 1
-    uci set "dhcp.$sec.boguspriv=1" || return 1
-    uci set "dhcp.$sec.domainneeded=1" || return 1
-    uci set "dhcp.$sec.quietdhcp=1" || return 1
-    if [ "$IPV6_ROUTE" != yes ]; then uci set "dhcp.$sec.filter_aaaa=1" || return 1; fi
     uci commit dhcp || return 1
 }
 remove_dnsmasq_perf() {
@@ -3295,20 +3278,11 @@ remove_dnsmasq_perf() {
         2) warn_msg "Настройки DNS-кэша изменены извне; текущие значения сохранены."; return 2 ;;
     esac
     sec="$(get_dnsmasq_section)" || return 1
-    for _spec in "cachesize|150" "dnsforwardmax|150" "max_cache_ttl|__DM_UNSET__" "boguspriv|1" "domainneeded|1" "quietdhcp|__DM_UNSET__"; do
-        _k="${_spec%%|*}"; _fallback="${_spec#*|}"
-        _stock_v="$(stock_uci_value_normalized dhcp "dhcp.@dnsmasq[0].$_k" "$_fallback")"
-        if [ "$_stock_v" = "__DM_UNSET__" ]; then
-            uci -q delete "dhcp.$sec.$_k" || true
-        else
-            uci set "dhcp.$sec.$_k=$_stock_v" || return 1
-        fi
-    done
-    if [ "$IPV6_ROUTE" != yes ]; then
-        _stock_v="$(stock_uci_value_normalized dhcp "dhcp.@dnsmasq[0].filter_aaaa" "0")"
-        if [ "$_stock_v" = "__DM_UNSET__" ]; then uci -q delete "dhcp.$sec.filter_aaaa" || true
-        else uci set "dhcp.$sec.filter_aaaa=$_stock_v" || return 1
-        fi
+    _stock_v="$(stock_uci_value_normalized dhcp "dhcp.@dnsmasq[0].cachesize" "150")"
+    if [ "$_stock_v" = "__DM_UNSET__" ]; then
+        uci -q delete "dhcp.$sec.cachesize" || true
+    else
+        uci set "dhcp.$sec.cachesize=$_stock_v" || return 1
     fi
     uci commit dhcp >/dev/null 2>&1 || return 1
     return 0
