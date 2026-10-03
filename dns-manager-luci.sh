@@ -133,10 +133,12 @@ CHECK_DIR="$RUNTIME_DIR/checks"
 CURRENT_SLOT_RESULTS="$RUNTIME_DIR/current-slot-results.conf"
 TMP_ROOT="$RUNTIME_DIR/tmp"
 UPDATE_STATE="/etc/dns-manager-luci/update.state"
+UPDATE_CHECK_CACHE="$RUNTIME_DIR/update-check.cache"
+UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.6.2"
+SELF_VERSION="1.6.5"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -476,11 +478,38 @@ update_catalog_json() {
     esac
 }
 update_check_json() {
+    _force="$(jget force 2>/dev/null || true)"
+    [ "$_force" = 1 ] || _force=0
+
+    # Match Zapret Manager behavior: cache remote version data in tmpfs
+    # for 30 minutes. A reboot clears the cache and forces a new check.
+    if [ "$_force" != 1 ] && [ -f "$UPDATE_CHECK_CACHE" ] && [ -z "$(find "$UPDATE_CHECK_CACHE" -mmin +30 2>/dev/null)" ]; then
+        status_json
+        return 0
+    fi
+
+    # Only one LuCI worker performs the remote check at a time.
+    if ! mkdir "$UPDATE_CHECK_LOCK" 2>/dev/null; then
+        status_json
+        return 0
+    fi
+
+    # Another worker may have completed the check while we acquired the lock.
+    if [ "$_force" != 1 ] && [ -f "$UPDATE_CHECK_CACHE" ] && [ -z "$(find "$UPDATE_CHECK_CACHE" -mmin +30 2>/dev/null)" ]; then
+        rm -rf "$UPDATE_CHECK_LOCK" 2>/dev/null || true
+        status_json
+        return 0
+    fi
+
     update_check_json_luci >/dev/null 2>&1 || true
     component_update_check || true
+
+    _ts="$(date +%s 2>/dev/null || printf 0)"
+    printf '%s
+' "$_ts" > "$UPDATE_CHECK_CACHE" 2>/dev/null || true
+    rm -rf "$UPDATE_CHECK_LOCK" 2>/dev/null || true
     status_json
 }
-
 update_manager_direct() {
     _installed="$(manager_version 2>/dev/null || true)"
     _out="$TMP_ROOT/manager-update-all.log"
@@ -1701,7 +1730,7 @@ case "${1:-}" in
             status) INPUT="$(cat 2>/dev/null || true)"; status_json;;
             runtime) runtime_json;;
             catalog) INPUT="$(cat 2>/dev/null || true)"; catalog_json;;
-            update_check) update_check_json;;            update_catalog) update_catalog_json;;            update_all) update_all_json;;            update) update_json;;            update_manager) update_manager_json;;            update_hdp) update_hdp_json;;
+            update_check) INPUT="$(cat 2>/dev/null || true)"; update_check_json;;            update_catalog) update_catalog_json;;            update_all) update_all_json;;            update) update_json;;            update_manager) update_manager_json;;            update_hdp) update_hdp_json;;
             set_profile|set_slot|set_setting|set_watchdog_setting) INPUT="$(cat 2>/dev/null || true)"; RPC_METHOD="$2"; run_action;;
             test_all|test_current|test_one) INPUT="$(cat 2>/dev/null || true)"; RPC_METHOD="$2"; test_json;;
             job) INPUT="$(cat 2>/dev/null || true)"; job_json "$(jget id)";;
@@ -1733,13 +1762,13 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.6.2
+// DNS Manager LuCI version: 1.6.5
 var callStatus = rpc.declare({ object:'dns_manager', method:'status', params:['detail'], expect:{} });
 var callBoardInfo = rpc.declare({ object:'system', method:'info', expect:{} });
 var callRuntime = rpc.declare({ object:'dns_manager', method:'runtime', expect:{} });
 function statusDetail(){return currentRoute()==='network'?1:0;}
 var callCatalog = rpc.declare({ object:'dns_manager', method:'catalog', params:['category','offset','limit','only_ok'], expect:{} });
-var callUpdateCheck = rpc.declare({ object:'dns_manager', method:'update_check', expect:{} });
+var callUpdateCheck = rpc.declare({ object:'dns_manager', method:'update_check', params:['force'], expect:{} });
 var callUpdate = rpc.declare({ object:'dns_manager', method:'update', expect:{} });
 var callManagerUpdate = rpc.declare({ object:'dns_manager', method:'update_manager', expect:{} });
 var callHdpUpdate = rpc.declare({ object:'dns_manager', method:'update_hdp', expect:{} });
@@ -1764,7 +1793,7 @@ var CATEGORY = [
   ['all','Все DNS'], ['bypass','Обход блокировок'], ['security','Безопасность'], ['privacy','Приватность'],
   ['adblock','Блокировка рекламы'], ['family','Семейный'], ['clean','Без фильтрации'], ['regional','Региональные']
 ];
-var state = { hdpUpdating:false, managerUpdating:false, updatingAll:false, category:'all', offset:0, limit:18, catalogLoaded:false, catalogLoading:false, advanced:true, logLoaded:false, logLoading:false, busy:false, busySetting:'', settingMessage:'', settingMessageType:'', settingMessageKey:'', pageNotice:{}, statusError:'', activeTab:'dashboard', jobRunning:false, lastJob:null, checking:{}, fullTest:null, catalogProgress:null, profileProgress:null, catalogCheckNotice:'', versionCheck:null, lastAction:null, runtimeCpuLoad:null, runtimeMemoryTotal:null, runtimeMemoryAvailable:null, boardInfo:null, systemPollBusy:false, dashboardStatusPollBusy:false };
+var state = { hdpUpdating:false, managerUpdating:false, updatingAll:false, category:'all', offset:0, limit:18, catalogLoaded:false, catalogLoading:false, advanced:true, logLoaded:false, logLoading:false, busy:false, busySetting:'', settingMessage:'', settingMessageType:'', settingMessageKey:'', pageNotice:{}, statusError:'', activeTab:'dashboard', jobRunning:false, lastJob:null, checking:{}, fullTest:null, catalogProgress:null, profileProgress:null, catalogCheckNotice:'', versionCheck:null, lastAction:null, runtimeCpuLoad:null, runtimeMemoryTotal:null, runtimeMemoryAvailable:null, boardInfo:null, systemPollBusy:false, dashboardStatusPollBusy:false, autoVersionCheckStarted:false };
 
 function profileName(p){
   var x=PROFILE.filter(function(v){return v[0]===p;})[0];
@@ -2187,7 +2216,7 @@ function renderOverview(root,st){
     ]),
     row('Проверено',dateText(st.components_checked_at)),
     E('div',{'class':'dm-actions'},[
-      btn(state.versionCheck&&state.versionCheck.running?'Проверяю актуальность…':'Проверить актуальность','cbi-button-neutral',function(){checkUpdate(root);},{disabled:!!(state.versionCheck&&state.versionCheck.running)}),
+      btn(state.versionCheck&&state.versionCheck.running?'Проверяю актуальность…':'Проверить актуальность','cbi-button-neutral',function(){checkUpdate(root,true);},{disabled:!!(state.versionCheck&&state.versionCheck.running)}),
       (yes(st.manager_update_available)||yes(st.luci_update_available)||yes(st.hdp_update_available)||yes(st.catalog_update_available)) ?
         btn(state.updatingAll?'Обновляю…':'Обновить','cbi-button-positive',function(){updateAll(root);},{disabled:!!state.updatingAll||!!state.busy}) :
         null
@@ -2823,11 +2852,11 @@ function refresh(root,keepPosition){
   });
 }
 function toast(msg,type){}
-function checkUpdate(root){
+function checkUpdate(root,force){
   if(state.versionCheck&&state.versionCheck.running)return;
   state.versionCheck={running:true,manager:'running',luci:'running',hdp:'running',catalog:'running',started:Date.now(),job:''};
   renderOverview(root,window.dmState||{});
-  callUpdateCheck().then(function(r){
+  callUpdateCheck(force?1:0).then(function(r){
     state.versionCheck.manager='done';
     state.versionCheck.luci='done';
     state.versionCheck.hdp='done';
@@ -3387,6 +3416,12 @@ return view.extend({
     render(root,st||{});
     removeLegacyCbiActions();if(window.setTimeout)window.setTimeout(removeLegacyCbiActions,0);
     startAutoStatus(root);
+    if(!state.autoVersionCheckStarted&&currentRoute()==='dashboard'){
+      state.autoVersionCheckStarted=true;
+      if(window.setTimeout)window.setTimeout(function(){
+        if(rootAlive(root)&&currentRoute()==='dashboard')checkUpdate(root,false);
+      },0);
+    }
     return root;
   },
   remove:function(){stopAutoStatus();}
