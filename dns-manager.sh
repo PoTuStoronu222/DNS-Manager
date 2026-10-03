@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.35.2"
+VERSION="3.35.3"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -1728,7 +1728,7 @@ detect_steer_dns_path() {
     case "$SYS_FW" in
         fw4)
             nft -a list ruleset 2>/dev/null | awk '
-                /dport[[:space:]]+53/ && /redirect[[:space:]]+to[[:space:]]*:[[:space:]]*5300([[:space:]]|$)/ { found=1 }
+                /dport[[:space:]]+53/ && /5300/ && /(redirect[[:space:]]+to|dnat[[:space:]]+to)/ { found=1 }
                 END { exit(found ? 0 : 1) }
             ' >/dev/null 2>&1 && {
                 STEER_DNS_ACTIVE=1
