@@ -1759,7 +1759,7 @@ var CATEGORY = [
   ['all','Все DNS'], ['bypass','Обход блокировок'], ['security','Безопасность'], ['privacy','Приватность'],
   ['adblock','Блокировка рекламы'], ['family','Семейный'], ['clean','Без фильтрации'], ['regional','Региональные']
 ];
-var state = { hdpUpdating:false, managerUpdating:false, updatingAll:false, category:'all', offset:0, limit:18, catalogLoaded:false, catalogLoading:false, advanced:true, logLoaded:false, logLoading:false, busy:false, busySetting:'', settingMessage:'', settingMessageType:'', settingMessageKey:'', pageNotice:{}, statusError:'', activeTab:'dashboard', jobRunning:false, lastJob:null, checking:{}, fullTest:null, catalogProgress:null, profileProgress:null, catalogCheckNotice:'', versionCheck:null, lastAction:null, runtimeCpuLoad:null, runtimeMemoryTotal:null, runtimeMemoryAvailable:null, boardInfo:null, systemPollBusy:false };
+var state = { hdpUpdating:false, managerUpdating:false, updatingAll:false, category:'all', offset:0, limit:18, catalogLoaded:false, catalogLoading:false, advanced:true, logLoaded:false, logLoading:false, busy:false, busySetting:'', settingMessage:'', settingMessageType:'', settingMessageKey:'', pageNotice:{}, statusError:'', activeTab:'dashboard', jobRunning:false, lastJob:null, checking:{}, fullTest:null, catalogProgress:null, profileProgress:null, catalogCheckNotice:'', versionCheck:null, lastAction:null, runtimeCpuLoad:null, runtimeMemoryTotal:null, runtimeMemoryAvailable:null, boardInfo:null, systemPollBusy:false, dashboardStatusPollBusy:false };
 
 function profileName(p){
   var x=PROFILE.filter(function(v){return v[0]===p;})[0];
@@ -3322,7 +3322,8 @@ function pollSystem(root){
 }
 function refreshDashboard(root){
   if(!rootAlive(root)||currentRoute()!=='dashboard')return Promise.resolve();
-  if(state.busy||state.versionCheck&&state.versionCheck.running)return Promise.resolve();
+  if(state.busy||state.versionCheck&&state.versionCheck.running||state.dashboardStatusPollBusy)return Promise.resolve();
+  state.dashboardStatusPollBusy=true;
   return callStatus(statusDetail()).then(function(st){
     if(!rootAlive(root))return;
     state.statusError='';
@@ -3332,7 +3333,9 @@ function refreshDashboard(root){
     });
     window.dmState=next;
     renderOverview(root,next);
-  }).catch(function(){});
+  }).catch(function(){}).then(function(){
+    state.dashboardStatusPollBusy=false;
+  });
 }
 function startAutoStatus(root){
   stopAutoStatus();
@@ -3347,7 +3350,10 @@ function startAutoStatus(root){
     if(document.hidden||currentRoute()!=='dashboard')return;
     tick++;
     tickLocalUptime(root);
-    if(tick%5===0)pollSystem(root);
+    if(tick%5===0){
+      pollSystem(root);
+      refreshDashboard(root);
+    }
   },1000);
 }
 return view.extend({
