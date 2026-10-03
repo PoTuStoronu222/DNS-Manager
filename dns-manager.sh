@@ -3181,15 +3181,10 @@ EOF_VERIFY_IPS
     return 0
 }
 verify_applied_doh_config() {
-    detect_forced_dns_path >/dev/null 2>&1 || true
-    if [ "${FORCED_DNS_EXTERNAL:-0}" = 1 ]; then
-        log_msg "Проверка force_ip_family пропущена: внешний forced-DNS ($FORCED_DNS_SOURCE) находится вне контроля DNS Manager."
-    else
-        [ "$(uci -q get https-dns-proxy.config.force_ip_family 2>/dev/null)" = "auto" ] || {
-            err_msg "https-dns-proxy не переведён в режим auto (dual-stack по возможности)."
-            return 1
-        }
-    fi
+    [ "$(uci -q get https-dns-proxy.config.force_ip_family 2>/dev/null)" = "auto" ] || {
+        err_msg "https-dns-proxy не переведён в режим auto (dual-stack по возможности)."
+        return 1
+    }
     _expected="$TMP_DIR/expected-doh-map"
     _actual="$TMP_DIR/actual-doh-map"
     : > "$_expected" || return 1
@@ -6411,24 +6406,25 @@ watchdog_candidate_categories() {
 }
 watchdog_enforce_hdp_control() {
     [ "${FORCE_DOH:-0}" = 1 ] || return 0
-    detect_forced_dns_path >/dev/null 2>&1 || true
-    if [ "${FORCED_DNS_EXTERNAL:-0}" = 1 ]; then
-        log_msg "Watchdog: внешний forced-DNS ($FORCED_DNS_SOURCE) обнаружен. Глобальные параметры https-dns-proxy не изменяю."
-        return 0
-    fi
     _changed=0
-    [ "$(uci -q get https-dns-proxy.config.dnsmasq_config_update 2>/dev/null)" = "-" ] || _changed=1
+    [ "$(uci -q get https-dns-proxy.config.dnsmasq_config_update 2>/dev/null)" = "*" ] || _changed=1
     [ "$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null)" = "1" ] || _changed=1
     [ "$(uci -q get https-dns-proxy.config.notrack_dns 2>/dev/null)" = "1" ] || _changed=1
+    [ "$(uci -q get https-dns-proxy.config.procd_trigger_wan6 2>/dev/null)" = "0" ] || _changed=1
+    [ "$(uci -q get https-dns-proxy.config.heartbeat_domain 2>/dev/null)" = "heartbeat.mossdef.org" ] || _changed=1
+    [ "$(uci -q get https-dns-proxy.config.heartbeat_sleep_timeout 2>/dev/null)" = "10" ] || _changed=1
+    [ "$(uci -q get https-dns-proxy.config.heartbeat_wait_timeout 2>/dev/null)" = "10" ] || _changed=1
+    [ "$(uci -q get https-dns-proxy.config.user 2>/dev/null)" = "nobody" ] || _changed=1
+    [ "$(uci -q get https-dns-proxy.config.group 2>/dev/null)" = "nogroup" ] || _changed=1
+    [ "$(uci -q get https-dns-proxy.config.listen_addr 2>/dev/null)" = "127.0.0.1" ] || _changed=1
     [ "$(uci -q get https-dns-proxy.config.force_ip_family 2>/dev/null)" = "auto" ] || _changed=1
+    [ "$(uci -q get https-dns-proxy.config.canary_domains_icloud 2>/dev/null)" = "1" ] || _changed=1
+    [ "$(uci -q get https-dns-proxy.config.canary_domains_mozilla 2>/dev/null)" = "1" ] || _changed=1
+    force_dns_ports_match_expected || _changed=1
+    force_dns_src_matches_expected || _changed=1
     [ "$_changed" = 0 ] && return 0
-    log_msg "Обнаружен drift настроек https-dns-proxy. Возвращаю контроль DNS Manager."
-    uci set https-dns-proxy.config.dnsmasq_config_update='-' || return 1
-    uci set https-dns-proxy.config.force_dns='1' || return 1
-    uci set https-dns-proxy.config.notrack_dns='1' || return 1
-    uci set https-dns-proxy.config.force_ip_family='auto' || return 1
-    uci commit https-dns-proxy || return 1
-    watchdog_restart_hdp || return 1
+    log_msg "Обнаружен drift forced-DNS. Возвращаю конфигурацию DNS Manager, совместимую с Zapret Manager."
+    sync_hdp_force_contract 1 || return 1
     return 0
 }
 watchdog_enforce_doh_authority() {
