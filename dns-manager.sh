@@ -2693,6 +2693,10 @@ sync_hdp_force_contract() {
 }
 
 configure_hdp_manager_control() {
+    # Core/profile-only DNS operations must not modify independent Settings.
+    # Forced-DNS is synchronized only during the full settings apply path.
+    [ "${CORE_ONLY:-0}" = 1 ] && return 0
+    [ "${PROFILE_APPLY:-0}" = 1 ] && return 0
     sync_hdp_force_contract "${FORCE_DOH:-0}"
 }
 ensure_doh_slot() {
