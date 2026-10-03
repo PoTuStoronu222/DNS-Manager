@@ -5573,25 +5573,15 @@ pause
 }
 profile_apply_begin() {
     PROFILE_APPLY=1
-    PROFILE_OLD_MTU_FIX="${MTU_FIX:-0}"
     PROFILE_OLD_NTP_IP_FALLBACK="${NTP_IP_FALLBACK:-0}"
-    PROFILE_OLD_SYSCTL_TUNING="${SYSCTL_TUNING:-0}"
-    PROFILE_OLD_SYSCTL_EXTENDED="${SYSCTL_EXTENDED:-0}"
     PROFILE_OLD_FORCE_DOH="${FORCE_DOH:-0}"
     PROFILE_OLD_DNSMASQ_PERF="${DNSMASQ_PERF:-0}"
-    PROFILE_OLD_NTP_CLIENTS="${NTP_CLIENTS:-0}"
-    PROFILE_OLD_CLIENT_FIXES="${CLIENT_FIXES:-0}"
     PROFILE_OLD_WATCHDOG_ENABLED="${WATCHDOG_ENABLED:-0}"
 }
 profile_apply_end() {
-    MTU_FIX="$PROFILE_OLD_MTU_FIX"
     NTP_IP_FALLBACK="$PROFILE_OLD_NTP_IP_FALLBACK"
-    SYSCTL_TUNING="$PROFILE_OLD_SYSCTL_TUNING"
-    SYSCTL_EXTENDED="$PROFILE_OLD_SYSCTL_EXTENDED"
     FORCE_DOH="$PROFILE_OLD_FORCE_DOH"
     DNSMASQ_PERF="$PROFILE_OLD_DNSMASQ_PERF"
-    NTP_CLIENTS="$PROFILE_OLD_NTP_CLIENTS"
-    CLIENT_FIXES="$PROFILE_OLD_CLIENT_FIXES"
     WATCHDOG_ENABLED="$PROFILE_OLD_WATCHDOG_ENABLED"
     PROFILE_APPLY=0
 }
@@ -6837,18 +6827,10 @@ setting_process() {
 
     if [ "$_rc" -eq 0 ]; then
         case "$_state:$_module" in
-            0:mtu|2:mtu) ok_msg "Исправление MTU и MSS для WAN настроено." ;;
-            1:mtu) ok_msg "Исправление MTU и MSS для WAN выключено." ;;
             0:force|2:force) ok_msg "Принудительный DNS для устройств настроен." ;;
             1:force) ok_msg "Принудительный DNS для устройств выключен." ;;
-            0:sysctl|2:sysctl) ok_msg "Оптимизация TCP и таблицы соединений настроена." ;;
-            1:sysctl) ok_msg "Оптимизация TCP и таблиц соединений выключена." ;;
             0:dnsmasq_perf|2:dnsmasq_perf) ok_msg "Увеличенный кэш DNS настроен." ;;
             1:dnsmasq_perf) ok_msg "Увеличенный кэш DNS выключен." ;;
-            0:ntp_clients|2:ntp_clients) ok_msg "Время для устройств в локальной сети включено (DHCP 42, без принудительного перехвата)." ;;
-            1:ntp_clients) ok_msg "Время для устройств в локальной сети выключено." ;;
-            0:client_fixes|2:client_fixes) ok_msg "DNS для проверки подключения и совместимости устройств настроен." ;;
-            1:client_fixes) ok_msg "DNS для проверки подключения и совместимости устройств выключен." ;;
             0:web|2:web) ok_msg "Терминальный доступ LuCI включён: пункт LuCI ведёт в ttyd DNS Manager." ;;
             1:web) ok_msg "Терминальный доступ LuCI выключен, пункт DNS Manager удалён." ;;
         esac
@@ -6870,38 +6852,27 @@ setting_process() {
 
 menu_extras() {
 while :; do
-    _state_mtu="$(check_module_state mtu)"
     _state_watchdog="$(check_module_state watchdog)"
     _state_force="$(check_module_state force)"
-    _state_sysctl="$(check_module_state sysctl)"
     _state_dnsmasq_perf="$(check_module_state dnsmasq_perf)"
-    _state_ntp_clients="$(check_module_state ntp_clients)"
-    _state_client_fixes="$(check_module_state client_fixes)"
     _state_luci="$(check_module_state luci)"
 
     menu_header "НАСТРОЙКИ"
     menu_section "DNS И ОБХОД"
-    menu_item_action "[1]" "Исправление MTU и MSS для WAN" mtu "$_state_mtu"
-    menu_item_action "[2]" "Автопроверка и замена DNS" watchdog "$_state_watchdog"
-    menu_item_action "[3]" "Принудительный DNS для устройств" force "$_state_force"
-    menu_section "ПРОИЗВОДИТЕЛЬНОСТЬ"
-    menu_item_action "[4]" "Оптимизация TCP и таблицы соединений" sysctl "$_state_sysctl"
-    menu_item_action "[5]" "Увеличенный кэш DNS" dnsmasq_perf "$_state_dnsmasq_perf"
-    menu_section "СЕРВИСЫ И КЛИЕНТЫ"
-    menu_item_action "[6]" "Время для устройств в локальной сети" ntp_clients "$_state_ntp_clients"
-    menu_item_action "[7]" "DNS для проверки подключения и совместимости устройств" client_fixes "$_state_client_fixes"
+    menu_item_action "[1]" "Автопроверка и замена DNS" watchdog "$_state_watchdog"
+    menu_item_action "[2]" "Принудительный DNS для устройств" force "$_state_force"
+    menu_section "ТЮНИНГ DNS"
+    menu_item_action "[3]" "Увеличенный кэш DNS" dnsmasq_perf "$_state_dnsmasq_perf"
+    menu_section "ИНТЕРФЕЙС"
+    menu_item_action "[4]" "Нативный интерфейс DNS Manager" luci "$_state_luci"
     menu_back
     menu_prompt
     safe_read c
     case "$c" in
-        1) setting_process mtu "Исправление MTU и MSS для WAN" "Исправление действует только на фактическую WAN-зону." "$_state_mtu" ;;
-        2) setting_process watchdog "Автопроверка и замена DNS" "Каждые ${WATCHDOG_INTERVAL:-90}с проверяет только выбранные DNS-порты. Замена выполняется после двух последовательных сбоев; полный каталог из 105 DNS в фоне не запускается." "$_state_watchdog" ;;
-        3) setting_process force "Принудительный DNS для устройств" "DNS-запросы устройств на портах 53 направляются на DNS роутера; DoT на 853 блокируется." "$_state_force" ;;
-        4) setting_process sysctl "Оптимизация TCP и таблицы соединений" "Настраиваются TCP и таблица соединений." "$_state_sysctl" ;;
-        5) setting_process dnsmasq_perf "Увеличенный кэш DNS" "Кэш dnsmasq увеличивается и настраивается для повторных запросов." "$_state_dnsmasq_perf" ;;
-        6) setting_process ntp_clients "Время для устройств в локальной сети" "Роутер сообщает устройствам свой адрес как сервер точного времени по DHCP." "$_state_ntp_clients" ;;
-        7) setting_process client_fixes "DNS для проверки подключения и совместимости устройств" "DNS-правила используются для системных проверок подключения и совместимости некоторых устройств." "$_state_client_fixes" ;;
-        8) setting_process luci "Нативный интерфейс DNS Manager" "Устанавливает отдельный файл dns-manager-luci.sh из GitHub и добавляет только LuCI → Службы → DNS Manager. ttyd и дополнительный HTTP-порт не используются." "$_state_luci" ;;
+        1) setting_process watchdog "Автопроверка и замена DNS" "Проверяет только выбранные DNS-порты. При повторном подтверждённом сбое автоматически восстанавливает рабочий вариант." "$_state_watchdog" ;;
+        2) setting_process force "Принудительный DNS для устройств" "DNS-запросы устройств на портах 53 направляются на DNS роутера; DoT на 853 блокируется." "$_state_force" ;;
+        3) setting_process dnsmasq_perf "Увеличенный кэш DNS" "Увеличивает только кэш dnsmasq для повторных DNS-запросов." "$_state_dnsmasq_perf" ;;
+        4) setting_process luci "Нативный интерфейс DNS Manager" "Устанавливает отдельный файл dns-manager-luci.sh из GitHub и добавляет только LuCI → Службы → DNS Manager. ttyd и дополнительный HTTP-порт не используются." "$_state_luci" ;;
         '') return ;;
         *) warn_msg "Неизвестный пункт."; pause ;;
     esac
