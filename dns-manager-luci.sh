@@ -974,12 +974,12 @@ status_json() {
     if [ -r /rom/etc/config/dhcp ]; then
         _dnsmasq_cache_stock="$(uci -q -c /rom/etc/config get "dhcp.@dnsmasq[0].cachesize" 2>/dev/null || true)"
     fi
-    [ -n "$_dnsmasq_cache_stock" ] || _dnsmasq_cache_stock=150
+    [ -n "$_dnsmasq_cache_stock" ] || _dnsmasq_cache_stock=1000
     _dnsmasq_cache_desired=4096
     if [ "$_dnsmasq_perf_cfg" = 1 ]; then
         [ "$_dnsmasq_cache_cur" = "$_dnsmasq_cache_desired" ] && _dnsmasq_perf_state=1 || _dnsmasq_perf_state=2
     else
-        [ "$_dnsmasq_cache_cur" = "$_dnsmasq_cache_stock" ] || [ -z "$_dnsmasq_cache_cur" -a "$_dnsmasq_cache_stock" = 150 ] && _dnsmasq_perf_state=0 || _dnsmasq_perf_state=2
+        [ "$_dnsmasq_cache_cur" = "$_dnsmasq_cache_stock" ] || [ -z "$_dnsmasq_cache_cur" -a "$_dnsmasq_cache_stock" = 1000 ] && _dnsmasq_perf_state=0 || _dnsmasq_perf_state=2
     fi
     _force="$(cfg_get FORCE_DOH)"; [ -n "$_force" ] || _force=0
     _force_cfg="$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null || true)"
