@@ -1866,10 +1866,7 @@ EOF_FORCE_IPT
 }
 
 prepare_dns_path() {
-    detect_forced_dns_path >/dev/null 2>&1 || true
-    if [ "${FORCED_DNS_EXTERNAL:-0}" = 1 ]; then
-        log_msg "Исправляю внешний forced-DNS ($FORCED_DNS_SOURCE) настройками DNS Manager."
-    fi
+    firewall_resolve_zones >/dev/null 2>&1 || true
     return 0
 }
 disc_firewall() {
@@ -2636,28 +2633,58 @@ record_own() {
     _own_line="$(printf '%s|%s|%s|%s' "$1" "$2" "$3" "$4")"
     grep -Fqx -- "$_own_line" "$OWNERSHIP" 2>/dev/null || printf '%s\n' "$_own_line" >> "$OWNERSHIP"
 }
-configure_hdp_manager_control() {
-    # DNS Manager owns the DoH resolver sections. Forced-DNS is applied only by apply_dns_force().
-    detect_forced_dns_path >/dev/null 2>&1 || true
+sync_hdp_force_contract() {
+    _want="${1:-0}"
+    case "$_want" in 0|1) ;; *) return 1 ;; esac
+    [ -f /etc/config/https-dns-proxy ] || return 0
 
-    if [ "${FORCE_DOH:-0}" = 1 ]; then
-        if [ "${FORCED_DNS_EXTERNAL:-0}" = 1 ]; then
-            log_msg "Внешний forced-DNS обнаружен: DNS Manager не перехватывает и не перезаписывает его глобальные параметры; настройка DNS/DoH продолжается."
-        fi
-        return 0
-    fi
+    # Match Zapret Manager's / LuCI's https-dns-proxy "forced DNS" contract
+    # exactly. DNS Manager is authoritative here: an existing external setup
+    # is deliberately replaced with this shared configuration.
+    firewall_resolve_zones >/dev/null 2>&1 || true
 
-    if [ "${FORCED_DNS_EXTERNAL:-0}" = 1 ]; then
-        log_msg "Внешний forced-DNS обнаружен: глобальные параметры https-dns-proxy не изменяю."
-        return 0
-    fi
-
-    # With forced-DNS disabled, leave the package's client interception off
-    # and keep DNS Manager authoritative over dnsmasq itself.
-    uci set https-dns-proxy.config.dnsmasq_config_update='-' || return 1
+    uci set https-dns-proxy.config.dnsmasq_config_update='*' || return 1
+    uci set https-dns-proxy.config.force_dns="$_want" || return 1
+    uci set https-dns-proxy.config.notrack_dns='1' || return 1
+    uci set https-dns-proxy.config.procd_trigger_wan6='0' || return 1
+    uci set https-dns-proxy.config.heartbeat_domain='heartbeat.mossdef.org' || return 1
+    uci set https-dns-proxy.config.heartbeat_sleep_timeout='10' || return 1
+    uci set https-dns-proxy.config.heartbeat_wait_timeout='10' || return 1
+    uci set https-dns-proxy.config.user='nobody' || return 1
+    uci set https-dns-proxy.config.group='nogroup' || return 1
+    uci set https-dns-proxy.config.listen_addr='127.0.0.1' || return 1
     uci set https-dns-proxy.config.force_ip_family='auto' || return 1
+
+    uci -q delete https-dns-proxy.config.force_dns_port >/dev/null 2>&1 || true
+    for _p in 53 853; do
+        uci add_list https-dns-proxy.config.force_dns_port="$_p" || return 1
+    done
+
+    uci -q delete https-dns-proxy.config.force_dns_src_interface >/dev/null 2>&1 || true
+    _force_src_nets="$(force_dns_expected_src_interfaces)"
+    for _n in $_force_src_nets; do
+        [ -n "$_n" ] || continue
+        uci add_list https-dns-proxy.config.force_dns_src_interface="$_n" || return 1
+    done
+
+    if [ "$_want" = 1 ]; then
+        uci set https-dns-proxy.config.canary_domains_icloud='1' || return 1
+        uci set https-dns-proxy.config.canary_domains_mozilla='1' || return 1
+    else
+        uci -q delete https-dns-proxy.config.canary_domains_icloud >/dev/null 2>&1 || true
+        uci -q delete https-dns-proxy.config.canary_domains_mozilla >/dev/null 2>&1 || true
+    fi
+
     uci commit https-dns-proxy || return 1
+
+    if [ -x /etc/init.d/https-dns-proxy ] && /etc/init.d/https-dns-proxy running >/dev/null 2>&1; then
+        /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || return 1
+    fi
     return 0
+}
+
+configure_hdp_manager_control() {
+    sync_hdp_force_contract "${FORCE_DOH:-0}"
 }
 ensure_doh_slot() {
 slot="$1"; id="$2"; [ -n "$id" ] || return 0
@@ -3012,46 +3039,13 @@ remove_dnsmasq_perf() {
 }
 apply_dns_force() {
     [ "${FORCE_DOH:-0}" = 1 ] || return 0
-    firewall_resolve_zones >/dev/null 2>&1 || return 1
-
-    if [ "${FORCED_DNS_EXTERNAL:-0}" = 1 ]; then
-        log_msg "Исправляю внешний forced-DNS ($FORCED_DNS_SOURCE) настройками DNS Manager."
-    fi
-    if ! prepare_dns_path; then
-        return 0
-    fi
-
-    # Match the actual https-dns-proxy forced-DNS contract: outbound client
-    # DNS (53) and DoT (853) from LAN interfaces are redirected to local DoH.
-    uci set https-dns-proxy.config.force_dns='1' || return 1
-    uci set https-dns-proxy.config.notrack_dns='1' || return 1
-    uci set https-dns-proxy.config.force_ip_family='auto' || return 1
-
-    uci -q delete https-dns-proxy.config.force_dns_port >/dev/null 2>&1 || true
-    for _p in 53 853; do
-        uci add_list https-dns-proxy.config.force_dns_port="$_p" || return 1
-    done
-
-    uci -q delete https-dns-proxy.config.force_dns_src_interface >/dev/null 2>&1 || true
-    _force_src_nets="$(force_dns_expected_src_interfaces)"
-    for _n in $_force_src_nets; do
-        [ -n "$_n" ] || continue
-        uci add_list https-dns-proxy.config.force_dns_src_interface="$_n" || return 1
-    done
-
-    # Deliberately different from the stock package default: do not let
-    # https-dns-proxy modify dnsmasq entries that DNS Manager owns.
-    uci set https-dns-proxy.config.dnsmasq_config_update='-' || return 1
-    uci commit https-dns-proxy || return 1
-    return 0
+    sync_hdp_force_contract 1
 }
 
 remove_dns_force() {
-    for _k in force_dns notrack_dns force_ip_family dnsmasq_config_update force_dns_port force_dns_src_interface; do
-        uci -q delete "https-dns-proxy.config.$_k" || true
-    done
-    uci commit https-dns-proxy >/dev/null 2>&1 || return 1
-    return 0
+    # Zapret Manager keeps the same main forced-DNS contract and switches only
+    # force_dns to 0 when interception is disabled.
+    sync_hdp_force_contract 0
 }
 apply_bogus() {
 clear_screen
@@ -5460,10 +5454,8 @@ check_module_state() {
             ;;
         force)
             detect_forced_dns_path >/dev/null 2>&1 || true
-            if [ "${FORCED_DNS_EXTERNAL:-0}" = 1 ]; then
-                printf 2
-                return 0
-            fi
+            # External forced-DNS is informational only. The selected
+            # DNS Manager setting remains authoritative and may overwrite it.
 
             # Package defaults are not an active DNS Manager feature.
             # Activation requires the manager flag and a real LAN DNS redirect.
@@ -5471,7 +5463,7 @@ check_module_state() {
                 _ok=1
                 [ "$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null)" = 1 ] || _ok=0
                 [ "$(uci -q get https-dns-proxy.config.notrack_dns 2>/dev/null)" = 1 ] || _ok=0
-                [ "$(uci -q get https-dns-proxy.config.dnsmasq_config_update 2>/dev/null)" = - ] || _ok=0
+                [ "$(uci -q get https-dns-proxy.config.dnsmasq_config_update 2>/dev/null)" = '*' ] || _ok=0
                 [ "$(uci -q get https-dns-proxy.config.force_ip_family 2>/dev/null)" = auto ] || _ok=0
                 force_dns_ports_match_expected || _ok=0
                 force_dns_src_matches_expected || _ok=0
