@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.6.4
+# Version: 1.6.5
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -23,7 +23,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.6.4"
+VERSION="1.6.5"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -942,7 +942,7 @@ detect_steer_dns_runtime() {
         return 0
     fi
     if command -v nft >/dev/null 2>&1 && nft -a list ruleset 2>/dev/null | awk '
-        /dport[[:space:]]+53/ && /redirect[[:space:]]+to[[:space:]]*:[[:space:]]*5300([[:space:]]|$)/ { found=1 }
+        /dport[[:space:]]+53/ && /5300/ && /(redirect[[:space:]]+to|dnat[[:space:]]+to)/ { found=1 }
         END { exit(found ? 0 : 1) }
     ' >/dev/null 2>&1; then
         STEER_DNS_ACTIVE=1
