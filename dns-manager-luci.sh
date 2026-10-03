@@ -3275,6 +3275,7 @@ function stopAutoStatus(){
   if(uptimeTimer){clearInterval(uptimeTimer);uptimeTimer=null;}
   if(fullStatusTimer){clearInterval(fullStatusTimer);fullStatusTimer=null;}
   if(dashboardPollTimer){clearInterval(dashboardPollTimer);dashboardPollTimer=null;}
+  state.dashboardStatusPollBusy=false;
 }
 function syncLocalUptime(root,sec){
   var n=Number(sec);
