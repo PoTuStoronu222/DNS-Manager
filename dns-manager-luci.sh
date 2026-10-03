@@ -959,7 +959,7 @@ status_json() {
             *) _dnsmasq_perf_state=2 ;;
         esac
     fi
-
+    _force="$(cfg_get FORCE_DOH)"; [ -n "$_force" ] || _force=0
     _force="$(cfg_get FORCE_DOH)"; [ -n "$_force" ] || _force=0
     _force_cfg="$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null || true)"
     _force_notrack="$(uci -q get https-dns-proxy.config.notrack_dns 2>/dev/null || true)"
@@ -1099,7 +1099,6 @@ status_json() {
     _watchdog_service_running=0; watchdog_service_running && _watchdog_service_running=1 || true
     _watchdog_loop_running=0; watchdog_loop_running && _watchdog_loop_running=1 || true
     printf ',"watchdog_service":%s,"watchdog_service_enabled":%s,"watchdog_loop":%s' "$_watchdog_service_running" "$_watchdog_service_enabled" "$_watchdog_loop_running"
-     printf ',"dnsmasq_perf_state":%s' "$_dnsmasq_perf_state"
      printf ',"dnsmasq_perf_state":%s' "$_dnsmasq_perf_state"
     printf ',"test_age_common":%s' "$_test_age_h"
     printf ',"force":'; json_quote "$_force"; printf ',"force_external":'; json_quote "$_force_external"; printf ',"force_owner":'; json_quote "$_force_owner"; printf ',"force_manager":%s,"force_both":%s' "$_force_manager" "$_force_both"
