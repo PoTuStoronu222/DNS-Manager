@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.35.1"
+VERSION="3.35.2"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -1715,9 +1715,11 @@ detect_steer_dns_path() {
     STEER_DNS_ACTIVE=0
     STEER_DNS_SOURCE="none"
 
+    # Steer is optional. If neither its init script nor its process exists,
+    # the manager immediately uses its normal standalone DNS path.
     if [ -x /etc/init.d/steer ] && /etc/init.d/steer running >/dev/null 2>&1; then
         :
-    elif pgrep -x steer >/dev/null 2>&1; then
+    elif command -v pgrep >/dev/null 2>&1 && pgrep -x steer >/dev/null 2>&1; then
         :
     else
         return 0
