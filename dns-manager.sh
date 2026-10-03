@@ -3137,27 +3137,12 @@ _apply_extras_now_impl() {
             [ "$NTP_IP_FALLBACK" = 1 ] || return 0
             apply_ntp_ip_fallback || return 1
             ;;
-        mtu)
-            apply_mtu_toggle || return 1
-            ;;
-        sysctl)
-            apply_sysctl_bundle "$SYSCTL_TUNING" "$SYSCTL_EXTENDED" || return 1
-            ;;
         force)
             if [ "${FORCE_DOH:-0}" = 1 ]; then
                 apply_dns_force || return 1
             else
                 remove_dns_force || return 1
             fi
-            reload_fw || return 1
-            ;;
-        ntp_clients)
-            if [ "$NTP_CLIENTS" = 1 ]; then
-                apply_ntp_clients || return 1
-            else
-                remove_ntp_clients || return 1
-            fi
-            /etc/init.d/dnsmasq restart >/dev/null 2>&1 || return 1
             reload_fw || return 1
             ;;
         dnsmasq_perf)
@@ -3168,26 +3153,8 @@ _apply_extras_now_impl() {
             fi
             /etc/init.d/dnsmasq restart >/dev/null 2>&1 || return 1
             ;;
-        client_fixes)
-            if [ "${CLIENT_FIXES:-0}" = 1 ]; then
-                apply_client_fixes || return 1
-            else
-                remove_client_fixes 1 || return 1
-            fi
-            /etc/init.d/dnsmasq restart >/dev/null 2>&1 || return 1
-            ;;
         web)
             apply_web_access || return 1
-            ;;
-        sysctl_ext)
-            if [ "$SYSCTL_EXTENDED" = 1 ]; then
-                apply_sysctl_extended || return 1
-            else
-                remove_sysctl_extended 1 || return 1
-            fi
-            ;;
-        *)
-            return 1
             ;;
     esac
     run_discovery || return 1
