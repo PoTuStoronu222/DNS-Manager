@@ -150,6 +150,35 @@ detect_steer_dns_path || fail "fw3 Steer detector returned error"
 [ "$STEER_DNS_SOURCE" = Steer ] || fail "fw3 Steer source mismatch"
 ok "Steer runtime/dns-path detection"
 
+awk '
+    /^detect_steer_dns_runtime\(\) \{/ { capture=1 }
+    capture { print }
+    capture && /^}$/ { exit }
+' "$tmp/backend.sh" > "$tmp/luci_steer_fn.sh"
+[ -s "$tmp/luci_steer_fn.sh" ] || fail "LuCI Steer detector extraction"
+sed 's#/etc/init.d/steer#"$STEER_INIT"#g' "$tmp/luci_steer_fn.sh" > "$tmp/luci_steer_fn_test.sh"
+(
+    . "$tmp/luci_steer_fn_test.sh"
+    SYS_FW=fw4
+    PATH="$tmp/bin:$PATH"
+    steer_luci_case() {
+        fixture="$1"
+        running="$2"
+        expected="$3"
+        printf '%s\n' "$fixture" > "$NFT_FIXTURE"
+        STEER_TEST_RUNNING="$running"
+        export STEER_TEST_RUNNING
+        STEER_DNS_ACTIVE=0
+        STEER_DNS_SOURCE=none
+        detect_steer_dns_runtime || fail "LuCI Steer detector returned error"
+        [ "$STEER_DNS_ACTIVE" = "$expected" ] || fail "LuCI Steer detection mismatch for fixture: $fixture"
+    }
+    steer_luci_case 'table inet test { chain prerouting { iifname "br-lan" udp dport 53 counter redirect to :5300 } }' 1 1
+    steer_luci_case 'table inet test { chain prerouting { iifname "eth0" udp dport 53 counter redirect to :5300 } }' 1 0
+    steer_luci_case 'table inet test { chain prerouting { iifname "br-lan" udp dport 53 counter redirect to :5300 } }' 0 0
+)
+ok "LuCI Steer detection matches LAN/runtime contract"
+
 grep -q '"steer_installed"' "$tmp/backend.sh" || fail "Steer installed status missing from RPC"
 grep -q '"steer_running"' "$tmp/backend.sh" || fail "Steer running status missing from RPC"
 grep -q '"steer_dns_active"' "$tmp/backend.sh" || fail "Steer DNS runtime status missing from RPC"
