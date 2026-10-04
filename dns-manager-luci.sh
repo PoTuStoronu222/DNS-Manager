@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.6.8
+# Version: 1.6.9
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -23,7 +23,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.6.8"
+VERSION="1.6.9"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -138,7 +138,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.6.8"
+SELF_VERSION="1.6.9"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -300,6 +300,7 @@ validate_candidate() {
 }
 
 update_check_json_luci() {
+    UPDATE_CHECK_LUCI_OK=0
     _installed="$(read_installed_luci_version)"
     _tmp="$TMP_ROOT/companion-check.$$"
     if ! fetch_url "$_tmp"; then
@@ -323,6 +324,7 @@ update_check_json_luci() {
         return 0
     fi
     _latest="$(sed -n 's/^# Version:[[:space:]]*//p' "$_tmp" 2>/dev/null | head -n1)"
+    UPDATE_CHECK_LUCI_OK=1
     _available=0
     [ -n "$_latest" ] && [ "$(version_gt "$_latest" "$_installed")" = 1 ] && _available=1
     _ts="$(date +%s 2>/dev/null || printf 0)"
@@ -339,24 +341,41 @@ update_check_json_luci() {
 }
 
 component_update_check() {
+    UPDATE_CHECK_COMPONENTS_OK=1
     _ts="$(date +%s 2>/dev/null || printf 0)"
     _manager_installed="$(manager_version 2>/dev/null || true)"
-    _manager_latest=""; _manager_available=0; _manager_ok=0
+    _manager_latest=""; _manager_available=0; _manager_ok=0; _manager_error=""
     _tmp="$TMP_ROOT/manager-check.$$"
-    if [ -n "$_manager_installed" ] && fetch_raw_url "$_tmp" "https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager.sh?_dmcb=$_ts-$$"; then
+    if [ -z "$_manager_installed" ]; then
+        _manager_error="DNS Manager не найден на роутере"
+        UPDATE_CHECK_COMPONENTS_OK=0
+    elif fetch_raw_url "$_tmp" "https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager.sh?_dmcb=$_ts-$$"; then
         _manager_latest="$(sed -n 's/^VERSION="\([^"]*\)"$/\1/p' "$_tmp" 2>/dev/null | head -n1)"
-        [ -n "$_manager_latest" ] && _manager_ok=1
-        [ -n "$_manager_latest" ] && [ "$(version_gt "$_manager_latest" "$_manager_installed")" = 1 ] && _manager_available=1
+        if [ -n "$_manager_latest" ]; then
+            _manager_ok=1
+            [ "$(version_gt "$_manager_latest" "$_manager_installed")" = 1 ] && _manager_available=1
+        else
+            _manager_error="в файле DNS Manager не найдена версия"
+            UPDATE_CHECK_COMPONENTS_OK=0
+        fi
+    else
+        _manager_error="не удалось получить DNS Manager с GitHub"
+        UPDATE_CHECK_COMPONENTS_OK=0
     fi
     rm -f "$_tmp" 2>/dev/null || true
 
-    _catalog_latest=""; _catalog_latest_rev=""; _catalog_latest_total=0; _catalog_available=0; _catalog_ok=0
+    _catalog_latest=""; _catalog_latest_rev=""; _catalog_latest_total=0; _catalog_available=0; _catalog_ok=0; _catalog_error=""
     _tmp="$TMP_ROOT/catalog-check.$$"
     if fetch_raw_url "$_tmp" "https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/catalogs/dns-8.5-RU-NOSOCIAL.conf?_dmcb=$_ts-$$"; then
         _catalog_latest="$(sed -n 's/^# DNSCATVER=//p' "$_tmp" 2>/dev/null | head -n1)"
         _catalog_latest_rev="$(sed -n 's/^# DNSCATREV=//p' "$_tmp" 2>/dev/null | head -n1)"
         _catalog_latest_total="$(grep -v '^#' "$_tmp" 2>/dev/null | grep -c '^[^|][^|]*|' 2>/dev/null || printf 0)"
-        [ -n "$_catalog_latest" ] && _catalog_ok=1
+        if [ -n "$_catalog_latest" ]; then
+            _catalog_ok=1
+        else
+            _catalog_error="полученный каталог DNS не содержит версии"
+            UPDATE_CHECK_COMPONENTS_OK=0
+        fi
         _local_rev="$(sed -n 's/^# DNSCATREV=//p' "$CATALOG_FILE" 2>/dev/null | head -n1)"
         _local_total="$(grep -v '^#' "$CATALOG_FILE" 2>/dev/null | grep -c '^[^|][^|]*|' 2>/dev/null || printf 0)"
         _catalog_same=0
@@ -365,18 +384,19 @@ component_update_check() {
         sed '/^[[:space:]]*#/d;/^[[:space:]]*$/d' "$_tmp" > "$_remote_body" 2>/dev/null || true
         if [ -r "$CATALOG_FILE" ]; then
             sed '/^[[:space:]]*#/d;/^[[:space:]]*$/d' "$CATALOG_FILE" > "$_local_body" 2>/dev/null || true
-            if cmp -s "$_remote_body" "$_local_body" 2>/dev/null; then
-                _catalog_same=1
-            fi
+            if cmp -s "$_remote_body" "$_local_body" 2>/dev/null; then _catalog_same=1; fi
         fi
-        if [ "$_catalog_same" != 1 ]; then
-            [ "$_catalog_latest" != "$(catalog_version)" ] && [ -n "$_catalog_latest" ] && _catalog_available=1
+        if [ "$_catalog_same" != 1 ] && [ "$_catalog_ok" = 1 ]; then
+            [ "$_catalog_latest" != "$(catalog_version)" ] && _catalog_available=1
             [ -n "$_catalog_latest_rev" ] && [ "$_catalog_latest_rev" != "$_local_rev" ] && _catalog_available=1
             [ "$_catalog_latest_total" != "$_local_total" ] && _catalog_available=1
         else
             _catalog_available=0
         fi
         rm -f "$_remote_body" "$_local_body" 2>/dev/null || true
+    else
+        _catalog_error="не удалось получить каталог DNS с GitHub"
+        UPDATE_CHECK_COMPONENTS_OK=0
     fi
     rm -f "$_tmp" 2>/dev/null || true
 
@@ -395,11 +415,13 @@ component_update_check() {
     printf 'manager_latest=%s\n' "$_manager_latest" >> "$_state_tmp"
     printf 'manager_available=%s\n' "$_manager_available" >> "$_state_tmp"
     printf 'manager_checked=%s\n' "$_manager_ok" >> "$_state_tmp"
+    printf 'manager_error=%s\n' "$_manager_error" >> "$_state_tmp"
     printf 'catalog_latest=%s\n' "$_catalog_latest" >> "$_state_tmp"
     printf 'catalog_latest_rev=%s\n' "$_catalog_latest_rev" >> "$_state_tmp"
     printf 'catalog_latest_total=%s\n' "$_catalog_latest_total" >> "$_state_tmp"
     printf 'catalog_available=%s\n' "$_catalog_available" >> "$_state_tmp"
     printf 'catalog_checked=%s\n' "$_catalog_ok" >> "$_state_tmp"
+    printf 'catalog_error=%s\n' "$_catalog_error" >> "$_state_tmp"
     printf 'hdp_latest=%s\n' "$_hdp_candidate" >> "$_state_tmp"
     printf 'hdp_available=%s\n' "$_hdp_available" >> "$_state_tmp"
     printf 'hdp_checked=%s\n' "$_hdp_checked" >> "$_state_tmp"
@@ -504,9 +526,10 @@ update_check_json() {
     update_check_json_luci >/dev/null 2>&1 || true
     component_update_check || true
 
-    _ts="$(date +%s 2>/dev/null || printf 0)"
-    printf '%s
-' "$_ts" > "$UPDATE_CHECK_CACHE" 2>/dev/null || true
+    if [ "${UPDATE_CHECK_LUCI_OK:-0}" = 1 ] && [ "${UPDATE_CHECK_COMPONENTS_OK:-0}" = 1 ]; then
+        _ts="$(date +%s 2>/dev/null || printf 0)"
+        printf '%s\n' "$_ts" > "$UPDATE_CHECK_CACHE" 2>/dev/null || true
+    fi
     rm -rf "$UPDATE_CHECK_LOCK" 2>/dev/null || true
     status_json
 }
@@ -1169,12 +1192,14 @@ status_json() {
     _manager_latest="$(sed -n 's/^manager_latest=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"
     _manager_avail="$(sed -n 's/^manager_available=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"; [ -n "$_manager_avail" ] || _manager_avail=0
     _manager_checked="$(sed -n 's/^manager_checked=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"; [ -n "$_manager_checked" ] || _manager_checked=0
+    _manager_error="$(sed -n 's/^manager_error=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"
     [ -n "$_manager_latest" ] && [ "$_manager_latest" = "$_mv" ] && _manager_avail=0
     _catalog_latest="$(sed -n 's/^catalog_latest=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"
     _catalog_latest_rev="$(sed -n 's/^catalog_latest_rev=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"
     _catalog_latest_total="$(sed -n 's/^catalog_latest_total=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"; [ -n "$_catalog_latest_total" ] || _catalog_latest_total=0
     _catalog_avail="$(sed -n 's/^catalog_available=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"; [ -n "$_catalog_avail" ] || _catalog_avail=0
     _catalog_checked="$(sed -n 's/^catalog_checked=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"; [ -n "$_catalog_checked" ] || _catalog_checked=0
+    _catalog_error="$(sed -n 's/^catalog_error=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"
     _hdp_installed="$(package_version https-dns-proxy 2>/dev/null || true)"
     _hdp_latest="$(sed -n 's/^hdp_latest=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"
     _hdp_avail="$(sed -n 's/^hdp_available=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"; [ -n "$_hdp_avail" ] || _hdp_avail=0
@@ -1187,7 +1212,7 @@ status_json() {
     printf ',"luci_version":'; json_quote "$_luciv"; printf ',"luci_latest_version":'; json_quote "$_luci_latest"
     printf ',"luci_update_available":%s,"luci_update_checked":%s,"luci_update_checked_at":%s' "$_luci_avail" "$_luci_checked" "$_luci_checked_at"
     printf ',"luci_update_error":'; json_quote "$_luci_error"
-    printf ',"manager_latest_version":'; json_quote "$_manager_latest"; printf ',"manager_update_available":%s,"manager_check_ok":%s' "$_manager_avail" "$_manager_checked"
+    printf ',"manager_latest_version":'; json_quote "$_manager_latest"; printf ',"manager_update_available":%s,"manager_check_ok":%s' "$_manager_avail" "$_manager_checked"; printf ',"manager_update_error":'; json_quote "$_manager_error"
     printf ',"catalog_latest_version":'; json_quote "$_catalog_latest"; printf ',"catalog_latest_rev":'; json_quote "$_catalog_latest_rev"; printf ',"catalog_latest_total":%s,"catalog_update_available":%s,"catalog_check_ok":%s' "$_catalog_latest_total" "$_catalog_avail" "$_catalog_checked"
     printf ',"model":'; json_quote "$_model"; printf ',"arch":'; json_quote "$_arch"; printf ',"target":'; json_quote "$_target"; printf ',"ipv4":'; json_quote "$_ipv4"; printf ',"ipv6":'; json_quote "$_ipv6"; printf ',"dnsmasq":'; json_quote "$_dnsmasq"; printf ',"doh":'; json_quote "$_doh"; printf ',"firewall":'; json_quote "$_fw"; printf ',"openwrt":'; json_quote "$(openwrt_release)"; printf ',"lan":'; json_quote "$_lan"
     printf ',"profile":'; json_quote "$_profile"; printf ',"profile_mode":'; json_quote "$_mode"; printf ',"selection_category":'; json_quote "$_selection_category"
@@ -1800,7 +1825,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.6.8
+// DNS Manager LuCI version: 1.6.9
 var callStatus = rpc.declare({ object:'dns_manager', method:'status', params:['detail'], expect:{} });
 var callBoardInfo = rpc.declare({ object:'system', method:'info', expect:{} });
 var callRuntime = rpc.declare({ object:'dns_manager', method:'runtime', expect:{} });
@@ -3282,7 +3307,7 @@ function pollJob(root,job,meta,done){
           loadCatalog(root);
         }
       }
-    }).catch(function(){
+    }).catch(function(err){
       if(meta&&meta.mode==='profile'){
         state.busy=false;
         state.profileProgress=null;
