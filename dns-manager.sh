@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.35.8"
+VERSION="3.35.9"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -8180,16 +8180,21 @@ menu_item "[4]" "Серверы точного времени"
 menu_item "[5]" "Сетевой тюнинг"
 menu_item "[6]" "Удалить DNS Manager"
 menu_section "LUCI"
-if [ "$(check_module_state luci)" = 1 ]; then
+_luci_state="$(check_module_state luci)"
+if [ "$_luci_state" = 1 ]; then
     if [ "${LUCI_UPDATE_AVAILABLE:-0}" = 1 ]; then
         printf_state_row "LuCI" "${C_YELLOW}УСТАНОВЛЕНО → доступно ${LUCI_REMOTE_VERSION}${C_NC}"
-        menu_item_action "[7]" "Нативный интерфейс DNS Manager → обновить до ${LUCI_REMOTE_VERSION}" luci "1"
+        menu_item "[7]" "Обновить LuCI → ${LUCI_REMOTE_VERSION}"
     else
         printf_state_row "LuCI" "${C_GREEN}УСТАНОВЛЕНО${C_NC}"
-        menu_item_action "[7]" "Нативный интерфейс DNS Manager" luci "1"
+        menu_item "[7]" "Удалить Нативный интерфейс DNS Manager"
     fi
 else
-    menu_item_action "[7]" "Нативный интерфейс DNS Manager" luci "$(check_module_state luci)"
+    case "$_luci_state" in
+        0) menu_item "[7]" "Установить Нативный интерфейс DNS Manager" ;;
+        2) menu_item "[7]" "Восстановить Нативный интерфейс DNS Manager" ;;
+        *) menu_item "[7]" "Нативный интерфейс DNS Manager" ;;
+    esac
 fi
 menu_back
 menu_prompt
@@ -8203,7 +8208,8 @@ case "$c" in
 5) MAIN_STATE_STALE=1; prepare_dns_operation || { pause; continue; }; menu_extras;;
 6) uninstall_manager;;
 7) MAIN_STATE_STALE=1;
-   if [ "${LUCI_UPDATE_AVAILABLE:-0}" = 1 ]; then
+   _luci_state="$(check_module_state luci)"
+   if [ "$_luci_state" = 1 ] && [ "${LUCI_UPDATE_AVAILABLE:-0}" = 1 ]; then
        confirm_action "Обновить нативный интерфейс LuCI DNS Manager до ${LUCI_REMOTE_VERSION}? Старый интерфейс будет удалён и заменён новой версией." || continue
        luci_companion_update; _rc=$?
        case "$_rc" in
@@ -8212,8 +8218,10 @@ case "$c" in
            *) err_msg "LuCI не удалось обновить." ;;
        esac
        pause
+   elif [ "$_luci_state" = 1 ]; then
+       setting_process luci "Удалить Нативный интерфейс DNS Manager" "Нативный интерфейс DNS Manager в LuCI." "$_luci_state"
    else
-       setting_process luci "Нативный интерфейс DNS Manager" "Нативный интерфейс DNS Manager в LuCI." "$(check_module_state luci)"
+       setting_process luci "Нативный интерфейс DNS Manager" "Нативный интерфейс DNS Manager в LuCI." "$_luci_state"
    fi
    MAIN_STATE_STALE=1;;
 *) warn_msg "Неизвестный пункт."; pause;;
