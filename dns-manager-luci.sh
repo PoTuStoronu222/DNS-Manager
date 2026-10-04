@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.6.14
+# Version: 1.6.15
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -23,7 +23,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.6.14"
+VERSION="1.6.15"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -138,7 +138,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.6.14"
+SELF_VERSION="1.6.15"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -1056,12 +1056,17 @@ status_json() {
     _force="$(cfg_get FORCE_DOH)"; [ -n "$_force" ] || _force=0
     _force_cfg="$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null || true)"
     _force_notrack="$(uci -q get https-dns-proxy.config.notrack_dns 2>/dev/null || true)"
-    # DNS Manager is authoritative for the effective forced-DNS state.
-    # Use its exact read-only check instead of maintaining a second copy here.
-    _force_state="$( "$MANAGER_PATH" --force-state 2>/dev/null || true )"
-    case "$_force_state" in 0|1|2) ;; *) _force_state=0;; esac
+    # Prefer the DNS Manager authoritative check when supported by the installed manager.
+    # Older Manager versions remain fully supported by the legacy exact UCI/runtime check below.
+    _force_state="$("$MANAGER_PATH" --force-state 2>/dev/null || true)"
+    _force_state_supported=0
+    case "$_force_state" in 0|1|2) _force_state_supported=1;; esac
     _force_manager=0
-    [ "$_force_state" = 1 ] && _force_manager=1
+    if [ "$_force_state_supported" = 1 ]; then
+        [ "$_force_state" = 1 ] && _force_manager=1
+    else
+        [ "$_force" = 1 ] && [ "$_force_cfg" = 1 ] && [ "$_force_notrack" = 1 ] && _force_manager=1
+    fi
     _steer_installed=0
     _steer_running=0
     steer_service_present && _steer_installed=1 || true
@@ -1815,7 +1820,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.6.14
+// DNS Manager LuCI version: 1.6.15
 var callStatus = rpc.declare({ object:'dns_manager', method:'status', params:['detail'], expect:{} });
 var callBoardInfo = rpc.declare({ object:'system', method:'info', expect:{} });
 var callRuntime = rpc.declare({ object:'dns_manager', method:'runtime', expect:{} });
