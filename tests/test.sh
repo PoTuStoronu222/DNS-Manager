@@ -160,6 +160,7 @@ sed 's#/etc/init.d/steer#"$STEER_INIT"#g' "$tmp/luci_steer_fn.sh" > "$tmp/luci_s
 (
     . "$tmp/luci_steer_fn_test.sh"
     SYS_FW=fw4
+    : > "$IPTABLES_FIXTURE"
     PATH="$tmp/bin:$PATH"
     steer_luci_case() {
         fixture="$1"
