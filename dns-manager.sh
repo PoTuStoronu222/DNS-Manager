@@ -8166,7 +8166,7 @@ case "$c" in
 5) MAIN_STATE_STALE=1; prepare_dns_operation || { pause; continue; }; menu_extras;;
 6) uninstall_manager;;
 7) MAIN_STATE_STALE=1; setting_process luci "Нативный интерфейс DNS Manager" "Нативный интерфейс DNS Manager в LuCI." "$(check_module_state luci)"; MAIN_STATE_STALE=1;;
-8) if [ "${LUCI_UPDATE_AVAILABLE:-0}" = 1 ]; then luci_companion_update; _rc=$?; case "$_rc" in 0) ok_msg "LuCI обновлена до версии ${LUCI_REMOTE_VERSION:-новой версии}."; 2) info_msg "Новой версии LuCI нет."; *) err_msg "LuCI не удалось обновить."; esac; pause; MAIN_STATE_STALE=1; else warn_msg "Обновление LuCI сейчас недоступно."; pause; fi;;
+8) if [ "${LUCI_UPDATE_AVAILABLE:-0}" = 1 ]; then luci_companion_update; _rc=$?; case "$_rc" in 0) ok_msg "LuCI обновлена до версии ${LUCI_REMOTE_VERSION:-новой версии}.";; 2) info_msg "Новой версии LuCI нет.";; *) err_msg "LuCI не удалось обновить.";; esac; pause; MAIN_STATE_STALE=1; else warn_msg "Обновление LuCI сейчас недоступно."; pause; fi;;
 *) warn_msg "Неизвестный пункт."; pause;;
 esac
 done
