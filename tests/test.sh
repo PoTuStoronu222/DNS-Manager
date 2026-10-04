@@ -78,6 +78,7 @@ ok "version comparison"
 
 STEER_INIT="$tmp/etc/init.d/steer"
 NFT_FIXTURE="$tmp/nft.txt"
+export NFT_FIXTURE
 mkdir -p "$(dirname "$STEER_INIT")" "$tmp/bin"
 
 cat > "$STEER_INIT" <<'EOF_STEER'
