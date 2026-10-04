@@ -8332,7 +8332,6 @@ force-state|--force-state)
     check_module_state force
     exit $?
     ;;
-case "${1:-}" in
 update-check|--update-check)
     preflight_readonly
     init_dirs
