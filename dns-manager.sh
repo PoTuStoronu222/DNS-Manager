@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.35.7"
+VERSION="3.35.8"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -8183,12 +8183,10 @@ menu_section "LUCI"
 if [ "$(check_module_state luci)" = 1 ]; then
     if [ "${LUCI_UPDATE_AVAILABLE:-0}" = 1 ]; then
         printf_state_row "LuCI" "${C_YELLOW}УСТАНОВЛЕНО → доступно ${LUCI_REMOTE_VERSION}${C_NC}"
+        menu_item_action "[7]" "Нативный интерфейс DNS Manager → обновить до ${LUCI_REMOTE_VERSION}" luci "1"
     else
         printf_state_row "LuCI" "${C_GREEN}УСТАНОВЛЕНО${C_NC}"
-    fi
-    menu_item_action "[7]" "Нативный интерфейс DNS Manager" luci "1"
-    if [ "${LUCI_UPDATE_AVAILABLE:-0}" = 1 ]; then
-        menu_item "[8]" "Обновить LuCI → ${LUCI_REMOTE_VERSION}"
+        menu_item_action "[7]" "Нативный интерфейс DNS Manager" luci "1"
     fi
 else
     menu_item_action "[7]" "Нативный интерфейс DNS Manager" luci "$(check_module_state luci)"
@@ -8204,8 +8202,20 @@ case "$c" in
 4) MAIN_STATE_STALE=1; prepare_dns_operation || { pause; continue; }; menu_ntp;;
 5) MAIN_STATE_STALE=1; prepare_dns_operation || { pause; continue; }; menu_extras;;
 6) uninstall_manager;;
-7) MAIN_STATE_STALE=1; setting_process luci "Нативный интерфейс DNS Manager" "Нативный интерфейс DNS Manager в LuCI." "$(check_module_state luci)"; MAIN_STATE_STALE=1;;
-8) if [ "${LUCI_UPDATE_AVAILABLE:-0}" = 1 ]; then luci_companion_update; _rc=$?; case "$_rc" in 0) ok_msg "LuCI обновлена до версии ${LUCI_REMOTE_VERSION:-новой версии}.";; 2) info_msg "Новой версии LuCI нет.";; *) err_msg "LuCI не удалось обновить.";; esac; pause; MAIN_STATE_STALE=1; else warn_msg "Обновление LuCI сейчас недоступно."; pause; fi;;
+7) MAIN_STATE_STALE=1;
+   if [ "${LUCI_UPDATE_AVAILABLE:-0}" = 1 ]; then
+       confirm_action "Обновить нативный интерфейс LuCI DNS Manager до ${LUCI_REMOTE_VERSION}? Старый интерфейс будет удалён и заменён новой версией." || continue
+       luci_companion_update; _rc=$?
+       case "$_rc" in
+           0) ok_msg "LuCI обновлена до версии ${LUCI_REMOTE_VERSION:-новой версии}." ;;
+           2) info_msg "Новой версии LuCI нет." ;;
+           *) err_msg "LuCI не удалось обновить." ;;
+       esac
+       pause
+   else
+       setting_process luci "Нативный интерфейс DNS Manager" "Нативный интерфейс DNS Manager в LuCI." "$(check_module_state luci)"
+   fi
+   MAIN_STATE_STALE=1;;
 *) warn_msg "Неизвестный пункт."; pause;;
 esac
 done
