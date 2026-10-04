@@ -20,7 +20,7 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT INT TERM
 
 awk '
-    /cat > "\$BACKEND_FILE"/ { capture=1; next }
+    /cat > "\$BACKEND_STAGE"/ { capture=1; next }
     capture && /^EOF_RPC$/ { exit }
     capture { print }
 ' dns-manager-luci.sh > "$tmp/backend.sh"
@@ -29,13 +29,39 @@ sh -n "$tmp/backend.sh" || fail "embedded backend: sh -n"
 ok "embedded backend syntax"
 
 awk '
-    /cat > "\$VIEW_FILE"/ { capture=1; next }
+    /cat > "\$VIEW_STAGE"/ { capture=1; next }
     capture && /^EOF_JS$/ { exit }
     capture { print }
 ' dns-manager-luci.sh > "$tmp/overview.js"
 [ -s "$tmp/overview.js" ] || fail "embedded JS extraction"
 node --check "$tmp/overview.js" >/dev/null 2>&1 || fail "embedded JS: node --check"
 ok "embedded LuCI JS syntax"
+
+grep -q 'BACKEND_STAGE="${BACKEND_FILE}.new.$"' dns-manager-luci.sh || fail "backend atomic staging missing"
+grep -q 'mv -f "$BACKEND_STAGE" "$BACKEND_FILE"' dns-manager-luci.sh || fail "backend atomic swap missing"
+grep -q 'RPC_STAGE="${RPC_PLUGIN}.new.$"' dns-manager-luci.sh || fail "RPC plugin atomic staging missing"
+grep -q 'mv -f "$RPC_STAGE" "$RPC_PLUGIN"' dns-manager-luci.sh || fail "RPC plugin atomic swap missing"
+grep -q 'VIEW_STAGE="${VIEW_FILE}.new.$"' dns-manager-luci.sh || fail "view atomic staging missing"
+grep -q 'mv -f "$VIEW_STAGE" "$VIEW_FILE"' dns-manager-luci.sh || fail "view atomic swap missing"
+grep -q 'function dmRpc(o)' "$tmp/overview.js" || fail "RPC retry wrapper missing"
+grep -q 'Object not found' "$tmp/overview.js" || fail "RPC retry condition missing"
+ok "LuCI atomic install and Object-not-found retry"
+
+grep -q '^        set_watchdog_setting)' "$tmp/backend.sh" || fail "watchdog setting dispatch missing"
+grep -q 'WATCHDOG_INTERVAL' "$tmp/backend.sh" || fail "watchdog interval handling missing"
+if awk '/^        set_setting\)/ { capture=1 } capture { print } capture && /^        set_watchdog_setting\)/ { exit }' "$tmp/backend.sh" | grep -q '_value'; then
+    fail "set_setting still contains stale _value watchdog logic"
+fi
+grep -q 'apply_watchdog .*|| _rc=' "$tmp/backend.sh" || fail "watchdog apply result is not checked"
+grep -q 'apply_extras_now force .*|| _rc=' "$tmp/backend.sh" || fail "force apply result is not checked"
+grep -q 'apply_extras_now dnsmasq_perf .*|| _rc=' "$tmp/backend.sh" || fail "dnsmasq_perf apply result is not checked"
+if grep -q 'update_check_job' "$tmp/backend.sh"; then
+    fail "stale update_check_job backend method remains"
+fi
+if grep -q 'update_check_job_status' "$tmp/backend.sh"; then
+    fail "stale update_check_job_status backend method remains"
+fi
+ok "LuCI RPC dispatch contract"
 
 top_luci="$(sed -n 's/^# Version:[[:space:]]*//p' dns-manager-luci.sh | head -n1)"
 installer_luci="$(sed -n 's/^VERSION="\([^"]*\)"$/\1/p' dns-manager-luci.sh | head -n1)"
