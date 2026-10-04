@@ -970,15 +970,42 @@ detect_steer_dns_runtime() {
     else
         return 0
     fi
-    if command -v nft >/dev/null 2>&1 && nft -a list ruleset 2>/dev/null | awk '
-        /dport[[:space:]]+53/ && /5300/ && /(redirect[[:space:]]+to|dnat[[:space:]]+to)/ { found=1 }
+    _lan_dev="$(uci -q get network.lan.device 2>/dev/null)"
+    _lan_if="$(uci -q get network.lan.ifname 2>/dev/null)"
+    if command -v nft >/dev/null 2>&1 && nft -a list ruleset 2>/dev/null | awk -v ld="$_lan_dev" -v li="$_lan_if" '
+        /dport[[:space:]]+53/ && /5300/ && /(redirect[[:space:]]+to|dnat[[:space:]]+to)/ {
+            ok=0
+            if ($0 ~ /iifname[[:space:]]+"br-lan"/) ok=1
+            if (ld != "" && index($0,"iifname \"" ld "\"")>0) ok=1
+            if (li != "" && index($0,"iifname \"" li "\"")>0) ok=1
+            if (ok) found=1
+        }
         END { exit(found ? 0 : 1) }
     ' >/dev/null 2>&1; then
         STEER_DNS_ACTIVE=1
         STEER_DNS_SOURCE="Steer"
-    elif command -v iptables >/dev/null 2>&1 && iptables -t nat -S PREROUTING 2>/dev/null | grep -qE -- '--dport[[:space:]]+53.*(REDIRECT.*--to-ports[[:space:]]+5300([[:space:]]|$)|DNAT.*:[[:space:]]*5300([[:space:]]|$))'; then
-        STEER_DNS_ACTIVE=1
-        STEER_DNS_SOURCE="Steer"
+    elif command -v iptables >/dev/null 2>&1; then
+        _rules=""
+        if command -v iptables-save >/dev/null 2>&1; then
+            _rules="$(iptables-save -t nat 2>/dev/null || true)"
+        else
+            _rules="$(iptables -t nat -S PREROUTING 2>/dev/null || true)"
+        fi
+        if [ -n "$_rules" ] && printf '%s\n' "$_rules" | awk -v ld="$_lan_dev" -v li="$_lan_if" '
+            function has_input_dev(    i) {
+                for (i=1; i<NF; i++) if ($i=="-i" && $(i+1)!="") {
+                    if ($(i+1)=="br-lan" || (ld!="" && $(i+1)==ld) || (li!="" && $(i+1)==li)) return 1
+                }
+                return 0
+            }
+            /-A PREROUTING / && has_input_dev() && /--dport[[:space:]]+53/ &&
+            (/(REDIRECT.*--to-ports[[:space:]]+5300([[:space:]]|$))/ ||
+             /(DNAT.*:[[:space:]]*5300([[:space:]]|$))/) { found=1 }
+            END { exit(found ? 0 : 1) }
+        ' >/dev/null 2>&1; then
+            STEER_DNS_ACTIVE=1
+            STEER_DNS_SOURCE="Steer"
+        fi
     fi
     return 0
 }
