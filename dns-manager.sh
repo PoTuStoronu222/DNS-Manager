@@ -5861,7 +5861,7 @@ luci_companion_check_update() {
 
     _remote_ver="${LUCI_COMPANION_FETCH_VERSION:-}"
     LUCI_REMOTE_VERSION="$_remote_ver"
-    if [ -n "$_remote_ver" ] && [ "$(version_gt "$_remote_ver" "$_installed_ver")" = 1 ]; then
+    if [ -n "$_remote_ver" ] && [ "$( _ver_newer "$_remote_ver" "$_installed_ver" >/dev/null 2>&1 && printf 1 || printf 0 )" = 1 ]; then
         LUCI_UPDATE_AVAILABLE=1
     fi
 
