@@ -129,7 +129,25 @@ steer_case() {
 steer_case 'table inet test { chain prerouting { iifname "br-lan" udp dport 53 counter redirect to :5300 } }' 1 1 Steer
 steer_case 'table ip test { chain prerouting { iifname "br-lan" tcp dport 53 dnat to 127.0.0.1:5300 } }' 1 1 Steer
 steer_case 'table inet test { chain prerouting { iifname "br-lan" udp dport 53 counter redirect to :5053 } }' 1 0 none
+steer_case 'table inet test { chain prerouting { iifname "eth0" udp dport 53 counter redirect to :5300 } }' 1 0 none
 steer_case 'table inet test { chain prerouting { iifname "br-lan" udp dport 53 counter redirect to :5300 } }' 0 0 none
+# The legacy fw3 path must still recognize a real LAN redirect.
+cat > "$tmp/bin/iptables-save" <<'EOF_IPTABLES'
+#!/bin/sh
+cat "$IPTABLES_FIXTURE"
+EOF_IPTABLES
+chmod 0755 "$tmp/bin/iptables-save"
+IPTABLES_FIXTURE="$tmp/iptables.txt"
+export IPTABLES_FIXTURE
+printf '%s\n' '-A PREROUTING -i br-lan -p udp -m udp --dport 53 -j REDIRECT --to-ports 5300' > "$IPTABLES_FIXTURE"
+SYS_FW=fw3
+STEER_TEST_RUNNING=1
+export STEER_TEST_RUNNING
+STEER_DNS_ACTIVE=0
+STEER_DNS_SOURCE=none
+detect_steer_dns_path || fail "fw3 Steer detector returned error"
+[ "$STEER_DNS_ACTIVE" = 1 ] || fail "fw3 Steer redirect was not detected"
+[ "$STEER_DNS_SOURCE" = Steer ] || fail "fw3 Steer source mismatch"
 ok "Steer runtime/dns-path detection"
 
 grep -q '"steer_installed"' "$tmp/backend.sh" || fail "Steer installed status missing from RPC"
