@@ -103,6 +103,8 @@ LUCI_ACL_FILE="/usr/share/rpcd/acl.d/luci-app-dns-manager.json"
 LUCI_RPC_PLUGIN="/usr/libexec/rpcd/dns_manager"
 LUCI_BACKEND_FILE="/usr/lib/dns-manager-luci/backend.sh"
 LUCI_VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
+LUCI_REMOTE_VERSION=""
+LUCI_UPDATE_AVAILABLE=0
 # Persistent marker: /var/run is tmpfs, so the first-run decision must survive reboot.
 FIRST_RUN_MARKER="$CFG_DIR/.first-run.done"
 FIRST_RUN=0
@@ -5845,23 +5847,51 @@ luci_companion_fetch() {
     return 0
 }
 
-luci_companion_sync() {
+luci_companion_check_update() {
+    LUCI_REMOTE_VERSION=""
+    LUCI_UPDATE_AVAILABLE=0
+
     luci_component_files_present || return 0
-    luci_companion_fetch || return 0
-    _remote_ver="${LUCI_COMPANION_FETCH_VERSION:-}"
+
     _installed_ver="$(sed -n 's/^version=//p' "$LUCI_STATE_FILE" 2>/dev/null | head -n1)"
-    [ -n "$_remote_ver" ] || return 0
-    if [ -z "$_installed_ver" ] || [ "$(version_gt "$_remote_ver" "$_installed_ver")" = 1 ]; then
-        _synced_ver="$_remote_ver"
-        rm -f "${LUCI_COMPANION_FETCH_FILE:-}" 2>/dev/null || true
-        if luci_companion_install >/dev/null 2>&1; then
-            log_msg "LuCI: обновлён до версии $_synced_ver."
-        fi
-    else
-        rm -f "${LUCI_COMPANION_FETCH_FILE:-}" 2>/dev/null || true
+    [ -n "$_installed_ver" ] || _installed_ver="$(sed -n 's|^// DNS Manager LuCI version:[[:space:]]*||p' "$LUCI_VIEW_FILE" 2>/dev/null | head -n1)"
+    [ -n "$_installed_ver" ] || return 0
+
+    luci_companion_fetch || return 0
+
+    _remote_ver="${LUCI_COMPANION_FETCH_VERSION:-}"
+    LUCI_REMOTE_VERSION="$_remote_ver"
+    if [ -n "$_remote_ver" ] && [ "$(version_gt "$_remote_ver" "$_installed_ver")" = 1 ]; then
+        LUCI_UPDATE_AVAILABLE=1
     fi
+
+    rm -f "${LUCI_COMPANION_FETCH_FILE:-}" 2>/dev/null || true
     LUCI_COMPANION_FETCH_FILE=""
     LUCI_COMPANION_FETCH_VERSION=""
+    return 0
+}
+
+luci_companion_update() {
+    [ "$(luci_component_state)" = 1 ] || {
+        err_msg "LuCI не установлена."
+        return 1
+    }
+
+    luci_companion_check_update
+    [ "${LUCI_UPDATE_AVAILABLE:-0}" = 1 ] || {
+        return 2
+    }
+
+    _new_ver="$LUCI_REMOTE_VERSION"
+    log_msg "LuCI: чистое обновление $_new_ver — удаление старого интерфейса."
+
+    luci_companion_remove || {
+        err_msg "Не удалось удалить старую версию LuCI. Новую версию не устанавливаю."
+        return 1
+    }
+
+    log_msg "LuCI: старый интерфейс удалён; устанавливаю $_new_ver."
+    luci_companion_install
 }
 
 luci_companion_install() {
@@ -8086,6 +8116,7 @@ MAIN_STATE_STALE=1
 while :; do
 if [ "${MAIN_STATE_STALE:-1}" = 1 ]; then
     run_discovery
+    luci_companion_check_update >/dev/null 2>&1 || true
     MAIN_STATE_STALE=0
 fi
 menu_header "DNS Manager $VERSION"
@@ -8110,7 +8141,19 @@ menu_item "[4]" "Серверы точного времени"
 menu_item "[5]" "Сетевой тюнинг"
 menu_item "[6]" "Удалить DNS Manager"
 menu_section "LUCI"
-menu_item_action "[7]" "Нативный интерфейс DNS Manager" luci "$(check_module_state luci)"
+if [ "$(check_module_state luci)" = 1 ]; then
+    if [ "${LUCI_UPDATE_AVAILABLE:-0}" = 1 ]; then
+        printf_state_row "LuCI" "${C_YELLOW}УСТАНОВЛЕНО → доступно ${LUCI_REMOTE_VERSION}${C_NC}"
+    else
+        printf_state_row "LuCI" "${C_GREEN}УСТАНОВЛЕНО${C_NC}"
+    fi
+    menu_item_action "[7]" "Нативный интерфейс DNS Manager" luci "1"
+    if [ "${LUCI_UPDATE_AVAILABLE:-0}" = 1 ]; then
+        menu_item "[8]" "Обновить LuCI → ${LUCI_REMOTE_VERSION}"
+    fi
+else
+    menu_item_action "[7]" "Нативный интерфейс DNS Manager" luci "$(check_module_state luci)"
+fi
 menu_back
 menu_prompt
 safe_read c
@@ -8123,6 +8166,7 @@ case "$c" in
 5) MAIN_STATE_STALE=1; prepare_dns_operation || { pause; continue; }; menu_extras;;
 6) uninstall_manager;;
 7) MAIN_STATE_STALE=1; setting_process luci "Нативный интерфейс DNS Manager" "Нативный интерфейс DNS Manager в LuCI." "$(check_module_state luci)"; MAIN_STATE_STALE=1;;
+8) if [ "${LUCI_UPDATE_AVAILABLE:-0}" = 1 ]; then luci_companion_update; _rc=$?; case "$_rc" in 0) ok_msg "LuCI обновлена до версии ${LUCI_REMOTE_VERSION:-новой версии}."; 2) info_msg "Новой версии LuCI нет."; *) err_msg "LuCI не удалось обновить."; esac; pause; MAIN_STATE_STALE=1; else warn_msg "Обновление LuCI сейчас недоступно."; pause; fi;;
 *) warn_msg "Неизвестный пункт."; pause;;
 esac
 done
@@ -8247,7 +8291,7 @@ startup_self_repair() {
 # STARTUP UPDATE CHECK
 # ==========================================
 startup_update_check() {
-    if [ "${DNS_MANAGER_NO_UPDATE:-0}" = 1 ]; then luci_companion_sync >/dev/null 2>&1 || true; return 0; fi
+    if [ "${DNS_MANAGER_NO_UPDATE:-0}" = 1 ]; then luci_companion_check_update >/dev/null 2>&1 || true; return 0; fi
     printf "\n${C_CYAN}${C_BOLD}↻ Проверяю обновление DNS Manager...${C_NC}\n"
     auto_update_manager
     _rc=$?
@@ -8267,7 +8311,7 @@ startup_update_check() {
 # STARTUP REQUIRED FUNCTION CHECK
 # ==========================================
 startup_required_function_check() {
-    for _fn in get_dnsmasq_section exact_list_has doh_selected_config_current validate_selected_slots ensure_dnsmasq_balancer web_access_pid_count detect_forced_dns_path clear_all_doh_for_apply rebuild_selected_hdp_sections reconcile_dnsmasq apply_ntp_ip_fallback luci_component_state luci_companion_install luci_companion_remove watchdog_embedded_loop watchdog_service_install_files watchdog_service_remove_files; do
+    for _fn in get_dnsmasq_section exact_list_has doh_selected_config_current validate_selected_slots ensure_dnsmasq_balancer web_access_pid_count detect_forced_dns_path clear_all_doh_for_apply rebuild_selected_hdp_sections reconcile_dnsmasq apply_ntp_ip_fallback luci_component_state luci_companion_check_update luci_companion_install luci_companion_remove luci_companion_update watchdog_embedded_loop watchdog_service_install_files watchdog_service_remove_files; do
         type "$_fn" >/dev/null 2>&1 || {
             printf "${C_RED}[✗] Критическая ошибка: отсутствует функция $_fn. Запуск остановлен до изменения настроек роутера.${C_NC}\n"
             return 1
