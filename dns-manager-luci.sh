@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.6.6
+# Version: 1.6.7
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -23,7 +23,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.6.6"
+VERSION="1.6.7"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -138,7 +138,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.6.6"
+SELF_VERSION="1.6.7"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -982,6 +982,12 @@ detect_steer_dns_runtime() {
     fi
     return 0
 }
+steer_service_present() {
+    [ -x /etc/init.d/steer ]
+}
+steer_service_running() {
+    [ -x /etc/init.d/steer ] && /etc/init.d/steer running >/dev/null 2>&1
+}
 
 status_json() {
     _mv="$(manager_version 2>/dev/null || true)"
@@ -1016,6 +1022,10 @@ status_json() {
     _force_notrack="$(uci -q get https-dns-proxy.config.notrack_dns 2>/dev/null || true)"
     _force_manager=0
     [ "$_force" = 1 ] && [ "$_force_cfg" = 1 ] && [ "$_force_notrack" = 1 ] && _force_manager=1
+    _steer_installed=0
+    _steer_running=0
+    steer_service_present && _steer_installed=1 || true
+    steer_service_running && _steer_running=1 || true
     detect_steer_dns_runtime >/dev/null 2>&1 || true
 
     _force_external=0
@@ -1170,6 +1180,7 @@ status_json() {
     printf ',"force_heartbeat_domain":'; json_quote "$(uci -q get https-dns-proxy.config.heartbeat_domain 2>/dev/null || true)"; printf ',"force_heartbeat_sleep":'; json_quote "$(uci -q get https-dns-proxy.config.heartbeat_sleep_timeout 2>/dev/null || true)"
     printf ',"force_heartbeat_wait":'; json_quote "$(uci -q get https-dns-proxy.config.heartbeat_wait_timeout 2>/dev/null || true)"; printf ',"force_user":'; json_quote "$(uci -q get https-dns-proxy.config.user 2>/dev/null || true)"
     printf ',"force_group":'; json_quote "$(uci -q get https-dns-proxy.config.group 2>/dev/null || true)"; printf ',"force_listen":'; json_quote "$(uci -q get https-dns-proxy.config.listen_addr 2>/dev/null || true)"
+    printf '"steer_installed":%s,"steer_running":%s,"steer_dns_active":%s,"steer_dns_source":' "$_steer_installed" "$_steer_running" "${STEER_DNS_ACTIVE:-0}"; json_quote "${STEER_DNS_SOURCE:-none}"
     printf ',"force_consistent":%s' "$([ "$_force_manager" = 1 ] && printf 1 || [ "$_force_owner" = steer ] && [ "$_force" = 1 ] && printf 1 || printf 0)"
     printf ',"force_state":%s' "$([ "$_force_manager" = 1 ] && printf 1 || [ "$_force_owner" = steer ] && [ "$_force" = 1 ] && printf 1 || [ "$_force_owner" = steer ] && printf 2 || [ "$_force_external" = 1 ] && printf 2 || printf 0)"
     printf ',"force_status":'; json_quote "$_force_status"
@@ -1762,7 +1773,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.6.6
+// DNS Manager LuCI version: 1.6.7
 var callStatus = rpc.declare({ object:'dns_manager', method:'status', params:['detail'], expect:{} });
 var callBoardInfo = rpc.declare({ object:'system', method:'info', expect:{} });
 var callRuntime = rpc.declare({ object:'dns_manager', method:'runtime', expect:{} });
@@ -1793,7 +1804,7 @@ var CATEGORY = [
   ['all','Все DNS'], ['bypass','Обход блокировок'], ['security','Безопасность'], ['privacy','Приватность'],
   ['adblock','Блокировка рекламы'], ['family','Семейный'], ['clean','Без фильтрации'], ['regional','Региональные']
 ];
-var state = { hdpUpdating:false, managerUpdating:false, updatingAll:false, category:'all', offset:0, limit:18, catalogLoaded:false, catalogLoading:false, advanced:true, logLoaded:false, logLoading:false, busy:false, busySetting:'', settingMessage:'', settingMessageType:'', settingMessageKey:'', pageNotice:{}, statusError:'', activeTab:'dashboard', jobRunning:false, lastJob:null, checking:{}, fullTest:null, catalogProgress:null, profileProgress:null, catalogCheckNotice:'', versionCheck:null, lastAction:null, runtimeCpuLoad:null, runtimeMemoryTotal:null, runtimeMemoryAvailable:null, boardInfo:null, systemPollBusy:false, dashboardStatusPollBusy:false, autoVersionCheckStarted:false };
+var state = { hdpUpdating:false, managerUpdating:false, updatingAll:false, category:'all', offset:0, limit:18, catalogLoaded:false, catalogLoading:false, advanced:true, logLoaded:false, logLoading:false, busy:false, busySetting:'', settingMessage:'', settingMessageType:'', settingMessageKey:'', pageNotice:{}, statusError:'', activeTab:'dashboard', jobRunning:false, lastJob:null, checking:{}, fullTest:null, catalogProgress:null, profileProgress:null, catalogCheckNotice:'', versionCheck:null, lastAction:null, runtimeCpuLoad:null, runtimeMemoryTotal:null, runtimeMemoryAvailable:null, boardInfo:null, systemPollBusy:false, autoVersionCheckStarted:false };
 
 function profileName(p){
   var x=PROFILE.filter(function(v){return v[0]===p;})[0];
@@ -2288,6 +2299,9 @@ function renderDoH(root,st){
     ch.push(E('div',{'class':'dm-force-external'},'Обнаружен '+shortVal(st.force_source)+'. Переключение выше может заменить его общей конфигурацией forced-DNS DNS Manager.'));
   } else if(steer){
     ch.push(E('div',{'class':'dm-inline-msg info'},'Steer перехватывает DNS :53. DNS Manager не создаёт второй перехват: обычные DNS-запросы идут через dnsmasq к выбранному DoH, а DNS-over-TLS :853 блокируется.'));
+  }
+  } else if(Number(st.steer_running)===1 && Number(st.steer_dns_active)!==1){
+    ch.push(E('div',{'class':'dm-inline-msg info'},'Steer запущен, но активный перехват DNS :53→:5300 не обнаружен. Поэтому DNS Manager не считает Steer владельцем forced-DNS и сохраняет обычную схему принудительного DNS.'));
   }
   if(state.pageNotice.doh)ch.push(E('div',{'class':'dm-inline-msg info'},state.pageNotice.doh));
   e.appendChild(card('DNS over HTTPS',ch));
@@ -3356,23 +3370,6 @@ function pollSystem(root){
     state.systemPollBusy=false;
   });
 }
-function refreshDashboard(root){
-  if(!rootAlive(root)||currentRoute()!=='dashboard')return Promise.resolve();
-  if(state.busy||state.versionCheck&&state.versionCheck.running||state.dashboardStatusPollBusy)return Promise.resolve();
-  state.dashboardStatusPollBusy=true;
-  return callStatus(statusDetail()).then(function(st){
-    if(!rootAlive(root))return;
-    state.statusError='';
-    var next=st||{},prev=window.dmState||{};
-    ['model','arch','target','openwrt','lan','cpu_count','ipv4','ipv6'].forEach(function(k){
-      if((next[k]===undefined||next[k]===null||next[k]==='')&&prev[k]!==undefined)next[k]=prev[k];
-    });
-    window.dmState=next;
-    renderOverview(root,next);
-  }).catch(function(){}).then(function(){
-    state.dashboardStatusPollBusy=false;
-  });
-}
 function startAutoStatus(root){
   stopAutoStatus();
   state.systemPollBusy=false;
@@ -3388,7 +3385,6 @@ function startAutoStatus(root){
     tickLocalUptime(root);
     if(tick%5===0){
       pollSystem(root);
-      refreshDashboard(root);
     }
   },1000);
 }
