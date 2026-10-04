@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.35.9"
+VERSION="3.35.10"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -6304,24 +6304,7 @@ setting_process() {
 
     printf "\n${C_WHITE}%s${C_NC}\n" "$_title"
 
-    if [ "$_module" = luci ]; then
-        case "$_state" in
-            0)
-                confirm_action "Установить нативный интерфейс LuCI DNS Manager?" || return 0
-                ;;
-            1)
-                confirm_action "Удалить нативный интерфейс LuCI DNS Manager? Сам DNS Manager и его DNS-настройки не изменятся." || return 0
-                ;;
-            2)
-                confirm_action "Восстановить нативный интерфейс LuCI DNS Manager?" || return 0
-                ;;
-            *)
-                err_msg "Не удалось определить состояние настройки."
-                pause
-                return 1
-                ;;
-        esac
-    else
+    if [ "$_module" != luci ]; then
         if [ "$_module" = force ]; then
             detect_forced_dns_path >/dev/null 2>&1 || true
             if [ "${FORCED_DNS_EXTERNAL:-0}" = 1 ]; then
@@ -8182,11 +8165,10 @@ menu_item "[6]" "Удалить DNS Manager"
 menu_section "LUCI"
 _luci_state="$(check_module_state luci)"
 if [ "$_luci_state" = 1 ]; then
+    printf_state_row "LuCI" "${C_GREEN}УСТАНОВЛЕНО${C_NC}"
     if [ "${LUCI_UPDATE_AVAILABLE:-0}" = 1 ]; then
-        printf_state_row "LuCI" "${C_YELLOW}УСТАНОВЛЕНО → доступно ${LUCI_REMOTE_VERSION}${C_NC}"
         menu_item "[7]" "Обновить LuCI → ${LUCI_REMOTE_VERSION}"
     else
-        printf_state_row "LuCI" "${C_GREEN}УСТАНОВЛЕНО${C_NC}"
         menu_item "[7]" "Удалить Нативный интерфейс DNS Manager"
     fi
 else
@@ -8210,7 +8192,6 @@ case "$c" in
 7) MAIN_STATE_STALE=1;
    _luci_state="$(check_module_state luci)"
    if [ "$_luci_state" = 1 ] && [ "${LUCI_UPDATE_AVAILABLE:-0}" = 1 ]; then
-       confirm_action "Обновить нативный интерфейс LuCI DNS Manager до ${LUCI_REMOTE_VERSION}? Старый интерфейс будет удалён и заменён новой версией." || continue
        luci_companion_update; _rc=$?
        case "$_rc" in
            0) ok_msg "LuCI обновлена до версии ${LUCI_REMOTE_VERSION:-новой версии}." ;;
