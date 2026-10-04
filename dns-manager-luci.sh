@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.6.9
+# Version: 1.6.10
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -23,7 +23,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.6.9"
+VERSION="1.6.10"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -138,7 +138,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.6.9"
+SELF_VERSION="1.6.10"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -1825,7 +1825,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.6.9
+// DNS Manager LuCI version: 1.6.10
 var callStatus = rpc.declare({ object:'dns_manager', method:'status', params:['detail'], expect:{} });
 var callBoardInfo = rpc.declare({ object:'system', method:'info', expect:{} });
 var callRuntime = rpc.declare({ object:'dns_manager', method:'runtime', expect:{} });
@@ -2973,7 +2973,7 @@ function updateManager(root){
     if(r&&r.ok&&r.updated)state.pageNotice.overview='DNS Manager обновлён до '+r.version+'.';
     else state.pageNotice.overview=(r&&r.error)||'DNS Manager не удалось обновить.';
     refresh(root,true);
-  }).catch(function(){
+  }).catch(function(err){
     state.managerUpdating=false;
     state.pageNotice.overview=withRpcError('Не удалось выполнить обновление DNS Manager.',err);
     refresh(root,true);
@@ -3039,13 +3039,13 @@ function updateHdp(root){
     if(r&&r.ok&&r.updated)state.pageNotice.overview='https-dns-proxy обновлён до '+r.version+'.';
     else state.pageNotice.overview=(r&&r.error)||'https-dns-proxy не удалось обновить.';
     refresh(root,true);
-  }).catch(function(){
+  }).catch(function(err){
     state.hdpUpdating=false;
     state.pageNotice.overview=withRpcError('Не удалось выполнить обновление https-dns-proxy.',err);
     refresh(root,true);
   });
 }
-function doUpdate(root){if(state.busy)return;var v=(window.dmState&&window.dmState.luci_latest_version)||'новой версии';state.busy=true;state.pageNotice.overview='Обновляю LuCI…';globalUpdateNotice('Обновляю LuCI до v'+v+'…','info');if(rootAlive(root))renderOverview(root,window.dmState||{});callUpdate().then(function(r){state.busy=false;if(r&&r.ok&&r.updated){var msg='LuCI обновлена до v'+r.version+'. Перезагружаю страницу…';state.pageNotice.overview=msg;globalUpdateNotice(msg,'ok');if(rootAlive(root))renderOverview(root,window.dmState||{});setTimeout(function(){location.reload();},1600);}else{var msg=(r&&r.error)||'LuCI не удалось обновить.';state.pageNotice.overview=msg;globalUpdateNotice(msg,'error');if(rootAlive(root))renderOverview(root,window.dmState||{});}}).catch(function(){state.busy=false;var msg=withRpcError('Не удалось выполнить RPC-обновление LuCI.',err);state.pageNotice.overview=msg;globalUpdateNotice(msg,'error');if(rootAlive(root))renderOverview(root,window.dmState||{});});}
+function doUpdate(root){if(state.busy)return;var v=(window.dmState&&window.dmState.luci_latest_version)||'новой версии';state.busy=true;state.pageNotice.overview='Обновляю LuCI…';globalUpdateNotice('Обновляю LuCI до v'+v+'…','info');if(rootAlive(root))renderOverview(root,window.dmState||{});callUpdate().then(function(r){state.busy=false;if(r&&r.ok&&r.updated){var msg='LuCI обновлена до v'+r.version+'. Перезагружаю страницу…';state.pageNotice.overview=msg;globalUpdateNotice(msg,'ok');if(rootAlive(root))renderOverview(root,window.dmState||{});setTimeout(function(){location.reload();},1600);}else{var msg=(r&&r.error)||'LuCI не удалось обновить.';state.pageNotice.overview=msg;globalUpdateNotice(msg,'error');if(rootAlive(root))renderOverview(root,window.dmState||{});}}).catch(function(err){state.busy=false;var msg=withRpcError('Не удалось выполнить RPC-обновление LuCI.',err);state.pageNotice.overview=msg;globalUpdateNotice(msg,'error');if(rootAlive(root))renderOverview(root,window.dmState||{});});}
 function applyProfile(name,root){
   if(state.busy)return;
   var st=window.dmState||{};
@@ -3070,7 +3070,7 @@ function applyProfile(name,root){
         state.pageNotice.profiles=(r&&r.error)||'Профиль не удалось запустить.';
       }
       refresh(root,true);
-    }).catch(function(){
+    }).catch(function(err){
       state.busy=false;
       state.profileProgress=null;
       setAction(false,withRpcError('Не удалось запустить применение профиля.',err));
@@ -3086,7 +3086,7 @@ function setTestAge(category,hours,root){
   state.busy=true;state.busySetting='testage_'+category;state.settingMessage='Сохраняю срок проверки…';state.settingMessageType='info';renderCatalog(root);
   callTestAge(category,Number(n)).then(function(r){
     state.busy=false;state.busySetting='';state.settingMessage=(r&&r.ok)?'Срок проверки сохранён.':((r&&r.error)||'Срок проверки не удалось сохранить.');state.settingMessageType=(r&&r.ok)?'ok':'error';refresh(root,true);
-  }).catch(function(){state.busy=false;state.busySetting='';state.settingMessage=withRpcError('Срок проверки не удалось сохранить.',err);state.settingMessageType='error';refresh(root,true);});
+  }).catch(function(err){state.busy=false;state.busySetting='';state.settingMessage=withRpcError('Срок проверки не удалось сохранить.',err);state.settingMessageType='error';refresh(root,true);});
 }
 function setSetting(name,en,root){
   if(state.busy)return;
@@ -3103,7 +3103,7 @@ function setSetting(name,en,root){
       setSettingFeedback(name,'Настройка «'+settingName(name)+'»: '+((r&&r.error)||'не удалось изменить.'),'error');
     }
     refresh(root,true);
-  }).catch(function(){
+  }).catch(function(err){
     state.busy=false;state.busySetting='';
     setSettingFeedback(name,'Настройка «'+settingName(name)+'»: '+withRpcError('не удалось изменить.',err),'error');
     refresh(root,true);
@@ -3120,7 +3120,7 @@ function setForceMode(mode,root){
     state.busy=false;state.busySetting='';
     state.pageNotice.doh=(r&&r.ok)?(en?'Перехват DNS включён.':'Перехват DNS выключен.'):(r&&r.error)||'Не удалось изменить перехват DNS.';
     refresh(root,true);
-  }).catch(function(){
+  }).catch(function(err){
     state.busy=false;state.busySetting='';
     state.pageNotice.doh=withRpcError('Не удалось изменить перехват DNS.',err);
     refresh(root,true);
@@ -3386,14 +3386,14 @@ function loadCatalog(root){
   state.catalogLoading=true;
   return callCatalog(state.category,state.offset,state.limit,0).then(function(d){
     state.catalogLoading=false;state.catalogLoaded=true;window.dmCatalog=d||{};renderCatalog(root);renderCatalogBody(root,window.dmCatalog);
-  }).catch(function(){
+  }).catch(function(err){
     state.catalogLoading=false;state.pageNotice.catalog=withRpcError('Не удалось загрузить каталог DNS.',err);renderCatalog(root);
   });
 }
 function showLog(root){
   if(state.logLoading)return Promise.resolve();
   state.logLoading=true;
-  return callLog(160).then(function(r){state.logLoading=false;state.logLoaded=true;state.logText=stripAnsi(r.log||'');renderLog(root);}).catch(function(){state.logLoading=false;state.pageNotice.log=withRpcError('Не удалось загрузить журнал.',err);renderLog(root);});
+  return callLog(160).then(function(r){state.logLoading=false;state.logLoaded=true;state.logText=stripAnsi(r.log||'');renderLog(root);}).catch(function(err){state.logLoading=false;state.pageNotice.log=withRpcError('Не удалось загрузить журнал.',err);renderLog(root);});
 }
 
 var autoStatusTimer=null;
