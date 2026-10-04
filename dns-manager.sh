@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.35.4"
+VERSION="3.35.5"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -8322,6 +8322,16 @@ startup_required_function_check() {
 
 # ==========================================
 # ==========================================
+case "${1:-}" in
+force-state|--force-state)
+    preflight_readonly
+    init_dirs
+    load_config
+    startup_required_function_check || exit 1
+    refresh_runtime_capabilities
+    check_module_state force
+    exit $?
+    ;;
 case "${1:-}" in
 update-check|--update-check)
     preflight_readonly
