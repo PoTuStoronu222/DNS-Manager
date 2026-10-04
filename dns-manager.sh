@@ -95,7 +95,7 @@ WATCHDOG_CRON_BOOT_ENABLED="unknown"
 WATCHDOG_CRON_DETECT_SOURCE="none"
 WATCHDOG_CRON_SCHEDULER_STATE="$STATE_DIR/watchdog-scheduler.state"
 LUCI_CONTROLLER="/usr/lib/lua/luci/controller/dns_manager.lua"
-LUCI_COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
+LUCI_COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 LUCI_COMPANION_CACHE="$BASE_DIR/dns-manager-luci.sh"
 LUCI_STATE_FILE="$CFG_DIR/luci-state.conf"
 LUCI_MENU_FILE="/usr/share/luci/menu.d/luci-app-dns-manager.json"
@@ -5810,17 +5810,17 @@ luci_companion_fetch() {
     mkdir -p "$CFG_DIR" "$STATE_DIR" "$TMP_DIR" 2>/dev/null || { LUCI_COMPANION_FETCH_ERROR="Не удалось подготовить каталог временных файлов."; return 1; }
     _tmp="$TMP_DIR/dns-manager-luci-$$"
     rm -f "$_tmp" 2>/dev/null || true
+    _cb="$(date +%s 2>/dev/null || printf 0)-$$"
+    _fetch_url="${LUCI_COMPANION_URL}&_dmcb=$_cb"
 
-    _cb="$(date +%s 2>/dev/null || printf 0)-$"
-    _fetch_url="$LUCI_COMPANION_URL?_dmcb=$_cb"
     if command -v curl >/dev/null 2>&1; then
-        curl -fsSL --connect-timeout 5 --max-time 30 -o "$_tmp" "$_fetch_url" >/dev/null 2>&1 || {
+        curl -fsSL --connect-timeout 5 --max-time 30 -H 'User-Agent: DNS-Manager-LuCI' -H 'Accept: application/vnd.github.raw+json' -H 'Cache-Control: no-cache' -o "$_tmp" "$_fetch_url" >/dev/null 2>&1 || {
             LUCI_COMPANION_FETCH_ERROR="Ошибка загрузки companion через curl."
             rm -f "$_tmp" 2>/dev/null || true
             return 1
         }
     elif command -v wget >/dev/null 2>&1; then
-        wget -q -T 30 -O "$_tmp" "$_fetch_url" >/dev/null 2>&1 || {
+        wget -q -T 30 --header='User-Agent: DNS-Manager-LuCI' --header='Accept: application/vnd.github.raw+json' --header='Cache-Control: no-cache' -O "$_tmp" "$_fetch_url" >/dev/null 2>&1 || {
             LUCI_COMPANION_FETCH_ERROR="Ошибка загрузки companion через wget."
             rm -f "$_tmp" 2>/dev/null || true
             return 1
@@ -5879,21 +5879,58 @@ luci_companion_update() {
         return 1
     }
 
-    luci_companion_check_update
-    [ "${LUCI_UPDATE_AVAILABLE:-0}" = 1 ] || {
-        return 2
+    _installed_ver="$(sed -n 's/^version=//p' "$LUCI_STATE_FILE" 2>/dev/null | head -n1)"
+    [ -n "$_installed_ver" ] || _installed_ver="$(sed -n 's|^// DNS Manager LuCI version:[[:space:]]*||p' "$LUCI_VIEW_FILE" 2>/dev/null | head -n1)"
+    [ -n "$_installed_ver" ] || { err_msg "Не удалось определить установленную версию LuCI."; return 1; }
+
+    luci_companion_fetch || {
+        [ -n "${LUCI_COMPANION_FETCH_ERROR:-}" ] && err_msg "LuCI: ${LUCI_COMPANION_FETCH_ERROR}" || err_msg "LuCI: не удалось получить свежую версию с GitHub."
+        return 1
     }
+    _new_ver="${LUCI_COMPANION_FETCH_VERSION:-}"
+    [ -n "$_new_ver" ] || { rm -f "${LUCI_COMPANION_FETCH_FILE:-}" 2>/dev/null || true; LUCI_COMPANION_FETCH_FILE=""; err_msg "LuCI: в загруженном файле не найдена версия."; return 1; }
+    if ! _ver_newer "$_new_ver" "$_installed_ver" >/dev/null 2>&1; then
+        rm -f "${LUCI_COMPANION_FETCH_FILE:-}" 2>/dev/null || true
+        LUCI_COMPANION_FETCH_FILE=""
+        LUCI_REMOTE_VERSION="$_new_ver"
+        return 2
+    fi
 
-    _new_ver="$LUCI_REMOTE_VERSION"
-    log_msg "LuCI: чистое обновление $_new_ver — удаление старого интерфейса."
-
+    _tmp="${LUCI_COMPANION_FETCH_FILE:-}"
+    _installed_cache="$LUCI_COMPANION_CACHE"
+    log_msg "LuCI: чистое обновление $_installed_ver → $_new_ver — удаление старого интерфейса."
     luci_companion_remove || {
+        rm -f "$_tmp" 2>/dev/null || true
+        LUCI_COMPANION_FETCH_FILE=""
         err_msg "Не удалось удалить старую версию LuCI. Новую версию не устанавливаю."
         return 1
     }
 
-    log_msg "LuCI: старый интерфейс удалён; устанавливаю $_new_ver."
-    luci_companion_install
+    mkdir -p "$BASE_DIR" "$CFG_DIR" 2>/dev/null || { rm -f "$_tmp" 2>/dev/null || true; LUCI_COMPANION_FETCH_FILE=""; return 1; }
+    if ! cp -f "$_tmp" "$_installed_cache" 2>/dev/null || ! chmod 700 "$_installed_cache" 2>/dev/null; then
+        rm -f "$_tmp" "$_installed_cache" 2>/dev/null || true
+        LUCI_COMPANION_FETCH_FILE=""
+        err_msg "Не удалось подготовить новый установщик LuCI."
+        return 1
+    fi
+    rm -f "$_tmp" 2>/dev/null || true
+    LUCI_COMPANION_FETCH_FILE=""
+
+    sh "$_installed_cache" install >"$TMP_DIR/luci-install.log" 2>&1
+    _luci_rc=$?
+    if [ "$_luci_rc" -ne 0 ]; then
+        [ -s "$TMP_DIR/luci-install.log" ] && while IFS= read -r _luci_line; do [ -n "$_luci_line" ] && log_msg "LuCI installer: $_luci_line"; done < "$TMP_DIR/luci-install.log"
+        rm -f "$_installed_cache" 2>/dev/null || true
+        err_msg "Установщик LuCI завершился с ошибкой (код $_luci_rc)."
+        return 1
+    fi
+
+    [ "$(luci_component_state)" = 1 ] || {
+        err_msg "Новая версия LuCI установлена не полностью."
+        return 1
+    }
+    LUCI_REMOTE_VERSION="$_new_ver"
+    return 0
 }
 
 luci_companion_install() {
