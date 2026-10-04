@@ -118,6 +118,7 @@ steer_case() {
     expected_source="$4"
     printf '%s\n' "$fixture" > "$NFT_FIXTURE"
     STEER_TEST_RUNNING="$running"
+    export STEER_TEST_RUNNING
     STEER_DNS_ACTIVE=0
     STEER_DNS_SOURCE=none
     detect_steer_dns_path || fail "Steer detector returned error"
@@ -125,10 +126,10 @@ steer_case() {
     [ "$STEER_DNS_SOURCE" = "$expected_source" ] || fail "Steer source mismatch for fixture: $fixture"
 }
 
-steer_case 'table inet test { chain prerouting { udp dport 53 counter redirect to :5300 } }' 1 1 Steer
-steer_case 'table ip test { chain prerouting { tcp dport 53 dnat to 127.0.0.1:5300 } }' 1 1 Steer
-steer_case 'table inet test { chain prerouting { udp dport 53 counter redirect to :5053 } }' 1 0 none
-steer_case 'table inet test { chain prerouting { udp dport 53 counter redirect to :5300 } }' 0 0 none
+steer_case 'table inet test { chain prerouting { iifname "br-lan" udp dport 53 counter redirect to :5300 } }' 1 1 Steer
+steer_case 'table ip test { chain prerouting { iifname "br-lan" tcp dport 53 dnat to 127.0.0.1:5300 } }' 1 1 Steer
+steer_case 'table inet test { chain prerouting { iifname "br-lan" udp dport 53 counter redirect to :5053 } }' 1 0 none
+steer_case 'table inet test { chain prerouting { iifname "br-lan" udp dport 53 counter redirect to :5300 } }' 0 0 none
 ok "Steer runtime/dns-path detection"
 
 grep -q '"steer_installed"' "$tmp/backend.sh" || fail "Steer installed status missing from RPC"
