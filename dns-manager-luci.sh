@@ -20,7 +20,7 @@ JOB_DIR="$RUNTIME_DIR/jobs"
 BACKUP_DIR="/etc/dns-manager-luci"
 CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
-COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
+COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
 VERSION="1.6.13"
@@ -258,32 +258,18 @@ fetch_url() {
     _out="$1"
     rm -f "$_out" 2>/dev/null || true
     _cb="$(date +%s 2>/dev/null || printf 0)-$$"
-    _fetch_url="${COMPANION_URL}&_dmcb=$_cb"
-    # GitHub Contents API with a raw response avoids stale raw-host revisions.
-    # falsely report an older LuCI version as current.
+    _fetch_url="${COMPANION_URL}?_dmcb=$_cb"
     if command -v curl >/dev/null 2>&1; then
-        curl -fsSL --connect-timeout 5 --max-time 30 \
-            -H 'User-Agent: DNS-Manager-LuCI' \
-            -H 'Accept: application/vnd.github.raw+json' \
-            -H 'Cache-Control: no-cache' \
-            -o "$_out" "$_fetch_url" >/dev/null 2>&1
+        curl -fsSL --connect-timeout 5 --max-time 30 -o "$_out" "$_fetch_url" >/dev/null 2>&1
     elif command -v wget >/dev/null 2>&1; then
-        wget -q -T 30 \
-            --header='User-Agent: DNS-Manager-LuCI' \
-            --header='Accept: application/vnd.github.raw+json' \
-            --header='Cache-Control: no-cache' \
-            -O "$_out" "$_fetch_url" >/dev/null 2>&1
+        wget -q -T 30 -O "$_out" "$_fetch_url" >/dev/null 2>&1
     elif command -v uclient-fetch >/dev/null 2>&1; then
-        uclient-fetch -q \
-            --header='User-Agent: DNS-Manager-LuCI' \
-            --header='Accept: application/vnd.github.raw+json' \
-            --header='Cache-Control: no-cache' \
-            -O "$_out" "$_fetch_url" >/dev/null 2>&1
+        uclient-fetch -q -O "$_out" "$_fetch_url" >/dev/null 2>&1
     else
         return 1
     fi
     [ -s "$_out" ] || return 1
-    [ "$(wc -c < "$_out" 2>/dev/null | tr -d ' ')" -le 250000 ] 2>/dev/null || return 1
+    [ "$(wc -c < "$_out" 2>/dev/null | tr -d " ")" -le 250000 ] 2>/dev/null || return 1
     return 0
 }
 
