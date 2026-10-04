@@ -95,7 +95,7 @@ WATCHDOG_CRON_BOOT_ENABLED="unknown"
 WATCHDOG_CRON_DETECT_SOURCE="none"
 WATCHDOG_CRON_SCHEDULER_STATE="$STATE_DIR/watchdog-scheduler.state"
 LUCI_CONTROLLER="/usr/lib/lua/luci/controller/dns_manager.lua"
-LUCI_COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
+LUCI_COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 LUCI_COMPANION_CACHE="$BASE_DIR/dns-manager-luci.sh"
 LUCI_STATE_FILE="$CFG_DIR/luci-state.conf"
 LUCI_MENU_FILE="/usr/share/luci/menu.d/luci-app-dns-manager.json"
@@ -5811,20 +5811,22 @@ luci_companion_fetch() {
     _tmp="$TMP_DIR/dns-manager-luci-$$"
     rm -f "$_tmp" 2>/dev/null || true
 
+    _cb="$(date +%s 2>/dev/null || printf 0)-$"
+    _fetch_url="$LUCI_COMPANION_URL?_dmcb=$_cb"
     if command -v curl >/dev/null 2>&1; then
-        curl -fsSL --connect-timeout 5 --max-time 30 -H 'Accept: application/vnd.github.raw+json' -H 'Cache-Control: no-cache' -o "$_tmp" "$LUCI_COMPANION_URL&_dmcb=$(date +%s 2>/dev/null || printf 0)-$$" >/dev/null 2>&1 || {
+        curl -fsSL --connect-timeout 5 --max-time 30 -o "$_tmp" "$_fetch_url" >/dev/null 2>&1 || {
             LUCI_COMPANION_FETCH_ERROR="Ошибка загрузки companion через curl."
             rm -f "$_tmp" 2>/dev/null || true
             return 1
         }
     elif command -v wget >/dev/null 2>&1; then
-        wget -q -T 30 -O "$_tmp" "$LUCI_COMPANION_URL" >/dev/null 2>&1 || {
+        wget -q -T 30 -O "$_tmp" "$_fetch_url" >/dev/null 2>&1 || {
             LUCI_COMPANION_FETCH_ERROR="Ошибка загрузки companion через wget."
             rm -f "$_tmp" 2>/dev/null || true
             return 1
         }
     elif command -v uclient-fetch >/dev/null 2>&1; then
-        uclient-fetch -q -O "$_tmp" "$LUCI_COMPANION_URL" >/dev/null 2>&1 || {
+        uclient-fetch -q -O "$_tmp" "$_fetch_url" >/dev/null 2>&1 || {
             LUCI_COMPANION_FETCH_ERROR="Ошибка загрузки companion через uclient-fetch."
             rm -f "$_tmp" 2>/dev/null || true
             return 1
