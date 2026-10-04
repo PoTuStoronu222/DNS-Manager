@@ -20,7 +20,7 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT INT TERM
 
 awk '
-    /cat > "\$BACKEND_STAGE"/ { capture=1; next }
+    /cat > "[^"]*BACKEND_STAGE[^"]*"[^<]*<<\x27EOF_RPC\x27/ { capture=1; next }
     capture && /^EOF_RPC$/ { exit }
     capture { print }
 ' dns-manager-luci.sh > "$tmp/backend.sh"
@@ -29,7 +29,7 @@ sh -n "$tmp/backend.sh" || fail "embedded backend: sh -n"
 ok "embedded backend syntax"
 
 awk '
-    /cat > "\$VIEW_STAGE"/ { capture=1; next }
+    /cat > "[^"]*VIEW_STAGE[^"]*"[^<]*<<\x27EOF_JS\x27/ { capture=1; next }
     capture && /^EOF_JS$/ { exit }
     capture { print }
 ' dns-manager-luci.sh > "$tmp/overview.js"
