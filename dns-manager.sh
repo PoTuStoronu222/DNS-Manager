@@ -8304,7 +8304,7 @@ startup_update_check() {
         busy) info_msg "Проверка обновления уже выполняется другим процессом; продолжаю запуск версии $VERSION." ;;
         *) [ "$_rc" -eq 0 ] && info_msg "Проверка обновления завершена. Используется версия $VERSION." || warn_msg "Проверка обновления завершилась с кодом $_rc. Продолжаю запуск текущей версии." ;;
     esac
-    luci_companion_sync >/dev/null 2>&1 || true
+    luci_companion_check_update >/dev/null 2>&1 || true
     return 0
 }
 # ==========================================
