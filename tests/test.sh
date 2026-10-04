@@ -93,6 +93,12 @@ cat "$NFT_FIXTURE"
 EOF_NFT
 chmod 0755 "$tmp/bin/nft"
 
+cat > "$tmp/bin/pgrep" <<'EOF_PGREP'
+#!/bin/sh
+exit 1
+EOF_PGREP
+chmod 0755 "$tmp/bin/pgrep"
+
 awk '
     /^detect_steer_dns_path\(\) \{/ { capture=1 }
     capture { print }
