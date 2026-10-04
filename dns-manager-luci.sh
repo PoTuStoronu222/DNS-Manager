@@ -103,7 +103,7 @@ EOF_MENU
     "description": "DNS Manager native LuCI interface",
     "read": {
       "ubus": {
-        "dns_manager": [ "status", "runtime", "catalog", "job", "log", "update_check", "update_check_job", "update_check_job_status" ]
+        "dns_manager": [ "status", "runtime", "catalog", "job", "log", "update_check" ]
       }
     },
     "write": {
@@ -115,7 +115,9 @@ EOF_MENU
 }
 EOF_ACL
 
-    cat > "$BACKEND_FILE" <<'EOF_RPC'
+    BACKEND_STAGE="${BACKEND_FILE}.new.$"
+    rm -f "$BACKEND_STAGE" 2>/dev/null || true
+    cat > "$BACKEND_STAGE" <<'EOF_RPC'
 #!/bin/sh
 # DNS Manager LuCI rpcd plugin
 # Lightweight read path for dashboard; mutations and DNS tests use the
@@ -1755,17 +1757,54 @@ run_action() {
             json_ok
             ;;
         set_setting)
-            _name="$(jget name)"; _enabled="$(jget enabled)"; case "$_enabled" in 0|1) ;; *) json_error "Неверное значение enabled"; return;; esac; case "$_name" in watchdog|force|dnsmasq_perf) ;; *) json_error "Недопустимая настройка"; return;; esac
-            load_manager || { json_error "DNS Manager недоступен"; return; }
-            case "$_name" in
-                watchdog) WATCHDOG_ENABLED="$_enabled"; SILENT_APPLY=1 apply_watchdog >/dev/null 2>&1 ;;
-                force) FORCE_DOH="$_enabled"; SILENT_APPLY=1 apply_extras_now force >/dev/null 2>&1 ;;
-                dnsmasq_perf) DNSMASQ_PERF="$_enabled"; SILENT_APPLY=1 apply_extras_now dnsmasq_perf >/dev/null 2>&1 ;;
-                interval) _key=WATCHDOG_INTERVAL; _min=30; _max=600;;
-                *) json_error "Недопустимый параметр watchdog"; return;;
+            _name="$(jget name)"
+            _enabled="$(jget enabled)"
+            case "$_enabled" in
+                0|1) ;;
+                *) json_error "Неверное значение enabled"; return;;
             esac
-            case "$_value" in ''|*[!0-9]*) json_error "Значение должно быть целым числом"; return;; esac
+            case "$_name" in
+                watchdog|force|dnsmasq_perf) ;;
+                *) json_error "Недопустимая настройка"; return;;
+            esac
+            load_manager || { json_error "DNS Manager недоступен"; return; }
+            _rc=0
+            case "$_name" in
+                watchdog)
+                    WATCHDOG_ENABLED="$_enabled"
+                    SILENT_APPLY=1 apply_watchdog >/dev/null 2>&1 || _rc=$?
+                    ;;
+                force)
+                    FORCE_DOH="$_enabled"
+                    SILENT_APPLY=1 apply_extras_now force >/dev/null 2>&1 || _rc=$?
+                    ;;
+                dnsmasq_perf)
+                    DNSMASQ_PERF="$_enabled"
+                    SILENT_APPLY=1 apply_extras_now dnsmasq_perf >/dev/null 2>&1 || _rc=$?
+                    ;;
+            esac
+            [ "$_rc" -eq 0 ] || { json_error "Настройку «$_name» не удалось применить"; return; }
+            json_ok
+            ;;
+        set_watchdog_setting)
+            _name="$(jget name)"
+            _value="$(jget value)"
+            case "$_name" in
+                interval)
+                    _key=WATCHDOG_INTERVAL
+                    _min=30
+                    _max=600
+                    ;;
+                *)
+                    json_error "Недопустимый параметр watchdog"
+                    return
+                    ;;
+            esac
+            case "$_value" in
+                ''|*[!0-9]*) json_error "Значение должно быть целым числом"; return;;
+            esac
             [ "$_value" -ge "$_min" ] 2>/dev/null && [ "$_value" -le "$_max" ] 2>/dev/null || { json_error "Значение вне допустимого диапазона"; return; }
+            load_manager || { json_error "DNS Manager недоступен"; return; }
             eval "$_key=\"$_value\""
             save_config >/dev/null 2>&1 || { json_error "Не удалось сохранить параметр watchdog"; return; }
             _saved="$(cfg_get "$_key")"
@@ -1802,12 +1841,20 @@ case "${1:-}" in
     *) exit 1;;
 esac
 EOF_RPC
-    if ! sh -n "$BACKEND_FILE" >/dev/null 2>&1; then
+    if ! sh -n "$BACKEND_STAGE" >/dev/null 2>&1; then
+        rm -f "$BACKEND_STAGE" 2>/dev/null || true
         err "Сгенерированный LuCI backend не прошёл shell-проверку."
         return 1
     fi
-    chmod 0755 "$BACKEND_FILE"
-    cat > "$RPC_PLUGIN" <<'EOF_RPC_WRAPPER'
+    chmod 0755 "$BACKEND_STAGE"
+    mv -f "$BACKEND_STAGE" "$BACKEND_FILE" || {
+        rm -f "$BACKEND_STAGE" 2>/dev/null || true
+        err "Не удалось заменить LuCI backend."
+        return 1
+    }
+    RPC_STAGE="${RPC_PLUGIN}.new.$"
+    rm -f "$RPC_STAGE" 2>/dev/null || true
+    cat > "$RPC_STAGE" <<'EOF_RPC_WRAPPER'
 #!/bin/sh
 # DNS Manager LuCI rpcd plugin
 # Thin bridge; all DNS Manager logic lives in the dedicated backend.
@@ -1815,35 +1862,57 @@ BACKEND="/usr/lib/dns-manager-luci/backend.sh"
 [ -x "$BACKEND" ] || { printf '{"ok":false,"error":"DNS Manager LuCI backend not found"}'; exit 1; }
 exec "$BACKEND" "$@"
 EOF_RPC_WRAPPER
-    chmod 0755 "$RPC_PLUGIN"
+    chmod 0755 "$RPC_STAGE"
+    mv -f "$RPC_STAGE" "$RPC_PLUGIN" || {
+        rm -f "$RPC_STAGE" 2>/dev/null || true
+        err "Не удалось заменить LuCI RPC plugin."
+        return 1
+    }
 
-    cat > "$VIEW_FILE" <<'EOF_JS'
+    VIEW_STAGE="${VIEW_FILE}.new.$"
+    rm -f "$VIEW_STAGE" 2>/dev/null || true
+    cat > "$VIEW_STAGE" <<'EOF_JS'
 'use strict';
 'require view';
 'require rpc';
 'require ui';
 
 // DNS Manager LuCI version: 1.6.17
-var callStatus = rpc.declare({ object:'dns_manager', method:'status', params:['detail'], expect:{} });
+function dmRpc(o){
+  var fn=rpc.declare(o);
+  return function(){
+    var self=this,args=arguments,left=6;
+    function go(){
+      return fn.apply(self,args).catch(function(e){
+        var msg=String((e&&e.message)||e||'');
+        if(left-- > 0 && /Object not found/i.test(msg))
+          return new Promise(function(resolve){setTimeout(resolve,1500);}).then(go);
+        throw e;
+      });
+    }
+    return go();
+  };
+}
+var callStatus = dmRpc({ object:'dns_manager', method:'status', params:['detail'], expect:{} });
 var callBoardInfo = rpc.declare({ object:'system', method:'info', expect:{} });
-var callRuntime = rpc.declare({ object:'dns_manager', method:'runtime', expect:{} });
+var callRuntime = dmRpc({ object:'dns_manager', method:'runtime', expect:{} });
 function statusDetail(){return currentRoute()==='network'?1:0;}
-var callCatalog = rpc.declare({ object:'dns_manager', method:'catalog', params:['category','offset','limit','only_ok'], expect:{} });
-var callUpdateCheck = rpc.declare({ object:'dns_manager', method:'update_check', params:['force'], expect:{} });
-var callUpdate = rpc.declare({ object:'dns_manager', method:'update', expect:{} });
-var callManagerUpdate = rpc.declare({ object:'dns_manager', method:'update_manager', expect:{} });
-var callHdpUpdate = rpc.declare({ object:'dns_manager', method:'update_hdp', expect:{} });
-var callUpdateCatalog = rpc.declare({ object:'dns_manager', method:'update_catalog', expect:{} });
-var callProfile = rpc.declare({ object:'dns_manager', method:'set_profile', params:['profile'], expect:{} });
-var callSlot = rpc.declare({ object:'dns_manager', method:'set_slot', params:['slot','id'], expect:{} });
-var callSetting = rpc.declare({ object:'dns_manager', method:'set_setting', params:['name','enabled'], expect:{} });
-var callWatchdogSetting = rpc.declare({ object:'dns_manager', method:'set_watchdog_setting', params:['name','value'], expect:{} });
-var callTestAge = rpc.declare({ object:'dns_manager', method:'set_test_age', params:['category','hours'], expect:{} });
-var callTestAll = rpc.declare({ object:'dns_manager', method:'test_all', expect:{} });
-var callTestCurrent = rpc.declare({ object:'dns_manager', method:'test_current', expect:{} });
-var callTestOne = rpc.declare({ object:'dns_manager', method:'test_one', params:['id'], expect:{} });
-var callJob = rpc.declare({ object:'dns_manager', method:'job', params:['id'], expect:{} });
-var callLog = rpc.declare({ object:'dns_manager', method:'log', params:['lines'], expect:{} });
+var callCatalog = dmRpc({ object:'dns_manager', method:'catalog', params:['category','offset','limit','only_ok'], expect:{} });
+var callUpdateCheck = dmRpc({ object:'dns_manager', method:'update_check', params:['force'], expect:{} });
+var callUpdate = dmRpc({ object:'dns_manager', method:'update', expect:{} });
+var callManagerUpdate = dmRpc({ object:'dns_manager', method:'update_manager', expect:{} });
+var callHdpUpdate = dmRpc({ object:'dns_manager', method:'update_hdp', expect:{} });
+var callUpdateCatalog = dmRpc({ object:'dns_manager', method:'update_catalog', expect:{} });
+var callProfile = dmRpc({ object:'dns_manager', method:'set_profile', params:['profile'], expect:{} });
+var callSlot = dmRpc({ object:'dns_manager', method:'set_slot', params:['slot','id'], expect:{} });
+var callSetting = dmRpc({ object:'dns_manager', method:'set_setting', params:['name','enabled'], expect:{} });
+var callWatchdogSetting = dmRpc({ object:'dns_manager', method:'set_watchdog_setting', params:['name','value'], expect:{} });
+var callTestAge = dmRpc({ object:'dns_manager', method:'set_test_age', params:['category','hours'], expect:{} });
+var callTestAll = dmRpc({ object:'dns_manager', method:'test_all', expect:{} });
+var callTestCurrent = dmRpc({ object:'dns_manager', method:'test_current', expect:{} });
+var callTestOne = dmRpc({ object:'dns_manager', method:'test_one', params:['id'], expect:{} });
+var callJob = dmRpc({ object:'dns_manager', method:'job', params:['id'], expect:{} });
+var callLog = dmRpc({ object:'dns_manager', method:'log', params:['lines'], expect:{} });
 
 var PROFILE = [
   ['bypass','Максимальный обход'], ['clean','Максимальная скорость'],
@@ -3504,7 +3573,12 @@ return view.extend({
   remove:function(){stopAutoStatus();}
 });
 EOF_JS
-    chmod 0644 "$MENU_FILE" "$ACL_FILE" "$VIEW_FILE"
+    chmod 0644 "$MENU_FILE" "$ACL_FILE" "$VIEW_STAGE"
+    mv -f "$VIEW_STAGE" "$VIEW_FILE" || {
+        rm -f "$VIEW_STAGE" 2>/dev/null || true
+        err "Не удалось заменить LuCI JS view."
+        return 1
+    }
 
     # The current native LuCI page is a JavaScript view and no longer uses
     # the former dns_manager Lua controller. Remove only that DNS Manager-owned
