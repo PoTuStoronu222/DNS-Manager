@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.35.42"
+VERSION="3.35.43"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -5583,6 +5583,8 @@ select_slot() {
             RU) slot_cat_set "$slot" "regional" || return 1 ;;
             *) slot_cat_set "$slot" "" || return 1 ;;
         esac
+        sync_profile_from_selected_categories >/dev/null
+        [ "$DNS_PROFILE" = hybrid ] && HYBRID_STAGE_SKIP=1
         sync_regional_dns_state
         info_msg "Изменение сохранено только после применения DNS."
         return
@@ -5599,6 +5601,7 @@ select_slot() {
     slot_set "$slot" "$id" || return 1
     slot_cat_set "$slot" "$_selected_cat" || return 1
     sync_profile_from_selected_categories >/dev/null
+    [ "$DNS_PROFILE" = hybrid ] && HYBRID_STAGE_SKIP=1
     sync_regional_dns_state
     info_msg "Выбор сохранится после применения DNS."
 }
