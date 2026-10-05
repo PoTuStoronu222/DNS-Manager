@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.35.40"
+VERSION="3.35.41"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -2228,13 +2228,12 @@ test_dns_catalog() (
         n=$((n+1))
         if [ $((n % batch)) -eq 0 ]; then
             wait
-            if [ $((n % TEST_PROGRESS_EVERY)) -eq 0 ] || [ "$n" -eq "$total" ]; then
+            if [ $((n % TEST_PROGRESS_EVERY)) -eq 0 ]; then
                 test_progress
             fi
         fi
     done < "$DNS_CATALOG"
     wait
-    test_progress
 
     _result_tmp="$TMP_DIR/test-results-$$"
     _meta_tmp="$TMP_DIR/test-results-meta-$$"
