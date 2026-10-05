@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.35.19"
+VERSION="3.35.20"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -443,9 +443,9 @@ auto_update_manager() {
         _update_url="${UPDATE_URL}?_dmcb=$(date +%s 2>/dev/null || printf 0)-$-$_fetch_attempt"
 
         if command -v curl >/dev/null 2>&1; then
-            curl -fsSL --connect-timeout 4 --max-time 20 -o "$_upd_tmp" "$_update_url" >/dev/null 2>&1
+            curl -fsSL --connect-timeout 4 --max-time 20 -H "Cache-Control: no-cache" -H "Pragma: no-cache" -o "$_upd_tmp" "$_update_url" >/dev/null 2>&1
         elif command -v wget >/dev/null 2>&1; then
-            wget -q -T 20 -O "$_upd_tmp" "$_update_url" >/dev/null 2>&1
+            wget -q -T 20 --header="Cache-Control: no-cache" --header="Pragma: no-cache" -O "$_upd_tmp" "$_update_url" >/dev/null 2>&1
         else
             uclient-fetch -q -O "$_upd_tmp" "$_update_url" >/dev/null 2>&1
         fi
@@ -8375,8 +8375,12 @@ startup_update_check() {
     fi
 
     # Startup checks are silent when nothing needs attention.
-    # Real update/failure events are already recorded by auto_update_manager.
+    # Show only a real update or a failed check; never log a routine "current" result.
     auto_update_manager >/dev/null 2>&1 || true
+    case "${AUTO_UPDATE_RESULT:-}" in
+        updated) info_msg "DNS Manager автоматически обновлён до версии $VERSION." ;;
+        failed) warn_msg "Проверка обновления DNS Manager не удалась. Продолжаю запуск версии $VERSION." ;;
+    esac
     luci_companion_check_update >/dev/null 2>&1 || true
     return 0
 }
