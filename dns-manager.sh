@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.35.13"
+VERSION="3.35.14"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -430,56 +430,77 @@ auto_update_manager() {
         return 0
     fi
 
-    _upd_tmp="/tmp/dns-manager-update-$$"
+    _upd_tmp="/tmp/dns-manager-update-$"
+    _upd_syntax="${_upd_tmp}.syntax"
     UPDATE_TMP_FILE="$_upd_tmp"
-    rm -f "$_upd_tmp" 2>/dev/null
+    rm -f "$_upd_tmp" "$_upd_syntax" 2>/dev/null
 
-    _update_url="${UPDATE_URL}?_dmcb=$(date +%s 2>/dev/null || printf 0)-$$"
+    _fetch_ok=0
+    _fetch_reason=""
+    _fetch_attempt=1
+    while [ "$_fetch_attempt" -le 3 ]; do
+        rm -f "$_upd_tmp" "$_upd_syntax" 2>/dev/null
+        _update_url="${UPDATE_URL}?_dmcb=$(date +%s 2>/dev/null || printf 0)-$-$_fetch_attempt"
 
-    if command -v curl >/dev/null 2>&1; then
-        curl -fsSL --connect-timeout 4 --max-time 20 -o "$_upd_tmp" "$_update_url" >/dev/null 2>&1
-    elif command -v wget >/dev/null 2>&1; then
-        wget -q -T 20 -O "$_upd_tmp" "$_update_url" >/dev/null 2>&1
-    else
-        uclient-fetch -q -O "$_upd_tmp" "$_update_url" >/dev/null 2>&1
-    fi
+        if command -v curl >/dev/null 2>&1; then
+            curl -fsSL --connect-timeout 4 --max-time 20 -o "$_upd_tmp" "$_update_url" >/dev/null 2>&1
+        elif command -v wget >/dev/null 2>&1; then
+            wget -q -T 20 -O "$_upd_tmp" "$_update_url" >/dev/null 2>&1
+        else
+            uclient-fetch -q -O "$_upd_tmp" "$_update_url" >/dev/null 2>&1
+        fi
 
-    if [ ! -s "$_upd_tmp" ]; then
-        log_msg "Автообновление: файл не получен. Нет связи, блокировка, нет curl/wget или сервер недоступен. Продолжаю работу без обновления."
+        if [ ! -s "$_upd_tmp" ]; then
+            _fetch_reason="файл не получен"
+            _fetch_attempt=$((_fetch_attempt+1))
+            [ "$_fetch_attempt" -le 3 ] && sleep 1
+            continue
+        fi
+
+        head -n 1 "$_upd_tmp" 2>/dev/null | grep -q '^#!/bin/sh' || {
+            _fetch_reason="загруженный файл не начинается с #!/bin/sh"
+            _fetch_attempt=$((_fetch_attempt+1))
+            [ "$_fetch_attempt" -le 3 ] && sleep 1
+            continue
+        }
+
+        _new_version="$(sed -n 's/^VERSION="\([^"]*\)"$/\1/p' "$_upd_tmp" 2>/dev/null | head -n1)"
+        if [ -z "$_new_version" ]; then
+            _fetch_reason="в файле не найдена VERSION"
+            _fetch_attempt=$((_fetch_attempt+1))
+            [ "$_fetch_attempt" -le 3 ] && sleep 1
+            continue
+        fi
+
+        _last_nonempty="$(sed -n '/[^[:space:]]/!d; $p' "$_upd_tmp" 2>/dev/null)"
+        if [ "$_last_nonempty" != "main_menu" ]; then
+            _fetch_reason="файл получен не полностью"
+            _fetch_attempt=$((_fetch_attempt+1))
+            [ "$_fetch_attempt" -le 3 ] && sleep 1
+            continue
+        fi
+
+        if ! sh -n "$_upd_tmp" 2>"$_upd_syntax"; then
+            _fetch_reason="syntax-check не пройден"
+            _fetch_attempt=$((_fetch_attempt+1))
+            [ "$_fetch_attempt" -le 3 ] && sleep 1
+            continue
+        fi
+
+        _fetch_ok=1
+        break
+    done
+
+    if [ "$_fetch_ok" != 1 ]; then
+        log_msg "Автообновление: не удалось получить и проверить файл после 3 попыток. Последняя причина: $_fetch_reason."
         AUTO_UPDATE_RESULT="failed"
-        rm -f "$_upd_tmp" 2>/dev/null
+        rm -f "$_upd_tmp" "$_upd_syntax" 2>/dev/null
         UPDATE_TMP_FILE=""
         release_auto_update_lock
         return 0
     fi
 
-    head -n 1 "$_upd_tmp" 2>/dev/null | grep -q '^#!/bin/sh' || {
-        log_msg "Автообновление: загруженный файл не является sh-скриптом."
-        AUTO_UPDATE_RESULT="failed"
-        rm -f "$_upd_tmp" 2>/dev/null
-        UPDATE_TMP_FILE=""
-        release_auto_update_lock
-        return 0
-    }
-
-    _new_version="$(sed -n 's/^VERSION="\([^"]*\)"$/\1/p' "$_upd_tmp" 2>/dev/null | head -n1)"
-    [ -n "$_new_version" ] || {
-        AUTO_UPDATE_RESULT="failed"
-        log_msg "Автообновление: в загруженном файле не найдена строка VERSION."
-        rm -f "$_upd_tmp" 2>/dev/null
-        UPDATE_TMP_FILE=""
-        release_auto_update_lock
-        return 0
-    }
-
-    if ! sh -n "$_upd_tmp" 2>/dev/null; then
-        log_msg "Автообновление: синтаксическая проверка загруженного файла не пройдена."
-        AUTO_UPDATE_RESULT="failed"
-        rm -f "$_upd_tmp" 2>/dev/null
-        UPDATE_TMP_FILE=""
-        release_auto_update_lock
-        return 0
-    fi
+    rm -f "$_upd_syntax" 2>/dev/null
 
     # A network fetch + shell/version validation completed successfully; only now
     # advance the throttle timestamp. Failed/blocked checks must be retryable.
