@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.35.30"
+VERSION="3.35.31"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -4683,12 +4683,15 @@ restore_dns_core() {
         unset ROLLBACK_DNS_CORE_ONLY
     fi
 
+    # Apply the restored configuration first. Service state is restored
+    # afterwards so a service that was originally stopped stays stopped.
+    if [ "$_rb_hdp" -eq 0 ]; then
+        /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || true
+    fi
+    /etc/init.d/dnsmasq restart >/dev/null 2>&1 || true
     if [ "$_rb_hdp" -eq 0 ]; then
         restore_dns_core_service_state || true
     fi
-
-    /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || true
-    /etc/init.d/dnsmasq restart >/dev/null 2>&1 || true
 
     clear_dns_core_runtime_state || _rc=1
 
