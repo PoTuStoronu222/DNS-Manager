@@ -483,7 +483,12 @@ grep -q 'test_dns_catalog' "$tmp/profile_apply_begin.sh" || fail "profile apply 
 grep -q 'test_dns_catalog ||' "$tmp/profile_apply_begin.sh" || fail "profile full test failure is not propagated"
 grep -q 'PROFILE_FULL_TEST=0' "$tmp/profile_apply_begin.sh" || fail "profile full-test flag is not reset on failure"
 
-grep -q 'if [ "${PROFILE_APPLY:-0}" = 1 ] && [ "${PROFILE_FULL_TEST:-0}" != 1 ]; then' dns-manager.sh || fail "bounded picker guard does not distinguish full profile tests"
+grep -q '^auto_fill_slots() {' dns-manager.sh || fail "automatic profile DNS selection helper missing"
+awk '/^auto_fill_slots\\(\\)/,/^return 0/' dns-manager.sh > "$tmp/auto_fill_profile.sh"
+grep -q 'ensure_test_results_fresh' "$tmp/auto_fill_profile.sh" || fail "profile selection does not use fresh full results"
+if grep -q 'profile_fill_slots' dns-manager.sh; then
+    fail "obsolete bounded profile picker remains"
+fi
 if grep -q 'PROFILE_FRESH_OK_IDS' dns-manager.sh; then
     fail "obsolete per-profile fresh DNS list remains"
 fi
@@ -515,7 +520,7 @@ grep -q '"profile_job_message"' "$tmp/backend.sh" || fail "profile job message i
 grep -q 'Последняя операция: профиль' "$tmp/overview.js" || fail "LuCI does not show the last profile operation after reopen"
 grep -q 'Причина:' "$tmp/overview.js" || fail "LuCI does not show the profile failure reason"
 grep -q 'Закрытие LuCI не останавливает операцию' "$tmp/overview.js" || fail "LuCI does not explain persistent running profile jobs"
-grep -q "setAction(true,p?'Профиль «'+profileName(p)+'» уже применяется. Связь восстановлена.':'Применение профиля уже выполняется. Связь восстановлена.','running')" "$tmp/overview.js" || fail "running profile resume is not labeled as running"
+grep -Fq "setAction(true,p?'Профиль «'+profileName(p)+'» уже применяется. Связь восстановлена.':'Применение профиля уже выполняется. Связь восстановлена.','running')" "$tmp/overview.js" || fail "running profile resume is not labeled as running"
 ok "LuCI persists profile operation state across page reloads"
 
 # LuCI must also expose the most recent long-running DNS check after a page reload.
