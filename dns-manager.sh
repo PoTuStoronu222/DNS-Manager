@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.35.48"
+VERSION="3.35.49"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -6769,6 +6769,18 @@ watchdog_desired_cat() {
         *) return 1 ;;
     esac
 }
+watchdog_target_live_count() {
+    _target_live=0
+    _target_cat="$(watchdog_scope_category 2>/dev/null || true)"
+    [ -n "$_target_cat" ] || { printf "0\n"; return 0; }
+    for _tls in 1 2 3 4 5 6; do
+        eval "_tlid=\${SLOT_${_tls}:-}"
+        [ -n "$_tlid" ] || continue
+        [ "$(dns_cat "$_tlid" 2>/dev/null || true)" = "$_target_cat" ] || continue
+        watchdog_check_slot "$_tls" >/dev/null 2>&1 && _target_live=$((_target_live+1))
+    done
+    printf "%s\n" "$_target_live"
+}
 watchdog_candidate_categories() {
     _slot="$1"
     _desired="$(watchdog_desired_cat "$_slot")"
@@ -7064,6 +7076,7 @@ watchdog_pick_replacement() {
     _slot="$1"
     _used="$2"
     _tried="$3"
+    _allow_clean="${4:-0}"
     _selection_kind="$(watchdog_scope_category 2>/dev/null || true)"
     [ -n "$_selection_kind" ] || return 1
     _desired_for_pick="$(watchdog_desired_cat "$_slot")"
@@ -7073,10 +7086,10 @@ watchdog_pick_replacement() {
         *) _probe_domain="example.com" ;;
     esac
 
-    # Prefer the intended category. If every candidate in that category is
-    # unavailable, use clean as a temporary service-preserving fallback.
+    # Prefer the intended category. Clean is only a temporary fallback when
+    # no target-category DNS is currently alive anywhere in the profile.
     _passcats="$_desired_for_pick"
-    if [ "$_slot" != RU ] && [ "$_desired_for_pick" != clean ]; then
+    if [ "$_allow_clean" = 1 ] && [ "$_slot" != RU ] && [ "$_desired_for_pick" != clean ]; then
         _passcats="$_desired_for_pick clean"
     fi
 
@@ -7124,7 +7137,7 @@ watchdog_pick_replacement() {
 watchdog_apply_slot_candidate() {
     _slot="$1"; _new_id="$2"; _new_cat="$3"; _old_id="$4"; _old_cat="$5"
     eval "_port=\${PORT_${_slot}:-}"
-    [ -n "$_slot" ] && [ -n "$_new_id" ] || return 1
+    [ -n "$_slot" ] || return 1
     slot_set "$_slot" "$_new_id" || return 1
     slot_cat_set "$_slot" "$_new_cat" || return 1
 
@@ -7156,6 +7169,14 @@ watchdog_apply_slot_candidate() {
         return 1
     fi
     sleep 3
+    if [ -z "$_new_id" ]; then
+        if ! save_config; then
+            watchdog_candidate_rollback >/dev/null 2>&1 || true
+            return 1
+        fi
+        normalize_ownership_snapshot >/dev/null 2>&1 || true
+        return 0
+    fi
     if watchdog_check_slot "$_slot"; then
         if ! save_config; then
             watchdog_candidate_rollback >/dev/null 2>&1 || true
@@ -8181,6 +8202,10 @@ watchdog_slot_target_run() {
     if [ "$_slot" != RU ] && [ -n "$_target_id" ] && [ "$_target_cat" != clean ] && [ "$(dns_cat "$_target_id" 2>/dev/null)" = clean ]; then
         _promote_fallback=1
     fi
+    _target_live="$(watchdog_target_live_count 2>/dev/null || printf 0)"
+    case "$_target_live" in ""|*[!0-9]*) _target_live=0;; esac
+    _allow_clean=0
+    [ "$_target_live" -eq 0 ] && [ "$_promote_fallback" != 1 ] && _allow_clean=1
 
     if ! watchdog_resource_guard; then
         return 0
@@ -8214,7 +8239,7 @@ watchdog_slot_target_run() {
     _replacement_ok=0
     while [ "$_attempt" -lt 2 ]; do
         _attempt=$((_attempt+1))
-        _picked="$(watchdog_pick_replacement "$_slot" "$_used" "$_tried")"
+        _picked="$(watchdog_pick_replacement "$_slot" "$_used" "$_tried" "$_allow_clean")"
         _repl="${_picked%%|*}"
         _repl_cat="${_picked#*|}"
         [ -n "$_repl" ] || break
@@ -8227,7 +8252,16 @@ watchdog_slot_target_run() {
             break
         fi
     done
-    [ "$_replacement_ok" = 1 ] || _slot_rc=1
+    if [ "$_replacement_ok" != 1 ] && [ "$_target_live" -gt 0 ] && [ "$_promote_fallback" != 1 ] && [ -n "$_target_id" ]; then
+        log_msg "Watchdog: другой DNS целевой категории остаётся рабочим; освобождаю неработающий слот $_slot вместо перехода на clean."
+        if watchdog_apply_slot_candidate "$_slot" "" "" "$_old_id" "$_old_cat"; then
+            _slot_rc=0
+        else
+            _slot_rc=1
+        fi
+    else
+        [ "$_replacement_ok" = 1 ] || _slot_rc=1
+    fi
     rm -f "$_used" "$_tried"
     release_mutation_lock
     return "$_slot_rc"
