@@ -286,7 +286,7 @@ grep -q 'if command -v dig' "$tmp/local_slot_test_fn.sh" || fail "local slot tes
 grep -Fq 'dig @127.0.0.1 -p "$_port" "$_domain" A +time=2 +tries=1' "$tmp/local_slot_test_fn.sh" || fail "local slot test exact dig endpoint missing"
 grep -q 'job_write "\$_jid" dns_status' "$tmp/backend.sh" || fail "single DNS job does not persist its exact status"
 grep -q 'job_write "\$_jid" ping' "$tmp/backend.sh" || fail "single DNS job does not persist its exact latency"
-grep -q 'status:j&&j.dns_status' "$tmp/overview.js" || fail "LuCI single-test UI still prefers aggregate status"
+grep -Fq 'status:(j&&j.dns_status)?String(j.dns_status):\x27FAIL\x27' "$tmp/overview.js" || fail "LuCI single-test UI does not prefer exact job status"
 ok "independent DNS test uses the exact result and local-port-safe checker"
 
 # Ready-made profiles must not fall through into the generic Hybrid/Max
