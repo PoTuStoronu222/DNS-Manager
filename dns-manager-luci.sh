@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.6.55
+# Version: 1.6.56
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -23,7 +23,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.6.55"
+VERSION="1.6.56"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -144,7 +144,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.6.55"
+SELF_VERSION="1.6.56"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -2030,6 +2030,7 @@ run_action() {
                     WATCHDOG_GUARD_INTERVAL) WATCHDOG_GUARD_INTERVAL="$_old_value" ;;
                 esac
                 save_config >/dev/null 2>&1 || true
+                watchdog_restore_service_state "$_old_service_enabled" "$_old_service_running"
                 json_error "Не удалось сохранить параметр watchdog; прежнее значение восстановлено"
                 return
             fi
@@ -2045,11 +2046,13 @@ run_action() {
                     WATCHDOG_GUARD_INTERVAL) WATCHDOG_GUARD_INTERVAL="$_old_value" ;;
                 esac
                 save_config >/dev/null 2>&1 || true
+                watchdog_restore_service_state "$_old_service_enabled" "$_old_service_running"
                 json_error "Параметр watchdog не сохранился; прежнее значение восстановлено"
                 return
             fi
             if [ "${WATCHDOG_ENABLED:-0}" = 1 ]; then
                 if ! watchdog_service_start_enable >/dev/null 2>&1; then
+                    watchdog_service_stop_disable >/dev/null 2>&1 || true
                     case "$_key" in
                         WATCHDOG_INTERVAL) WATCHDOG_INTERVAL="$_old_value" ;;
                         WATCHDOG_FAIL_THRESHOLD) WATCHDOG_FAIL_THRESHOLD="$_old_value" ;;
@@ -2060,9 +2063,40 @@ run_action() {
                         WATCHDOG_GUARD_INTERVAL) WATCHDOG_GUARD_INTERVAL="$_old_value" ;;
                     esac
                     save_config >/dev/null 2>&1 || true
-                    if [ "$_old_service_enabled" = 1 ]; then /etc/init.d/dns-watchdog enable >/dev/null 2>&1 || true; fi
-                    if [ "$_old_service_running" = 1 ]; then /etc/init.d/dns-watchdog start >/dev/null 2>&1 || true; fi
+                    watchdog_restore_service_state "$_old_service_enabled" "$_old_service_running"
                     json_error "Watchdog не удалось перезапустить; прежнее значение восстановлено"
+                    return
+                fi
+                if ! watchdog_cron_remove_owned_block >/dev/null 2>&1; then
+                    watchdog_service_stop_disable >/dev/null 2>&1 || true
+                    case "$_key" in
+                        WATCHDOG_INTERVAL) WATCHDOG_INTERVAL="$_old_value" ;;
+                        WATCHDOG_FAIL_THRESHOLD) WATCHDOG_FAIL_THRESHOLD="$_old_value" ;;
+                        WATCHDOG_REPAIR_COOLDOWN) WATCHDOG_REPAIR_COOLDOWN="$_old_value" ;;
+                        WATCHDOG_MAX_REPAIRS) WATCHDOG_MAX_REPAIRS="$_old_value" ;;
+                        WATCHDOG_MAX_RESTARTS) WATCHDOG_MAX_RESTARTS="$_old_value" ;;
+                        WATCHDOG_MAX_CANDIDATES) WATCHDOG_MAX_CANDIDATES="$_old_value" ;;
+                        WATCHDOG_GUARD_INTERVAL) WATCHDOG_GUARD_INTERVAL="$_old_value" ;;
+                    esac
+                    save_config >/dev/null 2>&1 || true
+                    watchdog_restore_service_state "$_old_service_enabled" "$_old_service_running"
+                    json_error "Не удалось убрать старый manager-owned cron watchdog; изменение отменено"
+                    return
+                fi
+            else
+                if ! watchdog_cron_remove_owned_block >/dev/null 2>&1; then
+                    case "$_key" in
+                        WATCHDOG_INTERVAL) WATCHDOG_INTERVAL="$_old_value" ;;
+                        WATCHDOG_FAIL_THRESHOLD) WATCHDOG_FAIL_THRESHOLD="$_old_value" ;;
+                        WATCHDOG_REPAIR_COOLDOWN) WATCHDOG_REPAIR_COOLDOWN="$_old_value" ;;
+                        WATCHDOG_MAX_REPAIRS) WATCHDOG_MAX_REPAIRS="$_old_value" ;;
+                        WATCHDOG_MAX_RESTARTS) WATCHDOG_MAX_RESTARTS="$_old_value" ;;
+                        WATCHDOG_MAX_CANDIDATES) WATCHDOG_MAX_CANDIDATES="$_old_value" ;;
+                        WATCHDOG_GUARD_INTERVAL) WATCHDOG_GUARD_INTERVAL="$_old_value" ;;
+                    esac
+                    save_config >/dev/null 2>&1 || true
+                    watchdog_restore_service_state "$_old_service_enabled" "$_old_service_running"
+                    json_error "Не удалось убрать старый manager-owned cron watchdog; изменение отменено"
                     return
                 fi
             fi
@@ -2071,6 +2105,20 @@ run_action() {
     esac
 }
 
+watchdog_restore_service_state() {
+    _enabled="$1"; _running="$2"
+    [ -x /etc/init.d/dns-watchdog ] || return 0
+    if [ "$_enabled" = 1 ]; then
+        /etc/init.d/dns-watchdog enable >/dev/null 2>&1 || true
+    else
+        /etc/init.d/dns-watchdog disable >/dev/null 2>&1 || true
+    fi
+    if [ "$_running" = 1 ]; then
+        /etc/init.d/dns-watchdog start >/dev/null 2>&1 || true
+    else
+        /etc/init.d/dns-watchdog stop >/dev/null 2>&1 || true
+    fi
+}
 test_json() { case "${RPC_METHOD:-}" in test_all) job_start_test_all;; test_current) job_start_test_current;; test_one) job_start_test_one "$(jget id)";; *) json_error "Недопустимый метод проверки";; esac; }
 
 case "${1:-}" in
@@ -2129,7 +2177,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.6.55
+// DNS Manager LuCI version: 1.6.56
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
