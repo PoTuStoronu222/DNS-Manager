@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.6.23
+# Version: 1.6.24
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -23,7 +23,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.6.23"
+VERSION="1.6.24"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -145,7 +145,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.6.23"
+SELF_VERSION="1.6.24"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -1448,40 +1448,58 @@ local_slot_test_one() {
     else
         rm -f "$_out" 2>/dev/null || true
         _start_ms="$(awk '{printf "%.0f", $1*1000}' /proc/uptime 2>/dev/null || printf 0)"
-        if command -v dig >/dev/null 2>&1; then
-            dig @127.0.0.1 -p "$_port" "$_domain" A +time=2 +tries=1 +stats >"$_out" 2>&1
-        elif command -v nslookup >/dev/null 2>&1; then
-            nslookup -port="$_port" "$_domain" 127.0.0.1 >"$_out" 2>&1
+        _lookup_rc=0
+
+        # A slot is healthy only when the DNS service returns an actual A
+        # record through this exact local listener. A generic "Server:" line
+        # is not a successful DNS response.
+        if command -v nslookup >/dev/null 2>&1; then
+            nslookup -port="$_port" "$_domain" 127.0.0.1 >"$_out" 2>&1 || _lookup_rc=$?
+            _answer="$(awk '
+                /^Name:[[:space:]]/ { in_answer=1; next }
+                !in_answer { next }
+                {
+                    for (i=1; i<=NF; i++) {
+                        v=$i
+                        gsub(/[^0-9.].*$/, "", v)
+                        if (v ~ /^[0-9]+(\.[0-9]+){3}$/ && v !~ /^127\./ && v != "0.0.0.0") {
+                            print v
+                            exit
+                        }
+                    }
+                }
+            ' "$_out" 2>/dev/null | head -n1)"
+        elif command -v dig >/dev/null 2>&1; then
+            # dig is only a fallback for systems without nslookup.
+            dig @127.0.0.1 -p "$_port" "$_domain" A +time=2 +tries=1 +short >"$_out" 2>&1 || _lookup_rc=$?
+            _answer="$(awk '/^[0-9]+(\.[0-9]+){3}$/ && $0 !~ /^127\./ && $0 != "0.0.0.0" {print; exit}' "$_out" 2>/dev/null)"
         else
-            _status="DNS_CHECKER_NOT_INSTALLED"
-            _ms=-1
+            _answer=""
+            _lookup_rc=127
         fi
-        if [ "$_status" != "DNS_CHECKER_NOT_INSTALLED" ]; then
-            _end_ms="$(awk '{printf "%.0f", $1*1000}' /proc/uptime 2>/dev/null || printf 0)"
-            case "$_start_ms|$_end_ms" in
-                *[!0-9|]*|\|*) _ms=-1 ;;
-                *) _ms=$((_end_ms-_start_ms)); [ "$_ms" -lt 0 ] && _ms=0 ;;
-            esac
-            _dns_rcode=""
-            if command -v dig >/dev/null 2>&1; then
-                _dns_rcode="$(sed -n "s/^;; ->>HEADER<<- opcode: QUERY, status: \\([^,][^,]*\\),.*/\\1/p" "$_out" 2>/dev/null | head -n1)"
-            elif grep -Eq "(^|[[:space:]])Name:[[:space:]]|^Address[[:space:]]|^Server:" "$_out" 2>/dev/null; then
-                _dns_rcode="NOERROR"
-            fi
-            if grep -Eq "SERVFAIL" "$_out" 2>/dev/null; then
-                _dns_rcode="SERVFAIL"
-            elif grep -Eq "REFUSED" "$_out" 2>/dev/null; then
-                _dns_rcode="REFUSED"
-            fi
-            case "$_dns_rcode" in
-                NOERROR)
-                    case "$_ms" in ""|*[!0-9]*) _status="LOCAL_DNS_BAD_TIMING" ;; *) _status="OK" ;; esac
-                    ;;
-                SERVFAIL) _status="LOCAL_DNS_SERVFAIL" ;;
-                REFUSED) _status="LOCAL_DNS_REFUSED" ;;
-                "") _status="LOCAL_DNS_NO_RESPONSE" ;;
-                *) _status="LOCAL_DNS_$_dns_rcode" ;;
-            esac
+
+        _end_ms="$(awk '{printf "%.0f", $1*1000}' /proc/uptime 2>/dev/null || printf 0)"
+        case "$_start_ms|$_end_ms" in
+            *[!0-9|]*|\|*) _ms=-1 ;;
+            *) _ms=$((_end_ms-_start_ms)); [ "$_ms" -lt 0 ] && _ms=0 ;;
+        esac
+
+        if [ -n "$_answer" ]; then
+            _status="OK"
+        elif grep -Eqi 'SERVFAIL' "$_out" 2>/dev/null; then
+            _status="LOCAL_DNS_SERVFAIL"
+        elif grep -Eqi 'REFUSED' "$_out" 2>/dev/null; then
+            _status="LOCAL_DNS_REFUSED"
+        elif grep -Eqi 'NXDOMAIN|non-existent domain' "$_out" 2>/dev/null; then
+            _status="LOCAL_DNS_NXDOMAIN"
+        elif grep -Eqi 'timed out|timeout|time out' "$_out" 2>/dev/null; then
+            _status="LOCAL_DNS_TIMEOUT"
+        elif [ "$_lookup_rc" -ne 0 ] 2>/dev/null; then
+            _status="LOCAL_DNS_NO_RESPONSE"
+        elif grep -Eqi 'connection refused|no servers could be reached|server failure' "$_out" 2>/dev/null; then
+            _status="LOCAL_DNS_NO_RESPONSE"
+        else
+            _status="LOCAL_DNS_NO_ANSWER"
         fi
     fi
     case "$_ms" in ""|*[!0-9]*) _ms=-1;; esac
@@ -1954,7 +1972,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.6.23
+// DNS Manager LuCI version: 1.6.24
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
