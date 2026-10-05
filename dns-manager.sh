@@ -8460,14 +8460,14 @@ startup_required_function_check() {
 case "${1:-}" in
 test-one|--test-one)
     _test_id="${2:-}"
-    case "$_test_id" in ''|*[!A-Za-z0-9_-]*) printf '%s|\n' "INVALID_ID"; exit 2;; esac
-    preflight_readonly
-    init_dirs
+    case "$_test_id" in ''|*[!A-Za-z0-9_-]*) printf '%s|INVALID||||INVALID_ID\n' "$_test_id"; exit 2;; esac
+    preflight_readonly >/dev/null 2>&1 || { printf '%s||||PRECHECK_FAILED\n' "$_test_id"; exit 1; }
+    init_dirs >/dev/null 2>&1 || { printf '%s||||INIT_FAILED\n' "$_test_id"; exit 1; }
     write_catalogs >/dev/null 2>&1 || true
-    load_config
-    startup_required_function_check || exit 1
+    load_config >/dev/null 2>&1 || { printf '%s||||CONFIG_FAILED\n' "$_test_id"; exit 1; }
+    startup_required_function_check >/dev/null 2>&1 || { printf '%s||||FUNCTION_CHECK_FAILED\n' "$_test_id"; exit 1; }
     DNS_TEST_RAM_ONLY=1
-    refresh_runtime_capabilities
+    refresh_runtime_capabilities >/dev/null 2>&1
     [ "$HAS_CURL" = yes ] || { printf '%s|unavailable||||CURL_NOT_FOUND\n' "$_test_id"; exit 1; }
     _test_lock_owned=0
     if [ "${DNS_MANAGER_TEST_LOCK_HELD:-0}" != 1 ]; then
@@ -8485,12 +8485,13 @@ test-one|--test-one)
     test_one_dns "$_test_id" || true
     _test_result_file="$TMP_DIR/t.$_test_id"
     if [ -s "$_test_result_file" ]; then
-        # The caller is a separate process. Its tmpfs is different and this
-        # manager process removes its TMP_DIR on exit, so return the result
-        # through stdout instead of relying on a shared temporary file.
         cat "$_test_result_file"
         _test_rc=1
-        grep -q '|OK
+        grep -q '|OK$' "$_test_result_file" 2>/dev/null && _test_rc=0
+    else
+        printf '%s||||TEST_NO_RESULT\n' "$_test_id"
+        _test_rc=1
+    fi
     rm -f "$TMP_DIR/t.$_test_id" "$TMP_DIR/dns_query.bin" "$TMP_DIR/body.$_test_id" "$TMP_DIR/h.$_test_id" 2>/dev/null || true
     [ "$_test_lock_owned" = 1 ] && release_test_lock
     exit "$_test_rc"
