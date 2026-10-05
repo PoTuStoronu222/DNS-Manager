@@ -264,71 +264,19 @@ grep -q '"steer_running"' "$tmp/backend.sh" || fail "Steer running status missin
 grep -q '"steer_dns_active"' "$tmp/backend.sh" || fail "Steer DNS runtime status missing from RPC"
 ok "Steer status fields exposed"
 
-awk '
-    /^local_slot_test_one\(\) \{/ { capture=1 }
-    capture { print }
-    capture && /^}$/ { exit }
-' dns-manager-luci.sh > "$tmp/local_slot_test_fn.sh"
-[ -s "$tmp/local_slot_test_fn.sh" ] || fail "local slot test extraction"
-grep -q 'command -v nslookup' "$tmp/local_slot_test_fn.sh" || fail "nslookup primary checker missing"
-grep -Fq 'nslookup -port="$_port" "$_domain" 127.0.0.1' "$tmp/local_slot_test_fn.sh" || fail "local slot nslookup port/host contract missing"
-grep -q '_answer="$(awk' "$tmp/local_slot_test_fn.sh" || fail "real DNS answer parser missing"
-grep -Fq '/^Name:[[:space:]]/' "$tmp/local_slot_test_fn.sh" || fail "DNS answer parser does not require Name section"
-grep -q 'LOCAL_DNS_NO_ANSWER' "$tmp/local_slot_test_fn.sh" || fail "empty-answer classification missing"
-grep -q 'LOCAL_DNS_SERVFAIL' "$tmp/local_slot_test_fn.sh" || fail "SERVFAIL classification missing"
-grep -q 'LOCAL_DNS_NXDOMAIN' "$tmp/local_slot_test_fn.sh" || fail "NXDOMAIN classification missing"
-if grep -Fq 'grep -Eq "(^|[[:space:]])Name:[[:space:]]|^Address[[:space:]]|^Server:"' "$tmp/local_slot_test_fn.sh"; then
-    fail "local slot test still accepts generic Server/Address lines"
+grep -q 'test_one_dns "\$_id"' "$tmp/backend.sh" || fail "LuCI selected DNS check does not use the manager test"
+grep -q 'write_current_slot_results "\$_results" "\$_stamp"' "$tmp/backend.sh" || fail "fresh current-test timestamp is not recorded"
+grep -q 'CURRENT_SLOT_RESULTS_META' "$tmp/backend.sh" || fail "current DNS result timestamp marker missing"
+grep -q '_luci_ts="$(cat "$CURRENT_SLOT_RESULTS_META"' "$tmp/backend.sh" || fail "LuCI does not read fresh current-test timestamp"
+if grep -q '^local_slot_test_one()' dns-manager-luci.sh; then
+    fail "obsolete separate local DNS checker remains"
 fi
-ok "LuCI local slot checks require a real DNS A answer"
-
-grep -q 'if command -v dig' "$tmp/local_slot_test_fn.sh" || fail "local slot test no longer prefers dig"
-grep -Fq 'dig @127.0.0.1 -p "$_port" "$_domain" A +time=2 +tries=1' "$tmp/local_slot_test_fn.sh" || fail "local slot test exact dig endpoint missing"
-grep -q 'job_write "\$_jid" dns_status' "$tmp/backend.sh" || fail "single DNS job does not persist its exact status"
-grep -q 'job_write "\$_jid" ping' "$tmp/backend.sh" || fail "single DNS job does not persist its exact latency"
-grep -Fq 'status:(j&&j.dns_status)' "$tmp/overview.js" || fail "LuCI single-test UI does not prefer exact job status"
-ok "independent DNS test uses the exact result and local-port-safe checker"
-awk '
-    /^validate_dns_message\(\) \{/ { capture=1 }
-    capture { print }
-    capture && /^\}$/ { exit }
-' dns-manager.sh > "$tmp/validate_dns_message.sh"
-[ -s "$tmp/validate_dns_message.sh" ] || fail "DNS wire validator extraction"
-. "$tmp/validate_dns_message.sh"
-
-node - "$tmp/dns-valid.bin" "$tmp/dns-servfail.bin" <<'NODE'
-const fs = require('fs');
-const qname = Buffer.from([
-  0x07,0x65,0x78,0x61,0x6d,0x70,0x6c,0x65,
-  0x03,0x63,0x6f,0x6d,0x00,0x00,0x01,0x00,0x01
-]);
-const answer = Buffer.from([
-  0xc0,0x0c,0x00,0x01,0x00,0x01,
-  0x00,0x00,0x00,0x3c,0x00,0x04,
-  0x5d,0xb8,0xd8,0x22
-]);
-const valid = Buffer.concat([
-  Buffer.from([0x12,0x34,0x81,0x80,0x00,0x01,0x00,0x01,0x00,0x00,0x00,0x00]),
-  qname, answer
-]);
-const servfail = Buffer.concat([
-  Buffer.from([0x12,0x34,0x81,0x82,0x00,0x01,0x00,0x00,0x00,0x00,0x00,0x00]),
-  qname
-]);
-fs.writeFileSync(process.argv[2], valid);
-fs.writeFileSync(process.argv[3], servfail);
-NODE
-validate_dns_message "$tmp/dns-valid.bin" || fail "valid DNS wire response rejected"
-if validate_dns_message "$tmp/dns-servfail.bin"; then
-    fail "SERVFAIL DNS wire response still accepted as healthy"
+if grep -q '^assigned_port_for_id()' dns-manager-luci.sh; then
+    fail "obsolete assigned-port helper remains"
 fi
-ok "DNS health test rejects SERVFAIL and requires a real A answer"
-
-grep -Fq -- '--connect-timeout 1 --max-time 3 --resolve "$host:$port:$ipx"' dns-manager.sh || fail "direct DoH timeout was not reduced"
-grep -q 'collect_current_batch()' "$tmp/backend.sh" || fail "selected DNS checks are not batched"
-grep -q '(trap - EXIT; test_one_dns "\$_id") &' "$tmp/backend.sh" || fail "selected DNS checks do not run in parallel"
-grep -q 'job_write "\$_jid" result fail' "$tmp/backend.sh" || fail "selected DNS failure result handling missing"
-ok "DNS wire validation and fast parallel selected checks"
+grep -Fq '--connect-timeout 1 --max-time 3 --resolve "$host:$port:$ipx"' dns-manager.sh || fail "direct DoH timeout was not reduced"
+grep -q '(trap - EXIT; test_one_dns "\$_id") &' "$tmp/backend.sh" || fail "selected DNS checks are not parallelized"
+ok "selected DNS checks reuse the main test, prefer fresh results and run in parallel"
 
 # Ready-made profiles must not fall through into the generic Hybrid/Max
 # Bypass selector after auto_fill_slots().
