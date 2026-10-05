@@ -470,7 +470,7 @@ ok "profile jobs survive LuCI disconnects and reconnect on page load"
 
 # Ready-made profiles must not trigger the heavy full-catalog scan just to select DNS.
 grep -q '^profile_fill_slots() {' dns-manager.sh || fail "bounded profile DNS picker missing"
-awk '/^profile_fill_slots\(\)/,/^}$/ { print }' dns-manager.sh > "$tmp/profile_fill_slots.sh"
+awk '/^profile_fill_slots\(\) \{/{capture=1} capture{print} capture && /^auto_fill_slots\(\) \{/{exit}' dns-manager.sh | sed '$d' > "$tmp/profile_fill_slots.sh"
 [ -s "$tmp/profile_fill_slots.sh" ] || fail "profile picker extraction"
 grep -q 'acquire_test_lock' "$tmp/profile_fill_slots.sh" || fail "profile picker is not serialized with DNS tests"
 grep -q 'test_one_dns' "$tmp/profile_fill_slots.sh" || fail "profile picker does not test DNS candidates"
