@@ -1386,9 +1386,8 @@ commit_single_test_result() {
     _line="$(awk -F"|" -v id="$_id" '$1==id && NF>=5 {print;exit}' "$_result_file" 2>/dev/null || true)"
     [ -n "$_line" ] || return 1
 
-    _tmp="$STATE_DIR/dns-test-results.single.$"
-    rm -f "$_tmp" 2>/dev/null || true
-    : > "$_tmp" || return 1
+    _tmp="$(mktemp "$STATE_DIR/dns-test-results.single.XXXXXX" 2>/dev/null || true)"
+    [ -n "$_tmp" ] || return 1
 
     if [ -s "$TEST_RESULTS" ]; then
         awk -F"|" -v id="$_id" '$1!=id {print}' "$TEST_RESULTS" > "$_tmp" 2>/dev/null || {
