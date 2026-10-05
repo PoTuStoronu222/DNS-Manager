@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.6.44
+# Version: 1.6.45
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -23,7 +23,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.6.44"
+VERSION="1.6.45"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -145,7 +145,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.6.44"
+SELF_VERSION="1.6.45"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -1675,39 +1675,75 @@ job_start_test_current() {
         if ! acquire_test_lock; then
             job_write "$_jid" status failed; job_write "$_jid" result fail; job_write "$_jid" finished "$(date +%s)"; exit 1
         fi
+
         _ids="$TMP_ROOT/current-dns-ids.$$"
         _results="$TMP_ROOT/current-test-results.$$"
         _merged="$TMP_ROOT/current-merged.$$"
         : > "$_ids"
         : > "$_results"
+        rm -f "$TMP_DIR/t."* 2>/dev/null || true
+
         _total=0
         _done=0
         _fail=0
         for _s in 1 2 3 4 5 6 RU RU_2; do
             _id="$(cfg_get "SLOT_$_s" 2>/dev/null || true)"
             [ -n "$_id" ] || continue
-            _port="$(cfg_get "PORT_$_s" 2>/dev/null || true)"
             printf "%s\n" "$_id" >> "$_ids"
             _total=$((_total+1))
-            # Check the actual DoH endpoint from the catalog. The local listener
-            # can answer from cache or another upstream and must not make a dead
-            # DoH server appear healthy.
-            printf "Проверяю DoH: %s" "$_id"
-            if test_one_dns "$_id"; then
-                :
-            else
-                _fail=$((_fail+1))
-            fi
-            _done=$((_done+1))
-            cat "$TMP_DIR/t.$_id" >> "$_results" 2>/dev/null || true
-            printf "Проверка выбранных DNS: %s из %s | ошибки %s\n" "$_done" "$_total" "$_fail"
         done
+
         if [ "$_total" -eq 0 ]; then
             release_test_lock
             rm -f "$_ids" "$_results" "$_merged"
-            job_write "$_jid" status failed; job_write "$_jid" result fail; job_write "$_jid" finished "$(date +%s)"
+            job_write "$_jid" status failed
+            job_write "$_jid" result fail
+            job_write "$_jid" finished "$(date +%s)"
             exit 1
         fi
+
+        _batch="${TEST_BATCH:-${TEST_BATCH_DEFAULT:-4}}"
+        case "$_batch" in ''|*[!0-9]*) _batch=4;; esac
+        [ "$_batch" -ge 1 ] 2>/dev/null || _batch=1
+        [ "$_batch" -le 4 ] 2>/dev/null || _batch=4
+
+        _batch_pids=""
+        _batch_ids=""
+        _batch_n=0
+        collect_current_batch() {
+            for _wp in $_batch_pids; do
+                wait "$_wp" 2>/dev/null || true
+            done
+            for _cid in $_batch_ids; do
+                _rfile="$TMP_DIR/t.$_cid"
+                if [ -s "$_rfile" ]; then
+                    cat "$_rfile" >> "$_results" 2>/dev/null || true
+                    grep -q '|OK$' "$_rfile" 2>/dev/null || _fail=$((_fail+1))
+                else
+                    printf '%s|%s|%s|-1|TEST_NO_RESULT\n' "$_cid" "$(dns_cat "$_cid" 2>/dev/null || printf unknown)" "$(dns_name "$_cid" 2>/dev/null || printf "%s" "$_cid")" >> "$_results"
+                    _fail=$((_fail+1))
+                fi
+                _done=$((_done+1))
+            done
+            printf "Проверка выбранных DNS: %s из %s | ошибки %s\n" "$_done" "$_total" "$_fail"
+            _batch_pids=""
+            _batch_ids=""
+            _batch_n=0
+        }
+
+        while IFS= read -r _id; do
+            [ -n "$_id" ] || continue
+            printf "Проверяю DoH: %s\n" "$_id"
+            (trap - EXIT; test_one_dns "$_id") &
+            _batch_pids="$_batch_pids $!"
+            _batch_ids="$_batch_ids $_id"
+            _batch_n=$((_batch_n+1))
+            if [ "$_batch_n" -ge "$_batch" ]; then
+                collect_current_batch
+            fi
+        done < "$_ids"
+        [ -n "$_batch_pids" ] && collect_current_batch
+
         : > "$_merged"
         if [ -s "$TEST_RESULTS" ]; then
             awk -F"|" -v ids_file="$_ids" 'BEGIN { while ((getline x < ids_file)>0) ids[x]=1 } !($1 in ids) { print }' "$TEST_RESULTS" > "$_merged" 2>/dev/null || true
@@ -1716,18 +1752,27 @@ job_start_test_current() {
         mv -f "$_merged" "$TEST_RESULTS" 2>/dev/null || {
             release_test_lock
             rm -f "$_ids" "$_results" "$_merged"
-            job_write "$_jid" status failed; job_write "$_jid" result fail; job_write "$_jid" finished "$(date +%s)"
+            job_write "$_jid" status failed
+            job_write "$_jid" result fail
+            job_write "$_jid" finished "$(date +%s)"
             exit 1
         }
+
         write_current_slot_results "$_results" || true
         _stamp="$(date +%s)"
         while IFS="|" read -r _id _rest; do
             [ -n "$_id" ] && set_check_stamp "$_id" "$_stamp"
         done < "$_results"
+
         rm -f "$_ids" "$_results" "$_merged" "$TMP_DIR/t."* 2>/dev/null || true
         release_test_lock
+
         job_write "$_jid" status done
-        job_write "$_jid" result ok
+        if [ "$_fail" -eq 0 ]; then
+            job_write "$_jid" result ok
+        else
+            job_write "$_jid" result fail
+        fi
         job_write "$_jid" finished "$_stamp"
     ) &
     printf '{"ok":true,"job":'; json_quote "$_jid"; printf '}'
@@ -2048,7 +2093,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.6.44
+// DNS Manager LuCI version: 1.6.45
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
