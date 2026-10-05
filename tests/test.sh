@@ -288,6 +288,47 @@ grep -q 'job_write "\$_jid" dns_status' "$tmp/backend.sh" || fail "single DNS jo
 grep -q 'job_write "\$_jid" ping' "$tmp/backend.sh" || fail "single DNS job does not persist its exact latency"
 grep -Fq 'status:(j&&j.dns_status)' "$tmp/overview.js" || fail "LuCI single-test UI does not prefer exact job status"
 ok "independent DNS test uses the exact result and local-port-safe checker"
+awk '
+    /^validate_dns_message\(\) \{/ { capture=1 }
+    capture { print }
+    capture && /^\}$/ { exit }
+' dns-manager.sh > "$tmp/validate_dns_message.sh"
+[ -s "$tmp/validate_dns_message.sh" ] || fail "DNS wire validator extraction"
+. "$tmp/validate_dns_message.sh"
+
+node - "$tmp/dns-valid.bin" "$tmp/dns-servfail.bin" <<'NODE'
+const fs = require('fs');
+const qname = Buffer.from([
+  0x07,0x65,0x78,0x61,0x6d,0x70,0x6c,0x65,
+  0x03,0x63,0x6f,0x6d,0x00,0x00,0x01,0x00,0x01
+]);
+const answer = Buffer.from([
+  0xc0,0x0c,0x00,0x01,0x00,0x01,
+  0x00,0x00,0x00,0x3c,0x00,0x04,
+  0x5d,0xb8,0xd8,0x22
+]);
+const valid = Buffer.concat([
+  Buffer.from([0x12,0x34,0x81,0x80,0x00,0x01,0x00,0x01,0x00,0x00,0x00,0x00]),
+  qname, answer
+]);
+const servfail = Buffer.concat([
+  Buffer.from([0x12,0x34,0x81,0x82,0x00,0x01,0x00,0x00,0x00,0x00,0x00,0x00]),
+  qname
+]);
+fs.writeFileSync(process.argv[2], valid);
+fs.writeFileSync(process.argv[3], servfail);
+NODE
+validate_dns_message "$tmp/dns-valid.bin" || fail "valid DNS wire response rejected"
+if validate_dns_message "$tmp/dns-servfail.bin"; then
+    fail "SERVFAIL DNS wire response still accepted as healthy"
+fi
+ok "DNS health test rejects SERVFAIL and requires a real A answer"
+
+grep -Fq '--connect-timeout 1 --max-time 3 --resolve "\$host:\$port:\$ipx"' dns-manager.sh || fail "direct DoH timeout was not reduced"
+grep -q 'collect_current_batch()' "$tmp/backend.sh" || fail "selected DNS checks are not batched"
+grep -q '(trap - EXIT; test_one_dns "\$_id") &' "$tmp/backend.sh" || fail "selected DNS checks do not run in parallel"
+grep -q 'job_write "\$_jid" result fail' "$tmp/backend.sh" || fail "selected DNS failure result handling missing"
+ok "DNS wire validation and fast parallel selected checks"
 
 # Ready-made profiles must not fall through into the generic Hybrid/Max
 # Bypass selector after auto_fill_slots().
