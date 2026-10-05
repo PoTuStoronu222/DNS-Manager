@@ -3456,7 +3456,6 @@ function testOne(id,root,origin,done){
   }).catch(function(err){
     state.checking[id]={status:'FAIL',ping:''};
     state.jobRunning=false;
-    else if(origin==='doh')state.pageNotice.doh=withRpcError('Не удалось выполнить проверку DNS.',err);
     render(root,window.dmState||{});
     if(done)done(window.dmState||{});
   });
@@ -3481,7 +3480,6 @@ function pollJob(root,job,meta,done){
     state.jobRunning=false;
     var noJob='Фоновая задача DNS Manager не вернула идентификатор.';
     setAction(false,noJob);
-    else if(meta&&meta.origin==='doh')state.pageNotice.doh=noJob;
     return;
   }
   var ticks=0;
@@ -3540,10 +3538,6 @@ function pollJob(root,job,meta,done){
           status:d&&d.status?d.status:(j&&j.dns_status?j.dns_status:(j.result==='ok'?'OK':'FAIL')),
           ping:d&&d.ping?d.ping:(j&&j.ping?j.ping:'')
         };
-        if(meta.origin==='catalog'){
-          var nn=meta.dns_id;
-          (window.dmCatalog&&window.dmCatalog.servers||[]).forEach(function(x){if(x&&x.id===meta.dns_id)nn=x.name||x.id;});
-        }
       }
       if(meta&&meta.mode==='current')state.checking={};
       state.jobRunning=false;
