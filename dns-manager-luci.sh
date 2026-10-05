@@ -147,6 +147,36 @@ if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
     mkdir -p "$RUNTIME_DIR" "$JOB_DIR" "$CHECK_DIR" "$TMP_ROOT" 2>/dev/null || exit 1
 fi
 
+acquire_runtime_lock() {
+    _lock="$1"
+    _parent="${_lock%/*}"
+    mkdir -p "$_parent" 2>/dev/null || return 1
+    if mkdir "$_lock" 2>/dev/null; then
+        printf '%s\n' "$" > "$_lock/pid" 2>/dev/null || true
+        return 0
+    fi
+    _pid="$(cat "$_lock/pid" 2>/dev/null)"
+    case "$_pid" in ''|*[!0-9]*) _pid="" ;; esac
+    if [ -n "$_pid" ] && kill -0 "$_pid" 2>/dev/null; then
+        return 1
+    fi
+    rm -rf "$_lock" 2>/dev/null || true
+    mkdir "$_lock" 2>/dev/null || return 1
+    printf '%s\n' "$" > "$_lock/pid" 2>/dev/null || true
+    return 0
+}
+release_runtime_lock() {
+    [ -n "${1:-}" ] || return 0
+    rm -rf "$1" 2>/dev/null || true
+}
+json_update_state() {
+    case "$1" in
+        *'"ok":true,"updated":true'*) printf '%s' updated ;;
+        *'"ok":true,"updated":false'*) printf '%s' current ;;
+        *'"ok":false'*) printf '%s' error ;;
+        *) printf '%s' unknown ;;
+    esac
+}
 json_quote() {
     _s="$1"
     _s=$(printf '%s' "$_s" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\r/ /g; s/\t/\\t/g')
@@ -421,14 +451,26 @@ component_update_check() {
 }
 
 update_hdp_json() {
-    if ! mkdir "$RUNTIME_DIR/hdp-update.lock" 2>/dev/null; then
+    if ! acquire_runtime_lock "$RUNTIME_DIR/hdp-update.lock"; then
         json_error "Обновление https-dns-proxy уже выполняется"; return
     fi
-    trap 'rm -rf "$RUNTIME_DIR/hdp-update.lock" 2>/dev/null || true' EXIT INT TERM
+    trap 'release_runtime_lock "$RUNTIME_DIR/hdp-update.lock"' EXIT INT TERM
     _installed="$(package_version https-dns-proxy 2>/dev/null || true)"
     _candidate="$(package_candidate_version https-dns-proxy 2>/dev/null || true)"
     [ -n "$_installed" ] || { json_error "https-dns-proxy не установлен"; return; }
-    [ -n "$_candidate" ] || { json_error "Новой версии https-dns-proxy не найдено"; return; }
+    [ -n "$_candidate" ] || {
+        _state_tmp="$UPDATE_STATE.tmp.$"
+        if [ -r "$UPDATE_STATE" ]; then
+            sed '/^hdp_latest=/d;/^hdp_available=/d;/^hdp_checked=/d;/^components_checked_at=/d' "$UPDATE_STATE" > "$_state_tmp" 2>/dev/null || true
+        else
+            : > "$_state_tmp"
+        fi
+        _ts="$(date +%s 2>/dev/null || printf 0)"
+        printf 'hdp_latest=%s\nhdp_available=0\nhdp_checked=1\ncomponents_checked_at=%s\n' "$_installed" "$_ts" >> "$_state_tmp"
+        mv "$_state_tmp" "$UPDATE_STATE" 2>/dev/null || rm -f "$_state_tmp" 2>/dev/null || true
+        printf '{"ok":true,"updated":false,"version":'; json_quote "$_installed"; printf ',"message":'; json_quote "https-dns-proxy уже актуален"; printf '}'
+        return
+    }
     if ! package_version_cmp "$_candidate" "$_installed"; then
         _state_tmp="$UPDATE_STATE.tmp.$$"
         if [ -r "$UPDATE_STATE" ]; then
@@ -459,7 +501,7 @@ update_hdp_json() {
 }
 
 update_catalog_json() {
-    if ! mkdir "$RUNTIME_DIR/catalog-update.lock" 2>/dev/null; then
+    if ! acquire_runtime_lock "$RUNTIME_DIR/catalog-update.lock"; then
         json_error "Обновление каталога DNS уже выполняется"
         return
     fi
@@ -469,7 +511,7 @@ update_catalog_json() {
     _rc=$?
     _new_v="$(catalog_version 2>/dev/null || true)"
     _new_r="$(catalog_revision 2>/dev/null || true)"
-    rm -rf "$RUNTIME_DIR/catalog-update.lock" 2>/dev/null || true
+    release_runtime_lock "$RUNTIME_DIR/catalog-update.lock"
     case "$_rc" in
         0)
             printf "{\"ok\":true,\"updated\":true,\"version\":"
@@ -502,14 +544,14 @@ update_check_json() {
     fi
 
     # Only one LuCI worker performs the remote check at a time.
-    if ! mkdir "$UPDATE_CHECK_LOCK" 2>/dev/null; then
+    if ! acquire_runtime_lock "$UPDATE_CHECK_LOCK"; then
         status_json
         return 0
     fi
 
     # Another worker may have completed the check while we acquired the lock.
     if [ "$_force" != 1 ] && [ -f "$UPDATE_CHECK_CACHE" ] && [ -z "$(find "$UPDATE_CHECK_CACHE" -mmin +30 2>/dev/null)" ]; then
-        rm -rf "$UPDATE_CHECK_LOCK" 2>/dev/null || true
+        release_runtime_lock "$UPDATE_CHECK_LOCK"
         status_json
         return 0
     fi
@@ -521,7 +563,7 @@ update_check_json() {
         _ts="$(date +%s 2>/dev/null || printf 0)"
         printf '%s\n' "$_ts" > "$UPDATE_CHECK_CACHE" 2>/dev/null || true
     fi
-    rm -rf "$UPDATE_CHECK_LOCK" 2>/dev/null || true
+    release_runtime_lock "$UPDATE_CHECK_LOCK"
     status_json
 }
 update_manager_direct() {
@@ -534,7 +576,7 @@ update_manager_direct() {
         rm -f "$_out" 2>/dev/null || true
         return 0
     fi
-    if grep -Eq "Новой версии|актуальна|не новее|текущая версия" "$_out" 2>/dev/null; then
+    if [ "$(json_update_state "$(cat "$_out" 2>/dev/null)")" = current ]; then
         rm -f "$_out" 2>/dev/null || true
         return 2
     fi
@@ -552,7 +594,7 @@ update_hdp_direct() {
         rm -f "$_out" 2>/dev/null || true
         return 0
     fi
-    if grep -Eq "Новой версии|актуален|не найдено" "$_out" 2>/dev/null; then
+    if [ "$(json_update_state "$(cat "$_out" 2>/dev/null)")" = current ]; then
         rm -f "$_out" 2>/dev/null || true
         return 2
     fi
@@ -590,7 +632,7 @@ update_luci_direct() {
         rm -f "$_out" 2>/dev/null || true
         return 0
     fi
-    if grep -Eq "Новой версии нет|Новой версии не|актуальна" "$_out" 2>/dev/null; then
+    if [ "$(json_update_state "$(cat "$_out" 2>/dev/null)")" = current ]; then
         rm -f "$_out" 2>/dev/null || true
         return 2
     fi
@@ -606,7 +648,7 @@ append_failure_message() {
 }
 
 update_all_json() {
-    if ! mkdir "$RUNTIME_DIR/update-all.lock" 2>/dev/null; then
+    if ! acquire_runtime_lock "$RUNTIME_DIR/update-all.lock"; then
         json_error "Обновление уже выполняется"
         return
     fi
@@ -618,7 +660,7 @@ update_all_json() {
     _new_m="$(manager_version 2>/dev/null || true)"
     if [ -n "$_old_m" ] && [ -n "$_new_m" ] && [ "$_new_m" != "$_old_m" ]; then
         append_update_message "DNS Manager $_old_m → $_new_m"
-    elif printf "%s\n" "$_mr" | grep -q "Новой\|актуал\|не новее" 2>/dev/null; then
+    elif [ "$(json_update_state "$_mr")" = current ]; then
         append_update_message "DNS Manager $_old_m · актуален"
     else
         append_failure_message "DNS Manager: не удалось обновить"
@@ -629,7 +671,7 @@ update_all_json() {
     _new_h="$(package_version https-dns-proxy 2>/dev/null || true)"
     if [ -n "$_old_h" ] && [ -n "$_new_h" ] && [ "$_new_h" != "$_old_h" ]; then
         append_update_message "Защищённый DNS $_old_h → $_new_h"
-    elif printf "%s\n" "$_hr" | grep -q "Новой\|актуал\|не найдено" 2>/dev/null; then
+    elif [ "$(json_update_state "$_hr")" = current ]; then
         append_update_message "Защищённый DNS $_old_h · актуален"
     else
         append_failure_message "Защищённый DNS: не удалось обновить"
@@ -652,13 +694,13 @@ update_all_json() {
     _new_l="$(read_installed_luci_version)"
     if [ -n "$_old_l" ] && [ -n "$_new_l" ] && [ "$_new_l" != "$_old_l" ]; then
         append_update_message "LuCI $_old_l → $_new_l"
-    elif printf "%s\n" "$_lr" | grep -q "Новой\|актуал\|не новее" 2>/dev/null; then
+    elif [ "$(json_update_state "$_lr")" = current ]; then
         append_update_message "LuCI $_old_l · актуальна"
     else
         append_failure_message "LuCI: не удалось обновить"
     fi
 
-    rm -rf "$RUNTIME_DIR/update-all.lock" 2>/dev/null || true
+    release_runtime_lock "$RUNTIME_DIR/update-all.lock"
     if [ -n "$_failed" ]; then
         [ -n "$_message" ] && _message="$_message; "
         _message="$_message""Ошибки: $_failed"
@@ -672,10 +714,10 @@ update_all_json() {
     fi
 }
 update_manager_json() {
-    if ! mkdir "$RUNTIME_DIR/manager-update.lock" 2>/dev/null; then
+    if ! acquire_runtime_lock "$RUNTIME_DIR/manager-update.lock"; then
         json_error "Обновление DNS Manager уже выполняется"; return
     fi
-    trap 'rm -rf "$RUNTIME_DIR/manager-update.lock" 2>/dev/null || true' EXIT INT TERM
+    trap 'release_runtime_lock "$RUNTIME_DIR/manager-update.lock"' EXIT INT TERM
     _installed="$(manager_version 2>/dev/null || true)"
     [ -n "$_installed" ] || { json_error "DNS Manager не найден"; return; }
     _out="$TMP_ROOT/manager-update.log"
@@ -689,15 +731,19 @@ update_manager_json() {
     fi
     _detail="$(tail -n 8 "$_out" 2>/dev/null | awk 'BEGIN{ORS=" "} {print}' | cut -c1-700)"
     rm -f "$_out" 2>/dev/null || true
-    [ -n "$_detail" ] || _detail="Новой версии DNS Manager не найдено."
+    if printf '%s\n' "$_detail" | grep -Eq "Новой версии|актуал|не новее|текущая версия" 2>/dev/null; then
+        printf '{"ok":true,"updated":false,"version":'; json_quote "$_installed"; printf ',"message":'; json_quote "DNS Manager уже актуален"; printf '}'
+        return
+    fi
+    [ -n "$_detail" ] || _detail="Не удалось обновить DNS Manager."
     json_error "$_detail"
 }
 
 update_json() {
-    if ! mkdir "$RUNTIME_DIR/update.lock" 2>/dev/null; then
+    if ! acquire_runtime_lock "$RUNTIME_DIR/update.lock"; then
         json_error "Обновление LuCI уже выполняется"; return
     fi
-    trap 'rm -rf "$RUNTIME_DIR/update.lock" 2>/dev/null || true' EXIT INT TERM
+    trap 'release_runtime_lock "$RUNTIME_DIR/update.lock"' EXIT INT TERM
     _installed="$(read_installed_luci_version)"
     _tmp="$TMP_ROOT/companion-update.$$"
     if ! fetch_url "$_tmp" || ! validate_candidate "$_tmp"; then
@@ -707,7 +753,8 @@ update_json() {
     _latest="$(sed -n 's/^# Version:[[:space:]]*//p' "$_tmp" 2>/dev/null | head -n1)"
     if [ -z "$_latest" ] || [ "$(version_gt "$_latest" "$_installed")" != 1 ]; then
         rm -f "$_tmp" 2>/dev/null || true
-        json_error "Новой версии нет"; return
+        printf '{"ok":true,"updated":false,"version":'; json_quote "$_installed"; printf ',"message":'; json_quote "DNS Manager LuCI уже актуальна"; printf '}'
+        return
     fi
     _log="$TMP_ROOT/companion-update.log"
     rm -f "$_log" 2>/dev/null || true
