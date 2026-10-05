@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.6.46
+# Version: 1.6.47
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -23,7 +23,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.6.46"
+VERSION="1.6.47"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -137,8 +137,6 @@ PERSIST_STATE_DIR="/etc/dns-manager/state"
 RUNTIME_DIR="/var/run/dns-manager-luci"
 JOB_DIR="$RUNTIME_DIR/jobs"
 CHECK_DIR="$RUNTIME_DIR/checks"
-CURRENT_SLOT_RESULTS="$RUNTIME_DIR/current-slot-results.conf"
-CURRENT_SLOT_RESULTS_META="$RUNTIME_DIR/current-slot-results.meta"
 TMP_ROOT="$RUNTIME_DIR/tmp"
 UPDATE_STATE="/etc/dns-manager-luci/update.state"
 UPDATE_CHECK_CACHE="$RUNTIME_DIR/update-check.cache"
@@ -146,7 +144,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.6.46"
+SELF_VERSION="1.6.47"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -796,8 +794,7 @@ last_check_for_id() {
     _id="$1"
     [ -n "$_id" ] || return 1
 
-    _luci_ts="$(cat "$CURRENT_SLOT_RESULTS_META" 2>/dev/null | head -n1)"
-    case "$_luci_ts" in ''|*[!0-9]*) _luci_ts="$(cat "$CHECK_DIR/$_id" 2>/dev/null | head -n1)";; esac
+    _luci_ts="$(cat "$CHECK_DIR/$_id" 2>/dev/null | head -n1)"
     case "$_luci_ts" in ''|*[!0-9]*) _luci_ts="";; esac
 
     _manager_meta="$STATE_DIR/dns-test-results.meta"
@@ -805,16 +802,17 @@ last_check_for_id() {
     _manager_ts="$(sed -n 's/^timestamp=//p' "$_manager_meta" 2>/dev/null | head -n1)"
     case "$_manager_ts" in ''|*[!0-9]*) _manager_ts="";; esac
 
-    _manager_has=0
-    result_for_id "$_id" >/dev/null 2>&1 && _manager_has=1
-    if [ "$_manager_has" = 1 ] && [ -n "$_manager_ts" ]; then
-        if [ -z "$_luci_ts" ] || [ "$_manager_ts" -gt "$_luci_ts" ] 2>/dev/null; then
+    result_for_id "$_id" >/dev/null 2>&1 || return 0
+    if [ -n "$_luci_ts" ] && [ -n "$_manager_ts" ]; then
+        if [ "$_manager_ts" -gt "$_luci_ts" ] 2>/dev/null; then
             printf '%s' "$_manager_ts"
-            return 0
+        else
+            printf '%s' "$_luci_ts"
         fi
+        return 0
     fi
     [ -n "$_luci_ts" ] && { printf '%s' "$_luci_ts"; return 0; }
-    [ "$_manager_has" = 1 ] && [ -n "$_manager_ts" ] && printf '%s' "$_manager_ts"
+    [ -n "$_manager_ts" ] && printf '%s' "$_manager_ts"
 }
 
 package_version() {
@@ -1370,58 +1368,12 @@ set_check_stamp() {
     case "$_id" in ''|*[!A-Za-z0-9_-]*) return 1;; esac
     printf '%s\n' "$_ts" > "$CHECK_DIR/$_id" 2>/dev/null
 }
-write_current_slot_results() {
-    _results="$1"
-    _stamp="${2:-$(date +%s)}"
-    [ -s "$_results" ] || return 1
-    cat "$_results" > "${CURRENT_SLOT_RESULTS}.tmp.$" 2>/dev/null || return 1
-    mv -f "${CURRENT_SLOT_RESULTS}.tmp.$" "$CURRENT_SLOT_RESULTS" 2>/dev/null || {
-        rm -f "${CURRENT_SLOT_RESULTS}.tmp.$" 2>/dev/null || true
-        return 1
-    }
-    printf "%s\n" "$_stamp" > "${CURRENT_SLOT_RESULTS_META}.tmp.$" 2>/dev/null || true
-    if [ -s "${CURRENT_SLOT_RESULTS_META}.tmp.$" ]; then
-        mv -f "${CURRENT_SLOT_RESULTS_META}.tmp.$" "$CURRENT_SLOT_RESULTS_META" 2>/dev/null || true
-    else
-        rm -f "${CURRENT_SLOT_RESULTS_META}.tmp.$" 2>/dev/null || true
-    fi
-    chmod 600 "$CURRENT_SLOT_RESULTS" "$CURRENT_SLOT_RESULTS_META" 2>/dev/null || true
-}
 current_slot_result_for_id() {
     _id="$1"
     [ -n "$_id" ] || return 1
 
-    # The DNS Manager test result is authoritative for the selected DNS.
-    # LuCI keeps a runtime copy, but it may belong to an older UI test.
-    _manager_result="$(result_for_id "$_id" 2>/dev/null || true)"
-    _manager_ts=""
-    _manager_meta="$STATE_DIR/dns-test-results.meta"
-    [ -r "$_manager_meta" ] || _manager_meta="$PERSIST_STATE_DIR/dns-test-results.meta"
-    _manager_ts="$(sed -n 's/^timestamp=//p' "$_manager_meta" 2>/dev/null | head -n1)"
-    case "$_manager_ts" in ''|*[!0-9]*) _manager_ts="";; esac
-
-    _luci_result=""
-    _luci_ts=""
-    if [ -r "$CURRENT_SLOT_RESULTS" ]; then
-        _luci_result="$(awk -F'|' -v id="$_id" '$1==id {print; exit}' "$CURRENT_SLOT_RESULTS" 2>/dev/null)"
-    fi
-    _luci_ts="$(cat "$CHECK_DIR/$_id" 2>/dev/null | head -n1)"
-    case "$_luci_ts" in ''|*[!0-9]*) _luci_ts="";; esac
-
-    if [ -n "$_manager_result" ]; then
-        if [ -z "$_luci_result" ]; then
-            printf '%s' "$_manager_result"
-            return 0
-        fi
-        if [ -n "$_manager_ts" ] && [ -n "$_luci_ts" ] && [ "$_manager_ts" -gt "$_luci_ts" ] 2>/dev/null; then
-            printf '%s' "$_manager_result"
-            return 0
-        fi
-    fi
-
-    [ -n "$_luci_result" ] && { printf '%s' "$_luci_result"; return 0; }
-    [ -n "$_manager_result" ] && { printf '%s' "$_manager_result"; return 0; }
-    return 1
+    # One authoritative result source for full, individual and selected DNS tests.
+    result_for_id "$_id"
 }
 # Assigned DNS checks use the real local listener port. Unassigned catalog DNS
 # keeps the remote DoH check until the DNS is assigned to a slot.
@@ -1665,7 +1617,6 @@ job_start_test_current() {
         }
 
         _stamp="$(date +%s)"
-        write_current_slot_results "$_results" "$_stamp" || true
         while IFS="|" read -r _id _rest; do
             [ -n "$_id" ] && set_check_stamp "$_id" "$_stamp"
         done < "$_results"
@@ -1725,14 +1676,6 @@ job_start_test_one() {
             mv "$_tmp" "$TEST_RESULTS" 2>/dev/null || true
             save_persistent_test_results >/dev/null 2>&1 || true
             _stamp="$(date +%s)"
-            _cur="$TMP_ROOT/current-slot-one.$"
-            : > "$_cur"
-            if [ -s "$CURRENT_SLOT_RESULTS" ]; then
-                awk -F"|" -v id="$_id" '$1!=id {print}' "$CURRENT_SLOT_RESULTS" > "$_cur" 2>/dev/null || true
-            fi
-            cat "$_result_file" >> "$_cur" 2>/dev/null || true
-            write_current_slot_results "$_cur" "$_stamp" || true
-            rm -f "$_cur" 2>/dev/null || true
             set_check_stamp "$_id" "$_stamp"
             rm -f "$_result_file" 2>/dev/null || true
             release_test_lock
@@ -1999,7 +1942,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.6.46
+// DNS Manager LuCI version: 1.6.47
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
