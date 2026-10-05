@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.6.34
+# Version: 1.6.35
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -145,7 +145,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.6.34"
+SELF_VERSION="1.6.35"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -773,12 +773,11 @@ update_json() {
     _update_ts="$(date +%s 2>/dev/null || printf 0)"
     printf 'installed=%s\nlatest=%s\navailable=0\nchecked_at=%s\n' "$_after" "$_after" "$_update_ts" >> "$_state_tmp"
     mv "$_state_tmp" "$UPDATE_STATE" 2>/dev/null || rm -f "$_state_tmp" 2>/dev/null || true
+    # Do not reload rpcd here. This function is itself running inside the
+    # rpcd request that must return the update result. The new backend/plugin
+    # files are picked up by subsequent requests; reloading rpcd at this point
+    # can kill the current worker before LuCI receives the response.
     printf '{"ok":true,"updated":true,"version":'; json_quote "$_after"; printf '}'
-    # Return the RPC response first. Reloading rpcd before writing the response can
-    # terminate the current rpcd worker and make LuCI report a false update failure.
-    if [ -x /etc/init.d/rpcd ]; then
-        ( sleep 1; /etc/init.d/rpcd reload >/dev/null 2>&1 || true ) >/dev/null 2>&1 &
-    fi
 }
 
 result_for_id() {
@@ -2035,7 +2034,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.6.31
+// DNS Manager LuCI version: 1.6.35
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -2083,7 +2082,7 @@ var CATEGORY = [
   ['all','Все DNS'], ['bypass','Обход блокировок'], ['security','Безопасность'], ['privacy','Приватность'],
   ['adblock','Блокировка рекламы'], ['family','Семейный'], ['clean','Без фильтрации'], ['regional','Региональные']
 ];
-var state = { hdpUpdating:false, managerUpdating:false, updatingAll:false, category:'all', offset:0, limit:18, catalogLoaded:false, catalogLoading:false, advanced:true, logLoaded:false, logLoading:false, busy:false, busySetting:'', settingMessage:'', settingMessageType:'', settingMessageKey:'', pageNotice:{}, statusError:'', activeTab:'dashboard', jobRunning:false, lastJob:null, checking:{}, fullTest:null, catalogProgress:null, profileProgress:null, versionCheck:null, lastAction:null, runtimeCpuLoad:null, runtimeMemoryTotal:null, runtimeMemoryAvailable:null, boardInfo:null, systemPollBusy:false, profileResumeStarted:false };
+var state = { luciUpdateReloadTimer:null, hdpUpdating:false, managerUpdating:false, updatingAll:false, category:'all', offset:0, limit:18, catalogLoaded:false, catalogLoading:false, advanced:true, logLoaded:false, logLoading:false, busy:false, busySetting:'', settingMessage:'', settingMessageType:'', settingMessageKey:'', pageNotice:{}, statusError:'', activeTab:'dashboard', jobRunning:false, lastJob:null, checking:{}, fullTest:null, catalogProgress:null, profileProgress:null, versionCheck:null, lastAction:null, runtimeCpuLoad:null, runtimeMemoryTotal:null, runtimeMemoryAvailable:null, boardInfo:null, systemPollBusy:false, profileResumeStarted:false };
 
 function profileName(p){
   var x=PROFILE.filter(function(v){return v[0]===p;})[0];
@@ -3355,7 +3354,48 @@ function updateHdp(root){
     refresh(root,true);
   });
 }
-function doUpdate(root){if(state.busy)return;var v=(window.dmState&&window.dmState.luci_latest_version)||'новой версии';state.busy=true;state.pageNotice.overview='Обновляю LuCI…';globalUpdateNotice('Обновляю LuCI до v'+v+'…','info');if(rootAlive(root))renderOverview(root,window.dmState||{});callUpdate().then(function(r){state.busy=false;if(r&&r.ok&&r.updated){var msg='LuCI обновлена до v'+r.version+'. Перезагружаю страницу…';state.pageNotice.overview=msg;globalUpdateNotice(msg,'ok');if(rootAlive(root))renderOverview(root,window.dmState||{});setTimeout(function(){location.reload();},1600);}else{var msg=(r&&r.error)||'LuCI не удалось обновить.';state.pageNotice.overview=msg;globalUpdateNotice(msg,'error');if(rootAlive(root))renderOverview(root,window.dmState||{});}}).catch(function(err){state.busy=false;var msg=withRpcError('Не удалось выполнить RPC-обновление LuCI.',err);state.pageNotice.overview=msg;globalUpdateNotice(msg,'error');if(rootAlive(root))renderOverview(root,window.dmState||{});});}
+function doUpdate(root){
+  if(state.busy)return;
+  var v=(window.dmState&&window.dmState.luci_latest_version)||'новой версии';
+  state.busy=true;
+  state.pageNotice.overview='Обновляю LuCI…';
+  globalUpdateNotice('Обновляю LuCI до v'+v+'…','info');
+  if(rootAlive(root))renderOverview(root,window.dmState||{});
+
+  if(state.luciUpdateReloadTimer){clearTimeout(state.luciUpdateReloadTimer);state.luciUpdateReloadTimer=null;}
+  state.luciUpdateReloadTimer=setTimeout(function(){
+    state.luciUpdateReloadTimer=null;
+    if(state.busy){
+      // The old RPC worker may have been terminated by a legacy updater after
+      // the files were already replaced. Reload the page so the new LuCI is used.
+      location.reload();
+    }
+  },8000);
+
+  callUpdate().then(function(r){
+    if(state.luciUpdateReloadTimer){clearTimeout(state.luciUpdateReloadTimer);state.luciUpdateReloadTimer=null;}
+    state.busy=false;
+    if(r&&r.ok&&r.updated){
+      var msg='LuCI обновлена до v'+r.version+'. Перезагружаю страницу…';
+      state.pageNotice.overview=msg;
+      globalUpdateNotice(msg,'ok');
+      if(rootAlive(root))renderOverview(root,window.dmState||{});
+      setTimeout(function(){location.reload();},1600);
+    }else{
+      var msg=(r&&r.error)||'LuCI не удалось обновить.';
+      state.pageNotice.overview=msg;
+      globalUpdateNotice(msg,'error');
+      if(rootAlive(root))renderOverview(root,window.dmState||{});
+    }
+  }).catch(function(err){
+    if(state.luciUpdateReloadTimer){clearTimeout(state.luciUpdateReloadTimer);state.luciUpdateReloadTimer=null;}
+    state.busy=false;
+    var msg=withRpcError('Не удалось выполнить RPC-обновление LuCI.',err);
+    state.pageNotice.overview=msg;
+    globalUpdateNotice(msg,'error');
+    if(rootAlive(root))renderOverview(root,window.dmState||{});
+  });
+}
 function resetDnsCore(root){
   if(state.busy)return;
   confirmAction('Восстановить стандартную настройку DNS',[
