@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.35.23"
+VERSION="3.35.24"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -4418,7 +4418,7 @@ EOF_RB_DNSMASQ
         fi
     done
 
-    if rollback_ownership_has dnsmasq confdir /etc/dnsmasq.d; then
+    if [ "${ROLLBACK_DNS_CORE_ONLY:-0}" != 1 ] && rollback_ownership_has dnsmasq confdir /etc/dnsmasq.d; then
         _baseline_confdir=0
         # If the clean baseline explicitly contained /etc/dnsmasq.d, it belongs
         # to the original system and must remain. Otherwise remove only the
@@ -4666,6 +4666,58 @@ _rollback_ours_impl() {
     return 1
 }
 
+clear_dns_core_runtime_state() {
+    SLOT_1=""; SLOT_2=""; SLOT_3=""; SLOT_4=""; SLOT_5=""; SLOT_6=""
+    SLOT_RU=""
+    PORT_1=""; PORT_2=""; PORT_3=""; PORT_4=""; PORT_5=""; PORT_6=""
+    PORT_RU=""
+    SLOT_1_CAT=""; SLOT_2_CAT=""; SLOT_3_CAT=""; SLOT_4_CAT=""; SLOT_5_CAT=""; SLOT_6_CAT=""
+    SLOT_RU_CAT=""
+    QUICK_PREF_1=""; QUICK_PREF_2=""; QUICK_PREF_3=""; QUICK_PREF_4=""; QUICK_PREF_5=""; QUICK_PREF_6=""
+    DNS_PROFILE="none"
+    DNS_SELECTION_MODE="none"
+    DNS_SELECTION_CATEGORY="none"
+    TLD_RU_ENABLED=0
+    TLD_SPLIT=0
+    BALANCER_ENABLED=0
+    save_config >/dev/null 2>&1
+}
+restore_dns_core() {
+    # Return only the DNS core to the normal OpenWrt resolver path.
+    # Independent Manager settings (force DNS, cache, watchdog, NTP, web)
+    # are deliberately left untouched.
+    acquire_mutation_lock || return 1
+    _rc=0
+    clear_screen
+    printf "%s\n" "${C_YELLOW}=== Восстановление стандартной настройки DNS ===${C_NC}"
+
+    run_discovery >/dev/null 2>&1 || true
+    ROLLBACK_DNS_CORE_ONLY=1
+    rollback_hdp_targeted || _rc=1
+    rollback_dnsmasq_targeted || _rc=1
+    unset ROLLBACK_DNS_CORE_ONLY
+
+    /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || true
+    /etc/init.d/dnsmasq restart >/dev/null 2>&1 || true
+
+    clear_dns_core_runtime_state || _rc=1
+
+    if [ -f "$OWNERSHIP" ]; then
+        _own_tmp="${OWNERSHIP}.tmp.$"
+        sed -E "/^(doh|dnsmasq)\|/d" "$OWNERSHIP" > "$_own_tmp" 2>/dev/null || : > "$_own_tmp"
+        mv "$_own_tmp" "$OWNERSHIP" 2>/dev/null || _rc=1
+        chmod 600 "$OWNERSHIP" 2>/dev/null || true
+    fi
+
+    if [ "$_rc" -eq 0 ]; then
+        ok_msg "Стандартная настройка DNS восстановлена."
+    else
+        err_msg "Стандартную настройку DNS удалось восстановить не полностью."
+    fi
+    pause
+    release_mutation_lock
+    return "$_rc"
+}
 rollback_ours() {
     acquire_mutation_lock || return 1
     _rc=0
@@ -5624,13 +5676,7 @@ case "$c" in
 7) select_slot RU;;
 8) CORE_ONLY=1; apply_settings; _rc=$?; CORE_ONLY=0; [ "$_rc" -eq 0 ] || warn_msg "Не удалось применить выбранные DNS."; pause;;
 9)
-    hybrid_set_defaults
-    CORE_ONLY=1
-    apply_settings
-    _rc=$?
-    CORE_ONLY=0
-    [ "$_rc" -eq 0 ] || warn_msg "Не удалось восстановить стандартную настройку DNS."
-    pause
+    restore_dns_core
     ;;
 *) warn_msg "Неверный пункт."; pause;;
 esac
