@@ -974,6 +974,8 @@ catalog_validate_file() {
         {
             count++
             if (NF != 7 || $1 == "" || $4 == "" || $5 !~ /^https:\/\//) bad=1
+            if ($1 !~ /^[A-Za-z0-9_-]+$/) bad=1
+            if ($2 !~ /^(bypass|clean|security|privacy|adblock|family|regional)$/) bad=1
             ids[$1]++
             if (ids[$1] > 1) bad=1
         }
@@ -1063,7 +1065,7 @@ if [ "$DNS_PROFILE" = "hybrid" ]; then
         if [ -n "$_sid" ] && [ -z "$_scat" ]; then
             _scat="$(dns_cat "$_sid")"
             case "$_slot" in RU) [ -n "$_scat" ] || _scat="regional" ;; esac
-            eval "SLOT_${_slot}_CAT=\"$_scat\""
+            slot_cat_set "$_slot" "$_scat" || return 1
         fi
     done
 fi
@@ -2072,6 +2074,53 @@ _u="$1"
 _u="$(printf '%s' "$_u" | sed 's/[[:space:]]//g; s:/*$::')"
 printf '%s' "$_u"
 }
+slot_set() {
+    case "$1" in
+        1) SLOT_1="$2" ;;
+        2) SLOT_2="$2" ;;
+        3) SLOT_3="$2" ;;
+        4) SLOT_4="$2" ;;
+        5) SLOT_5="$2" ;;
+        6) SLOT_6="$2" ;;
+        RU) SLOT_RU="$2" ;;
+        *) return 1 ;;
+    esac
+}
+slot_cat_set() {
+    case "$1" in
+        1) SLOT_1_CAT="$2" ;;
+        2) SLOT_2_CAT="$2" ;;
+        3) SLOT_3_CAT="$2" ;;
+        4) SLOT_4_CAT="$2" ;;
+        5) SLOT_5_CAT="$2" ;;
+        6) SLOT_6_CAT="$2" ;;
+        RU) SLOT_RU_CAT="$2" ;;
+        *) return 1 ;;
+    esac
+}
+port_set() {
+    case "$1" in
+        1) PORT_1="$2" ;;
+        2) PORT_2="$2" ;;
+        3) PORT_3="$2" ;;
+        4) PORT_4="$2" ;;
+        5) PORT_5="$2" ;;
+        6) PORT_6="$2" ;;
+        RU) PORT_RU="$2" ;;
+        *) return 1 ;;
+    esac
+}
+quick_pref_set() {
+    case "$1" in
+        1) QUICK_PREF_1="$2" ;;
+        2) QUICK_PREF_2="$2" ;;
+        3) QUICK_PREF_3="$2" ;;
+        4) QUICK_PREF_4="$2" ;;
+        5) QUICK_PREF_5="$2" ;;
+        6) QUICK_PREF_6="$2" ;;
+        *) return 1 ;;
+    esac
+}
 file_hash() {
 if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" 2>/dev/null | awk '{print $1}'
 elif command -v md5sum >/dev/null 2>&1; then md5sum "$1" 2>/dev/null | awk '{print $1}'
@@ -2402,12 +2451,12 @@ done <<EOF_HYB
 $(sort -t'|' -k4,4n "$TEST_RESULTS" 2>/dev/null)
 EOF_HYB
 if [ -n "$_replacement" ]; then
-eval "SLOT_$_s=\"$_replacement\""
+slot_set "$_s" "$_replacement" || return 1
 printf "${C_YELLOW}⚠ %s не прошёл тест → резерв %s.${C_NC}\n" "$(dns_name "$_id")" "$(dns_name "$_replacement")"
 _id="$_replacement"
 else
 warn_msg "Для Hybrid-слота $_s нет проверенного резерва."
-eval "SLOT_$_s="
+slot_set "$_s" "" || return 1
 fi
 fi
 [ -n "$_id" ] && printf '%s\n' "$_id" >> "$TMP_DIR/hybrid-used"
@@ -2907,7 +2956,7 @@ err_msg "Не найден идентификатор секции DNS-серв�
 return 1
 fi
 fi
-eval "PORT_$slot=\"$target\""
+port_set "$slot" "$target" || return 1
 [ "${APPLY_OUTPUT_QUIET:-0}" = 1 ] || printf "  ${C_GREEN}+ %s → 127.0.0.1:%s${C_NC}\n" "$name" "$target"
 return 0
 fi
@@ -2936,7 +2985,7 @@ uci set "https-dns-proxy.$sec.listen_addr=127.0.0.1" || return 1
 uci set "https-dns-proxy.$sec.resolver_url=$url" || return 1
 uci set "https-dns-proxy.$sec.request_timeout=2" || return 1
 record_own "doh" "$target" "$url" "slot=$slot;name=$name"
-eval "PORT_$slot=\"$target\""
+port_set "$slot" "$target" || return 1
 [ "${APPLY_OUTPUT_QUIET:-0}" = 1 ] || printf "  ${C_GREEN}+ %s → 127.0.0.1:%s${C_NC}\n" "$name" "$target"
 }
 repair_duplicate_own_doh_ports() {
@@ -3553,9 +3602,9 @@ replace_failed_slot_from_test() {
         [ -n "$_candidate_name" ] || _candidate_name="новый DNS"
         [ "${APPLY_OUTPUT_QUIET:-0}" = 1 ] || printf "  ${C_YELLOW}↻ Слот %s: %s не отвечает. Проверен кандидат %s; применяю только подтверждённый вариант.${C_NC}\n" "$_slot" "$_old_display" "$_candidate_name"
 
-        eval "SLOT_${_slot}=\"$_rid\""
-        eval "SLOT_${_slot}_CAT=\"$_rcat\""
-        eval "PORT_${_slot}=\"$_port\""
+        slot_set "$_slot" "$_rid" || return 1
+        slot_cat_set "$_slot" "$_rcat" || return 1
+        port_set "$_slot" "$_port" || return 1
         if watchdog_apply_slot_candidate "$_slot" "$_rid" "$_rcat" "$_old_id" "$_oldcat"; then
             [ "${APPLY_OUTPUT_QUIET:-0}" = 1 ] || printf "  ${C_GREEN}✓ Слот %s: %s подтверждён на 127.0.0.1:%s.${C_NC}\n" "$_slot" "$_candidate_name" "$_port"
             rm -f "$_slot_tried" "$_used" 2>/dev/null
@@ -3965,19 +4014,19 @@ adaptive_hybrid_prepare() {
         IFS='|' read -r _id _cat _name _ms _st < "$_pool" || break
         [ -n "$_id" ] || break
         sed '1d' "$_pool" > "$_pool.tmp" && mv "$_pool.tmp" "$_pool"
-        eval "SLOT_$_slot=\"$_id\""
+        slot_set "$_slot" "$_id" || return 1
         if [ "$_cat" = bypass ]; then
-            eval "QUICK_PREF_$_slot=\"$_id\""
+            quick_pref_set "$_slot" "$_id" || return 1
         fi
-        eval "SLOT_${_slot}_CAT=\"$_cat\""
+        slot_cat_set "$_slot" "$_cat" || return 1
         _port="$(hybrid_desired_port "$_slot")"
         printf "  ${C_GREEN}✓ Слот %s: %s → 127.0.0.1:%s${C_NC}\n" "$_slot" "$(dns_name "$_id")" "$_port"
         _success=$((_success+1))
         _slot=$((_slot+1))
     done
     while [ "$_slot" -le "$_hybrid_max_slots" ]; do
-        eval "SLOT_$_slot=''"
-        eval "SLOT_${_slot}_CAT='bypass'"
+        slot_set "$_slot" "" || return 1
+        slot_cat_set "$_slot" "bypass" || return 1
         _slot=$((_slot+1))
     done
 
@@ -5377,18 +5426,18 @@ fi
 i=1
 while IFS='|' read -r _id _cat2 _name _ms _st; do
     [ -n "$_id" ] || continue
-    eval "SLOT_$i=\"$_id\""
+    slot_set "$i" "$_id" || return 1
     if [ "$_cat" = bypass ]; then
-        eval "SLOT_${i}_CAT=\"bypass\""
+        slot_cat_set "$i" "bypass" || return 1
     else
-        eval "SLOT_${i}_CAT=\"$_cat2\""
+        slot_cat_set "$i" "$_cat2" || return 1
     fi
     i=$((i+1))
     [ "$i" -gt 6 ] && break
 done < "$_pool"
 while [ "$i" -le 6 ]; do
-    eval "SLOT_$i=\"\""
-    eval "SLOT_${i}_CAT=\"bypass\""
+    slot_set "$i" "" || return 1
+    slot_cat_set "$i" "bypass" || return 1
     i=$((i+1))
 done
 _ru1=""
@@ -5436,10 +5485,10 @@ select_slot() {
     safe_read c
     [ -z "$c" ] && return
     if [ "$c" = "99" ]; then
-        eval "SLOT_$slot=''"
+        slot_set "$slot" "" || return 1
         case "$slot" in
-            RU) eval "SLOT_${slot}_CAT='regional'" ;;
-            *) eval "SLOT_${slot}_CAT=''" ;;
+            RU) slot_cat_set "$slot" "regional" || return 1 ;;
+            *) slot_cat_set "$slot" "" || return 1 ;;
         esac
         sync_regional_dns_state
         info_msg "Изменение сохранено только после применения DNS."
@@ -5456,8 +5505,8 @@ select_slot() {
     _selected_cat="$(printf '%s' "$row" | cut -d'|' -f2)"
     DNS_PROFILE="custom"
     DNS_SELECTION_MODE="manual"
-    eval "SLOT_$slot=\$id"
-    eval "SLOT_${slot}_CAT=\$_selected_cat"
+    slot_set "$slot" "$id" || return 1
+    slot_cat_set "$slot" "$_selected_cat" || return 1
     if [ "$slot" = RU ]; then
         DNS_SELECTION_CATEGORY="regional"
     else
@@ -7014,12 +7063,12 @@ watchdog_apply_slot_candidate() {
     _slot="$1"; _new_id="$2"; _new_cat="$3"; _old_id="$4"; _old_cat="$5"
     eval "_port=\${PORT_${_slot}:-}"
     [ -n "$_slot" ] && [ -n "$_new_id" ] || return 1
-    eval "SLOT_${_slot}=\"$_new_id\""
-    eval "SLOT_${_slot}_CAT=\"$_new_cat\""
+    slot_set "$_slot" "$_new_id" || return 1
+    slot_cat_set "$_slot" "$_new_cat" || return 1
 
     watchdog_candidate_rollback() {
-        eval "SLOT_${_slot}=\"$_old_id\""
-        eval "SLOT_${_slot}_CAT=\"$_old_cat\""
+        slot_set "$_slot" "$_old_id" || return 1
+        slot_cat_set "$_slot" "$_old_cat" || return 1
         if ! rebuild_selected_hdp_sections >/dev/null 2>&1; then
             log_msg "Watchdog: не удалось пересобрать старую конфигурацию после неудачной замены слота $_slot."
             return 1
@@ -8231,11 +8280,11 @@ normalize_hybrid_ports() {
         if [ -n "$_id" ]; then
             _want="$(hybrid_desired_port "$_s")"
             if [ "$_cur" != "$_want" ]; then
-                eval "PORT_${_s}=\"$_want\""
+                port_set "$_s" "$_want" || return 1
                 _changed=1
             fi
         elif [ -n "$_cur" ]; then
-            eval "PORT_${_s}=''"
+            port_set "$_s" "" || return 1
             _changed=1
         fi
     done
