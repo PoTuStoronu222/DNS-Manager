@@ -3590,7 +3590,7 @@ function pollJob(root,job,meta,done){
       if(meta&&meta.mode==='one'&&meta.dns_id)state.checking[meta.dns_id]={status:'FAIL',ping:''};
       var jobErr=rpcErrorText(err);
       if(jobErr){
-        else if(meta.origin==='doh')state.pageNotice.doh='Проверка DNS не выполнена: '+jobErr;
+        if(meta.origin==='doh')state.pageNotice.doh='Проверка DNS не выполнена: '+jobErr;
       }
       if(meta&&meta.mode==='current')state.checking={};
       state.jobRunning=false;
