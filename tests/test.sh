@@ -413,6 +413,44 @@ grep -A10 -F 'watchdog_slot_target_run() {' dns-manager.sh | grep -q 'selected_g
 grep -A12 -F 'watchdog_embedded_integrity_guard() {' dns-manager.sh | grep -q 'selected_general_category' || fail "watchdog integrity guard lacks category gate"
 grep -q 'смешанные или пользовательские категории DNS' dns-manager.sh || fail "watchdog custom/mixed skip message missing"
 ok "manual same-category DNS changes preserve profile; mixed/custom selections disable DNS watchdog scope"
+
+# Watchdog keeps the intended profile category while using clean as a temporary fallback.
+awk '
+    /^watchdog_scope_category\(\) \{/ { capture=1 }
+    capture { print }
+    capture && /^\}/ { exit }
+' dns-manager.sh > "$tmp/watchdog_scope.sh"
+[ -s "$tmp/watchdog_scope.sh" ] || fail "watchdog scope classifier extraction"
+cat > "$tmp/watchdog_scope_runner.sh" <<'EOF_WATCHDOG_SCOPE'
+#!/bin/sh
+set -eu
+DNS_SELECTION_MODE=profile
+DNS_SELECTION_CATEGORY=bypass
+. "$1"
+[ "$(watchdog_scope_category)" = bypass ] || exit 21
+DNS_SELECTION_CATEGORY=clean
+[ "$(watchdog_scope_category)" = clean ] || exit 22
+DNS_SELECTION_CATEGORY=security
+[ "$(watchdog_scope_category)" = security ] || exit 23
+DNS_SELECTION_CATEGORY=all
+if watchdog_scope_category >/dev/null 2>&1; then exit 24; fi
+DNS_SELECTION_MODE=manual
+DNS_SELECTION_CATEGORY=bypass
+if watchdog_scope_category >/dev/null 2>&1; then exit 25; fi
+EOF_WATCHDOG_SCOPE
+chmod +x "$tmp/watchdog_scope_runner.sh"
+"$tmp/watchdog_scope_runner.sh" "$tmp/watchdog_scope.sh" || fail "watchdog intended-profile classifier behavior"
+grep -A22 -F 'watchdog_pick_replacement() {' dns-manager.sh | grep -q '_passcats="$_desired_for_pick clean"' || fail "clean fallback is not available for every non-clean profile"
+grep -A18 -F 'watchdog_pick_replacement() {' dns-manager.sh | grep -q 'watchdog_scope_category' || fail "watchdog replacement does not use intended profile category"
+grep -q '_fallback_slots=""' dns-manager.sh || fail "watchdog fallback slots are not tracked"
+grep -q '_empty_slots=""' dns-manager.sh || fail "watchdog empty slots are not tracked"
+grep -q 'watchdog: проверяю целевую категорию для восстановления/дозаполнения' dns-manager.sh || fail "watchdog gradual target restore/fill path missing"
+awk '/^auto_fill_slots\(\)/,/^return 0/' dns-manager.sh > "$tmp/auto_fill_profile.sh"
+if grep -q '_bypass_count.*-lt 6|подтверждено только .* из 6' "$tmp/auto_fill_profile.sh"; then
+    fail "profile application still requires six bypass DNS"
+fi
+grep -q 'if [ -z "$_id" ] || [ "$_current_cat" != "$_desired" ]; then' dns-manager.sh || fail "watchdog does not repair empty/category-mismatched slots"
+ok "profiles survive clean fallback and watchdog gradually restores/fills target DNS"
 grep -q '^job_state_value() {' "$tmp/backend.sh" || fail "profile job state helper missing"
 grep -q '^job_process_alive() {' "$tmp/backend.sh" || fail "profile job liveness helper missing"
 grep -q 'job_write "\$_jid" pid "\$_job_pid"' "$tmp/backend.sh" || fail "profile job PID persistence missing"
