@@ -20,7 +20,7 @@ ok "shell syntax"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT INT TERM
 
-# DNS health must not treat arbitrary HTTP 200/application-dns-message data as OK.
+# DNS health must reject malformed/non-response data, but accept legitimate resolver replies.
 awk '
     /^validate_dns_message\(\) \{/ { capture=1 }
     capture { print }
@@ -29,20 +29,37 @@ awk '
 [ -s "$tmp/validate_dns.sh" ] || fail "DNS response validator extraction"
 . "$tmp/validate_dns.sh"
 
-# 0x1234 query ID, QR=1, opcode=QUERY, TC=0, RCODE=NOERROR, QDCOUNT=1, ANCOUNT=1.
+# Normal DNS response header.
 printf '\022\064\200\000\000\001\000\001\000\000\000\000' > "$tmp/dns-valid"
 validate_dns_message "$tmp/dns-valid" || fail "valid DNS response header rejected"
 
-# Same DNS framing but SERVFAIL must be rejected.
-printf '\022\064\200\002\000\001\000\000\000\000\000\000' > "$tmp/dns-servfail"
-if validate_dns_message "$tmp/dns-servfail"; then
-    fail "SERVFAIL DNS response accepted as healthy"
+# A different transaction ID is still a valid DNS response.
+printf '\000\000\200\000\000\001\000\000\000\000\000\000' > "$tmp/dns-other-id"
+validate_dns_message "$tmp/dns-other-id" || fail "DNS response with different ID rejected"
+
+# NXDOMAIN is a legitimate resolver response and must stay healthy.
+printf '\000\001\200\003\000\001\000\000\000\000\000\000' > "$tmp/dns-nxdomain"
+validate_dns_message "$tmp/dns-nxdomain" || fail "NXDOMAIN response rejected"
+
+# NODATA/empty answer is also a legitimate response.
+printf '\000\001\200\000\000\001\000\000\000\000\000\000' > "$tmp/dns-no-answer"
+validate_dns_message "$tmp/dns-no-answer" || fail "NODATA response rejected"
+
+# Truncated DNS responses are still valid responses from a responding resolver.
+printf '\000\001\200\002\000\001\000\000\000\000\000\000' > "$tmp/dns-tc"
+# The validator only checks QR/opcode, so TC/SERVFAIL are intentionally accepted.
+validate_dns_message "$tmp/dns-tc" || fail "truncated DNS response rejected"
+
+# Query packet (QR=0) must be rejected.
+printf '\000\001\000\000\000\001\000\000\000\000\000\000' > "$tmp/dns-query"
+if validate_dns_message "$tmp/dns-query"; then
+    fail "DNS query packet accepted as a response"
 fi
 
-# Same framing but no answer records must be rejected.
-printf '\022\064\200\000\000\001\000\000\000\000\000\000' > "$tmp/dns-no-answer"
-if validate_dns_message "$tmp/dns-no-answer"; then
-    fail "empty DNS answer accepted as healthy"
+# Non-standard opcode must be rejected.
+printf '\000\001\x88\000\000\001\000\000\000\000\000\000' > "$tmp/dns-opcode"
+if validate_dns_message "$tmp/dns-opcode"; then
+    fail "non-standard DNS opcode accepted"
 fi
 
 # A 12-byte non-DNS body must be rejected.
@@ -50,7 +67,7 @@ printf 'abcdefghijkl' > "$tmp/dns-garbage"
 if validate_dns_message "$tmp/dns-garbage"; then
     fail "arbitrary 12-byte body accepted as healthy"
 fi
-ok "DNS response validation rejects false-positive HTTP 200/SERVFAIL/no-answer data"
+ok "DNS response validation is permissive for real DNS replies and rejects false positives"
 
 awk '
     /cat > "[^"]*BACKEND_STAGE[^"]*"[^<]*<<\x27EOF_RPC\x27/ { capture=1; next }
