@@ -2551,12 +2551,6 @@ function injectStyle(root){
   '@media(max-width:850px){.dm-test-age-common{flex-wrap:wrap}.dm-grid2{grid-template-columns:1fr}.dm-grid4{grid-template-columns:repeat(2,minmax(0,1fr))}.dm-doh-row{grid-template-columns:120px minmax(140px,1fr) 70px}.dm-doh-ping{display:none}.dm-slot-row{grid-template-columns:48px 115px minmax(130px,1fr) 85px 105px auto}.dm-slot-ping{display:none}.dm-catalog{grid-template-columns:repeat(2,minmax(0,1fr))}}'+
   '@media(max-width:560px){.dm-grid3,.dm-grid4,.dm-catalog{grid-template-columns:1fr}.dm-header-actions{margin-left:0}.dm-doh-row{grid-template-columns:1fr auto}.dm-doh-url{grid-column:1/3}.dm-doh-port{grid-column:1}.dm-slot-row{grid-template-columns:40px minmax(0,1fr) auto}.dm-slot-endpoint{display:none}.dm-slot-state{display:none}.dm-inline{grid-column:2/4;justify-content:flex-start}}';
   root.appendChild(E('style',{},css));
-  root.appendChild(E('style',{},
-    '.dm-test-age-list{display:flex;flex-direction:column;gap:1px;margin-top:2px}'+
-    '.dm-test-age-row{display:grid;grid-template-columns:minmax(0,1fr) 90px 20px;align-items:center;gap:8px;min-height:34px}'+
-    '.dm-test-age-label{font-size:13px;font-weight:600}.dm-test-age-unit{font-size:12px;opacity:.62}'+
-    '.dm-test-age-row .dm-input{width:90px!important;margin:0;box-sizing:border-box}'+
-  ));
 }
 
 function rootAlive(root){return !!root&&!!document&&!!document.documentElement&&document.documentElement.contains(root);}
