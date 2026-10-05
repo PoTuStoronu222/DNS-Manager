@@ -312,7 +312,7 @@ grep -Fq 'if [ $((n % TEST_PROGRESS_EVERY)) -eq 0 ]; then' "$tmp/catalog_test.sh
 if grep -Fq 'if [ $((n % TEST_PROGRESS_EVERY)) -eq 0 ] || [ "$n" -eq "$total" ]; then' "$tmp/catalog_test.sh"; then
     fail "catalog progress still prints a duplicate final intermediate result"
 fi
-_progress_calls="$(grep -c 'test_progress
+_progress_calls="$(grep -c 'test_progress$' "$tmp/catalog_test.sh" 2>/dev/null || printf 0)"
 [ "$_progress_calls" = 1 ] || fail "catalog progress has an unexpected final call"
 if grep -A2 -F '    wait' "$tmp/catalog_test.sh" | grep -q '^    test_progress$'; then
     fail "catalog test still has a separate final test_progress call"
