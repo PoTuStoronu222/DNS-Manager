@@ -2197,7 +2197,17 @@ q="$TMP_DIR/dns_query.bin"; body="$TMP_DIR/body.$id"; hdr="$TMP_DIR/h.$id"
 : > "$body"; : > "$hdr"
 # dns_query.bin is a single shared immutable payload created by test_dns_catalog
 # before workers are forked. A worker must never create or remove it.
-[ -s "$q" ] || { printf '%s\n' "$id|$cat|$name|-1|INTERNAL_TEST_QUERY_MISSING" > "$TMP_DIR/t.$id"; rm -f "$body" "$hdr"; return; }
+# Individual checks must be self-contained. The catalog runner pre-creates
+# this immutable query for parallel workers, while a standalone test_one call
+# may arrive without that file. Create it on demand instead of turning a valid
+# unassigned DNS into a false "unavailable" result.
+if [ ! -s "$q" ]; then
+    printf '\022\064\001\000\000\001\000\000\000\000\000\000\007example\003com\000\000\001\000\001' > "$q" 2>/dev/null || {
+        printf '%s\n' "$id|$cat|$name|-1|INTERNAL_TEST_QUERY_CREATE_FAIL" > "$TMP_DIR/t.$id"
+        rm -f "$body" "$hdr"
+        return
+    }
+fi
 _ips=""
 # Resolve the DoH endpoint through the trusted bootstrap DNS set first.
 # Local/system DNS is only a fallback so a poisoned provider resolver cannot
