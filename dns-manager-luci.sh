@@ -572,35 +572,22 @@ update_manager_direct() {
     _out="$TMP_ROOT/manager-update-all.log"
     rm -f "$_out" 2>/dev/null || true
     ( update_manager_json ) >"$_out" 2>&1 || true
-    _after="$(manager_version 2>/dev/null || true)"
-    if [ -n "$_installed" ] && [ -n "$_after" ] && [ "$_after" != "$_installed" ]; then
-        rm -f "$_out" 2>/dev/null || true
-        return 0
-    fi
-    if [ "$(json_update_state "$(cat "$_out" 2>/dev/null)")" = current ]; then
-        rm -f "$_out" 2>/dev/null || true
-        return 2
-    fi
-    rm -f "$_out" 2>/dev/null || true
-    return 3
+    case "$(json_update_state "$(cat "$_out" 2>/dev/null)")" in
+        updated) rm -f "$_out" 2>/dev/null || true; return 0 ;;
+        current) rm -f "$_out" 2>/dev/null || true; return 2 ;;
+        *) rm -f "$_out" 2>/dev/null || true; return 3 ;;
+    esac
 }
-
 update_hdp_direct() {
     _installed="$(package_version https-dns-proxy 2>/dev/null || true)"
     _out="$TMP_ROOT/hdp-update-all.log"
     rm -f "$_out" 2>/dev/null || true
     ( update_hdp_json ) >"$_out" 2>&1 || true
-    _after="$(package_version https-dns-proxy 2>/dev/null || true)"
-    if [ -n "$_installed" ] && [ -n "$_after" ] && [ "$_after" != "$_installed" ]; then
-        rm -f "$_out" 2>/dev/null || true
-        return 0
-    fi
-    if [ "$(json_update_state "$(cat "$_out" 2>/dev/null)")" = current ]; then
-        rm -f "$_out" 2>/dev/null || true
-        return 2
-    fi
-    rm -f "$_out" 2>/dev/null || true
-    return 3
+    case "$(json_update_state "$(cat "$_out" 2>/dev/null)")" in
+        updated) rm -f "$_out" 2>/dev/null || true; return 0 ;;
+        current) rm -f "$_out" 2>/dev/null || true; return 2 ;;
+        *) rm -f "$_out" 2>/dev/null || true; return 3 ;;
+    esac
 }
 update_catalog_direct() {
     _tmp="$TMP_ROOT/catalog-update-all.$$"
@@ -628,17 +615,11 @@ update_luci_direct() {
     _out="$TMP_ROOT/luci-update-all.log"
     rm -f "$_out" 2>/dev/null || true
     ( update_json ) >"$_out" 2>&1 || true
-    _after="$(read_installed_luci_version)"
-    if [ -n "$_installed" ] && [ -n "$_after" ] && [ "$_after" != "$_installed" ]; then
-        rm -f "$_out" 2>/dev/null || true
-        return 0
-    fi
-    if [ "$(json_update_state "$(cat "$_out" 2>/dev/null)")" = current ]; then
-        rm -f "$_out" 2>/dev/null || true
-        return 2
-    fi
-    rm -f "$_out" 2>/dev/null || true
-    return 3
+    case "$(json_update_state "$(cat "$_out" 2>/dev/null)")" in
+        updated) rm -f "$_out" 2>/dev/null || true; return 0 ;;
+        current) rm -f "$_out" 2>/dev/null || true; return 2 ;;
+        *) rm -f "$_out" 2>/dev/null || true; return 3 ;;
+    esac
 }
 append_update_message() {
     if [ -n "$_message" ]; then _message="$_message; $1"; else _message="$1"; fi
@@ -659,24 +640,24 @@ update_all_json() {
     _old_m="$(manager_version 2>/dev/null || true)"
     _mr="$(update_manager_json 2>/dev/null || true)"
     _new_m="$(manager_version 2>/dev/null || true)"
-    if [ -n "$_old_m" ] && [ -n "$_new_m" ] && [ "$_new_m" != "$_old_m" ]; then
-        append_update_message "DNS Manager $_old_m → $_new_m"
-    elif [ "$(json_update_state "$_mr")" = current ]; then
-        append_update_message "DNS Manager $_old_m · актуален"
-    else
-        append_failure_message "DNS Manager: не удалось обновить"
-    fi
+    case "$(json_update_state "$_mr")" in
+        updated)
+            if [ -n "$_old_m" ] && [ -n "$_new_m" ] && [ "$_new_m" != "$_old_m" ]; then append_update_message "DNS Manager $_old_m → $_new_m"; else append_update_message "DNS Manager обновлён"; fi
+            ;;
+        current) append_update_message "DNS Manager $_old_m · актуален" ;;
+        *) append_failure_message "DNS Manager: не удалось обновить" ;;
+    esac
 
     _old_h="$(package_version https-dns-proxy 2>/dev/null || true)"
     _hr="$(update_hdp_json 2>/dev/null || true)"
     _new_h="$(package_version https-dns-proxy 2>/dev/null || true)"
-    if [ -n "$_old_h" ] && [ -n "$_new_h" ] && [ "$_new_h" != "$_old_h" ]; then
-        append_update_message "Защищённый DNS $_old_h → $_new_h"
-    elif [ "$(json_update_state "$_hr")" = current ]; then
-        append_update_message "Защищённый DNS $_old_h · актуален"
-    else
-        append_failure_message "Защищённый DNS: не удалось обновить"
-    fi
+    case "$(json_update_state "$_hr")" in
+        updated)
+            if [ -n "$_old_h" ] && [ -n "$_new_h" ] && [ "$_new_h" != "$_old_h" ]; then append_update_message "Защищённый DNS $_old_h → $_new_h"; else append_update_message "Защищённый DNS обновлён"; fi
+            ;;
+        current) append_update_message "Защищённый DNS $_old_h · актуален" ;;
+        *) append_failure_message "Защищённый DNS: не удалось обновить" ;;
+    esac
 
     _old_cv="$(catalog_version 2>/dev/null || true)"
     _old_cr="$(catalog_revision 2>/dev/null || true)"
@@ -693,13 +674,13 @@ update_all_json() {
     _old_l="$(read_installed_luci_version)"
     _lr="$(update_json 2>/dev/null || true)"
     _new_l="$(read_installed_luci_version)"
-    if [ -n "$_old_l" ] && [ -n "$_new_l" ] && [ "$_new_l" != "$_old_l" ]; then
-        append_update_message "LuCI $_old_l → $_new_l"
-    elif [ "$(json_update_state "$_lr")" = current ]; then
-        append_update_message "LuCI $_old_l · актуальна"
-    else
-        append_failure_message "LuCI: не удалось обновить"
-    fi
+    case "$(json_update_state "$_lr")" in
+        updated)
+            if [ -n "$_old_l" ] && [ -n "$_new_l" ] && [ "$_new_l" != "$_old_l" ]; then append_update_message "LuCI $_old_l → $_new_l"; else append_update_message "LuCI обновлена"; fi
+            ;;
+        current) append_update_message "LuCI $_old_l · актуальна" ;;
+        *) append_failure_message "LuCI: не удалось обновить" ;;
+    esac
 
     release_runtime_lock "$RUNTIME_DIR/update-all.lock"
     if [ -n "$_failed" ]; then
