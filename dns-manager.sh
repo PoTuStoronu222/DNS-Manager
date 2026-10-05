@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.35.26"
+VERSION="3.35.27"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -8454,19 +8454,20 @@ startup_self_repair() {
 # STARTUP UPDATE CHECK
 # ==========================================
 startup_update_check() {
+    # During the re-exec after a successful manager update, never start another
+    # network check. The new process only needs to continue normal startup.
     if [ "${DNS_MANAGER_NO_UPDATE:-0}" = 1 ]; then
-        luci_companion_check_update >/dev/null 2>&1 || true
         return 0
     fi
 
-    # Startup checks are silent when nothing needs attention.
-    # Show only a real update or a failed check; never log a routine "current" result.
+    # Only the DNS Manager backend checks itself during startup. LuCI/companion
+    # updates are checked explicitly from LuCI, not as a hidden second network
+    # request during every manager launch.
     auto_update_manager >/dev/null 2>&1 || true
     case "${AUTO_UPDATE_RESULT:-}" in
         updated) info_msg "DNS Manager автоматически обновлён до версии $VERSION." ;;
         failed) warn_msg "Проверка обновления DNS Manager не удалась. Продолжаю запуск версии $VERSION." ;;
     esac
-    luci_companion_check_update >/dev/null 2>&1 || true
     return 0
 }
 # ==========================================
