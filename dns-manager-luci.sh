@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.6.36
+# Version: 1.6.37
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -145,7 +145,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.6.36"
+SELF_VERSION="1.6.37"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -1747,14 +1747,10 @@ job_start_test_one() {
         if ! acquire_test_lock; then
             job_write "$_jid" status failed; job_write "$_jid" result fail; job_write "$_jid" finished "$(date +%s)"; exit 1
         fi
-        _assigned="$(assigned_port_for_id "$_id" 2>/dev/null || true)"
-        if [ -n "$_assigned" ]; then
-            printf "Проверяю реальный DoH endpoint назначенного DNS: %s.\n" "$_id"
-        else
-            printf "Проверяю реальный DoH endpoint: %s.\n" "$_id"
-        fi
-        # Always test the catalog DoH URL itself. A successful local proxy/cache
-        # response must never hide an unavailable upstream resolver.
+        # The individual check must use exactly the same upstream DoH test
+        # as the full catalog check. Never substitute the local 127.0.0.1 slot
+        # listener, even when this DNS is currently assigned.
+        printf "Проверяю реальный DoH endpoint: %s.\n" "$_id"
         test_one_dns "$_id" || true
         _result_file="$TMP_DIR/t.$_id"
         if [ -s "$_result_file" ]; then
@@ -1781,7 +1777,11 @@ job_start_test_one() {
             rm -f "$_result_file" 2>/dev/null || true
             release_test_lock
             job_write "$_jid" status done
-            job_write "$_jid" result ok
+            if [ "$_one_status" = "OK" ]; then
+                job_write "$_jid" result ok
+            else
+                job_write "$_jid" result fail
+            fi
             job_write "$_jid" finished "$_stamp"
             exit 0
         fi
@@ -3631,10 +3631,11 @@ function pollJob(root,job,meta,done){
     callStatus(statusDetail()).then(function(ns){
       ns=ns||{};window.dmState=ns;
       if(meta&&meta.mode==='one'&&meta.dns_id){
-        var d=null;(ns.slots||[]).forEach(function(x){if(x.id===meta.dns_id)d=x;});
         state.checking[meta.dns_id]={
-          status:j&&j.dns_status?j.dns_status:(d&&d.status?d.status:(j.result==='ok'?'OK':'FAIL')),
-          ping:j&&j.ping?j.ping:(d&&d.ping?d.ping:'')
+          // The completed one-server test is authoritative. Never fall back
+          // to an old slot/local-listener status from status_json().
+          status:j&&j.dns_status?j.dns_status:'FAIL',
+          ping:(j&&j.dns_status==='OK'&&j.ping)?j.ping:''
         };
       }
       if(meta&&meta.mode==='current')state.checking={};
