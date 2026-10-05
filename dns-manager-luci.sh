@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.6.28
+# Version: 1.6.29
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -23,7 +23,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.6.28"
+VERSION="1.6.29"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -145,7 +145,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.6.28"
+SELF_VERSION="1.6.29"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -2009,7 +2009,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.6.28
+// DNS Manager LuCI version: 1.6.29
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -2056,7 +2056,7 @@ var CATEGORY = [
   ['all','Все DNS'], ['bypass','Обход блокировок'], ['security','Безопасность'], ['privacy','Приватность'],
   ['adblock','Блокировка рекламы'], ['family','Семейный'], ['clean','Без фильтрации'], ['regional','Региональные']
 ];
-var state = { hdpUpdating:false, managerUpdating:false, updatingAll:false, category:'all', offset:0, limit:18, catalogLoaded:false, catalogLoading:false, advanced:true, logLoaded:false, logLoading:false, busy:false, busySetting:'', settingMessage:'', settingMessageType:'', settingMessageKey:'', pageNotice:{}, statusError:'', activeTab:'dashboard', jobRunning:false, lastJob:null, checking:{}, fullTest:null, catalogProgress:null, profileProgress:null, catalogCheckNotice:'', versionCheck:null, lastAction:null, runtimeCpuLoad:null, runtimeMemoryTotal:null, runtimeMemoryAvailable:null, boardInfo:null, systemPollBusy:false, autoVersionCheckStarted:false, profileResumeStarted:false };
+var state = { hdpUpdating:false, managerUpdating:false, updatingAll:false, category:'all', offset:0, limit:18, catalogLoaded:false, catalogLoading:false, advanced:true, logLoaded:false, logLoading:false, busy:false, busySetting:'', settingMessage:'', settingMessageType:'', settingMessageKey:'', pageNotice:{}, statusError:'', activeTab:'dashboard', jobRunning:false, lastJob:null, checking:{}, fullTest:null, catalogProgress:null, profileProgress:null, versionCheck:null, lastAction:null, runtimeCpuLoad:null, runtimeMemoryTotal:null, runtimeMemoryAvailable:null, boardInfo:null, systemPollBusy:false, autoVersionCheckStarted:false, profileResumeStarted:false };
 
 function profileName(p){
   var x=PROFILE.filter(function(v){return v[0]===p;})[0];
@@ -3104,7 +3104,6 @@ function renderCatalog(root){
   if(!window.dmCatalog)body.appendChild(E('div',{'class':'dm-hint'},'Загрузка каталога DNS…'));
   var ch=[
     E('div',{'class':'dm-mini'},'Каталог DNS отображается постоянно. Выбор категории и назначение доступны ниже.'),
-    state.catalogCheckNotice?E('div',{'class':'dm-inline-msg '+(state.jobRunning?'info':((state.catalogCheckNotice.indexOf('недоступен')>=0||state.catalogCheckNotice.indexOf('Не удалось')>=0)?'error':'ok'))},state.catalogCheckNotice):E('span',{}),
     E('div',{'class':'dm-actions'},[
       btn(state.jobRunning&&state.fullTest&&state.fullTest.origin==='catalog'?'Проверяю…':'Проверить все DNS','cbi-button-action',function(){testAll(root,'catalog');},{disabled:!!state.busy||!!state.jobRunning})
     ])
@@ -3445,25 +3444,18 @@ function testOne(id,root,origin,done){
   if(state.jobRunning||state.busy||!id)return;
   state.lastJob=null;state.jobRunning=true;
   state.checking[id]={status:'RUNNING',ping:'',started:Date.now()};
-  if(origin==='catalog'){
-    var testName=id;
-    (window.dmCatalog&&window.dmCatalog.servers||[]).forEach(function(x){if(x&&x.id===id)testName=x.name||x.id;});
-    state.catalogCheckNotice='Проверяю «'+testName+'»…';
-  }
   render(root,window.dmState||{});
   callTestOne(id).then(function(r){
     if(r&&r.ok)pollJob(root,r.job,{mode:'one',dns_id:id,origin:origin||''},done);
     else{
       state.checking[id]={status:'FAIL',ping:''};
       state.jobRunning=false;
-      if(origin==='catalog')state.catalogCheckNotice='Не удалось запустить проверку DNS.';
       render(root,window.dmState||{});
       if(done)done(window.dmState||{});
     }
   }).catch(function(err){
     state.checking[id]={status:'FAIL',ping:''};
     state.jobRunning=false;
-    if(origin==='catalog')state.catalogCheckNotice=withRpcError('Не удалось выполнить проверку DNS.',err);
     else if(origin==='doh')state.pageNotice.doh=withRpcError('Не удалось выполнить проверку DNS.',err);
     render(root,window.dmState||{});
     if(done)done(window.dmState||{});
@@ -3489,7 +3481,6 @@ function pollJob(root,job,meta,done){
     state.jobRunning=false;
     var noJob='Фоновая задача DNS Manager не вернула идентификатор.';
     setAction(false,noJob);
-    if(meta&&meta.origin==='catalog')state.catalogCheckNotice=noJob;
     else if(meta&&meta.origin==='doh')state.pageNotice.doh=noJob;
     return;
   }
@@ -3552,8 +3543,6 @@ function pollJob(root,job,meta,done){
         if(meta.origin==='catalog'){
           var nn=meta.dns_id;
           (window.dmCatalog&&window.dmCatalog.servers||[]).forEach(function(x){if(x&&x.id===meta.dns_id)nn=x.name||x.id;});
-          var cc=state.checking[meta.dns_id],ss=String(cc.status||'').toUpperCase();
-          state.catalogCheckNotice=(ss==='OK'&&hasPing(cc.ping))?'«'+nn+'» проверен: доступен · '+cc.ping+' мс':'«'+nn+'» проверен: недоступен';
         }
       }
       if(meta&&meta.mode==='current')state.checking={};
@@ -3563,13 +3552,6 @@ function pollJob(root,job,meta,done){
         if(meta&&meta.mode==='one'&&meta.origin==='catalog'&&window.dmCatalog){
           return callCatalog(state.category,state.offset,state.limit,0).then(function(cd){
             window.dmCatalog=cd||{};
-            if(meta.dns_id){
-              var xd=null;(window.dmCatalog.servers||[]).forEach(function(x){if(x&&x.id===meta.dns_id)xd=x;});
-              var xn=xd&&xd.name?xd.name:meta.dns_id;
-              var xs=xd&&xd.status?String(xd.status).toUpperCase():'';
-              var xp=xd&&xd.ping?xd.ping:'';
-              state.catalogCheckNotice=(xs==='OK'&&hasPing(xp))?'«'+xn+'» проверен: доступен · '+xp+' мс':'«'+xn+'» проверен: недоступен';
-            }
             render(root,ns);
           }).catch(function(){render(root,ns);});
         }
@@ -3614,7 +3596,6 @@ function pollJob(root,job,meta,done){
       if(meta&&meta.mode==='one'&&meta.dns_id)state.checking[meta.dns_id]={status:'FAIL',ping:''};
       var jobErr=rpcErrorText(err);
       if(jobErr){
-        if(meta.origin==='catalog')state.catalogCheckNotice='Проверка не выполнена: '+jobErr;
         else if(meta.origin==='doh')state.pageNotice.doh='Проверка DNS не выполнена: '+jobErr;
       }
       if(meta&&meta.mode==='current')state.checking={};
