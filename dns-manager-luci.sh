@@ -2397,12 +2397,32 @@ function settingFeedback(label,key){
 }
 function setAction(ok,text,kind){state.lastAction={ok:!!ok,text:String(text||''),kind:String(kind||((ok===true)?'ok':'error'))};}
 function renderActionStatus(){
-  if(!state.lastAction||!state.lastAction.text)return null;
-  var kind=state.lastAction.kind||((state.lastAction.ok===true)?'ok':'error');
-  var title=kind==='running'?'Выполняется':(kind==='ok'?'Применено':'Ошибка');
-  return E('div',{'class':'dm-applied '+kind},[
-    E('strong',{},title),
-    E('span',{},state.lastAction.text)
+  var action=state.lastAction&&state.lastAction.text?{
+    kind:state.lastAction.kind||((state.lastAction.ok===true)?'ok':'error'),
+    text:state.lastAction.text
+  }:null;
+  if(!action){
+    var st=window.dmState||{},js=String(st.last_job_status||'').toLowerCase(),jr=String(st.last_job_result||'').toLowerCase(),jm=stripAnsi(String(st.last_job_message||'')).trim();
+    if(js==='running'||js==='done'||js==='failed'){
+      var label='',title='';
+      if(String(st.last_job_mode)==='profile')label='Профиль «'+profileName(st.last_job_profile||'')+'»';
+      else if(String(st.last_job_mode)==='all')label='Полная проверка каталога DNS';
+      else if(String(st.last_job_mode)==='current')label='Проверка DNS в слотах';
+      else if(String(st.last_job_mode)==='one')label='Проверка DNS «'+(st.last_job_dns_id||'')+'»';
+      else label='Фоновая задача DNS Manager';
+      if(js==='running'){
+        action={kind:'running',text:label+' сейчас выполняется. Закрытие LuCI не останавливает операцию.'};
+      }else if(js==='done'&&jr==='ok'){
+        action={kind:'ok',text:label+' завершена успешно.'};
+      }else{
+        action={kind:'error',text:label+' завершена с ошибкой.'+(jm?' Причина: '+jm:'')};
+      }
+    }
+  }
+  if(!action)return null;
+  return E('div',{'class':'dm-applied '+action.kind},[
+    E('strong',{},action.kind==='running'?'Выполняется':(action.kind==='ok'?'Успешно':'Ошибка')),
+    E('span',{},action.text)
   ]);
 }
 function stripAnsi(s){
