@@ -408,7 +408,6 @@ fi
 grep -A12 -F 'watchdog_pick_replacement() {' dns-manager.sh | grep -q 'watchdog_scope_category' || fail "watchdog replacement does not use intended profile category"
 grep -A18 -F 'watchdog_pick_replacement() {' dns-manager.sh | grep -q '_passcats="\$_desired_for_pick clean"' || fail "watchdog clean fallback is missing for non-clean profiles"
 grep -A16 -F 'watchdog_slot_target_run() {' dns-manager.sh | grep -q 'watchdog_scope_category' || fail "watchdog slot repair does not use intended profile category"
-grep -A14 -F 'watchdog_embedded_integrity_guard() {' dns-manager.sh | grep -q 'selected_general_category' || true
 grep -q 'смешанные или пользовательские категории DNS' dns-manager.sh || fail "watchdog custom/mixed skip message missing"
 ok "manual same-category DNS changes preserve profile; mixed/custom selections disable DNS watchdog scope"
 
@@ -449,6 +448,15 @@ if grep -q '_bypass_count.*-lt 6|подтверждено только .* из 6
 fi
 grep -q 'if [ -z "$_id" ] || [ "$_current_cat" != "$_desired" ]; then' dns-manager.sh || fail "watchdog does not repair empty/category-mismatched slots"
 ok "profiles survive clean fallback and watchdog gradually restores/fills target DNS"
+
+awk '/^quick_max_bypass\(\)/,/^}/' dns-manager.sh > "$tmp/quick_max_bypass.sh"
+grep -q 'auto_fill_slots bypass || return 1' "$tmp/quick_max_bypass.sh" || fail "bypass profile does not allow partial startup"
+if grep -q 'минимум 3\|_bypass_count.*-lt 6' "$tmp/quick_max_bypass.sh"; then
+    fail "bypass profile still requires multiple DNS before apply"
+fi
+grep -q '\[ -n "\$_empty_slots" \]' dns-manager.sh || fail "watchdog exits before processing empty profile slots"
+grep -q 'if \[ "$_slot" != RU \] && \[ "$_desired_slot_cat" != clean \] && \[ "$_current_slot_cat" = clean \]' dns-manager.sh || fail "watchdog does not detect temporary clean fallback slots"
+ok "bypass profile can start with one DNS and watchdog handles empty/fallback slots"
 grep -q '^job_state_value() {' "$tmp/backend.sh" || fail "profile job state helper missing"
 grep -q '^job_process_alive() {' "$tmp/backend.sh" || fail "profile job liveness helper missing"
 grep -q 'job_write "\$_jid" pid "\$_job_pid"' "$tmp/backend.sh" || fail "profile job PID persistence missing"
