@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.6.42
+# Version: 1.6.43
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -23,7 +23,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.6.42"
+VERSION="1.6.43"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -145,7 +145,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.6.42"
+SELF_VERSION="1.6.43"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -1751,13 +1751,20 @@ job_start_test_one() {
         # manager exactly like its normal CLI path and therefore shares the
         # same test implementation as the full catalog check.
         printf "Проверяю реальный DoH endpoint: %s.\n" "$_id"
-        _result_file="$TMP_ROOT/direct-test-result.$$"
+        _result_file="$TMP_ROOT/direct-test-result.$"
         rm -f "$_result_file" 2>/dev/null || true
-        DNS_MANAGER_TEST_LOCK_HELD=1 "$MANAGER" --test-one "$_id" >"$_result_file" 2>&1 || true
-        _result_file="$TMP_DIR/t.$_id"
-        if [ -s "$_result_file" ]; then
-            _one_ms="$(awk -F"|" 'NF>=5 {print $4;exit}' "$_result_file" 2>/dev/null || true)"
-            _one_status="$(awk -F"|" 'NF>=5 {print $5;exit}' "$_result_file" 2>/dev/null || true)"
+        # The manager is a separate process with its own /tmp/dnsmgr.* tree.
+        # Its single-test result is therefore read from stdout, not from the
+        # manager's private t.<id> file.
+        DNS_MANAGER_TEST_LOCK_HELD=1 "$MANAGER" --test-one "$_id" >"$_result_file" 2>/dev/null || true
+        if grep -Eq "^[A-Za-z0-9_-]+\|[^|]*\|[^|]*\|-?[0-9]+\|[A-Za-z0-9_:-]+$" "$_result_file" 2>/dev/null; then
+            _one_ms="$(awk -F"|" -v id="$_id" '$1==id && NF>=5 {print $4;exit}' "$_result_file" 2>/dev/null || true)"
+            _one_status="$(awk -F"|" -v id="$_id" '$1==id && NF>=5 {print $5;exit}' "$_result_file" 2>/dev/null || true)"
+        else
+            _one_ms=""
+            _one_status="TEST_NO_RESULT"
+        fi
+        if [ -n "$_one_status" ] && [ "$_one_status" != "TEST_NO_RESULT" ]; then
             job_write "$_jid" ping "$_one_ms"
             job_write "$_jid" dns_status "$_one_status"
             _tmp="$TMP_ROOT/results.$$"
@@ -2041,7 +2048,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.6.42
+// DNS Manager LuCI version: 1.6.43
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
