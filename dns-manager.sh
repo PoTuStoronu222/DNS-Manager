@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.35.44"
+VERSION="3.35.45"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -5487,13 +5487,6 @@ while IFS='|' read -r _id _cat2 _name _ms _st; do
     [ "$i" -gt 6 ] && break
 done < "$_src"
 [ -s "$_pool" ] || { warn_msg "Не удалось сформировать набор DNS."; pause; return 1; }
-if [ "$_cat" = bypass ]; then
-    _bypass_count="$(awk 'END{print NR+0}' "$_pool" 2>/dev/null)"
-    if [ "$_bypass_count" -lt 6 ]; then
-        warn_msg "В категории «Обход блокировок» подтверждено только $_bypass_count DNS из 6. Набор не применён."
-        return 1
-    fi
-fi
 if [ "$_cat" = all ]; then
     _src2="$TMP_DIR/auto-candidates-all"
     : > "$_src2"
@@ -7392,16 +7385,27 @@ watchdog_embedded_loop() {
         _missing=0
         _threshold_slots=""
         _local_recover_slots=""
+        _fallback_slots=""
+        _empty_slots=""
         _probe_rc=0
 
         watchdog_refresh_listener_snapshot
 
         for _slot in 1 2 3 4 5 6 RU; do
             eval "_id=\${SLOT_${_slot}:-}"
-            [ -n "$_id" ] || continue
+            _current_slot_cat=""; [ -n "$_id" ] && _current_slot_cat="$(dns_cat "$_id" 2>/dev/null || true)"
             eval "_port=\${PORT_${_slot}:-}"
-            [ -n "$_port" ] || continue
+            [ -n "$_port" ] || _port="$(hybrid_desired_port "$_slot")"
             case "$_slot" in RU) _domain="yandex.ru" ;; *) _domain="example.com" ;; esac
+            _desired_slot_cat="$(watchdog_desired_cat "$_slot" 2>/dev/null || true)"
+            if [ "$_slot" != RU ] && [ -z "$_id" ]; then
+                _empty_slots="$_empty_slots $_slot"
+                continue
+            fi
+            if [ "$_slot" != RU ] && [ "$_desired_slot_cat" != clean ] && [ "$_current_slot_cat" = clean ]; then
+                _fallback_slots="$_fallback_slots $_slot"
+            fi
+            [ -n "$_port" ] || continue
 
             _checked=$((_checked+1))
             if ! watchdog_listener_snapshot_has_port "$_port"; then
@@ -7485,7 +7489,18 @@ watchdog_embedded_loop() {
         fi
 
         if [ "$_watchdog_action" = 0 ] && [ "$_failed" -eq 0 ] && [ "$_missing" -eq 0 ]; then
-            watchdog_embedded_integrity_guard >/dev/null 2>&1 || true
+            _restore_slot=""
+            for _slot in $_fallback_slots; do _restore_slot="$_slot"; break; done
+            [ -n "$_restore_slot" ] || for _slot in $_empty_slots; do _restore_slot="$_slot"; break; done
+            if [ -n "$_restore_slot" ] && [ "$_wd_repairs" -lt "${WATCHDOG_MAX_REPAIRS:-1}" ]; then
+                log_msg "Watchdog: проверяю целевую категорию для восстановления/дозаполнения слота $_restore_slot."
+                watchdog_slot_target_run "$_restore_slot" >/dev/null 2>&1 && _watchdog_action=1 || true
+                load_config >/dev/null 2>&1 || true
+                refresh_runtime_capabilities >/dev/null 2>&1 || true
+            fi
+            if [ "$_watchdog_action" = 0 ]; then
+                watchdog_embedded_integrity_guard >/dev/null 2>&1 || true
+            fi
         fi
 
         sleep "$_interval"
