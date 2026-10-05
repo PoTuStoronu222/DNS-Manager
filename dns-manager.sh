@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.35.57"
+VERSION="3.35.58"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -7189,10 +7189,24 @@ watchdog_pick_replacement() {
     _used="$2"
     _tried="$3"
     _allow_clean="${4:-0}"
-    _selection_kind="$(watchdog_scope_category 2>/dev/null || true)"
-    [ -n "$_selection_kind" ] || return 1
-    _desired_for_pick="$(watchdog_desired_cat "$_slot")"
-    [ -n "$_desired_for_pick" ] || return 1
+    _profile_all_scope=0
+    if [ "${DNS_SELECTION_MODE:-}" = profile ] && [ "${DNS_SELECTION_CATEGORY:-}" = all ]; then
+        # "Все категории" is allowed to repair during an explicit profile apply.
+        # Background watchdog still rejects mixed/all selections via
+        # watchdog_scope_category().
+        _selection_kind=all
+        _profile_all_scope=1
+        if [ "$_slot" = RU ]; then
+            _desired_for_pick=regional
+        else
+            _desired_for_pick=all
+        fi
+    else
+        _selection_kind="$(watchdog_scope_category 2>/dev/null || true)"
+        [ -n "$_selection_kind" ] || return 1
+        _desired_for_pick="$(watchdog_desired_cat "$_slot")"
+        [ -n "$_desired_for_pick" ] || return 1
+    fi
 
     case "$_slot" in
         RU) _probe_domain="yandex.ru" ;;
@@ -7202,7 +7216,9 @@ watchdog_pick_replacement() {
     # Prefer the intended category. Clean is only a temporary fallback when
     # no target-category DNS is currently alive anywhere in the profile.
     _passcats="$_desired_for_pick"
-    if [ "$_allow_clean" = 1 ] && [ "$_slot" != RU ] && [ "$_desired_for_pick" != clean ]; then
+    if [ "$_profile_all_scope" = 1 ] && [ "$_slot" != RU ]; then
+        _passcats=all
+    elif [ "$_allow_clean" = 1 ] && [ "$_slot" != RU ] && [ "$_desired_for_pick" != clean ]; then
         _passcats="$_desired_for_pick clean"
     fi
 
@@ -7220,9 +7236,15 @@ watchdog_pick_replacement() {
 
         for _passcat in $_passcats; do
             [ -n "$_passcat" ] || continue
-            awk -F'|' -v c="$_passcat" '
-                NF>=5 && $1 !~ /^#/ && $2==c && $5=="OK" && $4 ~ /^[0-9]+$/ {print}
-            ' "$TEST_RESULTS" 2>/dev/null | sort -t'|' -k4,4n > "$_fresh_pass_source"
+            if [ "$_profile_all_scope" = 1 ] && [ "$_slot" != RU ]; then
+                awk -F'|' '
+                    NF>=5 && $1 !~ /^#/ && $2!="regional" && $5=="OK" && $4 ~ /^[0-9]+$/ {print}
+                ' "$TEST_RESULTS" 2>/dev/null | sort -t'|' -k4,4n > "$_fresh_pass_source"
+            else
+                awk -F'|' -v c="$_passcat" '
+                    NF>=5 && $1 !~ /^#/ && $2==c && $5=="OK" && $4 ~ /^[0-9]+$/ {print}
+                ' "$TEST_RESULTS" 2>/dev/null | sort -t'|' -k4,4n > "$_fresh_pass_source"
+            fi
 
             while IFS="|" read -r _rid _rcat _rname _rms _rst; do
                 [ -n "$_rid" ] || continue
@@ -7276,7 +7298,11 @@ watchdog_pick_replacement() {
         while IFS="|" read -r _rid _rcat _rname _rms _rst; do
             [ -n "$_rid" ] || continue
             case "$_rid" in \#*) continue ;; esac
-            [ "$_rcat" = "$_passcat" ] || continue
+            if [ "$_passcat" = all ] && [ "$_slot" != RU ]; then
+                [ "$_rcat" != regional ] || continue
+            else
+                [ "$_rcat" = "$_passcat" ] || continue
+            fi
             [ -n "${REPAIR_BAD_IDS:-}" ] && grep -qxF "$_rid" "$REPAIR_BAD_IDS" 2>/dev/null && continue
             [ "$_rid" != "${_current_id:-}" ] || continue
             _rurl="$(normalize_url "$(dns_url "$_rid")")"
