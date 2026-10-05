@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.6.58
+# Version: 1.6.59
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -23,7 +23,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.6.58"
+VERSION="1.6.59"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -113,7 +113,7 @@ EOF_MENU
     },
     "write": {
       "ubus": {
-        "dns_manager": [ "set_profile", "reset_dns", "set_slot", "set_setting", "set_watchdog_setting", "set_test_age", "test_all", "test_current", "test_one", "update", "update_manager", "update_hdp", "update_catalog", "update_all" ]
+        "dns_manager": [ "set_profile", "reset_dns", "set_slot", "set_setting", "set_watchdog_setting", "set_watchdog_settings", "set_test_age", "test_all", "test_current", "test_one", "update", "update_manager", "update_hdp", "update_catalog", "update_all" ]
       }
     }
   }
@@ -144,7 +144,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.6.58"
+SELF_VERSION="1.6.59"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -1481,6 +1481,161 @@ load_manager() {
     return 0
 }
 
+watchdog_apply_values() {
+    _ni="$1"; _nt="$2"; _nrc="$3"; _nmr="$4"; _nms="$5"; _nmc="$6"; _ngi="$7"
+
+    case "$_ni" in ''|*[!0-9]*) json_error "Интервал проверки: значение должно быть целым числом"; return 1;; esac
+    case "$_nt" in ''|*[!0-9]*) json_error "Порог сбоя: значение должно быть целым числом"; return 1;; esac
+    case "$_nrc" in ''|*[!0-9]*) json_error "Пауза между ремонтами: значение должно быть целым числом"; return 1;; esac
+    case "$_nmr" in ''|*[!0-9]*) json_error "Ремонтов за цикл: значение должно быть целым числом"; return 1;; esac
+    case "$_nms" in ''|*[!0-9]*) json_error "Перезапусков DNS: значение должно быть целым числом"; return 1;; esac
+    case "$_nmc" in ''|*[!0-9]*) json_error "Кандидатов за выбор: значение должно быть целым числом"; return 1;; esac
+    case "$_ngi" in ''|*[!0-9]*) json_error "Полная сверка: значение должно быть целым числом"; return 1;; esac
+
+    [ "$_ni" -ge 30 ] 2>/dev/null && [ "$_ni" -le 600 ] 2>/dev/null || { json_error "Интервал проверки должен быть от 30 до 600 с"; return 1; }
+    [ "$_nt" -ge 1 ] 2>/dev/null && [ "$_nt" -le 5 ] 2>/dev/null || { json_error "Порог сбоя должен быть от 1 до 5 циклов"; return 1; }
+    [ "$_nrc" -ge 30 ] 2>/dev/null && [ "$_nrc" -le 3600 ] 2>/dev/null || { json_error "Пауза между ремонтами должна быть от 30 до 3600 с"; return 1; }
+    [ "$_nmr" -ge 1 ] 2>/dev/null && [ "$_nmr" -le 3 ] 2>/dev/null || { json_error "Ремонтов за цикл должно быть от 1 до 3"; return 1; }
+    [ "$_nms" -ge 1 ] 2>/dev/null && [ "$_nms" -le 5 ] 2>/dev/null || { json_error "Перезапусков DNS должно быть от 1 до 5"; return 1; }
+    [ "$_nmc" -ge 1 ] 2>/dev/null && [ "$_nmc" -le 10 ] 2>/dev/null || { json_error "Кандидатов за выбор должно быть от 1 до 10"; return 1; }
+    [ "$_ngi" -ge 300 ] 2>/dev/null && [ "$_ngi" -le 3600 ] 2>/dev/null || { json_error "Полная сверка должна быть от 300 до 3600 с"; return 1; }
+
+    _old_interval="$WATCHDOG_INTERVAL"
+    _old_threshold="$WATCHDOG_FAIL_THRESHOLD"
+    _old_repair_cooldown="$WATCHDOG_REPAIR_COOLDOWN"
+    _old_max_repairs="$WATCHDOG_MAX_REPAIRS"
+    _old_max_restarts="$WATCHDOG_MAX_RESTARTS"
+    _old_max_candidates="$WATCHDOG_MAX_CANDIDATES"
+    _old_guard_interval="$WATCHDOG_GUARD_INTERVAL"
+
+    if [ "$_old_interval" = "$_ni" ] &&
+       [ "$_old_threshold" = "$_nt" ] &&
+       [ "$_old_repair_cooldown" = "$_nrc" ] &&
+       [ "$_old_max_repairs" = "$_nmr" ] &&
+       [ "$_old_max_restarts" = "$_nms" ] &&
+       [ "$_old_max_candidates" = "$_nmc" ] &&
+       [ "$_old_guard_interval" = "$_ngi" ]; then
+        json_ok
+        return 0
+    fi
+
+    _old_service_enabled=0; watchdog_service_enabled && _old_service_enabled=1 || true
+    _old_service_running=0; watchdog_service_running && _old_service_running=1 || true
+
+    if [ -x /etc/init.d/dns-watchdog ]; then
+        watchdog_service_stop_disable >/dev/null 2>&1 || {
+            json_error "Не удалось безопасно остановить watchdog; настройки не изменены"
+            return 1
+        }
+    fi
+
+    WATCHDOG_INTERVAL="$_ni"
+    WATCHDOG_FAIL_THRESHOLD="$_nt"
+    WATCHDOG_REPAIR_COOLDOWN="$_nrc"
+    WATCHDOG_MAX_REPAIRS="$_nmr"
+    WATCHDOG_MAX_RESTARTS="$_nms"
+    WATCHDOG_MAX_CANDIDATES="$_nmc"
+    WATCHDOG_GUARD_INTERVAL="$_ngi"
+
+    watchdog_restore_values() {
+        WATCHDOG_INTERVAL="$_old_interval"
+        WATCHDOG_FAIL_THRESHOLD="$_old_threshold"
+        WATCHDOG_REPAIR_COOLDOWN="$_old_repair_cooldown"
+        WATCHDOG_MAX_REPAIRS="$_old_max_repairs"
+        WATCHDOG_MAX_RESTARTS="$_old_max_restarts"
+        WATCHDOG_MAX_CANDIDATES="$_old_max_candidates"
+        WATCHDOG_GUARD_INTERVAL="$_old_guard_interval"
+        save_config >/dev/null 2>&1 || true
+        watchdog_restore_service_state "$_old_service_enabled" "$_old_service_running" >/dev/null 2>&1 || true
+    }
+
+    if ! save_config >/dev/null 2>&1; then
+        watchdog_restore_values
+        json_error "Не удалось сохранить настройки watchdog; прежние значения восстановлены"
+        return 1
+    fi
+
+    [ "$(cfg_get WATCHDOG_INTERVAL)" = "$_ni" ] &&
+    [ "$(cfg_get WATCHDOG_FAIL_THRESHOLD)" = "$_nt" ] &&
+    [ "$(cfg_get WATCHDOG_REPAIR_COOLDOWN)" = "$_nrc" ] &&
+    [ "$(cfg_get WATCHDOG_MAX_REPAIRS)" = "$_nmr" ] &&
+    [ "$(cfg_get WATCHDOG_MAX_RESTARTS)" = "$_nms" ] &&
+    [ "$(cfg_get WATCHDOG_MAX_CANDIDATES)" = "$_nmc" ] &&
+    [ "$(cfg_get WATCHDOG_GUARD_INTERVAL)" = "$_ngi" ] || {
+        watchdog_restore_values
+        json_error "Настройки watchdog не прошли проверку после сохранения; прежние значения восстановлены"
+        return 1
+    }
+
+    if [ "${WATCHDOG_ENABLED:-0}" = 1 ]; then
+        if ! watchdog_service_start_enable >/dev/null 2>&1; then
+            watchdog_restore_values
+            json_error "Watchdog не удалось перезапустить; прежние настройки восстановлены"
+            return 1
+        fi
+    fi
+
+    if ! watchdog_cron_remove_owned_block >/dev/null 2>&1; then
+        [ -x /etc/init.d/dns-watchdog ] && watchdog_service_stop_disable >/dev/null 2>&1 || true
+        watchdog_restore_values
+        json_error "Не удалось убрать старый manager-owned cron watchdog; изменение отменено"
+        return 1
+    fi
+
+    json_ok
+    return 0
+}
+
+watchdog_apply_single() {
+    _name="$1"; _value="$2"
+    case "$_name" in
+        interval) _key=WATCHDOG_INTERVAL ;;
+        threshold) _key=WATCHDOG_FAIL_THRESHOLD ;;
+        repair_cooldown) _key=WATCHDOG_REPAIR_COOLDOWN ;;
+        max_repairs) _key=WATCHDOG_MAX_REPAIRS ;;
+        max_restarts) _key=WATCHDOG_MAX_RESTARTS ;;
+        max_candidates) _key=WATCHDOG_MAX_CANDIDATES ;;
+        guard_interval) _key=WATCHDOG_GUARD_INTERVAL ;;
+        *) json_error "Недопустимый параметр watchdog"; return 1 ;;
+    esac
+    case "$_value" in ''|*[!0-9]*) json_error "Значение watchdog должно быть целым числом"; return 1;; esac
+
+    load_manager || { json_error "DNS Manager недоступен"; return 1; }
+    _interval="$WATCHDOG_INTERVAL"
+    _threshold="$WATCHDOG_FAIL_THRESHOLD"
+    _repair_cooldown="$WATCHDOG_REPAIR_COOLDOWN"
+    _max_repairs="$WATCHDOG_MAX_REPAIRS"
+    _max_restarts="$WATCHDOG_MAX_RESTARTS"
+    _max_candidates="$WATCHDOG_MAX_CANDIDATES"
+    _guard_interval="$WATCHDOG_GUARD_INTERVAL"
+    case "$_key" in
+        WATCHDOG_INTERVAL) _min=30; _max=600; _interval="$_value" ;;
+        WATCHDOG_FAIL_THRESHOLD) _min=1; _max=5; _threshold="$_value" ;;
+        WATCHDOG_REPAIR_COOLDOWN) _min=30; _max=3600; _repair_cooldown="$_value" ;;
+        WATCHDOG_MAX_REPAIRS) _min=1; _max=3; _max_repairs="$_value" ;;
+        WATCHDOG_MAX_RESTARTS) _min=1; _max=5; _max_restarts="$_value" ;;
+        WATCHDOG_MAX_CANDIDATES) _min=1; _max=10; _max_candidates="$_value" ;;
+        WATCHDOG_GUARD_INTERVAL) _min=300; _max=3600; _guard_interval="$_value" ;;
+    esac
+    [ "$_value" -ge "$_min" ] 2>/dev/null && [ "$_value" -le "$_max" ] 2>/dev/null || {
+        json_error "Значение вне допустимого диапазона ($_min–$_max)"
+        return 1
+    }
+    watchdog_apply_values "$_interval" "$_threshold" "$_repair_cooldown" "$_max_repairs" "$_max_restarts" "$_max_candidates" "$_guard_interval"
+}
+
+watchdog_apply_batch() {
+    _interval="$(jget interval)"
+    _threshold="$(jget threshold)"
+    _repair_cooldown="$(jget repair_cooldown)"
+    _max_repairs="$(jget max_repairs)"
+    _max_restarts="$(jget max_restarts)"
+    _max_candidates="$(jget max_candidates)"
+    _guard_interval="$(jget guard_interval)"
+    load_manager || { json_error "DNS Manager недоступен"; return 1; }
+    watchdog_apply_values "$_interval" "$_threshold" "$_repair_cooldown" "$_max_repairs" "$_max_restarts" "$_max_candidates" "$_guard_interval"
+}
+
 set_check_stamp() {
     _id="$1"; _ts="$2"
     case "$_id" in ''|*[!A-Za-z0-9_-]*) return 1;; esac
@@ -2025,132 +2180,12 @@ run_action() {
         set_watchdog_setting)
             _name="$(jget name)"
             _value="$(jget value)"
-            case "$_name" in
-                interval) _key=WATCHDOG_INTERVAL; _min=30; _max=600 ;;
-                threshold) _key=WATCHDOG_FAIL_THRESHOLD; _min=1; _max=5 ;;
-                repair_cooldown) _key=WATCHDOG_REPAIR_COOLDOWN; _min=30; _max=3600 ;;
-                max_repairs) _key=WATCHDOG_MAX_REPAIRS; _min=1; _max=3 ;;
-                max_restarts) _key=WATCHDOG_MAX_RESTARTS; _min=1; _max=5 ;;
-                max_candidates) _key=WATCHDOG_MAX_CANDIDATES; _min=1; _max=10 ;;
-                guard_interval) _key=WATCHDOG_GUARD_INTERVAL; _min=300; _max=3600 ;;
-                *) json_error "Недопустимый параметр watchdog"; return ;;
-            esac
-            case "$_value" in
-                ''|*[!0-9]*) json_error "Значение должно быть целым числом"; return ;;
-            esac
-            [ "$_value" -ge "$_min" ] 2>/dev/null && [ "$_value" -le "$_max" ] 2>/dev/null || { json_error "Значение вне допустимого диапазона"; return; }
-            load_manager || { json_error "DNS Manager недоступен"; return; }
-            _old_value="$(cfg_get "$_key")"
-            case "$_old_value" in
-                ''|*[!0-9]*)
-                    case "$_key" in
-                        WATCHDOG_INTERVAL) _old_value="${WATCHDOG_INTERVAL:-90}" ;;
-                        WATCHDOG_FAIL_THRESHOLD) _old_value="${WATCHDOG_FAIL_THRESHOLD:-2}" ;;
-                        WATCHDOG_REPAIR_COOLDOWN) _old_value="${WATCHDOG_REPAIR_COOLDOWN:-300}" ;;
-                        WATCHDOG_MAX_REPAIRS) _old_value="${WATCHDOG_MAX_REPAIRS:-1}" ;;
-                        WATCHDOG_MAX_RESTARTS) _old_value="${WATCHDOG_MAX_RESTARTS:-2}" ;;
-                        WATCHDOG_MAX_CANDIDATES) _old_value="${WATCHDOG_MAX_CANDIDATES:-3}" ;;
-                        WATCHDOG_GUARD_INTERVAL) _old_value="${WATCHDOG_GUARD_INTERVAL:-900}" ;;
-                    esac
-                    ;;
-            esac
-            _old_service_enabled=0; watchdog_service_enabled && _old_service_enabled=1 || true
-            _old_service_running=0; watchdog_service_running && _old_service_running=1 || true
-            if [ -x /etc/init.d/dns-watchdog ]; then
-                watchdog_service_stop_disable >/dev/null 2>&1 || { json_error "Не удалось безопасно остановить watchdog"; return; }
-            fi
-            case "$_key" in
-                WATCHDOG_INTERVAL) WATCHDOG_INTERVAL="$_value" ;;
-                WATCHDOG_FAIL_THRESHOLD) WATCHDOG_FAIL_THRESHOLD="$_value" ;;
-                WATCHDOG_REPAIR_COOLDOWN) WATCHDOG_REPAIR_COOLDOWN="$_value" ;;
-                WATCHDOG_MAX_REPAIRS) WATCHDOG_MAX_REPAIRS="$_value" ;;
-                WATCHDOG_MAX_RESTARTS) WATCHDOG_MAX_RESTARTS="$_value" ;;
-                WATCHDOG_MAX_CANDIDATES) WATCHDOG_MAX_CANDIDATES="$_value" ;;
-                WATCHDOG_GUARD_INTERVAL) WATCHDOG_GUARD_INTERVAL="$_value" ;;
-            esac
-            if ! save_config >/dev/null 2>&1; then
-                case "$_key" in
-                    WATCHDOG_INTERVAL) WATCHDOG_INTERVAL="$_old_value" ;;
-                    WATCHDOG_FAIL_THRESHOLD) WATCHDOG_FAIL_THRESHOLD="$_old_value" ;;
-                    WATCHDOG_REPAIR_COOLDOWN) WATCHDOG_REPAIR_COOLDOWN="$_old_value" ;;
-                    WATCHDOG_MAX_REPAIRS) WATCHDOG_MAX_REPAIRS="$_old_value" ;;
-                    WATCHDOG_MAX_RESTARTS) WATCHDOG_MAX_RESTARTS="$_old_value" ;;
-                    WATCHDOG_MAX_CANDIDATES) WATCHDOG_MAX_CANDIDATES="$_old_value" ;;
-                    WATCHDOG_GUARD_INTERVAL) WATCHDOG_GUARD_INTERVAL="$_old_value" ;;
-                esac
-                save_config >/dev/null 2>&1 || true
-                watchdog_restore_service_state "$_old_service_enabled" "$_old_service_running"
-                json_error "Не удалось сохранить параметр watchdog; прежнее значение восстановлено"
-                return
-            fi
-            _saved="$(cfg_get "$_key")"
-            if [ "$_saved" != "$_value" ]; then
-                case "$_key" in
-                    WATCHDOG_INTERVAL) WATCHDOG_INTERVAL="$_old_value" ;;
-                    WATCHDOG_FAIL_THRESHOLD) WATCHDOG_FAIL_THRESHOLD="$_old_value" ;;
-                    WATCHDOG_REPAIR_COOLDOWN) WATCHDOG_REPAIR_COOLDOWN="$_old_value" ;;
-                    WATCHDOG_MAX_REPAIRS) WATCHDOG_MAX_REPAIRS="$_old_value" ;;
-                    WATCHDOG_MAX_RESTARTS) WATCHDOG_MAX_RESTARTS="$_old_value" ;;
-                    WATCHDOG_MAX_CANDIDATES) WATCHDOG_MAX_CANDIDATES="$_old_value" ;;
-                    WATCHDOG_GUARD_INTERVAL) WATCHDOG_GUARD_INTERVAL="$_old_value" ;;
-                esac
-                save_config >/dev/null 2>&1 || true
-                watchdog_restore_service_state "$_old_service_enabled" "$_old_service_running"
-                json_error "Параметр watchdog не сохранился; прежнее значение восстановлено"
-                return
-            fi
-            if [ "${WATCHDOG_ENABLED:-0}" = 1 ]; then
-                if ! watchdog_service_start_enable >/dev/null 2>&1; then
-                    watchdog_service_stop_disable >/dev/null 2>&1 || true
-                    case "$_key" in
-                        WATCHDOG_INTERVAL) WATCHDOG_INTERVAL="$_old_value" ;;
-                        WATCHDOG_FAIL_THRESHOLD) WATCHDOG_FAIL_THRESHOLD="$_old_value" ;;
-                        WATCHDOG_REPAIR_COOLDOWN) WATCHDOG_REPAIR_COOLDOWN="$_old_value" ;;
-                        WATCHDOG_MAX_REPAIRS) WATCHDOG_MAX_REPAIRS="$_old_value" ;;
-                        WATCHDOG_MAX_RESTARTS) WATCHDOG_MAX_RESTARTS="$_old_value" ;;
-                        WATCHDOG_MAX_CANDIDATES) WATCHDOG_MAX_CANDIDATES="$_old_value" ;;
-                        WATCHDOG_GUARD_INTERVAL) WATCHDOG_GUARD_INTERVAL="$_old_value" ;;
-                    esac
-                    save_config >/dev/null 2>&1 || true
-                    watchdog_restore_service_state "$_old_service_enabled" "$_old_service_running"
-                    json_error "Watchdog не удалось перезапустить; прежнее значение восстановлено"
-                    return
-                fi
-                if ! watchdog_cron_remove_owned_block >/dev/null 2>&1; then
-                    watchdog_service_stop_disable >/dev/null 2>&1 || true
-                    case "$_key" in
-                        WATCHDOG_INTERVAL) WATCHDOG_INTERVAL="$_old_value" ;;
-                        WATCHDOG_FAIL_THRESHOLD) WATCHDOG_FAIL_THRESHOLD="$_old_value" ;;
-                        WATCHDOG_REPAIR_COOLDOWN) WATCHDOG_REPAIR_COOLDOWN="$_old_value" ;;
-                        WATCHDOG_MAX_REPAIRS) WATCHDOG_MAX_REPAIRS="$_old_value" ;;
-                        WATCHDOG_MAX_RESTARTS) WATCHDOG_MAX_RESTARTS="$_old_value" ;;
-                        WATCHDOG_MAX_CANDIDATES) WATCHDOG_MAX_CANDIDATES="$_old_value" ;;
-                        WATCHDOG_GUARD_INTERVAL) WATCHDOG_GUARD_INTERVAL="$_old_value" ;;
-                    esac
-                    save_config >/dev/null 2>&1 || true
-                    watchdog_restore_service_state "$_old_service_enabled" "$_old_service_running"
-                    json_error "Не удалось убрать старый manager-owned cron watchdog; изменение отменено"
-                    return
-                fi
-            else
-                if ! watchdog_cron_remove_owned_block >/dev/null 2>&1; then
-                    case "$_key" in
-                        WATCHDOG_INTERVAL) WATCHDOG_INTERVAL="$_old_value" ;;
-                        WATCHDOG_FAIL_THRESHOLD) WATCHDOG_FAIL_THRESHOLD="$_old_value" ;;
-                        WATCHDOG_REPAIR_COOLDOWN) WATCHDOG_REPAIR_COOLDOWN="$_old_value" ;;
-                        WATCHDOG_MAX_REPAIRS) WATCHDOG_MAX_REPAIRS="$_old_value" ;;
-                        WATCHDOG_MAX_RESTARTS) WATCHDOG_MAX_RESTARTS="$_old_value" ;;
-                        WATCHDOG_MAX_CANDIDATES) WATCHDOG_MAX_CANDIDATES="$_old_value" ;;
-                        WATCHDOG_GUARD_INTERVAL) WATCHDOG_GUARD_INTERVAL="$_old_value" ;;
-                    esac
-                    save_config >/dev/null 2>&1 || true
-                    watchdog_restore_service_state "$_old_service_enabled" "$_old_service_running"
-                    json_error "Не удалось убрать старый manager-owned cron watchdog; изменение отменено"
-                    return
-                fi
-            fi
-            json_ok
-            ;;        *) json_error "Недопустимый метод";;
+            watchdog_apply_single "$_name" "$_value"
+            ;;
+        set_watchdog_settings)
+            watchdog_apply_batch
+            ;;
+        *) json_error "Недопустимый метод";;
     esac
 }
 
@@ -2172,7 +2207,7 @@ test_json() { case "${RPC_METHOD:-}" in test_all) job_start_test_all;; test_curr
 
 case "${1:-}" in
     list)
-        printf '{"status":{},"runtime":{},"catalog":{"category":"String","offset":0,"limit":0,"only_ok":0},"update_check":{},"update":{},"update_manager":{},"update_hdp":{},"update_catalog":{},"update_all":{},"set_profile":{"profile":"String"},"reset_dns":{},"set_slot":{"slot":"String","id":"String"},"set_setting":{"name":"String","enabled":0},"set_watchdog_setting":{"name":"String","value":0},"set_ntp":{"preset":"String"},"set_test_age":{"category":"String","hours":0},"test_all":{},"test_current":{},"test_one":{"id":"String"},"job":{"id":"String"},"log":{"lines":0}}\n'
+        printf '{"status":{},"runtime":{},"catalog":{"category":"String","offset":0,"limit":0,"only_ok":0},"update_check":{},"update":{},"update_manager":{},"update_hdp":{},"update_catalog":{},"update_all":{},"set_profile":{"profile":"String"},"reset_dns":{},"set_slot":{"slot":"String","id":"String"},"set_setting":{"name":"String","enabled":0},"set_watchdog_setting":{"name":"String","value":0},"set_watchdog_settings":{"interval":0,"threshold":0,"repair_cooldown":0,"max_repairs":0,"max_restarts":0,"max_candidates":0,"guard_interval":0},"set_ntp":{"preset":"String"},"set_test_age":{"category":"String","hours":0},"test_all":{},"test_current":{},"test_one":{"id":"String"},"job":{"id":"String"},"log":{"lines":0}}\n'
         ;;
     call)
         case "${2:-}" in
@@ -2180,7 +2215,7 @@ case "${1:-}" in
             runtime) runtime_json;;
             catalog) INPUT="$(cat 2>/dev/null || true)"; catalog_json;;
             update_check) INPUT="$(cat 2>/dev/null || true)"; update_check_json;;            update_catalog) update_catalog_json;;            update_all) update_all_json;;            update) update_json;;            update_manager) update_manager_json;;            update_hdp) update_hdp_json;;
-            reset_dns|set_profile|set_slot|set_setting|set_watchdog_setting|set_ntp) INPUT="$(cat 2>/dev/null || true)"; RPC_METHOD="$2"; run_action;;
+            reset_dns|set_profile|set_slot|set_setting|set_watchdog_setting|set_watchdog_settings|set_ntp) INPUT="$(cat 2>/dev/null || true)"; RPC_METHOD="$2"; run_action;;
             test_all|test_current|test_one) INPUT="$(cat 2>/dev/null || true)"; RPC_METHOD="$2"; test_json;;
             job) INPUT="$(cat 2>/dev/null || true)"; job_json "$(jget id)";;
             log) INPUT="$(cat 2>/dev/null || true)"; log_json "$(jget lines)";;
@@ -2226,7 +2261,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.6.58
+// DNS Manager LuCI version: 1.6.59
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -2256,7 +2291,7 @@ var callProfile = dmRpc({ object:'dns_manager', method:'set_profile', params:['p
 var callResetDns = dmRpc({ object:'dns_manager', method:'reset_dns', expect:{} });
 var callSlot = dmRpc({ object:'dns_manager', method:'set_slot', params:['slot','id'], expect:{} });
 var callSetting = dmRpc({ object:'dns_manager', method:'set_setting', params:['name','enabled'], expect:{} });
-var callWatchdogSetting = dmRpc({ object:'dns_manager', method:'set_watchdog_setting', params:['name','value'], expect:{} });
+var callWatchdogSettings = dmRpc({ object:'dns_manager', method:'set_watchdog_settings', params:['interval','threshold','repair_cooldown','max_repairs','max_restarts','max_candidates','guard_interval'], expect:{} });
 var callNtp = dmRpc({ object:'dns_manager', method:'set_ntp', params:['preset'], expect:{} });
 var callTestAge = dmRpc({ object:'dns_manager', method:'set_test_age', params:['category','hours'], expect:{} });
 var callTestAll = dmRpc({ object:'dns_manager', method:'test_all', expect:{} });
@@ -2497,7 +2532,7 @@ function injectStyle(root){
   '.dm-header{display:flex;align-items:center;gap:9px;flex-wrap:wrap}.dm-header h2{margin:0;font-size:13px;font-weight:600}.dm-header-by{font-size:13px;opacity:.60}.dm-header-actions{display:flex;gap:7px;margin-left:auto;flex-wrap:wrap}.dm-header-actions .cbi-button{padding:5px 11px;font-size:12.5px}'+
   '.dm-load-wrap{min-width:220px;max-width:430px;width:100%}.dm-load-line{display:flex;align-items:center;gap:9px}.dm-load-track{height:8px;flex:1;min-width:120px;border-radius:999px;background:rgba(110,118,129,.16);overflow:hidden}.dm-load-fill{height:100%;border-radius:999px;background:#1a7f37;transition:width .25s ease}.dm-load-value{min-width:38px;font-size:12px;font-weight:700;text-align:right}.dm-load-meta{font-size:10.5px;opacity:.58;margin-top:3px}'+
   '.dm-mem-wrap{min-width:220px;max-width:430px;width:100%}.dm-mem-line{display:flex;align-items:center;gap:9px}.dm-mem-track{height:8px;flex:1;min-width:120px;border-radius:999px;background:rgba(110,118,129,.16);overflow:hidden}.dm-mem-fill{height:100%;border-radius:999px;background:#1a7f37;transition:width .25s ease}.dm-mem-value{font-size:12px;font-weight:700;white-space:nowrap}.dm-mem-meta{font-size:10.5px;opacity:.58;margin-top:3px}'+
-  ".dm-test-age-list{display:flex;flex-direction:column;gap:0;margin:0;padding:0}.dm-test-age-row{display:grid;grid-template-columns:minmax(0,1fr) 90px 20px;align-items:center;gap:8px;min-height:36px;margin:0;padding:3px 0;border:0!important}.dm-test-age-label{font-size:13px;font-weight:600;white-space:nowrap}.dm-test-age-unit,.dm-watchdog-unit{font-size:12px;opacity:.62;white-space:nowrap}.dm-test-age-row .dm-input{width:90px!important;margin:0;box-sizing:border-box}.dm-test-age-list + .dm-actions{margin-top:10px}.dm-watchdog-list{display:flex;flex-direction:column;gap:0;margin-top:5px}.dm-watchdog-row{display:grid;grid-template-columns:minmax(170px,1fr) 60px 105px 30px auto minmax(180px,auto);align-items:center;gap:7px;min-height:36px;padding:2px 0;border:0!important}.dm-watchdog-row .dm-setting-title{font-size:12.5px}.dm-setting-range{font-size:11px;opacity:.55;white-space:nowrap}.dm-watchdog-row .dm-input{width:105px!important;margin:0;box-sizing:border-box}.dm-watchdog-row .cbi-button{height:30px;line-height:1.1;padding:4px 9px;font-size:11.5px;white-space:nowrap}.dm-setting-feedback{font-size:11.5px;line-height:1.3;white-space:nowrap}.dm-setting-feedback.ok{color:#1a7f37}.dm-setting-feedback.error{color:#cf222e}.dm-setting-feedback.info{opacity:.65}"+
+  ".dm-test-age-list{display:flex;flex-direction:column;gap:0;margin:0;padding:0}.dm-test-age-row{display:grid;grid-template-columns:minmax(0,1fr) 90px 20px;align-items:center;gap:8px;min-height:36px;margin:0;padding:3px 0;border:0!important}.dm-test-age-label{font-size:13px;font-weight:600;white-space:nowrap}.dm-test-age-unit,.dm-watchdog-unit{font-size:12px;opacity:.62;white-space:nowrap}.dm-test-age-row .dm-input{width:90px!important;margin:0;box-sizing:border-box}.dm-test-age-list + .dm-actions{margin-top:10px}.dm-watchdog-list{display:flex;flex-direction:column;gap:1px;margin-top:5px}.dm-watchdog-row{display:grid;grid-template-columns:minmax(180px,1fr) 105px 90px;align-items:center;gap:9px;min-height:36px;padding:3px 0}.dm-watchdog-row .dm-setting-title{font-size:12.5px}.dm-setting-range{font-size:11px;opacity:.55;white-space:nowrap}.dm-watchdog-row .dm-input{width:105px!important;margin:0;box-sizing:border-box}.dm-watchdog-save{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin-top:12px}.dm-watchdog-save .cbi-button{padding:5px 12px;font-size:12.5px}.dm-watchdog-advanced{margin-top:8px;border-top:1px solid rgba(110,118,129,.14);padding-top:8px}.dm-watchdog-advanced>summary{cursor:pointer;font-size:12.5px;font-weight:600;opacity:.72;list-style:none}.dm-watchdog-advanced>summary::-webkit-details-marker{display:none}.dm-watchdog-advanced>summary:before{content:'▸';display:inline-block;margin-right:6px;transition:transform .15s ease}.dm-watchdog-advanced[open]>summary:before{transform:rotate(90deg)}.dm-setting-feedback{font-size:11.5px;line-height:1.3;white-space:nowrap}.dm-setting-feedback.ok{color:#1a7f37}.dm-setting-feedback.error{color:#cf222e}.dm-setting-feedback.info{opacity:.65}"+
   '.dm-card{min-width:0;box-sizing:border-box;background:var(--background-color-medium,#fff);border:1px solid rgba(0,0,0,.08);border-radius:11px;padding:15px 18px;box-shadow:0 1px 3px rgba(0,0,0,.04),0 1px 2px rgba(0,0,0,.03);overflow-wrap:break-word}.dm-card:hover{box-shadow:0 2px 7px rgba(0,0,0,.06)}'+
   'html.dm-theme-dark .dm-card{background:#1c2128;border-color:rgba(255,255,255,.10);box-shadow:0 1px 3px rgba(0,0,0,.22)}'+
   '.dm-version-action{display:flex;align-items:center;gap:7px;flex-wrap:wrap}.dm-version-action .cbi-button{padding:4px 9px;font-size:12px}.dm-version-error{display:inline-flex;align-items:center;gap:7px;flex-wrap:wrap}.dm-version-error-text{font-size:11.5px;opacity:.72}.dm-version-line{display:flex;align-items:center;gap:9px;margin:7px 0;flex-wrap:wrap}.dm-version-name{font-size:13px;font-weight:600;flex:0 1 160px;min-width:135px}.dm-version-state{min-width:0;flex:1 1 auto}.dm-card h3{margin:0 0 10px;font-size:15px;font-weight:600;display:flex;align-items:center;gap:7px;flex-wrap:wrap}.dm-doh-profile{display:inline-flex;align-items:center;gap:5px;margin-left:auto;padding:4px 9px;border:1px solid rgba(110,118,129,.18);border-radius:999px;background:rgba(110,118,129,.06);font-size:11.5px;font-weight:500;white-space:nowrap}.dm-doh-profile-label{opacity:.62}.dm-doh-profile-value{font-weight:650}.dm-row{display:flex;align-items:center;gap:10px;margin:6px 0;font-size:13px;flex-wrap:wrap}.dm-label{opacity:.65;flex-shrink:0}.dm-row-value{overflow-wrap:anywhere}'+
@@ -2521,11 +2556,6 @@ function injectStyle(root){
     '.dm-test-age-row{display:grid;grid-template-columns:minmax(0,1fr) 90px 20px;align-items:center;gap:8px;min-height:34px}'+
     '.dm-test-age-label{font-size:13px;font-weight:600}.dm-test-age-unit{font-size:12px;opacity:.62}'+
     '.dm-test-age-row .dm-input{width:90px!important;margin:0;box-sizing:border-box}'+
-    '.dm-watchdog-list{display:flex;flex-direction:column;gap:1px;margin-top:5px}'+
-    '.dm-watchdog-row{display:grid;grid-template-columns:minmax(170px,1fr) 70px 105px 42px auto minmax(150px,auto);align-items:center;gap:7px;min-height:34px;padding:2px 0}'+
-    '.dm-watchdog-row .dm-setting-title{font-size:12.5px}.dm-setting-range{font-size:11px;opacity:.55;white-space:nowrap}'+
-    '.dm-watchdog-row .dm-input{width:105px!important;margin:0;box-sizing:border-box}.dm-watchdog-row .cbi-button{padding:4px 8px;font-size:11.5px}'+
-    '.dm-setting-feedback{font-size:11.5px;line-height:1.3;opacity:.82}.dm-setting-feedback.ok{color:#1a7f37}.dm-setting-feedback.error{color:#cf222e}.dm-setting-feedback.info{opacity:.65}'
   ));
 }
 
@@ -3223,46 +3253,82 @@ function saveTestAges(root,inputs){
   next();
 }
 function watchdogCard(root,st){
-  var en=yes(st.watchdog), busy=state.busySetting==='watchdog';
+  var en=yes(st.watchdog), busy=state.busySetting==='watchdog' || state.busySetting==='watchdog_batch';
   var service=Number(st.watchdog_service||0)===1, loop=Number(st.watchdog_loop||0)===1;
+  var inputs={};
 
   function param(name,title,min,max,unit,desc){
-    var busyKey='wd_'+name, isBusy=state.busySetting===busyKey;
-    var keyMap={interval:'watchdog_interval',threshold:'watchdog_fail_threshold',repair_cooldown:'watchdog_repair_cooldown',max_repairs:'watchdog_max_repairs',max_restarts:'watchdog_max_restarts',max_candidates:'watchdog_max_candidates',guard_interval:'watchdog_guard_interval'};
-    var value=Number(st[keyMap[name]]||min);
+    var value=Number(st[name]||min);
     var input=E('input',{'type':'number','min':String(min),'max':String(max),'step':'1','value':String(value),'class':'dm-input'});
-    var save=btn(isBusy?'Сохраняю…':'Сохранить','cbi-button-neutral',function(){
-      if(state.busy)return;
-      var n=String(input.value||'').trim();
-      if(!/^\d+$/.test(n)||Number(n)<min||Number(n)>max){
-        setSettingFeedback(busyKey,title+': от '+min+' до '+max+' '+unit+'.','error');
-        renderNetwork(root,window.dmState||{});
-        return;
-      }
-      clearSettingFeedback();
-      state.busy=true; state.busySetting=busyKey;
-      renderNetwork(root,window.dmState||{});
-      callWatchdogSetting(name,Number(n)).then(function(r){
-        state.busy=false; state.busySetting='';
-        if(r&&r.ok)setSettingFeedback(busyKey,title+' сохранён.','ok');
-        else setSettingFeedback(busyKey,(r&&r.error)||('Не удалось сохранить: '+title+'.'),'error');
-        refresh(root,true);
-      }).catch(function(){
-        state.busy=false; state.busySetting='';
-        setSettingFeedback(busyKey,'Не удалось сохранить: '+title+'.','error');
-        refresh(root,true);
-      });
-    },{disabled:!!state.busy});
+    inputs[name]=input;
     return E('div',{'class':'dm-watchdog-row'},[
-      E('div',{},[E('div',{'class':'dm-setting-title'},title),E('div',{'class':'dm-setting-desc'},desc)]),
-      E('span',{'class':'dm-setting-range'},min+'–'+max+' '+unit),
-      input,save,settingFeedback('',busyKey)||E('span',{})
+      E('div',{},[
+        E('div',{'class':'dm-setting-title'},title),
+        E('div',{'class':'dm-setting-desc'},desc)
+      ]),
+      input,
+      E('span',{'class':'dm-setting-range'},min+'–'+max+' '+unit)
     ]);
   }
 
+  var save=btn(busy?'Сохраняю…':'Сохранить настройки','cbi-button-apply',function(){
+    if(state.busy)return;
+
+    var spec=[
+      ['watchdog_interval','Интервал проверки',30,600,'с'],
+      ['watchdog_fail_threshold','Порог сбоя',1,5,'цикла'],
+      ['watchdog_repair_cooldown','Пауза между ремонтами',30,3600,'с'],
+      ['watchdog_max_repairs','Ремонтов за цикл',1,3,'шт.'],
+      ['watchdog_max_restarts','Перезапусков DNS',1,5,'шт.'],
+      ['watchdog_max_candidates','Кандидатов за выбор',1,10,'шт.'],
+      ['watchdog_guard_interval','Полная сверка',300,3600,'с']
+    ];
+    var values=[];
+    var invalid='';
+    spec.forEach(function(x){
+      var raw=String(inputs[x[0]].value||'').trim();
+      if(!/^\d+$/.test(raw)||Number(raw)<x[2]||Number(raw)>x[3]){
+        if(!invalid)invalid=x[1]+': от '+x[2]+' до '+x[3]+' '+x[4]+'.';
+        return;
+      }
+      values.push(Number(raw));
+    });
+    if(invalid){
+      setSettingFeedback('watchdog_batch',invalid,'error');
+      renderNetwork(root,window.dmState||{});
+      return;
+    }
+
+    clearSettingFeedback();
+    state.busy=true;
+    state.busySetting='watchdog_batch';
+    save.disabled=true;
+    save.textContent='Сохраняю…';
+
+    callWatchdogSettings(values[0],values[1],values[2],values[3],values[4],values[5],values[6]).then(function(r){
+      state.busy=false;
+      state.busySetting='';
+      if(r&&r.ok){
+        setSettingFeedback('watchdog_batch','Настройки контроля сохранены.','ok');
+      }else{
+        setSettingFeedback('watchdog_batch',(r&&r.error)||'Не удалось сохранить настройки контроля.','error');
+      }
+      refresh(root,true);
+    }).catch(function(err){
+      state.busy=false;
+      state.busySetting='';
+      setSettingFeedback('watchdog_batch',withRpcError('Не удалось сохранить настройки контроля.',err),'error');
+      refresh(root,true);
+    });
+  },{disabled:!!state.busy});
+
+  var feedback=settingFeedback('', 'watchdog_batch')||E('span',{'class':'dm-setting-feedback'});
   var action=E('div',{'class':'dm-setting '+(busy?'dm-setting-saving':'')},[
     E('div',{'class':'dm-setting-line'},[
-      E('div',{},[E('div',{'class':'dm-setting-title'},'Контроль DNS'),E('div',{'class':'dm-setting-desc'},'Автоматически проверяет выбранные DNS и при подтверждённом сбое восстанавливает рабочий вариант.')]),
+      E('div',{},[
+        E('div',{'class':'dm-setting-title'},'Контроль DNS'),
+        E('div',{'class':'dm-setting-desc'},'Автоматически проверяет выбранные DNS и при подтверждённом сбое восстанавливает рабочий вариант.')
+      ]),
       E('div',{'class':'dm-setting-actions'},[
         badge(busy?'dm-warn':(en?'dm-ok':'dm-off'),busy?'изменение':(en?'включено':'выключено')),
         btn(busy?'Сохраняю…':(en?'Выключить':'Включить'),busy?'cbi-button-neutral':(en?'cbi-button-remove':'cbi-button-add'),function(){
@@ -3271,20 +3337,36 @@ function watchdogCard(root,st){
       ])
     ])
   ]);
+
   var status=E('div',{'class':'dm-grid2'},[
     row('Служба',badge(service?'dm-ok':'dm-warn',service?'работает':'не работает')),
     row('Проверка DNS',badge(loop?'dm-ok':service?'dm-warn':'dm-off',loop?'активна':service?'ждёт запуска':'не работает'))
   ]);
-  var controls=E('div',{'class':'dm-watchdog-list'},[
-    param('interval','Интервал проверки',30,600,'с','Пауза между циклами проверки.'),
-    param('threshold','Порог сбоя',1,5,'цикл','Сколько плохих циклов подряд нужно для ремонта.'),
-    param('repair_cooldown','Пауза между ремонтами',30,3600,'с','Минимальная пауза для повторного ремонта одного слота.'),
-    param('max_repairs','Ремонтов за цикл',1,3,'шт.','Сколько слотов можно ремонтировать за один цикл.'),
-    param('max_candidates','Кандидатов за выбор',1,10,'шт.','Максимум кандидатов, проверяемых за один проход выбора.'),
-    param('max_restarts','Рестартов https-dns-proxy',1,5,'шт.','Максимум контролируемых рестартов за одну операцию.'),
-    param('guard_interval','Тяжёлая сверка',300,3600,'с','Интервал полной контрольной сверки конфигурации.')
+
+  var main=E('div',{'class':'dm-watchdog-list'},[
+    param('watchdog_interval','Интервал проверки',30,600,'с','Пауза между циклами проверки.'),
+    param('watchdog_fail_threshold','Порог сбоя',1,5,'цикла','Сколько плохих циклов подряд нужно для ремонта.'),
+    param('watchdog_repair_cooldown','Пауза между ремонтами',30,3600,'с','Минимальная пауза перед повторным ремонтом одного слота.')
   ]);
-  return E('div',{},[action,status,E('div',{'class':'dm-section-title'},'Параметры watchdog'),controls]);
+
+  var advanced=E('details',{'class':'dm-watchdog-advanced'},[
+    E('summary',{},'Дополнительные параметры'),
+    E('div',{'class':'dm-watchdog-list'},[
+      param('watchdog_max_repairs','Ремонтов за цикл',1,3,'шт.','Сколько слотов можно восстановить за один цикл.'),
+      param('watchdog_max_candidates','Кандидатов за выбор',1,10,'шт.','Сколько вариантов проверять при выборе DNS.'),
+      param('watchdog_max_restarts','Перезапусков DNS',1,5,'шт.','Максимум перезапусков DNS за одну операцию.'),
+      param('watchdog_guard_interval','Полная сверка',300,3600,'с','Как часто проверять конфигурацию целиком.')
+    ])
+  ]);
+
+  return E('div',{},[
+    action,
+    status,
+    E('div',{'class':'dm-section-title'},'Настройки контроля'),
+    main,
+    advanced,
+    E('div',{'class':'dm-watchdog-save'},[save,feedback])
+  ]);
 }
 function renderTestAgeCommon(root,st){
   var ageValue=Number(st.test_age_common||6);
