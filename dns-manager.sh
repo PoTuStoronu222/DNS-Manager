@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.35.21"
+VERSION="3.35.22"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -5147,16 +5147,16 @@ _profile_name="Не выбран"
 if [ "${DOH_TOTAL:-0}" -gt 0 ] 2>/dev/null && [ "${DOH_MATCH:-0}" -eq "${DOH_TOTAL:-0}" ] 2>/dev/null; then
 case "${DNS_SELECTION_MODE:-}:${DNS_SELECTION_CATEGORY:-}" in
 quick:bypass)
-    _profile_name="Максимальный обход"
+    _profile_name="Обход блокировок"
     ;;
 profile:clean)
-    _profile_name="Максимальная скорость"
+    _profile_name="Без фильтрации"
     ;;
 profile:security)
-    _profile_name="Максимальная безопасность"
+    _profile_name="Безопасность"
     ;;
 profile:privacy)
-    _profile_name="Максимальная приватность"
+    _profile_name="Приватность"
     ;;
 profile:adblock)
     _profile_name="Блокировка рекламы"
@@ -5172,10 +5172,10 @@ hybrid:)
     ;;
 *)
     case "${DNS_SELECTION_CATEGORY:-}" in
-        bypass) _profile_name="Максимальный обход";;
-        clean) _profile_name="Максимальная скорость";;
-        security) _profile_name="Максимальная безопасность";;
-        privacy) _profile_name="Максимальная приватность";;
+        bypass) _profile_name="Обход блокировок";;
+        clean) _profile_name="Без фильтрации";;
+        security) _profile_name="Безопасность";;
+        privacy) _profile_name="Приватность";;
         adblock) _profile_name="Блокировка рекламы";;
         family) _profile_name="Семейный DNS";;
         all) _profile_name="Все категории";;
@@ -8176,10 +8176,10 @@ menu_dns() {
 while :; do
 menu_header "НАСТРОЙКА DNS"
 menu_section "ГОТОВЫЕ ПРОФИЛИ"
-menu_item "[1]" "Максимальный обход"
-menu_item "[2]" "Максимальная скорость"
-menu_item "[3]" "Максимальная безопасность"
-menu_item "[4]" "Максимальная приватность"
+menu_item "[1]" "Обход блокировок"
+menu_item "[2]" "Без фильтрации"
+menu_item "[3]" "Безопасность"
+menu_item "[4]" "Приватность"
 menu_item "[5]" "Блокировка рекламы"
 menu_item "[6]" "Выбор по категориям"
 menu_section "РУЧНАЯ НАСТРОЙКА"
