@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.6.56
+# Version: 1.6.57
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -23,7 +23,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.6.56"
+VERSION="1.6.57"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -144,7 +144,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.6.56"
+SELF_VERSION="1.6.57"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -1298,6 +1298,17 @@ status_json() {
     _test_age_v="$(cfg_get TEST_RESULTS_MAX_AGE)"
     case "$_test_age_v" in ''|*[!0-9]*) _test_age_h=6;; *) _test_age_h=$((_test_age_v/3600)); [ "$_test_age_h" -ge 1 ] || _test_age_h=1;; esac
 
+    # Keep the last profile operation visible after LuCI is closed and reopened.
+    _profile_job_status=""; _profile_job_result=""; _profile_job_profile=""; _profile_job_started=""; _profile_job_finished=""; _profile_job_message=""
+    if [ -r "$JOB_DIR/profile/state" ]; then
+        _profile_job_status="$(sed -n 's/^status=//p' "$JOB_DIR/profile/state" 2>/dev/null | tail -n1)"
+        _profile_job_result="$(sed -n 's/^result=//p' "$JOB_DIR/profile/state" 2>/dev/null | tail -n1)"
+        _profile_job_profile="$(sed -n 's/^profile=//p' "$JOB_DIR/profile/state" 2>/dev/null | head -n1)"
+        _profile_job_started="$(sed -n 's/^started=//p' "$JOB_DIR/profile/state" 2>/dev/null | head -n1)"
+        _profile_job_finished="$(sed -n 's/^finished=//p' "$JOB_DIR/profile/state" 2>/dev/null | tail -n1)"
+        _profile_job_message="$(tail -n 12 "$JOB_DIR/profile/output" 2>/dev/null | sed '/^[[:space:]]*$/d' | tail -n1 | tr '\r\t' '  ' | cut -c1-360)"
+    fi
+
     printf '{"ok":true,"manager_version":'; json_quote "$_mv"
     printf ',"luci_version":'; json_quote "$_luciv"; printf ',"luci_latest_version":'; json_quote "$_luci_latest"
     printf ',"luci_update_available":%s,"luci_update_checked":%s,"luci_update_checked_at":%s' "$_luci_avail" "$_luci_checked" "$_luci_checked_at"
@@ -1306,6 +1317,8 @@ status_json() {
     printf ',"catalog_latest_version":'; json_quote "$_catalog_latest"; printf ',"catalog_latest_rev":'; json_quote "$_catalog_latest_rev"; printf ',"catalog_latest_total":%s,"catalog_update_available":%s,"catalog_check_ok":%s' "$_catalog_latest_total" "$_catalog_avail" "$_catalog_checked"; printf ',"catalog_update_error":'; json_quote "$_catalog_error"
     printf ',"model":'; json_quote "$_model"; printf ',"arch":'; json_quote "$_arch"; printf ',"target":'; json_quote "$_target"; printf ',"ipv4":'; json_quote "$_ipv4"; printf ',"ipv6":'; json_quote "$_ipv6"; printf ',"dnsmasq":'; json_quote "$_dnsmasq"; printf ',"doh":'; json_quote "$_doh"; printf ',"firewall":'; json_quote "$_fw"; printf ',"openwrt":'; json_quote "$(openwrt_release)"; printf ',"lan":'; json_quote "$_lan"
     printf ',"profile":'; json_quote "$_profile"; printf ',"profile_mode":'; json_quote "$_mode"; printf ',"selection_category":'; json_quote "$_selection_category"
+    printf ',"profile_job_status":'; json_quote "$_profile_job_status"; printf ',"profile_job_result":'; json_quote "$_profile_job_result"
+    printf ',"profile_job_profile":'; json_quote "$_profile_job_profile"; printf ',"profile_job_started":'; json_quote "$_profile_job_started"; printf ',"profile_job_finished":'; json_quote "$_profile_job_finished"; printf ',"profile_job_message":'; json_quote "$_profile_job_message"
     printf ',"watchdog":'; json_quote "$_watchdog"; printf ',"watchdog_backend":'; json_quote "$_watchdog_backend"
     _watchdog_service_enabled=0; watchdog_service_enabled && _watchdog_service_enabled=1 || true
     _watchdog_service_running=0; watchdog_service_running && _watchdog_service_running=1 || true
@@ -2346,11 +2359,13 @@ function settingFeedback(label,key){
   if(!msg)return null;
   return E('span',{'class':'dm-setting-feedback '+(state.settingMessageType||'info')},msg);
 }
-function setAction(ok,text){state.lastAction={ok:!!ok,text:String(text||'')};}
+function setAction(ok,text,kind){state.lastAction={ok:!!ok,text:String(text||''),kind:String(kind||((ok===true)?'ok':'error'))};}
 function renderActionStatus(){
   if(!state.lastAction||!state.lastAction.text)return null;
-  return E('div',{'class':'dm-applied '+(state.lastAction.ok?'ok':'error')},[
-    E('strong',{},state.lastAction.ok?'Применено':'Ошибка'),
+  var kind=state.lastAction.kind||((state.lastAction.ok===true)?'ok':'error');
+  var title=kind==='running'?'Выполняется':(kind==='ok'?'Применено':'Ошибка');
+  return E('div',{'class':'dm-applied '+kind},[
+    E('strong',{},title),
     E('span',{},state.lastAction.text)
   ]);
 }
@@ -3035,8 +3050,25 @@ function renderProfiles(root,st){
   var pch=[
     row('Работает сейчас',badge('dm-ok',current)),
     g,
-    E('div',{'class':'dm-mini'},'Профиль определяет схему выбора DNS и используется сейчас.'),
-    btn('Восстановить стандартную настройку DNS','cbi-button-negative',function(){resetDnsCore(root);},{disabled:!!state.busy})  ];
+    E('div',{'class':'dm-mini'},'Профиль определяет схему выбора DNS и используется сейчас.')
+  ];
+
+  var pj=String(st.profile_job_status||'').toLowerCase();
+  var pp=String(st.profile_job_profile||'');
+  var pr=String(st.profile_job_result||'').toLowerCase();
+  var pm=String(st.profile_job_message||'').trim();
+  var pf=String(st.profile_job_finished||'');
+  if(pj==='running'){
+    pch.push(E('div',{'class':'dm-inline-msg info'},'⟳ Сейчас выполняется: профиль «'+(pp?profileName(pp):'DNS')+'». Закрытие LuCI не останавливает операцию; при открытии она продолжится здесь.'));
+  }else if(pj==='done'&&pr==='ok'){
+    pch.push(E('div',{'class':'dm-inline-msg ok'},'✓ Последняя операция: профиль «'+(pp?profileName(pp):'DNS')+'» применён.'+(pf?' · '+dateText(pf):'')));
+  }else if(pj==='failed'){
+    var failText='✗ Последняя операция: профиль «'+(pp?profileName(pp):'DNS')+'» не применён.';
+    if(pm)failText+=' Причина: '+pm;
+    pch.push(E('div',{'class':'dm-inline-msg error'},failText+(pf?' · '+dateText(pf):'')));
+  }
+
+  pch.push(btn('Восстановить стандартную настройку DNS','cbi-button-negative',function(){resetDnsCore(root);},{disabled:!!state.busy}));
   if(state.profileProgress){
     var pp=renderProfileProgress(root);
     if(pp)pch.push(pp);
@@ -3945,7 +3977,7 @@ function resumeRunningProfile(root){
     state.jobRunning=true;
     state.lastJob='profile';
     state.profileProgress={p:5,label:'Профиль уже применяется…',detail:'Связь с задачей восстановлена. Продолжаю отслеживание.'};
-    setAction(true,p?'Профиль «'+profileName(p)+'» уже применяется. Связь восстановлена.':'Применение профиля уже выполняется. Связь восстановлена.');
+    setAction(true,p?'Профиль «'+profileName(p)+'» уже применяется. Связь восстановлена.':'Применение профиля уже выполняется. Связь восстановлена.','running');
     if(rootAlive(root))renderProfiles(root,window.dmState||{});
     pollJob(root,'profile',{mode:'profile',profile:p});
   }).catch(function(err){
