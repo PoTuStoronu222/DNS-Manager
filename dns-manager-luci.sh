@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.6.50
+# Version: 1.6.51
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -23,7 +23,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.6.50"
+VERSION="1.6.51"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -144,7 +144,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.6.50"
+SELF_VERSION="1.6.51"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -1323,13 +1323,36 @@ status_json() {
                 break
             fi
         done
+        _r=""
+        _ms=""
+        _rawst=""
+        [ -n "$_instance_id" ] && _r="$(result_for_id "$_instance_id" 2>/dev/null || true)"
+        if [ -n "$_r" ]; then
+            _ms="$(printf '%s' "$_r" | awk -F'|' 'NF>=5 {print $4;exit}')"
+            _rawst="$(printf '%s' "$_r" | awk -F'|' 'NF>=5 {print $5;exit}')"
+        fi
+        case "$_rawst" in
+            OK)
+                case "$_ms" in ''|*[!0-9]*) _result_status=FAIL;; *) _result_status=OK;; esac
+                ;;
+            '')
+                _result_status=""
+                ;;
+            *)
+                _result_status=FAIL
+                ;;
+        esac
         [ "$_doh_first" = 1 ] || printf ','
         _doh_first=0
-        printf '{"index":%s,"name":' "$((_i + 1))"; json_quote "$_n"
+        printf '{"index":%s,"id":' "$((_i + 1))"; json_quote "$_instance_id"
+        printf ',"name":'; json_quote "$_n"
         printf ',"port":'; json_quote "$_p"
         printf ',"listen_addr":'; json_quote "$_a"
         printf ',"url":'; json_quote "$_u"
         printf ',"running":%s,"slot":' "$_run"; json_quote "$_slot"
+        printf ',"ping":'; json_quote "$_ms"
+        printf ',"status":'; json_quote "$_result_status"
+        printf ',"last_check":'; json_quote "$(last_check_for_id "$_instance_id")"
         printf '}'
         _i=$((_i + 1))
     done
@@ -1987,7 +2010,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.6.50
+// DNS Manager LuCI version: 1.6.51
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -2413,7 +2436,25 @@ function renderOverview(root,st){
   var applied=renderActionStatus();if(applied)e.appendChild(applied);
   if(state.statusError)e.appendChild(E('div',{'class':'dm-inline-msg error'},state.statusError+' Проверьте: ubus call dns_manager status.'));
 
-  var doh=E('span',{'id':'dm-runtime-doh'},st.doh==='yes'?badge('dm-ok','запущен'):Number(st.doh_total||0)>0?badge('dm-bad','остановлен'):badge('dm-off','не установлен'));
+  var dohState='unchecked';
+  var configured=(st.doh_instances||[]).filter(function(d){return d&&d.slot;});
+  var checked=0,failed=0;
+  configured.forEach(function(d){
+    var ci=checkInfo(d.id,d);
+    var s=String(ci.status||'').toUpperCase();
+    if(s==='OK')checked++;
+    else if(s==='RUNNING'){}
+    else if(s)failed++;
+  });
+  if(configured.length){
+    if(failed>0)dohState='down';
+    else if(checked===configured.length)dohState='ok';
+  }
+  var doh=dohState==='ok'
+    ? badge('dm-ok','работает')
+    : dohState==='down'
+      ? badge('dm-bad','не работает')
+      : badge('dm-off','не проверено');
 
   var force=yes(st.force_both)?badge('dm-bad','DNS Manager + внешний'):st.force_owner==='external'?badge('dm-bad','внешний сервис'):yes(st.force_manager)?badge('dm-ok','DNS Manager'):badge('dm-off','выключен');
 
@@ -2425,13 +2466,25 @@ function renderOverview(root,st){
     if(!d)return;
     var slot=d.slot?slotLabel(d.slot):'системный DNS';
     var name=d.name||'Пользовательский DNS';
-    var statusNode=Number(d.running||0)===1?badge('dm-ok','запущен'):badge('dm-bad','остановлен');
+    var ci=checkInfo(d.id,d);
+    var s=String(ci.status||'').toUpperCase();
+    var statusNode=s==='OK'
+      ? badge('dm-ok','работает')
+      : s==='RUNNING'
+        ? badge('dm-warn','проверяется…')
+        : s
+          ? badge('dm-bad','не работает')
+          : badge('dm-off','не проверено');
+    var meta=[];
+    if(s==='OK'||s==='RUNNING'||s==='FAIL'||s) {
+      if(s!=='RUNNING'&&hasPing(ci.ping))meta.push(E('span',{'class':'dm-component-dns-ping'},ping(ci.ping)));
+    }
     dnsItems.push(E('div',{'class':'dm-component-dns'},[
       E('div',{'class':'dm-component-dns-main'},[
         E('span',{'class':'dm-component-dns-slot'},slot),
         E('span',{'class':'dm-component-dns-name'},name)
       ]),
-      E('div',{'class':'dm-component-dns-meta'},[statusNode])
+      E('div',{'class':'dm-component-dns-meta'},[statusNode].concat(meta))
     ]));
   });
   if(!dnsItems.length)dnsItems.push(E('div',{'class':'dm-hint'},'DNS в слоты не назначены.'));
