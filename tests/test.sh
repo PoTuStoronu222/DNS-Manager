@@ -536,6 +536,28 @@ got="$(watchdog_pick_replacement 1 "$TMP_DIR/used" "$TMP_DIR/tried" 0)"
     printf '%s\n' "unexpected replacement: $got" >&2
     exit 31
 }
+
+# "Все категории" is a special profile mode: the background watchdog still
+# rejects it, but an explicit profile repair must use the fresh all-catalog set.
+DNS_SELECTION_CATEGORY=all
+watchdog_test_results_fresh() { [ "$1" = all ]; }
+cat > "$DNS_CATALOG" <<'EOF_ALL_CATALOG'
+c1|bypass|C1|https://c1.example/dns-query|ru/global|verified
+c5|bypass|C5|https://c5.example/dns-query|ru/global|verified
+ru1|regional|RU1|https://ru1.example/dns-query|ru|verified
+EOF_ALL_CATALOG
+cat > "$TEST_RESULTS" <<'EOF_ALL_RESULTS'
+c1|bypass|C1|10|FAIL
+c5|bypass|C5|40|OK
+ru1|regional|RU1|1|OK
+EOF_ALL_RESULTS
+: > "$TMP_DIR/used"
+: > "$TMP_DIR/tried"
+got="$(watchdog_pick_replacement 1 "$TMP_DIR/used" "$TMP_DIR/tried" 0)"
+[ "$got" = "c5|bypass" ] || {
+    printf '%s\n' "unexpected all-category replacement: $got" >&2
+    exit 32
+}
 EOF_WATCHDOG_PICK
 
 chmod +x "$tmp/watchdog_pick_runner.sh"
