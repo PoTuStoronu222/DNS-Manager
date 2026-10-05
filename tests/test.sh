@@ -29,8 +29,8 @@ awk '
 [ -s "$tmp/validate_dns.sh" ] || fail "DNS response validator extraction"
 . "$tmp/validate_dns.sh"
 
-printf '\000\000\000\000\000\001\000\000\000\000\000\000' > "$tmp/dns-small"
-if validate_dns_message "$tmp/dns-small"; then
+printf '\000\000\000\000\000\001\000\000\000\000\000' > "$tmp/dns-short"
+if validate_dns_message "$tmp/dns-short"; then
     fail "short DNS body accepted"
 fi
 
