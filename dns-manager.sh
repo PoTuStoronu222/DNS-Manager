@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.35.53"
+VERSION="3.35.54"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -2707,11 +2707,22 @@ validate_selected_slots() {
         _u="$(normalize_url "$(dns_url "$_id")")"
         [ -n "$_u" ] || { err_msg "Слот $s содержит DNS без URL."; return 1; }
         if [ "$DNS_PROFILE" = hybrid ]; then
-            ensure_test_results_fresh || return 1
-            _tested_ok="$(awk -F'|' -v id="$_id" 'NF>=5 && $1==id && $5=="OK" && $4 ~ /^[0-9]+$/ {print "yes"; exit}' "$TEST_RESULTS" 2>/dev/null)"
-            if [ "$_tested_ok" != yes ]; then
-                err_msg "DNS «$(dns_name "$_id")» не прошёл последнюю полную проверку. Он не может быть применён."
-                return 1
+            if [ "${PROFILE_APPLY:-0}" = 1 ]; then
+                _profile_tested_ok=no
+                for _pid in ${PROFILE_FRESH_OK_IDS:-}; do
+                    [ "$_pid" = "$_id" ] && { _profile_tested_ok=yes; break; }
+                done
+                if [ "$_profile_tested_ok" != yes ]; then
+                    err_msg "DNS «$(dns_name "$_id")» не прошёл свежую проверку профиля. Он не может быть применён."
+                    return 1
+                fi
+            else
+                ensure_test_results_fresh || return 1
+                _tested_ok="$(awk -F'|' -v id="$_id" 'NF>=5 && $1==id && $5=="OK" && $4 ~ /^[0-9]+$/ {print "yes"; exit}' "$TEST_RESULTS" 2>/dev/null)"
+                if [ "$_tested_ok" != yes ]; then
+                    err_msg "DNS «$(dns_name "$_id")» не прошёл последнюю полную проверку. Он не может быть применён."
+                    return 1
+                fi
             fi
         fi
         if grep -qxF "$_u" "$_urls" 2>/dev/null; then
@@ -5378,6 +5389,7 @@ pause
 }
 profile_apply_begin() {
     PROFILE_APPLY=1
+    PROFILE_FRESH_OK_IDS=""
     PROFILE_OLD_NTP_IP_FALLBACK="${NTP_IP_FALLBACK:-0}"
     PROFILE_OLD_FORCE_DOH="${FORCE_DOH:-0}"
     PROFILE_OLD_DNSMASQ_PERF="${DNSMASQ_PERF:-0}"
@@ -5556,6 +5568,10 @@ while IFS='|' read -r _id _cat2 _prof _name _url _region _status; do
 
     if [ "$_rst" = OK ]; then
         case "$_rms" in ''|*[!0-9]*) continue;; esac
+        case " ${PROFILE_FRESH_OK_IDS:-} " in
+            *" $_id "*) ;;
+            *) PROFILE_FRESH_OK_IDS="${PROFILE_FRESH_OK_IDS:+$PROFILE_FRESH_OK_IDS }$_id" ;;
+        esac
         printf '%s|%s|%s|%s|%s\n' "$_id" "$_cat2" "$_name" "$_rms" "$_rst" >> "$_pool"
         _found=$((_found+1))
         [ "$_found" -ge 6 ] && break
@@ -5574,7 +5590,14 @@ for _ru_id in yandex_ru $(awk -F'|' 'NF>=5 && $1 !~ /^#/ && $2=="regional" {prin
         _rst="$(awk -F'|' -v id="$_ru_id" '$1==id && NF>=5 {print $5;exit}' "$_rf" 2>/dev/null || true)"
     fi
     rm -f "$_rf" "$TMP_DIR/body.$_ru_id" "$TMP_DIR/h.$_ru_id" 2>/dev/null || true
-    if [ "$_rst" = OK ]; then _ru="$_ru_id"; break; fi
+    if [ "$_rst" = OK ]; then
+        case " ${PROFILE_FRESH_OK_IDS:-} " in
+            *" $_ru_id "*) ;;
+            *) PROFILE_FRESH_OK_IDS="${PROFILE_FRESH_OK_IDS:+$PROFILE_FRESH_OK_IDS } $_ru_id" ;;
+        esac
+        _ru="$_ru_id"
+        break
+    fi
 done
 
 rm -f "$_candidates" "$_seen" "$_q" "$TMP_DIR/t."* "$TMP_DIR/body."* "$TMP_DIR/h."* 2>/dev/null || true
@@ -6819,12 +6842,16 @@ printf "  ${C_GREEN}✓${C_NC} автоматическая замена нер�
 printf "  ${C_GREEN}✓${C_NC} одновременная работа выбранных DNS\n"
 printf "  ${C_GREEN}✓${C_NC} проверка после настройки\n"
 printf "  ${C_GREEN}✓${C_NC} сохранение исходных настроек для отката\n\n"
-if watchdog_test_results_fresh; then
-    info_msg "Использую свежие результаты полной проверки DNS; повторный тест не требуется."
+if [ "${PROFILE_APPLY:-0}" = 1 ]; then
+    info_msg "Проверяю быстрые кандидаты DNS; полная проверка каталога не требуется."
 else
-    test_dns_catalog || return 1
+    if watchdog_test_results_fresh; then
+        info_msg "Использую свежие результаты полной проверки DNS; повторный тест не требуется."
+    else
+        test_dns_catalog || return 1
+    fi
+    [ -s "$TEST_RESULTS" ] || return 1
 fi
-[ -s "$TEST_RESULTS" ] || return 1
 DNS_PROFILE="hybrid"
 DNS_SELECTION_MODE="quick"
 DNS_SELECTION_CATEGORY="bypass"
