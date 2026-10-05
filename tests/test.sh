@@ -441,7 +441,7 @@ grep -A22 -F 'watchdog_pick_replacement() {' dns-manager.sh | grep -q '_passcats
 grep -A18 -F 'watchdog_pick_replacement() {' dns-manager.sh | grep -q 'watchdog_scope_category' || fail "watchdog replacement does not use intended profile category"
 grep -q '_fallback_slots=""' dns-manager.sh || fail "watchdog fallback slots are not tracked"
 grep -q '_empty_slots=""' dns-manager.sh || fail "watchdog empty slots are not tracked"
-grep -q 'watchdog: проверяю целевую категорию для восстановления/дозаполнения' dns-manager.sh || fail "watchdog gradual target restore/fill path missing"
+grep -q 'Watchdog: проверяю целевую категорию для восстановления/дозаполнения' dns-manager.sh || fail "watchdog gradual target restore/fill path missing"
 awk '/^auto_fill_slots\(\)/,/^return 0/' dns-manager.sh > "$tmp/auto_fill_profile.sh"
 if grep -q '_bypass_count.*-lt 6|подтверждено только .* из 6' "$tmp/auto_fill_profile.sh"; then
     fail "profile application still requires six bypass DNS"
