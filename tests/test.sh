@@ -459,6 +459,79 @@ grep -q 'last_full_test_scope' "$tmp/backend.sh" || fail "LuCI status does not e
 grep -q 'last_full_test_scope' "$tmp/overview.js" || fail "LuCI header does not show DNS test scope"
 ok "ready-made profiles test only their own DNS category"
 
+# Replacement candidates must come from the fresh profile result set, not the
+# first few catalog entries. A working candidate later in the tested set must
+# still be selected.
+awk '
+    /^watchdog_pick_replacement\(\) \{/ { capture=1 }
+    capture { print }
+    capture && /^watchdog_apply_slot_candidate\(\) \{/ { exit }
+' dns-manager.sh | sed '$d' > "$tmp/watchdog_pick_replacement.sh"
+[ -s "$tmp/watchdog_pick_replacement.sh" ] || fail "watchdog replacement extraction"
+cat > "$tmp/watchdog_pick_runner.sh" <<'EOF_WATCHDOG_PICK'
+#!/bin/sh
+set -eu
+TMP_DIR="$1"
+DNS_CATALOG="$TMP_DIR/catalog"
+TEST_RESULTS="$TMP_DIR/results"
+REPAIR_BAD_IDS="$TMP_DIR/bad"
+WATCHDOG_MAX_CANDIDATES=3
+DNS_SELECTION_MODE=profile
+DNS_SELECTION_CATEGORY=bypass
+SLOT_1=c1
+SLOT_2=
+SLOT_3=
+SLOT_4=
+SLOT_5=
+SLOT_6=
+SLOT_RU=ru1
+
+watchdog_scope_category() { printf '%s\n' "$DNS_SELECTION_CATEGORY"; }
+watchdog_desired_cat() { [ "$1" = RU ] && printf '%s\n' regional || printf '%s\n' "$DNS_SELECTION_CATEGORY"; }
+dns_cat() {
+    case "$1" in
+        c1|c2|c3|c4|c5) printf '%s\n' bypass ;;
+        *) printf '%s\n' regional ;;
+    esac
+}
+dns_url() { printf 'https://%s.example/dns-query\n' "$1"; }
+dns_name() { printf '%s\n' "$1"; }
+normalize_url() { printf '%s\n' "$1"; }
+watchdog_test_results_fresh() { [ "$1" = bypass ]; }
+watchdog_probe_catalog_candidate() { return 1; }
+watchdog_preferred_quick_candidate() { return 1; }
+
+mkdir -p "$TMP_DIR"
+cat > "$DNS_CATALOG" <<'EOF_CATALOG'
+c1|bypass|C1|https://c1.example/dns-query|ru/global|verified
+c2|bypass|C2|https://c2.example/dns-query|ru/global|verified
+c3|bypass|C3|https://c3.example/dns-query|ru/global|verified
+c4|bypass|C4|https://c4.example/dns-query|ru/global|verified
+c5|bypass|C5|https://c5.example/dns-query|ru/global|verified
+EOF_CATALOG
+cat > "$TEST_RESULTS" <<'EOF_RESULTS'
+c1|bypass|C1|10|FAIL
+c2|bypass|C2|20|FAIL
+c3|bypass|C3|30|FAIL
+c4|bypass|C4|90|OK
+c5|bypass|C5|40|OK
+EOF_RESULTS
+: > "$REPAIR_BAD_IDS"
+: > "$TMP_DIR/used"
+: > "$TMP_DIR/tried"
+
+. "$2"
+got="$(watchdog_pick_replacement 1 "$TMP_DIR/used" "$TMP_DIR/tried" 0)"
+[ "$got" = "c5|bypass" ] || {
+    printf '%s\n' "unexpected replacement: $got" >&2
+    exit 31
+}
+EOF_WATCHDOG_PICK
+
+chmod +x "$tmp/watchdog_pick_runner.sh"
+"$tmp/watchdog_pick_runner.sh" "$tmp" "$tmp/watchdog_pick_replacement.sh" || fail "fresh DNS replacement candidate selection"
+ok "profile repair selects from all fresh tested candidates, not the first catalog entries"
+
 # Profile application validation must use the fresh category-scoped results.
 awk '/^validate_selected_slots\(\)/,/^ensure_dnsmasq_balancer\(\)/' dns-manager.sh > "$tmp/validate_selected_slots.sh"
 grep -q 'ensure_test_results_fresh "$_validate_scope" || return 1' "$tmp/validate_selected_slots.sh" || fail "profile validation does not use the selected test scope"
