@@ -92,12 +92,13 @@ fi
 ok "LuCI RPC dispatch contract"
 
 grep -q '^restore_dns_core() {' dns-manager.sh || fail "DNS core restore helper missing"
-awk '/^menu_slots\(\)/ { capture=1 } /^menu_bogus\(\)/ { capture=0 } capture { print }' dns-manager.sh > "$tmp/menu_slots.sh"
-if grep -q 'hybrid_set_defaults\|CORE_ONLY=1; apply_settings\|CORE_ONLY=1
+awk '/^menu_slots() {/,/^menu_bogus() {/' dns-manager.sh > "$tmp/menu_slots.sh"
+if grep -q 'hybrid_set_defaults\|CORE_ONLY=1; apply_settings\|CORE_ONLY=1' "$tmp/menu_slots.sh"; then
+    fail "DNS menu restore still selects/applies a DNS profile"
+fi
 grep -q 'reset_dns)' "$tmp/backend.sh" || fail "LuCI DNS reset RPC missing"
 grep -q 'reset_dns' "$tmp/overview.js" || fail "LuCI DNS reset action missing"
 ok "DNS restore returns to standard resolver path"
-
 top_luci="$(sed -n 's/^# Version:[[:space:]]*//p' dns-manager-luci.sh | head -n1)"
 installer_luci="$(sed -n 's/^VERSION="\([^"]*\)"$/\1/p' dns-manager-luci.sh | head -n1)"
 self_luci="$(sed -n 's/^SELF_VERSION="\([^"]*\)"$/\1/p' dns-manager-luci.sh | head -n1)"
