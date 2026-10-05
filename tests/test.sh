@@ -112,6 +112,11 @@ if grep -q 'function refreshDashboard' "$tmp/overview.js"; then
     fail "obsolete refreshDashboard function remains"
 fi
 ok "dashboard timer is lightweight"
+grep -q 'Подготавливаю окружение' dns-manager.sh || fail "startup progress: environment marker missing"
+grep -q 'Проверяю каталог DNS' dns-manager.sh || fail "startup progress: catalog marker missing"
+grep -q 'Проверяю обновления' dns-manager.sh || fail "startup progress: update marker missing"
+grep -q 'Проверяю состояние роутера' dns-manager.sh || fail "startup progress: discovery marker missing"
+ok "CLI startup shows visible progress before potentially slow stages"
 
 grep -q 'UPDATE_CHECK_CACHE="$RUNTIME_DIR/update-check.cache"' dns-manager-luci.sh || fail "version cache path missing"
 grep -q 'UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"' dns-manager-luci.sh || fail "version cache lock missing"
