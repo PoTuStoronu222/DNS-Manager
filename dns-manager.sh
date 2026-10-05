@@ -8469,7 +8469,7 @@ test-one|--test-one)
     fi
     rm -f "$TMP_DIR/t.$_test_id" "$TMP_DIR/dns_query.bin" "$TMP_DIR/body.$_test_id" "$TMP_DIR/h.$_test_id" 2>/dev/null || true
     q="$TMP_DIR/dns_query.bin"
-    if ! printf '\\022\\064\\001\\000\\000\\001\\000\\000\\000\\000\\000\\000\\007example\\003com\\000\\000\\001\\000\\001' > "$q" 2>/dev/null; then
+    if ! printf '\022\064\001\000\000\001\000\000\000\000\000\000\007example\003com\000\000\001\000\001' > "$q" 2>/dev/null; then
         rm -f "$q" 2>/dev/null || true
         [ "$_test_lock_owned" = 1 ] && release_test_lock
         printf '%s||||INTERNAL_TEST_QUERY_CREATE_FAIL\n' "$_test_id"
@@ -8479,138 +8479,7 @@ test-one|--test-one)
     if [ -s "$TMP_DIR/t.$_test_id" ]; then
         cat "$TMP_DIR/t.$_test_id"
         _test_rc=1
-        grep -q '|OK
-    preflight_readonly
-    init_dirs
-    load_config
-    startup_required_function_check || exit 1
-    refresh_runtime_capabilities
-    check_module_state force
-    exit $?
-    ;;
-update-check|--update-check)
-    preflight_readonly
-    init_dirs
-    write_catalogs >/dev/null 2>&1 || true
-    load_config
-    DNS_MANAGER_FORCE_UPDATE=1 DNS_MANAGER_UPDATE_NO_EXEC=1 auto_update_manager --force
-    case "${AUTO_UPDATE_RESULT:-failed}" in
-        updated) exit 0 ;;
-        current|throttled) exit 2 ;;
-        busy|failed|skipped|disabled) exit 1 ;;
-        *) exit 3 ;;
-    esac
-    ;;
-auto-update|--auto-update)
-    preflight_readonly
-    init_dirs
-    DNS_MANAGER_SCHEDULED_UPDATE=1 DNS_MANAGER_UPDATE_NO_EXEC=1 auto_update_manager --scheduled
-    exit 0
-    ;;
-uninstall|--uninstall|remove|--remove)
-    preflight_readonly
-    init_dirs
-    write_catalogs >/dev/null 2>&1 || true
-    load_config
-    uninstall_manager
-    exit $?
-    ;;
-watchdog-slot|--watchdog-slot)
-    preflight_readonly
-    init_dirs
-    load_config
-    startup_required_function_check || exit 1
-    DNS_MANAGER_RAM_LOG=1
-    refresh_runtime_capabilities
-    watchdog_slot_target_run "$2"
-    exit $?
-    ;;
-watchdog-service-recover|--watchdog-service-recover)
-    preflight_readonly
-    init_dirs
-    load_config
-    startup_required_function_check || exit 1
-    DNS_MANAGER_RAM_LOG=1
-    refresh_runtime_capabilities
-    watchdog_service_recover_run
-    exit $?
-    ;;
-watchdog|--watchdog|-w)
-    DNS_MANAGER_RAM_LOG=1
-    preflight_readonly
-    init_dirs
-    load_config
-    startup_required_function_check || exit 1
-    refresh_runtime_capabilities
-    log_msg "Запуск одноразовой проверки DNS."
-    run_watchdog
-    exit $?
-    ;;
-__watchdog-loop)
-    preflight_readonly
-    init_dirs
-    load_config
-    startup_required_function_check || exit 1
-    refresh_runtime_capabilities
-    watchdog_embedded_loop
-    exit $?
-    ;;
-esac
-
-printf "\n${C_CYAN}${C_BOLD}▶ DNS Manager $VERSION${C_NC}\n"
-printf "  ${C_CYAN}↻${C_NC} Подготавливаю окружение...\n"
-preflight_readonly
-init_dirs
-printf "  ${C_CYAN}↻${C_NC} Проверяю каталог DNS...\n"
-write_catalogs
-printf "  ${C_CYAN}↻${C_NC} Загружаю конфигурацию...\n"
-load_config
-startup_required_function_check || exit 1
-printf "  ${C_CYAN}↻${C_NC} Проверяю обновления...\n"
-startup_update_check
-case "${AUTO_UPDATE_RESULT:-}" in
-    updated) printf "  ${C_GREEN}✓${C_NC} DNS Manager автоматически обновлён до $VERSION.\n" ;;
-    failed) printf "  ${C_YELLOW}!${C_NC} Проверка обновления DNS Manager не удалась.\n" ;;
-    *) printf "  ${C_GREEN}✓${C_NC} Проверка обновлений завершена.\n" ;;
-esac
-printf "  ${C_CYAN}↻${C_NC} Проверяю состояние роутера...\n"
-run_discovery
-printf "  ${C_GREEN}✓${C_NC} Состояние роутера получено.\n"
-
-if [ "${FIRST_RUN_INITIAL:-0}" = 1 ]; then
-    # Initialization only: do not synchronize or mutate cron on first launch.
-    info_msg "Первый запуск: watchdog-служба procd не запускается и cron не изменяю."
-fi
-
-
-
-if [ "${FIRST_RUN_INITIAL:-0}" = 1 ]; then
-    if mkdir -p "$CFG_DIR" 2>/dev/null && {
-        printf 'version=%s\n' "$VERSION"
-        printf 'completed_at=%s\n' "$(date +%s)"
-    } > "${FIRST_RUN_MARKER}.tmp.$$" 2>/dev/null; then
-        chmod 600 "${FIRST_RUN_MARKER}.tmp.$$" 2>/dev/null || true
-        if mv "${FIRST_RUN_MARKER}.tmp.$$" "$FIRST_RUN_MARKER" 2>/dev/null; then
-            FIRST_RUN=0
-            info_msg "Первичная инициализация завершена. Watchdog procd и cron оставлены без изменений до явного включения автопроверки."
-        else
-            rm -f "${FIRST_RUN_MARKER}.tmp.$$" 2>/dev/null || true
-            warn_msg "Не удалось сохранить маркер первого запуска. Watchdog procd и cron останутся защищёнными до следующего запуска."
-        fi
-    else
-        rm -f "${FIRST_RUN_MARKER}.tmp.$$" 2>/dev/null || true
-        warn_msg "Не удалось сохранить маркер первого запуска. Watchdog procd и cron останутся защищёнными до следующего запуска."
-    fi
-fi
-
-# Existing installations: move watchdog from cron to procd only after a valid baseline exists.
-# FIRST_RUN_INITIAL is immutable for this invocation, so first launch never migrates cron.
-if [ "${FIRST_RUN_INITIAL:-0}" = 0 ] && [ "${WATCHDOG_ENABLED:-0}" = 1 ]; then
-    watchdog_service_migrate_legacy >/dev/null 2>&1 || warn_msg "Не удалось завершить переход watchdog с cron на procd. Состояние watchdog оставлено без самовольной ротации DNS."
-fi
-
-main_menu
- "$TMP_DIR/t.$_test_id" 2>/dev/null && _test_rc=0
+        grep -q '|OK$' "$TMP_DIR/t.$_test_id" 2>/dev/null && _test_rc=0
     else
         printf '%s||||TEST_NO_RESULT\n' "$_test_id"
         _test_rc=1
@@ -8619,7 +8488,6 @@ main_menu
     [ "$_test_lock_owned" = 1 ] && release_test_lock
     exit "$_test_rc"
     ;;
-
 force-state|--force-state)
     preflight_readonly
     init_dirs
