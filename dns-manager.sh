@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.35.28"
+VERSION="3.35.29"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -368,7 +368,7 @@ release_auto_update_lock() {
 }
 auto_update_manager() {
     AUTO_UPDATE_RESULT="disabled"
-    if [ "${DNS_MANAGER_NO_UPDATE:-0}" = "1" ] && [ "${DNS_MANAGER_FORCE_UPDATE:-0}" != 1 ]; then
+    if [ "${DNS_MANAGER_NO_UPDATE:-0}" = 1 ] && [ "${DNS_MANAGER_FORCE_UPDATE:-0}" != 1 ]; then
         return 0
     fi
     AUTO_UPDATE_RESULT="started"
@@ -380,13 +380,10 @@ auto_update_manager() {
     fi
 
     _scheduled=0
-    [ "${DNS_MANAGER_SCHEDULED_UPDATE:-0}" = "1" ] && _scheduled=1
-
-    # Interactive startup and explicit update-check perform a real GitHub check.
-    # The 12-hour throttle is reserved for scheduled/background updates.
+    [ "${DNS_MANAGER_SCHEDULED_UPDATE:-0}" = 1 ] && _scheduled=1
     if [ "$_scheduled" = 1 ] && [ "${DNS_MANAGER_FORCE_UPDATE:-0}" != 1 ]; then
-        _upd_now="$(date +%s 2>/dev/null)"
-        _upd_last="$(cat "$AUTO_UPDATE_LAST_CHECK_FILE" 2>/dev/null)"
+        _upd_now="$(date +%s 2>/dev/null || printf 0)"
+        _upd_last="$(cat "$AUTO_UPDATE_LAST_CHECK_FILE" 2>/dev/null || true)"
         case "$_upd_now" in ''|*[!0-9]*) _upd_now="";; esac
         case "$_upd_last" in ''|*[!0-9]*) _upd_last="";; esac
         if [ -n "$_upd_now" ] && [ -n "$_upd_last" ]; then
@@ -401,132 +398,45 @@ auto_update_manager() {
 
     case "$0" in
         "$MANAGER_PATH"|*/dns-manager|dns-manager) ;;
-        *)
-            AUTO_UPDATE_RESULT="skipped"
-            log_msg "Автообновление: запуск не из $MANAGER_PATH (0=$0), проверка пропущена."
-            release_auto_update_lock
-            return 0
-            ;;
+        *) AUTO_UPDATE_RESULT="skipped"; release_auto_update_lock; return 0 ;;
     esac
-
-    [ -f "$MANAGER_PATH" ] || {
-        log_msg "Автообновление: файл $MANAGER_PATH не найден."
-        AUTO_UPDATE_RESULT="skipped"
-        release_auto_update_lock
-        return 0
-    }
-
-    [ -w "${MANAGER_PATH%/*}" ] || {
-        log_msg "Автообновление: каталог ${MANAGER_PATH%/*} недоступен для записи."
-        AUTO_UPDATE_RESULT="skipped"
-        release_auto_update_lock
-        return 0
-    }
-
+    [ -f "$MANAGER_PATH" ] || { AUTO_UPDATE_RESULT="skipped"; release_auto_update_lock; return 0; }
+    [ -w "${MANAGER_PATH%/*}" ] || { AUTO_UPDATE_RESULT="skipped"; release_auto_update_lock; return 0; }
     if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1 && ! command -v uclient-fetch >/dev/null 2>&1; then
-        AUTO_UPDATE_RESULT="skipped"
-        log_msg "Автообновление: нет curl, wget или uclient-fetch, проверка пропущена."
-        release_auto_update_lock
-        return 0
+        AUTO_UPDATE_RESULT="skipped"; release_auto_update_lock; return 0
     fi
 
     _upd_tmp="/tmp/dns-manager-update-$$"
     _upd_syntax="${_upd_tmp}.syntax"
     UPDATE_TMP_FILE="$_upd_tmp"
-    _upd_now="$(date +%s 2>/dev/null || printf 0)"
-    case "$_upd_now" in ''|*[!0-9]*) _upd_now="";; esac
-    rm -f "$_upd_tmp" "$_upd_syntax" 2>/dev/null
+    rm -f "$_upd_tmp" "$_upd_syntax" 2>/dev/null || true
+    _update_url="${UPDATE_URL}?_dmcb=$(date +%s 2>/dev/null || printf 0)-$$"
 
-    _fetch_ok=0
-    _fetch_reason=""
-    _fetch_attempt=1
-    while [ "$_fetch_attempt" -le 3 ]; do
-        rm -f "$_upd_tmp" "$_upd_syntax" 2>/dev/null
-        _update_url="${UPDATE_URL}?_dmcb=$(date +%s 2>/dev/null || printf 0)-$$-$_fetch_attempt"
-
-        if command -v curl >/dev/null 2>&1; then
-            curl -fsSL --connect-timeout 4 --max-time 20 -H "Cache-Control: no-cache" -H "Pragma: no-cache" -o "$_upd_tmp" "$_update_url" >/dev/null 2>&1
-        elif command -v wget >/dev/null 2>&1; then
-            wget -q -T 20 --header="Cache-Control: no-cache" --header="Pragma: no-cache" -O "$_upd_tmp" "$_update_url" >/dev/null 2>&1
-        else
-            uclient-fetch -q -O "$_upd_tmp" "$_update_url" >/dev/null 2>&1
-        fi
-
-        if [ ! -s "$_upd_tmp" ]; then
-            _fetch_reason="файл не получен"
-            _fetch_attempt=$((_fetch_attempt+1))
-            [ "$_fetch_attempt" -le 3 ] && sleep 1
-            continue
-        fi
-
-        head -n 1 "$_upd_tmp" 2>/dev/null | grep -q '^#!/bin/sh' || {
-            _fetch_reason="загруженный файл не начинается с #!/bin/sh"
-            _fetch_attempt=$((_fetch_attempt+1))
-            [ "$_fetch_attempt" -le 3 ] && sleep 1
-            continue
-        }
-
-        _new_version="$(sed -n 's/^VERSION="\([^"]*\)"$/\1/p' "$_upd_tmp" 2>/dev/null | head -n1)"
-        if [ -z "$_new_version" ]; then
-            _fetch_reason="в файле не найдена VERSION"
-            _fetch_attempt=$((_fetch_attempt+1))
-            [ "$_fetch_attempt" -le 3 ] && sleep 1
-            continue
-        fi
-
-        _last_nonempty="$(sed -n '/[^[:space:]]/!d; $p' "$_upd_tmp" 2>/dev/null)"
-        if [ "$_last_nonempty" != "main_menu" ]; then
-            _fetch_reason="файл получен не полностью"
-            _fetch_attempt=$((_fetch_attempt+1))
-            [ "$_fetch_attempt" -le 3 ] && sleep 1
-            continue
-        fi
-
-        if ! sh -n "$_upd_tmp" 2>"$_upd_syntax"; then
-            _fetch_reason="syntax-check не пройден"
-            _fetch_attempt=$((_fetch_attempt+1))
-            [ "$_fetch_attempt" -le 3 ] && sleep 1
-            continue
-        fi
-
-        _fetch_ok=1
-        break
-    done
-
-    if [ "$_fetch_ok" != 1 ]; then
-        log_msg "Автообновление: не удалось получить и проверить файл после 3 попыток. Последняя причина: $_fetch_reason."
-        AUTO_UPDATE_RESULT="failed"
-        rm -f "$_upd_tmp" "$_upd_syntax" 2>/dev/null
-        UPDATE_TMP_FILE=""
-        release_auto_update_lock
-        return 0
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL --connect-timeout 4 --max-time 15 -H "Cache-Control: no-cache" -H "Pragma: no-cache" -o "$_upd_tmp" "$_update_url" >/dev/null 2>&1 || { AUTO_UPDATE_RESULT="failed"; rm -f "$_upd_tmp" "$_upd_syntax"; UPDATE_TMP_FILE=""; release_auto_update_lock; return 0; }
+    elif command -v wget >/dev/null 2>&1; then
+        wget -q -T 15 --header="Cache-Control: no-cache" --header="Pragma: no-cache" -O "$_upd_tmp" "$_update_url" >/dev/null 2>&1 || { AUTO_UPDATE_RESULT="failed"; rm -f "$_upd_tmp" "$_upd_syntax"; UPDATE_TMP_FILE=""; release_auto_update_lock; return 0; }
+    else
+        uclient-fetch -q -O "$_upd_tmp" "$_update_url" >/dev/null 2>&1 || { AUTO_UPDATE_RESULT="failed"; rm -f "$_upd_tmp" "$_upd_syntax"; UPDATE_TMP_FILE=""; release_auto_update_lock; return 0; }
     fi
 
-    rm -f "$_upd_syntax" 2>/dev/null
+    [ -s "$_upd_tmp" ] || { AUTO_UPDATE_RESULT="failed"; rm -f "$_upd_tmp" "$_upd_syntax"; UPDATE_TMP_FILE=""; release_auto_update_lock; return 0; }
+    head -n 1 "$_upd_tmp" 2>/dev/null | grep -q "^#!/bin/sh" || { AUTO_UPDATE_RESULT="failed"; rm -f "$_upd_tmp" "$_upd_syntax"; UPDATE_TMP_FILE=""; release_auto_update_lock; return 0; }
+    _new_version="$(sed -n 's/^VERSION="\([^"]*\)"$/\1/p' "$_upd_tmp" 2>/dev/null | head -n1)"
+    [ -n "$_new_version" ] || { AUTO_UPDATE_RESULT="failed"; rm -f "$_upd_tmp" "$_upd_syntax"; UPDATE_TMP_FILE=""; release_auto_update_lock; return 0; }
+    sh -n "$_upd_tmp" 2>"$_upd_syntax" || { AUTO_UPDATE_RESULT="failed"; rm -f "$_upd_tmp" "$_upd_syntax"; UPDATE_TMP_FILE=""; release_auto_update_lock; return 0; }
 
-    # A network fetch + shell/version validation completed successfully; only now
-    # advance the throttle timestamp. Failed/blocked checks must be retryable.
-    [ -n "$_upd_now" ] && printf '%s\n' "$_upd_now" > "$AUTO_UPDATE_LAST_CHECK_FILE" 2>/dev/null || true
+    _upd_now="$(date +%s 2>/dev/null || printf 0)"
+    case "$_upd_now" in ''|*[!0-9]*) _upd_now="";; esac
+    [ -n "$_upd_now" ] && printf "%s\n" "$_upd_now" > "$AUTO_UPDATE_LAST_CHECK_FILE" 2>/dev/null || true
 
     _new_hash="$(file_hash "$_upd_tmp")"
     _old_hash="$(file_hash "$MANAGER_PATH")"
-
-    if [ "$_new_version" = "$VERSION" ]; then
-        if [ -z "$_new_hash" ] || [ -z "$_old_hash" ] || [ "$_new_hash" = "$_old_hash" ]; then
-            AUTO_UPDATE_RESULT="current"
-            rm -f "$_upd_tmp" 2>/dev/null
-            UPDATE_TMP_FILE=""
-            release_auto_update_lock
-            return 0
-        fi
-    else
-        if ! _ver_newer "$_new_version" "$VERSION"; then
-            AUTO_UPDATE_RESULT="current"
-            rm -f "$_upd_tmp" 2>/dev/null
-            UPDATE_TMP_FILE=""
-            release_auto_update_lock
-            return 0
-        fi
+    if [ "$_new_version" = "$VERSION" ] && { [ -z "$_new_hash" ] || [ -z "$_old_hash" ] || [ "$_new_hash" = "$_old_hash" ]; }; then
+        AUTO_UPDATE_RESULT="current"; rm -f "$_upd_tmp" "$_upd_syntax"; UPDATE_TMP_FILE=""; release_auto_update_lock; return 0
+    fi
+    if [ "$_new_version" != "$VERSION" ] && ! _ver_newer "$_new_version" "$VERSION"; then
+        AUTO_UPDATE_RESULT="current"; rm -f "$_upd_tmp" "$_upd_syntax"; UPDATE_TMP_FILE=""; release_auto_update_lock; return 0
     fi
 
     if [ "$_new_version" = "$VERSION" ]; then
@@ -534,19 +444,16 @@ auto_update_manager() {
     else
         log_msg "Автообновление: найдено обновление $VERSION → $_new_version. Устанавливаю."
     fi
-
     if cp -f "$_upd_tmp" "$MANAGER_PATH" 2>/dev/null && chmod 755 "$MANAGER_PATH" 2>/dev/null; then
         sync 2>/dev/null || true
-        rm -f "$_upd_tmp" 2>/dev/null
+        rm -f "$_upd_tmp" "$_upd_syntax" 2>/dev/null || true
         UPDATE_TMP_FILE=""
         AUTO_UPDATE_RESULT="updated"
         log_msg "Автообновление: файл заменён на версию $_new_version."
-
         if [ "${DNS_MANAGER_UPDATE_NO_EXEC:-0}" = 1 ]; then
             release_auto_update_lock
             return 0
         fi
-
         [ -n "${TMP_DIR:-}" ] && rm -rf "$TMP_DIR" 2>/dev/null || true
         TMP_DIR=""
         release_auto_update_lock
@@ -556,15 +463,13 @@ auto_update_manager() {
             DNS_MANAGER_NO_UPDATE=1 exec "$MANAGER_PATH"
         fi
     fi
-
     AUTO_UPDATE_RESULT="failed"
     log_msg "Автообновление: не удалось заменить $MANAGER_PATH."
-    rm -f "$_upd_tmp" 2>/dev/null
+    rm -f "$_upd_tmp" "$_upd_syntax" 2>/dev/null || true
     UPDATE_TMP_FILE=""
     release_auto_update_lock
     return 0
 }
-# ==========================================
 # ==========================================
 log_msg() {
     if [ "${DNS_MANAGER_RAM_LOG:-0}" = 1 ] || [ "${DNS_TEST_RAM_ONLY:-0}" = 1 ]; then
