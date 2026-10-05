@@ -346,9 +346,6 @@ grep -q 'state.profileResumeStarted' "$tmp/overview.js" || fail "LuCI profile re
 grep -q 'resumeRunningProfile(root)' "$tmp/overview.js" || fail "LuCI profile resume is not started on render"
 ok "profile jobs survive LuCI disconnects and reconnect on page load"
 printf '%s\n' "All DNS Manager regression checks passed."
- "$tmp/catalog_test.sh" 2>/dev/null || printf 0)"
-[ "$_progress_calls" = 1 ] || fail "catalog progress has an unexpected final call"
-ok "catalog progress omits the duplicate final intermediate result"
 
 # Ready-made profiles must not fall through into the generic Hybrid/Max
 # Bypass selector after auto_fill_slots().
