@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.35.33"
+VERSION="3.35.34"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -8462,12 +8462,16 @@ test-one|--test-one)
     DNS_TEST_RAM_ONLY=1
     refresh_runtime_capabilities
     [ "$HAS_CURL" = yes ] || { printf '%s|unavailable||||CURL_NOT_FOUND\n' "$_test_id"; exit 1; }
-    acquire_test_lock || { printf '%s|unavailable||||TEST_BUSY\n' "$_test_id"; exit 1; }
+    _test_lock_owned=0
+    if [ "${DNS_MANAGER_TEST_LOCK_HELD:-0}" != 1 ]; then
+        acquire_test_lock || { printf '%s|unavailable||||TEST_BUSY\n' "$_test_id"; exit 1; }
+        _test_lock_owned=1
+    fi
     rm -f "$TMP_DIR/t.$_test_id" "$TMP_DIR/dns_query.bin" "$TMP_DIR/body.$_test_id" "$TMP_DIR/h.$_test_id" 2>/dev/null || true
     q="$TMP_DIR/dns_query.bin"
     if ! printf '\\022\\064\\001\\000\\000\\001\\000\\000\\000\\000\\000\\000\\007example\\003com\\000\\000\\001\\000\\001' > "$q" 2>/dev/null; then
         rm -f "$q" 2>/dev/null || true
-        release_test_lock
+        [ "$_test_lock_owned" = 1 ] && release_test_lock
         printf '%s||||INTERNAL_TEST_QUERY_CREATE_FAIL\n' "$_test_id"
         exit 1
     fi
@@ -8612,7 +8616,7 @@ main_menu
         _test_rc=1
     fi
     rm -f "$TMP_DIR/t.$_test_id" "$TMP_DIR/dns_query.bin" "$TMP_DIR/body.$_test_id" "$TMP_DIR/h.$_test_id" 2>/dev/null || true
-    release_test_lock
+    [ "$_test_lock_owned" = 1 ] && release_test_lock
     exit "$_test_rc"
     ;;
 
