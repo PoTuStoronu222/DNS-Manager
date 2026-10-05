@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.35.56"
+VERSION="3.35.57"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -6713,7 +6713,7 @@ printf "  ${C_GREEN}✓${C_NC} одновременная работа выбр�
 printf "  ${C_GREEN}✓${C_NC} проверка после настройки\n"
 printf "  ${C_GREEN}✓${C_NC} сохранение исходных настроек для отката\n\n"
 if [ "${PROFILE_FULL_TEST:-0}" = 1 ]; then
-    info_msg "Использую только что завершённую полную проверку DNS."
+    info_msg "Использую только что завершённую полную проверку DNS выбранной категории."
 else
     if watchdog_test_results_fresh; then
         info_msg "Использую свежие результаты полной проверки DNS; повторный тест не требуется."
@@ -7169,13 +7169,61 @@ watchdog_pick_replacement() {
     [ -n "$_selection_kind" ] || return 1
     _desired_for_pick="$(watchdog_desired_cat "$_slot")"
     [ -n "$_desired_for_pick" ] || return 1
+
     case "$_slot" in
         RU) _probe_domain="yandex.ru" ;;
         *) _probe_domain="example.com" ;;
     esac
 
-    # Prefer the intended category. Clean is only a temporary fallback when
-    # no target-category DNS is currently alive anywhere in the profile.
+    # During profile application TEST_RESULTS is the authoritative fresh
+    # candidate pool. It already contains the complete selected category
+    # (plus regional DNS), so do not cap replacement selection at the first
+    # few catalog entries. Pick the fastest fresh OK candidate not already
+    # used/tried and let the local post-apply check confirm the actual listener.
+    _results_scope="$_selection_kind"
+    if watchdog_test_results_fresh "$_results_scope" 2>/dev/null; then
+        _fresh_source="$TMP_DIR/watchdog-fresh-candidates-$$-$_slot"
+        _fresh_pass_source="$TMP_DIR/watchdog-fresh-pass-$$-$_slot"
+        : > "$_fresh_source" || return 1
+        : > "$_fresh_pass_source" || { rm -f "$_fresh_source"; return 1; }
+
+        while IFS= read -r _passcat; do
+            [ -n "$_passcat" ] || continue
+            awk -F'|' -v c="$_passcat" '
+                NF>=5 && $1 !~ /^#/ && $2==c && $5=="OK" && $4 ~ /^[0-9]+$/ {print}
+            ' "$TEST_RESULTS" 2>/dev/null | sort -t'|' -k4,4n > "$_fresh_pass_source"
+
+            while IFS="|" read -r _rid _rcat _rname _rms _rst; do
+                [ -n "$_rid" ] || continue
+                [ "$_rid" != "${_current_id:-}" ] || continue
+                [ -n "${REPAIR_BAD_IDS:-}" ] && grep -qxF "$_rid" "$REPAIR_BAD_IDS" 2>/dev/null && continue
+                _rurl="$(normalize_url "$(dns_url "$_rid")")"
+                [ -n "$_rurl" ] || continue
+                grep -qxF "$_rurl" "$_used" 2>/dev/null && continue
+                grep -qxF "$_rid" "$_tried" 2>/dev/null && continue
+                printf '%s|%s|%s|%s|%s\n' "$_rid" "$_rcat" "$_rname" "$_rms" "$_rst" >> "$_fresh_source"
+            done < "$_fresh_pass_source"
+
+            _fresh_pick="$(head -n1 "$_fresh_source" 2>/dev/null)"
+            if [ -n "$_fresh_pick" ]; then
+                _rid="${_fresh_pick%%|*}"
+                _rcat="${_fresh_pick#*|}"
+                rm -f "$_fresh_source" "$_fresh_pass_source" 2>/dev/null || true
+                printf '%s|%s\n' "$_rid" "$_rcat"
+                return 0
+            fi
+            : > "$_fresh_source"
+        done <<EOF_WD_PASSCATS
+$_desired_for_pick
+EOF_WD_PASSCATS
+
+        rm -f "$_fresh_source" "$_fresh_pass_source" 2>/dev/null || true
+    fi
+
+    # Emergency fallback for watchdog/runtime situations where no fresh scoped
+    # result exists. Keep the resource-safe direct probe cap here; profile
+    # application normally never reaches this path because it starts with a
+    # fresh category-scoped catalog test.
     _passcats="$_desired_for_pick"
     if [ "$_allow_clean" = 1 ] && [ "$_slot" != RU ] && [ "$_desired_for_pick" != clean ]; then
         _passcats="$_desired_for_pick clean"
