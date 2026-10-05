@@ -1375,6 +1375,44 @@ current_slot_result_for_id() {
     # One authoritative result source for full, individual and selected DNS tests.
     result_for_id "$_id"
 }
+commit_single_test_result() {
+    _id="$1"
+    _result_file="$2"
+    [ -n "$_id" ] && [ -s "$_result_file" ] || return 1
+
+    # Accept exactly one fresh result line for this DNS. A failed/incomplete
+    # write must never be reported as a successful test, otherwise the next
+    # LuCI page load falls back to the previous common-test result.
+    _line="$(awk -F"|" -v id="$_id" '$1==id && NF>=5 {print;exit}' "$_result_file" 2>/dev/null || true)"
+    [ -n "$_line" ] || return 1
+
+    _tmp="$STATE_DIR/dns-test-results.single.$"
+    rm -f "$_tmp" 2>/dev/null || true
+    : > "$_tmp" || return 1
+
+    if [ -s "$TEST_RESULTS" ]; then
+        awk -F"|" -v id="$_id" '$1!=id {print}' "$TEST_RESULTS" > "$_tmp" 2>/dev/null || {
+            rm -f "$_tmp" 2>/dev/null || true
+            return 1
+        }
+    fi
+    printf '%s\n' "$_line" >> "$_tmp" || {
+        rm -f "$_tmp" 2>/dev/null || true
+        return 1
+    }
+
+    # Atomic replacement on the same filesystem. Do not hide a failure.
+    mv -f "$_tmp" "$TEST_RESULTS" 2>/dev/null || {
+        rm -f "$_tmp" 2>/dev/null || true
+        return 1
+    }
+
+    # Read back the exact ID. This is the result that future status/catalog
+    # requests will consume after LuCI is closed and opened again.
+    _saved_line="$(awk -F"|" -v id="$_id" '$1==id && NF>=5 {print;exit}' "$TEST_RESULTS" 2>/dev/null || true)"
+    [ "$_saved_line" = "$_line" ] || return 1
+    return 0
+}
 # Assigned DNS checks use the real local listener port. Unassigned catalog DNS
 # keeps the remote DoH check until the DNS is assigned to a slot.
 new_job_id() {
@@ -1672,14 +1710,19 @@ job_start_test_one() {
         if [ -n "$_one_status" ] && [ "$_one_status" != "TEST_NO_RESULT" ]; then
             job_write "$_jid" ping "$_one_ms"
             job_write "$_jid" dns_status "$_one_status"
-            _tmp="$TMP_ROOT/results.$$"
-            : > "$_tmp"
-            [ -s "$TEST_RESULTS" ] && awk -F"|" -v id="$_id" '$1!=id {print}' "$TEST_RESULTS" > "$_tmp" 2>/dev/null || true
-            cat "$_result_file" >> "$_tmp" 2>/dev/null || true
-            mv "$_tmp" "$TEST_RESULTS" 2>/dev/null || true
-            save_persistent_test_results >/dev/null 2>&1 || true
+            if ! commit_single_test_result "$_id" "$_result_file"; then
+                job_write "$_jid" status failed
+                job_write "$_jid" result fail
+                job_write "$_jid" finished "$(date +%s)"
+                job_write "$_jid" error "Не удалось сохранить результат одиночной проверки в общий журнал DNS."
+                rm -f "$_result_file" 2>/dev/null || true
+                release_test_lock
+                exit 1
+            fi
+            # Only after the common result was verified do we advance the
+            # per-DNS freshness stamp used by LuCI.
             _stamp="$(date +%s)"
-            set_check_stamp "$_id" "$_stamp"
+            set_check_stamp "$_id" "$_stamp" || true
             rm -f "$_result_file" 2>/dev/null || true
             release_test_lock
             job_write "$_jid" status done
