@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.6.31
+# Version: 1.6.32
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -1457,8 +1457,12 @@ local_slot_test_one() {
         # a non-standard local DNS port. BusyBox nslookup variants differ in
         # their explicit-port behavior and can query the wrong endpoint.
         if command -v dig >/dev/null 2>&1; then
-            dig @127.0.0.1 -p "$_port" "$_domain" A +time=2 +tries=1 +short >"$_out" 2>&1 || _lookup_rc=$?
+            # Use dig's own DNS timing instead of /proc/uptime. /proc/uptime is
+            # only centisecond-resolution on typical OpenWrt kernels, so a
+            # 35–44 ms request could repeatedly appear as exactly 40 ms.
+            dig @127.0.0.1 -p "$_port" "$_domain" A +time=2 +tries=1 >"$_out" 2>&1 || _lookup_rc=$?
             _answer="$(awk '/^[0-9]+(\.[0-9]+){3}$/ && $0 !~ /^127\./ && $0 != "0.0.0.0" {print; exit}' "$_out" 2>/dev/null)"
+            _ms="$(awk -F': *' '/^;; Query time:/{v=$2; sub(/[[:space:]]+milliseconds.*/, "", v); if(v ~ /^[0-9]+$/){print v; exit}}' "$_out" 2>/dev/null)"
         elif command -v nslookup >/dev/null 2>&1; then
             nslookup -port="$_port" "$_domain" 127.0.0.1 >"$_out" 2>&1 || _lookup_rc=$?
             _answer="$(awk '
@@ -1480,11 +1484,15 @@ local_slot_test_one() {
             _lookup_rc=127
         fi
 
-        _end_ms="$(awk '{printf "%.0f", $1*1000}' /proc/uptime 2>/dev/null || printf 0)"
-        case "$_start_ms|$_end_ms" in
-            *[!0-9|]*|\|*) _ms=-1 ;;
-            *) _ms=$((_end_ms-_start_ms)); [ "$_ms" -lt 0 ] && _ms=0 ;;
-        esac
+        # dig provides the authoritative query latency. Keep the elapsed
+        # fallback only for BusyBox nslookup-only systems.
+        if [ -z "$_ms" ]; then
+            _end_ms="$(awk '{printf "%.0f", $1*1000}' /proc/uptime 2>/dev/null || printf 0)"
+            case "$_start_ms|$_end_ms" in
+                *[!0-9|]*|\|*) _ms=-1 ;;
+                *) _ms=$((_end_ms-_start_ms)); [ "$_ms" -lt 0 ] && _ms=0 ;;
+            esac
+        fi
 
         if [ -n "$_answer" ]; then
             _status="OK"
