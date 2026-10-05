@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.35.38"
+VERSION="3.35.39"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -2097,32 +2097,22 @@ validate_dns_message() {
     _file="$1"
     [ -s "$_file" ] || return 1
 
-    # The body must be a real successful DNS response to our query.
-    # Keep this deliberately small: validate only the DNS header, not the
-    # entire RR wire format. This rejects HTTP 200 responses containing
-    # SERVFAIL/NXDOMAIN/empty answers or arbitrary 12-byte garbage.
+    # Keep the health check permissive. The DoH HTTP layer already requires
+    # HTTP 200 and application/dns-message. Here only verify that the body
+    # starts with a plausible DNS response header. Do not require a particular
+    # transaction ID, answer count, RCODE or non-truncated response: valid
+    # resolvers may legitimately return NXDOMAIN, NODATA or TC.
     command -v od >/dev/null 2>&1 || return 1
     set -- $(od -An -tu1 -N12 "$_file" 2>/dev/null) || return 1
     [ "$#" -eq 12 ] || return 1
 
-    _id=$(( $1 * 256 + $2 ))
     _flags1=$3
-    _flags2=$4
-    _qd=$(( $5 * 256 + $6 ))
-    _an=$(( $7 * 256 + $8 ))
 
-    # Query ID is 0x1234, QR=1, opcode=QUERY, TC=0, RCODE=NOERROR,
-    # one question and at least one answer.
-    [ "$_id" -eq 4660 ] || return 1
+    # QR=1 means this is a DNS response. Opcode 0 means a normal DNS query.
     [ $((_flags1 & 128)) -eq 128 ] || return 1
     [ $((_flags1 & 120)) -eq 0 ] || return 1
-    [ $((_flags1 & 2)) -eq 0 ] || return 1
-    [ $((_flags2 & 15)) -eq 0 ] || return 1
-    [ "$_qd" -eq 1 ] || return 1
-    [ "$_an" -ge 1 ] || return 1
     return 0
-}
-test_one_dns() {
+}test_one_dns() {
 id="$1"; url="$(normalize_url "$(dns_url "$id")")"; name="$(dns_name "$id")"; cat="$(dns_cat "$id")"
 host="$(url_host "$url")"
 port="$(url_port "$url")"
