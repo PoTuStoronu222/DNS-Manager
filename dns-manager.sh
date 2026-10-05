@@ -8174,26 +8174,8 @@ done
 # ==========================================
 # ==========================================
 main_menu() {
-MAIN_STATE_STALE=1
 while :; do
-if [ "${MAIN_STATE_STALE:-1}" = 1 ]; then
-    run_discovery
-    luci_companion_check_update >/dev/null 2>&1 || true
-    MAIN_STATE_STALE=0
-fi
 menu_header "DNS Manager $VERSION"
-menu_section "СОСТОЯНИЕ РОУТЕРА"
-printf_state_row "IPv4" "$(state_word "$IPV4_ROUTE")"
-printf_state_row "IPv6" "$(state_word "$IPV6_ROUTE")"
-printf_state_row "dnsmasq" "$(state_word "$DNSMASQ_RUN")"
-printf_state_row "Защищённый DNS" "$(state_word "$HDP_RUNNING")"
-printf_state_row "DNS-серверов найдено" "${C_WHITE}${DOH_TOTAL}${C_NC}"
-printf_state_row "Firewall" "${C_CYAN}${SYS_FW:-не определён}${C_NC}"
-[ -n "${FIREWALL_WAN_NETWORK:-}" ] && printf_state_row "WAN-сеть" "${C_CYAN}${FIREWALL_WAN_NETWORK}${C_NC}"
-printf_state_row "Каталог DNS" "${C_CYAN}$(dns_catalog_version) • $(count_dns) серверов${C_NC}"
-printf_state_row "Автопроверка и замена DNS" "$(module_state_word watchdog "$WATCHDOG_ENABLED")"
-[ -s "$BASELINE_MANIFEST" ] && printf_state_row "Исходная копия" "${C_GREEN}есть${C_NC}" || printf_state_row "Исходная копия" "${C_YELLOW}нет${C_NC}"
-printf_state_row "Принудительный DNS для устройств" "$(force_state_word)"
 menu_section "НАСТРОЙКА DNS"
 menu_item "[1]" "Настроить DNS"
 menu_section "СЕРВИСЫ"
@@ -8222,13 +8204,9 @@ menu_prompt
 safe_read c
 [ -z "$c" ] && { clear_screen; printf "${C_GREEN}DNS Manager завершён.${C_NC}\n"; exit 0; }
 case "$c" in
-1) MAIN_STATE_STALE=1; prepare_dns_operation || { pause; continue; }; menu_dns;;
 2) test_dns_catalog; show_tests;;
 3) show_map;;
-4) MAIN_STATE_STALE=1; prepare_dns_operation || { pause; continue; }; menu_ntp;;
-5) MAIN_STATE_STALE=1; prepare_dns_operation || { pause; continue; }; menu_extras;;
 6) uninstall_manager;;
-7) MAIN_STATE_STALE=1;
    _luci_state="$(check_module_state luci)"
    if [ "$_luci_state" = 1 ] && [ "${LUCI_UPDATE_AVAILABLE:-0}" = 1 ]; then
        luci_companion_update; _rc=$?
@@ -8243,7 +8221,6 @@ case "$c" in
    else
        setting_process luci "Нативный интерфейс DNS Manager" "Нативный интерфейс DNS Manager в LuCI." "$_luci_state"
    fi
-   MAIN_STATE_STALE=1;;
 *) warn_msg "Неизвестный пункт."; pause;;
 esac
 done
