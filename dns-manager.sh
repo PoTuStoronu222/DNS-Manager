@@ -4714,7 +4714,7 @@ restore_dns_core() {
     else
         err_msg "Стандартную настройку DNS удалось восстановить не полностью."
     fi
-    pause
+    [ "${SILENT_APPLY:-0}" = 1 ] || pause
     release_mutation_lock
     return "$_rc"
 }
