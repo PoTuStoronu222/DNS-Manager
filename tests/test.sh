@@ -307,7 +307,6 @@ grep -q "callJob('profile')" "$tmp/overview.js" || fail "LuCI does not inspect r
 grep -q 'state.profileResumeStarted' "$tmp/overview.js" || fail "LuCI profile resume guard missing"
 grep -q 'resumeRunningProfile(root)' "$tmp/overview.js" || fail "LuCI profile resume is not started on render"
 ok "profile jobs survive LuCI disconnects and reconnect on page load"
-printf '%s\n' "All DNS Manager regression checks passed."
  "$tmp/menu_slots.sh"; then
     fail "DNS menu restore still selects/applies a DNS profile"
 fi
@@ -523,4 +522,4 @@ grep -q "callJob('profile')" "$tmp/overview.js" || fail "LuCI does not inspect r
 grep -q 'state.profileResumeStarted' "$tmp/overview.js" || fail "LuCI profile resume guard missing"
 grep -q 'resumeRunningProfile(root)' "$tmp/overview.js" || fail "LuCI profile resume is not started on render"
 ok "profile jobs survive LuCI disconnects and reconnect on page load"
-printf '%s\n' "All DNS Manager regression checks passed."
+printf '%s\n' "
