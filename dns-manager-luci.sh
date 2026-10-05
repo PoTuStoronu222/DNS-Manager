@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.6.19
+# Version: 1.6.20
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -23,7 +23,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.6.19"
+VERSION="1.6.20"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -82,6 +82,11 @@ install_files() {
   "admin/services/dns-manager/network": {
     "title": "Сеть",
     "order": 30,
+    "action": { "type": "view", "path": "dns_manager/overview" }
+  },
+  "admin/services/dns-manager/time": {
+    "title": "Серверы точного времени",
+    "order": 40,
     "action": { "type": "view", "path": "dns_manager/overview" }
   },
   "admin/services/dns-manager/catalog": {
@@ -1238,6 +1243,10 @@ status_json() {
     _hdp_avail="$(sed -n 's/^hdp_available=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"; [ -n "$_hdp_avail" ] || _hdp_avail=0
     _hdp_checked="$(sed -n 's/^hdp_checked=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"; [ -n "$_hdp_checked" ] || _hdp_checked=0
     _components_checked_at="$(sed -n 's/^components_checked_at=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"
+    _ntp_enabled="$(uci -q get system.ntp.enabled 2>/dev/null || true)"; [ -n "$_ntp_enabled" ] || _ntp_enabled=0
+    _ntp_use_dhcp="$(uci -q get system.ntp.use_dhcp 2>/dev/null || true)"; [ -n "$_ntp_use_dhcp" ] || _ntp_use_dhcp=0
+    _ntp_preset="$(cfg_get NTP_PRESET)"
+    _ntp_servers="$(uci -q get system.ntp.server 2>/dev/null || true)"
     _test_age_v="$(cfg_get TEST_RESULTS_MAX_AGE)"
     case "$_test_age_v" in ''|*[!0-9]*) _test_age_h=6;; *) _test_age_h=$((_test_age_v/3600)); [ "$_test_age_h" -ge 1 ] || _test_age_h=1;; esac
 
@@ -1255,6 +1264,9 @@ status_json() {
     _watchdog_loop_running=0; watchdog_loop_running && _watchdog_loop_running=1 || true
     printf ',"watchdog_service":%s,"watchdog_service_enabled":%s,"watchdog_loop":%s,"watchdog_fail_threshold":%s' "$_watchdog_service_running" "$_watchdog_service_enabled" "$_watchdog_loop_running" "$_watchdog_threshold"
      printf ',"dnsmasq_perf_state":%s' "$_dnsmasq_perf_state"
+    printf ',"ntp_enabled":%s,"ntp_use_dhcp":%s' "$_ntp_enabled" "$_ntp_use_dhcp"
+    printf ',"ntp_preset":'; json_quote "$_ntp_preset"
+    printf ',"ntp_servers":'; json_quote "$_ntp_servers"
     printf ',"test_age_common":%s' "$_test_age_h"
     printf ',"force":'; json_quote "$_force"; printf ',"force_external":'; json_quote "$_force_external"; printf ',"force_owner":'; json_quote "$_force_owner"; printf ',"force_manager":%s,"force_both":%s' "$_force_manager" "$_force_both"
     printf ',"force_source":'; json_quote "$_force_source"; printf ',"force_targets":'; json_quote "$_force_targets"
@@ -1766,6 +1778,22 @@ run_action() {
             DNS_PROFILE=custom DNS_SELECTION_MODE=manual DNS_SELECTION_CATEGORY="$_cat"; eval "SLOT_${RPC_SLOT}=\"$RPC_ID\""; eval "SLOT_${RPC_SLOT}_CAT=\"$_cat\""; [ "$RPC_SLOT" = RU ] && DNS_SELECTION_CATEGORY=regional || true
             sync_regional_dns_state >/dev/null 2>&1 || true; SILENT_APPLY=1 CORE_ONLY=1 SKIP_POST_APPLY_VERIFY=1 DNS_MANAGER_NO_UPDATE=1 apply_settings >/dev/null 2>&1 && json_ok || json_error "DNS не удалось применить"
             ;;
+        set_ntp)
+            _preset="$(jget preset)"
+            case "$_preset" in
+                vniiftri_moscow|nist_ip|cf_ip|google_ip) ;;
+                *) json_error "Неверный набор серверов точного времени"; return;;
+            esac
+            load_manager || { json_error "DNS Manager недоступен"; return; }
+            NTP_PRESET="$_preset"
+            if apply_ntp_ip_fallback >/dev/null 2>&1; then
+                NTP_PRESET_USER_SET=1
+                save_config >/dev/null 2>&1 || { json_error "Набор серверов времени применён, но выбор не удалось сохранить"; return; }
+                json_ok
+            else
+                json_error "Не удалось применить выбранный набор серверов времени"
+            fi
+            ;;
         set_test_age)
             _category="$(jget category)"; _hours="$(jget hours)"
             case "$_category" in all|bypass|clean|security|privacy|adblock|family|regional) ;; *) json_error "Неверная категория DNS"; return;; esac
@@ -1856,7 +1884,7 @@ test_json() { case "${RPC_METHOD:-}" in test_all) job_start_test_all;; test_curr
 
 case "${1:-}" in
     list)
-        printf '{"status":{},"runtime":{},"catalog":{"category":"String","offset":0,"limit":0,"only_ok":0},"update_check":{},"update":{},"update_manager":{},"update_hdp":{},"update_catalog":{},"update_all":{},"set_profile":{"profile":"String"},"set_slot":{"slot":"String","id":"String"},"set_setting":{"name":"String","enabled":0},"set_watchdog_setting":{"name":"String","value":0},"set_test_age":{"category":"String","hours":0},"test_all":{},"test_current":{},"test_one":{"id":"String"},"job":{"id":"String"},"log":{"lines":0}}\n'
+        printf '{"status":{},"runtime":{},"catalog":{"category":"String","offset":0,"limit":0,"only_ok":0},"update_check":{},"update":{},"update_manager":{},"update_hdp":{},"update_catalog":{},"update_all":{},"set_profile":{"profile":"String"},"set_slot":{"slot":"String","id":"String"},"set_setting":{"name":"String","enabled":0},"set_watchdog_setting":{"name":"String","value":0},"set_ntp":{"preset":"String"},"set_test_age":{"category":"String","hours":0},"test_all":{},"test_current":{},"test_one":{"id":"String"},"job":{"id":"String"},"log":{"lines":0}}\n'
         ;;
     call)
         case "${2:-}" in
@@ -1864,7 +1892,7 @@ case "${1:-}" in
             runtime) runtime_json;;
             catalog) INPUT="$(cat 2>/dev/null || true)"; catalog_json;;
             update_check) INPUT="$(cat 2>/dev/null || true)"; update_check_json;;            update_catalog) update_catalog_json;;            update_all) update_all_json;;            update) update_json;;            update_manager) update_manager_json;;            update_hdp) update_hdp_json;;
-            set_profile|set_slot|set_setting|set_watchdog_setting) INPUT="$(cat 2>/dev/null || true)"; RPC_METHOD="$2"; run_action;;
+            set_profile|set_slot|set_setting|set_watchdog_setting|set_ntp) INPUT="$(cat 2>/dev/null || true)"; RPC_METHOD="$2"; run_action;;
             test_all|test_current|test_one) INPUT="$(cat 2>/dev/null || true)"; RPC_METHOD="$2"; test_json;;
             job) INPUT="$(cat 2>/dev/null || true)"; job_json "$(jget id)";;
             log) INPUT="$(cat 2>/dev/null || true)"; log_json "$(jget lines)";;
@@ -1910,7 +1938,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.6.19
+// DNS Manager LuCI version: 1.6.20
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -1940,6 +1968,7 @@ var callProfile = dmRpc({ object:'dns_manager', method:'set_profile', params:['p
 var callSlot = dmRpc({ object:'dns_manager', method:'set_slot', params:['slot','id'], expect:{} });
 var callSetting = dmRpc({ object:'dns_manager', method:'set_setting', params:['name','enabled'], expect:{} });
 var callWatchdogSetting = dmRpc({ object:'dns_manager', method:'set_watchdog_setting', params:['name','value'], expect:{} });
+var callNtp = dmRpc({ object:'dns_manager', method:'set_ntp', params:['preset'], expect:{} });
 var callTestAge = dmRpc({ object:'dns_manager', method:'set_test_age', params:['category','hours'], expect:{} });
 var callTestAll = dmRpc({ object:'dns_manager', method:'test_all', expect:{} });
 var callTestCurrent = dmRpc({ object:'dns_manager', method:'test_current', expect:{} });
@@ -2207,11 +2236,12 @@ function setActiveTab(root,name){
     dashboard:['overview','test-inline'],
     doh:['profiles','slots'],
     network:['network'],
+    time:['time'],
     catalog:['catalog'],
     log:['log']
   };
   state.activeTab=groups[name]?name:'dashboard';
-  ['overview','doh','slots','profiles','network','job','catalog','log','test-inline'].forEach(function(id){
+  ['overview','doh','slots','profiles','network','time','job','catalog','log','test-inline'].forEach(function(id){
     var panel=root.querySelector('#dm-'+id);
     if(panel) panel.style.display='none';
   });
@@ -2230,7 +2260,7 @@ function currentRoute(){
 }
 function renderPageNav(root){
   var e=root.querySelector('#dm-page-nav');if(!e)return;e.innerHTML='';
-  var tabs=[['dashboard','Дашборд'],['doh','DNS over HTTPS'],['network','Сеть'],['catalog','Каталог DNS'],['log','Журнал']];
+  var tabs=[['dashboard','Дашборд'],['doh','DNS over HTTPS'],['network','Сеть'],['time','Серверы точного времени'],['catalog','Каталог DNS'],['log','Журнал']];
   var route=currentRoute();
   var nav=E('nav',{'class':'dm-page-nav'});
   var bar=E('div',{'class':'dm-page-tabs'});
@@ -2917,6 +2947,85 @@ function renderNetwork(root,st){
   ];
   e.appendChild(card('Сетевой тюнинг',body));
 }
+function ntpPresetName(p){
+  var map={
+    vniiftri_moscow:'ВНИИФТРИ',
+    nist_ip:'NIST',
+    cf_ip:'Cloudflare',
+    google_ip:'Google'
+  };
+  return map[String(p||'')]||'Не выбран';
+}
+function ntpPresetServers(p){
+  var map={
+    vniiftri_moscow:'89.109.251.21, 89.109.251.22, 89.109.251.23, 89.109.251.24, 89.109.251.25',
+    nist_ip:'129.6.15.28, 129.6.15.29, 129.6.15.30, 129.6.15.27, 129.6.15.26',
+    cf_ip:'162.159.200.1, 162.159.200.123',
+    google_ip:'216.239.35.0, 216.239.35.4, 216.239.35.8, 216.239.35.12'
+  };
+  return map[String(p||'')]||'';
+}
+function renderTime(root,st){
+  var e=root.querySelector('#dm-time');if(!e)return;e.innerHTML='';
+  var enabled=String(st.ntp_enabled||'0')==='1';
+  var preset=String(st.ntp_preset||'');
+  var servers=String(st.ntp_servers||'').trim();
+  var selected=ntpPresetName(preset);
+  var body=[];
+  body.push(E('div',{'class':'dm-hint'},'Настройка серверов точного времени роутера через стандартный system.ntp/sysntpd.'));
+  body.push(E('div',{'class':'dm-grid2'},[
+    row('Служба',badge(enabled?'dm-ok':'dm-off',enabled?'включена':'выключена')),
+    row('Выбранный набор',selected)
+  ]));
+  body.push(E('div',{'class':'dm-section-title'},'Текущие серверы времени'));
+  if(servers){
+    body.push(E('div',{'class':'dm-log','style':'max-height:none;overflow:visible'},servers.split(/[\\s]+/).filter(function(x){return x;}).map(function(x){return x;}).join('\\n')));
+  }else{
+    body.push(E('div',{'class':'dm-hint'},'Серверы времени не настроены.'));
+  }
+  var presets=[
+    ['vniiftri_moscow','ВНИИФТРИ','Российские серверы времени по IP'],
+    ['nist_ip','NIST','Серверы NIST по IP'],
+    ['cf_ip','Cloudflare','Серверы Cloudflare по IP'],
+    ['google_ip','Google','Серверы Google по IP']
+  ];
+  body.push(E('div',{'class':'dm-section-title'},'Наборы серверов'));
+  presets.forEach(function(x){
+    var active=preset===x[0];
+    body.push(E('div',{'class':'dm-setting '+(active?'dm-setting-saving':'')},[
+      E('div',{'class':'dm-setting-line'},[
+        E('div',{},[
+          E('div',{'class':'dm-setting-title'},x[1]),
+          E('div',{'class':'dm-setting-desc'},x[2]+' · '+ntpPresetServers(x[0]))
+        ]),
+        btn(state.busy?'Сохраняю…':(active?'Выбрано':'Применить'),active?'cbi-button-neutral':'cbi-button-add',function(){
+          if(state.busy)return;
+          if(active)return;
+          confirmAction('Подтвердить изменение серверов времени',[['Сейчас',selected],['Новый набор',x[1]]],function(){
+            state.busy=true;state.busySetting='ntp';state.pageNotice.time='';
+            renderTime(root,window.dmState||{});
+            callNtp(x[0]).then(function(r){
+              state.busy=false;state.busySetting='';
+              if(r&&r.ok){
+                state.pageNotice.time='Набор серверов времени «'+x[1]+'» применён.';
+                return refresh(root,true);
+              }
+              state.pageNotice.time=(r&&r.error)||'Не удалось применить набор серверов времени.';
+              renderTime(root,window.dmState||{});
+            }).catch(function(err){
+              state.busy=false;state.busySetting='';
+              state.pageNotice.time=withRpcError('Не удалось применить серверы точного времени.',err);
+              renderTime(root,window.dmState||{});
+            });
+          });
+        },{disabled:!!state.busy})
+      ])
+    ]));
+  });
+  if(state.pageNotice.time)body.unshift(E('div',{'class':'dm-inline-msg '+(state.busy?'info':'ok')},state.pageNotice.time));
+  e.appendChild(card('Серверы точного времени',body));
+}
+
 function renderCatalog(root){
   var e=root.querySelector('#dm-catalog');if(!e)return;e.innerHTML='';
   var ageCard=renderTestAgeCommon(root,window.dmState||{});
@@ -3012,6 +3121,7 @@ function render(root,st){
   renderSlots(root,st);
   renderProfiles(root,st);
   renderNetwork(root,st);
+  renderTime(root,st);
   renderCatalog(root);
   renderLog(root);
   renderJobIdle(root,st);
@@ -3590,7 +3700,7 @@ return view.extend({
   },
   render:function(st){
     var root=E('div',{'class':'dm-wrap'});
-    ['dm-header','dm-overview','dm-doh','dm-profiles','dm-slots','dm-network','dm-job','dm-catalog','dm-log'].forEach(function(id){root.appendChild(E('section',{'id':id}));});
+    ['dm-header','dm-overview','dm-doh','dm-profiles','dm-slots','dm-network','dm-time','dm-job','dm-catalog','dm-log'].forEach(function(id){root.appendChild(E('section',{'id':id}));});
     injectStyle(root);window.dmState=st||{};state.activeTab=currentRoute();
     render(root,st||{});
     removeLegacyCbiActions();if(window.setTimeout)window.setTimeout(removeLegacyCbiActions,0);
