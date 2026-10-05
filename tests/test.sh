@@ -268,4 +268,20 @@ if grep -Fq 'grep -Eq "(^|[[:space:]])Name:[[:space:]]|^Address[[:space:]]|^Serv
 fi
 ok "LuCI local slot checks require a real DNS A answer"
 
+# Ready-made profiles must not fall through into the generic Hybrid/Max
+# Bypass selector after auto_fill_slots().
+awk '
+    /^apply_profile_now\(\) \{/ { capture=1 }
+    capture { print }
+    capture && /^\}/ { exit }
+' dns-manager.sh > "$tmp/apply_profile_now.sh"
+[ -s "$tmp/apply_profile_now.sh" ] || fail "apply_profile_now extraction"
+grep -q 'if auto_fill_slots "\$goal"; then' "$tmp/apply_profile_now.sh" || fail "profile auto-selection path missing"
+grep -q 'HYBRID_STAGE_SKIP=1' "$tmp/apply_profile_now.sh" || fail "profile application does not skip generic Hybrid reselection"
+grep -q 'DNS_SELECTION_MODE="profile"' "$tmp/apply_profile_now.sh" || fail "profile mode assignment missing"
+grep -q 'DNS_SELECTION_CATEGORY="\$goal"' "$tmp/apply_profile_now.sh" || fail "profile category assignment missing"
+if grep -q 'HYBRID_STAGE_SKIP=0 apply_profile_now' dns-manager-luci.sh; then
+    fail "LuCI still overrides profile Hybrid-stage behavior"
+fi
+ok "ready-made DNS profiles preserve their selected category"
 printf '%s\n' "All DNS Manager regression checks passed."
