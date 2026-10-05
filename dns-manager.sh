@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.35.55"
+VERSION="3.35.56"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -2252,6 +2252,11 @@ test_dns_catalog() (
     # Full catalog results live only in /var/run (tmpfs). This subshell also
     # keeps the RAM-only logging mode local to the catalog test operation.
     DNS_TEST_RAM_ONLY=1
+    _test_scope="${1:-all}"
+    case "$_test_scope" in
+        all|bypass|clean|security|privacy|adblock|family) ;;
+        *) _test_scope=all ;;
+    esac
     [ "$HAS_CURL" = yes ] || { warn_msg "Полную проверку DNS нельзя выполнить: curl не установлен."; return 1; }
     acquire_test_lock || { warn_msg "Полная проверка DNS уже выполняется другим процессом. Текущая проверка отменена."; return 1; }
     rm -f "$TMP_DIR/t."* "$TMP_DIR/q."* "$TMP_DIR/dns_query.bin" "$TMP_DIR/body."* "$TMP_DIR/h."* 2>/dev/null
@@ -2263,9 +2268,18 @@ test_dns_catalog() (
         warn_msg "Не удалось создать общий DNS-тестовый пакет."
         return 1
     }
-    total="$(count_dns)"
-    [ "$total" -gt 0 ] || { release_test_lock; warn_msg "Каталог DNS пуст."; return 1; }
-    printf "${C_WHITE}Проверяю %s DNS-серверов. Это может занять до 5 минут...${C_NC}\n" "$total"
+    _test_source="$TMP_DIR/test-source-$"
+    if [ "$_test_scope" = all ]; then
+        grep -v '^#' "$DNS_CATALOG" 2>/dev/null | grep '|' > "$_test_source" || : > "$_test_source"
+        _test_scope_label="весь каталог"
+    else
+        awk -F'|' -v c="$_test_scope" 'NF>=5 && $1 !~ /^#/ && ($2==c || $2=="regional") {print}' "$DNS_CATALOG" > "$_test_source" 2>/dev/null || : > "$_test_source"
+        _test_scope_label="категорию «$(category_ru "$_test_scope")» и региональные DNS"
+    fi
+    total="$(wc -l < "$_test_source" 2>/dev/null | tr -d ' ')"
+    case "$total" in ''|*[!0-9]*) total=0;; esac
+    [ "$total" -gt 0 ] || { rm -f "$_test_source"; release_test_lock; warn_msg "В выбранной области проверки нет DNS-серверов."; return 1; }
+    printf "${C_WHITE}Проверяю %s DNS-серверов: %s. Это может занять до 5 минут...${C_NC}\n" "$total" "$_test_scope_label"
     test_progress() {
         _done=0
         _ok=0
@@ -2305,7 +2319,7 @@ test_dns_catalog() (
                 test_progress
             fi
         fi
-    done < "$DNS_CATALOG"
+    done < "$_test_source"
     wait
 
     _result_tmp="$TMP_DIR/test-results-$$"
@@ -2343,6 +2357,7 @@ test_dns_catalog() (
         printf 'catalog_version=%s\n' "$_catalog_version"
         printf 'catalog_count=%s\n' "$total"
         printf 'catalog_hash=%s\n' "$_catalog_hash"
+        printf 'test_scope=%s\n' "$_test_scope"
     } > "$_meta_tmp" 2>/dev/null || {
         rm -f "$_result_tmp" "$_meta_tmp" 2>/dev/null
         release_test_lock
@@ -2379,7 +2394,7 @@ test_dns_catalog() (
         return 1
     fi
     log_tx "TEST" "dns-catalog" "RUN" "OK" "ok=$okn,total=$total"
-    rm -f "$TMP_DIR"/t.* "$TMP_DIR"/q.* "$TMP_DIR"/body.* "$TMP_DIR"/h.* 2>/dev/null || true
+    rm -f "$TMP_DIR"/t.* "$TMP_DIR"/q.* "$TMP_DIR"/body.* "$TMP_DIR"/h.* "$_test_source" 2>/dev/null || true
 release_test_lock
 return 0
 )
@@ -5383,7 +5398,7 @@ profile_apply_begin() {
     PROFILE_OLD_FORCE_DOH="${FORCE_DOH:-0}"
     PROFILE_OLD_DNSMASQ_PERF="${DNSMASQ_PERF:-0}"
     PROFILE_OLD_WATCHDOG_ENABLED="${WATCHDOG_ENABLED:-0}"
-    test_dns_catalog || { PROFILE_FULL_TEST=0; PROFILE_APPLY=0; return 1; }
+    test_dns_catalog "$1" || { PROFILE_FULL_TEST=0; PROFILE_APPLY=0; return 1; }
 }
 profile_apply_end() {
     NTP_IP_FALLBACK="$PROFILE_OLD_NTP_IP_FALLBACK"
@@ -5398,14 +5413,14 @@ apply_profile_now() {
 goal="$1"
 case "$goal" in
 bypass)
-    profile_apply_begin || { _profile_rc=$?; profile_apply_end; return "$_profile_rc"; }
+    profile_apply_begin "$goal" || { _profile_rc=$?; profile_apply_end; return "$_profile_rc"; }
     quick_max_bypass
     _profile_rc=$?
     profile_apply_end
     return "$_profile_rc"
     ;;
 clean|security|privacy|adblock|family|all)
-    profile_apply_begin || { _profile_rc=$?; profile_apply_end; return "$_profile_rc"; }
+    profile_apply_begin "$goal" || { _profile_rc=$?; profile_apply_end; return "$_profile_rc"; }
     # Profile selection changes only the DNS selection. Preserve the operator's
     # current regional DNS where requested, while the Hybrid DNS core remains on.
     _profile_old_ru="${SLOT_RU:-}"
@@ -5498,7 +5513,7 @@ if ! case "$_cat" in bypass|clean|security|privacy|adblock|family|all) true;; *)
     pause
     return 1
 fi
-ensure_test_results_fresh || { warn_msg "Не удалось получить свежие результаты теста."; pause; return 1; }
+ensure_test_results_fresh "$_cat" || { warn_msg "Не удалось получить свежие результаты теста."; pause; return 1; }
 [ -s "$TEST_RESULTS" ] || { warn_msg "Не удалось получить результаты теста."; pause; return 1; }
 _pool="$TMP_DIR/auto-slots"
 _src="$TMP_DIR/auto-candidates"
@@ -6763,6 +6778,20 @@ watchdog_test_results_fresh() {
     _cv="$(sed -n 's/^catalog_version=//p' "$TEST_RESULTS_META" 2>/dev/null | head -n1)"
     _cc="$(sed -n 's/^catalog_count=//p' "$TEST_RESULTS_META" 2>/dev/null | head -n1)"
     _ch="$(sed -n 's/^catalog_hash=//p' "$TEST_RESULTS_META" 2>/dev/null | head -n1)"
+    _scope="$(sed -n 's/^test_scope=//p' "$TEST_RESULTS_META" 2>/dev/null | head -n1)"
+    [ -n "$_scope" ] || _scope=all
+    _expected_scope="${1:-all}"
+    case "$_expected_scope" in
+        all|bypass|clean|security|privacy|adblock|family) ;;
+        *) _expected_scope=all ;;
+    esac
+    [ "$_scope" = "$_expected_scope" ] || return 1
+    _expected_count=0
+    if [ "$_scope" = all ]; then
+        _expected_count="$(count_dns)"
+    else
+        _expected_count="$(awk -F'|' -v c="$_scope" 'NF>=5 && $1 !~ /^#/ && ($2==c || $2=="regional") {n++} END{print n+0}' "$DNS_CATALOG" 2>/dev/null)"
+    fi
     _now="$(date +%s 2>/dev/null)"
     case "$_ts" in ''|*[!0-9]*) return 1;; esac
     case "$_now" in ''|*[!0-9]*) return 1;; esac
@@ -6770,7 +6799,7 @@ watchdog_test_results_fresh() {
     [ -n "$_cv" ] || return 1
     [ -n "$_ch" ] || return 1
     [ "$_cv" = "$(dns_catalog_version)" ] || return 1
-    [ "$_cc" = "$(count_dns)" ] || return 1
+    [ "$_cc" = "$_expected_count" ] || return 1
     [ "$(wc -l < "$TEST_RESULTS" 2>/dev/null | tr -d " ")" = "$_cc" ] || return 1
     [ "$_ch" = "$(file_hash "$DNS_CATALOG")" ] || return 1
     [ "$(( _now - _ts ))" -ge 0 ] 2>/dev/null || return 1
@@ -6794,7 +6823,7 @@ ensure_test_results_fresh() {
         return 1
     fi
     info_msg "Результаты проверки DNS отсутствуют или устарели. Запускаю свежую проверку каталога."
-    test_dns_catalog || return 1
+    test_dns_catalog "$_fresh_cat" || return 1
     watchdog_test_results_fresh
 }
 watchdog_scope_category() {
