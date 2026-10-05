@@ -23,7 +23,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.6.47"
+VERSION="1.6.48"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -144,7 +144,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.6.47"
+SELF_VERSION="1.6.48"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -1649,22 +1649,25 @@ job_start_test_one() {
         if ! acquire_test_lock; then
             job_write "$_jid" status failed; job_write "$_jid" result fail; job_write "$_jid" finished "$(date +%s)"; exit 1
         fi
-        # Run the actual DNS Manager test command. This initializes the
-        # manager exactly like its normal CLI path and therefore shares the
-        # same test implementation as the full catalog check.
+        # Use exactly the same test_one_dns() call as the full and selected
+        # DNS tests. This keeps endpoint resolution, curl options, payload and
+        # result semantics identical; only the requested DNS ID is tested.
         printf "Проверяю реальный DoH endpoint: %s.\n" "$_id"
-        _result_file="$TMP_ROOT/direct-test-result.$"
-        rm -f "$_result_file" 2>/dev/null || true
-        # The manager is a separate process with its own /tmp/dnsmgr.* tree.
-        # Its single-test result is therefore read from stdout, not from the
-        # manager's private t.<id> file.
-        DNS_MANAGER_TEST_LOCK_HELD=1 "$MANAGER" --test-one "$_id" >"$_result_file" 2>/dev/null || true
-        if grep -Eq "^[A-Za-z0-9_-]+\|[^|]*\|[^|]*\|-?[0-9]+\|[A-Za-z0-9_:-]+$" "$_result_file" 2>/dev/null; then
+        rm -f "$TMP_DIR/t.$_id" 2>/dev/null || true
+        test_one_dns "$_id" || true
+        _result_file="$TMP_DIR/t.$_id"
+        if [ -s "$_result_file" ]; then
             _one_ms="$(awk -F"|" -v id="$_id" '$1==id && NF>=5 {print $4;exit}' "$_result_file" 2>/dev/null || true)"
             _one_status="$(awk -F"|" -v id="$_id" '$1==id && NF>=5 {print $5;exit}' "$_result_file" 2>/dev/null || true)"
         else
             _one_ms=""
             _one_status="TEST_NO_RESULT"
+        fi
+        # A successful DNS check must also have a numeric request time.
+        # This prevents LuCI from displaying a stale/partial OK result with
+        # a missing ping value.
+        if [ "$_one_status" = "OK" ]; then
+            case "$_one_ms" in ''|*[!0-9]*|-1) _one_status="FAIL"; _one_ms=-1;; esac
         fi
         if [ -n "$_one_status" ] && [ "$_one_status" != "TEST_NO_RESULT" ]; then
             job_write "$_jid" ping "$_one_ms"
@@ -1942,7 +1945,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.6.47
+// DNS Manager LuCI version: 1.6.48
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
