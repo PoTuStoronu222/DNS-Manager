@@ -405,7 +405,12 @@ awk '/^select_slot\(\) \{/,/^# ==========================================/' dns-
 if grep -q 'DNS_PROFILE="custom"' "$tmp/cli_select_slot.sh"; then
     fail "CLI slot change still forces custom profile"
 fi
-grep -A12 -F 'watchdog_pick_replacement() {' dns-manager.sh | grep -q 'watchdog_scope_category' || fail "watchdog replacement does not use intended profile category"
+awk '
+    /^watchdog_pick_replacement\(\) \{/ { capture=1 }
+    capture { print }
+    capture && /^watchdog_apply_slot_candidate\(\) \{/ { exit }
+' dns-manager.sh | sed '$d' > "$tmp/watchdog_pick_function.sh"
+grep -q 'watchdog_scope_category' "$tmp/watchdog_pick_function.sh" || fail "watchdog replacement does not use intended profile category"
 grep -q '_passcats="\$_desired_for_pick clean"' "$tmp/watchdog_pick_function.sh" || fail "watchdog clean fallback is missing for non-clean profiles"
 grep -A16 -F 'watchdog_slot_target_run() {' dns-manager.sh | grep -q 'watchdog_scope_category' || fail "watchdog slot repair does not use intended profile category"
 grep -q 'смешанные или пользовательские категории DNS' dns-manager.sh || fail "watchdog custom/mixed skip message missing"
