@@ -1227,15 +1227,9 @@ status_json() {
                 _selection_category="$_selection_category_derived"
                 ;;
             custom|none)
-                if [ "$_mode_cfg" = profile ] && [ "$_selection_category_cfg" = all ]; then
-                    _profile=hybrid
-                    _mode=profile
-                    _selection_category=all
-                else
-                    _profile=custom
-                    _mode=manual
-                    _selection_category=none
-                fi
+                _profile=custom
+                _mode=manual
+                _selection_category=none
                 ;;
             *)
                 _profile=custom
