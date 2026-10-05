@@ -252,7 +252,8 @@ catalog_field() {
 }
 
 catalog_version() { sed -n 's/^# DNSCATVER=//p' "$CATALOG_FILE" 2>/dev/null | head -n1; }
-catalog_revision() { sed -n 's/^# DNSCATREV=//p' "$CATALOG_FILE" 2>/dev/null | head -n1; }selected_general_category_status() {
+catalog_revision() { sed -n 's/^# DNSCATREV=//p' "$CATALOG_FILE" 2>/dev/null | head -n1; }
+selected_general_category_status() {
     _sgs_common=""
     _sgs_count=0
     for _sgs_slot in 1 2 3 4 5 6; do
@@ -1887,6 +1888,8 @@ run_action() {
             done
             case "$RPC_SLOT" in RU) [ "$_cat" = regional ] || { json_error "Этот DNS нельзя поставить в региональный слот"; return; } ;; *) [ "$_cat" != regional ] || { json_error "Региональный DNS нельзя поставить в общий слот"; return; } ;; esac
             eval "SLOT_${RPC_SLOT}=\"$RPC_ID\""
+            slot_cat_set "$RPC_SLOT" "$_cat" || { json_error "Не удалось сохранить категорию DNS"; return; }
+            [ "$RPC_SLOT" = RU ] && SLOT_RU_CAT=regional || true
             sync_profile_from_selected_categories >/dev/null
             _old_hybrid_stage_skip="${HYBRID_STAGE_SKIP:-0}"
             [ "$DNS_PROFILE" = hybrid ] && HYBRID_STAGE_SKIP=1
