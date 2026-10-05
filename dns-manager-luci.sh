@@ -1462,7 +1462,7 @@ local_slot_test_one() {
             # 35–44 ms request could repeatedly appear as exactly 40 ms.
             dig @127.0.0.1 -p "$_port" "$_domain" A +time=2 +tries=1 >"$_out" 2>&1 || _lookup_rc=$?
             _answer="$(awk '/^[0-9]+(\.[0-9]+){3}$/ && $0 !~ /^127\./ && $0 != "0.0.0.0" {print; exit}' "$_out" 2>/dev/null)"
-            _ms="$(awk -F': *' '/^;; Query time:/{v=$2; sub(/[[:space:]]+milliseconds.*/, "", v); if(v ~ /^[0-9]+$/){print v; exit}}' "$_out" 2>/dev/null)"
+            _ms="$(awk -F': *' '/^;; Query time:/{v=$2; sub(/[[:space:]].*$/, "", v); if(v ~ /^[0-9]+$/){print v; exit}}' "$_out" 2>/dev/null)"
         elif command -v nslookup >/dev/null 2>&1; then
             nslookup -port="$_port" "$_domain" 127.0.0.1 >"$_out" 2>&1 || _lookup_rc=$?
             _answer="$(awk '
