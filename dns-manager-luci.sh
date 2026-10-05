@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.6.59
+# Version: 1.6.60
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -23,7 +23,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.6.59"
+VERSION="1.6.60"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -144,7 +144,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.6.59"
+SELF_VERSION="1.6.60"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -1788,7 +1788,7 @@ job_start_profile() {
         if load_manager; then
             # Profile-specific selection is owned by apply_profile_now().
             # SSH and LuCI therefore use exactly the same application path.
-            DNS_MANAGER_NO_UPDATE=1 SILENT_APPLY=1 HYBRID_SELECTION_QUIET=1 apply_profile_now "$_profile"
+            DNS_MANAGER_NO_UPDATE=1 SILENT_APPLY=1 HYBRID_SELECTION_QUIET=1 PROFILE_APPLY=1 apply_profile_now "$_profile"
             _rc=$?
         else
             _rc=1
@@ -2261,7 +2261,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.6.59
+// DNS Manager LuCI version: 1.6.60
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -3785,8 +3785,8 @@ function applyProfile(name,root){
   if(state.busy)return;
   var st=window.dmState||{};
   var currentId=activeProfileId(st),current=currentId?profileName(currentId):activeProfileLabel(st),next=profileName(name);
-  if(currentId===name)return;
-  confirmAction('Подтвердить изменение профиля',[['Сейчас',current],['Новый профиль',next]],function(){
+  var repeat=currentId===name;
+  confirmAction(repeat?'Повторно применить профиль':'Подтвердить изменение профиля',[['Сейчас',current],[repeat?'Профиль':'Новый профиль',next]],function(){
     state.busy=true;
     state.profileProgress={p:5,label:'Подготавливаю профиль…',detail:''};
     state.pageNotice.profiles='';
