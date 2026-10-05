@@ -2100,7 +2100,8 @@ validate_dns_message() {
     case "$_n" in ''|*[!0-9]*) return 1;; esac
     [ "$_n" -ge 12 ] || return 1
     return 0
-}test_one_dns() {
+}
+test_one_dns() {
 id="$1"; url="$(normalize_url "$(dns_url "$id")")"; name="$(dns_name "$id")"; cat="$(dns_cat "$id")"
 host="$(url_host "$url")"
 port="$(url_port "$url")"
