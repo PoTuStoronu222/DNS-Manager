@@ -467,4 +467,41 @@ grep -q "callJob('profile')" "$tmp/overview.js" || fail "LuCI does not inspect r
 grep -q 'state.profileResumeStarted' "$tmp/overview.js" || fail "LuCI profile resume guard missing"
 grep -q 'resumeRunningProfile(root)' "$tmp/overview.js" || fail "LuCI profile resume is not started on render"
 ok "profile jobs survive LuCI disconnects and reconnect on page load"
+# Watchdog tuning is persisted and exposed as live LuCI controls.
+for _wd_key in WATCHDOG_INTERVAL WATCHDOG_FAIL_THRESHOLD WATCHDOG_REPAIR_COOLDOWN WATCHDOG_MAX_REPAIRS WATCHDOG_MAX_RESTARTS WATCHDOG_MAX_CANDIDATES WATCHDOG_GUARD_INTERVAL; do
+    grep -q "^\$_wd_key=" dns-manager.sh || fail "watchdog config variable missing: \$_wd_key"
+done
+grep -q 'WATCHDOG_FAIL_THRESHOLD="$WATCHDOG_FAIL_THRESHOLD"' dns-manager.sh || fail "watchdog threshold is not persisted"
+grep -q 'WATCHDOG_REPAIR_COOLDOWN="$WATCHDOG_REPAIR_COOLDOWN"' dns-manager.sh || fail "watchdog repair cooldown is not persisted"
+grep -q 'WATCHDOG_MAX_REPAIRS="$WATCHDOG_MAX_REPAIRS"' dns-manager.sh || fail "watchdog max repairs is not persisted"
+grep -q 'WATCHDOG_MAX_RESTARTS="$WATCHDOG_MAX_RESTARTS"' dns-manager.sh || fail "watchdog max restarts is not persisted"
+grep -q 'WATCHDOG_MAX_CANDIDATES="$WATCHDOG_MAX_CANDIDATES"' dns-manager.sh || fail "watchdog max candidates is not persisted"
+grep -q 'WATCHDOG_GUARD_INTERVAL="$WATCHDOG_GUARD_INTERVAL"' dns-manager.sh || fail "watchdog guard interval is not persisted"
+if awk '/# procd watchdog tuning is persisted/,/^[[:space:]]*: "\${SLOT_1:=}"/' dns-manager.sh | grep -q '^WATCHDOG_FAIL_THRESHOLD=2$'; then
+    fail "watchdog threshold is still hard-forced to 2 after config load"
+fi
+grep -q "threshold) _key=WATCHDOG_FAIL_THRESHOLD; _min=1; _max=5" "$tmp/backend.sh" || fail "LuCI watchdog threshold setter missing"
+grep -q "repair_cooldown) _key=WATCHDOG_REPAIR_COOLDOWN; _min=30; _max=3600" "$tmp/backend.sh" || fail "LuCI watchdog repair cooldown setter missing"
+grep -q "max_repairs) _key=WATCHDOG_MAX_REPAIRS; _min=1; _max=3" "$tmp/backend.sh" || fail "LuCI watchdog max repairs setter missing"
+grep -q "max_restarts) _key=WATCHDOG_MAX_RESTARTS; _min=1; _max=5" "$tmp/backend.sh" || fail "LuCI watchdog max restarts setter missing"
+grep -q "max_candidates) _key=WATCHDOG_MAX_CANDIDATES; _min=1; _max=10" "$tmp/backend.sh" || fail "LuCI watchdog max candidates setter missing"
+grep -q "guard_interval) _key=WATCHDOG_GUARD_INTERVAL; _min=300; _max=3600" "$tmp/backend.sh" || fail "LuCI watchdog guard interval setter missing"
+grep -q '"watchdog_repair_cooldown"' "$tmp/backend.sh" || fail "LuCI watchdog repair cooldown status missing"
+grep -q '"watchdog_max_repairs"' "$tmp/backend.sh" || fail "LuCI watchdog max repairs status missing"
+grep -q '"watchdog_max_restarts"' "$tmp/backend.sh" || fail "LuCI watchdog max restarts status missing"
+grep -q '"watchdog_max_candidates"' "$tmp/backend.sh" || fail "LuCI watchdog max candidates status missing"
+grep -q '"watchdog_guard_interval"' "$tmp/backend.sh" || fail "LuCI watchdog guard interval status missing"
+_wd_action="$(awk '/^        set_watchdog_setting\)/,/^        \*\) json_error/' "$tmp/backend.sh")"
+_wd_stop="$(printf '%s\n' "$_wd_action" | grep -n 'watchdog_service_stop_disable' | head -n1 | cut -d: -f1)"
+_wd_save="$(printf '%s\n' "$_wd_action" | grep -n 'save_config' | head -n1 | cut -d: -f1)"
+case "$_wd_stop:$_wd_save" in
+    '') fail "watchdog setter order check could not locate stop/save" ;;
+esac
+[ "$_wd_stop" -lt "$_wd_save" ] || fail "watchdog setting is saved before the running watchdog is stopped"
+grep -q 'watchdog_service_start_enable' "$tmp/backend.sh" || fail "watchdog setter does not restart procd after apply"
+grep -q 'Параметры watchdog' "$tmp/overview.js" || fail "LuCI watchdog parameter section missing"
+for _wd_label in 'Интервал проверки' 'Порог сбоя' 'Пауза между ремонтами' 'Ремонтов за цикл' 'Кандидатов за выбор' 'Рестартов https-dns-proxy' 'Тяжёлая сверка'; do
+    grep -q "$_wd_label" "$tmp/overview.js" || fail "LuCI watchdog control missing: $_wd_label"
+done
+ok "watchdog tuning is persisted, live-applied and exposed in LuCI"
 printf '%s\n' "All DNS Manager regression checks passed."
