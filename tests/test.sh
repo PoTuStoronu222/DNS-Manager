@@ -452,6 +452,11 @@ fi
 grep -q 'test_dns_catalog "\$1"' dns-manager.sh || fail "profile apply does not pass its category to the DNS test"
 grep -q 'test_scope=' dns-manager.sh || fail "DNS test scope is not persisted"
 grep -q 'ensure_test_results_fresh "\$_cat"' dns-manager.sh || fail "category selector does not request category-scoped freshness"
+grep -q 'test_dns_catalog "$1"' dns-manager.sh || fail "profile apply does not start a category-scoped DNS test"
+grep -q '($2==c || $2=="regional")' dns-manager.sh || fail "category-scoped test does not include the regional DNS set"
+grep -Fq '_test_scope="${1:-all}"' dns-manager.sh || fail "DNS test scope argument missing"
+grep -q 'last_full_test_scope' "$tmp/backend.sh" || fail "LuCI status does not expose DNS test scope"
+grep -q 'last_full_test_scope' "$tmp/overview.js" || fail "LuCI header does not show DNS test scope"
 ok "ready-made profiles test only their own DNS category"
 
 # Profile application validation must use the fresh category-scoped results.
