@@ -382,8 +382,9 @@ auto_update_manager() {
     _scheduled=0
     [ "${DNS_MANAGER_SCHEDULED_UPDATE:-0}" = "1" ] && _scheduled=1
 
-    # Automatic checks use the 12-hour throttle. Explicit update-check bypasses it.
-    if [ "${DNS_MANAGER_FORCE_UPDATE:-0}" != 1 ]; then
+    # Interactive startup and explicit update-check perform a real GitHub check.
+    # The 12-hour throttle is reserved for scheduled/background updates.
+    if [ "$_scheduled" = 1 ] && [ "${DNS_MANAGER_FORCE_UPDATE:-0}" != 1 ]; then
         _upd_now="$(date +%s 2>/dev/null)"
         _upd_last="$(cat "$AUTO_UPDATE_LAST_CHECK_FILE" 2>/dev/null)"
         case "$_upd_now" in ''|*[!0-9]*) _upd_now="";; esac
