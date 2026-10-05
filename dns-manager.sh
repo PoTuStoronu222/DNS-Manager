@@ -430,7 +430,7 @@ auto_update_manager() {
         return 0
     fi
 
-    _upd_tmp="/tmp/dns-manager-update-$"
+    _upd_tmp="/tmp/dns-manager-update-$$"
     _upd_syntax="${_upd_tmp}.syntax"
     UPDATE_TMP_FILE="$_upd_tmp"
     _upd_now="$(date +%s 2>/dev/null || printf 0)"
@@ -442,7 +442,7 @@ auto_update_manager() {
     _fetch_attempt=1
     while [ "$_fetch_attempt" -le 3 ]; do
         rm -f "$_upd_tmp" "$_upd_syntax" 2>/dev/null
-        _update_url="${UPDATE_URL}?_dmcb=$(date +%s 2>/dev/null || printf 0)-$-$_fetch_attempt"
+        _update_url="${UPDATE_URL}?_dmcb=$(date +%s 2>/dev/null || printf 0)-$$-$_fetch_attempt"
 
         if command -v curl >/dev/null 2>&1; then
             curl -fsSL --connect-timeout 4 --max-time 20 -H "Cache-Control: no-cache" -H "Pragma: no-cache" -o "$_upd_tmp" "$_update_url" >/dev/null 2>&1
