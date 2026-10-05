@@ -47,8 +47,6 @@ grep -Fq "VIEW_STAGE=\"${VIEW_FILE}.new.${PID_LITERAL}\"" dns-manager-luci.sh ||
 grep -q 'mv -f "$VIEW_STAGE" "$VIEW_FILE"' dns-manager-luci.sh || fail "view atomic swap missing"
 grep -q 'function dmRpc(o)' "$tmp/overview.js" || fail "RPC retry wrapper missing"
 grep -q 'Object not found' "$tmp/overview.js" || fail "RPC retry condition missing"
-grep -q 'function dmRpc(o)' "$tmp/overview.js" || fail "RPC retry wrapper missing"
-grep -q 'Object not found' "$tmp/overview.js" || fail "RPC retry condition missing"
 for legacy in \
   'eval "SLOT_$i=\"$_id\""' \
   'eval "SLOT_$i=\"\""' \
