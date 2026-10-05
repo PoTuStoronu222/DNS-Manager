@@ -120,6 +120,14 @@ grep -q '\[ "$_force" != 1 \]' "$tmp/backend.sh" || fail "force update-check byp
 ok "version-check cache contract"
 
 awk '
+    /^json_update_state\(\) \{/ { capture=1 }
+    capture { print }
+    capture && /^}$/ { exit }
+' "$tmp/backend.sh" > "$tmp/update_state.sh"
+[ -s "$tmp/update_state.sh" ] || fail "structured update result extraction"
+. "$tmp/update_state.sh"
+
+awk '
     /^version_gt\(\)/ { capture=1 }
     capture { print }
     capture && /^}/ { exit }
