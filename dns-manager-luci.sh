@@ -152,7 +152,7 @@ acquire_runtime_lock() {
     _parent="${_lock%/*}"
     mkdir -p "$_parent" 2>/dev/null || return 1
     if mkdir "$_lock" 2>/dev/null; then
-        printf '%s\n' "$" > "$_lock/pid" 2>/dev/null || true
+        printf '%s\n' "$$" > "$_lock/pid" 2>/dev/null || true
         return 0
     fi
     _pid="$(cat "$_lock/pid" 2>/dev/null)"
@@ -162,7 +162,7 @@ acquire_runtime_lock() {
     fi
     rm -rf "$_lock" 2>/dev/null || true
     mkdir "$_lock" 2>/dev/null || return 1
-    printf '%s\n' "$" > "$_lock/pid" 2>/dev/null || true
+    printf '%s\n' "$$" > "$_lock/pid" 2>/dev/null || true
     return 0
 }
 release_runtime_lock() {
