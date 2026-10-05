@@ -16,6 +16,38 @@ sh -n dns-manager.sh || fail "dns-manager.sh: sh -n"
 sh -n dns-manager-luci.sh || fail "dns-manager-luci.sh: sh -n"
 ok "shell syntax"
 
+# DNS health must not treat arbitrary HTTP 200/application-dns-message data as OK.
+awk '
+    /^validate_dns_message\(\) \{/ { capture=1 }
+    capture { print }
+    capture && /^}$/ { exit }
+' dns-manager.sh > "$tmp/validate_dns.sh"
+[ -s "$tmp/validate_dns.sh" ] || fail "DNS response validator extraction"
+. "$tmp/validate_dns.sh"
+
+# 0x1234 query ID, QR=1, opcode=QUERY, TC=0, RCODE=NOERROR, QDCOUNT=1, ANCOUNT=1.
+printf '\022\064\200\000\000\001\000\001\000\000\000\000' > "$tmp/dns-valid"
+validate_dns_message "$tmp/dns-valid" || fail "valid DNS response header rejected"
+
+# Same DNS framing but SERVFAIL must be rejected.
+printf '\022\064\200\002\000\001\000\000\000\000\000\000' > "$tmp/dns-servfail"
+if validate_dns_message "$tmp/dns-servfail"; then
+    fail "SERVFAIL DNS response accepted as healthy"
+fi
+
+# Same framing but no answer records must be rejected.
+printf '\022\064\200\000\000\001\000\000\000\000\000\000' > "$tmp/dns-no-answer"
+if validate_dns_message "$tmp/dns-no-answer"; then
+    fail "empty DNS answer accepted as healthy"
+fi
+
+# A 12-byte non-DNS body must be rejected.
+printf 'abcdefghijkl' > "$tmp/dns-garbage"
+if validate_dns_message "$tmp/dns-garbage"; then
+    fail "arbitrary 12-byte body accepted as healthy"
+fi
+ok "DNS response validation rejects false-positive HTTP 200/SERVFAIL/no-answer data"
+
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT INT TERM
 
