@@ -138,6 +138,7 @@ RUNTIME_DIR="/var/run/dns-manager-luci"
 JOB_DIR="$RUNTIME_DIR/jobs"
 CHECK_DIR="$RUNTIME_DIR/checks"
 CURRENT_SLOT_RESULTS="$RUNTIME_DIR/current-slot-results.conf"
+CURRENT_SLOT_RESULTS_META="$RUNTIME_DIR/current-slot-results.meta"
 TMP_ROOT="$RUNTIME_DIR/tmp"
 UPDATE_STATE="/etc/dns-manager-luci/update.state"
 UPDATE_CHECK_CACHE="$RUNTIME_DIR/update-check.cache"
@@ -795,7 +796,8 @@ last_check_for_id() {
     _id="$1"
     [ -n "$_id" ] || return 1
 
-    _luci_ts="$(cat "$CHECK_DIR/$_id" 2>/dev/null | head -n1)"
+    _luci_ts="$(cat "$CURRENT_SLOT_RESULTS_META" 2>/dev/null | head -n1)"
+    case "$_luci_ts" in ''|*[!0-9]*) _luci_ts="$(cat "$CHECK_DIR/$_id" 2>/dev/null | head -n1)";; esac
     case "$_luci_ts" in ''|*[!0-9]*) _luci_ts="";; esac
 
     _manager_meta="$STATE_DIR/dns-test-results.meta"
@@ -1370,13 +1372,20 @@ set_check_stamp() {
 }
 write_current_slot_results() {
     _results="$1"
+    _stamp="${2:-$(date +%s)}"
     [ -s "$_results" ] || return 1
-    cat "$_results" > "${CURRENT_SLOT_RESULTS}.tmp.$$" 2>/dev/null || return 1
-    mv -f "${CURRENT_SLOT_RESULTS}.tmp.$$" "$CURRENT_SLOT_RESULTS" 2>/dev/null || {
-        rm -f "${CURRENT_SLOT_RESULTS}.tmp.$$" 2>/dev/null || true
+    cat "$_results" > "${CURRENT_SLOT_RESULTS}.tmp.$" 2>/dev/null || return 1
+    mv -f "${CURRENT_SLOT_RESULTS}.tmp.$" "$CURRENT_SLOT_RESULTS" 2>/dev/null || {
+        rm -f "${CURRENT_SLOT_RESULTS}.tmp.$" 2>/dev/null || true
         return 1
     }
-    chmod 600 "$CURRENT_SLOT_RESULTS" 2>/dev/null || true
+    printf "%s\n" "$_stamp" > "${CURRENT_SLOT_RESULTS_META}.tmp.$" 2>/dev/null || true
+    if [ -s "${CURRENT_SLOT_RESULTS_META}.tmp.$" ]; then
+        mv -f "${CURRENT_SLOT_RESULTS_META}.tmp.$" "$CURRENT_SLOT_RESULTS_META" 2>/dev/null || true
+    else
+        rm -f "${CURRENT_SLOT_RESULTS_META}.tmp.$" 2>/dev/null || true
+    fi
+    chmod 600 "$CURRENT_SLOT_RESULTS" "$CURRENT_SLOT_RESULTS_META" 2>/dev/null || true
 }
 current_slot_result_for_id() {
     _id="$1"
@@ -1416,109 +1425,6 @@ current_slot_result_for_id() {
 }
 # Assigned DNS checks use the real local listener port. Unassigned catalog DNS
 # keeps the remote DoH check until the DNS is assigned to a slot.
-assigned_port_for_id() {
-    _id="$1"
-    [ -n "$_id" ] || return 1
-    for _s in 1 2 3 4 5 6 RU RU_2; do
-        _sid="$(cfg_get "SLOT_$_s" 2>/dev/null || true)"
-        [ "$_sid" = "$_id" ] || continue
-        _port="$(cfg_get "PORT_$_s" 2>/dev/null || true)"
-        [ -n "$_port" ] || return 1
-        printf "%s|%s" "$_s" "$_port"
-        return 0
-    done
-    return 1
-}
-
-local_slot_test_one() {
-    _id="$1"
-    _port="$2"
-    _slot="$3"
-    _cat="$(dns_cat "$_id" 2>/dev/null || true)"
-    _name="$(dns_name "$_id" 2>/dev/null || printf "%s" "$_id")"
-    _domain="example.com"
-    case "$_slot" in
-        RU|RU_2) _domain="yandex.ru" ;;
-    esac
-    _out="$TMP_ROOT/local-dns-test.$$.out"
-    _ms=""
-    _status="LOCAL_DNS_ERROR"
-    if [ -z "$_port" ]; then
-        _status="LOCAL_PORT_NOT_ASSIGNED"
-    elif ! listener_port_exists "$_port"; then
-        _status="LOCAL_PORT_CLOSED"
-    else
-        rm -f "$_out" 2>/dev/null || true
-        _start_ms="$(awk '{printf "%.0f", $1*1000}' /proc/uptime 2>/dev/null || printf 0)"
-        _lookup_rc=0
-
-        # A slot is healthy only when the DNS service returns an actual A
-        # record through this exact local listener. A generic "Server:" line
-        # is not a successful DNS response.
-        # dig is the primary checker because the selected slot may listen on
-        # a non-standard local DNS port. BusyBox nslookup variants differ in
-        # their explicit-port behavior and can query the wrong endpoint.
-        if command -v dig >/dev/null 2>&1; then
-            # Use dig's own DNS timing instead of /proc/uptime. /proc/uptime is
-            # only centisecond-resolution on typical OpenWrt kernels, so a
-            # 35–44 ms request could repeatedly appear as exactly 40 ms.
-            dig @127.0.0.1 -p "$_port" "$_domain" A +time=2 +tries=1 >"$_out" 2>&1 || _lookup_rc=$?
-            _answer="$(awk '/^[0-9]+(\.[0-9]+){3}$/ && $0 !~ /^127\./ && $0 != "0.0.0.0" {print; exit}' "$_out" 2>/dev/null)"
-            _ms="$(awk -F': *' '/^;; Query time:/{v=$2; sub(/[[:space:]].*$/, "", v); if(v ~ /^[0-9]+$/){print v; exit}}' "$_out" 2>/dev/null)"
-        elif command -v nslookup >/dev/null 2>&1; then
-            nslookup -port="$_port" "$_domain" 127.0.0.1 >"$_out" 2>&1 || _lookup_rc=$?
-            _answer="$(awk '
-                /^Name:[[:space:]]/ { in_answer=1; next }
-                !in_answer { next }
-                {
-                    for (i=1; i<=NF; i++) {
-                        v=$i
-                        gsub(/[^0-9.].*$/, "", v)
-                        if (v ~ /^[0-9]+(\.[0-9]+){3}$/ && v !~ /^127\./ && v != "0.0.0.0") {
-                            print v
-                            exit
-                        }
-                    }
-                }
-            ' "$_out" 2>/dev/null | head -n1)"
-        else
-            _answer=""
-            _lookup_rc=127
-        fi
-
-        # dig provides the authoritative query latency. Keep the elapsed
-        # fallback only for BusyBox nslookup-only systems.
-        if [ -z "$_ms" ]; then
-            _end_ms="$(awk '{printf "%.0f", $1*1000}' /proc/uptime 2>/dev/null || printf 0)"
-            case "$_start_ms|$_end_ms" in
-                *[!0-9|]*|\|*) _ms=-1 ;;
-                *) _ms=$((_end_ms-_start_ms)); [ "$_ms" -lt 0 ] && _ms=0 ;;
-            esac
-        fi
-
-        if [ -n "$_answer" ]; then
-            _status="OK"
-        elif grep -Eqi 'SERVFAIL' "$_out" 2>/dev/null; then
-            _status="LOCAL_DNS_SERVFAIL"
-        elif grep -Eqi 'REFUSED' "$_out" 2>/dev/null; then
-            _status="LOCAL_DNS_REFUSED"
-        elif grep -Eqi 'NXDOMAIN|non-existent domain' "$_out" 2>/dev/null; then
-            _status="LOCAL_DNS_NXDOMAIN"
-        elif grep -Eqi 'timed out|timeout|time out' "$_out" 2>/dev/null; then
-            _status="LOCAL_DNS_TIMEOUT"
-        elif [ "$_lookup_rc" -ne 0 ] 2>/dev/null; then
-            _status="LOCAL_DNS_NO_RESPONSE"
-        elif grep -Eqi 'connection refused|no servers could be reached|server failure' "$_out" 2>/dev/null; then
-            _status="LOCAL_DNS_NO_RESPONSE"
-        else
-            _status="LOCAL_DNS_NO_ANSWER"
-        fi
-    fi
-    case "$_ms" in ""|*[!0-9]*) _ms=-1;; esac
-    printf "%s|%s|%s|%s|%s\n" "$_id" "$_cat" "$_name" "$_ms" "$_status" > "$TMP_DIR/t.$_id"
-    rm -f "$_out" 2>/dev/null || true
-    [ "$_status" = OK ]
-}
 new_job_id() {
     case "${1:-}" in
         profile) printf 'profile' ;;
@@ -1758,8 +1664,8 @@ job_start_test_current() {
             exit 1
         }
 
-        write_current_slot_results "$_results" || true
         _stamp="$(date +%s)"
+        write_current_slot_results "$_results" "$_stamp" || true
         while IFS="|" read -r _id _rest; do
             [ -n "$_id" ] && set_check_stamp "$_id" "$_stamp"
         done < "$_results"
@@ -1818,15 +1724,15 @@ job_start_test_one() {
             cat "$_result_file" >> "$_tmp" 2>/dev/null || true
             mv "$_tmp" "$TEST_RESULTS" 2>/dev/null || true
             save_persistent_test_results >/dev/null 2>&1 || true
-            _cur="$TMP_ROOT/current-slot-one.$$"
+            _stamp="$(date +%s)"
+            _cur="$TMP_ROOT/current-slot-one.$"
             : > "$_cur"
             if [ -s "$CURRENT_SLOT_RESULTS" ]; then
                 awk -F"|" -v id="$_id" '$1!=id {print}' "$CURRENT_SLOT_RESULTS" > "$_cur" 2>/dev/null || true
             fi
             cat "$_result_file" >> "$_cur" 2>/dev/null || true
-            write_current_slot_results "$_cur" || true
+            write_current_slot_results "$_cur" "$_stamp" || true
             rm -f "$_cur" 2>/dev/null || true
-            _stamp="$(date +%s)"
             set_check_stamp "$_id" "$_stamp"
             rm -f "$_result_file" 2>/dev/null || true
             release_test_lock
