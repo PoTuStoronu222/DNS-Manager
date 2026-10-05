@@ -397,10 +397,12 @@ grep -q 'DNS_PROFILE="hybrid"' dns-manager.sh || fail "uniform category does not
 grep -q 'DNS_SELECTION_MODE="profile"' dns-manager.sh || fail "uniform category does not map to profile mode"
 grep -q 'DNS_SELECTION_CATEGORY="$_spc"' dns-manager.sh || fail "uniform category is not stored as selection category"
 grep -q 'DNS_PROFILE="custom"' dns-manager.sh || fail "mixed category does not map to custom profile"
-if grep -A18 -F '        set_slot)' dns-manager-luci.sh | grep -q 'DNS_PROFILE=custom DNS_SELECTION_MODE=manual'; then
+awk '/^        set_slot\)/,/^        set_ntp\)/' dns-manager-luci.sh > "$tmp/luci_set_slot.sh"
+if grep -q 'DNS_PROFILE=custom DNS_SELECTION_MODE=manual' "$tmp/luci_set_slot.sh"; then
     fail "LuCI slot change still forces custom/manual profile"
 fi
-if grep -A18 -F 'select_slot() {' dns-manager.sh | grep -q 'DNS_PROFILE="custom"'; then
+awk '/^select_slot\(\) \{/,/^# ==========================================/' dns-manager.sh > "$tmp/cli_select_slot.sh"
+if grep -q 'DNS_PROFILE="custom"' "$tmp/cli_select_slot.sh"; then
     fail "CLI slot change still forces custom profile"
 fi
 if grep -A14 -F 'watchdog_pick_replacement() {' dns-manager.sh | grep -q 'bypass clean'; then
@@ -409,7 +411,6 @@ fi
 grep -A8 -F 'watchdog_pick_replacement() {' dns-manager.sh | grep -q 'selected_general_category' || fail "watchdog replacement lacks category gate"
 grep -A10 -F 'watchdog_slot_target_run() {' dns-manager.sh | grep -q 'selected_general_category' || fail "watchdog slot repair lacks category gate"
 grep -A12 -F 'watchdog_embedded_integrity_guard() {' dns-manager.sh | grep -q 'selected_general_category' || fail "watchdog integrity guard lacks category gate"
-grep -Fq 's mixed|custom' /dev/null 2>/dev/null || true
 grep -q 'смешанные или пользовательские категории DNS' dns-manager.sh || fail "watchdog custom/mixed skip message missing"
 ok "manual same-category DNS changes preserve profile; mixed/custom selections disable DNS watchdog scope"
 grep -q '^job_state_value() {' "$tmp/backend.sh" || fail "profile job state helper missing"
