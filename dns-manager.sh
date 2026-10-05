@@ -7175,6 +7175,13 @@ watchdog_pick_replacement() {
         *) _probe_domain="example.com" ;;
     esac
 
+    # Prefer the intended category. Clean is only a temporary fallback when
+    # no target-category DNS is currently alive anywhere in the profile.
+    _passcats="$_desired_for_pick"
+    if [ "$_allow_clean" = 1 ] && [ "$_slot" != RU ] && [ "$_desired_for_pick" != clean ]; then
+        _passcats="$_desired_for_pick clean"
+    fi
+
     # During profile application TEST_RESULTS is the authoritative fresh
     # candidate pool. It already contains the complete selected category
     # (plus regional DNS), so do not cap replacement selection at the first
@@ -7187,7 +7194,7 @@ watchdog_pick_replacement() {
         : > "$_fresh_source" || return 1
         : > "$_fresh_pass_source" || { rm -f "$_fresh_source"; return 1; }
 
-        while IFS= read -r _passcat; do
+        for _passcat in $_passcats; do
             [ -n "$_passcat" ] || continue
             awk -F'|' -v c="$_passcat" '
                 NF>=5 && $1 !~ /^#/ && $2==c && $5=="OK" && $4 ~ /^[0-9]+$/ {print}
@@ -7213,9 +7220,7 @@ watchdog_pick_replacement() {
                 return 0
             fi
             : > "$_fresh_source"
-        done <<EOF_WD_PASSCATS
-$_desired_for_pick
-EOF_WD_PASSCATS
+        done
 
         rm -f "$_fresh_source" "$_fresh_pass_source" 2>/dev/null || true
     fi
@@ -7224,11 +7229,6 @@ EOF_WD_PASSCATS
     # result exists. Keep the resource-safe direct probe cap here; profile
     # application normally never reaches this path because it starts with a
     # fresh category-scoped catalog test.
-    _passcats="$_desired_for_pick"
-    if [ "$_allow_clean" = 1 ] && [ "$_slot" != RU ] && [ "$_desired_for_pick" != clean ]; then
-        _passcats="$_desired_for_pick clean"
-    fi
-
     for _passcat in $_passcats; do
         _checked_cat=0
 
