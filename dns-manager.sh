@@ -4060,9 +4060,10 @@ reset_hybrid_runtime_ports() {
     for _s in 1 2 3 4 5 6; do
         eval "_v=\${SLOT_$_s:-}"
         if [ -n "$_v" ]; then
-            eval "PORT_$_s=\$(hybrid_desired_port "$_s")"
+            _want="$(hybrid_desired_port "$_s")"
+            port_set "$_s" "$_want" || return 1
         else
-            eval "PORT_$_s=''"
+            port_set "$_s" "" || return 1
         fi
     done
     if [ -n "${SLOT_RU:-}" ]; then
