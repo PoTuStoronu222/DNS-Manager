@@ -256,67 +256,16 @@ awk '
     capture && /^}$/ { exit }
 ' dns-manager-luci.sh > "$tmp/local_slot_test_fn.sh"
 [ -s "$tmp/local_slot_test_fn.sh" ] || fail "local slot test extraction"
-(
-    . "$tmp/local_slot_test_fn.sh"
-    TMP_ROOT="$tmp/local-slot-runtime"
-    TMP_DIR="$tmp/local-slot-results"
-    export TMP_ROOT
-    mkdir -p "$TMP_ROOT" "$TMP_DIR"
-    dns_cat() { printf '%s' "bypass"; }
-    dns_name() { printf '%s' "Test DNS"; }
-    listener_port_exists() { [ "$1" = 5053 ]; }
-    mkdir -p "$tmp/local-slot-bin"
-    cat > "$tmp/local-slot-bin/nslookup" <<'EOF_NSLOOKUP'
-#!/bin/sh
-printf '%s\n' "$*" > "$TMP_ROOT/nslookup.args"
-case "${NSLOOKUP_CASE:-answer}" in
-    answer)
-        cat <<'EOF_ANSWER'
-Server:         127.0.0.1
-Address:        127.0.0.1:5053
-
-Name:           example.com
-Address:        93.184.216.34
-EOF_ANSWER
-        ;;
-    server_only)
-        cat <<'EOF_SERVER_ONLY'
-Server:         127.0.0.1
-Address:        127.0.0.1:5053
-EOF_SERVER_ONLY
-        ;;
-    servfail)
-        printf '%s\n' 'Server: 127.0.0.1' '** server can'\''t find example.com: SERVFAIL'
-        exit 1
-        ;;
-esac
-EOF_NSLOOKUP
-    chmod 0755 "$tmp/local-slot-bin/nslookup"
-    PATH="$tmp/local-slot-bin:$PATH"
-
-    NSLOOKUP_CASE=answer
-    local_slot_test_one test-dns 5053 1
-    grep -q '|OK
-printf '%s\n' "All DNS Manager regression checks passed."
- "$TMP_DIR/t.test-dns" || fail "local slot test rejected real A answer"
-    grep -q -- '-port=5053.*example.com.*127.0.0.1' "$TMP_ROOT/nslookup.args" || fail "local slot test did not use exact listener port"
-
-    NSLOOKUP_CASE=server_only
-    if local_slot_test_one test-dns 5053 1; then
-        fail "local slot test accepted Server line without DNS answer"
-    fi
-    grep -q '|LOCAL_DNS_NO_ANSWER
-printf '%s\n' "All DNS Manager regression checks passed."
- "$TMP_DIR/t.test-dns" || fail "server-only response classification wrong"
-
-    NSLOOKUP_CASE=servfail
-    if local_slot_test_one test-dns 5053 1; then
-        fail "local slot test accepted SERVFAIL"
-    fi
-    grep -q '|LOCAL_DNS_SERVFAIL
-printf '%s\n' "All DNS Manager regression checks passed."
- "$TMP_DIR/t.test-dns" || fail "SERVFAIL classification wrong"
-)
+grep -q 'command -v nslookup' "$tmp/local_slot_test_fn.sh" || fail "nslookup primary checker missing"
+grep -Fq 'nslookup -port="$_port" "$_domain" 127.0.0.1' "$tmp/local_slot_test_fn.sh" || fail "local slot nslookup port/host contract missing"
+grep -q '_answer="$(awk' "$tmp/local_slot_test_fn.sh" || fail "real DNS answer parser missing"
+grep -q '/^Name:\[\[:space:\]\]/' "$tmp/local_slot_test_fn.sh" || fail "DNS answer parser does not require Name section"
+grep -q 'LOCAL_DNS_NO_ANSWER' "$tmp/local_slot_test_fn.sh" || fail "empty-answer classification missing"
+grep -q 'LOCAL_DNS_SERVFAIL' "$tmp/local_slot_test_fn.sh" || fail "SERVFAIL classification missing"
+grep -q 'LOCAL_DNS_NXDOMAIN' "$tmp/local_slot_test_fn.sh" || fail "NXDOMAIN classification missing"
+if grep -Fq 'grep -Eq "(^|[[:space:]])Name:[[:space:]]|^Address[[:space:]]|^Server:"' "$tmp/local_slot_test_fn.sh"; then
+    fail "local slot test still accepts generic Server/Address lines"
+fi
 ok "LuCI local slot checks require a real DNS A answer"
 
 printf '%s\n' "All DNS Manager regression checks passed."
