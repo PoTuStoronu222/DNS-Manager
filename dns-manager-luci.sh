@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.6.27
+# Version: 1.6.28
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -23,7 +23,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.6.27"
+VERSION="1.6.28"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -145,7 +145,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.6.27"
+SELF_VERSION="1.6.28"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -2009,7 +2009,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.6.27
+// DNS Manager LuCI version: 1.6.28
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -2056,7 +2056,7 @@ var CATEGORY = [
   ['all','Все DNS'], ['bypass','Обход блокировок'], ['security','Безопасность'], ['privacy','Приватность'],
   ['adblock','Блокировка рекламы'], ['family','Семейный'], ['clean','Без фильтрации'], ['regional','Региональные']
 ];
-var state = { hdpUpdating:false, managerUpdating:false, updatingAll:false, category:'all', offset:0, limit:18, catalogLoaded:false, catalogLoading:false, advanced:true, logLoaded:false, logLoading:false, busy:false, busySetting:'', settingMessage:'', settingMessageType:'', settingMessageKey:'', pageNotice:{}, statusError:'', activeTab:'dashboard', jobRunning:false, lastJob:null, checking:{}, fullTest:null, catalogProgress:null, profileProgress:null, catalogCheckNotice:'', versionCheck:null, lastAction:null, runtimeCpuLoad:null, runtimeMemoryTotal:null, runtimeMemoryAvailable:null, boardInfo:null, systemPollBusy:false, autoVersionCheckStarted:false };
+var state = { hdpUpdating:false, managerUpdating:false, updatingAll:false, category:'all', offset:0, limit:18, catalogLoaded:false, catalogLoading:false, advanced:true, logLoaded:false, logLoading:false, busy:false, busySetting:'', settingMessage:'', settingMessageType:'', settingMessageKey:'', pageNotice:{}, statusError:'', activeTab:'dashboard', jobRunning:false, lastJob:null, checking:{}, fullTest:null, catalogProgress:null, profileProgress:null, catalogCheckNotice:'', versionCheck:null, lastAction:null, runtimeCpuLoad:null, runtimeMemoryTotal:null, runtimeMemoryAvailable:null, boardInfo:null, systemPollBusy:false, autoVersionCheckStarted:false, profileResumeStarted:false };
 
 function profileName(p){
   var x=PROFILE.filter(function(v){return v[0]===p;})[0];
@@ -3669,6 +3669,26 @@ function pollJob(root,job,meta,done){
   poll();
 }
 
+function resumeRunningProfile(root){
+  if(state.profileResumeStarted||!rootAlive(root))return;
+  state.profileResumeStarted=true;
+  callJob('profile').then(function(j){
+    var st=String(j&&j.status||'').toLowerCase();
+    if(st!=='running')return;
+    var p=String(j.profile||'');
+    state.busy=true;
+    state.jobRunning=true;
+    state.lastJob='profile';
+    state.profileProgress={p:5,label:'Профиль уже применяется…',detail:'Связь с задачей восстановлена. Продолжаю отслеживание.'};
+    setAction(true,p?'Профиль «'+profileName(p)+'» уже применяется. Связь восстановлена.':'Применение профиля уже выполняется. Связь восстановлена.');
+    if(rootAlive(root))renderProfiles(root,window.dmState||{});
+    pollJob(root,'profile',{mode:'profile',profile:p});
+  }).catch(function(err){
+    var msg=rpcErrorText(err);
+    if(msg&&/задач[ау] не найден|not found/i.test(msg))return;
+    if(rootAlive(root)&&msg)state.pageNotice.profiles='Проверил незавершённую операцию: '+msg;
+  });
+}
 function removeLegacyCbiActions(){
   var nodes=document.querySelectorAll('.cbi-page-actions');
   Array.prototype.forEach.call(nodes,function(n){
@@ -3789,6 +3809,9 @@ return view.extend({
     render(root,st||{});
     removeLegacyCbiActions();if(window.setTimeout)window.setTimeout(removeLegacyCbiActions,0);
     startAutoStatus(root);
+    if(!state.profileResumeStarted)window.setTimeout(function(){
+      if(rootAlive(root))resumeRunningProfile(root);
+    },0);
     if(!state.autoVersionCheckStarted&&currentRoute()==='dashboard'){
       state.autoVersionCheckStarted=true;
       if(window.setTimeout)window.setTimeout(function(){
