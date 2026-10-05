@@ -257,9 +257,12 @@ catalog_revision() { sed -n 's/^# DNSCATREV=//p' "$CATALOG_FILE" 2>/dev/null | h
 
 read_installed_luci_version() {
     _v=""
-    [ -r "$VERSION_FILE" ] && _v="$(sed -n 's/^version=//p' "$VERSION_FILE" 2>/dev/null | head -n1)"
+    # The view is the code that LuCI actually loads, so it is the authoritative
+    # installed-version marker. Persistent markers are only fallbacks for
+    # partially migrated/legacy installations.
+    [ -r "$VIEW_FILE" ] && _v="$(sed -n 's|^// DNS Manager LuCI version: *||p' "$VIEW_FILE" 2>/dev/null | head -n1)"
+    [ -n "$_v" ] || [ ! -r "$VERSION_FILE" ] || _v="$(sed -n 's/^version=//p' "$VERSION_FILE" 2>/dev/null | head -n1)"
     [ -n "$_v" ] || [ ! -r "/etc/dns-manager/config/luci-state.conf" ] || _v="$(sed -n 's/^version=//p' /etc/dns-manager/config/luci-state.conf 2>/dev/null | head -n1)"
-    [ -n "$_v" ] || [ ! -r "$VIEW_FILE" ] || _v="$(sed -n 's|^// DNS Manager LuCI version: *||p' "$VIEW_FILE" 2>/dev/null | head -n1)"
     [ -n "$_v" ] || _v="$SELF_VERSION"
     printf '%s' "$_v"
 }
