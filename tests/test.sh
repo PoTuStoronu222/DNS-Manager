@@ -265,11 +265,12 @@ grep -q '"steer_dns_active"' "$tmp/backend.sh" || fail "Steer DNS runtime status
 ok "Steer status fields exposed"
 
 grep -q 'test_one_dns "\$_id"' "$tmp/backend.sh" || fail "LuCI selected DNS check does not use the manager test"
-grep -q 'write_current_slot_results "\$_results" "\$_stamp"' "$tmp/backend.sh" || fail "fresh current-test timestamp is not recorded"
-grep -q 'CURRENT_SLOT_RESULTS_META' "$tmp/backend.sh" || fail "current DNS result timestamp marker missing"
-grep -q '_luci_ts="$(cat "$CURRENT_SLOT_RESULTS_META"' "$tmp/backend.sh" || fail "LuCI does not read fresh current-test timestamp"
-if grep -q '^local_slot_test_one()' dns-manager-luci.sh; then
-    fail "obsolete separate local DNS checker remains"
+grep -q 'result_for_id "\$_id"' "$tmp/backend.sh" || fail "selected DNS status does not use the authoritative result file"
+if grep -q 'CURRENT_SLOT_RESULTS' "$tmp/backend.sh"; then
+    fail "obsolete second DNS result store remains"
+fi
+if grep -q '^current_slot_result_for_id()' "$tmp/backend.sh"; then
+    ok "selected DNS status has a single authoritative result helper"
 fi
 if grep -q '^assigned_port_for_id()' dns-manager-luci.sh; then
     fail "obsolete assigned-port helper remains"
