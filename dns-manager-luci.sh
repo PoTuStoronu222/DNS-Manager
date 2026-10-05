@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.6.61
+# Version: 1.6.62
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -23,7 +23,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.6.61"
+VERSION="1.6.62"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -144,7 +144,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.6.61"
+SELF_VERSION="1.6.62"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -2261,7 +2261,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.6.61
+// DNS Manager LuCI version: 1.6.62
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -3069,7 +3069,7 @@ function profileProgressUpdate(j){
   var out=stripAnsi(j&&j.output||''), text=String(out||'');
   var stages=[
     {p:8,keys:['Запускаю применение','Подготавливаю новый набор'],label:'Подготавливаю профиль и новый набор DNS'},
-    {p:16,keys:['Автоматически выбран набор DNS','подтверждено только','Проверяю DNS для профиля'],label:'Проверяю быстрые кандидаты DNS'},
+    {p:16,keys:['Автоматически выбран набор DNS','подтверждено только','Проверяю DNS для профиля'],label:'Выбираю DNS из свежих результатов'},
     {p:28,keys:['Текущая DNS-схема','Текущих DNS-секций'],label:'Сверяю текущую DNS-схему'},
     {p:38,keys:['Останавливаю текущие экземпляры'],label:'Останавливаю старые экземпляры DNS'},
     {p:48,keys:['Конфигурация https-dns-proxy сохранена'],label:'Сохраняю конфигурацию DoH'},
@@ -3091,7 +3091,7 @@ function profileProgressUpdate(j){
   if(mp){
     var md=Number(mp[1]||0),mt=Number(mp[2]||0),mo=Number(mp[3]||0),mf=Number(mp[4]||0);
     var mpp=mt>0?8+Math.round(md*14/mt):8;
-    best={p:Math.max(8,Math.min(22,mpp)),label:'Обновляю результаты проверки DNS — проверено '+md+' из '+mt,detail:''};
+    best={p:Math.max(8,Math.min(22,mpp)),label:'Проверяю весь список DNS — проверено '+md+' из '+mt,detail:''};
   }
   stages.forEach(function(s){
     var hit=false,at=-1;
