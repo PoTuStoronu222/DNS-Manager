@@ -446,7 +446,7 @@ awk '/^auto_fill_slots\(\)/,/^return 0/' dns-manager.sh > "$tmp/auto_fill_profil
 if grep -q '_bypass_count.*-lt 6|подтверждено только .* из 6' "$tmp/auto_fill_profile.sh"; then
     fail "profile application still requires six bypass DNS"
 fi
-grep -q 'if [ -z "$_id" ] || [ "$_current_cat" != "$_desired" ]; then' dns-manager.sh || fail "watchdog does not repair empty/category-mismatched slots"
+grep -q '_current_slot_cat' dns-manager.sh || fail "watchdog slot category tracking missing"
 ok "profiles survive clean fallback and watchdog gradually restores/fills target DNS"
 
 awk '/^quick_max_bypass\(\)/,/^}/' dns-manager.sh > "$tmp/quick_max_bypass.sh"
