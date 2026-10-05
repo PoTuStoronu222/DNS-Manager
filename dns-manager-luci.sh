@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.6.30
+# Version: 1.6.31
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -23,7 +23,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.6.30"
+VERSION="1.6.31"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -145,7 +145,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.6.30"
+SELF_VERSION="1.6.31"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -1453,7 +1453,13 @@ local_slot_test_one() {
         # A slot is healthy only when the DNS service returns an actual A
         # record through this exact local listener. A generic "Server:" line
         # is not a successful DNS response.
-        if command -v nslookup >/dev/null 2>&1; then
+        # dig is the primary checker because the selected slot may listen on
+        # a non-standard local DNS port. BusyBox nslookup variants differ in
+        # their explicit-port behavior and can query the wrong endpoint.
+        if command -v dig >/dev/null 2>&1; then
+            dig @127.0.0.1 -p "$_port" "$_domain" A +time=2 +tries=1 +short >"$_out" 2>&1 || _lookup_rc=$?
+            _answer="$(awk '/^[0-9]+(\.[0-9]+){3}$/ && $0 !~ /^127\./ && $0 != "0.0.0.0" {print; exit}' "$_out" 2>/dev/null)"
+        elif command -v nslookup >/dev/null 2>&1; then
             nslookup -port="$_port" "$_domain" 127.0.0.1 >"$_out" 2>&1 || _lookup_rc=$?
             _answer="$(awk '
                 /^Name:[[:space:]]/ { in_answer=1; next }
@@ -1469,10 +1475,6 @@ local_slot_test_one() {
                     }
                 }
             ' "$_out" 2>/dev/null | head -n1)"
-        elif command -v dig >/dev/null 2>&1; then
-            # dig is only a fallback for systems without nslookup.
-            dig @127.0.0.1 -p "$_port" "$_domain" A +time=2 +tries=1 +short >"$_out" 2>&1 || _lookup_rc=$?
-            _answer="$(awk '/^[0-9]+(\.[0-9]+){3}$/ && $0 !~ /^127\./ && $0 != "0.0.0.0" {print; exit}' "$_out" 2>/dev/null)"
         else
             _answer=""
             _lookup_rc=127
@@ -1744,6 +1746,10 @@ job_start_test_one() {
         fi
         _result_file="$TMP_DIR/t.$_id"
         if [ -s "$_result_file" ]; then
+            _one_ms="$(awk -F"|" 'NF>=5 {print $4;exit}' "$_result_file" 2>/dev/null || true)"
+            _one_status="$(awk -F"|" 'NF>=5 {print $5;exit}' "$_result_file" 2>/dev/null || true)"
+            job_write "$_jid" ping "$_one_ms"
+            job_write "$_jid" dns_status "$_one_status"
             _tmp="$TMP_ROOT/results.$$"
             : > "$_tmp"
             [ -s "$TEST_RESULTS" ] && awk -F"|" -v id="$_id" '$1!=id {print}' "$TEST_RESULTS" > "$_tmp" 2>/dev/null || true
@@ -1786,9 +1792,13 @@ job_json() {
     _job_mode="$(sed -n 's/^mode=//p' "$_d/state" 2>/dev/null | head -n1)"
     _job_dns_id="$(sed -n 's/^dns_id=//p' "$_d/state" 2>/dev/null | head -n1)"
     if [ "$_job_mode" = "one" ] && [ -n "$_job_dns_id" ]; then
-        _jr="$(result_for_id "$_job_dns_id" 2>/dev/null || true)"
-        _jms="$(printf '%s' "$_jr" | awk -F'|' 'NF>=5 {print $4;exit}')"
-        _jst="$(printf '%s' "$_jr" | awk -F'|' 'NF>=5 {print $5;exit}')"
+        _jms="$(sed -n 's/^ping=//p' "$_d/state" 2>/dev/null | tail -n1)"
+        _jst="$(sed -n 's/^dns_status=//p' "$_d/state" 2>/dev/null | tail -n1)"
+        if [ -z "$_jst" ]; then
+            _jr="$(result_for_id "$_job_dns_id" 2>/dev/null || true)"
+            _jms="$(printf '%s' "$_jr" | awk -F'|' 'NF>=5 {print $4;exit}')"
+            _jst="$(printf '%s' "$_jr" | awk -F'|' 'NF>=5 {print $5;exit}')"
+        fi
         printf ',"ping":'; json_quote "$_jms"
         printf ',"dns_status":'; json_quote "$_jst"
     fi
@@ -2017,7 +2027,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.6.30
+// DNS Manager LuCI version: 1.6.31
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -3570,8 +3580,8 @@ function pollJob(root,job,meta,done){
       if(meta&&meta.mode==='one'&&meta.dns_id){
         var d=null;(ns.slots||[]).forEach(function(x){if(x.id===meta.dns_id)d=x;});
         state.checking[meta.dns_id]={
-          status:d&&d.status?d.status:(j&&j.dns_status?j.dns_status:(j.result==='ok'?'OK':'FAIL')),
-          ping:d&&d.ping?d.ping:(j&&j.ping?j.ping:'')
+          status:j&&j.dns_status?j.dns_status:(d&&d.status?d.status:(j.result==='ok'?'OK':'FAIL')),
+          ping:j&&j.ping?j.ping:(d&&d.ping?d.ping:'')
         };
       }
       if(meta&&meta.mode==='current')state.checking={};
