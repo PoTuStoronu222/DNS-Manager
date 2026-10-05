@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.6.57
+# Version: 1.6.58
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -23,7 +23,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.6.57"
+VERSION="1.6.58"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -144,7 +144,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.6.57"
+SELF_VERSION="1.6.58"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -1298,8 +1298,42 @@ status_json() {
     _test_age_v="$(cfg_get TEST_RESULTS_MAX_AGE)"
     case "$_test_age_v" in ''|*[!0-9]*) _test_age_h=6;; *) _test_age_h=$((_test_age_v/3600)); [ "$_test_age_h" -ge 1 ] || _test_age_h=1;; esac
 
-    # Keep the last profile operation visible after LuCI is closed and reopened.
+    # Keep the most recent background DNS operation visible after LuCI is closed and reopened.
+    _last_job_id=""; _last_job_status=""; _last_job_result=""; _last_job_mode=""; _last_job_profile=""; _last_job_dns_id=""; _last_job_started=""; _last_job_finished=""; _last_job_message=""
+    for _last_kind in profile test_all test_current test_one; do
+        _last_state="$JOB_DIR/$_last_kind/state"
+        [ -r "$_last_state" ] || continue
+        _ls="$(sed -n 's/^status=//p' "$_last_state" 2>/dev/null | tail -n1)"
+        _lr="$(sed -n 's/^result=//p' "$_last_state" 2>/dev/null | tail -n1)"
+        _lm="$(sed -n 's/^mode=//p' "$_last_state" 2>/dev/null | head -n1)"
+        _lp="$(sed -n 's/^profile=//p' "$_last_state" 2>/dev/null | head -n1)"
+        _ld="$(sed -n 's/^dns_id=//p' "$_last_state" 2>/dev/null | head -n1)"
+        _lst="$(sed -n 's/^started=//p' "$_last_state" 2>/dev/null | head -n1)"
+        _lfi="$(sed -n 's/^finished=//p' "$_last_state" 2>/dev/null | tail -n1)"
+        case "$_lst" in ''|*[!0-9]*) continue;; esac
+        case "$_last_job_started" in
+            ''|*[!0-9]*) _take=1;;
+            *) [ "$_lst" -ge "$_last_job_started" ] 2>/dev/null && _take=1 || _take=0;;
+        esac
+        [ "$_take" = 1 ] || continue
+        _last_job_id="$_last_kind"
+        _last_job_status="$_ls"; _last_job_result="$_lr"; _last_job_mode="$_lm"
+        _last_job_profile="$_lp"; _last_job_dns_id="$_ld"
+        _last_job_started="$_lst"; _last_job_finished="$_lfi"
+        _last_job_message="$(tail -n 12 "$JOB_DIR/$_last_kind/output" 2>/dev/null | sed '/^[[:space:]]*$/d' | tail -n1 | tr '\r\t' '  ' | cut -c1-360)"
+    done
+
+    # Keep dedicated profile fields for the profile page; the generic fields above
+    # additionally cover long-running DNS checks and single resolver tests.
     _profile_job_status=""; _profile_job_result=""; _profile_job_profile=""; _profile_job_started=""; _profile_job_finished=""; _profile_job_message=""
+    if [ -r "$JOB_DIR/profile/state" ]; then
+        _profile_job_status="$(sed -n 's/^status=//p' "$JOB_DIR/profile/state" 2>/dev/null | tail -n1)"
+        _profile_job_result="$(sed -n 's/^result=//p' "$JOB_DIR/profile/state" 2>/dev/null | tail -n1)"
+        _profile_job_profile="$(sed -n 's/^profile=//p' "$JOB_DIR/profile/state" 2>/dev/null | head -n1)"
+        _profile_job_started="$(sed -n 's/^started=//p' "$JOB_DIR/profile/state" 2>/dev/null | head -n1)"
+        _profile_job_finished="$(sed -n 's/^finished=//p' "$JOB_DIR/profile/state" 2>/dev/null | tail -n1)"
+        _profile_job_message="$(tail -n 12 "$JOB_DIR/profile/output" 2>/dev/null | sed '/^[[:space:]]*$/d' | tail -n1 | tr '\r\t' '  ' | cut -c1-360)"
+    fi
     if [ -r "$JOB_DIR/profile/state" ]; then
         _profile_job_status="$(sed -n 's/^status=//p' "$JOB_DIR/profile/state" 2>/dev/null | tail -n1)"
         _profile_job_result="$(sed -n 's/^result=//p' "$JOB_DIR/profile/state" 2>/dev/null | tail -n1)"
@@ -1317,6 +1351,8 @@ status_json() {
     printf ',"catalog_latest_version":'; json_quote "$_catalog_latest"; printf ',"catalog_latest_rev":'; json_quote "$_catalog_latest_rev"; printf ',"catalog_latest_total":%s,"catalog_update_available":%s,"catalog_check_ok":%s' "$_catalog_latest_total" "$_catalog_avail" "$_catalog_checked"; printf ',"catalog_update_error":'; json_quote "$_catalog_error"
     printf ',"model":'; json_quote "$_model"; printf ',"arch":'; json_quote "$_arch"; printf ',"target":'; json_quote "$_target"; printf ',"ipv4":'; json_quote "$_ipv4"; printf ',"ipv6":'; json_quote "$_ipv6"; printf ',"dnsmasq":'; json_quote "$_dnsmasq"; printf ',"doh":'; json_quote "$_doh"; printf ',"firewall":'; json_quote "$_fw"; printf ',"openwrt":'; json_quote "$(openwrt_release)"; printf ',"lan":'; json_quote "$_lan"
     printf ',"profile":'; json_quote "$_profile"; printf ',"profile_mode":'; json_quote "$_mode"; printf ',"selection_category":'; json_quote "$_selection_category"
+    printf ',"last_job_id":'; json_quote "$_last_job_id"; printf ',"last_job_status":'; json_quote "$_last_job_status"; printf ',"last_job_result":'; json_quote "$_last_job_result"; printf ',"last_job_mode":'; json_quote "$_last_job_mode"
+    printf ',"last_job_profile":'; json_quote "$_last_job_profile"; printf ',"last_job_dns_id":'; json_quote "$_last_job_dns_id"; printf ',"last_job_started":'; json_quote "$_last_job_started"; printf ',"last_job_finished":'; json_quote "$_last_job_finished"; printf ',"last_job_message":'; json_quote "$_last_job_message"
     printf ',"profile_job_status":'; json_quote "$_profile_job_status"; printf ',"profile_job_result":'; json_quote "$_profile_job_result"
     printf ',"profile_job_profile":'; json_quote "$_profile_job_profile"; printf ',"profile_job_started":'; json_quote "$_profile_job_started"; printf ',"profile_job_finished":'; json_quote "$_profile_job_finished"; printf ',"profile_job_message":'; json_quote "$_profile_job_message"
     printf ',"watchdog":'; json_quote "$_watchdog"; printf ',"watchdog_backend":'; json_quote "$_watchdog_backend"
@@ -2190,7 +2226,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.6.57
+// DNS Manager LuCI version: 1.6.58
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
