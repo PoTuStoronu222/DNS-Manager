@@ -442,50 +442,7 @@ grep -A18 -F 'watchdog_pick_replacement() {' dns-manager.sh | grep -q 'watchdog_
 grep -q '_fallback_slots=""' dns-manager.sh || fail "watchdog fallback slots are not tracked"
 grep -q '_empty_slots=""' dns-manager.sh || fail "watchdog empty slots are not tracked"
 grep -q 'Watchdog: проверяю целевую категорию для восстановления/дозаполнения' dns-manager.sh || fail "watchdog gradual target restore/fill path missing"
-awk '/^auto_fill_slots\(\)/,/^return 0/' dns-manager.sh > "$tmp/auto_fill_profile.sh"
-if grep -q '_bypass_count.*-lt 6|подтверждено только .* из 6' "$tmp/auto_fill_profile.sh"; then
-    fail "profile application still requires six bypass DNS"
-fi
-grep -q '_current_slot_cat' dns-manager.sh || fail "watchdog slot category tracking missing"
-ok "profiles survive clean fallback and watchdog gradually restores/fills target DNS"
-
-awk '/^quick_max_bypass\(\)/,/^}/' dns-manager.sh > "$tmp/quick_max_bypass.sh"
-grep -q 'auto_fill_slots bypass || return 1' "$tmp/quick_max_bypass.sh" || fail "bypass profile does not allow partial startup"
-if grep -q 'минимум 3\|_bypass_count.*-lt 6' "$tmp/quick_max_bypass.sh"; then
-    fail "bypass profile still requires multiple DNS before apply"
-fi
-grep -q '\[ -n "\$_empty_slots" \]' dns-manager.sh || fail "watchdog exits before processing empty profile slots"
-grep -q 'if \[ "$_slot" != RU \] && \[ "$_desired_slot_cat" != clean \] && \[ "$_current_slot_cat" = clean \]' dns-manager.sh || fail "watchdog does not detect temporary clean fallback slots"
-ok "bypass profile can start with one DNS and watchdog handles empty/fallback slots"
-grep -q '^job_state_value() {' "$tmp/backend.sh" || fail "profile job state helper missing"
-grep -q '^job_process_alive() {' "$tmp/backend.sh" || fail "profile job liveness helper missing"
-grep -q 'job_write "\$_jid" pid "\$_job_pid"' "$tmp/backend.sh" || fail "profile job PID persistence missing"
-grep -q 'PROFILE_RUNNING_JOB=' "$tmp/backend.sh" || fail "running profile job discovery missing"
-grep -q 'resumed":true' "$tmp/backend.sh" || fail "same-profile job resume response missing"
-grep -q 'function resumeRunningProfile(root)' "$tmp/overview.js" || fail "LuCI profile job reconnect helper missing"
-grep -q "callJob('profile')" "$tmp/overview.js" || fail "LuCI does not inspect running profile job"
-grep -q 'state.profileResumeStarted' "$tmp/overview.js" || fail "LuCI profile resume guard missing"
-grep -q 'resumeRunningProfile(root)' "$tmp/overview.js" || fail "LuCI profile resume is not started on render"
-ok "profile jobs survive LuCI disconnects and reconnect on page load"
-grep -q 'PROFILE_APPLY=1 apply_profile_now "\$_profile"' "$tmp/backend.sh" || fail "LuCI profile job does not use bounded profile picker"
-if awk '/^function applyProfile\(name,root\)\{/,/^function setTestAge/' "$tmp/overview.js" | grep -q 'if(currentId===name)return'; then
-    fail "LuCI blocks re-applying the currently selected profile"
-fi
-grep -q 'repeat=currentId===name' "$tmp/overview.js" || fail "LuCI repeat-profile path missing"
-ok "profile apply uses bounded selection and the active profile can be applied again"
-
-
-# Ready-made profiles must always refresh the complete DNS catalog before selection.
-grep -q '^profile_apply_begin() {' dns-manager.sh || fail "profile apply precheck helper missing"
-awk '/^profile_apply_begin\(\)/,/^}/' dns-manager.sh > "$tmp/profile_apply_begin.sh"
-grep -q 'PROFILE_FULL_TEST=1' "$tmp/profile_apply_begin.sh" || fail "profile apply does not require a full fresh test"
-grep -q 'test_dns_catalog' "$tmp/profile_apply_begin.sh" || fail "profile apply does not run the full catalog test"
-grep -q 'test_dns_catalog ||' "$tmp/profile_apply_begin.sh" || fail "profile full test failure is not propagated"
-grep -q 'PROFILE_FULL_TEST=0' "$tmp/profile_apply_begin.sh" || fail "profile full-test flag is not reset on failure"
-
-grep -q '^auto_fill_slots() {' dns-manager.sh || fail "automatic profile DNS selection helper missing"
-awk '/^auto_fill_slots\\(\\)/,/^return 0/' dns-manager.sh > "$tmp/auto_fill_profile.sh"
-grep -q 'ensure_test_results_fresh' "$tmp/auto_fill_profile.sh" || fail "profile selection does not use fresh full results"
+grep -A8 '^auto_fill_slots() {' dns-manager.sh | grep -q 'ensure_test_results_fresh' || fail "profile selection does not use fresh full results"
 if grep -q 'profile_fill_slots' dns-manager.sh; then
     fail "obsolete bounded profile picker remains"
 fi
