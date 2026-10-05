@@ -324,7 +324,7 @@ if validate_dns_message "$tmp/dns-servfail.bin"; then
 fi
 ok "DNS health test rejects SERVFAIL and requires a real A answer"
 
-grep -Fq -- '--connect-timeout 1 --max-time 3 --resolve "\$host:\$port:\$ipx"' dns-manager.sh || fail "direct DoH timeout was not reduced"
+grep -Fq -- '--connect-timeout 1 --max-time 3 --resolve "$host:$port:$ipx"' dns-manager.sh || fail "direct DoH timeout was not reduced"
 grep -q 'collect_current_batch()' "$tmp/backend.sh" || fail "selected DNS checks are not batched"
 grep -q '(trap - EXIT; test_one_dns "\$_id") &' "$tmp/backend.sh" || fail "selected DNS checks do not run in parallel"
 grep -q 'job_write "\$_jid" result fail' "$tmp/backend.sh" || fail "selected DNS failure result handling missing"
