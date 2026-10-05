@@ -307,10 +307,14 @@ grep -q ',"status":' "$tmp/backend.sh" || fail "LuCI DoH instances do not expose
 grep -q "badge('dm-ok','работает')" "$tmp/overview.js" || fail "LuCI does not show DNS test state as работает"
 grep -q "badge('dm-bad','не работает')" "$tmp/overview.js" || fail "LuCI does not show failed DNS test state as не работает"
 grep -q "badge('dm-off','не проверено')" "$tmp/overview.js" || fail "LuCI does not distinguish an untested DNS"
-if grep -q "badge('dm-ok','запущен')" "$tmp/overview.js"; then
-    fail "LuCI still exposes process state as пользовательский DNS status"
+if grep -q "dm-doh-state.*запущен" "$tmp/overview.js"; then
+    fail "LuCI DoH rows still expose process state as пользовательский DNS status"
+fi
+if grep -q "dm-doh-state.*остановлен" "$tmp/overview.js"; then
+    fail "LuCI DoH rows still expose process stop state instead of test state"
 fi
 grep -q "hasPing(ci.ping)" "$tmp/overview.js" || fail "LuCI does not render DNS test ping"
+grep -q "'dm-doh-ping'" "$tmp/overview.js" || fail "LuCI DoH page does not render DNS test ping"
 ok "LuCI DoH rows use test result status and ping"
 
 awk '
