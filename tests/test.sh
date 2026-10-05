@@ -259,7 +259,7 @@ awk '
 grep -q 'command -v nslookup' "$tmp/local_slot_test_fn.sh" || fail "nslookup primary checker missing"
 grep -Fq 'nslookup -port="$_port" "$_domain" 127.0.0.1' "$tmp/local_slot_test_fn.sh" || fail "local slot nslookup port/host contract missing"
 grep -q '_answer="$(awk' "$tmp/local_slot_test_fn.sh" || fail "real DNS answer parser missing"
-grep -q '/^Name:\[\[:space:\]\]/' "$tmp/local_slot_test_fn.sh" || fail "DNS answer parser does not require Name section"
+grep -Fq '/^Name:[[:space:]]/' "$tmp/local_slot_test_fn.sh" || fail "DNS answer parser does not require Name section"
 grep -q 'LOCAL_DNS_NO_ANSWER' "$tmp/local_slot_test_fn.sh" || fail "empty-answer classification missing"
 grep -q 'LOCAL_DNS_SERVFAIL' "$tmp/local_slot_test_fn.sh" || fail "SERVFAIL classification missing"
 grep -q 'LOCAL_DNS_NXDOMAIN' "$tmp/local_slot_test_fn.sh" || fail "NXDOMAIN classification missing"
