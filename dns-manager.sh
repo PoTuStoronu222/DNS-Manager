@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.35.15"
+VERSION="3.35.16"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -8202,16 +8202,11 @@ done
 main_menu() {
 while :; do
     menu_header "DNS Manager $VERSION"
-    menu_section "НАСТРОЙКА DNS"
     menu_item "[1]" "Настроить DNS"
-    menu_section "НАСТРОЙКИ"
     menu_item "[2]" "Серверы точного времени"
     menu_item "[3]" "Сетевой тюнинг"
-    menu_section "ДИАГНОСТИКА"
     menu_item "[4]" "Состояние и журнал"
-    menu_section "УПРАВЛЕНИЕ"
     menu_item "[5]" "Удалить DNS Manager"
-    menu_section "LUCI"
     _luci_state="$(check_module_state luci)"
     if [ "$_luci_state" = 1 ]; then
         if [ "${LUCI_UPDATE_AVAILABLE:-0}" = 1 ]; then
