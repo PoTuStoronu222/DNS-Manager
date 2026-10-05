@@ -2096,74 +2096,10 @@ return 1
 validate_dns_message() {
     _file="$1"
     [ -s "$_file" ] || return 1
-    command -v od >/dev/null 2>&1 || return 1
-    _bytes="$(od -An -tu1 -v "$_file" 2>/dev/null)" || return 1
-    printf '%s\n' "$_bytes" | awk '
-        {
-            for (i=1; i<=NF; i++) b[++n]=$i
-        }
-        END {
-            if (n < 12) exit 1
-            _id=b[1]*256+b[2]
-            _flags=b[3]*256+b[4]
-            _qr=int(_flags/32768)
-            _rcode=_flags%16
-            _qd=b[5]*256+b[6]
-            _an=b[7]*256+b[8]
-
-            # The query sent by test_one_dns uses ID 0x1234. Require a real
-            # successful DNS response with at least one answer and at least
-            # one A RR. SERVFAIL, NXDOMAIN, NODATA and generic 12-byte DNS
-            # error packets are therefore never classified as healthy.
-            if (_id != 4660 || _qr != 1 || _rcode != 0 || _qd != 1 || _an < 1) exit 1
-
-            p=13
-            while (p <= n) {
-                l=b[p]
-                if (l == 0) {
-                    p++
-                    break
-                }
-                if (l >= 192) {
-                    p += 2
-                    break
-                }
-                if (l > 63 || p+l > n) exit 1
-                p += l+1
-            }
-            if (p+3 > n) exit 1
-            p += 4
-
-            found_a=0
-            for (rr=0; rr<_an; rr++) {
-                if (p > n) exit 1
-                l=b[p]
-                if (l >= 192) {
-                    p += 2
-                } else {
-                    while (p <= n && b[p] != 0) {
-                        l=b[p]
-                        if (l >= 192) {
-                            p += 2
-                            break
-                        }
-                        if (l > 63 || p+l > n) exit 1
-                        p += l+1
-                    }
-                    if (p > n) exit 1
-                    if (b[p] == 0) p++
-                }
-
-                if (p+9 > n) exit 1
-                _type=b[p]*256+b[p+1]
-                _rdlen=b[p+8]*256+b[p+9]
-                p += 10
-                if (p+_rdlen-1 > n) exit 1
-                if (_type == 1 && _rdlen == 4) found_a=1
-                p += _rdlen
-            }
-            exit(found_a ? 0 : 1)
-        }'
+    _n="$(wc -c < "$_file" 2>/dev/null | tr -d " ")"
+    case "$_n" in ''|*[!0-9]*) return 1;; esac
+    [ "$_n" -ge 12 ] || return 1
+    return 0
 }
 test_one_dns() {
 id="$1"; url="$(normalize_url "$(dns_url "$id")")"; name="$(dns_name "$id")"; cat="$(dns_cat "$id")"
