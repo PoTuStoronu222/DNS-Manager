@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.35.45"
+VERSION="3.35.46"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -6636,7 +6636,7 @@ ${C_YELLOW}↻ Обнаружены недостающие компоненты.
 quick_max_bypass() {
 menu_header "МАКСИМАЛЬНЫЙ ОБХОД"
 printf "${C_WHITE}В этом пункте:${C_NC}\n"
-printf "  ${C_GREEN}✓${C_NC} до 6 рабочих DNS-серверов (минимум 3 для применения)\n"
+printf "  ${C_GREEN}✓${C_NC} до 6 рабочих DNS-серверов (можно начать с одного)\n"
 printf "  ${C_GREEN}✓${C_NC} отдельный DNS для .ru / .su / .рф\n"
 printf "  ${C_GREEN}✓${C_NC} автоматическая замена неработающих серверов\n"
 printf "  ${C_GREEN}✓${C_NC} одновременная работа выбранных DNS\n"
@@ -6652,24 +6652,22 @@ DNS_PROFILE="hybrid"
 DNS_SELECTION_MODE="quick"
 DNS_SELECTION_CATEGORY="bypass"
 SLOT_1=""; SLOT_2=""; SLOT_3=""; SLOT_4=""; SLOT_5=""; SLOT_6=""
-
 SLOT_1_CAT="bypass"; SLOT_2_CAT="bypass"; SLOT_3_CAT="bypass"
 SLOT_4_CAT="bypass"; SLOT_5_CAT="bypass"; SLOT_6_CAT="bypass"
-
 TLD_RU_ENABLED=1
 TLD_SPLIT=1
 BALANCER_ENABLED=1
 BOOTSTRAP_DNS="$BOOTSTRAP_DNS_ALL"
 PORT_1="$HYBRID_PORT_1"; PORT_2="$HYBRID_PORT_2"; PORT_3="$HYBRID_PORT_3"
 PORT_4="$HYBRID_PORT_4"; PORT_5="$HYBRID_PORT_5"; PORT_6="$HYBRID_PORT_6"
-
-HYBRID_FORCE_RESELECT=1
-   CORE_ONLY=1
-    apply_settings
-    _rc=$?
-    CORE_ONLY=0
-    HYBRID_FORCE_RESELECT=0
-    return "$_rc"
+auto_fill_slots bypass || return 1
+HYBRID_STAGE_SKIP=1
+CORE_ONLY=1
+apply_settings
+_rc=$?
+CORE_ONLY=0
+HYBRID_STAGE_SKIP=0
+return "$_rc"
 }
 # ==========================================
 # ==========================================
@@ -7440,7 +7438,7 @@ watchdog_embedded_loop() {
         done
 
         [ "$_probe_rc" = 2 ] && { sleep "$_interval"; continue; }
-        [ "$_checked" -gt 0 ] || { sleep "$_interval"; continue; }
+        [ "$_checked" -gt 0 ] || { [ -n "$_empty_slots" ] || { sleep "$_interval"; continue; }; }
 
         _watchdog_action=0
 
