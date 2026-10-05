@@ -20,7 +20,24 @@ ok "shell syntax"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT INT TERM
 
-# DNS health must reject malformed/non-response data, but accept legitimate resolver replies.
+# DNS response validation intentionally stays lightweight: HTTP 200 + DNS message body.
+awk '
+    /^validate_dns_message\(\) \{/ { capture=1 }
+    capture { print }
+    capture && /^}$/ { exit }
+' dns-manager.sh > "$tmp/validate_dns.sh"
+[ -s "$tmp/validate_dns.sh" ] || fail "DNS response validator extraction"
+. "$tmp/validate_dns.sh"
+
+printf '\000\000\000\000\000\001\000\000\000\000\000\000' > "$tmp/dns-small"
+if validate_dns_message "$tmp/dns-small"; then
+    fail "short DNS body accepted"
+fi
+
+printf '\000\000\000\000\000\001\000\000\000\000\000\000abcdefghijkl' > "$tmp/dns-body"
+validate_dns_message "$tmp/dns-body" || fail "normal-sized DNS body rejected"
+
+ok "DNS response validation remains lightweight"
 awk '
     /^validate_dns_message\(\) \{/ { capture=1 }
     capture { print }
