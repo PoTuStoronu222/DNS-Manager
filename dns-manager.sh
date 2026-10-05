@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.35.54"
+VERSION="3.35.55"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -2707,22 +2707,11 @@ validate_selected_slots() {
         _u="$(normalize_url "$(dns_url "$_id")")"
         [ -n "$_u" ] || { err_msg "Слот $s содержит DNS без URL."; return 1; }
         if [ "$DNS_PROFILE" = hybrid ]; then
-            if [ "${PROFILE_APPLY:-0}" = 1 ]; then
-                _profile_tested_ok=no
-                for _pid in ${PROFILE_FRESH_OK_IDS:-}; do
-                    [ "$_pid" = "$_id" ] && { _profile_tested_ok=yes; break; }
-                done
-                if [ "$_profile_tested_ok" != yes ]; then
-                    err_msg "DNS «$(dns_name "$_id")» не прошёл свежую проверку профиля. Он не может быть применён."
-                    return 1
-                fi
-            else
-                ensure_test_results_fresh || return 1
-                _tested_ok="$(awk -F'|' -v id="$_id" 'NF>=5 && $1==id && $5=="OK" && $4 ~ /^[0-9]+$/ {print "yes"; exit}' "$TEST_RESULTS" 2>/dev/null)"
-                if [ "$_tested_ok" != yes ]; then
-                    err_msg "DNS «$(dns_name "$_id")» не прошёл последнюю полную проверку. Он не может быть применён."
-                    return 1
-                fi
+            ensure_test_results_fresh || return 1
+            _tested_ok="$(awk -F'|' -v id="$_id" 'NF>=5 && $1==id && $5=="OK" && $4 ~ /^[0-9]+$/ {print "yes"; exit}' "$TEST_RESULTS" 2>/dev/null)"
+            if [ "$_tested_ok" != yes ]; then
+                err_msg "DNS «$(dns_name "$_id")» не прошёл последнюю полную проверку. Он не может быть применён."
+                return 1
             fi
         fi
         if grep -qxF "$_u" "$_urls" 2>/dev/null; then
@@ -5389,17 +5378,19 @@ pause
 }
 profile_apply_begin() {
     PROFILE_APPLY=1
-    PROFILE_FRESH_OK_IDS=""
+    PROFILE_FULL_TEST=1
     PROFILE_OLD_NTP_IP_FALLBACK="${NTP_IP_FALLBACK:-0}"
     PROFILE_OLD_FORCE_DOH="${FORCE_DOH:-0}"
     PROFILE_OLD_DNSMASQ_PERF="${DNSMASQ_PERF:-0}"
     PROFILE_OLD_WATCHDOG_ENABLED="${WATCHDOG_ENABLED:-0}"
+    test_dns_catalog || { PROFILE_FULL_TEST=0; PROFILE_APPLY=0; return 1; }
 }
 profile_apply_end() {
     NTP_IP_FALLBACK="$PROFILE_OLD_NTP_IP_FALLBACK"
     FORCE_DOH="$PROFILE_OLD_FORCE_DOH"
     DNSMASQ_PERF="$PROFILE_OLD_DNSMASQ_PERF"
     WATCHDOG_ENABLED="$PROFILE_OLD_WATCHDOG_ENABLED"
+    PROFILE_FULL_TEST=0
     PROFILE_APPLY=0
 }
 
@@ -5407,14 +5398,14 @@ apply_profile_now() {
 goal="$1"
 case "$goal" in
 bypass)
-    profile_apply_begin
+    profile_apply_begin || { _profile_rc=$?; profile_apply_end; return "$_profile_rc"; }
     quick_max_bypass
     _profile_rc=$?
     profile_apply_end
     return "$_profile_rc"
     ;;
 clean|security|privacy|adblock|family|all)
-    profile_apply_begin
+    profile_apply_begin || { _profile_rc=$?; profile_apply_end; return "$_profile_rc"; }
     # Profile selection changes only the DNS selection. Preserve the operator's
     # current regional DNS where requested, while the Hybrid DNS core remains on.
     _profile_old_ru="${SLOT_RU:-}"
@@ -5568,10 +5559,6 @@ while IFS='|' read -r _id _cat2 _prof _name _url _region _status; do
 
     if [ "$_rst" = OK ]; then
         case "$_rms" in ''|*[!0-9]*) continue;; esac
-        case " ${PROFILE_FRESH_OK_IDS:-} " in
-            *" $_id "*) ;;
-            *) PROFILE_FRESH_OK_IDS="${PROFILE_FRESH_OK_IDS:+$PROFILE_FRESH_OK_IDS }$_id" ;;
-        esac
         printf '%s|%s|%s|%s|%s\n' "$_id" "$_cat2" "$_name" "$_rms" "$_rst" >> "$_pool"
         _found=$((_found+1))
         [ "$_found" -ge 6 ] && break
@@ -5591,10 +5578,6 @@ for _ru_id in yandex_ru $(awk -F'|' 'NF>=5 && $1 !~ /^#/ && $2=="regional" {prin
     fi
     rm -f "$_rf" "$TMP_DIR/body.$_ru_id" "$TMP_DIR/h.$_ru_id" 2>/dev/null || true
     if [ "$_rst" = OK ]; then
-        case " ${PROFILE_FRESH_OK_IDS:-} " in
-            *" $_ru_id "*) ;;
-            *) PROFILE_FRESH_OK_IDS="${PROFILE_FRESH_OK_IDS:+$PROFILE_FRESH_OK_IDS }$_ru_id" ;;
-        esac
         _ru="$_ru_id"
         break
     fi
@@ -5643,7 +5626,7 @@ return 0
 
 auto_fill_slots() {
 _cat="$1"
-if [ "${PROFILE_APPLY:-0}" = 1 ]; then
+if [ "${PROFILE_APPLY:-0}" = 1 ] && [ "${PROFILE_FULL_TEST:-0}" != 1 ]; then
     profile_fill_slots "$_cat"
     return $?
 fi
@@ -6842,8 +6825,8 @@ printf "  ${C_GREEN}✓${C_NC} автоматическая замена нер�
 printf "  ${C_GREEN}✓${C_NC} одновременная работа выбранных DNS\n"
 printf "  ${C_GREEN}✓${C_NC} проверка после настройки\n"
 printf "  ${C_GREEN}✓${C_NC} сохранение исходных настроек для отката\n\n"
-if [ "${PROFILE_APPLY:-0}" = 1 ]; then
-    info_msg "Проверяю быстрые кандидаты DNS; полная проверка каталога не требуется."
+if [ "${PROFILE_FULL_TEST:-0}" = 1 ]; then
+    info_msg "Использую только что завершённую полную проверку DNS."
 else
     if watchdog_test_results_fresh; then
         info_msg "Использую свежие результаты полной проверки DNS; повторный тест не требуется."
