@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.35.11"
+VERSION="3.35.12"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -8425,7 +8425,12 @@ update-check|--update-check)
     write_catalogs >/dev/null 2>&1 || true
     load_config
     DNS_MANAGER_FORCE_UPDATE=1 DNS_MANAGER_UPDATE_NO_EXEC=1 auto_update_manager --force
-    exit 0
+    case "${AUTO_UPDATE_RESULT:-failed}" in
+        updated) exit 0 ;;
+        current|throttled) exit 2 ;;
+        busy|failed|skipped|disabled) exit 1 ;;
+        *) exit 3 ;;
+    esac
     ;;
 auto-update|--auto-update)
     preflight_readonly
