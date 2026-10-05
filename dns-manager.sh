@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.35.49"
+VERSION="3.35.50"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -3581,7 +3581,11 @@ replace_failed_slot_from_test() {
     _attempt=0
     while [ "$_attempt" -lt 2 ]; do
         _attempt=$((_attempt+1))
-        _picked="$(watchdog_pick_replacement "$_slot" "$_used" "$_slot_tried")"
+        _target_live="$(watchdog_target_live_count 2>/dev/null || printf 0)"
+        case "$_target_live" in ""|*[!0-9]*) _target_live=0;; esac
+        _allow_clean=0
+        [ "$_target_live" -eq 0 ] && _allow_clean=1
+        _picked="$(watchdog_pick_replacement "$_slot" "$_used" "$_slot_tried" "$_allow_clean")"
         _rid="${_picked%%|*}"
         _rcat="${_picked#*|}"
         [ -n "$_rid" ] || break
@@ -3602,7 +3606,15 @@ replace_failed_slot_from_test() {
         [ "${APPLY_OUTPUT_QUIET:-0}" = 1 ] || printf "  ${C_RED}✗ Слот %s: %s не подтвердился локально; откат выполнен.${C_NC}\n" "$_slot" "$_candidate_name"
     done
     rm -f "$_slot_tried" "$_used" 2>/dev/null
-    warn_msg "Для слота $_slot не найден другой DNS в выбранной категории, который прошёл точечную проверку и заработал через локальный порт."
+    if [ "${_target_live:-0}" -gt 0 ] && [ "$_slot" != RU ] && [ -n "$_old_id" ]; then
+        slot_set "$_slot" "" || return 1
+        slot_cat_set "$_slot" "" || return 1
+        if watchdog_apply_slot_candidate "$_slot" "" "" "$_old_id" "$_oldcat"; then
+            [ "${APPLY_OUTPUT_QUIET:-0}" = 1 ] || printf "  ${C_GREEN}✓ Слот %s освобождён; рабочий DNS целевой категории сохранён.${C_NC}\n" "$_slot"
+            return 0
+        fi
+    fi
+    warn_msg "Для слота $_slot не найден подтверждённый DNS в целевой категории."
     return 1
 }
 verify_after_apply_with_repair() {
@@ -7407,6 +7419,7 @@ watchdog_embedded_loop() {
         _fallback_slots=""
         _empty_slots=""
         _probe_rc=0
+        _target_live_count=0
 
         watchdog_refresh_listener_snapshot
 
@@ -7445,6 +7458,7 @@ watchdog_embedded_loop() {
             _probe_rc=$?
             [ "$_probe_rc" = 2 ] && break
             if [ "$_probe_rc" = 0 ]; then
+                [ "$_slot" != RU ] && [ "$_current_slot_cat" = "$_desired_slot_cat" ] && _target_live_count=$((_target_live_count+1))
                 watchdog_loop_reset_slot "$_slot"
                 continue
             fi
@@ -7497,7 +7511,7 @@ watchdog_embedded_loop() {
             if [ -n "$_trigger" ]; then
                 watchdog_loop_mark_repair "$_trigger"
                 log_msg "Подтверждён сбой слота $_trigger в двух последовательных циклах при живом локальном listener. Запрашиваю точечную замену."
-                watchdog_slot_target_run "$_trigger" >/dev/null 2>&1 || log_msg "Точечное восстановление слота $_trigger завершилось неуспешно; повторю после новых двух циклов."
+                watchdog_slot_target_run "$_trigger" "$_target_live_count" >/dev/null 2>&1 || log_msg "Точечное восстановление слота $_trigger завершилось неуспешно; повторю после новых двух циклов."
                 _watchdog_action=1
                 load_config
                 refresh_runtime_capabilities
@@ -7513,7 +7527,7 @@ watchdog_embedded_loop() {
             [ -n "$_restore_slot" ] || for _slot in $_empty_slots; do _restore_slot="$_slot"; break; done
             if [ -n "$_restore_slot" ] && [ "$_wd_repairs" -lt "${WATCHDOG_MAX_REPAIRS:-1}" ]; then
                 log_msg "Watchdog: проверяю целевую категорию для восстановления/дозаполнения слота $_restore_slot."
-                watchdog_slot_target_run "$_restore_slot" >/dev/null 2>&1 && _watchdog_action=1 || true
+                watchdog_slot_target_run "$_restore_slot" "$_target_live_count" >/dev/null 2>&1 && _watchdog_action=1 || true
                 load_config >/dev/null 2>&1 || true
                 refresh_runtime_capabilities >/dev/null 2>&1 || true
             fi
@@ -8202,7 +8216,10 @@ watchdog_slot_target_run() {
     if [ "$_slot" != RU ] && [ -n "$_target_id" ] && [ "$_target_cat" != clean ] && [ "$(dns_cat "$_target_id" 2>/dev/null)" = clean ]; then
         _promote_fallback=1
     fi
-    _target_live="$(watchdog_target_live_count 2>/dev/null || printf 0)"
+    _target_live="${2:-}"
+    case "$_target_live" in
+        ""|*[!0-9]*) _target_live="$(watchdog_target_live_count 2>/dev/null || printf 0)" ;;
+    esac
     case "$_target_live" in ""|*[!0-9]*) _target_live=0;; esac
     _allow_clean=0
     [ "$_target_live" -eq 0 ] && [ "$_promote_fallback" != 1 ] && _allow_clean=1
