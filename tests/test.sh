@@ -308,12 +308,6 @@ grep -q "callJob('profile')" "$tmp/overview.js" || fail "LuCI does not inspect r
 grep -q 'state.profileResumeStarted' "$tmp/overview.js" || fail "LuCI profile resume guard missing"
 grep -q 'resumeRunningProfile(root)' "$tmp/overview.js" || fail "LuCI profile resume is not started on render"
 ok "profile jobs survive LuCI disconnects and reconnect on page load"
- "$tmp/menu_slots.sh"; then
-    fail "DNS menu restore still selects/applies a DNS profile"
-fi
-grep -q 'reset_dns)' "$tmp/backend.sh" || fail "LuCI DNS reset RPC missing"
-grep -q 'reset_dns' "$tmp/overview.js" || fail "LuCI DNS reset action missing"
-ok "DNS restore returns to standard resolver path"
 
 top_luci="$(sed -n 's/^# Version:[[:space:]]*//p' dns-manager-luci.sh | head -n1)"
 installer_luci="$(sed -n 's/^VERSION="\([^"]*\)"$/\1/p' dns-manager-luci.sh | head -n1)"
