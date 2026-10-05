@@ -467,6 +467,35 @@ grep -q "callJob('profile')" "$tmp/overview.js" || fail "LuCI does not inspect r
 grep -q 'state.profileResumeStarted' "$tmp/overview.js" || fail "LuCI profile resume guard missing"
 grep -q 'resumeRunningProfile(root)' "$tmp/overview.js" || fail "LuCI profile resume is not started on render"
 ok "profile jobs survive LuCI disconnects and reconnect on page load"
+
+# Ready-made profiles must not trigger the heavy full-catalog scan just to select DNS.
+grep -q '^profile_fill_slots() {' dns-manager.sh || fail "bounded profile DNS picker missing"
+awk '/^profile_fill_slots\(\)/,/^}$/ { print }' dns-manager.sh > "$tmp/profile_fill_slots.sh"
+[ -s "$tmp/profile_fill_slots.sh" ] || fail "profile picker extraction"
+grep -q 'acquire_test_lock' "$tmp/profile_fill_slots.sh" || fail "profile picker is not serialized with DNS tests"
+grep -q 'test_one_dns' "$tmp/profile_fill_slots.sh" || fail "profile picker does not test DNS candidates"
+grep -q 'PROFILE_MAX_PROBES:-12' "$tmp/profile_fill_slots.sh" || fail "profile picker default probe bound missing"
+grep -q 'быстрых кандидатов' "$tmp/profile_fill_slots.sh" || fail "profile picker failure is not explicit"
+if grep -q 'ensure_test_results_fresh\|test_dns_catalog' "$tmp/profile_fill_slots.sh"; then
+    fail "ready profile picker still depends on a full catalog test"
+fi
+awk '/^auto_fill_slots\(\)/,/^}$/ { print }' dns-manager.sh > "$tmp/auto_fill_dispatch.sh"
+grep -q 'if [ "${PROFILE_APPLY:-0}" = 1 ]; then' "$tmp/auto_fill_dispatch.sh" || fail "profile apply does not switch to bounded picker"
+grep -q 'profile_fill_slots "${_cat}' "$tmp/auto_fill_dispatch.sh" || fail "profile apply bounded picker dispatch missing"
+ok "ready profile apply uses bounded candidate checks instead of full catalog scan"
+
+# Completed profile jobs survive a LuCI page reload and expose the actual reason for failure.
+grep -q 'profile_job_status' "$tmp/backend.sh" || fail "persistent profile job status missing"
+grep -q 'profile_job_result' "$tmp/backend.sh" || fail "persistent profile job result missing"
+grep -q 'profile_job_message' "$tmp/backend.sh" || fail "persistent profile job message missing"
+grep -q '"profile_job_status"' "$tmp/backend.sh" || fail "profile job status is not returned by status JSON"
+grep -q '"profile_job_message"' "$tmp/backend.sh" || fail "profile job message is not returned by status JSON"
+grep -q 'Последняя операция: профиль' "$tmp/overview.js" || fail "LuCI does not show the last profile operation after reopen"
+grep -q 'Причина:' "$tmp/overview.js" || fail "LuCI does not show the profile failure reason"
+grep -q 'Закрытие LuCI не останавливает операцию' "$tmp/overview.js" || fail "LuCI does not explain persistent running profile jobs"
+grep -q "setAction(true,p?'Профиль «'+profileName(p)+'» уже применяется. Связь восстановлена.':'Применение профиля уже выполняется. Связь восстановлена.','running')" "$tmp/overview.js" || fail "running profile resume is not labeled as running"
+ok "LuCI persists profile operation state across page reloads"
+
 # Watchdog tuning is persisted and exposed as live LuCI controls.
 for _wd_key in WATCHDOG_INTERVAL WATCHDOG_FAIL_THRESHOLD WATCHDOG_REPAIR_COOLDOWN WATCHDOG_MAX_REPAIRS WATCHDOG_MAX_RESTARTS WATCHDOG_MAX_CANDIDATES WATCHDOG_GUARD_INTERVAL; do
     grep -q "^${_wd_key}=" dns-manager.sh || fail "watchdog config variable missing: $_wd_key"
