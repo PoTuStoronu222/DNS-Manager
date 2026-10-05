@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.6.29
+# Version: 1.6.30
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -23,7 +23,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.6.29"
+VERSION="1.6.30"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -113,7 +113,7 @@ EOF_MENU
     },
     "write": {
       "ubus": {
-        "dns_manager": [ "set_profile", "set_slot", "set_setting", "set_watchdog_setting", "set_test_age", "test_all", "test_current", "test_one", "update", "update_manager", "update_hdp", "update_catalog", "update_all" ]
+        "dns_manager": [ "set_profile", "reset_dns", "set_slot", "set_setting", "set_watchdog_setting", "set_test_age", "test_all", "test_current", "test_one", "update", "update_manager", "update_hdp", "update_catalog", "update_all" ]
       }
     }
   }
@@ -145,7 +145,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.6.29"
+SELF_VERSION="1.6.30"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -1830,6 +1830,14 @@ run_action() {
             case "$_profile" in clean2) _profile=clean;; bypass|clean|security|privacy|adblock|family|all) ;; *) json_error "Неверный профиль"; return;; esac
             job_start_profile "$_profile"
             ;;
+        reset_dns)
+            load_manager || { json_error "DNS Manager недоступен"; return; }
+            if restore_dns_core >/dev/null 2>&1; then
+                json_ok
+            else
+                json_error "Не удалось восстановить стандартную настройку DNS"
+            fi
+            ;;
         set_slot)
             RPC_SLOT="$(jget slot)"; RPC_ID="$(jget id)"
             case "$RPC_SLOT" in 1|2|3|4|5|6|RU) ;; *) json_error "Неверный слот"; return;; esac
@@ -1955,7 +1963,7 @@ test_json() { case "${RPC_METHOD:-}" in test_all) job_start_test_all;; test_curr
 
 case "${1:-}" in
     list)
-        printf '{"status":{},"runtime":{},"catalog":{"category":"String","offset":0,"limit":0,"only_ok":0},"update_check":{},"update":{},"update_manager":{},"update_hdp":{},"update_catalog":{},"update_all":{},"set_profile":{"profile":"String"},"set_slot":{"slot":"String","id":"String"},"set_setting":{"name":"String","enabled":0},"set_watchdog_setting":{"name":"String","value":0},"set_ntp":{"preset":"String"},"set_test_age":{"category":"String","hours":0},"test_all":{},"test_current":{},"test_one":{"id":"String"},"job":{"id":"String"},"log":{"lines":0}}\n'
+        printf '{"status":{},"runtime":{},"catalog":{"category":"String","offset":0,"limit":0,"only_ok":0},"update_check":{},"update":{},"update_manager":{},"update_hdp":{},"update_catalog":{},"update_all":{},"set_profile":{"profile":"String"},"reset_dns":{},"set_slot":{"slot":"String","id":"String"},"set_setting":{"name":"String","enabled":0},"set_watchdog_setting":{"name":"String","value":0},"set_ntp":{"preset":"String"},"set_test_age":{"category":"String","hours":0},"test_all":{},"test_current":{},"test_one":{"id":"String"},"job":{"id":"String"},"log":{"lines":0}}\n'
         ;;
     call)
         case "${2:-}" in
@@ -1963,7 +1971,7 @@ case "${1:-}" in
             runtime) runtime_json;;
             catalog) INPUT="$(cat 2>/dev/null || true)"; catalog_json;;
             update_check) INPUT="$(cat 2>/dev/null || true)"; update_check_json;;            update_catalog) update_catalog_json;;            update_all) update_all_json;;            update) update_json;;            update_manager) update_manager_json;;            update_hdp) update_hdp_json;;
-            set_profile|set_slot|set_setting|set_watchdog_setting|set_ntp) INPUT="$(cat 2>/dev/null || true)"; RPC_METHOD="$2"; run_action;;
+            reset_dns|set_profile|set_slot|set_setting|set_watchdog_setting|set_ntp) INPUT="$(cat 2>/dev/null || true)"; RPC_METHOD="$2"; run_action;;
             test_all|test_current|test_one) INPUT="$(cat 2>/dev/null || true)"; RPC_METHOD="$2"; test_json;;
             job) INPUT="$(cat 2>/dev/null || true)"; job_json "$(jget id)";;
             log) INPUT="$(cat 2>/dev/null || true)"; log_json "$(jget lines)";;
@@ -2009,7 +2017,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.6.29
+// DNS Manager LuCI version: 1.6.30
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -2036,6 +2044,7 @@ var callManagerUpdate = dmRpc({ object:'dns_manager', method:'update_manager', e
 var callHdpUpdate = dmRpc({ object:'dns_manager', method:'update_hdp', expect:{} });
 var callUpdateCatalog = dmRpc({ object:'dns_manager', method:'update_catalog', expect:{} });
 var callProfile = dmRpc({ object:'dns_manager', method:'set_profile', params:['profile'], expect:{} });
+var callResetDns = dmRpc({ object:'dns_manager', method:'reset_dns', expect:{} });
 var callSlot = dmRpc({ object:'dns_manager', method:'set_slot', params:['slot','id'], expect:{} });
 var callSetting = dmRpc({ object:'dns_manager', method:'set_setting', params:['name','enabled'], expect:{} });
 var callWatchdogSetting = dmRpc({ object:'dns_manager', method:'set_watchdog_setting', params:['name','value'], expect:{} });
@@ -2826,8 +2835,8 @@ function renderProfiles(root,st){
   var pch=[
     row('Работает сейчас',badge('dm-ok',current)),
     g,
-    E('div',{'class':'dm-mini'},'Профиль определяет схему выбора DNS и используется сейчас.')
-  ];
+    E('div',{'class':'dm-mini'},'Профиль определяет схему выбора DNS и используется сейчас.'),
+    btn('Восстановить стандартную настройку DNS','cbi-button-negative',function(){resetDnsCore(root);},{disabled:!!state.busy})  ];
   if(state.profileProgress){
     var pp=renderProfileProgress(root);
     if(pp)pch.push(pp);
@@ -3329,6 +3338,32 @@ function updateHdp(root){
   });
 }
 function doUpdate(root){if(state.busy)return;var v=(window.dmState&&window.dmState.luci_latest_version)||'новой версии';state.busy=true;state.pageNotice.overview='Обновляю LuCI…';globalUpdateNotice('Обновляю LuCI до v'+v+'…','info');if(rootAlive(root))renderOverview(root,window.dmState||{});callUpdate().then(function(r){state.busy=false;if(r&&r.ok&&r.updated){var msg='LuCI обновлена до v'+r.version+'. Перезагружаю страницу…';state.pageNotice.overview=msg;globalUpdateNotice(msg,'ok');if(rootAlive(root))renderOverview(root,window.dmState||{});setTimeout(function(){location.reload();},1600);}else{var msg=(r&&r.error)||'LuCI не удалось обновить.';state.pageNotice.overview=msg;globalUpdateNotice(msg,'error');if(rootAlive(root))renderOverview(root,window.dmState||{});}}).catch(function(err){state.busy=false;var msg=withRpcError('Не удалось выполнить RPC-обновление LuCI.',err);state.pageNotice.overview=msg;globalUpdateNotice(msg,'error');if(rootAlive(root))renderOverview(root,window.dmState||{});});}
+function resetDnsCore(root){
+  if(state.busy)return;
+  confirmAction('Восстановить стандартную настройку DNS',[
+    ['Действие','Удалить выбранные DNS Manager DNS и вернуть обычный DNS роутера']
+  ],function(){
+    state.busy=true;
+    state.pageNotice.profiles='Восстанавливаю стандартную настройку DNS…';
+    renderProfiles(root,window.dmState||{});
+    callResetDns().then(function(r){
+      state.busy=false;
+      if(r&&r.ok){
+        setAction(true,'Стандартная настройка DNS восстановлена.');
+        state.pageNotice.profiles='Стандартная настройка DNS восстановлена.';
+      }else{
+        setAction(false,(r&&r.error)||'Не удалось восстановить стандартную настройку DNS.');
+        state.pageNotice.profiles=(r&&r.error)||'Не удалось восстановить стандартную настройку DNS.';
+      }
+      refresh(root,true);
+    }).catch(function(err){
+      state.busy=false;
+      setAction(false,withRpcError('Не удалось восстановить стандартную настройку DNS.',err));
+      state.pageNotice.profiles=withRpcError('Не удалось восстановить стандартную настройку DNS.',err);
+      refresh(root,true);
+    });
+  });
+}
 function applyProfile(name,root){
   if(state.busy)return;
   var st=window.dmState||{};
