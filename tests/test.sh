@@ -488,7 +488,13 @@ if grep -q 'ensure_test_results_fresh\|test_dns_catalog' "$tmp/profile_fill_slot
 fi
 grep -Fq 'if [ "${PROFILE_APPLY:-0}" = 1 ]; then' dns-manager.sh || fail "profile apply does not switch to bounded picker"
 grep -Fq 'profile_fill_slots "$_cat"' dns-manager.sh || fail "profile apply bounded picker dispatch missing"
-ok "ready profile apply uses bounded candidate checks instead of full catalog scan"
+grep -Fq 'PROFILE_FRESH_OK_IDS=""' dns-manager.sh || fail "profile fresh DNS result list is not reset"
+grep -Fq 'for _pid in ${PROFILE_FRESH_OK_IDS:-}; do' dns-manager.sh || fail "profile apply does not validate freshly tested DNS candidates"
+awk '/^quick_max_bypass\(\)/,/^dependency_preflight\(\)/' dns-manager.sh > "$tmp/quick_profile_block.sh"
+grep -Fq 'if [ "${PROFILE_APPLY:-0}" = 1 ]; then' "$tmp/quick_profile_block.sh" || fail "quick bypass profile does not enter bounded mode"
+grep -Fq 'полная проверка каталога не требуется' "$tmp/quick_profile_block.sh" || fail "quick bypass profile still forces full catalog precheck"
+grep -Fq 'localProfileRunning=!!(state.busy&&state.profileProgress)' "$tmp/overview.js" || fail "LuCI does not suppress stale profile result during retry"
+ok "profile apply validates its fresh candidates and hides stale result while running"
 
 # Completed profile jobs survive a LuCI page reload and expose the actual reason for failure.
 grep -q 'profile_job_status' "$tmp/backend.sh" || fail "persistent profile job status missing"
