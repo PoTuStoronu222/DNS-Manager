@@ -1832,7 +1832,7 @@ run_action() {
             ;;
         reset_dns)
             load_manager || { json_error "DNS Manager недоступен"; return; }
-            if restore_dns_core >/dev/null 2>&1; then
+            if SILENT_APPLY=1 restore_dns_core >/dev/null 2>&1; then
                 json_ok
             else
                 json_error "Не удалось восстановить стандартную настройку DNS"
