@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.35.47"
+VERSION="3.35.48"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -7350,7 +7350,7 @@ watchdog_embedded_loop() {
         [ "$_interval" -le 600 ] 2>/dev/null || _interval=90
 
         load_config >/dev/null 2>&1 || true
-        _selection_kind="$(selected_general_category)"
+        _selection_kind="$(watchdog_scope_category 2>/dev/null || true)"
         case "$_selection_kind" in
             bypass|clean|security|privacy|adblock|family) ;;
             *)
@@ -7519,7 +7519,7 @@ run_watchdog() {
         return 0
     fi
     load_config
-    _selection_kind="$(selected_general_category)"
+    _selection_kind="$(watchdog_scope_category 2>/dev/null || true)"
     case "$_selection_kind" in
         bypass|clean|security|privacy|adblock|family) ;;
         *)
@@ -8167,7 +8167,7 @@ watchdog_slot_target_run() {
     _slot="$1"
     case "$_slot" in 1|2|3|4|5|6|RU) ;; *) return 2 ;; esac
     [ "${WATCHDOG_ENABLED:-0}" = 1 ] || return 0
-    _selection_kind="$(selected_general_category)"
+    _selection_kind="$(watchdog_scope_category 2>/dev/null || true)"
     case "$_selection_kind" in
         bypass|clean|security|privacy|adblock|family) ;;
         *) return 0 ;;
