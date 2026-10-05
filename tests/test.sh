@@ -37,16 +37,16 @@ awk '
 node --check "$tmp/overview.js" >/dev/null 2>&1 || fail "embedded JS: node --check"
 ok "embedded LuCI JS syntax"
 
-PID_LITERAL="$(printf '\\044\\044')"
+DOLLAR='$'
+PID_LITERAL="${DOLLAR}${DOLLAR}"
 grep -Fq "BACKEND_STAGE=\"${BACKEND_FILE}.new.${PID_LITERAL}\"" dns-manager-luci.sh || fail "backend atomic staging missing"
 grep -q 'mv -f "$BACKEND_STAGE" "$BACKEND_FILE"' dns-manager-luci.sh || fail "backend atomic swap missing"
 grep -Fq "RPC_STAGE=\"${RPC_PLUGIN}.new.${PID_LITERAL}\"" dns-manager-luci.sh || fail "RPC plugin atomic staging missing"
 grep -q 'mv -f "$RPC_STAGE" "$RPC_PLUGIN"' dns-manager-luci.sh || fail "RPC plugin atomic swap missing"
 grep -Fq "VIEW_STAGE=\"${VIEW_FILE}.new.${PID_LITERAL}\"" dns-manager-luci.sh || fail "view atomic staging missing"
 grep -q 'mv -f "$VIEW_STAGE" "$VIEW_FILE"' dns-manager-luci.sh || fail "view atomic swap missing"
-grep -q 'mv -f "$RPC_STAGE" "$RPC_PLUGIN"' dns-manager-luci.sh || fail "RPC plugin atomic swap missing"
-grep -Fq 'VIEW_STAGE="${VIEW_FILE}.new.$"' dns-manager-luci.sh || fail "view atomic staging missing"
-grep -q 'mv -f "$VIEW_STAGE" "$VIEW_FILE"' dns-manager-luci.sh || fail "view atomic swap missing"
+grep -q 'function dmRpc(o)' "$tmp/overview.js" || fail "RPC retry wrapper missing"
+grep -q 'Object not found' "$tmp/overview.js" || fail "RPC retry condition missing"
 grep -q 'function dmRpc(o)' "$tmp/overview.js" || fail "RPC retry wrapper missing"
 grep -q 'Object not found' "$tmp/overview.js" || fail "RPC retry condition missing"
 for legacy in \
