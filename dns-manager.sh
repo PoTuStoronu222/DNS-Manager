@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.35.31"
+VERSION="3.35.32"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -2135,7 +2135,10 @@ _best_ms=-1; st=CONNECTION_ERROR
 while IFS= read -r ipx; do
     [ -n "$ipx" ] || continue
     : > "$body"; : > "$hdr"
-    result="$(curl -sS -o "$body" -D "$hdr" -w '%{http_code}|%{time_total}|%{errormsg}'  --connect-timeout 3 --max-time 6 --resolve "$host:$port:$ipx"  -H 'Content-Type: application/dns-message' -H 'Accept: application/dns-message'  --data-binary "@$q" "$url" 2>/dev/null)"
+    # The DNS test must always hit the DoH endpoint directly. In particular,
+    # an rpcd/LuCI environment must not inherit HTTP(S)/SOCKS proxy settings or
+    # curlrc rules, otherwise a dead resolver can be replaced by a proxy response.
+    result="$(curl -q --noproxy '*' -sS -o "$body" -D "$hdr" -w '%{http_code}|%{time_total}|%{errormsg}'  --connect-timeout 3 --max-time 6 --resolve "$host:$port:$ipx"  -H 'Content-Type: application/dns-message' -H 'Accept: application/dns-message'  --data-binary "@$q" "$url" 2>/dev/null)"
     code="${result%%|*}"; rest="${result#*|}"; tim="${rest%%|*}"; err="${rest#*|}"
     [ -z "$code" ] && code="000"
     bytes="$(wc -c < "$body" 2>/dev/null | tr -d ' ')"; [ -n "$bytes" ] || bytes=0
