@@ -504,4 +504,11 @@ for _wd_label in 'Интервал проверки' 'Порог сбоя' 'Па
     grep -q "$_wd_label" "$tmp/overview.js" || fail "LuCI watchdog control missing: $_wd_label"
 done
 ok "watchdog tuning is persisted, live-applied and exposed in LuCI"
+# Watchdog setting rollback keeps the previous supervisor state intact.
+grep -q '^watchdog_restore_service_state() {$' "$tmp/backend.sh" || fail "watchdog rollback helper missing"
+grep -A170 '^        set_watchdog_setting)$' "$tmp/backend.sh" | grep -q 'watchdog_restore_service_state "$_old_service_enabled" "$_old_service_running"' || fail "watchdog setter does not restore previous service state"
+grep -q 'if ! watchdog_service_start_enable' "$tmp/backend.sh" || fail "watchdog setter start path missing"
+grep -q 'watchdog_cron_remove_owned_block' "$tmp/backend.sh" || fail "watchdog setter does not handle manager-owned cron watchdog"
+ok "watchdog rollback and cron-safety guards are present"
+
 printf '%s\n' "All DNS Manager regression checks passed."
