@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.35.34"
+VERSION="3.35.35"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -368,6 +368,7 @@ release_auto_update_lock() {
 }
 auto_update_manager() {
     AUTO_UPDATE_RESULT="disabled"
+    AUTO_UPDATE_REASON=""
     if [ "${DNS_MANAGER_NO_UPDATE:-0}" = 1 ] && [ "${DNS_MANAGER_FORCE_UPDATE:-0}" != 1 ]; then
         return 0
     fi
@@ -413,18 +414,18 @@ auto_update_manager() {
     _update_url="${UPDATE_URL}?_dmcb=$(date +%s 2>/dev/null || printf 0)-$$"
 
     if command -v curl >/dev/null 2>&1; then
-        curl -fsSL --connect-timeout 4 --max-time 15 -H "Cache-Control: no-cache" -H "Pragma: no-cache" -o "$_upd_tmp" "$_update_url" >/dev/null 2>&1 || { AUTO_UPDATE_RESULT="failed"; rm -f "$_upd_tmp" "$_upd_syntax"; UPDATE_TMP_FILE=""; release_auto_update_lock; return 0; }
+        curl -fsSL --connect-timeout 4 --max-time 15 -H "Cache-Control: no-cache" -H "Pragma: no-cache" -o "$_upd_tmp" "$_update_url" >/dev/null 2>&1 || { AUTO_UPDATE_RESULT="failed"; AUTO_UPDATE_REASON="не удалось скачать файл с GitHub"; rm -f "$_upd_tmp" "$_upd_syntax"; UPDATE_TMP_FILE=""; release_auto_update_lock; return 0; }
     elif command -v wget >/dev/null 2>&1; then
-        wget -q -T 15 --header="Cache-Control: no-cache" --header="Pragma: no-cache" -O "$_upd_tmp" "$_update_url" >/dev/null 2>&1 || { AUTO_UPDATE_RESULT="failed"; rm -f "$_upd_tmp" "$_upd_syntax"; UPDATE_TMP_FILE=""; release_auto_update_lock; return 0; }
+        wget -q -T 15 --header="Cache-Control: no-cache" --header="Pragma: no-cache" -O "$_upd_tmp" "$_update_url" >/dev/null 2>&1 || { AUTO_UPDATE_RESULT="failed"; AUTO_UPDATE_REASON="не удалось скачать файл с GitHub"; rm -f "$_upd_tmp" "$_upd_syntax"; UPDATE_TMP_FILE=""; release_auto_update_lock; return 0; }
     else
-        uclient-fetch -q -O "$_upd_tmp" "$_update_url" >/dev/null 2>&1 || { AUTO_UPDATE_RESULT="failed"; rm -f "$_upd_tmp" "$_upd_syntax"; UPDATE_TMP_FILE=""; release_auto_update_lock; return 0; }
+        uclient-fetch -q -O "$_upd_tmp" "$_update_url" >/dev/null 2>&1 || { AUTO_UPDATE_RESULT="failed"; AUTO_UPDATE_REASON="не удалось скачать файл с GitHub"; rm -f "$_upd_tmp" "$_upd_syntax"; UPDATE_TMP_FILE=""; release_auto_update_lock; return 0; }
     fi
 
-    [ -s "$_upd_tmp" ] || { AUTO_UPDATE_RESULT="failed"; rm -f "$_upd_tmp" "$_upd_syntax"; UPDATE_TMP_FILE=""; release_auto_update_lock; return 0; }
-    head -n 1 "$_upd_tmp" 2>/dev/null | grep -q "^#!/bin/sh" || { AUTO_UPDATE_RESULT="failed"; rm -f "$_upd_tmp" "$_upd_syntax"; UPDATE_TMP_FILE=""; release_auto_update_lock; return 0; }
+    [ -s "$_upd_tmp" ] || { AUTO_UPDATE_RESULT="failed"; AUTO_UPDATE_REASON="GitHub вернул пустой файл"; rm -f "$_upd_tmp" "$_upd_syntax"; UPDATE_TMP_FILE=""; release_auto_update_lock; return 0; }
+    head -n 1 "$_upd_tmp" 2>/dev/null | grep -q "^#!/bin/sh" || { AUTO_UPDATE_RESULT="failed"; AUTO_UPDATE_REASON="загруженный файл не начинается с #!/bin/sh"; rm -f "$_upd_tmp" "$_upd_syntax"; UPDATE_TMP_FILE=""; release_auto_update_lock; return 0; }
     _new_version="$(sed -n 's/^VERSION="\([^"]*\)"$/\1/p' "$_upd_tmp" 2>/dev/null | head -n1)"
-    [ -n "$_new_version" ] || { AUTO_UPDATE_RESULT="failed"; rm -f "$_upd_tmp" "$_upd_syntax"; UPDATE_TMP_FILE=""; release_auto_update_lock; return 0; }
-    sh -n "$_upd_tmp" 2>"$_upd_syntax" || { AUTO_UPDATE_RESULT="failed"; rm -f "$_upd_tmp" "$_upd_syntax"; UPDATE_TMP_FILE=""; release_auto_update_lock; return 0; }
+    [ -n "$_new_version" ] || { AUTO_UPDATE_RESULT="failed"; AUTO_UPDATE_REASON="в загруженном файле не найдена VERSION"; rm -f "$_upd_tmp" "$_upd_syntax"; UPDATE_TMP_FILE=""; release_auto_update_lock; return 0; }
+    sh -n "$_upd_tmp" 2>"$_upd_syntax" || { AUTO_UPDATE_RESULT="failed"; AUTO_UPDATE_REASON="syntax-check"; rm -f "$_upd_tmp" "$_upd_syntax"; UPDATE_TMP_FILE=""; release_auto_update_lock; return 0; }
 
     _upd_now="$(date +%s 2>/dev/null || printf 0)"
     case "$_upd_now" in ''|*[!0-9]*) _upd_now="";; esac
@@ -8431,7 +8432,13 @@ startup_update_check() {
     auto_update_manager >/dev/null 2>&1 || true
     case "${AUTO_UPDATE_RESULT:-}" in
         updated) info_msg "DNS Manager автоматически обновлён до версии $VERSION." ;;
-        failed) warn_msg "Проверка обновления DNS Manager не удалась. Продолжаю запуск версии $VERSION." ;;
+        failed)
+            if [ -n "${AUTO_UPDATE_REASON:-}" ]; then
+                log_msg "Проверка обновления DNS Manager не удалась: $AUTO_UPDATE_REASON"
+            else
+                log_msg "Проверка обновления DNS Manager не удалась."
+            fi
+            ;;
     esac
     return 0
 }
