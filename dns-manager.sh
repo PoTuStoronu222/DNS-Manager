@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.35.43"
+VERSION="3.35.44"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -5233,19 +5233,18 @@ printf_plain_row "Активный iptables" "$(state_word "$IPTABLES_ACTIVE")"
 printf_plain_row "Аппаратное ускорение" "$(state_word "$FLOW_OFFLOAD")"
 menu_section "НАСТРОЙКИ DNS Manager"
 _profile_name="Не выбран"
-# The displayed profile follows the actual selected category set.
-_profile_expected="$(expected_managed_slots 2>/dev/null || printf 0)"
-if [ "${DOH_TOTAL:-0}" -gt 0 ] 2>/dev/null && [ "${DOH_TOTAL:-0}" -eq "$_profile_expected" ] 2>/dev/null && [ "${DOH_MATCH:-0}" -eq "$_profile_expected" ] 2>/dev/null; then
-_profile_detected_cat="$(selected_general_category)"
-case "$_profile_detected_cat" in
-    bypass) _profile_name="Обход блокировок";;
-    clean) _profile_name="Без фильтрации";;
-    security) _profile_name="Безопасность";;
-    privacy) _profile_name="Приватность";;
-    adblock) _profile_name="Блокировка рекламы";;
-    family) _profile_name="Семейный DNS";;
-    custom|none) _profile_name="Собственный выбор";;
-    *) _profile_name="Собственный выбор";;
+# Display the intended profile category. Runtime clean fallback DNS does not
+# change this value.
+if [ "${DOH_TOTAL:-0}" -gt 0 ] 2>/dev/null && [ "${DOH_MATCH:-0}" -eq "${DOH_TOTAL:-0}" ] 2>/dev/null; then
+case "${DNS_SELECTION_MODE:-}:${DNS_SELECTION_CATEGORY:-}" in
+    quick:bypass|profile:bypass) _profile_name="Обход блокировок";;
+    profile:clean) _profile_name="Без фильтрации";;
+    profile:security) _profile_name="Безопасность";;
+    profile:privacy) _profile_name="Приватность";;
+    profile:adblock) _profile_name="Блокировка рекламы";;
+    profile:family) _profile_name="Семейный DNS";;
+    manual:none) _profile_name="Собственный выбор";;
+    *) ;;
 esac
 fi
 printf_state_row "Текущий профиль" "$_profile_name"
@@ -6757,28 +6756,26 @@ ensure_test_results_fresh() {
     test_dns_catalog || return 1
     watchdog_test_results_fresh
 }
+watchdog_scope_category() {
+    # Saved profile category is the intended category. Clean fallback DNS is
+    # runtime-only and must never rewrite this value.
+    case "${DNS_SELECTION_MODE:-}" in
+        quick) printf "%s\n" bypass ;;
+        profile)
+            case "${DNS_SELECTION_CATEGORY:-}" in
+                bypass|clean|security|privacy|adblock|family) printf "%s\n" "$DNS_SELECTION_CATEGORY" ;;
+                *) return 1 ;;
+            esac
+            ;;
+        *) return 1 ;;
+    esac
+}
 watchdog_desired_cat() {
     _slot="$1"
-    case "$DNS_SELECTION_MODE" in
-        quick)
-            case "$_slot" in RU) printf '%s\n' regional ;; *) printf '%s\n' bypass ;; esac
-            return 0
-            ;;
-        profile|manual)
-            _cat=""
-            eval "_cat=\${SLOT_${_slot}_CAT:-}"
-            [ -n "$_cat" ] || { eval "_id=\${SLOT_${_slot}:-}"; [ -n "$_id" ] && _cat="$(dns_cat "$_id")"; }
-            case "$_slot" in RU) [ -n "$_cat" ] || _cat="regional" ;; esac
-            printf '%s\n' "$_cat"
-            return 0
-            ;;
-        *)
-            _cat=""
-            eval "_cat=\${SLOT_${_slot}_CAT:-}"
-            [ -n "$_cat" ] || _cat="$(dns_cat "$(eval "printf '%s' \"\${SLOT_${_slot}:-}\"")")"
-            case "$_slot" in RU) [ -n "$_cat" ] || _cat="regional" ;; *) [ -n "$_cat" ] || _cat="bypass" ;; esac
-            printf '%s\n' "$_cat"
-            ;;
+    case "$_slot" in
+        RU) printf "%s\n" regional ;;
+        1|2|3|4|5|6) watchdog_scope_category ;;
+        *) return 1 ;;
     esac
 }
 watchdog_candidate_categories() {
@@ -7076,11 +7073,8 @@ watchdog_pick_replacement() {
     _slot="$1"
     _used="$2"
     _tried="$3"
-    _selection_kind="$(selected_general_category)"
-    case "$_selection_kind" in
-        bypass|clean|security|privacy|adblock|family) ;;
-        *) return 1 ;;
-    esac
+    _selection_kind="$(watchdog_scope_category 2>/dev/null || true)"
+    [ -n "$_selection_kind" ] || return 1
     _desired_for_pick="$(watchdog_desired_cat "$_slot")"
     [ -n "$_desired_for_pick" ] || return 1
     case "$_slot" in
@@ -7088,7 +7082,12 @@ watchdog_pick_replacement() {
         *) _probe_domain="example.com" ;;
     esac
 
+    # Prefer the intended category. If every candidate in that category is
+    # unavailable, use clean as a temporary service-preserving fallback.
     _passcats="$_desired_for_pick"
+    if [ "$_slot" != RU ] && [ "$_desired_for_pick" != clean ]; then
+        _passcats="$_desired_for_pick clean"
+    fi
 
     for _passcat in $_passcats; do
         _checked_cat=0
@@ -7101,15 +7100,15 @@ watchdog_pick_replacement() {
                 if [ -n "$_purl" ] && ! grep -qxF "$_purl" "$_used" 2>/dev/null && ! grep -qxF "$_preferred" "$_tried" 2>/dev/null; then
                     _checked_cat=$((_checked_cat+1))
                     if [ "$_checked_cat" -le "${WATCHDOG_MAX_CANDIDATES:-3}" ] && watchdog_probe_catalog_candidate "$_preferred" "$_probe_domain"; then
-                        printf '%s|bypass\n' "$_preferred"
+                        printf "%s|bypass\n" "$_preferred"
                         return 0
                     fi
-                    printf '%s\n' "$_preferred" >> "$_tried"
+                    printf "%s\n" "$_preferred" >> "$_tried"
                 fi
             fi
         fi
 
-        while IFS='|' read -r _rid _rcat _rname _rms _rst; do
+        while IFS="|" read -r _rid _rcat _rname _rms _rst; do
             [ -n "$_rid" ] || continue
             case "$_rid" in \#*) continue ;; esac
             [ "$_rcat" = "$_passcat" ] || continue
@@ -7121,16 +7120,13 @@ watchdog_pick_replacement() {
             grep -qxF "$_rid" "$_tried" 2>/dev/null && continue
             _checked_cat=$((_checked_cat+1))
             [ "$_checked_cat" -le "${WATCHDOG_MAX_CANDIDATES:-3}" ] || break
-            # This is a direct DoH probe. No UCI write, no service restart, no flash.
+            # Direct HTTPS probe only: no UCI write, no service restart, no flash.
             if watchdog_probe_catalog_candidate "$_rid" "$_probe_domain"; then
-                printf '%s|%s\n' "$_rid" "$_rcat"
+                printf "%s|%s\n" "$_rid" "$_rcat"
                 return 0
             fi
-            printf '%s\n' "$_rid" >> "$_tried"
+            printf "%s\n" "$_rid" >> "$_tried"
         done < "$DNS_CATALOG"
-
-        # Do not try clean for non-bypass profiles.
-        [ "$_desired_for_pick" = bypass ] || break
     done
     return 1
 }
@@ -7153,7 +7149,11 @@ watchdog_apply_slot_candidate() {
             return 1
         }
         sleep 3
-        watchdog_check_slot "$_slot"
+        if [ -n "$_old_id" ]; then
+            watchdog_check_slot "$_slot"
+        else
+            return 0
+        fi
     }
 
     if ! rebuild_selected_hdp_sections >/dev/null 2>&1; then
@@ -7541,21 +7541,19 @@ run_watchdog() {
         _u="$(normalize_url "$(dns_url "$_uid")")"
         [ -n "$_u" ] && printf '%s\n' "$_u" >> "$_used"
     done
+    _selection_kind="$(watchdog_scope_category 2>/dev/null || true)"
     for _slot in 1 2 3 4 5 6 RU; do
         [ "$_wd_repairs" -lt "${WATCHDOG_MAX_REPAIRS:-1}" ] || break
         eval "_id=\${SLOT_${_slot}:-}"
-        [ -n "$_id" ] || continue
-        _current_cat="$(dns_cat "$_id")"
+        _current_cat=""; [ -n "$_id" ] && _current_cat="$(dns_cat "$_id" 2>/dev/null || true)"
+        _desired="$(watchdog_desired_cat "$_slot" 2>/dev/null || true)"
         _force_replace=0
-        case "$_slot" in
-            RU) ;;
-            *)
-                if [ -n "$_desired" ] && [ -n "$_current_cat" ] && [ "$_desired" != "$_current_cat" ]; then
-                    _force_replace=1
-                fi
-                ;;
-        esac
-        if [ "$_force_replace" = 0 ] && watchdog_check_slot "$_slot"; then continue; fi
+        if [ -n "$_desired" ] && [ "$_slot" != RU ]; then
+            if [ -z "$_id" ] || [ "$_current_cat" != "$_desired" ]; then
+                _force_replace=1
+            fi
+        fi
+        if [ "$_force_replace" = 0 ] && [ -n "$_id" ] && watchdog_check_slot "$_slot"; then continue; fi
         if [ "$_force_replace" = 0 ]; then
             sleep 2
             watchdog_check_slot "$_slot" && continue
@@ -8163,7 +8161,13 @@ watchdog_slot_target_run() {
     esac
     eval "_target_id=\${SLOT_${_slot}:-}"
     eval "_target_port=\${PORT_${_slot}:-}"
-    [ -n "$_target_id" ] && [ -n "$_target_port" ] || return 2
+    [ -n "$_target_port" ] || _target_port="$(hybrid_desired_port "$_slot")"
+    [ -n "$_target_port" ] || return 2
+    _target_cat="$(watchdog_desired_cat "$_slot")" || return 0
+    _promote_fallback=0
+    if [ "$_slot" != RU ] && [ -n "$_target_id" ] && [ "$_target_cat" != clean ] && [ "$(dns_cat "$_target_id" 2>/dev/null)" = clean ]; then
+        _promote_fallback=1
+    fi
 
     if ! watchdog_resource_guard; then
         return 0
@@ -8175,8 +8179,9 @@ watchdog_slot_target_run() {
     _old_cat="$(dns_cat "$_old_id" 2>/dev/null)"
     case "$_slot" in RU) _domain="yandex.ru" ;; *) _domain="example.com" ;; esac
 
-    # The daemon has already seen two failures; re-check once before touching config.
-    if watchdog_check_slot "$_slot"; then
+    # A healthy clean DNS can be a temporary fallback. Promote it only when a
+    # target-category candidate is actually confirmed by the direct probe.
+    if [ "$_promote_fallback" != 1 ] && [ -n "$_target_id" ] && watchdog_check_slot "$_slot"; then
         release_mutation_lock
         return 0
     fi
