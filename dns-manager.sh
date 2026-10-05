@@ -5593,7 +5593,7 @@ for _ru_id in yandex_ru $(awk -F'|' 'NF>=5 && $1 !~ /^#/ && $2=="regional" {prin
     if [ "$_rst" = OK ]; then
         case " ${PROFILE_FRESH_OK_IDS:-} " in
             *" $_ru_id "*) ;;
-            *) PROFILE_FRESH_OK_IDS="${PROFILE_FRESH_OK_IDS:+$PROFILE_FRESH_OK_IDS } $_ru_id" ;;
+            *) PROFILE_FRESH_OK_IDS="${PROFILE_FRESH_OK_IDS:+$PROFILE_FRESH_OK_IDS }$_ru_id" ;;
         esac
         _ru="$_ru_id"
         break
