@@ -437,7 +437,12 @@ if watchdog_scope_category >/dev/null 2>&1; then exit 25; fi
 EOF_WATCHDOG_SCOPE
 chmod +x "$tmp/watchdog_scope_runner.sh"
 "$tmp/watchdog_scope_runner.sh" "$tmp/watchdog_scope.sh" || fail "watchdog intended-profile classifier behavior"
-grep -A22 -F 'watchdog_pick_replacement() {' dns-manager.sh | grep -q '_passcats="$_desired_for_pick clean"' || fail "clean fallback is not available for every non-clean profile"
+awk '
+    /^watchdog_pick_replacement\(\) \{/ { capture=1 }
+    capture { print }
+    capture && /^watchdog_apply_slot_candidate\(\) \{/ { exit }
+' dns-manager.sh > "$tmp/watchdog_pick_function.sh"
+grep -q '_passcats="$_desired_for_pick clean"' "$tmp/watchdog_pick_function.sh" || fail "clean fallback is not available for every non-clean profile"
 grep -A18 -F 'watchdog_pick_replacement() {' dns-manager.sh | grep -q 'watchdog_scope_category' || fail "watchdog replacement does not use intended profile category"
 grep -q '_fallback_slots=""' dns-manager.sh || fail "watchdog fallback slots are not tracked"
 grep -q '_empty_slots=""' dns-manager.sh || fail "watchdog empty slots are not tracked"
