@@ -260,6 +260,7 @@ awk '
     . "$tmp/local_slot_test_fn.sh"
     TMP_ROOT="$tmp/local-slot-runtime"
     TMP_DIR="$tmp/local-slot-results"
+    export TMP_ROOT
     mkdir -p "$TMP_ROOT" "$TMP_DIR"
     dns_cat() { printf '%s' "bypass"; }
     dns_name() { printf '%s' "Test DNS"; }
