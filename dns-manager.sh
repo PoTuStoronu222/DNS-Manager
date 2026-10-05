@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.35.17"
+VERSION="3.35.18"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -5229,12 +5229,8 @@ if [ "$_tx_meaningful" = 1 ]; then
         printf "  %s: %s → %s → %s\n", phase,obj,act,res;
     }'
 fi
-printf "\n${C_YELLOW}[1]${C_NC} Проверить DNS-серверы\n"
 printf "${C_GREEN}[Enter]${C_NC} Назад\n"
 safe_read _status_action
-[ "$_status_action" = 1 ] && { test_dns_catalog; show_tests; }
-
-pause
 }
 # ==========================================
 # ==========================================
@@ -8180,6 +8176,7 @@ menu_item "[5]" "Блокировка рекламы"
 menu_item "[6]" "Выбор по категориям"
 menu_section "РУЧНАЯ НАСТРОЙКА"
 menu_item "[7]" "Серверы DNS"
+menu_item "[8]" "Проверить DNS-серверы"
 menu_back
 menu_prompt
 safe_read c
@@ -8192,6 +8189,7 @@ case "$c" in
 5) apply_profile_now adblock;;
 6) menu_category_select;;
 7) menu_slots;;
+8) test_dns_catalog; show_tests;;
 *) warn_msg "Неизвестный пункт."; pause;;
 esac
 done
