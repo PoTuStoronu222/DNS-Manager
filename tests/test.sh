@@ -45,7 +45,28 @@ grep -q 'VIEW_STAGE="${VIEW_FILE}.new.$"' dns-manager-luci.sh || fail "view atom
 grep -q 'mv -f "$VIEW_STAGE" "$VIEW_FILE"' dns-manager-luci.sh || fail "view atomic swap missing"
 grep -q 'function dmRpc(o)' "$tmp/overview.js" || fail "RPC retry wrapper missing"
 grep -q 'Object not found' "$tmp/overview.js" || fail "RPC retry condition missing"
-ok "LuCI atomic install and Object-not-found retry"
+for legacy in \
+  'eval "SLOT_$i=\"$_id\""' \
+  'eval "SLOT_$i=\"\""' \
+  'eval "SLOT_$_s=\"$_replacement\""' \
+  'eval "SLOT_$slot=\\$id"' \
+  'eval "SLOT_${_slot}=\"$_new_id\""' \
+  'eval "SLOT_${_slot}=\"$_rid\""' \
+  'eval "PORT_$slot=\"$target\""' \
+  'eval "PORT_${_slot}=\"$_port\""' ; do
+    if grep -Fq "$legacy" dns-manager.sh; then
+        fail "unsafe dynamic assignment remains: $legacy"
+    fi
+done
+grep -q '^slot_set() {' dns-manager.sh || fail "safe slot setter missing"
+grep -q '^slot_cat_set() {' dns-manager.sh || fail "safe slot category setter missing"
+grep -q '^port_set() {' dns-manager.sh || fail "safe port setter missing"
+grep -q '^quick_pref_set() {' dns-manager.sh || fail "safe quick preference setter missing"
+grep -q '\$1 !~ /\^\[A-Za-z0-9_-\]\+\$/' dns-manager.sh || fail "catalog ID validation missing"
+grep -q 'bypass|clean|security|privacy|adblock|family|regional' dns-manager.sh || fail "catalog category validation missing"
+grep -q 'acquire_runtime_lock() {' "$tmp/backend.sh" || fail "LuCI runtime lock helper missing"
+grep -q 'json_update_state() {' "$tmp/backend.sh" || fail "structured update result helper missing"
+ok "LuCI atomic install, RPC retry, safe dynamic assignments and lock/result helpers"
 
 grep -q '^        set_watchdog_setting)' "$tmp/backend.sh" || fail "watchdog setting dispatch missing"
 grep -q 'WATCHDOG_INTERVAL' "$tmp/backend.sh" || fail "watchdog interval handling missing"
@@ -100,7 +121,10 @@ awk '
 [ "$(version_gt 1.6.7 1.6.6)" = 1 ] || fail "version_gt newer"
 [ "$(version_gt 1.6.6 1.6.7)" = 0 ] || fail "version_gt older"
 [ "$(version_gt 1.6.7 1.6.7)" = 0 ] || fail "version_gt equal"
-ok "version comparison"
+[ "$(json_update_state '{"ok":true,"updated":true,"version":"1.0"}')" = updated ] || fail "structured updated result"
+[ "$(json_update_state '{"ok":true,"updated":false,"version":"1.0"}')" = current ] || fail "structured current result"
+[ "$(json_update_state '{"ok":false,"error":"x"}')" = error ] || fail "structured error result"
+ok "version comparison and structured update results"
 
 STEER_INIT="$tmp/etc/init.d/steer"
 NFT_FIXTURE="$tmp/nft.txt"
