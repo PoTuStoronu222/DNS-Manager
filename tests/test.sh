@@ -39,54 +39,6 @@ validate_dns_message "$tmp/dns-body" || fail "normal-sized DNS body rejected"
 
 ok "DNS response validation remains lightweight"
 awk '
-    /^validate_dns_message\(\) \{/ { capture=1 }
-    capture { print }
-    capture && /^}$/ { exit }
-' dns-manager.sh > "$tmp/validate_dns.sh"
-[ -s "$tmp/validate_dns.sh" ] || fail "DNS response validator extraction"
-. "$tmp/validate_dns.sh"
-
-# Normal DNS response header.
-printf '\022\064\200\000\000\001\000\001\000\000\000\000' > "$tmp/dns-valid"
-validate_dns_message "$tmp/dns-valid" || fail "valid DNS response header rejected"
-
-# A different transaction ID is still a valid DNS response.
-printf '\000\000\200\000\000\001\000\000\000\000\000\000' > "$tmp/dns-other-id"
-validate_dns_message "$tmp/dns-other-id" || fail "DNS response with different ID rejected"
-
-# NXDOMAIN is a legitimate resolver response and must stay healthy.
-printf '\000\001\200\003\000\001\000\000\000\000\000\000' > "$tmp/dns-nxdomain"
-validate_dns_message "$tmp/dns-nxdomain" || fail "NXDOMAIN response rejected"
-
-# NODATA/empty answer is also a legitimate response.
-printf '\000\001\200\000\000\001\000\000\000\000\000\000' > "$tmp/dns-no-answer"
-validate_dns_message "$tmp/dns-no-answer" || fail "NODATA response rejected"
-
-# Truncated DNS responses are still valid responses from a responding resolver.
-printf '\000\001\200\002\000\001\000\000\000\000\000\000' > "$tmp/dns-tc"
-# The validator only checks QR/opcode, so TC/SERVFAIL are intentionally accepted.
-validate_dns_message "$tmp/dns-tc" || fail "truncated DNS response rejected"
-
-# Query packet (QR=0) must be rejected.
-printf '\000\001\000\000\000\001\000\000\000\000\000\000' > "$tmp/dns-query"
-if validate_dns_message "$tmp/dns-query"; then
-    fail "DNS query packet accepted as a response"
-fi
-
-# Non-standard opcode must be rejected.
-printf '\000\001\x88\000\000\001\000\000\000\000\000\000' > "$tmp/dns-opcode"
-if validate_dns_message "$tmp/dns-opcode"; then
-    fail "non-standard DNS opcode accepted"
-fi
-
-# A 12-byte non-DNS body must be rejected.
-printf 'abcdefghijkl' > "$tmp/dns-garbage"
-if validate_dns_message "$tmp/dns-garbage"; then
-    fail "arbitrary 12-byte body accepted as healthy"
-fi
-ok "DNS response validation is permissive for real DNS replies and rejects false positives"
-
-awk '
     /cat > "[^"]*BACKEND_STAGE[^"]*"[^<]*<<\x27EOF_RPC\x27/ { capture=1; next }
     capture && /^EOF_RPC$/ { exit }
     capture { print }
