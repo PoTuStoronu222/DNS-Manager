@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.35.22"
+VERSION="3.35.23"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -8485,13 +8485,25 @@ __watchdog-loop)
     ;;
 esac
 
+printf "\n${C_CYAN}${C_BOLD}▶ DNS Manager $VERSION${C_NC}\n"
+printf "  ${C_CYAN}↻${C_NC} Подготавливаю окружение...\n"
 preflight_readonly
 init_dirs
+printf "  ${C_CYAN}↻${C_NC} Проверяю каталог DNS...\n"
 write_catalogs
+printf "  ${C_CYAN}↻${C_NC} Загружаю конфигурацию...\n"
 load_config
 startup_required_function_check || exit 1
+printf "  ${C_CYAN}↻${C_NC} Проверяю обновления...\n"
 startup_update_check
+case "${AUTO_UPDATE_RESULT:-}" in
+    updated) printf "  ${C_GREEN}✓${C_NC} DNS Manager автоматически обновлён до $VERSION.\n" ;;
+    failed) printf "  ${C_YELLOW}!${C_NC} Проверка обновления DNS Manager не удалась.\n" ;;
+    *) printf "  ${C_GREEN}✓${C_NC} Проверка обновлений завершена.\n" ;;
+esac
+printf "  ${C_CYAN}↻${C_NC} Проверяю состояние роутера...\n"
 run_discovery
+printf "  ${C_GREEN}✓${C_NC} Состояние роутера получено.\n"
 
 if [ "${FIRST_RUN_INITIAL:-0}" = 1 ]; then
     # Initialization only: do not synchronize or mutate cron on first launch.
