@@ -302,6 +302,48 @@ grep -Fq -- '--connect-timeout 1 --max-time 3 --resolve "$host:$port:$ipx"' dns-
 grep -q '(trap - EXIT; test_one_dns "\$_id") &' "$tmp/backend.sh" || fail "selected DNS checks are not parallelized"
 ok "single and full DNS checks use the same test_one_dns path"
 
+awk '
+    /^test_dns_catalog\(\) \(/ { capture=1 }
+    capture { print }
+    capture && /^\)$/ { exit }
+' dns-manager.sh > "$tmp/catalog_test.sh"
+[ -s "$tmp/catalog_test.sh" ] || fail "catalog test extraction"
+grep -Fq 'if [ $((n % TEST_PROGRESS_EVERY)) -eq 0 ]; then' "$tmp/catalog_test.sh" || fail "catalog progress is not interval-based"
+if grep -Fq 'if [ $((n % TEST_PROGRESS_EVERY)) -eq 0 ] || [ "$n" -eq "$total" ]; then' "$tmp/catalog_test.sh"; then
+    fail "catalog progress still prints a duplicate final intermediate result"
+fi
+_progress_calls="$(grep -Ec '^[[:space:]]*test_progress[[:space:]]*
+# Ready-made profiles must not fall through into the generic Hybrid/Max
+# Bypass selector after auto_fill_slots().
+awk '
+    /^apply_profile_now\(\) \{/ { capture=1 }
+    capture { print }
+    capture && /^\}/ { exit }
+' dns-manager.sh > "$tmp/apply_profile_now.sh"
+[ -s "$tmp/apply_profile_now.sh" ] || fail "apply_profile_now extraction"
+grep -q 'if auto_fill_slots "\$goal"; then' "$tmp/apply_profile_now.sh" || fail "profile auto-selection path missing"
+grep -q 'HYBRID_STAGE_SKIP=1' "$tmp/apply_profile_now.sh" || fail "profile application does not skip generic Hybrid reselection"
+grep -q 'DNS_SELECTION_MODE="profile"' "$tmp/apply_profile_now.sh" || fail "profile mode assignment missing"
+grep -q 'DNS_SELECTION_CATEGORY="\$goal"' "$tmp/apply_profile_now.sh" || fail "profile category assignment missing"
+if grep -q 'HYBRID_STAGE_SKIP=0 apply_profile_now' dns-manager-luci.sh; then
+    fail "LuCI still overrides profile Hybrid-stage behavior"
+fi
+ok "ready-made DNS profiles preserve their selected category"
+grep -q '^job_state_value() {' "$tmp/backend.sh" || fail "profile job state helper missing"
+grep -q '^job_process_alive() {' "$tmp/backend.sh" || fail "profile job liveness helper missing"
+grep -q 'job_write "\$_jid" pid "\$_job_pid"' "$tmp/backend.sh" || fail "profile job PID persistence missing"
+grep -q 'PROFILE_RUNNING_JOB=' "$tmp/backend.sh" || fail "running profile job discovery missing"
+grep -q 'resumed":true' "$tmp/backend.sh" || fail "same-profile job resume response missing"
+grep -q 'function resumeRunningProfile(root)' "$tmp/overview.js" || fail "LuCI profile job reconnect helper missing"
+grep -q "callJob('profile')" "$tmp/overview.js" || fail "LuCI does not inspect running profile job"
+grep -q 'state.profileResumeStarted' "$tmp/overview.js" || fail "LuCI profile resume guard missing"
+grep -q 'resumeRunningProfile(root)' "$tmp/overview.js" || fail "LuCI profile resume is not started on render"
+ok "profile jobs survive LuCI disconnects and reconnect on page load"
+printf '%s\n' "All DNS Manager regression checks passed."
+ "$tmp/catalog_test.sh" 2>/dev/null || printf 0)"
+[ "$_progress_calls" = 1 ] || fail "catalog progress has an unexpected final call"
+ok "catalog progress omits the duplicate final intermediate result"
+
 # Ready-made profiles must not fall through into the generic Hybrid/Max
 # Bypass selector after auto_fill_slots().
 awk '
