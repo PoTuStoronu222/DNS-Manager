@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.35.29"
+VERSION="3.35.30"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -4587,6 +4587,59 @@ _rollback_ours_impl() {
     return 1
 }
 
+restore_dns_core_path_safe() {
+    _path="$1"
+    [ -n "$_path" ] || return 3
+    [ -s "$BASELINE_MANIFEST" ] || return 2
+    [ -s "$BASELINE_LAST" ] || return 2
+    grep -q "^clean_profile=1$" "$BASELINE_META" 2>/dev/null || return 2
+
+    _last_line="$(awk -F"|" -v f="$_path" '$1==f{print;exit}' "$BASELINE_LAST" 2>/dev/null)"
+    [ -n "$_last_line" ] || return 2
+    IFS="|" read -r _lf _lk _lexisted _lhash <<EOF_CORE_RB_LAST
+$_last_line
+EOF_CORE_RB_LAST
+
+    # Restore only when the file is still exactly the state produced by the
+    # last successful DNS Manager application. External changes stay intact.
+    if [ "$_lexisted" = 1 ]; then
+        _curhash="$(file_hash "$_path" 2>/dev/null)"
+        [ -n "$_curhash" ] && [ "$_curhash" = "$_lhash" ] || return 2
+    else
+        [ ! -e "$_path" ] || return 2
+    fi
+
+    _base_line="$(awk -F"|" -v f="$_path" '$1==f{print;exit}' "$BASELINE_MANIFEST" 2>/dev/null)"
+    [ -n "$_base_line" ] || return 3
+    IFS="|" read -r _bf _bk _bexisted _bhash <<EOF_CORE_RB_BASE
+$_base_line
+EOF_CORE_RB_BASE
+
+    if [ "$_bexisted" = 1 ]; then
+        [ -f "$BASELINE_DIR/files/$_bk" ] || return 3
+        cp -p "$BASELINE_DIR/files/$_bk" "$_path" 2>/dev/null || return 1
+    else
+        rm -f "$_path" 2>/dev/null || return 1
+    fi
+    return 0
+}
+
+restore_dns_core_service_state() {
+    [ -s "$BASELINE_META" ] || return 2
+    _enabled="$(sed -n 's/^service_https-dns-proxy_enabled=//p' "$BASELINE_META" 2>/dev/null | head -n1)"
+    _running="$(sed -n 's/^service_https-dns-proxy_running=//p' "$BASELINE_META" 2>/dev/null | head -n1)"
+    [ "$_enabled" = yes ] || [ "$_enabled" = no ] || return 2
+    case "$_enabled" in
+        yes) /etc/init.d/https-dns-proxy enable >/dev/null 2>&1 || true ;;
+        no)  /etc/init.d/https-dns-proxy disable >/dev/null 2>&1 || true ;;
+    esac
+    case "$_running" in
+        yes) /etc/init.d/https-dns-proxy start >/dev/null 2>&1 || true ;;
+        no)  /etc/init.d/https-dns-proxy stop >/dev/null 2>&1 || true ;;
+    esac
+    return 0
+}
+
 clear_dns_core_runtime_state() {
     SLOT_1=""; SLOT_2=""; SLOT_3=""; SLOT_4=""; SLOT_5=""; SLOT_6=""
     SLOT_RU=""
@@ -4604,19 +4657,35 @@ clear_dns_core_runtime_state() {
     save_config >/dev/null 2>&1
 }
 restore_dns_core() {
-    # Return only the DNS core to the normal OpenWrt resolver path.
-    # Independent Manager settings (force DNS, cache, watchdog, NTP, web)
-    # are deliberately left untouched.
+    # Restore the exact pre-Manager DNS core when safe. If the baseline file
+    # was changed externally after the last apply, preserve that file and
+    # remove only Manager-owned artifacts instead.
     acquire_mutation_lock || return 1
     _rc=0
+    _rb_hdp=2
+    _rb_dhcp=2
     clear_screen
     printf "%s\n" "${C_YELLOW}=== Восстановление стандартной настройки DNS ===${C_NC}"
 
     run_discovery >/dev/null 2>&1 || true
-    ROLLBACK_DNS_CORE_ONLY=1
-    rollback_hdp_targeted || _rc=1
-    rollback_dnsmasq_targeted || _rc=1
-    unset ROLLBACK_DNS_CORE_ONLY
+
+    restore_dns_core_path_safe /etc/config/https-dns-proxy
+    _rb_hdp=$?
+    restore_dns_core_path_safe /etc/config/dhcp
+    _rb_dhcp=$?
+
+    if [ "$_rb_hdp" -ne 0 ]; then
+        rollback_hdp_targeted || _rc=1
+    fi
+    if [ "$_rb_dhcp" -ne 0 ]; then
+        ROLLBACK_DNS_CORE_ONLY=1
+        rollback_dnsmasq_targeted || _rc=1
+        unset ROLLBACK_DNS_CORE_ONLY
+    fi
+
+    if [ "$_rb_hdp" -eq 0 ]; then
+        restore_dns_core_service_state || true
+    fi
 
     /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || true
     /etc/init.d/dnsmasq restart >/dev/null 2>&1 || true
@@ -4624,7 +4693,7 @@ restore_dns_core() {
     clear_dns_core_runtime_state || _rc=1
 
     if [ -f "$OWNERSHIP" ]; then
-        _own_tmp="${OWNERSHIP}.tmp.$"
+        _own_tmp="${OWNERSHIP}.tmp.$$"
         sed -E "/^(doh|dnsmasq)\|/d" "$OWNERSHIP" > "$_own_tmp" 2>/dev/null || : > "$_own_tmp"
         mv "$_own_tmp" "$OWNERSHIP" 2>/dev/null || _rc=1
         chmod 600 "$OWNERSHIP" 2>/dev/null || true
@@ -4639,6 +4708,7 @@ restore_dns_core() {
     release_mutation_lock
     return "$_rc"
 }
+
 rollback_ours() {
     acquire_mutation_lock || return 1
     _rc=0
