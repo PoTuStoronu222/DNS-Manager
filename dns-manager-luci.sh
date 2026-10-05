@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.6.39
+# Version: 1.6.40
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -23,7 +23,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.6.39"
+VERSION="1.6.40"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -145,7 +145,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.6.39"
+SELF_VERSION="1.6.40"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -2051,7 +2051,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.6.39
+// DNS Manager LuCI version: 1.6.40
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -2580,8 +2580,8 @@ function resolverRows(st){
       E('span',{'class':'dm-doh-name'},d.name||d.id),
       E('span',{'class':'dm-doh-url'},'—'),
       E('span',{'class':'dm-doh-port'},d.port?'порт '+d.port:'—'),
-      E('span',{'class':'dm-doh-ping'},ping(ci.ping||d.ping)),
-      E('span',{'class':'dm-doh-state'},stateBadge(status,ci.ping||d.ping))
+      E('span',{'class':'dm-doh-ping'},ping(ci.ping)),
+      E('span',{'class':'dm-doh-state'},stateBadge(status,ci.ping))
     ]));
   });
   return [out,seen];
@@ -3646,10 +3646,11 @@ function pollJob(root,job,meta,done){
       ns=ns||{};window.dmState=ns;
       if(meta&&meta.mode==='one'&&meta.dns_id){
         state.checking[meta.dns_id]={
-          // The completed one-server test is authoritative. Never fall back
-          // to an old slot/local-listener status from status_json().
-          status:j&&j.dns_status?j.dns_status:'FAIL',
-          ping:(j&&j.dns_status==='OK'&&j.ping)?j.ping:''
+          // Only the just-completed direct DoH test is authoritative here.
+          // An absent/invalid job result is a failure; never reuse catalog data.
+          status:(j&&j.dns_status)?String(j.dns_status):'FAIL',
+          ping:(j&&j.dns_status==='OK'&&/^\d+$/.test(String(j.ping||'')))?String(j.ping):'',
+          fresh:true
         };
       }
       if(meta&&meta.mode==='current')state.checking={};
