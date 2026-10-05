@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.6.52
+# Version: 1.6.53
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -23,7 +23,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.6.52"
+VERSION="1.6.53"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -144,7 +144,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.6.52"
+SELF_VERSION="1.6.53"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -252,7 +252,28 @@ catalog_field() {
 }
 
 catalog_version() { sed -n 's/^# DNSCATVER=//p' "$CATALOG_FILE" 2>/dev/null | head -n1; }
-catalog_revision() { sed -n 's/^# DNSCATREV=//p' "$CATALOG_FILE" 2>/dev/null | head -n1; }
+catalog_revision() { sed -n 's/^# DNSCATREV=//p' "$CATALOG_FILE" 2>/dev/null | head -n1; }selected_general_category_status() {
+    _sgs_common=""
+    _sgs_count=0
+    for _sgs_slot in 1 2 3 4 5 6; do
+        _sgs_id="$(cfg_get "SLOT_${_sgs_slot}")"
+        [ -n "$_sgs_id" ] || continue
+        _sgs_cat="$(catalog_field "$_sgs_id" 2 2>/dev/null || true)"
+        case "$_sgs_cat" in
+            bypass|clean|security|privacy|adblock|family) ;;
+            *) printf "%s\n" custom; return 0 ;;
+        esac
+        if [ -z "$_sgs_common" ]; then
+            _sgs_common="$_sgs_cat"
+        elif [ "$_sgs_common" != "$_sgs_cat" ]; then
+            printf "%s\n" custom
+            return 0
+        fi
+        _sgs_count=$((_sgs_count+1))
+    done
+    [ "$_sgs_count" -gt 0 ] && printf "%s\n" "$_sgs_common" || printf "%s\n" none
+}
+
 
 read_installed_luci_version() {
     _v=""
@@ -1196,13 +1217,31 @@ status_json() {
     done
 
     # A profile is active only when the real DoH scheme matches completely.
-    if [ "$_doh_total" -gt 0 ] 2>/dev/null && [ "$_match" -eq "$_doh_total" ] 2>/dev/null; then
-        _profile="$_profile_cfg"
-        _mode="$_mode_cfg"
-        _selection_category="$_selection_category_cfg"
-        [ -n "$_profile" ] || _profile=hybrid
-        [ -n "$_mode" ] || _mode=quick
-        [ -n "$_selection_category" ] || _selection_category=bypass
+    if [ "$_doh_total" -gt 0 ] 2>/dev/null && [ "$_doh_total" -eq "$_expected" ] 2>/dev/null && [ "$_match" -eq "$_expected" ] 2>/dev/null; then
+        _selection_category_derived="$(selected_general_category_status)"
+        case "$_selection_category_derived" in
+            bypass|clean|security|privacy|adblock|family)
+                _profile=hybrid
+                _mode=profile
+                _selection_category="$_selection_category_derived"
+                ;;
+            custom|none)
+                if [ "$_mode_cfg" = profile ] && [ "$_selection_category_cfg" = all ]; then
+                    _profile=hybrid
+                    _mode=profile
+                    _selection_category=all
+                else
+                    _profile=custom
+                    _mode=manual
+                    _selection_category=none
+                fi
+                ;;
+            *)
+                _profile=custom
+                _mode=manual
+                _selection_category=none
+                ;;
+        esac
     fi
 
     _ipv4=no; ip -4 route show default 2>/dev/null | grep -q . && _ipv4=yes
@@ -1847,8 +1886,14 @@ run_action() {
                 fi
             done
             case "$RPC_SLOT" in RU) [ "$_cat" = regional ] || { json_error "Этот DNS нельзя поставить в региональный слот"; return; } ;; *) [ "$_cat" != regional ] || { json_error "Региональный DNS нельзя поставить в общий слот"; return; } ;; esac
-            DNS_PROFILE=custom DNS_SELECTION_MODE=manual DNS_SELECTION_CATEGORY="$_cat"; eval "SLOT_${RPC_SLOT}=\"$RPC_ID\""; eval "SLOT_${RPC_SLOT}_CAT=\"$_cat\""; [ "$RPC_SLOT" = RU ] && DNS_SELECTION_CATEGORY=regional || true
-            sync_regional_dns_state >/dev/null 2>&1 || true; SILENT_APPLY=1 CORE_ONLY=1 SKIP_POST_APPLY_VERIFY=1 DNS_MANAGER_NO_UPDATE=1 apply_settings >/dev/null 2>&1 && json_ok || json_error "DNS не удалось применить"
+            eval "SLOT_${RPC_SLOT}=\"$RPC_ID\""
+            sync_profile_from_selected_categories >/dev/null
+            _old_hybrid_stage_skip="${HYBRID_STAGE_SKIP:-0}"
+            [ "$DNS_PROFILE" = hybrid ] && HYBRID_STAGE_SKIP=1
+            SILENT_APPLY=1 CORE_ONLY=1 SKIP_POST_APPLY_VERIFY=1 DNS_MANAGER_NO_UPDATE=1 apply_settings >/dev/null 2>&1
+            _rc=$?
+            HYBRID_STAGE_SKIP="$_old_hybrid_stage_skip"
+            [ "$_rc" -eq 0 ] && json_ok || json_error "DNS не удалось применить"
             ;;
         set_ntp)
             _preset="$(jget preset)"
@@ -2010,7 +2055,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.6.52
+// DNS Manager LuCI version: 1.6.53
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
