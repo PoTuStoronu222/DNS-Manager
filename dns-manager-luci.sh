@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.6.63
+# Version: 1.6.64
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -23,7 +23,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.6.63"
+VERSION="1.6.64"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -144,7 +144,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.6.63"
+SELF_VERSION="1.6.64"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -1266,7 +1266,7 @@ status_json() {
     _mem_a="$(awk '/MemAvailable:/ {print $2;exit}' /proc/meminfo 2>/dev/null || true)"; [ -n "$_mem_a" ] || _mem_a=0
     _cpu_count="$(awk '/^processor[[:space:]]*:/ {n++} END {print n+0}' /proc/cpuinfo 2>/dev/null)"; case "$_cpu_count" in ''|*[!0-9]*|0) _cpu_count=1;; esac
 
-    _last=""; _meta="$STATE_DIR/dns-test-results.meta"; [ -r "$_meta" ] || _meta="$PERSIST_STATE_DIR/dns-test-results.meta"; _last="$(sed -n 's/^timestamp=//p' "$_meta" 2>/dev/null | head -n1)"
+    _last=""; _test_scope="all"; _meta="$STATE_DIR/dns-test-results.meta"; [ -r "$_meta" ] || _meta="$PERSIST_STATE_DIR/dns-test-results.meta"; _last="$(sed -n 's/^timestamp=//p' "$_meta" 2>/dev/null | head -n1)"; _test_scope="$(sed -n 's/^test_scope=//p' "$_meta" 2>/dev/null | head -n1)"; [ -n "$_test_scope" ] || _test_scope=all"
     _cat_total="$(grep -v '^#' "$CATALOG_FILE" 2>/dev/null | grep -c '^[^|][^|]*|' 2>/dev/null || printf 0)"
 
     _luciv="$(read_installed_luci_version)"
@@ -1381,7 +1381,7 @@ status_json() {
     _owner_label=нет; [ "$_force_owner" = manager ] && _owner_label='DNS Manager'; [ "$_force_owner" = steer ] && _owner_label='Steer'; [ "$_force_owner" = external ] && _owner_label=внешний
     printf ',"force_owner_label":'; json_quote "$_owner_label"; printf ',"zapret_running":%s' "$_zapret_running"
     printf ',"doh_total":%s,"doh_match":%s,"configured_dns":%s' "$_doh_total" "$_match" "$_expected"
-    printf ',"last_full_test":'; json_quote "$_last"; printf ',"components_checked_at":'; json_quote "$_components_checked_at"
+    printf ',"last_full_test":'; json_quote "$_last"; printf ',"last_full_test_scope":'; json_quote "$_test_scope"; printf ',"components_checked_at":'; json_quote "$_components_checked_at"
     printf ',"hostname":'; json_quote "$_host"; printf ',"uptime":'; json_quote "$_uptime"; printf ',"load1":'; json_quote "$_load"
     printf ',"cpu_count":%s,"memory_total_kb":%s,"memory_available_kb":%s' "$_cpu_count" "$_mem_t" "$_mem_a"
     printf ',"catalog_total":%s,"catalog_version":' "$_cat_total"; json_quote "$(catalog_version)"; printf ',"catalog_revision":'; json_quote "$(catalog_revision)"
@@ -2261,7 +2261,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.6.63
+// DNS Manager LuCI version: 1.6.64
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -2558,7 +2558,9 @@ function globalUpdateNotice(msg,type){}
 function renderHeader(root,st){
   var e=root.querySelector('#dm-header');if(!e)return;e.innerHTML='';
   var lastTest=dateText(st.last_full_test);
-  var testText=lastTest==='—'?'Последняя полная проверка DNS: не выполнялась':'Последняя полная проверка DNS: '+lastTest;
+  var scope=String(st.last_full_test_scope||'all');
+  var scopeLabel=scope==='all'?'весь каталог':(scope==='bypass'?'Обход блокировок':(scope==='clean'?'Без фильтрации':(scope==='security'?'Безопасность':(scope==='privacy'?'Приватность':(scope==='adblock'?'Блокировка рекламы':(scope==='family'?'Семейный':scope)))));
+  var testText=lastTest==='—'?'Последняя проверка DNS: не выполнялась':'Последняя проверка DNS: '+lastTest+' · '+scopeLabel;
   e.appendChild(E('div',{'class':'dm-header'},[
     E('h2',{},'DNS Manager LUCI'),
     E('span',{'class':'dm-header-by'},'by PoTuStoronu222'),
