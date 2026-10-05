@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.35.16"
+VERSION="3.35.17"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -382,9 +382,8 @@ auto_update_manager() {
     _scheduled=0
     [ "${DNS_MANAGER_SCHEDULED_UPDATE:-0}" = "1" ] && _scheduled=1
 
-    # Interactive startup and explicit update-check must perform a real GitHub
-    # check. The 12-hour throttle is reserved for scheduled/background updates.
-    if [ "$_scheduled" = 1 ] && [ "${DNS_MANAGER_FORCE_UPDATE:-0}" != 1 ]; then
+    # Automatic checks use the 12-hour throttle. Explicit update-check bypasses it.
+    if [ "${DNS_MANAGER_FORCE_UPDATE:-0}" != 1 ]; then
         _upd_now="$(date +%s 2>/dev/null)"
         _upd_last="$(cat "$AUTO_UPDATE_LAST_CHECK_FILE" 2>/dev/null)"
         case "$_upd_now" in ''|*[!0-9]*) _upd_now="";; esac
@@ -8371,19 +8370,14 @@ startup_self_repair() {
 # STARTUP UPDATE CHECK
 # ==========================================
 startup_update_check() {
-    if [ "${DNS_MANAGER_NO_UPDATE:-0}" = 1 ]; then luci_companion_check_update >/dev/null 2>&1 || true; return 0; fi
-    printf "\n${C_CYAN}${C_BOLD}↻ Проверяю обновление DNS Manager...${C_NC}\n"
-    auto_update_manager
-    _rc=$?
-    case "${AUTO_UPDATE_RESULT:-unknown}" in
-        current) info_msg "Проверка обновления: версия $VERSION актуальна." ;;
-        updated) info_msg "DNS Manager обновлён до версии $VERSION." ;;
-        throttled|disabled) info_msg "Проверка обновления пропущена по ограничению частоты." ;;
-        skipped) info_msg "Проверка обновления пропущена: условия обновления не выполнены." ;;
-        failed) warn_msg "Проверка обновления не удалась. Продолжаю запуск текущей версии $VERSION." ;;
-        busy) info_msg "Проверка обновления уже выполняется другим процессом; продолжаю запуск версии $VERSION." ;;
-        *) [ "$_rc" -eq 0 ] && info_msg "Проверка обновления завершена. Используется версия $VERSION." || warn_msg "Проверка обновления завершилась с кодом $_rc. Продолжаю запуск текущей версии." ;;
-    esac
+    if [ "${DNS_MANAGER_NO_UPDATE:-0}" = 1 ]; then
+        luci_companion_check_update >/dev/null 2>&1 || true
+        return 0
+    fi
+
+    # Startup checks are silent when nothing needs attention.
+    # Real update/failure events are already recorded by auto_update_manager.
+    auto_update_manager >/dev/null 2>&1 || true
     luci_companion_check_update >/dev/null 2>&1 || true
     return 0
 }
@@ -8494,7 +8488,7 @@ if [ "${FIRST_RUN_INITIAL:-0}" = 1 ]; then
     info_msg "Первый запуск: watchdog-служба procd не запускается и cron не изменяю."
 fi
 
-log_msg "Запуск DNS Manager. Версия $VERSION. OpenWrt=$SYS_OWRT; платформа=$SYS_TARGET; архитектура=$SYS_ARCH; firewall=$SYS_FW; backend=$FIREWALL_BACKEND; wan_network=${FIREWALL_WAN_NETWORK:-unknown}"
+
 
 if [ "${FIRST_RUN_INITIAL:-0}" = 1 ]; then
     if mkdir -p "$CFG_DIR" 2>/dev/null && {
