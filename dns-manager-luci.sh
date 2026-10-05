@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.6.53
+# Version: 1.6.54
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -23,7 +23,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.6.53"
+VERSION="1.6.54"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -144,7 +144,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.6.53"
+SELF_VERSION="1.6.54"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -1219,17 +1219,13 @@ status_json() {
 
     # A profile is active only when the real DoH scheme matches completely.
     if [ "$_doh_total" -gt 0 ] 2>/dev/null && [ "$_doh_total" -eq "$_expected" ] 2>/dev/null && [ "$_match" -eq "$_expected" ] 2>/dev/null; then
-        _selection_category_derived="$(selected_general_category_status)"
-        case "$_selection_category_derived" in
-            bypass|clean|security|privacy|adblock|family)
+        # The saved profile category is the intended category. A runtime clean
+        # fallback does not turn a profile into a custom selection.
+        case "${_mode_cfg}:${_selection_category_cfg}" in
+            quick:bypass|profile:bypass|profile:clean|profile:security|profile:privacy|profile:adblock|profile:family)
                 _profile=hybrid
-                _mode=profile
-                _selection_category="$_selection_category_derived"
-                ;;
-            custom|none)
-                _profile=custom
-                _mode=manual
-                _selection_category=none
+                _mode="${_mode_cfg}"
+                _selection_category="${_selection_category_cfg}"
                 ;;
             *)
                 _profile=custom
@@ -2052,7 +2048,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.6.53
+// DNS Manager LuCI version: 1.6.54
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
