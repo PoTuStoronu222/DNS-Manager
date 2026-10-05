@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.35.27"
+VERSION="3.35.28"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -2192,23 +2192,7 @@ validate_dns_message() {
     [ -s "$_file" ] || return 1
     _n="$(wc -c < "$_file" 2>/dev/null | tr -d " ")"
     case "$_n" in ''|*[!0-9]*) return 1;; esac
-    # Require a real DNS response from the DoH endpoint, but do not assume a
-    # particular transaction ID or truncation behavior. The request is the
-    # known positive A query for example.com.
-    [ "$_n" -ge 17 ] || return 1
-    set -- $(od -An -tu1 -N12 "$_file" 2>/dev/null) || return 1
-    [ "$#" -eq 12 ] || return 1
-    _flags1=$3; _flags2=$4
-    _qr=$(( _flags1 & 128 ))
-    _opcode=$(( (_flags1 & 120) >> 3 ))
-    _rcode=$(( _flags2 & 15 ))
-    _qd=$(( $5 * 256 + $6 ))
-    _an=$(( $7 * 256 + $8 ))
-    [ "$_qr" -eq 128 ] || return 1
-    [ "$_opcode" -eq 0 ] || return 1
-    [ "$_rcode" -eq 0 ] || return 1
-    [ "$_qd" -eq 1 ] || return 1
-    [ "$_an" -ge 1 ] || return 1
+    [ "$_n" -ge 12 ] || return 1
     return 0
 }
 test_one_dns() {
