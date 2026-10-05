@@ -5382,11 +5382,34 @@ pause
 }
 show_tests() {
 menu_header "РЕЗУЛЬТАТЫ ПРОВЕРКИ DNS"
-[ -s "$TEST_RESULTS" ] || { printf "${C_YELLOW}Тест ещё не запускался.${C_NC}\n"; pause; return; }
-okn="$(awk -F'|' 'NF>=5 && $5=="OK"{n++} END{print n+0}' "$TEST_RESULTS" 2>/dev/null)"; total="$(count_dns)"; failn=$((total-okn))
-printf "${C_GREEN}✓ Работают: %s${C_NC}    ${C_RED}✗ Ошибки: %s${C_NC}    ${C_WHITE}Всего: %s${C_NC}\n\n" "$okn" "$failn" "$total"
-printf "${C_YELLOW}${C_BOLD}%-28s %-18s %-9s %s${C_NC}\n" "DNS" "КАТЕГОРИЯ" "ВРЕМЯ" "СТАТУС"
-printf "  ──────────────────────────────────────────────────────────\n"
+[ -s "$TEST_RESULTS" ] || { printf "${C_YELLOW}Тест ещё не запускался.${C_NC}
+"; pause; return; }
+_test_scope="all"
+if [ -s "$TEST_RESULTS_META" ]; then
+    _test_scope="$(sed -n 's/^test_scope=//p' "$TEST_RESULTS_META" 2>/dev/null | head -n1)"
+fi
+case "$_test_scope" in
+    all|bypass|clean|security|privacy|adblock|family) ;;
+    *) _test_scope=all ;;
+esac
+if [ "$_test_scope" = all ]; then
+    total="$(count_dns)"
+    _scope_label="весь каталог"
+else
+    total="$(awk -F'|' -v c="$_test_scope" 'NF>=5 && $1 !~ /^#/ && ($2==c || $2=="regional") {n++} END{print n+0}' "$DNS_CATALOG" 2>/dev/null)"
+    _scope_label="категория «$(category_ru "$_test_scope")» + региональные DNS"
+fi
+okn="$(awk -F'|' 'NF>=5 && $5=="OK"{n++} END{print n+0}' "$TEST_RESULTS" 2>/dev/null)"
+failn=$((total-okn))
+printf "${C_GREEN}✓ Работают: %s${C_NC}    ${C_RED}✗ Ошибки: %s${C_NC}    ${C_WHITE}Всего: %s${C_NC}
+" "$okn" "$failn" "$total"
+printf "${C_CYAN}Область проверки: %s${C_NC}
+
+" "$_scope_label"
+printf "${C_YELLOW}${C_BOLD}%-28s %-18s %-9s %s${C_NC}
+" "DNS" "КАТЕГОРИЯ" "ВРЕМЯ" "СТАТУС"
+printf "  ──────────────────────────────────────────────────────────
+"
 { grep '|OK$' "$TEST_RESULTS" 2>/dev/null | sort -t'|' -k4,4n; grep -v '|OK$' "$TEST_RESULTS" 2>/dev/null; } | while IFS='|' read -r id cat name ms st; do
 status_text="$(status_ru "$st")"
 cat_text="$(category_ru "$cat")"
@@ -5396,7 +5419,8 @@ BOOTSTRAP_FAIL|BAD_DOH_RESPONSE) status="${C_YELLOW}${status_text}${C_NC}";;
 *) status="${C_RED}${status_text}${C_NC}";;
 esac
 case "$ms" in ''|-1) time="—";; *) time="${ms} мс";; esac
-printf "%-28s %-18s %-9s %b\n" "$name" "$cat_text" "$time" "$status"
+printf "%-28s %-18s %-9s %b
+" "$name" "$cat_text" "$time" "$status"
 done
 pause
 }
