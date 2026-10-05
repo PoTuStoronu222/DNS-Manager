@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.35.39"
+VERSION="3.35.40"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -2096,24 +2096,11 @@ return 1
 validate_dns_message() {
     _file="$1"
     [ -s "$_file" ] || return 1
-
-    # Keep the health check permissive. The DoH HTTP layer already requires
-    # HTTP 200 and application/dns-message. Here only verify that the body
-    # starts with a plausible DNS response header. Do not require a particular
-    # transaction ID, answer count, RCODE or non-truncated response: valid
-    # resolvers may legitimately return NXDOMAIN, NODATA or TC.
-    command -v od >/dev/null 2>&1 || return 1
-    set -- $(od -An -tu1 -N12 "$_file" 2>/dev/null) || return 1
-    [ "$#" -eq 12 ] || return 1
-
-    _flags1=$3
-
-    # QR=1 means this is a DNS response. Opcode 0 means a normal DNS query.
-    [ $((_flags1 & 128)) -eq 128 ] || return 1
-    [ $((_flags1 & 120)) -eq 0 ] || return 1
+    _n="$(wc -c < "$_file" 2>/dev/null | tr -d " ")"
+    case "$_n" in ''|*[!0-9]*) return 1;; esac
+    [ "$_n" -ge 12 ] || return 1
     return 0
-}
-test_one_dns() {
+}test_one_dns() {
 id="$1"; url="$(normalize_url "$(dns_url "$id")")"; name="$(dns_name "$id")"; cat="$(dns_cat "$id")"
 host="$(url_host "$url")"
 port="$(url_port "$url")"
