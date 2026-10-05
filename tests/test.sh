@@ -350,6 +350,68 @@ if grep -q 'HYBRID_STAGE_SKIP=0 apply_profile_now' dns-manager-luci.sh; then
     fail "LuCI still overrides profile Hybrid-stage behavior"
 fi
 ok "ready-made DNS profiles preserve their selected category"
+
+# Manual DNS changes must retain a category profile while all general slots stay
+# inside one catalog category, and must become custom as soon as categories mix.
+awk '
+    /^selected_general_category\(\) \{/ { capture=1 }
+    capture { print }
+    capture && /^\}/ { exit }
+' dns-manager.sh > "$tmp/selected_category.sh"
+[ -s "$tmp/selected_category.sh" ] || fail "selected category classifier extraction"
+cat > "$tmp/selected_category_runner.sh" <<'EOF_SELECTED_CATEGORY'
+#!/bin/sh
+set -eu
+dns_cat() {
+    case "$1" in
+        b1|b2|b3) printf '%s\n' bypass ;;
+        c1|c2|c3) printf '%s\n' clean ;;
+        s1) printf '%s\n' security ;;
+        unknown) return 1 ;;
+        *) return 1 ;;
+    esac
+}
+SLOT_1=b1; SLOT_2=b2; SLOT_3=b3; SLOT_4=; SLOT_5=; SLOT_6=
+. "$1"
+[ "$(selected_general_category)" = bypass ] || exit 11
+SLOT_3=c1
+[ "$(selected_general_category)" = custom ] || exit 12
+SLOT_3=
+SLOT_4=c2
+[ "$(selected_general_category)" = custom ] || exit 13
+SLOT_4=
+SLOT_1=unknown
+[ "$(selected_general_category)" = custom ] || exit 14
+SLOT_1=
+SLOT_2=
+SLOT_3=
+SLOT_4=
+SLOT_5=
+SLOT_6=
+[ "$(selected_general_category)" = none ] || exit 15
+EOF_SELECTED_CATEGORY
+chmod +x "$tmp/selected_category_runner.sh"
+"$tmp/selected_category_runner.sh" "$tmp/selected_category.sh" || fail "selected category classifier behavior"
+grep -q '^sync_profile_from_selected_categories() {' dns-manager.sh || fail "profile sync helper missing"
+grep -q 'DNS_PROFILE="hybrid"' dns-manager.sh || fail "uniform category does not map to Hybrid profile"
+grep -q 'DNS_SELECTION_MODE="profile"' dns-manager.sh || fail "uniform category does not map to profile mode"
+grep -q 'DNS_SELECTION_CATEGORY="$_spc"' dns-manager.sh || fail "uniform category is not stored as selection category"
+grep -q 'DNS_PROFILE="custom"' dns-manager.sh || fail "mixed category does not map to custom profile"
+if grep -A18 -F '        set_slot)' dns-manager-luci.sh | grep -q 'DNS_PROFILE=custom DNS_SELECTION_MODE=manual'; then
+    fail "LuCI slot change still forces custom/manual profile"
+fi
+if grep -A18 -F 'select_slot() {' dns-manager.sh | grep -q 'DNS_PROFILE="custom"'; then
+    fail "CLI slot change still forces custom profile"
+fi
+if grep -A14 -F 'watchdog_pick_replacement() {' dns-manager.sh | grep -q 'bypass clean'; then
+    fail "watchdog can still cross from bypass to clean category"
+fi
+grep -A8 -F 'watchdog_pick_replacement() {' dns-manager.sh | grep -q 'selected_general_category' || fail "watchdog replacement lacks category gate"
+grep -A10 -F 'watchdog_slot_target_run() {' dns-manager.sh | grep -q 'selected_general_category' || fail "watchdog slot repair lacks category gate"
+grep -A12 -F 'watchdog_embedded_integrity_guard() {' dns-manager.sh | grep -q 'selected_general_category' || fail "watchdog integrity guard lacks category gate"
+grep -Fq 's mixed|custom' /dev/null 2>/dev/null || true
+grep -q 'смешанные или пользовательские категории DNS' dns-manager.sh || fail "watchdog custom/mixed skip message missing"
+ok "manual same-category DNS changes preserve profile; mixed/custom selections disable DNS watchdog scope"
 grep -q '^job_state_value() {' "$tmp/backend.sh" || fail "profile job state helper missing"
 grep -q '^job_process_alive() {' "$tmp/backend.sh" || fail "profile job liveness helper missing"
 grep -q 'job_write "\$_jid" pid "\$_job_pid"' "$tmp/backend.sh" || fail "profile job PID persistence missing"
