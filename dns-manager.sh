@@ -5244,8 +5244,7 @@ case "$_profile_detected_cat" in
     privacy) _profile_name="Приватность";;
     adblock) _profile_name="Блокировка рекламы";;
     family) _profile_name="Семейный DNS";;
-    custom) [ "${DNS_SELECTION_MODE:-}:${DNS_SELECTION_CATEGORY:-}" = "profile:all" ] && _profile_name="Все категории" || _profile_name="Собственный выбор";;
-    none) [ "${DNS_SELECTION_MODE:-}:${DNS_SELECTION_CATEGORY:-}" = "profile:all" ] && _profile_name="Все категории";;
+    custom|none) _profile_name="Собственный выбор";;
     *) _profile_name="Собственный выбор";;
 esac
 fi
