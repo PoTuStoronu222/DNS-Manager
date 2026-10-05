@@ -37,11 +37,11 @@ awk '
 node --check "$tmp/overview.js" >/dev/null 2>&1 || fail "embedded JS: node --check"
 ok "embedded LuCI JS syntax"
 
-grep -q 'BACKEND_STAGE="${BACKEND_FILE}.new.$"' dns-manager-luci.sh || fail "backend atomic staging missing"
+grep -Fq 'BACKEND_STAGE="${BACKEND_FILE}.new.$"' dns-manager-luci.sh || fail "backend atomic staging missing"
 grep -q 'mv -f "$BACKEND_STAGE" "$BACKEND_FILE"' dns-manager-luci.sh || fail "backend atomic swap missing"
-grep -q 'RPC_STAGE="${RPC_PLUGIN}.new.$"' dns-manager-luci.sh || fail "RPC plugin atomic staging missing"
+grep -Fq 'RPC_STAGE="${RPC_PLUGIN}.new.$"' dns-manager-luci.sh || fail "RPC plugin atomic staging missing"
 grep -q 'mv -f "$RPC_STAGE" "$RPC_PLUGIN"' dns-manager-luci.sh || fail "RPC plugin atomic swap missing"
-grep -q 'VIEW_STAGE="${VIEW_FILE}.new.$"' dns-manager-luci.sh || fail "view atomic staging missing"
+grep -Fq 'VIEW_STAGE="${VIEW_FILE}.new.$"' dns-manager-luci.sh || fail "view atomic staging missing"
 grep -q 'mv -f "$VIEW_STAGE" "$VIEW_FILE"' dns-manager-luci.sh || fail "view atomic swap missing"
 grep -q 'function dmRpc(o)' "$tmp/overview.js" || fail "RPC retry wrapper missing"
 grep -q 'Object not found' "$tmp/overview.js" || fail "RPC retry condition missing"
@@ -66,6 +66,8 @@ grep -q '\$1 !~ /\^\[A-Za-z0-9_-\]\+\$/' dns-manager.sh || fail "catalog ID vali
 grep -q 'bypass|clean|security|privacy|adblock|family|regional' dns-manager.sh || fail "catalog category validation missing"
 grep -q 'acquire_runtime_lock() {' "$tmp/backend.sh" || fail "LuCI runtime lock helper missing"
 grep -q 'json_update_state() {' "$tmp/backend.sh" || fail "structured update result helper missing"
+grep -q 'updated) exit 0' dns-manager.sh || fail "manager update-check exit contract missing"
+grep -q 'current|throttled) exit 2' dns-manager.sh || fail "manager current exit contract missing"
 ok "LuCI atomic install, RPC retry, safe dynamic assignments and lock/result helpers"
 
 grep -q '^        set_watchdog_setting)' "$tmp/backend.sh" || fail "watchdog setting dispatch missing"
