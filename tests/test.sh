@@ -442,20 +442,19 @@ grep -A18 -F 'watchdog_pick_replacement() {' dns-manager.sh | grep -q 'watchdog_
 grep -q '_fallback_slots=""' dns-manager.sh || fail "watchdog fallback slots are not tracked"
 grep -q '_empty_slots=""' dns-manager.sh || fail "watchdog empty slots are not tracked"
 grep -q 'Watchdog: проверяю целевую категорию для восстановления/дозаполнения' dns-manager.sh || fail "watchdog gradual target restore/fill path missing"
-grep -A8 '^auto_fill_slots() {' dns-manager.sh | grep -q 'ensure_test_results_fresh' || fail "profile selection does not use fresh full results"
+grep -q '^auto_fill_slots() {' dns-manager.sh || fail "automatic profile DNS selection helper missing"
 if grep -q 'profile_fill_slots' dns-manager.sh; then
     fail "obsolete bounded profile picker remains"
 fi
 if grep -q 'PROFILE_FRESH_OK_IDS' dns-manager.sh; then
     fail "obsolete per-profile fresh DNS list remains"
 fi
+grep -q 'test_dns_catalog "\$1"' dns-manager.sh || fail "profile apply does not pass its category to the DNS test"
+grep -q 'test_scope=' dns-manager.sh || fail "DNS test scope is not persisted"
+grep -q 'ensure_test_results_fresh "\$_cat"' dns-manager.sh || fail "category selector does not request category-scoped freshness"
+ok "ready-made profiles test only their own DNS category"
 
-awk '/^quick_max_bypass\(\)/,/^dependency_preflight\(\)/' dns-manager.sh > "$tmp/quick_profile_block.sh"
-grep -Fq 'if [ "${PROFILE_FULL_TEST:-0}" = 1 ]; then' "$tmp/quick_profile_block.sh" || fail "quick bypass profile does not reuse the fresh full test"
-grep -Fq 'Использую только что завершённую полную проверку DNS.' "$tmp/quick_profile_block.sh" || fail "quick bypass profile does not report the fresh full test"
-ok "ready-made profiles always refresh the complete DNS catalog before selection"
-
-# Profile application validation must use the fresh full-catalog results.
+# Profile application validation must use the fresh category-scoped results.
 awk '/^validate_selected_slots\(\)/,/^ensure_dnsmasq_balancer\(\)/' dns-manager.sh > "$tmp/validate_selected_slots.sh"
 grep -q 'ensure_test_results_fresh || return 1' "$tmp/validate_selected_slots.sh" || fail "profile validation does not require fresh full results"
 grep -q 'последнюю полную проверку' "$tmp/validate_selected_slots.sh" || fail "profile validation message does not refer to full test results"
@@ -463,7 +462,7 @@ if grep -q 'PROFILE_FRESH_OK_IDS' "$tmp/validate_selected_slots.sh"; then
     fail "profile validation still uses temporary candidate list"
 fi
 grep -q 'PROFILE_FULL_TEST=0' dns-manager.sh || fail "profile full-test flag cleanup missing"
-grep -q 'Проверяю весь список DNS — проверено' "$tmp/overview.js" || fail "LuCI profile progress does not show full catalog checking"
+grep -q 'Проверяю весь список DNS — проверено' "$tmp/overview.js" || fail "LuCI profile progress does not show DNS checking progress"
 grep -q 'Выбираю DNS из свежих результатов' "$tmp/overview.js" || fail "LuCI profile progress does not label fresh-result selection"
 grep -q 'localProfileRunning=!!(state.busy&&state.profileProgress)' "$tmp/overview.js" || fail "LuCI does not suppress stale profile result while retrying"
 ok "profile apply validates only against the fresh full-catalog results"
