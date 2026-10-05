@@ -481,7 +481,8 @@ update_hdp_json() {
         _ts="$(date +%s 2>/dev/null || printf 0)"
         printf 'hdp_latest=%s\nhdp_available=0\nhdp_checked=1\ncomponents_checked_at=%s\n' "$_installed" "$_ts" >> "$_state_tmp"
         mv "$_state_tmp" "$UPDATE_STATE" 2>/dev/null || rm -f "$_state_tmp" 2>/dev/null || true
-        json_error "Новой версии https-dns-proxy не найдено"; return
+        printf '{"ok":true,"updated":false,"version":'; json_quote "$_installed"; printf ',"message":'; json_quote "https-dns-proxy уже актуален"; printf '}'
+        return
     fi
     if ! package_update_hdp; then
         json_error "https-dns-proxy не удалось обновить"; return
@@ -722,23 +723,27 @@ update_manager_json() {
     [ -n "$_installed" ] || { json_error "DNS Manager не найден"; return; }
     _out="$TMP_ROOT/manager-update.log"
     rm -f "$_out" 2>/dev/null || true
-    DNS_MANAGER_FORCE_UPDATE=1 DNS_MANAGER_UPDATE_NO_EXEC=1 "$MANAGER_PATH" update-check >"$_out" 2>&1 || true
+    _rc=0
+    DNS_MANAGER_FORCE_UPDATE=1 DNS_MANAGER_UPDATE_NO_EXEC=1 "$MANAGER_PATH" update-check >"$_out" 2>&1 || _rc=$?
     _after="$(manager_version 2>/dev/null || true)"
-    if [ -n "$_after" ] && [ "$_after" != "$_installed" ]; then
-        printf '{"ok":true,"updated":true,"version":'; json_quote "$_after"; printf '}'
-        rm -f "$_out" 2>/dev/null || true
-        return
-    fi
+    case "$_rc" in
+        0)
+            [ -n "$_after" ] || _after="$_installed"
+            printf '{"ok":true,"updated":true,"version":'; json_quote "$_after"; printf '}'
+            rm -f "$_out" 2>/dev/null || true
+            return
+            ;;
+        2)
+            printf '{"ok":true,"updated":false,"version":'; json_quote "$_installed"; printf ',"message":'; json_quote "DNS Manager уже актуален"; printf '}'
+            rm -f "$_out" 2>/dev/null || true
+            return
+            ;;
+    esac
     _detail="$(tail -n 8 "$_out" 2>/dev/null | awk 'BEGIN{ORS=" "} {print}' | cut -c1-700)"
     rm -f "$_out" 2>/dev/null || true
-    if printf '%s\n' "$_detail" | grep -Eq "Новой версии|актуал|не новее|текущая версия" 2>/dev/null; then
-        printf '{"ok":true,"updated":false,"version":'; json_quote "$_installed"; printf ',"message":'; json_quote "DNS Manager уже актуален"; printf '}'
-        return
-    fi
     [ -n "$_detail" ] || _detail="Не удалось обновить DNS Manager."
     json_error "$_detail"
 }
-
 update_json() {
     if ! acquire_runtime_lock "$RUNTIME_DIR/update.lock"; then
         json_error "Обновление LuCI уже выполняется"; return
