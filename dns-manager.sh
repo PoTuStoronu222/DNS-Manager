@@ -7238,7 +7238,8 @@ watchdog_pick_replacement() {
             _fresh_pick="$(head -n1 "$_fresh_source" 2>/dev/null)"
             if [ -n "$_fresh_pick" ]; then
                 _rid="${_fresh_pick%%|*}"
-                _rcat="${_fresh_pick#*|}"
+                _fresh_rest="${_fresh_pick#*|}"
+                _rcat="${_fresh_rest%%|*}"
                 rm -f "$_fresh_source" "$_fresh_pass_source" 2>/dev/null || true
                 printf '%s|%s\n' "$_rid" "$_rcat"
                 return 0
