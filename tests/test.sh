@@ -456,13 +456,16 @@ ok "ready-made profiles test only their own DNS category"
 
 # Profile application validation must use the fresh category-scoped results.
 awk '/^validate_selected_slots\(\)/,/^ensure_dnsmasq_balancer\(\)/' dns-manager.sh > "$tmp/validate_selected_slots.sh"
-grep -q 'ensure_test_results_fresh || return 1' "$tmp/validate_selected_slots.sh" || fail "profile validation does not require fresh full results"
+grep -q 'ensure_test_results_fresh "$_validate_scope" || return 1' "$tmp/validate_selected_slots.sh" || fail "profile validation does not use the selected test scope"
 grep -q 'последнюю полную проверку' "$tmp/validate_selected_slots.sh" || fail "profile validation message does not refer to full test results"
+grep -q '_validate_scope=all' "$tmp/validate_selected_slots.sh" || fail "profile validation default scope missing"
+grep -q '_validate_scope="${DNS_SELECTION_CATEGORY:-all}"' "$tmp/validate_selected_slots.sh" || fail "profile validation does not follow selected profile category"
+grep -q '_validate_scope=bypass' "$tmp/validate_selected_slots.sh" || fail "quick bypass validation scope missing"
 if grep -q 'PROFILE_FRESH_OK_IDS' "$tmp/validate_selected_slots.sh"; then
     fail "profile validation still uses temporary candidate list"
 fi
 grep -q 'PROFILE_FULL_TEST=0' dns-manager.sh || fail "profile full-test flag cleanup missing"
-grep -q 'Проверяю весь список DNS — проверено' "$tmp/overview.js" || fail "LuCI profile progress does not show DNS checking progress"
+grep -q 'Проверяю DNS выбранного профиля — проверено' "$tmp/overview.js" || fail "LuCI profile progress does not show category-scoped DNS checking progress"
 grep -q 'Выбираю DNS из свежих результатов' "$tmp/overview.js" || fail "LuCI profile progress does not label fresh-result selection"
 grep -q 'localProfileRunning=!!(state.busy&&state.profileProgress)' "$tmp/overview.js" || fail "LuCI does not suppress stale profile result while retrying"
 ok "profile apply validates only against the fresh full-catalog results"
