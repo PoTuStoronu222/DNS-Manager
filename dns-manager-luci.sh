@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.6.25
+# Version: 1.6.26
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -23,7 +23,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.6.25"
+VERSION="1.6.26"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -145,7 +145,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.6.25"
+SELF_VERSION="1.6.26"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -1960,7 +1960,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.6.25
+// DNS Manager LuCI version: 1.6.26
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -1999,8 +1999,8 @@ var callJob = dmRpc({ object:'dns_manager', method:'job', params:['id'], expect:
 var callLog = dmRpc({ object:'dns_manager', method:'log', params:['lines'], expect:{} });
 
 var PROFILE = [
-  ['bypass','Максимальный обход'], ['clean','Максимальная скорость'],
-  ['security','Максимальная безопасность'], ['privacy','Максимальная приватность'],
+  ['bypass','Обход блокировок'], ['clean','Без фильтрации'],
+  ['security','Безопасность'], ['privacy','Приватность'],
   ['adblock','Блокировка рекламы'], ['family','Семейный']
 ];
 var CATEGORY = [
@@ -2011,7 +2011,7 @@ var state = { hdpUpdating:false, managerUpdating:false, updatingAll:false, categ
 
 function profileName(p){
   var x=PROFILE.filter(function(v){return v[0]===p;})[0];
-  return x?x[1]:(p==='hybrid'?'Максимальный обход':p==='custom'?'Собственный выбор':p==='none'?'Не выбран':(p||'—'));
+  return x?x[1]:(p==='hybrid'?'Обход блокировок':p==='custom'?'Собственный выбор':p==='none'?'Не выбран':(p||'—'));
 }
 function isProfileId(p){
   for(var i=0;i<PROFILE.length;i++)if(PROFILE[i][0]===p)return true;
