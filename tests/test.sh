@@ -475,27 +475,37 @@ grep -q 'repeat=currentId===name' "$tmp/overview.js" || fail "LuCI repeat-profil
 ok "profile apply uses bounded selection and the active profile can be applied again"
 
 
-# Ready-made profiles must not trigger the heavy full-catalog scan just to select DNS.
-grep -q '^profile_fill_slots() {' dns-manager.sh || fail "bounded profile DNS picker missing"
-awk '/^profile_fill_slots\(\) \{/{capture=1} capture{print} capture && /^auto_fill_slots\(\) \{/{exit}' dns-manager.sh | sed '$d' > "$tmp/profile_fill_slots.sh"
-[ -s "$tmp/profile_fill_slots.sh" ] || fail "profile picker extraction"
-grep -q 'acquire_test_lock' "$tmp/profile_fill_slots.sh" || fail "profile picker is not serialized with DNS tests"
-grep -q 'test_one_dns' "$tmp/profile_fill_slots.sh" || fail "profile picker does not test DNS candidates"
-grep -q 'PROFILE_MAX_PROBES:-12' "$tmp/profile_fill_slots.sh" || fail "profile picker default probe bound missing"
-grep -q 'быстрых кандидатов' "$tmp/profile_fill_slots.sh" || fail "profile picker failure is not explicit"
-if grep -q 'ensure_test_results_fresh\|test_dns_catalog' "$tmp/profile_fill_slots.sh"; then
-    fail "ready profile picker still depends on a full catalog test"
-fi
-grep -Fq 'if [ "${PROFILE_APPLY:-0}" = 1 ]; then' dns-manager.sh || fail "profile apply does not switch to bounded picker"
-grep -Fq 'profile_fill_slots "$_cat"' dns-manager.sh || fail "profile apply bounded picker dispatch missing"
-grep -Fq 'PROFILE_FRESH_OK_IDS=""' dns-manager.sh || fail "profile fresh DNS result list is not reset"
-grep -Fq 'for _pid in ${PROFILE_FRESH_OK_IDS:-}; do' dns-manager.sh || fail "profile apply does not validate freshly tested DNS candidates"
-awk '/^quick_max_bypass\(\)/,/^dependency_preflight\(\)/' dns-manager.sh > "$tmp/quick_profile_block.sh"
-grep -Fq 'if [ "${PROFILE_APPLY:-0}" = 1 ]; then' "$tmp/quick_profile_block.sh" || fail "quick bypass profile does not enter bounded mode"
-grep -Fq 'полная проверка каталога не требуется' "$tmp/quick_profile_block.sh" || fail "quick bypass profile still forces full catalog precheck"
-grep -Fq 'localProfileRunning=!!(state.busy&&state.profileProgress)' "$tmp/overview.js" || fail "LuCI does not suppress stale profile result during retry"
-ok "profile apply validates its fresh candidates and hides stale result while running"
+# Ready-made profiles must always refresh the complete DNS catalog before selection.
+grep -q '^profile_apply_begin() {' dns-manager.sh || fail "profile apply precheck helper missing"
+awk '/^profile_apply_begin\(\)/,/^}/' dns-manager.sh > "$tmp/profile_apply_begin.sh"
+grep -q 'PROFILE_FULL_TEST=1' "$tmp/profile_apply_begin.sh" || fail "profile apply does not require a full fresh test"
+grep -q 'test_dns_catalog' "$tmp/profile_apply_begin.sh" || fail "profile apply does not run the full catalog test"
+grep -q 'test_dns_catalog ||' "$tmp/profile_apply_begin.sh" || fail "profile full test failure is not propagated"
+grep -q 'PROFILE_FULL_TEST=0' "$tmp/profile_apply_begin.sh" || fail "profile full-test flag is not reset on failure"
 
+grep -q 'if [ "${PROFILE_APPLY:-0}" = 1 ] && [ "${PROFILE_FULL_TEST:-0}" != 1 ]; then' dns-manager.sh || fail "bounded picker guard does not distinguish full profile tests"
+if grep -q 'PROFILE_FRESH_OK_IDS' dns-manager.sh; then
+    fail "obsolete per-profile fresh DNS list remains"
+fi
+
+awk '/^quick_max_bypass\(\)/,/^dependency_preflight\(\)/' dns-manager.sh > "$tmp/quick_profile_block.sh"
+grep -Fq 'if [ "${PROFILE_FULL_TEST:-0}" = 1 ]; then' "$tmp/quick_profile_block.sh" || fail "quick bypass profile does not reuse the fresh full test"
+grep -Fq 'Использую только что завершённую полную проверку DNS.' "$tmp/quick_profile_block.sh" || fail "quick bypass profile does not report the fresh full test"
+ok "ready-made profiles always refresh the complete DNS catalog before selection"
+
+# Profile application validation must use the fresh full-catalog results.
+awk '/^validate_selected_slots\(\)/,/^ensure_dnsmasq_balancer\(\)/' dns-manager.sh > "$tmp/validate_selected_slots.sh"
+grep -q 'ensure_test_results_fresh || return 1' "$tmp/validate_selected_slots.sh" || fail "profile validation does not require fresh full results"
+grep -q 'последнюю полную проверку' "$tmp/validate_selected_slots.sh" || fail "profile validation message does not refer to full test results"
+if grep -q 'PROFILE_FRESH_OK_IDS' "$tmp/validate_selected_slots.sh"; then
+    fail "profile validation still uses temporary candidate list"
+fi
+grep -q 'PROFILE_FULL_TEST=0' dns-manager.sh || fail "profile full-test flag cleanup missing"
+grep -q 'Проверяю весь список DNS — проверено' "$tmp/overview.js" || fail "LuCI profile progress does not show full catalog checking"
+grep -q 'Выбираю DNS из свежих результатов' "$tmp/overview.js" || fail "LuCI profile progress does not label fresh-result selection"
+grep -q 'localProfileRunning=!!(state.busy&&state.profileProgress)' "$tmp/overview.js" || fail "LuCI does not suppress stale profile result while retrying"
+ok "profile apply validates only against the fresh full-catalog results"
+ 
 # Completed profile jobs survive a LuCI page reload and expose the actual reason for failure.
 grep -q 'profile_job_status' "$tmp/backend.sh" || fail "persistent profile job status missing"
 grep -q 'profile_job_result' "$tmp/backend.sh" || fail "persistent profile job result missing"
