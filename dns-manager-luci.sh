@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.6.22
+# Version: 1.6.23
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -23,7 +23,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.6.22"
+VERSION="1.6.23"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -1445,21 +1445,37 @@ local_slot_test_one() {
         _status="LOCAL_PORT_NOT_ASSIGNED"
     elif ! listener_port_exists "$_port"; then
         _status="LOCAL_PORT_CLOSED"
-    elif ! command -v dig >/dev/null 2>&1; then
-        _status="DIG_NOT_INSTALLED"
     else
         rm -f "$_out" 2>/dev/null || true
-        if ! dig @127.0.0.1 -p "$_port" "$_domain" A +time=2 +tries=1 +stats >"$_out" 2>&1; then
-            _status="LOCAL_DNS_NO_RESPONSE"
+        _start_ms="$(awk '{printf "%.0f", $1*1000}' /proc/uptime 2>/dev/null || printf 0)"
+        if command -v dig >/dev/null 2>&1; then
+            dig @127.0.0.1 -p "$_port" "$_domain" A +time=2 +tries=1 +stats >"$_out" 2>&1
+        elif command -v nslookup >/dev/null 2>&1; then
+            nslookup -port="$_port" "$_domain" 127.0.0.1 >"$_out" 2>&1
         else
-            _ms="$(sed -n "s/^;; Query time: \\([0-9][0-9]*\\) msec$/\\1/p" "$_out" 2>/dev/null | head -n1)"
-            _dns_rcode="$(sed -n "s/^;; ->>HEADER<<- opcode: QUERY, status: \\([^,][^,]*\\),.*/\\1/p" "$_out" 2>/dev/null | head -n1)"
+            _status="DNS_CHECKER_NOT_INSTALLED"
+            _ms=-1
+        fi
+        if [ "$_status" != "DNS_CHECKER_NOT_INSTALLED" ]; then
+            _end_ms="$(awk '{printf "%.0f", $1*1000}' /proc/uptime 2>/dev/null || printf 0)"
+            case "$_start_ms|$_end_ms" in
+                *[!0-9|]*|\|*) _ms=-1 ;;
+                *) _ms=$((_end_ms-_start_ms)); [ "$_ms" -lt 0 ] && _ms=0 ;;
+            esac
+            _dns_rcode=""
+            if command -v dig >/dev/null 2>&1; then
+                _dns_rcode="$(sed -n "s/^;; ->>HEADER<<- opcode: QUERY, status: \\([^,][^,]*\\),.*/\\1/p" "$_out" 2>/dev/null | head -n1)"
+            elif grep -Eq "(^|[[:space:]])Name:[[:space:]]|^Address[[:space:]]|^Server:" "$_out" 2>/dev/null; then
+                _dns_rcode="NOERROR"
+            fi
+            if grep -Eq "SERVFAIL" "$_out" 2>/dev/null; then
+                _dns_rcode="SERVFAIL"
+            elif grep -Eq "REFUSED" "$_out" 2>/dev/null; then
+                _dns_rcode="REFUSED"
+            fi
             case "$_dns_rcode" in
                 NOERROR)
-                    case "$_ms" in
-                        ""|*[!0-9]*) _status="LOCAL_DNS_BAD_TIMING" ;;
-                        *) _status="OK" ;;
-                    esac
+                    case "$_ms" in ""|*[!0-9]*) _status="LOCAL_DNS_BAD_TIMING" ;; *) _status="OK" ;; esac
                     ;;
                 SERVFAIL) _status="LOCAL_DNS_SERVFAIL" ;;
                 REFUSED) _status="LOCAL_DNS_REFUSED" ;;
@@ -1938,7 +1954,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.6.22
+// DNS Manager LuCI version: 1.6.23
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
