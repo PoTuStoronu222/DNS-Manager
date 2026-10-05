@@ -2186,7 +2186,28 @@ validate_dns_message() {
     [ -s "$_file" ] || return 1
     _n="$(wc -c < "$_file" 2>/dev/null | tr -d " ")"
     case "$_n" in ''|*[!0-9]*) return 1;; esac
-    [ "$_n" -ge 12 ] || return 1
+    # A DoH response is not considered valid merely because the body has 12
+    # bytes. Validate the actual DNS wire header returned by the DoH endpoint.
+    # Request ID is 0, QDCOUNT is 1, the response bit must be set, opcode must
+    # be QUERY, truncation must be clear, RCODE must be NOERROR, and the answer
+    # section must contain at least one RR for the known positive test query.
+    [ "$_n" -ge 17 ] || return 1
+    set -- $(od -An -tu1 -N12 "$_file" 2>/dev/null) || return 1
+    [ "$#" -eq 12 ] || return 1
+    [ "$1" -eq 0 ] && [ "$2" -eq 0 ] || return 1
+    _flags1=$3; _flags2=$4
+    _qr=$(( _flags1 & 128 ))
+    _opcode=$(( (_flags1 & 120) >> 3 ))
+    _tc=$(( _flags1 & 2 ))
+    _rcode=$(( _flags2 & 15 ))
+    _qd=$(( $5 * 256 + $6 ))
+    _an=$(( $7 * 256 + $8 ))
+    [ "$_qr" -eq 128 ] || return 1
+    [ "$_opcode" -eq 0 ] || return 1
+    [ "$_tc" -eq 0 ] || return 1
+    [ "$_rcode" -eq 0 ] || return 1
+    [ "$_qd" -eq 1 ] || return 1
+    [ "$_an" -ge 1 ] || return 1
     return 0
 }
 test_one_dns() {
@@ -2202,7 +2223,7 @@ q="$TMP_DIR/dns_query.bin"; body="$TMP_DIR/body.$id"; hdr="$TMP_DIR/h.$id"
 # may arrive without that file. Create it on demand instead of turning a valid
 # unassigned DNS into a false "unavailable" result.
 if [ ! -s "$q" ]; then
-    printf '\022\064\001\000\000\001\000\000\000\000\000\000\007example\003com\000\000\001\000\001' > "$q" 2>/dev/null || {
+    printf '\000\000\001\000\000\001\000\000\000\000\000\000\007example\003com\000\000\001\000\001' > "$q" 2>/dev/null || {
         printf '%s\n' "$id|$cat|$name|-1|INTERNAL_TEST_QUERY_CREATE_FAIL" > "$TMP_DIR/t.$id"
         rm -f "$body" "$hdr"
         return
@@ -2270,7 +2291,7 @@ test_dns_catalog() (
     # Create the immutable shared DNS wire query before launching any parallel
     # test workers. This removes the worker-to-worker race on dns_query.bin.
     q="$TMP_DIR/dns_query.bin"
-    printf '\022\064\001\000\000\001\000\000\000\000\000\000\007example\003com\000\000\001\000\001' > "$q" 2>/dev/null || {
+    printf '\000\000\001\000\000\001\000\000\000\000\000\000\007example\003com\000\000\001\000\001' > "$q" 2>/dev/null || {
         release_test_lock
         warn_msg "Не удалось создать общий DNS-тестовый пакет."
         return 1
@@ -3398,7 +3419,7 @@ verify_doh_endpoint() {
     _h="$TMP_DIR/verify-h.$_suffix"
     : > "$_b" || return 1
     : > "$_h" || { rm -f "$_b"; return 1; }
-    printf '\022\064\001\000\000\001\000\000\000\000\000\000\007example\003com\000\000\001\000\001' > "$_q" || {
+    printf '\000\000\001\000\000\001\000\000\000\000\000\000\007example\003com\000\000\001\000\001' > "$_q" || {
         rm -f "$_q" "$_b" "$_h"
         return 1
     }
@@ -7040,7 +7061,7 @@ watchdog_probe_catalog_candidate() {
             printf '\022\064\001\000\000\001\000\000\000\000\000\000\006yandex\002ru\000\000\001\000\001' > "$_q" || { rm -f "$_q"; return 1; }
             ;;
         *)
-            printf '\022\064\001\000\000\001\000\000\000\000\000\000\007example\003com\000\000\001\000\001' > "$_q" || { rm -f "$_q"; return 1; }
+            printf '\000\000\001\000\000\001\000\000\000\000\000\000\007example\003com\000\000\001\000\001' > "$_q" || { rm -f "$_q"; return 1; }
             ;;
     esac
 
