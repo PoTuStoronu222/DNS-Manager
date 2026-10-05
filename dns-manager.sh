@@ -2722,7 +2722,16 @@ validate_selected_slots() {
         _u="$(normalize_url "$(dns_url "$_id")")"
         [ -n "$_u" ] || { err_msg "Слот $s содержит DNS без URL."; return 1; }
         if [ "$DNS_PROFILE" = hybrid ]; then
-            ensure_test_results_fresh || return 1
+            _validate_scope=all
+            case "${DNS_SELECTION_MODE:-}" in
+                profile)
+                    _validate_scope="${DNS_SELECTION_CATEGORY:-all}"
+                    ;;
+                quick)
+                    _validate_scope=bypass
+                    ;;
+            esac
+            ensure_test_results_fresh "$_validate_scope" || return 1
             _tested_ok="$(awk -F'|' -v id="$_id" 'NF>=5 && $1==id && $5=="OK" && $4 ~ /^[0-9]+$/ {print "yes"; exit}' "$TEST_RESULTS" 2>/dev/null)"
             if [ "$_tested_ok" != yes ]; then
                 err_msg "DNS «$(dns_name "$_id")» не прошёл последнюю полную проверку. Он не может быть применён."
