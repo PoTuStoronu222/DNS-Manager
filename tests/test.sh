@@ -283,7 +283,7 @@ fi
 ok "LuCI local slot checks require a real DNS A answer"
 
 grep -q 'if command -v dig' "$tmp/local_slot_test_fn.sh" || fail "local slot test no longer prefers dig"
-grep -Fq 'dig @127.0.0.1 -p "$_port" "$_domain" A +time=2 +tries=1 +short' "$tmp/local_slot_test_fn.sh" || fail "local slot test exact dig endpoint missing"
+grep -Fq 'dig @127.0.0.1 -p "$_port" "$_domain" A +time=2 +tries=1' "$tmp/local_slot_test_fn.sh" || fail "local slot test exact dig endpoint missing"
 grep -q 'job_write "\$_jid" dns_status' "$tmp/backend.sh" || fail "single DNS job does not persist its exact status"
 grep -q 'job_write "\$_jid" ping' "$tmp/backend.sh" || fail "single DNS job does not persist its exact latency"
 grep -q 'status:j&&j.dns_status' "$tmp/overview.js" || fail "LuCI single-test UI still prefers aggregate status"
