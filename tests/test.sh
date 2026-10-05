@@ -16,6 +16,10 @@ sh -n dns-manager.sh || fail "dns-manager.sh: sh -n"
 sh -n dns-manager-luci.sh || fail "dns-manager-luci.sh: sh -n"
 ok "shell syntax"
 
+
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT INT TERM
+
 # DNS health must not treat arbitrary HTTP 200/application-dns-message data as OK.
 awk '
     /^validate_dns_message\(\) \{/ { capture=1 }
@@ -47,9 +51,6 @@ if validate_dns_message "$tmp/dns-garbage"; then
     fail "arbitrary 12-byte body accepted as healthy"
 fi
 ok "DNS response validation rejects false-positive HTTP 200/SERVFAIL/no-answer data"
-
-tmp="$(mktemp -d)"
-trap 'rm -rf "$tmp"' EXIT INT TERM
 
 awk '
     /cat > "[^"]*BACKEND_STAGE[^"]*"[^<]*<<\x27EOF_RPC\x27/ { capture=1; next }
