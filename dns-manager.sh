@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.35.46"
+VERSION="3.35.47"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -7297,7 +7297,7 @@ watchdog_loop_reset_slot() {
     eval "WD_MISSING_${_slot}=0"
 }
 watchdog_embedded_integrity_guard() {
-    _selection_kind="$(selected_general_category)"
+    _selection_kind="$(watchdog_scope_category 2>/dev/null || true)"
     case "$_selection_kind" in
         bypass|clean|security|privacy|adblock|family) ;;
         *) return 0 ;;
