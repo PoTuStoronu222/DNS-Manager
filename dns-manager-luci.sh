@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.6.18
+# Version: 1.6.19
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -23,7 +23,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.6.18"
+VERSION="1.6.19"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -115,7 +115,7 @@ EOF_MENU
 }
 EOF_ACL
 
-    BACKEND_STAGE="${BACKEND_FILE}.new.$"
+    BACKEND_STAGE="${BACKEND_FILE}.new.$$"
     rm -f "$BACKEND_STAGE" 2>/dev/null || true
     cat > "$BACKEND_STAGE" <<'EOF_RPC'
 #!/bin/sh
@@ -140,7 +140,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.6.18"
+SELF_VERSION="1.6.19"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -459,7 +459,7 @@ update_hdp_json() {
     _candidate="$(package_candidate_version https-dns-proxy 2>/dev/null || true)"
     [ -n "$_installed" ] || { json_error "https-dns-proxy не установлен"; return; }
     [ -n "$_candidate" ] || {
-        _state_tmp="$UPDATE_STATE.tmp.$"
+        _state_tmp="$UPDATE_STATE.tmp.$$"
         if [ -r "$UPDATE_STATE" ]; then
             sed '/^hdp_latest=/d;/^hdp_available=/d;/^hdp_checked=/d;/^components_checked_at=/d' "$UPDATE_STATE" > "$_state_tmp" 2>/dev/null || true
         else
@@ -610,7 +610,7 @@ update_catalog_direct() {
     _count="$(grep -v '^[[:space:]]*#' "$_tmp" 2>/dev/null | grep -v '^[[:space:]]*$' | wc -l | tr -d ' ')"
     case "$_count" in ''|*[!0-9]*) _count=0;; esac
     [ -n "$_remote_ver" ] && [ -n "$_remote_rev" ] && [ "$_decl" = "$_count" ] && [ "$_count" -gt 0 ] || { rm -f "$_tmp" 2>/dev/null || true; return 4; }
-    awk -F'|' '/^[[:space:]]*#/ || /^[[:space:]]*$/ {next} {if(NF!=7 || $1=="" || $4=="" || $5 !~ /^https:\/\//) bad=1; ids[$1]++; if(ids[$1]>1) bad=1; n++} END{if(bad || n<1) exit 1}' "$_tmp" >/dev/null 2>&1 || { rm -f "$_tmp" 2>/dev/null || true; return 4; }
+    awk -F'|' '/^[[:space:]]*#/ || /^[[:space:]]*$/ {next} {if(NF!=7 || $1=="" || $4=="" || $5 !~ /^https:\/\//) bad=1; if($1 !~ /^[A-Za-z0-9_-]+$/) bad=1; if($2 !~ /^(bypass|clean|security|privacy|adblock|family|regional)$/) bad=1; ids[$1]++; if(ids[$1]>1) bad=1; n++} END{if(bad || n<1) exit 1}' "$_tmp" >/dev/null 2>&1 || { rm -f "$_tmp" 2>/dev/null || true; return 4; }
     _rb="$TMP_ROOT/catalog-remote-all.$$"
     _lb="$TMP_ROOT/catalog-local-all.$$"
     sed '/^[[:space:]]*#/d;/^[[:space:]]*$/d' "$_tmp" > "$_rb" 2>/dev/null || true
@@ -1899,7 +1899,7 @@ EOF_RPC
         err "Не удалось заменить LuCI backend."
         return 1
     }
-    RPC_STAGE="${RPC_PLUGIN}.new.$"
+    RPC_STAGE="${RPC_PLUGIN}.new.$$"
     rm -f "$RPC_STAGE" 2>/dev/null || true
     cat > "$RPC_STAGE" <<'EOF_RPC_WRAPPER'
 #!/bin/sh
@@ -1916,7 +1916,7 @@ EOF_RPC_WRAPPER
         return 1
     }
 
-    VIEW_STAGE="${VIEW_FILE}.new.$"
+    VIEW_STAGE="${VIEW_FILE}.new.$$"
     rm -f "$VIEW_STAGE" 2>/dev/null || true
     cat > "$VIEW_STAGE" <<'EOF_JS'
 'use strict';
@@ -1924,7 +1924,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.6.18
+// DNS Manager LuCI version: 1.6.19
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
