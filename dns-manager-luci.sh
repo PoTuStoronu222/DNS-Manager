@@ -2559,7 +2559,8 @@ function renderHeader(root,st){
   var e=root.querySelector('#dm-header');if(!e)return;e.innerHTML='';
   var lastTest=dateText(st.last_full_test);
   var scope=String(st.last_full_test_scope||'all');
-  var scopeLabel=scope==='all'?'весь каталог':(scope==='bypass'?'Обход блокировок':(scope==='clean'?'Без фильтрации':(scope==='security'?'Безопасность':(scope==='privacy'?'Приватность':(scope==='adblock'?'Блокировка рекламы':(scope==='family'?'Семейный':scope)))));
+  var scopeNames={all:'весь каталог',bypass:'Обход блокировок',clean:'Без фильтрации',security:'Безопасность',privacy:'Приватность',adblock:'Блокировка рекламы',family:'Семейный'};
+  var scopeLabel=scopeNames[scope]||scope;
   var testText=lastTest==='—'?'Последняя проверка DNS: не выполнялась':'Последняя проверка DNS: '+lastTest+' · '+scopeLabel;
   e.appendChild(E('div',{'class':'dm-header'},[
     E('h2',{},'DNS Manager LUCI'),
