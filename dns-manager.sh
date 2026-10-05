@@ -5073,7 +5073,6 @@ printf_plain_row "dig" "$(state_word "$HAS_DIG")"
 printf_plain_row "ntpd" "$(state_word "$HAS_NTPD")"
 menu_section "DNS"
 printf_plain_row "dnsmasq" "$(state_word "$DNSMASQ_RUN")"
-printf_plain_row "LuCI DNS Manager" "$(module_state_word luci)"
 refresh_doh_scheme_counts
 printf_plain_row "DNS-серверов всего" "$DOH_TOTAL"
 printf_plain_row "По текущей схеме" "$DOH_MATCH"
@@ -5798,15 +5797,6 @@ force_state_word() {
 }
 module_state_word() {
     case "$1" in
-        luci)
-            _real="$(check_module_state luci)"
-            case "$_real" in
-                1) printf "${C_BOLD}${C_GREEN}УСТАНОВЛЕНО${C_NC}" ;;
-                2) printf "${C_BOLD}${C_YELLOW}ТРЕБУЕТ ВОССТАНОВЛЕНИЯ${C_NC}" ;;
-                *) printf "${C_BOLD}${C_RED}НЕ УСТАНОВЛЕНО${C_NC}" ;;
-            esac
-            return 0
-            ;;
     esac
     _real="$(check_module_state "$1")"
     case "$_real" in
@@ -8215,7 +8205,6 @@ menu_item "[6]" "Удалить DNS Manager"
 menu_section "LUCI"
 _luci_state="$(check_module_state luci)"
 if [ "$_luci_state" = 1 ]; then
-    printf_state_row "LuCI" "${C_GREEN}УСТАНОВЛЕНО${C_NC}"
     if [ "${LUCI_UPDATE_AVAILABLE:-0}" = 1 ]; then
         menu_item "[7]" "Обновить LuCI → ${LUCI_REMOTE_VERSION}"
     else
