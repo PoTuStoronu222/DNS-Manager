@@ -479,9 +479,8 @@ grep -q 'быстрых кандидатов' "$tmp/profile_fill_slots.sh" || fa
 if grep -q 'ensure_test_results_fresh\|test_dns_catalog' "$tmp/profile_fill_slots.sh"; then
     fail "ready profile picker still depends on a full catalog test"
 fi
-awk '/^auto_fill_slots\(\)/,/^}$/ { print }' dns-manager.sh > "$tmp/auto_fill_dispatch.sh"
-grep -q 'if [ "${PROFILE_APPLY:-0}" = 1 ]; then' "$tmp/auto_fill_dispatch.sh" || fail "profile apply does not switch to bounded picker"
-grep -q 'profile_fill_slots "${_cat}' "$tmp/auto_fill_dispatch.sh" || fail "profile apply bounded picker dispatch missing"
+grep -Fq 'if [ "${PROFILE_APPLY:-0}" = 1 ]; then' dns-manager.sh || fail "profile apply does not switch to bounded picker"
+grep -Fq 'profile_fill_slots "$_cat"' dns-manager.sh || fail "profile apply bounded picker dispatch missing"
 ok "ready profile apply uses bounded candidate checks instead of full catalog scan"
 
 # Completed profile jobs survive a LuCI page reload and expose the actual reason for failure.
