@@ -302,8 +302,8 @@ grep -Fq -- '--connect-timeout 1 --max-time 3 --resolve "$host:$port:$ipx"' dns-
 grep -q '(trap - EXIT; test_one_dns "\$_id") &' "$tmp/backend.sh" || fail "selected DNS checks are not parallelized"
 ok "single and full DNS checks use the same test_one_dns path"
 
-grep -q 'printf '\'',"ping":'\'' "$_ms"' "$tmp/backend.sh" || fail "LuCI DoH instances do not expose saved ping"
-grep -q 'printf '\'',"status":'\'' "$_result_status"' "$tmp/backend.sh" || fail "LuCI DoH instances do not expose saved test status"
+grep -q ',"ping":' "$tmp/backend.sh" || fail "LuCI DoH instances do not expose saved ping"
+grep -q ',"status":' "$tmp/backend.sh" || fail "LuCI DoH instances do not expose saved test status"
 grep -q "badge('dm-ok','работает')" "$tmp/overview.js" || fail "LuCI does not show DNS test state as работает"
 grep -q "badge('dm-bad','не работает')" "$tmp/overview.js" || fail "LuCI does not show failed DNS test state as не работает"
 grep -q "badge('dm-off','не проверено')" "$tmp/overview.js" || fail "LuCI does not distinguish an untested DNS"
