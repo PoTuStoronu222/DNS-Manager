@@ -467,6 +467,13 @@ grep -q "callJob('profile')" "$tmp/overview.js" || fail "LuCI does not inspect r
 grep -q 'state.profileResumeStarted' "$tmp/overview.js" || fail "LuCI profile resume guard missing"
 grep -q 'resumeRunningProfile(root)' "$tmp/overview.js" || fail "LuCI profile resume is not started on render"
 ok "profile jobs survive LuCI disconnects and reconnect on page load"
+grep -q 'PROFILE_APPLY=1 apply_profile_now "\$_profile"' "$tmp/backend.sh" || fail "LuCI profile job does not use bounded profile picker"
+if awk '/^function applyProfile\(name,root\)\{/,/^function setTestAge/' "$tmp/overview.js" | grep -q 'if(currentId===name)return'; then
+    fail "LuCI blocks re-applying the currently selected profile"
+fi
+grep -q 'repeat=currentId===name' "$tmp/overview.js" || fail "LuCI repeat-profile path missing"
+ok "profile apply uses bounded selection and the active profile can be applied again"
+
 
 # Ready-made profiles must not trigger the heavy full-catalog scan just to select DNS.
 grep -q '^profile_fill_slots() {' dns-manager.sh || fail "bounded profile DNS picker missing"
