@@ -469,7 +469,7 @@ grep -q 'resumeRunningProfile(root)' "$tmp/overview.js" || fail "LuCI profile re
 ok "profile jobs survive LuCI disconnects and reconnect on page load"
 # Watchdog tuning is persisted and exposed as live LuCI controls.
 for _wd_key in WATCHDOG_INTERVAL WATCHDOG_FAIL_THRESHOLD WATCHDOG_REPAIR_COOLDOWN WATCHDOG_MAX_REPAIRS WATCHDOG_MAX_RESTARTS WATCHDOG_MAX_CANDIDATES WATCHDOG_GUARD_INTERVAL; do
-    grep -q "^\$_wd_key=" dns-manager.sh || fail "watchdog config variable missing: \$_wd_key"
+    grep -q "^${_wd_key}=" dns-manager.sh || fail "watchdog config variable missing: $_wd_key"
 done
 grep -q 'WATCHDOG_FAIL_THRESHOLD="$WATCHDOG_FAIL_THRESHOLD"' dns-manager.sh || fail "watchdog threshold is not persisted"
 grep -q 'WATCHDOG_REPAIR_COOLDOWN="$WATCHDOG_REPAIR_COOLDOWN"' dns-manager.sh || fail "watchdog repair cooldown is not persisted"
