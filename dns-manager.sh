@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.35.14"
+VERSION="3.35.15"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -8204,23 +8204,26 @@ while :; do
     menu_header "DNS Manager $VERSION"
     menu_section "НАСТРОЙКА DNS"
     menu_item "[1]" "Настроить DNS"
+    menu_section "НАСТРОЙКИ"
+    menu_item "[2]" "Серверы точного времени"
+    menu_item "[3]" "Сетевой тюнинг"
     menu_section "ДИАГНОСТИКА"
-    menu_item "[2]" "Состояние и журнал"
+    menu_item "[4]" "Состояние и журнал"
     menu_section "УПРАВЛЕНИЕ"
-    menu_item "[3]" "Удалить DNS Manager"
+    menu_item "[5]" "Удалить DNS Manager"
     menu_section "LUCI"
     _luci_state="$(check_module_state luci)"
     if [ "$_luci_state" = 1 ]; then
         if [ "${LUCI_UPDATE_AVAILABLE:-0}" = 1 ]; then
-            menu_item "[4]" "Обновить LuCI → ${LUCI_REMOTE_VERSION}"
+            menu_item "[6]" "Обновить LuCI → ${LUCI_REMOTE_VERSION}"
         else
-            menu_item "[4]" "Удалить Нативный интерфейс DNS Manager"
+            menu_item "[6]" "Удалить Нативный интерфейс DNS Manager"
         fi
     else
         case "$_luci_state" in
-            0) menu_item "[4]" "Установить Нативный интерфейс DNS Manager" ;;
-            2) menu_item "[4]" "Восстановить Нативный интерфейс DNS Manager" ;;
-            *) menu_item "[4]" "Нативный интерфейс DNS Manager" ;;
+            0) menu_item "[6]" "Установить Нативный интерфейс DNS Manager" ;;
+            2) menu_item "[6]" "Восстановить Нативный интерфейс DNS Manager" ;;
+            *) menu_item "[6]" "Нативный интерфейс DNS Manager" ;;
         esac
     fi
     menu_back
@@ -8229,9 +8232,11 @@ while :; do
     [ -z "$c" ] && { clear_screen; printf "${C_GREEN}DNS Manager завершён.${C_NC}\n"; exit 0; }
     case "$c" in
         1) prepare_dns_operation || { pause; continue; }; menu_dns ;;
-        2) show_map ;;
-        3) uninstall_manager ;;
-        4)
+        2) prepare_dns_operation || { pause; continue; }; menu_ntp ;;
+        3) prepare_dns_operation || { pause; continue; }; menu_extras ;;
+        4) show_map ;;
+        5) uninstall_manager ;;
+        6)
             _luci_state="$(check_module_state luci)"
             if [ "$_luci_state" = 1 ] && [ "${LUCI_UPDATE_AVAILABLE:-0}" = 1 ]; then
                 luci_companion_update; _rc=$?
