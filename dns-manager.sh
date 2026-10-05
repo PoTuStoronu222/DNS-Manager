@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.35.20"
+VERSION="3.35.21"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -5317,6 +5317,12 @@ clean|security|privacy|adblock|family|all)
     PORT_1="$HYBRID_PORT_1"; PORT_2="$HYBRID_PORT_2"; PORT_3="$HYBRID_PORT_3"
     PORT_4="$HYBRID_PORT_4"; PORT_5="$HYBRID_PORT_5"; PORT_6="$HYBRID_PORT_6"
     if auto_fill_slots "$goal"; then
+        # auto_fill_slots() already built the exact candidate set for the
+        # requested category. Do not run adaptive_hybrid_prepare() afterwards:
+        # that stage is intentionally for the generic Hybrid/Max Bypass mode
+        # and would reselect the default bypass pool.
+        _profile_old_stage_skip="${HYBRID_STAGE_SKIP:-0}"
+        HYBRID_STAGE_SKIP=1
         # On first profile selection there may be no prior RU slot. In that
         # case keep the RU server selected by auto_fill_slots(). Only restore
         # the old RU state when it actually existed before this profile change.
@@ -5333,6 +5339,7 @@ clean|security|privacy|adblock|family|all)
         apply_settings
         _profile_rc=$?
         CORE_ONLY=0
+        HYBRID_STAGE_SKIP="$_profile_old_stage_skip"
     else
         _profile_rc=1
     fi
