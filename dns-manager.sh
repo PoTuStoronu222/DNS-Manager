@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.35.36"
+VERSION="3.35.37"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -2067,7 +2067,7 @@ resolve_host() {
 host="$1"
 for bs in $(printf '%s' "$BOOTSTRAP_DNS" | tr ',' ' '); do
 if [ "$HAS_DIG" = yes ]; then
-ipx="$(dig +short "@$bs" "$host" A +time=2 +tries=1 2>/dev/null | awk '/^[0-9]+(\.[0-9]+){3}$/ && $0 !~ /^127\./ && $0 != "0.0.0.0" {print;exit}')"
+ipx="$(dig +short "@$bs" "$host" A +time=1 +tries=1 2>/dev/null | awk '/^[0-9]+(\.[0-9]+){3}$/ && $0 !~ /^127\./ && $0 != "0.0.0.0" {print;exit}')"
 elif command -v nslookup >/dev/null 2>&1; then
 ipx="$(nslookup "$host" "$bs" 2>/dev/null | awk '/^Address[ 0-9]*: / {print $NF}' | awk '/^[0-9]+(\.[0-9]+){3}$/ && $0 !~ /^127\./ && $0 != "0.0.0.0" {print;exit}')"
 else
@@ -2081,8 +2081,8 @@ resolve_host_fallback() {
 host="$1"
 ipx=""
 if [ "$HAS_DIG" = yes ]; then
-    ipx="$(dig +short "$host" A +time=3 +tries=1 2>/dev/null | awk '/^[0-9]+(\.[0-9]+){3}$/ && $0 !~ /^127\./ && $0 != "0.0.0.0" {print;exit}')"
-    [ -n "$ipx" ] || ipx="$(dig +short "$host" A +tcp +time=3 +tries=1 2>/dev/null | awk '/^[0-9]+(\.[0-9]+){3}$/ && $0 !~ /^127\./ && $0 != "0.0.0.0" {print;exit}')"
+    ipx="$(dig +short "$host" A +time=1 +tries=1 2>/dev/null | awk '/^[0-9]+(\.[0-9]+){3}$/ && $0 !~ /^127\./ && $0 != "0.0.0.0" {print;exit}')"
+    [ -n "$ipx" ] || ipx="$(dig +short "$host" A +tcp +time=1 +tries=1 2>/dev/null | awk '/^[0-9]+(\.[0-9]+){3}$/ && $0 !~ /^127\./ && $0 != "0.0.0.0" {print;exit}')"
 fi
 if [ -z "$ipx" ] && command -v nslookup >/dev/null 2>&1; then
     ipx="$(nslookup "$host" 2>/dev/null | awk '/^Address[ 0-9]*: / {print $NF}' | awk '/^[0-9]+(\.[0-9]+){3}$/ && $0 !~ /^127\./ && $0 != "0.0.0.0" {print;exit}')"
@@ -2096,10 +2096,74 @@ return 1
 validate_dns_message() {
     _file="$1"
     [ -s "$_file" ] || return 1
-    _n="$(wc -c < "$_file" 2>/dev/null | tr -d " ")"
-    case "$_n" in ''|*[!0-9]*) return 1;; esac
-    [ "$_n" -ge 12 ] || return 1
-    return 0
+    command -v od >/dev/null 2>&1 || return 1
+    _bytes="$(od -An -tu1 -v "$_file" 2>/dev/null)" || return 1
+    printf '%s\n' "$_bytes" | awk '
+        {
+            for (i=1; i<=NF; i++) b[++n]=$i
+        }
+        END {
+            if (n < 12) exit 1
+            _id=b[1]*256+b[2]
+            _flags=b[3]*256+b[4]
+            _qr=int(_flags/32768)
+            _rcode=_flags%16
+            _qd=b[5]*256+b[6]
+            _an=b[7]*256+b[8]
+
+            # The query sent by test_one_dns uses ID 0x1234. Require a real
+            # successful DNS response with at least one answer and at least
+            # one A RR. SERVFAIL, NXDOMAIN, NODATA and generic 12-byte DNS
+            # error packets are therefore never classified as healthy.
+            if (_id != 4660 || _qr != 1 || _rcode != 0 || _qd != 1 || _an < 1) exit 1
+
+            p=13
+            while (p <= n) {
+                l=b[p]
+                if (l == 0) {
+                    p++
+                    break
+                }
+                if (l >= 192) {
+                    p += 2
+                    break
+                }
+                if (l > 63 || p+l > n) exit 1
+                p += l+1
+            }
+            if (p+3 > n) exit 1
+            p += 4
+
+            found_a=0
+            for (rr=0; rr<_an; rr++) {
+                if (p > n) exit 1
+                l=b[p]
+                if (l >= 192) {
+                    p += 2
+                } else {
+                    while (p <= n && b[p] != 0) {
+                        l=b[p]
+                        if (l >= 192) {
+                            p += 2
+                            break
+                        }
+                        if (l > 63 || p+l > n) exit 1
+                        p += l+1
+                    }
+                    if (p > n) exit 1
+                    if (b[p] == 0) p++
+                }
+
+                if (p+9 > n) exit 1
+                _type=b[p]*256+b[p+1]
+                _rdlen=b[p+8]*256+b[p+9]
+                p += 10
+                if (p+_rdlen-1 > n) exit 1
+                if (_type == 1 && _rdlen == 4) found_a=1
+                p += _rdlen
+            }
+            exit(found_a ? 0 : 1)
+        }'
 }
 test_one_dns() {
 id="$1"; url="$(normalize_url "$(dns_url "$id")")"; name="$(dns_name "$id")"; cat="$(dns_cat "$id")"
@@ -2139,7 +2203,7 @@ while IFS= read -r ipx; do
     # The DNS test must always hit the DoH endpoint directly. In particular,
     # an rpcd/LuCI environment must not inherit HTTP(S)/SOCKS proxy settings or
     # curlrc rules, otherwise a dead resolver can be replaced by a proxy response.
-    result="$(curl -q --noproxy '*' -sS -o "$body" -D "$hdr" -w '%{http_code}|%{time_total}|%{errormsg}'  --connect-timeout 3 --max-time 6 --resolve "$host:$port:$ipx"  -H 'Content-Type: application/dns-message' -H 'Accept: application/dns-message'  --data-binary "@$q" "$url" 2>/dev/null)"
+    result="$(curl -q --noproxy '*' -sS -o "$body" -D "$hdr" -w '%{http_code}|%{time_total}|%{errormsg}'  --connect-timeout 1 --max-time 3 --resolve "$host:$port:$ipx"  -H 'Content-Type: application/dns-message' -H 'Accept: application/dns-message'  --data-binary "@$q" "$url" 2>/dev/null)"
     code="${result%%|*}"; rest="${result#*|}"; tim="${rest%%|*}"; err="${rest#*|}"
     [ -z "$code" ] && code="000"
     bytes="$(wc -c < "$body" 2>/dev/null | tr -d ' ')"; [ -n "$bytes" ] || bytes=0
