@@ -505,9 +505,9 @@ grep -q 'Проверка DNS «' "$tmp/overview.js" || fail "LuCI does not labe
 grep -q 'Фоновая задача DNS Manager' "$tmp/overview.js" || fail "LuCI does not have generic persisted operation fallback"
 ok "LuCI shows the latest DNS background operation after reload"
 
-# Watchdog tuning is persisted and exposed as live LuCI controls.
+# Watchdog tuning is persisted and exposed as one atomic LuCI save operation.
 for _wd_key in WATCHDOG_INTERVAL WATCHDOG_FAIL_THRESHOLD WATCHDOG_REPAIR_COOLDOWN WATCHDOG_MAX_REPAIRS WATCHDOG_MAX_RESTARTS WATCHDOG_MAX_CANDIDATES WATCHDOG_GUARD_INTERVAL; do
-    grep -q "^${_wd_key}=" dns-manager.sh || fail "watchdog config variable missing: $_wd_key"
+    grep -q "^\${_wd_key}=" dns-manager.sh || fail "watchdog config variable missing: $_wd_key"
 done
 grep -q 'WATCHDOG_FAIL_THRESHOLD="$WATCHDOG_FAIL_THRESHOLD"' dns-manager.sh || fail "watchdog threshold is not persisted"
 grep -q 'WATCHDOG_REPAIR_COOLDOWN="$WATCHDOG_REPAIR_COOLDOWN"' dns-manager.sh || fail "watchdog repair cooldown is not persisted"
@@ -515,38 +515,41 @@ grep -q 'WATCHDOG_MAX_REPAIRS="$WATCHDOG_MAX_REPAIRS"' dns-manager.sh || fail "w
 grep -q 'WATCHDOG_MAX_RESTARTS="$WATCHDOG_MAX_RESTARTS"' dns-manager.sh || fail "watchdog max restarts is not persisted"
 grep -q 'WATCHDOG_MAX_CANDIDATES="$WATCHDOG_MAX_CANDIDATES"' dns-manager.sh || fail "watchdog max candidates is not persisted"
 grep -q 'WATCHDOG_GUARD_INTERVAL="$WATCHDOG_GUARD_INTERVAL"' dns-manager.sh || fail "watchdog guard interval is not persisted"
-if awk '/# procd watchdog tuning is persisted/,/^[[:space:]]*: "\${SLOT_1:=}"/' dns-manager.sh | grep -q '^WATCHDOG_FAIL_THRESHOLD=2$'; then
-    fail "watchdog threshold is still hard-forced to 2 after config load"
-fi
-grep -q "threshold) _key=WATCHDOG_FAIL_THRESHOLD; _min=1; _max=5" "$tmp/backend.sh" || fail "LuCI watchdog threshold setter missing"
-grep -q "repair_cooldown) _key=WATCHDOG_REPAIR_COOLDOWN; _min=30; _max=3600" "$tmp/backend.sh" || fail "LuCI watchdog repair cooldown setter missing"
-grep -q "max_repairs) _key=WATCHDOG_MAX_REPAIRS; _min=1; _max=3" "$tmp/backend.sh" || fail "LuCI watchdog max repairs setter missing"
-grep -q "max_restarts) _key=WATCHDOG_MAX_RESTARTS; _min=1; _max=5" "$tmp/backend.sh" || fail "LuCI watchdog max restarts setter missing"
-grep -q "max_candidates) _key=WATCHDOG_MAX_CANDIDATES; _min=1; _max=10" "$tmp/backend.sh" || fail "LuCI watchdog max candidates setter missing"
-grep -q "guard_interval) _key=WATCHDOG_GUARD_INTERVAL; _min=300; _max=3600" "$tmp/backend.sh" || fail "LuCI watchdog guard interval setter missing"
-grep -q '"watchdog_repair_cooldown"' "$tmp/backend.sh" || fail "LuCI watchdog repair cooldown status missing"
-grep -q '"watchdog_max_repairs"' "$tmp/backend.sh" || fail "LuCI watchdog max repairs status missing"
-grep -q '"watchdog_max_restarts"' "$tmp/backend.sh" || fail "LuCI watchdog max restarts status missing"
-grep -q '"watchdog_max_candidates"' "$tmp/backend.sh" || fail "LuCI watchdog max candidates status missing"
-grep -q '"watchdog_guard_interval"' "$tmp/backend.sh" || fail "LuCI watchdog guard interval status missing"
-_wd_action="$(awk '/^        set_watchdog_setting\)/,/^        \*\) json_error/' "$tmp/backend.sh")"
-_wd_stop="$(printf '%s\n' "$_wd_action" | grep -n 'watchdog_service_stop_disable' | head -n1 | cut -d: -f1)"
-_wd_save="$(printf '%s\n' "$_wd_action" | grep -n 'save_config' | head -n1 | cut -d: -f1)"
-case "$_wd_stop:$_wd_save" in
-    '') fail "watchdog setter order check could not locate stop/save" ;;
-esac
-[ "$_wd_stop" -lt "$_wd_save" ] || fail "watchdog setting is saved before the running watchdog is stopped"
-grep -q 'watchdog_service_start_enable' "$tmp/backend.sh" || fail "watchdog setter does not restart procd after apply"
-grep -q 'Параметры watchdog' "$tmp/overview.js" || fail "LuCI watchdog parameter section missing"
-for _wd_label in 'Интервал проверки' 'Порог сбоя' 'Пауза между ремонтами' 'Ремонтов за цикл' 'Кандидатов за выбор' 'Рестартов https-dns-proxy' 'Тяжёлая сверка'; do
-    grep -q "$_wd_label" "$tmp/overview.js" || fail "LuCI watchdog control missing: $_wd_label"
-done
-ok "watchdog tuning is persisted, live-applied and exposed in LuCI"
-# Watchdog setting rollback keeps the previous supervisor state intact.
-grep -q '^watchdog_restore_service_state() {$' "$tmp/backend.sh" || fail "watchdog rollback helper missing"
-grep -A170 '^        set_watchdog_setting)$' "$tmp/backend.sh" | grep -q 'watchdog_restore_service_state "$_old_service_enabled" "$_old_service_running"' || fail "watchdog setter does not restore previous service state"
-grep -q 'if ! watchdog_service_start_enable' "$tmp/backend.sh" || fail "watchdog setter start path missing"
-grep -q 'watchdog_cron_remove_owned_block' "$tmp/backend.sh" || fail "watchdog setter does not handle manager-owned cron watchdog"
-ok "watchdog rollback and cron-safety guards are present"
 
+grep -q '^        set_watchdog_setting)' "$tmp/backend.sh" || fail "legacy watchdog setting dispatch missing"
+grep -q '^        set_watchdog_settings)' "$tmp/backend.sh" || fail "atomic watchdog settings dispatch missing"
+grep -q '"set_watchdog_settings"' "$tmp/backend.sh" || fail "atomic watchdog settings RPC schema missing"
+grep -q 'watchdog_apply_values() {' "$tmp/backend.sh" || fail "shared watchdog apply helper missing"
+grep -q 'watchdog_apply_single() {' "$tmp/backend.sh" || fail "legacy watchdog helper missing"
+grep -q 'watchdog_apply_batch() {' "$tmp/backend.sh" || fail "batch watchdog helper missing"
+grep -q 'watchdog_service_stop_disable' "$tmp/backend.sh" || fail "watchdog batch setter does not stop supervisor first"
+grep -q 'save_config' "$tmp/backend.sh" || fail "watchdog batch setter save path missing"
+grep -q 'watchdog_service_start_enable' "$tmp/backend.sh" || fail "watchdog batch setter does not restart procd after apply"
+grep -q 'watchdog_cron_remove_owned_block' "$tmp/backend.sh" || fail "watchdog setter does not handle manager-owned cron watchdog"
+grep -q 'watchdog_restore_service_state' "$tmp/backend.sh" || fail "watchdog rollback helper missing"
+grep -Fq 'watchdog_apply_values "$_interval" "$_threshold" "$_repair_cooldown" "$_max_repairs" "$_max_restarts" "$_max_candidates" "$_guard_interval"' "$tmp/backend.sh" || fail "batch watchdog values are not forwarded together"
+
+grep -q "method:'set_watchdog_settings'" "$tmp/overview.js" || fail "LuCI does not use the atomic watchdog RPC"
+grep -Fq "params:['interval','threshold','repair_cooldown','max_repairs','max_restarts','max_candidates','guard_interval']" "$tmp/overview.js" || fail "atomic watchdog RPC parameter order mismatch"
+if grep -q 'var callWatchdogSetting = ' "$tmp/overview.js"; then
+    fail "LuCI still defines the per-setting watchdog RPC"
+fi
+awk '/^function watchdogCard\(root,st\)\{/,/^function renderTestAgeCommon/' "$tmp/overview.js" > "$tmp/watchdog_card.js"
+save_count="$(grep -o 'Сохранить' "$tmp/watchdog_card.js" | wc -l | tr -d ' ')"
+[ "$save_count" = 1 ] || fail "watchdog must have exactly one Save label"
+grep -q 'Сохранить настройки' "$tmp/watchdog_card.js" || fail "common watchdog save button missing"
+grep -q 'Дополнительные параметры' "$tmp/watchdog_card.js" || fail "advanced watchdog section missing"
+grep -q 'Настройки контроля' "$tmp/watchdog_card.js" || fail "watchdog settings section title missing"
+for _wd_label in 'Интервал проверки' 'Порог сбоя' 'Пауза между ремонтами' 'Ремонтов за цикл' 'Кандидатов за выбор' 'Перезапусков DNS' 'Полная сверка'; do
+    grep -q "$_wd_label" "$tmp/watchdog_card.js" || fail "LuCI watchdog control missing: $_wd_label"
+done
+if grep -q 'Рестартов https-dns-proxy\|Тяжёлая сверка' "$tmp/watchdog_card.js"; then
+    fail "technical watchdog labels still exposed in LuCI"
+fi
+ok "watchdog tuning is persisted through one atomic RPC and exposed as a compact LuCI form"
+
+# The legacy single-setting RPC remains available for older clients, but shares the same apply path.
+grep -q 'watchdog_apply_single' "$tmp/backend.sh" || fail "legacy watchdog setter does not use shared apply logic"
+grep -q 'watchdog_apply_batch' "$tmp/backend.sh" || fail "batch watchdog setter helper missing"
+ok "legacy watchdog RPC compatibility is preserved"
 printf '%s\n' "All DNS Manager regression checks passed."
