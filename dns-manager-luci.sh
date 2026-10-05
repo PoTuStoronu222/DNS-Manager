@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.6.21
+# Version: 1.6.22
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -23,7 +23,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.6.21"
+VERSION="1.6.22"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -1938,7 +1938,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.6.21
+// DNS Manager LuCI version: 1.6.22
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -3489,6 +3489,19 @@ function pollJob(root,job,meta,done){
       state.jobRunning=false;
       if(done)done(ns);
       else{
+        if(meta&&meta.mode==='one'&&meta.origin==='catalog'&&window.dmCatalog){
+          return callCatalog(state.category,state.offset,state.limit,0).then(function(cd){
+            window.dmCatalog=cd||{};
+            if(meta.dns_id){
+              var xd=null;(window.dmCatalog.servers||[]).forEach(function(x){if(x&&x.id===meta.dns_id)xd=x;});
+              var xn=xd&&xd.name?xd.name:meta.dns_id;
+              var xs=xd&&xd.status?String(xd.status).toUpperCase():'';
+              var xp=xd&&xd.ping?xd.ping:'';
+              state.catalogCheckNotice=(xs==='OK'&&hasPing(xp))?'«'+xn+'» проверен: доступен · '+xp+' мс':'«'+xn+'» проверен: недоступен';
+            }
+            render(root,ns);
+          }).catch(function(){render(root,ns);});
+        }
         if(meta&&meta.mode==='all'){
           var allOk=String(j.status||'').toUpperCase()==='DONE'&&j.result==='ok';
           state.fullTest={status:allOk?'DONE':'FAILED',result:j.result||'fail',finished:Date.now(),origin:meta.origin||''};
