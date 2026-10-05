@@ -274,7 +274,7 @@ fi
 if grep -q '^assigned_port_for_id()' dns-manager-luci.sh; then
     fail "obsolete assigned-port helper remains"
 fi
-grep -Fq '--connect-timeout 1 --max-time 3 --resolve "$host:$port:$ipx"' dns-manager.sh || fail "direct DoH timeout was not reduced"
+grep -Fq -- '--connect-timeout 1 --max-time 3 --resolve "$host:$port:$ipx"' dns-manager.sh || fail "direct DoH timeout was not reduced"
 grep -q '(trap - EXIT; test_one_dns "\$_id") &' "$tmp/backend.sh" || fail "selected DNS checks are not parallelized"
 ok "selected DNS checks reuse the main test, prefer fresh results and run in parallel"
 
