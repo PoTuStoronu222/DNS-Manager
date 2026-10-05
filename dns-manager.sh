@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.35.41"
+VERSION="3.35.42"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -2043,6 +2043,49 @@ port_set() {
         *) return 1 ;;
     esac
 }
+selected_general_category() {
+    # Classify only the six general DoH slots. RU is a separate regional route.
+    _sgc_common=""
+    _sgc_count=0
+    for _sgc_slot in 1 2 3 4 5 6; do
+        eval "_sgc_id=\${SLOT_${_sgc_slot}:-}"
+        [ -n "$_sgc_id" ] || continue
+        _sgc_cat="$(dns_cat "$_sgc_id" 2>/dev/null || true)"
+        case "$_sgc_cat" in
+            bypass|clean|security|privacy|adblock|family) ;;
+            *) printf "%s\n" custom; return 0 ;;
+        esac
+        if [ -z "$_sgc_common" ]; then
+            _sgc_common="$_sgc_cat"
+        elif [ "$_sgc_common" != "$_sgc_cat" ]; then
+            printf "%s\n" custom
+            return 0
+        fi
+        _sgc_count=$((_sgc_count+1))
+    done
+    if [ "$_sgc_count" -gt 0 ]; then
+        printf "%s\n" "$_sgc_common"
+    else
+        printf "%s\n" none
+    fi
+}
+sync_profile_from_selected_categories() {
+    _spc="$(selected_general_category)"
+    case "$_spc" in
+        bypass|clean|security|privacy|adblock|family)
+            DNS_PROFILE="hybrid"
+            DNS_SELECTION_MODE="profile"
+            DNS_SELECTION_CATEGORY="$_spc"
+            ;;
+        custom|none)
+            DNS_PROFILE="custom"
+            DNS_SELECTION_MODE="manual"
+            DNS_SELECTION_CATEGORY="none"
+            ;;
+    esac
+    printf "%s\n" "$_spc"
+}
+
 quick_pref_set() {
     case "$1" in
         1) QUICK_PREF_1="$2" ;;
@@ -5190,47 +5233,19 @@ printf_plain_row "Активный iptables" "$(state_word "$IPTABLES_ACTIVE")"
 printf_plain_row "Аппаратное ускорение" "$(state_word "$FLOW_OFFLOAD")"
 menu_section "НАСТРОЙКИ DNS Manager"
 _profile_name="Не выбран"
-# A saved DNS_PROFILE is not enough to call a profile active. The profile
-# must still be present in the real https-dns-proxy configuration and match
-# the current Manager scheme exactly.
+# The displayed profile follows the actual selected category set.
 if [ "${DOH_TOTAL:-0}" -gt 0 ] 2>/dev/null && [ "${DOH_MATCH:-0}" -eq "${DOH_TOTAL:-0}" ] 2>/dev/null; then
-case "${DNS_SELECTION_MODE:-}:${DNS_SELECTION_CATEGORY:-}" in
-quick:bypass)
-    _profile_name="Обход блокировок"
-    ;;
-profile:clean)
-    _profile_name="Без фильтрации"
-    ;;
-profile:security)
-    _profile_name="Безопасность"
-    ;;
-profile:privacy)
-    _profile_name="Приватность"
-    ;;
-profile:adblock)
-    _profile_name="Блокировка рекламы"
-    ;;
-profile:family)
-    _profile_name="Семейный DNS"
-    ;;
-profile:all)
-    _profile_name="Все категории"
-    ;;
-hybrid:)
-    _profile_name="Гибридный DNS"
-    ;;
-*)
-    case "${DNS_SELECTION_CATEGORY:-}" in
-        bypass) _profile_name="Обход блокировок";;
-        clean) _profile_name="Без фильтрации";;
-        security) _profile_name="Безопасность";;
-        privacy) _profile_name="Приватность";;
-        adblock) _profile_name="Блокировка рекламы";;
-        family) _profile_name="Семейный DNS";;
-        all) _profile_name="Все категории";;
-        *) _profile_name="Ручная настройка";;
-    esac
-    ;;
+_profile_detected_cat="$(selected_general_category)"
+case "$_profile_detected_cat" in
+    bypass) _profile_name="Обход блокировок";;
+    clean) _profile_name="Без фильтрации";;
+    security) _profile_name="Безопасность";;
+    privacy) _profile_name="Приватность";;
+    adblock) _profile_name="Блокировка рекламы";;
+    family) _profile_name="Семейный DNS";;
+    custom) [ "${DNS_SELECTION_MODE:-}:${DNS_SELECTION_CATEGORY:-}" = "profile:all" ] && _profile_name="Все категории" || _profile_name="Собственный выбор";;
+    none) [ "${DNS_SELECTION_MODE:-}:${DNS_SELECTION_CATEGORY:-}" = "profile:all" ] && _profile_name="Все категории";;
+    *) _profile_name="Собственный выбор";;
 esac
 fi
 printf_state_row "Текущий профиль" "$_profile_name"
@@ -5581,15 +5596,9 @@ select_slot() {
     id="$(printf '%s' "$row" | cut -d'|' -f1)"
     [ -n "$id" ] || { warn_msg "Такого DNS нет в списке."; pause; return; }
     _selected_cat="$(printf '%s' "$row" | cut -d'|' -f2)"
-    DNS_PROFILE="custom"
-    DNS_SELECTION_MODE="manual"
     slot_set "$slot" "$id" || return 1
     slot_cat_set "$slot" "$_selected_cat" || return 1
-    if [ "$slot" = RU ]; then
-        DNS_SELECTION_CATEGORY="regional"
-    else
-        DNS_SELECTION_CATEGORY="$_selected_cat"
-    fi
+    sync_profile_from_selected_categories >/dev/null
     sync_regional_dns_state
     info_msg "Выбор сохранится после применения DNS."
 }
@@ -7064,6 +7073,11 @@ watchdog_pick_replacement() {
     _slot="$1"
     _used="$2"
     _tried="$3"
+    _selection_kind="$(selected_general_category)"
+    case "$_selection_kind" in
+        bypass|clean|security|privacy|adblock|family) ;;
+        *) return 1 ;;
+    esac
     _desired_for_pick="$(watchdog_desired_cat "$_slot")"
     [ -n "$_desired_for_pick" ] || return 1
     case "$_slot" in
@@ -7072,11 +7086,6 @@ watchdog_pick_replacement() {
     esac
 
     _passcats="$_desired_for_pick"
-    # Only bypass is allowed to fall back to clean, and only after the
-    # bounded bypass candidate set has been rejected. Regional never falls back.
-    if [ "$_desired_for_pick" = bypass ]; then
-        _passcats="bypass clean"
-    fi
 
     for _passcat in $_passcats; do
         _checked_cat=0
@@ -7294,6 +7303,11 @@ watchdog_loop_reset_slot() {
     eval "WD_MISSING_${_slot}=0"
 }
 watchdog_embedded_integrity_guard() {
+    _selection_kind="$(selected_general_category)"
+    case "$_selection_kind" in
+        bypass|clean|security|privacy|adblock|family) ;;
+        *) return 0 ;;
+    esac
     _now="$(date +%s 2>/dev/null)"
     case "$_now" in ''|*[!0-9]*) return 0;; esac
     _last="${WD_LAST_GUARD_TS:-0}"
@@ -7340,6 +7354,16 @@ watchdog_embedded_loop() {
         case "$_interval" in ''|*[!0-9]*) _interval=90;; esac
         [ "$_interval" -ge 30 ] 2>/dev/null || _interval=90
         [ "$_interval" -le 600 ] 2>/dev/null || _interval=90
+
+        load_config >/dev/null 2>&1 || true
+        _selection_kind="$(selected_general_category)"
+        case "$_selection_kind" in
+            bypass|clean|security|privacy|adblock|family) ;;
+            *)
+                sleep "$_interval"
+                continue
+                ;;
+        esac
 
         if ! watchdog_resource_guard; then
             sleep "$_interval"
@@ -7479,6 +7503,15 @@ run_watchdog() {
         return 0
     fi
     load_config
+    _selection_kind="$(selected_general_category)"
+    case "$_selection_kind" in
+        bypass|clean|security|privacy|adblock|family) ;;
+        *)
+            log_msg "Watchdog: смешанные или пользовательские категории DNS. Проверку и замену выбранных DNS не выполняю."
+            release_mutation_lock
+            return 0
+            ;;
+    esac
     _managed_slots=0
     for _s in 1 2 3 4 5 6 RU; do
         eval "_mid=\${SLOT_${_s}:-}"
@@ -8120,6 +8153,11 @@ watchdog_slot_target_run() {
     _slot="$1"
     case "$_slot" in 1|2|3|4|5|6|RU) ;; *) return 2 ;; esac
     [ "${WATCHDOG_ENABLED:-0}" = 1 ] || return 0
+    _selection_kind="$(selected_general_category)"
+    case "$_selection_kind" in
+        bypass|clean|security|privacy|adblock|family) ;;
+        *) return 0 ;;
+    esac
     eval "_target_id=\${SLOT_${_slot}:-}"
     eval "_target_port=\${PORT_${_slot}:-}"
     [ -n "$_target_id" ] && [ -n "$_target_port" ] || return 2
