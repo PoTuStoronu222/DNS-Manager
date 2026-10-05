@@ -5234,7 +5234,8 @@ printf_plain_row "Аппаратное ускорение" "$(state_word "$FLOW_
 menu_section "НАСТРОЙКИ DNS Manager"
 _profile_name="Не выбран"
 # The displayed profile follows the actual selected category set.
-if [ "${DOH_TOTAL:-0}" -gt 0 ] 2>/dev/null && [ "${DOH_MATCH:-0}" -eq "${DOH_TOTAL:-0}" ] 2>/dev/null; then
+_profile_expected="$(expected_managed_slots 2>/dev/null || printf 0)"
+if [ "${DOH_TOTAL:-0}" -gt 0 ] 2>/dev/null && [ "${DOH_TOTAL:-0}" -eq "$_profile_expected" ] 2>/dev/null && [ "${DOH_MATCH:-0}" -eq "$_profile_expected" ] 2>/dev/null; then
 _profile_detected_cat="$(selected_general_category)"
 case "$_profile_detected_cat" in
     bypass) _profile_name="Обход блокировок";;
