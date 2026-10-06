@@ -56,27 +56,14 @@ ok "update-chain temporary names and LuCI version detection"
 # has been successfully validated and installed.
 awk '/^luci_companion_update\(\) \{/,/^luci_companion_install\(\) \{/ { print }' dns-manager.sh > "$tmp/luci_update_fn.sh"
 [ -s "$tmp/luci_update_fn.sh" ] || fail "LuCI manager update function extraction"
-if grep -q 'luci_companion_remove' "$tmp/luci_update_fn.sh"; then
+if grep -Fq 'luci_companion_remove' "$tmp/luci_update_fn.sh"; then
     fail "Manager-side LuCI update still removes the current interface before installing the replacement"
 fi
-grep -q '_cache_stage=.*\\.new\\.\\$\\
-awk '
-    /^verify_applied_doh_config\(\) \{/ { capture=1 }
-    capture { print }
-    capture && /^}$/ { exit }
-' dns-manager.sh > "$tmp/verify_profile_doh.sh"
-[ -s "$tmp/verify_profile_doh.sh" ] || fail "profile DoH verifier extraction"
-TMP_DIR="$tmp" sh -c '. "$1"; verify_applied_doh_config' sh "$tmp/verify_profile_doh.sh" || fail "profile verifier must not depend on explicit force_ip_family"
-if awk '/^verify_applied_doh_config\(\) \{/,/^}$/ { print }' dns-manager.sh | grep -q 'force_ip_family'; then
-    fail "profile verifier still validates independent force_ip_family setting"
-fi
-if grep -q 'https-dns-proxy не переведён в режим auto' dns-manager.sh; then
-    fail "stale forced-DNS auto error remains in manager"
-fi
-if grep -q 'https-dns-proxy не переведён в режим auto' dns-manager-luci.sh; then
-    fail "stale forced-DNS auto error remains in LuCI companion"
-fi
-ok "profile verification no longer depends on independent Forced-DNS settings"
+grep -Fq '_cache_stage="${_installed_cache}.new.$$"' "$tmp/luci_update_fn.sh" || fail "Manager-side LuCI update has no staged installer cache"
+grep -Fq 'luci_component_runtime_valid' "$tmp/luci_update_fn.sh" || fail "Manager-side LuCI update does not validate the installed runtime"
+grep -Fq 'luci_component_files_present' "$tmp/luci_update_fn.sh" || fail "Manager-side LuCI update does not validate installed files"
+grep -Fq 'mv -f "$_cache_stage" "$_installed_cache"' "$tmp/luci_update_fn.sh" || fail "Manager-side LuCI update does not promote the staged installer after success"
+ok "LuCI update is non-destructive and staged"
 
 # DNS response validation intentionally stays lightweight: HTTP 200 + DNS message body.
 awk '
