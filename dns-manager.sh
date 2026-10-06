@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.35.62"
+VERSION="3.35.63"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -3293,15 +3293,12 @@ apply_extras_now() {
     return "$_rc"
 }
 
-# ==========================================
-# ==========================================
-# ==========================================
-# ==========================================
-# ==========================================
 apply_dnsmasq_perf() {
     [ "${DNSMASQ_PERF:-0}" = 1 ] || return 0
     sec="$(get_dnsmasq_section)"
     [ -n "$sec" ] || return 1
+    # This module changes one thing only: dnsmasq cachesize.
+    # No other dnsmasq tuning options belong to this module.
     uci set "dhcp.$sec.cachesize=$DNSMASQ_CACHE_SIZE" || return 1
     uci commit dhcp || return 1
 }
@@ -4308,8 +4305,8 @@ _apply_settings_impl() {
     fi
     if [ "$CORE_ONLY" != 1 ] && [ "$DNSMASQ_PERF" = 1 ]; then
         apply_progress "Настраиваю Увеличенный кэш DNS."
-        apply_dnsmasq_perf || { err_msg "Не удалось настроить производительность dnsmasq."; tx_restore_on_failure; return 1; }
-        apply_progress_ok "Увеличенный кэш DNS применена."
+        apply_dnsmasq_perf || { err_msg "Не удалось применить увеличенный кэш DNS."; tx_restore_on_failure; return 1; }
+        apply_progress_ok "Увеличенный кэш DNS применён."
     fi
     if [ "$CORE_ONLY" != 1 ]; then
         WATCHDOG_ENABLED="${WATCHDOG_ENABLED:-0}"
