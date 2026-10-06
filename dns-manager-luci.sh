@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.6.78
+# Version: 1.6.79
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -30,7 +30,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.6.78"
+VERSION="1.6.79"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -156,7 +156,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.6.78"
+SELF_VERSION="1.6.79"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -2346,7 +2346,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.6.78
+// DNS Manager LuCI version: 1.6.79
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -3358,7 +3358,6 @@ function watchdogCard(root,st){
       ['watchdog_repair_cooldown','Пауза между заменами DNS',5,120,'мин','Минимальное время между повторными заменами одного DNS.',true],
       ['watchdog_max_repairs','Сколько DNS можно заменить за раз',1,3,'шт.','Сколько неисправных DNS можно заменить во время одной проверки.',false],
       ['watchdog_max_candidates','Сколько DNS проверить при поиске замены',1,10,'шт.','Сколько других DNS проверить, прежде чем выбрать замену.',false],
-      ['watchdog_guard_interval','Как часто проверять настройки DNS Manager',15,180,'мин','Проверяет, что DNS Manager и его настройки не были изменены.',true]
     ];
     var values=[];
     var invalid='';
@@ -3381,6 +3380,7 @@ function watchdogCard(root,st){
     var internalMaxRestarts=Number(st.watchdog_max_restarts||2);
     if(!isFinite(internalMaxRestarts)||internalMaxRestarts<1||internalMaxRestarts>5)internalMaxRestarts=2;
     values.splice(4,0,Math.round(internalMaxRestarts));
+    values.splice(6,0,Number(st.watchdog_guard_interval||3600));
 
     clearSettingFeedback();
     state.busy=true;
@@ -3450,9 +3450,7 @@ function watchdogCard(root,st){
     E('div',{'class':'dm-watchdog-save'},[save,feedback])
   ]);
 }
-function renderTestAgeCommon(root,st){
-  var ageValue=Number(st.test_age_common||6);
-  var ageInput=E('input',{'type':'number','min':'1','max':'168','step':'1','value':String(ageValue),'class':'dm-input'});
+,'value':String(ageValue),'class':'dm-input'});
   var ageBusy=state.busySetting==='testages';
   var ageFeedback=settingFeedback('', 'testages');
   var ageSave=btn(ageBusy?'Сохраняю…':'Сохранить','cbi-button-neutral',function(){
