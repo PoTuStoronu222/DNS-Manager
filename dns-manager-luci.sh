@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.6.82
+# Version: 1.6.83
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -30,7 +30,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.6.82"
+VERSION="1.6.83"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -157,7 +157,7 @@ COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/
 COMPANION_RAW_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.6.82"
+SELF_VERSION="1.6.83"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -2984,10 +2984,11 @@ function renderOverview(root,st){
       ])
     ]),
     E('div',{'class':'dm-component-dns-list'},dnsItems),
-    E('div',{'class':'dm-actions'},[
-      btn('Проверить DNS в слотах','cbi-button-action',function(){testCurrent(root);},{disabled:!!state.busy||state.jobRunning||Number(st.test_lock||0)===1}),
-      Number(st.system_dns_count||0)>0 ? btn('Проверить системные DNS','cbi-button-action',function(){testSystem(root);},{disabled:!!state.busy||state.jobRunning||Number(st.test_lock||0)===1}) : null
-    ].filter(function(x){return !!x;}));
+    E('div',{'class':'dm-actions'},(function(){
+      var actions=[btn('Проверить DNS в слотах','cbi-button-action',function(){testCurrent(root);},{disabled:!!state.busy||state.jobRunning||Number(st.test_lock||0)===1})];
+      if(Number(st.system_dns_count||0)>0)actions.push(btn('Проверить системные DNS','cbi-button-action',function(){testSystem(root);},{disabled:!!state.busy||state.jobRunning||Number(st.test_lock||0)===1}));
+      return actions;
+    })())
   ]);
 
   var verCard=card('Версии',[
