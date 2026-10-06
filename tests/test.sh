@@ -52,6 +52,14 @@ awk '/^luci_installed_version\(\) \{/,/^}$/ { print }' dns-manager.sh > "$tmp/lu
 ) || fail "LuCI installed-version source order"
 ok "update-chain temporary names and LuCI version detection"
 
+# Self-update must not lose the interactive terminal when replacing the running shell.
+grep -Fq 'exec </dev/tty >/dev/tty 2>&1' dns-manager.sh || fail "self-update TTY recovery is missing"
+grep -Fq '    auto_update_manager || true' dns-manager.sh || fail "startup update check still redirects self-reexec output"
+grep -Fq 'uclient-fetch -q -T 15 -O "$_upd_tmp" "$_update_url"' dns-manager.sh || fail "Manager update uclient-fetch has no timeout"
+grep -Fq 'uclient-fetch -q -T 30 -O "$_tmp" "$_fetch_url"' dns-manager.sh || fail "LuCI companion fetch uclient-fetch has no timeout"
+ok "startup self-update output and fetch timeouts are bounded"
+
+
 # LuCI update must not remove the current interface before the new installer
 # has been successfully validated and installed.
 awk '/^luci_companion_update\(\) \{/,/^luci_companion_install\(\) \{/ { print }' dns-manager.sh > "$tmp/luci_update_fn.sh"
