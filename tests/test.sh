@@ -54,7 +54,7 @@ ok "update-chain temporary names and LuCI version detection"
 
 # LuCI update must not remove the current interface before the new installer
 # has been successfully validated and installed.
-awk '/^luci_companion_update\\(\\) \\{/,/^luci_companion_install\\(\\) \\{/ { print }' dns-manager.sh > "$tmp/luci_update_fn.sh"
+awk '/^luci_companion_update\(\) \{/,/^luci_companion_install\(\) \{/ { print }' dns-manager.sh > "$tmp/luci_update_fn.sh"
 [ -s "$tmp/luci_update_fn.sh" ] || fail "LuCI manager update function extraction"
 if grep -q 'luci_companion_remove' "$tmp/luci_update_fn.sh"; then
     fail "Manager-side LuCI update still removes the current interface before installing the replacement"
