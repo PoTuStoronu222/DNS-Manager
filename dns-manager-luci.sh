@@ -1346,14 +1346,6 @@ status_json() {
         _profile_job_finished="$(sed -n 's/^finished=//p' "$JOB_DIR/profile/state" 2>/dev/null | tail -n1)"
         _profile_job_message="$(tail -n 12 "$JOB_DIR/profile/output" 2>/dev/null | sed '/^[[:space:]]*$/d' | tail -n1 | tr '\r\t' '  ' | cut -c1-360)"
     fi
-    if [ -r "$JOB_DIR/profile/state" ]; then
-        _profile_job_status="$(sed -n 's/^status=//p' "$JOB_DIR/profile/state" 2>/dev/null | tail -n1)"
-        _profile_job_result="$(sed -n 's/^result=//p' "$JOB_DIR/profile/state" 2>/dev/null | tail -n1)"
-        _profile_job_profile="$(sed -n 's/^profile=//p' "$JOB_DIR/profile/state" 2>/dev/null | head -n1)"
-        _profile_job_started="$(sed -n 's/^started=//p' "$JOB_DIR/profile/state" 2>/dev/null | head -n1)"
-        _profile_job_finished="$(sed -n 's/^finished=//p' "$JOB_DIR/profile/state" 2>/dev/null | tail -n1)"
-        _profile_job_message="$(tail -n 12 "$JOB_DIR/profile/output" 2>/dev/null | sed '/^[[:space:]]*$/d' | tail -n1 | tr '\r\t' '  ' | cut -c1-360)"
-    fi
 
     printf '{"ok":true,"manager_version":'; json_quote "$_mv"
     printf ',"luci_version":'; json_quote "$_luciv"; printf ',"luci_latest_version":'; json_quote "$_luci_latest"
