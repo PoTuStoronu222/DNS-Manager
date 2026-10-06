@@ -1,6 +1,6 @@
 #!/bin/sh
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.35.58"
+VERSION="3.35.59"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -3454,10 +3454,10 @@ EOF_VERIFY_IPS
     return 0
 }
 verify_applied_doh_config() {
-    [ "$(uci -q get https-dns-proxy.config.force_ip_family 2>/dev/null)" = "auto" ] || {
-        err_msg "https-dns-proxy не переведён в режим auto (dual-stack по возможности)."
-        return 1
-    }
+    # Profile verification is limited to the DNS instances selected/applied by the profile.
+    # force_ip_family belongs to the independent Forced-DNS settings contract and is
+    # validated by check_module_state force instead. A profile must not fail merely
+    # because that optional setting is absent or uses the package default.
     _expected="$TMP_DIR/expected-doh-map"
     _actual="$TMP_DIR/actual-doh-map"
     : > "$_expected" || return 1
