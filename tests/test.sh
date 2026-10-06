@@ -21,6 +21,37 @@ ok "shell syntax"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT INT TERM
 
+
+# Update-chain regression checks: temporary names must keep the PID suffix, and
+# installed LuCI version detection must trust the code LuCI actually loads.
+if grep -Fq '_actual="$TMP_DIR/steer-dns-actual-$"' dns-manager.sh; then
+    fail "truncated PID suffix remains in Steer temporary file"
+fi
+if grep -Fq '_test_source="$TMP_DIR/test-source-$"' dns-manager.sh; then
+    fail "truncated PID suffix remains in DNS test source"
+fi
+if grep -Fq '_cb="$(date +%s 2>/dev/null || printf 0)-$"' dns-manager-luci.sh; then
+    fail "truncated PID suffix remains in LuCI cache-buster"
+fi
+awk '/^luci_installed_version\\(\\) \\{/,/^}$/ { print }' dns-manager.sh > "$tmp/luci_version_fn.sh"
+[ -s "$tmp/luci_version_fn.sh" ] || fail "LuCI installed-version helper extraction"
+(
+    set -eu
+    . "$tmp/luci_version_fn.sh"
+    LUCI_VIEW_FILE="$tmp/view"
+    LUCI_STATE_FILE="$tmp/state"
+    LUCI_COMPANION_CACHE="$tmp/cache"
+    printf "%s\\n" "// DNS Manager LuCI version: 9.9.9" > "$LUCI_VIEW_FILE"
+    printf "%s\\n" "version=8.8.8" > "$LUCI_STATE_FILE"
+    printf "%s\\n" "# Version: 7.7.7" > "$LUCI_COMPANION_CACHE"
+    [ "$(luci_installed_version)" = "9.9.9" ] || exit 1
+    rm -f "$LUCI_VIEW_FILE"
+    [ "$(luci_installed_version)" = "8.8.8" ] || exit 2
+    rm -f "$LUCI_STATE_FILE"
+    [ "$(luci_installed_version)" = "7.7.7" ] || exit 3
+) || fail "LuCI installed-version source order"
+ok "update-chain temporary names and LuCI version detection"
+
 awk '
     /^verify_applied_doh_config\(\) \{/ { capture=1 }
     capture { print }
