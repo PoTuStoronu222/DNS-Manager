@@ -33,7 +33,7 @@ fi
 if grep -Fq '_cb="$(date +%s 2>/dev/null || printf 0)-$"' dns-manager-luci.sh; then
     fail "truncated PID suffix remains in LuCI cache-buster"
 fi
-awk '/^luci_installed_version\\(\\) \\{/,/^}$/ { print }' dns-manager.sh > "$tmp/luci_version_fn.sh"
+awk '/^luci_installed_version\(\) \{/,/^}$/ { print }' dns-manager.sh > "$tmp/luci_version_fn.sh"
 [ -s "$tmp/luci_version_fn.sh" ] || fail "LuCI installed-version helper extraction"
 (
     set -eu
