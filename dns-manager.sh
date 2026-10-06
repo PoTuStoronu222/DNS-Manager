@@ -1405,7 +1405,6 @@ if [ -z "$LAN_IP" ]; then
         LAN_IP="$(ip -4 addr show dev "$_lan_if" 2>/dev/null | awk '/inet /{print $2}' | cut -d/ -f1 | head -n1)"
     fi
 fi
-[ -n "$LAN_IP" ] || LAN_IP="192.168.1.1"
 WAN_PROTO="$(uci -q get network.wan.proto 2>/dev/null)"
 [ -n "$WAN_PROTO" ] || {
     firewall_resolve_zones >/dev/null 2>&1 || true
