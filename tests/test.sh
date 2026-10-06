@@ -171,8 +171,7 @@ fi
 if grep -q 'update_check_job_status' "$tmp/backend.sh"; then
     fail "stale update_check_job_status backend method remains"
 fi
-
-// Action result strips must not resurrect the persistent last_job_* state on every LuCI page.
+# Action result strips must not resurrect the persistent last_job_* state on every LuCI page.
 awk '/^function renderActionStatus\(\)\{/,/^}/ { print }' "$tmp/overview.js" > "$tmp/render_action_status.js"
 grep -q 'state.lastAction' "$tmp/render_action_status.js" || fail "action strip no longer uses current-page action state"
 if grep -q 'last_job_status\|last_job_result\|last_job_message' "$tmp/render_action_status.js"; then
