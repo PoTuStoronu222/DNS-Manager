@@ -6,8 +6,8 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.36"
-# 3.36: maintenance release after the corrected LuCI companion update path.
+VERSION="3.37"
+# 3.37: fix LuCI installed-version detection via the persistent companion version marker.
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -6067,6 +6067,7 @@ luci_installed_version() {
     # overview.js is the code LuCI actually loads; persistent markers are fallbacks.
     [ -r "$LUCI_VIEW_FILE" ] && _v="$(sed -n 's|^// DNS Manager LuCI version: *||p' "$LUCI_VIEW_FILE" 2>/dev/null | head -n1)"
     [ -n "$_v" ] || [ ! -r "$LUCI_STATE_FILE" ] || _v="$(sed -n 's/^version=//p' "$LUCI_STATE_FILE" 2>/dev/null | head -n1)"
+    [ -n "$_v" ] || [ ! -r "${BACKUP_DIR:-/etc/dns-manager-luci}/version" ] || _v="$(sed -n 's/^version=//p' "${BACKUP_DIR:-/etc/dns-manager-luci}/version" 2>/dev/null | head -n1)"
     [ -n "$_v" ] || [ ! -r "$LUCI_COMPANION_CACHE" ] || _v="$(sed -n 's/^# Version:[[:space:]]*//p' "$LUCI_COMPANION_CACHE" 2>/dev/null | head -n1)"
     printf '%s' "$_v"
 }
