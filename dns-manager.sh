@@ -8473,7 +8473,8 @@ watchdog_apply_toggle() {
     WATCHDOG_ENABLED="$_old_enabled"
     save_config >/dev/null 2>&1 || true
 
-    if [ "$_old_service_present" = 1 ] && [ -x "$WATCHDOG_SERVICE_PATH" ]; then
+    if [ "$_old_service_present" = 1 ]; then
+        watchdog_service_install_files >/dev/null 2>&1 || true
         if [ "$_old_service_enabled" = 1 ]; then
             "$WATCHDOG_SERVICE_PATH" enable >/dev/null 2>&1 || true
         else
