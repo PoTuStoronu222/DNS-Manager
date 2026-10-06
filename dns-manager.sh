@@ -1798,7 +1798,7 @@ steer_dns_upstream_ready() {
     [ -n "$_sec" ] || return 1
     _expected="$(watchdog_expected_servers 2>/dev/null || true)"
     [ -n "$_expected" ] || return 1
-    _actual="$TMP_DIR/steer-dns-actual-$"
+    _actual="$TMP_DIR/steer-dns-actual-$$"
     printf "%s\n" "$(uci -q get "dhcp.$_sec.server" 2>/dev/null)" | tr " " "\n" | sed "/^$/d" | sort -u > "$_actual"
     _want="$(sort -u "$_expected" 2>/dev/null)"
     _ok=0
@@ -2268,7 +2268,7 @@ test_dns_catalog() (
         warn_msg "Не удалось создать общий DNS-тестовый пакет."
         return 1
     }
-    _test_source="$TMP_DIR/test-source-$"
+    _test_source="$TMP_DIR/test-source-$$"
     if [ "$_test_scope" = all ]; then
         grep -v '^#' "$DNS_CATALOG" 2>/dev/null | grep '|' > "$_test_source" || : > "$_test_source"
         _test_scope_label="весь каталог"
@@ -6059,14 +6059,22 @@ luci_companion_fetch() {
     return 0
 }
 
+luci_installed_version() {
+    _v=""
+    # overview.js is the code LuCI actually loads; persistent markers are fallbacks.
+    [ -r "$LUCI_VIEW_FILE" ] && _v="$(sed -n 's|^// DNS Manager LuCI version: *||p' "$LUCI_VIEW_FILE" 2>/dev/null | head -n1)"
+    [ -n "$_v" ] || [ ! -r "$LUCI_STATE_FILE" ] || _v="$(sed -n 's/^version=//p' "$LUCI_STATE_FILE" 2>/dev/null | head -n1)"
+    [ -n "$_v" ] || [ ! -r "$LUCI_COMPANION_CACHE" ] || _v="$(sed -n 's/^# Version:[[:space:]]*//p' "$LUCI_COMPANION_CACHE" 2>/dev/null | head -n1)"
+    printf '%s' "$_v"
+}
+
 luci_companion_check_update() {
     LUCI_REMOTE_VERSION=""
     LUCI_UPDATE_AVAILABLE=0
 
     luci_component_files_present || return 0
 
-    _installed_ver="$(sed -n 's/^version=//p' "$LUCI_STATE_FILE" 2>/dev/null | head -n1)"
-    [ -n "$_installed_ver" ] || _installed_ver="$(sed -n 's|^// DNS Manager LuCI version:[[:space:]]*||p' "$LUCI_VIEW_FILE" 2>/dev/null | head -n1)"
+    _installed_ver="$(luci_installed_version 2>/dev/null || true)"
     [ -n "$_installed_ver" ] || return 0
 
     luci_companion_fetch || return 0
@@ -6089,8 +6097,7 @@ luci_companion_update() {
         return 1
     }
 
-    _installed_ver="$(sed -n 's/^version=//p' "$LUCI_STATE_FILE" 2>/dev/null | head -n1)"
-    [ -n "$_installed_ver" ] || _installed_ver="$(sed -n 's|^// DNS Manager LuCI version:[[:space:]]*||p' "$LUCI_VIEW_FILE" 2>/dev/null | head -n1)"
+    _installed_ver="$(luci_installed_version 2>/dev/null || true)"
     [ -n "$_installed_ver" ] || { err_msg "Не удалось определить установленную версию LuCI."; return 1; }
 
     luci_companion_fetch || {
