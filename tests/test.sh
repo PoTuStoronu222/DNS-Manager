@@ -796,7 +796,7 @@ save_count="$(grep -o 'Сохранить' "$tmp/watchdog_card.js" | wc -l | tr 
 grep -q 'Сохранить настройки' "$tmp/watchdog_card.js" || fail "common watchdog save button missing"
 grep -q 'Дополнительные параметры' "$tmp/watchdog_card.js" || fail "advanced watchdog section missing"
 grep -q 'Настройки контроля' "$tmp/watchdog_card.js" || fail "watchdog settings section title missing"
-for _wd_label in 'Интервал проверки' 'Порог сбоя' 'Пауза между ремонтами' 'Ремонтов за цикл' 'Кандидатов за выбор' 'Перезапусков DNS' 'Полная сверка'; do
+for _wd_label in 'Как часто проверять DNS' 'Сколько сбоев подряд' 'Пауза перед повторным восстановлением' 'Сколько DNS восстановить за раз' 'Сколько вариантов DNS проверить' 'Сколько раз можно перезапустить DNS' 'Как часто перепроверять настройки DNS'; do
     grep -q "$_wd_label" "$tmp/watchdog_card.js" || fail "LuCI watchdog control missing: $_wd_label"
 done
 if grep -q 'Рестартов https-dns-proxy\|Тяжёлая сверка' "$tmp/watchdog_card.js"; then
