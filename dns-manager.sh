@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.35.63"
+VERSION="3.35.64"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -3516,7 +3516,7 @@ listener_port_exists() {
 }
 local_dns_query_ok() {
     _lp="$1"
-    _domain="${2:-example.com}"
+    _domain="$2"
     [ -n "$_lp" ] || return 1
     if command -v dig >/dev/null 2>&1; then
         _ans="$(dig @127.0.0.1 -p "$_lp" "$_domain" A +time=2 +tries=1 +short 2>/dev/null | awk '/^[0-9]+(\.[0-9]+){3}$/ && $0 !~ /^127\./ && $0 != "0.0.0.0" {print; exit}')"
@@ -3530,6 +3530,82 @@ local_dns_query_ok() {
         [ -n "$_ans" ] && return 0
     fi
     return 1
+}
+
+monotonic_ms() {
+    _m="$(awk '{printf "%.0f", $1*1000}' /proc/uptime 2>/dev/null | head -n1)"
+    case "$_m" in ''|*[!0-9]*) return 1;; esac
+    printf '%s' "$_m"
+}
+
+local_dns_query_ms() {
+    _lp="$1"
+    _domain="$2"
+    [ -n "$_lp" ] || return 1
+    _start="$(monotonic_ms 2>/dev/null || true)"
+    case "$_start" in ''|*[!0-9]*) _start=0;; esac
+    if command -v dig >/dev/null 2>&1; then
+        _ans="$(dig @127.0.0.1 -p "$_lp" "$_domain" A +time=2 +tries=1 +short 2>/dev/null | awk '/^[0-9]+(\.[0-9]+){3}$/ && $0 !~ /^127\./ && $0 != "0.0.0.0" {print; exit}')"
+    elif command -v nslookup >/dev/null 2>&1; then
+        _ans="$(nslookup -port="$_lp" "$_domain" 127.0.0.1 2>/dev/null | awk '/^Address [0-9]+: / {print $NF} /^Address: / {print $2}' | awk '/^[0-9]+(\.[0-9]+){3}$/ && $0 !~ /^127\./ && $0 != "0.0.0.0" {print; exit}')"
+    else
+        return 1
+    fi
+    [ -n "$_ans" ] || return 1
+    _end="$(monotonic_ms 2>/dev/null || true)"
+    case "$_end" in ''|*[!0-9]*) _end="$_start";; esac
+    _ms=$((_end-_start))
+    [ "$_ms" -ge 1 ] 2>/dev/null || _ms=1
+    printf '%s' "$_ms"
+}
+
+test_local_dns() {
+    _id="$1"
+    _port="$2"
+    _cat="$(dns_cat "$_id" 2>/dev/null || printf unknown)"
+    _name="$(dns_name "$_id" 2>/dev/null || printf '%s' "$_id")"
+    _domain="example.com"
+    case "$3" in RU) _domain="yandex.ru";; esac
+    if ! listener_port_exists "$_port"; then
+        printf '%s|%s|%s|-1|LOCAL_LISTENER_UNAVAILABLE\n' "$_id" "$_cat" "$_name" > "$TMP_DIR/t.$_id"
+        return 1
+    fi
+    _ms="$(local_dns_query_ms "$_port" "$_domain" 2>/dev/null || true)"
+    case "$_ms" in
+        ''|*[!0-9]*)
+            printf '%s|%s|%s|-1|LOCAL_DNS_UNAVAILABLE\n' "$_id" "$_cat" "$_name" > "$TMP_DIR/t.$_id"
+            return 1
+            ;;
+    esac
+    printf '%s|%s|%s|%s|OK\n' "$_id" "$_cat" "$_name" "$_ms" > "$TMP_DIR/t.$_id"
+    return 0
+}
+
+test_assigned_dns() {
+    _id="$1"
+    [ -n "$_id" ] || return 2
+    for _s in 1 2 3 4 5 6 RU; do
+        eval "_sid=\"\$SLOT_$_s\""
+        [ "$_sid" = "$_id" ] || continue
+        case "$_s" in
+            1) _port="$PORT_1";;
+            2) _port="$PORT_2";;
+            3) _port="$PORT_3";;
+            4) _port="$PORT_4";;
+            5) _port="$PORT_5";;
+            6) _port="$PORT_6";;
+            RU) _port="$PORT_RU";;
+        esac
+        [ -n "$_port" ] || {
+            _cat="$(dns_cat "$_id" 2>/dev/null || printf unknown)"
+            _name="$(dns_name "$_id" 2>/dev/null || printf '%s' "$_id")"
+            printf '%s|%s|%s|-1|LOCAL_PORT_UNAVAILABLE\n' "$_id" "$_cat" "$_name" > "$TMP_DIR/t.$_id"
+            return 1
+        }
+        test_local_dns "$_id" "$_port" "$_s"
+        return $?
+    done
+    return 2
 }
 verify_selected_doh() {
     FAILED_SLOT=""
