@@ -4174,7 +4174,7 @@ function testCurrent(root){
     return d&&(d.id||(!d.slot&&d.url&&d.port));
   });
   var slots=targets.filter(function(d){return d&&d.id;});
-  var systems=targets.filter(function(d){return d&&!d.id&&!d.slot&&d.url&&d.port;});
+  var systems=targets.filter(function(d){return d&&!d.slot&&d.url&&d.port;});
   var total=targets.length;
   if(!total){
     state.currentTest={status:'FAILED',total:0};
