@@ -241,6 +241,8 @@ grep -q 'function ntpActualPreset(servers)' "$tmp/overview.js" || fail "LuCI NTP
 grep -q "preset=ntpActualPreset(servers)" "$tmp/overview.js" || fail "LuCI NTP page still trusts stored preset instead of actual servers"
 grep -q "openwrt_default:'Стандарт OpenWrt'" "$tmp/overview.js" || fail "LuCI does not label OpenWrt default NTP servers"
 grep -q "other:'ДРУГОЕ'" "$tmp/overview.js" || fail "LuCI does not label unknown NTP servers as other"
+grep -q "st.force_owner==='steer'&&st.force_status==='other'" "$tmp/overview.js" || fail "LuCI components do not show Steer-owned forced-DNS state"
+grep -q "ДРУГОЕ • Steer" "$tmp/overview.js" || fail "LuCI components do not show Steer status label"
 awk '/^function renderTime\(root,st\)\{/,/^function renderCatalog\(root\)/' "$tmp/overview.js" > "$tmp/ntp_view.js"
 if grep -q "row('Служба'" "$tmp/ntp_view.js"; then
     fail "LuCI NTP page still exposes service status"
