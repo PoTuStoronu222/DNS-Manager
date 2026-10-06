@@ -1473,8 +1473,9 @@ status_json() {
         printf ',"last_check":'; json_quote "$_system_ts"; printf '}'
         _i=$((_i + 1))
     done
+    printf ']'
     printf ",\"system_dns_count\":%s" "$_system_dns_total"
-    printf '],"slots":['
+    printf ',"slots":['
     _first=1
     for _s in 1 2 3 4 5 6 RU; do
         _id="$(cfg_get "SLOT_${_s}")"; _cat="$(catalog_field "$_id" 2>/dev/null || true)"; _port="$(cfg_get "PORT_${_s}")"
