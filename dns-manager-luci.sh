@@ -143,6 +143,11 @@ STATE_DIR="/var/run/dns-manager"
 PERSIST_STATE_DIR="/etc/dns-manager/state"
 RUNTIME_DIR="/var/run/dns-manager-luci"
 JOB_DIR="$RUNTIME_DIR/jobs"
+# Hard wall-clock limits for persistent background jobs.
+JOB_MAX_AGE_PROFILE=900
+JOB_MAX_AGE_TEST_ALL=1800
+JOB_MAX_AGE_TEST_CURRENT=300
+JOB_MAX_AGE_TEST_ONE=60
 CHECK_DIR="$RUNTIME_DIR/checks"
 TMP_ROOT="$RUNTIME_DIR/tmp"
 UPDATE_STATE="/etc/dns-manager-luci/update.state"
