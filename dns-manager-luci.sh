@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.6.73
+# Version: 1.6.74
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -156,7 +156,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.6.73"
+SELF_VERSION="1.6.74"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -2346,7 +2346,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.6.73
+// DNS Manager LuCI version: 1.6.74
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -3480,7 +3480,9 @@ function ntpPresetName(p){
     vniiftri_moscow:'ВНИИФТРИ',
     nist_ip:'NIST',
     cf_ip:'Cloudflare',
-    google_ip:'Google'
+    google_ip:'Google',
+    openwrt_default:'Стандарт OpenWrt',
+    other:'ДРУГОЕ'
   };
   return map[String(p||'')]||'Не выбран';
 }
@@ -3493,11 +3495,23 @@ function ntpPresetServers(p){
   };
   return map[String(p||'')]||'';
 }
+function ntpActualPreset(servers){
+  var cur=String(servers||'').trim().split(/\\s+/).filter(function(x){return x;}).join(' ');
+  if(!cur)return 'none';
+  if(cur==='0.openwrt.pool.ntp.org 1.openwrt.pool.ntp.org 2.openwrt.pool.ntp.org 3.openwrt.pool.ntp.org')return 'openwrt_default';
+  var ids=['vniiftri_moscow','nist_ip','cf_ip','google_ip'];
+  for(var i=0;i<ids.length;i++){
+    var expected=String(ntpPresetServers(ids[i])||'').split(',').map(function(x){return String(x).trim();}).filter(function(x){return x;}).join(' ');
+    if(cur===expected)return ids[i];
+  }
+  return 'other';
+}
 function renderTime(root,st){
   var e=root.querySelector('#dm-time');if(!e)return;e.innerHTML='';
   var enabled=String(st.ntp_enabled||'0')==='1';
   var preset=String(st.ntp_preset||'');
   var servers=String(st.ntp_servers||'').trim();
+  preset=ntpActualPreset(servers);
   var selected=ntpPresetName(preset);
   var body=[];
   body.push(E('div',{'class':'dm-hint'},'Настройка серверов точного времени роутера через стандартный system.ntp/sysntpd.'));
