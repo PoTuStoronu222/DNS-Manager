@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.35.64"
+VERSION="3.35.65"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -3585,17 +3585,16 @@ test_assigned_dns() {
     _id="$1"
     [ -n "$_id" ] || return 2
     for _s in 1 2 3 4 5 6 RU; do
-        eval "_sid=\"\$SLOT_$_s\""
-        [ "$_sid" = "$_id" ] || continue
         case "$_s" in
-            1) _port="$PORT_1";;
-            2) _port="$PORT_2";;
-            3) _port="$PORT_3";;
-            4) _port="$PORT_4";;
-            5) _port="$PORT_5";;
-            6) _port="$PORT_6";;
-            RU) _port="$PORT_RU";;
+            1) _sid="$SLOT_1"; _port="$PORT_1";;
+            2) _sid="$SLOT_2"; _port="$PORT_2";;
+            3) _sid="$SLOT_3"; _port="$PORT_3";;
+            4) _sid="$SLOT_4"; _port="$PORT_4";;
+            5) _sid="$SLOT_5"; _port="$PORT_5";;
+            6) _sid="$SLOT_6"; _port="$PORT_6";;
+            RU) _sid="$SLOT_RU"; _port="$PORT_RU";;
         esac
+        [ "$_sid" = "$_id" ] || continue
         [ -n "$_port" ] || {
             _cat="$(dns_cat "$_id" 2>/dev/null || printf unknown)"
             _name="$(dns_name "$_id" 2>/dev/null || printf '%s' "$_id")"
