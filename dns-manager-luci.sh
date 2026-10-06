@@ -3436,8 +3436,7 @@ function watchdogCard(root,st){
     E('summary',{},'Дополнительные параметры'),
     E('div',{'class':'dm-watchdog-list'},[
       param('watchdog_max_repairs','Сколько DNS можно заменить за раз',1,3,'шт.','Сколько неисправных DNS можно заменить во время одной проверки.',false),
-      param('watchdog_max_candidates','Сколько DNS проверить при поиске замены',1,10,'шт.','Сколько других DNS проверить, прежде чем выбрать замену.',false),
-      param('watchdog_guard_interval','Как часто проверять настройки DNS Manager',15,180,'мин','Проверяет, что DNS Manager и его настройки не были изменены.',true)
+      param('watchdog_max_candidates','Сколько DNS проверить при поиске замены',1,10,'шт.','Сколько других DNS проверить, прежде чем выбрать замену.',false)
     ])
   ]);
 
@@ -3450,7 +3449,9 @@ function watchdogCard(root,st){
     E('div',{'class':'dm-watchdog-save'},[save,feedback])
   ]);
 }
-,'value':String(ageValue),'class':'dm-input'});
+function renderTestAgeCommon(root,st){
+  var ageValue=Number(st.test_age_common||6);
+  var ageInput=E('input',{'type':'number','min':'1','max':'168','step':'1','value':String(ageValue),'class':'dm-input'});
   var ageBusy=state.busySetting==='testages';
   var ageFeedback=settingFeedback('', 'testages');
   var ageSave=btn(ageBusy?'Сохраняю…':'Сохранить','cbi-button-neutral',function(){
