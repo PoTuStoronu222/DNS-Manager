@@ -16,6 +16,24 @@ sh -n dns-manager.sh || fail "dns-manager.sh: sh -n"
 sh -n dns-manager-luci.sh || fail "dns-manager-luci.sh: sh -n"
 ok "shell syntax"
 
+awk '
+    /^verify_applied_doh_config\(\) \{/ { capture=1 }
+    capture { print }
+    capture && /^}$/ { exit }
+' dns-manager.sh > "$tmp/verify_profile_doh.sh"
+[ -s "$tmp/verify_profile_doh.sh" ] || fail "profile DoH verifier extraction"
+TMP_DIR="$tmp" sh -c '. "$1"; verify_applied_doh_config' sh "$tmp/verify_profile_doh.sh" || fail "profile verifier must not depend on explicit force_ip_family"
+if awk '/^verify_applied_doh_config\(\) \{/,/^}$/ { print }' dns-manager.sh | grep -q 'force_ip_family'; then
+    fail "profile verifier still validates independent force_ip_family setting"
+fi
+if grep -q 'https-dns-proxy не переведён в режим auto' dns-manager.sh; then
+    fail "stale forced-DNS auto error remains in manager"
+fi
+if grep -q 'https-dns-proxy не переведён в режим auto' dns-manager-luci.sh; then
+    fail "stale forced-DNS auto error remains in LuCI companion"
+fi
+ok "profile verification no longer depends on independent Forced-DNS settings"
+
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT INT TERM
