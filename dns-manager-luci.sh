@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.11
+# Version: 1.12
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -30,7 +30,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.11"
+VERSION="1.12"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -156,7 +156,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.11"
+SELF_VERSION="1.12"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -2480,7 +2480,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.11
+// DNS Manager LuCI version: 1.12
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -2932,7 +2932,12 @@ function renderOverview(root,st){
       ? badge('dm-bad','не работает')
       : badge('dm-off','не проверено');
 
-  var force=yes(st.force_both)?badge('dm-bad','DNS Manager + внешний'):st.force_owner==='external'?badge('dm-bad','внешний сервис'):yes(st.force_manager)?badge('dm-ok','DNS Manager'):badge('dm-off','выключен');
+  var force=yes(st.force_both)?badge('dm-bad','DNS Manager + внешний')
+    :st.force_owner==='external'?badge('dm-bad','внешний сервис')
+    :st.force_owner==='steer'&&st.force_status==='other'?badge('dm-bad','ДРУГОЕ • Steer')
+    :st.force_owner==='steer'&&st.force_status==='steer'?badge('dm-ok','включён • Steer')
+    :yes(st.force_manager)?badge('dm-ok','DNS Manager')
+    :badge('dm-off','выключен');
 
   var wd=yes(st.watchdog)?(st.watchdog_backend==='procd'?(Number(st.watchdog_loop||0)===1?badge('dm-ok','работает'):Number(st.watchdog_service||0)===1?badge('dm-warn','служба запущена, цикл не найден'):badge('dm-bad','служба не запущена')):badge('dm-warn','неизвестный механизм')):badge('dm-off','выключена');
   var wdDetails='Проверка DNS — каждые '+Number(st.watchdog_interval||600)/60+' мин · после '+Number(st.watchdog_fail_threshold||2)+' сбоев подряд';
