@@ -2247,8 +2247,7 @@ run_action() {
             _rc=0
             case "$_name" in
                 watchdog)
-                    WATCHDOG_ENABLED="$_enabled"
-                    SILENT_APPLY=1 apply_watchdog >/dev/null 2>&1 || _rc=$?
+                    SILENT_APPLY=1 watchdog_apply_toggle "$_enabled" >/dev/null 2>&1 || _rc=$?
                     ;;
                 force)
                     FORCE_DOH="$_enabled"
