@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.6.74
+# Version: 1.6.75
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -30,7 +30,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.6.74"
+VERSION="1.6.75"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -156,7 +156,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.6.74"
+SELF_VERSION="1.6.75"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -2346,7 +2346,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.6.74
+// DNS Manager LuCI version: 1.6.75
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -3323,9 +3323,21 @@ function watchdogCard(root,st){
   var service=Number(st.watchdog_service||0)===1, loop=Number(st.watchdog_loop||0)===1;
   var inputs={};
 
-  function param(name,title,min,max,unit,desc){
-    var value=Number(st[name]||min);
-    var input=E('input',{'type':'number','min':String(min),'max':String(max),'step':'1','value':String(value),'class':'dm-input'});
+  function minuteValue(seconds,fallback){
+    var n=Number(seconds);
+    if(!isFinite(n)||n<=0)n=fallback;
+    return Math.round((n/60)*2)/2;
+  }
+  function param(name,title,min,max,unit,desc,minutes){
+    var value=minutes?minuteValue(st[name],min):Number(st[name]||min);
+    var input=E('input',{
+      'type':'number',
+      'min':String(min),
+      'max':String(max),
+      'step':minutes?'0.5':'1',
+      'value':String(value),
+      'class':'dm-input'
+    });
     inputs[name]=input;
     return E('div',{'class':'dm-watchdog-row'},[
       E('div',{},[
@@ -3341,23 +3353,25 @@ function watchdogCard(root,st){
     if(state.busy)return;
 
     var spec=[
-      ['watchdog_interval','Интервал проверки',30,600,'с'],
-      ['watchdog_fail_threshold','Порог сбоя',1,5,'цикла'],
-      ['watchdog_repair_cooldown','Пауза между ремонтами',30,3600,'с'],
-      ['watchdog_max_repairs','Ремонтов за цикл',1,3,'шт.'],
-      ['watchdog_max_restarts','Перезапусков DNS',1,5,'шт.'],
-      ['watchdog_max_candidates','Кандидатов за выбор',1,10,'шт.'],
-      ['watchdog_guard_interval','Полная сверка',300,3600,'с']
+      ['watchdog_interval','Как часто проверять DNS',0.5,10,'мин','Пауза между автоматическими проверками.',true],
+      ['watchdog_fail_threshold','Сколько сбоев подряд',1,5,'цикла','Сколько неудачных проверок подряд нужно для восстановления DNS.',false],
+      ['watchdog_repair_cooldown','Пауза перед повторным восстановлением',0.5,60,'мин','Минимальное время до повторного восстановления одного DNS.',true],
+      ['watchdog_max_repairs','Сколько DNS восстановить за раз',1,3,'шт.','Максимальное число DNS для восстановления за один цикл.',false],
+      ['watchdog_max_candidates','Сколько вариантов DNS проверить',1,10,'шт.','Сколько рабочих вариантов проверить при выборе замены.',false],
+      ['watchdog_max_restarts','Сколько раз можно перезапустить DNS',1,5,'шт.','Максимальное число перезапусков DNS за одну операцию.',false],
+      ['watchdog_guard_interval','Как часто перепроверять настройки DNS',5,60,'мин','Проверка конфигурации целиком.',true]
     ];
     var values=[];
     var invalid='';
     spec.forEach(function(x){
       var raw=String(inputs[x[0]].value||'').trim();
-      if(!/^\d+$/.test(raw)||Number(raw)<x[2]||Number(raw)>x[3]){
+      var n=Number(raw);
+      var ok=raw!==''&&isFinite(n)&&n>=x[2]&&n<=x[3]&&(x[6]?true:/^\\d+$/.test(raw));
+      if(!ok){
         if(!invalid)invalid=x[1]+': от '+x[2]+' до '+x[3]+' '+x[4]+'.';
         return;
       }
-      values.push(Number(raw));
+      values.push(x[6]?Math.round(n*60):Math.round(n));
     });
     if(invalid){
       setSettingFeedback('watchdog_batch',invalid,'error');
@@ -3410,18 +3424,18 @@ function watchdogCard(root,st){
   ]);
 
   var main=E('div',{'class':'dm-watchdog-list'},[
-    param('watchdog_interval','Интервал проверки',30,600,'с','Пауза между циклами проверки.'),
-    param('watchdog_fail_threshold','Порог сбоя',1,5,'цикла','Сколько плохих циклов подряд нужно для ремонта.'),
-    param('watchdog_repair_cooldown','Пауза между ремонтами',30,3600,'с','Минимальная пауза перед повторным ремонтом одного слота.')
+    param('watchdog_interval','Как часто проверять DNS',0.5,10,'мин','Пауза между автоматическими проверками.',true),
+    param('watchdog_fail_threshold','Сколько сбоев подряд',1,5,'цикла','Сколько неудачных проверок подряд нужно для восстановления DNS.',false),
+    param('watchdog_repair_cooldown','Пауза перед повторным восстановлением',0.5,60,'мин','Минимальное время до повторного восстановления одного DNS.',true)
   ]);
 
   var advanced=E('details',{'class':'dm-watchdog-advanced'},[
     E('summary',{},'Дополнительные параметры'),
     E('div',{'class':'dm-watchdog-list'},[
-      param('watchdog_max_repairs','Ремонтов за цикл',1,3,'шт.','Сколько слотов можно восстановить за один цикл.'),
-      param('watchdog_max_candidates','Кандидатов за выбор',1,10,'шт.','Сколько вариантов проверять при выборе DNS.'),
-      param('watchdog_max_restarts','Перезапусков DNS',1,5,'шт.','Максимум перезапусков DNS за одну операцию.'),
-      param('watchdog_guard_interval','Полная сверка',300,3600,'с','Как часто проверять конфигурацию целиком.')
+      param('watchdog_max_repairs','Сколько DNS восстановить за раз',1,3,'шт.','Максимальное число DNS для восстановления за один цикл.',false),
+      param('watchdog_max_candidates','Сколько вариантов DNS проверить',1,10,'шт.','Сколько рабочих вариантов проверить при выборе замены.',false),
+      param('watchdog_max_restarts','Сколько раз можно перезапустить DNS',1,5,'шт.','Максимальное число перезапусков DNS за одну операцию.',false),
+      param('watchdog_guard_interval','Как часто перепроверять настройки DNS',5,60,'мин','Проверка конфигурации целиком.',true)
     ])
   ]);
 
