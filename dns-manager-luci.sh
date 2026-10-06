@@ -1905,6 +1905,8 @@ job_start_test_all() {
             job_write "$_jid" status failed; job_write "$_jid" result fail; job_write "$_jid" finished "$(date +%s)"
         fi
     ) &
+    _job_pid=$!
+    job_record_pid "$_jid" "$_job_pid"
     printf '{"ok":true,"job":'; json_quote "$_jid"; printf '}'
 }
 
@@ -2020,6 +2022,8 @@ job_start_test_current() {
         fi
         job_write "$_jid" finished "$_stamp"
     ) &
+    _job_pid=$!
+    job_record_pid "$_jid" "$_job_pid"
     printf '{"ok":true,"job":'; json_quote "$_jid"; printf '}'
 }
 job_start_test_one() {
@@ -2087,6 +2091,8 @@ job_start_test_one() {
         job_write "$_jid" result fail
         job_write "$_jid" finished "$(date +%s)"
     ) &
+    _job_pid=$!
+    job_record_pid "$_jid" "$_job_pid"
     printf '{"ok":true,"job":'; json_quote "$_jid"; printf '}'
 }
 job_json() {
