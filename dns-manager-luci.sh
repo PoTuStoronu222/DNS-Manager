@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.6.64
+# Version: 1.6.65
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -17,13 +17,20 @@ VIEW_DIR="/www/luci-static/resources/view/dns_manager"
 VIEW_FILE="$VIEW_DIR/overview.js"
 RUNTIME_DIR="/var/run/dns-manager-luci"
 JOB_DIR="$RUNTIME_DIR/jobs"
+# Hard wall-clock limits for persistent background jobs. Browser timer throttling
+# must not make a DNS job appear to run forever.
+JOB_MAX_AGE_PROFILE=900
+JOB_MAX_AGE_TEST_ALL=1800
+JOB_MAX_AGE_TEST_CURRENT=300
+JOB_MAX_AGE_TEST_ONE=60
+
 BACKUP_DIR="/etc/dns-manager-luci"
 CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.6.64"
+VERSION="1.6.65"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -144,7 +151,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.6.64"
+SELF_VERSION="1.6.65"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -1709,37 +1716,115 @@ job_prepare() {
 }
 job_write() { _id="$1"; _key="$2"; _value="$3"; mkdir -p "$JOB_DIR/$_id" 2>/dev/null || return 1; printf '%s=%s\n' "$_key" "$_value" >> "$JOB_DIR/$_id/state" 2>/dev/null; }
 
+job_pid_start_token() {
+    _pid="$1"
+    case "$_pid" in ''|*[!0-9]*) return 1;; esac
+    [ -r "/proc/$_pid/stat" ] || return 1
+    awk '{print $22}' "/proc/$_pid/stat" 2>/dev/null | head -n1
+}
+job_max_age() {
+    _mode="$1"
+    case "$_mode" in
+        profile) printf '%s\n' "$JOB_MAX_AGE_PROFILE" ;;
+        all) printf '%s\n' "$JOB_MAX_AGE_TEST_ALL" ;;
+        current) printf '%s\n' "$JOB_MAX_AGE_TEST_CURRENT" ;;
+        one) printf '%s\n' "$JOB_MAX_AGE_TEST_ONE" ;;
+        *) printf '%s\n' 300 ;;
+    esac
+}
+job_mark_failed() {
+    _id="$1"
+    _d="$JOB_DIR/$_id"
+    _now="$2"
+    _msg="$3"
+    [ -n "$_now" ] || _now="$(date +%s 2>/dev/null || printf 0)"
+    job_write "$_id" status failed
+    job_write "$_id" result fail
+    job_write "$_id" finished "$_now"
+    printf '%s\n' "$_msg" >> "$_d/output" 2>/dev/null || true
+}
+job_record_pid() {
+    _id="$1"
+    _pid="$2"
+    job_write "$_id" pid "$_pid"
+    _token="$(job_pid_start_token "$_pid" 2>/dev/null || true)"
+    [ -n "$_token" ] && job_write "$_id" pid_start "$_token"
+}
+job_terminate_pid() {
+    _pid="$1"
+    case "$_pid" in ''|*[!0-9]*) return 0;; esac
+    kill "$_pid" 2>/dev/null || true
+    for _n in 1 2 3; do
+        kill -0 "$_pid" 2>/dev/null || return 0
+        sleep 1
+    done
+    kill -9 "$_pid" 2>/dev/null || true
+}
+
 job_state_value() {
-    _file="$1"; _key="$2"; _last="${3:-tail}"
+    _file="$1"; _key="$2"; _last="$3"
+    [ -n "$_last" ] || _last=tail
     [ -r "$_file" ] || return 0
     case "$_last" in
-        head) sed -n "s/^${_key}=//p" "$_file" 2>/dev/null | head -n1 ;;
-        *) sed -n "s/^${_key}=//p" "$_file" 2>/dev/null | tail -n1 ;;
+        head) sed -n "s/^$_key=//p" "$_file" 2>/dev/null | head -n1 ;;
+        *) sed -n "s/^$_key=//p" "$_file" 2>/dev/null | tail -n1 ;;
     esac
 }
 job_process_alive() {
     _d="$1"; _state="$_d/state"
     [ -r "$_state" ] || return 1
+    [ "$(job_state_value "$_state" status)" = running ] || return 1
+
+    _id="$(basename "$_d")"
+    _mode="$(job_state_value "$_state" mode head)"
     _pid="$(job_state_value "$_state" pid)"
     case "$_pid" in ''|*[!0-9]*) _pid="";; esac
-    if [ -n "$_pid" ] && kill -0 "$_pid" 2>/dev/null; then
-        return 0
-    fi
     _started="$(job_state_value "$_state" started head)"
     case "$_started" in ''|*[!0-9]*) _started="";; esac
     _now="$(date +%s 2>/dev/null || printf 0)"
     case "$_now" in ''|*[!0-9]*) _now="";; esac
-    if [ -z "$_started" ] || [ -z "$_now" ] || [ "$_now" -lt "$_started" ] 2>/dev/null; then
+
+    # Verify process identity to avoid PID reuse turning an old job into a
+    # permanently "running" job.
+    if [ -n "$_pid" ]; then
+        _stored_token="$(job_state_value "$_state" pid_start)"
+        _current_token="$(job_pid_start_token "$_pid" 2>/dev/null || true)"
+        if [ -n "$_stored_token" ] && [ -n "$_current_token" ] && [ "$_stored_token" != "$_current_token" ]; then
+            job_mark_failed "$_id" "$_now" "Фоновая задача DNS Manager стала недействительной: сохранённый PID уже принадлежит другому процессу."
+            return 1
+        fi
+    fi
+
+    _max_age="$(job_max_age "$_mode")"
+    case "$_max_age" in ''|*[!0-9]*) _max_age=300;; esac
+    if [ -n "$_started" ] && [ -n "$_now" ] && [ "$_now" -ge "$_started" ] 2>/dev/null; then
+        _age=$((_now-_started))
+        if [ "$_age" -ge "$_max_age" ] 2>/dev/null; then
+            if [ -n "$_pid" ]; then
+                _safe_to_kill=1
+                if [ -n "$_stored_token" ] && [ -n "$_current_token" ]; then
+                    [ "$_stored_token" = "$_current_token" ] || _safe_to_kill=0
+                fi
+                [ "$_safe_to_kill" = 1 ] && job_terminate_pid "$_pid"
+            fi
+            job_mark_failed "$_id" "$_now" "Фоновая задача DNS Manager превышает допустимое время выполнения ($_max_age с) и была остановлена."
+            return 1
+        fi
+    fi
+
+    if [ -z "$_pid" ]; then
+        job_mark_failed "$_id" "$_now" "Фоновая задача DNS Manager не имеет рабочего PID."
+        return 1
+    fi
+
+    if kill -0 "$_pid" 2>/dev/null; then
         return 0
     fi
-    _age=$((_now-_started))
-    [ "$_age" -lt 1800 ] 2>/dev/null && [ -z "$_pid" ] && return 0
-    job_write "$(basename "$_d")" status failed
-    job_write "$(basename "$_d")" result fail
-    job_write "$(basename "$_d")" finished "$_now"
-    printf '%s\n' "Задача применения профиля завершена аварийно: рабочий процесс больше не существует." >> "$_d/output" 2>/dev/null || true
+
+    job_mark_failed "$_id" "$_now" "Фоновая задача DNS Manager завершена аварийно: рабочий процесс больше не существует."
     return 1
 }
+
 profile_job_running() {
     PROFILE_RUNNING_JOB=""
     PROFILE_RUNNING_PROFILE=""
@@ -1807,7 +1892,7 @@ job_start_profile() {
         exit "$_rc"
     ) &
     _job_pid=$!
-    job_write "$_jid" pid "$_job_pid"
+    job_record_pid "$_jid" "$_job_pid"
 
     printf '{"ok":true,"job":'; json_quote "$_jid"; printf '}'
 }
@@ -2016,6 +2101,9 @@ job_start_test_one() {
 job_json() {
     _jid="$1"; case "$_jid" in ''|*[!A-Za-z0-9_-]*) json_error "Неверный job ID"; return;; esac
     _d="$JOB_DIR/$_jid"; [ -d "$_d" ] || { json_error "Задача не найдена"; return; }
+    if [ "$(job_state_value "$_d/state" status)" = running ]; then
+        job_process_alive "$_d" >/dev/null 2>&1 || true
+    fi
     printf '{"ok":true,"job":'; json_quote "$_jid"
     printf ',"status":'; json_quote "$(sed -n 's/^status=//p' "$_d/state" 2>/dev/null | tail -n1)"
     printf ',"result":'; json_quote "$(sed -n 's/^result=//p' "$_d/state" 2>/dev/null | tail -n1)"
