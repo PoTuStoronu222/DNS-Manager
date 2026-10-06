@@ -4001,7 +4001,7 @@ function pollJob(root,job,meta,done){
     return;
   }
   var ticks=0;
-  var maxTicks=(meta&&meta.mode==='profile')||!!(meta&&meta.afterProfile)?900:180;
+  var maxTicks=(meta&&meta.mode==='profile')?900:180;
   var maxErrors=(meta&&meta.mode==='profile')?30:8;
   function profileFinish(j){
     if(!meta||meta.mode!=='profile')return;
@@ -4057,14 +4057,6 @@ function pollJob(root,job,meta,done){
           }
         }
         if(meta&&meta.mode==='current')state.currentTest={status:String(j.status||'').toUpperCase()==='DONE'?'DONE':'FAILED',result:j.result||'fail',finished:Date.now()};
-        if(meta&&meta.mode==='current'&&meta.afterProfile){
-          var pLabel=profileName(meta.profile||'');
-          var verifyOk=String(j&&j.status||'').toUpperCase()==='DONE'&&String(j&&j.result||'')==='ok';
-          state.busy=false;
-          state.profileProgress=null;
-          if(verifyOk){setAction(true,'Профиль: «'+pLabel+'».');state.pageNotice.profiles='';}
-          else{setAction(false,'Профиль «'+pLabel+'» применён, но проверка DNS завершилась с ошибкой.');state.pageNotice.profiles='Профиль применён, но проверка выбранных DNS завершилась с ошибкой.';}
-        }
         render(root,ns);
         if(meta&&meta.mode==='all'&&meta.origin==='catalog'&&state.activeTab==='catalog'){
           loadCatalog(root);
@@ -4125,7 +4117,7 @@ function pollJob(root,job,meta,done){
       var s=String(j.status||'running').toUpperCase();
       if(s==='RUNNING'){
         var startedTs=Number(j.started||0);
-        var maxSeconds=(meta&&meta.mode==='profile')?900:((meta&&meta.afterProfile)?300:(meta&&meta.mode==='all'?1800:((meta&&meta.mode==='one')?60:300)));
+        var maxSeconds=(meta&&meta.mode==='profile')?900:((meta&&meta.mode==='all')?1800:((meta&&meta.mode==='one')?60:300));
         if(startedTs>0&&Math.floor(Date.now()/1000)-startedTs>=maxSeconds){
           finish({status:'FAILED',result:'fail',started:j.started,output:'Превышено допустимое время фоновой задачи DNS Manager.'});
           return;
