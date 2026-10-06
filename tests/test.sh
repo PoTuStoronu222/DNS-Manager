@@ -241,6 +241,11 @@ grep -q 'function ntpActualPreset(servers)' "$tmp/overview.js" || fail "LuCI NTP
 grep -q "preset=ntpActualPreset(servers)" "$tmp/overview.js" || fail "LuCI NTP page still trusts stored preset instead of actual servers"
 grep -q "openwrt_default:'Стандарт OpenWrt'" "$tmp/overview.js" || fail "LuCI does not label OpenWrt default NTP servers"
 grep -q "other:'ДРУГОЕ'" "$tmp/overview.js" || fail "LuCI does not label unknown NTP servers as other"
+awk '/^function renderTime\(root,st\)\{/,/^function renderCatalog\(root\)/' "$tmp/overview.js" > "$tmp/ntp_view.js"
+if grep -q "row('Служба'" "$tmp/ntp_view.js"; then
+    fail "LuCI NTP page still exposes service status"
+fi
+grep -q "row('Выбранный набор'" "$tmp/ntp_view.js" || fail "LuCI NTP page lost selected preset"
 ok "NTP status follows actual OpenWrt system.ntp.server configuration"
 # Watchdog time controls are shown to users in minutes, while the RPC still receives seconds.
 awk '/^function watchdogCard\(root,st\)\{/,/^function renderTestAgeCommon/' "$tmp/overview.js" > "$tmp/watchdog_card.sh"
