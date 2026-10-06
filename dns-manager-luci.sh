@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.6.69
+# Version: 1.6.70
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -30,7 +30,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.6.69"
+VERSION="1.6.70"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -156,7 +156,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.6.69"
+SELF_VERSION="1.6.70"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -1987,7 +1987,7 @@ job_start_test_current() {
         while IFS= read -r _id; do
             [ -n "$_id" ] || continue
             printf "Проверяю DoH: %s\n" "$_id"
-            (trap - EXIT; test_assigned_dns "$_id") &
+            (trap - EXIT; test_one_dns "$_id") &
             _batch_pids="$_batch_pids $!"
             _batch_ids="$_batch_ids $_id"
             _batch_n=$((_batch_n+1))
@@ -2044,16 +2044,10 @@ job_start_test_one() {
         if ! acquire_test_lock; then
             job_write "$_jid" status failed; job_write "$_jid" result fail; job_write "$_jid" finished "$(date +%s)"; exit 1
         fi
-        # Use exactly the same test_one_dns() call as the full and selected
-        # DNS tests. This keeps endpoint resolution, curl options, payload and
-        # result semantics identical; only the requested DNS ID is tested.
-        printf "Проверяю выбранный DNS: %s.\n" "$_id"
+        # Keep single-DNS checks identical to the full/selected catalog test path.
+        printf "Проверяю реальный DoH endpoint: %s.\n" "$_id"
         rm -f "$TMP_DIR/t.$_id" 2>/dev/null || true
-        _assigned_rc=2
-        test_assigned_dns "$_id" || _assigned_rc=$?
-        if [ "$_assigned_rc" -eq 2 ]; then
-            test_one_dns "$_id" || true
-        fi
+        test_one_dns "$_id" || true
         _result_file="$TMP_DIR/t.$_id"
         if [ -s "$_result_file" ]; then
             _one_ms="$(awk -F"|" -v id="$_id" '$1==id && NF>=5 {print $4;exit}' "$_result_file" 2>/dev/null || true)"
@@ -2353,7 +2347,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.6.69
+// DNS Manager LuCI version: 1.6.70
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
