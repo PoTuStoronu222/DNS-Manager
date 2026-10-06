@@ -225,11 +225,11 @@ manager_const_num() {
     _fallback="$2"
     case "$_key" in
         WATCHDOG_FAIL_THRESHOLD) _min=1; _max=5 ;;
-        WATCHDOG_REPAIR_COOLDOWN) _min=30; _max=3600 ;;
+        WATCHDOG_REPAIR_COOLDOWN) _min=300; _max=7200 ;;
         WATCHDOG_MAX_REPAIRS) _min=1; _max=3 ;;
         WATCHDOG_MAX_RESTARTS) _min=1; _max=5 ;;
         WATCHDOG_MAX_CANDIDATES) _min=1; _max=10 ;;
-        WATCHDOG_GUARD_INTERVAL) _min=300; _max=3600 ;;
+        WATCHDOG_GUARD_INTERVAL) _min=900; _max=10800 ;;
         *) printf '%s' "$_fallback"; return 0 ;;
     esac
     _v="$(sed -n "s/^${_key}=\"\([0-9][0-9]*\)\"$/\1/p" "$CONFIG_FILE" 2>/dev/null | head -n1)"
@@ -1126,14 +1126,14 @@ status_json() {
     _mode=none
     _selection_category=none
     _watchdog="$(cfg_get WATCHDOG_ENABLED)"; [ -n "$_watchdog" ] || _watchdog=0
-    _watchdog_interval="$(cfg_get WATCHDOG_INTERVAL)"; [ -n "$_watchdog_interval" ] || _watchdog_interval=90
+    _watchdog_interval="$(cfg_get WATCHDOG_INTERVAL)"; [ -n "$_watchdog_interval" ] || _watchdog_interval=300
     _watchdog_backend="$(cfg_get WATCHDOG_BACKEND)"; [ -n "$_watchdog_backend" ] || _watchdog_backend=procd
     _watchdog_threshold="$(manager_const_num WATCHDOG_FAIL_THRESHOLD 2)"
-    _watchdog_repair_cooldown="$(manager_const_num WATCHDOG_REPAIR_COOLDOWN 300)"
+    _watchdog_repair_cooldown="$(manager_const_num WATCHDOG_REPAIR_COOLDOWN 1800)"
     _watchdog_max_repairs="$(manager_const_num WATCHDOG_MAX_REPAIRS 1)"
     _watchdog_max_restarts="$(manager_const_num WATCHDOG_MAX_RESTARTS 2)"
     _watchdog_max_candidates="$(manager_const_num WATCHDOG_MAX_CANDIDATES 3)"
-    _watchdog_guard_interval="$(manager_const_num WATCHDOG_GUARD_INTERVAL 900)"
+    _watchdog_guard_interval="$(manager_const_num WATCHDOG_GUARD_INTERVAL 3600)
 
     # DNS cache tuning changes only dnsmasq cachesize. Do not let the
     # manager config flag or unrelated dnsmasq options distort the state.
@@ -1499,13 +1499,13 @@ watchdog_apply_values() {
     case "$_nmc" in ''|*[!0-9]*) json_error "Кандидатов за выбор: значение должно быть целым числом"; return 1;; esac
     case "$_ngi" in ''|*[!0-9]*) json_error "Полная сверка: значение должно быть целым числом"; return 1;; esac
 
-    [ "$_ni" -ge 30 ] 2>/dev/null && [ "$_ni" -le 600 ] 2>/dev/null || { json_error "Интервал проверки должен быть от 30 до 600 с"; return 1; }
+    [ "$_ni" -ge 60 ] 2>/dev/null && [ "$_ni" -le 3600 ] 2>/dev/null || { json_error "Интервал проверки должен быть от 60 до 3600 с"; return 1; }
     [ "$_nt" -ge 1 ] 2>/dev/null && [ "$_nt" -le 5 ] 2>/dev/null || { json_error "Порог сбоя должен быть от 1 до 5 циклов"; return 1; }
-    [ "$_nrc" -ge 30 ] 2>/dev/null && [ "$_nrc" -le 3600 ] 2>/dev/null || { json_error "Пауза между ремонтами должна быть от 30 до 3600 с"; return 1; }
+    [ "$_nrc" -ge 300 ] 2>/dev/null && [ "$_nrc" -le 7200 ] 2>/dev/null || { json_error "Пауза между ремонтами должна быть от 300 до 7200 с"; return 1; }
     [ "$_nmr" -ge 1 ] 2>/dev/null && [ "$_nmr" -le 3 ] 2>/dev/null || { json_error "Ремонтов за цикл должно быть от 1 до 3"; return 1; }
     [ "$_nms" -ge 1 ] 2>/dev/null && [ "$_nms" -le 5 ] 2>/dev/null || { json_error "Перезапусков DNS должно быть от 1 до 5"; return 1; }
     [ "$_nmc" -ge 1 ] 2>/dev/null && [ "$_nmc" -le 10 ] 2>/dev/null || { json_error "Кандидатов за выбор должно быть от 1 до 10"; return 1; }
-    [ "$_ngi" -ge 300 ] 2>/dev/null && [ "$_ngi" -le 3600 ] 2>/dev/null || { json_error "Полная сверка должна быть от 300 до 3600 с"; return 1; }
+    [ "$_ngi" -ge 900 ] 2>/dev/null && [ "$_ngi" -le 10800 ] 2>/dev/null || { json_error "Полная сверка должна быть от 900 до 10800 с"; return 1; }
 
     _old_interval="$WATCHDOG_INTERVAL"
     _old_threshold="$WATCHDOG_FAIL_THRESHOLD"
@@ -1616,13 +1616,13 @@ watchdog_apply_single() {
     _max_candidates="$WATCHDOG_MAX_CANDIDATES"
     _guard_interval="$WATCHDOG_GUARD_INTERVAL"
     case "$_key" in
-        WATCHDOG_INTERVAL) _min=30; _max=600; _interval="$_value" ;;
+        WATCHDOG_INTERVAL) _min=60; _max=3600; _interval="$_value" ;;
         WATCHDOG_FAIL_THRESHOLD) _min=1; _max=5; _threshold="$_value" ;;
-        WATCHDOG_REPAIR_COOLDOWN) _min=30; _max=3600; _repair_cooldown="$_value" ;;
+        WATCHDOG_REPAIR_COOLDOWN) _min=300; _max=7200; _repair_cooldown="$_value" ;;
         WATCHDOG_MAX_REPAIRS) _min=1; _max=3; _max_repairs="$_value" ;;
         WATCHDOG_MAX_RESTARTS) _min=1; _max=5; _max_restarts="$_value" ;;
         WATCHDOG_MAX_CANDIDATES) _min=1; _max=10; _max_candidates="$_value" ;;
-        WATCHDOG_GUARD_INTERVAL) _min=300; _max=3600; _guard_interval="$_value" ;;
+        WATCHDOG_GUARD_INTERVAL) _min=900; _max=10800; _guard_interval="$_value" ;;
     esac
     [ "$_value" -ge "$_min" ] 2>/dev/null && [ "$_value" -le "$_max" ] 2>/dev/null || {
         json_error "Значение вне допустимого диапазона ($_min–$_max)"
