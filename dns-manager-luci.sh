@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.6.81
+# Version: 1.6.82
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -30,7 +30,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.6.81"
+VERSION="1.6.82"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -153,10 +153,11 @@ TMP_ROOT="$RUNTIME_DIR/tmp"
 UPDATE_STATE="/etc/dns-manager-luci/update.state"
 UPDATE_CHECK_CACHE="$RUNTIME_DIR/update-check.cache"
 UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
-COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
+COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
+COMPANION_RAW_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.6.81"
+SELF_VERSION="1.6.82"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -342,21 +343,29 @@ fetch_url() {
     _out="$1"
     rm -f "$_out" 2>/dev/null || true
     _cb="$(date +%s 2>/dev/null || printf 0)-$$"
-    case "$COMPANION_URL" in
-        *\?*) _fetch_url="${COMPANION_URL}&_dmcb=$_cb" ;;
-        *) _fetch_url="${COMPANION_URL}?_dmcb=$_cb" ;;
-    esac
-    if command -v curl >/dev/null 2>&1; then
-        curl -fsSL --connect-timeout 5 --max-time 30 -H 'User-Agent: DNS-Manager-LuCI' -H 'Accept: application/vnd.github.raw+json' -H 'Cache-Control: no-cache' -o "$_out" "$_fetch_url" >/dev/null 2>&1
-    elif command -v wget >/dev/null 2>&1; then
-        wget -q -T 30 --header='User-Agent: DNS-Manager-LuCI' --header='Accept: application/vnd.github.raw+json' --header='Cache-Control: no-cache' -O "$_out" "$_fetch_url" >/dev/null 2>&1
-    elif command -v uclient-fetch >/dev/null 2>&1; then
-        uclient-fetch -q -O "$_out" "$_fetch_url" >/dev/null 2>&1
-    else
-        return 1
-    fi
+    _ok=1
+    for _base_url in "$COMPANION_URL" "$COMPANION_RAW_URL"; do
+        case "$_base_url" in
+            https://api.github.com/*) _fetch_url="$_base_url" ;;
+            *) _fetch_url="${_base_url}?_dmcb=$_cb" ;;
+        esac
+        if command -v curl >/dev/null 2>&1; then
+            if curl -fsSL --connect-timeout 5 --max-time 30 -H 'User-Agent: DNS-Manager-LuCI' -H 'Accept: application/vnd.github.raw+json' -H 'Cache-Control: no-cache' -o "$_out" "$_fetch_url" >/dev/null 2>&1; then _ok=0; break; fi
+        elif command -v wget >/dev/null 2>&1; then
+            if wget -q -T 30 --header='User-Agent: DNS-Manager-LuCI' --header='Accept: application/vnd.github.raw+json' --header='Cache-Control: no-cache' -O "$_out" "$_fetch_url" >/dev/null 2>&1; then _ok=0; break; fi
+        elif command -v uclient-fetch >/dev/null 2>&1; then
+            case "$_base_url" in
+                https://api.github.com/*) continue ;;
+                *) uclient-fetch -q -O "$_out" "$_fetch_url" >/dev/null 2>&1 && { _ok=0; break; } ;;
+            esac
+        else
+            return 1
+        fi
+        rm -f "$_out" 2>/dev/null || true
+    done
+    [ "$_ok" = 0 ] || return 1
     [ -s "$_out" ] || return 1
-    [ "$(wc -c < "$_out" 2>/dev/null | tr -d " ")" -le 250000 ] 2>/dev/null || return 1
+    [ "$(wc -c < "$_out" 2>/dev/null | tr -d ' ')" -le 250000 ] 2>/dev/null || return 1
     return 0
 }
 
@@ -1593,7 +1602,7 @@ watchdog_apply_values() {
     case "$_ngi" in ''|*[!0-9]*) json_error "Полная сверка: значение должно быть целым числом"; return 1;; esac
 
     [ "$_ni" -ge 60 ] 2>/dev/null && [ "$_ni" -le 3600 ] 2>/dev/null || { json_error "Интервал проверки должен быть от 60 до 3600 с"; return 1; }
-    [ "$_nt" -ge 1 ] 2>/dev/null && [ "$_nt" -le 5 ] 2>/dev/null || { json_error "Порог сбоя должен быть от 1 до 5 циклов"; return 1; }
+    [ "$_nt" -ge 1 ] 2>/dev/null && [ "$_nt" -le 5 ] 2>/dev/null || { json_error "Порог сбоя должен быть от 1 до 5 проверок"; return 1; }
     [ "$_nrc" -ge 300 ] 2>/dev/null && [ "$_nrc" -le 7200 ] 2>/dev/null || { json_error "Пауза между ремонтами должна быть от 300 до 7200 с"; return 1; }
     [ "$_nmr" -ge 1 ] 2>/dev/null && [ "$_nmr" -le 3 ] 2>/dev/null || { json_error "Ремонтов за цикл должно быть от 1 до 3"; return 1; }
     [ "$_nms" -ge 1 ] 2>/dev/null && [ "$_nms" -le 5 ] 2>/dev/null || { json_error "Перезапусков DNS должно быть от 1 до 5"; return 1; }
