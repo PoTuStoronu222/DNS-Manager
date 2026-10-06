@@ -364,7 +364,7 @@ if grep -q 'CURRENT_SLOT_RESULTS' "$tmp/backend.sh"; then
     fail "obsolete second DNS result store remains"
 fi
 if grep -q '^current_slot_result_for_id()' "$tmp/backend.sh"; then
-    ok "selected DNS status has a single authoritative result helper"
+    fail "obsolete result wrapper remains"
 fi
 if grep -q '^assigned_port_for_id()' dns-manager-luci.sh; then
     fail "obsolete assigned-port helper remains"
@@ -372,6 +372,15 @@ fi
 grep -Fq -- '--connect-timeout 1 --max-time 3 --resolve "$host:$port:$ipx"' dns-manager.sh || fail "direct DoH timeout was not reduced"
 grep -q '(trap - EXIT; test_one_dns "\$_id") &' "$tmp/backend.sh" || fail "selected DNS checks are not parallelized"
 ok "single and full DNS checks use the same test_one_dns path"
+awk '/^function checkInfo\(id,d\)/,/^}/' "$tmp/overview.js" > "$tmp/check_info.js"
+grep -q "String(x.status||'').toUpperCase()==='RUNNING'" "$tmp/check_info.js" || fail "LuCI transient check state is not limited to RUNNING"
+grep -q "d&&d.status" "$tmp/check_info.js" || fail "LuCI finished DNS status does not come from RPC data"
+if grep -q "state.checking\[meta.dns_id\]={" "$tmp/overview.js"; then
+    fail "LuCI stores a finished single-test result in transient state"
+fi
+grep -q "delete state.checking\[meta.dns_id\]" "$tmp/overview.js" || fail "LuCI does not clear the transient single-test state"
+ok "LuCI uses the RPC result for every finished single DNS check"
+
 
 
 grep -q ',"ping":' "$tmp/backend.sh" || fail "LuCI DoH instances do not expose saved ping"
