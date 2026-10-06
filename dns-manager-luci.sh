@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.8
+# Version: 1.12
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -30,7 +30,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.8"
+VERSION="1.12"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -156,7 +156,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.8"
+SELF_VERSION="1.12"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -1365,7 +1365,7 @@ status_json() {
     _watchdog_service_enabled=0; watchdog_service_enabled && _watchdog_service_enabled=1 || true
     _watchdog_service_running=0; watchdog_service_running && _watchdog_service_running=1 || true
     _watchdog_loop_running=0; watchdog_loop_running && _watchdog_loop_running=1 || true
-         printf ',"watchdog_service":%s,"watchdog_service_enabled":%s,"watchdog_loop":%s,"watchdog_fail_threshold":%s,"watchdog_repair_cooldown":%s,"watchdog_max_repairs":%s,"watchdog_max_restarts":%s,"watchdog_max_candidates":%s,"watchdog_guard_interval":%s' "$_watchdog_service_running" "$_watchdog_service_enabled" "$_watchdog_loop_running" "$_watchdog_threshold" "$_watchdog_repair_cooldown" "$_watchdog_max_repairs" "$_watchdog_max_restarts" "$_watchdog_max_candidates" "$_watchdog_guard_interval"
+         printf ',"watchdog_interval":%s,"watchdog_service":%s,"watchdog_service_enabled":%s,"watchdog_loop":%s,"watchdog_fail_threshold":%s,"watchdog_repair_cooldown":%s,"watchdog_max_repairs":%s,"watchdog_max_restarts":%s,"watchdog_max_candidates":%s,"watchdog_guard_interval":%s' "$_watchdog_interval" "$_watchdog_service_running" "$_watchdog_service_enabled" "$_watchdog_loop_running" "$_watchdog_threshold" "$_watchdog_repair_cooldown" "$_watchdog_max_repairs" "$_watchdog_max_restarts" "$_watchdog_max_candidates" "$_watchdog_guard_interval"
      printf ',"dnsmasq_perf_state":%s' "$_dnsmasq_perf_state"
     printf ',"ntp_enabled":%s,"ntp_use_dhcp":%s' "$_ntp_enabled" "$_ntp_use_dhcp"
     printf ',"ntp_preset":'; json_quote "$_ntp_preset"
@@ -2480,7 +2480,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.8
+// DNS Manager LuCI version: 1.12
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -2932,7 +2932,12 @@ function renderOverview(root,st){
       ? badge('dm-bad','не работает')
       : badge('dm-off','не проверено');
 
-  var force=yes(st.force_both)?badge('dm-bad','DNS Manager + внешний'):st.force_owner==='external'?badge('dm-bad','внешний сервис'):yes(st.force_manager)?badge('dm-ok','DNS Manager'):badge('dm-off','выключен');
+  var force=yes(st.force_both)?badge('dm-bad','DNS Manager + внешний')
+    :st.force_owner==='external'?badge('dm-bad','внешний сервис')
+    :st.force_owner==='steer'&&st.force_status==='other'?badge('dm-bad','ДРУГОЕ • Steer')
+    :st.force_owner==='steer'&&st.force_status==='steer'?badge('dm-ok','включён • Steer')
+    :yes(st.force_manager)?badge('dm-ok','DNS Manager')
+    :badge('dm-off','выключен');
 
   var wd=yes(st.watchdog)?(st.watchdog_backend==='procd'?(Number(st.watchdog_loop||0)===1?badge('dm-ok','работает'):Number(st.watchdog_service||0)===1?badge('dm-warn','служба запущена, цикл не найден'):badge('dm-bad','служба не запущена')):badge('dm-warn','неизвестный механизм')):badge('dm-off','выключена');
   var wdDetails='Проверка DNS — каждые '+Number(st.watchdog_interval||600)/60+' мин · после '+Number(st.watchdog_fail_threshold||2)+' сбоев подряд';
@@ -3505,7 +3510,7 @@ function watchdogCard(root,st){
     spec.forEach(function(x){
       var raw=String(inputs[x[0]].value||'').trim();
       var n=Number(raw);
-      var ok=raw!==''&&isFinite(n)&&n>=x[2]&&n<=x[3]&&(x[6]?true:/^\\d+$/.test(raw));
+      var ok=raw!==''&&isFinite(n)&&n>=x[2]&&n<=x[3]&&(x[6]?true:/^\d+$/.test(raw));
       if(!ok){
         if(!invalid)invalid=x[1]+': от '+x[2]+' до '+x[3]+' '+x[4]+'.';
         return;
@@ -3664,7 +3669,6 @@ function ntpActualPreset(servers){
 }
 function renderTime(root,st){
   var e=root.querySelector('#dm-time');if(!e)return;e.innerHTML='';
-  var enabled=String(st.ntp_enabled||'0')==='1';
   var preset=String(st.ntp_preset||'');
   var servers=String(st.ntp_servers||'').trim();
   preset=ntpActualPreset(servers);
@@ -3672,7 +3676,6 @@ function renderTime(root,st){
   var body=[];
   body.push(E('div',{'class':'dm-hint'},'Настройка серверов точного времени роутера через стандартный system.ntp/sysntpd.'));
   body.push(E('div',{'class':'dm-grid2'},[
-    row('Служба',badge(enabled?'dm-ok':'dm-off',enabled?'включена':'выключена')),
     row('Выбранный набор',selected)
   ]));
   body.push(E('div',{'class':'dm-section-title'},'Текущие серверы времени'));

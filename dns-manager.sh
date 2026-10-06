@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.38"
+VERSION="3.39"
 # 3.38: clear the LuCI update flag after a successful CLI update.
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
@@ -8206,6 +8206,16 @@ watchdog_service_stop_disable() {
     if [ -x "$WATCHDOG_SERVICE_PATH" ]; then
         "$WATCHDOG_SERVICE_PATH" stop >/dev/null 2>&1 || true
         "$WATCHDOG_SERVICE_PATH" disable >/dev/null 2>&1 || true
+
+        # procd stops asynchronously; give the service a short grace period
+        # before declaring a safe stop failure. This does not change watchdog
+        # monitoring logic or restart limits.
+        _wd_wait=0
+        while watchdog_service_running && [ "$_wd_wait" -lt 5 ]; do
+            sleep 1
+            _wd_wait=$((_wd_wait + 1))
+        done
+
         if watchdog_service_running; then
             err_msg "Служба dns-watchdog не остановилась. Изменение watchdog прекращено для безопасности."
             return 1
