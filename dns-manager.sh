@@ -8923,4 +8923,8 @@ if [ "${FIRST_RUN_INITIAL:-0}" = 0 ] && [ "${WATCHDOG_ENABLED:-0}" = 1 ]; then
     watchdog_service_migrate_legacy >/dev/null 2>&1 || warn_msg "Не удалось завершить переход watchdog с cron на procd. Состояние watchdog оставлено без самовольной ротации DNS."
 fi
 
+# Check the LuCI companion once before entering the interactive menu.
+# main_menu itself can loop without starting repeated network checks.
+luci_companion_check_update >/dev/null 2>&1 || true
+
 main_menu
