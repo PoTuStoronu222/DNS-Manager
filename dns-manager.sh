@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.35.70"
+VERSION="3.35.71"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -24,7 +24,7 @@ DNSCAT_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/ca
 WATCHDOG_SPEC_VERSION="23"
 WATCHDOG_RESTART_COOLDOWN=300
 WATCHDOG_BACKEND="procd"
-WATCHDOG_CHECK_INTERVAL_DEFAULT=300
+WATCHDOG_CHECK_INTERVAL_DEFAULT=600
 WATCHDOG_FAIL_THRESHOLD=2
 WATCHDOG_REPAIR_COOLDOWN=1800
 WATCHDOG_GUARD_INTERVAL=3600
@@ -962,12 +962,12 @@ BOOTSTRAP_DNS="$BOOTSTRAP_DNS_ALL"
 # procd watchdog tuning is persisted in manager.conf and validated on load.
 # The defaults below remain the safe baseline for small OpenWrt routers.
 WATCHDOG_BACKEND="procd"
-: "${WATCHDOG_INTERVAL:=${WATCHDOG_CHECK_INTERVAL_DEFAULT:-90}}"
+: "${WATCHDOG_INTERVAL:=${WATCHDOG_CHECK_INTERVAL_DEFAULT:-600}}"
 case "$WATCHDOG_INTERVAL" in
-    ''|*[!0-9]*) WATCHDOG_INTERVAL="${WATCHDOG_CHECK_INTERVAL_DEFAULT:-90}" ;;
+    ''|*[!0-9]*) WATCHDOG_INTERVAL="${WATCHDOG_CHECK_INTERVAL_DEFAULT:-600}" ;;
     *)
-        [ "$WATCHDOG_INTERVAL" -ge 30 ] 2>/dev/null || WATCHDOG_INTERVAL="${WATCHDOG_CHECK_INTERVAL_DEFAULT:-90}"
-        [ "$WATCHDOG_INTERVAL" -le 600 ] 2>/dev/null || WATCHDOG_INTERVAL="${WATCHDOG_CHECK_INTERVAL_DEFAULT:-90}"
+        [ "$WATCHDOG_INTERVAL" -ge 60 ] 2>/dev/null || WATCHDOG_INTERVAL="${WATCHDOG_CHECK_INTERVAL_DEFAULT:-600}"
+        [ "$WATCHDOG_INTERVAL" -le 3600 ] 2>/dev/null || WATCHDOG_INTERVAL="${WATCHDOG_CHECK_INTERVAL_DEFAULT:-600}"
         ;;
 esac
 : "${WATCHDOG_FAIL_THRESHOLD:=2}"
@@ -7515,14 +7515,14 @@ watchdog_embedded_loop() {
     WATCHDOG_LAST_RESTART_TS=0
     WD_LAST_GUARD_TS="$(date +%s 2>/dev/null)"
     CHECKER_MISSING_LOGGED=0
-    log_msg "Фоновый watchdog embedded/procd запущен: проверка каждые ${WATCHDOG_INTERVAL:-90}с, замена после ${WATCHDOG_FAIL_THRESHOLD:-2} последовательных циклов."
+    log_msg "Фоновый watchdog embedded/procd запущен: проверка каждые ${WATCHDOG_INTERVAL:-600}с, замена после ${WATCHDOG_FAIL_THRESHOLD:-2} последовательных циклов."
 
     # Give network + https-dns-proxy a short settling window after procd start/WAN-up.
     sleep 12
 
     while :; do
         [ "${WATCHDOG_ENABLED:-0}" = 1 ] || return 0
-        _interval="${WATCHDOG_INTERVAL:-90}"
+        _interval="${WATCHDOG_INTERVAL:-600}"
         case "$_interval" in ''|*[!0-9]*) _interval=90;; esac
         [ "$_interval" -ge 30 ] 2>/dev/null || _interval=90
         [ "$_interval" -le 600 ] 2>/dev/null || _interval=90
@@ -8251,7 +8251,7 @@ watchdog_apply_restore_previous_state() {
     if [ -n "${WATCHDOG_APPLY_OLD_INTERVAL:-}" ]; then
         WATCHDOG_INTERVAL="$WATCHDOG_APPLY_OLD_INTERVAL"
     else
-        WATCHDOG_INTERVAL="${WATCHDOG_CHECK_INTERVAL_DEFAULT:-90}"
+        WATCHDOG_INTERVAL="${WATCHDOG_CHECK_INTERVAL_DEFAULT:-600}"
     fi
     save_config >/dev/null 2>&1 || true
 
@@ -8446,7 +8446,7 @@ apply_watchdog() {
     watchdog_service_stop_disable || return 1
 
     WATCHDOG_BACKEND="procd"
-    : "${WATCHDOG_INTERVAL:=${WATCHDOG_CHECK_INTERVAL_DEFAULT:-90}}"
+    : "${WATCHDOG_INTERVAL:=${WATCHDOG_CHECK_INTERVAL_DEFAULT:-600}}"
     save_config || return 1
 
     if [ "${WATCHDOG_ENABLED:-0}" = 1 ]; then
