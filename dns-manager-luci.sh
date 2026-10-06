@@ -2349,7 +2349,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.6.64
+// DNS Manager LuCI version: 1.6.65
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
