@@ -16,6 +16,11 @@ sh -n dns-manager.sh || fail "dns-manager.sh: sh -n"
 sh -n dns-manager-luci.sh || fail "dns-manager-luci.sh: sh -n"
 ok "shell syntax"
 
+
+
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT INT TERM
+
 awk '
     /^verify_applied_doh_config\(\) \{/ { capture=1 }
     capture { print }
@@ -33,10 +38,6 @@ if grep -q 'https-dns-proxy не переведён в режим auto' dns-mana
     fail "stale forced-DNS auto error remains in LuCI companion"
 fi
 ok "profile verification no longer depends on independent Forced-DNS settings"
-
-
-tmp="$(mktemp -d)"
-trap 'rm -rf "$tmp"' EXIT INT TERM
 
 # DNS response validation intentionally stays lightweight: HTTP 200 + DNS message body.
 awk '
