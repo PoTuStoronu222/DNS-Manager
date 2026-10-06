@@ -59,7 +59,8 @@ awk '/^luci_companion_update\(\) \{/,/^luci_companion_install\(\) \{/ { print }'
 if grep -Fq 'luci_companion_remove' "$tmp/luci_update_fn.sh"; then
     fail "Manager-side LuCI update still removes the current interface before installing the replacement"
 fi
-grep -Fq '_cache_stage="${_installed_cache}.new.$$"' "$tmp/luci_update_fn.sh" || fail "Manager-side LuCI update has no staged installer cache"
+grep -Fq '_cache_stage=' "$tmp/luci_update_fn.sh" || fail "Manager-side LuCI update has no staged installer cache"
+grep -Fq '.new.$$' "$tmp/luci_update_fn.sh" || fail "Manager-side LuCI update stage is not PID-unique"
 grep -Fq 'luci_component_runtime_valid' "$tmp/luci_update_fn.sh" || fail "Manager-side LuCI update does not validate the installed runtime"
 grep -Fq 'luci_component_files_present' "$tmp/luci_update_fn.sh" || fail "Manager-side LuCI update does not validate installed files"
 grep -Fq 'mv -f "$_cache_stage" "$_installed_cache"' "$tmp/luci_update_fn.sh" || fail "Manager-side LuCI update does not promote the staged installer after success"
