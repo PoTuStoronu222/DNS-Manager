@@ -841,6 +841,13 @@ done
 if grep -q 'Рестартов https-dns-proxy\|Тяжёлая сверка' "$tmp/watchdog_card.js"; then
     fail "technical watchdog labels still exposed in LuCI"
 fi
+# Numeric watchdog fields must use a single-escaped digit regex; double-escaped \\d rejects normal values.
+grep -Fq '(x[6]?true:/^\\d+$/.test(raw))' "$tmp/watchdog_card.js" || fail "watchdog numeric validation regex is missing"
+if grep -Fq '(x[6]?true:/^\\\\d+$/.test(raw))' "$tmp/watchdog_card.js"; then
+    fail "watchdog numeric validation regex is double-escaped"
+fi
+ok "watchdog numeric field validation accepts normal integer values"
+
 ok "watchdog tuning is persisted through one atomic RPC and exposed as a compact LuCI form"
 
 # The legacy single-setting RPC remains available for older clients, but shares the same apply path.
