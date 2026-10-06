@@ -3437,7 +3437,6 @@ function watchdogCard(root,st){
     E('div',{'class':'dm-watchdog-list'},[
       param('watchdog_max_repairs','Сколько DNS можно заменить за раз',1,3,'шт.','Сколько неисправных DNS можно заменить во время одной проверки.',false),
       param('watchdog_max_candidates','Сколько DNS проверить при поиске замены',1,10,'шт.','Сколько других DNS проверить, прежде чем выбрать замену.',false),
-      param('watchdog_max_restarts','Сколько раз можно перезапустить DNS',1,5,'шт.','Максимальное число перезапусков DNS за одну операцию.',false),
       param('watchdog_guard_interval','Как часто проверять настройки DNS Manager',15,180,'мин','Проверяет, что DNS Manager и его настройки не были изменены.',true)
     ])
   ]);
