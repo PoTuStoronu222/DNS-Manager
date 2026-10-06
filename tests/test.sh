@@ -848,6 +848,11 @@ if grep -Fq '(x[6]?true:/^\\d+$/.test(raw))' "$tmp/watchdog_card.js"; then
 fi
 ok "watchdog numeric field validation accepts normal integer values"
 
+wd_stop_block="$(awk '/^watchdog_service_stop_disable\\(\\) \\{/,/^\\}/' dns-manager.sh)"
+printf '%s\\n' "$wd_stop_block" | grep -q 'while watchdog_service_running && \\[ "\\$_wd_wait" -lt 5 \\]' || fail "watchdog stop path has no bounded procd grace wait"
+printf '%s\\n' "$wd_stop_block" | grep -q 'sleep 1' || fail "watchdog stop grace wait has no sleep"
+ok "watchdog settings save tolerates asynchronous procd stop"
+
 ok "watchdog tuning is persisted through one atomic RPC and exposed as a compact LuCI form"
 
 # The legacy single-setting RPC remains available for older clients, but shares the same apply path.
