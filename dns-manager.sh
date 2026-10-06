@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.35.61"
+VERSION="3.35.62"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -5911,24 +5911,17 @@ check_module_state() {
             fi
             ;;
         dnsmasq_perf)
-            _stock=1
-            _desired=1
-            for _spec in "cachesize|1000|$DNSMASQ_CACHE_SIZE" "dnsforwardmax|150|300" "max_cache_ttl|__DM_UNSET__|86400" "boguspriv|1|1" "domainneeded|1|1" "quietdhcp|__DM_UNSET__|1"; do
-                _k="${_spec%%|*}"; _r="${_spec#*|}"; _fallback="${_r%%|*}"; _desired_v="${_r#*|}"
-                _cur="$(uci_value_normalized "dhcp.$_sec.$_k")"
-                _stock_v="$(stock_uci_value_normalized dhcp "dhcp.@dnsmasq[0].$_k" "$_fallback")"
-                [ "$_cur" = "$_stock_v" ] || _stock=0
-                [ "$_cur" = "$_desired_v" ] || _desired=0
-            done
-            if [ "$IPV6_ROUTE" != yes ]; then
-                _cur="$(uci_value_normalized "dhcp.$_sec.filter_aaaa")"
-                _stock_v="$(stock_uci_value_normalized dhcp "dhcp.@dnsmasq[0].filter_aaaa" "0")"
-                [ "$_cur" = "$_stock_v" ] || _stock=0
-                [ "$_cur" = 1 ] || _desired=0
-            fi
-            if [ "$_stock" = 1 ]; then printf 0
-            elif [ "$_desired" = 1 ]; then printf 1
-            else printf 2
+            # This module changes only dnsmasq cachesize. Its state must not
+            # depend on unrelated dnsmasq tuning options.
+            _cur="$(uci_value_normalized "dhcp.$_sec.cachesize")"
+            _stock_v="$(stock_uci_value_normalized dhcp "dhcp.@dnsmasq[0].cachesize" "1000")"
+            _desired_v="$DNSMASQ_CACHE_SIZE"
+            if [ "$_cur" = "$_stock_v" ]; then
+                printf 0
+            elif [ "$_cur" = "$_desired_v" ]; then
+                printf 1
+            else
+                printf 2
             fi
             ;;
 
