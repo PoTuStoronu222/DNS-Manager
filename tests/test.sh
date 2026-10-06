@@ -380,6 +380,16 @@ fi
 grep -q "delete state.checking\[meta.dns_id\]" "$tmp/overview.js" || fail "LuCI does not clear the transient single-test state"
 ok "LuCI uses the RPC result for every finished single DNS check"
 
+awk '/^function finish\(j\) \{/,/^  function poll\(\)\{/' "$tmp/overview.js" > "$tmp/poll_finish.js"
+if grep -q "callTestCurrent().then" "$tmp/poll_finish.js"; then
+    fail "LuCI still launches a second DNS test after profile apply"
+fi
+if grep -q "afterProfile" "$tmp/overview.js"; then
+    fail "obsolete after-profile DNS verification path remains"
+fi
+grep -q "Профиль применён.','" "$tmp/overview.js" || true
+ok "profile apply does not rerun the selected DNS test"
+
 
 
 grep -q ',"ping":' "$tmp/backend.sh" || fail "LuCI DoH instances do not expose saved ping"
