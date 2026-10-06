@@ -6115,17 +6115,11 @@ luci_companion_update() {
 
     _tmp="${LUCI_COMPANION_FETCH_FILE:-}"
     _installed_cache="$LUCI_COMPANION_CACHE"
-    log_msg "LuCI: чистое обновление $_installed_ver → $_new_ver — удаление старого интерфейса."
-    luci_companion_remove || {
-        rm -f "$_tmp" 2>/dev/null || true
-        LUCI_COMPANION_FETCH_FILE=""
-        err_msg "Не удалось удалить старую версию LuCI. Новую версию не устанавливаю."
-        return 1
-    }
-
-    mkdir -p "$BASE_DIR" "$CFG_DIR" 2>/dev/null || { rm -f "$_tmp" 2>/dev/null || true; LUCI_COMPANION_FETCH_FILE=""; return 1; }
-    if ! cp -f "$_tmp" "$_installed_cache" 2>/dev/null || ! chmod 700 "$_installed_cache" 2>/dev/null; then
-        rm -f "$_tmp" "$_installed_cache" 2>/dev/null || true
+    _cache_stage="${_installed_cache}.new.$$"
+    log_msg "LuCI: обновление $_installed_ver → $_new_ver — устанавливаю новую версию поверх текущей."
+    rm -f "$_cache_stage" 2>/dev/null || true
+    if ! cp -f "$_tmp" "$_cache_stage" 2>/dev/null || ! chmod 700 "$_cache_stage" 2>/dev/null; then
+        rm -f "$_tmp" "$_cache_stage" 2>/dev/null || true
         LUCI_COMPANION_FETCH_FILE=""
         err_msg "Не удалось подготовить новый установщик LuCI."
         return 1
@@ -6133,17 +6127,22 @@ luci_companion_update() {
     rm -f "$_tmp" 2>/dev/null || true
     LUCI_COMPANION_FETCH_FILE=""
 
-    sh "$_installed_cache" install >"$TMP_DIR/luci-install.log" 2>&1
-    _luci_rc=$?
-    if [ "$_luci_rc" -ne 0 ]; then
+    if ! sh "$_cache_stage" update >"$TMP_DIR/luci-install.log" 2>&1; then
         [ -s "$TMP_DIR/luci-install.log" ] && while IFS= read -r _luci_line; do [ -n "$_luci_line" ] && log_msg "LuCI installer: $_luci_line"; done < "$TMP_DIR/luci-install.log"
-        rm -f "$_installed_cache" 2>/dev/null || true
-        err_msg "Установщик LuCI завершился с ошибкой (код $_luci_rc)."
+        rm -f "$_cache_stage" 2>/dev/null || true
+        err_msg "Установщик LuCI завершился с ошибкой. Текущая версия интерфейса сохранена."
         return 1
     fi
 
-    [ "$(luci_component_state)" = 1 ] || {
+    if ! luci_component_runtime_valid || ! luci_component_files_present; then
+        rm -f "$_cache_stage" 2>/dev/null || true
         err_msg "Новая версия LuCI установлена не полностью."
+        return 1
+    fi
+
+    mv -f "$_cache_stage" "$_installed_cache" 2>/dev/null || {
+        rm -f "$_cache_stage" 2>/dev/null || true
+        err_msg "LuCI обновлена, но не удалось сохранить локальную копию установщика."
         return 1
     }
     LUCI_REMOTE_VERSION="$_new_ver"
