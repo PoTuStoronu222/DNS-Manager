@@ -6,8 +6,8 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.35.74"
-# 3.35.74: ensure installed 3.35.73 clients receive the corrected LuCI companion fetch path.
+VERSION="3.36"
+# 3.36: maintenance release after the corrected LuCI companion update path.
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
