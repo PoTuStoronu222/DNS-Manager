@@ -1,6 +1,12 @@
 #!/bin/sh
+# A self-update can exec this script while the previous process had stdout/stderr
+# redirected. Restore an interactive TTY only when stdin is itself a terminal;
+# cron/RPC launches remain untouched.
+if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
+    exec </dev/tty >/dev/tty 2>&1
+fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.35.60"
+VERSION="3.35.61"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -8719,7 +8725,7 @@ startup_update_check() {
     # Only the DNS Manager backend checks itself during startup. LuCI/companion
     # updates are checked explicitly from LuCI, not as a hidden second network
     # request during every manager launch.
-    auto_update_manager >/dev/null 2>&1 || true
+    auto_update_manager || true
     case "${AUTO_UPDATE_RESULT:-}" in
         updated) info_msg "DNS Manager автоматически обновлён до версии $VERSION." ;;
         failed)
