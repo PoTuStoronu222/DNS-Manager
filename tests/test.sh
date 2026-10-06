@@ -157,11 +157,11 @@ grep -q 'apply_watchdog .*|| _rc=' "$tmp/backend.sh" || fail "watchdog apply res
 grep -q 'apply_extras_now force .*|| _rc=' "$tmp/backend.sh" || fail "force apply result is not checked"
 grep -q 'apply_extras_now dnsmasq_perf .*|| _rc=' "$tmp/backend.sh" || fail "dnsmasq_perf apply result is not checked"
 
-cache_state_block="$(awk '/^        dnsmasq_perf\\)/,/^        watchdog\\)/' dns-manager.sh)"
-printf '%s\\n' "$cache_state_block" | grep -q '_cur=.*dhcp.\\$sec.cachesize' || fail "dnsmasq_perf state does not read only cachesize"
-printf '%s\\n' "$cache_state_block" | grep -q 'DNSMASQ_CACHE_SIZE' || fail "dnsmasq_perf state does not compare the target cache size"
-printf '%s\\n' "$cache_state_block" | grep -q 'stock_uci_value_normalized.*cachesize' || fail "dnsmasq_perf state does not compare the stock cache size"
-if printf '%s\\n' "$cache_state_block" | grep -Eq 'dnsforwardmax|max_cache_ttl|boguspriv|domainneeded|quietdhcp|filter_aaaa'; then
+cache_state_block="$(sed -n '/^        dnsmasq_perf)/,/^        watchdog)/p' dns-manager.sh)"
+printf '%s\n' "$cache_state_block" | grep -Fq '_cur="$(uci_value_normalized "dhcp.$_sec.cachesize")"' || fail "dnsmasq_perf state does not read only cachesize"
+printf '%s\n' "$cache_state_block" | grep -Fq '_desired_v="$DNSMASQ_CACHE_SIZE"' || fail "dnsmasq_perf state does not compare the target cache size"
+printf '%s\n' "$cache_state_block" | grep -Fq 'stock_uci_value_normalized dhcp "dhcp.@dnsmasq[0].cachesize"' || fail "dnsmasq_perf state does not compare the stock cache size"
+if printf '%s\n' "$cache_state_block" | grep -Eq 'dnsforwardmax|max_cache_ttl|boguspriv|domainneeded|quietdhcp|filter_aaaa'; then
     fail "dnsmasq_perf state still depends on unrelated dnsmasq options"
 fi
 ok "DNS cache tuning state depends only on cachesize"
