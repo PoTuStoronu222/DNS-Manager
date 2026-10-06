@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.35.68"
+VERSION="3.35.69"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -7149,57 +7149,26 @@ watchdog_preferred_quick_candidate() {
 }
 watchdog_probe_catalog_candidate() {
     _id="$1"
-    _domain="${2:-example.com}"
     [ -n "$_id" ] || return 1
-    [ "${HAS_CURL:-no}" = yes ] || return 2
 
-    _url="$(normalize_url "$(dns_url "$_id")")"
-    _host="$(url_host "$_url")"
-    _port="$(url_port "$_url")"
-    [ -n "$_url" ] && [ -n "$_host" ] && [ -n "$_port" ] || return 1
+    # Candidate checks must use the same authoritative DoH test as the full
+    # catalog and single-DNS checks.
+    _result_file="$TMP_DIR/t.$_id"
+    rm -f "$_result_file" "$TMP_DIR/body.$_id" "$TMP_DIR/h.$_id" 2>/dev/null || true
+    test_one_dns "$_id" >/dev/null 2>&1 || true
 
-    _q="$TMP_DIR/watchdog-q-$$"
-    _b="$TMP_DIR/watchdog-b-$$"
-    _h="$TMP_DIR/watchdog-h-$$"
-    rm -f "$_q" "$_b" "$_h" 2>/dev/null || true
+    if [ -s "$_result_file" ]; then
+        _status="$(awk -F'|' -v id="$_id" '$1==id && NF>=5 {print $5;exit}' "$_result_file" 2>/dev/null || true)"
+        _ms="$(awk -F'|' -v id="$_id" '$1==id && NF>=5 {print $4;exit}' "$_result_file" 2>/dev/null || true)"
+    else
+        _status=""
+        _ms=""
+    fi
 
-    case "$_domain" in
-        yandex.ru)
-            printf '\022\064\001\000\000\001\000\000\000\000\000\000\006yandex\002ru\000\000\001\000\001' > "$_q" || { rm -f "$_q"; return 1; }
-            ;;
-        *)
-            printf '\022\064\001\000\000\001\000\000\000\000\000\000\007example\003com\000\000\001\000\001' > "$_q" || { rm -f "$_q"; return 1; }
-            ;;
-    esac
-
-    _ips="$(resolve_host "$_host" 2>/dev/null)"
-    [ -n "$_ips" ] || {
-        rm -f "$_q"
-        return 1
-    }
-    _ok=0
-    while IFS= read -r _ip; do
-        [ -n "$_ip" ] || continue
-        : > "$_b"
-        : > "$_h"
-        _res="$(curl -sS -o "$_b" -D "$_h" -w '%{http_code}' \
-            --connect-timeout 2 --max-time 4 \
-            --resolve "$_host:$_port:$_ip" \
-            -H 'Content-Type: application/dns-message' \
-            -H 'Accept: application/dns-message' \
-            --data-binary "@$_q" "$_url" 2>/dev/null)"
-        _bytes="$(wc -c < "$_b" 2>/dev/null | tr -d ' ')"
-        case "$_bytes" in ''|*[!0-9]*) _bytes=0;; esac
-        _ctype="$(awk -F': *' 'tolower($1)=="content-type"{print tolower($2)}' "$_h" 2>/dev/null | tail -n1 | tr -d '\r')"
-        if [ "$_res" = 200 ] && [ "$_bytes" -ge 12 ] && printf '%s' "$_ctype" | grep -q 'application/dns-message'; then
-            _ok=1
-            break
-        fi
-    done <<EOF_WD_IPS
-$_ips
-EOF_WD_IPS
-    rm -f "$_q" "$_b" "$_h" 2>/dev/null || true
-    [ "$_ok" = 1 ]
+    rm -f "$_result_file" "$TMP_DIR/body.$_id" "$TMP_DIR/h.$_id" "$TMP_DIR/dns_query.bin" 2>/dev/null || true
+    [ "$_status" = OK ] || return 1
+    case "$_ms" in ''|*[!0-9]*) return 1;; esac
+    return 0
 }
 watchdog_pick_replacement() {
     _slot="$1"
@@ -7461,22 +7430,6 @@ watchdog_resource_guard() {
 }
 # ==========================================
 # ==========================================
-watchdog_light_probe() {
-    _port="$1"
-    _domain="${2:-example.com}"
-    case "$_port" in ''|*[!0-9]*) return 1;; esac
-    if command -v dig >/dev/null 2>&1; then
-        _ans="$(dig @127.0.0.1 -p "$_port" "$_domain" A +time=1 +tries=1 +short 2>/dev/null | awk '/^[0-9]+(\.[0-9]+){3}$/ && $0 !~ /^127\./ && $0 != "0.0.0.0" {print; exit}')"
-        [ -n "$_ans" ] && return 0
-        return 1
-    fi
-    if command -v nslookup >/dev/null 2>&1; then
-        _ans="$(nslookup -port="$_port" "$_domain" 127.0.0.1 2>/dev/null | awk '/^Address/ {for(i=2;i<=NF;i++) if($i ~ /^[0-9]+(\.[0-9]+){3}$/ && $i !~ /^127\./ && $i != "0.0.0.0") {print $i; exit}}')"
-        [ -n "$_ans" ] && return 0
-        return 1
-    fi
-    return 2
-}
 watchdog_refresh_listener_snapshot() {
     # One /proc scan per watchdog cycle. This avoids invoking ss/netstat for
     # every slot and keeps the normal healthy path cheap on small routers.
@@ -7646,7 +7599,7 @@ watchdog_embedded_loop() {
 
             _live=$((_live+1))
             eval "WD_MISSING_${_slot}=0"
-            watchdog_light_probe "$_port" "$_domain"
+            local_dns_query_ok "$_port" "$_domain"
             _probe_rc=$?
             [ "$_probe_rc" = 2 ] && break
             if [ "$_probe_rc" = 0 ]; then
