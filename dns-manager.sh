@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.35.67"
+VERSION="3.35.68"
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -2555,6 +2555,19 @@ pause
 esac
 done
 }
+ntp_current_preset() {
+_cur="$(uci -q get system.ntp.server 2>/dev/null || true)"
+_cur="$(printf '%s
+' "$_cur" | awk '{$1=$1; print}')"
+[ -n "$_cur" ] || { printf 'none'; return 0; }
+_expected="0.openwrt.pool.ntp.org 1.openwrt.pool.ntp.org 2.openwrt.pool.ntp.org 3.openwrt.pool.ntp.org"
+[ "$_cur" = "$_expected" ] && { printf 'openwrt_default'; return 0; }
+for _p in cf_ip nist_ip google_ip vniiftri_moscow; do
+    _expected="$(ntp_servers_for_profile "$_p")"
+    [ "$_cur" = "$_expected" ] && { printf '%s' "$_p"; return 0; }
+done
+printf 'other'
+}
 ntp_servers_for_profile() {
 case "$1" in
 cf_ip) echo "162.159.200.1 162.159.200.123";;
@@ -2632,7 +2645,7 @@ done
 else
 printf "  ${C_YELLOW}(не настроены)${C_NC}\n"
 fi
-printf "\n${C_YELLOW}${C_BOLD}Выбранный набор:${C_NC} ${C_YELLOW}${C_BOLD}%s${C_NC}\n\n" "$(case "$NTP_PRESET" in cf_ip) printf "Cloudflare";; nist_ip) printf "NIST";; vniiftri_moscow) printf "ВНИИФТРИ";; google_ip) printf "Google";; *) printf "%s" "$NTP_PRESET";; esac)"
+printf "\n${C_YELLOW}${C_BOLD}Выбранный набор:${C_NC} ${C_YELLOW}${C_BOLD}%s${C_NC}\n\n" "$(case "$(ntp_current_preset)" in cf_ip) printf "Cloudflare";; nist_ip) printf "NIST";; vniiftri_moscow) printf "ВНИИФТРИ";; google_ip) printf "Google";; openwrt_default) printf "Стандарт OpenWrt";; other) printf "ДРУГОЕ";; *) printf "Не выбран";; esac)"
 menu_item "[1]" "ВНИИФТРИ — российские серверы времени (по IP)"
 menu_item "[2]" "NIST — серверы точного времени"
 menu_item "[3]" "Cloudflare — серверы времени по IP"
