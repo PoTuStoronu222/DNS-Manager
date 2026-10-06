@@ -1807,7 +1807,7 @@ system_check_write() {
     _url="$1"; _port="$2"; _bootstrap="$3"; _status="$4"; _ping="$5"; _ts="$6"
     _f="$(system_check_file "$_url" "$_port" "$_bootstrap" 2>/dev/null || true)"
     [ -n "$_f" ] || return 1
-    _tmp="$CHECK_DIR/.system.$"
+    _tmp="$CHECK_DIR/.system.tmp"
     {
         printf 'url=%s\n' "$_url"
         printf 'port=%s\n' "$_port"
