@@ -6,7 +6,8 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.35.71"
+VERSION="3.35.72"
+# 3.35.72: synchronize watchdog interval/cooldown limits and make LuCI/CLI watchdog toggles roll back the previous service state on failure.
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -978,7 +979,7 @@ esac
 : "${WATCHDOG_REPAIR_COOLDOWN:=300}"
 case "$WATCHDOG_REPAIR_COOLDOWN" in
     ''|*[!0-9]*) WATCHDOG_REPAIR_COOLDOWN=300 ;;
-    *) [ "$WATCHDOG_REPAIR_COOLDOWN" -ge 30 ] 2>/dev/null && [ "$WATCHDOG_REPAIR_COOLDOWN" -le 3600 ] 2>/dev/null || WATCHDOG_REPAIR_COOLDOWN=300 ;;
+    *) [ "$WATCHDOG_REPAIR_COOLDOWN" -ge 300 ] 2>/dev/null && [ "$WATCHDOG_REPAIR_COOLDOWN" -le 7200 ] 2>/dev/null || WATCHDOG_REPAIR_COOLDOWN=300 ;;
 esac
 : "${WATCHDOG_MAX_REPAIRS:=1}"
 case "$WATCHDOG_MAX_REPAIRS" in
@@ -6601,10 +6602,8 @@ setting_process() {
 
     case "$_module" in
         watchdog)
-            _old_watchdog="$WATCHDOG_ENABLED"; WATCHDOG_ENABLED="$_new"
-            apply_watchdog
+            watchdog_apply_toggle "$_new"
             _rc=$?
-            [ "$_rc" -eq 0 ] || WATCHDOG_ENABLED="$_old_watchdog"
             ;;
         *)
             apply_extras_now "$_module"
@@ -7526,9 +7525,9 @@ watchdog_embedded_loop() {
     while :; do
         [ "${WATCHDOG_ENABLED:-0}" = 1 ] || return 0
         _interval="${WATCHDOG_INTERVAL:-600}"
-        case "$_interval" in ''|*[!0-9]*) _interval=90;; esac
-        [ "$_interval" -ge 30 ] 2>/dev/null || _interval=90
-        [ "$_interval" -le 600 ] 2>/dev/null || _interval=90
+        case "$_interval" in ''|*[!0-9]*) _interval=600;; esac
+        [ "$_interval" -ge 60 ] 2>/dev/null || _interval=600
+        [ "$_interval" -le 3600 ] 2>/dev/null || _interval=600
 
         load_config >/dev/null 2>&1 || true
         _selection_kind="$(watchdog_scope_category 2>/dev/null || true)"
@@ -8180,6 +8179,11 @@ start_service() {
     procd_close_instance
 }
 
+service_stopped() {
+    procd_running "dns-watchdog" || return 0
+    return 1
+}
+
 service_triggers() {
     . /lib/functions/network.sh 2>/dev/null || true
     network_flush_cache 2>/dev/null || true
@@ -8443,6 +8447,49 @@ watchdog_service_recover_run() {
     _rc=$?
     release_mutation_lock
     return "$_rc"
+}
+watchdog_apply_toggle() {
+    _new="$1"
+    case "$_new" in
+        0|1) ;;
+        *) return 1 ;;
+    esac
+
+    _old_enabled="$(cfg_get WATCHDOG_ENABLED 2>/dev/null || true)"
+    [ "$_old_enabled" = 1 ] || _old_enabled=0
+
+    _old_service_present=0
+    [ -x "$WATCHDOG_SERVICE_PATH" ] && watchdog_service_file_owned "$WATCHDOG_SERVICE_PATH" "$WATCHDOG_SERVICE_MARKER" && _old_service_present=1
+    _old_service_enabled=0
+    _old_service_running=0
+    [ "$_old_service_present" = 1 ] && watchdog_service_enabled && _old_service_enabled=1 || true
+    [ "$_old_service_present" = 1 ] && watchdog_service_running && _old_service_running=1 || true
+
+    WATCHDOG_ENABLED="$_new"
+    if apply_watchdog; then
+        return 0
+    fi
+
+    WATCHDOG_ENABLED="$_old_enabled"
+    save_config >/dev/null 2>&1 || true
+
+    if [ "$_old_service_present" = 1 ] && [ -x "$WATCHDOG_SERVICE_PATH" ]; then
+        if [ "$_old_service_enabled" = 1 ]; then
+            "$WATCHDOG_SERVICE_PATH" enable >/dev/null 2>&1 || true
+        else
+            "$WATCHDOG_SERVICE_PATH" disable >/dev/null 2>&1 || true
+        fi
+        if [ "$_old_service_running" = 1 ]; then
+            "$WATCHDOG_SERVICE_PATH" start >/dev/null 2>&1 || true
+        else
+            "$WATCHDOG_SERVICE_PATH" stop >/dev/null 2>&1 || true
+        fi
+    elif [ "$_old_enabled" = 0 ]; then
+        watchdog_service_stop_disable >/dev/null 2>&1 || true
+        watchdog_service_remove_files >/dev/null 2>&1 || true
+    fi
+
+    return 1
 }
 apply_watchdog() {
     # Stop first so a running watchdog cannot race an in-progress Apply.
