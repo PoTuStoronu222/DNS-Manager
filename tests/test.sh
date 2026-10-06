@@ -346,8 +346,8 @@ grep -q '"steer_running"' "$tmp/backend.sh" || fail "Steer running status missin
 grep -q '"steer_dns_active"' "$tmp/backend.sh" || fail "Steer DNS runtime status missing from RPC"
 ok "Steer status fields exposed"
 
-grep -q 'test_one_dns "\$_id"' "$tmp/backend.sh" || fail "LuCI selected DNS check does not use the manager test"
-grep -q 'test_one_dns "\$_id" || true' "$tmp/backend.sh" || fail "LuCI single DNS check is not using the direct manager test"
+grep -q 'test_assigned_dns "\$_id"' "$tmp/backend.sh" || fail "LuCI selected DNS check does not use the local assigned-DNS test"
+grep -q 'test_one_dns "\$_id" || true' "$tmp/backend.sh" || fail "LuCI single DNS check does not keep the remote catalog fallback"
 if grep -q '\$MANAGER --test-one' "$tmp/backend.sh"; then
     fail "LuCI single DNS check still spawns a separate manager test process"
 fi
@@ -362,8 +362,32 @@ if grep -q '^assigned_port_for_id()' dns-manager-luci.sh; then
     fail "obsolete assigned-port helper remains"
 fi
 grep -Fq -- '--connect-timeout 1 --max-time 3 --resolve "$host:$port:$ipx"' dns-manager.sh || fail "direct DoH timeout was not reduced"
-grep -q '(trap - EXIT; test_one_dns "\$_id") &' "$tmp/backend.sh" || fail "selected DNS checks are not parallelized"
-ok "single and full DNS checks use the same test_one_dns path"
+grep -q '(trap - EXIT; test_assigned_dns "\$_id") &' "$tmp/backend.sh" || fail "selected DNS checks are not parallelized"
+grep -q '^local_dns_query_ms() {' dns-manager.sh || fail "local DNS ping helper missing"
+grep -q '^test_local_dns() {' dns-manager.sh || fail "local DNS test helper missing"
+grep -q '^test_assigned_dns() {' dns-manager.sh || fail "assigned DNS test helper missing"
+ok "selected DNS checks use local listeners; catalog checks keep direct DoH path"
+# Assigned DNS routing must select the configured local listener, while an unknown ID stays on the catalog path.
+awk '/^test_assigned_dns\(\) \{/,/^}$/ { print }' dns-manager.sh > "$tmp/test_assigned_dns.sh"
+[ -s "$tmp/test_assigned_dns.sh" ] || fail "assigned DNS helper extraction"
+(
+    set -eu
+    SLOT_1=alpha
+    PORT_1=5053
+    SLOT_RU=beta
+    PORT_RU=5059
+    TMP_DIR="$tmp/local-test"
+    mkdir -p "$TMP_DIR"
+    dns_cat() { printf bypass; }
+    dns_name() { printf '%s' "$1"; }
+    test_local_dns() { printf '%s|%s' "$1" "$2"; }
+    . "$tmp/test_assigned_dns.sh"
+    [ "$(test_assigned_dns alpha)" = 'alpha|5053' ] || exit 1
+    [ "$(test_assigned_dns beta)" = 'beta|5059' ] || exit 2
+    if test_assigned_dns gamma; then exit 3; else [ "$?" -eq 2 ]; fi
+) || fail "assigned DNS helper does not select slot-local port"
+ok "assigned DNS helper maps selected IDs to their configured local ports"
+
 
 grep -q ',"ping":' "$tmp/backend.sh" || fail "LuCI DoH instances do not expose saved ping"
 grep -q ',"status":' "$tmp/backend.sh" || fail "LuCI DoH instances do not expose saved test status"

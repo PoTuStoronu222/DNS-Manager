@@ -1987,7 +1987,7 @@ job_start_test_current() {
         while IFS= read -r _id; do
             [ -n "$_id" ] || continue
             printf "Проверяю DoH: %s\n" "$_id"
-            (trap - EXIT; test_one_dns "$_id") &
+            (trap - EXIT; test_assigned_dns "$_id") &
             _batch_pids="$_batch_pids $!"
             _batch_ids="$_batch_ids $_id"
             _batch_n=$((_batch_n+1))
@@ -2047,9 +2047,13 @@ job_start_test_one() {
         # Use exactly the same test_one_dns() call as the full and selected
         # DNS tests. This keeps endpoint resolution, curl options, payload and
         # result semantics identical; only the requested DNS ID is tested.
-        printf "Проверяю реальный DoH endpoint: %s.\n" "$_id"
+        printf "Проверяю выбранный DNS: %s.\n" "$_id"
         rm -f "$TMP_DIR/t.$_id" 2>/dev/null || true
-        test_one_dns "$_id" || true
+        _assigned_rc=2
+        test_assigned_dns "$_id" || _assigned_rc=$?
+        if [ "$_assigned_rc" -eq 2 ]; then
+            test_one_dns "$_id" || true
+        fi
         _result_file="$TMP_DIR/t.$_id"
         if [ -s "$_result_file" ]; then
             _one_ms="$(awk -F"|" -v id="$_id" '$1==id && NF>=5 {print $4;exit}' "$_result_file" 2>/dev/null || true)"
