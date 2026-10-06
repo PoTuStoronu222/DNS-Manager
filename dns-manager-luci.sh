@@ -4179,6 +4179,14 @@ function pollJob(root,job,meta,done){
         renderCatalog(root);
       }
       var s=String(j.status||'running').toUpperCase();
+      if(s==='RUNNING'){
+        var startedTs=Number(j.started||0);
+        var maxSeconds=(meta&&meta.mode==='profile')?900:((meta&&meta.afterProfile)?300:(meta&&meta.mode==='all'?1800:((meta&&meta.mode==='one')?60:300)));
+        if(startedTs>0&&Math.floor(Date.now()/1000)-startedTs>=maxSeconds){
+          finish({status:'FAILED',result:'fail',started:j.started,output:'Превышено допустимое время фоновой задачи DNS Manager.'});
+          return;
+        }
+      }
       if(s==='DONE'||s==='FAILED'){finish(j);return;}
       if(ticks++>maxTicks){finish({status:'FAILED',result:'fail',output:'Превышено время ожидания фоновой задачи.'});return;}
       setTimeout(poll,1200);
