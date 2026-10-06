@@ -6,8 +6,8 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.37"
-# 3.37: fix LuCI installed-version detection via the persistent companion version marker.
+VERSION="3.38"
+# 3.38: clear the LuCI update flag after a successful CLI update.
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -6150,6 +6150,7 @@ luci_companion_update() {
         return 1
     }
     LUCI_REMOTE_VERSION="$_new_ver"
+    LUCI_UPDATE_AVAILABLE=0
     return 0
 }
 
