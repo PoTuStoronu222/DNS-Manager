@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.6.83
+# Version: 1.6.84
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -30,7 +30,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.6.83"
+VERSION="1.6.84"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -157,7 +157,7 @@ COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/
 COMPANION_RAW_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.6.83"
+SELF_VERSION="1.6.84"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -343,30 +343,43 @@ fetch_url() {
     _out="$1"
     rm -f "$_out" 2>/dev/null || true
     _cb="$(date +%s 2>/dev/null || printf 0)-$$"
-    _ok=1
-    for _base_url in "$COMPANION_URL" "$COMPANION_RAW_URL"; do
-        case "$_base_url" in
-            https://api.github.com/*) _fetch_url="$_base_url" ;;
-            *) _fetch_url="${_base_url}?_dmcb=$_cb" ;;
-        esac
+    _raw_url="${COMPANION_RAW_URL}?_dmcb=$_cb"
+    _sources="raw api"
+    for _source in $_sources; do
+        if [ "$_source" = raw ]; then
+            _fetch_url="$_raw_url"
+            _accept=''
+        else
+            _fetch_url="$COMPANION_URL"
+            _accept='application/vnd.github.raw+json'
+        fi
+        _fetched=0
         if command -v curl >/dev/null 2>&1; then
-            if curl -fsSL --connect-timeout 5 --max-time 30 -H 'User-Agent: DNS-Manager-LuCI' -H 'Accept: application/vnd.github.raw+json' -H 'Cache-Control: no-cache' -o "$_out" "$_fetch_url" >/dev/null 2>&1; then _ok=0; break; fi
+            if [ -n "$_accept" ]; then
+                curl -fsSL --connect-timeout 5 --max-time 30 -H 'User-Agent: DNS-Manager-LuCI' -H "Accept: $_accept" -H 'Cache-Control: no-cache' -o "$_out" "$_fetch_url" >/dev/null 2>&1 && _fetched=1 || true
+            else
+                curl -fsSL --connect-timeout 5 --max-time 30 -H 'User-Agent: DNS-Manager-LuCI' -H 'Cache-Control: no-cache' -o "$_out" "$_fetch_url" >/dev/null 2>&1 && _fetched=1 || true
+            fi
         elif command -v wget >/dev/null 2>&1; then
-            if wget -q -T 30 --header='User-Agent: DNS-Manager-LuCI' --header='Accept: application/vnd.github.raw+json' --header='Cache-Control: no-cache' -O "$_out" "$_fetch_url" >/dev/null 2>&1; then _ok=0; break; fi
+            if [ -n "$_accept" ]; then
+                wget -q -T 30 --header='User-Agent: DNS-Manager-LuCI' --header="Accept: $_accept" --header='Cache-Control: no-cache' -O "$_out" "$_fetch_url" >/dev/null 2>&1 && _fetched=1 || true
+            else
+                wget -q -T 30 --header='User-Agent: DNS-Manager-LuCI' --header='Cache-Control: no-cache' -O "$_out" "$_fetch_url" >/dev/null 2>&1 && _fetched=1 || true
+            fi
         elif command -v uclient-fetch >/dev/null 2>&1; then
-            case "$_base_url" in
-                https://api.github.com/*) continue ;;
-                *) uclient-fetch -q -O "$_out" "$_fetch_url" >/dev/null 2>&1 && { _ok=0; break; } ;;
-            esac
+            [ "$_source" = raw ] || continue
+            uclient-fetch -q -T 30 -O "$_out" "$_fetch_url" >/dev/null 2>&1 && _fetched=1 || true
         else
             return 1
         fi
+        if [ "$_fetched" = 1 ] && [ -s "$_out" ]; then
+            _size="$(wc -c < "$_out" 2>/dev/null | tr -d ' ')"
+            case "$_size" in ''|*[!0-9]*) _size=0;; esac
+            if [ "$_size" -le 250000 ] 2>/dev/null; then return 0; fi
+        fi
         rm -f "$_out" 2>/dev/null || true
     done
-    [ "$_ok" = 0 ] || return 1
-    [ -s "$_out" ] || return 1
-    [ "$(wc -c < "$_out" 2>/dev/null | tr -d ' ')" -le 250000 ] 2>/dev/null || return 1
-    return 0
+    return 1
 }
 
 validate_candidate() {
