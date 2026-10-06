@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.7
+# Version: 1.8
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -30,7 +30,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.7"
+VERSION="1.8"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -156,7 +156,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.7"
+SELF_VERSION="1.8"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -2480,7 +2480,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.7
+// DNS Manager LuCI version: 1.8
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -2812,8 +2812,14 @@ function renderPageNav(root){
   nav.appendChild(bar);
   e.appendChild(nav);
 }
+function checkKey(id,d){
+  if(id)return String(id);
+  if(d&&d.index!==undefined&&d.index!==null)return 'system:'+String(d.index);
+  return 'system:'+(d&&d.port?String(d.port):(d&&d.url?String(d.url):'unknown'));
+}
 function checkInfo(id,d){
-  var x=state.checking&&state.checking[id];
+  var key=checkKey(id,d);
+  var x=state.checking&&state.checking[key];
   if(x&&String(x.status||'').toUpperCase()==='RUNNING')return {status:'RUNNING',ping:''};
   var r={status:d&&d.status?d.status:'',ping:d&&d.ping?d.ping:''};
   if(String(r.status||'').toUpperCase()==='OK'&&!hasPing(r.ping))r.status='FAIL';
@@ -2975,9 +2981,7 @@ function renderOverview(root,st){
     ]),
     E('div',{'class':'dm-component-dns-list'},dnsItems),
     E('div',{'class':'dm-actions'},(function(){
-      var actions=[btn('Проверить DNS в слотах','cbi-button-action',function(){testCurrent(root);},{disabled:!!state.busy||state.jobRunning||Number(st.test_lock||0)===1})];
-      if(Number(st.system_dns_count||0)>0)actions.push(btn('Проверить системные DNS','cbi-button-action',function(){testSystem(root);},{disabled:!!state.busy||state.jobRunning||Number(st.test_lock||0)===1}));
-      return actions;
+      return [btn('Проверить текущие DNS','cbi-button-action',function(){testCurrent(root);},{disabled:!!state.busy||state.jobRunning||Number(st.test_lock||0)===1})];
     })())
   ]);
 
@@ -4166,16 +4170,90 @@ function testSystem(root){
 }
 function testCurrent(root){
   if(state.jobRunning||state.busy)return;
-  var total=(window.dmState&&window.dmState.slots||[]).filter(function(d){return d&&d.id;}).length;
-  if(!total){state.currentTest={status:'FAILED',total:0};state.checking={};render(root,window.dmState||{});return;}
+  var targets=(window.dmState&&window.dmState.doh_instances||[]).filter(function(d){
+    return d&&(d.id||(!d.slot&&d.url&&d.port));
+  });
+  var slots=targets.filter(function(d){return d&&d.id;});
+  var systems=targets.filter(function(d){return d&&!d.id&&!d.slot&&d.url&&d.port;});
+  var total=targets.length;
+  if(!total){
+    state.currentTest={status:'FAILED',total:0};
+    state.checking={};
+    state.pageNotice.doh='Текущих DNS для проверки нет.';
+    render(root,window.dmState||{});
+    return;
+  }
+
   state.currentTest={status:'RUNNING',total:total,started:Date.now()};
   state.jobRunning=true;
-  (window.dmState&&window.dmState.slots||[]).forEach(function(d){if(d&&d.id)state.checking[d.id]={status:'RUNNING',ping:'',started:Date.now()};});
+  targets.forEach(function(d){
+    state.checking[checkKey(d.id,d)]={status:'RUNNING',ping:'',started:Date.now()};
+  });
+  state.pageNotice.doh='Проверяю текущие DNS…';
   render(root,window.dmState||{});
+
+  var combinedFailed=false;
+
+  function finishCombined(ns){
+    ns=ns||{};
+    window.dmState=ns;
+    state.checking={};
+    state.jobRunning=false;
+    var bad=combinedFailed;
+    (ns.doh_instances||[]).forEach(function(d){
+      if(!d)return;
+      if(String(d.status||'').toUpperCase()!=='OK')bad=true;
+    });
+    state.currentTest={status:bad?'FAILED':'DONE',result:bad?'fail':'ok',total:total,finished:Date.now()};
+    state.pageNotice.doh=bad?'Проверка текущих DNS завершена с ошибками.':'Проверка текущих DNS завершена.';
+    render(root,ns);
+  }
+
+  function startSystemChecks(){
+    if(!systems.length){
+      finishCombined(window.dmState||{});
+      return;
+    }
+    state.jobRunning=true;
+    state.pageNotice.doh='Проверяю системные DNS…';
+    render(root,window.dmState||{});
+    callTestSystem().then(function(r){
+      if(r&&r.ok){
+        pollJob(root,r.job,{mode:'system'},function(ns){
+          finishCombined(ns);
+        });
+      }else{
+        combinedFailed=true;
+        state.jobRunning=false;
+        finishCombined(window.dmState||{});
+      }
+    }).catch(function(err){
+      combinedFailed=true;
+      state.jobRunning=false;
+      state.pageNotice.doh=withRpcError('Не удалось выполнить проверку системных DNS.',err);
+      finishCombined(window.dmState||{});
+    });
+  }
+
+  if(!slots.length){
+    startSystemChecks();
+    return;
+  }
+
   callTestCurrent().then(function(r){
-    if(r&&r.ok)pollJob(root,r.job,{mode:'current'},null);
-    else{state.currentTest={status:'FAILED',total:total};state.checking={};state.jobRunning=false;refresh(root,true);}
-  }).catch(function(err){state.currentTest={status:'FAILED',total:total};state.checking={};state.jobRunning=false;state.pageNotice.doh=withRpcError('Не удалось выполнить проверку DNS.',err);refresh(root,true);});
+    if(r&&r.ok){
+      pollJob(root,r.job,{mode:'current'},function(ns){
+        startSystemChecks();
+      });
+    }else{
+      combinedFailed=true;
+      startSystemChecks();
+    }
+  }).catch(function(err){
+    combinedFailed=true;
+    state.pageNotice.doh=withRpcError('Не удалось выполнить проверку DNS в слотах.',err);
+    startSystemChecks();
+  });
 }
 function pollJob(root,job,meta,done){
   var jobId=(typeof job==='string')?job:(job&&job.id)||'';
