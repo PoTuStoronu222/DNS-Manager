@@ -6,8 +6,8 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.35.72"
-# 3.35.72: synchronize watchdog interval/cooldown limits and make LuCI/CLI watchdog toggles roll back the previous service state on failure.
+VERSION="3.35.73"
+# 3.35.73: fix LuCI companion GitHub fetching through the official Contents API with raw fallback.
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
 STATE_DIR="/var/run/dns-manager"
@@ -6032,33 +6032,36 @@ luci_companion_fetch() {
     _tmp="$TMP_DIR/dns-manager-luci-$$"
     rm -f "$_tmp" 2>/dev/null || true
     _cb="$(date +%s 2>/dev/null || printf 0)-$$"
-    _fetch_url="${LUCI_COMPANION_URL}&_dmcb=$_cb"
+    _api_url="$LUCI_COMPANION_URL"
+    _raw_url="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh?_dmcb=$_cb"
+    _fetched=0
 
     if command -v curl >/dev/null 2>&1; then
-        curl -fsSL --connect-timeout 5 --max-time 30 -H 'User-Agent: DNS-Manager-LuCI' -H 'Accept: application/vnd.github.raw+json' -H 'Cache-Control: no-cache' -o "$_tmp" "$_fetch_url" >/dev/null 2>&1 || {
-            LUCI_COMPANION_FETCH_ERROR="Ошибка загрузки companion через curl."
+        curl -fsSL --connect-timeout 5 --max-time 30 -H 'User-Agent: DNS-Manager-LuCI' -H 'Accept: application/vnd.github.raw+json' -H 'Cache-Control: no-cache' -o "$_tmp" "$_api_url" >/dev/null 2>&1 && _fetched=1 || true
+        if [ "$_fetched" != 1 ]; then
             rm -f "$_tmp" 2>/dev/null || true
-            return 1
-        }
+            curl -fsSL --connect-timeout 5 --max-time 30 -H 'User-Agent: DNS-Manager-LuCI' -H 'Cache-Control: no-cache' -o "$_tmp" "$_raw_url" >/dev/null 2>&1 && _fetched=1 || true
+        fi
     elif command -v wget >/dev/null 2>&1; then
-        wget -q -T 30 --header='User-Agent: DNS-Manager-LuCI' --header='Accept: application/vnd.github.raw+json' --header='Cache-Control: no-cache' -O "$_tmp" "$_fetch_url" >/dev/null 2>&1 || {
-            LUCI_COMPANION_FETCH_ERROR="Ошибка загрузки companion через wget."
+        wget -q -T 30 --header='User-Agent: DNS-Manager-LuCI' --header='Accept: application/vnd.github.raw+json' --header='Cache-Control: no-cache' -O "$_tmp" "$_api_url" >/dev/null 2>&1 && _fetched=1 || true
+        if [ "$_fetched" != 1 ]; then
             rm -f "$_tmp" 2>/dev/null || true
-            return 1
-        }
+            wget -q -T 30 --header='User-Agent: DNS-Manager-LuCI' --header='Cache-Control: no-cache' -O "$_tmp" "$_raw_url" >/dev/null 2>&1 && _fetched=1 || true
+        fi
     elif command -v uclient-fetch >/dev/null 2>&1; then
-        uclient-fetch -q -T 30 -O "$_tmp" "$_fetch_url" >/dev/null 2>&1 || {
-            LUCI_COMPANION_FETCH_ERROR="Ошибка загрузки companion через uclient-fetch."
-            rm -f "$_tmp" 2>/dev/null || true
-            return 1
-        }
+        uclient-fetch -q -T 30 -O "$_tmp" "$_raw_url" >/dev/null 2>&1 && _fetched=1 || true
     else
         LUCI_COMPANION_FETCH_ERROR="Не найден curl, wget или uclient-fetch."
         rm -f "$_tmp" 2>/dev/null || true
         return 1
     fi
 
-    [ -s "$_tmp" ] || { LUCI_COMPANION_FETCH_ERROR="GitHub вернул пустой companion."; rm -f "$_tmp"; return 1; }
+    if [ "$_fetched" != 1 ] || [ ! -s "$_tmp" ]; then
+        LUCI_COMPANION_FETCH_ERROR="Ошибка загрузки companion с GitHub."
+        rm -f "$_tmp" 2>/dev/null || true
+        return 1
+    fi
+
     head -n 1 "$_tmp" 2>/dev/null | grep -q '^#!/bin/sh' || { LUCI_COMPANION_FETCH_ERROR="Companion не похож на штатный POSIX shell-установщик."; rm -f "$_tmp"; return 1; }
     grep -Fq '# DNS Manager LuCI companion' "$_tmp" 2>/dev/null || { LUCI_COMPANION_FETCH_ERROR="Не найден маркер DNS Manager LuCI companion."; rm -f "$_tmp"; return 1; }
     grep -Fq '/usr/libexec/rpcd/dns_manager' "$_tmp" 2>/dev/null || { LUCI_COMPANION_FETCH_ERROR="В companion отсутствует ожидаемый RPC backend."; rm -f "$_tmp"; return 1; }
