@@ -3358,7 +3358,6 @@ function watchdogCard(root,st){
       ['watchdog_repair_cooldown','Пауза между заменами DNS',5,120,'мин','Минимальное время между повторными заменами одного DNS.',true],
       ['watchdog_max_repairs','Сколько DNS можно заменить за раз',1,3,'шт.','Сколько неисправных DNS можно заменить во время одной проверки.',false],
       ['watchdog_max_candidates','Сколько DNS проверить при поиске замены',1,10,'шт.','Сколько других DNS проверить, прежде чем выбрать замену.',false],
-      ['watchdog_max_restarts','Сколько раз можно перезапустить DNS',1,5,'шт.','Максимальное число перезапусков DNS за одну операцию.',false],
       ['watchdog_guard_interval','Как часто проверять настройки DNS Manager',15,180,'мин','Проверяет, что DNS Manager и его настройки не были изменены.',true]
     ];
     var values=[];
@@ -3373,14 +3372,15 @@ function watchdogCard(root,st){
       }
       values.push(x[6]?Math.round(n*60):Math.round(n));
     });
-    var internalMaxRestarts=Number(st.watchdog_max_restarts||2);
-    if(!isFinite(internalMaxRestarts)||internalMaxRestarts<1||internalMaxRestarts>5)internalMaxRestarts=2;
-    values.splice(4,0,Math.round(internalMaxRestarts));
     if(invalid){
       setSettingFeedback('watchdog_batch',invalid,'error');
       renderNetwork(root,window.dmState||{});
       return;
     }
+
+    var internalMaxRestarts=Number(st.watchdog_max_restarts||2);
+    if(!isFinite(internalMaxRestarts)||internalMaxRestarts<1||internalMaxRestarts>5)internalMaxRestarts=2;
+    values.splice(4,0,Math.round(internalMaxRestarts));
 
     clearSettingFeedback();
     state.busy=true;
