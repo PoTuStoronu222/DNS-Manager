@@ -241,13 +241,11 @@ grep -q "Сколько проверок подряд считать сбоем"
 grep -q "Пауза между заменами DNS" "$tmp/watchdog_card.sh" || fail "watchdog repair cooldown label is not user-friendly"
 grep -q "1,60,'мин'" "$tmp/watchdog_card.sh" || fail "watchdog interval range is not practical"
 grep -q "5,120,'мин'" "$tmp/watchdog_card.sh" || fail "watchdog repair cooldown range is not practical"
-grep -q "15,180,'мин'" "$tmp/watchdog_card.sh" || fail "watchdog full check range is not practical"
 grep -q "'step':minutes?'1':'1'" "$tmp/watchdog_card.sh" || fail "watchdog minute fields must use whole minutes"
 grep -q "Math.round(n\*60)" "$tmp/watchdog_card.sh" || fail "watchdog minute values are not converted back to seconds"
 grep -q "minuteValue(st\[name\],min)" "$tmp/watchdog_card.sh" || fail "watchdog stored seconds are not converted to displayed minutes"
 grep -q "Сколько DNS можно заменить за раз" "$tmp/watchdog_card.sh" || fail "watchdog repair-count label is not user-friendly"
 grep -q "Сколько DNS проверить при поиске замены" "$tmp/watchdog_card.sh" || fail "watchdog candidate-count label is not user-friendly"
-grep -q "Как часто проверять настройки DNS Manager" "$tmp/watchdog_card.sh" || fail "watchdog integrity-check label is not user-friendly"
 if grep -q "Сколько раз можно перезапустить DNS" "$tmp/watchdog_card.sh"; then
     fail "internal watchdog restart limit is still exposed in LuCI"
 fi
@@ -262,12 +260,11 @@ if grep -q "Полная сверка.*300.*3600.*'с'" "$tmp/watchdog_card.sh";
     fail "watchdog full check still exposes seconds"
 fi
 ok "watchdog time controls use minutes in LuCI and seconds internally"
-grep -q 'WATCHDOG_CHECK_INTERVAL_DEFAULT=300' dns-manager.sh || fail "watchdog default interval is not 5 minutes"
+grep -q 'WATCHDOG_CHECK_INTERVAL_DEFAULT=600' dns-manager.sh || fail "watchdog default interval is not 10 minutes"
 grep -q 'WATCHDOG_REPAIR_COOLDOWN=1800' dns-manager.sh || fail "watchdog default repair cooldown is not 30 minutes"
-grep -q 'WATCHDOG_GUARD_INTERVAL=3600' dns-manager.sh || fail "watchdog default full check interval is not 60 minutes"
+grep -q 'WATCHDOG_GUARD_INTERVAL=3600' dns-manager.sh || fail "internal watchdog guard default is not 60 minutes"
 grep -q '\[ "\$_ni" -ge 60 \].*\[ "\$_ni" -le 3600 \]' "$tmp/backend.sh" || fail "watchdog backend interval range is not 1-60 minutes"
 grep -q '\[ "\$_nrc" -ge 300 \].*\[ "\$_nrc" -le 7200 \]' "$tmp/backend.sh" || fail "watchdog backend repair cooldown range is not 5-120 minutes"
-grep -q '\[ "\$_ngi" -ge 900 \].*\[ "\$_ngi" -le 10800 \]' "$tmp/backend.sh" || fail "watchdog backend full check range is not 15-180 minutes"
 ok "watchdog defaults and backend ranges match the practical minute-based UI"
 
 grep -q '^restore_dns_core() {' dns-manager.sh || fail "DNS core restore helper missing"
