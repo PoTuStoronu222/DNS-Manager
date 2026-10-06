@@ -237,14 +237,21 @@ ok "NTP status follows actual OpenWrt system.ntp.server configuration"
 # Watchdog time controls are shown to users in minutes, while the RPC still receives seconds.
 awk '/^function watchdogCard\(root,st\)\{/,/^function renderTestAgeCommon/' "$tmp/overview.js" > "$tmp/watchdog_card.sh"
 grep -q "Как часто проверять DNS" "$tmp/watchdog_card.sh" || fail "watchdog interval label is not user-friendly"
-grep -q "Сколько сбоев подряд" "$tmp/watchdog_card.sh" || fail "watchdog failure threshold label is not user-friendly"
-grep -q "Пауза перед повторным восстановлением" "$tmp/watchdog_card.sh" || fail "watchdog repair cooldown label is not user-friendly"
+grep -q "Сколько проверок подряд считать сбоем" "$tmp/watchdog_card.sh" || fail "watchdog failure threshold label is not user-friendly"
+grep -q "Пауза между заменами DNS" "$tmp/watchdog_card.sh" || fail "watchdog repair cooldown label is not user-friendly"
 grep -q "1,60,'мин'" "$tmp/watchdog_card.sh" || fail "watchdog interval range is not practical"
 grep -q "5,120,'мин'" "$tmp/watchdog_card.sh" || fail "watchdog repair cooldown range is not practical"
 grep -q "15,180,'мин'" "$tmp/watchdog_card.sh" || fail "watchdog full check range is not practical"
 grep -q "'step':minutes?'1':'1'" "$tmp/watchdog_card.sh" || fail "watchdog minute fields must use whole minutes"
 grep -q "Math.round(n\*60)" "$tmp/watchdog_card.sh" || fail "watchdog minute values are not converted back to seconds"
 grep -q "minuteValue(st\[name\],min)" "$tmp/watchdog_card.sh" || fail "watchdog stored seconds are not converted to displayed minutes"
+grep -q "Сколько DNS можно заменить за раз" "$tmp/watchdog_card.sh" || fail "watchdog repair-count label is not user-friendly"
+grep -q "Сколько DNS проверить при поиске замены" "$tmp/watchdog_card.sh" || fail "watchdog candidate-count label is not user-friendly"
+grep -q "Как часто проверять настройки DNS Manager" "$tmp/watchdog_card.sh" || fail "watchdog integrity-check label is not user-friendly"
+if grep -q "Сколько раз можно перезапустить DNS" "$tmp/watchdog_card.sh"; then
+    fail "internal watchdog restart limit is still exposed in LuCI"
+fi
+grep -q "values.splice(4,0,Math.round(internalMaxRestarts))" "$tmp/watchdog_card.sh" || fail "internal watchdog restart limit is not preserved when saving"
 if grep -q "Интервал проверки.*30.*600.*'с'" "$tmp/watchdog_card.sh"; then
     fail "watchdog interval still exposes seconds"
 fi
