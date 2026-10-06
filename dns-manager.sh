@@ -3455,7 +3455,7 @@ EOF_VERIFY_IPS
 }
 verify_applied_doh_config() {
     # Profile verification is limited to the DNS instances selected/applied by the profile.
-    # force_ip_family belongs to the independent Forced-DNS settings contract and is
+    # The IP-family option belongs to the independent Forced-DNS settings contract and is
     # validated by check_module_state force instead. A profile must not fail merely
     # because that optional setting is absent or uses the package default.
     _expected="$TMP_DIR/expected-doh-map"
