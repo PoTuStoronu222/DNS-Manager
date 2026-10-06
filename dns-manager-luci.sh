@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.6.71
+# Version: 1.6.72
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -30,7 +30,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.6.71"
+VERSION="1.6.72"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -156,7 +156,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.6.71"
+SELF_VERSION="1.6.72"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -2340,7 +2340,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.6.71
+// DNS Manager LuCI version: 1.6.72
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -3168,7 +3168,7 @@ function profileProgressUpdate(j){
     }
   });
   var done=String(j&&j.status||'').toUpperCase()==='DONE', ok=String(j&&j.result||'')==='ok';
-  if(done&&ok)best={p:100,label:'Профиль применён. Проверяю выбранные DNS…',detail:''};
+  if(done&&ok)best={p:100,label:'Профиль применён.',detail:''};
   state.profileProgress=best;
 }
 function renderProfileProgress(root){
@@ -3864,7 +3864,7 @@ function applyProfile(name,root){
       }
       state.busy=false;
       if(r&&r.ok){
-        state.profileProgress={p:100,label:'Профиль применён. Проверяю выбранные DNS…',detail:''};
+        state.profileProgress={p:100,label:'Профиль применён.',detail:''};
         state.pageNotice.profiles='';
       }else{
         setAction(false,(r&&r.error)||'Профиль не удалось запустить.');
@@ -4024,28 +4024,6 @@ function pollJob(root,job,meta,done){
   }
   function finish(j){
     if(meta&&meta.mode==='profile'){
-      var profileOk=String(j&&j.status||'').toUpperCase()==='DONE' && String(j&&j.result||'')==='ok';
-      if(profileOk){
-        state.profileProgress={p:96,label:'Профиль применён. Проверяю выбранные DNS…',detail:'Проверяю все выбранные DNS и обновляю их статус.'};
-        state.jobRunning=true;
-        renderProfiles(root,window.dmState||{});
-        callTestCurrent().then(function(v){
-          if(v&&v.ok){
-            pollJob(root,v.job,{mode:'current',afterProfile:true,profile:meta.profile});
-          }else{
-            state.busy=false;state.jobRunning=false;
-            setAction(true,'Профиль: «'+profileName(meta.profile||'')+'».');
-            state.pageNotice.profiles='Профиль применён, но автоматически проверить выбранные DNS не удалось.';
-            refresh(root,true);
-          }
-        }).catch(function(){
-          state.busy=false;state.jobRunning=false;
-          setAction(true,'Профиль: «'+profileName(meta.profile||'')+'».');
-          state.pageNotice.profiles='Профиль применён, но автоматически проверить выбранные DNS не удалось.';
-          refresh(root,true);
-        });
-        return;
-      }
       profileFinish(j);
     }
     callStatus(statusDetail()).then(function(ns){
