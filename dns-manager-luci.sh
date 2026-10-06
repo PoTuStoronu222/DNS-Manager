@@ -1388,7 +1388,10 @@ status_json() {
     _owner_label=нет; [ "$_force_owner" = manager ] && _owner_label='DNS Manager'; [ "$_force_owner" = steer ] && _owner_label='Steer'; [ "$_force_owner" = external ] && _owner_label=внешний
     printf ',"force_owner_label":'; json_quote "$_owner_label"; printf ',"zapret_running":%s' "$_zapret_running"
     _system_dns_total=0
+    _test_lock=0
+    if [ -r "$STATE_DIR/dns-test.lock/pid" ]; then _test_pid="$(cat "$STATE_DIR/dns-test.lock/pid" 2>/dev/null || true)"; case "$_test_pid" in ''|*[!0-9]*) ;; *) kill -0 "$_test_pid" 2>/dev/null && _test_lock=1;; esac; fi
     printf ',"doh_total":%s,"doh_match":%s,"configured_dns":%s' "$_doh_total" "$_match" "$_expected"
+    printf ",\"test_lock\":%s" "$_test_lock"
     printf ',"last_full_test":'; json_quote "$_last"; printf ',"last_full_test_scope":'; json_quote "$_test_scope"; printf ',"components_checked_at":'; json_quote "$_components_checked_at"
     printf ',"hostname":'; json_quote "$_host"; printf ',"uptime":'; json_quote "$_uptime"; printf ',"load1":'; json_quote "$_load"
     printf ',"cpu_count":%s,"memory_total_kb":%s,"memory_available_kb":%s' "$_cpu_count" "$_mem_t" "$_mem_a"
@@ -2972,8 +2975,8 @@ function renderOverview(root,st){
     ]),
     E('div',{'class':'dm-component-dns-list'},dnsItems),
     E('div',{'class':'dm-actions'},[
-      btn('Проверить DNS в слотах','cbi-button-action',function(){testCurrent(root);},{disabled:!!state.busy||state.jobRunning}),
-      Number(st.system_dns_count||0)>0 ? btn('Проверить системные DNS','cbi-button-action',function(){testSystem(root);},{disabled:!!state.busy||state.jobRunning}) : null
+      btn('Проверить DNS в слотах','cbi-button-action',function(){testCurrent(root);},{disabled:!!state.busy||state.jobRunning||Number(st.test_lock||0)===1}),
+      Number(st.system_dns_count||0)>0 ? btn('Проверить системные DNS','cbi-button-action',function(){testSystem(root);},{disabled:!!state.busy||state.jobRunning||Number(st.test_lock||0)===1}) : null
     ].filter(function(x){return !!x;})
   ]);
 
