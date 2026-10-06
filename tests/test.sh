@@ -580,6 +580,26 @@ grep -q '_passcats="\$_desired_for_pick clean"' "$tmp/watchdog_pick_function.sh"
 grep -A16 -F 'watchdog_slot_target_run() {' dns-manager.sh | grep -q 'watchdog_scope_category' || fail "watchdog slot repair does not use intended profile category"
 grep -q 'смешанные или пользовательские категории DNS' dns-manager.sh || fail "watchdog custom/mixed skip message missing"
 ok "manual same-category DNS changes preserve profile; mixed/custom selections disable DNS watchdog scope"
+# All watchdog paths must use the same DNS health checks as the verified Manager paths.
+awk '/^watchdog_embedded_loop\(\) \{/,/^# ==========================================/' dns-manager.sh > "$tmp/watchdog_embedded_loop.sh"
+grep -q 'local_dns_query_ok "\$_port" "\$_domain"' "$tmp/watchdog_embedded_loop.sh" || fail "procd watchdog does not use the canonical local DNS check"
+if grep -q 'watchdog_light_probe' dns-manager.sh; then
+    fail "obsolete simplified watchdog DNS probe remains"
+fi
+awk '/^watchdog_probe_catalog_candidate\(\) \{/,/^watchdog_pick_replacement\(\) \{/' dns-manager.sh > "$tmp/watchdog_candidate_probe.sh"
+grep -q 'test_one_dns "\$_id"' "$tmp/watchdog_candidate_probe.sh" || fail "watchdog candidate probe does not use canonical DoH test"
+if grep -q 'curl ' "$tmp/watchdog_candidate_probe.sh"; then
+    fail "watchdog candidate probe duplicates the canonical curl test"
+fi
+awk '/^watchdog_service_install_files\(\) \{/,/^watchdog_service_running\(\) \{/' dns-manager.sh > "$tmp/watchdog_service.sh"
+grep -q 'USE_PROCD=1' "$tmp/watchdog_service.sh" || fail "watchdog service is not managed by procd"
+grep -q 'procd_set_param command /bin/sh "\$PROG" "\$CMD"' "$tmp/watchdog_service.sh" || fail "watchdog procd command is missing"
+grep -q 'procd_set_param respawn 3600 5 5' "$tmp/watchdog_service.sh" || fail "watchdog procd respawn is missing"
+grep -q 'procd_add_interface_trigger "interface.*.up" "\$wan" /etc/init.d/dns-watchdog restart' "$tmp/watchdog_service.sh" || fail "watchdog WAN-up trigger is missing"
+if [ "$(grep -c 'watchdog_cron_desired_line' dns-manager.sh)" -ne 1 ]; then
+    fail "legacy watchdog cron scheduler is still referenced outside its unused definition"
+fi
+ok "watchdog uses the same DNS check logic; procd is the active scheduler and cron is legacy-only"
 
 # Watchdog keeps the intended profile category while using clean as a temporary fallback.
 awk '
