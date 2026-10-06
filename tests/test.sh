@@ -810,6 +810,7 @@ grep -q 'WATCHDOG_MAX_REPAIRS="$WATCHDOG_MAX_REPAIRS"' dns-manager.sh || fail "w
 grep -q 'WATCHDOG_MAX_RESTARTS="$WATCHDOG_MAX_RESTARTS"' dns-manager.sh || fail "watchdog max restarts is not persisted"
 grep -q 'WATCHDOG_MAX_CANDIDATES="$WATCHDOG_MAX_CANDIDATES"' dns-manager.sh || fail "watchdog max candidates is not persisted"
 grep -q 'WATCHDOG_GUARD_INTERVAL="$WATCHDOG_GUARD_INTERVAL"' dns-manager.sh || fail "watchdog guard interval is not persisted"
+grep -q 'watchdog_interval":%s,"watchdog_service' "$tmp/backend.sh" || fail "LuCI status does not expose saved watchdog interval"
 
 grep -q '^        set_watchdog_setting)' "$tmp/backend.sh" || fail "legacy watchdog setting dispatch missing"
 grep -q '^        set_watchdog_settings)' "$tmp/backend.sh" || fail "atomic watchdog settings dispatch missing"
