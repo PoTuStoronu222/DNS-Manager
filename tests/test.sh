@@ -507,6 +507,14 @@ fi
 grep -q "hasPing(ci.ping)" "$tmp/overview.js" || fail "LuCI does not render DNS test ping"
 grep -q "'dm-doh-ping'" "$tmp/overview.js" || fail "LuCI DoH page does not render DNS test ping"
 ok "LuCI DoH rows use test result status and ping"
+awk '/^function forceComponentItem\(root,st\)\{/,/^function boardMemoryKb/' "$tmp/overview.js" > "$tmp/force_component.js"
+grep -q "setSetting('force',target,root)" "$tmp/force_component.js" || fail "LuCI forced-DNS component has no existing force toggle action"
+grep -q "owner==='steer'&&mode==='other'" "$tmp/force_component.js" || fail "LuCI forced-DNS component does not handle Steer-owned state"
+grep -q "ДРУГОЕ • Steer" "$tmp/force_component.js" || fail "LuCI forced-DNS component lost Steer status label"
+grep -q "actionText=active?'Выключить'" "$tmp/force_component.js" || fail "LuCI forced-DNS component has no active-state action"
+grep -q "actionText==='Исправить'" "$tmp/force_component.js" || fail "LuCI forced-DNS component has no repair action"
+grep -q "forceComponentItem(root,st)" "$tmp/overview.js" || fail "LuCI overview does not render dedicated forced-DNS component control"
+ok "LuCI forced-DNS component displays actual owner state and uses the existing toggle RPC"
 
 awk '
     /^test_dns_catalog\(\) \(/ { capture=1 }
