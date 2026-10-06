@@ -180,6 +180,16 @@ fi
 grep -q 'if(state.activeTab!==nextTab)state.lastAction=null;' "$tmp/overview.js" || fail "tab navigation does not clear stale action strip"
 ok "global action banner does not persist across pages"
 ok "LuCI RPC dispatch contract"
+# Every asynchronous DNS test must record the PID of the process it started.
+# job_process_alive() relies on this PID; without it a valid job is immediately
+# reported as having no working PID.
+awk '/^job_start_test_all\(\) \{/,/^job_start_test_current\(\) \{/' "$tmp/backend.sh" | grep -q '_job_pid=\$!' || fail "test_all job PID is not recorded"
+awk '/^job_start_test_all\(\) \{/,/^job_start_test_current\(\) \{/' "$tmp/backend.sh" | grep -q 'job_record_pid "\$_jid" "\$_job_pid"' || fail "test_all job PID is not registered"
+awk '/^job_start_test_current\(\) \{/,/^job_start_test_one\(\) \{/' "$tmp/backend.sh" | grep -q '_job_pid=\$!' || fail "test_current job PID is not recorded"
+awk '/^job_start_test_current\(\) \{/,/^job_start_test_one\(\) \{/' "$tmp/backend.sh" | grep -q 'job_record_pid "\$_jid" "\$_job_pid"' || fail "test_current job PID is not registered"
+awk '/^job_start_test_one\(\) \{/,/^job_json\(\) \{/' "$tmp/backend.sh" | grep -q '_job_pid=\$!' || fail "test_one job PID is not recorded"
+awk '/^job_start_test_one\(\) \{/,/^job_json\(\) \{/' "$tmp/backend.sh" | grep -q 'job_record_pid "\$_jid" "\$_job_pid"' || fail "test_one job PID is not registered"
+ok "all asynchronous DNS jobs register their working PID"
 
 grep -q '^restore_dns_core() {' dns-manager.sh || fail "DNS core restore helper missing"
 awk '/^menu_slots() {/,/^menu_bogus() {/' dns-manager.sh > "$tmp/menu_slots.sh"
