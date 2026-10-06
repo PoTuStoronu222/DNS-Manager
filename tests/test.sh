@@ -161,7 +161,8 @@ grep -q 'WATCHDOG_INTERVAL' "$tmp/backend.sh" || fail "watchdog interval handlin
 if awk '/^        set_setting\)/ { capture=1 } capture { print } capture && /^        set_watchdog_setting\)/ { exit }' "$tmp/backend.sh" | grep -q '_value'; then
     fail "set_setting still contains stale _value watchdog logic"
 fi
-grep -q 'apply_watchdog .*|| _rc=' "$tmp/backend.sh" || fail "watchdog apply result is not checked"
+grep -q 'watchdog_apply_toggle .*|| _rc=' "$tmp/backend.sh" || fail "watchdog toggle result is not checked"
+grep -q '\[ "\$_rc" -eq 0 \] || { json_error "Настройку «\$_name» не удалось применить"; return; }' "$tmp/backend.sh" || fail "watchdog toggle error is not propagated"
 grep -q 'apply_extras_now force .*|| _rc=' "$tmp/backend.sh" || fail "force apply result is not checked"
 grep -q 'apply_extras_now dnsmasq_perf .*|| _rc=' "$tmp/backend.sh" || fail "dnsmasq_perf apply result is not checked"
 
