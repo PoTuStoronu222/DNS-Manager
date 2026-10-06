@@ -424,7 +424,7 @@ auto_update_manager() {
     elif command -v wget >/dev/null 2>&1; then
         wget -q -T 15 --header="Cache-Control: no-cache" --header="Pragma: no-cache" -O "$_upd_tmp" "$_update_url" >/dev/null 2>&1 || { AUTO_UPDATE_RESULT="failed"; AUTO_UPDATE_REASON="не удалось скачать файл с GitHub"; rm -f "$_upd_tmp" "$_upd_syntax"; UPDATE_TMP_FILE=""; release_auto_update_lock; return 0; }
     else
-        uclient-fetch -q -O "$_upd_tmp" "$_update_url" >/dev/null 2>&1 || { AUTO_UPDATE_RESULT="failed"; AUTO_UPDATE_REASON="не удалось скачать файл с GitHub"; rm -f "$_upd_tmp" "$_upd_syntax"; UPDATE_TMP_FILE=""; release_auto_update_lock; return 0; }
+        uclient-fetch -q -T 15 -O "$_upd_tmp" "$_update_url" >/dev/null 2>&1 || { AUTO_UPDATE_RESULT="failed"; AUTO_UPDATE_REASON="не удалось скачать файл с GitHub"; rm -f "$_upd_tmp" "$_upd_syntax"; UPDATE_TMP_FILE=""; release_auto_update_lock; return 0; }
     fi
 
     [ -s "$_upd_tmp" ] || { AUTO_UPDATE_RESULT="failed"; AUTO_UPDATE_REASON="GitHub вернул пустой файл"; rm -f "$_upd_tmp" "$_upd_syntax"; UPDATE_TMP_FILE=""; release_auto_update_lock; return 0; }
@@ -6042,7 +6042,7 @@ luci_companion_fetch() {
             return 1
         }
     elif command -v uclient-fetch >/dev/null 2>&1; then
-        uclient-fetch -q -O "$_tmp" "$_fetch_url" >/dev/null 2>&1 || {
+        uclient-fetch -q -T 30 -O "$_tmp" "$_fetch_url" >/dev/null 2>&1 || {
             LUCI_COMPANION_FETCH_ERROR="Ошибка загрузки companion через uclient-fetch."
             rm -f "$_tmp" 2>/dev/null || true
             return 1
