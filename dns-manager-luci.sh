@@ -1126,7 +1126,7 @@ status_json() {
     _mode=none
     _selection_category=none
     _watchdog="$(cfg_get WATCHDOG_ENABLED)"; [ -n "$_watchdog" ] || _watchdog=0
-    _watchdog_interval="$(cfg_get WATCHDOG_INTERVAL)"; [ -n "$_watchdog_interval" ] || _watchdog_interval=300
+    _watchdog_interval="$(cfg_get WATCHDOG_INTERVAL)"; [ -n "$_watchdog_interval" ] || _watchdog_interval=600
     _watchdog_backend="$(cfg_get WATCHDOG_BACKEND)"; [ -n "$_watchdog_backend" ] || _watchdog_backend=procd
     _watchdog_threshold="$(manager_const_num WATCHDOG_FAIL_THRESHOLD 2)"
     _watchdog_repair_cooldown="$(manager_const_num WATCHDOG_REPAIR_COOLDOWN 1800)"
@@ -2794,7 +2794,7 @@ function renderOverview(root,st){
   var force=yes(st.force_both)?badge('dm-bad','DNS Manager + внешний'):st.force_owner==='external'?badge('dm-bad','внешний сервис'):yes(st.force_manager)?badge('dm-ok','DNS Manager'):badge('dm-off','выключен');
 
   var wd=yes(st.watchdog)?(st.watchdog_backend==='procd'?(Number(st.watchdog_loop||0)===1?badge('dm-ok','работает'):Number(st.watchdog_service||0)===1?badge('dm-warn','служба запущена, цикл не найден'):badge('dm-bad','служба не запущена')):badge('dm-warn','неизвестный механизм')):badge('dm-off','выключена');
-  var wdDetails='Интервал — '+Number(st.watchdog_interval||90)+' с · порог — '+Number(st.watchdog_fail_threshold||2)+' цикла';
+  var wdDetails='Проверка DNS — каждые '+Number(st.watchdog_interval||600)/60+' мин · после '+Number(st.watchdog_fail_threshold||2)+' сбоев подряд';
 
   var dnsItems=[];
   (st.doh_instances||[]).forEach(function(d){
