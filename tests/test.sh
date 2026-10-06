@@ -234,6 +234,27 @@ grep -q "preset=ntpActualPreset(servers)" "$tmp/overview.js" || fail "LuCI NTP p
 grep -q "openwrt_default:'Стандарт OpenWrt'" "$tmp/overview.js" || fail "LuCI does not label OpenWrt default NTP servers"
 grep -q "other:'ДРУГОЕ'" "$tmp/overview.js" || fail "LuCI does not label unknown NTP servers as other"
 ok "NTP status follows actual OpenWrt system.ntp.server configuration"
+# Watchdog time controls are shown to users in minutes, while the RPC still receives seconds.
+awk '/^function watchdogCard\(root,st\)\{/,/^function renderTestAgeCommon/' "$tmp/overview.js" > "$tmp/watchdog_card.sh"
+grep -q "Как часто проверять DNS" "$tmp/watchdog_card.sh" || fail "watchdog interval label is not user-friendly"
+grep -q "Сколько сбоев подряд" "$tmp/watchdog_card.sh" || fail "watchdog failure threshold label is not user-friendly"
+grep -q "Пауза перед повторным восстановлением" "$tmp/watchdog_card.sh" || fail "watchdog repair cooldown label is not user-friendly"
+grep -q "0.5,10,'мин'" "$tmp/watchdog_card.sh" || fail "watchdog interval is not displayed in minutes"
+grep -q "0.5,60,'мин'" "$tmp/watchdog_card.sh" || fail "watchdog repair cooldown is not displayed in minutes"
+grep -q "5,60,'мин'" "$tmp/watchdog_card.sh" || fail "watchdog full check is not displayed in minutes"
+grep -q "step:minutes?'0.5':'1'" "$tmp/watchdog_card.sh" || fail "watchdog minute fields do not use half-minute steps"
+grep -q "Math.round(n\*60)" "$tmp/watchdog_card.sh" || fail "watchdog minute values are not converted back to seconds"
+grep -q "minuteValue(st\[name\],min)" "$tmp/watchdog_card.sh" || fail "watchdog stored seconds are not converted to displayed minutes"
+if grep -q "Интервал проверки.*30.*600.*'с'" "$tmp/watchdog_card.sh"; then
+    fail "watchdog interval still exposes seconds"
+fi
+if grep -q "Пауза между ремонтами.*30.*3600.*'с'" "$tmp/watchdog_card.sh"; then
+    fail "watchdog repair cooldown still exposes seconds"
+fi
+if grep -q "Полная сверка.*300.*3600.*'с'" "$tmp/watchdog_card.sh"; then
+    fail "watchdog full check still exposes seconds"
+fi
+ok "watchdog time controls use minutes in LuCI and seconds internally"
 
 grep -q '^restore_dns_core() {' dns-manager.sh || fail "DNS core restore helper missing"
 awk '/^menu_slots() {/,/^menu_bogus() {/' dns-manager.sh > "$tmp/menu_slots.sh"
