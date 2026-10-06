@@ -241,6 +241,13 @@ grep -q 'function ntpActualPreset(servers)' "$tmp/overview.js" || fail "LuCI NTP
 grep -q "preset=ntpActualPreset(servers)" "$tmp/overview.js" || fail "LuCI NTP page still trusts stored preset instead of actual servers"
 grep -q "openwrt_default:'Стандарт OpenWrt'" "$tmp/overview.js" || fail "LuCI does not label OpenWrt default NTP servers"
 grep -q "other:'ДРУГОЕ'" "$tmp/overview.js" || fail "LuCI does not label unknown NTP servers as other"
+grep -q "st.force_owner==='steer'&&st.force_status==='other'" "$tmp/overview.js" || fail "LuCI components do not show Steer-owned forced-DNS state"
+grep -q "ДРУГОЕ • Steer" "$tmp/overview.js" || fail "LuCI components do not show Steer status label"
+awk '/^function renderTime\(root,st\)\{/,/^function renderCatalog\(root\)/' "$tmp/overview.js" > "$tmp/ntp_view.js"
+if grep -q "row('Служба'" "$tmp/ntp_view.js"; then
+    fail "LuCI NTP page still exposes service status"
+fi
+grep -q "row('Выбранный набор'" "$tmp/ntp_view.js" || fail "LuCI NTP page lost selected preset"
 ok "NTP status follows actual OpenWrt system.ntp.server configuration"
 # Watchdog time controls are shown to users in minutes, while the RPC still receives seconds.
 awk '/^function watchdogCard\(root,st\)\{/,/^function renderTestAgeCommon/' "$tmp/overview.js" > "$tmp/watchdog_card.sh"
@@ -810,6 +817,7 @@ grep -q 'WATCHDOG_MAX_REPAIRS="$WATCHDOG_MAX_REPAIRS"' dns-manager.sh || fail "w
 grep -q 'WATCHDOG_MAX_RESTARTS="$WATCHDOG_MAX_RESTARTS"' dns-manager.sh || fail "watchdog max restarts is not persisted"
 grep -q 'WATCHDOG_MAX_CANDIDATES="$WATCHDOG_MAX_CANDIDATES"' dns-manager.sh || fail "watchdog max candidates is not persisted"
 grep -q 'WATCHDOG_GUARD_INTERVAL="$WATCHDOG_GUARD_INTERVAL"' dns-manager.sh || fail "watchdog guard interval is not persisted"
+grep -q 'watchdog_interval":%s,"watchdog_service' "$tmp/backend.sh" || fail "LuCI status does not expose saved watchdog interval"
 
 grep -q '^        set_watchdog_setting)' "$tmp/backend.sh" || fail "legacy watchdog setting dispatch missing"
 grep -q '^        set_watchdog_settings)' "$tmp/backend.sh" || fail "atomic watchdog settings dispatch missing"
@@ -841,6 +849,18 @@ done
 if grep -q 'Рестартов https-dns-proxy\|Тяжёлая сверка' "$tmp/watchdog_card.js"; then
     fail "technical watchdog labels still exposed in LuCI"
 fi
+# Numeric watchdog fields must use a single-escaped digit regex; double-escaped \\d rejects normal values.
+grep -Fq '(x[6]?true:/^\d+$/.test(raw))' "$tmp/watchdog_card.js" || fail "watchdog numeric validation regex is missing"
+if grep -Fq '(x[6]?true:/^\\d+$/.test(raw))' "$tmp/watchdog_card.js"; then
+    fail "watchdog numeric validation regex is double-escaped"
+fi
+ok "watchdog numeric field validation accepts normal integer values"
+
+wd_stop_block="$(sed -n '/^watchdog_service_stop_disable() {/,/^}/p' dns-manager.sh)"
+printf '%s\\n' "$wd_stop_block" | grep -Fq 'while watchdog_service_running && [ "$_wd_wait" -lt 5 ]' || fail "watchdog stop path has no bounded procd grace wait"
+printf '%s\\n' "$wd_stop_block" | grep -Fq 'sleep 1' || fail "watchdog stop grace wait has no sleep"
+ok "watchdog settings save tolerates asynchronous procd stop"
+
 ok "watchdog tuning is persisted through one atomic RPC and exposed as a compact LuCI form"
 
 # The legacy single-setting RPC remains available for older clients, but shares the same apply path.
