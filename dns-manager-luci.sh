@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.6.70
+# Version: 1.6.71
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -30,7 +30,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.6.70"
+VERSION="1.6.71"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -156,7 +156,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.6.70"
+SELF_VERSION="1.6.71"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -1464,7 +1464,7 @@ status_json() {
         _id="$(cfg_get "SLOT_${_s}")"; _cat="$(catalog_field "$_id" 2>/dev/null || true)"; _port="$(cfg_get "PORT_${_s}")"
         [ -n "$_cat" ] || [ -z "$_id" ] || _cat="$(cfg_get "SLOT_${_s}_CAT")"
         _name="$(catalog_field "$_id" 4 2>/dev/null || true)"; [ -n "$_name" ] || _name='Не задан'
-        _r="$(current_slot_result_for_id "$_id" 2>/dev/null || true)"
+        _r="$(result_for_id "$_id" 2>/dev/null || true)"
         _ms="$(printf '%s' "$_r" | awk -F'|' 'NF>=5 {print $4;exit}')"; _rawst="$(printf '%s' "$_r" | awk -F'|' 'NF>=5 {print $5;exit}')"
         _st=""; case "$_rawst" in OK) case "$_ms" in ''|*[!0-9]*) _st=FAIL;; *) _st=OK;; esac;; RUNNING) _st=RUNNING;; '') ;; *) _st=FAIL;; esac
         [ "$_first" = 1 ] || printf ','; _first=0
@@ -1647,13 +1647,6 @@ set_check_stamp() {
     _id="$1"; _ts="$2"
     case "$_id" in ''|*[!A-Za-z0-9_-]*) return 1;; esac
     printf '%s\n' "$_ts" > "$CHECK_DIR/$_id" 2>/dev/null
-}
-current_slot_result_for_id() {
-    _id="$1"
-    [ -n "$_id" ] || return 1
-
-    # One authoritative result source for full, individual and selected DNS tests.
-    result_for_id "$_id"
 }
 commit_single_test_result() {
     _id="$1"
@@ -2347,7 +2340,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.6.70
+// DNS Manager LuCI version: 1.6.71
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -2680,7 +2673,8 @@ function renderPageNav(root){
 }
 function checkInfo(id,d){
   var x=state.checking&&state.checking[id];
-  var r=x&&x.status?{status:x.status,ping:x.ping||''}:{status:d&&d.status?d.status:'',ping:d&&d.ping?d.ping:''};
+  if(x&&String(x.status||'').toUpperCase()==='RUNNING')return {status:'RUNNING',ping:''};
+  var r={status:d&&d.status?d.status:'',ping:d&&d.ping?d.ping:''};
   if(String(r.status||'').toUpperCase()==='OK'&&!hasPing(r.ping))r.status='FAIL';
   return r;
 }
@@ -3237,10 +3231,8 @@ function renderSlots(root,st){
     if(!d.id)return;
     var checking=state.checking&&state.checking[d.id];
     var running=checking&&String(checking.status||'').toUpperCase()==='RUNNING';
-    // A finished individual check is authoritative for this row. Do not
-    // fall back to the old slot status/ping when the fresh result is FAIL.
-    var shownStatus=running?'RUNNING':(checking&&checking.status?checking.status:d.status);
-    var shownPing=running?'':(checking?checking.ping:d.ping);
+    var shownStatus=running?'RUNNING':d.status;
+    var shownPing=running?'':d.ping;
     rows.push(E('div',{'class':'dm-slot-row '+(running?'dm-slot-checking':'')},[
       E('span',{'class':'dm-slot-id'},d.slot),
       E('span',{'class':'dm-slot-name'},d.name||d.id),
@@ -3974,15 +3966,15 @@ function testOne(id,root,origin,done){
   callTestOne(id).then(function(r){
     if(r&&r.ok)pollJob(root,r.job,{mode:'one',dns_id:id,origin:origin||''},done);
     else{
-      state.checking[id]={status:'FAIL',ping:''};
+      delete state.checking[id];
       state.jobRunning=false;
-      render(root,window.dmState||{});
+      refresh(root,true);
       if(done)done(window.dmState||{});
     }
   }).catch(function(err){
-    state.checking[id]={status:'FAIL',ping:''};
+    delete state.checking[id];
     state.jobRunning=false;
-    render(root,window.dmState||{});
+    refresh(root,true);
     if(done)done(window.dmState||{});
   });
 }
@@ -4058,15 +4050,7 @@ function pollJob(root,job,meta,done){
     }
     callStatus(statusDetail()).then(function(ns){
       ns=ns||{};window.dmState=ns;
-      if(meta&&meta.mode==='one'&&meta.dns_id){
-        state.checking[meta.dns_id]={
-          // Only the just-completed direct DoH test is authoritative here.
-          // An absent/invalid job result is a failure; never reuse catalog data.
-          status:(j&&j.dns_status)?String(j.dns_status):'FAIL',
-          ping:(j&&j.dns_status==='OK'&&/^\d+$/.test(String(j.ping||'')))?String(j.ping):'',
-          fresh:true
-        };
-      }
+      if(meta&&meta.mode==='one'&&meta.dns_id)delete state.checking[meta.dns_id];
       if(meta&&meta.mode==='current')state.checking={};
       state.jobRunning=false;
       if(done)done(ns);
@@ -4115,7 +4099,7 @@ function pollJob(root,job,meta,done){
         setAction(false,'Применение профиля завершилось, но состояние роутера не удалось обновить.');
         state.pageNotice.profiles='Применение профиля завершилось, но состояние роутера не удалось обновить.';
       }
-      if(meta&&meta.mode==='one'&&meta.dns_id)state.checking[meta.dns_id]={status:'FAIL',ping:''};
+      if(meta&&meta.mode==='one'&&meta.dns_id)delete state.checking[meta.dns_id];
       var jobErr=rpcErrorText(err);
       if(jobErr){
         if(meta.origin==='doh')state.pageNotice.doh='Проверка DNS не выполнена: '+jobErr;
