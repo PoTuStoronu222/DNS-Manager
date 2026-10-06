@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.6.76
+# Version: 1.6.77
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -30,7 +30,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.6.76"
+VERSION="1.6.77"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -156,7 +156,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.6.76"
+SELF_VERSION="1.6.77"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -2346,7 +2346,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.6.76
+// DNS Manager LuCI version: 1.6.77
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -3353,13 +3353,13 @@ function watchdogCard(root,st){
     if(state.busy)return;
 
     var spec=[
-      ['watchdog_interval','Как часто проверять DNS',1,60,'мин','Пауза между автоматическими проверками.',true],
-      ['watchdog_fail_threshold','Сколько сбоев подряд',1,5,'цикла','Сколько неудачных проверок подряд нужно для восстановления DNS.',false],
-      ['watchdog_repair_cooldown','Пауза перед повторным восстановлением',5,120,'мин','Минимальное время до повторного восстановления одного DNS.',true],
-      ['watchdog_max_repairs','Сколько DNS восстановить за раз',1,3,'шт.','Максимальное число DNS для восстановления за один цикл.',false],
-      ['watchdog_max_candidates','Сколько вариантов DNS проверить',1,10,'шт.','Сколько рабочих вариантов проверить при выборе замены.',false],
+      ['watchdog_interval','Как часто проверять DNS',1,60,'мин','Проверяет, отвечают ли выбранные DNS-серверы.',true],
+      ['watchdog_fail_threshold','Сколько проверок подряд считать сбоем',1,5,'проверки','Сколько раз подряд DNS должен не ответить, прежде чем менеджер заменит его.',false],
+      ['watchdog_repair_cooldown','Пауза между заменами DNS',5,120,'мин','Минимальное время между повторными заменами одного DNS.',true],
+      ['watchdog_max_repairs','Сколько DNS можно заменить за раз',1,3,'шт.','Сколько неисправных DNS можно заменить во время одной проверки.',false],
+      ['watchdog_max_candidates','Сколько DNS проверить при поиске замены',1,10,'шт.','Сколько других DNS проверить, прежде чем выбрать замену.',false],
       ['watchdog_max_restarts','Сколько раз можно перезапустить DNS',1,5,'шт.','Максимальное число перезапусков DNS за одну операцию.',false],
-      ['watchdog_guard_interval','Как часто перепроверять настройки DNS',15,180,'мин','Проверка конфигурации целиком.',true]
+      ['watchdog_guard_interval','Как часто проверять настройки DNS Manager',15,180,'мин','Проверяет, что DNS Manager и его настройки не были изменены.',true]
     ];
     var values=[];
     var invalid='';
@@ -3373,6 +3373,9 @@ function watchdogCard(root,st){
       }
       values.push(x[6]?Math.round(n*60):Math.round(n));
     });
+    var internalMaxRestarts=Number(st.watchdog_max_restarts||2);
+    if(!isFinite(internalMaxRestarts)||internalMaxRestarts<1||internalMaxRestarts>5)internalMaxRestarts=2;
+    values.splice(4,0,Math.round(internalMaxRestarts));
     if(invalid){
       setSettingFeedback('watchdog_batch',invalid,'error');
       renderNetwork(root,window.dmState||{});
@@ -3424,18 +3427,18 @@ function watchdogCard(root,st){
   ]);
 
   var main=E('div',{'class':'dm-watchdog-list'},[
-    param('watchdog_interval','Как часто проверять DNS',1,60,'мин','Пауза между автоматическими проверками.',true),
-    param('watchdog_fail_threshold','Сколько сбоев подряд',1,5,'цикла','Сколько неудачных проверок подряд нужно для восстановления DNS.',false),
-    param('watchdog_repair_cooldown','Пауза перед повторным восстановлением',5,120,'мин','Минимальное время до повторного восстановления одного DNS.',true)
+    param('watchdog_interval','Как часто проверять DNS',1,60,'мин','Проверяет, отвечают ли выбранные DNS-серверы.',true),
+    param('watchdog_fail_threshold','Сколько проверок подряд считать сбоем',1,5,'проверки','Сколько раз подряд DNS должен не ответить, прежде чем менеджер заменит его.',false),
+    param('watchdog_repair_cooldown','Пауза между заменами DNS',5,120,'мин','Минимальное время между повторными заменами одного DNS.',true)
   ]);
 
   var advanced=E('details',{'class':'dm-watchdog-advanced'},[
     E('summary',{},'Дополнительные параметры'),
     E('div',{'class':'dm-watchdog-list'},[
-      param('watchdog_max_repairs','Сколько DNS восстановить за раз',1,3,'шт.','Максимальное число DNS для восстановления за один цикл.',false),
-      param('watchdog_max_candidates','Сколько вариантов DNS проверить',1,10,'шт.','Сколько рабочих вариантов проверить при выборе замены.',false),
+      param('watchdog_max_repairs','Сколько DNS можно заменить за раз',1,3,'шт.','Сколько неисправных DNS можно заменить во время одной проверки.',false),
+      param('watchdog_max_candidates','Сколько DNS проверить при поиске замены',1,10,'шт.','Сколько других DNS проверить, прежде чем выбрать замену.',false),
       param('watchdog_max_restarts','Сколько раз можно перезапустить DNS',1,5,'шт.','Максимальное число перезапусков DNS за одну операцию.',false),
-      param('watchdog_guard_interval','Как часто перепроверять настройки DNS',15,180,'мин','Проверка конфигурации целиком.',true)
+      param('watchdog_guard_interval','Как часто проверять настройки DNS Manager',15,180,'мин','Проверяет, что DNS Manager и его настройки не были изменены.',true)
     ])
   ]);
 
