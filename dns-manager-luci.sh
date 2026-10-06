@@ -341,7 +341,7 @@ fetch_raw_url() {
 fetch_url() {
     _out="$1"
     rm -f "$_out" 2>/dev/null || true
-    _cb="$(date +%s 2>/dev/null || printf 0)-$"
+    _cb="$(date +%s 2>/dev/null || printf 0)-$$"
     case "$COMPANION_URL" in
         *\?*) _fetch_url="${COMPANION_URL}&_dmcb=$_cb" ;;
         *) _fetch_url="${COMPANION_URL}?_dmcb=$_cb" ;;
