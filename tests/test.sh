@@ -242,7 +242,7 @@ grep -q "Пауза перед повторным восстановлением
 grep -q "0.5,10,'мин'" "$tmp/watchdog_card.sh" || fail "watchdog interval is not displayed in minutes"
 grep -q "0.5,60,'мин'" "$tmp/watchdog_card.sh" || fail "watchdog repair cooldown is not displayed in minutes"
 grep -q "5,60,'мин'" "$tmp/watchdog_card.sh" || fail "watchdog full check is not displayed in minutes"
-grep -q "step:minutes?'0.5':'1'" "$tmp/watchdog_card.sh" || fail "watchdog minute fields do not use half-minute steps"
+grep -q "'step':minutes?'0.5':'1'" "$tmp/watchdog_card.sh" || fail "watchdog minute fields do not use half-minute steps"
 grep -q "Math.round(n\*60)" "$tmp/watchdog_card.sh" || fail "watchdog minute values are not converted back to seconds"
 grep -q "minuteValue(st\[name\],min)" "$tmp/watchdog_card.sh" || fail "watchdog stored seconds are not converted to displayed minutes"
 if grep -q "Интервал проверки.*30.*600.*'с'" "$tmp/watchdog_card.sh"; then
