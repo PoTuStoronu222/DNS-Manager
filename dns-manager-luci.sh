@@ -1133,7 +1133,7 @@ status_json() {
     _watchdog_max_repairs="$(manager_const_num WATCHDOG_MAX_REPAIRS 1)"
     _watchdog_max_restarts="$(manager_const_num WATCHDOG_MAX_RESTARTS 2)"
     _watchdog_max_candidates="$(manager_const_num WATCHDOG_MAX_CANDIDATES 3)"
-    _watchdog_guard_interval="$(manager_const_num WATCHDOG_GUARD_INTERVAL 3600)
+    _watchdog_guard_interval="$(manager_const_num WATCHDOG_GUARD_INTERVAL 3600)"
 
     # DNS cache tuning changes only dnsmasq cachesize. Do not let the
     # manager config flag or unrelated dnsmasq options distort the state.
