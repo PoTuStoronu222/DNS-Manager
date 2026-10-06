@@ -603,7 +603,19 @@ grep -q 'Фоновая задача DNS Manager' "$tmp/overview.js" || fail "Lu
 ok "LuCI shows the latest DNS background operation after reload"
 
 # Background LuCI jobs must never remain "running" forever.
-grep -q '^JOB_MAX_AGE_PROFILE=900for _wd_key in WATCHDOG_INTERVAL WATCHDOG_FAIL_THRESHOLD WATCHDOG_REPAIR_COOLDOWN WATCHDOG_MAX_REPAIRS WATCHDOG_MAX_RESTARTS WATCHDOG_MAX_CANDIDATES WATCHDOG_GUARD_INTERVAL; do
+grep -q '^JOB_MAX_AGE_PROFILE=900$' "$tmp/backend.sh" || fail "profile job timeout is missing"
+grep -q '^JOB_MAX_AGE_TEST_ALL=1800$' "$tmp/backend.sh" || fail "full DNS job timeout is missing"
+grep -q '^JOB_MAX_AGE_TEST_CURRENT=300$' "$tmp/backend.sh" || fail "selected DNS job timeout is missing"
+grep -q '^JOB_MAX_AGE_TEST_ONE=60$' "$tmp/backend.sh" || fail "single DNS job timeout is missing"
+grep -q '^job_pid_start_token() {' "$tmp/backend.sh" || fail "job PID identity helper missing"
+grep -q 'pid_start' "$tmp/backend.sh" || fail "job PID start token is not persisted"
+grep -q 'job_process_alive "$_d"' "$tmp/backend.sh" || fail "job JSON does not validate running jobs"
+grep -q 'Превышает допустимое время фоновой задачи DNS Manager' "$tmp/backend.sh" || fail "job timeout failure message missing"
+grep -q "Math.floor(Date.now()/1000)-startedTs>=maxSeconds" "$tmp/overview.js" || fail "LuCI job polling is not wall-clock bounded"
+ok "LuCI background jobs have wall-clock expiry and PID identity protection"
+
+# Watchdog tuning is persisted and exposed as one atomic LuCI save operation.
+for _wd_key in WATCHDOG_INTERVAL WATCHDOG_FAIL_THRESHOLD WATCHDOG_REPAIR_COOLDOWN WATCHDOG_MAX_REPAIRS WATCHDOG_MAX_RESTARTS WATCHDOG_MAX_CANDIDATES WATCHDOG_GUARD_INTERVAL; do
     grep -q "^${_wd_key}=" dns-manager.sh || fail "watchdog config variable missing: $_wd_key"
 done
 grep -q 'WATCHDOG_FAIL_THRESHOLD="$WATCHDOG_FAIL_THRESHOLD"' dns-manager.sh || fail "watchdog threshold is not persisted"
