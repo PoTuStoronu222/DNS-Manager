@@ -839,4 +839,15 @@ ok "watchdog tuning is persisted through one atomic RPC and exposed as a compact
 grep -q 'watchdog_apply_single' "$tmp/backend.sh" || fail "legacy watchdog setter does not use shared apply logic"
 grep -q 'watchdog_apply_batch' "$tmp/backend.sh" || fail "batch watchdog setter helper missing"
 ok "legacy watchdog RPC compatibility is preserved"
+# NTP RPC must be explicitly allowed by the LuCI ACL; the backend alone is not enough.
+grep -q '"set_ntp"' "$tmp/dns-manager-luci.sh" || fail "LuCI ACL/RPC schema does not contain set_ntp"
+awk '/"write"[[:space:]]*:[[:space:]]*\{/,/^[[:space:]]*\}[[:space:]]*$/ { print }' "$tmp/dns-manager-luci.sh" | grep -q '"set_ntp"' || fail "LuCI write ACL does not allow set_ntp"
+if grep -q '192\.168\.1\.1' "$tmp/dns-manager.sh"; then
+    fail "DNS Manager contains a fixed LAN IP fallback"
+fi
+if grep -q '192\.168\.1\.1' "$tmp/dns-manager-luci.sh"; then
+    fail "DNS Manager LuCI contains a fixed LAN IP binding"
+fi
+ok "NTP RPC is allowed by ACL and no fixed router LAN IP is used"
+
 printf '%s\n' "All DNS Manager regression checks passed."
