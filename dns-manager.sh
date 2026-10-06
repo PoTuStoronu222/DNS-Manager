@@ -6449,7 +6449,11 @@ end
 function redirect_to_ttyd()
     local http = require "luci.http"
     local uci = require "luci.model.uci".cursor()
-    local ip = uci:get("network", "lan", "ipaddr") or "192.168.1.1"
+    local ip = uci:get("network", "lan", "ipaddr")
+    if not ip then
+        http.status(404, "LAN address not found")
+        return
+    end
     local port = "7682"
     local fs = require "nixio.fs"
     local data = fs.readfile("/etc/dns-manager/config/manager.conf") or ""
