@@ -842,8 +842,8 @@ if grep -q 'Рестартов https-dns-proxy\|Тяжёлая сверка' "$t
     fail "technical watchdog labels still exposed in LuCI"
 fi
 # Numeric watchdog fields must use a single-escaped digit regex; double-escaped \\d rejects normal values.
-grep -Fq '(x[6]?true:/^\\d+$/.test(raw))' "$tmp/watchdog_card.js" || fail "watchdog numeric validation regex is missing"
-if grep -Fq '(x[6]?true:/^\\\\d+$/.test(raw))' "$tmp/watchdog_card.js"; then
+grep -Fq '(x[6]?true:/^\d+$/.test(raw))' "$tmp/watchdog_card.js" || fail "watchdog numeric validation regex is missing"
+if grep -Fq '(x[6]?true:/^\\d+$/.test(raw))' "$tmp/watchdog_card.js"; then
     fail "watchdog numeric validation regex is double-escaped"
 fi
 ok "watchdog numeric field validation accepts normal integer values"
