@@ -110,6 +110,14 @@ awk '
 node --check "$tmp/overview.js" >/dev/null 2>&1 || fail "embedded JS: node --check"
 ok "embedded LuCI JS syntax"
 
+grep -q "Проверить текущие DNS" "$tmp/overview.js" || fail "LuCI common current-DNS check button missing"
+if grep -q "Проверить DNS в слотах" "$tmp/overview.js" || grep -q "Проверить системные DNS" "$tmp/overview.js"; then
+    fail "LuCI still exposes separate slot/system DNS check buttons"
+fi
+grep -q "var systems=targets.filter(function(d){return d&&!d.slot&&d.url&&d.port;});" "$tmp/overview.js" || fail "LuCI current-DNS check does not classify unassigned system resolvers"
+grep -q "callTestSystem().then" "$tmp/overview.js" || fail "LuCI common current-DNS check does not include system DNS"
+ok "LuCI current-DNS check covers slots and system resolvers with one button"
+
 DOLLAR='$'
 PID_LITERAL="${DOLLAR}${DOLLAR}"
 grep -Fq 'BACKEND_STAGE="${BACKEND_FILE}.new.' dns-manager-luci.sh || fail "backend staging prefix missing"
