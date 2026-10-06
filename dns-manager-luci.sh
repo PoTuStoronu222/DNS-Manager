@@ -356,7 +356,7 @@ fetch_url() {
         return 1
     fi
     [ -s "$_out" ] || return 1
-    [ "$(wc -c < "$_out" 2>/dev/null | tr -d ' ')" -le 250000 ] 2>/dev/null || return 1
+    [ "$(wc -c < "$_out" 2>/dev/null | tr -d ' ')" -le 600000 ] 2>/dev/null || return 1
     return 0
 }
 validate_candidate() {
