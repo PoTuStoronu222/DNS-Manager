@@ -190,6 +190,50 @@ awk '/^job_start_test_current\(\) \{/,/^job_start_test_one\(\) \{/' "$tmp/backen
 awk '/^job_start_test_one\(\) \{/,/^job_json\(\) \{/' "$tmp/backend.sh" | grep -q '_job_pid=\$!' || fail "test_one job PID is not recorded"
 awk '/^job_start_test_one\(\) \{/,/^job_json\(\) \{/' "$tmp/backend.sh" | grep -q 'job_record_pid "\$_jid" "\$_job_pid"' || fail "test_one job PID is not registered"
 ok "all asynchronous DNS jobs register their working PID"
+# NTP status must follow the real OpenWrt system.ntp.server list, not the manager preference.
+grep -q '^ntp_current_preset() {' dns-manager.sh || fail "NTP actual-state detector missing"
+awk '/^ntp_current_preset\(\) \{/,/^\}/' dns-manager.sh > "$tmp/ntp_current_preset.sh"
+grep -q 'system.ntp.server' "$tmp/ntp_current_preset.sh" || fail "NTP detector does not read system.ntp.server"
+grep -q '0.openwrt.pool.ntp.org 1.openwrt.pool.ntp.org 2.openwrt.pool.ntp.org 3.openwrt.pool.ntp.org' "$tmp/ntp_current_preset.sh" || fail "NTP detector does not recognize OpenWrt defaults"
+grep -q 'ntp_current_preset' "$tmp/ntp_menu.sh" 2>/dev/null || true
+awk '/^menu_ntp\(\) \{/,/^# ==========================================/' dns-manager.sh > "$tmp/ntp_menu.sh"
+grep -q 'ntp_current_preset' "$tmp/ntp_menu.sh" || fail "DNS Manager NTP menu still uses only stored preference"
+cat > "$tmp/ntp_current_preset_runner.sh" <<'EOF_NTP_STATE'
+#!/bin/sh
+set -eu
+uci() {
+    case "$NTP_FAKE" in
+        default) printf '%s\n' '0.openwrt.pool.ntp.org 1.openwrt.pool.ntp.org 2.openwrt.pool.ntp.org 3.openwrt.pool.ntp.org' ;;
+        vniiftri) printf '%s\n' '89.109.251.21 89.109.251.22 89.109.251.23 89.109.251.24 89.109.251.25' ;;
+        other) printf '%s\n' '1.2.3.4 5.6.7.8' ;;
+        none) return 1 ;;
+    esac
+}
+ntp_servers_for_profile() {
+    case "$1" in
+        vniiftri_moscow) printf '%s\n' '89.109.251.21 89.109.251.22 89.109.251.23 89.109.251.24 89.109.251.25' ;;
+        nist_ip) printf '%s\n' '129.6.15.28 129.6.15.29 129.6.15.30 129.6.15.27 129.6.15.26' ;;
+        cf_ip) printf '%s\n' '162.159.200.1 162.159.200.123' ;;
+        google_ip) printf '%s\n' '216.239.35.0 216.239.35.4 216.239.35.8 216.239.35.12' ;;
+    esac
+}
+. "$1"
+NTP_FAKE=default
+[ "$(ntp_current_preset)" = openwrt_default ] || exit 41
+NTP_FAKE=vniiftri
+[ "$(ntp_current_preset)" = vniiftri_moscow ] || exit 42
+NTP_FAKE=other
+[ "$(ntp_current_preset)" = other ] || exit 43
+NTP_FAKE=none
+[ "$(ntp_current_preset)" = none ] || exit 44
+EOF_NTP_STATE
+chmod +x "$tmp/ntp_current_preset_runner.sh"
+"$tmp/ntp_current_preset_runner.sh" "$tmp/ntp_current_preset.sh" || fail "NTP actual-state detection behavior"
+grep -q 'function ntpActualPreset(servers)' "$tmp/overview.js" || fail "LuCI NTP actual-state detector missing"
+grep -q "preset=ntpActualPreset(servers)" "$tmp/overview.js" || fail "LuCI NTP page still trusts stored preset instead of actual servers"
+grep -q "openwrt_default:'Стандарт OpenWrt'" "$tmp/overview.js" || fail "LuCI does not label OpenWrt default NTP servers"
+grep -q "other:'ДРУГОЕ'" "$tmp/overview.js" || fail "LuCI does not label unknown NTP servers as other"
+ok "NTP status follows actual OpenWrt system.ntp.server configuration"
 
 grep -q '^restore_dns_core() {' dns-manager.sh || fail "DNS core restore helper missing"
 awk '/^menu_slots() {/,/^menu_bogus() {/' dns-manager.sh > "$tmp/menu_slots.sh"
