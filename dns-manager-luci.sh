@@ -1468,7 +1468,6 @@ status_json() {
         printf ',"status":'; json_quote "$_result_status"
         if [ -z "$_system_ts" ]; then _system_ts="$(last_check_for_id "$_instance_id")"; fi
         printf ',"last_check":'; json_quote "$_system_ts"; printf '}'
-        printf '}'
         _i=$((_i + 1))
     done
     printf ",\"system_dns_count\":%s" "$_system_dns_total"
@@ -1804,7 +1803,7 @@ system_check_write() {
     _url="$1"; _port="$2"; _bootstrap="$3"; _status="$4"; _ping="$5"; _ts="$6"
     _f="$(system_check_file "$_url" "$_port" "$_bootstrap" 2>/dev/null || true)"
     [ -n "$_f" ] || return 1
-    _tmp="$CHECK_DIR/.system.$$.$RANDOM"
+    _tmp="$CHECK_DIR/.system.$"
     {
         printf 'url=%s\n' "$_url"
         printf 'port=%s\n' "$_port"
