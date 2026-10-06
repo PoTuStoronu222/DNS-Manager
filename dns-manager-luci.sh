@@ -2988,6 +2988,7 @@ function renderOverview(root,st){
       btn('Проверить DNS в слотах','cbi-button-action',function(){testCurrent(root);},{disabled:!!state.busy||state.jobRunning||Number(st.test_lock||0)===1}),
       Number(st.system_dns_count||0)>0 ? btn('Проверить системные DNS','cbi-button-action',function(){testSystem(root);},{disabled:!!state.busy||state.jobRunning||Number(st.test_lock||0)===1}) : null
     ].filter(function(x){return !!x;}));
+  ]);
 
   var verCard=card('Версии',[
     E('div',{'class':'dm-version-line'},[
