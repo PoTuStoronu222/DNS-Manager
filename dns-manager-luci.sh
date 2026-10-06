@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.6.80
+# Version: 1.6.81
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -30,7 +30,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://api.github.com/repos/PoTuStoronu222/DNS-Manager/contents/dns-manager-luci.sh?ref=main"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.6.79"
+VERSION="1.6.81"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -120,7 +120,7 @@ EOF_MENU
     },
     "write": {
       "ubus": {
-        "dns_manager": [ "set_profile", "reset_dns", "set_slot", "set_setting", "set_watchdog_setting", "set_watchdog_settings", "set_ntp", "set_test_age", "test_all", "test_current", "test_one", "update", "update_manager", "update_hdp", "update_catalog", "update_all" ]
+        "dns_manager": [ "set_profile", "reset_dns", "set_slot", "set_setting", "set_watchdog_setting", "set_watchdog_settings", "set_ntp", "set_test_age", "test_all", "test_current", "test_one", "test_system", "update", "update_manager", "update_hdp", "update_catalog", "update_all" ]
       }
     }
   }
@@ -156,7 +156,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.6.79"
+SELF_VERSION="1.6.81"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -1387,6 +1387,7 @@ status_json() {
     printf ',"force_status":'; json_quote "$_force_status"
     _owner_label=нет; [ "$_force_owner" = manager ] && _owner_label='DNS Manager'; [ "$_force_owner" = steer ] && _owner_label='Steer'; [ "$_force_owner" = external ] && _owner_label=внешний
     printf ',"force_owner_label":'; json_quote "$_owner_label"; printf ',"zapret_running":%s' "$_zapret_running"
+    _system_dns_total=0
     printf ',"doh_total":%s,"doh_match":%s,"configured_dns":%s' "$_doh_total" "$_match" "$_expected"
     printf ',"last_full_test":'; json_quote "$_last"; printf ',"last_full_test_scope":'; json_quote "$_test_scope"; printf ',"components_checked_at":'; json_quote "$_components_checked_at"
     printf ',"hostname":'; json_quote "$_host"; printf ',"uptime":'; json_quote "$_uptime"; printf ',"load1":'; json_quote "$_load"
@@ -1428,10 +1429,21 @@ status_json() {
         _r=""
         _ms=""
         _rawst=""
+        _system_ts=""
         [ -n "$_instance_id" ] && _r="$(result_for_id "$_instance_id" 2>/dev/null || true)"
         if [ -n "$_r" ]; then
             _ms="$(printf '%s' "$_r" | awk -F'|' 'NF>=5 {print $4;exit}')"
             _rawst="$(printf '%s' "$_r" | awk -F'|' 'NF>=5 {print $5;exit}')"
+        fi
+        if [ -z "$_slot" ] && [ -n "$_u" ] && [ -n "$_p" ]; then
+            _system_dns_total=$((_system_dns_total + 1))
+            _system_bootstrap="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].bootstrap_dns" 2>/dev/null || true)"
+            _sr="$(system_check_read "$_u" "$_p" "$_system_bootstrap" 2>/dev/null || true)"
+            if [ -n "$_sr" ]; then
+                _ms="$(printf '%s' "$_sr" | awk -F'|' '{print $2}')"
+                _rawst="$(printf '%s' "$_sr" | awk -F'|' '{print $1}')"
+                _system_ts="$(printf '%s' "$_sr" | awk -F'|' '{print $3}')"
+            fi
         fi
         case "$_rawst" in
             OK)
@@ -1454,10 +1466,12 @@ status_json() {
         printf ',"running":%s,"slot":' "$_run"; json_quote "$_slot"
         printf ',"ping":'; json_quote "$_ms"
         printf ',"status":'; json_quote "$_result_status"
-        printf ',"last_check":'; json_quote "$(last_check_for_id "$_instance_id")"
+        if [ -z "$_system_ts" ]; then _system_ts="$(last_check_for_id "$_instance_id")"; fi
+        printf ',"last_check":'; json_quote "$_system_ts"; printf '}'
         printf '}'
         _i=$((_i + 1))
     done
+    printf ",\"system_dns_count\":%s" "$_system_dns_total"
     printf '],"slots":['
     _first=1
     for _s in 1 2 3 4 5 6 RU; do
@@ -1486,6 +1500,82 @@ load_manager() {
     restore_persistent_test_results >/dev/null 2>&1 || true
     refresh_runtime_capabilities >/dev/null 2>&1 || true
     return 0
+}
+system_instance_slot() {
+    _url="$(normalize_url "$1" 2>/dev/null || true)"; _port="$2"
+    _catalog_id="$(awk -F'|' -v u="$_url" '$5==u {print $1; exit}' "$CATALOG_FILE" 2>/dev/null || true)"
+    for _s in 1 2 3 4 5 6 RU; do
+        _sid="$(cfg_get "SLOT_$_s")"; _sport="$(cfg_get "PORT_$_s")"
+        [ -n "$_sid" ] && [ -n "$_catalog_id" ] && [ "$_sid" = "$_catalog_id" ] && return 0
+        [ -n "$_sport" ] && [ -n "$_port" ] && [ "$_sport" = "$_port" ] && return 0
+    done
+    return 1
+}
+
+job_start_test_system() {
+    _jid="$(new_job_id test_system)"
+    job_active "$_jid" && { json_error "Проверка системных DNS уже выполняется"; return; }
+    job_prepare "$_jid" || { json_error "Не удалось подготовить задачу"; return; }
+    printf 'status=running\nstarted=%s\nmode=system\n' "$(date +%s)" > "$JOB_DIR/$_jid/state"
+    (
+        exec >>"$JOB_DIR/$_jid/output" 2>&1
+        if ! load_manager; then
+            job_write "$_jid" status failed; job_write "$_jid" result fail; job_write "$_jid" finished "$(date +%s)"; exit 1
+        fi
+        if ! acquire_test_lock; then
+            job_write "$_jid" status failed; job_write "$_jid" result fail; job_write "$_jid" finished "$(date +%s)"
+            printf '%s\n' "Другая проверка DNS уже выполняется." >> "$JOB_DIR/$_jid/output"
+            exit 1
+        fi
+        _saved_catalog="$DNS_CATALOG"; _saved_bootstrap="$BOOTSTRAP_DNS"
+        _system_catalog="$TMP_ROOT/system-catalog-$$"
+        _total=0; _done=0; _fail=0; _i=0
+        while uci -q get "https-dns-proxy.@https-dns-proxy[$_i]" >/dev/null 2>&1; do
+            _u="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].resolver_url" 2>/dev/null || true)"
+            _p="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].listen_port" 2>/dev/null || true)"
+            _b="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].bootstrap_dns" 2>/dev/null || true)"
+            if [ -n "$_u" ] && [ -n "$_p" ] && ! system_instance_slot "$_u" "$_p"; then
+                _total=$((_total+1))
+                _sid="system_${_i}"
+                _norm_url="$(normalize_url "$_u" 2>/dev/null || true)"
+                printf '%s|system|System DNS|System DNS|%s\n' "$_sid" "$_norm_url" > "$_system_catalog"
+                DNS_CATALOG="$_system_catalog"; BOOTSTRAP_DNS="$_b"
+                rm -f "$TMP_DIR/t.$_sid" 2>/dev/null || true
+                test_one_dns "$_sid" >/dev/null 2>&1 || true
+                _rf="$TMP_DIR/t.$_sid"
+                if [ -s "$_rf" ]; then
+                    _line="$(head -n1 "$_rf")"
+                    _ms="$(printf '%s' "$_line" | awk -F'|' 'NF>=5 {print $4;exit}')"
+                    _st="$(printf '%s' "$_line" | awk -F'|' 'NF>=5 {print $5;exit}')"
+                    case "$_ms" in ''|*[!0-9]*) _ms=-1;; esac
+                    system_check_write "$_norm_url" "$_p" "$_b" "$_st" "$_ms" "$(date +%s)" >/dev/null 2>&1 || true
+                    [ "$_st" = OK ] || _fail=$((_fail+1))
+                else
+                    system_check_write "$_norm_url" "$_p" "$_b" "TEST_NO_RESULT" "-1" "$(date +%s)" >/dev/null 2>&1 || true
+                    _fail=$((_fail+1))
+                fi
+                rm -f "$_rf" 2>/dev/null || true
+                _done=$((_done+1))
+                job_write "$_jid" progress_done "$_done"; job_write "$_jid" progress_total "$_total"; job_write "$_jid" progress_fail "$_fail"
+            fi
+            _i=$((_i+1))
+        done
+        DNS_CATALOG="$_saved_catalog"; BOOTSTRAP_DNS="$_saved_bootstrap"
+        rm -f "$_system_catalog" 2>/dev/null || true
+        release_test_lock
+        _now="$(date +%s)"
+        if [ "$_total" -gt 0 ] && [ "$_fail" -eq 0 ]; then
+            job_write "$_jid" status done; job_write "$_jid" result ok
+        elif [ "$_total" -eq 0 ]; then
+            job_write "$_jid" status failed; job_write "$_jid" result fail
+            printf '%s\n' "Системных DNS без привязки к слотам не найдено." >> "$JOB_DIR/$_jid/output"
+        else
+            job_write "$_jid" status done; job_write "$_jid" result fail
+        fi
+        job_write "$_jid" finished "$_now"
+    ) &
+    _job_pid=$!; job_record_pid "$_jid" "$_job_pid"
+    printf '{"ok":true,"job":'; json_quote "$_jid"; printf '}'
 }
 
 watchdog_apply_values() {
@@ -1685,6 +1775,48 @@ commit_single_test_result() {
     [ "$_saved_line" = "$_line" ] || return 1
     return 0
 }
+system_check_key() {
+    _url="$1"; _port="$2"; _bootstrap="$3"
+    _s="$(printf '%s' "$_url|$_port|$_bootstrap" | cksum 2>/dev/null | awk '{print $1"-"$2}')"
+    [ -n "$_s" ] || return 1
+    printf '%s' "$_s"
+}
+system_check_file() {
+    _key="$(system_check_key "$1" "$2" "$3" 2>/dev/null || true)"
+    [ -n "$_key" ] || return 1
+    printf '%s/system-%s' "$CHECK_DIR" "$_key"
+}
+system_check_read() {
+    _url="$(normalize_url "$1" 2>/dev/null || true)"; _port="$2"; _bootstrap="$3"
+    _f="$(system_check_file "$_url" "$_port" "$_bootstrap" 2>/dev/null || true)"
+    [ -r "$_f" ] || return 1
+    _stored_url="$(sed -n 's/^url=//p' "$_f" 2>/dev/null | head -n1)"
+    _stored_port="$(sed -n 's/^port=//p' "$_f" 2>/dev/null | head -n1)"
+    _stored_bootstrap="$(sed -n 's/^bootstrap=//p' "$_f" 2>/dev/null | head -n1)"
+    [ "$_stored_url" = "$_url" ] && [ "$_stored_port" = "$_port" ] && [ "$_stored_bootstrap" = "$_bootstrap" ] || return 1
+    _status="$(sed -n 's/^status=//p' "$_f" 2>/dev/null | head -n1)"
+    _ping="$(sed -n 's/^ping=//p' "$_f" 2>/dev/null | head -n1)"
+    _ts="$(sed -n 's/^timestamp=//p' "$_f" 2>/dev/null | head -n1)"
+    [ -n "$_status" ] || return 1
+    printf '%s|%s|%s' "$_status" "$_ping" "$_ts"
+}
+system_check_write() {
+    _url="$1"; _port="$2"; _bootstrap="$3"; _status="$4"; _ping="$5"; _ts="$6"
+    _f="$(system_check_file "$_url" "$_port" "$_bootstrap" 2>/dev/null || true)"
+    [ -n "$_f" ] || return 1
+    _tmp="$CHECK_DIR/.system.$$.$RANDOM"
+    {
+        printf 'url=%s\n' "$_url"
+        printf 'port=%s\n' "$_port"
+        printf 'bootstrap=%s\n' "$_bootstrap"
+        printf 'status=%s\n' "$_status"
+        printf 'ping=%s\n' "$_ping"
+        printf 'timestamp=%s\n' "$_ts"
+    } > "$_tmp" 2>/dev/null || { rm -f "$_tmp" 2>/dev/null || true; return 1; }
+    chmod 600 "$_tmp" 2>/dev/null || true
+    mv -f "$_tmp" "$_f" 2>/dev/null || { rm -f "$_tmp" 2>/dev/null || true; return 1; }
+}
+
 # Assigned DNS checks use the real local listener port. Unassigned catalog DNS
 # keeps the remote DoH check until the DNS is assigned to a slot.
 new_job_id() {
@@ -1693,6 +1825,7 @@ new_job_id() {
         test_all) printf 'test_all' ;;
         test_current) printf 'test_current' ;;
         test_one) printf 'test_one' ;;
+        test_system) printf 'test_system' ;;
         *) printf 'job' ;;
     esac
 }
@@ -2287,11 +2420,11 @@ watchdog_restore_service_state() {
         /etc/init.d/dns-watchdog stop >/dev/null 2>&1 || true
     fi
 }
-test_json() { case "${RPC_METHOD:-}" in test_all) job_start_test_all;; test_current) job_start_test_current;; test_one) job_start_test_one "$(jget id)";; *) json_error "Недопустимый метод проверки";; esac; }
+test_json() { case "${RPC_METHOD:-}" in test_all) job_start_test_all;; test_current) job_start_test_current;; test_one) job_start_test_one "$(jget id)";; test_system) job_start_test_system;; *) json_error "Недопустимый метод проверки";; esac; }
 
 case "${1:-}" in
     list)
-        printf '{"status":{},"runtime":{},"catalog":{"category":"String","offset":0,"limit":0,"only_ok":0},"update_check":{},"update":{},"update_manager":{},"update_hdp":{},"update_catalog":{},"update_all":{},"set_profile":{"profile":"String"},"reset_dns":{},"set_slot":{"slot":"String","id":"String"},"set_setting":{"name":"String","enabled":0},"set_watchdog_setting":{"name":"String","value":0},"set_watchdog_settings":{"interval":0,"threshold":0,"repair_cooldown":0,"max_repairs":0,"max_restarts":0,"max_candidates":0,"guard_interval":0},"set_ntp":{"preset":"String"},"set_test_age":{"category":"String","hours":0},"test_all":{},"test_current":{},"test_one":{"id":"String"},"job":{"id":"String"},"log":{"lines":0}}\n'
+        printf '{"status":{},"runtime":{},"catalog":{"category":"String","offset":0,"limit":0,"only_ok":0},"update_check":{},"update":{},"update_manager":{},"update_hdp":{},"update_catalog":{},"update_all":{},"set_profile":{"profile":"String"},"reset_dns":{},"set_slot":{"slot":"String","id":"String"},"set_setting":{"name":"String","enabled":0},"set_watchdog_setting":{"name":"String","value":0},"set_watchdog_settings":{"interval":0,"threshold":0,"repair_cooldown":0,"max_repairs":0,"max_restarts":0,"max_candidates":0,"guard_interval":0},"set_ntp":{"preset":"String"},"set_test_age":{"category":"String","hours":0},"test_all":{},"test_current":{},"test_one":{"id":"String"},"test_system":{},"job":{"id":"String"},"log":{"lines":0}}\n'
         ;;
     call)
         case "${2:-}" in
@@ -2300,7 +2433,7 @@ case "${1:-}" in
             catalog) INPUT="$(cat 2>/dev/null || true)"; catalog_json;;
             update_check) INPUT="$(cat 2>/dev/null || true)"; update_check_json;;            update_catalog) update_catalog_json;;            update_all) update_all_json;;            update) update_json;;            update_manager) update_manager_json;;            update_hdp) update_hdp_json;;
             reset_dns|set_profile|set_slot|set_setting|set_watchdog_setting|set_watchdog_settings|set_ntp) INPUT="$(cat 2>/dev/null || true)"; RPC_METHOD="$2"; run_action;;
-            test_all|test_current|test_one) INPUT="$(cat 2>/dev/null || true)"; RPC_METHOD="$2"; test_json;;
+            test_all|test_current|test_one|test_system) INPUT="$(cat 2>/dev/null || true)"; RPC_METHOD="$2"; test_json;;
             job) INPUT="$(cat 2>/dev/null || true)"; job_json "$(jget id)";;
             log) INPUT="$(cat 2>/dev/null || true)"; log_json "$(jget lines)";;
             *) json_error "Недопустимый метод";;
@@ -2381,6 +2514,7 @@ var callTestAge = dmRpc({ object:'dns_manager', method:'set_test_age', params:['
 var callTestAll = dmRpc({ object:'dns_manager', method:'test_all', expect:{} });
 var callTestCurrent = dmRpc({ object:'dns_manager', method:'test_current', expect:{} });
 var callTestOne = dmRpc({ object:'dns_manager', method:'test_one', params:['id'], expect:{} });
+var callTestSystem = dmRpc({ object:'dns_manager', method:'test_system', expect:{} });
 var callJob = dmRpc({ object:'dns_manager', method:'job', params:['id'], expect:{} });
 var callLog = dmRpc({ object:'dns_manager', method:'log', params:['lines'], expect:{} });
 
@@ -2839,8 +2973,9 @@ function renderOverview(root,st){
     ]),
     E('div',{'class':'dm-component-dns-list'},dnsItems),
     E('div',{'class':'dm-actions'},[
-      btn('Проверить DNS в слотах','cbi-button-action',function(){testCurrent(root);},{disabled:!!state.busy||state.jobRunning})
-    ])
+      btn('Проверить DNS в слотах','cbi-button-action',function(){testCurrent(root);},{disabled:!!state.busy||state.jobRunning}),
+      Number(st.system_dns_count||0)>0 ? btn('Проверить системные DNS','cbi-button-action',function(){testSystem(root);},{disabled:!!state.busy||state.jobRunning}) : null
+    ].filter(function(x){return !!x;})
   ]);
 
   var verCard=card('Версии',[
@@ -4013,6 +4148,19 @@ function testOne(id,root,origin,done){
   });
 }
 
+function testSystem(root){
+  if(state.jobRunning||state.busy)return;
+  var total=(window.dmState&&window.dmState.doh_instances||[]).filter(function(d){return d&&d.url&&d.port&&!d.slot;}).length;
+  if(!total){state.pageNotice.doh='Системных DNS без привязки к слотам не найдено.';render(root,window.dmState||{});return;}
+  state.jobRunning=true;state.currentSystemTest={status:'RUNNING',total:total,started:Date.now()};state.pageNotice.doh='Проверяю системные DNS…';
+  render(root,window.dmState||{});
+  callTestSystem().then(function(r){
+    if(r&&r.ok)pollJob(root,r.job,{mode:'system'},null);
+    else{state.currentSystemTest={status:'FAILED',total:total};state.jobRunning=false;state.pageNotice.doh=(r&&r.error)||'Не удалось запустить проверку системных DNS.';refresh(root,true);}
+  }).catch(function(err){
+    state.currentSystemTest={status:'FAILED',total:total};state.jobRunning=false;state.pageNotice.doh=withRpcError('Не удалось запустить проверку системных DNS.',err);refresh(root,true);
+  });
+}
 function testCurrent(root){
   if(state.jobRunning||state.busy)return;
   var total=(window.dmState&&window.dmState.slots||[]).filter(function(d){return d&&d.id;}).length;
@@ -4091,6 +4239,7 @@ function pollJob(root,job,meta,done){
           }
         }
         if(meta&&meta.mode==='current')state.currentTest={status:String(j.status||'').toUpperCase()==='DONE'?'DONE':'FAILED',result:j.result||'fail',finished:Date.now()};
+        if(meta&&meta.mode==='system'){var systemOk=String(j.status||'').toUpperCase()==='DONE'&&j.result==='ok';state.currentSystemTest={status:systemOk?'DONE':'FAILED',result:j.result||'fail',finished:Date.now()};state.pageNotice.doh=systemOk?'Проверка системных DNS завершена.':'Проверка системных DNS завершена с ошибками.';}
         render(root,ns);
         if(meta&&meta.mode==='all'&&meta.origin==='catalog'&&state.activeTab==='catalog'){
           loadCatalog(root);
