@@ -6600,6 +6600,15 @@ setting_process() {
     case "$_module" in
     esac
 
+    if [ "$_module" = watchdog ] && [ "$_new" = 1 ]; then
+        _profile_category="$(selected_general_category_status 2>/dev/null || printf none)"
+        if [ "$_profile_category" = none ]; then
+            err_msg "Сначала выберите профиль DNS Manager."
+            pause
+            return 1
+        fi
+    fi
+
     case "$_module" in
         watchdog)
             watchdog_apply_toggle "$_new"
