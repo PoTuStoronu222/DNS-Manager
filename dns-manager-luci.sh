@@ -1784,7 +1784,15 @@ commit_single_test_result() {
 }
 system_check_key() {
     _url="$1"; _port="$2"; _bootstrap="$3"
-    _s="$(printf '%s' "$_url|$_port|$_bootstrap" | cksum 2>/dev/null | awk '{print $1"-"$2}')"
+    _input="$_url|$_port|$_bootstrap"
+    _s=""
+    if command -v cksum >/dev/null 2>&1; then
+        _s="$(printf '%s' "$_input" | cksum 2>/dev/null | awk '{print $1"-"$2}')"
+    elif command -v md5sum >/dev/null 2>&1; then
+        _s="$(printf '%s' "$_input" | md5sum 2>/dev/null | awk '{print $1}')"
+    elif command -v sha256sum >/dev/null 2>&1; then
+        _s="$(printf '%s' "$_input" | sha256sum 2>/dev/null | awk '{print $1}')"
+    fi
     [ -n "$_s" ] || return 1
     printf '%s' "$_s"
 }
