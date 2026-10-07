@@ -2858,10 +2858,9 @@ function componentSettingItem(title,key){
   var node=n===1?badge('dm-ok','включено'):n===2?badge('dm-bad','другое'):badge('dm-off','выключено');
   return componentItem(title,node);
 }
-function forceComponentItem(root,st){
+function forceComponentItem(st){
   st=st||{};
   var busy=!!state.busy;
-  var profileSelected=String(st.profile||'none')!=='none';
   var mode=String(st.force_status||'off');
   var owner=String(st.force_owner||'none');
   var both=yes(st.force_both);
@@ -2873,35 +2872,17 @@ function forceComponentItem(root,st){
     :owner==='steer'&&mode==='steer'?'включён • Steer'
     :owner==='manager'?'DNS Manager'
     :'выключен';
-  var target=active?0:1;
-  var actionText=active?'Выключить':(both||mode==='external'||owner==='external'||mode==='other'?'Исправить':'Включить');
-  var actionClass=active?'cbi-button-remove':(actionText==='Исправить'?'cbi-button-apply':'cbi-button-add');
-  var disabled=busy||(!profileSelected&&!active);
-  var actionNode=btn(busy?'Сохраняю…':actionText,actionClass,function(){
-    if(busy||(!profileSelected&&!active))return;
-    setSetting('force',target,root);
-  },{disabled:disabled});
-  var detailNodes=[E('div',{'class':'dm-actions'},[actionNode])];
-  if(!profileSelected&&!active)detailNodes.push(E('div',{'class':'dm-inline-msg info'},'Сначала выберите профиль DNS Manager.'));
   return componentItem('Принудительный DNS для устройств',
-    badge(busy?'dm-warn':stateKind,busy?'изменение':stateText),
-    E('div',{},detailNodes)
+    badge(busy?'dm-warn':stateKind,busy?'изменение':stateText)
   );
 }
-function watchdogComponentItem(root,st,wd,wdDetails){
+function watchdogComponentItem(st,wd,wdDetails){
   st=st||{};
   var busy=!!state.busy;
-  var profileSelected=String(st.profile||'none')!=='none';
-  var active=yes(st.watchdog);
-  var disabled=busy||(!profileSelected&&!active);
-  var actionNode=btn(busy?'Сохраняю…':(active?'Выключить':'Включить'),
-    active?'cbi-button-remove':'cbi-button-add',function(){
-      if(busy||(!profileSelected&&!active))return;
-      setSetting('watchdog',active?0:1,root);
-    },{disabled:disabled});
-  var detailNodes=[E('div',{'class':'dm-component-details'},wdDetails),E('div',{'class':'dm-actions'},[actionNode])];
-  if(!profileSelected&&!active)detailNodes.push(E('div',{'class':'dm-inline-msg info'},'Сначала выберите профиль DNS Manager.'));
-  return componentItem('Автопроверка и замена DNS',wd,E('div',{},detailNodes));
+  return componentItem('Автопроверка и замена DNS',
+    wd,
+    E('div',{'class':'dm-component-details'},wdDetails)
+  );
 }
 
 function boardMemoryKb(board,key){
@@ -3021,8 +3002,8 @@ function renderOverview(root,st){
   });
   if(!dnsItems.length)dnsItems.push(E('div',{'class':'dm-hint'},'DNS в слоты не назначены.'));
   var components=card('Компоненты',[
-    watchdogComponentItem(root,st,wd,wdDetails),
-    forceComponentItem(root,st),
+    watchdogComponentItem(st,wd,wdDetails),
+    forceComponentItem(st),
     componentSettingItem('Увеличенный кэш DNS','dnsmasq_perf'),
   ]);
 
