@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.23
+# Version: 1.24
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -30,7 +30,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.23"
+VERSION="1.24"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -156,7 +156,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.23"
+SELF_VERSION="1.24"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -2489,7 +2489,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.23
+// DNS Manager LuCI version: 1.24
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -4215,7 +4215,7 @@ function testCurrent(root){
   var targets=(window.dmState&&window.dmState.doh_instances||[]).filter(function(d){
     return d&&(d.id||(!d.slot&&d.url&&d.port));
   });
-  var slots=targets.filter(function(d){return d&&d.id;});
+  var slots=targets.filter(function(d){return d&&d.id&&d.slot;});
   var systems=targets.filter(function(d){return d&&!d.slot&&d.url&&d.port;});
   var total=targets.length;
   if(!total){
