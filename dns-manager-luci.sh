@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.27
+# Version: 1.28
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -30,7 +30,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.27"
+VERSION="1.28"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -156,7 +156,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.27"
+SELF_VERSION="1.28"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -2489,7 +2489,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.27
+// DNS Manager LuCI version: 1.28
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -2830,10 +2830,8 @@ function checkInfo(id,d){
   var key=checkKey(id,d);
   var x=state.checking&&state.checking[key];
   if(x&&String(x.status||'').toUpperCase()==='RUNNING')return {status:'RUNNING',ping:''};
-  if(state.currentTest&&state.currentTest.status==='RUNNING'&&state.currentTest.phase==='slots'&&d&&!d.slot)
-    return {status:'',ping:''};
   var r={status:d&&d.status?d.status:'',ping:d&&d.ping?d.ping:''};
-  
+  if(String(r.status||'').toUpperCase()==='OK'&&!hasPing(r.ping))r.status='FAIL';
   return r;
 }
 function componentItem(title,statusNode,details){
@@ -4226,7 +4224,7 @@ function testCurrent(root){
   var targets=(window.dmState&&window.dmState.doh_instances||[]).filter(function(d){
     return d&&(d.id||(!d.slot&&d.url&&d.port));
   });
-  var slots=targets.filter(function(d){return d&&d.id&&d.slot;});
+  var slots=targets.filter(function(d){return d&&d.id;});
   var systems=targets.filter(function(d){return d&&!d.slot&&d.url&&d.port;});
   var total=targets.length;
   if(!total){
@@ -4237,9 +4235,9 @@ function testCurrent(root){
     return;
   }
 
-  state.currentTest={status:'RUNNING',phase:'slots',total:total,started:Date.now()};
+  state.currentTest={status:'RUNNING',total:total,started:Date.now()};
   state.jobRunning=true;
-  slots.forEach(function(d){
+  targets.forEach(function(d){
     state.checking[checkKey(d.id,d)]={status:'RUNNING',ping:'',started:Date.now()};
   });
   state.pageNotice.doh='Проверяю текущие DNS…';
@@ -4267,11 +4265,7 @@ function testCurrent(root){
       finishCombined(window.dmState||{});
       return;
     }
-    state.currentTest.phase='system';
     state.jobRunning=true;
-    systems.forEach(function(d){
-      state.checking[checkKey(d.id,d)]={status:'RUNNING',ping:'',started:Date.now()};
-    });
     state.pageNotice.doh='Проверяю системные DNS…';
     render(root,window.dmState||{});
     callTestSystem().then(function(r){
