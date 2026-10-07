@@ -1916,6 +1916,8 @@ detect_forced_dns_path() {
                 FORCED_DNS_TARGETS="${FORCED_DNS_TARGETS}${_rp} "
                 if [ "$_steer" = 1 ] && [ "$_rp" = 5300 ]; then
                     :
+                elif [ "$_manager_force_cfg" = 1 ] && printf '%s\n' "$_line" | grep -q 'ubus:https-dns-proxy'; then
+                    :
                 elif dns_manager_force_port "$_rp" && [ "$_manager_force_cfg" = 1 ]; then
                     :
                 else
