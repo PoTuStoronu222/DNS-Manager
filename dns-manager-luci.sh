@@ -834,6 +834,20 @@ result_for_id() {
     awk -F'|' -v id="$_id" '$1==id {print; exit}' "$_f" 2>/dev/null
 }
 
+system_result_id() {
+    _sri_url="$1"; _sri_port="$2"; _sri_index="$3"
+    _sri_url="$(printf '%s' "$_sri_url" | sed 's/[[:space:]]//g; s:/*$::')"
+    _sri_cat_id="$(awk -F'|' -v u="$_sri_url" '$5==u {print $1; exit}' "$CATALOG_FILE" 2>/dev/null || true)"
+    if [ -n "$_sri_cat_id" ]; then
+        printf '%s' "$_sri_cat_id"
+        return 0
+    fi
+    case "$_sri_port" in
+        ''|*[!0-9]*) printf 'system_%s' "$_sri_index" ;;
+        *) printf 'system_port_%s' "$_sri_port" ;;
+    esac
+}
+
 last_check_for_id() {
     _id="$1"
     [ -n "$_id" ] || return 1
@@ -1432,20 +1446,15 @@ status_json() {
         _ms=""
         _rawst=""
         _system_ts=""
-        [ -n "$_instance_id" ] && _r="$(result_for_id "$_instance_id" 2>/dev/null || true)"
+        _result_id="$_instance_id"
+        if [ -z "$_slot" ] && [ -n "$_u" ] && [ -n "$_p" ]; then
+            _system_dns_total=$((_system_dns_total + 1))
+            _result_id="$(system_result_id "$_u" "$_p" "$_i")"
+        fi
+        [ -n "$_result_id" ] && _r="$(result_for_id "$_result_id" 2>/dev/null || true)"
         if [ -n "$_r" ]; then
             _ms="$(printf '%s' "$_r" | awk -F'|' 'NF>=5 {print $4;exit}')"
             _rawst="$(printf '%s' "$_r" | awk -F'|' 'NF>=5 {print $5;exit}')"
-        fi
-        if [ -z "$_slot" ] && [ -n "$_u" ] && [ -n "$_p" ]; then
-            _system_dns_total=$((_system_dns_total + 1))
-            _system_bootstrap="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].bootstrap_dns" 2>/dev/null || true)"
-            _sr="$(system_check_read "$_u" "$_p" "$_system_bootstrap" 2>/dev/null || true)"
-            if [ -n "$_sr" ]; then
-                _ms="$(printf '%s' "$_sr" | awk -F'|' '{print $2}')"
-                _rawst="$(printf '%s' "$_sr" | awk -F'|' '{print $1}')"
-                _system_ts="$(printf '%s' "$_sr" | awk -F'|' '{print $3}')"
-            fi
         fi
         case "$_rawst" in
             OK)
@@ -1468,7 +1477,7 @@ status_json() {
         printf ',"running":%s,"slot":' "$_run"; json_quote "$_slot"
         printf ',"ping":'; json_quote "$_ms"
         printf ',"status":'; json_quote "$_result_status"
-        if [ -z "$_system_ts" ]; then _system_ts="$(last_check_for_id "$_instance_id")"; fi
+        if [ -z "$_system_ts" ] && [ -n "$_result_id" ]; then _system_ts="$(last_check_for_id "$_result_id")"; fi
         printf ',"last_check":'; json_quote "$_system_ts"; printf '}'
         _i=$((_i + 1))
     done
@@ -1503,13 +1512,8 @@ load_manager() {
     refresh_runtime_capabilities >/dev/null 2>&1 || true
     return 0
 }
-luci_normalize_url() {
-    _lu="$1"
-    _lu="$(printf '%s' "$_lu" | sed 's/[[:space:]]//g; s:/*$::')"
-    printf '%s' "$_lu"
-}
 system_instance_slot() {
-    _url="$(luci_normalize_url "$1" 2>/dev/null || true)"; _port="$2"
+    _url="$(normalize_url "$1" 2>/dev/null || true)"; _port="$2"
     _catalog_id="$(awk -F'|' -v u="$_url" '$5==u {print $1; exit}' "$CATALOG_FILE" 2>/dev/null || true)"
     for _s in 1 2 3 4 5 6 RU; do
         _sid="$(cfg_get "SLOT_$_s")"; _sport="$(cfg_get "PORT_$_s")"
@@ -1540,13 +1544,12 @@ job_start_test_system() {
         while uci -q get "https-dns-proxy.@https-dns-proxy[$_i]" >/dev/null 2>&1; do
             _u="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].resolver_url" 2>/dev/null || true)"
             _p="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].listen_port" 2>/dev/null || true)"
-            _b="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].bootstrap_dns" 2>/dev/null || true)"
             if [ -n "$_u" ] && [ -n "$_p" ] && ! system_instance_slot "$_u" "$_p"; then
                 _total=$((_total+1))
-                _sid="system_${_i}"
-                _norm_url="$(luci_normalize_url "$_u" 2>/dev/null || true)"
+                _sid="$(system_result_id "$_u" "$_p" "$_i")"
+                _norm_url="$(normalize_url "$_u" 2>/dev/null || true)"
                 printf '%s|system|System DNS|System DNS|%s\n' "$_sid" "$_norm_url" > "$_system_catalog"
-                DNS_CATALOG="$_system_catalog"; BOOTSTRAP_DNS="$_b"
+                DNS_CATALOG="$_system_catalog"; BOOTSTRAP_DNS="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].bootstrap_dns" 2>/dev/null || true)"
                 rm -f "$TMP_DIR/t.$_sid" 2>/dev/null || true
                 test_one_dns "$_sid" >/dev/null 2>&1 || true
                 _rf="$TMP_DIR/t.$_sid"
@@ -1555,15 +1558,39 @@ job_start_test_system() {
                     _ms="$(printf '%s' "$_line" | awk -F'|' 'NF>=5 {print $4;exit}')"
                     _st="$(printf '%s' "$_line" | awk -F'|' 'NF>=5 {print $5;exit}')"
                     case "$_ms" in ''|*[!0-9]*) _ms=-1;; esac
-                    system_check_write "$_norm_url" "$_p" "$_b" "$_st" "$_ms" "$(date +%s)" >/dev/null 2>&1 || true
+                else
+                    _ms=-1
+                    _st="TEST_NO_RESULT"
+                fi
+
+                if [ "$_st" = OK ]; then
+                    case "$_ms" in ''|*[!0-9]*|-1) _st=FAIL; _ms=-1;; esac
+                fi
+
+                if [ -n "$_st" ] && [ "$_st" != "TEST_NO_RESULT" ]; then
+                    job_write "$_jid" ping "$_ms"
+                    job_write "$_jid" dns_status "$_st"
+                    if ! commit_single_test_result "$_sid" "$_rf"; then
+                        job_write "$_jid" status failed
+                        job_write "$_jid" result fail
+                        job_write "$_jid" finished "$(date +%s)"
+                        job_write "$_jid" error "Не удалось сохранить результат проверки системного DNS."
+                        rm -f "$_rf" "$_system_catalog" 2>/dev/null || true
+                        DNS_CATALOG="$_saved_catalog"; BOOTSTRAP_DNS="$_saved_bootstrap"
+                        release_test_lock
+                        exit 1
+                    fi
+                    set_check_stamp "$_sid" "$(date +%s)" || true
                     [ "$_st" = OK ] || _fail=$((_fail+1))
                 else
-                    system_check_write "$_norm_url" "$_p" "$_b" "TEST_NO_RESULT" "-1" "$(date +%s)" >/dev/null 2>&1 || true
                     _fail=$((_fail+1))
                 fi
+
                 rm -f "$_rf" 2>/dev/null || true
                 _done=$((_done+1))
-                job_write "$_jid" progress_done "$_done"; job_write "$_jid" progress_total "$_total"; job_write "$_jid" progress_fail "$_fail"
+                job_write "$_jid" progress_done "$_done"
+                job_write "$_jid" progress_total "$_total"
+                job_write "$_jid" progress_fail "$_fail"
             fi
             _i=$((_i+1))
         done
@@ -1782,56 +1809,6 @@ commit_single_test_result() {
     [ "$_saved_line" = "$_line" ] || return 1
     return 0
 }
-system_check_key() {
-    _url="$1"; _port="$2"; _bootstrap="$3"
-    _input="$_url|$_port|$_bootstrap"
-    _s=""
-    if command -v cksum >/dev/null 2>&1; then
-        _s="$(printf '%s' "$_input" | cksum 2>/dev/null | awk '{print $1"-"$2}')"
-    elif command -v md5sum >/dev/null 2>&1; then
-        _s="$(printf '%s' "$_input" | md5sum 2>/dev/null | awk '{print $1}')"
-    elif command -v sha256sum >/dev/null 2>&1; then
-        _s="$(printf '%s' "$_input" | sha256sum 2>/dev/null | awk '{print $1}')"
-    fi
-    [ -n "$_s" ] || return 1
-    printf '%s' "$_s"
-}
-system_check_file() {
-    _key="$(system_check_key "$1" "$2" "$3" 2>/dev/null || true)"
-    [ -n "$_key" ] || return 1
-    printf '%s/system-%s' "$CHECK_DIR" "$_key"
-}
-system_check_read() {
-    _url="$(luci_normalize_url "$1" 2>/dev/null || true)"; _port="$2"; _bootstrap="$3"
-    _f="$(system_check_file "$_url" "$_port" "$_bootstrap" 2>/dev/null || true)"
-    [ -r "$_f" ] || return 1
-    _stored_url="$(sed -n 's/^url=//p' "$_f" 2>/dev/null | head -n1)"
-    _stored_port="$(sed -n 's/^port=//p' "$_f" 2>/dev/null | head -n1)"
-    _stored_bootstrap="$(sed -n 's/^bootstrap=//p' "$_f" 2>/dev/null | head -n1)"
-    [ "$_stored_url" = "$_url" ] && [ "$_stored_port" = "$_port" ] && [ "$_stored_bootstrap" = "$_bootstrap" ] || return 1
-    _status="$(sed -n 's/^status=//p' "$_f" 2>/dev/null | head -n1)"
-    _ping="$(sed -n 's/^ping=//p' "$_f" 2>/dev/null | head -n1)"
-    _ts="$(sed -n 's/^timestamp=//p' "$_f" 2>/dev/null | head -n1)"
-    [ -n "$_status" ] || return 1
-    printf '%s|%s|%s' "$_status" "$_ping" "$_ts"
-}
-system_check_write() {
-    _url="$1"; _port="$2"; _bootstrap="$3"; _status="$4"; _ping="$5"; _ts="$6"
-    _f="$(system_check_file "$_url" "$_port" "$_bootstrap" 2>/dev/null || true)"
-    [ -n "$_f" ] || return 1
-    _tmp="$CHECK_DIR/.system.tmp"
-    {
-        printf 'url=%s\n' "$_url"
-        printf 'port=%s\n' "$_port"
-        printf 'bootstrap=%s\n' "$_bootstrap"
-        printf 'status=%s\n' "$_status"
-        printf 'ping=%s\n' "$_ping"
-        printf 'timestamp=%s\n' "$_ts"
-    } > "$_tmp" 2>/dev/null || { rm -f "$_tmp" 2>/dev/null || true; return 1; }
-    chmod 600 "$_tmp" 2>/dev/null || true
-    mv -f "$_tmp" "$_f" 2>/dev/null || { rm -f "$_tmp" 2>/dev/null || true; return 1; }
-}
-
 # Assigned DNS checks use the real local listener port. Unassigned catalog DNS
 # keeps the remote DoH check until the DNS is assigned to a slot.
 new_job_id() {
