@@ -1793,12 +1793,12 @@ force_dns_list_normalize() {
         sed '/^$/d' | sort -u | tr '\n' ' ' | sed 's/[[:space:]]*$//'
 }
 force_dns_src_matches_expected() {
-    _exp="$(force_dns_expected_src_interfaces | force_dns_list_normalize)"
-    _cur="$(uci -q get https-dns-proxy.config.force_dns_src_interface 2>/dev/null | force_dns_list_normalize)"
+    _exp="$(force_dns_list_normalize "$(force_dns_expected_src_interfaces)")"
+    _cur="$(force_dns_list_normalize "$(uci -q get https-dns-proxy.config.force_dns_src_interface 2>/dev/null)")"
     [ -n "$_exp" ] && [ "$_cur" = "$_exp" ]
 }
 force_dns_ports_match_expected() {
-    _cur="$(uci -q get https-dns-proxy.config.force_dns_port 2>/dev/null | force_dns_list_normalize)"
+    _cur="$(force_dns_list_normalize "$(uci -q get https-dns-proxy.config.force_dns_port 2>/dev/null)")"
     [ "$_cur" = "53 853" ]
 }
 steer_dns_upstream_ready() {
