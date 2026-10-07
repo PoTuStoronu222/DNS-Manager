@@ -3009,7 +3009,7 @@ function renderOverview(root,st){
     ]),
     E('div',{'class':'dm-component-dns-list'},dnsItems),
     E('div',{'class':'dm-actions'},(function(){
-      return [btn('Проверить текущие DNS','cbi-button-action',function(){testCurrent(root);},{disabled:!!state.busy||state.jobRunning||Number(st.test_lock||0)===1})];
+      return [btn('Проверить текущие DNS','cbi-button-action',function(){testCurrent(root);},{disabled:!!state.busy||state.jobRunning})];
     })())
   ]);
 
