@@ -525,10 +525,6 @@ safe_read() {
 }
 confirm_action() {
     _prompt="$1"
-    if [ "${PLAN_ONLY:-0}" = 1 ]; then
-        PROFILE_PLAN_GENERATED=1
-        return 1
-    fi
     if [ "${SILENT_APPLY:-0}" = 1 ]; then
         log_msg "Автоматическое подтверждение: $_prompt"
         return 0
@@ -8786,30 +8782,6 @@ startup_required_function_check() {
 # ==========================================
 # ==========================================
 case "${1:-}" in
-profile-plan|--profile-plan)
-    _profile_goal="${2:-}"
-    case "$_profile_goal" in
-        bypass|clean|security|privacy|adblock|family|all) ;;
-        *) printf 'PROFILE_PLAN_ERROR|INVALID_PROFILE|%s\n' "$_profile_goal"; exit 2 ;;
-    esac
-    preflight_readonly >/dev/null 2>&1 || { printf 'PROFILE_PLAN_ERROR|PRECHECK_FAILED\n'; exit 1; }
-    init_dirs >/dev/null 2>&1 || { printf 'PROFILE_PLAN_ERROR|INIT_FAILED\n'; exit 1; }
-    load_config >/dev/null 2>&1 || { printf 'PROFILE_PLAN_ERROR|CONFIG_FAILED\n'; exit 1; }
-    startup_required_function_check >/dev/null 2>&1 || { printf 'PROFILE_PLAN_ERROR|FUNCTION_CHECK_FAILED\n'; exit 1; }
-    refresh_runtime_capabilities >/dev/null 2>&1 || true
-    PROFILE_PLAN_GENERATED=0
-    PLAN_ONLY=1 SILENT_APPLY=1 DNS_MANAGER_NO_UPDATE=1 apply_profile_now "$_profile_goal"
-    _profile_plan_rc=$?
-    if [ "${PROFILE_PLAN_GENERATED:-0}" = 1 ]; then
-        exit 0
-    fi
-    if [ "$_profile_plan_rc" -eq 0 ]; then
-        printf 'PROFILE_PLAN_ERROR|PLAN_NOT_GENERATED\n'
-        exit 1
-    fi
-    printf 'PROFILE_PLAN_ERROR|APPLY_PREPARATION_FAILED|%s\n' "$_profile_plan_rc"
-    exit "$_profile_plan_rc"
-    ;;
 test-one|--test-one)
     _test_id="${2:-}"
     case "$_test_id" in ''|*[!A-Za-z0-9_-]*) printf '%s|INVALID||||INVALID_ID\n' "$_test_id"; exit 2;; esac
