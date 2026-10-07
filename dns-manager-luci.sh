@@ -1505,10 +1505,7 @@ load_manager() {
 }
 luci_normalize_url() {
     _lu="$1"
-    _lu="$(printf '%s' "$_lu" | tr -d '[:space:]')"
-    while [ "${_lu%/}" != "$_lu" ]; do
-        _lu="${_lu%/}"
-    done
+    _lu="$(printf '%s' "$_lu" | sed 's/[[:space:]]//g; s:/*$::')"
     printf '%s' "$_lu"
 }
 system_instance_slot() {
