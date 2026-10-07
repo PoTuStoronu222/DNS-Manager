@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.18
+# Version: 1.19
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -30,7 +30,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.18"
+VERSION="1.19"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -156,7 +156,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.18"
+SELF_VERSION="1.19"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -2395,7 +2395,12 @@ run_action() {
             _rc=0
             case "$_name" in
                 watchdog)
-                    SILENT_APPLY=1 watchdog_apply_toggle "$_enabled" >/dev/null 2>&1 || _rc=$?
+                    if [ "$_enabled" = 1 ] && [ -z "$SLOT_1$SLOT_2$SLOT_3$SLOT_4$SLOT_5$SLOT_6$SLOT_RU" ]; then
+                        _rc=2
+                        printf '%s\n' "Сначала выберите профиль DNS Manager." >&2
+                    else
+                        SILENT_APPLY=1 watchdog_apply_toggle "$_enabled" >/dev/null 2>&1 || _rc=$?
+                    fi
                     ;;
                 force)
                     FORCE_DOH="$_enabled"
@@ -2493,7 +2498,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.18
+// DNS Manager LuCI version: 1.19
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -2871,17 +2876,34 @@ function forceComponentItem(root,st){
   var target=active?0:1;
   var actionText=active?'Выключить':(both||mode==='external'||owner==='external'||mode==='other'?'Исправить':'Включить');
   var actionClass=active?'cbi-button-remove':(actionText==='Исправить'?'cbi-button-apply':'cbi-button-add');
-  var disabled=busy||(!profileSelected && !active);
+  var disabled=busy||(!profileSelected&&!active);
   var actionNode=btn(busy?'Сохраняю…':actionText,actionClass,function(){
-    if(busy||!profileSelected)return;
+    if(busy||(!profileSelected&&!active))return;
     setSetting('force',target,root);
   },{disabled:disabled});
-  var reason=!profileSelected?'Сначала выберите профиль DNS Manager.':'';
+  var detailNodes=[E('div',{'class':'dm-actions'},[actionNode])];
+  if(!profileSelected&&!active)detailNodes.push(E('div',{'class':'dm-inline-msg info'},'Сначала выберите профиль DNS Manager.'));
   return componentItem('Принудительный DNS для устройств',
     badge(busy?'dm-warn':stateKind,busy?'изменение':stateText),
-    reason||null);
-
+    E('div',{},detailNodes)
+  );
 }
+function watchdogComponentItem(root,st,wd,wdDetails){
+  st=st||{};
+  var busy=!!state.busy;
+  var profileSelected=String(st.profile||'none')!=='none';
+  var active=yes(st.watchdog);
+  var disabled=busy||(!profileSelected&&!active);
+  var actionNode=btn(busy?'Сохраняю…':(active?'Выключить':'Включить'),
+    active?'cbi-button-remove':'cbi-button-add',function(){
+      if(busy||(!profileSelected&&!active))return;
+      setSetting('watchdog',active?0:1,root);
+    },{disabled:disabled});
+  var detailNodes=[E('div',{'class':'dm-component-details'},wdDetails),E('div',{'class':'dm-actions'},[actionNode])];
+  if(!profileSelected&&!active)detailNodes.push(E('div',{'class':'dm-inline-msg info'},'Сначала выберите профиль DNS Manager.'));
+  return componentItem('Автопроверка и замена DNS',wd,E('div',{},detailNodes));
+}
+
 function boardMemoryKb(board,key){
   var m=board&&board.memory||{},v=m[key];
   if(v===undefined||v===null||v==='')return null;
@@ -2999,7 +3021,7 @@ function renderOverview(root,st){
   });
   if(!dnsItems.length)dnsItems.push(E('div',{'class':'dm-hint'},'DNS в слоты не назначены.'));
   var components=card('Компоненты',[
-    componentItem('Автопроверка и замена DNS',wd,wdDetails),
+    watchdogComponentItem(root,st,wd,wdDetails),
     forceComponentItem(root,st),
     componentSettingItem('Увеличенный кэш DNS','dnsmasq_perf'),
   ]);
@@ -3015,11 +3037,7 @@ function renderOverview(root,st){
     ]),
     E('div',{'class':'dm-component-dns-list'},dnsItems),
     E('div',{'class':'dm-actions'},(function(){
-      var profileSelected=String(st.profile||'none')!=='none';
-    var canTestCurrent=profileSelected;
-    var actions=[btn('Проверить текущие DNS','cbi-button-action',function(){if(canTestCurrent)testCurrent(root);},{disabled:!!state.busy||state.jobRunning||Number(st.test_lock||0)===1||!canTestCurrent})];
-    if(!canTestCurrent)actions.push(E('div',{'class':'dm-inline-msg info'},'Сначала выберите профиль DNS Manager.'));
-    return actions;
+      return [btn('Проверить текущие DNS','cbi-button-action',function(){testCurrent(root);},{disabled:!!state.busy||state.jobRunning||Number(st.test_lock||0)===1})];
     })())
   ]);
 
