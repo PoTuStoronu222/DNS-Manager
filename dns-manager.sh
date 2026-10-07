@@ -3285,10 +3285,10 @@ _apply_extras_now_impl() {
             else
                 remove_dns_force || return 1
             fi
-            reload_fw || return 1
+            # https-dns-proxy reload already marks the firewall config
+            # for re-generation; do not perform a second full firewall reload.
             # Forced-DNS changes are fully represented by the applied UCI/firewall
-            # state. Do not run the full router discovery here; the caller can
-            # refresh status after the operation without delaying the button.
+            # state. Do not run the full router discovery here.
             save_config || return 1
             return 0
             ;;
