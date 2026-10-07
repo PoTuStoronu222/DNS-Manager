@@ -679,6 +679,13 @@ fi
 if grep -q 'PROFILE_FRESH_OK_IDS' dns-manager.sh; then
     fail "obsolete per-profile fresh DNS list remains"
 fi
+awk '/^job_start_test_all\(\) \{/,/^\}/' "$tmp/backend.sh" > "$tmp/test_all_job.sh"
+grep -Fq 'job_write "$_jid" progress_done "$_final_total"' "$tmp/test_all_job.sh" || fail "LuCI full catalog job does not publish final progress_done"
+grep -Fq 'job_write "$_jid" progress_total "$_final_total"' "$tmp/test_all_job.sh" || fail "LuCI full catalog job does not publish final progress_total"
+grep -Fq 'job_write "$_jid" progress_ok "$_final_ok"' "$tmp/test_all_job.sh" || fail "LuCI full catalog job does not publish final progress_ok"
+grep -Fq 'job_write "$_jid" progress_fail "$_final_fail"' "$tmp/test_all_job.sh" || fail "LuCI full catalog job does not publish final progress_fail"
+ok "LuCI full catalog job publishes final progress before DONE"
+
 grep -q 'test_dns_catalog "\$1"' dns-manager.sh || fail "profile apply does not pass its category to the DNS test"
 grep -q 'test_scope=' dns-manager.sh || fail "DNS test scope is not persisted"
 grep -q 'ensure_test_results_fresh "\$_cat"' dns-manager.sh || fail "category selector does not request category-scoped freshness"
