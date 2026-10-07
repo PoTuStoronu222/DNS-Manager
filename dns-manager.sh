@@ -1630,7 +1630,10 @@ dns_path_conflict_nft() {
             } else if ($0 ~ /dnat[[:space:]]+to[[:space:]]+[^[:space:]]+:[0-9]+/) {
                 line=$0; sub(/^.*dnat[[:space:]]+to[[:space:]]+[^:[:space:]]*:/,"",line); port=line; sub(/[^0-9].*$/,"",port)
             }
-            if (port == "53" || port == "") next
+            # https-dns-proxy legitimately creates redirect :53 when
+            # port 53 is already listening (typically dnsmasq). That is still
+            # its own forced-DNS firewall rule, not an inactive path.
+            if (port == "" || (port == "53" && $0 !~ /ubus:https-dns-proxy/)) next
             h=$0; sub(/^.*#[[:space:]]*handle[[:space:]]+/,"",h); sub(/[^0-9].*$/,"",h)
             if (c != "" && h != "") print c "|" h "|" $0
         }
