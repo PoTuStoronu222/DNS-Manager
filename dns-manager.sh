@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.40"
+VERSION="3.41"
 # 3.38: clear the LuCI update flag after a successful CLI update.
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
@@ -1630,7 +1630,10 @@ dns_path_conflict_nft() {
             } else if ($0 ~ /dnat[[:space:]]+to[[:space:]]+[^[:space:]]+:[0-9]+/) {
                 line=$0; sub(/^.*dnat[[:space:]]+to[[:space:]]+[^:[:space:]]*:/,"",line); port=line; sub(/[^0-9].*$/,"",port)
             }
-            if (port == "53" || port == "") next
+            # https-dns-proxy legitimately creates redirect :53 when
+            # port 53 is already listening (typically dnsmasq). That is still
+            # its own forced-DNS firewall rule, not an inactive path.
+            if (port == "" || (port == "53" && $0 !~ /ubus:https-dns-proxy/)) next
             h=$0; sub(/^.*#[[:space:]]*handle[[:space:]]+/,"",h); sub(/[^0-9].*$/,"",h)
             if (c != "" && h != "") print c "|" h "|" $0
         }
@@ -1790,12 +1793,12 @@ force_dns_list_normalize() {
         sed '/^$/d' | sort -u | tr '\n' ' ' | sed 's/[[:space:]]*$//'
 }
 force_dns_src_matches_expected() {
-    _exp="$(force_dns_expected_src_interfaces | force_dns_list_normalize)"
-    _cur="$(uci -q get https-dns-proxy.config.force_dns_src_interface 2>/dev/null | force_dns_list_normalize)"
+    _exp="$(force_dns_list_normalize "$(force_dns_expected_src_interfaces)")"
+    _cur="$(force_dns_list_normalize "$(uci -q get https-dns-proxy.config.force_dns_src_interface 2>/dev/null)")"
     [ -n "$_exp" ] && [ "$_cur" = "$_exp" ]
 }
 force_dns_ports_match_expected() {
-    _cur="$(uci -q get https-dns-proxy.config.force_dns_port 2>/dev/null | force_dns_list_normalize)"
+    _cur="$(force_dns_list_normalize "$(uci -q get https-dns-proxy.config.force_dns_port 2>/dev/null)")"
     [ "$_cur" = "53 853" ]
 }
 steer_dns_upstream_ready() {
@@ -1912,6 +1915,8 @@ detect_forced_dns_path() {
                 FORCED_DNS_ACTIVE=1
                 FORCED_DNS_TARGETS="${FORCED_DNS_TARGETS}${_rp} "
                 if [ "$_steer" = 1 ] && [ "$_rp" = 5300 ]; then
+                    :
+                elif [ "$_manager_force_cfg" = 1 ] && printf '%s\n' "$_line" | grep -q 'ubus:https-dns-proxy'; then
                     :
                 elif dns_manager_force_port "$_rp" && [ "$_manager_force_cfg" = 1 ]; then
                     :
@@ -3280,7 +3285,12 @@ _apply_extras_now_impl() {
             else
                 remove_dns_force || return 1
             fi
-            reload_fw || return 1
+            # https-dns-proxy reload already marks the firewall config
+            # for re-generation; do not perform a second full firewall reload.
+            # Forced-DNS changes are fully represented by the applied UCI/firewall
+            # state. Do not run the full router discovery here.
+            save_config || return 1
+            return 0
             ;;
         dnsmasq_perf)
             if [ "$DNSMASQ_PERF" = 1 ]; then

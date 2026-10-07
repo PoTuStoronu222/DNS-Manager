@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.28
+# Version: 1.29
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -30,7 +30,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.28"
+VERSION="1.29"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -156,7 +156,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.28"
+SELF_VERSION="1.29"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -1012,6 +1012,71 @@ detect_runtime_force_state() {
     fi
     FORCE_RUNTIME_TARGETS="$(printf '%s\n' "$FORCE_RUNTIME_TARGETS" | tr ' ' '\n' | sed '/^$/d' | sort -n -u | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
 }
+
+force_readback_json() {
+    detect_runtime_force_state
+    detect_steer_dns_runtime >/dev/null 2>&1 || true
+
+    _fr_force="$(cfg_get FORCE_DOH)"; [ -n "$_fr_force" ] || _fr_force=0
+    _fr_external="${FORCE_RUNTIME_EXTERNAL:-0}"
+    _fr_owner=none
+    _fr_status=off
+    _fr_source=none
+
+    if [ "$_fr_external" = 1 ]; then
+        _fr_owner=external
+        _fr_status=external
+        _fr_source="${FORCE_RUNTIME_SOURCE:-внешний сервис}"
+    elif [ "${STEER_DNS_ACTIVE:-0}" = 1 ]; then
+        _fr_owner=steer
+        _fr_source=Steer
+        if [ "$_fr_force" = 1 ]; then
+            _fr_status=steer
+        else
+            _fr_status=other
+        fi
+    elif [ "${FORCE_RUNTIME_ACTIVE:-0}" = 1 ]; then
+        _fr_owner=manager
+        _fr_status=manager
+        _fr_source=DNS Manager
+    fi
+
+    _fr_manager=0
+    [ "$_fr_owner" = manager ] && _fr_manager=1
+    _fr_state=0
+    [ "$_fr_manager" = 1 ] && _fr_state=1
+    [ "$_fr_owner" = steer ] && [ "$_fr_force" = 1 ] && _fr_state=1
+    [ "$_fr_owner" = steer ] && [ "$_fr_force" != 1 ] && _fr_state=2
+    [ "$_fr_external" = 1 ] && _fr_state=2
+
+    printf '{"ok":true,"force":'; json_quote "$_fr_force"
+    printf ',"force_external":'; json_quote "$_fr_external"
+    printf ',"force_owner":'; json_quote "$_fr_owner"
+    printf ',"force_manager":%s,"force_both":0' "$_fr_manager"
+    printf ',"force_source":'; json_quote "$_fr_source"
+    printf ',"force_targets":'; json_quote "${FORCE_RUNTIME_TARGETS:-}"
+    printf ',"force_state":%s' "$_fr_state"
+    printf ',"force_status":'; json_quote "$_fr_status"
+    printf ',"steer_dns_active":%s' "${STEER_DNS_ACTIVE:-0}"
+    printf ',"force_notrack":'; json_quote "$(uci -q get https-dns-proxy.config.notrack_dns 2>/dev/null || true)"
+    printf ',"force_update":'; json_quote "$(uci -q get https-dns-proxy.config.dnsmasq_config_update 2>/dev/null || true)"
+    printf ',"force_family":'; json_quote "$(uci -q get https-dns-proxy.config.force_ip_family 2>/dev/null || true)"
+    printf ',"force_ports":'; json_quote "$(uci -q get https-dns-proxy.config.force_dns_port 2>/dev/null || true)"
+    printf ',"force_src":'; json_quote "$(uci -q get https-dns-proxy.config.force_dns_src_interface 2>/dev/null || true)"
+    printf ',"force_canary_icloud":'; json_quote "$(uci -q get https-dns-proxy.config.canary_domains_icloud 2>/dev/null || true)"
+    printf ',"force_canary_mozilla":'; json_quote "$(uci -q get https-dns-proxy.config.canary_domains_mozilla 2>/dev/null || true)"
+    printf ',"force_procd_trigger_wan6":'; json_quote "$(uci -q get https-dns-proxy.config.procd_trigger_wan6 2>/dev/null || true)"
+    printf ',"force_heartbeat_domain":'; json_quote "$(uci -q get https-dns-proxy.config.heartbeat_domain 2>/dev/null || true)"
+    printf ',"force_heartbeat_sleep":'; json_quote "$(uci -q get https-dns-proxy.config.heartbeat_sleep_timeout 2>/dev/null || true)"
+    printf ',"force_heartbeat_wait":'; json_quote "$(uci -q get https-dns-proxy.config.heartbeat_wait_timeout 2>/dev/null || true)"
+    printf ',"force_user":'; json_quote "$(uci -q get https-dns-proxy.config.user 2>/dev/null || true)"
+    printf ',"force_group":'; json_quote "$(uci -q get https-dns-proxy.config.group 2>/dev/null || true)"
+    printf ',"force_listen":'; json_quote "$(uci -q get https-dns-proxy.config.listen_addr 2>/dev/null || true)"
+    printf ',"force_consistent":%s' "$([ "$_fr_manager" = 1 ] && printf 1 || [ "$_fr_owner" = steer ] && [ "$_fr_force" = 1 ] && printf 1 || printf 0)"
+    printf ',"force_owner_label":'; case "$_fr_owner" in manager) json_quote "DNS Manager";; steer) json_quote "Steer";; external) json_quote "внешний";; *) json_quote "нет";; esac
+    printf ',"zapret_running":%s}\n' "$(runtime_zapret_running && printf 1 || printf 0)"
+}
+
 
 device_model() {
     _model="$(cat /tmp/sysinfo/model 2>/dev/null | tr -d "\000\r\n" || true)"
@@ -2386,6 +2451,10 @@ run_action() {
                 force)
                     FORCE_DOH="$_enabled"
                     SILENT_APPLY=1 apply_extras_now force >/dev/null 2>&1 || _rc=$?
+                    if [ "$_rc" -eq 0 ]; then
+                        force_readback_json
+                        return
+                    fi
                     ;;
                 dnsmasq_perf)
                     DNSMASQ_PERF="$_enabled"
@@ -2479,7 +2548,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.28
+// DNS Manager LuCI version: 1.29
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -2528,7 +2597,7 @@ var CATEGORY = [
   ['all','Все DNS'], ['bypass','Обход блокировок'], ['security','Безопасность'], ['privacy','Приватность'],
   ['adblock','Блокировка рекламы'], ['family','Семейный'], ['clean','Без фильтрации'], ['regional','Региональные']
 ];
-var state = { luciUpdateReloadTimer:null, hdpUpdating:false, managerUpdating:false, updatingAll:false, category:'all', offset:0, limit:18, catalogLoaded:false, catalogLoading:false, advanced:true, logLoaded:false, logLoading:false, busy:false, busySetting:'', settingMessage:'', settingMessageType:'', settingMessageKey:'', pageNotice:{}, statusError:'', activeTab:'dashboard', jobRunning:false, lastJob:null, checking:{}, fullTest:null, catalogProgress:null, profileProgress:null, versionCheck:null, lastAction:null, runtimeCpuLoad:null, runtimeMemoryTotal:null, runtimeMemoryAvailable:null, boardInfo:null, systemPollBusy:false, profileResumeStarted:false };
+var state = { luciUpdateReloadTimer:null, hdpUpdating:false, managerUpdating:false, updatingAll:false, category:'all', offset:0, limit:18, catalogLoaded:false, catalogLoading:false, advanced:true, logLoaded:false, logLoading:false, busy:false, busySetting:'', settingMessage:'', settingMessageType:'', settingMessageKey:'', pageNotice:{}, statusError:'', activeTab:'dashboard', jobRunning:false, lastJob:null, checking:{}, fullTest:null, catalogProgress:null, profileProgress:null, profileOutput:'', versionCheck:null, lastAction:null, runtimeCpuLoad:null, runtimeMemoryTotal:null, runtimeMemoryAvailable:null, boardInfo:null, systemPollBusy:false, profileResumeStarted:false };
 
 function profileName(p){
   var x=PROFILE.filter(function(v){return v[0]===p;})[0];
@@ -3368,11 +3437,20 @@ function renderProfileProgress(root){
     E('div',{'class':'dm-profile-progress-status'},p.label||'Выполняю…')
   ];
   if(p.detail)body.push(E('div',{'class':'dm-profile-progress-detail'},p.detail));
+  var out=String(state.profileOutput||'').trim();
+  if(out){
+    var lines=out.split('\n').filter(function(x){return String(x||'').trim();});
+    body.push(E('pre',{'class':'dm-profile-output','style':'max-height:260px;overflow:auto;white-space:pre-wrap;word-break:break-word;padding:9px;border:1px solid rgba(127,127,127,.18);border-radius:7px;margin-top:8px;font:11px/1.45 ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;background:rgba(0,0,0,.04)'},lines.slice(-40).join('\n')));
+  }
   return card('Ход применения',body);
 }
 
 function renderProfiles(root,st){
-  var e=root.querySelector('#dm-profiles');if(!e)return;e.innerHTML='';
+  var e=root.querySelector('#dm-profiles');if(!e)return;
+  var oldOut=e.querySelector('.dm-profile-output');
+  var oldScrollTop=oldOut?oldOut.scrollTop:0;
+  var oldAtBottom=oldOut?((oldOut.scrollHeight-oldOut.clientHeight-oldOut.scrollTop)<=8):false;
+  e.innerHTML='';
   var g=E('div',{'class':'dm-seg dm-profile-seg'});
   var currentId=activeProfileId(st);
   PROFILE.forEach(function(p){g.appendChild(btn(p[1],currentId===p[0]?'active cbi-button':'cbi-button',function(){applyProfile(p[0],root);},{disabled:!!state.busy}));});
@@ -3406,6 +3484,11 @@ function renderProfiles(root,st){
   }
   if(state.pageNotice.profiles)pch.push(E('div',{'class':'dm-inline-msg '+(state.busy?'info':'error')},state.pageNotice.profiles));
   e.appendChild(card('Профили DNS',pch));
+  var newOut=e.querySelector('.dm-profile-output');
+  if(newOut){
+    if(oldAtBottom)newOut.scrollTop=newOut.scrollHeight;
+    else newOut.scrollTop=Math.min(oldScrollTop,newOut.scrollHeight);
+  }
 }
 
 function renderSlots(root,st){
@@ -4071,6 +4154,7 @@ function applyProfile(name,root){
   confirmAction(repeat?'Повторно применить профиль':'Подтвердить изменение профиля',[['Сейчас',current],[repeat?'Профиль':'Новый профиль',next]],function(){
     state.busy=true;
     state.profileProgress={p:5,label:'Подготавливаю профиль…',detail:''};
+    state.profileOutput='';
     state.pageNotice.profiles='';
     renderProfiles(root,window.dmState||{});
     callProfile(name).then(function(r){
@@ -4136,12 +4220,27 @@ function setForceMode(mode,root){
   renderOverview(root,window.dmState||{});
   callSetting('force',en).then(function(r){
     state.busy=false;state.busySetting='';
-    state.pageNotice.doh=(r&&r.ok)?(en?'Перехват DNS включён.':'Перехват DNS выключен.'):(r&&r.error)||'Не удалось изменить перехват DNS.';
-    refresh(root,true);
+    if(r&&r.ok){
+      window.dmState=window.dmState||{};
+      [
+        'force','force_external','force_owner','force_manager','force_both',
+        'force_source','force_targets','force_state','force_status',
+        'force_notrack','force_update','force_family','force_ports','force_src',
+        'force_canary_icloud','force_canary_mozilla','force_procd_trigger_wan6',
+        'force_heartbeat_domain','force_heartbeat_sleep','force_heartbeat_wait',
+        'force_user','force_group','force_listen','force_consistent',
+        'force_owner_label','zapret_running','steer_dns_active'
+      ].forEach(function(k){if(Object.prototype.hasOwnProperty.call(r,k))window.dmState[k]=r[k];});
+      state.pageNotice.doh=en?'Перехват DNS включён.':'Перехват DNS выключен.';
+      renderDoH(root,window.dmState);
+    }else{
+      state.pageNotice.doh=(r&&r.error)||'Не удалось изменить перехват DNS.';
+      renderDoH(root,window.dmState||{});
+    }
   }).catch(function(err){
     state.busy=false;state.busySetting='';
     state.pageNotice.doh=withRpcError('Не удалось изменить перехват DNS.',err);
-    refresh(root,true);
+    renderDoH(root,window.dmState||{});
   });
 }
 function testAll(root,origin){
@@ -4389,6 +4488,7 @@ function pollJob(root,job,meta,done){
     callJob(jobId).then(function(j){
       j=j||{};
       if(meta&&meta.mode==='profile'){
+        state.profileOutput=stripAnsi(j.output||'');
         profileProgressUpdate(j);
         renderProfiles(root,window.dmState||{});
       }
