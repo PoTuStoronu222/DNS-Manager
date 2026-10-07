@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.40"
+VERSION="3.41"
 # 3.38: clear the LuCI update flag after a successful CLI update.
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
@@ -2184,78 +2184,187 @@ test_one_dns() {
 id="$1"; url="$(normalize_url "$(dns_url "$id")")"; name="$(dns_name "$id")"; cat="$(dns_cat "$id")"
 host="$(url_host "$url")"
 port="$(url_port "$url")"
-q="$TMP_DIR/dns_query.bin"; body="$TMP_DIR/body.$id"; hdr="$TMP_DIR/h.$id"
-: > "$body"; : > "$hdr"
-# dns_query.bin is a single shared immutable payload created by test_dns_catalog
-# before workers are forked. A worker must never create or remove it.
-# Individual checks must be self-contained. The catalog runner pre-creates
-# this immutable query for parallel workers, while a standalone test_one call
-# may arrive without that file. Create it on demand instead of turning a valid
-# unassigned DNS into a false "unavailable" result.
+q="$TMP_DIR/dns_query.bin"
+_ip_tmp="$TMP_DIR/ip.$id.$$"
+_bs_tmp="$_ip_tmp/bs"
+rm -rf "$_ip_tmp" 2>/dev/null || true
+mkdir -p "$_bs_tmp" 2>/dev/null || {
+    printf '%s\n' "$id|$cat|$name|-1|INTERNAL_TEST_TMP_CREATE_FAIL" > "$TMP_DIR/t.$id"
+    return
+}
 if [ ! -s "$q" ]; then
     printf '\022\064\001\000\000\001\000\000\000\000\000\000\007example\003com\000\000\001\000\001' > "$q" 2>/dev/null || {
         printf '%s\n' "$id|$cat|$name|-1|INTERNAL_TEST_QUERY_CREATE_FAIL" > "$TMP_DIR/t.$id"
-        rm -f "$body" "$hdr"
+        rm -rf "$_ip_tmp" 2>/dev/null || true
         return
     }
 fi
-_ips=""
-# Resolve all available A records through the trusted bootstrap DNS set first.
-# Keep the existing per-IP DoH check below; one successful address is enough.
+
+# OpenWrt's https-dns-proxy resolves the DoH hostname through configured
+# bootstrap DNS servers. Query the complete bootstrap pool, collect every
+# valid IPv4 A record, deduplicate the answers, then validate the real DoH
+# endpoint directly with curl --resolve.
+_ips_file="$_ip_tmp/ips"
+: > "$_ips_file"
+_bootstrap_parallel="$TEST_BATCH_DEFAULT"
+case "$_bootstrap_parallel" in ''|*[!0-9]*) _bootstrap_parallel=4;; esac
+[ "$_bootstrap_parallel" -ge 1 ] 2>/dev/null || _bootstrap_parallel=1
+[ "$_bootstrap_parallel" -le 4 ] 2>/dev/null || _bootstrap_parallel=4
+
 if [ "$HAS_DIG" = yes ]; then
+    _bs_idx=0
+    _bs_pids=""
+    _bs_running=0
     for _bs in $(printf '%s' "$BOOTSTRAP_DNS" | tr ',' ' '); do
-        _chunk="$(dig +short "@$_bs" "$host" A +time=1 +tries=1 2>/dev/null | awk '/^[0-9]+(\.[0-9]+){3}$/ && $0 !~ /^127\./ && $0 != "0.0.0.0" {print}' | head -n 4)"
-        if [ -n "$_chunk" ]; then
-            _ips="$_chunk"
-            break
+        [ -n "$_bs" ] || continue
+        _bs_idx=$((_bs_idx+1))
+        _bs_file="$_bs_tmp/r.$_bs_idx"
+        (
+            dig +short "@$_bs" "$host" A +time=1 +tries=1 2>/dev/null |
+                awk '/^[0-9]+(\.[0-9]+){3}$/ && $0 !~ /^127\./ && $0 != "0.0.0.0" {print}' |
+                awk '!seen[$0]++' > "$_bs_file"
+        ) &
+        _bs_pids="$_bs_pids $!"
+        _bs_running=$((_bs_running+1))
+        if [ "$_bs_running" -ge "$_bootstrap_parallel" ]; then
+            for _pid in $_bs_pids; do
+                wait "$_pid" 2>/dev/null || true
+            done
+            _bs_pids=""
+            _bs_running=0
         fi
     done
+    for _pid in $_bs_pids; do
+        wait "$_pid" 2>/dev/null || true
+    done
+
+    for _bs_file in "$_bs_tmp"/r.*; do
+        [ -f "$_bs_file" ] || continue
+        cat "$_bs_file" 2>/dev/null || true
+    done | awk '!seen[$0]++' > "$_ips_file"
 fi
-if [ -z "$_ips" ] && [ "$HAS_DIG" = yes ]; then
-    _chunk="$(dig +short +time=3 +tries=1 "$host" A 2>/dev/null | awk '/^[0-9]+(\.[0-9]+){3}$/ && $0 !~ /^127\./ && $0 != "0.0.0.0" {print}' | head -n 4)"
-    [ -n "$_chunk" ] && _ips="$_chunk"
+
+if [ ! -s "$_ips_file" ] && [ "$HAS_DIG" = yes ]; then
+    dig +short +time=3 +tries=1 "$host" A 2>/dev/null |
+        awk '/^[0-9]+(\.[0-9]+){3}$/ && $0 !~ /^127\./ && $0 != "0.0.0.0" {print}' |
+        awk '!seen[$0]++' > "$_ips_file"
 fi
-[ -n "$_ips" ] || { _one="$(resolve_host_fallback "$host")"; [ -n "$_one" ] && _ips="$_one"; }
-[ -n "$_ips" ] || { printf '%s|%s|%s|-1|BOOTSTRAP_FAIL\n' "$id" "$cat" "$name" > "$TMP_DIR/t.$id"; rm -f "$body" "$hdr"; return; }
-_best_ms=-1; st=CONNECTION_ERROR
+
+if [ ! -s "$_ips_file" ]; then
+    _one="$(resolve_host_fallback "$host")"
+    [ -n "$_one" ] && printf '%s\n' "$_one" | awk '!seen[$0]++' > "$_ips_file"
+fi
+
+if [ ! -s "$_ips_file" ]; then
+    printf '%s|%s|%s|-1|BOOTSTRAP_FAIL\n' "$id" "$cat" "$name" > "$TMP_DIR/t.$id"
+    rm -rf "$_ip_tmp" 2>/dev/null || true
+    return
+fi
+
+# Test every discovered DoH IP. Reuse the existing manager test batch as the
+# concurrency limit, so normal catalog/current checks remain bounded.
+_best_ms=-1
+_any_ok=0
+_last_status=CONNECTION_ERROR
+_ip_total="$(wc -l < "$_ips_file" 2>/dev/null | tr -d ' ')"
+case "$_ip_total" in ''|*[!0-9]*) _ip_total=0;; esac
+_ip_pids=""
+_ip_running=0
+_ip_idx=0
+
 while IFS= read -r ipx; do
     [ -n "$ipx" ] || continue
-    : > "$body"; : > "$hdr"
-    # The DNS test must always hit the DoH endpoint directly. In particular,
-    # an rpcd/LuCI environment must not inherit HTTP(S)/SOCKS proxy settings or
-    # curlrc rules, otherwise a dead resolver can be replaced by a proxy response.
-    result="$(curl -q --noproxy '*' -sS -o "$body" -D "$hdr" -w '%{http_code}|%{time_total}|%{errormsg}'  --connect-timeout 1 --max-time 3 --resolve "$host:$port:$ipx"  -H 'Content-Type: application/dns-message' -H 'Accept: application/dns-message'  --data-binary "@$q" "$url" 2>/dev/null)"
-    code="${result%%|*}"; rest="${result#*|}"; tim="${rest%%|*}"; err="${rest#*|}"
-    [ -z "$code" ] && code="000"
-    bytes="$(wc -c < "$body" 2>/dev/null | tr -d ' ')"; [ -n "$bytes" ] || bytes=0
-    ctype="$(awk -F': *' 'tolower($1)=="content-type"{print tolower($2)}' "$hdr" 2>/dev/null | tail -n1 | tr -d '\r')"
-    case "$tim" in ''|0) ms=-1;; *) ms="$(awk -v t="$tim" 'BEGIN{v=t*1000; if(v<1)v=1; printf "%.0f", v}')";; esac
-    case "$code" in
-    200)
-        case "$ctype" in *application/dns-message*) ct_ok=yes;; *) ct_ok=no;; esac
-        if [ "$ct_ok" = yes ] && validate_dns_message "$body"; then
-            if [ "$_best_ms" -lt 0 ] || { [ "$ms" -ge 0 ] && [ "$ms" -lt "$_best_ms" ]; }; then _best_ms="$ms"; fi
-            st=OK
-        else st=BAD_DOH_RESPONSE; fi ;;
-    000)
-        elc="$(printf '%s' "$err" | tr '[:upper:]' '[:lower:]')"
-        case "$elc" in
-        *timed*|*timeout*) st=CURL_TIMEOUT;;
-        *ssl*|*tls*|*certificate*|*schannel*) st=TLS_ERROR;;
-        *could\ not\ resolve*|*resolve\ host*|*name\ or\ service*) st=DNS_ERROR;;
-        *connection\ refused*|*failed\ to\ connect*|*connection\ reset*|*could\ not\ connect*) st=CONNECTION_ERROR;;
-        *) st=CURL_ERROR;; esac ;;
-    4??|5??) st="HTTP_$code" ;;
-    *) st="HTTP_$code" ;;
-    esac
-    [ "$st" = OK ] && break
-done <<EOF_IPS
-$_ips
-EOF_IPS
-[ "$st" = OK ] && ms="$_best_ms" || ms=-1
-printf '%s|%s|%s|%s|%s\n' "$id" "$cat" "$name" "$ms" "$st" > "$TMP_DIR/t.$id"
-rm -f "$body" "$hdr"
-[ "$st" = OK ] && return 0
+    _ip_idx=$((_ip_idx+1))
+    _result_file="$_ip_tmp/result.$_ip_idx"
+    _body_file="$_ip_tmp/body.$_ip_idx"
+    _hdr_file="$_ip_tmp/header.$_ip_idx"
+    (
+        : > "$_body_file"
+        : > "$_hdr_file"
+        result="$(curl -q --noproxy '*' -sS -o "$_body_file" -D "$_hdr_file" -w '%{http_code}|%{time_total}|%{errormsg}' \
+            --connect-timeout 1 --max-time 3 --resolve "$host:$port:$ipx" \
+            -H 'Content-Type: application/dns-message' -H 'Accept: application/dns-message' \
+            --data-binary "@$q" "$url" 2>/dev/null)"
+        code="$(printf '%s' "$result" | awk -F'|' '{print $1;exit}')"
+        tim="$(printf '%s' "$result" | awk -F'|' '{print $2;exit}')"
+        err="$(printf '%s' "$result" | awk -F'|' '{print $3;exit}')"
+        [ -z "$code" ] && code="000"
+        ctype="$(awk -F': *' 'tolower($1)=="content-type"{print tolower($2)}' "$_hdr_file" 2>/dev/null | tail -n1 | tr -d '\r')"
+        case "$tim" in
+            ''|0) ms=-1;;
+            *) ms="$(awk -v t="$tim" 'BEGIN{v=t*1000; if(v<1)v=1; printf "%.0f", v}')";;
+        esac
+        st=CONNECTION_ERROR
+        case "$code" in
+            200)
+                case "$ctype" in *application/dns-message*) ct_ok=yes;; *) ct_ok=no;; esac
+                if [ "$ct_ok" = yes ] && validate_dns_message "$_body_file"; then
+                    st=OK
+                else
+                    st=BAD_DOH_RESPONSE
+                fi
+                ;;
+            000)
+                elc="$(printf '%s' "$err" | tr '[:upper:]' '[:lower:]')"
+                case "$elc" in
+                    *timed*|*timeout*) st=CURL_TIMEOUT;;
+                    *ssl*|*tls*|*certificate*|*schannel*) st=TLS_ERROR;;
+                    *could\ not\ resolve*|*resolve\ host*|*name\ or\ service*) st=DNS_ERROR;;
+                    *connection\ refused*|*failed\ to\ connect*|*connection\ reset*|*could\ not\ connect*) st=CONNECTION_ERROR;;
+                    *) st=CURL_ERROR;;
+                esac
+                ;;
+            4??|5??) st="HTTP_$code";;
+            *) st="HTTP_$code";;
+        esac
+        printf '%s|%s\n' "$ms" "$st" > "$_result_file"
+    ) &
+    _ip_pids="$_ip_pids $!"
+    _ip_running=$((_ip_running+1))
+    if [ "$_ip_running" -ge "$_bootstrap_parallel" ]; then
+        for _pid in $_ip_pids; do
+            wait "$_pid" 2>/dev/null || true
+        done
+        _ip_pids=""
+        _ip_running=0
+    fi
+done < "$_ips_file"
+
+for _pid in $_ip_pids; do
+    wait "$_pid" 2>/dev/null || true
+done
+
+_ip_idx=1
+while [ "$_ip_idx" -le "$_ip_total" ]; do
+    _result_file="$_ip_tmp/result.$_ip_idx"
+    if [ -s "$_result_file" ]; then
+        _line="$(cat "$_result_file" 2>/dev/null || true)"
+        _ms="$(printf '%s' "$_line" | awk -F'|' '{print $1;exit}')"
+        _st="$(printf '%s' "$_line" | awk -F'|' '{print $2;exit}')"
+        case "$_st" in
+            OK)
+                _any_ok=1
+                if [ "$_best_ms" -lt 0 ] || { [ "$_ms" -ge 0 ] 2>/dev/null && [ "$_ms" -lt "$_best_ms" ] 2>/dev/null; }; then
+                    _best_ms="$_ms"
+                fi
+                ;;
+            '') _st=TEST_NO_RESULT;;
+        esac
+        _last_status="$_st"
+    else
+        _last_status=TEST_NO_RESULT
+    fi
+    _ip_idx=$((_ip_idx+1))
+done
+
+if [ "$_any_ok" = 1 ]; then
+    printf '%s|%s|%s|%s|OK\n' "$id" "$cat" "$name" "$_best_ms" > "$TMP_DIR/t.$id"
+    rm -rf "$_ip_tmp" 2>/dev/null || true
+    return 0
+fi
+
+printf '%s|%s|%s|-1|%s\n' "$id" "$cat" "$name" "$_last_status" > "$TMP_DIR/t.$id"
+rm -rf "$_ip_tmp" 2>/dev/null || true
 return 1
 }
 # ==========================================
