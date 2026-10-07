@@ -2830,6 +2830,8 @@ function checkInfo(id,d){
   var key=checkKey(id,d);
   var x=state.checking&&state.checking[key];
   if(x&&String(x.status||'').toUpperCase()==='RUNNING')return {status:'RUNNING',ping:''};
+  if(state.currentTest&&state.currentTest.status==='RUNNING'&&state.currentTest.phase==='slots'&&d&&!d.slot)
+    return {status:'',ping:''};
   var r={status:d&&d.status?d.status:'',ping:d&&d.ping?d.ping:''};
   
   return r;
@@ -4235,9 +4237,9 @@ function testCurrent(root){
     return;
   }
 
-  state.currentTest={status:'RUNNING',total:total,started:Date.now()};
+  state.currentTest={status:'RUNNING',phase:'slots',total:total,started:Date.now()};
   state.jobRunning=true;
-  targets.forEach(function(d){
+  slots.forEach(function(d){
     state.checking[checkKey(d.id,d)]={status:'RUNNING',ping:'',started:Date.now()};
   });
   state.pageNotice.doh='Проверяю текущие DNS…';
@@ -4265,7 +4267,11 @@ function testCurrent(root){
       finishCombined(window.dmState||{});
       return;
     }
+    state.currentTest.phase='system';
     state.jobRunning=true;
+    systems.forEach(function(d){
+      state.checking[checkKey(d.id,d)]={status:'RUNNING',ping:'',started:Date.now()};
+    });
     state.pageNotice.doh='Проверяю системные DNS…';
     render(root,window.dmState||{});
     callTestSystem().then(function(r){
