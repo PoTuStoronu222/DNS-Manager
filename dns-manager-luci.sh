@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.16
+# Version: 1.17
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -30,7 +30,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.16"
+VERSION="1.17"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -156,7 +156,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.16"
+SELF_VERSION="1.17"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -1524,6 +1524,15 @@ job_start_test_system() {
         if ! load_manager; then
             job_write "$_jid" status failed; job_write "$_jid" result fail; job_write "$_jid" finished "$(date +%s)"; exit 1
         fi
+        _profile_slots="$SLOT_1$SLOT_2$SLOT_3$SLOT_4$SLOT_5$SLOT_6$SLOT_RU"
+        if [ -z "$_profile_slots" ]; then
+            job_write "$_jid" status failed
+            job_write "$_jid" result fail
+            job_write "$_jid" finished "$(date +%s)"
+            printf '%s
+' "Сначала выберите профиль DNS Manager." >> "$JOB_DIR/$_jid/output"
+            exit 1
+        fi
         if ! acquire_test_lock; then
             job_write "$_jid" status failed; job_write "$_jid" result fail; job_write "$_jid" finished "$(date +%s)"
             printf '%s\n' "Другая проверка DNS уже выполняется." >> "$JOB_DIR/$_jid/output"
@@ -2484,7 +2493,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.16
+// DNS Manager LuCI version: 1.17
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -2847,6 +2856,7 @@ function componentSettingItem(title,key){
 function forceComponentItem(root,st){
   st=st||{};
   var busy=!!state.busy;
+  var profileSelected=String(st.profile||'none')!=='none';
   var mode=String(st.force_status||'off');
   var owner=String(st.force_owner||'none');
   var both=yes(st.force_both);
@@ -2861,13 +2871,16 @@ function forceComponentItem(root,st){
   var target=active?0:1;
   var actionText=active?'Выключить':(both||mode==='external'||owner==='external'||mode==='other'?'Исправить':'Включить');
   var actionClass=active?'cbi-button-remove':(actionText==='Исправить'?'cbi-button-apply':'cbi-button-add');
-  return componentItem('Принудительный DNS для устройств',
+  var disabled=busy||(!profileSelected && !active);
+  var actionNode=btn(busy?'Сохраняю…':actionText,actionClass,function(){
+    if(busy||!profileSelected)return;
+    setSetting('force',target,root);
+  },{disabled:disabled});
+  var body=[componentItem('Принудительный DNS для устройств',
     badge(busy?'dm-warn':stateKind,busy?'изменение':stateText),
-    btn(busy?'Сохраняю…':actionText,actionClass,function(){
-      if(busy)return;
-      setSetting('force',target,root);
-    },{disabled:busy})
-  );
+    actionNode)];
+  if(!profileSelected)body.push(E('div',{'class':'dm-inline-msg info'},'Сначала выберите профиль DNS Manager.'));
+  return body;
 }
 function boardMemoryKb(board,key){
   var m=board&&board.memory||{},v=m[key];
@@ -3002,7 +3015,11 @@ function renderOverview(root,st){
     ]),
     E('div',{'class':'dm-component-dns-list'},dnsItems),
     E('div',{'class':'dm-actions'},(function(){
-      return [btn('Проверить текущие DNS','cbi-button-action',function(){testCurrent(root);},{disabled:!!state.busy||state.jobRunning||Number(st.test_lock||0)===1})];
+      var profileSelected=String(st.profile||'none')!=='none';
+    var canTestCurrent=profileSelected;
+    var actions=[btn('Проверить текущие DNS','cbi-button-action',function(){if(canTestCurrent)testCurrent(root);},{disabled:!!state.busy||state.jobRunning||Number(st.test_lock||0)===1||!canTestCurrent})];
+    if(!canTestCurrent)actions.push(E('div',{'class':'dm-inline-msg info'},'Сначала выберите профиль DNS Manager.'));
+    return actions;
     })())
   ]);
 
