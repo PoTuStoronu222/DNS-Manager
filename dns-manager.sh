@@ -1047,7 +1047,7 @@ repair_catalog_category_state() {
     [ "$_cat" = "clean" ] || return 0
 
     _changed=0
-    for _slot in 1 2 3 4 5 6 RU RU_2; do
+    for _slot in 1 2 3 4 5 6 RU; do
         eval "_sid=\${SLOT_${_slot}:-}"
         [ "$_sid" = "$_id" ] || continue
         eval "_scat=\${SLOT_${_slot}_CAT:-}"
@@ -2200,11 +2200,17 @@ if [ ! -s "$q" ]; then
     }
 fi
 _ips=""
-# Resolve the DoH endpoint through the trusted bootstrap DNS set first.
-# Local/system DNS is only a fallback so a poisoned provider resolver cannot
-# make a valid DoH endpoint fail the TLS/HTTP test.
-_one="$(resolve_host "$host")"
-[ -n "$_one" ] && _ips="$_one"
+# Resolve all available A records through the trusted bootstrap DNS set first.
+# Keep the existing per-IP DoH check below; one successful address is enough.
+if [ "$HAS_DIG" = yes ]; then
+    for _bs in $(printf '%s' "$BOOTSTRAP_DNS" | tr ',' ' '); do
+        _chunk="$(dig +short "@$_bs" "$host" A +time=1 +tries=1 2>/dev/null | awk '/^[0-9]+(\.[0-9]+){3}$/ && $0 !~ /^127\./ && $0 != "0.0.0.0" {print}' | head -n 4)"
+        if [ -n "$_chunk" ]; then
+            _ips="$_chunk"
+            break
+        fi
+    done
+fi
 if [ -z "$_ips" ] && [ "$HAS_DIG" = yes ]; then
     _chunk="$(dig +short +time=3 +tries=1 "$host" A 2>/dev/null | awk '/^[0-9]+(\.[0-9]+){3}$/ && $0 !~ /^127\./ && $0 != "0.0.0.0" {print}' | head -n 4)"
     [ -n "$_chunk" ] && _ips="$_chunk"
