@@ -1503,8 +1503,16 @@ load_manager() {
     refresh_runtime_capabilities >/dev/null 2>&1 || true
     return 0
 }
+luci_normalize_url() {
+    _lu="$1"
+    _lu="$(printf '%s' "$_lu" | tr -d '[:space:]')"
+    while [ "${_lu%/}" != "$_lu" ]; do
+        _lu="${_lu%/}"
+    done
+    printf '%s' "$_lu"
+}
 system_instance_slot() {
-    _url="$(normalize_url "$1" 2>/dev/null || true)"; _port="$2"
+    _url="$(luci_normalize_url "$1" 2>/dev/null || true)"; _port="$2"
     _catalog_id="$(awk -F'|' -v u="$_url" '$5==u {print $1; exit}' "$CATALOG_FILE" 2>/dev/null || true)"
     for _s in 1 2 3 4 5 6 RU; do
         _sid="$(cfg_get "SLOT_$_s")"; _sport="$(cfg_get "PORT_$_s")"
@@ -1539,7 +1547,7 @@ job_start_test_system() {
             if [ -n "$_u" ] && [ -n "$_p" ] && ! system_instance_slot "$_u" "$_p"; then
                 _total=$((_total+1))
                 _sid="system_${_i}"
-                _norm_url="$(normalize_url "$_u" 2>/dev/null || true)"
+                _norm_url="$(luci_normalize_url "$_u" 2>/dev/null || true)"
                 printf '%s|system|System DNS|System DNS|%s\n' "$_sid" "$_norm_url" > "$_system_catalog"
                 DNS_CATALOG="$_system_catalog"; BOOTSTRAP_DNS="$_b"
                 rm -f "$TMP_DIR/t.$_sid" 2>/dev/null || true
@@ -1789,7 +1797,7 @@ system_check_file() {
     printf '%s/system-%s' "$CHECK_DIR" "$_key"
 }
 system_check_read() {
-    _url="$(normalize_url "$1" 2>/dev/null || true)"; _port="$2"; _bootstrap="$3"
+    _url="$(luci_normalize_url "$1" 2>/dev/null || true)"; _port="$2"; _bootstrap="$3"
     _f="$(system_check_file "$_url" "$_port" "$_bootstrap" 2>/dev/null || true)"
     [ -r "$_f" ] || return 1
     _stored_url="$(sed -n 's/^url=//p' "$_f" 2>/dev/null | head -n1)"
