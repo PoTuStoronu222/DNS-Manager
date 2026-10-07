@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.25
+# Version: 1.26
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -30,7 +30,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.25"
+VERSION="1.26"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -156,7 +156,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.25"
+SELF_VERSION="1.26"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -2489,7 +2489,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.25
+// DNS Manager LuCI version: 1.26
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -2754,13 +2754,13 @@ function injectStyle(root){
   '.dm-hint{font-size:12.5px;opacity:.68;line-height:1.5;margin:0 0 8px}.dm-mini{font-size:11px;opacity:.62}.dm-meta{font-size:11px;line-height:1.45;opacity:.66}.dm-update{padding:8px 10px;border-radius:8px;background:rgba(26,127,55,.08);border:1px solid rgba(26,127,55,.18);font-size:12.5px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}'+
   '.dm-seg{display:flex;flex-wrap:wrap;gap:6px;margin:5px 0}.dm-profile-seg{flex-wrap:nowrap;overflow-x:auto;padding-bottom:2px}.dm-seg .cbi-button{padding:5px 11px;border-radius:7px;font-size:12.5px;font-weight:600}.dm-seg .active{background:#1a7f37;color:#fff;border-color:#1a7f37}'+
   '.dm-force-note{font-size:12px;line-height:1.55;opacity:.72}.dm-inline-msg{display:block;margin:8px 0 0;padding:7px 10px;border-radius:7px;font-size:12px;line-height:1.4}.dm-inline-msg.info{background:rgba(9,105,218,.08);border:1px solid rgba(9,105,218,.16)}.dm-inline-msg.ok{background:rgba(26,127,55,.08);border:1px solid rgba(26,127,55,.16)}.dm-inline-msg.error{background:rgba(207,34,46,.08);border:1px solid rgba(207,34,46,.16)}.dm-applied{display:flex;align-items:center;gap:9px;padding:9px 11px;border-radius:8px;font-size:12.5px;line-height:1.45}.dm-applied.ok{background:rgba(26,127,55,.08);border:1px solid rgba(26,127,55,.18)}.dm-applied.running{background:rgba(191,135,0,.08);border:1px solid rgba(191,135,0,.18)}.dm-applied.error{background:rgba(207,34,46,.08);border:1px solid rgba(207,34,46,.18)}.dm-applied strong{font-weight:700}.dm-confirm-body{min-width:min(440px,calc(100vw - 70px))}.dm-setting{padding:11px 12px}.dm-setting-title{font-size:13px;font-weight:600}.dm-setting-desc{font-size:11.5px;line-height:1.45;opacity:.68;margin-top:3px}.dm-setting-line{display:flex;align-items:center;justify-content:space-between;gap:10px}.dm-setting-text{min-width:0}.dm-setting-controls{display:flex;align-items:center;justify-content:flex-end;gap:7px;margin-top:9px}.dm-setting-actions{display:flex;align-items:center;gap:7px;flex-shrink:0}.dm-setting-actions .cbi-button{padding:4px 9px;font-size:12px}.dm-setting-saving{opacity:.7}.dm-force-external{padding:8px 10px;border-radius:8px;background:rgba(191,135,0,.10);border:1px solid rgba(191,135,0,.22);font-size:12.5px;line-height:1.5;margin-top:8px}'+
-  '.dm-doh-list{display:flex;flex-direction:column}.dm-doh-row{display:grid;grid-template-columns:140px minmax(180px,1fr) 80px 100px;gap:10px;align-items:center;padding:7px 0;border-top:1px solid rgba(0,0,0,.07);font-size:13px}.dm-doh-row:first-child{border-top:0}.dm-doh-name{font-weight:600}.dm-doh-url{overflow-wrap:anywhere;opacity:.88}.dm-doh-port,.dm-doh-ping{font-size:12px;opacity:.7;white-space:nowrap}'+
+  '.dm-doh-list{display:flex;flex-direction:column}.dm-doh-row{display:grid;grid-template-columns:140px minmax(180px,1fr) 80px 100px minmax(150px,auto);gap:10px;align-items:center;padding:7px 0;border-top:1px solid rgba(0,0,0,.07);font-size:13px}.dm-doh-row:first-child{border-top:0}.dm-doh-name{font-weight:600}.dm-doh-url{overflow-wrap:anywhere;opacity:.88}.dm-doh-port,.dm-doh-ping{font-size:12px;opacity:.7;white-space:nowrap}.dm-doh-actions{display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap}.dm-doh-actions .cbi-button{padding:4px 8px;font-size:12px}'+
   '.dm-slot-table{display:flex;flex-direction:column}.dm-slot-row{display:grid;grid-template-columns:55px 135px minmax(180px,1fr) 85px 115px minmax(175px,auto);gap:14px;align-items:center;padding:7px 0;border-top:1px solid rgba(0,0,0,.07);font-size:13px}.dm-slot-row:first-child{border-top:0}.dm-slot-id{font-weight:700;opacity:.62}.dm-slot-name{font-weight:600;overflow-wrap:anywhere}.dm-slot-endpoint,.dm-slot-ping{font-size:12px;opacity:.72;white-space:nowrap}.dm-inline{display:flex;gap:6px;justify-content:flex-end}.dm-inline .cbi-button{padding:4px 9px;font-size:12px}.dm-assign-list{display:flex;flex-direction:column;gap:7px;min-width:min(430px,calc(100vw - 70px))}.dm-assign-item{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:9px 10px;border:1px solid rgba(0,0,0,.08);border-radius:8px}.dm-assign-info{min-width:0;flex:1}.dm-assign-slot{font-weight:700}.dm-assign-current{font-size:12px;opacity:.7;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}'+
   '.dm-catalog{display:grid;grid-template-columns:repeat(3,minmax(210px,1fr));gap:9px;margin-top:8px}.dm-catalog-item{padding:11px 12px}.dm-catalog-item h4{margin:0 0 4px;font-size:13px;line-height:1.35}.dm-catalog-toolbar{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:8px}.dm-assign-inline{display:flex;align-items:center;gap:6px;min-width:0}.dm-assign-inline select{height:30px;min-width:210px;max-width:100%;padding:3px 8px;border-radius:7px;border:1px solid rgba(110,118,129,.32);background:var(--background-color-medium,#fff);color:inherit;font-size:12px;box-shadow:none}.dm-assign-inline select:focus{outline:none;box-shadow:none}.dm-assign-inline .cbi-button{padding:5px 10px;font-size:12px}.dm-page{display:flex;justify-content:center;align-items:center;gap:7px;margin-top:9px}.dm-log{white-space:pre-wrap;max-height:360px;overflow:auto;font:11px/1.45 monospace;padding:10px;background:#111820;color:#dbe4ec;border-radius:8px;margin-top:8px}'+
   '.dm-page-nav{position:sticky;top:0;z-index:20;padding:7px 0;background:var(--background-color-base,#fff);border-bottom:1px solid rgba(0,0,0,.08)}.dm-page-nav::before,.dm-page-nav::after{content:"";position:absolute;left:0;right:0;height:7px;background:var(--background-color-base,#fff);pointer-events:none}.dm-page-nav::before{top:-7px}.dm-page-nav::after{bottom:-7px}.dm-page-tabs{display:flex;align-items:stretch;gap:4px;overflow-x:auto;scrollbar-width:none;padding:0 2px}.dm-page-tabs::-webkit-scrollbar{display:none}.dm-page-tab{flex:0 0 auto;padding:7px 12px!important;border-radius:8px 8px 0 0!important;font-size:12.5px!important;font-weight:600!important;border:1px solid transparent!important;background:transparent!important;box-shadow:none!important}.dm-page-tab:hover{background:rgba(0,0,0,.05)!important}.dm-page-tab.active{background:var(--background-color-medium,#fff)!important;border-color:rgba(0,0,0,.12)!important;border-bottom-color:var(--background-color-medium,#fff)!important}.dm-page-nav-title{display:none}.dm-wrap>section{scroll-margin-top:58px}'+
   '.dm-section-title{font-size:12px;letter-spacing:.02em;text-transform:none;opacity:.62;margin:3px 0 0;padding:0 2px}'+
   '@media(max-width:850px){.dm-test-age-common{flex-wrap:wrap}.dm-grid2{grid-template-columns:1fr}.dm-grid4{grid-template-columns:repeat(2,minmax(0,1fr))}.dm-doh-row{grid-template-columns:120px minmax(140px,1fr) 70px}.dm-doh-ping{display:none}.dm-slot-row{grid-template-columns:48px 115px minmax(130px,1fr) 85px 105px auto}.dm-slot-ping{display:none}.dm-catalog{grid-template-columns:repeat(2,minmax(0,1fr))}}'+
-  '@media(max-width:560px){.dm-grid3,.dm-grid4,.dm-catalog{grid-template-columns:1fr}.dm-header-actions{margin-left:0}.dm-doh-row{grid-template-columns:1fr auto}.dm-doh-url{grid-column:1/3}.dm-doh-port{grid-column:1}.dm-slot-row{grid-template-columns:40px minmax(0,1fr) auto}.dm-slot-endpoint{display:none}.dm-slot-state{display:none}.dm-inline{grid-column:2/4;justify-content:flex-start}}';
+  '@media(max-width:560px){.dm-grid3,.dm-grid4,.dm-catalog{grid-template-columns:1fr}.dm-header-actions{margin-left:0}.dm-doh-row{grid-template-columns:1fr auto}.dm-doh-actions{grid-column:1/3;justify-content:flex-start}.dm-doh-url{grid-column:1/3}.dm-doh-port{grid-column:1}.dm-slot-row{grid-template-columns:40px minmax(0,1fr) auto}.dm-slot-endpoint{display:none}.dm-slot-state{display:none}.dm-inline{grid-column:2/4;justify-content:flex-start}}';
   root.appendChild(E('style',{},css));
 }
 
@@ -2783,7 +2783,7 @@ function renderHeader(root,st){
 function setActiveTab(root,name){
   var groups={
     dashboard:['overview','test-inline'],
-    doh:['doh','profiles','slots'],
+    doh:['doh','profiles'],
     network:['network'],
     time:['time'],
     catalog:['catalog'],
@@ -3051,7 +3051,7 @@ function renderOverview(root,st){
   else if(state.fullTest&&state.fullTest.status==='FAILED')fullState=E('div',{'class':'dm-inline-msg error'},'Полная проверка DNS завершилась с ошибкой.');
   if(fullState)e.appendChild(fullState);
 }
-function resolverRows(st){
+function resolverRows(st,root){
   var out=[],seen=0;
   (st.doh_instances||[]).forEach(function(d){
     if(!d)return;
@@ -3060,38 +3060,47 @@ function resolverRows(st){
     var name=d.name||'Пользовательский DNS';
     var ci=checkInfo(d.id,d);
     var s=String(ci.status||'').toUpperCase();
-    var statusNode=s==='OK'
-      ? badge('dm-ok','работает')
-      : s==='RUNNING'
-        ? badge('dm-warn','проверяется…')
+    var running=s==='RUNNING';
+    var statusNode=running
+      ? badge('dm-warn','проверяется…')
+      : s==='OK'
+        ? badge('dm-ok','работает')
         : s
           ? badge('dm-bad','не работает')
           : badge('dm-off','не проверено');
+    var actions=[];
+    if(d.slot){
+      actions.push(btn('Выбрать','cbi-button-neutral',function(){openSlotPicker(d.slot,root);},{disabled:running||!!state.busy||!!state.jobRunning}));
+      actions.push(btn(running?'Проверяю…':'Проверить','cbi-button-neutral',function(){testOne(d.id,root,'doh');},{disabled:running||!!state.busy||!!state.jobRunning}));
+    }
     out.push(E('div',{'class':'dm-doh-row'},[
       E('span',{'class':'dm-doh-slot'},slot),
       E('span',{'class':'dm-doh-name'},name),
-      E('span',{'class':'dm-doh-ping'},s!=='RUNNING'&&hasPing(ci.ping)?ping(ci.ping):'—'),
-      E('span',{'class':'dm-doh-state'},statusNode)
+      E('span',{'class':'dm-doh-ping'},!running&&hasPing(ci.ping)?ping(ci.ping):'—'),
+      E('span',{'class':'dm-doh-state'},statusNode),
+      E('span',{'class':'dm-doh-actions'},actions)
     ]));
   });
   if(!seen)(st.slots||[]).forEach(function(d){
     if(!d||!d.id)return;
     seen++;
-    var ci=checkInfo(d.id,d),status=String(ci.status||d.status||'').toUpperCase();
+    var ci=checkInfo(d.id,d),status=String(ci.status||d.status||'').toUpperCase(),running=status==='RUNNING';
     out.push(E('div',{'class':'dm-doh-row'},[
       E('span',{'class':'dm-doh-slot'},slotLabel(d.slot||'—')),
       E('span',{'class':'dm-doh-name'},d.name||d.id),
-      E('span',{'class':'dm-doh-url'},'—'),
-      E('span',{'class':'dm-doh-port'},d.port?'порт '+d.port:'—'),
-      E('span',{'class':'dm-doh-ping'},ping(ci.ping)),
-      E('span',{'class':'dm-doh-state'},stateBadge(status,ci.ping))
+      E('span',{'class':'dm-doh-ping'},running?'—':ping(ci.ping)),
+      E('span',{'class':'dm-doh-state'},running?badge('dm-warn','проверяется…'):stateBadge(status,ci.ping)),
+      E('span',{'class':'dm-doh-actions'},[
+        btn('Выбрать','cbi-button-neutral',function(){openSlotPicker(d.slot,root);},{disabled:running||!!state.busy||!!state.jobRunning}),
+        btn(running?'Проверяю…':'Проверить','cbi-button-neutral',function(){testOne(d.id,root,'doh');},{disabled:running||!!state.busy||!!state.jobRunning})
+      ])
     ]));
   });
   return [out,seen];
 }
 function renderDoH(root,st){
   var e=root.querySelector('#dm-doh');if(!e)return;e.innerHTML='';
-  var rr=resolverRows(st), rows=rr[0], count=rr[1];
+  var rr=resolverRows(st,root), rows=rr[0], count=rr[1];
   var ch=[];
   ch.push(E('p',{'class':'dm-hint'},'Шифрованный DNS для всей сети: запросы устройств уходят к выбранным резолверам по HTTPS.'));
   ch.push(row('Пакет',st.doh_total>0?badge('dm-ok','установлен'):badge('dm-off','не установлен')));
