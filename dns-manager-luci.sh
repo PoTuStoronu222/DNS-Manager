@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.22
+# Version: 1.23
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -30,7 +30,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.22"
+VERSION="1.23"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -156,7 +156,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.22"
+SELF_VERSION="1.23"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -2489,7 +2489,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.22
+// DNS Manager LuCI version: 1.23
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -3102,12 +3102,21 @@ function renderDoH(root,st){
   } else ch.push(row('Сейчас используется',E('span',{},'резолверы не настроены')));
 
   var fm=forceMode(st);
+  var profileSelected=String(st.profile||'none')!=='none';
+  var forceEnableLocked=!profileSelected && fm!=='auto';
   var forceButtons=E('div',{'class':'dm-seg'},[
-    btn('Авто (рекомендуется)',fm==='auto'?'active cbi-button':'cbi-button',function(){setForceMode('auto',root);},{disabled:state.busy}),
+    btn('Авто (рекомендуется)',fm==='auto'?'active cbi-button':'cbi-button',function(){setForceMode('auto',root);},{disabled:state.busy||forceEnableLocked}),
     btn('Не перехватывать',fm==='off'?'active cbi-button':'cbi-button',function(){setForceMode('off',root);},{disabled:state.busy})
   ]);
   var steer=st.force_owner==='steer';
-  ch.push(E('div',{'style':'margin-top:9px'},[E('div',{'class':'dm-row'},[E('span',{'class':'dm-label'},'Перехват DNS устройств'),badge(st.force_status==='external'||st.force_status==='other'?'dm-bad':(st.force_status==='manager'||st.force_status==='steer')?'dm-ok':'dm-off',st.force_status==='external'?'внешний':st.force_status==='other'?'другое':st.force_status==='steer'?'включён • Steer':st.force_status==='manager'?'включён':'выключен')]),forceButtons]));
+  ch.push(E('div',{'style':'margin-top:9px'},[
+    E('div',{'class':'dm-row'},[
+      E('span',{'class':'dm-label'},'Перехват DNS устройств'),
+      badge(st.force_status==='external'||st.force_status==='other'?'dm-bad':(st.force_status==='manager'||st.force_status==='steer')?'dm-ok':'dm-off',st.force_status==='external'?'внешний':st.force_status==='other'?'другое':st.force_status==='steer'?'включён • Steer':st.force_status==='manager'?'включён':'выключен')
+    ]),
+    forceButtons,
+    (!profileSelected && fm!=='auto') ? E('div',{'class':'dm-inline-msg info'},'Сначала выберите профиль DNS Manager.') : null
+  ].filter(Boolean)));
   if(st.force_both){
     ch.push(E('div',{'class':'dm-force-external'},'Принудительный DNS обнаружен одновременно с внешним перехватом. Источник: '+shortVal(st.force_source)+'. При переключении DNS Manager приведёт общую конфигурацию forced-DNS к своей схеме.'));
   } else if(st.force_owner==='external'){
@@ -3492,6 +3501,7 @@ function saveTestAges(root,inputs){
 }
 function watchdogCard(root,st){
   var en=yes(st.watchdog), busy=state.busySetting==='watchdog' || state.busySetting==='watchdog_batch';
+  var profileSelected=String(st.profile||'none')!=='none';
   var service=Number(st.watchdog_service||0)===1, loop=Number(st.watchdog_loop||0)===1;
   var inputs={};
 
@@ -3587,8 +3597,10 @@ function watchdogCard(root,st){
       E('div',{'class':'dm-setting-actions'},[
         badge(busy?'dm-warn':(en?'dm-ok':'dm-off'),busy?'изменение':(en?'включено':'выключено')),
         btn(busy?'Сохраняю…':(en?'Выключить':'Включить'),busy?'cbi-button-neutral':(en?'cbi-button-remove':'cbi-button-add'),function(){
-          var cur=yes((window.dmState||{}).watchdog); setSetting('watchdog',cur?0:1,root);
-        },{disabled:!!state.busy})
+          var cur=yes((window.dmState||{}).watchdog);
+          if(!cur && !profileSelected)return;
+          setSetting('watchdog',cur?0:1,root);
+        },{disabled:!!state.busy || (!en && !profileSelected)})
       ])
     ])
   ]);
@@ -4117,6 +4129,7 @@ function setSetting(name,en,root){
 }
 function setForceMode(mode,root){
   if(state.busy)return;
+  if(mode==='auto' && String((window.dmState||{}).profile||'none')==='none')return;
   var en=mode==='auto'?1:0;
   state.busy=true;
   state.busySetting='force';
