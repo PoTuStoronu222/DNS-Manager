@@ -688,8 +688,14 @@ ok "LuCI full catalog job publishes final progress before DONE"
 
 grep -q "profileSelected=String(st.profile||'none')!=='none'" "$tmp/overview.js" || fail "LuCI does not detect missing DNS Manager profile"
 grep -q "Сначала выберите профиль DNS Manager" "$tmp/overview.js" || fail "LuCI missing no-profile reason"
-grep -Fq '_profile_slots="$SLOT_1$SLOT_2$SLOT_3$SLOT_4$SLOT_5$SLOT_6$SLOT_RU"' "$tmp/backend.sh" || fail "LuCI current DNS backend does not guard against empty Manager slots"
-ok "LuCI blocks forced/current DNS actions until a Manager profile is selected"
+grep -q "function watchdogComponentItem" "$tmp/overview.js" || fail "LuCI watchdog control helper missing"
+grep -q "setSetting('watchdog',active?0:1,root)" "$tmp/overview.js" || fail "LuCI watchdog toggle is not wired"
+grep -Fq 'if [ "$_module" = watchdog ] && [ "$_new" = 1 ]; then' dns-manager.sh || fail "CLI watchdog no-profile guard missing"
+grep -Fq 'if [ "$_enabled" = 1 ] && [ -z "$SLOT_1$SLOT_2$SLOT_3$SLOT_4$SLOT_5$SLOT_6$SLOT_RU" ]; then' "$tmp/backend.sh" || fail "RPC watchdog no-profile guard missing"
+grep -q "Проверить текущие DNS','cbi-button-action'" "$tmp/overview.js" || fail "Current DNS check button disappeared"
+if grep -q "canTestCurrent=profileSelected" "$tmp/overview.js"; then fail "Current DNS check is incorrectly blocked without profile"; fi
+if grep -q "_profile_slots.*Проверить текущие DNS" "$tmp/backend.sh"; then fail "Current DNS check is incorrectly guarded by profile"; fi
+ok "DNS control is blocked without profile; current DNS checks remain available"
 
 grep -q 'test_dns_catalog "\$1"' dns-manager.sh || fail "profile apply does not pass its category to the DNS test"
 grep -q 'test_scope=' dns-manager.sh || fail "DNS test scope is not persisted"
