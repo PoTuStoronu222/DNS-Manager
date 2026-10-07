@@ -2069,7 +2069,7 @@ job_start_test_current() {
         _total=0
         _done=0
         _fail=0
-        for _s in 1 2 3 4 5 6 RU RU_2; do
+        for _s in 1 2 3 4 5 6 RU; do
             _id="$(cfg_get "SLOT_$_s" 2>/dev/null || true)"
             [ -n "$_id" ] || continue
             printf "%s\n" "$_id" >> "$_ids"
