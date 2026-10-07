@@ -120,7 +120,7 @@ EOF_MENU
     },
     "write": {
       "ubus": {
-        "dns_manager": [ "set_profile", "reset_dns", "set_slot", "set_setting", "set_watchdog_setting", "set_watchdog_settings", "set_ntp", "set_test_age", "test_all", "test_current", "test_one", "test_system", "update", "update_manager", "update_hdp", "update_catalog", "update_all" ]
+        "dns_manager": [ "profile_plan", "set_profile", "reset_dns", "set_slot", "set_setting", "set_watchdog_setting", "set_watchdog_settings", "set_ntp", "set_test_age", "test_all", "test_current", "test_one", "test_system", "update", "update_manager", "update_hdp", "update_catalog", "update_all" ]
       }
     }
   }
@@ -2280,9 +2280,43 @@ catalog_json() {
     printf ']}'; rm -f "$_filtered" "$_paged" 2>/dev/null || true
 }
 
+profile_plan_json() {
+    _profile="$(jget profile)"
+    case "$_profile" in
+        clean2) _profile=clean ;;
+        bypass|clean|security|privacy|adblock|family|all) ;;
+        *) json_error "Неверный профиль"; return 1 ;;
+    esac
+    if profile_job_running; then
+        _running_name="$PROFILE_RUNNING_PROFILE"
+        [ -n "$_running_name" ] || _running_name="другой профиль"
+        json_error "Сейчас уже применяется профиль «$_running_name». Сначала дождитесь завершения текущей операции."
+        return 1
+    fi
+    load_manager || { json_error "DNS Manager недоступен"; return 1; }
+    _plan_file="$TMP_ROOT/profile-plan.$"
+    rm -f "$_plan_file" 2>/dev/null || true
+    "$MANAGER" profile-plan "$_profile" >"$_plan_file" 2>&1
+    _rc=$?
+    _plan="$(sed -n '/===  ПОДГОТОВКА И ПЛАН ПРИМЕНЕНИЯ ===/,$p' "$_plan_file" 2>/dev/null | head -n 120)"
+    rm -f "$_plan_file" 2>/dev/null || true
+    if [ -z "$_plan" ]; then
+        case "$_rc" in
+            2) json_error "Не удалось сформировать план: неверный профиль." ;;
+            *) json_error "Не удалось сформировать план применения профиля." ;;
+        esac
+        return 1
+    fi
+    printf '{"ok":true,"profile":'; json_quote "$_profile"
+    printf ',"plan":'; json_quote "$_plan"
+    printf '}'
+}
 run_action() {
     _profile="$(jget profile)"
     case "${RPC_METHOD:-}" in
+        profile_plan)
+            profile_plan_json
+            ;;
         set_profile)
             case "$_profile" in clean2) _profile=clean;; bypass|clean|security|privacy|adblock|family|all) ;; *) json_error "Неверный профиль"; return;; esac
             job_start_profile "$_profile"
@@ -2425,7 +2459,7 @@ test_json() { case "${RPC_METHOD:-}" in test_all) job_start_test_all;; test_curr
 
 case "${1:-}" in
     list)
-        printf '{"status":{},"runtime":{},"catalog":{"category":"String","offset":0,"limit":0,"only_ok":0},"update_check":{},"update":{},"update_manager":{},"update_hdp":{},"update_catalog":{},"update_all":{},"set_profile":{"profile":"String"},"reset_dns":{},"set_slot":{"slot":"String","id":"String"},"set_setting":{"name":"String","enabled":0},"set_watchdog_setting":{"name":"String","value":0},"set_watchdog_settings":{"interval":0,"threshold":0,"repair_cooldown":0,"max_repairs":0,"max_restarts":0,"max_candidates":0,"guard_interval":0},"set_ntp":{"preset":"String"},"set_test_age":{"category":"String","hours":0},"test_all":{},"test_current":{},"test_one":{"id":"String"},"test_system":{},"job":{"id":"String"},"log":{"lines":0}}\n'
+        printf '{"status":{},"runtime":{},"catalog":{"category":"String","offset":0,"limit":0,"only_ok":0},"update_check":{},"update":{},"update_manager":{},"update_hdp":{},"update_catalog":{},"update_all":{},"profile_plan":{"profile":"String"},"set_profile":{"profile":"String"},"reset_dns":{},"set_slot":{"slot":"String","id":"String"},"set_setting":{"name":"String","enabled":0},"set_watchdog_setting":{"name":"String","value":0},"set_watchdog_settings":{"interval":0,"threshold":0,"repair_cooldown":0,"max_repairs":0,"max_restarts":0,"max_candidates":0,"guard_interval":0},"set_ntp":{"preset":"String"},"set_test_age":{"category":"String","hours":0},"test_all":{},"test_current":{},"test_one":{"id":"String"},"test_system":{},"job":{"id":"String"},"log":{"lines":0}}\n'
         ;;
     call)
         case "${2:-}" in
@@ -2505,6 +2539,7 @@ var callUpdate = dmRpc({ object:'dns_manager', method:'update', expect:{} });
 var callManagerUpdate = dmRpc({ object:'dns_manager', method:'update_manager', expect:{} });
 var callHdpUpdate = dmRpc({ object:'dns_manager', method:'update_hdp', expect:{} });
 var callUpdateCatalog = dmRpc({ object:'dns_manager', method:'update_catalog', expect:{} });
+var callProfilePlan = dmRpc({ object:'dns_manager', method:'profile_plan', params:['profile'], expect:{} });
 var callProfile = dmRpc({ object:'dns_manager', method:'set_profile', params:['profile'], expect:{} });
 var callResetDns = dmRpc({ object:'dns_manager', method:'reset_dns', expect:{} });
 var callSlot = dmRpc({ object:'dns_manager', method:'set_slot', params:['slot','id'], expect:{} });
@@ -2528,7 +2563,7 @@ var CATEGORY = [
   ['all','Все DNS'], ['bypass','Обход блокировок'], ['security','Безопасность'], ['privacy','Приватность'],
   ['adblock','Блокировка рекламы'], ['family','Семейный'], ['clean','Без фильтрации'], ['regional','Региональные']
 ];
-var state = { luciUpdateReloadTimer:null, hdpUpdating:false, managerUpdating:false, updatingAll:false, category:'all', offset:0, limit:18, catalogLoaded:false, catalogLoading:false, advanced:true, logLoaded:false, logLoading:false, busy:false, busySetting:'', settingMessage:'', settingMessageType:'', settingMessageKey:'', pageNotice:{}, statusError:'', activeTab:'dashboard', jobRunning:false, lastJob:null, checking:{}, fullTest:null, catalogProgress:null, profileProgress:null, versionCheck:null, lastAction:null, runtimeCpuLoad:null, runtimeMemoryTotal:null, runtimeMemoryAvailable:null, boardInfo:null, systemPollBusy:false, profileResumeStarted:false };
+var state = { luciUpdateReloadTimer:null, hdpUpdating:false, managerUpdating:false, updatingAll:false, category:'all', offset:0, limit:18, catalogLoaded:false, catalogLoading:false, advanced:true, logLoaded:false, logLoading:false, busy:false, busySetting:'', settingMessage:'', settingMessageType:'', settingMessageKey:'', pageNotice:{}, statusError:'', activeTab:'dashboard', jobRunning:false, lastJob:null, checking:{}, fullTest:null, catalogProgress:null, profileProgress:null, profilePlanLoading:false, profilePlan:null, profileOutput:'', versionCheck:null, lastAction:null, runtimeCpuLoad:null, runtimeMemoryTotal:null, runtimeMemoryAvailable:null, boardInfo:null, systemPollBusy:false, profileResumeStarted:false };
 
 function profileName(p){
   var x=PROFILE.filter(function(v){return v[0]===p;})[0];
@@ -2632,6 +2667,51 @@ function confirmAction(title, rows, onConfirm){
     btn('Отмена','cbi-button-negative',ui.hideModal),
     btn('Применить','cbi-button-apply',function(){ui.hideModal();onConfirm();})
   ])]);
+}
+function showProfilePlan(root,name,plan,current){
+  var body=[];
+  body.push(row('Сейчас',E('span',{},String(current||'—'))));
+  body.push(row('Новый профиль',E('span',{},String(profileName(name)))));
+  body.push(E('div',{'class':'dm-profile-plan-label'},'План из backend DNS Manager'));
+  body.push(E('pre',{'class':'dm-profile-plan-output'},stripAnsi(plan||'').trim()||'План не получен.'));
+  body.push(E('div',{'class':'dm-mini'},'После подтверждения запускается существующее применение профиля; backend повторно проверяет текущее состояние перед изменением.'));
+  body.push(E('div',{'class':'right'},[
+    btn('Отмена','cbi-button-negative',function(){state.profilePlan=null;state.profilePlanLoading=false;state.busy=false;ui.hideModal();renderProfiles(root,window.dmState||{});}),
+    btn('Применить','cbi-button-apply',function(){
+      state.profilePlan=null;
+      state.profilePlanLoading=false;
+      ui.hideModal();
+      state.busy=true;
+      state.jobRunning=false;
+      state.profileProgress={p:5,label:'Подготавливаю профиль…',detail:''};
+      state.profileOutput='';
+      state.pageNotice.profiles='';
+      renderProfiles(root,window.dmState||{});
+      callProfile(name).then(function(r){
+        if(r&&r.ok&&r.job){
+          state.jobRunning=true;
+          pollJob(root,r.job,{mode:'profile',profile:name});
+          return;
+        }
+        state.busy=false;
+        if(r&&r.ok){
+          state.profileProgress={p:100,label:'Профиль применён.',detail:''};
+          state.pageNotice.profiles='';
+        }else{
+          setAction(false,(r&&r.error)||'Профиль не удалось запустить.');
+          state.pageNotice.profiles=(r&&r.error)||'Профиль не удалось запустить.';
+        }
+        refresh(root,true);
+      }).catch(function(err){
+        state.busy=false;
+        state.profileProgress=null;
+        setAction(false,withRpcError('Не удалось запустить применение профиля.',err));
+        state.pageNotice.profiles=withRpcError('Не удалось запустить применение профиля.',err);
+        refresh(root,true);
+      });
+    })
+  ]));
+  ui.showModal('Подтвердить изменение профиля',body);
 }
 function setSettingFeedback(key,msg,type){
   state.settingMessageKey=String(key||'');
@@ -3368,6 +3448,11 @@ function renderProfileProgress(root){
     E('div',{'class':'dm-profile-progress-status'},p.label||'Выполняю…')
   ];
   if(p.detail)body.push(E('div',{'class':'dm-profile-progress-detail'},p.detail));
+  var out=String(state.profileOutput||'').trim();
+  if(out){
+    var lines=out.split('\n').filter(function(x){return String(x||'').trim();});
+    body.push(E('pre',{'class':'dm-profile-output','style':'max-height:260px;overflow:auto;white-space:pre-wrap;word-break:break-word;padding:9px;border:1px solid rgba(127,127,127,.18);border-radius:7px;margin-top:8px;font:11px/1.45 ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;background:rgba(0,0,0,.04)'},lines.slice(-40).join('\n')));
+  }
   return card('Ход применения',body);
 }
 
@@ -4066,34 +4151,36 @@ function resetDnsCore(root){
 function applyProfile(name,root){
   if(state.busy)return;
   var st=window.dmState||{};
-  var currentId=activeProfileId(st),current=currentId?profileName(currentId):activeProfileLabel(st),next=profileName(name);
-  var repeat=currentId===name;
-  confirmAction(repeat?'Повторно применить профиль':'Подтвердить изменение профиля',[['Сейчас',current],[repeat?'Профиль':'Новый профиль',next]],function(){
-    state.busy=true;
-    state.profileProgress={p:5,label:'Подготавливаю профиль…',detail:''};
-    state.pageNotice.profiles='';
+  var currentId=activeProfileId(st),current=currentId?profileName(currentId):activeProfileLabel(st);
+  state.busy=true;
+  state.profilePlanLoading=true;
+  state.pageNotice.profiles='';
+  renderProfiles(root,window.dmState||{});
+  ui.showModal('Подготовка плана применения',[E('div',{'class':'dm-profile-plan-loading'},[
+    E('strong',{},'Формирую план для профиля «'+profileName(name)+'»…'),
+    E('div',{'class':'dm-mini'},'Проверяю выбранную категорию и готовлю тот же план, который backend использует перед применением.')
+  ])]);
+  callProfilePlan(name).then(function(r){
+    state.profilePlanLoading=false;
+    if(r&&r.ok&&r.plan){
+      state.profilePlan=r.plan;
+      showProfilePlan(root,name,r.plan,current);
+      return;
+    }
+    state.busy=false;
+    ui.hideModal();
+    var msg=(r&&r.error)||'Не удалось сформировать план применения профиля.';
+    setAction(false,msg);
+    state.pageNotice.profiles=msg;
     renderProfiles(root,window.dmState||{});
-    callProfile(name).then(function(r){
-      if(r&&r.ok&&r.job){
-        pollJob(root,r.job,{mode:'profile',profile:name});
-        return;
-      }
-      state.busy=false;
-      if(r&&r.ok){
-        state.profileProgress={p:100,label:'Профиль применён.',detail:''};
-        state.pageNotice.profiles='';
-      }else{
-        setAction(false,(r&&r.error)||'Профиль не удалось запустить.');
-        state.pageNotice.profiles=(r&&r.error)||'Профиль не удалось запустить.';
-      }
-      refresh(root,true);
-    }).catch(function(err){
-      state.busy=false;
-      state.profileProgress=null;
-      setAction(false,withRpcError('Не удалось запустить применение профиля.',err));
-      state.pageNotice.profiles=withRpcError('Не удалось запустить применение профиля.',err);
-      refresh(root,true);
-    });
+  }).catch(function(err){
+    state.profilePlanLoading=false;
+    state.busy=false;
+    ui.hideModal();
+    var msg=withRpcError('Не удалось сформировать план применения профиля.',err);
+    setAction(false,msg);
+    state.pageNotice.profiles=msg;
+    renderProfiles(root,window.dmState||{});
   });
 }
 function setTestAge(category,hours,root){
@@ -4321,7 +4408,7 @@ function pollJob(root,job,meta,done){
       if(detail.length>360)detail=detail.slice(0,357)+'…';
       var msg='Профиль «'+label+'» не удалось применить.';
       if(detail)msg+=' '+detail;
-      state.profileProgress=null;
+      state.profileProgress={p:100,label:'Профиль не применён.',detail:detail||'Операция завершилась с ошибкой.'};
       setAction(false,msg);
       state.pageNotice.profiles=msg;
     }
@@ -4389,6 +4476,7 @@ function pollJob(root,job,meta,done){
     callJob(jobId).then(function(j){
       j=j||{};
       if(meta&&meta.mode==='profile'){
+        state.profileOutput=stripAnsi(j.output||'');
         profileProgressUpdate(j);
         renderProfiles(root,window.dmState||{});
       }
