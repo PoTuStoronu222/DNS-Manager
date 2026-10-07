@@ -686,6 +686,11 @@ grep -Fq 'job_write "$_jid" progress_ok "$_final_ok"' "$tmp/test_all_job.sh" || 
 grep -Fq 'job_write "$_jid" progress_fail "$_final_fail"' "$tmp/test_all_job.sh" || fail "LuCI full catalog job does not publish final progress_fail"
 ok "LuCI full catalog job publishes final progress before DONE"
 
+grep -q "profileSelected=String(st.profile||'none')!=='none'" "$tmp/overview.js" || fail "LuCI does not detect missing DNS Manager profile"
+grep -q "Сначала выберите профиль DNS Manager" "$tmp/overview.js" || fail "LuCI missing no-profile reason"
+grep -Fq '_profile_slots="$SLOT_1$SLOT_2$SLOT_3$SLOT_4$SLOT_5$SLOT_6$SLOT_RU"' "$tmp/backend.sh" || fail "LuCI current DNS backend does not guard against empty Manager slots"
+ok "LuCI blocks forced/current DNS actions until a Manager profile is selected"
+
 grep -q 'test_dns_catalog "\$1"' dns-manager.sh || fail "profile apply does not pass its category to the DNS test"
 grep -q 'test_scope=' dns-manager.sh || fail "DNS test scope is not persisted"
 grep -q 'ensure_test_results_fresh "\$_cat"' dns-manager.sh || fail "category selector does not request category-scoped freshness"
