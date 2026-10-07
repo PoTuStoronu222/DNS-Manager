@@ -3281,6 +3281,11 @@ _apply_extras_now_impl() {
                 remove_dns_force || return 1
             fi
             reload_fw || return 1
+            # Forced-DNS changes are fully represented by the applied UCI/firewall
+            # state. Do not run the full router discovery here; the caller can
+            # refresh status after the operation without delaying the button.
+            save_config || return 1
+            return 0
             ;;
         dnsmasq_perf)
             if [ "$DNSMASQ_PERF" = 1 ]; then
