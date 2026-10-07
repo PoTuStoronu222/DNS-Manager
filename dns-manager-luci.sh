@@ -3377,7 +3377,11 @@ function renderProfileProgress(root){
 }
 
 function renderProfiles(root,st){
-  var e=root.querySelector('#dm-profiles');if(!e)return;e.innerHTML='';
+  var e=root.querySelector('#dm-profiles');if(!e)return;
+  var oldOut=e.querySelector('.dm-profile-output');
+  var oldScrollTop=oldOut?oldOut.scrollTop:0;
+  var oldAtBottom=oldOut?((oldOut.scrollHeight-oldOut.clientHeight-oldOut.scrollTop)<=8):false;
+  e.innerHTML='';
   var g=E('div',{'class':'dm-seg dm-profile-seg'});
   var currentId=activeProfileId(st);
   PROFILE.forEach(function(p){g.appendChild(btn(p[1],currentId===p[0]?'active cbi-button':'cbi-button',function(){applyProfile(p[0],root);},{disabled:!!state.busy}));});
@@ -3411,6 +3415,11 @@ function renderProfiles(root,st){
   }
   if(state.pageNotice.profiles)pch.push(E('div',{'class':'dm-inline-msg '+(state.busy?'info':'error')},state.pageNotice.profiles));
   e.appendChild(card('Профили DNS',pch));
+  var newOut=e.querySelector('.dm-profile-output');
+  if(newOut){
+    if(oldAtBottom)newOut.scrollTop=newOut.scrollHeight;
+    else newOut.scrollTop=Math.min(oldScrollTop,newOut.scrollHeight);
+  }
 }
 
 function renderSlots(root,st){
