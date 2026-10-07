@@ -4152,7 +4152,25 @@ function setForceMode(mode,root){
   callSetting('force',en).then(function(r){
     state.busy=false;state.busySetting='';
     state.pageNotice.doh=(r&&r.ok)?(en?'Перехват DNS включён.':'Перехват DNS выключен.'):(r&&r.error)||'Не удалось изменить перехват DNS.';
-    refresh(root,true);
+    if(r&&r.ok){
+      var st=Object.assign({},window.dmState||{});
+      var steerOwned=st.force_owner==='steer'||st.force_status==='steer'||st.force_source==='Steer';
+      if(en){
+        st.force_status=steerOwned?'steer':'manager';
+        st.force_owner=steerOwned?'steer':'manager';
+        st.force_source=steerOwned?'Steer':'DNS Manager';
+        st.force_manager=steerOwned?0:1;
+      }else{
+        st.force_status='off';
+        st.force_owner='none';
+        st.force_source='none';
+        st.force_manager=0;
+      }
+      window.dmState=st;
+      renderOverview(root,st);
+    }else{
+      refresh(root,true);
+    }
   }).catch(function(err){
     state.busy=false;state.busySetting='';
     state.pageNotice.doh=withRpcError('Не удалось изменить перехват DNS.',err);
