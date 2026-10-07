@@ -4153,6 +4153,11 @@ function setForceMode(mode,root){
     state.busy=false;state.busySetting='';
     state.pageNotice.doh=(r&&r.ok)?(en?'Перехват DNS включён.':'Перехват DNS выключен.'):(r&&r.error)||'Не удалось изменить перехват DNS.';
     refresh(root,true);
+    if(r&&r.ok){
+      setTimeout(function(){
+        if(rootAlive(root))refresh(root,true);
+      },1200);
+    }
   }).catch(function(err){
     state.busy=false;state.busySetting='';
     state.pageNotice.doh=withRpcError('Не удалось изменить перехват DNS.',err);
