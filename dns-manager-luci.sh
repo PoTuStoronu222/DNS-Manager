@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.13
+# Version: 1.14
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -30,7 +30,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.13"
+VERSION="1.14"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -156,7 +156,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.13"
+SELF_VERSION="1.14"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -2188,12 +2188,6 @@ job_start_test_one() {
             _one_ms=""
             _one_status="TEST_NO_RESULT"
         fi
-        # A successful DNS check must also have a numeric request time.
-        # This prevents LuCI from displaying a stale/partial OK result with
-        # a missing ping value.
-        if [ "$_one_status" = "OK" ]; then
-            case "$_one_ms" in ''|*[!0-9]*|-1) _one_status="FAIL"; _one_ms=-1;; esac
-        fi
         if [ -n "$_one_status" ] && [ "$_one_status" != "TEST_NO_RESULT" ]; then
             job_write "$_jid" ping "$_one_ms"
             job_write "$_jid" dns_status "$_one_status"
@@ -2480,7 +2474,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.13
+// DNS Manager LuCI version: 1.14
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -2822,7 +2816,7 @@ function checkInfo(id,d){
   var x=state.checking&&state.checking[key];
   if(x&&String(x.status||'').toUpperCase()==='RUNNING')return {status:'RUNNING',ping:''};
   var r={status:d&&d.status?d.status:'',ping:d&&d.ping?d.ping:''};
-  if(String(r.status||'').toUpperCase()==='OK'&&!hasPing(r.ping))r.status='FAIL';
+  
   return r;
 }
 function componentItem(title,statusNode,details){
@@ -2937,20 +2931,7 @@ function renderOverview(root,st){
   var applied=renderActionStatus();if(applied)e.appendChild(applied);
   if(state.statusError)e.appendChild(E('div',{'class':'dm-inline-msg error'},state.statusError+' Проверьте: ubus call dns_manager status.'));
 
-  var dohState='unchecked';
-  var configured=(st.doh_instances||[]).filter(function(d){return d&&d.slot;});
-  var checked=0,failed=0;
-  configured.forEach(function(d){
-    var ci=checkInfo(d.id,d);
-    var s=String(ci.status||'').toUpperCase();
-    if(s==='OK')checked++;
-    else if(s==='RUNNING'){}
-    else if(s)failed++;
-  });
-  if(configured.length){
-    if(failed>0)dohState='down';
-    else if(checked===configured.length)dohState='ok';
-  }
+  var dohState=String(st.doh||'').toLowerCase()==='yes'?'ok':'down';
   var doh=dohState==='ok'
     ? badge('dm-ok','работает')
     : dohState==='down'
