@@ -4509,7 +4509,8 @@ EOF_PAGE
             err "Не удалось заменить страницу DNS Manager LuCI: ${_page}."
             return 1
         }
-    done    chmod 0644 "$MENU_FILE" "$ACL_FILE"
+    done
+    chmod 0644 "$MENU_FILE" "$ACL_FILE"
 
     # The current native LuCI page is a JavaScript view and no longer uses
     # the former dns_manager Lua controller. Remove only that DNS Manager-owned
