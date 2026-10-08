@@ -803,6 +803,18 @@ got="$(watchdog_pick_replacement 1 "$TMP_DIR/used" "$TMP_DIR/tried" 0)"
     exit 31
 }
 
+# Runtime watchdog fallback must not reject a candidate before applying it just
+# because the separate bootstrap/HTTPS probe failed. The real accept/reject
+# decision is made by watchdog_apply_slot_candidate() after local DNS response.
+watchdog_test_results_fresh() { return 1; }
+: > "$TMP_DIR/used"
+: > "$TMP_DIR/tried"
+got="$(watchdog_pick_replacement 1 "$TMP_DIR/used" "$TMP_DIR/tried" 0)"
+[ "$got" = "c2|bypass" ] || {
+    printf '%s\n' "unexpected runtime fallback candidate: $got" >&2
+    exit 33
+}
+
 # "Все категории" is a special profile mode: the background watchdog still
 # rejects it, but an explicit profile repair must use the fresh all-catalog set.
 DNS_SELECTION_CATEGORY=all
