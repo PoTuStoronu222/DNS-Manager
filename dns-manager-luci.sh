@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.36
+# Version: 1.37
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -32,7 +32,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.36"
+VERSION="1.37"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -158,7 +158,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="1.36"
+SELF_VERSION="1.37"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -2496,7 +2496,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI common module version: 1.36
+// DNS Manager LuCI common module version: 1.37
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -4489,23 +4489,27 @@ EOF_COMMON
 
     rm -f "$VIEW_DIR/overview.js" 2>/dev/null || true
     for _page in dashboard doh network time catalog log; do
-        _page_stage="$VIEW_DIR/${_page}.js.new.$$"
+        _page_stage="/tmp/dns-manager-luci-${_page}.$$"
         rm -f "$_page_stage" 2>/dev/null || true
-        cat > "$_page_stage" <<'EOF_PAGE'
+        cat > "${_page_stage}" <<'EOF_PAGE'
 'use strict';
-// DNS Manager LuCI page version: 1.36
+// DNS Manager LuCI page version: 1.37
 'require dns_manager.common';
 var DM = require('dns_manager.common');
 return DM.createView();
 EOF_PAGE
+        [ -s "$_page_stage" ] || {
+            rm -f "$_page_stage" 2>/dev/null || true
+            err "Не удалось создать страницу DNS Manager LuCI: ${_page}."
+            return 1
+        }
         chmod 0644 "$_page_stage"
         mv -f "$_page_stage" "$VIEW_DIR/${_page}.js" || {
             rm -f "$_page_stage" 2>/dev/null || true
             err "Не удалось заменить страницу DNS Manager LuCI: ${_page}."
             return 1
         }
-    done
-    chmod 0644 "$MENU_FILE" "$ACL_FILE"
+    done    chmod 0644 "$MENU_FILE" "$ACL_FILE"
 
     # The current native LuCI page is a JavaScript view and no longer uses
     # the former dns_manager Lua controller. Remove only that DNS Manager-owned
