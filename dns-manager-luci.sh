@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.32
+# Version: 1.33
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -30,7 +30,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.32"
+VERSION="1.33"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -156,7 +156,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.32"
+SELF_VERSION="1.33"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -2494,7 +2494,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.32
+// DNS Manager LuCI version: 1.33
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -3800,15 +3800,42 @@ function render(root,st){
   }
   setActiveTab(root,state.activeTab);
 }
+function ensureStatusPromise(){
+  if(window.dmStatusPromise)return window.dmStatusPromise;
+  window.dmStatusPromise=callStatus(statusDetail()).then(function(st){
+    st=st||{};
+    window.dmStatusCache={ts:Date.now(),data:st};
+    return st;
+  }).catch(function(err){
+    window.dmStatusError=err;
+    throw err;
+  }).then(function(st){
+    window.dmStatusPromise=null;
+    return st;
+  },function(err){
+    window.dmStatusPromise=null;
+    throw err;
+  });
+  return window.dmStatusPromise;
+}
+function applyStatusToCurrentRoot(st){
+  var root=window.dmCurrentRoot;
+  if(!rootAlive(root))return;
+  state.statusError='';
+  state.statusFromCache=false;
+  window.dmState=st||{};
+  render(root,st||{});
+}
 function refresh(root,keepPosition){
   if(!rootAlive(root))return Promise.resolve();
-  return callStatus(statusDetail()).then(function(st){
-    if(!rootAlive(root))return;
-    state.statusError='';
-    state.statusFromCache=false;
-    window.dmState=st||{};
-    window.dmStatusCache={ts:Date.now(),data:window.dmState};
-    render(root,st||{});
+  return ensureStatusPromise().then(function(st){
+    if(rootAlive(root)){
+      state.statusError='';
+      state.statusFromCache=false;
+      window.dmState=st||{};
+      render(root,st||{});
+    }
+    applyStatusToCurrentRoot(st);
   }).catch(function(err){
     if(!rootAlive(root))return;
     state.statusError=withRpcError('Не удалось получить состояние DNS Manager через RPC (status).',err);
@@ -3821,7 +3848,9 @@ function scheduleBackgroundStatus(root){
   if(window.dmStatusRefreshTimer)window.clearTimeout(window.dmStatusRefreshTimer);
   window.dmStatusRefreshTimer=window.setTimeout(function(){
     window.dmStatusRefreshTimer=null;
-    if(rootAlive(root))refresh(root,true);
+    ensureStatusPromise().then(function(st){
+      applyStatusToCurrentRoot(st);
+    }).catch(function(){});
   },0);
 }
 function checkUpdate(root,force){
@@ -4425,12 +4454,14 @@ return view.extend({
     var cached=window.dmStatusCache&&window.dmStatusCache.data;
     state.statusFromCache=!!cached;
     state.statusRefreshAfterRender=true;
-    return Promise.resolve(cached||{});
+    if(cached)return Promise.resolve(cached);
+    ensureStatusPromise();
+    return Promise.resolve({});
   },
   render:function(st){
     var root=E('div',{'class':'dm-wrap'});
     ['dm-header','dm-overview','dm-doh','dm-profiles','dm-slots','dm-network','dm-time','dm-job','dm-catalog','dm-log'].forEach(function(id){root.appendChild(E('section',{'id':id}));});
-    injectStyle(root);window.dmState=st||{};state.activeTab=currentRoute();
+    injectStyle(root);window.dmState=st||{};state.activeTab=currentRoute();window.dmCurrentRoot=root;
     render(root,st||{});
     removeLegacyCbiActions();if(window.setTimeout)window.setTimeout(removeLegacyCbiActions,0);
     startAutoStatus(root);
@@ -4443,7 +4474,10 @@ return view.extend({
     },0);
     return root;
   },
-  remove:function(){stopAutoStatus();}
+  remove:function(){
+    if(window.dmCurrentRoot&&window.dmCurrentRoot===this.__root)window.dmCurrentRoot=null;
+    stopAutoStatus();
+  }
 });
 EOF_JS
     chmod 0644 "$MENU_FILE" "$ACL_FILE" "$VIEW_STAGE"
