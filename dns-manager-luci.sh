@@ -2773,7 +2773,6 @@ function setActiveTab(root,name){
   if(state.activeTab==='catalog'&&!window.dmCatalog&&!state.catalogLoading)loadCatalog(root);
   if(state.activeTab==='log'&&!state.logLoaded&&!state.logLoading)showLog(root);
 }
-function routeUrl(name){return '/cgi-bin/luci/admin/services/dns-manager/'+name;}
 function currentRoute(){
   var p=String((window.location&&window.location.pathname)||'');
   var m=p.match(/\/admin\/services\/dns-manager\/([^/?#]+)/);
