@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.41"
+VERSION="3.42"
 # 3.38: clear the LuCI update flag after a successful CLI update.
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
@@ -68,10 +68,6 @@ PACKAGE_OWNERSHIP="$CFG_DIR/package-ownership.conf"
 TEST_RESULTS="$STATE_DIR/dns-test-results.conf"
 TEST_LOCK_DIR="$STATE_DIR/dns-test.lock"
 TEST_LOCK_HELD=0
-WEB_ACCESS_PORT="7682"
-WEB_ACCESS_ENABLED=0
-TTYD_CONFIG="/etc/config/ttyd"
-WEB_SERVICE_CONFIG="/etc/init.d/ttyd"
 FIREWALL_OWNERSHIP="$CFG_DIR/firewall-ownership.conf"
 FW_NTP_SECTION="dns_manager_ntp_client"
 FW_DNS_REDIRECT_SECTION="dns_manager_dns_redirect"
@@ -775,7 +771,6 @@ esac
 : "${TEST_RESULTS_MAX_AGE_SECURITY:=21600}"; : "${TEST_RESULTS_MAX_AGE_PRIVACY:=21600}"
 : "${TEST_RESULTS_MAX_AGE_ADBLOCK:=21600}"; : "${TEST_RESULTS_MAX_AGE_FAMILY:=21600}"
 : "${TEST_RESULTS_MAX_AGE_REGIONAL:=21600}"
-: "${WEB_ACCESS_ENABLED:=0}"; : "${WEB_ACCESS_PORT:=7682}"
 TLD_SPLIT="$TLD_RU_ENABLED"
 if [ "$_had_dns_profile" = 0 ] && [ -z "$DNS_PROFILE" ]; then
 DNS_PROFILE="hybrid"
@@ -889,8 +884,6 @@ TEST_RESULTS_MAX_AGE_PRIVACY="$TEST_RESULTS_MAX_AGE_PRIVACY"
 TEST_RESULTS_MAX_AGE_ADBLOCK="$TEST_RESULTS_MAX_AGE_ADBLOCK"
 TEST_RESULTS_MAX_AGE_FAMILY="$TEST_RESULTS_MAX_AGE_FAMILY"
 TEST_RESULTS_MAX_AGE_REGIONAL="$TEST_RESULTS_MAX_AGE_REGIONAL"
-WEB_ACCESS_ENABLED="$WEB_ACCESS_ENABLED"
-WEB_ACCESS_PORT="$WEB_ACCESS_PORT"
 EOF_CFG
 ) || { rm -f "$_cfg_tmp"; return 1; }
 chmod 600 "$_cfg_tmp" 2>/dev/null || true
@@ -1624,7 +1617,6 @@ detect_forced_dns_path() {
     FORCED_DNS_TARGETS=""
     _manager_force_cfg=0
     _external=0
-    _zapret=0
     _steer=0
     detect_steer_dns_path >/dev/null 2>&1 || true
     [ "${STEER_DNS_ACTIVE:-0}" = 1 ] && _steer=1
@@ -1706,22 +1698,9 @@ EOF_FORCE_IPT
             ;;
     esac
 
-    # Attribute an already detected external path to Zapret only from the
-    # actual running Zapret process, never from a firewall section/chain name.
-    # This keeps source reporting fact-based and independent of ownership files.
-    if [ "$_external" = 1 ] && type third_party_running >/dev/null 2>&1; then
-        third_party_running zapret >/dev/null 2>&1 && _zapret=1
-        third_party_running zapret2 >/dev/null 2>&1 && _zapret=1
-    fi
-
-
     if [ "$_external" = 1 ]; then
         FORCED_DNS_EXTERNAL=1
-        if [ "$_zapret" = 1 ]; then
-            FORCED_DNS_SOURCE="Zapret / внешний"
-        else
-            FORCED_DNS_SOURCE="внешний сервис"
-        fi
+        FORCED_DNS_SOURCE="внешний сервис"
     elif [ "$_steer" = 1 ]; then
         FORCED_DNS_ACTIVE=1
         if [ "$_manager_force_cfg" = 1 ]; then
@@ -3058,9 +3037,6 @@ _apply_extras_now_impl() {
             fi
             /etc/init.d/dnsmasq restart >/dev/null 2>&1 || return 1
             ;;
-        web)
-            apply_web_access || return 1
-            ;;
     esac
     run_discovery || return 1
     save_config || return 1
@@ -3548,7 +3524,7 @@ if [ -x "$WATCHDOG_SERVICE_PATH" ]; then
     "$WATCHDOG_SERVICE_PATH" enabled >/dev/null 2>&1 && TX_WD_ENABLED=yes || TX_WD_ENABLED=no
     "$WATCHDOG_SERVICE_PATH" running >/dev/null 2>&1 && TX_WD_RUNNING=yes || TX_WD_RUNNING=no
 fi
-for f in "$CONFIG_FILE" "$OWNERSHIP" "$WATCHDOG_SERVICE_PATH" "$WATCHDOG_LEGACY_DAEMON_PATH" /etc/config/dhcp /etc/config/https-dns-proxy /etc/config/firewall /etc/config/system /etc/config/ttyd   /etc/dnsmasq.d/90-dns-manager-bogus.conf ; do
+for f in "$CONFIG_FILE" "$OWNERSHIP" "$WATCHDOG_SERVICE_PATH" "$WATCHDOG_LEGACY_DAEMON_PATH" /etc/config/dhcp /etc/config/https-dns-proxy /etc/config/firewall /etc/config/system /etc/dnsmasq.d/90-dns-manager-bogus.conf ; do
 key="$(printf '%s' "$f" | sed 's#^/##; s#[/ ]#_#g')"
 if [ -f "$f" ]; then cp -p "$f" "$TX_DIR/files/$key"; file_hash "$f" > "$TX_DIR/$key.before"; printf '%s|%s|1\n' "$f" "$key" >> "$TX_DIR/manifest"; else printf '%s|%s|0\n' "$f" "$key" >> "$TX_DIR/manifest"; fi
 done
@@ -4360,61 +4336,25 @@ restore_dns_core() {
     release_mutation_lock
     return "$_rc"
 }
-manager_running_under_ttyd() {
-    _pid="$$"
-    _depth=0
-    while [ "$_pid" -gt 1 ] 2>/dev/null && [ "$_depth" -lt 16 ]; do
-        # Prefer the executable path so command-line arguments containing the
-        # word "ttyd" cannot create a false positive.
-        if [ -e "/proc/$_pid/exe" ]; then
-            _exe="$(readlink "/proc/$_pid/exe" 2>/dev/null || true)"
-            case "${_exe##*/}" in
-                ttyd) return 0 ;;
-            esac
-        fi
-        if [ -r "/proc/$_pid/cmdline" ]; then
-            _argv0="$(tr '\000' '\n' < "/proc/$_pid/cmdline" 2>/dev/null | head -n1)"
-            case "${_argv0##*/}" in
-                ttyd) return 0 ;;
-            esac
-        fi
-        [ -r "/proc/$_pid/stat" ] || return 1
-        _stat="$(cat "/proc/$_pid/stat" 2>/dev/null)"
-        _rest="${_stat#*) }"
-        [ "$_rest" != "$_stat" ] || return 1
-        set -- $_rest
-        _pid="$2"
-        case "$_pid" in ''|*[!0-9]*) return 1 ;; esac
-        _depth=$((_depth+1))
-    done
-    return 1
+manager_force_config_matches() {
+    [ -f /etc/config/https-dns-proxy ] || return 1
+    [ "$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null)" = 1 ] || return 1
+    [ "$(uci -q get https-dns-proxy.config.notrack_dns 2>/dev/null)" = 1 ] || return 1
+    [ "$(uci -q get https-dns-proxy.config.dnsmasq_config_update 2>/dev/null)" = "*" ] || return 1
+    [ "$(uci -q get https-dns-proxy.config.procd_trigger_wan6 2>/dev/null)" = 0 ] || return 1
+    [ "$(uci -q get https-dns-proxy.config.heartbeat_domain 2>/dev/null)" = heartbeat.mossdef.org ] || return 1
+    [ "$(uci -q get https-dns-proxy.config.heartbeat_sleep_timeout 2>/dev/null)" = 10 ] || return 1
+    [ "$(uci -q get https-dns-proxy.config.heartbeat_wait_timeout 2>/dev/null)" = 10 ] || return 1
+    [ "$(uci -q get https-dns-proxy.config.user 2>/dev/null)" = nobody ] || return 1
+    [ "$(uci -q get https-dns-proxy.config.group 2>/dev/null)" = nogroup ] || return 1
+    [ "$(uci -q get https-dns-proxy.config.listen_addr 2>/dev/null)" = 127.0.0.1 ] || return 1
+    [ "$(uci -q get https-dns-proxy.config.force_ip_family 2>/dev/null)" = auto ] || return 1
+    [ "$(uci -q get https-dns-proxy.config.canary_domains_icloud 2>/dev/null)" = 1 ] || return 1
+    [ "$(uci -q get https-dns-proxy.config.canary_domains_mozilla 2>/dev/null)" = 1 ] || return 1
+    force_dns_ports_match_expected || return 1
+    force_dns_src_matches_expected || return 1
+    return 0
 }
-
-defer_ttyd_action() {
-    _action="$1"
-    _remove_pkg="${2:-0}"
-    _pkg_mgr="${3:-}"
-    [ -n "$_action" ] || [ "$_remove_pkg" = 1 ] || return 0
-    nohup sh -c '
-        sleep 2
-        case "$1" in
-            restart)
-                [ -x /etc/init.d/ttyd ] && /etc/init.d/ttyd restart >/dev/null 2>&1 || true
-                ;;
-            stop)
-                [ -x /etc/init.d/ttyd ] && /etc/init.d/ttyd stop >/dev/null 2>&1 || true
-                ;;
-        esac
-        if [ "$2" = 1 ]; then
-            case "$3" in
-                apk) command -v apk >/dev/null 2>&1 && apk del ttyd >/dev/null 2>&1 || true ;;
-                opkg) command -v opkg >/dev/null 2>&1 && opkg remove ttyd >/dev/null 2>&1 || true ;;
-            esac
-        fi
-    ' sh "$_action" "$_remove_pkg" "$_pkg_mgr" >/dev/null 2>&1 </dev/null &
-}
-
-
 uninstall_manager_impl() {
     clear_screen
     menu_header "УДАЛЕНИЕ DNS MANAGER"
@@ -4424,11 +4364,6 @@ uninstall_manager_impl() {
 
     acquire_mutation_lock || return 1
     _rc=0
-    WEB_ACCESS_SECTION_REMOVED=0
-    UNINSTALL_UNDER_TTYD=0
-    manager_running_under_ttyd && UNINSTALL_UNDER_TTYD=1 || true
-    UNINSTALL_TTYD_ACTION=""
-    UNINSTALL_DEFER_TTYD_PACKAGE=0
 
     _hdp_package_owned=0
     [ -f "$PACKAGE_OWNERSHIP" ] && grep -Fqx "https-dns-proxy" "$PACKAGE_OWNERSHIP" 2>/dev/null && _hdp_package_owned=1
@@ -4440,7 +4375,9 @@ uninstall_manager_impl() {
     rollback_dnsmasq_targeted >/dev/null 2>&1 || _rc=1
     rollback_firewall_targeted >/dev/null 2>&1 || _rc=1
 
-    if [ "$(check_module_state force 2>/dev/null)" = 1 ]; then
+    # Disable forced-DNS only when the live configuration matches the exact
+    # DNS Manager contract. External forced-DNS configurations are left alone.
+    if manager_force_config_matches; then
         FORCE_DOH=0
         remove_dns_force >/dev/null 2>&1 || _rc=1
     fi
@@ -4463,9 +4400,6 @@ uninstall_manager_impl() {
     /etc/init.d/dnsmasq restart >/dev/null 2>&1 || true
     reload_fw >/dev/null 2>&1 || true
 
-    WEB_ACCESS_ENABLED=0
-    web_access_luci_remove >/dev/null 2>&1 || _rc=1
-    web_access_remove_config_no_restart >/dev/null 2>&1 || true
     watchdog_service_remove_files >/dev/null 2>&1 || _rc=1
 
     if ! package_owner_remove_owned >/dev/null 2>&1; then
@@ -4490,15 +4424,12 @@ uninstall_manager_impl() {
 
     rm -f "$MANAGER_PATH" 2>/dev/null || _rc=1
 
-    if [ -n "${UNINSTALL_TTYD_ACTION:-}" ] || [ "${UNINSTALL_DEFER_TTYD_PACKAGE:-0}" = 1 ]; then
-        defer_ttyd_action "${UNINSTALL_TTYD_ACTION:-}" "${UNINSTALL_DEFER_TTYD_PACKAGE:-0}" "${PKG_MGR:-}"
     fi
 
     release_mutation_lock
     if [ "$_rc" -eq 0 ]; then
         printf "\n${C_GREEN}${C_BOLD}DNS Manager полностью удалён.${C_NC}\n"
         printf "${C_GREEN}Функции выключены, собственные DNS/Firewall/служебные настройки очищены.${C_NC}\n"
-        [ "${UNINSTALL_UNDER_TTYD:-0}" = 1 ] && printf "${C_YELLOW}Терминальный доступ завершит отложенное действие после удаления Manager.${C_NC}\n"
         exit 0
     fi
 
@@ -4594,24 +4525,6 @@ hybrid_runtime_state_word() {
 }
 # ==========================================
 # ==========================================
-third_party_running() {
-    _n="$1"
-    case "$_n" in
-        zapret) pgrep -f '(^|/)(zms|zapret)' >/dev/null 2>&1 ;;
-        zapret2) pgrep -f '(^|/)(zapret2|zaproxy2)' >/dev/null 2>&1 ;;
-        netshift) pgrep -f '(^|/)netshift([[:space:]]|$)' >/dev/null 2>&1 ;;
-        splify) pgrep -f '(^|/)splify([[:space:]]|$)' >/dev/null 2>&1 ;;
-        mixomo) pgrep -f 'mihomo' >/dev/null 2>&1 ;;
-        magi) pgrep -f 'magitrickle' >/dev/null 2>&1 ;;
-        hev) pgrep -f 'hev-socks5-tunnel' >/dev/null 2>&1 ;;
-        awg) pgrep -f 'awg|amneziawg' >/dev/null 2>&1 ;;
-        tggo) pgrep -f 'tg-ws-proxy-go' >/dev/null 2>&1 ;;
-        tgrs) pgrep -f 'tg-ws-proxy-rs' >/dev/null 2>&1 ;;
-        tgmt) pgrep -f 'tg-ws-proxy-mtproto' >/dev/null 2>&1 ;;
-        byedpi) pgrep -f 'byedpi' >/dev/null 2>&1 ;;
-        *) return 1 ;;
-    esac
-}
 show_map() {
 sync_regional_dns_state
 menu_header "СОСТОЯНИЕ РОУТЕРА"
@@ -5307,15 +5220,6 @@ check_module_state() {
         luci)
             luci_component_state
             ;;
-        web)
-            if web_access_real; then
-                printf 1
-            elif web_access_listener_exists "${WEB_ACCESS_PORT:-7682}" 2>/dev/null && [ "$(web_access_pid_count 2>/dev/null || printf 0)" -gt 1 ]; then
-                printf 2
-            else
-                printf 0
-            fi
-            ;;
         *)
             printf 0
             ;;
@@ -5569,22 +5473,6 @@ luci_companion_install() {
         mv "${LUCI_STATE_FILE}.tmp.$$" "$LUCI_STATE_FILE" 2>/dev/null || rm -f "${LUCI_STATE_FILE}.tmp.$$"
     fi
 
-    # A legacy 2.86 ttyd section is no longer the DNS Manager web interface.
-    # Remove only the exact stable DNS Manager section; do not stop/remove shared ttyd.
-    if uci -q get 'ttyd.dns_manager.command' 2>/dev/null | grep -qx '/usr/bin/dns-manager'; then
-        WEB_ACCESS_ENABLED=0
-        if manager_running_under_ttyd; then
-            # Do not restart ttyd from inside its own session. Remove the manager-owned
-            # section now and defer the shared ttyd restart until this shell has exited.
-            web_access_remove_config_no_restart >/dev/null 2>&1 || true
-            defer_ttyd_action restart 0 "${PKG_MGR:-}"
-        else
-            web_access_remove_config >/dev/null 2>&1 || true
-        fi
-        save_config >/dev/null 2>&1 || true
-        log_msg "LuCI: устаревший ttyd-раздел DNS Manager удалён; общий ttyd не изменён."
-    fi
-
     if [ -x /etc/init.d/rpcd ]; then
         /etc/init.d/rpcd reload >/dev/null 2>&1 || /etc/init.d/rpcd restart >/dev/null 2>&1 || true
     fi
@@ -5619,270 +5507,6 @@ luci_companion_remove() {
 }
 
 # ==========================================
-web_access_listener_exists() {
-    _wp="$1"
-    [ -n "$_wp" ] || return 1
-    if command -v ss >/dev/null 2>&1; then
-        ss -lnt 2>/dev/null | grep -qE "(^|[[:space:]])[^[:space:]]*:${_wp}([[:space:]]|$)" && return 0
-    fi
-    if command -v netstat >/dev/null 2>&1; then
-        netstat -lnt 2>/dev/null | grep -qE "(^|[[:space:]])[^[:space:]]*:${_wp}([[:space:]]|$)" && return 0
-    fi
-    listener_port_exists "$_wp"
-}
-web_access_owner_pid() {
-    _wp="$1"
-    [ -n "$_wp" ] || return 1
-    if command -v pidof >/dev/null 2>&1; then
-        for _pid in $(pidof ttyd 2>/dev/null); do
-            [ -r "/proc/$_pid/cmdline" ] || continue
-            _cmd="$(tr '\0' ' ' < "/proc/$_pid/cmdline" 2>/dev/null)"
-            case "$_cmd" in
-                *ttyd*"-p $_wp"*"/usr/bin/dns-manager"*) printf '%s\n' "$_pid"; return 0;;
-                *ttyd*"/usr/bin/dns-manager"*) printf '%s\n' "$_pid"; return 0;;
-            esac
-        done
-    fi
-    return 1
-}
-web_access_pid_count() {
-    _wp="${WEB_ACCESS_PORT:-7682}"
-    _n=0
-    for _pid in $(ps w 2>/dev/null | awk -v p="$_wp" '$1 ~ /^[0-9]+$/ && index($0,"ttyd") && index($0,"/usr/bin/dns-manager") && (index($0,"-p " p) || index($0," " p " ")) {print $1}'); do
-        kill -0 "$_pid" 2>/dev/null || continue
-        _n=$((_n + 1))
-    done
-    printf '%s\n' "$_n"
-}
-
-web_access_real() {
-    _wp="${WEB_ACCESS_PORT:-7682}"
-    web_access_listener_exists "$_wp" || return 1
-    _pid="$(web_access_owner_pid "$_wp" 2>/dev/null || true)"
-    [ -n "$_pid" ] || return 1
-    kill -0 "$_pid" 2>/dev/null
-}
-web_access_port_busy() {
-    _wp="${WEB_ACCESS_PORT:-7682}"
-    web_access_listener_exists "$_wp" || return 1
-    web_access_real && return 1
-    return 0
-}
-package_is_installed() {
-    _pkg="$1"
-    [ -n "$_pkg" ] || return 1
-    if [ "$PKG_MGR" = apk ]; then
-        apk info -e "$_pkg" >/dev/null 2>&1
-    elif [ "$PKG_MGR" = opkg ]; then
-        opkg status "$_pkg" 2>/dev/null | grep -q '^Status:.*installed'
-    else
-        return 1
-    fi
-}
-package_owner_record_if_new() {
-    _pkg="$1"
-    [ -n "$_pkg" ] || return 0
-    package_is_installed "$_pkg" && return 0
-    mkdir -p "$CFG_DIR" 2>/dev/null || return 1
-    touch "$PACKAGE_OWNERSHIP" 2>/dev/null || return 1
-    grep -Fqx -- "$_pkg" "$PACKAGE_OWNERSHIP" 2>/dev/null || printf '%s\n' "$_pkg" >> "$PACKAGE_OWNERSHIP" || return 1
-    return 0
-}
-package_owner_remove_owned() {
-    [ -f "$PACKAGE_OWNERSHIP" ] || return 0
-    _pkg_rc=0
-    while IFS= read -r _pkg; do
-        [ -n "$_pkg" ] || continue
-        case "$_pkg" in
-            *[!A-Za-z0-9._+:-]*) continue ;;
-        esac
-        if [ "$_pkg" = "ttyd" ] && [ "${UNINSTALL_UNDER_TTYD:-0}" = 1 ]; then
-            UNINSTALL_DEFER_TTYD_PACKAGE=1
-            continue
-        fi
-        # PACKAGE_OWNERSHIP already records that the package was absent before install.
-        if [ "$PKG_MGR" = apk ]; then
-            if apk info -e "$_pkg" >/dev/null 2>&1; then
-                apk del "$_pkg" >/dev/null 2>&1 || _pkg_rc=1
-            fi
-        elif [ "$PKG_MGR" = opkg ]; then
-            if opkg status "$_pkg" 2>/dev/null | grep -q '^Status:.*installed'; then
-                opkg remove "$_pkg" >/dev/null 2>&1 || _pkg_rc=1
-            fi
-        fi
-    done < "$PACKAGE_OWNERSHIP"
-    return "$_pkg_rc"
-}
-
-web_access_install() {
-    _need=""
-    command -v ttyd >/dev/null 2>&1 || _need="ttyd"
-    if [ ! -f "$TTYD_CONFIG" ] && [ -n "$_need" ]; then :; fi
-    if [ -n "$_need" ] || [ ! -x "$WEB_SERVICE_CONFIG" ]; then
-        [ -n "$_need" ] && package_owner_record_if_new ttyd || true
-        if [ "$PKG_MGR" = "apk" ]; then
-            apk update >/dev/null 2>&1 || return 1
-            apk add ttyd >/dev/null 2>&1 || return 1
-        elif [ "$PKG_MGR" = "opkg" ]; then
-            opkg update >/dev/null 2>&1 || return 1
-            opkg install ttyd >/dev/null 2>&1 || return 1
-        else
-            return 1
-        fi
-    fi
-    command -v ttyd >/dev/null 2>&1 || return 1
-    [ -x "$WEB_SERVICE_CONFIG" ] || return 1
-}
-web_access_write_config() {
-    mkdir -p /etc/config 2>/dev/null || return 1
-    _ipv6="0"
-    [ "${IPV6_ROUTE:-no}" = yes ] && _ipv6="1"
-
-    # Stable UCI section: ttyd.dns_manager. Never rewrite the whole ttyd
-    # configuration, so other ttyd instances remain untouched.
-    uci -q set "ttyd.dns_manager=ttyd" || return 1
-    uci set "ttyd.dns_manager.enable=1" || return 1
-    uci set "ttyd.dns_manager.port=${WEB_ACCESS_PORT:-7682}" || return 1
-    uci set "ttyd.dns_manager.interface=@lan" || return 1
-    uci set "ttyd.dns_manager.command=/usr/bin/dns-manager" || return 1
-    uci set "ttyd.dns_manager.readonly=0" || return 1
-    uci set "ttyd.dns_manager.check_origin=1" || return 1
-    uci set "ttyd.dns_manager.ipv6=$_ipv6" || return 1
-    uci commit ttyd || return 1
-    return 0
-}
-web_access_remove_config() {
-    # Do not restart the shared ttyd service when DNS Manager has no section.
-    _had_section=0
-    uci -q get "ttyd.dns_manager" >/dev/null 2>&1 && _had_section=1
-    uci -q delete "ttyd.dns_manager" || true
-    if [ "$_had_section" = 1 ]; then
-        uci commit ttyd >/dev/null 2>&1 || true
-        [ -x "$WEB_SERVICE_CONFIG" ] && "$WEB_SERVICE_CONFIG" restart >/dev/null 2>&1 || true
-    fi
-    return 0
-}
-web_access_remove_config_no_restart() {
-    # Remove only DNS Manager's stable ttyd section. Used by uninstall so the
-    # running terminal is not killed before the manager has removed itself.
-    WEB_ACCESS_SECTION_REMOVED=0
-    _had_section=0
-    uci -q get "ttyd.dns_manager" >/dev/null 2>&1 && _had_section=1
-    uci -q delete "ttyd.dns_manager" || true
-    if [ "$_had_section" = 1 ]; then
-        uci commit ttyd >/dev/null 2>&1 || return 1
-        WEB_ACCESS_SECTION_REMOVED=1
-    fi
-    return 0
-}
-
-web_access_start() {
-    [ -x "$WEB_SERVICE_CONFIG" ] || return 1
-    "$WEB_SERVICE_CONFIG" enable >/dev/null 2>&1 || true
-    "$WEB_SERVICE_CONFIG" restart >/dev/null 2>&1 || "$WEB_SERVICE_CONFIG" start >/dev/null 2>&1 || return 1
-    sleep 2
-    web_access_real
-}
-web_access_stop() {
-    [ -x "$WEB_SERVICE_CONFIG" ] && "$WEB_SERVICE_CONFIG" stop >/dev/null 2>&1 || true
-    return 0
-}
-web_access_luci_install() {
-    # Small LuCI launcher only: the terminal itself is the stock ttyd service.
-    # No firewall rule and no second init script are created by DNS Manager.
-    [ -d /usr/lib/lua/luci ] || return 0
-    mkdir -p /usr/lib/lua/luci/controller || return 1
-    cat > "$LUCI_CONTROLLER" <<'EOF_LUCI'
-module("luci.controller.dns_manager", package.seeall)
-
-function index()
-    local fs = require "nixio.fs"
-    local data = fs.readfile("/etc/dns-manager/config/manager.conf") or ""
-    if not data:match("WEB_ACCESS_ENABLED=[\"\']1[\"\']") then return end
-    local e = entry({"admin", "services", "dns_manager"}, call("redirect_to_ttyd"), _("DNS Manager Terminal"), 71)
-    e.leaf = true
-    e.dependent = false
-end
-
-function redirect_to_ttyd()
-    local http = require "luci.http"
-    local uci = require "luci.model.uci".cursor()
-    local ip = uci:get("network", "lan", "ipaddr")
-    if not ip then
-        http.status(404, "LAN address not found")
-        return
-    end
-    local port = "7682"
-    local fs = require "nixio.fs"
-    local data = fs.readfile("/etc/dns-manager/config/manager.conf") or ""
-    local found = data:match("WEB_ACCESS_PORT=[\"\']([0-9]+)[\"\']")
-    if found then port = found end
-    ip = ip:match("^[^/]+") or ip
-    if ip:find(":", 1, true) then
-        http.redirect("http://[" .. ip .. "]:" .. port .. "/")
-    else
-        http.redirect("http://" .. ip .. ":" .. port .. "/")
-    end
-end
-EOF_LUCI
-    chmod 0644 "$LUCI_CONTROLLER"
-    rm -rf /tmp/luci-* /tmp/luci-indexcache* /tmp/luci-modulecache* 2>/dev/null || true
-    /etc/init.d/rpcd reload >/dev/null 2>&1 || true
-}
-web_access_luci_remove() {
-    _had_controller=0
-    [ -f "$LUCI_CONTROLLER" ] && _had_controller=1
-    rm -f "$LUCI_CONTROLLER"
-    if [ "$_had_controller" = 1 ]; then
-        rm -rf /tmp/luci-* /tmp/luci-indexcache* /tmp/luci-modulecache* 2>/dev/null || true
-        if [ -x /etc/init.d/rpcd ]; then
-            /etc/init.d/rpcd restart >/dev/null 2>&1 || /etc/init.d/rpcd reload >/dev/null 2>&1 || true
-        fi
-    fi
-}
-
-apply_web_access() {
-    case "${WEB_ACCESS_ENABLED:-0}" in
-        1)
-            WEB_ACCESS_PORT=7682
-            if web_access_install >/dev/null 2>&1; then :; else
-                WEB_ACCESS_ENABLED=0
-                save_config
-                err_msg 'Не удалось установить/подготовить штатный ttyd.'
-                return 1
-            fi
-            if web_access_port_busy; then
-                WEB_ACCESS_ENABLED=0
-                save_config
-                err_msg "Порт терминала $WEB_ACCESS_PORT уже занят другим процессом."
-                return 1
-            fi
-            if ! web_access_write_config; then
-                WEB_ACCESS_ENABLED=0; save_config
-                err_msg 'Не удалось записать /etc/config/ttyd.'
-                return 1
-            fi
-            if ! web_access_start; then
-                WEB_ACCESS_ENABLED=0
-                save_config
-                err_msg 'Штатный ttyd не запустился. Проверьте: /etc/init.d/ttyd status и logread -e ttyd.'
-                return 1
-            fi
-            web_access_luci_install || true
-            save_config
-            ok_msg "Терминал DNS Manager работает через штатный ttyd на LAN: http://$(uci -q get network.lan.ipaddr 2>/dev/null | cut -d/ -f1 | head -n1):$WEB_ACCESS_PORT"
-            return 0
-            ;;
-        *)
-            WEB_ACCESS_ENABLED=0
-            web_access_luci_remove
-            web_access_remove_config
-            save_config
-            ok_msg 'Терминальный доступ DNS Manager выключен.'
-            return 0
-            ;;
-    esac
-}
 setting_process() {
     _module="$1"
     _title="$2"
@@ -5990,8 +5614,6 @@ setting_process() {
             1:force) ok_msg "Принудительный DNS для устройств выключен." ;;
             0:dnsmasq_perf|2:dnsmasq_perf) ok_msg "Увеличенный кэш DNS настроен." ;;
             1:dnsmasq_perf) ok_msg "Увеличенный кэш DNS выключен." ;;
-            0:web|2:web) ok_msg "Терминальный доступ LuCI включён: пункт LuCI ведёт в ttyd DNS Manager." ;;
-            1:web) ok_msg "Терминальный доступ LuCI выключен, пункт DNS Manager удалён." ;;
         esac
     else
         case "$_module" in
@@ -8122,7 +7744,6 @@ startup_update_check() {
 # STARTUP REQUIRED FUNCTION CHECK
 # ==========================================
 startup_required_function_check() {
-    for _fn in get_dnsmasq_section exact_list_has doh_selected_config_current validate_selected_slots ensure_dnsmasq_balancer web_access_pid_count detect_forced_dns_path clear_all_doh_for_apply rebuild_selected_hdp_sections reconcile_dnsmasq apply_ntp_ip_fallback luci_component_state luci_companion_check_update luci_companion_install luci_companion_remove luci_companion_update watchdog_embedded_loop watchdog_service_install_files watchdog_service_remove_files; do
         type "$_fn" >/dev/null 2>&1 || {
             printf "${C_RED}[✗] Критическая ошибка: отсутствует функция $_fn. Запуск остановлен до изменения настроек роутера.${C_NC}\n"
             return 1
