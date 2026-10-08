@@ -650,6 +650,9 @@ if grep -q '^watchdog_probe_catalog_candidate() {' dns-manager.sh; then
 fi
 awk '/^watchdog_apply_slot_candidate\(\) \{/,/^WATCHDOG_RESTART_COUNT=/' dns-manager.sh > "$tmp/watchdog_candidate_apply.sh"
 grep -q 'watchdog_check_slot "\$_slot"' "$tmp/watchdog_candidate_apply.sh" || fail "watchdog replacement is not accepted through the canonical local DNS check"
+grep -A2 -F 'watchdog_check_slot() {' dns-manager.sh | grep -q '^    local _slot' || fail "watchdog_check_slot does not isolate _slot"
+grep -A2 -F 'watchdog_apply_slot_candidate() {' dns-manager.sh | grep -q '^    local _slot' || fail "watchdog_apply_slot_candidate does not isolate _slot"
+grep -A2 -F 'watchdog_slot_target_run() {' dns-manager.sh | grep -q '^    local _slot' || fail "watchdog_slot_target_run does not isolate _slot"
 grep -q 'dig @127\.0\.0\.1' dns-manager.sh || fail "canonical local DNS check does not use dig"
 ok "watchdog candidate acceptance uses the canonical local DNS response check"
 awk '/^watchdog_service_install_files\(\) \{/,/^watchdog_service_running\(\) \{/' dns-manager.sh > "$tmp/watchdog_service.sh"
