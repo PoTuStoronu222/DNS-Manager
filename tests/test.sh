@@ -124,9 +124,11 @@ grep -Fq 'package_update_index() {' "$tmp/backend.sh" || fail "package index upd
 awk '/^component_update_check\(\) \{/ { capture=1 }
      capture { print }
      /^update_hdp_json\(\) \{/ && capture { exit }' "$tmp/backend.sh" > "$tmp/component_update_check.sh"
-grep -Fq 'package_update_index' "$tmp/component_update_check.sh" || fail "https-dns-proxy update check does not refresh package index"
-grep -Fq '_hdp_available=1' "$tmp/component_update_check.sh" || fail "https-dns-proxy update check never marks an available update"
-grep -Fq 'hdp_error=%s' "$tmp/component_update_check.sh" || fail "https-dns-proxy update check does not expose index errors"
+grep -Fq 'package_candidate_version https-dns-proxy' "$tmp/component_update_check.sh" || fail "https-dns-proxy update check does not read the package candidate"
+if grep -Fq 'package_update_index' "$tmp/component_update_check.sh"; then
+    fail "https-dns-proxy version check must not refresh the package index"
+fi
+grep -Fq '_hdp_available=0' "$tmp/component_update_check.sh" || fail "https-dns-proxy update check availability initialization missing"
 awk '/^update_hdp_json\(\) \{/ { capture=1 }
      capture { print }
      /^update_catalog_json\(\) \{/ && capture { exit }' "$tmp/backend.sh" > "$tmp/update_hdp.sh"
