@@ -105,8 +105,8 @@ flowchart TB
         I --> NET["🌐 Internet"]
     end
 
-    B --> H
-    B --> D
+    B -.-> H
+    B -.-> D
 
     CAT["📚 DNS-каталог"] --> B
     W["🐕 Watchdog"] --> T["Проверка DNS"]
