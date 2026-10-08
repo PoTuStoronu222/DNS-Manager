@@ -4804,7 +4804,7 @@ EOF_PAGE
     [ -s "${STATE_FILE}.tmp.$$" ] && chmod 600 "${STATE_FILE}.tmp.$$" 2>/dev/null || true
     [ -s "${STATE_FILE}.tmp.$$" ] && mv "${STATE_FILE}.tmp.$$" "$STATE_FILE" 2>/dev/null || rm -f "${STATE_FILE}.tmp.$$" 2>/dev/null || true
     if [ "${DNS_MANAGER_LUCI_SKIP_RPC_RELOAD:-0}" != 1 ] && [ -x /etc/init.d/rpcd ]; then
-        /etc/init.d/rpcd restart >/dev/null 2>&1 || true
+        /etc/init.d/rpcd reload >/dev/null 2>&1 || /etc/init.d/rpcd restart >/dev/null 2>&1 || true
         if command -v ubus >/dev/null 2>&1; then
             _rpcd_ok=0
             _rpcd_i=0
@@ -4845,7 +4845,7 @@ uninstall_files() {
         rm -f /usr/lib/lua/luci/controller/dns_manager.lua
     fi
     rm -rf /tmp/luci-* /tmp/luci-indexcache* /tmp/luci-modulecache* 2>/dev/null || true
-    [ -x /etc/init.d/rpcd ] && /etc/init.d/rpcd restart >/dev/null 2>&1 || true
+    [ -x /etc/init.d/rpcd ] && /etc/init.d/rpcd reload >/dev/null 2>&1 || true
     say "DNS Manager LuCI удалён. Основной /usr/bin/dns-manager не изменён."
 }
 
