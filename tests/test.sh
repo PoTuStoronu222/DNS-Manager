@@ -336,7 +336,7 @@ awk '/^function (memoryBar|loadBar|forceModeLabel|renderPageNav|openForceDetails
 top_luci="$(sed -n 's/^# Version:[[:space:]]*//p' dns-manager-luci.sh | head -n1)"
 installer_luci="$(sed -n 's/^VERSION="\([^"]*\)"$/\1/p' dns-manager-luci.sh | head -n1)"
 self_luci="$(sed -n 's/^SELF_VERSION="\([^"]*\)"$/\1/p' dns-manager-luci.sh | head -n1)"
-view_luci="$(sed -n 's|^// DNS Manager LuCI version:[[:space:]]*||p' "$tmp/common.js" | head -n1)"
+view_luci="$(sed -n 's|^// DNS Manager LuCI common module version:[[:space:]]*||p' "$tmp/common.js" | head -n1)"
 [ -n "$top_luci" ] || fail "LuCI top version missing"
 [ "$top_luci" = "$installer_luci" ] || fail "LuCI VERSION mismatch"
 [ "$top_luci" = "$self_luci" ] || fail "LuCI SELF_VERSION mismatch"
