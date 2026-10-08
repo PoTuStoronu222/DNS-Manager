@@ -276,27 +276,6 @@ catalog_field() {
 
 catalog_version() { sed -n 's/^# DNSCATVER=//p' "$CATALOG_FILE" 2>/dev/null | head -n1; }
 catalog_revision() { sed -n 's/^# DNSCATREV=//p' "$CATALOG_FILE" 2>/dev/null | head -n1; }
-selected_general_category_status() {
-    _sgs_common=""
-    _sgs_count=0
-    for _sgs_slot in 1 2 3 4 5 6; do
-        _sgs_id="$(cfg_get "SLOT_${_sgs_slot}")"
-        [ -n "$_sgs_id" ] || continue
-        _sgs_cat="$(catalog_field "$_sgs_id" 2 2>/dev/null || true)"
-        case "$_sgs_cat" in
-            bypass|clean|security|privacy|adblock|family) ;;
-            *) printf "%s\n" custom; return 0 ;;
-        esac
-        if [ -z "$_sgs_common" ]; then
-            _sgs_common="$_sgs_cat"
-        elif [ "$_sgs_common" != "$_sgs_cat" ]; then
-            printf "%s\n" custom
-            return 0
-        fi
-        _sgs_count=$((_sgs_count+1))
-    done
-    [ "$_sgs_count" -gt 0 ] && printf "%s\n" "$_sgs_common" || printf "%s\n" none
-}
 
 
 read_installed_luci_version() {
@@ -618,28 +597,6 @@ update_check_json() {
     release_runtime_lock "$UPDATE_CHECK_LOCK"
     status_json
 }
-update_manager_direct() {
-    _installed="$(manager_version 2>/dev/null || true)"
-    _out="$TMP_ROOT/manager-update-all.log"
-    rm -f "$_out" 2>/dev/null || true
-    ( update_manager_json ) >"$_out" 2>&1 || true
-    case "$(json_update_state "$(cat "$_out" 2>/dev/null)")" in
-        updated) rm -f "$_out" 2>/dev/null || true; return 0 ;;
-        current) rm -f "$_out" 2>/dev/null || true; return 2 ;;
-        *) rm -f "$_out" 2>/dev/null || true; return 3 ;;
-    esac
-}
-update_hdp_direct() {
-    _installed="$(package_version https-dns-proxy 2>/dev/null || true)"
-    _out="$TMP_ROOT/hdp-update-all.log"
-    rm -f "$_out" 2>/dev/null || true
-    ( update_hdp_json ) >"$_out" 2>&1 || true
-    case "$(json_update_state "$(cat "$_out" 2>/dev/null)")" in
-        updated) rm -f "$_out" 2>/dev/null || true; return 0 ;;
-        current) rm -f "$_out" 2>/dev/null || true; return 2 ;;
-        *) rm -f "$_out" 2>/dev/null || true; return 3 ;;
-    esac
-}
 update_catalog_direct() {
     _tmp="$TMP_ROOT/catalog-update-all.$$"
     fetch_raw_url "$_tmp" "https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/catalogs/dns-8.5-RU-NOSOCIAL.conf" || { rm -f "$_tmp" 2>/dev/null || true; return 3; }
@@ -661,17 +618,6 @@ update_catalog_direct() {
     return 0
 }
 
-update_luci_direct() {
-    _installed="$(read_installed_luci_version)"
-    _out="$TMP_ROOT/luci-update-all.log"
-    rm -f "$_out" 2>/dev/null || true
-    ( update_json ) >"$_out" 2>&1 || true
-    case "$(json_update_state "$(cat "$_out" 2>/dev/null)")" in
-        updated) rm -f "$_out" 2>/dev/null || true; return 0 ;;
-        current) rm -f "$_out" 2>/dev/null || true; return 2 ;;
-        *) rm -f "$_out" 2>/dev/null || true; return 3 ;;
-    esac
-}
 append_update_message() {
     if [ -n "$_message" ]; then _message="$_message; $1"; else _message="$1"; fi
 }
