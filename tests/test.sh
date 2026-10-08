@@ -645,11 +645,13 @@ grep -q 'local_dns_query_ok "\$_port" "\$_domain"' "$tmp/watchdog_embedded_loop.
 if grep -q 'watchdog_light_probe' dns-manager.sh; then
     fail "obsolete simplified watchdog DNS probe remains"
 fi
-awk '/^watchdog_probe_catalog_candidate\(\) \{/,/^watchdog_pick_replacement\(\) \{/' dns-manager.sh > "$tmp/watchdog_candidate_probe.sh"
-grep -q 'test_one_dns "\$_id"' "$tmp/watchdog_candidate_probe.sh" || fail "watchdog candidate probe does not use canonical DoH test"
-if grep -q 'curl ' "$tmp/watchdog_candidate_probe.sh"; then
-    fail "watchdog candidate probe duplicates the canonical curl test"
+if grep -q '^watchdog_probe_catalog_candidate() {' dns-manager.sh; then
+    fail "obsolete separate watchdog candidate probe remains"
 fi
+awk '/^watchdog_apply_slot_candidate\(\) \{/,/^WATCHDOG_RESTART_COUNT=/' dns-manager.sh > "$tmp/watchdog_candidate_apply.sh"
+grep -q 'watchdog_check_slot "\$_slot"' "$tmp/watchdog_candidate_apply.sh" || fail "watchdog replacement is not accepted through the canonical local DNS check"
+grep -q 'dig @127\.0\.0\.1' dns-manager.sh || fail "canonical local DNS check does not use dig"
+ok "watchdog candidate acceptance uses the canonical local DNS response check"
 awk '/^watchdog_service_install_files\(\) \{/,/^watchdog_service_running\(\) \{/' dns-manager.sh > "$tmp/watchdog_service.sh"
 grep -q 'USE_PROCD=1' "$tmp/watchdog_service.sh" || fail "watchdog service is not managed by procd"
 grep -q 'procd_set_param command /bin/sh "\$PROG" "\$CMD"' "$tmp/watchdog_service.sh" || fail "watchdog procd command is missing"
