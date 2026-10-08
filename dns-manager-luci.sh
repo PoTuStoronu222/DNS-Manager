@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.44
+# Version: 1.45
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -32,7 +32,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.44"
+VERSION="1.45"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -158,7 +158,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="1.44"
+SELF_VERSION="1.45"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -1155,6 +1155,9 @@ page_header_json() {
 }
 
 network_status_json() {
+    _profile="$(cfg_get DNS_PROFILE)"; [ -n "$_profile" ] || _profile=none
+    _mode="$(cfg_get DNS_SELECTION_MODE)"; [ -n "$_mode" ] || _mode=none
+    _selection_category="$(cfg_get DNS_SELECTION_CATEGORY)"; [ -n "$_selection_category" ] || _selection_category=none
     _watchdog="$(cfg_get WATCHDOG_ENABLED)"; [ -n "$_watchdog" ] || _watchdog=0
     _watchdog_interval="$(cfg_get WATCHDOG_INTERVAL)"; [ -n "$_watchdog_interval" ] || _watchdog_interval=600
     _watchdog_backend="$(cfg_get WATCHDOG_BACKEND)"; [ -n "$_watchdog_backend" ] || _watchdog_backend=procd
@@ -1177,6 +1180,7 @@ network_status_json() {
     _wl=0; watchdog_loop_running && _wl=1 || true
     printf '{"ok":true'; page_header_json
     printf ',"watchdog":'; json_quote "$_watchdog"
+    printf ',"profile":'; json_quote "$_profile"; printf ',"profile_mode":'; json_quote "$_mode"; printf ',"selection_category":'; json_quote "$_selection_category"
     printf ',"watchdog_backend":'; json_quote "$_watchdog_backend"
     printf ',"watchdog_interval":%s,"watchdog_service":%s,"watchdog_service_enabled":%s,"watchdog_loop":%s' "$_watchdog_interval" "$_wr" "$_ws" "$_wl"
     printf ',"watchdog_fail_threshold":%s,"watchdog_repair_cooldown":%s,"watchdog_max_repairs":%s,"watchdog_max_restarts":%s,"watchdog_max_candidates":%s,"watchdog_guard_interval":%s' "$_watchdog_threshold" "$_watchdog_repair_cooldown" "$_watchdog_max_repairs" "$_watchdog_max_restarts" "$_watchdog_max_candidates" "$_watchdog_guard_interval"
@@ -2705,7 +2709,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI common module version: 1.44
+// DNS Manager LuCI common module version: 1.45
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -4725,7 +4729,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI page version: 1.44
+// DNS Manager LuCI page version: 1.45
 return view.extend({
   load: DM.load,
   render: DM.render,
@@ -4764,7 +4768,7 @@ EOF_PAGE
     [ -s "${STATE_FILE}.tmp.$$" ] && chmod 600 "${STATE_FILE}.tmp.$$" 2>/dev/null || true
     [ -s "${STATE_FILE}.tmp.$$" ] && mv "${STATE_FILE}.tmp.$$" "$STATE_FILE" 2>/dev/null || rm -f "${STATE_FILE}.tmp.$$" 2>/dev/null || true
     if [ "${DNS_MANAGER_LUCI_SKIP_RPC_RELOAD:-0}" != 1 ] && [ -x /etc/init.d/rpcd ]; then
-        /etc/init.d/rpcd reload >/dev/null 2>&1 || /etc/init.d/rpcd restart >/dev/null 2>&1 || true
+        /etc/init.d/rpcd restart >/dev/null 2>&1 || true
         if command -v ubus >/dev/null 2>&1; then
             _rpcd_ok=0
             _rpcd_i=0
@@ -4805,7 +4809,7 @@ uninstall_files() {
         rm -f /usr/lib/lua/luci/controller/dns_manager.lua
     fi
     rm -rf /tmp/luci-* /tmp/luci-indexcache* /tmp/luci-modulecache* 2>/dev/null || true
-    [ -x /etc/init.d/rpcd ] && /etc/init.d/rpcd reload >/dev/null 2>&1 || true
+    [ -x /etc/init.d/rpcd ] && /etc/init.d/rpcd restart >/dev/null 2>&1 || true
     say "DNS Manager LuCI удалён. Основной /usr/bin/dns-manager не изменён."
 }
 
