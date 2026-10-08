@@ -152,7 +152,7 @@ grep -Fq 'RPC_STAGE="${RPC_PLUGIN}.new.' dns-manager-luci.sh || fail "RPC stagin
 grep -Fq "RPC_STAGE=\"\${RPC_PLUGIN}.new.${PID_LITERAL}\"" dns-manager-luci.sh || fail "RPC staging PID suffix missing"
 grep -q 'mv -f "$RPC_STAGE" "$RPC_PLUGIN"' dns-manager-luci.sh || fail "RPC plugin atomic swap missing"
 grep -Fq 'COMMON_STAGE="${COMMON_FILE}.new.' dns-manager-luci.sh || fail "view staging prefix missing"
-grep -Fq "COMMON_STAGE=\"\${VIEW_FILE}.new.${PID_LITERAL}\"" dns-manager-luci.sh || fail "view staging PID suffix missing"
+grep -Fq "COMMON_STAGE=\"\${COMMON_FILE}.new.${PID_LITERAL}\"" dns-manager-luci.sh || fail "common module staging PID suffix missing"
 grep -q 'mv -f "$COMMON_STAGE" "$COMMON_FILE"' dns-manager-luci.sh || fail "view atomic swap missing"
 grep -q 'function dmRpc(o)' "$tmp/common.js" || fail "RPC retry wrapper missing"
 grep -q 'Object not found' "$tmp/common.js" || fail "RPC retry condition missing"
