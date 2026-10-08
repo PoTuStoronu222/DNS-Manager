@@ -1511,7 +1511,7 @@ remove_dns_dot_block() {
     return 0
 }
 # Read-only discovery of the actual LAN DNS interception path. This is used
-# to separate DNS Manager from Zapret/other external forced-DNS without
+# to separate DNS Manager from external forced-DNS without
 # consulting ownership files.
 detect_forced_dns_path() {
     FORCED_DNS_ACTIVE=0
@@ -2384,7 +2384,7 @@ sync_hdp_force_contract() {
     case "$_want" in 0|1) ;; *) return 1 ;; esac
     [ -f /etc/config/https-dns-proxy ] || return 0
 
-    # Match Zapret Manager's / LuCI's https-dns-proxy "forced DNS" contract
+    # Match the shared / LuCI https-dns-proxy "forced DNS" contract
     # exactly. DNS Manager is authoritative here: an existing external setup
     # is deliberately replaced with this shared configuration.
     firewall_resolve_zones >/dev/null 2>&1 || true
@@ -2420,7 +2420,7 @@ sync_hdp_force_contract() {
     fi
 
     # Rebuild the main section from the shared contract so stray/foreign
-    # options cannot leave a configuration that only partially matches Zapret.
+    # stray options cannot leave a configuration that only partially matches the shared contract.
     _main_opts="$(uci -q show https-dns-proxy.config 2>/dev/null | sed -n 's/^https-dns-proxy\.config\.\([^.=]*\)=.*/\1/p' | sort -u)"
     for _opt in $_main_opts; do
         case "$_opt" in
@@ -2761,7 +2761,7 @@ apply_dns_force() {
 }
 
 remove_dns_force() {
-    # Zapret Manager keeps the same main forced-DNS contract and switches only
+    # The shared forced-DNS contract switches only
     # force_dns to 0 when interception is disabled.
     sync_hdp_force_contract 0
 }
@@ -5345,7 +5345,7 @@ watchdog_enforce_hdp_control() {
     force_dns_ports_match_expected || _changed=1
     force_dns_src_matches_expected || _changed=1
     [ "$_changed" = 0 ] && return 0
-    log_msg "Обнаружен drift forced-DNS. Возвращаю конфигурацию DNS Manager, совместимую с Zapret Manager."
+    log_msg "Обнаружен drift forced-DNS. Возвращаю конфигурацию DNS Manager."
     sync_hdp_force_contract 1 || return 1
     return 0
 }
@@ -5391,7 +5391,7 @@ watchdog_expected_servers() {
 watchdog_dns_path_guard() {
     detect_forced_dns_path >/dev/null 2>&1 || true
     if [ "${FORCED_DNS_EXTERNAL:-0}" = 1 ]; then
-        # External forced-DNS is a valid coexistence state (for example Zapret).
+        # External forced-DNS is a valid coexistence state.
         # It is reported by discovery/status, but it is not a watchdog error.
         return 0
     fi
