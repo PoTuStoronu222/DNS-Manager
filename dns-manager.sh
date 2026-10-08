@@ -5304,6 +5304,7 @@ watchdog_scope_category() {
     esac
 }
 watchdog_desired_cat() {
+    local _slot
     _slot="$1"
     case "$_slot" in
         RU) printf "%s\n" regional ;;
@@ -5516,6 +5517,7 @@ watchdog_hdp_guard() {
     return 0
 }
 watchdog_check_slot() {
+    local _slot _id _port _domain
     _slot="$1"
     case "$_slot" in
         1) _id="${SLOT_1:-}"; _port="${PORT_1:-}"; _domain="example.com";;
@@ -5535,6 +5537,7 @@ watchdog_check_slot() {
 }
 # ==========================================
 watchdog_preferred_quick_candidate() {
+    local _slot _pref
     _slot="$1"
     case "$_slot" in
         1|2|3|4|5|6) eval "_pref=\${QUICK_PREF_$_slot:-}" ;;
@@ -5544,6 +5547,7 @@ watchdog_preferred_quick_candidate() {
     printf '%s\n' "$_pref"
 }
 watchdog_pick_replacement() {
+    local _slot _used _tried _allow_clean _profile_all_scope _selection_kind _desired_for_pick _passcats _results_scope _fresh_source _fresh_pass_source _passcat _checked_cat _rid _rcat _fresh_pick _fresh_rest _rurl _u _current_id _current_cat _current_url _url
     _slot="$1"
     _used="$2"
     _tried="$3"
@@ -5676,6 +5680,7 @@ watchdog_pick_replacement() {
     return 1
 }
 watchdog_apply_slot_candidate() {
+    local _slot _new_id _new_cat _old_id _old_cat _port _new_url
     _slot="$1"; _new_id="$2"; _new_cat="$3"; _old_id="$4"; _old_cat="$5"
     eval "_port=\${PORT_${_slot}:-}"
     [ -n "$_slot" ] || return 1
@@ -5824,6 +5829,7 @@ watchdog_listener_snapshot_has_port() {
     esac
 }
 watchdog_loop_repair_cooldown_ok() {
+    local _slot _last _now
     _slot="$1"
     eval "_last=\${WD_REPAIR_TS_${_slot}:-0}"
     case "$_last" in ''|*[!0-9]*) _last=0;; esac
@@ -5832,12 +5838,14 @@ watchdog_loop_repair_cooldown_ok() {
     [ $((_now-_last)) -ge "${WATCHDOG_REPAIR_COOLDOWN:-300}" ] 2>/dev/null
 }
 watchdog_loop_mark_repair() {
+    local _slot _now
     _slot="$1"
     _now="$(date +%s 2>/dev/null)"
     case "$_now" in ''|*[!0-9]*) return 0;; esac
     eval "WD_REPAIR_TS_${_slot}=\$_now"
 }
 watchdog_loop_reset_slot() {
+    local _slot
     _slot="$1"
     eval "WD_FAIL_${_slot}=0"
     eval "WD_MISSING_${_slot}=0"
@@ -6610,6 +6618,7 @@ watchdog_state_word_procd() {
     fi
 }
 watchdog_slot_target_run() {
+    local _slot _target_id _target_port _target_cat _promote_fallback _target_live _allow_clean _slot_rc _old_id _old_cat _domain _used _tried _attempt _replacement_ok _picked _repl _repl_cat
     _slot="$1"
     case "$_slot" in 1|2|3|4|5|6|RU) ;; *) return 2 ;; esac
     [ "${WATCHDOG_ENABLED:-0}" = 1 ] || return 0
