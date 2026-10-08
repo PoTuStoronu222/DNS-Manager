@@ -4474,6 +4474,10 @@ return view.extend({
     return root;
   },
   remove:function(){stopAutoStatus();}
+});
+}
+return { createView: createView };
+
 EOF_COMMON
     chmod 0644 "$COMMON_STAGE"
     mv -f "$COMMON_STAGE" "$COMMON_FILE" || {
