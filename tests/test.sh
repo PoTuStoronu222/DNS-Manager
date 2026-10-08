@@ -109,16 +109,30 @@ awk '
 [ -s "$tmp/common.js" ] || fail "embedded JS extraction"
 node --check "$tmp/common.js" >/dev/null 2>&1 || fail "embedded JS: node --check"
 ok "embedded LuCI JS syntax"
-grep -q 'RESOURCE_DIR="/www/luci-static/resources/dns_manager"' dns-manager-luci.sh || fail "shared LuCI resource directory missing"
+grep -q 'RESOURCE_DIR="/www/luci-static/resources/dns-manager"' dns-manager-luci.sh || fail "shared LuCI resource directory missing"
 grep -q 'COMMON_FILE="$RESOURCE_DIR/common.js"' dns-manager-luci.sh || fail "shared LuCI common module path missing"
 for _view in dashboard doh network time catalog log; do
-    grep -q 'action": { "type": "view", "path": "dns_manager/'"$_view"'" }' dns-manager-luci.sh || fail "separate LuCI view route missing: $_view"
+    grep -q 'action": { "type": "view", "path": "dns-manager/'"$_view"'" }' dns-manager-luci.sh || fail "separate LuCI view route missing: $_view"
 done
-if grep -q 'path": "dns_manager/overview"' dns-manager-luci.sh; then
+if grep -q 'path": "dns-manager/overview"' dns-manager-luci.sh; then
     fail "legacy shared overview route remains"
 fi
 grep -q 'for _page in dashboard doh network time catalog log; do' dns-manager-luci.sh || fail "separate LuCI page generation loop missing"
-grep -q "return DM.createView();" dns-manager-luci.sh || fail "LuCI page wrapper does not use common module"
+grep -q "'require baseclass';" "$tmp/common.js" || fail "LuCI common module does not use baseclass"
+grep -q "return baseclass.extend({" "$tmp/common.js" || fail "LuCI common module does not return a baseclass constructor"
+for _rpc in doh_status network_status time_status page_meta; do
+    grep -q ""${_rpc}":{}" dns-manager-luci.sh || fail "fast LuCI RPC is missing from rpcd list: $_rpc"
+done
+for _rpc in doh_status network_status time_status page_meta; do
+    grep -q "${_rpc})" "$tmp/backend.sh" || fail "fast LuCI RPC dispatch is missing: $_rpc"
+done
+grep -q "case 'doh': return callDohStatus();" "$tmp/common.js" || fail "LuCI DoH page does not use targeted RPC"
+grep -q "case 'network': return callNetworkStatus();" "$tmp/common.js" || fail "LuCI network page does not use targeted RPC"
+grep -q "case 'time': return callTimeStatus();" "$tmp/common.js" || fail "LuCI time page does not use targeted RPC"
+grep -q "case 'log':" "$tmp/common.js" || fail "LuCI log page route handling missing"
+ok "LuCI uses page-specific RPC loading"
+grep -q "'require dns-manager.common as DM';" dns-manager-luci.sh || fail "LuCI page wrapper does not use common module"
+grep -q "return view.extend({" dns-manager-luci.sh || fail "LuCI page wrapper does not use native view constructor"
 ok "LuCI uses separate native page views with one shared module"
 
 grep -q "Проверить текущие DNS" "$tmp/common.js" || fail "LuCI common current-DNS check button missing"
