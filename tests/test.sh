@@ -292,7 +292,7 @@ grep -q 'reset_dns)' "$tmp/backend.sh" || fail "LuCI DNS reset RPC missing"
 grep -q 'reset_dns' "$tmp/overview.js" || fail "LuCI DNS reset action missing"
 grep -q 'rollback_hdp_targeted' "$tmp/dns-manager.sh" || fail "Targeted DoH cleanup missing"
 grep -q 'package_owner_remove_owned' "$tmp/dns-manager.sh" || fail "Owned package cleanup missing"
-if grep -q 'BASELINE_DIR\|BASELINE_MANIFEST\|BASELINE_LAST\|BASELINE_META\|baseline_restore_for_uninstall\|baseline_uninstall_validate\|baseline_capture_once\|baseline_mark_applied\|ensure_baseline_captured' "$tmp/dns-manager.sh"; then fail "Obsolete persistent baseline logic remains"; fi
+if grep -q 'BASELINE_DIR\|BASELINE_MANIFEST\|BASELINE_LAST\|BASELINE_META\|baseline_restore_for_uninstall\|baseline_uninstall_validate\|baseline_capture_once\|baseline_mark_applied\|ensure_baseline_captured' dns-manager.sh; then fail "Obsolete persistent baseline logic remains"; fi
 ok "DNS restore returns to standard resolver path"
 
 top_luci="$(sed -n 's/^# Version:[[:space:]]*//p' dns-manager-luci.sh | head -n1)"
