@@ -809,7 +809,7 @@ got="$(watchdog_pick_replacement 1 "$TMP_DIR/used" "$TMP_DIR/tried" 0)"
 # because the separate bootstrap/HTTPS probe failed. The real accept/reject
 # decision is made by watchdog_apply_slot_candidate() after local DNS response.
 watchdog_test_results_fresh() { return 1; }
-: > "$TMP_DIR/used"
+printf '%s\n' 'https://c1.example/dns-query' > "$TMP_DIR/used"
 : > "$TMP_DIR/tried"
 got="$(watchdog_pick_replacement 1 "$TMP_DIR/used" "$TMP_DIR/tried" 0)"
 [ "$got" = "c2|bypass" ] || {
