@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.29
+# Version: 1.44
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -13,8 +13,10 @@ RPC_PLUGIN="/usr/libexec/rpcd/dns_manager"
 BACKEND_FILE="/usr/lib/dns-manager-luci/backend.sh"
 ACL_FILE="/usr/share/rpcd/acl.d/luci-app-dns-manager.json"
 MENU_FILE="/usr/share/luci/menu.d/luci-app-dns-manager.json"
-VIEW_DIR="/www/luci-static/resources/view/dns_manager"
-VIEW_FILE="$VIEW_DIR/overview.js"
+VIEW_DIR="/www/luci-static/resources/view/dns-manager"
+RESOURCE_DIR="/www/luci-static/resources/dns-manager"
+COMMON_FILE="$RESOURCE_DIR/common.js"
+VIEW_FILE="/www/luci-static/resources/view/dns-manager/dashboard.js"
 RUNTIME_DIR="/var/run/dns-manager-luci"
 JOB_DIR="$RUNTIME_DIR/jobs"
 # Hard wall-clock limits for persistent background jobs. Browser timer throttling
@@ -30,7 +32,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.29"
+VERSION="1.44"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -49,7 +51,7 @@ install_files() {
     require_manager || return 1
 
     command -v jsonfilter >/dev/null 2>&1 || say "ℹ jsonfilter не найден — используется встроенный обработчик RPC-параметров."
-    mkdir -p "$VIEW_DIR" /usr/libexec/rpcd /usr/lib/dns-manager-luci /usr/share/rpcd/acl.d /usr/share/luci/menu.d "$RUNTIME_DIR/checks" "$JOB_DIR" "$BACKUP_DIR" "$(dirname "$STATE_FILE")" || return 1
+    mkdir -p "$VIEW_DIR" "$RESOURCE_DIR" /usr/libexec/rpcd /usr/lib/dns-manager-luci /usr/share/rpcd/acl.d /usr/share/luci/menu.d "$RUNTIME_DIR/checks" "$JOB_DIR" "$BACKUP_DIR" "$(dirname "$STATE_FILE")" || return 1
     if [ -d "$JOB_DIR" ]; then
         for _jd in "$JOB_DIR"/*; do
             [ -d "$_jd" ] || continue
@@ -79,32 +81,32 @@ install_files() {
   "admin/services/dns-manager/dashboard": {
     "title": "Дашборд",
     "order": 10,
-    "action": { "type": "view", "path": "dns_manager/overview" }
+    "action": { "type": "view", "path": "dns-manager/dashboard" }
   },
   "admin/services/dns-manager/doh": {
     "title": "DNS over HTTPS",
     "order": 20,
-    "action": { "type": "view", "path": "dns_manager/overview" }
+    "action": { "type": "view", "path": "dns-manager/doh" }
   },
   "admin/services/dns-manager/network": {
     "title": "Сеть",
     "order": 30,
-    "action": { "type": "view", "path": "dns_manager/overview" }
+    "action": { "type": "view", "path": "dns-manager/network" }
   },
   "admin/services/dns-manager/time": {
     "title": "Серверы точного времени",
     "order": 40,
-    "action": { "type": "view", "path": "dns_manager/overview" }
+    "action": { "type": "view", "path": "dns-manager/time" }
   },
   "admin/services/dns-manager/catalog": {
     "title": "Каталог DNS",
     "order": 50,
-    "action": { "type": "view", "path": "dns_manager/overview" }
+    "action": { "type": "view", "path": "dns-manager/catalog" }
   },
   "admin/services/dns-manager/log": {
     "title": "Журнал",
     "order": 80,
-    "action": { "type": "view", "path": "dns_manager/overview" }
+    "action": { "type": "view", "path": "dns-manager/log" }
   }
 }
 EOF_MENU
@@ -115,7 +117,7 @@ EOF_MENU
     "description": "DNS Manager native LuCI interface",
     "read": {
       "ubus": {
-        "dns_manager": [ "status", "runtime", "catalog", "job", "log", "update_check" ]
+        "dns_manager": [ "status", "runtime", "doh_status", "network_status", "time_status", "page_meta", "catalog", "job", "log", "update_check" ]
       }
     },
     "write": {
@@ -155,8 +157,8 @@ UPDATE_CHECK_CACHE="$RUNTIME_DIR/update-check.cache"
 UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
-VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.29"
+VIEW_FILE="$VIEW_DIR/dashboard.js"
+SELF_VERSION="1.44"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -276,27 +278,6 @@ catalog_field() {
 
 catalog_version() { sed -n 's/^# DNSCATVER=//p' "$CATALOG_FILE" 2>/dev/null | head -n1; }
 catalog_revision() { sed -n 's/^# DNSCATREV=//p' "$CATALOG_FILE" 2>/dev/null | head -n1; }
-selected_general_category_status() {
-    _sgs_common=""
-    _sgs_count=0
-    for _sgs_slot in 1 2 3 4 5 6; do
-        _sgs_id="$(cfg_get "SLOT_${_sgs_slot}")"
-        [ -n "$_sgs_id" ] || continue
-        _sgs_cat="$(catalog_field "$_sgs_id" 2 2>/dev/null || true)"
-        case "$_sgs_cat" in
-            bypass|clean|security|privacy|adblock|family) ;;
-            *) printf "%s\n" custom; return 0 ;;
-        esac
-        if [ -z "$_sgs_common" ]; then
-            _sgs_common="$_sgs_cat"
-        elif [ "$_sgs_common" != "$_sgs_cat" ]; then
-            printf "%s\n" custom
-            return 0
-        fi
-        _sgs_count=$((_sgs_count+1))
-    done
-    [ "$_sgs_count" -gt 0 ] && printf "%s\n" "$_sgs_common" || printf "%s\n" none
-}
 
 
 read_installed_luci_version() {
@@ -618,28 +599,6 @@ update_check_json() {
     release_runtime_lock "$UPDATE_CHECK_LOCK"
     status_json
 }
-update_manager_direct() {
-    _installed="$(manager_version 2>/dev/null || true)"
-    _out="$TMP_ROOT/manager-update-all.log"
-    rm -f "$_out" 2>/dev/null || true
-    ( update_manager_json ) >"$_out" 2>&1 || true
-    case "$(json_update_state "$(cat "$_out" 2>/dev/null)")" in
-        updated) rm -f "$_out" 2>/dev/null || true; return 0 ;;
-        current) rm -f "$_out" 2>/dev/null || true; return 2 ;;
-        *) rm -f "$_out" 2>/dev/null || true; return 3 ;;
-    esac
-}
-update_hdp_direct() {
-    _installed="$(package_version https-dns-proxy 2>/dev/null || true)"
-    _out="$TMP_ROOT/hdp-update-all.log"
-    rm -f "$_out" 2>/dev/null || true
-    ( update_hdp_json ) >"$_out" 2>&1 || true
-    case "$(json_update_state "$(cat "$_out" 2>/dev/null)")" in
-        updated) rm -f "$_out" 2>/dev/null || true; return 0 ;;
-        current) rm -f "$_out" 2>/dev/null || true; return 2 ;;
-        *) rm -f "$_out" 2>/dev/null || true; return 3 ;;
-    esac
-}
 update_catalog_direct() {
     _tmp="$TMP_ROOT/catalog-update-all.$$"
     fetch_raw_url "$_tmp" "https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/catalogs/dns-8.5-RU-NOSOCIAL.conf" || { rm -f "$_tmp" 2>/dev/null || true; return 3; }
@@ -661,17 +620,6 @@ update_catalog_direct() {
     return 0
 }
 
-update_luci_direct() {
-    _installed="$(read_installed_luci_version)"
-    _out="$TMP_ROOT/luci-update-all.log"
-    rm -f "$_out" 2>/dev/null || true
-    ( update_json ) >"$_out" 2>&1 || true
-    case "$(json_update_state "$(cat "$_out" 2>/dev/null)")" in
-        updated) rm -f "$_out" 2>/dev/null || true; return 0 ;;
-        current) rm -f "$_out" 2>/dev/null || true; return 2 ;;
-        *) rm -f "$_out" 2>/dev/null || true; return 3 ;;
-    esac
-}
 append_update_message() {
     if [ -n "$_message" ]; then _message="$_message; $1"; else _message="$1"; fi
 }
@@ -1191,6 +1139,211 @@ steer_service_present() {
 }
 steer_service_running() {
     [ -x /etc/init.d/steer ] && /etc/init.d/steer running >/dev/null 2>&1
+}
+
+
+page_header_json() {
+    _ph_meta="$STATE_DIR/dns-test-results.meta"
+    [ -r "$_ph_meta" ] || _ph_meta="$PERSIST_STATE_DIR/dns-test-results.meta"
+    _ph_last="$(sed -n 's/^timestamp=//p' "$_ph_meta" 2>/dev/null | head -n1)"
+    _ph_scope="$(sed -n 's/^test_scope=//p' "$_ph_meta" 2>/dev/null | head -n1)"
+    [ -n "$_ph_scope" ] || _ph_scope=all
+    _ph_lv="$(read_installed_luci_version)"
+    printf ',"luci_version":'; json_quote "$_ph_lv"
+    printf ',"last_full_test":'; json_quote "$_ph_last"
+    printf ',"last_full_test_scope":'; json_quote "$_ph_scope"
+}
+
+network_status_json() {
+    _watchdog="$(cfg_get WATCHDOG_ENABLED)"; [ -n "$_watchdog" ] || _watchdog=0
+    _watchdog_interval="$(cfg_get WATCHDOG_INTERVAL)"; [ -n "$_watchdog_interval" ] || _watchdog_interval=600
+    _watchdog_backend="$(cfg_get WATCHDOG_BACKEND)"; [ -n "$_watchdog_backend" ] || _watchdog_backend=procd
+    _watchdog_threshold="$(manager_const_num WATCHDOG_FAIL_THRESHOLD 2)"
+    _watchdog_repair_cooldown="$(manager_const_num WATCHDOG_REPAIR_COOLDOWN 1800)"
+    _watchdog_max_repairs="$(manager_const_num WATCHDOG_MAX_REPAIRS 1)"
+    _watchdog_max_restarts="$(manager_const_num WATCHDOG_MAX_RESTARTS 2)"
+    _watchdog_max_candidates="$(manager_const_num WATCHDOG_MAX_CANDIDATES 3)"
+    _watchdog_guard_interval="$(manager_const_num WATCHDOG_GUARD_INTERVAL 3600)"
+    _cache_cur="$(uci -q get dhcp.@dnsmasq[0].cachesize 2>/dev/null || true)"
+    _cache_stock=""
+    if [ -r /rom/etc/config/dhcp ]; then _cache_stock="$(uci -q -c /rom/etc/config get dhcp.@dnsmasq[0].cachesize 2>/dev/null || true)"; fi
+    [ -n "$_cache_stock" ] || _cache_stock=1000
+    if [ "$_cache_cur" = "$_cache_stock" ]; then _cache_state=0
+    elif [ "$_cache_cur" = 4096 ]; then _cache_state=1
+    else _cache_state=2
+    fi
+    _ws=0; watchdog_service_enabled && _ws=1 || true
+    _wr=0; watchdog_service_running && _wr=1 || true
+    _wl=0; watchdog_loop_running && _wl=1 || true
+    printf '{"ok":true'; page_header_json
+    printf ',"watchdog":'; json_quote "$_watchdog"
+    printf ',"watchdog_backend":'; json_quote "$_watchdog_backend"
+    printf ',"watchdog_interval":%s,"watchdog_service":%s,"watchdog_service_enabled":%s,"watchdog_loop":%s' "$_watchdog_interval" "$_wr" "$_ws" "$_wl"
+    printf ',"watchdog_fail_threshold":%s,"watchdog_repair_cooldown":%s,"watchdog_max_repairs":%s,"watchdog_max_restarts":%s,"watchdog_max_candidates":%s,"watchdog_guard_interval":%s' "$_watchdog_threshold" "$_watchdog_repair_cooldown" "$_watchdog_max_repairs" "$_watchdog_max_restarts" "$_watchdog_max_candidates" "$_watchdog_guard_interval"
+    printf ',"dnsmasq_perf_state":%s}' "$_cache_state"
+}
+
+time_status_json() {
+    _ntp_preset="$(cfg_get NTP_PRESET)"
+    _ntp_servers="$(uci -q get system.ntp.server 2>/dev/null || true)"
+    printf '{"ok":true'; page_header_json
+    printf ',"ntp_preset":'; json_quote "$_ntp_preset"
+    printf ',"ntp_servers":'; json_quote "$_ntp_servers"
+    printf '}'
+}
+
+page_meta_json() {
+    _age="$(cfg_get TEST_RESULTS_MAX_AGE)"
+    case "$_age" in ''|*[!0-9]*) _hours=6;; *) _hours=$((_age/3600)); [ "$_hours" -ge 1 ] || _hours=1;; esac
+    printf '{"ok":true,"test_age_common":%s}' "$_hours"
+}
+
+doh_status_json() {
+    _force="$(cfg_get FORCE_DOH)"; [ -n "$_force" ] || _force=0
+    _force_cfg="$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null || true)"
+    _force_notrack="$(uci -q get https-dns-proxy.config.notrack_dns 2>/dev/null || true)"
+    _force_state="$("$MANAGER_PATH" --force-state 2>/dev/null || true)"
+    _force_manager=0
+    case "$_force_state" in 1) _force_manager=1;; esac
+    [ "$_force_manager" = 1 ] || { [ "$_force" = 1 ] && [ "$_force_cfg" = 1 ] && [ "$_force_notrack" = 1 ] && _force_manager=1; }
+
+    _steer_installed=0; steer_service_present && _steer_installed=1 || true
+    _steer_running=0; steer_service_running && _steer_running=1 || true
+    STEER_DNS_ACTIVE=0; STEER_DNS_SOURCE=none
+    detect_steer_dns_runtime >/dev/null 2>&1 || true
+
+    _force_external=0; _force_source=none
+    _fw_secs="$(uci show firewall 2>/dev/null | sed -n 's/^firewall\.\([^.=]*\)=redirect$/\1/p')"
+    for _sec in $_fw_secs; do
+        [ "$(uci -q get firewall.$_sec.disabled 2>/dev/null)" = 1 ] && continue
+        runtime_lan_input_match "$(uci -q get firewall.$_sec.src 2>/dev/null || true)" || continue
+        _sd="$(uci -q get firewall.$_sec.src_dport 2>/dev/null || true)"
+        printf '%s
+' "$_sd" | tr ' ' '
+' | grep -qxF 53 2>/dev/null || continue
+        _target="$(uci -q get firewall.$_sec.target 2>/dev/null || true)"
+        case "$_target" in DNAT|dnat|REDIRECT|redirect) ;; *) continue;; esac
+        _dp="$(uci -q get firewall.$_sec.dest_port 2>/dev/null || true)"
+        [ -n "$_dp" ] || continue
+        case "$_dp" in 53|53-53) continue;; esac
+        if [ "$_force_manager" != 1 ] && { [ "$STEER_DNS_ACTIVE" != 1 ] || [ "$_dp" != 5300 ]; }; then
+            _force_external=1
+            _force_source="$_dp"
+        fi
+    done
+    _zapret_running=0
+    ps w 2>/dev/null | grep -Eq '[z]ms([[:space:]]|/)|[z]apret([[:space:]]|/)|[z]apret2([[:space:]]|/)|[z]aproxy2([[:space:]]|/)' && _zapret_running=1
+
+    _force_owner=none; _force_status=off
+    if [ "$_force_external" = 1 ]; then
+        _force_owner=external; _force_status=external
+        [ "$_zapret_running" = 1 ] && _force_source='Zapret / внешний' || _force_source='внешний сервис'
+    elif [ "$STEER_DNS_ACTIVE" = 1 ]; then
+        _force_owner=steer; _force_source=Steer
+        [ "$_force" = 1 ] && _force_status=steer || _force_status=other
+    elif [ "$_force_manager" = 1 ]; then
+        _force_owner=manager; _force_status=manager; _force_source='DNS Manager'
+    fi
+    _force_both=0; [ "$_force_manager" = 1 ] && [ "$_force_external" = 1 ] && _force_both=1
+
+    _listen="$(ss -lnt 2>/dev/null || netstat -lnt 2>/dev/null || true)"
+    _doh_total=0; _doh_running=0; _system_dns_total=0; _doh_instances=""; _doh_first=1
+    _i=0
+    while uci -q get https-dns-proxy.@https-dns-proxy[$_i] >/dev/null 2>&1; do
+        _p="$(uci -q get https-dns-proxy.@https-dns-proxy[$_i].listen_port 2>/dev/null || true)"
+        _a="$(uci -q get https-dns-proxy.@https-dns-proxy[$_i].listen_addr 2>/dev/null || true)"
+        _u="$(uci -q get https-dns-proxy.@https-dns-proxy[$_i].resolver_url 2>/dev/null | sed 's:/*$::' || true)"
+        _n="$(uci -q get https-dns-proxy.@https-dns-proxy[$_i].name 2>/dev/null || true)"
+        if [ -z "$_n" ] && [ -n "$_u" ]; then _n="$(awk -F'|' -v u="$_u" '$5==u {print $4; exit}' "$CATALOG_FILE" 2>/dev/null)"; fi
+        case "$_u" in
+            https://cloudflare-dns.com/dns-query) [ "$_n" = Cloudflare ] && _n='Cloudflare (Стандарт)';;
+            https://dns.google/dns-query) [ "$_n" = 'Google Public DNS' ] && _n='Google';;
+        esac
+        [ -n "$_n" ] || _n='Пользовательский DNS'
+        _run=0
+        [ -n "$_p" ] && printf '%s
+' "$_listen" | grep -qE "(^|[[:space:]])[^[:space:]]*:$_p([[:space:]]|$)" && _run=1
+        [ "$_run" = 1 ] && _doh_running=$((_doh_running+1))
+        _doh_total=$((_doh_total+1))
+        _instance_id="$(awk -F'|' -v u="$_u" '$5==u {print $1; exit}' "$CATALOG_FILE" 2>/dev/null || true)"
+        _slot=""
+        for _s in 1 2 3 4 5 6 RU; do
+            _sid="$(cfg_get SLOT_"$_s")"; _sport="$(cfg_get PORT_"$_s")"
+            [ -n "$_sid" ] || continue
+            [ -n "$_instance_id" ] && [ "$_sid" = "$_instance_id" ] && { _slot="$_s"; break; }
+            [ -n "$_sport" ] && [ "$_sport" = "$_p" ] && { _slot="$_s"; break; }
+        done
+        _result_id="$_instance_id"
+        if [ -z "$_slot" ] && [ -n "$_u" ] && [ -n "$_p" ]; then _system_dns_total=$((_system_dns_total+1)); _result_id="$(system_result_id "$_u" "$_p" "$_i")"; fi
+        _r=""; [ -n "$_result_id" ] && _r="$(result_for_id "$_result_id" 2>/dev/null || true)"
+        _ms="$(printf '%s' "$_r" | awk -F'|' 'NF>=5 {print $4;exit}')"
+        _rawst="$(printf '%s' "$_r" | awk -F'|' 'NF>=5 {print $5;exit}')"
+        case "$_rawst" in OK) case "$_ms" in ''|*[!0-9]*) _result_status=FAIL;; *) _result_status=OK;; esac;; '') _result_status="";; *) _result_status=FAIL;; esac
+        [ "$_doh_first" = 1 ] || _doh_instances="$_doh_instances,"
+        _doh_first=0
+        _last_check=""; [ -n "$_result_id" ] && _last_check="$(last_check_for_id "$_result_id")"
+        _obj='{"index":'$(($_i+1))',"id":'$(json_quote "$_instance_id")',"name":'$(json_quote "$_n")',"port":'$(json_quote "$_p")',"listen_addr":'$(json_quote "$_a")',"url":'$(json_quote "$_u")',"running":'$_run',"slot":'$(json_quote "$_slot")',"ping":'$(json_quote "$_ms")',"status":'$(json_quote "$_result_status")',"last_check":'$(json_quote "$_last_check")'}'
+        _doh_instances="$_doh_instances$_obj"
+        _i=$((_i+1))
+    done
+
+    _expected=0; _match=0
+    for _s in 1 2 3 4 5 6 RU; do
+        _id="$(cfg_get SLOT_"$_s")"; _port="$(cfg_get PORT_"$_s")"
+        [ -n "$_id" ] && [ -n "$_port" ] || continue
+        _expected=$((_expected+1))
+        _url="$(catalog_field "$_id" 5 2>/dev/null || true)"
+        [ -n "$_url" ] || continue
+        _url_cmp="$(printf '%s' "$_url" | sed 's:/*$::')"
+        _j=0
+        while uci -q get https-dns-proxy.@https-dns-proxy[$_j] >/dev/null 2>&1; do
+            _up="$(uci -q get https-dns-proxy.@https-dns-proxy[$_j].listen_port 2>/dev/null || true)"
+            _uu="$(uci -q get https-dns-proxy.@https-dns-proxy[$_j].resolver_url 2>/dev/null | sed 's:/*$::' || true)"
+            [ "$_up" = "$_port" ] && [ "$_uu" = "$_url_cmp" ] && { _match=$((_match+1)); break; }
+            _j=$((_j+1))
+        done
+    done
+    _mode_cfg="$(cfg_get DNS_SELECTION_MODE)"; _selection_category_cfg="$(cfg_get DNS_SELECTION_CATEGORY)"
+    _profile=none; _mode=none; _selection_category=none
+    if [ "$_doh_total" -gt 0 ] && [ "$_doh_total" -eq "$_expected" ] && [ "$_match" -eq "$_expected" ]; then
+        case "$_mode_cfg:$_selection_category_cfg" in
+            quick:bypass|profile:bypass|profile:clean|profile:security|profile:privacy|profile:adblock|profile:family) _profile=hybrid; _mode="$_mode_cfg"; _selection_category="$_selection_category_cfg";;
+            *) _profile=custom; _mode=manual;;
+        esac
+    fi
+
+    _pjs=""; _pjr=""; _pjp=""; _pjsd=""; _pjf=""; _pjm=""
+    if [ -r "$JOB_DIR/profile/state" ]; then
+        _pjs="$(sed -n 's/^status=//p' "$JOB_DIR/profile/state" 2>/dev/null | tail -n1)"
+        _pjr="$(sed -n 's/^result=//p' "$JOB_DIR/profile/state" 2>/dev/null | tail -n1)"
+        _pjp="$(sed -n 's/^profile=//p' "$JOB_DIR/profile/state" 2>/dev/null | head -n1)"
+        _pjsd="$(sed -n 's/^started=//p' "$JOB_DIR/profile/state" 2>/dev/null | head -n1)"
+        _pjf="$(sed -n 's/^finished=//p' "$JOB_DIR/profile/state" 2>/dev/null | tail -n1)"
+        _pjm="$(tail -n 12 "$JOB_DIR/profile/output" 2>/dev/null | sed '/^[[:space:]]*$/d' | tail -n1 | tr '	' '  ' | cut -c1-360)"
+    fi
+
+    printf '{"ok":true'; page_header_json
+    printf ',"doh_total":%s,"doh":' "$_doh_total"; json_quote "$([ "$_doh_running" -gt 0 ] && printf yes || printf no)"
+    printf ',"force_manager":%s,"force_external":%s,"force_owner":' "$_force_manager" "$_force_external"; json_quote "$_force_owner"
+    printf ',"force_status":'; json_quote "$_force_status"; printf ',"force_source":'; json_quote "$_force_source"; printf ',"force_both":%s' "$_force_both"
+    printf ',"steer_installed":%s,"steer_running":%s,"steer_dns_active":%s,"steer_dns_source":' "$_steer_installed" "$_steer_running" "$STEER_DNS_ACTIVE"; json_quote "$STEER_DNS_SOURCE"
+    printf ',"profile":'; json_quote "$_profile"; printf ',"profile_mode":'; json_quote "$_mode"; printf ',"selection_category":'; json_quote "$_selection_category"
+    printf ',"doh_instances":[%s],"slots":[' "$_doh_instances"
+    _first=1
+    for _s in 1 2 3 4 5 6 RU; do
+        _id="$(cfg_get SLOT_"$_s")"; _cat="$(catalog_field "$_id" 2>/dev/null || true)"; _port="$(cfg_get PORT_"$_s")"
+        [ -n "$_cat" ] || [ -z "$_id" ] || _cat="$(cfg_get SLOT_"$_s"_CAT)"
+        _name="$(catalog_field "$_id" 4 2>/dev/null || true)"; [ -n "$_name" ] || _name='Не задан'
+        _r="$(result_for_id "$_id" 2>/dev/null || true)"
+        _ms="$(printf '%s' "$_r" | awk -F'|' 'NF>=5 {print $4;exit}')"
+        _rawst="$(printf '%s' "$_r" | awk -F'|' 'NF>=5 {print $5;exit}')"
+        _st=""; case "$_rawst" in OK) case "$_ms" in ''|*[!0-9]*) _st=FAIL;; *) _st=OK;; esac;; RUNNING) _st=RUNNING;; '') ;; *) _st=FAIL;; esac
+        [ "$_first" = 1 ] || printf ','; _first=0
+        printf '{"slot":'; json_quote "$_s"; printf ',"id":'; json_quote "$_id"; printf ',"name":'; json_quote "$_name"; printf ',"category":'; json_quote "$_cat"; printf ',"port":'; json_quote "$_port"; printf ',"ping":'; json_quote "$_ms"; printf ',"status":'; json_quote "$_st"; printf ',"last_check":'; json_quote "$(last_check_for_id "$_id")"; printf '}'
+    done
+    printf '],"system_dns_count":%s' "$_system_dns_total"
+    printf ',"profile_job_status":'; json_quote "$_pjs"; printf ',"profile_job_result":'; json_quote "$_pjr"; printf ',"profile_job_profile":'; json_quote "$_pjp"; printf ',"profile_job_started":'; json_quote "$_pjsd"; printf ',"profile_job_finished":'; json_quote "$_pjf"; printf ',"profile_job_message":'; json_quote "$_pjm"
+    printf '}'
 }
 
 status_json() {
@@ -2494,11 +2647,15 @@ test_json() { case "${RPC_METHOD:-}" in test_all) job_start_test_all;; test_curr
 
 case "${1:-}" in
     list)
-        printf '{"status":{},"runtime":{},"catalog":{"category":"String","offset":0,"limit":0,"only_ok":0},"update_check":{},"update":{},"update_manager":{},"update_hdp":{},"update_catalog":{},"update_all":{},"set_profile":{"profile":"String"},"reset_dns":{},"set_slot":{"slot":"String","id":"String"},"set_setting":{"name":"String","enabled":0},"set_watchdog_setting":{"name":"String","value":0},"set_watchdog_settings":{"interval":0,"threshold":0,"repair_cooldown":0,"max_repairs":0,"max_restarts":0,"max_candidates":0,"guard_interval":0},"set_ntp":{"preset":"String"},"set_test_age":{"category":"String","hours":0},"test_all":{},"test_current":{},"test_one":{"id":"String"},"test_system":{},"job":{"id":"String"},"log":{"lines":0}}\n'
+        printf '{"status":{},"runtime":{},"doh_status":{},"network_status":{},"time_status":{},"page_meta":{},"catalog":{"category":"String","offset":0,"limit":0,"only_ok":0},"update_check":{},"update":{},"update_manager":{},"update_hdp":{},"update_catalog":{},"update_all":{},"set_profile":{"profile":"String"},"reset_dns":{},"set_slot":{"slot":"String","id":"String"},"set_setting":{"name":"String","enabled":0},"set_watchdog_setting":{"name":"String","value":0},"set_watchdog_settings":{"interval":0,"threshold":0,"repair_cooldown":0,"max_repairs":0,"max_restarts":0,"max_candidates":0,"guard_interval":0},"set_ntp":{"preset":"String"},"set_test_age":{"category":"String","hours":0},"test_all":{},"test_current":{},"test_one":{"id":"String"},"test_system":{},"job":{"id":"String"},"log":{"lines":0}}\n'
         ;;
     call)
         case "${2:-}" in
             status) INPUT="$(cat 2>/dev/null || true)"; status_json;;
+            doh_status) doh_status_json;;
+            network_status) network_status_json;;
+            time_status) time_status_json;;
+            page_meta) page_meta_json;;
             runtime) runtime_json;;
             catalog) INPUT="$(cat 2>/dev/null || true)"; catalog_json;;
             update_check) INPUT="$(cat 2>/dev/null || true)"; update_check_json;;            update_catalog) update_catalog_json;;            update_all) update_all_json;;            update) update_json;;            update_manager) update_manager_json;;            update_hdp) update_hdp_json;;
@@ -2540,15 +2697,15 @@ EOF_RPC_WRAPPER
         return 1
     }
 
-    VIEW_STAGE="${VIEW_FILE}.new.$$"
-    rm -f "$VIEW_STAGE" 2>/dev/null || true
-    cat > "$VIEW_STAGE" <<'EOF_JS'
+    COMMON_STAGE="$COMMON_FILE.new.$$"
+    rm -f "$COMMON_STAGE" 2>/dev/null || true
+    cat > "$COMMON_STAGE" <<'EOF_COMMON'
 'use strict';
-'require view';
+'require baseclass';
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.29
+// DNS Manager LuCI common module version: 1.44
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -2565,6 +2722,10 @@ function dmRpc(o){
   };
 }
 var callStatus = dmRpc({ object:'dns_manager', method:'status', params:['detail'], expect:{} });
+var callDohStatus = dmRpc({ object:'dns_manager', method:'doh_status', expect:{} });
+var callNetworkStatus = dmRpc({ object:'dns_manager', method:'network_status', expect:{} });
+var callTimeStatus = dmRpc({ object:'dns_manager', method:'time_status', expect:{} });
+var callPageMeta = dmRpc({ object:'dns_manager', method:'page_meta', expect:{} });
 var callBoardInfo = rpc.declare({ object:'system', method:'info', expect:{} });
 var callRuntime = dmRpc({ object:'dns_manager', method:'runtime', expect:{} });
 function statusDetail(){return currentRoute()==='network'?1:0;}
@@ -2645,52 +2806,17 @@ function memoryPercent(total,avail){
   var p=Math.round(((t-Math.max(0,a))/t)*100);
   return Math.max(0,Math.min(100,p));
 }
-function memoryBar(total,avail){
-  var p=memoryPercent(total,avail);
-  if(p===null)return E('span',{},'—');
-  return E('div',{'class':'dm-mem-wrap'},[
-    E('div',{'class':'dm-mem-line'},[
-      E('div',{'class':'dm-mem-track'},[E('div',{'class':'dm-mem-fill','style':'width:'+p+'%'})]),
-      E('span',{'class':'dm-mem-value'},memory(total,avail))
-    ]),
-    E('div',{'class':'dm-mem-meta'},p+'% занято')
-  ]);
-}
 function loadPercent(load1,cores){
   var n=Number(load1),c=Number(cores||1);
   if(!isFinite(n)||n<0||!isFinite(c)||c<1)return null;
   var p=Math.round((n/c)*100);
   return Math.max(0,Math.min(100,p));
 }
-function loadBar(load1,cores){
-  var p=loadPercent(load1,cores);
-  if(p===null)return E('span',{},'—');
-  return E('div',{'class':'dm-load-wrap'},[
-    E('div',{'class':'dm-load-line'},[
-      E('div',{'class':'dm-load-track'},[E('div',{'class':'dm-load-fill','style':'width:'+p+'%'})]),
-      E('span',{'class':'dm-load-value'},p+'%')
-    ]),
-    E('div',{'class':'dm-load-meta'},'load '+shortVal(load1)+' · '+String(cores||1)+' '+(Number(cores||1)===1?'ядро':'ядра'))
-  ]);
-}function cpuLoadBar(pct){
-  var p=Number(pct);
-  if(!isFinite(p)||p<0)p=0;
-  p=Math.max(0,Math.min(100,Math.round(p)));
-  return E('div',{'class':'dm-load-wrap'},[
-    E('div',{'class':'dm-load-line'},[
-      E('div',{'class':'dm-load-track'},[E('div',{'class':'dm-load-fill','style':'width:'+p+'%','id':'dm-runtime-load-fill'})]),
-      E('span',{'class':'dm-load-value','id':'dm-runtime-load-value'},p+'%')
-    ]),
-    E('div',{'class':'dm-load-meta','id':'dm-runtime-load-meta'},'Нагрузка процессора')
-  ]);
-}
-
 function badge(kind,text){ return E('span',{'class':'dm-badge '+kind},[E('span',{'class':'dm-dot'}),text]); }
 function btn(label,cls,fn,extra){ var a={'class':'cbi-button '+(cls||''),'type':'button','click':function(ev){ if(ev&&ev.preventDefault)ev.preventDefault(); return fn?fn.call(this,ev):undefined; }}; Object.keys(extra||{}).forEach(function(k){ if(k==='disabled'){ if(extra[k]) a.disabled=true; } else { a[k]=extra[k]; } }); return E('button',a,label); }
 function row(label,node){ return E('div',{'class':'dm-row'},[E('span',{'class':'dm-label'},label),E('span',{'class':'dm-row-value'},node)]); }
 function card(title,children,cls){ return E('div',{'class':'dm-card '+(cls||'')},[E('h3',{},title)].concat(children||[])); }
 function forceMode(st){ return (st.force_status==='manager'||st.force_status==='steer'||(st.force_status==='other'&&st.force_owner==='steer')) ? 'auto' : 'off'; }
-function forceModeLabel(m){ return m==='auto' ? 'Авто (рекомендуется)' : 'Не перехватывать'; }
 function yes(v){ return v===1 || v==='1' || v===true; }
 function dateText(v){ if(!v || !/^\d+$/.test(String(v))) return '—'; try { return new Date(Number(v)*1000).toLocaleString(); } catch(e){ return '—'; } }
 function shortVal(v){ return (v===undefined || v===null || v==='') ? '—' : String(v); }
@@ -2862,23 +2988,10 @@ function setActiveTab(root,name){
   if(state.activeTab==='catalog'&&!window.dmCatalog&&!state.catalogLoading)loadCatalog(root);
   if(state.activeTab==='log'&&!state.logLoaded&&!state.logLoading)showLog(root);
 }
-function routeUrl(name){return '/cgi-bin/luci/admin/services/dns-manager/'+name;}
 function currentRoute(){
   var p=String((window.location&&window.location.pathname)||'');
   var m=p.match(/\/admin\/services\/dns-manager\/([^/?#]+)/);
   return m&&m[1]?m[1]:'dashboard';
-}
-function renderPageNav(root){
-  var e=root.querySelector('#dm-page-nav');if(!e)return;e.innerHTML='';
-  var tabs=[['dashboard','Дашборд'],['doh','DNS over HTTPS'],['network','Сеть'],['time','Серверы точного времени'],['catalog','Каталог DNS'],['log','Журнал']];
-  var route=currentRoute();
-  var nav=E('nav',{'class':'dm-page-nav'});
-  var bar=E('div',{'class':'dm-page-tabs'});
-  tabs.forEach(function(x){
-    bar.appendChild(E('a',{'class':'dm-page-tab '+(route===x[0]?'active':''),'href':routeUrl(x[0])},x[1]));
-  });
-  nav.appendChild(bar);
-  e.appendChild(nav);
 }
 function checkKey(id,d){
   if(id)return String(id);
@@ -3370,20 +3483,6 @@ function openSlotPicker(slot,root){
   });
 }
 
-function openForceDetails(root,st){
-  var vals=[
-    ['force_dns',shortVal(st.force)],['notrack_dns',shortVal(st.force_notrack)],['dnsmasq_config_update',shortVal(st.force_update)],
-    ['force_dns_port',shortVal(st.force_ports)],['force_dns_src_interface',shortVal(st.force_src)],['force_ip_family',shortVal(st.force_family)],
-    ['procd_trigger_wan6',shortVal(st.force_procd_trigger_wan6)],['heartbeat_domain',shortVal(st.force_heartbeat_domain)],
-    ['heartbeat_sleep_timeout',shortVal(st.force_heartbeat_sleep)],['heartbeat_wait_timeout',shortVal(st.force_heartbeat_wait)],
-    ['user / group',shortVal(st.force_user)+' / '+shortVal(st.force_group)],['listen_addr',shortVal(st.force_listen)],
-    ['canary iCloud / Mozilla',shortVal(st.force_canary_icloud)+' / '+shortVal(st.force_canary_mozilla)],
-    ['Согласованность',st.force_consistent===1||st.force_consistent==='1'?badge('dm-ok','соответствует'):badge('dm-warn','отличается')]
-  ];
-  var body=E('div',{}); vals.forEach(function(x){body.appendChild(row(x[0],E('span',{},x[1])));});
-  ui.showModal('Параметры forced-DNS',[body,E('div',{'class':'right'},[btn('Закрыть','cbi-button-negative',ui.hideModal)])]);
-}
-
 function profileProgressUpdate(j){
   var out=stripAnsi(j&&j.output||''), text=String(out||'');
   var stages=[
@@ -3538,48 +3637,6 @@ function settingCard(root,x,st){
       E('div',{'class':'dm-setting-actions'},actions)
     ])
   ]);
-}
-function testAgeRow(root,st,category,label,inputs){
-  var key='test_age_'+category;
-  var input=E('input',{'type':'number','min':'1','max':'168','step':'1','value':String(st[key]||6),'class':'dm-input'});
-  inputs.push({category:category,input:input,label:label});
-  return E('div',{'class':'dm-test-age-row'},[E('span',{'class':'dm-test-age-label'},label),input,E('span',{'class':'dm-test-age-unit'},'ч')]);
-}
-function saveTestAges(root,inputs){
-  if(state.busy)return;
-  var values=[],invalid='';
-  inputs.forEach(function(x){
-    var n=String(x.input.value||'').trim();
-    if(!/^\d+$/.test(n)||Number(n)<1||Number(n)>168){invalid=invalid||x.label;return;}
-    values.push({category:x.category,hours:Number(n),label:x.label});
-  });
-  if(invalid){
-    setSettingFeedback('testages','«'+invalid+'»: срок должен быть от 1 до 168 часов.','error');
-    renderCatalog(root);
-    return;
-  }
-  clearSettingFeedback();
-  state.busy=true;state.busySetting='testages';
-  renderCatalog(root);
-  var index=0,failed=[];
-  function next(){
-    if(index>=values.length){
-      state.busy=false;state.busySetting='';
-      if(failed.length)setSettingFeedback('testages','Не удалось сохранить: '+failed.join(', ')+'. Остальные значения сохранены.','error');
-      else setSettingFeedback('testages','Сроки проверки сохранены.','ok');
-      refresh(root,true);
-      return;
-    }
-    var x=values[index++];
-    callTestAge(x.category,x.hours).then(function(r){
-      if(!(r&&r.ok))failed.push(x.label);
-      next();
-    }).catch(function(){
-      failed.push(x.label);
-      next();
-    });
-  }
-  next();
 }
 function watchdogCard(root,st){
   var en=yes(st.watchdog), busy=state.busySetting==='watchdog' || state.busySetting==='watchdog_batch';
@@ -3928,33 +3985,91 @@ function renderLog(root){
   e.appendChild(card('Журнал',ch));
 }
 
-function testPanel(root){return root.querySelector('#dm-test-inline');}
-function renderJobResult(root,j,st){return;}
-function renderJob(root,job,meta){return;}
 function renderJobIdle(root,st){
   var e=root.querySelector('#dm-job');if(!e)return;e.innerHTML='';
 }
 function render(root,st){
   renderHeader(root,st);
-  renderOverview(root,st);
-  renderDoH(root,st);
-  renderSlots(root,st);
-  renderProfiles(root,st);
-  renderNetwork(root,st);
-  renderTime(root,st);
-  renderCatalog(root);
-  renderLog(root);
-  renderJobIdle(root,st);
   state.activeTab=currentRoute();
+  switch(state.activeTab){
+    case 'doh':
+      renderDoH(root,st);
+      renderProfiles(root,st);
+      break;
+    case 'network':
+      renderNetwork(root,st);
+      break;
+    case 'time':
+      renderTime(root,st);
+      break;
+    case 'catalog':
+      renderCatalog(root);
+      break;
+    case 'log':
+      renderLog(root);
+      break;
+    default:
+      state.activeTab='dashboard';
+      renderOverview(root,st);
+      break;
+  }
   setActiveTab(root,state.activeTab);
+}
+function routeStatusCall(){
+  switch(currentRoute()){
+    case 'doh': return callDohStatus();
+    case 'network': return callNetworkStatus();
+    case 'time': return callTimeStatus();
+    case 'catalog':
+      return Promise.all([
+        callCatalog(state.category,state.offset,state.limit,0),
+        callPageMeta()
+      ]).then(function(v){
+        window.dmCatalog=v[0]||{};
+        state.catalogLoaded=true;
+        return v[1]||{};
+      });
+    case 'log':
+      return callLog(160).then(function(r){
+        state.logLoaded=true;
+        state.logText=stripAnsi((r&&r.log)||'');
+        return {ok:true};
+      });
+    default:
+      return callStatus(0);
+  }
+}
+function ensureStatusPromise(){
+  if(window.dmStatusPromise)return window.dmStatusPromise;
+  window.dmStatusPromise=routeStatusCall().then(function(st){
+    st=st||{};
+    window.dmStatusCache={ts:Date.now(),data:st};
+    return st;
+  }).catch(function(err){
+    window.dmStatusError=err;
+    throw err;
+  }).then(function(st){
+    window.dmStatusPromise=null;
+    return st;
+  },function(err){
+    window.dmStatusPromise=null;
+    throw err;
+  });
+  return window.dmStatusPromise;
+}
+
+function applyStatusToCurrentRoot(st){
+  var root=window.dmCurrentRoot;
+  if(!rootAlive(root))return;
+  state.statusError='';
+  state.statusFromCache=false;
+  window.dmState=st||{};
+  render(root,st||{});
 }
 function refresh(root,keepPosition){
   if(!rootAlive(root))return Promise.resolve();
-  return callStatus(statusDetail()).then(function(st){
-    if(!rootAlive(root))return;
-    state.statusError='';
-    window.dmState=st||{};
-    render(root,st||{});
+  return ensureStatusPromise().then(function(st){
+    applyStatusToCurrentRoot(st);
   }).catch(function(err){
     if(!rootAlive(root))return;
     state.statusError=withRpcError('Не удалось получить состояние DNS Manager через RPC (status).',err);
@@ -3962,7 +4077,16 @@ function refresh(root,keepPosition){
     render(root,window.dmState||{});
   });
 }
-function toast(msg,type){}
+function scheduleBackgroundStatus(root){
+  if(!rootAlive(root))return;
+  if(window.dmStatusRefreshTimer)window.clearTimeout(window.dmStatusRefreshTimer);
+  window.dmStatusRefreshTimer=window.setTimeout(function(){
+    window.dmStatusRefreshTimer=null;
+    ensureStatusPromise().then(function(st){
+      applyStatusToCurrentRoot(st);
+    }).catch(function(){});
+  },0);
+}
 function checkUpdate(root,force){
   if(state.versionCheck&&state.versionCheck.running)return;
   state.versionCheck={running:true,manager:'running',luci:'running',hdp:'running',catalog:'running',started:Date.now(),job:''};
@@ -3991,22 +4115,6 @@ function checkUpdate(root,force){
     state.versionCheck.error=true;
     state.pageNotice.overview=withRpcError('Проверка актуальности не выполнена.',err);
     renderOverview(root,window.dmState||{});
-  });
-}
-
-function updateManager(root){
-  if(state.managerUpdating||state.busy)return;
-  state.managerUpdating=true;
-  renderOverview(root,window.dmState||{});
-  callManagerUpdate().then(function(r){
-    state.managerUpdating=false;
-    if(r&&r.ok&&r.updated)state.pageNotice.overview='DNS Manager обновлён до '+r.version+'.';
-    else state.pageNotice.overview=(r&&r.error)||'DNS Manager не удалось обновить.';
-    refresh(root,true);
-  }).catch(function(err){
-    state.managerUpdating=false;
-    state.pageNotice.overview=withRpcError('Не удалось выполнить обновление DNS Manager.',err);
-    refresh(root,true);
   });
 }
 
@@ -4060,64 +4168,6 @@ function updateAll(root){
     }else{
       refresh(root,true);
     }
-  });
-}
-function updateHdp(root){
-  if(state.hdpUpdating||state.busy)return;
-  var v=(window.dmState&&window.dmState.hdp_latest_version)||'новой версии';
-  state.hdpUpdating=true;
-  renderOverview(root,window.dmState||{});
-  callHdpUpdate().then(function(r){
-    state.hdpUpdating=false;
-    if(r&&r.ok&&r.updated)state.pageNotice.overview='https-dns-proxy обновлён до '+r.version+'.';
-    else state.pageNotice.overview=(r&&r.error)||'https-dns-proxy не удалось обновить.';
-    refresh(root,true);
-  }).catch(function(err){
-    state.hdpUpdating=false;
-    state.pageNotice.overview=withRpcError('Не удалось выполнить обновление https-dns-proxy.',err);
-    refresh(root,true);
-  });
-}
-function doUpdate(root){
-  if(state.busy)return;
-  var v=(window.dmState&&window.dmState.luci_latest_version)||'новой версии';
-  state.busy=true;
-  state.pageNotice.overview='Обновляю LuCI…';
-  globalUpdateNotice('Обновляю LuCI до v'+v+'…','info');
-  if(rootAlive(root))renderOverview(root,window.dmState||{});
-
-  if(state.luciUpdateReloadTimer){clearTimeout(state.luciUpdateReloadTimer);state.luciUpdateReloadTimer=null;}
-  state.luciUpdateReloadTimer=setTimeout(function(){
-    state.luciUpdateReloadTimer=null;
-    if(state.busy){
-      // The old RPC worker may have been terminated by a legacy updater after
-      // the files were already replaced. Reload the page so the new LuCI is used.
-      location.reload();
-    }
-  },8000);
-
-  callUpdate().then(function(r){
-    if(state.luciUpdateReloadTimer){clearTimeout(state.luciUpdateReloadTimer);state.luciUpdateReloadTimer=null;}
-    state.busy=false;
-    if(r&&r.ok&&r.updated){
-      var msg='LuCI обновлена до v'+r.version+'. Перезагружаю страницу…';
-      state.pageNotice.overview=msg;
-      globalUpdateNotice(msg,'ok');
-      if(rootAlive(root))renderOverview(root,window.dmState||{});
-      setTimeout(function(){location.reload();},1600);
-    }else{
-      var msg=(r&&r.error)||'LuCI не удалось обновить.';
-      state.pageNotice.overview=msg;
-      globalUpdateNotice(msg,'error');
-      if(rootAlive(root))renderOverview(root,window.dmState||{});
-    }
-  }).catch(function(err){
-    if(state.luciUpdateReloadTimer){clearTimeout(state.luciUpdateReloadTimer);state.luciUpdateReloadTimer=null;}
-    state.busy=false;
-    var msg=withRpcError('Не удалось выполнить RPC-обновление LuCI.',err);
-    state.pageNotice.overview=msg;
-    globalUpdateNotice(msg,'error');
-    if(rootAlive(root))renderOverview(root,window.dmState||{});
   });
 }
 function resetDnsCore(root){
@@ -4179,15 +4229,6 @@ function applyProfile(name,root){
       refresh(root,true);
     });
   });
-}
-function setTestAge(category,hours,root){
-  if(state.busy)return;
-  var n=String(hours||'').trim();
-  if(!/^\d+$/.test(n)||Number(n)<1||Number(n)>168){state.settingMessage='Срок должен быть от 1 до 168 часов.';state.settingMessageType='error';renderCatalog(root);return;}
-  state.busy=true;state.busySetting='testage_'+category;state.settingMessage='Сохраняю срок проверки…';state.settingMessageType='info';renderCatalog(root);
-  callTestAge(category,Number(n)).then(function(r){
-    state.busy=false;state.busySetting='';state.settingMessage=(r&&r.ok)?'Срок проверки сохранён.':((r&&r.error)||'Срок проверки не удалось сохранить.');state.settingMessageType=(r&&r.ok)?'ok':'error';refresh(root,true);
-  }).catch(function(err){state.busy=false;state.busySetting='';state.settingMessage=withRpcError('Срок проверки не удалось сохранить.',err);state.settingMessageType='error';refresh(root,true);});
 }
 function setSetting(name,en,root){
   if(state.busy)return;
@@ -4295,19 +4336,6 @@ function testOne(id,root,origin,done){
   });
 }
 
-function testSystem(root){
-  if(state.jobRunning||state.busy)return;
-  var total=(window.dmState&&window.dmState.doh_instances||[]).filter(function(d){return d&&d.url&&d.port&&!d.slot;}).length;
-  if(!total){state.pageNotice.doh='Системных DNS без привязки к слотам не найдено.';render(root,window.dmState||{});return;}
-  state.jobRunning=true;state.currentSystemTest={status:'RUNNING',total:total,started:Date.now()};state.pageNotice.doh='Проверяю системные DNS…';
-  render(root,window.dmState||{});
-  callTestSystem().then(function(r){
-    if(r&&r.ok)pollJob(root,r.job,{mode:'system'},null);
-    else{state.currentSystemTest={status:'FAILED',total:total};state.jobRunning=false;state.pageNotice.doh=(r&&r.error)||'Не удалось запустить проверку системных DNS.';refresh(root,true);}
-  }).catch(function(err){
-    state.currentSystemTest={status:'FAILED',total:total};state.jobRunning=false;state.pageNotice.doh=withRpcError('Не удалось запустить проверку системных DNS.',err);refresh(root,true);
-  });
-}
 function testCurrent(root){
   if(state.jobRunning||state.busy)return;
   var targets=(window.dmState&&window.dmState.doh_instances||[]).filter(function(d){
@@ -4655,44 +4683,68 @@ function startAutoStatus(root){
     }
   },1000);
 }
-return view.extend({
+return baseclass.extend({
   load:function(){
-    return Promise.all([
-      callStatus(statusDetail()),
-      callBoardInfo().catch(function(){return {};})
-    ]).then(function(v){
-      var st=v[0]||{},b=v[1]||{};
-      state.boardInfo=b;
-      if(b&&b.uptime!==undefined&&b.uptime!==null)st.uptime=b.uptime;
-      var totalKb=boardMemoryKb(b,'total'),availKb=boardMemoryAvailableKb(b);
-      if(isFinite(totalKb)&&totalKb>0)st.memory_total_kb=totalKb;
-      if(isFinite(availKb)&&availKb>=0)st.memory_available_kb=availKb;
-      return st;
-    }).catch(function(){
-      return callStatus(statusDetail()).then(function(st){return st||{};});
-    });
+    state.statusFromCache=false;
+    state.statusRefreshAfterRender=false;
+    return ensureStatusPromise();
   },
   render:function(st){
     var root=E('div',{'class':'dm-wrap'});
-    ['dm-header','dm-overview','dm-doh','dm-profiles','dm-slots','dm-network','dm-time','dm-job','dm-catalog','dm-log'].forEach(function(id){root.appendChild(E('section',{'id':id}));});
-    injectStyle(root);window.dmState=st||{};state.activeTab=currentRoute();
+    var route=currentRoute();
+    var ids={dashboard:['dm-header','dm-overview'],doh:['dm-header','dm-doh','dm-profiles','dm-slots'],network:['dm-header','dm-network'],time:['dm-header','dm-time'],catalog:['dm-header','dm-catalog'],log:['dm-header','dm-log']}[route]||['dm-header','dm-overview'];
+    ids.forEach(function(id){root.appendChild(E('section',{'id':id}));});
+    injectStyle(root);window.dmState=st||{};state.activeTab=route;window.dmCurrentRoot=root;
     render(root,st||{});
     removeLegacyCbiActions();if(window.setTimeout)window.setTimeout(removeLegacyCbiActions,0);
-    startAutoStatus(root);
-    if(!state.profileResumeStarted)window.setTimeout(function(){
+    if(route==='dashboard')startAutoStatus(root);else stopAutoStatus();
+    if(state.statusRefreshAfterRender){
+      state.statusRefreshAfterRender=false;
+      scheduleBackgroundStatus(root);
+    }
+    if(!state.profileResumeStarted&&route==='doh')window.setTimeout(function(){
       if(rootAlive(root))resumeRunningProfile(root);
     },0);
     return root;
   },
   remove:function(){stopAutoStatus();}
 });
-EOF_JS
-    chmod 0644 "$MENU_FILE" "$ACL_FILE" "$VIEW_STAGE"
-    mv -f "$VIEW_STAGE" "$VIEW_FILE" || {
-        rm -f "$VIEW_STAGE" 2>/dev/null || true
-        err "Не удалось заменить LuCI JS view."
+EOF_COMMON
+    chmod 0644 "$COMMON_STAGE"
+    mv -f "$COMMON_STAGE" "$COMMON_FILE" || {
+        rm -f "$COMMON_STAGE" 2>/dev/null || true
+        err "Не удалось заменить общий модуль DNS Manager LuCI."
         return 1
     }
+
+    rm -f "$VIEW_DIR/overview.js" 2>/dev/null || true
+    for _page in dashboard doh network time catalog log; do
+        _page_stage="/tmp/dns-manager-luci-${_page}.$$"
+        rm -f "$_page_stage" 2>/dev/null || true
+        cat > "${_page_stage}" <<'EOF_PAGE'
+'use strict';
+'require view';
+'require dns-manager.common as DM';
+// DNS Manager LuCI page version: 1.44
+return view.extend({
+  load: DM.load,
+  render: DM.render,
+  remove: DM.remove
+});
+EOF_PAGE
+        [ -s "$_page_stage" ] || {
+            rm -f "$_page_stage" 2>/dev/null || true
+            err "Не удалось создать страницу DNS Manager LuCI: ${_page}."
+            return 1
+        }
+        chmod 0644 "$_page_stage"
+        mv -f "$_page_stage" "$VIEW_DIR/${_page}.js" || {
+            rm -f "$_page_stage" 2>/dev/null || true
+            err "Не удалось заменить страницу DNS Manager LuCI: ${_page}."
+            return 1
+        }
+    done
+    chmod 0644 "$MENU_FILE" "$ACL_FILE"
 
     # The current native LuCI page is a JavaScript view and no longer uses
     # the former dns_manager Lua controller. Remove only that DNS Manager-owned
@@ -4745,7 +4797,7 @@ EOF_JS
 
 uninstall_files() {
     rm -f "$RPC_PLUGIN" "$BACKEND_FILE" "$ACL_FILE" "$MENU_FILE" "$VIEW_FILE" 2>/dev/null || true
-    rm -rf "$VIEW_DIR" "$RUNTIME_DIR" "$BACKUP_DIR" 2>/dev/null || true
+    rm -rf "$VIEW_DIR" "$RESOURCE_DIR" "$RUNTIME_DIR" "$BACKUP_DIR" 2>/dev/null || true
     rm -f "$STATE_FILE" 2>/dev/null || true
     # the former dns_manager Lua controller. Remove only that DNS Manager-owned
     # controller so an old CBI/redirect route cannot shadow the native view.
