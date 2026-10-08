@@ -4424,8 +4424,6 @@ uninstall_manager_impl() {
 
     rm -f "$MANAGER_PATH" 2>/dev/null || _rc=1
 
-    fi
-
     release_mutation_lock
     if [ "$_rc" -eq 0 ]; then
         printf "\n${C_GREEN}${C_BOLD}DNS Manager полностью удалён.${C_NC}\n"
