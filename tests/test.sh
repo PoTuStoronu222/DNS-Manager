@@ -376,8 +376,8 @@ view_luci="$(sed -n 's|^// DNS Manager LuCI common module version:[[:space:]]*||
 [ "$top_luci" = "$self_luci" ] || fail "LuCI SELF_VERSION mismatch"
 [ "$top_luci" = "$view_luci" ] || fail "embedded JS version mismatch"
 ok "LuCI version markers synchronized ($top_luci)"
-grep -Fq 'VERSION="3.47"' dns-manager.sh || fail "DNS Manager version is not 3.46"
-ok "DNS Manager version marker synchronized (3.47)"
+grep -Fq 'VERSION="3.48"' dns-manager.sh || fail "DNS Manager version is not 3.46"
+ok "DNS Manager version marker synchronized (3.48)"
 
 if awk '
     /function startAutoStatus\(root\)/ { capture=1 }
@@ -923,6 +923,53 @@ grep -q 'Проверяю DNS выбранного профиля — прове
 grep -q 'Выбираю DNS из свежих результатов' "$tmp/common.js" || fail "LuCI profile progress does not label fresh-result selection"
 grep -q 'localProfileRunning=!!(state.busy&&state.profileProgress)' "$tmp/common.js" || fail "LuCI does not suppress stale profile result while retrying"
 ok "profile apply validates only against the fresh full-catalog results"
+
+# Profiles accept fewer than six tested DNS servers and leave unused slots empty.
+awk '/^auto_fill_slots\(\) \{/,/^# ==========================================' dns-manager.sh > "$tmp/auto_fill_slots.sh"
+[ -s "$tmp/auto_fill_slots.sh" ] || fail "auto_fill_slots extraction"
+cat > "$tmp/auto_fill_slots_runner.sh" <<'EOF_AUTO_FILL_FEWER'
+#!/bin/sh
+set -eu
+TMP_DIR="$1"
+TEST_RESULTS="$TMP_DIR/results"
+DNS_CATALOG="$TMP_DIR/catalog"
+normalize_url() { printf "%s" "$1"; }
+dns_url() { printf "https://%s.example/dns-query" "$1"; }
+dns_name() { printf "%s" "$1"; }
+ensure_test_results_fresh() { return 0; }
+warn_msg() { :; }
+slot_set() { case "$1" in 1) SLOT_1="$2";; 2) SLOT_2="$2";; 3) SLOT_3="$2";; 4) SLOT_4="$2";; 5) SLOT_5="$2";; 6) SLOT_6="$2";; RU) SLOT_RU="$2";; esac; }
+slot_cat_set() { case "$1" in 1) SLOT_1_CAT="$2";; 2) SLOT_2_CAT="$2";; 3) SLOT_3_CAT="$2";; 4) SLOT_4_CAT="$2";; 5) SLOT_5_CAT="$2";; 6) SLOT_6_CAT="$2";; RU) SLOT_RU_CAT="$2";; esac; }
+cat > "$TEST_RESULTS" <<'EOF_AUTO_RESULTS'
+d1|bypass|D1|10|OK
+d2|bypass|D2|20|OK
+d3|bypass|D3|30|OK
+d4|bypass|D4|40|OK
+d5|bypass|D5|50|OK
+EOF_AUTO_RESULTS
+SLOT_1= SLOT_2= SLOT_3= SLOT_4= SLOT_5= SLOT_6= SLOT_RU=
+. "$2"
+auto_fill_slots bypass
+[ "$SLOT_1" = d1 ] && [ "$SLOT_2" = d2 ] && [ "$SLOT_3" = d3 ] &&
+[ "$SLOT_4" = d4 ] && [ "$SLOT_5" = d5 ] && [ -z "$SLOT_6" ] || exit 41
+EOF_AUTO_FILL_FEWER
+chmod +x "$tmp/auto_fill_slots_runner.sh"
+"$tmp/auto_fill_slots_runner.sh" "$tmp" "$tmp/auto_fill_slots.sh" || fail "profile selection does not accept fewer than six DNS servers"
+ok "profiles accept fewer than six available DNS servers"
+
+# Profile post-apply verification must prune failed DNS and keep working slots.
+awk '/^profile_prune_failed_slots\(\) \{/,/^verify_after_apply_with_repair\(\) \{/' dns-manager.sh | sed '$d' > "$tmp/profile_prune.sh"
+[ -s "$tmp/profile_prune.sh" ] || fail "profile prune helper extraction"
+grep -q '_live_n=$((_live_n+1))' "$tmp/profile_prune.sh" || fail "profile prune does not count live DNS servers"
+grep -q '_bad_n=$((_bad_n+1))' "$tmp/profile_prune.sh" || fail "profile prune does not collect failed DNS servers"
+grep -q 'slot_set "$_slot" ""' "$tmp/profile_prune.sh" || fail "profile prune does not clear failed slots"
+grep -q 'rebuild_selected_hdp_sections' "$tmp/profile_prune.sh" || fail "profile prune does not rebuild DoH sections"
+grep -q 'reconcile_dnsmasq' "$tmp/profile_prune.sh" || fail "profile prune does not rebuild dnsmasq upstreams"
+awk '/^verify_after_apply_with_repair\(\) \{/,/^verify_after_apply\(\) \{/' dns-manager.sh > "$tmp/profile_verify.sh"
+grep -q '\[ "$PROFILE_APPLY" = 1 \]' "$tmp/profile_verify.sh" || fail "profile verification reduced-set path missing"
+grep -q 'profile_prune_failed_slots' "$tmp/profile_verify.sh" || fail "profile verification does not prune failed DNS"
+awk '/^verify_after_apply_with_repair\(\) \{/,/^verify_after_apply\(\) \{/' dns-manager.sh | sed -n '1,14p' | grep -q 'replace_failed_slot_from_test' && fail "profile verification still enters watchdog replacement loop"
+ok "profile apply keeps the working DNS subset"
  
 # Completed profile jobs survive a LuCI page reload and expose the actual reason for failure.
 grep -q 'profile_job_status' "$tmp/backend.sh" || fail "persistent profile job status missing"
