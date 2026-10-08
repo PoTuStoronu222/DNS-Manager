@@ -102,20 +102,31 @@ sh -n "$tmp/backend.sh" || fail "embedded backend: sh -n"
 ok "embedded backend syntax"
 
 awk '
-    /cat > "[^"]*VIEW_STAGE[^"]*"[^<]*<<\x27EOF_JS\x27/ { capture=1; next }
-    capture && /^EOF_JS$/ { exit }
+    /cat > "[^"]*COMMON_STAGE[^"]*"[^<]*<<\x27EOF_COMMON\x27/ { capture=1; next }
+    capture && /^EOF_COMMON$/ { exit }
     capture { print }
-' dns-manager-luci.sh > "$tmp/overview.js"
-[ -s "$tmp/overview.js" ] || fail "embedded JS extraction"
-node --check "$tmp/overview.js" >/dev/null 2>&1 || fail "embedded JS: node --check"
+' dns-manager-luci.sh > "$tmp/common.js"
+[ -s "$tmp/common.js" ] || fail "embedded JS extraction"
+node --check "$tmp/common.js" >/dev/null 2>&1 || fail "embedded JS: node --check"
 ok "embedded LuCI JS syntax"
+grep -q 'RESOURCE_DIR="/www/luci-static/resources/dns_manager"' dns-manager-luci.sh || fail "shared LuCI resource directory missing"
+grep -q 'COMMON_FILE="$RESOURCE_DIR/common.js"' dns-manager-luci.sh || fail "shared LuCI common module path missing"
+for _view in dashboard doh network time catalog log; do
+    grep -q 'action": { "type": "view", "path": "dns_manager/'"$_view"'" }' dns-manager-luci.sh || fail "separate LuCI view route missing: $_view"
+done
+if grep -q 'path": "dns_manager/overview"' dns-manager-luci.sh; then
+    fail "legacy shared overview route remains"
+fi
+grep -q 'for _page in dashboard doh network time catalog log; do' dns-manager-luci.sh || fail "separate LuCI page generation loop missing"
+grep -q "return DM.createView();" dns-manager-luci.sh || fail "LuCI page wrapper does not use common module"
+ok "LuCI uses separate native page views with one shared module"
 
-grep -q "Проверить текущие DNS" "$tmp/overview.js" || fail "LuCI common current-DNS check button missing"
-if grep -q "Проверить DNS в слотах" "$tmp/overview.js" || grep -q "Проверить системные DNS" "$tmp/overview.js"; then
+grep -q "Проверить текущие DNS" "$tmp/common.js" || fail "LuCI common current-DNS check button missing"
+if grep -q "Проверить DNS в слотах" "$tmp/common.js" || grep -q "Проверить системные DNS" "$tmp/common.js"; then
     fail "LuCI still exposes separate slot/system DNS check buttons"
 fi
-grep -q "var systems=targets.filter(function(d){return d&&!d.slot&&d.url&&d.port;});" "$tmp/overview.js" || fail "LuCI current-DNS check does not classify unassigned system resolvers"
-grep -q "callTestSystem().then" "$tmp/overview.js" || fail "LuCI common current-DNS check does not include system DNS"
+grep -q "var systems=targets.filter(function(d){return d&&!d.slot&&d.url&&d.port;});" "$tmp/common.js" || fail "LuCI current-DNS check does not classify unassigned system resolvers"
+grep -q "callTestSystem().then" "$tmp/common.js" || fail "LuCI common current-DNS check does not include system DNS"
 ok "LuCI current-DNS check covers slots and system resolvers with one button"
 
 DOLLAR='$'
@@ -126,11 +137,11 @@ grep -q 'mv -f "$BACKEND_STAGE" "$BACKEND_FILE"' dns-manager-luci.sh || fail "ba
 grep -Fq 'RPC_STAGE="${RPC_PLUGIN}.new.' dns-manager-luci.sh || fail "RPC staging prefix missing"
 grep -Fq "RPC_STAGE=\"\${RPC_PLUGIN}.new.${PID_LITERAL}\"" dns-manager-luci.sh || fail "RPC staging PID suffix missing"
 grep -q 'mv -f "$RPC_STAGE" "$RPC_PLUGIN"' dns-manager-luci.sh || fail "RPC plugin atomic swap missing"
-grep -Fq 'VIEW_STAGE="${VIEW_FILE}.new.' dns-manager-luci.sh || fail "view staging prefix missing"
-grep -Fq "VIEW_STAGE=\"\${VIEW_FILE}.new.${PID_LITERAL}\"" dns-manager-luci.sh || fail "view staging PID suffix missing"
-grep -q 'mv -f "$VIEW_STAGE" "$VIEW_FILE"' dns-manager-luci.sh || fail "view atomic swap missing"
-grep -q 'function dmRpc(o)' "$tmp/overview.js" || fail "RPC retry wrapper missing"
-grep -q 'Object not found' "$tmp/overview.js" || fail "RPC retry condition missing"
+grep -Fq 'COMMON_STAGE="${COMMON_FILE}.new.' dns-manager-luci.sh || fail "view staging prefix missing"
+grep -Fq "COMMON_STAGE=\"\${VIEW_FILE}.new.${PID_LITERAL}\"" dns-manager-luci.sh || fail "view staging PID suffix missing"
+grep -q 'mv -f "$COMMON_STAGE" "$COMMON_FILE"' dns-manager-luci.sh || fail "view atomic swap missing"
+grep -q 'function dmRpc(o)' "$tmp/common.js" || fail "RPC retry wrapper missing"
+grep -q 'Object not found' "$tmp/common.js" || fail "RPC retry condition missing"
 for legacy in \
   'eval "SLOT_$i=\"$_id\""' \
   'eval "SLOT_$i=\"\""' \
@@ -181,12 +192,12 @@ if grep -q 'update_check_job_status' "$tmp/backend.sh"; then
     fail "stale update_check_job_status backend method remains"
 fi
 # Action result strips must not resurrect the persistent last_job_* state on every LuCI page.
-awk '/^function renderActionStatus\(\)\{/,/^}/ { print }' "$tmp/overview.js" > "$tmp/render_action_status.js"
+awk '/^function renderActionStatus\(\)\{/,/^}/ { print }' "$tmp/common.js" > "$tmp/render_action_status.js"
 grep -q 'state.lastAction' "$tmp/render_action_status.js" || fail "action strip no longer uses current-page action state"
 if grep -q 'last_job_status\|last_job_result\|last_job_message' "$tmp/render_action_status.js"; then
     fail "action strip still promotes persistent job history to a global banner"
 fi
-grep -q 'if(state.activeTab!==nextTab)state.lastAction=null;' "$tmp/overview.js" || fail "tab navigation does not clear stale action strip"
+grep -q 'if(state.activeTab!==nextTab)state.lastAction=null;' "$tmp/common.js" || fail "tab navigation does not clear stale action strip"
 ok "global action banner does not persist across pages"
 ok "LuCI RPC dispatch contract"
 # Every asynchronous DNS test must record the PID of the process it started.
@@ -238,20 +249,20 @@ NTP_FAKE=none
 EOF_NTP_STATE
 chmod +x "$tmp/ntp_current_preset_runner.sh"
 "$tmp/ntp_current_preset_runner.sh" "$tmp/ntp_current_preset.sh" || fail "NTP actual-state detection behavior"
-grep -q 'function ntpActualPreset(servers)' "$tmp/overview.js" || fail "LuCI NTP actual-state detector missing"
-grep -q "preset=ntpActualPreset(servers)" "$tmp/overview.js" || fail "LuCI NTP page still trusts stored preset instead of actual servers"
-grep -q "openwrt_default:'Стандарт OpenWrt'" "$tmp/overview.js" || fail "LuCI does not label OpenWrt default NTP servers"
-grep -q "other:'ДРУГОЕ'" "$tmp/overview.js" || fail "LuCI does not label unknown NTP servers as other"
-grep -q "st.force_owner==='steer'&&st.force_status==='other'" "$tmp/overview.js" || fail "LuCI components do not show Steer-owned forced-DNS state"
-grep -q "ДРУГОЕ • Steer" "$tmp/overview.js" || fail "LuCI components do not show Steer status label"
-awk '/^function renderTime\(root,st\)\{/,/^function renderCatalog\(root\)/' "$tmp/overview.js" > "$tmp/ntp_view.js"
+grep -q 'function ntpActualPreset(servers)' "$tmp/common.js" || fail "LuCI NTP actual-state detector missing"
+grep -q "preset=ntpActualPreset(servers)" "$tmp/common.js" || fail "LuCI NTP page still trusts stored preset instead of actual servers"
+grep -q "openwrt_default:'Стандарт OpenWrt'" "$tmp/common.js" || fail "LuCI does not label OpenWrt default NTP servers"
+grep -q "other:'ДРУГОЕ'" "$tmp/common.js" || fail "LuCI does not label unknown NTP servers as other"
+grep -q "st.force_owner==='steer'&&st.force_status==='other'" "$tmp/common.js" || fail "LuCI components do not show Steer-owned forced-DNS state"
+grep -q "ДРУГОЕ • Steer" "$tmp/common.js" || fail "LuCI components do not show Steer status label"
+awk '/^function renderTime\(root,st\)\{/,/^function renderCatalog\(root\)/' "$tmp/common.js" > "$tmp/ntp_view.js"
 if grep -q "row('Служба'" "$tmp/ntp_view.js"; then
     fail "LuCI NTP page still exposes service status"
 fi
 grep -q "row('Выбранный набор'" "$tmp/ntp_view.js" || fail "LuCI NTP page lost selected preset"
 ok "NTP status follows actual OpenWrt system.ntp.server configuration"
 # Watchdog time controls are shown to users in minutes, while the RPC still receives seconds.
-awk '/^function watchdogCard\(root,st\)\{/,/^function renderTestAgeCommon/' "$tmp/overview.js" > "$tmp/watchdog_card.sh"
+awk '/^function watchdogCard\(root,st\)\{/,/^function renderTestAgeCommon/' "$tmp/common.js" > "$tmp/watchdog_card.sh"
 grep -q "Как часто проверять DNS" "$tmp/watchdog_card.sh" || fail "watchdog interval label is not user-friendly"
 grep -q "Сколько проверок подряд считать сбоем" "$tmp/watchdog_card.sh" || fail "watchdog failure threshold label is not user-friendly"
 grep -q "Пауза между заменами DNS" "$tmp/watchdog_card.sh" || fail "watchdog repair cooldown label is not user-friendly"
@@ -289,7 +300,7 @@ if grep -q 'hybrid_set_defaults\|CORE_ONLY=1; apply_settings\|CORE_ONLY=1' "$tmp
     fail "DNS menu restore still selects/applies a DNS profile"
 fi
 grep -q 'reset_dns)' "$tmp/backend.sh" || fail "LuCI DNS reset RPC missing"
-grep -q 'reset_dns' "$tmp/overview.js" || fail "LuCI DNS reset action missing"
+grep -q 'reset_dns' "$tmp/common.js" || fail "LuCI DNS reset action missing"
 grep -q 'rollback_hdp_targeted' dns-manager.sh || fail "Targeted DoH cleanup missing"
 grep -q 'package_owner_remove_owned' dns-manager.sh || fail "Owned package cleanup missing"
 if grep -q 'BASELINE_DIR\|BASELINE_MANIFEST\|BASELINE_LAST\|BASELINE_META\|baseline_restore_for_uninstall\|baseline_uninstall_validate\|baseline_capture_once\|baseline_mark_applied\|ensure_baseline_captured' dns-manager.sh; then fail "Obsolete persistent baseline logic remains"; fi
@@ -311,7 +322,7 @@ awk '/^function (memoryBar|loadBar|forceModeLabel|renderPageNav|openForceDetails
 top_luci="$(sed -n 's/^# Version:[[:space:]]*//p' dns-manager-luci.sh | head -n1)"
 installer_luci="$(sed -n 's/^VERSION="\([^"]*\)"$/\1/p' dns-manager-luci.sh | head -n1)"
 self_luci="$(sed -n 's/^SELF_VERSION="\([^"]*\)"$/\1/p' dns-manager-luci.sh | head -n1)"
-view_luci="$(sed -n 's|^// DNS Manager LuCI version:[[:space:]]*||p' "$tmp/overview.js" | head -n1)"
+view_luci="$(sed -n 's|^// DNS Manager LuCI version:[[:space:]]*||p' "$tmp/common.js" | head -n1)"
 [ -n "$top_luci" ] || fail "LuCI top version missing"
 [ "$top_luci" = "$installer_luci" ] || fail "LuCI VERSION mismatch"
 [ "$top_luci" = "$self_luci" ] || fail "LuCI SELF_VERSION mismatch"
@@ -322,10 +333,10 @@ if awk '
     /function startAutoStatus\(root\)/ { capture=1 }
     capture { print }
     capture && /^}/ { exit }
-' "$tmp/overview.js" | grep -q 'refreshDashboard'; then
+' "$tmp/common.js" | grep -q 'refreshDashboard'; then
     fail "startAutoStatus still performs a full dashboard refresh"
 fi
-if grep -q 'function refreshDashboard' "$tmp/overview.js"; then
+if grep -q 'function refreshDashboard' "$tmp/common.js"; then
     fail "obsolete refreshDashboard function remains"
 fi
 ok "dashboard timer is lightweight"
@@ -489,42 +500,42 @@ fi
 grep -Fq -- '--connect-timeout 1 --max-time 3 --resolve "$host:$port:$ipx"' dns-manager.sh || fail "direct DoH timeout was not reduced"
 grep -q '(trap - EXIT; test_one_dns "\$_id") &' "$tmp/backend.sh" || fail "selected DNS checks are not parallelized"
 ok "single and full DNS checks use the same test_one_dns path"
-awk '/^function checkInfo\(id,d\)/,/^}/' "$tmp/overview.js" > "$tmp/check_info.js"
+awk '/^function checkInfo\(id,d\)/,/^}/' "$tmp/common.js" > "$tmp/check_info.js"
 grep -q "String(x.status||'').toUpperCase()==='RUNNING'" "$tmp/check_info.js" || fail "LuCI transient check state is not limited to RUNNING"
 grep -q "d&&d.status" "$tmp/check_info.js" || fail "LuCI finished DNS status does not come from RPC data"
-if grep -q "state.checking\[meta.dns_id\]={" "$tmp/overview.js"; then
+if grep -q "state.checking\[meta.dns_id\]={" "$tmp/common.js"; then
     fail "LuCI stores a finished single-test result in transient state"
 fi
-grep -q "delete state.checking\[meta.dns_id\]" "$tmp/overview.js" || fail "LuCI does not clear the transient single-test state"
+grep -q "delete state.checking\[meta.dns_id\]" "$tmp/common.js" || fail "LuCI does not clear the transient single-test state"
 ok "LuCI uses the RPC result for every finished single DNS check"
 
-awk '/^function finish\(j\) \{/,/^  function poll\(\)\{/' "$tmp/overview.js" > "$tmp/poll_finish.js"
+awk '/^function finish\(j\) \{/,/^  function poll\(\)\{/' "$tmp/common.js" > "$tmp/poll_finish.js"
 if grep -q "callTestCurrent().then" "$tmp/poll_finish.js"; then
     fail "LuCI still launches a second DNS test after profile apply"
 fi
-if grep -q "afterProfile" "$tmp/overview.js"; then
+if grep -q "afterProfile" "$tmp/common.js"; then
     fail "obsolete after-profile DNS verification path remains"
 fi
-grep -q "Профиль применён.','" "$tmp/overview.js" || true
+grep -q "Профиль применён.','" "$tmp/common.js" || true
 ok "profile apply does not rerun the selected DNS test"
 
 
 
 grep -q ',"ping":' "$tmp/backend.sh" || fail "LuCI DoH instances do not expose saved ping"
 grep -q ',"status":' "$tmp/backend.sh" || fail "LuCI DoH instances do not expose saved test status"
-grep -q "badge('dm-ok','работает')" "$tmp/overview.js" || fail "LuCI does not show DNS test state as работает"
-grep -q "badge('dm-bad','не работает')" "$tmp/overview.js" || fail "LuCI does not show failed DNS test state as не работает"
-grep -q "badge('dm-off','не проверено')" "$tmp/overview.js" || fail "LuCI does not distinguish an untested DNS"
-if grep -q "dm-doh-state.*запущен" "$tmp/overview.js"; then
+grep -q "badge('dm-ok','работает')" "$tmp/common.js" || fail "LuCI does not show DNS test state as работает"
+grep -q "badge('dm-bad','не работает')" "$tmp/common.js" || fail "LuCI does not show failed DNS test state as не работает"
+grep -q "badge('dm-off','не проверено')" "$tmp/common.js" || fail "LuCI does not distinguish an untested DNS"
+if grep -q "dm-doh-state.*запущен" "$tmp/common.js"; then
     fail "LuCI DoH rows still expose process state as пользовательский DNS status"
 fi
-if grep -q "dm-doh-state.*остановлен" "$tmp/overview.js"; then
+if grep -q "dm-doh-state.*остановлен" "$tmp/common.js"; then
     fail "LuCI DoH rows still expose process stop state instead of test state"
 fi
-grep -q "hasPing(ci.ping)" "$tmp/overview.js" || fail "LuCI does not render DNS test ping"
-grep -q "'dm-doh-ping'" "$tmp/overview.js" || fail "LuCI DoH page does not render DNS test ping"
+grep -q "hasPing(ci.ping)" "$tmp/common.js" || fail "LuCI does not render DNS test ping"
+grep -q "'dm-doh-ping'" "$tmp/common.js" || fail "LuCI DoH page does not render DNS test ping"
 ok "LuCI DoH rows use test result status and ping"
-awk '/^function forceComponentItem\(st\)\{/,/^function watchdogComponentItem/' "$tmp/overview.js" > "$tmp/force_component.js"
+awk '/^function forceComponentItem\(st\)\{/,/^function watchdogComponentItem/' "$tmp/common.js" > "$tmp/force_component.js"
 if grep -q "setSetting('force'" "$tmp/force_component.js"; then
     fail "LuCI forced-DNS component must remain state-only"
 fi
@@ -534,7 +545,7 @@ fi
 grep -q "owner==='steer'&&mode==='other'" "$tmp/force_component.js" || fail "LuCI forced-DNS component does not handle Steer-owned state"
 grep -q "ДРУГОЕ • Steer" "$tmp/force_component.js" || fail "LuCI forced-DNS component lost Steer status label"
 grep -q "componentItem('Принудительный DNS для устройств'" "$tmp/force_component.js" || fail "LuCI overview does not render dedicated forced-DNS component"
-awk '/^function renderDoH\(root,st\)\{/,/^function slotLabel/' "$tmp/overview.js" > "$tmp/doh_panel.js"
+awk '/^function renderDoH\(root,st\)\{/,/^function slotLabel/' "$tmp/common.js" > "$tmp/doh_panel.js"
 grep -q "setForceMode('auto',root)" "$tmp/doh_panel.js" || fail "LuCI DoH page has no force-DNS auto action"
 grep -q "setForceMode('off',root)" "$tmp/doh_panel.js" || fail "LuCI DoH page has no force-DNS disable action"
 grep -q "Авто (рекомендуется)" "$tmp/doh_panel.js" || fail "LuCI DoH page lost force-DNS auto label"
@@ -715,18 +726,18 @@ grep -Fq 'job_write "$_jid" progress_ok "$_final_ok"' "$tmp/test_all_job.sh" || 
 grep -Fq 'job_write "$_jid" progress_fail "$_final_fail"' "$tmp/test_all_job.sh" || fail "LuCI full catalog job does not publish final progress_fail"
 ok "LuCI full catalog job publishes final progress before DONE"
 
-grep -q "profileSelected=String(st.profile||'none')!=='none'" "$tmp/overview.js" || fail "LuCI does not detect missing DNS Manager profile"
-grep -q "Сначала выберите профиль DNS Manager" "$tmp/overview.js" || fail "LuCI missing no-profile reason"
-grep -q "function watchdogComponentItem" "$tmp/overview.js" || fail "LuCI watchdog component state helper missing"
-awk '/^function watchdogComponentItem\(/,/^}/' "$tmp/overview.js" | grep -qE 'btn\(|setSetting\(' && fail "LuCI components block still contains a watchdog action button"
-grep -q "function forceComponentItem" "$tmp/overview.js" || fail "LuCI forced-DNS component state helper missing"
-awk '/^function forceComponentItem\(/,/^}/' "$tmp/overview.js" | grep -qE 'btn\(|setSetting\(' && fail "LuCI components block still contains a forced-DNS action button"
-grep -Fq "watchdogComponentItem(st,wd,wdDetails)" "$tmp/overview.js" || fail "LuCI watchdog component helper is not used as a state-only item"
-grep -Fq "forceComponentItem(st)" "$tmp/overview.js" || fail "LuCI forced-DNS component helper is not used as a state-only item"
+grep -q "profileSelected=String(st.profile||'none')!=='none'" "$tmp/common.js" || fail "LuCI does not detect missing DNS Manager profile"
+grep -q "Сначала выберите профиль DNS Manager" "$tmp/common.js" || fail "LuCI missing no-profile reason"
+grep -q "function watchdogComponentItem" "$tmp/common.js" || fail "LuCI watchdog component state helper missing"
+awk '/^function watchdogComponentItem\(/,/^}/' "$tmp/common.js" | grep -qE 'btn\(|setSetting\(' && fail "LuCI components block still contains a watchdog action button"
+grep -q "function forceComponentItem" "$tmp/common.js" || fail "LuCI forced-DNS component state helper missing"
+awk '/^function forceComponentItem\(/,/^}/' "$tmp/common.js" | grep -qE 'btn\(|setSetting\(' && fail "LuCI components block still contains a forced-DNS action button"
+grep -Fq "watchdogComponentItem(st,wd,wdDetails)" "$tmp/common.js" || fail "LuCI watchdog component helper is not used as a state-only item"
+grep -Fq "forceComponentItem(st)" "$tmp/common.js" || fail "LuCI forced-DNS component helper is not used as a state-only item"
 grep -Fq 'if [ "$_module" = watchdog ] && [ "$_new" = 1 ]; then' dns-manager.sh || fail "CLI watchdog no-profile guard missing"
 grep -Fq 'if [ "$_enabled" = 1 ] && [ -z "$SLOT_1$SLOT_2$SLOT_3$SLOT_4$SLOT_5$SLOT_6$SLOT_RU" ]; then' "$tmp/backend.sh" || fail "RPC watchdog no-profile guard missing"
-grep -q "Проверить текущие DNS','cbi-button-action'" "$tmp/overview.js" || fail "Current DNS check button disappeared"
-if grep -q "canTestCurrent=profileSelected" "$tmp/overview.js"; then fail "Current DNS check is incorrectly blocked without profile"; fi
+grep -q "Проверить текущие DNS','cbi-button-action'" "$tmp/common.js" || fail "Current DNS check button disappeared"
+if grep -q "canTestCurrent=profileSelected" "$tmp/common.js"; then fail "Current DNS check is incorrectly blocked without profile"; fi
 if grep -q "_profile_slots.*Проверить текущие DNS" "$tmp/backend.sh"; then fail "Current DNS check is incorrectly guarded by profile"; fi
 ok "DNS control is blocked without profile; current DNS checks remain available"
 
@@ -737,7 +748,7 @@ grep -q 'test_dns_catalog "$1"' dns-manager.sh || fail "profile apply does not s
 grep -q '($2==c || $2=="regional")' dns-manager.sh || fail "category-scoped test does not include the regional DNS set"
 grep -Fq '_test_scope="${1:-all}"' dns-manager.sh || fail "DNS test scope argument missing"
 grep -q 'last_full_test_scope' "$tmp/backend.sh" || fail "LuCI status does not expose DNS test scope"
-grep -q 'last_full_test_scope' "$tmp/overview.js" || fail "LuCI header does not show DNS test scope"
+grep -q 'last_full_test_scope' "$tmp/common.js" || fail "LuCI header does not show DNS test scope"
 ok "ready-made profiles test only their own DNS category"
 
 # Replacement candidates must come from the fresh profile result set, not the
@@ -858,9 +869,9 @@ if grep -q 'PROFILE_FRESH_OK_IDS' "$tmp/validate_selected_slots.sh"; then
     fail "profile validation still uses temporary candidate list"
 fi
 grep -q 'PROFILE_FULL_TEST=0' dns-manager.sh || fail "profile full-test flag cleanup missing"
-grep -q 'Проверяю DNS выбранного профиля — проверено' "$tmp/overview.js" || fail "LuCI profile progress does not show category-scoped DNS checking progress"
-grep -q 'Выбираю DNS из свежих результатов' "$tmp/overview.js" || fail "LuCI profile progress does not label fresh-result selection"
-grep -q 'localProfileRunning=!!(state.busy&&state.profileProgress)' "$tmp/overview.js" || fail "LuCI does not suppress stale profile result while retrying"
+grep -q 'Проверяю DNS выбранного профиля — проверено' "$tmp/common.js" || fail "LuCI profile progress does not show category-scoped DNS checking progress"
+grep -q 'Выбираю DNS из свежих результатов' "$tmp/common.js" || fail "LuCI profile progress does not label fresh-result selection"
+grep -q 'localProfileRunning=!!(state.busy&&state.profileProgress)' "$tmp/common.js" || fail "LuCI does not suppress stale profile result while retrying"
 ok "profile apply validates only against the fresh full-catalog results"
  
 # Completed profile jobs survive a LuCI page reload and expose the actual reason for failure.
@@ -869,10 +880,10 @@ grep -q 'profile_job_result' "$tmp/backend.sh" || fail "persistent profile job r
 grep -q 'profile_job_message' "$tmp/backend.sh" || fail "persistent profile job message missing"
 grep -q '"profile_job_status"' "$tmp/backend.sh" || fail "profile job status is not returned by status JSON"
 grep -q '"profile_job_message"' "$tmp/backend.sh" || fail "profile job message is not returned by status JSON"
-grep -q 'Последняя операция: профиль' "$tmp/overview.js" || fail "LuCI does not show the last profile operation after reopen"
-grep -q 'Причина:' "$tmp/overview.js" || fail "LuCI does not show the profile failure reason"
-grep -q 'Закрытие LuCI не останавливает операцию' "$tmp/overview.js" || fail "LuCI does not explain persistent running profile jobs"
-grep -Fq "setAction(true,p?'Профиль «'+profileName(p)+'» уже применяется. Связь восстановлена.':'Применение профиля уже выполняется. Связь восстановлена.','running')" "$tmp/overview.js" || fail "running profile resume is not labeled as running"
+grep -q 'Последняя операция: профиль' "$tmp/common.js" || fail "LuCI does not show the last profile operation after reopen"
+grep -q 'Причина:' "$tmp/common.js" || fail "LuCI does not show the profile failure reason"
+grep -q 'Закрытие LuCI не останавливает операцию' "$tmp/common.js" || fail "LuCI does not explain persistent running profile jobs"
+grep -Fq "setAction(true,p?'Профиль «'+profileName(p)+'» уже применяется. Связь восстановлена.':'Применение профиля уже выполняется. Связь восстановлена.','running')" "$tmp/common.js" || fail "running profile resume is not labeled as running"
 ok "LuCI persists profile operation state across page reloads"
 
 # The global action banner is transient; persisted job history is not promoted into that banner.
@@ -904,12 +915,12 @@ grep -q 'watchdog_cron_remove_owned_block' "$tmp/backend.sh" || fail "watchdog s
 grep -q 'watchdog_restore_service_state' "$tmp/backend.sh" || fail "watchdog rollback helper missing"
 grep -Fq 'watchdog_apply_values "$_interval" "$_threshold" "$_repair_cooldown" "$_max_repairs" "$_max_restarts" "$_max_candidates" "$_guard_interval"' "$tmp/backend.sh" || fail "batch watchdog values are not forwarded together"
 
-grep -q "method:'set_watchdog_settings'" "$tmp/overview.js" || fail "LuCI does not use the atomic watchdog RPC"
-grep -Fq "params:['interval','threshold','repair_cooldown','max_repairs','max_restarts','max_candidates','guard_interval']" "$tmp/overview.js" || fail "atomic watchdog RPC parameter order mismatch"
-if grep -q 'var callWatchdogSetting = ' "$tmp/overview.js"; then
+grep -q "method:'set_watchdog_settings'" "$tmp/common.js" || fail "LuCI does not use the atomic watchdog RPC"
+grep -Fq "params:['interval','threshold','repair_cooldown','max_repairs','max_restarts','max_candidates','guard_interval']" "$tmp/common.js" || fail "atomic watchdog RPC parameter order mismatch"
+if grep -q 'var callWatchdogSetting = ' "$tmp/common.js"; then
     fail "LuCI still defines the per-setting watchdog RPC"
 fi
-awk '/^function watchdogCard\(root,st\)\{/,/^function renderTestAgeCommon/' "$tmp/overview.js" > "$tmp/watchdog_card.js"
+awk '/^function watchdogCard\(root,st\)\{/,/^function renderTestAgeCommon/' "$tmp/common.js" > "$tmp/watchdog_card.js"
 save_count="$(grep -o 'Сохранить' "$tmp/watchdog_card.js" | wc -l | tr -d ' ')"
 [ "$save_count" = 1 ] || fail "watchdog must have exactly one Save label"
 grep -q 'Сохранить настройки' "$tmp/watchdog_card.js" || fail "common watchdog save button missing"
