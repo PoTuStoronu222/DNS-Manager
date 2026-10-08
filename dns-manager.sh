@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.43"
+VERSION="3.44"
 # 3.38: clear the LuCI update flag after a successful CLI update.
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
@@ -96,7 +96,9 @@ LUCI_MENU_FILE="/usr/share/luci/menu.d/luci-app-dns-manager.json"
 LUCI_ACL_FILE="/usr/share/rpcd/acl.d/luci-app-dns-manager.json"
 LUCI_RPC_PLUGIN="/usr/libexec/rpcd/dns_manager"
 LUCI_BACKEND_FILE="/usr/lib/dns-manager-luci/backend.sh"
-LUCI_VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
+LUCI_VIEW_DIR="/www/luci-static/resources/view/dns-manager"
+LUCI_COMMON_FILE="/www/luci-static/resources/dns-manager/common.js"
+LUCI_VIEW_FILE="$LUCI_VIEW_DIR/dashboard.js"
 LUCI_REMOTE_VERSION=""
 LUCI_UPDATE_AVAILABLE=0
 # Persistent marker: /var/run is tmpfs, so the first-run decision must survive reboot.
@@ -4647,11 +4649,15 @@ luci_component_files_present() {
     [ -f "$LUCI_MENU_FILE" ] || return 1
     [ -f "$LUCI_ACL_FILE" ] || return 1
     [ -x "$LUCI_RPC_PLUGIN" ] || return 1
-    [ -f "$LUCI_VIEW_FILE" ] || return 1
+    [ -f "$LUCI_BACKEND_FILE" ] || return 1
+    [ -f "$LUCI_COMMON_FILE" ] || return 1
+    for _view in dashboard doh network time catalog log; do
+        [ -f "$LUCI_VIEW_DIR/${_view}.js" ] || return 1
+    done
     grep -Eq 'admin/services/dns-manager|admin/services/dns_manager' "$LUCI_MENU_FILE" 2>/dev/null || return 1
     grep -Fq 'luci-app-dns-manager' "$LUCI_ACL_FILE" 2>/dev/null || return 1
     grep -Fq 'DNS Manager LuCI rpcd plugin' "$LUCI_RPC_PLUGIN" 2>/dev/null || return 1
-    grep -Fq 'DNS Manager' "$LUCI_VIEW_FILE" 2>/dev/null || return 1
+    grep -Fq 'DNS Manager LuCI' "$LUCI_COMMON_FILE" 2>/dev/null || return 1
     return 0
 }
 
@@ -4673,10 +4679,14 @@ luci_component_state() {
         return 0
     fi
     if command -v ubus >/dev/null 2>&1; then
-        if ubus -S list dns_manager 2>/dev/null | grep -q '^dns_manager$'; then
-            printf '1\n'
-            return 0
-        fi
+        _rpc_methods="$(ubus -v list dns_manager 2>/dev/null || true)"
+        printf '%s\n' "$_rpc_methods" | grep -Fq '"status":{}' || { printf '2\n'; return 0; }
+        printf '%s\n' "$_rpc_methods" | grep -Fq '"doh_status":{}' || { printf '2\n'; return 0; }
+        printf '%s\n' "$_rpc_methods" | grep -Fq '"network_status":{}' || { printf '2\n'; return 0; }
+        printf '%s\n' "$_rpc_methods" | grep -Fq '"time_status":{}' || { printf '2\n'; return 0; }
+        printf '%s\n' "$_rpc_methods" | grep -Fq '"page_meta":{}' || { printf '2\n'; return 0; }
+        printf '1\n'
+        return 0
     fi
     printf '2\n'
     return 0
@@ -4720,8 +4730,11 @@ luci_companion_fetch() {
 }
 luci_installed_version() {
     _v=""
-    # overview.js is the code LuCI actually loads; persistent markers are fallbacks.
-    [ -r "$LUCI_VIEW_FILE" ] && _v="$(sed -n 's|^// DNS Manager LuCI version: *||p' "$LUCI_VIEW_FILE" 2>/dev/null | head -n1)"
+    # dashboard.js is the native LuCI view; persistent markers are only fallbacks.
+    [ -r "$LUCI_VIEW_FILE" ] && _v="$(sed -n
+        -e 's|^// DNS Manager LuCI version: *||p'
+        -e 's|^// DNS Manager LuCI page version: *||p'
+        "$LUCI_VIEW_FILE" 2>/dev/null | head -n1)"
     [ -n "$_v" ] || [ ! -r "$LUCI_STATE_FILE" ] || _v="$(sed -n 's/^version=//p' "$LUCI_STATE_FILE" 2>/dev/null | head -n1)"
     [ -n "$_v" ] || [ ! -r "${BACKUP_DIR:-/etc/dns-manager-luci}/version" ] || _v="$(sed -n 's/^version=//p' "${BACKUP_DIR:-/etc/dns-manager-luci}/version" 2>/dev/null | head -n1)"
     [ -n "$_v" ] || [ ! -r "$LUCI_COMPANION_CACHE" ] || _v="$(sed -n 's/^# Version:[[:space:]]*//p' "$LUCI_COMPANION_CACHE" 2>/dev/null | head -n1)"
@@ -6904,7 +6917,7 @@ startup_update_check() {
     # Only the DNS Manager backend checks itself during startup. LuCI/companion
     # updates are checked explicitly from LuCI, not as a hidden second network
     # request during every manager launch.
-    auto_update_manager || true
+    DNS_MANAGER_SCHEDULED_UPDATE=1 auto_update_manager || true
     case "${AUTO_UPDATE_RESULT:-}" in
         updated) info_msg "DNS Manager автоматически обновлён до версии $VERSION." ;;
         failed)
