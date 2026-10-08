@@ -2647,7 +2647,7 @@ test_json() { case "${RPC_METHOD:-}" in test_all) job_start_test_all;; test_curr
 
 case "${1:-}" in
     list)
-        printf '{"status":{},"runtime":{},"catalog":{"category":"String","offset":0,"limit":0,"only_ok":0},"update_check":{},"update":{},"update_manager":{},"update_hdp":{},"update_catalog":{},"update_all":{},"set_profile":{"profile":"String"},"reset_dns":{},"set_slot":{"slot":"String","id":"String"},"set_setting":{"name":"String","enabled":0},"set_watchdog_setting":{"name":"String","value":0},"set_watchdog_settings":{"interval":0,"threshold":0,"repair_cooldown":0,"max_repairs":0,"max_restarts":0,"max_candidates":0,"guard_interval":0},"set_ntp":{"preset":"String"},"set_test_age":{"category":"String","hours":0},"test_all":{},"test_current":{},"test_one":{"id":"String"},"test_system":{},"job":{"id":"String"},"log":{"lines":0}}\n'
+        printf '{"status":{},"runtime":{},"doh_status":{},"network_status":{},"time_status":{},"page_meta":{},"catalog":{"category":"String","offset":0,"limit":0,"only_ok":0},"update_check":{},"update":{},"update_manager":{},"update_hdp":{},"update_catalog":{},"update_all":{},"set_profile":{"profile":"String"},"reset_dns":{},"set_slot":{"slot":"String","id":"String"},"set_setting":{"name":"String","enabled":0},"set_watchdog_setting":{"name":"String","value":0},"set_watchdog_settings":{"interval":0,"threshold":0,"repair_cooldown":0,"max_repairs":0,"max_restarts":0,"max_candidates":0,"guard_interval":0},"set_ntp":{"preset":"String"},"set_test_age":{"category":"String","hours":0},"test_all":{},"test_current":{},"test_one":{"id":"String"},"test_system":{},"job":{"id":"String"},"log":{"lines":0}}\n'
         ;;
     call)
         case "${2:-}" in
@@ -4684,19 +4684,7 @@ function startAutoStatus(root){
   },1000);
 }
 return baseclass.extend({
-  loadDashboard: function(){ return ensureStatusPromise(); },
-  loadDoh: function(){ return ensureStatusPromise(); },
-  loadNetwork: function(){ return ensureStatusPromise(); },
-  loadTime: function(){ return ensureStatusPromise(); },
-  loadCatalog: function(){ return ensureStatusPromise(); },
-  loadLog: function(){ return ensureStatusPromise(); },
   load:function(){
-    var cached=window.dmStatusCache&&window.dmStatusCache.data;
-    if(cached){
-      state.statusFromCache=true;
-      state.statusRefreshAfterRender=true;
-      return Promise.resolve(cached);
-    }
     state.statusFromCache=false;
     state.statusRefreshAfterRender=false;
     return ensureStatusPromise();
