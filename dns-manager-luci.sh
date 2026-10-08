@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.43
+# Version: 1.44
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -2705,7 +2705,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI common module version: 1.43
+// DNS Manager LuCI common module version: 1.44
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -4725,7 +4725,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI page version: 1.43
+// DNS Manager LuCI page version: 1.44
 return view.extend({
   load: DM.load,
   render: DM.render,
