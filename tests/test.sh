@@ -115,8 +115,13 @@ awk '
 [ -s "$tmp/common.js" ] || fail "embedded JS extraction"
 node --check "$tmp/common.js" >/dev/null 2>&1 || fail "embedded JS: node --check"
 ok "embedded LuCI JS syntax"
-grep -Fq 'package_update_index() {' "$tmp/backend.sh" || fail "package index update helper missing"
-awk '/^component_update_check\(\) \{/,/^update_catalog_direct\(\) \{ { print }' "$tmp/backend.sh" > "$tmp/component_update_check.sh"
+grep -Fq 'LUCI_VIEW_DIR="/www/luci-static/resources/view/dns-manager"' dns-manager.sh || fail "manager-side LuCI view directory is stale"
+grep -Fq 'LUCI_COMMON_FILE="/www/luci-static/resources/dns-manager/common.js"' dns-manager.sh || fail "manager-side LuCI common path is stale"
+if grep -Fq '/www/luci-static/resources/view/dns_manager/overview.js' dns-manager.sh; then fail "legacy LuCI overview path remains"; fi
+grep -Fq 'ubus -v list dns_manager' dns-manager.sh || fail "manager-side LuCI state does not inspect RPC methods"
+grep -Fq '// DNS Manager LuCI version:' dns-manager-luci.sh || fail "LuCI version marker is missing"
+grep -Fq 'package_update_index() {' "$tmp/backend.sh" || fail "package index update helper missing" "$tmp/backend.sh" || fail "package index update helper missing"
+awk '/^component_update_check\(\) \{/,/^update_hdp_json\(\) \{ { print }' "$tmp/backend.sh" > "$tmp/component_update_check.sh"
 grep -Fq 'package_update_index' "$tmp/component_update_check.sh" || fail "https-dns-proxy update check does not refresh package index"
 grep -Fq '_hdp_available=1' "$tmp/component_update_check.sh" || fail "https-dns-proxy update check never marks an available update"
 grep -Fq 'hdp_error=%s' "$tmp/component_update_check.sh" || fail "https-dns-proxy update check does not expose index errors"
@@ -359,6 +364,8 @@ view_luci="$(sed -n 's|^// DNS Manager LuCI common module version:[[:space:]]*||
 [ "$top_luci" = "$self_luci" ] || fail "LuCI SELF_VERSION mismatch"
 [ "$top_luci" = "$view_luci" ] || fail "embedded JS version mismatch"
 ok "LuCI version markers synchronized ($top_luci)"
+grep -Fq 'VERSION="3.46"' dns-manager.sh || fail "DNS Manager version is not 3.46"
+ok "DNS Manager version marker synchronized (3.46)"
 
 if awk '
     /function startAutoStatus\(root\)/ { capture=1 }
