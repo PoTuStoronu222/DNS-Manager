@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.45
+# Version: 1.46
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -32,7 +32,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.45"
+VERSION="1.46"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -158,7 +158,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="1.45"
+SELF_VERSION="1.46"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -454,10 +454,32 @@ component_update_check() {
     rm -f "$_tmp" 2>/dev/null || true
 
     _hdp_installed="$(package_version https-dns-proxy 2>/dev/null || true)"
-    _hdp_candidate="$(package_candidate_version https-dns-proxy 2>/dev/null || true)"
+    _hdp_latest=""
+    _hdp_candidate=""
     _hdp_checked=0
-    [ -n "$_hdp_installed" ] && _hdp_checked=1
     _hdp_available=0
+    _hdp_error=""
+    if [ -n "$_hdp_installed" ]; then
+        if package_update_index; then
+            _hdp_candidate="$(package_candidate_version https-dns-proxy 2>/dev/null || true)"
+            if [ -n "$_hdp_candidate" ]; then
+                _hdp_latest="$_hdp_candidate"
+            else
+                _hdp_latest="$_hdp_installed"
+            fi
+            _hdp_checked=1
+            if [ -n "$_hdp_candidate" ] && package_version_cmp "$_hdp_candidate" "$_hdp_installed"; then
+                _hdp_available=1
+            fi
+        else
+            _hdp_latest="$_hdp_installed"
+            _hdp_error="не удалось обновить индекс пакетов"
+            UPDATE_CHECK_COMPONENTS_OK=0
+        fi
+    else
+        _hdp_error="https-dns-proxy не установлен"
+        UPDATE_CHECK_COMPONENTS_OK=0
+    fi
 
     _state_tmp="$UPDATE_STATE.tmp.$$"
     if [ -r "$UPDATE_STATE" ]; then
@@ -475,9 +497,10 @@ component_update_check() {
     printf 'catalog_available=%s\n' "$_catalog_available" >> "$_state_tmp"
     printf 'catalog_checked=%s\n' "$_catalog_ok" >> "$_state_tmp"
     printf 'catalog_error=%s\n' "$_catalog_error" >> "$_state_tmp"
-    printf 'hdp_latest=%s\n' "$_hdp_candidate" >> "$_state_tmp"
+    printf 'hdp_latest=%s\n' "$_hdp_latest" >> "$_state_tmp"
     printf 'hdp_available=%s\n' "$_hdp_available" >> "$_state_tmp"
     printf 'hdp_checked=%s\n' "$_hdp_checked" >> "$_state_tmp"
+    printf 'hdp_error=%s\n' "$_hdp_error" >> "$_state_tmp"
     printf 'components_checked_at=%s\n' "$_ts" >> "$_state_tmp"
     mv "$_state_tmp" "$UPDATE_STATE" 2>/dev/null || rm -f "$_state_tmp" 2>/dev/null || true
 }
@@ -488,8 +511,9 @@ update_hdp_json() {
     fi
     trap 'release_runtime_lock "$RUNTIME_DIR/hdp-update.lock"' EXIT INT TERM
     _installed="$(package_version https-dns-proxy 2>/dev/null || true)"
-    _candidate="$(package_candidate_version https-dns-proxy 2>/dev/null || true)"
     [ -n "$_installed" ] || { json_error "https-dns-proxy не установлен"; return; }
+    package_update_index || { json_error "Не удалось обновить индекс пакетов для https-dns-proxy"; return; }
+    _candidate="$(package_candidate_version https-dns-proxy 2>/dev/null || true)"
     [ -n "$_candidate" ] || {
         _state_tmp="$UPDATE_STATE.tmp.$$"
         if [ -r "$UPDATE_STATE" ]; then
@@ -516,7 +540,7 @@ update_hdp_json() {
         printf '{"ok":true,"updated":false,"version":'; json_quote "$_installed"; printf ',"message":'; json_quote "https-dns-proxy уже актуален"; printf '}'
         return
     fi
-    if ! package_update_hdp; then
+    if ! package_upgrade_hdp; then
         json_error "https-dns-proxy не удалось обновить"; return
     fi
     _after="$(package_version https-dns-proxy 2>/dev/null || true)"
@@ -767,10 +791,11 @@ update_json() {
     _update_ts="$(date +%s 2>/dev/null || printf 0)"
     printf 'installed=%s\nlatest=%s\navailable=0\nchecked_at=%s\n' "$_after" "$_after" "$_update_ts" >> "$_state_tmp"
     mv "$_state_tmp" "$UPDATE_STATE" 2>/dev/null || rm -f "$_state_tmp" 2>/dev/null || true
-    # Do not reload rpcd here. This function is itself running inside the
-    # rpcd request that must return the update result. The new backend/plugin
-    # files are picked up by subsequent requests; reloading rpcd at this point
-    # can kill the current worker before LuCI receives the response.
+    # The update runs inside the current rpcd request. Restart rpcd only after
+    # a short delay, so this response can return before the old plugin exits.
+    if [ -x /etc/init.d/rpcd ]; then
+        (sleep 2; /etc/init.d/rpcd restart >/dev/null 2>&1 || true) >/dev/null 2>&1 </dev/null &
+    fi
     printf '{"ok":true,"updated":true,"version":'; json_quote "$_after"; printf '}'
 }
 
@@ -854,18 +879,28 @@ package_version_cmp() {
     fi
     awk -F'[^0-9]+' -v a="$_a" -v b="$_b" 'BEGIN{split(a,A);split(b,B);for(i=1;i<=8;i++){x=A[i]+0;y=B[i]+0;if(x>y){exit 0}if(x<y){exit 1}}exit 1}'
 }
-package_update_hdp() {
+package_update_index() {
     if command -v apk >/dev/null 2>&1; then
-        apk update >/dev/null 2>&1 || return 1
-        apk upgrade https-dns-proxy >/dev/null 2>&1 || return 1
+        apk update >/dev/null 2>&1
     elif command -v opkg >/dev/null 2>&1; then
-        opkg update >/dev/null 2>&1 || return 1
-        opkg upgrade https-dns-proxy >/dev/null 2>&1 || return 1
+        opkg update >/dev/null 2>&1
+    else
+        return 1
+    fi
+}
+package_upgrade_hdp() {
+    if command -v apk >/dev/null 2>&1; then
+        apk upgrade https-dns-proxy >/dev/null 2>&1
+    elif command -v opkg >/dev/null 2>&1; then
+        opkg upgrade https-dns-proxy >/dev/null 2>&1
     else
         return 1
     fi
     /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || return 1
-    return 0
+}
+package_update_hdp() {
+    package_update_index || return 1
+    package_upgrade_hdp
 }
 
 runtime_lan_input_match() {
@@ -2709,7 +2744,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI common module version: 1.45
+// DNS Manager LuCI common module version: 1.46
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -4168,7 +4203,7 @@ function updateAll(root){
     var msg=results.join('; ');
     globalUpdateNotice(msg,anyUpdate?'ok':'info');
     if(luciUpdated){
-      setTimeout(function(){location.reload();},1200);
+      setTimeout(function(){location.reload();},3000);
     }else{
       refresh(root,true);
     }
@@ -4729,7 +4764,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI page version: 1.45
+// DNS Manager LuCI version: 1.46
 return view.extend({
   load: DM.load,
   render: DM.render,
