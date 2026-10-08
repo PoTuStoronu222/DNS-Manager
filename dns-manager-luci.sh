@@ -3829,12 +3829,6 @@ function applyStatusToCurrentRoot(st){
 function refresh(root,keepPosition){
   if(!rootAlive(root))return Promise.resolve();
   return ensureStatusPromise().then(function(st){
-    if(rootAlive(root)){
-      state.statusError='';
-      state.statusFromCache=false;
-      window.dmState=st||{};
-      render(root,st||{});
-    }
     applyStatusToCurrentRoot(st);
   }).catch(function(err){
     if(!rootAlive(root))return;
@@ -4455,7 +4449,7 @@ return view.extend({
     state.statusFromCache=!!cached;
     state.statusRefreshAfterRender=true;
     if(cached)return Promise.resolve(cached);
-    ensureStatusPromise();
+    ensureStatusPromise().catch(function(){});
     return Promise.resolve({});
   },
   render:function(st){
@@ -4474,10 +4468,7 @@ return view.extend({
     },0);
     return root;
   },
-  remove:function(){
-    if(window.dmCurrentRoot&&window.dmCurrentRoot===this.__root)window.dmCurrentRoot=null;
-    stopAutoStatus();
-  }
+  remove:function(){stopAutoStatus();}
 });
 EOF_JS
     chmod 0644 "$MENU_FILE" "$ACL_FILE" "$VIEW_STAGE"
