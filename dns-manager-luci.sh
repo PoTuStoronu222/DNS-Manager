@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.34
+# Version: 1.35
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -32,7 +32,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.34"
+VERSION="1.35"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -81,32 +81,32 @@ install_files() {
   "admin/services/dns-manager/dashboard": {
     "title": "Дашборд",
     "order": 10,
-    "action": { "type": "view", "path": "dns_manager/overview" }
+    "action": { "type": "view", "path": "dns_manager/dashboard" }
   },
   "admin/services/dns-manager/doh": {
     "title": "DNS over HTTPS",
     "order": 20,
-    "action": { "type": "view", "path": "dns_manager/overview" }
+    "action": { "type": "view", "path": "dns_manager/doh" }
   },
   "admin/services/dns-manager/network": {
     "title": "Сеть",
     "order": 30,
-    "action": { "type": "view", "path": "dns_manager/overview" }
+    "action": { "type": "view", "path": "dns_manager/network" }
   },
   "admin/services/dns-manager/time": {
     "title": "Серверы точного времени",
     "order": 40,
-    "action": { "type": "view", "path": "dns_manager/overview" }
+    "action": { "type": "view", "path": "dns_manager/time" }
   },
   "admin/services/dns-manager/catalog": {
     "title": "Каталог DNS",
     "order": 50,
-    "action": { "type": "view", "path": "dns_manager/overview" }
+    "action": { "type": "view", "path": "dns_manager/catalog" }
   },
   "admin/services/dns-manager/log": {
     "title": "Журнал",
     "order": 80,
-    "action": { "type": "view", "path": "dns_manager/overview" }
+    "action": { "type": "view", "path": "dns_manager/log" }
   }
 }
 EOF_MENU
@@ -157,8 +157,8 @@ UPDATE_CHECK_CACHE="$RUNTIME_DIR/update-check.cache"
 UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
-VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.34"
+VIEW_FILE="$VIEW_DIR/dashboard.js"
+SELF_VERSION="1.35"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -2498,7 +2498,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI common module version: 1.34
+// DNS Manager LuCI common module version: 1.35
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -4492,7 +4492,7 @@ EOF_COMMON
         rm -f "$_page_stage" 2>/dev/null || true
         cat > "$_page_stage" <<'EOF_PAGE'
 'use strict';
-// DNS Manager LuCI page version: 1.34
+// DNS Manager LuCI page version: 1.35
 'require dns_manager.common';
 var DM = require('dns_manager.common');
 return DM.createView();
