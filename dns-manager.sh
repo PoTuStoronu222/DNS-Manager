@@ -7742,6 +7742,7 @@ startup_update_check() {
 # STARTUP REQUIRED FUNCTION CHECK
 # ==========================================
 startup_required_function_check() {
+    for _fn in get_dnsmasq_section exact_list_has doh_selected_config_current validate_selected_slots ensure_dnsmasq_balancer detect_forced_dns_path clear_all_doh_for_apply rebuild_selected_hdp_sections reconcile_dnsmasq apply_ntp_ip_fallback luci_component_state luci_companion_check_update luci_companion_install luci_companion_remove luci_companion_update watchdog_embedded_loop watchdog_service_install_files watchdog_service_remove_files; do
         type "$_fn" >/dev/null 2>&1 || {
             printf "${C_RED}[✗] Критическая ошибка: отсутствует функция $_fn. Запуск остановлен до изменения настроек роутера.${C_NC}\n"
             return 1
