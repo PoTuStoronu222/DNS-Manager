@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.48"
+VERSION="3.49"
 # 3.38: clear the LuCI update flag after a successful CLI update.
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
@@ -17,7 +17,7 @@ CONFIG_FILE="$CFG_DIR/manager.conf"
 DNS_CATALOG="$CFG_DIR/dns-catalog.conf"
 NTP_CATALOG="$CFG_DIR/ntp-catalog.conf"
 BOOTSTRAP_DNS_ALL="77.88.8.8,77.88.8.1,94.140.14.14,1.1.1.1,1.0.0.1,8.8.8.8,8.8.4.4,9.9.9.9,149.112.112.112,208.67.222.222,208.67.220.220,149.112.121.10,149.112.122.10,76.76.2.0,76.76.10.0,194.242.2.2,194.242.2.3,2606:4700:4700::1111,2606:4700:4700::1001,2001:4860:4860::8888,2001:4860:4860::8844,2620:fe::fe,2620:fe::9"
-DNSCAT_VERSION="8.6-RU-NOSOCIAL"
+DNSCAT_VERSION="8.7-RU-NOSOCIAL"
 DNSCAT_REVISION="2"
 DNSCAT_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/catalogs/dns-8.5-RU-NOSOCIAL.conf"
 WATCHDOG_RESTART_COOLDOWN=300
@@ -665,7 +665,7 @@ catalog_validate_file() {
             count++
             if (NF != 7 || $1 == "" || $4 == "" || $5 !~ /^https:\/\//) bad=1
             if ($1 !~ /^[A-Za-z0-9_-]+$/) bad=1
-            if ($2 !~ /^(bypass|clean|security|privacy|adblock|family|regional)$/) bad=1
+            if ($2 !~ /^(bypass|clean|security|privacy|adblock|family|gaming|regional)$/) bad=1
             ids[$1]++
             if (ids[$1] > 1) bad=1
         }
@@ -764,7 +764,7 @@ esac
 : "${WATCHDOG_ENABLED:=0}"
 : "${TEST_RESULTS_MAX_AGE_BYPASS:=21600}"; : "${TEST_RESULTS_MAX_AGE_CLEAN:=21600}"
 : "${TEST_RESULTS_MAX_AGE_SECURITY:=21600}"; : "${TEST_RESULTS_MAX_AGE_PRIVACY:=21600}"
-: "${TEST_RESULTS_MAX_AGE_ADBLOCK:=21600}"; : "${TEST_RESULTS_MAX_AGE_FAMILY:=21600}"
+: "${TEST_RESULTS_MAX_AGE_ADBLOCK:=21600}"; : "${TEST_RESULTS_MAX_AGE_FAMILY:=21600}"; : "${TEST_RESULTS_MAX_AGE_GAMING:=21600}"
 : "${TEST_RESULTS_MAX_AGE_REGIONAL:=21600}"
 TLD_SPLIT="$TLD_RU_ENABLED"
 if [ "$_had_dns_profile" = 0 ] && [ -z "$DNS_PROFILE" ]; then
@@ -878,6 +878,7 @@ TEST_RESULTS_MAX_AGE_SECURITY="$TEST_RESULTS_MAX_AGE_SECURITY"
 TEST_RESULTS_MAX_AGE_PRIVACY="$TEST_RESULTS_MAX_AGE_PRIVACY"
 TEST_RESULTS_MAX_AGE_ADBLOCK="$TEST_RESULTS_MAX_AGE_ADBLOCK"
 TEST_RESULTS_MAX_AGE_FAMILY="$TEST_RESULTS_MAX_AGE_FAMILY"
+TEST_RESULTS_MAX_AGE_GAMING="$TEST_RESULTS_MAX_AGE_GAMING"
 TEST_RESULTS_MAX_AGE_REGIONAL="$TEST_RESULTS_MAX_AGE_REGIONAL"
 EOF_CFG
 ) || { rm -f "$_cfg_tmp"; return 1; }
@@ -1908,7 +1909,7 @@ test_dns_catalog() (
     DNS_TEST_RAM_ONLY=1
     _test_scope="${1:-all}"
     case "$_test_scope" in
-        all|bypass|clean|security|privacy|adblock|family) ;;
+        all|bypass|clean|security|privacy|adblock|family|gaming) ;;
         *) _test_scope=all ;;
     esac
     [ "$HAS_CURL" = yes ] || { warn_msg "Полную проверку DNS нельзя выполнить: curl не установлен."; return 1; }
@@ -3961,13 +3962,14 @@ esac
 }
 category_ru() {
 case "$1" in
-bypass) printf '%s' 'Обход';;
-clean) printf '%s' 'Чистый';;
-security) printf '%s' 'Безопасность';;
-privacy) printf '%s' 'Приватность';;
+bypass) printf '%s' 'Обход геоблока';;
+clean) printf '%s' 'Без фильтрации';;
+security) printf '%s' 'Защита от угроз';;
+privacy) printf '%s' 'Конфиденциальность';;
 adblock) printf '%s' 'Блокировка рекламы';;
-family) printf '%s' 'Семейный';;
-regional) printf '%s' 'Региональный';;
+family) printf '%s' 'Семейная фильтрация';;
+gaming) printf '%s' 'Игровые DNS';;
+regional) printf '%s' 'Региональные DNS';;
 *) printf '%s' "$1";;
 esac
 }
@@ -4075,12 +4077,12 @@ _profile_name="Не выбран"
 # change this value.
 if [ "${DOH_TOTAL:-0}" -gt 0 ] 2>/dev/null && [ "${DOH_MATCH:-0}" -eq "${DOH_TOTAL:-0}" ] 2>/dev/null; then
 case "${DNS_SELECTION_MODE:-}:${DNS_SELECTION_CATEGORY:-}" in
-    quick:bypass|profile:bypass) _profile_name="Обход блокировок";;
+    quick:bypass|profile:bypass) _profile_name="Обход геоблока";;
     profile:clean) _profile_name="Без фильтрации";;
-    profile:security) _profile_name="Безопасность";;
-    profile:privacy) _profile_name="Приватность";;
+    profile:security) _profile_name="Защита от угроз";;
+    profile:privacy) _profile_name="Конфиденциальность";;
     profile:adblock) _profile_name="Блокировка рекламы";;
-    profile:family) _profile_name="Семейный DNS";;
+    profile:family) _profile_name="Семейная фильтрация";;
     manual:none) _profile_name="Собственный выбор";;
     *) ;;
 esac
@@ -4148,7 +4150,7 @@ if [ -s "$TEST_RESULTS_META" ]; then
     _test_scope="$(sed -n 's/^test_scope=//p' "$TEST_RESULTS_META" 2>/dev/null | head -n1)"
 fi
 case "$_test_scope" in
-    all|bypass|clean|security|privacy|adblock|family) ;;
+    all|bypass|clean|security|privacy|adblock|family|gaming) ;;
     *) _test_scope=all ;;
 esac
 if [ "$_test_scope" = all ]; then
@@ -4275,7 +4277,7 @@ menu_item "[1]" "Без фильтрации"
 menu_item "[2]" "Защита от угроз"
 menu_item "[3]" "Конфиденциальность"
 menu_item "[4]" "Блокировка рекламы"
-menu_item "[5]" "Обход блокировок"
+menu_item "[5]" "Обход геоблока"
 menu_item "[6]" "Семейная фильтрация"
 menu_item "[7]" "Все категории"
 menu_back
@@ -4316,7 +4318,7 @@ fi
 [ -s "$_src" ] || {
     _cat_ok_count="$(awk -F'|' -v c="$_cat" 'NF>=5 && $2==c && $5=="OK" {n++} END{print n+0}' "$TEST_RESULTS" 2>/dev/null)"
     if [ "$_cat" = bypass ]; then
-        warn_msg "В категории «Обход блокировок» не найдено подходящих проверенных DNS. Настройки не изменены."
+        warn_msg "В категории «Обход геоблока» не найдено подходящих проверенных DNS. Настройки не изменены."
     else
         warn_msg "В категории «$(category_ru "$_cat")» нет подходящих проверенных DNS. Настройки не изменены."
     fi
@@ -5317,6 +5319,7 @@ test_results_max_age_for_category() {
         privacy) printf '%s' "${TEST_RESULTS_MAX_AGE_PRIVACY:-21600}" ;;
         adblock) printf '%s' "${TEST_RESULTS_MAX_AGE_ADBLOCK:-21600}" ;;
         family) printf '%s' "${TEST_RESULTS_MAX_AGE_FAMILY:-21600}" ;;
+        gaming) printf '%s' "${TEST_RESULTS_MAX_AGE_GAMING:-21600}" ;;
         regional) printf '%s' "${TEST_RESULTS_MAX_AGE_REGIONAL:-21600}" ;;
         *) printf '%s' "${TEST_RESULTS_MAX_AGE:-21600}" ;;
     esac
@@ -5336,7 +5339,7 @@ watchdog_test_results_fresh() {
     [ -n "$_scope" ] || _scope=all
     _expected_scope="${1:-all}"
     case "$_expected_scope" in
-        all|bypass|clean|security|privacy|adblock|family) ;;
+        all|bypass|clean|security|privacy|adblock|family|gaming) ;;
         *) _expected_scope=all ;;
     esac
     [ "$_scope" = "$_expected_scope" ] || return 1
@@ -6884,10 +6887,10 @@ menu_dns() {
 while :; do
 menu_header "НАСТРОЙКА DNS"
 menu_section "ГОТОВЫЕ ПРОФИЛИ"
-menu_item "[1]" "Обход блокировок"
+menu_item "[1]" "Обход геоблока"
 menu_item "[2]" "Без фильтрации"
-menu_item "[3]" "Безопасность"
-menu_item "[4]" "Приватность"
+menu_item "[3]" "Защита от угроз"
+menu_item "[4]" "Конфиденциальность"
 menu_item "[5]" "Блокировка рекламы"
 menu_item "[6]" "Выбор по категориям"
 menu_section "РУЧНАЯ НАСТРОЙКА"
