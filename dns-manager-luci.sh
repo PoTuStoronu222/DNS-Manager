@@ -454,32 +454,10 @@ component_update_check() {
     rm -f "$_tmp" 2>/dev/null || true
 
     _hdp_installed="$(package_version https-dns-proxy 2>/dev/null || true)"
-    _hdp_latest=""
-    _hdp_candidate=""
+    _hdp_candidate="$(package_candidate_version https-dns-proxy 2>/dev/null || true)"
     _hdp_checked=0
+    [ -n "$_hdp_installed" ] && _hdp_checked=1
     _hdp_available=0
-    _hdp_error=""
-    if [ -n "$_hdp_installed" ]; then
-        if package_update_index; then
-            _hdp_candidate="$(package_candidate_version https-dns-proxy 2>/dev/null || true)"
-            if [ -n "$_hdp_candidate" ]; then
-                _hdp_latest="$_hdp_candidate"
-            else
-                _hdp_latest="$_hdp_installed"
-            fi
-            _hdp_checked=1
-            if [ -n "$_hdp_candidate" ] && package_version_cmp "$_hdp_candidate" "$_hdp_installed"; then
-                _hdp_available=1
-            fi
-        else
-            _hdp_latest="$_hdp_installed"
-            _hdp_error="не удалось обновить индекс пакетов"
-            UPDATE_CHECK_COMPONENTS_OK=0
-        fi
-    else
-        _hdp_error="https-dns-proxy не установлен"
-        UPDATE_CHECK_COMPONENTS_OK=0
-    fi
 
     _state_tmp="$UPDATE_STATE.tmp.$$"
     if [ -r "$UPDATE_STATE" ]; then
@@ -500,7 +478,6 @@ component_update_check() {
     printf 'hdp_latest=%s\n' "$_hdp_latest" >> "$_state_tmp"
     printf 'hdp_available=%s\n' "$_hdp_available" >> "$_state_tmp"
     printf 'hdp_checked=%s\n' "$_hdp_checked" >> "$_state_tmp"
-    printf 'hdp_error=%s\n' "$_hdp_error" >> "$_state_tmp"
     printf 'components_checked_at=%s\n' "$_ts" >> "$_state_tmp"
     mv "$_state_tmp" "$UPDATE_STATE" 2>/dev/null || rm -f "$_state_tmp" 2>/dev/null || true
 }
@@ -522,7 +499,7 @@ update_hdp_json() {
             : > "$_state_tmp"
         fi
         _ts="$(date +%s 2>/dev/null || printf 0)"
-        printf 'hdp_latest=%s\nhdp_available=0\nhdp_checked=1\nhdp_error=\ncomponents_checked_at=%s\n' "$_installed" "$_ts" >> "$_state_tmp"
+        printf 'hdp_latest=%s\nhdp_available=0\nhdp_checked=1\ncomponents_checked_at=%s\n' "$_installed" "$_ts" >> "$_state_tmp"
         mv "$_state_tmp" "$UPDATE_STATE" 2>/dev/null || rm -f "$_state_tmp" 2>/dev/null || true
         printf '{"ok":true,"updated":false,"version":'; json_quote "$_installed"; printf ',"message":'; json_quote "https-dns-proxy уже актуален"; printf '}'
         return
@@ -552,7 +529,7 @@ update_hdp_json() {
         : > "$_state_tmp"
     fi
     _ts="$(date +%s 2>/dev/null || printf 0)"
-    printf 'hdp_latest=%s\nhdp_available=0\nhdp_checked=1\nhdp_error=\ncomponents_checked_at=%s\n' "$_after" "$_ts" >> "$_state_tmp"
+    printf 'hdp_latest=%s\nhdp_available=0\nhdp_checked=1\ncomponents_checked_at=%s\n' "$_after" "$_ts" >> "$_state_tmp"
     mv "$_state_tmp" "$UPDATE_STATE" 2>/dev/null || rm -f "$_state_tmp" 2>/dev/null || true
     printf '{"ok":true,"updated":true,"version":'; json_quote "$_after"; printf '}'
 }
@@ -1575,7 +1552,6 @@ status_json() {
     _hdp_latest="$(sed -n 's/^hdp_latest=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"
     _hdp_avail="$(sed -n 's/^hdp_available=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"; [ -n "$_hdp_avail" ] || _hdp_avail=0
     _hdp_checked="$(sed -n 's/^hdp_checked=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"; [ -n "$_hdp_checked" ] || _hdp_checked=0
-    _hdp_error="$(sed -n 's/^hdp_error=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"
     _components_checked_at="$(sed -n 's/^components_checked_at=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"
     _ntp_enabled="$(uci -q get system.ntp.enabled 2>/dev/null || true)"; [ -n "$_ntp_enabled" ] || _ntp_enabled=0
     _ntp_use_dhcp="$(uci -q get system.ntp.use_dhcp 2>/dev/null || true)"; [ -n "$_ntp_use_dhcp" ] || _ntp_use_dhcp=0
@@ -1667,7 +1643,7 @@ status_json() {
     printf ',"hostname":'; json_quote "$_host"; printf ',"uptime":'; json_quote "$_uptime"; printf ',"load1":'; json_quote "$_load"
     printf ',"cpu_count":%s,"memory_total_kb":%s,"memory_available_kb":%s' "$_cpu_count" "$_mem_t" "$_mem_a"
     printf ',"catalog_total":%s,"catalog_version":' "$_cat_total"; json_quote "$(catalog_version)"; printf ',"catalog_revision":'; json_quote "$(catalog_revision)"
-    printf ',"hdp_version":'; json_quote "$_hdp_installed"; printf ',"hdp_latest_version":'; json_quote "$_hdp_latest"; printf ',"hdp_update_available":%s,"hdp_check_ok":%s' "$_hdp_avail" "$_hdp_checked"; printf ',"hdp_update_error":'; json_quote "$_hdp_error"
+    printf ',"hdp_version":'; json_quote "$_hdp_installed"; printf ',"hdp_latest_version":'; json_quote "$_hdp_latest"; printf ',"hdp_update_available":%s,"hdp_check_ok":%s' "$_hdp_avail" "$_hdp_checked"
     printf ',"doh_instances":['
     _doh_first=1
     _i=0
