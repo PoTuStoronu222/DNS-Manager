@@ -4993,6 +4993,8 @@ setting_process() {
     fi
 
     _old_force="$FORCE_APPLY_SETTINGS"
+    _old_force_doh="${FORCE_DOH:-0}"
+    _old_dnsmasq_perf="${DNSMASQ_PERF:-0}"
     case "$_state" in
         0) _new=1 ;;
         1) _new=0 ;;
@@ -5000,6 +5002,8 @@ setting_process() {
     esac
 
     case "$_module" in
+        force) FORCE_DOH="$_new" ;;
+        dnsmasq_perf) DNSMASQ_PERF="$_new" ;;
     esac
 
     if [ "$_module" = watchdog ] && [ "$_new" = 1 ]; then
@@ -5027,6 +5031,10 @@ setting_process() {
             ;;
     esac
 
+    if [ "$_rc" -ne 0 ]; then
+        FORCE_DOH="$_old_force_doh"
+        DNSMASQ_PERF="$_old_dnsmasq_perf"
+    fi
     FORCE_APPLY_SETTINGS="$_old_force"
 
     if [ "$_rc" -eq 0 ]; then
