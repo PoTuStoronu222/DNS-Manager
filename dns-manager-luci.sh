@@ -30,7 +30,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.29"
+VERSION="1.30"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -3775,16 +3775,29 @@ function renderJobIdle(root,st){
 }
 function render(root,st){
   renderHeader(root,st);
-  renderOverview(root,st);
-  renderDoH(root,st);
-  renderSlots(root,st);
-  renderProfiles(root,st);
-  renderNetwork(root,st);
-  renderTime(root,st);
-  renderCatalog(root);
-  renderLog(root);
-  renderJobIdle(root,st);
   state.activeTab=currentRoute();
+  switch(state.activeTab){
+    case 'doh':
+      renderDoH(root,st);
+      renderProfiles(root,st);
+      break;
+    case 'network':
+      renderNetwork(root,st);
+      break;
+    case 'time':
+      renderTime(root,st);
+      break;
+    case 'catalog':
+      renderCatalog(root);
+      break;
+    case 'log':
+      renderLog(root);
+      break;
+    default:
+      state.activeTab='dashboard';
+      renderOverview(root,st);
+      break;
+  }
   setActiveTab(root,state.activeTab);
 }
 function refresh(root,keepPosition){
@@ -4399,9 +4412,13 @@ function startAutoStatus(root){
 }
 return view.extend({
   load:function(){
+    var route=currentRoute();
+    var boardPromise=(route==='dashboard')
+      ? callBoardInfo().catch(function(){return {};})
+      : Promise.resolve({});
     return Promise.all([
       callStatus(statusDetail()),
-      callBoardInfo().catch(function(){return {};})
+      boardPromise
     ]).then(function(v){
       var st=v[0]||{},b=v[1]||{};
       state.boardInfo=b;
