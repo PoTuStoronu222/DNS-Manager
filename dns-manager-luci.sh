@@ -2488,8 +2488,6 @@ EOF_RPC_WRAPPER
         return 1
     }
 
-    VIEW_STAGE="${VIEW_FILE}.new.$$"
-    rm -f "$VIEW_STAGE" 2>/dev/null || true
     COMMON_STAGE="$COMMON_FILE.new.$$"
     rm -f "$COMMON_STAGE" 2>/dev/null || true
     cat > "$COMMON_STAGE" <<'EOF_COMMON'
