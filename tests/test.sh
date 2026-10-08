@@ -121,7 +121,7 @@ grep -q 'for _page in dashboard doh network time catalog log; do' dns-manager-lu
 grep -q "'require baseclass';" "$tmp/common.js" || fail "LuCI common module does not use baseclass"
 grep -q "return baseclass.extend({" "$tmp/common.js" || fail "LuCI common module does not return a baseclass constructor"
 for _rpc in doh_status network_status time_status page_meta; do
-    grep -q ""${_rpc}":{}" dns-manager-luci.sh || fail "fast LuCI RPC is missing from rpcd list: $_rpc"
+    grep -q "\"${_rpc}\":{}" dns-manager-luci.sh || fail "fast LuCI RPC is missing from rpcd list: $_rpc"
 done
 for _rpc in doh_status network_status time_status page_meta; do
     grep -q "${_rpc})" "$tmp/backend.sh" || fail "fast LuCI RPC dispatch is missing: $_rpc"
