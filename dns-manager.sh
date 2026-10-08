@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.45"
+VERSION="3.46"
 # 3.38: clear the LuCI update flag after a successful CLI update.
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
@@ -4733,10 +4733,7 @@ luci_companion_fetch() {
 luci_installed_version() {
     _v=""
     # dashboard.js is the native LuCI view; persistent markers are only fallbacks.
-    [ -r "$LUCI_VIEW_FILE" ] && _v="$(sed -n
-        -e 's|^// DNS Manager LuCI version: *||p'
-        -e 's|^// DNS Manager LuCI page version: *||p'
-        "$LUCI_VIEW_FILE" 2>/dev/null | head -n1)"
+    [ -r "$LUCI_VIEW_FILE" ] && _v="$(sed -n 's|^// DNS Manager LuCI version: *||p' "$LUCI_VIEW_FILE" 2>/dev/null | head -n1)"
     [ -n "$_v" ] || [ ! -r "$LUCI_STATE_FILE" ] || _v="$(sed -n 's/^version=//p' "$LUCI_STATE_FILE" 2>/dev/null | head -n1)"
     [ -n "$_v" ] || [ ! -r "${BACKUP_DIR:-/etc/dns-manager-luci}/version" ] || _v="$(sed -n 's/^version=//p' "${BACKUP_DIR:-/etc/dns-manager-luci}/version" 2>/dev/null | head -n1)"
     [ -n "$_v" ] || [ ! -r "$LUCI_COMPANION_CACHE" ] || _v="$(sed -n 's/^# Version:[[:space:]]*//p' "$LUCI_COMPANION_CACHE" 2>/dev/null | head -n1)"
