@@ -3805,6 +3805,7 @@ function refresh(root,keepPosition){
   return callStatus(statusDetail()).then(function(st){
     if(!rootAlive(root))return;
     state.statusError='';
+    state.statusFromCache=false;
     window.dmState=st||{};
     window.dmStatusCache={ts:Date.now(),data:window.dmState};
     render(root,st||{});
