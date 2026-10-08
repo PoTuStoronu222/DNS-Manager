@@ -3969,7 +3969,6 @@ privacy) printf '%s' 'Конфиденциальность';;
 adblock) printf '%s' 'Блокировка рекламы';;
 family) printf '%s' 'Семейная фильтрация';;
 gaming) printf '%s' 'Игровые DNS';;
-
 regional) printf '%s' 'Региональные DNS';;
 *) printf '%s' "$1";;
 esac
