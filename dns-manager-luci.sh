@@ -768,11 +768,6 @@ update_json() {
     _update_ts="$(date +%s 2>/dev/null || printf 0)"
     printf 'installed=%s\nlatest=%s\navailable=0\nchecked_at=%s\n' "$_after" "$_after" "$_update_ts" >> "$_state_tmp"
     mv "$_state_tmp" "$UPDATE_STATE" 2>/dev/null || rm -f "$_state_tmp" 2>/dev/null || true
-    # The update runs inside the current rpcd request. Restart rpcd only after
-    # a short delay, so this response can return before the old plugin exits.
-    if [ -x /etc/init.d/rpcd ]; then
-        (sleep 2; /etc/init.d/rpcd restart >/dev/null 2>&1 || true) >/dev/null 2>&1 </dev/null &
-    fi
     printf '{"ok":true,"updated":true,"version":'; json_quote "$_after"; printf '}'
 }
 
@@ -4779,7 +4774,15 @@ EOF_PAGE
     } > "${STATE_FILE}.tmp.$$" 2>/dev/null || true
     [ -s "${STATE_FILE}.tmp.$$" ] && chmod 600 "${STATE_FILE}.tmp.$$" 2>/dev/null || true
     [ -s "${STATE_FILE}.tmp.$$" ] && mv "${STATE_FILE}.tmp.$$" "$STATE_FILE" 2>/dev/null || rm -f "${STATE_FILE}.tmp.$$" 2>/dev/null || true
-    if [ "${DNS_MANAGER_LUCI_SKIP_RPC_RELOAD:-0}" != 1 ] && [ -x /etc/init.d/rpcd ]; then
+    if [ "${DNS_MANAGER_LUCI_SKIP_RPC_RELOAD:-0}" = 1 ]; then
+        # This installer is invoked from the current rpcd request during a
+        # self-update. Restart rpcd only after the update response can return.
+        # Keeping this here also fixes upgrades from older LuCI versions whose
+        # own update_json() did not schedule a restart.
+        if [ -x /etc/init.d/rpcd ]; then
+            (sleep 2; /etc/init.d/rpcd restart >/dev/null 2>&1 || true) >/dev/null 2>&1 </dev/null &
+        fi
+    elif [ -x /etc/init.d/rpcd ]; then
         /etc/init.d/rpcd reload >/dev/null 2>&1 || /etc/init.d/rpcd restart >/dev/null 2>&1 || true
         if command -v ubus >/dev/null 2>&1; then
             _rpcd_ok=0
