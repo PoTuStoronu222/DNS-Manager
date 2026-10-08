@@ -5504,6 +5504,49 @@ luci_companion_remove() {
     return 0
 }
 
+
+package_is_installed() {
+    _pkg="$1"
+    [ -n "$_pkg" ] || return 1
+    if [ "$PKG_MGR" = apk ]; then
+        apk info -e "$_pkg" >/dev/null 2>&1
+    elif [ "$PKG_MGR" = opkg ]; then
+        opkg status "$_pkg" 2>/dev/null | grep -q '^Status:.*installed'
+    else
+        return 1
+    fi
+}
+package_owner_record_if_new() {
+    _pkg="$1"
+    [ -n "$_pkg" ] || return 0
+    package_is_installed "$_pkg" && return 0
+    mkdir -p "$CFG_DIR" 2>/dev/null || return 1
+    touch "$PACKAGE_OWNERSHIP" 2>/dev/null || return 1
+    grep -Fqx -- "$_pkg" "$PACKAGE_OWNERSHIP" 2>/dev/null || printf '%s\n' "$_pkg" >> "$PACKAGE_OWNERSHIP" || return 1
+    return 0
+}
+package_owner_remove_owned() {
+    [ -f "$PACKAGE_OWNERSHIP" ] || return 0
+    _pkg_rc=0
+    while IFS= read -r _pkg; do
+        [ -n "$_pkg" ] || continue
+        case "$_pkg" in
+            *[!A-Za-z0-9._+:-]*) continue ;;
+        esac
+        # PACKAGE_OWNERSHIP records that the package was absent before installation.
+        if [ "$PKG_MGR" = apk ]; then
+            if apk info -e "$_pkg" >/dev/null 2>&1; then
+                apk del "$_pkg" >/dev/null 2>&1 || _pkg_rc=1
+            fi
+        elif [ "$PKG_MGR" = opkg ]; then
+            if opkg status "$_pkg" 2>/dev/null | grep -q '^Status:.*installed'; then
+                opkg remove "$_pkg" >/dev/null 2>&1 || _pkg_rc=1
+            fi
+        fi
+    done < "$PACKAGE_OWNERSHIP"
+    return "$_pkg_rc"
+}
+
 # ==========================================
 setting_process() {
     _module="$1"
