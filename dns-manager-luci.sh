@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.33
+# Version: 1.34
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -14,7 +14,9 @@ BACKEND_FILE="/usr/lib/dns-manager-luci/backend.sh"
 ACL_FILE="/usr/share/rpcd/acl.d/luci-app-dns-manager.json"
 MENU_FILE="/usr/share/luci/menu.d/luci-app-dns-manager.json"
 VIEW_DIR="/www/luci-static/resources/view/dns_manager"
-VIEW_FILE="$VIEW_DIR/overview.js"
+RESOURCE_DIR="/www/luci-static/resources/dns_manager"
+COMMON_FILE="$RESOURCE_DIR/common.js"
+VIEW_FILE="$VIEW_DIR/dashboard.js"
 RUNTIME_DIR="/var/run/dns-manager-luci"
 JOB_DIR="$RUNTIME_DIR/jobs"
 # Hard wall-clock limits for persistent background jobs. Browser timer throttling
@@ -30,7 +32,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.33"
+VERSION="1.34"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -49,7 +51,7 @@ install_files() {
     require_manager || return 1
 
     command -v jsonfilter >/dev/null 2>&1 || say "ℹ jsonfilter не найден — используется встроенный обработчик RPC-параметров."
-    mkdir -p "$VIEW_DIR" /usr/libexec/rpcd /usr/lib/dns-manager-luci /usr/share/rpcd/acl.d /usr/share/luci/menu.d "$RUNTIME_DIR/checks" "$JOB_DIR" "$BACKUP_DIR" "$(dirname "$STATE_FILE")" || return 1
+    mkdir -p "$VIEW_DIR" "$RESOURCE_DIR" /usr/libexec/rpcd /usr/lib/dns-manager-luci /usr/share/rpcd/acl.d /usr/share/luci/menu.d "$RUNTIME_DIR/checks" "$JOB_DIR" "$BACKUP_DIR" "$(dirname "$STATE_FILE")" || return 1
     if [ -d "$JOB_DIR" ]; then
         for _jd in "$JOB_DIR"/*; do
             [ -d "$_jd" ] || continue
@@ -156,7 +158,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.33"
+SELF_VERSION="1.34"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -2488,13 +2490,15 @@ EOF_RPC_WRAPPER
 
     VIEW_STAGE="${VIEW_FILE}.new.$$"
     rm -f "$VIEW_STAGE" 2>/dev/null || true
-    cat > "$VIEW_STAGE" <<'EOF_JS'
+    COMMON_STAGE="$COMMON_FILE.new.$$"
+    rm -f "$COMMON_STAGE" 2>/dev/null || true
+    cat > "$COMMON_STAGE" <<'EOF_COMMON'
 'use strict';
 'require view';
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.33
+// DNS Manager LuCI common module version: 1.34
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -4443,6 +4447,7 @@ function startAutoStatus(root){
     }
   },1000);
 }
+function createView(){
 return view.extend({
   load:function(){
     var cached=window.dmStatusCache&&window.dmStatusCache.data;
@@ -4470,7 +4475,35 @@ return view.extend({
   },
   remove:function(){stopAutoStatus();}
 });
-EOF_JS
+}
+return { createView: createView };
+
+EOF_COMMON
+    chmod 0644 "$COMMON_STAGE"
+    mv -f "$COMMON_STAGE" "$COMMON_FILE" || {
+        rm -f "$COMMON_STAGE" 2>/dev/null || true
+        err "Не удалось заменить общий модуль DNS Manager LuCI."
+        return 1
+    }
+
+    rm -f "$VIEW_DIR/overview.js" 2>/dev/null || true
+    for _page in dashboard doh network time catalog log; do
+        _page_stage="$VIEW_DIR/${_page}.js.new.$$"
+        rm -f "$_page_stage" 2>/dev/null || true
+        cat > "$_page_stage" <<'EOF_PAGE'
+'use strict';
+// DNS Manager LuCI page version: 1.34
+'require dns_manager.common';
+var DM = require('dns_manager.common');
+return DM.createView();
+EOF_PAGE
+        chmod 0644 "$_page_stage"
+        mv -f "$_page_stage" "$VIEW_DIR/${_page}.js" || {
+            rm -f "$_page_stage" 2>/dev/null || true
+            err "Не удалось заменить страницу DNS Manager LuCI: ${_page}."
+            return 1
+        }
+    done
     chmod 0644 "$MENU_FILE" "$ACL_FILE" "$VIEW_STAGE"
     mv -f "$VIEW_STAGE" "$VIEW_FILE" || {
         rm -f "$VIEW_STAGE" 2>/dev/null || true
@@ -4529,7 +4562,7 @@ EOF_JS
 
 uninstall_files() {
     rm -f "$RPC_PLUGIN" "$BACKEND_FILE" "$ACL_FILE" "$MENU_FILE" "$VIEW_FILE" 2>/dev/null || true
-    rm -rf "$VIEW_DIR" "$RUNTIME_DIR" "$BACKUP_DIR" 2>/dev/null || true
+    rm -rf "$VIEW_DIR" "$RESOURCE_DIR" "$RUNTIME_DIR" "$BACKUP_DIR" 2>/dev/null || true
     rm -f "$STATE_FILE" 2>/dev/null || true
     # the former dns_manager Lua controller. Remove only that DNS Manager-owned
     # controller so an old CBI/redirect route cannot shadow the native view.
