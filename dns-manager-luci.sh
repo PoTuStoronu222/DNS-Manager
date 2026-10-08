@@ -158,7 +158,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="1.46"
+SELF_VERSION="1.47"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -2716,7 +2716,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI common module version: 1.46
+// DNS Manager LuCI common module version: 1.47
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -4736,7 +4736,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 1.46
+// DNS Manager LuCI version: 1.47
 return view.extend({
   load: DM.load,
   render: DM.render,
