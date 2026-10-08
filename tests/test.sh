@@ -120,14 +120,20 @@ grep -Fq 'LUCI_COMMON_FILE="/www/luci-static/resources/dns-manager/common.js"' d
 if grep -Fq '/www/luci-static/resources/view/dns_manager/overview.js' dns-manager.sh; then fail "legacy LuCI overview path remains"; fi
 grep -Fq 'ubus -v list dns_manager' dns-manager.sh || fail "manager-side LuCI state does not inspect RPC methods"
 grep -Fq '// DNS Manager LuCI version:' dns-manager-luci.sh || fail "LuCI version marker is missing"
-grep -Fq 'package_update_index() {' "$tmp/backend.sh" || fail "package index update helper missing" "$tmp/backend.sh" || fail "package index update helper missing"
-awk '/^component_update_check\(\) \{/,/^update_hdp_json\(\) \{ { print }' "$tmp/backend.sh" > "$tmp/component_update_check.sh"
+grep -Fq 'package_update_index() {' "$tmp/backend.sh" || fail "package index update helper missing"
+awk '/^component_update_check\(\) \{/ { capture=1 }
+     capture { print }
+     /^update_hdp_json\(\) \{/ && capture { exit }' "$tmp/backend.sh" > "$tmp/component_update_check.sh"
 grep -Fq 'package_update_index' "$tmp/component_update_check.sh" || fail "https-dns-proxy update check does not refresh package index"
 grep -Fq '_hdp_available=1' "$tmp/component_update_check.sh" || fail "https-dns-proxy update check never marks an available update"
 grep -Fq 'hdp_error=%s' "$tmp/component_update_check.sh" || fail "https-dns-proxy update check does not expose index errors"
-awk '/^update_hdp_json\(\) \{/,/^update_catalog_json\(\) \{ { print }' "$tmp/backend.sh" > "$tmp/update_hdp.sh"
+awk '/^update_hdp_json\(\) \{/ { capture=1 }
+     capture { print }
+     /^update_catalog_json\(\) \{/ && capture { exit }' "$tmp/backend.sh" > "$tmp/update_hdp.sh"
 grep -Fq 'package_update_index ||' "$tmp/update_hdp.sh" || fail "https-dns-proxy update does not refresh package index before candidate lookup"
-awk '/^update_json\(\) \{/,/^result_for_id\(\) \{ { print }' "$tmp/backend.sh" > "$tmp/luci_self_update.sh"
+awk '/^update_json\(\) \{/ { capture=1 }
+     capture { print }
+     /^result_for_id\(\) \{/ && capture { exit }' "$tmp/backend.sh" > "$tmp/luci_self_update.sh"
 grep -Fq '/etc/init.d/rpcd restart' "$tmp/luci_self_update.sh" || fail "LuCI self-update does not schedule rpcd restart"
 grep -Fq 'setTimeout(function(){location.reload();},3000);' "$tmp/common.js" || fail "LuCI reload delay is not aligned with rpcd restart"
 ok "LuCI package update and self-update checks are covered"
