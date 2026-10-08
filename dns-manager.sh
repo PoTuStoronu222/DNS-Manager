@@ -5543,29 +5543,6 @@ watchdog_preferred_quick_candidate() {
     [ -n "$_pref" ] || return 1
     printf '%s\n' "$_pref"
 }
-watchdog_probe_catalog_candidate() {
-    _id="$1"
-    [ -n "$_id" ] || return 1
-
-    # Candidate checks must use the same authoritative DoH test as the full
-    # catalog and single-DNS checks.
-    _result_file="$TMP_DIR/t.$_id"
-    rm -f "$_result_file" "$TMP_DIR/body.$_id" "$TMP_DIR/h.$_id" 2>/dev/null || true
-    test_one_dns "$_id" >/dev/null 2>&1 || true
-
-    if [ -s "$_result_file" ]; then
-        _status="$(awk -F'|' -v id="$_id" '$1==id && NF>=5 {print $5;exit}' "$_result_file" 2>/dev/null || true)"
-        _ms="$(awk -F'|' -v id="$_id" '$1==id && NF>=5 {print $4;exit}' "$_result_file" 2>/dev/null || true)"
-    else
-        _status=""
-        _ms=""
-    fi
-
-    rm -f "$_result_file" "$TMP_DIR/body.$_id" "$TMP_DIR/h.$_id" "$TMP_DIR/dns_query.bin" 2>/dev/null || true
-    [ "$_status" = OK ] || return 1
-    case "$_ms" in ''|*[!0-9]*) return 1;; esac
-    return 0
-}
 watchdog_pick_replacement() {
     _slot="$1"
     _used="$2"
@@ -5589,11 +5566,6 @@ watchdog_pick_replacement() {
         _desired_for_pick="$(watchdog_desired_cat "$_slot")"
         [ -n "$_desired_for_pick" ] || return 1
     fi
-
-    case "$_slot" in
-        RU) _probe_domain="yandex.ru" ;;
-        *) _probe_domain="example.com" ;;
-    esac
 
     # Prefer the intended category. Clean is only a temporary fallback when
     # no target-category DNS is currently alive anywhere in the profile.
@@ -5655,9 +5627,9 @@ watchdog_pick_replacement() {
     fi
 
     # Emergency fallback for watchdog/runtime situations where no fresh scoped
-    # result exists. Keep the resource-safe direct probe cap here; profile
-    # application normally never reaches this path because it starts with a
-    # fresh category-scoped catalog test.
+    # result exists. Keep the resource-safe candidate cap here; the candidate is
+    # accepted only after the real https-dns-proxy instance answers a local DNS
+    # query on its assigned port.
     for _passcat in $_passcats; do
         _checked_cat=0
 
@@ -5668,7 +5640,7 @@ watchdog_pick_replacement() {
                 _purl="$(normalize_url "$(dns_url "$_preferred")")"
                 if [ -n "$_purl" ] && ! grep -qxF "$_purl" "$_used" 2>/dev/null && ! grep -qxF "$_preferred" "$_tried" 2>/dev/null; then
                     _checked_cat=$((_checked_cat+1))
-                    if [ "$_checked_cat" -le "${WATCHDOG_MAX_CANDIDATES:-3}" ] && watchdog_probe_catalog_candidate "$_preferred" "$_probe_domain"; then
+                    if [ "$_checked_cat" -le "${WATCHDOG_MAX_CANDIDATES:-3}" ]; then
                         printf "%s|bypass\n" "$_preferred"
                         return 0
                     fi
@@ -5693,12 +5665,12 @@ watchdog_pick_replacement() {
             grep -qxF "$_rid" "$_tried" 2>/dev/null && continue
             _checked_cat=$((_checked_cat+1))
             [ "$_checked_cat" -le "${WATCHDOG_MAX_CANDIDATES:-3}" ] || break
-            # Direct HTTPS probe only: no UCI write, no service restart, no flash.
-            if watchdog_probe_catalog_candidate "$_rid" "$_probe_domain"; then
-                printf "%s|%s\n" "$_rid" "$_rcat"
-                return 0
-            fi
-            printf "%s\n" "$_rid" >> "$_tried"
+            # Do not pre-test the candidate through bootstrap DNS. Install it,
+            # restart the real https-dns-proxy instance, and let
+            # watchdog_apply_slot_candidate() accept it only after a successful
+            # local DNS query through 127.0.0.1:PORT.
+            printf "%s|%s\n" "$_rid" "$_rcat"
+            return 0
         done < "$DNS_CATALOG"
     done
     return 1
