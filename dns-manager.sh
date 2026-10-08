@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.44"
+VERSION="3.45"
 # 3.38: clear the LuCI update flag after a successful CLI update.
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
@@ -36,6 +36,8 @@ WATCHDOG_LEGACY_RUNTIME_DIR="/var/run/dns-watchdog"
 WATCHDOG_LAST_RESTART_TS=0
 AUTO_UPDATE_LAST_CHECK_FILE="$STATE_DIR/auto-update-last-check"
 AUTO_UPDATE_CHECK_MAX_AGE=43200
+LUCI_UPDATE_LAST_CHECK_FILE="$STATE_DIR/luci-update-last-check"
+LUCI_UPDATE_CHECK_MAX_AGE=43200
 AUTO_UPDATE_LOCK_DIR="$STATE_DIR/auto-update.lock"
 TEST_RESULTS_META="$STATE_DIR/dns-test-results.meta"
 TEST_RESULTS_MAX_AGE=21600
@@ -4750,6 +4752,17 @@ luci_companion_check_update() {
     _installed_ver="$(luci_installed_version 2>/dev/null || true)"
     [ -n "$_installed_ver" ] || return 0
 
+    _now="$(date +%s 2>/dev/null || printf 0)"
+    _last="$(cat "$LUCI_UPDATE_LAST_CHECK_FILE" 2>/dev/null || true)"
+    case "$_now" in ''|*[!0-9]*) _now="";; esac
+    case "$_last" in ''|*[!0-9]*) _last="";; esac
+    if [ -n "$_now" ] && [ -n "$_last" ]; then
+        _age=$((_now-_last))
+        if [ "$_age" -ge 0 ] 2>/dev/null && [ "$_age" -lt "$LUCI_UPDATE_CHECK_MAX_AGE" ] 2>/dev/null; then
+            return 0
+        fi
+    fi
+
     luci_companion_fetch || return 0
 
     _remote_ver="${LUCI_COMPANION_FETCH_VERSION:-}"
@@ -4758,6 +4771,7 @@ luci_companion_check_update() {
         LUCI_UPDATE_AVAILABLE=1
     fi
 
+    [ -n "$_now" ] && printf '%s\n' "$_now" > "$LUCI_UPDATE_LAST_CHECK_FILE" 2>/dev/null || true
     rm -f "${LUCI_COMPANION_FETCH_FILE:-}" 2>/dev/null || true
     LUCI_COMPANION_FETCH_FILE=""
     LUCI_COMPANION_FETCH_VERSION=""
