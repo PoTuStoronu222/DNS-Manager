@@ -4341,18 +4341,8 @@ manager_force_config_matches() {
     [ "$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null)" = 1 ] || return 1
     [ "$(uci -q get https-dns-proxy.config.notrack_dns 2>/dev/null)" = 1 ] || return 1
     [ "$(uci -q get https-dns-proxy.config.dnsmasq_config_update 2>/dev/null)" = "*" ] || return 1
-    [ "$(uci -q get https-dns-proxy.config.procd_trigger_wan6 2>/dev/null)" = 0 ] || return 1
-    [ "$(uci -q get https-dns-proxy.config.heartbeat_domain 2>/dev/null)" = heartbeat.mossdef.org ] || return 1
-    [ "$(uci -q get https-dns-proxy.config.heartbeat_sleep_timeout 2>/dev/null)" = 10 ] || return 1
-    [ "$(uci -q get https-dns-proxy.config.heartbeat_wait_timeout 2>/dev/null)" = 10 ] || return 1
-    [ "$(uci -q get https-dns-proxy.config.user 2>/dev/null)" = nobody ] || return 1
-    [ "$(uci -q get https-dns-proxy.config.group 2>/dev/null)" = nogroup ] || return 1
-    [ "$(uci -q get https-dns-proxy.config.listen_addr 2>/dev/null)" = 127.0.0.1 ] || return 1
-    [ "$(uci -q get https-dns-proxy.config.force_ip_family 2>/dev/null)" = auto ] || return 1
-    [ "$(uci -q get https-dns-proxy.config.canary_domains_icloud 2>/dev/null)" = 1 ] || return 1
-    [ "$(uci -q get https-dns-proxy.config.canary_domains_mozilla 2>/dev/null)" = 1 ] || return 1
-    force_dns_ports_match_expected || return 1
-    force_dns_src_matches_expected || return 1
+    [ "$(uci -q get https-dns-proxy.config.force_dns_port 2>/dev/null)" = "53 853" ] || return 1
+    [ "$(uci -q get https-dns-proxy.config.force_dns_src_interface 2>/dev/null)" = "lan" ] || return 1
     return 0
 }
 uninstall_manager_impl() {
