@@ -63,10 +63,6 @@ LOG_MAX_BYTES=65536
 TX_LOG_MAX_BYTES=65536
 OWNERSHIP_MAX_BYTES=32768
 TX_KEEP_MINUTES=15
-BASELINE_DIR="$BASE_DIR/baseline"
-BASELINE_MANIFEST="$BASELINE_DIR/manifest"
-BASELINE_LAST="$BASELINE_DIR/last-applied.manifest"
-BASELINE_META="$BASELINE_DIR/meta"
 OWNERSHIP="$CFG_DIR/ownership.conf"
 PACKAGE_OWNERSHIP="$CFG_DIR/package-ownership.conf"
 TEST_RESULTS="$STATE_DIR/dns-test-results.conf"
@@ -635,7 +631,7 @@ preflight_readonly() {
 # ==========================================
 # ==========================================
 init_dirs() {
-    mkdir -p "$CFG_DIR" "$STATE_DIR" "$BASELINE_DIR" 2>/dev/null || return 1
+    mkdir -p "$CFG_DIR" "$STATE_DIR" 2>/dev/null || return 1
     if [ -n "${TMP_DIR:-}" ]; then
         mkdir -p "$TMP_DIR" 2>/dev/null || return 1
     fi
@@ -644,244 +640,6 @@ init_dirs() {
 }
 # ==========================================
 # ==========================================
-baseline_files() {
-printf '%s\n'  /etc/config/dhcp  /etc/config/https-dns-proxy  /etc/config/firewall  /etc/config/system  /etc/config/ttyd     /etc/dnsmasq.d/90-dns-manager-bogus.conf    
-}
-sanitize_baseline_shared_files() {
-    [ -s "$BASELINE_MANIFEST" ] && {
-        _bf_tmp="${BASELINE_MANIFEST}.tmp.$$"
-        sed '\|^/etc/crontabs/root|d' "$BASELINE_MANIFEST" > "$_bf_tmp" 2>/dev/null && mv "$_bf_tmp" "$BASELINE_MANIFEST" 2>/dev/null || rm -f "$_bf_tmp" 2>/dev/null
-    }
-    [ -s "$BASELINE_LAST" ] && {
-        _bl_tmp="${BASELINE_LAST}.tmp.$$"
-        sed '\|^/etc/crontabs/root|d' "$BASELINE_LAST" > "$_bl_tmp" 2>/dev/null && mv "$_bl_tmp" "$BASELINE_LAST" 2>/dev/null || rm -f "$_bl_tmp" 2>/dev/null
-    }
-    rm -f "$BASELINE_DIR/files/etc_crontabs_root" 2>/dev/null || true
-}
-baseline_key() {
-printf '%s' "$1" | sed 's#^/##; s#[/ ]#_#g'
-}
-ensure_baseline_captured() {
-    [ -s "$BASELINE_MANIFEST" ] && return 0
-    if [ "${MUTATION_LOCK_HELD:-0}" = 1 ]; then
-        baseline_capture_once
-        return $?
-    fi
-    acquire_mutation_lock || return 1
-    baseline_capture_once
-    _rc=$?
-    release_mutation_lock
-    return "$_rc"
-}
-baseline_capture_once() {
-    sanitize_baseline_shared_files 2>/dev/null || true
-    [ -s "$BASELINE_MANIFEST" ] && return 0
-    mkdir -p "$BASELINE_DIR/files" || return 1
-    : > "$BASELINE_MANIFEST"
-    while IFS= read -r _f; do
-        [ -n "$_f" ] || continue
-        _k="$(baseline_key "$_f")"
-        if [ -f "$_f" ]; then
-            cp -p "$_f" "$BASELINE_DIR/files/$_k" 2>/dev/null || return 1
-            _h="$(file_hash "$_f")"
-            printf '%s|%s|1|%s\n' "$_f" "$_k" "$_h" >> "$BASELINE_MANIFEST"
-        else
-            printf '%s|%s|0|NONE\n' "$_f" "$_k" >> "$BASELINE_MANIFEST"
-        fi
-    done <<EOF_BASELINE
-$(baseline_files)
-EOF_BASELINE
-    printf 'created_at=%s\n' "$(date +%s)" > "$BASELINE_META"
-    printf 'manager_version=%s\n' "$VERSION" >> "$BASELINE_META"
-    printf 'clean_profile=1\n' >> "$BASELINE_META"
-    printf 'openwrt_release=%s\n' "$SYS_OWRT" >> "$BASELINE_META"
-    printf 'firewall=%s\n' "$SYS_FW" >> "$BASELINE_META"
-    # Snapshot relevant service/package state before the first manager mutation.
-    for _svc in https-dns-proxy dnsmasq sysntpd ttyd; do
-        if [ -x "/etc/init.d/$_svc" ]; then
-            "/etc/init.d/$_svc" enabled >/dev/null 2>&1 && _en=yes || _en=no
-        else
-            _en=unknown
-        fi
-        case "$_svc" in
-            https-dns-proxy) pidof https-dns-proxy >/dev/null 2>&1 && _run=yes || _run=no ;;
-            dnsmasq) pidof dnsmasq >/dev/null 2>&1 && _run=yes || _run=no ;;
-            sysntpd) [ -x /etc/init.d/sysntpd ] && /etc/init.d/sysntpd status >/dev/null 2>&1 && _run=yes || _run=no ;;
-            ttyd) pidof ttyd >/dev/null 2>&1 && _run=yes || _run=no ;;
-        esac
-        printf 'service_%s_enabled=%s\n' "$_svc" "$_en" >> "$BASELINE_META"
-        printf 'service_%s_running=%s\n' "$_svc" "$_run" >> "$BASELINE_META"
-    done
-    for _pkg in curl https-dns-proxy ca-bundle dnsmasq bind-dig knot-dig ttyd luci-app-https-dns-proxy; do
-        package_is_installed "$_pkg" && _pst=1 || _pst=0
-        printf 'package_%s=%s\n' "$_pkg" "$_pst" >> "$BASELINE_META"
-    done
-    info_msg "Исходная конфигурация до первого изменения DNS Manager сохранена."
-    log_tx "BASELINE" "router" "CAPTURE" "OK" "dir=$BASELINE_DIR;clean_profile=1"
-}
-baseline_mark_applied() {
-    [ -s "$BASELINE_MANIFEST" ] || return 1
-    : > "$BASELINE_LAST"
-    while IFS='|' read -r _f _k _existed _basehash; do
-        [ -n "$_f" ] || continue
-        if [ -f "$_f" ]; then
-            _curh="$(file_hash "$_f")"
-            printf '%s|%s|1|%s\n' "$_f" "$_k" "$_curh" >> "$BASELINE_LAST"
-        else
-            printf '%s|%s|0|NONE\n' "$_f" "$_k" >> "$BASELINE_LAST"
-        fi
-    done < "$BASELINE_MANIFEST"
-    return 0
-}
-baseline_restore_path() {
-    case "$1" in
-        /etc/sysctl.d/90-dns-manager.conf|/etc/sysctl.d/91-dns-manager-extended.conf|/etc/dnsmasq.d/91-dns-manager-client-fixes.conf)
-            rm -f "$1" >/dev/null 2>&1 || true
-            return 0
-            ;;
-    esac
-    _path="$1"
-    [ -n "$_path" ] || return 3
-    [ -s "$BASELINE_MANIFEST" ] || return 3
-    _base_line="$(awk -F"|" -v f="$_path" '$1==f{print;exit}' "$BASELINE_MANIFEST" 2>/dev/null)"
-    [ -n "$_base_line" ] || return 3
-    IFS="|" read -r _bf _bk _base_existed _base_hash <<EOF_RB_BASE
-$_base_line
-EOF_RB_BASE
-    if [ "$_base_existed" = 1 ]; then
-        [ -f "$BASELINE_DIR/files/$_bk" ] || return 3
-        cp -p "$BASELINE_DIR/files/$_bk" "$_path" 2>/dev/null || return 1
-    else
-        rm -f "$_path" 2>/dev/null || return 1
-    fi
-    return 0
-}
-baseline_restore() {
-    BASELINE_RESTORED_DHCP=0
-    BASELINE_RESTORED_HDP=0
-    BASELINE_RESTORED_FIREWALL=0
-    BASELINE_RESTORED_SYSTEM=0
-    BASELINE_RESTORED_BOGUS=0
-    BASELINE_RESTORE_COUNT=0
-
-    [ -s "$BASELINE_MANIFEST" ] || return 2
-    [ -s "$BASELINE_LAST" ] || return 2
-    grep -q '^clean_profile=1$' "$BASELINE_META" 2>/dev/null || return 2
-
-    for _f in $(baseline_files); do
-        [ -n "$_f" ] || continue
-        _r=3
-        baseline_restore_path "$_f" && _r=0 || _r=$?
-        [ "$_r" -eq 0 ] || continue
-        BASELINE_RESTORE_COUNT=$((BASELINE_RESTORE_COUNT+1))
-        case "$_f" in
-            /etc/config/dhcp) BASELINE_RESTORED_DHCP=1;;
-            /etc/config/https-dns-proxy) BASELINE_RESTORED_HDP=1;;
-            /etc/config/firewall) BASELINE_RESTORED_FIREWALL=1;;
-            /etc/config/system) BASELINE_RESTORED_SYSTEM=1;;
-            /etc/dnsmasq.d/90-dns-manager-bogus.conf) BASELINE_RESTORED_BOGUS=1;;
-        esac
-    done
-
-    [ "$BASELINE_RESTORE_COUNT" -gt 0 ] || return 2
-    log_tx "BASELINE" "router" "RESTORE" "OK" "files=$BASELINE_RESTORE_COUNT;per_file=yes"
-    return 0
-}
-
-clear_baseline_for_reacquire() {
-    rm -rf "$BASELINE_DIR" 2>/dev/null
-    mkdir -p "$BASELINE_DIR/files" 2>/dev/null || return 1
-    rm -f "$BASELINE_MANIFEST" "$BASELINE_LAST" "$BASELINE_META" 2>/dev/null
-    info_msg "Исходная копия удалена. При следующем применении будет создана новая."
-}
-baseline_uninstall_validate() {
-    [ -s "$BASELINE_MANIFEST" ] || return 1
-    [ -d "$BASELINE_DIR/files" ] || return 1
-    grep -q '^clean_profile=1$' "$BASELINE_META" 2>/dev/null || return 1
-
-    _valid=0
-    while IFS='|' read -r _f _k _existed _hash; do
-        [ -n "$_f" ] || continue
-        case "$_f" in
-            /etc/sysctl.d/90-dns-manager.conf|/etc/sysctl.d/91-dns-manager-extended.conf|/etc/dnsmasq.d/91-dns-manager-client-fixes.conf)
-                continue
-                ;;
-            /etc/config/dhcp|/etc/config/https-dns-proxy|/etc/config/firewall|/etc/config/system|/etc/config/ttyd|/etc/dnsmasq.d/90-dns-manager-bogus.conf)
-                ;;
-            *) return 1 ;;
-        esac
-        [ "$_k" = "$(baseline_key "$_f")" ] || return 1
-        case "$_existed" in
-            0) [ "$_hash" = NONE ] || return 1 ;;
-            1)
-                [ -f "$BASELINE_DIR/files/$_k" ] || return 1
-                _saved_hash="$(file_hash "$BASELINE_DIR/files/$_k" 2>/dev/null)"
-                [ -n "$_saved_hash" ] && [ "$_saved_hash" = "$_hash" ] || return 1
-                ;;
-            *) return 1 ;;
-        esac
-        _valid=$((_valid+1))
-    done < "$BASELINE_MANIFEST"
-    [ "$_valid" -gt 0 ] || return 1
-    return 0
-}
-manager_state_requires_original_restore() {
-    # A baseline is required only when DNS Manager changed the core DNS path.
-    # Standalone additional modules are reverted directly to their stock state.
-    [ -s "$OWNERSHIP" ] && grep -Eq '^(doh|dnsmasq)\|' "$OWNERSHIP" 2>/dev/null && return 0
-    [ -s "$CONFIG_FILE" ] && {
-        for _v in SLOT_1 SLOT_2 SLOT_3 SLOT_4 SLOT_5 SLOT_6 SLOT_RU PORT_1 PORT_2 PORT_3 PORT_4 PORT_5 PORT_6 PORT_RU; do
-            eval "_mv=\${$_v:-}"
-            [ -n "$_mv" ] && return 0
-        done
-    }
-    return 1
-}
-baseline_restore_for_uninstall() {
-    baseline_uninstall_validate || {
-        warn_msg "Исходная копия DNS Manager отсутствует или повреждена. Без неё удаление остановлено, чтобы не угадывать исходные настройки."
-        return 1
-    }
-    [ -s "$BASELINE_LAST" ] || {
-        warn_msg "Контрольный снимок последнего применения отсутствует. Без него удаление общих UCI-файлов не выполняю."
-        return 1
-    }
-
-    UNINSTALL_RESTORED_DHCP=0
-    UNINSTALL_RESTORED_HDP=0
-    UNINSTALL_RESTORED_FIREWALL=0
-    UNINSTALL_RESTORED_SYSTEM=0
-    UNINSTALL_RESTORED_TTYD=0
-    UNINSTALL_RESTORED_BOGUS=0
-    UNINSTALL_RESTORE_COUNT=0
-    UNINSTALL_SKIPPED_COUNT=0
-
-    # Restore the original file only when it still matches the state recorded
-    # after the last successful DNS Manager Apply. Otherwise preserve the file
-    # and let the targeted cleanup remove only manager-owned artifacts.
-    while IFS='|' read -r _f _k _existed _base_hash; do
-        [ -n "$_f" ] || continue
-        if baseline_restore_path "$_f"; then
-            UNINSTALL_RESTORE_COUNT=$((UNINSTALL_RESTORE_COUNT+1))
-            case "$_f" in
-                /etc/config/dhcp) UNINSTALL_RESTORED_DHCP=1 ;;
-                /etc/config/https-dns-proxy) UNINSTALL_RESTORED_HDP=1 ;;
-                /etc/config/firewall) UNINSTALL_RESTORED_FIREWALL=1 ;;
-                /etc/config/system) UNINSTALL_RESTORED_SYSTEM=1 ;;
-                /etc/config/ttyd) UNINSTALL_RESTORED_TTYD=1 ;;
-                /etc/dnsmasq.d/90-dns-manager-bogus.conf) UNINSTALL_RESTORED_BOGUS=1 ;;
-            esac
-        else
-            _r=$?
-            UNINSTALL_SKIPPED_COUNT=$((UNINSTALL_SKIPPED_COUNT+1))
-            [ "$_r" = 2 ] || return 1
-        fi
-    done < "$BASELINE_MANIFEST"
-
-    [ "$UNINSTALL_RESTORE_COUNT" -gt 0 ] || [ "$UNINSTALL_SKIPPED_COUNT" -gt 0 ] || return 1
-    log_tx "UNINSTALL" "baseline" "RESTORE" "OK" "restored=$UNINSTALL_RESTORE_COUNT;skipped=$UNINSTALL_SKIPPED_COUNT;guard=enabled"
-    return 0
-}
 catalog_download() {
     _out="$1"
     _url="${DNSCAT_URL}?_dmcb=$(date +%s 2>/dev/null || printf 0)-$$"
@@ -4259,7 +4017,6 @@ _apply_settings_impl() {
     else
         apply_progress "Текущая DNS-схема отличается; выполняется пересборка выбранного набора DNS Manager."
     fi
-    baseline_capture_once || { err_msg "Не удалось сохранить исходную копию. Настройки не изменены."; return 1; }
     tx_snapshot_start || { err_msg "Не удалось сохранить копию настроек. Настройки не изменены."; return 1; }
     DEFER_CONFIG_SAVE=1
     log_tx "PLAN" "all" "APPLY" "START" "version=$VERSION"
@@ -4371,7 +4128,6 @@ _apply_settings_impl() {
         pause
         return 1
     fi
-    baseline_mark_applied || warn_msg "Не удалось обновить контрольный снимок."
         DEFER_CONFIG_SAVE=0
         save_config || {
             err_msg "Не удалось сохранить итоговую конфигурацию DNS Manager. Изменения откатываются."
@@ -4417,34 +4173,12 @@ apply_settings() {
     fi
     acquire_mutation_lock || return 1
     _rc=0
-    ensure_baseline_captured || {
-        release_mutation_lock
-        err_msg "Не удалось сохранить исходное состояние до установки зависимостей."
-        return 1
-    }
     install_missing_dependencies || _rc=$?
     if [ "$_rc" -eq 0 ]; then
         _apply_settings_impl "$@" || _rc=$?
     fi
     release_mutation_lock
     return "$_rc"
-}
-restore_hdp_control_from_baseline() {
-    _bf="$BASELINE_DIR/files/etc_config_https-dns-proxy"
-    [ -f "$_bf" ] || return 0
-    for _opt in dnsmasq_config_update force_dns notrack_dns; do
-        _v="$(awk -v o="$_opt" '
-            /^config[[:space:]]+main([[:space:]]|$)/ { in_main=1; next }
-            /^config[[:space:]]/ { in_main=0 }
-            in_main && $1=="option" && $2==o { v=$3; gsub(/^'"'"'|'"'"'$/, "", v); print v; exit }
-        ' "$_bf" 2>/dev/null)"
-        if [ -n "$_v" ]; then
-            uci set "https-dns-proxy.config.$_opt=$_v" 2>/dev/null || true
-        else
-            uci -q delete "https-dns-proxy.config.$_opt" 2>/dev/null || true
-        fi
-    done
-    uci commit https-dns-proxy 2>/dev/null || true
 }
 rollback_ownership_has() {
     _t="$1"; _k="$2"; _v="$3"
@@ -4486,27 +4220,11 @@ EOF_RB_DNSMASQ
     done
 
     if [ "${ROLLBACK_DNS_CORE_ONLY:-0}" != 1 ] && rollback_ownership_has dnsmasq confdir /etc/dnsmasq.d; then
-        _baseline_confdir=0
-        # If the clean baseline explicitly contained /etc/dnsmasq.d, it belongs
-        # to the original system and must remain. Otherwise remove only the
-        # manager-added list item.
-        if [ -s "$BASELINE_DIR/files/etc_config_dhcp" ]; then
-            _tmpbase="$TMP_DIR/rb-baseline-uci-$$"
-            rm -rf "$_tmpbase" 2>/dev/null || true
-            mkdir -p "$_tmpbase" 2>/dev/null && cp -p "$BASELINE_DIR/files/etc_config_dhcp" "$_tmpbase/dhcp" 2>/dev/null || true
-            if [ -f "$_tmpbase/dhcp" ]; then
-                uci -c "$_tmpbase" -q get "dhcp.$sec.confdir" 2>/dev/null | tr ' ' '\n' | grep -qxF /etc/dnsmasq.d 2>/dev/null && _baseline_confdir=1
-            fi
-            rm -rf "$_tmpbase" 2>/dev/null || true
-        fi
-        if [ "$_baseline_confdir" -eq 0 ]; then
-            _cur_conf="$(uci -q get "dhcp.$sec.confdir" 2>/dev/null | tr ' ' '\n')"
-            if printf '%s\n' "$_cur_conf" | grep -qxF /etc/dnsmasq.d 2>/dev/null; then
-                uci -q del_list "dhcp.$sec.confdir=/etc/dnsmasq.d" >/dev/null 2>&1 && _changed=1
-            fi
+        _cur_conf="$(uci -q get "dhcp.$sec.confdir" 2>/dev/null | tr " " "\n")"
+        if printf "%s\n" "$_cur_conf" | grep -qxF /etc/dnsmasq.d 2>/dev/null; then
+            uci -q del_list "dhcp.$sec.confdir=/etc/dnsmasq.d" >/dev/null 2>&1 && _changed=1
         fi
     fi
-
     if [ "$_changed" = 1 ]; then
         uci commit dhcp >/dev/null 2>&1 || return 1
         /etc/init.d/dnsmasq restart >/dev/null 2>&1 || true
@@ -4603,189 +4321,6 @@ rollback_firewall_targeted() {
     return 0
 }
 
-reset_manager_runtime_state_after_rollback() {
-    SLOT_1=""; SLOT_2=""; SLOT_3=""; SLOT_4=""; SLOT_5=""; SLOT_6=""
-
-    PORT_1=""; PORT_2=""; PORT_3=""; PORT_4=""; PORT_5=""; PORT_6=""
-
-    SLOT_1_CAT=""; SLOT_2_CAT=""; SLOT_3_CAT=""; SLOT_4_CAT=""; SLOT_5_CAT=""; SLOT_6_CAT=""
-    SLOT_RU_CAT=""
-    TLD_RU_ENABLED=0
-    TLD_SPLIT=0
-    BALANCER_ENABLED=0
-    NTP_IP_FALLBACK=0
-    DNSMASQ_PERF=0
-    FORCE_DOH=0
-    WATCHDOG_ENABLED=0
-    WEB_ACCESS_ENABLED=0
-    DNS_PROFILE="custom"
-    DNS_SELECTION_MODE="quick"
-    DNS_SELECTION_CATEGORY="bypass"
-    save_config >/dev/null 2>&1 || return 1
-    return 0
-}
-
-cleanup_manager_rollback_state() {
-    rm -f "$STATE_DIR/sysctl-extended-before.conf" "$WATCHDOG_CRON_STATE" "$FIREWALL_OWNERSHIP" 2>/dev/null || true
-    : > "$OWNERSHIP" 2>/dev/null || true
-    chmod 600 "$OWNERSHIP" 2>/dev/null || true
-    rm -f "$BASELINE_LAST" "$BASELINE_MANIFEST" "$BASELINE_META" 2>/dev/null || true
-    rm -rf "$BASELINE_DIR/files" 2>/dev/null || true
-    rmdir "$BASELINE_DIR" 2>/dev/null || true
-    rm -rf "$TX_DIR" 2>/dev/null || true
-    TX_DIR=""
-    TX_ACTIVE=0
-    TX_WD_LEGACY_DAEMON_EXISTED=0
-    TX_WD_SERVICE_EXISTED=0
-    TX_WD_ENABLED=unknown
-    TX_WD_RUNNING=unknown
-}
-
-_rollback_ours_impl() {
-    clear_screen
-    WEB_ACCESS_ENABLED=0
-    web_access_luci_remove
-    web_access_remove_config
-    watchdog_service_stop_disable >/dev/null 2>&1 || true
-    watchdog_service_remove_files >/dev/null 2>&1 || true
-    watchdog_cron_remove_owned_block >/dev/null 2>&1 || true
-    printf "${C_YELLOW}=== 🔄 Удаление изменений DNS Manager ===${C_NC}\n"
-
-    BASELINE_RESTORED_DHCP=0
-    BASELINE_RESTORED_HDP=0
-    BASELINE_RESTORED_FIREWALL=0
-    BASELINE_RESTORED_SYSTEM=0
-    BASELINE_RESTORED_BOGUS=0
-
-    _rollback_fail=0
-    _baseline_rc=2
-    baseline_restore || _baseline_rc=$?
-
-    # Shared UCI files are restored independently. A change made by another
-    # component therefore blocks only that file, not the whole rollback.
-    if [ "$BASELINE_RESTORED_DHCP" != 1 ]; then
-        if ! rollback_dnsmasq_targeted; then
-            _rollback_fail=1
-            warn_msg "Не удалось полностью очистить собственные изменения dnsmasq."
-        fi
-        if [ "$(check_module_state dnsmasq_perf 2>/dev/null)" = 1 ]; then
-            DNSMASQ_PERF=0
-            remove_dnsmasq_perf || { _rollback_fail=1; warn_msg "Не удалось восстановить настройки DNS-кэша."; }
-        fi
-    fi
-
-    if [ "$BASELINE_RESTORED_HDP" != 1 ]; then
-        if ! rollback_hdp_targeted; then
-            _rollback_fail=1
-            warn_msg "Не удалось полностью очистить собственные изменения https-dns-proxy."
-        fi
-        if [ "$(check_module_state force 2>/dev/null)" = 1 ]; then
-            remove_dns_force || { _rollback_fail=1; warn_msg "Не удалось восстановить принудительный DNS."; }
-        fi
-    fi
-
-    if [ "$BASELINE_RESTORED_FIREWALL" != 1 ]; then
-        if ! rollback_firewall_targeted; then
-            _rollback_fail=1
-            warn_msg "Не удалось полностью очистить собственные правила firewall."
-        fi
-    fi
-
-    if [ "$BASELINE_RESTORED_BOGUS" != 1 ]; then
-        if rollback_ownership_has file /etc/dnsmasq.d/90-dns-manager-bogus.conf created; then
-            rm -f /etc/dnsmasq.d/90-dns-manager-bogus.conf || { _rollback_fail=1; warn_msg "Не удалось удалить manager-owned bogus-nxdomain."; }
-        fi
-    fi
-    if [ "$BASELINE_RESTORED_SYSTEM" != 1 ]; then
-        if [ "$(check_module_state ntp 2>/dev/null)" = 1 ]; then
-            remove_ntp_ip_fallback || _rollback_fail=1
-        else
-            [ "$(check_module_state ntp 2>/dev/null)" = 2 ] && warn_msg "Системный NTP изменён извне; /etc/config/system сохраняю."
-        fi
-    fi
-
-
-    /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || true
-    /etc/init.d/dnsmasq restart >/dev/null 2>&1 || true
-    reload_fw >/dev/null 2>&1 || true
-
-    # The manager itself remains installed, but its persistent state must no
-    # longer claim that an active DNS Manager configuration exists.
-    if ! reset_manager_runtime_state_after_rollback; then
-        _rollback_fail=1
-        warn_msg "Не удалось полностью сбросить сохранённое состояние DNS Manager."
-    fi
-    cleanup_manager_rollback_state
-
-    # Any hard failure in a targeted cleanup is reported as such. A missing
-    # baseline by itself is not a hard failure: the ownership-based cleanup
-    # can still remove artifacts from the current manager version safely.
-    if [ "${_rollback_fail:-0}" -eq 0 ]; then
-        ok_msg "Изменения DNS Manager удалены. Внешние изменения, обнаруженные после применения, сохранены."
-        log_tx "ROLLBACK" "manager" "REMOVE" "OK" "baseline_files=${BASELINE_RESTORE_COUNT:-0};per_file=yes;baseline_rc=${_baseline_rc:-2}"
-        pause
-        return 0
-    fi
-
-    err_msg "Удаление завершилось не полностью. Сторонние настройки автоматически не удалялись; проверьте журнал DNS Manager."
-    log_tx "ROLLBACK" "manager" "REMOVE" "FAIL" "baseline_files=${BASELINE_RESTORE_COUNT:-0};per_file=yes"
-    pause
-    return 1
-}
-
-restore_dns_core_path_safe() {
-    _path="$1"
-    [ -n "$_path" ] || return 3
-    [ -s "$BASELINE_MANIFEST" ] || return 2
-    [ -s "$BASELINE_LAST" ] || return 2
-    grep -q "^clean_profile=1$" "$BASELINE_META" 2>/dev/null || return 2
-
-    _last_line="$(awk -F"|" -v f="$_path" '$1==f{print;exit}' "$BASELINE_LAST" 2>/dev/null)"
-    [ -n "$_last_line" ] || return 2
-    IFS="|" read -r _lf _lk _lexisted _lhash <<EOF_CORE_RB_LAST
-$_last_line
-EOF_CORE_RB_LAST
-
-    # Restore only when the file is still exactly the state produced by the
-    # last successful DNS Manager application. External changes stay intact.
-    if [ "$_lexisted" = 1 ]; then
-        _curhash="$(file_hash "$_path" 2>/dev/null)"
-        [ -n "$_curhash" ] && [ "$_curhash" = "$_lhash" ] || return 2
-    else
-        [ ! -e "$_path" ] || return 2
-    fi
-
-    _base_line="$(awk -F"|" -v f="$_path" '$1==f{print;exit}' "$BASELINE_MANIFEST" 2>/dev/null)"
-    [ -n "$_base_line" ] || return 3
-    IFS="|" read -r _bf _bk _bexisted _bhash <<EOF_CORE_RB_BASE
-$_base_line
-EOF_CORE_RB_BASE
-
-    if [ "$_bexisted" = 1 ]; then
-        [ -f "$BASELINE_DIR/files/$_bk" ] || return 3
-        cp -p "$BASELINE_DIR/files/$_bk" "$_path" 2>/dev/null || return 1
-    else
-        rm -f "$_path" 2>/dev/null || return 1
-    fi
-    return 0
-}
-
-restore_dns_core_service_state() {
-    [ -s "$BASELINE_META" ] || return 2
-    _enabled="$(sed -n 's/^service_https-dns-proxy_enabled=//p' "$BASELINE_META" 2>/dev/null | head -n1)"
-    _running="$(sed -n 's/^service_https-dns-proxy_running=//p' "$BASELINE_META" 2>/dev/null | head -n1)"
-    [ "$_enabled" = yes ] || [ "$_enabled" = no ] || return 2
-    case "$_enabled" in
-        yes) /etc/init.d/https-dns-proxy enable >/dev/null 2>&1 || true ;;
-        no)  /etc/init.d/https-dns-proxy disable >/dev/null 2>&1 || true ;;
-    esac
-    case "$_running" in
-        yes) /etc/init.d/https-dns-proxy start >/dev/null 2>&1 || true ;;
-        no)  /etc/init.d/https-dns-proxy stop >/dev/null 2>&1 || true ;;
-    esac
-    return 0
-}
-
 clear_dns_core_runtime_state() {
     SLOT_1=""; SLOT_2=""; SLOT_3=""; SLOT_4=""; SLOT_5=""; SLOT_6=""
     SLOT_RU=""
@@ -4803,50 +4338,18 @@ clear_dns_core_runtime_state() {
     save_config >/dev/null 2>&1
 }
 restore_dns_core() {
-    # Restore the exact pre-Manager DNS core when safe. If the baseline file
-    # was changed externally after the last apply, preserve that file and
-    # remove only Manager-owned artifacts instead.
     acquire_mutation_lock || return 1
-    _rc=0
-    _rb_hdp=2
-    _rb_dhcp=2
     clear_screen
     printf "%s\n" "${C_YELLOW}=== Восстановление стандартной настройки DNS ===${C_NC}"
 
-    run_discovery >/dev/null 2>&1 || true
-
-    restore_dns_core_path_safe /etc/config/https-dns-proxy
-    _rb_hdp=$?
-    restore_dns_core_path_safe /etc/config/dhcp
-    _rb_dhcp=$?
-
-    if [ "$_rb_hdp" -ne 0 ]; then
-        rollback_hdp_targeted || _rc=1
-    fi
-    if [ "$_rb_dhcp" -ne 0 ]; then
-        ROLLBACK_DNS_CORE_ONLY=1
-        rollback_dnsmasq_targeted || _rc=1
-        unset ROLLBACK_DNS_CORE_ONLY
-    fi
-
-    # Apply the restored configuration first. Service state is restored
-    # afterwards so a service that was originally stopped stays stopped.
-    if [ "$_rb_hdp" -eq 0 ]; then
-        /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || true
-    fi
+    _rc=0
+    rollback_hdp_targeted >/dev/null 2>&1 || _rc=1
+    rollback_dnsmasq_targeted >/dev/null 2>&1 || _rc=1
+    rollback_firewall_targeted >/dev/null 2>&1 || _rc=1
+    /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || true
     /etc/init.d/dnsmasq restart >/dev/null 2>&1 || true
-    if [ "$_rb_hdp" -eq 0 ]; then
-        restore_dns_core_service_state || true
-    fi
-
+    reload_fw >/dev/null 2>&1 || true
     clear_dns_core_runtime_state || _rc=1
-
-    if [ -f "$OWNERSHIP" ]; then
-        _own_tmp="${OWNERSHIP}.tmp.$$"
-        sed -E "/^(doh|dnsmasq)\|/d" "$OWNERSHIP" > "$_own_tmp" 2>/dev/null || : > "$_own_tmp"
-        mv "$_own_tmp" "$OWNERSHIP" 2>/dev/null || _rc=1
-        chmod 600 "$OWNERSHIP" 2>/dev/null || true
-    fi
 
     if [ "$_rc" -eq 0 ]; then
         ok_msg "Стандартная настройка DNS восстановлена."
@@ -4857,15 +4360,6 @@ restore_dns_core() {
     release_mutation_lock
     return "$_rc"
 }
-
-rollback_ours() {
-    acquire_mutation_lock || return 1
-    _rc=0
-    _rollback_ours_impl "$@" || _rc=$?
-    release_mutation_lock
-    return "$_rc"
-}
-
 manager_running_under_ttyd() {
     _pid="$$"
     _depth=0
@@ -4924,20 +4418,9 @@ defer_ttyd_action() {
 uninstall_manager_impl() {
     clear_screen
     menu_header "УДАЛЕНИЕ DNS MANAGER"
-    warn_msg "Будет удалён DNS Manager, а настройки роутера будут возвращены в состояние, сохранённое ДО первого применения DNS Manager."
-    printf "\n${C_YELLOW}Это включает сохранённую конфигурацию DoH: она вернётся к той, что была до DNS Manager.${C_NC}\n"
-    printf "${C_YELLOW}Текущие изменения, сделанные самим DNS Manager после этого, будут отменены.${C_NC}\n"
-    printf "${C_RED}Если исходная копия отсутствует или повреждена, удаление не продолжится.${C_NC}\n\n"
-    confirm_action "Полностью удалить DNS Manager и восстановить исходное состояние?" || { info_msg "Отменено."; pause; return 0; }
-
-    # Validate BEFORE touching any live configuration.
-    if [ -s "$BASELINE_MANIFEST" ]; then
-        baseline_uninstall_validate || {
-            err_msg "Удаление остановлено: исходная копия отсутствует/повреждена."
-            pause
-            return 1
-        }
-    fi
+    warn_msg "DNS Manager будет удалён, его функции выключены, а созданные им настройки и службы очищены."
+    printf "\n${C_YELLOW}Изменения сторонних служб и настроек автоматически не восстанавливаются и не удаляются.${C_NC}\n\n"
+    confirm_action "Полностью удалить DNS Manager?" || { info_msg "Отменено."; pause; return 0; }
 
     acquire_mutation_lock || return 1
     _rc=0
@@ -4947,194 +4430,66 @@ uninstall_manager_impl() {
     UNINSTALL_TTYD_ACTION=""
     UNINSTALL_DEFER_TTYD_PACKAGE=0
 
-    # With no baseline, validate that there is truly no active manager state
-    # before stopping the procd watchdog. An aborted uninstall must not leave
-    # a configured watchdog silently disabled.
-    if [ ! -s "$BASELINE_MANIFEST" ] && manager_state_requires_original_restore; then
-        err_msg "Удаление остановлено: менеджер имеет признаки активной конфигурации, но исходная копия отсутствует. Настройки не угадываю и watchdog не отключаю."
-        release_mutation_lock
-        pause
-        return 1
+    _hdp_package_owned=0
+    [ -f "$PACKAGE_OWNERSHIP" ] && grep -Fqx "https-dns-proxy" "$PACKAGE_OWNERSHIP" 2>/dev/null && _hdp_package_owned=1
+
+    watchdog_service_stop_disable >/dev/null 2>&1 || true
+    watchdog_cron_remove_owned_block >/dev/null 2>&1 || true
+
+    rollback_hdp_targeted >/dev/null 2>&1 || _rc=1
+    rollback_dnsmasq_targeted >/dev/null 2>&1 || _rc=1
+    rollback_firewall_targeted >/dev/null 2>&1 || _rc=1
+
+    if [ "$(check_module_state force 2>/dev/null)" = 1 ]; then
+        FORCE_DOH=0
+        remove_dns_force >/dev/null 2>&1 || _rc=1
+    fi
+    if [ "$(check_module_state dnsmasq_perf 2>/dev/null)" = 1 ]; then
+        DNSMASQ_PERF=0
+        remove_dnsmasq_perf >/dev/null 2>&1 || _rc=1
+    fi
+    if [ "$(check_module_state ntp 2>/dev/null)" = 1 ]; then
+        remove_ntp_ip_fallback >/dev/null 2>&1 || _rc=1
+    fi
+    if rollback_ownership_has file /etc/dnsmasq.d/90-dns-manager-bogus.conf created; then
+        rm -f /etc/dnsmasq.d/90-dns-manager-bogus.conf >/dev/null 2>&1 || _rc=1
     fi
 
-    # Stop procd watchdog before touching configuration so it cannot race with restoration.
-    if [ -x "$WATCHDOG_SERVICE_PATH" ]; then
-        if ! watchdog_service_stop_disable; then
-            release_mutation_lock
-            pause
-            return 1
-        fi
-    fi
-
-    # No baseline means the manager was installed but never performed a
-    # state-changing Apply. In that case there is nothing to restore.
-    if [ -s "$BASELINE_MANIFEST" ]; then
-        # Remove cron first so no scheduled process can race with restoration.
-        if ! watchdog_cron_remove_owned_block >/dev/null 2>&1; then
-            err_msg "Удаление остановлено: cron-запись DNS Manager не удалось удалить безопасно."
-            release_mutation_lock
-            pause
-            return 1
-        fi
-        watchdog_cron_scheduler_detect >/dev/null 2>&1 || true
-        if watchdog_cron_marker_exists >/dev/null 2>&1; then
-            err_msg "Удаление остановлено: собственная cron-запись DNS Manager всё ещё присутствует."
-            release_mutation_lock
-            pause
-            return 1
-        fi
-
-        # Remove manager's LuCI launcher before the final service reloads.
-        web_access_luci_remove >/dev/null 2>&1 || true
-        [ ! -f "$LUCI_CONTROLLER" ] || {
-            err_msg "Удаление остановлено: LuCI-контроллер DNS Manager не удалось удалить."
-            release_mutation_lock
-            pause
-            return 1
-        }
-
-        # Restore the complete pre-manager state before attempting package removal.
-        # Package-manager failures must never block network/config restoration.
-        if ! baseline_restore_for_uninstall; then
-            err_msg "Удаление остановлено: не удалось безопасно восстановить исходное состояние. Сам менеджер НЕ удалён."
-            release_mutation_lock
-            pause
-            return 1
-        fi
-
-        # Files changed after the last Apply are kept intact; remove only manager-owned artifacts.
-        if [ "$UNINSTALL_RESTORED_DHCP" != 1 ]; then
-            rollback_dnsmasq_targeted >/dev/null 2>&1 || true
-            if [ "$(check_module_state dnsmasq_perf 2>/dev/null)" = 1 ]; then
-                DNSMASQ_PERF=0
-                remove_dnsmasq_perf >/dev/null 2>&1 || true
-            fi
-        fi
-        if [ "$UNINSTALL_RESTORED_HDP" != 1 ]; then
-            rollback_hdp_targeted >/dev/null 2>&1 || true
-            if [ "$(check_module_state force 2>/dev/null)" = 1 ]; then
-                remove_dns_force >/dev/null 2>&1 || true
-            fi
-        fi
-        if [ "$UNINSTALL_RESTORED_FIREWALL" != 1 ]; then
-            rollback_firewall_targeted >/dev/null 2>&1 || true
-        fi
-        if [ "$UNINSTALL_RESTORED_SYSTEM" != 1 ]; then
-            remove_ntp_ip_fallback >/dev/null 2>&1 || true
-        fi
-        if [ "$UNINSTALL_RESTORED_BOGUS" != 1 ] && rollback_ownership_has file /etc/dnsmasq.d/90-dns-manager-bogus.conf created; then
-            rm -f /etc/dnsmasq.d/90-dns-manager-bogus.conf >/dev/null 2>&1 || true
-        fi
-        if [ "${UNINSTALL_RESTORED_TTYD:-0}" != 1 ]; then
-            # Compatibility with older DNS Manager baselines that did not
-            # snapshot ttyd. Older versions used the same stable section.
-            web_access_remove_config_no_restart >/dev/null 2>&1 || true
-        fi
+    if [ "$_hdp_package_owned" = 1 ]; then
+        /etc/init.d/https-dns-proxy stop >/dev/null 2>&1 || true
     else
-        if ! watchdog_cron_remove_owned_block >/dev/null 2>&1; then
-            err_msg "Удаление остановлено: cron-запись DNS Manager не удалось удалить безопасно."
-            release_mutation_lock
-            pause
-            return 1
-        fi
-        if watchdog_cron_marker_exists >/dev/null 2>&1; then
-            err_msg "Удаление остановлено: собственная cron-запись DNS Manager всё ещё присутствует."
-            release_mutation_lock
-            pause
-            return 1
-        fi
-        web_access_luci_remove >/dev/null 2>&1 || true
-        [ ! -f "$LUCI_CONTROLLER" ] || {
-            err_msg "Удаление остановлено: LuCI-контроллер DNS Manager не удалось удалить."
-            release_mutation_lock
-            pause
-            return 1
-        }
-        web_access_remove_config_no_restart >/dev/null 2>&1 || true
-
-        # No core DNS Apply: additional modules are independent and return to stock directly.
-        if [ "$(check_module_state ntp 2>/dev/null)" = 1 ]; then remove_ntp_ip_fallback >/dev/null 2>&1 || true; fi
-        if [ "$(check_module_state dnsmasq_perf 2>/dev/null)" = 1 ]; then DNSMASQ_PERF=0; remove_dnsmasq_perf >/dev/null 2>&1 || true; fi
-        if [ "$(check_module_state force 2>/dev/null)" = 1 ]; then remove_dns_force >/dev/null 2>&1 || true; fi
-        if rollback_ownership_has file /etc/dnsmasq.d/90-dns-manager-bogus.conf created; then rm -f /etc/dnsmasq.d/90-dns-manager-bogus.conf >/dev/null 2>&1 || true; fi
         /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || true
-        /etc/init.d/dnsmasq restart >/dev/null 2>&1 || true
-        reload_fw >/dev/null 2>&1 || true
     fi
+    /etc/init.d/dnsmasq restart >/dev/null 2>&1 || true
+    reload_fw >/dev/null 2>&1 || true
 
-    # FIRST restore the live firewall from the restored baseline, so any manager
-    # DNS interception is removed before dnsmasq/DoH service state changes.
-    [ "${UNINSTALL_RESTORED_FIREWALL:-0}" = 1 ] && reload_fw >/dev/null 2>&1 || true
+    WEB_ACCESS_ENABLED=0
+    web_access_luci_remove >/dev/null 2>&1 || _rc=1
+    web_access_remove_config_no_restart >/dev/null 2>&1 || true
+    watchdog_service_remove_files >/dev/null 2>&1 || _rc=1
 
-    # Restore the real service enabled/running state while BASELINE_META still exists.
-    # ttyd is special: restarting/stopping it from inside its own session can kill
-    # this shell before the uninstall has removed the manager executable and locks.
-    for _svc in https-dns-proxy dnsmasq sysntpd ttyd; do
-        [ -s "$BASELINE_META" ] || break
-        _en="$(sed -n "s/^service_${_svc}_enabled=//p" "$BASELINE_META" 2>/dev/null | head -n1)"
-        _run="$(sed -n "s/^service_${_svc}_running=//p" "$BASELINE_META" 2>/dev/null | head -n1)"
-        [ -x "/etc/init.d/$_svc" ] || continue
-        case "$_en" in
-            yes) "/etc/init.d/$_svc" enable >/dev/null 2>&1 || true ;;
-        esac
-        if [ "$_svc" = ttyd ] && [ "${UNINSTALL_UNDER_TTYD:-0}" = 1 ]; then
-            case "$_run" in
-                yes) UNINSTALL_TTYD_ACTION="restart" ;;
-                no) UNINSTALL_TTYD_ACTION="stop" ;;
-            esac
-            continue
-        fi
-        case "$_run" in
-            yes) "/etc/init.d/$_svc" restart >/dev/null 2>&1 || "/etc/init.d/$_svc" start >/dev/null 2>&1 || true ;;
-            no) "/etc/init.d/$_svc" stop >/dev/null 2>&1 || true ;;
-        esac
-    done
-
-    # Remove the new manager-owned procd watchdog artifacts. Legacy cron was removed above.
-    if ! watchdog_service_remove_files; then
-        err_msg "Удаление остановлено: watchdog procd содержит чужой/изменённый файл. Сам менеджер НЕ удалён."
-        release_mutation_lock
-        pause
-        return 1
-    fi
-
-    # Package removal is best-effort. A dependency conflict, missing repository,
-    # or package-manager lock must never turn a completed network restoration into
-    # a half-uninstalled manager. Record the warning and continue cleaning state.
-    UNINSTALL_PACKAGE_WARNING=0
     if ! package_owner_remove_owned >/dev/null 2>&1; then
-        UNINSTALL_PACKAGE_WARNING=1
-        warn_msg "Некоторые пакеты DNS Manager не удалось удалить; конфигурация и службы уже восстановлены, продолжаю очистку."
-        log_msg "Uninstall: package removal returned an error; continuing with configuration/state cleanup."
+        warn_msg "Некоторые пакеты DNS Manager не удалось удалить."
+        _rc=1
+    fi
+    if [ "$_hdp_package_owned" = 1 ]; then
+        rm -f /etc/config/https-dns-proxy >/dev/null 2>&1 || _rc=1
     fi
 
-    # Remove the native LuCI companion only when this DNS Manager installation owns it.
-    # A failure is treated as a cleanup error; network/DNS configuration restoration is already complete.
     if ! luci_companion_remove >/dev/null 2>&1; then
-        if [ -s "$LUCI_STATE_FILE" ]; then
-            UNINSTALL_LUCI_WARNING=1
-            warn_msg "Нативный интерфейс LuCI DNS Manager не удалось удалить автоматически; основной DNS Manager продолжаю удалять после восстановления конфигурации."
-            log_msg "Uninstall: LuCI companion cleanup did not complete."
-        fi
+        warn_msg "Нативный интерфейс LuCI DNS Manager не удалось удалить полностью."
+        _rc=1
     fi
 
-    # Remove all manager state and persistent test data.
     rm -rf "$BASE_DIR" 2>/dev/null || _rc=1
     rm -f "$LOG_FILE" "$TX_LOG" 2>/dev/null || true
     rm -rf "$STATE_DIR" 2>/dev/null || true
-    rm -rf "$WATCHDOG_LEGACY_RUNTIME_DIR" 2>/dev/null || true
-    [ -n "${TMP_DIR:-}" ] && rm -rf "$TMP_DIR" 2>/dev/null || true
-    [ -n "${UPDATE_TMP_FILE:-}" ] && rm -f "$UPDATE_TMP_FILE" 2>/dev/null || true
     cleanup_stale_tmp_dirs >/dev/null 2>&1 || true
-    find /tmp -maxdepth 1 -type f -name 'dns-manager-update-*' -mmin +30 -exec rm -f {} \; 2>/dev/null || true
+    find /tmp -maxdepth 1 -type f -name "dns-manager-update-*" -mmin +30 -exec rm -f {} \; 2>/dev/null || true
     rm -rf /tmp/luci-indexcache* /tmp/luci-modulecache* 2>/dev/null || true
 
-    # Finally remove the executable itself. The running shell can safely
-    # finish after unlinking its own executable path.
     rm -f "$MANAGER_PATH" 2>/dev/null || _rc=1
 
-    # Rebuild/restart ttyd only after this shell has completed its destructive work.
-    # nohup detaches the delayed action from the closing ttyd session.
     if [ -n "${UNINSTALL_TTYD_ACTION:-}" ] || [ "${UNINSTALL_DEFER_TTYD_PACKAGE:-0}" = 1 ]; then
         defer_ttyd_action "${UNINSTALL_TTYD_ACTION:-}" "${UNINSTALL_DEFER_TTYD_PACKAGE:-0}" "${PKG_MGR:-}"
     fi
@@ -5142,22 +4497,15 @@ uninstall_manager_impl() {
     release_mutation_lock
     if [ "$_rc" -eq 0 ]; then
         printf "\n${C_GREEN}${C_BOLD}DNS Manager полностью удалён.${C_NC}\n"
-        printf "${C_GREEN}Исходное состояние роутера восстановлено по сохранённой штатной копии; изменения после Apply не сохраняются.${C_NC}\n"
-        if [ "${UNINSTALL_PACKAGE_WARNING:-0}" = 1 ]; then
-            printf "${C_YELLOW}Некоторые необязательные пакеты не удалились; это не повлияло на восстановление конфигурации.${C_NC}\n"
-        fi
-        if [ "${UNINSTALL_LUCI_WARNING:-0}" = 1 ]; then
-            printf "${C_YELLOW}Нативный интерфейс LuCI мог остаться установленным: удаление companion не подтвердилось автоматически.${C_NC}\n"
-        fi
-        printf "${C_YELLOW}Возвращаемся в shell.${C_NC}\n"
+        printf "${C_GREEN}Функции выключены, собственные DNS/Firewall/служебные настройки очищены.${C_NC}\n"
+        [ "${UNINSTALL_UNDER_TTYD:-0}" = 1 ] && printf "${C_YELLOW}Терминальный доступ завершит отложенное действие после удаления Manager.${C_NC}\n"
         exit 0
     fi
 
-    err_msg "Менеджер удалён не полностью. Проверьте остаточные файлы и журнал DNS Manager."
+    err_msg "DNS Manager удалён не полностью. Проверьте остаточные файлы и журнал DNS Manager."
     pause
     return 1
 }
-
 uninstall_manager() {
     # Directly invoked from the installed executable or menu.
     uninstall_manager_impl "$@"
@@ -6352,8 +5700,7 @@ package_owner_remove_owned() {
             UNINSTALL_DEFER_TTYD_PACKAGE=1
             continue
         fi
-        _baseline_pkg="$(sed -n "s/^package_${_pkg}=//p" "$BASELINE_META" 2>/dev/null | head -n1)"
-        [ "$_baseline_pkg" = 0 ] || continue
+        # PACKAGE_OWNERSHIP already records that the package was absent before install.
         if [ "$PKG_MGR" = apk ]; then
             if apk info -e "$_pkg" >/dev/null 2>&1; then
                 apk del "$_pkg" >/dev/null 2>&1 || _pkg_rc=1
@@ -8315,11 +7662,6 @@ watchdog_apply_restore_previous_state() {
 watchdog_service_migrate_legacy() {
     [ "${FIRST_RUN_INITIAL:-0}" = 1 ] && return 0
     [ "${WATCHDOG_ENABLED:-0}" = 1 ] || return 0
-    [ -s "$BASELINE_MANIFEST" ] || {
-        log_msg "Watchdog: исходный baseline отсутствует; procd автоматически не включаю."
-        return 1
-    }
-
     _legacy_cron=0
     watchdog_cron_marker_exists >/dev/null 2>&1 && _legacy_cron=1
 
