@@ -136,9 +136,13 @@ grep -Fq 'package_update_index ||' "$tmp/update_hdp.sh" || fail "https-dns-proxy
 awk '/^update_json\(\) \{/ { capture=1 }
      capture { print }
      /^result_for_id\(\) \{/ && capture { exit }' "$tmp/backend.sh" > "$tmp/luci_self_update.sh"
-grep -Fq '/etc/init.d/rpcd restart' "$tmp/luci_self_update.sh" || fail "LuCI self-update does not schedule rpcd restart"
+if grep -Fq '/etc/init.d/rpcd restart' "$tmp/luci_self_update.sh"; then
+    fail "current RPC self-update must not restart rpcd before returning its response"
+fi
+awk '/^    if \[ "\${DNS_MANAGER_LUCI_SKIP_RPC_RELOAD:-0}" = 1 \];$/,/^    elif \[ -x \/etc\/init.d\/rpcd \]; then$/ { print }' dns-manager-luci.sh > "$tmp/luci_legacy_restart.sh"
+grep -Fq '/etc/init.d/rpcd restart' "$tmp/luci_legacy_restart.sh" || fail "LuCI installer does not schedule rpcd restart for legacy self-updates"
 grep -Fq 'setTimeout(function(){location.reload();},3000);' "$tmp/common.js" || fail "LuCI reload delay is not aligned with rpcd restart"
-ok "LuCI package update and self-update checks are covered"
+ok "LuCI package update and legacy self-update rpcd checks are covered"
 grep -q 'RESOURCE_DIR="/www/luci-static/resources/dns-manager"' dns-manager-luci.sh || fail "shared LuCI resource directory missing"
 grep -q 'COMMON_FILE="$RESOURCE_DIR/common.js"' dns-manager-luci.sh || fail "shared LuCI common module path missing"
 for _view in dashboard doh network time catalog log; do
