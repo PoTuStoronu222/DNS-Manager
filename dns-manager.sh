@@ -4028,9 +4028,12 @@ if [ -s "$TEST_RESULTS" ]; then
     else
         printf "${C_WHITE}Последняя проверка${C_NC}\n"
     fi
-    _status_total="$(count_dns)"
+    _status_total="$(sed -n 's/^catalog_count=\([0-9][0-9]*\)$/\1/p' "$TEST_RESULTS_META" 2>/dev/null | head -n1)"
+    case "$_status_total" in ''|*[!0-9]*) _status_total="$(wc -l < "$TEST_RESULTS" 2>/dev/null | tr -d ' ')";; esac
+    case "$_status_total" in ''|*[!0-9]*) _status_total=0;; esac
     _status_ok="$(awk -F'|' 'NF>=5 && $5=="OK"{n++} END{print n+0}' "$TEST_RESULTS" 2>/dev/null)"
     _status_fail=$((_status_total-_status_ok))
+    [ "$_status_fail" -lt 0 ] 2>/dev/null && _status_fail=0
     printf "  DNS: ${C_GREEN}%s работают${C_NC}, ${C_YELLOW}%s не прошли${C_NC}, всего %s\n" "$_status_ok" "$_status_fail" "$_status_total"
 else
     printf "${C_WHITE}Последняя проверка${C_NC}\n"
@@ -5000,7 +5003,7 @@ setting_process() {
     esac
 
     if [ "$_module" = watchdog ] && [ "$_new" = 1 ]; then
-        _profile_category="$(selected_general_category_status 2>/dev/null || printf none)"
+        _profile_category="$(watchdog_scope_category 2>/dev/null || printf none)"
         if [ "$_profile_category" = none ]; then
             err_msg "Сначала выберите профиль DNS Manager."
             pause
