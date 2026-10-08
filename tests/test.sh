@@ -925,7 +925,7 @@ grep -q 'localProfileRunning=!!(state.busy&&state.profileProgress)' "$tmp/common
 ok "profile apply validates only against the fresh full-catalog results"
 
 # Profiles accept fewer than six tested DNS servers and leave unused slots empty.
-awk '/^auto_fill_slots\(\) \{/,/^# ==========================================' dns-manager.sh > "$tmp/auto_fill_slots.sh"
+awk '/^auto_fill_slots\(\) \{/,/^# ==========================================$/' dns-manager.sh > "$tmp/auto_fill_slots.sh"
 [ -s "$tmp/auto_fill_slots.sh" ] || fail "auto_fill_slots extraction"
 cat > "$tmp/auto_fill_slots_runner.sh" <<'EOF_AUTO_FILL_FEWER'
 #!/bin/sh
