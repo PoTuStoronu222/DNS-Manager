@@ -83,45 +83,40 @@
 ## 🏗️ Архитектура
 
 ~~~mermaid
-flowchart LR
-    C["🖥️ LAN-клиенты"] --> D["dnsmasq :53"]
-    D --> P["DoH-пул"]
-    P --> H["https-dns-proxy"]
-    H --> I["🌐 Internet"]
+flowchart TB
+    subgraph UI["Управление"]
+        SSH["🔑 SSH"] --> B["DNS Manager backend"]
+        subgraph LUCI["Native LuCI"]
+            P1["Дашборд"]
+            P2["DNS over HTTPS"]
+            P3["Сеть"]
+            P4["Время"]
+            P5["Каталог DNS"]
+            P6["Журнал"]
+        end
+        P1 & P2 & P3 & P4 & P5 & P6 --> RPC["rpcd"]
+        RPC --> B
+    end
 
-    RU["🇷🇺 RU DNS"] --> D
+    subgraph DNS["DNS-путь"]
+        C["🖥️ LAN-клиенты"] --> D["dnsmasq :53"]
+        D --> H["https-dns-proxy"]
+        H --> I["🌐 DNS over HTTPS"]
+        I --> NET["🌐 Internet"]
+    end
 
-    S["SSH"] --> B["DNS Manager backend"]
-    L["native LuCI"] --> RPC["rpcd"]
-    RPC --> B
-
-    W["🐕 Watchdog"] --> T["реальная проверка"]
-    T --> R["точечное восстановление"]
+    B --> H
+    B --> D
 
     CAT["📚 DNS-каталог"] --> B
+    W["🐕 Watchdog"] --> T["Проверка DNS"]
+    T --> B
 ~~~
 
 ### Один backend
 
-~~~text
-               ┌─────────────────────┐
-               │     DNS Manager     │
-               └──────────┬──────────┘
-                          │
-             ┌────────────┴────────────┐
-             │                         │
-            SSH                       LuCI
-             │                         │
-             └────────────┬────────────┘
-                          ↓
-                   единый backend
-                          │
-          ┌───────────────┼───────────────┐
-          ↓               ↓               ↓
-       dnsmasq      https-dns-proxy    Watchdog
-~~~
-
-LuCI не дублирует DNS-логику. Он использует тот же backend.
+SSH и все отдельные страницы Native LuCI используют один **DNS Manager backend**.  
+LuCI не дублирует DNS-логику.
 
 ---
 
