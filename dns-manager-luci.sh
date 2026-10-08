@@ -494,7 +494,7 @@ update_hdp_json() {
     [ -n "$_candidate" ] || {
         _state_tmp="$UPDATE_STATE.tmp.$$"
         if [ -r "$UPDATE_STATE" ]; then
-            sed '/^hdp_latest=/d;/^hdp_available=/d;/^hdp_checked=/d;/^hdp_error=/d;/^components_checked_at=/d' "$UPDATE_STATE" > "$_state_tmp" 2>/dev/null || true
+            sed '/^hdp_latest=/d;/^hdp_available=/d;/^hdp_checked=/d;/^components_checked_at=/d' "$UPDATE_STATE" > "$_state_tmp" 2>/dev/null || true
         else
             : > "$_state_tmp"
         fi
