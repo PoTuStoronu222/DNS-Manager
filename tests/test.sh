@@ -306,6 +306,7 @@ fi
 if grep -Eq 'disc_clients\(\)|OTHER_ZAPRET|OTHER_ZAPRET2|OTHER_NETSHIFT|OTHER_SPLIFY|OTHER_MIXOMO|OTHER_MAGI|OTHER_HEV|OTHER_AWG|OTHER_TGGO|OTHER_TGRS|OTHER_TGMT|OTHER_BYEDPI|DNS_SMARTDNS|DNS_UNBOUND|DNS_ADGUARD|DNS_MOSDNS|DNS_SINGBOX' dns-manager.sh; then
     fail "Unrelated third-party service discovery remains in DNS Manager"
 fi
+awk '/^function (memoryBar|loadBar|forceModeLabel|renderPageNav|openForceDetails|testAgeRow|saveTestAges|testPanel|renderJobResult|renderJob|toast|updateManager|updateHdp|doUpdate|setTestAge|testSystem|routeUrl)\\(/' dns-manager-luci.sh >/dev/null 2>&1 && fail "Dead legacy LuCI JS functions remain"
 
 top_luci="$(sed -n 's/^# Version:[[:space:]]*//p' dns-manager-luci.sh | head -n1)"
 installer_luci="$(sed -n 's/^VERSION="\([^"]*\)"$/\1/p' dns-manager-luci.sh | head -n1)"
