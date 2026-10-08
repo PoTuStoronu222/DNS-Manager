@@ -299,6 +299,7 @@ if grep -q 'ttyd\|WEB_ACCESS\|web_access_\|third_party_running\|manager_running_
 fi
 grep -q '^manager_force_config_matches() {' dns-manager.sh || fail "Live forced-DNS uninstall matcher missing"
 grep -q 'if manager_force_config_matches; then' dns-manager.sh || fail "Uninstall still relies on stale force state"
+grep -q '^package_owner_remove_owned() {' dns-manager.sh || fail "Generic package cleanup helper missing"
 
 top_luci="$(sed -n 's/^# Version:[[:space:]]*//p' dns-manager-luci.sh | head -n1)"
 installer_luci="$(sed -n 's/^VERSION="\([^"]*\)"$/\1/p' dns-manager-luci.sh | head -n1)"
