@@ -54,7 +54,7 @@ ok "update-chain temporary names and LuCI version detection"
 
 # Self-update must not lose the interactive terminal when replacing the running shell.
 grep -Fq 'exec </dev/tty >/dev/tty 2>&1' dns-manager.sh || fail "self-update TTY recovery is missing"
-grep -Fq '    auto_update_manager || true' dns-manager.sh || fail "startup update check still redirects self-reexec output"
+grep -Fq '    DNS_MANAGER_SCHEDULED_UPDATE=1 auto_update_manager || true' dns-manager.sh || fail "startup update check is not using scheduled throttling"
 grep -Fq 'uclient-fetch -q -T 15 -O "$_upd_tmp" "$_update_url"' dns-manager.sh || fail "Manager update uclient-fetch has no timeout"
 grep -Fq 'uclient-fetch -q -T 30 -O "$_tmp" "$_fetch_url"' dns-manager.sh || fail "LuCI companion fetch uclient-fetch has no timeout"
 ok "startup self-update output and fetch timeouts are bounded"
@@ -73,6 +73,12 @@ grep -Fq 'luci_component_runtime_valid' dns-manager.sh || fail "Manager-side LuC
 grep -Fq 'luci_component_files_present' dns-manager.sh || fail "Manager-side LuCI update does not validate installed files"
 grep -Fq 'mv -f "$_cache_stage" "$_installed_cache"' dns-manager.sh || fail "Manager-side LuCI update does not promote the staged installer after success"
 ok "LuCI update is non-destructive and staged"
+awk '/^luci_component_state\(\) \{/,/^\}/ { print }' dns-manager.sh > "$tmp/luci_state_fn.sh"
+grep -Fq 'LUCI_VIEW_DIR="/www/luci-static/resources/view/dns-manager"' dns-manager.sh || fail "manager-side LuCI view directory is stale"
+grep -Fq 'LUCI_COMMON_FILE="/www/luci-static/resources/dns-manager/common.js"' dns-manager.sh || fail "manager-side LuCI common path is stale"
+if grep -Fq '/www/luci-static/resources/view/dns_manager/overview.js' dns-manager.sh; then fail "legacy LuCI overview path remains"; fi
+grep -Fq 'ubus -v list dns_manager' "$tmp/luci_state_fn.sh" || fail "manager-side LuCI state does not inspect RPC methods"
+ok "LuCI runtime validation checks the current page layout and RPC contract"
 
 # DNS response validation intentionally stays lightweight: HTTP 200 + DNS message body.
 awk '
@@ -109,6 +115,17 @@ awk '
 [ -s "$tmp/common.js" ] || fail "embedded JS extraction"
 node --check "$tmp/common.js" >/dev/null 2>&1 || fail "embedded JS: node --check"
 ok "embedded LuCI JS syntax"
+grep -Fq 'package_update_index() {' "$tmp/backend.sh" || fail "package index update helper missing"
+awk '/^component_update_check\(\) \{/,/^update_catalog_direct\(\) \{ { print }' "$tmp/backend.sh" > "$tmp/component_update_check.sh"
+grep -Fq 'package_update_index' "$tmp/component_update_check.sh" || fail "https-dns-proxy update check does not refresh package index"
+grep -Fq '_hdp_available=1' "$tmp/component_update_check.sh" || fail "https-dns-proxy update check never marks an available update"
+grep -Fq 'hdp_error=%s' "$tmp/component_update_check.sh" || fail "https-dns-proxy update check does not expose index errors"
+awk '/^update_hdp_json\(\) \{/,/^update_catalog_json\(\) \{ { print }' "$tmp/backend.sh" > "$tmp/update_hdp.sh"
+grep -Fq 'package_update_index ||' "$tmp/update_hdp.sh" || fail "https-dns-proxy update does not refresh package index before candidate lookup"
+awk '/^update_json\(\) \{/,/^result_for_id\(\) \{ { print }' "$tmp/backend.sh" > "$tmp/luci_self_update.sh"
+grep -Fq '/etc/init.d/rpcd restart' "$tmp/luci_self_update.sh" || fail "LuCI self-update does not schedule rpcd restart"
+grep -Fq 'setTimeout(function(){location.reload();},3000);' "$tmp/common.js" || fail "LuCI reload delay is not aligned with rpcd restart"
+ok "LuCI package update and self-update checks are covered"
 grep -q 'RESOURCE_DIR="/www/luci-static/resources/dns-manager"' dns-manager-luci.sh || fail "shared LuCI resource directory missing"
 grep -q 'COMMON_FILE="$RESOURCE_DIR/common.js"' dns-manager-luci.sh || fail "shared LuCI common module path missing"
 for _view in dashboard doh network time catalog log; do
