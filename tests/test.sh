@@ -295,8 +295,7 @@ grep -q 'package_owner_remove_owned' dns-manager.sh || fail "Owned package clean
 if grep -q 'BASELINE_DIR\|BASELINE_MANIFEST\|BASELINE_LAST\|BASELINE_META\|baseline_restore_for_uninstall\|baseline_uninstall_validate\|baseline_capture_once\|baseline_mark_applied\|ensure_baseline_captured' dns-manager.sh; then fail "Obsolete persistent baseline logic remains"; fi
 ok "DNS restore returns to standard resolver path"
 if grep -q 'ttyd\|WEB_ACCESS\|web_access_\|third_party_running\|manager_running_under_ttyd\|defer_ttyd_action' dns-manager.sh; then fail "Obsolete terminal/external-service code remains in DNS Manager"; fi
-grep -q '^manager_force_config_matches() {
-top_luci="$(sed -n 's/^# Version:[[:space:]]*//p' dns-manager-luci.sh | head -n1)"
+grep -q '^manager_force_config_matches() {' dns-manager.sh || fail 'Live forced-DNS uninstall matcher missing'
 installer_luci="$(sed -n 's/^VERSION="\([^"]*\)"$/\1/p' dns-manager-luci.sh | head -n1)"
 self_luci="$(sed -n 's/^SELF_VERSION="\([^"]*\)"$/\1/p' dns-manager-luci.sh | head -n1)"
 view_luci="$(sed -n 's|^// DNS Manager LuCI version:[[:space:]]*||p' "$tmp/overview.js" | head -n1)"
