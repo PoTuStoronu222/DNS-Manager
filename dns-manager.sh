@@ -2462,6 +2462,12 @@ sync_hdp_force_contract() {
 
     uci commit https-dns-proxy || return 1
 
+    if [ "$_want" = 1 ]; then
+        ensure_dns_dot_block || return 1
+    else
+        remove_dns_dot_block || return 1
+    fi
+
     if [ -x /etc/init.d/https-dns-proxy ] && /etc/init.d/https-dns-proxy running >/dev/null 2>&1; then
         /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || return 1
     fi
@@ -6986,8 +6992,9 @@ force-state|--force-state)
     load_config
     startup_required_function_check || exit 1
     refresh_runtime_capabilities
-    check_module_state force
-    exit $?
+    _force_state="$(check_module_state force)"
+    printf '%s\n' "$_force_state"
+    exit "$_force_state"
     ;;
 update-check|--update-check)
     preflight_readonly
