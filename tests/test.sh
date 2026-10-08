@@ -284,7 +284,7 @@ grep -q '\[ "\$_nrc" -ge 300 \].*\[ "\$_nrc" -le 7200 \]' "$tmp/backend.sh" || f
 ok "watchdog defaults and backend ranges match the practical minute-based UI"
 
 grep -q '^restore_dns_core() {' dns-manager.sh || fail "DNS core restore helper missing"
-awk '/^menu_slots() {/,/^menu_bogus() {/' dns-manager.sh > "$tmp/menu_slots.sh"
+awk '/^menu_slots() {/,/^firewall_dot_rule_matches() {/' dns-manager.sh > "$tmp/menu_slots.sh"
 if grep -q 'hybrid_set_defaults\|CORE_ONLY=1; apply_settings\|CORE_ONLY=1' "$tmp/menu_slots.sh"; then
     fail "DNS menu restore still selects/applies a DNS profile"
 fi
@@ -300,6 +300,12 @@ fi
 grep -q '^manager_force_config_matches() {' dns-manager.sh || fail "Live forced-DNS uninstall matcher missing"
 grep -q 'if manager_force_config_matches; then' dns-manager.sh || fail "Uninstall still relies on stale force state"
 grep -q '^package_owner_remove_owned() {' dns-manager.sh || fail "Generic package cleanup helper missing"
+if grep -Eq '^(menu_item_state|firewall_lan_zone_require|firewall_wan_zone_require|firewall_find_exact_redirect|dns_redirect_conflict_uci|prepare_dns_path|ntp_name|ntp_ipv4|ntp_leap|show_best_category|hybrid_set_defaults|hybrid_prepare_selection|show_hybrid_profile|find_doh_by_port|uci_list_normalized|uci_list_current_normalized|stock_uci_list_normalized|stock_effective_uci_value|repair_duplicate_own_doh_ports|firewall_owner_has|firewall_owner_add|firewall_ownership_sync|settings_file_normalized|apply_ntp_if_needed|verify_doh_endpoint|stage_port_used|stage_free_port|stage_cleanup|stage_bootstrap|stage_start_one|stage_process_alive|stage_local_ok|stage_try_candidate|stage_stop_last|stage_drop_by_url|candidate_already_used|next_hybrid_candidate|show_doh|show_best|menu_bogus|apply_bogus|dependency_preflight|watchdog_candidate_categories|watchdog_test_candidate|watchdog_apply_restore_previous_state|restore_persistent_test_results|save_persistent_test_results|startup_self_repair|normalize_hybrid_ports)\(\) \{' dns-manager.sh; then
+    fail "Verified dead DNS Manager functions remain"
+fi
+if grep -Eq 'disc_clients\(\)|OTHER_ZAPRET|OTHER_ZAPRET2|OTHER_NETSHIFT|OTHER_SPLIFY|OTHER_MIXOMO|OTHER_MAGI|OTHER_HEV|OTHER_AWG|OTHER_TGGO|OTHER_TGRS|OTHER_TGMT|OTHER_BYEDPI|DNS_SMARTDNS|DNS_UNBOUND|DNS_ADGUARD|DNS_MOSDNS|DNS_SINGBOX' dns-manager.sh; then
+    fail "Unrelated third-party service discovery remains in DNS Manager"
+fi
 
 top_luci="$(sed -n 's/^# Version:[[:space:]]*//p' dns-manager-luci.sh | head -n1)"
 installer_luci="$(sed -n 's/^VERSION="\([^"]*\)"$/\1/p' dns-manager-luci.sh | head -n1)"
@@ -648,10 +654,10 @@ grep -q 'USE_PROCD=1' "$tmp/watchdog_service.sh" || fail "watchdog service is no
 grep -q 'procd_set_param command /bin/sh "\$PROG" "\$CMD"' "$tmp/watchdog_service.sh" || fail "watchdog procd command is missing"
 grep -q 'procd_set_param respawn 3600 5 5' "$tmp/watchdog_service.sh" || fail "watchdog procd respawn is missing"
 grep -q 'procd_add_interface_trigger "interface.*.up" "\$wan" /etc/init.d/dns-watchdog restart' "$tmp/watchdog_service.sh" || fail "watchdog WAN-up trigger is missing"
-if [ "$(grep -c 'watchdog_cron_desired_line' dns-manager.sh)" -ne 1 ]; then
-    fail "legacy watchdog cron scheduler is still referenced outside its unused definition"
+if grep -Eq '^(watchdog_cron_scheduler_require|watchdog_cron_scheduler_start|watchdog_cron_write_state|watchdog_cron_file_prepare|watchdog_cron_desired_line|watchdog_cron_line_exists|watchdog_cron_owned_block_status)\(\) \{' dns-manager.sh; then
+    fail "obsolete watchdog cron mutation helpers remain"
 fi
-ok "watchdog uses the same DNS check logic; procd is the active scheduler and cron is legacy-only"
+ok "watchdog uses procd as the active scheduler; obsolete cron mutation helpers are removed"
 
 # Watchdog keeps the intended profile category while using clean as a temporary fallback.
 awk '
