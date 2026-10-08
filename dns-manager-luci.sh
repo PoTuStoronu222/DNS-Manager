@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.31
+# Version: 1.32
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -30,7 +30,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.31"
+VERSION="1.32"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -156,7 +156,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="/www/luci-static/resources/view/dns_manager/overview.js"
-SELF_VERSION="1.31"
+SELF_VERSION="1.32"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -2494,7 +2494,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI version: 1.31
+// DNS Manager LuCI version: 1.32
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -3817,7 +3817,7 @@ function refresh(root,keepPosition){
   });
 }
 function scheduleBackgroundStatus(root){
-  if(!rootAlive(root)||!window.dmStatusCache)return;
+  if(!rootAlive(root))return;
   if(window.dmStatusRefreshTimer)window.clearTimeout(window.dmStatusRefreshTimer);
   window.dmStatusRefreshTimer=window.setTimeout(function(){
     window.dmStatusRefreshTimer=null;
@@ -4422,35 +4422,10 @@ function startAutoStatus(root){
 }
 return view.extend({
   load:function(){
-    var route=currentRoute();
     var cached=window.dmStatusCache&&window.dmStatusCache.data;
-    if(cached){
-      state.statusFromCache=true;
-      return Promise.resolve(cached);
-    }
-    state.statusFromCache=false;
-    var boardPromise=(route==='dashboard')
-      ? callBoardInfo().catch(function(){return {};})
-      : Promise.resolve({});
-    return Promise.all([
-      callStatus(statusDetail()),
-      boardPromise
-    ]).then(function(v){
-      var st=v[0]||{},b=v[1]||{};
-      state.boardInfo=b;
-      if(b&&b.uptime!==undefined&&b.uptime!==null)st.uptime=b.uptime;
-      var totalKb=boardMemoryKb(b,'total'),availKb=boardMemoryAvailableKb(b);
-      if(isFinite(totalKb)&&totalKb>0)st.memory_total_kb=totalKb;
-      if(isFinite(availKb)&&availKb>=0)st.memory_available_kb=availKb;
-      window.dmStatusCache={ts:Date.now(),data:st};
-      return st;
-    }).catch(function(){
-      return callStatus(statusDetail()).then(function(st){
-        st=st||{};
-        window.dmStatusCache={ts:Date.now(),data:st};
-        return st;
-      });
-    });
+    state.statusFromCache=!!cached;
+    state.statusRefreshAfterRender=true;
+    return Promise.resolve(cached||{});
   },
   render:function(st){
     var root=E('div',{'class':'dm-wrap'});
@@ -4459,7 +4434,10 @@ return view.extend({
     render(root,st||{});
     removeLegacyCbiActions();if(window.setTimeout)window.setTimeout(removeLegacyCbiActions,0);
     startAutoStatus(root);
-    if(state.statusFromCache)scheduleBackgroundStatus(root);
+    if(state.statusRefreshAfterRender){
+      state.statusRefreshAfterRender=false;
+      scheduleBackgroundStatus(root);
+    }
     if(!state.profileResumeStarted)window.setTimeout(function(){
       if(rootAlive(root))resumeRunningProfile(root);
     },0);
