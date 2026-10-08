@@ -208,11 +208,25 @@ grep -q '^slot_cat_set() {' dns-manager.sh || fail "safe slot category setter mi
 grep -q '^port_set() {' dns-manager.sh || fail "safe port setter missing"
 grep -q '^quick_pref_set() {' dns-manager.sh || fail "safe quick preference setter missing"
 grep -Fq 'if ($1 !~ /^[A-Za-z0-9_-]+$/) bad=1' dns-manager.sh || fail "catalog ID validation missing"
-grep -q 'bypass|clean|security|privacy|adblock|family|regional' dns-manager.sh || fail "catalog category validation missing"
+grep -q 'bypass|clean|security|privacy|adblock|family|gaming|regional' dns-manager.sh || fail "catalog category validation missing"
 grep -q 'acquire_runtime_lock() {' "$tmp/backend.sh" || fail "LuCI runtime lock helper missing"
 grep -q 'json_update_state() {' "$tmp/backend.sh" || fail "structured update result helper missing"
 grep -q 'updated) exit 0' dns-manager.sh || fail "manager update-check exit contract missing"
 grep -q 'current|throttled) exit 2' dns-manager.sh || fail "manager current exit contract missing"
+grep -q "xbox_dns|gaming|games+supercell|Xbox DNS|" catalogs/dns-8.5-RU-NOSOCIAL.conf || fail "Xbox DNS is not in gaming catalog category"
+grep -q "'gaming','Игровые DNS'" dns-manager-luci.sh || fail "gaming catalog label missing in LuCI"
+grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validation missing gaming category"
+grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
+grep -q 'VERSION="3.49"' dns-manager.sh || fail "manager version not bumped"
+grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.5-RU-NOSOCIAL.conf || fail "catalog version not bumped"
+grep -q 'VERSION="1.48"' dns-manager-luci.sh || fail "LuCI version not bumped"
+grep -q "'bypass','Обход геоблока'" dns-manager-luci.sh || fail "bypass profile label not updated"
+grep -q "'security','Защита от угроз'" dns-manager-luci.sh || fail "security profile label not updated"
+grep -q "'privacy','Конфиденциальность'" dns-manager-luci.sh || fail "privacy profile label not updated"
+grep -q "'family','Семейная фильтрация'" dns-manager-luci.sh || fail "family profile label not updated"
+if awk '/var PROFILE = \[/,/^\];/' dns-manager-luci.sh | grep -q "'gaming'"; then
+    fail "gaming must not be a ready-made profile"
+fi
 ok "LuCI atomic install, RPC retry, safe dynamic assignments and lock/result helpers"
 
 grep -q '^        set_watchdog_setting)' "$tmp/backend.sh" || fail "watchdog setting dispatch missing"
@@ -376,8 +390,8 @@ view_luci="$(sed -n 's|^// DNS Manager LuCI common module version:[[:space:]]*||
 [ "$top_luci" = "$self_luci" ] || fail "LuCI SELF_VERSION mismatch"
 [ "$top_luci" = "$view_luci" ] || fail "embedded JS version mismatch"
 ok "LuCI version markers synchronized ($top_luci)"
-grep -Fq 'VERSION="3.48"' dns-manager.sh || fail "DNS Manager version is not 3.46"
-ok "DNS Manager version marker synchronized (3.48)"
+grep -Fq 'VERSION="3.49"' dns-manager.sh || fail "DNS Manager version marker is not 3.49"
+ok "DNS Manager version marker synchronized (3.49)"
 
 if awk '
     /function startAutoStatus\(root\)/ { capture=1 }

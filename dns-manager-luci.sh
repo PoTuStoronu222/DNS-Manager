@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.47
+# Version: 1.48
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -32,7 +32,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.47"
+VERSION="1.48"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -158,7 +158,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="1.47"
+SELF_VERSION="1.48"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -609,7 +609,7 @@ update_catalog_direct() {
     _count="$(grep -v '^[[:space:]]*#' "$_tmp" 2>/dev/null | grep -v '^[[:space:]]*$' | wc -l | tr -d ' ')"
     case "$_count" in ''|*[!0-9]*) _count=0;; esac
     [ -n "$_remote_ver" ] && [ -n "$_remote_rev" ] && [ "$_decl" = "$_count" ] && [ "$_count" -gt 0 ] || { rm -f "$_tmp" 2>/dev/null || true; return 4; }
-    awk -F'|' '/^[[:space:]]*#/ || /^[[:space:]]*$/ {next} {if(NF!=7 || $1=="" || $4=="" || $5 !~ /^https:\/\//) bad=1; if($1 !~ /^[A-Za-z0-9_-]+$/) bad=1; if($2 !~ /^(bypass|clean|security|privacy|adblock|family|regional)$/) bad=1; ids[$1]++; if(ids[$1]>1) bad=1; n++} END{if(bad || n<1) exit 1}' "$_tmp" >/dev/null 2>&1 || { rm -f "$_tmp" 2>/dev/null || true; return 4; }
+    awk -F'|' '/^[[:space:]]*#/ || /^[[:space:]]*$/ {next} {if(NF!=7 || $1=="" || $4=="" || $5 !~ /^https:\/\//) bad=1; if($1 !~ /^[A-Za-z0-9_-]+$/) bad=1; if($2 !~ /^(bypass|clean|security|privacy|adblock|family|gaming|regional)$/) bad=1; ids[$1]++; if(ids[$1]>1) bad=1; n++} END{if(bad || n<1) exit 1}' "$_tmp" >/dev/null 2>&1 || { rm -f "$_tmp" 2>/dev/null || true; return 4; }
     _rb="$TMP_ROOT/catalog-remote-all.$$"
     _lb="$TMP_ROOT/catalog-local-all.$$"
     sed '/^[[:space:]]*#/d;/^[[:space:]]*$/d' "$_tmp" > "$_rb" 2>/dev/null || true
@@ -2488,7 +2488,7 @@ log_json() { _n="$1"; case "$_n" in ''|*[!0-9]*) _n=80;; esac; [ "$_n" -gt 300 ]
 catalog_json() {
     _category="$(jget category)"; _offset="$(jget offset)"; _limit="$(jget limit)"; _only_ok="$(jget only_ok)"
     case "$_offset" in ''|*[!0-9]*) _offset=0;; esac; case "$_limit" in ''|*[!0-9]*) _limit=18;; esac; [ "$_limit" -gt 48 ] && _limit=48; [ -n "$_category" ] || _category=all
-    case "$_category" in all|bypass|security|privacy|adblock|family|clean|regional) ;; *) json_error "Неверная категория DNS"; return;; esac
+    case "$_category" in all|bypass|security|privacy|adblock|family|clean|gaming|regional) ;; *) json_error "Неверная категория DNS"; return;; esac
     case "$_only_ok" in 1|0) ;; *) _only_ok=0;; esac
     [ -s "$CATALOG_FILE" ] || { json_error "Каталог DNS недоступен"; return; }
     _filtered="$TMP_ROOT/catalog-filtered.$$"; _paged="$TMP_ROOT/catalog-page.$$"; : > "$_filtered"; : > "$_paged"
@@ -2569,7 +2569,7 @@ run_action() {
             ;;
         set_test_age)
             _category="$(jget category)"; _hours="$(jget hours)"
-            case "$_category" in all|bypass|clean|security|privacy|adblock|family|regional) ;; *) json_error "Неверная категория DNS"; return;; esac
+            case "$_category" in all|bypass|clean|security|privacy|adblock|family|gaming|regional) ;; *) json_error "Неверная категория DNS"; return;; esac
             case "$_hours" in ''|*[!0-9]*) json_error "Неверный срок проверки"; return;; esac
             [ "$_hours" -ge 1 ] 2>/dev/null && [ "$_hours" -le 168 ] 2>/dev/null || { json_error "Срок проверки должен быть от 1 до 168 часов"; return; }
             load_manager || { json_error "DNS Manager недоступен"; return; }
@@ -2716,7 +2716,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI common module version: 1.47
+// DNS Manager LuCI common module version: 1.48
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -2761,19 +2761,19 @@ var callJob = dmRpc({ object:'dns_manager', method:'job', params:['id'], expect:
 var callLog = dmRpc({ object:'dns_manager', method:'log', params:['lines'], expect:{} });
 
 var PROFILE = [
-  ['bypass','Обход блокировок'], ['clean','Без фильтрации'],
-  ['security','Безопасность'], ['privacy','Приватность'],
-  ['adblock','Блокировка рекламы'], ['family','Семейный']
+  ['bypass','Обход геоблока'], ['clean','Без фильтрации'],
+  ['security','Защита от угроз'], ['privacy','Конфиденциальность'],
+  ['adblock','Блокировка рекламы'], ['family','Семейная фильтрация']
 ];
 var CATEGORY = [
-  ['all','Все DNS'], ['bypass','Обход блокировок'], ['security','Безопасность'], ['privacy','Приватность'],
-  ['adblock','Блокировка рекламы'], ['family','Семейный'], ['clean','Без фильтрации'], ['regional','Региональные']
+  ['all','Все DNS'], ['bypass','Обход геоблока'], ['security','Защита от угроз'], ['privacy','Конфиденциальность'],
+  ['adblock','Блокировка рекламы'], ['family','Семейная фильтрация'], ['clean','Без фильтрации'], ['gaming','Игровые DNS'], ['regional','Региональные DNS']
 ];
 var state = { luciUpdateReloadTimer:null, hdpUpdating:false, managerUpdating:false, updatingAll:false, category:'all', offset:0, limit:18, catalogLoaded:false, catalogLoading:false, advanced:true, logLoaded:false, logLoading:false, busy:false, busySetting:'', settingMessage:'', settingMessageType:'', settingMessageKey:'', pageNotice:{}, statusError:'', activeTab:'dashboard', jobRunning:false, lastJob:null, checking:{}, fullTest:null, catalogProgress:null, profileProgress:null, profileOutput:'', versionCheck:null, lastAction:null, runtimeCpuLoad:null, runtimeMemoryTotal:null, runtimeMemoryAvailable:null, boardInfo:null, systemPollBusy:false, profileResumeStarted:false };
 
 function profileName(p){
   var x=PROFILE.filter(function(v){return v[0]===p;})[0];
-  return x?x[1]:(p==='hybrid'?'Обход блокировок':p==='custom'?'Собственный выбор':p==='none'?'Не выбран':(p||'—'));
+  return x?x[1]:(p==='hybrid'?'Обход геоблока':p==='custom'?'Собственный выбор':p==='none'?'Не выбран':(p||'—'));
 }
 function isProfileId(p){
   for(var i=0;i<PROFILE.length;i++)if(PROFILE[i][0]===p)return true;
@@ -2966,7 +2966,7 @@ function renderHeader(root,st){
   var e=root.querySelector('#dm-header');if(!e)return;e.innerHTML='';
   var lastTest=dateText(st.last_full_test);
   var scope=String(st.last_full_test_scope||'all');
-  var scopeNames={all:'весь каталог',bypass:'Обход блокировок',clean:'Без фильтрации',security:'Безопасность',privacy:'Приватность',adblock:'Блокировка рекламы',family:'Семейный'};
+  var scopeNames={all:'весь каталог',bypass:'Обход геоблока',clean:'Без фильтрации',security:'Защита от угроз',privacy:'Конфиденциальность',adblock:'Блокировка рекламы',family:'Семейная фильтрация'};
   var scopeLabel=scopeNames[scope]||scope;
   var testText=lastTest==='—'?'Последняя проверка DNS: не выполнялась':'Последняя проверка DNS: '+lastTest+' · '+scopeLabel;
   e.appendChild(E('div',{'class':'dm-header'},[
@@ -4736,7 +4736,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 1.47
+// DNS Manager LuCI version: 1.48
 return view.extend({
   load: DM.load,
   render: DM.render,
