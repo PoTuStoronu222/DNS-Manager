@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.47"
+VERSION="3.48"
 # 3.38: clear the LuCI update flag after a successful CLI update.
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
@@ -3029,7 +3029,70 @@ replace_failed_slot_from_test() {
     warn_msg "Для слота $_slot не найден подтверждённый DNS в целевой категории."
     return 1
 }
+profile_prune_failed_slots() {
+    local _bad _bad_n _live_n _slot _id _port _domain
+    _bad="$TMP_DIR/profile-bad-slots-$$"
+    : > "$_bad" || return 1
+    _bad_n=0
+    _live_n=0
+
+    for _slot in 1 2 3 4 5 6 RU; do
+        eval "_id=\$SLOT_$_slot"
+        [ -n "$_id" ] || continue
+        eval "_port=\$PORT_$_slot"
+        [ -n "$_port" ] || {
+            printf "%s\n" "$_slot" >> "$_bad"
+            _bad_n=$((_bad_n+1))
+            continue
+        }
+        case "$_slot" in RU) _domain="yandex.ru" ;; *) _domain="example.com" ;; esac
+        if listener_port_exists "$_port" && local_dns_query_ok "$_port" "$_domain"; then
+            _live_n=$((_live_n+1))
+        else
+            printf "%s\n" "$_slot" >> "$_bad"
+            _bad_n=$((_bad_n+1))
+        fi
+    done
+
+    if [ "$_bad_n" -eq 0 ]; then
+        rm -f "$_bad"
+        return 0
+    fi
+    [ "$_live_n" -gt 0 ] || {
+        rm -f "$_bad"
+        return 1
+    }
+
+    warn_msg "Профиль: $_bad_n DNS не прошли локальную проверку. Убираю нерабочие слоты и продолжаю с $_live_n рабочими DNS."
+    while IFS= read -r _slot; do
+        [ -n "$_slot" ] || continue
+        eval "_id=\$SLOT_$_slot"
+        printf "%s\n" "Слот $_slot освобождён: $(dns_name "$_id") не отвечает локально."
+        slot_set "$_slot" "" || { rm -f "$_bad"; return 1; }
+        slot_cat_set "$_slot" "" || { rm -f "$_bad"; return 1; }
+    done < "$_bad"
+    rm -f "$_bad"
+
+    sync_regional_dns_state
+    rebuild_selected_hdp_sections || return 1
+    reconcile_dnsmasq || return 1
+    /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || return 1
+    /etc/init.d/dnsmasq restart >/dev/null 2>&1 || return 1
+    sleep 3
+    return 0
+}
 verify_after_apply_with_repair() {
+    if [ "$PROFILE_APPLY" = 1 ] 2>/dev/null; then
+        if verify_after_apply; then
+            return 0
+        fi
+        if profile_prune_failed_slots; then
+            tx_snapshot_after_apply
+            verify_after_apply && return 0
+        fi
+        return 1
+    fi
+
     _attempt=0
     _max=8
     REPAIR_BAD_IDS="$TMP_DIR/repair-bad-ids-$$"
@@ -3045,7 +3108,7 @@ verify_after_apply_with_repair() {
         fi
         [ -n "$FAILED_SLOT" ] || { rm -f "$REPAIR_BAD_IDS" 2>/dev/null; return 1; }
         _attempt=$((_attempt+1))
-        [ "${APPLY_OUTPUT_QUIET:-0}" = 1 ] || printf "  ${C_CYAN}Проверка не пройдена. Подбираю другую замену из выбранной категории (точечная проверка, попытка $_attempt/$_max).${C_NC}\n"
+        printf "%s\n" "Проверка не пройдена. Подбираю другую замену из выбранной категории (точечная проверка, попытка $_attempt/$_max)."
         if ! replace_failed_slot_from_test; then
             rm -f "$REPAIR_BAD_IDS" 2>/dev/null
             return 1
