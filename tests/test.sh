@@ -297,7 +297,9 @@ ok "DNS restore returns to standard resolver path"
 if grep -q 'ttyd\|WEB_ACCESS\|web_access_\|third_party_running\|manager_running_under_ttyd\|defer_ttyd_action' dns-manager.sh; then
     fail "Obsolete terminal/external-service code remains in DNS Manager"
 fi
-grep -q '^manager_force_config_matches() {
+grep -q '^manager_force_config_matches() {' dns-manager.sh || fail "Live forced-DNS uninstall matcher missing"
+grep -q 'if manager_force_config_matches; then' dns-manager.sh || fail "Uninstall still relies on stale force state"
+
 top_luci="$(sed -n 's/^# Version:[[:space:]]*//p' dns-manager-luci.sh | head -n1)"
 installer_luci="$(sed -n 's/^VERSION="\([^"]*\)"$/\1/p' dns-manager-luci.sh | head -n1)"
 self_luci="$(sed -n 's/^SELF_VERSION="\([^"]*\)"$/\1/p' dns-manager-luci.sh | head -n1)"
@@ -924,9 +926,6 @@ ok "NTP RPC is allowed by ACL and no fixed router LAN IP is used"
 
 
 printf '%s\n' "All DNS Manager regression checks passed."
- dns-manager.sh || fail "Live forced-DNS uninstall matcher missing"
-grep -q 'if manager_force_config_matches; then' dns-manager.sh || fail "Uninstall still relies on stale force state"
-ok "DNS Manager managed-function cleanup and live forced-DNS uninstall check"
 
 top_luci="$(sed -n 's/^# Version:[[:space:]]*//p' dns-manager-luci.sh | head -n1)"
 installer_luci="$(sed -n 's/^VERSION="\([^"]*\)"$/\1/p' dns-manager-luci.sh | head -n1)"
