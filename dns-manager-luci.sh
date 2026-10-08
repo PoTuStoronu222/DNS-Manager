@@ -4507,12 +4507,7 @@ EOF_PAGE
             return 1
         }
     done
-    chmod 0644 "$MENU_FILE" "$ACL_FILE" "$VIEW_STAGE"
-    mv -f "$VIEW_STAGE" "$VIEW_FILE" || {
-        rm -f "$VIEW_STAGE" 2>/dev/null || true
-        err "Не удалось заменить LuCI JS view."
-        return 1
-    }
+    chmod 0644 "$MENU_FILE" "$ACL_FILE"
 
     # The current native LuCI page is a JavaScript view and no longer uses
     # the former dns_manager Lua controller. Remove only that DNS Manager-owned
