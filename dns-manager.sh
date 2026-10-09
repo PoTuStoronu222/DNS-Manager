@@ -677,12 +677,23 @@ write_catalogs() {
     if catalog_validate_file "$DNS_CATALOG"; then
         return 0
     fi
-    _catalog_tmp="/tmp/dns-manager-catalog-$$"
+    _catalog_tmp="/tmp/dns-manager-catalog-$"
+    _old_shecan_url="$(awk -F'|' '$1=="shecan" {print $5; exit}' "$DNS_CATALOG" 2>/dev/null)"
     rm -f "$_catalog_tmp" 2>/dev/null || true
     if catalog_download "$_catalog_tmp" && catalog_validate_file "$_catalog_tmp"; then
+        _new_shecan_url="$(awk -F'|' '$1=="shecan" {print $5; exit}' "$_catalog_tmp" 2>/dev/null)"
         mkdir -p "$CFG_DIR" 2>/dev/null || true
         if mv -f "$_catalog_tmp" "$DNS_CATALOG" 2>/dev/null; then
             chmod 600 "$DNS_CATALOG" 2>/dev/null || true
+            if [ "$_old_shecan_url" != "$_new_shecan_url" ]; then
+                for _result_file in "$TEST_RESULTS" "$PERSIST_STATE_DIR/dns-test-results.conf"; do
+                    [ -s "$_result_file" ] || continue
+                    _result_tmp="${_result_file}.tmp.$"
+                    awk -F'|' '$1!="shecan" {print}' "$_result_file" > "$_result_tmp" 2>/dev/null &&
+                        mv -f "$_result_tmp" "$_result_file" 2>/dev/null ||
+                        rm -f "$_result_tmp" 2>/dev/null || true
+                done
+            fi
             log_msg "Каталог DNS: загружен внешний $DNSCAT_VERSION (revision $DNSCAT_REVISION, 105 записей)."
             return 0
         fi
