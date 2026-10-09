@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.49
+# Version: 1.50
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -32,7 +32,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.49"
+VERSION="1.50"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -158,7 +158,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="1.49"
+SELF_VERSION="1.50"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -2728,7 +2728,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI common module version: 1.49
+// DNS Manager LuCI common module version: 1.50
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -3384,7 +3384,7 @@ function slotCatalogOptionLabel(slot){
   var tm=hasPing(x.ping)?' · '+x.ping+' мс':'';
   return slotLabel(slot)+' — '+x.name+' · '+avail+tm;
 }
-function assignDirect(id,slot,root,nextName){
+function assignDirect(id,slot,root,nextName,nextUrl){
   if(state.busy||!id||!slot)return;
   var occupied=assignedSlotInfo(id,slot);
   if(occupied){
@@ -3392,8 +3392,12 @@ function assignDirect(id,slot,root,nextName){
     renderCatalog(root);
     return;
   }
-  var current=slotCurrentName(slot),next=nextName||id;
-  if(current===next)return;
+  var current=slotCurrentName(slot),next=nextName||id,activeUrl='';
+  (window.dmState&&window.dmState.doh_instances||[]).forEach(function(x){
+    if(x&&String(x.slot)===String(slot))activeUrl=String(x.url||'');
+  });
+  var normalizeUrl=function(u){return String(u||'').replace(/\/+$/,'');};
+  if(current===next&&normalizeUrl(activeUrl)===normalizeUrl(nextUrl))return;
   state.busy=true;
   state.pageNotice.catalog='Назначаю «'+next+'» в '+slotLabel(slot)+'…';
   renderCatalog(root);
@@ -3428,7 +3432,7 @@ function renderCatalogAssign(d,root){
     select,
     btn(checking?'Проверяется…':(unavailable?'Недоступен':'Назначить'),'cbi-button-action',function(){
       if(unavailable||checking)return;
-      assignDirect(d.id,select.value,root,d.name||d.id);
+      assignDirect(d.id,select.value,root,d.name||d.id,d.url);
     },{disabled:!!state.busy||!!state.jobRunning||unavailable||checking,title:unavailable?'DNS не прошёл последнюю проверку. Повторите проверку после восстановления.':''})
   ]);
 }
@@ -4755,7 +4759,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 1.49
+// DNS Manager LuCI version: 1.50
 return view.extend({
   load: DM.load,
   render: DM.render,
