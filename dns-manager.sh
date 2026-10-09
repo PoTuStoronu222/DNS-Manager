@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.49"
+VERSION="3.50"
 # 3.38: clear the LuCI update flag after a successful CLI update.
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
@@ -18,7 +18,7 @@ DNS_CATALOG="$CFG_DIR/dns-catalog.conf"
 NTP_CATALOG="$CFG_DIR/ntp-catalog.conf"
 BOOTSTRAP_DNS_ALL="77.88.8.8,77.88.8.1,94.140.14.14,1.1.1.1,1.0.0.1,8.8.8.8,8.8.4.4,9.9.9.9,149.112.112.112,208.67.222.222,208.67.220.220,149.112.121.10,149.112.122.10,76.76.2.0,76.76.10.0,194.242.2.2,194.242.2.3,2606:4700:4700::1111,2606:4700:4700::1001,2001:4860:4860::8888,2001:4860:4860::8844,2620:fe::fe,2620:fe::9"
 DNSCAT_VERSION="8.7-RU-NOSOCIAL"
-DNSCAT_REVISION="2"
+DNSCAT_REVISION="3"
 DNSCAT_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/catalogs/dns-8.7-RU-NOSOCIAL.conf"
 WATCHDOG_RESTART_COOLDOWN=300
 WATCHDOG_BACKEND="procd"
