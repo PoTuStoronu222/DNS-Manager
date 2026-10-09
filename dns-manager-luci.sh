@@ -610,13 +610,25 @@ update_catalog_direct() {
     case "$_count" in ''|*[!0-9]*) _count=0;; esac
     [ -n "$_remote_ver" ] && [ -n "$_remote_rev" ] && [ "$_decl" = "$_count" ] && [ "$_count" -gt 0 ] || { rm -f "$_tmp" 2>/dev/null || true; return 4; }
     awk -F'|' '/^[[:space:]]*#/ || /^[[:space:]]*$/ {next} {if(NF!=7 || $1=="" || $4=="" || $5 !~ /^https:\/\//) bad=1; if($1 !~ /^[A-Za-z0-9_-]+$/) bad=1; if($2 !~ /^(bypass|clean|security|privacy|adblock|family|gaming|regional)$/) bad=1; ids[$1]++; if(ids[$1]>1) bad=1; n++} END{if(bad || n<1) exit 1}' "$_tmp" >/dev/null 2>&1 || { rm -f "$_tmp" 2>/dev/null || true; return 4; }
-    _rb="$TMP_ROOT/catalog-remote-all.$$"
-    _lb="$TMP_ROOT/catalog-local-all.$$"
+    _rb="$TMP_ROOT/catalog-remote-all.$"
+    _lb="$TMP_ROOT/catalog-local-all.$"
+    _old_shecan_url="$(awk -F'|' '$1=="shecan" {print $5; exit}' "$CATALOG_FILE" 2>/dev/null)"
+    _new_shecan_url="$(awk -F'|' '$1=="shecan" {print $5; exit}' "$_tmp" 2>/dev/null)"
     sed '/^[[:space:]]*#/d;/^[[:space:]]*$/d' "$_tmp" > "$_rb" 2>/dev/null || true
     sed '/^[[:space:]]*#/d;/^[[:space:]]*$/d' "$CATALOG_FILE" > "$_lb" 2>/dev/null || true
     if cmp -s "$_rb" "$_lb" 2>/dev/null; then rm -f "$_tmp" "$_rb" "$_lb" 2>/dev/null || true; return 2; fi
     mv -f "$_tmp" "$CATALOG_FILE" 2>/dev/null || { rm -f "$_rb" "$_lb" 2>/dev/null || true; return 5; }
     chmod 600 "$CATALOG_FILE" 2>/dev/null || true
+    if [ "$_old_shecan_url" != "$_new_shecan_url" ]; then
+        for _result_file in "$STATE_DIR/dns-test-results.conf" "$PERSIST_STATE_DIR/dns-test-results.conf"; do
+            [ -s "$_result_file" ] || continue
+            _result_tmp="${_result_file}.tmp.$"
+            awk -F'|' '$1!="shecan" {print}' "$_result_file" > "$_result_tmp" 2>/dev/null &&
+                mv -f "$_result_tmp" "$_result_file" 2>/dev/null ||
+                rm -f "$_result_tmp" 2>/dev/null || true
+        done
+        rm -f "$CHECK_DIR/shecan" 2>/dev/null || true
+    fi
     rm -f "$_rb" "$_lb" 2>/dev/null || true
     return 0
 }
@@ -3017,9 +3029,8 @@ function checkInfo(id,d){
   if(String(r.status||'').toUpperCase()==='OK'&&!hasPing(r.ping))r.status='FAIL';
   return r;
 }
-function resolverKnownUnavailable(ci){
-  var s=String(ci&&ci.status||'').toUpperCase();
-  return s==='FAIL'||s==='FAILED'||s.indexOf('_FAIL')>0||s.indexOf('TIMEOUT')>=0||s.indexOf('ERROR')>=0||s.indexOf('HTTP_')===0;
+function resolverAvailable(ci){
+  return String(ci&&ci.status||'').toUpperCase()==='OK'&&hasPing(ci&&ci.ping);
 }
 function componentItem(title,statusNode,details){
   return E('div',{'class':'dm-component-item'},[
@@ -3405,7 +3416,7 @@ function assignDirect(id,slot,root,nextName){
 }
 function renderCatalogAssign(d,root){
   var slots=slotOptionsForCatalog(d.category),st=window.dmState||{},current='';
-  var ci=checkInfo(d.id,d),unavailable=resolverKnownUnavailable(ci),checking=String(ci.status||'').toUpperCase()==='RUNNING';
+  var ci=checkInfo(d.id,d),checking=String(ci.status||'').toUpperCase()==='RUNNING',unavailable=!checking&&!resolverAvailable(ci);
   (st.slots||[]).forEach(function(x){if(x&&x.id===d.id)current=String(x.slot||'');});
   if(slots.indexOf(current)<0)current=slots[0]||'1';
   var select=E('select',{'class':'dm-assign-select','aria-label':'Слот'});
@@ -3415,7 +3426,7 @@ function renderCatalogAssign(d,root){
   select.value=current;
   return E('div',{'class':'dm-assign-inline'},[
     select,
-    btn(unavailable?'Недоступен':(checking?'Проверяется…':'Назначить'),'cbi-button-action',function(){
+    btn(checking?'Проверяется…':(unavailable?'Недоступен':'Назначить'),'cbi-button-action',function(){
       if(unavailable||checking)return;
       assignDirect(d.id,select.value,root,d.name||d.id);
     },{disabled:!!state.busy||!!state.jobRunning||unavailable||checking,title:unavailable?'DNS не прошёл последнюю проверку. Повторите проверку после восстановления.':''})
@@ -3459,14 +3470,15 @@ function openSlotPicker(slot,root){
         var occupiedMark=elsewhere
           ? badge('dm-warn','занят в '+slotLabel(assignedSlot)+(assignedPort?' · 127.0.0.1:'+assignedPort:''))
           : null;
-        var unavailable=resolverKnownUnavailable(ci);
-        var actionLabel=elsewhere?('Уже в '+slotLabel(assignedSlot)):((x.name===cur)?'Выбран':(unavailable?'Недоступен':'Выбрать'));
+        var checking=String(ci.status||'').toUpperCase()==='RUNNING';
+        var unavailable=!checking&&!resolverAvailable(ci);
+        var actionLabel=elsewhere?('Уже в '+slotLabel(assignedSlot)):((x.name===cur)?'Выбран':(checking?'Проверяется…':(unavailable?'Недоступен':'Выбрать')));
         var action=btn(actionLabel,'cbi-button-neutral',function(){
           if(elsewhere||unavailable)return;
           if(x.name===cur){ui.hideModal();return;}
           ui.hideModal();
           assign(x.id,slot,root,x.name);
-        },{disabled:!!state.busy||!!elsewhere||(unavailable&&x.name!==cur),title:unavailable?'DNS не прошёл последнюю проверку. Нажмите «Проверить» после восстановления.':''});
+        },{disabled:!!state.busy||!!elsewhere||checking||(unavailable&&x.name!==cur),title:unavailable?'DNS не прошёл проверку или нет результатов. Нажмите «Проверить» перед назначением.':''});
         var check=btn(ci.status==='RUNNING'?'Проверяется':'Проверить','cbi-button-neutral',function(){
           if(state.jobRunning||state.busy)return;
           testOne(x.id,root,'doh',function(){openSlotPicker(slot,root);});
