@@ -84,33 +84,15 @@
 
 ~~~mermaid
 flowchart TB
-    subgraph UI["Управление"]
-        SSH["🔑 SSH"] --> B["DNS Manager backend"]
-        subgraph LUCI["Native LuCI"]
-            P1["Дашборд"]
-            P2["DNS over HTTPS"]
-            P3["Сеть"]
-            P4["Время"]
-            P5["Каталог DNS"]
-            P6["Журнал"]
-        end
-        P1 & P2 & P3 & P4 & P5 & P6 --> RPC["rpcd"]
-        RPC --> B
-    end
+    U["Устройства сети"] --> D["dnsmasq"]
+    D --> H["https-dns-proxy"]
+    H --> S["DoH-серверы"]
 
-    subgraph DNS["DNS-путь"]
-        C["🖥️ LAN-клиенты"] --> D["dnsmasq :53"]
-        D --> H["https-dns-proxy"]
-        H --> I["🌐 DNS over HTTPS"]
-        I --> NET["🌐 Internet"]
-    end
-
-    B -.-> H
-    B -.-> D
-
-    CAT["📚 DNS-каталог"] --> B
-    W["🐕 Watchdog"] --> T["Проверка DNS"]
-    T --> B
+    L["SSH / LuCI"] --> M["DNS Manager"]
+    C["Каталог DNS"] --> M
+    W["Watchdog"] --> M
+    M --> D
+    M --> H
 ~~~
 
 ### Один backend
