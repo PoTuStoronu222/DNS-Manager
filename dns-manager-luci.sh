@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.48
+# Version: 1.49
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -32,7 +32,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.48"
+VERSION="1.49"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -158,7 +158,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="1.48"
+SELF_VERSION="1.49"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -610,13 +610,25 @@ update_catalog_direct() {
     case "$_count" in ''|*[!0-9]*) _count=0;; esac
     [ -n "$_remote_ver" ] && [ -n "$_remote_rev" ] && [ "$_decl" = "$_count" ] && [ "$_count" -gt 0 ] || { rm -f "$_tmp" 2>/dev/null || true; return 4; }
     awk -F'|' '/^[[:space:]]*#/ || /^[[:space:]]*$/ {next} {if(NF!=7 || $1=="" || $4=="" || $5 !~ /^https:\/\//) bad=1; if($1 !~ /^[A-Za-z0-9_-]+$/) bad=1; if($2 !~ /^(bypass|clean|security|privacy|adblock|family|gaming|regional)$/) bad=1; ids[$1]++; if(ids[$1]>1) bad=1; n++} END{if(bad || n<1) exit 1}' "$_tmp" >/dev/null 2>&1 || { rm -f "$_tmp" 2>/dev/null || true; return 4; }
-    _rb="$TMP_ROOT/catalog-remote-all.$$"
-    _lb="$TMP_ROOT/catalog-local-all.$$"
+    _rb="$TMP_ROOT/catalog-remote-all.$"
+    _lb="$TMP_ROOT/catalog-local-all.$"
+    _old_shecan_url="$(awk -F'|' '$1=="shecan" {print $5; exit}' "$CATALOG_FILE" 2>/dev/null)"
+    _new_shecan_url="$(awk -F'|' '$1=="shecan" {print $5; exit}' "$_tmp" 2>/dev/null)"
     sed '/^[[:space:]]*#/d;/^[[:space:]]*$/d' "$_tmp" > "$_rb" 2>/dev/null || true
     sed '/^[[:space:]]*#/d;/^[[:space:]]*$/d' "$CATALOG_FILE" > "$_lb" 2>/dev/null || true
     if cmp -s "$_rb" "$_lb" 2>/dev/null; then rm -f "$_tmp" "$_rb" "$_lb" 2>/dev/null || true; return 2; fi
     mv -f "$_tmp" "$CATALOG_FILE" 2>/dev/null || { rm -f "$_rb" "$_lb" 2>/dev/null || true; return 5; }
     chmod 600 "$CATALOG_FILE" 2>/dev/null || true
+    if [ "$_old_shecan_url" != "$_new_shecan_url" ]; then
+        for _result_file in "$STATE_DIR/dns-test-results.conf" "$PERSIST_STATE_DIR/dns-test-results.conf"; do
+            [ -s "$_result_file" ] || continue
+            _result_tmp="${_result_file}.tmp.$"
+            awk -F'|' '$1!="shecan" {print}' "$_result_file" > "$_result_tmp" 2>/dev/null &&
+                mv -f "$_result_tmp" "$_result_file" 2>/dev/null ||
+                rm -f "$_result_tmp" 2>/dev/null || true
+        done
+        rm -f "$CHECK_DIR/shecan" 2>/dev/null || true
+    fi
     rm -f "$_rb" "$_lb" 2>/dev/null || true
     return 0
 }
@@ -2716,7 +2728,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI common module version: 1.48
+// DNS Manager LuCI common module version: 1.49
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -3016,6 +3028,9 @@ function checkInfo(id,d){
   var r={status:d&&d.status?d.status:'',ping:d&&d.ping?d.ping:''};
   if(String(r.status||'').toUpperCase()==='OK'&&!hasPing(r.ping))r.status='FAIL';
   return r;
+}
+function resolverAvailable(ci){
+  return String(ci&&ci.status||'').toUpperCase()==='OK'&&hasPing(ci&&ci.ping);
 }
 function componentItem(title,statusNode,details){
   return E('div',{'class':'dm-component-item'},[
@@ -3401,6 +3416,7 @@ function assignDirect(id,slot,root,nextName){
 }
 function renderCatalogAssign(d,root){
   var slots=slotOptionsForCatalog(d.category),st=window.dmState||{},current='';
+  var ci=checkInfo(d.id,d),checking=String(ci.status||'').toUpperCase()==='RUNNING',unavailable=!checking&&!resolverAvailable(ci);
   (st.slots||[]).forEach(function(x){if(x&&x.id===d.id)current=String(x.slot||'');});
   if(slots.indexOf(current)<0)current=slots[0]||'1';
   var select=E('select',{'class':'dm-assign-select','aria-label':'Слот'});
@@ -3410,9 +3426,10 @@ function renderCatalogAssign(d,root){
   select.value=current;
   return E('div',{'class':'dm-assign-inline'},[
     select,
-    btn('Назначить','cbi-button-action',function(){
+    btn(checking?'Проверяется…':(unavailable?'Недоступен':'Назначить'),'cbi-button-action',function(){
+      if(unavailable||checking)return;
       assignDirect(d.id,select.value,root,d.name||d.id);
-    },{disabled:!!state.busy||!!state.jobRunning})
+    },{disabled:!!state.busy||!!state.jobRunning||unavailable||checking,title:unavailable?'DNS не прошёл последнюю проверку. Повторите проверку после восстановления.':''})
   ]);
 }
 
@@ -3453,13 +3470,15 @@ function openSlotPicker(slot,root){
         var occupiedMark=elsewhere
           ? badge('dm-warn','занят в '+slotLabel(assignedSlot)+(assignedPort?' · 127.0.0.1:'+assignedPort:''))
           : null;
-        var actionLabel=elsewhere?('Уже в '+slotLabel(assignedSlot)):((x.name===cur)?'Выбран':'Выбрать');
+        var checking=String(ci.status||'').toUpperCase()==='RUNNING';
+        var unavailable=!checking&&!resolverAvailable(ci);
+        var actionLabel=elsewhere?('Уже в '+slotLabel(assignedSlot)):((x.name===cur)?'Выбран':(checking?'Проверяется…':(unavailable?'Недоступен':'Выбрать')));
         var action=btn(actionLabel,'cbi-button-neutral',function(){
-          if(elsewhere)return;
+          if(elsewhere||unavailable)return;
           if(x.name===cur){ui.hideModal();return;}
           ui.hideModal();
           assign(x.id,slot,root,x.name);
-        },{disabled:!!state.busy||!!elsewhere});
+        },{disabled:!!state.busy||!!elsewhere||checking||(unavailable&&x.name!==cur),title:unavailable?'DNS не прошёл проверку или нет результатов. Нажмите «Проверить» перед назначением.':''});
         var check=btn(ci.status==='RUNNING'?'Проверяется':'Проверить','cbi-button-neutral',function(){
           if(state.jobRunning||state.busy)return;
           testOne(x.id,root,'doh',function(){openSlotPicker(slot,root);});
@@ -4736,7 +4755,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 1.48
+// DNS Manager LuCI version: 1.49
 return view.extend({
   load: DM.load,
   render: DM.render,
