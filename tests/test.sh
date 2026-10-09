@@ -217,7 +217,7 @@ grep -q "xbox_dns|gaming|games+supercell|Xbox DNS|" catalogs/dns-8.7-RU-NOSOCIAL
 grep -Fq '# DNSCATREV=3' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog revision not bumped"
 grep -Fq 'shecan|bypass|geo+services|Шифрованный DNS (DoH)|https://dns.zapret.moe/dns-query|' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "Shecan entry was not replaced by zapret.moe DoH"
 grep -Fq "function resolverKnownUnavailable(ci)" dns-manager-luci.sh || fail "DoH availability helper missing"
-grep -Fq "disabled:!!state.busy||!!state.jobRunning||unavailable||checking" dns-manager-luci.sh || fail "catalog assignment is not disabled for unavailable DoH
+grep -Fq "disabled:!!state.busy||!!state.jobRunning||unavailable||checking" dns-manager-luci.sh || fail "catalog assignment is not disabled for unavailable DoH"
 grep -q "'gaming','Игровые DNS'" dns-manager-luci.sh || fail "gaming catalog label missing in LuCI"
 grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validation missing gaming category"
 grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
