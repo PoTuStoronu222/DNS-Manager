@@ -225,7 +225,7 @@ grep -Fq "disabled:!!state.busy||!!state.jobRunning||unavailable||checking" dns-
 grep -q "'gaming','Игровые DNS'" dns-manager-luci.sh || fail "gaming catalog label missing in LuCI"
 grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validation missing gaming category"
 grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
-grep -q 'VERSION="3.51"' dns-manager.sh || fail "manager version not bumped"
+grep -q 'VERSION="3.52"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
 grep -q 'VERSION="1.50"' dns-manager-luci.sh || fail "LuCI version not bumped"
 grep -q "'bypass','Обход геоблока'" dns-manager-luci.sh || fail "bypass profile label not updated"
@@ -398,8 +398,8 @@ view_luci="$(sed -n 's|^// DNS Manager LuCI common module version:[[:space:]]*||
 [ "$top_luci" = "$self_luci" ] || fail "LuCI SELF_VERSION mismatch"
 [ "$top_luci" = "$view_luci" ] || fail "embedded JS version mismatch"
 ok "LuCI version markers synchronized ($top_luci)"
-grep -Fq 'VERSION="3.51"' dns-manager.sh || fail "DNS Manager version marker is not 3.51"
-ok "DNS Manager version marker synchronized (3.51)"
+grep -Fq 'VERSION="3.52"' dns-manager.sh || fail "DNS Manager version marker is not 3.52"
+ok "DNS Manager version marker synchronized (3.52)"
 
 if awk '
     /function startAutoStatus\(root\)/ { capture=1 }
@@ -979,7 +979,7 @@ chmod +x "$tmp/auto_fill_slots_runner.sh"
 "$tmp/auto_fill_slots_runner.sh" "$tmp" "$tmp/auto_fill_slots.sh" || fail "profile selection does not accept fewer than six DNS servers"
 ok "profiles accept fewer than six available DNS servers"
 
-# Profile post-apply verification must prune failed DNS and keep working slots.
+# Profile post-apply verification must prune failed DNS only for a slot-specific failure.
 awk '/^profile_prune_failed_slots\(\) \{/,/^verify_after_apply_with_repair\(\) \{/' dns-manager.sh | sed '$d' > "$tmp/profile_prune.sh"
 [ -s "$tmp/profile_prune.sh" ] || fail "profile prune helper extraction"
 grep -q '_live_n=$((_live_n+1))' "$tmp/profile_prune.sh" || fail "profile prune does not count live DNS servers"
@@ -990,8 +990,38 @@ grep -q 'reconcile_dnsmasq' "$tmp/profile_prune.sh" || fail "profile prune does 
 awk '/^verify_after_apply_with_repair\(\) \{/,/^verify_after_apply\(\) \{/' dns-manager.sh > "$tmp/profile_verify.sh"
 grep -q '\[ "$PROFILE_APPLY" = 1 \]' "$tmp/profile_verify.sh" || fail "profile verification reduced-set path missing"
 grep -q 'profile_prune_failed_slots' "$tmp/profile_verify.sh" || fail "profile verification does not prune failed DNS"
-awk '/^verify_after_apply_with_repair\(\) \{/,/^verify_after_apply\(\) \{/' dns-manager.sh | sed -n '1,14p' | grep -q 'replace_failed_slot_from_test' && fail "profile verification still enters watchdog replacement loop"
-ok "profile apply keeps the working DNS subset"
+grep -Fq '[ -n "${FAILED_SLOT:-}" ] || return 1' "$tmp/profile_verify.sh" || fail "profile verification may prune DNS after a non-slot failure"
+grep -Fq 'Последние системные сообщения о dnsmasq:' dns-manager.sh || fail "dnsmasq startup diagnostics missing"
+awk '/^verify_after_apply_with_repair\(\) \{/,/^verify_after_apply\(\) \{/{if ($0 !~ /^verify_after_apply\(\) \{$/) print}' dns-manager.sh > "$tmp/profile_verify_function.sh"
+cat > "$tmp/profile_verify_runner.sh" <<'EOF_PROFILE_RUNNER'
+#!/bin/sh
+set -eu
+PROFILE_APPLY=1
+FAILED_SLOT=""
+MODE=infra
+VERIFY_CALL=0
+MARKER="$2"
+verify_after_apply() {
+    VERIFY_CALL=$((VERIFY_CALL+1))
+    if [ "$VERIFY_CALL" -eq 1 ]; then
+        if [ "$MODE" = slot ]; then FAILED_SLOT=2; else FAILED_SLOT=""; fi
+        return 1
+    fi
+    return 0
+}
+profile_prune_failed_slots() { : > "$MARKER"; return 0; }
+tx_snapshot_after_apply() { :; }
+. "$1"
+if verify_after_apply_with_repair; then exit 41; fi
+[ ! -e "$MARKER" ] || exit 42
+MODE=slot
+VERIFY_CALL=0
+verify_after_apply_with_repair || exit 43
+[ -f "$MARKER" ] || exit 44
+EOF_PROFILE_RUNNER
+chmod +x "$tmp/profile_verify_runner.sh"
+"$tmp/profile_verify_runner.sh" "$tmp/profile_verify_function.sh" "$tmp/profile-pruned" || fail "profile verification prunes slots for service errors or skips slot-specific repair"
+ok "profile apply preserves slots on service errors and prunes only failed resolvers"
  
 # Completed profile jobs survive a LuCI page reload and expose the actual reason for failure.
 grep -q 'profile_job_status' "$tmp/backend.sh" || fail "persistent profile job status missing"
