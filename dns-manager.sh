@@ -3154,7 +3154,7 @@ verify_after_apply() {
             while IFS= read -r _dnsmasq_line; do
                 [ -n "$_dnsmasq_line" ] || continue
                 log_msg "Диагностика dnsmasq: $_dnsmasq_line"
-                [ "${APPLY_OUTPUT_QUIET:-0}" = 1 ] || printf "    %s\\n" "$_dnsmasq_line"
+                [ "${APPLY_OUTPUT_QUIET:-0}" = 1 ] || printf "    %s\n" "$_dnsmasq_line"
             done <<EOF_DNSMASQ_DIAG
 $_dnsmasq_diag
 EOF_DNSMASQ_DIAG
