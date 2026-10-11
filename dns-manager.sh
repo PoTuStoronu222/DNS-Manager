@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.51"
+VERSION="3.52"
 # 3.38: clear the LuCI update flag after a successful CLI update.
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
@@ -3098,6 +3098,10 @@ verify_after_apply_with_repair() {
         if verify_after_apply; then
             return 0
         fi
+        # A profile may drop DNS slots only when verification identified a
+        # specific failed slot. Service/configuration failures must roll back
+        # the transaction without discarding otherwise valid DNS selections.
+        [ -n "${FAILED_SLOT:-}" ] || return 1
         if profile_prune_failed_slots; then
             tx_snapshot_after_apply
             verify_after_apply && return 0
@@ -3131,9 +3135,31 @@ verify_after_apply_with_repair() {
     return 1
 }
 verify_after_apply() {
+    # Reset slot-specific failure details before checking shared services.
+    # Otherwise a previous failed slot could make an infrastructure error
+    # look like a resolver failure and trigger profile pruning.
+    FAILED_SLOT=""
+    FAILED_SLOT_ID=""
+    FAILED_SLOT_PORT=""
+    FAILED_SLOT_CAT=""
     sleep 3
     if ! /etc/init.d/dnsmasq status >/dev/null 2>&1 && ! pgrep -x dnsmasq >/dev/null 2>&1; then
-        err_msg "dnsmasq не запущен после применения."; return 1
+        _dnsmasq_diag=""
+        if command -v logread >/dev/null 2>&1; then
+            _dnsmasq_diag="$(logread 2>/dev/null | grep -i 'dnsmasq' | tail -n 8)"
+        fi
+        err_msg "dnsmasq не запущен после применения."
+        if [ -n "$_dnsmasq_diag" ]; then
+            apply_progress "Последние системные сообщения о dnsmasq:"
+            while IFS= read -r _dnsmasq_line; do
+                [ -n "$_dnsmasq_line" ] || continue
+                log_msg "Диагностика dnsmasq: $_dnsmasq_line"
+                [ "${APPLY_OUTPUT_QUIET:-0}" = 1 ] || printf "    %s\n" "$_dnsmasq_line"
+            done <<EOF_DNSMASQ_DIAG
+$_dnsmasq_diag
+EOF_DNSMASQ_DIAG
+        fi
+        return 1
     fi
     if [ "$DOH_TOTAL" -gt 0 ]; then
         pgrep -f 'https-dns-proxy' >/dev/null 2>&1 || { err_msg "https-dns-proxy не запущен после применения."; return 1; }
