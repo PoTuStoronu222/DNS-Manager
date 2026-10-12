@@ -103,10 +103,10 @@ EOS
     . "$WORK/uninstall.sh"
     clear_screen() { :; }; menu_header() { :; }; warn_msg() { :; }; err_msg() { :; }; info_msg() { :; }; pause() { :; }
     confirm_action() { return 0; }; acquire_mutation_lock() { return 0; }; release_mutation_lock() { :; }
-    watchdog_service_stop_disable() { return 0; }; watchdog_cron_remove_owned_block() { return 0; }
+    watchdog_service_stop_disable() { [ "${TEST_WATCHDOG_FAIL:-0}" != 1 ]; }; watchdog_cron_remove_owned_block() { return 0; }
     rollback_hdp_targeted() { return 0; }; rollback_dnsmasq_targeted() { return 0; }; rollback_firewall_targeted() { return 0; }
     manager_force_config_matches() { return 1; }; check_module_state() { printf '%s' 0; }; rollback_ownership_has() { return 1; }
-    reload_fw() { return 0; }; watchdog_service_remove_files() { return 0; }; luci_companion_remove() { return 0; }
+    reload_fw() { [ "${TEST_FIREWALL_FAIL:-0}" != 1 ]; }; watchdog_service_remove_files() { return 0; }; luci_companion_remove() { return 0; }
     cleanup_stale_tmp_dirs() { return 0; }; find() { return 0; }
     package_owner_remove_owned() {
         _attempt="$(cat "$TEST_TMP/package-remove-attempts" 2>/dev/null || printf 0)"
@@ -125,7 +125,20 @@ EOS
     for _path in "$BASE_DIR" "$PACKAGE_OWNERSHIP" "$OWNERSHIP" "$STATE_DIR" "$LOG_FILE" "$TX_LOG" "$MANAGER_PATH"; do
         [ -e "$_path" ] || { printf '  retry state deleted after DNS restart failure: %s\n' "$_path"; return 1; }
     done
-    TEST_DNSMASQ_FAIL=0; export TEST_DNSMASQ_FAIL
+
+    TEST_DNSMASQ_FAIL=0; TEST_FIREWALL_FAIL=1; export TEST_DNSMASQ_FAIL TEST_FIREWALL_FAIL
+    if (uninstall_manager_impl >/dev/null 2>&1); then printf '%s\n' '  uninstall reported success although firewall reload failed'; return 1; fi
+    for _path in "$BASE_DIR" "$PACKAGE_OWNERSHIP" "$OWNERSHIP" "$STATE_DIR" "$LOG_FILE" "$TX_LOG" "$MANAGER_PATH"; do
+        [ -e "$_path" ] || { printf '  retry state deleted after firewall reload failure: %s\n' "$_path"; return 1; }
+    done
+
+    TEST_FIREWALL_FAIL=0; TEST_WATCHDOG_FAIL=1; export TEST_FIREWALL_FAIL TEST_WATCHDOG_FAIL
+    if (uninstall_manager_impl >/dev/null 2>&1); then printf '%s\n' '  uninstall reported success although procd watchdog did not stop'; return 1; fi
+    for _path in "$BASE_DIR" "$PACKAGE_OWNERSHIP" "$OWNERSHIP" "$STATE_DIR" "$LOG_FILE" "$TX_LOG" "$MANAGER_PATH"; do
+        [ -e "$_path" ] || { printf '  retry state deleted after watchdog stop failure: %s\n' "$_path"; return 1; }
+    done
+
+    TEST_WATCHDOG_FAIL=0; export TEST_WATCHDOG_FAIL
     (uninstall_manager_impl >/dev/null 2>&1) || { printf '%s\n' '  final retry could not finish after transient failures'; return 1; }
     for _path in "$BASE_DIR" "$STATE_DIR" "$LOG_FILE" "$TX_LOG" "$MANAGER_PATH"; do
         [ ! -e "$_path" ] || { printf '  successful final pass left residual state: %s\n' "$_path"; return 1; }
