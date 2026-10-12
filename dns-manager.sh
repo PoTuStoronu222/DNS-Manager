@@ -1226,8 +1226,8 @@ doh_selected_config_current() {
                 _selected=1
                 break
             fi
-            eval "_sid=${SLOT_${_slot}:-}"
-            eval "_sp=${PORT_${_slot}:-}"
+            eval "_sid=\${SLOT_${_slot}:-}"
+            eval "_sp=\${PORT_${_slot}:-}"
             if [ -n "$_sid" ] && [ -z "$_sp" ] && [ "$DNS_PROFILE" = hybrid ]; then
                 _sp="$(hybrid_desired_port "$_slot")"
             fi
@@ -1237,8 +1237,8 @@ doh_selected_config_current() {
         # A third-party section sharing a selected port is a conflict and must
         # be re-evaluated by the apply path, not silently treated as harmless.
         for _slot in 1 2 3 4 5 6 RU; do
-            eval "_sid=${SLOT_${_slot}:-}"
-            eval "_sp=${PORT_${_slot}:-}"
+            eval "_sid=\${SLOT_${_slot}:-}"
+            eval "_sp=\${PORT_${_slot}:-}"
             [ -n "$_sid" ] && [ -z "$_sp" ] && [ "$DNS_PROFILE" = hybrid ] && _sp="$(hybrid_desired_port "$_slot")"
             [ -n "$_sid" ] && [ -n "$_sp" ] && [ "$_sp" = "$_port" ] && return 1
         done
@@ -2665,8 +2665,8 @@ reconcile_dnsmasq() {
         if rollback_ownership_has dnsmasq server "$val" || dnsmasq_manager_server_owned "$val"; then
             _desired=0
             for s in 1 2 3 4 5 6; do
-                eval "_id=${SLOT_${s}:-}"
-                eval "_p=${PORT_${s}:-}"
+                eval "_id=\${SLOT_${s}:-}"
+                eval "_p=\${PORT_${s}:-}"
                 [ -n "$_id" ] && [ -n "$_p" ] && [ "$val" = "127.0.0.1#$_p" ] && _desired=1
             done
             if [ "$TLD_RU_ENABLED" = 1 ] && [ -n "$SLOT_RU" ] && [ -n "$PORT_RU" ]; then
@@ -2683,7 +2683,7 @@ $_cur
 EOF_DNS_MANAGER_SERVER
 
     for s in 1 2 3 4 5 6; do
-        eval "id=${SLOT_${s}:-}"; eval "p=${PORT_${s}:-}"
+        eval "id=\${SLOT_${s}:-}"; eval "p=\${PORT_${s}:-}"
         [ -n "$id" ] && [ -n "$p" ] || continue
         val="127.0.0.1#$p"
         if ! exact_list_has "dhcp.$sec.server" "$val"; then
@@ -2882,8 +2882,8 @@ verify_applied_doh_config() {
     : > "$_expected" || return 1
     : > "$_actual" || return 1
     for s in 1 2 3 4 5 6 RU; do
-        eval "_id=${SLOT_${s}:-}"
-        eval "_p=${PORT_${s}:-}"
+        eval "_id=\${SLOT_${s}:-}"
+        eval "_p=\${PORT_${s}:-}"
         [ -n "$_id" ] || continue
         [ -n "$_p" ] || { err_msg "Слот $s: не определён боевой порт."; return 1; }
         _u="$(normalize_url "$(dns_url "$_id")")"
@@ -3007,9 +3007,9 @@ rebuild_selected_hdp_sections() {
     _keep_file="$TMP_DIR/rebuild-keep-$$"
     : > "$_keep_file" || return 1
     for _rs in 1 2 3 4 5 6 RU; do
-        eval "_rid=${SLOT_${_rs}:-}"
+        eval "_rid=\${SLOT_${_rs}:-}"
         [ -n "$_rid" ] || continue
-        eval "_rport=${PORT_${_rs}:-}"
+        eval "_rport=\${PORT_${_rs}:-}"
         [ -n "$_rport" ] || _rport="$(hybrid_desired_port "$_rs")"
         _rurl="$(normalize_url "$(dns_url "$_rid")")"
         [ -n "$_rurl" ] || { rm -f "$_keep_file"; return 1; }
@@ -3020,7 +3020,7 @@ rebuild_selected_hdp_sections() {
     # identified Manager sections may be removed; unknown sections are retained.
     clear_all_doh_for_apply || { rm -f "$_keep_file"; return 1; }
     for _rs in 1 2 3 4 5 6 RU; do
-        eval "_rid=${SLOT_${_rs}:-}"
+        eval "_rid=\${SLOT_${_rs}:-}"
         [ -n "$_rid" ] || continue
         ensure_doh_slot "$_rs" "$_rid" || { rm -f "$_keep_file"; return 1; }
     done
@@ -3827,9 +3827,9 @@ dns_manager_hdp_section_desired() {
     _port="$1"; _url="$(normalize_url "$2")"
     [ -n "$_port" ] && [ -n "$_url" ] || return 1
     for _slot in 1 2 3 4 5 6 RU; do
-        eval "_id=${SLOT_${_slot}:-}"
+        eval "_id=\${SLOT_${_slot}:-}"
         [ -n "$_id" ] || continue
-        eval "_expected_port=${PORT_${_slot}:-}"
+        eval "_expected_port=\${PORT_${_slot}:-}"
         [ -n "$_expected_port" ] || {
             [ "$DNS_PROFILE" = hybrid ] || continue
             _expected_port="$(hybrid_desired_port "$_slot")"
@@ -3895,8 +3895,8 @@ EOF_RB_DNSMASQ
     # restores the normal OpenWrt WAN resolver path without erasing custom DNS.
     _manager_slot_configured=0
     for _slot in 1 2 3 4 5 6 RU; do
-        eval "_id=${SLOT_${_slot}:-}"
-        eval "_port=${PORT_${_slot}:-}"
+        eval "_id=\${SLOT_${_slot}:-}"
+        eval "_port=\${PORT_${_slot}:-}"
         [ -n "$_id" ] && [ -n "$_port" ] && _manager_slot_configured=1
     done
     _curv="$(uci -q get "dhcp.$sec.noresolv" 2>/dev/null)"
@@ -4054,14 +4054,10 @@ manager_force_config_matches() {
 
 uninstall_disable_forced_dns() {
     manager_force_config_matches || return 0
+    # force_dns is the switch that enables HDP's forced-DNS firewall path.
+    # Keep other package options intact; they may be used by remaining external
+    # https-dns-proxy sections.
     uci set https-dns-proxy.config.force_dns=0 || return 1
-    # Remove only force-specific fields whose values match the Manager contract.
-    [ "$(uci -q get https-dns-proxy.config.notrack_dns 2>/dev/null)" = 1 ] &&
-        uci -q delete https-dns-proxy.config.notrack_dns || true
-    [ "$(uci -q get https-dns-proxy.config.force_dns_port 2>/dev/null)" = "53 853" ] &&
-        uci -q delete https-dns-proxy.config.force_dns_port || true
-    [ "$(uci -q get https-dns-proxy.config.force_dns_src_interface 2>/dev/null)" = lan ] &&
-        uci -q delete https-dns-proxy.config.force_dns_src_interface || true
     uci commit https-dns-proxy || return 1
     remove_dns_dot_block || return 1
     return 0
@@ -6782,7 +6778,7 @@ watchdog_cron_remove_owned_block() {
     _tmp="$WATCHDOG_CRON_FILE.dns-manager.$$"
     _owner_suffix="${MANAGER_PATH} watchdog >> ${LOG_FILE} 2>&1"
 
-    awk -v marker="$_marker" -v state_line="$_state_line" -v suffix="$_owner_suffix" '
+    awk -v marker="$WATCHDOG_CRON_MARKER" -v state_line="$_state_line" -v suffix="$_owner_suffix" '
         $0==marker { pending=1; next }
         pending==1 {
             if ((state_line!="" && $0==state_line) || (index($0,suffix)>0 && $0 ~ /^\*\/[0-9]+[[:space:]]+\*[[:space:]]+\*[[:space:]]+\*[[:space:]]+\*/)) {
@@ -6810,7 +6806,9 @@ watchdog_cron_remove_owned_block() {
     [ "$_awk_rc" -eq 0 ] || { rm -f "$_tmp" 2>/dev/null || true; return 1; }
 
     watchdog_cron_preserve_attrs "$WATCHDOG_CRON_FILE" "$_tmp" || { rm -f "$_tmp" 2>/dev/null || true; return 1; }
-    watchdog_cron_atomic_replace "$WATCHDOG_CRON_FILE" "$_tmp" "$_cron_before" || { rm -f "$_tmp" 2>/dev/null || true; return $?; }
+    watchdog_cron_atomic_replace "$WATCHDOG_CRON_FILE" "$_tmp" "$_cron_before"
+    _replace_rc=$?
+    [ "$_replace_rc" -eq 0 ] || { rm -f "$_tmp" 2>/dev/null || true; return "$_replace_rc"; }
     watchdog_cron_scheduler_apply >/dev/null 2>&1 || return 1
     rm -f "$WATCHDOG_CRON_STATE" 2>/dev/null || return 1
     log_tx "ROLLBACK" "watchdog" "CRON_REMOVE" "OK" "file=$WATCHDOG_CRON_FILE"
