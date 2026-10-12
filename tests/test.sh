@@ -379,7 +379,7 @@ if grep -q 'ttyd\|WEB_ACCESS\|web_access_\|third_party_running\|manager_running_
     fail "Obsolete terminal/external-service code remains in DNS Manager"
 fi
 grep -q '^manager_force_config_matches() {' dns-manager.sh || fail "Live forced-DNS uninstall matcher missing"
-grep -q 'if manager_force_config_matches; then' dns-manager.sh || fail "Uninstall still relies on stale force state"
+grep -Fq 'if [ "$_hdp_package_owned" = 1 ] && manager_force_config_matches; then' dns-manager.sh || fail "Uninstall must check the live forced-DNS contract and package ownership"
 grep -q '^package_owner_remove_owned() {' dns-manager.sh || fail "Generic package cleanup helper missing"
 if grep -Eq '^(menu_item_state|firewall_lan_zone_require|firewall_wan_zone_require|firewall_find_exact_redirect|dns_redirect_conflict_uci|prepare_dns_path|ntp_name|ntp_ipv4|ntp_leap|show_best_category|hybrid_set_defaults|hybrid_prepare_selection|show_hybrid_profile|find_doh_by_port|uci_list_normalized|uci_list_current_normalized|stock_uci_list_normalized|stock_effective_uci_value|repair_duplicate_own_doh_ports|firewall_owner_has|firewall_owner_add|firewall_ownership_sync|settings_file_normalized|apply_ntp_if_needed|verify_doh_endpoint|stage_port_used|stage_free_port|stage_cleanup|stage_bootstrap|stage_start_one|stage_process_alive|stage_local_ok|stage_try_candidate|stage_stop_last|stage_drop_by_url|candidate_already_used|next_hybrid_candidate|show_doh|show_best|menu_bogus|apply_bogus|dependency_preflight|watchdog_candidate_categories|watchdog_test_candidate|watchdog_apply_restore_previous_state|restore_persistent_test_results|save_persistent_test_results|startup_self_repair|normalize_hybrid_ports)\(\) \{' dns-manager.sh; then
     fail "Verified dead DNS Manager functions remain"
