@@ -2398,24 +2398,6 @@ stock_uci_value_normalized() {
 # ==========================================
 
 
-doh_section_owned_by_manager() {
-    _doh_port="$1"
-    _doh_url="$(normalize_url "$2")"
-    [ -n "$_doh_port" ] && [ -n "$_doh_url" ] || return 1
-    rollback_ownership_has doh "$_doh_port" "$_doh_url" && return 0
-    for _doh_slot in 1 2 3 4 5 6 RU; do
-        eval "_doh_id=${SLOT_$_doh_slot:-}"
-        eval "_doh_expected_port=${PORT_$_doh_slot:-}"
-        [ -n "$_doh_id" ] || continue
-        if [ -z "$_doh_expected_port" ] && [ "$DNS_PROFILE" = hybrid ]; then
-            _doh_expected_port="$(hybrid_desired_port "$_doh_slot")"
-        fi
-        [ "$_doh_port" = "$_doh_expected_port" ] || continue
-        _doh_expected_url="$(normalize_url "$(dns_url "$_doh_id")")"
-        [ "$_doh_url" = "$_doh_expected_url" ] && return 0
-    done
-    return 1
-}
 https_dns_proxy_stock_section_owned() {
     [ -f "$PACKAGE_OWNERSHIP" ] || return 1
     grep -Fqx "https-dns-proxy" "$PACKAGE_OWNERSHIP" 2>/dev/null || return 1
@@ -2435,13 +2417,13 @@ clear_all_doh_for_apply() {
     apply_progress "Пересобираю только DNS-секции, принадлежащие DNS Manager."
     _removed=0
     _kept=0
-    _sections="$(uci show https-dns-proxy 2>/dev/null | sed -n 's/^https-dns-proxy\\.\\([^.=]*\\)=https-dns-proxy$/\\1/p')"
+    _sections="$(uci show https-dns-proxy 2>/dev/null | sed -n 's/^https-dns-proxy\.\([^.=]*\)=https-dns-proxy$/\1/p')"
     for _sec in $_sections; do
         _u="$(normalize_url "$(uci -q get "https-dns-proxy.$_sec.resolver_url" 2>/dev/null)")"
         _p="$(uci -q get "https-dns-proxy.$_sec.listen_port" 2>/dev/null)"
         _a="$(uci -q get "https-dns-proxy.$_sec.listen_addr" 2>/dev/null)"
         _own=0
-        doh_section_owned_by_manager "$_p" "$_u" && _own=1
+        dns_manager_hdp_section_owned "$_p" "$_u" && _own=1
         if [ "$_own" = 0 ] && https_dns_proxy_stock_section_owned "$_p" "$_u" "$_a"; then
             _own=1
         fi
