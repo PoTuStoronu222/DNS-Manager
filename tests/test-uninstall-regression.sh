@@ -105,7 +105,13 @@ ok "HDP cleanup is targeted and reports deletion errors"
 # A failed package-removal attempt must leave state and executable for retry.
 mkdir -p "$WORK/init.d" "$WORK/config" "$WORK/base/config" "$WORK/state" "$WORK/bin"
 for _service in dnsmasq https-dns-proxy; do
-    printf '#!/bin/sh\nexit 0\n' > "$WORK/init.d/$_service"
+    cat > "$WORK/init.d/$_service" <<'EOS'
+#!/bin/sh
+if [ "${TEST_DNSMASQ_FAIL:-0}" = 1 ] && [ "$(basename "$0")" = dnsmasq ]; then
+    exit 1
+fi
+exit 0
+EOS
     chmod 755 "$WORK/init.d/$_service"
 done
 extract_function uninstall_manager_impl "$WORK/uninstall.raw" || fail "cannot extract uninstall function"
@@ -133,6 +139,10 @@ BASE_DIR="$WORK/base"; STATE_DIR="$WORK/state"; LOG_FILE="$WORK/manager.log"; TX
 MANAGER_PATH="$WORK/bin/dns-manager"
 printf 'https-dns-proxy\n' > "$PACKAGE_OWNERSHIP"
 : > "$OWNERSHIP"; : > "$LOG_FILE"; : > "$TX_LOG"; : > "$STATE_DIR/state"; : > "$MANAGER_PATH"; : > "$WORK/config/https-dns-proxy"
+TEST_DNSMASQ_FAIL=1; export TEST_DNSMASQ_FAIL
+if (uninstall_manager_impl >/dev/null 2>&1); then fail "uninstall reported success after dnsmasq restart failure"; fi
+TEST_DNSMASQ_FAIL=0; export TEST_DNSMASQ_FAIL
+[ -f "$PACKAGE_OWNERSHIP" ] && [ -f "$OWNERSHIP" ] && [ -f "$MANAGER_PATH" ] && [ -d "$BASE_DIR" ] || fail "retry state was deleted after dnsmasq restart failure"
 package_owner_remove_owned() {
     _attempt="$(cat "$WORK/remove-attempts" 2>/dev/null || printf 0)"
     _attempt=$((_attempt+1)); printf '%s\n' "$_attempt" > "$WORK/remove-attempts"
