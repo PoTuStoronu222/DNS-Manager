@@ -139,6 +139,11 @@ package_owner_remove_owned() {
 }
 if (uninstall_manager_impl >/dev/null 2>&1); then fail "uninstall reported success after package removal failure"; fi
 [ -f "$PACKAGE_OWNERSHIP" ] && [ -f "$OWNERSHIP" ] && [ -f "$MANAGER_PATH" ] && [ -d "$BASE_DIR" ] || fail "retry state was deleted after package removal failure"
-if ! (uninstall_manager_impl >/dev/null 2>&1); then fail "retry could not finish after transient package removal failure"; fi
+if ! (uninstall_manager_impl >"$WORK/final-uninstall.log" 2>&1); then
+    printf '%s\n' 'Final uninstall log:' >&2
+    cat "$WORK/final-uninstall.log" >&2
+    printf 'Package removal attempts: %s\n' "$(cat "$WORK/remove-attempts" 2>/dev/null || printf 0)" >&2
+    fail "retry could not finish after transient package removal failure"
+fi
 [ ! -e "$MANAGER_PATH" ] && [ ! -e "$BASE_DIR" ] && [ ! -e "$STATE_DIR" ] || fail "successful retry left Manager files"
 ok "Failed uninstall keeps state for a safe retry"
