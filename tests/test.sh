@@ -1122,4 +1122,7 @@ fi
 ok "NTP RPC is allowed by ACL and no fixed router LAN IP is used"
 
 
+# Uninstall behavior regressions use mocked UCI/services in a temporary sandbox.
+sh tests/test-uninstall-regression.sh || fail "uninstall regression tests"
+
 printf '%s\n' "All DNS Manager regression checks passed."
