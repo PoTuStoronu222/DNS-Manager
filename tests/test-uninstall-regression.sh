@@ -78,7 +78,7 @@ test_dns_recovery_without_backup() (
     _server="$(state_value server 2>/dev/null || true)"; _noresolv="$(state_value noresolv 2>/dev/null || true)"
     case "$_server" in *'127.0.0.1#5053'*) printf '%s\n' '  dead Manager upstream remains alongside third-party DNS'; return 1;; esac
     case "$_server" in *'192.0.2.53'*) :;; *) printf '%s\n' '  unrelated DNS upstream was removed'; return 1;; esac
-    [ "$_noresolv" != 1 ] || { printf '%s\n' '  noresolv=1 still blocks WAN DNS'; return 1; }
+    [ "$_noresolv" = 1 ] || { printf '%s\n' '  noresolv was changed despite a preserved unrelated upstream'; return 1; }
 )
 test_external_hdp_sections_are_preserved() (
     extract_function rebuild_selected_hdp_sections "$WORK/rebuild-hdp.sh" || return 1
