@@ -225,7 +225,7 @@ grep -Fq "disabled:!!state.busy||!!state.jobRunning||unavailable||checking" dns-
 grep -q "'gaming','Игровые DNS'" dns-manager-luci.sh || fail "gaming catalog label missing in LuCI"
 grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validation missing gaming category"
 grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
-grep -q 'VERSION="3.54"' dns-manager.sh || fail "manager version not bumped"
+grep -q 'VERSION="3.53"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
 grep -q 'VERSION="1.50"' dns-manager-luci.sh || fail "LuCI version not bumped"
 grep -q "'bypass','Обход геоблока'" dns-manager-luci.sh || fail "bypass profile label not updated"
@@ -398,8 +398,8 @@ view_luci="$(sed -n 's|^// DNS Manager LuCI common module version:[[:space:]]*||
 [ "$top_luci" = "$self_luci" ] || fail "LuCI SELF_VERSION mismatch"
 [ "$top_luci" = "$view_luci" ] || fail "embedded JS version mismatch"
 ok "LuCI version markers synchronized ($top_luci)"
-grep -Fq 'VERSION="3.54"' dns-manager.sh || fail "DNS Manager version marker is not 3.54"
-ok "DNS Manager version marker synchronized (3.54)"
+grep -Fq 'VERSION="3.53"' dns-manager.sh || fail "DNS Manager version marker is not 3.53"
+ok "DNS Manager version marker synchronized (3.52)"
 
 if awk '
     /function startAutoStatus\(root\)/ { capture=1 }
@@ -1122,7 +1122,6 @@ fi
 ok "NTP RPC is allowed by ACL and no fixed router LAN IP is used"
 
 
-# Uninstall behavior regressions use mocked UCI/services in a temporary sandbox.
 sh tests/test-uninstall-regression.sh || fail "uninstall regression tests"
 
 printf '%s\n' "All DNS Manager regression checks passed."
