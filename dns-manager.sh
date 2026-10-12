@@ -2654,7 +2654,7 @@ dnsmasq_manager_server_owned() {
     # Legacy Hybrid ports remain recognised so an upgrade can safely clean
     # an older manager installation without trusting its stale journal.
     case "$_val" in
-        127.0.0.1#505[3-9]|/ru/127.0.0.1#505[3-9]|/su/127.0.0.1#505[3-9]|/xn--p1ai/127.0.0.1#505[3-9]) return 0 ;;
+        127.0.0.1#505[3-9]|127.0.0.1#5060|/ru/127.0.0.1#505[3-9]|/ru/127.0.0.1#5060|/su/127.0.0.1#505[3-9]|/su/127.0.0.1#5060|/xn--p1ai/127.0.0.1#505[3-9]|/xn--p1ai/127.0.0.1#5060) return 0 ;;
     esac
     return 1
 }
@@ -4126,7 +4126,8 @@ uninstall_manager_impl() {
 
     # If an external HDP package has no sections left, prevent its startup hook
     # from forcing noresolv=1 without any upstream proxy.
-    if [ "$_hdp_package_owned" != 1 ] && [ -x /etc/init.d/https-dns-proxy ] &&
+    if [ "$_hdp_package_owned" != 1 ] && [ "$_force_contract_owned" = 1 ] &&
+       [ -x /etc/init.d/https-dns-proxy ] &&
        ! uci -q get "https-dns-proxy.@https-dns-proxy[0]" >/dev/null 2>&1 &&
        [ "$(uci -q get https-dns-proxy.config.dnsmasq_config_update 2>/dev/null)" = "*" ]; then
         uci set https-dns-proxy.config.dnsmasq_config_update='-' || _rc=1
