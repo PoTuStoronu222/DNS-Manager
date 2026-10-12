@@ -57,13 +57,13 @@ test_dns_recovery_without_backup() (
     mkdir -p "$TEST_TMP/init.d"
     printf '#!/bin/sh\nexit 0\n' > "$TEST_TMP/init.d/dnsmasq"; chmod 755 "$TEST_TMP/init.d/dnsmasq"
     extract_function dnsmasq_manager_server_owned "$WORK/server-owned.sh" || return 1
-    extract_function dnsmasq_external_confdir_has_files "$WORK/confdir-helper.sh" || return 1
+    extract_function dnsmasq_external_confdir_has_servers "$WORK/confdir-helper.sh" || return 1
     extract_function rollback_dnsmasq_targeted "$WORK/rollback.raw" || return 1
     sed 's|/etc/init.d/dnsmasq|"$TEST_TMP/init.d/dnsmasq"|g' "$WORK/rollback.raw" > "$WORK/rollback.sh"
     . "$WORK/server-owned.sh"
     . "$WORK/confdir-helper.sh"
     . "$WORK/rollback.sh"
-    dnsmasq_external_confdir_has_files() { return 1; }
+    dnsmasq_external_confdir_has_servers() { return 1; }
     uci() { mock_uci "$@"; }
     get_dnsmasq_section() { printf '%s' dnsmasq; }
     rollback_ownership_has() { [ -f "$OWNERSHIP" ] && grep -Fqx -- "$1|$2|$3" "$OWNERSHIP" 2>/dev/null; }
