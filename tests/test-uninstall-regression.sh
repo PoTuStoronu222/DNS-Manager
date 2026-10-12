@@ -7,7 +7,7 @@ trap 'rm -rf "$WORK"' EXIT INT TERM
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 ok() { printf 'OK: %s\n' "$*"; }
 extract_function() {
-    awk -v fn="$1" '$0 == fn " {" {capture=1} capture {print} capture && /^}$/ {exit}' "$ROOT/dns-manager.sh" > "$2"
+    awk -v fn="$1" '$0 == fn "() {" {capture=1} capture {print} capture && /^}$/ {exit}' "$ROOT/dns-manager.sh" > "$2"
     [ -s "$2" ]
 }
 
