@@ -3850,12 +3850,13 @@ dns_manager_hdp_section_owned() {
     rollback_ownership_has doh "$_port" "$_url" && return 0
     dns_manager_hdp_section_desired "$_port" "$_url"
 }
-dnsmasq_external_confdir_has_files() {
+dnsmasq_external_confdir_has_servers() {
     [ -d /etc/dnsmasq.d ] || return 1
     for _file in /etc/dnsmasq.d/*; do
-        [ -e "$_file" ] || continue
+        [ -f "$_file" ] || continue
         [ "$_file" = /etc/dnsmasq.d/90-dns-manager-bogus.conf ] && continue
-        return 0
+        # Only server= supplies an upstream while noresolv=1 is active.
+        grep -Eq '^[[:space:]]*server=[^[:space:]#]+' "$_file" 2>/dev/null && return 0
     done
     return 1
 }
@@ -3910,7 +3911,7 @@ EOF_RB_DNSMASQ
        ! rollback_ownership_has dnsmasq noresolv 1 &&
        { [ "$_removed_manager_server" = 1 ] || [ "$_manager_slot_configured" = 1 ]; } &&
        [ -z "$_remaining_servers" ] &&
-       ! dnsmasq_external_confdir_has_files; then
+       ! dnsmasq_external_confdir_has_servers; then
         uci -q delete "dhcp.$sec.noresolv" || return 1
         _changed=1
         printf '%s\n' '  - dnsmasq noresolv: восстановлен штатный путь DNS через WAN'
