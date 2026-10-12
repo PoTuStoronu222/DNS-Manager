@@ -56,9 +56,14 @@ test_dns_recovery_without_backup() (
     TEST_TMP="$WORK/dns-no-backup"; export TEST_TMP
     mkdir -p "$TEST_TMP/init.d"
     printf '#!/bin/sh\nexit 0\n' > "$TEST_TMP/init.d/dnsmasq"; chmod 755 "$TEST_TMP/init.d/dnsmasq"
+    extract_function dnsmasq_manager_server_owned "$WORK/server-owned.sh" || return 1
+    extract_function dnsmasq_external_confdir_has_files "$WORK/confdir-helper.sh" || return 1
     extract_function rollback_dnsmasq_targeted "$WORK/rollback.raw" || return 1
     sed 's|/etc/init.d/dnsmasq|"$TEST_TMP/init.d/dnsmasq"|g' "$WORK/rollback.raw" > "$WORK/rollback.sh"
+    . "$WORK/server-owned.sh"
+    . "$WORK/confdir-helper.sh"
     . "$WORK/rollback.sh"
+    dnsmasq_external_confdir_has_files() { return 1; }
     uci() { mock_uci "$@"; }
     get_dnsmasq_section() { printf '%s' dnsmasq; }
     rollback_ownership_has() { [ -f "$OWNERSHIP" ] && grep -Fqx -- "$1|$2|$3" "$OWNERSHIP" 2>/dev/null; }
@@ -81,9 +86,17 @@ test_dns_recovery_without_backup() (
     [ "$_noresolv" = 1 ] || { printf '%s\n' '  noresolv was changed despite a preserved unrelated upstream'; return 1; }
 )
 test_external_hdp_sections_are_preserved() (
+    extract_function clear_all_doh_for_apply "$WORK/clear-hdp.sh" || return 1
     extract_function rebuild_selected_hdp_sections "$WORK/rebuild-hdp.sh" || return 1
-    if grep -Fq 'uci -q delete "https-dns-proxy.@https-dns-proxy[0]"' "$WORK/rebuild-hdp.sh"; then
-        printf '%s\n' '  applying a profile deletes all pre-existing https-dns-proxy sections without a restorable snapshot'
+    grep -Fq 'dns_manager_hdp_section_owned "$_p" "$_u"' "$WORK/clear-hdp.sh" || {
+        printf '%s\n' '  HDP apply cleanup does not verify Manager ownership'; return 1;
+    }
+    grep -Fq 'clear_all_doh_for_apply ||' "$WORK/rebuild-hdp.sh" || {
+        printf '%s\n' '  HDP rebuild does not use selective cleanup'; return 1;
+    }
+    if grep -Fq 'uci -q delete "https-dns-proxy.@https-dns-proxy[0]"' "$WORK/rebuild-hdp.sh" ||
+       grep -Fq 'uci -q delete "https-dns-proxy.@https-dns-proxy[0]"' "$WORK/clear-hdp.sh"; then
+        printf '%s\n' '  applying a profile deletes all pre-existing https-dns-proxy sections without ownership checks'
         return 1
     fi
 )
