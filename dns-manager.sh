@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.52"
+VERSION="3.53"
 # 3.38: clear the LuCI update flag after a successful CLI update.
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
@@ -3089,7 +3089,7 @@ profile_prune_failed_slots() {
     rebuild_selected_hdp_sections || return 1
     reconcile_dnsmasq || return 1
     /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || return 1
-    /etc/init.d/dnsmasq restart >/dev/null 2>&1 || return 1
+    dnsmasq_restart_checked || return 1
     sleep 3
     return 0
 }
@@ -3134,6 +3134,92 @@ verify_after_apply_with_repair() {
     rm -f "$REPAIR_BAD_IDS" 2>/dev/null
     return 1
 }
+dnsmasq_failure_diagnostics() {
+    local _dnsmasq_diag _dnsmasq_line _dnsmasq_sec _dnsmasq_conf _dnsmasq_test _dnsmasq_test_rc _dnsmasq_found _dnsmasq_sections
+    _dnsmasq_found=0
+
+    # OpenWrt's dnsmasq init script generates /var/etc/dnsmasq.conf.<section>
+    # and launches dnsmasq with that file. Test the generated file, not the UCI
+    # source file, so syntax errors in the effective runtime config are visible.
+    if command -v dnsmasq >/dev/null 2>&1; then
+        _dnsmasq_sections="$(uci show dhcp 2>/dev/null | sed -n 's/^dhcp\.\([^.=]*\)=dnsmasq$/\1/p')"
+        for _dnsmasq_sec in $_dnsmasq_sections; do
+            [ "$(uci -q get "dhcp.$_dnsmasq_sec.disabled" 2>/dev/null)" != 1 ] || continue
+            _dnsmasq_conf="/var/etc/dnsmasq.conf.$_dnsmasq_sec"
+            [ -f "$_dnsmasq_conf" ] || continue
+            _dnsmasq_found=1
+            _dnsmasq_test="$(dnsmasq --test --conf-file="$_dnsmasq_conf" 2>&1)"
+            _dnsmasq_test_rc=$?
+            apply_progress "Проверяю сгенерированную конфигурацию: $_dnsmasq_conf"
+            if [ -n "$_dnsmasq_test" ]; then
+                while IFS= read -r _dnsmasq_line; do
+                    [ -n "$_dnsmasq_line" ] || continue
+                    log_msg "Проверка dnsmasq ($_dnsmasq_conf): $_dnsmasq_line"
+                    [ "${APPLY_OUTPUT_QUIET:-0}" = 1 ] || printf "    %s\n" "$_dnsmasq_line"
+                done <<EOF_DNSMASQ_TEST
+$_dnsmasq_test
+EOF_DNSMASQ_TEST
+            fi
+            if [ "$_dnsmasq_test_rc" -eq 0 ]; then
+                log_msg "Диагностика dnsmasq: синтаксис $_dnsmasq_conf корректен."
+            else
+                log_msg "Диагностика dnsmasq: проверка $_dnsmasq_conf завершилась с кодом $_dnsmasq_test_rc."
+            fi
+        done
+    fi
+
+    if [ "$_dnsmasq_found" -eq 0 ]; then
+        log_msg "Диагностика dnsmasq: сгенерированный файл /var/etc/dnsmasq.conf.<секция> не найден; проверка конфигурации пропущена."
+    fi
+
+    _dnsmasq_diag=""
+    if command -v logread >/dev/null 2>&1; then
+        _dnsmasq_diag="$(logread -e dnsmasq 2>/dev/null | tail -n 20)"
+    fi
+    if [ -n "$_dnsmasq_diag" ]; then
+        apply_progress "Последние системные сообщения dnsmasq:"
+        while IFS= read -r _dnsmasq_line; do
+            [ -n "$_dnsmasq_line" ] || continue
+            log_msg "Диагностика dnsmasq: $_dnsmasq_line"
+            [ "${APPLY_OUTPUT_QUIET:-0}" = 1 ] || printf "    %s\n" "$_dnsmasq_line"
+        done <<EOF_DNSMASQ_DIAG
+$_dnsmasq_diag
+EOF_DNSMASQ_DIAG
+    else
+        log_msg "Диагностика dnsmasq: журнал не вернул сообщений по фильтру dnsmasq."
+    fi
+}
+
+dnsmasq_restart_checked() {
+    local _dnsmasq_output _dnsmasq_rc _dnsmasq_line
+    _dnsmasq_output="$TMP_DIR/dnsmasq-restart-$"
+    : > "$_dnsmasq_output" || {
+        err_msg "Не удалось подготовить запись вывода перезапуска dnsmasq."
+        return 1
+    }
+
+    /etc/init.d/dnsmasq restart >"$_dnsmasq_output" 2>&1
+    _dnsmasq_rc=$?
+
+    if [ -s "$_dnsmasq_output" ]; then
+        apply_progress "Вывод команды перезапуска dnsmasq:"
+        while IFS= read -r _dnsmasq_line; do
+            [ -n "$_dnsmasq_line" ] || continue
+            log_msg "Перезапуск dnsmasq: $_dnsmasq_line"
+            [ "${APPLY_OUTPUT_QUIET:-0}" = 1 ] || printf "    %s\n" "$_dnsmasq_line"
+        done < "$_dnsmasq_output"
+    fi
+    rm -f "$_dnsmasq_output" 2>/dev/null
+
+    if [ "$_dnsmasq_rc" -eq 0 ]; then
+        return 0
+    fi
+
+    err_msg "Команда перезапуска dnsmasq завершилась с кодом $_dnsmasq_rc."
+    dnsmasq_failure_diagnostics
+    return 1
+}
+
 verify_after_apply() {
     # Reset slot-specific failure details before checking shared services.
     # Otherwise a previous failed slot could make an infrastructure error
@@ -3144,21 +3230,8 @@ verify_after_apply() {
     FAILED_SLOT_CAT=""
     sleep 3
     if ! /etc/init.d/dnsmasq status >/dev/null 2>&1 && ! pgrep -x dnsmasq >/dev/null 2>&1; then
-        _dnsmasq_diag=""
-        if command -v logread >/dev/null 2>&1; then
-            _dnsmasq_diag="$(logread 2>/dev/null | grep -i 'dnsmasq' | tail -n 8)"
-        fi
         err_msg "dnsmasq не запущен после применения."
-        if [ -n "$_dnsmasq_diag" ]; then
-            apply_progress "Последние системные сообщения о dnsmasq:"
-            while IFS= read -r _dnsmasq_line; do
-                [ -n "$_dnsmasq_line" ] || continue
-                log_msg "Диагностика dnsmasq: $_dnsmasq_line"
-                [ "${APPLY_OUTPUT_QUIET:-0}" = 1 ] || printf "    %s\n" "$_dnsmasq_line"
-            done <<EOF_DNSMASQ_DIAG
-$_dnsmasq_diag
-EOF_DNSMASQ_DIAG
-        fi
+        dnsmasq_failure_diagnostics
         return 1
     fi
     if [ "$DOH_TOTAL" -gt 0 ]; then
@@ -3614,7 +3687,7 @@ _apply_settings_impl() {
     apply_progress "Запускаю https-dns-proxy с выбранными экземплярами."
     /etc/init.d/https-dns-proxy restart || true
     apply_progress "Перезапускаю dnsmasq."
-    /etc/init.d/dnsmasq restart || true
+    dnsmasq_restart_checked || { tx_restore_on_failure; return 1; }
     sleep 2
     apply_progress "Повторно проверяю параметры dnsmasq после запуска."
     ensure_dnsmasq_balancer || { err_msg "Одновременный опрос DNS не включился после запуска. Изменения откатываются."; tx_restore_on_failure; return 1; }
