@@ -2621,11 +2621,13 @@ dnsmasq_manager_server_owned() {
     return 1
 }
 dnsmasq_external_confdir_has_servers() {
-    [ -d /etc/dnsmasq.d ] || return 1
-    for _file in /etc/dnsmasq.d/*; do
-        [ -f "$_file" ] || continue
-        [ "$_file" = /etc/dnsmasq.d/90-dns-manager-bogus.conf ] && continue
-        grep -Eq '^[[:space:]]*server=[^[:space:]#]+' "$_file" 2>/dev/null && return 0
+    for _dir in $1; do
+        [ -d "$_dir" ] || continue
+        for _file in "$_dir"/*; do
+            [ -f "$_file" ] || continue
+            [ "$_file" = "$_dir/90-dns-manager-bogus.conf" ] && continue
+            grep -Eq '^[[:space:]]*server=[^[:space:]#]+' "$_file" 2>/dev/null && return 0
+        done
     done
     return 1
 }
@@ -3822,7 +3824,7 @@ EOF_RB_DNSMASQ
        ! rollback_ownership_has dnsmasq noresolv 1 &&
        { [ "$_removed_manager_server" = 1 ] || [ "$_manager_slot_configured" = 1 ]; } &&
        [ -z "$_remaining_servers" ] &&
-       ! dnsmasq_external_confdir_has_servers; then
+       ! dnsmasq_external_confdir_has_servers "$(uci -q get "dhcp.$sec.confdir" 2>/dev/null)"; then
         uci -q delete "dhcp.$sec.noresolv" || return 1
         _changed=1
     fi
