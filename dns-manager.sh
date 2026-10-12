@@ -2396,32 +2396,71 @@ stock_uci_value_normalized() {
 
 # ==========================================
 # ==========================================
+
+
+doh_section_owned_by_manager() {
+    _doh_port="$1"
+    _doh_url="$(normalize_url "$2")"
+    [ -n "$_doh_port" ] && [ -n "$_doh_url" ] || return 1
+    rollback_ownership_has doh "$_doh_port" "$_doh_url" && return 0
+    for _doh_slot in 1 2 3 4 5 6 RU; do
+        eval "_doh_id=${SLOT_$_doh_slot:-}"
+        eval "_doh_expected_port=${PORT_$_doh_slot:-}"
+        [ -n "$_doh_id" ] || continue
+        if [ -z "$_doh_expected_port" ] && [ "$DNS_PROFILE" = hybrid ]; then
+            _doh_expected_port="$(hybrid_desired_port "$_doh_slot")"
+        fi
+        [ "$_doh_port" = "$_doh_expected_port" ] || continue
+        _doh_expected_url="$(normalize_url "$(dns_url "$_doh_id")")"
+        [ "$_doh_url" = "$_doh_expected_url" ] && return 0
+    done
+    return 1
+}
+https_dns_proxy_stock_section_owned() {
+    [ -f "$PACKAGE_OWNERSHIP" ] || return 1
+    grep -Fqx "https-dns-proxy" "$PACKAGE_OWNERSHIP" 2>/dev/null || return 1
+    _stock_port="$1"
+    _stock_url="$(normalize_url "$2")"
+    _stock_addr="$3"
+    [ "$_stock_addr" = "127.0.0.1" ] || return 1
+    case "$_stock_port|$_stock_url" in
+        "5053|https://cloudflare-dns.com/dns-query"|"5054|https://dns.google/dns-query") return 0 ;;
+    esac
+    return 1
+}
+
 clear_all_doh_for_apply() {
-    apply_progress "Удаляю только устаревшие секции DNS Manager; чужие https-dns-proxy не изменяются."
+    # Rebuild only sections DNS Manager can identify as its own.
+    # Unrecognised https-dns-proxy sections are preserved.
+    apply_progress "Пересобираю только DNS-секции, принадлежащие DNS Manager."
     _removed=0
-    _i=0
-    while uci -q get "https-dns-proxy.@https-dns-proxy[$_i]" >/dev/null 2>&1; do
-        _sec="@https-dns-proxy[$_i]"
-        _p="$(uci -q get "https-dns-proxy.$_sec.listen_port" 2>/dev/null)"
+    _kept=0
+    _sections="$(uci show https-dns-proxy 2>/dev/null | sed -n 's/^https-dns-proxy\\.\\([^.=]*\\)=https-dns-proxy$/\\1/p')"
+    for _sec in $_sections; do
         _u="$(normalize_url "$(uci -q get "https-dns-proxy.$_sec.resolver_url" 2>/dev/null)")"
-        if dns_manager_hdp_section_owned "$_p" "$_u" &&
-           ! dns_manager_hdp_section_desired "$_p" "$_u"; then
-            [ -n "$_u" ] && apply_progress "Удаляется устаревшая секция DNS Manager: $_u"
+        _p="$(uci -q get "https-dns-proxy.$_sec.listen_port" 2>/dev/null)"
+        _a="$(uci -q get "https-dns-proxy.$_sec.listen_addr" 2>/dev/null)"
+        _own=0
+        doh_section_owned_by_manager "$_p" "$_u" && _own=1
+        if [ "$_own" = 0 ] && https_dns_proxy_stock_section_owned "$_p" "$_u" "$_a"; then
+            _own=1
+        fi
+        if [ "$_own" = 1 ]; then
+            apply_progress "Удаляется собственная DNS-секция на порту $_p."
             uci -q delete "https-dns-proxy.$_sec" || return 1
             _removed=$((_removed+1))
-            # Anonymous UCI indices shift left after deletion.
-            continue
+        else
+            _kept=$((_kept+1))
         fi
-        _i=$((_i+1))
     done
     uci commit https-dns-proxy || return 1
-    : > "$DOH_INV"
+    : > "$DOH_INV" || return 1
     DOH_TOTAL=0
     DOH_MATCH=0
     DOH_OTHER=0
     disc_listeners
     disc_dns
-    apply_progress_ok "Устаревших DNS-секций Manager удалено: $_removed. Сторонние секции сохранены."
+    apply_progress_ok "Собственных DNS-секций удалено: $_removed; сторонних сохранено: $_kept."
 }
 record_own() {
     _own_line="$(printf '%s|%s|%s|%s' "$1" "$2" "$3" "$4")"
