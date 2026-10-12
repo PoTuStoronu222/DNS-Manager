@@ -176,7 +176,12 @@ EOS
     done
 
     TEST_WATCHDOG_FAIL=0; export TEST_WATCHDOG_FAIL
-    (uninstall_manager_impl >/dev/null 2>&1) || { printf '%s\n' '  final retry could not finish after transient failures'; return 1; }
+    if ! (uninstall_manager_impl >"$TEST_TMP/final-uninstall.log" 2>&1); then
+        printf '%s\n' '  final retry could not finish after transient failures'
+        cat "$TEST_TMP/final-uninstall.log" >&2
+        printf '  package removal attempts: %s\n' "$(cat "$TEST_TMP/package-remove-attempts" 2>/dev/null || printf 0)" >&2
+        return 1
+    fi
     for _path in "$BASE_DIR" "$STATE_DIR" "$LOG_FILE" "$TX_LOG" "$MANAGER_PATH"; do
         [ ! -e "$_path" ] || { printf '  successful final pass left residual state: %s\n' "$_path"; return 1; }
     done
