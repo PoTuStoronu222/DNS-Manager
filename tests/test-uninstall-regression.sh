@@ -118,6 +118,7 @@ sed \
     "$WORK/uninstall.raw" > "$WORK/uninstall.sh"
 . "$WORK/uninstall.sh"
 TEST_TMP="$WORK"; export TEST_TMP
+C_YELLOW= C_NC= C_GREEN= C_BOLD=
 clear_screen() { :; }; menu_header() { :; }; warn_msg() { :; }; err_msg() { :; }; info_msg() { :; }; pause() { :; }
 confirm_action() { return 0; }; acquire_mutation_lock() { return 0; }; release_mutation_lock() { :; }
 watchdog_service_stop_disable() { return 0; }; watchdog_cron_remove_owned_block() { return 0; }
