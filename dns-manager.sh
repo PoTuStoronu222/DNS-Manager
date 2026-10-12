@@ -4125,20 +4125,13 @@ uninstall_manager_impl() {
         rm -f /etc/dnsmasq.d/90-dns-manager-bogus.conf >/dev/null 2>&1 || _rc=1
     fi
 
-    # If an external HDP package has no sections left, prevent its startup hook
-    # from forcing noresolv=1 without any upstream proxy.
-    if [ "$_hdp_package_owned" != 1 ] && [ "$_force_contract_owned" = 1 ] &&
+    # Keep an external https-dns-proxy running only when it still has at
+    # least one configured resolver. Starting an empty instance can re-apply
+    # noresolv=1 without any usable upstream and break WAN DNS. Do not rewrite
+    # its external dnsmasq_config_update setting to work around that.
+    if [ "$_hdp_package_owned" != 1 ] &&
        [ -x /etc/init.d/https-dns-proxy ] &&
-       ! uci -q get "https-dns-proxy.@https-dns-proxy[0]" >/dev/null 2>&1 &&
-       [ "$(uci -q get https-dns-proxy.config.dnsmasq_config_update 2>/dev/null)" = "*" ]; then
-        uci set https-dns-proxy.config.dnsmasq_config_update='-' || _rc=1
-        uci commit https-dns-proxy >/dev/null 2>&1 || _rc=1
-    fi
-
-    # Leave externally installed https-dns-proxy in service with its remaining
-    # sections. A package installed by this Manager stays stopped and is removed
-    # only after DNS, firewall, and watchdog cleanup all succeeded.
-    if [ "$_hdp_package_owned" != 1 ] && [ -x /etc/init.d/https-dns-proxy ]; then
+       uci -q get "https-dns-proxy.@https-dns-proxy[0]" >/dev/null 2>&1; then
         /etc/init.d/https-dns-proxy start >/dev/null 2>&1 || _rc=1
     fi
     if [ -x /etc/init.d/dnsmasq ]; then
