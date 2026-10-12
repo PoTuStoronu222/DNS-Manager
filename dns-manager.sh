@@ -2398,19 +2398,6 @@ stock_uci_value_normalized() {
 # ==========================================
 
 
-https_dns_proxy_stock_section_owned() {
-    [ -f "$PACKAGE_OWNERSHIP" ] || return 1
-    grep -Fqx "https-dns-proxy" "$PACKAGE_OWNERSHIP" 2>/dev/null || return 1
-    _stock_port="$1"
-    _stock_url="$(normalize_url "$2")"
-    _stock_addr="$3"
-    [ "$_stock_addr" = "127.0.0.1" ] || return 1
-    case "$_stock_port|$_stock_url" in
-        "5053|https://cloudflare-dns.com/dns-query"|"5054|https://dns.google/dns-query") return 0 ;;
-    esac
-    return 1
-}
-
 clear_all_doh_for_apply() {
     # Rebuild only sections DNS Manager can identify as its own.
     # Unrecognised https-dns-proxy sections are preserved.
@@ -2424,9 +2411,6 @@ clear_all_doh_for_apply() {
         _a="$(uci -q get "https-dns-proxy.$_sec.listen_addr" 2>/dev/null)"
         _own=0
         dns_manager_hdp_section_owned "$_p" "$_u" && _own=1
-        if [ "$_own" = 0 ] && https_dns_proxy_stock_section_owned "$_p" "$_u" "$_a"; then
-            _own=1
-        fi
         if [ "$_own" = 1 ]; then
             apply_progress "Удаляется собственная DNS-секция на порту $_p."
             uci -q delete "https-dns-proxy.$_sec" || return 1
