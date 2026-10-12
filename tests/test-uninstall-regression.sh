@@ -78,12 +78,36 @@ test_dns_recovery_without_backup() (
     _server="$(state_value server 2>/dev/null || true)"; _noresolv="$(state_value noresolv 2>/dev/null || true)"
     case "$_server" in *'127.0.0.1#5053'*) printf '%s\n' '  dead Manager upstream was left in dnsmasq'; return 1;; esac
     [ "$_noresolv" != 1 ] || { printf '%s\n' '  noresolv=1 still blocks WAN DNS without a usable upstream'; return 1; }
+    printf '%s\n' 'server=127.0.0.1#5060' 'noresolv=1' 'allservers=1' 'strictorder=0' 'confdir=/etc/dnsmasq.d' > "$MOCK_UCI_STATE"
+    SLOT_1=; PORT_1=
+    rollback_dnsmasq_targeted || { printf '%s\n' '  rollback failed for legacy port 5060'; return 1; }
+    _server="$(state_value server 2>/dev/null || true)"; _noresolv="$(state_value noresolv 2>/dev/null || true)"
+    case "$_server" in *'127.0.0.1#5060'*) printf '%s\n' '  legacy Manager upstream on port 5060 was left behind'; return 1;; esac
+    [ "$_noresolv" != 1 ] || { printf '%s\n' '  legacy port 5060 left WAN DNS disabled'; return 1; }
+    SLOT_1=cloudflare; PORT_1=5053
     printf '%s\n' 'server=127.0.0.1#5053|192.0.2.53' 'noresolv=1' 'allservers=1' 'strictorder=0' 'confdir=/etc/dnsmasq.d' > "$MOCK_UCI_STATE"
     rollback_dnsmasq_targeted || { printf '%s\n' '  rollback failed for mixed upstreams'; return 1; }
     _server="$(state_value server 2>/dev/null || true)"; _noresolv="$(state_value noresolv 2>/dev/null || true)"
     case "$_server" in *'127.0.0.1#5053'*) printf '%s\n' '  dead Manager upstream remains alongside third-party DNS'; return 1;; esac
     case "$_server" in *'192.0.2.53'*) :;; *) printf '%s\n' '  unrelated DNS upstream was removed'; return 1;; esac
     [ "$_noresolv" = 1 ] || { printf '%s\n' '  noresolv was changed despite a preserved unrelated upstream'; return 1; }
+)
+test_confdir_upstream_detection() (
+    TEST_TMP="$WORK/confdir-detection"; export TEST_TMP
+    mkdir -p "$TEST_TMP/confdir"
+    extract_function dnsmasq_external_confdir_has_servers "$WORK/confdir-helper.raw" || return 1
+    sed 's|/etc/dnsmasq.d|"$TEST_TMP/confdir"|g' "$WORK/confdir-helper.raw" > "$WORK/confdir-helper.sh"
+    . "$WORK/confdir-helper.sh"
+    printf '%s\n' 'address=/blocked.example/0.0.0.0' > "$TEST_TMP/confdir/address.conf"
+    if dnsmasq_external_confdir_has_servers; then
+        printf '%s\n' '  non-upstream address= directive was treated as an upstream'
+        return 1
+    fi
+    printf '%s\n' 'server=192.0.2.53' > "$TEST_TMP/confdir/upstream.conf"
+    dnsmasq_external_confdir_has_servers || {
+        printf '%s\n' '  explicit external server= upstream was not detected'
+        return 1
+    }
 )
 test_external_hdp_sections_are_preserved() (
     extract_function clear_all_doh_for_apply "$WORK/clear-hdp.sh" || return 1
@@ -158,7 +182,7 @@ EOS
     done
 )
 _failures=0
-for _test in test_dns_recovery_without_backup test_external_hdp_sections_are_preserved test_failed_uninstall_keeps_retry_state; do
+for _test in test_dns_recovery_without_backup test_confdir_upstream_detection test_external_hdp_sections_are_preserved test_failed_uninstall_keeps_retry_state; do
     if "$_test"; then ok "$_test"; else printf 'FAIL: %s\n' "$_test" >&2; _failures=$((_failures+1)); fi
 done
 [ "$_failures" -eq 0 ] || exit 1
