@@ -225,7 +225,7 @@ grep -Fq "disabled:!!state.busy||!!state.jobRunning||unavailable||checking" dns-
 grep -q "'gaming','Игровые DNS'" dns-manager-luci.sh || fail "gaming catalog label missing in LuCI"
 grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validation missing gaming category"
 grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
-grep -q 'VERSION="3.52"' dns-manager.sh || fail "manager version not bumped"
+grep -q 'VERSION="3.53"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
 grep -q 'VERSION="1.50"' dns-manager-luci.sh || fail "LuCI version not bumped"
 grep -q "'bypass','Обход геоблока'" dns-manager-luci.sh || fail "bypass profile label not updated"
@@ -398,7 +398,7 @@ view_luci="$(sed -n 's|^// DNS Manager LuCI common module version:[[:space:]]*||
 [ "$top_luci" = "$self_luci" ] || fail "LuCI SELF_VERSION mismatch"
 [ "$top_luci" = "$view_luci" ] || fail "embedded JS version mismatch"
 ok "LuCI version markers synchronized ($top_luci)"
-grep -Fq 'VERSION="3.52"' dns-manager.sh || fail "DNS Manager version marker is not 3.52"
+grep -Fq 'VERSION="3.53"' dns-manager.sh || fail "DNS Manager version marker is not 3.52"
 ok "DNS Manager version marker synchronized (3.52)"
 
 if awk '
@@ -991,7 +991,11 @@ awk '/^verify_after_apply_with_repair\(\) \{/,/^verify_after_apply\(\) \{/' dns-
 grep -q '\[ "$PROFILE_APPLY" = 1 \]' "$tmp/profile_verify.sh" || fail "profile verification reduced-set path missing"
 grep -q 'profile_prune_failed_slots' "$tmp/profile_verify.sh" || fail "profile verification does not prune failed DNS"
 grep -Fq '[ -n "${FAILED_SLOT:-}" ] || return 1' "$tmp/profile_verify.sh" || fail "profile verification may prune DNS after a non-slot failure"
-grep -Fq 'Последние системные сообщения о dnsmasq:' dns-manager.sh || fail "dnsmasq startup diagnostics missing"
+grep -Fq 'dnsmasq --test --conf-file="$_dnsmasq_conf"' dns-manager.sh || fail "dnsmasq failure path does not test OpenWrt's generated runtime configuration"
+grep -Fq 'logread -e dnsmasq' dns-manager.sh || fail "dnsmasq failure path does not use OpenWrt's documented journal filter"
+grep -Fq 'dnsmasq_restart_checked || { tx_restore_on_failure; return 1; }' dns-manager.sh || fail "profile apply still ignores dnsmasq restart failure"
+grep -Fq 'dnsmasq_restart_checked || return 1' dns-manager.sh || fail "profile repair still hides dnsmasq restart output"
+grep -Fq 'Последние системные сообщения dnsmasq:' dns-manager.sh || fail "dnsmasq startup diagnostics missing"
 awk '/^verify_after_apply_with_repair\(\) \{/,/^verify_after_apply\(\) \{/{if ($0 !~ /^verify_after_apply\(\) \{$/) print}' dns-manager.sh > "$tmp/profile_verify_function.sh"
 cat > "$tmp/profile_verify_runner.sh" <<'EOF_PROFILE_RUNNER'
 #!/bin/sh
@@ -1022,6 +1026,14 @@ EOF_PROFILE_RUNNER
 chmod +x "$tmp/profile_verify_runner.sh"
 "$tmp/profile_verify_runner.sh" "$tmp/profile_verify_function.sh" "$tmp/profile-pruned" || fail "profile verification prunes slots for service errors or skips slot-specific repair"
 ok "profile apply preserves slots on service errors and prunes only failed resolvers"
+
+awk '/^dnsmasq_failure_diagnostics\(\) \{/,/^}$/ { print }' dns-manager.sh > "$tmp/dnsmasq_diagnostics.sh"
+awk '/^dnsmasq_restart_checked\(\) \{/,/^}$/ { print }' dns-manager.sh > "$tmp/dnsmasq_restart_checked.sh"
+[ -s "$tmp/dnsmasq_diagnostics.sh" ] || fail "dnsmasq diagnostics helper extraction"
+[ -s "$tmp/dnsmasq_restart_checked.sh" ] || fail "dnsmasq restart helper extraction"
+sh -n "$tmp/dnsmasq_diagnostics.sh" || fail "dnsmasq diagnostics helper syntax"
+sh -n "$tmp/dnsmasq_restart_checked.sh" || fail "dnsmasq restart helper syntax"
+ok "dnsmasq failure diagnostics and checked restart helpers"
  
 # Completed profile jobs survive a LuCI page reload and expose the actual reason for failure.
 grep -q 'profile_job_status' "$tmp/backend.sh" || fail "persistent profile job status missing"
