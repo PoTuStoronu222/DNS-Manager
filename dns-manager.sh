@@ -3348,6 +3348,8 @@ tx_restore_watchdog_state
 /etc/init.d/dnsmasq restart >/dev/null 2>&1 || true
 reload_fw >/dev/null 2>&1 || true
 TX_ACTIVE=0
+DEFER_CONFIG_SAVE=0
+load_config || log_msg "Откат: не удалось перечитать восстановленную конфигурацию DNS Manager."
 log_tx "ROLLBACK" "transaction" "RESTORE" "OK" "dir=$TX_DIR;guarded=no"
 rm -rf "$TX_DIR" 2>/dev/null || true
 TX_DIR=""
@@ -4326,14 +4328,14 @@ clean|security|privacy|adblock|family|all)
         # On first profile selection there may be no prior RU slot. In that
         # case keep the RU server selected by auto_fill_slots(). Only restore
         # the old RU state when it actually existed before this profile change.
-        if [ -n "$_profile_old_ru" ]; then
+        if [ -n "$_profile_old_ru" ] &&
+           awk -F'|' -v id="$_profile_old_ru" '$1==id && $2=="regional" && $5=="OK" && $4 ~ /^[0-9]+$/ {found=1; exit} END {exit !found}' "$TEST_RESULTS" 2>/dev/null; then
             SLOT_RU="$_profile_old_ru"
             SLOT_RU_CAT="$_profile_old_ru_cat"
             # Hybrid core always keeps regional routing enabled for every category.
             TLD_RU_ENABLED=1
             TLD_SPLIT=1
             PORT_RU="$HYBRID_PORT_RU"
-
         fi
         CORE_ONLY=1
         apply_settings
@@ -5464,7 +5466,7 @@ ensure_test_results_fresh() {
     fi
     info_msg "Результаты проверки DNS отсутствуют или устарели. Запускаю свежую проверку каталога."
     test_dns_catalog "$_fresh_cat" || return 1
-    watchdog_test_results_fresh
+    watchdog_test_results_fresh "$_fresh_cat"
 }
 watchdog_scope_category() {
     # Saved profile category is the intended category. Clean fallback DNS is
