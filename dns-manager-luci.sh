@@ -617,7 +617,6 @@ update_catalog_direct() {
     sed '/^[[:space:]]*#/d;/^[[:space:]]*$/d' "$_tmp" > "$_rb" 2>/dev/null || true
     sed '/^[[:space:]]*#/d;/^[[:space:]]*$/d' "$CATALOG_FILE" > "$_lb" 2>/dev/null || true
     if cmp -s "$_rb" "$_lb" 2>/dev/null; then rm -f "$_tmp" "$_rb" "$_lb" 2>/dev/null || true; return 2; fi
-    mkdir -p "${CATALOG_FILE%/*}" 2>/dev/null || { rm -f "$_tmp" "$_rb" "$_lb" 2>/dev/null || true; return 5; }
     mv -f "$_tmp" "$CATALOG_FILE" 2>/dev/null || { rm -f "$_rb" "$_lb" 2>/dev/null || true; return 5; }
     chmod 600 "$CATALOG_FILE" 2>/dev/null || true
     if [ "$_old_shecan_url" != "$_new_shecan_url" ]; then
