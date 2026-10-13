@@ -1126,6 +1126,126 @@ fi
 ok "NTP RPC is allowed by ACL and no fixed router LAN IP is used"
 
 
+
+# Refreshing a category-scoped DNS test must validate that same scope afterwards.
+awk '/^ensure_test_results_fresh\(\) \{/,/^watchdog_scope_category\(\) \{/' dns-manager.sh | sed '$d' > "$tmp/ensure_test_results_fresh.sh"
+[ -s "$tmp/ensure_test_results_fresh.sh" ] || fail "category freshness helper extraction"
+cat > "$tmp/ensure_test_results_fresh_runner.sh" <<'EOF_FRESH_SCOPE'
+#!/bin/sh
+set -eu
+HAS_CURL=yes
+CALLS=0
+watchdog_test_results_fresh() {
+    CALLS=$((CALLS+1))
+    [ "${1:-}" = security ] && [ "$CALLS" -eq 2 ]
+}
+test_dns_catalog() { [ "$1" = security ]; }
+info_msg() { :; }
+. "$1"
+ensure_test_results_fresh security || exit 41
+[ "$CALLS" -eq 2 ] || exit 42
+EOF_FRESH_SCOPE
+chmod +x "$tmp/ensure_test_results_fresh_runner.sh"
+"$tmp/ensure_test_results_fresh_runner.sh" "$tmp/ensure_test_results_fresh.sh" || fail "category test refresh validates the wrong scope"
+ok "category-scoped DNS test refresh preserves its scope"
+
+# Preserve an existing RU DNS only when it passed the fresh regional test.
+awk '/^apply_profile_now\(\) \{/,/^menu_category_select\(\)/' dns-manager.sh | sed '$d' > "$tmp/apply_profile_now_ru.sh"
+[ -s "$tmp/apply_profile_now_ru.sh" ] || fail "profile application helper extraction"
+cat > "$tmp/apply_profile_now_ru_runner.sh" <<'EOF_PROFILE_RU'
+#!/bin/sh
+set -eu
+TMP_DIR="$1"
+TEST_RESULTS="$TMP_DIR/ru-results"
+case "$2" in
+    keep_old)
+        cat > "$TEST_RESULTS" <<'EOF_RU_OK'
+ru_old|regional|Old RU|10|OK
+ru_candidate|regional|Candidate RU|20|OK
+EOF_RU_OK
+        _expected=ru_old
+        ;;
+    replace_old)
+        cat > "$TEST_RESULTS" <<'EOF_RU_BAD'
+ru_old|regional|Old RU|-1|TIMEOUT
+ru_candidate|regional|Candidate RU|20|OK
+EOF_RU_BAD
+        _expected=ru_candidate
+        ;;
+    *) exit 40 ;;
+esac
+SLOT_RU=ru_old
+SLOT_RU_CAT=regional
+DNS_PROFILE=hybrid
+DNS_SELECTION_MODE=profile
+DNS_SELECTION_CATEGORY=clean
+TLD_RU_ENABLED=1
+TLD_SPLIT=1
+BALANCER_ENABLED=1
+HYBRID_STAGE_SKIP=0
+HYBRID_PORT_1=5053
+HYBRID_PORT_2=5054
+HYBRID_PORT_3=5055
+HYBRID_PORT_4=5056
+HYBRID_PORT_5=5057
+HYBRID_PORT_6=5058
+HYBRID_PORT_RU=5059
+NTP_IP_FALLBACK=0
+FORCE_DOH=0
+DNSMASQ_PERF=0
+WATCHDOG_ENABLED=0
+profile_apply_begin() { return 0; }
+profile_apply_end() { :; }
+auto_fill_slots() { SLOT_RU=ru_candidate; SLOT_RU_CAT=regional; return 0; }
+apply_settings() { return 0; }
+. "$3"
+apply_profile_now clean || exit 41
+[ "$SLOT_RU" = "$_expected" ] || exit 42
+EOF_PROFILE_RU
+chmod +x "$tmp/apply_profile_now_ru_runner.sh"
+"$tmp/apply_profile_now_ru_runner.sh" "$tmp" keep_old "$tmp/apply_profile_now_ru.sh" || fail "working previous RU DNS was not preserved"
+"$tmp/apply_profile_now_ru_runner.sh" "$tmp" replace_old "$tmp/apply_profile_now_ru.sh" || fail "unhealthy previous RU DNS replaced the working candidate"
+ok "profile keeps the previous RU DNS only when its fresh test passed"
+
+# A failed transaction must reload the just-restored manager configuration into memory.
+awk '/^tx_restore_on_failure\(\) \{/,/^tx_commit\(\) \{/' dns-manager.sh | sed '$d' > "$tmp/tx_restore_on_failure.sh"
+[ -s "$tmp/tx_restore_on_failure.sh" ] || fail "transaction rollback helper extraction"
+cat > "$tmp/tx_restore_on_failure_runner.sh" <<'EOF_ROLLBACK_STATE'
+#!/bin/sh
+set -eu
+WORK="$2"
+CONFIG_FILE="$WORK/manager.conf"
+TX_DIR="$WORK/tx-rollback"
+mkdir -p "$TX_DIR/files"
+printf 'SLOT_1="old_dns"\nSLOT_RU="ru_old"\nDNS_PROFILE="hybrid"\n' > "$TX_DIR/files/manager.conf"
+printf 'SLOT_1="new_dns"\nSLOT_RU="ru_new"\nDNS_PROFILE="custom"\n' > "$CONFIG_FILE"
+printf '%s|manager.conf|1\n' "$CONFIG_FILE" > "$TX_DIR/manifest"
+TX_ACTIVE=1
+DEFER_CONFIG_SAVE=1
+SLOT_1=new_dns
+SLOT_RU=ru_new
+DNS_PROFILE=custom
+LOAD_CONFIG_CALLED=0
+watchdog_cron_remove_owned_block() { :; }
+tx_restore_watchdog_state() { :; }
+reload_fw() { :; }
+warn_msg() { :; }
+log_msg() { :; }
+log_tx() { :; }
+load_config() {
+    LOAD_CONFIG_CALLED=1
+    . "$CONFIG_FILE"
+}
+. "$1"
+tx_restore_on_failure
+[ "$LOAD_CONFIG_CALLED" -eq 1 ] || exit 41
+[ "$SLOT_1" = old_dns ] && [ "$SLOT_RU" = ru_old ] && [ "$DNS_PROFILE" = hybrid ] || exit 42
+[ "$TX_ACTIVE" -eq 0 ] && [ "$DEFER_CONFIG_SAVE" -eq 0 ] || exit 43
+EOF_ROLLBACK_STATE
+chmod +x "$tmp/tx_restore_on_failure_runner.sh"
+"$tmp/tx_restore_on_failure_runner.sh" "$tmp/tx_restore_on_failure.sh" "$tmp" || fail "transaction rollback left stale profile variables in memory"
+ok "transaction rollback restores the in-memory manager profile"
+
 sh tests/test-uninstall-regression.sh || fail "uninstall regression tests"
 
 printf '%s\n' "All DNS Manager regression checks passed."
