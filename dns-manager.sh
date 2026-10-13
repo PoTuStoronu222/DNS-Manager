@@ -102,6 +102,7 @@ LUCI_VIEW_DIR="/www/luci-static/resources/view/dns-manager"
 LUCI_RESOURCE_DIR="/www/luci-static/resources/dns-manager"
 LUCI_RUNTIME_DIR="/var/run/dns-manager-luci"
 LUCI_BACKUP_DIR="/etc/dns-manager-luci"
+LUCI_CACHE_DIR="/tmp"
 LUCI_LEGACY_CONTROLLER_FILE="/usr/lib/lua/luci/controller/dns_manager.lua"
 LUCI_COMMON_FILE="/www/luci-static/resources/dns-manager/common.js"
 LUCI_VIEW_FILE="$LUCI_VIEW_DIR/dashboard.js"
@@ -5066,7 +5067,7 @@ luci_companion_remove_fallback() {
     fi
 
     rm -rf "$LUCI_VIEW_DIR" "$LUCI_RESOURCE_DIR" "$LUCI_RUNTIME_DIR" "$LUCI_BACKUP_DIR" 2>/dev/null || return 1
-    for _cache in /tmp/luci-indexcache* /tmp/luci-modulecache*; do
+    for _cache in "$LUCI_CACHE_DIR"/luci-indexcache* "$LUCI_CACHE_DIR"/luci-modulecache*; do
         [ -e "$_cache" ] || continue
         rm -rf "$_cache" 2>/dev/null || return 1
     done
