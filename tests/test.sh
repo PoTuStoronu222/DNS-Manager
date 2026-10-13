@@ -149,7 +149,7 @@ awk '
 [ -s "$tmp/common.js" ] || fail "embedded JS extraction"
 node --check "$tmp/common.js" >/dev/null 2>&1 || fail "embedded JS: node --check"
 grep -Fq "params:['detail']" "$tmp/common.js" || fail "LuCI status caller no longer declares its detail parameter"
-"$tmp/backend.sh" list > "$tmp/rpc-list.json" || fail "embedded LuCI RPC list failed"
+sh "$tmp/backend.sh" list > "$tmp/rpc-list.json" || fail "embedded LuCI RPC list failed"
 node -e 'const fs=require("fs"); const x=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); if(!x.status||x.status.detail!==0) process.exit(1)' "$tmp/rpc-list.json" ||
     fail "LuCI RPC list does not declare the status.detail argument used by the dashboard"
 ok "LuCI status RPC parameters match the backend schema"
