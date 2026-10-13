@@ -2604,34 +2604,23 @@ normalize_ownership_snapshot() {
 dnsmasq_manager_server_owned() {
     _val="$1"
     [ -n "$_val" ] || return 1
-
-    # Without an ownership log, use only the live Manager slot/port mapping.
-    # Do not infer ownership from a port number alone: another local resolver
-    # may legitimately use the same port.
+    # Ownership is derived from the current DNS Manager selection. The
     for _s in 1 2 3 4 5 6; do
-        eval "_id=\${SLOT_${_s}:-}"
-        eval "_p=\${PORT_${_s}:-}"
-        [ -n "$_id" ] && [ -n "$_p" ] && [ "$_val" = "127.0.0.1#$_p" ] && return 0
+        eval "_p=\${PORT_$_s:-}"
+        [ -n "$_p" ] && [ "$_val" = "127.0.0.1#$_p" ] && return 0
     done
-    if [ -n "${SLOT_RU:-}" ] && [ -n "${PORT_RU:-}" ]; then
+    if [ -n "${PORT_RU:-}" ]; then
         case "$_val" in
-            "127.0.0.1#${PORT_RU}"|"/ru/127.0.0.1#${PORT_RU}"|"/su/127.0.0.1#${PORT_RU}"|"/xn--p1ai/127.0.0.1#${PORT_RU}") return 0 ;;
+            /ru/127.0.0.1#${PORT_RU}|/su/127.0.0.1#${PORT_RU}|/xn--p1ai/127.0.0.1#${PORT_RU}) return 0 ;;
         esac
     fi
+    # Legacy Hybrid ports remain recognised so an upgrade can safely clean
+    # an older manager installation without trusting its stale journal.
+    case "$_val" in
+        127.0.0.1#505[3-9]|/ru/127.0.0.1#505[3-9]|/su/127.0.0.1#505[3-9]|/xn--p1ai/127.0.0.1#505[3-9]) return 0 ;;
+    esac
     return 1
 }
-dnsmasq_external_confdir_has_servers() {
-    for _dir in $1; do
-        [ -d "$_dir" ] || continue
-        for _file in "$_dir"/*; do
-            [ -f "$_file" ] || continue
-            [ "$_file" = "$_dir/90-dns-manager-bogus.conf" ] && continue
-            grep -Eq '^[[:space:]]*server=[^[:space:]#]+' "$_file" 2>/dev/null && return 0
-        done
-    done
-    return 1
-}
-
 reconcile_dnsmasq() {
     sec="$(get_dnsmasq_section)"
     uci -q get "dhcp.$sec" >/dev/null 2>&1 || return 1
@@ -3783,67 +3772,48 @@ rollback_dnsmasq_targeted() {
     sec="$(get_dnsmasq_section 2>/dev/null)"
     [ -n "$sec" ] || return 0
     _changed=0
-    _removed_manager_server=0
 
+    # Remove only DNS Manager-owned upstream entries. Unrelated server= entries
+    # are left intact, including entries introduced by another package.
     _cur="$(uci -q get "dhcp.$sec.server" 2>/dev/null | tr ' ' '\n')"
     while IFS= read -r _val; do
         [ -n "$_val" ] || continue
-        if rollback_ownership_has dnsmasq server "$_val" || dnsmasq_manager_server_owned "$_val"; then
-            uci -q del_list "dhcp.$sec.server=$_val" >/dev/null 2>&1 || return 1
+        rollback_ownership_has dnsmasq server "$_val" || continue
+        if uci -q del_list "dhcp.$sec.server=$_val" >/dev/null 2>&1; then
             _changed=1
-            _removed_manager_server=1
+            printf '  - dnsmasq server: %s\n' "$_val"
         fi
     done <<EOF_RB_DNSMASQ
 $_cur
 EOF_RB_DNSMASQ
 
-    # Ownership records are authoritative for scalar options. If the journal
-    # is absent, restore WAN DNS only when an active Manager slot was found,
-    # no upstream remains, and no explicit server= upstream exists in confdir.
+    # Restore only scalar settings that DNS Manager explicitly recorded as
+    # changed. If the value was subsequently changed by somebody else, keep it.
     for _kv in 'allservers|1' 'strictorder|0' 'noresolv|1'; do
         _k="${_kv%%|*}"; _managed="${_kv#*|}"
         rollback_ownership_has dnsmasq "$_k" "$_managed" || continue
         _curv="$(uci -q get "dhcp.$sec.$_k" 2>/dev/null)"
         if [ "$_curv" = "$_managed" ]; then
-            uci -q delete "dhcp.$sec.$_k" || return 1
+            uci -q delete "dhcp.$sec.$_k" || true
             _changed=1
         else
             warn_msg "dnsmasq: $_k изменён после применения DNS Manager. Текущее значение сохранено."
         fi
     done
 
-    _manager_slot_configured=0
-    for _slot in 1 2 3 4 5 6 RU; do
-        eval "_id=\${SLOT_${_slot}:-}"
-        eval "_port=\${PORT_${_slot}:-}"
-        [ -n "$_id" ] && [ -n "$_port" ] && _manager_slot_configured=1
-    done
-    _curv="$(uci -q get "dhcp.$sec.noresolv" 2>/dev/null)"
-    _remaining_servers="$(uci -q get "dhcp.$sec.server" 2>/dev/null)"
-    if [ "$_curv" = 1 ] &&
-       ! rollback_ownership_has dnsmasq noresolv 1 &&
-       { [ "$_removed_manager_server" = 1 ] || [ "$_manager_slot_configured" = 1 ]; } &&
-       [ -z "$_remaining_servers" ] &&
-       ! dnsmasq_external_confdir_has_servers "$(uci -q get "dhcp.$sec.confdir" 2>/dev/null)"; then
-        uci -q delete "dhcp.$sec.noresolv" || return 1
-        _changed=1
-    fi
-
     if [ "${ROLLBACK_DNS_CORE_ONLY:-0}" != 1 ] && rollback_ownership_has dnsmasq confdir /etc/dnsmasq.d; then
         _cur_conf="$(uci -q get "dhcp.$sec.confdir" 2>/dev/null | tr " " "\n")"
         if printf "%s\n" "$_cur_conf" | grep -qxF /etc/dnsmasq.d 2>/dev/null; then
-            uci -q del_list "dhcp.$sec.confdir=/etc/dnsmasq.d" >/dev/null 2>&1 || return 1
-            _changed=1
+            uci -q del_list "dhcp.$sec.confdir=/etc/dnsmasq.d" >/dev/null 2>&1 && _changed=1
         fi
     fi
     if [ "$_changed" = 1 ]; then
         uci commit dhcp >/dev/null 2>&1 || return 1
-        if [ "${DNS_MANAGER_UNINSTALLING:-0}" != 1 ]; then
-            /etc/init.d/dnsmasq restart >/dev/null 2>&1 || return 1
-        fi
+        /etc/init.d/dnsmasq restart >/dev/null 2>&1 || true
     fi
     return 0
 }
+
 rollback_hdp_targeted() {
     _changed=0
     _sections="$(uci show https-dns-proxy 2>/dev/null | sed -n 's/^https-dns-proxy\.\([^.=]*\)=https-dns-proxy$/\1/p')"
@@ -3869,15 +3839,13 @@ rollback_hdp_targeted() {
         [ "$_own" = 1 ] || continue
         # A section modified by hand no longer matches both recorded URL/port;
         # ownership fallback is therefore intentionally conservative.
-        uci -q delete "https-dns-proxy.$_sec" || return 1
+        uci -q delete "https-dns-proxy.$_sec" || continue
         _changed=1
     done
 
     if [ "$_changed" = 1 ]; then
         uci commit https-dns-proxy >/dev/null 2>&1 || return 1
-        if [ "${DNS_MANAGER_UNINSTALLING:-0}" != 1 ]; then
-            /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || return 1
-        fi
+        /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || true
     fi
     return 0
 }
@@ -3912,14 +3880,14 @@ rollback_firewall_targeted() {
             case "$(uci -q get "firewall.$_sec" 2>/dev/null)" in
                 redirect)
                     if [ -n "${FIREWALL_LAN_ZONE:-}" ] && firewall_section_owned_redirect "$_sec" "$FIREWALL_LAN_ZONE" 'tcp udp' 53 "$LAN_IP" 53 DNAT; then
-                        uci -q delete "firewall.$_sec" || return 1
+                        uci -q delete "firewall.$_sec" || continue
                         firewall_owner_remove "$_sec" || true
                         _changed=1
                     fi
                     ;;
                 rule)
                     if firewall_dot_rule_matches "$_sec"; then
-                        uci -q delete "firewall.$_sec" || return 1
+                        uci -q delete "firewall.$_sec" || continue
                         firewall_owner_remove "$_sec" || true
                         _changed=1
                     fi
@@ -3930,9 +3898,7 @@ rollback_firewall_targeted() {
 
     if [ "$_changed" = 1 ]; then
         uci commit firewall >/dev/null 2>&1 || return 1
-        if [ "${DNS_MANAGER_UNINSTALLING:-0}" != 1 ]; then
-            reload_fw >/dev/null 2>&1 || return 1
-        fi
+        reload_fw >/dev/null 2>&1 || true
     fi
     return 0
 }
@@ -3976,165 +3942,66 @@ restore_dns_core() {
     release_mutation_lock
     return "$_rc"
 }
-manager_force_config_matches() {
-    [ -f /etc/config/https-dns-proxy ] || return 1
-    [ "$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null)" = 1 ] || return 1
-    [ "$(uci -q get https-dns-proxy.config.notrack_dns 2>/dev/null)" = 1 ] || return 1
-    [ "$(uci -q get https-dns-proxy.config.dnsmasq_config_update 2>/dev/null)" = "*" ] || return 1
-    [ "$(uci -q get https-dns-proxy.config.force_dns_port 2>/dev/null)" = "53 853" ] || return 1
-    [ "$(uci -q get https-dns-proxy.config.force_dns_src_interface 2>/dev/null)" = "lan" ] || return 1
-    return 0
-}
 uninstall_manager_impl() {
     clear_screen
     menu_header "УДАЛЕНИЕ DNS MANAGER"
-    warn_msg "DNS Manager будет удалён, его функции выключены, а созданные им настройки и службы очищены."
-    printf "\n${C_YELLOW}Сторонние DNS-настройки сохраняются, если их принадлежность DNS Manager нельзя подтвердить.${C_NC}\n\n"
-    confirm_action "Полностью удалить DNS Manager?" || { info_msg "Отменено."; pause; return 0; }
+    warn_msg "DNS Manager, его LuCI, собственные службы и установленные им пакеты будут удалены."
+    printf "\n$C_YELLOW Перед удалением нажмите существующую кнопку восстановления стандартного DNS, если хотите вернуть стандартную схему. Удаление не откатывает и не очищает настройки DNS, DoH, dnsmasq, firewall или NTP.$C_NC\n\n"
+    confirm_action "Удалить DNS Manager и установленные им пакеты?" || { info_msg "Отменено."; pause; return 0; }
 
     acquire_mutation_lock || return 1
-    _rc=0
-    DNS_MANAGER_UNINSTALLING=1
 
-    _hdp_package_owned=0
-    [ -f "$PACKAGE_OWNERSHIP" ] && grep -Fqx "https-dns-proxy" "$PACKAGE_OWNERSHIP" 2>/dev/null && _hdp_package_owned=1
-
-    # Keep the Manager and its retry records if a service cannot be stopped.
     watchdog_service_stop_disable >/dev/null 2>&1 || {
-        DNS_MANAGER_UNINSTALLING=0
         release_mutation_lock
-        err_msg "Не удалось остановить watchdog. DNS Manager сохранён для повторной попытки."
+        err_msg "Не удалось остановить DNS Watchdog. Менеджер сохранён для повторной попытки."
         pause
         return 1
     }
     watchdog_cron_remove_owned_block >/dev/null 2>&1 || {
-        DNS_MANAGER_UNINSTALLING=0
         release_mutation_lock
-        err_msg "Не удалось удалить запись watchdog из cron. DNS Manager сохранён для повторной попытки."
+        err_msg "Не удалось удалить запись DNS Watchdog из cron. Менеджер сохранён для повторной попытки."
         pause
         return 1
     }
-
-    # The official https-dns-proxy stop hook restores its own dnsmasq backup.
-    # Stop it before removing Manager's per-slot routes.
-    if [ -x /etc/init.d/https-dns-proxy ]; then
-        /etc/init.d/https-dns-proxy stop >/dev/null 2>&1 || {
-            /etc/init.d/https-dns-proxy start >/dev/null 2>&1 || true
-            DNS_MANAGER_UNINSTALLING=0
-            release_mutation_lock
-            err_msg "Не удалось корректно остановить https-dns-proxy. DNS Manager сохранён для повторной попытки."
-            pause
-            return 1
-        }
-    fi
-
-    rollback_hdp_targeted >/dev/null 2>&1 || _rc=1
-    rollback_dnsmasq_targeted >/dev/null 2>&1 || _rc=1
-    rollback_firewall_targeted >/dev/null 2>&1 || _rc=1
-
-    # Only alter the forced-DNS contract when https-dns-proxy itself was
-    # installed by this Manager. An external package configuration is retained.
-    if [ "$_hdp_package_owned" = 1 ] && manager_force_config_matches; then
-        FORCE_DOH=0
-        remove_dns_force >/dev/null 2>&1 || _rc=1
-    fi
-    if [ "$(check_module_state dnsmasq_perf 2>/dev/null)" = 1 ]; then
-        DNSMASQ_PERF=0
-        remove_dnsmasq_perf >/dev/null 2>&1 || _rc=1
-    fi
-    if [ "$(check_module_state ntp 2>/dev/null)" = 1 ]; then
-        remove_ntp_ip_fallback >/dev/null 2>&1 || _rc=1
-    fi
-    if rollback_ownership_has file /etc/dnsmasq.d/90-dns-manager-bogus.conf created; then
-        rm -f /etc/dnsmasq.d/90-dns-manager-bogus.conf >/dev/null 2>&1 || _rc=1
-    fi
-
-    if [ "$_rc" -eq 0 ] &&
-       [ "$_hdp_package_owned" != 1 ] &&
-       [ -x /etc/init.d/https-dns-proxy ] &&
-       uci -q get "https-dns-proxy.@https-dns-proxy[0]" >/dev/null 2>&1; then
-        /etc/init.d/https-dns-proxy start >/dev/null 2>&1 || _rc=1
-    fi
-    if [ -x /etc/init.d/dnsmasq ]; then
-        /etc/init.d/dnsmasq restart >/dev/null 2>&1 || _rc=1
-    else
-        _rc=1
-    fi
-    reload_fw >/dev/null 2>&1 || _rc=1
-
-    if [ "$_rc" -ne 0 ]; then
-        # Re-open a configured proxy if rollback was incomplete; never start
-        # an empty external proxy just to make the command appear successful.
-        if [ -x /etc/init.d/https-dns-proxy ] &&
-           uci -q get "https-dns-proxy.@https-dns-proxy[0]" >/dev/null 2>&1; then
-            /etc/init.d/https-dns-proxy start >/dev/null 2>&1 || true
-        fi
-        /etc/init.d/dnsmasq restart >/dev/null 2>&1 || true
-        reload_fw >/dev/null 2>&1 || true
-        DNS_MANAGER_UNINSTALLING=0
-        release_mutation_lock
-        err_msg "DNS Manager не удалён полностью. Настройки и журнал сохранены для безопасной повторной попытки."
-        pause
-        return 1
-    fi
-
     watchdog_service_remove_files >/dev/null 2>&1 || {
-        DNS_MANAGER_UNINSTALLING=0
         release_mutation_lock
-        err_msg "Не удалось полностью удалить watchdog. DNS Manager сохранён для повторной попытки."
+        err_msg "Не удалось удалить службу DNS Watchdog. Менеджер сохранён для повторной попытки."
         pause
         return 1
     }
 
     if ! package_owner_remove_owned >/dev/null 2>&1; then
-        DNS_MANAGER_UNINSTALLING=0
         release_mutation_lock
-        warn_msg "Некоторые пакеты не удалось удалить. DNS Manager сохранён для повторной попытки."
+        warn_msg "Не удалось удалить все пакеты, установленные DNS Manager. Файлы менеджера сохранены для повторной попытки."
         pause
         return 1
     fi
-    if [ "$_hdp_package_owned" = 1 ] && [ -e /etc/config/https-dns-proxy ]; then
-        rm -f /etc/config/https-dns-proxy >/dev/null 2>&1 || {
-            DNS_MANAGER_UNINSTALLING=0
-            release_mutation_lock
-            err_msg "Не удалось удалить конфигурацию https-dns-proxy. DNS Manager сохранён для повторной попытки."
-            pause
-            return 1
-        }
-    fi
-
     if ! luci_companion_remove >/dev/null 2>&1; then
-        DNS_MANAGER_UNINSTALLING=0
         release_mutation_lock
-        err_msg "Нативный интерфейс LuCI DNS Manager не удалось удалить полностью. Данные для повтора сохранены."
+        err_msg "Не удалось полностью удалить LuCI DNS Manager. Файлы менеджера сохранены для повторной попытки."
         pause
         return 1
     fi
 
     rm -f "$LOG_FILE" "$TX_LOG" 2>/dev/null || true
-    rm -rf "$STATE_DIR" 2>/dev/null || true
-    cleanup_stale_tmp_dirs >/dev/null 2>&1 || true
-    find /tmp -maxdepth 1 -type f -name "dns-manager-update-*" -mmin +30 -exec rm -f {} \; 2>/dev/null || true
-    rm -rf /tmp/luci-indexcache* /tmp/luci-modulecache* 2>/dev/null || true
+    find "$STATE_DIR" -mindepth 1 -maxdepth 1 ! -path "$MUTATION_LOCK_DIR" -exec rm -rf {} \; 2>/dev/null || true
+
     rm -rf "$BASE_DIR" 2>/dev/null || {
-        DNS_MANAGER_UNINSTALLING=0
         release_mutation_lock
         err_msg "Не удалось удалить служебные файлы DNS Manager. Повторите удаление."
         pause
         return 1
     }
     rm -f "$MANAGER_PATH" 2>/dev/null || {
-        DNS_MANAGER_UNINSTALLING=0
         release_mutation_lock
-        err_msg "Настройки удалены, но исполняемый файл DNS Manager не удалось удалить."
+        err_msg "Служебные файлы удалены, но исполняемый файл DNS Manager остался."
         pause
         return 1
     }
 
-    DNS_MANAGER_UNINSTALLING=0
     release_mutation_lock
-    printf "\n${C_GREEN}${C_BOLD}DNS Manager полностью удалён.${C_NC}\n"
-    printf "${C_GREEN}DNS и firewall восстановлены; собственные службы и файлы удалены.${C_NC}\n"
+    printf "\n$C_GREEN$C_BOLD DNS Manager полностью удалён.$C_NC\n"
+    printf "$C_GREEN Удалены менеджер, его LuCI, службы и установленные им пакеты. Настройки DNS/DoH/dnsmasq/firewall/NTP самим сценарием удаления не изменялись.$C_NC\n"
     exit 0
 }
 uninstall_manager() {
