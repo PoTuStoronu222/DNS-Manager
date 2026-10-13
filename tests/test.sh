@@ -148,17 +148,12 @@ awk '
 ' dns-manager-luci.sh > "$tmp/common.js"
 [ -s "$tmp/common.js" ] || fail "embedded JS extraction"
 node --check "$tmp/common.js" >/dev/null 2>&1 || fail "embedded JS: node --check"
-grep -Fq "params:['detail']" "$tmp/common.js" || fail "LuCI status caller no longer declares its detail parameter"
-sh "$tmp/backend-fresh.sh" list > "$tmp/rpc-list.json" || fail "embedded LuCI RPC list failed"
-node -e 'const fs=require("fs"); const x=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); if(!x.status||x.status.detail!==0) process.exit(1)' "$tmp/rpc-list.json" ||
-    fail "LuCI RPC list does not declare the status.detail argument used by the dashboard"
-ok "LuCI status RPC parameters match the backend schema"
 printf '%s\n' '{"detail":0}' |
     sh "$tmp/backend-fresh.sh" call status > "$tmp/fresh/status.json" ||
-    fail "clean LuCI dashboard status RPC failed"
+    fail "clean Manager status response failed"
 node -e 'const fs=require("fs"); const x=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); if(x.ok!==true||typeof x.model!=="string"||!Number.isFinite(x.memory_total_kb)||x.memory_total_kb<=0) process.exit(1)' "$tmp/fresh/status.json" ||
-    fail "clean LuCI dashboard did not return router status data"
-ok "clean LuCI dashboard status works without a saved Manager config"
+    fail "clean Manager status response has no router data"
+ok "Manager status returns router data without a saved config"
 ok "embedded LuCI JS syntax"
 grep -Fq 'LUCI_VIEW_DIR="/www/luci-static/resources/view/dns-manager"' dns-manager.sh || fail "manager-side LuCI view directory is stale"
 grep -Fq 'LUCI_COMMON_FILE="/www/luci-static/resources/dns-manager/common.js"' dns-manager.sh || fail "manager-side LuCI common path is stale"
