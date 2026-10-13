@@ -1137,7 +1137,7 @@ HAS_CURL=yes
 CALLS=0
 watchdog_test_results_fresh() {
     CALLS=$((CALLS+1))
-    [ "\${1:-}" = security ] && [ "$CALLS" -eq 2 ]
+    [ "${1:-}" = security ] && [ "$CALLS" -eq 2 ]
 }
 test_dns_catalog() { [ "$1" = security ]; }
 info_msg() { :; }
