@@ -3942,94 +3942,67 @@ restore_dns_core() {
     release_mutation_lock
     return "$_rc"
 }
-manager_force_config_matches() {
-    [ -f /etc/config/https-dns-proxy ] || return 1
-    [ "$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null)" = 1 ] || return 1
-    [ "$(uci -q get https-dns-proxy.config.notrack_dns 2>/dev/null)" = 1 ] || return 1
-    [ "$(uci -q get https-dns-proxy.config.dnsmasq_config_update 2>/dev/null)" = "*" ] || return 1
-    [ "$(uci -q get https-dns-proxy.config.force_dns_port 2>/dev/null)" = "53 853" ] || return 1
-    [ "$(uci -q get https-dns-proxy.config.force_dns_src_interface 2>/dev/null)" = "lan" ] || return 1
-    return 0
-}
 uninstall_manager_impl() {
     clear_screen
     menu_header "УДАЛЕНИЕ DNS MANAGER"
-    warn_msg "DNS Manager будет удалён, его функции выключены, а созданные им настройки и службы очищены."
-    printf "\n${C_YELLOW}Изменения сторонних служб и настроек автоматически не восстанавливаются и не удаляются.${C_NC}\n\n"
-    confirm_action "Полностью удалить DNS Manager?" || { info_msg "Отменено."; pause; return 0; }
+    warn_msg "DNS Manager, его LuCI, собственные службы и установленные им пакеты будут удалены."
+    printf "\n$C_YELLOW Перед удалением нажмите существующую кнопку восстановления стандартного DNS, если хотите вернуть стандартную схему. Удаление не откатывает и не очищает настройки DNS, DoH, dnsmasq, firewall или NTP.$C_NC\n\n"
+    confirm_action "Удалить DNS Manager и установленные им пакеты?" || { info_msg "Отменено."; pause; return 0; }
 
     acquire_mutation_lock || return 1
-    _rc=0
 
-    _hdp_package_owned=0
-    [ -f "$PACKAGE_OWNERSHIP" ] && grep -Fqx "https-dns-proxy" "$PACKAGE_OWNERSHIP" 2>/dev/null && _hdp_package_owned=1
-
-    watchdog_service_stop_disable >/dev/null 2>&1 || true
-    watchdog_cron_remove_owned_block >/dev/null 2>&1 || true
-
-    rollback_hdp_targeted >/dev/null 2>&1 || _rc=1
-    rollback_dnsmasq_targeted >/dev/null 2>&1 || _rc=1
-    rollback_firewall_targeted >/dev/null 2>&1 || _rc=1
-
-    # Disable forced-DNS only when the live configuration matches the exact
-    # DNS Manager contract. External forced-DNS configurations are left alone.
-    if manager_force_config_matches; then
-        FORCE_DOH=0
-        remove_dns_force >/dev/null 2>&1 || _rc=1
-    fi
-    if [ "$(check_module_state dnsmasq_perf 2>/dev/null)" = 1 ]; then
-        DNSMASQ_PERF=0
-        remove_dnsmasq_perf >/dev/null 2>&1 || _rc=1
-    fi
-    if [ "$(check_module_state ntp 2>/dev/null)" = 1 ]; then
-        remove_ntp_ip_fallback >/dev/null 2>&1 || _rc=1
-    fi
-    if rollback_ownership_has file /etc/dnsmasq.d/90-dns-manager-bogus.conf created; then
-        rm -f /etc/dnsmasq.d/90-dns-manager-bogus.conf >/dev/null 2>&1 || _rc=1
-    fi
-
-    if [ "$_hdp_package_owned" = 1 ]; then
-        /etc/init.d/https-dns-proxy stop >/dev/null 2>&1 || true
-    else
-        /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || true
-    fi
-    /etc/init.d/dnsmasq restart >/dev/null 2>&1 || true
-    reload_fw >/dev/null 2>&1 || true
-
-    watchdog_service_remove_files >/dev/null 2>&1 || _rc=1
+    watchdog_service_stop_disable >/dev/null 2>&1 || {
+        release_mutation_lock
+        err_msg "Не удалось остановить DNS Watchdog. Менеджер сохранён для повторной попытки."
+        pause
+        return 1
+    }
+    watchdog_cron_remove_owned_block >/dev/null 2>&1 || {
+        release_mutation_lock
+        err_msg "Не удалось удалить запись DNS Watchdog из cron. Менеджер сохранён для повторной попытки."
+        pause
+        return 1
+    }
+    watchdog_service_remove_files >/dev/null 2>&1 || {
+        release_mutation_lock
+        err_msg "Не удалось удалить службу DNS Watchdog. Менеджер сохранён для повторной попытки."
+        pause
+        return 1
+    }
 
     if ! package_owner_remove_owned >/dev/null 2>&1; then
-        warn_msg "Некоторые пакеты DNS Manager не удалось удалить."
-        _rc=1
+        release_mutation_lock
+        warn_msg "Не удалось удалить все пакеты, установленные DNS Manager. Файлы менеджера сохранены для повторной попытки."
+        pause
+        return 1
     fi
-    if [ "$_hdp_package_owned" = 1 ]; then
-        rm -f /etc/config/https-dns-proxy >/dev/null 2>&1 || _rc=1
-    fi
-
     if ! luci_companion_remove >/dev/null 2>&1; then
-        warn_msg "Нативный интерфейс LuCI DNS Manager не удалось удалить полностью."
-        _rc=1
+        release_mutation_lock
+        err_msg "Не удалось полностью удалить LuCI DNS Manager. Файлы менеджера сохранены для повторной попытки."
+        pause
+        return 1
     fi
 
-    rm -rf "$BASE_DIR" 2>/dev/null || _rc=1
     rm -f "$LOG_FILE" "$TX_LOG" 2>/dev/null || true
-    rm -rf "$STATE_DIR" 2>/dev/null || true
-    cleanup_stale_tmp_dirs >/dev/null 2>&1 || true
-    find /tmp -maxdepth 1 -type f -name "dns-manager-update-*" -mmin +30 -exec rm -f {} \; 2>/dev/null || true
-    rm -rf /tmp/luci-indexcache* /tmp/luci-modulecache* 2>/dev/null || true
+    find "$STATE_DIR" -mindepth 1 -maxdepth 1 ! -path "$MUTATION_LOCK_DIR" -exec rm -rf {} \; 2>/dev/null || true
 
-    rm -f "$MANAGER_PATH" 2>/dev/null || _rc=1
+    rm -rf "$BASE_DIR" 2>/dev/null || {
+        release_mutation_lock
+        err_msg "Не удалось удалить служебные файлы DNS Manager. Повторите удаление."
+        pause
+        return 1
+    }
+    rm -f "$MANAGER_PATH" 2>/dev/null || {
+        release_mutation_lock
+        err_msg "Служебные файлы удалены, но исполняемый файл DNS Manager остался."
+        pause
+        return 1
+    }
 
     release_mutation_lock
-    if [ "$_rc" -eq 0 ]; then
-        printf "\n${C_GREEN}${C_BOLD}DNS Manager полностью удалён.${C_NC}\n"
-        printf "${C_GREEN}Функции выключены, собственные DNS/Firewall/служебные настройки очищены.${C_NC}\n"
-        exit 0
-    fi
-
-    err_msg "DNS Manager удалён не полностью. Проверьте остаточные файлы и журнал DNS Manager."
-    pause
-    return 1
+    printf "\n$C_GREEN$C_BOLD DNS Manager полностью удалён.$C_NC\n"
+    printf "$C_GREEN Удалены менеджер, его LuCI, службы и установленные им пакеты. Настройки DNS/DoH/dnsmasq/firewall/NTP самим сценарием удаления не изменялись.$C_NC\n"
+    exit 0
 }
 uninstall_manager() {
     # Directly invoked from the installed executable or menu.
