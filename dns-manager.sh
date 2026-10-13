@@ -99,6 +99,10 @@ LUCI_ACL_FILE="/usr/share/rpcd/acl.d/luci-app-dns-manager.json"
 LUCI_RPC_PLUGIN="/usr/libexec/rpcd/dns_manager"
 LUCI_BACKEND_FILE="/usr/lib/dns-manager-luci/backend.sh"
 LUCI_VIEW_DIR="/www/luci-static/resources/view/dns-manager"
+LUCI_RESOURCE_DIR="/www/luci-static/resources/dns-manager"
+LUCI_RUNTIME_DIR="/var/run/dns-manager-luci"
+LUCI_BACKUP_DIR="/etc/dns-manager-luci"
+LUCI_LEGACY_CONTROLLER_FILE="/usr/lib/lua/luci/controller/dns_manager.lua"
 LUCI_COMMON_FILE="/www/luci-static/resources/dns-manager/common.js"
 LUCI_VIEW_FILE="$LUCI_VIEW_DIR/dashboard.js"
 LUCI_REMOTE_VERSION=""
@@ -5047,17 +5051,47 @@ luci_companion_install() {
     return 2
 }
 
+luci_companion_remove_fallback() {
+    # The installed marker was checked by luci_companion_remove(). Remove only
+    # the companion's fixed, namespaced paths; never edit DNS/UCI configuration.
+    rm -f "$LUCI_RPC_PLUGIN" "$LUCI_BACKEND_FILE" "$LUCI_ACL_FILE" "$LUCI_MENU_FILE" || return 1
+    for _view in dashboard doh network time catalog log overview; do
+        rm -f "$LUCI_VIEW_DIR/${_view}.js" || return 1
+    done
+    rm -f "$LUCI_COMMON_FILE" || return 1
+
+    if [ -f "$LUCI_LEGACY_CONTROLLER_FILE" ] &&
+       grep -q 'module("luci.controller.dns_manager"' "$LUCI_LEGACY_CONTROLLER_FILE" 2>/dev/null; then
+        rm -f "$LUCI_LEGACY_CONTROLLER_FILE" || return 1
+    fi
+
+    rm -rf "$LUCI_VIEW_DIR" "$LUCI_RESOURCE_DIR" "$LUCI_RUNTIME_DIR" "$LUCI_BACKUP_DIR" 2>/dev/null || return 1
+    for _cache in /tmp/luci-indexcache* /tmp/luci-modulecache*; do
+        [ -e "$_cache" ] || continue
+        rm -rf "$_cache" 2>/dev/null || return 1
+    done
+    if [ -x /etc/init.d/rpcd ]; then
+        /etc/init.d/rpcd reload >/dev/null 2>&1 || /etc/init.d/rpcd restart >/dev/null 2>&1 || return 1
+    fi
+    return 0
+}
+
 luci_companion_remove() {
     # Only remove an interface which this DNS Manager installation explicitly installed.
     [ -s "$LUCI_STATE_FILE" ] || return 0
     [ "$(sed -n 's/^installed=//p' "$LUCI_STATE_FILE" 2>/dev/null | head -n1)" = 1 ] || return 0
 
     if [ -x "$LUCI_COMPANION_CACHE" ]; then
-        sh "$LUCI_COMPANION_CACHE" remove >/dev/null 2>&1 || return 1
+        sh "$LUCI_COMPANION_CACHE" remove >/dev/null 2>&1 || {
+            err_msg "Установщик LuCI не смог удалить интерфейс DNS Manager."
+            return 1
+        }
     else
-        # No cached installer: refuse destructive guessing.
-        err_msg "Локальная копия установщика LuCI отсутствует; интерфейс автоматически не удаляю."
-        return 1
+        warn_msg "Локальная копия установщика LuCI отсутствует; использую безопасное удаление файлов по фиксированным путям."
+        luci_companion_remove_fallback || {
+            err_msg "Не удалось удалить файлы нативного интерфейса LuCI DNS Manager."
+            return 1
+        }
     fi
 
     if luci_component_files_present; then
