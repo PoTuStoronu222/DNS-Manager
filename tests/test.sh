@@ -132,7 +132,7 @@ done
 cp "$DNS_CATALOG_FIXTURE" "$out"
 EOF_FAKE_CURL
 chmod +x "$tmp/fresh/bin/curl"
-printf '%s\\n' '{"category":"all","offset":0,"limit":18,"only_ok":0}' |
+printf '%s\n' '{"category":"all","offset":0,"limit":18,"only_ok":0}' |
     DNS_CATALOG_FIXTURE="$ROOT/catalogs/dns-8.7-RU-NOSOCIAL.conf" PATH="$tmp/fresh/bin:/usr/bin:/bin" \
         "$tmp/backend-fresh.sh" call catalog > "$tmp/fresh/catalog.json" ||
     fail "clean LuCI catalog request failed"
