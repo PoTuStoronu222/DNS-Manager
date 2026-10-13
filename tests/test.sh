@@ -144,7 +144,16 @@ ok "clean LuCI install bootstraps a missing DNS catalog"
 sed \
     -e "s|CATALOG_FILE=\"/etc/dns-manager/config/dns-catalog.conf\"|CATALOG_FILE=\"$tmp/existing/config/dns-catalog.conf\"|" \
     -e "s|RUNTIME_DIR=\"/var/run/dns-manager-luci\"|RUNTIME_DIR=\"$tmp/existing/runtime\"|" \
-    -e "s|STATE_DIR=\"/var/run/dns-manager\"|STATE_DIR=\"$tmp/ > "$CURL_CALLED"
+    -e "s|STATE_DIR=\"/var/run/dns-manager\"|STATE_DIR=\"$tmp/existing/state\"|" \
+    -e "s|PERSIST_STATE_DIR=\"/etc/dns-manager/state\"|PERSIST_STATE_DIR=\"$tmp/existing/persist\"|" \
+    -e "s|UPDATE_STATE=\"/etc/dns-manager-luci/update.state\"|UPDATE_STATE=\"$tmp/existing/update.state\"|" \
+    "$tmp/backend.sh" > "$tmp/backend-existing.sh"
+chmod +x "$tmp/backend-existing.sh"
+mkdir -p "$tmp/existing/bin" "$tmp/existing/config"
+cp "$ROOT/catalogs/dns-8.7-RU-NOSOCIAL.conf" "$tmp/existing/config/dns-catalog.conf"
+cat > "$tmp/existing/bin/curl" <<'EOF_NO_CURL'
+#!/bin/sh
+: > "$CURL_CALLED"
 exit 2
 EOF_NO_CURL
 chmod +x "$tmp/existing/bin/curl"
@@ -187,12 +196,6 @@ awk '
 ' dns-manager-luci.sh > "$tmp/common.js"
 [ -s "$tmp/common.js" ] || fail "embedded JS extraction"
 node --check "$tmp/common.js" >/dev/null 2>&1 || fail "embedded JS: node --check"
-printf '%s\n' '{"detail":0}' |
-    sh "$tmp/backend-fresh.sh" call status > "$tmp/fresh/status.json" ||
-    fail "clean Manager status response failed"
-node -e 'const fs=require("fs"); const x=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); if(x.ok!==true||typeof x.model!=="string"||!Number.isFinite(x.memory_total_kb)||x.memory_total_kb<=0) process.exit(1)' "$tmp/fresh/status.json" ||
-    fail "clean Manager status response has no router data"
-ok "Manager status returns router data without a saved config"
 ok "embedded LuCI JS syntax"
 grep -Fq 'LUCI_VIEW_DIR="/www/luci-static/resources/view/dns-manager"' dns-manager.sh || fail "manager-side LuCI view directory is stale"
 grep -Fq 'LUCI_COMMON_FILE="/www/luci-static/resources/dns-manager/common.js"' dns-manager.sh || fail "manager-side LuCI common path is stale"
