@@ -107,6 +107,40 @@ awk '
 sh -n "$tmp/backend.sh" || fail "embedded backend: sh -n"
 ok "embedded backend syntax"
 
+# Clean-install regression: if Manager's first catalog download did not run
+# or failed, the first LuCI catalog request must bootstrap the local copy.
+# Route filesystem paths into the test directory so no router state is touched.
+sed \
+    -e "s|CATALOG_FILE=\"/etc/dns-manager/config/dns-catalog.conf\"|CATALOG_FILE=\"$tmp/fresh/config/dns-catalog.conf\"|" \
+    -e "s|RUNTIME_DIR=\"/var/run/dns-manager-luci\"|RUNTIME_DIR=\"$tmp/fresh/runtime\"|" \
+    -e "s|STATE_DIR=\"/var/run/dns-manager\"|STATE_DIR=\"$tmp/fresh/state\"|" \
+    -e "s|PERSIST_STATE_DIR=\"/etc/dns-manager/state\"|PERSIST_STATE_DIR=\"$tmp/fresh/persist\"|" \
+    -e "s|UPDATE_STATE=\"/etc/dns-manager-luci/update.state\"|UPDATE_STATE=\"$tmp/fresh/update.state\"|" \
+    "$tmp/backend.sh" > "$tmp/backend-fresh.sh"
+chmod +x "$tmp/backend-fresh.sh"
+mkdir -p "$tmp/fresh/bin"
+cat > "$tmp/fresh/bin/curl" <<'EOF_FAKE_CURL'
+#!/bin/sh
+out=""
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        -o) out="$2"; shift 2 ;;
+        *) shift ;;
+    esac
+done
+[ -n "$out" ] && [ -s "$DNS_CATALOG_FIXTURE" ] || exit 2
+cp "$DNS_CATALOG_FIXTURE" "$out"
+EOF_FAKE_CURL
+chmod +x "$tmp/fresh/bin/curl"
+printf '%s\\n' '{"category":"all","offset":0,"limit":18,"only_ok":0}' |
+    DNS_CATALOG_FIXTURE="$ROOT/catalogs/dns-8.7-RU-NOSOCIAL.conf" PATH="$tmp/fresh/bin:/usr/bin:/bin" \
+        "$tmp/backend-fresh.sh" call catalog > "$tmp/fresh/catalog.json" ||
+    fail "clean LuCI catalog request failed"
+[ -s "$tmp/fresh/config/dns-catalog.conf" ] || fail "clean LuCI request did not create the local catalog"
+node -e 'const fs=require("fs"); const x=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); if(!x.ok||x.total!==105||!Array.isArray(x.servers)||x.servers.length===0) process.exit(1)' "$tmp/fresh/catalog.json" ||
+    fail "clean LuCI catalog request returned no DNS entries"
+ok "clean LuCI install bootstraps a missing DNS catalog"
+
 awk '
     /cat > "[^"]*COMMON_STAGE[^"]*"[^<]*<<\x27EOF_COMMON\x27/ { capture=1; next }
     capture && /^EOF_COMMON$/ { exit }
@@ -114,6 +148,11 @@ awk '
 ' dns-manager-luci.sh > "$tmp/common.js"
 [ -s "$tmp/common.js" ] || fail "embedded JS extraction"
 node --check "$tmp/common.js" >/dev/null 2>&1 || fail "embedded JS: node --check"
+grep -Fq "params:['detail']" "$tmp/common.js" || fail "LuCI status caller no longer declares its detail parameter"
+"$tmp/backend.sh" list > "$tmp/rpc-list.json" || fail "embedded LuCI RPC list failed"
+node -e 'const fs=require("fs"); const x=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); if(!x.status||x.status.detail!==0) process.exit(1)' "$tmp/rpc-list.json" ||
+    fail "LuCI RPC list does not declare the status.detail argument used by the dashboard"
+ok "LuCI status RPC parameters match the backend schema"
 ok "embedded LuCI JS syntax"
 grep -Fq 'LUCI_VIEW_DIR="/www/luci-static/resources/view/dns-manager"' dns-manager.sh || fail "manager-side LuCI view directory is stale"
 grep -Fq 'LUCI_COMMON_FILE="/www/luci-static/resources/dns-manager/common.js"' dns-manager.sh || fail "manager-side LuCI common path is stale"
