@@ -11,6 +11,15 @@ extract_function() {
     [ -s "$2" ]
 }
 
+# Explicit shell syntax checks (five independent checks).
+sh -n "$ROOT/dns-manager.sh" || fail "syntax: dns-manager.sh"
+sh -n "$ROOT/dns-manager-luci.sh" || fail "syntax: dns-manager-luci.sh"
+sh -n "$ROOT/tests/test.sh" || fail "syntax: tests/test.sh"
+sh -n "$0" || fail "syntax: tests/test-uninstall-regression.sh"
+extract_function uninstall_manager_impl "$WORK/uninstall.syntax.sh" || fail "cannot extract uninstall function for syntax check"
+sh -n "$WORK/uninstall.syntax.sh" || fail "syntax: uninstall_manager_impl"
+ok "Five explicit shell syntax checks"
+
 # Minimal UCI mock. List values are stored with | separators in the fixture.
 mock_uci() {
     [ "${1:-}" = -q ] && shift
