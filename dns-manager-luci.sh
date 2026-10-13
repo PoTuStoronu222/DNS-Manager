@@ -617,6 +617,7 @@ update_catalog_direct() {
     sed '/^[[:space:]]*#/d;/^[[:space:]]*$/d' "$_tmp" > "$_rb" 2>/dev/null || true
     sed '/^[[:space:]]*#/d;/^[[:space:]]*$/d' "$CATALOG_FILE" > "$_lb" 2>/dev/null || true
     if cmp -s "$_rb" "$_lb" 2>/dev/null; then rm -f "$_tmp" "$_rb" "$_lb" 2>/dev/null || true; return 2; fi
+    mkdir -p "${CATALOG_FILE%/*}" 2>/dev/null || { rm -f "$_tmp" "$_rb" "$_lb" 2>/dev/null || true; return 5; }
     mv -f "$_tmp" "$CATALOG_FILE" 2>/dev/null || { rm -f "$_rb" "$_lb" 2>/dev/null || true; return 5; }
     chmod 600 "$CATALOG_FILE" 2>/dev/null || true
     if [ "$_old_shecan_url" != "$_new_shecan_url" ]; then
@@ -2502,6 +2503,19 @@ catalog_json() {
     case "$_offset" in ''|*[!0-9]*) _offset=0;; esac; case "$_limit" in ''|*[!0-9]*) _limit=18;; esac; [ "$_limit" -gt 48 ] && _limit=48; [ -n "$_category" ] || _category=all
     case "$_category" in all|bypass|security|privacy|adblock|family|clean|gaming|regional) ;; *) json_error "Неверная категория DNS"; return;; esac
     case "$_only_ok" in 1|0) ;; *) _only_ok=0;; esac
+    # A clean Manager + LuCI install may reach this RPC before the CLI's
+    # first-run catalog download completed. Recover once here instead of
+    # leaving the catalog empty until the user presses Update.
+    if [ ! -s "$CATALOG_FILE" ] || [ -z "$(catalog_version 2>/dev/null || true)" ] || ! grep -q '^[^#][^|]*|' "$CATALOG_FILE" 2>/dev/null; then
+        mkdir -p "${CATALOG_FILE%/*}" "$TMP_ROOT" 2>/dev/null || {
+            json_error "Не удалось подготовить каталог DNS"
+            return
+        }
+        update_catalog_direct >/dev/null 2>&1 || {
+            json_error "Каталог DNS отсутствует, загрузить его не удалось"
+            return
+        }
+    fi
     [ -s "$CATALOG_FILE" ] || { json_error "Каталог DNS недоступен"; return; }
     _filtered="$TMP_ROOT/catalog-filtered.$$"; _paged="$TMP_ROOT/catalog-page.$$"; : > "$_filtered"; : > "$_paged"
     while IFS='|' read -r _id _cat _prof _name _url _region _status; do
@@ -2670,7 +2684,7 @@ test_json() { case "${RPC_METHOD:-}" in test_all) job_start_test_all;; test_curr
 
 case "${1:-}" in
     list)
-        printf '{"status":{},"runtime":{},"doh_status":{},"network_status":{},"time_status":{},"page_meta":{},"catalog":{"category":"String","offset":0,"limit":0,"only_ok":0},"update_check":{},"update":{},"update_manager":{},"update_hdp":{},"update_catalog":{},"update_all":{},"set_profile":{"profile":"String"},"reset_dns":{},"set_slot":{"slot":"String","id":"String"},"set_setting":{"name":"String","enabled":0},"set_watchdog_setting":{"name":"String","value":0},"set_watchdog_settings":{"interval":0,"threshold":0,"repair_cooldown":0,"max_repairs":0,"max_restarts":0,"max_candidates":0,"guard_interval":0},"set_ntp":{"preset":"String"},"set_test_age":{"category":"String","hours":0},"test_all":{},"test_current":{},"test_one":{"id":"String"},"test_system":{},"job":{"id":"String"},"log":{"lines":0}}\n'
+        printf '{"status":{"detail":0},"runtime":{},"doh_status":{},"network_status":{},"time_status":{},"page_meta":{},"catalog":{"category":"String","offset":0,"limit":0,"only_ok":0},"update_check":{},"update":{},"update_manager":{},"update_hdp":{},"update_catalog":{},"update_all":{},"set_profile":{"profile":"String"},"reset_dns":{},"set_slot":{"slot":"String","id":"String"},"set_setting":{"name":"String","enabled":0},"set_watchdog_setting":{"name":"String","value":0},"set_watchdog_settings":{"interval":0,"threshold":0,"repair_cooldown":0,"max_repairs":0,"max_restarts":0,"max_candidates":0,"guard_interval":0},"set_ntp":{"preset":"String"},"set_test_age":{"category":"String","hours":0},"test_all":{},"test_current":{},"test_one":{"id":"String"},"test_system":{},"job":{"id":"String"},"log":{"lines":0}}\n'
         ;;
     call)
         case "${2:-}" in
