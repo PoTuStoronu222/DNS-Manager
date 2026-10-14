@@ -4120,7 +4120,7 @@ uninstall_manager_impl() {
 
     release_mutation_lock
     printf "\n$C_GREEN$C_BOLD DNS Manager полностью удалён.$C_NC\n"
-    printf "$C_GREEN Удалены менеджер, его LuCI, службы и установленные им пакеты. Настройки DNS/DoH/dnsmasq/firewall/NTP самим сценарием удаления не изменялись.$C_NC\n"
+    printf "$C_GREEN Удалены DNS Manager, его LuCI и службы. Привязки DNS Manager сняты, системный DNS восстановлен. Пакет https-dns-proxy сохранён.$C_NC\n"
     exit 0
 }
 uninstall_manager() {
