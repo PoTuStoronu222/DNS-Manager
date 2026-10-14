@@ -3944,18 +3944,20 @@ uninstall_dnsmasq_resolv_fallback() {
     return 0
 }
 
+disable_manager_forced_dns() {
+    # Force DNS is reset only if Manager's saved switch says it enabled it.
+    [ "${FORCE_DOH:-0}" = 1 ] || return 0
+    [ "$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null)" = 1 ] || return 0
+    uci set https-dns-proxy.config.force_dns=0 || return 1
+    uci commit https-dns-proxy || return 1
+    return 0
+}
+
 restore_dns_before_uninstall() {
     _dns_restore_rc=0
 
-    # Disable only the forced-DNS switch enabled by this Manager config.
     # Keep the https-dns-proxy package installed; users may remove it separately.
-    if [ -f /etc/config/https-dns-proxy ] &&
-       [ "${FORCE_DOH:-0}" = 1 ] &&
-       [ "$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null)" = 1 ]; then
-        uci set https-dns-proxy.config.force_dns=0 || _dns_restore_rc=1
-        uci commit https-dns-proxy || _dns_restore_rc=1
-    fi
-
+    disable_manager_forced_dns || _dns_restore_rc=1
     rollback_hdp_targeted >/dev/null 2>&1 || _dns_restore_rc=1
     rollback_dnsmasq_targeted >/dev/null 2>&1 || _dns_restore_rc=1
     uninstall_dnsmasq_resolv_fallback || _dns_restore_rc=1
