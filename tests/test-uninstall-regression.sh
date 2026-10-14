@@ -46,7 +46,6 @@ watchdog_cron_remove_owned_block() { return 0; }
 watchdog_service_remove_files() { return 0; }
 luci_companion_remove() { : > "$WORK/luci-removed"; return 0; }
 restore_dns_before_uninstall() {
-    [ ! -e "$WORK/package-remove-attempts" ] || : > "$WORK/dns-restore-after-package-attempt"
     printf 'restored\n' >> "$WORK/dns-restore-attempts"
     return 0
 }
@@ -79,13 +78,14 @@ package_owner_remove_owned() {
     _attempt="$(cat "$WORK/package-remove-attempts" 2>/dev/null || printf 0)"
     _attempt=$((_attempt + 1))
     printf '%s\n' "$_attempt" > "$WORK/package-remove-attempts"
+    _restore_count="$(wc -l < "$WORK/dns-restore-attempts" 2>/dev/null || printf 0)"
+    [ "$_restore_count" -eq "$_attempt" ] || return 1
     [ "$_attempt" -ge 2 ]
 }
 if (uninstall_manager_impl >/dev/null 2>&1); then
     fail "uninstall must report a package-removal failure"
 fi
-[ -s "$WORK/dns-restore-attempts" ] || fail "DNS restore was not attempted before package removal"
-[ ! -e "$WORK/dns-restore-after-package-attempt" ] || fail "DNS restore ordering is invalid"
+[ "$(wc -l < "$WORK/dns-restore-attempts")" -eq 1 ] || fail "DNS restore was not attempted before package removal"
 [ -f "$PACKAGE_OWNERSHIP" ] && [ -f "$MANAGER_PATH" ] && [ -d "$BASE_DIR" ] || fail "manager retry files were deleted after a package-removal failure"
 [ ! -e "$WORK/luci-removed" ] || fail "LuCI was removed before package removal succeeded"
 
@@ -98,7 +98,7 @@ fi
 cmp -s "$DNS_STATE" "$WORK/dns-state.expected" || fail "uninstall changed DNS/DoH/firewall state"
 [ ! -s "$UCI_CALLS" ] || fail "uninstall called UCI"
 [ ! -e "$WORK/forbidden-dns-call" ] || fail "uninstall called a DNS cleanup helper"
-ok "Package-removal failure is retryable; DNS/DoH/firewall state stays untouched"
+ok "Package-removal failure is retryable; DNS restore runs before every package-removal attempt"
 
 # When no explicit upstream remains, disable noresolv so system resolvfile is used.
 extract_function uninstall_dnsmasq_resolv_fallback "$WORK/resolv-fallback.sh" || fail "cannot extract DNS resolvfile fallback"
