@@ -3928,6 +3928,42 @@ clear_dns_core_runtime_state() {
     BALANCER_ENABLED=0
     save_config >/dev/null 2>&1
 }
+uninstall_detach_https_dns_proxy() {
+    # The official https-dns-proxy init script restores doh_backup_* values on
+    # stop and modifies dnsmasq again on start when dnsmasq_config_update='*'.
+    # Stop it first so backups are restored, then disable that integration before
+    # any later restart. The package and unrelated resolver sections are kept.
+    uci -q get https-dns-proxy.config >/dev/null 2>&1 || return 0
+    _init="${HTTPS_DNS_PROXY_INIT:-/etc/init.d/https-dns-proxy}"
+    if [ -x "$_init" ]; then
+        "$_init" stop >/dev/null 2>&1 || return 1
+    fi
+
+    if [ "${FORCE_DOH:-0}" = 1 ]; then
+        uci set https-dns-proxy.config.force_dns=0 || return 1
+    fi
+    uci set "https-dns-proxy.config.dnsmasq_config_update=-" || return 1
+    uci commit https-dns-proxy || return 1
+
+    _dhcp_sections="$(uci show dhcp 2>/dev/null | sed -n 's/^dhcp\.\([^.=]*\)=dnsmasq$/\1/p')"
+    _dhcp_changed=0
+    for _sec in $_dhcp_sections; do
+        # These are private integration bookkeeping fields used by
+        # https-dns-proxy's init script. Clear them so a later package removal
+        # cannot restore the old local DNS Manager ports over manual DNS edits.
+        for _opt in doh_server doh_backup_server doh_backup_noresolv; do
+            if uci -q get "dhcp.$_sec.$_opt" >/dev/null 2>&1; then
+                uci -q delete "dhcp.$_sec.$_opt" || return 1
+                _dhcp_changed=1
+            fi
+        done
+    done
+    if [ "$_dhcp_changed" = 1 ]; then
+        uci commit dhcp || return 1
+    fi
+    return 0
+}
+
 uninstall_dnsmasq_resolv_fallback() {
     _sec="$(get_dnsmasq_section 2>/dev/null)" || return 1
     [ -n "$_sec" ] || return 1
@@ -3937,11 +3973,10 @@ uninstall_dnsmasq_resolv_fallback() {
     _servers="$(uci -q get "dhcp.$_sec.server" 2>/dev/null | tr ' ' '\n')"
     while IFS= read -r _val; do
         [ -n "$_val" ] || continue
-        # DNS Manager's reserved local DoH ports must not remain as dnsmasq
-        # upstreams after uninstall. Do not remove unrelated local ports or
-        # user-configured remote DNS servers.
+        # DNS Manager's reserved local DoH ports and https-dns-proxy's canary
+        # entries must not remain as active DNS rules after uninstall.
         case "$_val" in
-            127.0.0.1#505[3-9]|127.0.0.1#5060|/ru/127.0.0.1#505[3-9]|/ru/127.0.0.1#5060|/su/127.0.0.1#505[3-9]|/su/127.0.0.1#5060|/xn--p1ai/127.0.0.1#505[3-9]|/xn--p1ai/127.0.0.1#5060)
+            127.0.0.1#505[3-9]|127.0.0.1#5060|/ru/127.0.0.1#505[3-9]|/ru/127.0.0.1#5060|/su/127.0.0.1#505[3-9]|/su/127.0.0.1#5060|/xn--p1ai/127.0.0.1#505[3-9]|/xn--p1ai/127.0.0.1#5060|/mask.icloud.com/|/mask-h2.icloud.com/|/use-application-dns.net/)
                 uci -q del_list "dhcp.$_sec.server=$_val" || return 1
                 _changed=1
                 ;;
@@ -3956,8 +3991,6 @@ EOF_UNINSTALL_DNSMASQ
     _has_general_upstream=0
     while IFS= read -r _val; do
         [ -n "$_val" ] || continue
-        # Domain-only dnsmasq rules (for example /mask.icloud.com/) do not
-        # provide a general upstream for other domains.
         case "$_val" in
             /*) continue ;;
             127.0.0.1#505[3-9]|127.0.0.1#5060) continue ;;
@@ -3977,27 +4010,18 @@ EOF_UNINSTALL_REMAINING_DNS
     return 0
 }
 
-disable_manager_forced_dns() {
-    # Force DNS is reset only if Manager's saved switch says it enabled it.
-    [ "${FORCE_DOH:-0}" = 1 ] || return 0
-    [ "$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null)" = 1 ] || return 0
-    uci set https-dns-proxy.config.force_dns=0 || return 1
-    uci commit https-dns-proxy || return 1
-    return 0
-}
-
 restore_dns_before_uninstall() {
     _dns_restore_rc=0
 
-    # Keep the https-dns-proxy package installed; users may remove it separately.
-    disable_manager_forced_dns || _dns_restore_rc=1
+    # Detach package-side dnsmasq auto-management before removing Manager DNS.
+    uninstall_detach_https_dns_proxy || _dns_restore_rc=1
     rollback_hdp_targeted >/dev/null 2>&1 || _dns_restore_rc=1
     rollback_dnsmasq_targeted >/dev/null 2>&1 || _dns_restore_rc=1
     uninstall_dnsmasq_resolv_fallback || _dns_restore_rc=1
     rollback_firewall_targeted >/dev/null 2>&1 || _dns_restore_rc=1
 
-    # Apply the configuration before removing the Manager files. These restarts
-    # do not uninstall https-dns-proxy and remain safe if its init script is absent.
+    # Restart only after the package's auto dnsmasq update and restore journals
+    # are detached. The package remains installed for optional manual use/removal.
     [ ! -x /etc/init.d/https-dns-proxy ] ||
         /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || true
     /etc/init.d/dnsmasq restart >/dev/null 2>&1 || _dns_restore_rc=1
@@ -4033,7 +4057,7 @@ uninstall_manager_impl() {
     clear_screen
     menu_header "УДАЛЕНИЕ DNS MANAGER"
     warn_msg "DNS Manager, его LuCI, собственные службы и установленные им пакеты будут удалены."
-    printf "\n$C_YELLOW При удалении сначала восстанавливаются системные DNS-настройки и отключается управляемый DNS Manager перехват. Сторонние DNS-серверы сохраняются. Пакет https-dns-proxy не удаляется.$C_NC\n\n"
+    printf "\n$C_YELLOW При удалении сначала отключается автоизменение dnsmasq со стороны https-dns-proxy, удаляются привязки DNS Manager и восстанавливается системный DNS. Пакет https-dns-proxy остаётся установленным.$C_NC\n\n"
     confirm_action "Удалить DNS Manager и установленные им пакеты?" || { info_msg "Отменено."; pause; return 0; }
 
     acquire_mutation_lock || return 1
