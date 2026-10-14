@@ -177,7 +177,9 @@ HD_TEST_META="doh_server
 doh_backup_server
 doh_backup_noresolv"
 HD_TEST_COMMITS=0
-FORCE_DOH=1
+# Reproduce the user's exact case: Manager had FORCE_DOH=0 while the proxy
+# config still had force_dns=1. Uninstall must disable the package interception.
+FORCE_DOH=0
 HTTPS_DNS_PROXY_INIT="$HD_TEST_DIR/init"
 export HD_TEST_EVENTS
 cat > "$HTTPS_DNS_PROXY_INIT" <<'EOF_HDP_INIT'
@@ -229,7 +231,7 @@ uci() {
 : > "$HD_TEST_EVENTS"
 uninstall_detach_https_dns_proxy || fail "proxy detachment failed"
 [ "$HD_TEST_CONFIG_UPDATE" = "-" ] || fail "https-dns-proxy auto dnsmasq updates remain enabled"
-[ "$HD_TEST_FORCE_DNS" = 0 ] || fail "Manager forced-DNS switch remains enabled"
+[ "$HD_TEST_FORCE_DNS" = 0 ] || fail "https-dns-proxy forced-DNS interception remains enabled despite saved FORCE_DOH=0"
 grep -qxF 'stop' "$HD_TEST_EVENTS" || fail "proxy stop hook did not run"
 grep -qxF 'commit-hdp' "$HD_TEST_EVENTS" || fail "proxy config was not committed"
 [ "$HD_TEST_COMMITS" -eq 1 ] || fail "proxy config commit count unexpected"
