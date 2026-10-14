@@ -106,12 +106,14 @@ extract_function uninstall_dnsmasq_resolv_fallback "$WORK/resolv-fallback.sh" ||
 DNS_TEST_SERVER=""
 DNS_TEST_NORESOLV=1
 DNS_TEST_COMMITS=0
+DNS_TEST_DEL_CALLS=""
 get_dnsmasq_section() { printf 'lan'; }
 uci() {
     [ "${1:-}" = "-q" ] && shift
     case "${1:-}" in
         get)
             case "${2:-}" in
+                dhcp.lan) return 0 ;;
                 dhcp.lan.server)
                     [ -n "$DNS_TEST_SERVER" ] || return 1
                     printf '%s' "$DNS_TEST_SERVER"
@@ -123,6 +125,11 @@ uci() {
                 *) return 1 ;;
             esac
             ;;
+        del_list)
+            _entry="${2#dhcp.lan.server=}"
+            DNS_TEST_DEL_CALLS="${DNS_TEST_DEL_CALLS}|$_entry"
+            DNS_TEST_SERVER="$(printf '%s' "$DNS_TEST_SERVER" | tr ' ' '\n' | grep -vxF "$_entry" | tr '\n' ' ' | sed 's/ *$//')"
+            ;;
         delete)
             [ "${2:-}" = dhcp.lan.noresolv ] || return 1
             DNS_TEST_NORESOLV=""
@@ -131,17 +138,30 @@ uci() {
             [ "${2:-}" = dhcp ] || return 1
             DNS_TEST_COMMITS=$((DNS_TEST_COMMITS + 1))
             ;;
-        *) return 1 ;;
+        *) return 1
     esac
 }
+# Reproduce the actual failure mode: domain-only entries coexist with three
+# stale Manager loopback ports. Those ports must go, and the system resolvfile
+# must be enabled even though domain-only rules remain.
+DNS_TEST_SERVER="/mask.icloud.com/ /mask-h2.icloud.com/ /use-application-dns.net/ 127.0.0.1#5054 127.0.0.1#5056 127.0.0.1#5058"
+DNS_TEST_NORESOLV=1
+DNS_TEST_COMMITS=0
+DNS_TEST_DEL_CALLS=""
 uninstall_dnsmasq_resolv_fallback || fail "failed to enable the default resolvfile path"
-[ -z "$DNS_TEST_NORESOLV" ] && [ "$DNS_TEST_COMMITS" -eq 1 ] || fail "noresolv remained enabled without explicit upstreams"
+case " $DNS_TEST_SERVER " in *"127.0.0.1#5054"*|*"127.0.0.1#5056"*|*"127.0.0.1#5058"*) fail "Manager loopback upstreams remain" ;; esac
+[ -z "$DNS_TEST_NORESOLV" ] || fail "noresolv remained enabled without a general upstream"
+case "$DNS_TEST_SERVER" in *"/mask.icloud.com/"*" /mask-h2.icloud.com/"*"/use-application-dns.net/"*) ;; *) fail "unrelated domain-only entries were not preserved" ;; esac
+ok "stale Manager loopback ports removed; domain-only rules preserved; system resolvfile enabled"
+
 DNS_TEST_SERVER="9.9.9.9"
 DNS_TEST_NORESOLV=1
 DNS_TEST_COMMITS=0
+DNS_TEST_DEL_CALLS=""
 uninstall_dnsmasq_resolv_fallback || fail "fallback failed with a custom upstream"
-[ "$DNS_TEST_NORESOLV" = 1 ] && [ "$DNS_TEST_COMMITS" -eq 0 ] || fail "fallback overwrote a custom DNS upstream"
-ok "DNS uninstall fallback enables system resolvfile only when no explicit upstream remains"
+[ "$DNS_TEST_NORESOLV" = 1 ] || fail "fallback disabled noresolv despite custom DNS upstream"
+case "$DNS_TEST_SERVER" in 9.9.9.9) ;; *) fail "custom DNS upstream was changed" ;; esac
+ok "custom upstreams are preserved and keep noresolv enabled"
 
 # Disable forced-DNS only when the Manager's saved setting says it owns the switch.
 extract_function disable_manager_forced_dns "$WORK/disable-force.sh" || fail "cannot extract forced-DNS cleanup"
