@@ -20,13 +20,14 @@ sh -n "$WORK/uninstall.sh" || fail "syntax: uninstall_manager_impl"
 ok "Shell syntax checks"
 
 if grep -Eq 'rollback_hdp_targeted|rollback_dnsmasq_targeted|rollback_firewall_targeted|remove_dns_force|remove_dnsmasq_perf|remove_ntp_ip_fallback|manager_force_config_matches|uci[[:space:]]+(-q[[:space:]]+)?(set|delete|del|add_list|commit)|reload_fw|/etc/init.d/(https-dns-proxy|dnsmasq)' "$WORK/uninstall.sh"; then
-    fail "uninstall contains DNS/DoH/dnsmasq/firewall cleanup"
+    fail "DNS restoration must be isolated in restore_dns_before_uninstall"
 fi
+grep -Fq 'restore_dns_before_uninstall' "$WORK/uninstall.sh" || fail "uninstall does not restore system DNS first"
 grep -Fq 'package_owner_remove_owned' "$WORK/uninstall.sh" || fail "owned packages are not removed"
 grep -Fq 'luci_companion_remove' "$WORK/uninstall.sh" || fail "LuCI companion is not removed"
 grep -Fq 'watchdog_service_stop_disable' "$WORK/uninstall.sh" || fail "watchdog is not stopped"
 grep -Fq 'watchdog_service_remove_files' "$WORK/uninstall.sh" || fail "watchdog files are not removed"
-ok "Uninstall is limited to Manager, owned packages, LuCI, and watchdog"
+ok "Uninstall restores owned DNS state before removing Manager files"
 
 # Exercise retry behavior with temporary paths; no router paths are touched.
 . "$WORK/uninstall.sh"
@@ -44,6 +45,10 @@ watchdog_service_stop_disable() { return 0; }
 watchdog_cron_remove_owned_block() { return 0; }
 watchdog_service_remove_files() { return 0; }
 luci_companion_remove() { : > "$WORK/luci-removed"; return 0; }
+restore_dns_before_uninstall() {
+    printf 'restored\n' >> "$WORK/dns-restore-attempts"
+    return 0
+}
 
 DNS_STATE="$WORK/dns-state"
 printf 'dnsmasq=server=127.0.0.1#5053;noresolv=1\nhttps-dns-proxy.force_dns=1\nfirewall=manager-redirect\n' > "$DNS_STATE"
@@ -73,11 +78,14 @@ package_owner_remove_owned() {
     _attempt="$(cat "$WORK/package-remove-attempts" 2>/dev/null || printf 0)"
     _attempt=$((_attempt + 1))
     printf '%s\n' "$_attempt" > "$WORK/package-remove-attempts"
+    _restore_count="$(wc -l < "$WORK/dns-restore-attempts" 2>/dev/null || printf 0)"
+    [ "$_restore_count" -eq "$_attempt" ] || return 1
     [ "$_attempt" -ge 2 ]
 }
 if (uninstall_manager_impl >/dev/null 2>&1); then
     fail "uninstall must report a package-removal failure"
 fi
+[ "$(wc -l < "$WORK/dns-restore-attempts")" -eq 1 ] || fail "DNS restore was not attempted before package removal"
 [ -f "$PACKAGE_OWNERSHIP" ] && [ -f "$MANAGER_PATH" ] && [ -d "$BASE_DIR" ] || fail "manager retry files were deleted after a package-removal failure"
 [ ! -e "$WORK/luci-removed" ] || fail "LuCI was removed before package removal succeeded"
 
@@ -90,4 +98,257 @@ fi
 cmp -s "$DNS_STATE" "$WORK/dns-state.expected" || fail "uninstall changed DNS/DoH/firewall state"
 [ ! -s "$UCI_CALLS" ] || fail "uninstall called UCI"
 [ ! -e "$WORK/forbidden-dns-call" ] || fail "uninstall called a DNS cleanup helper"
-ok "Package-removal failure is retryable; DNS/DoH/firewall state stays untouched"
+ok "Package-removal failure is retryable; DNS restore runs before every package-removal attempt"
+
+# When no explicit upstream remains, disable noresolv so system resolvfile is used.
+extract_function uninstall_dnsmasq_resolv_fallback "$WORK/resolv-fallback.sh" || fail "cannot extract DNS resolvfile fallback"
+. "$WORK/resolv-fallback.sh"
+DNS_TEST_SERVER=""
+DNS_TEST_NORESOLV=1
+DNS_TEST_COMMITS=0
+DNS_TEST_DEL_CALLS=""
+get_dnsmasq_section() { printf 'lan'; }
+uci() {
+    [ "${1:-}" = "-q" ] && shift
+    case "${1:-}" in
+        get)
+            case "${2:-}" in
+                dhcp.lan) return 0 ;;
+                dhcp.lan.server)
+                    [ -n "$DNS_TEST_SERVER" ] || return 1
+                    printf '%s' "$DNS_TEST_SERVER"
+                    ;;
+                dhcp.lan.noresolv)
+                    [ -n "$DNS_TEST_NORESOLV" ] || return 1
+                    printf '%s' "$DNS_TEST_NORESOLV"
+                    ;;
+                *) return 1 ;;
+            esac
+            ;;
+        del_list)
+            _entry="${2#dhcp.lan.server=}"
+            DNS_TEST_DEL_CALLS="${DNS_TEST_DEL_CALLS}|$_entry"
+            DNS_TEST_SERVER="$(printf '%s' "$DNS_TEST_SERVER" | tr ' ' '\n' | grep -vxF "$_entry" | tr '\n' ' ' | sed 's/ *$//')"
+            ;;
+        delete)
+            [ "${2:-}" = dhcp.lan.noresolv ] || return 1
+            DNS_TEST_NORESOLV=""
+            ;;
+        commit)
+            [ "${2:-}" = dhcp ] || return 1
+            DNS_TEST_COMMITS=$((DNS_TEST_COMMITS + 1))
+            ;;
+        *) return 1
+    esac
+}
+# Reproduce the actual failure mode: domain-only entries coexist with three
+# stale Manager loopback ports. Those ports must go, and the system resolvfile
+# must be enabled even though domain-only rules remain.
+DNS_TEST_SERVER="/mask.icloud.com/ /mask-h2.icloud.com/ /use-application-dns.net/ /unrelated.example/ 127.0.0.1#5054 127.0.0.1#5056 127.0.0.1#5058"
+DNS_TEST_NORESOLV=1
+DNS_TEST_COMMITS=0
+DNS_TEST_DEL_CALLS=""
+uninstall_dnsmasq_resolv_fallback || fail "failed to enable the default resolvfile path"
+case " $DNS_TEST_SERVER " in *"127.0.0.1#5054"*|*"127.0.0.1#5056"*|*"127.0.0.1#5058"*) fail "Manager loopback upstreams remain" ;; esac
+[ -z "$DNS_TEST_NORESOLV" ] || fail "noresolv remained enabled without a general upstream"
+case "$DNS_TEST_SERVER" in *"/unrelated.example/"*) ;; *) fail "unrelated domain-only entry was not preserved" ;; esac
+case "$DNS_TEST_SERVER" in *"/mask.icloud.com/"*|*"/mask-h2.icloud.com/"*|*"/use-application-dns.net/"*) fail "https-dns-proxy canary entries remain" ;; esac
+ok "stale Manager ports and proxy canaries removed; unrelated domain rule preserved; system resolvfile enabled"
+
+DNS_TEST_SERVER="9.9.9.9"
+DNS_TEST_NORESOLV=1
+DNS_TEST_COMMITS=0
+DNS_TEST_DEL_CALLS=""
+uninstall_dnsmasq_resolv_fallback || fail "fallback failed with a custom upstream"
+[ "$DNS_TEST_NORESOLV" = 1 ] || fail "fallback disabled noresolv despite custom DNS upstream"
+case "$DNS_TEST_SERVER" in 9.9.9.9) ;; *) fail "custom DNS upstream was changed" ;; esac
+ok "custom upstreams are preserved and keep noresolv enabled"
+
+# Ensure https-dns-proxy is stopped before detachment, its dnsmasq auto-update
+# is disabled, and package-private restore journals are removed for future stop/removal.
+extract_function uninstall_detach_https_dns_proxy "$WORK/detach-hdp.sh" || fail "cannot extract proxy detachment helper"
+. "$WORK/detach-hdp.sh"
+HD_TEST_DIR="$WORK/hdp-detach"
+mkdir -p "$HD_TEST_DIR"
+HD_TEST_EVENTS="$HD_TEST_DIR/events"
+HD_TEST_CONFIG_UPDATE="*"
+HD_TEST_FORCE_DNS=1
+HD_TEST_META="doh_server
+doh_backup_server
+doh_backup_noresolv"
+HD_TEST_COMMITS=0
+# Reproduce the user's exact case: Manager had FORCE_DOH=0 while the proxy
+# config still had force_dns=1. Uninstall must disable the package interception.
+FORCE_DOH=0
+HTTPS_DNS_PROXY_INIT="$HD_TEST_DIR/init"
+export HD_TEST_EVENTS
+cat > "$HTTPS_DNS_PROXY_INIT" <<'EOF_HDP_INIT'
+#!/bin/sh
+printf 'stop\n' >> "$HD_TEST_EVENTS"
+[ "${1:-}" = stop ]
+EOF_HDP_INIT
+chmod +x "$HTTPS_DNS_PROXY_INIT"
+uci() {
+    [ "${1:-}" = "-q" ] && shift
+    case "${1:-}" in
+        get)
+            case "${2:-}" in
+                https-dns-proxy.config) printf 'config' ;;
+                https-dns-proxy.config.force_dns) printf '%s' "$HD_TEST_FORCE_DNS" ;;
+                dhcp.cfg01411c.doh_server|dhcp.cfg01411c.doh_backup_server|dhcp.cfg01411c.doh_backup_noresolv)
+                    _opt="${2##*.}"
+                    printf '%s\n' "$HD_TEST_META" | grep -qxF "$_opt" && printf 'present' || return 1
+                    ;;
+                *) return 1 ;;
+            esac
+            ;;
+        show)
+            [ "${2:-}" = dhcp ] || return 1
+            printf 'dhcp.cfg01411c=dnsmasq\n'
+            ;;
+        set)
+            case "${2:-}" in
+                https-dns-proxy.config.force_dns=0) HD_TEST_FORCE_DNS=0; printf 'force-off\n' >> "$HD_TEST_EVENTS" ;;
+                https-dns-proxy.config.dnsmasq_config_update=-) HD_TEST_CONFIG_UPDATE=-; printf 'update-off\n' >> "$HD_TEST_EVENTS" ;;
+                *) return 1 ;;
+            esac
+            ;;
+        commit)
+            case "${2:-}" in
+                https-dns-proxy) HD_TEST_COMMITS=$((HD_TEST_COMMITS+1)); printf 'commit-hdp\n' >> "$HD_TEST_EVENTS" ;;
+                dhcp) printf 'commit-dhcp\n' >> "$HD_TEST_EVENTS" ;;
+                *) return 1 ;;
+            esac
+            ;;
+        delete)
+            _opt="${2##*.}"
+            HD_TEST_META="$(printf '%s\n' "$HD_TEST_META" | grep -vxF "$_opt" || true)"
+            printf 'delete:%s\n' "$_opt" >> "$HD_TEST_EVENTS"
+            ;;
+        *) return 1 ;;
+    esac
+}
+: > "$HD_TEST_EVENTS"
+uninstall_detach_https_dns_proxy || fail "proxy detachment failed"
+[ "$HD_TEST_CONFIG_UPDATE" = "-" ] || fail "https-dns-proxy auto dnsmasq updates remain enabled"
+[ "$HD_TEST_FORCE_DNS" = 0 ] || fail "https-dns-proxy forced-DNS interception remains enabled despite saved FORCE_DOH=0"
+grep -qxF 'stop' "$HD_TEST_EVENTS" || fail "proxy stop hook did not run"
+grep -qxF 'commit-hdp' "$HD_TEST_EVENTS" || fail "proxy config was not committed"
+[ "$HD_TEST_COMMITS" -eq 1 ] || fail "proxy config commit count unexpected"
+[ -z "$HD_TEST_META" ] || fail "https-dns-proxy restore metadata remains"
+[ "$(sed -n '1p' "$HD_TEST_EVENTS")" = stop ] || fail "proxy wasn't stopped before changing integration"
+ok "https-dns-proxy stop journal cleared, auto dnsmasq update disabled, package retained"
+
+# The proxy-detachment test above also verifies that Manager forced-DNS is
+# disabled only when the saved Manager setting says it was enabled.
+
+# Verify package removal always preserves https-dns-proxy regardless of ownership.
+extract_function package_owner_remove_owned "$WORK/package-remove-owned.sh" || fail "cannot extract package owner removal"
+. "$WORK/package-remove-owned.sh"
+PACKAGE_OWNERSHIP="$WORK/package-ownership-test.conf"
+APK_CALLS="$WORK/apk-calls"
+PKG_MGR=apk
+printf 'https-dns-proxy\ncurl\n' > "$PACKAGE_OWNERSHIP"
+apk() {
+    printf '%s\n' "$*" >> "$APK_CALLS"
+    case "$*" in
+        "info -e https-dns-proxy"|"info -e curl") return 0 ;;
+        "del curl") return 0 ;;
+        "del https-dns-proxy") return 99 ;;
+        *) return 1 ;;
+    esac
+}
+: > "$APK_CALLS"
+package_owner_remove_owned || fail "owned package removal failed"
+grep -Fq 'del curl' "$APK_CALLS" || fail "other owned packages were not removed"
+if grep -Fq 'del https-dns-proxy' "$APK_CALLS"; then
+    fail "https-dns-proxy must never be removed by DNS Manager uninstall"
+fi
+ok "https-dns-proxy remains installed even if ownership file lists it"
+
+# If the cached companion installer is missing, uninstall the known LuCI
+# namespace from its installed marker and fixed paths. Repeating removal is safe.
+for _fn in luci_companion_remove_fallback luci_companion_remove; do
+    awk -v fn="$_fn" '$0 == fn "() {" {capture=1} capture {print} capture && /^}$/ {exit}' "$ROOT/dns-manager.sh" >> "$WORK/luci-remove-functions.sh"
+done
+[ -s "$WORK/luci-remove-functions.sh" ] || fail "cannot extract LuCI removal helpers"
+sh -n "$WORK/luci-remove-functions.sh" || fail "syntax: LuCI removal helpers"
+cat > "$WORK/luci-remove-runner.sh" <<'EOF_LUCI_REMOVE'
+#!/bin/sh
+set -eu
+W="$1"
+LUCI_STATE_FILE="$W/etc/dns-manager/config/luci-state.conf"
+LUCI_COMPANION_CACHE="$W/etc/dns-manager/dns-manager-luci.sh"
+LUCI_RPC_PLUGIN="$W/usr/libexec/rpcd/dns_manager"
+LUCI_BACKEND_FILE="$W/usr/lib/dns-manager-luci/backend.sh"
+LUCI_ACL_FILE="$W/usr/share/rpcd/acl.d/luci-app-dns-manager.json"
+LUCI_MENU_FILE="$W/usr/share/luci/menu.d/luci-app-dns-manager.json"
+LUCI_VIEW_DIR="$W/www/luci-static/resources/view/dns-manager"
+LUCI_RESOURCE_DIR="$W/www/luci-static/resources/dns-manager"
+LUCI_COMMON_FILE="$LUCI_RESOURCE_DIR/common.js"
+LUCI_VIEW_FILE="$LUCI_VIEW_DIR/dashboard.js"
+LUCI_RUNTIME_DIR="$W/var/run/dns-manager-luci"
+LUCI_BACKUP_DIR="$W/etc/dns-manager-luci"
+LUCI_CACHE_DIR="$W/tmp"
+LUCI_LEGACY_CONTROLLER_FILE="$W/usr/lib/lua/luci/controller/dns_manager.lua"
+CLEANUP_EVENTS="$W/cleanup-events"
+
+mkdir -p "$W/etc/dns-manager/config" "$W/etc/config" \
+    "$(dirname "$LUCI_RPC_PLUGIN")" "$(dirname "$LUCI_BACKEND_FILE")" \
+    "$(dirname "$LUCI_ACL_FILE")" "$(dirname "$LUCI_MENU_FILE")" \
+    "$LUCI_VIEW_DIR" "$LUCI_RESOURCE_DIR" "$LUCI_RUNTIME_DIR" "$LUCI_BACKUP_DIR" \
+    "$(dirname "$LUCI_LEGACY_CONTROLLER_FILE")" "$W/usr/lib/lua/luci/controller" \
+    "$W/www/luci-static/resources/view/unrelated" "$LUCI_CACHE_DIR"
+printf 'installed=1\nversion=1.50\n' > "$LUCI_STATE_FILE"
+printf 'manager configuration must survive LuCI cleanup\n' > "$W/etc/dns-manager/config/manager.conf"
+printf 'third-party DHCP configuration\n' > "$W/etc/config/dhcp"
+cp "$W/etc/config/dhcp" "$W/dhcp.expected"
+printf 'menu admin/services/dns-manager\n' > "$LUCI_MENU_FILE"
+printf 'ACL luci-app-dns-manager\n' > "$LUCI_ACL_FILE"
+printf '# DNS Manager LuCI rpcd plugin\n' > "$LUCI_RPC_PLUGIN"
+printf '# DNS Manager LuCI backend\n' > "$LUCI_BACKEND_FILE"
+printf '// DNS Manager LuCI common module version: 1.50\n' > "$LUCI_COMMON_FILE"
+for _view in dashboard doh network time catalog log; do
+    printf '// DNS Manager LuCI version: 1.50\n' > "$LUCI_VIEW_DIR/$_view.js"
+done
+printf 'module("luci.controller.dns_manager", package.seeall)\n' > "$LUCI_LEGACY_CONTROLLER_FILE"
+printf 'third-party controller must survive\n' > "$W/usr/lib/lua/luci/controller/thirdparty.lua"
+printf 'unrelated LuCI view must survive\n' > "$W/www/luci-static/resources/view/unrelated/index.js"
+printf 'LuCI cache\n' > "$LUCI_CACHE_DIR/luci-indexcache-test"
+printf 'LuCI module cache\n' > "$LUCI_CACHE_DIR/luci-modulecache-test"
+: > "$CLEANUP_EVENTS"
+# LUCI_COMPANION_CACHE intentionally does not exist.
+warn_msg() { printf 'WARN:%s\n' "$*" >> "$CLEANUP_EVENTS"; }
+err_msg() { printf 'ERR:%s\n' "$*" >> "$CLEANUP_EVENTS"; }
+luci_component_files_present() {
+    [ -f "$LUCI_MENU_FILE" ] || return 1
+    [ -f "$LUCI_ACL_FILE" ] || return 1
+    [ -x "$LUCI_RPC_PLUGIN" ] || return 1
+    [ -f "$LUCI_BACKEND_FILE" ] || return 1
+    [ -f "$LUCI_COMMON_FILE" ] || return 1
+    for _view in dashboard doh network time catalog log; do
+        [ -f "$LUCI_VIEW_DIR/${_view}.js" ] || return 1
+    done
+    return 0
+}
+. "$2"
+luci_companion_remove || exit 51
+[ ! -e "$LUCI_STATE_FILE" ] || exit 52
+[ ! -e "$LUCI_COMPANION_CACHE" ] || exit 53
+for _path in "$LUCI_RPC_PLUGIN" "$LUCI_BACKEND_FILE" "$LUCI_ACL_FILE" "$LUCI_MENU_FILE" "$LUCI_VIEW_DIR" "$LUCI_RESOURCE_DIR" "$LUCI_RUNTIME_DIR" "$LUCI_BACKUP_DIR" "$LUCI_LEGACY_CONTROLLER_FILE"; do
+    [ ! -e "$_path" ] || { printf 'leftover: %s\n' "$_path" >&2; exit 54; }
+done
+[ -f "$W/usr/lib/lua/luci/controller/thirdparty.lua" ] || exit 55
+[ -f "$W/www/luci-static/resources/view/unrelated/index.js" ] || exit 56
+[ -f "$W/etc/dns-manager/config/manager.conf" ] || exit 57
+cmp -s "$W/etc/config/dhcp" "$W/dhcp.expected" || exit 58
+[ ! -e "$LUCI_CACHE_DIR/luci-indexcache-test" ] && [ ! -e "$LUCI_CACHE_DIR/luci-modulecache-test" ] || exit 59
+# A second call is a no-op once the installed marker has been removed.
+luci_companion_remove || exit 60
+[ -f "$W/etc/dns-manager/config/manager.conf" ] || exit 61
+cmp -s "$W/etc/config/dhcp" "$W/dhcp.expected" || exit 62
+EOF_LUCI_REMOVE
+chmod +x "$WORK/luci-remove-runner.sh"
+"$WORK/luci-remove-runner.sh" "$WORK/luci-fixture" "$WORK/luci-remove-functions.sh" || fail "missing-cache LuCI removal or idempotent retry"
+ok "missing cached installer: owned LuCI files removed, unrelated files/config preserved, retry is safe"
+
