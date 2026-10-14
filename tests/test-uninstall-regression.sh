@@ -27,7 +27,7 @@ grep -Fq 'package_owner_remove_owned' "$WORK/uninstall.sh" || fail "owned packag
 grep -Fq 'luci_companion_remove' "$WORK/uninstall.sh" || fail "LuCI companion is not removed"
 grep -Fq 'watchdog_service_stop_disable' "$WORK/uninstall.sh" || fail "watchdog is not stopped"
 grep -Fq 'watchdog_service_remove_files' "$WORK/uninstall.sh" || fail "watchdog files are not removed"
-ok "Uninstall is limited to Manager, owned packages, LuCI, and watchdog"
+ok "Uninstall restores owned DNS state before removing Manager files"
 
 # Exercise retry behavior with temporary paths; no router paths are touched.
 . "$WORK/uninstall.sh"
@@ -142,6 +142,39 @@ DNS_TEST_COMMITS=0
 uninstall_dnsmasq_resolv_fallback || fail "fallback failed with a custom upstream"
 [ "$DNS_TEST_NORESOLV" = 1 ] && [ "$DNS_TEST_COMMITS" -eq 0 ] || fail "fallback overwrote a custom DNS upstream"
 ok "DNS uninstall fallback enables system resolvfile only when no explicit upstream remains"
+
+# Disable forced-DNS only when the Manager's saved setting says it owns the switch.
+extract_function disable_manager_forced_dns "$WORK/disable-force.sh" || fail "cannot extract forced-DNS cleanup"
+. "$WORK/disable-force.sh"
+FORCE_TEST_VALUE=1
+FORCE_TEST_CALLS=""
+FORCE_DOH=1
+uci() {
+    [ "${1:-}" = "-q" ] && shift
+    case "${1:-} ${2:-}" in
+        "get https-dns-proxy.config.force_dns")
+            printf '%s' "$FORCE_TEST_VALUE"
+            ;;
+        "set https-dns-proxy.config.force_dns=0")
+            FORCE_TEST_VALUE=0
+            FORCE_TEST_CALLS="${FORCE_TEST_CALLS} set"
+            ;;
+        "commit https-dns-proxy")
+            FORCE_TEST_CALLS="${FORCE_TEST_CALLS} commit"
+            ;;
+        *) return 1 ;;
+    esac
+}
+disable_manager_forced_dns || fail "failed to disable Manager forced-DNS"
+[ "$FORCE_TEST_VALUE" = 0 ] || fail "Manager forced-DNS switch remains enabled"
+[ "$FORCE_TEST_CALLS" = " set commit" ] || fail "forced-DNS change was not committed"
+
+FORCE_TEST_VALUE=1
+FORCE_TEST_CALLS=""
+FORCE_DOH=0
+disable_manager_forced_dns || fail "unexpected forced-DNS failure with Manager switch off"
+[ "$FORCE_TEST_VALUE" = 1 ] && [ -z "$FORCE_TEST_CALLS" ] || fail "external forced-DNS was changed while Manager switch was off"
+ok "forced-DNS is disabled only when Manager's setting enabled it"
 
 # Verify package removal always preserves https-dns-proxy regardless of ownership.
 extract_function package_owner_remove_owned "$WORK/package-remove-owned.sh" || fail "cannot extract package owner removal"
