@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.53"
+VERSION="3.54"
 # 3.38: clear the LuCI update flag after a successful CLI update.
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
@@ -4033,6 +4033,59 @@ restore_dns_before_uninstall() {
     return "$_dns_restore_rc"
 }
 
+restore_hdp_package_defaults() {
+    # Reset resolver instances and package options to the official
+    # https-dns-proxy defaults: Cloudflare on 5053 and Google on 5054.
+    # Capture sections first and delete in reverse order because anonymous
+    # UCI section indices shift after each deletion.
+    _sections="$(uci show https-dns-proxy 2>/dev/null | sed -n 's/^https-dns-proxy\.\([^.=]*\)=https-dns-proxy$/\1/p' | awk '{ section[NR]=$0 } END { for (i=NR; i>0; i--) print section[i] }')"
+    for _sec in $_sections; do
+        uci -q delete "https-dns-proxy.$_sec" || return 1
+    done
+
+    # Recreate the named main section with the package-shipped defaults.
+    uci -q delete https-dns-proxy.config >/dev/null 2>&1 || true
+    uci set https-dns-proxy.config=main || return 1
+    for _kv in \
+        'canary_domains_icloud|1' \
+        'canary_domains_mozilla|1' \
+        'dnsmasq_config_update|*' \
+        'force_dns|1' \
+        'notrack_dns|1' \
+        'procd_trigger_wan6|0' \
+        'heartbeat_domain|heartbeat.mossdef.org' \
+        'heartbeat_sleep_timeout|10' \
+        'heartbeat_wait_timeout|10' \
+        'user|nobody' \
+        'group|nogroup' \
+        'listen_addr|127.0.0.1' \
+        'force_ip_family|auto'; do
+        _key="${_kv%%|*}"
+        _value="${_kv#*|}"
+        uci set "https-dns-proxy.config.$_key=$_value" || return 1
+    done
+    uci -q delete https-dns-proxy.config.force_dns_port >/dev/null 2>&1 || true
+    uci add_list 'https-dns-proxy.config.force_dns_port=53' || return 1
+    uci add_list 'https-dns-proxy.config.force_dns_port=853' || return 1
+    uci -q delete https-dns-proxy.config.force_dns_src_interface >/dev/null 2>&1 || true
+    uci add_list 'https-dns-proxy.config.force_dns_src_interface=lan' || return 1
+
+    _cf_sec="$(uci add https-dns-proxy https-dns-proxy)" || return 1
+    [ -n "$_cf_sec" ] || return 1
+    uci set "https-dns-proxy.$_cf_sec.bootstrap_dns=1.1.1.1,1.0.0.1,2606:4700:4700::1111,2606:4700:4700::1001" || return 1
+    uci set "https-dns-proxy.$_cf_sec.resolver_url=https://cloudflare-dns.com/dns-query" || return 1
+    uci set "https-dns-proxy.$_cf_sec.listen_port=5053" || return 1
+
+    _google_sec="$(uci add https-dns-proxy https-dns-proxy)" || return 1
+    [ -n "$_google_sec" ] || return 1
+    uci set "https-dns-proxy.$_google_sec.bootstrap_dns=8.8.8.8,8.8.4.4,2001:4860:4860::8888,2001:4860:4860::8844" || return 1
+    uci set "https-dns-proxy.$_google_sec.resolver_url=https://dns.google/dns-query" || return 1
+    uci set "https-dns-proxy.$_google_sec.listen_port=5054" || return 1
+
+    uci commit https-dns-proxy >/dev/null 2>&1 || return 1
+    return 0
+}
+
 restore_dns_core() {
     acquire_mutation_lock || return 1
     clear_screen
@@ -4042,6 +4095,7 @@ restore_dns_core() {
     rollback_hdp_targeted >/dev/null 2>&1 || _rc=1
     rollback_dnsmasq_targeted >/dev/null 2>&1 || _rc=1
     rollback_firewall_targeted >/dev/null 2>&1 || _rc=1
+    restore_hdp_package_defaults || _rc=1
     /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || true
     /etc/init.d/dnsmasq restart >/dev/null 2>&1 || true
     reload_fw >/dev/null 2>&1 || true
@@ -7246,7 +7300,7 @@ startup_update_check() {
 # STARTUP REQUIRED FUNCTION CHECK
 # ==========================================
 startup_required_function_check() {
-    for _fn in get_dnsmasq_section exact_list_has doh_selected_config_current validate_selected_slots ensure_dnsmasq_balancer detect_forced_dns_path clear_all_doh_for_apply rebuild_selected_hdp_sections reconcile_dnsmasq apply_ntp_ip_fallback luci_component_state luci_companion_check_update luci_companion_install luci_companion_remove luci_companion_update watchdog_embedded_loop watchdog_service_install_files watchdog_service_remove_files; do
+    for _fn in restore_hdp_package_defaults get_dnsmasq_section exact_list_has doh_selected_config_current validate_selected_slots ensure_dnsmasq_balancer detect_forced_dns_path clear_all_doh_for_apply rebuild_selected_hdp_sections reconcile_dnsmasq apply_ntp_ip_fallback luci_component_state luci_companion_check_update luci_companion_install luci_companion_remove luci_companion_update watchdog_embedded_loop watchdog_service_install_files watchdog_service_remove_files; do
         type "$_fn" >/dev/null 2>&1 || {
             printf "${C_RED}[✗] Критическая ошибка: отсутствует функция $_fn. Запуск остановлен до изменения настроек роутера.${C_NC}\n"
             return 1
