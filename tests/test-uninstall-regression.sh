@@ -297,13 +297,13 @@ uci() {
             [ "${2:-}" = "https-dns-proxy" ] || return 1
             _i=0
             while IFS='|' read -r _port _url; do
-                printf 'https-dns-proxy.@https-dns-proxy[%s]=https-dns-proxy\\n' "$_i"
+                printf 'https-dns-proxy.@https-dns-proxy[%s]=https-dns-proxy\n' "$_i"
                 _i=$((_i + 1))
             done < "$HD_TEST_SECTIONS"
             ;;
         get)
             _arg="${2:-}"
-            _index="$(printf '%s' "$_arg" | sed -n 's/^https-dns-proxy\\.@https-dns-proxy\\[\\([0-9][0-9]*\\)\\]\\.\\(listen_port\\|resolver_url\\)$/\\1/p')"
+            _index="$(printf '%s' "$_arg" | sed -n 's/^https-dns-proxy\.@https-dns-proxy\[\([0-9][0-9]*\)\]\.\(listen_port\|resolver_url\)$/\1/p')"
             [ -n "$_index" ] || return 1
             _field="${_arg##*.}"
             _line="$(sed -n "$((_index + 1))p" "$HD_TEST_SECTIONS")"
@@ -318,7 +318,7 @@ EOF_DOH_ROW
             esac
             ;;
         delete)
-            _index="$(printf '%s' "${2:-}" | sed -n 's/^https-dns-proxy\\.@https-dns-proxy\\[\\([0-9][0-9]*\\)\\]$/\\1/p')"
+            _index="$(printf '%s' "${2:-}" | sed -n 's/^https-dns-proxy\.@https-dns-proxy\[\([0-9][0-9]*\)\]$/\1/p')"
             [ -n "$_index" ] || return 1
             sed "$((_index + 1))d" "$HD_TEST_SECTIONS" > "$HD_TEST_SECTIONS.tmp"
             mv "$HD_TEST_SECTIONS.tmp" "$HD_TEST_SECTIONS"
