@@ -20,8 +20,9 @@ sh -n "$WORK/uninstall.sh" || fail "syntax: uninstall_manager_impl"
 ok "Shell syntax checks"
 
 if grep -Eq 'rollback_hdp_targeted|rollback_dnsmasq_targeted|rollback_firewall_targeted|remove_dns_force|remove_dnsmasq_perf|remove_ntp_ip_fallback|manager_force_config_matches|uci[[:space:]]+(-q[[:space:]]+)?(set|delete|del|add_list|commit)|reload_fw|/etc/init.d/(https-dns-proxy|dnsmasq)' "$WORK/uninstall.sh"; then
-    fail "uninstall contains DNS/DoH/dnsmasq/firewall cleanup"
+    fail "DNS restoration must be isolated in restore_dns_before_uninstall"
 fi
+grep -Fq 'restore_dns_before_uninstall' "$WORK/uninstall.sh" || fail "uninstall does not restore system DNS first"
 grep -Fq 'package_owner_remove_owned' "$WORK/uninstall.sh" || fail "owned packages are not removed"
 grep -Fq 'luci_companion_remove' "$WORK/uninstall.sh" || fail "LuCI companion is not removed"
 grep -Fq 'watchdog_service_stop_disable' "$WORK/uninstall.sh" || fail "watchdog is not stopped"
@@ -44,6 +45,11 @@ watchdog_service_stop_disable() { return 0; }
 watchdog_cron_remove_owned_block() { return 0; }
 watchdog_service_remove_files() { return 0; }
 luci_companion_remove() { : > "$WORK/luci-removed"; return 0; }
+restore_dns_before_uninstall() {
+    [ ! -e "$WORK/package-remove-attempts" ] || : > "$WORK/dns-restore-after-package-attempt"
+    printf 'restored\n' >> "$WORK/dns-restore-attempts"
+    return 0
+}
 
 DNS_STATE="$WORK/dns-state"
 printf 'dnsmasq=server=127.0.0.1#5053;noresolv=1\nhttps-dns-proxy.force_dns=1\nfirewall=manager-redirect\n' > "$DNS_STATE"
@@ -78,6 +84,8 @@ package_owner_remove_owned() {
 if (uninstall_manager_impl >/dev/null 2>&1); then
     fail "uninstall must report a package-removal failure"
 fi
+[ -s "$WORK/dns-restore-attempts" ] || fail "DNS restore was not attempted before package removal"
+[ ! -e "$WORK/dns-restore-after-package-attempt" ] || fail "DNS restore ordering is invalid"
 [ -f "$PACKAGE_OWNERSHIP" ] && [ -f "$MANAGER_PATH" ] && [ -d "$BASE_DIR" ] || fail "manager retry files were deleted after a package-removal failure"
 [ ! -e "$WORK/luci-removed" ] || fail "LuCI was removed before package removal succeeded"
 
@@ -91,6 +99,73 @@ cmp -s "$DNS_STATE" "$WORK/dns-state.expected" || fail "uninstall changed DNS/Do
 [ ! -s "$UCI_CALLS" ] || fail "uninstall called UCI"
 [ ! -e "$WORK/forbidden-dns-call" ] || fail "uninstall called a DNS cleanup helper"
 ok "Package-removal failure is retryable; DNS/DoH/firewall state stays untouched"
+
+# When no explicit upstream remains, disable noresolv so system resolvfile is used.
+extract_function uninstall_dnsmasq_resolv_fallback "$WORK/resolv-fallback.sh" || fail "cannot extract DNS resolvfile fallback"
+. "$WORK/resolv-fallback.sh"
+DNS_TEST_SERVER=""
+DNS_TEST_NORESOLV=1
+DNS_TEST_COMMITS=0
+get_dnsmasq_section() { printf 'lan'; }
+uci() {
+    [ "${1:-}" = "-q" ] && shift
+    case "${1:-}" in
+        get)
+            case "${2:-}" in
+                dhcp.lan.server)
+                    [ -n "$DNS_TEST_SERVER" ] || return 1
+                    printf '%s' "$DNS_TEST_SERVER"
+                    ;;
+                dhcp.lan.noresolv)
+                    [ -n "$DNS_TEST_NORESOLV" ] || return 1
+                    printf '%s' "$DNS_TEST_NORESOLV"
+                    ;;
+                *) return 1 ;;
+            esac
+            ;;
+        delete)
+            [ "${2:-}" = dhcp.lan.noresolv ] || return 1
+            DNS_TEST_NORESOLV=""
+            ;;
+        commit)
+            [ "${2:-}" = dhcp ] || return 1
+            DNS_TEST_COMMITS=$((DNS_TEST_COMMITS + 1))
+            ;;
+        *) return 1 ;;
+    esac
+}
+uninstall_dnsmasq_resolv_fallback || fail "failed to enable the default resolvfile path"
+[ -z "$DNS_TEST_NORESOLV" ] && [ "$DNS_TEST_COMMITS" -eq 1 ] || fail "noresolv remained enabled without explicit upstreams"
+DNS_TEST_SERVER="9.9.9.9"
+DNS_TEST_NORESOLV=1
+DNS_TEST_COMMITS=0
+uninstall_dnsmasq_resolv_fallback || fail "fallback failed with a custom upstream"
+[ "$DNS_TEST_NORESOLV" = 1 ] && [ "$DNS_TEST_COMMITS" -eq 0 ] || fail "fallback overwrote a custom DNS upstream"
+ok "DNS uninstall fallback enables system resolvfile only when no explicit upstream remains"
+
+# Verify package removal always preserves https-dns-proxy regardless of ownership.
+extract_function package_owner_remove_owned "$WORK/package-remove-owned.sh" || fail "cannot extract package owner removal"
+. "$WORK/package-remove-owned.sh"
+PACKAGE_OWNERSHIP="$WORK/package-ownership-test.conf"
+APK_CALLS="$WORK/apk-calls"
+PKG_MGR=apk
+printf 'https-dns-proxy\ncurl\n' > "$PACKAGE_OWNERSHIP"
+apk() {
+    printf '%s\n' "$*" >> "$APK_CALLS"
+    case "$*" in
+        "info -e https-dns-proxy"|"info -e curl") return 0 ;;
+        "del curl") return 0 ;;
+        "del https-dns-proxy") return 99 ;;
+        *) return 1 ;;
+    esac
+}
+: > "$APK_CALLS"
+package_owner_remove_owned || fail "owned package removal failed"
+grep -Fq 'del curl' "$APK_CALLS" || fail "other owned packages were not removed"
+if grep -Fq 'del https-dns-proxy' "$APK_CALLS"; then
+    fail "https-dns-proxy must never be removed by DNS Manager uninstall"
+fi
+ok "https-dns-proxy remains installed even if ownership file lists it"
 
 # If the cached companion installer is missing, uninstall the known LuCI
 # namespace from its installed marker and fixed paths. Repeating removal is safe.
