@@ -3785,7 +3785,9 @@ rollback_dnsmasq_targeted() {
     _cur="$(uci -q get "dhcp.$sec.server" 2>/dev/null | tr ' ' '\n')"
     while IFS= read -r _val; do
         [ -n "$_val" ] || continue
-        rollback_ownership_has dnsmasq server "$_val" || continue
+        if ! rollback_ownership_has dnsmasq server "$_val" && ! dnsmasq_manager_server_owned "$_val"; then
+            continue
+        fi
         if uci -q del_list "dhcp.$sec.server=$_val" >/dev/null 2>&1; then
             _changed=1
             printf '  - dnsmasq server: %s\n' "$_val"
@@ -3926,6 +3928,49 @@ clear_dns_core_runtime_state() {
     BALANCER_ENABLED=0
     save_config >/dev/null 2>&1
 }
+uninstall_dnsmasq_resolv_fallback() {
+    _sec="$(get_dnsmasq_section 2>/dev/null)" || return 1
+    [ -n "$_sec" ] || return 1
+
+    _servers="$(uci -q get "dhcp.$_sec.server" 2>/dev/null)"
+    _noresolv="$(uci -q get "dhcp.$_sec.noresolv" 2>/dev/null)"
+
+    # If no explicit upstream remains, let dnsmasq use OpenWrt's resolvfile
+    # (normally /tmp/resolv.conf.d/resolv.conf.auto) instead of local DoH ports.
+    if [ -z "$_servers" ] && [ "$_noresolv" = 1 ]; then
+        uci -q delete "dhcp.$_sec.noresolv" || return 1
+        uci commit dhcp || return 1
+    fi
+    return 0
+}
+
+restore_dns_before_uninstall() {
+    _dns_restore_rc=0
+
+    # Disable only the forced-DNS switch enabled by this Manager config.
+    # Keep the https-dns-proxy package installed; users may remove it separately.
+    if [ -f /etc/config/https-dns-proxy ] &&
+       [ "${FORCE_DOH:-0}" = 1 ] &&
+       [ "$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null)" = 1 ]; then
+        uci set https-dns-proxy.config.force_dns=0 || _dns_restore_rc=1
+        uci commit https-dns-proxy || _dns_restore_rc=1
+    fi
+
+    rollback_hdp_targeted >/dev/null 2>&1 || _dns_restore_rc=1
+    rollback_dnsmasq_targeted >/dev/null 2>&1 || _dns_restore_rc=1
+    uninstall_dnsmasq_resolv_fallback || _dns_restore_rc=1
+    rollback_firewall_targeted >/dev/null 2>&1 || _dns_restore_rc=1
+
+    # Apply the configuration before removing the Manager files. These restarts
+    # do not uninstall https-dns-proxy and remain safe if its init script is absent.
+    [ ! -x /etc/init.d/https-dns-proxy ] ||
+        /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || true
+    /etc/init.d/dnsmasq restart >/dev/null 2>&1 || _dns_restore_rc=1
+    reload_fw >/dev/null 2>&1 || _dns_restore_rc=1
+
+    return "$_dns_restore_rc"
+}
+
 restore_dns_core() {
     acquire_mutation_lock || return 1
     clear_screen
@@ -3953,7 +3998,7 @@ uninstall_manager_impl() {
     clear_screen
     menu_header "УДАЛЕНИЕ DNS MANAGER"
     warn_msg "DNS Manager, его LuCI, собственные службы и установленные им пакеты будут удалены."
-    printf "\n$C_YELLOW Перед удалением нажмите существующую кнопку восстановления стандартного DNS, если хотите вернуть стандартную схему. Удаление не откатывает и не очищает настройки DNS, DoH, dnsmasq, firewall или NTP.$C_NC\n\n"
+    printf "\n$C_YELLOW При удалении сначала восстанавливаются системные DNS-настройки и отключается управляемый DNS Manager перехват. Сторонние DNS-серверы сохраняются. Пакет https-dns-proxy не удаляется.$C_NC\n\n"
     confirm_action "Удалить DNS Manager и установленные им пакеты?" || { info_msg "Отменено."; pause; return 0; }
 
     acquire_mutation_lock || return 1
@@ -3976,6 +4021,13 @@ uninstall_manager_impl() {
         pause
         return 1
     }
+
+    if ! restore_dns_before_uninstall >/dev/null 2>&1; then
+        release_mutation_lock
+        err_msg "Не удалось безопасно восстановить системный DNS. Менеджер и пакеты сохранены для повторной попытки."
+        pause
+        return 1
+    fi
 
     if ! package_owner_remove_owned >/dev/null 2>&1; then
         release_mutation_lock
@@ -5131,6 +5183,7 @@ package_owner_remove_owned() {
         [ -n "$_pkg" ] || continue
         case "$_pkg" in
             *[!A-Za-z0-9._+:-]*) continue ;;
+            https-dns-proxy) continue ;; # Keep the proxy installed; uninstall only detaches DNS Manager's configuration.
         esac
         # PACKAGE_OWNERSHIP records that the package was absent before installation.
         if [ "$PKG_MGR" = apk ]; then
