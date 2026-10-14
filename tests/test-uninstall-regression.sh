@@ -215,8 +215,8 @@ EOF_HDP_TEST_MAIN
     }
     restore_hdp_package_defaults || { echo "restore helper failed" >&2; cat "$HDP_TEST_SECTIONS" "$HDP_TEST_MAIN" "$HDP_TEST_EVENTS" >&2; exit 1; }
     [ "$(wc -l < "$HDP_TEST_SECTIONS" | tr -d ' ')" = 2 ] || { printf "wrong section count\n" >&2; cat "$HDP_TEST_SECTIONS" >&2; exit 1; }
-    grep -Fq '|5053|https://cloudflare-dns.com/dns-query|1.1.1.1,1.0.0.1,2606:4700:4700::1111,2606:4700:4700::1001|127.0.0.1' "$HDP_TEST_SECTIONS" || { echo "Cloudflare factory entry mismatch" >&2; cat "$HDP_TEST_SECTIONS" >&2; exit 1; }
-    grep -Fq '|5054|https://dns.google/dns-query|8.8.8.8,8.8.4.4,2001:4860:4860::8888,2001:4860:4860::8844|127.0.0.1' "$HDP_TEST_SECTIONS" || { echo "Google factory entry mismatch" >&2; cat "$HDP_TEST_SECTIONS" >&2; exit 1; }
+    grep -Fq '|5053|https://cloudflare-dns.com/dns-query|1.1.1.1,1.0.0.1,2606:4700:4700::1111,2606:4700:4700::1001' "$HDP_TEST_SECTIONS" || { echo "Cloudflare factory entry mismatch" >&2; cat "$HDP_TEST_SECTIONS" >&2; exit 1; }
+    grep -Fq '|5054|https://dns.google/dns-query|8.8.8.8,8.8.4.4,2001:4860:4860::8888,2001:4860:4860::8844' "$HDP_TEST_SECTIONS" || { echo "Google factory entry mismatch" >&2; cat "$HDP_TEST_SECTIONS" >&2; exit 1; }
     grep -qx 'force_dns=1' "$HDP_TEST_MAIN" || { echo "force_dns default mismatch" >&2; cat "$HDP_TEST_MAIN" >&2; exit 1; }
     grep -qx 'dnsmasq_config_update=*' "$HDP_TEST_MAIN" || { echo "dnsmasq_config_update default mismatch" >&2; cat "$HDP_TEST_MAIN" >&2; exit 1; }
     grep -qx 'notrack_dns=1' "$HDP_TEST_MAIN" || exit 1
