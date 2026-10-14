@@ -108,7 +108,6 @@ ok "Package-removal failure is retryable; DNS restore runs before every package-
     HDP_TEST_SECTIONS="$WORK/restore-hdp-sections.conf"
     HDP_TEST_MAIN="$WORK/restore-hdp-main.conf"
     HDP_TEST_EVENTS="$WORK/restore-hdp-events"
-    HDP_TEST_ADDED=0
     cat > "$HDP_TEST_SECTIONS" <<'EOF_HDP_TEST_SECTIONS'
 old1|5054|https://cloudflare-dns.com/dns-query|old-bootstrap|127.0.0.1|2
 old2|5056|https://dns.aa.net.uk/dns-query|old-bootstrap|127.0.0.1|2
@@ -189,9 +188,9 @@ EOF_HDP_TEST_MAIN
                 ;;
             add)
                 [ "${2:-}" = https-dns-proxy ] && [ "${3:-}" = https-dns-proxy ] || return 1
-                HDP_TEST_ADDED=$((HDP_TEST_ADDED + 1))
-                printf 'cfg-default-%s|||||\n' "$HDP_TEST_ADDED" >> "$HDP_TEST_SECTIONS"
-                printf 'cfg-default-%s\n' "$HDP_TEST_ADDED"
+                UT_NEXT="$(awk -F'|' '$1 ~ /^cfg-default-[0-9]+$/ {n++} END {print n+1}' "$HDP_TEST_SECTIONS")"
+                printf 'cfg-default-%s|||||\n' "$UT_NEXT" >> "$HDP_TEST_SECTIONS"
+                printf 'cfg-default-%s\n' "$UT_NEXT"
                 ;;
             add_list)
                 UT_ASSIGN="${2:-}"
