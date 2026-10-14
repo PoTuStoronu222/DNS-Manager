@@ -3939,9 +3939,10 @@ uninstall_detach_https_dns_proxy() {
         "$_init" stop >/dev/null 2>&1 || return 1
     fi
 
-    if [ "${FORCE_DOH:-0}" = 1 ]; then
-        uci set https-dns-proxy.config.force_dns=0 || return 1
-    fi
+    # The uninstall contract is to leave the proxy optional, not forced on.
+    # Disable this package's LAN DNS interception regardless of who installed
+    # it or the Manager's previously saved FORCE_DOH value.
+    uci set https-dns-proxy.config.force_dns=0 || return 1
     uci set "https-dns-proxy.config.dnsmasq_config_update=-" || return 1
     uci commit https-dns-proxy || return 1
 
