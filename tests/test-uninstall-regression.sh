@@ -266,6 +266,71 @@ if grep -Fq 'del https-dns-proxy' "$APK_CALLS"; then
 fi
 ok "https-dns-proxy remains installed even if ownership file lists it"
 
+# Removing UCI anonymous sections shifts their indexes. All Manager-owned
+# DoH instances must be removed even when the first matched section is deleted.
+for _fn in rollback_ownership_has rollback_hdp_targeted; do
+    extract_function "$_fn" "$WORK/${_fn}.sh" || fail "cannot extract $_fn"
+done
+. "$WORK/rollback_ownership_has.sh"
+. "$WORK/rollback_hdp_targeted.sh"
+OWNERSHIP="$WORK/doh-ownership.conf"
+HD_TEST_SECTIONS="$WORK/doh-sections.conf"
+cat > "$OWNERSHIP" <<'EOF_DOH_OWNERSHIP'
+doh|5054|https://cloudflare-dns.com/dns-query|slot=1
+doh|5056|https://dns.aa.net.uk/dns-query|slot=2
+doh|5058|https://dns.belnet.be/dns-query|slot=3
+EOF_DOH_OWNERSHIP
+cat > "$HD_TEST_SECTIONS" <<'EOF_DOH_SECTIONS'
+5054|https://cloudflare-dns.com/dns-query
+5056|https://dns.aa.net.uk/dns-query
+5058|https://dns.belnet.be/dns-query
+EOF_DOH_SECTIONS
+normalize_url() {
+    _u="$1"
+    _u="$(printf '%s' "$_u" | sed 's/[[:space:]]//g; s:/*$::')"
+    printf '%s' "$_u"
+}
+uci() {
+    [ "${1:-}" = "-q" ] && shift
+    case "${1:-}" in
+        show)
+            [ "${2:-}" = "https-dns-proxy" ] || return 1
+            _i=0
+            while IFS='|' read -r _port _url; do
+                printf 'https-dns-proxy.@https-dns-proxy[%s]=https-dns-proxy\\n' "$_i"
+                _i=$((_i + 1))
+            done < "$HD_TEST_SECTIONS"
+            ;;
+        get)
+            _arg="${2:-}"
+            _index="$(printf '%s' "$_arg" | sed -n 's/^https-dns-proxy\\.@https-dns-proxy\\[\\([0-9][0-9]*\\)\\]\\.\\(listen_port\\|resolver_url\\)$/\\1/p')"
+            [ -n "$_index" ] || return 1
+            _field="${_arg##*.}"
+            _line="$(sed -n "$((_index + 1))p" "$HD_TEST_SECTIONS")"
+            [ -n "$_line" ] || return 1
+            IFS='|' read -r _port _url <<EOF_DOH_ROW
+$_line
+EOF_DOH_ROW
+            case "$_field" in
+                listen_port) printf '%s' "$_port" ;;
+                resolver_url) printf '%s' "$_url" ;;
+                *) return 1 ;;
+            esac
+            ;;
+        delete)
+            _index="$(printf '%s' "${2:-}" | sed -n 's/^https-dns-proxy\\.@https-dns-proxy\\[\\([0-9][0-9]*\\)\\]$/\\1/p')"
+            [ -n "$_index" ] || return 1
+            sed "$((_index + 1))d" "$HD_TEST_SECTIONS" > "$HD_TEST_SECTIONS.tmp"
+            mv "$HD_TEST_SECTIONS.tmp" "$HD_TEST_SECTIONS"
+            ;;
+        commit) [ "${2:-}" = "https-dns-proxy" ] ;;
+        *) return 1 ;;
+    esac
+}
+rollback_hdp_targeted || fail "targeted DoH cleanup failed"
+[ ! -s "$HD_TEST_SECTIONS" ] || fail "one or more Manager-owned anonymous DoH sections survived cleanup"
+ok "all Manager-owned DoH instances removed despite anonymous UCI index renumbering"
+
 # If the cached companion installer is missing, uninstall the known LuCI
 # namespace from its installed marker and fixed paths. Repeating removal is safe.
 for _fn in luci_companion_remove_fallback luci_companion_remove; do
