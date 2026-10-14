@@ -3825,7 +3825,9 @@ EOF_RB_DNSMASQ
 
 rollback_hdp_targeted() {
     _changed=0
-    _sections="$(uci show https-dns-proxy 2>/dev/null | sed -n 's/^https-dns-proxy\.\([^.=]*\)=https-dns-proxy$/\1/p')"
+    # Anonymous UCI section indices shift when a section is deleted. Process the
+    # list backwards so one removal cannot make the next index point elsewhere.
+    _sections="$(uci show https-dns-proxy 2>/dev/null | sed -n 's/^https-dns-proxy\.\([^.=]*\)=https-dns-proxy$/\1/p' | awk '{ section[NR]=$0 } END { for (i=NR; i>0; i--) print section[i] }')"
     for _sec in $_sections; do
         _url="$(uci -q get "https-dns-proxy.$_sec.resolver_url" 2>/dev/null)"
         _port="$(uci -q get "https-dns-proxy.$_sec.listen_port" 2>/dev/null)"
