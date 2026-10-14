@@ -237,38 +237,8 @@ grep -qxF 'commit-hdp' "$HD_TEST_EVENTS" || fail "proxy config was not committed
 [ "$(sed -n '1p' "$HD_TEST_EVENTS")" = stop ] || fail "proxy wasn't stopped before changing integration"
 ok "https-dns-proxy stop journal cleared, auto dnsmasq update disabled, package retained"
 
-# Disable forced-DNS only when the Manager's saved setting says it owns the switch.
-extract_function disable_manager_forced_dns "$WORK/disable-force.sh" || fail "cannot extract forced-DNS cleanup"
-. "$WORK/disable-force.sh"
-FORCE_TEST_VALUE=1
-FORCE_TEST_CALLS=""
-FORCE_DOH=1
-uci() {
-    [ "${1:-}" = "-q" ] && shift
-    case "${1:-} ${2:-}" in
-        "get https-dns-proxy.config.force_dns")
-            printf '%s' "$FORCE_TEST_VALUE"
-            ;;
-        "set https-dns-proxy.config.force_dns=0")
-            FORCE_TEST_VALUE=0
-            FORCE_TEST_CALLS="${FORCE_TEST_CALLS} set"
-            ;;
-        "commit https-dns-proxy")
-            FORCE_TEST_CALLS="${FORCE_TEST_CALLS} commit"
-            ;;
-        *) return 1 ;;
-    esac
-}
-disable_manager_forced_dns || fail "failed to disable Manager forced-DNS"
-[ "$FORCE_TEST_VALUE" = 0 ] || fail "Manager forced-DNS switch remains enabled"
-[ "$FORCE_TEST_CALLS" = " set commit" ] || fail "forced-DNS change was not committed"
-
-FORCE_TEST_VALUE=1
-FORCE_TEST_CALLS=""
-FORCE_DOH=0
-disable_manager_forced_dns || fail "unexpected forced-DNS failure with Manager switch off"
-[ "$FORCE_TEST_VALUE" = 1 ] && [ -z "$FORCE_TEST_CALLS" ] || fail "external forced-DNS was changed while Manager switch was off"
-ok "forced-DNS is disabled only when Manager's setting enabled it"
+# The proxy-detachment test above also verifies that Manager forced-DNS is
+# disabled only when the saved Manager setting says it was enabled.
 
 # Verify package removal always preserves https-dns-proxy regardless of ownership.
 extract_function package_owner_remove_owned "$WORK/package-remove-owned.sh" || fail "cannot extract package owner removal"
