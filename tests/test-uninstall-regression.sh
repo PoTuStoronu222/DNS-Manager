@@ -144,15 +144,16 @@ uci() {
 # Reproduce the actual failure mode: domain-only entries coexist with three
 # stale Manager loopback ports. Those ports must go, and the system resolvfile
 # must be enabled even though domain-only rules remain.
-DNS_TEST_SERVER="/mask.icloud.com/ /mask-h2.icloud.com/ /use-application-dns.net/ 127.0.0.1#5054 127.0.0.1#5056 127.0.0.1#5058"
+DNS_TEST_SERVER="/mask.icloud.com/ /mask-h2.icloud.com/ /use-application-dns.net/ /unrelated.example/ 127.0.0.1#5054 127.0.0.1#5056 127.0.0.1#5058"
 DNS_TEST_NORESOLV=1
 DNS_TEST_COMMITS=0
 DNS_TEST_DEL_CALLS=""
 uninstall_dnsmasq_resolv_fallback || fail "failed to enable the default resolvfile path"
 case " $DNS_TEST_SERVER " in *"127.0.0.1#5054"*|*"127.0.0.1#5056"*|*"127.0.0.1#5058"*) fail "Manager loopback upstreams remain" ;; esac
 [ -z "$DNS_TEST_NORESOLV" ] || fail "noresolv remained enabled without a general upstream"
-case "$DNS_TEST_SERVER" in *"/mask.icloud.com/"*" /mask-h2.icloud.com/"*"/use-application-dns.net/"*) ;; *) fail "unrelated domain-only entries were not preserved" ;; esac
-ok "stale Manager loopback ports removed; domain-only rules preserved; system resolvfile enabled"
+case "$DNS_TEST_SERVER" in *"/unrelated.example/"*) ;; *) fail "unrelated domain-only entry was not preserved" ;; esac
+case "$DNS_TEST_SERVER" in *"/mask.icloud.com/"*|*"/mask-h2.icloud.com/"*|*"/use-application-dns.net/"*) fail "https-dns-proxy canary entries remain" ;; esac
+ok "stale Manager ports and proxy canaries removed; unrelated domain rule preserved; system resolvfile enabled"
 
 DNS_TEST_SERVER="9.9.9.9"
 DNS_TEST_NORESOLV=1
@@ -162,6 +163,75 @@ uninstall_dnsmasq_resolv_fallback || fail "fallback failed with a custom upstrea
 [ "$DNS_TEST_NORESOLV" = 1 ] || fail "fallback disabled noresolv despite custom DNS upstream"
 case "$DNS_TEST_SERVER" in 9.9.9.9) ;; *) fail "custom DNS upstream was changed" ;; esac
 ok "custom upstreams are preserved and keep noresolv enabled"
+
+# Ensure https-dns-proxy is stopped before detachment, its dnsmasq auto-update
+# is disabled, and package-private restore journals are removed for future stop/removal.
+extract_function uninstall_detach_https_dns_proxy "$WORK/detach-hdp.sh" || fail "cannot extract proxy detachment helper"
+. "$WORK/detach-hdp.sh"
+HD_TEST_DIR="$WORK/hdp-detach"
+mkdir -p "$HD_TEST_DIR"
+HD_TEST_EVENTS="$HD_TEST_DIR/events"
+HD_TEST_CONFIG_UPDATE="*"
+HD_TEST_FORCE_DNS=1
+HD_TEST_META="cfg01411c|doh_server cfg01411c|doh_backup_server cfg01411c|doh_backup_noresolv"
+HD_TEST_COMMITS=0
+FORCE_DOH=1
+HTTPS_DNS_PROXY_INIT="$HD_TEST_DIR/init"
+cat > "$HTTPS_DNS_PROXY_INIT" <<'EOF_HDP_INIT'
+#!/bin/sh
+printf 'stop\n' >> "$HD_TEST_EVENTS"
+[ "${1:-}" = stop ]
+EOF_HDP_INIT
+chmod +x "$HTTPS_DNS_PROXY_INIT"
+uci() {
+    [ "${1:-}" = "-q" ] && shift
+    case "${1:-}" in
+        get)
+            case "${2:-}" in
+                https-dns-proxy.config) printf 'config' ;;
+                https-dns-proxy.config.force_dns) printf '%s' "$HD_TEST_FORCE_DNS" ;;
+                dhcp.cfg01411c.doh_server|dhcp.cfg01411c.doh_backup_server|dhcp.cfg01411c.doh_backup_noresolv)
+                    printf '%s' "$HD_TEST_META" | grep -qF "${2#dhcp.}" && printf 'present' || return 1
+                    ;;
+                *) return 1 ;;
+            esac
+            ;;
+        show)
+            [ "${2:-}" = dhcp ] || return 1
+            printf 'dhcp.cfg01411c=dnsmasq\n'
+            ;;
+        set)
+            case "${2:-}" in
+                https-dns-proxy.config.force_dns=0) HD_TEST_FORCE_DNS=0; printf 'force-off\n' >> "$HD_TEST_EVENTS" ;;
+                https-dns-proxy.config.dnsmasq_config_update=-) HD_TEST_CONFIG_UPDATE=-; printf 'update-off\n' >> "$HD_TEST_EVENTS" ;;
+                *) return 1 ;;
+            esac
+            ;;
+        commit)
+            case "${2:-}" in
+                https-dns-proxy) HD_TEST_COMMITS=$((HD_TEST_COMMITS+1)); printf 'commit-hdp\n' >> "$HD_TEST_EVENTS" ;;
+                dhcp) printf 'commit-dhcp\n' >> "$HD_TEST_EVENTS" ;;
+                *) return 1 ;;
+            esac
+            ;;
+        delete)
+            _m="${2#dhcp.}"
+            HD_TEST_META="$(printf '%s' "$HD_TEST_META" | sed "s|$_m||g")"
+            printf 'delete:%s\n' "$_m" >> "$HD_TEST_EVENTS"
+            ;;
+        *) return 1 ;;
+    esac
+}
+: > "$HD_TEST_EVENTS"
+uninstall_detach_https_dns_proxy || fail "proxy detachment failed"
+[ "$HD_TEST_CONFIG_UPDATE" = "-" ] || fail "https-dns-proxy auto dnsmasq updates remain enabled"
+[ "$HD_TEST_FORCE_DNS" = 0 ] || fail "Manager forced-DNS switch remains enabled"
+grep -qxF 'stop' "$HD_TEST_EVENTS" || fail "proxy stop hook did not run"
+grep -qxF 'commit-hdp' "$HD_TEST_EVENTS" || fail "proxy config was not committed"
+[ "$HD_TEST_COMMITS" -eq 1 ] || fail "proxy config commit count unexpected"
+[ -z "$HD_TEST_META" ] || fail "https-dns-proxy restore metadata remains"
+[ "$(sed -n '1p' "$HD_TEST_EVENTS")" = stop ] || fail "proxy wasn't stopped before changing integration"
+ok "https-dns-proxy stop journal cleared, auto dnsmasq update disabled, package retained"
 
 # Disable forced-DNS only when the Manager's saved setting says it owns the switch.
 extract_function disable_manager_forced_dns "$WORK/disable-force.sh" || fail "cannot extract forced-DNS cleanup"
