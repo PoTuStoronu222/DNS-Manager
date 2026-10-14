@@ -99,6 +99,11 @@ LUCI_ACL_FILE="/usr/share/rpcd/acl.d/luci-app-dns-manager.json"
 LUCI_RPC_PLUGIN="/usr/libexec/rpcd/dns_manager"
 LUCI_BACKEND_FILE="/usr/lib/dns-manager-luci/backend.sh"
 LUCI_VIEW_DIR="/www/luci-static/resources/view/dns-manager"
+LUCI_RESOURCE_DIR="/www/luci-static/resources/dns-manager"
+LUCI_RUNTIME_DIR="/var/run/dns-manager-luci"
+LUCI_BACKUP_DIR="/etc/dns-manager-luci"
+LUCI_CACHE_DIR="/tmp"
+LUCI_LEGACY_CONTROLLER_FILE="/usr/lib/lua/luci/controller/dns_manager.lua"
 LUCI_COMMON_FILE="/www/luci-static/resources/dns-manager/common.js"
 LUCI_VIEW_FILE="$LUCI_VIEW_DIR/dashboard.js"
 LUCI_REMOTE_VERSION=""
@@ -3780,7 +3785,9 @@ rollback_dnsmasq_targeted() {
     _cur="$(uci -q get "dhcp.$sec.server" 2>/dev/null | tr ' ' '\n')"
     while IFS= read -r _val; do
         [ -n "$_val" ] || continue
-        rollback_ownership_has dnsmasq server "$_val" || continue
+        if ! rollback_ownership_has dnsmasq server "$_val" && ! dnsmasq_manager_server_owned "$_val"; then
+            continue
+        fi
         if uci -q del_list "dhcp.$sec.server=$_val" >/dev/null 2>&1; then
             _changed=1
             printf '  - dnsmasq server: %s\n' "$_val"
@@ -3921,6 +3928,109 @@ clear_dns_core_runtime_state() {
     BALANCER_ENABLED=0
     save_config >/dev/null 2>&1
 }
+uninstall_detach_https_dns_proxy() {
+    # The official https-dns-proxy init script restores doh_backup_* values on
+    # stop and modifies dnsmasq again on start when dnsmasq_config_update='*'.
+    # Stop it first so backups are restored, then disable that integration before
+    # any later restart. The package and unrelated resolver sections are kept.
+    uci -q get https-dns-proxy.config >/dev/null 2>&1 || return 0
+    _init="${HTTPS_DNS_PROXY_INIT:-/etc/init.d/https-dns-proxy}"
+    if [ -x "$_init" ]; then
+        "$_init" stop >/dev/null 2>&1 || return 1
+    fi
+
+    # The uninstall contract is to leave the proxy optional, not forced on.
+    # Disable this package's LAN DNS interception regardless of who installed
+    # it or the Manager's previously saved FORCE_DOH value.
+    uci set https-dns-proxy.config.force_dns=0 || return 1
+    uci set "https-dns-proxy.config.dnsmasq_config_update=-" || return 1
+    uci commit https-dns-proxy || return 1
+
+    _dhcp_sections="$(uci show dhcp 2>/dev/null | sed -n 's/^dhcp\.\([^.=]*\)=dnsmasq$/\1/p')"
+    _dhcp_changed=0
+    for _sec in $_dhcp_sections; do
+        # These are private integration bookkeeping fields used by
+        # https-dns-proxy's init script. Clear them so a later package removal
+        # cannot restore the old local DNS Manager ports over manual DNS edits.
+        for _opt in doh_server doh_backup_server doh_backup_noresolv; do
+            if uci -q get "dhcp.$_sec.$_opt" >/dev/null 2>&1; then
+                uci -q delete "dhcp.$_sec.$_opt" || return 1
+                _dhcp_changed=1
+            fi
+        done
+    done
+    if [ "$_dhcp_changed" = 1 ]; then
+        uci commit dhcp || return 1
+    fi
+    return 0
+}
+
+uninstall_dnsmasq_resolv_fallback() {
+    _sec="$(get_dnsmasq_section 2>/dev/null)" || return 1
+    [ -n "$_sec" ] || return 1
+    uci -q get "dhcp.$_sec" >/dev/null 2>&1 || return 1
+
+    _changed=0
+    _servers="$(uci -q get "dhcp.$_sec.server" 2>/dev/null | tr ' ' '\n')"
+    while IFS= read -r _val; do
+        [ -n "$_val" ] || continue
+        # DNS Manager's reserved local DoH ports and https-dns-proxy's canary
+        # entries must not remain as active DNS rules after uninstall.
+        case "$_val" in
+            127.0.0.1#505[3-9]|127.0.0.1#5060|/ru/127.0.0.1#505[3-9]|/ru/127.0.0.1#5060|/su/127.0.0.1#505[3-9]|/su/127.0.0.1#5060|/xn--p1ai/127.0.0.1#505[3-9]|/xn--p1ai/127.0.0.1#5060|/mask.icloud.com/|/mask-h2.icloud.com/|/use-application-dns.net/)
+                uci -q del_list "dhcp.$_sec.server=$_val" || return 1
+                _changed=1
+                ;;
+        esac
+    done <<EOF_UNINSTALL_DNSMASQ
+$_servers
+EOF_UNINSTALL_DNSMASQ
+
+    [ "$_changed" = 0 ] || uci commit dhcp || return 1
+
+    _remaining="$(uci -q get "dhcp.$_sec.server" 2>/dev/null | tr ' ' '\n')"
+    _has_general_upstream=0
+    while IFS= read -r _val; do
+        [ -n "$_val" ] || continue
+        case "$_val" in
+            /*) continue ;;
+            127.0.0.1#505[3-9]|127.0.0.1#5060) continue ;;
+        esac
+        _has_general_upstream=1
+        break
+    done <<EOF_UNINSTALL_REMAINING_DNS
+$_remaining
+EOF_UNINSTALL_REMAINING_DNS
+
+    _noresolv="$(uci -q get "dhcp.$_sec.noresolv" 2>/dev/null)"
+    # Use OpenWrt's resolvfile whenever there is no general explicit resolver.
+    if [ "$_has_general_upstream" = 0 ] && [ "$_noresolv" = 1 ]; then
+        uci -q delete "dhcp.$_sec.noresolv" || return 1
+        uci commit dhcp || return 1
+    fi
+    return 0
+}
+
+restore_dns_before_uninstall() {
+    _dns_restore_rc=0
+
+    # Detach package-side dnsmasq auto-management before removing Manager DNS.
+    uninstall_detach_https_dns_proxy || _dns_restore_rc=1
+    rollback_hdp_targeted >/dev/null 2>&1 || _dns_restore_rc=1
+    rollback_dnsmasq_targeted >/dev/null 2>&1 || _dns_restore_rc=1
+    uninstall_dnsmasq_resolv_fallback || _dns_restore_rc=1
+    rollback_firewall_targeted >/dev/null 2>&1 || _dns_restore_rc=1
+
+    # Restart only after the package's auto dnsmasq update and restore journals
+    # are detached. The package remains installed for optional manual use/removal.
+    [ ! -x /etc/init.d/https-dns-proxy ] ||
+        /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || true
+    /etc/init.d/dnsmasq restart >/dev/null 2>&1 || _dns_restore_rc=1
+    reload_fw >/dev/null 2>&1 || _dns_restore_rc=1
+
+    return "$_dns_restore_rc"
+}
+
 restore_dns_core() {
     acquire_mutation_lock || return 1
     clear_screen
@@ -3948,7 +4058,7 @@ uninstall_manager_impl() {
     clear_screen
     menu_header "УДАЛЕНИЕ DNS MANAGER"
     warn_msg "DNS Manager, его LuCI, собственные службы и установленные им пакеты будут удалены."
-    printf "\n$C_YELLOW Перед удалением нажмите существующую кнопку восстановления стандартного DNS, если хотите вернуть стандартную схему. Удаление не откатывает и не очищает настройки DNS, DoH, dnsmasq, firewall или NTP.$C_NC\n\n"
+    printf "\n$C_YELLOW При удалении сначала отключается автоизменение dnsmasq со стороны https-dns-proxy, удаляются привязки DNS Manager и восстанавливается системный DNS. Пакет https-dns-proxy остаётся установленным.$C_NC\n\n"
     confirm_action "Удалить DNS Manager и установленные им пакеты?" || { info_msg "Отменено."; pause; return 0; }
 
     acquire_mutation_lock || return 1
@@ -3971,6 +4081,13 @@ uninstall_manager_impl() {
         pause
         return 1
     }
+
+    if ! restore_dns_before_uninstall >/dev/null 2>&1; then
+        release_mutation_lock
+        err_msg "Не удалось безопасно восстановить системный DNS. Менеджер и пакеты сохранены для повторной попытки."
+        pause
+        return 1
+    fi
 
     if ! package_owner_remove_owned >/dev/null 2>&1; then
         release_mutation_lock
@@ -4003,7 +4120,7 @@ uninstall_manager_impl() {
 
     release_mutation_lock
     printf "\n$C_GREEN$C_BOLD DNS Manager полностью удалён.$C_NC\n"
-    printf "$C_GREEN Удалены менеджер, его LuCI, службы и установленные им пакеты. Настройки DNS/DoH/dnsmasq/firewall/NTP самим сценарием удаления не изменялись.$C_NC\n"
+    printf "$C_GREEN Удалены DNS Manager, его LuCI и службы. Привязки DNS Manager сняты, системный DNS восстановлен. Пакет https-dns-proxy сохранён.$C_NC\n"
     exit 0
 }
 uninstall_manager() {
@@ -5047,17 +5164,47 @@ luci_companion_install() {
     return 2
 }
 
+luci_companion_remove_fallback() {
+    # The installed marker was checked by luci_companion_remove(). Remove only
+    # the companion's fixed, namespaced paths; never edit DNS/UCI configuration.
+    rm -f "$LUCI_RPC_PLUGIN" "$LUCI_BACKEND_FILE" "$LUCI_ACL_FILE" "$LUCI_MENU_FILE" || return 1
+    for _view in dashboard doh network time catalog log overview; do
+        rm -f "$LUCI_VIEW_DIR/${_view}.js" || return 1
+    done
+    rm -f "$LUCI_COMMON_FILE" || return 1
+
+    if [ -f "$LUCI_LEGACY_CONTROLLER_FILE" ] &&
+       grep -q 'module("luci.controller.dns_manager"' "$LUCI_LEGACY_CONTROLLER_FILE" 2>/dev/null; then
+        rm -f "$LUCI_LEGACY_CONTROLLER_FILE" || return 1
+    fi
+
+    rm -rf "$LUCI_VIEW_DIR" "$LUCI_RESOURCE_DIR" "$LUCI_RUNTIME_DIR" "$LUCI_BACKUP_DIR" 2>/dev/null || return 1
+    for _cache in "$LUCI_CACHE_DIR"/luci-indexcache* "$LUCI_CACHE_DIR"/luci-modulecache*; do
+        [ -e "$_cache" ] || continue
+        rm -rf "$_cache" 2>/dev/null || return 1
+    done
+    if [ -x /etc/init.d/rpcd ]; then
+        /etc/init.d/rpcd reload >/dev/null 2>&1 || /etc/init.d/rpcd restart >/dev/null 2>&1 || return 1
+    fi
+    return 0
+}
+
 luci_companion_remove() {
     # Only remove an interface which this DNS Manager installation explicitly installed.
     [ -s "$LUCI_STATE_FILE" ] || return 0
     [ "$(sed -n 's/^installed=//p' "$LUCI_STATE_FILE" 2>/dev/null | head -n1)" = 1 ] || return 0
 
     if [ -x "$LUCI_COMPANION_CACHE" ]; then
-        sh "$LUCI_COMPANION_CACHE" remove >/dev/null 2>&1 || return 1
+        sh "$LUCI_COMPANION_CACHE" remove >/dev/null 2>&1 || {
+            err_msg "Установщик LuCI не смог удалить интерфейс DNS Manager."
+            return 1
+        }
     else
-        # No cached installer: refuse destructive guessing.
-        err_msg "Локальная копия установщика LuCI отсутствует; интерфейс автоматически не удаляю."
-        return 1
+        warn_msg "Локальная копия установщика LuCI отсутствует; использую безопасное удаление файлов по фиксированным путям."
+        luci_companion_remove_fallback || {
+            err_msg "Не удалось удалить файлы нативного интерфейса LuCI DNS Manager."
+            return 1
+        }
     fi
 
     if luci_component_files_present; then
@@ -5096,6 +5243,7 @@ package_owner_remove_owned() {
         [ -n "$_pkg" ] || continue
         case "$_pkg" in
             *[!A-Za-z0-9._+:-]*) continue ;;
+            https-dns-proxy) continue ;; # Keep the proxy installed; uninstall only detaches DNS Manager's configuration.
         esac
         # PACKAGE_OWNERSHIP records that the package was absent before installation.
         if [ "$PKG_MGR" = apk ]; then
