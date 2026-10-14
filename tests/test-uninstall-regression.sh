@@ -173,10 +173,13 @@ mkdir -p "$HD_TEST_DIR"
 HD_TEST_EVENTS="$HD_TEST_DIR/events"
 HD_TEST_CONFIG_UPDATE="*"
 HD_TEST_FORCE_DNS=1
-HD_TEST_META="cfg01411c|doh_server cfg01411c|doh_backup_server cfg01411c|doh_backup_noresolv"
+HD_TEST_META="doh_server
+doh_backup_server
+doh_backup_noresolv"
 HD_TEST_COMMITS=0
 FORCE_DOH=1
 HTTPS_DNS_PROXY_INIT="$HD_TEST_DIR/init"
+export HD_TEST_EVENTS
 cat > "$HTTPS_DNS_PROXY_INIT" <<'EOF_HDP_INIT'
 #!/bin/sh
 printf 'stop\n' >> "$HD_TEST_EVENTS"
@@ -191,7 +194,8 @@ uci() {
                 https-dns-proxy.config) printf 'config' ;;
                 https-dns-proxy.config.force_dns) printf '%s' "$HD_TEST_FORCE_DNS" ;;
                 dhcp.cfg01411c.doh_server|dhcp.cfg01411c.doh_backup_server|dhcp.cfg01411c.doh_backup_noresolv)
-                    printf '%s' "$HD_TEST_META" | grep -qF "${2#dhcp.}" && printf 'present' || return 1
+                    _opt="${2##*.}"
+                    printf '%s\n' "$HD_TEST_META" | grep -qxF "$_opt" && printf 'present' || return 1
                     ;;
                 *) return 1 ;;
             esac
@@ -215,9 +219,9 @@ uci() {
             esac
             ;;
         delete)
-            _m="${2#dhcp.}"
-            HD_TEST_META="$(printf '%s' "$HD_TEST_META" | sed "s|$_m||g")"
-            printf 'delete:%s\n' "$_m" >> "$HD_TEST_EVENTS"
+            _opt="${2##*.}"
+            HD_TEST_META="$(printf '%s\n' "$HD_TEST_META" | grep -vxF "$_opt" || true)"
+            printf 'delete:%s\n' "$_opt" >> "$HD_TEST_EVENTS"
             ;;
         *) return 1 ;;
     esac
