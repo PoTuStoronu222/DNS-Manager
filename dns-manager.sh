@@ -3931,13 +3931,46 @@ clear_dns_core_runtime_state() {
 uninstall_dnsmasq_resolv_fallback() {
     _sec="$(get_dnsmasq_section 2>/dev/null)" || return 1
     [ -n "$_sec" ] || return 1
+    uci -q get "dhcp.$_sec" >/dev/null 2>&1 || return 1
 
-    _servers="$(uci -q get "dhcp.$_sec.server" 2>/dev/null)"
+    _changed=0
+    _servers="$(uci -q get "dhcp.$_sec.server" 2>/dev/null | tr ' ' '\n')"
+    while IFS= read -r _val; do
+        [ -n "$_val" ] || continue
+        # DNS Manager's reserved local DoH ports must not remain as dnsmasq
+        # upstreams after uninstall. Do not remove unrelated local ports or
+        # user-configured remote DNS servers.
+        case "$_val" in
+            127.0.0.1#505[3-9]|127.0.0.1#5060|/ru/127.0.0.1#505[3-9]|/ru/127.0.0.1#5060|/su/127.0.0.1#505[3-9]|/su/127.0.0.1#5060|/xn--p1ai/127.0.0.1#505[3-9]|/xn--p1ai/127.0.0.1#5060)
+                uci -q del_list "dhcp.$_sec.server=$_val" || return 1
+                _changed=1
+                ;;
+        esac
+    done <<EOF_UNINSTALL_DNSMASQ
+$_servers
+EOF_UNINSTALL_DNSMASQ
+
+    [ "$_changed" = 0 ] || uci commit dhcp || return 1
+
+    _remaining="$(uci -q get "dhcp.$_sec.server" 2>/dev/null | tr ' ' '\n')"
+    _has_general_upstream=0
+    while IFS= read -r _val; do
+        [ -n "$_val" ] || continue
+        # Domain-only dnsmasq rules (for example /mask.icloud.com/) do not
+        # provide a general upstream for other domains.
+        case "$_val" in
+            /*) continue ;;
+            127.0.0.1#505[3-9]|127.0.0.1#5060) continue ;;
+        esac
+        _has_general_upstream=1
+        break
+    done <<EOF_UNINSTALL_REMAINING_DNS
+$_remaining
+EOF_UNINSTALL_REMAINING_DNS
+
     _noresolv="$(uci -q get "dhcp.$_sec.noresolv" 2>/dev/null)"
-
-    # If no explicit upstream remains, let dnsmasq use OpenWrt's resolvfile
-    # (normally /tmp/resolv.conf.d/resolv.conf.auto) instead of local DoH ports.
-    if [ -z "$_servers" ] && [ "$_noresolv" = 1 ]; then
+    # Use OpenWrt's resolvfile whenever there is no general explicit resolver.
+    if [ "$_has_general_upstream" = 0 ] && [ "$_noresolv" = 1 ]; then
         uci -q delete "dhcp.$_sec.noresolv" || return 1
         uci commit dhcp || return 1
     fi
