@@ -6280,7 +6280,7 @@ watchdog_embedded_integrity_guard() {
     watchdog_enforce_hdp_control || log_msg "Watchdog: не удалось полностью восстановить контроль над настройками https-dns-proxy."
     watchdog_enforce_doh_authority || log_msg "Watchdog: не удалось полностью синхронизировать набор DNS Manager."
     watchdog_hdp_guard || log_msg "Watchdog: проверка экземпляров https-dns-proxy завершилась с ошибкой."
-    watchdog_dns_path_guard || log_msg "Watchdog: проверка пути forced-DNS в firewall завершилась с ошибкой."
+    watchdog_dns_path_guard || log_msg "Watchdog: проверка пути forced-DNS завершилась с ошибкой."
     watchdog_dnsmasq_guard || log_msg "Watchdog: проверка конфигурации dnsmasq завершилась с ошибкой."
     release_mutation_lock
     return 0
