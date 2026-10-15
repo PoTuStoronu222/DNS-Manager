@@ -231,9 +231,9 @@ grep -Fq "disabled:!!state.busy||!!state.jobRunning||unavailable||checking" dns-
 grep -q "'gaming','Игровые DNS'" dns-manager-luci.sh || fail "gaming catalog label missing in LuCI"
 grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validation missing gaming category"
 grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
-grep -q 'VERSION="3.55"' dns-manager.sh || fail "manager version not bumped"
+grep -q 'VERSION="3.56"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
-grep -q 'VERSION="1.50"' dns-manager-luci.sh || fail "LuCI version not bumped"
+grep -q 'VERSION="1.51"' dns-manager-luci.sh || fail "LuCI version not bumped"
 grep -q "'bypass','Обход геоблока'" dns-manager-luci.sh || fail "bypass profile label not updated"
 grep -q "'security','Защита от угроз'" dns-manager-luci.sh || fail "security profile label not updated"
 grep -q "'privacy','Конфиденциальность'" dns-manager-luci.sh || fail "privacy profile label not updated"
@@ -412,8 +412,8 @@ view_luci="$(sed -n 's|^// DNS Manager LuCI common module version:[[:space:]]*||
 [ "$top_luci" = "$self_luci" ] || fail "LuCI SELF_VERSION mismatch"
 [ "$top_luci" = "$view_luci" ] || fail "embedded JS version mismatch"
 ok "LuCI version markers synchronized ($top_luci)"
-grep -Fq 'VERSION="3.55"' dns-manager.sh || fail "DNS Manager version marker is not 3.55"
-ok "DNS Manager version marker synchronized (3.55)"
+grep -Fq 'VERSION="3.56"' dns-manager.sh || fail "DNS Manager version marker is not 3.56"
+ok "DNS Manager version marker synchronized (3.56)"
 
 if awk '
     /function startAutoStatus\(root\)/ { capture=1 }
@@ -763,31 +763,55 @@ fi
 ok "watchdog uses procd as the active scheduler; obsolete cron mutation helpers are removed"
 
 # Watchdog keeps the intended profile category while using clean as a temporary fallback.
-awk '
-    /^watchdog_scope_category\(\) \{/ { capture=1 }
-    capture { print }
-    capture && /^\}/ { exit }
-' dns-manager.sh > "$tmp/watchdog_scope.sh"
-[ -s "$tmp/watchdog_scope.sh" ] || fail "watchdog scope classifier extraction"
+: > "$tmp/watchdog_scope.sh"
+for _watchdog_fn in watchdog_scope_category watchdog_scope_supported watchdog_has_selected_dns watchdog_slot_is_selected; do
+    awk -v fn="$_watchdog_fn" '
+        $0 ~ ("^" fn "\\(\\) \\{") { capture=1 }
+        capture { print }
+        capture && /^}/ { exit }
+    ' dns-manager.sh >> "$tmp/watchdog_scope.sh"
+done
+[ -s "$tmp/watchdog_scope.sh" ] || fail "watchdog scope helper extraction"
 cat > "$tmp/watchdog_scope_runner.sh" <<'EOF_WATCHDOG_SCOPE'
 #!/bin/sh
 set -eu
+. "$1"
 DNS_SELECTION_MODE=profile
 DNS_SELECTION_CATEGORY=bypass
-. "$1"
+SLOT_1=resolver_bypass
+SLOT_2=; SLOT_3=; SLOT_4=; SLOT_5=; SLOT_6=; SLOT_RU=
 [ "$(watchdog_scope_category)" = bypass ] || exit 21
+watchdog_scope_supported || exit 22
+watchdog_has_selected_dns || exit 23
+watchdog_slot_is_selected 1 || exit 24
+PORT_RU=5059
+if watchdog_slot_is_selected RU; then exit 25; fi
+SLOT_1=
+if watchdog_has_selected_dns; then exit 26; fi
 DNS_SELECTION_CATEGORY=clean
-[ "$(watchdog_scope_category)" = clean ] || exit 22
+watchdog_scope_supported || exit 27
 DNS_SELECTION_CATEGORY=security
-[ "$(watchdog_scope_category)" = security ] || exit 23
+watchdog_scope_supported || exit 28
+DNS_SELECTION_CATEGORY=gaming
+if watchdog_scope_supported; then exit 29; fi
 DNS_SELECTION_CATEGORY=all
-if watchdog_scope_category >/dev/null 2>&1; then exit 24; fi
+if watchdog_scope_supported; then exit 30; fi
 DNS_SELECTION_MODE=manual
 DNS_SELECTION_CATEGORY=bypass
-if watchdog_scope_category >/dev/null 2>&1; then exit 25; fi
+if watchdog_scope_supported; then exit 31; fi
+DNS_SELECTION_MODE=quick
+DNS_SELECTION_CATEGORY=gaming
+[ "$(watchdog_scope_category)" = bypass ] || exit 32
+watchdog_scope_supported || exit 33
+SLOT_RU=yandex_ru
+watchdog_has_selected_dns || exit 34
+watchdog_slot_is_selected RU || exit 35
 EOF_WATCHDOG_SCOPE
 chmod +x "$tmp/watchdog_scope_runner.sh"
-"$tmp/watchdog_scope_runner.sh" "$tmp/watchdog_scope.sh" || fail "watchdog intended-profile classifier behavior"
+"$tmp/watchdog_scope_runner.sh" "$tmp/watchdog_scope.sh" || fail "watchdog supported-profile/RU-slot behavior"
+awk '/^watchdog_embedded_loop\(\) \{/,/^# ==========================================/' dns-manager.sh > "$tmp/watchdog_embedded_loop.sh"
+grep -Fq 'if [ "$_slot" = RU ] && ! watchdog_slot_is_selected "$_slot"; then' "$tmp/watchdog_embedded_loop.sh" || fail "embedded watchdog still probes the default RU port without an RU DNS"
+ok "watchdog ignores an unconfigured RU slot and admits only supported scopes"
 awk '
     /^watchdog_pick_replacement\(\) \{/ { capture=1 }
     capture { print }
@@ -797,7 +821,70 @@ grep -q '_passcats="$_desired_for_pick clean"' "$tmp/watchdog_pick_function.sh" 
 grep -A18 -F 'watchdog_pick_replacement() {' dns-manager.sh | grep -q 'watchdog_scope_category' || fail "watchdog replacement does not use intended profile category"
 grep -q '_fallback_slots=""' dns-manager.sh || fail "watchdog fallback slots are not tracked"
 grep -q '_empty_slots=""' dns-manager.sh || fail "watchdog empty slots are not tracked"
-grep -q 'Watchdog: проверяю целевую категорию для восстановления/дозаполнения' dns-manager.sh || fail "watchdog gradual target restore/fill path missing"
+grep -q '^watchdog_embedded_restore_slots() {' dns-manager.sh || fail "watchdog fallback restoration helper missing"
+grep -q '^watchdog_embedded_repair_slot() {' dns-manager.sh || fail "watchdog repair counter helper missing"
+awk '/^watchdog_embedded_loop\(\) \{/,/^# ==========================================/' dns-manager.sh > "$tmp/watchdog_embedded_loop.sh"
+grep -Fq '_wd_repairs=0' "$tmp/watchdog_embedded_loop.sh" || fail "watchdog replacement limit is not reset per cycle"
+grep -Fq 'for _trigger in $_threshold_slots; do' "$tmp/watchdog_embedded_loop.sh" || fail "watchdog only considers one failed slot per cycle"
+grep -Fq '[ "$_wd_repairs" -lt "$_max_repairs" ] || break' "$tmp/watchdog_embedded_loop.sh" || fail "watchdog failed-slot replacement loop ignores the per-cycle limit"
+grep -Fq 'watchdog_embedded_repair_slot "$_trigger"' "$tmp/watchdog_embedded_loop.sh" || fail "failed-slot replacement bypasses the per-cycle repair counter"
+
+for _watchdog_fn in watchdog_scope_category watchdog_desired_cat watchdog_embedded_repair_slot watchdog_embedded_restore_slots; do
+    awk -v fn="$_watchdog_fn" '
+        $0 ~ ("^" fn "\\(\\) \\{") { capture=1 }
+        capture { print }
+        capture && /^}/ { exit }
+    ' dns-manager.sh >> "$tmp/watchdog_recovery_functions.sh"
+done
+[ -s "$tmp/watchdog_recovery_functions.sh" ] || fail "watchdog recovery helper extraction"
+cat > "$tmp/watchdog_recovery_runner.sh" <<'EOF_WATCHDOG_RECOVERY'
+#!/bin/sh
+set -eu
+. "$1"
+dns_cat() {
+    case "$1" in
+        clean_dns) printf 'clean\n' ;;
+        bypass_one|bypass_two|bypass_three) printf 'bypass\n' ;;
+        *) return 1 ;;
+    esac
+}
+log_msg() { :; }
+watchdog_target_live_count() { printf '0\n'; }
+load_config() { :; }
+refresh_runtime_capabilities() { :; }
+watchdog_slot_target_run() {
+    REPAIR_CALLS=$((REPAIR_CALLS+1))
+    case "$1" in
+        1) [ "$SLOT_1" = clean_dns ] || return 1; SLOT_1=bypass_one ;;
+        2) [ -z "$SLOT_2" ] || return 1; SLOT_2=bypass_two ;;
+        3) [ -z "$SLOT_3" ] || return 1; SLOT_3=bypass_three ;;
+        *) return 1 ;;
+    esac
+}
+reset_fixture() {
+    SLOT_1=clean_dns; SLOT_2=; SLOT_3=; SLOT_4=; SLOT_5=; SLOT_6=; SLOT_RU=
+    DNS_SELECTION_MODE=profile; DNS_SELECTION_CATEGORY=bypass
+    _fallback_slots=1; _empty_slots='2 3'; _wd_repairs=0; REPAIR_CALLS=0
+}
+reset_fixture
+WATCHDOG_MAX_REPAIRS=1
+watchdog_embedded_restore_slots
+[ "$_wd_repairs" = 1 ] && [ "$REPAIR_CALLS" = 1 ] || exit 41
+[ "$SLOT_1" = bypass_one ] && [ -z "$SLOT_2" ] && [ -z "$SLOT_3" ] || exit 42
+reset_fixture
+WATCHDOG_MAX_REPAIRS=2
+watchdog_embedded_restore_slots
+[ "$_wd_repairs" = 2 ] && [ "$REPAIR_CALLS" = 2 ] || exit 43
+[ "$SLOT_1" = bypass_one ] && [ "$SLOT_2" = bypass_two ] && [ -z "$SLOT_3" ] || exit 44
+reset_fixture
+WATCHDOG_MAX_REPAIRS=3
+watchdog_embedded_restore_slots
+[ "$_wd_repairs" = 3 ] && [ "$REPAIR_CALLS" = 3 ] || exit 45
+[ "$SLOT_1" = bypass_one ] && [ "$SLOT_2" = bypass_two ] && [ "$SLOT_3" = bypass_three ] || exit 46
+EOF_WATCHDOG_RECOVERY
+chmod +x "$tmp/watchdog_recovery_runner.sh"
+"$tmp/watchdog_recovery_runner.sh" "$tmp/watchdog_recovery_functions.sh" || fail "watchdog fallback restoration/max-repairs behavior"
+ok "watchdog restores clean fallback first and honors a 1–3 repair limit per cycle"
 grep -q '^auto_fill_slots() {' dns-manager.sh || fail "automatic profile DNS selection helper missing"
 if grep -q 'profile_fill_slots' dns-manager.sh; then
     fail "obsolete bounded profile picker remains"
@@ -812,16 +899,21 @@ grep -Fq 'job_write "$_jid" progress_ok "$_final_ok"' "$tmp/test_all_job.sh" || 
 grep -Fq 'job_write "$_jid" progress_fail "$_final_fail"' "$tmp/test_all_job.sh" || fail "LuCI full catalog job does not publish final progress_fail"
 ok "LuCI full catalog job publishes final progress before DONE"
 
-grep -q "profileSelected=String(st.profile||'none')!=='none'" "$tmp/common.js" || fail "LuCI does not detect missing DNS Manager profile"
+grep -q "function watchdogProfileSupported(st)" "$tmp/common.js" || fail "LuCI watchdog supported-profile classifier missing"
+grep -q "disabled:!!state.busy || (!en && !canEnable)" "$tmp/common.js" || fail "LuCI watchdog enable button is not disabled for unsupported profiles"
 grep -q "Сначала выберите профиль DNS Manager" "$tmp/common.js" || fail "LuCI missing no-profile reason"
+grep -q "смешанный или пользовательский профиль" "$tmp/common.js" || fail "LuCI missing unsupported-profile reason"
 grep -q "function watchdogComponentItem" "$tmp/common.js" || fail "LuCI watchdog component state helper missing"
 awk '/^function watchdogComponentItem\(/,/^}/' "$tmp/common.js" | grep -qE 'btn\(|setSetting\(' && fail "LuCI components block still contains a watchdog action button"
 grep -q "function forceComponentItem" "$tmp/common.js" || fail "LuCI forced-DNS component state helper missing"
 awk '/^function forceComponentItem\(/,/^}/' "$tmp/common.js" | grep -qE 'btn\(|setSetting\(' && fail "LuCI components block still contains a forced-DNS action button"
 grep -Fq "watchdogComponentItem(st,wd,wdDetails)" "$tmp/common.js" || fail "LuCI watchdog component helper is not used as a state-only item"
 grep -Fq "forceComponentItem(st)" "$tmp/common.js" || fail "LuCI forced-DNS component helper is not used as a state-only item"
-grep -Fq 'if [ "$_module" = watchdog ] && [ "$_new" = 1 ]; then' dns-manager.sh || fail "CLI watchdog no-profile guard missing"
-grep -Fq 'if [ "$_enabled" = 1 ] && [ -z "$SLOT_1$SLOT_2$SLOT_3$SLOT_4$SLOT_5$SLOT_6$SLOT_RU" ]; then' "$tmp/backend.sh" || fail "RPC watchdog no-profile guard missing"
+grep -Fq 'if [ "$_module" = watchdog ] && [ "$_new" = 1 ]; then' dns-manager.sh || fail "CLI watchdog enable guard missing"
+grep -Fq 'watchdog_scope_supported || return 1' dns-manager.sh || fail "watchdog backend does not enforce supported scopes"
+grep -Fq '_watchdog_scope="$(watchdog_scope_category 2>/dev/null || true)"' "$tmp/backend.sh" || fail "RPC watchdog enable is not blocked for unsupported scopes"
+grep -Fq 'Контроль DNS не поддерживает текущий режим или категорию профиля.' "$tmp/backend.sh" || fail "RPC watchdog unsupported-profile error missing"
+grep -Fq 'if [ -z "$SLOT_1$SLOT_2$SLOT_3$SLOT_4$SLOT_5$SLOT_6$SLOT_RU" ]; then' "$tmp/backend.sh" || fail "RPC watchdog selected-DNS check missing"
 grep -q "Проверить текущие DNS','cbi-button-action'" "$tmp/common.js" || fail "Current DNS check button disappeared"
 if grep -q "canTestCurrent=profileSelected" "$tmp/common.js"; then fail "Current DNS check is incorrectly blocked without profile"; fi
 if grep -q "_profile_slots.*Проверить текущие DNS" "$tmp/backend.sh"; then fail "Current DNS check is incorrectly guarded by profile"; fi
