@@ -892,7 +892,8 @@ chmod +x "$tmp/watchdog_cycle_repair_test.sh"
 grep -Fq 'WD_CYCLE_REPAIRS=0' "$tmp/watchdog_embedded_loop.sh" || fail "watchdog repair counter is not reset per cycle"
 grep -Fq 'watchdog_cycle_repair_slot "$_trigger" "$_target_live_count"' "$tmp/watchdog_embedded_loop.sh" || fail "failed DNS slots bypass the per-cycle repair limit"
 grep -Fq 'watchdog_cycle_repair_slot "$_restore_slot" "$_target_live_count"' "$tmp/watchdog_embedded_loop.sh" || fail "fallback restoration bypasses the per-cycle repair limit"
-if grep -q '\$_wd_repairs' "$tmp/watchdog_embedded_loop.sh"; then fail "embedded watchdog uses an uninitialized repair counter"; fi
+grep -Fq 'отсутствует после ${WATCHDOG_FAIL_THRESHOLD:-2} последовательных проверок' "$tmp/watchdog_embedded_loop.sh" || fail "watchdog listener recovery log ignores the configured failure threshold"
+if grep -Fq '$_wd_repairs' "$tmp/watchdog_embedded_loop.sh"; then fail "embedded watchdog uses an uninitialized repair counter"; fi
 ok "watchdog clean fallback restore and failed-slot repair share the configured per-cycle limit"
 
 grep -q 'test_dns_catalog "\$1"' dns-manager.sh || fail "profile apply does not pass its category to the DNS test"
