@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.55"
+VERSION="3.56"
 # 3.38: clear the LuCI update flag after a successful CLI update.
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
@@ -5398,8 +5398,12 @@ setting_process() {
     esac
 
     if [ "$_module" = watchdog ] && [ "$_new" = 1 ]; then
-        _profile_category="$(watchdog_scope_category 2>/dev/null || printf none)"
-        if [ "$_profile_category" = none ]; then
+        if ! watchdog_scope_supported; then
+            err_msg "Контроль DNS недоступен для текущего режима или категории профиля."
+            pause
+            return 1
+        fi
+        if ! watchdog_has_selected_dns; then
             err_msg "Сначала выберите профиль DNS Manager."
             pause
             return 1
@@ -5686,6 +5690,29 @@ watchdog_scope_category() {
                 *) return 1 ;;
             esac
             ;;
+        *) return 1 ;;
+    esac
+}
+watchdog_scope_supported() {
+    local _wss_scope
+    _wss_scope="$(watchdog_scope_category 2>/dev/null || true)"
+    case "$_wss_scope" in
+        bypass|clean|security|privacy|adblock|family) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+watchdog_has_selected_dns() {
+    [ -n "${SLOT_1:-}${SLOT_2:-}${SLOT_3:-}${SLOT_4:-}${SLOT_5:-}${SLOT_6:-}${SLOT_RU:-}" ]
+}
+watchdog_slot_is_selected() {
+    case "$1" in
+        1) [ -n "${SLOT_1:-}" ] ;;
+        2) [ -n "${SLOT_2:-}" ] ;;
+        3) [ -n "${SLOT_3:-}" ] ;;
+        4) [ -n "${SLOT_4:-}" ] ;;
+        5) [ -n "${SLOT_5:-}" ] ;;
+        6) [ -n "${SLOT_6:-}" ] ;;
+        RU) [ -n "${SLOT_RU:-}" ] ;;
         *) return 1 ;;
     esac
 }
@@ -6253,9 +6280,63 @@ watchdog_embedded_integrity_guard() {
     watchdog_enforce_hdp_control || log_msg "Watchdog: не удалось полностью восстановить контроль над настройками https-dns-proxy."
     watchdog_enforce_doh_authority || log_msg "Watchdog: не удалось полностью синхронизировать набор DNS Manager."
     watchdog_hdp_guard || log_msg "Watchdog: проверка экземпляров https-dns-proxy завершилась с ошибкой."
-    watchdog_dns_path_guard || log_msg "Watchdog: проверка пути forced-DNS завершилась с ошибкой."
+    watchdog_dns_path_guard || log_msg "Watchdog: проверка пути forced-DNS в firewall завершилась с ошибкой."
     watchdog_dnsmasq_guard || log_msg "Watchdog: проверка конфигурации dnsmasq завершилась с ошибкой."
     release_mutation_lock
+    return 0
+}
+# A slot counts toward the per-cycle limit only when its saved selection changes.
+# Re-load manager.conf after every operation so the next repair sees current state.
+watchdog_embedded_repair_slot() {
+    local _wer_slot _wer_before_id _wer_before_cat _wer_after_id _wer_after_cat _wer_live
+    _wer_slot="$1"
+    case "$_wer_slot" in 1|2|3|4|5|6|RU) ;; *) return 1 ;; esac
+    eval "_wer_before_id=\${SLOT_${_wer_slot}:-}"
+    _wer_before_cat=""
+    [ -n "$_wer_before_id" ] && _wer_before_cat="$(dns_cat "$_wer_before_id" 2>/dev/null || true)"
+    _wer_live="$(watchdog_target_live_count 2>/dev/null || printf 0)"
+    case "$_wer_live" in ''|*[!0-9]*) _wer_live=0;; esac
+    watchdog_slot_target_run "$_wer_slot" "$_wer_live" >/dev/null 2>&1 || true
+    load_config >/dev/null 2>&1 || true
+    refresh_runtime_capabilities >/dev/null 2>&1 || true
+    eval "_wer_after_id=\${SLOT_${_wer_slot}:-}"
+    _wer_after_cat=""
+    [ -n "$_wer_after_id" ] && _wer_after_cat="$(dns_cat "$_wer_after_id" 2>/dev/null || true)"
+    if [ "$_wer_before_id" != "$_wer_after_id" ] || [ "$_wer_before_cat" != "$_wer_after_cat" ]; then
+        _wd_repairs=$((${_wd_repairs:-0}+1))
+        return 0
+    fi
+    return 1
+}
+watchdog_embedded_restore_slots() {
+    local _wers_slot _wers_id _wers_cat _wers_desired _wers_max
+    _wers_max="${WATCHDOG_MAX_REPAIRS:-1}"
+    case "$_wers_max" in ''|*[!0-9]*) _wers_max=1;; esac
+    [ "$_wers_max" -ge 1 ] 2>/dev/null || _wers_max=1
+    [ "$_wers_max" -le 3 ] 2>/dev/null || _wers_max=3
+
+    # Restore temporary clean fallbacks before filling empty general slots.
+    for _wers_slot in ${_fallback_slots:-}; do
+        [ "${_wd_repairs:-0}" -lt "$_wers_max" ] || break
+        case "$_wers_slot" in 1|2|3|4|5|6) ;; *) continue;; esac
+        eval "_wers_id=\${SLOT_${_wers_slot}:-}"
+        [ -n "$_wers_id" ] || continue
+        _wers_cat="$(dns_cat "$_wers_id" 2>/dev/null || true)"
+        _wers_desired="$(watchdog_desired_cat "$_wers_slot" 2>/dev/null || true)"
+        [ "$_wers_cat" = clean ] && [ -n "$_wers_desired" ] && [ "$_wers_desired" != clean ] || continue
+        log_msg "Watchdog: восстанавливаю целевую категорию в слоте $_wers_slot вместо временного clean DNS."
+        watchdog_embedded_repair_slot "$_wers_slot" || true
+    done
+
+    # RU is intentionally excluded: this loop fills only the six general slots.
+    for _wers_slot in ${_empty_slots:-}; do
+        [ "${_wd_repairs:-0}" -lt "$_wers_max" ] || break
+        case "$_wers_slot" in 1|2|3|4|5|6) ;; *) continue;; esac
+        eval "_wers_id=\${SLOT_${_wers_slot}:-}"
+        [ -z "$_wers_id" ] || continue
+        log_msg "Watchdog: проверяю целевую категорию для дозаполнения пустого слота $_wers_slot."
+        watchdog_embedded_repair_slot "$_wers_slot" || true
+    done
     return 0
 }
 watchdog_embedded_loop() {
@@ -6327,11 +6408,17 @@ watchdog_embedded_loop() {
         _empty_slots=""
         _probe_rc=0
         _target_live_count=0
+        _wd_repairs=0
 
         watchdog_refresh_listener_snapshot
 
         for _slot in 1 2 3 4 5 6 RU; do
             eval "_id=\${SLOT_${_slot}:-}"
+            if [ "$_slot" = RU ] && ! watchdog_slot_is_selected "$_slot"; then
+                WD_FAIL_RU=0
+                WD_MISSING_RU=0
+                continue
+            fi
             _current_slot_cat=""; [ -n "$_id" ] && _current_slot_cat="$(dns_cat "$_id" 2>/dev/null || true)"
             eval "_port=\${PORT_${_slot}:-}"
             [ -n "$_port" ] || _port="$(hybrid_desired_port "$_slot")"
@@ -6408,37 +6495,30 @@ watchdog_embedded_loop() {
             # Never rotate healthy DNS choices during a common outage.
             for _slot in 1 2 3 4 5 6 RU; do watchdog_loop_reset_slot "$_slot"; done
         else
-            _trigger=""
-            for _slot in $_threshold_slots; do
-                if watchdog_loop_repair_cooldown_ok "$_slot"; then
-                    _trigger="$_slot"
-                    break
-                fi
-            done
-            if [ -n "$_trigger" ]; then
+            _max_repairs="${WATCHDOG_MAX_REPAIRS:-1}"
+            case "$_max_repairs" in ''|*[!0-9]*) _max_repairs=1;; esac
+            [ "$_max_repairs" -ge 1 ] 2>/dev/null || _max_repairs=1
+            [ "$_max_repairs" -le 3 ] 2>/dev/null || _max_repairs=3
+            for _trigger in $_threshold_slots; do
+                [ "$_wd_repairs" -lt "$_max_repairs" ] || break
+                watchdog_loop_repair_cooldown_ok "$_trigger" || continue
                 watchdog_loop_mark_repair "$_trigger"
-                log_msg "Подтверждён сбой слота $_trigger в двух последовательных циклах при живом локальном listener. Запрашиваю точечную замену."
-                watchdog_slot_target_run "$_trigger" "$_target_live_count" >/dev/null 2>&1 || log_msg "Точечное восстановление слота $_trigger завершилось неуспешно; повторю после новых двух циклов."
+                log_msg "Подтверждён сбой слота $_trigger при живом локальном listener. Запрашиваю точечную замену."
+                if watchdog_embedded_repair_slot "$_trigger"; then
+                    log_msg "Watchdog: слот $_trigger изменён после подтверждённого восстановления."
+                else
+                    log_msg "Watchdog: слот $_trigger не изменён; повторю проверку после новых циклов."
+                fi
                 _watchdog_action=1
-                load_config
-                refresh_runtime_capabilities
-                WD_LAST_GUARD_TS="$(date +%s 2>/dev/null)"
                 eval "WD_FAIL_${_trigger}=0"
+                WD_LAST_GUARD_TS="$(date +%s 2>/dev/null)"
                 sleep 5
-            fi
+            done
         fi
 
         if [ "$_watchdog_action" = 0 ] && [ "$_failed" -eq 0 ] && [ "$_missing" -eq 0 ]; then
-            _restore_slot=""
-            for _slot in $_fallback_slots; do _restore_slot="$_slot"; break; done
-            [ -n "$_restore_slot" ] || for _slot in $_empty_slots; do _restore_slot="$_slot"; break; done
-            if [ -n "$_restore_slot" ] && [ "$_wd_repairs" -lt "${WATCHDOG_MAX_REPAIRS:-1}" ]; then
-                log_msg "Watchdog: проверяю целевую категорию для восстановления/дозаполнения слота $_restore_slot."
-                watchdog_slot_target_run "$_restore_slot" "$_target_live_count" >/dev/null 2>&1 && _watchdog_action=1 || true
-                load_config >/dev/null 2>&1 || true
-                refresh_runtime_capabilities >/dev/null 2>&1 || true
-            fi
-            if [ "$_watchdog_action" = 0 ]; then
+            watchdog_embedded_restore_slots
+            if [ "$_wd_repairs" -eq 0 ]; then
                 watchdog_embedded_integrity_guard >/dev/null 2>&1 || true
             fi
         fi
@@ -7108,6 +7188,10 @@ watchdog_apply_toggle() {
         0|1) ;;
         *) return 1 ;;
     esac
+    if [ "$_new" = 1 ]; then
+        watchdog_scope_supported || return 1
+        watchdog_has_selected_dns || return 1
+    fi
 
     _old_enabled="$(cfg_get WATCHDOG_ENABLED 2>/dev/null || true)"
     [ "$_old_enabled" = 1 ] || _old_enabled=0
