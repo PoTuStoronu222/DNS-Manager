@@ -6492,9 +6492,6 @@ watchdog_embedded_loop() {
             if [ "$_watchdog_action" = 0 ]; then
                 watchdog_embedded_integrity_guard >/dev/null 2>&1 || true
             fi
-        fi            if [ "$_watchdog_action" = 0 ]; then
-                watchdog_embedded_integrity_guard >/dev/null 2>&1 || true
-            fi
         fi
 
         sleep "$_interval"
