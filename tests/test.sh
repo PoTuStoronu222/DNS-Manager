@@ -1172,6 +1172,10 @@ printf '%s\\n' "$wd_stop_block" | grep -Fq 'sleep 1' || fail "watchdog stop grac
 ok "watchdog settings save tolerates asynchronous procd stop"
 
 ok "watchdog tuning is persisted through one atomic RPC and exposed as a compact LuCI form"
+# The embedded watchdog must not probe the default regional port when SLOT_RU is unset.
+grep -Fq 'if [ "$_slot" = RU ] && [ -z "$_id" ]; then' dns-manager.sh || fail "watchdog probes an unconfigured RU port"
+grep -Fq 'continue' dns-manager.sh || fail "watchdog does not skip an unconfigured RU slot"
+ok "watchdog skips the unconfigured RU slot"
 
 # The legacy single-setting RPC remains available for older clients, but shares the same apply path.
 grep -q 'watchdog_apply_single' "$tmp/backend.sh" || fail "legacy watchdog setter does not use shared apply logic"
