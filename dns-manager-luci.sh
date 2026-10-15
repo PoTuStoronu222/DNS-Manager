@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.50
+# Version: 1.51
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -32,7 +32,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.50"
+VERSION="1.51"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -158,7 +158,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="1.50"
+SELF_VERSION="1.51"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -2617,12 +2617,21 @@ run_action() {
             _rc=0
             case "$_name" in
                 watchdog)
-                    if [ "$_enabled" = 1 ] && [ -z "$SLOT_1$SLOT_2$SLOT_3$SLOT_4$SLOT_5$SLOT_6$SLOT_RU" ]; then
-                        _rc=2
-                        printf '%s\n' "Сначала выберите профиль DNS Manager." >&2
-                    else
-                        SILENT_APPLY=1 watchdog_apply_toggle "$_enabled" >/dev/null 2>&1 || _rc=$?
+                    if [ "$_enabled" = 1 ]; then
+                        _watchdog_scope="$(watchdog_scope_category 2>/dev/null || true)"
+                        case "$_watchdog_scope" in
+                            bypass|clean|security|privacy|adblock|family) ;;
+                            *)
+                                json_error "Контроль DNS не поддерживает текущий режим или категорию профиля."
+                                return
+                                ;;
+                        esac
+                        if [ -z "$SLOT_1$SLOT_2$SLOT_3$SLOT_4$SLOT_5$SLOT_6$SLOT_RU" ]; then
+                            json_error "Сначала выберите профиль DNS Manager."
+                            return
+                        fi
                     fi
+                    SILENT_APPLY=1 watchdog_apply_toggle "$_enabled" >/dev/null 2>&1 || _rc=$?
                     ;;
                 force)
                     FORCE_DOH="$_enabled"
@@ -2728,7 +2737,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI common module version: 1.50
+// DNS Manager LuCI common module version: 1.51
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -2921,6 +2930,23 @@ function settingStateView(st,key){
   if(ms===2)return {kind:'dm-bad',text:'другое'};
   if(ms===0)return {kind:'dm-off',text:'выключено'};
   return yes(st[key])?{kind:'dm-ok',text:'включено'}:{kind:'dm-off',text:'выключено'};
+}
+function watchdogProfileSupported(st){
+  if(!st||String(st.profile||'none')==='none')return false;
+  var mode=String(st.profile_mode||'none');
+  var category=String(st.selection_category||'none');
+  if(mode==='quick')return true;
+  return mode==='profile'&&['bypass','clean','security','privacy','adblock','family'].indexOf(category)>=0;
+}
+function watchdogProfileReason(st){
+  if(!st||String(st.profile||'none')==='none')return 'Сначала выберите профиль DNS Manager.';
+  var mode=String(st.profile_mode||'none');
+  var category=String(st.selection_category||'none');
+  if(mode==='quick')return '';
+  if(mode==='profile'&&category==='gaming')return 'Контроль DNS не поддерживает категорию «Игровые DNS».';
+  if(mode==='profile'&&category==='all')return 'Контроль DNS не поддерживает режим «Все категории». Выберите одну категорию.';
+  if(mode==='profile')return 'Контроль DNS поддерживает только однородный профиль из разрешённых категорий.';
+  return 'Контроль DNS не поддерживает смешанный или пользовательский профиль.';
 }
 function versionState(v,available,latest,checked,okWord,pending,error){
   if(pending)return badge('dm-warn','проверяется…');
@@ -3674,7 +3700,7 @@ function settingCard(root,x,st){
 }
 function watchdogCard(root,st){
   var en=yes(st.watchdog), busy=state.busySetting==='watchdog' || state.busySetting==='watchdog_batch';
-  var profileSelected=String(st.profile||'none')!=='none';
+  var canEnable=watchdogProfileSupported(st);
   var service=Number(st.watchdog_service||0)===1, loop=Number(st.watchdog_loop||0)===1;
   var inputs={};
 
@@ -3771,9 +3797,9 @@ function watchdogCard(root,st){
         badge(busy?'dm-warn':(en?'dm-ok':'dm-off'),busy?'изменение':(en?'включено':'выключено')),
         btn(busy?'Сохраняю…':(en?'Выключить':'Включить'),busy?'cbi-button-neutral':(en?'cbi-button-remove':'cbi-button-add'),function(){
           var cur=yes((window.dmState||{}).watchdog);
-          if(!cur && !profileSelected)return;
+          if(!cur && !watchdogProfileSupported(window.dmState||{}))return;
           setSetting('watchdog',cur?0:1,root);
-        },{disabled:!!state.busy || (!en && !profileSelected)})
+        },{disabled:!!state.busy || (!en && !canEnable)})
       ])
     ])
   ]);
@@ -3797,14 +3823,16 @@ function watchdogCard(root,st){
     ])
   ]);
 
-  return E('div',{},[
-    action,
+  var content=[action];
+  if(!en&&!canEnable)content.push(E('div',{'class':'dm-hint'},watchdogProfileReason(st)));
+  content.push(
     status,
     E('div',{'class':'dm-section-title'},'Настройки контроля'),
     main,
     advanced,
     E('div',{'class':'dm-watchdog-save'},[save,feedback])
-  ]);
+  );
+  return E('div',{},content);
 }
 function renderTestAgeCommon(root,st){
   var ageValue=Number(st.test_age_common||6);
@@ -4759,7 +4787,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 1.50
+// DNS Manager LuCI version: 1.51
 return view.extend({
   load: DM.load,
   render: DM.render,
