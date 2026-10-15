@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.55"
+VERSION="3.56"
 # 3.38: clear the LuCI update flag after a successful CLI update.
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
@@ -5398,9 +5398,8 @@ setting_process() {
     esac
 
     if [ "$_module" = watchdog ] && [ "$_new" = 1 ]; then
-        _profile_category="$(watchdog_scope_category 2>/dev/null || printf none)"
-        if [ "$_profile_category" = none ]; then
-            err_msg "Сначала выберите профиль DNS Manager."
+        if ! watchdog_profile_supported; then
+            err_msg "Контроль DNS доступен только для поддерживаемого профиля и хотя бы одного назначенного DNS."
             pause
             return 1
         fi
@@ -5688,6 +5687,22 @@ watchdog_scope_category() {
             ;;
         *) return 1 ;;
     esac
+}
+watchdog_scope_supported() {
+    watchdog_scope_category >/dev/null 2>&1
+}
+watchdog_has_selected_slots() {
+    [ -n "$SLOT_1$SLOT_2$SLOT_3$SLOT_4$SLOT_5$SLOT_6$SLOT_RU" ]
+}
+watchdog_profile_supported() {
+    watchdog_scope_supported && watchdog_has_selected_slots
+}
+watchdog_repair_budget_available() {
+    _used="${1:-0}"
+    case "$_used" in ''|*[!0-9]*) return 1;; esac
+    _limit="${WATCHDOG_MAX_REPAIRS:-1}"
+    case "$_limit" in ''|*[!0-9]*) _limit=1;; esac
+    [ "$_used" -lt "$_limit" ] 2>/dev/null
 }
 watchdog_desired_cat() {
     local _slot
@@ -6277,6 +6292,7 @@ watchdog_embedded_loop() {
     WATCHDOG_LAST_RESTART_TS=0
     WD_LAST_GUARD_TS="$(date +%s 2>/dev/null)"
     CHECKER_MISSING_LOGGED=0
+    WD_SCOPE_SKIP_LOGGED=0
     log_msg "Фоновый watchdog embedded/procd запущен: проверка каждые ${WATCHDOG_INTERVAL:-600}с, замена после ${WATCHDOG_FAIL_THRESHOLD:-2} последовательных циклов."
 
     # Give network + https-dns-proxy a short settling window after procd start/WAN-up.
@@ -6290,6 +6306,15 @@ watchdog_embedded_loop() {
         [ "$_interval" -le 3600 ] 2>/dev/null || _interval=600
 
         load_config >/dev/null 2>&1 || true
+        if ! watchdog_scope_supported; then
+            if [ "${WD_SCOPE_SKIP_LOGGED:-0}" != 1 ]; then
+                log_msg "Watchdog: поддерживаемый профиль DNS не выбран. Фоновую проверку и замену пропускаю."
+                WD_SCOPE_SKIP_LOGGED=1
+            fi
+            sleep "$_interval"
+            continue
+        fi
+        WD_SCOPE_SKIP_LOGGED=0
         _selection_kind="$(watchdog_scope_category 2>/dev/null || true)"
         case "$_selection_kind" in
             bypass|clean|security|privacy|adblock|family) ;;
@@ -6317,6 +6342,8 @@ watchdog_embedded_loop() {
             CHECKER_MISSING_LOGGED=0
         fi
 
+        # Repair budget is per background watchdog cycle.
+        _wd_repairs=0
         _checked=0
         _failed=0
         _live=0
@@ -6331,16 +6358,18 @@ watchdog_embedded_loop() {
         watchdog_refresh_listener_snapshot
 
         for _slot in 1 2 3 4 5 6 RU; do
-            eval "_id=\${SLOT_${_slot}:-}"
-            _current_slot_cat=""; [ -n "$_id" ] && _current_slot_cat="$(dns_cat "$_id" 2>/dev/null || true)"
-            eval "_port=\${PORT_${_slot}:-}"
-            [ -n "$_port" ] || _port="$(hybrid_desired_port "$_slot")"
-            case "$_slot" in RU) _domain="yandex.ru" ;; *) _domain="example.com" ;; esac
-            _desired_slot_cat="$(watchdog_desired_cat "$_slot" 2>/dev/null || true)"
-            if [ "$_slot" != RU ] && [ -z "$_id" ]; then
+            eval "_id=${SLOT_${_slot}:-}"
+            if [ -z "$_id" ]; then
+                # RU is optional; never probe its default port unless an RU DNS is assigned.
+                [ "$_slot" = RU ] && continue
                 _empty_slots="$_empty_slots $_slot"
                 continue
             fi
+            _current_slot_cat="$(dns_cat "$_id" 2>/dev/null || true)"
+            eval "_port=${PORT_${_slot}:-}"
+            [ -n "$_port" ] || _port="$(hybrid_desired_port "$_slot")"
+            case "$_slot" in RU) _domain="yandex.ru" ;; *) _domain="example.com" ;; esac
+            _desired_slot_cat="$(watchdog_desired_cat "$_slot" 2>/dev/null || true)"
             if [ "$_slot" != RU ] && [ "$_desired_slot_cat" != clean ] && [ "$_current_slot_cat" = clean ]; then
                 _fallback_slots="$_fallback_slots $_slot"
             fi
@@ -6395,7 +6424,7 @@ watchdog_embedded_loop() {
             sleep 5
         elif [ -n "$_local_recover_slots" ]; then
             _local_trigger="${_local_recover_slots# }"
-            log_msg "Локальный DoH-listener слота $_local_trigger отсутствует два цикла подряд. Запрашиваю восстановление https-dns-proxy без ротации DNS."
+            log_msg "Локальный DoH-listener слота $_local_trigger отсутствует после ${WATCHDOG_FAIL_THRESHOLD:-2} последовательных проверок. Запрашиваю восстановление https-dns-proxy без ротации DNS."
             watchdog_service_recover_run >/dev/null 2>&1 || true
             _watchdog_action=1
             load_config
@@ -6408,36 +6437,47 @@ watchdog_embedded_loop() {
             # Never rotate healthy DNS choices during a common outage.
             for _slot in 1 2 3 4 5 6 RU; do watchdog_loop_reset_slot "$_slot"; done
         else
-            _trigger=""
-            for _slot in $_threshold_slots; do
-                if watchdog_loop_repair_cooldown_ok "$_slot"; then
-                    _trigger="$_slot"
-                    break
-                fi
-            done
-            if [ -n "$_trigger" ]; then
+            for _trigger in $_threshold_slots; do
+                watchdog_repair_budget_available "$_wd_repairs" || break
+                watchdog_loop_repair_cooldown_ok "$_trigger" || continue
                 watchdog_loop_mark_repair "$_trigger"
-                log_msg "Подтверждён сбой слота $_trigger в двух последовательных циклах при живом локальном listener. Запрашиваю точечную замену."
-                watchdog_slot_target_run "$_trigger" "$_target_live_count" >/dev/null 2>&1 || log_msg "Точечное восстановление слота $_trigger завершилось неуспешно; повторю после новых двух циклов."
+                eval "_repair_before=${SLOT_${_trigger}:-}"
+                log_msg "Подтверждён сбой слота $_trigger после ${WATCHDOG_FAIL_THRESHOLD:-2} последовательных проверок при живом локальном listener. Запрашиваю точечную замену."
+                watchdog_slot_target_run "$_trigger" "$_target_live_count" >/dev/null 2>&1 || log_msg "Точечное восстановление слота $_trigger завершилось неуспешно; повторю после новых проверок."
                 _watchdog_action=1
                 load_config
                 refresh_runtime_capabilities
                 WD_LAST_GUARD_TS="$(date +%s 2>/dev/null)"
+                eval "_repair_after=${SLOT_${_trigger}:-}"
+                [ "$_repair_after" = "$_repair_before" ] || _wd_repairs=$((_wd_repairs+1))
                 eval "WD_FAIL_${_trigger}=0"
+                _target_live_count="$(watchdog_target_live_count 2>/dev/null || printf 0)"
+                case "$_target_live_count" in ''|*[!0-9]*) _target_live_count=0;; esac
                 sleep 5
-            fi
+            done
         fi
 
         if [ "$_watchdog_action" = 0 ] && [ "$_failed" -eq 0 ] && [ "$_missing" -eq 0 ]; then
-            _restore_slot=""
-            for _slot in $_fallback_slots; do _restore_slot="$_slot"; break; done
-            [ -n "$_restore_slot" ] || for _slot in $_empty_slots; do _restore_slot="$_slot"; break; done
-            if [ -n "$_restore_slot" ] && [ "$_wd_repairs" -lt "${WATCHDOG_MAX_REPAIRS:-1}" ]; then
+            # Restore clean fallbacks first, then gradually fill empty slots.
+            # Only actual slot changes consume the configured per-cycle budget.
+            for _restore_slot in $_fallback_slots $_empty_slots; do
+                watchdog_repair_budget_available "$_wd_repairs" || break
+                [ -n "$_restore_slot" ] || continue
+                eval "_restore_before=${SLOT_${_restore_slot}:-}"
                 log_msg "Watchdog: проверяю целевую категорию для восстановления/дозаполнения слота $_restore_slot."
-                watchdog_slot_target_run "$_restore_slot" "$_target_live_count" >/dev/null 2>&1 && _watchdog_action=1 || true
+                if ! watchdog_slot_target_run "$_restore_slot" "$_target_live_count" >/dev/null 2>&1; then
+                    break
+                fi
                 load_config >/dev/null 2>&1 || true
                 refresh_runtime_capabilities >/dev/null 2>&1 || true
-            fi
+                eval "_restore_after=${SLOT_${_restore_slot}:-}"
+                [ "$_restore_after" != "$_restore_before" ] || break
+                _wd_repairs=$((_wd_repairs+1))
+                _watchdog_action=1
+                WD_LAST_GUARD_TS="$(date +%s 2>/dev/null)"
+                _target_live_count="$(watchdog_target_live_count 2>/dev/null || printf 0)"
+                case "$_target_live_count" in ''|*[!0-9]*) _target_live_count=0;; esac
+            done
             if [ "$_watchdog_action" = 0 ]; then
                 watchdog_embedded_integrity_guard >/dev/null 2>&1 || true
             fi
@@ -7008,10 +7048,11 @@ watchdog_slot_target_run() {
     _slot="$1"
     case "$_slot" in 1|2|3|4|5|6|RU) ;; *) return 2 ;; esac
     [ "${WATCHDOG_ENABLED:-0}" = 1 ] || return 0
+    watchdog_scope_supported || return 1
     _selection_kind="$(watchdog_scope_category 2>/dev/null || true)"
     case "$_selection_kind" in
         bypass|clean|security|privacy|adblock|family) ;;
-        *) return 0 ;;
+        *) return 1 ;;
     esac
     eval "_target_id=\${SLOT_${_slot}:-}"
     eval "_target_port=\${PORT_${_slot}:-}"
@@ -7108,6 +7149,10 @@ watchdog_apply_toggle() {
         0|1) ;;
         *) return 1 ;;
     esac
+    if [ "$_new" = 1 ] && ! watchdog_profile_supported; then
+        err_msg "Контроль DNS нельзя включить: выбранный профиль не поддерживается или DNS не назначен."
+        return 1
+    fi
 
     _old_enabled="$(cfg_get WATCHDOG_ENABLED 2>/dev/null || true)"
     [ "$_old_enabled" = 1 ] || _old_enabled=0
@@ -7303,7 +7348,7 @@ startup_update_check() {
 # STARTUP REQUIRED FUNCTION CHECK
 # ==========================================
 startup_required_function_check() {
-    for _fn in restore_hdp_package_defaults get_dnsmasq_section exact_list_has doh_selected_config_current validate_selected_slots ensure_dnsmasq_balancer detect_forced_dns_path clear_all_doh_for_apply rebuild_selected_hdp_sections reconcile_dnsmasq apply_ntp_ip_fallback luci_component_state luci_companion_check_update luci_companion_install luci_companion_remove luci_companion_update watchdog_embedded_loop watchdog_service_install_files watchdog_service_remove_files; do
+    for _fn in restore_hdp_package_defaults get_dnsmasq_section exact_list_has doh_selected_config_current validate_selected_slots ensure_dnsmasq_balancer detect_forced_dns_path clear_all_doh_for_apply rebuild_selected_hdp_sections reconcile_dnsmasq apply_ntp_ip_fallback luci_component_state luci_companion_check_update luci_companion_install luci_companion_remove luci_companion_update watchdog_scope_category watchdog_scope_supported watchdog_has_selected_slots watchdog_profile_supported watchdog_repair_budget_available watchdog_embedded_loop watchdog_service_install_files watchdog_service_remove_files; do
         type "$_fn" >/dev/null 2>&1 || {
             printf "${C_RED}[✗] Критическая ошибка: отсутствует функция $_fn. Запуск остановлен до изменения настроек роутера.${C_NC}\n"
             return 1
