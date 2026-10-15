@@ -1176,6 +1176,31 @@ ok "watchdog tuning is persisted through one atomic RPC and exposed as a compact
 grep -Fq 'if [ "$_slot" = RU ] && [ -z "$_id" ]; then' dns-manager.sh || fail "watchdog probes an unconfigured RU port"
 grep -Fq 'continue' dns-manager.sh || fail "watchdog does not skip an unconfigured RU slot"
 ok "watchdog skips the unconfigured RU slot"
+# The watchdog repair budget counts actual slot changes, not successful no-op returns.
+awk '/^watchdog_loop_repair_slot\(\) \{/,/^}/ {print}' dns-manager.sh > "$tmp/watchdog_repair_budget.sh"
+cat > "$tmp/watchdog_repair_budget_runner.sh" <<'EOF_WD_BUDGET'
+#!/bin/sh
+SLOT_1=old
+_wd_repairs=0
+WATCHDOG_MAX_REPAIRS=2
+watchdog_slot_target_run() { return 0; }
+. "$1"
+watchdog_loop_repair_slot 1 1
+[ "$_wd_repairs" = 0 ] || exit 41
+watchdog_slot_target_run() { SLOT_1=new; return 0; }
+watchdog_loop_repair_slot 1 1
+[ "$_wd_repairs" = 1 ] || exit 42
+watchdog_loop_repair_slot 1 1
+[ "$_wd_repairs" = 1 ] || exit 43
+EOF_WD_BUDGET
+chmod +x "$tmp/watchdog_repair_budget_runner.sh"
+"$tmp/watchdog_repair_budget_runner.sh" "$tmp/watchdog_repair_budget.sh" || fail "watchdog repair budget counts no-op returns"
+grep -Fq 'if [ "$_watchdog_action" = 0 ] && [ "$_failed" -eq 0 ] && [ "$_missing" -eq 0 ]; then' dns-manager.sh || fail "watchdog fallback restoration gate missing"
+grep -Fq '_restore_slots="$_fallback_slots $_empty_slots"' dns-manager.sh || fail "watchdog does not retry clean fallback / empty slots"
+grep -Fq 'if ! watchdog_scope_supported; then' dns-manager.sh || fail "watchdog loop does not reject unsupported profile scopes"
+grep -Fq 'if [ "$_name" = watchdog ] && [ "$_enabled" = 1 ] && ! watchdog_scope_supported; then' dns-manager-luci.sh || fail "RPC does not reject unsupported watchdog enable requests"
+grep -Fq 'scopeSupported=yes(st.watchdog_scope_supported)' dns-manager-luci.sh || fail "LuCI does not expose watchdog scope support"
+ok "watchdog fallback, repair budget, and supported-scope guards are covered"
 
 # The legacy single-setting RPC remains available for older clients, but shares the same apply path.
 grep -q 'watchdog_apply_single' "$tmp/backend.sh" || fail "legacy watchdog setter does not use shared apply logic"
