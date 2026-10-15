@@ -22,7 +22,7 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT INT TERM
 
 # Uninstall must remove the empty, namespaced LuCI backend directory.
-awk '/^luci_companion_remove\\(\\) \\{/,/^}$/ { print }' dns-manager.sh > "$tmp/luci_remove_fn.sh"
+sed -n '/^luci_companion_remove(/,/^}/p' dns-manager.sh > "$tmp/luci_remove_fn.sh"
 [ -s "$tmp/luci_remove_fn.sh" ] || fail "LuCI uninstall helper extraction"
 grep -Fq 'rmdir /usr/lib/dns-manager-luci 2>/dev/null || true' "$tmp/luci_remove_fn.sh" || fail "LuCI uninstall leaves the empty backend directory"
 ok "LuCI uninstall removes its empty backend directory"
