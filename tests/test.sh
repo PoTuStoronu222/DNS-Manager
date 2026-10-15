@@ -825,11 +825,13 @@ grep -q '^watchdog_embedded_restore_slots() {' dns-manager.sh || fail "watchdog 
 grep -q '^watchdog_embedded_repair_slot() {' dns-manager.sh || fail "watchdog repair counter helper missing"
 awk '/^watchdog_embedded_loop\(\) \{/,/^# ==========================================/' dns-manager.sh > "$tmp/watchdog_embedded_loop.sh"
 grep -Fq '_wd_repairs=0' "$tmp/watchdog_embedded_loop.sh" || fail "watchdog replacement limit is not reset per cycle"
-grep -Fq 'for _trigger in $_threshold_slots; do' "$tmp/watchdog_embedded_loop.sh" || fail "watchdog only considers one failed slot per cycle"
-grep -Fq '[ "$_wd_repairs" -lt "$_max_repairs" ] || break' "$tmp/watchdog_embedded_loop.sh" || fail "watchdog failed-slot replacement loop ignores the per-cycle limit"
-grep -Fq 'watchdog_embedded_repair_slot "$_trigger"' "$tmp/watchdog_embedded_loop.sh" || fail "failed-slot replacement bypasses the per-cycle repair counter"
+grep -q '^watchdog_embedded_repair_failed_slots() {' dns-manager.sh || fail "watchdog failed-slot repair helper missing"
+awk '/^watchdog_embedded_repair_failed_slots\(\) \{/,/^}/' dns-manager.sh > "$tmp/watchdog_failed_repair.sh"
+grep -Fq 'for _wef_trigger in ${_threshold_slots:-}; do' "$tmp/watchdog_failed_repair.sh" || fail "watchdog only considers one failed slot per cycle"
+grep -Fq '[ "${_wd_repairs:-0}" -lt "$_wef_max" ] || break' "$tmp/watchdog_failed_repair.sh" || fail "watchdog failed-slot replacement loop ignores the per-cycle limit"
+grep -Fq 'watchdog_embedded_repair_slot "$_wef_trigger"' "$tmp/watchdog_failed_repair.sh" || fail "failed-slot replacement bypasses the per-cycle repair counter"
 
-for _watchdog_fn in watchdog_scope_category watchdog_desired_cat watchdog_embedded_repair_slot watchdog_embedded_restore_slots; do
+for _watchdog_fn in watchdog_scope_category watchdog_desired_cat watchdog_embedded_repair_slot watchdog_embedded_restore_slots watchdog_embedded_repair_failed_slots; do
     awk -v fn="$_watchdog_fn" '
         $0 ~ ("^" fn "\\(\\) \\{") { capture=1 }
         capture { print }
@@ -852,6 +854,9 @@ log_msg() { :; }
 watchdog_target_live_count() { printf '0\n'; }
 load_config() { :; }
 refresh_runtime_capabilities() { :; }
+watchdog_loop_repair_cooldown_ok() { return 0; }
+watchdog_loop_mark_repair() { :; }
+sleep() { :; }
 watchdog_slot_target_run() {
     REPAIR_CALLS=$((REPAIR_CALLS+1))
     case "$1" in
@@ -881,6 +886,33 @@ WATCHDOG_MAX_REPAIRS=3
 watchdog_embedded_restore_slots
 [ "$_wd_repairs" = 3 ] && [ "$REPAIR_CALLS" = 3 ] || exit 45
 [ "$SLOT_1" = bypass_one ] && [ "$SLOT_2" = bypass_two ] && [ "$SLOT_3" = bypass_three ] || exit 46
+
+reset_fixture
+_threshold_slots='1 2 3'
+WD_FAIL_1=2; WD_FAIL_2=2; WD_FAIL_3=2
+WATCHDOG_MAX_REPAIRS=1
+_watchdog_action=0
+watchdog_embedded_repair_failed_slots
+[ "$_wd_repairs" = 1 ] && [ "$REPAIR_CALLS" = 1 ] || exit 51
+[ "$_watchdog_action" = 1 ] && [ "$SLOT_1" = bypass_one ] && [ -z "$SLOT_2" ] && [ -z "$SLOT_3" ] || exit 52
+
+reset_fixture
+_threshold_slots='1 2 3'
+WD_FAIL_1=2; WD_FAIL_2=2; WD_FAIL_3=2
+WATCHDOG_MAX_REPAIRS=2
+_watchdog_action=0
+watchdog_embedded_repair_failed_slots
+[ "$_wd_repairs" = 2 ] && [ "$REPAIR_CALLS" = 2 ] || exit 53
+[ "$SLOT_1" = bypass_one ] && [ "$SLOT_2" = bypass_two ] && [ -z "$SLOT_3" ] || exit 54
+
+reset_fixture
+_threshold_slots='1 2 3'
+WD_FAIL_1=2; WD_FAIL_2=2; WD_FAIL_3=2
+WATCHDOG_MAX_REPAIRS=3
+_watchdog_action=0
+watchdog_embedded_repair_failed_slots
+[ "$_wd_repairs" = 3 ] && [ "$REPAIR_CALLS" = 3 ] || exit 55
+[ "$SLOT_1" = bypass_one ] && [ "$SLOT_2" = bypass_two ] && [ "$SLOT_3" = bypass_three ] || exit 56
 EOF_WATCHDOG_RECOVERY
 chmod +x "$tmp/watchdog_recovery_runner.sh"
 "$tmp/watchdog_recovery_runner.sh" "$tmp/watchdog_recovery_functions.sh" || fail "watchdog fallback restoration/max-repairs behavior"
@@ -901,6 +933,7 @@ ok "LuCI full catalog job publishes final progress before DONE"
 
 grep -q "function watchdogProfileSupported(st)" "$tmp/common.js" || fail "LuCI watchdog supported-profile classifier missing"
 grep -q "disabled:!!state.busy || (!en && !canEnable)" "$tmp/common.js" || fail "LuCI watchdog enable button is not disabled for unsupported profiles"
+grep -q "профиль не поддерживается" "$tmp/common.js" || fail "LuCI watchdog does not show unsupported active-profile state"
 grep -q "Сначала выберите профиль DNS Manager" "$tmp/common.js" || fail "LuCI missing no-profile reason"
 grep -q "смешанный или пользовательский профиль" "$tmp/common.js" || fail "LuCI missing unsupported-profile reason"
 grep -q "function watchdogComponentItem" "$tmp/common.js" || fail "LuCI watchdog component state helper missing"
