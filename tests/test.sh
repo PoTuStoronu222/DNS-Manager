@@ -113,6 +113,88 @@ awk '
 sh -n "$tmp/backend.sh" || fail "embedded backend: sh -n"
 ok "embedded backend syntax"
 
+# Clean-install regression: a missing catalog is recovered by the first LuCI request.
+# All paths and downloads are isolated so the test cannot modify router or host state.
+sed \
+    -e "s|CATALOG_FILE=\"/etc/dns-manager/config/dns-catalog.conf\"|CATALOG_FILE=\"$tmp/fresh/config/dns-catalog.conf\"|" \
+    -e "s|RUNTIME_DIR=\"/var/run/dns-manager-luci\"|RUNTIME_DIR=\"$tmp/fresh/runtime\"|" \
+    -e "s|STATE_DIR=\"/var/run/dns-manager\"|STATE_DIR=\"$tmp/fresh/state\"|" \
+    -e "s|PERSIST_STATE_DIR=\"/etc/dns-manager/state\"|PERSIST_STATE_DIR=\"$tmp/fresh/persist\"|" \
+    -e "s|UPDATE_STATE=\"/etc/dns-manager-luci/update.state\"|UPDATE_STATE=\"$tmp/fresh/update.state\"|" \
+    "$tmp/backend.sh" > "$tmp/backend-fresh.sh"
+chmod +x "$tmp/backend-fresh.sh"
+mkdir -p "$tmp/fresh/bin"
+cat > "$tmp/fresh/bin/curl" <<'EOF_FAKE_CURL'
+#!/bin/sh
+out=""
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        -o) out="$2"; shift 2 ;;
+        *) shift ;;
+    esac
+done
+[ -n "$out" ] && [ -s "$DNS_CATALOG_FIXTURE" ] || exit 2
+cp "$DNS_CATALOG_FIXTURE" "$out"
+EOF_FAKE_CURL
+chmod +x "$tmp/fresh/bin/curl"
+printf '%s\n' '{"category":"all","offset":0,"limit":18,"only_ok":0}' |
+    DNS_CATALOG_FIXTURE="$ROOT/catalogs/dns-8.7-RU-NOSOCIAL.conf" PATH="$tmp/fresh/bin:/usr/bin:/bin" \
+        "$tmp/backend-fresh.sh" call catalog > "$tmp/fresh/catalog.json" ||
+    fail "clean LuCI catalog request failed"
+[ -s "$tmp/fresh/config/dns-catalog.conf" ] || fail "clean LuCI request did not create the local catalog"
+node -e 'const fs=require("fs"); const x=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); if(!x.ok||x.total!==105||!Array.isArray(x.servers)||x.servers.length===0) process.exit(1)' "$tmp/fresh/catalog.json" ||
+    fail "clean LuCI catalog request returned no DNS entries"
+ok "clean LuCI install bootstraps a missing DNS catalog"
+
+# Upgrade regression: a valid existing local catalog is served as-is; no download or replacement.
+sed \
+    -e "s|CATALOG_FILE=\"/etc/dns-manager/config/dns-catalog.conf\"|CATALOG_FILE=\"$tmp/existing/config/dns-catalog.conf\"|" \
+    -e "s|RUNTIME_DIR=\"/var/run/dns-manager-luci\"|RUNTIME_DIR=\"$tmp/existing/runtime\"|" \
+    -e "s|STATE_DIR=\"/var/run/dns-manager\"|STATE_DIR=\"$tmp/existing/state\"|" \
+    -e "s|PERSIST_STATE_DIR=\"/etc/dns-manager/state\"|PERSIST_STATE_DIR=\"$tmp/existing/persist\"|" \
+    -e "s|UPDATE_STATE=\"/etc/dns-manager-luci/update.state\"|UPDATE_STATE=\"$tmp/existing/update.state\"|" \
+    "$tmp/backend.sh" > "$tmp/backend-existing.sh"
+chmod +x "$tmp/backend-existing.sh"
+mkdir -p "$tmp/existing/bin" "$tmp/existing/config"
+cp "$ROOT/catalogs/dns-8.7-RU-NOSOCIAL.conf" "$tmp/existing/config/dns-catalog.conf"
+cat > "$tmp/existing/bin/curl" <<'EOF_NO_CURL'
+#!/bin/sh
+: > "$CURL_CALLED"
+exit 2
+EOF_NO_CURL
+chmod +x "$tmp/existing/bin/curl"
+printf '%s\n' '{"category":"all","offset":0,"limit":18,"only_ok":0}' |
+    CURL_CALLED="$tmp/existing/curl-called" PATH="$tmp/existing/bin:/usr/bin:/bin" \
+        "$tmp/backend-existing.sh" call catalog > "$tmp/existing/catalog.json" ||
+    fail "catalog request with existing local catalog failed"
+node -e 'const fs=require("fs"); const x=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); if(!x.ok||x.total!==105||!Array.isArray(x.servers)||x.servers.length===0) process.exit(1)' "$tmp/existing/catalog.json" ||
+    fail "existing local catalog returned no DNS entries"
+[ ! -e "$tmp/existing/curl-called" ] || fail "valid local catalog unexpectedly triggered a download"
+cmp -s "$ROOT/catalogs/dns-8.7-RU-NOSOCIAL.conf" "$tmp/existing/config/dns-catalog.conf" ||
+    fail "valid local catalog was modified"
+ok "existing local DNS catalog is preserved without a download"
+
+# Failure regression: if both the local catalog and network source are unavailable,
+# LuCI returns an explicit error and does not leave an empty catalog file.
+sed \
+    -e "s|CATALOG_FILE=\"/etc/dns-manager/config/dns-catalog.conf\"|CATALOG_FILE=\"$tmp/fail/config/dns-catalog.conf\"|" \
+    -e "s|RUNTIME_DIR=\"/var/run/dns-manager-luci\"|RUNTIME_DIR=\"$tmp/fail/runtime\"|" \
+    -e "s|STATE_DIR=\"/var/run/dns-manager\"|STATE_DIR=\"$tmp/fail/state\"|" \
+    -e "s|PERSIST_STATE_DIR=\"/etc/dns-manager/state\"|PERSIST_STATE_DIR=\"$tmp/fail/persist\"|" \
+    -e "s|UPDATE_STATE=\"/etc/dns-manager-luci/update.state\"|UPDATE_STATE=\"$tmp/fail/update.state\"|" \
+    "$tmp/backend.sh" > "$tmp/backend-fail.sh"
+chmod +x "$tmp/backend-fail.sh"
+mkdir -p "$tmp/fail/bin"
+cp "$tmp/fresh/bin/curl" "$tmp/fail/bin/curl"
+printf '%s\n' '{"category":"all","offset":0,"limit":18,"only_ok":0}' |
+    DNS_CATALOG_FIXTURE="" PATH="$tmp/fail/bin:/usr/bin:/bin" \
+        "$tmp/backend-fail.sh" call catalog > "$tmp/fail/catalog.json" ||
+    fail "catalog request with unavailable remote source exited unexpectedly"
+node -e 'const fs=require("fs"); const x=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); if(x.ok!==false||!String(x.error||"").includes("загрузить его не удалось")) process.exit(1)' "$tmp/fail/catalog.json" ||
+    fail "failed catalog bootstrap did not return an explicit error"
+[ ! -e "$tmp/fail/config/dns-catalog.conf" ] || fail "failed catalog bootstrap left an empty catalog file"
+ok "catalog bootstrap failure is explicit and leaves no partial catalog"
+
 awk '
     /cat > "[^"]*COMMON_STAGE[^"]*"[^<]*<<\x27EOF_COMMON\x27/ { capture=1; next }
     capture && /^EOF_COMMON$/ { exit }

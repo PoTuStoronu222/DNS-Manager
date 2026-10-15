@@ -2502,6 +2502,19 @@ catalog_json() {
     case "$_offset" in ''|*[!0-9]*) _offset=0;; esac; case "$_limit" in ''|*[!0-9]*) _limit=18;; esac; [ "$_limit" -gt 48 ] && _limit=48; [ -n "$_category" ] || _category=all
     case "$_category" in all|bypass|security|privacy|adblock|family|clean|gaming|regional) ;; *) json_error "Неверная категория DNS"; return;; esac
     case "$_only_ok" in 1|0) ;; *) _only_ok=0;; esac
+    # A clean Manager + LuCI install may reach this RPC before the CLI's
+    # first-run catalog download completed. Recover once here instead of
+    # leaving the catalog empty until the user presses Update.
+    if [ ! -s "$CATALOG_FILE" ] || [ -z "$(catalog_version 2>/dev/null || true)" ] || ! grep -q '^[^#][^|]*|' "$CATALOG_FILE" 2>/dev/null; then
+        mkdir -p "${CATALOG_FILE%/*}" "$TMP_ROOT" 2>/dev/null || {
+            json_error "Не удалось подготовить каталог DNS"
+            return
+        }
+        update_catalog_direct >/dev/null 2>&1 || {
+            json_error "Каталог DNS отсутствует, загрузить его не удалось"
+            return
+        }
+    fi
     [ -s "$CATALOG_FILE" ] || { json_error "Каталог DNS недоступен"; return; }
     _filtered="$TMP_ROOT/catalog-filtered.$$"; _paged="$TMP_ROOT/catalog-page.$$"; : > "$_filtered"; : > "$_paged"
     while IFS='|' read -r _id _cat _prof _name _url _region _status; do
