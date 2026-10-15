@@ -6271,7 +6271,7 @@ watchdog_embedded_integrity_guard() {
     return 0
 }
 watchdog_loop_repair_slot() {
-    local _slot _target_live _max _done _rc
+    local _slot _target_live _max _done _rc _before _after
     _slot="$1"
     _target_live="${2:-}"
     _max="${WATCHDOG_MAX_REPAIRS:-1}"
@@ -6281,9 +6281,12 @@ watchdog_loop_repair_slot() {
     [ "$_max" -ge 1 ] 2>/dev/null || _max=1
     [ "$_max" -le 3 ] 2>/dev/null || _max=3
     [ "$_done" -lt "$_max" ] || return 2
+    eval "_before=\${SLOT_${_slot}:-}"
     watchdog_slot_target_run "$_slot" "$_target_live"
     _rc=$?
-    if [ "$_rc" -eq 0 ]; then
+    eval "_after=\${SLOT_${_slot}:-}"
+    # Count only an actual slot change; resource guards and busy locks can no-op successfully.
+    if [ "$_rc" -eq 0 ] && [ "$_before" != "$_after" ]; then
         _wd_repairs=$((_done + 1))
     fi
     return "$_rc"
