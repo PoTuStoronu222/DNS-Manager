@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.50
+# Version: 1.51
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -32,7 +32,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.50"
+VERSION="1.51"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -158,7 +158,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="1.50"
+SELF_VERSION="1.51"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -1173,6 +1173,25 @@ page_header_json() {
     printf ',"last_full_test_scope":'; json_quote "$_ph_scope"
 }
 
+watchdog_profile_supported_value() {
+    _wps_mode="$(cfg_get DNS_SELECTION_MODE 2>/dev/null || true)"
+    _wps_cat="$(cfg_get DNS_SELECTION_CATEGORY 2>/dev/null || true)"
+    [ -n "$_wps_mode" ] || _wps_mode=quick
+    [ -n "$_wps_cat" ] || _wps_cat=bypass
+    case "$_wps_mode" in
+        quick) ;;
+        profile)
+            case "$_wps_cat" in bypass|clean|security|privacy|adblock|family) ;; *) return 1;; esac
+            ;;
+        *) return 1 ;;
+    esac
+    _wps_has_slot=0
+    for _wps_slot in 1 2 3 4 5 6 RU; do
+        [ -n "$(cfg_get "SLOT_$_wps_slot" 2>/dev/null || true)" ] && _wps_has_slot=1
+    done
+    [ "$_wps_has_slot" = 1 ]
+}
+
 network_status_json() {
     _profile="$(cfg_get DNS_PROFILE)"; [ -n "$_profile" ] || _profile=none
     _mode="$(cfg_get DNS_SELECTION_MODE)"; [ -n "$_mode" ] || _mode=none
@@ -1186,6 +1205,7 @@ network_status_json() {
     _watchdog_max_restarts="$(manager_const_num WATCHDOG_MAX_RESTARTS 2)"
     _watchdog_max_candidates="$(manager_const_num WATCHDOG_MAX_CANDIDATES 3)"
     _watchdog_guard_interval="$(manager_const_num WATCHDOG_GUARD_INTERVAL 3600)"
+    _watchdog_supported=0; watchdog_profile_supported_value && _watchdog_supported=1 || true
     _cache_cur="$(uci -q get dhcp.@dnsmasq[0].cachesize 2>/dev/null || true)"
     _cache_stock=""
     if [ -r /rom/etc/config/dhcp ]; then _cache_stock="$(uci -q -c /rom/etc/config get dhcp.@dnsmasq[0].cachesize 2>/dev/null || true)"; fi
@@ -1200,6 +1220,7 @@ network_status_json() {
     printf '{"ok":true'; page_header_json
     printf ',"watchdog":'; json_quote "$_watchdog"
     printf ',"profile":'; json_quote "$_profile"; printf ',"profile_mode":'; json_quote "$_mode"; printf ',"selection_category":'; json_quote "$_selection_category"
+    printf ',"watchdog_profile_supported":%s' "$_watchdog_supported"
     printf ',"watchdog_backend":'; json_quote "$_watchdog_backend"
     printf ',"watchdog_interval":%s,"watchdog_service":%s,"watchdog_service_enabled":%s,"watchdog_loop":%s' "$_watchdog_interval" "$_wr" "$_ws" "$_wl"
     printf ',"watchdog_fail_threshold":%s,"watchdog_repair_cooldown":%s,"watchdog_max_repairs":%s,"watchdog_max_restarts":%s,"watchdog_max_candidates":%s,"watchdog_guard_interval":%s' "$_watchdog_threshold" "$_watchdog_repair_cooldown" "$_watchdog_max_repairs" "$_watchdog_max_restarts" "$_watchdog_max_candidates" "$_watchdog_guard_interval"
@@ -1391,6 +1412,7 @@ status_json() {
 
     # DNS cache tuning changes only dnsmasq cachesize. Do not let the
     # manager config flag or unrelated dnsmasq options distort the state.
+    _watchdog_supported=0; watchdog_profile_supported_value && _watchdog_supported=1 || true
     _dnsmasq_cache_cur="$(uci -q get "dhcp.@dnsmasq[0].cachesize" 2>/dev/null || true)"
     _dnsmasq_cache_stock=""
     if [ -r /rom/etc/config/dhcp ]; then
@@ -1612,6 +1634,7 @@ status_json() {
     printf ',"catalog_latest_version":'; json_quote "$_catalog_latest"; printf ',"catalog_latest_rev":'; json_quote "$_catalog_latest_rev"; printf ',"catalog_latest_total":%s,"catalog_update_available":%s,"catalog_check_ok":%s' "$_catalog_latest_total" "$_catalog_avail" "$_catalog_checked"; printf ',"catalog_update_error":'; json_quote "$_catalog_error"
     printf ',"model":'; json_quote "$_model"; printf ',"arch":'; json_quote "$_arch"; printf ',"target":'; json_quote "$_target"; printf ',"ipv4":'; json_quote "$_ipv4"; printf ',"ipv6":'; json_quote "$_ipv6"; printf ',"dnsmasq":'; json_quote "$_dnsmasq"; printf ',"doh":'; json_quote "$_doh"; printf ',"firewall":'; json_quote "$_fw"; printf ',"openwrt":'; json_quote "$(openwrt_release)"; printf ',"lan":'; json_quote "$_lan"
     printf ',"profile":'; json_quote "$_profile"; printf ',"profile_mode":'; json_quote "$_mode"; printf ',"selection_category":'; json_quote "$_selection_category"
+    printf ',"watchdog_profile_supported":%s' "$_watchdog_supported"
     printf ',"last_job_id":'; json_quote "$_last_job_id"; printf ',"last_job_status":'; json_quote "$_last_job_status"; printf ',"last_job_result":'; json_quote "$_last_job_result"; printf ',"last_job_mode":'; json_quote "$_last_job_mode"
     printf ',"last_job_profile":'; json_quote "$_last_job_profile"; printf ',"last_job_dns_id":'; json_quote "$_last_job_dns_id"; printf ',"last_job_started":'; json_quote "$_last_job_started"; printf ',"last_job_finished":'; json_quote "$_last_job_finished"; printf ',"last_job_message":'; json_quote "$_last_job_message"
     printf ',"profile_job_status":'; json_quote "$_profile_job_status"; printf ',"profile_job_result":'; json_quote "$_profile_job_result"
@@ -2617,12 +2640,11 @@ run_action() {
             _rc=0
             case "$_name" in
                 watchdog)
-                    if [ "$_enabled" = 1 ] && [ -z "$SLOT_1$SLOT_2$SLOT_3$SLOT_4$SLOT_5$SLOT_6$SLOT_RU" ]; then
-                        _rc=2
-                        printf '%s\n' "Сначала выберите профиль DNS Manager." >&2
-                    else
-                        SILENT_APPLY=1 watchdog_apply_toggle "$_enabled" >/dev/null 2>&1 || _rc=$?
+                    if [ "$_enabled" = 1 ] && ! watchdog_profile_supported_value; then
+                        json_error "Контроль DNS доступен только для поддерживаемого профиля и хотя бы одного назначенного DNS."
+                        return
                     fi
+                    SILENT_APPLY=1 watchdog_apply_toggle "$_enabled" >/dev/null 2>&1 || _rc=$?
                     ;;
                 force)
                     FORCE_DOH="$_enabled"
@@ -2728,7 +2750,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI common module version: 1.50
+// DNS Manager LuCI common module version: 1.51
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -2909,6 +2931,16 @@ function stateBadge(status,pingValue){
   return badge('dm-off','нет данных');
 }
 function settingName(n){ var m={watchdog:'Контроль DNS',dnsmasq_perf:'Увеличенный кэш DNS'}; return m[n]||n; }
+function watchdogProfileSupported(st){
+  if(st.watchdog_profile_supported!==undefined&&st.watchdog_profile_supported!==null)
+    return yes(st.watchdog_profile_supported);
+  var hasSlot=['1','2','3','4','5','6','RU'].some(function(slot){
+    return String(st['slot_'+slot]||st['SLOT_'+slot]||'')!=='';
+  });
+  var mode=String(st.profile_mode||'none');
+  var category=String(st.selection_category||'none');
+  return hasSlot&&(mode==='quick'||(mode==='profile'&&['bypass','clean','security','privacy','adblock','family'].indexOf(category)>=0));
+}
 function settingModuleState(st,key){
   var raw=st[key+'_state'];
   if(raw===undefined||raw===null||raw==='')return -1;
@@ -3674,7 +3706,7 @@ function settingCard(root,x,st){
 }
 function watchdogCard(root,st){
   var en=yes(st.watchdog), busy=state.busySetting==='watchdog' || state.busySetting==='watchdog_batch';
-  var profileSelected=String(st.profile||'none')!=='none';
+  var profileSupported=watchdogProfileSupported(st);
   var service=Number(st.watchdog_service||0)===1, loop=Number(st.watchdog_loop||0)===1;
   var inputs={};
 
@@ -3771,13 +3803,16 @@ function watchdogCard(root,st){
         badge(busy?'dm-warn':(en?'dm-ok':'dm-off'),busy?'изменение':(en?'включено':'выключено')),
         btn(busy?'Сохраняю…':(en?'Выключить':'Включить'),busy?'cbi-button-neutral':(en?'cbi-button-remove':'cbi-button-add'),function(){
           var cur=yes((window.dmState||{}).watchdog);
-          if(!cur && !profileSelected)return;
+          if(!cur && !profileSupported)return;
           setSetting('watchdog',cur?0:1,root);
-        },{disabled:!!state.busy || (!en && !profileSelected)})
+        },{disabled:!!state.busy || (!en && !profileSupported)})
       ])
     ])
   ]);
 
+  var availabilityHint=!profileSupported
+    ? E('div',{'class':'dm-inline-msg info'},'Для включения выберите профиль одной поддерживаемой категории. «Все категории» и смешанный/ручной выбор не поддерживаются.')
+    : null;
   var status=E('div',{'class':'dm-grid2'},[
     row('Служба',badge(service?'dm-ok':'dm-warn',service?'работает':'не работает')),
     row('Проверка DNS',badge(loop?'dm-ok':service?'dm-warn':'dm-off',loop?'активна':service?'ждёт запуска':'не работает'))
@@ -3799,6 +3834,7 @@ function watchdogCard(root,st){
 
   return E('div',{},[
     action,
+    availabilityHint,
     status,
     E('div',{'class':'dm-section-title'},'Настройки контроля'),
     main,
@@ -4759,7 +4795,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 1.50
+// DNS Manager LuCI version: 1.51
 return view.extend({
   load: DM.load,
   render: DM.render,
