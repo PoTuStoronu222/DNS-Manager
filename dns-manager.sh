@@ -6322,13 +6322,10 @@ watchdog_embedded_loop() {
 
         load_config >/dev/null 2>&1 || true
         _selection_kind="$(watchdog_scope_category 2>/dev/null || true)"
-        case "$_selection_kind" in
-            bypass|clean|security|privacy|adblock|family) ;;
-            *)
-                sleep "$_interval"
-                continue
-                ;;
-        esac
+        if ! watchdog_scope_supported; then
+            sleep "$_interval"
+            continue
+        fi
 
         if ! watchdog_resource_guard; then
             sleep "$_interval"
@@ -6432,7 +6429,7 @@ watchdog_embedded_loop() {
             sleep 5
         elif [ -n "$_local_recover_slots" ]; then
             _local_trigger="${_local_recover_slots# }"
-            log_msg "Локальный DoH-listener слота $_local_trigger отсутствует два цикла подряд. Запрашиваю восстановление https-dns-proxy без ротации DNS."
+            log_msg "Локальный DoH-listener слота $_local_trigger отсутствует ${WATCHDOG_FAIL_THRESHOLD:-2} последовательных цикла. Запрашиваю восстановление https-dns-proxy без ротации DNS."
             watchdog_service_recover_run >/dev/null 2>&1 || true
             _watchdog_action=1
             load_config
@@ -7446,10 +7443,10 @@ uninstall|--uninstall|remove|--remove)
     exit $?
     ;;
 watchdog-scope-state|--watchdog-scope-state)
-    preflight_readonly
-    init_dirs
-    load_config
-    startup_required_function_check || exit 1
+    preflight_readonly >/dev/null 2>&1 || exit 1
+    init_dirs >/dev/null 2>&1 || exit 1
+    load_config >/dev/null 2>&1 || exit 1
+    startup_required_function_check >/dev/null 2>&1 || exit 1
     if watchdog_scope_supported; then printf '1\n'; else printf '0\n'; fi
     exit 0
     ;;
