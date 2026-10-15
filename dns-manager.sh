@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.54"
+VERSION="3.55"
 # 3.38: clear the LuCI update flag after a successful CLI update.
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
@@ -5267,6 +5267,9 @@ luci_companion_remove() {
         err_msg "После удаления LuCI её файлы всё ещё присутствуют; очистку не считаю завершённой."
         return 1
     fi
+    # The companion removes its files but can leave its now-empty parent directory.
+    # rmdir removes only this namespaced directory when empty; unrelated files are preserved.
+    rmdir /usr/lib/dns-manager-luci 2>/dev/null || true
     rm -f "$LUCI_COMPANION_CACHE" "$LUCI_STATE_FILE" 2>/dev/null || true
     return 0
 }
