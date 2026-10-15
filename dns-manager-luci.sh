@@ -3794,7 +3794,7 @@ function watchdogCard(root,st){
     ]),
     E('div',{'class':'dm-setting-controls'},[
       E('div',{'class':'dm-setting-actions'},[
-        badge(busy?'dm-warn':(en?'dm-ok':'dm-off'),busy?'изменение':(en?'включено':'выключено')),
+        badge(busy?'dm-warn':(!canEnable?'dm-bad':(en?'dm-ok':'dm-off')),busy?'изменение':(!canEnable?'профиль не поддерживается':(en?'включено':'выключено'))),
         btn(busy?'Сохраняю…':(en?'Выключить':'Включить'),busy?'cbi-button-neutral':(en?'cbi-button-remove':'cbi-button-add'),function(){
           var cur=yes((window.dmState||{}).watchdog);
           if(!cur && !watchdogProfileSupported(window.dmState||{}))return;
@@ -3824,7 +3824,7 @@ function watchdogCard(root,st){
   ]);
 
   var content=[action];
-  if(!en&&!canEnable)content.push(E('div',{'class':'dm-hint'},watchdogProfileReason(st)));
+  if(!canEnable)content.push(E('div',{'class':'dm-hint'},watchdogProfileReason(st)));
   content.push(
     status,
     E('div',{'class':'dm-section-title'},'Настройки контроля'),
