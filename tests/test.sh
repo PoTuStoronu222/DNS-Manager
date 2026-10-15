@@ -811,6 +811,7 @@ chmod +x "$tmp/watchdog_scope_runner.sh"
 "$tmp/watchdog_scope_runner.sh" "$tmp/watchdog_scope.sh" || fail "watchdog supported-profile/RU-slot behavior"
 awk '/^watchdog_embedded_loop\(\) \{/,/^# ==========================================/' dns-manager.sh > "$tmp/watchdog_embedded_loop.sh"
 grep -Fq 'if [ "$_slot" = RU ] && ! watchdog_slot_is_selected "$_slot"; then' "$tmp/watchdog_embedded_loop.sh" || fail "embedded watchdog still probes the default RU port without an RU DNS"
+grep -Fq 'отсутствует ${WATCHDOG_FAIL_THRESHOLD:-2} последовательных циклов подряд' dns-manager.sh || fail "listener recovery log ignores the configured failure threshold"
 ok "watchdog ignores an unconfigured RU slot and admits only supported scopes"
 awk '
     /^watchdog_pick_replacement\(\) \{/ { capture=1 }
