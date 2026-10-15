@@ -6339,6 +6339,29 @@ watchdog_embedded_restore_slots() {
     done
     return 0
 }
+watchdog_embedded_repair_failed_slots() {
+    local _wef_trigger _wef_max
+    _wef_max="${WATCHDOG_MAX_REPAIRS:-1}"
+    case "$_wef_max" in ''|*[!0-9]*) _wef_max=1;; esac
+    [ "$_wef_max" -ge 1 ] 2>/dev/null || _wef_max=1
+    [ "$_wef_max" -le 3 ] 2>/dev/null || _wef_max=3
+    for _wef_trigger in ${_threshold_slots:-}; do
+        [ "${_wd_repairs:-0}" -lt "$_wef_max" ] || break
+        watchdog_loop_repair_cooldown_ok "$_wef_trigger" || continue
+        watchdog_loop_mark_repair "$_wef_trigger"
+        log_msg "Подтверждён сбой слота $_wef_trigger при живом локальном listener. Запрашиваю точечную замену."
+        if watchdog_embedded_repair_slot "$_wef_trigger"; then
+            log_msg "Watchdog: слот $_wef_trigger изменён после подтверждённого восстановления."
+        else
+            log_msg "Watchdog: слот $_wef_trigger не изменён; повторю проверку после новых циклов."
+        fi
+        _watchdog_action=1
+        eval "WD_FAIL_${_wef_trigger}=0"
+        WD_LAST_GUARD_TS="$(date +%s 2>/dev/null)"
+        sleep 5
+    done
+    return 0
+}
 watchdog_embedded_loop() {
     [ "${WATCHDOG_ENABLED:-0}" = 1 ] || return 0
 
@@ -6495,25 +6518,7 @@ watchdog_embedded_loop() {
             # Never rotate healthy DNS choices during a common outage.
             for _slot in 1 2 3 4 5 6 RU; do watchdog_loop_reset_slot "$_slot"; done
         else
-            _max_repairs="${WATCHDOG_MAX_REPAIRS:-1}"
-            case "$_max_repairs" in ''|*[!0-9]*) _max_repairs=1;; esac
-            [ "$_max_repairs" -ge 1 ] 2>/dev/null || _max_repairs=1
-            [ "$_max_repairs" -le 3 ] 2>/dev/null || _max_repairs=3
-            for _trigger in $_threshold_slots; do
-                [ "$_wd_repairs" -lt "$_max_repairs" ] || break
-                watchdog_loop_repair_cooldown_ok "$_trigger" || continue
-                watchdog_loop_mark_repair "$_trigger"
-                log_msg "Подтверждён сбой слота $_trigger при живом локальном listener. Запрашиваю точечную замену."
-                if watchdog_embedded_repair_slot "$_trigger"; then
-                    log_msg "Watchdog: слот $_trigger изменён после подтверждённого восстановления."
-                else
-                    log_msg "Watchdog: слот $_trigger не изменён; повторю проверку после новых циклов."
-                fi
-                _watchdog_action=1
-                eval "WD_FAIL_${_trigger}=0"
-                WD_LAST_GUARD_TS="$(date +%s 2>/dev/null)"
-                sleep 5
-            done
+            watchdog_embedded_repair_failed_slots
         fi
 
         if [ "$_watchdog_action" = 0 ] && [ "$_failed" -eq 0 ] && [ "$_missing" -eq 0 ]; then
