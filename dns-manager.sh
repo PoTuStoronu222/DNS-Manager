@@ -6423,7 +6423,7 @@ watchdog_embedded_loop() {
             sleep 5
         elif [ -n "$_local_recover_slots" ]; then
             _local_trigger="${_local_recover_slots# }"
-            log_msg "Локальный DoH-listener слота $_local_trigger отсутствует два цикла подряд. Запрашиваю восстановление https-dns-proxy без ротации DNS."
+            log_msg "Локальный DoH-listener слота $_local_trigger отсутствует после ${WATCHDOG_FAIL_THRESHOLD:-2} последовательных проверок. Запрашиваю восстановление https-dns-proxy без ротации DNS."
             watchdog_service_recover_run >/dev/null 2>&1 || true
             _watchdog_action=1
             load_config
