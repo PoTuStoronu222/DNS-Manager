@@ -21,6 +21,12 @@ ok "shell syntax"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT INT TERM
 
+# Uninstall must remove the empty, namespaced LuCI backend directory.
+sed -n '/^luci_companion_remove(/,/^}/p' dns-manager.sh > "$tmp/luci_remove_fn.sh"
+[ -s "$tmp/luci_remove_fn.sh" ] || fail "LuCI uninstall helper extraction"
+grep -Fq 'rmdir /usr/lib/dns-manager-luci 2>/dev/null || true' "$tmp/luci_remove_fn.sh" || fail "LuCI uninstall leaves the empty backend directory"
+ok "LuCI uninstall removes its empty backend directory"
+
 
 # Update-chain regression checks: temporary names must keep the PID suffix, and
 # installed LuCI version detection must trust the code LuCI actually loads.
@@ -225,7 +231,7 @@ grep -Fq "disabled:!!state.busy||!!state.jobRunning||unavailable||checking" dns-
 grep -q "'gaming','Игровые DNS'" dns-manager-luci.sh || fail "gaming catalog label missing in LuCI"
 grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validation missing gaming category"
 grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
-grep -q 'VERSION="3.53"' dns-manager.sh || fail "manager version not bumped"
+grep -q 'VERSION="3.55"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
 grep -q 'VERSION="1.50"' dns-manager-luci.sh || fail "LuCI version not bumped"
 grep -q "'bypass','Обход геоблока'" dns-manager-luci.sh || fail "bypass profile label not updated"
@@ -365,6 +371,10 @@ grep -q '\[ "\$_nrc" -ge 300 \].*\[ "\$_nrc" -le 7200 \]' "$tmp/backend.sh" || f
 ok "watchdog defaults and backend ranges match the practical minute-based UI"
 
 grep -q '^restore_dns_core() {' dns-manager.sh || fail "DNS core restore helper missing"
+grep -q '^restore_hdp_package_defaults() {' dns-manager.sh || fail "package-default DNS restore helper missing"
+grep -Fq 'restore_hdp_package_defaults || _rc=1' dns-manager.sh || fail "DNS core restore does not rebuild package defaults"
+grep -Fq 'https://cloudflare-dns.com/dns-query' dns-manager.sh || fail "Cloudflare package default missing"
+grep -Fq 'https://dns.google/dns-query' dns-manager.sh || fail "Google package default missing"
 awk '/^menu_slots() {/,/^firewall_dot_rule_matches() {/' dns-manager.sh > "$tmp/menu_slots.sh"
 if grep -q 'hybrid_set_defaults\|CORE_ONLY=1; apply_settings\|CORE_ONLY=1' "$tmp/menu_slots.sh"; then
     fail "DNS menu restore still selects/applies a DNS profile"
@@ -402,8 +412,8 @@ view_luci="$(sed -n 's|^// DNS Manager LuCI common module version:[[:space:]]*||
 [ "$top_luci" = "$self_luci" ] || fail "LuCI SELF_VERSION mismatch"
 [ "$top_luci" = "$view_luci" ] || fail "embedded JS version mismatch"
 ok "LuCI version markers synchronized ($top_luci)"
-grep -Fq 'VERSION="3.53"' dns-manager.sh || fail "DNS Manager version marker is not 3.53"
-ok "DNS Manager version marker synchronized (3.52)"
+grep -Fq 'VERSION="3.55"' dns-manager.sh || fail "DNS Manager version marker is not 3.55"
+ok "DNS Manager version marker synchronized (3.55)"
 
 if awk '
     /function startAutoStatus\(root\)/ { capture=1 }

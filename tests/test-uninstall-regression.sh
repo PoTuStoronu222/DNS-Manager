@@ -100,6 +100,215 @@ cmp -s "$DNS_STATE" "$WORK/dns-state.expected" || fail "uninstall changed DNS/Do
 [ ! -e "$WORK/forbidden-dns-call" ] || fail "uninstall called a DNS cleanup helper"
 ok "Package-removal failure is retryable; DNS restore runs before every package-removal attempt"
 
+
+# DNS reset must restore the official package defaults, not leave zero DoH instances.
+(
+    extract_function restore_hdp_package_defaults "$WORK/restore-hdp-defaults.sh" || fail "cannot extract package-default DNS restore helper"
+    . "$WORK/restore-hdp-defaults.sh"
+    HDP_TEST_SECTIONS="$WORK/restore-hdp-sections.conf"
+    HDP_TEST_MAIN="$WORK/restore-hdp-main.conf"
+    HDP_TEST_EVENTS="$WORK/restore-hdp-events"
+    cat > "$HDP_TEST_SECTIONS" <<'EOF_HDP_TEST_SECTIONS'
+old1|5054|https://cloudflare-dns.com/dns-query|old-bootstrap|127.0.0.1|2
+old2|5056|https://dns.aa.net.uk/dns-query|old-bootstrap|127.0.0.1|2
+old3|5058|https://dns.belnet.be/dns-query|old-bootstrap|127.0.0.1|2
+EOF_HDP_TEST_SECTIONS
+    cat > "$HDP_TEST_MAIN" <<'EOF_HDP_TEST_MAIN'
+type=main
+force_dns=0
+dnsmasq_config_update=-
+notrack_dns=1
+force_dns_port=53
+force_dns_port=853
+force_dns_src_interface=lan
+EOF_HDP_TEST_MAIN
+    : > "$HDP_TEST_EVENTS"
+    uci() {
+        [ "${1:-}" = "-q" ] && shift
+        case "${1:-}" in
+            show)
+                [ "${2:-}" = https-dns-proxy ] || return 1
+                [ -s "$HDP_TEST_MAIN" ] && printf 'https-dns-proxy.config=main\n'
+                awk -F'|' '{ printf "https-dns-proxy.@https-dns-proxy[%d]=https-dns-proxy\n", NR-1 }' "$HDP_TEST_SECTIONS"
+                ;;
+            delete)
+                UT_TARGET="${2:-}"
+                case "$UT_TARGET" in
+                    https-dns-proxy.config)
+                        : > "$HDP_TEST_MAIN"
+                        ;;
+                    https-dns-proxy.config.*)
+                        UT_KEY="${UT_TARGET#https-dns-proxy.config.}"
+                        awk -F'=' -v k="$UT_KEY" '$1 != k {print}' "$HDP_TEST_MAIN" > "$HDP_TEST_MAIN.tmp" &&
+                            mv "$HDP_TEST_MAIN.tmp" "$HDP_TEST_MAIN"
+                        ;;
+                    https-dns-proxy.@https-dns-proxy*)
+                        UT_IDX="$(printf '%s\n' "$UT_TARGET" | sed -n 's/^https-dns-proxy\.@https-dns-proxy\[\([0-9][0-9]*\)\]$/\1/p')"
+                        [ -n "$UT_IDX" ] || return 1
+                        awk -F'|' -v n="$((UT_IDX + 1))" 'NR != n {print}' "$HDP_TEST_SECTIONS" > "$HDP_TEST_SECTIONS.tmp" &&
+                            mv "$HDP_TEST_SECTIONS.tmp" "$HDP_TEST_SECTIONS"
+                        ;;
+                    *) return 1 ;;
+                esac
+                printf 'delete:%s\n' "$UT_TARGET" >> "$HDP_TEST_EVENTS"
+                ;;
+            set)
+                UT_ASSIGN="${2:-}"
+                UT_LEFT="${UT_ASSIGN%%=*}"
+                UT_VALUE="${UT_ASSIGN#*=}"
+                case "$UT_LEFT" in
+                    https-dns-proxy.config)
+                        : > "$HDP_TEST_MAIN"
+                        printf 'type=%s\n' "$UT_VALUE" >> "$HDP_TEST_MAIN"
+                        ;;
+                    https-dns-proxy.config.*)
+                        UT_KEY="${UT_LEFT#https-dns-proxy.config.}"
+                        awk -F'=' -v k="$UT_KEY" '$1 != k {print}' "$HDP_TEST_MAIN" > "$HDP_TEST_MAIN.tmp" &&
+                            mv "$HDP_TEST_MAIN.tmp" "$HDP_TEST_MAIN"
+                        printf '%s=%s\n' "$UT_KEY" "$UT_VALUE" >> "$HDP_TEST_MAIN"
+                        ;;
+                    https-dns-proxy.cfg-default-*.bootstrap_dns)
+                        UT_SEC="${UT_LEFT#https-dns-proxy.}"; UT_SEC="${UT_SEC%%.*}"
+                        awk -F'|' -v OFS='|' -v id="$UT_SEC" -v v="$UT_VALUE" '$1==id {$4=v} {print}' "$HDP_TEST_SECTIONS" > "$HDP_TEST_SECTIONS.tmp" &&
+                            mv "$HDP_TEST_SECTIONS.tmp" "$HDP_TEST_SECTIONS"
+                        ;;
+                    https-dns-proxy.cfg-default-*.resolver_url)
+                        UT_SEC="${UT_LEFT#https-dns-proxy.}"; UT_SEC="${UT_SEC%%.*}"
+                        awk -F'|' -v OFS='|' -v id="$UT_SEC" -v v="$UT_VALUE" '$1==id {$3=v} {print}' "$HDP_TEST_SECTIONS" > "$HDP_TEST_SECTIONS.tmp" &&
+                            mv "$HDP_TEST_SECTIONS.tmp" "$HDP_TEST_SECTIONS"
+                        ;;
+                    https-dns-proxy.cfg-default-*.listen_port)
+                        UT_SEC="${UT_LEFT#https-dns-proxy.}"; UT_SEC="${UT_SEC%%.*}"
+                        awk -F'|' -v OFS='|' -v id="$UT_SEC" -v v="$UT_VALUE" '$1==id {$2=v} {print}' "$HDP_TEST_SECTIONS" > "$HDP_TEST_SECTIONS.tmp" &&
+                            mv "$HDP_TEST_SECTIONS.tmp" "$HDP_TEST_SECTIONS"
+                        ;;
+                    *) return 1 ;;
+                esac
+                printf 'set:%s\n' "$UT_ASSIGN" >> "$HDP_TEST_EVENTS"
+                ;;
+            add)
+                [ "${2:-}" = https-dns-proxy ] && [ "${3:-}" = https-dns-proxy ] || return 1
+                UT_NEXT="$(awk -F'|' '$1 ~ /^cfg-default-[0-9]+$/ {n++} END {print n+1}' "$HDP_TEST_SECTIONS")"
+                printf 'cfg-default-%s|||||\n' "$UT_NEXT" >> "$HDP_TEST_SECTIONS"
+                printf 'cfg-default-%s\n' "$UT_NEXT"
+                ;;
+            add_list)
+                UT_ASSIGN="${2:-}"
+                UT_LEFT="${UT_ASSIGN%%=*}"
+                UT_VALUE="${UT_ASSIGN#*=}"
+                case "$UT_LEFT" in
+                    https-dns-proxy.config.force_dns_port)
+                        printf 'force_dns_port=%s\n' "$UT_VALUE" >> "$HDP_TEST_MAIN"
+                        ;;
+                    https-dns-proxy.config.force_dns_src_interface)
+                        printf 'force_dns_src_interface=%s\n' "$UT_VALUE" >> "$HDP_TEST_MAIN"
+                        ;;
+                    *) return 1 ;;
+                esac
+                ;;
+            commit)
+                [ "${2:-}" = https-dns-proxy ] || return 1
+                printf 'commit\n' >> "$HDP_TEST_EVENTS"
+                ;;
+            *) return 1 ;;
+        esac
+    }
+    restore_hdp_package_defaults || { echo "restore helper failed" >&2; cat "$HDP_TEST_SECTIONS" "$HDP_TEST_MAIN" "$HDP_TEST_EVENTS" >&2; exit 1; }
+    [ "$(wc -l < "$HDP_TEST_SECTIONS" | tr -d ' ')" = 2 ] || { printf "wrong section count\n" >&2; cat "$HDP_TEST_SECTIONS" >&2; exit 1; }
+    grep -Fq '|5053|https://cloudflare-dns.com/dns-query|1.1.1.1,1.0.0.1,2606:4700:4700::1111,2606:4700:4700::1001' "$HDP_TEST_SECTIONS" || { echo "Cloudflare factory entry mismatch" >&2; cat "$HDP_TEST_SECTIONS" >&2; exit 1; }
+    grep -Fq '|5054|https://dns.google/dns-query|8.8.8.8,8.8.4.4,2001:4860:4860::8888,2001:4860:4860::8844' "$HDP_TEST_SECTIONS" || { echo "Google factory entry mismatch" >&2; cat "$HDP_TEST_SECTIONS" >&2; exit 1; }
+    grep -qx 'force_dns=1' "$HDP_TEST_MAIN" || { echo "force_dns default mismatch" >&2; cat "$HDP_TEST_MAIN" >&2; exit 1; }
+    grep -Fqx 'dnsmasq_config_update=*' "$HDP_TEST_MAIN" || { echo "dnsmasq_config_update default mismatch" >&2; cat "$HDP_TEST_MAIN" >&2; exit 1; }
+    grep -qx 'notrack_dns=1' "$HDP_TEST_MAIN" || exit 1
+    grep -qx 'force_dns_port=53' "$HDP_TEST_MAIN" || exit 1
+    grep -qx 'force_dns_port=853' "$HDP_TEST_MAIN" || exit 1
+    grep -qx 'force_dns_src_interface=lan' "$HDP_TEST_MAIN" || exit 1
+    grep -qx 'commit' "$HDP_TEST_EVENTS" || exit 1
+) || fail "DNS reset did not restore the official https-dns-proxy defaults"
+ok "DNS reset restores package defaults: Cloudflare 5053 + Google 5054"
+
+# Anonymous https-dns-proxy UCI section indices shift after deletion.
+# Remove several Manager-owned instances in reverse order, without touching an
+# unrelated resolver that happens to sit between them.
+(
+    extract_function rollback_hdp_targeted "$WORK/rollback-hdp-source.sh" || fail "cannot extract DoH rollback helper"
+    sed 's|^[[:space:]]*/etc/init.d/https-dns-proxy restart.*|    : # service restart mocked for this isolated test|' \
+        "$WORK/rollback-hdp-source.sh" > "$WORK/rollback-hdp-targeted.sh"
+    . "$WORK/rollback-hdp-targeted.sh"
+    ROLLBACK_SECTIONS="$WORK/rollback-sections.conf"
+    ROLLBACK_UCI_CALLS="$WORK/rollback-uci-calls"
+    OWNERSHIP="$WORK/rollback-ownership.conf"
+    : > "$OWNERSHIP"
+    : > "$ROLLBACK_UCI_CALLS"
+    cat > "$ROLLBACK_SECTIONS" <<'EOF_ROLLBACK_SECTIONS'
+5054|https://cloudflare-dns.com/dns-query
+5056|https://dns.aa.net.uk/dns-query
+6000|https://manual.example/dns-query
+5058|https://dns.belnet.be/dns-query
+EOF_ROLLBACK_SECTIONS
+    SLOT_1=cloudflare; PORT_1=5054
+    SLOT_2=aa; PORT_2=5056
+    SLOT_3=belnet; PORT_3=5058
+    SLOT_4=; SLOT_5=; SLOT_6=; SLOT_RU=
+    PORT_4=; PORT_5=; PORT_6=; PORT_RU=
+    normalize_url() { printf '%s' "$1" | sed 's/[[:space:]]//g; s:/*$::'; }
+    dns_url() {
+        case "$1" in
+            cloudflare) printf 'https://cloudflare-dns.com/dns-query' ;;
+            aa) printf 'https://dns.aa.net.uk/dns-query' ;;
+            belnet) printf 'https://dns.belnet.be/dns-query' ;;
+            *) return 1 ;;
+        esac
+    }
+    rollback_ownership_has() { return 1; }
+    uci() {
+        [ "$1" = "-q" ] && shift
+        case "$1" in
+            show)
+                [ "$2" = "https-dns-proxy" ] || return 1
+                awk -F'|' '{ printf "https-dns-proxy.@https-dns-proxy[%d]=https-dns-proxy\n", NR-1 }' "$ROLLBACK_SECTIONS"
+                ;;
+            get)
+                _target="$2"
+                _idx="$(printf '%s\n' "$_target" | sed -n 's/^https-dns-proxy\.@https-dns-proxy\[\([0-9][0-9]*\)\].*/\1/p')"
+                [ -n "$_idx" ] || return 1
+                _row="$(sed -n "$((_idx + 1))p" "$ROLLBACK_SECTIONS")"
+                [ -n "$_row" ] || return 1
+                _port="$(printf '%s\n' "$_row" | cut -d'|' -f1)"
+                _url="$(printf '%s\n' "$_row" | cut -d'|' -f2-)"
+                case "$_target" in
+                    *.resolver_url) printf '%s' "$_url" ;;
+                    *.listen_port) printf '%s' "$_port" ;;
+                    *) printf 'https-dns-proxy' ;;
+                esac
+                ;;
+            delete)
+                _target="$2"
+                _idx="$(printf '%s\n' "$_target" | sed -n 's/^https-dns-proxy\.@https-dns-proxy\[\([0-9][0-9]*\)\]$/\1/p')"
+                [ -n "$_idx" ] || return 1
+                awk -F'|' -v n="$((_idx + 1))" 'NR != n { print }' "$ROLLBACK_SECTIONS" > "$ROLLBACK_SECTIONS.tmp" &&
+                    mv "$ROLLBACK_SECTIONS.tmp" "$ROLLBACK_SECTIONS"
+                printf 'delete:%s\n' "$_idx" >> "$ROLLBACK_UCI_CALLS"
+                ;;
+            commit)
+                [ "$2" = "https-dns-proxy" ] || return 1
+                printf 'commit\n' >> "$ROLLBACK_UCI_CALLS"
+                ;;
+            *) return 1 ;;
+        esac
+    }
+    rollback_hdp_targeted || exit 1
+    if grep -qE '^(5054|5056|5058)\|' "$ROLLBACK_SECTIONS"; then
+        printf 'Remaining Manager DoH sections:\n' >&2
+        cat "$ROLLBACK_SECTIONS" >&2
+        exit 1
+    fi
+    grep -q '^6000|https://manual.example/dns-query$' "$ROLLBACK_SECTIONS" ||
+        { printf 'Unrelated DoH section was removed\n' >&2; exit 1; }
+    [ "$(wc -l < "$ROLLBACK_SECTIONS" | tr -d ' ')" = 1 ] || exit 1
+) || fail "DoH rollback skipped sections after anonymous UCI indices shifted"
+ok "multiple Manager DoH sections removed; unrelated resolver preserved"
+
 # When no explicit upstream remains, disable noresolv so system resolvfile is used.
 extract_function uninstall_dnsmasq_resolv_fallback "$WORK/resolv-fallback.sh" || fail "cannot extract DNS resolvfile fallback"
 . "$WORK/resolv-fallback.sh"
