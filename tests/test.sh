@@ -127,7 +127,13 @@ if validate_dns_message "$tmp/dns-wrong-qcount" "$tmp/dns-query"; then
     fail "DNS response with a mismatched question count accepted"
 fi
 
-ok "DNS response validation checks ID, QR, opcode, and question count"
+# A matching header is not enough if the response question doesn't match the query.
+printf '\\022\\064\\201\\200\\000\\001\\000\\000\\000\\000\\000\\000\\006google\\003com\\000\\000\\001\\000\\001' > "$tmp/dns-wrong-question"
+if validate_dns_message "$tmp/dns-wrong-question" "$tmp/dns-query"; then
+    fail "DNS response with a different question accepted"
+fi
+
+ok "DNS response validation checks ID, QR, opcode, question count, and echoed question"
 awk '
     /cat > "[^"]*BACKEND_STAGE[^"]*"[^<]*<<\x27EOF_RPC\x27/ { capture=1; next }
     capture && /^EOF_RPC$/ { exit }

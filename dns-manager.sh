@@ -1837,10 +1837,14 @@ validate_dns_message() {
     [ -s "$_file" ] && [ -s "$_query" ] || return 1
     _n="$(wc -c < "$_file" 2>/dev/null | tr -d " ")"
     case "$_n" in ''|*[!0-9]*) return 1;; esac
-    [ "$_n" -ge 17 ] || return 1
+    [ "$_n" -ge 12 ] || return 1
+    _query_n="$(wc -c < "$_query" 2>/dev/null | tr -d " ")"
+    case "$_query_n" in ''|*[!0-9]*) return 1;; esac
+    [ "$_query_n" -gt 12 ] || return 1
+    [ "$_n" -ge "$_query_n" ] || return 1
 
     # A DoH body is a DNS wire-format message. Check the response header
-    # against the query we sent, without requiring RCODE=0 or an A answer.
+    # against the query we sent, including the echoed question section.
     _header="$(od -An -tu1 -N6 "$_file" 2>/dev/null)" || return 1
     set -- $_header
     [ "$#" -eq 6 ] || return 1
@@ -1859,6 +1863,11 @@ validate_dns_message() {
     [ $((_flags_hi & 128)) -ne 0 ] || return 1
     [ $((_flags_hi & 120)) -eq "$_query_opcode" ] || return 1
     [ "$_qdcount" -eq "$_query_qdcount" ] || return 1
+
+    _question_len=$((_query_n - 12))
+    _query_question="$(od -An -tu1 -j 12 -N "$_question_len" "$_query" 2>/dev/null | tr -s '[:space:]' ' ' | sed 's/^ //;s/ $//')" || return 1
+    _response_question="$(od -An -tu1 -j 12 -N "$_question_len" "$_file" 2>/dev/null | tr -s '[:space:]' ' ' | sed 's/^ //;s/ $//')" || return 1
+    [ -n "$_query_question" ] && [ "$_query_question" = "$_response_question" ] || return 1
     return 0
 }
 test_one_dns() {
