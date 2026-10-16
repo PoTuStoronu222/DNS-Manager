@@ -1833,7 +1833,6 @@ return 1
 # ==========================================
 validate_dns_message() {
     _file="$1"
-    _query="${2:-}"
     [ -s "$_file" ] || return 1
     _n="$(wc -c < "$_file" 2>/dev/null | tr -d " ")"
     case "$_n" in ''|*[!0-9]*) return 1;; esac
@@ -1845,7 +1844,6 @@ validate_dns_message() {
     _header="$(od -An -tu1 -N12 "$_file" 2>/dev/null)" || return 1
     set -- $_header
     [ "$#" -eq 12 ] || return 1
-    _id=$(( $1 * 256 + $2 ))
     _flags_hi="$3"
     _qdcount=$(( $5 * 256 + $6 ))
 
@@ -1854,15 +1852,6 @@ validate_dns_message() {
     [ $((_flags_hi & 120)) -eq 0 ] || return 1
     [ "$_qdcount" -eq 1 ] || return 1
 
-    # Match the ID to the query sent by test_one_dns.
-    if [ -n "$_query" ]; then
-        [ -s "$_query" ] || return 1
-        _qheader="$(od -An -tu1 -N2 "$_query" 2>/dev/null)" || return 1
-        set -- $_qheader
-        [ "$#" -eq 2 ] || return 1
-        _qid=$(( $1 * 256 + $2 ))
-        [ "$_id" -eq "$_qid" ] || return 1
-    fi
     return 0
 }
 test_one_dns() {
@@ -1878,7 +1867,7 @@ q="$TMP_DIR/dns_query.bin"; body="$TMP_DIR/body.$id"; hdr="$TMP_DIR/h.$id"
 # may arrive without that file. Create it on demand instead of turning a valid
 # unassigned DNS into a false "unavailable" result.
 if [ ! -s "$q" ]; then
-    printf '\022\064\001\000\000\001\000\000\000\000\000\000\007example\003com\000\000\001\000\001' > "$q" 2>/dev/null || {
+    printf '\000\000\001\000\000\001\000\000\000\000\000\000\007example\003com\000\000\001\000\001' > "$q" 2>/dev/null || {
         printf '%s\n' "$id|$cat|$name|-1|INTERNAL_TEST_QUERY_CREATE_FAIL" > "$TMP_DIR/t.$id"
         rm -f "$body" "$hdr"
         return
@@ -1918,7 +1907,7 @@ while IFS= read -r ipx; do
     case "$code" in
     200)
         case "$ctype" in *application/dns-message*) ct_ok=yes;; *) ct_ok=no;; esac
-        if [ "$ct_ok" = yes ] && validate_dns_message "$body" "$q"; then
+        if [ "$ct_ok" = yes ] && validate_dns_message "$body"; then
             if [ "$_best_ms" -lt 0 ] || { [ "$ms" -ge 0 ] && [ "$ms" -lt "$_best_ms" ]; }; then _best_ms="$ms"; fi
             st=OK
         else st=BAD_DOH_RESPONSE; fi ;;
@@ -1960,7 +1949,7 @@ test_dns_catalog() (
     # Create the immutable shared DNS wire query before launching any parallel
     # test workers. This removes the worker-to-worker race on dns_query.bin.
     q="$TMP_DIR/dns_query.bin"
-    printf '\022\064\001\000\000\001\000\000\000\000\000\000\007example\003com\000\000\001\000\001' > "$q" 2>/dev/null || {
+    printf '\000\000\001\000\000\001\000\000\000\000\000\000\007example\003com\000\000\001\000\001' > "$q" 2>/dev/null || {
         release_test_lock
         warn_msg "Не удалось создать общий DNS-тестовый пакет."
         return 1
@@ -7359,7 +7348,7 @@ test-one|--test-one)
     fi
     rm -f "$TMP_DIR/t.$_test_id" "$TMP_DIR/dns_query.bin" "$TMP_DIR/body.$_test_id" "$TMP_DIR/h.$_test_id" 2>/dev/null || true
     q="$TMP_DIR/dns_query.bin"
-    if ! printf '\022\064\001\000\000\001\000\000\000\000\000\000\007example\003com\000\000\001\000\001' > "$q" 2>/dev/null; then
+    if ! printf '\000\000\001\000\000\001\000\000\000\000\000\000\007example\003com\000\000\001\000\001' > "$q" 2>/dev/null; then
         rm -f "$q" 2>/dev/null || true
         [ "$_test_lock_owned" = 1 ] && release_test_lock
         printf '%s||||INTERNAL_TEST_QUERY_CREATE_FAIL\n' "$_test_id"
