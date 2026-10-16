@@ -96,30 +96,37 @@ awk '
 [ -s "$tmp/validate_dns.sh" ] || fail "DNS response validator extraction"
 . "$tmp/validate_dns.sh"
 
-printf '\022\064\001\000\000\001\000\000\000\000\000\000\007example\003com\000\000\001\000\001' > "$tmp/dns-query"
-printf '\022\064\201\203\000\001\000\000\000\000\000\000\007example\003com\000\000\001\000\001' > "$tmp/dns-response-nxdomain"
-validate_dns_message "$tmp/dns-response-nxdomain" "$tmp/dns-query" || fail "valid DNS NXDOMAIN response rejected"
+# RFC 8484 recommends DNS ID 0 for DoH requests; HTTP correlates the exchange.
+printf '\000\000\001\000\000\001\000\000\000\000\000\000\007example\003com\000\000\001\000\001' > "$tmp/dns-query"
+printf '\000\000\201\203\000\001\000\000\000\000\000\000\007example\003com\000\000\001\000\001' > "$tmp/dns-response-nxdomain"
+validate_dns_message "$tmp/dns-response-nxdomain" || fail "valid DNS NXDOMAIN response rejected"
 
 printf '\000\000\000\000\000\001\000\000\000\000\000' > "$tmp/dns-short"
-if validate_dns_message "$tmp/dns-short" "$tmp/dns-query"; then
+if validate_dns_message "$tmp/dns-short"; then
     fail "short DNS body accepted"
 fi
 
 # Arbitrary bytes with an HTTP-200-sized body must not be classified as DoH success.
 printf '\000\000\000\000\000\001\000\000\000\000\000\000abcdefghijkl' > "$tmp/dns-body"
-if validate_dns_message "$tmp/dns-body" "$tmp/dns-query"; then
+if validate_dns_message "$tmp/dns-body"; then
     fail "malformed DNS body accepted"
 fi
 
-# The response ID must match the query ID.
-printf '\022\065\201\203\000\001\000\000\000\000\000\000\007example\003com\000\000\001\000\001' > "$tmp/dns-response-wrong-id"
-if validate_dns_message "$tmp/dns-response-wrong-id" "$tmp/dns-query"; then
-    fail "DNS response with mismatched ID accepted"
+# A query is not a response: QR must be set.
+if validate_dns_message "$tmp/dns-query"; then
+    fail "DNS query accepted as a response"
 fi
 
-# The query itself has the right ID and length but is not a DNS response (QR=0).
-if validate_dns_message "$tmp/dns-query" "$tmp/dns-query"; then
-    fail "DNS query accepted as a response"
+# Non-QUERY opcode must be rejected.
+printf '\000\000\211\203\000\001\000\000\000\000\000\000\007example\003com\000\000\001\000\001' > "$tmp/dns-response-wrong-opcode"
+if validate_dns_message "$tmp/dns-response-wrong-opcode"; then
+    fail "DNS response with unsupported opcode accepted"
+fi
+
+# The response must report one question, not an empty question section.
+printf '\000\000\201\203\000\000\000\001\000\000\000\000\007example\003com\000\000\001\000\001' > "$tmp/dns-response-no-question"
+if validate_dns_message "$tmp/dns-response-no-question"; then
+    fail "DNS response with zero questions accepted"
 fi
 
 ok "DoH DNS wire-header validation and RCODE-independent health checks"
