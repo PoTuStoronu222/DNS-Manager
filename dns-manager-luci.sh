@@ -2904,6 +2904,7 @@ function hasPing(v){ return /^\d+$/.test(String(v===undefined||v===null?'':v)); 
 function stateBadge(status,pingValue){
   var s=String(status||'').toUpperCase();
   if(s==='RUNNING')return badge('dm-warn','проверяется');
+  if(!s)return badge('dm-off','нет данных');
   if(s==='OK'&&hasPing(pingValue))return badge('dm-ok','доступен');
   if(s==='OK'||s==='FAIL'||s==='FAILED'||s.indexOf('_FAIL')>0||s.indexOf('TIMEOUT')>=0||s.indexOf('ERROR')>=0||s.indexOf('HTTP_')===0||!hasPing(pingValue))return badge('dm-bad','недоступен');
   return badge('dm-off','нет данных');
