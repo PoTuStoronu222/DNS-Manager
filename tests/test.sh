@@ -1185,13 +1185,16 @@ _wd_repairs=0
 WATCHDOG_MAX_REPAIRS=2
 watchdog_slot_target_run() { return 0; }
 . "$1"
-watchdog_loop_repair_slot 1 1
-[ "$_wd_repairs" = 0 ] || exit 41
+watchdog_loop_repair_slot 1 1; _rc=$?
+printf 'DEBUG watchdog repair step=1 rc=%s repairs=%s slot=%s\n' "$_rc" "$_wd_repairs" "$SLOT_1"
+[ "$_rc" = 0 ] && [ "$_wd_repairs" = 0 ] || exit 41
 watchdog_slot_target_run() { SLOT_1=new; return 0; }
-watchdog_loop_repair_slot 1 1
-[ "$_wd_repairs" = 1 ] || exit 42
-watchdog_loop_repair_slot 1 1
-[ "$_wd_repairs" = 1 ] || exit 43
+watchdog_loop_repair_slot 1 1; _rc=$?
+printf 'DEBUG watchdog repair step=2 rc=%s repairs=%s slot=%s\n' "$_rc" "$_wd_repairs" "$SLOT_1"
+[ "$_rc" = 0 ] && [ "$_wd_repairs" = 1 ] || exit 42
+watchdog_loop_repair_slot 1 1; _rc=$?
+printf 'DEBUG watchdog repair step=3 rc=%s repairs=%s slot=%s\n' "$_rc" "$_wd_repairs" "$SLOT_1"
+[ "$_rc" = 0 ] && [ "$_wd_repairs" = 1 ] || exit 43
 EOF_WD_BUDGET
 chmod +x "$tmp/watchdog_repair_budget_runner.sh"
 "$tmp/watchdog_repair_budget_runner.sh" "$tmp/watchdog_repair_budget.sh" || fail "watchdog repair budget counts no-op returns"
