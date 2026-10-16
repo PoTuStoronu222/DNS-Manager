@@ -1833,10 +1833,36 @@ return 1
 # ==========================================
 validate_dns_message() {
     _file="$1"
+    _query="${2:-}"
     [ -s "$_file" ] || return 1
     _n="$(wc -c < "$_file" 2>/dev/null | tr -d " ")"
     case "$_n" in ''|*[!0-9]*) return 1;; esac
-    [ "$_n" -ge 12 ] || return 1
+    [ "$_n" -ge 17 ] && [ "$_n" -le 65535 ] || return 1
+
+    # Check the DNS wire header instead of accepting arbitrary HTTP payloads.
+    # The endpoint must return a response to our query, but any DNS RCODE
+    # (including NXDOMAIN) still proves that the DoH endpoint answered.
+    _header="$(od -An -tu1 -N12 "$_file" 2>/dev/null)" || return 1
+    set -- $_header
+    [ "$#" -eq 12 ] || return 1
+    _id=$(( $1 * 256 + $2 ))
+    _flags_hi="$3"
+    _qdcount=$(( $5 * 256 + $6 ))
+
+    # QR must indicate a response; OPCODE must be QUERY (0).
+    [ "$_flags_hi" -ge 128 ] || return 1
+    [ $((_flags_hi & 120)) -eq 0 ] || return 1
+    [ "$_qdcount" -eq 1 ] || return 1
+
+    # Match the ID to the query sent by test_one_dns.
+    if [ -n "$_query" ]; then
+        [ -s "$_query" ] || return 1
+        _qheader="$(od -An -tu1 -N2 "$_query" 2>/dev/null)" || return 1
+        set -- $_qheader
+        [ "$#" -eq 2 ] || return 1
+        _qid=$(( $1 * 256 + $2 ))
+        [ "$_id" -eq "$_qid" ] || return 1
+    fi
     return 0
 }
 test_one_dns() {
@@ -1892,7 +1918,7 @@ while IFS= read -r ipx; do
     case "$code" in
     200)
         case "$ctype" in *application/dns-message*) ct_ok=yes;; *) ct_ok=no;; esac
-        if [ "$ct_ok" = yes ] && validate_dns_message "$body"; then
+        if [ "$ct_ok" = yes ] && validate_dns_message "$body" "$q"; then
             if [ "$_best_ms" -lt 0 ] || { [ "$ms" -ge 0 ] && [ "$ms" -lt "$_best_ms" ]; }; then _best_ms="$ms"; fi
             st=OK
         else st=BAD_DOH_RESPONSE; fi ;;
