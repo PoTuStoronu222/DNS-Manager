@@ -86,7 +86,7 @@ if grep -Fq '/www/luci-static/resources/view/dns_manager/overview.js' dns-manage
 grep -Fq 'ubus -v list dns_manager' "$tmp/luci_state_fn.sh" || fail "manager-side LuCI state does not inspect RPC methods"
 ok "LuCI runtime validation checks the current page layout and RPC contract"
 
-# DNS response validation intentionally stays lightweight: HTTP 200 + DNS message body.
+# Validate the DNS response header instead of accepting any 12-byte body.
 awk '
     /^validate_dns_message\(\) \{/ { capture=1 }
     capture { print }
@@ -100,10 +100,31 @@ if validate_dns_message "$tmp/dns-short"; then
     fail "short DNS body accepted"
 fi
 
-printf '\000\000\000\000\000\001\000\000\000\000\000\000abcdefghijkl' > "$tmp/dns-body"
-validate_dns_message "$tmp/dns-body" || fail "normal-sized DNS body rejected"
+printf '\022\064\001\000\000\001\000\000\000\000\000\000\007example\003com\000\000\001\000\001' > "$tmp/dns-query"
 
-ok "DNS response validation remains lightweight"
+# A standard DNS response for example.com A with one compressed A record.
+printf '\022\064\201\200\000\001\000\001\000\000\000\000\007example\003com\000\000\001\000\001\300\014\000\001\000\001\000\000\000\074\000\004\135\270\330\042' > "$tmp/dns-body"
+validate_dns_message "$tmp/dns-body" "$tmp/dns-query" || fail "valid DNS response rejected"
+
+# The same-length body with QR=0 is a query, not a DNS response.
+printf '\022\064\001\200\000\001\000\001\000\000\000\000\007example\003com\000\000\001\000\001\300\014\000\001\000\001\000\000\000\074\000\004\135\270\330\042' > "$tmp/dns-not-response"
+if validate_dns_message "$tmp/dns-not-response" "$tmp/dns-query"; then
+    fail "DNS query packet accepted as a response"
+fi
+
+# A DNS response must match the query ID.
+printf '\000\000\201\200\000\001\000\001\000\000\000\000\007example\003com\000\000\001\000\001\300\014\000\001\000\001\000\000\000\074\000\004\135\270\330\042' > "$tmp/dns-bad-id"
+if validate_dns_message "$tmp/dns-bad-id" "$tmp/dns-query"; then
+    fail "DNS response with mismatched ID accepted"
+fi
+
+# A successful probe must contain at least one answer record.
+printf '\022\064\201\200\000\001\000\000\000\000\000\000\007example\003com\000\000\001\000\001' > "$tmp/dns-no-answer"
+if validate_dns_message "$tmp/dns-no-answer" "$tmp/dns-query"; then
+    fail "DNS response without answers accepted"
+fi
+
+ok "DNS response validation checks the response header and query ID"
 awk '
     /cat > "[^"]*BACKEND_STAGE[^"]*"[^<]*<<\x27EOF_RPC\x27/ { capture=1; next }
     capture && /^EOF_RPC$/ { exit }
