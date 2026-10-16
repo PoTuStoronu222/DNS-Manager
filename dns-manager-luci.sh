@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.50
+# Version: 1.51
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -32,7 +32,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.50"
+VERSION="1.51"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -158,7 +158,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="1.50"
+SELF_VERSION="1.51"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -1178,6 +1178,8 @@ network_status_json() {
     _mode="$(cfg_get DNS_SELECTION_MODE)"; [ -n "$_mode" ] || _mode=none
     _selection_category="$(cfg_get DNS_SELECTION_CATEGORY)"; [ -n "$_selection_category" ] || _selection_category=none
     _watchdog="$(cfg_get WATCHDOG_ENABLED)"; [ -n "$_watchdog" ] || _watchdog=0
+    _watchdog_scope_supported="$("$MANAGER_PATH" --watchdog-scope-state 2>/dev/null || true)"
+    case "$_watchdog_scope_supported" in 0|1) ;; *) _watchdog_scope_supported=0;; esac
     _watchdog_interval="$(cfg_get WATCHDOG_INTERVAL)"; [ -n "$_watchdog_interval" ] || _watchdog_interval=600
     _watchdog_backend="$(cfg_get WATCHDOG_BACKEND)"; [ -n "$_watchdog_backend" ] || _watchdog_backend=procd
     _watchdog_threshold="$(manager_const_num WATCHDOG_FAIL_THRESHOLD 2)"
@@ -1199,6 +1201,7 @@ network_status_json() {
     _wl=0; watchdog_loop_running && _wl=1 || true
     printf '{"ok":true'; page_header_json
     printf ',"watchdog":'; json_quote "$_watchdog"
+    printf ',"watchdog_scope_supported":%s' "$_watchdog_scope_supported"
     printf ',"profile":'; json_quote "$_profile"; printf ',"profile_mode":'; json_quote "$_mode"; printf ',"selection_category":'; json_quote "$_selection_category"
     printf ',"watchdog_backend":'; json_quote "$_watchdog_backend"
     printf ',"watchdog_interval":%s,"watchdog_service":%s,"watchdog_service_enabled":%s,"watchdog_loop":%s' "$_watchdog_interval" "$_wr" "$_ws" "$_wl"
@@ -2614,15 +2617,14 @@ run_action() {
                 *) json_error "Недопустимая настройка"; return;;
             esac
             load_manager || { json_error "DNS Manager недоступен"; return; }
+            if [ "$_name" = watchdog ] && [ "$_enabled" = 1 ] && ! watchdog_scope_supported; then
+                json_error "Контроль DNS доступен только для поддерживаемого профиля с назначенным DNS-сервером."
+                return
+            fi
             _rc=0
             case "$_name" in
                 watchdog)
-                    if [ "$_enabled" = 1 ] && [ -z "$SLOT_1$SLOT_2$SLOT_3$SLOT_4$SLOT_5$SLOT_6$SLOT_RU" ]; then
-                        _rc=2
-                        printf '%s\n' "Сначала выберите профиль DNS Manager." >&2
-                    else
-                        SILENT_APPLY=1 watchdog_apply_toggle "$_enabled" >/dev/null 2>&1 || _rc=$?
-                    fi
+                    SILENT_APPLY=1 watchdog_apply_toggle "$_enabled" >/dev/null 2>&1 || _rc=$?
                     ;;
                 force)
                     FORCE_DOH="$_enabled"
@@ -2728,7 +2730,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI common module version: 1.50
+// DNS Manager LuCI common module version: 1.51
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -3674,7 +3676,7 @@ function settingCard(root,x,st){
 }
 function watchdogCard(root,st){
   var en=yes(st.watchdog), busy=state.busySetting==='watchdog' || state.busySetting==='watchdog_batch';
-  var profileSelected=String(st.profile||'none')!=='none';
+  var scopeSupported=yes(st.watchdog_scope_supported);
   var service=Number(st.watchdog_service||0)===1, loop=Number(st.watchdog_loop||0)===1;
   var inputs={};
 
@@ -3764,23 +3766,25 @@ function watchdogCard(root,st){
   var action=E('div',{'class':'dm-setting '+(busy?'dm-setting-saving':'')},[
     E('div',{'class':'dm-setting-text'},[
       E('div',{'class':'dm-setting-title'},'Контроль DNS'),
-      E('div',{'class':'dm-setting-desc'},'Автоматически проверяет выбранные DNS и при подтверждённом сбое восстанавливает рабочий вариант.')
+      E('div',{'class':'dm-setting-desc'},scopeSupported
+        ? 'Автоматически проверяет выбранные DNS и при подтверждённом сбое восстанавливает рабочий вариант.'
+        : 'Для включения выберите поддерживаемый профиль и назначьте хотя бы один DNS-сервер.')
     ]),
     E('div',{'class':'dm-setting-controls'},[
       E('div',{'class':'dm-setting-actions'},[
-        badge(busy?'dm-warn':(en?'dm-ok':'dm-off'),busy?'изменение':(en?'включено':'выключено')),
+        badge(busy?'dm-warn':(!scopeSupported?'dm-warn':(en?'dm-ok':'dm-off')),busy?'изменение':(!scopeSupported?(en?'профиль не поддерживается':'нужен профиль'):(en?'включено':'выключено'))),
         btn(busy?'Сохраняю…':(en?'Выключить':'Включить'),busy?'cbi-button-neutral':(en?'cbi-button-remove':'cbi-button-add'),function(){
           var cur=yes((window.dmState||{}).watchdog);
-          if(!cur && !profileSelected)return;
+          if(!cur && !scopeSupported)return;
           setSetting('watchdog',cur?0:1,root);
-        },{disabled:!!state.busy || (!en && !profileSelected)})
+        },{disabled:!!state.busy || (!en && !scopeSupported)})
       ])
     ])
   ]);
 
   var status=E('div',{'class':'dm-grid2'},[
     row('Служба',badge(service?'dm-ok':'dm-warn',service?'работает':'не работает')),
-    row('Проверка DNS',badge(loop?'dm-ok':service?'dm-warn':'dm-off',loop?'активна':service?'ждёт запуска':'не работает'))
+    row('Проверка DNS',badge(!scopeSupported?'dm-warn':loop?'dm-ok':service?'dm-warn':'dm-off',!scopeSupported?'профиль не поддерживается':loop?'активна':service?'ждёт запуска':'не работает'))
   ]);
 
   var main=E('div',{'class':'dm-watchdog-list'},[
@@ -4759,7 +4763,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 1.50
+// DNS Manager LuCI version: 1.51
 return view.extend({
   load: DM.load,
   render: DM.render,
