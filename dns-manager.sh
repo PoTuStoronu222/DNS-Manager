@@ -2414,8 +2414,12 @@ sync_hdp_force_contract() {
 
     # Steer already owns LAN:53 -> :5300. Do not create a second forced-DNS path.
     if [ "${STEER_DNS_ACTIVE:-0}" = 1 ]; then
+        # The package defaults force_dns to 1 when the option is absent.
+        # Keep an explicit 0 so https-dns-proxy does not create a second
+        # forced-DNS path alongside Steer's LAN:53 -> :5300 redirect.
+        uci set https-dns-proxy.config.force_dns="0" || return 1
         if [ "$_want" = 1 ]; then
-            for _k in force_dns notrack_dns force_dns_port force_dns_src_interface; do
+            for _k in notrack_dns force_dns_port force_dns_src_interface; do
                 uci -q delete "https-dns-proxy.config.$_k" || true
             done
             uci set https-dns-proxy.config.force_ip_family="auto" || return 1
@@ -2428,7 +2432,7 @@ sync_hdp_force_contract() {
             reconcile_dnsmasq || return 1
             if [ -x /etc/init.d/dnsmasq ]; then /etc/init.d/dnsmasq restart >/dev/null 2>&1 || return 1; fi
         else
-            for _k in force_dns notrack_dns force_dns_port force_dns_src_interface force_ip_family dnsmasq_config_update; do
+            for _k in notrack_dns force_dns_port force_dns_src_interface force_ip_family dnsmasq_config_update; do
                 uci -q delete "https-dns-proxy.config.$_k" || true
             done
             uci commit https-dns-proxy || return 1
@@ -4866,7 +4870,7 @@ check_module_state() {
                     _ok=1
                     [ "$(uci -q get https-dns-proxy.config.dnsmasq_config_update 2>/dev/null)" = "-" ] || _ok=0
                     [ "$(uci -q get https-dns-proxy.config.force_ip_family 2>/dev/null)" = "auto" ] || _ok=0
-                    [ -z "$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null)" ] || _ok=0
+                    [ "$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null)" = "0" ] || _ok=0
                     [ -z "$(uci -q get https-dns-proxy.config.notrack_dns 2>/dev/null)" ] || _ok=0
                     [ -z "$(uci -q get https-dns-proxy.config.force_dns_port 2>/dev/null)" ] || _ok=0
                     [ -z "$(uci -q get https-dns-proxy.config.force_dns_src_interface 2>/dev/null)" ] || _ok=0
@@ -5715,13 +5719,15 @@ watchdog_enforce_hdp_control() {
     detect_steer_dns_path >/dev/null 2>&1 || true
     if [ "${STEER_DNS_ACTIVE:-0}" = 1 ]; then
         _changed=0
-        for _k in force_dns notrack_dns force_dns_port force_dns_src_interface; do
+        [ "$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null)" = "0" ] || _changed=1
+        for _k in notrack_dns force_dns_port force_dns_src_interface; do
             uci -q get "https-dns-proxy.config.$_k" >/dev/null 2>&1 && _changed=1
         done
         [ "$(uci -q get https-dns-proxy.config.dnsmasq_config_update 2>/dev/null)" = "-" ] || _changed=1
         [ "$(uci -q get https-dns-proxy.config.force_ip_family 2>/dev/null)" = "auto" ] || _changed=1
         if [ "$_changed" = 1 ]; then
-            for _k in force_dns notrack_dns force_dns_port force_dns_src_interface; do
+            uci set https-dns-proxy.config.force_dns="0" || return 1
+            for _k in notrack_dns force_dns_port force_dns_src_interface; do
                 uci -q delete "https-dns-proxy.config.$_k" || true
             done
             uci set https-dns-proxy.config.dnsmasq_config_update="-" || return 1

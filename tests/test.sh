@@ -569,6 +569,37 @@ grep -q '"steer_running"' "$tmp/backend.sh" || fail "Steer running status missin
 grep -q '"steer_dns_active"' "$tmp/backend.sh" || fail "Steer DNS runtime status missing from RPC"
 ok "Steer status fields exposed"
 
+# https-dns-proxy defaults force_dns to 1 when its UCI option is absent.
+# If Steer owns LAN:53 interception, DNS Manager must explicitly set force_dns=0.
+awk '/^sync_hdp_force_contract\(\) \{/,/^configure_hdp_manager_control\(\) \{/' dns-manager.sh > "$tmp/force_sync_fn.sh"
+[ -s "$tmp/force_sync_fn.sh" ] || fail "forced-DNS synchronization function extraction"
+awk '
+    /STEER_DNS_ACTIVE.*= 1/ { capture=1 }
+    capture { print }
+    capture && /^[[:space:]]*return 0$/ { exit }
+' "$tmp/force_sync_fn.sh" > "$tmp/force_sync_steer.sh"
+grep -Fq 'uci set https-dns-proxy.config.force_dns="0"' "$tmp/force_sync_steer.sh" || fail "Steer forced-DNS branch does not explicitly disable https-dns-proxy interception"
+if grep -Fq 'uci -q delete "https-dns-proxy.config.force_dns"' "$tmp/force_sync_steer.sh"; then
+    fail "Steer forced-DNS branch deletes force_dns and falls back to package default 1"
+fi
+
+awk '/^watchdog_enforce_hdp_control\(\) \{/,/^watchdog_enforce_doh_authority\(\) \{/' dns-manager.sh > "$tmp/force_watchdog_fn.sh"
+[ -s "$tmp/force_watchdog_fn.sh" ] || fail "forced-DNS watchdog function extraction"
+awk '
+    /STEER_DNS_ACTIVE.*= 1/ { capture=1 }
+    capture { print }
+    capture && /^[[:space:]]*ensure_dns_dot_block/ { exit }
+' "$tmp/force_watchdog_fn.sh" > "$tmp/force_watchdog_steer.sh"
+grep -Fq 'uci set https-dns-proxy.config.force_dns="0"' "$tmp/force_watchdog_steer.sh" || fail "Steer forced-DNS watchdog does not preserve explicit force_dns=0"
+if grep -Fq 'uci -q delete "https-dns-proxy.config.force_dns"' "$tmp/force_watchdog_steer.sh"; then
+    fail "Steer forced-DNS watchdog deletes force_dns and can restore package default 1"
+fi
+
+awk '/^[[:space:]]*force\)/,/^[[:space:]]*dnsmasq_perf\)/' dns-manager.sh > "$tmp/force_state.sh"
+grep -Fq '[ "$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null)" = "0" ] || _ok=0' "$tmp/force_state.sh" || fail "Steer force-state check does not expect the explicit disabled value"
+ok "Steer forced-DNS avoids https-dns-proxy default interception"
+
+
 grep -q 'test_one_dns "\$_id"' "$tmp/backend.sh" || fail "LuCI selected DNS check does not use the manager test"
 if grep -q '\$MANAGER --test-one' "$tmp/backend.sh"; then
     fail "LuCI single DNS check still spawns a separate manager test process"
