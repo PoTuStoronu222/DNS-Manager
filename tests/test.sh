@@ -767,7 +767,16 @@ cat > "$tmp/watchdog_loop_repair_runner.sh" <<'EOF_WATCHDOG_REPAIR'
 set -eu
 . "$1"
 attempted=0
-watchdog_slot_target_run() { attempted=$((attempted+1)); return "${MOCK_RC:-0}"; }
+SLOT_1=old1
+SLOT_2=old2
+SLOT_3=old3
+SLOT_4=old4
+watchdog_slot_target_run() {
+    attempted=$((attempted+1))
+    [ "${MOCK_RC:-0}" -eq 0 ] || return "${MOCK_RC}"
+    eval "SLOT_\$1=changed\$1"
+    return 0
+}
 WATCHDOG_MAX_REPAIRS=2
 _wd_repairs=0
 watchdog_loop_repair_slot 1 0 || exit 31
