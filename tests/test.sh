@@ -774,24 +774,121 @@ SLOT_4=old4
 watchdog_slot_target_run() {
     attempted=$((attempted+1))
     [ "${MOCK_RC:-0}" -eq 0 ] || return "${MOCK_RC}"
-    eval "SLOT_$1=changed$1"
+    if [ "${MOCK_NO_CHANGE:-0}" != 1 ]; then
+        eval "SLOT_$1=changed$1"
+    fi
     return 0
 }
 WATCHDOG_MAX_REPAIRS=2
 _wd_repairs=0
+MOCK_NO_CHANGE=1
 watchdog_loop_repair_slot 1 0 || exit 31
-[ "$_wd_repairs" -eq 1 ] && [ "$attempted" -eq 1 ] || exit 32
-watchdog_loop_repair_slot 2 0 || exit 33
-[ "$_wd_repairs" -eq 2 ] && [ "$attempted" -eq 2 ] || exit 34
-if watchdog_loop_repair_slot 3 0; then exit 35; else [ "$?" -eq 2 ] || exit 36; fi
-[ "$attempted" -eq 2 ] || exit 37
+[ "$_wd_repairs" -eq 0 ] && [ "$attempted" -eq 1 ] || exit 32
+MOCK_NO_CHANGE=0
+watchdog_loop_repair_slot 1 0 || exit 33
+[ "$_wd_repairs" -eq 1 ] && [ "$attempted" -eq 2 ] || exit 34
+watchdog_loop_repair_slot 2 0 || exit 35
+[ "$_wd_repairs" -eq 2 ] && [ "$attempted" -eq 3 ] || exit 36
+if watchdog_loop_repair_slot 3 0; then exit 37; else [ "$?" -eq 2 ] || exit 38; fi
+[ "$attempted" -eq 3 ] || exit 39
 _wd_repairs=0
 MOCK_RC=1
-if watchdog_loop_repair_slot 4 0; then exit 38; else [ "$?" -eq 1 ] || exit 39; fi
-[ "$_wd_repairs" -eq 0 ] || exit 40
+if watchdog_loop_repair_slot 4 0; then exit 40; else [ "$?" -eq 1 ] || exit 41; fi
+[ "$_wd_repairs" -eq 0 ] || exit 42
 EOF_WATCHDOG_REPAIR
 chmod +x "$tmp/watchdog_loop_repair_runner.sh"
 "$tmp/watchdog_loop_repair_runner.sh" "$tmp/watchdog_loop_repair_slot.sh" || fail "watchdog repair budget behavior"
+
+# Run the real embedded watchdog loop with isolated stubs. Verify that a clean
+# fallback slot is restored before any empty slot is filled, and unset RU does
+# not probe its default port 5059.
+cat > "$tmp/watchdog_loop_scenario.sh" <<'EOF_WATCHDOG_SCENARIO'
+#!/bin/sh
+set -eu
+. "$1"
+. "$2"
+DNS_SELECTION_MODE=profile
+DNS_SELECTION_CATEGORY=bypass
+WATCHDOG_ENABLED=1
+WATCHDOG_INTERVAL=60
+WATCHDOG_FAIL_THRESHOLD=2
+WATCHDOG_MAX_REPAIRS=1
+WATCHDOG_REPAIR_COOLDOWN=1800
+WATCHDOG_MAX_CANDIDATES=3
+STATE_DIR="$3"
+SLOT_1=clean_dns
+SLOT_2=''
+SLOT_3=''
+SLOT_4=''
+SLOT_5=''
+SLOT_6=''
+SLOT_RU=''
+PORT_1=5053
+PORT_2=5054
+PORT_3=5055
+PORT_4=5056
+PORT_5=5057
+PORT_6=5058
+PORT_RU=5059
+RU_PROBED=0
+target_calls=''
+load_config() { :; }
+refresh_runtime_capabilities() { :; }
+watchdog_scope_category() { printf '%s\n' "$DNS_SELECTION_CATEGORY"; }
+watchdog_scope_supported() { [ -n "$SLOT_1$SLOT_2$SLOT_3$SLOT_4$SLOT_5$SLOT_6$SLOT_RU" ]; }
+watchdog_resource_guard() { return 0; }
+watchdog_refresh_listener_snapshot() { :; }
+watchdog_listener_snapshot_has_port() { case "$1" in 5053|5059) return 0;; *) return 1;; esac; }
+local_dns_query_ok() {
+    case "$1:$2" in
+        5053:example.com) return 0 ;;
+        5059:yandex.ru) RU_PROBED=1; return 0 ;;
+        *) return 1 ;;
+    esac
+}
+watchdog_loop_reset_slot() {
+    eval "WD_FAIL_$1=0"
+    eval "WD_MISSING_$1=0"
+}
+dns_cat() {
+    case "$1" in
+        clean_dns) printf 'clean\n' ;;
+        bypass_dns) printf 'bypass\n' ;;
+        *) return 1 ;;
+    esac
+}
+watchdog_desired_cat() {
+    case "$1" in RU) printf 'regional\n';; *) printf 'bypass\n';; esac
+}
+watchdog_slot_target_run() {
+    target_calls="$target_calls $1"
+    case "$1" in
+        1) SLOT_1=bypass_dns; return 0 ;;
+        2) SLOT_2=filled_dns; return 0 ;;
+        *) return 1 ;;
+    esac
+}
+watchdog_target_live_count() { printf '1\n'; }
+watchdog_embedded_integrity_guard() { return 0; }
+watchdog_service_recover_run() { return 0; }
+dig() { return 0; }
+sleep() {
+    case "$1" in
+        12) return 0 ;;
+        *)
+            [ "$RU_PROBED" -eq 0 ] || exit 51
+            [ "$target_calls" = ' 1' ] || exit 52
+            [ "$SLOT_1" = bypass_dns ] || exit 53
+            exit 0
+            ;;
+    esac
+}
+watchdog_embedded_loop
+exit 54
+EOF_WATCHDOG_SCENARIO
+chmod +x "$tmp/watchdog_loop_scenario.sh"
+"$tmp/watchdog_loop_scenario.sh" "$tmp/watchdog_embedded_loop.sh" "$tmp/watchdog_loop_repair_slot.sh" "$tmp/watchdog-loop-state" || fail "embedded watchdog fallback priority / unconfigured RU behavior"
+ok "embedded watchdog restores a clean fallback before filling empty slots and skips unconfigured RU"
 grep -q 'if ! watchdog_scope_supported; then' "$tmp/watchdog_embedded_loop.sh" || fail "background watchdog is not gated by supported profile scope"
 ok "background watchdog skips unsupported scopes and enforces the configured repair budget"
 awk '/^watchdog_service_install_files\(\) \{/,/^watchdog_service_running\(\) \{/' dns-manager.sh > "$tmp/watchdog_service.sh"
