@@ -86,7 +86,8 @@ if grep -Fq '/www/luci-static/resources/view/dns_manager/overview.js' dns-manage
 grep -Fq 'ubus -v list dns_manager' "$tmp/luci_state_fn.sh" || fail "manager-side LuCI state does not inspect RPC methods"
 ok "LuCI runtime validation checks the current page layout and RPC contract"
 
-# DNS response validation intentionally stays lightweight: HTTP 200 + DNS message body.
+# DNS-over-HTTPS checks must validate the DNS wire header, not only body length.
+# A real DNS response with NXDOMAIN still counts as a reachable/working endpoint.
 awk '
     /^validate_dns_message\(\) \{/ { capture=1 }
     capture { print }
@@ -95,15 +96,33 @@ awk '
 [ -s "$tmp/validate_dns.sh" ] || fail "DNS response validator extraction"
 . "$tmp/validate_dns.sh"
 
+printf '\022\064\001\000\000\001\000\000\000\000\000\000\007example\003com\000\000\001\000\001' > "$tmp/dns-query"
+printf '\022\064\201\203\000\001\000\000\000\000\000\000\007example\003com\000\000\001\000\001' > "$tmp/dns-response-nxdomain"
+validate_dns_message "$tmp/dns-response-nxdomain" "$tmp/dns-query" || fail "valid DNS NXDOMAIN response rejected"
+
 printf '\000\000\000\000\000\001\000\000\000\000\000' > "$tmp/dns-short"
-if validate_dns_message "$tmp/dns-short"; then
+if validate_dns_message "$tmp/dns-short" "$tmp/dns-query"; then
     fail "short DNS body accepted"
 fi
 
+# Arbitrary bytes with an HTTP-200-sized body must not be classified as DoH success.
 printf '\000\000\000\000\000\001\000\000\000\000\000\000abcdefghijkl' > "$tmp/dns-body"
-validate_dns_message "$tmp/dns-body" || fail "normal-sized DNS body rejected"
+if validate_dns_message "$tmp/dns-body" "$tmp/dns-query"; then
+    fail "malformed DNS body accepted"
+fi
 
-ok "DNS response validation remains lightweight"
+# The response ID must match the query ID.
+printf '\022\065\201\203\000\001\000\000\000\000\000\000\007example\003com\000\000\001\000\001' > "$tmp/dns-response-wrong-id"
+if validate_dns_message "$tmp/dns-response-wrong-id" "$tmp/dns-query"; then
+    fail "DNS response with mismatched ID accepted"
+fi
+
+# The query itself has the right ID and length but is not a DNS response (QR=0).
+if validate_dns_message "$tmp/dns-query" "$tmp/dns-query"; then
+    fail "DNS query accepted as a response"
+fi
+
+ok "DoH DNS wire-header validation and RCODE-independent health checks"
 awk '
     /cat > "[^"]*BACKEND_STAGE[^"]*"[^<]*<<\x27EOF_RPC\x27/ { capture=1; next }
     capture && /^EOF_RPC$/ { exit }
