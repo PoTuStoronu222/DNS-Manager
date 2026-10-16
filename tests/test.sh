@@ -832,6 +832,7 @@ PORT_6=5058
 PORT_RU=5059
 RU_PROBED=0
 target_calls=''
+log_msg() { :; }
 load_config() { :; }
 refresh_runtime_capabilities() { :; }
 watchdog_scope_category() { printf '%s\n' "$DNS_SELECTION_CATEGORY"; }
