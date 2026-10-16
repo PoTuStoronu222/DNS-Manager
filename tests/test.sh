@@ -86,7 +86,7 @@ if grep -Fq '/www/luci-static/resources/view/dns_manager/overview.js' dns-manage
 grep -Fq 'ubus -v list dns_manager' "$tmp/luci_state_fn.sh" || fail "manager-side LuCI state does not inspect RPC methods"
 ok "LuCI runtime validation checks the current page layout and RPC contract"
 
-# DNS response validation intentionally stays lightweight: HTTP 200 + DNS message body.
+# DNS response validation checks the DNS wire header, not only body length.
 awk '
     /^validate_dns_message\(\) \{/ { capture=1 }
     capture { print }
@@ -95,15 +95,39 @@ awk '
 [ -s "$tmp/validate_dns.sh" ] || fail "DNS response validator extraction"
 . "$tmp/validate_dns.sh"
 
+printf '\022\064\001\000\000\001\000\000\000\000\000\000\007example\003com\000\000\001\000\001' > "$tmp/dns-query"
+printf '\022\064\201\203\000\001\000\000\000\000\000\000\007example\003com\000\000\001\000\001' > "$tmp/dns-valid-response"
+validate_dns_message "$tmp/dns-valid-response" "$tmp/dns-query" || fail "valid DNS response with a nonzero RCODE rejected"
+
 printf '\000\000\000\000\000\001\000\000\000\000\000' > "$tmp/dns-short"
-if validate_dns_message "$tmp/dns-short"; then
+if validate_dns_message "$tmp/dns-short" "$tmp/dns-query"; then
     fail "short DNS body accepted"
 fi
 
+# This is larger than a DNS header, but it is not a matching DNS response.
 printf '\000\000\000\000\000\001\000\000\000\000\000\000abcdefghijkl' > "$tmp/dns-body"
-validate_dns_message "$tmp/dns-body" || fail "normal-sized DNS body rejected"
+if validate_dns_message "$tmp/dns-body" "$tmp/dns-query"; then
+    fail "arbitrary body accepted as a DNS response"
+fi
 
-ok "DNS response validation remains lightweight"
+# Reject a response with the wrong transaction ID.
+printf '\000\000\201\200\000\001\000\000\000\000\000\000\007example\003com\000\000\001\000\001' > "$tmp/dns-wrong-id"
+if validate_dns_message "$tmp/dns-wrong-id" "$tmp/dns-query"; then
+    fail "DNS response with a mismatched ID accepted"
+fi
+
+# Reject a query-shaped packet (QR=0).
+if validate_dns_message "$tmp/dns-query" "$tmp/dns-query"; then
+    fail "DNS query accepted as a response"
+fi
+
+# Reject a response whose question count does not match the sent query.
+printf '\022\064\201\200\000\000\000\000\000\000\000\000\007example\003com\000\000\001\000\001' > "$tmp/dns-wrong-qcount"
+if validate_dns_message "$tmp/dns-wrong-qcount" "$tmp/dns-query"; then
+    fail "DNS response with a mismatched question count accepted"
+fi
+
+ok "DNS response validation checks ID, QR, opcode, and question count"
 awk '
     /cat > "[^"]*BACKEND_STAGE[^"]*"[^<]*<<\x27EOF_RPC\x27/ { capture=1; next }
     capture && /^EOF_RPC$/ { exit }

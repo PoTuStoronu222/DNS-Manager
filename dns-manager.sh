@@ -1833,10 +1833,32 @@ return 1
 # ==========================================
 validate_dns_message() {
     _file="$1"
-    [ -s "$_file" ] || return 1
+    _query="$2"
+    [ -s "$_file" ] && [ -s "$_query" ] || return 1
     _n="$(wc -c < "$_file" 2>/dev/null | tr -d " ")"
     case "$_n" in ''|*[!0-9]*) return 1;; esac
-    [ "$_n" -ge 12 ] || return 1
+    [ "$_n" -ge 17 ] || return 1
+
+    # A DoH body is a DNS wire-format message. Check the response header
+    # against the query we sent, without requiring RCODE=0 or an A answer.
+    _header="$(od -An -tu1 -N6 "$_file" 2>/dev/null)" || return 1
+    set -- $_header
+    [ "$#" -eq 6 ] || return 1
+    _resp_id=$(( $1 * 256 + $2 ))
+    _flags_hi="$3"
+    _qdcount=$(( $5 * 256 + $6 ))
+
+    _query_header="$(od -An -tu1 -N6 "$_query" 2>/dev/null)" || return 1
+    set -- $_query_header
+    [ "$#" -eq 6 ] || return 1
+    _query_id=$(( $1 * 256 + $2 ))
+    _query_opcode=$(( $3 & 120 ))
+    _query_qdcount=$(( $5 * 256 + $6 ))
+
+    [ "$_resp_id" -eq "$_query_id" ] || return 1
+    [ $((_flags_hi & 128)) -ne 0 ] || return 1
+    [ $((_flags_hi & 120)) -eq "$_query_opcode" ] || return 1
+    [ "$_qdcount" -eq "$_query_qdcount" ] || return 1
     return 0
 }
 test_one_dns() {
@@ -1892,7 +1914,7 @@ while IFS= read -r ipx; do
     case "$code" in
     200)
         case "$ctype" in *application/dns-message*) ct_ok=yes;; *) ct_ok=no;; esac
-        if [ "$ct_ok" = yes ] && validate_dns_message "$body"; then
+        if [ "$ct_ok" = yes ] && validate_dns_message "$body" "$q"; then
             if [ "$_best_ms" -lt 0 ] || { [ "$ms" -ge 0 ] && [ "$ms" -lt "$_best_ms" ]; }; then _best_ms="$ms"; fi
             st=OK
         else st=BAD_DOH_RESPONSE; fi ;;
