@@ -1833,10 +1833,35 @@ return 1
 # ==========================================
 validate_dns_message() {
     _file="$1"
+    _query="${2:-}"
     [ -s "$_file" ] || return 1
     _n="$(wc -c < "$_file" 2>/dev/null | tr -d " ")"
     case "$_n" in ''|*[!0-9]*) return 1;; esac
-    [ "$_n" -ge 12 ] || return 1
+    # RFC 8484 carries one DNS wire-format message (maximum 65535 bytes).
+    # This probe asks for example.com A, so a header-only body is not usable.
+    [ "$_n" -ge 40 ] && [ "$_n" -le 65535 ] || return 1
+
+    set -- $(od -An -tu1 -N 12 "$_file" 2>/dev/null) || return 1
+    [ "$#" -eq 12 ] || return 1
+    _id_hi="$1"; _id_lo="$2"
+    _flags_hi="$3"; _flags_lo="$4"
+    _qd_hi="$5"; _qd_lo="$6"
+    _an_hi="$7"; _an_lo="$8"
+
+    # Require a standard response with NOERROR, one question, and an answer.
+    [ $((_flags_hi & 128)) -ne 0 ] || return 1
+    [ $((_flags_hi & 120)) -eq 0 ] || return 1
+    [ $((_flags_hi & 2)) -eq 0 ] || return 1
+    [ $((_flags_lo & 15)) -eq 0 ] || return 1
+    [ $((_qd_hi * 256 + _qd_lo)) -eq 1 ] || return 1
+    [ $((_an_hi * 256 + _an_lo)) -gt 0 ] || return 1
+
+    if [ -n "$_query" ]; then
+        [ -s "$_query" ] || return 1
+        set -- $(od -An -tu1 -N 2 "$_query" 2>/dev/null) || return 1
+        [ "$#" -eq 2 ] || return 1
+        [ "$_id_hi" = "$1" ] && [ "$_id_lo" = "$2" ] || return 1
+    fi
     return 0
 }
 test_one_dns() {
@@ -1892,7 +1917,7 @@ while IFS= read -r ipx; do
     case "$code" in
     200)
         case "$ctype" in *application/dns-message*) ct_ok=yes;; *) ct_ok=no;; esac
-        if [ "$ct_ok" = yes ] && validate_dns_message "$body"; then
+        if [ "$ct_ok" = yes ] && validate_dns_message "$body" "$q"; then
             if [ "$_best_ms" -lt 0 ] || { [ "$ms" -ge 0 ] && [ "$ms" -lt "$_best_ms" ]; }; then _best_ms="$ms"; fi
             st=OK
         else st=BAD_DOH_RESPONSE; fi ;;
