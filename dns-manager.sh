@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.55"
+VERSION="3.56"
 # 3.38: clear the LuCI update flag after a successful CLI update.
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
@@ -1584,7 +1584,7 @@ detect_forced_dns_path() {
             _rt="$(dns_path_conflict_nft 2>/dev/null || true)"
             while IFS='|' read -r _chain _handle _line; do
                 [ -n "$_line" ] || continue
-                _rp="$(printf '%s\n' "$_line" | sed -n 's/.*redirect[[:space:]]\+to[[:space:]]\+:[[:space:]]*\([0-9][0-9]*\).*/\1/p' | head -n1)"
+                _rp="$(printf '%s\n' "$_line" | sed -n 's/.*redirect[[:space:]]\+to[[:space:]]\+:[[:space:]]*\([0-9][0-9]*\).*/\1/p; s/.*dnat[[:space:]]\+to[[:space:]]\+[^[:space:]]*:\([0-9][0-9]*\).*/\1/p' | head -n1)"
                 [ -n "$_rp" ] || continue
                 FORCED_DNS_ACTIVE=1
                 FORCED_DNS_TARGETS="${FORCED_DNS_TARGETS}${_rp} "
@@ -1632,8 +1632,8 @@ EOF_FORCE_IPT
         else
             FORCED_DNS_SOURCE="Steer"
         fi
-    elif [ "$_manager_force_cfg" = 1 ]; then
-        FORCED_DNS_ACTIVE=1
+    elif [ "$_manager_force_cfg" = 1 ] && [ "${FORCED_DNS_ACTIVE:-0}" = 1 ]; then
+        # UCI settings alone do not prove that the runtime LAN:53 interception exists.
         FORCED_DNS_SOURCE="DNS Manager"
     fi
 
@@ -2414,8 +2414,11 @@ sync_hdp_force_contract() {
 
     # Steer already owns LAN:53 -> :5300. Do not create a second forced-DNS path.
     if [ "${STEER_DNS_ACTIVE:-0}" = 1 ]; then
+        # https-dns-proxy defaults force_dns to 1 when the option is absent.
+        # Keep an explicit 0 so a package restart cannot add a second redirect.
+        uci set https-dns-proxy.config.force_dns="0" || return 1
         if [ "$_want" = 1 ]; then
-            for _k in force_dns notrack_dns force_dns_port force_dns_src_interface; do
+            for _k in notrack_dns force_dns_port force_dns_src_interface; do
                 uci -q delete "https-dns-proxy.config.$_k" || true
             done
             uci set https-dns-proxy.config.force_ip_family="auto" || return 1
@@ -2428,7 +2431,7 @@ sync_hdp_force_contract() {
             reconcile_dnsmasq || return 1
             if [ -x /etc/init.d/dnsmasq ]; then /etc/init.d/dnsmasq restart >/dev/null 2>&1 || return 1; fi
         else
-            for _k in force_dns notrack_dns force_dns_port force_dns_src_interface force_ip_family dnsmasq_config_update; do
+            for _k in notrack_dns force_dns_port force_dns_src_interface force_ip_family dnsmasq_config_update; do
                 uci -q delete "https-dns-proxy.config.$_k" || true
             done
             uci commit https-dns-proxy || return 1
@@ -4866,7 +4869,7 @@ check_module_state() {
                     _ok=1
                     [ "$(uci -q get https-dns-proxy.config.dnsmasq_config_update 2>/dev/null)" = "-" ] || _ok=0
                     [ "$(uci -q get https-dns-proxy.config.force_ip_family 2>/dev/null)" = "auto" ] || _ok=0
-                    [ -z "$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null)" ] || _ok=0
+                    [ "$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null)" = "0" ] || _ok=0
                     [ -z "$(uci -q get https-dns-proxy.config.notrack_dns 2>/dev/null)" ] || _ok=0
                     [ -z "$(uci -q get https-dns-proxy.config.force_dns_port 2>/dev/null)" ] || _ok=0
                     [ -z "$(uci -q get https-dns-proxy.config.force_dns_src_interface 2>/dev/null)" ] || _ok=0
@@ -4900,7 +4903,7 @@ check_module_state() {
                 [ "$(uci -q get https-dns-proxy.config.canary_domains_mozilla 2>/dev/null)" = 1 ] || _ok=0
                 force_dns_ports_match_expected || _ok=0
                 force_dns_src_matches_expected || _ok=0
-                if [ "$_ok" = 1 ] && [ "${FORCED_DNS_ACTIVE:-0}" = 1 ]; then
+                if [ "$_ok" = 1 ] && [ "${FORCED_DNS_EXTERNAL:-0}" = 0 ] && [ "${FORCED_DNS_ACTIVE:-0}" = 1 ]; then
                     printf 1
                 else
                     printf 2
@@ -5711,27 +5714,40 @@ watchdog_target_live_count() {
     printf "%s\n" "$_target_live"
 }
 watchdog_enforce_hdp_control() {
-    [ "${FORCE_DOH:-0}" = 1 ] || return 0
     detect_steer_dns_path >/dev/null 2>&1 || true
     if [ "${STEER_DNS_ACTIVE:-0}" = 1 ]; then
+        # Keep package interception disabled regardless of the Manager toggle:
+        # Steer already owns LAN:53 -> :5300, while absent force_dns defaults to 1.
         _changed=0
-        for _k in force_dns notrack_dns force_dns_port force_dns_src_interface; do
-            uci -q get "https-dns-proxy.config.$_k" >/dev/null 2>&1 && _changed=1
-        done
-        [ "$(uci -q get https-dns-proxy.config.dnsmasq_config_update 2>/dev/null)" = "-" ] || _changed=1
-        [ "$(uci -q get https-dns-proxy.config.force_ip_family 2>/dev/null)" = "auto" ] || _changed=1
-        if [ "$_changed" = 1 ]; then
-            for _k in force_dns notrack_dns force_dns_port force_dns_src_interface; do
-                uci -q delete "https-dns-proxy.config.$_k" || true
+        [ "$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null)" = "0" ] || _changed=1
+        if [ "${FORCE_DOH:-0}" = 1 ]; then
+            for _k in notrack_dns force_dns_port force_dns_src_interface; do
+                uci -q get "https-dns-proxy.config.$_k" >/dev/null 2>&1 && _changed=1
             done
-            uci set https-dns-proxy.config.dnsmasq_config_update="-" || return 1
-            uci set https-dns-proxy.config.force_ip_family="auto" || return 1
+            [ "$(uci -q get https-dns-proxy.config.dnsmasq_config_update 2>/dev/null)" = "-" ] || _changed=1
+            [ "$(uci -q get https-dns-proxy.config.force_ip_family 2>/dev/null)" = "auto" ] || _changed=1
+        fi
+        if [ "$_changed" = 1 ]; then
+            uci set https-dns-proxy.config.force_dns="0" || return 1
+            if [ "${FORCE_DOH:-0}" = 1 ]; then
+                for _k in notrack_dns force_dns_port force_dns_src_interface; do
+                    uci -q delete "https-dns-proxy.config.$_k" || true
+                done
+                uci set https-dns-proxy.config.dnsmasq_config_update="-" || return 1
+                uci set https-dns-proxy.config.force_ip_family="auto" || return 1
+            fi
             uci commit https-dns-proxy || return 1
             watchdog_restart_hdp || return 1
         fi
-        ensure_dns_dot_block || return 1
+        if [ "${FORCE_DOH:-0}" = 1 ]; then
+            ensure_dns_dot_block || return 1
+        else
+            remove_dns_dot_block || return 1
+        fi
         return 0
     fi
+    [ "${FORCE_DOH:-0}" = 1 ] || return 0
+
     _changed=0
     [ "$(uci -q get https-dns-proxy.config.dnsmasq_config_update 2>/dev/null)" = "*" ] || _changed=1
     [ "$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null)" = "1" ] || _changed=1
@@ -5748,10 +5764,21 @@ watchdog_enforce_hdp_control() {
     [ "$(uci -q get https-dns-proxy.config.canary_domains_mozilla 2>/dev/null)" = "1" ] || _changed=1
     force_dns_ports_match_expected || _changed=1
     force_dns_src_matches_expected || _changed=1
-    [ "$_changed" = 0 ] && return 0
-    log_msg "Обнаружен drift forced-DNS. Возвращаю конфигурацию DNS Manager."
-    sync_hdp_force_contract 1 || return 1
-    return 0
+    if [ "$_changed" = 1 ]; then
+        log_msg "Обнаружен drift forced-DNS. Возвращаю конфигурацию DNS Manager."
+        sync_hdp_force_contract 1 || return 1
+    fi
+
+    # Correct UCI settings are not sufficient if the package didn't install its live LAN:53 rule.
+    ensure_dns_dot_block || return 1
+    detect_forced_dns_path >/dev/null 2>&1 || true
+    [ "${FORCED_DNS_ACTIVE:-0}" = 1 ] && [ "${FORCED_DNS_EXTERNAL:-0}" = 0 ] && return 0
+    log_msg "Forced-DNS config is present but the runtime LAN:53 path is missing; restarting https-dns-proxy."
+    watchdog_restart_hdp || return 1
+    detect_forced_dns_path >/dev/null 2>&1 || true
+    [ "${FORCED_DNS_ACTIVE:-0}" = 1 ] && [ "${FORCED_DNS_EXTERNAL:-0}" = 0 ] && return 0
+    log_msg "Forced-DNS runtime LAN:53 path is still missing after https-dns-proxy restart."
+    return 1
 }
 watchdog_enforce_doh_authority() {
     [ "$DNS_PROFILE" = hybrid ] || [ "$DNS_PROFILE" = custom ] || return 0
