@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.55"
+VERSION="3.59"
 # 3.38: clear the LuCI update flag after a successful CLI update.
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
@@ -29,7 +29,7 @@ WATCHDOG_GUARD_INTERVAL=3600
 DNSMASQ_CACHE_SIZE=4096
 WATCHDOG_SERVICE_PATH="/etc/init.d/dns-watchdog"
 WATCHDOG_SERVICE_MARKER="# DNS_MANAGER_WATCHDOG_SERVICE=2"
-WATCHDOG_SERVICE_VERSION_MARKER="# DNS_MANAGER_WATCHDOG_SERVICE_VERSION=3.11.6"
+WATCHDOG_SERVICE_VERSION_MARKER="# DNS_MANAGER_WATCHDOG_SERVICE_VERSION=3.11.7"
 WATCHDOG_LEGACY_DAEMON_PATH="/usr/bin/dns-watchdog-daemon.sh"
 WATCHDOG_LEGACY_DAEMON_MARKER="# DNS_MANAGER_WATCHDOG_DAEMON=1"
 WATCHDOG_LEGACY_RUNTIME_DIR="/var/run/dns-watchdog"
@@ -1584,7 +1584,7 @@ detect_forced_dns_path() {
             _rt="$(dns_path_conflict_nft 2>/dev/null || true)"
             while IFS='|' read -r _chain _handle _line; do
                 [ -n "$_line" ] || continue
-                _rp="$(printf '%s\n' "$_line" | sed -n 's/.*redirect[[:space:]]\+to[[:space:]]\+:[[:space:]]*\([0-9][0-9]*\).*/\1/p' | head -n1)"
+                _rp="$(printf '%s\n' "$_line" | sed -n 's/.*redirect[[:space:]]\+to[[:space:]]\+:[[:space:]]*\([0-9][0-9]*\).*/\1/p; s/.*dnat[[:space:]]\+to[[:space:]]\+[^[:space:]]*:\([0-9][0-9]*\).*/\1/p' | head -n1)"
                 [ -n "$_rp" ] || continue
                 FORCED_DNS_ACTIVE=1
                 FORCED_DNS_TARGETS="${FORCED_DNS_TARGETS}${_rp} "
@@ -1632,8 +1632,8 @@ EOF_FORCE_IPT
         else
             FORCED_DNS_SOURCE="Steer"
         fi
-    elif [ "$_manager_force_cfg" = 1 ]; then
-        FORCED_DNS_ACTIVE=1
+    elif [ "$_manager_force_cfg" = 1 ] && [ "${FORCED_DNS_ACTIVE:-0}" = 1 ]; then
+        # UCI settings alone do not prove that the runtime LAN:53 interception exists.
         FORCED_DNS_SOURCE="DNS Manager"
     fi
 
@@ -2414,8 +2414,11 @@ sync_hdp_force_contract() {
 
     # Steer already owns LAN:53 -> :5300. Do not create a second forced-DNS path.
     if [ "${STEER_DNS_ACTIVE:-0}" = 1 ]; then
+        # https-dns-proxy defaults force_dns to 1 when the option is absent.
+        # Keep an explicit 0 so a package restart cannot add a second redirect.
+        uci set https-dns-proxy.config.force_dns="0" || return 1
         if [ "$_want" = 1 ]; then
-            for _k in force_dns notrack_dns force_dns_port force_dns_src_interface; do
+            for _k in notrack_dns force_dns_port force_dns_src_interface; do
                 uci -q delete "https-dns-proxy.config.$_k" || true
             done
             uci set https-dns-proxy.config.force_ip_family="auto" || return 1
@@ -2428,7 +2431,7 @@ sync_hdp_force_contract() {
             reconcile_dnsmasq || return 1
             if [ -x /etc/init.d/dnsmasq ]; then /etc/init.d/dnsmasq restart >/dev/null 2>&1 || return 1; fi
         else
-            for _k in force_dns notrack_dns force_dns_port force_dns_src_interface force_ip_family dnsmasq_config_update; do
+            for _k in notrack_dns force_dns_port force_dns_src_interface force_ip_family dnsmasq_config_update; do
                 uci -q delete "https-dns-proxy.config.$_k" || true
             done
             uci commit https-dns-proxy || return 1
@@ -2733,6 +2736,9 @@ _apply_extras_now_impl() {
             # Forced-DNS changes are fully represented by the applied UCI/firewall
             # state. Do not run the full router discovery here.
             save_config || return 1
+            # When DNS probing is off, the same procd service follows forced-DNS.
+            # When it is on, the running loop picks up the saved setting.
+            [ "${WATCHDOG_ENABLED:-0}" = 1 ] || apply_watchdog || return 1
             return 0
             ;;
         dnsmasq_perf)
@@ -4866,7 +4872,7 @@ check_module_state() {
                     _ok=1
                     [ "$(uci -q get https-dns-proxy.config.dnsmasq_config_update 2>/dev/null)" = "-" ] || _ok=0
                     [ "$(uci -q get https-dns-proxy.config.force_ip_family 2>/dev/null)" = "auto" ] || _ok=0
-                    [ -z "$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null)" ] || _ok=0
+                    [ "$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null)" = "0" ] || _ok=0
                     [ -z "$(uci -q get https-dns-proxy.config.notrack_dns 2>/dev/null)" ] || _ok=0
                     [ -z "$(uci -q get https-dns-proxy.config.force_dns_port 2>/dev/null)" ] || _ok=0
                     [ -z "$(uci -q get https-dns-proxy.config.force_dns_src_interface 2>/dev/null)" ] || _ok=0
@@ -4900,7 +4906,7 @@ check_module_state() {
                 [ "$(uci -q get https-dns-proxy.config.canary_domains_mozilla 2>/dev/null)" = 1 ] || _ok=0
                 force_dns_ports_match_expected || _ok=0
                 force_dns_src_matches_expected || _ok=0
-                if [ "$_ok" = 1 ] && [ "${FORCED_DNS_ACTIVE:-0}" = 1 ]; then
+                if [ "$_ok" = 1 ] && [ "${FORCED_DNS_EXTERNAL:-0}" = 0 ] && [ "${FORCED_DNS_ACTIVE:-0}" = 1 ]; then
                     printf 1
                 else
                     printf 2
@@ -5711,27 +5717,50 @@ watchdog_target_live_count() {
     printf "%s\n" "$_target_live"
 }
 watchdog_enforce_hdp_control() {
+    # Background checks must not mutate the forced-DNS module while it is off.
     [ "${FORCE_DOH:-0}" = 1 ] || return 0
-    detect_steer_dns_path >/dev/null 2>&1 || true
+
+    # An unrelated live interception is not proof that Manager's own rule is missing.
+    # Keep external config untouched and expose the conflict through read-only status.
+    detect_forced_dns_path >/dev/null 2>&1 || true
+    if [ "${FORCED_DNS_EXTERNAL:-0}" = 1 ]; then
+        log_msg "Watchdog: обнаружен внешний перехват DNS; чужую конфигурацию не изменяю."
+        return 0
+    fi
+
     if [ "${STEER_DNS_ACTIVE:-0}" = 1 ]; then
+        # Keep package interception disabled regardless of the Manager toggle:
+        # Steer already owns LAN:53 -> :5300, while absent force_dns defaults to 1.
         _changed=0
-        for _k in force_dns notrack_dns force_dns_port force_dns_src_interface; do
-            uci -q get "https-dns-proxy.config.$_k" >/dev/null 2>&1 && _changed=1
-        done
-        [ "$(uci -q get https-dns-proxy.config.dnsmasq_config_update 2>/dev/null)" = "-" ] || _changed=1
-        [ "$(uci -q get https-dns-proxy.config.force_ip_family 2>/dev/null)" = "auto" ] || _changed=1
-        if [ "$_changed" = 1 ]; then
-            for _k in force_dns notrack_dns force_dns_port force_dns_src_interface; do
-                uci -q delete "https-dns-proxy.config.$_k" || true
+        [ "$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null)" = "0" ] || _changed=1
+        if [ "${FORCE_DOH:-0}" = 1 ]; then
+            for _k in notrack_dns force_dns_port force_dns_src_interface; do
+                uci -q get "https-dns-proxy.config.$_k" >/dev/null 2>&1 && _changed=1
             done
-            uci set https-dns-proxy.config.dnsmasq_config_update="-" || return 1
-            uci set https-dns-proxy.config.force_ip_family="auto" || return 1
+            [ "$(uci -q get https-dns-proxy.config.dnsmasq_config_update 2>/dev/null)" = "-" ] || _changed=1
+            [ "$(uci -q get https-dns-proxy.config.force_ip_family 2>/dev/null)" = "auto" ] || _changed=1
+        fi
+        if [ "$_changed" = 1 ]; then
+            uci set https-dns-proxy.config.force_dns="0" || return 1
+            if [ "${FORCE_DOH:-0}" = 1 ]; then
+                for _k in notrack_dns force_dns_port force_dns_src_interface; do
+                    uci -q delete "https-dns-proxy.config.$_k" || true
+                done
+                uci set https-dns-proxy.config.dnsmasq_config_update="-" || return 1
+                uci set https-dns-proxy.config.force_ip_family="auto" || return 1
+            fi
             uci commit https-dns-proxy || return 1
             watchdog_restart_hdp || return 1
         fi
-        ensure_dns_dot_block || return 1
+        if [ "${FORCE_DOH:-0}" = 1 ]; then
+            ensure_dns_dot_block || return 1
+        else
+            remove_dns_dot_block || return 1
+        fi
         return 0
     fi
+    [ "${FORCE_DOH:-0}" = 1 ] || return 0
+
     _changed=0
     [ "$(uci -q get https-dns-proxy.config.dnsmasq_config_update 2>/dev/null)" = "*" ] || _changed=1
     [ "$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null)" = "1" ] || _changed=1
@@ -5748,11 +5777,37 @@ watchdog_enforce_hdp_control() {
     [ "$(uci -q get https-dns-proxy.config.canary_domains_mozilla 2>/dev/null)" = "1" ] || _changed=1
     force_dns_ports_match_expected || _changed=1
     force_dns_src_matches_expected || _changed=1
-    [ "$_changed" = 0 ] && return 0
-    log_msg "Обнаружен drift forced-DNS. Возвращаю конфигурацию DNS Manager."
-    sync_hdp_force_contract 1 || return 1
-    return 0
+    if [ "$_changed" = 1 ]; then
+        log_msg "Обнаружен drift forced-DNS. Возвращаю конфигурацию DNS Manager."
+        sync_hdp_force_contract 1 || return 1
+    fi
+
+    # Correct UCI settings are not sufficient if the package didn't install its live LAN:53 rule.
+    ensure_dns_dot_block || return 1
+    detect_forced_dns_path >/dev/null 2>&1 || true
+    [ "${FORCED_DNS_ACTIVE:-0}" = 1 ] && [ "${FORCED_DNS_EXTERNAL:-0}" = 0 ] && return 0
+    log_msg "Forced-DNS config is present but the runtime LAN:53 path is missing; restarting https-dns-proxy."
+    watchdog_restart_hdp || return 1
+    detect_forced_dns_path >/dev/null 2>&1 || true
+    [ "${FORCED_DNS_ACTIVE:-0}" = 1 ] && [ "${FORCED_DNS_EXTERNAL:-0}" = 0 ] && return 0
+    log_msg "Forced-DNS runtime LAN:53 path is still missing after https-dns-proxy restart."
+    return 1
 }
+
+# Steer can be installed, stopped, or removed after DNS Manager starts.
+# Reconcile forced-DNS ownership on each background-check cycle instead of
+# relying only on the throttled integrity guard.
+watchdog_forced_dns_runtime_guard() {
+    acquire_mutation_lock || return 0
+    if watchdog_enforce_hdp_control; then
+        _wfr_rc=0
+    else
+        _wfr_rc=$?
+    fi
+    release_mutation_lock
+    return "$_wfr_rc"
+}
+
 watchdog_enforce_doh_authority() {
     [ "$DNS_PROFILE" = hybrid ] || [ "$DNS_PROFILE" = custom ] || return 0
     _expected=0
@@ -6259,13 +6314,12 @@ watchdog_embedded_integrity_guard() {
     return 0
 }
 watchdog_embedded_loop() {
-    [ "${WATCHDOG_ENABLED:-0}" = 1 ] || return 0
-
-    # RAM-first watchdog: no catalog refresh, no persistent log writes, no
-    # per-cycle runtime files. Persistent configuration is only read here.
+    # Forced-DNS Auto must track Steer even when DNS probing/rotation is off.
+    # When WATCHDOG_ENABLED=0 this loop runs only the lightweight path guard.
     DNS_MANAGER_RAM_LOG=1
     mkdir -p "$STATE_DIR" 2>/dev/null || return 1
     load_config
+    [ "${WATCHDOG_ENABLED:-0}" = 1 ] || [ "${FORCE_DOH:-0}" = 1 ] || return 0
     refresh_runtime_capabilities
 
     for _slot in 1 2 3 4 5 6 RU; do
@@ -6277,19 +6331,34 @@ watchdog_embedded_loop() {
     WATCHDOG_LAST_RESTART_TS=0
     WD_LAST_GUARD_TS="$(date +%s 2>/dev/null)"
     CHECKER_MISSING_LOGGED=0
-    log_msg "Фоновый watchdog embedded/procd запущен: проверка каждые ${WATCHDOG_INTERVAL:-600}с, замена после ${WATCHDOG_FAIL_THRESHOLD:-2} последовательных циклов."
+    if [ "${WATCHDOG_ENABLED:-0}" = 1 ]; then
+        log_msg "Фоновый DNS Watchdog запущен: проверка каждые ${WATCHDOG_INTERVAL:-600}с, замена после ${WATCHDOG_FAIL_THRESHOLD:-2} последовательных циклов."
+    else
+        log_msg "Фоновая проверка forced-DNS/Steer запущена; проверка и замена DNS-серверов выключены."
+    fi
 
     # Give network + https-dns-proxy a short settling window after procd start/WAN-up.
     sleep 12
 
     while :; do
-        [ "${WATCHDOG_ENABLED:-0}" = 1 ] || return 0
+        load_config >/dev/null 2>&1 || true
+        [ "${WATCHDOG_ENABLED:-0}" = 1 ] || [ "${FORCE_DOH:-0}" = 1 ] || return 0
+
+        if ! watchdog_forced_dns_runtime_guard; then
+            log_msg "Watchdog: не удалось синхронизировать forced-DNS по текущему состоянию Steer."
+        fi
+
+        # Forced-DNS-only mode does not test or rotate selected DNS servers.
+        if [ "${WATCHDOG_ENABLED:-0}" != 1 ]; then
+            sleep 60
+            continue
+        fi
+
         _interval="${WATCHDOG_INTERVAL:-600}"
         case "$_interval" in ''|*[!0-9]*) _interval=600;; esac
         [ "$_interval" -ge 60 ] 2>/dev/null || _interval=600
         [ "$_interval" -le 3600 ] 2>/dev/null || _interval=600
 
-        load_config >/dev/null 2>&1 || true
         _selection_kind="$(watchdog_scope_category 2>/dev/null || true)"
         case "$_selection_kind" in
             bypass|clean|security|privacy|adblock|family) ;;
@@ -6837,7 +6906,7 @@ watchdog_service_install_files() {
     cat > "$_stmp" <<'EOF_DNS_WATCHDOG_SERVICE'
 #!/bin/sh /etc/rc.common
 # DNS_MANAGER_WATCHDOG_SERVICE=2
-# DNS_MANAGER_WATCHDOG_SERVICE_VERSION=3.11.6
+# DNS_MANAGER_WATCHDOG_SERVICE_VERSION=3.11.7
 
 USE_PROCD=1
 START=95
@@ -6849,7 +6918,9 @@ CMD="__watchdog-loop"
 start_service() {
     [ -x "$PROG" ] || return 1
     [ -r /etc/dns-manager/config/manager.conf ] || return 0
-    [ "$(sed -n 's/^WATCHDOG_ENABLED="\([01]\)"$/\1/p' /etc/dns-manager/config/manager.conf 2>/dev/null | head -n1)" = 1 ] || return 0
+    _wd_enabled="$(sed -n 's/^WATCHDOG_ENABLED="\([01]\)"$/\1/p' /etc/dns-manager/config/manager.conf 2>/dev/null | head -n1)"
+    _force_enabled="$(sed -n 's/^FORCE_DOH="\([01]\)"$/\1/p' /etc/dns-manager/config/manager.conf 2>/dev/null | head -n1)"
+    [ "$_wd_enabled" = 1 ] || [ "$_force_enabled" = 1 ] || return 0
     procd_open_instance "dns-watchdog"
     procd_set_param command /bin/sh "$PROG" "$CMD"
     procd_set_param respawn 3600 5 5
@@ -6943,7 +7014,7 @@ watchdog_service_remove_files() {
 }
 watchdog_service_migrate_legacy() {
     [ "${FIRST_RUN_INITIAL:-0}" = 1 ] && return 0
-    [ "${WATCHDOG_ENABLED:-0}" = 1 ] || return 0
+    [ "${WATCHDOG_ENABLED:-0}" = 1 ] || [ "${FORCE_DOH:-0}" = 1 ] || return 0
     _legacy_cron=0
     watchdog_cron_marker_exists >/dev/null 2>&1 && _legacy_cron=1
 
@@ -6987,6 +7058,7 @@ watchdog_service_migrate_legacy() {
     return 0
 }
 watchdog_state_word_procd() {
+    [ "${WATCHDOG_ENABLED:-0}" = 1 ] || { printf '0'; return 0; }
     _service=0
     _enabled=0
     _running=0
@@ -7154,7 +7226,7 @@ apply_watchdog() {
     : "${WATCHDOG_INTERVAL:=${WATCHDOG_CHECK_INTERVAL_DEFAULT:-600}}"
     save_config || return 1
 
-    if [ "${WATCHDOG_ENABLED:-0}" = 1 ]; then
+    if [ "${WATCHDOG_ENABLED:-0}" = 1 ] || [ "${FORCE_DOH:-0}" = 1 ]; then
         watchdog_service_install_files || return 1
         # During a transaction the final manager.conf has not been committed yet.
         # Do not start the embedded loop until Apply commits the new configuration.
@@ -7480,7 +7552,7 @@ fi
 
 # Existing installations: move watchdog from cron to procd only after a valid baseline exists.
 # FIRST_RUN_INITIAL is immutable for this invocation, so first launch never migrates cron.
-if [ "${FIRST_RUN_INITIAL:-0}" = 0 ] && [ "${WATCHDOG_ENABLED:-0}" = 1 ]; then
+if [ "${FIRST_RUN_INITIAL:-0}" = 0 ] && { [ "${WATCHDOG_ENABLED:-0}" = 1 ] || [ "${FORCE_DOH:-0}" = 1 ]; }; then
     watchdog_service_migrate_legacy >/dev/null 2>&1 || warn_msg "Не удалось завершить переход watchdog с cron на procd. Состояние watchdog оставлено без самовольной ротации DNS."
 fi
 

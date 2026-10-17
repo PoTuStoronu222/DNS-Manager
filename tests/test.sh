@@ -231,7 +231,7 @@ grep -Fq "disabled:!!state.busy||!!state.jobRunning||unavailable||checking" dns-
 grep -q "'gaming','Игровые DNS'" dns-manager-luci.sh || fail "gaming catalog label missing in LuCI"
 grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validation missing gaming category"
 grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
-grep -q 'VERSION="3.55"' dns-manager.sh || fail "manager version not bumped"
+grep -q 'VERSION="3.59"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
 grep -q 'VERSION="1.50"' dns-manager-luci.sh || fail "LuCI version not bumped"
 grep -q "'bypass','Обход геоблока'" dns-manager-luci.sh || fail "bypass profile label not updated"
@@ -412,8 +412,8 @@ view_luci="$(sed -n 's|^// DNS Manager LuCI common module version:[[:space:]]*||
 [ "$top_luci" = "$self_luci" ] || fail "LuCI SELF_VERSION mismatch"
 [ "$top_luci" = "$view_luci" ] || fail "embedded JS version mismatch"
 ok "LuCI version markers synchronized ($top_luci)"
-grep -Fq 'VERSION="3.55"' dns-manager.sh || fail "DNS Manager version marker is not 3.55"
-ok "DNS Manager version marker synchronized (3.55)"
+grep -Fq 'VERSION="3.59"' dns-manager.sh || fail "DNS Manager version marker is not 3.59"
+ok "DNS Manager version marker synchronized (3.59)"
 
 if awk '
     /function startAutoStatus\(root\)/ { capture=1 }
@@ -563,6 +563,191 @@ sed 's#/etc/init.d/steer#"$STEER_INIT"#g' "$tmp/luci_steer_fn.sh" > "$tmp/luci_s
     steer_luci_case 'table inet test { chain prerouting { iifname "br-lan" udp dport 53 counter redirect to :5300 } }' 0 0
 )
 ok "LuCI Steer detection matches LAN/runtime contract"
+
+# https-dns-proxy defaults force_dns to 1 when the option is absent.
+# Steer already redirects LAN:53 to :5300, so DNS Manager must keep force_dns explicitly at 0.
+awk '/^sync_hdp_force_contract\(\) \{/,/^configure_hdp_manager_control\(\) \{/' dns-manager.sh > "$tmp/force_sync_fn.sh"
+[ -s "$tmp/force_sync_fn.sh" ] || fail "forced-DNS synchronization function extraction"
+awk '
+    /STEER_DNS_ACTIVE.*= 1/ { capture=1 }
+    capture { print }
+    capture && /^[[:space:]]*return 0$/ { exit }
+' "$tmp/force_sync_fn.sh" > "$tmp/force_sync_steer.sh"
+grep -Fq 'uci set https-dns-proxy.config.force_dns="0"' "$tmp/force_sync_steer.sh" || fail "Steer forced-DNS branch does not explicitly disable package interception"
+if grep -Fq 'uci -q delete "https-dns-proxy.config.force_dns"' "$tmp/force_sync_steer.sh"; then
+    fail "Steer forced-DNS branch deletes force_dns and falls back to package default 1"
+fi
+awk '/^watchdog_enforce_hdp_control\(\) \{/,/^watchdog_enforce_doh_authority\(\) \{/' dns-manager.sh > "$tmp/force_watchdog_fn.sh"
+grep -Fq 'uci set https-dns-proxy.config.force_dns="0"' "$tmp/force_watchdog_fn.sh" || fail "Steer watchdog does not preserve explicit force_dns=0"
+grep -Fq 'FORCED_DNS_ACTIVE' "$tmp/force_watchdog_fn.sh" || fail "watchdog does not verify live forced-DNS state"
+grep -Fq '[ "${FORCED_DNS_EXTERNAL:-0}" = 0 ]' "$tmp/force_watchdog_fn.sh" || fail "watchdog accepts an external DNS redirect as DNS Manager success"
+awk '/^watchdog_enforce_hdp_control\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' dns-manager.sh > "$tmp/force_enforce_source.sh"
+_guard_off_line="$(grep -nF '[ "${FORCE_DOH:-0}" = 1 ] || return 0' "$tmp/force_enforce_source.sh" | head -n1 | cut -d: -f1)"
+_detect_external_line="$(grep -nF 'detect_forced_dns_path' "$tmp/force_enforce_source.sh" | head -n1 | cut -d: -f1)"
+[ -n "$_guard_off_line" ] && [ -n "$_detect_external_line" ] && [ "$_guard_off_line" -lt "$_detect_external_line" ] || fail "forced-DNS OFF guard is not before detection or mutation"
+awk '/^[[:space:]]*force\)/,/^[[:space:]]*dnsmasq_perf\)/' dns-manager.sh > "$tmp/force_state.sh"
+grep -Fq '[ "$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null)" = "0" ] || _ok=0' "$tmp/force_state.sh" || fail "Steer force-state check does not expect explicit force_dns=0"
+ok "Steer forced-DNS avoids the package default interception"
+
+# Runtime controller must be a no-op when forced-DNS is OFF and when an
+# unrelated active redirect owns the path. This tests behavior, not only text.
+awk '/^watchdog_enforce_hdp_control\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' dns-manager.sh > "$tmp/force_enforce_fn.sh"
+[ -s "$tmp/force_enforce_fn.sh" ] || fail "forced-DNS enforcer extraction"
+(
+    set -e
+    . "$tmp/force_enforce_fn.sh"
+    DETECT_CALLS=0
+    UCI_WRITES=0
+    RESTARTS=0
+    DETECT_EXTERNAL=0
+    detect_forced_dns_path() {
+        DETECT_CALLS=$((DETECT_CALLS+1))
+        FORCED_DNS_EXTERNAL="$DETECT_EXTERNAL"
+        STEER_DNS_ACTIVE=0
+        return 0
+    }
+    log_msg() { :; }
+    uci() {
+        case "$1" in
+            set|commit|add|delete) UCI_WRITES=$((UCI_WRITES+1));;
+        esac
+        return 0
+    }
+    watchdog_restart_hdp() { RESTARTS=$((RESTARTS+1)); return 0; }
+    FORCE_DOH=0
+    watchdog_enforce_hdp_control
+    [ "$DETECT_CALLS" = 0 ] || exit 1
+    [ "$UCI_WRITES" = 0 ] || exit 2
+    [ "$RESTARTS" = 0 ] || exit 3
+    FORCE_DOH=1
+    DETECT_EXTERNAL=1
+    watchdog_enforce_hdp_control
+    [ "$DETECT_CALLS" = 1 ] || exit 4
+    [ "$UCI_WRITES" = 0 ] || exit 5
+    [ "$RESTARTS" = 0 ] || exit 6
+) || fail "forced-DNS enforcer mutates disabled or externally-owned DNS path"
+ok "forced-DNS OFF and external interception are no-mutation states"
+
+# Forced-DNS ownership must be reconciled through a lock on every background
+# check cycle, and a failed reconciliation must still release the lock.
+awk '/^watchdog_forced_dns_runtime_guard/ { capture=1 } capture { print } capture && /^}$/ { exit }' dns-manager.sh > "$tmp/force_runtime_guard_fn.sh"
+[ -s "$tmp/force_runtime_guard_fn.sh" ] || fail "forced-DNS runtime guard extraction"
+(
+    set -eu
+    . "$tmp/force_runtime_guard_fn.sh"
+    LOCK_OK=1
+    LOCK_RELEASES=0
+    ENFORCE_CALLS=0
+    ENFORCE_RC=0
+    acquire_mutation_lock() { [ "$LOCK_OK" = 1 ]; }
+    release_mutation_lock() { LOCK_RELEASES=$((LOCK_RELEASES+1)); }
+    watchdog_enforce_hdp_control() { ENFORCE_CALLS=$((ENFORCE_CALLS+1)); return "$ENFORCE_RC"; }
+    watchdog_forced_dns_runtime_guard || exit 1
+    [ "$ENFORCE_CALLS" = 1 ] || exit 2
+    [ "$LOCK_RELEASES" = 1 ] || exit 3
+    ENFORCE_RC=7
+    if watchdog_forced_dns_runtime_guard; then exit 4; else [ "$?" = 7 ] || exit 5; fi
+    [ "$ENFORCE_CALLS" = 2 ] || exit 6
+    [ "$LOCK_RELEASES" = 2 ] || exit 7
+    LOCK_OK=0
+    watchdog_forced_dns_runtime_guard || exit 8
+    [ "$ENFORCE_CALLS" = 2 ] || exit 9
+    [ "$LOCK_RELEASES" = 2 ] || exit 10
+) || fail "forced-DNS runtime guard lock/error handling"
+awk '/^watchdog_embedded_loop/ { capture=1 } capture { print } capture && /^run_watchdog/ { exit }' dns-manager.sh > "$tmp/watchdog_embedded_loop.sh"
+grep -Fq 'if ! watchdog_forced_dns_runtime_guard; then' "$tmp/watchdog_embedded_loop.sh" || fail "background loop does not reconcile forced-DNS runtime"
+_guard_line="$(grep -n 'watchdog_forced_dns_runtime_guard' "$tmp/watchdog_embedded_loop.sh" | head -n1 | cut -d: -f1)"
+_scope_line="$(grep -n '_selection_kind=' "$tmp/watchdog_embedded_loop.sh" | head -n1 | cut -d: -f1)"
+[ -n "$_guard_line" ] && [ -n "$_scope_line" ] && [ "$_guard_line" -lt "$_scope_line" ] || fail "forced-DNS runtime reconciliation is skipped by profile guards"
+ok "forced-DNS Steer transitions are reconciled on each background-check cycle"
+
+# Forced-DNS Auto must keep the lightweight runtime service active even when
+# DNS testing/replacement is disabled; the watchdog menu state remains OFF.
+grep -Fq '[ "${WATCHDOG_ENABLED:-0}" = 1 ] || [ "${FORCE_DOH:-0}" = 1 ] || return 0' "$tmp/watchdog_embedded_loop.sh" || fail "runtime loop exits while forced-DNS Auto is enabled"
+grep -Fq 'if [ "${WATCHDOG_ENABLED:-0}" != 1 ]; then' "$tmp/watchdog_embedded_loop.sh" || fail "forced-DNS-only loop lacks monitor-only branch"
+grep -Fq 'sleep 60' "$tmp/watchdog_embedded_loop.sh" || fail "forced-DNS-only loop has no bounded polling interval"
+awk '/^watchdog_state_word_procd\(\) \{/ { capture=1 } capture { print } capture && /^}/ { exit }' dns-manager.sh > "$tmp/watchdog_state_fn.sh"
+grep -Fq '[ "${WATCHDOG_ENABLED:-0}" = 1 ] || { printf '\''0'\''; return 0; }' "$tmp/watchdog_state_fn.sh" || fail "runtime-only service falsely reports DNS replacement watchdog as enabled"
+grep -Fq 'FORCE_DOH="\([01]\)"' dns-manager.sh || fail "procd service does not read the forced-DNS setting"
+if grep -Fq 'watchdog_runtime_service_sync' dns-manager.sh; then
+    fail "separate forced-DNS service lifecycle helper remains"
+fi
+awk '/^apply_watchdog\(\) \{/,/^menu_dns\(\) \{/' dns-manager.sh > "$tmp/apply_watchdog_fn.sh"
+grep -Fq 'if [ "${WATCHDOG_ENABLED:-0}" = 1 ] || [ "${FORCE_DOH:-0}" = 1 ]; then' "$tmp/apply_watchdog_fn.sh" || fail "one procd service is not shared by DNS checks and forced-DNS tracking"
+grep -Fq 'WATCHDOG_SERVICE_VERSION_MARKER="# DNS_MANAGER_WATCHDOG_SERVICE_VERSION=3.11.7"' dns-manager.sh || fail "watchdog service marker not bumped"
+grep -Fq 'DNS_MANAGER_WATCHDOG_SERVICE_VERSION=3.11.7' dns-manager.sh || fail "generated procd service marker not bumped"
+grep -Fq '[ "${WATCHDOG_ENABLED:-0}" = 1 ] || [ "${FORCE_DOH:-0}" = 1 ] || return 0' dns-manager.sh || fail "forced-DNS-only runtime is not a service start condition"
+grep -Fq '[ "${FORCE_DOH:-0}" = 1 ] || return 0' dns-manager.sh || fail "forced-DNS service migration does not check its own enable flag"
+ok "forced-DNS Auto tracks Steer without enabling DNS tests or rotation"
+
+# Runtime detection must not trust config alone; it must parse both redirect and DNAT rules.
+(
+    set -eu
+    FORCE_FN="$tmp/forced_dns_runtime_fn.sh"
+    : > "$FORCE_FN"
+    for _fn in dns_path_conflict_nft dns_path_conflict_iptables detect_steer_dns_path dns_manager_force_port detect_forced_dns_path; do
+        awk -v f="$_fn" '$0 ~ ("^" f "\\(\\) \\{") { capture=1 } capture { print } capture && /^}$/ { exit }' dns-manager.sh >> "$FORCE_FN"
+    done
+    sed 's#/etc/init.d/steer#"$STEER_INIT"#g' "$FORCE_FN" > "$tmp/forced_dns_runtime_source.sh"
+    . "$tmp/forced_dns_runtime_source.sh"
+    TMP_DIR="$tmp/forced-dns-runtime"
+    mkdir -p "$TMP_DIR"
+    SYS_FW=fw4
+    FIREWALL_LAN_ZONE=lan
+    FIREWALL_WAN_ZONE=wan
+    PORT_1=5053
+    STEER_TEST_RUNNING=0
+    export STEER_TEST_RUNNING
+    firewall_resolve_zones() { FIREWALL_LAN_ZONE=lan; FIREWALL_WAN_ZONE=wan; return 0; }
+    firewall_ref_matches_zone() { [ "$1" = "$2" ]; }
+    uci() {
+        case "$*" in
+            "show firewall") [ "${DNS_TEST_REDIRECT:-0}" = 1 ] && printf '%s\n' 'firewall.ext_dns=redirect' ;;
+            "-q get network.lan.device") printf '%s' br-lan ;;
+            "-q get network.lan.ifname") printf '%s' br-lan ;;
+            "-q get https-dns-proxy.config.force_dns") printf '%s' "${DNS_TEST_FORCE:-}" ;;
+            "-q get https-dns-proxy.config.notrack_dns") printf '%s' "${DNS_TEST_NOTRACK:-}" ;;
+            "-q get firewall.ext_dns.disabled") printf '' ;;
+            "-q get firewall.ext_dns.src") printf '%s' lan ;;
+            "-q get firewall.ext_dns.src_dport") printf '%s' 53 ;;
+            "-q get firewall.ext_dns.target") printf '%s' DNAT ;;
+            "-q get firewall.ext_dns.dest_port") printf '%s' "${DNS_TEST_REDIRECT_PORT:-5300}" ;;
+            *) return 1 ;;
+        esac
+    }
+    force_case() {
+        printf '%s\n' "$1" > "$NFT_FIXTURE"
+        FORCE_DOH="${2:-1}"
+        DNS_TEST_FORCE="${3:-1}"
+        DNS_TEST_NOTRACK="${4:-1}"
+        DNS_TEST_REDIRECT="${5:-0}"
+        DNS_TEST_REDIRECT_PORT="${6:-5300}"
+        export FORCE_DOH DNS_TEST_FORCE DNS_TEST_NOTRACK DNS_TEST_REDIRECT DNS_TEST_REDIRECT_PORT
+        FORCED_DNS_ACTIVE=0
+        FORCED_DNS_EXTERNAL=0
+        FORCED_DNS_SOURCE=none
+        detect_forced_dns_path || fail "forced-DNS detector returned an error"
+    }
+    : > "$NFT_FIXTURE"
+    force_case '' 1 1 1 0
+    [ "$FORCED_DNS_ACTIVE" = 0 ] || fail "valid UCI options without a live rule were reported active"
+    [ "$FORCED_DNS_EXTERNAL" = 0 ] || fail "missing live rule was misclassified as external"
+    force_case 'table inet fw4 {
+ chain dstnat_lan {
+  iifname "br-lan" udp dport 53 counter redirect to :53 comment "ubus:https-dns-proxy" # handle 41
+ }
+}' 1 1 1 0
+    [ "$FORCED_DNS_ACTIVE" = 1 ] || fail "https-dns-proxy runtime redirect was not detected"
+    [ "$FORCED_DNS_EXTERNAL" = 0 ] || fail "https-dns-proxy runtime redirect was misclassified as external"
+    force_case 'table ip fw4 {
+ chain dstnat_lan {
+  iifname "br-lan" udp dport 53 dnat to 198.51.100.10:5300 comment "external-rule" # handle 42
+ }
+}' 0 '' '' 0
+    [ "$FORCED_DNS_ACTIVE" = 1 ] || fail "runtime DNAT interception was not detected"
+    [ "$FORCED_DNS_EXTERNAL" = 1 ] || fail "runtime DNAT interception was not detected as external"
+)
+ok "Forced-DNS runtime detection distinguishes UCI config from live fw4 rules"
 
 grep -q '"steer_installed"' "$tmp/backend.sh" || fail "Steer installed status missing from RPC"
 grep -q '"steer_running"' "$tmp/backend.sh" || fail "Steer running status missing from RPC"
