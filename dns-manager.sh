@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.56"
+VERSION="3.57"
 # 3.38: clear the LuCI update flag after a successful CLI update.
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
@@ -5780,6 +5780,21 @@ watchdog_enforce_hdp_control() {
     log_msg "Forced-DNS runtime LAN:53 path is still missing after https-dns-proxy restart."
     return 1
 }
+
+# Steer can be installed, stopped, or removed after DNS Manager starts.
+# Reconcile forced-DNS ownership on each background-check cycle instead of
+# relying only on the throttled integrity guard.
+watchdog_forced_dns_runtime_guard() {
+    acquire_mutation_lock || return 0
+    if watchdog_enforce_hdp_control; then
+        _wfr_rc=0
+    else
+        _wfr_rc=$?
+    fi
+    release_mutation_lock
+    return "$_wfr_rc"
+}
+
 watchdog_enforce_doh_authority() {
     [ "$DNS_PROFILE" = hybrid ] || [ "$DNS_PROFILE" = custom ] || return 0
     _expected=0
@@ -6317,6 +6332,9 @@ watchdog_embedded_loop() {
         [ "$_interval" -le 3600 ] 2>/dev/null || _interval=600
 
         load_config >/dev/null 2>&1 || true
+        if ! watchdog_forced_dns_runtime_guard; then
+            log_msg "Watchdog: не удалось синхронизировать forced-DNS по текущему состоянию Steer."
+        fi
         _selection_kind="$(watchdog_scope_category 2>/dev/null || true)"
         case "$_selection_kind" in
             bypass|clean|security|privacy|adblock|family) ;;

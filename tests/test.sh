@@ -231,7 +231,7 @@ grep -Fq "disabled:!!state.busy||!!state.jobRunning||unavailable||checking" dns-
 grep -q "'gaming','Игровые DNS'" dns-manager-luci.sh || fail "gaming catalog label missing in LuCI"
 grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validation missing gaming category"
 grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
-grep -q 'VERSION="3.56"' dns-manager.sh || fail "manager version not bumped"
+grep -q 'VERSION="3.57"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
 grep -q 'VERSION="1.50"' dns-manager-luci.sh || fail "LuCI version not bumped"
 grep -q "'bypass','Обход геоблока'" dns-manager-luci.sh || fail "bypass profile label not updated"
@@ -412,8 +412,8 @@ view_luci="$(sed -n 's|^// DNS Manager LuCI common module version:[[:space:]]*||
 [ "$top_luci" = "$self_luci" ] || fail "LuCI SELF_VERSION mismatch"
 [ "$top_luci" = "$view_luci" ] || fail "embedded JS version mismatch"
 ok "LuCI version markers synchronized ($top_luci)"
-grep -Fq 'VERSION="3.56"' dns-manager.sh || fail "DNS Manager version marker is not 3.56"
-ok "DNS Manager version marker synchronized (3.56)"
+grep -Fq 'VERSION="3.57"' dns-manager.sh || fail "DNS Manager version marker is not 3.57"
+ok "DNS Manager version marker synchronized (3.57)"
 
 if awk '
     /function startAutoStatus\(root\)/ { capture=1 }
@@ -584,6 +584,39 @@ grep -Fq '[ "${FORCED_DNS_EXTERNAL:-0}" = 0 ]' "$tmp/force_watchdog_fn.sh" || fa
 awk '/^[[:space:]]*force\)/,/^[[:space:]]*dnsmasq_perf\)/' dns-manager.sh > "$tmp/force_state.sh"
 grep -Fq '[ "$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null)" = "0" ] || _ok=0' "$tmp/force_state.sh" || fail "Steer force-state check does not expect explicit force_dns=0"
 ok "Steer forced-DNS avoids the package default interception"
+
+# Forced-DNS ownership must be reconciled through a lock on every background
+# check cycle, and a failed reconciliation must still release the lock.
+awk '/^watchdog_forced_dns_runtime_guard\\(\\) \\{/,/^}/ { print }' dns-manager.sh > "$tmp/force_runtime_guard_fn.sh"
+[ -s "$tmp/force_runtime_guard_fn.sh" ] || fail "forced-DNS runtime guard extraction"
+(
+    set -eu
+    . "$tmp/force_runtime_guard_fn.sh"
+    LOCK_OK=1
+    LOCK_RELEASES=0
+    ENFORCE_CALLS=0
+    ENFORCE_RC=0
+    acquire_mutation_lock() { [ "$LOCK_OK" = 1 ]; }
+    release_mutation_lock() { LOCK_RELEASES=$((LOCK_RELEASES+1)); }
+    watchdog_enforce_hdp_control() { ENFORCE_CALLS=$((ENFORCE_CALLS+1)); return "$ENFORCE_RC"; }
+    watchdog_forced_dns_runtime_guard || exit 1
+    [ "$ENFORCE_CALLS" = 1 ] || exit 2
+    [ "$LOCK_RELEASES" = 1 ] || exit 3
+    ENFORCE_RC=7
+    if watchdog_forced_dns_runtime_guard; then exit 4; else [ "$?" = 7 ] || exit 5; fi
+    [ "$ENFORCE_CALLS" = 2 ] || exit 6
+    [ "$LOCK_RELEASES" = 2 ] || exit 7
+    LOCK_OK=0
+    watchdog_forced_dns_runtime_guard || exit 8
+    [ "$ENFORCE_CALLS" = 2 ] || exit 9
+    [ "$LOCK_RELEASES" = 2 ] || exit 10
+) || fail "forced-DNS runtime guard lock/error handling"
+awk '/^watchdog_embedded_loop\\(\\) \\{/,/^run_watchdog\\(\\) \\{/' dns-manager.sh > "$tmp/watchdog_embedded_loop.sh"
+grep -Fq 'if ! watchdog_forced_dns_runtime_guard; then' "$tmp/watchdog_embedded_loop.sh" || fail "background loop does not reconcile forced-DNS runtime"
+_guard_line="$(grep -n 'watchdog_forced_dns_runtime_guard' "$tmp/watchdog_embedded_loop.sh" | head -n1 | cut -d: -f1)"
+_scope_line="$(grep -n '_selection_kind=' "$tmp/watchdog_embedded_loop.sh" | head -n1 | cut -d: -f1)"
+[ -n "$_guard_line" ] && [ -n "$_scope_line" ] && [ "$_guard_line" -lt "$_scope_line" ] || fail "forced-DNS runtime reconciliation is skipped by profile guards"
+ok "forced-DNS Steer transitions are reconciled on each background-check cycle"
 
 # Runtime detection must not trust config alone; it must parse both redirect and DNAT rules.
 (
