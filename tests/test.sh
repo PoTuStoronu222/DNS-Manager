@@ -879,6 +879,12 @@ awk '/^apply_encrypted_dns_block\(\) \{/,/^}/' dns-manager.sh > "$tmp/encrypted_
 grep -Fq 'ensure_dns_dot_block || return 1' "$tmp/encrypted_dns_apply.sh" || fail "encrypted-DNS protection does not add its DoT rule"
 grep -Fq 'remove_dns_dot_block || return 1' "$tmp/encrypted_dns_apply.sh" || fail "encrypted-DNS protection does not remove its DoT rule"
 grep -Fq 'uci set "https-dns-proxy.config.canary_domains_mozilla=$_want"' "$tmp/encrypted_dns_apply.sh" || fail "encrypted-DNS protection does not configure its independent browser DoH canary state"
+awk '/^remove_dns_dot_block\(\) \{/,/^}/' dns-manager.sh > "$tmp/remove_dot_block.sh"
+if grep -Fq 'firewall_find_exact_rule_signature' "$tmp/remove_dot_block.sh"; then
+    fail "encrypted-DNS OFF can delete a matching firewall rule owned by another component"
+fi
+grep -Fq 'firewall.$FW_DOT_SECTION' "$tmp/remove_dot_block.sh" || fail "encrypted-DNS OFF does not target its own DoT rule"
+ok "encrypted-DNS OFF removes only the exact DNS Manager-owned DoT rule"
 grep -Fq 'watchdog|force|encrypted_dns|dnsmasq_perf)' dns-manager-luci.sh || fail "LuCI RPC does not allow the independent encrypted-DNS setting"
 grep -Fq "setSetting('encrypted_dns',1,root)" dns-manager-luci.sh || fail "LuCI has no enable action for encrypted-DNS protection"
 grep -Fq "setSetting('encrypted_dns',0,root)" dns-manager-luci.sh || fail "LuCI has no disable action for encrypted-DNS protection"
