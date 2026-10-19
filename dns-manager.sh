@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.61"
+VERSION="3.62"
 # 3.38: clear the LuCI update flag after a successful CLI update.
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
@@ -1520,15 +1520,10 @@ ensure_dns_dot_block() {
     return 0
 }
 remove_dns_dot_block() {
-    firewall_resolve_zones >/dev/null 2>&1 || true
-    _sec=""
+    # Disable only the exact DNS Manager-owned rule. An equivalent rule under
+    # another section name may belong to the router administrator or another app.
     if [ "$(uci -q get "firewall.$FW_DOT_SECTION" 2>/dev/null)" = rule ] && firewall_dot_rule_matches "$FW_DOT_SECTION"; then
-        _sec="$FW_DOT_SECTION"
-    else
-        _sec="$(firewall_find_exact_rule_signature dot "$FW_DOT_SECTION" 853 2>/dev/null || true)"
-    fi
-    if [ -n "$_sec" ]; then
-        uci -q delete "firewall.$_sec" || return 1
+        uci -q delete "firewall.$FW_DOT_SECTION" || return 1
         uci commit firewall || return 1
         reload_fw || return 1
     fi
