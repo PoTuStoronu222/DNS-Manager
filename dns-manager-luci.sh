@@ -34,8 +34,8 @@ COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main
 VERSION_FILE="$BACKUP_DIR/version"
 VERSION="1.53"
 
-say() { printf '%s\\n' "$*"; }
-err() { printf 'ERROR: %s\\n' "$*" >&2; }
+say() { printf '%s\n' "$*"; }
+err() { printf 'ERROR: %s\n' "$*" >&2; }
 
 manager_version() {
     [ -r "$MANAGER" ] || return 1
@@ -170,7 +170,7 @@ acquire_runtime_lock() {
     _parent="${_lock%/*}"
     mkdir -p "$_parent" 2>/dev/null || return 1
     if mkdir "$_lock" 2>/dev/null; then
-        printf '%s\\n' "$$" > "$_lock/pid" 2>/dev/null || true
+        printf '%s\n' "$$" > "$_lock/pid" 2>/dev/null || true
         return 0
     fi
     _pid="$(cat "$_lock/pid" 2>/dev/null)"
@@ -180,7 +180,7 @@ acquire_runtime_lock() {
     fi
     rm -rf "$_lock" 2>/dev/null || true
     mkdir "$_lock" 2>/dev/null || return 1
-    printf '%s\\n' "$$" > "$_lock/pid" 2>/dev/null || true
+    printf '%s\n' "$$" > "$_lock/pid" 2>/dev/null || true
     return 0
 }
 release_runtime_lock() {
@@ -212,7 +212,7 @@ jget() {
     fi
     # Minimal fallback for this RPC's controlled scalar arguments.
     # Allowed keys are fixed by the rpcd list/call dispatch below.
-    printf '%s\\n' "$INPUT" | sed -n \
+    printf '%s\n' "$INPUT" | sed -n \
         -e 's/.*"'"$_key"'"[[:space:]]*:[[:space:]]*"\([^"\\]*\)".*/\1/p' \
         -e 's/.*"'"$_key"'"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' | head -n1
 }
@@ -386,7 +386,7 @@ update_check_json_luci() {
         _ts="$(date +%s 2>/dev/null || printf 0)"
         _state_tmp="$UPDATE_STATE.tmp.$$"
         if [ -r "$UPDATE_STATE" ]; then sed '/^installed=/d;/^latest=/d;/^available=/d;/^checked_at=/d;/^error=/d' "$UPDATE_STATE" > "$_state_tmp" 2>/dev/null || true; else : > "$_state_tmp"; fi
-        printf 'installed=%s\\nlatest=\\navailable=0\\nchecked_at=%s\\nerror=%s\\n' "$_installed" "$_ts" "Не удалось получить DNS Manager LuCI с GitHub" >> "$_state_tmp"
+        printf 'installed=%s\nlatest=\navailable=0\nchecked_at=%s\nerror=%s\n' "$_installed" "$_ts" "Не удалось получить DNS Manager LuCI с GitHub" >> "$_state_tmp"
         mv "$_state_tmp" "$UPDATE_STATE" 2>/dev/null || rm -f "$_state_tmp" 2>/dev/null || true
         printf '{"ok":false,"installed_version":'; json_quote "$_installed"; printf ',"latest_version":"","available":false,"checked_at":%s,"error":' "$_ts"; json_quote "Не удалось получить DNS Manager LuCI с GitHub"; printf '}'
         return 0
@@ -396,7 +396,7 @@ update_check_json_luci() {
         _ts="$(date +%s 2>/dev/null || printf 0)"
         _state_tmp="$UPDATE_STATE.tmp.$$"
         if [ -r "$UPDATE_STATE" ]; then sed '/^installed=/d;/^latest=/d;/^available=/d;/^checked_at=/d;/^error=/d' "$UPDATE_STATE" > "$_state_tmp" 2>/dev/null || true; else : > "$_state_tmp"; fi
-        printf 'installed=%s\\nlatest=\\navailable=0\\nchecked_at=%s\\nerror=%s\\n' "$_installed" "$_ts" "Полученный файл DNS Manager LuCI не прошёл проверку" >> "$_state_tmp"
+        printf 'installed=%s\nlatest=\navailable=0\nchecked_at=%s\nerror=%s\n' "$_installed" "$_ts" "Полученный файл DNS Manager LuCI не прошёл проверку" >> "$_state_tmp"
         mv "$_state_tmp" "$UPDATE_STATE" 2>/dev/null || rm -f "$_state_tmp" 2>/dev/null || true
         printf '{"ok":false,"installed_version":'; json_quote "$_installed"; printf ',"latest_version":"","available":false,"checked_at":%s,"error":' "$_ts"; json_quote "Полученный файл DNS Manager LuCI не прошёл проверку"; printf '}'
         return 0
@@ -407,11 +407,11 @@ update_check_json_luci() {
     [ -n "$_latest" ] && [ "$(version_gt "$_latest" "$_installed")" = 1 ] && _available=1
     _ts="$(date +%s 2>/dev/null || printf 0)"
     {
-        printf 'installed=%s\\n' "$_installed"
-        printf 'latest=%s\\n' "$_latest"
-        printf 'available=%s\\n' "$_available"
-        printf 'checked_at=%s\\n' "$_ts"
-        printf 'error=\\n'
+        printf 'installed=%s\n' "$_installed"
+        printf 'latest=%s\n' "$_latest"
+        printf 'available=%s\n' "$_available"
+        printf 'checked_at=%s\n' "$_ts"
+        printf 'error=\n'
     } > "${UPDATE_STATE}.tmp.$$" 2>/dev/null || true
     [ -s "${UPDATE_STATE}.tmp.$$" ] && mv "${UPDATE_STATE}.tmp.$$" "$UPDATE_STATE" 2>/dev/null || rm -f "${UPDATE_STATE}.tmp.$$" 2>/dev/null || true
     rm -f "$_tmp" 2>/dev/null || true
@@ -490,20 +490,20 @@ component_update_check() {
     else
         : > "$_state_tmp"
     fi
-    printf 'manager_latest=%s\\n' "$_manager_latest" >> "$_state_tmp"
-    printf 'manager_available=%s\\n' "$_manager_available" >> "$_state_tmp"
-    printf 'manager_checked=%s\\n' "$_manager_ok" >> "$_state_tmp"
-    printf 'manager_error=%s\\n' "$_manager_error" >> "$_state_tmp"
-    printf 'catalog_latest=%s\\n' "$_catalog_latest" >> "$_state_tmp"
-    printf 'catalog_latest_rev=%s\\n' "$_catalog_latest_rev" >> "$_state_tmp"
-    printf 'catalog_latest_total=%s\\n' "$_catalog_latest_total" >> "$_state_tmp"
-    printf 'catalog_available=%s\\n' "$_catalog_available" >> "$_state_tmp"
-    printf 'catalog_checked=%s\\n' "$_catalog_ok" >> "$_state_tmp"
-    printf 'catalog_error=%s\\n' "$_catalog_error" >> "$_state_tmp"
-    printf 'hdp_latest=%s\\n' "$_hdp_latest" >> "$_state_tmp"
-    printf 'hdp_available=%s\\n' "$_hdp_available" >> "$_state_tmp"
-    printf 'hdp_checked=%s\\n' "$_hdp_checked" >> "$_state_tmp"
-    printf 'components_checked_at=%s\\n' "$_ts" >> "$_state_tmp"
+    printf 'manager_latest=%s\n' "$_manager_latest" >> "$_state_tmp"
+    printf 'manager_available=%s\n' "$_manager_available" >> "$_state_tmp"
+    printf 'manager_checked=%s\n' "$_manager_ok" >> "$_state_tmp"
+    printf 'manager_error=%s\n' "$_manager_error" >> "$_state_tmp"
+    printf 'catalog_latest=%s\n' "$_catalog_latest" >> "$_state_tmp"
+    printf 'catalog_latest_rev=%s\n' "$_catalog_latest_rev" >> "$_state_tmp"
+    printf 'catalog_latest_total=%s\n' "$_catalog_latest_total" >> "$_state_tmp"
+    printf 'catalog_available=%s\n' "$_catalog_available" >> "$_state_tmp"
+    printf 'catalog_checked=%s\n' "$_catalog_ok" >> "$_state_tmp"
+    printf 'catalog_error=%s\n' "$_catalog_error" >> "$_state_tmp"
+    printf 'hdp_latest=%s\n' "$_hdp_latest" >> "$_state_tmp"
+    printf 'hdp_available=%s\n' "$_hdp_available" >> "$_state_tmp"
+    printf 'hdp_checked=%s\n' "$_hdp_checked" >> "$_state_tmp"
+    printf 'components_checked_at=%s\n' "$_ts" >> "$_state_tmp"
     mv "$_state_tmp" "$UPDATE_STATE" 2>/dev/null || rm -f "$_state_tmp" 2>/dev/null || true
 }
 
@@ -524,7 +524,7 @@ update_hdp_json() {
             : > "$_state_tmp"
         fi
         _ts="$(date +%s 2>/dev/null || printf 0)"
-        printf 'hdp_latest=%s\\nhdp_available=0\\nhdp_checked=1\\ncomponents_checked_at=%s\\n' "$_installed" "$_ts" >> "$_state_tmp"
+        printf 'hdp_latest=%s\nhdp_available=0\nhdp_checked=1\ncomponents_checked_at=%s\n' "$_installed" "$_ts" >> "$_state_tmp"
         mv "$_state_tmp" "$UPDATE_STATE" 2>/dev/null || rm -f "$_state_tmp" 2>/dev/null || true
         printf '{"ok":true,"updated":false,"version":'; json_quote "$_installed"; printf ',"message":'; json_quote "https-dns-proxy уже актуален"; printf '}'
         return
@@ -537,7 +537,7 @@ update_hdp_json() {
             : > "$_state_tmp"
         fi
         _ts="$(date +%s 2>/dev/null || printf 0)"
-        printf 'hdp_latest=%s\\nhdp_available=0\\nhdp_checked=1\\ncomponents_checked_at=%s\\n' "$_installed" "$_ts" >> "$_state_tmp"
+        printf 'hdp_latest=%s\nhdp_available=0\nhdp_checked=1\ncomponents_checked_at=%s\n' "$_installed" "$_ts" >> "$_state_tmp"
         mv "$_state_tmp" "$UPDATE_STATE" 2>/dev/null || rm -f "$_state_tmp" 2>/dev/null || true
         printf '{"ok":true,"updated":false,"version":'; json_quote "$_installed"; printf ',"message":'; json_quote "https-dns-proxy уже актуален"; printf '}'
         return
@@ -554,7 +554,7 @@ update_hdp_json() {
         : > "$_state_tmp"
     fi
     _ts="$(date +%s 2>/dev/null || printf 0)"
-    printf 'hdp_latest=%s\\nhdp_available=0\\nhdp_checked=1\\ncomponents_checked_at=%s\\n' "$_after" "$_ts" >> "$_state_tmp"
+    printf 'hdp_latest=%s\nhdp_available=0\nhdp_checked=1\ncomponents_checked_at=%s\n' "$_after" "$_ts" >> "$_state_tmp"
     mv "$_state_tmp" "$UPDATE_STATE" 2>/dev/null || rm -f "$_state_tmp" 2>/dev/null || true
     printf '{"ok":true,"updated":true,"version":'; json_quote "$_after"; printf '}'
 }
@@ -620,7 +620,7 @@ update_check_json() {
 
     if [ "${UPDATE_CHECK_LUCI_OK:-0}" = 1 ] && [ "${UPDATE_CHECK_COMPONENTS_OK:-0}" = 1 ]; then
         _ts="$(date +%s 2>/dev/null || printf 0)"
-        printf '%s\\n' "$_ts" > "$UPDATE_CHECK_CACHE" 2>/dev/null || true
+        printf '%s\n' "$_ts" > "$UPDATE_CHECK_CACHE" 2>/dev/null || true
     fi
     release_runtime_lock "$UPDATE_CHECK_LOCK"
     status_json
@@ -803,7 +803,7 @@ update_json() {
         : > "$_state_tmp"
     fi
     _update_ts="$(date +%s 2>/dev/null || printf 0)"
-    printf 'installed=%s\\nlatest=%s\\navailable=0\\nchecked_at=%s\\n' "$_after" "$_after" "$_update_ts" >> "$_state_tmp"
+    printf 'installed=%s\nlatest=%s\navailable=0\nchecked_at=%s\n' "$_after" "$_after" "$_update_ts" >> "$_state_tmp"
     mv "$_state_tmp" "$UPDATE_STATE" 2>/dev/null || rm -f "$_state_tmp" 2>/dev/null || true
     printf '{"ok":true,"updated":true,"version":'; json_quote "$_after"; printf '}'
 }
@@ -920,7 +920,7 @@ runtime_lan_input_match() {
         @zone\[*\]) _nets="$(uci -q get "firewall.$_ref.network" 2>/dev/null || true)" ;;
         *) _nets="$(uci -q get "firewall.$_ref.network" 2>/dev/null || true)" ;;
     esac
-    printf '%s\\n' "$_nets" | tr ' ' '\\n' | grep -qxF lan 2>/dev/null
+    printf '%s\n' "$_nets" | tr ' ' '\n' | grep -qxF lan 2>/dev/null
 }
 runtime_zapret_running() {
     ps w 2>/dev/null | grep -Eq '[z]ms([[:space:]]|/)|[z]apret([[:space:]]|/)|[z]apret2([[:space:]]|/)|[z]aproxy2([[:space:]]|/)'
@@ -941,7 +941,7 @@ detect_runtime_force_state() {
         [ "$(uci -q get "firewall.$_sec.disabled" 2>/dev/null)" = 1 ] && continue
         runtime_lan_input_match "$(uci -q get "firewall.$_sec.src" 2>/dev/null || true)" || continue
         _sd="$(uci -q get "firewall.$_sec.src_dport" 2>/dev/null || true)"
-        printf '%s\\n' "$_sd" | tr ' ' '\\n' | grep -qxF 53 2>/dev/null || continue
+        printf '%s\n' "$_sd" | tr ' ' '\n' | grep -qxF 53 2>/dev/null || continue
         _target="$(uci -q get "firewall.$_sec.target" 2>/dev/null || true)"
         case "$_target" in DNAT|dnat|REDIRECT|redirect) ;; *) continue ;; esac
         _dp="$(uci -q get "firewall.$_sec.dest_port" 2>/dev/null || true)"
@@ -953,7 +953,7 @@ detect_runtime_force_state() {
     done
     if command -v nft >/dev/null 2>&1 && nft list table inet fw4 >/dev/null 2>&1; then
         _rt="$(nft -a list ruleset 2>/dev/null || true)"
-        _nft_ports="$(printf '%s\\n' "$_rt" | awk -v ld="$_lan_dev" -v li="$_lan_if" '
+        _nft_ports="$(printf '%s\n' "$_rt" | awk -v ld="$_lan_dev" -v li="$_lan_if" '
             /iifname[[:space:]]+"[^"]+"/ && /dport[[:space:]]+53/ && /(redirect[[:space:]]+to[[:space:]]+:[0-9]+|dnat[[:space:]]+to[[:space:]]+[^[:space:]]+:[0-9]+)/ {
                 ok=0
                 if ($0 ~ /iifname[[:space:]]+"br-lan"/) ok=1
@@ -973,7 +973,7 @@ detect_runtime_force_state() {
         fi
     elif command -v iptables-save >/dev/null 2>&1; then
         _rt="$(iptables-save -t nat 2>/dev/null || true)"
-        _ipt_ports="$(printf '%s\\n' "$_rt" | awk -v ld="$_lan_dev" -v li="$_lan_if" '
+        _ipt_ports="$(printf '%s\n' "$_rt" | awk -v ld="$_lan_dev" -v li="$_lan_if" '
             function has_input_dev(    i) {
                 for(i=1;i<NF;i++) if($i=="-i" && $(i+1)!="") {
                     if($(i+1)=="br-lan" || (ld!="" && $(i+1)==ld) || (li!="" && $(i+1)==li)) return 1
@@ -1002,7 +1002,7 @@ detect_runtime_force_state() {
         FORCE_RUNTIME_ACTIVE=1
         FORCE_RUNTIME_SOURCE="DNS Manager"
     fi
-    FORCE_RUNTIME_TARGETS="$(printf '%s\\n' "$FORCE_RUNTIME_TARGETS" | tr ' ' '\\n' | sed '/^$/d' | sort -n -u | tr '\\n' ' ' | sed 's/[[:space:]]*$//')"
+    FORCE_RUNTIME_TARGETS="$(printf '%s\n' "$FORCE_RUNTIME_TARGETS" | tr ' ' '\n' | sed '/^$/d' | sort -n -u | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
 }
 
 force_readback_json() {
@@ -1066,14 +1066,14 @@ force_readback_json() {
     printf ',"force_listen":'; json_quote "$(uci -q get https-dns-proxy.config.listen_addr 2>/dev/null || true)"
     printf ',"force_consistent":%s' "$([ "$_fr_manager" = 1 ] && printf 1 || [ "$_fr_owner" = steer ] && [ "$_fr_force" = 1 ] && printf 1 || printf 0)"
     printf ',"force_owner_label":'; case "$_fr_owner" in manager) json_quote "DNS Manager";; steer) json_quote "Steer";; external) json_quote "внешний";; *) json_quote "нет";; esac
-    printf ',"zapret_running":%s}\\n' "$(runtime_zapret_running && printf 1 || printf 0)"
+    printf ',"zapret_running":%s}\n' "$(runtime_zapret_running && printf 1 || printf 0)"
 }
 
 
 device_model() {
-    _model="$(cat /tmp/sysinfo/model 2>/dev/null | tr -d "\000\r\\n" || true)"
-    [ -n "$_model" ] || _model="$(cat /sys/firmware/devicetree/base/model 2>/dev/null | tr -d "\000\r\\n" || true)"
-    [ -n "$_model" ] || _model="$(cat /proc/device-tree/model 2>/dev/null | tr -d "\000\r\\n" || true)"
+    _model="$(cat /tmp/sysinfo/model 2>/dev/null | tr -d "\000\r\n" || true)"
+    [ -n "$_model" ] || _model="$(cat /sys/firmware/devicetree/base/model 2>/dev/null | tr -d "\000\r\n" || true)"
+    [ -n "$_model" ] || _model="$(cat /proc/device-tree/model 2>/dev/null | tr -d "\000\r\n" || true)"
     [ -n "$_model" ] || _model="неизвестно"
     printf "%s" "$_model"
 }
@@ -1091,9 +1091,9 @@ cpu_load_percent() {
     if [ -s "$f" ]; then
         prev="$(cat "$f" 2>/dev/null || true)"
     else
-        printf '%s\\n' "$now" > "$f" 2>/dev/null || true
+        printf '%s\n' "$now" > "$f" 2>/dev/null || true
         printf '0'
-        printf '%s\\n' '0' > "$f.pct" 2>/dev/null || true
+        printf '%s\n' '0' > "$f.pct" 2>/dev/null || true
         return 0
     fi
     set -- $prev $now
@@ -1107,8 +1107,8 @@ cpu_load_percent() {
         return 0
     fi
     [ "$t2" -gt "$t1" ] 2>/dev/null || { printf '0'; return 0; }
-    printf '%s\\n' "$now" > "$f" 2>/dev/null || true
-    printf '%s\\n' "$(( (100 * ((t2-t1) - (i2-i1)) + (t2-t1)/2) / (t2-t1) ))" | tee "$f.pct"
+    printf '%s\n' "$now" > "$f" 2>/dev/null || true
+    printf '%s\n' "$(( (100 * ((t2-t1) - (i2-i1)) + (t2-t1)/2) / (t2-t1) ))" | tee "$f.pct"
 }
 
 runtime_uptime_seconds() {
@@ -1158,7 +1158,7 @@ detect_steer_dns_runtime() {
         else
             _rules="$(iptables -t nat -S PREROUTING 2>/dev/null || true)"
         fi
-        if [ -n "$_rules" ] && printf '%s\\n' "$_rules" | awk -v ld="$_lan_dev" -v li="$_lan_if" '
+        if [ -n "$_rules" ] && printf '%s\n' "$_rules" | awk -v ld="$_lan_dev" -v li="$_lan_if" '
             function has_input_dev(    i) {
                 for (i=1; i<NF; i++) if ($i=="-i" && $(i+1)!="") {
                     if ($(i+1)=="br-lan" || (ld!="" && $(i+1)==ld) || (li!="" && $(i+1)==li)) return 1
@@ -1264,7 +1264,7 @@ doh_status_json() {
         [ "$(uci -q get firewall.$_sec.disabled 2>/dev/null)" = 1 ] && continue
         runtime_lan_input_match "$(uci -q get firewall.$_sec.src 2>/dev/null || true)" || continue
         _sd="$(uci -q get firewall.$_sec.src_dport 2>/dev/null || true)"
-        printf '%s\\n' "$_sd" | tr ' ' '\\n' | grep -qxF 53 2>/dev/null || continue
+        printf '%s\n' "$_sd" | tr ' ' '\n' | grep -qxF 53 2>/dev/null || continue
         _target="$(uci -q get firewall.$_sec.target 2>/dev/null || true)"
         case "$_target" in DNAT|dnat|REDIRECT|redirect) ;; *) continue;; esac
         _dp="$(uci -q get firewall.$_sec.dest_port 2>/dev/null || true)"
@@ -1305,7 +1305,7 @@ doh_status_json() {
         esac
         [ -n "$_n" ] || _n='Пользовательский DNS'
         _run=0
-        [ -n "$_p" ] && printf '%s\\n' "$_listen" | grep -qE "(^|[[:space:]])[^[:space:]]*:$_p([[:space:]]|$)" && _run=1
+        [ -n "$_p" ] && printf '%s\n' "$_listen" | grep -qE "(^|[[:space:]])[^[:space:]]*:$_p([[:space:]]|$)" && _run=1
         [ "$_run" = 1 ] && _doh_running=$((_doh_running+1))
         _doh_total=$((_doh_total+1))
         _instance_id="$(catalog_id_for_url "$_u" 2>/dev/null || true)"
@@ -1452,7 +1452,7 @@ status_json() {
         [ "$(uci -q get "firewall.$_sec.disabled" 2>/dev/null)" = 1 ] && continue
         runtime_lan_input_match "$(uci -q get "firewall.$_sec.src" 2>/dev/null || true)" || continue
         _sd="$(uci -q get "firewall.$_sec.src_dport" 2>/dev/null || true)"
-        printf '%s\\n' "$_sd" | tr ' ' '\\n' | grep -qxF 53 2>/dev/null || continue
+        printf '%s\n' "$_sd" | tr ' ' '\n' | grep -qxF 53 2>/dev/null || continue
         _target="$(uci -q get "firewall.$_sec.target" 2>/dev/null || true)"
         case "$_target" in DNAT|dnat|REDIRECT|redirect) ;; *) continue;; esac
         _dp="$(uci -q get "firewall.$_sec.dest_port" 2>/dev/null || true)"
@@ -1488,7 +1488,7 @@ status_json() {
         _force_status=manager
         _force_source='DNS Manager'
     fi
-    _force_targets="$(printf '%s\\n' "$_force_targets" | tr ' ' '\\n' | sed '/^$/d' | sort -n -u | tr '\\n' ' ' | sed 's/[[:space:]]*$//')"
+    _force_targets="$(printf '%s\n' "$_force_targets" | tr ' ' '\n' | sed '/^$/d' | sort -n -u | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
     _force_both=0
     [ "$_force_manager" = 1 ] && [ "$_force_external" = 1 ] && _force_both=1
 
@@ -1499,7 +1499,7 @@ status_json() {
     while uci -q get "https-dns-proxy.@https-dns-proxy[$_i]" >/dev/null 2>&1; do
         _doh_total=$((_doh_total + 1))
         _p="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].listen_port" 2>/dev/null || true)"
-        if [ -n "$_p" ] && printf '%s\\n' "$_listen" | grep -qE "(^|[[:space:]])[^[:space:]]*:${_p}([[:space:]]|$)"; then _doh_running=$((_doh_running + 1)); fi
+        if [ -n "$_p" ] && printf '%s\n' "$_listen" | grep -qE "(^|[[:space:]])[^[:space:]]*:${_p}([[:space:]]|$)"; then _doh_running=$((_doh_running + 1)); fi
         _i=$((_i + 1))
     done
     _doh=no; [ "$_doh_running" -gt 0 ] && _doh=yes
@@ -1689,7 +1689,7 @@ status_json() {
         esac
         [ -n "$_n" ] || _n="Пользовательский DNS"
         _run=0
-        [ -n "$_p" ] && printf '%s\\n' "$_listen" | grep -qE "(^|[[:space:]])[^[:space:]]*:$_p([[:space:]]|$)" && _run=1
+        [ -n "$_p" ] && printf '%s\n' "$_listen" | grep -qE "(^|[[:space:]])[^[:space:]]*:$_p([[:space:]]|$)" && _run=1
         _slot=""
         _instance_id="$(catalog_id_for_url "$_u" 2>/dev/null || true)"
         for _s in 1 2 3 4 5 6 RU; do
@@ -1789,7 +1789,7 @@ job_start_test_system() {
     _jid="$(new_job_id test_system)"
     job_active "$_jid" && { json_error "Проверка системных DNS уже выполняется"; return; }
     job_prepare "$_jid" || { json_error "Не удалось подготовить задачу"; return; }
-    printf 'status=running\\nstarted=%s\\nmode=system\\n' "$(date +%s)" > "$JOB_DIR/$_jid/state"
+    printf 'status=running\nstarted=%s\nmode=system\n' "$(date +%s)" > "$JOB_DIR/$_jid/state"
     (
         exec >>"$JOB_DIR/$_jid/output" 2>&1
         if ! load_manager; then
@@ -1797,7 +1797,7 @@ job_start_test_system() {
         fi
         if ! acquire_test_lock; then
             job_write "$_jid" status failed; job_write "$_jid" result fail; job_write "$_jid" finished "$(date +%s)"
-            printf '%s\\n' "Другая проверка DNS уже выполняется." >> "$JOB_DIR/$_jid/output"
+            printf '%s\n' "Другая проверка DNS уже выполняется." >> "$JOB_DIR/$_jid/output"
             exit 1
         fi
         _saved_catalog="$DNS_CATALOG"; _saved_bootstrap="$BOOTSTRAP_DNS"
@@ -1810,7 +1810,7 @@ job_start_test_system() {
                 _total=$((_total+1))
                 _sid="$(system_result_id "$_u" "$_p" "$_i")"
                 _norm_url="$(normalize_url "$_u" 2>/dev/null || true)"
-                printf '%s|system|System DNS|System DNS|%s\\n' "$_sid" "$_norm_url" > "$_system_catalog"
+                printf '%s|system|System DNS|System DNS|%s\n' "$_sid" "$_norm_url" > "$_system_catalog"
                 DNS_CATALOG="$_system_catalog"; BOOTSTRAP_DNS="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].bootstrap_dns" 2>/dev/null || true)"
                 rm -f "$TMP_DIR/t.$_sid" 2>/dev/null || true
                 test_one_dns "$_sid" >/dev/null 2>&1 || true
@@ -1864,7 +1864,7 @@ job_start_test_system() {
             job_write "$_jid" status done; job_write "$_jid" result ok
         elif [ "$_total" -eq 0 ]; then
             job_write "$_jid" status failed; job_write "$_jid" result fail
-            printf '%s\\n' "Системных DNS без привязки к слотам не найдено." >> "$JOB_DIR/$_jid/output"
+            printf '%s\n' "Системных DNS без привязки к слотам не найдено." >> "$JOB_DIR/$_jid/output"
         else
             job_write "$_jid" status done; job_write "$_jid" result fail
         fi
@@ -2032,7 +2032,7 @@ watchdog_apply_batch() {
 set_check_stamp() {
     _id="$1"; _ts="$2"
     case "$_id" in ''|*[!A-Za-z0-9_-]*) return 1;; esac
-    printf '%s\\n' "$_ts" > "$CHECK_DIR/$_id" 2>/dev/null
+    printf '%s\n' "$_ts" > "$CHECK_DIR/$_id" 2>/dev/null
 }
 commit_single_test_result() {
     _id="$1"
@@ -2054,7 +2054,7 @@ commit_single_test_result() {
             return 1
         }
     fi
-    printf '%s\\n' "$_line" >> "$_tmp" || {
+    printf '%s\n' "$_line" >> "$_tmp" || {
         rm -f "$_tmp" 2>/dev/null || true
         return 1
     }
@@ -2094,7 +2094,7 @@ job_prepare() {
     : > "$JOB_DIR/$_id/state" || return 1
     : > "$JOB_DIR/$_id/output" || return 1
 }
-job_write() { _id="$1"; _key="$2"; _value="$3"; mkdir -p "$JOB_DIR/$_id" 2>/dev/null || return 1; printf '%s=%s\\n' "$_key" "$_value" >> "$JOB_DIR/$_id/state" 2>/dev/null; }
+job_write() { _id="$1"; _key="$2"; _value="$3"; mkdir -p "$JOB_DIR/$_id" 2>/dev/null || return 1; printf '%s=%s\n' "$_key" "$_value" >> "$JOB_DIR/$_id/state" 2>/dev/null; }
 
 job_pid_start_token() {
     _pid="$1"
@@ -2105,11 +2105,11 @@ job_pid_start_token() {
 job_max_age() {
     _mode="$1"
     case "$_mode" in
-        profile) printf '%s\\n' "$JOB_MAX_AGE_PROFILE" ;;
-        all) printf '%s\\n' "$JOB_MAX_AGE_TEST_ALL" ;;
-        current) printf '%s\\n' "$JOB_MAX_AGE_TEST_CURRENT" ;;
-        one) printf '%s\\n' "$JOB_MAX_AGE_TEST_ONE" ;;
-        *) printf '%s\\n' 300 ;;
+        profile) printf '%s\n' "$JOB_MAX_AGE_PROFILE" ;;
+        all) printf '%s\n' "$JOB_MAX_AGE_TEST_ALL" ;;
+        current) printf '%s\n' "$JOB_MAX_AGE_TEST_CURRENT" ;;
+        one) printf '%s\n' "$JOB_MAX_AGE_TEST_ONE" ;;
+        *) printf '%s\n' 300 ;;
     esac
 }
 job_mark_failed() {
@@ -2121,7 +2121,7 @@ job_mark_failed() {
     job_write "$_id" status failed
     job_write "$_id" result fail
     job_write "$_id" finished "$_now"
-    printf '%s\\n' "$_msg" >> "$_d/output" 2>/dev/null || true
+    printf '%s\n' "$_msg" >> "$_d/output" 2>/dev/null || true
 }
 job_record_pid() {
     _id="$1"
@@ -2246,7 +2246,7 @@ job_start_profile() {
     _jid="$(new_job_id profile)"
     job_active "$_jid" && { json_error "Другая операция применения профиля уже выполняется"; return; }
     job_prepare "$_jid" || { json_error "Не удалось подготовить задачу"; return; }
-    printf 'status=running\\nstarted=%s\\nmode=profile\\nprofile=%s\\n' "$(date +%s)" "$_profile" > "$JOB_DIR/$_jid/state"
+    printf 'status=running\nstarted=%s\nmode=profile\nprofile=%s\n' "$(date +%s)" "$_profile" > "$JOB_DIR/$_jid/state"
 
     (
         exec >>"$JOB_DIR/$_jid/output" 2>&1
@@ -2257,7 +2257,7 @@ job_start_profile() {
             _rc=$?
         else
             _rc=1
-            printf '%s\\n' "DNS Manager недоступен."
+            printf '%s\n' "DNS Manager недоступен."
         fi
 
         _now="$(date +%s)"
@@ -2281,7 +2281,7 @@ job_start_test_all() {
     _jid="$(new_job_id test_all)"
     job_active "$_jid" && { json_error "Полная проверка уже выполняется"; return; }
     job_prepare "$_jid" || { json_error "Не удалось подготовить задачу"; return; }
-    printf 'status=running\\nstarted=%s\\nmode=all\\n' "$(date +%s)" > "$JOB_DIR/$_jid/state"
+    printf 'status=running\nstarted=%s\nmode=all\n' "$(date +%s)" > "$JOB_DIR/$_jid/state"
     (
         exec >>"$JOB_DIR/$_jid/output" 2>&1
         trap 'job_write "$_jid" status failed; job_write "$_jid" finished "$(date +%s)"; exit 1' INT TERM
@@ -2311,7 +2311,7 @@ job_start_test_current() {
     _jid="$(new_job_id test_current)"
     job_active "$_jid" && { json_error "Проверка выбранных DNS уже выполняется"; return; }
     job_prepare "$_jid" || { json_error "Не удалось подготовить задачу"; return; }
-    printf 'status=running\\nstarted=%s\\nmode=current\\n' "$(date +%s)" > "$JOB_DIR/$_jid/state"
+    printf 'status=running\nstarted=%s\nmode=current\n' "$(date +%s)" > "$JOB_DIR/$_jid/state"
     (
         exec >>"$JOB_DIR/$_jid/output" 2>&1
         if ! load_manager; then
@@ -2334,7 +2334,7 @@ job_start_test_current() {
         for _s in 1 2 3 4 5 6 RU; do
             _id="$(cfg_get "SLOT_$_s" 2>/dev/null || true)"
             [ -n "$_id" ] || continue
-            printf "%s\\n" "$_id" >> "$_ids"
+            printf "%s\n" "$_id" >> "$_ids"
             _total=$((_total+1))
         done
 
@@ -2378,12 +2378,12 @@ job_start_test_current() {
                     cat "$_rfile" >> "$_results" 2>/dev/null || true
                     grep -q '|OK$' "$_rfile" 2>/dev/null || _fail=$((_fail+1))
                 else
-                    printf '%s|%s|%s|-1|TEST_NO_RESULT\\n' "$_cid" "$(dns_cat "$_cid" 2>/dev/null || printf unknown)" "$(dns_name "$_cid" 2>/dev/null || printf "%s" "$_cid")" >> "$_results"
+                    printf '%s|%s|%s|-1|TEST_NO_RESULT\n' "$_cid" "$(dns_cat "$_cid" 2>/dev/null || printf unknown)" "$(dns_name "$_cid" 2>/dev/null || printf "%s" "$_cid")" >> "$_results"
                     _fail=$((_fail+1))
                 fi
                 _done=$((_done+1))
             done
-            printf "Проверка выбранных DNS: %s из %s | ошибки %s\\n" "$_done" "$_total" "$_fail"
+            printf "Проверка выбранных DNS: %s из %s | ошибки %s\n" "$_done" "$_total" "$_fail"
             _batch_pids=""
             _batch_ids=""
             _batch_n=0
@@ -2391,7 +2391,7 @@ job_start_test_current() {
 
         while IFS= read -r _id; do
             [ -n "$_id" ] || continue
-            printf "Проверяю DoH: %s\\n" "$_id"
+            printf "Проверяю DoH: %s\n" "$_id"
             (trap - EXIT; test_one_dns "$_id") &
             _batch_pids="$_batch_pids $!"
             _batch_ids="$_batch_ids $_id"
@@ -2441,7 +2441,7 @@ job_start_test_one() {
     _jid="$(new_job_id test_one)"
     job_active "$_jid" && { json_error "Проверка DNS уже выполняется"; return; }
     job_prepare "$_jid" || { json_error "Не удалось подготовить задачу"; return; }
-    printf 'status=running\\nstarted=%s\\nmode=one\\n' "$(date +%s)" > "$JOB_DIR/$_jid/state"
+    printf 'status=running\nstarted=%s\nmode=one\n' "$(date +%s)" > "$JOB_DIR/$_jid/state"
     job_write "$_jid" dns_id "$_id"
     (
         exec >>"$JOB_DIR/$_jid/output" 2>&1
@@ -2452,7 +2452,7 @@ job_start_test_one() {
             job_write "$_jid" status failed; job_write "$_jid" result fail; job_write "$_jid" finished "$(date +%s)"; exit 1
         fi
         # Keep single-DNS checks identical to the full/selected catalog test path.
-        printf "Проверяю реальный DoH endpoint: %s.\\n" "$_id"
+        printf "Проверяю реальный DoH endpoint: %s.\n" "$_id"
         rm -f "$TMP_DIR/t.$_id" 2>/dev/null || true
         test_one_dns "$_id" || true
         _result_file="$TMP_DIR/t.$_id"
@@ -2542,7 +2542,7 @@ catalog_json() {
         case "$_id" in ''|\#*) continue;; esac
         [ "$_category" = all ] || [ "$_cat" = "$_category" ] || continue
         if [ "$_only_ok" = 1 ]; then _r="$(result_for_id "$_id" 2>/dev/null || true)"; _st="$(printf '%s' "$_r" | awk -F'|' 'NF>=5 {print $5;exit}')"; [ "$_st" = OK ] || continue; fi
-        printf '%s|%s|%s|%s|%s|%s|%s\\n' "$_id" "$_cat" "$_prof" "$_name" "$_url" "$_region" "$_status" >> "$_filtered"
+        printf '%s|%s|%s|%s|%s|%s|%s\n' "$_id" "$_cat" "$_prof" "$_name" "$_url" "$_region" "$_status" >> "$_filtered"
     done < "$CATALOG_FILE"
     _total="$(wc -l < "$_filtered" 2>/dev/null | tr -d ' ')"; case "$_total" in ''|*[!0-9]*) _total=0;; esac
     [ "$_total" -gt "$_offset" ] && sed -n "$((_offset+1)),$((_offset+_limit))p" "$_filtered" > "$_paged" 2>/dev/null || true
@@ -2653,7 +2653,7 @@ run_action() {
                 watchdog)
                     if [ "$_enabled" = 1 ] && [ -z "$SLOT_1$SLOT_2$SLOT_3$SLOT_4$SLOT_5$SLOT_6$SLOT_RU" ]; then
                         _rc=2
-                        printf '%s\\n' "Сначала выберите профиль DNS Manager." >&2
+                        printf '%s\n' "Сначала выберите профиль DNS Manager." >&2
                     else
                         SILENT_APPLY=1 watchdog_apply_toggle "$_enabled" >/dev/null 2>&1 || _rc=$?
                     fi
@@ -2704,7 +2704,7 @@ test_json() { case "${RPC_METHOD:-}" in test_all) job_start_test_all;; test_curr
 
 case "${1:-}" in
     list)
-        printf '{"status":{},"runtime":{},"doh_status":{},"network_status":{},"time_status":{},"page_meta":{},"catalog":{"category":"String","offset":0,"limit":0,"only_ok":0},"update_check":{},"update":{},"update_manager":{},"update_hdp":{},"update_catalog":{},"update_all":{},"set_profile":{"profile":"String"},"reset_dns":{},"set_slot":{"slot":"String","id":"String"},"set_setting":{"name":"String","enabled":0},"set_watchdog_setting":{"name":"String","value":0},"set_watchdog_settings":{"interval":0,"threshold":0,"repair_cooldown":0,"max_repairs":0,"max_restarts":0,"max_candidates":0,"guard_interval":0},"set_ntp":{"preset":"String"},"set_test_age":{"category":"String","hours":0},"test_all":{},"test_current":{},"test_one":{"id":"String"},"test_system":{},"job":{"id":"String"},"log":{"lines":0}}\\n'
+        printf '{"status":{},"runtime":{},"doh_status":{},"network_status":{},"time_status":{},"page_meta":{},"catalog":{"category":"String","offset":0,"limit":0,"only_ok":0},"update_check":{},"update":{},"update_manager":{},"update_hdp":{},"update_catalog":{},"update_all":{},"set_profile":{"profile":"String"},"reset_dns":{},"set_slot":{"slot":"String","id":"String"},"set_setting":{"name":"String","enabled":0},"set_watchdog_setting":{"name":"String","value":0},"set_watchdog_settings":{"interval":0,"threshold":0,"repair_cooldown":0,"max_repairs":0,"max_restarts":0,"max_candidates":0,"guard_interval":0},"set_ntp":{"preset":"String"},"set_test_age":{"category":"String","hours":0},"test_all":{},"test_current":{},"test_one":{"id":"String"},"test_system":{},"job":{"id":"String"},"log":{"lines":0}}\n'
         ;;
     call)
         case "${2:-}" in
@@ -3570,7 +3570,7 @@ function profileProgressUpdate(j){
     {p:98,keys:['Все локальные проверки после применения'],label:'Проверка применения завершена'}
   ];
   var best={p:0,label:'Подготавливаю применение профиля…',detail:''};
-  var mlines=text.split('\\n'),mprog='';
+  var mlines=text.split('\n'),mprog='';
   for(var mi=mlines.length-1;mi>=0;mi--){
     if(mlines[mi].indexOf('Промежуточный результат:')>=0){mprog=String(mlines[mi]);break;}
   }
@@ -3607,8 +3607,8 @@ function renderProfileProgress(root){
   if(p.detail)body.push(E('div',{'class':'dm-profile-progress-detail'},p.detail));
   var out=String(state.profileOutput||'').trim();
   if(out){
-    var lines=out.split('\\n').filter(function(x){return String(x||'').trim();});
-    body.push(E('pre',{'class':'dm-profile-output','style':'max-height:260px;overflow:auto;white-space:pre-wrap;word-break:break-word;padding:9px;border:1px solid rgba(127,127,127,.18);border-radius:7px;margin-top:8px;font:11px/1.45 ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;background:rgba(0,0,0,.04)'},lines.slice(-40).join('\\n')));
+    var lines=out.split('\n').filter(function(x){return String(x||'').trim();});
+    body.push(E('pre',{'class':'dm-profile-output','style':'max-height:260px;overflow:auto;white-space:pre-wrap;word-break:break-word;padding:9px;border:1px solid rgba(127,127,127,.18);border-radius:7px;margin-top:8px;font:11px/1.45 ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;background:rgba(0,0,0,.04)'},lines.slice(-40).join('\n')));
   }
   return card('Ход применения',body);
 }
@@ -3926,7 +3926,7 @@ function renderTime(root,st){
   ]));
   body.push(E('div',{'class':'dm-section-title'},'Текущие серверы времени'));
   if(servers){
-    body.push(E('div',{'class':'dm-log','style':'max-height:none;overflow:visible'},servers.split(/[\\s]+/).filter(function(x){return x;}).map(function(x){return x;}).join('\\\n')));
+    body.push(E('div',{'class':'dm-log','style':'max-height:none;overflow:visible'},servers.split(/[\\s]+/).filter(function(x){return x;}).map(function(x){return x;}).join('\\n')));
   }else{
     body.push(E('div',{'class':'dm-hint'},'Серверы времени не настроены.'));
   }
@@ -4512,7 +4512,7 @@ function pollJob(root,job,meta,done){
       setAction(true,'Профиль: «'+label+'».');
       state.pageNotice.profiles='Профиль «'+label+'» применён.';
     }else{
-      var out=stripAnsi(j&&j.output||'').trim().split('\\n').filter(function(x){return String(x||'').trim();});
+      var out=stripAnsi(j&&j.output||'').trim().split('\n').filter(function(x){return String(x||'').trim();});
       var detail=out.length?String(out[out.length-1]).trim():'';
       if(detail.length>360)detail=detail.slice(0,357)+'…';
       var msg='Профиль «'+label+'» не удалось применить.';
@@ -4551,7 +4551,7 @@ function pollJob(root,job,meta,done){
             state.catalogProgress.detail=allOk
               ? ''
               : (state.catalogProgress.detail||'Проверка завершилась с ошибкой.');
-            state.pageNotice.catalog=allOk?'Полная проверка каталога завершена.':((j.output&&stripAnsi(j.output).split('\\n').filter(function(x){return String(x||'').trim();}).pop())||'Полная проверка DNS завершилась с ошибкой.');
+            state.pageNotice.catalog=allOk?'Полная проверка каталога завершена.':((j.output&&stripAnsi(j.output).split('\n').filter(function(x){return String(x||'').trim();}).pop())||'Полная проверка DNS завершилась с ошибкой.');
             window.dmCatalog=null;
             state.catalogLoaded=false;
           }
@@ -4591,7 +4591,7 @@ function pollJob(root,job,meta,done){
       }
       if(meta&&meta.mode==='all'&&meta.origin==='catalog'){
         var pout=stripAnsi(j.output||'');
-        var lines=pout.split('\\n').filter(function(x){return String(x||'').trim();});
+        var lines=pout.split('\n').filter(function(x){return String(x||'').trim();});
         var lastProgress='';
         var pd=0,pt=0,po=0,pf=0;
         for(var pi=lines.length-1;pi>=0;pi--){
@@ -4824,11 +4824,11 @@ EOF_PAGE
     rm -rf /tmp/luci-* /tmp/luci-indexcache* /tmp/luci-modulecache* 2>/dev/null || true
 
     {
-        printf 'installed=1\\nversion=%s\\ninstalled_at=%s\\nsource=%s\\n' "$VERSION" "$(date +%s 2>/dev/null || printf 0)" "$COMPANION_URL"
+        printf 'installed=1\nversion=%s\ninstalled_at=%s\nsource=%s\n' "$VERSION" "$(date +%s 2>/dev/null || printf 0)" "$COMPANION_URL"
     } > "${BACKUP_DIR}/version" 2>/dev/null || true
     chmod 600 "${BACKUP_DIR}/version" 2>/dev/null || true
     {
-        printf 'installed=1\\nversion=%s\\ninstalled_at=%s\\nsource=%s\\n' "$VERSION" "$(date +%s 2>/dev/null || printf 0)" "$COMPANION_URL"
+        printf 'installed=1\nversion=%s\ninstalled_at=%s\nsource=%s\n' "$VERSION" "$(date +%s 2>/dev/null || printf 0)" "$COMPANION_URL"
     } > "${STATE_FILE}.tmp.$$" 2>/dev/null || true
     [ -s "${STATE_FILE}.tmp.$$" ] && chmod 600 "${STATE_FILE}.tmp.$$" 2>/dev/null || true
     [ -s "${STATE_FILE}.tmp.$$" ] && mv "${STATE_FILE}.tmp.$$" "$STATE_FILE" 2>/dev/null || rm -f "${STATE_FILE}.tmp.$$" 2>/dev/null || true
