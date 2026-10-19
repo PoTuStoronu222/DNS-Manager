@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.50
+# Version: 1.51
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -2619,7 +2619,7 @@ run_action() {
                 watchdog)
                     if [ "$_enabled" = 1 ] && [ -z "$SLOT_1$SLOT_2$SLOT_3$SLOT_4$SLOT_5$SLOT_6$SLOT_RU" ]; then
                         _rc=2
-                        printf '%s\n' "Сначала выберите профиль DNS Manager." >&2
+                        printf '%s\n' "Сначала настройте хотя бы один DNS-сервер." >&2
                     else
                         SILENT_APPLY=1 watchdog_apply_toggle "$_enabled" >/dev/null 2>&1 || _rc=$?
                     fi
@@ -3674,7 +3674,6 @@ function settingCard(root,x,st){
 }
 function watchdogCard(root,st){
   var en=yes(st.watchdog), busy=state.busySetting==='watchdog' || state.busySetting==='watchdog_batch';
-  var profileSelected=String(st.profile||'none')!=='none';
   var service=Number(st.watchdog_service||0)===1, loop=Number(st.watchdog_loop||0)===1;
   var inputs={};
 
@@ -3711,7 +3710,6 @@ function watchdogCard(root,st){
       ['watchdog_interval','Как часто проверять DNS',1,60,'мин','Проверяет, отвечают ли выбранные DNS-серверы.',true],
       ['watchdog_fail_threshold','Сколько проверок подряд считать сбоем',1,5,'проверок','Сколько раз подряд DNS должен не ответить, прежде чем менеджер заменит его.',false],
       ['watchdog_repair_cooldown','Пауза между заменами DNS',5,120,'мин','Минимальное время между повторными заменами одного DNS.',true],
-      ['watchdog_max_repairs','Сколько DNS можно заменить за раз',1,3,'шт.','Сколько неисправных DNS можно заменить во время одной проверки.',false],
       ['watchdog_max_candidates','Сколько DNS проверить при поиске замены',1,10,'шт.','Сколько других DNS проверить, прежде чем выбрать замену.',false],
     ];
     var values=[];
@@ -3734,6 +3732,9 @@ function watchdogCard(root,st){
 
     var internalMaxRestarts=Number(st.watchdog_max_restarts||2);
     if(!isFinite(internalMaxRestarts)||internalMaxRestarts<1||internalMaxRestarts>5)internalMaxRestarts=2;
+    var internalMaxRepairs=Number(st.watchdog_max_repairs||1);
+    if(!isFinite(internalMaxRepairs)||internalMaxRepairs<1||internalMaxRepairs>3)internalMaxRepairs=1;
+    values.splice(3,0,Math.round(internalMaxRepairs));
     values.splice(4,0,Math.round(internalMaxRestarts));
     values.splice(6,0,Number(st.watchdog_guard_interval||3600));
 
@@ -3764,16 +3765,15 @@ function watchdogCard(root,st){
   var action=E('div',{'class':'dm-setting '+(busy?'dm-setting-saving':'')},[
     E('div',{'class':'dm-setting-text'},[
       E('div',{'class':'dm-setting-title'},'Контроль DNS'),
-      E('div',{'class':'dm-setting-desc'},'Автоматически проверяет выбранные DNS и при подтверждённом сбое восстанавливает рабочий вариант.')
+      E('div',{'class':'dm-setting-desc'},'Проверяет каждый настроенный DNS отдельно и заменяет его только сервером той же категории. Профиль не требуется.')
     ]),
     E('div',{'class':'dm-setting-controls'},[
       E('div',{'class':'dm-setting-actions'},[
         badge(busy?'dm-warn':(en?'dm-ok':'dm-off'),busy?'изменение':(en?'включено':'выключено')),
         btn(busy?'Сохраняю…':(en?'Выключить':'Включить'),busy?'cbi-button-neutral':(en?'cbi-button-remove':'cbi-button-add'),function(){
           var cur=yes((window.dmState||{}).watchdog);
-          if(!cur && !profileSelected)return;
           setSetting('watchdog',cur?0:1,root);
-        },{disabled:!!state.busy || (!en && !profileSelected)})
+        },{disabled:!!state.busy})
       ])
     ])
   ]);
@@ -3792,7 +3792,6 @@ function watchdogCard(root,st){
   var advanced=E('details',{'class':'dm-watchdog-advanced'},[
     E('summary',{},'Дополнительные параметры'),
     E('div',{'class':'dm-watchdog-list'},[
-      param('watchdog_max_repairs','Сколько DNS можно заменить за раз',1,3,'шт.','Сколько неисправных DNS можно заменить во время одной проверки.',false),
       param('watchdog_max_candidates','Сколько DNS проверить при поиске замены',1,10,'шт.','Сколько других DNS проверить, прежде чем выбрать замену.',false)
     ])
   ]);
