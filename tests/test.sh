@@ -1144,6 +1144,18 @@ grep -Fq 'WATCHDOG_MAX_REPAIRS=$(shell_quote "$WATCHDOG_MAX_REPAIRS")' dns-manag
 grep -Fq 'WATCHDOG_MAX_RESTARTS=$(shell_quote "$WATCHDOG_MAX_RESTARTS")' dns-manager.sh || fail "watchdog max restarts is not persisted"
 grep -Fq 'WATCHDOG_MAX_CANDIDATES=$(shell_quote "$WATCHDOG_MAX_CANDIDATES")' dns-manager.sh || fail "watchdog max candidates is not persisted"
 grep -Fq 'WATCHDOG_GUARD_INTERVAL=$(shell_quote "$WATCHDOG_GUARD_INTERVAL")' dns-manager.sh || fail "watchdog guard interval is not persisted"
+
+# Saved config values must round-trip as literal data, including shell metacharacters.
+_quote_func="$(sed -n '/^shell_quote() {/,/^}/p' dns-manager.sh)"
+[ -n "$_quote_func" ] || fail "shell_quote helper missing"
+eval "$_quote_func"
+_quote_marker="$tmp/config-quote-injection-marker"
+_quote_input="value with 'quotes'; \$(touch '$_quote_marker')"
+_quote_encoded="$(shell_quote "$_quote_input")"
+eval "_quote_roundtrip=$_quote_encoded"
+[ "$_quote_roundtrip" = "$_quote_input" ] || fail "shell_quote did not round-trip a special value"
+[ ! -e "$_quote_marker" ] || fail "shell_quote evaluated embedded shell syntax"
+ok "config serialization keeps shell metacharacters as literal data"
 grep -q 'watchdog_interval":%s,"watchdog_service' "$tmp/backend.sh" || fail "LuCI status does not expose saved watchdog interval"
 
 grep -q '^        set_watchdog_setting)' "$tmp/backend.sh" || fail "legacy watchdog setting dispatch missing"
