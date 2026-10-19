@@ -659,8 +659,11 @@ awk '/^watchdog_forced_dns_runtime_guard/ { capture=1 } capture { print } captur
 awk '/^watchdog_embedded_loop/ { capture=1 } capture { print } capture && /^run_watchdog/ { exit }' dns-manager.sh > "$tmp/watchdog_embedded_loop.sh"
 grep -Fq 'if ! watchdog_forced_dns_runtime_guard; then' "$tmp/watchdog_embedded_loop.sh" || fail "background loop does not reconcile forced-DNS runtime"
 _guard_line="$(grep -n 'watchdog_forced_dns_runtime_guard' "$tmp/watchdog_embedded_loop.sh" | head -n1 | cut -d: -f1)"
-_scope_line="$(grep -n '_selection_kind=' "$tmp/watchdog_embedded_loop.sh" | head -n1 | cut -d: -f1)"
-[ -n "$_guard_line" ] && [ -n "$_scope_line" ] && [ "$_guard_line" -lt "$_scope_line" ] || fail "forced-DNS runtime reconciliation is skipped by profile guards"
+_slot_check_line="$(grep -n 'watchdog_refresh_listener_snapshot' "$tmp/watchdog_embedded_loop.sh" | head -n1 | cut -d: -f1)"
+[ -n "$_guard_line" ] && [ -n "$_slot_check_line" ] && [ "$_guard_line" -lt "$_slot_check_line" ] || fail "forced-DNS runtime reconciliation is skipped by DNS-loop guards"
+if grep -Fq '_selection_kind=' "$tmp/watchdog_embedded_loop.sh"; then
+    fail "background DNS checks still depend on a selected profile"
+fi
 ok "forced-DNS Steer transitions are reconciled on each background-check cycle"
 
 # Forced-DNS Auto must keep the lightweight runtime service active even when
