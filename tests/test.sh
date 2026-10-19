@@ -347,7 +347,9 @@ grep -q "5,120,'мин'" "$tmp/watchdog_card.sh" || fail "watchdog repair cooldo
 grep -q "'step':minutes?'1':'1'" "$tmp/watchdog_card.sh" || fail "watchdog minute fields must use whole minutes"
 grep -q "Math.round(n\*60)" "$tmp/watchdog_card.sh" || fail "watchdog minute values are not converted back to seconds"
 grep -q "minuteValue(st\[name\],min)" "$tmp/watchdog_card.sh" || fail "watchdog stored seconds are not converted to displayed minutes"
-grep -q "Сколько DNS можно заменить за раз" "$tmp/watchdog_card.sh" || fail "watchdog repair-count label is not user-friendly"
+if grep -q "Сколько DNS можно заменить за раз" "$tmp/watchdog_card.sh"; then
+    fail "obsolete per-cycle watchdog repair-count setting is still exposed"
+fi
 grep -q "Сколько DNS проверить при поиске замены" "$tmp/watchdog_card.sh" || fail "watchdog candidate-count label is not user-friendly"
 if grep -q "Сколько раз можно перезапустить DNS" "$tmp/watchdog_card.sh"; then
     fail "internal watchdog restart limit is still exposed in LuCI"
@@ -1356,9 +1358,12 @@ save_count="$(grep -o 'Сохранить' "$tmp/watchdog_card.js" | wc -l | tr 
 grep -q 'Сохранить настройки' "$tmp/watchdog_card.js" || fail "common watchdog save button missing"
 grep -q 'Дополнительные параметры' "$tmp/watchdog_card.js" || fail "advanced watchdog section missing"
 grep -q 'Настройки контроля' "$tmp/watchdog_card.js" || fail "watchdog settings section title missing"
-for _wd_label in 'Как часто проверять DNS' 'Сколько проверок подряд считать сбоем' 'Пауза между заменами DNS' 'Сколько DNS можно заменить за раз' 'Сколько DNS проверить при поиске замены'; do
+for _wd_label in 'Как часто проверять DNS' 'Сколько проверок подряд считать сбоем' 'Пауза между заменами DNS' 'Сколько DNS проверить при поиске замены'; do
     grep -q "$_wd_label" "$tmp/watchdog_card.js" || fail "LuCI watchdog control missing: $_wd_label"
 done
+if grep -q 'Сколько DNS можно заменить за раз' "$tmp/watchdog_card.js"; then
+    fail "LuCI still shows the removed per-cycle repair-count setting"
+fi
 if grep -q 'Рестартов https-dns-proxy\|Тяжёлая сверка' "$tmp/watchdog_card.js"; then
     fail "technical watchdog labels still exposed in LuCI"
 fi
