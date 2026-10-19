@@ -6368,15 +6368,6 @@ watchdog_embedded_loop() {
         [ "$_interval" -ge 60 ] 2>/dev/null || _interval=600
         [ "$_interval" -le 3600 ] 2>/dev/null || _interval=600
 
-        _selection_kind="$(watchdog_scope_category 2>/dev/null || true)"
-        case "$_selection_kind" in
-            bypass|clean|security|privacy|adblock|family) ;;
-            *)
-                sleep "$_interval"
-                continue
-                ;;
-        esac
-
         if ! watchdog_resource_guard; then
             sleep "$_interval"
             continue
@@ -6401,28 +6392,25 @@ watchdog_embedded_loop() {
         _missing=0
         _threshold_slots=""
         _local_recover_slots=""
-        _fallback_slots=""
-        _empty_slots=""
         _probe_rc=0
-        _target_live_count=0
 
         watchdog_refresh_listener_snapshot
 
         for _slot in 1 2 3 4 5 6 RU; do
             eval "_id=\${SLOT_${_slot}:-}"
-            _current_slot_cat=""; [ -n "$_id" ] && _current_slot_cat="$(dns_cat "$_id" 2>/dev/null || true)"
-            eval "_port=\${PORT_${_slot}:-}"
-            [ -n "$_port" ] || _port="$(hybrid_desired_port "$_slot")"
-            case "$_slot" in RU) _domain="yandex.ru" ;; *) _domain="example.com" ;; esac
-            _desired_slot_cat="$(watchdog_desired_cat "$_slot" 2>/dev/null || true)"
-            if [ "$_slot" != RU ] && [ -z "$_id" ]; then
-                _empty_slots="$_empty_slots $_slot"
+            if [ -z "$_id" ]; then
+                watchdog_loop_reset_slot "$_slot"
                 continue
             fi
-            if [ "$_slot" != RU ] && [ "$_desired_slot_cat" != clean ] && [ "$_current_slot_cat" = clean ]; then
-                _fallback_slots="$_fallback_slots $_slot"
+            _current_slot_cat="$(dns_cat "$_id" 2>/dev/null || true)"
+            if [ -z "$_current_slot_cat" ]; then
+                watchdog_loop_reset_slot "$_slot"
+                continue
             fi
+            eval "_port=\${PORT_${_slot}:-}"
+            [ -n "$_port" ] || _port="$(hybrid_desired_port "$_slot")"
             [ -n "$_port" ] || continue
+            case "$_slot" in RU) _domain="yandex.ru" ;; *) _domain="example.com" ;; esac
 
             _checked=$((_checked+1))
             if ! watchdog_listener_snapshot_has_port "$_port"; then
@@ -6443,7 +6431,6 @@ watchdog_embedded_loop() {
             _probe_rc=$?
             [ "$_probe_rc" = 2 ] && break
             if [ "$_probe_rc" = 0 ]; then
-                [ "$_slot" != RU ] && [ "$_current_slot_cat" = "$_desired_slot_cat" ] && _target_live_count=$((_target_live_count+1))
                 watchdog_loop_reset_slot "$_slot"
                 continue
             fi
