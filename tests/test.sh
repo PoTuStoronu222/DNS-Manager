@@ -872,9 +872,12 @@ grep -Fq 'BLOCK_EXTERNAL_DNS="$BLOCK_EXTERNAL_DNS"' dns-manager.sh || fail "inde
 grep -Fq 'apply_encrypted_dns_block() {' dns-manager.sh || fail "independent encrypted-DNS apply helper missing"
 grep -Fq 'encrypted_dns)' dns-manager.sh || fail "encrypted-DNS setting has no apply action"
 awk '/^sync_hdp_force_contract\(\) \{/,/^configure_hdp_manager_control\(\) \{/' dns-manager.sh > "$tmp/force_sync_independence.sh"
-if grep -Eq 'ensure_dns_dot_block|remove_dns_dot_block|uci (set|-q delete) https-dns-proxy\.config\.canary_domains' "$tmp/force_sync_independence.sh"; then
-    fail "forced-DNS contract still controls the independent encrypted-DNS protection"
+if grep -Eq 'ensure_dns_dot_block|remove_dns_dot_block' "$tmp/force_sync_independence.sh"; then
+    fail "forced-DNS contract still adds/removes the independent DoT rule"
 fi
+grep -Fq '_canary_enabled="${BLOCK_EXTERNAL_DNS:-0}"' "$tmp/force_sync_independence.sh" || fail "forced-DNS sync does not preserve the independent canary state"
+grep -Fq 'uci set "https-dns-proxy.config.canary_domains_icloud=$_canary_enabled"' "$tmp/force_sync_independence.sh" || fail "forced-DNS sync does not apply the current independent iCloud canary state"
+grep -Fq 'uci set "https-dns-proxy.config.canary_domains_mozilla=$_canary_enabled"' "$tmp/force_sync_independence.sh" || fail "forced-DNS sync does not apply the current independent Mozilla canary state"
 awk '/^apply_encrypted_dns_block\(\) \{/,/^}/' dns-manager.sh > "$tmp/encrypted_dns_apply.sh"
 grep -Fq 'ensure_dns_dot_block || return 1' "$tmp/encrypted_dns_apply.sh" || fail "encrypted-DNS protection does not add its DoT rule"
 grep -Fq 'remove_dns_dot_block || return 1' "$tmp/encrypted_dns_apply.sh" || fail "encrypted-DNS protection does not remove its DoT rule"
