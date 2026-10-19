@@ -27,6 +27,20 @@ sed -n '/^luci_companion_remove(/,/^}/p' dns-manager.sh > "$tmp/luci_remove_fn.s
 grep -Fq 'rmdir /usr/lib/dns-manager-luci 2>/dev/null || true' "$tmp/luci_remove_fn.sh" || fail "LuCI uninstall leaves the empty backend directory"
 ok "LuCI uninstall removes its empty backend directory"
 
+# mktemp output must stay in place until the downloader opens it.
+_catalog_download_block="$(sed -n '/^catalog_download() {/,/^}/p' dns-manager.sh)"
+if printf '%s\n' "$_catalog_download_block" | grep -Fq 'rm -f "$_out"'; then
+    fail "catalog downloader unlinks its unique output path before writing"
+fi
+_write_catalogs_block="$(sed -n '/^write_catalogs() {/,/^}/p' dns-manager.sh)"
+printf '%s\n' "$_write_catalogs_block" | awk '
+    /_catalog_tmp=.*mktemp/ { seen=1; next }
+    seen && index($0, "rm -f \"$_catalog_tmp\"") && !download_started { bad=1 }
+    seen && index($0, "catalog_download \"$_catalog_tmp\"") { download_started=1; exit }
+    END { if (bad || !download_started) exit 1 }
+' || fail "catalog temp file is removed before download starts"
+ok "catalog downloader preserves its unique temporary file"
+
 
 # Update-chain regression checks: temporary names must keep the PID suffix, and
 # installed LuCI version detection must trust the code LuCI actually loads.
