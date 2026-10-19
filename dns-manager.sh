@@ -3729,7 +3729,7 @@ _apply_settings_impl() {
             tx_restore_on_failure
             return 1
         }
-        if [ "${WATCHDOG_ENABLED:-0}" = 1 ]; then
+        if [ "${WATCHDOG_ENABLED:-0}" = 1 ] || [ "${FORCE_DOH:-0}" = 1 ]; then
             if ! watchdog_service_start_enable; then
                 err_msg "Watchdog не удалось запустить после фиксации конфигурации. Изменения DNS откатываются."
                 tx_restore_on_failure
