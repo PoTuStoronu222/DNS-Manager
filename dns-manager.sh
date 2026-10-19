@@ -2415,6 +2415,12 @@ sync_hdp_force_contract() {
 
     detect_steer_dns_path >/dev/null 2>&1 || true
 
+    # Keep browser DoH canaries tied to their own setting, never to FORCE_DOH.
+    _canary_enabled="${BLOCK_EXTERNAL_DNS:-0}"
+    case "$_canary_enabled" in 0|1) ;; *) return 1 ;; esac
+    uci set "https-dns-proxy.config.canary_domains_icloud=$_canary_enabled" || return 1
+    uci set "https-dns-proxy.config.canary_domains_mozilla=$_canary_enabled" || return 1
+
     # Steer already owns LAN:53 -> :5300. Do not create a second forced-DNS path.
     if [ "${STEER_DNS_ACTIVE:-0}" = 1 ]; then
         # https-dns-proxy defaults force_dns to 1 when the option is absent.
@@ -2811,13 +2817,10 @@ apply_encrypted_dns_block() {
     [ -f /etc/config/https-dns-proxy ] || return 0
     uci -q get https-dns-proxy.config >/dev/null 2>&1 || return 0
 
-    if [ "$_want" = 1 ]; then
-        uci set https-dns-proxy.config.canary_domains_icloud='1' || return 1
-        uci set https-dns-proxy.config.canary_domains_mozilla='1' || return 1
-    else
-        uci -q delete https-dns-proxy.config.canary_domains_icloud >/dev/null 2>&1 || true
-        uci -q delete https-dns-proxy.config.canary_domains_mozilla >/dev/null 2>&1 || true
-    fi
+    # Write explicit 0/1 values: the package defaults both canary options to 1
+    # when they are absent, so deleting them would not disable this protection.
+    uci set "https-dns-proxy.config.canary_domains_icloud=$_want" || return 1
+    uci set "https-dns-proxy.config.canary_domains_mozilla=$_want" || return 1
     uci commit https-dns-proxy || return 1
     if [ -x /etc/init.d/https-dns-proxy ] && /etc/init.d/https-dns-proxy running >/dev/null 2>&1; then
         /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || return 1
