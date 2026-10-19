@@ -186,7 +186,11 @@ acquire_mutation_lock() {
     if [ "$_stale_pid" = "$_mpid" ] && ! kill -0 "$_stale_pid" 2>/dev/null; then
         rm -rf "$_stale_lock" 2>/dev/null || true
     else
-        # The lock changed while being examined; put it back only if the path is free.
+        # Never let mv treat an occupied lock path as a destination directory.
+        if [ -e "$MUTATION_LOCK_DIR" ] || [ -L "$MUTATION_LOCK_DIR" ]; then
+            log_msg "Операция пропущена: путь блокировки изменился во время восстановления."
+            return 1
+        fi
         mv "$_stale_lock" "$MUTATION_LOCK_DIR" 2>/dev/null || true
         return 1
     fi
@@ -285,6 +289,7 @@ acquire_test_lock() {
     if [ "$_stale_pid" = "$_tpid" ] && ! kill -0 "$_stale_pid" 2>/dev/null; then
         rm -rf "$_stale_lock" 2>/dev/null || true
     else
+        if [ -e "$TEST_LOCK_DIR" ] || [ -L "$TEST_LOCK_DIR" ]; then return 1; fi
         mv "$_stale_lock" "$TEST_LOCK_DIR" 2>/dev/null || true
         return 1
     fi
@@ -418,6 +423,7 @@ acquire_auto_update_lock() {
     if [ "$_stale_pid" = "$_au_pid" ] && ! kill -0 "$_stale_pid" 2>/dev/null; then
         rm -rf "$_stale_lock" 2>/dev/null || true
     else
+        if [ -e "$AUTO_UPDATE_LOCK_DIR" ] || [ -L "$AUTO_UPDATE_LOCK_DIR" ]; then return 1; fi
         mv "$_stale_lock" "$AUTO_UPDATE_LOCK_DIR" 2>/dev/null || true
         return 1
     fi
