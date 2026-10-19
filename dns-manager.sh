@@ -152,31 +152,62 @@ cleanup_transaction_history() {
 acquire_mutation_lock() {
     mkdir -p "$STATE_DIR" 2>/dev/null || return 1
     if mkdir "$MUTATION_LOCK_DIR" 2>/dev/null; then
-        printf '%s\n' "$$" > "$MUTATION_LOCK_DIR/pid" 2>/dev/null || true
+        if ! printf '%s\n' "$$" > "$MUTATION_LOCK_DIR/pid" 2>/dev/null; then
+            rmdir "$MUTATION_LOCK_DIR" 2>/dev/null || true
+            return 1
+        fi
         MUTATION_LOCK_HELD=1
         return 0
     fi
-    _mpid="$(cat "$MUTATION_LOCK_DIR/pid" 2>/dev/null)"
-    if [ -z "$_mpid" ]; then
-        for _try in 1 2 3 4 5; do
-            sleep 1
-            _mpid="$(cat "$MUTATION_LOCK_DIR/pid" 2>/dev/null)"
-            [ -n "$_mpid" ] && break
-        done
-    fi
-    if [ -n "$_mpid" ] && kill -0 "$_mpid" 2>/dev/null; then
+
+    _mpid=""
+    for _try in 1 2 3 4 5; do
+        _mpid="$(cat "$MUTATION_LOCK_DIR/pid" 2>/dev/null || true)"
+        case "$_mpid" in
+            ''|*[!0-9]*) sleep 1 ;;
+            *) break ;;
+        esac
+    done
+    case "$_mpid" in ''|0|*[!0-9]*)
+        log_msg "Операция пропущена: блокировка изменения конфигурации имеет пустой/некорректный PID."
+        return 1 ;;
+    esac
+    if kill -0 "$_mpid" 2>/dev/null; then
         log_msg "Операция пропущена: другой процесс DNS Manager уже изменяет конфигурацию (PID $_mpid)."
         return 1
     fi
-    rm -rf "$MUTATION_LOCK_DIR" 2>/dev/null || true
-    mkdir "$MUTATION_LOCK_DIR" 2>/dev/null || return 1
-    printf '%s\n' "$$" > "$MUTATION_LOCK_DIR/pid" 2>/dev/null || true
-    MUTATION_LOCK_HELD=1
-    return 0
+
+    # Rename the observed stale lock atomically. Never rm the live lock path:
+    # another process may have replaced it after our PID check.
+    _stale_lock="${MUTATION_LOCK_DIR}.stale.$$"
+    if [ -e "$_stale_lock" ] || [ -L "$_stale_lock" ]; then return 1; fi
+    mv "$MUTATION_LOCK_DIR" "$_stale_lock" 2>/dev/null || return 1
+    _stale_pid="$(cat "$_stale_lock/pid" 2>/dev/null || true)"
+    if [ "$_stale_pid" = "$_mpid" ] && ! kill -0 "$_stale_pid" 2>/dev/null; then
+        rm -rf "$_stale_lock" 2>/dev/null || true
+    else
+        # Never let mv treat an occupied lock path as a destination directory.
+        if [ -e "$MUTATION_LOCK_DIR" ] || [ -L "$MUTATION_LOCK_DIR" ]; then
+            log_msg "Операция пропущена: путь блокировки изменился во время восстановления."
+            return 1
+        fi
+        mv "$_stale_lock" "$MUTATION_LOCK_DIR" 2>/dev/null || true
+        return 1
+    fi
+    if mkdir "$MUTATION_LOCK_DIR" 2>/dev/null; then
+        if ! printf '%s\n' "$$" > "$MUTATION_LOCK_DIR/pid" 2>/dev/null; then
+            rmdir "$MUTATION_LOCK_DIR" 2>/dev/null || true
+            return 1
+        fi
+        MUTATION_LOCK_HELD=1
+        return 0
+    fi
+    return 1
 }
 release_mutation_lock() {
     [ "${MUTATION_LOCK_HELD:-0}" = 1 ] || return 0
-    rm -rf "$MUTATION_LOCK_DIR" 2>/dev/null || true
+    _owner="$(cat "$MUTATION_LOCK_DIR/pid" 2>/dev/null || true)"
+    [ "$_owner" = "$$" ] && rm -rf "$MUTATION_LOCK_DIR" 2>/dev/null || true
     MUTATION_LOCK_HELD=0
 }
 
@@ -236,30 +267,46 @@ UPDATE_TMP_FILE=""
 acquire_test_lock() {
     mkdir -p "$STATE_DIR" 2>/dev/null || return 1
     if mkdir "$TEST_LOCK_DIR" 2>/dev/null; then
-        printf '%s\n' "$$" > "$TEST_LOCK_DIR/pid" 2>/dev/null || true
+        if ! printf '%s\n' "$$" > "$TEST_LOCK_DIR/pid" 2>/dev/null; then
+            rmdir "$TEST_LOCK_DIR" 2>/dev/null || true
+            return 1
+        fi
         TEST_LOCK_HELD=1
         return 0
     fi
-    _tpid="$(cat "$TEST_LOCK_DIR/pid" 2>/dev/null)"
-    if [ -z "$_tpid" ]; then
-        for _try in 1 2 3 4 5; do
-            sleep 1
-            _tpid="$(cat "$TEST_LOCK_DIR/pid" 2>/dev/null)"
-            [ -n "$_tpid" ] && break
-        done
-    fi
-    if [ -n "$_tpid" ] && kill -0 "$_tpid" 2>/dev/null; then
+    _tpid=""
+    for _try in 1 2 3 4 5; do
+        _tpid="$(cat "$TEST_LOCK_DIR/pid" 2>/dev/null || true)"
+        case "$_tpid" in ''|*[!0-9]*) sleep 1 ;; *) break ;; esac
+    done
+    case "$_tpid" in ''|0|*[!0-9]*) return 1 ;; esac
+    kill -0 "$_tpid" 2>/dev/null && return 1
+
+    _stale_lock="${TEST_LOCK_DIR}.stale.$$"
+    if [ -e "$_stale_lock" ] || [ -L "$_stale_lock" ]; then return 1; fi
+    mv "$TEST_LOCK_DIR" "$_stale_lock" 2>/dev/null || return 1
+    _stale_pid="$(cat "$_stale_lock/pid" 2>/dev/null || true)"
+    if [ "$_stale_pid" = "$_tpid" ] && ! kill -0 "$_stale_pid" 2>/dev/null; then
+        rm -rf "$_stale_lock" 2>/dev/null || true
+    else
+        if [ -e "$TEST_LOCK_DIR" ] || [ -L "$TEST_LOCK_DIR" ]; then return 1; fi
+        mv "$_stale_lock" "$TEST_LOCK_DIR" 2>/dev/null || true
         return 1
     fi
-    rm -rf "$TEST_LOCK_DIR" 2>/dev/null || true
-    mkdir "$TEST_LOCK_DIR" 2>/dev/null || return 1
-    printf '%s\n' "$$" > "$TEST_LOCK_DIR/pid" 2>/dev/null || true
-    TEST_LOCK_HELD=1
-    return 0
+    if mkdir "$TEST_LOCK_DIR" 2>/dev/null; then
+        if ! printf '%s\n' "$$" > "$TEST_LOCK_DIR/pid" 2>/dev/null; then
+            rmdir "$TEST_LOCK_DIR" 2>/dev/null || true
+            return 1
+        fi
+        TEST_LOCK_HELD=1
+        return 0
+    fi
+    return 1
 }
 release_test_lock() {
     [ "${TEST_LOCK_HELD:-0}" = 1 ] || return 0
-    rm -rf "$TEST_LOCK_DIR" 2>/dev/null || true
+    _owner="$(cat "$TEST_LOCK_DIR/pid" 2>/dev/null || true)"
+    [ "$_owner" = "$$" ] && rm -rf "$TEST_LOCK_DIR" 2>/dev/null || true
     TEST_LOCK_HELD=0
 }
 aligned_label_width() {
@@ -354,20 +401,47 @@ _ver_newer() {
 acquire_auto_update_lock() {
     mkdir -p "$STATE_DIR" 2>/dev/null || return 1
     if mkdir "$AUTO_UPDATE_LOCK_DIR" 2>/dev/null; then
-        printf '%s\n' "$$" > "$AUTO_UPDATE_LOCK_DIR/pid" 2>/dev/null || true
+        if ! printf '%s\n' "$$" > "$AUTO_UPDATE_LOCK_DIR/pid" 2>/dev/null; then
+            rmdir "$AUTO_UPDATE_LOCK_DIR" 2>/dev/null || true
+            return 1
+        fi
+        AUTO_UPDATE_LOCK_HELD=1
         return 0
     fi
-    _au_pid="$(cat "$AUTO_UPDATE_LOCK_DIR/pid" 2>/dev/null)"
-    if [ -n "$_au_pid" ] && kill -0 "$_au_pid" 2>/dev/null; then
+    _au_pid=""
+    for _try in 1 2 3 4 5; do
+        _au_pid="$(cat "$AUTO_UPDATE_LOCK_DIR/pid" 2>/dev/null || true)"
+        case "$_au_pid" in ''|*[!0-9]*) sleep 1 ;; *) break ;; esac
+    done
+    case "$_au_pid" in ''|0|*[!0-9]*) return 1 ;; esac
+    kill -0 "$_au_pid" 2>/dev/null && return 1
+
+    _stale_lock="${AUTO_UPDATE_LOCK_DIR}.stale.$$"
+    if [ -e "$_stale_lock" ] || [ -L "$_stale_lock" ]; then return 1; fi
+    mv "$AUTO_UPDATE_LOCK_DIR" "$_stale_lock" 2>/dev/null || return 1
+    _stale_pid="$(cat "$_stale_lock/pid" 2>/dev/null || true)"
+    if [ "$_stale_pid" = "$_au_pid" ] && ! kill -0 "$_stale_pid" 2>/dev/null; then
+        rm -rf "$_stale_lock" 2>/dev/null || true
+    else
+        if [ -e "$AUTO_UPDATE_LOCK_DIR" ] || [ -L "$AUTO_UPDATE_LOCK_DIR" ]; then return 1; fi
+        mv "$_stale_lock" "$AUTO_UPDATE_LOCK_DIR" 2>/dev/null || true
         return 1
     fi
-    rm -rf "$AUTO_UPDATE_LOCK_DIR" 2>/dev/null || true
-    mkdir "$AUTO_UPDATE_LOCK_DIR" 2>/dev/null || return 1
-    printf '%s\n' "$$" > "$AUTO_UPDATE_LOCK_DIR/pid" 2>/dev/null || true
-    return 0
+    if mkdir "$AUTO_UPDATE_LOCK_DIR" 2>/dev/null; then
+        if ! printf '%s\n' "$$" > "$AUTO_UPDATE_LOCK_DIR/pid" 2>/dev/null; then
+            rmdir "$AUTO_UPDATE_LOCK_DIR" 2>/dev/null || true
+            return 1
+        fi
+        AUTO_UPDATE_LOCK_HELD=1
+        return 0
+    fi
+    return 1
 }
 release_auto_update_lock() {
-    rm -rf "$AUTO_UPDATE_LOCK_DIR" 2>/dev/null || true
+    [ "${AUTO_UPDATE_LOCK_HELD:-0}" = 1 ] || return 0
+    _owner="$(cat "$AUTO_UPDATE_LOCK_DIR/pid" 2>/dev/null || true)"
+    [ "$_owner" = "$$" ] && rm -rf "$AUTO_UPDATE_LOCK_DIR" 2>/dev/null || true
+    AUTO_UPDATE_LOCK_HELD=0
 }
 auto_update_manager() {
     AUTO_UPDATE_RESULT="disabled"
@@ -640,7 +714,6 @@ init_dirs() {
 catalog_download() {
     _out="$1"
     _url="${DNSCAT_URL}?_dmcb=$(date +%s 2>/dev/null || printf 0)-$$"
-    rm -f "$_out" 2>/dev/null || true
     if command -v curl >/dev/null 2>&1; then
         curl -fsSL --connect-timeout 5 --max-time 30 -o "$_out" "$_url" >/dev/null 2>&1
     elif command -v wget >/dev/null 2>&1; then
@@ -682,9 +755,8 @@ write_catalogs() {
     if catalog_validate_file "$DNS_CATALOG"; then
         return 0
     fi
-    _catalog_tmp="/tmp/dns-manager-catalog-$"
+    _catalog_tmp="$(mktemp /tmp/dns-manager-catalog.XXXXXX 2>/dev/null)" || return 1
     _old_shecan_url="$(awk -F'|' '$1=="shecan" {print $5; exit}' "$DNS_CATALOG" 2>/dev/null)"
-    rm -f "$_catalog_tmp" 2>/dev/null || true
     if catalog_download "$_catalog_tmp" && catalog_validate_file "$_catalog_tmp"; then
         _new_shecan_url="$(awk -F'|' '$1=="shecan" {print $5; exit}' "$_catalog_tmp" 2>/dev/null)"
         mkdir -p "$CFG_DIR" 2>/dev/null || true
@@ -693,7 +765,7 @@ write_catalogs() {
             if [ "$_old_shecan_url" != "$_new_shecan_url" ]; then
                 for _result_file in "$TEST_RESULTS" "$PERSIST_STATE_DIR/dns-test-results.conf"; do
                     [ -s "$_result_file" ] || continue
-                    _result_tmp="${_result_file}.tmp.$"
+                    _result_tmp="$(mktemp "${_result_file}.tmp.XXXXXX" 2>/dev/null)" || continue
                     awk -F'|' '$1!="shecan" {print}' "$_result_file" > "$_result_tmp" 2>/dev/null &&
                         mv -f "$_result_tmp" "$_result_file" 2>/dev/null ||
                         rm -f "$_result_tmp" 2>/dev/null || true
@@ -833,69 +905,75 @@ repair_catalog_category_state() {
     return 0
 }
 
+shell_quote() {
+    # Emit one POSIX-shell single-quoted word; input is data, never shell syntax.
+    printf "'"
+    printf '%s' "$1" | sed "s/'/'\\\\''/g"
+    printf "'"
+}
 save_config() {
     [ "${TX_ACTIVE:-0}" = 1 ] && [ "${DEFER_CONFIG_SAVE:-0}" = 1 ] && return 0
 sync_regional_dns_state
 mkdir -p "$CFG_DIR" 2>/dev/null || return 1
-_cfg_tmp="${CONFIG_FILE}.tmp.$$"
+_cfg_tmp="$(mktemp "${CONFIG_FILE}.tmp.XXXXXX" 2>/dev/null)" || return 1
 ( umask 077
 cat > "$_cfg_tmp" <<EOF_CFG
-SLOT_1="$SLOT_1"
-SLOT_2="$SLOT_2"
-SLOT_3="$SLOT_3"
-SLOT_4="$SLOT_4"
-SLOT_5="$SLOT_5"
-SLOT_6="$SLOT_6"
-SLOT_RU="$SLOT_RU"
-SLOT_1_CAT="$SLOT_1_CAT"
-SLOT_2_CAT="$SLOT_2_CAT"
-SLOT_3_CAT="$SLOT_3_CAT"
-SLOT_4_CAT="$SLOT_4_CAT"
-SLOT_5_CAT="$SLOT_5_CAT"
-SLOT_6_CAT="$SLOT_6_CAT"
-SLOT_RU_CAT="$SLOT_RU_CAT"
-PORT_1="$PORT_1"
-PORT_2="$PORT_2"
-PORT_3="$PORT_3"
-PORT_4="$PORT_4"
-PORT_5="$PORT_5"
-PORT_6="$PORT_6"
-PORT_RU="$PORT_RU"
-BOOTSTRAP_DNS="$BOOTSTRAP_DNS_ALL"
-TLD_RU_ENABLED="$TLD_RU_ENABLED"
-NTP_IP_FALLBACK="$NTP_IP_FALLBACK"
-FORCE_DOH="$FORCE_DOH"
-DNSMASQ_PERF="$DNSMASQ_PERF"
-BALANCER_ENABLED="$BALANCER_ENABLED"
-NTP_PRESET="$NTP_PRESET"
-NTP_PRESET_USER_SET="$NTP_PRESET_USER_SET"
-DNS_PROFILE="$DNS_PROFILE"
-DNS_SELECTION_MODE="$DNS_SELECTION_MODE"
-DNS_SELECTION_CATEGORY="$DNS_SELECTION_CATEGORY"
-QUICK_PREF_1="$QUICK_PREF_1"
-QUICK_PREF_2="$QUICK_PREF_2"
-QUICK_PREF_3="$QUICK_PREF_3"
-QUICK_PREF_4="$QUICK_PREF_4"
-QUICK_PREF_5="$QUICK_PREF_5"
-QUICK_PREF_6="$QUICK_PREF_6"
-WATCHDOG_ENABLED="$WATCHDOG_ENABLED"
-WATCHDOG_INTERVAL="$WATCHDOG_INTERVAL"
-WATCHDOG_BACKEND="$WATCHDOG_BACKEND"
-WATCHDOG_FAIL_THRESHOLD="$WATCHDOG_FAIL_THRESHOLD"
-WATCHDOG_REPAIR_COOLDOWN="$WATCHDOG_REPAIR_COOLDOWN"
-WATCHDOG_MAX_REPAIRS="$WATCHDOG_MAX_REPAIRS"
-WATCHDOG_MAX_RESTARTS="$WATCHDOG_MAX_RESTARTS"
-WATCHDOG_MAX_CANDIDATES="$WATCHDOG_MAX_CANDIDATES"
-WATCHDOG_GUARD_INTERVAL="$WATCHDOG_GUARD_INTERVAL"
-TEST_RESULTS_MAX_AGE="$TEST_RESULTS_MAX_AGE"
-TEST_RESULTS_MAX_AGE_BYPASS="$TEST_RESULTS_MAX_AGE_BYPASS"
-TEST_RESULTS_MAX_AGE_CLEAN="$TEST_RESULTS_MAX_AGE_CLEAN"
-TEST_RESULTS_MAX_AGE_SECURITY="$TEST_RESULTS_MAX_AGE_SECURITY"
-TEST_RESULTS_MAX_AGE_PRIVACY="$TEST_RESULTS_MAX_AGE_PRIVACY"
-TEST_RESULTS_MAX_AGE_ADBLOCK="$TEST_RESULTS_MAX_AGE_ADBLOCK"
-TEST_RESULTS_MAX_AGE_FAMILY="$TEST_RESULTS_MAX_AGE_FAMILY"
-TEST_RESULTS_MAX_AGE_GAMING="$TEST_RESULTS_MAX_AGE_GAMING"
-TEST_RESULTS_MAX_AGE_REGIONAL="$TEST_RESULTS_MAX_AGE_REGIONAL"
+SLOT_1=$(shell_quote "$SLOT_1")
+SLOT_2=$(shell_quote "$SLOT_2")
+SLOT_3=$(shell_quote "$SLOT_3")
+SLOT_4=$(shell_quote "$SLOT_4")
+SLOT_5=$(shell_quote "$SLOT_5")
+SLOT_6=$(shell_quote "$SLOT_6")
+SLOT_RU=$(shell_quote "$SLOT_RU")
+SLOT_1_CAT=$(shell_quote "$SLOT_1_CAT")
+SLOT_2_CAT=$(shell_quote "$SLOT_2_CAT")
+SLOT_3_CAT=$(shell_quote "$SLOT_3_CAT")
+SLOT_4_CAT=$(shell_quote "$SLOT_4_CAT")
+SLOT_5_CAT=$(shell_quote "$SLOT_5_CAT")
+SLOT_6_CAT=$(shell_quote "$SLOT_6_CAT")
+SLOT_RU_CAT=$(shell_quote "$SLOT_RU_CAT")
+PORT_1=$(shell_quote "$PORT_1")
+PORT_2=$(shell_quote "$PORT_2")
+PORT_3=$(shell_quote "$PORT_3")
+PORT_4=$(shell_quote "$PORT_4")
+PORT_5=$(shell_quote "$PORT_5")
+PORT_6=$(shell_quote "$PORT_6")
+PORT_RU=$(shell_quote "$PORT_RU")
+BOOTSTRAP_DNS=$(shell_quote "$BOOTSTRAP_DNS_ALL")
+TLD_RU_ENABLED=$(shell_quote "$TLD_RU_ENABLED")
+NTP_IP_FALLBACK=$(shell_quote "$NTP_IP_FALLBACK")
+FORCE_DOH=$(shell_quote "$FORCE_DOH")
+DNSMASQ_PERF=$(shell_quote "$DNSMASQ_PERF")
+BALANCER_ENABLED=$(shell_quote "$BALANCER_ENABLED")
+NTP_PRESET=$(shell_quote "$NTP_PRESET")
+NTP_PRESET_USER_SET=$(shell_quote "$NTP_PRESET_USER_SET")
+DNS_PROFILE=$(shell_quote "$DNS_PROFILE")
+DNS_SELECTION_MODE=$(shell_quote "$DNS_SELECTION_MODE")
+DNS_SELECTION_CATEGORY=$(shell_quote "$DNS_SELECTION_CATEGORY")
+QUICK_PREF_1=$(shell_quote "$QUICK_PREF_1")
+QUICK_PREF_2=$(shell_quote "$QUICK_PREF_2")
+QUICK_PREF_3=$(shell_quote "$QUICK_PREF_3")
+QUICK_PREF_4=$(shell_quote "$QUICK_PREF_4")
+QUICK_PREF_5=$(shell_quote "$QUICK_PREF_5")
+QUICK_PREF_6=$(shell_quote "$QUICK_PREF_6")
+WATCHDOG_ENABLED=$(shell_quote "$WATCHDOG_ENABLED")
+WATCHDOG_INTERVAL=$(shell_quote "$WATCHDOG_INTERVAL")
+WATCHDOG_BACKEND=$(shell_quote "$WATCHDOG_BACKEND")
+WATCHDOG_FAIL_THRESHOLD=$(shell_quote "$WATCHDOG_FAIL_THRESHOLD")
+WATCHDOG_REPAIR_COOLDOWN=$(shell_quote "$WATCHDOG_REPAIR_COOLDOWN")
+WATCHDOG_MAX_REPAIRS=$(shell_quote "$WATCHDOG_MAX_REPAIRS")
+WATCHDOG_MAX_RESTARTS=$(shell_quote "$WATCHDOG_MAX_RESTARTS")
+WATCHDOG_MAX_CANDIDATES=$(shell_quote "$WATCHDOG_MAX_CANDIDATES")
+WATCHDOG_GUARD_INTERVAL=$(shell_quote "$WATCHDOG_GUARD_INTERVAL")
+TEST_RESULTS_MAX_AGE=$(shell_quote "$TEST_RESULTS_MAX_AGE")
+TEST_RESULTS_MAX_AGE_BYPASS=$(shell_quote "$TEST_RESULTS_MAX_AGE_BYPASS")
+TEST_RESULTS_MAX_AGE_CLEAN=$(shell_quote "$TEST_RESULTS_MAX_AGE_CLEAN")
+TEST_RESULTS_MAX_AGE_SECURITY=$(shell_quote "$TEST_RESULTS_MAX_AGE_SECURITY")
+TEST_RESULTS_MAX_AGE_PRIVACY=$(shell_quote "$TEST_RESULTS_MAX_AGE_PRIVACY")
+TEST_RESULTS_MAX_AGE_ADBLOCK=$(shell_quote "$TEST_RESULTS_MAX_AGE_ADBLOCK")
+TEST_RESULTS_MAX_AGE_FAMILY=$(shell_quote "$TEST_RESULTS_MAX_AGE_FAMILY")
+TEST_RESULTS_MAX_AGE_GAMING=$(shell_quote "$TEST_RESULTS_MAX_AGE_GAMING")
+TEST_RESULTS_MAX_AGE_REGIONAL=$(shell_quote "$TEST_RESULTS_MAX_AGE_REGIONAL")
 EOF_CFG
 ) || { rm -f "$_cfg_tmp"; return 1; }
 chmod 600 "$_cfg_tmp" 2>/dev/null || true

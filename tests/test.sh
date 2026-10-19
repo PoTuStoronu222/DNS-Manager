@@ -27,6 +27,20 @@ sed -n '/^luci_companion_remove(/,/^}/p' dns-manager.sh > "$tmp/luci_remove_fn.s
 grep -Fq 'rmdir /usr/lib/dns-manager-luci 2>/dev/null || true' "$tmp/luci_remove_fn.sh" || fail "LuCI uninstall leaves the empty backend directory"
 ok "LuCI uninstall removes its empty backend directory"
 
+# mktemp output must stay in place until the downloader opens it.
+_catalog_download_block="$(sed -n '/^catalog_download() {/,/^}/p' dns-manager.sh)"
+if printf '%s\n' "$_catalog_download_block" | grep -Fq 'rm -f "$_out"'; then
+    fail "catalog downloader unlinks its unique output path before writing"
+fi
+_write_catalogs_block="$(sed -n '/^write_catalogs() {/,/^}/p' dns-manager.sh)"
+printf '%s\n' "$_write_catalogs_block" | awk '
+    /_catalog_tmp=.*mktemp/ { seen=1; next }
+    seen && index($0, "rm -f \"$_catalog_tmp\"") && !download_started { bad=1 }
+    seen && index($0, "catalog_download \"$_catalog_tmp\"") { download_started=1; exit }
+    END { if (bad || !download_started) exit 1 }
+' || fail "catalog temp file is removed before download starts"
+ok "catalog downloader preserves its unique temporary file"
+
 
 # Update-chain regression checks: temporary names must keep the PID suffix, and
 # installed LuCI version detection must trust the code LuCI actually loads.
@@ -1138,12 +1152,191 @@ ok "LuCI does not require persisted DNS job history for global status banners"
 for _wd_key in WATCHDOG_INTERVAL WATCHDOG_FAIL_THRESHOLD WATCHDOG_REPAIR_COOLDOWN WATCHDOG_MAX_REPAIRS WATCHDOG_MAX_RESTARTS WATCHDOG_MAX_CANDIDATES WATCHDOG_GUARD_INTERVAL; do
     grep -q "^${_wd_key}=" dns-manager.sh || fail "watchdog config variable missing: $_wd_key"
 done
-grep -q 'WATCHDOG_FAIL_THRESHOLD="$WATCHDOG_FAIL_THRESHOLD"' dns-manager.sh || fail "watchdog threshold is not persisted"
-grep -q 'WATCHDOG_REPAIR_COOLDOWN="$WATCHDOG_REPAIR_COOLDOWN"' dns-manager.sh || fail "watchdog repair cooldown is not persisted"
-grep -q 'WATCHDOG_MAX_REPAIRS="$WATCHDOG_MAX_REPAIRS"' dns-manager.sh || fail "watchdog max repairs is not persisted"
-grep -q 'WATCHDOG_MAX_RESTARTS="$WATCHDOG_MAX_RESTARTS"' dns-manager.sh || fail "watchdog max restarts is not persisted"
-grep -q 'WATCHDOG_MAX_CANDIDATES="$WATCHDOG_MAX_CANDIDATES"' dns-manager.sh || fail "watchdog max candidates is not persisted"
-grep -q 'WATCHDOG_GUARD_INTERVAL="$WATCHDOG_GUARD_INTERVAL"' dns-manager.sh || fail "watchdog guard interval is not persisted"
+grep -Fq 'WATCHDOG_FAIL_THRESHOLD=$(shell_quote "$WATCHDOG_FAIL_THRESHOLD")' dns-manager.sh || fail "watchdog threshold is not persisted"
+grep -Fq 'WATCHDOG_REPAIR_COOLDOWN=$(shell_quote "$WATCHDOG_REPAIR_COOLDOWN")' dns-manager.sh || fail "watchdog repair cooldown is not persisted"
+grep -Fq 'WATCHDOG_MAX_REPAIRS=$(shell_quote "$WATCHDOG_MAX_REPAIRS")' dns-manager.sh || fail "watchdog max repairs is not persisted"
+grep -Fq 'WATCHDOG_MAX_RESTARTS=$(shell_quote "$WATCHDOG_MAX_RESTARTS")' dns-manager.sh || fail "watchdog max restarts is not persisted"
+grep -Fq 'WATCHDOG_MAX_CANDIDATES=$(shell_quote "$WATCHDOG_MAX_CANDIDATES")' dns-manager.sh || fail "watchdog max candidates is not persisted"
+grep -Fq 'WATCHDOG_GUARD_INTERVAL=$(shell_quote "$WATCHDOG_GUARD_INTERVAL")' dns-manager.sh || fail "watchdog guard interval is not persisted"
+
+# Saved config values must round-trip as literal data, including shell metacharacters.
+_quote_func="$(sed -n '/^shell_quote() {/,/^}/p' dns-manager.sh)"
+[ -n "$_quote_func" ] || fail "shell_quote helper missing"
+eval "$_quote_func"
+_quote_marker="$tmp/config-quote-injection-marker"
+_quote_input="value with 'quotes'; \$(touch '$_quote_marker')"
+_quote_encoded="$(shell_quote "$_quote_input")"
+eval "_quote_roundtrip=$_quote_encoded"
+[ "$_quote_roundtrip" = "$_quote_input" ] || fail "shell_quote did not round-trip a special value"
+[ ! -e "$_quote_marker" ] || fail "shell_quote evaluated embedded shell syntax"
+ok "config serialization keeps shell metacharacters as literal data"
+
+# Lock recovery must reject PID 0 and must not reuse an existing quarantine path.
+[ "$(grep -Fc '|0|*[!0-9]*' dns-manager.sh)" -ge 3 ] || fail "lock recovery accepts PID zero"
+[ "$(grep -Fc 'if [ -e "$_stale_lock" ] || [ -L "$_stale_lock" ]; then return 1; fi' dns-manager.sh)" = 3 ] || fail "stale-lock quarantine path is not collision-checked for all lock types"
+ok "lock recovery validates PID and checks stale quarantine paths"
+
+grep -Fq 'if [ -e "$MUTATION_LOCK_DIR" ] || [ -L "$MUTATION_LOCK_DIR" ]; then' dns-manager.sh || fail "mutation lock restore can move into an occupied path"
+grep -Fq 'if [ -e "$TEST_LOCK_DIR" ] || [ -L "$TEST_LOCK_DIR" ]; then return 1; fi' dns-manager.sh || fail "test lock restore can move into an occupied path"
+grep -Fq 'if [ -e "$AUTO_UPDATE_LOCK_DIR" ] || [ -L "$AUTO_UPDATE_LOCK_DIR" ]; then return 1; fi' dns-manager.sh || fail "auto-update lock restore can move into an occupied path"
+ok "lock recovery refuses to restore into an occupied path"
+
+# Exercise the mutation lock in an isolated temporary directory.
+_lock_funcs="$(sed -n -e '/^acquire_mutation_lock() {/,/^}/p' -e '/^release_mutation_lock() {/,/^}/p' dns-manager.sh)"
+[ -n "$_lock_funcs" ] || fail "mutation lock functions missing"
+eval "$_lock_funcs"
+log_msg() { :; }
+STATE_DIR="$tmp/lock-state"
+MUTATION_LOCK_DIR="$STATE_DIR/mutation.lock"
+MUTATION_LOCK_HELD=0
+mkdir -p "$STATE_DIR" || fail "cannot create lock-test directory"
+acquire_mutation_lock || fail "fresh mutation lock could not be acquired"
+[ "$(cat "$MUTATION_LOCK_DIR/pid")" = "$$" ] || fail "mutation lock owner PID mismatch"
+release_mutation_lock
+[ ! -d "$MUTATION_LOCK_DIR" ] || fail "mutation lock was not released"
+
+mkdir -p "$MUTATION_LOCK_DIR" || fail "cannot prepare live-lock test"
+printf '%s\n' "$$" > "$MUTATION_LOCK_DIR/pid"
+if acquire_mutation_lock; then
+    fail "mutation lock allowed a second acquisition by the same live PID"
+fi
+[ -d "$MUTATION_LOCK_DIR" ] || fail "live mutation lock was removed"
+rm -rf "$MUTATION_LOCK_DIR"
+
+_test_stale_pid=999999
+while kill -0 "$_test_stale_pid" 2>/dev/null; do _test_stale_pid=$((_test_stale_pid + 1)); done
+mkdir -p "$MUTATION_LOCK_DIR" || fail "cannot prepare stale-lock test"
+printf '%s\n' "$_test_stale_pid" > "$MUTATION_LOCK_DIR/pid"
+acquire_mutation_lock || fail "stale mutation lock was not recovered"
+[ "$(cat "$MUTATION_LOCK_DIR/pid")" = "$$" ] || fail "recovered lock has the wrong owner"
+release_mutation_lock
+
+mkdir -p "$MUTATION_LOCK_DIR" "$MUTATION_LOCK_DIR.stale.$$" || fail "cannot prepare quarantine collision test"
+printf '%s\n' "$_test_stale_pid" > "$MUTATION_LOCK_DIR/pid"
+: > "$MUTATION_LOCK_DIR.stale.$$/marker"
+if acquire_mutation_lock; then
+    fail "mutation lock ignored an existing stale-quarantine path"
+fi
+[ -d "$MUTATION_LOCK_DIR" ] || fail "quarantine collision removed the original lock"
+[ -f "$MUTATION_LOCK_DIR.stale.$$/marker" ] || fail "quarantine collision altered the existing path"
+rm -rf "$MUTATION_LOCK_DIR" "$MUTATION_LOCK_DIR.stale.$$"
+
+# Corrupt PID data must fail closed without deleting the existing lock.
+mkdir -p "$MUTATION_LOCK_DIR" || fail "cannot prepare malformed-PID lock"
+printf '%s\n' 'not-a-pid' > "$MUTATION_LOCK_DIR/pid"
+if acquire_mutation_lock; then
+    fail "mutation lock accepted a malformed PID"
+fi
+[ -d "$MUTATION_LOCK_DIR" ] || fail "malformed mutation lock was deleted"
+rm -rf "$MUTATION_LOCK_DIR"
+ok "mutation lock rejects malformed PID without deleting the lock"
+
+# Exercise the test lock dynamically: PID 0 and a pre-existing quarantine path.
+_test_lock_funcs="$(sed -n -e '/^acquire_test_lock() {/,/^}/p' -e '/^release_test_lock() {/,/^}/p' dns-manager.sh)"
+[ -n "$_test_lock_funcs" ] || fail "test lock functions missing"
+eval "$_test_lock_funcs"
+STATE_DIR="$tmp/test-lock-state"
+TEST_LOCK_DIR="$STATE_DIR/test.lock"
+TEST_LOCK_HELD=0
+mkdir -p "$STATE_DIR" "$TEST_LOCK_DIR" || fail "cannot prepare test-lock PID test"
+printf '%s\n' 0 > "$TEST_LOCK_DIR/pid"
+if acquire_test_lock; then fail "test lock accepted PID zero"; fi
+[ -d "$TEST_LOCK_DIR" ] || fail "invalid test lock was deleted"
+rm -rf "$TEST_LOCK_DIR"
+mkdir -p "$TEST_LOCK_DIR" "$TEST_LOCK_DIR.stale.$$" || fail "cannot prepare test-lock quarantine test"
+printf '%s\n' "$_test_stale_pid" > "$TEST_LOCK_DIR/pid"
+: > "$TEST_LOCK_DIR.stale.$$/marker"
+if acquire_test_lock; then fail "test lock ignored an existing quarantine path"; fi
+[ -d "$TEST_LOCK_DIR" ] || fail "test-lock collision removed original lock"
+[ -f "$TEST_LOCK_DIR.stale.$$/marker" ] || fail "test-lock collision altered quarantine path"
+rm -rf "$TEST_LOCK_DIR" "$TEST_LOCK_DIR.stale.$$"
+ok "test lock rejects invalid PID and preserves quarantine collisions"
+
+# Exercise the auto-update lock dynamically with the same failure cases.
+_auto_lock_funcs="$(sed -n '/^acquire_auto_update_lock() {/,/^}/p' dns-manager.sh)"
+[ -n "$_auto_lock_funcs" ] || fail "auto-update lock function missing"
+eval "$_auto_lock_funcs"
+STATE_DIR="$tmp/auto-lock-state"
+AUTO_UPDATE_LOCK_DIR="$STATE_DIR/auto-update.lock"
+AUTO_UPDATE_LOCK_HELD=0
+mkdir -p "$STATE_DIR" "$AUTO_UPDATE_LOCK_DIR" || fail "cannot prepare auto-update PID test"
+printf '%s\n' 0 > "$AUTO_UPDATE_LOCK_DIR/pid"
+if acquire_auto_update_lock; then fail "auto-update lock accepted PID zero"; fi
+[ -d "$AUTO_UPDATE_LOCK_DIR" ] || fail "invalid auto-update lock was deleted"
+rm -rf "$AUTO_UPDATE_LOCK_DIR"
+mkdir -p "$AUTO_UPDATE_LOCK_DIR" "$AUTO_UPDATE_LOCK_DIR.stale.$$" || fail "cannot prepare auto-update quarantine test"
+printf '%s\n' "$_test_stale_pid" > "$AUTO_UPDATE_LOCK_DIR/pid"
+: > "$AUTO_UPDATE_LOCK_DIR.stale.$$/marker"
+if acquire_auto_update_lock; then fail "auto-update lock ignored an existing quarantine path"; fi
+[ -d "$AUTO_UPDATE_LOCK_DIR" ] || fail "auto-update collision removed original lock"
+[ -f "$AUTO_UPDATE_LOCK_DIR.stale.$$/marker" ] || fail "auto-update collision altered quarantine path"
+rm -rf "$AUTO_UPDATE_LOCK_DIR" "$AUTO_UPDATE_LOCK_DIR.stale.$$"
+ok "auto-update lock rejects invalid PID and preserves quarantine collisions"
+
+ok "mutation lock acquisition, release and stale-lock recovery are exercised"
+
+# Round-trip the real config writer with shell syntax embedded as data.
+_save_funcs="$(sed -n -e '/^shell_quote() {/,/^}/p' -e '/^save_config() {/,/^}/p' dns-manager.sh)"
+[ -n "$_save_funcs" ] || fail "config save functions missing"
+eval "$_save_funcs"
+sync_regional_dns_state() { :; }
+CFG_DIR="$tmp/config-save"
+CONFIG_FILE="$CFG_DIR/manager.conf"
+TX_ACTIVE=0
+DEFER_CONFIG_SAVE=0
+_quote_marker="$tmp/config-save-injection-marker"
+_expected_config_value="value with 'quotes'; \$(touch '$_quote_marker')"
+SLOT_1="$_expected_config_value"
+BOOTSTRAP_DNS_ALL="$_expected_config_value"
+save_config || fail "save_config failed for a value with shell metacharacters"
+SLOT_1=""
+BOOTSTRAP_DNS=""
+. "$CONFIG_FILE" || fail "saved manager.conf could not be sourced"
+[ "$SLOT_1" = "$_expected_config_value" ] || fail "SLOT_1 did not round-trip from manager.conf"
+[ "$BOOTSTRAP_DNS" = "$_expected_config_value" ] || fail "bootstrap DNS did not round-trip from manager.conf"
+[ ! -e "$_quote_marker" ] || fail "sourcing manager.conf executed embedded shell syntax"
+ok "manager.conf safely saves and reloads special characters"
+
+# Exercise concurrent lock acquisition in two independent shell processes.
+STATE_DIR="$tmp/lock-concurrent"
+MUTATION_LOCK_DIR="$STATE_DIR/mutation.lock"
+MUTATION_LOCK_HELD=0
+mkdir -p "$STATE_DIR" || fail "cannot create concurrent lock-test directory"
+{
+    sed -n -e '/^acquire_mutation_lock() {/,/^}/p' -e '/^release_mutation_lock() {/,/^}/p' dns-manager.sh
+    cat <<'EOF_LOCK_HOLDER'
+log_msg() { :; }
+STATE_DIR="$1"
+MUTATION_LOCK_DIR="$STATE_DIR/mutation.lock"
+MUTATION_LOCK_HELD=0
+mkdir -p "$STATE_DIR" || exit 3
+acquire_mutation_lock || exit 4
+: > "$STATE_DIR/ready"
+sleep 1
+release_mutation_lock
+EOF_LOCK_HOLDER
+} > "$tmp/lock-holder.sh"
+sh "$tmp/lock-holder.sh" "$STATE_DIR" &
+_holder_pid=$!
+_wait=0
+while [ ! -f "$STATE_DIR/ready" ] && [ "$_wait" -lt 50 ]; do
+    sleep 0.1
+    _wait=$((_wait + 1))
+done
+if [ ! -f "$STATE_DIR/ready" ]; then
+    kill "$_holder_pid" 2>/dev/null || true
+    wait "$_holder_pid" 2>/dev/null || true
+    fail "concurrent lock holder did not become ready"
+fi
+if acquire_mutation_lock; then
+    release_mutation_lock
+    wait "$_holder_pid" 2>/dev/null || true
+    fail "second process acquired an active mutation lock"
+fi
+[ -d "$MUTATION_LOCK_DIR" ] || fail "active lock disappeared during concurrent contention"
+wait "$_holder_pid" || fail "concurrent lock holder failed"
+[ ! -d "$MUTATION_LOCK_DIR" ] || fail "concurrent lock holder did not release its lock"
+ok "mutation lock rejects a concurrent process and releases cleanly"
 grep -q 'watchdog_interval":%s,"watchdog_service' "$tmp/backend.sh" || fail "LuCI status does not expose saved watchdog interval"
 
 grep -q '^        set_watchdog_setting)' "$tmp/backend.sh" || fail "legacy watchdog setting dispatch missing"
