@@ -1220,6 +1220,59 @@ fi
 [ -d "$MUTATION_LOCK_DIR" ] || fail "quarantine collision removed the original lock"
 [ -f "$MUTATION_LOCK_DIR.stale.$$/marker" ] || fail "quarantine collision altered the existing path"
 rm -rf "$MUTATION_LOCK_DIR" "$MUTATION_LOCK_DIR.stale.$$"
+
+# Corrupt PID data must fail closed without deleting the existing lock.
+mkdir -p "$MUTATION_LOCK_DIR" || fail "cannot prepare malformed-PID lock"
+printf '%s\n' 'not-a-pid' > "$MUTATION_LOCK_DIR/pid"
+if acquire_mutation_lock; then
+    fail "mutation lock accepted a malformed PID"
+fi
+[ -d "$MUTATION_LOCK_DIR" ] || fail "malformed mutation lock was deleted"
+rm -rf "$MUTATION_LOCK_DIR"
+ok "mutation lock rejects malformed PID without deleting the lock"
+
+# Exercise the test lock dynamically: PID 0 and a pre-existing quarantine path.
+_test_lock_funcs="$(sed -n -e '/^acquire_test_lock() {/,/^}/p' -e '/^release_test_lock() {/,/^}/p' dns-manager.sh)"
+[ -n "$_test_lock_funcs" ] || fail "test lock functions missing"
+eval "$_test_lock_funcs"
+STATE_DIR="$tmp/test-lock-state"
+TEST_LOCK_DIR="$STATE_DIR/test.lock"
+TEST_LOCK_HELD=0
+mkdir -p "$STATE_DIR" "$TEST_LOCK_DIR" || fail "cannot prepare test-lock PID test"
+printf '%s\n' 0 > "$TEST_LOCK_DIR/pid"
+if acquire_test_lock; then fail "test lock accepted PID zero"; fi
+[ -d "$TEST_LOCK_DIR" ] || fail "invalid test lock was deleted"
+rm -rf "$TEST_LOCK_DIR"
+mkdir -p "$TEST_LOCK_DIR" "$TEST_LOCK_DIR.stale.$" || fail "cannot prepare test-lock quarantine test"
+printf '%s\n' "$_test_stale_pid" > "$TEST_LOCK_DIR/pid"
+: > "$TEST_LOCK_DIR.stale.$/marker"
+if acquire_test_lock; then fail "test lock ignored an existing quarantine path"; fi
+[ -d "$TEST_LOCK_DIR" ] || fail "test-lock collision removed original lock"
+[ -f "$TEST_LOCK_DIR.stale.$/marker" ] || fail "test-lock collision altered quarantine path"
+rm -rf "$TEST_LOCK_DIR" "$TEST_LOCK_DIR.stale.$"
+ok "test lock rejects invalid PID and preserves quarantine collisions"
+
+# Exercise the auto-update lock dynamically with the same failure cases.
+_auto_lock_funcs="$(sed -n '/^acquire_auto_update_lock() {/,/^}/p' dns-manager.sh)"
+[ -n "$_auto_lock_funcs" ] || fail "auto-update lock function missing"
+eval "$_auto_lock_funcs"
+STATE_DIR="$tmp/auto-lock-state"
+AUTO_UPDATE_LOCK_DIR="$STATE_DIR/auto-update.lock"
+AUTO_UPDATE_LOCK_HELD=0
+mkdir -p "$STATE_DIR" "$AUTO_UPDATE_LOCK_DIR" || fail "cannot prepare auto-update PID test"
+printf '%s\n' 0 > "$AUTO_UPDATE_LOCK_DIR/pid"
+if acquire_auto_update_lock; then fail "auto-update lock accepted PID zero"; fi
+[ -d "$AUTO_UPDATE_LOCK_DIR" ] || fail "invalid auto-update lock was deleted"
+rm -rf "$AUTO_UPDATE_LOCK_DIR"
+mkdir -p "$AUTO_UPDATE_LOCK_DIR" "$AUTO_UPDATE_LOCK_DIR.stale.$" || fail "cannot prepare auto-update quarantine test"
+printf '%s\n' "$_test_stale_pid" > "$AUTO_UPDATE_LOCK_DIR/pid"
+: > "$AUTO_UPDATE_LOCK_DIR.stale.$/marker"
+if acquire_auto_update_lock; then fail "auto-update lock ignored an existing quarantine path"; fi
+[ -d "$AUTO_UPDATE_LOCK_DIR" ] || fail "auto-update collision removed original lock"
+[ -f "$AUTO_UPDATE_LOCK_DIR.stale.$/marker" ] || fail "auto-update collision altered quarantine path"
+rm -rf "$AUTO_UPDATE_LOCK_DIR" "$AUTO_UPDATE_LOCK_DIR.stale.$"
+ok "auto-update lock rejects invalid PID and preserves quarantine collisions"
+
 ok "mutation lock acquisition, release and stale-lock recovery are exercised"
 
 # Round-trip the real config writer with shell syntax embedded as data.
