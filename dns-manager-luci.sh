@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.50
+# Version: 1.51
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -32,7 +32,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.50"
+VERSION="1.51"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -158,7 +158,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="1.50"
+SELF_VERSION="1.51"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -1223,6 +1223,9 @@ page_meta_json() {
 
 doh_status_json() {
     _force="$(cfg_get FORCE_DOH)"; [ -n "$_force" ] || _force=0
+    _encrypted_dns="$(cfg_get BLOCK_EXTERNAL_DNS)"
+    [ -n "$_encrypted_dns" ] || _encrypted_dns="$_force"
+    case "$_encrypted_dns" in 0|1) ;; *) _encrypted_dns=0 ;; esac
     _force_cfg="$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null || true)"
     _force_notrack="$(uci -q get https-dns-proxy.config.notrack_dns 2>/dev/null || true)"
     _force_state="$("$MANAGER_PATH" --force-state 2>/dev/null || true)"
@@ -1366,6 +1369,7 @@ doh_status_json() {
     done
     printf '],"system_dns_count":%s' "$_system_dns_total"
     printf ',"profile_job_status":'; json_quote "$_pjs"; printf ',"profile_job_result":'; json_quote "$_pjr"; printf ',"profile_job_profile":'; json_quote "$_pjp"; printf ',"profile_job_started":'; json_quote "$_pjsd"; printf ',"profile_job_finished":'; json_quote "$_pjf"; printf ',"profile_job_message":'; json_quote "$_pjm"
+    printf ',"encrypted_dns":%s' "$_encrypted_dns"
     printf '}'
 }
 
@@ -2610,7 +2614,7 @@ run_action() {
                 *) json_error "Неверное значение enabled"; return;;
             esac
             case "$_name" in
-                watchdog|force|dnsmasq_perf) ;;
+                watchdog|force|encrypted_dns|dnsmasq_perf) ;;
                 *) json_error "Недопустимая настройка"; return;;
             esac
             load_manager || { json_error "DNS Manager недоступен"; return; }
@@ -2631,6 +2635,10 @@ run_action() {
                         force_readback_json
                         return
                     fi
+                    ;;
+                encrypted_dns)
+                    BLOCK_EXTERNAL_DNS="$_enabled"
+                    SILENT_APPLY=1 apply_extras_now encrypted_dns >/dev/null 2>&1 || _rc=$?
                     ;;
                 dnsmasq_perf)
                     DNSMASQ_PERF="$_enabled"
@@ -2728,7 +2736,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI common module version: 1.50
+// DNS Manager LuCI common module version: 1.51
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -2908,7 +2916,7 @@ function stateBadge(status,pingValue){
   if(s==='OK'||s==='FAIL'||s==='FAILED'||s.indexOf('_FAIL')>0||s.indexOf('TIMEOUT')>=0||s.indexOf('ERROR')>=0||s.indexOf('HTTP_')===0||!hasPing(pingValue))return badge('dm-bad','недоступен');
   return badge('dm-off','нет данных');
 }
-function settingName(n){ var m={watchdog:'Контроль DNS',dnsmasq_perf:'Увеличенный кэш DNS'}; return m[n]||n; }
+function settingName(n){ var m={watchdog:'Контроль DNS',force:'Принудительный DNS',encrypted_dns:'Не давать устройствам обходить блокировку',dnsmasq_perf:'Увеличенный кэш DNS'}; return m[n]||n; }
 function settingModuleState(st,key){
   var raw=st[key+'_state'];
   if(raw===undefined||raw===null||raw==='')return -1;
@@ -3311,25 +3319,41 @@ function renderDoH(root,st){
   var fm=forceMode(st);
   var profileSelected=String(st.profile||'none')!=='none';
   var forceEnableLocked=!profileSelected && fm!=='auto';
+  var forceEnabled=fm==='auto';
   var forceButtons=E('div',{'class':'dm-seg'},[
     btn('Авто (рекомендуется)',fm==='auto'?'active cbi-button':'cbi-button',function(){setForceMode('auto',root);},{disabled:state.busy||forceEnableLocked}),
     btn('Не перехватывать',fm==='off'?'active cbi-button':'cbi-button',function(){setForceMode('off',root);},{disabled:state.busy})
   ]);
+  var encryptedEnabled=yes(st.encrypted_dns);
+  var encryptedButtons=E('div',{'class':'dm-seg'},[
+    btn('Включено',encryptedEnabled?'active cbi-button':'cbi-button',function(){setSetting('encrypted_dns',1,root);},{disabled:state.busy||encryptedEnabled}),
+    btn('Выключено',!encryptedEnabled?'active cbi-button':'cbi-button',function(){setSetting('encrypted_dns',0,root);},{disabled:state.busy||!encryptedEnabled})
+  ]);
   var steer=st.force_owner==='steer';
   ch.push(E('div',{'style':'margin-top:9px'},[
     E('div',{'class':'dm-row'},[
-      E('span',{'class':'dm-label'},'Перехват DNS устройств'),
+      E('span',{'class':'dm-label'},'Принудительный DNS'),
       badge(st.force_status==='external'||st.force_status==='other'?'dm-bad':(st.force_status==='manager'||st.force_status==='steer')?'dm-ok':'dm-off',st.force_status==='external'?'внешний':st.force_status==='other'?'другое':st.force_status==='steer'?'включён • Steer':st.force_status==='manager'?'включён':'выключен')
     ]),
+    E('p',{'class':'dm-hint'},'Направляет обычные DNS-запросы устройств на DNS роутера. В конфигурации https-dns-proxy задействованы порты 53 и 853.'),
     forceButtons,
     (!profileSelected && fm!=='auto') ? E('div',{'class':'dm-inline-msg info'},'Сначала выберите профиль DNS Manager.') : null
+  ].filter(Boolean)));
+  ch.push(E('div',{'style':'margin-top:14px'},[
+    E('div',{'class':'dm-row'},[
+      E('span',{'class':'dm-label'},'Не давать устройствам обходить блокировку'),
+      badge(encryptedEnabled?'dm-ok':'dm-off',encryptedEnabled?'включено':'выключено')
+    ]),
+    E('p',{'class':'dm-hint'},'Дополнительно ограничивает использование сторонних зашифрованных DNS-сервисов, через которые устройство может обходить DNS-фильтрацию роутера.'),
+    encryptedButtons,
+    E('p',{'class':'dm-hint'},'Блокируются DoT-запросы на порту 853 и включаются canary-проверки для автоматического DoH в поддерживаемых браузерах. Произвольный DoH поверх HTTPS/443 эта настройка не гарантированно блокирует.')
   ].filter(Boolean)));
   if(st.force_both){
     ch.push(E('div',{'class':'dm-force-external'},'Принудительный DNS обнаружен одновременно с внешним перехватом. Источник: '+shortVal(st.force_source)+'. При переключении DNS Manager приведёт общую конфигурацию forced-DNS к своей схеме.'));
   } else if(st.force_owner==='external'){
     ch.push(E('div',{'class':'dm-force-external'},'Обнаружен '+shortVal(st.force_source)+'. Переключение выше может заменить его общей конфигурацией forced-DNS DNS Manager.'));
   } else if(steer){
-    ch.push(E('div',{'class':'dm-inline-msg info'},'Steer перехватывает DNS :53. DNS Manager не создаёт второй перехват: обычные DNS-запросы идут через dnsmasq к выбранному DoH, а DNS-over-TLS :853 блокируется.'));
+    ch.push(E('div',{'class':'dm-inline-msg info'},'Steer перехватывает DNS :53. DNS Manager не создаёт второй перехват: обычные DNS-запросы идут через dnsmasq к выбранному DoH. Ограничение DoT :853 управляется отдельным переключателем выше.'));
   } else if(Number(st.steer_running)===1 && Number(st.steer_dns_active)!==1){
     ch.push(E('div',{'class':'dm-inline-msg info'},'Steer запущен, но активный перехват DNS :53→:5300 не обнаружен. Поэтому DNS Manager не считает Steer владельцем forced-DNS и сохраняет обычную схему принудительного DNS.'));
   }
@@ -4759,7 +4783,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 1.50
+// DNS Manager LuCI version: 1.51
 return view.extend({
   load: DM.load,
   render: DM.render,
