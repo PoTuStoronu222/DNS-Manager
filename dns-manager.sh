@@ -152,7 +152,7 @@ cleanup_transaction_history() {
 acquire_mutation_lock() {
     mkdir -p "$STATE_DIR" 2>/dev/null || return 1
     if mkdir "$MUTATION_LOCK_DIR" 2>/dev/null; then
-        if ! printf '%s\n' "$" > "$MUTATION_LOCK_DIR/pid" 2>/dev/null; then
+        if ! printf '%s\n' "$$" > "$MUTATION_LOCK_DIR/pid" 2>/dev/null; then
             rmdir "$MUTATION_LOCK_DIR" 2>/dev/null || true
             return 1
         fi
@@ -190,7 +190,7 @@ acquire_mutation_lock() {
         return 1
     fi
     if mkdir "$MUTATION_LOCK_DIR" 2>/dev/null; then
-        if ! printf '%s\n' "$" > "$MUTATION_LOCK_DIR/pid" 2>/dev/null; then
+        if ! printf '%s\n' "$$" > "$MUTATION_LOCK_DIR/pid" 2>/dev/null; then
             rmdir "$MUTATION_LOCK_DIR" 2>/dev/null || true
             return 1
         fi
@@ -262,7 +262,7 @@ UPDATE_TMP_FILE=""
 acquire_test_lock() {
     mkdir -p "$STATE_DIR" 2>/dev/null || return 1
     if mkdir "$TEST_LOCK_DIR" 2>/dev/null; then
-        if ! printf '%s\n' "$" > "$TEST_LOCK_DIR/pid" 2>/dev/null; then
+        if ! printf '%s\n' "$$" > "$TEST_LOCK_DIR/pid" 2>/dev/null; then
             rmdir "$TEST_LOCK_DIR" 2>/dev/null || true
             return 1
         fi
@@ -287,7 +287,7 @@ acquire_test_lock() {
         return 1
     fi
     if mkdir "$TEST_LOCK_DIR" 2>/dev/null; then
-        if ! printf '%s\n' "$" > "$TEST_LOCK_DIR/pid" 2>/dev/null; then
+        if ! printf '%s\n' "$$" > "$TEST_LOCK_DIR/pid" 2>/dev/null; then
             rmdir "$TEST_LOCK_DIR" 2>/dev/null || true
             return 1
         fi
@@ -394,7 +394,7 @@ _ver_newer() {
 acquire_auto_update_lock() {
     mkdir -p "$STATE_DIR" 2>/dev/null || return 1
     if mkdir "$AUTO_UPDATE_LOCK_DIR" 2>/dev/null; then
-        if ! printf '%s\n' "$" > "$AUTO_UPDATE_LOCK_DIR/pid" 2>/dev/null; then
+        if ! printf '%s\n' "$$" > "$AUTO_UPDATE_LOCK_DIR/pid" 2>/dev/null; then
             rmdir "$AUTO_UPDATE_LOCK_DIR" 2>/dev/null || true
             return 1
         fi
@@ -419,7 +419,7 @@ acquire_auto_update_lock() {
         return 1
     fi
     if mkdir "$AUTO_UPDATE_LOCK_DIR" 2>/dev/null; then
-        if ! printf '%s\n' "$" > "$AUTO_UPDATE_LOCK_DIR/pid" 2>/dev/null; then
+        if ! printf '%s\n' "$$" > "$AUTO_UPDATE_LOCK_DIR/pid" 2>/dev/null; then
             rmdir "$AUTO_UPDATE_LOCK_DIR" 2>/dev/null || true
             return 1
         fi
