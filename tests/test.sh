@@ -888,6 +888,10 @@ if grep -Fq 'firewall_find_exact_rule_signature' "$tmp/remove_dot_block.sh"; the
 fi
 grep -Fq 'firewall.$FW_DOT_SECTION' "$tmp/remove_dot_block.sh" || fail "encrypted-DNS OFF does not target its own DoT rule"
 ok "encrypted-DNS OFF removes only the exact DNS Manager-owned DoT rule"
+grep -Fq 'canary_domains_icloud 2>/dev/null)" = "${BLOCK_EXTERNAL_DNS:-0}" ] || _ok=0' dns-manager.sh || fail "forced-DNS state still assumes browser DoH canaries must be on"
+grep -Fq 'canary_domains_mozilla 2>/dev/null)" = "${BLOCK_EXTERNAL_DNS:-0}" ] || _ok=0' dns-manager.sh || fail "forced-DNS state does not follow independent protection setting"
+grep -Fq 'canary_domains_icloud 2>/dev/null)" = "${BLOCK_EXTERNAL_DNS:-0}" ] || _changed=1' dns-manager.sh || fail "forced-DNS watchdog will treat protection OFF as drift"
+grep -Fq 'canary_domains_mozilla 2>/dev/null)" = "${BLOCK_EXTERNAL_DNS:-0}" ] || _changed=1' dns-manager.sh || fail "forced-DNS watchdog Mozilla canary check is not independent"
 grep -Fq 'watchdog|force|encrypted_dns|dnsmasq_perf)' dns-manager-luci.sh || fail "LuCI RPC does not allow the independent encrypted-DNS setting"
 grep -Fq "setSetting('encrypted_dns',1,root)" dns-manager-luci.sh || fail "LuCI has no enable action for encrypted-DNS protection"
 grep -Fq "setSetting('encrypted_dns',0,root)" dns-manager-luci.sh || fail "LuCI has no disable action for encrypted-DNS protection"
