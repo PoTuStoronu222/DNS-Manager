@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.60"
+VERSION="3.62"
 # 3.38: clear the LuCI update flag after a successful CLI update.
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
@@ -774,6 +774,8 @@ esac
 : "${PORT_1:=}"; : "${PORT_2:=}"; : "${PORT_3:=}"; : "${PORT_4:=}"; : "${PORT_5:=}"; : "${PORT_6:=}"
 : "${PORT_RU:=}"
 : "${TLD_RU_ENABLED:=1}"; : "${FORCE_DOH:=0}"
+: "${BLOCK_EXTERNAL_DNS:=${FORCE_DOH:-0}}"
+case "$BLOCK_EXTERNAL_DNS" in 0|1) ;; *) BLOCK_EXTERNAL_DNS="${FORCE_DOH:-0}" ;; esac
 : "${NTP_IP_FALLBACK:=1}"; : "${DNSMASQ_PERF:=0}"
 : "${BALANCER_ENABLED:=1}"; : "${NTP_PRESET:=vniiftri_moscow}"; : "${NTP_PRESET_USER_SET:=0}"; : "${DNS_PROFILE:=hybrid}"; : "${DNS_SELECTION_MODE:=quick}"; : "${DNS_SELECTION_CATEGORY:=bypass}"
 : "${QUICK_PREF_1:=}"; : "${QUICK_PREF_2:=}"; : "${QUICK_PREF_3:=}"; : "${QUICK_PREF_4:=}"; : "${QUICK_PREF_5:=}"; : "${QUICK_PREF_6:=}"
@@ -865,6 +867,7 @@ BOOTSTRAP_DNS="$BOOTSTRAP_DNS_ALL"
 TLD_RU_ENABLED="$TLD_RU_ENABLED"
 NTP_IP_FALLBACK="$NTP_IP_FALLBACK"
 FORCE_DOH="$FORCE_DOH"
+BLOCK_EXTERNAL_DNS="$BLOCK_EXTERNAL_DNS"
 DNSMASQ_PERF="$DNSMASQ_PERF"
 BALANCER_ENABLED="$BALANCER_ENABLED"
 NTP_PRESET="$NTP_PRESET"
@@ -1517,15 +1520,10 @@ ensure_dns_dot_block() {
     return 0
 }
 remove_dns_dot_block() {
-    firewall_resolve_zones >/dev/null 2>&1 || true
-    _sec=""
+    # Disable only the exact DNS Manager-owned rule. An equivalent rule under
+    # another section name may belong to the router administrator or another app.
     if [ "$(uci -q get "firewall.$FW_DOT_SECTION" 2>/dev/null)" = rule ] && firewall_dot_rule_matches "$FW_DOT_SECTION"; then
-        _sec="$FW_DOT_SECTION"
-    else
-        _sec="$(firewall_find_exact_rule_signature dot "$FW_DOT_SECTION" 853 2>/dev/null || true)"
-    fi
-    if [ -n "$_sec" ]; then
-        uci -q delete "firewall.$_sec" || return 1
+        uci -q delete "firewall.$FW_DOT_SECTION" || return 1
         uci commit firewall || return 1
         reload_fw || return 1
     fi
@@ -2412,6 +2410,12 @@ sync_hdp_force_contract() {
 
     detect_steer_dns_path >/dev/null 2>&1 || true
 
+    # Keep browser DoH canaries tied to their own setting, never to FORCE_DOH.
+    _canary_enabled="${BLOCK_EXTERNAL_DNS:-0}"
+    case "$_canary_enabled" in 0|1) ;; *) return 1 ;; esac
+    uci set "https-dns-proxy.config.canary_domains_icloud=$_canary_enabled" || return 1
+    uci set "https-dns-proxy.config.canary_domains_mozilla=$_canary_enabled" || return 1
+
     # Steer already owns LAN:53 -> :5300. Do not create a second forced-DNS path.
     if [ "${STEER_DNS_ACTIVE:-0}" = 1 ]; then
         # https-dns-proxy defaults force_dns to 1 when the option is absent.
@@ -2427,7 +2431,7 @@ sync_hdp_force_contract() {
             if [ -x /etc/init.d/https-dns-proxy ] && /etc/init.d/https-dns-proxy running >/dev/null 2>&1; then
                 /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || return 1
             fi
-            ensure_dns_dot_block || return 1
+
             reconcile_dnsmasq || return 1
             if [ -x /etc/init.d/dnsmasq ]; then /etc/init.d/dnsmasq restart >/dev/null 2>&1 || return 1; fi
         else
@@ -2435,7 +2439,7 @@ sync_hdp_force_contract() {
                 uci -q delete "https-dns-proxy.config.$_k" || true
             done
             uci commit https-dns-proxy || return 1
-            remove_dns_dot_block || return 1
+
             if [ -x /etc/init.d/https-dns-proxy ] && /etc/init.d/https-dns-proxy running >/dev/null 2>&1; then
                 /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || true
             fi
@@ -2476,21 +2480,9 @@ sync_hdp_force_contract() {
         uci add_list https-dns-proxy.config.force_dns_src_interface="$_n" || return 1
     done
 
-    if [ "$_want" = 1 ]; then
-        uci set https-dns-proxy.config.canary_domains_icloud='1' || return 1
-        uci set https-dns-proxy.config.canary_domains_mozilla='1' || return 1
-    else
-        uci -q delete https-dns-proxy.config.canary_domains_icloud >/dev/null 2>&1 || true
-        uci -q delete https-dns-proxy.config.canary_domains_mozilla >/dev/null 2>&1 || true
-    fi
+    # Browser DoH canaries are controlled independently by BLOCK_EXTERNAL_DNS.
 
     uci commit https-dns-proxy || return 1
-
-    if [ "$_want" = 1 ]; then
-        ensure_dns_dot_block || return 1
-    else
-        remove_dns_dot_block || return 1
-    fi
 
     if [ -x /etc/init.d/https-dns-proxy ] && /etc/init.d/https-dns-proxy running >/dev/null 2>&1; then
         /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || return 1
@@ -2741,6 +2733,11 @@ _apply_extras_now_impl() {
             [ "${WATCHDOG_ENABLED:-0}" = 1 ] || apply_watchdog || return 1
             return 0
             ;;
+        encrypted_dns)
+            apply_encrypted_dns_block || return 1
+            save_config || return 1
+            return 0
+            ;;
         dnsmasq_perf)
             if [ "$DNSMASQ_PERF" = 1 ]; then
                 apply_dnsmasq_perf || return 1
@@ -2797,6 +2794,33 @@ remove_dns_force() {
     # The shared forced-DNS contract switches only
     # force_dns to 0 when interception is disabled.
     sync_hdp_force_contract 0
+}
+apply_encrypted_dns_block() {
+    _want="${BLOCK_EXTERNAL_DNS:-0}"
+    case "$_want" in 0|1) ;; *) return 1 ;; esac
+
+    # This setting alone owns the explicit LAN-to-WAN DoT block.
+    if [ "$_want" = 1 ]; then
+        ensure_dns_dot_block || return 1
+    else
+        remove_dns_dot_block || return 1
+    fi
+
+    # https-dns-proxy's browser DoH canaries are independent from force_dns.
+    # Do not start the package just to change this setting; persist options and
+    # restart only when the service is already running.
+    [ -f /etc/config/https-dns-proxy ] || return 0
+    uci -q get https-dns-proxy.config >/dev/null 2>&1 || return 0
+
+    # Write explicit 0/1 values: the package defaults both canary options to 1
+    # when they are absent, so deleting them would not disable this protection.
+    uci set "https-dns-proxy.config.canary_domains_icloud=$_want" || return 1
+    uci set "https-dns-proxy.config.canary_domains_mozilla=$_want" || return 1
+    uci commit https-dns-proxy || return 1
+    if [ -x /etc/init.d/https-dns-proxy ] && /etc/init.d/https-dns-proxy running >/dev/null 2>&1; then
+        /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || return 1
+    fi
+    return 0
 }
 url_host() {
     _u="${1#https://}"
@@ -4902,8 +4926,8 @@ check_module_state() {
                 [ "$(uci -q get https-dns-proxy.config.group 2>/dev/null)" = nogroup ] || _ok=0
                 [ "$(uci -q get https-dns-proxy.config.listen_addr 2>/dev/null)" = 127.0.0.1 ] || _ok=0
                 [ "$(uci -q get https-dns-proxy.config.force_ip_family 2>/dev/null)" = auto ] || _ok=0
-                [ "$(uci -q get https-dns-proxy.config.canary_domains_icloud 2>/dev/null)" = 1 ] || _ok=0
-                [ "$(uci -q get https-dns-proxy.config.canary_domains_mozilla 2>/dev/null)" = 1 ] || _ok=0
+                [ "$(uci -q get https-dns-proxy.config.canary_domains_icloud 2>/dev/null)" = "${BLOCK_EXTERNAL_DNS:-0}" ] || _ok=0
+                [ "$(uci -q get https-dns-proxy.config.canary_domains_mozilla 2>/dev/null)" = "${BLOCK_EXTERNAL_DNS:-0}" ] || _ok=0
                 force_dns_ports_match_expected || _ok=0
                 force_dns_src_matches_expected || _ok=0
                 if [ "$_ok" = 1 ] && [ "${FORCED_DNS_EXTERNAL:-0}" = 0 ] && [ "${FORCED_DNS_ACTIVE:-0}" = 1 ]; then
@@ -5717,6 +5741,10 @@ watchdog_target_live_count() {
     printf "%s\n" "$_target_live"
 }
 watchdog_enforce_hdp_control() {
+    # Keep the independent encrypted-DNS protection active even with forced DNS OFF.
+    if [ "${BLOCK_EXTERNAL_DNS:-0}" = 1 ]; then
+        apply_encrypted_dns_block || return 1
+    fi
     # Background checks must not mutate the forced-DNS module while it is off.
     [ "${FORCE_DOH:-0}" = 1 ] || return 0
 
@@ -5752,11 +5780,6 @@ watchdog_enforce_hdp_control() {
             uci commit https-dns-proxy || return 1
             watchdog_restart_hdp || return 1
         fi
-        if [ "${FORCE_DOH:-0}" = 1 ]; then
-            ensure_dns_dot_block || return 1
-        else
-            remove_dns_dot_block || return 1
-        fi
         return 0
     fi
     [ "${FORCE_DOH:-0}" = 1 ] || return 0
@@ -5773,8 +5796,8 @@ watchdog_enforce_hdp_control() {
     [ "$(uci -q get https-dns-proxy.config.group 2>/dev/null)" = "nogroup" ] || _changed=1
     [ "$(uci -q get https-dns-proxy.config.listen_addr 2>/dev/null)" = "127.0.0.1" ] || _changed=1
     [ "$(uci -q get https-dns-proxy.config.force_ip_family 2>/dev/null)" = "auto" ] || _changed=1
-    [ "$(uci -q get https-dns-proxy.config.canary_domains_icloud 2>/dev/null)" = "1" ] || _changed=1
-    [ "$(uci -q get https-dns-proxy.config.canary_domains_mozilla 2>/dev/null)" = "1" ] || _changed=1
+    [ "$(uci -q get https-dns-proxy.config.canary_domains_icloud 2>/dev/null)" = "${BLOCK_EXTERNAL_DNS:-0}" ] || _changed=1
+    [ "$(uci -q get https-dns-proxy.config.canary_domains_mozilla 2>/dev/null)" = "${BLOCK_EXTERNAL_DNS:-0}" ] || _changed=1
     force_dns_ports_match_expected || _changed=1
     force_dns_src_matches_expected || _changed=1
     if [ "$_changed" = 1 ]; then
@@ -5783,7 +5806,7 @@ watchdog_enforce_hdp_control() {
     fi
 
     # Correct UCI settings are not sufficient if the package didn't install its live LAN:53 rule.
-    ensure_dns_dot_block || return 1
+
     detect_forced_dns_path >/dev/null 2>&1 || true
     [ "${FORCED_DNS_ACTIVE:-0}" = 1 ] && [ "${FORCED_DNS_EXTERNAL:-0}" = 0 ] && return 0
     log_msg "Forced-DNS config is present but the runtime LAN:53 path is missing; restarting https-dns-proxy."

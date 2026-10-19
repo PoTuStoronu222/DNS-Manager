@@ -231,9 +231,9 @@ grep -Fq "disabled:!!state.busy||!!state.jobRunning||unavailable||checking" dns-
 grep -q "'gaming','Игровые DNS'" dns-manager-luci.sh || fail "gaming catalog label missing in LuCI"
 grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validation missing gaming category"
 grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
-grep -q 'VERSION="3.60"' dns-manager.sh || fail "manager version not bumped"
+grep -q 'VERSION="3.62"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
-grep -q 'VERSION="1.50"' dns-manager-luci.sh || fail "LuCI version not bumped"
+grep -q 'VERSION="1.51"' dns-manager-luci.sh || fail "LuCI version not bumped"
 grep -q "'bypass','Обход геоблока'" dns-manager-luci.sh || fail "bypass profile label not updated"
 grep -q "'security','Защита от угроз'" dns-manager-luci.sh || fail "security profile label not updated"
 grep -q "'privacy','Конфиденциальность'" dns-manager-luci.sh || fail "privacy profile label not updated"
@@ -412,8 +412,8 @@ view_luci="$(sed -n 's|^// DNS Manager LuCI common module version:[[:space:]]*||
 [ "$top_luci" = "$self_luci" ] || fail "LuCI SELF_VERSION mismatch"
 [ "$top_luci" = "$view_luci" ] || fail "embedded JS version mismatch"
 ok "LuCI version markers synchronized ($top_luci)"
-grep -Fq 'VERSION="3.60"' dns-manager.sh || fail "DNS Manager version marker is not 3.60"
-ok "DNS Manager version marker synchronized (3.60)"
+grep -Fq 'VERSION="3.62"' dns-manager.sh || fail "DNS Manager version marker is not 3.62"
+ok "DNS Manager version marker synchronized (3.62)"
 
 if awk '
     /function startAutoStatus\(root\)/ { capture=1 }
@@ -865,6 +865,39 @@ grep -q "setForceMode('off',root)" "$tmp/doh_panel.js" || fail "LuCI DoH page ha
 grep -q "Авто (рекомендуется)" "$tmp/doh_panel.js" || fail "LuCI DoH page lost force-DNS auto label"
 grep -q "Не перехватывать" "$tmp/doh_panel.js" || fail "LuCI DoH page lost force-DNS disable label"
 ok "LuCI forced-DNS component is state-only; controls live in the DoH page"
+
+# Encrypted-DNS bypass protection is an independent setting; force DNS must not
+# turn its DoT firewall rule or browser auto-DoH canaries on/off by itself.
+grep -Fq 'BLOCK_EXTERNAL_DNS="$BLOCK_EXTERNAL_DNS"' dns-manager.sh || fail "independent encrypted-DNS setting is not persisted"
+grep -Fq 'apply_encrypted_dns_block() {' dns-manager.sh || fail "independent encrypted-DNS apply helper missing"
+grep -Fq 'encrypted_dns)' dns-manager.sh || fail "encrypted-DNS setting has no apply action"
+awk '/^sync_hdp_force_contract\(\) \{/,/^configure_hdp_manager_control\(\) \{/' dns-manager.sh > "$tmp/force_sync_independence.sh"
+if grep -Eq 'ensure_dns_dot_block|remove_dns_dot_block' "$tmp/force_sync_independence.sh"; then
+    fail "forced-DNS contract still adds/removes the independent DoT rule"
+fi
+grep -Fq '_canary_enabled="${BLOCK_EXTERNAL_DNS:-0}"' "$tmp/force_sync_independence.sh" || fail "forced-DNS sync does not preserve the independent canary state"
+grep -Fq 'uci set "https-dns-proxy.config.canary_domains_icloud=$_canary_enabled"' "$tmp/force_sync_independence.sh" || fail "forced-DNS sync does not apply the current independent iCloud canary state"
+grep -Fq 'uci set "https-dns-proxy.config.canary_domains_mozilla=$_canary_enabled"' "$tmp/force_sync_independence.sh" || fail "forced-DNS sync does not apply the current independent Mozilla canary state"
+awk '/^apply_encrypted_dns_block\(\) \{/,/^}/' dns-manager.sh > "$tmp/encrypted_dns_apply.sh"
+grep -Fq 'ensure_dns_dot_block || return 1' "$tmp/encrypted_dns_apply.sh" || fail "encrypted-DNS protection does not add its DoT rule"
+grep -Fq 'remove_dns_dot_block || return 1' "$tmp/encrypted_dns_apply.sh" || fail "encrypted-DNS protection does not remove its DoT rule"
+grep -Fq 'uci set "https-dns-proxy.config.canary_domains_mozilla=$_want"' "$tmp/encrypted_dns_apply.sh" || fail "encrypted-DNS protection does not configure its independent browser DoH canary state"
+awk '/^remove_dns_dot_block\(\) \{/,/^}/' dns-manager.sh > "$tmp/remove_dot_block.sh"
+if grep -Fq 'firewall_find_exact_rule_signature' "$tmp/remove_dot_block.sh"; then
+    fail "encrypted-DNS OFF can delete a matching firewall rule owned by another component"
+fi
+grep -Fq 'firewall.$FW_DOT_SECTION' "$tmp/remove_dot_block.sh" || fail "encrypted-DNS OFF does not target its own DoT rule"
+ok "encrypted-DNS OFF removes only the exact DNS Manager-owned DoT rule"
+grep -Fq 'canary_domains_icloud 2>/dev/null)" = "${BLOCK_EXTERNAL_DNS:-0}" ] || _ok=0' dns-manager.sh || fail "forced-DNS state still assumes browser DoH canaries must be on"
+grep -Fq 'canary_domains_mozilla 2>/dev/null)" = "${BLOCK_EXTERNAL_DNS:-0}" ] || _ok=0' dns-manager.sh || fail "forced-DNS state does not follow independent protection setting"
+grep -Fq 'canary_domains_icloud 2>/dev/null)" = "${BLOCK_EXTERNAL_DNS:-0}" ] || _changed=1' dns-manager.sh || fail "forced-DNS watchdog will treat protection OFF as drift"
+grep -Fq 'canary_domains_mozilla 2>/dev/null)" = "${BLOCK_EXTERNAL_DNS:-0}" ] || _changed=1' dns-manager.sh || fail "forced-DNS watchdog Mozilla canary check is not independent"
+grep -Fq 'watchdog|force|encrypted_dns|dnsmasq_perf)' dns-manager-luci.sh || fail "LuCI RPC does not allow the independent encrypted-DNS setting"
+grep -Fq "setSetting('encrypted_dns',1,root)" dns-manager-luci.sh || fail "LuCI has no enable action for encrypted-DNS protection"
+grep -Fq "setSetting('encrypted_dns',0,root)" dns-manager-luci.sh || fail "LuCI has no disable action for encrypted-DNS protection"
+grep -Fq 'Направляет обычные DNS-запросы устройств на DNS роутера.' dns-manager-luci.sh || fail "LuCI is missing the forced-DNS explanation"
+grep -Fq 'Дополнительно ограничивает использование сторонних зашифрованных DNS-сервисов' dns-manager-luci.sh || fail "LuCI is missing the encrypted-DNS protection explanation"
+ok "Forced DNS and encrypted-DNS bypass protection are independently controlled"
 
 awk '
     /^test_dns_catalog\(\) \(/ { capture=1 }
