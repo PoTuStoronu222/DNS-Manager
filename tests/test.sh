@@ -115,6 +115,10 @@ if validate_dns_message "$tmp/dns-bad-id" "$tmp/dns-query"; then fail "response 
 printf '\022\064\201\200\000\001\000\001\000\000\000\000\007example\003net\000\000\001\000\001\300\014\000\001\000\001\000\000\000\074\000\004\135\270\330\042' > "$tmp/dns-bad-question"
 if validate_dns_message "$tmp/dns-bad-question" "$tmp/dns-query"; then fail "response for a different question accepted"; fi
 
+# The RR owner must actually answer the requested name, not an unrelated host.
+printf '\022\064\201\200\000\001\000\001\000\000\000\000\007example\003com\000\000\001\000\001\004evil\003com\000\000\001\000\001\000\000\000\074\000\004\135\270\330\042' > "$tmp/dns-bad-answer-owner"
+if validate_dns_message "$tmp/dns-bad-answer-owner" "$tmp/dns-query"; then fail "unrelated DNS answer owner accepted"; fi
+
 printf '\022\064\201\200\000\001\000\000\000\000\000\000\007example\003com\000\000\001\000\001' > "$tmp/dns-no-answer"
 if validate_dns_message "$tmp/dns-no-answer" "$tmp/dns-query"; then fail "DNS response without a usable answer accepted"; fi
 
@@ -1203,6 +1207,8 @@ grep -Fq 'Сохранённые результаты устарели' "$tmp/sh
 awk '/^quick_max_bypass\(\) \{/,/^test_results_max_age_for_category\(\) \{/' dns-manager.sh | sed '$d' > "$tmp/quick_max_bypass.sh"
 grep -Fq 'watchdog_test_results_usable bypass' "$tmp/quick_max_bypass.sh" || fail "bypass flow reuses results without checking working DNS"
 grep -Fq 'test_dns_catalog bypass' "$tmp/quick_max_bypass.sh" || fail "bypass flow tests the entire catalog instead of its category"
+grep -Fq '_catalog_hash_start="$(file_hash "$DNS_CATALOG")"' dns-manager.sh || fail "DNS test does not snapshot the starting catalog hash"
+grep -Fq 'Каталог DNS изменился во время проверки. Результат отброшен' dns-manager.sh || fail "DNS test does not discard results when catalog changes during testing"
 ok "DNS result freshness display and category-scoped tests"
 
 # Preserve an existing RU DNS only when it passed the fresh regional test.
