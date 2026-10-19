@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.59"
+VERSION="3.60"
 # 3.38: clear the LuCI update flag after a successful CLI update.
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
@@ -29,7 +29,7 @@ WATCHDOG_GUARD_INTERVAL=3600
 DNSMASQ_CACHE_SIZE=4096
 WATCHDOG_SERVICE_PATH="/etc/init.d/dns-watchdog"
 WATCHDOG_SERVICE_MARKER="# DNS_MANAGER_WATCHDOG_SERVICE=2"
-WATCHDOG_SERVICE_VERSION_MARKER="# DNS_MANAGER_WATCHDOG_SERVICE_VERSION=3.11.7"
+WATCHDOG_SERVICE_VERSION_MARKER="# DNS_MANAGER_WATCHDOG_SERVICE_VERSION=3.11.8"
 WATCHDOG_LEGACY_DAEMON_PATH="/usr/bin/dns-watchdog-daemon.sh"
 WATCHDOG_LEGACY_DAEMON_MARKER="# DNS_MANAGER_WATCHDOG_DAEMON=1"
 WATCHDOG_LEGACY_RUNTIME_DIR="/var/run/dns-watchdog"
@@ -6906,7 +6906,7 @@ watchdog_service_install_files() {
     cat > "$_stmp" <<'EOF_DNS_WATCHDOG_SERVICE'
 #!/bin/sh /etc/rc.common
 # DNS_MANAGER_WATCHDOG_SERVICE=2
-# DNS_MANAGER_WATCHDOG_SERVICE_VERSION=3.11.7
+# DNS_MANAGER_WATCHDOG_SERVICE_VERSION=3.11.8
 
 USE_PROCD=1
 START=95
@@ -6994,12 +6994,17 @@ watchdog_remove_legacy_daemon() {
     return 0
 }
 watchdog_service_start_enable() {
+    # Never start procd alongside a legacy daemon or manager-owned cron job.
+    watchdog_remove_legacy_daemon || return 1
+    if watchdog_cron_marker_exists >/dev/null 2>&1; then
+        watchdog_cron_remove_owned_block >/dev/null 2>&1 || return 1
+        watchdog_cron_marker_exists >/dev/null 2>&1 && return 1
+    fi
     watchdog_service_install_files || return 1
     "$WATCHDOG_SERVICE_PATH" enable >/dev/null 2>&1 || return 1
     "$WATCHDOG_SERVICE_PATH" start >/dev/null 2>&1 || return 1
     sleep 1
     watchdog_service_running || return 1
-    watchdog_remove_legacy_daemon || return 1
     return 0
 }
 watchdog_service_remove_files() {
@@ -7021,6 +7026,18 @@ watchdog_service_migrate_legacy() {
     _service_ready=0
     watchdog_service_file_matches "$WATCHDOG_SERVICE_PATH" "$WATCHDOG_SERVICE_MARKER" "$WATCHDOG_SERVICE_VERSION_MARKER" && _service_ready=1
 
+    # A legacy daemon must be gone before procd starts; never run both.
+    watchdog_remove_legacy_daemon || return 1
+
+    # If cron is still active, remove its owned block before starting procd.
+    # If this cannot be done safely, leave procd stopped/disabled.
+    if [ "$_legacy_cron" = 1 ]; then
+        "$WATCHDOG_SERVICE_PATH" stop >/dev/null 2>&1 || true
+        "$WATCHDOG_SERVICE_PATH" disable >/dev/null 2>&1 || true
+        watchdog_cron_remove_owned_block >/dev/null 2>&1 || return 1
+        watchdog_cron_marker_exists >/dev/null 2>&1 && return 1
+    fi
+
     # If the service is manager-owned but old, stop it before replacing the launcher.
     if [ "$_service_ready" != 1 ] && watchdog_service_running >/dev/null 2>&1; then
         "$WATCHDOG_SERVICE_PATH" stop >/dev/null 2>&1 || return 1
@@ -7035,22 +7052,8 @@ watchdog_service_migrate_legacy() {
     "$WATCHDOG_SERVICE_PATH" start >/dev/null 2>&1 || return 1
     sleep 1
     watchdog_service_running || return 1
-    watchdog_remove_legacy_daemon || return 1
 
     if [ "$_legacy_cron" = 1 ]; then
-        log_msg "Watchdog: обнаружен старый cron DNS Manager; выполняю однократную миграцию на embedded procd."
-        watchdog_cron_remove_owned_block >/dev/null 2>&1 || {
-            log_msg "Watchdog: старый cron DNS Manager не удалось удалить безопасно; watchdog оставляю выключенным."
-            "$WATCHDOG_SERVICE_PATH" stop >/dev/null 2>&1 || true
-            "$WATCHDOG_SERVICE_PATH" disable >/dev/null 2>&1 || true
-            return 1
-        }
-        watchdog_cron_marker_exists >/dev/null 2>&1 && {
-            log_msg "Watchdog: старый cron-маркер всё ещё присутствует; procd watchdog выключен."
-            "$WATCHDOG_SERVICE_PATH" stop >/dev/null 2>&1 || true
-            "$WATCHDOG_SERVICE_PATH" disable >/dev/null 2>&1 || true
-            return 1
-        }
         log_msg "Watchdog: миграция на embedded procd завершена."
     elif [ "$_service_ready" = 0 ]; then
         log_msg "Watchdog: embedded procd-служба DNS Manager установлена и запущена."
@@ -7227,21 +7230,17 @@ apply_watchdog() {
     save_config || return 1
 
     if [ "${WATCHDOG_ENABLED:-0}" = 1 ] || [ "${FORCE_DOH:-0}" = 1 ]; then
-        watchdog_service_install_files || return 1
-        # During a transaction the final manager.conf has not been committed yet.
-        # Do not start the embedded loop until Apply commits the new configuration.
+        # During a transaction, defer service and legacy-scheduler changes until
+        # the final manager.conf has been committed and the Apply is verified.
         if [ "${TX_ACTIVE:-0}" = 1 ] && [ "${DEFER_CONFIG_SAVE:-0}" = 1 ]; then
-            watchdog_cron_marker_exists >/dev/null 2>&1 && watchdog_cron_remove_owned_block >/dev/null 2>&1 || true
             return 0
         fi
-        "$WATCHDOG_SERVICE_PATH" enable >/dev/null 2>&1 || return 1
-        "$WATCHDOG_SERVICE_PATH" start >/dev/null 2>&1 || return 1
-        sleep 1
-        watchdog_service_running || return 1
-        watchdog_remove_legacy_daemon || return 1
-        watchdog_cron_marker_exists >/dev/null 2>&1 && watchdog_cron_remove_owned_block >/dev/null 2>&1 || true
+        watchdog_service_start_enable || return 1
     else
-        watchdog_cron_marker_exists >/dev/null 2>&1 && watchdog_cron_remove_owned_block >/dev/null 2>&1 || true
+        watchdog_cron_marker_exists >/dev/null 2>&1 && {
+            watchdog_cron_remove_owned_block >/dev/null 2>&1 || return 1
+            watchdog_cron_marker_exists >/dev/null 2>&1 && return 1
+        }
         watchdog_service_remove_files || return 1
     fi
     return 0
