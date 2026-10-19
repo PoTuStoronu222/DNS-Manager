@@ -708,7 +708,6 @@ init_dirs() {
 catalog_download() {
     _out="$1"
     _url="${DNSCAT_URL}?_dmcb=$(date +%s 2>/dev/null || printf 0)-$$"
-    rm -f "$_out" 2>/dev/null || true
     if command -v curl >/dev/null 2>&1; then
         curl -fsSL --connect-timeout 5 --max-time 30 -o "$_out" "$_url" >/dev/null 2>&1
     elif command -v wget >/dev/null 2>&1; then
@@ -752,7 +751,6 @@ write_catalogs() {
     fi
     _catalog_tmp="$(mktemp /tmp/dns-manager-catalog.XXXXXX 2>/dev/null)" || return 1
     _old_shecan_url="$(awk -F'|' '$1=="shecan" {print $5; exit}' "$DNS_CATALOG" 2>/dev/null)"
-    rm -f "$_catalog_tmp" 2>/dev/null || true
     if catalog_download "$_catalog_tmp" && catalog_validate_file "$_catalog_tmp"; then
         _new_shecan_url="$(awk -F'|' '$1=="shecan" {print $5; exit}' "$_catalog_tmp" 2>/dev/null)"
         mkdir -p "$CFG_DIR" 2>/dev/null || true
