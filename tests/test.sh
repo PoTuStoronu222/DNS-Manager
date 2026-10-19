@@ -231,9 +231,9 @@ grep -Fq "disabled:!!state.busy||!!state.jobRunning||unavailable||checking" dns-
 grep -q "'gaming','Игровые DNS'" dns-manager-luci.sh || fail "gaming catalog label missing in LuCI"
 grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validation missing gaming category"
 grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
-grep -q 'VERSION="3.60"' dns-manager.sh || fail "manager version not bumped"
+grep -q 'VERSION="3.61"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
-grep -q 'VERSION="1.50"' dns-manager-luci.sh || fail "LuCI version not bumped"
+grep -q 'VERSION="1.51"' dns-manager-luci.sh || fail "LuCI version not bumped"
 grep -q "'bypass','Обход геоблока'" dns-manager-luci.sh || fail "bypass profile label not updated"
 grep -q "'security','Защита от угроз'" dns-manager-luci.sh || fail "security profile label not updated"
 grep -q "'privacy','Конфиденциальность'" dns-manager-luci.sh || fail "privacy profile label not updated"
@@ -954,16 +954,20 @@ awk '/^select_slot\(\) \{/,/^# ==========================================/' dns-
 if grep -q 'DNS_PROFILE="custom"' "$tmp/cli_select_slot.sh"; then
     fail "CLI slot change still forces custom profile"
 fi
-awk '
-    /^watchdog_pick_replacement\(\) \{/ { capture=1 }
-    capture { print }
-    capture && /^watchdog_apply_slot_candidate\(\) \{/ { exit }
-' dns-manager.sh | sed '$d' > "$tmp/watchdog_pick_function.sh"
-grep -q 'watchdog_scope_category' "$tmp/watchdog_pick_function.sh" || fail "watchdog replacement does not use intended profile category"
-grep -q '_passcats="\$_desired_for_pick clean"' "$tmp/watchdog_pick_function.sh" || fail "watchdog clean fallback is missing for non-clean profiles"
-grep -A16 -F 'watchdog_slot_target_run() {' dns-manager.sh | grep -q 'watchdog_scope_category' || fail "watchdog slot repair does not use intended profile category"
-grep -q 'смешанные или пользовательские категории DNS' dns-manager.sh || fail "watchdog custom/mixed skip message missing"
-ok "manual same-category DNS changes preserve profile; mixed/custom selections disable DNS watchdog scope"
+# Background repair follows each selected DNS resolver's own category.
+awk '/^watchdog_slot_target_run\(\) \{/,/^watchdog_service_recover_run\(\) \{/' dns-manager.sh > "$tmp/watchdog_slot_target_run.sh"
+grep -Fq 'watchdog_pick_replacement "$_slot" "$_used" "$_tried" 0 "$_target_cat"' "$tmp/watchdog_slot_target_run.sh" || fail "watchdog does not choose a replacement from the current DNS category"
+if grep -Fq 'watchdog_scope_category' "$tmp/watchdog_slot_target_run.sh"; then
+    fail "watchdog per-slot repair still requires a selected profile"
+fi
+grep -Fq '[ -n "$_target_id" ] || return 0' "$tmp/watchdog_slot_target_run.sh" || fail "watchdog does not skip empty slots"
+awk '/^watchdog_embedded_loop\(\) \{/,/^run_watchdog\(\) \{/' dns-manager.sh > "$tmp/watchdog_embedded_loop.sh"
+grep -Fq 'for _trigger in $_threshold_slots; do' "$tmp/watchdog_embedded_loop.sh" || fail "watchdog does not process every failed configured slot"
+grep -Fq 'if [ -z "$_id" ]; then' "$tmp/watchdog_embedded_loop.sh" || fail "watchdog probes an unconfigured slot"
+if grep -Fq 'WATCHDOG_MAX_REPAIRS' "$tmp/watchdog_embedded_loop.sh"; then
+    fail "watchdog still limits how many slots it may repair in one cycle"
+fi
+ok "watchdog checks configured slots independently and replaces DNS only within its category"
 # All watchdog paths must use the same DNS health checks as the verified Manager paths.
 awk '/^watchdog_embedded_loop\(\) \{/,/^# ==========================================/' dns-manager.sh > "$tmp/watchdog_embedded_loop.sh"
 grep -q 'local_dns_query_ok "\$_port" "\$_domain"' "$tmp/watchdog_embedded_loop.sh" || fail "procd watchdog does not use the canonical local DNS check"
@@ -1016,23 +1020,17 @@ if watchdog_scope_category >/dev/null 2>&1; then exit 25; fi
 EOF_WATCHDOG_SCOPE
 chmod +x "$tmp/watchdog_scope_runner.sh"
 "$tmp/watchdog_scope_runner.sh" "$tmp/watchdog_scope.sh" || fail "watchdog intended-profile classifier behavior"
+# Exact-category mode lets Watchdog repair a manually selected DNS without requiring a profile.
 awk '
     /^watchdog_pick_replacement\(\) \{/ { capture=1 }
     capture { print }
     capture && /^watchdog_apply_slot_candidate\(\) \{/ { exit }
 ' dns-manager.sh > "$tmp/watchdog_pick_function.sh"
-grep -q '_passcats="$_desired_for_pick clean"' "$tmp/watchdog_pick_function.sh" || fail "clean fallback is not available for every non-clean profile"
-grep -A18 -F 'watchdog_pick_replacement() {' dns-manager.sh | grep -q 'watchdog_scope_category' || fail "watchdog replacement does not use intended profile category"
-grep -q '_fallback_slots=""' dns-manager.sh || fail "watchdog fallback slots are not tracked"
-grep -q '_empty_slots=""' dns-manager.sh || fail "watchdog empty slots are not tracked"
-grep -q 'Watchdog: проверяю целевую категорию для восстановления/дозаполнения' dns-manager.sh || fail "watchdog gradual target restore/fill path missing"
-grep -q '^auto_fill_slots() {' dns-manager.sh || fail "automatic profile DNS selection helper missing"
-if grep -q 'profile_fill_slots' dns-manager.sh; then
-    fail "obsolete bounded profile picker remains"
-fi
-if grep -q 'PROFILE_FRESH_OK_IDS' dns-manager.sh; then
-    fail "obsolete per-profile fresh DNS list remains"
-fi
+grep -Fq '_explicit_cat="${5:-}"' "$tmp/watchdog_pick_function.sh" || fail "watchdog picker has no explicit per-slot category mode"
+grep -Fq '_desired_for_pick="$_explicit_cat"' "$tmp/watchdog_pick_function.sh" || fail "watchdog picker ignores the current DNS category"
+grep -Fq 'if [ -z "$_explicit_cat" ]; then' "$tmp/watchdog_pick_function.sh" || fail "profile fallback behavior is not isolated from runtime replacement"
+ok "watchdog category selection is independent of profile selection"
+
 awk '/^job_start_test_all\(\) \{/,/^\}/' "$tmp/backend.sh" > "$tmp/test_all_job.sh"
 grep -Fq 'job_write "$_jid" progress_done "$_final_total"' "$tmp/test_all_job.sh" || fail "LuCI full catalog job does not publish final progress_done"
 grep -Fq 'job_write "$_jid" progress_total "$_final_total"' "$tmp/test_all_job.sh" || fail "LuCI full catalog job does not publish final progress_total"
@@ -1053,7 +1051,20 @@ grep -Fq 'if [ "$_enabled" = 1 ] && [ -z "$SLOT_1$SLOT_2$SLOT_3$SLOT_4$SLOT_5$SL
 grep -q "Проверить текущие DNS','cbi-button-action'" "$tmp/common.js" || fail "Current DNS check button disappeared"
 if grep -q "canTestCurrent=profileSelected" "$tmp/common.js"; then fail "Current DNS check is incorrectly blocked without profile"; fi
 if grep -q "_profile_slots.*Проверить текущие DNS" "$tmp/backend.sh"; then fail "Current DNS check is incorrectly guarded by profile"; fi
-ok "DNS control is blocked without profile; current DNS checks remain available"
+awk '/^function watchdogCard\(root,st\)\{/,/^function renderTestAgeCommon/' "$tmp/common.js" > "$tmp/watchdog_card.js"
+if grep -Fq 'profileSelected' "$tmp/watchdog_card.js"; then
+    fail "LuCI Watchdog toggle is still blocked when no profile is selected"
+fi
+if grep -Fq 'Сначала выберите профиль DNS Manager' "$tmp/watchdog_card.js"; then
+    fail "LuCI Watchdog still asks for a profile"
+fi
+if grep -Fq 'Сколько DNS можно заменить за раз' "$tmp/watchdog_card.js"; then
+    fail "LuCI still exposes the obsolete per-cycle repair count"
+fi
+grep -Fq 'Профиль не требуется.' "$tmp/watchdog_card.js" || fail "LuCI does not describe profile-independent Watchdog"
+ok "LuCI Watchdog is available for manually configured DNS without a profile"
+
+ok "forced-DNS controls and current-DNS checks retain their existing behavior"
 
 grep -q 'test_dns_catalog "\$1"' dns-manager.sh || fail "profile apply does not pass its category to the DNS test"
 grep -q 'test_scope=' dns-manager.sh || fail "DNS test scope is not persisted"
@@ -1165,6 +1176,22 @@ got="$(watchdog_pick_replacement 1 "$TMP_DIR/used" "$TMP_DIR/tried" 0)"
 [ "$got" = "c5|bypass" ] || {
     printf '%s\n' "unexpected all-category replacement: $got" >&2
     exit 32
+}
+# A manually selected clean resolver is replaced by another clean resolver without a profile.
+DNS_SELECTION_MODE=manual
+DNS_SELECTION_CATEGORY=
+watchdog_test_results_fresh() { return 1; }
+cat > "$DNS_CATALOG" <<'EOF_MANUAL_CATALOG'
+clean1|clean|Clean1|https://clean1.example/dns-query|ru/global|verified
+clean2|clean|Clean2|https://clean2.example/dns-query|ru/global|verified
+bypass1|bypass|Bypass1|https://bypass1.example/dns-query|ru/global|verified
+EOF_MANUAL_CATALOG
+: > "$TMP_DIR/used"
+: > "$TMP_DIR/tried"
+got="$(watchdog_pick_replacement 1 "$TMP_DIR/used" "$TMP_DIR/tried" 0 clean)"
+[ "$got" = "clean1|clean" ] || {
+    printf '%s\n' "unexpected manual same-category replacement: $got" >&2
+    exit 34
 }
 EOF_WATCHDOG_PICK
 
