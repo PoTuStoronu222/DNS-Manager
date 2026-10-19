@@ -4926,8 +4926,8 @@ check_module_state() {
                 [ "$(uci -q get https-dns-proxy.config.group 2>/dev/null)" = nogroup ] || _ok=0
                 [ "$(uci -q get https-dns-proxy.config.listen_addr 2>/dev/null)" = 127.0.0.1 ] || _ok=0
                 [ "$(uci -q get https-dns-proxy.config.force_ip_family 2>/dev/null)" = auto ] || _ok=0
-                [ "$(uci -q get https-dns-proxy.config.canary_domains_icloud 2>/dev/null)" = 1 ] || _ok=0
-                [ "$(uci -q get https-dns-proxy.config.canary_domains_mozilla 2>/dev/null)" = 1 ] || _ok=0
+                [ "$(uci -q get https-dns-proxy.config.canary_domains_icloud 2>/dev/null)" = "${BLOCK_EXTERNAL_DNS:-0}" ] || _ok=0
+                [ "$(uci -q get https-dns-proxy.config.canary_domains_mozilla 2>/dev/null)" = "${BLOCK_EXTERNAL_DNS:-0}" ] || _ok=0
                 force_dns_ports_match_expected || _ok=0
                 force_dns_src_matches_expected || _ok=0
                 if [ "$_ok" = 1 ] && [ "${FORCED_DNS_EXTERNAL:-0}" = 0 ] && [ "${FORCED_DNS_ACTIVE:-0}" = 1 ]; then
@@ -5796,8 +5796,8 @@ watchdog_enforce_hdp_control() {
     [ "$(uci -q get https-dns-proxy.config.group 2>/dev/null)" = "nogroup" ] || _changed=1
     [ "$(uci -q get https-dns-proxy.config.listen_addr 2>/dev/null)" = "127.0.0.1" ] || _changed=1
     [ "$(uci -q get https-dns-proxy.config.force_ip_family 2>/dev/null)" = "auto" ] || _changed=1
-    [ "$(uci -q get https-dns-proxy.config.canary_domains_icloud 2>/dev/null)" = "1" ] || _changed=1
-    [ "$(uci -q get https-dns-proxy.config.canary_domains_mozilla 2>/dev/null)" = "1" ] || _changed=1
+    [ "$(uci -q get https-dns-proxy.config.canary_domains_icloud 2>/dev/null)" = "${BLOCK_EXTERNAL_DNS:-0}" ] || _changed=1
+    [ "$(uci -q get https-dns-proxy.config.canary_domains_mozilla 2>/dev/null)" = "${BLOCK_EXTERNAL_DNS:-0}" ] || _changed=1
     force_dns_ports_match_expected || _changed=1
     force_dns_src_matches_expected || _changed=1
     if [ "$_changed" = 1 ]; then
