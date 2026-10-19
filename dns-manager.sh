@@ -6445,7 +6445,7 @@ watchdog_embedded_loop() {
         done
 
         [ "$_probe_rc" = 2 ] && { sleep "$_interval"; continue; }
-        [ "$_checked" -gt 0 ] || { [ -n "$_empty_slots" ] || { sleep "$_interval"; continue; }; }
+        [ "$_checked" -gt 0 ] || { sleep "$_interval"; continue; }
 
         _watchdog_action=0
 
@@ -6468,44 +6468,27 @@ watchdog_embedded_loop() {
             WD_LAST_GUARD_TS="$(date +%s 2>/dev/null)"
             for _slot in 1 2 3 4 5 6 RU; do watchdog_loop_reset_slot "$_slot"; done
             sleep 5
-        elif [ "$_live" -gt 0 ] && [ "$_failed" -eq "$_live" ] && [ "$_missing" -eq 0 ]; then
-            # All live DNS paths failed together: treat as WAN/upstream outage.
-            # Never rotate healthy DNS choices during a common outage.
-            for _slot in 1 2 3 4 5 6 RU; do watchdog_loop_reset_slot "$_slot"; done
         else
-            _trigger=""
-            for _slot in $_threshold_slots; do
-                if watchdog_loop_repair_cooldown_ok "$_slot"; then
-                    _trigger="$_slot"
-                    break
-                fi
-            done
-            if [ -n "$_trigger" ]; then
+            # Process all failed configured slots; the cooldown is tracked per slot.
+            for _trigger in $_threshold_slots; do
+                watchdog_loop_repair_cooldown_ok "$_trigger" || continue
                 watchdog_loop_mark_repair "$_trigger"
-                log_msg "Подтверждён сбой слота $_trigger в двух последовательных циклах при живом локальном listener. Запрашиваю точечную замену."
-                watchdog_slot_target_run "$_trigger" "$_target_live_count" >/dev/null 2>&1 || log_msg "Точечное восстановление слота $_trigger завершилось неуспешно; повторю после новых двух циклов."
+                log_msg "DNS в слоте $_trigger не отвечает ${WATCHDOG_FAIL_THRESHOLD:-2} проверок подряд. Ищу замену той же категории."
+                if watchdog_slot_target_run "$_trigger"; then
+                    log_msg "Watchdog: слот $_trigger восстановлен."
+                else
+                    log_msg "Watchdog: замена слота $_trigger не подтверждена; текущий DNS сохранён."
+                fi
                 _watchdog_action=1
-                load_config
-                refresh_runtime_capabilities
+                load_config >/dev/null 2>&1 || true
+                refresh_runtime_capabilities >/dev/null 2>&1 || true
                 WD_LAST_GUARD_TS="$(date +%s 2>/dev/null)"
                 eval "WD_FAIL_${_trigger}=0"
-                sleep 5
-            fi
+            done
         fi
 
         if [ "$_watchdog_action" = 0 ] && [ "$_failed" -eq 0 ] && [ "$_missing" -eq 0 ]; then
-            _restore_slot=""
-            for _slot in $_fallback_slots; do _restore_slot="$_slot"; break; done
-            [ -n "$_restore_slot" ] || for _slot in $_empty_slots; do _restore_slot="$_slot"; break; done
-            if [ -n "$_restore_slot" ] && [ "$_wd_repairs" -lt "${WATCHDOG_MAX_REPAIRS:-1}" ]; then
-                log_msg "Watchdog: проверяю целевую категорию для восстановления/дозаполнения слота $_restore_slot."
-                watchdog_slot_target_run "$_restore_slot" "$_target_live_count" >/dev/null 2>&1 && _watchdog_action=1 || true
-                load_config >/dev/null 2>&1 || true
-                refresh_runtime_capabilities >/dev/null 2>&1 || true
-            fi
-            if [ "$_watchdog_action" = 0 ]; then
-                watchdog_embedded_integrity_guard >/dev/null 2>&1 || true
-            fi
+            watchdog_embedded_integrity_guard >/dev/null 2>&1 || true
         fi
 
         sleep "$_interval"
