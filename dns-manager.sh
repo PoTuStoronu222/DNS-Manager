@@ -6510,66 +6510,48 @@ run_watchdog() {
     load_config
     _managed_slots=0
     for _s in 1 2 3 4 5 6 RU; do
-        eval "_mid=\${SLOT_${_s}:-}"
+        eval "_mid=\${SLOT_\${_s}:-}"
         [ -n "$_mid" ] && _managed_slots=$((_managed_slots+1))
     done
     if [ "$_managed_slots" -eq 0 ]; then
-        log_msg "Watchdog: активная схема DNS Manager не настроена; сторонний https-dns-proxy не изменяю."
+        log_msg "Watchdog: DNS-серверы не настроены; заменять нечего."
         release_mutation_lock
         return 0
     fi
+
     sync_regional_dns_state
     cleanup_stale_tmp_dirs
     watchdog_enforce_hdp_control || log_msg "Не удалось полностью восстановить контроль над настройками https-dns-proxy."
     watchdog_enforce_doh_authority || log_msg "Не удалось полностью синхронизировать набор DNS Manager."
-    watchdog_service_recover || log_msg "Не удалось выполнить восстановительное перезапускание https-dns-proxy."
+    watchdog_service_recover || log_msg "Не удалось восстановить https-dns-proxy."
     watchdog_hdp_guard || log_msg "Не удалось проверить соответствие DNS-серверов выбранному набору."
     watchdog_dns_path_guard || log_msg "Не удалось проверить путь forced-DNS в firewall."
     watchdog_dnsmasq_guard || log_msg "Не удалось полностью восстановить конфигурацию dnsmasq."
-    _used="$TMP_DIR/watchdog-used-$$"
-    : > "$_used"
-    for _s in 1 2 3 4 5 6 RU; do
-        eval "_uid=\${SLOT_${_s}:-}"
-        [ -n "$_uid" ] || continue
-        _u="$(normalize_url "$(dns_url "$_uid")")"
-        [ -n "$_u" ] && printf '%s\n' "$_u" >> "$_used"
-    done
+    release_mutation_lock
+
+    # Use the same locked, same-category replacement path as the background loop.
+    # If a local listener is missing, do not rotate its DNS choice.
+    watchdog_refresh_listener_snapshot
     for _slot in 1 2 3 4 5 6 RU; do
-        eval "_id=\${SLOT_${_slot}:-}"
+        load_config >/dev/null 2>&1 || true
+        eval "_id=\${SLOT_\${_slot}:-}"
         [ -n "$_id" ] || continue
-        _current_cat="$(dns_cat "$_id" 2>/dev/null || true)"
-        [ -n "$_current_cat" ] || continue
-        watchdog_check_slot "$_slot" && continue
-        log_msg "DNS в слоте $_slot: $(dns_name "$_id") требует замены. Ищу подходящий DNS той же категории."
-        _tried="$TMP_DIR/watchdog-tried-${_slot}-$$"
-        : > "$_tried"
-        _old="$_id"
-        _oldcat="$_current_cat"
-        _replacement_ok=0
-        _attempt=0
-        while [ "$_attempt" -lt 2 ]; do
-            _attempt=$((_attempt+1))
-            _picked="$(watchdog_pick_replacement "$_slot" "$_used" "$_tried" 0 "$_current_cat")"
-            _repl="${_picked%%|*}"
-            _repl_cat="${_picked#*|}"
-            [ -n "$_repl" ] || break
-            [ "$_repl" = "$_old" ] && { printf '%s\n' "$_repl" >> "$_tried"; continue; }
-            printf '%s\n' "$_repl" >> "$_tried"
-            printf "  ${C_YELLOW}↻ Слот %s: %s не отвечает или не соответствует профилю. Проверяю замену %s.${C_NC}\n" "$_slot" "$(dns_name "$_old")" "$(dns_name "$_repl")"
-            if watchdog_apply_slot_candidate "$_slot" "$_repl" "$_repl_cat" "$_old" "$_oldcat"; then
-                printf "  ${C_GREEN}✓ Слот %s: %s подтверждён на 127.0.0.1:%s.${C_NC}\n" "$_slot" "$(dns_name "$_repl")" "$(eval "printf %s \"\${PORT_${_slot}:-}\"")"
-                _u="$(normalize_url "$(dns_url "$_repl")")"
-                grep -qxF "$_u" "$_used" 2>/dev/null || printf '%s\n' "$_u" >> "$_used"
-                _replacement_ok=1
-                break
-            fi
-            printf "  ${C_RED}✗ Слот %s: %s не подтвердился через 127.0.0.1:%s.${C_NC}\n" "$_slot" "$(dns_name "$_repl")" "$(eval "printf %s \"\${PORT_${_slot}:-}\"")"
-        done
-        [ "$_replacement_ok" = 1 ] || _wd_rc=1
-        rm -f "$_tried"
+        eval "_port=\${PORT_\${_slot}:-}"
+        [ -n "$_port" ] || _port="$(hybrid_desired_port "$_slot")"
+        [ -n "$_port" ] || continue
+        if ! watchdog_listener_snapshot_has_port "$_port"; then
+            log_msg "Локальный DoH-listener слота $_slot отсутствует; сначала нужно восстановить https-dns-proxy. DNS не меняю."
+            _wd_rc=1
+            continue
+        fi
+        if ! watchdog_slot_target_run "$_slot"; then
+            _wd_rc=1
+        fi
+        load_config >/dev/null 2>&1 || true
+        refresh_runtime_capabilities >/dev/null 2>&1 || true
+        watchdog_refresh_listener_snapshot
     done
     rm -f "$TMP_DIR"/watchdog-*-$$ "$TMP_DIR"/watchdog-used-$$ "$TMP_DIR"/watchdog-categories-$$ 2>/dev/null
-    release_mutation_lock
     return "$_wd_rc"
 }
 watchdog_cron_scheduler_detect_pid() {
