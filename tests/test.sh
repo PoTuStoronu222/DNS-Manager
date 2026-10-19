@@ -674,11 +674,39 @@ if grep -Fq 'watchdog_runtime_service_sync' dns-manager.sh; then
 fi
 awk '/^apply_watchdog\(\) \{/,/^menu_dns\(\) \{/' dns-manager.sh > "$tmp/apply_watchdog_fn.sh"
 grep -Fq 'if [ "${WATCHDOG_ENABLED:-0}" = 1 ] || [ "${FORCE_DOH:-0}" = 1 ]; then' "$tmp/apply_watchdog_fn.sh" || fail "one procd service is not shared by DNS checks and forced-DNS tracking"
-grep -Fq 'WATCHDOG_SERVICE_VERSION_MARKER="# DNS_MANAGER_WATCHDOG_SERVICE_VERSION=3.11.7"' dns-manager.sh || fail "watchdog service marker not bumped"
-grep -Fq 'DNS_MANAGER_WATCHDOG_SERVICE_VERSION=3.11.7' dns-manager.sh || fail "generated procd service marker not bumped"
+grep -Fq 'WATCHDOG_SERVICE_VERSION_MARKER="# DNS_MANAGER_WATCHDOG_SERVICE_VERSION=3.11.8"' dns-manager.sh || fail "watchdog service marker not bumped"
+grep -Fq 'DNS_MANAGER_WATCHDOG_SERVICE_VERSION=3.11.8' dns-manager.sh || fail "generated procd service marker not bumped"
 grep -Fq '[ "${WATCHDOG_ENABLED:-0}" = 1 ] || [ "${FORCE_DOH:-0}" = 1 ] || return 0' dns-manager.sh || fail "forced-DNS-only runtime is not a service start condition"
 grep -Fq '[ "${FORCE_DOH:-0}" = 1 ] || return 0' dns-manager.sh || fail "forced-DNS service migration does not check its own enable flag"
 ok "forced-DNS Auto tracks Steer without enabling DNS tests or rotation"
+
+# Service migration must remove legacy ownership before starting the one procd service.
+awk '/^watchdog_service_start_enable\(\) \{/,/^}/' dns-manager.sh > "$tmp/watchdog_service_start_enable.sh"
+[ -s "$tmp/watchdog_service_start_enable.sh" ] || fail "watchdog start helper extraction"
+(
+    set -eu
+    . "$tmp/watchdog_service_start_enable.sh"
+    CALLS=""
+    CRON_PRESENT=1
+    watchdog_remove_legacy_daemon() { CALLS="${CALLS} legacy"; return 0; }
+    watchdog_cron_marker_exists() { [ "$CRON_PRESENT" = 1 ]; }
+    watchdog_cron_remove_owned_block() { CALLS="${CALLS} cron-remove"; CRON_PRESENT=0; return 0; }
+    watchdog_service_install_files() { CALLS="${CALLS} install"; return 0; }
+    watchdog_service_running() { CALLS="${CALLS} running"; return 0; }
+    WATCHDOG_SERVICE_PATH=/fake/dns-watchdog
+    fake_service() { CALLS="${CALLS} $1"; return 0; }
+    # The real helper invokes this path directly, so replace the command name.
+    eval '"/fake/dns-watchdog"() { :; }' 2>/dev/null || true
+) >/dev/null 2>&1 || true
+awk '/^watchdog_service_start_enable\(\) \{/,/^}/' dns-manager.sh > "$tmp/watchdog_service_start_enable.sh"
+awk '/^watchdog_service_migrate_legacy\(\) \{/,/^}/' dns-manager.sh > "$tmp/watchdog_service_migrate_legacy.sh"
+_legacy_line="$(grep -nF 'watchdog_remove_legacy_daemon || return 1' "$tmp/watchdog_service_start_enable.sh" | head -n1 | cut -d: -f1)"
+_start_line="$(grep -nF '"$WATCHDOG_SERVICE_PATH" start' "$tmp/watchdog_service_start_enable.sh" | head -n1 | cut -d: -f1)"
+[ -n "$_legacy_line" ] && [ -n "$_start_line" ] && [ "$_legacy_line" -lt "$_start_line" ] || fail "procd starts before legacy daemon is removed"
+_migrate_legacy_line="$(grep -nF 'watchdog_remove_legacy_daemon || return 1' "$tmp/watchdog_service_migrate_legacy.sh" | head -n1 | cut -d: -f1)"
+_migrate_start_line="$(grep -nF '"$WATCHDOG_SERVICE_PATH" start' "$tmp/watchdog_service_migrate_legacy.sh" | head -n1 | cut -d: -f1)"
+[ -n "$_migrate_legacy_line" ] && [ -n "$_migrate_start_line" ] && [ "$_migrate_legacy_line" -lt "$_migrate_start_line" ] || fail "legacy migration starts procd before legacy daemon preflight"
+ok "watchdog migration checks legacy ownership before starting the single procd service"
 
 # Runtime detection must not trust config alone; it must parse both redirect and DNAT rules.
 (
