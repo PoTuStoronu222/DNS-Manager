@@ -179,7 +179,7 @@ acquire_mutation_lock() {
 
     # Rename the observed stale lock atomically. Never rm the live lock path:
     # another process may have replaced it after our PID check.
-    _stale_lock="${MUTATION_LOCK_DIR}.stale.$"
+    _stale_lock="${MUTATION_LOCK_DIR}.stale.$$"
     if [ -e "$_stale_lock" ] || [ -L "$_stale_lock" ]; then return 1; fi
     mv "$MUTATION_LOCK_DIR" "$_stale_lock" 2>/dev/null || return 1
     _stale_pid="$(cat "$_stale_lock/pid" 2>/dev/null || true)"
@@ -278,7 +278,7 @@ acquire_test_lock() {
     case "$_tpid" in ''|0|*[!0-9]*) return 1 ;; esac
     kill -0 "$_tpid" 2>/dev/null && return 1
 
-    _stale_lock="${TEST_LOCK_DIR}.stale.$"
+    _stale_lock="${TEST_LOCK_DIR}.stale.$$"
     if [ -e "$_stale_lock" ] || [ -L "$_stale_lock" ]; then return 1; fi
     mv "$TEST_LOCK_DIR" "$_stale_lock" 2>/dev/null || return 1
     _stale_pid="$(cat "$_stale_lock/pid" 2>/dev/null || true)"
@@ -411,7 +411,7 @@ acquire_auto_update_lock() {
     case "$_au_pid" in ''|0|*[!0-9]*) return 1 ;; esac
     kill -0 "$_au_pid" 2>/dev/null && return 1
 
-    _stale_lock="${AUTO_UPDATE_LOCK_DIR}.stale.$"
+    _stale_lock="${AUTO_UPDATE_LOCK_DIR}.stale.$$"
     if [ -e "$_stale_lock" ] || [ -L "$_stale_lock" ]; then return 1; fi
     mv "$AUTO_UPDATE_LOCK_DIR" "$_stale_lock" 2>/dev/null || return 1
     _stale_pid="$(cat "$_stale_lock/pid" 2>/dev/null || true)"
