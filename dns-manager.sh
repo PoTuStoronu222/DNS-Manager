@@ -202,7 +202,7 @@ acquire_mutation_lock() {
 release_mutation_lock() {
     [ "${MUTATION_LOCK_HELD:-0}" = 1 ] || return 0
     _owner="$(cat "$MUTATION_LOCK_DIR/pid" 2>/dev/null || true)"
-    [ "$_owner" = "$" ] && rm -rf "$MUTATION_LOCK_DIR" 2>/dev/null || true
+    [ "$_owner" = "$$" ] && rm -rf "$MUTATION_LOCK_DIR" 2>/dev/null || true
     MUTATION_LOCK_HELD=0
 }
 
@@ -299,7 +299,7 @@ acquire_test_lock() {
 release_test_lock() {
     [ "${TEST_LOCK_HELD:-0}" = 1 ] || return 0
     _owner="$(cat "$TEST_LOCK_DIR/pid" 2>/dev/null || true)"
-    [ "$_owner" = "$" ] && rm -rf "$TEST_LOCK_DIR" 2>/dev/null || true
+    [ "$_owner" = "$$" ] && rm -rf "$TEST_LOCK_DIR" 2>/dev/null || true
     TEST_LOCK_HELD=0
 }
 aligned_label_width() {
@@ -431,7 +431,7 @@ acquire_auto_update_lock() {
 release_auto_update_lock() {
     [ "${AUTO_UPDATE_LOCK_HELD:-0}" = 1 ] || return 0
     _owner="$(cat "$AUTO_UPDATE_LOCK_DIR/pid" 2>/dev/null || true)"
-    [ "$_owner" = "$" ] && rm -rf "$AUTO_UPDATE_LOCK_DIR" 2>/dev/null || true
+    [ "$_owner" = "$$" ] && rm -rf "$AUTO_UPDATE_LOCK_DIR" 2>/dev/null || true
     AUTO_UPDATE_LOCK_HELD=0
 }
 auto_update_manager() {
