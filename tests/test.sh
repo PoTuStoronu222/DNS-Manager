@@ -1243,13 +1243,13 @@ printf '%s\n' 0 > "$TEST_LOCK_DIR/pid"
 if acquire_test_lock; then fail "test lock accepted PID zero"; fi
 [ -d "$TEST_LOCK_DIR" ] || fail "invalid test lock was deleted"
 rm -rf "$TEST_LOCK_DIR"
-mkdir -p "$TEST_LOCK_DIR" "$TEST_LOCK_DIR.stale.$" || fail "cannot prepare test-lock quarantine test"
+mkdir -p "$TEST_LOCK_DIR" "$TEST_LOCK_DIR.stale.$$" || fail "cannot prepare test-lock quarantine test"
 printf '%s\n' "$_test_stale_pid" > "$TEST_LOCK_DIR/pid"
-: > "$TEST_LOCK_DIR.stale.$/marker"
+: > "$TEST_LOCK_DIR.stale.$$/marker"
 if acquire_test_lock; then fail "test lock ignored an existing quarantine path"; fi
 [ -d "$TEST_LOCK_DIR" ] || fail "test-lock collision removed original lock"
-[ -f "$TEST_LOCK_DIR.stale.$/marker" ] || fail "test-lock collision altered quarantine path"
-rm -rf "$TEST_LOCK_DIR" "$TEST_LOCK_DIR.stale.$"
+[ -f "$TEST_LOCK_DIR.stale.$$/marker" ] || fail "test-lock collision altered quarantine path"
+rm -rf "$TEST_LOCK_DIR" "$TEST_LOCK_DIR.stale.$$"
 ok "test lock rejects invalid PID and preserves quarantine collisions"
 
 # Exercise the auto-update lock dynamically with the same failure cases.
@@ -1264,13 +1264,13 @@ printf '%s\n' 0 > "$AUTO_UPDATE_LOCK_DIR/pid"
 if acquire_auto_update_lock; then fail "auto-update lock accepted PID zero"; fi
 [ -d "$AUTO_UPDATE_LOCK_DIR" ] || fail "invalid auto-update lock was deleted"
 rm -rf "$AUTO_UPDATE_LOCK_DIR"
-mkdir -p "$AUTO_UPDATE_LOCK_DIR" "$AUTO_UPDATE_LOCK_DIR.stale.$" || fail "cannot prepare auto-update quarantine test"
+mkdir -p "$AUTO_UPDATE_LOCK_DIR" "$AUTO_UPDATE_LOCK_DIR.stale.$$" || fail "cannot prepare auto-update quarantine test"
 printf '%s\n' "$_test_stale_pid" > "$AUTO_UPDATE_LOCK_DIR/pid"
-: > "$AUTO_UPDATE_LOCK_DIR.stale.$/marker"
+: > "$AUTO_UPDATE_LOCK_DIR.stale.$$/marker"
 if acquire_auto_update_lock; then fail "auto-update lock ignored an existing quarantine path"; fi
 [ -d "$AUTO_UPDATE_LOCK_DIR" ] || fail "auto-update collision removed original lock"
-[ -f "$AUTO_UPDATE_LOCK_DIR.stale.$/marker" ] || fail "auto-update collision altered quarantine path"
-rm -rf "$AUTO_UPDATE_LOCK_DIR" "$AUTO_UPDATE_LOCK_DIR.stale.$"
+[ -f "$AUTO_UPDATE_LOCK_DIR.stale.$$/marker" ] || fail "auto-update collision altered quarantine path"
+rm -rf "$AUTO_UPDATE_LOCK_DIR" "$AUTO_UPDATE_LOCK_DIR.stale.$$"
 ok "auto-update lock rejects invalid PID and preserves quarantine collisions"
 
 ok "mutation lock acquisition, release and stale-lock recovery are exercised"
