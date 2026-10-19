@@ -1189,7 +1189,7 @@ while kill -0 "$_test_stale_pid" 2>/dev/null; do _test_stale_pid=$((_test_stale_
 mkdir -p "$MUTATION_LOCK_DIR" || fail "cannot prepare stale-lock test"
 printf '%s\n' "$_test_stale_pid" > "$MUTATION_LOCK_DIR/pid"
 acquire_mutation_lock || fail "stale mutation lock was not recovered"
-[ "$(cat "$MUTATION_LOCK_DIR/pid")" = "$" ] || fail "recovered lock has the wrong owner"
+[ "$(cat "$MUTATION_LOCK_DIR/pid")" = "$$" ] || fail "recovered lock has the wrong owner"
 release_mutation_lock
 
 mkdir -p "$MUTATION_LOCK_DIR" "$MUTATION_LOCK_DIR.stale.$$" || fail "cannot prepare quarantine collision test"
@@ -1200,7 +1200,7 @@ if acquire_mutation_lock; then
 fi
 [ -d "$MUTATION_LOCK_DIR" ] || fail "quarantine collision removed the original lock"
 [ -f "$MUTATION_LOCK_DIR.stale.$$/marker" ] || fail "quarantine collision altered the existing path"
-rm -rf "$MUTATION_LOCK_DIR" "$MUTATION_LOCK_DIR.stale.$"
+rm -rf "$MUTATION_LOCK_DIR" "$MUTATION_LOCK_DIR.stale.$$"
 ok "mutation lock acquisition, release and stale-lock recovery are exercised"
 grep -q 'watchdog_interval":%s,"watchdog_service' "$tmp/backend.sh" || fail "LuCI status does not expose saved watchdog interval"
 
