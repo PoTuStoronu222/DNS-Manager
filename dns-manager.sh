@@ -2047,7 +2047,7 @@ test_dns_catalog() (
         warn_msg "Не удалось зафиксировать версию каталога перед проверкой DNS."
         return 1
     }
-    _test_source="$TMP_DIR/test-source-$"
+    _test_source="$TMP_DIR/test-source-$$"
     if [ "$_test_scope" = all ]; then
         grep -v '^#' "$DNS_CATALOG" 2>/dev/null | grep '|' > "$_test_source" || : > "$_test_source"
         _test_scope_label="весь каталог"
