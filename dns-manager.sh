@@ -6510,7 +6510,7 @@ run_watchdog() {
     load_config
     _managed_slots=0
     for _s in 1 2 3 4 5 6 RU; do
-        eval "_mid=\${SLOT_\${_s}:-}"
+        eval "_mid=\${SLOT_${_s}:-}"
         [ -n "$_mid" ] && _managed_slots=$((_managed_slots+1))
     done
     if [ "$_managed_slots" -eq 0 ]; then
@@ -6534,9 +6534,9 @@ run_watchdog() {
     watchdog_refresh_listener_snapshot
     for _slot in 1 2 3 4 5 6 RU; do
         load_config >/dev/null 2>&1 || true
-        eval "_id=\${SLOT_\${_slot}:-}"
+        eval "_id=\${SLOT_${_slot}:-}"
         [ -n "$_id" ] || continue
-        eval "_port=\${PORT_\${_slot}:-}"
+        eval "_port=\${PORT_${_slot}:-}"
         [ -n "$_port" ] || _port="$(hybrid_desired_port "$_slot")"
         [ -n "$_port" ] || continue
         if ! watchdog_listener_snapshot_has_port "$_port"; then
