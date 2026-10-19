@@ -6500,7 +6500,6 @@ watchdog_embedded_loop() {
 run_watchdog() {
     [ "${WATCHDOG_ENABLED:-0}" = 1 ] || return 0
     _wd_rc=0
-    _wd_repairs=0
     WATCHDOG_RESTART_COUNT=0
     if ! watchdog_resource_guard; then
         return 0
@@ -6509,15 +6508,6 @@ run_watchdog() {
         return 0
     fi
     load_config
-    _selection_kind="$(watchdog_scope_category 2>/dev/null || true)"
-    case "$_selection_kind" in
-        bypass|clean|security|privacy|adblock|family) ;;
-        *)
-            log_msg "Watchdog: смешанные или пользовательские категории DNS. Проверку и замену выбранных DNS не выполняю."
-            release_mutation_lock
-            return 0
-            ;;
-    esac
     _managed_slots=0
     for _s in 1 2 3 4 5 6 RU; do
         eval "_mid=\${SLOT_${_s}:-}"
@@ -6544,25 +6534,12 @@ run_watchdog() {
         _u="$(normalize_url "$(dns_url "$_uid")")"
         [ -n "$_u" ] && printf '%s\n' "$_u" >> "$_used"
     done
-    _selection_kind="$(watchdog_scope_category 2>/dev/null || true)"
     for _slot in 1 2 3 4 5 6 RU; do
-        [ "$_wd_repairs" -lt "${WATCHDOG_MAX_REPAIRS:-1}" ] || break
         eval "_id=\${SLOT_${_slot}:-}"
-        _current_cat=""; [ -n "$_id" ] && _current_cat="$(dns_cat "$_id" 2>/dev/null || true)"
-        _desired="$(watchdog_desired_cat "$_slot" 2>/dev/null || true)"
-        _force_replace=0
-        if [ -n "$_desired" ] && [ "$_slot" != RU ]; then
-            if [ -z "$_id" ] || [ "$_current_cat" != "$_desired" ]; then
-                _force_replace=1
-            fi
-        fi
-        if [ "$_force_replace" = 0 ] && [ -n "$_id" ] && watchdog_check_slot "$_slot"; then continue; fi
-        if [ "$_force_replace" = 0 ]; then
-            sleep 2
-            watchdog_check_slot "$_slot" && continue
-        else
-            log_msg "DNS в слоте $_slot не соответствует выбранной категории ($_current_cat вместо $_desired). Ищу замену."
-        fi
+        [ -n "$_id" ] || continue
+        _current_cat="$(dns_cat "$_id" 2>/dev/null || true)"
+        [ -n "$_current_cat" ] || continue
+        watchdog_check_slot "$_slot" && continue
         log_msg "DNS в слоте $_slot: $(dns_name "$_id") требует замены. Ищу подходящий DNS той же категории."
         _tried="$TMP_DIR/watchdog-tried-${_slot}-$$"
         : > "$_tried"
@@ -6572,7 +6549,7 @@ run_watchdog() {
         _attempt=0
         while [ "$_attempt" -lt 2 ]; do
             _attempt=$((_attempt+1))
-            _picked="$(watchdog_pick_replacement "$_slot" "$_used" "$_tried")"
+            _picked="$(watchdog_pick_replacement "$_slot" "$_used" "$_tried" 0 "$_current_cat")"
             _repl="${_picked%%|*}"
             _repl_cat="${_picked#*|}"
             [ -n "$_repl" ] || break
@@ -6584,7 +6561,6 @@ run_watchdog() {
                 _u="$(normalize_url "$(dns_url "$_repl")")"
                 grep -qxF "$_u" "$_used" 2>/dev/null || printf '%s\n' "$_u" >> "$_used"
                 _replacement_ok=1
-                _wd_repairs=$((_wd_repairs+1))
                 break
             fi
             printf "  ${C_RED}✗ Слот %s: %s не подтвердился через 127.0.0.1:%s.${C_NC}\n" "$_slot" "$(dns_name "$_repl")" "$(eval "printf %s \"\${PORT_${_slot}:-}\"")"
