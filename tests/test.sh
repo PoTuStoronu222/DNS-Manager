@@ -86,24 +86,70 @@ if grep -Fq '/www/luci-static/resources/view/dns_manager/overview.js' dns-manage
 grep -Fq 'ubus -v list dns_manager' "$tmp/luci_state_fn.sh" || fail "manager-side LuCI state does not inspect RPC methods"
 ok "LuCI runtime validation checks the current page layout and RPC contract"
 
-# DNS response validation intentionally stays lightweight: HTTP 200 + DNS message body.
-awk '
-    /^validate_dns_message\(\) \{/ { capture=1 }
-    capture { print }
-    capture && /^}$/ { exit }
-' dns-manager.sh > "$tmp/validate_dns.sh"
-[ -s "$tmp/validate_dns.sh" ] || fail "DNS response validator extraction"
-. "$tmp/validate_dns.sh"
+# DNS tests must validate wire data, the transaction, question and DNS media type.
+for _fn in validate_dns_message is_dns_media_type normalize_url; do
+    awk -v fn="$_fn" '$0 ~ ("^" fn "\\(\\) \\{") { capture=1 } capture { print } capture && /^}$/ { exit }' dns-manager.sh > "$tmp/$_fn.sh"
+    [ -s "$tmp/$_fn.sh" ] || fail "DNS helper extraction: $_fn"
+    . "$tmp/$_fn.sh"
+done
 
+printf '\022\064\001\000\000\001\000\000\000\000\000\000\007example\003com\000\000\001\000\001' > "$tmp/dns-query"
 printf '\000\000\000\000\000\001\000\000\000\000\000' > "$tmp/dns-short"
-if validate_dns_message "$tmp/dns-short"; then
-    fail "short DNS body accepted"
-fi
+if validate_dns_message "$tmp/dns-short" "$tmp/dns-query"; then fail "short DNS body accepted"; fi
+if validate_dns_message "$tmp/dns-query"; then fail "DNS response accepted without its query"; fi
 
-printf '\000\000\000\000\000\001\000\000\000\000\000\000abcdefghijkl' > "$tmp/dns-body"
-validate_dns_message "$tmp/dns-body" || fail "normal-sized DNS body rejected"
+# A complete response for example.com A, answer owner compressed to QNAME.
+printf '\022\064\201\200\000\001\000\001\000\000\000\000\007example\003com\000\000\001\000\001\300\014\000\001\000\001\000\000\000\074\000\004\135\270\330\042' > "$tmp/dns-body"
+validate_dns_message "$tmp/dns-body" "$tmp/dns-query" || fail "valid DNS response rejected"
 
-ok "DNS response validation remains lightweight"
+# DNS names compare case-insensitively.
+printf '\022\064\201\200\000\001\000\001\000\000\000\000\007EXAMPLE\003COM\000\000\001\000\001\300\014\000\001\000\001\000\000\000\074\000\004\135\270\330\042' > "$tmp/dns-uppercase"
+validate_dns_message "$tmp/dns-uppercase" "$tmp/dns-query" || fail "valid case-normalized DNS response rejected"
+
+printf '\022\064\001\200\000\001\000\001\000\000\000\000\007example\003com\000\000\001\000\001\300\014\000\001\000\001\000\000\000\074\000\004\135\270\330\042' > "$tmp/dns-not-response"
+if validate_dns_message "$tmp/dns-not-response" "$tmp/dns-query"; then fail "DNS query packet accepted as a response"; fi
+
+printf '\000\000\201\200\000\001\000\001\000\000\000\000\007example\003com\000\000\001\000\001\300\014\000\001\000\001\000\000\000\074\000\004\135\270\330\042' > "$tmp/dns-bad-id"
+if validate_dns_message "$tmp/dns-bad-id" "$tmp/dns-query"; then fail "response with mismatched transaction ID accepted"; fi
+
+printf '\022\064\201\200\000\001\000\001\000\000\000\000\007example\003net\000\000\001\000\001\300\014\000\001\000\001\000\000\000\074\000\004\135\270\330\042' > "$tmp/dns-bad-question"
+if validate_dns_message "$tmp/dns-bad-question" "$tmp/dns-query"; then fail "response for a different question accepted"; fi
+
+# The RR owner must actually answer the requested name, not an unrelated host.
+printf '\022\064\201\200\000\001\000\001\000\000\000\000\007example\003com\000\000\001\000\001\004evil\003com\000\000\001\000\001\000\000\000\074\000\004\135\270\330\042' > "$tmp/dns-bad-answer-owner"
+if validate_dns_message "$tmp/dns-bad-answer-owner" "$tmp/dns-query"; then fail "unrelated DNS answer owner accepted"; fi
+
+printf '\022\064\201\200\000\001\000\000\000\000\000\000\007example\003com\000\000\001\000\001' > "$tmp/dns-no-answer"
+if validate_dns_message "$tmp/dns-no-answer" "$tmp/dns-query"; then fail "DNS response without a usable answer accepted"; fi
+
+# A CNAME must lead to a usable A answer, not be accepted by itself.
+printf '\022\064\201\200\000\001\000\001\000\000\000\000\007example\003com\000\000\001\000\001\300\014\000\005\000\001\000\000\000\074\000\023\005alias\007example\003com\000' > "$tmp/dns-cname-only"
+if validate_dns_message "$tmp/dns-cname-only" "$tmp/dns-query"; then fail "CNAME without a terminal A answer accepted"; fi
+
+# A complete CNAME chain ending in a usable A record is valid.
+printf '\022\064\201\200\000\001\000\002\000\000\000\000\007example\003com\000\000\001\000\001\300\014\000\005\000\001\000\000\000\074\000\023\005alias\007example\003com\000\300\051\000\001\000\001\000\000\000\074\000\004\135\270\330\042' > "$tmp/dns-cname-chain"
+validate_dns_message "$tmp/dns-cname-chain" "$tmp/dns-query" || fail "valid CNAME-to-A chain rejected"
+
+# Sinkhole-style A responses are not accepted as usable DNS.
+printf '\022\064\201\200\000\001\000\001\000\000\000\000\007example\003com\000\000\001\000\001\300\014\000\001\000\001\000\000\000\074\000\004\000\000\000\000' > "$tmp/dns-zero-answer"
+if validate_dns_message "$tmp/dns-zero-answer" "$tmp/dns-query"; then fail "0.0.0.0 sinkhole accepted as usable answer"; fi
+printf '\022\064\201\200\000\001\000\001\000\000\000\000\007example\003com\000\000\001\000\001\300\014\000\001\000\001\000\000\000\074\000\004\177\000\000\001' > "$tmp/dns-loopback-answer"
+if validate_dns_message "$tmp/dns-loopback-answer" "$tmp/dns-query"; then fail "loopback sinkhole accepted as usable answer"; fi
+
+printf '\022\064\201\200\000\001\000\001\000\000\000\000\007example\003com\000\000\001\000\001' > "$tmp/dns-truncated-answer"
+if validate_dns_message "$tmp/dns-truncated-answer" "$tmp/dns-query"; then fail "truncated answer record accepted"; fi
+
+printf '\022\064\201\200\000\001\000\001\000\000\000\000\007example\003com\000\000\001\000\001\300\014\000\001\000\001\000\000\000\074\000\006\135\270\330\042' > "$tmp/dns-bad-rdlength"
+if validate_dns_message "$tmp/dns-bad-rdlength" "$tmp/dns-query"; then fail "answer with an overlong RDLENGTH accepted"; fi
+
+is_dns_media_type 'Application/DNS-Message; charset=binary' || fail "valid DNS media type with parameters rejected"
+if is_dns_media_type 'text/application/dns-message'; then fail "invalid DNS media type accepted by substring"; fi
+if is_dns_media_type 'application/dns-message-extra'; then fail "invalid DNS media type suffix accepted"; fi
+
+[ "$(normalize_url 'https://doh.cleanbrowsing.org/doh/security-filter/')" = 'https://doh.cleanbrowsing.org/doh/security-filter/' ] || fail "DoH path trailing slash was stripped"
+[ "$(normalize_url 'https://dns.example/')" = 'https://dns.example' ] || fail "origin-root slash normalization changed"
+
+ok "DNS response parser, media type and URL path regression checks"
 awk '
     /cat > "[^"]*BACKEND_STAGE[^"]*"[^<]*<<\x27EOF_RPC\x27/ { capture=1; next }
     capture && /^EOF_RPC$/ { exit }
@@ -121,6 +167,13 @@ awk '
 [ -s "$tmp/common.js" ] || fail "embedded JS extraction"
 node --check "$tmp/common.js" >/dev/null 2>&1 || fail "embedded JS: node --check"
 ok "embedded LuCI JS syntax"
+# No saved DNS result is unknown, not proof that the resolver is unavailable.
+awk '/^function stateBadge\(status,pingValue\)/,/^}/' "$tmp/common.js" > "$tmp/state_badge.js"
+grep -Fq "if(!s)return badge('dm-off','нет данных');" "$tmp/state_badge.js" || fail "LuCI marks an untested DNS unavailable"
+_guard_line="$(grep -nF "if(!s)return badge('dm-off','нет данных');" "$tmp/state_badge.js" | cut -d: -f1)"
+_failure_line="$(grep -nF "||!hasPing(pingValue))return badge('dm-bad','недоступен');" "$tmp/state_badge.js" | cut -d: -f1)"
+[ -n "$_guard_line" ] && [ -n "$_failure_line" ] && [ "$_guard_line" -lt "$_failure_line" ] || fail "LuCI empty-status guard is after the unavailable fallback"
+ok "LuCI distinguishes untested DNS from unavailable DNS"
 grep -Fq 'LUCI_VIEW_DIR="/www/luci-static/resources/view/dns-manager"' dns-manager.sh || fail "manager-side LuCI view directory is stale"
 grep -Fq 'LUCI_COMMON_FILE="/www/luci-static/resources/dns-manager/common.js"' dns-manager.sh || fail "manager-side LuCI common path is stale"
 if grep -Fq '/www/luci-static/resources/view/dns_manager/overview.js' dns-manager.sh; then fail "legacy LuCI overview path remains"; fi
@@ -220,20 +273,29 @@ grep -q 'json_update_state() {' "$tmp/backend.sh" || fail "structured update res
 grep -q 'updated) exit 0' dns-manager.sh || fail "manager update-check exit contract missing"
 grep -q 'current|throttled) exit 2' dns-manager.sh || fail "manager current exit contract missing"
 grep -q "xbox_dns|gaming|games+supercell|Xbox DNS|" catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "Xbox DNS is not in gaming catalog category"
-grep -Fq '# DNSCATREV=4' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog revision not bumped"
+grep -Fq '# DNSCATREV=5' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog revision not bumped"
 grep -Fq 'shecan|bypass|geo+services|zapret.moe|https://dns.zapret.moe/dns-query|' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "Shecan entry was not replaced by zapret.moe DoH"
+grep -Fq '# ENTRIES=107' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog entry count was not updated"
+grep -Fq 'bezmezhau|bypass|geo+services|Bezmezhau DNS|https://dns.bezmezhau.com/dns-query|' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "Bezmezhau geo DNS entry missing"
+grep -Fq 'dagami|bypass|geo+services|Dagami DNS|https://dns.dagami.ru/dns-query|' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "Dagami geo DNS entry missing"
 grep -Fq "function resolverAvailable(ci)" dns-manager-luci.sh || fail "DoH availability helper missing"
 grep -Fq 'assignDirect(d.id,select.value,root,d.name||d.id,d.url)' dns-manager-luci.sh || fail "catalog assignment does not pass the target URL"
 grep -Fq 'normalizeUrl(activeUrl)===normalizeUrl(nextUrl)' dns-manager-luci.sh || fail "same-name assignment does not refresh a changed resolver URL"
+awk '/var normalizeUrl=function\(u\)/ {print; found=1; exit} END {if (!found) exit 1}' dns-manager-luci.sh > "$tmp/normalize_url.js" || fail "LuCI URL normalizer is missing"
+cat >> "$tmp/normalize_url.js" <<'EOF_NORMALIZE_URL'
+if (normalizeUrl('https://example.com/path/') !== 'https://example.com/path/') process.exit(1);
+if (normalizeUrl('https://example.com/') !== 'https://example.com') process.exit(1);
+EOF_NORMALIZE_URL
+node "$tmp/normalize_url.js" || fail "LuCI URL normalizer strips a significant DoH path slash"
 grep -Fq '$1!="shecan" {print}' dns-manager-luci.sh || fail "LuCI does not invalidate the changed resolver test result"
 grep -Fq '$1!="shecan" {print}' dns-manager.sh || fail "Manager does not invalidate the changed resolver test result"
 grep -Fq "disabled:!!state.busy||!!state.jobRunning||unavailable||checking" dns-manager-luci.sh || fail "catalog assignment is not disabled for unavailable DoH"
 grep -q "'gaming','Игровые DNS'" dns-manager-luci.sh || fail "gaming catalog label missing in LuCI"
 grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validation missing gaming category"
 grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
-grep -q 'VERSION="3.55"' dns-manager.sh || fail "manager version not bumped"
+grep -q 'VERSION="3.59"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
-grep -q 'VERSION="1.50"' dns-manager-luci.sh || fail "LuCI version not bumped"
+grep -q 'VERSION="1.53"' dns-manager-luci.sh || fail "LuCI version not bumped"
 grep -q "'bypass','Обход геоблока'" dns-manager-luci.sh || fail "bypass profile label not updated"
 grep -q "'security','Защита от угроз'" dns-manager-luci.sh || fail "security profile label not updated"
 grep -q "'privacy','Конфиденциальность'" dns-manager-luci.sh || fail "privacy profile label not updated"
@@ -412,8 +474,8 @@ view_luci="$(sed -n 's|^// DNS Manager LuCI common module version:[[:space:]]*||
 [ "$top_luci" = "$self_luci" ] || fail "LuCI SELF_VERSION mismatch"
 [ "$top_luci" = "$view_luci" ] || fail "embedded JS version mismatch"
 ok "LuCI version markers synchronized ($top_luci)"
-grep -Fq 'VERSION="3.55"' dns-manager.sh || fail "DNS Manager version marker is not 3.55"
-ok "DNS Manager version marker synchronized (3.55)"
+grep -Fq 'VERSION="3.59"' dns-manager.sh || fail "DNS Manager version marker is not 3.59"
+ok "DNS Manager version marker synchronized (3.59)"
 
 if awk '
     /function startAutoStatus\(root\)/ { capture=1 }
@@ -585,7 +647,14 @@ if grep -q '^assigned_port_for_id()' dns-manager-luci.sh; then
 fi
 grep -Fq -- '--connect-timeout 1 --max-time 3 --resolve "$host:$port:$ipx"' dns-manager.sh || fail "direct DoH timeout was not reduced"
 grep -q '(trap - EXIT; test_one_dns "\$_id") &' "$tmp/backend.sh" || fail "selected DNS checks are not parallelized"
-ok "single and full DNS checks use the same test_one_dns path"
+awk '
+    /^job_start_test_current\(\) \{/ { capture=1 }
+    capture && /q="\$TMP_DIR\/dns_query\.bin"/ { query_line=NR }
+    capture && /if ! printf .*example.*com/ { create_line=NR }
+    capture && /\(trap - EXIT; test_one_dns/ { worker_line=NR; exit }
+    END { if (!query_line || !create_line || !worker_line || query_line >= create_line || create_line >= worker_line) exit 1 }
+' dns-manager-luci.sh || fail "selected DNS workers do not receive a pre-created immutable query"
+ok "single and selected DNS checks initialize the shared query safely"
 awk '/^function checkInfo\(id,d\)/,/^}/' "$tmp/common.js" > "$tmp/check_info.js"
 grep -q "String(x.status||'').toUpperCase()==='RUNNING'" "$tmp/check_info.js" || fail "LuCI transient check state is not limited to RUNNING"
 grep -q "d&&d.status" "$tmp/check_info.js" || fail "LuCI finished DNS status does not come from RPC data"
@@ -1145,7 +1214,7 @@ cat > "$tmp/ensure_test_results_fresh_runner.sh" <<'EOF_FRESH_SCOPE'
 set -eu
 HAS_CURL=yes
 CALLS=0
-watchdog_test_results_fresh() {
+watchdog_test_results_usable() {
     CALLS=$((CALLS+1))
     [ "${1:-}" = security ] && [ "$CALLS" -eq 2 ]
 }
@@ -1158,6 +1227,54 @@ EOF_FRESH_SCOPE
 chmod +x "$tmp/ensure_test_results_fresh_runner.sh"
 "$tmp/ensure_test_results_fresh_runner.sh" "$tmp/ensure_test_results_fresh.sh" || fail "category test refresh validates the wrong scope"
 ok "category-scoped DNS test refresh preserves its scope"
+# A category-specific freshness setting must override the common fallback.
+awk '/^test_results_max_age_for_category\(\) \{/,/^}/' dns-manager.sh > "$tmp/test_results_max_age.sh"
+[ -s "$tmp/test_results_max_age.sh" ] || fail "category freshness helper extraction"
+cat > "$tmp/test_results_max_age_runner.sh" <<'EOF_TEST_AGE'
+#!/bin/sh
+set -eu
+TEST_RESULTS_MAX_AGE=21600
+TEST_RESULTS_MAX_AGE_BYPASS=3600
+TEST_RESULTS_MAX_AGE_CLEAN=7200
+. "$1"
+[ "$(test_results_max_age_for_category bypass)" = 3600 ] || exit 41
+[ "$(test_results_max_age_for_category clean)" = 7200 ] || exit 42
+[ "$(test_results_max_age_for_category all)" = 21600 ] || exit 43
+[ "$(test_results_max_age_for_category unknown)" = 21600 ] || exit 44
+EOF_TEST_AGE
+chmod +x "$tmp/test_results_max_age_runner.sh"
+"$tmp/test_results_max_age_runner.sh" "$tmp/test_results_max_age.sh" || fail "category-specific DNS freshness is overridden by the common value"
+ok "category-specific DNS result freshness settings take precedence"
+
+awk '/^show_tests\(\) \{/,/^profile_apply_begin\(\) \{/' dns-manager.sh > "$tmp/show_tests.sh"
+grep -Fq 'watchdog_test_results_fresh "$_test_scope"' "$tmp/show_tests.sh" || fail "DNS results screen does not check freshness"
+grep -Fq 'Сохранённые результаты устарели' "$tmp/show_tests.sh" || fail "DNS results screen does not label stale results"
+awk '/^quick_max_bypass\(\) \{/,/^test_results_max_age_for_category\(\) \{/' dns-manager.sh | sed '$d' > "$tmp/quick_max_bypass.sh"
+grep -Fq 'watchdog_test_results_usable bypass' "$tmp/quick_max_bypass.sh" || fail "bypass flow reuses results without checking working DNS"
+grep -Fq 'test_dns_catalog bypass' "$tmp/quick_max_bypass.sh" || fail "bypass flow tests the entire catalog instead of its category"
+grep -Fq '_catalog_hash_start="$(file_hash "$DNS_CATALOG")"' dns-manager.sh || fail "DNS test does not snapshot the starting catalog hash"
+grep -Fq 'Каталог DNS изменился во время проверки. Результат отброшен' dns-manager.sh || fail "DNS test does not discard results when catalog changes during testing"
+ok "DNS result freshness display and category-scoped tests"
+# A successful regional resolver cannot make a failing general category usable.
+awk '/^watchdog_test_results_usable\(\) \{/,/^}/' dns-manager.sh > "$tmp/watchdog_test_results_usable.sh"
+[ -s "$tmp/watchdog_test_results_usable.sh" ] || fail "usable DNS result helper extraction"
+cat > "$tmp/watchdog_test_results_usable_runner.sh" <<'EOF_USABLE_RESULTS'
+#!/bin/sh
+set -eu
+TEST_RESULTS="$2"
+watchdog_test_results_fresh() { return 0; }
+. "$1"
+printf 'yandex_ru|regional|Yandex RU|10|OK\n' > "$TEST_RESULTS"
+if watchdog_test_results_usable bypass; then exit 41; fi
+if watchdog_test_results_usable all; then exit 42; fi
+printf 'yandex_ru|regional|Yandex RU|10|OK\ncomss_bypass|bypass|Comss|20|OK\n' > "$TEST_RESULTS"
+watchdog_test_results_usable bypass || exit 43
+printf 'adguard_default|adblock|AdGuard|20|OK\n' > "$TEST_RESULTS"
+if watchdog_test_results_usable bypass; then exit 44; fi
+EOF_USABLE_RESULTS
+chmod +x "$tmp/watchdog_test_results_usable_runner.sh"
+"$tmp/watchdog_test_results_usable_runner.sh" "$tmp/watchdog_test_results_usable.sh" "$tmp/usable-results" || fail "regional or unrelated DNS result satisfies selected category"
+ok "cached DNS usability requires a working resolver in the requested category"
 
 # Preserve an existing RU DNS only when it passed the fresh regional test.
 awk '/^apply_profile_now\(\) \{/,/^menu_category_select\(\)/' dns-manager.sh | sed '$d' > "$tmp/apply_profile_now_ru.sh"

@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.55"
+VERSION="3.59"
 # 3.38: clear the LuCI update flag after a successful CLI update.
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
@@ -18,8 +18,8 @@ DNS_CATALOG="$CFG_DIR/dns-catalog.conf"
 NTP_CATALOG="$CFG_DIR/ntp-catalog.conf"
 BOOTSTRAP_DNS_ALL="77.88.8.8,77.88.8.1,94.140.14.14,1.1.1.1,1.0.0.1,8.8.8.8,8.8.4.4,9.9.9.9,149.112.112.112,208.67.222.222,208.67.220.220,149.112.121.10,149.112.122.10,76.76.2.0,76.76.10.0,194.242.2.2,194.242.2.3,2606:4700:4700::1111,2606:4700:4700::1001,2001:4860:4860::8888,2001:4860:4860::8844,2620:fe::fe,2620:fe::9"
 DNSCAT_VERSION="8.7-RU-NOSOCIAL"
-DNSCAT_REVISION="4"
-DNSCAT_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/catalogs/dns-8.7-RU-NOSOCIAL.conf"
+DNSCAT_REVISION="5"
+DNSCAT_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/geo-block-dns-providers-20261019/catalogs/dns-8.7-RU-NOSOCIAL.conf"
 WATCHDOG_RESTART_COOLDOWN=300
 WATCHDOG_BACKEND="procd"
 WATCHDOG_CHECK_INTERVAL_DEFAULT=600
@@ -662,7 +662,7 @@ catalog_validate_file() {
     [ "$_ver" = "$DNSCAT_VERSION" ] || return 1
     if [ "$_mode" != "legacy" ]; then
         grep -Fqx "# DNSCATREV=$DNSCAT_REVISION" "$_f" 2>/dev/null || return 1
-        grep -Fqx "# ENTRIES=105" "$_f" 2>/dev/null || return 1
+        grep -Fqx "# ENTRIES=107" "$_f" 2>/dev/null || return 1
     fi
     awk -F'|' '
         /^[[:space:]]*#/ || /^[[:space:]]*$/ { next }
@@ -674,7 +674,7 @@ catalog_validate_file() {
             ids[$1]++
             if (ids[$1] > 1) bad=1
         }
-        END { if (bad || count != 105) exit 1 }
+        END { if (bad || count != 107) exit 1 }
     ' "$_f" >/dev/null 2>&1 || return 1
     return 0
 }
@@ -1698,9 +1698,17 @@ dns_catalog_version() { sed -n 's/^# DNSCATVER=//p' "$DNS_CATALOG" 2>/dev/null |
 # ==========================================
 # ==========================================
 normalize_url() {
-_u="$1"
-_u="$(printf '%s' "$_u" | sed 's/[[:space:]]//g; s:/*$::')"
-printf '%s' "$_u"
+    _u="$(printf '%s' "$1" | sed 's/[[:space:]]//g')"
+    # A slash at the origin root is equivalent to an empty path. Preserve
+    # trailing slashes on non-root paths: some DoH providers require them.
+    case "$_u" in
+        https://*/*)
+            _authority_path="${_u#https://}"
+            _path="${_authority_path#*/}"
+            [ -n "$_path" ] || _u="${_u%/}"
+            ;;
+    esac
+    printf '%s' "$_u"
 }
 slot_set() {
     case "$1" in
@@ -1833,11 +1841,115 @@ return 1
 # ==========================================
 validate_dns_message() {
     _file="$1"
-    [ -s "$_file" ] || return 1
-    _n="$(wc -c < "$_file" 2>/dev/null | tr -d " ")"
+    _query="${2:-}"
+    [ -s "$_file" ] && [ -s "$_query" ] || return 1
+    _n="$(wc -c < "$_file" 2>/dev/null | tr -d ' ')"
     case "$_n" in ''|*[!0-9]*) return 1;; esac
-    [ "$_n" -ge 12 ] || return 1
-    return 0
+    [ "$_n" -ge 12 ] && [ "$_n" -le 65535 ] || return 1
+
+    _response_bytes="$(od -An -tu1 -v "$_file" 2>/dev/null | tr '\n' ' ')"
+    _query_bytes="$(od -An -tu1 -v "$_query" 2>/dev/null | tr '\n' ' ')"
+    [ -n "$_response_bytes" ] && [ -n "$_query_bytes" ] || return 1
+
+    # Parse the DNS wire message instead of trusting its HTTP status and size.
+    # Validate the transaction ID, response flags, echoed question, and RR bounds.
+    printf '%s\n%s\n' "$_response_bytes" "$_query_bytes" | awk '
+        function u16(a, p) { return a[p] * 256 + a[p + 1] }
+        function read_name(a, n, p, build,    cur, jumped, steps, byte, lablen, target, j, label, name, saved_next) {
+            cur=p; jumped=0; steps=0; name=""; saved_next=-1
+            while (1) {
+                if (cur < 0 || cur >= n || ++steps > n) return 0
+                byte=a[cur]
+                if (byte == 0) {
+                    name_next = jumped ? saved_next : cur + 1
+                    name_value = name
+                    return 1
+                }
+                if (byte >= 192) {
+                    if (cur + 1 >= n) return 0
+                    target=(byte - 192) * 256 + a[cur + 1]
+                    if (target >= cur || target >= n) return 0
+                    if (!jumped) { saved_next=cur + 2; jumped=1 }
+                    cur=target
+                    continue
+                }
+                if (byte >= 64) return 0
+                lablen=byte
+                if (cur + lablen >= n) return 0
+                label=""
+                if (build) {
+                    for (j=1; j<=lablen; j++) label=label sprintf("%c", a[cur + j])
+                    if (name != "") name=name "."
+                    name=name tolower(label)
+                }
+                cur=cur + lablen + 1
+            }
+        }
+        NR==1 { rn=NF; for (i=1; i<=NF; i++) r[i-1]=$i; next }
+        NR==2 { qn=NF; for (i=1; i<=NF; i++) q[i-1]=$i; next }
+        END {
+            if (rn < 12 || rn > 65535 || qn < 17 || qn > 65535) exit 1
+            if (r[0] != q[0] || r[1] != q[1]) exit 1
+
+            flags_hi=r[2]; flags_lo=r[3]
+            if (int(flags_hi / 128) % 2 != 1) exit 1
+            if (int(flags_hi / 8) % 16 != 0) exit 1
+            if (int(flags_hi / 2) % 2 != 0) exit 1
+            if (flags_lo % 16 != 0) exit 1
+
+            qd=u16(r,4); an=u16(r,6); ns=u16(r,8); ar=u16(r,10)
+            if (qd != 1 || an < 1) exit 1
+            if (int(q[2] / 128) % 2 != 0 || int(q[2] / 8) % 16 != 0 || u16(q,4) != 1) exit 1
+
+            if (!read_name(q, qn, 12, 1)) exit 1
+            query_name=name_value; qpos=name_next
+            if (qpos + 4 > qn) exit 1
+            query_type=u16(q,qpos); query_class=u16(q,qpos+2)
+
+            if (!read_name(r, rn, 12, 1)) exit 1
+            response_name=name_value; rpos=name_next
+            if (rpos + 4 > rn) exit 1
+            response_type=u16(r,rpos); response_class=u16(r,rpos+2); rpos += 4
+            if (response_name != query_name || response_type != query_type || response_class != query_class) exit 1
+
+            for (k=0; k<an+ns+ar; k++) {
+                if (!read_name(r, rn, rpos, 1)) exit 1
+                rr_owner=name_value; rpos=name_next
+                if (rpos + 10 > rn) exit 1
+                rr_type=u16(r,rpos); rr_class=u16(r,rpos+2); rdlen=u16(r,rpos+8); rdata_pos=rpos+10
+                if (rdata_pos + rdlen > rn) exit 1
+                # Record only usable A answers in the answer section.
+                # A zero/loopback answer for example.com is a sinkhole, not a successful resolution.
+                if (k < an && rr_class == query_class && rr_type == 1) {
+                    if (rdlen != 4) exit 1
+                    a1=r[rdata_pos]; a2=r[rdata_pos+1]; a3=r[rdata_pos+2]; a4=r[rdata_pos+3]
+                    if (a1 != 0 && a1 != 127) usable_a[rr_owner]=1
+                }
+                # Follow CNAME answers. A CNAME-only reply does not prove that an A query resolves.
+                if (k < an && rr_class == query_class && rr_type == 5) {
+                    if (!read_name(r, rn, rdata_pos, 1) || name_next != rdata_pos + rdlen) exit 1
+                    cname_value=name_value
+                    if ((rr_owner in cname_target) && cname_target[rr_owner] != cname_value) exit 1
+                    cname_target[rr_owner]=cname_value
+                }
+                rpos=rdata_pos+rdlen
+            }
+            current_name=query_name
+            answer_usable=0
+            for (depth=0; depth<16; depth++) {
+                if (current_name in usable_a) { answer_usable=1; break }
+                if (!(current_name in cname_target) || (current_name in cname_seen)) break
+                cname_seen[current_name]=1
+                current_name=cname_target[current_name]
+            }
+            if (!answer_usable || rpos != rn) exit 1
+            exit 0
+        }
+    '
+}
+is_dns_media_type() {
+    _ct="$(printf '%s' "$1" | sed 's/;.*//' | tr '[:upper:]' '[:lower:]' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    [ "$_ct" = "application/dns-message" ]
 }
 test_one_dns() {
 id="$1"; url="$(normalize_url "$(dns_url "$id")")"; name="$(dns_name "$id")"; cat="$(dns_cat "$id")"
@@ -1890,9 +2002,8 @@ while IFS= read -r ipx; do
     ctype="$(awk -F': *' 'tolower($1)=="content-type"{print tolower($2)}' "$hdr" 2>/dev/null | tail -n1 | tr -d '\r')"
     case "$tim" in ''|0) ms=-1;; *) ms="$(awk -v t="$tim" 'BEGIN{v=t*1000; if(v<1)v=1; printf "%.0f", v}')";; esac
     case "$code" in
-    200)
-        case "$ctype" in *application/dns-message*) ct_ok=yes;; *) ct_ok=no;; esac
-        if [ "$ct_ok" = yes ] && validate_dns_message "$body"; then
+    2??)
+        if is_dns_media_type "$ctype" && validate_dns_message "$body" "$q"; then
             if [ "$_best_ms" -lt 0 ] || { [ "$ms" -ge 0 ] && [ "$ms" -lt "$_best_ms" ]; }; then _best_ms="$ms"; fi
             st=OK
         else st=BAD_DOH_RESPONSE; fi ;;
@@ -1939,6 +2050,16 @@ test_dns_catalog() (
         warn_msg "Не удалось создать общий DNS-тестовый пакет."
         return 1
     }
+    # Pin the catalog identity for this test run. A concurrent catalog refresh
+    # must not let results for old URLs be marked fresh against the new catalog.
+    _catalog_version_start="$(dns_catalog_version)"
+    _catalog_hash_start="$(file_hash "$DNS_CATALOG")"
+    [ -n "$_catalog_version_start" ] && [ -n "$_catalog_hash_start" ] || {
+        rm -f "$TMP_DIR/dns_query.bin" 2>/dev/null
+        release_test_lock
+        warn_msg "Не удалось зафиксировать версию каталога перед проверкой DNS."
+        return 1
+    }
     _test_source="$TMP_DIR/test-source-$$"
     if [ "$_test_scope" = all ]; then
         grep -v '^#' "$DNS_CATALOG" 2>/dev/null | grep '|' > "$_test_source" || : > "$_test_source"
@@ -1950,6 +2071,12 @@ test_dns_catalog() (
     total="$(wc -l < "$_test_source" 2>/dev/null | tr -d ' ')"
     case "$total" in ''|*[!0-9]*) total=0;; esac
     [ "$total" -gt 0 ] || { rm -f "$_test_source"; release_test_lock; warn_msg "В выбранной области проверки нет DNS-серверов."; return 1; }
+    if [ "$_catalog_version_start" != "$(dns_catalog_version)" ] || [ "$_catalog_hash_start" != "$(file_hash "$DNS_CATALOG")" ]; then
+        rm -f "$_test_source" "$TMP_DIR/dns_query.bin" 2>/dev/null
+        release_test_lock
+        warn_msg "Каталог DNS изменился до начала проверки. Запустите проверку повторно."
+        return 1
+    fi
     printf "${C_WHITE}Проверяю %s DNS-серверов: %s. Это может занять до 5 минут...${C_NC}\n" "$total" "$_test_scope_label"
     test_progress() {
         _done=0
@@ -2010,19 +2137,19 @@ test_dns_catalog() (
         return 1
     }
     _catalog_version="$(dns_catalog_version)"
-    [ -n "$_catalog_version" ] || {
-        rm -f "$_result_tmp" "$_meta_tmp" 2>/dev/null
-        release_test_lock
-        warn_msg "Каталог DNS не содержит версии DNSCATVER. Результат не принят watchdog."
-        return 1
-    }
     _catalog_hash="$(file_hash "$DNS_CATALOG")"
-    [ -n "$_catalog_hash" ] || {
+    [ -n "$_catalog_version" ] && [ -n "$_catalog_hash" ] || {
         rm -f "$_result_tmp" "$_meta_tmp" 2>/dev/null
         release_test_lock
-        warn_msg "Не удалось вычислить хеш каталога DNS. Результат не сохранён."
+        warn_msg "Не удалось подтвердить версию каталога DNS. Результат не сохранён."
         return 1
     }
+    if [ "$_catalog_version" != "$_catalog_version_start" ] || [ "$_catalog_hash" != "$_catalog_hash_start" ]; then
+        rm -f "$_result_tmp" "$_meta_tmp" "$_test_source" "$TMP_DIR/dns_query.bin" 2>/dev/null
+        release_test_lock
+        warn_msg "Каталог DNS изменился во время проверки. Результат отброшен; запустите проверку повторно."
+        return 1
+    fi
     {
         printf 'timestamp=%s\n' "$(date +%s)"
         printf 'catalog_version=%s\n' "$_catalog_version"
@@ -4411,17 +4538,32 @@ case "$_test_scope" in
     all|bypass|clean|security|privacy|adblock|family|gaming) ;;
     *) _test_scope=all ;;
 esac
-if [ "$_test_scope" = all ]; then
-    total="$(count_dns)"
-    _scope_label="весь каталог"
+_results_fresh=0
+watchdog_test_results_fresh "$_test_scope" >/dev/null 2>&1 && _results_fresh=1
+if [ "$_results_fresh" = 1 ]; then
+    if [ "$_test_scope" = all ]; then
+        total="$(count_dns)"
+        _scope_label="весь каталог"
+    else
+        total="$(awk -F'|' -v c="$_test_scope" 'NF>=5 && $1 !~ /^#/ && ($2==c || $2=="regional") {n++} END{print n+0}' "$DNS_CATALOG" 2>/dev/null)"
+        _scope_label="категория «$(category_ru "$_test_scope")» + региональные DNS"
+    fi
 else
-    total="$(awk -F'|' -v c="$_test_scope" 'NF>=5 && $1 !~ /^#/ && ($2==c || $2=="regional") {n++} END{print n+0}' "$DNS_CATALOG" 2>/dev/null)"
-    _scope_label="категория «$(category_ru "$_test_scope")» + региональные DNS"
+    total="$(wc -l < "$TEST_RESULTS" 2>/dev/null | tr -d ' ')"
+    case "$total" in ''|*[!0-9]*) total=0;; esac
+    _scope_label="последняя сохранённая проверка (результаты неактуальны)"
 fi
-okn="$(awk -F'|' 'NF>=5 && $5=="OK"{n++} END{print n+0}' "$TEST_RESULTS" 2>/dev/null)"
+okn="$(awk -F'|' 'NF==5 && $5=="OK" && $4 ~ /^[0-9]+$/ {n++} END{print n+0}' "$TEST_RESULTS" 2>/dev/null)"
 failn=$((total-okn))
-printf "${C_GREEN}✓ Работают: %s${C_NC}    ${C_RED}✗ Ошибки: %s${C_NC}    ${C_WHITE}Всего: %s${C_NC}
+if [ "$_results_fresh" = 1 ]; then
+    printf "${C_GREEN}✓ Работают: %s${C_NC}    ${C_RED}✗ Ошибки: %s${C_NC}    ${C_WHITE}Всего: %s${C_NC}
 " "$okn" "$failn" "$total"
+else
+    printf "${C_YELLOW}Сохранённые результаты устарели или не соответствуют текущему каталогу; они не подтверждают текущую доступность DNS.${C_NC}
+"
+    printf "${C_GREEN}Работали в сохранённой проверке: %s${C_NC}    ${C_RED}Ошибки: %s${C_NC}    ${C_WHITE}Записей: %s${C_NC}
+" "$okn" "$failn" "$total"
+fi
 printf "${C_CYAN}Область проверки: %s${C_NC}
 
 " "$_scope_label"
@@ -5566,10 +5708,10 @@ printf "  ${C_GREEN}✓${C_NC} сохранение исходных настр�
 if [ "${PROFILE_FULL_TEST:-0}" = 1 ]; then
     info_msg "Использую только что завершённую полную проверку DNS выбранной категории."
 else
-    if watchdog_test_results_fresh; then
-        info_msg "Использую свежие результаты полной проверки DNS; повторный тест не требуется."
+    if watchdog_test_results_usable bypass; then
+        info_msg "Использую свежие результаты проверки категории «Обход геоблока»; повторный тест не требуется."
     else
-        test_dns_catalog || return 1
+        test_dns_catalog bypass || return 1
     fi
     [ -s "$TEST_RESULTS" ] || return 1
 fi
@@ -5600,21 +5742,24 @@ return "$_rc"
 # ==========================================
 # ==========================================
 test_results_max_age_for_category() {
-    case "${TEST_RESULTS_MAX_AGE:-}" in
-        ''|*[!0-9]*) ;;
-        *) printf '%s' "$TEST_RESULTS_MAX_AGE"; return 0 ;;
-    esac
+    _age=""
     case "$1" in
-        bypass) printf '%s' "${TEST_RESULTS_MAX_AGE_BYPASS:-21600}" ;;
-        clean) printf '%s' "${TEST_RESULTS_MAX_AGE_CLEAN:-21600}" ;;
-        security) printf '%s' "${TEST_RESULTS_MAX_AGE_SECURITY:-21600}" ;;
-        privacy) printf '%s' "${TEST_RESULTS_MAX_AGE_PRIVACY:-21600}" ;;
-        adblock) printf '%s' "${TEST_RESULTS_MAX_AGE_ADBLOCK:-21600}" ;;
-        family) printf '%s' "${TEST_RESULTS_MAX_AGE_FAMILY:-21600}" ;;
-        gaming) printf '%s' "${TEST_RESULTS_MAX_AGE_GAMING:-21600}" ;;
-        regional) printf '%s' "${TEST_RESULTS_MAX_AGE_REGIONAL:-21600}" ;;
-        *) printf '%s' "${TEST_RESULTS_MAX_AGE:-21600}" ;;
+        bypass) _age="${TEST_RESULTS_MAX_AGE_BYPASS:-}" ;;
+        clean) _age="${TEST_RESULTS_MAX_AGE_CLEAN:-}" ;;
+        security) _age="${TEST_RESULTS_MAX_AGE_SECURITY:-}" ;;
+        privacy) _age="${TEST_RESULTS_MAX_AGE_PRIVACY:-}" ;;
+        adblock) _age="${TEST_RESULTS_MAX_AGE_ADBLOCK:-}" ;;
+        family) _age="${TEST_RESULTS_MAX_AGE_FAMILY:-}" ;;
+        gaming) _age="${TEST_RESULTS_MAX_AGE_GAMING:-}" ;;
+        regional) _age="${TEST_RESULTS_MAX_AGE_REGIONAL:-}" ;;
     esac
+    # A category-specific window takes precedence. The common value is the
+    # fallback for "all", unknown categories, and legacy/missing category values.
+    case "$_age" in
+        ''|*[!0-9]*) _age="${TEST_RESULTS_MAX_AGE:-21600}" ;;
+    esac
+    case "$_age" in ''|*[!0-9]*) _age=21600 ;; esac
+    printf '%s' "$_age"
 }
 
 watchdog_test_results_fresh() {
@@ -5655,9 +5800,20 @@ watchdog_test_results_fresh() {
     [ "$(( _now - _ts ))" -le "$_fresh_max" ] 2>/dev/null || return 1
     return 0
 }
+watchdog_test_results_usable() {
+    _usable_scope="${1:-all}"
+    watchdog_test_results_fresh "$_usable_scope" || return 1
+    # Regional DNS is tested alongside a category, but it cannot stand in for
+    # a working general resolver when that category is selected.
+    awk -F'|' -v c="$_usable_scope" '
+        NF==5 && $5=="OK" && $4 ~ /^[0-9]+$/ && $2!="regional" &&
+        (c=="all" || $2==c) {found=1}
+        END {exit !found}
+    ' "$TEST_RESULTS" 2>/dev/null
+}
 ensure_test_results_fresh() {
     _fresh_cat="${1:-}"
-    if watchdog_test_results_fresh "$_fresh_cat"; then
+    if watchdog_test_results_usable "$_fresh_cat"; then
         return 0
     fi
     if [ "${HAS_CURL:-no}" != yes ]; then
@@ -5673,7 +5829,7 @@ ensure_test_results_fresh() {
     fi
     info_msg "Результаты проверки DNS отсутствуют или устарели. Запускаю свежую проверку каталога."
     test_dns_catalog "$_fresh_cat" || return 1
-    watchdog_test_results_fresh "$_fresh_cat"
+    watchdog_test_results_usable "$_fresh_cat"
 }
 watchdog_scope_category() {
     # Saved profile category is the intended category. Clean fallback DNS is
