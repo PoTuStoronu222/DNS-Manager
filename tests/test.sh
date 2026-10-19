@@ -1161,6 +1161,47 @@ ok "config serialization keeps shell metacharacters as literal data"
 [ "$(grep -Fc '|0|*[!0-9]*' dns-manager.sh)" -ge 3 ] || fail "lock recovery accepts PID zero"
 [ "$(grep -Fc 'if [ -e "$_stale_lock" ] || [ -L "$_stale_lock" ]; then return 1; fi' dns-manager.sh)" = 3 ] || fail "stale-lock quarantine path is not collision-checked for all lock types"
 ok "lock recovery validates PID and checks stale quarantine paths"
+
+# Exercise the mutation lock in an isolated temporary directory.
+_lock_funcs="$(sed -n -e '/^acquire_mutation_lock() {/,/^}/p' -e '/^release_mutation_lock() {/,/^}/p' dns-manager.sh)"
+[ -n "$_lock_funcs" ] || fail "mutation lock functions missing"
+eval "$_lock_funcs"
+log_msg() { :; }
+STATE_DIR="$tmp/lock-state"
+MUTATION_LOCK_DIR="$STATE_DIR/mutation.lock"
+MUTATION_LOCK_HELD=0
+mkdir -p "$STATE_DIR" || fail "cannot create lock-test directory"
+acquire_mutation_lock || fail "fresh mutation lock could not be acquired"
+[ "$(cat "$MUTATION_LOCK_DIR/pid")" = "$" ] || fail "mutation lock owner PID mismatch"
+release_mutation_lock
+[ ! -d "$MUTATION_LOCK_DIR" ] || fail "mutation lock was not released"
+
+mkdir -p "$MUTATION_LOCK_DIR" || fail "cannot prepare live-lock test"
+printf '%s\n' "$" > "$MUTATION_LOCK_DIR/pid"
+if acquire_mutation_lock; then
+    fail "mutation lock allowed a second acquisition by the same live PID"
+fi
+[ -d "$MUTATION_LOCK_DIR" ] || fail "live mutation lock was removed"
+rm -rf "$MUTATION_LOCK_DIR"
+
+_test_stale_pid=999999
+while kill -0 "$_test_stale_pid" 2>/dev/null; do _test_stale_pid=$((_test_stale_pid + 1)); done
+mkdir -p "$MUTATION_LOCK_DIR" || fail "cannot prepare stale-lock test"
+printf '%s\n' "$_test_stale_pid" > "$MUTATION_LOCK_DIR/pid"
+acquire_mutation_lock || fail "stale mutation lock was not recovered"
+[ "$(cat "$MUTATION_LOCK_DIR/pid")" = "$" ] || fail "recovered lock has the wrong owner"
+release_mutation_lock
+
+mkdir -p "$MUTATION_LOCK_DIR" "$MUTATION_LOCK_DIR.stale.$" || fail "cannot prepare quarantine collision test"
+printf '%s\n' "$_test_stale_pid" > "$MUTATION_LOCK_DIR/pid"
+: > "$MUTATION_LOCK_DIR.stale.$/marker"
+if acquire_mutation_lock; then
+    fail "mutation lock ignored an existing stale-quarantine path"
+fi
+[ -d "$MUTATION_LOCK_DIR" ] || fail "quarantine collision removed the original lock"
+[ -f "$MUTATION_LOCK_DIR.stale.$/marker" ] || fail "quarantine collision altered the existing path"
+rm -rf "$MUTATION_LOCK_DIR" "$MUTATION_LOCK_DIR.stale.$"
+ok "mutation lock acquisition, release and stale-lock recovery are exercised"
 grep -q 'watchdog_interval":%s,"watchdog_service' "$tmp/backend.sh" || fail "LuCI status does not expose saved watchdog interval"
 
 grep -q '^        set_watchdog_setting)' "$tmp/backend.sh" || fail "legacy watchdog setting dispatch missing"
