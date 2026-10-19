@@ -973,6 +973,18 @@ if grep -Fq 'WATCHDOG_MAX_REPAIRS' "$tmp/watchdog_embedded_loop.sh"; then
     fail "watchdog still limits how many slots it may repair in one cycle"
 fi
 ok "watchdog checks configured slots independently and replaces DNS only within its category"
+
+# The one-shot CLI Watchdog must share the same locked repair helper as the background loop.
+awk '/^run_watchdog\(\) \{/,/^watchdog_cron_scheduler_detect_pid\(\) \{/' dns-manager.sh > "$tmp/run_watchdog.sh"
+grep -Fq 'if ! watchdog_slot_target_run "$_slot"; then' "$tmp/run_watchdog.sh" || fail "one-shot Watchdog bypasses the shared per-slot repair helper"
+grep -Fq 'watchdog_listener_snapshot_has_port "$_port"' "$tmp/run_watchdog.sh" || fail "one-shot Watchdog may rotate DNS when the local listener is missing"
+if grep -Fq 'watchdog_pick_replacement' "$tmp/run_watchdog.sh"; then
+    fail "one-shot Watchdog still duplicates candidate selection"
+fi
+if grep -Fq 'watchdog_scope_category' "$tmp/run_watchdog.sh"; then
+    fail "one-shot Watchdog still requires a DNS profile"
+fi
+ok "one-shot and background Watchdog share the same safe per-slot repair path"
 # All watchdog paths must use the same DNS health checks as the verified Manager paths.
 awk '/^watchdog_embedded_loop\(\) \{/,/^# ==========================================/' dns-manager.sh > "$tmp/watchdog_embedded_loop.sh"
 grep -q 'local_dns_query_ok "\$_port" "\$_domain"' "$tmp/watchdog_embedded_loop.sh" || fail "procd watchdog does not use the canonical local DNS check"
