@@ -1741,7 +1741,119 @@ normalize_slot_domains() {
     _sd_size="$(printf '%s' "$_sd_input" | wc -c 2>/dev/null | tr -d '[:space:]')"
     case "$_sd_size" in ''|*[!0-9]*) return 1;; esac
     [ "$_sd_size" -le 4096 ] 2>/dev/null || return 1
-    printf '%s' "$_sd_input" | LC_ALL=C grep -Eq '^[A-Za-z0-9.,[:space:]-]*
+    printf '%s' "$_sd_input" | LC_ALL=C grep -Eq "^[A-Za-z0-9.,[:space:]-]*$" || return 1
+    _sd_input="$(printf '%s' "$_sd_input" | tr ',' ' ' | tr -d '\\r' | tr 'A-Z' 'a-z')"
+    _sd_out=""
+    for _sd_domain in $_sd_input; do
+        [ -n "$_sd_domain" ] || continue
+        case "$_sd_domain" in *.) _sd_domain="${_sd_domain%.}";; esac
+        case "$_sd_domain" in ''|.*|*.|*..*|*[!a-z0-9.-]*) return 1;; esac
+        [ "${#_sd_domain}" -le 253 ] 2>/dev/null || return 1
+        printf '%s\n' "$_sd_domain" | awk -F. '
+            NF < 2 { exit 1 }
+            {
+                for (i=1; i<=NF; i++) {
+                    if (length($i) > 63 || $i !~ /^[a-z0-9][a-z0-9-]*$/ || $i ~ /-$/)
+                        exit 1
+                }
+            }
+        ' || return 1
+        case " $_sd_out " in
+            *" $_sd_domain "*) ;;
+            *) [ -n "$_sd_out" ] && _sd_out="$_sd_out $_sd_domain" || _sd_out="$_sd_domain" ;;
+        esac
+    done
+    printf '%s' "$_sd_out"
+}
+slot_domains_get() {
+    case "$1" in
+        1) printf '%s' "${SLOT_1_DOMAINS:-}" ;;
+        2) printf '%s' "${SLOT_2_DOMAINS:-}" ;;
+        3) printf '%s' "${SLOT_3_DOMAINS:-}" ;;
+        4) printf '%s' "${SLOT_4_DOMAINS:-}" ;;
+        5) printf '%s' "${SLOT_5_DOMAINS:-}" ;;
+        6) printf '%s' "${SLOT_6_DOMAINS:-}" ;;
+        *) return 1 ;;
+    esac
+}
+slot_domains_set() {
+    case "$1" in
+        1) SLOT_1_DOMAINS="$2" ;;
+        2) SLOT_2_DOMAINS="$2" ;;
+        3) SLOT_3_DOMAINS="$2" ;;
+        4) SLOT_4_DOMAINS="$2" ;;
+        5) SLOT_5_DOMAINS="$2" ;;
+        6) SLOT_6_DOMAINS="$2" ;;
+        *) return 1 ;;
+    esac
+}
+slot_domains_apply() {
+    local _sd_slot _sd_raw _sd_new _sd_old _sd_id _sd_port _sd_other _sd_other_domains _sd_domain
+    _sd_slot="$1"
+    _sd_raw="${2:-}"
+    SLOT_DOMAINS_ERROR=""
+    case "$_sd_slot" in 1|2|3|4|5|6) ;; *) SLOT_DOMAINS_ERROR="Неверный слот DNS."; return 1;; esac
+    acquire_mutation_lock || { SLOT_DOMAINS_ERROR="Другая операция DNS Manager уже выполняется."; return 1; }
+    load_config || {
+        SLOT_DOMAINS_ERROR="Не удалось загрузить конфигурацию DNS Manager."
+        release_mutation_lock
+        return 1
+    }
+    _sd_new="$(normalize_slot_domains "$_sd_raw")" || {
+        SLOT_DOMAINS_ERROR="Некорректный список доменов. Укажите домены вида example.com, по одному на строку или через запятую."
+        release_mutation_lock
+        return 1
+    }
+    _sd_old="$(slot_domains_get "$_sd_slot")"
+    if [ -n "$_sd_new" ]; then
+        case "$_sd_slot" in
+            1) _sd_id="${SLOT_1:-}"; _sd_port="${PORT_1:-}" ;;
+            2) _sd_id="${SLOT_2:-}"; _sd_port="${PORT_2:-}" ;;
+            3) _sd_id="${SLOT_3:-}"; _sd_port="${PORT_3:-}" ;;
+            4) _sd_id="${SLOT_4:-}"; _sd_port="${PORT_4:-}" ;;
+            5) _sd_id="${SLOT_5:-}"; _sd_port="${PORT_5:-}" ;;
+            6) _sd_id="${SLOT_6:-}"; _sd_port="${PORT_6:-}" ;;
+        esac
+        [ -n "$_sd_id" ] && [ -n "$_sd_port" ] || {
+            SLOT_DOMAINS_ERROR="Сначала назначьте DNS-сервер в выбранный слот."
+            release_mutation_lock
+            return 1
+        }
+        for _sd_other in 1 2 3 4 5 6; do
+            [ "$_sd_other" = "$_sd_slot" ] && continue
+            _sd_other_domains="$(slot_domains_get "$_sd_other")" || continue
+            for _sd_domain in $_sd_new; do
+                case " $_sd_other_domains " in
+                    *" $_sd_domain "*)
+                        SLOT_DOMAINS_ERROR="Домен $_sd_domain уже назначен слоту DNS $_sd_other."
+                        release_mutation_lock
+                        return 1
+                        ;;
+                esac
+            done
+        done
+    fi
+    [ "$_sd_old" = "$_sd_new" ] && { release_mutation_lock; return 0; }
+    slot_domains_set "$_sd_slot" "$_sd_new" || {
+        SLOT_DOMAINS_ERROR="Не удалось сохранить список доменов."
+        release_mutation_lock
+        return 1
+    }
+    if save_config >/dev/null 2>&1 && reconcile_dnsmasq >/dev/null 2>&1 && APPLY_OUTPUT_QUIET=1 dnsmasq_restart_checked >/dev/null 2>&1; then
+        log_msg "Маршруты DNS для слота $_sd_slot обновлены."
+        release_mutation_lock
+        return 0
+    fi
+    slot_domains_set "$_sd_slot" "$_sd_old" || true
+    save_config >/dev/null 2>&1 || true
+    if reconcile_dnsmasq >/dev/null 2>&1; then
+        /etc/init.d/dnsmasq restart >/dev/null 2>&1 || true
+    fi
+    SLOT_DOMAINS_ERROR="Не удалось применить маршруты доменов. Предыдущая настройка восстановлена."
+    release_mutation_lock
+    return 1
+}
+
 port_set() {
     case "$1" in
         1) PORT_1="$2" ;;
@@ -2661,7 +2773,7 @@ reconcile_dnsmasq() {
         if [ -n "$_slot_domains" ]; then
             _slot_domains="$(normalize_slot_domains "$_slot_domains")" || return 1
             for _domain in $_slot_domains; do
-                val="/$_domain/127.0.0.1#$_p"
+                val="/$_domain/127.0.0.1#$p"
                 exact_list_has "dhcp.$sec.server" "$val" || uci add_list "dhcp.$sec.server=$val" || return 1
                 record_own "dnsmasq" "server" "$val" "section=$sec"
             done
