@@ -1914,12 +1914,13 @@ validate_dns_message() {
 
             answer_usable=0
             for (k=0; k<an+ns+ar; k++) {
-                if (!read_name(r, rn, rpos, 0)) exit 1
-                rpos=name_next
+                if (!read_name(r, rn, rpos, 1)) exit 1
+                rr_owner=name_value; rpos=name_next
                 if (rpos + 10 > rn) exit 1
                 rr_type=u16(r,rpos); rr_class=u16(r,rpos+2); rdlen=u16(r,rpos+8); rdata_pos=rpos+10
                 if (rdata_pos + rdlen > rn) exit 1
-                if (k < an && rr_class == query_class && (rr_type == query_type || rr_type == 5)) {
+                # Do not accept unrelated A/CNAME data as an answer for this question.
+                if (k < an && rr_owner == query_name && rr_class == query_class && (rr_type == query_type || rr_type == 5)) {
                     if (rr_type == 1 && rdlen != 4) exit 1
                     if (rr_type == 5) {
                         if (!read_name(r, rn, rdata_pos, 0) || name_next != rdata_pos + rdlen) exit 1
@@ -2036,7 +2037,17 @@ test_dns_catalog() (
         warn_msg "Не удалось создать общий DNS-тестовый пакет."
         return 1
     }
-    _test_source="$TMP_DIR/test-source-$$"
+    # Pin the catalog identity for this test run. A concurrent catalog refresh
+    # must not let results for old URLs be marked fresh against the new catalog.
+    _catalog_version_start="$(dns_catalog_version)"
+    _catalog_hash_start="$(file_hash "$DNS_CATALOG")"
+    [ -n "$_catalog_version_start" ] && [ -n "$_catalog_hash_start" ] || {
+        rm -f "$TMP_DIR/dns_query.bin" 2>/dev/null
+        release_test_lock
+        warn_msg "Не удалось зафиксировать версию каталога перед проверкой DNS."
+        return 1
+    }
+    _test_source="$TMP_DIR/test-source-$"
     if [ "$_test_scope" = all ]; then
         grep -v '^#' "$DNS_CATALOG" 2>/dev/null | grep '|' > "$_test_source" || : > "$_test_source"
         _test_scope_label="весь каталог"
@@ -2047,6 +2058,12 @@ test_dns_catalog() (
     total="$(wc -l < "$_test_source" 2>/dev/null | tr -d ' ')"
     case "$total" in ''|*[!0-9]*) total=0;; esac
     [ "$total" -gt 0 ] || { rm -f "$_test_source"; release_test_lock; warn_msg "В выбранной области проверки нет DNS-серверов."; return 1; }
+    if [ "$_catalog_version_start" != "$(dns_catalog_version)" ] || [ "$_catalog_hash_start" != "$(file_hash "$DNS_CATALOG")" ]; then
+        rm -f "$_test_source" "$TMP_DIR/dns_query.bin" 2>/dev/null
+        release_test_lock
+        warn_msg "Каталог DNS изменился до начала проверки. Запустите проверку повторно."
+        return 1
+    fi
     printf "${C_WHITE}Проверяю %s DNS-серверов: %s. Это может занять до 5 минут...${C_NC}\n" "$total" "$_test_scope_label"
     test_progress() {
         _done=0
@@ -2107,17 +2124,17 @@ test_dns_catalog() (
         return 1
     }
     _catalog_version="$(dns_catalog_version)"
-    [ -n "$_catalog_version" ] || {
+    _catalog_hash="$(file_hash "$DNS_CATALOG")"
+    [ -n "$_catalog_version" ] && [ -n "$_catalog_hash" ] || {
         rm -f "$_result_tmp" "$_meta_tmp" 2>/dev/null
         release_test_lock
-        warn_msg "Каталог DNS не содержит версии DNSCATVER. Результат не принят watchdog."
+        warn_msg "Не удалось подтвердить версию каталога DNS. Результат не сохранён."
         return 1
     }
-    _catalog_hash="$(file_hash "$DNS_CATALOG")"
-    [ -n "$_catalog_hash" ] || {
-        rm -f "$_result_tmp" "$_meta_tmp" 2>/dev/null
+    if [ "$_catalog_version" != "$_catalog_version_start" ] || [ "$_catalog_hash" != "$_catalog_hash_start" ]; then
+        rm -f "$_result_tmp" "$_meta_tmp" "$_test_source" "$TMP_DIR/dns_query.bin" 2>/dev/null
         release_test_lock
-        warn_msg "Не удалось вычислить хеш каталога DNS. Результат не сохранён."
+        warn_msg "Каталог DNS изменился во время проверки. Результат отброшен; запустите проверку повторно."
         return 1
     }
     {
