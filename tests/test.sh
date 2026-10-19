@@ -1210,6 +1210,26 @@ grep -Fq 'test_dns_catalog bypass' "$tmp/quick_max_bypass.sh" || fail "bypass fl
 grep -Fq '_catalog_hash_start="$(file_hash "$DNS_CATALOG")"' dns-manager.sh || fail "DNS test does not snapshot the starting catalog hash"
 grep -Fq 'Каталог DNS изменился во время проверки. Результат отброшен' dns-manager.sh || fail "DNS test does not discard results when catalog changes during testing"
 ok "DNS result freshness display and category-scoped tests"
+# A successful regional resolver cannot make a failing general category usable.
+awk '/^watchdog_test_results_usable\(\) \{/,/^}/' dns-manager.sh > "$tmp/watchdog_test_results_usable.sh"
+[ -s "$tmp/watchdog_test_results_usable.sh" ] || fail "usable DNS result helper extraction"
+cat > "$tmp/watchdog_test_results_usable_runner.sh" <<'EOF_USABLE_RESULTS'
+#!/bin/sh
+set -eu
+TEST_RESULTS="$2"
+watchdog_test_results_fresh() { return 0; }
+. "$1"
+printf 'yandex_ru|regional|Yandex RU|10|OK\n' > "$TEST_RESULTS"
+if watchdog_test_results_usable bypass; then exit 41; fi
+if watchdog_test_results_usable all; then exit 42; fi
+printf 'yandex_ru|regional|Yandex RU|10|OK\ncomss_bypass|bypass|Comss|20|OK\n' > "$TEST_RESULTS"
+watchdog_test_results_usable bypass || exit 43
+printf 'adguard_default|adblock|AdGuard|20|OK\n' > "$TEST_RESULTS"
+if watchdog_test_results_usable bypass; then exit 44; fi
+EOF_USABLE_RESULTS
+chmod +x "$tmp/watchdog_test_results_usable_runner.sh"
+"$tmp/watchdog_test_results_usable_runner.sh" "$tmp/watchdog_test_results_usable.sh" "$tmp/usable-results" || fail "regional or unrelated DNS result satisfies selected category"
+ok "cached DNS usability requires a working resolver in the requested category"
 
 # Preserve an existing RU DNS only when it passed the fresh regional test.
 awk '/^apply_profile_now\(\) \{/,/^menu_category_select\(\)/' dns-manager.sh | sed '$d' > "$tmp/apply_profile_now_ru.sh"
