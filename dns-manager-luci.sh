@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.50
+# Version: 1.51
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -32,7 +32,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.50"
+VERSION="1.51"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -158,7 +158,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="1.50"
+SELF_VERSION="1.51"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -2728,7 +2728,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI common module version: 1.50
+// DNS Manager LuCI common module version: 1.51
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -2904,6 +2904,7 @@ function hasPing(v){ return /^\d+$/.test(String(v===undefined||v===null?'':v)); 
 function stateBadge(status,pingValue){
   var s=String(status||'').toUpperCase();
   if(s==='RUNNING')return badge('dm-warn','проверяется');
+  if(!s)return badge('dm-off','нет данных');
   if(s==='OK'&&hasPing(pingValue))return badge('dm-ok','доступен');
   if(s==='OK'||s==='FAIL'||s==='FAILED'||s.indexOf('_FAIL')>0||s.indexOf('TIMEOUT')>=0||s.indexOf('ERROR')>=0||s.indexOf('HTTP_')===0||!hasPing(pingValue))return badge('dm-bad','недоступен');
   return badge('dm-off','нет данных');
@@ -4759,7 +4760,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 1.50
+// DNS Manager LuCI version: 1.51
 return view.extend({
   load: DM.load,
   render: DM.render,
