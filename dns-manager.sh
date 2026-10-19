@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.58"
+VERSION="3.59"
 # 3.38: clear the LuCI update flag after a successful CLI update.
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
@@ -1912,22 +1912,35 @@ validate_dns_message() {
             response_type=u16(r,rpos); response_class=u16(r,rpos+2); rpos += 4
             if (response_name != query_name || response_type != query_type || response_class != query_class) exit 1
 
-            answer_usable=0
             for (k=0; k<an+ns+ar; k++) {
                 if (!read_name(r, rn, rpos, 1)) exit 1
                 rr_owner=name_value; rpos=name_next
                 if (rpos + 10 > rn) exit 1
                 rr_type=u16(r,rpos); rr_class=u16(r,rpos+2); rdlen=u16(r,rpos+8); rdata_pos=rpos+10
                 if (rdata_pos + rdlen > rn) exit 1
-                # Do not accept unrelated A/CNAME data as an answer for this question.
-                if (k < an && rr_owner == query_name && rr_class == query_class && (rr_type == query_type || rr_type == 5)) {
-                    if (rr_type == 1 && rdlen != 4) exit 1
-                    if (rr_type == 5) {
-                        if (!read_name(r, rn, rdata_pos, 0) || name_next != rdata_pos + rdlen) exit 1
-                    }
-                    answer_usable=1
+                # Record only usable A answers in the answer section.
+                # A zero/loopback answer for example.com is a sinkhole, not a successful resolution.
+                if (k < an && rr_class == query_class && rr_type == 1) {
+                    if (rdlen != 4) exit 1
+                    a1=r[rdata_pos]; a2=r[rdata_pos+1]; a3=r[rdata_pos+2]; a4=r[rdata_pos+3]
+                    if (a1 != 0 && a1 != 127) usable_a[rr_owner]=1
+                }
+                # Follow CNAME answers. A CNAME-only reply does not prove that an A query resolves.
+                if (k < an && rr_class == query_class && rr_type == 5) {
+                    if (!read_name(r, rn, rdata_pos, 1) || name_next != rdata_pos + rdlen) exit 1
+                    cname_value=name_value
+                    if ((rr_owner in cname_target) && cname_target[rr_owner] != cname_value) exit 1
+                    cname_target[rr_owner]=cname_value
                 }
                 rpos=rdata_pos+rdlen
+            }
+            current_name=query_name
+            answer_usable=0
+            for (depth=0; depth<16; depth++) {
+                if (current_name in usable_a) { answer_usable=1; break }
+                if (!(current_name in cname_target) || (current_name in cname_seen)) break
+                cname_seen[current_name]=1
+                current_name=cname_target[current_name]
             }
             if (!answer_usable || rpos != rn) exit 1
             exit 0
