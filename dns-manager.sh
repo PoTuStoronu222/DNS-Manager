@@ -2483,12 +2483,6 @@ sync_hdp_force_contract() {
 
     uci commit https-dns-proxy || return 1
 
-    if [ "$_want" = 1 ]; then
-
-    else
-
-    fi
-
     if [ -x /etc/init.d/https-dns-proxy ] && /etc/init.d/https-dns-proxy running >/dev/null 2>&1; then
         /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || return 1
     fi
