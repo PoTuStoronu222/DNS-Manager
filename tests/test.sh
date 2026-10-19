@@ -880,7 +880,7 @@ grep -Fq 'ensure_dns_dot_block || return 1' "$tmp/encrypted_dns_apply.sh" || fai
 grep -Fq 'remove_dns_dot_block || return 1' "$tmp/encrypted_dns_apply.sh" || fail "encrypted-DNS protection does not remove its DoT rule"
 grep -Fq "canary_domains_mozilla='1'" "$tmp/encrypted_dns_apply.sh" || fail "encrypted-DNS protection does not configure the browser DoH canary"
 grep -Fq 'watchdog|force|encrypted_dns|dnsmasq_perf)' dns-manager-luci.sh || fail "LuCI RPC does not allow the independent encrypted-DNS setting"
-grep -Fq 'setSetting(\x27encrypted_dns\x27,1,root)' dns-manager-luci.sh || grep -Fq "setSetting('encrypted_dns',1,root)" dns-manager-luci.sh || fail "LuCI has no enable action for encrypted-DNS protection"
+grep -Fq "setSetting('encrypted_dns',1,root)" dns-manager-luci.sh || fail "LuCI has no enable action for encrypted-DNS protection"
 grep -Fq "setSetting('encrypted_dns',0,root)" dns-manager-luci.sh || fail "LuCI has no disable action for encrypted-DNS protection"
 grep -Fq 'Направляет обычные DNS-запросы устройств на DNS роутера.' dns-manager-luci.sh || fail "LuCI is missing the forced-DNS explanation"
 grep -Fq 'Дополнительно ограничивает использование сторонних зашифрованных DNS-сервисов' dns-manager-luci.sh || fail "LuCI is missing the encrypted-DNS protection explanation"
