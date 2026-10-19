@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.60"
+VERSION="3.61"
 # 3.38: clear the LuCI update flag after a successful CLI update.
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
@@ -2951,7 +2951,10 @@ verify_selected_doh() {
     return 0
 }
 rebuild_selected_hdp_sections() {
-    case "$DNS_PROFILE" in hybrid|custom) ;; *) return 1 ;; esac
+    case "$DNS_PROFILE" in
+        hybrid|custom) ;;
+        *) [ -n "$SLOT_1$SLOT_2$SLOT_3$SLOT_4$SLOT_5$SLOT_6$SLOT_RU" ] || return 1 ;;
+    esac
     _keep_file="$TMP_DIR/rebuild-keep-$$"
     : > "$_keep_file" || return 1
     for _rs in 1 2 3 4 5 6 RU; do
@@ -5404,9 +5407,8 @@ setting_process() {
     esac
 
     if [ "$_module" = watchdog ] && [ "$_new" = 1 ]; then
-        _profile_category="$(watchdog_scope_category 2>/dev/null || printf none)"
-        if [ "$_profile_category" = none ]; then
-            err_msg "Сначала выберите профиль DNS Manager."
+        if [ -z "$SLOT_1$SLOT_2$SLOT_3$SLOT_4$SLOT_5$SLOT_6$SLOT_RU" ]; then
+            err_msg "Сначала настройте хотя бы один DNS-сервер."
             pause
             return 1
         fi
@@ -5809,12 +5811,12 @@ watchdog_forced_dns_runtime_guard() {
 }
 
 watchdog_enforce_doh_authority() {
-    [ "$DNS_PROFILE" = hybrid ] || [ "$DNS_PROFILE" = custom ] || return 0
     _expected=0
     for _s in 1 2 3 4 5 6 RU; do
         eval "_id=\${SLOT_${_s}:-}"
         [ -n "$_id" ] && _expected=$((_expected+1))
     done
+    [ "$_expected" -gt 0 ] || return 0
     _actual=0
     _i=0
     while uci -q get "https-dns-proxy.@https-dns-proxy[$_i]" >/dev/null 2>&1; do
@@ -5988,16 +5990,19 @@ watchdog_preferred_quick_candidate() {
     printf '%s\n' "$_pref"
 }
 watchdog_pick_replacement() {
-    local _slot _used _tried _allow_clean _profile_all_scope _selection_kind _desired_for_pick _passcats _results_scope _fresh_source _fresh_pass_source _passcat _checked_cat _rid _rcat _fresh_pick _fresh_rest _rurl _u _current_id _current_cat _current_url _url
+    local _slot _used _tried _allow_clean _explicit_cat _profile_all_scope _selection_kind _desired_for_pick _passcats _results_scope _fresh_source _fresh_pass_source _passcat _checked_cat _rid _rcat _fresh_pick _fresh_rest _rurl _u _current_id _current_cat _current_url _url
     _slot="$1"
     _used="$2"
     _tried="$3"
     _allow_clean="${4:-0}"
+    _explicit_cat="${5:-}"
     _profile_all_scope=0
-    if [ "${DNS_SELECTION_MODE:-}" = profile ] && [ "${DNS_SELECTION_CATEGORY:-}" = all ]; then
-        # "Все категории" is allowed to repair during an explicit profile apply.
-        # Background watchdog still rejects mixed/all selections via
-        # watchdog_scope_category().
+    if [ -n "$_explicit_cat" ]; then
+        case "$_explicit_cat" in ''|*[!a-zA-Z0-9_-]*) return 1;; esac
+        _selection_kind="$_explicit_cat"
+        _desired_for_pick="$_explicit_cat"
+    elif [ "${DNS_SELECTION_MODE:-}" = profile ] && [ "${DNS_SELECTION_CATEGORY:-}" = all ]; then
+        # "Все категории" remains supported by explicit profile-apply repair.
         _selection_kind=all
         _profile_all_scope=1
         if [ "$_slot" = RU ]; then
@@ -6015,10 +6020,13 @@ watchdog_pick_replacement() {
     # Prefer the intended category. Clean is only a temporary fallback when
     # no target-category DNS is currently alive anywhere in the profile.
     _passcats="$_desired_for_pick"
-    if [ "$_profile_all_scope" = 1 ] && [ "$_slot" != RU ]; then
-        _passcats=all
-    elif [ "$_allow_clean" = 1 ] && [ "$_slot" != RU ] && [ "$_desired_for_pick" != clean ]; then
-        _passcats="$_desired_for_pick clean"
+    # Exact-category mode is used by automatic per-slot repair.
+    if [ -z "$_explicit_cat" ]; then
+        if [ "$_profile_all_scope" = 1 ] && [ "$_slot" != RU ]; then
+            _passcats=all
+        elif [ "$_allow_clean" = 1 ] && [ "$_slot" != RU ] && [ "$_desired_for_pick" != clean ]; then
+            _passcats="$_desired_for_pick clean"
+        fi
     fi
 
     # During profile application TEST_RESULTS is the authoritative fresh
@@ -6292,11 +6300,12 @@ watchdog_loop_reset_slot() {
     eval "WD_MISSING_${_slot}=0"
 }
 watchdog_embedded_integrity_guard() {
-    _selection_kind="$(watchdog_scope_category 2>/dev/null || true)"
-    case "$_selection_kind" in
-        bypass|clean|security|privacy|adblock|family) ;;
-        *) return 0 ;;
-    esac
+    _has_slots=0
+    for _guard_slot in 1 2 3 4 5 6 RU; do
+        eval "_guard_id=${SLOT_${_guard_slot}:-}"
+        [ -n "$_guard_id" ] && _has_slots=1
+    done
+    [ "$_has_slots" = 1 ] || return 0
     _now="$(date +%s 2>/dev/null)"
     case "$_now" in ''|*[!0-9]*) return 0;; esac
     _last="${WD_LAST_GUARD_TS:-0}"
