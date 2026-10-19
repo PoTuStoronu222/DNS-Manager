@@ -1296,7 +1296,7 @@ doh_status_json() {
     while uci -q get https-dns-proxy.@https-dns-proxy[$_i] >/dev/null 2>&1; do
         _p="$(uci -q get https-dns-proxy.@https-dns-proxy[$_i].listen_port 2>/dev/null || true)"
         _a="$(uci -q get https-dns-proxy.@https-dns-proxy[$_i].listen_addr 2>/dev/null || true)"
-        _u="$(catalog_url_normalize "$(uci -q get https-dns-proxy.@https-dns-proxy[$_i].resolver_url 2>/dev/null || true)")
+        _u="$(catalog_url_normalize "$(uci -q get https-dns-proxy.@https-dns-proxy[$_i].resolver_url 2>/dev/null || true)")"
         _n="$(uci -q get https-dns-proxy.@https-dns-proxy[$_i].name 2>/dev/null || true)"
         if [ -z "$_n" ] && [ -n "$_u" ]; then _lookup_id="$(catalog_id_for_url "$_u" 2>/dev/null || true)"; [ -n "$_lookup_id" ] && _n="$(catalog_field "$_lookup_id" 4 2>/dev/null || true)"; fi
         case "$_u" in
@@ -1341,7 +1341,7 @@ doh_status_json() {
         _j=0
         while uci -q get https-dns-proxy.@https-dns-proxy[$_j] >/dev/null 2>&1; do
             _up="$(uci -q get https-dns-proxy.@https-dns-proxy[$_j].listen_port 2>/dev/null || true)"
-            _uu="$(catalog_url_normalize "$(uci -q get https-dns-proxy.@https-dns-proxy[$_j].resolver_url 2>/dev/null || true)")
+            _uu="$(catalog_url_normalize "$(uci -q get https-dns-proxy.@https-dns-proxy[$_j].resolver_url 2>/dev/null || true)")"
             [ "$_up" = "$_port" ] && [ "$_uu" = "$_url_cmp" ] && { _match=$((_match+1)); break; }
             _j=$((_j+1))
         done
@@ -1516,7 +1516,7 @@ status_json() {
         _j=0
         while uci -q get "https-dns-proxy.@https-dns-proxy[$_j]" >/dev/null 2>&1; do
             _up="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_j].listen_port" 2>/dev/null || true)"
-            _uu="$(catalog_url_normalize "$(uci -q get "https-dns-proxy.@https-dns-proxy[$_j].resolver_url" 2>/dev/null || true)")
+            _uu="$(catalog_url_normalize "$(uci -q get "https-dns-proxy.@https-dns-proxy[$_j].resolver_url" 2>/dev/null || true)")"
             if [ "$_up" = "$_port" ] && [ "$_uu" = "$_url_cmp" ]; then _match=$((_match + 1)); break; fi
             _j=$((_j + 1))
         done
@@ -1677,7 +1677,7 @@ status_json() {
     while uci -q get "https-dns-proxy.@https-dns-proxy[$_i]" >/dev/null 2>&1; do
         _p="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].listen_port" 2>/dev/null || true)"
         _a="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].listen_addr" 2>/dev/null || true)"
-        _u="$(catalog_url_normalize "$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].resolver_url" 2>/dev/null || true)")
+        _u="$(catalog_url_normalize "$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].resolver_url" 2>/dev/null || true)")"
         _n="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].name" 2>/dev/null || true)"
         if [ -z "$_n" ] && [ -n "$_u" ]; then
             _lookup_id="$(catalog_id_for_url "$_u" 2>/dev/null || true)"
