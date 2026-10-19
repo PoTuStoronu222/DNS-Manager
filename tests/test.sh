@@ -1156,6 +1156,11 @@ eval "_quote_roundtrip=$_quote_encoded"
 [ "$_quote_roundtrip" = "$_quote_input" ] || fail "shell_quote did not round-trip a special value"
 [ ! -e "$_quote_marker" ] || fail "shell_quote evaluated embedded shell syntax"
 ok "config serialization keeps shell metacharacters as literal data"
+
+# Lock recovery must reject PID 0 and must not reuse an existing quarantine path.
+[ "$(grep -Fc '|0|*[!0-9]*' dns-manager.sh)" -ge 3 ] || fail "lock recovery accepts PID zero"
+[ "$(grep -Fc 'if [ -e "$_stale_lock" ] || [ -L "$_stale_lock" ]; then return 1; fi' dns-manager.sh)" = 3 ] || fail "stale-lock quarantine path is not collision-checked for all lock types"
+ok "lock recovery validates PID and checks stale quarantine paths"
 grep -q 'watchdog_interval":%s,"watchdog_service' "$tmp/backend.sh" || fail "LuCI status does not expose saved watchdog interval"
 
 grep -q '^        set_watchdog_setting)' "$tmp/backend.sh" || fail "legacy watchdog setting dispatch missing"
