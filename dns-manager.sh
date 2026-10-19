@@ -5785,8 +5785,15 @@ watchdog_test_results_fresh() {
     return 0
 }
 watchdog_test_results_usable() {
-    watchdog_test_results_fresh "${1:-all}" || return 1
-    awk -F'|' 'NF==5 && $5=="OK" && $4 ~ /^[0-9]+$/ {found=1} END{exit !found}' "$TEST_RESULTS" 2>/dev/null
+    _usable_scope="\${1:-all}"
+    watchdog_test_results_fresh "$_usable_scope" || return 1
+    # Regional DNS is tested alongside a category, but it cannot stand in for
+    # a working general resolver when that category is selected.
+    awk -F'|' -v c="$_usable_scope" '
+        NF==5 && $5=="OK" && $4 ~ /^[0-9]+$/ && $2!="regional" &&
+        (c=="all" || $2==c) {found=1}
+        END {exit !found}
+    ' "$TEST_RESULTS" 2>/dev/null
 }
 ensure_test_results_fresh() {
     _fresh_cat="${1:-}"
