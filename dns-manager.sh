@@ -5742,21 +5742,24 @@ return "$_rc"
 # ==========================================
 # ==========================================
 test_results_max_age_for_category() {
-    case "${TEST_RESULTS_MAX_AGE:-}" in
-        ''|*[!0-9]*) ;;
-        *) printf '%s' "$TEST_RESULTS_MAX_AGE"; return 0 ;;
-    esac
+    _age=""
     case "$1" in
-        bypass) printf '%s' "${TEST_RESULTS_MAX_AGE_BYPASS:-21600}" ;;
-        clean) printf '%s' "${TEST_RESULTS_MAX_AGE_CLEAN:-21600}" ;;
-        security) printf '%s' "${TEST_RESULTS_MAX_AGE_SECURITY:-21600}" ;;
-        privacy) printf '%s' "${TEST_RESULTS_MAX_AGE_PRIVACY:-21600}" ;;
-        adblock) printf '%s' "${TEST_RESULTS_MAX_AGE_ADBLOCK:-21600}" ;;
-        family) printf '%s' "${TEST_RESULTS_MAX_AGE_FAMILY:-21600}" ;;
-        gaming) printf '%s' "${TEST_RESULTS_MAX_AGE_GAMING:-21600}" ;;
-        regional) printf '%s' "${TEST_RESULTS_MAX_AGE_REGIONAL:-21600}" ;;
-        *) printf '%s' "${TEST_RESULTS_MAX_AGE:-21600}" ;;
+        bypass) _age="${TEST_RESULTS_MAX_AGE_BYPASS:-}" ;;
+        clean) _age="${TEST_RESULTS_MAX_AGE_CLEAN:-}" ;;
+        security) _age="${TEST_RESULTS_MAX_AGE_SECURITY:-}" ;;
+        privacy) _age="${TEST_RESULTS_MAX_AGE_PRIVACY:-}" ;;
+        adblock) _age="${TEST_RESULTS_MAX_AGE_ADBLOCK:-}" ;;
+        family) _age="${TEST_RESULTS_MAX_AGE_FAMILY:-}" ;;
+        gaming) _age="${TEST_RESULTS_MAX_AGE_GAMING:-}" ;;
+        regional) _age="${TEST_RESULTS_MAX_AGE_REGIONAL:-}" ;;
     esac
+    # A category-specific window takes precedence. The common value is the
+    # fallback for "all", unknown categories, and legacy/missing category values.
+    case "$_age" in
+        ''|*[!0-9]*) _age="${TEST_RESULTS_MAX_AGE:-21600}" ;;
+    esac
+    case "$_age" in ''|*[!0-9]*) _age=21600 ;; esac
+    printf '%s' "$_age"
 }
 
 watchdog_test_results_fresh() {
