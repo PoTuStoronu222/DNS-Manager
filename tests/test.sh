@@ -16,6 +16,60 @@ sh -n dns-manager.sh || fail "dns-manager.sh: sh -n"
 sh -n dns-manager-luci.sh || fail "dns-manager-luci.sh: sh -n"
 ok "shell syntax"
 
+# Per-slot DNS domain routing uses dnsmasq server=/domain/127.0.0.1#port rules.
+awk '/^normalize_slot_domains\(\) \{/,/^slot_domains_get\(\) \{/' dns-manager.sh | sed '$d' > "$tmp/normalize_slot_domains.sh"
+[ -s "$tmp/normalize_slot_domains.sh" ] || fail "domain normalizer extraction"
+cat > "$tmp/normalize_slot_domains_runner.sh" <<'EOF_DNS_DOMAINS'
+#!/bin/sh
+set -eu
+. "$1"
+got="$(normalize_slot_domains 'YouTube.COM.,example.org example.org')"
+[ "$got" = 'youtube.com example.org' ] || { printf '%s\n' "unexpected normalized domains: $got" >&2; exit 51; }
+if normalize_slot_domains 'https://example.com' >/dev/null 2>&1; then exit 52; fi
+if normalize_slot_domains 'example..com' >/dev/null 2>&1; then exit 53; fi
+if normalize_slot_domains '-bad.example' >/dev/null 2>&1; then exit 54; fi
+if normalize_slot_domains 'plainword' >/dev/null 2>&1; then exit 55; fi
+EOF_DNS_DOMAINS
+chmod +x "$tmp/normalize_slot_domains_runner.sh"
+"$tmp/normalize_slot_domains_runner.sh" "$tmp/normalize_slot_domains.sh" || fail "domain input validation and normalization"
+ok "domain input validation rejects malformed hosts and normalizes duplicates"
+
+awk '/^slot_domains_get\(\) \{/,/^slot_domains_set\(\) \{/' dns-manager.sh | sed '$d' > "$tmp/slot_domains_get.sh"
+awk '/^watchdog_expected_servers\(\) \{/,/^}/' dns-manager.sh > "$tmp/watchdog_expected_servers.sh"
+[ -s "$tmp/slot_domains_get.sh" ] || fail "slot domain getter extraction"
+[ -s "$tmp/watchdog_expected_servers.sh" ] || fail "Watchdog expected DNS extraction"
+cat > "$tmp/watchdog_expected_domains_runner.sh" <<'EOF_WATCHDOG_DOMAIN_EXPECTED'
+#!/bin/sh
+set -eu
+TMP_DIR="$1"
+mkdir -p "$TMP_DIR"
+SLOT_1=resolver1; PORT_1=5053; SLOT_1_DOMAINS='youtube.com googlevideo.com'
+SLOT_2=resolver2; PORT_2=5054; SLOT_2_DOMAINS='netflix.com'
+SLOT_3=; PORT_3=; SLOT_3_DOMAINS=
+SLOT_4=; PORT_4=; SLOT_4_DOMAINS=
+SLOT_5=; PORT_5=; SLOT_5_DOMAINS=
+SLOT_6=; PORT_6=; SLOT_6_DOMAINS=
+TLD_RU_ENABLED=1; SLOT_RU=regional; PORT_RU=5059
+. "$2"
+. "$3"
+expected="$(watchdog_expected_servers)"
+grep -Fqx '127.0.0.1#5053' "$expected" || exit 61
+grep -Fqx '/youtube.com/127.0.0.1#5053' "$expected" || exit 62
+grep -Fqx '/googlevideo.com/127.0.0.1#5053' "$expected" || exit 63
+grep -Fqx '/netflix.com/127.0.0.1#5054' "$expected" || exit 64
+grep -Fqx '/ru/127.0.0.1#5059' "$expected" || exit 65
+if grep -Fqx '/youtube.com/127.0.0.1#5054' "$expected"; then exit 66; fi
+EOF_WATCHDOG_DOMAIN_EXPECTED
+chmod +x "$tmp/watchdog_expected_domains_runner.sh"
+"$tmp/watchdog_expected_domains_runner.sh" "$tmp/watchdog-domain-state" "$tmp/slot_domains_get.sh" "$tmp/watchdog_expected_servers.sh" || fail "Watchdog expected-domain rules"
+grep -Fq 'val="/$_domain/127.0.0.1#$p"' dns-manager.sh || fail "dnsmasq does not route configured domains to their slot port"
+grep -Fq 'SLOT_1_DOMAINS="$SLOT_1_DOMAINS"' dns-manager.sh || fail "domain assignments are not persisted"
+grep -Fq 'SLOT_6_DOMAINS="$SLOT_6_DOMAINS"' dns-manager.sh || fail "domain assignments are not persisted for every slot"
+grep -Fq 'set_slot_domains)' dns-manager-luci.sh || fail "LuCI domain update RPC is missing"
+grep -Fq "method:'set_slot_domains'" dns-manager-luci.sh || fail "LuCI domain save call is missing"
+grep -Fq 'Домены только через ' dns-manager-luci.sh || fail "LuCI slot domain editor is missing"
+ok "dnsmasq and Watchdog preserve per-slot domain routes"
+
 
 
 tmp="$(mktemp -d)"
@@ -231,9 +285,9 @@ grep -Fq "disabled:!!state.busy||!!state.jobRunning||unavailable||checking" dns-
 grep -q "'gaming','Игровые DNS'" dns-manager-luci.sh || fail "gaming catalog label missing in LuCI"
 grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validation missing gaming category"
 grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
-grep -q 'VERSION="3.55"' dns-manager.sh || fail "manager version not bumped"
+grep -q 'VERSION="3.56"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
-grep -q 'VERSION="1.50"' dns-manager-luci.sh || fail "LuCI version not bumped"
+grep -q 'VERSION="1.51"' dns-manager-luci.sh || fail "LuCI version not bumped"
 grep -q "'bypass','Обход геоблока'" dns-manager-luci.sh || fail "bypass profile label not updated"
 grep -q "'security','Защита от угроз'" dns-manager-luci.sh || fail "security profile label not updated"
 grep -q "'privacy','Конфиденциальность'" dns-manager-luci.sh || fail "privacy profile label not updated"
@@ -412,7 +466,7 @@ view_luci="$(sed -n 's|^// DNS Manager LuCI common module version:[[:space:]]*||
 [ "$top_luci" = "$self_luci" ] || fail "LuCI SELF_VERSION mismatch"
 [ "$top_luci" = "$view_luci" ] || fail "embedded JS version mismatch"
 ok "LuCI version markers synchronized ($top_luci)"
-grep -Fq 'VERSION="3.55"' dns-manager.sh || fail "DNS Manager version marker is not 3.55"
+grep -Fq 'VERSION="3.56"' dns-manager.sh || fail "DNS Manager version marker is not 3.55"
 ok "DNS Manager version marker synchronized (3.55)"
 
 if awk '
