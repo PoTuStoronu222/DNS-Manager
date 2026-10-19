@@ -7008,11 +7008,12 @@ watchdog_service_start_enable() {
     return 0
 }
 watchdog_service_remove_files() {
+    # Keep the existing launcher if a legacy daemon is still active.
+    watchdog_remove_legacy_daemon || return 1
     if [ -x "$WATCHDOG_SERVICE_PATH" ]; then
         "$WATCHDOG_SERVICE_PATH" stop >/dev/null 2>&1 || true
         "$WATCHDOG_SERVICE_PATH" disable >/dev/null 2>&1 || true
     fi
-    watchdog_remove_legacy_daemon >/dev/null 2>&1 || true
     rm -f "$WATCHDOG_SERVICE_PATH" 2>/dev/null || return 1
     rm -rf "$WATCHDOG_LEGACY_RUNTIME_DIR" 2>/dev/null || true
     return 0
