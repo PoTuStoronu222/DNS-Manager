@@ -168,7 +168,7 @@ acquire_mutation_lock() {
             *) break ;;
         esac
     done
-    case "$_mpid" in ''|*[!0-9]*)
+    case "$_mpid" in ''|0|*[!0-9]*)
         log_msg "Операция пропущена: блокировка изменения конфигурации имеет пустой/некорректный PID."
         return 1 ;;
     esac
@@ -179,7 +179,8 @@ acquire_mutation_lock() {
 
     # Rename the observed stale lock atomically. Never rm the live lock path:
     # another process may have replaced it after our PID check.
-    _stale_lock="${MUTATION_LOCK_DIR}.stale.$$"
+    _stale_lock="${MUTATION_LOCK_DIR}.stale.$"
+    if [ -e "$_stale_lock" ] || [ -L "$_stale_lock" ]; then return 1; fi
     mv "$MUTATION_LOCK_DIR" "$_stale_lock" 2>/dev/null || return 1
     _stale_pid="$(cat "$_stale_lock/pid" 2>/dev/null || true)"
     if [ "$_stale_pid" = "$_mpid" ] && ! kill -0 "$_stale_pid" 2>/dev/null; then
@@ -274,10 +275,11 @@ acquire_test_lock() {
         _tpid="$(cat "$TEST_LOCK_DIR/pid" 2>/dev/null || true)"
         case "$_tpid" in ''|*[!0-9]*) sleep 1 ;; *) break ;; esac
     done
-    case "$_tpid" in ''|*[!0-9]*) return 1 ;; esac
+    case "$_tpid" in ''|0|*[!0-9]*) return 1 ;; esac
     kill -0 "$_tpid" 2>/dev/null && return 1
 
-    _stale_lock="${TEST_LOCK_DIR}.stale.$$"
+    _stale_lock="${TEST_LOCK_DIR}.stale.$"
+    if [ -e "$_stale_lock" ] || [ -L "$_stale_lock" ]; then return 1; fi
     mv "$TEST_LOCK_DIR" "$_stale_lock" 2>/dev/null || return 1
     _stale_pid="$(cat "$_stale_lock/pid" 2>/dev/null || true)"
     if [ "$_stale_pid" = "$_tpid" ] && ! kill -0 "$_stale_pid" 2>/dev/null; then
@@ -406,10 +408,11 @@ acquire_auto_update_lock() {
         _au_pid="$(cat "$AUTO_UPDATE_LOCK_DIR/pid" 2>/dev/null || true)"
         case "$_au_pid" in ''|*[!0-9]*) sleep 1 ;; *) break ;; esac
     done
-    case "$_au_pid" in ''|*[!0-9]*) return 1 ;; esac
+    case "$_au_pid" in ''|0|*[!0-9]*) return 1 ;; esac
     kill -0 "$_au_pid" 2>/dev/null && return 1
 
-    _stale_lock="${AUTO_UPDATE_LOCK_DIR}.stale.$$"
+    _stale_lock="${AUTO_UPDATE_LOCK_DIR}.stale.$"
+    if [ -e "$_stale_lock" ] || [ -L "$_stale_lock" ]; then return 1; fi
     mv "$AUTO_UPDATE_LOCK_DIR" "$_stale_lock" 2>/dev/null || return 1
     _stale_pid="$(cat "$_stale_lock/pid" 2>/dev/null || true)"
     if [ "$_stale_pid" = "$_au_pid" ] && ! kill -0 "$_stale_pid" 2>/dev/null; then
