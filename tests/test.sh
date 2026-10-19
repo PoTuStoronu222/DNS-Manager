@@ -122,6 +122,20 @@ if validate_dns_message "$tmp/dns-bad-answer-owner" "$tmp/dns-query"; then fail 
 printf '\022\064\201\200\000\001\000\000\000\000\000\000\007example\003com\000\000\001\000\001' > "$tmp/dns-no-answer"
 if validate_dns_message "$tmp/dns-no-answer" "$tmp/dns-query"; then fail "DNS response without a usable answer accepted"; fi
 
+# A CNAME must lead to a usable A answer, not be accepted by itself.
+printf '\022\064\201\200\000\001\000\001\000\000\000\000\007example\003com\000\000\001\000\001\300\014\000\005\000\001\000\000\000\074\000\023\005alias\007example\003com\000' > "$tmp/dns-cname-only"
+if validate_dns_message "$tmp/dns-cname-only" "$tmp/dns-query"; then fail "CNAME without a terminal A answer accepted"; fi
+
+# A complete CNAME chain ending in a usable A record is valid.
+printf '\022\064\201\200\000\001\000\002\000\000\000\000\007example\003com\000\000\001\000\001\300\014\000\005\000\001\000\000\000\074\000\023\005alias\007example\003com\000\300\051\000\001\000\001\000\000\000\074\000\004\135\270\330\042' > "$tmp/dns-cname-chain"
+validate_dns_message "$tmp/dns-cname-chain" "$tmp/dns-query" || fail "valid CNAME-to-A chain rejected"
+
+# Sinkhole-style A responses are not accepted as usable DNS.
+printf '\022\064\201\200\000\001\000\001\000\000\000\000\007example\003com\000\000\001\000\001\300\014\000\001\000\001\000\000\000\074\000\004\000\000\000\000' > "$tmp/dns-zero-answer"
+if validate_dns_message "$tmp/dns-zero-answer" "$tmp/dns-query"; then fail "0.0.0.0 sinkhole accepted as usable answer"; fi
+printf '\022\064\201\200\000\001\000\001\000\000\000\000\007example\003com\000\000\001\000\001\300\014\000\001\000\001\000\000\000\074\000\004\177\000\000\001' > "$tmp/dns-loopback-answer"
+if validate_dns_message "$tmp/dns-loopback-answer" "$tmp/dns-query"; then fail "loopback sinkhole accepted as usable answer"; fi
+
 printf '\022\064\201\200\000\001\000\001\000\000\000\000\007example\003com\000\000\001\000\001' > "$tmp/dns-truncated-answer"
 if validate_dns_message "$tmp/dns-truncated-answer" "$tmp/dns-query"; then fail "truncated answer record accepted"; fi
 
@@ -273,9 +287,9 @@ grep -Fq "disabled:!!state.busy||!!state.jobRunning||unavailable||checking" dns-
 grep -q "'gaming','Игровые DNS'" dns-manager-luci.sh || fail "gaming catalog label missing in LuCI"
 grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validation missing gaming category"
 grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
-grep -q 'VERSION="3.57"' dns-manager.sh || fail "manager version not bumped"
+grep -q 'VERSION="3.59"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
-grep -q 'VERSION="1.51"' dns-manager-luci.sh || fail "LuCI version not bumped"
+grep -q 'VERSION="1.53"' dns-manager-luci.sh || fail "LuCI version not bumped"
 grep -q "'bypass','Обход геоблока'" dns-manager-luci.sh || fail "bypass profile label not updated"
 grep -q "'security','Защита от угроз'" dns-manager-luci.sh || fail "security profile label not updated"
 grep -q "'privacy','Конфиденциальность'" dns-manager-luci.sh || fail "privacy profile label not updated"
@@ -454,8 +468,8 @@ view_luci="$(sed -n 's|^// DNS Manager LuCI common module version:[[:space:]]*||
 [ "$top_luci" = "$self_luci" ] || fail "LuCI SELF_VERSION mismatch"
 [ "$top_luci" = "$view_luci" ] || fail "embedded JS version mismatch"
 ok "LuCI version markers synchronized ($top_luci)"
-grep -Fq 'VERSION="3.57"' dns-manager.sh || fail "DNS Manager version marker is not 3.57"
-ok "DNS Manager version marker synchronized (3.55)"
+grep -Fq 'VERSION="3.59"' dns-manager.sh || fail "DNS Manager version marker is not 3.59"
+ok "DNS Manager version marker synchronized (3.59)"
 
 if awk '
     /function startAutoStatus\(root\)/ { capture=1 }
@@ -627,7 +641,14 @@ if grep -q '^assigned_port_for_id()' dns-manager-luci.sh; then
 fi
 grep -Fq -- '--connect-timeout 1 --max-time 3 --resolve "$host:$port:$ipx"' dns-manager.sh || fail "direct DoH timeout was not reduced"
 grep -q '(trap - EXIT; test_one_dns "\$_id") &' "$tmp/backend.sh" || fail "selected DNS checks are not parallelized"
-ok "single and full DNS checks use the same test_one_dns path"
+awk '
+    /^job_start_test_current\(\) \{/ { capture=1 }
+    capture && /q="\$TMP_DIR\/dns_query\.bin"/ { query_line=NR }
+    capture && /if ! printf .*example.*com/ { create_line=NR }
+    capture && /\(trap - EXIT; test_one_dns/ { worker_line=NR; exit }
+    END { if (!query_line || !create_line || !worker_line || query_line >= create_line || create_line >= worker_line) exit 1 }
+' dns-manager-luci.sh || fail "selected DNS workers do not receive a pre-created immutable query"
+ok "single and selected DNS checks initialize the shared query safely"
 awk '/^function checkInfo\(id,d\)/,/^}/' "$tmp/common.js" > "$tmp/check_info.js"
 grep -q "String(x.status||'').toUpperCase()==='RUNNING'" "$tmp/check_info.js" || fail "LuCI transient check state is not limited to RUNNING"
 grep -q "d&&d.status" "$tmp/check_info.js" || fail "LuCI finished DNS status does not come from RPC data"
