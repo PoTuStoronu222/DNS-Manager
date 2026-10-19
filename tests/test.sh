@@ -1228,7 +1228,7 @@ chmod +x "$tmp/ensure_test_results_fresh_runner.sh"
 "$tmp/ensure_test_results_fresh_runner.sh" "$tmp/ensure_test_results_fresh.sh" || fail "category test refresh validates the wrong scope"
 ok "category-scoped DNS test refresh preserves its scope"
 # A category-specific freshness setting must override the common fallback.
-awk '/^test_results_max_age_for_category\\(\\) \\{/,/^}/' dns-manager.sh > "$tmp/test_results_max_age.sh"
+awk '/^test_results_max_age_for_category\(\) \{/,/^}/' dns-manager.sh > "$tmp/test_results_max_age.sh"
 [ -s "$tmp/test_results_max_age.sh" ] || fail "category freshness helper extraction"
 cat > "$tmp/test_results_max_age_runner.sh" <<'EOF_TEST_AGE'
 #!/bin/sh
