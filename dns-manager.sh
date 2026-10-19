@@ -2136,7 +2136,7 @@ test_dns_catalog() (
         release_test_lock
         warn_msg "Каталог DNS изменился во время проверки. Результат отброшен; запустите проверку повторно."
         return 1
-    }
+    fi
     {
         printf 'timestamp=%s\n' "$(date +%s)"
         printf 'catalog_version=%s\n' "$_catalog_version"
