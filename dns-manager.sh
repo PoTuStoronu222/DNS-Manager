@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.55"
+VERSION="3.61"
 # 3.38: clear the LuCI update flag after a successful CLI update.
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
@@ -29,7 +29,7 @@ WATCHDOG_GUARD_INTERVAL=3600
 DNSMASQ_CACHE_SIZE=4096
 WATCHDOG_SERVICE_PATH="/etc/init.d/dns-watchdog"
 WATCHDOG_SERVICE_MARKER="# DNS_MANAGER_WATCHDOG_SERVICE=2"
-WATCHDOG_SERVICE_VERSION_MARKER="# DNS_MANAGER_WATCHDOG_SERVICE_VERSION=3.11.6"
+WATCHDOG_SERVICE_VERSION_MARKER="# DNS_MANAGER_WATCHDOG_SERVICE_VERSION=3.11.8"
 WATCHDOG_LEGACY_DAEMON_PATH="/usr/bin/dns-watchdog-daemon.sh"
 WATCHDOG_LEGACY_DAEMON_MARKER="# DNS_MANAGER_WATCHDOG_DAEMON=1"
 WATCHDOG_LEGACY_RUNTIME_DIR="/var/run/dns-watchdog"
@@ -1584,7 +1584,7 @@ detect_forced_dns_path() {
             _rt="$(dns_path_conflict_nft 2>/dev/null || true)"
             while IFS='|' read -r _chain _handle _line; do
                 [ -n "$_line" ] || continue
-                _rp="$(printf '%s\n' "$_line" | sed -n 's/.*redirect[[:space:]]\+to[[:space:]]\+:[[:space:]]*\([0-9][0-9]*\).*/\1/p' | head -n1)"
+                _rp="$(printf '%s\n' "$_line" | sed -n 's/.*redirect[[:space:]]\+to[[:space:]]\+:[[:space:]]*\([0-9][0-9]*\).*/\1/p; s/.*dnat[[:space:]]\+to[[:space:]]\+[^[:space:]]*:\([0-9][0-9]*\).*/\1/p' | head -n1)"
                 [ -n "$_rp" ] || continue
                 FORCED_DNS_ACTIVE=1
                 FORCED_DNS_TARGETS="${FORCED_DNS_TARGETS}${_rp} "
@@ -1632,8 +1632,8 @@ EOF_FORCE_IPT
         else
             FORCED_DNS_SOURCE="Steer"
         fi
-    elif [ "$_manager_force_cfg" = 1 ]; then
-        FORCED_DNS_ACTIVE=1
+    elif [ "$_manager_force_cfg" = 1 ] && [ "${FORCED_DNS_ACTIVE:-0}" = 1 ]; then
+        # UCI settings alone do not prove that the runtime LAN:53 interception exists.
         FORCED_DNS_SOURCE="DNS Manager"
     fi
 
@@ -2414,8 +2414,11 @@ sync_hdp_force_contract() {
 
     # Steer already owns LAN:53 -> :5300. Do not create a second forced-DNS path.
     if [ "${STEER_DNS_ACTIVE:-0}" = 1 ]; then
+        # https-dns-proxy defaults force_dns to 1 when the option is absent.
+        # Keep an explicit 0 so a package restart cannot add a second redirect.
+        uci set https-dns-proxy.config.force_dns="0" || return 1
         if [ "$_want" = 1 ]; then
-            for _k in force_dns notrack_dns force_dns_port force_dns_src_interface; do
+            for _k in notrack_dns force_dns_port force_dns_src_interface; do
                 uci -q delete "https-dns-proxy.config.$_k" || true
             done
             uci set https-dns-proxy.config.force_ip_family="auto" || return 1
@@ -2428,7 +2431,7 @@ sync_hdp_force_contract() {
             reconcile_dnsmasq || return 1
             if [ -x /etc/init.d/dnsmasq ]; then /etc/init.d/dnsmasq restart >/dev/null 2>&1 || return 1; fi
         else
-            for _k in force_dns notrack_dns force_dns_port force_dns_src_interface force_ip_family dnsmasq_config_update; do
+            for _k in notrack_dns force_dns_port force_dns_src_interface force_ip_family dnsmasq_config_update; do
                 uci -q delete "https-dns-proxy.config.$_k" || true
             done
             uci commit https-dns-proxy || return 1
@@ -2733,6 +2736,9 @@ _apply_extras_now_impl() {
             # Forced-DNS changes are fully represented by the applied UCI/firewall
             # state. Do not run the full router discovery here.
             save_config || return 1
+            # When DNS probing is off, the same procd service follows forced-DNS.
+            # When it is on, the running loop picks up the saved setting.
+            [ "${WATCHDOG_ENABLED:-0}" = 1 ] || apply_watchdog || return 1
             return 0
             ;;
         dnsmasq_perf)
@@ -2945,7 +2951,10 @@ verify_selected_doh() {
     return 0
 }
 rebuild_selected_hdp_sections() {
-    case "$DNS_PROFILE" in hybrid|custom) ;; *) return 1 ;; esac
+    case "$DNS_PROFILE" in
+        hybrid|custom) ;;
+        *) [ -n "$SLOT_1$SLOT_2$SLOT_3$SLOT_4$SLOT_5$SLOT_6$SLOT_RU" ] || return 1 ;;
+    esac
     _keep_file="$TMP_DIR/rebuild-keep-$$"
     : > "$_keep_file" || return 1
     for _rs in 1 2 3 4 5 6 RU; do
@@ -3723,7 +3732,7 @@ _apply_settings_impl() {
             tx_restore_on_failure
             return 1
         }
-        if [ "${WATCHDOG_ENABLED:-0}" = 1 ]; then
+        if [ "${WATCHDOG_ENABLED:-0}" = 1 ] || [ "${FORCE_DOH:-0}" = 1 ]; then
             if ! watchdog_service_start_enable; then
                 err_msg "Watchdog не удалось запустить после фиксации конфигурации. Изменения DNS откатываются."
                 tx_restore_on_failure
@@ -4866,7 +4875,7 @@ check_module_state() {
                     _ok=1
                     [ "$(uci -q get https-dns-proxy.config.dnsmasq_config_update 2>/dev/null)" = "-" ] || _ok=0
                     [ "$(uci -q get https-dns-proxy.config.force_ip_family 2>/dev/null)" = "auto" ] || _ok=0
-                    [ -z "$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null)" ] || _ok=0
+                    [ "$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null)" = "0" ] || _ok=0
                     [ -z "$(uci -q get https-dns-proxy.config.notrack_dns 2>/dev/null)" ] || _ok=0
                     [ -z "$(uci -q get https-dns-proxy.config.force_dns_port 2>/dev/null)" ] || _ok=0
                     [ -z "$(uci -q get https-dns-proxy.config.force_dns_src_interface 2>/dev/null)" ] || _ok=0
@@ -4900,7 +4909,7 @@ check_module_state() {
                 [ "$(uci -q get https-dns-proxy.config.canary_domains_mozilla 2>/dev/null)" = 1 ] || _ok=0
                 force_dns_ports_match_expected || _ok=0
                 force_dns_src_matches_expected || _ok=0
-                if [ "$_ok" = 1 ] && [ "${FORCED_DNS_ACTIVE:-0}" = 1 ]; then
+                if [ "$_ok" = 1 ] && [ "${FORCED_DNS_EXTERNAL:-0}" = 0 ] && [ "${FORCED_DNS_ACTIVE:-0}" = 1 ]; then
                     printf 1
                 else
                     printf 2
@@ -5398,9 +5407,8 @@ setting_process() {
     esac
 
     if [ "$_module" = watchdog ] && [ "$_new" = 1 ]; then
-        _profile_category="$(watchdog_scope_category 2>/dev/null || printf none)"
-        if [ "$_profile_category" = none ]; then
-            err_msg "Сначала выберите профиль DNS Manager."
+        if [ -z "$SLOT_1$SLOT_2$SLOT_3$SLOT_4$SLOT_5$SLOT_6$SLOT_RU" ]; then
+            err_msg "Сначала настройте хотя бы один DNS-сервер."
             pause
             return 1
         fi
@@ -5711,27 +5719,50 @@ watchdog_target_live_count() {
     printf "%s\n" "$_target_live"
 }
 watchdog_enforce_hdp_control() {
+    # Background checks must not mutate the forced-DNS module while it is off.
     [ "${FORCE_DOH:-0}" = 1 ] || return 0
-    detect_steer_dns_path >/dev/null 2>&1 || true
+
+    # An unrelated live interception is not proof that Manager's own rule is missing.
+    # Keep external config untouched and expose the conflict through read-only status.
+    detect_forced_dns_path >/dev/null 2>&1 || true
+    if [ "${FORCED_DNS_EXTERNAL:-0}" = 1 ]; then
+        log_msg "Watchdog: обнаружен внешний перехват DNS; чужую конфигурацию не изменяю."
+        return 0
+    fi
+
     if [ "${STEER_DNS_ACTIVE:-0}" = 1 ]; then
+        # Keep package interception disabled regardless of the Manager toggle:
+        # Steer already owns LAN:53 -> :5300, while absent force_dns defaults to 1.
         _changed=0
-        for _k in force_dns notrack_dns force_dns_port force_dns_src_interface; do
-            uci -q get "https-dns-proxy.config.$_k" >/dev/null 2>&1 && _changed=1
-        done
-        [ "$(uci -q get https-dns-proxy.config.dnsmasq_config_update 2>/dev/null)" = "-" ] || _changed=1
-        [ "$(uci -q get https-dns-proxy.config.force_ip_family 2>/dev/null)" = "auto" ] || _changed=1
-        if [ "$_changed" = 1 ]; then
-            for _k in force_dns notrack_dns force_dns_port force_dns_src_interface; do
-                uci -q delete "https-dns-proxy.config.$_k" || true
+        [ "$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null)" = "0" ] || _changed=1
+        if [ "${FORCE_DOH:-0}" = 1 ]; then
+            for _k in notrack_dns force_dns_port force_dns_src_interface; do
+                uci -q get "https-dns-proxy.config.$_k" >/dev/null 2>&1 && _changed=1
             done
-            uci set https-dns-proxy.config.dnsmasq_config_update="-" || return 1
-            uci set https-dns-proxy.config.force_ip_family="auto" || return 1
+            [ "$(uci -q get https-dns-proxy.config.dnsmasq_config_update 2>/dev/null)" = "-" ] || _changed=1
+            [ "$(uci -q get https-dns-proxy.config.force_ip_family 2>/dev/null)" = "auto" ] || _changed=1
+        fi
+        if [ "$_changed" = 1 ]; then
+            uci set https-dns-proxy.config.force_dns="0" || return 1
+            if [ "${FORCE_DOH:-0}" = 1 ]; then
+                for _k in notrack_dns force_dns_port force_dns_src_interface; do
+                    uci -q delete "https-dns-proxy.config.$_k" || true
+                done
+                uci set https-dns-proxy.config.dnsmasq_config_update="-" || return 1
+                uci set https-dns-proxy.config.force_ip_family="auto" || return 1
+            fi
             uci commit https-dns-proxy || return 1
             watchdog_restart_hdp || return 1
         fi
-        ensure_dns_dot_block || return 1
+        if [ "${FORCE_DOH:-0}" = 1 ]; then
+            ensure_dns_dot_block || return 1
+        else
+            remove_dns_dot_block || return 1
+        fi
         return 0
     fi
+    [ "${FORCE_DOH:-0}" = 1 ] || return 0
+
     _changed=0
     [ "$(uci -q get https-dns-proxy.config.dnsmasq_config_update 2>/dev/null)" = "*" ] || _changed=1
     [ "$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null)" = "1" ] || _changed=1
@@ -5748,18 +5779,44 @@ watchdog_enforce_hdp_control() {
     [ "$(uci -q get https-dns-proxy.config.canary_domains_mozilla 2>/dev/null)" = "1" ] || _changed=1
     force_dns_ports_match_expected || _changed=1
     force_dns_src_matches_expected || _changed=1
-    [ "$_changed" = 0 ] && return 0
-    log_msg "Обнаружен drift forced-DNS. Возвращаю конфигурацию DNS Manager."
-    sync_hdp_force_contract 1 || return 1
-    return 0
+    if [ "$_changed" = 1 ]; then
+        log_msg "Обнаружен drift forced-DNS. Возвращаю конфигурацию DNS Manager."
+        sync_hdp_force_contract 1 || return 1
+    fi
+
+    # Correct UCI settings are not sufficient if the package didn't install its live LAN:53 rule.
+    ensure_dns_dot_block || return 1
+    detect_forced_dns_path >/dev/null 2>&1 || true
+    [ "${FORCED_DNS_ACTIVE:-0}" = 1 ] && [ "${FORCED_DNS_EXTERNAL:-0}" = 0 ] && return 0
+    log_msg "Forced-DNS config is present but the runtime LAN:53 path is missing; restarting https-dns-proxy."
+    watchdog_restart_hdp || return 1
+    detect_forced_dns_path >/dev/null 2>&1 || true
+    [ "${FORCED_DNS_ACTIVE:-0}" = 1 ] && [ "${FORCED_DNS_EXTERNAL:-0}" = 0 ] && return 0
+    log_msg "Forced-DNS runtime LAN:53 path is still missing after https-dns-proxy restart."
+    return 1
 }
+
+# Steer can be installed, stopped, or removed after DNS Manager starts.
+# Reconcile forced-DNS ownership on each background-check cycle instead of
+# relying only on the throttled integrity guard.
+watchdog_forced_dns_runtime_guard() {
+    acquire_mutation_lock || return 0
+    if watchdog_enforce_hdp_control; then
+        _wfr_rc=0
+    else
+        _wfr_rc=$?
+    fi
+    release_mutation_lock
+    return "$_wfr_rc"
+}
+
 watchdog_enforce_doh_authority() {
-    [ "$DNS_PROFILE" = hybrid ] || [ "$DNS_PROFILE" = custom ] || return 0
     _expected=0
     for _s in 1 2 3 4 5 6 RU; do
         eval "_id=\${SLOT_${_s}:-}"
         [ -n "$_id" ] && _expected=$((_expected+1))
     done
+    [ "$_expected" -gt 0 ] || return 0
     _actual=0
     _i=0
     while uci -q get "https-dns-proxy.@https-dns-proxy[$_i]" >/dev/null 2>&1; do
@@ -5933,16 +5990,19 @@ watchdog_preferred_quick_candidate() {
     printf '%s\n' "$_pref"
 }
 watchdog_pick_replacement() {
-    local _slot _used _tried _allow_clean _profile_all_scope _selection_kind _desired_for_pick _passcats _results_scope _fresh_source _fresh_pass_source _passcat _checked_cat _rid _rcat _fresh_pick _fresh_rest _rurl _u _current_id _current_cat _current_url _url
+    local _slot _used _tried _allow_clean _explicit_cat _profile_all_scope _selection_kind _desired_for_pick _passcats _results_scope _fresh_source _fresh_pass_source _passcat _checked_cat _rid _rcat _fresh_pick _fresh_rest _rurl _u _current_id _current_cat _current_url _url
     _slot="$1"
     _used="$2"
     _tried="$3"
     _allow_clean="${4:-0}"
+    _explicit_cat="${5:-}"
     _profile_all_scope=0
-    if [ "${DNS_SELECTION_MODE:-}" = profile ] && [ "${DNS_SELECTION_CATEGORY:-}" = all ]; then
-        # "Все категории" is allowed to repair during an explicit profile apply.
-        # Background watchdog still rejects mixed/all selections via
-        # watchdog_scope_category().
+    if [ -n "$_explicit_cat" ]; then
+        case "$_explicit_cat" in ''|*[!a-zA-Z0-9_-]*) return 1;; esac
+        _selection_kind="$_explicit_cat"
+        _desired_for_pick="$_explicit_cat"
+    elif [ "${DNS_SELECTION_MODE:-}" = profile ] && [ "${DNS_SELECTION_CATEGORY:-}" = all ]; then
+        # "Все категории" remains supported by explicit profile-apply repair.
         _selection_kind=all
         _profile_all_scope=1
         if [ "$_slot" = RU ]; then
@@ -5960,10 +6020,13 @@ watchdog_pick_replacement() {
     # Prefer the intended category. Clean is only a temporary fallback when
     # no target-category DNS is currently alive anywhere in the profile.
     _passcats="$_desired_for_pick"
-    if [ "$_profile_all_scope" = 1 ] && [ "$_slot" != RU ]; then
-        _passcats=all
-    elif [ "$_allow_clean" = 1 ] && [ "$_slot" != RU ] && [ "$_desired_for_pick" != clean ]; then
-        _passcats="$_desired_for_pick clean"
+    # Exact-category mode is used by automatic per-slot repair.
+    if [ -z "$_explicit_cat" ]; then
+        if [ "$_profile_all_scope" = 1 ] && [ "$_slot" != RU ]; then
+            _passcats=all
+        elif [ "$_allow_clean" = 1 ] && [ "$_slot" != RU ] && [ "$_desired_for_pick" != clean ]; then
+            _passcats="$_desired_for_pick clean"
+        fi
     fi
 
     # During profile application TEST_RESULTS is the authoritative fresh
@@ -6237,11 +6300,12 @@ watchdog_loop_reset_slot() {
     eval "WD_MISSING_${_slot}=0"
 }
 watchdog_embedded_integrity_guard() {
-    _selection_kind="$(watchdog_scope_category 2>/dev/null || true)"
-    case "$_selection_kind" in
-        bypass|clean|security|privacy|adblock|family) ;;
-        *) return 0 ;;
-    esac
+    _has_slots=0
+    for _guard_slot in 1 2 3 4 5 6 RU; do
+        eval "_guard_id=${SLOT_${_guard_slot}:-}"
+        [ -n "$_guard_id" ] && _has_slots=1
+    done
+    [ "$_has_slots" = 1 ] || return 0
     _now="$(date +%s 2>/dev/null)"
     case "$_now" in ''|*[!0-9]*) return 0;; esac
     _last="${WD_LAST_GUARD_TS:-0}"
@@ -6259,13 +6323,12 @@ watchdog_embedded_integrity_guard() {
     return 0
 }
 watchdog_embedded_loop() {
-    [ "${WATCHDOG_ENABLED:-0}" = 1 ] || return 0
-
-    # RAM-first watchdog: no catalog refresh, no persistent log writes, no
-    # per-cycle runtime files. Persistent configuration is only read here.
+    # Forced-DNS Auto must track Steer even when DNS probing/rotation is off.
+    # When WATCHDOG_ENABLED=0 this loop runs only the lightweight path guard.
     DNS_MANAGER_RAM_LOG=1
     mkdir -p "$STATE_DIR" 2>/dev/null || return 1
     load_config
+    [ "${WATCHDOG_ENABLED:-0}" = 1 ] || [ "${FORCE_DOH:-0}" = 1 ] || return 0
     refresh_runtime_capabilities
 
     for _slot in 1 2 3 4 5 6 RU; do
@@ -6277,27 +6340,33 @@ watchdog_embedded_loop() {
     WATCHDOG_LAST_RESTART_TS=0
     WD_LAST_GUARD_TS="$(date +%s 2>/dev/null)"
     CHECKER_MISSING_LOGGED=0
-    log_msg "Фоновый watchdog embedded/procd запущен: проверка каждые ${WATCHDOG_INTERVAL:-600}с, замена после ${WATCHDOG_FAIL_THRESHOLD:-2} последовательных циклов."
+    if [ "${WATCHDOG_ENABLED:-0}" = 1 ]; then
+        log_msg "Фоновый DNS Watchdog запущен: проверка каждые ${WATCHDOG_INTERVAL:-600}с, замена после ${WATCHDOG_FAIL_THRESHOLD:-2} последовательных циклов."
+    else
+        log_msg "Фоновая проверка forced-DNS/Steer запущена; проверка и замена DNS-серверов выключены."
+    fi
 
     # Give network + https-dns-proxy a short settling window after procd start/WAN-up.
     sleep 12
 
     while :; do
-        [ "${WATCHDOG_ENABLED:-0}" = 1 ] || return 0
+        load_config >/dev/null 2>&1 || true
+        [ "${WATCHDOG_ENABLED:-0}" = 1 ] || [ "${FORCE_DOH:-0}" = 1 ] || return 0
+
+        if ! watchdog_forced_dns_runtime_guard; then
+            log_msg "Watchdog: не удалось синхронизировать forced-DNS по текущему состоянию Steer."
+        fi
+
+        # Forced-DNS-only mode does not test or rotate selected DNS servers.
+        if [ "${WATCHDOG_ENABLED:-0}" != 1 ]; then
+            sleep 60
+            continue
+        fi
+
         _interval="${WATCHDOG_INTERVAL:-600}"
         case "$_interval" in ''|*[!0-9]*) _interval=600;; esac
         [ "$_interval" -ge 60 ] 2>/dev/null || _interval=600
         [ "$_interval" -le 3600 ] 2>/dev/null || _interval=600
-
-        load_config >/dev/null 2>&1 || true
-        _selection_kind="$(watchdog_scope_category 2>/dev/null || true)"
-        case "$_selection_kind" in
-            bypass|clean|security|privacy|adblock|family) ;;
-            *)
-                sleep "$_interval"
-                continue
-                ;;
-        esac
 
         if ! watchdog_resource_guard; then
             sleep "$_interval"
@@ -6323,28 +6392,25 @@ watchdog_embedded_loop() {
         _missing=0
         _threshold_slots=""
         _local_recover_slots=""
-        _fallback_slots=""
-        _empty_slots=""
         _probe_rc=0
-        _target_live_count=0
 
         watchdog_refresh_listener_snapshot
 
         for _slot in 1 2 3 4 5 6 RU; do
             eval "_id=\${SLOT_${_slot}:-}"
-            _current_slot_cat=""; [ -n "$_id" ] && _current_slot_cat="$(dns_cat "$_id" 2>/dev/null || true)"
-            eval "_port=\${PORT_${_slot}:-}"
-            [ -n "$_port" ] || _port="$(hybrid_desired_port "$_slot")"
-            case "$_slot" in RU) _domain="yandex.ru" ;; *) _domain="example.com" ;; esac
-            _desired_slot_cat="$(watchdog_desired_cat "$_slot" 2>/dev/null || true)"
-            if [ "$_slot" != RU ] && [ -z "$_id" ]; then
-                _empty_slots="$_empty_slots $_slot"
+            if [ -z "$_id" ]; then
+                watchdog_loop_reset_slot "$_slot"
                 continue
             fi
-            if [ "$_slot" != RU ] && [ "$_desired_slot_cat" != clean ] && [ "$_current_slot_cat" = clean ]; then
-                _fallback_slots="$_fallback_slots $_slot"
+            _current_slot_cat="$(dns_cat "$_id" 2>/dev/null || true)"
+            if [ -z "$_current_slot_cat" ]; then
+                watchdog_loop_reset_slot "$_slot"
+                continue
             fi
+            eval "_port=\${PORT_${_slot}:-}"
+            [ -n "$_port" ] || _port="$(hybrid_desired_port "$_slot")"
             [ -n "$_port" ] || continue
+            case "$_slot" in RU) _domain="yandex.ru" ;; *) _domain="example.com" ;; esac
 
             _checked=$((_checked+1))
             if ! watchdog_listener_snapshot_has_port "$_port"; then
@@ -6365,7 +6431,6 @@ watchdog_embedded_loop() {
             _probe_rc=$?
             [ "$_probe_rc" = 2 ] && break
             if [ "$_probe_rc" = 0 ]; then
-                [ "$_slot" != RU ] && [ "$_current_slot_cat" = "$_desired_slot_cat" ] && _target_live_count=$((_target_live_count+1))
                 watchdog_loop_reset_slot "$_slot"
                 continue
             fi
@@ -6380,7 +6445,7 @@ watchdog_embedded_loop() {
         done
 
         [ "$_probe_rc" = 2 ] && { sleep "$_interval"; continue; }
-        [ "$_checked" -gt 0 ] || { [ -n "$_empty_slots" ] || { sleep "$_interval"; continue; }; }
+        [ "$_checked" -gt 0 ] || { sleep "$_interval"; continue; }
 
         _watchdog_action=0
 
@@ -6403,44 +6468,27 @@ watchdog_embedded_loop() {
             WD_LAST_GUARD_TS="$(date +%s 2>/dev/null)"
             for _slot in 1 2 3 4 5 6 RU; do watchdog_loop_reset_slot "$_slot"; done
             sleep 5
-        elif [ "$_live" -gt 0 ] && [ "$_failed" -eq "$_live" ] && [ "$_missing" -eq 0 ]; then
-            # All live DNS paths failed together: treat as WAN/upstream outage.
-            # Never rotate healthy DNS choices during a common outage.
-            for _slot in 1 2 3 4 5 6 RU; do watchdog_loop_reset_slot "$_slot"; done
         else
-            _trigger=""
-            for _slot in $_threshold_slots; do
-                if watchdog_loop_repair_cooldown_ok "$_slot"; then
-                    _trigger="$_slot"
-                    break
-                fi
-            done
-            if [ -n "$_trigger" ]; then
+            # Process all failed configured slots; the cooldown is tracked per slot.
+            for _trigger in $_threshold_slots; do
+                watchdog_loop_repair_cooldown_ok "$_trigger" || continue
                 watchdog_loop_mark_repair "$_trigger"
-                log_msg "Подтверждён сбой слота $_trigger в двух последовательных циклах при живом локальном listener. Запрашиваю точечную замену."
-                watchdog_slot_target_run "$_trigger" "$_target_live_count" >/dev/null 2>&1 || log_msg "Точечное восстановление слота $_trigger завершилось неуспешно; повторю после новых двух циклов."
+                log_msg "DNS в слоте $_trigger не отвечает ${WATCHDOG_FAIL_THRESHOLD:-2} проверок подряд. Ищу замену той же категории."
+                if watchdog_slot_target_run "$_trigger"; then
+                    log_msg "Watchdog: слот $_trigger восстановлен."
+                else
+                    log_msg "Watchdog: замена слота $_trigger не подтверждена; текущий DNS сохранён."
+                fi
                 _watchdog_action=1
-                load_config
-                refresh_runtime_capabilities
+                load_config >/dev/null 2>&1 || true
+                refresh_runtime_capabilities >/dev/null 2>&1 || true
                 WD_LAST_GUARD_TS="$(date +%s 2>/dev/null)"
                 eval "WD_FAIL_${_trigger}=0"
-                sleep 5
-            fi
+            done
         fi
 
         if [ "$_watchdog_action" = 0 ] && [ "$_failed" -eq 0 ] && [ "$_missing" -eq 0 ]; then
-            _restore_slot=""
-            for _slot in $_fallback_slots; do _restore_slot="$_slot"; break; done
-            [ -n "$_restore_slot" ] || for _slot in $_empty_slots; do _restore_slot="$_slot"; break; done
-            if [ -n "$_restore_slot" ] && [ "$_wd_repairs" -lt "${WATCHDOG_MAX_REPAIRS:-1}" ]; then
-                log_msg "Watchdog: проверяю целевую категорию для восстановления/дозаполнения слота $_restore_slot."
-                watchdog_slot_target_run "$_restore_slot" "$_target_live_count" >/dev/null 2>&1 && _watchdog_action=1 || true
-                load_config >/dev/null 2>&1 || true
-                refresh_runtime_capabilities >/dev/null 2>&1 || true
-            fi
-            if [ "$_watchdog_action" = 0 ]; then
-                watchdog_embedded_integrity_guard >/dev/null 2>&1 || true
-            fi
+            watchdog_embedded_integrity_guard >/dev/null 2>&1 || true
         fi
 
         sleep "$_interval"
@@ -6452,7 +6500,6 @@ watchdog_embedded_loop() {
 run_watchdog() {
     [ "${WATCHDOG_ENABLED:-0}" = 1 ] || return 0
     _wd_rc=0
-    _wd_repairs=0
     WATCHDOG_RESTART_COUNT=0
     if ! watchdog_resource_guard; then
         return 0
@@ -6461,91 +6508,50 @@ run_watchdog() {
         return 0
     fi
     load_config
-    _selection_kind="$(watchdog_scope_category 2>/dev/null || true)"
-    case "$_selection_kind" in
-        bypass|clean|security|privacy|adblock|family) ;;
-        *)
-            log_msg "Watchdog: смешанные или пользовательские категории DNS. Проверку и замену выбранных DNS не выполняю."
-            release_mutation_lock
-            return 0
-            ;;
-    esac
     _managed_slots=0
     for _s in 1 2 3 4 5 6 RU; do
         eval "_mid=\${SLOT_${_s}:-}"
         [ -n "$_mid" ] && _managed_slots=$((_managed_slots+1))
     done
     if [ "$_managed_slots" -eq 0 ]; then
-        log_msg "Watchdog: активная схема DNS Manager не настроена; сторонний https-dns-proxy не изменяю."
+        log_msg "Watchdog: DNS-серверы не настроены; заменять нечего."
         release_mutation_lock
         return 0
     fi
+
     sync_regional_dns_state
     cleanup_stale_tmp_dirs
     watchdog_enforce_hdp_control || log_msg "Не удалось полностью восстановить контроль над настройками https-dns-proxy."
     watchdog_enforce_doh_authority || log_msg "Не удалось полностью синхронизировать набор DNS Manager."
-    watchdog_service_recover || log_msg "Не удалось выполнить восстановительное перезапускание https-dns-proxy."
+    watchdog_service_recover || log_msg "Не удалось восстановить https-dns-proxy."
     watchdog_hdp_guard || log_msg "Не удалось проверить соответствие DNS-серверов выбранному набору."
     watchdog_dns_path_guard || log_msg "Не удалось проверить путь forced-DNS в firewall."
     watchdog_dnsmasq_guard || log_msg "Не удалось полностью восстановить конфигурацию dnsmasq."
-    _used="$TMP_DIR/watchdog-used-$$"
-    : > "$_used"
-    for _s in 1 2 3 4 5 6 RU; do
-        eval "_uid=\${SLOT_${_s}:-}"
-        [ -n "$_uid" ] || continue
-        _u="$(normalize_url "$(dns_url "$_uid")")"
-        [ -n "$_u" ] && printf '%s\n' "$_u" >> "$_used"
-    done
-    _selection_kind="$(watchdog_scope_category 2>/dev/null || true)"
+    release_mutation_lock
+
+    # Use the same locked, same-category replacement path as the background loop.
+    # If a local listener is missing, do not rotate its DNS choice.
+    watchdog_refresh_listener_snapshot
     for _slot in 1 2 3 4 5 6 RU; do
-        [ "$_wd_repairs" -lt "${WATCHDOG_MAX_REPAIRS:-1}" ] || break
+        load_config >/dev/null 2>&1 || true
         eval "_id=\${SLOT_${_slot}:-}"
-        _current_cat=""; [ -n "$_id" ] && _current_cat="$(dns_cat "$_id" 2>/dev/null || true)"
-        _desired="$(watchdog_desired_cat "$_slot" 2>/dev/null || true)"
-        _force_replace=0
-        if [ -n "$_desired" ] && [ "$_slot" != RU ]; then
-            if [ -z "$_id" ] || [ "$_current_cat" != "$_desired" ]; then
-                _force_replace=1
-            fi
+        [ -n "$_id" ] || continue
+        eval "_port=\${PORT_${_slot}:-}"
+        [ -n "$_port" ] || _port="$(hybrid_desired_port "$_slot")"
+        [ -n "$_port" ] || continue
+        if ! watchdog_listener_snapshot_has_port "$_port"; then
+            log_msg "Локальный DoH-listener слота $_slot отсутствует; сначала нужно восстановить https-dns-proxy. DNS не меняю."
+            _wd_rc=1
+            continue
         fi
-        if [ "$_force_replace" = 0 ] && [ -n "$_id" ] && watchdog_check_slot "$_slot"; then continue; fi
-        if [ "$_force_replace" = 0 ]; then
-            sleep 2
-            watchdog_check_slot "$_slot" && continue
-        else
-            log_msg "DNS в слоте $_slot не соответствует выбранной категории ($_current_cat вместо $_desired). Ищу замену."
+        if ! watchdog_slot_target_run "$_slot"; then
+            _wd_rc=1
         fi
-        log_msg "DNS в слоте $_slot: $(dns_name "$_id") требует замены. Ищу подходящий DNS той же категории."
-        _tried="$TMP_DIR/watchdog-tried-${_slot}-$$"
-        : > "$_tried"
-        _old="$_id"
-        _oldcat="$_current_cat"
-        _replacement_ok=0
-        _attempt=0
-        while [ "$_attempt" -lt 2 ]; do
-            _attempt=$((_attempt+1))
-            _picked="$(watchdog_pick_replacement "$_slot" "$_used" "$_tried")"
-            _repl="${_picked%%|*}"
-            _repl_cat="${_picked#*|}"
-            [ -n "$_repl" ] || break
-            [ "$_repl" = "$_old" ] && { printf '%s\n' "$_repl" >> "$_tried"; continue; }
-            printf '%s\n' "$_repl" >> "$_tried"
-            printf "  ${C_YELLOW}↻ Слот %s: %s не отвечает или не соответствует профилю. Проверяю замену %s.${C_NC}\n" "$_slot" "$(dns_name "$_old")" "$(dns_name "$_repl")"
-            if watchdog_apply_slot_candidate "$_slot" "$_repl" "$_repl_cat" "$_old" "$_oldcat"; then
-                printf "  ${C_GREEN}✓ Слот %s: %s подтверждён на 127.0.0.1:%s.${C_NC}\n" "$_slot" "$(dns_name "$_repl")" "$(eval "printf %s \"\${PORT_${_slot}:-}\"")"
-                _u="$(normalize_url "$(dns_url "$_repl")")"
-                grep -qxF "$_u" "$_used" 2>/dev/null || printf '%s\n' "$_u" >> "$_used"
-                _replacement_ok=1
-                _wd_repairs=$((_wd_repairs+1))
-                break
-            fi
-            printf "  ${C_RED}✗ Слот %s: %s не подтвердился через 127.0.0.1:%s.${C_NC}\n" "$_slot" "$(dns_name "$_repl")" "$(eval "printf %s \"\${PORT_${_slot}:-}\"")"
-        done
-        [ "$_replacement_ok" = 1 ] || _wd_rc=1
-        rm -f "$_tried"
+        load_config >/dev/null 2>&1 || true
+        refresh_runtime_capabilities >/dev/null 2>&1 || true
+        watchdog_refresh_listener_snapshot
     done
     rm -f "$TMP_DIR"/watchdog-*-$$ "$TMP_DIR"/watchdog-used-$$ "$TMP_DIR"/watchdog-categories-$$ 2>/dev/null
-    release_mutation_lock
     return "$_wd_rc"
 }
 watchdog_cron_scheduler_detect_pid() {
@@ -6837,7 +6843,7 @@ watchdog_service_install_files() {
     cat > "$_stmp" <<'EOF_DNS_WATCHDOG_SERVICE'
 #!/bin/sh /etc/rc.common
 # DNS_MANAGER_WATCHDOG_SERVICE=2
-# DNS_MANAGER_WATCHDOG_SERVICE_VERSION=3.11.6
+# DNS_MANAGER_WATCHDOG_SERVICE_VERSION=3.11.8
 
 USE_PROCD=1
 START=95
@@ -6849,7 +6855,9 @@ CMD="__watchdog-loop"
 start_service() {
     [ -x "$PROG" ] || return 1
     [ -r /etc/dns-manager/config/manager.conf ] || return 0
-    [ "$(sed -n 's/^WATCHDOG_ENABLED="\([01]\)"$/\1/p' /etc/dns-manager/config/manager.conf 2>/dev/null | head -n1)" = 1 ] || return 0
+    _wd_enabled="$(sed -n 's/^WATCHDOG_ENABLED="\([01]\)"$/\1/p' /etc/dns-manager/config/manager.conf 2>/dev/null | head -n1)"
+    _force_enabled="$(sed -n 's/^FORCE_DOH="\([01]\)"$/\1/p' /etc/dns-manager/config/manager.conf 2>/dev/null | head -n1)"
+    [ "$_wd_enabled" = 1 ] || [ "$_force_enabled" = 1 ] || return 0
     procd_open_instance "dns-watchdog"
     procd_set_param command /bin/sh "$PROG" "$CMD"
     procd_set_param respawn 3600 5 5
@@ -6923,32 +6931,50 @@ watchdog_remove_legacy_daemon() {
     return 0
 }
 watchdog_service_start_enable() {
+    # Never start procd alongside a legacy daemon or manager-owned cron job.
+    watchdog_remove_legacy_daemon || return 1
+    if watchdog_cron_marker_exists >/dev/null 2>&1; then
+        watchdog_cron_remove_owned_block >/dev/null 2>&1 || return 1
+        watchdog_cron_marker_exists >/dev/null 2>&1 && return 1
+    fi
     watchdog_service_install_files || return 1
     "$WATCHDOG_SERVICE_PATH" enable >/dev/null 2>&1 || return 1
     "$WATCHDOG_SERVICE_PATH" start >/dev/null 2>&1 || return 1
     sleep 1
     watchdog_service_running || return 1
-    watchdog_remove_legacy_daemon || return 1
     return 0
 }
 watchdog_service_remove_files() {
+    # Keep the existing launcher if a legacy daemon is still active.
+    watchdog_remove_legacy_daemon || return 1
     if [ -x "$WATCHDOG_SERVICE_PATH" ]; then
         "$WATCHDOG_SERVICE_PATH" stop >/dev/null 2>&1 || true
         "$WATCHDOG_SERVICE_PATH" disable >/dev/null 2>&1 || true
     fi
-    watchdog_remove_legacy_daemon >/dev/null 2>&1 || true
     rm -f "$WATCHDOG_SERVICE_PATH" 2>/dev/null || return 1
     rm -rf "$WATCHDOG_LEGACY_RUNTIME_DIR" 2>/dev/null || true
     return 0
 }
 watchdog_service_migrate_legacy() {
     [ "${FIRST_RUN_INITIAL:-0}" = 1 ] && return 0
-    [ "${WATCHDOG_ENABLED:-0}" = 1 ] || return 0
+    [ "${WATCHDOG_ENABLED:-0}" = 1 ] || [ "${FORCE_DOH:-0}" = 1 ] || return 0
     _legacy_cron=0
     watchdog_cron_marker_exists >/dev/null 2>&1 && _legacy_cron=1
 
     _service_ready=0
     watchdog_service_file_matches "$WATCHDOG_SERVICE_PATH" "$WATCHDOG_SERVICE_MARKER" "$WATCHDOG_SERVICE_VERSION_MARKER" && _service_ready=1
+
+    # A legacy daemon must be gone before procd starts; never run both.
+    watchdog_remove_legacy_daemon || return 1
+
+    # If cron is still active, remove its owned block before starting procd.
+    # If this cannot be done safely, leave procd stopped/disabled.
+    if [ "$_legacy_cron" = 1 ]; then
+        "$WATCHDOG_SERVICE_PATH" stop >/dev/null 2>&1 || true
+        "$WATCHDOG_SERVICE_PATH" disable >/dev/null 2>&1 || true
+        watchdog_cron_remove_owned_block >/dev/null 2>&1 || return 1
+        watchdog_cron_marker_exists >/dev/null 2>&1 && return 1
+    fi
 
     # If the service is manager-owned but old, stop it before replacing the launcher.
     if [ "$_service_ready" != 1 ] && watchdog_service_running >/dev/null 2>&1; then
@@ -6964,22 +6990,8 @@ watchdog_service_migrate_legacy() {
     "$WATCHDOG_SERVICE_PATH" start >/dev/null 2>&1 || return 1
     sleep 1
     watchdog_service_running || return 1
-    watchdog_remove_legacy_daemon || return 1
 
     if [ "$_legacy_cron" = 1 ]; then
-        log_msg "Watchdog: обнаружен старый cron DNS Manager; выполняю однократную миграцию на embedded procd."
-        watchdog_cron_remove_owned_block >/dev/null 2>&1 || {
-            log_msg "Watchdog: старый cron DNS Manager не удалось удалить безопасно; watchdog оставляю выключенным."
-            "$WATCHDOG_SERVICE_PATH" stop >/dev/null 2>&1 || true
-            "$WATCHDOG_SERVICE_PATH" disable >/dev/null 2>&1 || true
-            return 1
-        }
-        watchdog_cron_marker_exists >/dev/null 2>&1 && {
-            log_msg "Watchdog: старый cron-маркер всё ещё присутствует; procd watchdog выключен."
-            "$WATCHDOG_SERVICE_PATH" stop >/dev/null 2>&1 || true
-            "$WATCHDOG_SERVICE_PATH" disable >/dev/null 2>&1 || true
-            return 1
-        }
         log_msg "Watchdog: миграция на embedded procd завершена."
     elif [ "$_service_ready" = 0 ]; then
         log_msg "Watchdog: embedded procd-служба DNS Manager установлена и запущена."
@@ -6987,6 +6999,7 @@ watchdog_service_migrate_legacy() {
     return 0
 }
 watchdog_state_word_procd() {
+    [ "${WATCHDOG_ENABLED:-0}" = 1 ] || { printf '0'; return 0; }
     _service=0
     _enabled=0
     _running=0
@@ -7008,27 +7021,14 @@ watchdog_slot_target_run() {
     _slot="$1"
     case "$_slot" in 1|2|3|4|5|6|RU) ;; *) return 2 ;; esac
     [ "${WATCHDOG_ENABLED:-0}" = 1 ] || return 0
-    _selection_kind="$(watchdog_scope_category 2>/dev/null || true)"
-    case "$_selection_kind" in
-        bypass|clean|security|privacy|adblock|family) ;;
-        *) return 0 ;;
-    esac
     eval "_target_id=\${SLOT_${_slot}:-}"
+    [ -n "$_target_id" ] || return 0
     eval "_target_port=\${PORT_${_slot}:-}"
     [ -n "$_target_port" ] || _target_port="$(hybrid_desired_port "$_slot")"
     [ -n "$_target_port" ] || return 2
-    _target_cat="$(watchdog_desired_cat "$_slot")" || return 0
-    _promote_fallback=0
-    if [ "$_slot" != RU ] && [ -n "$_target_id" ] && [ "$_target_cat" != clean ] && [ "$(dns_cat "$_target_id" 2>/dev/null)" = clean ]; then
-        _promote_fallback=1
-    fi
-    _target_live="${2:-}"
-    case "$_target_live" in
-        ""|*[!0-9]*) _target_live="$(watchdog_target_live_count 2>/dev/null || printf 0)" ;;
-    esac
-    case "$_target_live" in ""|*[!0-9]*) _target_live=0;; esac
+    _target_cat="$(dns_cat "$_target_id" 2>/dev/null || true)"
+    [ -n "$_target_cat" ] || return 1
     _allow_clean=0
-    [ "$_target_live" -eq 0 ] && [ "$_promote_fallback" != 1 ] && _allow_clean=1
 
     if ! watchdog_resource_guard; then
         return 0
@@ -7042,7 +7042,7 @@ watchdog_slot_target_run() {
 
     # A healthy clean DNS can be a temporary fallback. Promote it only when a
     # target-category candidate is actually confirmed by the direct probe.
-    if [ "$_promote_fallback" != 1 ] && [ -n "$_target_id" ] && watchdog_check_slot "$_slot"; then
+    if watchdog_check_slot "$_slot"; then
         release_mutation_lock
         return 0
     fi
@@ -7060,9 +7060,13 @@ watchdog_slot_target_run() {
 
     _attempt=0
     _replacement_ok=0
-    while [ "$_attempt" -lt 2 ]; do
+    _max_attempts="${WATCHDOG_MAX_CANDIDATES:-3}"
+    case "$_max_attempts" in ''|*[!0-9]*) _max_attempts=3;; esac
+    [ "$_max_attempts" -ge 1 ] 2>/dev/null || _max_attempts=1
+    [ "$_max_attempts" -le 10 ] 2>/dev/null || _max_attempts=10
+    while [ "$_attempt" -lt "$_max_attempts" ]; do
         _attempt=$((_attempt+1))
-        _picked="$(watchdog_pick_replacement "$_slot" "$_used" "$_tried" "$_allow_clean")"
+        _picked="$(watchdog_pick_replacement "$_slot" "$_used" "$_tried" 0 "$_target_cat")"
         _repl="${_picked%%|*}"
         _repl_cat="${_picked#*|}"
         [ -n "$_repl" ] || break
@@ -7075,16 +7079,7 @@ watchdog_slot_target_run() {
             break
         fi
     done
-    if [ "$_replacement_ok" != 1 ] && [ "$_target_live" -gt 0 ] && [ "$_promote_fallback" != 1 ] && [ -n "$_target_id" ]; then
-        log_msg "Watchdog: другой DNS целевой категории остаётся рабочим; освобождаю неработающий слот $_slot вместо перехода на clean."
-        if watchdog_apply_slot_candidate "$_slot" "" "" "$_old_id" "$_old_cat"; then
-            _slot_rc=0
-        else
-            _slot_rc=1
-        fi
-    else
-        [ "$_replacement_ok" = 1 ] || _slot_rc=1
-    fi
+    [ "$_replacement_ok" = 1 ] || _slot_rc=1
     rm -f "$_used" "$_tried"
     release_mutation_lock
     return "$_slot_rc"
@@ -7154,22 +7149,18 @@ apply_watchdog() {
     : "${WATCHDOG_INTERVAL:=${WATCHDOG_CHECK_INTERVAL_DEFAULT:-600}}"
     save_config || return 1
 
-    if [ "${WATCHDOG_ENABLED:-0}" = 1 ]; then
-        watchdog_service_install_files || return 1
-        # During a transaction the final manager.conf has not been committed yet.
-        # Do not start the embedded loop until Apply commits the new configuration.
+    if [ "${WATCHDOG_ENABLED:-0}" = 1 ] || [ "${FORCE_DOH:-0}" = 1 ]; then
+        # During a transaction, defer service and legacy-scheduler changes until
+        # the final manager.conf has been committed and the Apply is verified.
         if [ "${TX_ACTIVE:-0}" = 1 ] && [ "${DEFER_CONFIG_SAVE:-0}" = 1 ]; then
-            watchdog_cron_marker_exists >/dev/null 2>&1 && watchdog_cron_remove_owned_block >/dev/null 2>&1 || true
             return 0
         fi
-        "$WATCHDOG_SERVICE_PATH" enable >/dev/null 2>&1 || return 1
-        "$WATCHDOG_SERVICE_PATH" start >/dev/null 2>&1 || return 1
-        sleep 1
-        watchdog_service_running || return 1
-        watchdog_remove_legacy_daemon || return 1
-        watchdog_cron_marker_exists >/dev/null 2>&1 && watchdog_cron_remove_owned_block >/dev/null 2>&1 || true
+        watchdog_service_start_enable || return 1
     else
-        watchdog_cron_marker_exists >/dev/null 2>&1 && watchdog_cron_remove_owned_block >/dev/null 2>&1 || true
+        watchdog_cron_marker_exists >/dev/null 2>&1 && {
+            watchdog_cron_remove_owned_block >/dev/null 2>&1 || return 1
+            watchdog_cron_marker_exists >/dev/null 2>&1 && return 1
+        }
         watchdog_service_remove_files || return 1
     fi
     return 0
@@ -7480,7 +7471,7 @@ fi
 
 # Existing installations: move watchdog from cron to procd only after a valid baseline exists.
 # FIRST_RUN_INITIAL is immutable for this invocation, so first launch never migrates cron.
-if [ "${FIRST_RUN_INITIAL:-0}" = 0 ] && [ "${WATCHDOG_ENABLED:-0}" = 1 ]; then
+if [ "${FIRST_RUN_INITIAL:-0}" = 0 ] && { [ "${WATCHDOG_ENABLED:-0}" = 1 ] || [ "${FORCE_DOH:-0}" = 1 ]; }; then
     watchdog_service_migrate_legacy >/dev/null 2>&1 || warn_msg "Не удалось завершить переход watchdog с cron на procd. Состояние watchdog оставлено без самовольной ротации DNS."
 fi
 
