@@ -692,23 +692,25 @@ awk '/^watchdog_service_start_enable\(\) \{/,/^}/' dns-manager.sh > "$tmp/watchd
     export WATCHDOG_SERVICE_PATH
     cat > "$WATCHDOG_SERVICE_PATH" <<'EOF_FAKE_SERVICE'
 #!/bin/sh
-printf 'service %s\n' "$1" >> "$CALL_LOG"
+printf 'service %s\\n' "$1" >> "$CALL_LOG"
 exit 0
 EOF_FAKE_SERVICE
     chmod 755 "$WATCHDOG_SERVICE_PATH"
     CRON_PRESENT=1
-    watchdog_remove_legacy_daemon() { printf 'legacy\n' >> "$CALL_LOG"; return "${LEGACY_RC:-0}"; }
+    watchdog_remove_legacy_daemon() { printf 'legacy\\n' >> "$CALL_LOG"; return "${LEGACY_RC:-0}"; }
     watchdog_cron_marker_exists() { [ "$CRON_PRESENT" = 1 ]; }
-    watchdog_cron_remove_owned_block() { printf 'cron-remove\n' >> "$CALL_LOG"; CRON_PRESENT=0; return 0; }
-    watchdog_service_install_files() { printf 'install\n' >> "$CALL_LOG"; return 0; }
-    watchdog_service_running() { printf 'running\n' >> "$CALL_LOG"; return 0; }
+    watchdog_cron_remove_owned_block() { printf 'cron-remove\\n' >> "$CALL_LOG"; CRON_PRESENT=0; return 0; }
+    watchdog_service_install_files() { printf 'install\\n' >> "$CALL_LOG"; return 0; }
+    watchdog_service_running() { printf 'running\\n' >> "$CALL_LOG"; return 0; }
     sleep() { :; }
     watchdog_service_start_enable
     awk 'NR==1 { if ($0!="legacy") exit 1 } NR==2 { if ($0!="cron-remove") exit 1 } NR==3 { if ($0!="install") exit 1 } NR==4 { if ($0!="service enable") exit 1 } NR==5 { if ($0!="service start") exit 1 } NR==6 { if ($0!="running") exit 1 } END { if (NR!=6) exit 1 }' "$CALL_LOG"
     : > "$CALL_LOG"
     LEGACY_RC=1
     if watchdog_service_start_enable; then exit 2; fi
-    ! grep -q '^service startawk '/^watchdog_service_start_enable\(\) \{/,/^}/' dns-manager.sh > "$tmp/watchdog_service_start_enable.sh"
+    if grep -q '^service start$' "$CALL_LOG"; then exit 3; fi
+) || fail "watchdog service starts before legacy ownership is cleared"
+awk '/^watchdog_service_start_enable\(\) \{/,/^}/' dns-manager.sh > "$tmp/watchdog_service_start_enable.sh"
 awk '/^watchdog_service_migrate_legacy\(\) \{/,/^}/' dns-manager.sh > "$tmp/watchdog_service_migrate_legacy.sh"
 _legacy_line="$(grep -nF 'watchdog_remove_legacy_daemon || return 1' "$tmp/watchdog_service_start_enable.sh" | head -n1 | cut -d: -f1)"
 _start_line="$(grep -nF '"$WATCHDOG_SERVICE_PATH" start' "$tmp/watchdog_service_start_enable.sh" | head -n1 | cut -d: -f1)"
