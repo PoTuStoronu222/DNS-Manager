@@ -1176,6 +1176,11 @@ ok "config serialization keeps shell metacharacters as literal data"
 [ "$(grep -Fc 'if [ -e "$_stale_lock" ] || [ -L "$_stale_lock" ]; then return 1; fi' dns-manager.sh)" = 3 ] || fail "stale-lock quarantine path is not collision-checked for all lock types"
 ok "lock recovery validates PID and checks stale quarantine paths"
 
+grep -Fq 'if [ -e "$MUTATION_LOCK_DIR" ] || [ -L "$MUTATION_LOCK_DIR" ]; then' dns-manager.sh || fail "mutation lock restore can move into an occupied path"
+grep -Fq 'if [ -e "$TEST_LOCK_DIR" ] || [ -L "$TEST_LOCK_DIR" ]; then return 1; fi' dns-manager.sh || fail "test lock restore can move into an occupied path"
+grep -Fq 'if [ -e "$AUTO_UPDATE_LOCK_DIR" ] || [ -L "$AUTO_UPDATE_LOCK_DIR" ]; then return 1; fi' dns-manager.sh || fail "auto-update lock restore can move into an occupied path"
+ok "lock recovery refuses to restore into an occupied path"
+
 # Exercise the mutation lock in an isolated temporary directory.
 _lock_funcs="$(sed -n -e '/^acquire_mutation_lock() {/,/^}/p' -e '/^release_mutation_lock() {/,/^}/p' dns-manager.sh)"
 [ -n "$_lock_funcs" ] || fail "mutation lock functions missing"
