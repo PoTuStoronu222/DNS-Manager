@@ -1202,6 +1202,69 @@ fi
 [ -f "$MUTATION_LOCK_DIR.stale.$$/marker" ] || fail "quarantine collision altered the existing path"
 rm -rf "$MUTATION_LOCK_DIR" "$MUTATION_LOCK_DIR.stale.$$"
 ok "mutation lock acquisition, release and stale-lock recovery are exercised"
+
+# Round-trip the real config writer with shell syntax embedded as data.
+_save_funcs="$(sed -n -e '/^shell_quote() {/,/^}/p' -e '/^save_config() {/,/^}/p' dns-manager.sh)"
+[ -n "$_save_funcs" ] || fail "config save functions missing"
+eval "$_save_funcs"
+sync_regional_dns_state() { :; }
+CFG_DIR="$tmp/config-save"
+CONFIG_FILE="$CFG_DIR/manager.conf"
+TX_ACTIVE=0
+DEFER_CONFIG_SAVE=0
+_quote_marker="$tmp/config-save-injection-marker"
+_expected_config_value="value with 'quotes'; \$(touch '$_quote_marker')"
+SLOT_1="$_expected_config_value"
+BOOTSTRAP_DNS_ALL="$_expected_config_value"
+save_config || fail "save_config failed for a value with shell metacharacters"
+SLOT_1=""
+BOOTSTRAP_DNS=""
+. "$CONFIG_FILE" || fail "saved manager.conf could not be sourced"
+[ "$SLOT_1" = "$_expected_config_value" ] || fail "SLOT_1 did not round-trip from manager.conf"
+[ "$BOOTSTRAP_DNS" = "$_expected_config_value" ] || fail "bootstrap DNS did not round-trip from manager.conf"
+[ ! -e "$_quote_marker" ] || fail "sourcing manager.conf executed embedded shell syntax"
+ok "manager.conf safely saves and reloads special characters"
+
+# Exercise concurrent lock acquisition in two independent shell processes.
+STATE_DIR="$tmp/lock-concurrent"
+MUTATION_LOCK_DIR="$STATE_DIR/mutation.lock"
+MUTATION_LOCK_HELD=0
+mkdir -p "$STATE_DIR" || fail "cannot create concurrent lock-test directory"
+{
+    sed -n -e '/^acquire_mutation_lock() {/,/^}/p' -e '/^release_mutation_lock() {/,/^}/p' dns-manager.sh
+    cat <<'EOF_LOCK_HOLDER'
+log_msg() { :; }
+STATE_DIR="$1"
+MUTATION_LOCK_DIR="$STATE_DIR/mutation.lock"
+MUTATION_LOCK_HELD=0
+mkdir -p "$STATE_DIR" || exit 3
+acquire_mutation_lock || exit 4
+: > "$STATE_DIR/ready"
+sleep 1
+release_mutation_lock
+EOF_LOCK_HOLDER
+} > "$tmp/lock-holder.sh"
+sh "$tmp/lock-holder.sh" "$STATE_DIR" &
+_holder_pid=$!
+_wait=0
+while [ ! -f "$STATE_DIR/ready" ] && [ "$_wait" -lt 50 ]; do
+    sleep 0.1
+    _wait=$((_wait + 1))
+done
+if [ ! -f "$STATE_DIR/ready" ]; then
+    kill "$_holder_pid" 2>/dev/null || true
+    wait "$_holder_pid" 2>/dev/null || true
+    fail "concurrent lock holder did not become ready"
+fi
+if acquire_mutation_lock; then
+    release_mutation_lock
+    wait "$_holder_pid" 2>/dev/null || true
+    fail "second process acquired an active mutation lock"
+fi
+[ -d "$MUTATION_LOCK_DIR" ] || fail "active lock disappeared during concurrent contention"
+wait "$_holder_pid" || fail "concurrent lock holder failed"
+[ ! -d "$MUTATION_LOCK_DIR" ] || fail "concurrent lock holder did not release its lock"
+ok "mutation lock rejects a concurrent process and releases cleanly"
 grep -q 'watchdog_interval":%s,"watchdog_service' "$tmp/backend.sh" || fail "LuCI status does not expose saved watchdog interval"
 
 grep -q '^        set_watchdog_setting)' "$tmp/backend.sh" || fail "legacy watchdog setting dispatch missing"
