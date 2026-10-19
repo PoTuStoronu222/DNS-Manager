@@ -3431,7 +3431,7 @@ function assignDirect(id,slot,root,nextName,nextUrl){
   (window.dmState&&window.dmState.doh_instances||[]).forEach(function(x){
     if(x&&String(x.slot)===String(slot))activeUrl=String(x.url||'');
   });
-  var normalizeUrl=function(u){return String(u||'').replace(/\/+$/,'');};
+  var normalizeUrl=function(u){u=String(u||'');return u.replace(/^(https:\/\/[^/]+)\/+$/i,'$1');};
   if(current===next&&normalizeUrl(activeUrl)===normalizeUrl(nextUrl))return;
   state.busy=true;
   state.pageNotice.catalog='Назначаю «'+next+'» в '+slotLabel(slot)+'…';
