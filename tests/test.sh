@@ -1227,6 +1227,24 @@ EOF_FRESH_SCOPE
 chmod +x "$tmp/ensure_test_results_fresh_runner.sh"
 "$tmp/ensure_test_results_fresh_runner.sh" "$tmp/ensure_test_results_fresh.sh" || fail "category test refresh validates the wrong scope"
 ok "category-scoped DNS test refresh preserves its scope"
+# A category-specific freshness setting must override the common fallback.
+awk '/^test_results_max_age_for_category\\(\\) \\{/,/^}/' dns-manager.sh > "$tmp/test_results_max_age.sh"
+[ -s "$tmp/test_results_max_age.sh" ] || fail "category freshness helper extraction"
+cat > "$tmp/test_results_max_age_runner.sh" <<'EOF_TEST_AGE'
+#!/bin/sh
+set -eu
+TEST_RESULTS_MAX_AGE=21600
+TEST_RESULTS_MAX_AGE_BYPASS=3600
+TEST_RESULTS_MAX_AGE_CLEAN=7200
+. "$1"
+[ "$(test_results_max_age_for_category bypass)" = 3600 ] || exit 41
+[ "$(test_results_max_age_for_category clean)" = 7200 ] || exit 42
+[ "$(test_results_max_age_for_category all)" = 21600 ] || exit 43
+[ "$(test_results_max_age_for_category unknown)" = 21600 ] || exit 44
+EOF_TEST_AGE
+chmod +x "$tmp/test_results_max_age_runner.sh"
+"$tmp/test_results_max_age_runner.sh" "$tmp/test_results_max_age.sh" || fail "category-specific DNS freshness is overridden by the common value"
+ok "category-specific DNS result freshness settings take precedence"
 
 awk '/^show_tests\(\) \{/,/^profile_apply_begin\(\) \{/' dns-manager.sh > "$tmp/show_tests.sh"
 grep -Fq 'watchdog_test_results_fresh "$_test_scope"' "$tmp/show_tests.sh" || fail "DNS results screen does not check freshness"
