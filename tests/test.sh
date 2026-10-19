@@ -414,7 +414,7 @@ view_luci="$(sed -n 's|^// DNS Manager LuCI common module version:[[:space:]]*||
 [ "$top_luci" = "$self_luci" ] || fail "LuCI SELF_VERSION mismatch"
 [ "$top_luci" = "$view_luci" ] || fail "embedded JS version mismatch"
 ok "LuCI version markers synchronized ($top_luci)"
-grep -Fq 'VERSION="3.60"' dns-manager.sh || fail "DNS Manager version marker is not 3.60"
+grep -Fq 'VERSION="3.61"' dns-manager.sh || fail "DNS Manager version marker is not 3.61"
 ok "DNS Manager version marker synchronized (3.60)"
 
 if awk '
