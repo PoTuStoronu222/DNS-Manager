@@ -7063,27 +7063,14 @@ watchdog_slot_target_run() {
     _slot="$1"
     case "$_slot" in 1|2|3|4|5|6|RU) ;; *) return 2 ;; esac
     [ "${WATCHDOG_ENABLED:-0}" = 1 ] || return 0
-    _selection_kind="$(watchdog_scope_category 2>/dev/null || true)"
-    case "$_selection_kind" in
-        bypass|clean|security|privacy|adblock|family) ;;
-        *) return 0 ;;
-    esac
     eval "_target_id=\${SLOT_${_slot}:-}"
+    [ -n "$_target_id" ] || return 0
     eval "_target_port=\${PORT_${_slot}:-}"
     [ -n "$_target_port" ] || _target_port="$(hybrid_desired_port "$_slot")"
     [ -n "$_target_port" ] || return 2
-    _target_cat="$(watchdog_desired_cat "$_slot")" || return 0
-    _promote_fallback=0
-    if [ "$_slot" != RU ] && [ -n "$_target_id" ] && [ "$_target_cat" != clean ] && [ "$(dns_cat "$_target_id" 2>/dev/null)" = clean ]; then
-        _promote_fallback=1
-    fi
-    _target_live="${2:-}"
-    case "$_target_live" in
-        ""|*[!0-9]*) _target_live="$(watchdog_target_live_count 2>/dev/null || printf 0)" ;;
-    esac
-    case "$_target_live" in ""|*[!0-9]*) _target_live=0;; esac
+    _target_cat="$(dns_cat "$_target_id" 2>/dev/null || true)"
+    [ -n "$_target_cat" ] || return 1
     _allow_clean=0
-    [ "$_target_live" -eq 0 ] && [ "$_promote_fallback" != 1 ] && _allow_clean=1
 
     if ! watchdog_resource_guard; then
         return 0
@@ -7097,7 +7084,7 @@ watchdog_slot_target_run() {
 
     # A healthy clean DNS can be a temporary fallback. Promote it only when a
     # target-category candidate is actually confirmed by the direct probe.
-    if [ "$_promote_fallback" != 1 ] && [ -n "$_target_id" ] && watchdog_check_slot "$_slot"; then
+    if watchdog_check_slot "$_slot"; then
         release_mutation_lock
         return 0
     fi
@@ -7115,9 +7102,13 @@ watchdog_slot_target_run() {
 
     _attempt=0
     _replacement_ok=0
-    while [ "$_attempt" -lt 2 ]; do
+    _max_attempts="${WATCHDOG_MAX_CANDIDATES:-3}"
+    case "$_max_attempts" in ''|*[!0-9]*) _max_attempts=3;; esac
+    [ "$_max_attempts" -ge 1 ] 2>/dev/null || _max_attempts=1
+    [ "$_max_attempts" -le 10 ] 2>/dev/null || _max_attempts=10
+    while [ "$_attempt" -lt "$_max_attempts" ]; do
         _attempt=$((_attempt+1))
-        _picked="$(watchdog_pick_replacement "$_slot" "$_used" "$_tried" "$_allow_clean")"
+        _picked="$(watchdog_pick_replacement "$_slot" "$_used" "$_tried" 0 "$_target_cat")"
         _repl="${_picked%%|*}"
         _repl_cat="${_picked#*|}"
         [ -n "$_repl" ] || break
@@ -7130,16 +7121,7 @@ watchdog_slot_target_run() {
             break
         fi
     done
-    if [ "$_replacement_ok" != 1 ] && [ "$_target_live" -gt 0 ] && [ "$_promote_fallback" != 1 ] && [ -n "$_target_id" ]; then
-        log_msg "Watchdog: другой DNS целевой категории остаётся рабочим; освобождаю неработающий слот $_slot вместо перехода на clean."
-        if watchdog_apply_slot_candidate "$_slot" "" "" "$_old_id" "$_old_cat"; then
-            _slot_rc=0
-        else
-            _slot_rc=1
-        fi
-    else
-        [ "$_replacement_ok" = 1 ] || _slot_rc=1
-    fi
+    [ "$_replacement_ok" = 1 ] || _slot_rc=1
     rm -f "$_used" "$_tried"
     release_mutation_lock
     return "$_slot_rc"
