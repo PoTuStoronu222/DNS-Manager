@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.52
+# Version: 1.53
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -32,7 +32,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.52"
+VERSION="1.53"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -158,7 +158,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="1.52"
+SELF_VERSION="1.53"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -2352,6 +2352,19 @@ job_start_test_current() {
             exit 1
         fi
 
+        # test_one_dns workers share this immutable packet. Create it here
+        # before forking, exactly as the full catalog test does.
+        q="$TMP_DIR/dns_query.bin"
+        if ! printf '\022\064\001\000\000\001\000\000\000\000\000\000\007example\003com\000\000\001\000\001' > "$q" 2>/dev/null; then
+            rm -f "$q" "$_ids" "$_results" "$_merged" 2>/dev/null || true
+            release_test_lock
+            job_write "$_jid" status failed
+            job_write "$_jid" result fail
+            job_write "$_jid" finished "$(date +%s)"
+            job_write "$_jid" error "Не удалось создать общий DNS-тестовый пакет."
+            exit 1
+        fi
+
         _batch="${TEST_BATCH:-${TEST_BATCH_DEFAULT:-4}}"
         case "$_batch" in ''|*[!0-9]*) _batch=4;; esac
         [ "$_batch" -ge 1 ] 2>/dev/null || _batch=1
@@ -2413,7 +2426,7 @@ job_start_test_current() {
             [ -n "$_id" ] && set_check_stamp "$_id" "$_stamp"
         done < "$_results"
 
-        rm -f "$_ids" "$_results" "$_merged" "$TMP_DIR/t."* 2>/dev/null || true
+        rm -f "$_ids" "$_results" "$_merged" "$TMP_DIR/t."* "$TMP_DIR/dns_query.bin" 2>/dev/null || true
         release_test_lock
 
         job_write "$_jid" status done
@@ -2754,7 +2767,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI common module version: 1.52
+// DNS Manager LuCI common module version: 1.53
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -4786,7 +4799,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 1.52
+// DNS Manager LuCI version: 1.53
 return view.extend({
   load: DM.load,
   render: DM.render,
