@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.51
+# Version: 1.52
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -32,7 +32,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.51"
+VERSION="1.52"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -158,7 +158,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="1.51"
+SELF_VERSION="1.52"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -278,6 +278,31 @@ catalog_field() {
 
 catalog_version() { sed -n 's/^# DNSCATVER=//p' "$CATALOG_FILE" 2>/dev/null | head -n1; }
 catalog_revision() { sed -n 's/^# DNSCATREV=//p' "$CATALOG_FILE" 2>/dev/null | head -n1; }
+
+catalog_url_normalize() {
+    _cun_url="$(printf '%s' "$1" | sed 's/[[:space:]]//g')"
+    # Normalize only a slash at the origin root. Keep path-ending slashes.
+    case "$_cun_url" in
+        https://*/*)
+            _cun_authority_path="${_cun_url#https://}"
+            _cun_path="${_cun_authority_path#*/}"
+            [ -n "$_cun_path" ] || _cun_url="${_cun_url%/}"
+            ;;
+    esac
+    printf '%s' "$_cun_url"
+}
+catalog_id_for_url() {
+    _cui_url="$(catalog_url_normalize "$1")"
+    [ -n "$_cui_url" ] && [ -r "$CATALOG_FILE" ] || return 1
+    awk -F'|' -v u="$_cui_url" '
+        function norm_url(x) {
+            gsub(/[[:space:]]/, "", x)
+            if (x ~ /^https:\/\/[^/]+\/$/) sub(/\/$/, "", x)
+            return x
+        }
+        $1 !~ /^#/ && $1 != "" && $5 != "" && norm_url($5) == u { print $1; exit }
+    ' "$CATALOG_FILE" 2>/dev/null
+}
 
 
 read_installed_luci_version() {
@@ -793,8 +818,8 @@ result_for_id() {
 
 system_result_id() {
     _sri_url="$1"; _sri_port="$2"; _sri_index="$3"
-    _sri_url="$(printf '%s' "$_sri_url" | sed 's/[[:space:]]//g; s:/*$::')"
-    _sri_cat_id="$(awk -F'|' -v u="$_sri_url" '$5==u {print $1; exit}' "$CATALOG_FILE" 2>/dev/null || true)"
+    _sri_url="$(catalog_url_normalize "$_sri_url")"
+    _sri_cat_id="$(catalog_id_for_url "$_sri_url" 2>/dev/null || true)"
     if [ -n "$_sri_cat_id" ]; then
         printf '%s' "$_sri_cat_id"
         return 0
@@ -1275,9 +1300,9 @@ doh_status_json() {
     while uci -q get https-dns-proxy.@https-dns-proxy[$_i] >/dev/null 2>&1; do
         _p="$(uci -q get https-dns-proxy.@https-dns-proxy[$_i].listen_port 2>/dev/null || true)"
         _a="$(uci -q get https-dns-proxy.@https-dns-proxy[$_i].listen_addr 2>/dev/null || true)"
-        _u="$(uci -q get https-dns-proxy.@https-dns-proxy[$_i].resolver_url 2>/dev/null | sed 's:/*$::' || true)"
+        _u="$(catalog_url_normalize "$(uci -q get https-dns-proxy.@https-dns-proxy[$_i].resolver_url 2>/dev/null || true)")
         _n="$(uci -q get https-dns-proxy.@https-dns-proxy[$_i].name 2>/dev/null || true)"
-        if [ -z "$_n" ] && [ -n "$_u" ]; then _n="$(awk -F'|' -v u="$_u" '$5==u {print $4; exit}' "$CATALOG_FILE" 2>/dev/null)"; fi
+        if [ -z "$_n" ] && [ -n "$_u" ]; then _lookup_id="$(catalog_id_for_url "$_u" 2>/dev/null || true)"; [ -n "$_lookup_id" ] && _n="$(catalog_field "$_lookup_id" 4 2>/dev/null || true)"; fi
         case "$_u" in
             https://cloudflare-dns.com/dns-query) [ "$_n" = Cloudflare ] && _n='Cloudflare (Стандарт)';;
             https://dns.google/dns-query) [ "$_n" = 'Google Public DNS' ] && _n='Google';;
@@ -1288,7 +1313,7 @@ doh_status_json() {
 ' "$_listen" | grep -qE "(^|[[:space:]])[^[:space:]]*:$_p([[:space:]]|$)" && _run=1
         [ "$_run" = 1 ] && _doh_running=$((_doh_running+1))
         _doh_total=$((_doh_total+1))
-        _instance_id="$(awk -F'|' -v u="$_u" '$5==u {print $1; exit}' "$CATALOG_FILE" 2>/dev/null || true)"
+        _instance_id="$(catalog_id_for_url "$_u" 2>/dev/null || true)"
         _slot=""
         for _s in 1 2 3 4 5 6 RU; do
             _sid="$(cfg_get SLOT_"$_s")"; _sport="$(cfg_get PORT_"$_s")"
@@ -1317,11 +1342,11 @@ doh_status_json() {
         _expected=$((_expected+1))
         _url="$(catalog_field "$_id" 5 2>/dev/null || true)"
         [ -n "$_url" ] || continue
-        _url_cmp="$(printf '%s' "$_url" | sed 's:/*$::')"
+        _url_cmp="$(catalog_url_normalize "$_url")"
         _j=0
         while uci -q get https-dns-proxy.@https-dns-proxy[$_j] >/dev/null 2>&1; do
             _up="$(uci -q get https-dns-proxy.@https-dns-proxy[$_j].listen_port 2>/dev/null || true)"
-            _uu="$(uci -q get https-dns-proxy.@https-dns-proxy[$_j].resolver_url 2>/dev/null | sed 's:/*$::' || true)"
+            _uu="$(catalog_url_normalize "$(uci -q get https-dns-proxy.@https-dns-proxy[$_j].resolver_url 2>/dev/null || true)")
             [ "$_up" = "$_port" ] && [ "$_uu" = "$_url_cmp" ] && { _match=$((_match+1)); break; }
             _j=$((_j+1))
         done
@@ -1492,11 +1517,11 @@ status_json() {
         [ -n "$_id" ] && [ -n "$_port" ] || continue
         _url="$(catalog_field "$_id" 5 2>/dev/null || true)"
         [ -n "$_url" ] || continue
-        _url_cmp="$(printf '%s' "$_url" | sed 's:/*$::')"
+        _url_cmp="$(catalog_url_normalize "$_url")"
         _j=0
         while uci -q get "https-dns-proxy.@https-dns-proxy[$_j]" >/dev/null 2>&1; do
             _up="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_j].listen_port" 2>/dev/null || true)"
-            _uu="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_j].resolver_url" 2>/dev/null | sed 's:/*$::' )"
+            _uu="$(catalog_url_normalize "$(uci -q get "https-dns-proxy.@https-dns-proxy[$_j].resolver_url" 2>/dev/null || true)")
             if [ "$_up" = "$_port" ] && [ "$_uu" = "$_url_cmp" ]; then _match=$((_match + 1)); break; fi
             _j=$((_j + 1))
         done
@@ -1657,10 +1682,11 @@ status_json() {
     while uci -q get "https-dns-proxy.@https-dns-proxy[$_i]" >/dev/null 2>&1; do
         _p="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].listen_port" 2>/dev/null || true)"
         _a="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].listen_addr" 2>/dev/null || true)"
-        _u="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].resolver_url" 2>/dev/null | sed 's:/*$::' || true)"
+        _u="$(catalog_url_normalize "$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].resolver_url" 2>/dev/null || true)")
         _n="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].name" 2>/dev/null || true)"
         if [ -z "$_n" ] && [ -n "$_u" ]; then
-            _n="$(awk -F'|' -v u="$_u" '$5==u {print $4; exit}' "$CATALOG_FILE" 2>/dev/null)"
+            _lookup_id="$(catalog_id_for_url "$_u" 2>/dev/null || true)"
+            [ -n "$_lookup_id" ] && _n="$(catalog_field "$_lookup_id" 4 2>/dev/null || true)"
         fi
         case "$_u" in
             https://cloudflare-dns.com/dns-query) [ -n "$_n" ] && [ "$_n" = "Cloudflare" ] && _n="Cloudflare (Стандарт)" ;;
@@ -1670,7 +1696,7 @@ status_json() {
         _run=0
         [ -n "$_p" ] && printf '%s\n' "$_listen" | grep -qE "(^|[[:space:]])[^[:space:]]*:$_p([[:space:]]|$)" && _run=1
         _slot=""
-        _instance_id="$(awk -F'|' -v u="$_u" '$5==u {print $1; exit}' "$CATALOG_FILE" 2>/dev/null || true)"
+        _instance_id="$(catalog_id_for_url "$_u" 2>/dev/null || true)"
         for _s in 1 2 3 4 5 6 RU; do
             _sid="$(cfg_get "SLOT_$_s")"; _sport="$(cfg_get "PORT_$_s")"
             [ -n "$_sid" ] || continue
@@ -1754,8 +1780,8 @@ load_manager() {
     return 0
 }
 system_instance_slot() {
-    _url="$(normalize_url "$1" 2>/dev/null || true)"; _port="$2"
-    _catalog_id="$(awk -F'|' -v u="$_url" '$5==u {print $1; exit}' "$CATALOG_FILE" 2>/dev/null || true)"
+    _url="$(catalog_url_normalize "$(normalize_url "$1" 2>/dev/null || true)")"; _port="$2"
+    _catalog_id="$(catalog_id_for_url "$_url" 2>/dev/null || true)"
     for _s in 1 2 3 4 5 6 RU; do
         _sid="$(cfg_get "SLOT_$_s")"; _sport="$(cfg_get "PORT_$_s")"
         [ -n "$_sid" ] && [ -n "$_catalog_id" ] && [ "$_sid" = "$_catalog_id" ] && return 0
@@ -2728,7 +2754,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI common module version: 1.51
+// DNS Manager LuCI common module version: 1.52
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -4760,7 +4786,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 1.51
+// DNS Manager LuCI version: 1.52
 return view.extend({
   load: DM.load,
   render: DM.render,
