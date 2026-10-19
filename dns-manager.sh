@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.57"
+VERSION="3.58"
 # 3.38: clear the LuCI update flag after a successful CLI update.
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
@@ -1868,7 +1868,7 @@ validate_dns_message() {
                 if (byte >= 192) {
                     if (cur + 1 >= n) return 0
                     target=(byte - 192) * 256 + a[cur + 1]
-                    if (target >= n) return 0
+                    if (target >= cur || target >= n) return 0
                     if (!jumped) { saved_next=cur + 2; jumped=1 }
                     cur=target
                     continue
@@ -1989,7 +1989,7 @@ while IFS= read -r ipx; do
     ctype="$(awk -F': *' 'tolower($1)=="content-type"{print tolower($2)}' "$hdr" 2>/dev/null | tail -n1 | tr -d '\r')"
     case "$tim" in ''|0) ms=-1;; *) ms="$(awk -v t="$tim" 'BEGIN{v=t*1000; if(v<1)v=1; printf "%.0f", v}')";; esac
     case "$code" in
-    200)
+    2??)
         if is_dns_media_type "$ctype" && validate_dns_message "$body" "$q"; then
             if [ "$_best_ms" -lt 0 ] || { [ "$ms" -ge 0 ] && [ "$ms" -lt "$_best_ms" ]; }; then _best_ms="$ms"; fi
             st=OK
@@ -5785,7 +5785,7 @@ watchdog_test_results_fresh() {
     return 0
 }
 watchdog_test_results_usable() {
-    _usable_scope="\${1:-all}"
+    _usable_scope="${1:-all}"
     watchdog_test_results_fresh "$_usable_scope" || return 1
     # Regional DNS is tested alongside a category, but it cannot stand in for
     # a working general resolver when that category is selected.
