@@ -16,6 +16,9 @@ sh -n dns-manager.sh || fail "dns-manager.sh: sh -n"
 sh -n dns-manager-luci.sh || fail "dns-manager-luci.sh: sh -n"
 ok "shell syntax"
 
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT INT TERM
+
 # Per-slot DNS domain routing uses dnsmasq server=/domain/127.0.0.1#port rules.
 awk '/^normalize_slot_domains\(\) \{/,/^slot_domains_get\(\) \{/' dns-manager.sh | sed '$d' > "$tmp/normalize_slot_domains.sh"
 [ -s "$tmp/normalize_slot_domains.sh" ] || fail "domain normalizer extraction"
@@ -71,9 +74,6 @@ grep -Fq 'Домены только через ' dns-manager-luci.sh || fail "Lu
 ok "dnsmasq and Watchdog preserve per-slot domain routes"
 
 
-
-tmp="$(mktemp -d)"
-trap 'rm -rf "$tmp"' EXIT INT TERM
 
 # Uninstall must remove the empty, namespaced LuCI backend directory.
 sed -n '/^luci_companion_remove(/,/^}/p' dns-manager.sh > "$tmp/luci_remove_fn.sh"
