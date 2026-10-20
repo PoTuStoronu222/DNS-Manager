@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.56
+# Version: 1.57
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -32,7 +32,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/router-validation-20261020/dns-manager-luci.sh"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.56"
+VERSION="1.57"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -159,7 +159,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/router-validation-20261020/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="1.56"
+SELF_VERSION="1.57"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -2552,67 +2552,70 @@ job_start_test_current() {
     printf '{"ok":true,"job":'; json_quote "$_jid"; printf '}'
 }
 job_start_test_one() {
-    _id="$1"; case "$_id" in ''|*[!A-Za-z0-9_-]*) json_error "Неверный ID DNS"; return;; esac
-    _jid="$(new_job_id test_one)"
-    job_active "$_jid" && { json_error "Проверка DNS уже выполняется"; return; }
-    job_prepare "$_jid" || { json_error "Не удалось подготовить задачу"; return; }
-    printf 'status=running\nstarted=%s\nmode=one\n' "$(date +%s)" > "$JOB_DIR/$_jid/state"
-    job_write "$_jid" dns_id "$_id"
+    # Keep the requested DNS ID separate from helpers such as job_active(),
+    # job_prepare() and job_write(), which reuse the global variable _id.
+    DNSMGR_SINGLE_TEST_DNS_ID="$1"
+    case "$DNSMGR_SINGLE_TEST_DNS_ID" in ''|*[!A-Za-z0-9_-]*) json_error "Неверный ID DNS"; return;; esac
+    DNSMGR_SINGLE_TEST_JOB_ID="$(new_job_id test_one)"
+    job_active "$DNSMGR_SINGLE_TEST_JOB_ID" && { json_error "Проверка DNS уже выполняется"; return; }
+    job_prepare "$DNSMGR_SINGLE_TEST_JOB_ID" || { json_error "Не удалось подготовить задачу"; return; }
+    printf 'status=running\nstarted=%s\nmode=one\n' "$(date +%s)" > "$JOB_DIR/$DNSMGR_SINGLE_TEST_JOB_ID/state"
+    job_write "$DNSMGR_SINGLE_TEST_JOB_ID" dns_id "$DNSMGR_SINGLE_TEST_DNS_ID"
     (
-        exec >>"$JOB_DIR/$_jid/output" 2>&1
+        exec >>"$JOB_DIR/$DNSMGR_SINGLE_TEST_JOB_ID/output" 2>&1
         if ! load_manager; then
-            job_write "$_jid" status failed; job_write "$_jid" result fail; job_write "$_jid" finished "$(date +%s)"; exit 1
+            job_write "$DNSMGR_SINGLE_TEST_JOB_ID" status failed; job_write "$DNSMGR_SINGLE_TEST_JOB_ID" result fail; job_write "$DNSMGR_SINGLE_TEST_JOB_ID" finished "$(date +%s)"; exit 1
         fi
         if ! acquire_test_lock; then
-            job_write "$_jid" status failed; job_write "$_jid" result fail; job_write "$_jid" finished "$(date +%s)"; exit 1
+            job_write "$DNSMGR_SINGLE_TEST_JOB_ID" status failed; job_write "$DNSMGR_SINGLE_TEST_JOB_ID" result fail; job_write "$DNSMGR_SINGLE_TEST_JOB_ID" finished "$(date +%s)"; exit 1
         fi
         # Keep single-DNS checks identical to the full/selected catalog test path.
-        printf "Проверяю реальный DoH endpoint: %s.\n" "$_id"
-        rm -f "$TMP_DIR/t.$_id" 2>/dev/null || true
-        test_one_dns "$_id" || true
-        _result_file="$TMP_DIR/t.$_id"
-        if [ -s "$_result_file" ]; then
-            _one_ms="$(awk -F"|" -v id="$_id" '$1==id && NF>=5 {print $4;exit}' "$_result_file" 2>/dev/null || true)"
-            _one_status="$(awk -F"|" -v id="$_id" '$1==id && NF>=5 {print $5;exit}' "$_result_file" 2>/dev/null || true)"
+        printf "Проверяю реальный DoH endpoint: %s.\n" "$DNSMGR_SINGLE_TEST_DNS_ID"
+        rm -f "$TMP_DIR/t.$DNSMGR_SINGLE_TEST_DNS_ID" 2>/dev/null || true
+        test_one_dns "$DNSMGR_SINGLE_TEST_DNS_ID" || true
+        DNSMGR_SINGLE_TEST_RESULT_FILE="$TMP_DIR/t.$DNSMGR_SINGLE_TEST_DNS_ID"
+        if [ -s "$DNSMGR_SINGLE_TEST_RESULT_FILE" ]; then
+            DNSMGR_SINGLE_TEST_MS="$(awk -F"|" -v id="$DNSMGR_SINGLE_TEST_DNS_ID" '$1==id && NF>=5 {print $4;exit}' "$DNSMGR_SINGLE_TEST_RESULT_FILE" 2>/dev/null || true)"
+            DNSMGR_SINGLE_TEST_STATUS="$(awk -F"|" -v id="$DNSMGR_SINGLE_TEST_DNS_ID" '$1==id && NF>=5 {print $5;exit}' "$DNSMGR_SINGLE_TEST_RESULT_FILE" 2>/dev/null || true)"
         else
-            _one_ms=""
-            _one_status="TEST_NO_RESULT"
+            DNSMGR_SINGLE_TEST_MS=""
+            DNSMGR_SINGLE_TEST_STATUS="TEST_NO_RESULT"
         fi
-        if [ -n "$_one_status" ] && [ "$_one_status" != "TEST_NO_RESULT" ]; then
-            job_write "$_jid" ping "$_one_ms"
-            job_write "$_jid" dns_status "$_one_status"
-            if ! commit_single_test_result "$_id" "$_result_file"; then
-                job_write "$_jid" status failed
-                job_write "$_jid" result fail
-                job_write "$_jid" finished "$(date +%s)"
-                job_write "$_jid" error "Не удалось сохранить результат одиночной проверки в общий журнал DNS."
-                rm -f "$_result_file" 2>/dev/null || true
+        if [ -n "$DNSMGR_SINGLE_TEST_STATUS" ] && [ "$DNSMGR_SINGLE_TEST_STATUS" != "TEST_NO_RESULT" ]; then
+            job_write "$DNSMGR_SINGLE_TEST_JOB_ID" ping "$DNSMGR_SINGLE_TEST_MS"
+            job_write "$DNSMGR_SINGLE_TEST_JOB_ID" dns_status "$DNSMGR_SINGLE_TEST_STATUS"
+            if ! commit_single_test_result "$DNSMGR_SINGLE_TEST_DNS_ID" "$DNSMGR_SINGLE_TEST_RESULT_FILE"; then
+                job_write "$DNSMGR_SINGLE_TEST_JOB_ID" status failed
+                job_write "$DNSMGR_SINGLE_TEST_JOB_ID" result fail
+                job_write "$DNSMGR_SINGLE_TEST_JOB_ID" finished "$(date +%s)"
+                job_write "$DNSMGR_SINGLE_TEST_JOB_ID" error "Не удалось сохранить результат одиночной проверки в общий журнал DNS."
+                rm -f "$DNSMGR_SINGLE_TEST_RESULT_FILE" 2>/dev/null || true
                 release_test_lock
                 exit 1
             fi
             # Only after the common result was verified do we advance the
             # per-DNS freshness stamp used by LuCI.
-            _stamp="$(date +%s)"
-            set_check_stamp "$_id" "$_stamp" || true
-            rm -f "$_result_file" 2>/dev/null || true
+            DNSMGR_SINGLE_TEST_STAMP="$(date +%s)"
+            set_check_stamp "$DNSMGR_SINGLE_TEST_DNS_ID" "$DNSMGR_SINGLE_TEST_STAMP" || true
+            rm -f "$DNSMGR_SINGLE_TEST_RESULT_FILE" 2>/dev/null || true
             release_test_lock
-            job_write "$_jid" status done
-            if [ "$_one_status" = "OK" ]; then
-                job_write "$_jid" result ok
+            job_write "$DNSMGR_SINGLE_TEST_JOB_ID" status done
+            if [ "$DNSMGR_SINGLE_TEST_STATUS" = "OK" ]; then
+                job_write "$DNSMGR_SINGLE_TEST_JOB_ID" result ok
             else
-                job_write "$_jid" result fail
+                job_write "$DNSMGR_SINGLE_TEST_JOB_ID" result fail
             fi
-            job_write "$_jid" finished "$_stamp"
+            job_write "$DNSMGR_SINGLE_TEST_JOB_ID" finished "$DNSMGR_SINGLE_TEST_STAMP"
             exit 0
         fi
         release_test_lock
-        job_write "$_jid" status failed
-        job_write "$_jid" result fail
-        job_write "$_jid" finished "$(date +%s)"
+        job_write "$DNSMGR_SINGLE_TEST_JOB_ID" status failed
+        job_write "$DNSMGR_SINGLE_TEST_JOB_ID" result fail
+        job_write "$DNSMGR_SINGLE_TEST_JOB_ID" finished "$(date +%s)"
     ) &
-    _job_pid=$!
-    job_record_pid "$_jid" "$_job_pid"
-    printf '{"ok":true,"job":'; json_quote "$_jid"; printf '}'
+    DNSMGR_SINGLE_TEST_PID=$!
+    job_record_pid "$DNSMGR_SINGLE_TEST_JOB_ID" "$DNSMGR_SINGLE_TEST_PID"
+    printf '{"ok":true,"job":'; json_quote "$DNSMGR_SINGLE_TEST_JOB_ID"; printf '}'
 }
 job_json() {
     _jid="$1"; case "$_jid" in ''|*[!A-Za-z0-9_-]*) json_error "Неверный job ID"; return;; esac
