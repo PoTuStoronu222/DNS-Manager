@@ -274,7 +274,12 @@ grep -q 'json_update_state() {' "$tmp/backend.sh" || fail "structured update res
 grep -q 'updated) exit 0' dns-manager.sh || fail "manager update-check exit contract missing"
 grep -q 'current|throttled) exit 2' dns-manager.sh || fail "manager current exit contract missing"
 grep -q "xbox_dns|gaming|games+supercell|Xbox DNS|" catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "Xbox DNS is not in gaming catalog category"
-grep -Fq '# DNSCATREV=4' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog revision not bumped"
+grep -Fq '# DNSCATREV=5' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog revision not bumped"
+grep -Fq '# ENTRIES=108' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog entry count header is incorrect"
+grep -Fq 'cubedns|privacy|privacy+no-logs|CubeDNS|https://cubedns.com/dns-query|' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "CubeDNS DoH entry missing"
+grep -Fq 'dagami|bypass|geo+services|Dagami DNS|https://dns.dagami.ru/dns-query|' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "Dagami DNS entry missing"
+grep -Fq 'webshift|bypass|geo+services|WebShift DNS|https://d.webshiftvpn.ru/dns-query|' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "WebShift DNS entry missing"
+grep -Fq 'libredns_clean|bypass|privacy+geo+services|LibreDNS|https://doh.libredns.gr/dns-query|' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "LibreDNS category is incorrect"
 grep -Fq 'shecan|bypass|geo+services|zapret.moe|https://dns.zapret.moe/dns-query|' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "Shecan entry was not replaced by zapret.moe DoH"
 grep -Fq "function resolverAvailable(ci)" dns-manager-luci.sh || fail "DoH availability helper missing"
 grep -Fq 'assignDirect(d.id,select.value,root,d.name||d.id,d.url)' dns-manager-luci.sh || fail "catalog assignment does not pass the target URL"
@@ -285,7 +290,7 @@ grep -Fq "disabled:!!state.busy||!!state.jobRunning||unavailable||checking" dns-
 grep -q "'gaming','Игровые DNS'" dns-manager-luci.sh || fail "gaming catalog label missing in LuCI"
 grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validation missing gaming category"
 grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
-grep -q 'VERSION="3.56"' dns-manager.sh || fail "manager version not bumped"
+grep -q 'VERSION="3.57"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
 grep -q 'VERSION="1.51"' dns-manager-luci.sh || fail "LuCI version not bumped"
 grep -q "'bypass','Обход геоблока'" dns-manager-luci.sh || fail "bypass profile label not updated"
@@ -466,8 +471,8 @@ view_luci="$(sed -n 's|^// DNS Manager LuCI common module version:[[:space:]]*||
 [ "$top_luci" = "$self_luci" ] || fail "LuCI SELF_VERSION mismatch"
 [ "$top_luci" = "$view_luci" ] || fail "embedded JS version mismatch"
 ok "LuCI version markers synchronized ($top_luci)"
-grep -Fq 'VERSION="3.56"' dns-manager.sh || fail "DNS Manager version marker is not 3.56"
-ok "DNS Manager version marker synchronized (3.56)"
+grep -Fq 'VERSION="3.57"' dns-manager.sh || fail "DNS Manager version marker is not 3.57"
+ok "DNS Manager version marker synchronized (3.57)"
 
 if awk '
     /function startAutoStatus\(root\)/ { capture=1 }
