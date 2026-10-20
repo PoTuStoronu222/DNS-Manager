@@ -373,8 +373,8 @@ awk '/^job_start_test_all\(\) \{/,/^job_start_test_current\(\) \{/' "$tmp/backen
 awk '/^job_start_test_all\(\) \{/,/^job_start_test_current\(\) \{/' "$tmp/backend.sh" | grep -q 'job_record_pid "\$_jid" "\$_job_pid"' || fail "test_all job PID is not registered"
 awk '/^job_start_test_current\(\) \{/,/^job_start_test_one\(\) \{/' "$tmp/backend.sh" | grep -q '_job_pid=\$!' || fail "test_current job PID is not recorded"
 awk '/^job_start_test_current\(\) \{/,/^job_start_test_one\(\) \{/' "$tmp/backend.sh" | grep -q 'job_record_pid "\$_jid" "\$_job_pid"' || fail "test_current job PID is not registered"
-awk '/^job_start_test_one\(\) \{/,/^job_json\(\) \{/' "$tmp/backend.sh" | grep -q '_job_pid=\$!' || fail "test_one job PID is not recorded"
-awk '/^job_start_test_one\(\) \{/,/^job_json\(\) \{/' "$tmp/backend.sh" | grep -q 'job_record_pid "\$_jid" "\$_job_pid"' || fail "test_one job PID is not registered"
+awk '/^job_start_test_one\(\) \{/,/^job_json\(\) \{/' "$tmp/backend.sh" | grep -q 'DNSMGR_SINGLE_TEST_PID=\$!' || fail "test_one job PID is not recorded"
+awk '/^job_start_test_one\(\) \{/,/^job_json\(\) \{/' "$tmp/backend.sh" | grep -q 'job_record_pid "\$DNSMGR_SINGLE_TEST_JOB_ID" "\$DNSMGR_SINGLE_TEST_PID"' || fail "test_one job PID is not registered"
 ok "all asynchronous DNS jobs register their working PID"
 # NTP status must follow the real OpenWrt system.ntp.server list, not the manager preference.
 grep -q '^ntp_current_preset() {' dns-manager.sh || fail "NTP actual-state detector missing"
