@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.54
+# Version: 1.55
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -32,7 +32,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/router-validation-20261020/dns-manager-luci.sh"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.54"
+VERSION="1.55"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -141,6 +141,7 @@ MANAGER="/usr/bin/dns-manager"
 MANAGER_PATH="$MANAGER"
 CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 CATALOG_FILE="/etc/dns-manager/config/dns-catalog.conf"
+CUSTOM_CATALOG_FILE="/etc/dns-manager/config/dns-custom-catalog.conf"
 STATE_DIR="/var/run/dns-manager"
 PERSIST_STATE_DIR="/etc/dns-manager/state"
 RUNTIME_DIR="/var/run/dns-manager-luci"
@@ -158,7 +159,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/router-validation-20261020/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="1.54"
+SELF_VERSION="1.55"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -272,8 +273,12 @@ cfg_get() {
 
 catalog_field() {
     _id="$1"; _n="$2"
-    [ -r "$CATALOG_FILE" ] || return 1
-    awk -F'|' -v id="$_id" -v n="$_n" '$1==id { if (n==2) print $2; else if (n==4) print $4; else if (n==5) print $5; exit }' "$CATALOG_FILE" 2>/dev/null
+    for _cf_file in "$CATALOG_FILE" "$CUSTOM_CATALOG_FILE"; do
+        [ -r "$_cf_file" ] || continue
+        _cf_value="$(awk -F'|' -v id="$_id" -v n="$_n" '$1==id { if (n==2) print $2; else if (n==4) print $4; else if (n==5) print $5; exit }' "$_cf_file" 2>/dev/null)"
+        [ -n "$_cf_value" ] && { printf '%s' "$_cf_value"; return 0; }
+    done
+    return 1
 }
 
 catalog_version() { sed -n 's/^# DNSCATVER=//p' "$CATALOG_FILE" 2>/dev/null | head -n1; }
@@ -293,15 +298,20 @@ catalog_url_normalize() {
 }
 catalog_id_for_url() {
     _cui_url="$(catalog_url_normalize "$1")"
-    [ -n "$_cui_url" ] && [ -r "$CATALOG_FILE" ] || return 1
-    awk -F'|' -v u="$_cui_url" '
-        function norm_url(x) {
-            gsub(/[[:space:]]/, "", x)
-            if (x ~ /^https:\/\/[^/]+\/$/) sub(/\/$/, "", x)
-            return x
-        }
-        $1 !~ /^#/ && $1 != "" && $5 != "" && norm_url($5) == u { print $1; exit }
-    ' "$CATALOG_FILE" 2>/dev/null
+    [ -n "$_cui_url" ] || return 1
+    for _cui_file in "$CATALOG_FILE" "$CUSTOM_CATALOG_FILE"; do
+        [ -r "$_cui_file" ] || continue
+        _cui_id="$(awk -F'|' -v u="$_cui_url" '
+            function norm_url(x) {
+                gsub(/[[:space:]]/, "", x)
+                if (x ~ /^https:\/\/[^/]+\/$/) sub(/\/$/, "", x)
+                return x
+            }
+            $1 !~ /^#/ && $1 != "" && $5 != "" && norm_url($5) == u { print $1; exit }
+        ' "$_cui_file" 2>/dev/null)"
+        [ -n "$_cui_id" ] && { printf '%s' "$_cui_id"; return 0; }
+    done
+    return 1
 }
 
 
@@ -2780,7 +2790,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI common module version: 1.54
+// DNS Manager LuCI common module version: 1.55
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -4862,7 +4872,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 1.54
+// DNS Manager LuCI version: 1.55
 return view.extend({
   load: DM.load,
   render: DM.render,
