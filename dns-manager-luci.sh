@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.57
+# Version: 1.58
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -32,7 +32,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/router-validation-20261020/dns-manager-luci.sh"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.57"
+VERSION="1.58"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -122,7 +122,7 @@ EOF_MENU
     },
     "write": {
       "ubus": {
-        "dns_manager": [ "set_profile", "reset_dns", "set_slot", "set_slot_domains", "add_custom_dns", "set_setting", "set_watchdog_setting", "set_watchdog_settings", "set_ntp", "set_test_age", "test_all", "test_current", "test_one", "test_system", "update", "update_manager", "update_hdp", "update_catalog", "update_all" ]
+        "dns_manager": [ "set_profile", "reset_dns", "set_slot", "set_slot_domains", "add_custom_dns", "delete_custom_dns", "set_setting", "set_watchdog_setting", "set_watchdog_settings", "set_ntp", "set_test_age", "test_all", "test_current", "test_one", "test_system", "update", "update_manager", "update_hdp", "update_catalog", "update_all" ]
       }
     }
   }
@@ -159,7 +159,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/router-validation-20261020/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="1.57"
+SELF_VERSION="1.58"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -414,6 +414,71 @@ add_custom_dns_json() {
     printf ',"name":'; json_quote "$_name"
     printf ',"url":'; json_quote "$_url"
     printf '}'
+}
+
+delete_custom_dns_json() {
+    DNSMGR_DCD_ID="$(jget id)"
+    case "$DNSMGR_DCD_ID" in custom_[0-9][0-9][0-9]) ;; *) json_error "Можно удалять только пользовательские DNS"; return;; esac
+    if ! acquire_runtime_lock "$RUNTIME_DIR/custom-catalog.lock"; then
+        json_error "Список пользовательских DNS уже изменяется"
+        return
+    fi
+    load_manager || { release_runtime_lock "$RUNTIME_DIR/custom-catalog.lock"; json_error "DNS Manager недоступен"; return; }
+    if ! awk -F"|" -v id="$DNSMGR_DCD_ID" '$1==id {found=1} END {exit !found}' "$CUSTOM_CATALOG_FILE" 2>/dev/null; then
+        release_runtime_lock "$RUNTIME_DIR/custom-catalog.lock"
+        json_error "Пользовательский DNS не найден"
+        return
+    fi
+    if ! acquire_test_lock; then
+        release_runtime_lock "$RUNTIME_DIR/custom-catalog.lock"
+        json_error "Проверка DNS выполняется. Дождитесь её завершения и повторите удаление"
+        return
+    fi
+    for DNSMGR_DCD_SLOT in 1 2 3 4 5 6 RU; do
+        DNSMGR_DCD_ASSIGNED="$(cfg_get "SLOT_$DNSMGR_DCD_SLOT" 2>/dev/null || true)"
+        if [ "$DNSMGR_DCD_ASSIGNED" = "$DNSMGR_DCD_ID" ]; then
+            release_test_lock
+            release_runtime_lock "$RUNTIME_DIR/custom-catalog.lock"
+            json_error "DNS назначен в слоте $DNSMGR_DCD_SLOT. Сначала замените DNS в этом слоте"
+            return
+        fi
+    done
+    DNSMGR_DCD_TMP="$(mktemp "$CUSTOM_CATALOG_FILE.delete.XXXXXX" 2>/dev/null || true)"
+    if [ -z "$DNSMGR_DCD_TMP" ]; then
+        release_test_lock
+        release_runtime_lock "$RUNTIME_DIR/custom-catalog.lock"
+        json_error "Не удалось подготовить удаление пользовательского DNS"
+        return
+    fi
+    if ! awk -F"|" -v id="$DNSMGR_DCD_ID" '$1!=id {print} $1==id {found=1} END {if(!found) exit 1}' "$CUSTOM_CATALOG_FILE" > "$DNSMGR_DCD_TMP"; then
+        rm -f "$DNSMGR_DCD_TMP" 2>/dev/null || true
+        release_test_lock
+        release_runtime_lock "$RUNTIME_DIR/custom-catalog.lock"
+        json_error "Не удалось прочитать пользовательский каталог DNS"
+        return
+    fi
+    chmod 600 "$DNSMGR_DCD_TMP" 2>/dev/null || true
+    if ! mv -f "$DNSMGR_DCD_TMP" "$CUSTOM_CATALOG_FILE"; then
+        rm -f "$DNSMGR_DCD_TMP" 2>/dev/null || true
+        release_test_lock
+        release_runtime_lock "$RUNTIME_DIR/custom-catalog.lock"
+        json_error "Не удалось сохранить изменения пользовательского каталога DNS"
+        return
+    fi
+    for DNSMGR_DCD_RESULTS in "$STATE_DIR/dns-test-results.conf" "$PERSIST_STATE_DIR/dns-test-results.conf"; do
+        [ -f "$DNSMGR_DCD_RESULTS" ] || continue
+        DNSMGR_DCD_RESULT_TMP="$(mktemp "$DNSMGR_DCD_RESULTS.tmp.XXXXXX" 2>/dev/null || true)"
+        [ -n "$DNSMGR_DCD_RESULT_TMP" ] || continue
+        if awk -F"|" -v id="$DNSMGR_DCD_ID" '$1!=id {print}' "$DNSMGR_DCD_RESULTS" > "$DNSMGR_DCD_RESULT_TMP" && mv -f "$DNSMGR_DCD_RESULT_TMP" "$DNSMGR_DCD_RESULTS"; then
+            chmod 600 "$DNSMGR_DCD_RESULTS" 2>/dev/null || true
+        else
+            rm -f "$DNSMGR_DCD_RESULT_TMP" 2>/dev/null || true
+        fi
+    done
+    rm -f "$CHECK_DIR/$DNSMGR_DCD_ID" 2>/dev/null || true
+    release_test_lock
+    release_runtime_lock "$RUNTIME_DIR/custom-catalog.lock"
+    printf '{"ok":true,"id":'; json_quote "$DNSMGR_DCD_ID"; printf '}'
 }
 
 read_installed_luci_version() {
@@ -2682,6 +2747,9 @@ run_action() {
         add_custom_dns)
             add_custom_dns_json
             ;;
+        delete_custom_dns)
+            delete_custom_dns_json
+            ;;
         set_profile)
             case "$_profile" in clean2) _profile=clean;; bypass|clean|security|privacy|adblock|family|all) ;; *) json_error "Неверный профиль"; return;; esac
             job_start_profile "$_profile"
@@ -2842,7 +2910,7 @@ test_json() { case "${RPC_METHOD:-}" in test_all) job_start_test_all;; test_curr
 
 case "${1:-}" in
     list)
-        printf '{"status":{},"runtime":{},"doh_status":{},"network_status":{},"time_status":{},"page_meta":{},"catalog":{"category":"String","offset":0,"limit":0,"only_ok":0},"update_check":{"force":0},"update":{},"update_manager":{},"update_hdp":{},"update_catalog":{},"update_all":{},"set_profile":{"profile":"String"},"reset_dns":{},"set_slot":{"slot":"String","id":"String"},"set_slot_domains":{"slot":"String","domains":"String"},"add_custom_dns":{"name":"String","url":"String"},"set_setting":{"name":"String","enabled":0},"set_watchdog_setting":{"name":"String","value":0},"set_watchdog_settings":{"interval":0,"threshold":0,"repair_cooldown":0,"max_repairs":0,"max_restarts":0,"max_candidates":0,"guard_interval":0},"set_ntp":{"preset":"String"},"set_test_age":{"category":"String","hours":0},"test_all":{},"test_current":{},"test_one":{"id":"String"},"test_system":{},"job":{"id":"String"},"log":{"lines":0}}\n'
+        printf '{"status":{},"runtime":{},"doh_status":{},"network_status":{},"time_status":{},"page_meta":{},"catalog":{"category":"String","offset":0,"limit":0,"only_ok":0},"update_check":{"force":0},"update":{},"update_manager":{},"update_hdp":{},"update_catalog":{},"update_all":{},"set_profile":{"profile":"String"},"reset_dns":{},"set_slot":{"slot":"String","id":"String"},"set_slot_domains":{"slot":"String","domains":"String"},"add_custom_dns":{"name":"String","url":"String"},"delete_custom_dns":{"id":"String"},"set_setting":{"name":"String","enabled":0},"set_watchdog_setting":{"name":"String","value":0},"set_watchdog_settings":{"interval":0,"threshold":0,"repair_cooldown":0,"max_repairs":0,"max_restarts":0,"max_candidates":0,"guard_interval":0},"set_ntp":{"preset":"String"},"set_test_age":{"category":"String","hours":0},"test_all":{},"test_current":{},"test_one":{"id":"String"},"test_system":{},"job":{"id":"String"},"log":{"lines":0}}\n'
         ;;
     call)
         case "${2:-}" in
@@ -2854,7 +2922,7 @@ case "${1:-}" in
             runtime) runtime_json;;
             catalog) INPUT="$(cat 2>/dev/null || true)"; catalog_json;;
             update_check) INPUT="$(cat 2>/dev/null || true)"; update_check_json;;            update_catalog) update_catalog_json;;            update_all) update_all_json;;            update) update_json;;            update_manager) update_manager_json;;            update_hdp) update_hdp_json;;
-            add_custom_dns|reset_dns|set_profile|set_slot|set_slot_domains|set_setting|set_watchdog_setting|set_watchdog_settings|set_ntp) INPUT="$(cat 2>/dev/null || true)"; RPC_METHOD="$2"; run_action;;
+            add_custom_dns|delete_custom_dns|reset_dns|set_profile|set_slot|set_slot_domains|set_watchdog_setting|set_watchdog_settings|set_ntp) INPUT="$(cat 2>/dev/null || true)"; RPC_METHOD="$2"; run_action;;
             test_all|test_current|test_one|test_system) INPUT="$(cat 2>/dev/null || true)"; RPC_METHOD="$2"; test_json;;
             job) INPUT="$(cat 2>/dev/null || true)"; job_json "$(jget id)";;
             log) INPUT="$(cat 2>/dev/null || true)"; log_json "$(jget lines)";;
@@ -2935,6 +3003,7 @@ var callResetDns = dmRpc({ object:'dns_manager', method:'reset_dns', expect:{} }
 var callSlot = dmRpc({ object:'dns_manager', method:'set_slot', params:['slot','id'], expect:{} });
 var callSlotDomains = dmRpc({ object:'dns_manager', method:'set_slot_domains', params:['slot','domains'], expect:{} });
 var callAddCustomDns = dmRpc({ object:'dns_manager', method:'add_custom_dns', params:['name','url'], expect:{} });
+var callDeleteCustomDns = dmRpc({ object:'dns_manager', method:'delete_custom_dns', params:['id'], expect:{} });
 var callSetting = dmRpc({ object:'dns_manager', method:'set_setting', params:['name','enabled'], expect:{} });
 var callWatchdogSettings = dmRpc({ object:'dns_manager', method:'set_watchdog_settings', params:['interval','threshold','repair_cooldown','max_repairs','max_restarts','max_candidates','guard_interval'], expect:{} });
 var callNtp = dmRpc({ object:'dns_manager', method:'set_ntp', params:['preset'], expect:{} });
@@ -4204,6 +4273,34 @@ function saveCustomDns(nameInput,urlInput,root){
   });
 }
 
+function isUserDnsRecord(d){
+  return !!(d&&d.category==='custom'&&/^custom_[0-9]{3}$/.test(String(d.id||'')));
+}
+function deleteCustomDns(d,root){
+  if(state.busy||state.jobRunning||!isUserDnsRecord(d))return;
+  confirmAction('Удалить пользовательский DNS?',[['Название',d.name||d.id],['URL DoH',d.url||'—'],['Важно','Удалится только эта пользовательская запись. Встроенные DNS не затрагиваются.']],function(){
+    state.busy=true;
+    state.pageNotice.catalog='Удаляю пользовательский DNS…';
+    renderCatalog(root);
+    callDeleteCustomDns(d.id).then(function(r){
+      state.busy=false;
+      if(r&&r.ok){
+        state.category='custom';state.offset=0;window.dmCatalog=null;state.catalogLoaded=false;
+        state.pageNotice.catalog='Пользовательский DNS «'+(d.name||d.id)+'» удалён.';
+        setAction(true,'Пользовательский DNS удалён.');
+        refresh(root,true);
+      }else{
+        var msg=(r&&r.error)||'Не удалось удалить пользовательский DNS.';
+        state.pageNotice.catalog=msg;setAction(false,msg);renderCatalog(root);
+      }
+    }).catch(function(err){
+      state.busy=false;
+      var msg=withRpcError('Не удалось удалить пользовательский DNS.',err);
+      state.pageNotice.catalog=msg;setAction(false,msg);renderCatalog(root);
+    });
+  });
+}
+
 function renderCatalog(root){
   var e=root.querySelector('#dm-catalog');if(!e)return;e.innerHTML='';
   var ageCard=renderTestAgeCommon(root,window.dmState||{});
@@ -4282,9 +4379,11 @@ function renderCatalogBody(root,data){
           btn(ci.status==='RUNNING'?'Проверяю…':'Проверить','cbi-button-neutral',function(){testOne(d.id,root,'catalog');},{disabled:ci.status==='RUNNING'||!!state.busy||!!state.jobRunning})
         ])
       ]),
-      E('div',{'class':'dm-catalog-toolbar'},[
-        renderCatalogAssign(d,root)
-      ])
+      E('div',{'class':'dm-catalog-toolbar'},(function(){
+        var toolbar=[renderCatalogAssign(d,root)];
+        if(isUserDnsRecord(d))toolbar.push(btn('Удалить','cbi-button-negative',function(){deleteCustomDns(d,root);},{disabled:!!state.busy||!!state.jobRunning}));
+        return toolbar;
+      })())
     ]));
   });
   b.appendChild(g);
