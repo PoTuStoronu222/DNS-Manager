@@ -315,6 +315,107 @@ catalog_id_for_url() {
 }
 
 
+add_custom_dns_json() {
+    if ! acquire_runtime_lock "$RUNTIME_DIR/custom-catalog.lock"; then
+        json_error "Список пользовательских DNS уже изменяется"
+        return
+    fi
+    _name="$(jget name)"
+    _url="$(catalog_url_normalize "$(jget url)")"
+    if [ -z "$_name" ] || [ -z "$_url" ]; then
+        release_runtime_lock "$RUNTIME_DIR/custom-catalog.lock"
+        json_error "Укажите название и HTTPS URL DoH"
+        return
+    fi
+    _name_len="$(printf '%s' "$_name" | wc -c | tr -d ' ')"
+    _url_len="$(printf '%s' "$_url" | wc -c | tr -d ' ')"
+    case "$_name_len" in ''|*[!0-9]*) _name_len=999;; esac
+    case "$_url_len" in ''|*[!0-9]*) _url_len=999;; esac
+    if [ "$_name_len" -gt 80 ] || printf '%s' "$_name" | LC_ALL=C grep -q '[|[:cntrl:]]'; then
+        release_runtime_lock "$RUNTIME_DIR/custom-catalog.lock"
+        json_error "Название должно быть до 80 байт, без служебных символов и вертикальной черты"
+        return
+    fi
+    if [ "$_url_len" -gt 512 ] || ! printf '%s' "$_url" | LC_ALL=C grep -Eq '^https://[A-Za-z0-9._~:/?#@!$&()*+,;=%-]+$'; then
+        release_runtime_lock "$RUNTIME_DIR/custom-catalog.lock"
+        json_error "Укажите корректный HTTPS URL DoH без пробелов и служебных символов"
+        return
+    fi
+    _authority="$(printf '%s' "$_url" | sed -e 's|^https://||' -e 's|[/#?].*$||')"
+    if ! printf '%s' "$_authority" | LC_ALL=C grep -Eq '^([A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?)(:[0-9]{1,5})?$'; then
+        release_runtime_lock "$RUNTIME_DIR/custom-catalog.lock"
+        json_error "В HTTPS URL указан некорректный адрес сервера"
+        return
+    fi
+    case "$_authority" in
+        *:*)
+            _port="$(printf '%s' "$_authority" | sed 's/^.*://')"
+            case "$_port" in ''|*[!0-9]*) _port=0;; esac
+            if [ "$_port" -lt 1 ] 2>/dev/null || [ "$_port" -gt 65535 ] 2>/dev/null; then
+                release_runtime_lock "$RUNTIME_DIR/custom-catalog.lock"
+                json_error "Порт в HTTPS URL должен быть от 1 до 65535"
+                return
+            fi
+            ;;
+    esac
+    load_manager || {
+        release_runtime_lock "$RUNTIME_DIR/custom-catalog.lock"
+        json_error "DNS Manager недоступен"
+        return
+    }
+    _duplicate="$(catalog_id_for_url "$_url" 2>/dev/null || true)"
+    if [ -n "$_duplicate" ]; then
+        _duplicate_name="$(catalog_field "$_duplicate" 4 2>/dev/null || true)"
+        [ -n "$_duplicate_name" ] || _duplicate_name="$_duplicate"
+        release_runtime_lock "$RUNTIME_DIR/custom-catalog.lock"
+        json_error "Этот DoH URL уже есть в каталоге: $_duplicate_name"
+        return
+    fi
+    mkdir -p "$(dirname "$CUSTOM_CATALOG_FILE")" 2>/dev/null || {
+        release_runtime_lock "$RUNTIME_DIR/custom-catalog.lock"
+        json_error "Не удалось создать каталог пользовательских DNS"
+        return
+    }
+    [ -f "$CUSTOM_CATALOG_FILE" ] || : > "$CUSTOM_CATALOG_FILE"
+    chmod 600 "$CUSTOM_CATALOG_FILE" 2>/dev/null || true
+    _n=1
+    while [ "$_n" -le 999 ]; do
+        _id="$(printf 'custom_%03d' "$_n")"
+        [ -z "$(dns_cat "$_id" 2>/dev/null || true)" ] && break
+        _n=$((_n + 1))
+    done
+    if [ "$_n" -gt 999 ]; then
+        release_runtime_lock "$RUNTIME_DIR/custom-catalog.lock"
+        json_error "Достигнут лимит пользовательских DNS"
+        return
+    fi
+    _tmp="$(mktemp "$CUSTOM_CATALOG_FILE.tmp.XXXXXX" 2>/dev/null || true)"
+    if [ -z "$_tmp" ]; then
+        release_runtime_lock "$RUNTIME_DIR/custom-catalog.lock"
+        json_error "Не удалось подготовить файл пользовательских DNS"
+        return
+    fi
+    cat "$CUSTOM_CATALOG_FILE" > "$_tmp" 2>/dev/null || : > "$_tmp"
+    printf '%s|custom|custom|%s|%s|manual|USER\n' "$_id" "$_name" "$_url" >> "$_tmp" || {
+        rm -f "$_tmp" 2>/dev/null || true
+        release_runtime_lock "$RUNTIME_DIR/custom-catalog.lock"
+        json_error "Не удалось записать пользовательский DNS"
+        return
+    }
+    chmod 600 "$_tmp" 2>/dev/null || true
+    mv -f "$_tmp" "$CUSTOM_CATALOG_FILE" || {
+        rm -f "$_tmp" 2>/dev/null || true
+        release_runtime_lock "$RUNTIME_DIR/custom-catalog.lock"
+        json_error "Не удалось сохранить пользовательский DNS"
+        return
+    }
+    release_runtime_lock "$RUNTIME_DIR/custom-catalog.lock"
+    printf '{"ok":true,"id":'; json_quote "$_id"
+    printf ',"name":'; json_quote "$_name"
+    printf ',"url":'; json_quote "$_url"
+    printf '}'
+}
+
 read_installed_luci_version() {
     _v=""
     # The view is the code that LuCI actually loads, so it is the authoritative
