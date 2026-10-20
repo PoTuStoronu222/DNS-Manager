@@ -37,7 +37,7 @@ chmod +x "$tmp/normalize_slot_domains_runner.sh"
 "$tmp/normalize_slot_domains_runner.sh" "$tmp/normalize_slot_domains.sh" || fail "domain input validation and normalization"
 ok "domain input validation rejects malformed hosts and normalizes duplicates"
 
-awk '/^slot_domains_get\(\) \{/,/^slot_domains_set\(\) \{/' dns-manager.sh | sed '$d' > "$tmp/slot_domains_get.sh"
+awk '/^normalize_slot_domains\(\) \{/,/^slot_domains_set\(\) \{/' dns-manager.sh | sed '$d' > "$tmp/slot_domains_get.sh"
 awk '/^watchdog_expected_servers\(\) \{/,/^}/' dns-manager.sh > "$tmp/watchdog_expected_servers.sh"
 [ -s "$tmp/slot_domains_get.sh" ] || fail "slot domain getter extraction"
 [ -s "$tmp/watchdog_expected_servers.sh" ] || fail "Watchdog expected DNS extraction"
