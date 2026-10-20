@@ -1015,7 +1015,7 @@ ok "LuCI forced-DNS component is state-only; controls live in the DoH page"
 
 # Encrypted-DNS bypass protection is an independent setting; force DNS must not
 # turn its DoT firewall rule or browser auto-DoH canaries on/off by itself.
-grep -Fq 'BLOCK_EXTERNAL_DNS="$BLOCK_EXTERNAL_DNS"' dns-manager.sh || fail "independent encrypted-DNS setting is not persisted"
+grep -Fq 'BLOCK_EXTERNAL_DNS=$(shell_quote "$BLOCK_EXTERNAL_DNS")' dns-manager.sh || fail "independent encrypted-DNS setting is not persisted"
 grep -Fq 'apply_encrypted_dns_block() {' dns-manager.sh || fail "independent encrypted-DNS apply helper missing"
 grep -Fq 'encrypted_dns)' dns-manager.sh || fail "encrypted-DNS setting has no apply action"
 awk '/^sync_hdp_force_contract\(\) \{/,/^configure_hdp_manager_control\(\) \{/' dns-manager.sh > "$tmp/force_sync_independence.sh"
