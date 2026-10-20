@@ -2968,7 +2968,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI common module version: 1.56
+// DNS Manager LuCI common module version: 1.60
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
