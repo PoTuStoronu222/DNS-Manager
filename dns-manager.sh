@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.63"
+VERSION="3.64"
 # 3.38: clear the LuCI update flag after a successful CLI update.
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
@@ -15,6 +15,7 @@ LOG_FILE="/var/log/dns-manager.log"
 TX_LOG="/var/log/dns-manager.tx"
 CONFIG_FILE="$CFG_DIR/manager.conf"
 DNS_CATALOG="$CFG_DIR/dns-catalog.conf"
+CUSTOM_DNS_CATALOG="$CFG_DIR/dns-custom-catalog.conf"
 NTP_CATALOG="$CFG_DIR/ntp-catalog.conf"
 BOOTSTRAP_DNS_ALL="77.88.8.8,77.88.8.1,94.140.14.14,1.1.1.1,1.0.0.1,8.8.8.8,8.8.4.4,9.9.9.9,149.112.112.112,208.67.222.222,208.67.220.220,149.112.121.10,149.112.122.10,76.76.2.0,76.76.10.0,194.242.2.2,194.242.2.3,2606:4700:4700::1111,2606:4700:4700::1001,2001:4860:4860::8888,2001:4860:4860::8844,2620:fe::fe,2620:fe::9"
 DNSCAT_VERSION="8.7-RU-NOSOCIAL"
@@ -1757,19 +1758,23 @@ refresh_runtime_capabilities() {
 # ==========================================
 # ==========================================
 dns_field() {
+    local _target_id _f_idx _df_file _c1 _c2 _c3 _c4 _c5 _c6 _c7
     _target_id="$1"
     _f_idx="$2"
-    while IFS='|' read -r _c1 _c2 _c3 _c4 _c5 _c6 _c7; do
-        case "$_c1" in ''|\#*) continue ;; esac
-        [ "$_c1" = "$_target_id" ] || continue
-        case "$_f_idx" in
-            2) printf '%s' "$_c2" ;;
-            4) printf '%s' "$_c4" ;;
-            5) printf '%s' "$_c5" ;;
-            *) return 1 ;;
-        esac
-        return 0
-    done < "$DNS_CATALOG"
+    for _df_file in "$DNS_CATALOG" "$CUSTOM_DNS_CATALOG"; do
+        [ -r "$_df_file" ] || continue
+        while IFS='|' read -r _c1 _c2 _c3 _c4 _c5 _c6 _c7; do
+            case "$_c1" in ''|\#*) continue ;; esac
+            [ "$_c1" = "$_target_id" ] || continue
+            case "$_f_idx" in
+                2) printf '%s' "$_c2" ;;
+                4) printf '%s' "$_c4" ;;
+                5) printf '%s' "$_c5" ;;
+                *) return 1 ;;
+            esac
+            return 0
+        done < "$_df_file"
+    done
     return 1
 }
 dns_name() { dns_field "$1" 4 | sed 's/\\\\\././g'; }
