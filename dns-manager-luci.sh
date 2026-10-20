@@ -2931,6 +2931,7 @@ var callProfile = dmRpc({ object:'dns_manager', method:'set_profile', params:['p
 var callResetDns = dmRpc({ object:'dns_manager', method:'reset_dns', expect:{} });
 var callSlot = dmRpc({ object:'dns_manager', method:'set_slot', params:['slot','id'], expect:{} });
 var callSlotDomains = dmRpc({ object:'dns_manager', method:'set_slot_domains', params:['slot','domains'], expect:{} });
+var callAddCustomDns = dmRpc({ object:'dns_manager', method:'add_custom_dns', params:['name','url'], expect:{} });
 var callSetting = dmRpc({ object:'dns_manager', method:'set_setting', params:['name','enabled'], expect:{} });
 var callWatchdogSettings = dmRpc({ object:'dns_manager', method:'set_watchdog_settings', params:['interval','threshold','repair_cooldown','max_repairs','max_restarts','max_candidates','guard_interval'], expect:{} });
 var callNtp = dmRpc({ object:'dns_manager', method:'set_ntp', params:['preset'], expect:{} });
@@ -2949,7 +2950,7 @@ var PROFILE = [
 ];
 var CATEGORY = [
   ['all','Все DNS'], ['bypass','Обход геоблока'], ['security','Защита от угроз'], ['privacy','Конфиденциальность'],
-  ['adblock','Блокировка рекламы'], ['family','Семейная фильтрация'], ['clean','Без фильтрации'], ['gaming','Игровые DNS'], ['regional','Региональные DNS']
+  ['adblock','Блокировка рекламы'], ['family','Семейная фильтрация'], ['clean','Без фильтрации'], ['gaming','Игровые DNS'], ['regional','Региональные DNS'], ['custom','Мои DNS']
 ];
 var state = { luciUpdateReloadTimer:null, hdpUpdating:false, managerUpdating:false, updatingAll:false, category:'all', offset:0, limit:18, catalogLoaded:false, catalogLoading:false, advanced:true, logLoaded:false, logLoading:false, busy:false, busySetting:'', settingMessage:'', settingMessageType:'', settingMessageKey:'', pageNotice:{}, statusError:'', activeTab:'dashboard', jobRunning:false, lastJob:null, checking:{}, fullTest:null, catalogProgress:null, profileProgress:null, profileOutput:'', versionCheck:null, lastAction:null, runtimeCpuLoad:null, runtimeMemoryTotal:null, runtimeMemoryAvailable:null, boardInfo:null, systemPollBusy:false, profileResumeStarted:false };
 
@@ -3836,30 +3837,32 @@ function renderProfiles(root,st){
 function renderSlots(root,st){
   var e=root.querySelector('#dm-slots');if(!e)return;e.innerHTML='';var rows=[];
   (st.slots||[]).forEach(function(d){
-    if(!d.id)return;
-    var checking=state.checking&&state.checking[d.id];
+    var assigned=!!d.id;
+    var checking=assigned&&state.checking&&state.checking[d.id];
     var running=checking&&String(checking.status||'').toUpperCase()==='RUNNING';
     var shownStatus=running?'RUNNING':d.status;
     var shownPing=running?'':d.ping;
     var rowNode=E('div',{'class':'dm-slot-row '+(running?'dm-slot-checking':'')},[
       E('span',{'class':'dm-slot-id'},d.slot),
-      E('span',{'class':'dm-slot-name'},d.name||d.id),
+      E('span',{'class':'dm-slot-name'},assigned?(d.name||d.id):'Не назначен'),
       E('span',{'class':'dm-slot-endpoint'},d.port?'127.0.0.1:'+d.port:'—'),
-      E('span',{'class':'dm-slot-ping'},running?'—':ping(shownPing)),
-      E('span',{'class':'dm-slot-state'},running?badge('dm-warn','проверяется…'):stateBadge(shownStatus,shownPing)),
+      E('span',{'class':'dm-slot-ping'},running?'—':(assigned?ping(shownPing):'—')),
+      E('span',{'class':'dm-slot-state'},running?badge('dm-warn','проверяется…'):(assigned?stateBadge(shownStatus,shownPing):badge('dm-off','не назначен'))),
       E('span',{'class':'dm-inline'},[
         btn('Выбрать','cbi-button-neutral',function(){openSlotPicker(d.slot,root);},{disabled:running||!!state.busy||!!state.jobRunning}),
-        btn(running?'Проверяю…':'Проверить','cbi-button-neutral',function(){testOne(d.id,root);},{disabled:running||!!state.busy||!!state.jobRunning})
+        btn(running?'Проверяю…':'Проверить','cbi-button-neutral',function(){if(assigned)testOne(d.id,root);},{disabled:!assigned||running||!!state.busy||!!state.jobRunning})
       ])
     ]);
     var children=[rowNode];
     if(String(d.slot)!=='RU'){
       var initial=String(d.domains||'').trim().split(/\s+/).filter(Boolean).join('\n');
-      var domainInput=E('textarea',{'class':'dm-slot-domains-input','rows':'2','spellcheck':'false','placeholder':'youtube.com\nexample.org'});
+      var domainInput=E('textarea',{'class':'dm-slot-domains-input','rows':'2','spellcheck':'false','placeholder':'youtube.com\nexample.org','disabled':!assigned});
       domainInput.value=initial;
       children.push(E('div',{'class':'dm-slot-domain-panel'},[
         E('div',{'class':'dm-slot-domains-heading'},'Домены только через '+slotLabel(d.slot)),
-        E('div',{'class':'dm-slot-domains-help'},'Один домен на строку. Его поддомены тоже пойдут через этот DNS; остальные запросы остаются в общем наборе DNS. Для доменов на кириллице используйте Punycode.'),
+        E('div',{'class':'dm-slot-domains-help'},assigned
+          ? 'Один домен на строку. Поддомены тоже пойдут через этот DNS; остальные запросы останутся в общей схеме. Для доменов на кириллице используйте Punycode.'
+          : 'Чтобы привязать сайты к этому DNS, сначала нажмите «Выбрать» и назначьте резолвер в слот.'),
         E('div',{'class':'dm-slot-domain-controls'},[
           domainInput,
           btn(state.busy?'Применяю…':'Сохранить домены','cbi-button-neutral',function(){saveSlotDomains(d.slot,domainInput,root);},{disabled:!!state.busy||!!state.jobRunning})
@@ -3869,9 +3872,12 @@ function renderSlots(root,st){
     rows.push(E('div',{'class':'dm-slot-entry'},children));
   });
   if(!rows.length)rows.push(E('div',{'class':'dm-hint'},'DNS пока не настроены.'));
-  var sch=[E('div',{'class':'dm-slot-table'},rows)];
+  var sch=[
+    E('div',{'class':'dm-mini'},'Сначала выбери DNS в слоте. Затем впиши домены — запросы к этим доменам и поддоменам пойдут через этот резолвер.'),
+    E('div',{'class':'dm-slot-table'},rows)
+  ];
   if(state.pageNotice.slots)sch.push(E('div',{'class':'dm-inline-msg info'},state.pageNotice.slots));
-  e.appendChild(card('Выбранные DNS',sch));
+  e.appendChild(card('DNS по слотам и маршруты доменов',sch));
 }
 function settingCard(root,x,st){
   var en=yes(st[x[0]]),busy=state.busySetting===x[0],feedback=settingFeedback(x[1],x[0]),sv=settingStateView(st,x[0]);
@@ -4158,6 +4164,43 @@ function renderTime(root,st){
   e.appendChild(card('Серверы точного времени',body));
 }
 
+function saveCustomDns(nameInput,urlInput,root){
+  if(state.busy||!nameInput||!urlInput)return;
+  var name=String(nameInput.value||'').trim();
+  var url=String(urlInput.value||'').trim();
+  if(!name||!url){
+    state.pageNotice.catalog='Заполни название DNS и HTTPS URL DoH.';
+    renderCatalog(root);
+    return;
+  }
+  state.busy=true;
+  state.pageNotice.catalog='Сохраняю пользовательский DoH…';
+  renderCatalog(root);
+  callAddCustomDns(name,url).then(function(r){
+    state.busy=false;
+    if(r&&r.ok){
+      state.category='custom';
+      state.offset=0;
+      window.dmCatalog=null;
+      state.catalogLoaded=false;
+      state.pageNotice.catalog='DNS «'+(r.name||name)+'» добавлен. Открой «Мои DNS», проверь его и назначь в слот.';
+      setAction(true,'Пользовательский DoH добавлен.');
+      refresh(root,true);
+    }else{
+      var msg=(r&&r.error)||'Не удалось сохранить пользовательский DoH.';
+      state.pageNotice.catalog=msg;
+      setAction(false,msg);
+      renderCatalog(root);
+    }
+  }).catch(function(err){
+    state.busy=false;
+    var msg=withRpcError('Не удалось сохранить пользовательский DoH.',err);
+    state.pageNotice.catalog=msg;
+    setAction(false,msg);
+    renderCatalog(root);
+  });
+}
+
 function renderCatalog(root){
   var e=root.querySelector('#dm-catalog');if(!e)return;e.innerHTML='';
   var ageCard=renderTestAgeCommon(root,window.dmState||{});
@@ -4169,6 +4212,24 @@ function renderCatalog(root){
       btn(state.jobRunning&&state.fullTest&&state.fullTest.origin==='catalog'?'Проверяю…':'Проверить все DNS','cbi-button-action',function(){testAll(root,'catalog');},{disabled:!!state.busy||!!state.jobRunning})
     ])
   ];
+
+  var customName=E('input',{'class':'dm-input','type':'text','maxlength':'80','placeholder':'Например, Мой DNS'});
+  var customUrl=E('input',{'class':'dm-input','type':'url','maxlength':'512','placeholder':'https://dns.example/dns-query'});
+  e.appendChild(card('Добавить свой DoH',[
+    E('div',{'class':'dm-mini'},'Добавь собственный HTTPS-адрес DNS over HTTPS. Он сохранится отдельно от официального каталога и не исчезнет при обновлении каталога.'),
+    E('div',{'class':'dm-custom-dns-form'},[
+      E('div',{},[
+        E('div',{'class':'dm-setting-title'},'Название'),
+        customName
+      ]),
+      E('div',{},[
+        E('div',{'class':'dm-setting-title'},'URL DoH'),
+        customUrl
+      ]),
+      btn(state.busy?'Сохраняю…':'Добавить DNS','cbi-button-action',function(){saveCustomDns(customName,customUrl,root);},{disabled:!!state.busy||!!state.jobRunning})
+    ]),
+    E('div',{'class':'dm-mini'},'После добавления выбери «Мои DNS», нажми «Проверить», затем назначь сервер в слот DNS 1–6.')
+  ]));
 
   if(state.fullTest&&state.fullTest.origin==='catalog'&&state.catalogProgress){
     var p=state.catalogProgress;
