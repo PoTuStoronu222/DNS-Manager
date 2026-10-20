@@ -504,8 +504,12 @@ view_luci="$(sed -n 's|^// DNS Manager LuCI common module version:[[:space:]]*||
 [ "$top_luci" = "$self_luci" ] || fail "LuCI SELF_VERSION mismatch"
 [ "$top_luci" = "$view_luci" ] || fail "embedded JS version mismatch"
 ok "LuCI version markers synchronized ($top_luci)"
-grep -Fq 'VERSION="3.63"' dns-manager.sh || fail "DNS Manager version marker is not 3.61"
-ok "DNS Manager version marker synchronized (3.63)"
+grep -Fq 'VERSION="3.65"' dns-manager.sh || fail "DNS Manager version marker is not 3.65"
+ok "DNS Manager version marker synchronized (3.65)"
+grep -Fq "assignment.appendChild(btn('Удалить'" dns-manager-luci.sh || fail "Custom DNS delete button is not aligned with the assignment action"
+grep -Fq ".dm-catalog-item-custom{grid-column:span 2}" dns-manager-luci.sh || fail "Custom DNS card does not allocate width for horizontal actions"
+grep -Fq ".dm-catalog-controls-custom .dm-assign-inline select{height:30px;min-width:0;width:auto;max-width:100%;flex:1 1 160px" dns-manager-luci.sh || fail "Custom DNS actions do not have a responsive inline layout"
+ok "Custom DNS assignment and delete actions share a responsive horizontal row"
 
 if awk '
     /function startAutoStatus\(root\)/ { capture=1 }
