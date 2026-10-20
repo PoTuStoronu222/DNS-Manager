@@ -1742,7 +1742,7 @@ normalize_slot_domains() {
     case "$_sd_size" in ''|*[!0-9]*) return 1;; esac
     [ "$_sd_size" -le 4096 ] 2>/dev/null || return 1
     printf '%s' "$_sd_input" | LC_ALL=C grep -Eq "^[A-Za-z0-9.,[:space:]-]*$" || return 1
-    _sd_input="$(printf '%s' "$_sd_input" | tr ',' ' ' | tr -d '\\r' | tr 'A-Z' 'a-z')"
+    _sd_input="$(printf '%s' "$_sd_input" | tr ',' ' ' | tr -d '\r' | tr 'A-Z' 'a-z')"
     _sd_out=""
     for _sd_domain in $_sd_input; do
         [ -n "$_sd_domain" ] || continue
