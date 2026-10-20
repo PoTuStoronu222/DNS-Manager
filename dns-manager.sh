@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.64"
+VERSION="3.65"
 # 3.38: clear the LuCI update flag after a successful CLI update.
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
@@ -2050,115 +2050,11 @@ return 1
 # ==========================================
 validate_dns_message() {
     _file="$1"
-    _query="${2:-}"
-    [ -s "$_file" ] && [ -s "$_query" ] || return 1
-    _n="$(wc -c < "$_file" 2>/dev/null | tr -d ' ')"
+    [ -s "$_file" ] || return 1
+    _n="$(wc -c < "$_file" 2>/dev/null | tr -d " ")"
     case "$_n" in ''|*[!0-9]*) return 1;; esac
-    [ "$_n" -ge 12 ] && [ "$_n" -le 65535 ] || return 1
-
-    _response_bytes="$(od -An -tu1 -v "$_file" 2>/dev/null | tr '\n' ' ')"
-    _query_bytes="$(od -An -tu1 -v "$_query" 2>/dev/null | tr '\n' ' ')"
-    [ -n "$_response_bytes" ] && [ -n "$_query_bytes" ] || return 1
-
-    # Parse the DNS wire message instead of trusting its HTTP status and size.
-    # Validate the transaction ID, response flags, echoed question, and RR bounds.
-    printf '%s\n%s\n' "$_response_bytes" "$_query_bytes" | awk '
-        function u16(a, p) { return a[p] * 256 + a[p + 1] }
-        function read_name(a, n, p, build,    cur, jumped, steps, byte, lablen, target, j, label, name, saved_next) {
-            cur=p; jumped=0; steps=0; name=""; saved_next=-1
-            while (1) {
-                if (cur < 0 || cur >= n || ++steps > n) return 0
-                byte=a[cur]
-                if (byte == 0) {
-                    name_next = jumped ? saved_next : cur + 1
-                    name_value = name
-                    return 1
-                }
-                if (byte >= 192) {
-                    if (cur + 1 >= n) return 0
-                    target=(byte - 192) * 256 + a[cur + 1]
-                    if (target >= cur || target >= n) return 0
-                    if (!jumped) { saved_next=cur + 2; jumped=1 }
-                    cur=target
-                    continue
-                }
-                if (byte >= 64) return 0
-                lablen=byte
-                if (cur + lablen >= n) return 0
-                label=""
-                if (build) {
-                    for (j=1; j<=lablen; j++) label=label sprintf("%c", a[cur + j])
-                    if (name != "") name=name "."
-                    name=name tolower(label)
-                }
-                cur=cur + lablen + 1
-            }
-        }
-        NR==1 { rn=NF; for (i=1; i<=NF; i++) r[i-1]=$i; next }
-        NR==2 { qn=NF; for (i=1; i<=NF; i++) q[i-1]=$i; next }
-        END {
-            if (rn < 12 || rn > 65535 || qn < 17 || qn > 65535) exit 1
-            if (r[0] != q[0] || r[1] != q[1]) exit 1
-
-            flags_hi=r[2]; flags_lo=r[3]
-            if (int(flags_hi / 128) % 2 != 1) exit 1
-            if (int(flags_hi / 8) % 16 != 0) exit 1
-            if (int(flags_hi / 2) % 2 != 0) exit 1
-            if (flags_lo % 16 != 0) exit 1
-
-            qd=u16(r,4); an=u16(r,6); ns=u16(r,8); ar=u16(r,10)
-            if (qd != 1 || an < 1) exit 1
-            if (int(q[2] / 128) % 2 != 0 || int(q[2] / 8) % 16 != 0 || u16(q,4) != 1) exit 1
-
-            if (!read_name(q, qn, 12, 1)) exit 1
-            query_name=name_value; qpos=name_next
-            if (qpos + 4 > qn) exit 1
-            query_type=u16(q,qpos); query_class=u16(q,qpos+2)
-
-            if (!read_name(r, rn, 12, 1)) exit 1
-            response_name=name_value; rpos=name_next
-            if (rpos + 4 > rn) exit 1
-            response_type=u16(r,rpos); response_class=u16(r,rpos+2); rpos += 4
-            if (response_name != query_name || response_type != query_type || response_class != query_class) exit 1
-
-            for (k=0; k<an+ns+ar; k++) {
-                if (!read_name(r, rn, rpos, 1)) exit 1
-                rr_owner=name_value; rpos=name_next
-                if (rpos + 10 > rn) exit 1
-                rr_type=u16(r,rpos); rr_class=u16(r,rpos+2); rdlen=u16(r,rpos+8); rdata_pos=rpos+10
-                if (rdata_pos + rdlen > rn) exit 1
-                # Record only usable A answers in the answer section.
-                # A zero/loopback answer for example.com is a sinkhole, not a successful resolution.
-                if (k < an && rr_class == query_class && rr_type == 1) {
-                    if (rdlen != 4) exit 1
-                    a1=r[rdata_pos]; a2=r[rdata_pos+1]; a3=r[rdata_pos+2]; a4=r[rdata_pos+3]
-                    if (a1 != 0 && a1 != 127) usable_a[rr_owner]=1
-                }
-                # Follow CNAME answers. A CNAME-only reply does not prove that an A query resolves.
-                if (k < an && rr_class == query_class && rr_type == 5) {
-                    if (!read_name(r, rn, rdata_pos, 1) || name_next != rdata_pos + rdlen) exit 1
-                    cname_value=name_value
-                    if ((rr_owner in cname_target) && cname_target[rr_owner] != cname_value) exit 1
-                    cname_target[rr_owner]=cname_value
-                }
-                rpos=rdata_pos+rdlen
-            }
-            current_name=query_name
-            answer_usable=0
-            for (depth=0; depth<16; depth++) {
-                if (current_name in usable_a) { answer_usable=1; break }
-                if (!(current_name in cname_target) || (current_name in cname_seen)) break
-                cname_seen[current_name]=1
-                current_name=cname_target[current_name]
-            }
-            if (!answer_usable || rpos != rn) exit 1
-            exit 0
-        }
-    '
-}
-is_dns_media_type() {
-    _ct="$(printf '%s' "$1" | sed 's/;.*//' | tr '[:upper:]' '[:lower:]' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-    [ "$_ct" = "application/dns-message" ]
+    [ "$_n" -ge 12 ] || return 1
+    return 0
 }
 test_one_dns() {
 id="$1"; url="$(normalize_url "$(dns_url "$id")")"; name="$(dns_name "$id")"; cat="$(dns_cat "$id")"
@@ -2211,8 +2107,9 @@ while IFS= read -r ipx; do
     ctype="$(awk -F': *' 'tolower($1)=="content-type"{print tolower($2)}' "$hdr" 2>/dev/null | tail -n1 | tr -d '\r')"
     case "$tim" in ''|0) ms=-1;; *) ms="$(awk -v t="$tim" 'BEGIN{v=t*1000; if(v<1)v=1; printf "%.0f", v}')";; esac
     case "$code" in
-    2??)
-        if is_dns_media_type "$ctype" && validate_dns_message "$body" "$q"; then
+    200)
+        case "$ctype" in *application/dns-message*) ct_ok=yes;; *) ct_ok=no;; esac
+        if [ "$ct_ok" = yes ] && validate_dns_message "$body"; then
             if [ "$_best_ms" -lt 0 ] || { [ "$ms" -ge 0 ] && [ "$ms" -lt "$_best_ms" ]; }; then _best_ms="$ms"; fi
             st=OK
         else st=BAD_DOH_RESPONSE; fi ;;
