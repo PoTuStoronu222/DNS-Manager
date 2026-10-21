@@ -5532,7 +5532,15 @@ luci_companion_install() {
 
 luci_companion_remove_fallback() {
     # The installed marker was checked by luci_companion_remove(). Remove only
-    # the companion's fixed, namespaced paths; never edit DNS/UCI configuration.
+    # the companion's fixed, namespaced paths and its own device-DNS runtime.
+    if [ -x /etc/init.d/dns-manager-device-dns ]; then
+        /etc/init.d/dns-manager-device-dns stop >/dev/null 2>&1 || true
+        /etc/init.d/dns-manager-device-dns disable >/dev/null 2>&1 || true
+    fi
+    rm -f /etc/nftables.d/90-dns-manager-device-dns.nft /etc/nftables.d/90-dns-manager-device-dns.nft.tmp.* 2>/dev/null || true
+    rm -f /etc/init.d/dns-manager-device-dns /etc/dns-manager/config/device-dns.conf 2>/dev/null || true
+    rm -rf /etc/dns-manager/device-dns 2>/dev/null || true
+    reload_fw >/dev/null 2>&1 || return 1
     rm -f "$LUCI_RPC_PLUGIN" "$LUCI_BACKEND_FILE" "$LUCI_ACL_FILE" "$LUCI_MENU_FILE" || return 1
     for _view in dashboard doh network time catalog log overview; do
         rm -f "$LUCI_VIEW_DIR/${_view}.js" || return 1
