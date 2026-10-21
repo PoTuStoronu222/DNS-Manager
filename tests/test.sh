@@ -35,7 +35,7 @@ grep -Fq 'callSetDeviceDns' dns-manager-luci.sh || fail "LuCI has no client for 
 grep -Fq 'card(' "dns-manager-luci.sh" >/dev/null || fail "LuCI card renderer missing"
 ok "per-device DNS service, per-MAC nft redirects and multi-DoH assignment contract"
 
-awk '/^dmd_normalize_slots\\(\\) \\{/,/^}/' "$tmp/device_dns_service.sh" > "$tmp/device_dns_normalize.sh"
+awk '/^dmd_normalize_slots\(\) \{/,/^}/' "$tmp/device_dns_service.sh" > "$tmp/device_dns_normalize.sh"
 [ -s "$tmp/device_dns_normalize.sh" ] || fail "per-device slot normalizer missing"
 (
     . "$tmp/device_dns_normalize.sh"
