@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.65
+# Version: 1.66
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -32,7 +32,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/router-validation-20261020/dns-manager-luci.sh"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.65"
+VERSION="1.66"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -51,7 +51,7 @@ install_files() {
     require_manager || return 1
 
     command -v jsonfilter >/dev/null 2>&1 || say "ℹ jsonfilter не найден — используется встроенный обработчик RPC-параметров."
-    mkdir -p "$VIEW_DIR" "$RESOURCE_DIR" /usr/libexec/rpcd /usr/lib/dns-manager-luci /usr/share/rpcd/acl.d /usr/share/luci/menu.d "$RUNTIME_DIR/checks" "$JOB_DIR" "$BACKUP_DIR" "$(dirname "$STATE_FILE")" || return 1
+    mkdir -p "$VIEW_DIR" "$RESOURCE_DIR" /usr/libexec/rpcd /usr/lib/dns-manager-luci /usr/share/rpcd/acl.d /usr/share/luci/menu.d "$RUNTIME_DIR/checks" "$JOB_DIR" "$BACKUP_DIR" "$(dirname "$STATE_FILE")" /etc/dns-manager/device-dns /etc/nftables.d || return 1
     if [ -d "$JOB_DIR" ]; then
         for _jd in "$JOB_DIR"/*; do
             [ -d "$_jd" ] || continue
@@ -65,6 +65,210 @@ install_files() {
             rm -rf "$_jd" 2>/dev/null || true
         done
     fi
+    cat > /etc/init.d/dns-manager-device-dns <<'EOF_DEVICE_DNS_SERVICE'
+#!/bin/sh /etc/rc.common
+# DNS Manager per-device DoH listeners. This does not provide DHCP.
+START=95
+STOP=10
+USE_PROCD=1
+DMD_BASE="/etc/dns-manager/device-dns"
+DMD_ASSIGNMENTS="/etc/dns-manager/config/device-dns.conf"
+DMD_MANAGER_CONFIG="/etc/dns-manager/config/manager.conf"
+DMD_NFT="/etc/nftables.d/90-dns-manager-device-dns.nft"
+DMD_STAGE=""
+
+dmd_log() { logger -t dns-manager-device-dns -- "$*" 2>/dev/null || true; }
+dmd_cleanup_stage() { [ -n "${DMD_STAGE:-}" ] && rm -rf "$DMD_STAGE" 2>/dev/null || true; }
+
+dmd_valid_mac() {
+    printf '%s\n' "$1" | awk '
+        /^[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]$/ { ok=1 }
+        END { exit ok ? 0 : 1 }
+    '
+}
+
+dmd_normalize_slots() {
+    _dmd_raw="$(printf '%s' "$1" | tr ',' ' ')"
+    _dmd_list=""
+    for _dmd_slot in $_dmd_raw; do
+        case "$_dmd_slot" in 1|2|3|4|5|6) ;; *) return 1 ;; esac
+        case " $_dmd_list " in *" $_dmd_slot "*) ;; *) _dmd_list="${_dmd_list:+$_dmd_list }$_dmd_slot" ;; esac
+    done
+    [ -n "$_dmd_list" ] || return 1
+    printf '%s\n' $_dmd_list | sort -n -u | tr '\n' ',' | sed 's/,$//'
+}
+
+dmd_mask_for_slots() {
+    _dmd_mask=0
+    for _dmd_slot in $(printf '%s' "$1" | tr ',' ' '); do
+        case "$_dmd_slot" in
+            1) _dmd_bit=1 ;; 2) _dmd_bit=2 ;; 3) _dmd_bit=4 ;;
+            4) _dmd_bit=8 ;; 5) _dmd_bit=16 ;; 6) _dmd_bit=32 ;;
+            *) return 1 ;;
+        esac
+        _dmd_mask=$((_dmd_mask + _dmd_bit))
+    done
+    [ "$_dmd_mask" -gt 0 ] || return 1
+    printf '%s' "$_dmd_mask"
+}
+
+dmd_port_busy() {
+    _dmd_port="$1"
+    if command -v netstat >/dev/null 2>&1; then
+        netstat -ln 2>/dev/null | awk -v p=":$_dmd_port" '
+            $4 ~ (p "$") || $5 ~ (p "$") { found=1 }
+            END { exit found ? 0 : 1 }
+        '
+        return $?
+    fi
+    if command -v ss >/dev/null 2>&1; then
+        ss -lnut 2>/dev/null | awk -v p=":$_dmd_port" '
+            { for (i=1;i<=NF;i++) if ($i ~ (p "$")) found=1 }
+            END { exit found ? 0 : 1 }
+        '
+        return $?
+    fi
+    return 1
+}
+
+dmd_fail_open() {
+    rm -f "$DMD_NFT" 2>/dev/null || true
+    rm -rf "$DMD_BASE/profiles" 2>/dev/null || true
+    /etc/init.d/firewall reload >/dev/null 2>&1 || true
+    dmd_log "Per-device DNS rules disabled after a configuration error; clients fall back to the normal LAN DNS path."
+}
+
+dmd_build_and_install() {
+    command -v fw4 >/dev/null 2>&1 || { dmd_log "fw4 is unavailable."; return 1; }
+    [ -x /usr/sbin/dnsmasq ] || { dmd_log "dnsmasq is unavailable."; return 1; }
+
+    DMD_STAGE="/tmp/dns-manager-device-dns.stage.$"
+    dmd_cleanup_stage
+    mkdir -p "$DMD_STAGE/profiles" "$DMD_BASE" /etc/nftables.d || return 1
+    : > "$DMD_STAGE/profiles.map"
+    : > "$DMD_STAGE/nft.rules"
+
+    SLOT_1=""; SLOT_2=""; SLOT_3=""; SLOT_4=""; SLOT_5=""; SLOT_6=""
+    PORT_1=""; PORT_2=""; PORT_3=""; PORT_4=""; PORT_5=""; PORT_6=""
+    [ ! -r "$DMD_MANAGER_CONFIG" ] || . "$DMD_MANAGER_CONFIG" || { dmd_cleanup_stage; return 1; }
+
+    DMD_LAN_DEV="$(uci -q get network.lan.device 2>/dev/null || true)"
+    [ -n "$DMD_LAN_DEV" ] || DMD_LAN_DEV="br-lan"
+    case "$DMD_LAN_DEV" in ''|*[!A-Za-z0-9_.:-]*) dmd_cleanup_stage; return 1 ;; esac
+
+    DMD_ACTIVE=0
+    printf 'chain dns_manager_device_dns {\n type nat hook prerouting priority -110; policy accept;\n' > "$DMD_STAGE/nft.rules"
+
+    if [ -r "$DMD_ASSIGNMENTS" ]; then
+        while IFS='|' read -r DMD_MAC DMD_RAW_SLOTS DMD_EXTRA; do
+            DMD_MAC="$(printf '%s' "$DMD_MAC" | tr 'A-F' 'a-f')"
+            [ -n "$DMD_MAC" ] || continue
+            dmd_valid_mac "$DMD_MAC" || continue
+            [ -z "$DMD_EXTRA" ] || continue
+            DMD_SLOTS="$(dmd_normalize_slots "$DMD_RAW_SLOTS" 2>/dev/null || true)"
+            [ -n "$DMD_SLOTS" ] || continue
+
+            DMD_VALID=1
+            DMD_COUNT=0
+            for DMD_SLOT in $(printf '%s' "$DMD_SLOTS" | tr ',' ' '); do
+                eval "DMD_ID=${SLOT_$DMD_SLOT:-}"
+                eval "DMD_PORT=${PORT_$DMD_SLOT:-}"
+                case "$DMD_PORT" in ''|*[!0-9]*) DMD_VALID=0; break ;; esac
+                [ -n "$DMD_ID" ] || { DMD_VALID=0; break; }
+                [ "$DMD_PORT" -ge 1 ] 2>/dev/null && [ "$DMD_PORT" -le 65535 ] 2>/dev/null || { DMD_VALID=0; break; }
+                DMD_COUNT=$((DMD_COUNT + 1))
+            done
+            [ "$DMD_VALID" = 1 ] && [ "$DMD_COUNT" -gt 0 ] || continue
+
+            DMD_MASK="$(dmd_mask_for_slots "$DMD_SLOTS")" || continue
+            DMD_LISTENER_PORT=$((54100 + DMD_MASK))
+            DMD_MAP_LINE="$DMD_SLOTS|$DMD_MASK|$DMD_LISTENER_PORT"
+            if ! grep -Fqx "$DMD_MAP_LINE" "$DMD_STAGE/profiles.map" 2>/dev/null; then
+                if [ ! -f "$DMD_BASE/profiles/profile_$DMD_MASK.conf" ] && dmd_port_busy "$DMD_LISTENER_PORT"; then
+                    dmd_log "Port $DMD_LISTENER_PORT is busy; device $DMD_MAC stays on the normal DNS path."
+                    continue
+                fi
+                DMD_PROFILE="$DMD_STAGE/profiles/profile_$DMD_MASK.conf"
+                {
+                    printf 'port=%s\n' "$DMD_LISTENER_PORT"
+                    printf 'interface=%s\n' "$DMD_LAN_DEV"
+                    printf 'bind-dynamic\nexcept-interface=lo\nno-dhcp-interface=%s\n' "$DMD_LAN_DEV"
+                    printf 'no-resolv\nno-poll\nno-hosts\ndomain-needed\nbogus-priv\ncache-size=1000\n'
+                    printf 'server=/lan/127.0.0.1#53\n'
+                    [ "$DMD_COUNT" -le 1 ] || printf 'all-servers\n'
+                    for DMD_SLOT in $(printf '%s' "$DMD_SLOTS" | tr ',' ' '); do
+                        eval "DMD_UPSTREAM_PORT=${PORT_$DMD_SLOT:-}"
+                        printf 'server=127.0.0.1#%s\n' "$DMD_UPSTREAM_PORT"
+                    done
+                } > "$DMD_PROFILE" || { dmd_cleanup_stage; return 1; }
+                /usr/sbin/dnsmasq --test --conf-file="$DMD_PROFILE" >/dev/null 2>&1 || {
+                    dmd_log "dnsmasq rejected per-device profile $DMD_MASK."
+                    dmd_cleanup_stage
+                    return 1
+                }
+                printf '%s\n' "$DMD_MAP_LINE" >> "$DMD_STAGE/profiles.map"
+            fi
+            printf ' ether saddr %s udp dport 53 redirect to :%s\n' "$DMD_MAC" "$DMD_LISTENER_PORT" >> "$DMD_STAGE/nft.rules"
+            printf ' ether saddr %s tcp dport 53 redirect to :%s\n' "$DMD_MAC" "$DMD_LISTENER_PORT" >> "$DMD_STAGE/nft.rules"
+            DMD_ACTIVE=$((DMD_ACTIVE + 1))
+        done < "$DMD_ASSIGNMENTS"
+    fi
+
+    if [ "$DMD_ACTIVE" -gt 0 ]; then
+        printf '}\n' >> "$DMD_STAGE/nft.rules"
+        mv "$DMD_STAGE/nft.rules" "$DMD_STAGE/device-rules.nft" || { dmd_cleanup_stage; return 1; }
+    else
+        rm -f "$DMD_STAGE/nft.rules"
+    fi
+
+    rm -rf "$DMD_BASE/profiles.new" "$DMD_BASE/profiles.old" 2>/dev/null || true
+    [ ! -d "$DMD_BASE/profiles" ] || mv "$DMD_BASE/profiles" "$DMD_BASE/profiles.old" || { dmd_cleanup_stage; return 1; }
+    mv "$DMD_STAGE/profiles" "$DMD_BASE/profiles" || {
+        [ ! -d "$DMD_BASE/profiles.old" ] || mv "$DMD_BASE/profiles.old" "$DMD_BASE/profiles" 2>/dev/null || true
+        dmd_cleanup_stage
+        return 1
+    }
+
+    if [ -f "$DMD_STAGE/device-rules.nft" ]; then
+        _DMD_NFT_TMP="$DMD_NFT.tmp.$"
+        cp "$DMD_STAGE/device-rules.nft" "$_DMD_NFT_TMP" || { dmd_cleanup_stage; return 1; }
+        chmod 0644 "$_DMD_NFT_TMP" 2>/dev/null || true
+        mv -f "$_DMD_NFT_TMP" "$DMD_NFT" || { dmd_cleanup_stage; return 1; }
+    else
+        rm -f "$DMD_NFT" "$DMD_NFT.tmp.$" 2>/dev/null || true
+    fi
+
+    rm -rf "$DMD_BASE/profiles.old" 2>/dev/null || true
+    rm -f "$DMD_STAGE/profiles.map" "$DMD_STAGE/nft.rules" 2>/dev/null || true
+    dmd_cleanup_stage
+    /etc/init.d/firewall reload >/dev/null 2>&1 || return 1
+    return 0
+}
+
+start_service() {
+    if ! dmd_build_and_install; then
+        dmd_fail_open
+        return 1
+    fi
+    for DMD_PROFILE in "$DMD_BASE"/profiles/profile_*.conf; do
+        [ -f "$DMD_PROFILE" ] || continue
+        DMD_NAME="${DMD_PROFILE##*/}"
+        DMD_NAME="${DMD_NAME%.conf}"
+        procd_open_instance "$DMD_NAME"
+        procd_set_param command /usr/sbin/dnsmasq --keep-in-foreground --conf-file="$DMD_PROFILE"
+        procd_set_param respawn 3600 5 5
+        procd_close_instance
+    done
+}
+
+reload_service() {
+    /etc/init.d/dns-manager-device-dns stop >/dev/null 2>&1 || true
+    /etc/init.d/dns-manager-device-dns start
+}
+EOF_DEVICE_DNS_SERVICE
+    chmod 0755 /etc/init.d/dns-manager-device-dns || return 1
+    /etc/init.d/dns-manager-device-dns enable >/dev/null 2>&1 || return 1
+
     cat > "$MENU_FILE" <<'EOF_MENU'
 {
   "admin/services/dns-manager": {
@@ -159,7 +363,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/router-validation-20261020/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="1.65"
+SELF_VERSION="1.66"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -3071,7 +3275,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI common module version: 1.65
+// DNS Manager LuCI common module version: 1.66
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
