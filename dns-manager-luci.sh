@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.64
+# Version: 1.65
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -32,7 +32,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/router-validation-20261020/dns-manager-luci.sh"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.64"
+VERSION="1.65"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -159,7 +159,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/router-validation-20261020/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="1.64"
+SELF_VERSION="1.65"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -1372,6 +1372,93 @@ page_header_json() {
     printf ',"luci_version":'; json_quote "$_ph_lv"
     printf ',"last_full_test":'; json_quote "$_ph_last"
     printf ',"last_full_test_scope":'; json_quote "$_ph_scope"
+}
+
+lan_devices_json() {
+    _ld_tmp="$(mktemp /tmp/dns-manager-lan-devices.XXXXXX 2>/dev/null)" || {
+        printf '{"ok":false,"error":"Не удалось создать временный файл","devices":[]}\n'
+        return 0
+    }
+    _ld_merged="$_ld_tmp.merged"
+    : > "$_ld_tmp"
+
+    # Active DHCP leases known to dnsmasq.
+    if [ -r /tmp/dhcp.leases ]; then
+        awk -F '[[:space:]]+' '
+            NF >= 3 &&
+            $2 ~ /^[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]$/ &&
+            $3 ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ {
+                name = (NF >= 4 && $4 != "*" ? $4 : "")
+                gsub(/[|\t\r\n]/, " ", name)
+                printf "%s|%s|%s|DHCP|1\n", tolower($2), $3, name
+            }
+        ' /tmp/dhcp.leases >> "$_ld_tmp" 2>/dev/null || true
+    fi
+
+    # IPv4 neighbours on the LAN bridge, including recent statically addressed clients.
+    _ld_dev="$(uci -q get network.lan.device 2>/dev/null || true)"
+    [ -n "$_ld_dev" ] || _ld_dev=br-lan
+    if [ -r /proc/net/arp ]; then
+        awk -v dev="$_ld_dev" '
+            NR > 1 && $3 == "0x2" &&
+            $4 ~ /^[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]$/ &&
+            ($6 == "br-lan" || $6 == dev) {
+                printf "%s|%s||ARP|1\n", tolower($4), $1
+            }
+        ' /proc/net/arp >> "$_ld_tmp" 2>/dev/null || true
+    fi
+
+    # Static DHCP host entries remain visible while their devices are offline.
+    _ld_hosts="$(uci -q show dhcp 2>/dev/null | sed -n 's/^dhcp\.\([^.=]*\)=host$/\1/p')"
+    for _ld_sec in $_ld_hosts; do
+        _ld_macs="$(uci -q get "dhcp.$_ld_sec.mac" 2>/dev/null || true)"
+        _ld_ip="$(uci -q get "dhcp.$_ld_sec.ip" 2>/dev/null || true)"
+        _ld_name="$(uci -q get "dhcp.$_ld_sec.name" 2>/dev/null || true)"
+        case "$_ld_ip" in ignore|*:* ) _ld_ip="" ;; esac
+        case "$_ld_ip" in *[!0-9.]* ) _ld_ip="" ;; esac
+        _ld_name="$(printf '%s' "$_ld_name" | tr '\011\012\015|' '    ')"
+        for _ld_mac in $_ld_macs; do
+            printf '%s|%s|%s|static DHCP|0\n' "$(printf '%s' "$_ld_mac" | tr 'A-F' 'a-f')" "$_ld_ip" "$_ld_name" >> "$_ld_tmp"
+        done
+    done
+
+    # Merge records by MAC; quote every value via json_quote after aggregation.
+    awk -F '|' '
+        function ismac(m) {
+            return m ~ /^[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]$/
+        }
+        {
+            mac = tolower($1)
+            if (!ismac(mac)) next
+            if (!(mac in seen)) { seen[mac] = 1; order[++n] = mac }
+            if ($2 != "" && $2 != "ignore" && ip[mac] == "") ip[mac] = $2
+            if ($3 != "" && $3 != "*" && name[mac] == "") name[mac] = $3
+            if ($4 == "DHCP") source[mac] = "DHCP"
+            else if ($4 == "ARP" && source[mac] != "DHCP") source[mac] = "ARP"
+            else if ($4 == "static DHCP" && source[mac] == "") source[mac] = "static DHCP"
+            if ($5 == "1") online[mac] = 1
+        }
+        END {
+            for (i = 1; i <= n; i++) {
+                mac = order[i]
+                printf "%s|%s|%s|%s|%s\n", mac, ip[mac], name[mac], source[mac], (online[mac] ? 1 : 0)
+            }
+        }
+    ' "$_ld_tmp" | sort -t '|' -k1,1 > "$_ld_merged"
+
+    printf '{"ok":true,"devices":['
+    _ld_sep=""
+    while IFS='|' read -r _ld_mac _ld_ip _ld_name _ld_source _ld_online; do
+        [ -n "$_ld_mac" ] || continue
+        printf '%s{"mac":' "$_ld_sep"; json_quote "$_ld_mac"
+        printf ',"ip":'; json_quote "$_ld_ip"
+        printf ',"name":'; json_quote "$_ld_name"
+        printf ',"source":'; json_quote "$_ld_source"
+        printf ',"online":%s}' "$([ "$_ld_online" = 1 ] && printf 1 || printf 0)"
+        _ld_sep=","
+    done < "$_ld_merged"
+    printf ']}\n'
+    rm -f "$_ld_tmp" "$_ld_merged" 2>/dev/null || true
 }
 
 network_status_json() {
@@ -2912,13 +2999,14 @@ test_json() { case "${RPC_METHOD:-}" in test_all) job_start_test_all;; test_curr
 
 case "${1:-}" in
     list)
-        printf '{"status":{},"runtime":{},"doh_status":{},"network_status":{},"time_status":{},"page_meta":{},"catalog":{"category":"String","offset":0,"limit":0,"only_ok":0},"update_check":{"force":0},"update":{},"update_manager":{},"update_hdp":{},"update_catalog":{},"update_all":{},"set_profile":{"profile":"String"},"reset_dns":{},"set_slot":{"slot":"String","id":"String"},"set_slot_domains":{"slot":"String","domains":"String"},"add_custom_dns":{"name":"String","url":"String"},"delete_custom_dns":{"id":"String"},"set_setting":{"name":"String","enabled":0},"set_watchdog_setting":{"name":"String","value":0},"set_watchdog_settings":{"interval":0,"threshold":0,"repair_cooldown":0,"max_repairs":0,"max_restarts":0,"max_candidates":0,"guard_interval":0},"set_ntp":{"preset":"String"},"set_test_age":{"category":"String","hours":0},"test_all":{},"test_current":{},"test_one":{"id":"String"},"test_system":{},"job":{"id":"String"},"log":{"lines":0}}\n'
+        printf '{"status":{},"runtime":{},"doh_status":{},"network_status":{},"lan_devices":{},"time_status":{},"page_meta":{},"catalog":{"category":"String","offset":0,"limit":0,"only_ok":0},"update_check":{"force":0},"update":{},"update_manager":{},"update_hdp":{},"update_catalog":{},"update_all":{},"set_profile":{"profile":"String"},"reset_dns":{},"set_slot":{"slot":"String","id":"String"},"set_slot_domains":{"slot":"String","domains":"String"},"add_custom_dns":{"name":"String","url":"String"},"delete_custom_dns":{"id":"String"},"set_setting":{"name":"String","enabled":0},"set_watchdog_setting":{"name":"String","value":0},"set_watchdog_settings":{"interval":0,"threshold":0,"repair_cooldown":0,"max_repairs":0,"max_restarts":0,"max_candidates":0,"guard_interval":0},"set_ntp":{"preset":"String"},"set_test_age":{"category":"String","hours":0},"test_all":{},"test_current":{},"test_one":{"id":"String"},"test_system":{},"job":{"id":"String"},"log":{"lines":0}}\n'
         ;;
     call)
         case "${2:-}" in
             status) INPUT="$(cat 2>/dev/null || true)"; status_json;;
             doh_status) doh_status_json;;
             network_status) network_status_json;;
+            lan_devices) lan_devices_json;;
             time_status) time_status_json;;
             page_meta) page_meta_json;;
             runtime) runtime_json;;
@@ -2970,7 +3058,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI common module version: 1.64
+// DNS Manager LuCI common module version: 1.65
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -2989,6 +3077,7 @@ function dmRpc(o){
 var callStatus = dmRpc({ object:'dns_manager', method:'status', params:['detail'], expect:{} });
 var callDohStatus = dmRpc({ object:'dns_manager', method:'doh_status', expect:{} });
 var callNetworkStatus = dmRpc({ object:'dns_manager', method:'network_status', expect:{} });
+var callLanDevices = dmRpc({ object:'dns_manager', method:'lan_devices', expect:{} });
 var callTimeStatus = dmRpc({ object:'dns_manager', method:'time_status', expect:{} });
 var callPageMeta = dmRpc({ object:'dns_manager', method:'page_meta', expect:{} });
 var callBoardInfo = rpc.declare({ object:'system', method:'info', expect:{} });
@@ -3959,6 +4048,44 @@ function renderSlots(root,st){
   ];
   if(state.pageNotice.slots)sch.push(E('div',{'class':'dm-inline-msg info'},state.pageNotice.slots));
   e.appendChild(card('DNS по слотам и маршруты доменов',sch));
+
+  var inventory=window.dmLanDevices||{};
+  var deviceChildren=[
+    E('div',{'class':'dm-mini'},'Список объединяет DHCP-аренды, ARP-кэш и сохранённые статические DHCP-записи. Спящие устройства и клиенты, которых роутер ещё не обнаружил, могут отсутствовать.')
+  ];
+  var devices=Array.isArray(inventory.devices)?inventory.devices:[];
+  if(!inventory.ok){
+    deviceChildren.push(E('div',{'class':'dm-hint'},'Не удалось получить список устройств LAN.'));
+  }else if(!devices.length){
+    deviceChildren.push(E('div',{'class':'dm-hint'},'Роутер пока не обнаружил устройства LAN.'));
+  }else{
+    var deviceRows=[];
+    devices.forEach(function(d){
+      var active=String(d.online)==='1';
+      var name=String(d.name||'').trim()||'Устройство без имени';
+      var source=String(d.source||'');
+      var sourceLabel=source==='DHCP'?'DHCP-аренда':(source==='ARP'?'ARP-кэш':'статическая DHCP-запись');
+      deviceRows.push(E('div',{'class':'dm-slot-entry'},[
+        E('div',{'class':'dm-slot-domains-heading'},name+' · '+(active?'обнаружено в сети':'неактивно')),
+        E('div',{'class':'dm-slot-domains-help'},'IP: '+(d.ip||'—')+' · MAC: '+(d.mac||'—')+' · Источник: '+sourceLabel)
+      ]));
+    });
+    deviceChildren.push(E('div',{'class':'dm-slot-table'},deviceRows));
+  }
+  deviceChildren.push(E('div',{'class':'dm-inline-msg info'},'Пока это список для просмотра: назначение отдельного DoH устройству ещё не включено. Для него нужен отдельный DNS-путь и проверка перехвата fw4; эта карточка не меняет сетевые настройки.'));
+  deviceChildren.push(E('div',{'class':'dm-actions'},[
+    btn('Обновить список устройств','cbi-button-neutral',function(){
+      callLanDevices().then(function(r){
+        window.dmLanDevices=r||{ok:false,devices:[]};
+        renderSlots(root,window.dmState||{});
+      }).catch(function(err){
+        window.dmLanDevices={ok:false,devices:[]};
+        state.pageNotice.slots=withRpcError('Не удалось обновить список устройств.',err);
+        renderSlots(root,window.dmState||{});
+      });
+    },{disabled:!!state.busy||!!state.jobRunning})
+  ]));
+  e.appendChild(card('Устройства LAN',deviceChildren));
 }
 function settingCard(root,x,st){
   var en=yes(st[x[0]]),busy=state.busySetting===x[0],feedback=settingFeedback(x[1],x[0]),sv=settingStateView(st,x[0]);
@@ -4447,7 +4574,7 @@ function render(root,st){
 }
 function routeStatusCall(){
   switch(currentRoute()){
-    case 'doh': return callDohStatus();
+    case 'doh': return Promise.all([callDohStatus(),callLanDevices().catch(function(){return {ok:false,devices:[]};})]).then(function(v){window.dmLanDevices=v[1]||{};return v[0]||{};});
     case 'network': return callNetworkStatus();
     case 'time': return callTimeStatus();
     case 'catalog':
