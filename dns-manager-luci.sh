@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.74
+# Version: 1.75
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -32,7 +32,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/dns-manager-complete-integration-20261021/dns-manager-luci.sh"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.74"
+VERSION="1.75"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -490,7 +490,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/dns-manager-complete-integration-20261021/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="1.74"
+SELF_VERSION="1.75"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -3570,7 +3570,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI common module version: 1.74
+// DNS Manager LuCI common module version: 1.75
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -4116,9 +4116,7 @@ function resolverRows(st,root){
           : badge('dm-off','не проверено');
     var actions=[];
     if(d.slot){
-      actions.push(btn('Выбрать','cbi-button-neutral',function(){openSlotPicker(d.slot,root);},{disabled:running||!!state.busy||!!state.jobRunning}));
-      actions.push(btn(running?'Проверяю…':'Проверить','cbi-button-neutral',function(){testOne(d.id,root,'doh');},{disabled:running||!!state.busy||!!state.jobRunning}));
-    }
+      }
     out.push(E('div',{'class':'dm-doh-row'},[
       E('span',{'class':'dm-doh-slot'},slot),
       E('span',{'class':'dm-doh-name'},name),
@@ -4136,10 +4134,7 @@ function resolverRows(st,root){
       E('span',{'class':'dm-doh-name'},d.name||d.id),
       E('span',{'class':'dm-doh-ping'},running?'—':ping(ci.ping)),
       E('span',{'class':'dm-doh-state'},running?badge('dm-warn','проверяется…'):stateBadge(status,ci.ping)),
-      E('span',{'class':'dm-doh-actions'},[
-        btn('Выбрать','cbi-button-neutral',function(){openSlotPicker(d.slot,root);},{disabled:running||!!state.busy||!!state.jobRunning}),
-        btn(running?'Проверяю…':'Проверить','cbi-button-neutral',function(){testOne(d.id,root,'doh');},{disabled:running||!!state.busy||!!state.jobRunning})
-      ])
+      E('span',{'class':'dm-doh-actions'},[])
     ]));
   });
   return [out,seen];
@@ -5865,7 +5860,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 1.74
+// DNS Manager LuCI version: 1.75
 return view.extend({
   load: DM.load,
   render: DM.render,
