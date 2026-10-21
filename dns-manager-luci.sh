@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.72
+# Version: 1.73
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -29,10 +29,10 @@ JOB_MAX_AGE_TEST_ONE=60
 BACKUP_DIR="/etc/dns-manager-luci"
 CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
-COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/router-validation-20261020/dns-manager-luci.sh"
+COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/dns-manager-complete-integration-20261021/dns-manager-luci.sh"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.72"
+VERSION="1.73"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -487,10 +487,10 @@ TMP_ROOT="$RUNTIME_DIR/tmp"
 UPDATE_STATE="/etc/dns-manager-luci/update.state"
 UPDATE_CHECK_CACHE="$RUNTIME_DIR/update-check.cache"
 UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
-COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/router-validation-20261020/dns-manager-luci.sh"
+COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/dns-manager-complete-integration-20261021/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="1.72"
+SELF_VERSION="1.73"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -936,7 +936,7 @@ component_update_check() {
     if [ -z "$_manager_installed" ]; then
         _manager_error="DNS Manager не найден на роутере"
         UPDATE_CHECK_COMPONENTS_OK=0
-    elif fetch_raw_url "$_tmp" "https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/router-validation-20261020/dns-manager.sh?_dmcb=$_ts-$$"; then
+    elif fetch_raw_url "$_tmp" "https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/dns-manager-complete-integration-20261021/dns-manager.sh?_dmcb=$_ts-$$"; then
         _manager_latest="$(sed -n 's/^VERSION="\([^"]*\)"$/\1/p' "$_tmp" 2>/dev/null | head -n1)"
         if [ -n "$_manager_latest" ]; then
             _manager_ok=1
@@ -953,7 +953,7 @@ component_update_check() {
 
     _catalog_latest=""; _catalog_latest_rev=""; _catalog_latest_total=0; _catalog_available=0; _catalog_ok=0; _catalog_error=""
     _tmp="$TMP_ROOT/catalog-check.$$"
-    if fetch_raw_url "$_tmp" "https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/router-validation-20261020/catalogs/dns-8.7-RU-NOSOCIAL.conf?_dmcb=$_ts-$$"; then
+    if fetch_raw_url "$_tmp" "https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/dns-manager-complete-integration-20261021/catalogs/dns-8.7-RU-NOSOCIAL.conf?_dmcb=$_ts-$$"; then
         _catalog_latest="$(sed -n 's/^# DNSCATVER=//p' "$_tmp" 2>/dev/null | head -n1)"
         _catalog_latest_rev="$(sed -n 's/^# DNSCATREV=//p' "$_tmp" 2>/dev/null | head -n1)"
         _catalog_latest_total="$(grep -v '^#' "$_tmp" 2>/dev/null | grep -c '^[^|][^|]*|' 2>/dev/null || printf 0)"
@@ -1136,7 +1136,7 @@ update_check_json() {
 }
 update_catalog_direct() {
     _tmp="$TMP_ROOT/catalog-update-all.$$"
-    fetch_raw_url "$_tmp" "https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/router-validation-20261020/catalogs/dns-8.7-RU-NOSOCIAL.conf" || { rm -f "$_tmp" 2>/dev/null || true; return 3; }
+    fetch_raw_url "$_tmp" "https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/dns-manager-complete-integration-20261021/catalogs/dns-8.7-RU-NOSOCIAL.conf" || { rm -f "$_tmp" 2>/dev/null || true; return 3; }
     _remote_ver="$(sed -n 's/^# DNSCATVER=//p' "$_tmp" 2>/dev/null | head -n1)"
     _remote_rev="$(sed -n 's/^# DNSCATREV=//p' "$_tmp" 2>/dev/null | head -n1)"
     _decl="$(sed -n 's/^# ENTRIES=//p' "$_tmp" 2>/dev/null | head -n1)"
@@ -1147,7 +1147,9 @@ update_catalog_direct() {
     _rb="$TMP_ROOT/catalog-remote-all.$"
     _lb="$TMP_ROOT/catalog-local-all.$"
     _old_shecan_url="$(awk -F'|' '$1=="shecan" {print $5; exit}' "$CATALOG_FILE" 2>/dev/null)"
+    _old_astracat_url="$(awk -F'|' '$1=="astracat" {print $5; exit}' "$CATALOG_FILE" 2>/dev/null)"
     _new_shecan_url="$(awk -F'|' '$1=="shecan" {print $5; exit}' "$_tmp" 2>/dev/null)"
+    _new_astracat_url="$(awk -F'|' '$1=="astracat" {print $5; exit}' "$_tmp" 2>/dev/null)"
     sed '/^[[:space:]]*#/d;/^[[:space:]]*$/d' "$_tmp" > "$_rb" 2>/dev/null || true
     sed '/^[[:space:]]*#/d;/^[[:space:]]*$/d' "$CATALOG_FILE" > "$_lb" 2>/dev/null || true
     if cmp -s "$_rb" "$_lb" 2>/dev/null; then rm -f "$_tmp" "$_rb" "$_lb" 2>/dev/null || true; return 2; fi
@@ -1162,6 +1164,16 @@ update_catalog_direct() {
                 rm -f "$_result_tmp" 2>/dev/null || true
         done
         rm -f "$CHECK_DIR/shecan" 2>/dev/null || true
+    fi
+    if [ "$_old_astracat_url" != "$_new_astracat_url" ]; then
+        for _result_file in "$STATE_DIR/dns-test-results.conf" "$PERSIST_STATE_DIR/dns-test-results.conf"; do
+            [ -s "$_result_file" ] || continue
+            _result_tmp="${_result_file}.tmp.$"
+            awk -F'|' '$1!="astracat" {print}' "$_result_file" > "$_result_tmp" 2>/dev/null &&
+                mv -f "$_result_tmp" "$_result_file" 2>/dev/null ||
+                rm -f "$_result_tmp" 2>/dev/null || true
+        done
+        rm -f "$CHECK_DIR/astracat" 2>/dev/null || true
     fi
     rm -f "$_rb" "$_lb" 2>/dev/null || true
     return 0
@@ -3558,7 +3570,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI common module version: 1.72
+// DNS Manager LuCI common module version: 1.73
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
