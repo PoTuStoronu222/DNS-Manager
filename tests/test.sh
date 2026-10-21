@@ -424,12 +424,17 @@ grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validat
 grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
 grep -q 'VERSION="3.69"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
-grep -q 'VERSION="1.79"' dns-manager-luci.sh || fail "LuCI version not bumped"
+grep -q 'VERSION="1.80"' dns-manager-luci.sh || fail "LuCI version not bumped"
 grep -Fq 'DMD_DEFAULT_FILE="/etc/dns-manager/config/device-dns-default.conf"' dns-manager-luci.sh || fail "LAN-wide DoH config path missing"
 grep -Fq 'dmd_ensure_profile() {' dns-manager-luci.sh || fail "shared dnsmasq profile builder missing"
 grep -Fq 'ether saddr != { %s } udp dport 53 redirect to :%s' dns-manager-luci.sh || fail "LAN-wide DNS rule does not preserve per-device precedence"
 grep -Fq 'case "$DMD_RAW_SLOTS" in' dns-manager-luci.sh || fail "per-device DNS override/exclusion modes missing"
 grep -Fq 'DMD_SKIP_MACS="$DMD_SKIP_MACS $DMD_MAC"' dns-manager-luci.sh || fail "per-device choices are not excluded from the LAN-wide rule"
+# Explicit exclusions must be handled before slot normalization (EXCLUDE is not a slot list).
+awk '/case "\$DMD_RAW_SLOTS" in/,/DMD_LISTENER_PORT=/ { print }' "$tmp/device_dns_service.sh" > "$tmp/override-precedence.sh"
+grep -Fq 'EXCLUDE)' "$tmp/override-precedence.sh" || fail "explicit per-device exclusion is parsed after normalization"
+grep -Fq '# A valid explicit per-device choice takes precedence even when its' "$tmp/device_dns_service.sh" || fail "unavailable individual DoH can incorrectly fall through to the global default"
+
 grep -Fq 'set_device_dns_default_json() {' dns-manager-luci.sh || fail "LAN-wide default DNS setter missing"
 grep -Fq '"set_device_dns_default":{"slots":"String"}' dns-manager-luci.sh || fail "LAN-wide DNS RPC schema missing"
 grep -Fq '"set_device_dns_default"' dns-manager-luci.sh || fail "LAN-wide DNS RPC action is missing"
