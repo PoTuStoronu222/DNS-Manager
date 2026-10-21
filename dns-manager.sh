@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.67"
+VERSION="3.68"
 # 3.38: clear the LuCI update flag after a successful CLI update.
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
@@ -5535,7 +5535,8 @@ luci_companion_install() {
 luci_companion_remove_fallback() {
     # Validate ownership before changing either the firewall include or its file.
     if uci -q get firewall.dns_manager_device_dns >/dev/null 2>&1; then
-        if [ "$(uci -q get firewall.dns_manager_device_dns.type 2>/dev/null || true)" != nftables ] ||
+        if [ "$(uci -q get firewall.dns_manager_device_dns 2>/dev/null || true)" != include ] ||
+           [ "$(uci -q get firewall.dns_manager_device_dns.type 2>/dev/null || true)" != nftables ] ||
            [ "$(uci -q get firewall.dns_manager_device_dns.path 2>/dev/null || true)" != /etc/dns-manager/device-dns/redirects.nft ] ||
            [ "$(uci -q get firewall.dns_manager_device_dns.position 2>/dev/null || true)" != chain-pre ] ||
            [ "$(uci -q get firewall.dns_manager_device_dns.chain 2>/dev/null || true)" != dstnat_lan ]; then
