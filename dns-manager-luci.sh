@@ -74,7 +74,9 @@ USE_PROCD=1
 DMD_BASE="/etc/dns-manager/device-dns"
 DMD_ASSIGNMENTS="/etc/dns-manager/config/device-dns.conf"
 DMD_MANAGER_CONFIG="/etc/dns-manager/config/manager.conf"
-DMD_NFT="/etc/nftables.d/90-dns-manager-device-dns.nft"
+DMD_NFT="/etc/dns-manager/device-dns/redirects.nft"
+DMD_INCLUDE="dns_manager_device_dns"
+DMD_CHAIN="dstnat_lan"
 DMD_STAGE=""
 
 dmd_log() { logger -t dns-manager-device-dns -- "$*" 2>/dev/null || true; }
@@ -156,10 +158,57 @@ dmd_port_busy() {
     return 1
 }
 
+dmd_include_is_owned() {
+    [ "$(uci -q get "firewall.$DMD_INCLUDE" 2>/dev/null || true)" = include ] &&
+    [ "$(uci -q get "firewall.$DMD_INCLUDE.type" 2>/dev/null || true)" = nftables ] &&
+    [ "$(uci -q get "firewall.$DMD_INCLUDE.path" 2>/dev/null || true)" = "$DMD_NFT" ] &&
+    [ "$(uci -q get "firewall.$DMD_INCLUDE.position" 2>/dev/null || true)" = chain-pre ] &&
+    [ "$(uci -q get "firewall.$DMD_INCLUDE.chain" 2>/dev/null || true)" = "$DMD_CHAIN" ]
+}
+
+dmd_remove_include() {
+    if uci -q get "firewall.$DMD_INCLUDE" >/dev/null 2>&1; then
+        dmd_include_is_owned || {
+            dmd_log "Refusing to remove unrelated firewall include named $DMD_INCLUDE."
+            return 1
+        }
+        uci -q delete "firewall.$DMD_INCLUDE" || return 1
+        uci commit firewall || return 1
+    fi
+    rm -f "$DMD_NFT" /etc/nftables.d/90-dns-manager-device-dns.nft 2>/dev/null || true
+    /etc/init.d/firewall reload >/dev/null 2>&1 || return 1
+    return 0
+}
+
+dmd_configure_include() {
+    if uci -q get "firewall.$DMD_INCLUDE" >/dev/null 2>&1; then
+        dmd_include_is_owned || {
+            dmd_log "Refusing to overwrite unrelated firewall include named $DMD_INCLUDE."
+            return 1
+        }
+    else
+        uci set "firewall.$DMD_INCLUDE=include" || return 1
+    fi
+    uci set "firewall.$DMD_INCLUDE.enabled=1" || return 1
+    uci set "firewall.$DMD_INCLUDE.type=nftables" || return 1
+    uci set "firewall.$DMD_INCLUDE.path=$DMD_NFT" || return 1
+    uci set "firewall.$DMD_INCLUDE.position=chain-pre" || return 1
+    uci set "firewall.$DMD_INCLUDE.chain=$DMD_CHAIN" || return 1
+    uci commit firewall || return 1
+
+    DMD_FW4_CHECK="$DMD_STAGE/fw4-check.nft"
+    fw4 print > "$DMD_FW4_CHECK" 2>/dev/null || return 1
+    nft -c -f "$DMD_FW4_CHECK" >/dev/null 2>&1 || {
+        dmd_log "fw4/nft rejected the per-device DNS include."
+        return 1
+    }
+    /etc/init.d/firewall reload >/dev/null 2>&1 || return 1
+    return 0
+}
+
 dmd_fail_open() {
-    rm -f "$DMD_NFT" 2>/dev/null || true
+    dmd_remove_include >/dev/null 2>&1 || true
     rm -rf "$DMD_BASE/profiles" 2>/dev/null || true
-    /etc/init.d/firewall reload >/dev/null 2>&1 || true
     dmd_log "Per-device DNS rules disabled after a configuration error; clients fall back to the normal LAN DNS path."
 }
 
@@ -169,7 +218,7 @@ dmd_build_and_install() {
 
     dmd_cleanup_stage
     DMD_STAGE="$(mktemp -d /tmp/dns-manager-device-dns.stage.XXXXXX 2>/dev/null)" || return 1
-    mkdir -p "$DMD_STAGE/profiles" "$DMD_BASE" /etc/nftables.d || { dmd_cleanup_stage; return 1; }
+    mkdir -p "$DMD_STAGE/profiles" "$DMD_BASE" "$(dirname "$DMD_NFT")" || { dmd_cleanup_stage; return 1; }
     : > "$DMD_STAGE/profiles.map"
     : > "$DMD_STAGE/nft.rules"
 
@@ -182,7 +231,7 @@ dmd_build_and_install() {
     case "$DMD_LAN_DEV" in ''|*[!A-Za-z0-9_.:-]*) dmd_cleanup_stage; return 1 ;; esac
 
     DMD_ACTIVE=0
-    printf 'chain dns_manager_device_dns {\n type nat hook prerouting priority -110; policy accept;\n' > "$DMD_STAGE/nft.rules"
+    : > "$DMD_STAGE/nft.rules"
 
     if [ -r "$DMD_ASSIGNMENTS" ]; then
         while IFS='|' read -r DMD_MAC DMD_RAW_SLOTS DMD_EXTRA; do
@@ -246,14 +295,13 @@ dmd_build_and_install() {
                 }
                 printf '%s\n' "$DMD_MAP_LINE" >> "$DMD_STAGE/profiles.map"
             fi
-            printf ' iifname "%s" ether saddr %s udp dport 53 redirect to :%s\n' "$DMD_LAN_DEV" "$DMD_MAC" "$DMD_LISTENER_PORT" >> "$DMD_STAGE/nft.rules"
-            printf ' iifname "%s" ether saddr %s tcp dport 53 redirect to :%s\n' "$DMD_LAN_DEV" "$DMD_MAC" "$DMD_LISTENER_PORT" >> "$DMD_STAGE/nft.rules"
+            printf 'iifname "%s" ether saddr %s udp dport 53 redirect to :%s\n' "$DMD_LAN_DEV" "$DMD_MAC" "$DMD_LISTENER_PORT" >> "$DMD_STAGE/nft.rules"
+            printf 'iifname "%s" ether saddr %s tcp dport 53 redirect to :%s\n' "$DMD_LAN_DEV" "$DMD_MAC" "$DMD_LISTENER_PORT" >> "$DMD_STAGE/nft.rules"
             DMD_ACTIVE=$((DMD_ACTIVE + 1))
         done < "$DMD_ASSIGNMENTS"
     fi
 
     if [ "$DMD_ACTIVE" -gt 0 ]; then
-        printf '}\n' >> "$DMD_STAGE/nft.rules"
         mv "$DMD_STAGE/nft.rules" "$DMD_STAGE/device-rules.nft" || { dmd_cleanup_stage; return 1; }
     else
         rm -f "$DMD_STAGE/nft.rules"
@@ -268,18 +316,18 @@ dmd_build_and_install() {
     }
 
     if [ -f "$DMD_STAGE/device-rules.nft" ]; then
-        _DMD_NFT_TMP="$DMD_NFT.tmp.$"
-        cp "$DMD_STAGE/device-rules.nft" "$_DMD_NFT_TMP" || { dmd_cleanup_stage; return 1; }
-        chmod 0644 "$_DMD_NFT_TMP" 2>/dev/null || true
-        mv -f "$_DMD_NFT_TMP" "$DMD_NFT" || { dmd_cleanup_stage; return 1; }
+        DMD_NFT_TMP="$DMD_NFT.tmp.$"
+        cp "$DMD_STAGE/device-rules.nft" "$DMD_NFT_TMP" || { dmd_cleanup_stage; return 1; }
+        chmod 0644 "$DMD_NFT_TMP" 2>/dev/null || true
+        mv -f "$DMD_NFT_TMP" "$DMD_NFT" || { dmd_cleanup_stage; return 1; }
+        dmd_configure_include || { dmd_cleanup_stage; return 1; }
     else
-        rm -f "$DMD_NFT" "$DMD_NFT.tmp.$" 2>/dev/null || true
+        dmd_remove_include || { dmd_cleanup_stage; return 1; }
     fi
 
     rm -rf "$DMD_BASE/profiles.old" 2>/dev/null || true
-    rm -f "$DMD_STAGE/profiles.map" "$DMD_STAGE/nft.rules" 2>/dev/null || true
+    rm -f "$DMD_STAGE/profiles.map" "$DMD_STAGE/nft.rules" "$DMD_STAGE/fw4-check.nft" 2>/dev/null || true
     dmd_cleanup_stage
-    /etc/init.d/firewall reload >/dev/null 2>&1 || return 1
     return 0
 }
 
@@ -306,6 +354,7 @@ reload_service() {
 EOF_DEVICE_DNS_SERVICE
     chmod 0755 /etc/init.d/dns-manager-device-dns || return 1
     /etc/init.d/dns-manager-device-dns enable >/dev/null 2>&1 || return 1
+    rm -f /etc/nftables.d/90-dns-manager-device-dns.nft 2>/dev/null || true
 
     cat > "$MENU_FILE" <<'EOF_MENU'
 {
