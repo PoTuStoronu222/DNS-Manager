@@ -112,7 +112,7 @@ dmd_normalize_slots() {
         case " $_dmd_list " in *" $_dmd_slot "*) ;; *) _dmd_list="${_dmd_list:+$_dmd_list }$_dmd_slot" ;; esac
     done
     [ -n "$_dmd_list" ] || return 1
-    printf '%s\n' $_dmd_list | sort -n -u | tr '\n' ',' | sed 's/,$//'
+    printf '%s\n' $_dmd_list | tr ' ' '\n' | sort -n -u | tr '\n' ',' | sed 's/,$//'
 }
 
 dmd_mask_for_slots() {
@@ -201,7 +201,7 @@ dmd_build_and_install() {
             DMD_LISTENER_PORT=$((54100 + DMD_MASK))
             DMD_MAP_LINE="$DMD_SLOTS|$DMD_MASK|$DMD_LISTENER_PORT"
             if ! grep -Fqx "$DMD_MAP_LINE" "$DMD_STAGE/profiles.map" 2>/dev/null; then
-                if [ ! -f "$DMD_BASE/profiles/profile_$DMD_MASK.conf" ] && dmd_port_busy "$DMD_LISTENER_PORT"; then
+                if dmd_port_busy "$DMD_LISTENER_PORT"; then
                     dmd_log "Port $DMD_LISTENER_PORT is busy; device $DMD_MAC stays on the normal DNS path."
                     continue
                 fi
@@ -5811,6 +5811,15 @@ EOF_PAGE
 }
 
 uninstall_files() {
+    # Remove only DNS Manager's per-device listener and fw4 include.
+    if [ -x /etc/init.d/dns-manager-device-dns ]; then
+        /etc/init.d/dns-manager-device-dns stop >/dev/null 2>&1 || true
+        /etc/init.d/dns-manager-device-dns disable >/dev/null 2>&1 || true
+    fi
+    rm -f /etc/nftables.d/90-dns-manager-device-dns.nft /etc/nftables.d/90-dns-manager-device-dns.nft.tmp.* 2>/dev/null || true
+    rm -f /etc/init.d/dns-manager-device-dns /etc/dns-manager/config/device-dns.conf 2>/dev/null || true
+    rm -rf /etc/dns-manager/device-dns 2>/dev/null || true
+    /etc/init.d/firewall reload >/dev/null 2>&1 || true
     rm -f "$RPC_PLUGIN" "$BACKEND_FILE" "$ACL_FILE" "$MENU_FILE" "$VIEW_FILE" 2>/dev/null || true
     rm -rf "$VIEW_DIR" "$RESOURCE_DIR" "$RUNTIME_DIR" "$BACKUP_DIR" 2>/dev/null || true
     rm -f "$STATE_FILE" 2>/dev/null || true
