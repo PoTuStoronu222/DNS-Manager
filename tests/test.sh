@@ -16,10 +16,64 @@ sh -n dns-manager.sh || fail "dns-manager.sh: sh -n"
 sh -n dns-manager-luci.sh || fail "dns-manager-luci.sh: sh -n"
 ok "shell syntax"
 
-
-
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT INT TERM
+
+# Per-slot DNS domain routing uses dnsmasq server=/domain/127.0.0.1#port rules.
+awk '/^normalize_slot_domains\(\) \{/,/^slot_domains_get\(\) \{/' dns-manager.sh | sed '$d' > "$tmp/normalize_slot_domains.sh"
+[ -s "$tmp/normalize_slot_domains.sh" ] || fail "domain normalizer extraction"
+cat > "$tmp/normalize_slot_domains_runner.sh" <<'EOF_DNS_DOMAINS'
+#!/bin/sh
+set -eu
+. "$1"
+got="$(normalize_slot_domains 'YouTube.COM.,example.org example.org')"
+[ "$got" = 'youtube.com example.org' ] || { printf '%s\n' "unexpected normalized domains: $got" >&2; exit 51; }
+if normalize_slot_domains 'https://example.com' >/dev/null 2>&1; then exit 52; fi
+if normalize_slot_domains 'example..com' >/dev/null 2>&1; then exit 53; fi
+if normalize_slot_domains '-bad.example' >/dev/null 2>&1; then exit 54; fi
+if normalize_slot_domains 'plainword' >/dev/null 2>&1; then exit 55; fi
+EOF_DNS_DOMAINS
+chmod +x "$tmp/normalize_slot_domains_runner.sh"
+"$tmp/normalize_slot_domains_runner.sh" "$tmp/normalize_slot_domains.sh" || fail "domain input validation and normalization"
+ok "domain input validation rejects malformed hosts and normalizes duplicates"
+
+awk '/^normalize_slot_domains\(\) \{/,/^slot_domains_set\(\) \{/' dns-manager.sh | sed '$d' > "$tmp/slot_domains_get.sh"
+awk '/^watchdog_expected_servers\(\) \{/,/^}/' dns-manager.sh > "$tmp/watchdog_expected_servers.sh"
+[ -s "$tmp/slot_domains_get.sh" ] || fail "slot domain getter extraction"
+[ -s "$tmp/watchdog_expected_servers.sh" ] || fail "Watchdog expected DNS extraction"
+cat > "$tmp/watchdog_expected_domains_runner.sh" <<'EOF_WATCHDOG_DOMAIN_EXPECTED'
+#!/bin/sh
+set -eu
+TMP_DIR="$1"
+mkdir -p "$TMP_DIR"
+SLOT_1=resolver1; PORT_1=5053; SLOT_1_DOMAINS='youtube.com googlevideo.com'
+SLOT_2=resolver2; PORT_2=5054; SLOT_2_DOMAINS='netflix.com'
+SLOT_3=; PORT_3=; SLOT_3_DOMAINS=
+SLOT_4=; PORT_4=; SLOT_4_DOMAINS=
+SLOT_5=; PORT_5=; SLOT_5_DOMAINS=
+SLOT_6=; PORT_6=; SLOT_6_DOMAINS=
+TLD_RU_ENABLED=1; SLOT_RU=regional; PORT_RU=5059
+. "$2"
+. "$3"
+expected="$(watchdog_expected_servers)"
+grep -Fqx '127.0.0.1#5053' "$expected" || exit 61
+grep -Fqx '/youtube.com/127.0.0.1#5053' "$expected" || exit 62
+grep -Fqx '/googlevideo.com/127.0.0.1#5053' "$expected" || exit 63
+grep -Fqx '/netflix.com/127.0.0.1#5054' "$expected" || exit 64
+grep -Fqx '/ru/127.0.0.1#5059' "$expected" || exit 65
+if grep -Fqx '/youtube.com/127.0.0.1#5054' "$expected"; then exit 66; fi
+EOF_WATCHDOG_DOMAIN_EXPECTED
+chmod +x "$tmp/watchdog_expected_domains_runner.sh"
+"$tmp/watchdog_expected_domains_runner.sh" "$tmp/watchdog-domain-state" "$tmp/slot_domains_get.sh" "$tmp/watchdog_expected_servers.sh" || fail "Watchdog expected-domain rules"
+grep -Fq 'val="/$_domain/127.0.0.1#$p"' dns-manager.sh || fail "dnsmasq does not route configured domains to their slot port"
+grep -Fq 'SLOT_1_DOMAINS="$SLOT_1_DOMAINS"' dns-manager.sh || fail "domain assignments are not persisted"
+grep -Fq 'SLOT_6_DOMAINS="$SLOT_6_DOMAINS"' dns-manager.sh || fail "domain assignments are not persisted for every slot"
+grep -Fq 'set_slot_domains)' dns-manager-luci.sh || fail "LuCI domain update RPC is missing"
+grep -Fq "method:'set_slot_domains'" dns-manager-luci.sh || fail "LuCI domain save call is missing"
+grep -Fq 'Домены только через ' dns-manager-luci.sh || fail "LuCI slot domain editor is missing"
+ok "dnsmasq and Watchdog preserve per-slot domain routes"
+
+
 
 # Uninstall must remove the empty, namespaced LuCI backend directory.
 sed -n '/^luci_companion_remove(/,/^}/p' dns-manager.sh > "$tmp/luci_remove_fn.sh"
@@ -220,7 +274,12 @@ grep -q 'json_update_state() {' "$tmp/backend.sh" || fail "structured update res
 grep -q 'updated) exit 0' dns-manager.sh || fail "manager update-check exit contract missing"
 grep -q 'current|throttled) exit 2' dns-manager.sh || fail "manager current exit contract missing"
 grep -q "xbox_dns|gaming|games+supercell|Xbox DNS|" catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "Xbox DNS is not in gaming catalog category"
-grep -Fq '# DNSCATREV=4' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog revision not bumped"
+grep -Fq '# DNSCATREV=5' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog revision not bumped"
+grep -Fq '# ENTRIES=108' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog entry count header is incorrect"
+grep -Fq 'cubedns|privacy|privacy+no-logs|CubeDNS|https://cubedns.com/dns-query|' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "CubeDNS DoH entry missing"
+grep -Fq 'dagami|bypass|geo+services|Dagami DNS|https://dns.dagami.ru/dns-query|' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "Dagami DNS entry missing"
+grep -Fq 'webshift|bypass|geo+services|WebShift DNS|https://d.webshiftvpn.ru/dns-query|' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "WebShift DNS entry missing"
+grep -Fq 'libredns_clean|bypass|privacy+geo+services|LibreDNS|https://doh.libredns.gr/dns-query|' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "LibreDNS category is incorrect"
 grep -Fq 'shecan|bypass|geo+services|zapret.moe|https://dns.zapret.moe/dns-query|' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "Shecan entry was not replaced by zapret.moe DoH"
 grep -Fq "function resolverAvailable(ci)" dns-manager-luci.sh || fail "DoH availability helper missing"
 grep -Fq 'assignDirect(d.id,select.value,root,d.name||d.id,d.url)' dns-manager-luci.sh || fail "catalog assignment does not pass the target URL"
@@ -231,9 +290,9 @@ grep -Fq "disabled:!!state.busy||!!state.jobRunning||unavailable||checking" dns-
 grep -q "'gaming','Игровые DNS'" dns-manager-luci.sh || fail "gaming catalog label missing in LuCI"
 grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validation missing gaming category"
 grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
-grep -q 'VERSION="3.55"' dns-manager.sh || fail "manager version not bumped"
+grep -q 'VERSION="3.58"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
-grep -q 'VERSION="1.50"' dns-manager-luci.sh || fail "LuCI version not bumped"
+grep -q 'VERSION="1.51"' dns-manager-luci.sh || fail "LuCI version not bumped"
 grep -q "'bypass','Обход геоблока'" dns-manager-luci.sh || fail "bypass profile label not updated"
 grep -q "'security','Защита от угроз'" dns-manager-luci.sh || fail "security profile label not updated"
 grep -q "'privacy','Конфиденциальность'" dns-manager-luci.sh || fail "privacy profile label not updated"
@@ -412,8 +471,8 @@ view_luci="$(sed -n 's|^// DNS Manager LuCI common module version:[[:space:]]*||
 [ "$top_luci" = "$self_luci" ] || fail "LuCI SELF_VERSION mismatch"
 [ "$top_luci" = "$view_luci" ] || fail "embedded JS version mismatch"
 ok "LuCI version markers synchronized ($top_luci)"
-grep -Fq 'VERSION="3.55"' dns-manager.sh || fail "DNS Manager version marker is not 3.55"
-ok "DNS Manager version marker synchronized (3.55)"
+grep -Fq 'VERSION="3.58"' dns-manager.sh || fail "DNS Manager version marker is not 3.58"
+ok "DNS Manager version marker synchronized (3.58)"
 
 if awk '
     /function startAutoStatus\(root\)/ { capture=1 }
@@ -1001,6 +1060,39 @@ grep -q '_bad_n=$((_bad_n+1))' "$tmp/profile_prune.sh" || fail "profile prune do
 grep -q 'slot_set "$_slot" ""' "$tmp/profile_prune.sh" || fail "profile prune does not clear failed slots"
 grep -q 'rebuild_selected_hdp_sections' "$tmp/profile_prune.sh" || fail "profile prune does not rebuild DoH sections"
 grep -q 'reconcile_dnsmasq' "$tmp/profile_prune.sh" || fail "profile prune does not rebuild dnsmasq upstreams"
+
+# Failed profile slots must be compacted without losing slot/category alignment.
+awk '/^profile_compact_general_slots\(\) \{/,/^}$/ { print }' dns-manager.sh > "$tmp/profile_compact.sh"
+[ -s "$tmp/profile_compact.sh" ] || fail "profile slot compaction helper extraction"
+cat > "$tmp/profile_compact_runner.sh" <<'EOF_PROFILE_COMPACT'
+#!/bin/sh
+set -eu
+TMP_DIR="$1"
+HYBRID_PORT_1=5053 HYBRID_PORT_2=5054 HYBRID_PORT_3=5055
+HYBRID_PORT_4=5056 HYBRID_PORT_5=5057 HYBRID_PORT_6=5058
+SLOT_1=d1 SLOT_2=d2 SLOT_3= SLOT_4=d4 SLOT_5=d5 SLOT_6=
+SLOT_1_CAT=bypass SLOT_2_CAT=bypass SLOT_3_CAT= SLOT_4_CAT=clean SLOT_5_CAT=security SLOT_6_CAT=
+PORT_1=5053 PORT_2=5054 PORT_3= PORT_4=5056 PORT_5=5057 PORT_6=
+SLOT_1_DOMAINS=one.example SLOT_2_DOMAINS=two.example SLOT_3_DOMAINS=three.example
+SLOT_4_DOMAINS=four.example SLOT_5_DOMAINS=five.example SLOT_6_DOMAINS=six.example
+slot_set() { case "$1" in 1) SLOT_1="$2";; 2) SLOT_2="$2";; 3) SLOT_3="$2";; 4) SLOT_4="$2";; 5) SLOT_5="$2";; 6) SLOT_6="$2";; esac; }
+slot_cat_set() { case "$1" in 1) SLOT_1_CAT="$2";; 2) SLOT_2_CAT="$2";; 3) SLOT_3_CAT="$2";; 4) SLOT_4_CAT="$2";; 5) SLOT_5_CAT="$2";; 6) SLOT_6_CAT="$2";; esac; }
+port_set() { case "$1" in 1) PORT_1="$2";; 2) PORT_2="$2";; 3) PORT_3="$2";; 4) PORT_4="$2";; 5) PORT_5="$2";; 6) PORT_6="$2";; esac; }
+hybrid_desired_port() { case "$1" in 1) echo 5053;; 2) echo 5054;; 3) echo 5055;; 4) echo 5056;; 5) echo 5057;; 6) echo 5058;; esac; }
+. "$2"
+profile_compact_general_slots || exit 51
+[ "$SLOT_1" = d1 ] && [ "$SLOT_2" = d2 ] &&
+[ "$SLOT_3" = d4 ] && [ "$SLOT_4" = d5 ] &&
+[ -z "$SLOT_5" ] && [ -z "$SLOT_6" ] || exit 52
+[ "$SLOT_3_CAT" = clean ] && [ "$SLOT_4_CAT" = security ] || exit 53
+[ "$PORT_1" = 5053 ] && [ "$PORT_2" = 5054 ] &&
+[ "$PORT_3" = 5055 ] && [ "$PORT_4" = 5056 ] &&
+[ -z "$PORT_5" ] && [ -z "$PORT_6" ] || exit 54
+[ "$SLOT_1_DOMAINS" = one.example ] && [ "$SLOT_4_DOMAINS" = four.example ] || exit 55
+EOF_PROFILE_COMPACT
+chmod +x "$tmp/profile_compact_runner.sh"
+"$tmp/profile_compact_runner.sh" "$tmp" "$tmp/profile_compact.sh" || fail "profile slots do not compact across a failed slot"
+ok "profile slot compaction removes numbering gaps and preserves categories/ports"
 awk '/^verify_after_apply_with_repair\(\) \{/,/^verify_after_apply\(\) \{/' dns-manager.sh > "$tmp/profile_verify.sh"
 grep -q '\[ "$PROFILE_APPLY" = 1 \]' "$tmp/profile_verify.sh" || fail "profile verification reduced-set path missing"
 grep -q 'profile_prune_failed_slots' "$tmp/profile_verify.sh" || fail "profile verification does not prune failed DNS"

@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.55"
+VERSION="3.58"
 # 3.38: clear the LuCI update flag after a successful CLI update.
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
@@ -18,7 +18,7 @@ DNS_CATALOG="$CFG_DIR/dns-catalog.conf"
 NTP_CATALOG="$CFG_DIR/ntp-catalog.conf"
 BOOTSTRAP_DNS_ALL="77.88.8.8,77.88.8.1,94.140.14.14,1.1.1.1,1.0.0.1,8.8.8.8,8.8.4.4,9.9.9.9,149.112.112.112,208.67.222.222,208.67.220.220,149.112.121.10,149.112.122.10,76.76.2.0,76.76.10.0,194.242.2.2,194.242.2.3,2606:4700:4700::1111,2606:4700:4700::1001,2001:4860:4860::8888,2001:4860:4860::8844,2620:fe::fe,2620:fe::9"
 DNSCAT_VERSION="8.7-RU-NOSOCIAL"
-DNSCAT_REVISION="4"
+DNSCAT_REVISION="5"
 DNSCAT_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/catalogs/dns-8.7-RU-NOSOCIAL.conf"
 WATCHDOG_RESTART_COOLDOWN=300
 WATCHDOG_BACKEND="procd"
@@ -662,7 +662,7 @@ catalog_validate_file() {
     [ "$_ver" = "$DNSCAT_VERSION" ] || return 1
     if [ "$_mode" != "legacy" ]; then
         grep -Fqx "# DNSCATREV=$DNSCAT_REVISION" "$_f" 2>/dev/null || return 1
-        grep -Fqx "# ENTRIES=105" "$_f" 2>/dev/null || return 1
+        grep -Fqx "# ENTRIES=108" "$_f" 2>/dev/null || return 1
     fi
     awk -F'|' '
         /^[[:space:]]*#/ || /^[[:space:]]*$/ { next }
@@ -674,7 +674,7 @@ catalog_validate_file() {
             ids[$1]++
             if (ids[$1] > 1) bad=1
         }
-        END { if (bad || count != 105) exit 1 }
+        END { if (bad || count != 108) exit 1 }
     ' "$_f" >/dev/null 2>&1 || return 1
     return 0
 }
@@ -699,7 +699,7 @@ write_catalogs() {
                         rm -f "$_result_tmp" 2>/dev/null || true
                 done
             fi
-            log_msg "Каталог DNS: загружен внешний $DNSCAT_VERSION (revision $DNSCAT_REVISION, 105 записей)."
+            log_msg "Каталог DNS: загружен внешний $DNSCAT_VERSION (revision $DNSCAT_REVISION, 108 записей)."
             return 0
         fi
     fi
@@ -768,6 +768,7 @@ case "$WATCHDOG_GUARD_INTERVAL" in
     *) [ "$WATCHDOG_GUARD_INTERVAL" -ge 300 ] 2>/dev/null && [ "$WATCHDOG_GUARD_INTERVAL" -le 3600 ] 2>/dev/null || WATCHDOG_GUARD_INTERVAL=900 ;;
 esac
 : "${SLOT_1:=}"; : "${SLOT_2:=}"; : "${SLOT_3:=}"; : "${SLOT_4:=}"; : "${SLOT_5:=}"; : "${SLOT_6:=}"
+: "${SLOT_1_DOMAINS:=}"; : "${SLOT_2_DOMAINS:=}"; : "${SLOT_3_DOMAINS:=}"; : "${SLOT_4_DOMAINS:=}"; : "${SLOT_5_DOMAINS:=}"; : "${SLOT_6_DOMAINS:=}"
 : "${SLOT_RU:=}"
 : "${SLOT_1_CAT:=}"; : "${SLOT_2_CAT:=}"; : "${SLOT_3_CAT:=}"; : "${SLOT_4_CAT:=}"; : "${SLOT_5_CAT:=}"; : "${SLOT_6_CAT:=}"
 : "${SLOT_RU_CAT:=}"
@@ -846,6 +847,12 @@ SLOT_3="$SLOT_3"
 SLOT_4="$SLOT_4"
 SLOT_5="$SLOT_5"
 SLOT_6="$SLOT_6"
+SLOT_1_DOMAINS="$SLOT_1_DOMAINS"
+SLOT_2_DOMAINS="$SLOT_2_DOMAINS"
+SLOT_3_DOMAINS="$SLOT_3_DOMAINS"
+SLOT_4_DOMAINS="$SLOT_4_DOMAINS"
+SLOT_5_DOMAINS="$SLOT_5_DOMAINS"
+SLOT_6_DOMAINS="$SLOT_6_DOMAINS"
 SLOT_RU="$SLOT_RU"
 SLOT_1_CAT="$SLOT_1_CAT"
 SLOT_2_CAT="$SLOT_2_CAT"
@@ -1726,6 +1733,127 @@ slot_cat_set() {
         *) return 1 ;;
     esac
 }
+
+normalize_slot_domains() {
+    local _sd_input _sd_size _sd_out _sd_domain
+    _sd_input="${1:-}"
+    [ -n "$_sd_input" ] || { printf ''; return 0; }
+    _sd_size="$(printf '%s' "$_sd_input" | wc -c 2>/dev/null | tr -d '[:space:]')"
+    case "$_sd_size" in ''|*[!0-9]*) return 1;; esac
+    [ "$_sd_size" -le 4096 ] 2>/dev/null || return 1
+    printf '%s' "$_sd_input" | LC_ALL=C grep -Eq "^[A-Za-z0-9.,[:space:]-]*$" || return 1
+    _sd_input="$(printf '%s' "$_sd_input" | tr ',' ' ' | tr -d '\r' | tr 'A-Z' 'a-z')"
+    _sd_out=""
+    for _sd_domain in $_sd_input; do
+        [ -n "$_sd_domain" ] || continue
+        case "$_sd_domain" in *.) _sd_domain="${_sd_domain%.}";; esac
+        case "$_sd_domain" in ''|.*|*.|*..*|*[!a-z0-9.-]*) return 1;; esac
+        [ "${#_sd_domain}" -le 253 ] 2>/dev/null || return 1
+        printf '%s\n' "$_sd_domain" | awk -F. '
+            NF < 2 { exit 1 }
+            {
+                for (i=1; i<=NF; i++) {
+                    if (length($i) > 63 || $i !~ /^[a-z0-9][a-z0-9-]*$/ || $i ~ /-$/)
+                        exit 1
+                }
+            }
+        ' || return 1
+        case " $_sd_out " in
+            *" $_sd_domain "*) ;;
+            *) [ -n "$_sd_out" ] && _sd_out="$_sd_out $_sd_domain" || _sd_out="$_sd_domain" ;;
+        esac
+    done
+    printf '%s' "$_sd_out"
+}
+slot_domains_get() {
+    case "$1" in
+        1) printf '%s' "${SLOT_1_DOMAINS:-}" ;;
+        2) printf '%s' "${SLOT_2_DOMAINS:-}" ;;
+        3) printf '%s' "${SLOT_3_DOMAINS:-}" ;;
+        4) printf '%s' "${SLOT_4_DOMAINS:-}" ;;
+        5) printf '%s' "${SLOT_5_DOMAINS:-}" ;;
+        6) printf '%s' "${SLOT_6_DOMAINS:-}" ;;
+        *) return 1 ;;
+    esac
+}
+slot_domains_set() {
+    case "$1" in
+        1) SLOT_1_DOMAINS="$2" ;;
+        2) SLOT_2_DOMAINS="$2" ;;
+        3) SLOT_3_DOMAINS="$2" ;;
+        4) SLOT_4_DOMAINS="$2" ;;
+        5) SLOT_5_DOMAINS="$2" ;;
+        6) SLOT_6_DOMAINS="$2" ;;
+        *) return 1 ;;
+    esac
+}
+slot_domains_apply() {
+    local _sd_slot _sd_raw _sd_new _sd_old _sd_id _sd_port _sd_other _sd_other_domains _sd_domain
+    _sd_slot="$1"
+    _sd_raw="${2:-}"
+    SLOT_DOMAINS_ERROR=""
+    case "$_sd_slot" in 1|2|3|4|5|6) ;; *) SLOT_DOMAINS_ERROR="Неверный слот DNS."; return 1;; esac
+    acquire_mutation_lock || { SLOT_DOMAINS_ERROR="Другая операция DNS Manager уже выполняется."; return 1; }
+    load_config || {
+        SLOT_DOMAINS_ERROR="Не удалось загрузить конфигурацию DNS Manager."
+        release_mutation_lock
+        return 1
+    }
+    _sd_new="$(normalize_slot_domains "$_sd_raw")" || {
+        SLOT_DOMAINS_ERROR="Некорректный список доменов. Укажите домены вида example.com, по одному на строку или через запятую."
+        release_mutation_lock
+        return 1
+    }
+    _sd_old="$(slot_domains_get "$_sd_slot")"
+    if [ -n "$_sd_new" ]; then
+        case "$_sd_slot" in
+            1) _sd_id="${SLOT_1:-}"; _sd_port="${PORT_1:-}" ;;
+            2) _sd_id="${SLOT_2:-}"; _sd_port="${PORT_2:-}" ;;
+            3) _sd_id="${SLOT_3:-}"; _sd_port="${PORT_3:-}" ;;
+            4) _sd_id="${SLOT_4:-}"; _sd_port="${PORT_4:-}" ;;
+            5) _sd_id="${SLOT_5:-}"; _sd_port="${PORT_5:-}" ;;
+            6) _sd_id="${SLOT_6:-}"; _sd_port="${PORT_6:-}" ;;
+        esac
+        [ -n "$_sd_id" ] && [ -n "$_sd_port" ] || {
+            SLOT_DOMAINS_ERROR="Сначала назначьте DNS-сервер в выбранный слот."
+            release_mutation_lock
+            return 1
+        }
+        for _sd_other in 1 2 3 4 5 6; do
+            [ "$_sd_other" = "$_sd_slot" ] && continue
+            _sd_other_domains="$(slot_domains_get "$_sd_other")" || continue
+            for _sd_domain in $_sd_new; do
+                case " $_sd_other_domains " in
+                    *" $_sd_domain "*)
+                        SLOT_DOMAINS_ERROR="Домен $_sd_domain уже назначен слоту DNS $_sd_other."
+                        release_mutation_lock
+                        return 1
+                        ;;
+                esac
+            done
+        done
+    fi
+    [ "$_sd_old" = "$_sd_new" ] && { release_mutation_lock; return 0; }
+    slot_domains_set "$_sd_slot" "$_sd_new" || {
+        SLOT_DOMAINS_ERROR="Не удалось сохранить список доменов."
+        release_mutation_lock
+        return 1
+    }
+    if save_config >/dev/null 2>&1 && reconcile_dnsmasq >/dev/null 2>&1 && APPLY_OUTPUT_QUIET=1 dnsmasq_restart_checked >/dev/null 2>&1; then
+        log_msg "Маршруты DNS для слота $_sd_slot обновлены."
+        release_mutation_lock
+        return 0
+    fi
+    slot_domains_set "$_sd_slot" "$_sd_old" || true
+    save_config >/dev/null 2>&1 || true
+    if reconcile_dnsmasq >/dev/null 2>&1; then
+        /etc/init.d/dnsmasq restart >/dev/null 2>&1 || true
+    fi
+    SLOT_DOMAINS_ERROR="Не удалось применить маршруты доменов. Предыдущая настройка восстановлена."
+    release_mutation_lock
+    return 1
+}
+
 port_set() {
     case "$1" in
         1) PORT_1="$2" ;;
@@ -2641,6 +2769,15 @@ reconcile_dnsmasq() {
             uci add_list "dhcp.$sec.server=$val" || return 1
         }
         record_own "dnsmasq" "server" "$val" "section=$sec"
+        _slot_domains="$(slot_domains_get "$s")" || return 1
+        if [ -n "$_slot_domains" ]; then
+            _slot_domains="$(normalize_slot_domains "$_slot_domains")" || return 1
+            for _domain in $_slot_domains; do
+                val="/$_domain/127.0.0.1#$p"
+                exact_list_has "dhcp.$sec.server" "$val" || uci add_list "dhcp.$sec.server=$val" || return 1
+                record_own "dnsmasq" "server" "$val" "section=$sec"
+            done
+        fi
     done
     if [ "$TLD_RU_ENABLED" = 1 ] && [ -n "$SLOT_RU" ] && [ -n "$PORT_RU" ]; then
         for t in /ru /su /xn--p1ai; do
@@ -3046,6 +3183,46 @@ replace_failed_slot_from_test() {
     warn_msg "Для слота $_slot не найден подтверждённый DNS в целевой категории."
     return 1
 }
+profile_compact_general_slots() {
+    local _pcs_file _pcs_src _pcs_dst _pcs_id _pcs_cat _pcs_port
+    _pcs_file="$TMP_DIR/profile-compact-slots"
+    : > "$_pcs_file" || return 1
+
+    # Snapshot active IDs/categories before writing the compacted slot map.
+    for _pcs_src in 1 2 3 4 5 6; do
+        eval "_pcs_id=\$SLOT_$_pcs_src"
+        [ -n "$_pcs_id" ] || continue
+        eval "_pcs_cat=\$SLOT_${_pcs_src}_CAT"
+        printf '%s|%s\n' "$_pcs_id" "$_pcs_cat" >> "$_pcs_file" || {
+            rm -f "$_pcs_file"
+            return 1
+        }
+    done
+
+    # Domain rules are tied to logical slot numbers, so SLOT_n_DOMAINS stays
+    # in place. Resolver IDs/categories move left and ports follow their new slots.
+    _pcs_dst=1
+    while IFS='|' read -r _pcs_id _pcs_cat; do
+        [ -n "$_pcs_id" ] || continue
+        slot_set "$_pcs_dst" "$_pcs_id" || { rm -f "$_pcs_file"; return 1; }
+        slot_cat_set "$_pcs_dst" "$_pcs_cat" || { rm -f "$_pcs_file"; return 1; }
+        _pcs_port="$(hybrid_desired_port "$_pcs_dst")"
+        [ -n "$_pcs_port" ] || { rm -f "$_pcs_file"; return 1; }
+        port_set "$_pcs_dst" "$_pcs_port" || { rm -f "$_pcs_file"; return 1; }
+        _pcs_dst=$((_pcs_dst+1))
+    done < "$_pcs_file"
+
+    while [ "$_pcs_dst" -le 6 ]; do
+        slot_set "$_pcs_dst" "" || { rm -f "$_pcs_file"; return 1; }
+        slot_cat_set "$_pcs_dst" "" || { rm -f "$_pcs_file"; return 1; }
+        port_set "$_pcs_dst" "" || { rm -f "$_pcs_file"; return 1; }
+        _pcs_dst=$((_pcs_dst+1))
+    done
+
+    rm -f "$_pcs_file"
+    return 0
+}
+
 profile_prune_failed_slots() {
     local _bad _bad_n _live_n _slot _id _port _domain
     _bad="$TMP_DIR/profile-bad-slots-$$"
@@ -3088,6 +3265,7 @@ profile_prune_failed_slots() {
         slot_set "$_slot" "" || { rm -f "$_bad"; return 1; }
         slot_cat_set "$_slot" "" || { rm -f "$_bad"; return 1; }
     done < "$_bad"
+    profile_compact_general_slots || { rm -f "$_bad"; return 1; }
     rm -f "$_bad"
 
     sync_regional_dns_state
@@ -5783,6 +5961,13 @@ watchdog_expected_servers() {
         [ -n "$_wid" ] || continue
         [ -n "$_wp" ] || continue
         printf '127.0.0.1#%s\n' "$_wp" >> "$_out"
+        _ws_domains="$(slot_domains_get "$_ws")" || return 1
+        if [ -n "$_ws_domains" ]; then
+            _ws_domains="$(normalize_slot_domains "$_ws_domains")" || return 1
+            for _ws_domain in $_ws_domains; do
+                printf '/%s/127.0.0.1#%s\n' "$_ws_domain" "$_wp" >> "$_out"
+            done
+        fi
     done
     if [ "${TLD_RU_ENABLED:-0}" = 1 ]; then
         if [ -n "$SLOT_RU" ] && [ -n "$PORT_RU" ]; then
