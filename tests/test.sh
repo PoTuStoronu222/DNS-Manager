@@ -236,13 +236,19 @@ fi
 grep -q 'for _page in dashboard doh network time catalog log; do' dns-manager-luci.sh || fail "separate LuCI page generation loop missing"
 grep -q "'require baseclass';" "$tmp/common.js" || fail "LuCI common module does not use baseclass"
 grep -q "return baseclass.extend({" "$tmp/common.js" || fail "LuCI common module does not return a baseclass constructor"
-for _rpc in doh_status network_status time_status page_meta; do
+for _rpc in doh_status network_status lan_devices time_status page_meta; do
     grep -q "\"${_rpc}\":{}" dns-manager-luci.sh || fail "fast LuCI RPC is missing from rpcd list: $_rpc"
 done
-for _rpc in doh_status network_status time_status page_meta; do
+for _rpc in doh_status network_status lan_devices time_status page_meta; do
     grep -q "${_rpc})" "$tmp/backend.sh" || fail "fast LuCI RPC dispatch is missing: $_rpc"
 done
-grep -q "case 'doh': return callDohStatus();" "$tmp/common.js" || fail "LuCI DoH page does not use targeted RPC"
+grep -q "case 'doh': return Promise.all\(\[callDohStatus(),callLanDevices()" "$tmp/common.js" || fail "LuCI DoH page does not load assigned DNS state and LAN devices"
+grep -Fq 'function lan_devices_json()' "$tmp/backend.sh" || fail "LAN device inventory RPC implementation missing"
+grep -Fq '/tmp/dhcp.leases' "$tmp/backend.sh" || fail "LAN inventory does not include DHCP leases"
+grep -Fq '/proc/net/arp' "$tmp/backend.sh" || fail "LAN inventory does not include ARP neighbours"
+grep -Fq 'Список объединяет DHCP-аренды, ARP-кэш и сохранённые статические DHCP-записи.' "$tmp/common.js" || fail "LAN device inventory scope is not explained"
+grep -Fq 'назначение отдельного DoH устройству ещё не включено' "$tmp/common.js" || fail "LAN inventory misleadingly suggests per-device routing is active"
+ok "LuCI exposes a clearly read-only LAN device inventory"
 awk '/^function routeStatusCall\(\)/,/^}/' "$tmp/common.js" > "$tmp/route_status_call.js"
 awk "/case 'catalog':/,/case 'log':/" "$tmp/route_status_call.js" > "$tmp/catalog_route_status.js"
 grep -Fq 'callDohStatus()' "$tmp/catalog_route_status.js" || fail "LuCI catalog refresh does not reload live DNS slots"
@@ -336,7 +342,7 @@ grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validat
 grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
 grep -q 'VERSION="3.65"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
-grep -q 'VERSION="1.64"' dns-manager-luci.sh || fail "LuCI version not bumped"
+grep -q 'VERSION="1.65"' dns-manager-luci.sh || fail "LuCI version not bumped"
 grep -q "'bypass','Обход геоблока'" dns-manager-luci.sh || fail "bypass profile label not updated"
 grep -q "'security','Защита от угроз'" dns-manager-luci.sh || fail "security profile label not updated"
 grep -q "'privacy','Конфиденциальность'" dns-manager-luci.sh || fail "privacy profile label not updated"
