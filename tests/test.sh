@@ -155,7 +155,7 @@ grep -Fq 'ubus -v list dns_manager' "$tmp/luci_state_fn.sh" || fail "manager-sid
 ok "LuCI runtime validation checks the current page layout and RPC contract"
 
 # DNS tests must validate wire data, the transaction, question and DNS media type.
-for _fn in validate_dns_message is_dns_media_type normalize_url; do
+for _fn in dns_file_bytes_decimal validate_dns_message is_dns_media_type normalize_url; do
     awk -v fn="$_fn" '$0 ~ ("^" fn "\\(\\) \\{") { capture=1 } capture { print } capture && /^}$/ { exit }' dns-manager.sh > "$tmp/$_fn.sh"
     [ -s "$tmp/$_fn.sh" ] || fail "DNS helper extraction: $_fn"
     . "$tmp/$_fn.sh"
@@ -169,6 +169,14 @@ if validate_dns_message "$tmp/dns-query"; then fail "DNS response accepted witho
 # A complete response for example.com A, answer owner compressed to QNAME.
 printf '\022\064\201\200\000\001\000\001\000\000\000\000\007example\003com\000\000\001\000\001\300\014\000\001\000\001\000\000\000\074\000\004\135\270\330\042' > "$tmp/dns-body"
 validate_dns_message "$tmp/dns-body" "$tmp/dns-query" || fail "valid DNS response rejected"
+
+# Validate the DNS wire parser on minimal OpenWrt images without od.
+od() { return 127; }
+hexdump() { command od -An -tu1 -v "$4"; }
+validate_dns_message "$tmp/dns-body" "$tmp/dns-query" || fail "valid DNS response rejected when od is unavailable and hexdump fallback is present"
+unset -f od
+unset -f hexdump
+ok "DNS wire validation supports the hexdump fallback when od is unavailable"
 
 # DNS names compare case-insensitively.
 printf '\022\064\201\200\000\001\000\001\000\000\000\000\007EXAMPLE\003COM\000\000\001\000\001\300\014\000\001\000\001\000\000\000\074\000\004\135\270\330\042' > "$tmp/dns-uppercase"
@@ -211,6 +219,7 @@ printf '\022\064\201\200\000\001\000\001\000\000\000\000\007example\003com\000\0
 if validate_dns_message "$tmp/dns-bad-rdlength" "$tmp/dns-query"; then fail "answer with an overlong RDLENGTH accepted"; fi
 
 is_dns_media_type 'Application/DNS-Message; charset=binary' || fail "valid DNS media type with parameters rejected"
+is_dns_media_type 'application/dns-message' || fail "literal DNS media type rejected on OpenWrt-compatible tr"
 if is_dns_media_type 'text/application/dns-message'; then fail "invalid DNS media type accepted by substring"; fi
 if is_dns_media_type 'application/dns-message-extra'; then fail "invalid DNS media type suffix accepted"; fi
 
@@ -367,7 +376,7 @@ grep -Fq "disabled:!!state.busy||!!state.jobRunning||unavailable||checking" dns-
 grep -q "'gaming','Игровые DNS'" dns-manager-luci.sh || fail "gaming catalog label missing in LuCI"
 grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validation missing gaming category"
 grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
-grep -q 'VERSION="3.63"' dns-manager.sh || fail "manager version not bumped"
+grep -q 'VERSION="3.64"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
 grep -q 'VERSION="1.56"' dns-manager-luci.sh || fail "LuCI version not bumped"
 [ "$(grep -Fc "printf ',\"domains\":';" dns-manager-luci.sh)" -eq 2 ] || fail "slot domain RPC JSON keys are malformed"
@@ -594,8 +603,8 @@ view_luci="$(sed -n 's|^// DNS Manager LuCI common module version:[[:space:]]*||
 [ "$top_luci" = "$self_luci" ] || fail "LuCI SELF_VERSION mismatch"
 [ "$top_luci" = "$view_luci" ] || fail "embedded JS version mismatch"
 ok "LuCI version markers synchronized ($top_luci)"
-grep -Fq 'VERSION="3.63"' dns-manager.sh || fail "DNS Manager version marker is not 3.55"
-ok "DNS Manager version marker synchronized (3.63)"
+grep -Fq 'VERSION="3.64"' dns-manager.sh || fail "DNS Manager version marker is not 3.55"
+ok "DNS Manager version marker synchronized (3.64)"
 
 if awk '
     /function startAutoStatus\(root\)/ { capture=1 }

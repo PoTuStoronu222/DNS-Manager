@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.63"
+VERSION="3.64"
 # 3.38: clear the LuCI update flag after a successful CLI update.
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
@@ -2043,6 +2043,18 @@ return 1
 # ==========================================
 # ==========================================
 # ==========================================
+dns_file_bytes_decimal() {
+    local _db_file
+    _db_file="$1"
+    # OpenWrt's minimal BusyBox may not include od. Prefer it when available,
+    # but fall back to the hexdump applet shipped on this target.
+    if command -v od >/dev/null 2>&1; then
+        od -An -tu1 -v "$_db_file" 2>/dev/null && return 0
+    fi
+    command -v hexdump >/dev/null 2>&1 || return 1
+    hexdump -v -e '1/1 "%u\n"' "$_db_file" 2>/dev/null
+}
+
 validate_dns_message() {
     _file="$1"
     _query="${2:-}"
@@ -2051,8 +2063,8 @@ validate_dns_message() {
     case "$_n" in ''|*[!0-9]*) return 1;; esac
     [ "$_n" -ge 12 ] && [ "$_n" -le 65535 ] || return 1
 
-    _response_bytes="$(od -An -tu1 -v "$_file" 2>/dev/null | tr '\n' ' ')"
-    _query_bytes="$(od -An -tu1 -v "$_query" 2>/dev/null | tr '\n' ' ')"
+    _response_bytes="$(dns_file_bytes_decimal "$_file" 2>/dev/null | tr '\n' ' ')"
+    _query_bytes="$(dns_file_bytes_decimal "$_query" 2>/dev/null | tr '\n' ' ')"
     [ -n "$_response_bytes" ] && [ -n "$_query_bytes" ] || return 1
 
     # Parse the DNS wire message instead of trusting its HTTP status and size.
@@ -2152,7 +2164,7 @@ validate_dns_message() {
     '
 }
 is_dns_media_type() {
-    _ct="$(printf '%s' "$1" | sed 's/;.*//' | tr '[:upper:]' '[:lower:]' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    _ct="$(printf '%s' "$1" | sed 's/;.*//' | tr 'ABCDEFGHIJKLMNOPQRSTUVWXYZ' 'abcdefghijklmnopqrstuvwxyz' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
     [ "$_ct" = "application/dns-message" ]
 }
 test_one_dns() {
@@ -2212,7 +2224,7 @@ while IFS= read -r ipx; do
             st=OK
         else st=BAD_DOH_RESPONSE; fi ;;
     000)
-        elc="$(printf '%s' "$err" | tr '[:upper:]' '[:lower:]')"
+        elc="$(printf '%s' "$err" | tr 'ABCDEFGHIJKLMNOPQRSTUVWXYZ' 'abcdefghijklmnopqrstuvwxyz')"
         case "$elc" in
         *timed*|*timeout*) st=CURL_TIMEOUT;;
         *ssl*|*tls*|*certificate*|*schannel*) st=TLS_ERROR;;
