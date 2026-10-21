@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.79
+# Version: 1.80
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -32,7 +32,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/dns-manager-complete-integration-20261021/dns-manager-luci.sh"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.79"
+VERSION="1.80"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -334,9 +334,6 @@ dmd_build_and_install() {
             [ -n "$DMD_MAC" ] || continue
             dmd_valid_mac "$DMD_MAC" || continue
             [ -z "$DMD_EXTRA" ] || continue
-            DMD_SLOTS="$(dmd_normalize_slots "$DMD_RAW_SLOTS" 2>/dev/null || true)"
-            [ -n "$DMD_SLOTS" ] || continue
-
             case "$DMD_RAW_SLOTS" in
                 EXCLUDE)
                     DMD_SKIP_MACS="$DMD_SKIP_MACS $DMD_MAC"
@@ -345,6 +342,9 @@ dmd_build_and_install() {
             esac
             DMD_SLOTS="$(dmd_normalize_slots "$DMD_RAW_SLOTS" 2>/dev/null || true)"
             [ -n "$DMD_SLOTS" ] || continue
+            # A valid explicit per-device choice takes precedence even when its
+            # upstream is temporarily down; do not silently route it via default DNS.
+            DMD_SKIP_MACS="$DMD_SKIP_MACS $DMD_MAC"
 
             DMD_LISTENER_PORT="$(dmd_ensure_profile "$DMD_SLOTS" "device $DMD_MAC" 2>/dev/null || true)"
             case "$DMD_LISTENER_PORT" in ''|*[!0-9]*)
@@ -355,7 +355,6 @@ dmd_build_and_install() {
 
             printf 'iifname "%s" ether saddr %s udp dport 53 redirect to :%s\n' "$DMD_LAN_DEV" "$DMD_MAC" "$DMD_LISTENER_PORT" >> "$DMD_STAGE/nft.rules"
             printf 'iifname "%s" ether saddr %s tcp dport 53 redirect to :%s\n' "$DMD_LAN_DEV" "$DMD_MAC" "$DMD_LISTENER_PORT" >> "$DMD_STAGE/nft.rules"
-            DMD_SKIP_MACS="$DMD_SKIP_MACS $DMD_MAC"
             DMD_ACTIVE=$((DMD_ACTIVE + 1))
         done < "$DMD_ASSIGNMENTS"
     fi
@@ -540,7 +539,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/dns-manager-complete-integration-20261021/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="1.79"
+SELF_VERSION="1.80"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -3755,7 +3754,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI common module version: 1.79
+// DNS Manager LuCI common module version: 1.80
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -6124,7 +6123,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 1.79
+// DNS Manager LuCI version: 1.80
 return view.extend({
   load: DM.load,
   render: DM.render,
