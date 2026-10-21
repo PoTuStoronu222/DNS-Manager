@@ -1790,9 +1790,9 @@ dns_field() {
 custom_dns_validate_input() {
     local _size _rest _host
     CUSTOM_DNS_ERROR=""
-    CUSTOM_DNS_NAME="$(printf '%s' "\${1:-}" | tr '\r\n\t' ' ' | tr -s ' ' | sed 's/^ *//;s/ *$//')"
-    CUSTOM_DNS_URL="\${2:-}"
-    CUSTOM_DNS_CATEGORY="\${3:-}"
+    CUSTOM_DNS_NAME="$(printf '%s' "${1:-}" | tr '\r\n\t' ' ' | tr -s ' ' | sed 's/^ *//;s/ *$//')"
+    CUSTOM_DNS_URL="${2:-}"
+    CUSTOM_DNS_CATEGORY="${3:-}"
     [ -n "$CUSTOM_DNS_NAME" ] || { CUSTOM_DNS_ERROR="Введите название DNS."; return 1; }
     _size="$(printf '%s' "$CUSTOM_DNS_NAME" | wc -c 2>/dev/null | tr -d '[:space:]')"
     case "$_size" in ''|*[!0-9]*) CUSTOM_DNS_ERROR="Некорректное название DNS."; return 1;; esac
@@ -1807,10 +1807,10 @@ custom_dns_validate_input() {
     case "$CUSTOM_DNS_URL" in https://*) ;; *) CUSTOM_DNS_ERROR="Адрес DoH должен начинаться с https://."; return 1;; esac
     printf '%s' "$CUSTOM_DNS_URL" | LC_ALL=C grep -Fq '|' && { CUSTOM_DNS_ERROR="Адрес DoH содержит недопустимый символ |."; return 1; }
     printf '%s' "$CUSTOM_DNS_URL" | LC_ALL=C grep -q '[[:space:][:cntrl:]]' && { CUSTOM_DNS_ERROR="Адрес DoH содержит пробелы или управляющие символы."; return 1; }
-    _rest="\${CUSTOM_DNS_URL#https://}"
-    _host="\${_rest%%/*}"
-    _host="\${_host%%\?*}"
-    _host="\${_host%%#*}"
+    _rest="${CUSTOM_DNS_URL#https://}"
+    _host="${_rest%%/*}"
+    _host="${_host%%\?*}"
+    _host="${_host%%#*}"
     case "$_host" in ''|*'@'*|*'\\'*) CUSTOM_DNS_ERROR="В адресе DoH указан некорректный узел."; return 1;; esac
     return 0
 }
@@ -1818,7 +1818,7 @@ custom_dns_add() {
     local _id _stamp _seq _tmp
     CUSTOM_DNS_ERROR=""
     CUSTOM_DNS_RESULT_ID=""
-    custom_dns_validate_input "\${1:-}" "\${2:-}" "\${3:-}" || return 1
+    custom_dns_validate_input "${1:-}" "${2:-}" "${3:-}" || return 1
     init_dirs >/dev/null 2>&1 || { CUSTOM_DNS_ERROR="Не удалось подготовить каталог настроек."; return 1; }
     acquire_mutation_lock || { CUSTOM_DNS_ERROR="Другая операция DNS Manager уже выполняется."; return 1; }
     if [ -s "$CUSTOM_DNS" ] && ! awk -F'|' '
@@ -1845,12 +1845,12 @@ custom_dns_add() {
     _stamp="$(date +%s 2>/dev/null || printf 0)"
     _seq=1
     while [ "$_seq" -le 100 ]; do
-        _id="custom_\${_stamp}_$_\${_seq}"
+        _id="custom_${_stamp}_$_${_seq}"
         if ! dns_field "$_id" 4 >/dev/null 2>&1; then break; fi
         _seq=$((_seq+1))
     done
     [ "$_seq" -le 100 ] || { CUSTOM_DNS_ERROR="Не удалось создать уникальный идентификатор DNS."; release_mutation_lock; return 1; }
-    _tmp="$(mktemp "\${CUSTOM_DNS}.tmp.XXXXXX" 2>/dev/null)" || { CUSTOM_DNS_ERROR="Не удалось подготовить временный файл DNS."; release_mutation_lock; return 1; }
+    _tmp="$(mktemp "${CUSTOM_DNS}.tmp.XXXXXX" 2>/dev/null)" || { CUSTOM_DNS_ERROR="Не удалось подготовить временный файл DNS."; release_mutation_lock; return 1; }
     if [ -s "$CUSTOM_DNS" ] && ! cat "$CUSTOM_DNS" > "$_tmp"; then
         rm -f "$_tmp" 2>/dev/null || true; CUSTOM_DNS_ERROR="Не удалось прочитать сохранённые DNS."; release_mutation_lock; return 1
     fi
@@ -1868,7 +1868,7 @@ custom_dns_add() {
 custom_dns_delete() {
     local _id _tmp _slot _assigned
     CUSTOM_DNS_ERROR=""
-    _id="\${1:-}"
+    _id="${1:-}"
     printf '%s\n' "$_id" | grep -Eq '^custom_[0-9]+_[0-9]+_[0-9]+
 dns_name() { dns_field "$1" 4 | sed 's/\\\\\././g'; }
 dns_url() { dns_field "$1" 5; }
