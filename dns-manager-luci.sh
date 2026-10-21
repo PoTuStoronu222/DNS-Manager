@@ -3141,8 +3141,8 @@ set_device_dns_json() {
     done
 
     DMD_RPC_FILE="/etc/dns-manager/config/device-dns.conf"
-    DMD_RPC_TMP="$DMD_RPC_FILE.tmp.$"
-    DMD_RPC_BACKUP="$DMD_RPC_FILE.backup.$"
+    DMD_RPC_TMP="$(mktemp "$DMD_RPC_FILE.tmp.XXXXXX" 2>/dev/null)" || { release_mutation_lock; json_error "Не удалось создать временный файл привязок"; return; }
+    DMD_RPC_BACKUP="$(mktemp "$DMD_RPC_FILE.backup.XXXXXX" 2>/dev/null)" || { rm -f "$DMD_RPC_TMP"; release_mutation_lock; json_error "Не удалось создать резервную копию привязок"; return; }
     DMD_RPC_HAD_FILE=0
     mkdir -p "$(dirname "$DMD_RPC_FILE")" || {
         release_mutation_lock
