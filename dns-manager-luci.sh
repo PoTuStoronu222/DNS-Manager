@@ -148,7 +148,7 @@ dmd_port_busy() {
     fi
     if command -v ss >/dev/null 2>&1; then
         ss -lnut 2>/dev/null | awk -v p=":$_dmd_port" '
-            if ($5 ~ (p "$")) found=1
+            { if ($5 ~ (p "$")) found=1 }
             END { exit found ? 0 : 1 }
         '
         return $?
@@ -3162,14 +3162,14 @@ set_device_dns_json() {
     done
 
     DMD_RPC_FILE="/etc/dns-manager/config/device-dns.conf"
-    DMD_RPC_TMP="$(mktemp "$DMD_RPC_FILE.tmp.XXXXXX" 2>/dev/null)" || { release_mutation_lock; json_error "Не удалось создать временный файл привязок"; return; }
-    DMD_RPC_BACKUP="$(mktemp "$DMD_RPC_FILE.backup.XXXXXX" 2>/dev/null)" || { rm -f "$DMD_RPC_TMP"; release_mutation_lock; json_error "Не удалось создать резервную копию привязок"; return; }
-    DMD_RPC_HAD_FILE=0
     mkdir -p "$(dirname "$DMD_RPC_FILE")" || {
         release_mutation_lock
         json_error "Не удалось создать каталог привязок"
         return
     }
+    DMD_RPC_TMP="$(mktemp "$DMD_RPC_FILE.tmp.XXXXXX" 2>/dev/null)" || { release_mutation_lock; json_error "Не удалось создать временный файл привязок"; return; }
+    DMD_RPC_BACKUP="$(mktemp "$DMD_RPC_FILE.backup.XXXXXX" 2>/dev/null)" || { rm -f "$DMD_RPC_TMP"; release_mutation_lock; json_error "Не удалось создать резервную копию привязок"; return; }
+    DMD_RPC_HAD_FILE=0
     if [ -f "$DMD_RPC_FILE" ]; then
         DMD_RPC_HAD_FILE=1
         cp -p "$DMD_RPC_FILE" "$DMD_RPC_BACKUP" || {
