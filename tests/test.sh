@@ -242,7 +242,8 @@ done
 for _rpc in doh_status network_status lan_devices time_status page_meta; do
     grep -q "${_rpc})" "$tmp/backend.sh" || fail "fast LuCI RPC dispatch is missing: $_rpc"
 done
-grep -Fq "case 'doh': return Promise.all([callDohStatus(),callLanDevices()" "$tmp/common.js" || fail "LuCI DoH page does not load assigned DNS state and LAN devices"
+grep -Fq "case 'doh': return Promise.all([callDohStatus(),callLanDevices()" "$tmp/common.js" || fail "LuCI DoH page does not load DNS state and LAN devices"
+grep -Fq '"dns_manager": [ "status", "runtime", "doh_status", "network_status", "lan_devices"' dns-manager-luci.sh || fail "LAN inventory RPC is missing from the read ACL"
 grep -Fq 'lan_devices_json() {' "$tmp/backend.sh" || fail "LAN device inventory RPC implementation missing"
 grep -Fq '/tmp/dhcp.leases' "$tmp/backend.sh" || fail "LAN inventory does not include DHCP leases"
 grep -Fq '/proc/net/arp' "$tmp/backend.sh" || fail "LAN inventory does not include ARP neighbours"
