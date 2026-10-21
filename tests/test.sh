@@ -23,7 +23,11 @@ trap 'rm -rf "$tmp"' EXIT INT TERM
 awk '/cat > \/etc\/init.d\/dns-manager-device-dns <<'\''EOF_DEVICE_DNS_SERVICE'\''/ {capture=1; next} capture && /^EOF_DEVICE_DNS_SERVICE$/ {exit} capture {print}' dns-manager-luci.sh > "$tmp/device_dns_service.sh"
 [ -s "$tmp/device_dns_service.sh" ] || fail "per-device DNS service heredoc missing"
 sh -n "$tmp/device_dns_service.sh" || fail "per-device DNS service shell syntax"
-grep -Fq 'priority -110' "$tmp/device_dns_service.sh" || fail "per-device DNS rules do not precede generic port-53 redirects"
+grep -Fq 'DMD_CHAIN="dstnat_lan"' "$tmp/device_dns_service.sh" || fail "per-device DNS rules target the wrong fw4 chain"
+grep -Fq 'position=chain-pre' "$tmp/device_dns_service.sh" || fail "per-device DNS rules are not inserted ahead of generic redirects"
+grep -Fq 'fw4 print > "$DMD_FW4_CHECK"' "$tmp/device_dns_service.sh" || fail "per-device ruleset is not validated before reload"
+grep -Fq 'nft -c -f "$DMD_FW4_CHECK"' "$tmp/device_dns_service.sh" || fail "per-device nft rules are not syntax-checked"
+if grep -Fq 'type nat hook prerouting' "$tmp/device_dns_service.sh"; then fail "per-device service must not create a competing base NAT chain"; fi
 grep -Fq 'ether saddr %s udp dport 53 redirect to :%s' "$tmp/device_dns_service.sh" || fail "per-device UDP DNS redirect missing"
 grep -Fq 'ether saddr %s tcp dport 53 redirect to :%s' "$tmp/device_dns_service.sh" || fail "per-device TCP DNS redirect missing"
 grep -Fq 'all-servers' "$tmp/device_dns_service.sh" || fail "multi-DoH device profiles do not query all selected upstreams"
@@ -53,7 +57,9 @@ awk '/^_apply_extras_now_impl\(\) \{/,/^}/' dns-manager.sh > "$tmp/extras_apply.
 awk '/encrypted_dns\)/,/;;/' "$tmp/extras_apply.sh" > "$tmp/encrypted_dns_apply.sh"
 grep -Fq 'refresh_device_dns_runtime' "$tmp/encrypted_dns_apply.sh" || fail "encrypted-DNS toggle does not refresh per-device canary profiles"
 awk '/^luci_companion_remove_fallback\(\) \{/,/^}/' dns-manager.sh > "$tmp/luci_remove_fallback.sh"
-grep -Fq '90-dns-manager-device-dns.nft' "$tmp/luci_remove_fallback.sh" || fail "LuCI fallback uninstall leaves per-device redirects"
+grep -Fq 'dns_manager_device_dns' dns-manager-luci.sh || fail "LuCI uninstall does not clean up the owned firewall include"
+grep -Fq '/etc/dns-manager/device-dns/redirects.nft' dns-manager-luci.sh || fail "per-device rules include path missing"
+grep -Fq '90-dns-manager-device-dns.nft' "$tmp/luci_remove_fallback.sh" || fail "Manager fallback uninstall leaves legacy per-device rules"
 grep -Fq "card('Устройства LAN — привязка к DoH'" dns-manager-luci.sh || fail "per-device DNS assignment UI missing"
 
 
