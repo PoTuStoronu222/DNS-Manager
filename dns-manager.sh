@@ -4030,7 +4030,6 @@ refresh_device_dns_runtime() {
     # The LuCI companion owns the per-device resolver service and rule include.
     # Rebuild only after manager.conf has been atomically saved.
     [ -x /etc/init.d/dns-manager-device-dns ] || return 0
-    [ -f /etc/dns-manager/config/device-dns.conf ] || return 0
     if /etc/init.d/dns-manager-device-dns restart >/dev/null 2>&1; then
         log_msg "Привязки DNS по устройствам обновлены."
         return 0
