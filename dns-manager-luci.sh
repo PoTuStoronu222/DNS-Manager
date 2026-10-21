@@ -175,7 +175,7 @@ dmd_remove_include() {
         uci -q delete "firewall.$DMD_INCLUDE" || return 1
         uci commit firewall || return 1
     fi
-    rm -f "$DMD_NFT" /etc/nftables.d/90-dns-manager-device-dns.nft 2>/dev/null || true
+    rm -f "$DMD_NFT" "$DMD_NFT".tmp.* /etc/nftables.d/90-dns-manager-device-dns.nft /etc/nftables.d/90-dns-manager-device-dns.nft.tmp.* 2>/dev/null || true
     /etc/init.d/firewall reload >/dev/null 2>&1 || return 1
     return 0
 }
@@ -316,8 +316,8 @@ dmd_build_and_install() {
     }
 
     if [ -f "$DMD_STAGE/device-rules.nft" ]; then
-        DMD_NFT_TMP="$DMD_NFT.tmp.$"
-        cp "$DMD_STAGE/device-rules.nft" "$DMD_NFT_TMP" || { dmd_cleanup_stage; return 1; }
+        DMD_NFT_TMP="$(mktemp "$DMD_NFT.tmp.XXXXXX" 2>/dev/null)" || { dmd_cleanup_stage; return 1; }
+        cp "$DMD_STAGE/device-rules.nft" "$DMD_NFT_TMP" || { rm -f "$DMD_NFT_TMP"; dmd_cleanup_stage; return 1; }
         chmod 0644 "$DMD_NFT_TMP" 2>/dev/null || true
         mv -f "$DMD_NFT_TMP" "$DMD_NFT" || { dmd_cleanup_stage; return 1; }
         dmd_configure_include || { dmd_cleanup_stage; return 1; }
