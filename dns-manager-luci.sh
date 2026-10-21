@@ -3678,7 +3678,7 @@ function injectStyle(root){
   '.dm-seg{display:flex;flex-wrap:wrap;gap:6px;margin:5px 0}.dm-profile-seg{flex-wrap:nowrap;overflow-x:auto;padding-bottom:2px}.dm-seg .cbi-button{padding:5px 11px;border-radius:7px;font-size:12.5px;font-weight:600}.dm-seg .active{background:#1a7f37;color:#fff;border-color:#1a7f37}'+
   '.dm-force-note{font-size:12px;line-height:1.56;opacity:.72}.dm-inline-msg{display:block;margin:8px 0 0;padding:7px 10px;border-radius:7px;font-size:12px;line-height:1.4}.dm-inline-msg.info{background:rgba(9,105,218,.08);border:1px solid rgba(9,105,218,.16)}.dm-inline-msg.ok{background:rgba(26,127,55,.08);border:1px solid rgba(26,127,55,.16)}.dm-inline-msg.error{background:rgba(207,34,46,.08);border:1px solid rgba(207,34,46,.16)}.dm-applied{display:flex;align-items:center;gap:9px;padding:9px 11px;border-radius:8px;font-size:12.5px;line-height:1.45}.dm-applied.ok{background:rgba(26,127,55,.08);border:1px solid rgba(26,127,55,.18)}.dm-applied.running{background:rgba(191,135,0,.08);border:1px solid rgba(191,135,0,.18)}.dm-applied.error{background:rgba(207,34,46,.08);border:1px solid rgba(207,34,46,.18)}.dm-applied strong{font-weight:700}.dm-confirm-body{min-width:min(440px,calc(100vw - 70px))}.dm-setting{padding:11px 12px}.dm-setting-title{font-size:13px;font-weight:600}.dm-setting-desc{font-size:11.5px;line-height:1.45;opacity:.68;margin-top:3px}.dm-setting-line{display:flex;align-items:center;justify-content:space-between;gap:10px}.dm-setting-text{min-width:0}.dm-setting-controls{display:flex;align-items:center;justify-content:flex-end;gap:7px;margin-top:9px}.dm-setting-actions{display:flex;align-items:center;gap:7px;flex-shrink:0}.dm-setting-actions .cbi-button{padding:4px 9px;font-size:12px}.dm-setting-saving{opacity:.7}.dm-force-external{padding:8px 10px;border-radius:8px;background:rgba(191,135,0,.10);border:1px solid rgba(191,135,0,.22);font-size:12.5px;line-height:1.5;margin-top:8px}'+
   '.dm-doh-list{display:flex;flex-direction:column}.dm-doh-row{display:grid;grid-template-columns:140px minmax(180px,1fr) 80px 100px minmax(150px,auto);gap:10px;align-items:center;padding:7px 0;border-top:1px solid rgba(0,0,0,.07);font-size:13px}.dm-doh-row:first-child{border-top:0}.dm-doh-name{font-weight:600}.dm-doh-url{overflow-wrap:anywhere;opacity:.88}.dm-doh-port,.dm-doh-ping{font-size:12px;opacity:.7;white-space:nowrap}.dm-doh-actions{display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap}.dm-doh-actions .cbi-button{padding:4px 8px;font-size:12px}'+
-  '.dm-slot-table{display:flex;flex-direction:column}.dm-slot-entry{display:flex;flex-direction:column;gap:4px;border-top:1px solid rgba(0,0,0,.07);padding:6px 0}.dm-slot-entry:first-child{border-top:0}.dm-slot-domain-panel{display:flex;flex-direction:column;gap:5px;padding:0 0 10px 68px}.dm-slot-domains-heading{font-size:12px;font-weight:600}.dm-slot-domains-help{font-size:12px;opacity:.72}.dm-slot-domain-controls{display:flex;align-items:stretch;gap:8px}.dm-slot-domains-input{width:100%;min-width:0;min-height:48px;resize:vertical}.dm-slot-domain-controls .cbi-button{align-self:flex-start;white-space:nowrap}@media(max-width:560px){.dm-slot-domain-panel{padding-left:0}.dm-slot-domain-controls{flex-direction:column}.dm-slot-domain-controls .cbi-button{align-self:flex-start}}.dm-slot-row{display:grid;grid-template-columns:55px 135px minmax(180px,1fr) 85px 115px minmax(175px,auto);gap:14px;align-items:center;padding:7px 0;border-top:1px solid rgba(0,0,0,.07);font-size:13px}.dm-slot-row:first-child{border-top:0}.dm-slot-id{font-weight:700;opacity:.62}.dm-slot-name{font-weight:600;overflow-wrap:anywhere}.dm-slot-endpoint,.dm-slot-ping{font-size:12px;opacity:.72;white-space:nowrap}.dm-inline{display:flex;gap:6px;justify-content:flex-end}.dm-inline .cbi-button{padding:4px 9px;font-size:12px}.dm-assign-list{display:flex;flex-direction:column;gap:7px;min-width:min(430px,calc(100vw - 70px))}.dm-assign-item{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:9px 10px;border:1px solid rgba(0,0,0,.08);border-radius:8px}.dm-assign-info{min-width:0;flex:1}.dm-assign-slot{font-weight:700}.dm-assign-current{font-size:12px;opacity:.7;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}'+
+  '.dm-device-dns-options{display:flex;flex-wrap:wrap;gap:8px}.dm-device-dns-option{display:flex;align-items:center;gap:5px;font-size:12px}.dm-device-dns-entry{gap:8px}.dm-slot-table{display:flex;flex-direction:column}.dm-slot-entry{display:flex;flex-direction:column;gap:4px;border-top:1px solid rgba(0,0,0,.07);padding:6px 0}.dm-slot-entry:first-child{border-top:0}.dm-slot-domain-panel{display:flex;flex-direction:column;gap:5px;padding:0 0 10px 68px}.dm-slot-domains-heading{font-size:12px;font-weight:600}.dm-slot-domains-help{font-size:12px;opacity:.72}.dm-slot-domain-controls{display:flex;align-items:stretch;gap:8px}.dm-slot-domains-input{width:100%;min-width:0;min-height:48px;resize:vertical}.dm-slot-domain-controls .cbi-button{align-self:flex-start;white-space:nowrap}@media(max-width:560px){.dm-slot-domain-panel{padding-left:0}.dm-slot-domain-controls{flex-direction:column}.dm-slot-domain-controls .cbi-button{align-self:flex-start}}.dm-slot-row{display:grid;grid-template-columns:55px 135px minmax(180px,1fr) 85px 115px minmax(175px,auto);gap:14px;align-items:center;padding:7px 0;border-top:1px solid rgba(0,0,0,.07);font-size:13px}.dm-slot-row:first-child{border-top:0}.dm-slot-id{font-weight:700;opacity:.62}.dm-slot-name{font-weight:600;overflow-wrap:anywhere}.dm-slot-endpoint,.dm-slot-ping{font-size:12px;opacity:.72;white-space:nowrap}.dm-inline{display:flex;gap:6px;justify-content:flex-end}.dm-inline .cbi-button{padding:4px 9px;font-size:12px}.dm-assign-list{display:flex;flex-direction:column;gap:7px;min-width:min(430px,calc(100vw - 70px))}.dm-assign-item{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:9px 10px;border:1px solid rgba(0,0,0,.08);border-radius:8px}.dm-assign-info{min-width:0;flex:1}.dm-assign-slot{font-weight:700}.dm-assign-current{font-size:12px;opacity:.7;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}'+
   '.dm-catalog{display:grid;grid-template-columns:repeat(3,minmax(210px,1fr));gap:9px;margin-top:8px}.dm-catalog-item{padding:11px 12px}.dm-catalog-item-custom{grid-column:auto}.dm-catalog-item h4{margin:0 0 4px;font-size:13px;line-height:1.35}.dm-catalog-controls{display:flex;flex-direction:column;gap:8px;margin-top:8px;min-width:0}.dm-catalog-controls-custom{display:flex;flex-direction:row;align-items:center;min-width:0}.dm-catalog-toolbar{display:flex;align-items:center;justify-content:flex-start;gap:8px;min-width:0}.dm-catalog-controls-custom .dm-assign-inline{display:flex;align-items:center;gap:6px;min-width:0;flex-wrap:nowrap;width:100%;flex:1 1 auto}.dm-catalog-controls-custom .dm-assign-inline select{height:30px;min-width:0;width:auto;max-width:100%;flex:1 1 160px;padding:3px 8px;border-radius:7px;border:1px solid rgba(110,118,129,.32);background:var(--background-color-medium,#fff);color:inherit;font-size:12px;box-shadow:none}.dm-assign-inline select:focus{outline:none;box-shadow:none}.dm-assign-inline .cbi-button{padding:5px 10px;font-size:12px;flex:0 0 auto}.dm-page{display:flex;justify-content:center;align-items:center;gap:7px;margin-top:9px}.dm-log{white-space:pre-wrap;max-height:360px;overflow:auto;font:11px/1.45 monospace;padding:10px;background:#111820;color:#dbe4ec;border-radius:8px;margin-top:8px}'+
   '.dm-page-nav{position:sticky;top:0;z-index:20;padding:7px 0;background:var(--background-color-base,#fff);border-bottom:1px solid rgba(0,0,0,.08)}.dm-page-nav::before,.dm-page-nav::after{content:"";position:absolute;left:0;right:0;height:7px;background:var(--background-color-base,#fff);pointer-events:none}.dm-page-nav::before{top:-7px}.dm-page-nav::after{bottom:-7px}.dm-page-tabs{display:flex;align-items:stretch;gap:4px;overflow-x:auto;scrollbar-width:none;padding:0 2px}.dm-page-tabs::-webkit-scrollbar{display:none}.dm-page-tab{flex:0 0 auto;padding:7px 12px!important;border-radius:8px 8px 0 0!important;font-size:12.5px!important;font-weight:600!important;border:1px solid transparent!important;background:transparent!important;box-shadow:none!important}.dm-page-tab:hover{background:rgba(0,0,0,.05)!important}.dm-page-tab.active{background:var(--background-color-medium,#fff)!important;border-color:rgba(0,0,0,.12)!important;border-bottom-color:var(--background-color-medium,#fff)!important}.dm-page-nav-title{display:none}.dm-wrap>section{scroll-margin-top:58px}'+
   '.dm-section-title{font-size:12px;letter-spacing:.02em;text-transform:none;opacity:.62;margin:3px 0 0;padding:0 2px}'+
@@ -4119,6 +4119,42 @@ function saveSlotDomains(slot,input,root){
     setAction(false,msg);state.pageNotice.slots=msg;refresh(root,true);
   });
 }
+function saveDeviceDns(mac,controls,root){
+  if(state.busy||state.jobRunning||!controls)return;
+  var selected=[];
+  var inputs=controls.querySelectorAll('input.dm-device-dns-checkbox');
+  Array.prototype.forEach.call(inputs,function(input){
+    if(input.checked&&input.getAttribute('data-available')==='1')selected.push(String(input.value));
+  });
+  selected.sort(function(a,b){return Number(a)-Number(b);});
+  state.busy=true;
+  callSetDeviceDns(String(mac||''),selected.join(',')).then(function(r){
+    state.busy=false;
+    if(r&&r.ok){
+      state.pageNotice.slots=selected.length
+        ? 'Для устройства '+mac+' сохранены DNS '+selected.join(', ')+'.'
+        : 'Привязка DNS для устройства '+mac+' удалена.';
+      setAction(true,selected.length?'DNS для устройства сохранены.':'Привязка DNS удалена.');
+    }else{
+      var msg=(r&&r.error)||'Не удалось применить DNS для устройства.';
+      state.pageNotice.slots=msg;setAction(false,msg);
+    }
+    return Promise.all([
+      callLanDevices().catch(function(){return {ok:false,devices:[]};}),
+      callDohStatus().catch(function(){return window.dmState||{};})
+    ]).then(function(v){
+      window.dmLanDevices=v[0]||{ok:false,devices:[]};
+      window.dmState=v[1]||{};
+      renderSlots(root,window.dmState);
+    });
+  }).catch(function(err){
+    state.busy=false;
+    var msg=withRpcError('Не удалось применить DNS для устройства.',err);
+    state.pageNotice.slots=msg;setAction(false,msg);
+    renderSlots(root,window.dmState||{});
+  });
+}
+
 function slotOptionsForCatalog(cat){
   return String(cat||'').toLowerCase()==='regional'?['RU']:['1','2','3','4','5','6'];
 }
@@ -4431,9 +4467,18 @@ function renderSlots(root,st){
 
   var inventory=window.dmLanDevices||{};
   var deviceChildren=[
-    E('div',{'class':'dm-mini'},'Список объединяет DHCP-аренды, ARP/NDP-кэш и сохранённые статические DHCP-записи. Спящие устройства и клиенты, которых роутер ещё не обнаружил, могут отсутствовать.')
+    E('div',{'class':'dm-mini'},'Выберите один или несколько слотов DNS 1–6 для каждого устройства. Обычные DNS-запросы UDP/TCP на порт 53 будут направляться через отдельный локальный DNS-слушатель к выбранным DoH. При выборе нескольких DNS опрашиваются все выбранные серверы, используется первый ответ. Для привязанных устройств общие правила доменов слотов 1–6 не применяются.')
   ];
   var devices=Array.isArray(inventory.devices)?inventory.devices:[];
+  var available={};
+  var slotNames={};
+  (st.slots||[]).forEach(function(x){
+    var n=String(x&&x.slot||'');
+    if(/^[1-6]$/.test(n)){
+      available[n]=!!(x.id&&x.port);
+      slotNames[n]=String(x.name||x.id||'');
+    }
+  });
   if(!inventory.ok){
     deviceChildren.push(E('div',{'class':'dm-hint'},'Не удалось получить список устройств LAN.'));
   }else if(!devices.length){
@@ -4444,15 +4489,36 @@ function renderSlots(root,st){
       var active=String(d.online)==='1';
       var name=String(d.name||'').trim()||'Устройство без имени';
       var source=String(d.source||'');
-      var sourceLabel=source==='DHCP'?'DHCP-аренда':(source==='ARP'?'ARP-кэш':(source==='NDP'?'IPv6-сосед (NDP)':'статическая DHCP-запись'));
-      deviceRows.push(E('div',{'class':'dm-slot-entry'},[
-        E('div',{'class':'dm-slot-domains-heading'},name+' · '+(active?'обнаружено в сети':'неактивно')),
-        E('div',{'class':'dm-slot-domains-help'},'IP: '+(d.ip||'—')+' · MAC: '+(d.mac||'—')+' · Источник: '+sourceLabel)
-      ]));
+      var sourceLabel=source==='DHCP'?'DHCP-аренда':(source==='ARP'?'ARP-кэш':(source==='NDP'?'IPv6-сосед (NDP)':(source==='ASSIGN'?'сохранённая привязка':'статическая DHCP-запись')));
+      var chosen=String(d.assigned_slots||'').split(',').filter(Boolean);
+      var options=[];
+      for(var i=1;i<=6;i++){
+        var key=String(i);
+        var selected=chosen.indexOf(key)>=0;
+        var usable=available[key]===true;
+        var cb=E('input',{'type':'checkbox','class':'dm-device-dns-checkbox','value':key,'checked':selected,'disabled':!usable&&!selected,'data-available':usable?'1':'0'});
+        var labelText='DNS '+key+(usable?(' · '+(slotNames[key]||'назначен')):' · слот пуст');
+        options.push(E('label',{'class':'dm-device-dns-option'},[cb,E('span',{},labelText)]));
+      }
+      var controls=E('div',{'class':'dm-device-dns-options'},options);
+      var statusText=active?'обнаружено в сети':(source==='ASSIGN'?'сохранено, устройство сейчас не обнаружено':'неактивно');
+      var detail='IP: '+(d.ip||'—')+' · MAC: '+(d.mac||'—')+' · Источник: '+sourceLabel;
+      var savedWarning=chosen.some(function(n){return available[n]!==true;})
+        ? E('div',{'class':'dm-inline-msg info'},'В привязке есть слот, который сейчас не назначен. При сохранении он будет удалён из выбора.')
+        : null;
+      var children=[
+        E('div',{'class':'dm-slot-domains-heading'},name+' · '+statusText),
+        E('div',{'class':'dm-slot-domains-help'},detail),
+        E('div',{'class':'dm-slot-domains-heading'},'Использовать DoH'),
+        controls
+      ];
+      if(savedWarning)children.push(savedWarning);
+      children.push(btn(state.busy?'Сохраняю…':'Сохранить привязку','cbi-button-neutral',function(){saveDeviceDns(d.mac,controls,root);},{disabled:!!state.busy||!!state.jobRunning}));
+      deviceRows.push(E('div',{'class':'dm-slot-entry dm-device-dns-entry'},children));
     });
     deviceChildren.push(E('div',{'class':'dm-slot-table'},deviceRows));
   }
-  deviceChildren.push(E('div',{'class':'dm-inline-msg info'},'Пока это список для просмотра: назначение отдельного DoH устройству ещё не включено. Для него нужен отдельный DNS-путь и проверка перехвата fw4; эта карточка не меняет сетевые настройки.'));
+  deviceChildren.push(E('div',{'class':'dm-mini'},'Список объединяет DHCP-аренды, IPv4 ARP, IPv6 NDP и статические DHCP-записи. Клиент должен обращаться к обычному DNS на порту 53; собственный DoH поверх HTTPS/443 и DoT на 853 этой привязкой не перенаправляются. Список можно обновить после подключения нового устройства.'));
   deviceChildren.push(E('div',{'class':'dm-actions'},[
     btn('Обновить список устройств','cbi-button-neutral',function(){
       callLanDevices().then(function(r){
@@ -4465,7 +4531,7 @@ function renderSlots(root,st){
       });
     },{disabled:!!state.busy||!!state.jobRunning})
   ]));
-  e.appendChild(card('Устройства LAN',deviceChildren));
+  e.appendChild(card('Устройства LAN — привязка к DoH',deviceChildren));
 }
 function settingCard(root,x,st){
   var en=yes(st[x[0]]),busy=state.busySetting===x[0],feedback=settingFeedback(x[1],x[0]),sv=settingStateView(st,x[0]);
