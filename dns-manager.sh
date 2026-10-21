@@ -1869,7 +1869,54 @@ custom_dns_delete() {
     local _id _tmp _slot _assigned
     CUSTOM_DNS_ERROR=""
     _id="${1:-}"
-    printf '%s\n' "$_id" | grep -Eq '^custom_[0-9]+_[0-9]+_[0-9]+
+    printf '%s\n' "$_id" | grep -Eq '^custom_[0-9]+_[0-9]+_[0-9]+$' || {
+        CUSTOM_DNS_ERROR="Можно удалить только пользовательский DNS."
+        return 1
+    }
+    init_dirs >/dev/null 2>&1 || { CUSTOM_DNS_ERROR="Не удалось подготовить каталог настроек."; return 1; }
+    acquire_mutation_lock || { CUSTOM_DNS_ERROR="Другая операция DNS Manager уже выполняется."; return 1; }
+    if [ ! -s "$CUSTOM_DNS" ] || ! awk -F'|' -v id="$_id" '$1==id {found=1} END {exit !found}' "$CUSTOM_DNS" 2>/dev/null; then
+        CUSTOM_DNS_ERROR="Пользовательский DNS не найден."
+        release_mutation_lock
+        return 1
+    fi
+    for _slot in 1 2 3 4 5 6 RU; do
+        case "$_slot" in
+            1) _assigned="${SLOT_1:-}" ;;
+            2) _assigned="${SLOT_2:-}" ;;
+            3) _assigned="${SLOT_3:-}" ;;
+            4) _assigned="${SLOT_4:-}" ;;
+            5) _assigned="${SLOT_5:-}" ;;
+            6) _assigned="${SLOT_6:-}" ;;
+            RU) _assigned="${SLOT_RU:-}" ;;
+        esac
+        if [ "$_assigned" = "$_id" ]; then
+            CUSTOM_DNS_ERROR="Сначала назначьте другой DNS вместо этого сервера в слоте $_slot."
+            release_mutation_lock
+            return 1
+        fi
+    done
+    _tmp="$(mktemp "${CUSTOM_DNS}.tmp.XXXXXX" 2>/dev/null)" || {
+        CUSTOM_DNS_ERROR="Не удалось подготовить временный файл DNS."
+        release_mutation_lock
+        return 1
+    }
+    if ! awk -F'|' -v id="$_id" '$1!=id {print}' "$CUSTOM_DNS" > "$_tmp"; then
+        rm -f "$_tmp" 2>/dev/null || true
+        CUSTOM_DNS_ERROR="Не удалось подготовить удаление пользовательского DNS."
+        release_mutation_lock
+        return 1
+    fi
+    chmod 600 "$_tmp" 2>/dev/null || true
+    if ! mv -f "$_tmp" "$CUSTOM_DNS"; then
+        rm -f "$_tmp" 2>/dev/null || true
+        CUSTOM_DNS_ERROR="Не удалось завершить удаление пользовательского DNS."
+        release_mutation_lock
+        return 1
+    fi
+    release_mutation_lock
+    return 0
+}
 dns_name() { dns_field "$1" 4 | sed 's/\\\\\././g'; }
 dns_url() { dns_field "$1" 5; }
 dns_cat() { dns_field "$1" 2; }
