@@ -1928,7 +1928,7 @@ slot_domains_apply() {
         release_mutation_lock
         return 1
     }
-    if save_config >/dev/null 2>&1 && reconcile_dnsmasq >/dev/null 2>&1 && APPLY_OUTPUT_QUIET=1 dnsmasq_restart_checked >/dev/null 2>&1; then
+    if save_config >/dev/null 2>&1 && reconcile_dnsmasq >/dev/null 2>&1 && APPLY_OUTPUT_QUIET=1 dnsmasq_restart_checked >/dev/null 2>&1 && refresh_device_dns_runtime >/dev/null 2>&1; then
         log_msg "Маршруты DNS для слота $_sd_slot обновлены."
         release_mutation_lock
         return 0
@@ -1938,6 +1938,7 @@ slot_domains_apply() {
     if reconcile_dnsmasq >/dev/null 2>&1; then
         /etc/init.d/dnsmasq restart >/dev/null 2>&1 || true
     fi
+    refresh_device_dns_runtime >/dev/null 2>&1 || true
     SLOT_DOMAINS_ERROR="Не удалось применить маршруты доменов. Предыдущая настройка восстановлена."
     release_mutation_lock
     return 1
