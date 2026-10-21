@@ -27,6 +27,9 @@ grep -Fq 'priority -110' "$tmp/device_dns_service.sh" || fail "per-device DNS ru
 grep -Fq 'ether saddr %s udp dport 53 redirect to :%s' "$tmp/device_dns_service.sh" || fail "per-device UDP DNS redirect missing"
 grep -Fq 'ether saddr %s tcp dport 53 redirect to :%s' "$tmp/device_dns_service.sh" || fail "per-device TCP DNS redirect missing"
 grep -Fq 'all-servers' "$tmp/device_dns_service.sh" || fail "multi-DoH device profiles do not query all selected upstreams"
+grep -Fq 'dmd_slot_domains()' "$tmp/device_dns_service.sh" || fail "per-device profiles do not read slot-specific domain overrides"
+grep -Fq 'server=/%s/127.0.0.1#%s' "$tmp/device_dns_service.sh" || fail "per-device profiles do not preserve slot domain overrides"
+grep -Fq 'iifname "%s" ether saddr %s udp dport 53 redirect to :%s' "$tmp/device_dns_service.sh" || fail "per-device redirect is not scoped to LAN"
 grep -Fq 'dmd_fail_open()' "$tmp/device_dns_service.sh" || fail "per-device DNS service has no fail-open cleanup"
 grep -Fq 'set_device_dns)' dns-manager-luci.sh || fail "set-device-DNS RPC dispatch missing"
 grep -Fq '"set_device_dns":{"mac":"String","slots":"String"}' dns-manager-luci.sh || fail "set-device-DNS RPC schema missing"
@@ -42,6 +45,8 @@ awk '/^dmd_normalize_slots\(\) \{/,/^}/' "$tmp/device_dns_service.sh" > "$tmp/de
     [ "$(dmd_normalize_slots '2,1,2')" = '1,2' ] || fail "per-device multi-slot normalizer does not sort and deduplicate slot IDs"
 ) || fail "per-device multi-slot normalization"
 grep -Fq 'refresh_device_dns_runtime' dns-manager.sh || fail "main DNS Manager does not resync per-device listeners"
+awk '/^slot_domains_apply\(\) \{/,/^}/' dns-manager.sh > "$tmp/slot_domains_apply.sh"
+grep -Fq 'refresh_device_dns_runtime' "$tmp/slot_domains_apply.sh" || fail "slot domain edits do not refresh per-device DNS listeners"
 grep -Fq "card('Устройства LAN — привязка к DoH'" dns-manager-luci.sh || fail "per-device DNS assignment UI missing"
 
 
