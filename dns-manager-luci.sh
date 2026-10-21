@@ -5865,7 +5865,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 1.56
+// DNS Manager LuCI version: 1.73
 return view.extend({
   load: DM.load,
   render: DM.render,

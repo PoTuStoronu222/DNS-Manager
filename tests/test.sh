@@ -604,6 +604,8 @@ view_luci="$(sed -n 's|^// DNS Manager LuCI common module version:[[:space:]]*||
 [ "$top_luci" = "$installer_luci" ] || fail "LuCI VERSION mismatch"
 [ "$top_luci" = "$self_luci" ] || fail "LuCI SELF_VERSION mismatch"
 [ "$top_luci" = "$view_luci" ] || fail "embedded JS version mismatch"
+dashboard_view_luci="$(sed -n 's|^// DNS Manager LuCI version: *||p' dns-manager-luci.sh | head -n1)"
+[ "$top_luci" = "$dashboard_view_luci" ] || fail "dashboard view version marker is stale"
 ok "LuCI version markers synchronized ($top_luci)"
 grep -Fq 'VERSION="3.69"' dns-manager.sh || fail "DNS Manager version marker is not 3.69"
 ok "DNS Manager version marker synchronized (3.69)"
