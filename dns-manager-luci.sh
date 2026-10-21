@@ -1768,6 +1768,8 @@ page_header_json() {
 }
 
 lan_devices_json() {
+    _ld_default_raw="$(sed -n '1p' /etc/dns-manager/config/device-dns-default.conf 2>/dev/null || true)"
+    _ld_default_slots="$(printf '%s' "$_ld_default_raw" | awk '{ gsub(/[[:space:]]/, ""); if ($0 ~ /^([1-6])(,[1-6])*$/) print $0 }')"
     _ld_tmp="$(mktemp /tmp/dns-manager-lan-devices.XXXXXX 2>/dev/null)" || {
         printf '{"ok":false,"error":"Не удалось создать временный файл","devices":[]}\n'
         return 0
@@ -1827,11 +1829,14 @@ lan_devices_json() {
         done
     done
 
-    # Keep saved bindings visible after devices go offline or DHCP leases expire.
+    # Keep saved bindings and explicit default exclusions visible after devices go offline.
     if [ -r /etc/dns-manager/config/device-dns.conf ]; then
         awk -F '|' '
             NF >= 2 && $1 ~ /^[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]$/ {
-                printf "%s|||ASSIGN|0|%s\n", tolower($1), $2
+                slots = $2
+                mode = "custom"
+                if ($2 == "EXCLUDE") { slots = ""; mode = "exclude" }
+                printf "%s|||ASSIGN|0|%s|%s\n", tolower($1), slots, mode
             }
         ' /etc/dns-manager/config/device-dns.conf >> "$_ld_tmp" 2>/dev/null || true
     fi
@@ -1839,7 +1844,7 @@ lan_devices_json() {
     # Merge records by MAC; quote every value via json_quote after aggregation.
     awk -F '|' '
         function ismac(m) {
-            return m ~ /^[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]$/
+            return m ~ /^[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]$/
         }
         {
             mac = tolower($1)
@@ -1853,19 +1858,20 @@ lan_devices_json() {
             else if ($4 == "static DHCP" && source[mac] == "") source[mac] = "static DHCP"
             else if ($4 == "ASSIGN" && source[mac] == "") source[mac] = "ASSIGN"
             if ($6 != "") assigned[mac] = $6
+            if ($7 != "") dns_mode[mac] = $7
             if ($5 == "1") online[mac] = 1
         }
         END {
             for (i = 1; i <= n; i++) {
                 mac = order[i]
-                printf "%s|%s|%s|%s|%s|%s\n", mac, ip[mac], name[mac], source[mac], (online[mac] ? 1 : 0), assigned[mac]
+                printf "%s|%s|%s|%s|%s|%s|%s\n", mac, ip[mac], name[mac], source[mac], (online[mac] ? 1 : 0), assigned[mac], dns_mode[mac]
             }
         }
     ' "$_ld_tmp" | sort -t '|' -k1,1 > "$_ld_merged"
 
-    printf '{"ok":true,"devices":['
+    printf '{"ok":true,"default_slots":'; json_quote "$_ld_default_slots"; printf ',"devices":['
     _ld_sep=""
-    while IFS='|' read -r _ld_mac _ld_ip _ld_name _ld_source _ld_online _ld_assigned_slots; do
+    while IFS='|' read -r _ld_mac _ld_ip _ld_name _ld_source _ld_online _ld_assigned_slots _ld_dns_mode; do
         [ -n "$_ld_mac" ] || continue
         printf '%s{"mac":' "$_ld_sep"; json_quote "$_ld_mac"
         printf ',"ip":'; json_quote "$_ld_ip"
@@ -1873,6 +1879,7 @@ lan_devices_json() {
         printf ',"source":'; json_quote "$_ld_source"
         printf ',"online":%s' "$([ "$_ld_online" = 1 ] && printf 1 || printf 0)"
         printf ',"assigned_slots":'; json_quote "$_ld_assigned_slots"
+        printf ',"dns_mode":'; json_quote "$_ld_dns_mode"
         printf '}'
         _ld_sep=","
     done < "$_ld_merged"
