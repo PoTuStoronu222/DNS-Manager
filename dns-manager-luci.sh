@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.80
+# Version: 1.81
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -32,7 +32,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/dns-manager-complete-integration-20261021/dns-manager-luci.sh"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.80"
+VERSION="1.81"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -539,7 +539,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/dns-manager-complete-integration-20261021/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="1.80"
+SELF_VERSION="1.81"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -1770,7 +1770,7 @@ lan_devices_json() {
     _ld_default_raw="$(sed -n '1p' /etc/dns-manager/config/device-dns-default.conf 2>/dev/null || true)"
     _ld_default_slots="$(printf '%s' "$_ld_default_raw" | awk '{ gsub(/[[:space:]]/, ""); if ($0 ~ /^([1-6])(,[1-6])*$/) print $0 }')"
     _ld_tmp="$(mktemp /tmp/dns-manager-lan-devices.XXXXXX 2>/dev/null)" || {
-        printf '{"ok":false,"error":"Не удалось создать временный файл","devices":[]}\n'
+        printf '{"ok":false,"error":"Не удалось создать временный файл","default_slots":"","devices":[]}\n'
         return 0
     }
     _ld_merged="$_ld_tmp.merged"
@@ -1831,7 +1831,7 @@ lan_devices_json() {
     # Keep saved bindings and explicit default exclusions visible after devices go offline.
     if [ -r /etc/dns-manager/config/device-dns.conf ]; then
         awk -F '|' '
-            NF >= 2 && $1 ~ /^[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]$/ {
+            NF >= 2 && $1 ~ /^[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]$/ {
                 slots = $2
                 mode = "custom"
                 if ($2 == "EXCLUDE") { slots = ""; mode = "exclude" }
@@ -1843,7 +1843,7 @@ lan_devices_json() {
     # Merge records by MAC; quote every value via json_quote after aggregation.
     awk -F '|' '
         function ismac(m) {
-            return m ~ /^[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]$/
+            return m ~ /^[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]$/
         }
         {
             mac = tolower($1)
@@ -3754,7 +3754,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI common module version: 1.80
+// DNS Manager LuCI common module version: 1.81
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -3813,7 +3813,7 @@ var CATEGORY = [
   ['all','Все DNS'], ['bypass','Обход геоблока'], ['security','Защита от угроз'], ['privacy','Конфиденциальность'],
   ['adblock','Блокировка рекламы'], ['family','Семейная фильтрация'], ['clean','Без фильтрации'], ['gaming','Игровые DNS'], ['regional','Региональные DNS'], ['custom','Мои DNS']
 ];
-var state = { luciUpdateReloadTimer:null, hdpUpdating:false, managerUpdating:false, updatingAll:false, category:'all', offset:0, limit:18, catalogLoaded:false, catalogLoading:false, advanced:true, logLoaded:false, logLoading:false, busy:false, busySetting:'', settingMessage:'', settingMessageType:'', settingMessageKey:'', pageNotice:{}, statusError:'', activeTab:'dashboard', jobRunning:false, lastJob:null, checking:{}, fullTest:null, catalogProgress:null, profileProgress:null, profileOutput:'', versionCheck:null, lastAction:null, runtimeCpuLoad:null, runtimeMemoryTotal:null, runtimeMemoryAvailable:null, boardInfo:null, systemPollBusy:false, profileResumeStarted:false };
+var state = { lanDevicesLoading:false, lanDevicesMessage:'', luciUpdateReloadTimer:null, hdpUpdating:false, managerUpdating:false, updatingAll:false, category:'all', offset:0, limit:18, catalogLoaded:false, catalogLoading:false, advanced:true, logLoaded:false, logLoading:false, busy:false, busySetting:'', settingMessage:'', settingMessageType:'', settingMessageKey:'', pageNotice:{}, statusError:'', activeTab:'dashboard', jobRunning:false, lastJob:null, checking:{}, fullTest:null, catalogProgress:null, profileProgress:null, profileOutput:'', versionCheck:null, lastAction:null, runtimeCpuLoad:null, runtimeMemoryTotal:null, runtimeMemoryAvailable:null, boardInfo:null, systemPollBusy:false, profileResumeStarted:false };
 
 function profileName(p){
   var x=PROFILE.filter(function(v){return v[0]===p;})[0];
@@ -4852,6 +4852,9 @@ function renderSlots(root,st){
     defaultControls,
     btn(state.busy?'Сохраняю…':'Сохранить общий выбор DNS','cbi-button-neutral',function(){saveDeviceDnsDefault(defaultControls,root);},{disabled:!!state.busy||!!state.jobRunning})
   ]));
+  if(state.lanDevicesMessage){
+    deviceChildren.push(E('div',{'class':'dm-inline-msg '+(state.lanDevicesLoading?'info':'info')},state.lanDevicesMessage));
+  }
   var devices=Array.isArray(inventory.devices)?inventory.devices:[];
   if(!inventory.ok){
     deviceChildren.push(E('div',{'class':'dm-hint'},'Не удалось получить список устройств LAN.'));
@@ -4911,16 +4914,29 @@ function renderSlots(root,st){
   }
   deviceChildren.push(E('div',{'class':'dm-mini'},'Список объединяет DHCP-аренды, IPv4 ARP, IPv6 NDP и статические DHCP-записи. Клиент должен обращаться к обычному DNS на порту 53; собственный DoH поверх HTTPS/443 и DoT на 853 этой привязкой не перенаправляются. Список можно обновить после подключения нового устройства.'));
   deviceChildren.push(E('div',{'class':'dm-actions'},[
-    btn('Обновить список устройств','cbi-button-neutral',function(){
+    btn(state.lanDevicesLoading?'Обновляю список…':'Обновить список устройств','cbi-button-neutral',function(){
+      if(state.lanDevicesLoading||state.busy||state.jobRunning)return;
+      state.lanDevicesLoading=true;
+      state.lanDevicesMessage='Обновляю список устройств LAN… Пожалуйста, подождите.';
+      renderSlots(root,window.dmState||{});
       callLanDevices().then(function(r){
         window.dmLanDevices=r||{ok:false,devices:[]};
+        state.lanDevicesLoading=false;
+        if(window.dmLanDevices.ok){
+          var count=Array.isArray(window.dmLanDevices.devices)?window.dmLanDevices.devices.length:0;
+          state.lanDevicesMessage=count
+            ? 'Список обновлён. Найдено устройств: '+count+'.'
+            : 'Список обновлён, но устройства LAN не обнаружены. Проверьте DHCP-аренды и таблицу соседей роутера.';
+        }else{
+          state.lanDevicesMessage=(window.dmLanDevices.error||'Не удалось получить список устройств LAN.');
+        }
         renderSlots(root,window.dmState||{});
       }).catch(function(err){
-        window.dmLanDevices={ok:false,devices:[]};
-        state.pageNotice.slots=withRpcError('Не удалось обновить список устройств.',err);
+        state.lanDevicesLoading=false;
+        state.lanDevicesMessage=withRpcError('Не удалось обновить список устройств.',err);
         renderSlots(root,window.dmState||{});
       });
-    },{disabled:!!state.busy||!!state.jobRunning})
+    },{disabled:!!state.lanDevicesLoading||!!state.busy||!!state.jobRunning})
   ]));
   e.appendChild(card('Устройства LAN — привязка к DoH',deviceChildren));
 }
@@ -6123,7 +6139,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 1.80
+// DNS Manager LuCI version: 1.81
 return view.extend({
   load: DM.load,
   render: DM.render,
