@@ -79,6 +79,33 @@ ok "LuCI renders per-slot domain controls on the DNS over HTTPS page"
 
 
 
+# Custom DoH records are persisted separately from the official catalog.
+awk '/^custom_dns_validate_input\(\) \{/,/^}/' dns-manager.sh > "$tmp/custom_dns_validate.sh"
+[ -s "$tmp/custom_dns_validate.sh" ] || fail "custom DNS validator extraction"
+cat > "$tmp/custom_dns_validator_test.sh" <<'EOF_CUSTOM_DNS'
+#!/bin/sh
+set -eu
+. "$1"
+custom_dns_validate_input '  Home Resolver  ' 'https://dns.example/dns-query' bypass || exit 41
+[ "$CUSTOM_DNS_NAME" = 'Home Resolver' ] || exit 42
+[ "$CUSTOM_DNS_URL" = 'https://dns.example/dns-query' ] || exit 43
+[ "$CUSTOM_DNS_CATEGORY" = bypass ] || exit 44
+if custom_dns_validate_input 'Bad' 'http://dns.example/dns-query' bypass; then exit 45; fi
+if custom_dns_validate_input 'Bad' 'https://dns.example/dns-query' all; then exit 46; fi
+if custom_dns_validate_input 'Bad' 'https://dns.example/a b' clean; then exit 47; fi
+EOF_CUSTOM_DNS
+chmod +x "$tmp/custom_dns_validator_test.sh"
+"$tmp/custom_dns_validator_test.sh" "$tmp/custom_dns_validate.sh" || fail "custom DNS input validation"
+grep -Fq 'custom_dns_add)' dns-manager-luci.sh || fail "custom DNS add RPC handler missing"
+grep -Fq 'custom_dns_delete)' dns-manager-luci.sh || fail "custom DNS delete RPC handler missing"
+grep -Fq "method:'custom_dns_add'" dns-manager-luci.sh || fail "custom DNS add UI RPC missing"
+grep -Fq "method:'custom_dns_delete'" dns-manager-luci.sh || fail "custom DNS delete UI RPC missing"
+grep -Fq 'function renderCustomDnsEditor(root)' dns-manager-luci.sh || fail "custom DNS editor missing"
+grep -Fq "d.custom ? btn('Удалить'" dns-manager-luci.sh || fail "custom DNS delete control missing"
+grep -Fq 'for _dns_source in "$DNS_CATALOG" "$CUSTOM_DNS"' dns-manager.sh || fail "backend does not resolve user DNS records"
+grep -Fq 'for _source in "$CATALOG_FILE" "$CUSTOM_DNS_FILE"' dns-manager-luci.sh || fail "LuCI catalog omits user DNS records"
+ok "custom DoH add/list/delete is connected to DNS slot assignment separately from official catalog"
+
 # Uninstall must remove the empty, namespaced LuCI backend directory.
 sed -n '/^luci_companion_remove(/,/^}/p' dns-manager.sh > "$tmp/luci_remove_fn.sh"
 [ -s "$tmp/luci_remove_fn.sh" ] || fail "LuCI uninstall helper extraction"
@@ -387,9 +414,9 @@ grep -Fq "disabled:!!state.busy||!!state.jobRunning||unavailable||checking" dns-
 grep -q "'gaming','Игровые DNS'" dns-manager-luci.sh || fail "gaming catalog label missing in LuCI"
 grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validation missing gaming category"
 grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
-grep -q 'VERSION="3.64"' dns-manager.sh || fail "manager version not bumped"
+grep -q 'VERSION="3.65"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
-grep -q 'VERSION="1.57"' dns-manager-luci.sh || fail "LuCI version not bumped"
+grep -q 'VERSION="1.58"' dns-manager-luci.sh || fail "LuCI version not bumped"
 [ "$(grep -Fc "printf ',\"domains\":';" dns-manager-luci.sh)" -eq 2 ] || fail "slot domain RPC JSON keys are malformed"
 if grep -Fq "printf ',\\\"domains\\\":';" dns-manager-luci.sh; then
     fail "slot domain RPC JSON key contains a literal escape"
@@ -614,7 +641,7 @@ view_luci="$(sed -n 's|^// DNS Manager LuCI common module version:[[:space:]]*||
 [ "$top_luci" = "$self_luci" ] || fail "LuCI SELF_VERSION mismatch"
 [ "$top_luci" = "$view_luci" ] || fail "embedded JS version mismatch"
 ok "LuCI version markers synchronized ($top_luci)"
-grep -Fq 'VERSION="3.64"' dns-manager.sh || fail "DNS Manager version marker is not 3.55"
+grep -Fq 'VERSION="3.65"' dns-manager.sh || fail "DNS Manager version marker is not 3.55"
 ok "DNS Manager version marker synchronized (3.64)"
 
 if awk '
