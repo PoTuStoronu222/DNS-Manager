@@ -49,6 +49,11 @@ awk '/^dmd_normalize_slots\(\) \{/,/^}/' "$tmp/device_dns_service.sh" > "$tmp/de
 grep -Fq 'refresh_device_dns_runtime' dns-manager.sh || fail "main DNS Manager does not resync per-device listeners"
 awk '/^slot_domains_apply\(\) \{/,/^}/' dns-manager.sh > "$tmp/slot_domains_apply.sh"
 grep -Fq 'refresh_device_dns_runtime' "$tmp/slot_domains_apply.sh" || fail "slot domain edits do not refresh per-device DNS listeners"
+awk '/^_apply_extras_now_impl\(\) \{/,/^}/' dns-manager.sh > "$tmp/extras_apply.sh"
+awk '/encrypted_dns\)/,/;;/' "$tmp/extras_apply.sh" > "$tmp/encrypted_dns_apply.sh"
+grep -Fq 'refresh_device_dns_runtime' "$tmp/encrypted_dns_apply.sh" || fail "encrypted-DNS toggle does not refresh per-device canary profiles"
+awk '/^luci_companion_remove_fallback\(\) \{/,/^}/' dns-manager.sh > "$tmp/luci_remove_fallback.sh"
+grep -Fq '90-dns-manager-device-dns.nft' "$tmp/luci_remove_fallback.sh" || fail "LuCI fallback uninstall leaves per-device redirects"
 grep -Fq "card('Устройства LAN — привязка к DoH'" dns-manager-luci.sh || fail "per-device DNS assignment UI missing"
 
 
