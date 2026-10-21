@@ -1655,6 +1655,15 @@ lan_devices_json() {
         done
     done
 
+    # Keep saved bindings visible after devices go offline or DHCP leases expire.
+    if [ -r /etc/dns-manager/config/device-dns.conf ]; then
+        awk -F '|' '
+            NF >= 2 && $1 ~ /^[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]$/ {
+                printf "%s|||ASSIGN|0|%s\\n", tolower($1), $2
+            }
+        ' /etc/dns-manager/config/device-dns.conf >> "$_ld_tmp" 2>/dev/null || true
+    fi
+
     # Merge records by MAC; quote every value via json_quote after aggregation.
     awk -F '|' '
         function ismac(m) {
@@ -1670,25 +1679,29 @@ lan_devices_json() {
             else if ($4 == "ARP" && source[mac] != "DHCP") source[mac] = "ARP"
             else if ($4 == "NDP" && source[mac] != "DHCP" && source[mac] != "ARP") source[mac] = "NDP"
             else if ($4 == "static DHCP" && source[mac] == "") source[mac] = "static DHCP"
+            else if ($4 == "ASSIGN" && source[mac] == "") source[mac] = "ASSIGN"
+            if ($6 != "") assigned[mac] = $6
             if ($5 == "1") online[mac] = 1
         }
         END {
             for (i = 1; i <= n; i++) {
                 mac = order[i]
-                printf "%s|%s|%s|%s|%s\n", mac, ip[mac], name[mac], source[mac], (online[mac] ? 1 : 0)
+                printf "%s|%s|%s|%s|%s|%s\n", mac, ip[mac], name[mac], source[mac], (online[mac] ? 1 : 0), assigned[mac]
             }
         }
     ' "$_ld_tmp" | sort -t '|' -k1,1 > "$_ld_merged"
 
     printf '{"ok":true,"devices":['
     _ld_sep=""
-    while IFS='|' read -r _ld_mac _ld_ip _ld_name _ld_source _ld_online; do
+    while IFS='|' read -r _ld_mac _ld_ip _ld_name _ld_source _ld_online _ld_assigned_slots; do
         [ -n "$_ld_mac" ] || continue
         printf '%s{"mac":' "$_ld_sep"; json_quote "$_ld_mac"
         printf ',"ip":'; json_quote "$_ld_ip"
         printf ',"name":'; json_quote "$_ld_name"
         printf ',"source":'; json_quote "$_ld_source"
-        printf ',"online":%s}' "$([ "$_ld_online" = 1 ] && printf 1 || printf 0)"
+        printf ',"online":%s' "$([ "$_ld_online" = 1 ] && printf 1 || printf 0)"
+        printf ',"assigned_slots":'; json_quote "$_ld_assigned_slots"
+        printf '}'
         _ld_sep=","
     done < "$_ld_merged"
     printf ']}\n'
