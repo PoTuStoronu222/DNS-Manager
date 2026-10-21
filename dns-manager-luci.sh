@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.51
+# Version: 1.54
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -29,10 +29,10 @@ JOB_MAX_AGE_TEST_ONE=60
 BACKUP_DIR="/etc/dns-manager-luci"
 CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
-COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
+COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/ax3000t-full-integration-20261021/dns-manager-luci.sh"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.51"
+VERSION="1.54"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -155,10 +155,10 @@ TMP_ROOT="$RUNTIME_DIR/tmp"
 UPDATE_STATE="/etc/dns-manager-luci/update.state"
 UPDATE_CHECK_CACHE="$RUNTIME_DIR/update-check.cache"
 UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
-COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
+COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/ax3000t-full-integration-20261021/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="1.51"
+SELF_VERSION="1.54"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -278,6 +278,31 @@ catalog_field() {
 
 catalog_version() { sed -n 's/^# DNSCATVER=//p' "$CATALOG_FILE" 2>/dev/null | head -n1; }
 catalog_revision() { sed -n 's/^# DNSCATREV=//p' "$CATALOG_FILE" 2>/dev/null | head -n1; }
+
+catalog_url_normalize() {
+    _cun_url="$(printf '%s' "$1" | sed 's/[[:space:]]//g')"
+    # Normalize only a slash at the origin root. Keep path-ending slashes.
+    case "$_cun_url" in
+        https://*/*)
+            _cun_authority_path="${_cun_url#https://}"
+            _cun_path="${_cun_authority_path#*/}"
+            [ -n "$_cun_path" ] || _cun_url="${_cun_url%/}"
+            ;;
+    esac
+    printf '%s' "$_cun_url"
+}
+catalog_id_for_url() {
+    _cui_url="$(catalog_url_normalize "$1")"
+    [ -n "$_cui_url" ] && [ -r "$CATALOG_FILE" ] || return 1
+    awk -F'|' -v u="$_cui_url" '
+        function norm_url(x) {
+            gsub(/[[:space:]]/, "", x)
+            if (x ~ /^https:\/\/[^/]+\/$/) sub(/\/$/, "", x)
+            return x
+        }
+        $1 !~ /^#/ && $1 != "" && $5 != "" && norm_url($5) == u { print $1; exit }
+    ' "$CATALOG_FILE" 2>/dev/null
+}
 
 
 read_installed_luci_version() {
@@ -402,7 +427,7 @@ component_update_check() {
     if [ -z "$_manager_installed" ]; then
         _manager_error="DNS Manager не найден на роутере"
         UPDATE_CHECK_COMPONENTS_OK=0
-    elif fetch_raw_url "$_tmp" "https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager.sh?_dmcb=$_ts-$$"; then
+    elif fetch_raw_url "$_tmp" "https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/ax3000t-full-integration-20261021/dns-manager.sh?_dmcb=$_ts-$$"; then
         _manager_latest="$(sed -n 's/^VERSION="\([^"]*\)"$/\1/p' "$_tmp" 2>/dev/null | head -n1)"
         if [ -n "$_manager_latest" ]; then
             _manager_ok=1
@@ -419,7 +444,7 @@ component_update_check() {
 
     _catalog_latest=""; _catalog_latest_rev=""; _catalog_latest_total=0; _catalog_available=0; _catalog_ok=0; _catalog_error=""
     _tmp="$TMP_ROOT/catalog-check.$$"
-    if fetch_raw_url "$_tmp" "https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/catalogs/dns-8.7-RU-NOSOCIAL.conf?_dmcb=$_ts-$$"; then
+    if fetch_raw_url "$_tmp" "https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/ax3000t-full-integration-20261021/catalogs/dns-8.7-RU-NOSOCIAL.conf?_dmcb=$_ts-$$"; then
         _catalog_latest="$(sed -n 's/^# DNSCATVER=//p' "$_tmp" 2>/dev/null | head -n1)"
         _catalog_latest_rev="$(sed -n 's/^# DNSCATREV=//p' "$_tmp" 2>/dev/null | head -n1)"
         _catalog_latest_total="$(grep -v '^#' "$_tmp" 2>/dev/null | grep -c '^[^|][^|]*|' 2>/dev/null || printf 0)"
@@ -602,7 +627,7 @@ update_check_json() {
 }
 update_catalog_direct() {
     _tmp="$TMP_ROOT/catalog-update-all.$$"
-    fetch_raw_url "$_tmp" "https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/catalogs/dns-8.7-RU-NOSOCIAL.conf" || { rm -f "$_tmp" 2>/dev/null || true; return 3; }
+    fetch_raw_url "$_tmp" "https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/ax3000t-full-integration-20261021/catalogs/dns-8.7-RU-NOSOCIAL.conf" || { rm -f "$_tmp" 2>/dev/null || true; return 3; }
     _remote_ver="$(sed -n 's/^# DNSCATVER=//p' "$_tmp" 2>/dev/null | head -n1)"
     _remote_rev="$(sed -n 's/^# DNSCATREV=//p' "$_tmp" 2>/dev/null | head -n1)"
     _decl="$(sed -n 's/^# ENTRIES=//p' "$_tmp" 2>/dev/null | head -n1)"
@@ -793,8 +818,8 @@ result_for_id() {
 
 system_result_id() {
     _sri_url="$1"; _sri_port="$2"; _sri_index="$3"
-    _sri_url="$(printf '%s' "$_sri_url" | sed 's/[[:space:]]//g; s:/*$::')"
-    _sri_cat_id="$(awk -F'|' -v u="$_sri_url" '$5==u {print $1; exit}' "$CATALOG_FILE" 2>/dev/null || true)"
+    _sri_url="$(catalog_url_normalize "$_sri_url")"
+    _sri_cat_id="$(catalog_id_for_url "$_sri_url" 2>/dev/null || true)"
     if [ -n "$_sri_cat_id" ]; then
         printf '%s' "$_sri_cat_id"
         return 0
@@ -1066,11 +1091,9 @@ cpu_load_percent() {
     if [ -s "$f" ]; then
         prev="$(cat "$f" 2>/dev/null || true)"
     else
-        printf '%s
-' "$now" > "$f" 2>/dev/null || true
+        printf '%s\n' "$now" > "$f" 2>/dev/null || true
         printf '0'
-        printf '%s
-' '0' > "$f.pct" 2>/dev/null || true
+        printf '%s\n' '0' > "$f.pct" 2>/dev/null || true
         return 0
     fi
     set -- $prev $now
@@ -1223,6 +1246,9 @@ page_meta_json() {
 
 doh_status_json() {
     _force="$(cfg_get FORCE_DOH)"; [ -n "$_force" ] || _force=0
+    _encrypted_dns="$(cfg_get BLOCK_EXTERNAL_DNS)"
+    [ -n "$_encrypted_dns" ] || _encrypted_dns="$_force"
+    case "$_encrypted_dns" in 0|1) ;; *) _encrypted_dns=0 ;; esac
     _force_cfg="$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null || true)"
     _force_notrack="$(uci -q get https-dns-proxy.config.notrack_dns 2>/dev/null || true)"
     _force_state="$("$MANAGER_PATH" --force-state 2>/dev/null || true)"
@@ -1241,9 +1267,7 @@ doh_status_json() {
         [ "$(uci -q get firewall.$_sec.disabled 2>/dev/null)" = 1 ] && continue
         runtime_lan_input_match "$(uci -q get firewall.$_sec.src 2>/dev/null || true)" || continue
         _sd="$(uci -q get firewall.$_sec.src_dport 2>/dev/null || true)"
-        printf '%s
-' "$_sd" | tr ' ' '
-' | grep -qxF 53 2>/dev/null || continue
+        printf '%s\n' "$_sd" | tr ' ' '\n' | grep -qxF 53 2>/dev/null || continue
         _target="$(uci -q get firewall.$_sec.target 2>/dev/null || true)"
         case "$_target" in DNAT|dnat|REDIRECT|redirect) ;; *) continue;; esac
         _dp="$(uci -q get firewall.$_sec.dest_port 2>/dev/null || true)"
@@ -1275,20 +1299,19 @@ doh_status_json() {
     while uci -q get https-dns-proxy.@https-dns-proxy[$_i] >/dev/null 2>&1; do
         _p="$(uci -q get https-dns-proxy.@https-dns-proxy[$_i].listen_port 2>/dev/null || true)"
         _a="$(uci -q get https-dns-proxy.@https-dns-proxy[$_i].listen_addr 2>/dev/null || true)"
-        _u="$(uci -q get https-dns-proxy.@https-dns-proxy[$_i].resolver_url 2>/dev/null | sed 's:/*$::' || true)"
+        _u="$(catalog_url_normalize "$(uci -q get https-dns-proxy.@https-dns-proxy[$_i].resolver_url 2>/dev/null || true)")"
         _n="$(uci -q get https-dns-proxy.@https-dns-proxy[$_i].name 2>/dev/null || true)"
-        if [ -z "$_n" ] && [ -n "$_u" ]; then _n="$(awk -F'|' -v u="$_u" '$5==u {print $4; exit}' "$CATALOG_FILE" 2>/dev/null)"; fi
+        if [ -z "$_n" ] && [ -n "$_u" ]; then _lookup_id="$(catalog_id_for_url "$_u" 2>/dev/null || true)"; [ -n "$_lookup_id" ] && _n="$(catalog_field "$_lookup_id" 4 2>/dev/null || true)"; fi
         case "$_u" in
             https://cloudflare-dns.com/dns-query) [ "$_n" = Cloudflare ] && _n='Cloudflare (Стандарт)';;
             https://dns.google/dns-query) [ "$_n" = 'Google Public DNS' ] && _n='Google';;
         esac
         [ -n "$_n" ] || _n='Пользовательский DNS'
         _run=0
-        [ -n "$_p" ] && printf '%s
-' "$_listen" | grep -qE "(^|[[:space:]])[^[:space:]]*:$_p([[:space:]]|$)" && _run=1
+        [ -n "$_p" ] && printf '%s\n' "$_listen" | grep -qE "(^|[[:space:]])[^[:space:]]*:$_p([[:space:]]|$)" && _run=1
         [ "$_run" = 1 ] && _doh_running=$((_doh_running+1))
         _doh_total=$((_doh_total+1))
-        _instance_id="$(awk -F'|' -v u="$_u" '$5==u {print $1; exit}' "$CATALOG_FILE" 2>/dev/null || true)"
+        _instance_id="$(catalog_id_for_url "$_u" 2>/dev/null || true)"
         _slot=""
         for _s in 1 2 3 4 5 6 RU; do
             _sid="$(cfg_get SLOT_"$_s")"; _sport="$(cfg_get PORT_"$_s")"
@@ -1317,11 +1340,11 @@ doh_status_json() {
         _expected=$((_expected+1))
         _url="$(catalog_field "$_id" 5 2>/dev/null || true)"
         [ -n "$_url" ] || continue
-        _url_cmp="$(printf '%s' "$_url" | sed 's:/*$::')"
+        _url_cmp="$(catalog_url_normalize "$_url")"
         _j=0
         while uci -q get https-dns-proxy.@https-dns-proxy[$_j] >/dev/null 2>&1; do
             _up="$(uci -q get https-dns-proxy.@https-dns-proxy[$_j].listen_port 2>/dev/null || true)"
-            _uu="$(uci -q get https-dns-proxy.@https-dns-proxy[$_j].resolver_url 2>/dev/null | sed 's:/*$::' || true)"
+            _uu="$(catalog_url_normalize "$(uci -q get https-dns-proxy.@https-dns-proxy[$_j].resolver_url 2>/dev/null || true)")"
             [ "$_up" = "$_port" ] && [ "$_uu" = "$_url_cmp" ] && { _match=$((_match+1)); break; }
             _j=$((_j+1))
         done
@@ -1366,6 +1389,7 @@ doh_status_json() {
     done
     printf '],"system_dns_count":%s' "$_system_dns_total"
     printf ',"profile_job_status":'; json_quote "$_pjs"; printf ',"profile_job_result":'; json_quote "$_pjr"; printf ',"profile_job_profile":'; json_quote "$_pjp"; printf ',"profile_job_started":'; json_quote "$_pjsd"; printf ',"profile_job_finished":'; json_quote "$_pjf"; printf ',"profile_job_message":'; json_quote "$_pjm"
+    printf ',"encrypted_dns":%s' "$_encrypted_dns"
     printf '}'
 }
 
@@ -1492,11 +1516,11 @@ status_json() {
         [ -n "$_id" ] && [ -n "$_port" ] || continue
         _url="$(catalog_field "$_id" 5 2>/dev/null || true)"
         [ -n "$_url" ] || continue
-        _url_cmp="$(printf '%s' "$_url" | sed 's:/*$::')"
+        _url_cmp="$(catalog_url_normalize "$_url")"
         _j=0
         while uci -q get "https-dns-proxy.@https-dns-proxy[$_j]" >/dev/null 2>&1; do
             _up="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_j].listen_port" 2>/dev/null || true)"
-            _uu="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_j].resolver_url" 2>/dev/null | sed 's:/*$::' )"
+            _uu="$(catalog_url_normalize "$(uci -q get "https-dns-proxy.@https-dns-proxy[$_j].resolver_url" 2>/dev/null || true)")"
             if [ "$_up" = "$_port" ] && [ "$_uu" = "$_url_cmp" ]; then _match=$((_match + 1)); break; fi
             _j=$((_j + 1))
         done
@@ -1657,10 +1681,11 @@ status_json() {
     while uci -q get "https-dns-proxy.@https-dns-proxy[$_i]" >/dev/null 2>&1; do
         _p="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].listen_port" 2>/dev/null || true)"
         _a="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].listen_addr" 2>/dev/null || true)"
-        _u="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].resolver_url" 2>/dev/null | sed 's:/*$::' || true)"
+        _u="$(catalog_url_normalize "$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].resolver_url" 2>/dev/null || true)")"
         _n="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].name" 2>/dev/null || true)"
         if [ -z "$_n" ] && [ -n "$_u" ]; then
-            _n="$(awk -F'|' -v u="$_u" '$5==u {print $4; exit}' "$CATALOG_FILE" 2>/dev/null)"
+            _lookup_id="$(catalog_id_for_url "$_u" 2>/dev/null || true)"
+            [ -n "$_lookup_id" ] && _n="$(catalog_field "$_lookup_id" 4 2>/dev/null || true)"
         fi
         case "$_u" in
             https://cloudflare-dns.com/dns-query) [ -n "$_n" ] && [ "$_n" = "Cloudflare" ] && _n="Cloudflare (Стандарт)" ;;
@@ -1670,7 +1695,7 @@ status_json() {
         _run=0
         [ -n "$_p" ] && printf '%s\n' "$_listen" | grep -qE "(^|[[:space:]])[^[:space:]]*:$_p([[:space:]]|$)" && _run=1
         _slot=""
-        _instance_id="$(awk -F'|' -v u="$_u" '$5==u {print $1; exit}' "$CATALOG_FILE" 2>/dev/null || true)"
+        _instance_id="$(catalog_id_for_url "$_u" 2>/dev/null || true)"
         for _s in 1 2 3 4 5 6 RU; do
             _sid="$(cfg_get "SLOT_$_s")"; _sport="$(cfg_get "PORT_$_s")"
             [ -n "$_sid" ] || continue
@@ -1754,8 +1779,8 @@ load_manager() {
     return 0
 }
 system_instance_slot() {
-    _url="$(normalize_url "$1" 2>/dev/null || true)"; _port="$2"
-    _catalog_id="$(awk -F'|' -v u="$_url" '$5==u {print $1; exit}' "$CATALOG_FILE" 2>/dev/null || true)"
+    _url="$(catalog_url_normalize "$(normalize_url "$1" 2>/dev/null || true)")"; _port="$2"
+    _catalog_id="$(catalog_id_for_url "$_url" 2>/dev/null || true)"
     for _s in 1 2 3 4 5 6 RU; do
         _sid="$(cfg_get "SLOT_$_s")"; _sport="$(cfg_get "PORT_$_s")"
         [ -n "$_sid" ] && [ -n "$_catalog_id" ] && [ "$_sid" = "$_catalog_id" ] && return 0
@@ -2326,6 +2351,19 @@ job_start_test_current() {
             exit 1
         fi
 
+        # test_one_dns workers share this immutable packet. Create it here
+        # before forking, exactly as the full catalog test does.
+        q="$TMP_DIR/dns_query.bin"
+        if ! printf '\022\064\001\000\000\001\000\000\000\000\000\000\007example\003com\000\000\001\000\001' > "$q" 2>/dev/null; then
+            rm -f "$q" "$_ids" "$_results" "$_merged" 2>/dev/null || true
+            release_test_lock
+            job_write "$_jid" status failed
+            job_write "$_jid" result fail
+            job_write "$_jid" finished "$(date +%s)"
+            job_write "$_jid" error "Не удалось создать общий DNS-тестовый пакет."
+            exit 1
+        fi
+
         _batch="${TEST_BATCH:-${TEST_BATCH_DEFAULT:-4}}"
         case "$_batch" in ''|*[!0-9]*) _batch=4;; esac
         [ "$_batch" -ge 1 ] 2>/dev/null || _batch=1
@@ -2387,7 +2425,7 @@ job_start_test_current() {
             [ -n "$_id" ] && set_check_stamp "$_id" "$_stamp"
         done < "$_results"
 
-        rm -f "$_ids" "$_results" "$_merged" "$TMP_DIR/t."* 2>/dev/null || true
+        rm -f "$_ids" "$_results" "$_merged" "$TMP_DIR/t."* "$TMP_DIR/dns_query.bin" 2>/dev/null || true
         release_test_lock
 
         job_write "$_jid" status done
@@ -2620,7 +2658,7 @@ run_action() {
                 *) json_error "Неверное значение enabled"; return;;
             esac
             case "$_name" in
-                watchdog|force|dnsmasq_perf) ;;
+                watchdog|force|encrypted_dns|dnsmasq_perf) ;;
                 *) json_error "Недопустимая настройка"; return;;
             esac
             load_manager || { json_error "DNS Manager недоступен"; return; }
@@ -2629,7 +2667,7 @@ run_action() {
                 watchdog)
                     if [ "$_enabled" = 1 ] && [ -z "$SLOT_1$SLOT_2$SLOT_3$SLOT_4$SLOT_5$SLOT_6$SLOT_RU" ]; then
                         _rc=2
-                        printf '%s\n' "Сначала выберите профиль DNS Manager." >&2
+                        printf '%s\n' "Сначала настройте хотя бы один DNS-сервер." >&2
                     else
                         SILENT_APPLY=1 watchdog_apply_toggle "$_enabled" >/dev/null 2>&1 || _rc=$?
                     fi
@@ -2641,6 +2679,10 @@ run_action() {
                         force_readback_json
                         return
                     fi
+                    ;;
+                encrypted_dns)
+                    BLOCK_EXTERNAL_DNS="$_enabled"
+                    SILENT_APPLY=1 apply_extras_now encrypted_dns >/dev/null 2>&1 || _rc=$?
                     ;;
                 dnsmasq_perf)
                     DNSMASQ_PERF="$_enabled"
@@ -2738,7 +2780,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI common module version: 1.51
+// DNS Manager LuCI common module version: 1.54
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -2915,11 +2957,12 @@ function hasPing(v){ return /^\d+$/.test(String(v===undefined||v===null?'':v)); 
 function stateBadge(status,pingValue){
   var s=String(status||'').toUpperCase();
   if(s==='RUNNING')return badge('dm-warn','проверяется');
+  if(!s)return badge('dm-off','нет данных');
   if(s==='OK'&&hasPing(pingValue))return badge('dm-ok','доступен');
   if(s==='OK'||s==='FAIL'||s==='FAILED'||s.indexOf('_FAIL')>0||s.indexOf('TIMEOUT')>=0||s.indexOf('ERROR')>=0||s.indexOf('HTTP_')===0||!hasPing(pingValue))return badge('dm-bad','недоступен');
   return badge('dm-off','нет данных');
 }
-function settingName(n){ var m={watchdog:'Контроль DNS',dnsmasq_perf:'Увеличенный кэш DNS'}; return m[n]||n; }
+function settingName(n){ var m={watchdog:'Контроль DNS',force:'Принудительный DNS',encrypted_dns:'Не давать устройствам обходить блокировку',dnsmasq_perf:'Увеличенный кэш DNS'}; return m[n]||n; }
 function settingModuleState(st,key){
   var raw=st[key+'_state'];
   if(raw===undefined||raw===null||raw==='')return -1;
@@ -3322,25 +3365,41 @@ function renderDoH(root,st){
   var fm=forceMode(st);
   var profileSelected=String(st.profile||'none')!=='none';
   var forceEnableLocked=!profileSelected && fm!=='auto';
+  var forceEnabled=fm==='auto';
   var forceButtons=E('div',{'class':'dm-seg'},[
     btn('Авто (рекомендуется)',fm==='auto'?'active cbi-button':'cbi-button',function(){setForceMode('auto',root);},{disabled:state.busy||forceEnableLocked}),
     btn('Не перехватывать',fm==='off'?'active cbi-button':'cbi-button',function(){setForceMode('off',root);},{disabled:state.busy})
   ]);
+  var encryptedEnabled=yes(st.encrypted_dns);
+  var encryptedButtons=E('div',{'class':'dm-seg'},[
+    btn('Включено',encryptedEnabled?'active cbi-button':'cbi-button',function(){setSetting('encrypted_dns',1,root);},{disabled:state.busy||encryptedEnabled}),
+    btn('Выключено',!encryptedEnabled?'active cbi-button':'cbi-button',function(){setSetting('encrypted_dns',0,root);},{disabled:state.busy||!encryptedEnabled})
+  ]);
   var steer=st.force_owner==='steer';
   ch.push(E('div',{'style':'margin-top:9px'},[
     E('div',{'class':'dm-row'},[
-      E('span',{'class':'dm-label'},'Перехват DNS устройств'),
+      E('span',{'class':'dm-label'},'Принудительный DNS'),
       badge(st.force_status==='external'||st.force_status==='other'?'dm-bad':(st.force_status==='manager'||st.force_status==='steer')?'dm-ok':'dm-off',st.force_status==='external'?'внешний':st.force_status==='other'?'другое':st.force_status==='steer'?'включён • Steer':st.force_status==='manager'?'включён':'выключен')
     ]),
+    E('p',{'class':'dm-hint'},'Направляет обычные DNS-запросы устройств на DNS роутера. В конфигурации https-dns-proxy задействованы порты 53 и 853.'),
     forceButtons,
     (!profileSelected && fm!=='auto') ? E('div',{'class':'dm-inline-msg info'},'Сначала выберите профиль DNS Manager.') : null
+  ].filter(Boolean)));
+  ch.push(E('div',{'style':'margin-top:14px'},[
+    E('div',{'class':'dm-row'},[
+      E('span',{'class':'dm-label'},'Не давать устройствам обходить блокировку'),
+      badge(encryptedEnabled?'dm-ok':'dm-off',encryptedEnabled?'включено':'выключено')
+    ]),
+    E('p',{'class':'dm-hint'},'Дополнительно ограничивает использование сторонних зашифрованных DNS-сервисов, через которые устройство может обходить DNS-фильтрацию роутера.'),
+    encryptedButtons,
+    E('p',{'class':'dm-hint'},'Блокировка DoT на порту 853 работает независимо. Canary-проверки автоматического DoH через https-dns-proxy работают только когда сам пакет выполняет принудительный DNS; при перехвате через Steer эта часть защиты не действует. Произвольный DoH поверх HTTPS/443 эта настройка не гарантированно блокирует.')
   ].filter(Boolean)));
   if(st.force_both){
     ch.push(E('div',{'class':'dm-force-external'},'Принудительный DNS обнаружен одновременно с внешним перехватом. Источник: '+shortVal(st.force_source)+'. При переключении DNS Manager приведёт общую конфигурацию forced-DNS к своей схеме.'));
   } else if(st.force_owner==='external'){
     ch.push(E('div',{'class':'dm-force-external'},'Обнаружен '+shortVal(st.force_source)+'. Переключение выше может заменить его общей конфигурацией forced-DNS DNS Manager.'));
   } else if(steer){
-    ch.push(E('div',{'class':'dm-inline-msg info'},'Steer перехватывает DNS :53. DNS Manager не создаёт второй перехват: обычные DNS-запросы идут через dnsmasq к выбранному DoH, а DNS-over-TLS :853 блокируется.'));
+    ch.push(E('div',{'class':'dm-inline-msg info'},'Steer перехватывает DNS :53. DNS Manager не создаёт второй перехват: обычные DNS-запросы идут через dnsmasq к выбранному DoH. Ограничение DoT :853 управляется отдельным переключателем выше.'));
   } else if(Number(st.steer_running)===1 && Number(st.steer_dns_active)!==1){
     ch.push(E('div',{'class':'dm-inline-msg info'},'Steer запущен, но активный перехват DNS :53→:5300 не обнаружен. Поэтому DNS Manager не считает Steer владельцем forced-DNS и сохраняет обычную схему принудительного DNS.'));
   }
@@ -3429,7 +3488,7 @@ function assignDirect(id,slot,root,nextName,nextUrl){
   (window.dmState&&window.dmState.doh_instances||[]).forEach(function(x){
     if(x&&String(x.slot)===String(slot))activeUrl=String(x.url||'');
   });
-  var normalizeUrl=function(u){return String(u||'').replace(/\/+$/,'');};
+  var normalizeUrl=function(u){u=String(u||'');return u.replace(/^(https:\/\/[^/]+)\/+$/i,'$1');};
   if(current===next&&normalizeUrl(activeUrl)===normalizeUrl(nextUrl))return;
   state.busy=true;
   state.pageNotice.catalog='Назначаю «'+next+'» в '+slotLabel(slot)+'…';
@@ -3719,7 +3778,6 @@ function settingCard(root,x,st){
 }
 function watchdogCard(root,st){
   var en=yes(st.watchdog), busy=state.busySetting==='watchdog' || state.busySetting==='watchdog_batch';
-  var profileSelected=String(st.profile||'none')!=='none';
   var service=Number(st.watchdog_service||0)===1, loop=Number(st.watchdog_loop||0)===1;
   var inputs={};
 
@@ -3756,7 +3814,6 @@ function watchdogCard(root,st){
       ['watchdog_interval','Как часто проверять DNS',1,60,'мин','Проверяет, отвечают ли выбранные DNS-серверы.',true],
       ['watchdog_fail_threshold','Сколько проверок подряд считать сбоем',1,5,'проверок','Сколько раз подряд DNS должен не ответить, прежде чем менеджер заменит его.',false],
       ['watchdog_repair_cooldown','Пауза между заменами DNS',5,120,'мин','Минимальное время между повторными заменами одного DNS.',true],
-      ['watchdog_max_repairs','Сколько DNS можно заменить за раз',1,3,'шт.','Сколько неисправных DNS можно заменить во время одной проверки.',false],
       ['watchdog_max_candidates','Сколько DNS проверить при поиске замены',1,10,'шт.','Сколько других DNS проверить, прежде чем выбрать замену.',false],
     ];
     var values=[];
@@ -3779,6 +3836,9 @@ function watchdogCard(root,st){
 
     var internalMaxRestarts=Number(st.watchdog_max_restarts||2);
     if(!isFinite(internalMaxRestarts)||internalMaxRestarts<1||internalMaxRestarts>5)internalMaxRestarts=2;
+    var internalMaxRepairs=Number(st.watchdog_max_repairs||1);
+    if(!isFinite(internalMaxRepairs)||internalMaxRepairs<1||internalMaxRepairs>3)internalMaxRepairs=1;
+    values.splice(3,0,Math.round(internalMaxRepairs));
     values.splice(4,0,Math.round(internalMaxRestarts));
     values.splice(6,0,Number(st.watchdog_guard_interval||3600));
 
@@ -3809,16 +3869,15 @@ function watchdogCard(root,st){
   var action=E('div',{'class':'dm-setting '+(busy?'dm-setting-saving':'')},[
     E('div',{'class':'dm-setting-text'},[
       E('div',{'class':'dm-setting-title'},'Контроль DNS'),
-      E('div',{'class':'dm-setting-desc'},'Автоматически проверяет выбранные DNS и при подтверждённом сбое восстанавливает рабочий вариант.')
+      E('div',{'class':'dm-setting-desc'},'Проверяет каждый настроенный DNS отдельно и заменяет его только сервером той же категории. Профиль не требуется.')
     ]),
     E('div',{'class':'dm-setting-controls'},[
       E('div',{'class':'dm-setting-actions'},[
         badge(busy?'dm-warn':(en?'dm-ok':'dm-off'),busy?'изменение':(en?'включено':'выключено')),
         btn(busy?'Сохраняю…':(en?'Выключить':'Включить'),busy?'cbi-button-neutral':(en?'cbi-button-remove':'cbi-button-add'),function(){
           var cur=yes((window.dmState||{}).watchdog);
-          if(!cur && !profileSelected)return;
           setSetting('watchdog',cur?0:1,root);
-        },{disabled:!!state.busy || (!en && !profileSelected)})
+        },{disabled:!!state.busy})
       ])
     ])
   ]);
@@ -3837,7 +3896,6 @@ function watchdogCard(root,st){
   var advanced=E('details',{'class':'dm-watchdog-advanced'},[
     E('summary',{},'Дополнительные параметры'),
     E('div',{'class':'dm-watchdog-list'},[
-      param('watchdog_max_repairs','Сколько DNS можно заменить за раз',1,3,'шт.','Сколько неисправных DNS можно заменить во время одной проверки.',false),
       param('watchdog_max_candidates','Сколько DNS проверить при поиске замены',1,10,'шт.','Сколько других DNS проверить, прежде чем выбрать замену.',false)
     ])
   ]);
@@ -4804,7 +4862,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 1.51
+// DNS Manager LuCI version: 1.54
 return view.extend({
   load: DM.load,
   render: DM.render,
