@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.68
+# Version: 1.69
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -32,7 +32,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/router-validation-20261020/dns-manager-luci.sh"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.68"
+VERSION="1.69"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -234,7 +234,7 @@ dmd_build_and_install() {
 
     dmd_cleanup_stage
     DMD_STAGE="$(mktemp -d /tmp/dns-manager-device-dns.stage.XXXXXX 2>/dev/null)" || return 1
-    mkdir -p "$DMD_STAGE/profiles" "$DMD_BASE" "$(dirname "$DMD_NFT")" || { dmd_cleanup_stage; return 1; }
+    mkdir -p "$DMD_STAGE/profiles" "$DMD_BASE" "$(dirname "$DMD_NFT")" /var/run/dns-manager-device-dns || { dmd_cleanup_stage; return 1; }
     : > "$DMD_STAGE/profiles.map"
     : > "$DMD_STAGE/nft.rules"
 
@@ -286,6 +286,7 @@ dmd_build_and_install() {
                 DMD_PROFILE="$DMD_STAGE/profiles/profile_$DMD_MASK.conf"
                 {
                     printf 'port=%s\n' "$DMD_LISTENER_PORT"
+                    printf 'pid-file=/var/run/dns-manager-device-dns/profile_%s.pid\n' "$DMD_MASK"
                     printf 'interface=%s\n' "$DMD_LAN_DEV"
                     printf 'bind-dynamic\nexcept-interface=lo\nno-dhcp-interface=%s\n' "$DMD_LAN_DEV"
                     printf 'no-resolv\nno-poll\nno-hosts\ndomain-needed\nbogus-priv\ncache-size=1000\n'
@@ -480,7 +481,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/router-validation-20261020/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="1.68"
+SELF_VERSION="1.69"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -3542,7 +3543,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI common module version: 1.68
+// DNS Manager LuCI common module version: 1.69
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
