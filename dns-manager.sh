@@ -2981,6 +2981,7 @@ _apply_extras_now_impl() {
         encrypted_dns)
             apply_encrypted_dns_block || return 1
             save_config || return 1
+            refresh_device_dns_runtime >/dev/null 2>&1 || return 1
             return 0
             ;;
         dnsmasq_perf)
