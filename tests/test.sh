@@ -16,6 +16,9 @@ sh -n dns-manager.sh || fail "dns-manager.sh: sh -n"
 sh -n dns-manager-luci.sh || fail "dns-manager-luci.sh: sh -n"
 ok "shell syntax"
 
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT INT TERM
+
 # The generated per-device dnsmasq/firewall service is shell-checked independently of the installer heredoc.
 awk '/cat > \/etc\/init.d\/dns-manager-device-dns <<'\''EOF_DEVICE_DNS_SERVICE'\''/ {capture=1; next} capture && /^EOF_DEVICE_DNS_SERVICE$/ {exit} capture {print}' dns-manager-luci.sh > "$tmp/device_dns_service.sh"
 [ -s "$tmp/device_dns_service.sh" ] || fail "per-device DNS service heredoc missing"
@@ -27,14 +30,21 @@ grep -Fq 'all-servers' "$tmp/device_dns_service.sh" || fail "multi-DoH device pr
 grep -Fq 'dmd_fail_open()' "$tmp/device_dns_service.sh" || fail "per-device DNS service has no fail-open cleanup"
 grep -Fq 'set_device_dns)' dns-manager-luci.sh || fail "set-device-DNS RPC dispatch missing"
 grep -Fq '"set_device_dns":{"mac":"String","slots":"String"}' dns-manager-luci.sh || fail "set-device-DNS RPC schema missing"
-grep -Fq '"set_device_dns"' dns-manager-luci.sh || fail "set-device-DNS RPC is missing from ACL"
+grep -Fq '"dns_manager": [ "set_profile", "reset_dns", "set_slot", "set_slot_domains", "set_device_dns"' dns-manager-luci.sh || fail "set-device-DNS RPC is missing from the write ACL"
 grep -Fq 'callSetDeviceDns' dns-manager-luci.sh || fail "LuCI has no client for set-device-DNS RPC"
 grep -Fq 'card(' "dns-manager-luci.sh" >/dev/null || fail "LuCI card renderer missing"
 ok "per-device DNS service, per-MAC nft redirects and multi-DoH assignment contract"
 
+awk '/^dmd_normalize_slots\\(\\) \\{/,/^}/' "$tmp/device_dns_service.sh" > "$tmp/device_dns_normalize.sh"
+[ -s "$tmp/device_dns_normalize.sh" ] || fail "per-device slot normalizer missing"
+(
+    . "$tmp/device_dns_normalize.sh"
+    [ "$(dmd_normalize_slots '2,1,2')" = '1,2' ] || fail "per-device multi-slot normalizer does not sort and deduplicate slot IDs"
+) || fail "per-device multi-slot normalization"
+grep -Fq 'refresh_device_dns_runtime' dns-manager.sh || fail "main DNS Manager does not resync per-device listeners"
+grep -Fq "card('Устройства LAN — привязка к DoH'" dns-manager-luci.sh || fail "per-device DNS assignment UI missing"
 
-tmp="$(mktemp -d)"
-trap 'rm -rf "$tmp"' EXIT INT TERM
+
 
 # Per-slot DNS domain routing uses dnsmasq server=/domain/127.0.0.1#port rules.
 awk '/^normalize_slot_domains\(\) \{/,/^slot_domains_get\(\) \{/' dns-manager.sh | sed '$d' > "$tmp/normalize_slot_domains.sh"
