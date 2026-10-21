@@ -5555,7 +5555,12 @@ luci_companion_remove_fallback() {
     rm -f /etc/nftables.d/90-dns-manager-device-dns.nft /etc/nftables.d/90-dns-manager-device-dns.nft.tmp.* 2>/dev/null || true
     rm -f /etc/init.d/dns-manager-device-dns /etc/dns-manager/config/device-dns.conf /etc/dns-manager/device-dns/redirects.nft /etc/dns-manager/device-dns/redirects.nft.tmp.* 2>/dev/null || true
     rm -rf /etc/dns-manager/device-dns 2>/dev/null || true
-    reload_fw >/dev/null 2>&1 || return 1
+    # When UCI is unavailable (for example during isolated uninstall tests),
+    # no fw4 configuration can exist for this include. On OpenWrt, keep the
+    # firewall reload mandatory so stale redirect rules cannot survive removal.
+    if command -v uci >/dev/null 2>&1; then
+        reload_fw >/dev/null 2>&1 || return 1
+    fi
     rm -f "$LUCI_RPC_PLUGIN" "$LUCI_BACKEND_FILE" "$LUCI_ACL_FILE" "$LUCI_MENU_FILE" || return 1
     for _view in dashboard doh network time catalog log overview; do
         rm -f "$LUCI_VIEW_DIR/${_view}.js" || return 1
