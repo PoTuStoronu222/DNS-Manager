@@ -103,6 +103,14 @@ dmd_slot_port() {
         *) return 1 ;;
     esac
 }
+dmd_slot_domains() {
+    case "$1" in
+        1) printf '%s' "${SLOT_1_DOMAINS:-}" ;; 2) printf '%s' "${SLOT_2_DOMAINS:-}" ;;
+        3) printf '%s' "${SLOT_3_DOMAINS:-}" ;; 4) printf '%s' "${SLOT_4_DOMAINS:-}" ;;
+        5) printf '%s' "${SLOT_5_DOMAINS:-}" ;; 6) printf '%s' "${SLOT_6_DOMAINS:-}" ;;
+        *) return 1 ;;
+    esac
+}
 
 dmd_normalize_slots() {
     _dmd_raw="$(printf '%s' "$1" | tr ',' ' ')"
@@ -216,6 +224,11 @@ dmd_build_and_install() {
                     for DMD_SLOT in $(printf '%s' "$DMD_SLOTS" | tr ',' ' '); do
                         DMD_UPSTREAM_PORT="$(dmd_slot_port "$DMD_SLOT" 2>/dev/null || true)"
                         printf 'server=127.0.0.1#%s\n' "$DMD_UPSTREAM_PORT"
+                        DMD_SLOT_DOMAINS="$(dmd_slot_domains "$DMD_SLOT" 2>/dev/null || true)"
+                        for DMD_DOMAIN in $DMD_SLOT_DOMAINS; do
+                            case "$DMD_DOMAIN" in ''|.*|*.|*[!A-Za-z0-9.-]*) continue ;; esac
+                            printf 'server=/%s/127.0.0.1#%s\n' "$DMD_DOMAIN" "$DMD_UPSTREAM_PORT"
+                        done
                     done
                 } > "$DMD_PROFILE" || { dmd_cleanup_stage; return 1; }
                 /usr/sbin/dnsmasq --test --conf-file="$DMD_PROFILE" >/dev/null 2>&1 || {
@@ -4467,7 +4480,7 @@ function renderSlots(root,st){
 
   var inventory=window.dmLanDevices||{};
   var deviceChildren=[
-    E('div',{'class':'dm-mini'},'Выберите один или несколько слотов DNS 1–6 для каждого устройства. Обычные DNS-запросы UDP/TCP на порт 53 будут направляться через отдельный локальный DNS-слушатель к выбранным DoH. При выборе нескольких DNS опрашиваются все выбранные серверы, используется первый ответ. Для привязанных устройств общие правила доменов слотов 1–6 не применяются.')
+    E('div',{'class':'dm-mini'},'Выберите один или несколько слотов DNS 1–6 для каждого устройства. Обычные DNS-запросы UDP/TCP на порт 53 будут направляться через отдельный локальный DNS-слушатель к выбранным DoH. При выборе нескольких DNS опрашиваются все выбранные серверы, используется первый ответ. Домены, указанные у выбранных слотов, сохраняют свои маршруты и для этого устройства.')
   ];
   var devices=Array.isArray(inventory.devices)?inventory.devices:[];
   var available={};
