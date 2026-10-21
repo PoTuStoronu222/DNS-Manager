@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.77
+# Version: 1.78
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -32,7 +32,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/dns-manager-complete-integration-20261021/dns-manager-luci.sh"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.77"
+VERSION="1.78"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -540,7 +540,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/dns-manager-complete-integration-20261021/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="1.77"
+SELF_VERSION="1.78"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -3755,7 +3755,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI common module version: 1.77
+// DNS Manager LuCI common module version: 1.78
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -4433,6 +4433,48 @@ function saveSlotDomains(slot,input,root){
     setAction(false,msg);state.pageNotice.slots=msg;refresh(root,true);
   });
 }
+function refreshDeviceDnsPanels(root){
+  return Promise.all([
+    callLanDevices().catch(function(){return {ok:false,devices:[]};}),
+    callDohStatus().catch(function(){return window.dmState||{};})
+  ]).then(function(v){
+    window.dmLanDevices=v[0]||{ok:false,devices:[]};
+    window.dmState=v[1]||{};
+    renderSlots(root,window.dmState);
+  });
+}
+function saveDeviceDnsDefault(controls,root){
+  if(state.busy||state.jobRunning||!controls)return;
+  var selected=[];
+  var inputs=controls.querySelectorAll('input.dm-device-dns-default-checkbox');
+  Array.prototype.forEach.call(inputs,function(input){
+    if(input.checked&&input.getAttribute('data-available')==='1')selected.push(String(input.value));
+  });
+  selected.sort(function(a,b){return Number(a)-Number(b);});
+  state.busy=true;
+  state.pageNotice.slots=selected.length
+    ? 'Применяю общий выбор DNS '+selected.join(', ')+'…'
+    : 'Отключаю общий выбор DNS…';
+  renderSlots(root,window.dmState||{});
+  callSetDeviceDnsDefault(selected.join(',')).then(function(r){
+    state.busy=false;
+    if(r&&r.ok){
+      state.pageNotice.slots=selected.length
+        ? 'Общий выбор DNS '+selected.join(', ')+' применён для LAN-устройств без индивидуальной привязки.'
+        : 'Общий выбор DNS отключён. Устройства без индивидуальной привязки используют штатный DNS роутера.';
+      setAction(true,selected.length?'Общий выбор DNS сохранён.':'Общий выбор DNS отключён.');
+    }else{
+      var msg=(r&&r.error)||'Не удалось применить общий выбор DNS.';
+      state.pageNotice.slots=msg;setAction(false,msg);
+    }
+    return refreshDeviceDnsPanels(root);
+  }).catch(function(err){
+    state.busy=false;
+    var msg=withRpcError('Не удалось применить общий выбор DNS.',err);
+    state.pageNotice.slots=msg;setAction(false,msg);
+    renderSlots(root,window.dmState||{});
+  });
+}
 function saveDeviceDns(mac,controls,root){
   if(state.busy||state.jobRunning||!controls)return;
   var selected=[];
@@ -4441,26 +4483,24 @@ function saveDeviceDns(mac,controls,root){
     if(input.checked&&input.getAttribute('data-available')==='1')selected.push(String(input.value));
   });
   selected.sort(function(a,b){return Number(a)-Number(b);});
+  var row=controls.parentNode;
+  var excludeInput=row&&row.querySelector?row.querySelector('input.dm-device-dns-exclude'):null;
+  var mode=selected.length?'custom':((excludeInput&&excludeInput.checked)?'exclude':'inherit');
   state.busy=true;
-  callSetDeviceDns(String(mac||''),selected.join(',')).then(function(r){
+  callSetDeviceDns(String(mac||''),selected.join(','),mode).then(function(r){
     state.busy=false;
     if(r&&r.ok){
-      state.pageNotice.slots=selected.length
+      state.pageNotice.slots=mode==='custom'
         ? 'Для устройства '+mac+' сохранены DNS '+selected.join(', ')+'.'
-        : 'Привязка DNS для устройства '+mac+' удалена.';
-      setAction(true,selected.length?'DNS для устройства сохранены.':'Привязка DNS удалена.');
+        : (mode==='exclude'
+          ? 'Устройство '+mac+' исключено из общего выбора DoH.'
+          : 'Устройство '+mac+' использует общий выбор DNS, если он включён.');
+      setAction(true,mode==='custom'?'Индивидуальная привязка DNS сохранена.':(mode==='exclude'?'Устройство исключено из общего DoH.':'Устройство использует общий DNS.'));
     }else{
       var msg=(r&&r.error)||'Не удалось применить DNS для устройства.';
       state.pageNotice.slots=msg;setAction(false,msg);
     }
-    return Promise.all([
-      callLanDevices().catch(function(){return {ok:false,devices:[]};}),
-      callDohStatus().catch(function(){return window.dmState||{};})
-    ]).then(function(v){
-      window.dmLanDevices=v[0]||{ok:false,devices:[]};
-      window.dmState=v[1]||{};
-      renderSlots(root,window.dmState);
-    });
+    return refreshDeviceDnsPanels(root);
   }).catch(function(err){
     state.busy=false;
     var msg=withRpcError('Не удалось применить DNS для устройства.',err);
@@ -4782,9 +4822,28 @@ function renderSlots(root,st){
   e.appendChild(card('DNS по слотам и маршруты доменов',sch));
 
   var inventory=window.dmLanDevices||{};
+  var defaultSlots=String(inventory.default_slots||'').split(',').filter(Boolean);
   var deviceChildren=[
-    E('div',{'class':'dm-mini'},'Выберите один или несколько слотов DNS 1–6 для каждого устройства. Обычные DNS-запросы UDP/TCP на порт 53 будут направляться через отдельный локальный DNS-слушатель к выбранным DoH. При выборе нескольких DNS опрашиваются все выбранные серверы, используется первый ответ. Домены выбранных слотов сохраняют свои маршруты; при назначенном RU также действует региональный маршрут .ru/.su/.рф. Canary-защита учитывается, если включён запрет обхода зашифрованного DNS.')
+    E('div',{'class':'dm-mini'},'Общий выбор DNS применяется ко всем LAN-устройствам без индивидуальной привязки, включая новые устройства. Индивидуальный выбор ниже переопределяет общий; устройство можно отдельно исключить из общего DoH. Обычные DNS-запросы UDP/TCP на порт 53 направляются через локальный DNS-слушатель. Доменные маршруты выбранных слотов и региональный маршрут RU сохраняются.')
   ];
+  var defaultOptions=[];
+  for(var di=1;di<=6;di++){
+    var dkey=String(di);
+    var dusable=available[dkey]===true;
+    var dselected=defaultSlots.indexOf(dkey)>=0;
+    var defaultAttrs={'type':'checkbox','class':'dm-device-dns-default-checkbox','value':dkey,'data-available':dusable?'1':'0'};
+    if(dselected)defaultAttrs.checked='';
+    if(!dusable&&!dselected)defaultAttrs.disabled='';
+    var defaultCb=E('input',defaultAttrs);
+    defaultOptions.push(E('label',{'class':'dm-device-dns-option'},[defaultCb,E('span',{},'DNS '+dkey+(dusable?(' · '+(slotNames[dkey]||'назначен')):' · слот пуст'))]));
+  }
+  var defaultControls=E('div',{'class':'dm-device-dns-options'},defaultOptions);
+  deviceChildren.push(E('div',{'class':'dm-slot-entry dm-device-dns-default'},[
+    E('div',{'class':'dm-slot-domains-heading'},'Для всех LAN-устройств по умолчанию'),
+    E('div',{'class':'dm-slot-domains-help'},defaultSlots.length?'Сейчас общий выбор: DNS '+defaultSlots.join(', ')+'. Чтобы отключить его, снимите все галки и сохраните.':'Общий выбор выключен. Чтобы включить, выберите один или несколько назначенных слотов.'),
+    defaultControls,
+    btn(state.busy?'Сохраняю…':'Сохранить общий выбор DNS','cbi-button-neutral',function(){saveDeviceDnsDefault(defaultControls,root);},{disabled:!!state.busy||!!state.jobRunning})
+  ]));
   var devices=Array.isArray(inventory.devices)?inventory.devices:[];
   var available={};
   var slotNames={};
@@ -4807,7 +4866,10 @@ function renderSlots(root,st){
       var source=String(d.source||'');
       var sourceLabel=source==='DHCP'?'DHCP-аренда':(source==='ARP'?'ARP-кэш':(source==='NDP'?'IPv6-сосед (NDP)':(source==='ASSIGN'?'сохранённая привязка':'статическая DHCP-запись')));
       var chosen=String(d.assigned_slots||'').split(',').filter(Boolean);
+      var deviceMode=String(d.dns_mode||'');
       var options=[];
+      var excludeInput=E('input',{'type':'checkbox','class':'dm-device-dns-exclude'});
+      if(deviceMode==='exclude')excludeInput.checked='';
       for(var i=1;i<=6;i++){
         var key=String(i);
         var selected=chosen.indexOf(key)>=0;
@@ -4822,19 +4884,29 @@ function renderSlots(root,st){
       var controls=E('div',{'class':'dm-device-dns-options'},options);
       var statusText=active?'обнаружено в сети':(source==='ASSIGN'?'сохранено, устройство сейчас не обнаружено':'неактивно');
       var detail='IP: '+(d.ip||'—')+' · MAC: '+(d.mac||'—')+' · Источник: '+sourceLabel;
+      var effectiveText;
+      if(deviceMode==='custom'&&chosen.length)effectiveText='Индивидуальный выбор: DNS '+chosen.join(', ')+'.';
+      else if(deviceMode==='exclude')effectiveText='Исключено из общего DoH; используется обычный DNS-маршрут роутера.';
+      else if(defaultSlots.length)effectiveText='По общему выбору: DNS '+defaultSlots.join(', ')+'.';
+      else effectiveText='Индивидуальная привязка не задана; используется обычный DNS-маршрут роутера.';
       var savedWarning=chosen.some(function(n){return available[n]!==true;})
         ? E('div',{'class':'dm-inline-msg info'},'В привязке есть слот, который сейчас не назначен. При сохранении он будет удалён из выбора.')
         : null;
       var children=[
         E('div',{'class':'dm-slot-domains-heading'},name+' · '+statusText),
         E('div',{'class':'dm-slot-domains-help'},detail),
+        E('div',{'class':'dm-slot-domains-help'},effectiveText),
         E('div',{'class':'dm-slot-domains-heading'},'Использовать DoH'),
         controls
       ];
+      if(defaultSlots.length||deviceMode==='exclude'){
+        children.push(E('label',{'class':'dm-device-dns-exclude-option'},[excludeInput,E('span',{},'Исключить из общего выбора DoH (обычный DNS)')]));
+      }
       if(savedWarning)children.push(savedWarning);
       children.push(btn(state.busy?'Сохраняю…':'Сохранить привязку','cbi-button-neutral',function(){saveDeviceDns(d.mac,controls,root);},{disabled:!!state.busy||!!state.jobRunning}));
       deviceRows.push(E('div',{'class':'dm-slot-entry dm-device-dns-entry'},children));
     });
+
     deviceChildren.push(E('div',{'class':'dm-slot-table'},deviceRows));
   }
   deviceChildren.push(E('div',{'class':'dm-mini'},'Список объединяет DHCP-аренды, IPv4 ARP, IPv6 NDP и статические DHCP-записи. Клиент должен обращаться к обычному DNS на порту 53; собственный DoH поверх HTTPS/443 и DoT на 853 этой привязкой не перенаправляются. Список можно обновить после подключения нового устройства.'));
@@ -6051,7 +6123,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 1.77
+// DNS Manager LuCI version: 1.78
 return view.extend({
   load: DM.load,
   render: DM.render,
