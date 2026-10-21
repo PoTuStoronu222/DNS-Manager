@@ -369,7 +369,7 @@ grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validat
 grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
 grep -q 'VERSION="3.63"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
-grep -q 'VERSION="1.55"' dns-manager-luci.sh || fail "LuCI version not bumped"
+grep -q 'VERSION="1.56"' dns-manager-luci.sh || fail "LuCI version not bumped"
 [ "$(grep -Fc "printf ',\"domains\":';" dns-manager-luci.sh)" -eq 2 ] || fail "slot domain RPC JSON keys are malformed"
 if grep -Fq "printf ',\\\"domains\\\":';" dns-manager-luci.sh; then
     fail "slot domain RPC JSON key contains a literal escape"
@@ -427,6 +427,45 @@ awk '/^job_start_test_current\(\) \{/,/^job_start_test_one\(\) \{/' "$tmp/backen
 awk '/^job_start_test_one\(\) \{/,/^job_json\(\) \{/' "$tmp/backend.sh" | grep -q '_job_pid=\$!' || fail "test_one job PID is not recorded"
 awk '/^job_start_test_one\(\) \{/,/^job_json\(\) \{/' "$tmp/backend.sh" | grep -q 'job_record_pid "\$_jid" "\$_job_pid"' || fail "test_one job PID is not registered"
 ok "all asynchronous DNS jobs register their working PID"
+# Regress the shell-global collision between job helpers and the requested DNS ID.
+awk '/^job_start_test_one\(\) \{/,/^job_json\(\) \{/' "$tmp/backend.sh" | sed '$d' > "$tmp/job_start_test_one.sh"
+[ -s "$tmp/job_start_test_one.sh" ] || fail "single DNS job function extraction"
+cat > "$tmp/single_dns_job_identity_runner.sh" <<'EOF_SINGLE_DNS_ID'
+#!/bin/sh
+set -eu
+ROOT_TMP="$1"
+JOB_DIR="$ROOT_TMP/jobs"
+TMP_DIR="$ROOT_TMP/dns"
+COMMIT_FILE="$ROOT_TMP/committed-id"
+mkdir -p "$JOB_DIR" "$TMP_DIR"
+. "$2"
+new_job_id() { printf 'test_one'; }
+job_active() { _id="$1"; return 1; }
+job_prepare() { _id="$1"; mkdir -p "$JOB_DIR/$_id"; : > "$JOB_DIR/$_id/state"; : > "$JOB_DIR/$_id/output"; }
+job_write() { _id="$1"; _key="$2"; _value="$3"; printf '%s=%s\n' "$_key" "$_value" >> "$JOB_DIR/$_id/state"; }
+job_record_pid() { _id="$1"; _pid="$2"; :; }
+load_manager() { _id=doh_lacontrevoie; return 0; }
+acquire_test_lock() { return 0; }
+test_one_dns() { id="$1"; printf '%s|clean|Fake DNS|123|OK\n' "$id" > "$TMP_DIR/t.$id"; }
+commit_single_test_result() { printf '%s\n' "$1" > "$COMMIT_FILE"; cp "$2" "$COMMIT_FILE.result"; }
+set_check_stamp() { :; }
+release_test_lock() { :; }
+json_error() { printf 'ERROR:%s\n' "$*" >&2; return 1; }
+json_quote() { printf '"%s"' "$1"; }
+job_start_test_one google_clean >/dev/null
+i=0
+while [ "$(sed -n 's/^status=//p' "$JOB_DIR/test_one/state" | tail -n1)" = running ]; do
+    [ "$i" -lt 100 ] || { echo "single DNS job timed out" >&2; exit 1; }
+    sleep 0.02
+    i=$((i + 1))
+done
+grep -Fqx 'dns_id=google_clean' "$JOB_DIR/test_one/state"
+grep -Fq 'Проверяю реальный DoH endpoint: google_clean.' "$JOB_DIR/test_one/output"
+[ "$(cat "$COMMIT_FILE")" = google_clean ]
+EOF_SINGLE_DNS_ID
+chmod +x "$tmp/single_dns_job_identity_runner.sh"
+"$tmp/single_dns_job_identity_runner.sh" "$tmp/single-dns-job" "$tmp/job_start_test_one.sh" || fail "single DNS job overwrites requested resolver ID"
+ok "single DNS check preserves the requested resolver ID across helpers"
 # NTP status must follow the real OpenWrt system.ntp.server list, not the manager preference.
 grep -q '^ntp_current_preset() {' dns-manager.sh || fail "NTP actual-state detector missing"
 awk '/^ntp_current_preset\(\) \{/,/^\}/' dns-manager.sh > "$tmp/ntp_current_preset.sh"

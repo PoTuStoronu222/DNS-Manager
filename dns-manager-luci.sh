@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.55
+# Version: 1.56
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -32,7 +32,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/ax3000t-full-integration-20261021/dns-manager-luci.sh"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.55"
+VERSION="1.56"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -158,7 +158,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/ax3000t-full-integration-20261021/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="1.55"
+SELF_VERSION="1.56"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -2441,12 +2441,13 @@ job_start_test_current() {
     printf '{"ok":true,"job":'; json_quote "$_jid"; printf '}'
 }
 job_start_test_one() {
-    _id="$1"; case "$_id" in ''|*[!A-Za-z0-9_-]*) json_error "Неверный ID DNS"; return;; esac
+    local _dns_id _jid _job_pid _result_file _one_ms _one_status _stamp
+    _dns_id="$1"; case "$_dns_id" in ''|*[!A-Za-z0-9_-]*) json_error "Неверный ID DNS"; return;; esac
     _jid="$(new_job_id test_one)"
     job_active "$_jid" && { json_error "Проверка DNS уже выполняется"; return; }
     job_prepare "$_jid" || { json_error "Не удалось подготовить задачу"; return; }
     printf 'status=running\nstarted=%s\nmode=one\n' "$(date +%s)" > "$JOB_DIR/$_jid/state"
-    job_write "$_jid" dns_id "$_id"
+    job_write "$_jid" dns_id "$_dns_id"
     (
         exec >>"$JOB_DIR/$_jid/output" 2>&1
         if ! load_manager; then
@@ -2456,13 +2457,13 @@ job_start_test_one() {
             job_write "$_jid" status failed; job_write "$_jid" result fail; job_write "$_jid" finished "$(date +%s)"; exit 1
         fi
         # Keep single-DNS checks identical to the full/selected catalog test path.
-        printf "Проверяю реальный DoH endpoint: %s.\n" "$_id"
-        rm -f "$TMP_DIR/t.$_id" 2>/dev/null || true
-        test_one_dns "$_id" || true
-        _result_file="$TMP_DIR/t.$_id"
+        printf "Проверяю реальный DoH endpoint: %s.\n" "$_dns_id"
+        rm -f "$TMP_DIR/t.$_dns_id" 2>/dev/null || true
+        test_one_dns "$_dns_id" || true
+        _result_file="$TMP_DIR/t.$_dns_id"
         if [ -s "$_result_file" ]; then
-            _one_ms="$(awk -F"|" -v id="$_id" '$1==id && NF>=5 {print $4;exit}' "$_result_file" 2>/dev/null || true)"
-            _one_status="$(awk -F"|" -v id="$_id" '$1==id && NF>=5 {print $5;exit}' "$_result_file" 2>/dev/null || true)"
+            _one_ms="$(awk -F"|" -v id="$_dns_id" '$1==id && NF>=5 {print $4;exit}' "$_result_file" 2>/dev/null || true)"
+            _one_status="$(awk -F"|" -v id="$_dns_id" '$1==id && NF>=5 {print $5;exit}' "$_result_file" 2>/dev/null || true)"
         else
             _one_ms=""
             _one_status="TEST_NO_RESULT"
@@ -2470,7 +2471,7 @@ job_start_test_one() {
         if [ -n "$_one_status" ] && [ "$_one_status" != "TEST_NO_RESULT" ]; then
             job_write "$_jid" ping "$_one_ms"
             job_write "$_jid" dns_status "$_one_status"
-            if ! commit_single_test_result "$_id" "$_result_file"; then
+            if ! commit_single_test_result "$_dns_id" "$_result_file"; then
                 job_write "$_jid" status failed
                 job_write "$_jid" result fail
                 job_write "$_jid" finished "$(date +%s)"
@@ -2482,7 +2483,7 @@ job_start_test_one() {
             # Only after the common result was verified do we advance the
             # per-DNS freshness stamp used by LuCI.
             _stamp="$(date +%s)"
-            set_check_stamp "$_id" "$_stamp" || true
+            set_check_stamp "$_dns_id" "$_stamp" || true
             rm -f "$_result_file" 2>/dev/null || true
             release_test_lock
             job_write "$_jid" status done
@@ -2780,7 +2781,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI common module version: 1.55
+// DNS Manager LuCI common module version: 1.56
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -4862,7 +4863,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 1.55
+// DNS Manager LuCI version: 1.56
 return view.extend({
   load: DM.load,
   render: DM.render,
