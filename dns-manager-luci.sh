@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.70
+# Version: 1.71
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -32,7 +32,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/router-validation-20261020/dns-manager-luci.sh"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.70"
+VERSION="1.71"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -115,6 +115,7 @@ dmd_slot_domains() {
 }
 
 dmd_normalize_slots() {
+    if printf '%s' "$1" | grep -q '[^1-6,[:space:]]'; then return 1; fi
     _dmd_raw="$(printf '%s' "$1" | tr ',' ' ')"
     _dmd_list=""
     for _dmd_slot in $_dmd_raw; do
@@ -481,7 +482,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/router-validation-20261020/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="1.70"
+SELF_VERSION="1.71"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -3198,6 +3199,12 @@ device_dns_slot_port() {
 set_device_dns_json() {
     DMD_RPC_MAC="$(printf '%s' "${1:-}" | tr 'A-F' 'a-f')"
     DMD_RPC_RAW_SLOTS="${2:-}"
+    if [ -n "$DMD_RPC_RAW_SLOTS" ]; then
+        printf '%s' "$DMD_RPC_RAW_SLOTS" | awk '
+            { gsub(/[[:space:]]/, ""); if ($0 !~ /^[1-6](,[1-6])*$/) bad=1 }
+            END { exit bad ? 1 : 0 }
+        ' || { json_error "Список DNS должен содержать номера слотов 1–6 через запятую"; return; }
+    fi
     printf '%s\n' "$DMD_RPC_MAC" | awk '
         /^[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]$/ { ok=1 }
         END { exit ok ? 0 : 1 }
@@ -3543,7 +3550,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI common module version: 1.70
+// DNS Manager LuCI common module version: 1.71
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
