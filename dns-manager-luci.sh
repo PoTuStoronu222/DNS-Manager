@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.78
+# Version: 1.79
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -32,7 +32,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/dns-manager-complete-integration-20261021/dns-manager-luci.sh"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.78"
+VERSION="1.79"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -374,8 +374,8 @@ dmd_build_and_install() {
                     printf 'iifname "%s" ether saddr != { %s } udp dport 53 redirect to :%s\n' "$DMD_LAN_DEV" "$DMD_SKIP_SET" "$DMD_DEFAULT_PORT" >> "$DMD_STAGE/nft.rules"
                     printf 'iifname "%s" ether saddr != { %s } tcp dport 53 redirect to :%s\n' "$DMD_LAN_DEV" "$DMD_SKIP_SET" "$DMD_DEFAULT_PORT" >> "$DMD_STAGE/nft.rules"
                 else
-                    printf 'iifname "%s" udp dport 53 redirect to :%s\n' "$DMD_LAN_DEV" "$DMD_DEFAULT_PORT" "$DMD_DEFAULT_PORT" >> "$DMD_STAGE/nft.rules"
-                    printf 'iifname "%s" tcp dport 53 redirect to :%s\n' "$DMD_LAN_DEV" "$DMD_DEFAULT_PORT" "$DMD_DEFAULT_PORT" >> "$DMD_STAGE/nft.rules"
+                    printf 'iifname "%s" udp dport 53 redirect to :%s\n' "$DMD_LAN_DEV" "$DMD_DEFAULT_PORT" >> "$DMD_STAGE/nft.rules"
+                    printf 'iifname "%s" tcp dport 53 redirect to :%s\n' "$DMD_LAN_DEV" "$DMD_DEFAULT_PORT" >> "$DMD_STAGE/nft.rules"
                 fi
                 DMD_ACTIVE=$((DMD_ACTIVE + 1))
                 ;;
@@ -540,7 +540,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/dns-manager-complete-integration-20261021/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="1.78"
+SELF_VERSION="1.79"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -3755,7 +3755,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI common module version: 1.78
+// DNS Manager LuCI common module version: 1.79
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -4822,6 +4822,15 @@ function renderSlots(root,st){
   e.appendChild(card('DNS по слотам и маршруты доменов',sch));
 
   var inventory=window.dmLanDevices||{};
+  var available={};
+  var slotNames={};
+  (st.slots||[]).forEach(function(x){
+    var n=String(x&&x.slot||'');
+    if(/^[1-6]$/.test(n)){
+      available[n]=!!(x.id&&x.port);
+      slotNames[n]=String(x.name||x.id||'');
+    }
+  });
   var defaultSlots=String(inventory.default_slots||'').split(',').filter(Boolean);
   var deviceChildren=[
     E('div',{'class':'dm-mini'},'Общий выбор DNS применяется ко всем LAN-устройствам без индивидуальной привязки, включая новые устройства. Индивидуальный выбор ниже переопределяет общий; устройство можно отдельно исключить из общего DoH. Обычные DNS-запросы UDP/TCP на порт 53 направляются через локальный DNS-слушатель. Доменные маршруты выбранных слотов и региональный маршрут RU сохраняются.')
@@ -4845,15 +4854,6 @@ function renderSlots(root,st){
     btn(state.busy?'Сохраняю…':'Сохранить общий выбор DNS','cbi-button-neutral',function(){saveDeviceDnsDefault(defaultControls,root);},{disabled:!!state.busy||!!state.jobRunning})
   ]));
   var devices=Array.isArray(inventory.devices)?inventory.devices:[];
-  var available={};
-  var slotNames={};
-  (st.slots||[]).forEach(function(x){
-    var n=String(x&&x.slot||'');
-    if(/^[1-6]$/.test(n)){
-      available[n]=!!(x.id&&x.port);
-      slotNames[n]=String(x.name||x.id||'');
-    }
-  });
   if(!inventory.ok){
     deviceChildren.push(E('div',{'class':'dm-hint'},'Не удалось получить список устройств LAN.'));
   }else if(!devices.length){
@@ -4868,8 +4868,9 @@ function renderSlots(root,st){
       var chosen=String(d.assigned_slots||'').split(',').filter(Boolean);
       var deviceMode=String(d.dns_mode||'');
       var options=[];
-      var excludeInput=E('input',{'type':'checkbox','class':'dm-device-dns-exclude'});
-      if(deviceMode==='exclude')excludeInput.checked='';
+      var excludeAttrs={'type':'checkbox','class':'dm-device-dns-exclude'};
+      if(deviceMode==='exclude')excludeAttrs.checked='';
+      var excludeInput=E('input',excludeAttrs);
       for(var i=1;i<=6;i++){
         var key=String(i);
         var selected=chosen.indexOf(key)>=0;
@@ -6123,7 +6124,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 1.78
+// DNS Manager LuCI version: 1.79
 return view.extend({
   load: DM.load,
   render: DM.render,
@@ -6220,7 +6221,7 @@ uninstall_files() {
         /etc/init.d/dns-manager-device-dns disable >/dev/null 2>&1 || true
     fi
     rm -f /etc/nftables.d/90-dns-manager-device-dns.nft /etc/nftables.d/90-dns-manager-device-dns.nft.tmp.* 2>/dev/null || true
-    rm -f /etc/init.d/dns-manager-device-dns /etc/dns-manager/config/device-dns.conf /etc/dns-manager/device-dns/redirects.nft /etc/dns-manager/device-dns/redirects.nft.tmp.* 2>/dev/null || true
+    rm -f /etc/init.d/dns-manager-device-dns /etc/dns-manager/config/device-dns.conf /etc/dns-manager/config/device-dns-default.conf /etc/dns-manager/device-dns/redirects.nft /etc/dns-manager/device-dns/redirects.nft.tmp.* 2>/dev/null || true
     rm -rf /etc/dns-manager/device-dns 2>/dev/null || true
     /etc/init.d/firewall reload >/dev/null 2>&1 || return 1
     rm -f "$RPC_PLUGIN" "$BACKEND_FILE" "$ACL_FILE" "$MENU_FILE" "$VIEW_FILE" 2>/dev/null || true
