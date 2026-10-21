@@ -1811,7 +1811,7 @@ custom_dns_validate_input() {
     _host="${_rest%%/*}"
     _host="${_host%%\?*}"
     _host="${_host%%#*}"
-    case "$_host" in ''|*'@'*|*'\\'*) CUSTOM_DNS_ERROR="В адресе DoH указан некорректный узел."; return 1;; esac
+    case "$_host" in ''|*'@'*) CUSTOM_DNS_ERROR="В адресе DoH указан некорректный узел."; return 1;; esac
     return 0
 }
 custom_dns_add() {
@@ -1845,7 +1845,7 @@ custom_dns_add() {
     _stamp="$(date +%s 2>/dev/null || printf 0)"
     _seq=1
     while [ "$_seq" -le 100 ]; do
-        _id="custom_${_stamp}_$_${_seq}"
+        _id="custom_${_stamp}_$$_${_seq}"
         if ! dns_field "$_id" 4 >/dev/null 2>&1; then break; fi
         _seq=$((_seq+1))
     done
