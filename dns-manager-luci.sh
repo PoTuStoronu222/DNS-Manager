@@ -5882,15 +5882,26 @@ EOF_PAGE
 }
 
 uninstall_files() {
-    # Remove only DNS Manager's per-device listener and fw4 include.
+    # Refuse to remove a similarly named include if it is not exactly ours.
+    if uci -q get firewall.dns_manager_device_dns >/dev/null 2>&1; then
+        if [ "$(uci -q get firewall.dns_manager_device_dns.type 2>/dev/null || true)" != nftables ] ||
+           [ "$(uci -q get firewall.dns_manager_device_dns.path 2>/dev/null || true)" != /etc/dns-manager/device-dns/redirects.nft ] ||
+           [ "$(uci -q get firewall.dns_manager_device_dns.position 2>/dev/null || true)" != chain-pre ] ||
+           [ "$(uci -q get firewall.dns_manager_device_dns.chain 2>/dev/null || true)" != dstnat_lan ]; then
+            err "Найден чужой firewall include с именем dns_manager_device_dns; ничего не удалено."
+            return 1
+        fi
+        uci -q delete firewall.dns_manager_device_dns || return 1
+        uci commit firewall || return 1
+    fi
     if [ -x /etc/init.d/dns-manager-device-dns ]; then
         /etc/init.d/dns-manager-device-dns stop >/dev/null 2>&1 || true
         /etc/init.d/dns-manager-device-dns disable >/dev/null 2>&1 || true
     fi
     rm -f /etc/nftables.d/90-dns-manager-device-dns.nft /etc/nftables.d/90-dns-manager-device-dns.nft.tmp.* 2>/dev/null || true
-    rm -f /etc/init.d/dns-manager-device-dns /etc/dns-manager/config/device-dns.conf 2>/dev/null || true
+    rm -f /etc/init.d/dns-manager-device-dns /etc/dns-manager/config/device-dns.conf /etc/dns-manager/device-dns/redirects.nft /etc/dns-manager/device-dns/redirects.nft.tmp.* 2>/dev/null || true
     rm -rf /etc/dns-manager/device-dns 2>/dev/null || true
-    /etc/init.d/firewall reload >/dev/null 2>&1 || true
+    /etc/init.d/firewall reload >/dev/null 2>&1 || return 1
     rm -f "$RPC_PLUGIN" "$BACKEND_FILE" "$ACL_FILE" "$MENU_FILE" "$VIEW_FILE" 2>/dev/null || true
     rm -rf "$VIEW_DIR" "$RESOURCE_DIR" "$RUNTIME_DIR" "$BACKUP_DIR" 2>/dev/null || true
     rm -f "$STATE_FILE" 2>/dev/null || true
