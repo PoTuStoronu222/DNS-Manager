@@ -173,8 +173,8 @@ dmd_build_and_install() {
     : > "$DMD_STAGE/profiles.map"
     : > "$DMD_STAGE/nft.rules"
 
-    SLOT_1=""; SLOT_2=""; SLOT_3=""; SLOT_4=""; SLOT_5=""; SLOT_6=""
-    PORT_1=""; PORT_2=""; PORT_3=""; PORT_4=""; PORT_5=""; PORT_6=""
+    SLOT_1=""; SLOT_2=""; SLOT_3=""; SLOT_4=""; SLOT_5=""; SLOT_6=""; SLOT_RU=""
+    PORT_1=""; PORT_2=""; PORT_3=""; PORT_4=""; PORT_5=""; PORT_6=""; PORT_RU=""
     [ ! -r "$DMD_MANAGER_CONFIG" ] || . "$DMD_MANAGER_CONFIG" || { dmd_cleanup_stage; return 1; }
 
     DMD_LAN_DEV="$(uci -q get network.lan.device 2>/dev/null || true)"
@@ -230,6 +230,14 @@ dmd_build_and_install() {
                             printf 'server=/%s/127.0.0.1#%s\n' "$DMD_DOMAIN" "$DMD_UPSTREAM_PORT"
                         done
                     done
+                    if [ -n "${SLOT_RU:-}" ] && [ -n "${PORT_RU:-}" ]; then
+                        for DMD_TLD in /ru /su /xn--p1ai; do
+                            printf 'server=%s/127.0.0.1#%s\n' "$DMD_TLD" "$PORT_RU"
+                        done
+                    fi
+                    if [ "${BLOCK_EXTERNAL_DNS:-0}" = 1 ]; then
+                        printf 'server=/mask.icloud.com/\nserver=/mask-h2.icloud.com/\nserver=/use-application-dns.net/\n'
+                    fi
                 } > "$DMD_PROFILE" || { dmd_cleanup_stage; return 1; }
                 /usr/sbin/dnsmasq --test --conf-file="$DMD_PROFILE" >/dev/null 2>&1 || {
                     dmd_log "dnsmasq rejected per-device profile $DMD_MASK."
@@ -4480,7 +4488,7 @@ function renderSlots(root,st){
 
   var inventory=window.dmLanDevices||{};
   var deviceChildren=[
-    E('div',{'class':'dm-mini'},'Выберите один или несколько слотов DNS 1–6 для каждого устройства. Обычные DNS-запросы UDP/TCP на порт 53 будут направляться через отдельный локальный DNS-слушатель к выбранным DoH. При выборе нескольких DNS опрашиваются все выбранные серверы, используется первый ответ. Домены, указанные у выбранных слотов, сохраняют свои маршруты и для этого устройства.')
+    E('div',{'class':'dm-mini'},'Выберите один или несколько слотов DNS 1–6 для каждого устройства. Обычные DNS-запросы UDP/TCP на порт 53 будут направляться через отдельный локальный DNS-слушатель к выбранным DoH. При выборе нескольких DNS опрашиваются все выбранные серверы, используется первый ответ. Домены выбранных слотов сохраняют свои маршруты; при назначенном RU также действует региональный маршрут .ru/.su/.рф. Canary-защита учитывается, если включён запрет обхода зашифрованного DNS.')
   ];
   var devices=Array.isArray(inventory.devices)?inventory.devices:[];
   var available={};
