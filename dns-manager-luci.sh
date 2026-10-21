@@ -117,7 +117,7 @@ EOF_MENU
     "description": "DNS Manager native LuCI interface",
     "read": {
       "ubus": {
-        "dns_manager": [ "status", "runtime", "doh_status", "network_status", "time_status", "page_meta", "catalog", "job", "log", "update_check" ]
+        "dns_manager": [ "status", "runtime", "doh_status", "network_status", "lan_devices", "time_status", "page_meta", "catalog", "job", "log", "update_check" ]
       }
     },
     "write": {
