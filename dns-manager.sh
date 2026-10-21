@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.65"
+VERSION="3.66"
 # 3.38: clear the LuCI update flag after a successful CLI update.
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
@@ -4000,6 +4000,9 @@ _apply_settings_impl() {
             tx_restore_on_failure
             return 1
         }
+        if ! refresh_device_dns_runtime; then
+            warn_msg "Основная DNS-схема применена, но привязки отдельных устройств пришлось отключить из-за ошибки применения."
+        fi
         if [ "${WATCHDOG_ENABLED:-0}" = 1 ] || [ "${FORCE_DOH:-0}" = 1 ]; then
             if ! watchdog_service_start_enable; then
                 err_msg "Watchdog не удалось запустить после фиксации конфигурации. Изменения DNS откатываются."
@@ -4023,6 +4026,19 @@ _apply_settings_impl() {
         log_tx "VERIFY" "all" "VERIFY" "OK" "dnsmasq=$DNSMASQ_RUN,doh=$DOH_TOTAL"
     pause
 }
+refresh_device_dns_runtime() {
+    # The LuCI companion owns the per-device resolver service and rule include.
+    # Rebuild only after manager.conf has been atomically saved.
+    [ -x /etc/init.d/dns-manager-device-dns ] || return 0
+    [ -f /etc/dns-manager/config/device-dns.conf ] || return 0
+    if /etc/init.d/dns-manager-device-dns restart >/dev/null 2>&1; then
+        log_msg "Привязки DNS по устройствам обновлены."
+        return 0
+    fi
+    log_msg "Не удалось обновить DNS-привязки устройств. Служба отключает свои правила, чтобы устройства вернулись к обычному DNS-маршруту."
+    return 1
+}
+
 firewall_backend_require() {
     detect_firewall_backend
     case "$SYS_FW" in
@@ -4377,6 +4393,7 @@ restore_dns_core() {
     /etc/init.d/dnsmasq restart >/dev/null 2>&1 || true
     reload_fw >/dev/null 2>&1 || true
     clear_dns_core_runtime_state || _rc=1
+    refresh_device_dns_runtime >/dev/null 2>&1 || _rc=1
 
     if [ "$_rc" -eq 0 ]; then
         ok_msg "Стандартная настройка DNS восстановлена."
@@ -7597,7 +7614,7 @@ startup_update_check() {
 # STARTUP REQUIRED FUNCTION CHECK
 # ==========================================
 startup_required_function_check() {
-    for _fn in restore_hdp_package_defaults get_dnsmasq_section exact_list_has doh_selected_config_current validate_selected_slots ensure_dnsmasq_balancer detect_forced_dns_path clear_all_doh_for_apply rebuild_selected_hdp_sections reconcile_dnsmasq apply_ntp_ip_fallback luci_component_state luci_companion_check_update luci_companion_install luci_companion_remove luci_companion_update watchdog_embedded_loop watchdog_service_install_files watchdog_service_remove_files; do
+    for _fn in restore_hdp_package_defaults get_dnsmasq_section exact_list_has doh_selected_config_current validate_selected_slots ensure_dnsmasq_balancer detect_forced_dns_path refresh_device_dns_runtime clear_all_doh_for_apply rebuild_selected_hdp_sections reconcile_dnsmasq apply_ntp_ip_fallback luci_component_state luci_companion_check_update luci_companion_install luci_companion_remove luci_companion_update watchdog_embedded_loop watchdog_service_install_files watchdog_service_remove_files; do
         type "$_fn" >/dev/null 2>&1 || {
             printf "${C_RED}[✗] Критическая ошибка: отсутствует функция $_fn. Запуск остановлен до изменения настроек роутера.${C_NC}\n"
             return 1
