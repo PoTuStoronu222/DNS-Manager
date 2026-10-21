@@ -1408,6 +1408,18 @@ lan_devices_json() {
         ' /proc/net/arp >> "$_ld_tmp" 2>/dev/null || true
     fi
 
+    # IPv6 neighbours are discovered from the Linux NDP table when iproute2 is available.
+    if command -v ip >/dev/null 2>&1; then
+        ip -6 neigh show dev "$_ld_dev" 2>/dev/null | awk '
+            $1 ~ /:/ && $0 !~ /[[:space:]](FAILED|INCOMPLETE)([[:space:]]|$)/ {
+                mac = ""
+                for (i = 2; i < NF; i++) if ($i == "lladdr") mac = tolower($(i + 1))
+                if (mac ~ /^[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]$/)
+                    printf "%s|%s||NDP|1\n", mac, $1
+            }
+        ' >> "$_ld_tmp" 2>/dev/null || true
+    fi
+
     # Static DHCP host entries remain visible while their devices are offline.
     _ld_hosts="$(uci -q show dhcp 2>/dev/null | sed -n 's/^dhcp\.\([^.=]*\)=host$/\1/p')"
     for _ld_sec in $_ld_hosts; do
@@ -1435,6 +1447,7 @@ lan_devices_json() {
             if ($3 != "" && $3 != "*" && name[mac] == "") name[mac] = $3
             if ($4 == "DHCP") source[mac] = "DHCP"
             else if ($4 == "ARP" && source[mac] != "DHCP") source[mac] = "ARP"
+            else if ($4 == "NDP" && source[mac] != "DHCP" && source[mac] != "ARP") source[mac] = "NDP"
             else if ($4 == "static DHCP" && source[mac] == "") source[mac] = "static DHCP"
             if ($5 == "1") online[mac] = 1
         }
@@ -4051,7 +4064,7 @@ function renderSlots(root,st){
 
   var inventory=window.dmLanDevices||{};
   var deviceChildren=[
-    E('div',{'class':'dm-mini'},'Список объединяет DHCP-аренды, ARP-кэш и сохранённые статические DHCP-записи. Спящие устройства и клиенты, которых роутер ещё не обнаружил, могут отсутствовать.')
+    E('div',{'class':'dm-mini'},'Список объединяет DHCP-аренды, ARP/NDP-кэш и сохранённые статические DHCP-записи. Спящие устройства и клиенты, которых роутер ещё не обнаружил, могут отсутствовать.')
   ];
   var devices=Array.isArray(inventory.devices)?inventory.devices:[];
   if(!inventory.ok){
@@ -4064,7 +4077,7 @@ function renderSlots(root,st){
       var active=String(d.online)==='1';
       var name=String(d.name||'').trim()||'Устройство без имени';
       var source=String(d.source||'');
-      var sourceLabel=source==='DHCP'?'DHCP-аренда':(source==='ARP'?'ARP-кэш':'статическая DHCP-запись');
+      var sourceLabel=source==='DHCP'?'DHCP-аренда':(source==='ARP'?'ARP-кэш':(source==='NDP'?'IPv6-сосед (NDP)':'статическая DHCP-запись'));
       deviceRows.push(E('div',{'class':'dm-slot-entry'},[
         E('div',{'class':'dm-slot-domains-heading'},name+' · '+(active?'обнаружено в сети':'неактивно')),
         E('div',{'class':'dm-slot-domains-help'},'IP: '+(d.ip||'—')+' · MAC: '+(d.mac||'—')+' · Источник: '+sourceLabel)
