@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.66"
+VERSION="3.67"
 # 3.38: clear the LuCI update flag after a successful CLI update.
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
@@ -5318,6 +5318,8 @@ luci_component_state() {
         printf '%s\n' "$_rpc_methods" | grep -Fq '"status":{}' || { printf '2\n'; return 0; }
         printf '%s\n' "$_rpc_methods" | grep -Fq '"doh_status":{}' || { printf '2\n'; return 0; }
         printf '%s\n' "$_rpc_methods" | grep -Fq '"network_status":{}' || { printf '2\n'; return 0; }
+        printf '%s\n' "$_rpc_methods" | grep -Fq '"lan_devices":{}' || { printf '2\n'; return 0; }
+        printf '%s\n' "$_rpc_methods" | grep -Fq '"set_device_dns":{"mac":"String","slots":"String"}' || { printf '2\n'; return 0; }
         printf '%s\n' "$_rpc_methods" | grep -Fq '"time_status":{}' || { printf '2\n'; return 0; }
         printf '%s\n' "$_rpc_methods" | grep -Fq '"page_meta":{}' || { printf '2\n'; return 0; }
         printf '1\n'
@@ -5531,14 +5533,26 @@ luci_companion_install() {
 }
 
 luci_companion_remove_fallback() {
-    # The installed marker was checked by luci_companion_remove(). Remove only
-    # the companion's fixed, namespaced paths and its own device-DNS runtime.
+    # Validate ownership before changing either the firewall include or its file.
+    if uci -q get firewall.dns_manager_device_dns >/dev/null 2>&1; then
+        if [ "$(uci -q get firewall.dns_manager_device_dns.type 2>/dev/null || true)" != nftables ] ||
+           [ "$(uci -q get firewall.dns_manager_device_dns.path 2>/dev/null || true)" != /etc/dns-manager/device-dns/redirects.nft ] ||
+           [ "$(uci -q get firewall.dns_manager_device_dns.position 2>/dev/null || true)" != chain-pre ] ||
+           [ "$(uci -q get firewall.dns_manager_device_dns.chain 2>/dev/null || true)" != dstnat_lan ]; then
+            warn_msg "Найден чужой firewall include с именем dns_manager_device_dns; удаление остановлено."
+            return 1
+        fi
+    fi
     if [ -x /etc/init.d/dns-manager-device-dns ]; then
         /etc/init.d/dns-manager-device-dns stop >/dev/null 2>&1 || true
         /etc/init.d/dns-manager-device-dns disable >/dev/null 2>&1 || true
     fi
+    if uci -q get firewall.dns_manager_device_dns >/dev/null 2>&1; then
+        uci -q delete firewall.dns_manager_device_dns || return 1
+        uci commit firewall || return 1
+    fi
     rm -f /etc/nftables.d/90-dns-manager-device-dns.nft /etc/nftables.d/90-dns-manager-device-dns.nft.tmp.* 2>/dev/null || true
-    rm -f /etc/init.d/dns-manager-device-dns /etc/dns-manager/config/device-dns.conf 2>/dev/null || true
+    rm -f /etc/init.d/dns-manager-device-dns /etc/dns-manager/config/device-dns.conf /etc/dns-manager/device-dns/redirects.nft /etc/dns-manager/device-dns/redirects.nft.tmp.* 2>/dev/null || true
     rm -rf /etc/dns-manager/device-dns 2>/dev/null || true
     reload_fw >/dev/null 2>&1 || return 1
     rm -f "$LUCI_RPC_PLUGIN" "$LUCI_BACKEND_FILE" "$LUCI_ACL_FILE" "$LUCI_MENU_FILE" || return 1
