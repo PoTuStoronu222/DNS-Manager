@@ -323,7 +323,7 @@ grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validat
 grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
 grep -q 'VERSION="3.65"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
-grep -q 'VERSION="1.60"' dns-manager-luci.sh || fail "LuCI version not bumped"
+grep -q 'VERSION="1.61"' dns-manager-luci.sh || fail "LuCI version not bumped"
 grep -q "'bypass','Обход геоблока'" dns-manager-luci.sh || fail "bypass profile label not updated"
 grep -q "'security','Защита от угроз'" dns-manager-luci.sh || fail "security profile label not updated"
 grep -q "'privacy','Конфиденциальность'" dns-manager-luci.sh || fail "privacy profile label not updated"
@@ -510,6 +510,46 @@ grep -Fq "assignment.appendChild(btn('Удалить'" dns-manager-luci.sh || fa
 grep -Fq ".dm-catalog-item-custom{grid-column:span 2}" dns-manager-luci.sh || fail "Custom DNS card does not allocate width for horizontal actions"
 grep -Fq ".dm-catalog-controls-custom .dm-assign-inline select{height:30px;min-width:0;width:auto;max-width:100%;flex:1 1 160px" dns-manager-luci.sh || fail "Custom DNS actions do not have a responsive inline layout"
 ok "Custom DNS assignment and delete actions share a responsive horizontal row"
+
+# Regression: the sourced manager backend uses generic `_url` temporaries while
+# load_manager() refreshes runtime capability data. Custom DNS input must survive
+# that call and be saved to catalog field 5.
+awk '/^add_custom_dns_json\(\) \{/,/^}/' dns-manager-luci.sh > "$tmp/add_custom_dns_json_fn.sh"
+[ -s "$tmp/add_custom_dns_json_fn.sh" ] || fail "Custom DNS save function extraction"
+cat > "$tmp/add_custom_dns_runner.sh" <<'EOF_CUSTOM_DNS_SAVE'
+#!/bin/sh
+set -eu
+CUSTOM_CATALOG_FILE="$2/dns-custom-catalog.conf"
+RUNTIME_DIR="$2/runtime"
+mkdir -p "$RUNTIME_DIR"
+TEST_NAME='CleanBrowsing Security TEST'
+TEST_URL='https://doh.cleanbrowsing.org/doh/security-filter/'
+jget() {
+    case "$1" in
+        name) printf '%s' "$TEST_NAME" ;;
+        url) printf '%s' "$TEST_URL" ;;
+        *) return 1 ;;
+    esac
+}
+catalog_url_normalize() { printf '%s' "$1"; }
+acquire_runtime_lock() { return 0; }
+release_runtime_lock() { :; }
+json_error() { printf 'ERROR: %s\n' "$1" >&2; return 1; }
+json_quote() { printf '"%s"' "$1"; }
+load_manager() { _url=""; return 0; }
+catalog_id_for_url() { printf '%s' "$1" > "$RUNTIME_DIR/lookup-url"; return 1; }
+dns_cat() {
+    awk -F'|' -v id="$1" '$1==id {print $2;found=1} END {if(!found) exit 1}' "$CUSTOM_CATALOG_FILE" 2>/dev/null
+}
+catalog_field() { return 1; }
+. "$1"
+add_custom_dns_json > "$RUNTIME_DIR/response.json"
+[ "$(cat "$RUNTIME_DIR/lookup-url")" = "$TEST_URL" ] || exit 21
+awk -F'|' -v expected="$TEST_URL" '$1=="custom_001" {found=1; if($5!=expected) exit 22} END {if(!found) exit 23}' "$CUSTOM_CATALOG_FILE" || exit 24
+EOF_CUSTOM_DNS_SAVE
+chmod +x "$tmp/add_custom_dns_runner.sh"
+"$tmp/add_custom_dns_runner.sh" "$tmp/add_custom_dns_json_fn.sh" "$tmp/custom-dns-save" || fail "Custom DNS URL was lost when the manager backend reused _url"
+ok "Custom DNS URL survives backend loading and is written to catalog field 5"
 
 if awk '
     /function startAutoStatus\(root\)/ { capture=1 }
