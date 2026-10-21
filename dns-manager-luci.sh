@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.60
+# Version: 1.61
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -32,7 +32,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/router-validation-20261020/dns-manager-luci.sh"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.60"
+VERSION="1.61"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -159,7 +159,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/router-validation-20261020/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="1.60"
+SELF_VERSION="1.61"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -320,28 +320,30 @@ add_custom_dns_json() {
         json_error "Список пользовательских DNS уже изменяется"
         return
     fi
-    _name="$(jget name)"
-    _url="$(catalog_url_normalize "$(jget url)")"
-    if [ -z "$_name" ] || [ -z "$_url" ]; then
+    # load_manager() sources backend functions into this shell; keep request values out
+    # of its shared underscore-prefixed temporary-variable namespace.
+    DNSMGR_ADD_CUSTOM_NAME="$(jget name)"
+    DNSMGR_ADD_CUSTOM_URL="$(catalog_url_normalize "$(jget url)")"
+    if [ -z "$DNSMGR_ADD_CUSTOM_NAME" ] || [ -z "$DNSMGR_ADD_CUSTOM_URL" ]; then
         release_runtime_lock "$RUNTIME_DIR/custom-catalog.lock"
         json_error "Укажите название и HTTPS URL DoH"
         return
     fi
-    _name_len="$(printf '%s' "$_name" | wc -c | tr -d ' ')"
-    _url_len="$(printf '%s' "$_url" | wc -c | tr -d ' ')"
+    _name_len="$(printf '%s' "$DNSMGR_ADD_CUSTOM_NAME" | wc -c | tr -d ' ')"
+    _url_len="$(printf '%s' "$DNSMGR_ADD_CUSTOM_URL" | wc -c | tr -d ' ')"
     case "$_name_len" in ''|*[!0-9]*) _name_len=999;; esac
     case "$_url_len" in ''|*[!0-9]*) _url_len=999;; esac
-    if [ "$_name_len" -gt 80 ] || printf '%s' "$_name" | LC_ALL=C grep -q '[|[:cntrl:]]'; then
+    if [ "$_name_len" -gt 80 ] || printf '%s' "$DNSMGR_ADD_CUSTOM_NAME" | LC_ALL=C grep -q '[|[:cntrl:]]'; then
         release_runtime_lock "$RUNTIME_DIR/custom-catalog.lock"
         json_error "Название должно быть до 80 байт, без служебных символов и вертикальной черты"
         return
     fi
-    if [ "$_url_len" -gt 512 ] || ! printf '%s' "$_url" | LC_ALL=C grep -Eq '^https://[A-Za-z0-9._~:/?#@!$&()*+,;=%-]+$'; then
+    if [ "$_url_len" -gt 512 ] || ! printf '%s' "$DNSMGR_ADD_CUSTOM_URL" | LC_ALL=C grep -Eq '^https://[A-Za-z0-9._~:/?#@!$&()*+,;=%-]+$'; then
         release_runtime_lock "$RUNTIME_DIR/custom-catalog.lock"
         json_error "Укажите корректный HTTPS URL DoH без пробелов и служебных символов"
         return
     fi
-    _authority="$(printf '%s' "$_url" | sed -e 's|^https://||' -e 's|[/#?].*$||')"
+    _authority="$(printf '%s' "$DNSMGR_ADD_CUSTOM_URL" | sed -e 's|^https://||' -e 's|[/#?].*$||')"
     if ! printf '%s' "$_authority" | LC_ALL=C grep -Eq '^([A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?)(:[0-9]{1,5})?$'; then
         release_runtime_lock "$RUNTIME_DIR/custom-catalog.lock"
         json_error "В HTTPS URL указан некорректный адрес сервера"
@@ -363,7 +365,7 @@ add_custom_dns_json() {
         json_error "DNS Manager недоступен"
         return
     }
-    _duplicate="$(catalog_id_for_url "$_url" 2>/dev/null || true)"
+    _duplicate="$(catalog_id_for_url "$DNSMGR_ADD_CUSTOM_URL" 2>/dev/null || true)"
     if [ -n "$_duplicate" ]; then
         _duplicate_name="$(catalog_field "$_duplicate" 4 2>/dev/null || true)"
         [ -n "$_duplicate_name" ] || _duplicate_name="$_duplicate"
@@ -396,7 +398,7 @@ add_custom_dns_json() {
         return
     fi
     cat "$CUSTOM_CATALOG_FILE" > "$_tmp" 2>/dev/null || : > "$_tmp"
-    printf '%s|custom|custom|%s|%s|manual|USER\n' "$_id" "$_name" "$_url" >> "$_tmp" || {
+    printf '%s|custom|custom|%s|%s|manual|USER\n' "$_id" "$DNSMGR_ADD_CUSTOM_NAME" "$DNSMGR_ADD_CUSTOM_URL" >> "$_tmp" || {
         rm -f "$_tmp" 2>/dev/null || true
         release_runtime_lock "$RUNTIME_DIR/custom-catalog.lock"
         json_error "Не удалось записать пользовательский DNS"
@@ -411,8 +413,8 @@ add_custom_dns_json() {
     }
     release_runtime_lock "$RUNTIME_DIR/custom-catalog.lock"
     printf '{"ok":true,"id":'; json_quote "$_id"
-    printf ',"name":'; json_quote "$_name"
-    printf ',"url":'; json_quote "$_url"
+    printf ',"name":'; json_quote "$DNSMGR_ADD_CUSTOM_NAME"
+    printf ',"url":'; json_quote "$DNSMGR_ADD_CUSTOM_URL"
     printf '}'
 }
 
@@ -2968,7 +2970,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI common module version: 1.60
+// DNS Manager LuCI common module version: 1.61
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
