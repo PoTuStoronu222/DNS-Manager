@@ -141,14 +141,14 @@ dmd_port_busy() {
     _dmd_port="$1"
     if command -v netstat >/dev/null 2>&1; then
         netstat -ln 2>/dev/null | awk -v p=":$_dmd_port" '
-            $4 ~ (p "$") || $5 ~ (p "$") { found=1 }
+            $4 ~ (p "$") { found=1 }
             END { exit found ? 0 : 1 }
         '
         return $?
     fi
     if command -v ss >/dev/null 2>&1; then
         ss -lnut 2>/dev/null | awk -v p=":$_dmd_port" '
-            { for (i=1;i<=NF;i++) if ($i ~ (p "$")) found=1 }
+            if ($5 ~ (p "$")) found=1
             END { exit found ? 0 : 1 }
         '
         return $?
