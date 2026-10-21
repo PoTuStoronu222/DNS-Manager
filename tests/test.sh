@@ -37,7 +37,7 @@ grep -Fq 'ether saddr %s tcp dport 53 redirect to :%s' "$tmp/device_dns_service.
 grep -Fq 'all-servers' "$tmp/device_dns_service.sh" || fail "multi-DoH device profiles do not query all selected upstreams"
 grep -Fq 'dmd_slot_domains()' "$tmp/device_dns_service.sh" || fail "per-device profiles do not read slot-specific domain overrides"
 grep -Fq 'server=/%s/127.0.0.1#%s' "$tmp/device_dns_service.sh" || fail "per-device profiles do not preserve slot domain overrides"
-grep -Fq 'for DMD_TLD in /ru /su /xn--p1ai' "$tmp/device_dns_service.sh" || fail "per-device profiles do not preserve the regional DNS route"
+grep -Fq 'for _dmd_tld in /ru /su /xn--p1ai' "$tmp/device_dns_service.sh" || fail "per-device profiles do not preserve the regional DNS route"
 grep -Fq 'server=/use-application-dns.net/' "$tmp/device_dns_service.sh" || fail "per-device profiles do not inherit encrypted-DNS canary protection"
 grep -Fq 'iifname "%s" ether saddr %s udp dport 53 redirect to :%s' "$tmp/device_dns_service.sh" || fail "per-device redirect is not scoped to LAN"
 grep -Fq 'dmd_fail_open()' "$tmp/device_dns_service.sh" || fail "per-device DNS service has no fail-open cleanup"
