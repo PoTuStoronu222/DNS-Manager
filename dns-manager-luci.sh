@@ -1659,7 +1659,7 @@ lan_devices_json() {
     if [ -r /etc/dns-manager/config/device-dns.conf ]; then
         awk -F '|' '
             NF >= 2 && $1 ~ /^[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]$/ {
-                printf "%s|||ASSIGN|0|%s\\n", tolower($1), $2
+                printf "%s|||ASSIGN|0|%s\n", tolower($1), $2
             }
         ' /etc/dns-manager/config/device-dns.conf >> "$_ld_tmp" 2>/dev/null || true
     fi
