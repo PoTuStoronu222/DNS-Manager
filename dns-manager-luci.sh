@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.76
+# Version: 1.77
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -32,7 +32,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/dns-manager-complete-integration-20261021/dns-manager-luci.sh"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.76"
+VERSION="1.77"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -73,6 +73,7 @@ STOP=10
 USE_PROCD=1
 DMD_BASE="/etc/dns-manager/device-dns"
 DMD_ASSIGNMENTS="/etc/dns-manager/config/device-dns.conf"
+DMD_DEFAULT_FILE="/etc/dns-manager/config/device-dns-default.conf"
 DMD_MANAGER_CONFIG="/etc/dns-manager/config/manager.conf"
 DMD_NFT="/etc/dns-manager/device-dns/redirects.nft"
 DMD_INCLUDE="dns_manager_device_dns"
@@ -229,6 +230,74 @@ dmd_fail_open() {
     dmd_log "Per-device DNS rules disabled after a configuration error; clients fall back to the normal LAN DNS path."
 }
 
+dmd_ensure_profile() {
+    _dmd_slots="$1"
+    _dmd_label="$2"
+    _dmd_count=0
+
+    for _dmd_slot in $(printf '%s' "$_dmd_slots" | tr ',' ' '); do
+        _dmd_id="$(dmd_slot_id "$_dmd_slot" 2>/dev/null || true)"
+        _dmd_port="$(dmd_slot_port "$_dmd_slot" 2>/dev/null || true)"
+        case "$_dmd_port" in ''|*[!0-9]*) dmd_log "Missing upstream port for DNS slot $_dmd_slot ($_dmd_label)."; return 1 ;; esac
+        [ -n "$_dmd_id" ] || { dmd_log "DNS slot $_dmd_slot is not assigned ($_dmd_label)."; return 1; }
+        [ "$_dmd_port" -ge 1 ] 2>/dev/null && [ "$_dmd_port" -le 65535 ] 2>/dev/null || { dmd_log "Invalid upstream port for DNS slot $_dmd_slot ($_dmd_label)."; return 1; }
+        dmd_upstream_port_exists "$_dmd_port" || {
+            dmd_log "DNS slot $_dmd_slot has no listening DoH upstream on port $_dmd_port ($_dmd_label)."
+            return 1
+        }
+        _dmd_count=$((_dmd_count + 1))
+    done
+    [ "$_dmd_count" -gt 0 ] || return 1
+
+    _dmd_mask="$(dmd_mask_for_slots "$_dmd_slots" 2>/dev/null)" || return 1
+    _dmd_listener_port=$((54100 + _dmd_mask))
+    _dmd_map_line="$_dmd_slots|$_dmd_mask|$_dmd_listener_port"
+    if grep -Fqx "$_dmd_map_line" "$DMD_STAGE/profiles.map" 2>/dev/null; then
+        printf '%s' "$_dmd_listener_port"
+        return 0
+    fi
+    if dmd_port_busy "$_dmd_listener_port"; then
+        dmd_log "Port $_dmd_listener_port is busy; cannot activate $_dmd_label."
+        return 1
+    fi
+
+    _dmd_profile="$DMD_STAGE/profiles/profile_$_dmd_mask.conf"
+    {
+        printf 'port=%s\n' "$_dmd_listener_port"
+        printf 'pid-file=/var/run/dns-manager-device-dns/profile_%s.pid\n' "$_dmd_mask"
+        printf 'interface=%s\n' "$DMD_LAN_DEV"
+        printf 'bind-dynamic\nexcept-interface=lo\nno-dhcp-interface=%s\n' "$DMD_LAN_DEV"
+        printf 'no-resolv\nno-poll\nno-hosts\ndomain-needed\nbogus-priv\ncache-size=1000\n'
+        printf 'server=/lan/127.0.0.1#53\n'
+        [ "$_dmd_count" -le 1 ] || printf 'all-servers\n'
+        for _dmd_slot in $(printf '%s' "$_dmd_slots" | tr ',' ' '); do
+            _dmd_upstream_port="$(dmd_slot_port "$_dmd_slot" 2>/dev/null || true)"
+            printf 'server=127.0.0.1#%s\n' "$_dmd_upstream_port"
+            _dmd_slot_domains="$(dmd_slot_domains "$_dmd_slot" 2>/dev/null || true)"
+            for _dmd_domain in $_dmd_slot_domains; do
+                case "$_dmd_domain" in ''|.*|*.|*[!A-Za-z0-9.-]*) continue ;; esac
+                printf 'server=/%s/127.0.0.1#%s\n' "$_dmd_domain" "$_dmd_upstream_port"
+            done
+        done
+        if [ -n "${SLOT_RU:-}" ] && [ -n "${PORT_RU:-}" ]; then
+            for _dmd_tld in /ru /su /xn--p1ai; do
+                printf 'server=%s/127.0.0.1#%s\n' "$_dmd_tld" "$PORT_RU"
+            done
+        fi
+        if [ "${BLOCK_EXTERNAL_DNS:-0}" = 1 ]; then
+            printf 'server=/mask.icloud.com/\nserver=/mask-h2.icloud.com/\nserver=/use-application-dns.net/\n'
+        fi
+    } > "$_dmd_profile" || return 1
+
+    /usr/sbin/dnsmasq --test --conf-file="$_dmd_profile" >/dev/null 2>&1 || {
+        dmd_log "dnsmasq rejected profile $_dmd_mask for $_dmd_label."
+        rm -f "$_dmd_profile" 2>/dev/null || true
+        return 1
+    }
+    printf '%s\n' "$_dmd_map_line" >> "$DMD_STAGE/profiles.map" || return 1
+    printf '%s' "$_dmd_listener_port"
+}
+
 dmd_build_and_install() {
     # Check a same-named UCI include before writing its target path. Never overwrite
     # an unrelated user's nftables snippet even if it happens to use our filename.
@@ -256,6 +325,7 @@ dmd_build_and_install() {
     case "$DMD_LAN_DEV" in ''|*[!A-Za-z0-9_.:-]*) dmd_cleanup_stage; return 1 ;; esac
 
     DMD_ACTIVE=0
+    DMD_SKIP_MACS=""
     : > "$DMD_STAGE/nft.rules"
 
     if [ -r "$DMD_ASSIGNMENTS" ]; then
@@ -267,69 +337,49 @@ dmd_build_and_install() {
             DMD_SLOTS="$(dmd_normalize_slots "$DMD_RAW_SLOTS" 2>/dev/null || true)"
             [ -n "$DMD_SLOTS" ] || continue
 
-            DMD_VALID=1
-            DMD_COUNT=0
-            for DMD_SLOT in $(printf '%s' "$DMD_SLOTS" | tr ',' ' '); do
-                DMD_ID="$(dmd_slot_id "$DMD_SLOT" 2>/dev/null || true)"
-                DMD_PORT="$(dmd_slot_port "$DMD_SLOT" 2>/dev/null || true)"
-                case "$DMD_PORT" in ''|*[!0-9]*) DMD_VALID=0; break ;; esac
-                [ -n "$DMD_ID" ] || { DMD_VALID=0; break; }
-                [ "$DMD_PORT" -ge 1 ] 2>/dev/null && [ "$DMD_PORT" -le 65535 ] 2>/dev/null || { DMD_VALID=0; break; }
-                dmd_upstream_port_exists "$DMD_PORT" || {
-                    dmd_log "Selected DNS slot $DMD_SLOT has no listening DoH upstream on port $DMD_PORT; device $DMD_MAC stays on the normal DNS path."
-                    DMD_VALID=0
-                    break
-                }
-                DMD_COUNT=$((DMD_COUNT + 1))
-            done
-            [ "$DMD_VALID" = 1 ] && [ "$DMD_COUNT" -gt 0 ] || continue
-
-            DMD_MASK="$(dmd_mask_for_slots "$DMD_SLOTS")" || continue
-            DMD_LISTENER_PORT=$((54100 + DMD_MASK))
-            DMD_MAP_LINE="$DMD_SLOTS|$DMD_MASK|$DMD_LISTENER_PORT"
-            if ! grep -Fqx "$DMD_MAP_LINE" "$DMD_STAGE/profiles.map" 2>/dev/null; then
-                if dmd_port_busy "$DMD_LISTENER_PORT"; then
-                    dmd_log "Port $DMD_LISTENER_PORT is busy; device $DMD_MAC stays on the normal DNS path."
+            case "$DMD_RAW_SLOTS" in
+                EXCLUDE)
+                    DMD_SKIP_MACS="$DMD_SKIP_MACS $DMD_MAC"
                     continue
-                fi
-                DMD_PROFILE="$DMD_STAGE/profiles/profile_$DMD_MASK.conf"
-                {
-                    printf 'port=%s\n' "$DMD_LISTENER_PORT"
-                    printf 'pid-file=/var/run/dns-manager-device-dns/profile_%s.pid\n' "$DMD_MASK"
-                    printf 'interface=%s\n' "$DMD_LAN_DEV"
-                    printf 'bind-dynamic\nexcept-interface=lo\nno-dhcp-interface=%s\n' "$DMD_LAN_DEV"
-                    printf 'no-resolv\nno-poll\nno-hosts\ndomain-needed\nbogus-priv\ncache-size=1000\n'
-                    printf 'server=/lan/127.0.0.1#53\n'
-                    [ "$DMD_COUNT" -le 1 ] || printf 'all-servers\n'
-                    for DMD_SLOT in $(printf '%s' "$DMD_SLOTS" | tr ',' ' '); do
-                        DMD_UPSTREAM_PORT="$(dmd_slot_port "$DMD_SLOT" 2>/dev/null || true)"
-                        printf 'server=127.0.0.1#%s\n' "$DMD_UPSTREAM_PORT"
-                        DMD_SLOT_DOMAINS="$(dmd_slot_domains "$DMD_SLOT" 2>/dev/null || true)"
-                        for DMD_DOMAIN in $DMD_SLOT_DOMAINS; do
-                            case "$DMD_DOMAIN" in ''|.*|*.|*[!A-Za-z0-9.-]*) continue ;; esac
-                            printf 'server=/%s/127.0.0.1#%s\n' "$DMD_DOMAIN" "$DMD_UPSTREAM_PORT"
-                        done
-                    done
-                    if [ -n "${SLOT_RU:-}" ] && [ -n "${PORT_RU:-}" ]; then
-                        for DMD_TLD in /ru /su /xn--p1ai; do
-                            printf 'server=%s/127.0.0.1#%s\n' "$DMD_TLD" "$PORT_RU"
-                        done
-                    fi
-                    if [ "${BLOCK_EXTERNAL_DNS:-0}" = 1 ]; then
-                        printf 'server=/mask.icloud.com/\nserver=/mask-h2.icloud.com/\nserver=/use-application-dns.net/\n'
-                    fi
-                } > "$DMD_PROFILE" || { dmd_cleanup_stage; return 1; }
-                /usr/sbin/dnsmasq --test --conf-file="$DMD_PROFILE" >/dev/null 2>&1 || {
-                    dmd_log "dnsmasq rejected per-device profile $DMD_MASK."
-                    dmd_cleanup_stage
-                    return 1
-                }
-                printf '%s\n' "$DMD_MAP_LINE" >> "$DMD_STAGE/profiles.map"
-            fi
+                    ;;
+            esac
+            DMD_SLOTS="$(dmd_normalize_slots "$DMD_RAW_SLOTS" 2>/dev/null || true)"
+            [ -n "$DMD_SLOTS" ] || continue
+
+            DMD_LISTENER_PORT="$(dmd_ensure_profile "$DMD_SLOTS" "device $DMD_MAC" 2>/dev/null || true)"
+            case "$DMD_LISTENER_PORT" in ''|*[!0-9]*)
+                dmd_log "Device $DMD_MAC has no usable DoH profile; it will use the LAN default if enabled."
+                continue
+                ;;
+            esac
+
             printf 'iifname "%s" ether saddr %s udp dport 53 redirect to :%s\n' "$DMD_LAN_DEV" "$DMD_MAC" "$DMD_LISTENER_PORT" >> "$DMD_STAGE/nft.rules"
             printf 'iifname "%s" ether saddr %s tcp dport 53 redirect to :%s\n' "$DMD_LAN_DEV" "$DMD_MAC" "$DMD_LISTENER_PORT" >> "$DMD_STAGE/nft.rules"
+            DMD_SKIP_MACS="$DMD_SKIP_MACS $DMD_MAC"
             DMD_ACTIVE=$((DMD_ACTIVE + 1))
         done < "$DMD_ASSIGNMENTS"
+    fi
+
+    DMD_DEFAULT_RAW="$(sed -n '1p' "$DMD_DEFAULT_FILE" 2>/dev/null || true)"
+    DMD_DEFAULT_SLOTS="$(dmd_normalize_slots "$DMD_DEFAULT_RAW" 2>/dev/null || true)"
+    if [ -n "$DMD_DEFAULT_SLOTS" ]; then
+        DMD_DEFAULT_PORT="$(dmd_ensure_profile "$DMD_DEFAULT_SLOTS" "LAN default" 2>/dev/null || true)"
+        case "$DMD_DEFAULT_PORT" in
+            ''|*[!0-9]*)
+                dmd_log "The saved LAN-wide DNS selection could not be activated; unmatched devices remain on the normal DNS path."
+                ;;
+            *)
+                DMD_SKIP_SET="$(printf '%s\n' $DMD_SKIP_MACS | awk 'NF && !seen[$0]++ { if (n++) printf ", "; printf "%s", $0 } END { if (n) printf "\n" }')"
+                if [ -n "$DMD_SKIP_SET" ]; then
+                    printf 'iifname "%s" ether saddr != { %s } udp dport 53 redirect to :%s\n' "$DMD_LAN_DEV" "$DMD_SKIP_SET" "$DMD_DEFAULT_PORT" >> "$DMD_STAGE/nft.rules"
+                    printf 'iifname "%s" ether saddr != { %s } tcp dport 53 redirect to :%s\n' "$DMD_LAN_DEV" "$DMD_SKIP_SET" "$DMD_DEFAULT_PORT" >> "$DMD_STAGE/nft.rules"
+                else
+                    printf 'iifname "%s" udp dport 53 redirect to :%s\n' "$DMD_LAN_DEV" "$DMD_DEFAULT_PORT" "$DMD_DEFAULT_PORT" >> "$DMD_STAGE/nft.rules"
+                    printf 'iifname "%s" tcp dport 53 redirect to :%s\n' "$DMD_LAN_DEV" "$DMD_DEFAULT_PORT" "$DMD_DEFAULT_PORT" >> "$DMD_STAGE/nft.rules"
+                fi
+                DMD_ACTIVE=$((DMD_ACTIVE + 1))
+                ;;
+        esac
     fi
 
     if [ "$DMD_ACTIVE" -gt 0 ]; then
@@ -490,7 +540,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/dns-manager-complete-integration-20261021/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="1.76"
+SELF_VERSION="1.77"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -3570,7 +3620,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI common module version: 1.76
+// DNS Manager LuCI common module version: 1.77
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -5865,7 +5915,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 1.76
+// DNS Manager LuCI version: 1.77
 return view.extend({
   load: DM.load,
   render: DM.render,
