@@ -249,6 +249,13 @@ grep -Fq 'callDohStatus()' "$tmp/catalog_route_status.js" || fail "LuCI catalog 
 grep -Fq 'callPageMeta()' "$tmp/catalog_route_status.js" || fail "LuCI catalog refresh dropped its page metadata"
 grep -Fq 'Object.keys(meta).forEach(function(k){st[k]=meta[k];});' "$tmp/catalog_route_status.js" || fail "LuCI catalog refresh does not merge metadata into live slot state"
 ok "catalog refresh reloads assigned DNS slots immediately"
+
+# The regional slot has an independent dnsmasq route; explain the actual suffix
+# behavior and that assigning general slots 1-6 manually does not enable it.
+grep -Fq 'После применения настроек запросы к зонам .ru, .su и .рф направляются через назначенный здесь DNS.' "$tmp/common.js" || fail "LuCI does not explain active regional DNS routing"
+grep -Fq 'Слот RU не назначен: отдельного маршрута для .ru, .su и .рф нет.' "$tmp/common.js" || fail "LuCI does not explain the disabled regional route"
+grep -Fq 'RU — отдельный региональный слот: в него выбирается DNS из категории «Региональные DNS».' "$tmp/common.js" || fail "LuCI does not explain the separate regional slot"
+ok "LuCI explains regional TLD routing and the separate RU slot"
 grep -q "case 'network': return callNetworkStatus();" "$tmp/common.js" || fail "LuCI network page does not use targeted RPC"
 grep -q "case 'time': return callTimeStatus();" "$tmp/common.js" || fail "LuCI time page does not use targeted RPC"
 grep -q "case 'log':" "$tmp/common.js" || fail "LuCI log page route handling missing"
@@ -329,7 +336,7 @@ grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validat
 grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
 grep -q 'VERSION="3.65"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
-grep -q 'VERSION="1.63"' dns-manager-luci.sh || fail "LuCI version not bumped"
+grep -q 'VERSION="1.64"' dns-manager-luci.sh || fail "LuCI version not bumped"
 grep -q "'bypass','Обход геоблока'" dns-manager-luci.sh || fail "bypass profile label not updated"
 grep -q "'security','Защита от угроз'" dns-manager-luci.sh || fail "security profile label not updated"
 grep -q "'privacy','Конфиденциальность'" dns-manager-luci.sh || fail "privacy profile label not updated"
