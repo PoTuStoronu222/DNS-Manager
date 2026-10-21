@@ -72,6 +72,10 @@ grep -Fq 'set_slot_domains)' dns-manager-luci.sh || fail "LuCI domain update RPC
 grep -Fq "method:'set_slot_domains'" dns-manager-luci.sh || fail "LuCI domain save call is missing"
 grep -Fq 'Домены только через ' dns-manager-luci.sh || fail "LuCI slot domain editor is missing"
 ok "dnsmasq and Watchdog preserve per-slot domain routes"
+awk '/^function render\(root,st\)\{/,/^}/ { print }' dns-manager-luci.sh > "$tmp/render_route.js" || fail "LuCI render route extraction"
+awk "/case 'doh':/,/case 'network':/" "$tmp/render_route.js" | grep -Fq 'renderSlots(root,st)' || fail "selected DNS slot/domain editor is not rendered on the DNS over HTTPS page"
+grep -Fq "E('div',{'class':'dm-slot-domains-heading'},'Домены только через '" dns-manager-luci.sh || fail "slot domain editor label missing"
+ok "LuCI renders per-slot domain controls on the DNS over HTTPS page"
 
 
 
@@ -378,7 +382,7 @@ grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validat
 grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
 grep -q 'VERSION="3.64"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
-grep -q 'VERSION="1.56"' dns-manager-luci.sh || fail "LuCI version not bumped"
+grep -q 'VERSION="1.57"' dns-manager-luci.sh || fail "LuCI version not bumped"
 [ "$(grep -Fc "printf ',\"domains\":';" dns-manager-luci.sh)" -eq 2 ] || fail "slot domain RPC JSON keys are malformed"
 if grep -Fq "printf ',\\\"domains\\\":';" dns-manager-luci.sh; then
     fail "slot domain RPC JSON key contains a literal escape"
