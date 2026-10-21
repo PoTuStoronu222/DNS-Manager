@@ -369,7 +369,12 @@ grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validat
 grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
 grep -q 'VERSION="3.63"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
-grep -q 'VERSION="1.54"' dns-manager-luci.sh || fail "LuCI version not bumped"
+grep -q 'VERSION="1.55"' dns-manager-luci.sh || fail "LuCI version not bumped"
+[ "$(grep -Fc "printf ',\"domains\":';" dns-manager-luci.sh)" -eq 2 ] || fail "slot domain RPC JSON keys are malformed"
+if grep -Fq "printf ',\\\"domains\\\":';" dns-manager-luci.sh; then
+    fail "slot domain RPC JSON key contains a literal escape"
+fi
+ok "slot domain RPC JSON keys are valid"
 grep -q "'bypass','Обход геоблока'" dns-manager-luci.sh || fail "bypass profile label not updated"
 grep -q "'security','Защита от угроз'" dns-manager-luci.sh || fail "security profile label not updated"
 grep -q "'privacy','Конфиденциальность'" dns-manager-luci.sh || fail "privacy profile label not updated"
