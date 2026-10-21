@@ -238,8 +238,8 @@ dmd_build_and_install() {
                 }
                 printf '%s\n' "$DMD_MAP_LINE" >> "$DMD_STAGE/profiles.map"
             fi
-            printf ' ether saddr %s udp dport 53 redirect to :%s\n' "$DMD_MAC" "$DMD_LISTENER_PORT" >> "$DMD_STAGE/nft.rules"
-            printf ' ether saddr %s tcp dport 53 redirect to :%s\n' "$DMD_MAC" "$DMD_LISTENER_PORT" >> "$DMD_STAGE/nft.rules"
+            printf ' iifname "%s" ether saddr %s udp dport 53 redirect to :%s\n' "$DMD_LAN_DEV" "$DMD_MAC" "$DMD_LISTENER_PORT" >> "$DMD_STAGE/nft.rules"
+            printf ' iifname "%s" ether saddr %s tcp dport 53 redirect to :%s\n' "$DMD_LAN_DEV" "$DMD_MAC" "$DMD_LISTENER_PORT" >> "$DMD_STAGE/nft.rules"
             DMD_ACTIVE=$((DMD_ACTIVE + 1))
         done < "$DMD_ASSIGNMENTS"
     fi
