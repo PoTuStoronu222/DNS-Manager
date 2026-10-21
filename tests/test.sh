@@ -319,7 +319,7 @@ grep -Fq '/tmp/dhcp.leases' "$tmp/backend.sh" || fail "LAN inventory does not in
 grep -Fq '/proc/net/arp' "$tmp/backend.sh" || fail "LAN inventory does not include ARP neighbours"
 grep -Fq 'ip -6 neigh show dev' "$tmp/backend.sh" || fail "LAN inventory does not include IPv6 neighbours"
 grep -Fq 'Список объединяет DHCP-аренды, IPv4 ARP, IPv6 NDP и статические DHCP-записи.' "$tmp/common.js" || fail "LAN device inventory scope is not explained"
-grep -Fq 'Выберите один или несколько слотов DNS 1–6 для каждого устройства.' "$tmp/common.js" || fail "per-device DNS selector is missing from LAN inventory"
+grep -Fq 'Общий выбор DNS применяется ко всем LAN-устройствам без индивидуальной привязки' "$tmp/common.js" || fail "LAN-wide DNS default selector is missing from the LAN inventory"
 ok "LuCI exposes a clearly read-only LAN device inventory"
 awk '/^function routeStatusCall\(\)/,/^}/' "$tmp/common.js" > "$tmp/route_status_call.js"
 awk "/case 'catalog':/,/case 'log':/" "$tmp/route_status_call.js" > "$tmp/catalog_route_status.js"
