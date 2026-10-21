@@ -427,11 +427,11 @@ grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail 
 grep -q 'VERSION="1.76"' dns-manager-luci.sh || fail "LuCI version not bumped"
 grep -Fq "var domainAttrs={'class':'dm-slot-domains-input'" dns-manager-luci.sh || fail "domain editor attributes are not assembled safely"
 grep -Fq "if(!assigned)domainAttrs.disabled='';" dns-manager-luci.sh || fail "unassigned slots are not disabled without a false boolean attribute"
-if grep -Fq "'disabled':!assigned" dns-manager-luci.sh; then fail "domain editor creates a disabled="false" attribute"; fi
+if grep -Fq "'disabled':!assigned" dns-manager-luci.sh; then fail "domain editor still sets disabled unconditionally"; fi
 grep -Fq "if(selected)cbAttrs.checked='';" dns-manager-luci.sh || fail "LAN checkbox checked state is not added conditionally"
 grep -Fq "if(!usable&&!selected)cbAttrs.disabled='';" dns-manager-luci.sh || fail "LAN checkbox disabled state is not added conditionally"
-if grep -Fq "'checked':selected" dns-manager-luci.sh; then fail "LAN checkbox creates a checked="false" attribute"; fi
-if grep -Fq "'disabled':!usable&&!selected" dns-manager-luci.sh; then fail "LAN checkbox creates a disabled="false" attribute"; fi
+if grep -Fq "'checked':selected" dns-manager-luci.sh; then fail "LAN checkbox still sets checked unconditionally"; fi
+if grep -Fq "'disabled':!usable&&!selected" dns-manager-luci.sh; then fail "LAN checkbox still sets disabled unconditionally"; fi
 ! sed -n '/function resolverRows/,/function renderDoH/p' dns-manager-luci.sh | grep -Eq "btn\('Выбрать'|btn\(running\?'Проверяю…':'Проверить'" || fail "current DoH summary must not duplicate slot actions"
 grep -Fq "doh:['doh','slots','profiles']" dns-manager-luci.sh || fail "DNS slot/domain panel visibility regression"
 grep -q "'bypass','Обход геоблока'" dns-manager-luci.sh || fail "bypass profile label not updated"
