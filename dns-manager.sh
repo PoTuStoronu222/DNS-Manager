@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.57"
+VERSION="3.58"
 # 3.38: clear the LuCI update flag after a successful CLI update.
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
@@ -3183,6 +3183,46 @@ replace_failed_slot_from_test() {
     warn_msg "Для слота $_slot не найден подтверждённый DNS в целевой категории."
     return 1
 }
+profile_compact_general_slots() {
+    local _pcs_file _pcs_src _pcs_dst _pcs_id _pcs_cat _pcs_port
+    _pcs_file="$TMP_DIR/profile-compact-slots-$"
+    : > "$_pcs_file" || return 1
+
+    # Snapshot active IDs/categories before writing the compacted slot map.
+    for _pcs_src in 1 2 3 4 5 6; do
+        eval "_pcs_id=\$SLOT_$_pcs_src"
+        [ -n "$_pcs_id" ] || continue
+        eval "_pcs_cat=\$SLOT_${_pcs_src}_CAT"
+        printf '%s|%s\n' "$_pcs_id" "$_pcs_cat" >> "$_pcs_file" || {
+            rm -f "$_pcs_file"
+            return 1
+        }
+    done
+
+    # Domain rules are tied to logical slot numbers, so SLOT_n_DOMAINS stays
+    # in place. Resolver IDs/categories move left and ports follow their new slots.
+    _pcs_dst=1
+    while IFS='|' read -r _pcs_id _pcs_cat; do
+        [ -n "$_pcs_id" ] || continue
+        slot_set "$_pcs_dst" "$_pcs_id" || { rm -f "$_pcs_file"; return 1; }
+        slot_cat_set "$_pcs_dst" "$_pcs_cat" || { rm -f "$_pcs_file"; return 1; }
+        _pcs_port="$(hybrid_desired_port "$_pcs_dst")"
+        [ -n "$_pcs_port" ] || { rm -f "$_pcs_file"; return 1; }
+        port_set "$_pcs_dst" "$_pcs_port" || { rm -f "$_pcs_file"; return 1; }
+        _pcs_dst=$((_pcs_dst+1))
+    done < "$_pcs_file"
+
+    while [ "$_pcs_dst" -le 6 ]; do
+        slot_set "$_pcs_dst" "" || { rm -f "$_pcs_file"; return 1; }
+        slot_cat_set "$_pcs_dst" "" || { rm -f "$_pcs_file"; return 1; }
+        port_set "$_pcs_dst" "" || { rm -f "$_pcs_file"; return 1; }
+        _pcs_dst=$((_pcs_dst+1))
+    done
+
+    rm -f "$_pcs_file"
+    return 0
+}
+
 profile_prune_failed_slots() {
     local _bad _bad_n _live_n _slot _id _port _domain
     _bad="$TMP_DIR/profile-bad-slots-$$"
@@ -3225,6 +3265,7 @@ profile_prune_failed_slots() {
         slot_set "$_slot" "" || { rm -f "$_bad"; return 1; }
         slot_cat_set "$_slot" "" || { rm -f "$_bad"; return 1; }
     done < "$_bad"
+    profile_compact_general_slots || { rm -f "$_bad"; return 1; }
     rm -f "$_bad"
 
     sync_regional_dns_state
