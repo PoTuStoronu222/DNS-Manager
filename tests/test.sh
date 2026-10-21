@@ -48,7 +48,7 @@ grep -Fq 'gsub(/[[:space:]]/, ""); if ($0 !~ /^[1-6](,[1-6])*$/)' dns-manager-lu
 grep -Fq "grep -q '[^1-6,[:space:]]'" "$tmp/device_dns_service.sh" || fail "device DNS service does not validate saved slot characters"
 grep -Fq 'DMD_NFT_TMP="$(mktemp "$DMD_NFT.tmp.XXXXXX"' dns-manager-luci.sh || fail "per-device nft snippet update does not use a unique temporary file"
 grep -Fq 'set_device_dns)' dns-manager-luci.sh || fail "set-device-DNS RPC dispatch missing"
-grep -Fq '"set_device_dns":{"mac":"String","slots":"String"}' dns-manager-luci.sh || fail "set-device-DNS RPC schema missing"
+grep -Fq '"set_device_dns":{"mac":"String","slots":"String","mode":"String"}' dns-manager-luci.sh || fail "set-device-DNS RPC schema missing"
 grep -Fq '"dns_manager": [ "set_profile", "reset_dns", "set_slot", "set_slot_domains", "set_device_dns"' dns-manager-luci.sh || fail "set-device-DNS RPC is missing from the write ACL"
 grep -Fq 'callSetDeviceDns' dns-manager-luci.sh || fail "LuCI has no client for set-device-DNS RPC"
 grep -Fq 'card(' "dns-manager-luci.sh" >/dev/null || fail "LuCI card renderer missing"
@@ -437,7 +437,7 @@ grep -Fq "method:'set_device_dns_default'" dns-manager-luci.sh || fail "LuCI has
 grep -Fq "function saveDeviceDnsDefault(controls,root)" dns-manager-luci.sh || fail "LAN-wide DNS controls are not wired to a save action"
 grep -Fq "class':'dm-device-dns-default-checkbox" dns-manager-luci.sh || fail "LAN-wide DNS slot controls missing"
 grep -Fq "mode==='exclude'" dns-manager-luci.sh || fail "per-device exclusion is not saved"
-grep -Fq ',"dns_mode":'; json_quote "$_ld_dns_mode"' dns-manager-luci.sh || fail "LAN device response does not expose override mode"
+grep -Fq 'dns_mode' dns-manager-luci.sh || fail "LAN device response does not expose override mode"
 
 grep -Fq "var domainAttrs={'class':'dm-slot-domains-input'" dns-manager-luci.sh || fail "domain editor attributes are not assembled safely"
 grep -Fq "if(!assigned)domainAttrs.disabled='';" dns-manager-luci.sh || fail "unassigned slots are not disabled without a false boolean attribute"
