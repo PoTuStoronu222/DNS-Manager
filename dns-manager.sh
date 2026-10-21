@@ -18,7 +18,7 @@ DNS_CATALOG="$CFG_DIR/dns-catalog.conf"
 NTP_CATALOG="$CFG_DIR/ntp-catalog.conf"
 BOOTSTRAP_DNS_ALL="77.88.8.8,77.88.8.1,94.140.14.14,1.1.1.1,1.0.0.1,8.8.8.8,8.8.4.4,9.9.9.9,149.112.112.112,208.67.222.222,208.67.220.220,149.112.121.10,149.112.122.10,76.76.2.0,76.76.10.0,194.242.2.2,194.242.2.3,2606:4700:4700::1111,2606:4700:4700::1001,2001:4860:4860::8888,2001:4860:4860::8844,2620:fe::fe,2620:fe::9"
 DNSCAT_VERSION="8.7-RU-NOSOCIAL"
-DNSCAT_REVISION="6"
+DNSCAT_REVISION="7"
 DNSCAT_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/ax3000t-full-integration-20261021/catalogs/dns-8.7-RU-NOSOCIAL.conf"
 WATCHDOG_RESTART_COOLDOWN=300
 WATCHDOG_BACKEND="procd"
@@ -735,7 +735,7 @@ catalog_validate_file() {
     [ "$_ver" = "$DNSCAT_VERSION" ] || return 1
     if [ "$_mode" != "legacy" ]; then
         grep -Fqx "# DNSCATREV=$DNSCAT_REVISION" "$_f" 2>/dev/null || return 1
-        grep -Fqx "# ENTRIES=109" "$_f" 2>/dev/null || return 1
+        grep -Fqx "# ENTRIES=107" "$_f" 2>/dev/null || return 1
     fi
     awk -F'|' '
         /^[[:space:]]*#/ || /^[[:space:]]*$/ { next }
@@ -747,7 +747,7 @@ catalog_validate_file() {
             ids[$1]++
             if (ids[$1] > 1) bad=1
         }
-        END { if (bad || count != 109) exit 1 }
+        END { if (bad || count != 107) exit 1 }
     ' "$_f" >/dev/null 2>&1 || return 1
     return 0
 }
@@ -757,8 +757,10 @@ write_catalogs() {
     fi
     _catalog_tmp="$(mktemp /tmp/dns-manager-catalog.XXXXXX 2>/dev/null)" || return 1
     _old_shecan_url="$(awk -F'|' '$1=="shecan" {print $5; exit}' "$DNS_CATALOG" 2>/dev/null)"
+    _old_astracat_url="$(awk -F'|' '$1=="astracat" {print $5; exit}' "$DNS_CATALOG" 2>/dev/null)"
     if catalog_download "$_catalog_tmp" && catalog_validate_file "$_catalog_tmp"; then
         _new_shecan_url="$(awk -F'|' '$1=="shecan" {print $5; exit}' "$_catalog_tmp" 2>/dev/null)"
+        _new_astracat_url="$(awk -F'|' '$1=="astracat" {print $5; exit}' "$_catalog_tmp" 2>/dev/null)"
         mkdir -p "$CFG_DIR" 2>/dev/null || true
         if mv -f "$_catalog_tmp" "$DNS_CATALOG" 2>/dev/null; then
             chmod 600 "$DNS_CATALOG" 2>/dev/null || true
@@ -771,7 +773,16 @@ write_catalogs() {
                         rm -f "$_result_tmp" 2>/dev/null || true
                 done
             fi
-            log_msg "Каталог DNS: загружен внешний $DNSCAT_VERSION (revision $DNSCAT_REVISION, 108 записей)."
+            if [ "$_old_astracat_url" != "$_new_astracat_url" ]; then
+                for _result_file in "$TEST_RESULTS" "$PERSIST_STATE_DIR/dns-test-results.conf"; do
+                    [ -s "$_result_file" ] || continue
+                    _result_tmp="$(mktemp "${_result_file}.tmp.XXXXXX" 2>/dev/null)" || continue
+                    awk -F'|' '$1!="astracat" {print}' "$_result_file" > "$_result_tmp" 2>/dev/null &&
+                        mv -f "$_result_tmp" "$_result_file" 2>/dev/null ||
+                        rm -f "$_result_tmp" 2>/dev/null || true
+                done
+            fi
+            log_msg "Каталог DNS: загружен внешний $DNSCAT_VERSION (revision $DNSCAT_REVISION, 107 записей)."
             return 0
         fi
     fi
