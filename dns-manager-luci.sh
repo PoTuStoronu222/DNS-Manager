@@ -139,6 +139,22 @@ dmd_mask_for_slots() {
     printf '%s' "$_dmd_mask"
 }
 
+dmd_upstream_port_exists() {
+    _dmd_uport="$1"
+    case "$_dmd_uport" in ''|*[!0-9]*) return 1 ;; esac
+    if command -v ss >/dev/null 2>&1; then
+        ss -lntu 2>/dev/null | grep -Eq "(^|[[:space:]])[^[:space:]]*:${_dmd_uport}([[:space:]]|$)" && return 0
+    fi
+    if command -v netstat >/dev/null 2>&1; then
+        netstat -lntu 2>/dev/null | grep -Eq "(^|[[:space:]])[^[:space:]]*:${_dmd_uport}([[:space:]]|$)" && return 0
+    fi
+    _dmd_hex="$(printf '%04X' "$_dmd_uport" 2>/dev/null || true)"
+    [ -n "$_dmd_hex" ] || return 1
+    awk -v p="$_dmd_hex" 'NR>1 {split($2,a,":"); if (toupper(a[2])==p && ($4=="0A" || $4=="07" || $4=="01")) ok=1} END {exit ok?0:1}' /proc/net/tcp 2>/dev/null && return 0
+    awk -v p="$_dmd_hex" 'NR>1 {split($2,a,":"); if (toupper(a[2])==p && $4=="07") ok=1} END {exit ok?0:1}' /proc/net/udp 2>/dev/null && return 0
+    return 1
+}
+
 dmd_port_busy() {
     _dmd_port="$1"
     if command -v netstat >/dev/null 2>&1; then
@@ -250,6 +266,11 @@ dmd_build_and_install() {
                 case "$DMD_PORT" in ''|*[!0-9]*) DMD_VALID=0; break ;; esac
                 [ -n "$DMD_ID" ] || { DMD_VALID=0; break; }
                 [ "$DMD_PORT" -ge 1 ] 2>/dev/null && [ "$DMD_PORT" -le 65535 ] 2>/dev/null || { DMD_VALID=0; break; }
+                dmd_upstream_port_exists "$DMD_PORT" || {
+                    dmd_log "Selected DNS slot $DMD_SLOT has no listening DoH upstream on port $DMD_PORT; device $DMD_MAC stays on the normal DNS path."
+                    DMD_VALID=0
+                    break
+                }
                 DMD_COUNT=$((DMD_COUNT + 1))
             done
             [ "$DMD_VALID" = 1 ] && [ "$DMD_COUNT" -gt 0 ] || continue
@@ -3196,6 +3217,10 @@ set_device_dns_json() {
             json_error "Сначала назначьте DNS в выбранный слот: DNS $DMD_RPC_SLOT"
             return
         }
+        listener_port_exists "$DMD_RPC_PORT" || {
+            json_error "Выбранный DNS $DMD_RPC_SLOT сейчас не слушает порт $DMD_RPC_PORT. Проверьте DoH и повторите."
+            return
+        }
     done
 
     acquire_mutation_lock || { json_error "Другая операция DNS Manager уже выполняется"; return; }
@@ -3207,9 +3232,9 @@ set_device_dns_json() {
     for DMD_RPC_SLOT in $(printf '%s' "$DMD_RPC_SLOTS" | tr ',' ' '); do
         DMD_RPC_ID="$(device_dns_slot_id "$DMD_RPC_SLOT" 2>/dev/null || true)"
         DMD_RPC_PORT="$(device_dns_slot_port "$DMD_RPC_SLOT" 2>/dev/null || true)"
-        [ -n "$DMD_RPC_ID" ] && [ -n "$DMD_RPC_PORT" ] || {
+        [ -n "$DMD_RPC_ID" ] && [ -n "$DMD_RPC_PORT" ] && listener_port_exists "$DMD_RPC_PORT" || {
             release_mutation_lock
-            json_error "Слот DNS $DMD_RPC_SLOT изменился. Обновите страницу и повторите."
+            json_error "Слот DNS $DMD_RPC_SLOT изменился или его DoH не слушает порт. Обновите страницу и повторите."
             return
         }
     done
