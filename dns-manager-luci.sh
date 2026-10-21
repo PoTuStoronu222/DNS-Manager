@@ -3173,6 +3173,7 @@ set_device_dns_json() {
     if [ -f "$DMD_RPC_FILE" ]; then
         DMD_RPC_HAD_FILE=1
         cp -p "$DMD_RPC_FILE" "$DMD_RPC_BACKUP" || {
+            rm -f "$DMD_RPC_TMP" "$DMD_RPC_BACKUP"
             release_mutation_lock
             json_error "Не удалось сохранить прежние привязки"
             return
