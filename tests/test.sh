@@ -312,7 +312,7 @@ grep -Fq 'lan_devices_json() {' "$tmp/backend.sh" || fail "LAN device inventory 
 grep -Fq '/tmp/dhcp.leases' "$tmp/backend.sh" || fail "LAN inventory does not include DHCP leases"
 grep -Fq '/proc/net/arp' "$tmp/backend.sh" || fail "LAN inventory does not include ARP neighbours"
 grep -Fq 'ip -6 neigh show dev' "$tmp/backend.sh" || fail "LAN inventory does not include IPv6 neighbours"
-grep -Fq 'Список объединяет DHCP-аренды, ARP/NDP-кэш и сохранённые статические DHCP-записи.' "$tmp/common.js" || fail "LAN device inventory scope is not explained"
+grep -Fq 'Список объединяет DHCP-аренды, IPv4 ARP, IPv6 NDP и статические DHCP-записи.' "$tmp/common.js" || fail "LAN device inventory scope is not explained"
 grep -Fq 'назначение отдельного DoH устройству ещё не включено' "$tmp/common.js" || fail "LAN inventory misleadingly suggests per-device routing is active"
 ok "LuCI exposes a clearly read-only LAN device inventory"
 awk '/^function routeStatusCall\(\)/,/^}/' "$tmp/common.js" > "$tmp/route_status_call.js"
