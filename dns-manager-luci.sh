@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.75
+# Version: 1.76
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -32,7 +32,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/dns-manager-complete-integration-20261021/dns-manager-luci.sh"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.75"
+VERSION="1.76"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -490,7 +490,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/dns-manager-complete-integration-20261021/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="1.75"
+SELF_VERSION="1.76"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -3570,7 +3570,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI common module version: 1.75
+// DNS Manager LuCI common module version: 1.76
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -4570,7 +4570,9 @@ function renderSlots(root,st){
       ]));
     }else{
       var initial=String(d.domains||'').trim().split(/\s+/).filter(Boolean).join('\n');
-      var domainInput=E('textarea',{'class':'dm-slot-domains-input','rows':'2','spellcheck':'false','placeholder':'youtube.com\nexample.org','disabled':!assigned});
+      var domainAttrs={'class':'dm-slot-domains-input','rows':'2','spellcheck':'false','placeholder':'youtube.com\nexample.org'};
+      if(!assigned)domainAttrs.disabled='';
+      var domainInput=E('textarea',domainAttrs);
       domainInput.value=initial;
       children.push(E('div',{'class':'dm-slot-domain-panel'},[
         E('div',{'class':'dm-slot-domains-heading'},'Домены только через '+slotLabel(d.slot)),
@@ -4624,7 +4626,10 @@ function renderSlots(root,st){
         var key=String(i);
         var selected=chosen.indexOf(key)>=0;
         var usable=available[key]===true;
-        var cb=E('input',{'type':'checkbox','class':'dm-device-dns-checkbox','value':key,'checked':selected,'disabled':!usable&&!selected,'data-available':usable?'1':'0'});
+        var cbAttrs={'type':'checkbox','class':'dm-device-dns-checkbox','value':key,'data-available':usable?'1':'0'};
+        if(selected)cbAttrs.checked='';
+        if(!usable&&!selected)cbAttrs.disabled='';
+        var cb=E('input',cbAttrs);
         var labelText='DNS '+key+(usable?(' · '+(slotNames[key]||'назначен')):' · слот пуст');
         options.push(E('label',{'class':'dm-device-dns-option'},[cb,E('span',{},labelText)]));
       }
@@ -5860,7 +5865,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 1.75
+// DNS Manager LuCI version: 1.76
 return view.extend({
   load: DM.load,
   render: DM.render,
