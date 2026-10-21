@@ -290,7 +290,7 @@ grep -Fq "disabled:!!state.busy||!!state.jobRunning||unavailable||checking" dns-
 grep -q "'gaming','Игровые DNS'" dns-manager-luci.sh || fail "gaming catalog label missing in LuCI"
 grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validation missing gaming category"
 grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
-grep -q 'VERSION="3.57"' dns-manager.sh || fail "manager version not bumped"
+grep -q 'VERSION="3.58"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
 grep -q 'VERSION="1.51"' dns-manager-luci.sh || fail "LuCI version not bumped"
 grep -q "'bypass','Обход геоблока'" dns-manager-luci.sh || fail "bypass profile label not updated"
@@ -471,8 +471,8 @@ view_luci="$(sed -n 's|^// DNS Manager LuCI common module version:[[:space:]]*||
 [ "$top_luci" = "$self_luci" ] || fail "LuCI SELF_VERSION mismatch"
 [ "$top_luci" = "$view_luci" ] || fail "embedded JS version mismatch"
 ok "LuCI version markers synchronized ($top_luci)"
-grep -Fq 'VERSION="3.57"' dns-manager.sh || fail "DNS Manager version marker is not 3.57"
-ok "DNS Manager version marker synchronized (3.57)"
+grep -Fq 'VERSION="3.58"' dns-manager.sh || fail "DNS Manager version marker is not 3.58"
+ok "DNS Manager version marker synchronized (3.58)"
 
 if awk '
     /function startAutoStatus\(root\)/ { capture=1 }
@@ -1060,6 +1060,39 @@ grep -q '_bad_n=$((_bad_n+1))' "$tmp/profile_prune.sh" || fail "profile prune do
 grep -q 'slot_set "$_slot" ""' "$tmp/profile_prune.sh" || fail "profile prune does not clear failed slots"
 grep -q 'rebuild_selected_hdp_sections' "$tmp/profile_prune.sh" || fail "profile prune does not rebuild DoH sections"
 grep -q 'reconcile_dnsmasq' "$tmp/profile_prune.sh" || fail "profile prune does not rebuild dnsmasq upstreams"
+
+# Failed profile slots must be compacted without losing slot/category alignment.
+awk '/^profile_compact_general_slots\(\) \{/,/^}$/ { print }' dns-manager.sh > "$tmp/profile_compact.sh"
+[ -s "$tmp/profile_compact.sh" ] || fail "profile slot compaction helper extraction"
+cat > "$tmp/profile_compact_runner.sh" <<'EOF_PROFILE_COMPACT'
+#!/bin/sh
+set -eu
+TMP_DIR="$1"
+HYBRID_PORT_1=5053 HYBRID_PORT_2=5054 HYBRID_PORT_3=5055
+HYBRID_PORT_4=5056 HYBRID_PORT_5=5057 HYBRID_PORT_6=5058
+SLOT_1=d1 SLOT_2=d2 SLOT_3= SLOT_4=d4 SLOT_5=d5 SLOT_6=
+SLOT_1_CAT=bypass SLOT_2_CAT=bypass SLOT_3_CAT= SLOT_4_CAT=clean SLOT_5_CAT=security SLOT_6_CAT=
+PORT_1=5053 PORT_2=5054 PORT_3= PORT_4=5056 PORT_5=5057 PORT_6=
+SLOT_1_DOMAINS=one.example SLOT_2_DOMAINS=two.example SLOT_3_DOMAINS=three.example
+SLOT_4_DOMAINS=four.example SLOT_5_DOMAINS=five.example SLOT_6_DOMAINS=six.example
+slot_set() { case "$1" in 1) SLOT_1="$2";; 2) SLOT_2="$2";; 3) SLOT_3="$2";; 4) SLOT_4="$2";; 5) SLOT_5="$2";; 6) SLOT_6="$2";; esac; }
+slot_cat_set() { case "$1" in 1) SLOT_1_CAT="$2";; 2) SLOT_2_CAT="$2";; 3) SLOT_3_CAT="$2";; 4) SLOT_4_CAT="$2";; 5) SLOT_5_CAT="$2";; 6) SLOT_6_CAT="$2";; esac; }
+port_set() { case "$1" in 1) PORT_1="$2";; 2) PORT_2="$2";; 3) PORT_3="$2";; 4) PORT_4="$2";; 5) PORT_5="$2";; 6) PORT_6="$2";; esac; }
+hybrid_desired_port() { case "$1" in 1) echo 5053;; 2) echo 5054;; 3) echo 5055;; 4) echo 5056;; 5) echo 5057;; 6) echo 5058;; esac; }
+. "$2"
+profile_compact_general_slots || exit 51
+[ "$SLOT_1" = d1 ] && [ "$SLOT_2" = d2 ] &&
+[ "$SLOT_3" = d4 ] && [ "$SLOT_4" = d5 ] &&
+[ -z "$SLOT_5" ] && [ -z "$SLOT_6" ] || exit 52
+[ "$SLOT_3_CAT" = clean ] && [ "$SLOT_4_CAT" = security ] || exit 53
+[ "$PORT_1" = 5053 ] && [ "$PORT_2" = 5054 ] &&
+[ "$PORT_3" = 5055 ] && [ "$PORT_4" = 5056 ] &&
+[ -z "$PORT_5" ] && [ -z "$PORT_6" ] || exit 54
+[ "$SLOT_1_DOMAINS" = one.example ] && [ "$SLOT_4_DOMAINS" = four.example ] || exit 55
+EOF_PROFILE_COMPACT
+chmod +x "$tmp/profile_compact_runner.sh"
+"$tmp/profile_compact_runner.sh" "$tmp" "$tmp/profile_compact.sh" || fail "profile slots do not compact across a failed slot"
+ok "profile slot compaction removes numbering gaps and preserves categories/ports"
 awk '/^verify_after_apply_with_repair\(\) \{/,/^verify_after_apply\(\) \{/' dns-manager.sh > "$tmp/profile_verify.sh"
 grep -q '\[ "$PROFILE_APPLY" = 1 \]' "$tmp/profile_verify.sh" || fail "profile verification reduced-set path missing"
 grep -q 'profile_prune_failed_slots' "$tmp/profile_verify.sh" || fail "profile verification does not prune failed DNS"
