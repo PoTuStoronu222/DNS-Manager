@@ -3185,7 +3185,7 @@ replace_failed_slot_from_test() {
 }
 profile_compact_general_slots() {
     local _pcs_file _pcs_src _pcs_dst _pcs_id _pcs_cat _pcs_port
-    _pcs_file="$TMP_DIR/profile-compact-slots-$"
+    _pcs_file="$TMP_DIR/profile-compact-slots"
     : > "$_pcs_file" || return 1
 
     # Snapshot active IDs/categories before writing the compacted slot map.
