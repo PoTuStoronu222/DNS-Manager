@@ -503,7 +503,7 @@ EOF_MENU
     },
     "write": {
       "ubus": {
-        "dns_manager": [ "set_profile", "reset_dns", "set_slot", "set_slot_domains", "set_device_dns", "add_custom_dns", "delete_custom_dns", "set_setting", "set_watchdog_setting", "set_watchdog_settings", "set_ntp", "set_test_age", "test_all", "test_current", "test_one", "test_system", "update", "update_manager", "update_hdp", "update_catalog", "update_all" ]
+        "dns_manager": [ "set_profile", "reset_dns", "set_slot", "set_slot_domains", "set_device_dns", "set_device_dns_default", "add_custom_dns", "delete_custom_dns", "set_setting", "set_watchdog_setting", "set_watchdog_settings", "set_ntp", "set_test_age", "test_all", "test_current", "test_one", "test_system", "update", "update_manager", "update_hdp", "update_catalog", "update_all" ]
       }
     }
   }
@@ -3276,6 +3276,18 @@ device_dns_slot_port() {
 set_device_dns_json() {
     DMD_RPC_MAC="$(printf '%s' "${1:-}" | tr 'A-F' 'a-f')"
     DMD_RPC_RAW_SLOTS="${2:-}"
+    DMD_RPC_MODE="${3:-}"
+    case "$DMD_RPC_MODE" in
+        '')
+            if [ -n "$DMD_RPC_RAW_SLOTS" ]; then DMD_RPC_MODE=custom; else DMD_RPC_MODE=inherit; fi
+            ;;
+        custom|inherit|exclude) ;;
+        *) json_error "Неизвестный режим привязки DNS"; return ;;
+    esac
+    case "$DMD_RPC_MODE" in
+        custom) [ -n "$DMD_RPC_RAW_SLOTS" ] || { json_error "Выберите DNS 1–6 для индивидуальной привязки"; return; } ;;
+        inherit|exclude) [ -z "$DMD_RPC_RAW_SLOTS" ] || { json_error "Для режима без индивидуального выбора очистите выбранные слоты"; return; } ;;
+    esac
     if [ -n "$DMD_RPC_RAW_SLOTS" ]; then
         printf '%s' "$DMD_RPC_RAW_SLOTS" | awk '
             { gsub(/[[:space:]]/, ""); if ($0 !~ /^[1-6](,[1-6])*$/) bad=1 }
@@ -3363,9 +3375,10 @@ set_device_dns_json() {
             return
         }
     fi
-    if [ -n "$DMD_RPC_SLOTS" ]; then
-        printf '%s|%s\n' "$DMD_RPC_MAC" "$DMD_RPC_SLOTS" >> "$DMD_RPC_TMP"
-    fi
+    case "$DMD_RPC_MODE" in
+        custom) printf '%s|%s\n' "$DMD_RPC_MAC" "$DMD_RPC_SLOTS" >> "$DMD_RPC_TMP" ;;
+        exclude) printf '%s|EXCLUDE\n' "$DMD_RPC_MAC" >> "$DMD_RPC_TMP" ;;
+    esac
     sort -t '|' -k1,1 "$DMD_RPC_TMP" -o "$DMD_RPC_TMP" || {
         rm -f "$DMD_RPC_TMP" "$DMD_RPC_BACKUP"
         release_mutation_lock
@@ -3396,6 +3409,118 @@ set_device_dns_json() {
     json_ok
 }
 
+set_device_dns_default_json() {
+    DMD_RPC_RAW_SLOTS="${1:-}"
+    if [ -n "$DMD_RPC_RAW_SLOTS" ]; then
+        printf '%s' "$DMD_RPC_RAW_SLOTS" | awk '
+            { gsub(/[[:space:]]/, ""); if ($0 !~ /^[1-6](,[1-6])*$/) bad=1 }
+            END { exit bad ? 1 : 0 }
+        ' || { json_error "Список общего DNS должен содержать номера слотов 1–6 через запятую"; return; }
+    fi
+
+    DMD_RPC_SLOTS=""
+    for DMD_RPC_SLOT in $(printf '%s' "$DMD_RPC_RAW_SLOTS" | tr ',' ' '); do
+        case "$DMD_RPC_SLOT" in 1|2|3|4|5|6) ;; *) json_error "Выберите DNS 1–6"; return ;; esac
+        case " $DMD_RPC_SLOTS " in
+            *" $DMD_RPC_SLOT "*) ;;
+            *) DMD_RPC_SLOTS="${DMD_RPC_SLOTS:+$DMD_RPC_SLOTS }$DMD_RPC_SLOT" ;;
+        esac
+    done
+    if [ -n "$DMD_RPC_SLOTS" ]; then
+        DMD_RPC_SLOTS="$(printf '%s\n' $DMD_RPC_SLOTS | sort -n -u | tr '\n' ',' | sed 's/,$//')"
+    fi
+
+    load_manager || { json_error "DNS Manager недоступен"; return; }
+    for DMD_RPC_SLOT in $(printf '%s' "$DMD_RPC_SLOTS" | tr ',' ' '); do
+        DMD_RPC_ID="$(device_dns_slot_id "$DMD_RPC_SLOT" 2>/dev/null || true)"
+        DMD_RPC_PORT="$(device_dns_slot_port "$DMD_RPC_SLOT" 2>/dev/null || true)"
+        [ -n "$DMD_RPC_ID" ] && [ -n "$DMD_RPC_PORT" ] || {
+            json_error "Сначала назначьте DNS в выбранный слот: DNS $DMD_RPC_SLOT"
+            return
+        }
+        listener_port_exists "$DMD_RPC_PORT" || {
+            json_error "Выбранный DNS $DMD_RPC_SLOT сейчас не слушает порт $DMD_RPC_PORT. Проверьте DoH и повторите."
+            return
+        }
+    done
+
+    acquire_mutation_lock || { json_error "Другая операция DNS Manager уже выполняется"; return; }
+    load_manager || {
+        release_mutation_lock
+        json_error "Не удалось перечитать выбранные DNS"
+        return
+    }
+    for DMD_RPC_SLOT in $(printf '%s' "$DMD_RPC_SLOTS" | tr ',' ' '); do
+        DMD_RPC_ID="$(device_dns_slot_id "$DMD_RPC_SLOT" 2>/dev/null || true)"
+        DMD_RPC_PORT="$(device_dns_slot_port "$DMD_RPC_SLOT" 2>/dev/null || true)"
+        [ -n "$DMD_RPC_ID" ] && [ -n "$DMD_RPC_PORT" ] && listener_port_exists "$DMD_RPC_PORT" || {
+            release_mutation_lock
+            json_error "Слот DNS $DMD_RPC_SLOT изменился или его DoH не слушает порт. Обновите страницу и повторите."
+            return
+        }
+    done
+
+    DMD_RPC_FILE="/etc/dns-manager/config/device-dns-default.conf"
+    mkdir -p "$(dirname "$DMD_RPC_FILE")" || {
+        release_mutation_lock
+        json_error "Не удалось создать каталог общего DNS"
+        return
+    }
+    DMD_RPC_TMP="$(mktemp "$DMD_RPC_FILE.tmp.XXXXXX" 2>/dev/null)" || { release_mutation_lock; json_error "Не удалось подготовить общий выбор DNS"; return; }
+    DMD_RPC_BACKUP="$(mktemp "$DMD_RPC_FILE.backup.XXXXXX" 2>/dev/null)" || { rm -f "$DMD_RPC_TMP"; release_mutation_lock; json_error "Не удалось сохранить прежний общий выбор DNS"; return; }
+    DMD_RPC_HAD_FILE=0
+    if [ -f "$DMD_RPC_FILE" ]; then
+        DMD_RPC_HAD_FILE=1
+        cp -p "$DMD_RPC_FILE" "$DMD_RPC_BACKUP" || {
+            rm -f "$DMD_RPC_TMP" "$DMD_RPC_BACKUP"
+            release_mutation_lock
+            json_error "Не удалось сохранить прежний общий выбор DNS"
+            return
+        }
+    else
+        : > "$DMD_RPC_BACKUP"
+    fi
+
+    if [ -n "$DMD_RPC_SLOTS" ]; then
+        printf '%s\n' "$DMD_RPC_SLOTS" > "$DMD_RPC_TMP" || {
+            rm -f "$DMD_RPC_TMP" "$DMD_RPC_BACKUP"
+            release_mutation_lock
+            json_error "Не удалось записать общий выбор DNS"
+            return
+        }
+        chmod 0600 "$DMD_RPC_TMP" 2>/dev/null || true
+        mv -f "$DMD_RPC_TMP" "$DMD_RPC_FILE" || {
+            rm -f "$DMD_RPC_TMP" "$DMD_RPC_BACKUP"
+            release_mutation_lock
+            json_error "Не удалось сохранить общий выбор DNS"
+            return
+        }
+    else
+        rm -f "$DMD_RPC_TMP"
+        rm -f "$DMD_RPC_FILE" || {
+            rm -f "$DMD_RPC_BACKUP"
+            release_mutation_lock
+            json_error "Не удалось отключить общий выбор DNS"
+            return
+        }
+    fi
+
+    if [ ! -x /etc/init.d/dns-manager-device-dns ] || ! /etc/init.d/dns-manager-device-dns restart >/dev/null 2>&1; then
+        if [ "$DMD_RPC_HAD_FILE" = 1 ]; then
+            mv -f "$DMD_RPC_BACKUP" "$DMD_RPC_FILE" 2>/dev/null || true
+        else
+            rm -f "$DMD_RPC_FILE" "$DMD_RPC_BACKUP" 2>/dev/null || true
+        fi
+        [ ! -x /etc/init.d/dns-manager-device-dns ] || /etc/init.d/dns-manager-device-dns restart >/dev/null 2>&1 || true
+        release_mutation_lock
+        json_error "Общий DNS не удалось применить. Предыдущая настройка восстановлена."
+        return
+    fi
+    rm -f "$DMD_RPC_BACKUP"
+    release_mutation_lock
+    json_ok
+}
+
 run_action() {
     _profile="$(jget profile)"
     case "${RPC_METHOD:-}" in
@@ -3406,7 +3531,10 @@ run_action() {
             delete_custom_dns_json
             ;;
         set_device_dns)
-            set_device_dns_json "$(jget mac)" "$(jget slots)"
+            set_device_dns_json "$(jget mac)" "$(jget slots)" "$(jget mode)"
+            ;;
+        set_device_dns_default)
+            set_device_dns_default_json "$(jget slots)"
             ;;
         set_profile)
             case "$_profile" in clean2) _profile=clean;; bypass|clean|security|privacy|adblock|family|all) ;; *) json_error "Неверный профиль"; return;; esac
@@ -3568,7 +3696,7 @@ test_json() { case "${RPC_METHOD:-}" in test_all) job_start_test_all;; test_curr
 
 case "${1:-}" in
     list)
-        printf '{"status":{},"runtime":{},"doh_status":{},"network_status":{},"lan_devices":{},"set_device_dns":{"mac":"String","slots":"String"},"time_status":{},"page_meta":{},"catalog":{"category":"String","offset":0,"limit":0,"only_ok":0},"update_check":{"force":0},"update":{},"update_manager":{},"update_hdp":{},"update_catalog":{},"update_all":{},"set_profile":{"profile":"String"},"reset_dns":{},"set_slot":{"slot":"String","id":"String"},"set_slot_domains":{"slot":"String","domains":"String"},"add_custom_dns":{"name":"String","url":"String"},"delete_custom_dns":{"id":"String"},"set_setting":{"name":"String","enabled":0},"set_watchdog_setting":{"name":"String","value":0},"set_watchdog_settings":{"interval":0,"threshold":0,"repair_cooldown":0,"max_repairs":0,"max_restarts":0,"max_candidates":0,"guard_interval":0},"set_ntp":{"preset":"String"},"set_test_age":{"category":"String","hours":0},"test_all":{},"test_current":{},"test_one":{"id":"String"},"test_system":{},"job":{"id":"String"},"log":{"lines":0}}\n'
+        printf '{"status":{},"runtime":{},"doh_status":{},"network_status":{},"lan_devices":{},"set_device_dns":{"mac":"String","slots":"String","mode":"String"},"set_device_dns_default":{"slots":"String"},"time_status":{},"page_meta":{},"catalog":{"category":"String","offset":0,"limit":0,"only_ok":0},"update_check":{"force":0},"update":{},"update_manager":{},"update_hdp":{},"update_catalog":{},"update_all":{},"set_profile":{"profile":"String"},"reset_dns":{},"set_slot":{"slot":"String","id":"String"},"set_slot_domains":{"slot":"String","domains":"String"},"add_custom_dns":{"name":"String","url":"String"},"delete_custom_dns":{"id":"String"},"set_setting":{"name":"String","enabled":0},"set_watchdog_setting":{"name":"String","value":0},"set_watchdog_settings":{"interval":0,"threshold":0,"repair_cooldown":0,"max_repairs":0,"max_restarts":0,"max_candidates":0,"guard_interval":0},"set_ntp":{"preset":"String"},"set_test_age":{"category":"String","hours":0},"test_all":{},"test_current":{},"test_one":{"id":"String"},"test_system":{},"job":{"id":"String"},"log":{"lines":0}}\n'
         ;;
     call)
         case "${2:-}" in
@@ -3581,7 +3709,7 @@ case "${1:-}" in
             runtime) runtime_json;;
             catalog) INPUT="$(cat 2>/dev/null || true)"; catalog_json;;
             update_check) INPUT="$(cat 2>/dev/null || true)"; update_check_json;;            update_catalog) update_catalog_json;;            update_all) update_all_json;;            update) update_json;;            update_manager) update_manager_json;;            update_hdp) update_hdp_json;;
-            add_custom_dns|delete_custom_dns|set_device_dns|reset_dns|set_profile|set_slot|set_slot_domains|set_setting|set_watchdog_setting|set_watchdog_settings|set_ntp) INPUT="$(cat 2>/dev/null || true)"; RPC_METHOD="$2"; run_action;;
+            add_custom_dns|delete_custom_dns|set_device_dns|set_device_dns_default|reset_dns|set_profile|set_slot|set_slot_domains|set_setting|set_watchdog_setting|set_watchdog_settings|set_ntp) INPUT="$(cat 2>/dev/null || true)"; RPC_METHOD="$2"; run_action;;
             test_all|test_current|test_one|test_system) INPUT="$(cat 2>/dev/null || true)"; RPC_METHOD="$2"; test_json;;
             job) INPUT="$(cat 2>/dev/null || true)"; job_json "$(jget id)";;
             log) INPUT="$(cat 2>/dev/null || true)"; log_json "$(jget lines)";;
@@ -3647,7 +3775,8 @@ var callStatus = dmRpc({ object:'dns_manager', method:'status', params:['detail'
 var callDohStatus = dmRpc({ object:'dns_manager', method:'doh_status', expect:{} });
 var callNetworkStatus = dmRpc({ object:'dns_manager', method:'network_status', expect:{} });
 var callLanDevices = dmRpc({ object:'dns_manager', method:'lan_devices', expect:{} });
-var callSetDeviceDns = dmRpc({ object:'dns_manager', method:'set_device_dns', params:['mac','slots'], expect:{} });
+var callSetDeviceDns = dmRpc({ object:'dns_manager', method:'set_device_dns', params:['mac','slots','mode'], expect:{} });
+var callSetDeviceDnsDefault = dmRpc({ object:'dns_manager', method:'set_device_dns_default', params:['slots'], expect:{} });
 var callTimeStatus = dmRpc({ object:'dns_manager', method:'time_status', expect:{} });
 var callPageMeta = dmRpc({ object:'dns_manager', method:'page_meta', expect:{} });
 var callBoardInfo = rpc.declare({ object:'system', method:'info', expect:{} });
