@@ -66,7 +66,7 @@ EOF_WATCHDOG_DOMAIN_EXPECTED
 chmod +x "$tmp/watchdog_expected_domains_runner.sh"
 "$tmp/watchdog_expected_domains_runner.sh" "$tmp/watchdog-domain-state" "$tmp/slot_domains_get.sh" "$tmp/watchdog_expected_servers.sh" || fail "Watchdog expected-domain rules"
 grep -Fq 'val="/$_domain/127.0.0.1#$p"' dns-manager.sh || fail "dnsmasq does not route configured domains to their slot port"
-grep -Fq 'SLOT_1_DOMAINS="$SLOT_1_DOMAINS"' dns-manager.sh || fail "domain assignments are not persisted"
+grep -Fq 'SLOT_1_DOMAINS=$(shell_quote "$SLOT_1_DOMAINS")' dns-manager.sh || fail "domain assignments are not safely persisted"
 grep -Fq 'SLOT_6_DOMAINS=$(shell_quote "$SLOT_6_DOMAINS")' dns-manager.sh || fail "domain assignments are not safely persisted for every slot"
 grep -Fq 'set_slot_domains)' dns-manager-luci.sh || fail "LuCI domain update RPC is missing"
 grep -Fq "method:'set_slot_domains'" dns-manager-luci.sh || fail "LuCI domain save call is missing"
