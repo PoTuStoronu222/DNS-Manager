@@ -87,6 +87,23 @@ dmd_valid_mac() {
     '
 }
 
+dmd_slot_id() {
+    case "$1" in
+        1) printf '%s' "${SLOT_1:-}" ;; 2) printf '%s' "${SLOT_2:-}" ;;
+        3) printf '%s' "${SLOT_3:-}" ;; 4) printf '%s' "${SLOT_4:-}" ;;
+        5) printf '%s' "${SLOT_5:-}" ;; 6) printf '%s' "${SLOT_6:-}" ;;
+        *) return 1 ;;
+    esac
+}
+dmd_slot_port() {
+    case "$1" in
+        1) printf '%s' "${PORT_1:-}" ;; 2) printf '%s' "${PORT_2:-}" ;;
+        3) printf '%s' "${PORT_3:-}" ;; 4) printf '%s' "${PORT_4:-}" ;;
+        5) printf '%s' "${PORT_5:-}" ;; 6) printf '%s' "${PORT_6:-}" ;;
+        *) return 1 ;;
+    esac
+}
+
 dmd_normalize_slots() {
     _dmd_raw="$(printf '%s' "$1" | tr ',' ' ')"
     _dmd_list=""
@@ -142,9 +159,9 @@ dmd_build_and_install() {
     command -v fw4 >/dev/null 2>&1 || { dmd_log "fw4 is unavailable."; return 1; }
     [ -x /usr/sbin/dnsmasq ] || { dmd_log "dnsmasq is unavailable."; return 1; }
 
-    DMD_STAGE="/tmp/dns-manager-device-dns.stage.$"
     dmd_cleanup_stage
-    mkdir -p "$DMD_STAGE/profiles" "$DMD_BASE" /etc/nftables.d || return 1
+    DMD_STAGE="$(mktemp -d /tmp/dns-manager-device-dns.stage.XXXXXX 2>/dev/null)" || return 1
+    mkdir -p "$DMD_STAGE/profiles" "$DMD_BASE" /etc/nftables.d || { dmd_cleanup_stage; return 1; }
     : > "$DMD_STAGE/profiles.map"
     : > "$DMD_STAGE/nft.rules"
 
@@ -171,8 +188,8 @@ dmd_build_and_install() {
             DMD_VALID=1
             DMD_COUNT=0
             for DMD_SLOT in $(printf '%s' "$DMD_SLOTS" | tr ',' ' '); do
-                eval "DMD_ID=${SLOT_$DMD_SLOT:-}"
-                eval "DMD_PORT=${PORT_$DMD_SLOT:-}"
+                DMD_ID="$(dmd_slot_id "$DMD_SLOT" 2>/dev/null || true)"
+                DMD_PORT="$(dmd_slot_port "$DMD_SLOT" 2>/dev/null || true)"
                 case "$DMD_PORT" in ''|*[!0-9]*) DMD_VALID=0; break ;; esac
                 [ -n "$DMD_ID" ] || { DMD_VALID=0; break; }
                 [ "$DMD_PORT" -ge 1 ] 2>/dev/null && [ "$DMD_PORT" -le 65535 ] 2>/dev/null || { DMD_VALID=0; break; }
@@ -197,7 +214,7 @@ dmd_build_and_install() {
                     printf 'server=/lan/127.0.0.1#53\n'
                     [ "$DMD_COUNT" -le 1 ] || printf 'all-servers\n'
                     for DMD_SLOT in $(printf '%s' "$DMD_SLOTS" | tr ',' ' '); do
-                        eval "DMD_UPSTREAM_PORT=${PORT_$DMD_SLOT:-}"
+                        DMD_UPSTREAM_PORT="$(dmd_slot_port "$DMD_SLOT" 2>/dev/null || true)"
                         printf 'server=127.0.0.1#%s\n' "$DMD_UPSTREAM_PORT"
                     done
                 } > "$DMD_PROFILE" || { dmd_cleanup_stage; return 1; }
