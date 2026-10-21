@@ -360,7 +360,7 @@ grep -Fq '# ENTRIES=107' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog entr
 grep -Fq 'cubedns|privacy|privacy+no-logs|CubeDNS|https://cubedns.com/dns-query|' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "CubeDNS DoH entry missing"
 grep -Fq 'dagami|bypass|geo+services|Dagami DNS|https://dns.dagami.ru/dns-query|' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "Dagami DNS entry missing"
 grep -Fq 'astracat|bypass|geo+ads+services|AstraCat DNS|https://dns.commonnet.work/dns-query|ru/global|official-current' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "AstraCat official DoH endpoint is stale"
-if grep -Eq '^astracat_(1498|8443)\\|' catalogs/dns-8.7-RU-NOSOCIAL.conf; then fail "obsolete AstraCat alternate-port DoH entries remain"; fi
+if grep -Eq '^astracat_(1498|8443)[|]' catalogs/dns-8.7-RU-NOSOCIAL.conf; then fail "obsolete AstraCat alternate-port DoH entries remain"; fi
 grep -Fq 'DNSCAT_REVISION="7"' dns-manager.sh || fail "backend catalog revision is not synchronized"
 grep -Fq '_old_astracat_url=' dns-manager.sh || fail "old AstraCat endpoint is not tracked during catalog update"
 grep -Fq '_new_astracat_url=' dns-manager.sh || fail "new AstraCat endpoint is not tracked during catalog update"
