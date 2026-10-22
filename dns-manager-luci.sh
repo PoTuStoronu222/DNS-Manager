@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.82
+# Version: 1.83
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -32,7 +32,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/dns-manager-complete-integration-20261021/dns-manager-luci.sh"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.82"
+VERSION="1.83"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -73,7 +73,6 @@ STOP=10
 USE_PROCD=1
 DMD_BASE="/etc/dns-manager/device-dns"
 DMD_ASSIGNMENTS="/etc/dns-manager/config/device-dns.conf"
-DMD_DEFAULT_FILE="/etc/dns-manager/config/device-dns-default.conf"
 DMD_MANAGER_CONFIG="/etc/dns-manager/config/manager.conf"
 DMD_NFT="/etc/dns-manager/device-dns/redirects.nft"
 DMD_INCLUDE="dns_manager_device_dns"
@@ -325,7 +324,6 @@ dmd_build_and_install() {
     case "$DMD_LAN_DEV" in ''|*[!A-Za-z0-9_.:-]*) dmd_cleanup_stage; return 1 ;; esac
 
     DMD_ACTIVE=0
-    DMD_SKIP_MACS=""
     : > "$DMD_STAGE/nft.rules"
 
     if [ -r "$DMD_ASSIGNMENTS" ]; then
@@ -334,21 +332,11 @@ dmd_build_and_install() {
             [ -n "$DMD_MAC" ] || continue
             dmd_valid_mac "$DMD_MAC" || continue
             [ -z "$DMD_EXTRA" ] || continue
-            case "$DMD_RAW_SLOTS" in
-                EXCLUDE)
-                    DMD_SKIP_MACS="$DMD_SKIP_MACS $DMD_MAC"
-                    continue
-                    ;;
-            esac
             DMD_SLOTS="$(dmd_normalize_slots "$DMD_RAW_SLOTS" 2>/dev/null || true)"
             [ -n "$DMD_SLOTS" ] || continue
-            # A valid explicit per-device choice takes precedence even when its
-            # upstream is temporarily down; do not silently route it via default DNS.
-            DMD_SKIP_MACS="$DMD_SKIP_MACS $DMD_MAC"
-
             DMD_LISTENER_PORT="$(dmd_ensure_profile "$DMD_SLOTS" "device $DMD_MAC" 2>/dev/null || true)"
             case "$DMD_LISTENER_PORT" in ''|*[!0-9]*)
-                dmd_log "Device $DMD_MAC has no usable DoH profile; it will use the LAN default if enabled."
+                dmd_log "Device $DMD_MAC has no usable DoH profile; it will use the normal LAN DNS path."
                 continue
                 ;;
             esac
@@ -357,28 +345,6 @@ dmd_build_and_install() {
             printf 'iifname "%s" ether saddr %s tcp dport 53 redirect to :%s\n' "$DMD_LAN_DEV" "$DMD_MAC" "$DMD_LISTENER_PORT" >> "$DMD_STAGE/nft.rules"
             DMD_ACTIVE=$((DMD_ACTIVE + 1))
         done < "$DMD_ASSIGNMENTS"
-    fi
-
-    DMD_DEFAULT_RAW="$(sed -n '1p' "$DMD_DEFAULT_FILE" 2>/dev/null || true)"
-    DMD_DEFAULT_SLOTS="$(dmd_normalize_slots "$DMD_DEFAULT_RAW" 2>/dev/null || true)"
-    if [ -n "$DMD_DEFAULT_SLOTS" ]; then
-        DMD_DEFAULT_PORT="$(dmd_ensure_profile "$DMD_DEFAULT_SLOTS" "LAN default" 2>/dev/null || true)"
-        case "$DMD_DEFAULT_PORT" in
-            ''|*[!0-9]*)
-                dmd_log "The saved LAN-wide DNS selection could not be activated; unmatched devices remain on the normal DNS path."
-                ;;
-            *)
-                DMD_SKIP_SET="$(printf '%s\n' $DMD_SKIP_MACS | awk 'NF && !seen[$0]++ { if (n++) printf ", "; printf "%s", $0 } END { if (n) printf "\n" }')"
-                if [ -n "$DMD_SKIP_SET" ]; then
-                    printf 'iifname "%s" ether saddr != { %s } udp dport 53 redirect to :%s\n' "$DMD_LAN_DEV" "$DMD_SKIP_SET" "$DMD_DEFAULT_PORT" >> "$DMD_STAGE/nft.rules"
-                    printf 'iifname "%s" ether saddr != { %s } tcp dport 53 redirect to :%s\n' "$DMD_LAN_DEV" "$DMD_SKIP_SET" "$DMD_DEFAULT_PORT" >> "$DMD_STAGE/nft.rules"
-                else
-                    printf 'iifname "%s" udp dport 53 redirect to :%s\n' "$DMD_LAN_DEV" "$DMD_DEFAULT_PORT" >> "$DMD_STAGE/nft.rules"
-                    printf 'iifname "%s" tcp dport 53 redirect to :%s\n' "$DMD_LAN_DEV" "$DMD_DEFAULT_PORT" >> "$DMD_STAGE/nft.rules"
-                fi
-                DMD_ACTIVE=$((DMD_ACTIVE + 1))
-                ;;
-        esac
     fi
 
     if [ "$DMD_ACTIVE" -gt 0 ]; then
@@ -440,6 +406,13 @@ EOF_DEVICE_DNS_SERVICE
     chmod 0755 /etc/init.d/dns-manager-device-dns || return 1
     /etc/init.d/dns-manager-device-dns enable >/dev/null 2>&1 || return 1
     rm -f /etc/nftables.d/90-dns-manager-device-dns.nft /etc/nftables.d/90-dns-manager-device-dns.nft.tmp.* 2>/dev/null || true
+    rm -f /etc/dns-manager/config/device-dns-default.conf 2>/dev/null || true
+    if [ -f /etc/dns-manager/config/device-dns.conf ]; then
+        _dmd_migrate_tmp="$(mktemp /etc/dns-manager/config/device-dns.migrate.XXXXXX 2>/dev/null)" || return 1
+        awk -F '|' '$2 != "EXCLUDE" { print }' /etc/dns-manager/config/device-dns.conf > "$_dmd_migrate_tmp" &&
+            mv -f "$_dmd_migrate_tmp" /etc/dns-manager/config/device-dns.conf ||
+            { rm -f "$_dmd_migrate_tmp"; return 1; }
+    fi
     /etc/init.d/firewall reload >/dev/null 2>&1 || true
     if ! /etc/init.d/dns-manager-device-dns restart >/dev/null 2>&1; then
         say "ПРЕДУПРЕЖДЕНИЕ: не удалось запустить проверку привязок DNS по устройствам; они остаются без активных правил."
@@ -502,7 +475,7 @@ EOF_MENU
     },
     "write": {
       "ubus": {
-        "dns_manager": [ "set_profile", "reset_dns", "set_slot", "set_slot_domains", "set_device_dns", "set_device_dns_default", "add_custom_dns", "delete_custom_dns", "set_setting", "set_watchdog_setting", "set_watchdog_settings", "set_ntp", "set_test_age", "test_all", "test_current", "test_one", "test_system", "update", "update_manager", "update_hdp", "update_catalog", "update_all" ]
+        "dns_manager": [ "set_profile", "reset_dns", "set_slot", "set_slot_domains", "set_device_dns", "add_custom_dns", "delete_custom_dns", "set_setting", "set_watchdog_setting", "set_watchdog_settings", "set_ntp", "set_test_age", "test_all", "test_current", "test_one", "test_system", "update", "update_manager", "update_hdp", "update_catalog", "update_all" ]
       }
     }
   }
@@ -539,7 +512,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/dns-manager-complete-integration-20261021/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="1.82"
+SELF_VERSION="1.83"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -1767,10 +1740,8 @@ page_header_json() {
 }
 
 lan_devices_json() {
-    _ld_default_raw="$(sed -n '1p' /etc/dns-manager/config/device-dns-default.conf 2>/dev/null || true)"
-    _ld_default_slots="$(printf '%s' "$_ld_default_raw" | awk '{ gsub(/[[:space:]]/, ""); if ($0 ~ /^([1-6])(,[1-6])*$/) print $0 }')"
     _ld_tmp="$(mktemp /tmp/dns-manager-lan-devices.XXXXXX 2>/dev/null)" || {
-        printf '{"ok":false,"error":"Не удалось создать временный файл","default_slots":"","devices":[]}\n'
+        printf '{"ok":false,"error":"Не удалось создать временный файл","devices":[]}\n'
         return 0
     }
     _ld_merged="$_ld_tmp.merged"
@@ -1828,14 +1799,12 @@ lan_devices_json() {
         done
     done
 
-    # Keep saved bindings and explicit default exclusions visible after devices go offline.
+    # Keep saved individual bindings visible after devices go offline.
     if [ -r /etc/dns-manager/config/device-dns.conf ]; then
         awk -F '|' '
-            NF >= 2 && $1 ~ /^[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]$/ {
-                slots = $2
-                mode = "custom"
-                if ($2 == "EXCLUDE") { slots = ""; mode = "exclude" }
-                printf "%s|||ASSIGN|0|%s|%s\n", tolower($1), slots, mode
+            NF >= 2 && $2 ~ /^[1-6](,[1-6])*$/ &&
+            $1 ~ /^[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]$/ {
+                printf "%s|||ASSIGN|0|%s\n", tolower($1), $2
             }
         ' /etc/dns-manager/config/device-dns.conf >> "$_ld_tmp" 2>/dev/null || true
     fi
@@ -1857,20 +1826,19 @@ lan_devices_json() {
             else if ($4 == "static DHCP" && source[mac] == "") source[mac] = "static DHCP"
             else if ($4 == "ASSIGN" && source[mac] == "") source[mac] = "ASSIGN"
             if ($6 != "") assigned[mac] = $6
-            if ($7 != "") dns_mode[mac] = $7
             if ($5 == "1") online[mac] = 1
         }
         END {
             for (i = 1; i <= n; i++) {
                 mac = order[i]
-                printf "%s|%s|%s|%s|%s|%s|%s\n", mac, ip[mac], name[mac], source[mac], (online[mac] ? 1 : 0), assigned[mac], dns_mode[mac]
+                printf "%s|%s|%s|%s|%s|%s\n", mac, ip[mac], name[mac], source[mac], (online[mac] ? 1 : 0), assigned[mac]
             }
         }
     ' "$_ld_tmp" | sort -t '|' -k1,1 > "$_ld_merged"
 
-    printf '{"ok":true,"default_slots":'; json_quote "$_ld_default_slots"; printf ',"devices":['
+    printf '{"ok":true,"devices":['
     _ld_sep=""
-    while IFS='|' read -r _ld_mac _ld_ip _ld_name _ld_source _ld_online _ld_assigned_slots _ld_dns_mode; do
+    while IFS='|' read -r _ld_mac _ld_ip _ld_name _ld_source _ld_online _ld_assigned_slots; do
         [ -n "$_ld_mac" ] || continue
         printf '%s{"mac":' "$_ld_sep"; json_quote "$_ld_mac"
         printf ',"ip":'; json_quote "$_ld_ip"
@@ -1878,7 +1846,6 @@ lan_devices_json() {
         printf ',"source":'; json_quote "$_ld_source"
         printf ',"online":%s' "$([ "$_ld_online" = 1 ] && printf 1 || printf 0)"
         printf ',"assigned_slots":'; json_quote "$_ld_assigned_slots"
-        printf ',"dns_mode":'; json_quote "$_ld_dns_mode"
         printf '}'
         _ld_sep=","
     done < "$_ld_merged"
@@ -3275,18 +3242,6 @@ device_dns_slot_port() {
 set_device_dns_json() {
     DMD_RPC_MAC="$(printf '%s' "${1:-}" | tr 'A-F' 'a-f')"
     DMD_RPC_RAW_SLOTS="${2:-}"
-    DMD_RPC_MODE="${3:-}"
-    case "$DMD_RPC_MODE" in
-        '')
-            if [ -n "$DMD_RPC_RAW_SLOTS" ]; then DMD_RPC_MODE=custom; else DMD_RPC_MODE=inherit; fi
-            ;;
-        custom|inherit|exclude) ;;
-        *) json_error "Неизвестный режим привязки DNS"; return ;;
-    esac
-    case "$DMD_RPC_MODE" in
-        custom) [ -n "$DMD_RPC_RAW_SLOTS" ] || { json_error "Выберите DNS 1–6 для индивидуальной привязки"; return; } ;;
-        inherit|exclude) [ -z "$DMD_RPC_RAW_SLOTS" ] || { json_error "Для режима без индивидуального выбора очистите выбранные слоты"; return; } ;;
-    esac
     if [ -n "$DMD_RPC_RAW_SLOTS" ]; then
         printf '%s' "$DMD_RPC_RAW_SLOTS" | awk '
             { gsub(/[[:space:]]/, ""); if ($0 !~ /^[1-6](,[1-6])*$/) bad=1 }
@@ -3374,10 +3329,9 @@ set_device_dns_json() {
             return
         }
     fi
-    case "$DMD_RPC_MODE" in
-        custom) printf '%s|%s\n' "$DMD_RPC_MAC" "$DMD_RPC_SLOTS" >> "$DMD_RPC_TMP" ;;
-        exclude) printf '%s|EXCLUDE\n' "$DMD_RPC_MAC" >> "$DMD_RPC_TMP" ;;
-    esac
+    if [ -n "$DMD_RPC_SLOTS" ]; then
+        printf '%s|%s\n' "$DMD_RPC_MAC" "$DMD_RPC_SLOTS" >> "$DMD_RPC_TMP"
+    fi
     sort -t '|' -k1,1 "$DMD_RPC_TMP" -o "$DMD_RPC_TMP" || {
         rm -f "$DMD_RPC_TMP" "$DMD_RPC_BACKUP"
         release_mutation_lock
@@ -3408,118 +3362,6 @@ set_device_dns_json() {
     json_ok
 }
 
-set_device_dns_default_json() {
-    DMD_RPC_RAW_SLOTS="${1:-}"
-    if [ -n "$DMD_RPC_RAW_SLOTS" ]; then
-        printf '%s' "$DMD_RPC_RAW_SLOTS" | awk '
-            { gsub(/[[:space:]]/, ""); if ($0 !~ /^[1-6](,[1-6])*$/) bad=1 }
-            END { exit bad ? 1 : 0 }
-        ' || { json_error "Список общего DNS должен содержать номера слотов 1–6 через запятую"; return; }
-    fi
-
-    DMD_RPC_SLOTS=""
-    for DMD_RPC_SLOT in $(printf '%s' "$DMD_RPC_RAW_SLOTS" | tr ',' ' '); do
-        case "$DMD_RPC_SLOT" in 1|2|3|4|5|6) ;; *) json_error "Выберите DNS 1–6"; return ;; esac
-        case " $DMD_RPC_SLOTS " in
-            *" $DMD_RPC_SLOT "*) ;;
-            *) DMD_RPC_SLOTS="${DMD_RPC_SLOTS:+$DMD_RPC_SLOTS }$DMD_RPC_SLOT" ;;
-        esac
-    done
-    if [ -n "$DMD_RPC_SLOTS" ]; then
-        DMD_RPC_SLOTS="$(printf '%s\n' $DMD_RPC_SLOTS | sort -n -u | tr '\n' ',' | sed 's/,$//')"
-    fi
-
-    load_manager || { json_error "DNS Manager недоступен"; return; }
-    for DMD_RPC_SLOT in $(printf '%s' "$DMD_RPC_SLOTS" | tr ',' ' '); do
-        DMD_RPC_ID="$(device_dns_slot_id "$DMD_RPC_SLOT" 2>/dev/null || true)"
-        DMD_RPC_PORT="$(device_dns_slot_port "$DMD_RPC_SLOT" 2>/dev/null || true)"
-        [ -n "$DMD_RPC_ID" ] && [ -n "$DMD_RPC_PORT" ] || {
-            json_error "Сначала назначьте DNS в выбранный слот: DNS $DMD_RPC_SLOT"
-            return
-        }
-        listener_port_exists "$DMD_RPC_PORT" || {
-            json_error "Выбранный DNS $DMD_RPC_SLOT сейчас не слушает порт $DMD_RPC_PORT. Проверьте DoH и повторите."
-            return
-        }
-    done
-
-    acquire_mutation_lock || { json_error "Другая операция DNS Manager уже выполняется"; return; }
-    load_manager || {
-        release_mutation_lock
-        json_error "Не удалось перечитать выбранные DNS"
-        return
-    }
-    for DMD_RPC_SLOT in $(printf '%s' "$DMD_RPC_SLOTS" | tr ',' ' '); do
-        DMD_RPC_ID="$(device_dns_slot_id "$DMD_RPC_SLOT" 2>/dev/null || true)"
-        DMD_RPC_PORT="$(device_dns_slot_port "$DMD_RPC_SLOT" 2>/dev/null || true)"
-        [ -n "$DMD_RPC_ID" ] && [ -n "$DMD_RPC_PORT" ] && listener_port_exists "$DMD_RPC_PORT" || {
-            release_mutation_lock
-            json_error "Слот DNS $DMD_RPC_SLOT изменился или его DoH не слушает порт. Обновите страницу и повторите."
-            return
-        }
-    done
-
-    DMD_RPC_FILE="/etc/dns-manager/config/device-dns-default.conf"
-    mkdir -p "$(dirname "$DMD_RPC_FILE")" || {
-        release_mutation_lock
-        json_error "Не удалось создать каталог общего DNS"
-        return
-    }
-    DMD_RPC_TMP="$(mktemp "$DMD_RPC_FILE.tmp.XXXXXX" 2>/dev/null)" || { release_mutation_lock; json_error "Не удалось подготовить общий выбор DNS"; return; }
-    DMD_RPC_BACKUP="$(mktemp "$DMD_RPC_FILE.backup.XXXXXX" 2>/dev/null)" || { rm -f "$DMD_RPC_TMP"; release_mutation_lock; json_error "Не удалось сохранить прежний общий выбор DNS"; return; }
-    DMD_RPC_HAD_FILE=0
-    if [ -f "$DMD_RPC_FILE" ]; then
-        DMD_RPC_HAD_FILE=1
-        cp -p "$DMD_RPC_FILE" "$DMD_RPC_BACKUP" || {
-            rm -f "$DMD_RPC_TMP" "$DMD_RPC_BACKUP"
-            release_mutation_lock
-            json_error "Не удалось сохранить прежний общий выбор DNS"
-            return
-        }
-    else
-        : > "$DMD_RPC_BACKUP"
-    fi
-
-    if [ -n "$DMD_RPC_SLOTS" ]; then
-        printf '%s\n' "$DMD_RPC_SLOTS" > "$DMD_RPC_TMP" || {
-            rm -f "$DMD_RPC_TMP" "$DMD_RPC_BACKUP"
-            release_mutation_lock
-            json_error "Не удалось записать общий выбор DNS"
-            return
-        }
-        chmod 0600 "$DMD_RPC_TMP" 2>/dev/null || true
-        mv -f "$DMD_RPC_TMP" "$DMD_RPC_FILE" || {
-            rm -f "$DMD_RPC_TMP" "$DMD_RPC_BACKUP"
-            release_mutation_lock
-            json_error "Не удалось сохранить общий выбор DNS"
-            return
-        }
-    else
-        rm -f "$DMD_RPC_TMP"
-        rm -f "$DMD_RPC_FILE" || {
-            rm -f "$DMD_RPC_BACKUP"
-            release_mutation_lock
-            json_error "Не удалось отключить общий выбор DNS"
-            return
-        }
-    fi
-
-    if [ ! -x /etc/init.d/dns-manager-device-dns ] || ! /etc/init.d/dns-manager-device-dns restart >/dev/null 2>&1; then
-        if [ "$DMD_RPC_HAD_FILE" = 1 ]; then
-            mv -f "$DMD_RPC_BACKUP" "$DMD_RPC_FILE" 2>/dev/null || true
-        else
-            rm -f "$DMD_RPC_FILE" "$DMD_RPC_BACKUP" 2>/dev/null || true
-        fi
-        [ ! -x /etc/init.d/dns-manager-device-dns ] || /etc/init.d/dns-manager-device-dns restart >/dev/null 2>&1 || true
-        release_mutation_lock
-        json_error "Общий DNS не удалось применить. Предыдущая настройка восстановлена."
-        return
-    fi
-    rm -f "$DMD_RPC_BACKUP"
-    release_mutation_lock
-    json_ok
-}
-
 run_action() {
     _profile="$(jget profile)"
     case "${RPC_METHOD:-}" in
@@ -3530,10 +3372,7 @@ run_action() {
             delete_custom_dns_json
             ;;
         set_device_dns)
-            set_device_dns_json "$(jget mac)" "$(jget slots)" "$(jget mode)"
-            ;;
-        set_device_dns_default)
-            set_device_dns_default_json "$(jget slots)"
+            set_device_dns_json "$(jget mac)" "$(jget slots)"
             ;;
         set_profile)
             case "$_profile" in clean2) _profile=clean;; bypass|clean|security|privacy|adblock|family|all) ;; *) json_error "Неверный профиль"; return;; esac
@@ -3695,7 +3534,7 @@ test_json() { case "${RPC_METHOD:-}" in test_all) job_start_test_all;; test_curr
 
 case "${1:-}" in
     list)
-        printf '{"status":{},"runtime":{},"doh_status":{},"network_status":{},"lan_devices":{},"set_device_dns":{"mac":"String","slots":"String","mode":"String"},"set_device_dns_default":{"slots":"String"},"time_status":{},"page_meta":{},"catalog":{"category":"String","offset":0,"limit":0,"only_ok":0},"update_check":{"force":0},"update":{},"update_manager":{},"update_hdp":{},"update_catalog":{},"update_all":{},"set_profile":{"profile":"String"},"reset_dns":{},"set_slot":{"slot":"String","id":"String"},"set_slot_domains":{"slot":"String","domains":"String"},"add_custom_dns":{"name":"String","url":"String"},"delete_custom_dns":{"id":"String"},"set_setting":{"name":"String","enabled":0},"set_watchdog_setting":{"name":"String","value":0},"set_watchdog_settings":{"interval":0,"threshold":0,"repair_cooldown":0,"max_repairs":0,"max_restarts":0,"max_candidates":0,"guard_interval":0},"set_ntp":{"preset":"String"},"set_test_age":{"category":"String","hours":0},"test_all":{},"test_current":{},"test_one":{"id":"String"},"test_system":{},"job":{"id":"String"},"log":{"lines":0}}\n'
+        printf '{"status":{},"runtime":{},"doh_status":{},"network_status":{},"lan_devices":{},"set_device_dns":{"mac":"String","slots":"String"},"time_status":{},"page_meta":{},"catalog":{"category":"String","offset":0,"limit":0,"only_ok":0},"update_check":{"force":0},"update":{},"update_manager":{},"update_hdp":{},"update_catalog":{},"update_all":{},"set_profile":{"profile":"String"},"reset_dns":{},"set_slot":{"slot":"String","id":"String"},"set_slot_domains":{"slot":"String","domains":"String"},"add_custom_dns":{"name":"String","url":"String"},"delete_custom_dns":{"id":"String"},"set_setting":{"name":"String","enabled":0},"set_watchdog_setting":{"name":"String","value":0},"set_watchdog_settings":{"interval":0,"threshold":0,"repair_cooldown":0,"max_repairs":0,"max_restarts":0,"max_candidates":0,"guard_interval":0},"set_ntp":{"preset":"String"},"set_test_age":{"category":"String","hours":0},"test_all":{},"test_current":{},"test_one":{"id":"String"},"test_system":{},"job":{"id":"String"},"log":{"lines":0}}\n'
         ;;
     call)
         case "${2:-}" in
@@ -3708,7 +3547,7 @@ case "${1:-}" in
             runtime) runtime_json;;
             catalog) INPUT="$(cat 2>/dev/null || true)"; catalog_json;;
             update_check) INPUT="$(cat 2>/dev/null || true)"; update_check_json;;            update_catalog) update_catalog_json;;            update_all) update_all_json;;            update) update_json;;            update_manager) update_manager_json;;            update_hdp) update_hdp_json;;
-            add_custom_dns|delete_custom_dns|set_device_dns|set_device_dns_default|reset_dns|set_profile|set_slot|set_slot_domains|set_setting|set_watchdog_setting|set_watchdog_settings|set_ntp) INPUT="$(cat 2>/dev/null || true)"; RPC_METHOD="$2"; run_action;;
+            add_custom_dns|delete_custom_dns|set_device_dns|reset_dns|set_profile|set_slot|set_slot_domains|set_setting|set_watchdog_setting|set_watchdog_settings|set_ntp) INPUT="$(cat 2>/dev/null || true)"; RPC_METHOD="$2"; run_action;;
             test_all|test_current|test_one|test_system) INPUT="$(cat 2>/dev/null || true)"; RPC_METHOD="$2"; test_json;;
             job) INPUT="$(cat 2>/dev/null || true)"; job_json "$(jget id)";;
             log) INPUT="$(cat 2>/dev/null || true)"; log_json "$(jget lines)";;
@@ -3754,7 +3593,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI common module version: 1.82
+// DNS Manager LuCI common module version: 1.83
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -3774,8 +3613,7 @@ var callStatus = dmRpc({ object:'dns_manager', method:'status', params:['detail'
 var callDohStatus = dmRpc({ object:'dns_manager', method:'doh_status', expect:{} });
 var callNetworkStatus = dmRpc({ object:'dns_manager', method:'network_status', expect:{} });
 var callLanDevices = dmRpc({ object:'dns_manager', method:'lan_devices', expect:{} });
-var callSetDeviceDns = dmRpc({ object:'dns_manager', method:'set_device_dns', params:['mac','slots','mode'], expect:{} });
-var callSetDeviceDnsDefault = dmRpc({ object:'dns_manager', method:'set_device_dns_default', params:['slots'], expect:{} });
+var callSetDeviceDns = dmRpc({ object:'dns_manager', method:'set_device_dns', params:['mac','slots'], expect:{} });
 var callTimeStatus = dmRpc({ object:'dns_manager', method:'time_status', expect:{} });
 var callPageMeta = dmRpc({ object:'dns_manager', method:'page_meta', expect:{} });
 var callBoardInfo = rpc.declare({ object:'system', method:'info', expect:{} });
@@ -4442,40 +4280,6 @@ function refreshDeviceDnsPanels(root){
     renderSlots(root,window.dmState);
   });
 }
-function saveDeviceDnsDefault(controls,root){
-  if(state.busy||state.jobRunning||!controls)return;
-  var selected=[];
-  var inputs=controls.querySelectorAll('input.dm-device-dns-default-checkbox');
-  Array.prototype.forEach.call(inputs,function(input){
-    if(input.checked&&input.getAttribute('data-available')==='1')selected.push(String(input.value));
-  });
-  var defaultToggle=controls.parentNode&&controls.parentNode.querySelector?controls.parentNode.querySelector('input.dm-device-dns-default-enabled'):null;
-  if(!defaultToggle||!defaultToggle.checked)selected=[];
-  selected.sort(function(a,b){return Number(a)-Number(b);});
-  state.busy=true;
-  state.pageNotice.slots=selected.length
-    ? 'Применяю общий выбор DNS '+selected.join(', ')+'…'
-    : 'Отключаю общий выбор DNS…';
-  renderSlots(root,window.dmState||{});
-  callSetDeviceDnsDefault(selected.join(',')).then(function(r){
-    state.busy=false;
-    if(r&&r.ok){
-      state.pageNotice.slots=selected.length
-        ? 'Общий выбор DNS '+selected.join(', ')+' применён для LAN-устройств без индивидуальной привязки.'
-        : 'Общий выбор DNS отключён. Устройства без индивидуальной привязки используют штатный DNS роутера.';
-      setAction(true,selected.length?'Общий выбор DNS сохранён.':'Общий выбор DNS отключён.');
-    }else{
-      var msg=(r&&r.error)||'Не удалось применить общий выбор DNS.';
-      state.pageNotice.slots=msg;setAction(false,msg);
-    }
-    return refreshDeviceDnsPanels(root);
-  }).catch(function(err){
-    state.busy=false;
-    var msg=withRpcError('Не удалось применить общий выбор DNS.',err);
-    state.pageNotice.slots=msg;setAction(false,msg);
-    renderSlots(root,window.dmState||{});
-  });
-}
 function saveDeviceDns(mac,controls,root){
   if(state.busy||state.jobRunning||!controls)return;
   var selected=[];
@@ -4484,19 +4288,14 @@ function saveDeviceDns(mac,controls,root){
     if(input.checked&&input.getAttribute('data-available')==='1')selected.push(String(input.value));
   });
   selected.sort(function(a,b){return Number(a)-Number(b);});
-  var row=controls.parentNode;
-  var excludeInput=row&&row.querySelector?row.querySelector('input.dm-device-dns-exclude'):null;
-  var mode=selected.length?'custom':((excludeInput&&excludeInput.checked)?'exclude':'inherit');
   state.busy=true;
-  callSetDeviceDns(String(mac||''),selected.join(','),mode).then(function(r){
+  callSetDeviceDns(String(mac||''),selected.join(',')).then(function(r){
     state.busy=false;
     if(r&&r.ok){
-      state.pageNotice.slots=mode==='custom'
+      state.pageNotice.slots=selected.length
         ? 'Для устройства '+mac+' сохранены DNS '+selected.join(', ')+'.'
-        : (mode==='exclude'
-          ? 'Устройство '+mac+' исключено из общего выбора DoH.'
-          : 'Устройство '+mac+' использует общий выбор DNS, если он включён.');
-      setAction(true,mode==='custom'?'Индивидуальная привязка DNS сохранена.':(mode==='exclude'?'Устройство исключено из общего DoH.':'Устройство использует общий DNS.'));
+        : 'Индивидуальная привязка для '+mac+' удалена; устройство использует обычный DNS роутера.';
+      setAction(true,selected.length?'Индивидуальная привязка DNS сохранена.':'Индивидуальная привязка удалена.');
     }else{
       var msg=(r&&r.error)||'Не удалось применить DNS для устройства.';
       state.pageNotice.slots=msg;setAction(false,msg);
@@ -4832,51 +4631,6 @@ function renderSlots(root,st){
       slotNames[n]=String(x.name||x.id||'');
     }
   });
-  var defaultSlots=String(inventory.default_slots||'').split(',').filter(Boolean);
-  var deviceChildren=[
-    E('div',{'class':'dm-mini'},'Общий выбор DNS применяется ко всем LAN-устройствам без индивидуальной привязки, включая новые устройства. Индивидуальный выбор ниже переопределяет общий; устройство можно отдельно исключить из общего DoH. Обычные DNS-запросы UDP/TCP на порт 53 направляются через локальный DNS-слушатель. Доменные маршруты выбранных слотов и региональный маршрут RU сохраняются.')
-  ];
-  var defaultOptions=[];
-  for(var di=1;di<=6;di++){
-    var dkey=String(di);
-    var dusable=available[dkey]===true;
-    var dselected=defaultSlots.indexOf(dkey)>=0;
-    var defaultAttrs={'type':'checkbox','class':'dm-device-dns-default-checkbox','value':dkey,'data-available':dusable?'1':'0'};
-    if(dselected)defaultAttrs.checked='';
-    if(!dusable&&!dselected)defaultAttrs.disabled='';
-    var defaultCb=E('input',defaultAttrs);
-    defaultOptions.push(E('label',{'class':'dm-device-dns-option'},[defaultCb,E('span',{},'DNS '+dkey+(dusable?(' · '+(slotNames[dkey]||'назначен')):' · слот пуст'))]));
-  }
-  var defaultEnabled=defaultSlots.length>0;
-  var defaultToggle=E('input',{'type':'checkbox','class':'dm-device-dns-default-enabled'});
-  if(defaultEnabled)defaultToggle.checked=true;
-  var defaultToggleLabel=E('label',{'class':'dm-device-dns-master'},[
-    defaultToggle,
-    E('span',{},'Включить общий DoH для LAN')
-  ]);
-  var defaultHelp=E('div',{'class':'dm-slot-domains-help'},defaultEnabled
-    ? 'Включён: DNS '+defaultSlots.join(', ')+'. Устройства с индивидуальной привязкой или исключением не затрагиваются.'
-    : 'Выключен: все устройства без индивидуальной привязки используют штатный DNS роутера.');
-  var defaultControls=E('div',{'class':'dm-device-dns-options'},defaultOptions);
-  function updateDefaultControls(){
-    var enabled=!!defaultToggle.checked;
-    var inputs=defaultControls.querySelectorAll('input.dm-device-dns-default-checkbox');
-    Array.prototype.forEach.call(inputs,function(input){
-      input.disabled=!enabled||(input.getAttribute('data-available')!=='1'&&!input.checked);
-    });
-    defaultHelp.textContent=enabled
-      ? 'Включён после сохранения: выберите один или несколько назначенных DNS-слотов.'
-      : 'Выключен: все устройства без индивидуальной привязки используют штатный DNS роутера.';
-  }
-  defaultToggle.addEventListener('change',updateDefaultControls);
-  updateDefaultControls();
-  deviceChildren.push(E('div',{'class':'dm-slot-entry dm-device-dns-default'},[
-    E('div',{'class':'dm-slot-domains-heading'},'Общий DNS для LAN'),
-    defaultToggleLabel,
-    defaultHelp,
-    defaultControls,
-    btn(state.busy?'Сохраняю…':'Сохранить настройки общего DoH','cbi-button-neutral',function(){saveDeviceDnsDefault(defaultControls,root);},{disabled:!!state.busy||!!state.jobRunning})
-  ]));
   if(state.lanDevicesMessage){
     deviceChildren.push(E('div',{'class':'dm-inline-msg '+(state.lanDevicesLoading?'info':'info')},state.lanDevicesMessage));
   }
@@ -4893,11 +4647,7 @@ function renderSlots(root,st){
       var source=String(d.source||'');
       var sourceLabel=source==='DHCP'?'DHCP-аренда':(source==='ARP'?'ARP-кэш':(source==='NDP'?'IPv6-сосед (NDP)':(source==='ASSIGN'?'сохранённая привязка':'статическая DHCP-запись')));
       var chosen=String(d.assigned_slots||'').split(',').filter(Boolean);
-      var deviceMode=String(d.dns_mode||'');
       var options=[];
-      var excludeAttrs={'type':'checkbox','class':'dm-device-dns-exclude'};
-      if(deviceMode==='exclude')excludeAttrs.checked='';
-      var excludeInput=E('input',excludeAttrs);
       for(var i=1;i<=6;i++){
         var key=String(i);
         var selected=chosen.indexOf(key)>=0;
@@ -4912,11 +4662,9 @@ function renderSlots(root,st){
       var controls=E('div',{'class':'dm-device-dns-options'},options);
       var statusText=active?'обнаружено в сети':(source==='ASSIGN'?'сохранено, устройство сейчас не обнаружено':'неактивно');
       var detail='IP: '+(d.ip||'—')+' · MAC: '+(d.mac||'—')+' · Источник: '+sourceLabel;
-      var effectiveText;
-      if(deviceMode==='custom'&&chosen.length)effectiveText='Индивидуальный выбор: DNS '+chosen.join(', ')+'.';
-      else if(deviceMode==='exclude')effectiveText='Исключено из общего DoH; используется обычный DNS-маршрут роутера.';
-      else if(defaultSlots.length)effectiveText='По общему выбору: DNS '+defaultSlots.join(', ')+'.';
-      else effectiveText='Индивидуальная привязка не задана; используется обычный DNS-маршрут роутера.';
+      var effectiveText=chosen.length
+        ? 'Индивидуальный выбор: DNS '+chosen.join(', ')+'.'
+        : 'Индивидуальная привязка не задана; используется обычный DNS-маршрут роутера.';
       var savedWarning=chosen.some(function(n){return available[n]!==true;})
         ? E('div',{'class':'dm-inline-msg info'},'В привязке есть слот, который сейчас не назначен. При сохранении он будет удалён из выбора.')
         : null;
@@ -4927,9 +4675,6 @@ function renderSlots(root,st){
         E('div',{'class':'dm-slot-domains-heading'},'Использовать DoH'),
         controls
       ];
-      if(defaultSlots.length||deviceMode==='exclude'){
-        children.push(E('label',{'class':'dm-device-dns-exclude-option'},[excludeInput,E('span',{},'Исключить из общего выбора DoH (обычный DNS)')]));
-      }
       if(savedWarning)children.push(savedWarning);
       children.push(btn(state.busy?'Сохраняю…':'Сохранить привязку','cbi-button-neutral',function(){saveDeviceDns(d.mac,controls,root);},{disabled:!!state.busy||!!state.jobRunning}));
       deviceRows.push(E('div',{'class':'dm-slot-entry dm-device-dns-entry'},children));
@@ -6164,7 +5909,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 1.82
+// DNS Manager LuCI version: 1.83
 return view.extend({
   load: DM.load,
   render: DM.render,
