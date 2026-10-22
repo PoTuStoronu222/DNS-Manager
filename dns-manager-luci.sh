@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.81
+# Version: 1.82
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -32,7 +32,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/dns-manager-complete-integration-20261021/dns-manager-luci.sh"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.81"
+VERSION="1.82"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -539,7 +539,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/dns-manager-complete-integration-20261021/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="1.81"
+SELF_VERSION="1.82"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -3754,7 +3754,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI common module version: 1.81
+// DNS Manager LuCI common module version: 1.82
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -4449,6 +4449,8 @@ function saveDeviceDnsDefault(controls,root){
   Array.prototype.forEach.call(inputs,function(input){
     if(input.checked&&input.getAttribute('data-available')==='1')selected.push(String(input.value));
   });
+  var defaultToggle=controls.querySelector('input.dm-device-dns-default-enabled');
+  if(!defaultToggle||!defaultToggle.checked)selected=[];
   selected.sort(function(a,b){return Number(a)-Number(b);});
   state.busy=true;
   state.pageNotice.slots=selected.length
@@ -4845,12 +4847,35 @@ function renderSlots(root,st){
     var defaultCb=E('input',defaultAttrs);
     defaultOptions.push(E('label',{'class':'dm-device-dns-option'},[defaultCb,E('span',{},'DNS '+dkey+(dusable?(' · '+(slotNames[dkey]||'назначен')):' · слот пуст'))]));
   }
+  var defaultEnabled=defaultSlots.length>0;
+  var defaultToggle=E('input',{'type':'checkbox','class':'dm-device-dns-default-enabled'});
+  if(defaultEnabled)defaultToggle.checked=true;
+  var defaultToggleLabel=E('label',{'class':'dm-device-dns-master'},[
+    defaultToggle,
+    E('span',{},'Включить общий DoH для LAN')
+  ]);
+  var defaultHelp=E('div',{'class':'dm-slot-domains-help'},defaultEnabled
+    ? 'Включён: DNS '+defaultSlots.join(', ')+'. Устройства с индивидуальной привязкой или исключением не затрагиваются.'
+    : 'Выключен: все устройства без индивидуальной привязки используют штатный DNS роутера.');
   var defaultControls=E('div',{'class':'dm-device-dns-options'},defaultOptions);
+  function updateDefaultControls(){
+    var enabled=!!defaultToggle.checked;
+    var inputs=defaultControls.querySelectorAll('input.dm-device-dns-default-checkbox');
+    Array.prototype.forEach.call(inputs,function(input){
+      input.disabled=!enabled||(input.getAttribute('data-available')!=='1'&&!input.checked);
+    });
+    defaultHelp.textContent=enabled
+      ? 'Включён после сохранения: выберите один или несколько назначенных DNS-слотов.'
+      : 'Выключен: все устройства без индивидуальной привязки используют штатный DNS роутера.';
+  }
+  defaultToggle.addEventListener('change',updateDefaultControls);
+  updateDefaultControls();
   deviceChildren.push(E('div',{'class':'dm-slot-entry dm-device-dns-default'},[
-    E('div',{'class':'dm-slot-domains-heading'},'Для всех LAN-устройств по умолчанию'),
-    E('div',{'class':'dm-slot-domains-help'},defaultSlots.length?'Сейчас общий выбор: DNS '+defaultSlots.join(', ')+'. Чтобы отключить его, снимите все галки и сохраните.':'Общий выбор выключен. Чтобы включить, выберите один или несколько назначенных слотов.'),
+    E('div',{'class':'dm-slot-domains-heading'},'Общий DNS для LAN'),
+    defaultToggleLabel,
+    defaultHelp,
     defaultControls,
-    btn(state.busy?'Сохраняю…':'Сохранить общий выбор DNS','cbi-button-neutral',function(){saveDeviceDnsDefault(defaultControls,root);},{disabled:!!state.busy||!!state.jobRunning})
+    btn(state.busy?'Сохраняю…':'Сохранить настройки общего DoH','cbi-button-neutral',function(){saveDeviceDnsDefault(defaultControls,root);},{disabled:!!state.busy||!!state.jobRunning})
   ]));
   if(state.lanDevicesMessage){
     deviceChildren.push(E('div',{'class':'dm-inline-msg '+(state.lanDevicesLoading?'info':'info')},state.lanDevicesMessage));
@@ -6139,7 +6164,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 1.81
+// DNS Manager LuCI version: 1.82
 return view.extend({
   load: DM.load,
   render: DM.render,
