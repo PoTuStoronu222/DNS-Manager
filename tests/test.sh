@@ -947,7 +947,7 @@ grep -Fq 'if [ "${WATCHDOG_ENABLED:-0}" != 1 ]; then' "$tmp/watchdog_embedded_lo
 grep -Fq 'sleep 60' "$tmp/watchdog_embedded_loop.sh" || fail "forced-DNS-only loop has no bounded polling interval"
 awk '/^watchdog_state_word_procd\(\) \{/ { capture=1 } capture { print } capture && /^}/ { exit }' dns-manager.sh > "$tmp/watchdog_state_fn.sh"
 grep -Fq '[ "${WATCHDOG_ENABLED:-0}" = 1 ] || { printf '\''0'\''; return 0; }' "$tmp/watchdog_state_fn.sh" || fail "runtime-only service falsely reports DNS replacement watchdog as enabled"
-grep -Fq 'FORCE_DOH="\([01]\)"' dns-manager.sh || fail "procd service does not read the forced-DNS setting"
+grep -Fq '_force_enabled="${FORCE_DOH:-0}"' dns-manager.sh || fail "procd service does not read the forced-DNS setting"
 if grep -Fq 'watchdog_runtime_service_sync' dns-manager.sh; then
     fail "separate forced-DNS service lifecycle helper remains"
 fi
