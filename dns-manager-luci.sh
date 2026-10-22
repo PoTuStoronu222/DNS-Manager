@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.99
+# Version: 1.100
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -32,7 +32,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/dns-manager-complete-integration-20261021/dns-manager-luci.sh"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.99"
+VERSION="1.100"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -506,7 +506,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/dns-manager-complete-integration-20261021/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="1.99"
+SELF_VERSION="1.100"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -3606,7 +3606,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI common module version: 1.99
+// DNS Manager LuCI common module version: 1.100
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -4971,7 +4971,6 @@ function watchdogCard(root,st){
   var en=yes(st.watchdog);
   var auto=yes(st.watchdog_autoreplace);
   var busy=state.busySetting==='watchdog' || state.busySetting==='watchdog_autoreplace' || state.busySetting==='watchdog_batch';
-  var checkBusy=!!state.jobRunning || !!(state.currentTest&&state.currentTest.status==='RUNNING');
   var service=Number(st.watchdog_service||0)===1;
   var loop=Number(st.watchdog_loop||0)===1;
   var inputs={};
@@ -4995,10 +4994,14 @@ function watchdogCard(root,st){
     ]);
   }
 
+  var intervalMinutes=minuteValue(st.watchdog_interval,2);
+  var failThreshold=Number(st.watchdog_fail_threshold||2);
+  if(!isFinite(failThreshold)||failThreshold<1||failThreshold>5)failThreshold=2;
+  var cooldownMinutes=minuteValue(st.watchdog_repair_cooldown,5);
   var spec=[
-    ['watchdog_interval','Как часто проверять DNS',1,60,'мин','Частота короткого запроса к каждому назначенному DNS.',true],
-    ['watchdog_fail_threshold','Ошибок подряд до замены',1,5,'проверок','Сколько неудачных проверок подряд считать сбоем.',false],
-    ['watchdog_repair_cooldown','Пауза между заменами одного DNS',5,120,'мин','Защита от слишком частой повторной замены.',true]
+    ['watchdog_interval','Как часто проверять DNS',1,60,'мин','Интервал между проверками назначенных DoH-слотов.',true],
+    ['watchdog_fail_threshold','Ошибок подряд до замены',1,5,'проверок','Сколько подряд неудачных проверок нужно для признания DNS неисправным.',false],
+    ['watchdog_repair_cooldown','Пауза между заменами одного DNS',5,120,'мин','Минимальная пауза перед повторной заменой того же слота.',true]
   ];
   var save=btn(busy?'Сохраняю…':'Сохранить настройки','cbi-button-apply',function(){
     if(state.busy)return;
@@ -5084,18 +5087,16 @@ function watchdogCard(root,st){
       E('div',{'class':'dm-watchdog-records'},recordRows)
     ]);
   }else{
-    lastView=E('div',{'class':'dm-watchdog-lastcheck dm-hint'},'Автоматическая проверка ещё не выполнялась. Включите проверку или нажмите «Проверить сейчас».');
+    lastView=E('div',{'class':'dm-watchdog-lastcheck dm-hint'},(en?'Автоматическая проверка ещё не выполнялась.':'Периодическая проверка выключена. Включите «Проверка DNS», чтобы начать контроль.'));
   }
 
   var feedback=settingFeedback('','watchdog_batch')||E('span',{'class':'dm-setting-feedback'});
   return E('div',{'class':'dm-watchdog-card'},[
     E('div',{'class':'dm-section-title'},'Контроль текущих DNS'),
-    E('div',{'class':'dm-setting-desc'},'Быстрый запрос к каждому назначенному DNS раз в 2 минуты. Профиль не требуется. Автозамена работает отдельно и выбирает только сервер той же категории.'),
-    toggleRow('Проверка DNS','Периодически проверяет доступность выбранных DoH-серверов, не меняя их.',en,'watchdog',false),
-    toggleRow('Автозамена DNS','Меняет только DNS, который не ответил несколько раз подряд. Пользовательские DoH автоматически не заменяются.',auto,'watchdog_autoreplace',!en),
-    E('div',{'class':'dm-watchdog-actions-row'},[
-      btn(checkBusy?'Проверка…':'Проверить сейчас','cbi-button-neutral',function(){testCurrent(root);},{disabled:!!state.busy||!!state.jobRunning})
-    ]),
+    E('div',{'class':'dm-setting-desc'},'Контроль выполняется каждые '+intervalMinutes+' мин: проверяется локальный порт назначенного DoH и DNS-ответ на запрос example.com (для слота RU — yandex.ru). Это проверка рабочего пути, а не полный тест каталога DNS.'),
+    toggleRow('Проверка DNS','Включает периодическую проверку назначенных DoH-слотов. Контроль сам по себе DNS не меняет.',en,'watchdog',false),
+    toggleRow('Автозамена DNS','После '+failThreshold+' неудачных проверок подряд заменяет неисправный DNS сервером той же категории; повторная попытка для слота — не раньше чем через '+cooldownMinutes+' мин. Пользовательские DoH автоматически не заменяются.',auto,'watchdog_autoreplace',!en),
+    E('div',{'class':'dm-hint'},'Полный разовый тест текущих DoH и дополнительных системных экземпляров доступен на Дашборде кнопкой «Проверить текущие DNS». Он проверяет реальные DoH-endpoint’ы и не включает периодический контроль.'),
     status,
     lastView,
     E('details',{'class':'dm-watchdog-advanced'},[
@@ -6157,7 +6158,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 1.99
+// DNS Manager LuCI version: 1.100
 return view.extend({
   load: DM.load,
   render: DM.render,
