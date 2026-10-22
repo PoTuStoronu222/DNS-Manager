@@ -16,16 +16,154 @@ sh -n dns-manager.sh || fail "dns-manager.sh: sh -n"
 sh -n dns-manager-luci.sh || fail "dns-manager-luci.sh: sh -n"
 ok "shell syntax"
 
-
-
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT INT TERM
+
+# The generated per-device dnsmasq/firewall service is shell-checked independently of the installer heredoc.
+awk '/cat > \/etc\/init.d\/dns-manager-device-dns <<'\''EOF_DEVICE_DNS_SERVICE'\''/ {capture=1; next} capture && /^EOF_DEVICE_DNS_SERVICE$/ {exit} capture {print}' dns-manager-luci.sh > "$tmp/device_dns_service.sh"
+[ -s "$tmp/device_dns_service.sh" ] || fail "per-device DNS service heredoc missing"
+sh -n "$tmp/device_dns_service.sh" || fail "per-device DNS service shell syntax"
+grep -Fq 'DMD_CHAIN="dstnat_lan"' "$tmp/device_dns_service.sh" || fail "per-device DNS rules target the wrong fw4 chain"
+grep -Fq 'START=99' "$tmp/device_dns_service.sh" || fail "per-device DNS service can start before https-dns-proxy at boot"
+grep -Fq 'pid-file=/var/run/dns-manager-device-dns/profile_%s.pid' "$tmp/device_dns_service.sh" || fail "per-device dnsmasq instances do not have unique PID files"
+grep -Fq 'position=chain-pre' "$tmp/device_dns_service.sh" || fail "per-device DNS rules are not inserted ahead of generic redirects"
+grep -Fq 'Never overwrite' "$tmp/device_dns_service.sh" || fail "per-device DNS service does not document ownership preflight"
+grep -Fq 'dmd_include_is_owned || {' "$tmp/device_dns_service.sh" || fail "per-device DNS service does not verify include ownership before writing"
+grep -Fq 'fw4 print > "$DMD_FW4_CHECK"' "$tmp/device_dns_service.sh" || fail "per-device ruleset is not validated before reload"
+grep -Fq 'nft -c -f "$DMD_FW4_CHECK"' "$tmp/device_dns_service.sh" || fail "per-device nft rules are not syntax-checked"
+if grep -Fq 'type nat hook prerouting' "$tmp/device_dns_service.sh"; then fail "per-device service must not create a competing base NAT chain"; fi
+grep -Fq 'ether saddr %s udp dport 53 redirect to :%s' "$tmp/device_dns_service.sh" || fail "per-device UDP DNS redirect missing"
+grep -Fq 'ether saddr %s tcp dport 53 redirect to :%s' "$tmp/device_dns_service.sh" || fail "per-device TCP DNS redirect missing"
+grep -Fq 'all-servers' "$tmp/device_dns_service.sh" || fail "multi-DoH device profiles do not query all selected upstreams"
+grep -Fq 'dmd_slot_domains()' "$tmp/device_dns_service.sh" || fail "per-device profiles do not read slot-specific domain overrides"
+grep -Fq 'server=/%s/127.0.0.1#%s' "$tmp/device_dns_service.sh" || fail "per-device profiles do not preserve slot domain overrides"
+grep -Fq 'for _dmd_tld in /ru /su /xn--p1ai' "$tmp/device_dns_service.sh" || fail "per-device profiles do not preserve the regional DNS route"
+grep -Fq 'server=/use-application-dns.net/' "$tmp/device_dns_service.sh" || fail "per-device profiles do not inherit encrypted-DNS canary protection"
+grep -Fq 'iifname "%s" ether saddr %s udp dport 53 redirect to :%s' "$tmp/device_dns_service.sh" || fail "per-device redirect is not scoped to LAN"
+grep -Fq 'dmd_fail_open()' "$tmp/device_dns_service.sh" || fail "per-device DNS service has no fail-open cleanup"
+grep -Fq 'stop_service() {' "$tmp/device_dns_service.sh" || fail "stopping the per-device DNS service leaves redirects installed"
+grep -Fq 'dmd_upstream_port_exists()' "$tmp/device_dns_service.sh" || fail "per-device DNS service does not check selected DoH listeners"
+grep -Fq 'listener_port_exists "$DMD_RPC_PORT"' dns-manager-luci.sh || fail "RPC can save a device binding to a missing DoH listener"
+grep -Fq 'gsub(/[[:space:]]/, ""); if ($0 !~ /^[1-6](,[1-6])*$/)' dns-manager-luci.sh || fail "RPC does not validate its comma-separated device DNS slot list"
+grep -Fq "grep -q '[^1-6,[:space:]]'" "$tmp/device_dns_service.sh" || fail "device DNS service does not validate saved slot characters"
+grep -Fq 'DMD_NFT_TMP="$(mktemp "$DMD_NFT.tmp.XXXXXX"' dns-manager-luci.sh || fail "per-device nft snippet update does not use a unique temporary file"
+grep -Fq 'set_device_dns)' dns-manager-luci.sh || fail "set-device-DNS RPC dispatch missing"
+grep -Fq '"set_device_dns":{"mac":"String","slots":"String"}' dns-manager-luci.sh || fail "set-device-DNS RPC schema missing"
+grep -Fq '"dns_manager": [ "set_profile", "reset_dns", "set_slot", "set_slot_domains", "set_device_dns"' dns-manager-luci.sh || fail "set-device-DNS RPC is missing from the write ACL"
+grep -Fq 'callSetDeviceDns' dns-manager-luci.sh || fail "LuCI has no client for set-device-DNS RPC"
+grep -Fq 'card(' "dns-manager-luci.sh" >/dev/null || fail "LuCI card renderer missing"
+ok "per-device DNS service, per-MAC nft redirects and multi-DoH assignment contract"
+
+awk '/^dmd_normalize_slots\(\) \{/,/^}/' "$tmp/device_dns_service.sh" > "$tmp/device_dns_normalize.sh"
+[ -s "$tmp/device_dns_normalize.sh" ] || fail "per-device slot normalizer missing"
+(
+    . "$tmp/device_dns_normalize.sh"
+    [ "$(dmd_normalize_slots '2,1,2')" = '1,2' ] || fail "per-device multi-slot normalizer does not sort and deduplicate slot IDs"
+    if dmd_normalize_slots '1,*' >/dev/null 2>&1; then fail "per-device slot normalizer accepts glob characters"; fi
+) || fail "per-device multi-slot normalization"
+awk '/^dmd_mask_for_slots\(\) \{/,/^}/' "$tmp/device_dns_service.sh" > "$tmp/device_dns_mask.sh"
+[ -s "$tmp/device_dns_mask.sh" ] || fail "per-device slot mask helper missing"
+(
+    . "$tmp/device_dns_mask.sh"
+    [ "$(dmd_mask_for_slots '1')" = '1' ] || fail "single DNS slot maps to the wrong listener profile"
+    [ "$(dmd_mask_for_slots '1,2')" = '3' ] || fail "two DNS slots do not map to a shared listener profile"
+    [ "$(dmd_mask_for_slots '1,2,6')" = '35' ] || fail "multi-slot DNS profile mask is not deterministic"
+) || fail "per-device DNS listener profile mapping"
+grep -Fq 'refresh_device_dns_runtime' dns-manager.sh || fail "main DNS Manager does not resync per-device listeners"
+grep -Fq 'lan_devices":{}' dns-manager.sh || fail "manager-side LuCI health check omits the LAN device inventory RPC"
+grep -Fq 'set_device_dns":{"mac":"String","slots":"String"}' dns-manager.sh || fail "manager-side LuCI health check omits the per-device DNS assignment RPC"
+awk '/^luci_companion_remove_fallback\(\) \{/,/^}/' dns-manager.sh > "$tmp/luci_remove_fallback.sh"
+[ -s "$tmp/luci_remove_fallback.sh" ] || fail "manager fallback uninstall helper extraction"
+grep -Fq 'firewall.dns_manager_device_dns.path' "$tmp/luci_remove_fallback.sh" || fail "manager fallback uninstall does not check ownership of the fw4 include"
+grep -Fq 'firewall.dns_manager_device_dns 2>/dev/null || true' "$tmp/luci_remove_fallback.sh" || fail "manager fallback cleanup does not validate the UCI section type"
+awk '/^slot_domains_apply\(\) \{/,/^}/' dns-manager.sh > "$tmp/slot_domains_apply.sh"
+grep -Fq 'refresh_device_dns_runtime' "$tmp/slot_domains_apply.sh" || fail "slot domain edits do not refresh per-device DNS listeners"
+awk '/^_apply_extras_now_impl\(\) \{/,/^}/' dns-manager.sh > "$tmp/extras_apply.sh"
+awk '/encrypted_dns\)/,/;;/' "$tmp/extras_apply.sh" > "$tmp/encrypted_dns_apply.sh"
+grep -Fq 'refresh_device_dns_runtime' "$tmp/encrypted_dns_apply.sh" || fail "encrypted-DNS toggle does not refresh per-device canary profiles"
+grep -Fq 'dns_manager_device_dns' dns-manager-luci.sh || fail "LuCI uninstall does not clean up the owned firewall include"
+grep -Fq 'uci -q delete firewall.dns_manager_device_dns' dns-manager-luci.sh || fail "LuCI uninstall does not remove its owned UCI include"
+grep -Fq '/etc/dns-manager/device-dns/redirects.nft' dns-manager-luci.sh || fail "per-device rules include path missing"
+grep -Fq '90-dns-manager-device-dns.nft' "$tmp/luci_remove_fallback.sh" || fail "Manager fallback uninstall leaves legacy per-device rules"
+grep -Fq "card('Устройства LAN — привязка к DoH'" dns-manager-luci.sh || fail "per-device DNS assignment UI missing"
+
+
+
+# Per-slot DNS domain routing uses dnsmasq server=/domain/127.0.0.1#port rules.
+awk '/^normalize_slot_domains\(\) \{/,/^slot_domains_get\(\) \{/' dns-manager.sh | sed '$d' > "$tmp/normalize_slot_domains.sh"
+[ -s "$tmp/normalize_slot_domains.sh" ] || fail "domain normalizer extraction"
+cat > "$tmp/normalize_slot_domains_runner.sh" <<'EOF_DNS_DOMAINS'
+#!/bin/sh
+set -eu
+. "$1"
+got="$(normalize_slot_domains 'YouTube.COM.,example.org example.org')"
+[ "$got" = 'youtube.com example.org' ] || { printf '%s\n' "unexpected normalized domains: $got" >&2; exit 51; }
+if normalize_slot_domains 'https://example.com' >/dev/null 2>&1; then exit 52; fi
+if normalize_slot_domains 'example..com' >/dev/null 2>&1; then exit 53; fi
+if normalize_slot_domains '-bad.example' >/dev/null 2>&1; then exit 54; fi
+if normalize_slot_domains 'plainword' >/dev/null 2>&1; then exit 55; fi
+EOF_DNS_DOMAINS
+chmod +x "$tmp/normalize_slot_domains_runner.sh"
+"$tmp/normalize_slot_domains_runner.sh" "$tmp/normalize_slot_domains.sh" || fail "domain input validation and normalization"
+ok "domain input validation rejects malformed hosts and normalizes duplicates"
+
+awk '/^normalize_slot_domains\(\) \{/,/^slot_domains_set\(\) \{/' dns-manager.sh | sed '$d' > "$tmp/slot_domains_get.sh"
+awk '/^watchdog_expected_servers\(\) \{/,/^}/' dns-manager.sh > "$tmp/watchdog_expected_servers.sh"
+[ -s "$tmp/slot_domains_get.sh" ] || fail "slot domain getter extraction"
+[ -s "$tmp/watchdog_expected_servers.sh" ] || fail "Watchdog expected DNS extraction"
+cat > "$tmp/watchdog_expected_domains_runner.sh" <<'EOF_WATCHDOG_DOMAIN_EXPECTED'
+#!/bin/sh
+set -eu
+TMP_DIR="$1"
+mkdir -p "$TMP_DIR"
+SLOT_1=resolver1; PORT_1=5053; SLOT_1_DOMAINS='youtube.com googlevideo.com'
+SLOT_2=resolver2; PORT_2=5054; SLOT_2_DOMAINS='netflix.com'
+SLOT_3=; PORT_3=; SLOT_3_DOMAINS=
+SLOT_4=; PORT_4=; SLOT_4_DOMAINS=
+SLOT_5=; PORT_5=; SLOT_5_DOMAINS=
+SLOT_6=; PORT_6=; SLOT_6_DOMAINS=
+TLD_RU_ENABLED=1; SLOT_RU=regional; PORT_RU=5059
+. "$2"
+. "$3"
+expected="$(watchdog_expected_servers)"
+grep -Fqx '127.0.0.1#5053' "$expected" || exit 61
+grep -Fqx '/youtube.com/127.0.0.1#5053' "$expected" || exit 62
+grep -Fqx '/googlevideo.com/127.0.0.1#5053' "$expected" || exit 63
+grep -Fqx '/netflix.com/127.0.0.1#5054' "$expected" || exit 64
+grep -Fqx '/ru/127.0.0.1#5059' "$expected" || exit 65
+if grep -Fqx '/youtube.com/127.0.0.1#5054' "$expected"; then exit 66; fi
+EOF_WATCHDOG_DOMAIN_EXPECTED
+chmod +x "$tmp/watchdog_expected_domains_runner.sh"
+"$tmp/watchdog_expected_domains_runner.sh" "$tmp/watchdog-domain-state" "$tmp/slot_domains_get.sh" "$tmp/watchdog_expected_servers.sh" || fail "Watchdog expected-domain rules"
+grep -Fq 'val="/$_domain/127.0.0.1#$p"' dns-manager.sh || fail "dnsmasq does not route configured domains to their slot port"
+grep -Fq 'SLOT_1_DOMAINS=$(shell_quote "$SLOT_1_DOMAINS")' dns-manager.sh || fail "domain assignments are not persisted"
+grep -Fq 'SLOT_6_DOMAINS=$(shell_quote "$SLOT_6_DOMAINS")' dns-manager.sh || fail "domain assignments are not persisted for every slot"
+grep -Fq 'set_slot_domains)' dns-manager-luci.sh || fail "LuCI domain update RPC is missing"
+grep -Fq "method:'set_slot_domains'" dns-manager-luci.sh || fail "LuCI domain save call is missing"
+grep -Fq 'Домены только через ' dns-manager-luci.sh || fail "LuCI slot domain editor is missing"
+ok "dnsmasq and Watchdog preserve per-slot domain routes"
+
+
 
 # Uninstall must remove the empty, namespaced LuCI backend directory.
 sed -n '/^luci_companion_remove(/,/^}/p' dns-manager.sh > "$tmp/luci_remove_fn.sh"
 [ -s "$tmp/luci_remove_fn.sh" ] || fail "LuCI uninstall helper extraction"
 grep -Fq 'rmdir /usr/lib/dns-manager-luci 2>/dev/null || true' "$tmp/luci_remove_fn.sh" || fail "LuCI uninstall leaves the empty backend directory"
 ok "LuCI uninstall removes its empty backend directory"
+
+# mktemp output must stay in place until the downloader opens it.
+_catalog_download_block="$(sed -n '/^catalog_download() {/,/^}/p' dns-manager.sh)"
+if printf '%s\n' "$_catalog_download_block" | grep -Fq 'rm -f "$_out"'; then
+    fail "catalog downloader unlinks its unique output path before writing"
+fi
+_write_catalogs_block="$(sed -n '/^write_catalogs() {/,/^}/p' dns-manager.sh)"
+printf '%s\n' "$_write_catalogs_block" | awk '
+    /_catalog_tmp=.*mktemp/ { seen=1; next }
+    seen && index($0, "rm -f \"$_catalog_tmp\"") && !download_started { bad=1 }
+    seen && index($0, "catalog_download \"$_catalog_tmp\"") { download_started=1; exit }
+    END { if (bad || !download_started) exit 1 }
+' || fail "catalog temp file is removed before download starts"
+ok "catalog downloader preserves its unique temporary file"
 
 
 # Update-chain regression checks: temporary names must keep the PID suffix, and
@@ -86,24 +224,25 @@ if grep -Fq '/www/luci-static/resources/view/dns_manager/overview.js' dns-manage
 grep -Fq 'ubus -v list dns_manager' "$tmp/luci_state_fn.sh" || fail "manager-side LuCI state does not inspect RPC methods"
 ok "LuCI runtime validation checks the current page layout and RPC contract"
 
-# DNS response validation intentionally stays lightweight: HTTP 200 + DNS message body.
-awk '
-    /^validate_dns_message\(\) \{/ { capture=1 }
-    capture { print }
-    capture && /^}$/ { exit }
-' dns-manager.sh > "$tmp/validate_dns.sh"
-[ -s "$tmp/validate_dns.sh" ] || fail "DNS response validator extraction"
-. "$tmp/validate_dns.sh"
+# Keep DoH response acceptance aligned with the known-working main branch.
+# The test verifies that an HTTP 200 response has a DNS-message content type
+# and a non-empty payload at least as large as a DNS header; it does not parse
+# every resolver's answer packet.
+for _fn in validate_dns_message normalize_url; do
+    awk -v fn="$_fn" '$0 ~ ("^" fn "\\(\\) \\{") { capture=1 } capture { print } capture && /^}$/ { exit }' dns-manager.sh > "$tmp/$_fn.sh"
+    [ -s "$tmp/$_fn.sh" ] || fail "DNS helper extraction: $_fn"
+    . "$tmp/$_fn.sh"
+done
 
 printf '\000\000\000\000\000\001\000\000\000\000\000' > "$tmp/dns-short"
-if validate_dns_message "$tmp/dns-short"; then
-    fail "short DNS body accepted"
-fi
+if validate_dns_message "$tmp/dns-short"; then fail "short DNS body accepted"; fi
+printf '\022\064\001\000\000\001\000\000\000\000\000\000\007example\003com\000\000\001\000\001' > "$tmp/dns-query"
+validate_dns_message "$tmp/dns-query" || fail "DNS message with a complete header rejected"
 
-printf '\000\000\000\000\000\001\000\000\000\000\000\000abcdefghijkl' > "$tmp/dns-body"
-validate_dns_message "$tmp/dns-body" || fail "normal-sized DNS body rejected"
+[ "$(normalize_url 'https://doh.cleanbrowsing.org/doh/security-filter/')" = 'https://doh.cleanbrowsing.org/doh/security-filter/' ] || fail "DoH path trailing slash was stripped"
+[ "$(normalize_url 'https://dns.example/')" = 'https://dns.example' ] || fail "origin-root slash normalization changed"
 
-ok "DNS response validation remains lightweight"
+ok "Main-compatible DNS response acceptance and URL path regression checks"
 awk '
     /cat > "[^"]*BACKEND_STAGE[^"]*"[^<]*<<\x27EOF_RPC\x27/ { capture=1; next }
     capture && /^EOF_RPC$/ { exit }
@@ -121,6 +260,13 @@ awk '
 [ -s "$tmp/common.js" ] || fail "embedded JS extraction"
 node --check "$tmp/common.js" >/dev/null 2>&1 || fail "embedded JS: node --check"
 ok "embedded LuCI JS syntax"
+# No saved DNS result is unknown, not proof that the resolver is unavailable.
+awk '/^function stateBadge\(status,pingValue\)/,/^}/' "$tmp/common.js" > "$tmp/state_badge.js"
+grep -Fq "if(!s)return badge('dm-off','нет данных');" "$tmp/state_badge.js" || fail "LuCI marks an untested DNS unavailable"
+_guard_line="$(grep -nF "if(!s)return badge('dm-off','нет данных');" "$tmp/state_badge.js" | cut -d: -f1)"
+_failure_line="$(grep -nF "||!hasPing(pingValue))return badge('dm-bad','недоступен');" "$tmp/state_badge.js" | cut -d: -f1)"
+[ -n "$_guard_line" ] && [ -n "$_failure_line" ] && [ "$_guard_line" -lt "$_failure_line" ] || fail "LuCI empty-status guard is after the unavailable fallback"
+ok "LuCI distinguishes untested DNS from unavailable DNS"
 grep -Fq 'LUCI_VIEW_DIR="/www/luci-static/resources/view/dns-manager"' dns-manager.sh || fail "manager-side LuCI view directory is stale"
 grep -Fq 'LUCI_COMMON_FILE="/www/luci-static/resources/dns-manager/common.js"' dns-manager.sh || fail "manager-side LuCI common path is stale"
 if grep -Fq '/www/luci-static/resources/view/dns_manager/overview.js' dns-manager.sh; then fail "legacy LuCI overview path remains"; fi
@@ -160,13 +306,37 @@ fi
 grep -q 'for _page in dashboard doh network time catalog log; do' dns-manager-luci.sh || fail "separate LuCI page generation loop missing"
 grep -q "'require baseclass';" "$tmp/common.js" || fail "LuCI common module does not use baseclass"
 grep -q "return baseclass.extend({" "$tmp/common.js" || fail "LuCI common module does not return a baseclass constructor"
-for _rpc in doh_status network_status time_status page_meta; do
+for _rpc in doh_status network_status lan_devices time_status page_meta; do
     grep -q "\"${_rpc}\":{}" dns-manager-luci.sh || fail "fast LuCI RPC is missing from rpcd list: $_rpc"
 done
-for _rpc in doh_status network_status time_status page_meta; do
+for _rpc in doh_status network_status lan_devices time_status page_meta; do
     grep -q "${_rpc})" "$tmp/backend.sh" || fail "fast LuCI RPC dispatch is missing: $_rpc"
 done
-grep -q "case 'doh': return callDohStatus();" "$tmp/common.js" || fail "LuCI DoH page does not use targeted RPC"
+grep -Fq "case 'doh': return Promise.all([callDohStatus(),callLanDevices()" "$tmp/common.js" || fail "LuCI DoH page does not load DNS state and LAN devices"
+grep -Fq '"dns_manager": [ "status", "runtime", "doh_status", "network_status", "lan_devices"' dns-manager-luci.sh || fail "LAN inventory RPC is missing from the read ACL"
+grep -Fq 'lan_devices_json() {' "$tmp/backend.sh" || fail "LAN device inventory RPC implementation missing"
+grep -Fq '/tmp/dhcp.leases' "$tmp/backend.sh" || fail "LAN inventory does not include DHCP leases"
+grep -Fq '/proc/net/arp' "$tmp/backend.sh" || fail "LAN inventory does not include ARP neighbours"
+grep -Fq 'ip -6 neigh show dev' "$tmp/backend.sh" || fail "LAN inventory does not include IPv6 neighbours"
+grep -Fq 'Список объединяет DHCP-аренды, IPv4 ARP, IPv6 NDP и статические DHCP-записи.' "$tmp/common.js" || fail "LAN device inventory scope is not explained"
+grep -Fq 'Индивидуальная привязка не задана; используется обычный DNS-маршрут роутера.' "$tmp/common.js" || fail "unassigned devices are not described as using normal router DNS"
+grep -Fq "method:'set_device_dns', params:['mac','slots']" dns-manager-luci.sh || fail "per-device DNS RPC has unnecessary parameters"
+if grep -Fq 'Общий выбор DNS применяется ко всем LAN-устройствам' "$tmp/common.js"; then fail "global DNS selector remains in LuCI"; fi
+if grep -Fq 'Включить общий DoH для LAN' "$tmp/common.js"; then fail "global DoH switch remains in LuCI"; fi
+ok "LuCI keeps only individual DNS binding and normal DNS for unassigned devices"
+awk '/^function routeStatusCall\(\)/,/^}/' "$tmp/common.js" > "$tmp/route_status_call.js"
+awk "/case 'catalog':/,/case 'log':/" "$tmp/route_status_call.js" > "$tmp/catalog_route_status.js"
+grep -Fq 'callDohStatus()' "$tmp/catalog_route_status.js" || fail "LuCI catalog refresh does not reload live DNS slots"
+grep -Fq 'callPageMeta()' "$tmp/catalog_route_status.js" || fail "LuCI catalog refresh dropped its page metadata"
+grep -Fq 'Object.keys(meta).forEach(function(k){st[k]=meta[k];});' "$tmp/catalog_route_status.js" || fail "LuCI catalog refresh does not merge metadata into live slot state"
+ok "catalog refresh reloads assigned DNS slots immediately"
+
+# The regional slot has an independent dnsmasq route; explain the actual suffix
+# behavior and that assigning general slots 1-6 manually does not enable it.
+grep -Fq 'После применения настроек запросы к зонам .ru, .su и .рф направляются через назначенный здесь DNS.' "$tmp/common.js" || fail "LuCI does not explain active regional DNS routing"
+grep -Fq 'Слот RU не назначен: отдельного маршрута для .ru, .su и .рф нет.' "$tmp/common.js" || fail "LuCI does not explain the disabled regional route"
+grep -Fq 'RU — отдельный региональный слот: в него выбирается DNS из категории «Региональные DNS».' "$tmp/common.js" || fail "LuCI does not explain the separate regional slot"
+ok "LuCI explains regional TLD routing and the separate RU slot"
 grep -q "case 'network': return callNetworkStatus();" "$tmp/common.js" || fail "LuCI network page does not use targeted RPC"
 grep -q "case 'time': return callTimeStatus();" "$tmp/common.js" || fail "LuCI time page does not use targeted RPC"
 grep -q "case 'log':" "$tmp/common.js" || fail "LuCI log page route handling missing"
@@ -220,20 +390,76 @@ grep -q 'json_update_state() {' "$tmp/backend.sh" || fail "structured update res
 grep -q 'updated) exit 0' dns-manager.sh || fail "manager update-check exit contract missing"
 grep -q 'current|throttled) exit 2' dns-manager.sh || fail "manager current exit contract missing"
 grep -q "xbox_dns|gaming|games+supercell|Xbox DNS|" catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "Xbox DNS is not in gaming catalog category"
-grep -Fq '# DNSCATREV=4' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog revision not bumped"
+grep -Fq '# DNSCATREV=7' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog revision not bumped"
+grep -Fq '# ENTRIES=107' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog entry count header is incorrect"
+grep -Fq 'astracat|bypass|geo+ads+services|AstraCat DNS|https://dns.commonnet.work/dns-query|ru/global|official-current' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "AstraCat catalog endpoint is stale"
+if grep -Eq '^astracat_(1498|8443)[|]' catalogs/dns-8.7-RU-NOSOCIAL.conf; then fail "obsolete AstraCat alternate-port entries remain"; fi
+grep -Fq 'cubedns|privacy|privacy+no-logs|CubeDNS|https://cubedns.com/dns-query|' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "CubeDNS DoH entry missing"
+grep -Fq 'dagami|bypass|geo+services|Dagami DNS|https://dns.dagami.ru/dns-query|' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "Dagami DNS entry missing"
+grep -Fq 'webshift|bypass|geo+services|WebShift DNS|https://d.webshiftvpn.ru/dns-query|' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "WebShift DNS entry missing"
+grep -Fq 'libredns_clean|bypass|privacy+geo+services|LibreDNS|https://doh.libredns.gr/dns-query|' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "LibreDNS category is incorrect"
 grep -Fq 'shecan|bypass|geo+services|zapret.moe|https://dns.zapret.moe/dns-query|' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "Shecan entry was not replaced by zapret.moe DoH"
+grep -Fq '# ENTRIES=107' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog entry count was not updated"
+grep -Fq 'bezmezhau|bypass|geo+services|Bezmezhau DNS|https://dns.bezmezhau.com/dns-query|' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "Bezmezhau geo DNS entry missing"
+grep -Fq 'dagami|bypass|geo+services|Dagami DNS|https://dns.dagami.ru/dns-query|' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "Dagami geo DNS entry missing"
 grep -Fq "function resolverAvailable(ci)" dns-manager-luci.sh || fail "DoH availability helper missing"
-grep -Fq 'assignDirect(d.id,select.value,root,d.name||d.id,d.url)' dns-manager-luci.sh || fail "catalog assignment does not pass the target URL"
+grep -Fq 'assignDirect(d.id,slot,root,name,d.url)' dns-manager-luci.sh || fail "catalog assignment does not pass the target URL"
 grep -Fq 'normalizeUrl(activeUrl)===normalizeUrl(nextUrl)' dns-manager-luci.sh || fail "same-name assignment does not refresh a changed resolver URL"
+awk '/var normalizeUrl=function\(u\)/ {print; found=1; exit} END {if (!found) exit 1}' dns-manager-luci.sh > "$tmp/normalize_url.js" || fail "LuCI URL normalizer is missing"
+cat >> "$tmp/normalize_url.js" <<'EOF_NORMALIZE_URL'
+if (normalizeUrl('https://example.com/path/') !== 'https://example.com/path/') process.exit(1);
+if (normalizeUrl('https://example.com/') !== 'https://example.com') process.exit(1);
+EOF_NORMALIZE_URL
+node "$tmp/normalize_url.js" || fail "LuCI URL normalizer strips a significant DoH path slash"
 grep -Fq '$1!="shecan" {print}' dns-manager-luci.sh || fail "LuCI does not invalidate the changed resolver test result"
 grep -Fq '$1!="shecan" {print}' dns-manager.sh || fail "Manager does not invalidate the changed resolver test result"
+grep -Fq 'DNSCAT_REVISION="7"' dns-manager.sh || fail "backend catalog revision is not synchronized"
+grep -Fq '_old_astracat_url=' dns-manager.sh || fail "old AstraCat endpoint is not tracked during catalog update"
+grep -Fq '_new_astracat_url=' dns-manager.sh || fail "new AstraCat endpoint is not tracked during catalog update"
+grep -Fq '$1!="astracat" {print}' dns-manager.sh || fail "AstraCat cached test result is not invalidated after endpoint change"
+grep -Fq '_old_astracat_url=' dns-manager-luci.sh || fail "LuCI does not track the old AstraCat endpoint"
+grep -Fq '_new_astracat_url=' dns-manager-luci.sh || fail "LuCI does not track the new AstraCat endpoint"
+grep -Fq '$1!="astracat" {print}' dns-manager-luci.sh || fail "LuCI persisted AstraCat result is not invalidated after endpoint change"
+grep -Fq 'rm -f "$CHECK_DIR/astracat"' dns-manager-luci.sh || fail "LuCI AstraCat endpoint cache is not invalidated"
 grep -Fq "disabled:!!state.busy||!!state.jobRunning||unavailable||checking" dns-manager-luci.sh || fail "catalog assignment is not disabled for unavailable DoH"
 grep -q "'gaming','Игровые DNS'" dns-manager-luci.sh || fail "gaming catalog label missing in LuCI"
 grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validation missing gaming category"
 grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
-grep -q 'VERSION="3.55"' dns-manager.sh || fail "manager version not bumped"
+grep -q 'VERSION="3.74"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
-grep -q 'VERSION="1.50"' dns-manager-luci.sh || fail "LuCI version not bumped"
+grep -q 'VERSION="1.102"' dns-manager-luci.sh || fail "LuCI version not bumped"
+grep -Fq 'return m ~ /^[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]$/' dns-manager-luci.sh || fail "LAN inventory merge rejects valid six-octet MAC addresses"
+grep -Fq 'NF >= 2 && $2 ~ /^[1-6](,[1-6])*$/ &&' dns-manager-luci.sh || fail "saved LAN device assignments do not require valid DNS slot lists"
+grep -Fq "state.lanDevicesMessage='Обновляю список устройств LAN… Пожалуйста, подождите.'" dns-manager-luci.sh || fail "LAN refresh does not display a waiting message"
+grep -Fq "state.lanDevicesLoading?'Обновляю список…':'Обновить список устройств'" dns-manager-luci.sh || fail "LAN refresh button has no loading state"
+grep -Fq "'Список обновлён. Найдено устройств: '+count+'.'" dns-manager-luci.sh || fail "LAN refresh does not report the result count"
+grep -Fq "'Список обновлён, но устройства LAN не обнаружены. Проверьте DHCP-аренды и таблицу соседей роутера.'" dns-manager-luci.sh || fail "empty LAN scan has no explanatory result"
+grep -Fq 'dmd_ensure_profile() {' dns-manager-luci.sh || fail "shared dnsmasq profile builder missing"
+grep -Fq 'iifname "%s" ether saddr %s udp dport 53 redirect to :%s\n' dns-manager-luci.sh || fail "per-device UDP DNS redirect is missing"
+grep -Fq 'iifname "%s" ether saddr %s tcp dport 53 redirect to :%s\n' dns-manager-luci.sh || fail "per-device TCP DNS redirect is missing"
+if grep -Fq 'iifname "%s" udp dport 53 redirect to :%s\n' "$tmp/device_dns_service.sh"; then
+    fail "unscoped LAN-wide DNS redirect remains"
+fi
+if grep -Fq 'ether saddr != {' "$tmp/device_dns_service.sh"; then fail "global rule still excludes per-device MACs"; fi
+if grep -Fq 'set_device_dns_default' dns-manager-luci.sh; then fail "global default DNS RPC remains"; fi
+if grep -Fq 'default_slots' dns-manager-luci.sh; then fail "LAN inventory still exposes a global DNS selection"; fi
+if grep -Fq 'dns_mode' dns-manager-luci.sh; then fail "LAN inventory still exposes an unnecessary binding mode"; fi
+if grep -Fq 'EXCLUDE)' "$tmp/device_dns_service.sh"; then fail "per-device binding still has global-default exclusion mode"; fi
+grep -Fq "method:'set_device_dns', params:['mac','slots']" dns-manager-luci.sh || fail "per-device DNS RPC has parameters beyond MAC and selected slots"
+grep -Fq "function saveDeviceDns(mac,controls,root)" dns-manager-luci.sh || fail "per-device DNS controls do not have a save action"
+grep -Fq "callSetDeviceDns(String(mac||''),selected.join(','))" dns-manager-luci.sh || fail "per-device DNS save still depends on a global mode"
+grep -Fq "Индивидуальная привязка не задана; используется обычный DNS-маршрут роутера." dns-manager-luci.sh || fail "unassigned devices are not described as using normal router DNS"
+ok "DNS assignment is per-device only; unassigned devices use the normal router DNS path"
+
+grep -Fq "var domainAttrs={'class':'dm-slot-domains-input'" dns-manager-luci.sh || fail "domain editor attributes are not assembled safely"
+grep -Fq "if(!assigned)domainAttrs.disabled='';" dns-manager-luci.sh || fail "unassigned slots are not disabled without a false boolean attribute"
+if grep -Fq "'disabled':!assigned" dns-manager-luci.sh; then fail "domain editor still sets disabled unconditionally"; fi
+grep -Fq "if(selected)cbAttrs.checked='';" dns-manager-luci.sh || fail "LAN checkbox checked state is not added conditionally"
+grep -Fq "if(!usable&&!selected)cbAttrs.disabled='';" dns-manager-luci.sh || fail "LAN checkbox disabled state is not added conditionally"
+if grep -Fq "'checked':selected" dns-manager-luci.sh; then fail "LAN checkbox still sets checked unconditionally"; fi
+if grep -Fq "'disabled':!usable&&!selected" dns-manager-luci.sh; then fail "LAN checkbox still sets disabled unconditionally"; fi
+! sed -n '/function resolverRows/,/function renderDoH/p' dns-manager-luci.sh | grep -Eq "btn\('Выбрать'|btn\(running\?'Проверяю…':'Проверить'" || fail "current DoH summary must not duplicate slot actions"
+grep -Fq "doh:['doh','slots','profiles']" dns-manager-luci.sh || fail "DNS slot/domain panel visibility regression"
 grep -q "'bypass','Обход геоблока'" dns-manager-luci.sh || fail "bypass profile label not updated"
 grep -q "'security','Защита от угроз'" dns-manager-luci.sh || fail "security profile label not updated"
 grep -q "'privacy','Конфиденциальность'" dns-manager-luci.sh || fail "privacy profile label not updated"
@@ -283,8 +509,8 @@ awk '/^job_start_test_all\(\) \{/,/^job_start_test_current\(\) \{/' "$tmp/backen
 awk '/^job_start_test_all\(\) \{/,/^job_start_test_current\(\) \{/' "$tmp/backend.sh" | grep -q 'job_record_pid "\$_jid" "\$_job_pid"' || fail "test_all job PID is not registered"
 awk '/^job_start_test_current\(\) \{/,/^job_start_test_one\(\) \{/' "$tmp/backend.sh" | grep -q '_job_pid=\$!' || fail "test_current job PID is not recorded"
 awk '/^job_start_test_current\(\) \{/,/^job_start_test_one\(\) \{/' "$tmp/backend.sh" | grep -q 'job_record_pid "\$_jid" "\$_job_pid"' || fail "test_current job PID is not registered"
-awk '/^job_start_test_one\(\) \{/,/^job_json\(\) \{/' "$tmp/backend.sh" | grep -q '_job_pid=\$!' || fail "test_one job PID is not recorded"
-awk '/^job_start_test_one\(\) \{/,/^job_json\(\) \{/' "$tmp/backend.sh" | grep -q 'job_record_pid "\$_jid" "\$_job_pid"' || fail "test_one job PID is not registered"
+awk '/^job_start_test_one\(\) \{/,/^job_json\(\) \{/' "$tmp/backend.sh" | grep -q 'DNSMGR_SINGLE_TEST_PID=\$!' || fail "test_one job PID is not recorded"
+awk '/^job_start_test_one\(\) \{/,/^job_json\(\) \{/' "$tmp/backend.sh" | grep -q 'job_record_pid "\$DNSMGR_SINGLE_TEST_JOB_ID" "\$DNSMGR_SINGLE_TEST_PID"' || fail "test_one job PID is not registered"
 ok "all asynchronous DNS jobs register their working PID"
 # NTP status must follow the real OpenWrt system.ntp.server list, not the manager preference.
 grep -q '^ntp_current_preset() {' dns-manager.sh || fail "NTP actual-state detector missing"
@@ -340,19 +566,23 @@ ok "NTP status follows actual OpenWrt system.ntp.server configuration"
 # Watchdog time controls are shown to users in minutes, while the RPC still receives seconds.
 awk '/^function watchdogCard\(root,st\)\{/,/^function renderTestAgeCommon/' "$tmp/common.js" > "$tmp/watchdog_card.sh"
 grep -q "Как часто проверять DNS" "$tmp/watchdog_card.sh" || fail "watchdog interval label is not user-friendly"
-grep -q "Сколько проверок подряд считать сбоем" "$tmp/watchdog_card.sh" || fail "watchdog failure threshold label is not user-friendly"
-grep -q "Пауза между заменами DNS" "$tmp/watchdog_card.sh" || fail "watchdog repair cooldown label is not user-friendly"
+grep -q "Ошибок подряд до замены" "$tmp/watchdog_card.sh" || fail "watchdog failure threshold label is not user-friendly"
+grep -q "Пауза между заменами одного DNS" "$tmp/watchdog_card.sh" || fail "watchdog repair cooldown label is not user-friendly"
 grep -q "1,60,'мин'" "$tmp/watchdog_card.sh" || fail "watchdog interval range is not practical"
 grep -q "5,120,'мин'" "$tmp/watchdog_card.sh" || fail "watchdog repair cooldown range is not practical"
-grep -q "'step':minutes?'1':'1'" "$tmp/watchdog_card.sh" || fail "watchdog minute fields must use whole minutes"
+grep -q "'step':'1'" "$tmp/watchdog_card.sh" || fail "watchdog fields must use whole-number steps"
 grep -q "Math.round(n\*60)" "$tmp/watchdog_card.sh" || fail "watchdog minute values are not converted back to seconds"
 grep -q "minuteValue(st\[name\],min)" "$tmp/watchdog_card.sh" || fail "watchdog stored seconds are not converted to displayed minutes"
-grep -q "Сколько DNS можно заменить за раз" "$tmp/watchdog_card.sh" || fail "watchdog repair-count label is not user-friendly"
-grep -q "Сколько DNS проверить при поиске замены" "$tmp/watchdog_card.sh" || fail "watchdog candidate-count label is not user-friendly"
+if grep -q "Сколько DNS можно заменить за раз" "$tmp/watchdog_card.sh"; then
+    fail "obsolete per-cycle watchdog repair-count setting is still exposed"
+fi
+if grep -q "Сколько DNS проверить при поиске замены" "$tmp/watchdog_card.sh"; then
+    fail "watchdog candidate-count setting is still exposed"
+fi
 if grep -q "Сколько раз можно перезапустить DNS" "$tmp/watchdog_card.sh"; then
     fail "internal watchdog restart limit is still exposed in LuCI"
 fi
-grep -q "values.splice(4,0,Math.round(internalMaxRestarts))" "$tmp/watchdog_card.sh" || fail "internal watchdog restart limit is not preserved when saving"
+grep -q "callWatchdogSettings(values\[0\],values\[1\],values\[2\],Math.round(restarts),Math.round(guard))" "$tmp/watchdog_card.sh" || fail "internal watchdog defaults are not preserved when saving"
 if grep -q "Интервал проверки.*30.*600.*'с'" "$tmp/watchdog_card.sh"; then
     fail "watchdog interval still exposes seconds"
 fi
@@ -363,8 +593,8 @@ if grep -q "Полная сверка.*300.*3600.*'с'" "$tmp/watchdog_card.sh";
     fail "watchdog full check still exposes seconds"
 fi
 ok "watchdog time controls use minutes in LuCI and seconds internally"
-grep -q 'WATCHDOG_CHECK_INTERVAL_DEFAULT=600' dns-manager.sh || fail "watchdog default interval is not 10 minutes"
-grep -q 'WATCHDOG_REPAIR_COOLDOWN=1800' dns-manager.sh || fail "watchdog default repair cooldown is not 30 minutes"
+grep -q 'WATCHDOG_CHECK_INTERVAL_DEFAULT=120' dns-manager.sh || fail "watchdog default interval is not 2 minutes"
+grep -q 'WATCHDOG_REPAIR_COOLDOWN=300' dns-manager.sh || fail "watchdog default repair cooldown is not 5 minutes"
 grep -q 'WATCHDOG_GUARD_INTERVAL=3600' dns-manager.sh || fail "internal watchdog guard default is not 60 minutes"
 grep -q '\[ "\$_ni" -ge 60 \].*\[ "\$_ni" -le 3600 \]' "$tmp/backend.sh" || fail "watchdog backend interval range is not 1-60 minutes"
 grep -q '\[ "\$_nrc" -ge 300 \].*\[ "\$_nrc" -le 7200 \]' "$tmp/backend.sh" || fail "watchdog backend repair cooldown range is not 5-120 minutes"
@@ -411,9 +641,55 @@ view_luci="$(sed -n 's|^// DNS Manager LuCI common module version:[[:space:]]*||
 [ "$top_luci" = "$installer_luci" ] || fail "LuCI VERSION mismatch"
 [ "$top_luci" = "$self_luci" ] || fail "LuCI SELF_VERSION mismatch"
 [ "$top_luci" = "$view_luci" ] || fail "embedded JS version mismatch"
+dashboard_view_luci="$(sed -n 's|^// DNS Manager LuCI version: *||p' dns-manager-luci.sh | head -n1)"
+[ "$top_luci" = "$dashboard_view_luci" ] || fail "dashboard view version marker is stale"
 ok "LuCI version markers synchronized ($top_luci)"
-grep -Fq 'VERSION="3.55"' dns-manager.sh || fail "DNS Manager version marker is not 3.55"
-ok "DNS Manager version marker synchronized (3.55)"
+grep -Fq 'VERSION="3.74"' dns-manager.sh || fail "DNS Manager version marker is not 3.74"
+ok "DNS Manager version marker synchronized (3.74)"
+grep -Fq "assignment.appendChild(btn('Удалить'" dns-manager-luci.sh || fail "Custom DNS delete button is not aligned with the assignment action"
+grep -Fq ".dm-catalog-item-custom{grid-column:auto}" dns-manager-luci.sh || fail "Custom DNS card is wider than a stock catalog card"
+grep -Fq ".dm-catalog-controls-custom .dm-assign-inline select{height:30px;min-width:0;width:auto;max-width:100%;flex:1 1 160px" dns-manager-luci.sh || fail "Custom DNS actions do not have a responsive inline layout"
+ok "Custom DNS assignment and delete actions share a responsive horizontal row"
+
+# Regression: the sourced manager backend uses generic `_url` temporaries while
+# load_manager() refreshes runtime capability data. Custom DNS input must survive
+# that call and be saved to catalog field 5.
+awk '/^add_custom_dns_json\(\) \{/,/^}/' dns-manager-luci.sh > "$tmp/add_custom_dns_json_fn.sh"
+[ -s "$tmp/add_custom_dns_json_fn.sh" ] || fail "Custom DNS save function extraction"
+cat > "$tmp/add_custom_dns_runner.sh" <<'EOF_CUSTOM_DNS_SAVE'
+#!/bin/sh
+set -eu
+CUSTOM_CATALOG_FILE="$2/dns-custom-catalog.conf"
+RUNTIME_DIR="$2/runtime"
+mkdir -p "$RUNTIME_DIR"
+TEST_NAME='CleanBrowsing Security TEST'
+TEST_URL='https://doh.cleanbrowsing.org/doh/security-filter/'
+jget() {
+    case "$1" in
+        name) printf '%s' "$TEST_NAME" ;;
+        url) printf '%s' "$TEST_URL" ;;
+        *) return 1 ;;
+    esac
+}
+catalog_url_normalize() { printf '%s' "$1"; }
+acquire_runtime_lock() { return 0; }
+release_runtime_lock() { :; }
+json_error() { printf 'ERROR: %s\n' "$1" >&2; return 1; }
+json_quote() { printf '"%s"' "$1"; }
+load_manager() { _url=""; return 0; }
+catalog_id_for_url() { printf '%s' "$1" > "$RUNTIME_DIR/lookup-url"; return 1; }
+dns_cat() {
+    awk -F'|' -v id="$1" '$1==id {print $2;found=1} END {if(!found) exit 1}' "$CUSTOM_CATALOG_FILE" 2>/dev/null
+}
+catalog_field() { return 1; }
+. "$1"
+add_custom_dns_json > "$RUNTIME_DIR/response.json"
+[ "$(cat "$RUNTIME_DIR/lookup-url")" = "$TEST_URL" ] || exit 21
+awk -F'|' -v expected="$TEST_URL" '$1=="custom_001" {found=1; if($5!=expected) exit 22} END {if(!found) exit 23}' "$CUSTOM_CATALOG_FILE" || exit 24
+EOF_CUSTOM_DNS_SAVE
+chmod +x "$tmp/add_custom_dns_runner.sh"
+"$tmp/add_custom_dns_runner.sh" "$tmp/add_custom_dns_json_fn.sh" "$tmp/custom-dns-save" || fail "Custom DNS URL was lost when the manager backend reused _url"
+ok "Custom DNS URL survives backend loading and is written to catalog field 5"
 
 if awk '
     /function startAutoStatus\(root\)/ { capture=1 }
@@ -564,6 +840,237 @@ sed 's#/etc/init.d/steer#"$STEER_INIT"#g' "$tmp/luci_steer_fn.sh" > "$tmp/luci_s
 )
 ok "LuCI Steer detection matches LAN/runtime contract"
 
+# https-dns-proxy defaults force_dns to 1 when the option is absent.
+# Steer already redirects LAN:53 to :5300, so DNS Manager must keep force_dns explicitly at 0.
+awk '/^sync_hdp_force_contract\(\) \{/,/^configure_hdp_manager_control\(\) \{/' dns-manager.sh > "$tmp/force_sync_fn.sh"
+[ -s "$tmp/force_sync_fn.sh" ] || fail "forced-DNS synchronization function extraction"
+awk '
+    /STEER_DNS_ACTIVE.*= 1/ { capture=1 }
+    capture { print }
+    capture && /^[[:space:]]*return 0$/ { exit }
+' "$tmp/force_sync_fn.sh" > "$tmp/force_sync_steer.sh"
+grep -Fq 'uci set https-dns-proxy.config.force_dns="0"' "$tmp/force_sync_steer.sh" || fail "Steer forced-DNS branch does not explicitly disable package interception"
+if grep -Fq 'uci -q delete "https-dns-proxy.config.force_dns"' "$tmp/force_sync_steer.sh"; then
+    fail "Steer forced-DNS branch deletes force_dns and falls back to package default 1"
+fi
+awk '/^watchdog_enforce_hdp_control\(\) \{/,/^watchdog_enforce_doh_authority\(\) \{/' dns-manager.sh > "$tmp/force_watchdog_fn.sh"
+grep -Fq 'uci set https-dns-proxy.config.force_dns="0"' "$tmp/force_watchdog_fn.sh" || fail "Steer watchdog does not preserve explicit force_dns=0"
+grep -Fq 'FORCED_DNS_ACTIVE' "$tmp/force_watchdog_fn.sh" || fail "watchdog does not verify live forced-DNS state"
+grep -Fq '[ "${FORCED_DNS_EXTERNAL:-0}" = 0 ]' "$tmp/force_watchdog_fn.sh" || fail "watchdog accepts an external DNS redirect as DNS Manager success"
+awk '/^watchdog_enforce_hdp_control\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' dns-manager.sh > "$tmp/force_enforce_source.sh"
+_guard_off_line="$(grep -nF '[ "${FORCE_DOH:-0}" = 1 ] || return 0' "$tmp/force_enforce_source.sh" | head -n1 | cut -d: -f1)"
+_detect_external_line="$(grep -nF 'detect_forced_dns_path' "$tmp/force_enforce_source.sh" | head -n1 | cut -d: -f1)"
+[ -n "$_guard_off_line" ] && [ -n "$_detect_external_line" ] && [ "$_guard_off_line" -lt "$_detect_external_line" ] || fail "forced-DNS OFF guard is not before detection or mutation"
+awk '/^[[:space:]]*force\)/,/^[[:space:]]*dnsmasq_perf\)/' dns-manager.sh > "$tmp/force_state.sh"
+grep -Fq '[ "$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null)" = "0" ] || _ok=0' "$tmp/force_state.sh" || fail "Steer force-state check does not expect explicit force_dns=0"
+ok "Steer forced-DNS avoids the package default interception"
+
+# Runtime controller must be a no-op when forced-DNS is OFF and when an
+# unrelated active redirect owns the path. This tests behavior, not only text.
+awk '/^watchdog_enforce_hdp_control\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' dns-manager.sh > "$tmp/force_enforce_fn.sh"
+[ -s "$tmp/force_enforce_fn.sh" ] || fail "forced-DNS enforcer extraction"
+(
+    set -e
+    . "$tmp/force_enforce_fn.sh"
+    DETECT_CALLS=0
+    UCI_WRITES=0
+    RESTARTS=0
+    DETECT_EXTERNAL=0
+    detect_forced_dns_path() {
+        DETECT_CALLS=$((DETECT_CALLS+1))
+        FORCED_DNS_EXTERNAL="$DETECT_EXTERNAL"
+        STEER_DNS_ACTIVE=0
+        return 0
+    }
+    log_msg() { :; }
+    uci() {
+        case "$1" in
+            set|commit|add|delete) UCI_WRITES=$((UCI_WRITES+1));;
+        esac
+        return 0
+    }
+    watchdog_restart_hdp() { RESTARTS=$((RESTARTS+1)); return 0; }
+    FORCE_DOH=0
+    watchdog_enforce_hdp_control
+    [ "$DETECT_CALLS" = 0 ] || exit 1
+    [ "$UCI_WRITES" = 0 ] || exit 2
+    [ "$RESTARTS" = 0 ] || exit 3
+    FORCE_DOH=1
+    DETECT_EXTERNAL=1
+    watchdog_enforce_hdp_control
+    [ "$DETECT_CALLS" = 1 ] || exit 4
+    [ "$UCI_WRITES" = 0 ] || exit 5
+    [ "$RESTARTS" = 0 ] || exit 6
+) || fail "forced-DNS enforcer mutates disabled or externally-owned DNS path"
+ok "forced-DNS OFF and external interception are no-mutation states"
+
+# Forced-DNS ownership must be reconciled through a lock on every background
+# check cycle, and a failed reconciliation must still release the lock.
+awk '/^watchdog_forced_dns_runtime_guard/ { capture=1 } capture { print } capture && /^}$/ { exit }' dns-manager.sh > "$tmp/force_runtime_guard_fn.sh"
+[ -s "$tmp/force_runtime_guard_fn.sh" ] || fail "forced-DNS runtime guard extraction"
+(
+    set -eu
+    . "$tmp/force_runtime_guard_fn.sh"
+    LOCK_OK=1
+    LOCK_RELEASES=0
+    ENFORCE_CALLS=0
+    ENFORCE_RC=0
+    acquire_mutation_lock() { [ "$LOCK_OK" = 1 ]; }
+    release_mutation_lock() { LOCK_RELEASES=$((LOCK_RELEASES+1)); }
+    watchdog_enforce_hdp_control() { ENFORCE_CALLS=$((ENFORCE_CALLS+1)); return "$ENFORCE_RC"; }
+    watchdog_forced_dns_runtime_guard || exit 1
+    [ "$ENFORCE_CALLS" = 1 ] || exit 2
+    [ "$LOCK_RELEASES" = 1 ] || exit 3
+    ENFORCE_RC=7
+    if watchdog_forced_dns_runtime_guard; then exit 4; else [ "$?" = 7 ] || exit 5; fi
+    [ "$ENFORCE_CALLS" = 2 ] || exit 6
+    [ "$LOCK_RELEASES" = 2 ] || exit 7
+    LOCK_OK=0
+    watchdog_forced_dns_runtime_guard || exit 8
+    [ "$ENFORCE_CALLS" = 2 ] || exit 9
+    [ "$LOCK_RELEASES" = 2 ] || exit 10
+) || fail "forced-DNS runtime guard lock/error handling"
+awk '/^watchdog_embedded_loop/ { capture=1 } capture { print } capture && /^run_watchdog/ { exit }' dns-manager.sh > "$tmp/watchdog_embedded_loop.sh"
+grep -Fq 'if ! watchdog_forced_dns_runtime_guard; then' "$tmp/watchdog_embedded_loop.sh" || fail "background loop does not reconcile forced-DNS runtime"
+_guard_line="$(grep -n 'watchdog_forced_dns_runtime_guard' "$tmp/watchdog_embedded_loop.sh" | head -n1 | cut -d: -f1)"
+_slot_check_line="$(grep -n 'watchdog_refresh_listener_snapshot' "$tmp/watchdog_embedded_loop.sh" | head -n1 | cut -d: -f1)"
+[ -n "$_guard_line" ] && [ -n "$_slot_check_line" ] && [ "$_guard_line" -lt "$_slot_check_line" ] || fail "forced-DNS runtime reconciliation is skipped by DNS-loop guards"
+if grep -Fq '_selection_kind=' "$tmp/watchdog_embedded_loop.sh"; then
+    fail "background DNS checks still depend on a selected profile"
+fi
+ok "forced-DNS Steer transitions are reconciled on each background-check cycle"
+
+# Forced-DNS Auto must keep the lightweight runtime service active even when
+# DNS testing/replacement is disabled; the watchdog menu state remains OFF.
+grep -Fq '[ "${WATCHDOG_ENABLED:-0}" = 1 ] || [ "${FORCE_DOH:-0}" = 1 ] || return 0' "$tmp/watchdog_embedded_loop.sh" || fail "runtime loop exits while forced-DNS Auto is enabled"
+grep -Fq 'if [ "${WATCHDOG_ENABLED:-0}" != 1 ]; then' "$tmp/watchdog_embedded_loop.sh" || fail "forced-DNS-only loop lacks monitor-only branch"
+grep -Fq 'sleep 60' "$tmp/watchdog_embedded_loop.sh" || fail "forced-DNS-only loop has no bounded polling interval"
+awk '/^watchdog_state_word_procd\(\) \{/ { capture=1 } capture { print } capture && /^}/ { exit }' dns-manager.sh > "$tmp/watchdog_state_fn.sh"
+grep -Fq '[ "${WATCHDOG_ENABLED:-0}" = 1 ] || { printf '\''0'\''; return 0; }' "$tmp/watchdog_state_fn.sh" || fail "runtime-only service falsely reports DNS replacement watchdog as enabled"
+grep -Fq '_force_enabled="${FORCE_DOH:-0}"' dns-manager.sh || fail "procd service does not read the forced-DNS setting"
+if grep -Fq 'watchdog_runtime_service_sync' dns-manager.sh; then
+    fail "separate forced-DNS service lifecycle helper remains"
+fi
+awk '/^apply_watchdog\(\) \{/,/^menu_dns\(\) \{/' dns-manager.sh > "$tmp/apply_watchdog_fn.sh"
+grep -Fq 'if [ "${WATCHDOG_ENABLED:-0}" = 1 ] || [ "${FORCE_DOH:-0}" = 1 ]; then' "$tmp/apply_watchdog_fn.sh" || fail "one procd service is not shared by DNS checks and forced-DNS tracking"
+grep -Fq 'WATCHDOG_SERVICE_VERSION_MARKER="# DNS_MANAGER_WATCHDOG_SERVICE_VERSION=3.11.9"' dns-manager.sh || fail "watchdog service marker not bumped"
+grep -Fq 'DNS_MANAGER_WATCHDOG_SERVICE_VERSION=3.11.9' dns-manager.sh || fail "generated procd service marker not bumped"
+grep -Fq '[ "${WATCHDOG_ENABLED:-0}" = 1 ] || [ "${FORCE_DOH:-0}" = 1 ] || return 0' dns-manager.sh || fail "forced-DNS-only runtime is not a service start condition"
+grep -Fq '[ "${FORCE_DOH:-0}" = 1 ] || return 0' dns-manager.sh || fail "forced-DNS service migration does not check its own enable flag"
+ok "forced-DNS Auto tracks Steer without enabling DNS tests or rotation"
+
+# Service migration must remove legacy ownership before starting the one procd service.
+awk '/^watchdog_service_start_enable\(\) \{/,/^}/' dns-manager.sh > "$tmp/watchdog_service_start_enable.sh"
+[ -s "$tmp/watchdog_service_start_enable.sh" ] || fail "watchdog start helper extraction"
+(
+    set -eu
+    . "$tmp/watchdog_service_start_enable.sh"
+    CALL_LOG="$tmp/watchdog-service-calls"
+    export CALL_LOG
+    WATCHDOG_SERVICE_PATH="$tmp/fake-dns-watchdog"
+    export WATCHDOG_SERVICE_PATH
+    cat > "$WATCHDOG_SERVICE_PATH" <<'EOF_FAKE_SERVICE'
+#!/bin/sh
+printf 'service %s\n' "$1" >> "$CALL_LOG"
+exit 0
+EOF_FAKE_SERVICE
+    chmod 755 "$WATCHDOG_SERVICE_PATH"
+    CRON_PRESENT=1
+    watchdog_remove_legacy_daemon() { printf 'legacy\n' >> "$CALL_LOG"; return "${LEGACY_RC:-0}"; }
+    watchdog_cron_marker_exists() { [ "$CRON_PRESENT" = 1 ]; }
+    watchdog_cron_remove_owned_block() { printf 'cron-remove\n' >> "$CALL_LOG"; CRON_PRESENT=0; return 0; }
+    watchdog_service_install_files() { printf 'install\n' >> "$CALL_LOG"; return 0; }
+    watchdog_service_running() { printf 'running\n' >> "$CALL_LOG"; return 0; }
+    sleep() { :; }
+    watchdog_service_start_enable
+    awk 'NR==1 { if ($0!="legacy") exit 1 } NR==2 { if ($0!="cron-remove") exit 1 } NR==3 { if ($0!="install") exit 1 } NR==4 { if ($0!="service enable") exit 1 } NR==5 { if ($0!="service start") exit 1 } NR==6 { if ($0!="running") exit 1 } END { if (NR!=6) exit 1 }' "$CALL_LOG"
+    : > "$CALL_LOG"
+    LEGACY_RC=1
+    if watchdog_service_start_enable; then exit 2; fi
+    if grep -q '^service start$' "$CALL_LOG"; then exit 3; fi
+) || fail "watchdog service starts before legacy ownership is cleared"
+awk '/^watchdog_service_start_enable\(\) \{/,/^}/' dns-manager.sh > "$tmp/watchdog_service_start_enable.sh"
+awk '/^watchdog_service_migrate_legacy\(\) \{/,/^}/' dns-manager.sh > "$tmp/watchdog_service_migrate_legacy.sh"
+_legacy_line="$(grep -nF 'watchdog_remove_legacy_daemon || return 1' "$tmp/watchdog_service_start_enable.sh" | head -n1 | cut -d: -f1)"
+_start_line="$(grep -nF '"$WATCHDOG_SERVICE_PATH" start' "$tmp/watchdog_service_start_enable.sh" | head -n1 | cut -d: -f1)"
+[ -n "$_legacy_line" ] && [ -n "$_start_line" ] && [ "$_legacy_line" -lt "$_start_line" ] || fail "procd starts before legacy daemon is removed"
+_migrate_legacy_line="$(grep -nF 'watchdog_remove_legacy_daemon || return 1' "$tmp/watchdog_service_migrate_legacy.sh" | head -n1 | cut -d: -f1)"
+_migrate_start_line="$(grep -nF '"$WATCHDOG_SERVICE_PATH" start' "$tmp/watchdog_service_migrate_legacy.sh" | head -n1 | cut -d: -f1)"
+[ -n "$_migrate_legacy_line" ] && [ -n "$_migrate_start_line" ] && [ "$_migrate_legacy_line" -lt "$_migrate_start_line" ] || fail "legacy migration starts procd before legacy daemon preflight"
+ok "watchdog migration checks legacy ownership before starting the single procd service"
+grep -Fq 'if [ "${WATCHDOG_ENABLED:-0}" = 1 ] || [ "${FORCE_DOH:-0}" = 1 ]; then' "$tmp/apply_watchdog_fn.sh" || fail "forced-DNS-only Apply does not use the shared service"
+grep -Fq 'if [ "${WATCHDOG_ENABLED:-0}" = 1 ] || [ "${FORCE_DOH:-0}" = 1 ]; then' dns-manager.sh || fail "post-Apply does not start service for forced-DNS-only mode"
+ok "forced-DNS-only Apply starts the same procd service after transaction commit"
+
+# Runtime detection must not trust config alone; it must parse both redirect and DNAT rules.
+(
+    set -eu
+    FORCE_FN="$tmp/forced_dns_runtime_fn.sh"
+    : > "$FORCE_FN"
+    for _fn in dns_path_conflict_nft dns_path_conflict_iptables detect_steer_dns_path dns_manager_force_port detect_forced_dns_path; do
+        awk -v f="$_fn" '$0 ~ ("^" f "\\(\\) \\{") { capture=1 } capture { print } capture && /^}$/ { exit }' dns-manager.sh >> "$FORCE_FN"
+    done
+    sed 's#/etc/init.d/steer#"$STEER_INIT"#g' "$FORCE_FN" > "$tmp/forced_dns_runtime_source.sh"
+    . "$tmp/forced_dns_runtime_source.sh"
+    TMP_DIR="$tmp/forced-dns-runtime"
+    mkdir -p "$TMP_DIR"
+    SYS_FW=fw4
+    FIREWALL_LAN_ZONE=lan
+    FIREWALL_WAN_ZONE=wan
+    PORT_1=5053
+    STEER_TEST_RUNNING=0
+    export STEER_TEST_RUNNING
+    firewall_resolve_zones() { FIREWALL_LAN_ZONE=lan; FIREWALL_WAN_ZONE=wan; return 0; }
+    firewall_ref_matches_zone() { [ "$1" = "$2" ]; }
+    uci() {
+        case "$*" in
+            "show firewall") [ "${DNS_TEST_REDIRECT:-0}" = 1 ] && printf '%s\n' 'firewall.ext_dns=redirect' ;;
+            "-q get network.lan.device") printf '%s' br-lan ;;
+            "-q get network.lan.ifname") printf '%s' br-lan ;;
+            "-q get https-dns-proxy.config.force_dns") printf '%s' "${DNS_TEST_FORCE:-}" ;;
+            "-q get https-dns-proxy.config.notrack_dns") printf '%s' "${DNS_TEST_NOTRACK:-}" ;;
+            "-q get firewall.ext_dns.disabled") printf '' ;;
+            "-q get firewall.ext_dns.src") printf '%s' lan ;;
+            "-q get firewall.ext_dns.src_dport") printf '%s' 53 ;;
+            "-q get firewall.ext_dns.target") printf '%s' DNAT ;;
+            "-q get firewall.ext_dns.dest_port") printf '%s' "${DNS_TEST_REDIRECT_PORT:-5300}" ;;
+            *) return 1 ;;
+        esac
+    }
+    force_case() {
+        printf '%s\n' "$1" > "$NFT_FIXTURE"
+        FORCE_DOH="${2:-1}"
+        DNS_TEST_FORCE="${3:-1}"
+        DNS_TEST_NOTRACK="${4:-1}"
+        DNS_TEST_REDIRECT="${5:-0}"
+        DNS_TEST_REDIRECT_PORT="${6:-5300}"
+        export FORCE_DOH DNS_TEST_FORCE DNS_TEST_NOTRACK DNS_TEST_REDIRECT DNS_TEST_REDIRECT_PORT
+        FORCED_DNS_ACTIVE=0
+        FORCED_DNS_EXTERNAL=0
+        FORCED_DNS_SOURCE=none
+        detect_forced_dns_path || fail "forced-DNS detector returned an error"
+    }
+    : > "$NFT_FIXTURE"
+    force_case '' 1 1 1 0
+    [ "$FORCED_DNS_ACTIVE" = 0 ] || fail "valid UCI options without a live rule were reported active"
+    [ "$FORCED_DNS_EXTERNAL" = 0 ] || fail "missing live rule was misclassified as external"
+    force_case 'table inet fw4 {
+ chain dstnat_lan {
+  iifname "br-lan" udp dport 53 counter redirect to :53 comment "ubus:https-dns-proxy" # handle 41
+ }
+}' 1 1 1 0
+    [ "$FORCED_DNS_ACTIVE" = 1 ] || fail "https-dns-proxy runtime redirect was not detected"
+    [ "$FORCED_DNS_EXTERNAL" = 0 ] || fail "https-dns-proxy runtime redirect was misclassified as external"
+    force_case 'table ip fw4 {
+ chain dstnat_lan {
+  iifname "br-lan" udp dport 53 dnat to 198.51.100.10:5300 comment "external-rule" # handle 42
+ }
+}' 0 '' '' 0
+    [ "$FORCED_DNS_ACTIVE" = 1 ] || fail "runtime DNAT interception was not detected"
+    [ "$FORCED_DNS_EXTERNAL" = 1 ] || fail "runtime DNAT interception was not detected as external"
+)
+ok "Forced-DNS runtime detection distinguishes UCI config from live fw4 rules"
+
 grep -q '"steer_installed"' "$tmp/backend.sh" || fail "Steer installed status missing from RPC"
 grep -q '"steer_running"' "$tmp/backend.sh" || fail "Steer running status missing from RPC"
 grep -q '"steer_dns_active"' "$tmp/backend.sh" || fail "Steer DNS runtime status missing from RPC"
@@ -585,7 +1092,14 @@ if grep -q '^assigned_port_for_id()' dns-manager-luci.sh; then
 fi
 grep -Fq -- '--connect-timeout 1 --max-time 3 --resolve "$host:$port:$ipx"' dns-manager.sh || fail "direct DoH timeout was not reduced"
 grep -q '(trap - EXIT; test_one_dns "\$_id") &' "$tmp/backend.sh" || fail "selected DNS checks are not parallelized"
-ok "single and full DNS checks use the same test_one_dns path"
+awk '
+    /^job_start_test_current\(\) \{/ { capture=1 }
+    capture && /q="\$TMP_DIR\/dns_query\.bin"/ { query_line=NR }
+    capture && /if ! printf .*example.*com/ { create_line=NR }
+    capture && /\(trap - EXIT; test_one_dns/ { worker_line=NR; exit }
+    END { if (!query_line || !create_line || !worker_line || query_line >= create_line || create_line >= worker_line) exit 1 }
+' dns-manager-luci.sh || fail "selected DNS workers do not receive a pre-created immutable query"
+ok "single and selected DNS checks initialize the shared query safely"
 awk '/^function checkInfo\(id,d\)/,/^}/' "$tmp/common.js" > "$tmp/check_info.js"
 grep -q "String(x.status||'').toUpperCase()==='RUNNING'" "$tmp/check_info.js" || fail "LuCI transient check state is not limited to RUNNING"
 grep -q "d&&d.status" "$tmp/check_info.js" || fail "LuCI finished DNS status does not come from RPC data"
@@ -618,8 +1132,8 @@ fi
 if grep -q "dm-doh-state.*остановлен" "$tmp/common.js"; then
     fail "LuCI DoH rows still expose process stop state instead of test state"
 fi
-grep -q "hasPing(ci.ping)" "$tmp/common.js" || fail "LuCI does not render DNS test ping"
-grep -q "'dm-doh-ping'" "$tmp/common.js" || fail "LuCI DoH page does not render DNS test ping"
+grep -q "stateBadge(status,ci.ping)" "$tmp/common.js" || fail "LuCI does not render DNS test ping in the status badge"
+grep -Fq "E('span',{'class':'dm-doh-state'},statusNode)" "$tmp/common.js" || fail "LuCI DoH page does not render the DNS test status badge"
 ok "LuCI DoH rows use test result status and ping"
 awk '/^function forceComponentItem\(st\)\{/,/^function watchdogComponentItem/' "$tmp/common.js" > "$tmp/force_component.js"
 if grep -q "setSetting('force'" "$tmp/force_component.js"; then
@@ -637,6 +1151,39 @@ grep -q "setForceMode('off',root)" "$tmp/doh_panel.js" || fail "LuCI DoH page ha
 grep -q "Авто (рекомендуется)" "$tmp/doh_panel.js" || fail "LuCI DoH page lost force-DNS auto label"
 grep -q "Не перехватывать" "$tmp/doh_panel.js" || fail "LuCI DoH page lost force-DNS disable label"
 ok "LuCI forced-DNS component is state-only; controls live in the DoH page"
+
+# Encrypted-DNS bypass protection is an independent setting; force DNS must not
+# turn its DoT firewall rule or browser auto-DoH canaries on/off by itself.
+grep -Fq 'BLOCK_EXTERNAL_DNS=$(shell_quote "$BLOCK_EXTERNAL_DNS")' dns-manager.sh || fail "independent encrypted-DNS setting is not persisted"
+grep -Fq 'apply_encrypted_dns_block() {' dns-manager.sh || fail "independent encrypted-DNS apply helper missing"
+grep -Fq 'encrypted_dns)' dns-manager.sh || fail "encrypted-DNS setting has no apply action"
+awk '/^sync_hdp_force_contract\(\) \{/,/^configure_hdp_manager_control\(\) \{/' dns-manager.sh > "$tmp/force_sync_independence.sh"
+if grep -Eq 'ensure_dns_dot_block|remove_dns_dot_block' "$tmp/force_sync_independence.sh"; then
+    fail "forced-DNS contract still adds/removes the independent DoT rule"
+fi
+grep -Fq '_canary_enabled="${BLOCK_EXTERNAL_DNS:-0}"' "$tmp/force_sync_independence.sh" || fail "forced-DNS sync does not preserve the independent canary state"
+grep -Fq 'uci set "https-dns-proxy.config.canary_domains_icloud=$_canary_enabled"' "$tmp/force_sync_independence.sh" || fail "forced-DNS sync does not apply the current independent iCloud canary state"
+grep -Fq 'uci set "https-dns-proxy.config.canary_domains_mozilla=$_canary_enabled"' "$tmp/force_sync_independence.sh" || fail "forced-DNS sync does not apply the current independent Mozilla canary state"
+awk '/^apply_encrypted_dns_block\(\) \{/,/^}/' dns-manager.sh > "$tmp/encrypted_dns_apply.sh"
+grep -Fq 'ensure_dns_dot_block || return 1' "$tmp/encrypted_dns_apply.sh" || fail "encrypted-DNS protection does not add its DoT rule"
+grep -Fq 'remove_dns_dot_block || return 1' "$tmp/encrypted_dns_apply.sh" || fail "encrypted-DNS protection does not remove its DoT rule"
+grep -Fq 'uci set "https-dns-proxy.config.canary_domains_mozilla=$_want"' "$tmp/encrypted_dns_apply.sh" || fail "encrypted-DNS protection does not configure its independent browser DoH canary state"
+awk '/^remove_dns_dot_block\(\) \{/,/^}/' dns-manager.sh > "$tmp/remove_dot_block.sh"
+if grep -Fq 'firewall_find_exact_rule_signature' "$tmp/remove_dot_block.sh"; then
+    fail "encrypted-DNS OFF can delete a matching firewall rule owned by another component"
+fi
+grep -Fq 'firewall.$FW_DOT_SECTION' "$tmp/remove_dot_block.sh" || fail "encrypted-DNS OFF does not target its own DoT rule"
+ok "encrypted-DNS OFF removes only the exact DNS Manager-owned DoT rule"
+grep -Fq 'canary_domains_icloud 2>/dev/null)" = "${BLOCK_EXTERNAL_DNS:-0}" ] || _ok=0' dns-manager.sh || fail "forced-DNS state still assumes browser DoH canaries must be on"
+grep -Fq 'canary_domains_mozilla 2>/dev/null)" = "${BLOCK_EXTERNAL_DNS:-0}" ] || _ok=0' dns-manager.sh || fail "forced-DNS state does not follow independent protection setting"
+grep -Fq 'canary_domains_icloud 2>/dev/null)" = "${BLOCK_EXTERNAL_DNS:-0}" ] || _changed=1' dns-manager.sh || fail "forced-DNS watchdog will treat protection OFF as drift"
+grep -Fq 'canary_domains_mozilla 2>/dev/null)" = "${BLOCK_EXTERNAL_DNS:-0}" ] || _changed=1' dns-manager.sh || fail "forced-DNS watchdog Mozilla canary check is not independent"
+grep -Fq 'watchdog|watchdog_autoreplace|force|encrypted_dns|dnsmasq_perf)' dns-manager-luci.sh || fail "LuCI RPC does not allow the independent encrypted-DNS setting"
+grep -Fq "setSetting('encrypted_dns',1,root)" dns-manager-luci.sh || fail "LuCI has no enable action for encrypted-DNS protection"
+grep -Fq "setSetting('encrypted_dns',0,root)" dns-manager-luci.sh || fail "LuCI has no disable action for encrypted-DNS protection"
+grep -Fq 'Направляет обычные DNS-запросы устройств на DNS роутера.' dns-manager-luci.sh || fail "LuCI is missing the forced-DNS explanation"
+grep -Fq 'Дополнительно ограничивает использование сторонних зашифрованных DNS-сервисов' dns-manager-luci.sh || fail "LuCI is missing the encrypted-DNS protection explanation"
+ok "Forced DNS and encrypted-DNS bypass protection are independently controlled"
 
 awk '
     /^test_dns_catalog\(\) \(/ { capture=1 }
@@ -726,16 +1273,43 @@ awk '/^select_slot\(\) \{/,/^# ==========================================/' dns-
 if grep -q 'DNS_PROFILE="custom"' "$tmp/cli_select_slot.sh"; then
     fail "CLI slot change still forces custom profile"
 fi
-awk '
-    /^watchdog_pick_replacement\(\) \{/ { capture=1 }
-    capture { print }
-    capture && /^watchdog_apply_slot_candidate\(\) \{/ { exit }
-' dns-manager.sh | sed '$d' > "$tmp/watchdog_pick_function.sh"
-grep -q 'watchdog_scope_category' "$tmp/watchdog_pick_function.sh" || fail "watchdog replacement does not use intended profile category"
-grep -q '_passcats="\$_desired_for_pick clean"' "$tmp/watchdog_pick_function.sh" || fail "watchdog clean fallback is missing for non-clean profiles"
-grep -A16 -F 'watchdog_slot_target_run() {' dns-manager.sh | grep -q 'watchdog_scope_category' || fail "watchdog slot repair does not use intended profile category"
-grep -q 'смешанные или пользовательские категории DNS' dns-manager.sh || fail "watchdog custom/mixed skip message missing"
-ok "manual same-category DNS changes preserve profile; mixed/custom selections disable DNS watchdog scope"
+# Background repair follows each selected DNS resolver's own category.
+# The checker and auto-replace toggles are independent; candidate discovery has no fixed cap.
+awk '/^watchdog_embedded_loop\(\) \{/,/^run_watchdog\(\) \{/' dns-manager.sh > "$tmp/watchdog_embedded_loop.sh"
+grep -Fq 'if [ "${WATCHDOG_AUTOREPLACE:-0}" = 1 ]; then' "$tmp/watchdog_embedded_loop.sh" || fail "periodic replacement is not gated by auto-replace toggle"
+grep -Fq ': "${WATCHDOG_AUTOREPLACE:=${WATCHDOG_ENABLED:-0}}"' dns-manager.sh || fail "legacy config has no compatible auto-replace default"
+if grep -Fq 'WATCHDOG_MAX_CANDIDATES' dns-manager.sh dns-manager-luci.sh; then
+    fail "DNS replacement retains a fixed candidate cap"
+fi
+if grep -Fq '_max_attempts' dns-manager.sh; then
+    fail "per-slot DNS replacement retains a fixed attempt cap"
+fi
+
+awk '/^watchdog_slot_target_run\(\) \{/,/^watchdog_service_recover_run\(\) \{/' dns-manager.sh > "$tmp/watchdog_slot_target_run.sh"
+grep -Fq 'watchdog_pick_replacement "$_slot" "$_used" "$_tried" 0 "$_target_cat"' "$tmp/watchdog_slot_target_run.sh" || fail "watchdog does not choose a replacement from the current DNS category"
+if grep -Fq 'watchdog_scope_category' "$tmp/watchdog_slot_target_run.sh"; then
+    fail "watchdog per-slot repair still requires a selected profile"
+fi
+grep -Fq '[ -n "$_target_id" ] || return 0' "$tmp/watchdog_slot_target_run.sh" || fail "watchdog does not skip empty slots"
+awk '/^watchdog_embedded_loop\(\) \{/,/^run_watchdog\(\) \{/' dns-manager.sh > "$tmp/watchdog_embedded_loop.sh"
+grep -Fq 'for _trigger in $_threshold_slots; do' "$tmp/watchdog_embedded_loop.sh" || fail "watchdog does not process every failed configured slot"
+grep -Fq 'if [ -z "$_id" ]; then' "$tmp/watchdog_embedded_loop.sh" || fail "watchdog probes an unconfigured slot"
+if grep -Fq 'WATCHDOG_MAX_REPAIRS' "$tmp/watchdog_embedded_loop.sh"; then
+    fail "watchdog still limits how many slots it may repair in one cycle"
+fi
+ok "watchdog checks configured slots independently and replaces DNS only within its category"
+
+# The one-shot CLI Watchdog must share the same locked repair helper as the background loop.
+awk '/^run_watchdog\(\) \{/,/^watchdog_cron_scheduler_detect_pid\(\) \{/' dns-manager.sh > "$tmp/run_watchdog.sh"
+grep -Fq 'if ! watchdog_slot_target_run "$_slot"; then' "$tmp/run_watchdog.sh" || fail "one-shot Watchdog bypasses the shared per-slot repair helper"
+grep -Fq 'watchdog_listener_snapshot_has_port "$_port"' "$tmp/run_watchdog.sh" || fail "one-shot Watchdog may rotate DNS when the local listener is missing"
+if grep -Fq 'watchdog_pick_replacement' "$tmp/run_watchdog.sh"; then
+    fail "one-shot Watchdog still duplicates candidate selection"
+fi
+if grep -Fq 'watchdog_scope_category' "$tmp/run_watchdog.sh"; then
+    fail "one-shot Watchdog still requires a DNS profile"
+fi
+ok "one-shot and background Watchdog share the same safe per-slot repair path"
 # All watchdog paths must use the same DNS health checks as the verified Manager paths.
 awk '/^watchdog_embedded_loop\(\) \{/,/^# ==========================================/' dns-manager.sh > "$tmp/watchdog_embedded_loop.sh"
 grep -q 'local_dns_query_ok "\$_port" "\$_domain"' "$tmp/watchdog_embedded_loop.sh" || fail "procd watchdog does not use the canonical local DNS check"
@@ -754,6 +1328,9 @@ grep -q 'dig @127\.0\.0\.1' dns-manager.sh || fail "canonical local DNS check do
 ok "watchdog candidate acceptance uses the canonical local DNS response check"
 awk '/^watchdog_service_install_files\(\) \{/,/^watchdog_service_running\(\) \{/' dns-manager.sh > "$tmp/watchdog_service.sh"
 grep -q 'USE_PROCD=1' "$tmp/watchdog_service.sh" || fail "watchdog service is not managed by procd"
+grep -Fq '. /etc/dns-manager/config/manager.conf' "$tmp/watchdog_service.sh" || fail "watchdog service does not load shell-quoted manager settings"
+grep -Fq '_wd_enabled="${WATCHDOG_ENABLED:-0}"' "$tmp/watchdog_service.sh" || fail "watchdog service does not read the saved watchdog setting"
+grep -Fq '_force_enabled="${FORCE_DOH:-0}"' "$tmp/watchdog_service.sh" || fail "watchdog service does not read the saved forced-DNS setting"
 grep -q 'procd_set_param command /bin/sh "\$PROG" "\$CMD"' "$tmp/watchdog_service.sh" || fail "watchdog procd command is missing"
 grep -q 'procd_set_param respawn 3600 5 5' "$tmp/watchdog_service.sh" || fail "watchdog procd respawn is missing"
 grep -q 'procd_add_interface_trigger "interface.*.up" "\$wan" /etc/init.d/dns-watchdog restart' "$tmp/watchdog_service.sh" || fail "watchdog WAN-up trigger is missing"
@@ -788,23 +1365,17 @@ if watchdog_scope_category >/dev/null 2>&1; then exit 25; fi
 EOF_WATCHDOG_SCOPE
 chmod +x "$tmp/watchdog_scope_runner.sh"
 "$tmp/watchdog_scope_runner.sh" "$tmp/watchdog_scope.sh" || fail "watchdog intended-profile classifier behavior"
+# Exact-category mode lets Watchdog repair a manually selected DNS without requiring a profile.
 awk '
     /^watchdog_pick_replacement\(\) \{/ { capture=1 }
     capture { print }
     capture && /^watchdog_apply_slot_candidate\(\) \{/ { exit }
 ' dns-manager.sh > "$tmp/watchdog_pick_function.sh"
-grep -q '_passcats="$_desired_for_pick clean"' "$tmp/watchdog_pick_function.sh" || fail "clean fallback is not available for every non-clean profile"
-grep -A18 -F 'watchdog_pick_replacement() {' dns-manager.sh | grep -q 'watchdog_scope_category' || fail "watchdog replacement does not use intended profile category"
-grep -q '_fallback_slots=""' dns-manager.sh || fail "watchdog fallback slots are not tracked"
-grep -q '_empty_slots=""' dns-manager.sh || fail "watchdog empty slots are not tracked"
-grep -q 'Watchdog: проверяю целевую категорию для восстановления/дозаполнения' dns-manager.sh || fail "watchdog gradual target restore/fill path missing"
-grep -q '^auto_fill_slots() {' dns-manager.sh || fail "automatic profile DNS selection helper missing"
-if grep -q 'profile_fill_slots' dns-manager.sh; then
-    fail "obsolete bounded profile picker remains"
-fi
-if grep -q 'PROFILE_FRESH_OK_IDS' dns-manager.sh; then
-    fail "obsolete per-profile fresh DNS list remains"
-fi
+grep -Fq '_explicit_cat="${5:-}"' "$tmp/watchdog_pick_function.sh" || fail "watchdog picker has no explicit per-slot category mode"
+grep -Fq '_desired_for_pick="$_explicit_cat"' "$tmp/watchdog_pick_function.sh" || fail "watchdog picker ignores the current DNS category"
+grep -Fq 'if [ -z "$_explicit_cat" ]; then' "$tmp/watchdog_pick_function.sh" || fail "profile fallback behavior is not isolated from runtime replacement"
+ok "watchdog category selection is independent of profile selection"
+
 awk '/^job_start_test_all\(\) \{/,/^\}/' "$tmp/backend.sh" > "$tmp/test_all_job.sh"
 grep -Fq 'job_write "$_jid" progress_done "$_final_total"' "$tmp/test_all_job.sh" || fail "LuCI full catalog job does not publish final progress_done"
 grep -Fq 'job_write "$_jid" progress_total "$_final_total"' "$tmp/test_all_job.sh" || fail "LuCI full catalog job does not publish final progress_total"
@@ -825,7 +1396,21 @@ grep -Fq 'if [ "$_enabled" = 1 ] && [ -z "$SLOT_1$SLOT_2$SLOT_3$SLOT_4$SLOT_5$SL
 grep -q "Проверить текущие DNS','cbi-button-action'" "$tmp/common.js" || fail "Current DNS check button disappeared"
 if grep -q "canTestCurrent=profileSelected" "$tmp/common.js"; then fail "Current DNS check is incorrectly blocked without profile"; fi
 if grep -q "_profile_slots.*Проверить текущие DNS" "$tmp/backend.sh"; then fail "Current DNS check is incorrectly guarded by profile"; fi
-ok "DNS control is blocked without profile; current DNS checks remain available"
+awk '/^function watchdogCard\(root,st\)\{/,/^function renderTestAgeCommon/' "$tmp/common.js" > "$tmp/watchdog_card.js"
+if grep -Fq 'profileSelected' "$tmp/watchdog_card.js"; then
+    fail "LuCI Watchdog toggle is still blocked when no profile is selected"
+fi
+if grep -Fq 'Сначала выберите профиль DNS Manager' "$tmp/watchdog_card.js"; then
+    fail "LuCI Watchdog still asks for a profile"
+fi
+if grep -Fq 'Сколько DNS можно заменить за раз' "$tmp/watchdog_card.js"; then
+    fail "LuCI still exposes the obsolete per-cycle repair count"
+fi
+grep -Fq 'Профиль не требуется.' "$tmp/watchdog_card.js" || fail "LuCI does not describe profile-independent Watchdog"
+grep -Fq "row('Автозамена',badge(!en?'dm-off':(auto?'dm-ok':'dm-off'),!en?'проверка выключена':(auto?'включена':'выключена')))" "$tmp/watchdog_card.js" || fail "LuCI auto-replace status badge has incorrect argument order"
+ok "LuCI Watchdog is available for manually configured DNS without a profile"
+
+ok "forced-DNS controls and current-DNS checks retain their existing behavior"
 
 grep -q 'test_dns_catalog "\$1"' dns-manager.sh || fail "profile apply does not pass its category to the DNS test"
 grep -q 'test_scope=' dns-manager.sh || fail "DNS test scope is not persisted"
@@ -937,6 +1522,22 @@ got="$(watchdog_pick_replacement 1 "$TMP_DIR/used" "$TMP_DIR/tried" 0)"
 [ "$got" = "c5|bypass" ] || {
     printf '%s\n' "unexpected all-category replacement: $got" >&2
     exit 32
+}
+# A manually selected clean resolver is replaced by another clean resolver without a profile.
+DNS_SELECTION_MODE=manual
+DNS_SELECTION_CATEGORY=
+watchdog_test_results_fresh() { return 1; }
+cat > "$DNS_CATALOG" <<'EOF_MANUAL_CATALOG'
+clean1|clean|Clean1|https://clean1.example/dns-query|ru/global|verified
+clean2|clean|Clean2|https://clean2.example/dns-query|ru/global|verified
+bypass1|bypass|Bypass1|https://bypass1.example/dns-query|ru/global|verified
+EOF_MANUAL_CATALOG
+: > "$TMP_DIR/used"
+: > "$TMP_DIR/tried"
+got="$(watchdog_pick_replacement 1 "$TMP_DIR/used" "$TMP_DIR/tried" 0 clean)"
+[ "$got" = "clean1|clean" ] || {
+    printf '%s\n' "unexpected manual same-category replacement: $got" >&2
+    exit 34
 }
 EOF_WATCHDOG_PICK
 
@@ -1066,16 +1667,196 @@ ok "LuCI persists profile operation state across page reloads"
 ok "LuCI does not require persisted DNS job history for global status banners"
 
 # Watchdog tuning is persisted and exposed as one atomic LuCI save operation.
-for _wd_key in WATCHDOG_INTERVAL WATCHDOG_FAIL_THRESHOLD WATCHDOG_REPAIR_COOLDOWN WATCHDOG_MAX_REPAIRS WATCHDOG_MAX_RESTARTS WATCHDOG_MAX_CANDIDATES WATCHDOG_GUARD_INTERVAL; do
+for _wd_key in WATCHDOG_INTERVAL WATCHDOG_FAIL_THRESHOLD WATCHDOG_REPAIR_COOLDOWN WATCHDOG_MAX_RESTARTS WATCHDOG_GUARD_INTERVAL WATCHDOG_AUTOREPLACE; do
     grep -q "^${_wd_key}=" dns-manager.sh || fail "watchdog config variable missing: $_wd_key"
 done
-grep -q 'WATCHDOG_FAIL_THRESHOLD="$WATCHDOG_FAIL_THRESHOLD"' dns-manager.sh || fail "watchdog threshold is not persisted"
-grep -q 'WATCHDOG_REPAIR_COOLDOWN="$WATCHDOG_REPAIR_COOLDOWN"' dns-manager.sh || fail "watchdog repair cooldown is not persisted"
-grep -q 'WATCHDOG_MAX_REPAIRS="$WATCHDOG_MAX_REPAIRS"' dns-manager.sh || fail "watchdog max repairs is not persisted"
-grep -q 'WATCHDOG_MAX_RESTARTS="$WATCHDOG_MAX_RESTARTS"' dns-manager.sh || fail "watchdog max restarts is not persisted"
-grep -q 'WATCHDOG_MAX_CANDIDATES="$WATCHDOG_MAX_CANDIDATES"' dns-manager.sh || fail "watchdog max candidates is not persisted"
-grep -q 'WATCHDOG_GUARD_INTERVAL="$WATCHDOG_GUARD_INTERVAL"' dns-manager.sh || fail "watchdog guard interval is not persisted"
+grep -Fq 'WATCHDOG_FAIL_THRESHOLD=$(shell_quote "$WATCHDOG_FAIL_THRESHOLD")' dns-manager.sh || fail "watchdog threshold is not persisted"
+grep -Fq 'WATCHDOG_REPAIR_COOLDOWN=$(shell_quote "$WATCHDOG_REPAIR_COOLDOWN")' dns-manager.sh || fail "watchdog repair cooldown is not persisted"
+grep -Fq 'WATCHDOG_MAX_RESTARTS=$(shell_quote "$WATCHDOG_MAX_RESTARTS")' dns-manager.sh || fail "watchdog max restarts is not persisted"
+grep -Fq 'WATCHDOG_GUARD_INTERVAL=$(shell_quote "$WATCHDOG_GUARD_INTERVAL")' dns-manager.sh || fail "watchdog guard interval is not persisted"
+grep -Fq 'WATCHDOG_AUTOREPLACE=$(shell_quote "$WATCHDOG_AUTOREPLACE")' dns-manager.sh || fail "watchdog autoreplace is not persisted"
+
+# Saved config values must round-trip as literal data, including shell metacharacters.
+_quote_func="$(sed -n '/^shell_quote() {/,/^}/p' dns-manager.sh)"
+[ -n "$_quote_func" ] || fail "shell_quote helper missing"
+eval "$_quote_func"
+_quote_marker="$tmp/config-quote-injection-marker"
+_quote_input="value with 'quotes'; \$(touch '$_quote_marker')"
+_quote_encoded="$(shell_quote "$_quote_input")"
+eval "_quote_roundtrip=$_quote_encoded"
+[ "$_quote_roundtrip" = "$_quote_input" ] || fail "shell_quote did not round-trip a special value"
+[ ! -e "$_quote_marker" ] || fail "shell_quote evaluated embedded shell syntax"
+ok "config serialization keeps shell metacharacters as literal data"
+
+# Lock recovery must reject PID 0 and must not reuse an existing quarantine path.
+[ "$(grep -Fc '|0|*[!0-9]*' dns-manager.sh)" -ge 3 ] || fail "lock recovery accepts PID zero"
+[ "$(grep -Fc 'if [ -e "$_stale_lock" ] || [ -L "$_stale_lock" ]; then return 1; fi' dns-manager.sh)" = 3 ] || fail "stale-lock quarantine path is not collision-checked for all lock types"
+ok "lock recovery validates PID and checks stale quarantine paths"
+
+grep -Fq 'if [ -e "$MUTATION_LOCK_DIR" ] || [ -L "$MUTATION_LOCK_DIR" ]; then' dns-manager.sh || fail "mutation lock restore can move into an occupied path"
+grep -Fq 'if [ -e "$TEST_LOCK_DIR" ] || [ -L "$TEST_LOCK_DIR" ]; then return 1; fi' dns-manager.sh || fail "test lock restore can move into an occupied path"
+grep -Fq 'if [ -e "$AUTO_UPDATE_LOCK_DIR" ] || [ -L "$AUTO_UPDATE_LOCK_DIR" ]; then return 1; fi' dns-manager.sh || fail "auto-update lock restore can move into an occupied path"
+ok "lock recovery refuses to restore into an occupied path"
+
+# Exercise the mutation lock in an isolated temporary directory.
+_lock_funcs="$(sed -n -e '/^acquire_mutation_lock() {/,/^}/p' -e '/^release_mutation_lock() {/,/^}/p' dns-manager.sh)"
+[ -n "$_lock_funcs" ] || fail "mutation lock functions missing"
+eval "$_lock_funcs"
+log_msg() { :; }
+STATE_DIR="$tmp/lock-state"
+MUTATION_LOCK_DIR="$STATE_DIR/mutation.lock"
+MUTATION_LOCK_HELD=0
+mkdir -p "$STATE_DIR" || fail "cannot create lock-test directory"
+acquire_mutation_lock || fail "fresh mutation lock could not be acquired"
+[ "$(cat "$MUTATION_LOCK_DIR/pid")" = "$$" ] || fail "mutation lock owner PID mismatch"
+release_mutation_lock
+[ ! -d "$MUTATION_LOCK_DIR" ] || fail "mutation lock was not released"
+
+mkdir -p "$MUTATION_LOCK_DIR" || fail "cannot prepare live-lock test"
+printf '%s\n' "$$" > "$MUTATION_LOCK_DIR/pid"
+if acquire_mutation_lock; then
+    fail "mutation lock allowed a second acquisition by the same live PID"
+fi
+[ -d "$MUTATION_LOCK_DIR" ] || fail "live mutation lock was removed"
+rm -rf "$MUTATION_LOCK_DIR"
+
+_test_stale_pid=999999
+while kill -0 "$_test_stale_pid" 2>/dev/null; do _test_stale_pid=$((_test_stale_pid + 1)); done
+mkdir -p "$MUTATION_LOCK_DIR" || fail "cannot prepare stale-lock test"
+printf '%s\n' "$_test_stale_pid" > "$MUTATION_LOCK_DIR/pid"
+acquire_mutation_lock || fail "stale mutation lock was not recovered"
+[ "$(cat "$MUTATION_LOCK_DIR/pid")" = "$$" ] || fail "recovered lock has the wrong owner"
+release_mutation_lock
+
+mkdir -p "$MUTATION_LOCK_DIR" "$MUTATION_LOCK_DIR.stale.$$" || fail "cannot prepare quarantine collision test"
+printf '%s\n' "$_test_stale_pid" > "$MUTATION_LOCK_DIR/pid"
+: > "$MUTATION_LOCK_DIR.stale.$$/marker"
+if acquire_mutation_lock; then
+    fail "mutation lock ignored an existing stale-quarantine path"
+fi
+[ -d "$MUTATION_LOCK_DIR" ] || fail "quarantine collision removed the original lock"
+[ -f "$MUTATION_LOCK_DIR.stale.$$/marker" ] || fail "quarantine collision altered the existing path"
+rm -rf "$MUTATION_LOCK_DIR" "$MUTATION_LOCK_DIR.stale.$$"
+
+# Corrupt PID data must fail closed without deleting the existing lock.
+mkdir -p "$MUTATION_LOCK_DIR" || fail "cannot prepare malformed-PID lock"
+printf '%s\n' 'not-a-pid' > "$MUTATION_LOCK_DIR/pid"
+if acquire_mutation_lock; then
+    fail "mutation lock accepted a malformed PID"
+fi
+[ -d "$MUTATION_LOCK_DIR" ] || fail "malformed mutation lock was deleted"
+rm -rf "$MUTATION_LOCK_DIR"
+ok "mutation lock rejects malformed PID without deleting the lock"
+
+# Exercise the test lock dynamically: PID 0 and a pre-existing quarantine path.
+_test_lock_funcs="$(sed -n -e '/^acquire_test_lock() {/,/^}/p' -e '/^release_test_lock() {/,/^}/p' dns-manager.sh)"
+[ -n "$_test_lock_funcs" ] || fail "test lock functions missing"
+eval "$_test_lock_funcs"
+STATE_DIR="$tmp/test-lock-state"
+TEST_LOCK_DIR="$STATE_DIR/test.lock"
+TEST_LOCK_HELD=0
+mkdir -p "$STATE_DIR" "$TEST_LOCK_DIR" || fail "cannot prepare test-lock PID test"
+printf '%s\n' 0 > "$TEST_LOCK_DIR/pid"
+if acquire_test_lock; then fail "test lock accepted PID zero"; fi
+[ -d "$TEST_LOCK_DIR" ] || fail "invalid test lock was deleted"
+rm -rf "$TEST_LOCK_DIR"
+mkdir -p "$TEST_LOCK_DIR" "$TEST_LOCK_DIR.stale.$$" || fail "cannot prepare test-lock quarantine test"
+printf '%s\n' "$_test_stale_pid" > "$TEST_LOCK_DIR/pid"
+: > "$TEST_LOCK_DIR.stale.$$/marker"
+if acquire_test_lock; then fail "test lock ignored an existing quarantine path"; fi
+[ -d "$TEST_LOCK_DIR" ] || fail "test-lock collision removed original lock"
+[ -f "$TEST_LOCK_DIR.stale.$$/marker" ] || fail "test-lock collision altered quarantine path"
+rm -rf "$TEST_LOCK_DIR" "$TEST_LOCK_DIR.stale.$$"
+ok "test lock rejects invalid PID and preserves quarantine collisions"
+
+# Exercise the auto-update lock dynamically with the same failure cases.
+_auto_lock_funcs="$(sed -n '/^acquire_auto_update_lock() {/,/^}/p' dns-manager.sh)"
+[ -n "$_auto_lock_funcs" ] || fail "auto-update lock function missing"
+eval "$_auto_lock_funcs"
+STATE_DIR="$tmp/auto-lock-state"
+AUTO_UPDATE_LOCK_DIR="$STATE_DIR/auto-update.lock"
+AUTO_UPDATE_LOCK_HELD=0
+mkdir -p "$STATE_DIR" "$AUTO_UPDATE_LOCK_DIR" || fail "cannot prepare auto-update PID test"
+printf '%s\n' 0 > "$AUTO_UPDATE_LOCK_DIR/pid"
+if acquire_auto_update_lock; then fail "auto-update lock accepted PID zero"; fi
+[ -d "$AUTO_UPDATE_LOCK_DIR" ] || fail "invalid auto-update lock was deleted"
+rm -rf "$AUTO_UPDATE_LOCK_DIR"
+mkdir -p "$AUTO_UPDATE_LOCK_DIR" "$AUTO_UPDATE_LOCK_DIR.stale.$$" || fail "cannot prepare auto-update quarantine test"
+printf '%s\n' "$_test_stale_pid" > "$AUTO_UPDATE_LOCK_DIR/pid"
+: > "$AUTO_UPDATE_LOCK_DIR.stale.$$/marker"
+if acquire_auto_update_lock; then fail "auto-update lock ignored an existing quarantine path"; fi
+[ -d "$AUTO_UPDATE_LOCK_DIR" ] || fail "auto-update collision removed original lock"
+[ -f "$AUTO_UPDATE_LOCK_DIR.stale.$$/marker" ] || fail "auto-update collision altered quarantine path"
+rm -rf "$AUTO_UPDATE_LOCK_DIR" "$AUTO_UPDATE_LOCK_DIR.stale.$$"
+ok "auto-update lock rejects invalid PID and preserves quarantine collisions"
+
+ok "mutation lock acquisition, release and stale-lock recovery are exercised"
+
+# Round-trip the real config writer with shell syntax embedded as data.
+_save_funcs="$(sed -n -e '/^shell_quote() {/,/^}/p' -e '/^save_config() {/,/^}/p' dns-manager.sh)"
+[ -n "$_save_funcs" ] || fail "config save functions missing"
+eval "$_save_funcs"
+sync_regional_dns_state() { :; }
+CFG_DIR="$tmp/config-save"
+CONFIG_FILE="$CFG_DIR/manager.conf"
+TX_ACTIVE=0
+DEFER_CONFIG_SAVE=0
+_quote_marker="$tmp/config-save-injection-marker"
+_expected_config_value="value with 'quotes'; \$(touch '$_quote_marker')"
+SLOT_1="$_expected_config_value"
+BOOTSTRAP_DNS_ALL="$_expected_config_value"
+save_config || fail "save_config failed for a value with shell metacharacters"
+SLOT_1=""
+BOOTSTRAP_DNS=""
+. "$CONFIG_FILE" || fail "saved manager.conf could not be sourced"
+[ "$SLOT_1" = "$_expected_config_value" ] || fail "SLOT_1 did not round-trip from manager.conf"
+[ "$BOOTSTRAP_DNS" = "$_expected_config_value" ] || fail "bootstrap DNS did not round-trip from manager.conf"
+[ ! -e "$_quote_marker" ] || fail "sourcing manager.conf executed embedded shell syntax"
+ok "manager.conf safely saves and reloads special characters"
+
+# Exercise concurrent lock acquisition in two independent shell processes.
+STATE_DIR="$tmp/lock-concurrent"
+MUTATION_LOCK_DIR="$STATE_DIR/mutation.lock"
+MUTATION_LOCK_HELD=0
+mkdir -p "$STATE_DIR" || fail "cannot create concurrent lock-test directory"
+{
+    sed -n -e '/^acquire_mutation_lock() {/,/^}/p' -e '/^release_mutation_lock() {/,/^}/p' dns-manager.sh
+    cat <<'EOF_LOCK_HOLDER'
+log_msg() { :; }
+STATE_DIR="$1"
+MUTATION_LOCK_DIR="$STATE_DIR/mutation.lock"
+MUTATION_LOCK_HELD=0
+mkdir -p "$STATE_DIR" || exit 3
+acquire_mutation_lock || exit 4
+: > "$STATE_DIR/ready"
+sleep 1
+release_mutation_lock
+EOF_LOCK_HOLDER
+} > "$tmp/lock-holder.sh"
+sh "$tmp/lock-holder.sh" "$STATE_DIR" &
+_holder_pid=$!
+_wait=0
+while [ ! -f "$STATE_DIR/ready" ] && [ "$_wait" -lt 50 ]; do
+    sleep 0.1
+    _wait=$((_wait + 1))
+done
+if [ ! -f "$STATE_DIR/ready" ]; then
+    kill "$_holder_pid" 2>/dev/null || true
+    wait "$_holder_pid" 2>/dev/null || true
+    fail "concurrent lock holder did not become ready"
+fi
+if acquire_mutation_lock; then
+    release_mutation_lock
+    wait "$_holder_pid" 2>/dev/null || true
+    fail "second process acquired an active mutation lock"
+fi
+[ -d "$MUTATION_LOCK_DIR" ] || fail "active lock disappeared during concurrent contention"
+wait "$_holder_pid" || fail "concurrent lock holder failed"
+[ ! -d "$MUTATION_LOCK_DIR" ] || fail "concurrent lock holder did not release its lock"
+ok "mutation lock rejects a concurrent process and releases cleanly"
 grep -q 'watchdog_interval":%s,"watchdog_service' "$tmp/backend.sh" || fail "LuCI status does not expose saved watchdog interval"
+if sed -n '/watchdog_interval/p' "$tmp/backend.sh" | grep -Fq '\'; then fail "LuCI status JSON has literal backslashes in keys"; fi
+if sed -n '/watchdog_fail_threshold/p' "$tmp/backend.sh" | grep -Fq '\'; then fail "LuCI network status JSON has literal backslashes in keys"; fi
 
 grep -q '^        set_watchdog_setting)' "$tmp/backend.sh" || fail "legacy watchdog setting dispatch missing"
 grep -q '^        set_watchdog_settings)' "$tmp/backend.sh" || fail "atomic watchdog settings dispatch missing"
@@ -1088,10 +1869,10 @@ grep -q 'save_config' "$tmp/backend.sh" || fail "watchdog batch setter save path
 grep -q 'watchdog_service_start_enable' "$tmp/backend.sh" || fail "watchdog batch setter does not restart procd after apply"
 grep -q 'watchdog_cron_remove_owned_block' "$tmp/backend.sh" || fail "watchdog setter does not handle manager-owned cron watchdog"
 grep -q 'watchdog_restore_service_state' "$tmp/backend.sh" || fail "watchdog rollback helper missing"
-grep -Fq 'watchdog_apply_values "$_interval" "$_threshold" "$_repair_cooldown" "$_max_repairs" "$_max_restarts" "$_max_candidates" "$_guard_interval"' "$tmp/backend.sh" || fail "batch watchdog values are not forwarded together"
+grep -Fq 'watchdog_apply_values "$_interval" "$_threshold" "$_repair_cooldown" "$_max_restarts" "$_guard_interval"' "$tmp/backend.sh" || fail "batch watchdog values are not forwarded together"
 
 grep -q "method:'set_watchdog_settings'" "$tmp/common.js" || fail "LuCI does not use the atomic watchdog RPC"
-grep -Fq "params:['interval','threshold','repair_cooldown','max_repairs','max_restarts','max_candidates','guard_interval']" "$tmp/common.js" || fail "atomic watchdog RPC parameter order mismatch"
+grep -Fq "params:['interval','threshold','repair_cooldown','max_restarts','guard_interval']" "$tmp/common.js" || fail "atomic watchdog RPC parameter order mismatch"
 if grep -q 'var callWatchdogSetting = ' "$tmp/common.js"; then
     fail "LuCI still defines the per-setting watchdog RPC"
 fi
@@ -1100,16 +1881,24 @@ save_count="$(grep -o 'Сохранить' "$tmp/watchdog_card.js" | wc -l | tr 
 [ "$save_count" = 1 ] || fail "watchdog must have exactly one Save label"
 grep -q 'Сохранить настройки' "$tmp/watchdog_card.js" || fail "common watchdog save button missing"
 grep -q 'Дополнительные параметры' "$tmp/watchdog_card.js" || fail "advanced watchdog section missing"
-grep -q 'Настройки контроля' "$tmp/watchdog_card.js" || fail "watchdog settings section title missing"
-for _wd_label in 'Как часто проверять DNS' 'Сколько проверок подряд считать сбоем' 'Пауза между заменами DNS' 'Сколько DNS можно заменить за раз' 'Сколько DNS проверить при поиске замены'; do
+grep -q 'Контроль текущих DNS' "$tmp/watchdog_card.js" || fail "watchdog settings section title missing"
+for _wd_label in 'Как часто проверять DNS' 'Ошибок подряд до замены' 'Пауза между заменами одного DNS' 'Проверка DNS' 'Автозамена DNS'; do
     grep -q "$_wd_label" "$tmp/watchdog_card.js" || fail "LuCI watchdog control missing: $_wd_label"
 done
+if grep -q 'Проверить сейчас' "$tmp/watchdog_card.js"; then
+    fail "Watchdog panel must not duplicate the full current-DNS test action"
+fi
+grep -q 'локальный порт назначенного DoH' "$tmp/watchdog_card.js" || fail "Watchdog probe is not explained in LuCI"
+grep -q 'Полный разовый тест текущих DoH' "$tmp/watchdog_card.js" || fail "LuCI does not direct users to the distinct full DNS test"
+if grep -q 'Сколько DNS можно заменить за раз' "$tmp/watchdog_card.js"; then
+    fail "LuCI still shows the removed per-cycle repair-count setting"
+fi
 if grep -q 'Рестартов https-dns-proxy\|Тяжёлая сверка' "$tmp/watchdog_card.js"; then
     fail "technical watchdog labels still exposed in LuCI"
 fi
 # Numeric watchdog fields must use a single-escaped digit regex; double-escaped \\d rejects normal values.
-grep -Fq '(x[6]?true:/^\d+$/.test(raw))' "$tmp/watchdog_card.js" || fail "watchdog numeric validation regex is missing"
-if grep -Fq '(x[6]?true:/^\\d+$/.test(raw))' "$tmp/watchdog_card.js"; then
+grep -Fq '(x[6]||/^\d+$/.test(raw))' "$tmp/watchdog_card.js" || fail "watchdog numeric validation regex is missing"
+if grep -Fq '(x[6]||/^\\d+$/.test(raw))' "$tmp/watchdog_card.js"; then
     fail "watchdog numeric validation regex is double-escaped"
 fi
 ok "watchdog numeric field validation accepts normal integer values"
@@ -1145,7 +1934,7 @@ cat > "$tmp/ensure_test_results_fresh_runner.sh" <<'EOF_FRESH_SCOPE'
 set -eu
 HAS_CURL=yes
 CALLS=0
-watchdog_test_results_fresh() {
+watchdog_test_results_usable() {
     CALLS=$((CALLS+1))
     [ "${1:-}" = security ] && [ "$CALLS" -eq 2 ]
 }
@@ -1158,6 +1947,54 @@ EOF_FRESH_SCOPE
 chmod +x "$tmp/ensure_test_results_fresh_runner.sh"
 "$tmp/ensure_test_results_fresh_runner.sh" "$tmp/ensure_test_results_fresh.sh" || fail "category test refresh validates the wrong scope"
 ok "category-scoped DNS test refresh preserves its scope"
+# A category-specific freshness setting must override the common fallback.
+awk '/^test_results_max_age_for_category\(\) \{/,/^}/' dns-manager.sh > "$tmp/test_results_max_age.sh"
+[ -s "$tmp/test_results_max_age.sh" ] || fail "category freshness helper extraction"
+cat > "$tmp/test_results_max_age_runner.sh" <<'EOF_TEST_AGE'
+#!/bin/sh
+set -eu
+TEST_RESULTS_MAX_AGE=21600
+TEST_RESULTS_MAX_AGE_BYPASS=3600
+TEST_RESULTS_MAX_AGE_CLEAN=7200
+. "$1"
+[ "$(test_results_max_age_for_category bypass)" = 3600 ] || exit 41
+[ "$(test_results_max_age_for_category clean)" = 7200 ] || exit 42
+[ "$(test_results_max_age_for_category all)" = 21600 ] || exit 43
+[ "$(test_results_max_age_for_category unknown)" = 21600 ] || exit 44
+EOF_TEST_AGE
+chmod +x "$tmp/test_results_max_age_runner.sh"
+"$tmp/test_results_max_age_runner.sh" "$tmp/test_results_max_age.sh" || fail "category-specific DNS freshness is overridden by the common value"
+ok "category-specific DNS result freshness settings take precedence"
+
+awk '/^show_tests\(\) \{/,/^profile_apply_begin\(\) \{/' dns-manager.sh > "$tmp/show_tests.sh"
+grep -Fq 'watchdog_test_results_fresh "$_test_scope"' "$tmp/show_tests.sh" || fail "DNS results screen does not check freshness"
+grep -Fq 'Сохранённые результаты устарели' "$tmp/show_tests.sh" || fail "DNS results screen does not label stale results"
+awk '/^quick_max_bypass\(\) \{/,/^test_results_max_age_for_category\(\) \{/' dns-manager.sh | sed '$d' > "$tmp/quick_max_bypass.sh"
+grep -Fq 'watchdog_test_results_usable bypass' "$tmp/quick_max_bypass.sh" || fail "bypass flow reuses results without checking working DNS"
+grep -Fq 'test_dns_catalog bypass' "$tmp/quick_max_bypass.sh" || fail "bypass flow tests the entire catalog instead of its category"
+grep -Fq '_catalog_hash_start="$(file_hash "$DNS_CATALOG")"' dns-manager.sh || fail "DNS test does not snapshot the starting catalog hash"
+grep -Fq 'Каталог DNS изменился во время проверки. Результат отброшен' dns-manager.sh || fail "DNS test does not discard results when catalog changes during testing"
+ok "DNS result freshness display and category-scoped tests"
+# A successful regional resolver cannot make a failing general category usable.
+awk '/^watchdog_test_results_usable\(\) \{/,/^}/' dns-manager.sh > "$tmp/watchdog_test_results_usable.sh"
+[ -s "$tmp/watchdog_test_results_usable.sh" ] || fail "usable DNS result helper extraction"
+cat > "$tmp/watchdog_test_results_usable_runner.sh" <<'EOF_USABLE_RESULTS'
+#!/bin/sh
+set -eu
+TEST_RESULTS="$2"
+watchdog_test_results_fresh() { return 0; }
+. "$1"
+printf 'yandex_ru|regional|Yandex RU|10|OK\n' > "$TEST_RESULTS"
+if watchdog_test_results_usable bypass; then exit 41; fi
+if watchdog_test_results_usable all; then exit 42; fi
+printf 'yandex_ru|regional|Yandex RU|10|OK\ncomss_bypass|bypass|Comss|20|OK\n' > "$TEST_RESULTS"
+watchdog_test_results_usable bypass || exit 43
+printf 'adguard_default|adblock|AdGuard|20|OK\n' > "$TEST_RESULTS"
+if watchdog_test_results_usable bypass; then exit 44; fi
+EOF_USABLE_RESULTS
+chmod +x "$tmp/watchdog_test_results_usable_runner.sh"
+"$tmp/watchdog_test_results_usable_runner.sh" "$tmp/watchdog_test_results_usable.sh" "$tmp/usable-results" || fail "regional or unrelated DNS result satisfies selected category"
+ok "cached DNS usability requires a working resolver in the requested category"
 
 # Preserve an existing RU DNS only when it passed the fresh regional test.
 awk '/^apply_profile_now\(\) \{/,/^menu_category_select\(\)/' dns-manager.sh | sed '$d' > "$tmp/apply_profile_now_ru.sh"
