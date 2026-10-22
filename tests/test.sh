@@ -425,7 +425,7 @@ grep -Fq "disabled:!!state.busy||!!state.jobRunning||unavailable||checking" dns-
 grep -q "'gaming','Игровые DNS'" dns-manager-luci.sh || fail "gaming catalog label missing in LuCI"
 grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validation missing gaming category"
 grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
-grep -q 'VERSION="3.71"' dns-manager.sh || fail "manager version not bumped"
+grep -q 'VERSION="3.72"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
 grep -q 'VERSION="1.96"' dns-manager-luci.sh || fail "LuCI version not bumped"
 grep -Fq 'return m ~ /^[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]$/' dns-manager-luci.sh || fail "LAN inventory merge rejects valid six-octet MAC addresses"
@@ -576,11 +576,13 @@ grep -q "minuteValue(st\[name\],min)" "$tmp/watchdog_card.sh" || fail "watchdog 
 if grep -q "Сколько DNS можно заменить за раз" "$tmp/watchdog_card.sh"; then
     fail "obsolete per-cycle watchdog repair-count setting is still exposed"
 fi
-grep -q "Сколько DNS проверить при поиске замены" "$tmp/watchdog_card.sh" || fail "watchdog candidate-count label is not user-friendly"
+if grep -q "Сколько DNS проверить при поиске замены" "$tmp/watchdog_card.sh"; then
+    fail "watchdog candidate-count setting is still exposed"
+fi
 if grep -q "Сколько раз можно перезапустить DNS" "$tmp/watchdog_card.sh"; then
     fail "internal watchdog restart limit is still exposed in LuCI"
 fi
-grep -q "values.splice(4,0,Math.round(internalMaxRestarts))" "$tmp/watchdog_card.sh" || fail "internal watchdog restart limit is not preserved when saving"
+grep -q "callWatchdogSettings(values\[0\],values\[1\],values\[2\],Math.round(restarts),Math.round(guard))" "$tmp/watchdog_card.sh" || fail "internal watchdog defaults are not preserved when saving"
 if grep -q "Интервал проверки.*30.*600.*'с'" "$tmp/watchdog_card.sh"; then
     fail "watchdog interval still exposes seconds"
 fi
@@ -591,8 +593,8 @@ if grep -q "Полная сверка.*300.*3600.*'с'" "$tmp/watchdog_card.sh";
     fail "watchdog full check still exposes seconds"
 fi
 ok "watchdog time controls use minutes in LuCI and seconds internally"
-grep -q 'WATCHDOG_CHECK_INTERVAL_DEFAULT=600' dns-manager.sh || fail "watchdog default interval is not 10 minutes"
-grep -q 'WATCHDOG_REPAIR_COOLDOWN=1800' dns-manager.sh || fail "watchdog default repair cooldown is not 30 minutes"
+grep -q 'WATCHDOG_CHECK_INTERVAL_DEFAULT=120' dns-manager.sh || fail "watchdog default interval is not 2 minutes"
+grep -q 'WATCHDOG_REPAIR_COOLDOWN=300' dns-manager.sh || fail "watchdog default repair cooldown is not 5 minutes"
 grep -q 'WATCHDOG_GUARD_INTERVAL=3600' dns-manager.sh || fail "internal watchdog guard default is not 60 minutes"
 grep -q '\[ "\$_ni" -ge 60 \].*\[ "\$_ni" -le 3600 \]' "$tmp/backend.sh" || fail "watchdog backend interval range is not 1-60 minutes"
 grep -q '\[ "\$_nrc" -ge 300 \].*\[ "\$_nrc" -le 7200 \]' "$tmp/backend.sh" || fail "watchdog backend repair cooldown range is not 5-120 minutes"
@@ -642,8 +644,8 @@ view_luci="$(sed -n 's|^// DNS Manager LuCI common module version:[[:space:]]*||
 dashboard_view_luci="$(sed -n 's|^// DNS Manager LuCI version: *||p' dns-manager-luci.sh | head -n1)"
 [ "$top_luci" = "$dashboard_view_luci" ] || fail "dashboard view version marker is stale"
 ok "LuCI version markers synchronized ($top_luci)"
-grep -Fq 'VERSION="3.71"' dns-manager.sh || fail "DNS Manager version marker is not 3.71"
-ok "DNS Manager version marker synchronized (3.71)"
+grep -Fq 'VERSION="3.72"' dns-manager.sh || fail "DNS Manager version marker is not 3.72"
+ok "DNS Manager version marker synchronized (3.72)"
 grep -Fq "assignment.appendChild(btn('Удалить'" dns-manager-luci.sh || fail "Custom DNS delete button is not aligned with the assignment action"
 grep -Fq ".dm-catalog-item-custom{grid-column:auto}" dns-manager-luci.sh || fail "Custom DNS card is wider than a stock catalog card"
 grep -Fq ".dm-catalog-controls-custom .dm-assign-inline select{height:30px;min-width:0;width:auto;max-width:100%;flex:1 1 160px" dns-manager-luci.sh || fail "Custom DNS actions do not have a responsive inline layout"
