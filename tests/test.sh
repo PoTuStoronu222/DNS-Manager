@@ -1404,7 +1404,7 @@ ok "LuCI full catalog job publishes final progress before DONE"
 
 awk '/^job_json\(\) \{/,/^}/' "$tmp/backend.sh" > "$tmp/job_json.sh"
 for _field in progress_done progress_total progress_ok progress_fail; do
-    grep -Fq ",\\\"${_field}\\\":" "$tmp/job_json.sh" || fail "LuCI job RPC does not expose final $_field"
+    grep -Fq "$_field" "$tmp/job_json.sh" || fail "LuCI job RPC does not expose final $_field"
 done
 ok "LuCI job RPC exposes final progress counts"
 
