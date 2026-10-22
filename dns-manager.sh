@@ -748,7 +748,7 @@ catalog_validate_file() {
             ids[$1]++
             if (ids[$1] > 1) bad=1
         }
-        END { if (bad || count != 109) exit 1 }
+        END { if (bad || count != 107) exit 1 }
     ' "$_f" >/dev/null 2>&1 || return 1
     return 0
 }
