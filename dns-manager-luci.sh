@@ -4449,7 +4449,7 @@ function saveDeviceDnsDefault(controls,root){
   Array.prototype.forEach.call(inputs,function(input){
     if(input.checked&&input.getAttribute('data-available')==='1')selected.push(String(input.value));
   });
-  var defaultToggle=controls.querySelector('input.dm-device-dns-default-enabled');
+  var defaultToggle=controls.parentNode&&controls.parentNode.querySelector?controls.parentNode.querySelector('input.dm-device-dns-default-enabled'):null;
   if(!defaultToggle||!defaultToggle.checked)selected=[];
   selected.sort(function(a,b){return Number(a)-Number(b);});
   state.busy=true;
