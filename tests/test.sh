@@ -1852,8 +1852,8 @@ wait "$_holder_pid" || fail "concurrent lock holder failed"
 [ ! -d "$MUTATION_LOCK_DIR" ] || fail "concurrent lock holder did not release its lock"
 ok "mutation lock rejects a concurrent process and releases cleanly"
 grep -q 'watchdog_interval":%s,"watchdog_service' "$tmp/backend.sh" || fail "LuCI status does not expose saved watchdog interval"
-grep -Fq "printf ',\\\"watchdog_interval" "$tmp/backend.sh" || fail "LuCI status JSON keys contain literal escape characters"
-grep -Fq "printf ',\\\"watchdog_fail_threshold" "$tmp/backend.sh" || fail "LuCI network status JSON keys contain literal escape characters"
+if sed -n '/watchdog_interval/p' "$tmp/backend.sh" | grep -Fq '\'; then fail "LuCI status JSON has literal backslashes in keys"; fi
+if sed -n '/watchdog_fail_threshold/p' "$tmp/backend.sh" | grep -Fq '\'; then fail "LuCI network status JSON has literal backslashes in keys"; fi
 
 grep -q '^        set_watchdog_setting)' "$tmp/backend.sh" || fail "legacy watchdog setting dispatch missing"
 grep -q '^        set_watchdog_settings)' "$tmp/backend.sh" || fail "atomic watchdog settings dispatch missing"
