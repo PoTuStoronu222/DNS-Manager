@@ -472,7 +472,9 @@ grep -Fq "if(!usable&&!selected)cbAttrs.disabled='';" dns-manager-luci.sh || fai
 if grep -Fq "'checked':selected" dns-manager-luci.sh; then fail "LAN checkbox still sets checked unconditionally"; fi
 if grep -Fq "'disabled':!usable&&!selected" dns-manager-luci.sh; then fail "LAN checkbox still sets disabled unconditionally"; fi
 ! sed -n '/function resolverRows/,/function renderDoH/p' dns-manager-luci.sh | grep -Eq "btn\('Выбрать'|btn\(running\?'Проверяю…':'Проверить'" || fail "current DoH summary must not duplicate slot actions"
-grep -Fq "doh:['doh','slots','profiles']" dns-manager-luci.sh || fail "DNS slot/domain panel visibility regression"
+grep -Fq "doh:['doh','profiles']" dns-manager-luci.sh || fail "DoH page still includes DNS slots or device bindings"
+grep -Fq "slots:['slots']" dns-manager-luci.sh || fail "DNS slot/domain panel is not isolated to its own page"
+grep -Fq "devices:['devices']" dns-manager-luci.sh || fail "LAN device binding is not isolated to its own page"
 grep -q "'bypass','Обход геоблока'" dns-manager-luci.sh || fail "bypass profile label not updated"
 grep -q "'security','Защита от угроз'" dns-manager-luci.sh || fail "security profile label not updated"
 grep -q "'privacy','Конфиденциальность'" dns-manager-luci.sh || fail "privacy profile label not updated"
