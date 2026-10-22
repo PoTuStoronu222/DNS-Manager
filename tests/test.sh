@@ -960,6 +960,17 @@ if grep -Fq '_selection_kind=' "$tmp/watchdog_embedded_loop.sh"; then
 fi
 ok "forced-DNS Steer transitions are reconciled on each background-check cycle"
 
+# Repeated local DNS failures must try service recovery before optional DNS replacement.
+grep -Fq 'watchdog_service_recover_run >/dev/null 2>&1 || true' "$tmp/watchdog_embedded_loop.sh" || fail "repeated local DNS failures do not try https-dns-proxy recovery"
+grep -Fq 'if watchdog_check_slot "$_trigger"; then' "$tmp/watchdog_embedded_loop.sh" || fail "watchdog does not verify the same selected DNS after restart"
+grep -Fq 'DNS не изменён.' "$tmp/watchdog_embedded_loop.sh" || fail "successful restart recovery is not logged without DNS replacement"
+grep -Fq 'elif [ "${WATCHDOG_AUTOREPLACE:-0}" = 1 ]; then' "$tmp/watchdog_embedded_loop.sh" || fail "DNS replacement is not kept behind the auto-replacement toggle"
+_recovery_line="$(grep -n 'watchdog_service_recover_run' "$tmp/watchdog_embedded_loop.sh" | tail -n1 | cut -d: -f1)"
+_recheck_line="$(grep -n 'if watchdog_check_slot' "$tmp/watchdog_embedded_loop.sh" | tail -n1 | cut -d: -f1)"
+_replace_line="$(grep -n 'watchdog_slot_target_run' "$tmp/watchdog_embedded_loop.sh" | tail -n1 | cut -d: -f1)"
+[ -n "$_recovery_line" ] && [ -n "$_recheck_line" ] && [ -n "$_replace_line" ] && [ "$_recovery_line" -lt "$_recheck_line" ] && [ "$_recheck_line" -lt "$_replace_line" ] || fail "DNS replacement does not follow service recovery and same-slot recheck"
+ok "watchdog restarts DoH before considering optional DNS replacement"
+
 # Forced-DNS Auto must keep the lightweight runtime service active even when
 # DNS testing/replacement is disabled; the watchdog menu state remains OFF.
 grep -Fq '[ "${WATCHDOG_ENABLED:-0}" = 1 ] || [ "${FORCE_DOH:-0}" = 1 ] || return 0' "$tmp/watchdog_embedded_loop.sh" || fail "runtime loop exits while forced-DNS Auto is enabled"
