@@ -1877,9 +1877,14 @@ save_count="$(grep -o 'Сохранить' "$tmp/watchdog_card.js" | wc -l | tr 
 grep -q 'Сохранить настройки' "$tmp/watchdog_card.js" || fail "common watchdog save button missing"
 grep -q 'Дополнительные параметры' "$tmp/watchdog_card.js" || fail "advanced watchdog section missing"
 grep -q 'Контроль текущих DNS' "$tmp/watchdog_card.js" || fail "watchdog settings section title missing"
-for _wd_label in 'Как часто проверять DNS' 'Ошибок подряд до замены' 'Пауза между заменами одного DNS' 'Проверка DNS' 'Автозамена DNS' 'Проверить сейчас'; do
+for _wd_label in 'Как часто проверять DNS' 'Ошибок подряд до замены' 'Пауза между заменами одного DNS' 'Проверка DNS' 'Автозамена DNS'; do
     grep -q "$_wd_label" "$tmp/watchdog_card.js" || fail "LuCI watchdog control missing: $_wd_label"
 done
+if grep -q 'Проверить сейчас' "$tmp/watchdog_card.js"; then
+    fail "Watchdog panel must not duplicate the full current-DNS test action"
+fi
+grep -q 'локальный порт назначенного DoH' "$tmp/watchdog_card.js" || fail "Watchdog probe is not explained in LuCI"
+grep -q 'Полный разовый тест текущих DoH' "$tmp/watchdog_card.js" || fail "LuCI does not direct users to the distinct full DNS test"
 if grep -q 'Сколько DNS можно заменить за раз' "$tmp/watchdog_card.js"; then
     fail "LuCI still shows the removed per-cycle repair-count setting"
 fi
