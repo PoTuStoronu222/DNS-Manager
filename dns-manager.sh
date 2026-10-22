@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.72"
+VERSION="3.73"
 # 3.38: clear the LuCI update flag after a successful CLI update.
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
@@ -30,7 +30,7 @@ WATCHDOG_GUARD_INTERVAL=3600
 DNSMASQ_CACHE_SIZE=4096
 WATCHDOG_SERVICE_PATH="/etc/init.d/dns-watchdog"
 WATCHDOG_SERVICE_MARKER="# DNS_MANAGER_WATCHDOG_SERVICE=2"
-WATCHDOG_SERVICE_VERSION_MARKER="# DNS_MANAGER_WATCHDOG_SERVICE_VERSION=3.11.8"
+WATCHDOG_SERVICE_VERSION_MARKER="# DNS_MANAGER_WATCHDOG_SERVICE_VERSION=3.11.9"
 WATCHDOG_LEGACY_DAEMON_PATH="/usr/bin/dns-watchdog-daemon.sh"
 WATCHDOG_LEGACY_DAEMON_MARKER="# DNS_MANAGER_WATCHDOG_DAEMON=1"
 WATCHDOG_LEGACY_RUNTIME_DIR="/var/run/dns-watchdog"
@@ -7244,7 +7244,7 @@ watchdog_service_install_files() {
     cat > "$_stmp" <<'EOF_DNS_WATCHDOG_SERVICE'
 #!/bin/sh /etc/rc.common
 # DNS_MANAGER_WATCHDOG_SERVICE=2
-# DNS_MANAGER_WATCHDOG_SERVICE_VERSION=3.11.8
+# DNS_MANAGER_WATCHDOG_SERVICE_VERSION=3.11.9
 
 USE_PROCD=1
 START=95
@@ -7256,8 +7256,9 @@ CMD="__watchdog-loop"
 start_service() {
     [ -x "$PROG" ] || return 1
     [ -r /etc/dns-manager/config/manager.conf ] || return 0
-    _wd_enabled="$(sed -n 's/^WATCHDOG_ENABLED="\([01]\)"$/\1/p' /etc/dns-manager/config/manager.conf 2>/dev/null | head -n1)"
-    _force_enabled="$(sed -n 's/^FORCE_DOH="\([01]\)"$/\1/p' /etc/dns-manager/config/manager.conf 2>/dev/null | head -n1)"
+    . /etc/dns-manager/config/manager.conf
+    _wd_enabled="${WATCHDOG_ENABLED:-0}"
+    _force_enabled="${FORCE_DOH:-0}"
     [ "$_wd_enabled" = 1 ] || [ "$_force_enabled" = 1 ] || return 0
     procd_open_instance "dns-watchdog"
     procd_set_param command /bin/sh "$PROG" "$CMD"
