@@ -403,7 +403,7 @@ grep -Fq '# ENTRIES=107' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog entr
 grep -Fq 'bezmezhau|bypass|geo+services|Bezmezhau DNS|https://dns.bezmezhau.com/dns-query|' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "Bezmezhau geo DNS entry missing"
 grep -Fq 'dagami|bypass|geo+services|Dagami DNS|https://dns.dagami.ru/dns-query|' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "Dagami geo DNS entry missing"
 grep -Fq "function resolverAvailable(ci)" dns-manager-luci.sh || fail "DoH availability helper missing"
-grep -Fq 'assignDirect(d.id,select.value,root,d.name||d.id,d.url)' dns-manager-luci.sh || fail "catalog assignment does not pass the target URL"
+grep -Fq 'assignDirect(d.id,slot,root,name,d.url)' dns-manager-luci.sh || fail "catalog assignment does not pass the target URL"
 grep -Fq 'normalizeUrl(activeUrl)===normalizeUrl(nextUrl)' dns-manager-luci.sh || fail "same-name assignment does not refresh a changed resolver URL"
 awk '/var normalizeUrl=function\(u\)/ {print; found=1; exit} END {if (!found) exit 1}' dns-manager-luci.sh > "$tmp/normalize_url.js" || fail "LuCI URL normalizer is missing"
 cat >> "$tmp/normalize_url.js" <<'EOF_NORMALIZE_URL'
