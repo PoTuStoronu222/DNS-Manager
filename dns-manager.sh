@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.71"
+VERSION="3.72"
 # 3.38: clear the LuCI update flag after a successful CLI update.
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
@@ -23,9 +23,9 @@ DNSCAT_REVISION="7"
 DNSCAT_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/dns-manager-complete-integration-20261021/catalogs/dns-8.7-RU-NOSOCIAL.conf"
 WATCHDOG_RESTART_COOLDOWN=300
 WATCHDOG_BACKEND="procd"
-WATCHDOG_CHECK_INTERVAL_DEFAULT=600
+WATCHDOG_CHECK_INTERVAL_DEFAULT=120
 WATCHDOG_FAIL_THRESHOLD=2
-WATCHDOG_REPAIR_COOLDOWN=1800
+WATCHDOG_REPAIR_COOLDOWN=300
 WATCHDOG_GUARD_INTERVAL=3600
 DNSMASQ_CACHE_SIZE=4096
 WATCHDOG_SERVICE_PATH="/etc/init.d/dns-watchdog"
