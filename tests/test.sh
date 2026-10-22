@@ -437,7 +437,7 @@ grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validat
 grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
 grep -q 'VERSION="3.74"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
-grep -q 'VERSION="1.105"' dns-manager-luci.sh || fail "LuCI version not bumped"
+grep -q 'VERSION="1.106"' dns-manager-luci.sh || fail "LuCI version not bumped"
 test_luci_url='https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/luci-dns-sections-tabs-20261022/dns-manager-luci.sh'
 [ "$(grep -Fc "$test_luci_url" dns-manager-luci.sh)" -eq 2 ] || fail "test LuCI updater URLs are not pinned to the test branch"
 ok "test LuCI version and update source are isolated from main"
@@ -1401,6 +1401,12 @@ grep -Fq 'job_write "$_jid" progress_total "$_final_total"' "$tmp/test_all_job.s
 grep -Fq 'job_write "$_jid" progress_ok "$_final_ok"' "$tmp/test_all_job.sh" || fail "LuCI full catalog job does not publish final progress_ok"
 grep -Fq 'job_write "$_jid" progress_fail "$_final_fail"' "$tmp/test_all_job.sh" || fail "LuCI full catalog job does not publish final progress_fail"
 ok "LuCI full catalog job publishes final progress before DONE"
+
+awk '/^job_json\(\) \{/,/^}/' "$tmp/backend.sh" > "$tmp/job_json.sh"
+for _field in progress_done progress_total progress_ok progress_fail; do
+    grep -Fq ",\\\"${_field}\\\":" "$tmp/job_json.sh" || fail "LuCI job RPC does not expose final $_field"
+done
+ok "LuCI job RPC exposes final progress counts"
 
 grep -q "profileSelected=String(st.profile||'none')!=='none'" "$tmp/common.js" || fail "LuCI does not detect missing DNS Manager profile"
 grep -q "Сначала выберите профиль DNS Manager" "$tmp/common.js" || fail "LuCI missing no-profile reason"
