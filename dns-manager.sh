@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.69"
+VERSION="3.70"
 # 3.38: clear the LuCI update flag after a successful CLI update.
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
@@ -41,6 +41,7 @@ LUCI_UPDATE_LAST_CHECK_FILE="$STATE_DIR/luci-update-last-check"
 LUCI_UPDATE_CHECK_MAX_AGE=43200
 AUTO_UPDATE_LOCK_DIR="$STATE_DIR/auto-update.lock"
 TEST_RESULTS_META="$STATE_DIR/dns-test-results.meta"
+WATCHDOG_CHECK_RESULTS="$STATE_DIR/dns-watchdog-check-results.conf"
 TEST_RESULTS_MAX_AGE=21600
 # Freshness window for DNS test results, by catalog category.
 # Values are stored in seconds and exposed in LuCI as hours.
@@ -6637,6 +6638,48 @@ watchdog_listener_snapshot_has_port() {
         *) return 1;;
     esac
 }
+watchdog_append_check_record() {
+    local _file _slot _id _cat _status _name
+    _file="$1"; _slot="$2"; _id="$3"; _cat="$4"; _status="$5"
+    case "$_slot" in 1|2|3|4|5|6|RU) ;; *) return 1;; esac
+    case "$_cat" in ''|*[!A-Za-z0-9_-]*) _cat=unknown;; esac
+    case "$_status" in OK|FAIL|NO_LISTENER|SKIPPED) ;; *) _status=SKIPPED;; esac
+    _name="$(dns_name "$_id" 2>/dev/null || true)"
+    [ -n "$_name" ] || _name="DNS $_slot"
+    printf 'record|%s|%s|%s|%s|%s\n' "$_slot" "$_id" "$_cat" "$_name" "$_status" >> "$_file"
+}
+watchdog_save_check_results() {
+    local _src _tmp _now _checked _failed _cat_count _category
+    _src="$1"
+    [ -f "$_src" ] || return 1
+    _checked="$(awk -F'|' '$1=="record" && $6!="SKIPPED" {n++} END {print n+0}' "$_src" 2>/dev/null)"
+    case "$_checked" in ''|*[!0-9]*) _checked=0;; esac
+    if [ "$_checked" -le 0 ]; then
+        rm -f "$_src" 2>/dev/null || true
+        return 0
+    fi
+    _failed="$(awk -F'|' '$1=="record" && ($6=="FAIL" || $6=="NO_LISTENER") {n++} END {print n+0}' "$_src" 2>/dev/null)"
+    case "$_failed" in ''|*[!0-9]*) _failed=0;; esac
+    _cat_count="$(awk -F'|' '$1=="record" && $6!="SKIPPED" {print $4}' "$_src" 2>/dev/null | sort -u | awk 'END {print NR+0}')"
+    case "$_cat_count" in ''|*[!0-9]*) _cat_count=0;; esac
+    case "$_cat_count" in
+        1) _category="$(awk -F'|' '$1=="record" && $6!="SKIPPED" {print $4}' "$_src" 2>/dev/null | sort -u | head -n1)" ;;
+        0) _category=unknown ;;
+        *) _category=mixed ;;
+    esac
+    _now="$(date +%s 2>/dev/null)"
+    case "$_now" in ''|*[!0-9]*) rm -f "$_src" 2>/dev/null || true; return 1;; esac
+    _tmp="${WATCHDOG_CHECK_RESULTS}.tmp.$"
+    rm -f "$_tmp" 2>/dev/null || true
+    {
+        printf 'timestamp=%s\nchecked=%s\nfailed=%s\ncategory=%s\n' "$_now" "$_checked" "$_failed" "$_category"
+        cat "$_src"
+    } > "$_tmp" || { rm -f "$_tmp" "$_src" 2>/dev/null || true; return 1; }
+    chmod 600 "$_tmp" 2>/dev/null || true
+    mv -f "$_tmp" "$WATCHDOG_CHECK_RESULTS" || { rm -f "$_tmp" "$_src" 2>/dev/null || true; return 1; }
+    rm -f "$_src" 2>/dev/null || true
+    return 0
+}
 watchdog_loop_repair_cooldown_ok() {
     local _slot _last _now
     _slot="$1"
@@ -6753,6 +6796,8 @@ watchdog_embedded_loop() {
         _threshold_slots=""
         _local_recover_slots=""
         _probe_rc=0
+        _wd_cycle_records="$STATE_DIR/dns-watchdog-cycle.$"
+        : > "$_wd_cycle_records" || { sleep "$_interval"; continue; }
 
         watchdog_refresh_listener_snapshot
 
@@ -6764,16 +6809,21 @@ watchdog_embedded_loop() {
             fi
             _current_slot_cat="$(dns_cat "$_id" 2>/dev/null || true)"
             if [ -z "$_current_slot_cat" ]; then
+                watchdog_append_check_record "$_wd_cycle_records" "$_slot" "$_id" unknown SKIPPED
                 watchdog_loop_reset_slot "$_slot"
                 continue
             fi
             eval "_port=\${PORT_${_slot}:-}"
             [ -n "$_port" ] || _port="$(hybrid_desired_port "$_slot")"
-            [ -n "$_port" ] || continue
+            if [ -z "$_port" ]; then
+                watchdog_append_check_record "$_wd_cycle_records" "$_slot" "$_id" "$_current_slot_cat" NO_LISTENER
+                continue
+            fi
             case "$_slot" in RU) _domain="yandex.ru" ;; *) _domain="example.com" ;; esac
 
             _checked=$((_checked+1))
             if ! watchdog_listener_snapshot_has_port "$_port"; then
+                watchdog_append_check_record "$_wd_cycle_records" "$_slot" "$_id" "$_current_slot_cat" NO_LISTENER
                 _missing=$((_missing+1))
                 eval "WD_FAIL_${_slot}=0"
                 eval "_mc=\${WD_MISSING_${_slot}:-0}"
@@ -6789,11 +6839,16 @@ watchdog_embedded_loop() {
             eval "WD_MISSING_${_slot}=0"
             local_dns_query_ok "$_port" "$_domain"
             _probe_rc=$?
-            [ "$_probe_rc" = 2 ] && break
+            if [ "$_probe_rc" = 2 ]; then
+                watchdog_append_check_record "$_wd_cycle_records" "$_slot" "$_id" "$_current_slot_cat" SKIPPED
+                break
+            fi
             if [ "$_probe_rc" = 0 ]; then
+                watchdog_append_check_record "$_wd_cycle_records" "$_slot" "$_id" "$_current_slot_cat" OK
                 watchdog_loop_reset_slot "$_slot"
                 continue
             fi
+            watchdog_append_check_record "$_wd_cycle_records" "$_slot" "$_id" "$_current_slot_cat" FAIL
 
             _failed=$((_failed+1))
             eval "_fc=\${WD_FAIL_${_slot}:-0}"
@@ -6804,7 +6859,12 @@ watchdog_embedded_loop() {
             fi
         done
 
-        [ "$_probe_rc" = 2 ] && { sleep "$_interval"; continue; }
+        if [ "$_probe_rc" = 2 ]; then
+            rm -f "$_wd_cycle_records" 2>/dev/null || true
+            sleep "$_interval"
+            continue
+        fi
+        watchdog_save_check_results "$_wd_cycle_records" || log_msg "Watchdog: не удалось сохранить результаты цикла проверки DNS."
         [ "$_checked" -gt 0 ] || { sleep "$_interval"; continue; }
 
         _watchdog_action=0
@@ -7406,8 +7466,13 @@ watchdog_slot_target_run() {
         release_mutation_lock
         return 0
     fi
+    if [ "$_target_cat" = custom ]; then
+        log_msg "Watchdog slot $_slot: пользовательский DoH $(dns_name "$_old_id") не отвечает; автоматическую замену не выполняю, URL оставляю без изменений."
+        release_mutation_lock
+        return 1
+    fi
 
-    _used="$TMP_DIR/watchdog-slot-used-$$"
+    _used="$TMP_DIR/watchdog-slot-used-$"
     _tried="$TMP_DIR/watchdog-slot-tried-$$"
     : > "$_used" || { release_mutation_lock; return 1; }
     : > "$_tried" || { rm -f "$_used"; release_mutation_lock; return 1; }
@@ -7654,7 +7719,7 @@ startup_update_check() {
 # STARTUP REQUIRED FUNCTION CHECK
 # ==========================================
 startup_required_function_check() {
-    for _fn in restore_hdp_package_defaults get_dnsmasq_section exact_list_has doh_selected_config_current validate_selected_slots ensure_dnsmasq_balancer detect_forced_dns_path refresh_device_dns_runtime clear_all_doh_for_apply rebuild_selected_hdp_sections reconcile_dnsmasq apply_ntp_ip_fallback luci_component_state luci_companion_check_update luci_companion_install luci_companion_remove luci_companion_update watchdog_embedded_loop watchdog_service_install_files watchdog_service_remove_files; do
+    for _fn in restore_hdp_package_defaults get_dnsmasq_section exact_list_has doh_selected_config_current validate_selected_slots ensure_dnsmasq_balancer detect_forced_dns_path refresh_device_dns_runtime clear_all_doh_for_apply rebuild_selected_hdp_sections reconcile_dnsmasq apply_ntp_ip_fallback luci_component_state luci_companion_check_update luci_companion_install luci_companion_remove luci_companion_update watchdog_embedded_loop watchdog_save_check_results watchdog_append_check_record watchdog_service_install_files watchdog_service_remove_files; do
         type "$_fn" >/dev/null 2>&1 || {
             printf "${C_RED}[✗] Критическая ошибка: отсутствует функция $_fn. Запуск остановлен до изменения настроек роутера.${C_NC}\n"
             return 1
