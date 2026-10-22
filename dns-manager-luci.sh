@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.91
+# Version: 1.92
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -32,7 +32,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/dns-manager-complete-integration-20261021/dns-manager-luci.sh"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.91"
+VERSION="1.92"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -506,7 +506,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/dns-manager-complete-integration-20261021/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="1.91"
+SELF_VERSION="1.92"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -3587,7 +3587,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI common module version: 1.91
+// DNS Manager LuCI common module version: 1.92
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -3767,9 +3767,9 @@ function withRpcError(fallback,err){
 function hasPing(v){ return /^\d+$/.test(String(v===undefined||v===null?'':v)); }
 function stateBadge(status,pingValue){
   var s=String(status||'').toUpperCase();
-  if(s==='RUNNING')return badge('dm-warn','проверяется');
+  if(s==='RUNNING')return badge('dm-warn','проверяется…');
   if(!s)return badge('dm-off','нет данных');
-  if(s==='OK'&&hasPing(pingValue))return badge('dm-ok','доступен');
+  if(s==='OK'&&hasPing(pingValue))return badge('dm-ok',ping(pingValue)+' · доступен');
   if(s==='OK'||s==='FAIL'||s==='FAILED'||s.indexOf('_FAIL')>0||s.indexOf('TIMEOUT')>=0||s.indexOf('ERROR')>=0||s.indexOf('HTTP_')===0||!hasPing(pingValue))return badge('dm-bad','недоступен');
   return badge('dm-off','нет данных');
 }
@@ -3874,11 +3874,12 @@ function injectStyle(root){
   '.dm-wrap .dm-component-dns:first-child{border-top:1px solid rgba(110,118,129,.17)}'+
   '.dm-wrap .dm-component-dns-slot{min-width:0;padding:4px 7px;border-radius:6px;background:rgba(110,118,129,.07);opacity:.8}'+
   '.dm-wrap .dm-doh-list{gap:7px}'+
-  '.dm-wrap .dm-doh-row{grid-template-columns:max-content minmax(0,1fr) max-content max-content max-content;gap:10px;padding:11px 12px;border:1px solid rgba(110,118,129,.17);border-radius:10px;background:rgba(110,118,129,.03)}'+
+  '.dm-wrap .dm-doh-row{grid-template-columns:max-content minmax(0,1fr) minmax(0,max-content) max-content;gap:10px;padding:11px 12px;border:1px solid rgba(110,118,129,.17);border-radius:10px;background:rgba(110,118,129,.03)}'+
   '.dm-wrap .dm-doh-row:first-child{border-top:1px solid rgba(110,118,129,.17)}'+
   '.dm-wrap .dm-doh-slot{padding:4px 7px;border-radius:6px;background:rgba(110,118,129,.07);font-size:11px;font-weight:700;opacity:.8}'+
   '.dm-wrap .dm-doh-name{font-size:12.5px;line-height:1.4}'+
   '.dm-wrap .dm-doh-actions .cbi-button{min-height:28px;border-radius:7px}'+
+  '.dm-wrap .dm-slot-row{grid-template-columns:42px minmax(0,1fr) max-content max-content max-content;gap:10px}'+
   '.dm-wrap .dm-slot-table>.dm-slot-entry:not(.dm-device-dns-entry){margin:8px 0 0;padding:12px;border:1px solid rgba(110,118,129,.18);border-radius:10px;background:rgba(110,118,129,.025)}'+
   '.dm-wrap .dm-slot-entry:not(.dm-device-dns-entry) .dm-slot-row{padding:3px 0;border:0}'+
   '.dm-wrap .dm-slot-entry:not(.dm-device-dns-entry) .dm-slot-domain-panel{padding:10px 0 0;margin-top:5px;border-top:1px solid rgba(110,118,129,.14)}'+
@@ -3922,7 +3923,7 @@ function injectStyle(root){
   'html.dm-theme-dark .dm-wrap .dm-catalog-item{background:#1c2128;border-color:rgba(255,255,255,.1);box-shadow:0 1px 4px rgba(0,0,0,.2)}'+
   'html.dm-theme-dark .dm-wrap .dm-page-nav{border-color:rgba(255,255,255,.1);box-shadow:0 2px 8px rgba(0,0,0,.2)}'+
   'html.dm-theme-dark .dm-wrap .dm-page-tab.active{border-color:rgba(255,255,255,.13)!important;border-bottom-color:#1c2128!important;background:#1c2128!important}'+
-  '@media(max-width:850px){.dm-wrap .dm-custom-dns-form{grid-template-columns:repeat(2,minmax(0,1fr))}.dm-wrap .dm-custom-dns-form>.cbi-button{grid-column:1/-1}.dm-wrap .dm-doh-row{grid-template-columns:minmax(0,1fr) max-content}.dm-wrap .dm-doh-slot{grid-column:1;grid-row:1}.dm-wrap .dm-doh-name{grid-column:1;grid-row:2;max-width:none}.dm-wrap .dm-doh-ping{grid-column:2;grid-row:1;justify-self:end}.dm-wrap .dm-doh-state{grid-column:2;grid-row:2;justify-self:end}.dm-wrap .dm-doh-actions{grid-column:1/-1;grid-row:3;justify-content:flex-start}.dm-wrap .dm-slot-row{grid-template-columns:40px minmax(0,1fr) auto}.dm-wrap .dm-slot-endpoint{display:none}.dm-wrap .dm-slot-state{display:none}.dm-wrap .dm-inline{grid-column:2/4;justify-content:flex-start}}'+
+  '@media(max-width:850px){.dm-wrap .dm-custom-dns-form{grid-template-columns:repeat(2,minmax(0,1fr))}.dm-wrap .dm-custom-dns-form>.cbi-button{grid-column:1/-1}.dm-wrap .dm-doh-row{grid-template-columns:minmax(0,1fr) max-content}.dm-wrap .dm-doh-slot{grid-column:1;grid-row:1}.dm-wrap .dm-doh-name{grid-column:1;grid-row:2;max-width:none}.dm-wrap .dm-doh-state{grid-column:2;grid-row:2;justify-self:end}.dm-wrap .dm-doh-actions{grid-column:1/-1;grid-row:3;justify-content:flex-start}.dm-wrap .dm-slot-row{grid-template-columns:40px minmax(0,1fr) auto}.dm-wrap .dm-slot-endpoint{display:none}.dm-wrap .dm-slot-state{grid-column:2/4;grid-row:2;display:block}.dm-wrap .dm-inline{grid-column:2/4;grid-row:3;justify-content:flex-start}}'+
   '@media(max-width:560px){.dm-wrap{gap:11px}.dm-wrap .dm-header{padding:11px 12px;border-radius:11px}.dm-wrap .dm-header h2{font-size:16px}.dm-wrap .dm-card{padding:13px;border-radius:12px}.dm-wrap .dm-card>h3{margin-bottom:11px;padding-bottom:9px;font-size:13.5px}.dm-wrap .dm-card>h3:before{height:14px}.dm-wrap .dm-grid2,.dm-wrap .dm-grid3,.dm-wrap .dm-grid4{gap:9px}.dm-wrap .dm-row{align-items:flex-start;gap:7px}.dm-wrap .dm-hint{padding:9px 10px}.dm-wrap .dm-doh-row{gap:7px;padding:9px}.dm-wrap .dm-catalog{grid-template-columns:minmax(0,1fr);gap:9px}.dm-wrap .dm-catalog-item{padding:12px}.dm-wrap .dm-custom-dns-form{grid-template-columns:minmax(0,1fr)}.dm-wrap .dm-custom-dns-form>.cbi-button{grid-column:auto;width:100%}.dm-wrap .dm-setting-line{align-items:flex-start}.dm-wrap .dm-setting-controls{justify-content:flex-start}.dm-wrap .dm-watchdog-row{grid-template-columns:minmax(0,1fr) 82px auto;gap:7px}.dm-wrap .dm-watchdog-row .dm-input{width:82px!important}.dm-wrap .dm-picker-item{align-items:flex-start;flex-direction:column}.dm-wrap .dm-picker-actions{width:100%}.dm-wrap .dm-picker-actions .cbi-button{flex:1 1 auto}.dm-wrap .dm-page-tabs{gap:3px}.dm-wrap .dm-page-tab{padding:7px 9px!important;font-size:11.5px!important}.dm-wrap .dm-page-nav{top:0}.dm-wrap .dm-page{margin-top:10px}}';
   root.appendChild(E('style',{},css));
 }
@@ -4124,24 +4125,13 @@ function renderOverview(root,st){
     var slot=d.slot?slotLabel(d.slot):'системный DNS';
     var name=d.name||'Пользовательский DNS';
     var ci=checkInfo(d.id,d);
-    var s=String(ci.status||'').toUpperCase();
-    var statusNode=s==='OK'
-      ? badge('dm-ok','работает')
-      : s==='RUNNING'
-        ? badge('dm-warn','проверяется…')
-        : s
-          ? badge('dm-bad','не работает')
-          : badge('dm-off','не проверено');
-    var meta=[];
-    if(s==='OK'||s==='RUNNING'||s==='FAIL'||s) {
-      if(s!=='RUNNING'&&hasPing(ci.ping))meta.push(E('span',{'class':'dm-component-dns-ping'},ping(ci.ping)));
-    }
+    var statusNode=stateBadge(ci.status,ci.ping);
     dnsItems.push(E('div',{'class':'dm-component-dns'},[
       E('div',{'class':'dm-component-dns-main'},[
         E('span',{'class':'dm-component-dns-slot'},slot),
         E('span',{'class':'dm-component-dns-name'},name)
       ]),
-      E('div',{'class':'dm-component-dns-meta'},[statusNode].concat(meta))
+      E('div',{'class':'dm-component-dns-meta'},[statusNode])
     ]));
   });
   if(!dnsItems.length)dnsItems.push(E('div',{'class':'dm-hint'},'DNS в слоты не назначены.'));
@@ -4214,20 +4204,13 @@ function resolverRows(st,root){
     var ci=checkInfo(d.id,d);
     var s=String(ci.status||'').toUpperCase();
     var running=s==='RUNNING';
-    var statusNode=running
-      ? badge('dm-warn','проверяется…')
-      : s==='OK'
-        ? badge('dm-ok','работает')
-        : s
-          ? badge('dm-bad','не работает')
-          : badge('dm-off','не проверено');
+    var statusNode=stateBadge(ci.status,ci.ping);
     var actions=[];
     if(d.slot){
       }
     out.push(E('div',{'class':'dm-doh-row'},[
       E('span',{'class':'dm-doh-slot'},slot),
       E('span',{'class':'dm-doh-name'},name),
-      E('span',{'class':'dm-doh-ping'},!running&&hasPing(ci.ping)?ping(ci.ping):'—'),
       E('span',{'class':'dm-doh-state'},statusNode),
       E('span',{'class':'dm-doh-actions'},actions)
     ]));
@@ -4239,8 +4222,7 @@ function resolverRows(st,root){
     out.push(E('div',{'class':'dm-doh-row'},[
       E('span',{'class':'dm-doh-slot'},slotLabel(d.slot||'—')),
       E('span',{'class':'dm-doh-name'},d.name||d.id),
-      E('span',{'class':'dm-doh-ping'},running?'—':ping(ci.ping)),
-      E('span',{'class':'dm-doh-state'},running?badge('dm-warn','проверяется…'):stateBadge(status,ci.ping)),
+      E('span',{'class':'dm-doh-state'},stateBadge(status,ci.ping)),
       E('span',{'class':'dm-doh-actions'},[])
     ]));
   });
@@ -4510,7 +4492,6 @@ function openSlotPicker(slot,root,requestedCategory,requestedOffset,preserveScro
         var pickerChecking=!!(state.slotPickerCheck&&String(state.slotPickerCheck.id)===String(x.id)&&String(state.slotPickerCheck.slot)===String(slot));
         var checking=pickerChecking||String(ci.status||'').toUpperCase()==='RUNNING';
         var status=checking?badge('dm-warn','проверяется…'):stateBadge(ci.status,ci.ping);
-        var pingNode=!pickerChecking&&ci.status!=='RUNNING'&&hasPing(ci.ping)?ping(ci.ping):'—';
         var currentMark=x.name===cur?badge('dm-ok','выбран'):null;
         var assignedSlot='',assignedPort='';
         (st.slots||[]).forEach(function(sd){
@@ -4544,7 +4525,6 @@ function openSlotPicker(slot,root,requestedCategory,requestedOffset,preserveScro
         var mainChildren=[
           E('div',{'class':'dm-picker-name'},x.name||x.id),
           E('div',{'class':'dm-picker-meta'},[
-            E('span',{},pingNode),
             status,
             occupiedMark||currentMark||E('span',{})
           ])
@@ -4719,7 +4699,6 @@ function renderSlots(root,st){
       E('span',{'class':'dm-slot-id'},d.slot),
       E('span',{'class':'dm-slot-name'},assigned?(d.name||d.id):'Не назначен'),
       E('span',{'class':'dm-slot-endpoint'},d.port?'127.0.0.1:'+d.port:'—'),
-      E('span',{'class':'dm-slot-ping'},running?'—':(assigned?ping(shownPing):'—')),
       E('span',{'class':'dm-slot-state'},running?badge('dm-warn','проверяется…'):(assigned?stateBadge(shownStatus,shownPing):badge('dm-off','не назначен'))),
       E('span',{'class':'dm-inline'},[
         btn('Выбрать','cbi-button-neutral',function(){openSlotPicker(d.slot,root);},{disabled:running||!!state.busy||!!state.jobRunning}),
@@ -5299,13 +5278,12 @@ function renderCatalogBody(root,data){
   var g=E('div',{'class':'dm-catalog'});
   (data.servers||[]).forEach(function(d){
     var ci=checkInfo(d.id,d);
-    var statusText=ci.status==='RUNNING'?'проверяется':stateBadge(ci.status,ci.ping);
+    var statusText=stateBadge(ci.status,ci.ping);
     g.appendChild(E('div',{'class':'dm-card dm-catalog-item'+(isUserDnsRecord(d)?' dm-catalog-item-custom':'')},[
       E('h4',{},d.name||d.id),
       E('div',{'class':'dm-meta'},catName(d.category)),
       E('div',{'class':'dm-row'},[
-        E('span',{'class':'dm-slot-ping'},ci.status==='RUNNING'?badge('dm-warn','проверяется'):ping(ci.ping)),
-        E('span',{'class':'dm-slot-state'},typeof statusText==='string'?statusText:statusText),
+        E('span',{'class':'dm-slot-state'},statusText),
         E('span',{'class':'dm-inline'},[
           btn(ci.status==='RUNNING'?'Проверяю…':'Проверить','cbi-button-neutral',function(){testOne(d.id,root,'catalog');},{disabled:ci.status==='RUNNING'||!!state.busy||!!state.jobRunning})
         ])
@@ -5677,15 +5655,15 @@ function testOne(id,root,origin,done){
   state.checking[id]={status:'RUNNING',ping:'',started:Date.now()};
   render(root,window.dmState||{});
   callTestOne(id).then(function(r){
-    if(r&&r.ok)pollJob(root,r.job,{mode:'one',dns_id:id,origin:origin||''},function(ns){
-      if(done){
+    if(r&&r.ok){
+      var onDone=done?function(ns){
         // The modal picker callback replaces only the modal. Re-render the page
         // first so controls disabled by jobRunning are enabled without F5.
         render(root,ns||window.dmState||{});
         done(ns||window.dmState||{});
-      }
-    });
-    else{
+      }:undefined;
+      pollJob(root,r.job,{mode:'one',dns_id:id,origin:origin||''},onDone);
+    }else{
       delete state.checking[id];
       state.jobRunning=false;
       refresh(root,true);
@@ -6087,7 +6065,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 1.91
+// DNS Manager LuCI version: 1.92
 return view.extend({
   load: DM.load,
   render: DM.render,
