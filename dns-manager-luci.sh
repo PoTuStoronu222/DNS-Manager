@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.97
+# Version: 1.98
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -32,7 +32,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/dns-manager-complete-integration-20261021/dns-manager-luci.sh"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.97"
+VERSION="1.98"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -506,7 +506,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/dns-manager-complete-integration-20261021/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="1.97"
+SELF_VERSION="1.98"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -3606,7 +3606,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI common module version: 1.97
+// DNS Manager LuCI common module version: 1.98
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -5090,7 +5090,7 @@ function watchdogCard(root,st){
   var feedback=settingFeedback('','watchdog_batch')||E('span',{'class':'dm-setting-feedback'});
   return E('div',{'class':'dm-watchdog-card'},[
     E('div',{'class':'dm-section-title'},'Контроль текущих DNS'),
-    E('div',{'class':'dm-setting-desc'},'Быстрый запрос к каждому назначенному DNS раз в 2 минуты. Профиль DNS не требуется. Автозамена работает отдельно и выбирает только сервер той же категории.'),
+    E('div',{'class':'dm-setting-desc'},'Быстрый запрос к каждому назначенному DNS раз в 2 минуты. Профиль не требуется. Автозамена работает отдельно и выбирает только сервер той же категории.'),
     toggleRow('Проверка DNS','Периодически проверяет доступность выбранных DoH-серверов, не меняя их.',en,'watchdog',false),
     toggleRow('Автозамена DNS','Меняет только DNS, который не ответил несколько раз подряд. Пользовательские DoH автоматически не заменяются.',auto,'watchdog_autoreplace',!en),
     E('div',{'class':'dm-watchdog-actions-row'},[
@@ -6157,7 +6157,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 1.97
+// DNS Manager LuCI version: 1.98
 return view.extend({
   load: DM.load,
   render: DM.render,
