@@ -2303,7 +2303,6 @@ status_json() {
     _watchdog_service_running=0; watchdog_service_running && _watchdog_service_running=1 || true
     _watchdog_loop_running=0; watchdog_loop_running && _watchdog_loop_running=1 || true
     printf ',\"watchdog_interval\":%s,\"watchdog_service\":%s,\"watchdog_service_enabled\":%s,\"watchdog_loop\":%s,\"watchdog_fail_threshold\":%s,\"watchdog_repair_cooldown\":%s,\"watchdog_max_restarts\":%s,\"watchdog_guard_interval\":%s,\"watchdog_autoreplace\":%s' "$_watchdog_interval" "$_watchdog_service_running" "$_watchdog_service_enabled" "$_watchdog_loop_running" "$_watchdog_threshold" "$_watchdog_repair_cooldown" "$_watchdog_max_restarts" "$_watchdog_guard_interval" "$_watchdog_autoreplace"
-    printf ',\"watchdog_autoreplace\":%s' "$_watchdog_autoreplace"
      printf ',"watchdog_last_check":%s,"watchdog_last_checked":%s,"watchdog_last_failed":%s,"watchdog_last_category":' "$_watchdog_last_check" "$_watchdog_last_checked" "$_watchdog_last_failed"
      json_quote "$_watchdog_last_category"
      printf ',"watchdog_last_records":['
