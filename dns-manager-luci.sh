@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.89
+# Version: 1.90
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -32,7 +32,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/dns-manager-complete-integration-20261021/dns-manager-luci.sh"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.89"
+VERSION="1.90"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -506,7 +506,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/dns-manager-complete-integration-20261021/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="1.89"
+SELF_VERSION="1.90"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -3587,7 +3587,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI common module version: 1.89
+// DNS Manager LuCI common module version: 1.90
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -5587,7 +5587,14 @@ function testOne(id,root,origin,done){
   state.checking[id]={status:'RUNNING',ping:'',started:Date.now()};
   render(root,window.dmState||{});
   callTestOne(id).then(function(r){
-    if(r&&r.ok)pollJob(root,r.job,{mode:'one',dns_id:id,origin:origin||''},done);
+    if(r&&r.ok)pollJob(root,r.job,{mode:'one',dns_id:id,origin:origin||''},function(ns){
+      if(done){
+        // The modal picker callback replaces only the modal. Re-render the page
+        // first so controls disabled by jobRunning are enabled without F5.
+        render(root,ns||window.dmState||{});
+        done(ns||window.dmState||{});
+      }
+    });
     else{
       delete state.checking[id];
       state.jobRunning=false;
@@ -5601,7 +5608,6 @@ function testOne(id,root,origin,done){
     if(done)done(window.dmState||{});
   });
 }
-
 function testCurrent(root){
   if(state.jobRunning||state.busy)return;
   var targets=(window.dmState&&window.dmState.doh_instances||[]).filter(function(d){
@@ -5991,7 +5997,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 1.89
+// DNS Manager LuCI version: 1.90
 return view.extend({
   load: DM.load,
   render: DM.render,
