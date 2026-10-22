@@ -435,6 +435,16 @@ EOF_DEVICE_DNS_SERVICE
     "order": 20,
     "action": { "type": "view", "path": "dns-manager/doh" }
   },
+  "admin/services/dns-manager/slots": {
+    "title": "DNS по слотам",
+    "order": 25,
+    "action": { "type": "view", "path": "dns-manager/slots" }
+  },
+  "admin/services/dns-manager/devices": {
+    "title": "Устройства LAN",
+    "order": 27,
+    "action": { "type": "view", "path": "dns-manager/devices" }
+  },
   "admin/services/dns-manager/network": {
     "title": "Сеть",
     "order": 30,
@@ -3999,7 +4009,9 @@ function renderHeader(root,st){
 function setActiveTab(root,name){
   var groups={
     dashboard:['overview','test-inline'],
-    doh:['doh','slots','profiles'],
+    doh:['doh','profiles'],
+    slots:['slots'],
+    devices:['devices'],
     network:['network'],
     time:['time'],
     catalog:['catalog'],
@@ -4008,7 +4020,7 @@ function setActiveTab(root,name){
   var nextTab=groups[name]?name:'dashboard';
   if(state.activeTab!==nextTab)state.lastAction=null;
   state.activeTab=nextTab;
-  ['overview','doh','slots','profiles','network','time','job','catalog','log','test-inline'].forEach(function(id){
+  ['overview','doh','slots','devices','profiles','network','time','job','catalog','log','test-inline'].forEach(function(id){
     var panel=root.querySelector('#dm-'+id);
     if(panel) panel.style.display='none';
   });
@@ -4774,7 +4786,7 @@ function renderProfiles(root,st){
 }
 
 function renderSlots(root,st){
-  var e=root.querySelector('#dm-slots');if(!e)return;e.innerHTML='';var rows=[];var deviceChildren=[];
+  var e=root.querySelector('#dm-slots');if(!e)return;e.innerHTML='';var rows=[];
   (st.slots||[]).forEach(function(d){
     var assigned=!!d.id;
     var checking=assigned&&state.checking&&state.checking[d.id];
@@ -4826,6 +4838,10 @@ function renderSlots(root,st){
   if(state.pageNotice.slots)sch.push(E('div',{'class':'dm-inline-msg info'},state.pageNotice.slots));
   e.appendChild(card('DNS по слотам и маршруты доменов',sch));
 
+}
+
+function renderDeviceDns(root,st){
+  var e=root.querySelector('#dm-devices');if(!e)return;e.innerHTML='';var deviceChildren=[];
   var inventory=window.dmLanDevices||{};
   var available={};
   var slotNames={};
@@ -4925,7 +4941,7 @@ function renderSlots(root,st){
       if(state.lanDevicesLoading||state.busy||state.jobRunning)return;
       state.lanDevicesLoading=true;
       state.lanDevicesMessage='Обновляю список устройств LAN… Пожалуйста, подождите.';
-      renderSlots(root,window.dmState||{});
+      renderDeviceDns(root,window.dmState||{});
       callLanDevices().then(function(r){
         window.dmLanDevices=r||{ok:false,devices:[]};
         state.lanDevicesLoading=false;
@@ -4937,16 +4953,17 @@ function renderSlots(root,st){
         }else{
           state.lanDevicesMessage=(window.dmLanDevices.error||'Не удалось получить список устройств LAN.');
         }
-        renderSlots(root,window.dmState||{});
+        renderDeviceDns(root,window.dmState||{});
       }).catch(function(err){
         state.lanDevicesLoading=false;
         state.lanDevicesMessage=withRpcError('Не удалось обновить список устройств.',err);
-        renderSlots(root,window.dmState||{});
+        renderDeviceDns(root,window.dmState||{});
       });
     },{disabled:!!state.lanDevicesLoading||!!state.busy||!!state.jobRunning})
   ]));
   e.appendChild(card('Устройства LAN — привязка к DoH',deviceChildren));
 }
+
 function settingCard(root,x,st){
   var en=yes(st[x[0]]),busy=state.busySetting===x[0],feedback=settingFeedback(x[1],x[0]),sv=settingStateView(st,x[0]);
   var active=(settingModuleState(st,x[0])===1)||((settingModuleState(st,x[0])===-1)&&en);
@@ -5416,8 +5433,13 @@ function render(root,st){
   switch(state.activeTab){
     case 'doh':
       renderDoH(root,st);
-      renderSlots(root,st);
       renderProfiles(root,st);
+      break;
+    case 'slots':
+      renderSlots(root,st);
+      break;
+    case 'devices':
+      renderDeviceDns(root,st);
       break;
     case 'network':
       renderNetwork(root,st);
@@ -5440,7 +5462,14 @@ function render(root,st){
 }
 function routeStatusCall(){
   switch(currentRoute()){
-    case 'doh': return Promise.all([callDohStatus(),callLanDevices().catch(function(){return {ok:false,devices:[]};})]).then(function(v){window.dmLanDevices=v[1]||{};return v[0]||{};});
+    case 'doh':
+    case 'slots':
+      return callDohStatus();
+    case 'devices':
+      return Promise.all([
+        callDohStatus(),
+        callLanDevices().catch(function(){return {ok:false,devices:[]};})
+      ]).then(function(v){window.dmLanDevices=v[1]||{};return v[0]||{};});
     case 'network': return callNetworkStatus();
     case 'time': return callTimeStatus();
     case 'catalog':
@@ -6125,7 +6154,16 @@ return baseclass.extend({
   render:function(st){
     var root=E('div',{'class':'dm-wrap'});
     var route=currentRoute();
-    var ids={dashboard:['dm-header','dm-overview'],doh:['dm-header','dm-doh','dm-slots','dm-profiles'],network:['dm-header','dm-network'],time:['dm-header','dm-time'],catalog:['dm-header','dm-catalog'],log:['dm-header','dm-log']}[route]||['dm-header','dm-overview'];
+    var ids={
+      dashboard:['dm-header','dm-overview'],
+      doh:['dm-header','dm-doh','dm-profiles'],
+      slots:['dm-header','dm-slots'],
+      devices:['dm-header','dm-devices'],
+      network:['dm-header','dm-network'],
+      time:['dm-header','dm-time'],
+      catalog:['dm-header','dm-catalog'],
+      log:['dm-header','dm-log']
+    }[route]||['dm-header','dm-overview'];
     ids.forEach(function(id){root.appendChild(E('section',{'id':id}));});
     injectStyle(root);window.dmState=st||{};state.activeTab=route;window.dmCurrentRoot=root;
     render(root,st||{});
@@ -6151,7 +6189,7 @@ EOF_COMMON
     }
 
     rm -f "$VIEW_DIR/overview.js" 2>/dev/null || true
-    for _page in dashboard doh network time catalog log; do
+    for _page in dashboard doh slots devices network time catalog log; do
         _page_stage="/tmp/dns-manager-luci-${_page}.$$"
         rm -f "$_page_stage" 2>/dev/null || true
         cat > "${_page_stage}" <<'EOF_PAGE'
