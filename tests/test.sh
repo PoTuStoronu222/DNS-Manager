@@ -425,9 +425,9 @@ grep -Fq "disabled:!!state.busy||!!state.jobRunning||unavailable||checking" dns-
 grep -q "'gaming','Игровые DNS'" dns-manager-luci.sh || fail "gaming catalog label missing in LuCI"
 grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validation missing gaming category"
 grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
-grep -q 'VERSION="3.70"' dns-manager.sh || fail "manager version not bumped"
+grep -q 'VERSION="3.71"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
-grep -q 'VERSION="1.95"' dns-manager-luci.sh || fail "LuCI version not bumped"
+grep -q 'VERSION="1.96"' dns-manager-luci.sh || fail "LuCI version not bumped"
 grep -Fq 'return m ~ /^[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]$/' dns-manager-luci.sh || fail "LAN inventory merge rejects valid six-octet MAC addresses"
 grep -Fq 'NF >= 2 && $2 ~ /^[1-6](,[1-6])*$/ &&' dns-manager-luci.sh || fail "saved LAN device assignments do not require valid DNS slot lists"
 grep -Fq "state.lanDevicesMessage='Обновляю список устройств LAN… Пожалуйста, подождите.'" dns-manager-luci.sh || fail "LAN refresh does not display a waiting message"
@@ -642,8 +642,8 @@ view_luci="$(sed -n 's|^// DNS Manager LuCI common module version:[[:space:]]*||
 dashboard_view_luci="$(sed -n 's|^// DNS Manager LuCI version: *||p' dns-manager-luci.sh | head -n1)"
 [ "$top_luci" = "$dashboard_view_luci" ] || fail "dashboard view version marker is stale"
 ok "LuCI version markers synchronized ($top_luci)"
-grep -Fq 'VERSION="3.70"' dns-manager.sh || fail "DNS Manager version marker is not 3.70"
-ok "DNS Manager version marker synchronized (3.70)"
+grep -Fq 'VERSION="3.71"' dns-manager.sh || fail "DNS Manager version marker is not 3.71"
+ok "DNS Manager version marker synchronized (3.71)"
 grep -Fq "assignment.appendChild(btn('Удалить'" dns-manager-luci.sh || fail "Custom DNS delete button is not aligned with the assignment action"
 grep -Fq ".dm-catalog-item-custom{grid-column:auto}" dns-manager-luci.sh || fail "Custom DNS card is wider than a stock catalog card"
 grep -Fq ".dm-catalog-controls-custom .dm-assign-inline select{height:30px;min-width:0;width:auto;max-width:100%;flex:1 1 160px" dns-manager-luci.sh || fail "Custom DNS actions do not have a responsive inline layout"
@@ -1272,6 +1272,17 @@ if grep -q 'DNS_PROFILE="custom"' "$tmp/cli_select_slot.sh"; then
     fail "CLI slot change still forces custom profile"
 fi
 # Background repair follows each selected DNS resolver's own category.
+# The checker and auto-replace toggles are independent; candidate discovery has no fixed cap.
+awk '/^watchdog_embedded_loop\(\) \{/,/^run_watchdog\(\) \{/' dns-manager.sh > "$tmp/watchdog_embedded_loop.sh"
+grep -Fq 'if [ "${WATCHDOG_AUTOREPLACE:-0}" = 1 ]; then' "$tmp/watchdog_embedded_loop.sh" || fail "periodic replacement is not gated by auto-replace toggle"
+grep -Fq ': "${WATCHDOG_AUTOREPLACE:=${WATCHDOG_ENABLED:-0}}"' dns-manager.sh || fail "legacy config has no compatible auto-replace default"
+if grep -Fq 'WATCHDOG_MAX_CANDIDATES' dns-manager.sh dns-manager-luci.sh; then
+    fail "DNS replacement retains a fixed candidate cap"
+fi
+if grep -Fq '_max_attempts' dns-manager.sh; then
+    fail "per-slot DNS replacement retains a fixed attempt cap"
+fi
+
 awk '/^watchdog_slot_target_run\(\) \{/,/^watchdog_service_recover_run\(\) \{/' dns-manager.sh > "$tmp/watchdog_slot_target_run.sh"
 grep -Fq 'watchdog_pick_replacement "$_slot" "$_used" "$_tried" 0 "$_target_cat"' "$tmp/watchdog_slot_target_run.sh" || fail "watchdog does not choose a replacement from the current DNS category"
 if grep -Fq 'watchdog_scope_category' "$tmp/watchdog_slot_target_run.sh"; then
@@ -1650,15 +1661,14 @@ ok "LuCI persists profile operation state across page reloads"
 ok "LuCI does not require persisted DNS job history for global status banners"
 
 # Watchdog tuning is persisted and exposed as one atomic LuCI save operation.
-for _wd_key in WATCHDOG_INTERVAL WATCHDOG_FAIL_THRESHOLD WATCHDOG_REPAIR_COOLDOWN WATCHDOG_MAX_REPAIRS WATCHDOG_MAX_RESTARTS WATCHDOG_MAX_CANDIDATES WATCHDOG_GUARD_INTERVAL; do
+for _wd_key in WATCHDOG_INTERVAL WATCHDOG_FAIL_THRESHOLD WATCHDOG_REPAIR_COOLDOWN WATCHDOG_MAX_RESTARTS WATCHDOG_GUARD_INTERVAL WATCHDOG_AUTOREPLACE; do
     grep -q "^${_wd_key}=" dns-manager.sh || fail "watchdog config variable missing: $_wd_key"
 done
 grep -Fq 'WATCHDOG_FAIL_THRESHOLD=$(shell_quote "$WATCHDOG_FAIL_THRESHOLD")' dns-manager.sh || fail "watchdog threshold is not persisted"
 grep -Fq 'WATCHDOG_REPAIR_COOLDOWN=$(shell_quote "$WATCHDOG_REPAIR_COOLDOWN")' dns-manager.sh || fail "watchdog repair cooldown is not persisted"
-grep -Fq 'WATCHDOG_MAX_REPAIRS=$(shell_quote "$WATCHDOG_MAX_REPAIRS")' dns-manager.sh || fail "watchdog max repairs is not persisted"
 grep -Fq 'WATCHDOG_MAX_RESTARTS=$(shell_quote "$WATCHDOG_MAX_RESTARTS")' dns-manager.sh || fail "watchdog max restarts is not persisted"
-grep -Fq 'WATCHDOG_MAX_CANDIDATES=$(shell_quote "$WATCHDOG_MAX_CANDIDATES")' dns-manager.sh || fail "watchdog max candidates is not persisted"
 grep -Fq 'WATCHDOG_GUARD_INTERVAL=$(shell_quote "$WATCHDOG_GUARD_INTERVAL")' dns-manager.sh || fail "watchdog guard interval is not persisted"
+grep -Fq 'WATCHDOG_AUTOREPLACE=$(shell_quote "$WATCHDOG_AUTOREPLACE")' dns-manager.sh || fail "watchdog autoreplace is not persisted"
 
 # Saved config values must round-trip as literal data, including shell metacharacters.
 _quote_func="$(sed -n '/^shell_quote() {/,/^}/p' dns-manager.sh)"
@@ -1851,10 +1861,10 @@ grep -q 'save_config' "$tmp/backend.sh" || fail "watchdog batch setter save path
 grep -q 'watchdog_service_start_enable' "$tmp/backend.sh" || fail "watchdog batch setter does not restart procd after apply"
 grep -q 'watchdog_cron_remove_owned_block' "$tmp/backend.sh" || fail "watchdog setter does not handle manager-owned cron watchdog"
 grep -q 'watchdog_restore_service_state' "$tmp/backend.sh" || fail "watchdog rollback helper missing"
-grep -Fq 'watchdog_apply_values "$_interval" "$_threshold" "$_repair_cooldown" "$_max_repairs" "$_max_restarts" "$_max_candidates" "$_guard_interval"' "$tmp/backend.sh" || fail "batch watchdog values are not forwarded together"
+grep -Fq 'watchdog_apply_values "$_interval" "$_threshold" "$_repair_cooldown" "$_max_restarts" "$_guard_interval"' "$tmp/backend.sh" || fail "batch watchdog values are not forwarded together"
 
 grep -q "method:'set_watchdog_settings'" "$tmp/common.js" || fail "LuCI does not use the atomic watchdog RPC"
-grep -Fq "params:['interval','threshold','repair_cooldown','max_repairs','max_restarts','max_candidates','guard_interval']" "$tmp/common.js" || fail "atomic watchdog RPC parameter order mismatch"
+grep -Fq "params:['interval','threshold','repair_cooldown','max_restarts','guard_interval']" "$tmp/common.js" || fail "atomic watchdog RPC parameter order mismatch"
 if grep -q 'var callWatchdogSetting = ' "$tmp/common.js"; then
     fail "LuCI still defines the per-setting watchdog RPC"
 fi
@@ -1863,8 +1873,8 @@ save_count="$(grep -o 'Сохранить' "$tmp/watchdog_card.js" | wc -l | tr 
 [ "$save_count" = 1 ] || fail "watchdog must have exactly one Save label"
 grep -q 'Сохранить настройки' "$tmp/watchdog_card.js" || fail "common watchdog save button missing"
 grep -q 'Дополнительные параметры' "$tmp/watchdog_card.js" || fail "advanced watchdog section missing"
-grep -q 'Настройки контроля' "$tmp/watchdog_card.js" || fail "watchdog settings section title missing"
-for _wd_label in 'Как часто проверять DNS' 'Сколько проверок подряд считать сбоем' 'Пауза между заменами DNS' 'Сколько DNS проверить при поиске замены'; do
+grep -q 'Контроль текущих DNS' "$tmp/watchdog_card.js" || fail "watchdog settings section title missing"
+for _wd_label in 'Как часто проверять DNS' 'Ошибок подряд до замены' 'Пауза между заменами одного DNS' 'Проверка DNS' 'Автозамена DNS' 'Проверить сейчас'; do
     grep -q "$_wd_label" "$tmp/watchdog_card.js" || fail "LuCI watchdog control missing: $_wd_label"
 done
 if grep -q 'Сколько DNS можно заменить за раз' "$tmp/watchdog_card.js"; then
@@ -1874,8 +1884,8 @@ if grep -q 'Рестартов https-dns-proxy\|Тяжёлая сверка' "$t
     fail "technical watchdog labels still exposed in LuCI"
 fi
 # Numeric watchdog fields must use a single-escaped digit regex; double-escaped \\d rejects normal values.
-grep -Fq '(x[6]?true:/^\d+$/.test(raw))' "$tmp/watchdog_card.js" || fail "watchdog numeric validation regex is missing"
-if grep -Fq '(x[6]?true:/^\\d+$/.test(raw))' "$tmp/watchdog_card.js"; then
+grep -Fq '(x[6]||/^\d+$/.test(raw))' "$tmp/watchdog_card.js" || fail "watchdog numeric validation regex is missing"
+if grep -Fq '(x[6]||/^\\d+$/.test(raw))' "$tmp/watchdog_card.js"; then
     fail "watchdog numeric validation regex is double-escaped"
 fi
 ok "watchdog numeric field validation accepts normal integer values"
