@@ -1875,7 +1875,6 @@ network_status_json() {
     printf ',"watchdog_backend":'; json_quote "$_watchdog_backend"
     printf ',"watchdog_interval":%s,"watchdog_service":%s,"watchdog_service_enabled":%s,"watchdog_loop":%s' "$_watchdog_interval" "$_wr" "$_ws" "$_wl"
     printf ',\"watchdog_fail_threshold\":%s,\"watchdog_repair_cooldown\":%s,\"watchdog_max_restarts\":%s,\"watchdog_guard_interval\":%s' "$_watchdog_threshold" "$_watchdog_repair_cooldown" "$_watchdog_max_restarts" "$_watchdog_guard_interval"
-    printf ',\"watchdog_autoreplace\":%s' "$_watchdog_autoreplace"
     printf ',"dnsmasq_perf_state":%s}' "$_cache_state"
 }
 
@@ -3489,7 +3488,14 @@ run_action() {
                     if [ "$_enabled" = 1 ] && [ "${WATCHDOG_ENABLED:-0}" != 1 ]; then
                         _rc=2
                     else
-                        SILENT_APPLY=1 watchdog_apply_autoreplace_toggle "$_enabled" >/dev/null 2>&1 || _rc=$?
+                        _old_autoreplace="$(cfg_get WATCHDOG_AUTOREPLACE)"
+                        case "$_old_autoreplace" in 0|1) ;; *) _old_autoreplace="${WATCHDOG_ENABLED:-0}";; esac
+                        WATCHDOG_AUTOREPLACE="$_enabled"
+                        if ! save_config >/dev/null 2>&1 || [ "$(cfg_get WATCHDOG_AUTOREPLACE)" != "$_enabled" ]; then
+                            WATCHDOG_AUTOREPLACE="$_old_autoreplace"
+                            save_config >/dev/null 2>&1 || true
+                            _rc=1
+                        fi
                     fi
                     ;;
                 force)
