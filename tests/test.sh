@@ -1330,6 +1330,20 @@ if grep -Fq 'watchdog_scope_category' "$tmp/run_watchdog.sh"; then
     fail "one-shot Watchdog still requires a DNS profile"
 fi
 ok "one-shot and background Watchdog share the same safe per-slot repair path"
+
+# A stalled local proxy is restarted by its slot port before optional DNS replacement.
+awk '/^watchdog_slot_instance_pid\(\) \{/,/^watchdog_embedded_integrity_guard\(\) \{/' dns-manager.sh > "$tmp/watchdog_slot_restart.sh"
+grep -Fq 'kill -TERM "$_pid"' "$tmp/watchdog_slot_restart.sh" || fail "stalled slot recovery does not terminate only the matching proxy process"
+grep -Fq '*" -p $_port "*)' "$tmp/watchdog_slot_restart.sh" || fail "stalled slot recovery does not match the selected slot port"
+grep -Fq 'local_dns_query_ok "$_port" "$_domain"' "$tmp/watchdog_slot_restart.sh" || fail "stalled slot recovery does not verify DNS after respawn"
+if grep -Fq '/etc/init.d/https-dns-proxy restart' "$tmp/watchdog_slot_restart.sh"; then
+    fail "stalled slot recovery restarts every DoH slot instead of the affected instance"
+fi
+grep -Fq 'if watchdog_restart_slot_instance "$_trigger"; then' "$tmp/watchdog_embedded_loop.sh" || fail "background watchdog does not try local slot recovery first"
+grep -Fq 'replace the selected DNS only if recovery fails' "$tmp/watchdog_embedded_loop.sh" || fail "DNS replacement is not gated by failed slot recovery"
+grep -Fq '$6 == "FAIL" { $6 = "OK" }' "$tmp/watchdog_embedded_loop.sh" || fail "successful slot recovery does not clear the recorded false failure"
+ok "stalled DoH slot is restarted in isolation before optional DNS replacement"
+
 # All watchdog paths must use the same DNS health checks as the verified Manager paths.
 awk '/^watchdog_embedded_loop\(\) \{/,/^# ==========================================/' dns-manager.sh > "$tmp/watchdog_embedded_loop.sh"
 grep -q 'local_dns_query_ok "\$_port" "\$_domain"' "$tmp/watchdog_embedded_loop.sh" || fail "procd watchdog does not use the canonical local DNS check"
