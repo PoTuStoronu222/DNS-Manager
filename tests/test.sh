@@ -319,12 +319,11 @@ grep -Fq '/tmp/dhcp.leases' "$tmp/backend.sh" || fail "LAN inventory does not in
 grep -Fq '/proc/net/arp' "$tmp/backend.sh" || fail "LAN inventory does not include ARP neighbours"
 grep -Fq 'ip -6 neigh show dev' "$tmp/backend.sh" || fail "LAN inventory does not include IPv6 neighbours"
 grep -Fq 'Список объединяет DHCP-аренды, IPv4 ARP, IPv6 NDP и статические DHCP-записи.' "$tmp/common.js" || fail "LAN device inventory scope is not explained"
-grep -Fq 'Общий выбор DNS применяется ко всем LAN-устройствам без индивидуальной привязки' "$tmp/common.js" || fail "LAN-wide DNS default selector is missing from the LAN inventory"
-grep -Fq 'Включить общий DoH для LAN' "$tmp/common.js" || fail "LAN-wide DoH master switch is missing"
-grep -Fq "defaultToggle.addEventListener('change',updateDefaultControls)" "$tmp/common.js" || fail "LAN-wide DoH master switch does not update slot controls"
-grep -Fq "var defaultToggle=controls.parentNode&&controls.parentNode.querySelector?controls.parentNode.querySelector('input.dm-device-dns-default-enabled'):null;" "$tmp/common.js" || fail "saving does not read the LAN-wide DoH master switch"
-grep -Fq 'Сохранить настройки общего DoH' "$tmp/common.js" || fail "LAN-wide DoH save action is missing"
-ok "LuCI exposes a clearly read-only LAN device inventory"
+grep -Fq 'Индивидуальная привязка не задана; используется обычный DNS-маршрут роутера.' "$tmp/common.js" || fail "unassigned devices are not described as using normal router DNS"
+grep -Fq "method:'set_device_dns', params:['mac','slots']" dns-manager-luci.sh || fail "per-device DNS RPC has unnecessary parameters"
+if grep -Fq 'Общий выбор DNS применяется ко всем LAN-устройствам' "$tmp/common.js"; then fail "global DNS selector remains in LuCI"; fi
+if grep -Fq 'Включить общий DoH для LAN' "$tmp/common.js"; then fail "global DoH switch remains in LuCI"; fi
+ok "LuCI keeps only individual DNS binding and normal DNS for unassigned devices"
 awk '/^function routeStatusCall\(\)/,/^}/' "$tmp/common.js" > "$tmp/route_status_call.js"
 awk "/case 'catalog':/,/case 'log':/" "$tmp/route_status_call.js" > "$tmp/catalog_route_status.js"
 grep -Fq 'callDohStatus()' "$tmp/catalog_route_status.js" || fail "LuCI catalog refresh does not reload live DNS slots"
@@ -435,6 +434,23 @@ grep -Fq "state.lanDevicesMessage='Обновляю список устройс�
 grep -Fq "state.lanDevicesLoading?'Обновляю список…':'Обновить список устройств'" dns-manager-luci.sh || fail "LAN refresh button has no loading state"
 grep -Fq "'Список обновлён. Найдено устройств: '+count+'.'" dns-manager-luci.sh || fail "LAN refresh does not report the result count"
 grep -Fq "'Список обновлён, но устройства LAN не обнаружены. Проверьте DHCP-аренды и таблицу соседей роутера.'" dns-manager-luci.sh || fail "empty LAN scan has no explanatory result"
+grep -Fq 'dmd_ensure_profile() {' dns-manager-luci.sh || fail "shared dnsmasq profile builder missing"
+grep -Fq 'iifname "%s" ether saddr %s udp dport 53 redirect to :%s\n' dns-manager-luci.sh || fail "per-device UDP DNS redirect is missing"
+grep -Fq 'iifname "%s" ether saddr %s tcp dport 53 redirect to :%s\n' dns-manager-luci.sh || fail "per-device TCP DNS redirect is missing"
+if grep -Fq 'iifname "%s" udp dport 53 redirect to :%s\n' "$tmp/device_dns_service.sh"; then
+    fail "unscoped LAN-wide DNS redirect remains"
+fi
+if grep -Fq 'ether saddr != {' "$tmp/device_dns_service.sh"; then fail "global rule still excludes per-device MACs"; fi
+if grep -Fq 'set_device_dns_default' dns-manager-luci.sh; then fail "global default DNS RPC remains"; fi
+if grep -Fq 'default_slots' dns-manager-luci.sh; then fail "LAN inventory still exposes a global DNS selection"; fi
+if grep -Fq 'dns_mode' dns-manager-luci.sh; then fail "LAN inventory still exposes an unnecessary binding mode"; fi
+if grep -Fq 'EXCLUDE)' "$tmp/device_dns_service.sh"; then fail "per-device binding still has global-default exclusion mode"; fi
+grep -Fq "method:'set_device_dns', params:['mac','slots']" dns-manager-luci.sh || fail "per-device DNS RPC has parameters beyond MAC and selected slots"
+grep -Fq "function saveDeviceDns(mac,controls,root)" dns-manager-luci.sh || fail "per-device DNS controls do not have a save action"
+grep -Fq "callSetDeviceDns(String(mac||''),selected.join(','))" dns-manager-luci.sh || fail "per-device DNS save still depends on a global mode"
+grep -Fq "Индивидуальная привязка не задана; используется обычный DNS-маршрут роутера." dns-manager-luci.sh || fail "unassigned devices are not described as using normal router DNS"
+ok "DNS assignment is per-device only; unassigned devices use the normal router DNS path"
+
 grep -Fq "var domainAttrs={'class':'dm-slot-domains-input'" dns-manager-luci.sh || fail "domain editor attributes are not assembled safely"
 grep -Fq "if(!assigned)domainAttrs.disabled='';" dns-manager-luci.sh || fail "unassigned slots are not disabled without a false boolean attribute"
 if grep -Fq "'disabled':!assigned" dns-manager-luci.sh; then fail "domain editor still sets disabled unconditionally"; fi
