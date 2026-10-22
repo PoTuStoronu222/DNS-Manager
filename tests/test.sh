@@ -437,7 +437,7 @@ grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validat
 grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
 grep -q 'VERSION="3.74"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
-grep -q 'VERSION="1.106"' dns-manager-luci.sh || fail "LuCI version not bumped"
+grep -q 'VERSION="1.107"' dns-manager-luci.sh || fail "LuCI version not bumped"
 main_luci_url='https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh'
 [ "$(grep -Fc "$main_luci_url" dns-manager-luci.sh)" -eq 2 ] || fail "released LuCI updater URLs are not pinned to main"
 if grep -Fq 'https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/luci-dns-sections-tabs-20261022/dns-manager-luci.sh' dns-manager-luci.sh; then fail "released LuCI updater still targets the test branch"; fi
@@ -1916,6 +1916,17 @@ if grep -q 'Проверить сейчас' "$tmp/watchdog_card.js"; then
 fi
 grep -q 'локальный порт назначенного DoH' "$tmp/watchdog_card.js" || fail "Watchdog probe is not explained in LuCI"
 grep -q 'Полный разовый тест текущих DoH' "$tmp/watchdog_card.js" || fail "LuCI does not direct users to the distinct full DNS test"
+
+# The Network tab uses network_status_json rather than the dashboard status RPC.
+# It must expose the latest saved watchdog results as well as the service flags.
+awk '/^network_status_json\(\) \{/,/^}/' dns-manager-luci.sh > "$tmp/network_status_json.sh"
+[ -s "$tmp/network_status_json.sh" ] || fail "network status function extraction"
+for _wd_field in watchdog_last_check watchdog_last_checked watchdog_last_failed watchdog_last_category watchdog_last_records; do
+    grep -Fq "$_wd_field" "$tmp/network_status_json.sh" || fail "network status omits saved watchdog field: $_wd_field"
+done
+grep -Fq 'dns-watchdog-check-results.conf' "$tmp/network_status_json.sh" || fail "network status does not read saved watchdog results"
+grep -Fq 'while IFS=\x27|\x27 read -r _wd_rec_tag _wd_rec_slot _wd_rec_id _wd_rec_cat _wd_rec_name _wd_rec_status' "$tmp/network_status_json.sh" || fail "network status does not serialize watchdog result records"
+ok "network status exposes saved watchdog results"
 if grep -q 'Сколько DNS можно заменить за раз' "$tmp/watchdog_card.js"; then
     fail "LuCI still shows the removed per-cycle repair-count setting"
 fi
