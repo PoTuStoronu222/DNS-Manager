@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.70"
+VERSION="3.71"
 # 3.38: clear the LuCI update flag after a successful CLI update.
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
@@ -57,9 +57,7 @@ TEST_DEPENDENCY_WARNING_MAX_AGE=3600
 TEST_PROGRESS_EVERY=20
 # Resource-safety defaults for small OpenWrt routers.
 TEST_BATCH_DEFAULT=4
-WATCHDOG_MAX_REPAIRS=1
 WATCHDOG_MAX_RESTARTS=2
-WATCHDOG_MAX_CANDIDATES=3
 LOG_MAX_BYTES=65536
 TX_LOG_MAX_BYTES=65536
 OWNERSHIP_MAX_BYTES=32768
@@ -814,12 +812,12 @@ BOOTSTRAP_DNS="$BOOTSTRAP_DNS_ALL"
 # procd watchdog tuning is persisted in manager.conf and validated on load.
 # The defaults below remain the safe baseline for small OpenWrt routers.
 WATCHDOG_BACKEND="procd"
-: "${WATCHDOG_INTERVAL:=${WATCHDOG_CHECK_INTERVAL_DEFAULT:-600}}"
+: "${WATCHDOG_INTERVAL:=${WATCHDOG_CHECK_INTERVAL_DEFAULT:-120}}"
 case "$WATCHDOG_INTERVAL" in
-    ''|*[!0-9]*) WATCHDOG_INTERVAL="${WATCHDOG_CHECK_INTERVAL_DEFAULT:-600}" ;;
+    ''|*[!0-9]*) WATCHDOG_INTERVAL="${WATCHDOG_CHECK_INTERVAL_DEFAULT:-120}" ;;
     *)
-        [ "$WATCHDOG_INTERVAL" -ge 60 ] 2>/dev/null || WATCHDOG_INTERVAL="${WATCHDOG_CHECK_INTERVAL_DEFAULT:-600}"
-        [ "$WATCHDOG_INTERVAL" -le 3600 ] 2>/dev/null || WATCHDOG_INTERVAL="${WATCHDOG_CHECK_INTERVAL_DEFAULT:-600}"
+        [ "$WATCHDOG_INTERVAL" -ge 60 ] 2>/dev/null || WATCHDOG_INTERVAL="${WATCHDOG_CHECK_INTERVAL_DEFAULT:-120}"
+        [ "$WATCHDOG_INTERVAL" -le 3600 ] 2>/dev/null || WATCHDOG_INTERVAL="${WATCHDOG_CHECK_INTERVAL_DEFAULT:-120}"
         ;;
 esac
 : "${WATCHDOG_FAIL_THRESHOLD:=2}"
@@ -832,20 +830,10 @@ case "$WATCHDOG_REPAIR_COOLDOWN" in
     ''|*[!0-9]*) WATCHDOG_REPAIR_COOLDOWN=300 ;;
     *) [ "$WATCHDOG_REPAIR_COOLDOWN" -ge 300 ] 2>/dev/null && [ "$WATCHDOG_REPAIR_COOLDOWN" -le 7200 ] 2>/dev/null || WATCHDOG_REPAIR_COOLDOWN=300 ;;
 esac
-: "${WATCHDOG_MAX_REPAIRS:=1}"
-case "$WATCHDOG_MAX_REPAIRS" in
-    ''|*[!0-9]*) WATCHDOG_MAX_REPAIRS=1 ;;
-    *) [ "$WATCHDOG_MAX_REPAIRS" -ge 1 ] 2>/dev/null && [ "$WATCHDOG_MAX_REPAIRS" -le 3 ] 2>/dev/null || WATCHDOG_MAX_REPAIRS=1 ;;
-esac
 : "${WATCHDOG_MAX_RESTARTS:=2}"
 case "$WATCHDOG_MAX_RESTARTS" in
     ''|*[!0-9]*) WATCHDOG_MAX_RESTARTS=2 ;;
     *) [ "$WATCHDOG_MAX_RESTARTS" -ge 1 ] 2>/dev/null && [ "$WATCHDOG_MAX_RESTARTS" -le 5 ] 2>/dev/null || WATCHDOG_MAX_RESTARTS=2 ;;
-esac
-: "${WATCHDOG_MAX_CANDIDATES:=3}"
-case "$WATCHDOG_MAX_CANDIDATES" in
-    ''|*[!0-9]*) WATCHDOG_MAX_CANDIDATES=3 ;;
-    *) [ "$WATCHDOG_MAX_CANDIDATES" -ge 1 ] 2>/dev/null && [ "$WATCHDOG_MAX_CANDIDATES" -le 10 ] 2>/dev/null || WATCHDOG_MAX_CANDIDATES=3 ;;
 esac
 : "${WATCHDOG_GUARD_INTERVAL:=900}"
 case "$WATCHDOG_GUARD_INTERVAL" in
@@ -866,6 +854,8 @@ case "$BLOCK_EXTERNAL_DNS" in 0|1) ;; *) BLOCK_EXTERNAL_DNS="${FORCE_DOH:-0}" ;;
 : "${BALANCER_ENABLED:=1}"; : "${NTP_PRESET:=vniiftri_moscow}"; : "${NTP_PRESET_USER_SET:=0}"; : "${DNS_PROFILE:=hybrid}"; : "${DNS_SELECTION_MODE:=quick}"; : "${DNS_SELECTION_CATEGORY:=bypass}"
 : "${QUICK_PREF_1:=}"; : "${QUICK_PREF_2:=}"; : "${QUICK_PREF_3:=}"; : "${QUICK_PREF_4:=}"; : "${QUICK_PREF_5:=}"; : "${QUICK_PREF_6:=}"
 : "${WATCHDOG_ENABLED:=0}"
+: "${WATCHDOG_AUTOREPLACE:=${WATCHDOG_ENABLED:-0}}"
+case "$WATCHDOG_AUTOREPLACE" in 0|1) ;; *) WATCHDOG_AUTOREPLACE="${WATCHDOG_ENABLED:-0}" ;; esac
 : "${TEST_RESULTS_MAX_AGE_BYPASS:=21600}"; : "${TEST_RESULTS_MAX_AGE_CLEAN:=21600}"
 : "${TEST_RESULTS_MAX_AGE_SECURITY:=21600}"; : "${TEST_RESULTS_MAX_AGE_PRIVACY:=21600}"
 : "${TEST_RESULTS_MAX_AGE_ADBLOCK:=21600}"; : "${TEST_RESULTS_MAX_AGE_FAMILY:=21600}"; : "${TEST_RESULTS_MAX_AGE_GAMING:=21600}"
@@ -980,13 +970,12 @@ QUICK_PREF_4=$(shell_quote "$QUICK_PREF_4")
 QUICK_PREF_5=$(shell_quote "$QUICK_PREF_5")
 QUICK_PREF_6=$(shell_quote "$QUICK_PREF_6")
 WATCHDOG_ENABLED=$(shell_quote "$WATCHDOG_ENABLED")
+WATCHDOG_AUTOREPLACE=$(shell_quote "$WATCHDOG_AUTOREPLACE")
 WATCHDOG_INTERVAL=$(shell_quote "$WATCHDOG_INTERVAL")
 WATCHDOG_BACKEND=$(shell_quote "$WATCHDOG_BACKEND")
 WATCHDOG_FAIL_THRESHOLD=$(shell_quote "$WATCHDOG_FAIL_THRESHOLD")
 WATCHDOG_REPAIR_COOLDOWN=$(shell_quote "$WATCHDOG_REPAIR_COOLDOWN")
-WATCHDOG_MAX_REPAIRS=$(shell_quote "$WATCHDOG_MAX_REPAIRS")
 WATCHDOG_MAX_RESTARTS=$(shell_quote "$WATCHDOG_MAX_RESTARTS")
-WATCHDOG_MAX_CANDIDATES=$(shell_quote "$WATCHDOG_MAX_CANDIDATES")
 WATCHDOG_GUARD_INTERVAL=$(shell_quote "$WATCHDOG_GUARD_INTERVAL")
 TEST_RESULTS_MAX_AGE=$(shell_quote "$TEST_RESULTS_MAX_AGE")
 TEST_RESULTS_MAX_AGE_BYPASS=$(shell_quote "$TEST_RESULTS_MAX_AGE_BYPASS")
@@ -6441,24 +6430,17 @@ watchdog_pick_replacement() {
     fi
 
     # Emergency fallback for watchdog/runtime situations where no fresh scoped
-    # result exists. Keep the resource-safe candidate cap here; the candidate is
-    # accepted only after the real https-dns-proxy instance answers a local DNS
-    # query on its assigned port.
+    # result exists. Try each eligible same-category catalog entry in order; the
+    # real local DNS listener must confirm a candidate before it is accepted.
     for _passcat in $_passcats; do
-        _checked_cat=0
-
         # In quick mode, try the already preferred bypass entry first.
         if [ "$_passcat" = bypass ] && [ "${DNS_SELECTION_MODE:-}" = quick ]; then
             _preferred="$(watchdog_preferred_quick_candidate "$_slot" 2>/dev/null)"
             if [ -n "$_preferred" ] && [ "$(dns_cat "$_preferred" 2>/dev/null)" = bypass ] && [ "$_preferred" != "${_current_id:-}" ]; then
                 _purl="$(normalize_url "$(dns_url "$_preferred")")"
                 if [ -n "$_purl" ] && ! grep -qxF "$_purl" "$_used" 2>/dev/null && ! grep -qxF "$_preferred" "$_tried" 2>/dev/null; then
-                    _checked_cat=$((_checked_cat+1))
-                    if [ "$_checked_cat" -le "${WATCHDOG_MAX_CANDIDATES:-3}" ]; then
-                        printf "%s|bypass\n" "$_preferred"
-                        return 0
-                    fi
-                    printf "%s\n" "$_preferred" >> "$_tried"
+                    printf "%s|bypass\n" "$_preferred"
+                    return 0
                 fi
             fi
         fi
@@ -6477,8 +6459,6 @@ watchdog_pick_replacement() {
             [ -n "$_rurl" ] || continue
             grep -qxF "$_rurl" "$_used" 2>/dev/null && continue
             grep -qxF "$_rid" "$_tried" 2>/dev/null && continue
-            _checked_cat=$((_checked_cat+1))
-            [ "$_checked_cat" -le "${WATCHDOG_MAX_CANDIDATES:-3}" ] || break
             # Do not pre-test the candidate through bootstrap DNS. Install it,
             # restart the real https-dns-proxy instance, and let
             # watchdog_apply_slot_candidate() accept it only after a successful
@@ -6887,22 +6867,25 @@ watchdog_embedded_loop() {
             for _slot in 1 2 3 4 5 6 RU; do watchdog_loop_reset_slot "$_slot"; done
             sleep 5
         else
-            # Process all failed configured slots; the cooldown is tracked per slot.
-            for _trigger in $_threshold_slots; do
-                watchdog_loop_repair_cooldown_ok "$_trigger" || continue
-                watchdog_loop_mark_repair "$_trigger"
-                log_msg "DNS в слоте $_trigger не отвечает ${WATCHDOG_FAIL_THRESHOLD:-2} проверок подряд. Ищу замену той же категории."
-                if watchdog_slot_target_run "$_trigger"; then
-                    log_msg "Watchdog: слот $_trigger восстановлен."
-                else
-                    log_msg "Watchdog: замена слота $_trigger не подтверждена; текущий DNS сохранён."
-                fi
-                _watchdog_action=1
-                load_config >/dev/null 2>&1 || true
-                refresh_runtime_capabilities >/dev/null 2>&1 || true
-                WD_LAST_GUARD_TS="$(date +%s 2>/dev/null)"
-                eval "WD_FAIL_${_trigger}=0"
-            done
+            # Monitoring is independent of rotation. Failures still appear in
+            # the saved results while automatic replacement is disabled.
+            if [ "${WATCHDOG_AUTOREPLACE:-0}" = 1 ]; then
+                for _trigger in $_threshold_slots; do
+                    watchdog_loop_repair_cooldown_ok "$_trigger" || continue
+                    watchdog_loop_mark_repair "$_trigger"
+                    log_msg "DNS в слоте $_trigger не отвечает ${WATCHDOG_FAIL_THRESHOLD:-2} проверок подряд. Ищу замену той же категории."
+                    if watchdog_slot_target_run "$_trigger"; then
+                        log_msg "Watchdog: слот $_trigger восстановлен."
+                    else
+                        log_msg "Watchdog: замена слота $_trigger не подтверждена; текущий DNS сохранён."
+                    fi
+                    _watchdog_action=1
+                    load_config >/dev/null 2>&1 || true
+                    refresh_runtime_capabilities >/dev/null 2>&1 || true
+                    WD_LAST_GUARD_TS="$(date +%s 2>/dev/null)"
+                    eval "WD_FAIL_${_trigger}=0"
+                done
+            fi
         fi
 
         if [ "$_watchdog_action" = 0 ] && [ "$_failed" -eq 0 ] && [ "$_missing" -eq 0 ]; then
@@ -7435,7 +7418,7 @@ watchdog_state_word_procd() {
     fi
 }
 watchdog_slot_target_run() {
-    local _slot _target_id _target_port _target_cat _promote_fallback _target_live _allow_clean _slot_rc _old_id _old_cat _domain _used _tried _attempt _replacement_ok _picked _repl _repl_cat
+    local _slot _target_id _target_port _target_cat _promote_fallback _target_live _allow_clean _slot_rc _old_id _old_cat _domain _used _tried _replacement_ok _picked _repl _repl_cat
     _slot="$1"
     case "$_slot" in 1|2|3|4|5|6|RU) ;; *) return 2 ;; esac
     [ "${WATCHDOG_ENABLED:-0}" = 1 ] || return 0
@@ -7479,14 +7462,8 @@ watchdog_slot_target_run() {
         [ -n "$_u" ] && printf '%s\n' "$_u" >> "$_used"
     done
 
-    _attempt=0
     _replacement_ok=0
-    _max_attempts="${WATCHDOG_MAX_CANDIDATES:-3}"
-    case "$_max_attempts" in ''|*[!0-9]*) _max_attempts=3;; esac
-    [ "$_max_attempts" -ge 1 ] 2>/dev/null || _max_attempts=1
-    [ "$_max_attempts" -le 10 ] 2>/dev/null || _max_attempts=10
-    while [ "$_attempt" -lt "$_max_attempts" ]; do
-        _attempt=$((_attempt+1))
+    while :; do
         _picked="$(watchdog_pick_replacement "$_slot" "$_used" "$_tried" 0 "$_target_cat")"
         _repl="${_picked%%|*}"
         _repl_cat="${_picked#*|}"
@@ -7527,6 +7504,8 @@ watchdog_apply_toggle() {
 
     _old_enabled="$(cfg_get WATCHDOG_ENABLED 2>/dev/null || true)"
     [ "$_old_enabled" = 1 ] || _old_enabled=0
+    _old_autoreplace="$(cfg_get WATCHDOG_AUTOREPLACE 2>/dev/null || true)"
+    [ "$_old_autoreplace" = 1 ] || _old_autoreplace=0
 
     _old_service_present=0
     [ -x "$WATCHDOG_SERVICE_PATH" ] && watchdog_service_file_owned "$WATCHDOG_SERVICE_PATH" "$WATCHDOG_SERVICE_MARKER" && _old_service_present=1
@@ -7536,11 +7515,13 @@ watchdog_apply_toggle() {
     [ "$_old_service_present" = 1 ] && watchdog_service_running && _old_service_running=1 || true
 
     WATCHDOG_ENABLED="$_new"
+    [ "$_new" = 1 ] || WATCHDOG_AUTOREPLACE=0
     if apply_watchdog; then
         return 0
     fi
 
     WATCHDOG_ENABLED="$_old_enabled"
+    WATCHDOG_AUTOREPLACE="$_old_autoreplace"
     save_config >/dev/null 2>&1 || true
 
     if [ "$_old_service_present" = 1 ]; then
@@ -7562,12 +7543,24 @@ watchdog_apply_toggle() {
 
     return 1
 }
+watchdog_apply_autoreplace_toggle() {
+    _new="$1"
+    case "$_new" in 0|1) ;; *) return 1;; esac
+    [ "$_new" = 0 ] || [ "${WATCHDOG_ENABLED:-0}" = 1 ] || return 2
+    _old="$(cfg_get WATCHDOG_AUTOREPLACE 2>/dev/null || true)"
+    [ "$_old" = 1 ] || _old=0
+    WATCHDOG_AUTOREPLACE="$_new"
+    if save_config >/dev/null 2>&1 && [ "$(cfg_get WATCHDOG_AUTOREPLACE)" = "$_new" ]; then return 0; fi
+    WATCHDOG_AUTOREPLACE="$_old"
+    save_config >/dev/null 2>&1 || true
+    return 1
+}
 apply_watchdog() {
     # Stop first so a running watchdog cannot race an in-progress Apply.
     watchdog_service_stop_disable || return 1
 
     WATCHDOG_BACKEND="procd"
-    : "${WATCHDOG_INTERVAL:=${WATCHDOG_CHECK_INTERVAL_DEFAULT:-600}}"
+    : "${WATCHDOG_INTERVAL:=${WATCHDOG_CHECK_INTERVAL_DEFAULT:-120}}"
     save_config || return 1
 
     if [ "${WATCHDOG_ENABLED:-0}" = 1 ] || [ "${FORCE_DOH:-0}" = 1 ]; then
@@ -7715,7 +7708,7 @@ startup_update_check() {
 # STARTUP REQUIRED FUNCTION CHECK
 # ==========================================
 startup_required_function_check() {
-    for _fn in restore_hdp_package_defaults get_dnsmasq_section exact_list_has doh_selected_config_current validate_selected_slots ensure_dnsmasq_balancer detect_forced_dns_path refresh_device_dns_runtime clear_all_doh_for_apply rebuild_selected_hdp_sections reconcile_dnsmasq apply_ntp_ip_fallback luci_component_state luci_companion_check_update luci_companion_install luci_companion_remove luci_companion_update watchdog_embedded_loop watchdog_save_check_results watchdog_append_check_record watchdog_service_install_files watchdog_service_remove_files; do
+    for _fn in restore_hdp_package_defaults get_dnsmasq_section exact_list_has doh_selected_config_current validate_selected_slots ensure_dnsmasq_balancer detect_forced_dns_path refresh_device_dns_runtime clear_all_doh_for_apply rebuild_selected_hdp_sections reconcile_dnsmasq apply_ntp_ip_fallback luci_component_state luci_companion_check_update luci_companion_install luci_companion_remove luci_companion_update watchdog_embedded_loop watchdog_save_check_results watchdog_append_check_record watchdog_apply_autoreplace_toggle watchdog_service_install_files watchdog_service_remove_files; do
         type "$_fn" >/dev/null 2>&1 || {
             printf "${C_RED}[✗] Критическая ошибка: отсутствует функция $_fn. Запуск остановлен до изменения настроек роутера.${C_NC}\n"
             return 1
