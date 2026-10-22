@@ -6687,7 +6687,7 @@ watchdog_slot_instance_pid() {
     case "$_port" in ''|*[!0-9]*) return 1;; esac
     for _proc in /proc/[0-9]*; do
         [ -r "$_proc/cmdline" ] || continue
-        _cmd="$(tr '\\000' ' ' < "$_proc/cmdline" 2>/dev/null)"
+        _cmd="$(tr '\000' ' ' < "$_proc/cmdline" 2>/dev/null)"
         case "$_cmd" in
             /usr/sbin/https-dns-proxy\ *)
                 case " $_cmd " in
