@@ -6669,8 +6669,7 @@ watchdog_save_check_results() {
     esac
     _now="$(date +%s 2>/dev/null)"
     case "$_now" in ''|*[!0-9]*) rm -f "$_src" 2>/dev/null || true; return 1;; esac
-    _tmp="${WATCHDOG_CHECK_RESULTS}.tmp.$"
-    rm -f "$_tmp" 2>/dev/null || true
+    _tmp="$(mktemp "${WATCHDOG_CHECK_RESULTS}.tmp.XXXXXX" 2>/dev/null)" || { rm -f "$_src" 2>/dev/null || true; return 1; }
     {
         printf 'timestamp=%s\nchecked=%s\nfailed=%s\ncategory=%s\n' "$_now" "$_checked" "$_failed" "$_category"
         cat "$_src"
@@ -6796,8 +6795,7 @@ watchdog_embedded_loop() {
         _threshold_slots=""
         _local_recover_slots=""
         _probe_rc=0
-        _wd_cycle_records="$STATE_DIR/dns-watchdog-cycle.$"
-        : > "$_wd_cycle_records" || { sleep "$_interval"; continue; }
+        _wd_cycle_records="$(mktemp "$STATE_DIR/dns-watchdog-cycle.XXXXXX" 2>/dev/null)" || { sleep "$_interval"; continue; }
 
         watchdog_refresh_listener_snapshot
 
@@ -7472,10 +7470,8 @@ watchdog_slot_target_run() {
         return 1
     fi
 
-    _used="$TMP_DIR/watchdog-slot-used-$"
-    _tried="$TMP_DIR/watchdog-slot-tried-$$"
-    : > "$_used" || { release_mutation_lock; return 1; }
-    : > "$_tried" || { rm -f "$_used"; release_mutation_lock; return 1; }
+    _used="$(mktemp "$TMP_DIR/watchdog-slot-used.XXXXXX" 2>/dev/null)" || { release_mutation_lock; return 1; }
+    _tried="$(mktemp "$TMP_DIR/watchdog-slot-tried.XXXXXX" 2>/dev/null)" || { rm -f "$_used"; release_mutation_lock; return 1; }
     for _s in 1 2 3 4 5 6 RU; do
         eval "_uid=\${SLOT_${_s}:-}"
         [ -n "$_uid" ] || continue
