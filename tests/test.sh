@@ -297,13 +297,13 @@ grep -Fq 'setTimeout(function(){location.reload();},3000);' "$tmp/common.js" || 
 ok "LuCI package update and legacy self-update rpcd checks are covered"
 grep -q 'RESOURCE_DIR="/www/luci-static/resources/dns-manager"' dns-manager-luci.sh || fail "shared LuCI resource directory missing"
 grep -q 'COMMON_FILE="$RESOURCE_DIR/common.js"' dns-manager-luci.sh || fail "shared LuCI common module path missing"
-for _view in dashboard doh network time catalog log; do
+for _view in dashboard doh slots devices network time catalog log; do
     grep -q 'action": { "type": "view", "path": "dns-manager/'"$_view"'" }' dns-manager-luci.sh || fail "separate LuCI view route missing: $_view"
 done
 if grep -q 'path": "dns-manager/overview"' dns-manager-luci.sh; then
     fail "legacy shared overview route remains"
 fi
-grep -q 'for _page in dashboard doh network time catalog log; do' dns-manager-luci.sh || fail "separate LuCI page generation loop missing"
+grep -q 'for _page in dashboard doh slots devices network time catalog log; do' dns-manager-luci.sh || fail "separate LuCI page generation loop missing"
 grep -q "'require baseclass';" "$tmp/common.js" || fail "LuCI common module does not use baseclass"
 grep -q "return baseclass.extend({" "$tmp/common.js" || fail "LuCI common module does not return a baseclass constructor"
 for _rpc in doh_status network_status lan_devices time_status page_meta; do
@@ -312,7 +312,17 @@ done
 for _rpc in doh_status network_status lan_devices time_status page_meta; do
     grep -q "${_rpc})" "$tmp/backend.sh" || fail "fast LuCI RPC dispatch is missing: $_rpc"
 done
-grep -Fq "case 'doh': return Promise.all([callDohStatus(),callLanDevices()" "$tmp/common.js" || fail "LuCI DoH page does not load DNS state and LAN devices"
+grep -Fq "case 'doh':" "$tmp/common.js" || fail "LuCI DoH route is missing"
+grep -Fq "case 'slots':" "$tmp/common.js" || fail "LuCI DNS slots route is missing"
+grep -Fq "case 'devices':" "$tmp/common.js" || fail "LuCI LAN devices route is missing"
+grep -Fq 'function renderSlots(root,st){' "$tmp/common.js" || fail "DNS slot/domain panel renderer missing"
+grep -Fq 'function renderDeviceDns(root,st){' "$tmp/common.js" || fail "separate LAN device panel renderer missing"
+grep -Fq "slots:['slots']" "$tmp/common.js" || fail "DNS slot page is not a separate tab"
+grep -Fq "devices:['devices']" "$tmp/common.js" || fail "LAN device page is not a separate tab"
+awk '/^function render\(root,st\)/,/^}/' "$tmp/common.js" > "$tmp/render_routes.js"
+awk "/case 'doh':/,/case 'slots':/" "$tmp/render_routes.js" > "$tmp/doh_route.js"
+if grep -Fq 'renderSlots(root,st);' "$tmp/doh_route.js"; then fail "DNS slots still render inside the DoH page"; fi
+grep -Fq 'callLanDevices().catch(function(){return {ok:false,devices:[]};})' "$tmp/common.js" || fail "LAN device route does not load inventory"
 grep -Fq '"dns_manager": [ "status", "runtime", "doh_status", "network_status", "lan_devices"' dns-manager-luci.sh || fail "LAN inventory RPC is missing from the read ACL"
 grep -Fq 'lan_devices_json() {' "$tmp/backend.sh" || fail "LAN device inventory RPC implementation missing"
 grep -Fq '/tmp/dhcp.leases' "$tmp/backend.sh" || fail "LAN inventory does not include DHCP leases"
@@ -427,7 +437,11 @@ grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validat
 grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
 grep -q 'VERSION="3.74"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
-grep -q 'VERSION="1.102"' dns-manager-luci.sh || fail "LuCI version not bumped"
+grep -q 'VERSION="1.106"' dns-manager-luci.sh || fail "LuCI version not bumped"
+main_luci_url='https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh'
+[ "$(grep -Fc "$main_luci_url" dns-manager-luci.sh)" -eq 2 ] || fail "released LuCI updater URLs are not pinned to main"
+if grep -Fq 'https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/luci-dns-sections-tabs-20261022/dns-manager-luci.sh' dns-manager-luci.sh; then fail "released LuCI updater still targets the test branch"; fi
+ok "LuCI version and update source target main"
 grep -Fq 'return m ~ /^[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]$/' dns-manager-luci.sh || fail "LAN inventory merge rejects valid six-octet MAC addresses"
 grep -Fq 'NF >= 2 && $2 ~ /^[1-6](,[1-6])*$/ &&' dns-manager-luci.sh || fail "saved LAN device assignments do not require valid DNS slot lists"
 grep -Fq "state.lanDevicesMessage='Обновляю список устройств LAN… Пожалуйста, подождите.'" dns-manager-luci.sh || fail "LAN refresh does not display a waiting message"
@@ -459,7 +473,13 @@ grep -Fq "if(!usable&&!selected)cbAttrs.disabled='';" dns-manager-luci.sh || fai
 if grep -Fq "'checked':selected" dns-manager-luci.sh; then fail "LAN checkbox still sets checked unconditionally"; fi
 if grep -Fq "'disabled':!usable&&!selected" dns-manager-luci.sh; then fail "LAN checkbox still sets disabled unconditionally"; fi
 ! sed -n '/function resolverRows/,/function renderDoH/p' dns-manager-luci.sh | grep -Eq "btn\('Выбрать'|btn\(running\?'Проверяю…':'Проверить'" || fail "current DoH summary must not duplicate slot actions"
-grep -Fq "doh:['doh','slots','profiles']" dns-manager-luci.sh || fail "DNS slot/domain panel visibility regression"
+grep -Fq "doh:['doh','profiles']" dns-manager-luci.sh || fail "DoH page still includes DNS slots or device bindings"
+grep -Fq "slots:['slots']" dns-manager-luci.sh || fail "DNS slot/domain panel is not isolated to its own page"
+grep -Fq "devices:['devices']" dns-manager-luci.sh || fail "LAN device binding is not isolated to its own page"
+grep -Fq "if(!running&&detail==='Проверка запущена…')detail='';" dns-manager-luci.sh || fail "stale catalog running message is not hidden after completion"
+grep -Fq "if(!detail&&running)detail='Проверка запущена…';" dns-manager-luci.sh || fail "catalog check status fallback is not limited to a running check"
+grep -Fq "if(detail)method.push(E('div',{'class':'dm-inline-msg info'},detail));" dns-manager-luci.sh || fail "empty progress details are still displayed after completion"
+grep -Fq 'width:60px!important;min-width:60px!important' dns-manager-luci.sh || fail "common freshness hours input remains too narrow"
 grep -q "'bypass','Обход геоблока'" dns-manager-luci.sh || fail "bypass profile label not updated"
 grep -q "'security','Защита от угроз'" dns-manager-luci.sh || fail "security profile label not updated"
 grep -q "'privacy','Конфиденциальность'" dns-manager-luci.sh || fail "privacy profile label not updated"
@@ -1382,6 +1402,12 @@ grep -Fq 'job_write "$_jid" progress_total "$_final_total"' "$tmp/test_all_job.s
 grep -Fq 'job_write "$_jid" progress_ok "$_final_ok"' "$tmp/test_all_job.sh" || fail "LuCI full catalog job does not publish final progress_ok"
 grep -Fq 'job_write "$_jid" progress_fail "$_final_fail"' "$tmp/test_all_job.sh" || fail "LuCI full catalog job does not publish final progress_fail"
 ok "LuCI full catalog job publishes final progress before DONE"
+
+awk '/^job_json\(\) \{/,/^}/' "$tmp/backend.sh" > "$tmp/job_json.sh"
+for _field in progress_done progress_total progress_ok progress_fail; do
+    grep -Fq "$_field" "$tmp/job_json.sh" || fail "LuCI job RPC does not expose final $_field"
+done
+ok "LuCI job RPC exposes final progress counts"
 
 grep -q "profileSelected=String(st.profile||'none')!=='none'" "$tmp/common.js" || fail "LuCI does not detect missing DNS Manager profile"
 grep -q "Сначала выберите профиль DNS Manager" "$tmp/common.js" || fail "LuCI missing no-profile reason"

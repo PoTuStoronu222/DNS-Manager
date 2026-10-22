@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.102
+# Version: 1.106
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -32,7 +32,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.102"
+VERSION="1.106"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -435,6 +435,16 @@ EOF_DEVICE_DNS_SERVICE
     "order": 20,
     "action": { "type": "view", "path": "dns-manager/doh" }
   },
+  "admin/services/dns-manager/slots": {
+    "title": "DNS по слотам",
+    "order": 25,
+    "action": { "type": "view", "path": "dns-manager/slots" }
+  },
+  "admin/services/dns-manager/devices": {
+    "title": "Устройства LAN",
+    "order": 27,
+    "action": { "type": "view", "path": "dns-manager/devices" }
+  },
   "admin/services/dns-manager/network": {
     "title": "Сеть",
     "order": 30,
@@ -506,7 +516,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="1.102"
+SELF_VERSION="1.106"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -3174,6 +3184,10 @@ job_json() {
     printf ',"mode":'; json_quote "$(sed -n 's/^mode=//p' "$_d/state" 2>/dev/null | head -n1)"
     printf ',"profile":'; json_quote "$(sed -n 's/^profile=//p' "$_d/state" 2>/dev/null | head -n1)"
     printf ',"dns_id":'; json_quote "$(sed -n 's/^dns_id=//p' "$_d/state" 2>/dev/null | head -n1)"
+    printf ',"progress_done":'; json_quote "$(sed -n 's/^progress_done=//p' "$_d/state" 2>/dev/null | tail -n1)"
+    printf ',"progress_total":'; json_quote "$(sed -n 's/^progress_total=//p' "$_d/state" 2>/dev/null | tail -n1)"
+    printf ',"progress_ok":'; json_quote "$(sed -n 's/^progress_ok=//p' "$_d/state" 2>/dev/null | tail -n1)"
+    printf ',"progress_fail":'; json_quote "$(sed -n 's/^progress_fail=//p' "$_d/state" 2>/dev/null | tail -n1)"
     _job_mode="$(sed -n 's/^mode=//p' "$_d/state" 2>/dev/null | head -n1)"
     _job_dns_id="$(sed -n 's/^dns_id=//p' "$_d/state" 2>/dev/null | head -n1)"
     if [ "$_job_mode" = "one" ] && [ -n "$_job_dns_id" ]; then
@@ -3606,7 +3620,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI common module version: 1.102
+// DNS Manager LuCI common module version: 1.106
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -3835,7 +3849,7 @@ function injectStyle(root){
   '.dm-header{display:flex;align-items:center;gap:9px;flex-wrap:wrap}.dm-header h2{margin:0;font-size:13px;font-weight:600}.dm-header-by{font-size:13px;opacity:.60}.dm-header-actions{display:flex;gap:7px;margin-left:auto;flex-wrap:wrap}.dm-header-actions .cbi-button{padding:5px 11px;font-size:12.5px}'+
   '.dm-load-wrap{min-width:220px;max-width:430px;width:100%}.dm-load-line{display:flex;align-items:center;gap:9px}.dm-load-track{height:8px;flex:1;min-width:120px;border-radius:999px;background:rgba(110,118,129,.16);overflow:hidden}.dm-load-fill{height:100%;border-radius:999px;background:#1a7f37;transition:width .25s ease}.dm-load-value{min-width:38px;font-size:12px;font-weight:700;text-align:right}.dm-load-meta{font-size:10.5px;opacity:.58;margin-top:3px}'+
   '.dm-mem-wrap{min-width:220px;max-width:430px;width:100%}.dm-mem-line{display:flex;align-items:center;gap:9px}.dm-mem-track{height:8px;flex:1;min-width:120px;border-radius:999px;background:rgba(110,118,129,.16);overflow:hidden}.dm-mem-fill{height:100%;border-radius:999px;background:#1a7f37;transition:width .25s ease}.dm-mem-value{font-size:12px;font-weight:700;white-space:nowrap}.dm-mem-meta{font-size:10.5px;opacity:.58;margin-top:3px}'+
-  ".dm-test-age-list{display:flex;flex-direction:column;gap:0;margin:0;padding:0}.dm-test-age-row{display:grid;grid-template-columns:minmax(0,1fr) 90px 20px;align-items:center;gap:8px;min-height:36px;margin:0;padding:3px 0;border:0!important}.dm-test-age-label{font-size:13px;font-weight:600;white-space:nowrap}.dm-test-age-unit,.dm-watchdog-unit{font-size:12px;opacity:.62;white-space:nowrap}.dm-test-age-common{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.dm-test-age-common .dm-input{width:45px!important;min-width:45px!important;margin:0;box-sizing:border-box}.dm-test-age-common .cbi-button{margin:0}.dm-test-age-row .dm-input{width:90px!important;margin:0;box-sizing:border-box}.dm-test-age-list + .dm-actions{margin-top:10px}.dm-watchdog-list{display:flex;flex-direction:column;gap:1px;margin-top:5px}.dm-watchdog-row{display:grid;grid-template-columns:minmax(180px,1fr) 105px 90px;align-items:center;gap:9px;min-height:36px;padding:3px 0}.dm-watchdog-row .dm-setting-title{font-size:12.5px}.dm-setting-range{font-size:11px;opacity:.55;white-space:nowrap}.dm-watchdog-row .dm-input{width:105px!important;margin:0;box-sizing:border-box}.dm-watchdog-save{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin-top:12px}.dm-watchdog-save .cbi-button{padding:5px 12px;font-size:12.5px}.dm-watchdog-advanced{margin-top:8px;border-top:1px solid rgba(110,118,129,.14);padding-top:8px}.dm-watchdog-advanced>summary{cursor:pointer;font-size:12.5px;font-weight:600;opacity:.72;list-style:none}.dm-watchdog-advanced>summary::-webkit-details-marker{display:none}.dm-watchdog-advanced>summary:before{content:'▸';display:inline-block;margin-right:6px;transition:transform .15s ease}.dm-watchdog-advanced[open]>summary:before{transform:rotate(90deg)}.dm-setting-feedback{font-size:11.5px;line-height:1.3;white-space:nowrap}.dm-setting-feedback.ok{color:#1a7f37}.dm-setting-feedback.error{color:#cf222e}.dm-setting-feedback.info{opacity:.65}"+
+  ".dm-test-age-list{display:flex;flex-direction:column;gap:0;margin:0;padding:0}.dm-test-age-row{display:grid;grid-template-columns:minmax(0,1fr) 90px 20px;align-items:center;gap:8px;min-height:36px;margin:0;padding:3px 0;border:0!important}.dm-test-age-label{font-size:13px;font-weight:600;white-space:nowrap}.dm-test-age-unit,.dm-watchdog-unit{font-size:12px;opacity:.62;white-space:nowrap}.dm-test-age-common{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.dm-test-age-common .dm-input{width:60px!important;min-width:60px!important;margin:0;box-sizing:border-box}.dm-test-age-common .cbi-button{margin:0}.dm-test-age-row .dm-input{width:90px!important;margin:0;box-sizing:border-box}.dm-test-age-list + .dm-actions{margin-top:10px}.dm-watchdog-list{display:flex;flex-direction:column;gap:1px;margin-top:5px}.dm-watchdog-row{display:grid;grid-template-columns:minmax(180px,1fr) 105px 90px;align-items:center;gap:9px;min-height:36px;padding:3px 0}.dm-watchdog-row .dm-setting-title{font-size:12.5px}.dm-setting-range{font-size:11px;opacity:.55;white-space:nowrap}.dm-watchdog-row .dm-input{width:105px!important;margin:0;box-sizing:border-box}.dm-watchdog-save{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin-top:12px}.dm-watchdog-save .cbi-button{padding:5px 12px;font-size:12.5px}.dm-watchdog-advanced{margin-top:8px;border-top:1px solid rgba(110,118,129,.14);padding-top:8px}.dm-watchdog-advanced>summary{cursor:pointer;font-size:12.5px;font-weight:600;opacity:.72;list-style:none}.dm-watchdog-advanced>summary::-webkit-details-marker{display:none}.dm-watchdog-advanced>summary:before{content:'▸';display:inline-block;margin-right:6px;transition:transform .15s ease}.dm-watchdog-advanced[open]>summary:before{transform:rotate(90deg)}.dm-setting-feedback{font-size:11.5px;line-height:1.3;white-space:nowrap}.dm-setting-feedback.ok{color:#1a7f37}.dm-setting-feedback.error{color:#cf222e}.dm-setting-feedback.info{opacity:.65}"+
   '.dm-card{min-width:0;box-sizing:border-box;background:var(--background-color-medium,#fff);border:1px solid rgba(0,0,0,.08);border-radius:11px;padding:15px 18px;box-shadow:0 1px 3px rgba(0,0,0,.04),0 1px 2px rgba(0,0,0,.03);overflow-wrap:break-word}.dm-card:hover{box-shadow:0 2px 7px rgba(0,0,0,.06)}'+
   'html.dm-theme-dark .dm-card{background:#1c2128;border-color:rgba(255,255,255,.10);box-shadow:0 1px 3px rgba(0,0,0,.22)}'+
   '.dm-version-action{display:flex;align-items:center;gap:7px;flex-wrap:wrap}.dm-version-action .cbi-button{padding:4px 9px;font-size:12px}.dm-version-error{display:inline-flex;align-items:center;gap:7px;flex-wrap:wrap}.dm-version-error-text{font-size:11.5px;opacity:.72}.dm-version-line{display:flex;align-items:center;gap:9px;margin:7px 0;flex-wrap:wrap}.dm-version-name{font-size:13px;font-weight:600;flex:0 1 160px;min-width:135px}.dm-version-state{min-width:0;flex:1 1 auto}.dm-card h3{margin:0 0 10px;font-size:15px;font-weight:600;display:flex;align-items:center;gap:7px;flex-wrap:wrap}.dm-doh-profile{display:inline-flex;align-items:center;gap:5px;margin-left:auto;padding:4px 9px;border:1px solid rgba(110,118,129,.18);border-radius:999px;background:rgba(110,118,129,.06);font-size:11.5px;font-weight:500;white-space:nowrap}.dm-doh-profile-label{opacity:.62}.dm-doh-profile-value{font-weight:650}.dm-row{display:flex;align-items:center;gap:10px;margin:6px 0;font-size:13px;flex-wrap:wrap}.dm-label{opacity:.65;flex-shrink:0}.dm-row-value{overflow-wrap:anywhere}'+
@@ -3999,7 +4013,9 @@ function renderHeader(root,st){
 function setActiveTab(root,name){
   var groups={
     dashboard:['overview','test-inline'],
-    doh:['doh','slots','profiles'],
+    doh:['doh','profiles'],
+    slots:['slots'],
+    devices:['devices'],
     network:['network'],
     time:['time'],
     catalog:['catalog'],
@@ -4008,7 +4024,7 @@ function setActiveTab(root,name){
   var nextTab=groups[name]?name:'dashboard';
   if(state.activeTab!==nextTab)state.lastAction=null;
   state.activeTab=nextTab;
-  ['overview','doh','slots','profiles','network','time','job','catalog','log','test-inline'].forEach(function(id){
+  ['overview','doh','slots','devices','profiles','network','time','job','catalog','log','test-inline'].forEach(function(id){
     var panel=root.querySelector('#dm-'+id);
     if(panel) panel.style.display='none';
   });
@@ -4395,7 +4411,7 @@ function refreshDeviceDnsPanels(root){
   ]).then(function(v){
     window.dmLanDevices=v[0]||{ok:false,devices:[]};
     window.dmState=v[1]||{};
-    renderSlots(root,window.dmState);
+    renderDeviceDns(root,window.dmState);
   });
 }
 function saveDeviceDns(mac,controls,root){
@@ -4423,7 +4439,7 @@ function saveDeviceDns(mac,controls,root){
     state.busy=false;
     var msg=withRpcError('Не удалось применить DNS для устройства.',err);
     state.pageNotice.slots=msg;setAction(false,msg);
-    renderSlots(root,window.dmState||{});
+    renderDeviceDns(root,window.dmState||{});
   });
 }
 
@@ -4774,7 +4790,7 @@ function renderProfiles(root,st){
 }
 
 function renderSlots(root,st){
-  var e=root.querySelector('#dm-slots');if(!e)return;e.innerHTML='';var rows=[];var deviceChildren=[];
+  var e=root.querySelector('#dm-slots');if(!e)return;e.innerHTML='';var rows=[];
   (st.slots||[]).forEach(function(d){
     var assigned=!!d.id;
     var checking=assigned&&state.checking&&state.checking[d.id];
@@ -4826,6 +4842,10 @@ function renderSlots(root,st){
   if(state.pageNotice.slots)sch.push(E('div',{'class':'dm-inline-msg info'},state.pageNotice.slots));
   e.appendChild(card('DNS по слотам и маршруты доменов',sch));
 
+}
+
+function renderDeviceDns(root,st){
+  var e=root.querySelector('#dm-devices');if(!e)return;e.innerHTML='';var deviceChildren=[];
   var inventory=window.dmLanDevices||{};
   var available={};
   var slotNames={};
@@ -4837,8 +4857,9 @@ function renderSlots(root,st){
     }
   });
   if(state.lanDevicesMessage){
-    deviceChildren.push(E('div',{'class':'dm-inline-msg '+(state.lanDevicesLoading?'info':'info')},state.lanDevicesMessage));
+    deviceChildren.push(E('div',{'class':'dm-inline-msg info'},state.lanDevicesMessage));
   }
+  if(state.pageNotice.slots)deviceChildren.push(E('div',{'class':'dm-inline-msg info'},state.pageNotice.slots));
   var devices=Array.isArray(inventory.devices)?inventory.devices:[];
   if(!inventory.ok){
     deviceChildren.push(E('div',{'class':'dm-hint'},'Не удалось получить список устройств LAN.'));
@@ -4925,7 +4946,7 @@ function renderSlots(root,st){
       if(state.lanDevicesLoading||state.busy||state.jobRunning)return;
       state.lanDevicesLoading=true;
       state.lanDevicesMessage='Обновляю список устройств LAN… Пожалуйста, подождите.';
-      renderSlots(root,window.dmState||{});
+      renderDeviceDns(root,window.dmState||{});
       callLanDevices().then(function(r){
         window.dmLanDevices=r||{ok:false,devices:[]};
         state.lanDevicesLoading=false;
@@ -4937,16 +4958,17 @@ function renderSlots(root,st){
         }else{
           state.lanDevicesMessage=(window.dmLanDevices.error||'Не удалось получить список устройств LAN.');
         }
-        renderSlots(root,window.dmState||{});
+        renderDeviceDns(root,window.dmState||{});
       }).catch(function(err){
         state.lanDevicesLoading=false;
         state.lanDevicesMessage=withRpcError('Не удалось обновить список устройств.',err);
-        renderSlots(root,window.dmState||{});
+        renderDeviceDns(root,window.dmState||{});
       });
     },{disabled:!!state.lanDevicesLoading||!!state.busy||!!state.jobRunning})
   ]));
   e.appendChild(card('Устройства LAN — привязка к DoH',deviceChildren));
 }
+
 function settingCard(root,x,st){
   var en=yes(st[x[0]]),busy=state.busySetting===x[0],feedback=settingFeedback(x[1],x[0]),sv=settingStateView(st,x[0]);
   var active=(settingModuleState(st,x[0])===1)||((settingModuleState(st,x[0])===-1)&&en);
@@ -5343,15 +5365,18 @@ function renderCatalog(root){
     var summary=total>0
       ? 'Проверено '+done+' из '+total+' · доступно '+okn+' · ошибки '+failn
       : 'Подготавливаю список DNS-серверов…';
+    var detail=String(p.detail||'').trim();
+    if(!running&&detail==='Проверка запущена…')detail='';
+    if(!detail&&running)detail='Проверка запущена…';
     var method=[
       E('div',{'class':'dm-mini'},title),
       E('div',{'class':'dm-mem-line'},[
         E('div',{'class':'dm-mem-track'},[E('div',{'class':'dm-mem-fill','style':'width:'+pct+'%'})]),
         E('span',{'class':'dm-mem-value'},pct+'%')
       ]),
-      E('div',{'class':'dm-mem-meta'},summary),
-      E('div',{'class':'dm-inline-msg info'},String(p.detail||'Проверка запущена…')),
+      E('div',{'class':'dm-mem-meta'},summary)
     ];
+    if(detail)method.push(E('div',{'class':'dm-inline-msg info'},detail));
     ch.push(card('Ход проверки',method));
   }
 
@@ -5416,8 +5441,13 @@ function render(root,st){
   switch(state.activeTab){
     case 'doh':
       renderDoH(root,st);
-      renderSlots(root,st);
       renderProfiles(root,st);
+      break;
+    case 'slots':
+      renderSlots(root,st);
+      break;
+    case 'devices':
+      renderDeviceDns(root,st);
       break;
     case 'network':
       renderNetwork(root,st);
@@ -5440,7 +5470,14 @@ function render(root,st){
 }
 function routeStatusCall(){
   switch(currentRoute()){
-    case 'doh': return Promise.all([callDohStatus(),callLanDevices().catch(function(){return {ok:false,devices:[]};})]).then(function(v){window.dmLanDevices=v[1]||{};return v[0]||{};});
+    case 'doh':
+    case 'slots':
+      return callDohStatus();
+    case 'devices':
+      return Promise.all([
+        callDohStatus(),
+        callLanDevices().catch(function(){return {ok:false,devices:[]};})
+      ]).then(function(v){window.dmLanDevices=v[1]||{};return v[0]||{};});
     case 'network': return callNetworkStatus();
     case 'time': return callTimeStatus();
     case 'catalog':
@@ -6125,7 +6162,16 @@ return baseclass.extend({
   render:function(st){
     var root=E('div',{'class':'dm-wrap'});
     var route=currentRoute();
-    var ids={dashboard:['dm-header','dm-overview'],doh:['dm-header','dm-doh','dm-slots','dm-profiles'],network:['dm-header','dm-network'],time:['dm-header','dm-time'],catalog:['dm-header','dm-catalog'],log:['dm-header','dm-log']}[route]||['dm-header','dm-overview'];
+    var ids={
+      dashboard:['dm-header','dm-overview'],
+      doh:['dm-header','dm-doh','dm-profiles'],
+      slots:['dm-header','dm-slots'],
+      devices:['dm-header','dm-devices'],
+      network:['dm-header','dm-network'],
+      time:['dm-header','dm-time'],
+      catalog:['dm-header','dm-catalog'],
+      log:['dm-header','dm-log']
+    }[route]||['dm-header','dm-overview'];
     ids.forEach(function(id){root.appendChild(E('section',{'id':id}));});
     injectStyle(root);window.dmState=st||{};state.activeTab=route;window.dmCurrentRoot=root;
     render(root,st||{});
@@ -6151,14 +6197,14 @@ EOF_COMMON
     }
 
     rm -f "$VIEW_DIR/overview.js" 2>/dev/null || true
-    for _page in dashboard doh network time catalog log; do
+    for _page in dashboard doh slots devices network time catalog log; do
         _page_stage="/tmp/dns-manager-luci-${_page}.$$"
         rm -f "$_page_stage" 2>/dev/null || true
         cat > "${_page_stage}" <<'EOF_PAGE'
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 1.102
+// DNS Manager LuCI version: 1.106
 return view.extend({
   load: DM.load,
   render: DM.render,
