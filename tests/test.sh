@@ -1130,8 +1130,8 @@ fi
 if grep -q "dm-doh-state.*остановлен" "$tmp/common.js"; then
     fail "LuCI DoH rows still expose process stop state instead of test state"
 fi
-grep -q "hasPing(ci.ping)" "$tmp/common.js" || fail "LuCI does not render DNS test ping"
-grep -q "'dm-doh-ping'" "$tmp/common.js" || fail "LuCI DoH page does not render DNS test ping"
+grep -q "stateBadge(status,ci.ping)" "$tmp/common.js" || fail "LuCI does not render DNS test ping in the status badge"
+grep -Fq "E('span',{'class':'dm-doh-state'},statusNode)" "$tmp/common.js" || fail "LuCI DoH page does not render the DNS test status badge"
 ok "LuCI DoH rows use test result status and ping"
 awk '/^function forceComponentItem\(st\)\{/,/^function watchdogComponentItem/' "$tmp/common.js" > "$tmp/force_component.js"
 if grep -q "setSetting('force'" "$tmp/force_component.js"; then
