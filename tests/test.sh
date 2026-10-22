@@ -438,10 +438,10 @@ grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp
 grep -q 'VERSION="3.74"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
 grep -q 'VERSION="1.107"' dns-manager-luci.sh || fail "LuCI version not bumped"
-main_luci_url='https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh'
-[ "$(grep -Fc "$main_luci_url" dns-manager-luci.sh)" -eq 2 ] || fail "released LuCI updater URLs are not pinned to main"
-if grep -Fq 'https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/luci-dns-sections-tabs-20261022/dns-manager-luci.sh' dns-manager-luci.sh; then fail "released LuCI updater still targets the test branch"; fi
-ok "LuCI version and update source target main"
+test_luci_url='https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/watchdog-network-status-20261022/dns-manager-luci.sh'
+[ "$(grep -Fc "$test_luci_url" dns-manager-luci.sh)" -eq 2 ] || fail "test LuCI updater URLs are not pinned to this test branch"
+if grep -Fq 'https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh' dns-manager-luci.sh; then fail "test LuCI updater still targets main"; fi
+ok "LuCI version and update source target this test branch"
 grep -Fq 'return m ~ /^[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]$/' dns-manager-luci.sh || fail "LAN inventory merge rejects valid six-octet MAC addresses"
 grep -Fq 'NF >= 2 && $2 ~ /^[1-6](,[1-6])*$/ &&' dns-manager-luci.sh || fail "saved LAN device assignments do not require valid DNS slot lists"
 grep -Fq "state.lanDevicesMessage='Обновляю список устройств LAN… Пожалуйста, подождите.'" dns-manager-luci.sh || fail "LAN refresh does not display a waiting message"
