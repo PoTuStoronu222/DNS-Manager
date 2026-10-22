@@ -387,7 +387,7 @@ C_TITLE='\033[0;34m'
 C_SECTION='\033[1;33m'
 # ==========================================
 # ==========================================
-UPDATE_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager.sh"
+UPDATE_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/watchdog-stalled-slot-recovery-20261022/dns-manager.sh"
 _ver_newer() {
     awk -v a="$1" -v b="$2" 'BEGIN{
         na=split(a,x,"\\."); nb=split(b,y,"\\."); n=(na>nb?na:nb);
