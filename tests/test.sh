@@ -437,7 +437,7 @@ grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validat
 grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
 grep -q 'VERSION="3.74"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
-grep -q 'VERSION="1.103"' dns-manager-luci.sh || fail "LuCI version not bumped"
+grep -q 'VERSION="1.104"' dns-manager-luci.sh || fail "LuCI version not bumped"
 test_luci_url='https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/luci-dns-sections-tabs-20261022/dns-manager-luci.sh'
 [ "$(grep -Fc "$test_luci_url" dns-manager-luci.sh)" -eq 2 ] || fail "test LuCI updater URLs are not pinned to the test branch"
 ok "test LuCI version and update source are isolated from main"
@@ -475,6 +475,9 @@ if grep -Fq "'disabled':!usable&&!selected" dns-manager-luci.sh; then fail "LAN 
 grep -Fq "doh:['doh','profiles']" dns-manager-luci.sh || fail "DoH page still includes DNS slots or device bindings"
 grep -Fq "slots:['slots']" dns-manager-luci.sh || fail "DNS slot/domain panel is not isolated to its own page"
 grep -Fq "devices:['devices']" dns-manager-luci.sh || fail "LAN device binding is not isolated to its own page"
+grep -Fq "if(!detail&&running)detail='Проверка запущена…';" dns-manager-luci.sh || fail "catalog check status fallback is not limited to a running check"
+grep -Fq "if(detail)method.push(E('div',{'class':'dm-inline-msg info'},detail));" dns-manager-luci.sh || fail "empty progress details are still displayed after completion"
+grep -Fq 'width:60px!important;min-width:60px!important' dns-manager-luci.sh || fail "common freshness hours input remains too narrow"
 grep -q "'bypass','Обход геоблока'" dns-manager-luci.sh || fail "bypass profile label not updated"
 grep -q "'security','Защита от угроз'" dns-manager-luci.sh || fail "security profile label not updated"
 grep -q "'privacy','Конфиденциальность'" dns-manager-luci.sh || fail "privacy profile label not updated"
