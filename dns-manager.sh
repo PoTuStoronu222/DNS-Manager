@@ -6877,8 +6877,8 @@ watchdog_embedded_loop() {
                 watchdog_service_recover_run >/dev/null 2>&1 || true
                 load_config >/dev/null 2>&1 || true
                 refresh_runtime_capabilities >/dev/null 2>&1 || true
-                eval "_id=\${SLOT_\${_trigger}:-}"
-                eval "_port=\${PORT_\${_trigger}:-}"
+                eval "_id=\${SLOT_${_trigger}:-}"
+                eval "_port=\${PORT_${_trigger}:-}"
                 [ -n "$_port" ] || _port="$(hybrid_desired_port "$_trigger")"
                 case "$_trigger" in RU) _domain="yandex.ru";; *) _domain="example.com";; esac
                 if [ -n "$_id" ] && [ -n "$_port" ] && listener_port_exists "$_port" && local_dns_query_ok "$_port" "$_domain"; then
