@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.92
+# Version: 1.93
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -32,7 +32,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/dns-manager-complete-integration-20261021/dns-manager-luci.sh"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.92"
+VERSION="1.93"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -506,7 +506,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/dns-manager-complete-integration-20261021/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="1.92"
+SELF_VERSION="1.93"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -3587,7 +3587,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI common module version: 1.92
+// DNS Manager LuCI common module version: 1.93
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -3899,6 +3899,20 @@ function injectStyle(root){
   '.dm-wrap .dm-catalog-item h4{font-size:14px;font-weight:750;line-height:1.45;overflow-wrap:anywhere}'+
   '.dm-wrap .dm-catalog-item>.dm-meta{display:inline-flex;align-self:flex-start;padding:4px 8px;border-radius:6px;background:rgba(110,118,129,.075);font-size:10.5px;opacity:.82}'+
   '.dm-wrap .dm-catalog-item .dm-catalog-controls{margin-top:auto;padding-top:9px;border-top:1px solid rgba(110,118,129,.13)}'+
+  '.dm-wrap .dm-catalog-assign{display:flex;align-items:center;gap:8px;flex-wrap:wrap;width:100%;min-width:0}'+
+  '.dm-wrap .dm-catalog-assign>.cbi-button-action{flex:1 1 auto;min-width:100px}'+
+  '.dm-wrap .dm-catalog-controls-custom .dm-catalog-assign>.cbi-button-negative{flex:0 0 auto}'+
+  '.dm-catalog-slot-picker{display:flex;flex-direction:column;gap:8px;min-width:min(460px,calc(100vw - 64px));margin-top:10px}'+
+  '.dm-catalog-slot-option{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:12px;padding:11px 12px;border:1px solid rgba(110,118,129,.18);border-radius:10px;background:rgba(110,118,129,.035)}'+
+  '.dm-catalog-slot-option.is-current{border-color:rgba(35,134,54,.3);background:rgba(35,134,54,.06)}'+
+  '.dm-catalog-slot-option.is-occupied{border-color:rgba(191,135,0,.22)}'+
+  '.dm-catalog-slot-main{display:flex;flex-direction:column;gap:4px;min-width:0}'+
+  '.dm-catalog-slot-title{font-size:12px;font-weight:750;letter-spacing:.015em;opacity:.75}'+
+  '.dm-catalog-slot-current{font-size:12.5px;font-weight:600;line-height:1.45;overflow-wrap:anywhere}'+
+  '.dm-catalog-slot-status{margin-top:1px}'+
+  '.dm-catalog-slot-port{font-size:10.5px;opacity:.6}'+
+  'html.dm-theme-dark .dm-catalog-slot-option{background:rgba(255,255,255,.025);border-color:rgba(255,255,255,.1)}'+
+  '@media(max-width:560px){.dm-catalog-slot-picker{min-width:0;width:100%}.dm-catalog-slot-option{grid-template-columns:minmax(0,1fr);gap:8px}.dm-catalog-slot-option>.cbi-button{width:100%}.dm-wrap .dm-catalog-assign>.cbi-button-action{width:100%}}'+
   '.dm-wrap .dm-custom-dns-form{display:grid;grid-template-columns:minmax(180px,1fr) minmax(240px,1.4fr) auto;align-items:end;gap:12px;margin:12px 0}'+
   '.dm-wrap .dm-custom-dns-form>div{display:flex;flex-direction:column;gap:6px;min-width:0}'+
   '.dm-wrap .dm-custom-dns-form>.cbi-button{justify-self:start}'+
@@ -4381,9 +4395,9 @@ function slotOptionsForCatalog(cat){
 function slotCatalogInfo(slot){
   var st=window.dmState||{},d=null;
   (st.slots||[]).forEach(function(x){if(x&&String(x.slot)===String(slot))d=x;});
-  if(!d||!d.id)return {name:'не назначен',status:'',ping:''};
+  if(!d||!d.id)return {id:'',port:'',name:'не назначен',status:'',ping:''};
   var ci=checkInfo(d.id,d);
-  return {name:d.name||d.id,status:String(ci.status||d.status||''),ping:String(ci.ping||d.ping||'')};
+  return {id:String(d.id),port:String(d.port||''),name:d.name||d.id,status:String(ci.status||d.status||''),ping:String(ci.ping||d.ping||'')};
 }
 function slotCatalogOptionLabel(slot){
   var x=slotCatalogInfo(slot);
@@ -4428,22 +4442,56 @@ function assignDirect(id,slot,root,nextName,nextUrl){
   });
 }
 function renderCatalogAssign(d,root){
-  var slots=slotOptionsForCatalog(d.category),st=window.dmState||{},current='';
-  var ci=checkInfo(d.id,d),checking=String(ci.status||'').toUpperCase()==='RUNNING',unavailable=!checking&&!resolverAvailable(ci);
-  (st.slots||[]).forEach(function(x){if(x&&x.id===d.id)current=String(x.slot||'');});
-  if(slots.indexOf(current)<0)current=slots[0]||'1';
-  var select=E('select',{'class':'dm-assign-select','aria-label':'Слот'});
-  slots.forEach(function(slot){
-    select.appendChild(E('option',{'value':slot},slotCatalogOptionLabel(slot)));
-  });
-  select.value=current;
-  return E('div',{'class':'dm-assign-inline'},[
-    select,
+  var ci=checkInfo(d.id,d);
+  var checking=String(ci.status||'').toUpperCase()==='RUNNING';
+  var unavailable=!checking&&!resolverAvailable(ci);
+  return E('div',{'class':'dm-catalog-assign'},[
     btn(checking?'Проверяется…':(unavailable?'Недоступен':'Назначить'),'cbi-button-action',function(){
       if(unavailable||checking)return;
-      assignDirect(d.id,select.value,root,d.name||d.id,d.url);
+      openCatalogSlotPicker(d,root);
     },{disabled:!!state.busy||!!state.jobRunning||unavailable||checking,title:unavailable?'DNS не прошёл последнюю проверку. Повторите проверку после восстановления.':''})
   ]);
+}
+function openCatalogSlotPicker(d,root){
+  if(state.busy||state.jobRunning||!d)return;
+  var ci=checkInfo(d.id,d);
+  var checking=String(ci.status||'').toUpperCase()==='RUNNING';
+  if(checking||!resolverAvailable(ci))return;
+  var slots=slotOptionsForCatalog(d.category);
+  var name=d.name||d.id;
+  var children=[
+    E('div',{'class':'dm-mini'},'Выберите слот для «'+name+'». Если слот занят другим DNS, кнопка будет помечена «Заменить».'),
+    E('div',{'class':'dm-catalog-slot-picker'},[])
+  ];
+  var list=children[1];
+  slots.forEach(function(slot){
+    var info=slotCatalogInfo(slot);
+    var current=String(info.id||'')===String(d.id);
+    var elsewhere=assignedSlotInfo(d.id,slot);
+    var occupied=!!info.id&&!current;
+    var buttonText=current?'Уже назначен':(elsewhere?'Уже в '+slotLabel(elsewhere.slot):(occupied?'Заменить':'Назначить'));
+    var disabled=!!state.busy||!!state.jobRunning||current||!!elsewhere;
+    var main=[
+      E('div',{'class':'dm-catalog-slot-title'},slotLabel(slot)),
+      E('div',{'class':'dm-catalog-slot-current'},info.name==='не назначен'?'Не назначен':info.name)
+    ];
+    if(info.id&&info.status){
+      main.push(E('div',{'class':'dm-catalog-slot-status'},stateBadge(info.status,info.ping)));
+    }
+    if(info.port){
+      main.push(E('div',{'class':'dm-catalog-slot-port'},'127.0.0.1:'+info.port));
+    }
+    list.appendChild(E('div',{'class':'dm-catalog-slot-option'+(current?' is-current':'')+(occupied?' is-occupied':'')},[
+      E('div',{'class':'dm-catalog-slot-main'},main),
+      btn(buttonText,'cbi-button-'+(occupied?'negative':'action'),function(){
+        if(disabled||state.busy||state.jobRunning)return;
+        ui.hideModal();
+        assignDirect(d.id,slot,root,name,d.url);
+      },{disabled:disabled,title:elsewhere?'Этот DNS уже назначен в '+slotLabel(elsewhere.slot)+'. Дублирование не разрешено.':(current?'Этот DNS уже назначен в выбранный слот.':'')})
+    ]));
+  });
+  children.push(E('div',{'class':'right'},[btn('Отмена','cbi-button-negative',ui.hideModal)]));
+  ui.showModal('Назначить «'+name+'»',children);
 }
 
 function openSlotPicker(slot,root,requestedCategory,requestedOffset,preserveScroll){
@@ -6065,7 +6113,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 1.92
+// DNS Manager LuCI version: 1.93
 return view.extend({
   load: DM.load,
   render: DM.render,
