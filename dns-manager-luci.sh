@@ -2302,7 +2302,7 @@ status_json() {
     _watchdog_service_enabled=0; watchdog_service_enabled && _watchdog_service_enabled=1 || true
     _watchdog_service_running=0; watchdog_service_running && _watchdog_service_running=1 || true
     _watchdog_loop_running=0; watchdog_loop_running && _watchdog_loop_running=1 || true
-    printf ',\"watchdog_fail_threshold\":%s,\"watchdog_repair_cooldown\":%s,\"watchdog_max_restarts\":%s,\"watchdog_guard_interval\":%s' "$_watchdog_threshold" "$_watchdog_repair_cooldown" "$_watchdog_max_restarts" "$_watchdog_guard_interval"
+    printf ',\"watchdog_interval\":%s,\"watchdog_service\":%s,\"watchdog_service_enabled\":%s,\"watchdog_loop\":%s,\"watchdog_fail_threshold\":%s,\"watchdog_repair_cooldown\":%s,\"watchdog_max_restarts\":%s,\"watchdog_guard_interval\":%s,\"watchdog_autoreplace\":%s' "$_watchdog_interval" "$_watchdog_service_running" "$_watchdog_service_enabled" "$_watchdog_loop_running" "$_watchdog_threshold" "$_watchdog_repair_cooldown" "$_watchdog_max_restarts" "$_watchdog_guard_interval" "$_watchdog_autoreplace"
     printf ',\"watchdog_autoreplace\":%s' "$_watchdog_autoreplace"
      printf ',"watchdog_last_check":%s,"watchdog_last_checked":%s,"watchdog_last_failed":%s,"watchdog_last_category":' "$_watchdog_last_check" "$_watchdog_last_checked" "$_watchdog_last_failed"
      json_quote "$_watchdog_last_category"
@@ -4170,7 +4170,7 @@ function renderOverview(root,st){
     :badge('dm-off','выключен');
 
   var wd=yes(st.watchdog)?(st.watchdog_backend==='procd'?(Number(st.watchdog_loop||0)===1?badge('dm-ok','работает'):Number(st.watchdog_service||0)===1?badge('dm-warn','служба запущена, цикл не найден'):badge('dm-bad','служба не запущена')):badge('dm-warn','неизвестный механизм')):badge('dm-off','выключена');
-  var wdDetails='Проверка DNS — каждые '+Number(st.watchdog_interval||600)/60+' мин · после '+Number(st.watchdog_fail_threshold||2)+' сбоев подряд';
+  var wdDetails='Проверка DNS — каждые '+Number(st.watchdog_interval||120)/60+' мин · после '+Number(st.watchdog_fail_threshold||2)+' сбоев подряд';
 
   var dnsItems=[];
   (st.doh_instances||[]).forEach(function(d){
