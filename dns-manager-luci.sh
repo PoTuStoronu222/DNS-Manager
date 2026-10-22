@@ -5093,7 +5093,7 @@ function watchdogCard(root,st){
   var feedback=settingFeedback('','watchdog_batch')||E('span',{'class':'dm-setting-feedback'});
   return E('div',{'class':'dm-watchdog-card'},[
     E('div',{'class':'dm-section-title'},'Контроль текущих DNS'),
-    E('div',{'class':'dm-setting-desc'},'Контроль выполняется каждые '+intervalMinutes+' мин: проверяется локальный порт назначенного DoH и DNS-ответ на запрос example.com (для слота RU — yandex.ru). Это проверка рабочего пути, а не полный тест каталога DNS.'),
+    E('div',{'class':'dm-setting-desc'},'Контроль выполняется каждые '+intervalMinutes+' мин: проверяется локальный порт назначенного DoH и DNS-ответ на запрос example.com (для слота RU — yandex.ru). Это проверка рабочего пути, а не полный тест каталога DNS. Профиль не требуется.'),
     toggleRow('Проверка DNS','Включает периодическую проверку назначенных DoH-слотов. Контроль сам по себе DNS не меняет.',en,'watchdog',false),
     toggleRow('Автозамена DNS','После '+failThreshold+' неудачных проверок подряд заменяет неисправный DNS сервером той же категории; повторная попытка для слота — не раньше чем через '+cooldownMinutes+' мин. Пользовательские DoH автоматически не заменяются.',auto,'watchdog_autoreplace',!en),
     E('div',{'class':'dm-hint'},'Полный разовый тест текущих DoH и дополнительных системных экземпляров доступен на Дашборде кнопкой «Проверить текущие DNS». Он проверяет реальные DoH-endpoint’ы и не включает периодический контроль.'),
