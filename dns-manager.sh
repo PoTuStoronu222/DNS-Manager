@@ -6877,13 +6877,14 @@ watchdog_embedded_loop() {
             done
 
             if [ -n "$_repair_slots" ]; then
-                log_msg "DNS в слотах ${_repair_slots# } не отвечает несколько проверок подряд. Перезапускаю https-dns-proxy без смены выбранных DNS."
-                watchdog_service_recover_run >/dev/null 2>&1 || true
-                load_config >/dev/null 2>&1 || true
-                refresh_runtime_capabilities >/dev/null 2>&1 || true
-                WD_LAST_GUARD_TS="$(date +%s 2>/dev/null)"
-
                 for _trigger in $_repair_slots; do
+                    if ! watchdog_check_slot "$_trigger"; then
+                        log_msg "DNS в слоте $_trigger не отвечает несколько проверок подряд. Перезапускаю только его экземпляр https-dns-proxy."
+                        watchdog_restart_slot_hdp "$_trigger" >/dev/null 2>&1 || true
+                        load_config >/dev/null 2>&1 || true
+                        refresh_runtime_capabilities >/dev/null 2>&1 || true
+                    fi
+
                     if watchdog_check_slot "$_trigger"; then
                         log_msg "Watchdog: слот $_trigger восстановлен после перезапуска; DNS не изменён."
                     elif [ "${WATCHDOG_AUTOREPLACE:-0}" = 1 ]; then
@@ -7497,6 +7498,47 @@ watchdog_slot_target_run() {
     rm -f "$_used" "$_tried"
     release_mutation_lock
     return "$_slot_rc"
+}
+watchdog_restart_slot_hdp() {
+    local _slot _port _pid _proc _match
+    _slot="$1"
+    case "$_slot" in
+        1) _port="${PORT_1:-}" ;;
+        2) _port="${PORT_2:-}" ;;
+        3) _port="${PORT_3:-}" ;;
+        4) _port="${PORT_4:-}" ;;
+        5) _port="${PORT_5:-}" ;;
+        6) _port="${PORT_6:-}" ;;
+        RU) _port="${PORT_RU:-}" ;;
+        *) return 1 ;;
+    esac
+    case "$_port" in ''|*[!0-9]*) return 1 ;; esac
+    acquire_mutation_lock || return 1
+    _pid=""
+    for _proc in /proc/[0-9]*; do
+        [ -r "$_proc/cmdline" ] || continue
+        _match="$(tr '\000' '\n' < "$_proc/cmdline" 2>/dev/null | awk -v p="$_port" '
+            NR == 1 {
+                if ($0 !~ /(^|\/)https-dns-proxy$/) exit 1
+                valid=1
+            }
+            valid && $0 == "-p" {
+                if (getline && $0 == p) found=1
+            }
+            END { if (valid && found) print "yes" }
+        ')"
+        if [ "$_match" = yes ]; then
+            _pid="${_proc##*/}"
+            break
+        fi
+    done
+    if [ -n "$_pid" ]; then
+        kill -TERM "$_pid" 2>/dev/null || _pid=""
+    fi
+    release_mutation_lock
+    [ -n "$_pid" ] || return 1
+    sleep 1
+    return 0
 }
 watchdog_service_recover_run() {
     [ "${WATCHDOG_ENABLED:-0}" = 1 ] || return 0
