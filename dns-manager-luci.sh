@@ -407,12 +407,6 @@ EOF_DEVICE_DNS_SERVICE
     /etc/init.d/dns-manager-device-dns enable >/dev/null 2>&1 || return 1
     rm -f /etc/nftables.d/90-dns-manager-device-dns.nft /etc/nftables.d/90-dns-manager-device-dns.nft.tmp.* 2>/dev/null || true
     rm -f /etc/dns-manager/config/device-dns-default.conf 2>/dev/null || true
-    if [ -f /etc/dns-manager/config/device-dns.conf ]; then
-        _dmd_migrate_tmp="$(mktemp /etc/dns-manager/config/device-dns.migrate.XXXXXX 2>/dev/null)" || return 1
-        awk -F '|' '$2 != "EXCLUDE" { print }' /etc/dns-manager/config/device-dns.conf > "$_dmd_migrate_tmp" &&
-            mv -f "$_dmd_migrate_tmp" /etc/dns-manager/config/device-dns.conf ||
-            { rm -f "$_dmd_migrate_tmp"; return 1; }
-    fi
     /etc/init.d/firewall reload >/dev/null 2>&1 || true
     if ! /etc/init.d/dns-manager-device-dns restart >/dev/null 2>&1; then
         say "ПРЕДУПРЕЖДЕНИЕ: не удалось запустить проверку привязок DNS по устройствам; они остаются без активных правил."
