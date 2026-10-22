@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.93
+# Version: 1.94
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -32,7 +32,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/dns-manager-complete-integration-20261021/dns-manager-luci.sh"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.93"
+VERSION="1.94"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -506,7 +506,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/dns-manager-complete-integration-20261021/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="1.93"
+SELF_VERSION="1.94"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -2211,6 +2211,15 @@ status_json() {
     _cpu_count="$(awk '/^processor[[:space:]]*:/ {n++} END {print n+0}' /proc/cpuinfo 2>/dev/null)"; case "$_cpu_count" in ''|*[!0-9]*|0) _cpu_count=1;; esac
 
     _last=""; _test_scope="all"; _meta="$STATE_DIR/dns-test-results.meta"; [ -r "$_meta" ] || _meta="$PERSIST_STATE_DIR/dns-test-results.meta"; _last="$(sed -n 's/^timestamp=//p' "$_meta" 2>/dev/null | head -n1)"; _test_scope="$(sed -n 's/^test_scope=//p' "$_meta" 2>/dev/null | head -n1)"; [ -n "$_test_scope" ] || _test_scope=all
+    _watchdog_check_file="$STATE_DIR/dns-watchdog-check-results.conf"
+    _watchdog_last_check="$(sed -n 's/^timestamp=//p' "$_watchdog_check_file" 2>/dev/null | head -n1)"
+    _watchdog_last_checked="$(sed -n 's/^checked=//p' "$_watchdog_check_file" 2>/dev/null | head -n1)"
+    _watchdog_last_failed="$(sed -n 's/^failed=//p' "$_watchdog_check_file" 2>/dev/null | head -n1)"
+    _watchdog_last_category="$(sed -n 's/^category=//p' "$_watchdog_check_file" 2>/dev/null | head -n1)"
+    case "$_watchdog_last_check" in ''|*[!0-9]*) _watchdog_last_check=0;; esac
+    case "$_watchdog_last_checked" in ''|*[!0-9]*) _watchdog_last_checked=0;; esac
+    case "$_watchdog_last_failed" in ''|*[!0-9]*) _watchdog_last_failed=0;; esac
+    [ -n "$_watchdog_last_category" ] || _watchdog_last_category=unknown
     _cat_total="$(grep -v '^#' "$CATALOG_FILE" 2>/dev/null | grep -c '^[^|][^|]*|' 2>/dev/null || printf 0)"
 
     _luciv="$(read_installed_luci_version)"
@@ -2296,6 +2305,25 @@ status_json() {
     _watchdog_service_running=0; watchdog_service_running && _watchdog_service_running=1 || true
     _watchdog_loop_running=0; watchdog_loop_running && _watchdog_loop_running=1 || true
          printf ',"watchdog_interval":%s,"watchdog_service":%s,"watchdog_service_enabled":%s,"watchdog_loop":%s,"watchdog_fail_threshold":%s,"watchdog_repair_cooldown":%s,"watchdog_max_repairs":%s,"watchdog_max_restarts":%s,"watchdog_max_candidates":%s,"watchdog_guard_interval":%s' "$_watchdog_interval" "$_watchdog_service_running" "$_watchdog_service_enabled" "$_watchdog_loop_running" "$_watchdog_threshold" "$_watchdog_repair_cooldown" "$_watchdog_max_repairs" "$_watchdog_max_restarts" "$_watchdog_max_candidates" "$_watchdog_guard_interval"
+     printf ',"watchdog_last_check":%s,"watchdog_last_checked":%s,"watchdog_last_failed":%s,"watchdog_last_category":' "$_watchdog_last_check" "$_watchdog_last_checked" "$_watchdog_last_failed"
+     json_quote "$_watchdog_last_category"
+     printf ',"watchdog_last_records":['
+     _wd_rec_sep=""
+     if [ -r "$_watchdog_check_file" ]; then
+         while IFS='|' read -r _wr_tag _wr_slot _wr_id _wr_cat _wr_name _wr_status; do
+             [ "$_wr_tag" = record ] || continue
+             case "$_wr_status" in OK|FAIL|NO_LISTENER|SKIPPED) ;; *) _wr_status=SKIPPED;; esac
+             [ -n "$_wr_name" ] || _wr_name="DNS $_wr_slot"
+             printf '%s{"slot":' "$_wd_rec_sep"; json_quote "$_wr_slot"
+             printf ',"id":'; json_quote "$_wr_id"
+             printf ',"name":'; json_quote "$_wr_name"
+             printf ',"category":'; json_quote "$_wr_cat"
+             printf ',"status":'; json_quote "$_wr_status"
+             printf '}'
+             _wd_rec_sep=","
+         done < "$_watchdog_check_file"
+     fi
+     printf ']'
      printf ',"dnsmasq_perf_state":%s' "$_dnsmasq_perf_state"
     printf ',"ntp_enabled":%s,"ntp_use_dhcp":%s' "$_ntp_enabled" "$_ntp_use_dhcp"
     printf ',"ntp_preset":'; json_quote "$_ntp_preset"
@@ -3587,7 +3615,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI common module version: 1.93
+// DNS Manager LuCI common module version: 1.94
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -3918,6 +3946,23 @@ function injectStyle(root){
   '.dm-wrap .dm-custom-dns-form>.cbi-button{justify-self:start}'+
   '.dm-wrap .dm-test-age-row{min-height:40px;border-bottom:1px solid rgba(110,118,129,.1)}'+
   '.dm-wrap .dm-watchdog-row{min-height:42px;padding:6px 0;border-bottom:1px solid rgba(110,118,129,.1)}'+
+   '.dm-wrap .dm-watchdog-card{display:flex;flex-direction:column;gap:14px;padding:2px 0 15px;border-bottom:1px solid rgba(110,118,129,.18)}'+
+   '.dm-wrap .dm-watchdog-status{gap:10px}'+
+   '.dm-wrap .dm-watchdog-status .dm-row{min-width:0;padding:11px 12px;border:1px solid rgba(110,118,129,.16);border-radius:9px;background:rgba(110,118,129,.035)}'+
+   '.dm-wrap .dm-watchdog-lastcheck{display:flex;flex-direction:column;gap:9px;padding:12px;border:1px solid rgba(110,118,129,.18);border-radius:11px;background:rgba(110,118,129,.035)}'+
+   '.dm-wrap .dm-watchdog-lastcheck-head{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;font-size:12px}'+
+   '.dm-wrap .dm-watchdog-lastcheck-head strong{font-size:12.5px;font-weight:750}'+
+   '.dm-wrap .dm-watchdog-lastcheck-head span{font-size:11px;opacity:.72}'+
+   '.dm-wrap .dm-watchdog-records{display:flex;flex-direction:column;gap:6px}'+
+   '.dm-wrap .dm-watchdog-record{display:grid;grid-template-columns:58px minmax(0,1fr) auto;align-items:center;gap:10px;padding:8px 9px;border:1px solid rgba(110,118,129,.12);border-radius:8px;background:var(--background-color-base,#fff)}'+
+   '.dm-wrap .dm-watchdog-record-slot{font-size:11px;font-weight:750;opacity:.75}'+
+   '.dm-wrap .dm-watchdog-record-main{display:flex;flex-direction:column;gap:2px;min-width:0}'+
+   '.dm-wrap .dm-watchdog-record-name{font-size:12px;line-height:1.4;overflow-wrap:anywhere}'+
+   '.dm-wrap .dm-watchdog-record-category{font-size:10.5px;opacity:.68}'+
+   'html.dm-theme-dark .dm-wrap .dm-watchdog-status .dm-row,html.dm-theme-dark .dm-wrap .dm-watchdog-lastcheck{border-color:rgba(255,255,255,.1);background:rgba(255,255,255,.025)}'+
+   'html.dm-theme-dark .dm-wrap .dm-watchdog-record{border-color:rgba(255,255,255,.08);background:rgba(255,255,255,.025)}'+
+   '@media(max-width:560px){.dm-wrap .dm-watchdog-record{grid-template-columns:48px minmax(0,1fr);gap:7px}.dm-wrap .dm-watchdog-record>.dm-badge{grid-column:2;justify-self:start}.dm-wrap .dm-watchdog-lastcheck-head{align-items:flex-start;flex-direction:column;gap:4px}}'+
+
   '.dm-wrap .dm-watchdog-row:last-child{border-bottom:0}'+
   '.dm-wrap .dm-profile-progress{padding:13px;border:1px solid rgba(110,118,129,.19);border-radius:10px;background:rgba(110,118,129,.04)}'+
   '.dm-wrap .dm-page-nav{padding:5px;border:1px solid rgba(110,118,129,.17);border-radius:11px;background:var(--background-color-base,#fff);box-shadow:0 2px 8px rgba(15,23,42,.035)}'+
@@ -3946,9 +3991,11 @@ function rootAlive(root){return !!root&&!!document&&!!document.documentElement&&
 function globalUpdateNotice(msg,type){}
 function renderHeader(root,st){
   var e=root.querySelector('#dm-header');if(!e)return;e.innerHTML='';
-  var lastTest=dateText(st.last_full_test);
-  var scope=String(st.last_full_test_scope||'all');
-  var scopeNames={all:'весь каталог',bypass:'Обход геоблока',clean:'Без фильтрации',security:'Защита от угроз',privacy:'Конфиденциальность',adblock:'Блокировка рекламы',family:'Семейная фильтрация'};
+  var fullAt=Number(st.last_full_test||0),watchdogAt=Number(st.watchdog_last_check||0);
+  var useWatchdog=watchdogAt>0&&watchdogAt>=fullAt;
+  var lastTest=dateText(useWatchdog?st.watchdog_last_check:st.last_full_test);
+  var scope=String(useWatchdog?st.watchdog_last_category:(st.last_full_test_scope||'all'));
+  var scopeNames={all:'весь каталог',bypass:'Обход геоблока',clean:'Без фильтрации',security:'Защита от угроз',privacy:'Конфиденциальность',adblock:'Блокировка рекламы',family:'Семейная фильтрация',gaming:'Игры',regional:'Региональный DNS',custom:'Пользовательский DNS',mixed:'Несколько категорий',unknown:'DNS'};
   var scopeLabel=scopeNames[scope]||scope;
   var testText=lastTest==='—'?'Последняя проверка DNS: не выполнялась':'Последняя проверка DNS: '+lastTest+' · '+scopeLabel;
   e.appendChild(E('div',{'class':'dm-header'},[
@@ -5035,7 +5082,7 @@ function watchdogCard(root,st){
     ])
   ]);
 
-  var status=E('div',{'class':'dm-grid2'},[
+  var status=E('div',{'class':'dm-watchdog-status dm-grid2'},[
     row('Служба',badge(service?'dm-ok':'dm-warn',service?'работает':'не работает')),
     row('Проверка DNS',badge(loop?'dm-ok':service?'dm-warn':'dm-off',loop?'активна':service?'ждёт запуска':'не работает'))
   ]);
@@ -5053,9 +5100,37 @@ function watchdogCard(root,st){
     ])
   ]);
 
-  return E('div',{},[
+  var categoryNames={bypass:'Обход геоблока',clean:'Без фильтрации',security:'Защита от угроз',privacy:'Конфиденциальность',adblock:'Блокировка рекламы',family:'Семейная фильтрация',gaming:'Игры',regional:'Региональный DNS',custom:'Пользовательский DNS',unknown:'Категория не определена'};
+  var records=Array.isArray(st.watchdog_last_records)?st.watchdog_last_records:[];
+  var lastView=null;
+  if(records.length){
+    var recordRows=records.map(function(d){
+      var status=String(d.status||'SKIPPED');
+      var statusKind=status==='OK'?'dm-ok':(status==='SKIPPED'?'dm-off':'dm-bad');
+      var statusText=status==='OK'?'доступен':status==='FAIL'?'не отвечает':status==='NO_LISTENER'?'нет локального порта':'не проверен';
+      var cat=String(d.category||'unknown');
+      return E('div',{'class':'dm-watchdog-record'},[
+        E('span',{'class':'dm-watchdog-record-slot'},'DNS '+String(d.slot||'—')),
+        E('div',{'class':'dm-watchdog-record-main'},[
+          E('strong',{'class':'dm-watchdog-record-name'},String(d.name||d.id||'DNS')),
+          E('span',{'class':'dm-watchdog-record-category'},categoryNames[cat]||cat)
+        ]),
+        badge(statusKind,statusText)
+      ]);
+    });
+    lastView=E('div',{'class':'dm-watchdog-lastcheck'},[
+      E('div',{'class':'dm-watchdog-lastcheck-head'},[
+        E('strong',{},'Результаты последнего цикла'),
+        E('span',{},'Проверено: '+String(st.watchdog_last_checked||0)+' · проблем: '+String(st.watchdog_last_failed||0))
+      ]),
+      E('div',{'class':'dm-watchdog-records'},recordRows)
+    ]);
+  }
+
+  return E('div',{'class':'dm-watchdog-card'},[
     action,
     status,
+    lastView,
     E('div',{'class':'dm-section-title'},'Настройки контроля'),
     main,
     advanced,
@@ -6113,7 +6188,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 1.93
+// DNS Manager LuCI version: 1.94
 return view.extend({
   load: DM.load,
   render: DM.render,
