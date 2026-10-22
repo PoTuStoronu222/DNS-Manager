@@ -4118,9 +4118,13 @@ function forceComponentItem(st){
   );
 }
 function watchdogComponentItem(st,wd,wdDetails){
-  st=st||{};
-  var busy=!!state.busy;
-  return componentItem('Автопроверка и замена DNS',
+  return componentItem('Проверка DNS',
+    wd,
+    E('div',{'class':'dm-component-details'},wdDetails)
+  );
+}
+function watchdogReplacementComponentItem(wd,wdDetails){
+  return componentItem('Автозамена DNS',
     wd,
     E('div',{'class':'dm-component-details'},wdDetails)
   );
@@ -4212,8 +4216,14 @@ function renderOverview(root,st){
     :yes(st.force_manager)?badge('dm-ok','DNS Manager')
     :badge('dm-off','выключен');
 
-  var wd=yes(st.watchdog)?(st.watchdog_backend==='procd'?(Number(st.watchdog_loop||0)===1?badge('dm-ok','работает'):Number(st.watchdog_service||0)===1?badge('dm-warn','служба запущена, цикл не найден'):badge('dm-bad','служба не запущена')):badge('dm-warn','неизвестный механизм')):badge('dm-off','выключена');
-  var wdDetails='Проверка DNS — каждые '+Number(st.watchdog_interval||120)/60+' мин · после '+Number(st.watchdog_fail_threshold||2)+' сбоев подряд';
+  var watchdogEnabled=yes(st.watchdog);
+  var watchdogLoop=Number(st.watchdog_loop||0)===1;
+  var watchdogService=Number(st.watchdog_service||0)===1;
+  var watchdogAutoReplace=yes(st.watchdog_autoreplace);
+  var wd=watchdogEnabled?(st.watchdog_backend==='procd'?(watchdogLoop?badge('dm-ok','работает'):watchdogService?badge('dm-warn','служба запущена, цикл не найден'):badge('dm-bad','служба не запущена')):badge('dm-warn','неизвестный механизм')):badge('dm-off','выключена');
+  var wdDetails='Интервал: каждые '+Number(st.watchdog_interval||120)/60+' мин.';
+  var wdAuto=!watchdogEnabled?badge('dm-off','проверка выключена'):watchdogAutoReplace?(watchdogLoop?badge('dm-ok','включена'):badge('dm-warn','проверка не работает')):badge('dm-off','выключена');
+  var wdAutoDetails='Замена после '+Number(st.watchdog_fail_threshold||2)+' последовательных сбоев.';
 
   var dnsItems=[];
   (st.doh_instances||[]).forEach(function(d){
@@ -4233,6 +4243,7 @@ function renderOverview(root,st){
   if(!dnsItems.length)dnsItems.push(E('div',{'class':'dm-hint'},'DNS в слоты не назначены.'));
   var components=card('Компоненты',[
     watchdogComponentItem(st,wd,wdDetails),
+    watchdogReplacementComponentItem(wdAuto,wdAutoDetails),
     forceComponentItem(st),
     componentSettingItem('Увеличенный кэш DNS','dnsmasq_perf'),
   ]);
