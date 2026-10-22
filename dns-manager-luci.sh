@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.90
+# Version: 1.91
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -32,7 +32,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/dns-manager-complete-integration-20261021/dns-manager-luci.sh"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.90"
+VERSION="1.91"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -506,7 +506,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/dns-manager-complete-integration-20261021/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="1.90"
+SELF_VERSION="1.91"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -3587,7 +3587,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI common module version: 1.90
+// DNS Manager LuCI common module version: 1.91
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -3833,7 +3833,97 @@ function injectStyle(root){
   '.dm-page-nav{position:sticky;top:0;z-index:20;padding:7px 0;background:var(--background-color-base,#fff);border-bottom:1px solid rgba(0,0,0,.08)}.dm-page-nav::before,.dm-page-nav::after{content:"";position:absolute;left:0;right:0;height:7px;background:var(--background-color-base,#fff);pointer-events:none}.dm-page-nav::before{top:-7px}.dm-page-nav::after{bottom:-7px}.dm-page-tabs{display:flex;align-items:stretch;gap:4px;overflow-x:auto;scrollbar-width:none;padding:0 2px}.dm-page-tabs::-webkit-scrollbar{display:none}.dm-page-tab{flex:0 0 auto;padding:7px 12px!important;border-radius:8px 8px 0 0!important;font-size:12.5px!important;font-weight:600!important;border:1px solid transparent!important;background:transparent!important;box-shadow:none!important}.dm-page-tab:hover{background:rgba(0,0,0,.05)!important}.dm-page-tab.active{background:var(--background-color-medium,#fff)!important;border-color:rgba(0,0,0,.12)!important;border-bottom-color:var(--background-color-medium,#fff)!important}.dm-page-nav-title{display:none}.dm-wrap>section{scroll-margin-top:58px}'+
   '.dm-section-title{font-size:12px;letter-spacing:.02em;text-transform:none;opacity:.62;margin:3px 0 0;padding:0 2px}'+
   '@media(max-width:850px){.dm-test-age-common{flex-wrap:wrap}.dm-grid2{grid-template-columns:1fr}.dm-grid4{grid-template-columns:repeat(2,minmax(0,1fr))}.dm-doh-row{grid-template-columns:max-content minmax(0,max-content) max-content max-content minmax(0,1fr);gap:7px}.dm-doh-name{max-width:220px}.dm-doh-ping{display:block}.dm-slot-row{grid-template-columns:40px minmax(0,max-content) max-content max-content max-content minmax(140px,auto);gap:7px}.dm-slot-name{max-width:190px}.dm-catalog{grid-template-columns:repeat(2,minmax(0,1fr))}}'+
-  '@media(max-width:560px){.dm-grid3,.dm-grid4,.dm-catalog{grid-template-columns:1fr}.dm-catalog-item-custom{grid-column:auto}.dm-catalog-controls-custom{flex-direction:column;align-items:stretch}.dm-catalog-controls-custom .dm-assign-inline{flex-wrap:wrap}.dm-catalog-controls-custom .dm-assign-inline select{flex:1 1 100%;width:100%}.dm-header-actions{margin-left:0}.dm-doh-row{grid-template-columns:max-content minmax(0,1fr) max-content max-content;gap:6px}.dm-doh-name{max-width:180px}.dm-doh-actions{grid-column:1/5;justify-content:flex-start}.dm-doh-url{grid-column:1/3}.dm-doh-port{grid-column:1}.dm-slot-row{grid-template-columns:40px minmax(0,1fr) auto}.dm-slot-endpoint{display:none}.dm-slot-state{display:none}.dm-inline{grid-column:2/4;justify-content:flex-start}.dm-device-dns-meta{grid-template-columns:minmax(0,1fr)}.dm-device-dns-options{grid-template-columns:repeat(2,minmax(0,1fr));gap:6px}.dm-device-dns-option{padding:8px;min-height:52px;gap:7px}.dm-device-dns-head{align-items:flex-start}.dm-device-dns-name{font-size:14px}.dm-slot-entry.dm-device-dns-entry{padding:11px;gap:10px}.dm-device-dns-current{flex-direction:column;gap:3px}.dm-device-dns-actions{justify-content:stretch}.dm-device-dns-save{width:100%}}';
+  '@media(max-width:560px){.dm-grid3,.dm-grid4,.dm-catalog{grid-template-columns:1fr}.dm-catalog-item-custom{grid-column:auto}.dm-catalog-controls-custom{flex-direction:column;align-items:stretch}.dm-catalog-controls-custom .dm-assign-inline{flex-wrap:wrap}.dm-catalog-controls-custom .dm-assign-inline select{flex:1 1 100%;width:100%}.dm-header-actions{margin-left:0}.dm-doh-row{grid-template-columns:max-content minmax(0,1fr) max-content max-content;gap:6px}.dm-doh-name{max-width:180px}.dm-doh-actions{grid-column:1/5;justify-content:flex-start}.dm-doh-url{grid-column:1/3}.dm-doh-port{grid-column:1}.dm-slot-row{grid-template-columns:40px minmax(0,1fr) auto}.dm-slot-endpoint{display:none}.dm-slot-state{display:none}.dm-inline{grid-column:2/4;justify-content:flex-start}.dm-device-dns-meta{grid-template-columns:minmax(0,1fr)}.dm-device-dns-options{grid-template-columns:repeat(2,minmax(0,1fr));gap:6px}.dm-device-dns-option{padding:8px;min-height:52px;gap:7px}.dm-device-dns-head{align-items:flex-start}.dm-device-dns-name{font-size:14px}.dm-slot-entry.dm-device-dns-entry{padding:11px;gap:10px}.dm-device-dns-current{flex-direction:column;gap:3px}.dm-device-dns-actions{justify-content:stretch}.dm-device-dns-save{width:100%}}'+
+  '.dm-wrap{gap:15px;padding-bottom:32px}'+
+  '.dm-wrap .dm-header{align-items:center;gap:8px;padding:13px 15px;border:1px solid rgba(110,118,129,.2);border-radius:13px;background:linear-gradient(135deg,rgba(110,118,129,.075),rgba(110,118,129,.02))}'+
+  '.dm-wrap .dm-header h2{font-size:18px;line-height:1.25;font-weight:750;letter-spacing:-.025em;margin-right:3px}'+
+  '.dm-wrap .dm-header-by{display:inline-flex;align-items:center;max-width:100%;padding:4px 8px;border:1px solid rgba(110,118,129,.17);border-radius:7px;background:rgba(110,118,129,.055);font-size:11.5px;line-height:1.4;opacity:.82;overflow-wrap:anywhere}'+
+  '.dm-wrap .dm-header-by:last-child{flex-basis:100%;padding:0;border:0;border-radius:0;background:transparent;font-size:11.5px;opacity:.67}'+
+  '.dm-wrap .dm-card{padding:18px;border:1px solid rgba(110,118,129,.2);border-radius:14px;box-shadow:0 2px 9px rgba(15,23,42,.045);transition:border-color .18s ease,box-shadow .18s ease}'+
+  '.dm-wrap .dm-card:hover{border-color:rgba(110,118,129,.3);box-shadow:0 4px 14px rgba(15,23,42,.065)}'+
+  '.dm-wrap .dm-card>h3{display:flex;align-items:center;gap:8px;margin:0 0 14px;padding:0 0 11px;border-bottom:1px solid rgba(110,118,129,.16);font-size:14px;line-height:1.4;font-weight:750;letter-spacing:-.012em}'+
+  '.dm-wrap .dm-card>h3:before{content:"";display:inline-block;flex:0 0 3px;width:3px;height:15px;border-radius:99px;background:var(--primary-color,#238636)}'+
+  '.dm-wrap .dm-grid2,.dm-wrap .dm-grid3,.dm-wrap .dm-grid4{gap:12px}'+
+  '.dm-wrap .dm-row{gap:12px;margin:0;padding:9px 0;border-bottom:1px solid rgba(110,118,129,.12);line-height:1.45}'+
+  '.dm-wrap .dm-label{font-size:12px;font-weight:650;opacity:.67}'+
+  '.dm-wrap .dm-row-value{font-weight:550;min-width:0}'+
+  '.dm-wrap .dm-hint{padding:10px 12px;margin:0 0 10px;border-left:3px solid rgba(110,118,129,.28);border-radius:8px;background:rgba(110,118,129,.055);font-size:12px;line-height:1.55;opacity:.82}'+
+  '.dm-wrap .dm-mini{font-size:11.5px;line-height:1.5}'+
+  '.dm-wrap .dm-section-title{font-size:12px;font-weight:750;letter-spacing:.015em;opacity:.7;margin:15px 0 7px;padding:0 1px}'+
+  '.dm-wrap .dm-badge{padding:4px 9px;border-radius:7px;font-size:11px;line-height:1.35;letter-spacing:.005em}'+
+  '.dm-wrap .dm-inline-msg{margin-top:10px;padding:10px 12px;border-radius:9px;font-size:12px;line-height:1.5}'+
+  '.dm-wrap .dm-applied{gap:10px;padding:11px 13px;margin-bottom:10px;border-radius:10px}'+
+  '.dm-wrap .cbi-button{min-height:30px;border-radius:8px;font-weight:650;transition:filter .15s ease,border-color .15s ease,box-shadow .15s ease}'+
+  '.dm-wrap .cbi-button:hover:not(:disabled){filter:brightness(.98);box-shadow:0 1px 4px rgba(15,23,42,.07)}'+
+  '.dm-wrap .cbi-button:focus-visible{outline:2px solid var(--primary-color,#0969da);outline-offset:2px}'+
+  '.dm-wrap .cbi-button:disabled{opacity:.48;cursor:not-allowed;box-shadow:none}'+
+  '.dm-wrap .dm-seg{gap:7px;margin:8px 0}'+
+  '.dm-wrap .dm-seg .cbi-button{min-height:32px;padding:7px 12px;border-radius:9px}'+
+  '.dm-wrap .dm-input,.dm-wrap input:not([type=checkbox]):not([type=radio]),.dm-wrap select,.dm-wrap textarea{max-width:100%;border:1px solid rgba(110,118,129,.28);border-radius:8px;background:var(--background-color-medium,#fff);color:inherit;box-shadow:none}'+
+  '.dm-wrap .dm-input:focus,.dm-wrap input:not([type=checkbox]):not([type=radio]):focus,.dm-wrap select:focus,.dm-wrap textarea:focus{outline:none;border-color:var(--primary-color,#0969da);box-shadow:0 0 0 3px rgba(9,105,218,.1)}'+
+  '.dm-wrap .dm-setting{margin-top:8px;padding:13px;border:1px solid rgba(110,118,129,.18);border-radius:10px;background:rgba(110,118,129,.035)}'+
+  '.dm-wrap .dm-setting-title{font-size:12.5px;font-weight:750;line-height:1.4}'+
+  '.dm-wrap .dm-setting-desc{font-size:11.5px;line-height:1.55;opacity:.73}'+
+  '.dm-wrap .dm-setting-line{align-items:center;flex-wrap:wrap;gap:12px}'+
+  '.dm-wrap .dm-setting-controls,.dm-wrap .dm-setting-actions{flex-wrap:wrap}'+
+  '.dm-wrap .dm-setting-saving{opacity:1;border-color:rgba(35,134,54,.3);background:rgba(35,134,54,.055)}'+
+  '.dm-wrap .dm-component-item,.dm-wrap .dm-component-group{margin-top:8px;padding:12px;border:1px solid rgba(110,118,129,.18);border-radius:10px;background:rgba(110,118,129,.035)}'+
+  '.dm-wrap .dm-component-item:last-of-type{border-bottom:1px solid rgba(110,118,129,.18)}'+
+  '.dm-wrap .dm-component-dns-list{gap:7px;margin-top:8px}'+
+  '.dm-wrap .dm-component-dns{gap:10px;padding:10px 11px;border:1px solid rgba(110,118,129,.17);border-radius:9px;background:rgba(110,118,129,.035)}'+
+  '.dm-wrap .dm-component-dns:first-child{border-top:1px solid rgba(110,118,129,.17)}'+
+  '.dm-wrap .dm-component-dns-slot{min-width:0;padding:4px 7px;border-radius:6px;background:rgba(110,118,129,.07);opacity:.8}'+
+  '.dm-wrap .dm-doh-list{gap:7px}'+
+  '.dm-wrap .dm-doh-row{grid-template-columns:max-content minmax(0,1fr) max-content max-content max-content;gap:10px;padding:11px 12px;border:1px solid rgba(110,118,129,.17);border-radius:10px;background:rgba(110,118,129,.03)}'+
+  '.dm-wrap .dm-doh-row:first-child{border-top:1px solid rgba(110,118,129,.17)}'+
+  '.dm-wrap .dm-doh-slot{padding:4px 7px;border-radius:6px;background:rgba(110,118,129,.07);font-size:11px;font-weight:700;opacity:.8}'+
+  '.dm-wrap .dm-doh-name{font-size:12.5px;line-height:1.4}'+
+  '.dm-wrap .dm-doh-actions .cbi-button{min-height:28px;border-radius:7px}'+
+  '.dm-wrap .dm-slot-table>.dm-slot-entry:not(.dm-device-dns-entry){margin:8px 0 0;padding:12px;border:1px solid rgba(110,118,129,.18);border-radius:10px;background:rgba(110,118,129,.025)}'+
+  '.dm-wrap .dm-slot-entry:not(.dm-device-dns-entry) .dm-slot-row{padding:3px 0;border:0}'+
+  '.dm-wrap .dm-slot-entry:not(.dm-device-dns-entry) .dm-slot-domain-panel{padding:10px 0 0;margin-top:5px;border-top:1px solid rgba(110,118,129,.14)}'+
+  '.dm-wrap .dm-slot-domains-heading{font-size:12.5px;font-weight:750}'+
+  '.dm-wrap .dm-slot-domains-help{font-size:11.5px;line-height:1.55}'+
+  '.dm-wrap .dm-slot-domains-input{padding:9px 10px;line-height:1.5}'+
+  '.dm-wrap .dm-picker-list{gap:8px;padding:2px;border-radius:10px}'+
+  '.dm-wrap .dm-picker-item{gap:12px;padding:11px;border:1px solid rgba(110,118,129,.18);border-radius:10px;background:rgba(110,118,129,.025)}'+
+  '.dm-wrap .dm-picker-item:last-child{border-bottom:1px solid rgba(110,118,129,.18)}'+
+  '.dm-wrap .dm-picker-name{font-size:13px;line-height:1.45}'+
+  '.dm-wrap .dm-picker-meta{gap:7px;margin-top:5px}'+
+  '.dm-wrap .dm-slot-picker-categories{gap:6px;margin:8px 0 12px}'+
+  '.dm-wrap .dm-slot-picker-categories .cbi-button{border-radius:8px;padding:6px 9px}'+
+  '.dm-wrap .dm-catalog{gap:12px;margin-top:12px}'+
+  '.dm-wrap .dm-catalog-item{gap:9px;padding:14px;border:1px solid rgba(110,118,129,.19);border-radius:12px;background:var(--background-color-medium,#fff);box-shadow:0 1px 4px rgba(15,23,42,.035);transition:border-color .18s ease,box-shadow .18s ease}'+
+  '.dm-wrap .dm-catalog-item:hover{border-color:rgba(110,118,129,.34);box-shadow:0 4px 12px rgba(15,23,42,.065)}'+
+  '.dm-wrap .dm-catalog-item h4{font-size:14px;font-weight:750;line-height:1.45;overflow-wrap:anywhere}'+
+  '.dm-wrap .dm-catalog-item>.dm-meta{display:inline-flex;align-self:flex-start;padding:4px 8px;border-radius:6px;background:rgba(110,118,129,.075);font-size:10.5px;opacity:.82}'+
+  '.dm-wrap .dm-catalog-item .dm-catalog-controls{margin-top:auto;padding-top:9px;border-top:1px solid rgba(110,118,129,.13)}'+
+  '.dm-wrap .dm-custom-dns-form{display:grid;grid-template-columns:minmax(180px,1fr) minmax(240px,1.4fr) auto;align-items:end;gap:12px;margin:12px 0}'+
+  '.dm-wrap .dm-custom-dns-form>div{display:flex;flex-direction:column;gap:6px;min-width:0}'+
+  '.dm-wrap .dm-custom-dns-form>.cbi-button{justify-self:start}'+
+  '.dm-wrap .dm-test-age-row{min-height:40px;border-bottom:1px solid rgba(110,118,129,.1)}'+
+  '.dm-wrap .dm-watchdog-row{min-height:42px;padding:6px 0;border-bottom:1px solid rgba(110,118,129,.1)}'+
+  '.dm-wrap .dm-watchdog-row:last-child{border-bottom:0}'+
+  '.dm-wrap .dm-profile-progress{padding:13px;border:1px solid rgba(110,118,129,.19);border-radius:10px;background:rgba(110,118,129,.04)}'+
+  '.dm-wrap .dm-page-nav{padding:5px;border:1px solid rgba(110,118,129,.17);border-radius:11px;background:var(--background-color-base,#fff);box-shadow:0 2px 8px rgba(15,23,42,.035)}'+
+  '.dm-wrap .dm-page-tabs{gap:5px;padding:0}'+
+  '.dm-wrap .dm-page-tab{border-radius:8px!important;padding:8px 12px!important}'+
+  '.dm-wrap .dm-page-tab.active{box-shadow:0 1px 3px rgba(15,23,42,.05)!important}'+
+  '.dm-wrap .dm-page{gap:8px;margin-top:14px;padding-top:10px;border-top:1px solid rgba(110,118,129,.14)}'+
+  '.dm-wrap .dm-log{padding:13px;border:1px solid rgba(255,255,255,.08);border-radius:10px;line-height:1.6;box-shadow:inset 0 1px 4px rgba(0,0,0,.16)}'+
+  '.dm-wrap .dm-confirm-body{display:flex;flex-direction:column;gap:4px;padding:2px}'+
+  '.dm-wrap .dm-confirm-body .dm-row{padding:9px 10px;border:1px solid rgba(110,118,129,.15);border-radius:8px;background:rgba(110,118,129,.035)}'+
+  'html.dm-theme-dark .dm-wrap .dm-header{border-color:rgba(255,255,255,.1);background:linear-gradient(135deg,rgba(255,255,255,.055),rgba(255,255,255,.015))}'+
+  'html.dm-theme-dark .dm-wrap .dm-card{background:#1c2128;border-color:rgba(255,255,255,.1);box-shadow:0 2px 9px rgba(0,0,0,.2)}'+
+  'html.dm-theme-dark .dm-wrap .dm-card:hover{border-color:rgba(255,255,255,.18);box-shadow:0 4px 14px rgba(0,0,0,.25)}'+
+  'html.dm-theme-dark .dm-wrap .dm-card>h3{border-bottom-color:rgba(255,255,255,.1)}'+
+  'html.dm-theme-dark .dm-wrap .dm-hint{background:rgba(255,255,255,.035);border-left-color:rgba(255,255,255,.2)}'+
+  'html.dm-theme-dark .dm-wrap .dm-setting,html.dm-theme-dark .dm-wrap .dm-component-item,html.dm-theme-dark .dm-wrap .dm-component-group,html.dm-theme-dark .dm-wrap .dm-component-dns,html.dm-theme-dark .dm-wrap .dm-doh-row,html.dm-theme-dark .dm-wrap .dm-slot-table>.dm-slot-entry:not(.dm-device-dns-entry),html.dm-theme-dark .dm-wrap .dm-picker-item{background:rgba(255,255,255,.025);border-color:rgba(255,255,255,.09)}'+
+  'html.dm-theme-dark .dm-wrap .dm-catalog-item{background:#1c2128;border-color:rgba(255,255,255,.1);box-shadow:0 1px 4px rgba(0,0,0,.2)}'+
+  'html.dm-theme-dark .dm-wrap .dm-page-nav{border-color:rgba(255,255,255,.1);box-shadow:0 2px 8px rgba(0,0,0,.2)}'+
+  'html.dm-theme-dark .dm-wrap .dm-page-tab.active{border-color:rgba(255,255,255,.13)!important;border-bottom-color:#1c2128!important;background:#1c2128!important}'+
+  '@media(max-width:850px){.dm-wrap .dm-custom-dns-form{grid-template-columns:repeat(2,minmax(0,1fr))}.dm-wrap .dm-custom-dns-form>.cbi-button{grid-column:1/-1}.dm-wrap .dm-doh-row{grid-template-columns:minmax(0,1fr) max-content}.dm-wrap .dm-doh-slot{grid-column:1;grid-row:1}.dm-wrap .dm-doh-name{grid-column:1;grid-row:2;max-width:none}.dm-wrap .dm-doh-ping{grid-column:2;grid-row:1;justify-self:end}.dm-wrap .dm-doh-state{grid-column:2;grid-row:2;justify-self:end}.dm-wrap .dm-doh-actions{grid-column:1/-1;grid-row:3;justify-content:flex-start}.dm-wrap .dm-slot-row{grid-template-columns:40px minmax(0,1fr) auto}.dm-wrap .dm-slot-endpoint{display:none}.dm-wrap .dm-slot-state{display:none}.dm-wrap .dm-inline{grid-column:2/4;justify-content:flex-start}}'+
+  '@media(max-width:560px){.dm-wrap{gap:11px}.dm-wrap .dm-header{padding:11px 12px;border-radius:11px}.dm-wrap .dm-header h2{font-size:16px}.dm-wrap .dm-card{padding:13px;border-radius:12px}.dm-wrap .dm-card>h3{margin-bottom:11px;padding-bottom:9px;font-size:13.5px}.dm-wrap .dm-card>h3:before{height:14px}.dm-wrap .dm-grid2,.dm-wrap .dm-grid3,.dm-wrap .dm-grid4{gap:9px}.dm-wrap .dm-row{align-items:flex-start;gap:7px}.dm-wrap .dm-hint{padding:9px 10px}.dm-wrap .dm-doh-row{gap:7px;padding:9px}.dm-wrap .dm-catalog{grid-template-columns:minmax(0,1fr);gap:9px}.dm-wrap .dm-catalog-item{padding:12px}.dm-wrap .dm-custom-dns-form{grid-template-columns:minmax(0,1fr)}.dm-wrap .dm-custom-dns-form>.cbi-button{grid-column:auto;width:100%}.dm-wrap .dm-setting-line{align-items:flex-start}.dm-wrap .dm-setting-controls{justify-content:flex-start}.dm-wrap .dm-watchdog-row{grid-template-columns:minmax(0,1fr) 82px auto;gap:7px}.dm-wrap .dm-watchdog-row .dm-input{width:82px!important}.dm-wrap .dm-picker-item{align-items:flex-start;flex-direction:column}.dm-wrap .dm-picker-actions{width:100%}.dm-wrap .dm-picker-actions .cbi-button{flex:1 1 auto}.dm-wrap .dm-page-tabs{gap:3px}.dm-wrap .dm-page-tab{padding:7px 9px!important;font-size:11.5px!important}.dm-wrap .dm-page-nav{top:0}.dm-wrap .dm-page{margin-top:10px}}';
   root.appendChild(E('style',{},css));
 }
 
@@ -5997,7 +6087,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 1.90
+// DNS Manager LuCI version: 1.91
 return view.extend({
   load: DM.load,
   render: DM.render,
