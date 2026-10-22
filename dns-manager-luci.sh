@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.100
+# Version: 1.101
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -32,7 +32,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/dns-manager-complete-integration-20261021/dns-manager-luci.sh"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.100"
+VERSION="1.101"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -506,7 +506,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/dns-manager-complete-integration-20261021/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="1.100"
+SELF_VERSION="1.101"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -1874,7 +1874,7 @@ network_status_json() {
     printf ',"profile":'; json_quote "$_profile"; printf ',"profile_mode":'; json_quote "$_mode"; printf ',"selection_category":'; json_quote "$_selection_category"
     printf ',"watchdog_backend":'; json_quote "$_watchdog_backend"
     printf ',"watchdog_interval":%s,"watchdog_service":%s,"watchdog_service_enabled":%s,"watchdog_loop":%s' "$_watchdog_interval" "$_wr" "$_ws" "$_wl"
-    printf ',\"watchdog_fail_threshold\":%s,\"watchdog_repair_cooldown\":%s,\"watchdog_max_restarts\":%s,\"watchdog_guard_interval\":%s' "$_watchdog_threshold" "$_watchdog_repair_cooldown" "$_watchdog_max_restarts" "$_watchdog_guard_interval"
+    printf ',"watchdog_fail_threshold":%s,"watchdog_repair_cooldown":%s,"watchdog_max_restarts":%s,"watchdog_guard_interval":%s' "$_watchdog_threshold" "$_watchdog_repair_cooldown" "$_watchdog_max_restarts" "$_watchdog_guard_interval"
     printf ',"dnsmasq_perf_state":%s}' "$_cache_state"
 }
 
@@ -2302,7 +2302,7 @@ status_json() {
     _watchdog_service_enabled=0; watchdog_service_enabled && _watchdog_service_enabled=1 || true
     _watchdog_service_running=0; watchdog_service_running && _watchdog_service_running=1 || true
     _watchdog_loop_running=0; watchdog_loop_running && _watchdog_loop_running=1 || true
-    printf ',\"watchdog_interval\":%s,\"watchdog_service\":%s,\"watchdog_service_enabled\":%s,\"watchdog_loop\":%s,\"watchdog_fail_threshold\":%s,\"watchdog_repair_cooldown\":%s,\"watchdog_max_restarts\":%s,\"watchdog_guard_interval\":%s,\"watchdog_autoreplace\":%s' "$_watchdog_interval" "$_watchdog_service_running" "$_watchdog_service_enabled" "$_watchdog_loop_running" "$_watchdog_threshold" "$_watchdog_repair_cooldown" "$_watchdog_max_restarts" "$_watchdog_guard_interval" "$_watchdog_autoreplace"
+    printf ',"watchdog_interval":%s,"watchdog_service":%s,"watchdog_service_enabled":%s,"watchdog_loop":%s,"watchdog_fail_threshold":%s,"watchdog_repair_cooldown":%s,"watchdog_max_restarts":%s,"watchdog_guard_interval":%s,"watchdog_autoreplace":%s' "$_watchdog_interval" "$_watchdog_service_running" "$_watchdog_service_enabled" "$_watchdog_loop_running" "$_watchdog_threshold" "$_watchdog_repair_cooldown" "$_watchdog_max_restarts" "$_watchdog_guard_interval" "$_watchdog_autoreplace"
      printf ',"watchdog_last_check":%s,"watchdog_last_checked":%s,"watchdog_last_failed":%s,"watchdog_last_category":' "$_watchdog_last_check" "$_watchdog_last_checked" "$_watchdog_last_failed"
      json_quote "$_watchdog_last_category"
      printf ',"watchdog_last_records":['
@@ -3606,7 +3606,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI common module version: 1.100
+// DNS Manager LuCI common module version: 1.101
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -6158,7 +6158,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 1.100
+// DNS Manager LuCI version: 1.101
 return view.extend({
   load: DM.load,
   render: DM.render,
