@@ -48,7 +48,7 @@ grep -Fq 'gsub(/[[:space:]]/, ""); if ($0 !~ /^[1-6](,[1-6])*$/)' dns-manager-lu
 grep -Fq "grep -q '[^1-6,[:space:]]'" "$tmp/device_dns_service.sh" || fail "device DNS service does not validate saved slot characters"
 grep -Fq 'DMD_NFT_TMP="$(mktemp "$DMD_NFT.tmp.XXXXXX"' dns-manager-luci.sh || fail "per-device nft snippet update does not use a unique temporary file"
 grep -Fq 'set_device_dns)' dns-manager-luci.sh || fail "set-device-DNS RPC dispatch missing"
-grep -Fq '"set_device_dns":{"mac":"String","slots":"String","mode":"String"}' dns-manager-luci.sh || fail "set-device-DNS RPC schema missing"
+grep -Fq '"set_device_dns":{"mac":"String","slots":"String"}' dns-manager-luci.sh || fail "set-device-DNS RPC schema missing"
 grep -Fq '"dns_manager": [ "set_profile", "reset_dns", "set_slot", "set_slot_domains", "set_device_dns"' dns-manager-luci.sh || fail "set-device-DNS RPC is missing from the write ACL"
 grep -Fq 'callSetDeviceDns' dns-manager-luci.sh || fail "LuCI has no client for set-device-DNS RPC"
 grep -Fq 'card(' "dns-manager-luci.sh" >/dev/null || fail "LuCI card renderer missing"
