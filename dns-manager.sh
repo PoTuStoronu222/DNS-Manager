@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.74"
+VERSION="3.75"
 # 3.38: clear the LuCI update flag after a successful CLI update.
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
@@ -6867,27 +6867,43 @@ watchdog_embedded_loop() {
             for _slot in 1 2 3 4 5 6 RU; do watchdog_loop_reset_slot "$_slot"; done
             sleep 5
         else
-            # Monitoring is independent of rotation. Failures still appear in
-            # the saved results while automatic replacement is disabled.
-            if [ "${WATCHDOG_AUTOREPLACE:-0}" = 1 ]; then
-                for _trigger in $_threshold_slots; do
-                    watchdog_loop_repair_cooldown_ok "$_trigger" || continue
-                    watchdog_loop_mark_repair "$_trigger"
-                    log_msg "DNS в слоте $_trigger не отвечает ${WATCHDOG_FAIL_THRESHOLD:-2} проверок подряд. Ищу замену той же категории."
-                    if watchdog_slot_target_run "$_trigger"; then
-                        log_msg "Watchdog: слот $_trigger восстановлен."
+            # First try to recover the existing DoH service after repeated local query failures.
+            # Only consider DNS replacement afterwards, and only when auto-replacement is enabled.
+            _repair_slots=""
+            for _trigger in $_threshold_slots; do
+                watchdog_loop_repair_cooldown_ok "$_trigger" || continue
+                watchdog_loop_mark_repair "$_trigger"
+                _repair_slots="$_repair_slots $_trigger"
+            done
+
+            if [ -n "$_repair_slots" ]; then
+                for _trigger in $_repair_slots; do
+                    if ! watchdog_check_slot "$_trigger"; then
+                        log_msg "DNS в слоте $_trigger не отвечает несколько проверок подряд. Перезапускаю только его экземпляр https-dns-proxy."
+                        watchdog_restart_slot_hdp "$_trigger" >/dev/null 2>&1 || true
+                        load_config >/dev/null 2>&1 || true
+                        refresh_runtime_capabilities >/dev/null 2>&1 || true
+                    fi
+
+                    if watchdog_check_slot "$_trigger"; then
+                        log_msg "Watchdog: слот $_trigger восстановлен после перезапуска; DNS не изменён."
+                    elif [ "${WATCHDOG_AUTOREPLACE:-0}" = 1 ]; then
+                        log_msg "Watchdog: перезапуск не восстановил слот $_trigger. Ищу замену той же категории."
+                        if watchdog_slot_target_run "$_trigger"; then
+                            log_msg "Watchdog: слот $_trigger восстановлен заменой DNS."
+                        else
+                            log_msg "Watchdog: замена слота $_trigger не подтверждена; текущий DNS сохранён."
+                        fi
                     else
-                        log_msg "Watchdog: замена слота $_trigger не подтверждена; текущий DNS сохранён."
+                        log_msg "Watchdog: слот $_trigger всё ещё не отвечает после перезапуска; автозамена выключена, DNS сохранён."
                     fi
                     _watchdog_action=1
                     load_config >/dev/null 2>&1 || true
                     refresh_runtime_capabilities >/dev/null 2>&1 || true
-                    WD_LAST_GUARD_TS="$(date +%s 2>/dev/null)"
                     eval "WD_FAIL_${_trigger}=0"
                 done
             fi
         fi
-
         if [ "$_watchdog_action" = 0 ] && [ "$_failed" -eq 0 ] && [ "$_missing" -eq 0 ]; then
             watchdog_embedded_integrity_guard >/dev/null 2>&1 || true
         fi
@@ -7482,6 +7498,48 @@ watchdog_slot_target_run() {
     rm -f "$_used" "$_tried"
     release_mutation_lock
     return "$_slot_rc"
+}
+watchdog_restart_slot_hdp() {
+    local _slot _port _pid _proc _match
+    _slot="$1"
+    case "$_slot" in
+        1) _port="${PORT_1:-}" ;;
+        2) _port="${PORT_2:-}" ;;
+        3) _port="${PORT_3:-}" ;;
+        4) _port="${PORT_4:-}" ;;
+        5) _port="${PORT_5:-}" ;;
+        6) _port="${PORT_6:-}" ;;
+        RU) _port="${PORT_RU:-}" ;;
+        *) return 1 ;;
+    esac
+    case "$_port" in ''|*[!0-9]*) return 1 ;; esac
+    acquire_mutation_lock || return 1
+    _pid=""
+    for _proc in /proc/[0-9]*; do
+        [ -r "$_proc/cmdline" ] || continue
+        _match="$(tr '\000' '\n' < "$_proc/cmdline" 2>/dev/null | awk -v p="$_port" '
+            NR == 1 {
+                if ($0 !~ /(^|\/)https-dns-proxy$/) exit 1
+                valid=1
+            }
+            valid && $0 == "-p" {
+                if (getline && $0 == p) found=1
+            }
+            END { if (valid && found) print "yes" }
+        ')"
+        if [ "$_match" = yes ]; then
+            _pid="${_proc##*/}"
+            break
+        fi
+    done
+    if [ -n "$_pid" ]; then
+        kill -TERM "$_pid" 2>/dev/null || _pid=""
+    fi
+    release_mutation_lock
+    [ -n "$_pid" ] || return 1
+    # Allow procd time to respawn the killed instance before the same-slot query.
+    sleep 6
+    return 0
 }
 watchdog_service_recover_run() {
     [ "${WATCHDOG_ENABLED:-0}" = 1 ] || return 0

@@ -435,7 +435,7 @@ grep -Fq "disabled:!!state.busy||!!state.jobRunning||unavailable||checking" dns-
 grep -q "'gaming','Игровые DNS'" dns-manager-luci.sh || fail "gaming catalog label missing in LuCI"
 grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validation missing gaming category"
 grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
-grep -q 'VERSION="3.74"' dns-manager.sh || fail "manager version not bumped"
+grep -q 'VERSION="3.75"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
 grep -q 'VERSION="1.106"' dns-manager-luci.sh || fail "LuCI version not bumped"
 main_luci_url='https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh'
@@ -959,6 +959,19 @@ if grep -Fq '_selection_kind=' "$tmp/watchdog_embedded_loop.sh"; then
     fail "background DNS checks still depend on a selected profile"
 fi
 ok "forced-DNS Steer transitions are reconciled on each background-check cycle"
+
+# Repeated local DNS failures restart only the selected DoH process before optional replacement.
+grep -Fq 'watchdog_restart_slot_hdp() {' dns-manager.sh || fail "slot-specific DoH restart helper is missing"
+grep -Fq 'if (getline && $0 == p) found=1' dns-manager.sh || fail "slot restart does not match the exact listener port"
+grep -Fq 'watchdog_restart_slot_hdp "$_trigger" >/dev/null 2>&1 || true' "$tmp/watchdog_embedded_loop.sh" || fail "repeated local DNS failures do not restart the affected DoH process"
+grep -Fq 'if watchdog_check_slot "$_trigger"; then' "$tmp/watchdog_embedded_loop.sh" || fail "watchdog does not verify the same selected DNS after restart"
+grep -Fq 'DNS не изменён.' "$tmp/watchdog_embedded_loop.sh" || fail "successful restart recovery is not logged without DNS replacement"
+grep -Fq 'elif [ "${WATCHDOG_AUTOREPLACE:-0}" = 1 ]; then' "$tmp/watchdog_embedded_loop.sh" || fail "DNS replacement is not kept behind the auto-replacement toggle"
+_recovery_line="$(grep -n 'watchdog_restart_slot_hdp "$_trigger"' "$tmp/watchdog_embedded_loop.sh" | tail -n1 | cut -d: -f1)"
+_recheck_line="$(grep -n 'if watchdog_check_slot' "$tmp/watchdog_embedded_loop.sh" | tail -n1 | cut -d: -f1)"
+_replace_line="$(grep -n 'watchdog_slot_target_run' "$tmp/watchdog_embedded_loop.sh" | tail -n1 | cut -d: -f1)"
+[ -n "$_recovery_line" ] && [ -n "$_recheck_line" ] && [ -n "$_replace_line" ] && [ "$_recovery_line" -lt "$_recheck_line" ] && [ "$_recheck_line" -lt "$_replace_line" ] || fail "DNS replacement does not follow slot restart and same-slot recheck"
+ok "watchdog restarts only the failed DoH process before considering optional DNS replacement"
 
 # Forced-DNS Auto must keep the lightweight runtime service active even when
 # DNS testing/replacement is disabled; the watchdog menu state remains OFF.
