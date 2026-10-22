@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion
-# Version: 1.50
+# Version: 1.102
 # Installs a native LuCI application for the existing /usr/bin/dns-manager.
 # This file DOES NOT replace, patch or modify the DNS Manager backend.
 # It does not install ttyd and does not open another HTTP port.
@@ -32,7 +32,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.50"
+VERSION="1.102"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -51,7 +51,7 @@ install_files() {
     require_manager || return 1
 
     command -v jsonfilter >/dev/null 2>&1 || say "ℹ jsonfilter не найден — используется встроенный обработчик RPC-параметров."
-    mkdir -p "$VIEW_DIR" "$RESOURCE_DIR" /usr/libexec/rpcd /usr/lib/dns-manager-luci /usr/share/rpcd/acl.d /usr/share/luci/menu.d "$RUNTIME_DIR/checks" "$JOB_DIR" "$BACKUP_DIR" "$(dirname "$STATE_FILE")" || return 1
+    mkdir -p "$VIEW_DIR" "$RESOURCE_DIR" /usr/libexec/rpcd /usr/lib/dns-manager-luci /usr/share/rpcd/acl.d /usr/share/luci/menu.d "$RUNTIME_DIR/checks" "$JOB_DIR" "$BACKUP_DIR" "$(dirname "$STATE_FILE")" /etc/dns-manager/device-dns /etc/nftables.d || return 1
     if [ -d "$JOB_DIR" ]; then
         for _jd in "$JOB_DIR"/*; do
             [ -d "$_jd" ] || continue
@@ -65,6 +65,353 @@ install_files() {
             rm -rf "$_jd" 2>/dev/null || true
         done
     fi
+    cat > /etc/init.d/dns-manager-device-dns <<'EOF_DEVICE_DNS_SERVICE'
+#!/bin/sh /etc/rc.common
+# DNS Manager per-device DoH listeners. This does not provide DHCP.
+START=99
+STOP=10
+USE_PROCD=1
+DMD_BASE="/etc/dns-manager/device-dns"
+DMD_ASSIGNMENTS="/etc/dns-manager/config/device-dns.conf"
+DMD_MANAGER_CONFIG="/etc/dns-manager/config/manager.conf"
+DMD_NFT="/etc/dns-manager/device-dns/redirects.nft"
+DMD_INCLUDE="dns_manager_device_dns"
+DMD_CHAIN="dstnat_lan"
+DMD_STAGE=""
+
+dmd_log() { logger -t dns-manager-device-dns -- "$*" 2>/dev/null || true; }
+dmd_cleanup_stage() { [ -n "${DMD_STAGE:-}" ] && rm -rf "$DMD_STAGE" 2>/dev/null || true; }
+
+dmd_valid_mac() {
+    printf '%s\n' "$1" | awk '
+        /^[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]$/ { ok=1 }
+        END { exit ok ? 0 : 1 }
+    '
+}
+
+dmd_slot_id() {
+    case "$1" in
+        1) printf '%s' "${SLOT_1:-}" ;; 2) printf '%s' "${SLOT_2:-}" ;;
+        3) printf '%s' "${SLOT_3:-}" ;; 4) printf '%s' "${SLOT_4:-}" ;;
+        5) printf '%s' "${SLOT_5:-}" ;; 6) printf '%s' "${SLOT_6:-}" ;;
+        *) return 1 ;;
+    esac
+}
+dmd_slot_port() {
+    case "$1" in
+        1) printf '%s' "${PORT_1:-}" ;; 2) printf '%s' "${PORT_2:-}" ;;
+        3) printf '%s' "${PORT_3:-}" ;; 4) printf '%s' "${PORT_4:-}" ;;
+        5) printf '%s' "${PORT_5:-}" ;; 6) printf '%s' "${PORT_6:-}" ;;
+        *) return 1 ;;
+    esac
+}
+dmd_slot_domains() {
+    case "$1" in
+        1) printf '%s' "${SLOT_1_DOMAINS:-}" ;; 2) printf '%s' "${SLOT_2_DOMAINS:-}" ;;
+        3) printf '%s' "${SLOT_3_DOMAINS:-}" ;; 4) printf '%s' "${SLOT_4_DOMAINS:-}" ;;
+        5) printf '%s' "${SLOT_5_DOMAINS:-}" ;; 6) printf '%s' "${SLOT_6_DOMAINS:-}" ;;
+        *) return 1 ;;
+    esac
+}
+
+dmd_normalize_slots() {
+    if printf '%s' "$1" | grep -q '[^1-6,[:space:]]'; then return 1; fi
+    _dmd_raw="$(printf '%s' "$1" | tr ',' ' ')"
+    _dmd_list=""
+    for _dmd_slot in $_dmd_raw; do
+        case "$_dmd_slot" in 1|2|3|4|5|6) ;; *) return 1 ;; esac
+        case " $_dmd_list " in *" $_dmd_slot "*) ;; *) _dmd_list="${_dmd_list:+$_dmd_list }$_dmd_slot" ;; esac
+    done
+    [ -n "$_dmd_list" ] || return 1
+    printf '%s\n' $_dmd_list | tr ' ' '\n' | sort -n -u | tr '\n' ',' | sed 's/,$//'
+}
+
+dmd_mask_for_slots() {
+    _dmd_mask=0
+    for _dmd_slot in $(printf '%s' "$1" | tr ',' ' '); do
+        case "$_dmd_slot" in
+            1) _dmd_bit=1 ;; 2) _dmd_bit=2 ;; 3) _dmd_bit=4 ;;
+            4) _dmd_bit=8 ;; 5) _dmd_bit=16 ;; 6) _dmd_bit=32 ;;
+            *) return 1 ;;
+        esac
+        _dmd_mask=$((_dmd_mask + _dmd_bit))
+    done
+    [ "$_dmd_mask" -gt 0 ] || return 1
+    printf '%s' "$_dmd_mask"
+}
+
+dmd_upstream_port_exists() {
+    _dmd_uport="$1"
+    case "$_dmd_uport" in ''|*[!0-9]*) return 1 ;; esac
+    if command -v ss >/dev/null 2>&1; then
+        ss -lntu 2>/dev/null | grep -Eq "(^|[[:space:]])[^[:space:]]*:${_dmd_uport}([[:space:]]|$)" && return 0
+    fi
+    if command -v netstat >/dev/null 2>&1; then
+        netstat -lntu 2>/dev/null | grep -Eq "(^|[[:space:]])[^[:space:]]*:${_dmd_uport}([[:space:]]|$)" && return 0
+    fi
+    _dmd_hex="$(printf '%04X' "$_dmd_uport" 2>/dev/null || true)"
+    [ -n "$_dmd_hex" ] || return 1
+    awk -v p="$_dmd_hex" 'NR>1 {split($2,a,":"); if (toupper(a[2])==p && ($4=="0A" || $4=="07" || $4=="01")) ok=1} END {exit ok?0:1}' /proc/net/tcp 2>/dev/null && return 0
+    awk -v p="$_dmd_hex" 'NR>1 {split($2,a,":"); if (toupper(a[2])==p && $4=="07") ok=1} END {exit ok?0:1}' /proc/net/udp 2>/dev/null && return 0
+    return 1
+}
+
+dmd_port_busy() {
+    _dmd_port="$1"
+    if command -v netstat >/dev/null 2>&1; then
+        netstat -ln 2>/dev/null | awk -v p=":$_dmd_port" '
+            $4 ~ (p "$") { found=1 }
+            END { exit found ? 0 : 1 }
+        '
+        return $?
+    fi
+    if command -v ss >/dev/null 2>&1; then
+        ss -lnut 2>/dev/null | awk -v p=":$_dmd_port" '
+            { if ($5 ~ (p "$")) found=1 }
+            END { exit found ? 0 : 1 }
+        '
+        return $?
+    fi
+    return 1
+}
+
+dmd_include_is_owned() {
+    [ "$(uci -q get "firewall.$DMD_INCLUDE" 2>/dev/null || true)" = include ] &&
+    [ "$(uci -q get "firewall.$DMD_INCLUDE.type" 2>/dev/null || true)" = nftables ] &&
+    [ "$(uci -q get "firewall.$DMD_INCLUDE.path" 2>/dev/null || true)" = "$DMD_NFT" ] &&
+    [ "$(uci -q get "firewall.$DMD_INCLUDE.position" 2>/dev/null || true)" = chain-pre ] &&
+    [ "$(uci -q get "firewall.$DMD_INCLUDE.chain" 2>/dev/null || true)" = "$DMD_CHAIN" ]
+}
+
+dmd_remove_include() {
+    if uci -q get "firewall.$DMD_INCLUDE" >/dev/null 2>&1; then
+        dmd_include_is_owned || {
+            dmd_log "Refusing to remove unrelated firewall include named $DMD_INCLUDE."
+            return 1
+        }
+        uci -q delete "firewall.$DMD_INCLUDE" || return 1
+        uci commit firewall || return 1
+    fi
+    rm -f "$DMD_NFT" "$DMD_NFT".tmp.* /etc/nftables.d/90-dns-manager-device-dns.nft /etc/nftables.d/90-dns-manager-device-dns.nft.tmp.* 2>/dev/null || true
+    /etc/init.d/firewall reload >/dev/null 2>&1 || return 1
+    return 0
+}
+
+dmd_configure_include() {
+    if uci -q get "firewall.$DMD_INCLUDE" >/dev/null 2>&1; then
+        dmd_include_is_owned || {
+            dmd_log "Refusing to overwrite unrelated firewall include named $DMD_INCLUDE."
+            return 1
+        }
+    else
+        uci set "firewall.$DMD_INCLUDE=include" || return 1
+    fi
+    uci set "firewall.$DMD_INCLUDE.enabled=1" || return 1
+    uci set "firewall.$DMD_INCLUDE.type=nftables" || return 1
+    uci set "firewall.$DMD_INCLUDE.path=$DMD_NFT" || return 1
+    uci set "firewall.$DMD_INCLUDE.position=chain-pre" || return 1
+    uci set "firewall.$DMD_INCLUDE.chain=$DMD_CHAIN" || return 1
+    uci commit firewall || return 1
+
+    DMD_FW4_CHECK="$DMD_STAGE/fw4-check.nft"
+    fw4 print > "$DMD_FW4_CHECK" 2>/dev/null || return 1
+    nft -c -f "$DMD_FW4_CHECK" >/dev/null 2>&1 || {
+        dmd_log "fw4/nft rejected the per-device DNS include."
+        return 1
+    }
+    /etc/init.d/firewall reload >/dev/null 2>&1 || return 1
+    return 0
+}
+
+dmd_fail_open() {
+    dmd_remove_include >/dev/null 2>&1 || true
+    rm -rf "$DMD_BASE/profiles" 2>/dev/null || true
+    dmd_log "Per-device DNS rules disabled after a configuration error; clients fall back to the normal LAN DNS path."
+}
+
+dmd_ensure_profile() {
+    _dmd_slots="$1"
+    _dmd_label="$2"
+    _dmd_count=0
+
+    for _dmd_slot in $(printf '%s' "$_dmd_slots" | tr ',' ' '); do
+        _dmd_id="$(dmd_slot_id "$_dmd_slot" 2>/dev/null || true)"
+        _dmd_port="$(dmd_slot_port "$_dmd_slot" 2>/dev/null || true)"
+        case "$_dmd_port" in ''|*[!0-9]*) dmd_log "Missing upstream port for DNS slot $_dmd_slot ($_dmd_label)."; return 1 ;; esac
+        [ -n "$_dmd_id" ] || { dmd_log "DNS slot $_dmd_slot is not assigned ($_dmd_label)."; return 1; }
+        [ "$_dmd_port" -ge 1 ] 2>/dev/null && [ "$_dmd_port" -le 65535 ] 2>/dev/null || { dmd_log "Invalid upstream port for DNS slot $_dmd_slot ($_dmd_label)."; return 1; }
+        dmd_upstream_port_exists "$_dmd_port" || {
+            dmd_log "DNS slot $_dmd_slot has no listening DoH upstream on port $_dmd_port ($_dmd_label)."
+            return 1
+        }
+        _dmd_count=$((_dmd_count + 1))
+    done
+    [ "$_dmd_count" -gt 0 ] || return 1
+
+    _dmd_mask="$(dmd_mask_for_slots "$_dmd_slots" 2>/dev/null)" || return 1
+    _dmd_listener_port=$((54100 + _dmd_mask))
+    _dmd_map_line="$_dmd_slots|$_dmd_mask|$_dmd_listener_port"
+    if grep -Fqx "$_dmd_map_line" "$DMD_STAGE/profiles.map" 2>/dev/null; then
+        printf '%s' "$_dmd_listener_port"
+        return 0
+    fi
+    if dmd_port_busy "$_dmd_listener_port"; then
+        dmd_log "Port $_dmd_listener_port is busy; cannot activate $_dmd_label."
+        return 1
+    fi
+
+    _dmd_profile="$DMD_STAGE/profiles/profile_$_dmd_mask.conf"
+    {
+        printf 'port=%s\n' "$_dmd_listener_port"
+        printf 'pid-file=/var/run/dns-manager-device-dns/profile_%s.pid\n' "$_dmd_mask"
+        printf 'interface=%s\n' "$DMD_LAN_DEV"
+        printf 'bind-dynamic\nexcept-interface=lo\nno-dhcp-interface=%s\n' "$DMD_LAN_DEV"
+        printf 'no-resolv\nno-poll\nno-hosts\ndomain-needed\nbogus-priv\ncache-size=1000\n'
+        printf 'server=/lan/127.0.0.1#53\n'
+        [ "$_dmd_count" -le 1 ] || printf 'all-servers\n'
+        for _dmd_slot in $(printf '%s' "$_dmd_slots" | tr ',' ' '); do
+            _dmd_upstream_port="$(dmd_slot_port "$_dmd_slot" 2>/dev/null || true)"
+            printf 'server=127.0.0.1#%s\n' "$_dmd_upstream_port"
+            _dmd_slot_domains="$(dmd_slot_domains "$_dmd_slot" 2>/dev/null || true)"
+            for _dmd_domain in $_dmd_slot_domains; do
+                case "$_dmd_domain" in ''|.*|*.|*[!A-Za-z0-9.-]*) continue ;; esac
+                printf 'server=/%s/127.0.0.1#%s\n' "$_dmd_domain" "$_dmd_upstream_port"
+            done
+        done
+        if [ -n "${SLOT_RU:-}" ] && [ -n "${PORT_RU:-}" ]; then
+            for _dmd_tld in /ru /su /xn--p1ai; do
+                printf 'server=%s/127.0.0.1#%s\n' "$_dmd_tld" "$PORT_RU"
+            done
+        fi
+        if [ "${BLOCK_EXTERNAL_DNS:-0}" = 1 ]; then
+            printf 'server=/mask.icloud.com/\nserver=/mask-h2.icloud.com/\nserver=/use-application-dns.net/\n'
+        fi
+    } > "$_dmd_profile" || return 1
+
+    /usr/sbin/dnsmasq --test --conf-file="$_dmd_profile" >/dev/null 2>&1 || {
+        dmd_log "dnsmasq rejected profile $_dmd_mask for $_dmd_label."
+        rm -f "$_dmd_profile" 2>/dev/null || true
+        return 1
+    }
+    printf '%s\n' "$_dmd_map_line" >> "$DMD_STAGE/profiles.map" || return 1
+    printf '%s' "$_dmd_listener_port"
+}
+
+dmd_build_and_install() {
+    # Check a same-named UCI include before writing its target path. Never overwrite
+    # an unrelated user's nftables snippet even if it happens to use our filename.
+    if uci -q get "firewall.$DMD_INCLUDE" >/dev/null 2>&1; then
+        dmd_include_is_owned || {
+            dmd_log "Refusing per-device DNS activation because firewall include $DMD_INCLUDE is not owned by DNS Manager."
+            return 1
+        }
+    fi
+    command -v fw4 >/dev/null 2>&1 || { dmd_log "fw4 is unavailable."; return 1; }
+    [ -x /usr/sbin/dnsmasq ] || { dmd_log "dnsmasq is unavailable."; return 1; }
+
+    dmd_cleanup_stage
+    DMD_STAGE="$(mktemp -d /tmp/dns-manager-device-dns.stage.XXXXXX 2>/dev/null)" || return 1
+    mkdir -p "$DMD_STAGE/profiles" "$DMD_BASE" "$(dirname "$DMD_NFT")" /var/run/dns-manager-device-dns || { dmd_cleanup_stage; return 1; }
+    : > "$DMD_STAGE/profiles.map"
+    : > "$DMD_STAGE/nft.rules"
+
+    SLOT_1=""; SLOT_2=""; SLOT_3=""; SLOT_4=""; SLOT_5=""; SLOT_6=""; SLOT_RU=""
+    PORT_1=""; PORT_2=""; PORT_3=""; PORT_4=""; PORT_5=""; PORT_6=""; PORT_RU=""
+    [ ! -r "$DMD_MANAGER_CONFIG" ] || . "$DMD_MANAGER_CONFIG" || { dmd_cleanup_stage; return 1; }
+
+    DMD_LAN_DEV="$(uci -q get network.lan.device 2>/dev/null || true)"
+    [ -n "$DMD_LAN_DEV" ] || DMD_LAN_DEV="br-lan"
+    case "$DMD_LAN_DEV" in ''|*[!A-Za-z0-9_.:-]*) dmd_cleanup_stage; return 1 ;; esac
+
+    DMD_ACTIVE=0
+    : > "$DMD_STAGE/nft.rules"
+
+    if [ -r "$DMD_ASSIGNMENTS" ]; then
+        while IFS='|' read -r DMD_MAC DMD_RAW_SLOTS DMD_EXTRA; do
+            DMD_MAC="$(printf '%s' "$DMD_MAC" | tr 'A-F' 'a-f')"
+            [ -n "$DMD_MAC" ] || continue
+            dmd_valid_mac "$DMD_MAC" || continue
+            [ -z "$DMD_EXTRA" ] || continue
+            DMD_SLOTS="$(dmd_normalize_slots "$DMD_RAW_SLOTS" 2>/dev/null || true)"
+            [ -n "$DMD_SLOTS" ] || continue
+            DMD_LISTENER_PORT="$(dmd_ensure_profile "$DMD_SLOTS" "device $DMD_MAC" 2>/dev/null || true)"
+            case "$DMD_LISTENER_PORT" in ''|*[!0-9]*)
+                dmd_log "Device $DMD_MAC has no usable DoH profile; it will use the normal LAN DNS path."
+                continue
+                ;;
+            esac
+
+            printf 'iifname "%s" ether saddr %s udp dport 53 redirect to :%s\n' "$DMD_LAN_DEV" "$DMD_MAC" "$DMD_LISTENER_PORT" >> "$DMD_STAGE/nft.rules"
+            printf 'iifname "%s" ether saddr %s tcp dport 53 redirect to :%s\n' "$DMD_LAN_DEV" "$DMD_MAC" "$DMD_LISTENER_PORT" >> "$DMD_STAGE/nft.rules"
+            DMD_ACTIVE=$((DMD_ACTIVE + 1))
+        done < "$DMD_ASSIGNMENTS"
+    fi
+
+    if [ "$DMD_ACTIVE" -gt 0 ]; then
+        mv "$DMD_STAGE/nft.rules" "$DMD_STAGE/device-rules.nft" || { dmd_cleanup_stage; return 1; }
+    else
+        rm -f "$DMD_STAGE/nft.rules"
+    fi
+
+    rm -rf "$DMD_BASE/profiles.new" "$DMD_BASE/profiles.old" 2>/dev/null || true
+    [ ! -d "$DMD_BASE/profiles" ] || mv "$DMD_BASE/profiles" "$DMD_BASE/profiles.old" || { dmd_cleanup_stage; return 1; }
+    mv "$DMD_STAGE/profiles" "$DMD_BASE/profiles" || {
+        [ ! -d "$DMD_BASE/profiles.old" ] || mv "$DMD_BASE/profiles.old" "$DMD_BASE/profiles" 2>/dev/null || true
+        dmd_cleanup_stage
+        return 1
+    }
+
+    if [ -f "$DMD_STAGE/device-rules.nft" ]; then
+        DMD_NFT_TMP="$(mktemp "$DMD_NFT.tmp.XXXXXX" 2>/dev/null)" || { dmd_cleanup_stage; return 1; }
+        cp "$DMD_STAGE/device-rules.nft" "$DMD_NFT_TMP" || { rm -f "$DMD_NFT_TMP"; dmd_cleanup_stage; return 1; }
+        chmod 0644 "$DMD_NFT_TMP" 2>/dev/null || true
+        mv -f "$DMD_NFT_TMP" "$DMD_NFT" || { dmd_cleanup_stage; return 1; }
+        dmd_configure_include || { dmd_cleanup_stage; return 1; }
+    else
+        dmd_remove_include || { dmd_cleanup_stage; return 1; }
+    fi
+
+    rm -rf "$DMD_BASE/profiles.old" 2>/dev/null || true
+    rm -f "$DMD_STAGE/profiles.map" "$DMD_STAGE/nft.rules" "$DMD_STAGE/fw4-check.nft" 2>/dev/null || true
+    dmd_cleanup_stage
+    return 0
+}
+
+stop_service() {
+    # Never leave clients redirected to local ports after these dnsmasq listeners stop.
+    dmd_remove_include >/dev/null 2>&1 || true
+}
+
+start_service() {
+    if ! dmd_build_and_install; then
+        dmd_fail_open
+        return 1
+    fi
+    for DMD_PROFILE in "$DMD_BASE"/profiles/profile_*.conf; do
+        [ -f "$DMD_PROFILE" ] || continue
+        DMD_NAME="${DMD_PROFILE##*/}"
+        DMD_NAME="${DMD_NAME%.conf}"
+        procd_open_instance "$DMD_NAME"
+        procd_set_param command /usr/sbin/dnsmasq --keep-in-foreground --conf-file="$DMD_PROFILE"
+        procd_set_param respawn 3600 5 5
+        procd_close_instance
+    done
+}
+
+reload_service() {
+    /etc/init.d/dns-manager-device-dns stop >/dev/null 2>&1 || true
+    /etc/init.d/dns-manager-device-dns start
+}
+EOF_DEVICE_DNS_SERVICE
+    chmod 0755 /etc/init.d/dns-manager-device-dns || return 1
+    /etc/init.d/dns-manager-device-dns enable >/dev/null 2>&1 || return 1
+    rm -f /etc/nftables.d/90-dns-manager-device-dns.nft /etc/nftables.d/90-dns-manager-device-dns.nft.tmp.* 2>/dev/null || true
+    rm -f /etc/dns-manager/config/device-dns-default.conf 2>/dev/null || true
+    /etc/init.d/firewall reload >/dev/null 2>&1 || true
+    if ! /etc/init.d/dns-manager-device-dns restart >/dev/null 2>&1; then
+        say "ПРЕДУПРЕЖДЕНИЕ: не удалось запустить проверку привязок DNS по устройствам; они остаются без активных правил."
+    fi
+
     cat > "$MENU_FILE" <<'EOF_MENU'
 {
   "admin/services/dns-manager": {
@@ -117,12 +464,12 @@ EOF_MENU
     "description": "DNS Manager native LuCI interface",
     "read": {
       "ubus": {
-        "dns_manager": [ "status", "runtime", "doh_status", "network_status", "time_status", "page_meta", "catalog", "job", "log", "update_check" ]
+        "dns_manager": [ "status", "runtime", "doh_status", "network_status", "lan_devices", "time_status", "page_meta", "catalog", "job", "log", "update_check" ]
       }
     },
     "write": {
       "ubus": {
-        "dns_manager": [ "set_profile", "reset_dns", "set_slot", "set_setting", "set_watchdog_setting", "set_watchdog_settings", "set_ntp", "set_test_age", "test_all", "test_current", "test_one", "test_system", "update", "update_manager", "update_hdp", "update_catalog", "update_all" ]
+        "dns_manager": [ "set_profile", "reset_dns", "set_slot", "set_slot_domains", "set_device_dns", "add_custom_dns", "delete_custom_dns", "set_setting", "set_watchdog_setting", "set_watchdog_settings", "set_ntp", "set_test_age", "test_all", "test_current", "test_one", "test_system", "update", "update_manager", "update_hdp", "update_catalog", "update_all" ]
       }
     }
   }
@@ -141,6 +488,7 @@ MANAGER="/usr/bin/dns-manager"
 MANAGER_PATH="$MANAGER"
 CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 CATALOG_FILE="/etc/dns-manager/config/dns-catalog.conf"
+CUSTOM_CATALOG_FILE="/etc/dns-manager/config/dns-custom-catalog.conf"
 STATE_DIR="/var/run/dns-manager"
 PERSIST_STATE_DIR="/etc/dns-manager/state"
 RUNTIME_DIR="/var/run/dns-manager-luci"
@@ -158,7 +506,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="1.50"
+SELF_VERSION="1.102"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -228,9 +576,7 @@ manager_const_num() {
     case "$_key" in
         WATCHDOG_FAIL_THRESHOLD) _min=1; _max=5 ;;
         WATCHDOG_REPAIR_COOLDOWN) _min=300; _max=7200 ;;
-        WATCHDOG_MAX_REPAIRS) _min=1; _max=3 ;;
         WATCHDOG_MAX_RESTARTS) _min=1; _max=5 ;;
-        WATCHDOG_MAX_CANDIDATES) _min=1; _max=10 ;;
         WATCHDOG_GUARD_INTERVAL) _min=900; _max=10800 ;;
         *) printf '%s' "$_fallback"; return 0 ;;
     esac
@@ -272,13 +618,215 @@ cfg_get() {
 
 catalog_field() {
     _id="$1"; _n="$2"
-    [ -r "$CATALOG_FILE" ] || return 1
-    awk -F'|' -v id="$_id" -v n="$_n" '$1==id { if (n==2) print $2; else if (n==4) print $4; else if (n==5) print $5; exit }' "$CATALOG_FILE" 2>/dev/null
+    for _cf_file in "$CATALOG_FILE" "$CUSTOM_CATALOG_FILE"; do
+        [ -r "$_cf_file" ] || continue
+        _cf_value="$(awk -F'|' -v id="$_id" -v n="$_n" '$1==id { if (n==2) print $2; else if (n==4) print $4; else if (n==5) print $5; exit }' "$_cf_file" 2>/dev/null)"
+        [ -n "$_cf_value" ] && { printf '%s' "$_cf_value"; return 0; }
+    done
+    return 1
 }
 
 catalog_version() { sed -n 's/^# DNSCATVER=//p' "$CATALOG_FILE" 2>/dev/null | head -n1; }
 catalog_revision() { sed -n 's/^# DNSCATREV=//p' "$CATALOG_FILE" 2>/dev/null | head -n1; }
 
+catalog_url_normalize() {
+    _cun_url="$(printf '%s' "$1" | sed 's/[[:space:]]//g')"
+    # Normalize only a slash at the origin root. Keep path-ending slashes.
+    case "$_cun_url" in
+        https://*/*)
+            _cun_authority_path="${_cun_url#https://}"
+            _cun_path="${_cun_authority_path#*/}"
+            [ -n "$_cun_path" ] || _cun_url="${_cun_url%/}"
+            ;;
+    esac
+    printf '%s' "$_cun_url"
+}
+catalog_id_for_url() {
+    _cui_url="$(catalog_url_normalize "$1")"
+    [ -n "$_cui_url" ] || return 1
+    for _cui_file in "$CATALOG_FILE" "$CUSTOM_CATALOG_FILE"; do
+        [ -r "$_cui_file" ] || continue
+        _cui_id="$(awk -F'|' -v u="$_cui_url" '
+            function norm_url(x) {
+                gsub(/[[:space:]]/, "", x)
+                if (x ~ /^https:\/\/[^/]+\/$/) sub(/\/$/, "", x)
+                return x
+            }
+            $1 !~ /^#/ && $1 != "" && $5 != "" && norm_url($5) == u { print $1; exit }
+        ' "$_cui_file" 2>/dev/null)"
+        [ -n "$_cui_id" ] && { printf '%s' "$_cui_id"; return 0; }
+    done
+    return 1
+}
+
+
+add_custom_dns_json() {
+    if ! acquire_runtime_lock "$RUNTIME_DIR/custom-catalog.lock"; then
+        json_error "Список пользовательских DNS уже изменяется"
+        return
+    fi
+    # load_manager() sources backend functions into this shell; keep request values out
+    # of its shared underscore-prefixed temporary-variable namespace.
+    DNSMGR_ADD_CUSTOM_NAME="$(jget name)"
+    DNSMGR_ADD_CUSTOM_URL="$(catalog_url_normalize "$(jget url)")"
+    if [ -z "$DNSMGR_ADD_CUSTOM_NAME" ] || [ -z "$DNSMGR_ADD_CUSTOM_URL" ]; then
+        release_runtime_lock "$RUNTIME_DIR/custom-catalog.lock"
+        json_error "Укажите название и HTTPS URL DoH"
+        return
+    fi
+    _name_len="$(printf '%s' "$DNSMGR_ADD_CUSTOM_NAME" | wc -c | tr -d ' ')"
+    _url_len="$(printf '%s' "$DNSMGR_ADD_CUSTOM_URL" | wc -c | tr -d ' ')"
+    case "$_name_len" in ''|*[!0-9]*) _name_len=999;; esac
+    case "$_url_len" in ''|*[!0-9]*) _url_len=999;; esac
+    if [ "$_name_len" -gt 80 ] || printf '%s' "$DNSMGR_ADD_CUSTOM_NAME" | LC_ALL=C grep -q '[|[:cntrl:]]'; then
+        release_runtime_lock "$RUNTIME_DIR/custom-catalog.lock"
+        json_error "Название должно быть до 80 байт, без служебных символов и вертикальной черты"
+        return
+    fi
+    if [ "$_url_len" -gt 512 ] || ! printf '%s' "$DNSMGR_ADD_CUSTOM_URL" | LC_ALL=C grep -Eq '^https://[A-Za-z0-9._~:/?#@!$&()*+,;=%-]+$'; then
+        release_runtime_lock "$RUNTIME_DIR/custom-catalog.lock"
+        json_error "Укажите корректный HTTPS URL DoH без пробелов и служебных символов"
+        return
+    fi
+    _authority="$(printf '%s' "$DNSMGR_ADD_CUSTOM_URL" | sed -e 's|^https://||' -e 's|[/#?].*$||')"
+    if ! printf '%s' "$_authority" | LC_ALL=C grep -Eq '^([A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?)(:[0-9]{1,5})?$'; then
+        release_runtime_lock "$RUNTIME_DIR/custom-catalog.lock"
+        json_error "В HTTPS URL указан некорректный адрес сервера"
+        return
+    fi
+    case "$_authority" in
+        *:*)
+            _port="$(printf '%s' "$_authority" | sed 's/^.*://')"
+            case "$_port" in ''|*[!0-9]*) _port=0;; esac
+            if [ "$_port" -lt 1 ] 2>/dev/null || [ "$_port" -gt 65535 ] 2>/dev/null; then
+                release_runtime_lock "$RUNTIME_DIR/custom-catalog.lock"
+                json_error "Порт в HTTPS URL должен быть от 1 до 65535"
+                return
+            fi
+            ;;
+    esac
+    load_manager || {
+        release_runtime_lock "$RUNTIME_DIR/custom-catalog.lock"
+        json_error "DNS Manager недоступен"
+        return
+    }
+    _duplicate="$(catalog_id_for_url "$DNSMGR_ADD_CUSTOM_URL" 2>/dev/null || true)"
+    if [ -n "$_duplicate" ]; then
+        _duplicate_name="$(catalog_field "$_duplicate" 4 2>/dev/null || true)"
+        [ -n "$_duplicate_name" ] || _duplicate_name="$_duplicate"
+        release_runtime_lock "$RUNTIME_DIR/custom-catalog.lock"
+        json_error "Этот DoH URL уже есть в каталоге: $_duplicate_name"
+        return
+    fi
+    mkdir -p "$(dirname "$CUSTOM_CATALOG_FILE")" 2>/dev/null || {
+        release_runtime_lock "$RUNTIME_DIR/custom-catalog.lock"
+        json_error "Не удалось создать каталог пользовательских DNS"
+        return
+    }
+    [ -f "$CUSTOM_CATALOG_FILE" ] || : > "$CUSTOM_CATALOG_FILE"
+    chmod 600 "$CUSTOM_CATALOG_FILE" 2>/dev/null || true
+    _n=1
+    while [ "$_n" -le 999 ]; do
+        _id="$(printf 'custom_%03d' "$_n")"
+        [ -z "$(dns_cat "$_id" 2>/dev/null || true)" ] && break
+        _n=$((_n + 1))
+    done
+    if [ "$_n" -gt 999 ]; then
+        release_runtime_lock "$RUNTIME_DIR/custom-catalog.lock"
+        json_error "Достигнут лимит пользовательских DNS"
+        return
+    fi
+    _tmp="$(mktemp "$CUSTOM_CATALOG_FILE.tmp.XXXXXX" 2>/dev/null || true)"
+    if [ -z "$_tmp" ]; then
+        release_runtime_lock "$RUNTIME_DIR/custom-catalog.lock"
+        json_error "Не удалось подготовить файл пользовательских DNS"
+        return
+    fi
+    cat "$CUSTOM_CATALOG_FILE" > "$_tmp" 2>/dev/null || : > "$_tmp"
+    printf '%s|custom|custom|%s|%s|manual|USER\n' "$_id" "$DNSMGR_ADD_CUSTOM_NAME" "$DNSMGR_ADD_CUSTOM_URL" >> "$_tmp" || {
+        rm -f "$_tmp" 2>/dev/null || true
+        release_runtime_lock "$RUNTIME_DIR/custom-catalog.lock"
+        json_error "Не удалось записать пользовательский DNS"
+        return
+    }
+    chmod 600 "$_tmp" 2>/dev/null || true
+    mv -f "$_tmp" "$CUSTOM_CATALOG_FILE" || {
+        rm -f "$_tmp" 2>/dev/null || true
+        release_runtime_lock "$RUNTIME_DIR/custom-catalog.lock"
+        json_error "Не удалось сохранить пользовательский DNS"
+        return
+    }
+    release_runtime_lock "$RUNTIME_DIR/custom-catalog.lock"
+    printf '{"ok":true,"id":'; json_quote "$_id"
+    printf ',"name":'; json_quote "$DNSMGR_ADD_CUSTOM_NAME"
+    printf ',"url":'; json_quote "$DNSMGR_ADD_CUSTOM_URL"
+    printf '}'
+}
+
+delete_custom_dns_json() {
+    DNSMGR_DCD_ID="$(jget id)"
+    case "$DNSMGR_DCD_ID" in custom_[0-9][0-9][0-9]) ;; *) json_error "Можно удалять только пользовательские DNS"; return;; esac
+    if ! acquire_runtime_lock "$RUNTIME_DIR/custom-catalog.lock"; then
+        json_error "Список пользовательских DNS уже изменяется"
+        return
+    fi
+    load_manager || { release_runtime_lock "$RUNTIME_DIR/custom-catalog.lock"; json_error "DNS Manager недоступен"; return; }
+    if ! awk -F"|" -v id="$DNSMGR_DCD_ID" '$1==id {found=1} END {exit !found}' "$CUSTOM_CATALOG_FILE" 2>/dev/null; then
+        release_runtime_lock "$RUNTIME_DIR/custom-catalog.lock"
+        json_error "Пользовательский DNS не найден"
+        return
+    fi
+    if ! acquire_test_lock; then
+        release_runtime_lock "$RUNTIME_DIR/custom-catalog.lock"
+        json_error "Проверка DNS выполняется. Дождитесь её завершения и повторите удаление"
+        return
+    fi
+    for DNSMGR_DCD_SLOT in 1 2 3 4 5 6 RU; do
+        DNSMGR_DCD_ASSIGNED="$(cfg_get "SLOT_$DNSMGR_DCD_SLOT" 2>/dev/null || true)"
+        if [ "$DNSMGR_DCD_ASSIGNED" = "$DNSMGR_DCD_ID" ]; then
+            release_test_lock
+            release_runtime_lock "$RUNTIME_DIR/custom-catalog.lock"
+            json_error "DNS назначен в слоте $DNSMGR_DCD_SLOT. Сначала замените DNS в этом слоте"
+            return
+        fi
+    done
+    DNSMGR_DCD_TMP="$(mktemp "$CUSTOM_CATALOG_FILE.delete.XXXXXX" 2>/dev/null || true)"
+    if [ -z "$DNSMGR_DCD_TMP" ]; then
+        release_test_lock
+        release_runtime_lock "$RUNTIME_DIR/custom-catalog.lock"
+        json_error "Не удалось подготовить удаление пользовательского DNS"
+        return
+    fi
+    if ! awk -F"|" -v id="$DNSMGR_DCD_ID" '$1!=id {print} $1==id {found=1} END {if(!found) exit 1}' "$CUSTOM_CATALOG_FILE" > "$DNSMGR_DCD_TMP"; then
+        rm -f "$DNSMGR_DCD_TMP" 2>/dev/null || true
+        release_test_lock
+        release_runtime_lock "$RUNTIME_DIR/custom-catalog.lock"
+        json_error "Не удалось прочитать пользовательский каталог DNS"
+        return
+    fi
+    chmod 600 "$DNSMGR_DCD_TMP" 2>/dev/null || true
+    if ! mv -f "$DNSMGR_DCD_TMP" "$CUSTOM_CATALOG_FILE"; then
+        rm -f "$DNSMGR_DCD_TMP" 2>/dev/null || true
+        release_test_lock
+        release_runtime_lock "$RUNTIME_DIR/custom-catalog.lock"
+        json_error "Не удалось сохранить изменения пользовательского каталога DNS"
+        return
+    fi
+    for DNSMGR_DCD_RESULTS in "$STATE_DIR/dns-test-results.conf" "$PERSIST_STATE_DIR/dns-test-results.conf"; do
+        [ -f "$DNSMGR_DCD_RESULTS" ] || continue
+        DNSMGR_DCD_RESULT_TMP="$(mktemp "$DNSMGR_DCD_RESULTS.tmp.XXXXXX" 2>/dev/null || true)"
+        [ -n "$DNSMGR_DCD_RESULT_TMP" ] || continue
+        if awk -F"|" -v id="$DNSMGR_DCD_ID" '$1!=id {print}' "$DNSMGR_DCD_RESULTS" > "$DNSMGR_DCD_RESULT_TMP" && mv -f "$DNSMGR_DCD_RESULT_TMP" "$DNSMGR_DCD_RESULTS"; then
+            chmod 600 "$DNSMGR_DCD_RESULTS" 2>/dev/null || true
+        else
+            rm -f "$DNSMGR_DCD_RESULT_TMP" 2>/dev/null || true
+        fi
+    done
+    rm -f "$CHECK_DIR/$DNSMGR_DCD_ID" 2>/dev/null || true
+    release_test_lock
+    release_runtime_lock "$RUNTIME_DIR/custom-catalog.lock"
+    printf '{"ok":true,"id":'; json_quote "$DNSMGR_DCD_ID"; printf '}'
+}
 
 read_installed_luci_version() {
     _v=""
@@ -402,7 +950,7 @@ component_update_check() {
     if [ -z "$_manager_installed" ]; then
         _manager_error="DNS Manager не найден на роутере"
         UPDATE_CHECK_COMPONENTS_OK=0
-    elif fetch_raw_url "$_tmp" "https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager.sh?_dmcb=$_ts-$$"; then
+    elif fetch_raw_url "$_tmp" "https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager.sh"; then
         _manager_latest="$(sed -n 's/^VERSION="\([^"]*\)"$/\1/p' "$_tmp" 2>/dev/null | head -n1)"
         if [ -n "$_manager_latest" ]; then
             _manager_ok=1
@@ -419,7 +967,7 @@ component_update_check() {
 
     _catalog_latest=""; _catalog_latest_rev=""; _catalog_latest_total=0; _catalog_available=0; _catalog_ok=0; _catalog_error=""
     _tmp="$TMP_ROOT/catalog-check.$$"
-    if fetch_raw_url "$_tmp" "https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/catalogs/dns-8.7-RU-NOSOCIAL.conf?_dmcb=$_ts-$$"; then
+    if fetch_raw_url "$_tmp" "https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/catalogs/dns-8.7-RU-NOSOCIAL.conf"; then
         _catalog_latest="$(sed -n 's/^# DNSCATVER=//p' "$_tmp" 2>/dev/null | head -n1)"
         _catalog_latest_rev="$(sed -n 's/^# DNSCATREV=//p' "$_tmp" 2>/dev/null | head -n1)"
         _catalog_latest_total="$(grep -v '^#' "$_tmp" 2>/dev/null | grep -c '^[^|][^|]*|' 2>/dev/null || printf 0)"
@@ -613,7 +1161,9 @@ update_catalog_direct() {
     _rb="$TMP_ROOT/catalog-remote-all.$"
     _lb="$TMP_ROOT/catalog-local-all.$"
     _old_shecan_url="$(awk -F'|' '$1=="shecan" {print $5; exit}' "$CATALOG_FILE" 2>/dev/null)"
+    _old_astracat_url="$(awk -F'|' '$1=="astracat" {print $5; exit}' "$CATALOG_FILE" 2>/dev/null)"
     _new_shecan_url="$(awk -F'|' '$1=="shecan" {print $5; exit}' "$_tmp" 2>/dev/null)"
+    _new_astracat_url="$(awk -F'|' '$1=="astracat" {print $5; exit}' "$_tmp" 2>/dev/null)"
     sed '/^[[:space:]]*#/d;/^[[:space:]]*$/d' "$_tmp" > "$_rb" 2>/dev/null || true
     sed '/^[[:space:]]*#/d;/^[[:space:]]*$/d' "$CATALOG_FILE" > "$_lb" 2>/dev/null || true
     if cmp -s "$_rb" "$_lb" 2>/dev/null; then rm -f "$_tmp" "$_rb" "$_lb" 2>/dev/null || true; return 2; fi
@@ -628,6 +1178,16 @@ update_catalog_direct() {
                 rm -f "$_result_tmp" 2>/dev/null || true
         done
         rm -f "$CHECK_DIR/shecan" 2>/dev/null || true
+    fi
+    if [ "$_old_astracat_url" != "$_new_astracat_url" ]; then
+        for _result_file in "$STATE_DIR/dns-test-results.conf" "$PERSIST_STATE_DIR/dns-test-results.conf"; do
+            [ -s "$_result_file" ] || continue
+            _result_tmp="${_result_file}.tmp.$"
+            awk -F'|' '$1!="astracat" {print}' "$_result_file" > "$_result_tmp" 2>/dev/null &&
+                mv -f "$_result_tmp" "$_result_file" 2>/dev/null ||
+                rm -f "$_result_tmp" 2>/dev/null || true
+        done
+        rm -f "$CHECK_DIR/astracat" 2>/dev/null || true
     fi
     rm -f "$_rb" "$_lb" 2>/dev/null || true
     return 0
@@ -793,8 +1353,8 @@ result_for_id() {
 
 system_result_id() {
     _sri_url="$1"; _sri_port="$2"; _sri_index="$3"
-    _sri_url="$(printf '%s' "$_sri_url" | sed 's/[[:space:]]//g; s:/*$::')"
-    _sri_cat_id="$(awk -F'|' -v u="$_sri_url" '$5==u {print $1; exit}' "$CATALOG_FILE" 2>/dev/null || true)"
+    _sri_url="$(catalog_url_normalize "$_sri_url")"
+    _sri_cat_id="$(catalog_id_for_url "$_sri_url" 2>/dev/null || true)"
     if [ -n "$_sri_cat_id" ]; then
         printf '%s' "$_sri_cat_id"
         return 0
@@ -1066,11 +1626,9 @@ cpu_load_percent() {
     if [ -s "$f" ]; then
         prev="$(cat "$f" 2>/dev/null || true)"
     else
-        printf '%s
-' "$now" > "$f" 2>/dev/null || true
+        printf '%s\n' "$now" > "$f" 2>/dev/null || true
         printf '0'
-        printf '%s
-' '0' > "$f.pct" 2>/dev/null || true
+        printf '%s\n' '0' > "$f.pct" 2>/dev/null || true
         return 0
     fi
     set -- $prev $now
@@ -1173,18 +1731,132 @@ page_header_json() {
     printf ',"last_full_test_scope":'; json_quote "$_ph_scope"
 }
 
+lan_devices_json() {
+    _ld_tmp="$(mktemp /tmp/dns-manager-lan-devices.XXXXXX 2>/dev/null)" || {
+        printf '{"ok":false,"error":"Не удалось создать временный файл","devices":[]}\n'
+        return 0
+    }
+    _ld_merged="$_ld_tmp.merged"
+    : > "$_ld_tmp"
+
+    # Active DHCP leases known to dnsmasq.
+    if [ -r /tmp/dhcp.leases ]; then
+        awk -F '[[:space:]]+' '
+            NF >= 3 &&
+            $2 ~ /^[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]$/ &&
+            $3 ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ {
+                name = (NF >= 4 && $4 != "*" ? $4 : "")
+                gsub(/[|\t\r\n]/, " ", name)
+                printf "%s|%s|%s|DHCP|1\n", tolower($2), $3, name
+            }
+        ' /tmp/dhcp.leases >> "$_ld_tmp" 2>/dev/null || true
+    fi
+
+    # IPv4 neighbours on the LAN bridge, including recent statically addressed clients.
+    _ld_dev="$(uci -q get network.lan.device 2>/dev/null || true)"
+    [ -n "$_ld_dev" ] || _ld_dev=br-lan
+    if [ -r /proc/net/arp ]; then
+        awk -v dev="$_ld_dev" '
+            NR > 1 && $3 == "0x2" &&
+            $4 ~ /^[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]$/ &&
+            ($6 == "br-lan" || $6 == dev) {
+                printf "%s|%s||ARP|1\n", tolower($4), $1
+            }
+        ' /proc/net/arp >> "$_ld_tmp" 2>/dev/null || true
+    fi
+
+    # IPv6 neighbours are discovered from the Linux NDP table when iproute2 is available.
+    if command -v ip >/dev/null 2>&1; then
+        ip -6 neigh show dev "$_ld_dev" 2>/dev/null | awk '
+            $1 ~ /:/ && $0 !~ /[[:space:]](FAILED|INCOMPLETE)([[:space:]]|$)/ {
+                mac = ""
+                for (i = 2; i < NF; i++) if ($i == "lladdr") mac = tolower($(i + 1))
+                if (mac ~ /^[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]$/)
+                    printf "%s|%s||NDP|1\n", mac, $1
+            }
+        ' >> "$_ld_tmp" 2>/dev/null || true
+    fi
+
+    # Static DHCP host entries remain visible while their devices are offline.
+    _ld_hosts="$(uci -q show dhcp 2>/dev/null | sed -n 's/^dhcp\.\([^.=]*\)=host$/\1/p')"
+    for _ld_sec in $_ld_hosts; do
+        _ld_macs="$(uci -q get "dhcp.$_ld_sec.mac" 2>/dev/null || true)"
+        _ld_ip="$(uci -q get "dhcp.$_ld_sec.ip" 2>/dev/null || true)"
+        _ld_name="$(uci -q get "dhcp.$_ld_sec.name" 2>/dev/null || true)"
+        case "$_ld_ip" in ignore|*:* ) _ld_ip="" ;; esac
+        case "$_ld_ip" in *[!0-9.]* ) _ld_ip="" ;; esac
+        _ld_name="$(printf '%s' "$_ld_name" | tr '\011\012\015|' '    ')"
+        for _ld_mac in $_ld_macs; do
+            printf '%s|%s|%s|static DHCP|0\n' "$(printf '%s' "$_ld_mac" | tr 'A-F' 'a-f')" "$_ld_ip" "$_ld_name" >> "$_ld_tmp"
+        done
+    done
+
+    # Keep saved individual bindings visible after devices go offline.
+    if [ -r /etc/dns-manager/config/device-dns.conf ]; then
+        awk -F '|' '
+            NF >= 2 && $2 ~ /^[1-6](,[1-6])*$/ &&
+            $1 ~ /^[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]$/ {
+                printf "%s|||ASSIGN|0|%s\n", tolower($1), $2
+            }
+        ' /etc/dns-manager/config/device-dns.conf >> "$_ld_tmp" 2>/dev/null || true
+    fi
+
+    # Merge records by MAC; quote every value via json_quote after aggregation.
+    awk -F '|' '
+        function ismac(m) {
+            return m ~ /^[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]$/
+        }
+        {
+            mac = tolower($1)
+            if (!ismac(mac)) next
+            if (!(mac in seen)) { seen[mac] = 1; order[++n] = mac }
+            if ($2 != "" && $2 != "ignore" && ip[mac] == "") ip[mac] = $2
+            if ($3 != "" && $3 != "*" && name[mac] == "") name[mac] = $3
+            if ($4 == "DHCP") source[mac] = "DHCP"
+            else if ($4 == "ARP" && source[mac] != "DHCP") source[mac] = "ARP"
+            else if ($4 == "NDP" && source[mac] != "DHCP" && source[mac] != "ARP") source[mac] = "NDP"
+            else if ($4 == "static DHCP" && source[mac] == "") source[mac] = "static DHCP"
+            else if ($4 == "ASSIGN" && source[mac] == "") source[mac] = "ASSIGN"
+            if ($6 != "") assigned[mac] = $6
+            if ($5 == "1") online[mac] = 1
+        }
+        END {
+            for (i = 1; i <= n; i++) {
+                mac = order[i]
+                printf "%s|%s|%s|%s|%s|%s\n", mac, ip[mac], name[mac], source[mac], (online[mac] ? 1 : 0), assigned[mac]
+            }
+        }
+    ' "$_ld_tmp" | sort -t '|' -k1,1 > "$_ld_merged"
+
+    printf '{"ok":true,"devices":['
+    _ld_sep=""
+    while IFS='|' read -r _ld_mac _ld_ip _ld_name _ld_source _ld_online _ld_assigned_slots; do
+        [ -n "$_ld_mac" ] || continue
+        printf '%s{"mac":' "$_ld_sep"; json_quote "$_ld_mac"
+        printf ',"ip":'; json_quote "$_ld_ip"
+        printf ',"name":'; json_quote "$_ld_name"
+        printf ',"source":'; json_quote "$_ld_source"
+        printf ',"online":%s' "$([ "$_ld_online" = 1 ] && printf 1 || printf 0)"
+        printf ',"assigned_slots":'; json_quote "$_ld_assigned_slots"
+        printf '}'
+        _ld_sep=","
+    done < "$_ld_merged"
+    printf ']}\n'
+    rm -f "$_ld_tmp" "$_ld_merged" 2>/dev/null || true
+}
+
 network_status_json() {
     _profile="$(cfg_get DNS_PROFILE)"; [ -n "$_profile" ] || _profile=none
     _mode="$(cfg_get DNS_SELECTION_MODE)"; [ -n "$_mode" ] || _mode=none
     _selection_category="$(cfg_get DNS_SELECTION_CATEGORY)"; [ -n "$_selection_category" ] || _selection_category=none
     _watchdog="$(cfg_get WATCHDOG_ENABLED)"; [ -n "$_watchdog" ] || _watchdog=0
-    _watchdog_interval="$(cfg_get WATCHDOG_INTERVAL)"; [ -n "$_watchdog_interval" ] || _watchdog_interval=600
+    _watchdog_autoreplace="$(cfg_get WATCHDOG_AUTOREPLACE)"
+    case "$_watchdog_autoreplace" in 0|1) ;; *) _watchdog_autoreplace="$_watchdog";; esac
+    _watchdog_interval="$(cfg_get WATCHDOG_INTERVAL)"; [ -n "$_watchdog_interval" ] || _watchdog_interval=120
     _watchdog_backend="$(cfg_get WATCHDOG_BACKEND)"; [ -n "$_watchdog_backend" ] || _watchdog_backend=procd
     _watchdog_threshold="$(manager_const_num WATCHDOG_FAIL_THRESHOLD 2)"
-    _watchdog_repair_cooldown="$(manager_const_num WATCHDOG_REPAIR_COOLDOWN 1800)"
-    _watchdog_max_repairs="$(manager_const_num WATCHDOG_MAX_REPAIRS 1)"
+    _watchdog_repair_cooldown="$(manager_const_num WATCHDOG_REPAIR_COOLDOWN 300)"
     _watchdog_max_restarts="$(manager_const_num WATCHDOG_MAX_RESTARTS 2)"
-    _watchdog_max_candidates="$(manager_const_num WATCHDOG_MAX_CANDIDATES 3)"
     _watchdog_guard_interval="$(manager_const_num WATCHDOG_GUARD_INTERVAL 3600)"
     _cache_cur="$(uci -q get dhcp.@dnsmasq[0].cachesize 2>/dev/null || true)"
     _cache_stock=""
@@ -1202,7 +1874,7 @@ network_status_json() {
     printf ',"profile":'; json_quote "$_profile"; printf ',"profile_mode":'; json_quote "$_mode"; printf ',"selection_category":'; json_quote "$_selection_category"
     printf ',"watchdog_backend":'; json_quote "$_watchdog_backend"
     printf ',"watchdog_interval":%s,"watchdog_service":%s,"watchdog_service_enabled":%s,"watchdog_loop":%s' "$_watchdog_interval" "$_wr" "$_ws" "$_wl"
-    printf ',"watchdog_fail_threshold":%s,"watchdog_repair_cooldown":%s,"watchdog_max_repairs":%s,"watchdog_max_restarts":%s,"watchdog_max_candidates":%s,"watchdog_guard_interval":%s' "$_watchdog_threshold" "$_watchdog_repair_cooldown" "$_watchdog_max_repairs" "$_watchdog_max_restarts" "$_watchdog_max_candidates" "$_watchdog_guard_interval"
+    printf ',"watchdog_fail_threshold":%s,"watchdog_repair_cooldown":%s,"watchdog_max_restarts":%s,"watchdog_guard_interval":%s' "$_watchdog_threshold" "$_watchdog_repair_cooldown" "$_watchdog_max_restarts" "$_watchdog_guard_interval"
     printf ',"dnsmasq_perf_state":%s}' "$_cache_state"
 }
 
@@ -1223,6 +1895,9 @@ page_meta_json() {
 
 doh_status_json() {
     _force="$(cfg_get FORCE_DOH)"; [ -n "$_force" ] || _force=0
+    _encrypted_dns="$(cfg_get BLOCK_EXTERNAL_DNS)"
+    [ -n "$_encrypted_dns" ] || _encrypted_dns="$_force"
+    case "$_encrypted_dns" in 0|1) ;; *) _encrypted_dns=0 ;; esac
     _force_cfg="$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null || true)"
     _force_notrack="$(uci -q get https-dns-proxy.config.notrack_dns 2>/dev/null || true)"
     _force_state="$("$MANAGER_PATH" --force-state 2>/dev/null || true)"
@@ -1241,9 +1916,7 @@ doh_status_json() {
         [ "$(uci -q get firewall.$_sec.disabled 2>/dev/null)" = 1 ] && continue
         runtime_lan_input_match "$(uci -q get firewall.$_sec.src 2>/dev/null || true)" || continue
         _sd="$(uci -q get firewall.$_sec.src_dport 2>/dev/null || true)"
-        printf '%s
-' "$_sd" | tr ' ' '
-' | grep -qxF 53 2>/dev/null || continue
+        printf '%s\n' "$_sd" | tr ' ' '\n' | grep -qxF 53 2>/dev/null || continue
         _target="$(uci -q get firewall.$_sec.target 2>/dev/null || true)"
         case "$_target" in DNAT|dnat|REDIRECT|redirect) ;; *) continue;; esac
         _dp="$(uci -q get firewall.$_sec.dest_port 2>/dev/null || true)"
@@ -1275,20 +1948,19 @@ doh_status_json() {
     while uci -q get https-dns-proxy.@https-dns-proxy[$_i] >/dev/null 2>&1; do
         _p="$(uci -q get https-dns-proxy.@https-dns-proxy[$_i].listen_port 2>/dev/null || true)"
         _a="$(uci -q get https-dns-proxy.@https-dns-proxy[$_i].listen_addr 2>/dev/null || true)"
-        _u="$(uci -q get https-dns-proxy.@https-dns-proxy[$_i].resolver_url 2>/dev/null | sed 's:/*$::' || true)"
+        _u="$(catalog_url_normalize "$(uci -q get https-dns-proxy.@https-dns-proxy[$_i].resolver_url 2>/dev/null || true)")"
         _n="$(uci -q get https-dns-proxy.@https-dns-proxy[$_i].name 2>/dev/null || true)"
-        if [ -z "$_n" ] && [ -n "$_u" ]; then _n="$(awk -F'|' -v u="$_u" '$5==u {print $4; exit}' "$CATALOG_FILE" 2>/dev/null)"; fi
+        if [ -z "$_n" ] && [ -n "$_u" ]; then _lookup_id="$(catalog_id_for_url "$_u" 2>/dev/null || true)"; [ -n "$_lookup_id" ] && _n="$(catalog_field "$_lookup_id" 4 2>/dev/null || true)"; fi
         case "$_u" in
             https://cloudflare-dns.com/dns-query) [ "$_n" = Cloudflare ] && _n='Cloudflare (Стандарт)';;
             https://dns.google/dns-query) [ "$_n" = 'Google Public DNS' ] && _n='Google';;
         esac
         [ -n "$_n" ] || _n='Пользовательский DNS'
         _run=0
-        [ -n "$_p" ] && printf '%s
-' "$_listen" | grep -qE "(^|[[:space:]])[^[:space:]]*:$_p([[:space:]]|$)" && _run=1
+        [ -n "$_p" ] && printf '%s\n' "$_listen" | grep -qE "(^|[[:space:]])[^[:space:]]*:$_p([[:space:]]|$)" && _run=1
         [ "$_run" = 1 ] && _doh_running=$((_doh_running+1))
         _doh_total=$((_doh_total+1))
-        _instance_id="$(awk -F'|' -v u="$_u" '$5==u {print $1; exit}' "$CATALOG_FILE" 2>/dev/null || true)"
+        _instance_id="$(catalog_id_for_url "$_u" 2>/dev/null || true)"
         _slot=""
         for _s in 1 2 3 4 5 6 RU; do
             _sid="$(cfg_get SLOT_"$_s")"; _sport="$(cfg_get PORT_"$_s")"
@@ -1317,11 +1989,11 @@ doh_status_json() {
         _expected=$((_expected+1))
         _url="$(catalog_field "$_id" 5 2>/dev/null || true)"
         [ -n "$_url" ] || continue
-        _url_cmp="$(printf '%s' "$_url" | sed 's:/*$::')"
+        _url_cmp="$(catalog_url_normalize "$_url")"
         _j=0
         while uci -q get https-dns-proxy.@https-dns-proxy[$_j] >/dev/null 2>&1; do
             _up="$(uci -q get https-dns-proxy.@https-dns-proxy[$_j].listen_port 2>/dev/null || true)"
-            _uu="$(uci -q get https-dns-proxy.@https-dns-proxy[$_j].resolver_url 2>/dev/null | sed 's:/*$::' || true)"
+            _uu="$(catalog_url_normalize "$(uci -q get https-dns-proxy.@https-dns-proxy[$_j].resolver_url 2>/dev/null || true)")"
             [ "$_up" = "$_port" ] && [ "$_uu" = "$_url_cmp" ] && { _match=$((_match+1)); break; }
             _j=$((_j+1))
         done
@@ -1354,7 +2026,7 @@ doh_status_json() {
     printf ',"doh_instances":[%s],"slots":[' "$_doh_instances"
     _first=1
     for _s in 1 2 3 4 5 6 RU; do
-        _id="$(cfg_get SLOT_"$_s")"; _cat="$(catalog_field "$_id" 2>/dev/null || true)"; _port="$(cfg_get PORT_"$_s")"
+        _id="$(cfg_get SLOT_"$_s")"; _cat="$(catalog_field "$_id" 2>/dev/null || true)"; _port="$(cfg_get PORT_"$_s")"; _domains="$(cfg_get "SLOT_${_s}_DOMAINS")"
         [ -n "$_cat" ] || [ -z "$_id" ] || _cat="$(cfg_get SLOT_"$_s"_CAT)"
         _name="$(catalog_field "$_id" 4 2>/dev/null || true)"; [ -n "$_name" ] || _name='Не задан'
         _r="$(result_for_id "$_id" 2>/dev/null || true)"
@@ -1362,10 +2034,11 @@ doh_status_json() {
         _rawst="$(printf '%s' "$_r" | awk -F'|' 'NF>=5 {print $5;exit}')"
         _st=""; case "$_rawst" in OK) case "$_ms" in ''|*[!0-9]*) _st=FAIL;; *) _st=OK;; esac;; RUNNING) _st=RUNNING;; '') ;; *) _st=FAIL;; esac
         [ "$_first" = 1 ] || printf ','; _first=0
-        printf '{"slot":'; json_quote "$_s"; printf ',"id":'; json_quote "$_id"; printf ',"name":'; json_quote "$_name"; printf ',"category":'; json_quote "$_cat"; printf ',"port":'; json_quote "$_port"; printf ',"ping":'; json_quote "$_ms"; printf ',"status":'; json_quote "$_st"; printf ',"last_check":'; json_quote "$(last_check_for_id "$_id")"; printf '}'
+        printf '{"slot":'; json_quote "$_s"; printf ',"id":'; json_quote "$_id"; printf ',"name":'; json_quote "$_name"; printf ',"category":'; json_quote "$_cat"; printf ',"port":'; json_quote "$_port"; printf ',"ping":'; json_quote "$_ms"; printf ',"status":'; json_quote "$_st"; printf ',"last_check":'; json_quote "$(last_check_for_id "$_id")"; printf ',"domains":'; json_quote "$_domains"; printf '}'
     done
     printf '],"system_dns_count":%s' "$_system_dns_total"
     printf ',"profile_job_status":'; json_quote "$_pjs"; printf ',"profile_job_result":'; json_quote "$_pjr"; printf ',"profile_job_profile":'; json_quote "$_pjp"; printf ',"profile_job_started":'; json_quote "$_pjsd"; printf ',"profile_job_finished":'; json_quote "$_pjf"; printf ',"profile_job_message":'; json_quote "$_pjm"
+    printf ',"encrypted_dns":%s' "$_encrypted_dns"
     printf '}'
 }
 
@@ -1380,13 +2053,13 @@ status_json() {
     _mode=none
     _selection_category=none
     _watchdog="$(cfg_get WATCHDOG_ENABLED)"; [ -n "$_watchdog" ] || _watchdog=0
-    _watchdog_interval="$(cfg_get WATCHDOG_INTERVAL)"; [ -n "$_watchdog_interval" ] || _watchdog_interval=600
+    _watchdog_autoreplace="$(cfg_get WATCHDOG_AUTOREPLACE)"
+    case "$_watchdog_autoreplace" in 0|1) ;; *) _watchdog_autoreplace="$_watchdog";; esac
+    _watchdog_interval="$(cfg_get WATCHDOG_INTERVAL)"; [ -n "$_watchdog_interval" ] || _watchdog_interval=120
     _watchdog_backend="$(cfg_get WATCHDOG_BACKEND)"; [ -n "$_watchdog_backend" ] || _watchdog_backend=procd
     _watchdog_threshold="$(manager_const_num WATCHDOG_FAIL_THRESHOLD 2)"
-    _watchdog_repair_cooldown="$(manager_const_num WATCHDOG_REPAIR_COOLDOWN 1800)"
-    _watchdog_max_repairs="$(manager_const_num WATCHDOG_MAX_REPAIRS 1)"
+    _watchdog_repair_cooldown="$(manager_const_num WATCHDOG_REPAIR_COOLDOWN 300)"
     _watchdog_max_restarts="$(manager_const_num WATCHDOG_MAX_RESTARTS 2)"
-    _watchdog_max_candidates="$(manager_const_num WATCHDOG_MAX_CANDIDATES 3)"
     _watchdog_guard_interval="$(manager_const_num WATCHDOG_GUARD_INTERVAL 3600)"
 
     # DNS cache tuning changes only dnsmasq cachesize. Do not let the
@@ -1492,11 +2165,11 @@ status_json() {
         [ -n "$_id" ] && [ -n "$_port" ] || continue
         _url="$(catalog_field "$_id" 5 2>/dev/null || true)"
         [ -n "$_url" ] || continue
-        _url_cmp="$(printf '%s' "$_url" | sed 's:/*$::')"
+        _url_cmp="$(catalog_url_normalize "$_url")"
         _j=0
         while uci -q get "https-dns-proxy.@https-dns-proxy[$_j]" >/dev/null 2>&1; do
             _up="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_j].listen_port" 2>/dev/null || true)"
-            _uu="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_j].resolver_url" 2>/dev/null | sed 's:/*$::' )"
+            _uu="$(catalog_url_normalize "$(uci -q get "https-dns-proxy.@https-dns-proxy[$_j].resolver_url" 2>/dev/null || true)")"
             if [ "$_up" = "$_port" ] && [ "$_uu" = "$_url_cmp" ]; then _match=$((_match + 1)); break; fi
             _j=$((_j + 1))
         done
@@ -1536,6 +2209,15 @@ status_json() {
     _cpu_count="$(awk '/^processor[[:space:]]*:/ {n++} END {print n+0}' /proc/cpuinfo 2>/dev/null)"; case "$_cpu_count" in ''|*[!0-9]*|0) _cpu_count=1;; esac
 
     _last=""; _test_scope="all"; _meta="$STATE_DIR/dns-test-results.meta"; [ -r "$_meta" ] || _meta="$PERSIST_STATE_DIR/dns-test-results.meta"; _last="$(sed -n 's/^timestamp=//p' "$_meta" 2>/dev/null | head -n1)"; _test_scope="$(sed -n 's/^test_scope=//p' "$_meta" 2>/dev/null | head -n1)"; [ -n "$_test_scope" ] || _test_scope=all
+    _watchdog_check_file="$STATE_DIR/dns-watchdog-check-results.conf"
+    _watchdog_last_check="$(sed -n 's/^timestamp=//p' "$_watchdog_check_file" 2>/dev/null | head -n1)"
+    _watchdog_last_checked="$(sed -n 's/^checked=//p' "$_watchdog_check_file" 2>/dev/null | head -n1)"
+    _watchdog_last_failed="$(sed -n 's/^failed=//p' "$_watchdog_check_file" 2>/dev/null | head -n1)"
+    _watchdog_last_category="$(sed -n 's/^category=//p' "$_watchdog_check_file" 2>/dev/null | head -n1)"
+    case "$_watchdog_last_check" in ''|*[!0-9]*) _watchdog_last_check=0;; esac
+    case "$_watchdog_last_checked" in ''|*[!0-9]*) _watchdog_last_checked=0;; esac
+    case "$_watchdog_last_failed" in ''|*[!0-9]*) _watchdog_last_failed=0;; esac
+    [ -n "$_watchdog_last_category" ] || _watchdog_last_category=unknown
     _cat_total="$(grep -v '^#' "$CATALOG_FILE" 2>/dev/null | grep -c '^[^|][^|]*|' 2>/dev/null || printf 0)"
 
     _luciv="$(read_installed_luci_version)"
@@ -1620,7 +2302,26 @@ status_json() {
     _watchdog_service_enabled=0; watchdog_service_enabled && _watchdog_service_enabled=1 || true
     _watchdog_service_running=0; watchdog_service_running && _watchdog_service_running=1 || true
     _watchdog_loop_running=0; watchdog_loop_running && _watchdog_loop_running=1 || true
-         printf ',"watchdog_interval":%s,"watchdog_service":%s,"watchdog_service_enabled":%s,"watchdog_loop":%s,"watchdog_fail_threshold":%s,"watchdog_repair_cooldown":%s,"watchdog_max_repairs":%s,"watchdog_max_restarts":%s,"watchdog_max_candidates":%s,"watchdog_guard_interval":%s' "$_watchdog_interval" "$_watchdog_service_running" "$_watchdog_service_enabled" "$_watchdog_loop_running" "$_watchdog_threshold" "$_watchdog_repair_cooldown" "$_watchdog_max_repairs" "$_watchdog_max_restarts" "$_watchdog_max_candidates" "$_watchdog_guard_interval"
+    printf ',"watchdog_interval":%s,"watchdog_service":%s,"watchdog_service_enabled":%s,"watchdog_loop":%s,"watchdog_fail_threshold":%s,"watchdog_repair_cooldown":%s,"watchdog_max_restarts":%s,"watchdog_guard_interval":%s,"watchdog_autoreplace":%s' "$_watchdog_interval" "$_watchdog_service_running" "$_watchdog_service_enabled" "$_watchdog_loop_running" "$_watchdog_threshold" "$_watchdog_repair_cooldown" "$_watchdog_max_restarts" "$_watchdog_guard_interval" "$_watchdog_autoreplace"
+     printf ',"watchdog_last_check":%s,"watchdog_last_checked":%s,"watchdog_last_failed":%s,"watchdog_last_category":' "$_watchdog_last_check" "$_watchdog_last_checked" "$_watchdog_last_failed"
+     json_quote "$_watchdog_last_category"
+     printf ',"watchdog_last_records":['
+     _wd_rec_sep=""
+     if [ -r "$_watchdog_check_file" ]; then
+         while IFS='|' read -r _wr_tag _wr_slot _wr_id _wr_cat _wr_name _wr_status; do
+             [ "$_wr_tag" = record ] || continue
+             case "$_wr_status" in OK|FAIL|NO_LISTENER|SKIPPED) ;; *) _wr_status=SKIPPED;; esac
+             [ -n "$_wr_name" ] || _wr_name="DNS $_wr_slot"
+             printf '%s{"slot":' "$_wd_rec_sep"; json_quote "$_wr_slot"
+             printf ',"id":'; json_quote "$_wr_id"
+             printf ',"name":'; json_quote "$_wr_name"
+             printf ',"category":'; json_quote "$_wr_cat"
+             printf ',"status":'; json_quote "$_wr_status"
+             printf '}'
+             _wd_rec_sep=","
+         done < "$_watchdog_check_file"
+     fi
+     printf ']'
      printf ',"dnsmasq_perf_state":%s' "$_dnsmasq_perf_state"
     printf ',"ntp_enabled":%s,"ntp_use_dhcp":%s' "$_ntp_enabled" "$_ntp_use_dhcp"
     printf ',"ntp_preset":'; json_quote "$_ntp_preset"
@@ -1657,10 +2358,11 @@ status_json() {
     while uci -q get "https-dns-proxy.@https-dns-proxy[$_i]" >/dev/null 2>&1; do
         _p="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].listen_port" 2>/dev/null || true)"
         _a="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].listen_addr" 2>/dev/null || true)"
-        _u="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].resolver_url" 2>/dev/null | sed 's:/*$::' || true)"
+        _u="$(catalog_url_normalize "$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].resolver_url" 2>/dev/null || true)")"
         _n="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_i].name" 2>/dev/null || true)"
         if [ -z "$_n" ] && [ -n "$_u" ]; then
-            _n="$(awk -F'|' -v u="$_u" '$5==u {print $4; exit}' "$CATALOG_FILE" 2>/dev/null)"
+            _lookup_id="$(catalog_id_for_url "$_u" 2>/dev/null || true)"
+            [ -n "$_lookup_id" ] && _n="$(catalog_field "$_lookup_id" 4 2>/dev/null || true)"
         fi
         case "$_u" in
             https://cloudflare-dns.com/dns-query) [ -n "$_n" ] && [ "$_n" = "Cloudflare" ] && _n="Cloudflare (Стандарт)" ;;
@@ -1670,7 +2372,7 @@ status_json() {
         _run=0
         [ -n "$_p" ] && printf '%s\n' "$_listen" | grep -qE "(^|[[:space:]])[^[:space:]]*:$_p([[:space:]]|$)" && _run=1
         _slot=""
-        _instance_id="$(awk -F'|' -v u="$_u" '$5==u {print $1; exit}' "$CATALOG_FILE" 2>/dev/null || true)"
+        _instance_id="$(catalog_id_for_url "$_u" 2>/dev/null || true)"
         for _s in 1 2 3 4 5 6 RU; do
             _sid="$(cfg_get "SLOT_$_s")"; _sport="$(cfg_get "PORT_$_s")"
             [ -n "$_sid" ] || continue
@@ -1727,14 +2429,14 @@ status_json() {
     printf ',"slots":['
     _first=1
     for _s in 1 2 3 4 5 6 RU; do
-        _id="$(cfg_get "SLOT_${_s}")"; _cat="$(catalog_field "$_id" 2>/dev/null || true)"; _port="$(cfg_get "PORT_${_s}")"
+        _id="$(cfg_get "SLOT_${_s}")"; _cat="$(catalog_field "$_id" 2>/dev/null || true)"; _port="$(cfg_get "PORT_${_s}")"; _domains="$(cfg_get "SLOT_${_s}_DOMAINS")"
         [ -n "$_cat" ] || [ -z "$_id" ] || _cat="$(cfg_get "SLOT_${_s}_CAT")"
         _name="$(catalog_field "$_id" 4 2>/dev/null || true)"; [ -n "$_name" ] || _name='Не задан'
         _r="$(result_for_id "$_id" 2>/dev/null || true)"
         _ms="$(printf '%s' "$_r" | awk -F'|' 'NF>=5 {print $4;exit}')"; _rawst="$(printf '%s' "$_r" | awk -F'|' 'NF>=5 {print $5;exit}')"
         _st=""; case "$_rawst" in OK) case "$_ms" in ''|*[!0-9]*) _st=FAIL;; *) _st=OK;; esac;; RUNNING) _st=RUNNING;; '') ;; *) _st=FAIL;; esac
         [ "$_first" = 1 ] || printf ','; _first=0
-        printf '{"slot":'; json_quote "$_s"; printf ',"id":'; json_quote "$_id"; printf ',"name":'; json_quote "$_name"; printf ',"category":'; json_quote "$_cat"; printf ',"port":'; json_quote "$_port"; printf ',"ping":'; json_quote "$_ms"; printf ',"status":'; json_quote "$_st"; printf ',"last_check":'; json_quote "$(last_check_for_id "$_id")"; printf '}'
+        printf '{"slot":'; json_quote "$_s"; printf ',"id":'; json_quote "$_id"; printf ',"name":'; json_quote "$_name"; printf ',"category":'; json_quote "$_cat"; printf ',"port":'; json_quote "$_port"; printf ',"ping":'; json_quote "$_ms"; printf ',"status":'; json_quote "$_st"; printf ',"last_check":'; json_quote "$(last_check_for_id "$_id")"; printf ',"domains":'; json_quote "$_domains"; printf '}'
     done
     printf ']}'
 }
@@ -1754,8 +2456,8 @@ load_manager() {
     return 0
 }
 system_instance_slot() {
-    _url="$(normalize_url "$1" 2>/dev/null || true)"; _port="$2"
-    _catalog_id="$(awk -F'|' -v u="$_url" '$5==u {print $1; exit}' "$CATALOG_FILE" 2>/dev/null || true)"
+    _url="$(catalog_url_normalize "$(normalize_url "$1" 2>/dev/null || true)")"; _port="$2"
+    _catalog_id="$(catalog_id_for_url "$_url" 2>/dev/null || true)"
     for _s in 1 2 3 4 5 6 RU; do
         _sid="$(cfg_get "SLOT_$_s")"; _sport="$(cfg_get "PORT_$_s")"
         [ -n "$_sid" ] && [ -n "$_catalog_id" ] && [ "$_sid" = "$_catalog_id" ] && return 0
@@ -1854,38 +2556,30 @@ job_start_test_system() {
 }
 
 watchdog_apply_values() {
-    _ni="$1"; _nt="$2"; _nrc="$3"; _nmr="$4"; _nms="$5"; _nmc="$6"; _ngi="$7"
+    _ni="$1"; _nt="$2"; _nrc="$3"; _nms="$4"; _ngi="$5"
 
     case "$_ni" in ''|*[!0-9]*) json_error "Интервал проверки: значение должно быть целым числом"; return 1;; esac
     case "$_nt" in ''|*[!0-9]*) json_error "Порог сбоя: значение должно быть целым числом"; return 1;; esac
-    case "$_nrc" in ''|*[!0-9]*) json_error "Пауза между ремонтами: значение должно быть целым числом"; return 1;; esac
-    case "$_nmr" in ''|*[!0-9]*) json_error "Ремонтов за цикл: значение должно быть целым числом"; return 1;; esac
-    case "$_nms" in ''|*[!0-9]*) json_error "Перезапусков DNS: значение должно быть целым числом"; return 1;; esac
-    case "$_nmc" in ''|*[!0-9]*) json_error "Кандидатов за выбор: значение должно быть целым числом"; return 1;; esac
+    case "$_nrc" in ''|*[!0-9]*) json_error "Пауза между заменами: значение должно быть целым числом"; return 1;; esac
+    case "$_nms" in ''|*[!0-9]*) json_error "Перезапуски DNS: значение должно быть целым числом"; return 1;; esac
     case "$_ngi" in ''|*[!0-9]*) json_error "Полная сверка: значение должно быть целым числом"; return 1;; esac
 
     [ "$_ni" -ge 60 ] 2>/dev/null && [ "$_ni" -le 3600 ] 2>/dev/null || { json_error "Интервал проверки должен быть от 60 до 3600 с"; return 1; }
     [ "$_nt" -ge 1 ] 2>/dev/null && [ "$_nt" -le 5 ] 2>/dev/null || { json_error "Порог сбоя должен быть от 1 до 5 проверок"; return 1; }
-    [ "$_nrc" -ge 300 ] 2>/dev/null && [ "$_nrc" -le 7200 ] 2>/dev/null || { json_error "Пауза между ремонтами должна быть от 300 до 7200 с"; return 1; }
-    [ "$_nmr" -ge 1 ] 2>/dev/null && [ "$_nmr" -le 3 ] 2>/dev/null || { json_error "Ремонтов за цикл должно быть от 1 до 3"; return 1; }
+    [ "$_nrc" -ge 300 ] 2>/dev/null && [ "$_nrc" -le 7200 ] 2>/dev/null || { json_error "Пауза между заменами должна быть от 300 до 7200 с"; return 1; }
     [ "$_nms" -ge 1 ] 2>/dev/null && [ "$_nms" -le 5 ] 2>/dev/null || { json_error "Перезапусков DNS должно быть от 1 до 5"; return 1; }
-    [ "$_nmc" -ge 1 ] 2>/dev/null && [ "$_nmc" -le 10 ] 2>/dev/null || { json_error "Кандидатов за выбор должно быть от 1 до 10"; return 1; }
     [ "$_ngi" -ge 900 ] 2>/dev/null && [ "$_ngi" -le 10800 ] 2>/dev/null || { json_error "Полная сверка должна быть от 900 до 10800 с"; return 1; }
 
     _old_interval="$WATCHDOG_INTERVAL"
     _old_threshold="$WATCHDOG_FAIL_THRESHOLD"
     _old_repair_cooldown="$WATCHDOG_REPAIR_COOLDOWN"
-    _old_max_repairs="$WATCHDOG_MAX_REPAIRS"
     _old_max_restarts="$WATCHDOG_MAX_RESTARTS"
-    _old_max_candidates="$WATCHDOG_MAX_CANDIDATES"
     _old_guard_interval="$WATCHDOG_GUARD_INTERVAL"
 
     if [ "$_old_interval" = "$_ni" ] &&
        [ "$_old_threshold" = "$_nt" ] &&
        [ "$_old_repair_cooldown" = "$_nrc" ] &&
-       [ "$_old_max_repairs" = "$_nmr" ] &&
        [ "$_old_max_restarts" = "$_nms" ] &&
-       [ "$_old_max_candidates" = "$_nmc" ] &&
        [ "$_old_guard_interval" = "$_ngi" ]; then
         json_ok
         return 0
@@ -1904,18 +2598,14 @@ watchdog_apply_values() {
     WATCHDOG_INTERVAL="$_ni"
     WATCHDOG_FAIL_THRESHOLD="$_nt"
     WATCHDOG_REPAIR_COOLDOWN="$_nrc"
-    WATCHDOG_MAX_REPAIRS="$_nmr"
     WATCHDOG_MAX_RESTARTS="$_nms"
-    WATCHDOG_MAX_CANDIDATES="$_nmc"
     WATCHDOG_GUARD_INTERVAL="$_ngi"
 
     watchdog_restore_values() {
         WATCHDOG_INTERVAL="$_old_interval"
         WATCHDOG_FAIL_THRESHOLD="$_old_threshold"
         WATCHDOG_REPAIR_COOLDOWN="$_old_repair_cooldown"
-        WATCHDOG_MAX_REPAIRS="$_old_max_repairs"
         WATCHDOG_MAX_RESTARTS="$_old_max_restarts"
-        WATCHDOG_MAX_CANDIDATES="$_old_max_candidates"
         WATCHDOG_GUARD_INTERVAL="$_old_guard_interval"
         save_config >/dev/null 2>&1 || true
         watchdog_restore_service_state "$_old_service_enabled" "$_old_service_running" >/dev/null 2>&1 || true
@@ -1930,9 +2620,7 @@ watchdog_apply_values() {
     [ "$(cfg_get WATCHDOG_INTERVAL)" = "$_ni" ] &&
     [ "$(cfg_get WATCHDOG_FAIL_THRESHOLD)" = "$_nt" ] &&
     [ "$(cfg_get WATCHDOG_REPAIR_COOLDOWN)" = "$_nrc" ] &&
-    [ "$(cfg_get WATCHDOG_MAX_REPAIRS)" = "$_nmr" ] &&
     [ "$(cfg_get WATCHDOG_MAX_RESTARTS)" = "$_nms" ] &&
-    [ "$(cfg_get WATCHDOG_MAX_CANDIDATES)" = "$_nmc" ] &&
     [ "$(cfg_get WATCHDOG_GUARD_INTERVAL)" = "$_ngi" ] || {
         watchdog_restore_values
         json_error "Настройки watchdog не прошли проверку после сохранения; прежние значения восстановлены"
@@ -1964,9 +2652,7 @@ watchdog_apply_single() {
         interval) _key=WATCHDOG_INTERVAL ;;
         threshold) _key=WATCHDOG_FAIL_THRESHOLD ;;
         repair_cooldown) _key=WATCHDOG_REPAIR_COOLDOWN ;;
-        max_repairs) _key=WATCHDOG_MAX_REPAIRS ;;
         max_restarts) _key=WATCHDOG_MAX_RESTARTS ;;
-        max_candidates) _key=WATCHDOG_MAX_CANDIDATES ;;
         guard_interval) _key=WATCHDOG_GUARD_INTERVAL ;;
         *) json_error "Недопустимый параметр watchdog"; return 1 ;;
     esac
@@ -1976,37 +2662,32 @@ watchdog_apply_single() {
     _interval="$WATCHDOG_INTERVAL"
     _threshold="$WATCHDOG_FAIL_THRESHOLD"
     _repair_cooldown="$WATCHDOG_REPAIR_COOLDOWN"
-    _max_repairs="$WATCHDOG_MAX_REPAIRS"
     _max_restarts="$WATCHDOG_MAX_RESTARTS"
-    _max_candidates="$WATCHDOG_MAX_CANDIDATES"
     _guard_interval="$WATCHDOG_GUARD_INTERVAL"
     case "$_key" in
         WATCHDOG_INTERVAL) _min=60; _max=3600; _interval="$_value" ;;
         WATCHDOG_FAIL_THRESHOLD) _min=1; _max=5; _threshold="$_value" ;;
         WATCHDOG_REPAIR_COOLDOWN) _min=300; _max=7200; _repair_cooldown="$_value" ;;
-        WATCHDOG_MAX_REPAIRS) _min=1; _max=3; _max_repairs="$_value" ;;
         WATCHDOG_MAX_RESTARTS) _min=1; _max=5; _max_restarts="$_value" ;;
-        WATCHDOG_MAX_CANDIDATES) _min=1; _max=10; _max_candidates="$_value" ;;
         WATCHDOG_GUARD_INTERVAL) _min=900; _max=10800; _guard_interval="$_value" ;;
     esac
     [ "$_value" -ge "$_min" ] 2>/dev/null && [ "$_value" -le "$_max" ] 2>/dev/null || {
         json_error "Значение вне допустимого диапазона ($_min–$_max)"
         return 1
     }
-    watchdog_apply_values "$_interval" "$_threshold" "$_repair_cooldown" "$_max_repairs" "$_max_restarts" "$_max_candidates" "$_guard_interval"
+    watchdog_apply_values "$_interval" "$_threshold" "$_repair_cooldown" "$_max_restarts" "$_guard_interval"
 }
 
 watchdog_apply_batch() {
     _interval="$(jget interval)"
     _threshold="$(jget threshold)"
     _repair_cooldown="$(jget repair_cooldown)"
-    _max_repairs="$(jget max_repairs)"
     _max_restarts="$(jget max_restarts)"
-    _max_candidates="$(jget max_candidates)"
     _guard_interval="$(jget guard_interval)"
     load_manager || { json_error "DNS Manager недоступен"; return 1; }
-    watchdog_apply_values "$_interval" "$_threshold" "$_repair_cooldown" "$_max_repairs" "$_max_restarts" "$_max_candidates" "$_guard_interval"
+    watchdog_apply_values "$_interval" "$_threshold" "$_repair_cooldown" "$_max_restarts" "$_guard_interval"
 }
+
 
 set_check_stamp() {
     _id="$1"; _ts="$2"
@@ -2326,6 +3007,19 @@ job_start_test_current() {
             exit 1
         fi
 
+        # test_one_dns workers share this immutable packet. Create it here
+        # before forking, exactly as the full catalog test does.
+        q="$TMP_DIR/dns_query.bin"
+        if ! printf '\022\064\001\000\000\001\000\000\000\000\000\000\007example\003com\000\000\001\000\001' > "$q" 2>/dev/null; then
+            rm -f "$q" "$_ids" "$_results" "$_merged" 2>/dev/null || true
+            release_test_lock
+            job_write "$_jid" status failed
+            job_write "$_jid" result fail
+            job_write "$_jid" finished "$(date +%s)"
+            job_write "$_jid" error "Не удалось создать общий DNS-тестовый пакет."
+            exit 1
+        fi
+
         _batch="${TEST_BATCH:-${TEST_BATCH_DEFAULT:-4}}"
         case "$_batch" in ''|*[!0-9]*) _batch=4;; esac
         [ "$_batch" -ge 1 ] 2>/dev/null || _batch=1
@@ -2387,7 +3081,7 @@ job_start_test_current() {
             [ -n "$_id" ] && set_check_stamp "$_id" "$_stamp"
         done < "$_results"
 
-        rm -f "$_ids" "$_results" "$_merged" "$TMP_DIR/t."* 2>/dev/null || true
+        rm -f "$_ids" "$_results" "$_merged" "$TMP_DIR/t."* "$TMP_DIR/dns_query.bin" 2>/dev/null || true
         release_test_lock
 
         job_write "$_jid" status done
@@ -2403,67 +3097,70 @@ job_start_test_current() {
     printf '{"ok":true,"job":'; json_quote "$_jid"; printf '}'
 }
 job_start_test_one() {
-    _id="$1"; case "$_id" in ''|*[!A-Za-z0-9_-]*) json_error "Неверный ID DNS"; return;; esac
-    _jid="$(new_job_id test_one)"
-    job_active "$_jid" && { json_error "Проверка DNS уже выполняется"; return; }
-    job_prepare "$_jid" || { json_error "Не удалось подготовить задачу"; return; }
-    printf 'status=running\nstarted=%s\nmode=one\n' "$(date +%s)" > "$JOB_DIR/$_jid/state"
-    job_write "$_jid" dns_id "$_id"
+    # Keep the requested DNS ID separate from helpers such as job_active(),
+    # job_prepare() and job_write(), which reuse the global variable _id.
+    DNSMGR_SINGLE_TEST_DNS_ID="$1"
+    case "$DNSMGR_SINGLE_TEST_DNS_ID" in ''|*[!A-Za-z0-9_-]*) json_error "Неверный ID DNS"; return;; esac
+    DNSMGR_SINGLE_TEST_JOB_ID="$(new_job_id test_one)"
+    job_active "$DNSMGR_SINGLE_TEST_JOB_ID" && { json_error "Проверка DNS уже выполняется"; return; }
+    job_prepare "$DNSMGR_SINGLE_TEST_JOB_ID" || { json_error "Не удалось подготовить задачу"; return; }
+    printf 'status=running\nstarted=%s\nmode=one\n' "$(date +%s)" > "$JOB_DIR/$DNSMGR_SINGLE_TEST_JOB_ID/state"
+    job_write "$DNSMGR_SINGLE_TEST_JOB_ID" dns_id "$DNSMGR_SINGLE_TEST_DNS_ID"
     (
-        exec >>"$JOB_DIR/$_jid/output" 2>&1
+        exec >>"$JOB_DIR/$DNSMGR_SINGLE_TEST_JOB_ID/output" 2>&1
         if ! load_manager; then
-            job_write "$_jid" status failed; job_write "$_jid" result fail; job_write "$_jid" finished "$(date +%s)"; exit 1
+            job_write "$DNSMGR_SINGLE_TEST_JOB_ID" status failed; job_write "$DNSMGR_SINGLE_TEST_JOB_ID" result fail; job_write "$DNSMGR_SINGLE_TEST_JOB_ID" finished "$(date +%s)"; exit 1
         fi
         if ! acquire_test_lock; then
-            job_write "$_jid" status failed; job_write "$_jid" result fail; job_write "$_jid" finished "$(date +%s)"; exit 1
+            job_write "$DNSMGR_SINGLE_TEST_JOB_ID" status failed; job_write "$DNSMGR_SINGLE_TEST_JOB_ID" result fail; job_write "$DNSMGR_SINGLE_TEST_JOB_ID" finished "$(date +%s)"; exit 1
         fi
         # Keep single-DNS checks identical to the full/selected catalog test path.
-        printf "Проверяю реальный DoH endpoint: %s.\n" "$_id"
-        rm -f "$TMP_DIR/t.$_id" 2>/dev/null || true
-        test_one_dns "$_id" || true
-        _result_file="$TMP_DIR/t.$_id"
-        if [ -s "$_result_file" ]; then
-            _one_ms="$(awk -F"|" -v id="$_id" '$1==id && NF>=5 {print $4;exit}' "$_result_file" 2>/dev/null || true)"
-            _one_status="$(awk -F"|" -v id="$_id" '$1==id && NF>=5 {print $5;exit}' "$_result_file" 2>/dev/null || true)"
+        printf "Проверяю реальный DoH endpoint: %s.\n" "$DNSMGR_SINGLE_TEST_DNS_ID"
+        rm -f "$TMP_DIR/t.$DNSMGR_SINGLE_TEST_DNS_ID" 2>/dev/null || true
+        test_one_dns "$DNSMGR_SINGLE_TEST_DNS_ID" || true
+        DNSMGR_SINGLE_TEST_RESULT_FILE="$TMP_DIR/t.$DNSMGR_SINGLE_TEST_DNS_ID"
+        if [ -s "$DNSMGR_SINGLE_TEST_RESULT_FILE" ]; then
+            DNSMGR_SINGLE_TEST_MS="$(awk -F"|" -v id="$DNSMGR_SINGLE_TEST_DNS_ID" '$1==id && NF>=5 {print $4;exit}' "$DNSMGR_SINGLE_TEST_RESULT_FILE" 2>/dev/null || true)"
+            DNSMGR_SINGLE_TEST_STATUS="$(awk -F"|" -v id="$DNSMGR_SINGLE_TEST_DNS_ID" '$1==id && NF>=5 {print $5;exit}' "$DNSMGR_SINGLE_TEST_RESULT_FILE" 2>/dev/null || true)"
         else
-            _one_ms=""
-            _one_status="TEST_NO_RESULT"
+            DNSMGR_SINGLE_TEST_MS=""
+            DNSMGR_SINGLE_TEST_STATUS="TEST_NO_RESULT"
         fi
-        if [ -n "$_one_status" ] && [ "$_one_status" != "TEST_NO_RESULT" ]; then
-            job_write "$_jid" ping "$_one_ms"
-            job_write "$_jid" dns_status "$_one_status"
-            if ! commit_single_test_result "$_id" "$_result_file"; then
-                job_write "$_jid" status failed
-                job_write "$_jid" result fail
-                job_write "$_jid" finished "$(date +%s)"
-                job_write "$_jid" error "Не удалось сохранить результат одиночной проверки в общий журнал DNS."
-                rm -f "$_result_file" 2>/dev/null || true
+        if [ -n "$DNSMGR_SINGLE_TEST_STATUS" ] && [ "$DNSMGR_SINGLE_TEST_STATUS" != "TEST_NO_RESULT" ]; then
+            job_write "$DNSMGR_SINGLE_TEST_JOB_ID" ping "$DNSMGR_SINGLE_TEST_MS"
+            job_write "$DNSMGR_SINGLE_TEST_JOB_ID" dns_status "$DNSMGR_SINGLE_TEST_STATUS"
+            if ! commit_single_test_result "$DNSMGR_SINGLE_TEST_DNS_ID" "$DNSMGR_SINGLE_TEST_RESULT_FILE"; then
+                job_write "$DNSMGR_SINGLE_TEST_JOB_ID" status failed
+                job_write "$DNSMGR_SINGLE_TEST_JOB_ID" result fail
+                job_write "$DNSMGR_SINGLE_TEST_JOB_ID" finished "$(date +%s)"
+                job_write "$DNSMGR_SINGLE_TEST_JOB_ID" error "Не удалось сохранить результат одиночной проверки в общий журнал DNS."
+                rm -f "$DNSMGR_SINGLE_TEST_RESULT_FILE" 2>/dev/null || true
                 release_test_lock
                 exit 1
             fi
             # Only after the common result was verified do we advance the
             # per-DNS freshness stamp used by LuCI.
-            _stamp="$(date +%s)"
-            set_check_stamp "$_id" "$_stamp" || true
-            rm -f "$_result_file" 2>/dev/null || true
+            DNSMGR_SINGLE_TEST_STAMP="$(date +%s)"
+            set_check_stamp "$DNSMGR_SINGLE_TEST_DNS_ID" "$DNSMGR_SINGLE_TEST_STAMP" || true
+            rm -f "$DNSMGR_SINGLE_TEST_RESULT_FILE" 2>/dev/null || true
             release_test_lock
-            job_write "$_jid" status done
-            if [ "$_one_status" = "OK" ]; then
-                job_write "$_jid" result ok
+            job_write "$DNSMGR_SINGLE_TEST_JOB_ID" status done
+            if [ "$DNSMGR_SINGLE_TEST_STATUS" = "OK" ]; then
+                job_write "$DNSMGR_SINGLE_TEST_JOB_ID" result ok
             else
-                job_write "$_jid" result fail
+                job_write "$DNSMGR_SINGLE_TEST_JOB_ID" result fail
             fi
-            job_write "$_jid" finished "$_stamp"
+            job_write "$DNSMGR_SINGLE_TEST_JOB_ID" finished "$DNSMGR_SINGLE_TEST_STAMP"
             exit 0
         fi
         release_test_lock
-        job_write "$_jid" status failed
-        job_write "$_jid" result fail
-        job_write "$_jid" finished "$(date +%s)"
+        job_write "$DNSMGR_SINGLE_TEST_JOB_ID" status failed
+        job_write "$DNSMGR_SINGLE_TEST_JOB_ID" result fail
+        job_write "$DNSMGR_SINGLE_TEST_JOB_ID" finished "$(date +%s)"
     ) &
-    _job_pid=$!
-    job_record_pid "$_jid" "$_job_pid"
-    printf '{"ok":true,"job":'; json_quote "$_jid"; printf '}'
+    DNSMGR_SINGLE_TEST_PID=$!
+    job_record_pid "$DNSMGR_SINGLE_TEST_JOB_ID" "$DNSMGR_SINGLE_TEST_PID"
+    printf '{"ok":true,"job":'; json_quote "$DNSMGR_SINGLE_TEST_JOB_ID"; printf '}'
 }
 job_json() {
     _jid="$1"; case "$_jid" in ''|*[!A-Za-z0-9_-]*) json_error "Неверный job ID"; return;; esac
@@ -2500,16 +3197,19 @@ log_json() { _n="$1"; case "$_n" in ''|*[!0-9]*) _n=80;; esac; [ "$_n" -gt 300 ]
 catalog_json() {
     _category="$(jget category)"; _offset="$(jget offset)"; _limit="$(jget limit)"; _only_ok="$(jget only_ok)"
     case "$_offset" in ''|*[!0-9]*) _offset=0;; esac; case "$_limit" in ''|*[!0-9]*) _limit=18;; esac; [ "$_limit" -gt 48 ] && _limit=48; [ -n "$_category" ] || _category=all
-    case "$_category" in all|bypass|security|privacy|adblock|family|clean|gaming|regional) ;; *) json_error "Неверная категория DNS"; return;; esac
+    case "$_category" in all|bypass|security|privacy|adblock|family|clean|gaming|regional|custom) ;; *) json_error "Неверная категория DNS"; return;; esac
     case "$_only_ok" in 1|0) ;; *) _only_ok=0;; esac
-    [ -s "$CATALOG_FILE" ] || { json_error "Каталог DNS недоступен"; return; }
+    [ -s "$CATALOG_FILE" ] || [ -s "$CUSTOM_CATALOG_FILE" ] || { json_error "Каталог DNS недоступен"; return; }
     _filtered="$TMP_ROOT/catalog-filtered.$$"; _paged="$TMP_ROOT/catalog-page.$$"; : > "$_filtered"; : > "$_paged"
-    while IFS='|' read -r _id _cat _prof _name _url _region _status; do
-        case "$_id" in ''|\#*) continue;; esac
-        [ "$_category" = all ] || [ "$_cat" = "$_category" ] || continue
-        if [ "$_only_ok" = 1 ]; then _r="$(result_for_id "$_id" 2>/dev/null || true)"; _st="$(printf '%s' "$_r" | awk -F'|' 'NF>=5 {print $5;exit}')"; [ "$_st" = OK ] || continue; fi
-        printf '%s|%s|%s|%s|%s|%s|%s\n' "$_id" "$_cat" "$_prof" "$_name" "$_url" "$_region" "$_status" >> "$_filtered"
-    done < "$CATALOG_FILE"
+    for _catalog_source in "$CATALOG_FILE" "$CUSTOM_CATALOG_FILE"; do
+        [ -r "$_catalog_source" ] || continue
+        while IFS='|' read -r _id _cat _prof _name _url _region _status; do
+            case "$_id" in ''|\#*) continue;; esac
+            [ "$_category" = all ] || [ "$_cat" = "$_category" ] || continue
+            if [ "$_only_ok" = 1 ]; then _r="$(result_for_id "$_id" 2>/dev/null || true)"; _st="$(printf '%s' "$_r" | awk -F'|' 'NF>=5 {print $5;exit}')"; [ "$_st" = OK ] || continue; fi
+            printf '%s|%s|%s|%s|%s|%s|%s\n' "$_id" "$_cat" "$_prof" "$_name" "$_url" "$_region" "$_status" >> "$_filtered"
+        done < "$_catalog_source"
+    done
     _total="$(wc -l < "$_filtered" 2>/dev/null | tr -d ' ')"; case "$_total" in ''|*[!0-9]*) _total=0;; esac
     [ "$_total" -gt "$_offset" ] && sed -n "$((_offset+1)),$((_offset+_limit))p" "$_filtered" > "$_paged" 2>/dev/null || true
     printf '{"ok":true,"version":'; json_quote "$(catalog_version)"; printf ',"category":'; json_quote "$_category"; printf ',"offset":%s,"limit":%s,"total":%s,"servers":[' "$_offset" "$_limit" "$_total"
@@ -2521,9 +3221,158 @@ catalog_json() {
     printf ']}'; rm -f "$_filtered" "$_paged" 2>/dev/null || true
 }
 
+device_dns_slot_id() {
+    case "$1" in
+        1) printf '%s' "${SLOT_1:-}" ;; 2) printf '%s' "${SLOT_2:-}" ;;
+        3) printf '%s' "${SLOT_3:-}" ;; 4) printf '%s' "${SLOT_4:-}" ;;
+        5) printf '%s' "${SLOT_5:-}" ;; 6) printf '%s' "${SLOT_6:-}" ;;
+        *) return 1 ;;
+    esac
+}
+device_dns_slot_port() {
+    case "$1" in
+        1) printf '%s' "${PORT_1:-}" ;; 2) printf '%s' "${PORT_2:-}" ;;
+        3) printf '%s' "${PORT_3:-}" ;; 4) printf '%s' "${PORT_4:-}" ;;
+        5) printf '%s' "${PORT_5:-}" ;; 6) printf '%s' "${PORT_6:-}" ;;
+        *) return 1 ;;
+    esac
+}
+
+set_device_dns_json() {
+    DMD_RPC_MAC="$(printf '%s' "${1:-}" | tr 'A-F' 'a-f')"
+    DMD_RPC_RAW_SLOTS="${2:-}"
+    if [ -n "$DMD_RPC_RAW_SLOTS" ]; then
+        printf '%s' "$DMD_RPC_RAW_SLOTS" | awk '
+            { gsub(/[[:space:]]/, ""); if ($0 !~ /^[1-6](,[1-6])*$/) bad=1 }
+            END { exit bad ? 1 : 0 }
+        ' || { json_error "Список DNS должен содержать номера слотов 1–6 через запятую"; return; }
+    fi
+    printf '%s\n' "$DMD_RPC_MAC" | awk '
+        /^[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]$/ { ok=1 }
+        END { exit ok ? 0 : 1 }
+    ' || { json_error "Неверный MAC-адрес устройства"; return; }
+
+    DMD_RPC_SLOTS=""
+    for DMD_RPC_SLOT in $(printf '%s' "$DMD_RPC_RAW_SLOTS" | tr ',' ' '); do
+        case "$DMD_RPC_SLOT" in 1|2|3|4|5|6) ;; *) json_error "Выберите DNS 1–6"; return ;; esac
+        case " $DMD_RPC_SLOTS " in
+            *" $DMD_RPC_SLOT "*) ;;
+            *) DMD_RPC_SLOTS="${DMD_RPC_SLOTS:+$DMD_RPC_SLOTS }$DMD_RPC_SLOT" ;;
+        esac
+    done
+    if [ -n "$DMD_RPC_SLOTS" ]; then
+        DMD_RPC_SLOTS="$(printf '%s\n' $DMD_RPC_SLOTS | sort -n -u | tr '\n' ',' | sed 's/,$//')"
+    fi
+
+    load_manager || { json_error "DNS Manager недоступен"; return; }
+    for DMD_RPC_SLOT in $(printf '%s' "$DMD_RPC_SLOTS" | tr ',' ' '); do
+        DMD_RPC_ID="$(device_dns_slot_id "$DMD_RPC_SLOT" 2>/dev/null || true)"
+        DMD_RPC_PORT="$(device_dns_slot_port "$DMD_RPC_SLOT" 2>/dev/null || true)"
+        [ -n "$DMD_RPC_ID" ] && [ -n "$DMD_RPC_PORT" ] || {
+            json_error "Сначала назначьте DNS в выбранный слот: DNS $DMD_RPC_SLOT"
+            return
+        }
+        listener_port_exists "$DMD_RPC_PORT" || {
+            json_error "Выбранный DNS $DMD_RPC_SLOT сейчас не слушает порт $DMD_RPC_PORT. Проверьте DoH и повторите."
+            return
+        }
+    done
+
+    acquire_mutation_lock || { json_error "Другая операция DNS Manager уже выполняется"; return; }
+    load_manager || {
+        release_mutation_lock
+        json_error "Не удалось перечитать выбранные DNS"
+        return
+    }
+    for DMD_RPC_SLOT in $(printf '%s' "$DMD_RPC_SLOTS" | tr ',' ' '); do
+        DMD_RPC_ID="$(device_dns_slot_id "$DMD_RPC_SLOT" 2>/dev/null || true)"
+        DMD_RPC_PORT="$(device_dns_slot_port "$DMD_RPC_SLOT" 2>/dev/null || true)"
+        [ -n "$DMD_RPC_ID" ] && [ -n "$DMD_RPC_PORT" ] && listener_port_exists "$DMD_RPC_PORT" || {
+            release_mutation_lock
+            json_error "Слот DNS $DMD_RPC_SLOT изменился или его DoH не слушает порт. Обновите страницу и повторите."
+            return
+        }
+    done
+
+    DMD_RPC_FILE="/etc/dns-manager/config/device-dns.conf"
+    mkdir -p "$(dirname "$DMD_RPC_FILE")" || {
+        release_mutation_lock
+        json_error "Не удалось создать каталог привязок"
+        return
+    }
+    DMD_RPC_TMP="$(mktemp "$DMD_RPC_FILE.tmp.XXXXXX" 2>/dev/null)" || { release_mutation_lock; json_error "Не удалось создать временный файл привязок"; return; }
+    DMD_RPC_BACKUP="$(mktemp "$DMD_RPC_FILE.backup.XXXXXX" 2>/dev/null)" || { rm -f "$DMD_RPC_TMP"; release_mutation_lock; json_error "Не удалось создать резервную копию привязок"; return; }
+    DMD_RPC_HAD_FILE=0
+    if [ -f "$DMD_RPC_FILE" ]; then
+        DMD_RPC_HAD_FILE=1
+        cp -p "$DMD_RPC_FILE" "$DMD_RPC_BACKUP" || {
+            rm -f "$DMD_RPC_TMP" "$DMD_RPC_BACKUP"
+            release_mutation_lock
+            json_error "Не удалось сохранить прежние привязки"
+            return
+        }
+    else
+        : > "$DMD_RPC_BACKUP"
+    fi
+    : > "$DMD_RPC_TMP" || {
+        rm -f "$DMD_RPC_BACKUP"
+        release_mutation_lock
+        json_error "Не удалось подготовить файл привязок"
+        return
+    }
+    if [ -r "$DMD_RPC_FILE" ]; then
+        awk -F '|' -v mac="$DMD_RPC_MAC" '$1 != mac {print}' "$DMD_RPC_FILE" > "$DMD_RPC_TMP" || {
+            rm -f "$DMD_RPC_TMP" "$DMD_RPC_BACKUP"
+            release_mutation_lock
+            json_error "Не удалось прочитать прежние привязки"
+            return
+        }
+    fi
+    if [ -n "$DMD_RPC_SLOTS" ]; then
+        printf '%s|%s\n' "$DMD_RPC_MAC" "$DMD_RPC_SLOTS" >> "$DMD_RPC_TMP"
+    fi
+    sort -t '|' -k1,1 "$DMD_RPC_TMP" -o "$DMD_RPC_TMP" || {
+        rm -f "$DMD_RPC_TMP" "$DMD_RPC_BACKUP"
+        release_mutation_lock
+        json_error "Не удалось отсортировать привязки"
+        return
+    }
+    chmod 0600 "$DMD_RPC_TMP" 2>/dev/null || true
+    mv -f "$DMD_RPC_TMP" "$DMD_RPC_FILE" || {
+        rm -f "$DMD_RPC_TMP" "$DMD_RPC_BACKUP"
+        release_mutation_lock
+        json_error "Не удалось сохранить привязку"
+        return
+    }
+
+    if [ ! -x /etc/init.d/dns-manager-device-dns ] || ! /etc/init.d/dns-manager-device-dns restart >/dev/null 2>&1; then
+        if [ "$DMD_RPC_HAD_FILE" = 1 ]; then
+            mv -f "$DMD_RPC_BACKUP" "$DMD_RPC_FILE" 2>/dev/null || true
+        else
+            rm -f "$DMD_RPC_FILE" "$DMD_RPC_BACKUP" 2>/dev/null || true
+        fi
+        [ ! -x /etc/init.d/dns-manager-device-dns ] || /etc/init.d/dns-manager-device-dns restart >/dev/null 2>&1 || true
+        release_mutation_lock
+        json_error "Привязку не удалось применить. Устройство оставлено на обычном DNS-маршруте."
+        return
+    fi
+    rm -f "$DMD_RPC_BACKUP"
+    release_mutation_lock
+    json_ok
+}
+
 run_action() {
     _profile="$(jget profile)"
     case "${RPC_METHOD:-}" in
+        add_custom_dns)
+            add_custom_dns_json
+            ;;
+        delete_custom_dns)
+            delete_custom_dns_json
+            ;;
+        set_device_dns)
+            set_device_dns_json "$(jget mac)" "$(jget slots)"
+            ;;
         set_profile)
             case "$_profile" in clean2) _profile=clean;; bypass|clean|security|privacy|adblock|family|all) ;; *) json_error "Неверный профиль"; return;; esac
             job_start_profile "$_profile"
@@ -2562,6 +3411,16 @@ run_action() {
             _rc=$?
             HYBRID_STAGE_SKIP="$_old_hybrid_stage_skip"
             [ "$_rc" -eq 0 ] && json_ok || json_error "DNS не удалось применить"
+            ;;
+        set_slot_domains)
+            RPC_SLOT="$(jget slot)"; RPC_DOMAINS="$(jget domains)"
+            case "$RPC_SLOT" in 1|2|3|4|5|6) ;; *) json_error "Неверный слот DNS"; return;; esac
+            load_manager || { json_error "DNS Manager недоступен"; return; }
+            if slot_domains_apply "$RPC_SLOT" "$RPC_DOMAINS"; then
+                json_ok
+            else
+                json_error "${SLOT_DOMAINS_ERROR:-Не удалось применить список доменов}"
+            fi
             ;;
         set_ntp)
             _preset="$(jget preset)"
@@ -2610,7 +3469,7 @@ run_action() {
                 *) json_error "Неверное значение enabled"; return;;
             esac
             case "$_name" in
-                watchdog|force|dnsmasq_perf) ;;
+                watchdog|watchdog_autoreplace|force|encrypted_dns|dnsmasq_perf) ;;
                 *) json_error "Недопустимая настройка"; return;;
             esac
             load_manager || { json_error "DNS Manager недоступен"; return; }
@@ -2619,9 +3478,23 @@ run_action() {
                 watchdog)
                     if [ "$_enabled" = 1 ] && [ -z "$SLOT_1$SLOT_2$SLOT_3$SLOT_4$SLOT_5$SLOT_6$SLOT_RU" ]; then
                         _rc=2
-                        printf '%s\n' "Сначала выберите профиль DNS Manager." >&2
+                        printf '%s\n' "Сначала настройте хотя бы один DNS-сервер." >&2
                     else
                         SILENT_APPLY=1 watchdog_apply_toggle "$_enabled" >/dev/null 2>&1 || _rc=$?
+                    fi
+                    ;;
+                watchdog_autoreplace)
+                    if [ "$_enabled" = 1 ] && [ "${WATCHDOG_ENABLED:-0}" != 1 ]; then
+                        _rc=2
+                    else
+                        _old_autoreplace="$(cfg_get WATCHDOG_AUTOREPLACE)"
+                        case "$_old_autoreplace" in 0|1) ;; *) _old_autoreplace="${WATCHDOG_ENABLED:-0}";; esac
+                        WATCHDOG_AUTOREPLACE="$_enabled"
+                        if ! save_config >/dev/null 2>&1 || [ "$(cfg_get WATCHDOG_AUTOREPLACE)" != "$_enabled" ]; then
+                            WATCHDOG_AUTOREPLACE="$_old_autoreplace"
+                            save_config >/dev/null 2>&1 || true
+                            _rc=1
+                        fi
                     fi
                     ;;
                 force)
@@ -2631,6 +3504,10 @@ run_action() {
                         force_readback_json
                         return
                     fi
+                    ;;
+                encrypted_dns)
+                    BLOCK_EXTERNAL_DNS="$_enabled"
+                    SILENT_APPLY=1 apply_extras_now encrypted_dns >/dev/null 2>&1 || _rc=$?
                     ;;
                 dnsmasq_perf)
                     DNSMASQ_PERF="$_enabled"
@@ -2670,19 +3547,20 @@ test_json() { case "${RPC_METHOD:-}" in test_all) job_start_test_all;; test_curr
 
 case "${1:-}" in
     list)
-        printf '{"status":{},"runtime":{},"doh_status":{},"network_status":{},"time_status":{},"page_meta":{},"catalog":{"category":"String","offset":0,"limit":0,"only_ok":0},"update_check":{},"update":{},"update_manager":{},"update_hdp":{},"update_catalog":{},"update_all":{},"set_profile":{"profile":"String"},"reset_dns":{},"set_slot":{"slot":"String","id":"String"},"set_setting":{"name":"String","enabled":0},"set_watchdog_setting":{"name":"String","value":0},"set_watchdog_settings":{"interval":0,"threshold":0,"repair_cooldown":0,"max_repairs":0,"max_restarts":0,"max_candidates":0,"guard_interval":0},"set_ntp":{"preset":"String"},"set_test_age":{"category":"String","hours":0},"test_all":{},"test_current":{},"test_one":{"id":"String"},"test_system":{},"job":{"id":"String"},"log":{"lines":0}}\n'
+        printf '{"status":{},"runtime":{},"doh_status":{},"network_status":{},"lan_devices":{},"set_device_dns":{"mac":"String","slots":"String"},"time_status":{},"page_meta":{},"catalog":{"category":"String","offset":0,"limit":0,"only_ok":0},"update_check":{"force":0},"update":{},"update_manager":{},"update_hdp":{},"update_catalog":{},"update_all":{},"set_profile":{"profile":"String"},"reset_dns":{},"set_slot":{"slot":"String","id":"String"},"set_slot_domains":{"slot":"String","domains":"String"},"add_custom_dns":{"name":"String","url":"String"},"delete_custom_dns":{"id":"String"},"set_setting":{"name":"String","enabled":0},"set_watchdog_setting":{"name":"String","value":0},"set_watchdog_settings":{"interval":0,"threshold":0,"repair_cooldown":0,"max_restarts":0,"guard_interval":0},"set_ntp":{"preset":"String"},"set_test_age":{"category":"String","hours":0},"test_all":{},"test_current":{},"test_one":{"id":"String"},"test_system":{},"job":{"id":"String"},"log":{"lines":0}}\n'
         ;;
     call)
         case "${2:-}" in
             status) INPUT="$(cat 2>/dev/null || true)"; status_json;;
             doh_status) doh_status_json;;
             network_status) network_status_json;;
+            lan_devices) lan_devices_json;;
             time_status) time_status_json;;
             page_meta) page_meta_json;;
             runtime) runtime_json;;
             catalog) INPUT="$(cat 2>/dev/null || true)"; catalog_json;;
             update_check) INPUT="$(cat 2>/dev/null || true)"; update_check_json;;            update_catalog) update_catalog_json;;            update_all) update_all_json;;            update) update_json;;            update_manager) update_manager_json;;            update_hdp) update_hdp_json;;
-            reset_dns|set_profile|set_slot|set_setting|set_watchdog_setting|set_watchdog_settings|set_ntp) INPUT="$(cat 2>/dev/null || true)"; RPC_METHOD="$2"; run_action;;
+            add_custom_dns|delete_custom_dns|set_device_dns|reset_dns|set_profile|set_slot|set_slot_domains|set_setting|set_watchdog_setting|set_watchdog_settings|set_ntp) INPUT="$(cat 2>/dev/null || true)"; RPC_METHOD="$2"; run_action;;
             test_all|test_current|test_one|test_system) INPUT="$(cat 2>/dev/null || true)"; RPC_METHOD="$2"; test_json;;
             job) INPUT="$(cat 2>/dev/null || true)"; job_json "$(jget id)";;
             log) INPUT="$(cat 2>/dev/null || true)"; log_json "$(jget lines)";;
@@ -2728,7 +3606,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI common module version: 1.50
+// DNS Manager LuCI common module version: 1.102
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -2747,6 +3625,8 @@ function dmRpc(o){
 var callStatus = dmRpc({ object:'dns_manager', method:'status', params:['detail'], expect:{} });
 var callDohStatus = dmRpc({ object:'dns_manager', method:'doh_status', expect:{} });
 var callNetworkStatus = dmRpc({ object:'dns_manager', method:'network_status', expect:{} });
+var callLanDevices = dmRpc({ object:'dns_manager', method:'lan_devices', expect:{} });
+var callSetDeviceDns = dmRpc({ object:'dns_manager', method:'set_device_dns', params:['mac','slots'], expect:{} });
 var callTimeStatus = dmRpc({ object:'dns_manager', method:'time_status', expect:{} });
 var callPageMeta = dmRpc({ object:'dns_manager', method:'page_meta', expect:{} });
 var callBoardInfo = rpc.declare({ object:'system', method:'info', expect:{} });
@@ -2761,8 +3641,11 @@ var callUpdateCatalog = dmRpc({ object:'dns_manager', method:'update_catalog', e
 var callProfile = dmRpc({ object:'dns_manager', method:'set_profile', params:['profile'], expect:{} });
 var callResetDns = dmRpc({ object:'dns_manager', method:'reset_dns', expect:{} });
 var callSlot = dmRpc({ object:'dns_manager', method:'set_slot', params:['slot','id'], expect:{} });
+var callSlotDomains = dmRpc({ object:'dns_manager', method:'set_slot_domains', params:['slot','domains'], expect:{} });
+var callAddCustomDns = dmRpc({ object:'dns_manager', method:'add_custom_dns', params:['name','url'], expect:{} });
+var callDeleteCustomDns = dmRpc({ object:'dns_manager', method:'delete_custom_dns', params:['id'], expect:{} });
 var callSetting = dmRpc({ object:'dns_manager', method:'set_setting', params:['name','enabled'], expect:{} });
-var callWatchdogSettings = dmRpc({ object:'dns_manager', method:'set_watchdog_settings', params:['interval','threshold','repair_cooldown','max_repairs','max_restarts','max_candidates','guard_interval'], expect:{} });
+var callWatchdogSettings = dmRpc({ object:'dns_manager', method:'set_watchdog_settings', params:['interval','threshold','repair_cooldown','max_restarts','guard_interval'], expect:{} });
 var callNtp = dmRpc({ object:'dns_manager', method:'set_ntp', params:['preset'], expect:{} });
 var callTestAge = dmRpc({ object:'dns_manager', method:'set_test_age', params:['category','hours'], expect:{} });
 var callTestAll = dmRpc({ object:'dns_manager', method:'test_all', expect:{} });
@@ -2779,9 +3662,9 @@ var PROFILE = [
 ];
 var CATEGORY = [
   ['all','Все DNS'], ['bypass','Обход геоблока'], ['security','Защита от угроз'], ['privacy','Конфиденциальность'],
-  ['adblock','Блокировка рекламы'], ['family','Семейная фильтрация'], ['clean','Без фильтрации'], ['gaming','Игровые DNS'], ['regional','Региональные DNS']
+  ['adblock','Блокировка рекламы'], ['family','Семейная фильтрация'], ['clean','Без фильтрации'], ['gaming','Игровые DNS'], ['regional','Региональные DNS'], ['custom','Мои DNS']
 ];
-var state = { luciUpdateReloadTimer:null, hdpUpdating:false, managerUpdating:false, updatingAll:false, category:'all', offset:0, limit:18, catalogLoaded:false, catalogLoading:false, advanced:true, logLoaded:false, logLoading:false, busy:false, busySetting:'', settingMessage:'', settingMessageType:'', settingMessageKey:'', pageNotice:{}, statusError:'', activeTab:'dashboard', jobRunning:false, lastJob:null, checking:{}, fullTest:null, catalogProgress:null, profileProgress:null, profileOutput:'', versionCheck:null, lastAction:null, runtimeCpuLoad:null, runtimeMemoryTotal:null, runtimeMemoryAvailable:null, boardInfo:null, systemPollBusy:false, profileResumeStarted:false };
+var state = { slotPickerCheck:null, slotPickerRequest:0, lanDevicesLoading:false, lanDevicesMessage:'', luciUpdateReloadTimer:null, hdpUpdating:false, managerUpdating:false, updatingAll:false, category:'all', offset:0, limit:18, catalogLoaded:false, catalogLoading:false, advanced:true, logLoaded:false, logLoading:false, busy:false, busySetting:'', settingMessage:'', settingMessageType:'', settingMessageKey:'', pageNotice:{}, statusError:'', activeTab:'dashboard', jobRunning:false, lastJob:null, checking:{}, fullTest:null, catalogProgress:null, profileProgress:null, profileOutput:'', versionCheck:null, lastAction:null, runtimeCpuLoad:null, runtimeMemoryTotal:null, runtimeMemoryAvailable:null, boardInfo:null, systemPollBusy:false, profileResumeStarted:false };
 
 function profileName(p){
   var x=PROFILE.filter(function(v){return v[0]===p;})[0];
@@ -2903,12 +3786,13 @@ function withRpcError(fallback,err){
 function hasPing(v){ return /^\d+$/.test(String(v===undefined||v===null?'':v)); }
 function stateBadge(status,pingValue){
   var s=String(status||'').toUpperCase();
-  if(s==='RUNNING')return badge('dm-warn','проверяется');
-  if(s==='OK'&&hasPing(pingValue))return badge('dm-ok','доступен');
+  if(s==='RUNNING')return badge('dm-warn','проверяется…');
+  if(!s)return badge('dm-off','нет данных');
+  if(s==='OK'&&hasPing(pingValue))return badge('dm-ok',ping(pingValue)+' · доступен');
   if(s==='OK'||s==='FAIL'||s==='FAILED'||s.indexOf('_FAIL')>0||s.indexOf('TIMEOUT')>=0||s.indexOf('ERROR')>=0||s.indexOf('HTTP_')===0||!hasPing(pingValue))return badge('dm-bad','недоступен');
   return badge('dm-off','нет данных');
 }
-function settingName(n){ var m={watchdog:'Контроль DNS',dnsmasq_perf:'Увеличенный кэш DNS'}; return m[n]||n; }
+function settingName(n){ var m={watchdog:'Проверка DNS',watchdog_autoreplace:'Автозамена DNS',force:'Принудительный DNS',encrypted_dns:'Не давать устройствам обходить блокировку',dnsmasq_perf:'Увеличенный кэш DNS'}; return m[n]||n; }
 function settingModuleState(st,key){
   var raw=st[key+'_state'];
   if(raw===undefined||raw===null||raw==='')return -1;
@@ -2951,24 +3835,146 @@ function injectStyle(root){
   '.dm-header{display:flex;align-items:center;gap:9px;flex-wrap:wrap}.dm-header h2{margin:0;font-size:13px;font-weight:600}.dm-header-by{font-size:13px;opacity:.60}.dm-header-actions{display:flex;gap:7px;margin-left:auto;flex-wrap:wrap}.dm-header-actions .cbi-button{padding:5px 11px;font-size:12.5px}'+
   '.dm-load-wrap{min-width:220px;max-width:430px;width:100%}.dm-load-line{display:flex;align-items:center;gap:9px}.dm-load-track{height:8px;flex:1;min-width:120px;border-radius:999px;background:rgba(110,118,129,.16);overflow:hidden}.dm-load-fill{height:100%;border-radius:999px;background:#1a7f37;transition:width .25s ease}.dm-load-value{min-width:38px;font-size:12px;font-weight:700;text-align:right}.dm-load-meta{font-size:10.5px;opacity:.58;margin-top:3px}'+
   '.dm-mem-wrap{min-width:220px;max-width:430px;width:100%}.dm-mem-line{display:flex;align-items:center;gap:9px}.dm-mem-track{height:8px;flex:1;min-width:120px;border-radius:999px;background:rgba(110,118,129,.16);overflow:hidden}.dm-mem-fill{height:100%;border-radius:999px;background:#1a7f37;transition:width .25s ease}.dm-mem-value{font-size:12px;font-weight:700;white-space:nowrap}.dm-mem-meta{font-size:10.5px;opacity:.58;margin-top:3px}'+
-  ".dm-test-age-list{display:flex;flex-direction:column;gap:0;margin:0;padding:0}.dm-test-age-row{display:grid;grid-template-columns:minmax(0,1fr) 90px 20px;align-items:center;gap:8px;min-height:36px;margin:0;padding:3px 0;border:0!important}.dm-test-age-label{font-size:13px;font-weight:600;white-space:nowrap}.dm-test-age-unit,.dm-watchdog-unit{font-size:12px;opacity:.62;white-space:nowrap}.dm-test-age-row .dm-input{width:90px!important;margin:0;box-sizing:border-box}.dm-test-age-list + .dm-actions{margin-top:10px}.dm-watchdog-list{display:flex;flex-direction:column;gap:1px;margin-top:5px}.dm-watchdog-row{display:grid;grid-template-columns:minmax(180px,1fr) 105px 90px;align-items:center;gap:9px;min-height:36px;padding:3px 0}.dm-watchdog-row .dm-setting-title{font-size:12.5px}.dm-setting-range{font-size:11px;opacity:.55;white-space:nowrap}.dm-watchdog-row .dm-input{width:105px!important;margin:0;box-sizing:border-box}.dm-watchdog-save{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin-top:12px}.dm-watchdog-save .cbi-button{padding:5px 12px;font-size:12.5px}.dm-watchdog-advanced{margin-top:8px;border-top:1px solid rgba(110,118,129,.14);padding-top:8px}.dm-watchdog-advanced>summary{cursor:pointer;font-size:12.5px;font-weight:600;opacity:.72;list-style:none}.dm-watchdog-advanced>summary::-webkit-details-marker{display:none}.dm-watchdog-advanced>summary:before{content:'▸';display:inline-block;margin-right:6px;transition:transform .15s ease}.dm-watchdog-advanced[open]>summary:before{transform:rotate(90deg)}.dm-setting-feedback{font-size:11.5px;line-height:1.3;white-space:nowrap}.dm-setting-feedback.ok{color:#1a7f37}.dm-setting-feedback.error{color:#cf222e}.dm-setting-feedback.info{opacity:.65}"+
+  ".dm-test-age-list{display:flex;flex-direction:column;gap:0;margin:0;padding:0}.dm-test-age-row{display:grid;grid-template-columns:minmax(0,1fr) 90px 20px;align-items:center;gap:8px;min-height:36px;margin:0;padding:3px 0;border:0!important}.dm-test-age-label{font-size:13px;font-weight:600;white-space:nowrap}.dm-test-age-unit,.dm-watchdog-unit{font-size:12px;opacity:.62;white-space:nowrap}.dm-test-age-common{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.dm-test-age-common .dm-input{width:45px!important;min-width:45px!important;margin:0;box-sizing:border-box}.dm-test-age-common .cbi-button{margin:0}.dm-test-age-row .dm-input{width:90px!important;margin:0;box-sizing:border-box}.dm-test-age-list + .dm-actions{margin-top:10px}.dm-watchdog-list{display:flex;flex-direction:column;gap:1px;margin-top:5px}.dm-watchdog-row{display:grid;grid-template-columns:minmax(180px,1fr) 105px 90px;align-items:center;gap:9px;min-height:36px;padding:3px 0}.dm-watchdog-row .dm-setting-title{font-size:12.5px}.dm-setting-range{font-size:11px;opacity:.55;white-space:nowrap}.dm-watchdog-row .dm-input{width:105px!important;margin:0;box-sizing:border-box}.dm-watchdog-save{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin-top:12px}.dm-watchdog-save .cbi-button{padding:5px 12px;font-size:12.5px}.dm-watchdog-advanced{margin-top:8px;border-top:1px solid rgba(110,118,129,.14);padding-top:8px}.dm-watchdog-advanced>summary{cursor:pointer;font-size:12.5px;font-weight:600;opacity:.72;list-style:none}.dm-watchdog-advanced>summary::-webkit-details-marker{display:none}.dm-watchdog-advanced>summary:before{content:'▸';display:inline-block;margin-right:6px;transition:transform .15s ease}.dm-watchdog-advanced[open]>summary:before{transform:rotate(90deg)}.dm-setting-feedback{font-size:11.5px;line-height:1.3;white-space:nowrap}.dm-setting-feedback.ok{color:#1a7f37}.dm-setting-feedback.error{color:#cf222e}.dm-setting-feedback.info{opacity:.65}"+
   '.dm-card{min-width:0;box-sizing:border-box;background:var(--background-color-medium,#fff);border:1px solid rgba(0,0,0,.08);border-radius:11px;padding:15px 18px;box-shadow:0 1px 3px rgba(0,0,0,.04),0 1px 2px rgba(0,0,0,.03);overflow-wrap:break-word}.dm-card:hover{box-shadow:0 2px 7px rgba(0,0,0,.06)}'+
   'html.dm-theme-dark .dm-card{background:#1c2128;border-color:rgba(255,255,255,.10);box-shadow:0 1px 3px rgba(0,0,0,.22)}'+
   '.dm-version-action{display:flex;align-items:center;gap:7px;flex-wrap:wrap}.dm-version-action .cbi-button{padding:4px 9px;font-size:12px}.dm-version-error{display:inline-flex;align-items:center;gap:7px;flex-wrap:wrap}.dm-version-error-text{font-size:11.5px;opacity:.72}.dm-version-line{display:flex;align-items:center;gap:9px;margin:7px 0;flex-wrap:wrap}.dm-version-name{font-size:13px;font-weight:600;flex:0 1 160px;min-width:135px}.dm-version-state{min-width:0;flex:1 1 auto}.dm-card h3{margin:0 0 10px;font-size:15px;font-weight:600;display:flex;align-items:center;gap:7px;flex-wrap:wrap}.dm-doh-profile{display:inline-flex;align-items:center;gap:5px;margin-left:auto;padding:4px 9px;border:1px solid rgba(110,118,129,.18);border-radius:999px;background:rgba(110,118,129,.06);font-size:11.5px;font-weight:500;white-space:nowrap}.dm-doh-profile-label{opacity:.62}.dm-doh-profile-value{font-weight:650}.dm-row{display:flex;align-items:center;gap:10px;margin:6px 0;font-size:13px;flex-wrap:wrap}.dm-label{opacity:.65;flex-shrink:0}.dm-row-value{overflow-wrap:anywhere}'+
   '.dm-badge{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:999px;font-size:12px;font-weight:600;white-space:nowrap}.dm-dot{width:8px;height:8px;border-radius:50%;display:inline-block;flex-shrink:0}'+
   '.dm-ok{background:rgba(46,160,67,.12);color:#1a7f37}.dm-ok .dm-dot{background:#1a7f37}.dm-bad{background:rgba(207,34,46,.10);color:#cf222e}.dm-bad .dm-dot{background:#cf222e}.dm-warn{background:rgba(191,135,0,.12);color:#9a6700}.dm-warn .dm-dot{background:#9a6700}.dm-off{background:rgba(9,105,218,.10);color:#0969da}.dm-off .dm-dot{background:#0969da}'+
   '.dm-grid2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.dm-system-card{margin-bottom:0}.dm-system-layout{display:flex;flex-direction:column;gap:10px}.dm-system-rows{min-width:0}.dm-system-meters{min-width:0;width:100%}.dm-system-meter{padding:7px 0}.dm-system-meter-head{display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:12.5px}.dm-system-meter-head strong{font-size:12px;white-space:nowrap}.dm-system-meter-track{height:8px;margin-top:6px;border-radius:999px;background:rgba(110,118,129,.16);overflow:hidden}.dm-system-meter-track i{display:block;height:100%;border-radius:999px;background:#1a7f37;transition:width .25s ease}.dm-system-hint{font-size:10.5px;opacity:.58;margin-top:3px}.dm-grid3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}.dm-grid4{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}'+
-  '.dm-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:11px}.dm-picker-list{display:flex;flex-direction:column;gap:7px;max-height:60vh;overflow:auto}.dm-picker-item{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 0;border-bottom:1px solid rgba(110,118,129,.14)}.dm-picker-main{min-width:0;flex:1}.dm-picker-name{font-size:13px;font-weight:600;overflow-wrap:anywhere}.dm-picker-meta{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:3px}.dm-picker-actions{display:flex;gap:6px;flex-shrink:0;flex-wrap:wrap}.dm-component-item{padding:8px 0;border-bottom:1px solid rgba(110,118,129,.14)}.dm-component-group{padding:8px 0;border-bottom:1px solid rgba(110,118,129,.14)}.dm-component-dns-list{margin-top:6px;display:flex;flex-direction:column;gap:5px}.dm-component-dns{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:6px 0;border-top:1px solid rgba(110,118,129,.08);flex-wrap:wrap}.dm-component-dns:first-child{border-top:0}.dm-component-dns-main{display:flex;align-items:center;gap:8px;min-width:0;flex:1 1 260px}.dm-component-dns-slot{font-size:11.5px;font-weight:700;opacity:.62;min-width:118px}.dm-component-dns-name{font-size:12.5px;font-weight:600;overflow-wrap:anywhere}.dm-component-dns-meta{display:flex;align-items:center;gap:9px;font-size:11.5px;opacity:.78;flex:0 0 auto}.dm-component-dns-ping{font-size:12px;white-space:nowrap;opacity:.8}.dm-component-item:last-of-type{border-bottom:0}.dm-component-head{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}.dm-component-title{font-size:13px;font-weight:600}.dm-component-details{font-size:11.5px;line-height:1.45;opacity:.66;margin-top:3px;overflow-wrap:anywhere}.dm-component-date{font-size:12.5px;opacity:.82}.dm-profile-progress{margin-top:11px}.dm-profile-progress-status{font-size:12.5px;font-weight:600;margin-top:8px}.dm-profile-progress-detail{font-size:11px;opacity:.62;margin-top:4px;overflow-wrap:anywhere}'+'.dm-actions .cbi-button{margin:0;padding:5px 11px;font-size:12.5px}'+
+  '.dm-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:11px}.dm-slot-picker-categories{gap:5px;margin:0 0 9px}.dm-slot-picker-categories .cbi-button{padding:4px 8px;font-size:11.5px}.dm-picker-list{display:flex;flex-direction:column;gap:7px;max-height:60vh;overflow:auto}.dm-picker-item{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 0;border-bottom:1px solid rgba(110,118,129,.14)}.dm-picker-main{min-width:0;flex:1}.dm-picker-name{font-size:13px;font-weight:600;overflow-wrap:anywhere}.dm-picker-meta{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:3px}.dm-picker-actions{display:flex;gap:6px;flex-shrink:0;flex-wrap:wrap}.dm-component-item{padding:8px 0;border-bottom:1px solid rgba(110,118,129,.14)}.dm-component-group{padding:8px 0;border-bottom:1px solid rgba(110,118,129,.14)}.dm-component-dns-list{margin-top:6px;display:flex;flex-direction:column;gap:5px}.dm-component-dns{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:6px 0;border-top:1px solid rgba(110,118,129,.08);flex-wrap:wrap}.dm-component-dns:first-child{border-top:0}.dm-component-dns-main{display:flex;align-items:center;gap:8px;min-width:0;flex:1 1 260px}.dm-component-dns-slot{font-size:11.5px;font-weight:700;opacity:.62;min-width:118px}.dm-component-dns-name{font-size:12.5px;font-weight:600;overflow-wrap:anywhere}.dm-component-dns-meta{display:flex;align-items:center;gap:9px;font-size:11.5px;opacity:.78;flex:0 0 auto}.dm-component-dns-ping{font-size:12px;white-space:nowrap;opacity:.8}.dm-component-item:last-of-type{border-bottom:0}.dm-component-head{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}.dm-component-title{font-size:13px;font-weight:600}.dm-component-details{font-size:11.5px;line-height:1.45;opacity:.66;margin-top:3px;overflow-wrap:anywhere}.dm-component-date{font-size:12.5px;opacity:.82}.dm-profile-progress{margin-top:11px}.dm-profile-progress-status{font-size:12.5px;font-weight:600;margin-top:8px}.dm-profile-progress-detail{font-size:11px;opacity:.62;margin-top:4px;overflow-wrap:anywhere}'+'.dm-actions .cbi-button{margin:0;padding:5px 11px;font-size:12.5px}'+
   '.dm-hint{font-size:12.5px;opacity:.68;line-height:1.5;margin:0 0 8px}.dm-mini{font-size:11px;opacity:.62}.dm-meta{font-size:11px;line-height:1.45;opacity:.66}.dm-update{padding:8px 10px;border-radius:8px;background:rgba(26,127,55,.08);border:1px solid rgba(26,127,55,.18);font-size:12.5px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}'+
   '.dm-seg{display:flex;flex-wrap:wrap;gap:6px;margin:5px 0}.dm-profile-seg{flex-wrap:nowrap;overflow-x:auto;padding-bottom:2px}.dm-seg .cbi-button{padding:5px 11px;border-radius:7px;font-size:12.5px;font-weight:600}.dm-seg .active{background:#1a7f37;color:#fff;border-color:#1a7f37}'+
-  '.dm-force-note{font-size:12px;line-height:1.55;opacity:.72}.dm-inline-msg{display:block;margin:8px 0 0;padding:7px 10px;border-radius:7px;font-size:12px;line-height:1.4}.dm-inline-msg.info{background:rgba(9,105,218,.08);border:1px solid rgba(9,105,218,.16)}.dm-inline-msg.ok{background:rgba(26,127,55,.08);border:1px solid rgba(26,127,55,.16)}.dm-inline-msg.error{background:rgba(207,34,46,.08);border:1px solid rgba(207,34,46,.16)}.dm-applied{display:flex;align-items:center;gap:9px;padding:9px 11px;border-radius:8px;font-size:12.5px;line-height:1.45}.dm-applied.ok{background:rgba(26,127,55,.08);border:1px solid rgba(26,127,55,.18)}.dm-applied.running{background:rgba(191,135,0,.08);border:1px solid rgba(191,135,0,.18)}.dm-applied.error{background:rgba(207,34,46,.08);border:1px solid rgba(207,34,46,.18)}.dm-applied strong{font-weight:700}.dm-confirm-body{min-width:min(440px,calc(100vw - 70px))}.dm-setting{padding:11px 12px}.dm-setting-title{font-size:13px;font-weight:600}.dm-setting-desc{font-size:11.5px;line-height:1.45;opacity:.68;margin-top:3px}.dm-setting-line{display:flex;align-items:center;justify-content:space-between;gap:10px}.dm-setting-text{min-width:0}.dm-setting-controls{display:flex;align-items:center;justify-content:flex-end;gap:7px;margin-top:9px}.dm-setting-actions{display:flex;align-items:center;gap:7px;flex-shrink:0}.dm-setting-actions .cbi-button{padding:4px 9px;font-size:12px}.dm-setting-saving{opacity:.7}.dm-force-external{padding:8px 10px;border-radius:8px;background:rgba(191,135,0,.10);border:1px solid rgba(191,135,0,.22);font-size:12.5px;line-height:1.5;margin-top:8px}'+
-  '.dm-doh-list{display:flex;flex-direction:column}.dm-doh-row{display:grid;grid-template-columns:140px minmax(180px,1fr) 80px 100px minmax(150px,auto);gap:10px;align-items:center;padding:7px 0;border-top:1px solid rgba(0,0,0,.07);font-size:13px}.dm-doh-row:first-child{border-top:0}.dm-doh-name{font-weight:600}.dm-doh-url{overflow-wrap:anywhere;opacity:.88}.dm-doh-port,.dm-doh-ping{font-size:12px;opacity:.7;white-space:nowrap}.dm-doh-actions{display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap}.dm-doh-actions .cbi-button{padding:4px 8px;font-size:12px}'+
-  '.dm-slot-table{display:flex;flex-direction:column}.dm-slot-row{display:grid;grid-template-columns:55px 135px minmax(180px,1fr) 85px 115px minmax(175px,auto);gap:14px;align-items:center;padding:7px 0;border-top:1px solid rgba(0,0,0,.07);font-size:13px}.dm-slot-row:first-child{border-top:0}.dm-slot-id{font-weight:700;opacity:.62}.dm-slot-name{font-weight:600;overflow-wrap:anywhere}.dm-slot-endpoint,.dm-slot-ping{font-size:12px;opacity:.72;white-space:nowrap}.dm-inline{display:flex;gap:6px;justify-content:flex-end}.dm-inline .cbi-button{padding:4px 9px;font-size:12px}.dm-assign-list{display:flex;flex-direction:column;gap:7px;min-width:min(430px,calc(100vw - 70px))}.dm-assign-item{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:9px 10px;border:1px solid rgba(0,0,0,.08);border-radius:8px}.dm-assign-info{min-width:0;flex:1}.dm-assign-slot{font-weight:700}.dm-assign-current{font-size:12px;opacity:.7;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}'+
-  '.dm-catalog{display:grid;grid-template-columns:repeat(3,minmax(210px,1fr));gap:9px;margin-top:8px}.dm-catalog-item{padding:11px 12px}.dm-catalog-item h4{margin:0 0 4px;font-size:13px;line-height:1.35}.dm-catalog-toolbar{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:8px}.dm-assign-inline{display:flex;align-items:center;gap:6px;min-width:0}.dm-assign-inline select{height:30px;min-width:210px;max-width:100%;padding:3px 8px;border-radius:7px;border:1px solid rgba(110,118,129,.32);background:var(--background-color-medium,#fff);color:inherit;font-size:12px;box-shadow:none}.dm-assign-inline select:focus{outline:none;box-shadow:none}.dm-assign-inline .cbi-button{padding:5px 10px;font-size:12px}.dm-page{display:flex;justify-content:center;align-items:center;gap:7px;margin-top:9px}.dm-log{white-space:pre-wrap;max-height:360px;overflow:auto;font:11px/1.45 monospace;padding:10px;background:#111820;color:#dbe4ec;border-radius:8px;margin-top:8px}'+
+  '.dm-force-note{font-size:12px;line-height:1.56;opacity:.72}.dm-inline-msg{display:block;margin:8px 0 0;padding:7px 10px;border-radius:7px;font-size:12px;line-height:1.4}.dm-inline-msg.info{background:rgba(9,105,218,.08);border:1px solid rgba(9,105,218,.16)}.dm-inline-msg.ok{background:rgba(26,127,55,.08);border:1px solid rgba(26,127,55,.16)}.dm-inline-msg.error{background:rgba(207,34,46,.08);border:1px solid rgba(207,34,46,.16)}.dm-applied{display:flex;align-items:center;gap:9px;padding:9px 11px;border-radius:8px;font-size:12.5px;line-height:1.45}.dm-applied.ok{background:rgba(26,127,55,.08);border:1px solid rgba(26,127,55,.18)}.dm-applied.running{background:rgba(191,135,0,.08);border:1px solid rgba(191,135,0,.18)}.dm-applied.error{background:rgba(207,34,46,.08);border:1px solid rgba(207,34,46,.18)}.dm-applied strong{font-weight:700}.dm-confirm-body{min-width:min(440px,calc(100vw - 70px))}.dm-setting{padding:11px 12px}.dm-setting-title{font-size:13px;font-weight:600}.dm-setting-desc{font-size:11.5px;line-height:1.45;opacity:.68;margin-top:3px}.dm-setting-line{display:flex;align-items:center;justify-content:space-between;gap:10px}.dm-setting-text{min-width:0}.dm-setting-controls{display:flex;align-items:center;justify-content:flex-end;gap:7px;margin-top:9px}.dm-setting-actions{display:flex;align-items:center;gap:7px;flex-shrink:0}.dm-setting-actions .cbi-button{padding:4px 9px;font-size:12px}.dm-setting-saving{opacity:.7}.dm-force-external{padding:8px 10px;border-radius:8px;background:rgba(191,135,0,.10);border:1px solid rgba(191,135,0,.22);font-size:12.5px;line-height:1.5;margin-top:8px}'+
+  '.dm-doh-list{display:flex;flex-direction:column}.dm-doh-row{display:grid;grid-template-columns:max-content minmax(0,max-content) max-content max-content minmax(0,1fr);gap:8px;align-items:center;padding:7px 0;border-top:1px solid rgba(0,0,0,.07);font-size:13px}.dm-doh-row:first-child{border-top:0}.dm-doh-slot{font-size:12px;white-space:nowrap;opacity:.7}.dm-doh-name{font-weight:600;min-width:0;max-width:260px;overflow-wrap:anywhere}.dm-doh-url{overflow-wrap:anywhere;opacity:.88}.dm-doh-state{white-space:nowrap}.dm-doh-port,.dm-doh-ping{font-size:12px;opacity:.7;white-space:nowrap}.dm-doh-actions{display:flex;gap:6px;justify-content:flex-start;flex-wrap:wrap}.dm-doh-actions .cbi-button{padding:4px 8px;font-size:12px}'+
+  '.dm-device-dns-options{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:3px}.dm-device-dns-option{display:flex;align-items:flex-start;gap:9px;min-width:0;min-height:56px;padding:10px;border:1px solid rgba(110,118,129,.24);border-radius:9px;background:rgba(110,118,129,.035);cursor:pointer;font-size:12px;transition:border-color .15s,background .15s}.dm-device-dns-option.is-selected{border-color:var(--primary-color,#0069c7);background:rgba(31,111,235,.07)}.dm-device-dns-option.is-empty{opacity:.55;cursor:default}.dm-device-dns-checkbox{flex:0 0 auto;width:16px;height:16px;margin:2px 0 0;accent-color:var(--primary-color,#0069c7)}.dm-device-dns-option-content{display:flex;flex-direction:column;gap:3px;min-width:0}.dm-device-dns-option-slot{font-size:10.5px;font-weight:700;letter-spacing:.04em;opacity:.68}.dm-device-dns-option-name{font-size:12px;font-weight:600;line-height:1.35;overflow-wrap:anywhere}.dm-slot-entry.dm-device-dns-entry{gap:12px;padding:14px;margin:8px 0 0;border:1px solid rgba(110,118,129,.22);border-radius:11px;background:rgba(110,118,129,.025)}.dm-device-dns-head{display:flex;align-items:center;justify-content:space-between;gap:12px;min-width:0}.dm-device-dns-name{font-size:15px;font-weight:700;line-height:1.35;overflow-wrap:anywhere}.dm-device-dns-status{flex:0 0 auto;padding:4px 8px;border-radius:999px;font-size:10.5px;font-weight:700;white-space:nowrap}.dm-device-dns-status.is-online{color:var(--success-color,#238636);background:rgba(35,134,54,.1)}.dm-device-dns-status.is-offline{color:var(--text-color-high,#666);background:rgba(110,118,129,.1)}.dm-device-dns-meta{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}.dm-device-dns-meta-item{display:flex;flex-direction:column;gap:3px;min-width:0;padding:8px 10px;border-radius:7px;background:rgba(110,118,129,.055)}.dm-device-dns-meta-label{font-size:10.5px;font-weight:700;letter-spacing:.035em;opacity:.62;text-transform:uppercase}.dm-device-dns-meta-value{font-size:12px;line-height:1.4;overflow-wrap:anywhere}.dm-device-dns-mac{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px}.dm-device-dns-current{display:flex;align-items:flex-start;gap:8px;flex-wrap:wrap;padding:9px 11px;border-radius:8px;background:rgba(110,118,129,.07)}.dm-device-dns-current.has-selection{background:rgba(35,134,54,.075)}.dm-device-dns-current-label{flex:0 0 auto;font-size:11px;font-weight:700;opacity:.75}.dm-device-dns-current-value{min-width:0;font-size:12px;line-height:1.45;overflow-wrap:anywhere}.dm-device-dns-section-title{font-size:12.5px;font-weight:700;margin-bottom:-7px}.dm-device-dns-section-help{font-size:11.5px;opacity:.65;margin-top:-6px}.dm-device-dns-actions{display:flex;justify-content:flex-end;margin-top:1px}.dm-device-dns-save{padding:7px 14px;font-weight:600}.dm-device-dns-note{padding:11px 13px;margin-top:12px;border:1px solid rgba(110,118,129,.18);border-radius:9px;background:rgba(110,118,129,.045)}.dm-device-dns-note-title{font-size:12px;font-weight:700;margin-bottom:5px}.dm-device-dns-note-text{font-size:11.5px;line-height:1.5;opacity:.78;margin-top:3px}.dm-slot-table{display:flex;flex-direction:column}.dm-slot-entry{display:flex;flex-direction:column;gap:4px;border-top:1px solid rgba(0,0,0,.07);padding:6px 0}.dm-slot-entry:first-child{border-top:0}.dm-slot-domain-panel{display:flex;flex-direction:column;gap:5px;padding:0 0 10px 68px}.dm-slot-domains-heading{font-size:12px;font-weight:600}.dm-slot-domains-help{font-size:12px;opacity:.72}.dm-slot-domain-controls{display:flex;align-items:stretch;gap:8px}.dm-slot-domains-input{width:100%;min-width:0;min-height:48px;resize:vertical}.dm-slot-domain-controls .cbi-button{align-self:flex-start;white-space:nowrap}@media(max-width:560px){.dm-slot-domain-panel{padding-left:0}.dm-slot-domain-controls{flex-direction:column}.dm-slot-domain-controls .cbi-button{align-self:flex-start}}.dm-slot-row{display:grid;grid-template-columns:42px minmax(0,max-content) max-content max-content max-content minmax(175px,auto);gap:8px;align-items:center;padding:7px 0;border-top:1px solid rgba(0,0,0,.07);font-size:13px}.dm-slot-row:first-child{border-top:0}.dm-slot-id{font-weight:700;opacity:.62;white-space:nowrap}.dm-slot-name{font-weight:600;min-width:0;max-width:220px;overflow-wrap:anywhere}.dm-slot-endpoint,.dm-slot-ping{font-size:12px;opacity:.72;white-space:nowrap}.dm-inline{display:flex;gap:6px;justify-content:flex-end}.dm-inline .cbi-button{padding:4px 9px;font-size:12px}.dm-assign-list{display:flex;flex-direction:column;gap:7px;min-width:min(430px,calc(100vw - 70px))}.dm-assign-item{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:9px 10px;border:1px solid rgba(0,0,0,.08);border-radius:8px}.dm-assign-info{min-width:0;flex:1}.dm-assign-slot{font-weight:700}.dm-assign-current{font-size:12px;opacity:.7;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}'+
+  '.dm-catalog{display:grid;grid-template-columns:repeat(3,minmax(210px,1fr));gap:9px;margin-top:8px}.dm-catalog-item{padding:11px 12px}.dm-catalog-item-custom{grid-column:auto}.dm-catalog-item h4{margin:0 0 4px;font-size:13px;line-height:1.35}.dm-catalog-controls{display:flex;flex-direction:column;gap:8px;margin-top:8px;min-width:0}.dm-catalog-controls-custom{display:flex;flex-direction:row;align-items:center;min-width:0}.dm-catalog-toolbar{display:flex;align-items:center;justify-content:flex-start;gap:8px;min-width:0}.dm-catalog-controls-custom .dm-assign-inline{display:flex;align-items:center;gap:6px;min-width:0;flex-wrap:nowrap;width:100%;flex:1 1 auto}.dm-catalog-controls-custom .dm-assign-inline select{height:30px;min-width:0;width:auto;max-width:100%;flex:1 1 160px;padding:3px 8px;border-radius:7px;border:1px solid rgba(110,118,129,.32);background:var(--background-color-medium,#fff);color:inherit;font-size:12px;box-shadow:none}.dm-assign-inline select:focus{outline:none;box-shadow:none}.dm-assign-inline .cbi-button{padding:5px 10px;font-size:12px;flex:0 0 auto}.dm-page{display:flex;justify-content:center;align-items:center;gap:7px;margin-top:9px}.dm-log{white-space:pre-wrap;max-height:360px;overflow:auto;font:11px/1.45 monospace;padding:10px;background:#111820;color:#dbe4ec;border-radius:8px;margin-top:8px}'+
   '.dm-page-nav{position:sticky;top:0;z-index:20;padding:7px 0;background:var(--background-color-base,#fff);border-bottom:1px solid rgba(0,0,0,.08)}.dm-page-nav::before,.dm-page-nav::after{content:"";position:absolute;left:0;right:0;height:7px;background:var(--background-color-base,#fff);pointer-events:none}.dm-page-nav::before{top:-7px}.dm-page-nav::after{bottom:-7px}.dm-page-tabs{display:flex;align-items:stretch;gap:4px;overflow-x:auto;scrollbar-width:none;padding:0 2px}.dm-page-tabs::-webkit-scrollbar{display:none}.dm-page-tab{flex:0 0 auto;padding:7px 12px!important;border-radius:8px 8px 0 0!important;font-size:12.5px!important;font-weight:600!important;border:1px solid transparent!important;background:transparent!important;box-shadow:none!important}.dm-page-tab:hover{background:rgba(0,0,0,.05)!important}.dm-page-tab.active{background:var(--background-color-medium,#fff)!important;border-color:rgba(0,0,0,.12)!important;border-bottom-color:var(--background-color-medium,#fff)!important}.dm-page-nav-title{display:none}.dm-wrap>section{scroll-margin-top:58px}'+
   '.dm-section-title{font-size:12px;letter-spacing:.02em;text-transform:none;opacity:.62;margin:3px 0 0;padding:0 2px}'+
-  '@media(max-width:850px){.dm-test-age-common{flex-wrap:wrap}.dm-grid2{grid-template-columns:1fr}.dm-grid4{grid-template-columns:repeat(2,minmax(0,1fr))}.dm-doh-row{grid-template-columns:120px minmax(140px,1fr) 70px}.dm-doh-ping{display:none}.dm-slot-row{grid-template-columns:48px 115px minmax(130px,1fr) 85px 105px auto}.dm-slot-ping{display:none}.dm-catalog{grid-template-columns:repeat(2,minmax(0,1fr))}}'+
-  '@media(max-width:560px){.dm-grid3,.dm-grid4,.dm-catalog{grid-template-columns:1fr}.dm-header-actions{margin-left:0}.dm-doh-row{grid-template-columns:1fr auto}.dm-doh-actions{grid-column:1/3;justify-content:flex-start}.dm-doh-url{grid-column:1/3}.dm-doh-port{grid-column:1}.dm-slot-row{grid-template-columns:40px minmax(0,1fr) auto}.dm-slot-endpoint{display:none}.dm-slot-state{display:none}.dm-inline{grid-column:2/4;justify-content:flex-start}}';
+  '@media(max-width:850px){.dm-test-age-common{flex-wrap:wrap}.dm-grid2{grid-template-columns:1fr}.dm-grid4{grid-template-columns:repeat(2,minmax(0,1fr))}.dm-doh-row{grid-template-columns:max-content minmax(0,max-content) max-content max-content minmax(0,1fr);gap:7px}.dm-doh-name{max-width:220px}.dm-doh-ping{display:block}.dm-slot-row{grid-template-columns:40px minmax(0,max-content) max-content max-content max-content minmax(140px,auto);gap:7px}.dm-slot-name{max-width:190px}.dm-catalog{grid-template-columns:repeat(2,minmax(0,1fr))}}'+
+  '@media(max-width:560px){.dm-grid3,.dm-grid4,.dm-catalog{grid-template-columns:1fr}.dm-catalog-item-custom{grid-column:auto}.dm-catalog-controls-custom{flex-direction:column;align-items:stretch}.dm-catalog-controls-custom .dm-assign-inline{flex-wrap:wrap}.dm-catalog-controls-custom .dm-assign-inline select{flex:1 1 100%;width:100%}.dm-header-actions{margin-left:0}.dm-doh-row{grid-template-columns:max-content minmax(0,1fr) max-content max-content;gap:6px}.dm-doh-name{max-width:180px}.dm-doh-actions{grid-column:1/5;justify-content:flex-start}.dm-doh-url{grid-column:1/3}.dm-doh-port{grid-column:1}.dm-slot-row{grid-template-columns:40px minmax(0,1fr) auto}.dm-slot-endpoint{display:none}.dm-slot-state{display:none}.dm-inline{grid-column:2/4;justify-content:flex-start}.dm-device-dns-meta{grid-template-columns:minmax(0,1fr)}.dm-device-dns-options{grid-template-columns:repeat(2,minmax(0,1fr));gap:6px}.dm-device-dns-option{padding:8px;min-height:52px;gap:7px}.dm-device-dns-head{align-items:flex-start}.dm-device-dns-name{font-size:14px}.dm-slot-entry.dm-device-dns-entry{padding:11px;gap:10px}.dm-device-dns-current{flex-direction:column;gap:3px}.dm-device-dns-actions{justify-content:stretch}.dm-device-dns-save{width:100%}}'+
+  '.dm-wrap{gap:15px;padding-bottom:32px}'+
+  '.dm-wrap .dm-header{align-items:center;gap:8px;padding:13px 15px;border:1px solid rgba(110,118,129,.2);border-radius:13px;background:linear-gradient(135deg,rgba(110,118,129,.075),rgba(110,118,129,.02))}'+
+  '.dm-wrap .dm-header h2{font-size:18px;line-height:1.25;font-weight:750;letter-spacing:-.025em;margin-right:3px}'+
+  '.dm-wrap .dm-header-by{display:inline-flex;align-items:center;max-width:100%;padding:4px 8px;border:1px solid rgba(110,118,129,.17);border-radius:7px;background:rgba(110,118,129,.055);font-size:11.5px;line-height:1.4;opacity:.82;overflow-wrap:anywhere}'+
+  '.dm-wrap .dm-header-by:last-child{flex-basis:100%;padding:0;border:0;border-radius:0;background:transparent;font-size:11.5px;opacity:.67}'+
+  '.dm-wrap .dm-card{padding:18px;border:1px solid rgba(110,118,129,.2);border-radius:14px;box-shadow:0 2px 9px rgba(15,23,42,.045);transition:border-color .18s ease,box-shadow .18s ease}'+
+  '.dm-wrap .dm-card:hover{border-color:rgba(110,118,129,.3);box-shadow:0 4px 14px rgba(15,23,42,.065)}'+
+  '.dm-wrap .dm-card>h3{display:flex;align-items:center;gap:8px;margin:0 0 14px;padding:0 0 11px;border-bottom:1px solid rgba(110,118,129,.16);font-size:14px;line-height:1.4;font-weight:750;letter-spacing:-.012em}'+
+  '.dm-wrap .dm-card>h3:before{content:"";display:inline-block;flex:0 0 3px;width:3px;height:15px;border-radius:99px;background:var(--primary-color,#238636)}'+
+  '.dm-wrap .dm-grid2,.dm-wrap .dm-grid3,.dm-wrap .dm-grid4{gap:12px}'+
+  '.dm-wrap .dm-row{gap:12px;margin:0;padding:9px 0;border-bottom:1px solid rgba(110,118,129,.12);line-height:1.45}'+
+  '.dm-wrap .dm-label{font-size:12px;font-weight:650;opacity:.67}'+
+  '.dm-wrap .dm-row-value{font-weight:550;min-width:0}'+
+  '.dm-wrap .dm-hint{padding:10px 12px;margin:0 0 10px;border-left:3px solid rgba(110,118,129,.28);border-radius:8px;background:rgba(110,118,129,.055);font-size:12px;line-height:1.55;opacity:.82}'+
+  '.dm-wrap .dm-mini{font-size:11.5px;line-height:1.5}'+
+  '.dm-wrap .dm-section-title{font-size:12px;font-weight:750;letter-spacing:.015em;opacity:.7;margin:15px 0 7px;padding:0 1px}'+
+  '.dm-wrap .dm-badge{padding:4px 9px;border-radius:7px;font-size:11px;line-height:1.35;letter-spacing:.005em}'+
+  '.dm-wrap .dm-inline-msg{margin-top:10px;padding:10px 12px;border-radius:9px;font-size:12px;line-height:1.5}'+
+  '.dm-wrap .dm-applied{gap:10px;padding:11px 13px;margin-bottom:10px;border-radius:10px}'+
+  '.dm-wrap .cbi-button{min-height:30px;border-radius:8px;font-weight:650;transition:filter .15s ease,border-color .15s ease,box-shadow .15s ease}'+
+  '.dm-wrap .cbi-button:hover:not(:disabled){filter:brightness(.98);box-shadow:0 1px 4px rgba(15,23,42,.07)}'+
+  '.dm-wrap .cbi-button:focus-visible{outline:2px solid var(--primary-color,#0969da);outline-offset:2px}'+
+  '.dm-wrap .cbi-button:disabled{opacity:.48;cursor:not-allowed;box-shadow:none}'+
+  '.dm-wrap .dm-seg{gap:7px;margin:8px 0}'+
+  '.dm-wrap .dm-seg .cbi-button{min-height:32px;padding:7px 12px;border-radius:9px}'+
+  '.dm-wrap .dm-input,.dm-wrap input:not([type=checkbox]):not([type=radio]),.dm-wrap select,.dm-wrap textarea{max-width:100%;border:1px solid rgba(110,118,129,.28);border-radius:8px;background:var(--background-color-medium,#fff);color:inherit;box-shadow:none}'+
+  '.dm-wrap .dm-input:focus,.dm-wrap input:not([type=checkbox]):not([type=radio]):focus,.dm-wrap select:focus,.dm-wrap textarea:focus{outline:none;border-color:var(--primary-color,#0969da);box-shadow:0 0 0 3px rgba(9,105,218,.1)}'+
+  '.dm-wrap .dm-setting{margin-top:8px;padding:13px;border:1px solid rgba(110,118,129,.18);border-radius:10px;background:rgba(110,118,129,.035)}'+
+  '.dm-wrap .dm-setting-title{font-size:12.5px;font-weight:750;line-height:1.4}'+
+  '.dm-wrap .dm-setting-desc{font-size:11.5px;line-height:1.55;opacity:.73}'+
+  '.dm-wrap .dm-setting-line{align-items:center;flex-wrap:wrap;gap:12px}'+
+  '.dm-wrap .dm-setting-controls,.dm-wrap .dm-setting-actions{flex-wrap:wrap}'+
+  '.dm-wrap .dm-setting-saving{opacity:1;border-color:rgba(35,134,54,.3);background:rgba(35,134,54,.055)}'+
+  '.dm-wrap .dm-component-item,.dm-wrap .dm-component-group{margin-top:8px;padding:12px;border:1px solid rgba(110,118,129,.18);border-radius:10px;background:rgba(110,118,129,.035)}'+
+  '.dm-wrap .dm-component-item:last-of-type{border-bottom:1px solid rgba(110,118,129,.18)}'+
+  '.dm-wrap .dm-component-dns-list{gap:7px;margin-top:8px}'+
+  '.dm-wrap .dm-component-dns{gap:10px;padding:10px 11px;border:1px solid rgba(110,118,129,.17);border-radius:9px;background:rgba(110,118,129,.035)}'+
+  '.dm-wrap .dm-component-dns:first-child{border-top:1px solid rgba(110,118,129,.17)}'+
+  '.dm-wrap .dm-component-dns-slot{min-width:0;padding:4px 7px;border-radius:6px;background:rgba(110,118,129,.07);opacity:.8}'+
+  '.dm-wrap .dm-doh-list{gap:7px}'+
+  '.dm-wrap .dm-doh-row{grid-template-columns:max-content minmax(0,1fr) minmax(0,max-content) max-content;gap:10px;padding:11px 12px;border:1px solid rgba(110,118,129,.17);border-radius:10px;background:rgba(110,118,129,.03)}'+
+  '.dm-wrap .dm-doh-row:first-child{border-top:1px solid rgba(110,118,129,.17)}'+
+  '.dm-wrap .dm-doh-slot{padding:4px 7px;border-radius:6px;background:rgba(110,118,129,.07);font-size:11px;font-weight:700;opacity:.8}'+
+  '.dm-wrap .dm-doh-name{font-size:12.5px;line-height:1.4}'+
+  '.dm-wrap .dm-doh-actions .cbi-button{min-height:28px;border-radius:7px}'+
+  '.dm-wrap .dm-slot-row{grid-template-columns:42px minmax(0,1fr) max-content max-content max-content;gap:10px}'+
+  '.dm-wrap .dm-slot-table>.dm-slot-entry:not(.dm-device-dns-entry){margin:8px 0 0;padding:12px;border:1px solid rgba(110,118,129,.18);border-radius:10px;background:rgba(110,118,129,.025)}'+
+  '.dm-wrap .dm-slot-entry:not(.dm-device-dns-entry) .dm-slot-row{padding:3px 0;border:0}'+
+  '.dm-wrap .dm-slot-entry:not(.dm-device-dns-entry) .dm-slot-domain-panel{padding:10px 0 0;margin-top:5px;border-top:1px solid rgba(110,118,129,.14)}'+
+  '.dm-wrap .dm-slot-domains-heading{font-size:12.5px;font-weight:750}'+
+  '.dm-wrap .dm-slot-domains-help{font-size:11.5px;line-height:1.55}'+
+  '.dm-wrap .dm-slot-domains-input{padding:9px 10px;line-height:1.5}'+
+  '.dm-wrap .dm-picker-list{gap:8px;padding:2px;border-radius:10px}'+
+  '.dm-wrap .dm-picker-item{gap:12px;padding:11px;border:1px solid rgba(110,118,129,.18);border-radius:10px;background:rgba(110,118,129,.025)}'+
+  '.dm-wrap .dm-picker-item:last-child{border-bottom:1px solid rgba(110,118,129,.18)}'+
+  '.dm-wrap .dm-picker-name{font-size:13px;line-height:1.45}'+
+  '.dm-wrap .dm-picker-meta{gap:7px;margin-top:5px}'+
+  '.dm-wrap .dm-slot-picker-categories{gap:6px;margin:8px 0 12px}'+
+  '.dm-wrap .dm-slot-picker-categories .cbi-button{border-radius:8px;padding:6px 9px}'+
+  '.dm-wrap .dm-catalog{gap:12px;margin-top:12px}'+
+  '.dm-wrap .dm-catalog-item{gap:9px;padding:14px;border:1px solid rgba(110,118,129,.19);border-radius:12px;background:var(--background-color-medium,#fff);box-shadow:0 1px 4px rgba(15,23,42,.035);transition:border-color .18s ease,box-shadow .18s ease}'+
+  '.dm-wrap .dm-catalog-item:hover{border-color:rgba(110,118,129,.34);box-shadow:0 4px 12px rgba(15,23,42,.065)}'+
+  '.dm-wrap .dm-catalog-item h4{font-size:14px;font-weight:750;line-height:1.45;overflow-wrap:anywhere}'+
+  '.dm-wrap .dm-catalog-item>.dm-meta{display:inline-flex;align-self:flex-start;padding:4px 8px;border-radius:6px;background:rgba(110,118,129,.075);font-size:10.5px;opacity:.82}'+
+  '.dm-wrap .dm-catalog-item .dm-catalog-controls{margin-top:auto;padding-top:9px;border-top:1px solid rgba(110,118,129,.13)}'+
+  '.dm-wrap .dm-catalog-assign{display:flex;align-items:center;gap:8px;flex-wrap:wrap;width:100%;min-width:0}'+
+  '.dm-wrap .dm-catalog-assign>.cbi-button-action{flex:1 1 auto;min-width:100px}'+
+  '.dm-wrap .dm-catalog-controls-custom .dm-catalog-assign>.cbi-button-negative{flex:0 0 auto}'+
+  '.dm-catalog-slot-picker{display:flex;flex-direction:column;gap:8px;min-width:min(460px,calc(100vw - 64px));margin-top:10px}'+
+  '.dm-catalog-slot-option{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:12px;padding:11px 12px;border:1px solid rgba(110,118,129,.18);border-radius:10px;background:rgba(110,118,129,.035)}'+
+  '.dm-catalog-slot-option.is-current{border-color:rgba(35,134,54,.3);background:rgba(35,134,54,.06)}'+
+  '.dm-catalog-slot-option.is-occupied{border-color:rgba(191,135,0,.22)}'+
+  '.dm-catalog-slot-main{display:flex;flex-direction:column;gap:4px;min-width:0}'+
+  '.dm-catalog-slot-title{font-size:12px;font-weight:750;letter-spacing:.015em;opacity:.75}'+
+  '.dm-catalog-slot-current{font-size:12.5px;font-weight:600;line-height:1.45;overflow-wrap:anywhere}'+
+  '.dm-catalog-slot-status{margin-top:1px}'+
+  '.dm-catalog-slot-port{font-size:10.5px;opacity:.6}'+
+  'html.dm-theme-dark .dm-catalog-slot-option{background:rgba(255,255,255,.025);border-color:rgba(255,255,255,.1)}'+
+  '@media(max-width:560px){.dm-catalog-slot-picker{min-width:0;width:100%}.dm-catalog-slot-option{grid-template-columns:minmax(0,1fr);gap:8px}.dm-catalog-slot-option>.cbi-button{width:100%}.dm-wrap .dm-catalog-assign>.cbi-button-action{width:100%}}'+
+  '.dm-wrap .dm-custom-dns-form{display:grid;grid-template-columns:minmax(180px,1fr) minmax(240px,1.4fr) auto;align-items:end;gap:12px;margin:12px 0}'+
+  '.dm-wrap .dm-custom-dns-form>div{display:flex;flex-direction:column;gap:6px;min-width:0}'+
+  '.dm-wrap .dm-custom-dns-form>.cbi-button{justify-self:start}'+
+  '.dm-wrap .dm-test-age-row{min-height:40px;border-bottom:1px solid rgba(110,118,129,.1)}'+
+  '.dm-wrap .dm-watchdog-row{min-height:42px;padding:6px 0;border-bottom:1px solid rgba(110,118,129,.1)}'+
+   '.dm-wrap .dm-watchdog-card{display:flex;flex-direction:column;gap:14px;padding:2px 0 15px;border-bottom:1px solid rgba(110,118,129,.18)}'+
+   '.dm-wrap .dm-watchdog-status{gap:10px}'+
+   '.dm-wrap .dm-watchdog-status .dm-row{min-width:0;padding:11px 12px;border:1px solid rgba(110,118,129,.16);border-radius:9px;background:rgba(110,118,129,.035)}'+
+   '.dm-wrap .dm-watchdog-lastcheck{display:flex;flex-direction:column;gap:9px;padding:12px;border:1px solid rgba(110,118,129,.18);border-radius:11px;background:rgba(110,118,129,.035)}'+
+   '.dm-wrap .dm-watchdog-lastcheck-head{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;font-size:12px}'+
+   '.dm-wrap .dm-watchdog-lastcheck-head strong{font-size:12.5px;font-weight:750}'+
+   '.dm-wrap .dm-watchdog-lastcheck-head span{font-size:11px;opacity:.72}'+
+   '.dm-wrap .dm-watchdog-records{display:flex;flex-direction:column;gap:6px}'+
+   '.dm-wrap .dm-watchdog-record{display:grid;grid-template-columns:58px minmax(0,1fr) auto;align-items:center;gap:10px;padding:8px 9px;border:1px solid rgba(110,118,129,.12);border-radius:8px;background:var(--background-color-base,#fff)}'+
+   '.dm-wrap .dm-watchdog-record-slot{font-size:11px;font-weight:750;opacity:.75}'+
+   '.dm-wrap .dm-watchdog-record-main{display:flex;flex-direction:column;gap:2px;min-width:0}'+
+   '.dm-wrap .dm-watchdog-record-name{font-size:12px;line-height:1.4;overflow-wrap:anywhere}'+
+   '.dm-wrap .dm-watchdog-record-category{font-size:10.5px;opacity:.68}'+
+   'html.dm-theme-dark .dm-wrap .dm-watchdog-status .dm-row,html.dm-theme-dark .dm-wrap .dm-watchdog-lastcheck{border-color:rgba(255,255,255,.1);background:rgba(255,255,255,.025)}'+
+   'html.dm-theme-dark .dm-wrap .dm-watchdog-record{border-color:rgba(255,255,255,.08);background:rgba(255,255,255,.025)}'+
+   '@media(max-width:560px){.dm-wrap .dm-watchdog-record{grid-template-columns:48px minmax(0,1fr);gap:7px}.dm-wrap .dm-watchdog-record>.dm-badge{grid-column:2;justify-self:start}.dm-wrap .dm-watchdog-lastcheck-head{align-items:flex-start;flex-direction:column;gap:4px}}'+
+
+  '.dm-wrap .dm-watchdog-row:last-child{border-bottom:0}'+
+  '.dm-wrap .dm-profile-progress{padding:13px;border:1px solid rgba(110,118,129,.19);border-radius:10px;background:rgba(110,118,129,.04)}'+
+  '.dm-wrap .dm-page-nav{padding:5px;border:1px solid rgba(110,118,129,.17);border-radius:11px;background:var(--background-color-base,#fff);box-shadow:0 2px 8px rgba(15,23,42,.035)}'+
+  '.dm-wrap .dm-page-tabs{gap:5px;padding:0}'+
+  '.dm-wrap .dm-page-tab{border-radius:8px!important;padding:8px 12px!important}'+
+  '.dm-wrap .dm-page-tab.active{box-shadow:0 1px 3px rgba(15,23,42,.05)!important}'+
+  '.dm-wrap .dm-page{gap:8px;margin-top:14px;padding-top:10px;border-top:1px solid rgba(110,118,129,.14)}'+
+  '.dm-wrap .dm-log{padding:13px;border:1px solid rgba(255,255,255,.08);border-radius:10px;line-height:1.6;box-shadow:inset 0 1px 4px rgba(0,0,0,.16)}'+
+  '.dm-wrap .dm-confirm-body{display:flex;flex-direction:column;gap:4px;padding:2px}'+
+  '.dm-wrap .dm-confirm-body .dm-row{padding:9px 10px;border:1px solid rgba(110,118,129,.15);border-radius:8px;background:rgba(110,118,129,.035)}'+
+  'html.dm-theme-dark .dm-wrap .dm-header{border-color:rgba(255,255,255,.1);background:linear-gradient(135deg,rgba(255,255,255,.055),rgba(255,255,255,.015))}'+
+  'html.dm-theme-dark .dm-wrap .dm-card{background:#1c2128;border-color:rgba(255,255,255,.1);box-shadow:0 2px 9px rgba(0,0,0,.2)}'+
+  'html.dm-theme-dark .dm-wrap .dm-card:hover{border-color:rgba(255,255,255,.18);box-shadow:0 4px 14px rgba(0,0,0,.25)}'+
+  'html.dm-theme-dark .dm-wrap .dm-card>h3{border-bottom-color:rgba(255,255,255,.1)}'+
+  'html.dm-theme-dark .dm-wrap .dm-hint{background:rgba(255,255,255,.035);border-left-color:rgba(255,255,255,.2)}'+
+  'html.dm-theme-dark .dm-wrap .dm-setting,html.dm-theme-dark .dm-wrap .dm-component-item,html.dm-theme-dark .dm-wrap .dm-component-group,html.dm-theme-dark .dm-wrap .dm-component-dns,html.dm-theme-dark .dm-wrap .dm-doh-row,html.dm-theme-dark .dm-wrap .dm-slot-table>.dm-slot-entry:not(.dm-device-dns-entry),html.dm-theme-dark .dm-wrap .dm-picker-item{background:rgba(255,255,255,.025);border-color:rgba(255,255,255,.09)}'+
+  'html.dm-theme-dark .dm-wrap .dm-catalog-item{background:#1c2128;border-color:rgba(255,255,255,.1);box-shadow:0 1px 4px rgba(0,0,0,.2)}'+
+  'html.dm-theme-dark .dm-wrap .dm-page-nav{border-color:rgba(255,255,255,.1);box-shadow:0 2px 8px rgba(0,0,0,.2)}'+
+  'html.dm-theme-dark .dm-wrap .dm-page-tab.active{border-color:rgba(255,255,255,.13)!important;border-bottom-color:#1c2128!important;background:#1c2128!important}'+
+  '@media(max-width:850px){.dm-wrap .dm-custom-dns-form{grid-template-columns:repeat(2,minmax(0,1fr))}.dm-wrap .dm-custom-dns-form>.cbi-button{grid-column:1/-1}.dm-wrap .dm-doh-row{grid-template-columns:minmax(0,1fr) max-content}.dm-wrap .dm-doh-slot{grid-column:1;grid-row:1}.dm-wrap .dm-doh-name{grid-column:1;grid-row:2;max-width:none}.dm-wrap .dm-doh-state{grid-column:2;grid-row:2;justify-self:end}.dm-wrap .dm-doh-actions{grid-column:1/-1;grid-row:3;justify-content:flex-start}.dm-wrap .dm-slot-row{grid-template-columns:40px minmax(0,1fr) auto}.dm-wrap .dm-slot-endpoint{display:none}.dm-wrap .dm-slot-state{grid-column:2/4;grid-row:2;display:block}.dm-wrap .dm-inline{grid-column:2/4;grid-row:3;justify-content:flex-start}}'+
+  '@media(max-width:560px){.dm-wrap{gap:11px}.dm-wrap .dm-header{padding:11px 12px;border-radius:11px}.dm-wrap .dm-header h2{font-size:16px}.dm-wrap .dm-card{padding:13px;border-radius:12px}.dm-wrap .dm-card>h3{margin-bottom:11px;padding-bottom:9px;font-size:13.5px}.dm-wrap .dm-card>h3:before{height:14px}.dm-wrap .dm-grid2,.dm-wrap .dm-grid3,.dm-wrap .dm-grid4{gap:9px}.dm-wrap .dm-row{align-items:flex-start;gap:7px}.dm-wrap .dm-hint{padding:9px 10px}.dm-wrap .dm-doh-row{gap:7px;padding:9px}.dm-wrap .dm-catalog{grid-template-columns:minmax(0,1fr);gap:9px}.dm-wrap .dm-catalog-item{padding:12px}.dm-wrap .dm-custom-dns-form{grid-template-columns:minmax(0,1fr)}.dm-wrap .dm-custom-dns-form>.cbi-button{grid-column:auto;width:100%}.dm-wrap .dm-setting-line{align-items:flex-start}.dm-wrap .dm-setting-controls{justify-content:flex-start}.dm-wrap .dm-watchdog-row{grid-template-columns:minmax(0,1fr) 82px auto;gap:7px}.dm-wrap .dm-watchdog-row .dm-input{width:82px!important}.dm-wrap .dm-picker-item{align-items:flex-start;flex-direction:column}.dm-wrap .dm-picker-actions{width:100%}.dm-wrap .dm-picker-actions .cbi-button{flex:1 1 auto}.dm-wrap .dm-page-tabs{gap:3px}.dm-wrap .dm-page-tab{padding:7px 9px!important;font-size:11.5px!important}.dm-wrap .dm-page-nav{top:0}.dm-wrap .dm-page{margin-top:10px}}';
   root.appendChild(E('style',{},css));
 }
 
@@ -2976,9 +3982,11 @@ function rootAlive(root){return !!root&&!!document&&!!document.documentElement&&
 function globalUpdateNotice(msg,type){}
 function renderHeader(root,st){
   var e=root.querySelector('#dm-header');if(!e)return;e.innerHTML='';
-  var lastTest=dateText(st.last_full_test);
-  var scope=String(st.last_full_test_scope||'all');
-  var scopeNames={all:'весь каталог',bypass:'Обход геоблока',clean:'Без фильтрации',security:'Защита от угроз',privacy:'Конфиденциальность',adblock:'Блокировка рекламы',family:'Семейная фильтрация'};
+  var fullAt=Number(st.last_full_test||0),watchdogAt=Number(st.watchdog_last_check||0);
+  var useWatchdog=watchdogAt>0&&watchdogAt>=fullAt;
+  var lastTest=dateText(useWatchdog?st.watchdog_last_check:st.last_full_test);
+  var scope=String(useWatchdog?st.watchdog_last_category:(st.last_full_test_scope||'all'));
+  var scopeNames={all:'весь каталог',bypass:'Обход геоблока',clean:'Без фильтрации',security:'Защита от угроз',privacy:'Конфиденциальность',adblock:'Блокировка рекламы',family:'Семейная фильтрация',gaming:'Игры',regional:'Региональный DNS',custom:'Пользовательский DNS',mixed:'Несколько категорий',unknown:'DNS'};
   var scopeLabel=scopeNames[scope]||scope;
   var testText=lastTest==='—'?'Последняя проверка DNS: не выполнялась':'Последняя проверка DNS: '+lastTest+' · '+scopeLabel;
   e.appendChild(E('div',{'class':'dm-header'},[
@@ -2991,7 +3999,7 @@ function renderHeader(root,st){
 function setActiveTab(root,name){
   var groups={
     dashboard:['overview','test-inline'],
-    doh:['doh','profiles'],
+    doh:['doh','slots','profiles'],
     network:['network'],
     time:['time'],
     catalog:['catalog'],
@@ -3161,7 +4169,7 @@ function renderOverview(root,st){
     :badge('dm-off','выключен');
 
   var wd=yes(st.watchdog)?(st.watchdog_backend==='procd'?(Number(st.watchdog_loop||0)===1?badge('dm-ok','работает'):Number(st.watchdog_service||0)===1?badge('dm-warn','служба запущена, цикл не найден'):badge('dm-bad','служба не запущена')):badge('dm-warn','неизвестный механизм')):badge('dm-off','выключена');
-  var wdDetails='Проверка DNS — каждые '+Number(st.watchdog_interval||600)/60+' мин · после '+Number(st.watchdog_fail_threshold||2)+' сбоев подряд';
+  var wdDetails='Проверка DNS — каждые '+Number(st.watchdog_interval||120)/60+' мин · после '+Number(st.watchdog_fail_threshold||2)+' сбоев подряд';
 
   var dnsItems=[];
   (st.doh_instances||[]).forEach(function(d){
@@ -3169,24 +4177,13 @@ function renderOverview(root,st){
     var slot=d.slot?slotLabel(d.slot):'системный DNS';
     var name=d.name||'Пользовательский DNS';
     var ci=checkInfo(d.id,d);
-    var s=String(ci.status||'').toUpperCase();
-    var statusNode=s==='OK'
-      ? badge('dm-ok','работает')
-      : s==='RUNNING'
-        ? badge('dm-warn','проверяется…')
-        : s
-          ? badge('dm-bad','не работает')
-          : badge('dm-off','не проверено');
-    var meta=[];
-    if(s==='OK'||s==='RUNNING'||s==='FAIL'||s) {
-      if(s!=='RUNNING'&&hasPing(ci.ping))meta.push(E('span',{'class':'dm-component-dns-ping'},ping(ci.ping)));
-    }
+    var statusNode=stateBadge(ci.status,ci.ping);
     dnsItems.push(E('div',{'class':'dm-component-dns'},[
       E('div',{'class':'dm-component-dns-main'},[
         E('span',{'class':'dm-component-dns-slot'},slot),
         E('span',{'class':'dm-component-dns-name'},name)
       ]),
-      E('div',{'class':'dm-component-dns-meta'},[statusNode].concat(meta))
+      E('div',{'class':'dm-component-dns-meta'},[statusNode])
     ]));
   });
   if(!dnsItems.length)dnsItems.push(E('div',{'class':'dm-hint'},'DNS в слоты не назначены.'));
@@ -3259,22 +4256,13 @@ function resolverRows(st,root){
     var ci=checkInfo(d.id,d);
     var s=String(ci.status||'').toUpperCase();
     var running=s==='RUNNING';
-    var statusNode=running
-      ? badge('dm-warn','проверяется…')
-      : s==='OK'
-        ? badge('dm-ok','работает')
-        : s
-          ? badge('dm-bad','не работает')
-          : badge('dm-off','не проверено');
+    var statusNode=stateBadge(ci.status,ci.ping);
     var actions=[];
     if(d.slot){
-      actions.push(btn('Выбрать','cbi-button-neutral',function(){openSlotPicker(d.slot,root);},{disabled:running||!!state.busy||!!state.jobRunning}));
-      actions.push(btn(running?'Проверяю…':'Проверить','cbi-button-neutral',function(){testOne(d.id,root,'doh');},{disabled:running||!!state.busy||!!state.jobRunning}));
-    }
+      }
     out.push(E('div',{'class':'dm-doh-row'},[
       E('span',{'class':'dm-doh-slot'},slot),
       E('span',{'class':'dm-doh-name'},name),
-      E('span',{'class':'dm-doh-ping'},!running&&hasPing(ci.ping)?ping(ci.ping):'—'),
       E('span',{'class':'dm-doh-state'},statusNode),
       E('span',{'class':'dm-doh-actions'},actions)
     ]));
@@ -3286,12 +4274,8 @@ function resolverRows(st,root){
     out.push(E('div',{'class':'dm-doh-row'},[
       E('span',{'class':'dm-doh-slot'},slotLabel(d.slot||'—')),
       E('span',{'class':'dm-doh-name'},d.name||d.id),
-      E('span',{'class':'dm-doh-ping'},running?'—':ping(ci.ping)),
-      E('span',{'class':'dm-doh-state'},running?badge('dm-warn','проверяется…'):stateBadge(status,ci.ping)),
-      E('span',{'class':'dm-doh-actions'},[
-        btn('Выбрать','cbi-button-neutral',function(){openSlotPicker(d.slot,root);},{disabled:running||!!state.busy||!!state.jobRunning}),
-        btn(running?'Проверяю…':'Проверить','cbi-button-neutral',function(){testOne(d.id,root,'doh');},{disabled:running||!!state.busy||!!state.jobRunning})
-      ])
+      E('span',{'class':'dm-doh-state'},stateBadge(status,ci.ping)),
+      E('span',{'class':'dm-doh-actions'},[])
     ]));
   });
   return [out,seen];
@@ -3311,25 +4295,41 @@ function renderDoH(root,st){
   var fm=forceMode(st);
   var profileSelected=String(st.profile||'none')!=='none';
   var forceEnableLocked=!profileSelected && fm!=='auto';
+  var forceEnabled=fm==='auto';
   var forceButtons=E('div',{'class':'dm-seg'},[
     btn('Авто (рекомендуется)',fm==='auto'?'active cbi-button':'cbi-button',function(){setForceMode('auto',root);},{disabled:state.busy||forceEnableLocked}),
     btn('Не перехватывать',fm==='off'?'active cbi-button':'cbi-button',function(){setForceMode('off',root);},{disabled:state.busy})
   ]);
+  var encryptedEnabled=yes(st.encrypted_dns);
+  var encryptedButtons=E('div',{'class':'dm-seg'},[
+    btn('Включено',encryptedEnabled?'active cbi-button':'cbi-button',function(){setSetting('encrypted_dns',1,root);},{disabled:state.busy||encryptedEnabled}),
+    btn('Выключено',!encryptedEnabled?'active cbi-button':'cbi-button',function(){setSetting('encrypted_dns',0,root);},{disabled:state.busy||!encryptedEnabled})
+  ]);
   var steer=st.force_owner==='steer';
   ch.push(E('div',{'style':'margin-top:9px'},[
     E('div',{'class':'dm-row'},[
-      E('span',{'class':'dm-label'},'Перехват DNS устройств'),
+      E('span',{'class':'dm-label'},'Принудительный DNS'),
       badge(st.force_status==='external'||st.force_status==='other'?'dm-bad':(st.force_status==='manager'||st.force_status==='steer')?'dm-ok':'dm-off',st.force_status==='external'?'внешний':st.force_status==='other'?'другое':st.force_status==='steer'?'включён • Steer':st.force_status==='manager'?'включён':'выключен')
     ]),
+    E('p',{'class':'dm-hint'},'Направляет обычные DNS-запросы устройств на DNS роутера. В конфигурации https-dns-proxy задействованы порты 53 и 853.'),
     forceButtons,
     (!profileSelected && fm!=='auto') ? E('div',{'class':'dm-inline-msg info'},'Сначала выберите профиль DNS Manager.') : null
+  ].filter(Boolean)));
+  ch.push(E('div',{'style':'margin-top:14px'},[
+    E('div',{'class':'dm-row'},[
+      E('span',{'class':'dm-label'},'Не давать устройствам обходить блокировку'),
+      badge(encryptedEnabled?'dm-ok':'dm-off',encryptedEnabled?'включено':'выключено')
+    ]),
+    E('p',{'class':'dm-hint'},'Дополнительно ограничивает использование сторонних зашифрованных DNS-сервисов, через которые устройство может обходить DNS-фильтрацию роутера.'),
+    encryptedButtons,
+    E('p',{'class':'dm-hint'},'Блокировка DoT на порту 853 работает независимо. Canary-проверки автоматического DoH через https-dns-proxy работают только когда сам пакет выполняет принудительный DNS; при перехвате через Steer эта часть защиты не действует. Произвольный DoH поверх HTTPS/443 эта настройка не гарантированно блокирует.')
   ].filter(Boolean)));
   if(st.force_both){
     ch.push(E('div',{'class':'dm-force-external'},'Принудительный DNS обнаружен одновременно с внешним перехватом. Источник: '+shortVal(st.force_source)+'. При переключении DNS Manager приведёт общую конфигурацию forced-DNS к своей схеме.'));
   } else if(st.force_owner==='external'){
     ch.push(E('div',{'class':'dm-force-external'},'Обнаружен '+shortVal(st.force_source)+'. Переключение выше может заменить его общей конфигурацией forced-DNS DNS Manager.'));
   } else if(steer){
-    ch.push(E('div',{'class':'dm-inline-msg info'},'Steer перехватывает DNS :53. DNS Manager не создаёт второй перехват: обычные DNS-запросы идут через dnsmasq к выбранному DoH, а DNS-over-TLS :853 блокируется.'));
+    ch.push(E('div',{'class':'dm-inline-msg info'},'Steer перехватывает DNS :53. DNS Manager не создаёт второй перехват: обычные DNS-запросы идут через dnsmasq к выбранному DoH. Ограничение DoT :853 управляется отдельным переключателем выше.'));
   } else if(Number(st.steer_running)===1 && Number(st.steer_dns_active)!==1){
     ch.push(E('div',{'class':'dm-inline-msg info'},'Steer запущен, но активный перехват DNS :53→:5300 не обнаружен. Поэтому DNS Manager не считает Steer владельцем forced-DNS и сохраняет обычную схему принудительного DNS.'));
   }
@@ -3366,15 +4366,76 @@ function assign(id,slot,root,nextName){
     }).catch(function(){state.busy=false;setAction(false,'DNS не удалось применить.');state.pageNotice.slots='DNS не удалось применить.';refresh(root,true);});
   });
 }
+function saveSlotDomains(slot,input,root){
+  if(state.busy||!input)return;
+  var value=String(input.value||'').replace(/\r/g,'').split(/[\s,]+/).filter(Boolean).join(',');
+  state.busy=true;
+  state.pageNotice.slots='Применяю список доменов для '+slotLabel(slot)+'…';
+  renderSlots(root,window.dmState||{});
+  callSlotDomains(slot,value).then(function(r){
+    state.busy=false;
+    if(r&&r.ok){
+      setAction(true,'Домены для '+slotLabel(slot)+' сохранены.');
+      state.pageNotice.slots='Маршруты доменов для '+slotLabel(slot)+' обновлены.';
+    }else{
+      var msg=(r&&r.error)||'Не удалось применить домены.';
+      setAction(false,msg);state.pageNotice.slots=msg;
+    }
+    refresh(root,true);
+  }).catch(function(err){
+    state.busy=false;
+    var msg=withRpcError('Не удалось применить домены.',err);
+    setAction(false,msg);state.pageNotice.slots=msg;refresh(root,true);
+  });
+}
+function refreshDeviceDnsPanels(root){
+  return Promise.all([
+    callLanDevices().catch(function(){return {ok:false,devices:[]};}),
+    callDohStatus().catch(function(){return window.dmState||{};})
+  ]).then(function(v){
+    window.dmLanDevices=v[0]||{ok:false,devices:[]};
+    window.dmState=v[1]||{};
+    renderSlots(root,window.dmState);
+  });
+}
+function saveDeviceDns(mac,controls,root){
+  if(state.busy||state.jobRunning||!controls)return;
+  var selected=[];
+  var inputs=controls.querySelectorAll('input.dm-device-dns-checkbox');
+  Array.prototype.forEach.call(inputs,function(input){
+    if(input.checked&&input.getAttribute('data-available')==='1')selected.push(String(input.value));
+  });
+  selected.sort(function(a,b){return Number(a)-Number(b);});
+  state.busy=true;
+  callSetDeviceDns(String(mac||''),selected.join(',')).then(function(r){
+    state.busy=false;
+    if(r&&r.ok){
+      state.pageNotice.slots=selected.length
+        ? 'Для устройства '+mac+' сохранены DNS '+selected.join(', ')+'.'
+        : 'Индивидуальная привязка для '+mac+' удалена; устройство использует обычный DNS роутера.';
+      setAction(true,selected.length?'Индивидуальная привязка DNS сохранена.':'Индивидуальная привязка удалена.');
+    }else{
+      var msg=(r&&r.error)||'Не удалось применить DNS для устройства.';
+      state.pageNotice.slots=msg;setAction(false,msg);
+    }
+    return refreshDeviceDnsPanels(root);
+  }).catch(function(err){
+    state.busy=false;
+    var msg=withRpcError('Не удалось применить DNS для устройства.',err);
+    state.pageNotice.slots=msg;setAction(false,msg);
+    renderSlots(root,window.dmState||{});
+  });
+}
+
 function slotOptionsForCatalog(cat){
   return String(cat||'').toLowerCase()==='regional'?['RU']:['1','2','3','4','5','6'];
 }
 function slotCatalogInfo(slot){
   var st=window.dmState||{},d=null;
   (st.slots||[]).forEach(function(x){if(x&&String(x.slot)===String(slot))d=x;});
-  if(!d||!d.id)return {name:'не назначен',status:'',ping:''};
+  if(!d||!d.id)return {id:'',port:'',name:'не назначен',status:'',ping:''};
   var ci=checkInfo(d.id,d);
-  return {name:d.name||d.id,status:String(ci.status||d.status||''),ping:String(ci.ping||d.ping||'')};
+  return {id:String(d.id),port:String(d.port||''),name:d.name||d.id,status:String(ci.status||d.status||''),ping:String(ci.ping||d.ping||'')};
 }
 function slotCatalogOptionLabel(slot){
   var x=slotCatalogInfo(slot);
@@ -3396,7 +4457,7 @@ function assignDirect(id,slot,root,nextName,nextUrl){
   (window.dmState&&window.dmState.doh_instances||[]).forEach(function(x){
     if(x&&String(x.slot)===String(slot))activeUrl=String(x.url||'');
   });
-  var normalizeUrl=function(u){return String(u||'').replace(/\/+$/,'');};
+  var normalizeUrl=function(u){u=String(u||'');return u.replace(/^(https:\/\/[^/]+)\/+$/i,'$1');};
   if(current===next&&normalizeUrl(activeUrl)===normalizeUrl(nextUrl))return;
   state.busy=true;
   state.pageNotice.catalog='Назначаю «'+next+'» в '+slotLabel(slot)+'…';
@@ -3419,40 +4480,94 @@ function assignDirect(id,slot,root,nextName,nextUrl){
   });
 }
 function renderCatalogAssign(d,root){
-  var slots=slotOptionsForCatalog(d.category),st=window.dmState||{},current='';
-  var ci=checkInfo(d.id,d),checking=String(ci.status||'').toUpperCase()==='RUNNING',unavailable=!checking&&!resolverAvailable(ci);
-  (st.slots||[]).forEach(function(x){if(x&&x.id===d.id)current=String(x.slot||'');});
-  if(slots.indexOf(current)<0)current=slots[0]||'1';
-  var select=E('select',{'class':'dm-assign-select','aria-label':'Слот'});
-  slots.forEach(function(slot){
-    select.appendChild(E('option',{'value':slot},slotCatalogOptionLabel(slot)));
-  });
-  select.value=current;
-  return E('div',{'class':'dm-assign-inline'},[
-    select,
+  var ci=checkInfo(d.id,d);
+  var checking=String(ci.status||'').toUpperCase()==='RUNNING';
+  var unavailable=!checking&&!resolverAvailable(ci);
+  return E('div',{'class':'dm-catalog-assign'},[
     btn(checking?'Проверяется…':(unavailable?'Недоступен':'Назначить'),'cbi-button-action',function(){
       if(unavailable||checking)return;
-      assignDirect(d.id,select.value,root,d.name||d.id,d.url);
+      openCatalogSlotPicker(d,root);
     },{disabled:!!state.busy||!!state.jobRunning||unavailable||checking,title:unavailable?'DNS не прошёл последнюю проверку. Повторите проверку после восстановления.':''})
   ]);
 }
+function openCatalogSlotPicker(d,root){
+  if(state.busy||state.jobRunning||!d)return;
+  var ci=checkInfo(d.id,d);
+  var checking=String(ci.status||'').toUpperCase()==='RUNNING';
+  if(checking||!resolverAvailable(ci))return;
+  var slots=slotOptionsForCatalog(d.category);
+  var name=d.name||d.id;
+  var children=[
+    E('div',{'class':'dm-mini'},'Выберите слот для «'+name+'». Если слот занят другим DNS, кнопка будет помечена «Заменить».'),
+    E('div',{'class':'dm-catalog-slot-picker'},[])
+  ];
+  var list=children[1];
+  slots.forEach(function(slot){
+    var info=slotCatalogInfo(slot);
+    var current=String(info.id||'')===String(d.id);
+    var elsewhere=assignedSlotInfo(d.id,slot);
+    var occupied=!!info.id&&!current;
+    var buttonText=current?'Уже назначен':(elsewhere?'Уже в '+slotLabel(elsewhere.slot):(occupied?'Заменить':'Назначить'));
+    var disabled=!!state.busy||!!state.jobRunning||current||!!elsewhere;
+    var main=[
+      E('div',{'class':'dm-catalog-slot-title'},slotLabel(slot)),
+      E('div',{'class':'dm-catalog-slot-current'},info.name==='не назначен'?'Не назначен':info.name)
+    ];
+    if(info.id&&info.status){
+      main.push(E('div',{'class':'dm-catalog-slot-status'},stateBadge(info.status,info.ping)));
+    }
+    if(info.port){
+      main.push(E('div',{'class':'dm-catalog-slot-port'},'127.0.0.1:'+info.port));
+    }
+    list.appendChild(E('div',{'class':'dm-catalog-slot-option'+(current?' is-current':'')+(occupied?' is-occupied':'')},[
+      E('div',{'class':'dm-catalog-slot-main'},main),
+      btn(buttonText,'cbi-button-'+(occupied?'negative':'action'),function(){
+        if(disabled||state.busy||state.jobRunning)return;
+        ui.hideModal();
+        assignDirect(d.id,slot,root,name,d.url);
+      },{disabled:disabled,title:elsewhere?'Этот DNS уже назначен в '+slotLabel(elsewhere.slot)+'. Дублирование не разрешено.':(current?'Этот DNS уже назначен в выбранный слот.':'')})
+    ]));
+  });
+  children.push(E('div',{'class':'right'},[btn('Отмена','cbi-button-negative',ui.hideModal)]));
+  ui.showModal('Назначить «'+name+'»',children);
+}
 
-function openSlotPicker(slot,root){
+function openSlotPicker(slot,root,requestedCategory,requestedOffset,preserveScroll){
   if(state.busy)return;
+  var pickerScrollTop=0;
+  if(preserveScroll){
+    var activePickerList=document.querySelector('.dm-picker-list');
+    if(activePickerList)pickerScrollTop=activePickerList.scrollTop||0;
+  }
+  var pickerRequest=(Number(state.slotPickerRequest)||0)+1;
+  state.slotPickerRequest=pickerRequest;
   var st=window.dmState||{};
   var currentSlot=null;
   (st.slots||[]).forEach(function(d){if(String(d.slot)===String(slot))currentSlot=d;});
-  var regional=slot==='RU';
+  var regional=String(slot)==='RU';
   var currentCategory=String(currentSlot&&currentSlot.category||'').toLowerCase();
   var selectedCategory=String(st.selection_category||'').toLowerCase();
+  function selectableCategory(value){
+    value=String(value||'').toLowerCase();
+    return value!=='all'&&value!=='regional'&&CATEGORY.some(function(x){return x[0]===value;});
+  }
+  var askedCategory=String(requestedCategory||'').toLowerCase();
   var category=regional
     ? 'regional'
-    : (currentCategory&&currentCategory!=='regional'
-      ? currentCategory
-      : (selectedCategory&&selectedCategory!=='regional'&&CATEGORY.some(function(x){return x[0]===selectedCategory;})?selectedCategory:'bypass'));
+    : (selectableCategory(askedCategory)
+      ? askedCategory
+      : (selectableCategory(currentCategory)
+        ? currentCategory
+        : (selectableCategory(selectedCategory)?selectedCategory:'bypass')));
+  var offset=Number(requestedOffset);
+  if(!isFinite(offset)||offset<0)offset=0;
+  offset=Math.floor(offset/48)*48;
+  if(regional)offset=0;
   var profile=profileName(st.profile);
-  callCatalog(category,0,48,0).then(function(d){
+  callCatalog(category,offset,48,0).then(function(d){
+    if(pickerRequest!==state.slotPickerRequest)return;
     var rows=d&&d.servers||[];
+    var total=Number(d&&d.total||0);
     var cur=currentSlot&&currentSlot.name?currentSlot.name:slotCurrentName(slot);
     var list=E('div',{'class':'dm-picker-list'});
     if(!rows.length){
@@ -3460,8 +4575,9 @@ function openSlotPicker(slot,root){
     }else{
       rows.forEach(function(x){
         var ci=checkInfo(x.id,x);
-        var status=ci.status==='RUNNING'?badge('dm-warn','проверяется'):stateBadge(ci.status,ci.ping);
-        var pingNode=ping(ci.ping);
+        var pickerChecking=!!(state.slotPickerCheck&&String(state.slotPickerCheck.id)===String(x.id)&&String(state.slotPickerCheck.slot)===String(slot));
+        var checking=pickerChecking||String(ci.status||'').toUpperCase()==='RUNNING';
+        var status=checking?badge('dm-warn','проверяется…'):stateBadge(ci.status,ci.ping);
         var currentMark=x.name===cur?badge('dm-ok','выбран'):null;
         var assignedSlot='',assignedPort='';
         (st.slots||[]).forEach(function(sd){
@@ -3474,30 +4590,45 @@ function openSlotPicker(slot,root){
         var occupiedMark=elsewhere
           ? badge('dm-warn','занят в '+slotLabel(assignedSlot)+(assignedPort?' · 127.0.0.1:'+assignedPort:''))
           : null;
-        var checking=String(ci.status||'').toUpperCase()==='RUNNING';
         var unavailable=!checking&&!resolverAvailable(ci);
         var actionLabel=elsewhere?('Уже в '+slotLabel(assignedSlot)):((x.name===cur)?'Выбран':(checking?'Проверяется…':(unavailable?'Недоступен':'Выбрать')));
         var action=btn(actionLabel,'cbi-button-neutral',function(){
-          if(elsewhere||unavailable)return;
+          if(elsewhere||unavailable||checking)return;
           if(x.name===cur){ui.hideModal();return;}
           ui.hideModal();
           assign(x.id,slot,root,x.name);
-        },{disabled:!!state.busy||!!elsewhere||checking||(unavailable&&x.name!==cur),title:unavailable?'DNS не прошёл проверку или нет результатов. Нажмите «Проверить» перед назначением.':''});
-        var check=btn(ci.status==='RUNNING'?'Проверяется':'Проверить','cbi-button-neutral',function(){
+        },{disabled:!!state.busy||!!state.jobRunning||!!elsewhere||checking||(unavailable&&x.name!==cur),title:unavailable?'DNS не прошёл проверку или нет результатов. Нажмите «Проверить» перед назначением.':''});
+        var check=btn(checking?'Проверяется…':'Проверить','cbi-button-neutral',function(){
           if(state.jobRunning||state.busy)return;
-          testOne(x.id,root,'doh',function(){openSlotPicker(slot,root);});
-        },{disabled:ci.status==='RUNNING'||!!state.busy});
+          state.slotPickerCheck={id:String(x.id),slot:String(slot)};
+          openSlotPicker(slot,root,category,offset,true);
+          testOne(x.id,root,'doh',function(){
+            if(state.slotPickerCheck&&String(state.slotPickerCheck.id)===String(x.id)&&String(state.slotPickerCheck.slot)===String(slot))
+              state.slotPickerCheck=null;
+            openSlotPicker(slot,root,category,offset,true);
+          });
+        },{disabled:checking||!!state.busy||!!state.jobRunning});
+        var mainChildren=[
+          E('div',{'class':'dm-picker-name'},x.name||x.id),
+          E('div',{'class':'dm-picker-meta'},[
+            status,
+            occupiedMark||currentMark||E('span',{})
+          ])
+        ];
         list.appendChild(E('div',{'class':'dm-picker-item'},[
-          E('div',{'class':'dm-picker-main'},[
-            E('div',{'class':'dm-picker-name'},x.name||x.id),
-            E('div',{'class':'dm-picker-meta'},[
-              E('span',{},pingNode),
-              status,
-              occupiedMark||currentMark||E('span',{})
-            ])
-          ]),
+          E('div',{'class':'dm-picker-main'},mainChildren),
           E('div',{'class':'dm-picker-actions'},[check,action])
         ]));
+      });
+    }
+
+    var categoryControls=E('div',{'class':'dm-seg dm-slot-picker-categories'},[]);
+    if(!regional){
+      CATEGORY.forEach(function(c){
+        if(c[0]==='all'||c[0]==='regional')return;
+        categoryControls.appendChild(btn(c[1],c[0]===category?'active cbi-button':'cbi-button',function(){
+          openSlotPicker(slot,root,c[0],0);
+        },{disabled:!!state.busy||!!state.jobRunning}));
       });
     }
     var slotPort=currentSlot&&currentSlot.port?currentSlot.port:'';
@@ -3505,13 +4636,31 @@ function openSlotPicker(slot,root){
     var slotInfo=occupied
       ? 'Слот '+slotLabel(slot)+' занят: '+cur+(slotPort?' · 127.0.0.1:'+slotPort:'')
       : 'Слот '+slotLabel(slot)+' свободен';
-    ui.showModal('DNS для профиля «'+profile+'» · '+slotLabel(slot),[
-      E('div',{'class':'dm-slot-occupied-note'},slotInfo),
-      E('div',{'class':'dm-mini'},'Категория: '+catName(category)),
-      list,
-      E('div',{'class':'right'},[btn('Закрыть','cbi-button-negative',ui.hideModal)])
-    ]);
+    var modalChildren=[
+      E('div',{'class':'dm-slot-occupied-note'},slotInfo)
+    ];
+    if(!regional){
+      modalChildren.push(E('div',{'class':'dm-mini'},'Выберите категорию, затем DNS из неё. Доступны все обычные категории каталога; региональные DNS назначаются только в слот RU.'));
+      modalChildren.push(categoryControls);
+    }else{
+      modalChildren.push(E('div',{'class':'dm-mini'},'Категория: '+catName(category)));
+    }
+    modalChildren.push(list);
+    if(!regional&&total>48){
+      modalChildren.push(E('div',{'class':'dm-page'},[
+        btn('←','cbi-button-neutral',function(){openSlotPicker(slot,root,category,Math.max(0,offset-48));},{disabled:offset<=0||!!state.busy||!!state.jobRunning}),
+        E('span',{'class':'dm-mini'},(Math.floor(offset/48)+1)+' / '+Math.max(1,Math.ceil(total/48))+' · '+total+' DNS'),
+        btn('→','cbi-button-neutral',function(){openSlotPicker(slot,root,category,offset+48);},{disabled:offset+48>=total||!!state.busy||!!state.jobRunning})
+      ]));
+    }
+    modalChildren.push(E('div',{'class':'right'},[btn('Закрыть','cbi-button-negative',ui.hideModal)]));
+    ui.showModal('Выбор DNS · '+slotLabel(slot),modalChildren);
+    if(preserveScroll){
+      var updatedPickerList=document.querySelector('.dm-picker-list');
+      if(updatedPickerList)updatedPickerList.scrollTop=pickerScrollTop;
+    }
   }).catch(function(){
+    if(pickerRequest!==state.slotPickerRequest)return;
     state.pageNotice.slots='Не удалось открыть список DNS.';
     renderSlots(root,window.dmState||{});
   });
@@ -3625,33 +4774,179 @@ function renderProfiles(root,st){
 }
 
 function renderSlots(root,st){
-  var e=root.querySelector('#dm-slots');if(!e)return;e.innerHTML='';var rows=[];
+  var e=root.querySelector('#dm-slots');if(!e)return;e.innerHTML='';var rows=[];var deviceChildren=[];
   (st.slots||[]).forEach(function(d){
-    if(!d.id)return;
-    var checking=state.checking&&state.checking[d.id];
+    var assigned=!!d.id;
+    var checking=assigned&&state.checking&&state.checking[d.id];
     var running=checking&&String(checking.status||'').toUpperCase()==='RUNNING';
     var shownStatus=running?'RUNNING':d.status;
     var shownPing=running?'':d.ping;
-    rows.push(E('div',{'class':'dm-slot-row '+(running?'dm-slot-checking':'')},[
+    var rowNode=E('div',{'class':'dm-slot-row '+(running?'dm-slot-checking':'')},[
       E('span',{'class':'dm-slot-id'},d.slot),
-      E('span',{'class':'dm-slot-name'},d.name||d.id),
+      E('span',{'class':'dm-slot-name'},assigned?(d.name||d.id):'Не назначен'),
       E('span',{'class':'dm-slot-endpoint'},d.port?'127.0.0.1:'+d.port:'—'),
-      E('span',{'class':'dm-slot-ping'},running?'—':ping(shownPing)),
-      E('span',{'class':'dm-slot-state'},running
-        ?badge('dm-warn','проверяется…')
-        :stateBadge(shownStatus,shownPing)),
+      E('span',{'class':'dm-slot-state'},running?badge('dm-warn','проверяется…'):(assigned?stateBadge(shownStatus,shownPing):badge('dm-off','не назначен'))),
       E('span',{'class':'dm-inline'},[
         btn('Выбрать','cbi-button-neutral',function(){openSlotPicker(d.slot,root);},{disabled:running||!!state.busy||!!state.jobRunning}),
-        btn(running?'Проверяю…':'Проверить',running?'cbi-button-neutral':'cbi-button-neutral',function(){testOne(d.id,root);},{disabled:running||!!state.busy||!!state.jobRunning})
+        btn(running?'Проверяю…':'Проверить','cbi-button-neutral',function(){if(assigned)testOne(d.id,root);},{disabled:!assigned||running||!!state.busy||!!state.jobRunning})
       ])
-    ]));
+    ]);
+    var children=[rowNode];
+    if(String(d.slot)==='RU'){
+      children.push(E('div',{'class':'dm-slot-domain-panel dm-slot-regional-panel'},[
+        E('div',{'class':'dm-slot-domains-heading'},'Что направляется через региональный DNS'),
+        E('div',{'class':'dm-slot-domains-help'},assigned
+          ? 'После применения настроек запросы к зонам .ru, .su и .рф направляются через назначенный здесь DNS. Правило действует и при ручной настройке DNS 1–6.'
+          : 'Слот RU не назначен: отдельного маршрута для .ru, .su и .рф нет. Настройка DNS 1–6 вручную его не включает.')
+      ]));
+    }else{
+      var initial=String(d.domains||'').trim().split(/\s+/).filter(Boolean).join('\n');
+      var domainAttrs={'class':'dm-slot-domains-input','rows':'2','spellcheck':'false','placeholder':'youtube.com\nexample.org'};
+      if(!assigned)domainAttrs.disabled='';
+      var domainInput=E('textarea',domainAttrs);
+      domainInput.value=initial;
+      children.push(E('div',{'class':'dm-slot-domain-panel'},[
+        E('div',{'class':'dm-slot-domains-heading'},'Домены только через '+slotLabel(d.slot)),
+        E('div',{'class':'dm-slot-domains-help'},assigned
+          ? 'Один домен на строку. Поддомены тоже пойдут через этот DNS; остальные запросы останутся в общей схеме. Для доменов на кириллице используйте Punycode.'
+          : 'Чтобы привязать сайты к этому DNS, сначала нажмите «Выбрать» и назначьте резолвер в слот.'),
+        E('div',{'class':'dm-slot-domain-controls'},[
+          domainInput,
+          btn(state.busy?'Применяю…':'Сохранить домены','cbi-button-neutral',function(){saveSlotDomains(d.slot,domainInput,root);},{disabled:!assigned||!!state.busy||!!state.jobRunning})
+        ])
+      ]));
+    }
+    rows.push(E('div',{'class':'dm-slot-entry'},children));
   });
   if(!rows.length)rows.push(E('div',{'class':'dm-hint'},'DNS пока не настроены.'));
-  var sch=[E('div',{'class':'dm-slot-table'},rows)];
+  var sch=[
+    E('div',{'class':'dm-mini'},'DNS 1–6 — общие слоты; указанные ниже домены и их поддомены пойдут через соответствующий слот. RU — отдельный региональный слот: в него выбирается DNS из категории «Региональные DNS».'),
+    E('div',{'class':'dm-slot-table'},rows)
+  ];
   if(state.pageNotice.slots)sch.push(E('div',{'class':'dm-inline-msg info'},state.pageNotice.slots));
-  e.appendChild(card('Выбранные DNS',sch));
-}
+  e.appendChild(card('DNS по слотам и маршруты доменов',sch));
 
+  var inventory=window.dmLanDevices||{};
+  var available={};
+  var slotNames={};
+  (st.slots||[]).forEach(function(x){
+    var n=String(x&&x.slot||'');
+    if(/^[1-6]$/.test(n)){
+      available[n]=!!(x.id&&x.port);
+      slotNames[n]=String(x.name||x.id||'');
+    }
+  });
+  if(state.lanDevicesMessage){
+    deviceChildren.push(E('div',{'class':'dm-inline-msg '+(state.lanDevicesLoading?'info':'info')},state.lanDevicesMessage));
+  }
+  var devices=Array.isArray(inventory.devices)?inventory.devices:[];
+  if(!inventory.ok){
+    deviceChildren.push(E('div',{'class':'dm-hint'},'Не удалось получить список устройств LAN.'));
+  }else if(!devices.length){
+    deviceChildren.push(E('div',{'class':'dm-hint'},'Роутер пока не обнаружил устройства LAN.'));
+  }else{
+    var deviceRows=[];
+    devices.forEach(function(d){
+      var active=String(d.online)==='1';
+      var name=String(d.name||'').trim()||'Устройство без имени';
+      var source=String(d.source||'');
+      var sourceLabel=source==='DHCP'?'DHCP-аренда':(source==='ARP'?'ARP-кэш':(source==='NDP'?'IPv6-сосед (NDP)':(source==='ASSIGN'?'сохранённая привязка':'статическая DHCP-запись')));
+      var chosen=String(d.assigned_slots||'').split(',').filter(Boolean);
+      var options=[];
+      for(var i=1;i<=6;i++){
+        var key=String(i);
+        var selected=chosen.indexOf(key)>=0;
+        var usable=available[key]===true;
+        var cbAttrs={'type':'checkbox','class':'dm-device-dns-checkbox','value':key,'data-available':usable?'1':'0'};
+        if(selected)cbAttrs.checked='';
+        if(!usable&&!selected)cbAttrs.disabled='';
+        var cb=E('input',cbAttrs);
+        var optionClass='dm-device-dns-option'+(selected?' is-selected':'')+(usable?' is-available':' is-empty');
+        options.push(E('label',{'class':optionClass},[
+          cb,
+          E('span',{'class':'dm-device-dns-option-content'},[
+            E('span',{'class':'dm-device-dns-option-slot'},'DNS '+key),
+            E('span',{'class':'dm-device-dns-option-name'},usable?(slotNames[key]||'Назначен'):'Слот пуст')
+          ])
+        ]));
+      }
+      var controls=E('div',{'class':'dm-device-dns-options'},options);
+      var statusText=active?'В сети':(source==='ASSIGN'?'Не в сети · привязка сохранена':'Неактивно');
+      var effectiveText=chosen.length
+        ? 'DNS '+chosen.join(', ')+' назначены этому устройству.'
+        : 'Индивидуальная привязка не задана; используется обычный DNS-маршрут роутера.';
+      var savedWarning=chosen.some(function(n){return available[n]!==true;})
+        ? E('div',{'class':'dm-inline-msg info'},'В привязке есть слот, который сейчас не назначен. При сохранении он будет удалён из выбора.')
+        : null;
+      var children=[
+        E('div',{'class':'dm-device-dns-head'},[
+          E('div',{'class':'dm-device-dns-name'},name),
+          E('span',{'class':'dm-device-dns-status '+(active?'is-online':'is-offline')},statusText)
+        ]),
+        E('div',{'class':'dm-device-dns-meta'},[
+          E('div',{'class':'dm-device-dns-meta-item'},[
+            E('span',{'class':'dm-device-dns-meta-label'},'IP'),
+            E('span',{'class':'dm-device-dns-meta-value'},d.ip||'—')
+          ]),
+          E('div',{'class':'dm-device-dns-meta-item'},[
+            E('span',{'class':'dm-device-dns-meta-label'},'MAC'),
+            E('span',{'class':'dm-device-dns-meta-value dm-device-dns-mac'},d.mac||'—')
+          ]),
+          E('div',{'class':'dm-device-dns-meta-item'},[
+            E('span',{'class':'dm-device-dns-meta-label'},'Источник'),
+            E('span',{'class':'dm-device-dns-meta-value'},sourceLabel)
+          ])
+        ]),
+        E('div',{'class':'dm-device-dns-current '+(chosen.length?'has-selection':'')},[
+          E('span',{'class':'dm-device-dns-current-label'},chosen.length?'Индивидуальный выбор':'Общий маршрут'),
+          E('span',{'class':'dm-device-dns-current-value'},effectiveText)
+        ]),
+        E('div',{'class':'dm-device-dns-section-title'},'Использовать DoH'),
+        E('div',{'class':'dm-device-dns-section-help'},'Отметьте один или несколько назначенных DNS-слотов.'),
+        controls
+      ];
+      if(savedWarning)children.push(savedWarning);
+      children.push(E('div',{'class':'dm-device-dns-actions'},[
+        btn(state.busy?'Сохраняю…':'Сохранить привязку','cbi-button-apply dm-device-dns-save',function(){saveDeviceDns(d.mac,controls,root);},{disabled:!!state.busy||!!state.jobRunning})
+      ]));
+      deviceRows.push(E('div',{'class':'dm-slot-entry dm-device-dns-entry'},children));
+    });
+
+    deviceChildren.push(E('div',{'class':'dm-slot-table'},deviceRows));
+  }
+  deviceChildren.push(E('div',{'class':'dm-device-dns-note'},[
+    E('div',{'class':'dm-device-dns-note-title'},'ⓘ О привязке устройств'),
+    E('div',{'class':'dm-device-dns-note-text'},'Список объединяет DHCP-аренды, IPv4 ARP, IPv6 NDP и статические DHCP-записи.'),
+    E('div',{'class':'dm-device-dns-note-text'},'Привязка действует для обычного DNS на порту 53. Собственный DoH через HTTPS/443 и DoT на порту 853 не перенаправляются.'),
+    E('div',{'class':'dm-device-dns-note-text'},'После подключения нового устройства нажмите «Обновить список устройств».')
+  ]));
+  deviceChildren.push(E('div',{'class':'dm-actions'},[
+    btn(state.lanDevicesLoading?'Обновляю список…':'Обновить список устройств','cbi-button-neutral',function(){
+      if(state.lanDevicesLoading||state.busy||state.jobRunning)return;
+      state.lanDevicesLoading=true;
+      state.lanDevicesMessage='Обновляю список устройств LAN… Пожалуйста, подождите.';
+      renderSlots(root,window.dmState||{});
+      callLanDevices().then(function(r){
+        window.dmLanDevices=r||{ok:false,devices:[]};
+        state.lanDevicesLoading=false;
+        if(window.dmLanDevices.ok){
+          var count=Array.isArray(window.dmLanDevices.devices)?window.dmLanDevices.devices.length:0;
+          state.lanDevicesMessage=count
+            ? 'Список обновлён. Найдено устройств: '+count+'.'
+            : 'Список обновлён, но устройства LAN не обнаружены. Проверьте DHCP-аренды и таблицу соседей роутера.';
+        }else{
+          state.lanDevicesMessage=(window.dmLanDevices.error||'Не удалось получить список устройств LAN.');
+        }
+        renderSlots(root,window.dmState||{});
+      }).catch(function(err){
+        state.lanDevicesLoading=false;
+        state.lanDevicesMessage=withRpcError('Не удалось обновить список устройств.',err);
+        renderSlots(root,window.dmState||{});
+      });
+    },{disabled:!!state.lanDevicesLoading||!!state.busy||!!state.jobRunning})
+  ]));
+  e.appendChild(card('Устройства LAN — привязка к DoH',deviceChildren));
+}
 function settingCard(root,x,st){
   var en=yes(st[x[0]]),busy=state.busySetting===x[0],feedback=settingFeedback(x[1],x[0]),sv=settingStateView(st,x[0]);
   var active=(settingModuleState(st,x[0])===1)||((settingModuleState(st,x[0])===-1)&&en);
@@ -3673,9 +4968,11 @@ function settingCard(root,x,st){
   ]);
 }
 function watchdogCard(root,st){
-  var en=yes(st.watchdog), busy=state.busySetting==='watchdog' || state.busySetting==='watchdog_batch';
-  var profileSelected=String(st.profile||'none')!=='none';
-  var service=Number(st.watchdog_service||0)===1, loop=Number(st.watchdog_loop||0)===1;
+  var en=yes(st.watchdog);
+  var auto=yes(st.watchdog_autoreplace);
+  var busy=state.busySetting==='watchdog' || state.busySetting==='watchdog_autoreplace' || state.busySetting==='watchdog_batch';
+  var service=Number(st.watchdog_service||0)===1;
+  var loop=Number(st.watchdog_loop||0)===1;
   var inputs={};
 
   function minuteValue(seconds,fallback){
@@ -3685,14 +4982,7 @@ function watchdogCard(root,st){
   }
   function param(name,title,min,max,unit,desc,minutes){
     var value=minutes?minuteValue(st[name],min):Number(st[name]||min);
-    var input=E('input',{
-      'type':'number',
-      'min':String(min),
-      'max':String(max),
-      'step':minutes?'1':'1',
-      'value':String(value),
-      'class':'dm-input'
-    });
+    var input=E('input',{'type':'number','min':String(min),'max':String(max),'step':'1','value':String(value),'class':'dm-input'});
     inputs[name]=input;
     return E('div',{'class':'dm-watchdog-row'},[
       E('div',{},[
@@ -3704,26 +4994,22 @@ function watchdogCard(root,st){
     ]);
   }
 
+  var intervalMinutes=minuteValue(st.watchdog_interval,2);
+  var failThreshold=Number(st.watchdog_fail_threshold||2);
+  if(!isFinite(failThreshold)||failThreshold<1||failThreshold>5)failThreshold=2;
+  var cooldownMinutes=minuteValue(st.watchdog_repair_cooldown,5);
+  var spec=[
+    ['watchdog_interval','Как часто проверять DNS',1,60,'мин','Интервал между проверками назначенных DoH-слотов.',true],
+    ['watchdog_fail_threshold','Ошибок подряд до замены',1,5,'проверок','Сколько подряд неудачных проверок нужно для признания DNS неисправным.',false],
+    ['watchdog_repair_cooldown','Пауза между заменами одного DNS',5,120,'мин','Минимальная пауза перед повторной заменой того же слота.',true]
+  ];
   var save=btn(busy?'Сохраняю…':'Сохранить настройки','cbi-button-apply',function(){
     if(state.busy)return;
-
-    var spec=[
-      ['watchdog_interval','Как часто проверять DNS',1,60,'мин','Проверяет, отвечают ли выбранные DNS-серверы.',true],
-      ['watchdog_fail_threshold','Сколько проверок подряд считать сбоем',1,5,'проверок','Сколько раз подряд DNS должен не ответить, прежде чем менеджер заменит его.',false],
-      ['watchdog_repair_cooldown','Пауза между заменами DNS',5,120,'мин','Минимальное время между повторными заменами одного DNS.',true],
-      ['watchdog_max_repairs','Сколько DNS можно заменить за раз',1,3,'шт.','Сколько неисправных DNS можно заменить во время одной проверки.',false],
-      ['watchdog_max_candidates','Сколько DNS проверить при поиске замены',1,10,'шт.','Сколько других DNS проверить, прежде чем выбрать замену.',false],
-    ];
-    var values=[];
-    var invalid='';
+    var values=[],invalid='';
     spec.forEach(function(x){
-      var raw=String(inputs[x[0]].value||'').trim();
-      var n=Number(raw);
-      var ok=raw!==''&&isFinite(n)&&n>=x[2]&&n<=x[3]&&(x[6]?true:/^\d+$/.test(raw));
-      if(!ok){
-        if(!invalid)invalid=x[1]+': от '+x[2]+' до '+x[3]+' '+x[4]+'.';
-        return;
-      }
+      var raw=String(inputs[x[0]].value||'').trim(),n=Number(raw);
+      var valid=raw!==''&&isFinite(n)&&n>=x[2]&&n<=x[3]&&(x[6]||/^\d+$/.test(raw));
+      if(!valid){if(!invalid)invalid=x[1]+': от '+x[2]+' до '+x[3]+' '+x[4]+'.';return;}
       values.push(x[6]?Math.round(n*60):Math.round(n));
     });
     if(invalid){
@@ -3731,81 +5017,96 @@ function watchdogCard(root,st){
       renderNetwork(root,window.dmState||{});
       return;
     }
-
-    var internalMaxRestarts=Number(st.watchdog_max_restarts||2);
-    if(!isFinite(internalMaxRestarts)||internalMaxRestarts<1||internalMaxRestarts>5)internalMaxRestarts=2;
-    values.splice(4,0,Math.round(internalMaxRestarts));
-    values.splice(6,0,Number(st.watchdog_guard_interval||3600));
-
+    var restarts=Number(st.watchdog_max_restarts||2);
+    if(!isFinite(restarts)||restarts<1||restarts>5)restarts=2;
+    var guard=Number(st.watchdog_guard_interval||3600);
+    if(!isFinite(guard)||guard<900||guard>10800)guard=3600;
     clearSettingFeedback();
-    state.busy=true;
-    state.busySetting='watchdog_batch';
-    save.disabled=true;
-    save.textContent='Сохраняю…';
-
-    callWatchdogSettings(values[0],values[1],values[2],values[3],values[4],values[5],values[6]).then(function(r){
-      state.busy=false;
-      state.busySetting='';
-      if(r&&r.ok){
-        setSettingFeedback('watchdog_batch','Настройки контроля сохранены.','ok');
-      }else{
-        setSettingFeedback('watchdog_batch',(r&&r.error)||'Не удалось сохранить настройки контроля.','error');
-      }
+    state.busy=true;state.busySetting='watchdog_batch';
+    renderNetwork(root,window.dmState||{});
+    callWatchdogSettings(values[0],values[1],values[2],Math.round(restarts),Math.round(guard)).then(function(r){
+      state.busy=false;state.busySetting='';
+      setSettingFeedback('watchdog_batch',r&&r.ok?'Настройки проверки сохранены.':((r&&r.error)||'Не удалось сохранить настройки контроля.'),r&&r.ok?'ok':'error');
       refresh(root,true);
     }).catch(function(err){
-      state.busy=false;
-      state.busySetting='';
+      state.busy=false;state.busySetting='';
       setSettingFeedback('watchdog_batch',withRpcError('Не удалось сохранить настройки контроля.',err),'error');
       refresh(root,true);
     });
   },{disabled:!!state.busy});
 
-  var feedback=settingFeedback('', 'watchdog_batch')||E('span',{'class':'dm-setting-feedback'});
-  var action=E('div',{'class':'dm-setting '+(busy?'dm-setting-saving':'')},[
-    E('div',{'class':'dm-setting-text'},[
-      E('div',{'class':'dm-setting-title'},'Контроль DNS'),
-      E('div',{'class':'dm-setting-desc'},'Автоматически проверяет выбранные DNS и при подтверждённом сбое восстанавливает рабочий вариант.')
-    ]),
-    E('div',{'class':'dm-setting-controls'},[
-      E('div',{'class':'dm-setting-actions'},[
-        badge(busy?'dm-warn':(en?'dm-ok':'dm-off'),busy?'изменение':(en?'включено':'выключено')),
-        btn(busy?'Сохраняю…':(en?'Выключить':'Включить'),busy?'cbi-button-neutral':(en?'cbi-button-remove':'cbi-button-add'),function(){
-          var cur=yes((window.dmState||{}).watchdog);
-          if(!cur && !profileSelected)return;
-          setSetting('watchdog',cur?0:1,root);
-        },{disabled:!!state.busy || (!en && !profileSelected)})
+  function toggleRow(title,desc,enabled,key,disabled){
+    var settingBusy=state.busySetting===key;
+    var actionLabel=settingBusy?'Сохраняю…':(enabled?'Выключить':'Включить');
+    return E('div',{'class':'dm-setting dm-watchdog-toggle '+(settingBusy?'dm-setting-saving':'')},[
+      E('div',{'class':'dm-setting-text'},[
+        E('div',{'class':'dm-setting-title'},title),
+        E('div',{'class':'dm-setting-desc'},desc)
+      ]),
+      E('div',{'class':'dm-setting-controls'},[
+        E('div',{'class':'dm-setting-actions'},[
+          badge(settingBusy?'dm-warn':(enabled?'dm-ok':'dm-off'),settingBusy?'изменение':(enabled?'включено':'выключено')),
+          btn(actionLabel,settingBusy?'cbi-button-neutral':(enabled?'cbi-button-remove':'cbi-button-add'),function(){
+            setSetting(key,enabled?0:1,root);
+          },{disabled:!!state.busy||!!disabled})
+        ])
       ])
-    ])
+    ]);
+  }
+
+  var runtimeText=!en?'выключена':loop?'активна':service?'запускается':'не запущена';
+  var runtimeKind=!en?'dm-off':loop?'dm-ok':service?'dm-warn':'dm-bad';
+  var status=E('div',{'class':'dm-watchdog-status'},[
+    row('Состояние проверки',badge(runtimeKind,runtimeText)),
+    row('Автозамена',badge(!en?'dm-off':(auto?'dm-ok':'dm-off'),!en?'проверка выключена':(auto?'включена':'выключена')))
   ]);
 
-  var status=E('div',{'class':'dm-grid2'},[
-    row('Служба',badge(service?'dm-ok':'dm-warn',service?'работает':'не работает')),
-    row('Проверка DNS',badge(loop?'dm-ok':service?'dm-warn':'dm-off',loop?'активна':service?'ждёт запуска':'не работает'))
-  ]);
+  var categoryNames={bypass:'Обход геоблока',clean:'Без фильтрации',security:'Защита от угроз',privacy:'Конфиденциальность',adblock:'Блокировка рекламы',family:'Семейная фильтрация',gaming:'Игры',regional:'Региональный DNS',custom:'Пользовательский DNS',unknown:'Категория не определена'};
+  var records=Array.isArray(st.watchdog_last_records)?st.watchdog_last_records:[];
+  var lastView;
+  if(records.length){
+    var recordRows=records.map(function(d){
+      var status=String(d.status||'SKIPPED');
+      var statusKind=status==='OK'?'dm-ok':(status==='SKIPPED'?'dm-off':'dm-bad');
+      var statusText=status==='OK'?'доступен':status==='FAIL'?'не отвечает':status==='NO_LISTENER'?'нет локального порта':'не проверен';
+      var cat=String(d.category||'unknown');
+      return E('div',{'class':'dm-watchdog-record'},[
+        E('span',{'class':'dm-watchdog-record-slot'},'DNS '+String(d.slot||'—')),
+        E('div',{'class':'dm-watchdog-record-main'},[
+          E('strong',{'class':'dm-watchdog-record-name'},String(d.name||d.id||'DNS')),
+          E('span',{'class':'dm-watchdog-record-category'},categoryNames[cat]||cat)
+        ]),
+        badge(statusKind,statusText)
+      ]);
+    });
+    lastView=E('div',{'class':'dm-watchdog-lastcheck'},[
+      E('div',{'class':'dm-watchdog-lastcheck-head'},[
+        E('strong',{},'Результаты последней автоматической проверки'),
+        E('span',{},'Проверено: '+String(st.watchdog_last_checked||0)+' · проблем: '+String(st.watchdog_last_failed||0))
+      ]),
+      E('div',{'class':'dm-watchdog-records'},recordRows)
+    ]);
+  }else{
+    lastView=E('div',{'class':'dm-watchdog-lastcheck dm-hint'},(en?'Автоматическая проверка ещё не выполнялась.':'Периодическая проверка выключена. Включите «Проверка DNS», чтобы начать контроль.'));
+  }
 
-  var main=E('div',{'class':'dm-watchdog-list'},[
-    param('watchdog_interval','Как часто проверять DNS',1,60,'мин','Проверяет, отвечают ли выбранные DNS-серверы.',true),
-    param('watchdog_fail_threshold','Сколько проверок подряд считать сбоем',1,5,'проверок','Сколько раз подряд DNS должен не ответить, прежде чем менеджер заменит его.',false),
-    param('watchdog_repair_cooldown','Пауза между заменами DNS',5,120,'мин','Минимальное время между повторными заменами одного DNS.',true)
-  ]);
-
-  var advanced=E('details',{'class':'dm-watchdog-advanced'},[
-    E('summary',{},'Дополнительные параметры'),
-    E('div',{'class':'dm-watchdog-list'},[
-      param('watchdog_max_repairs','Сколько DNS можно заменить за раз',1,3,'шт.','Сколько неисправных DNS можно заменить во время одной проверки.',false),
-      param('watchdog_max_candidates','Сколько DNS проверить при поиске замены',1,10,'шт.','Сколько других DNS проверить, прежде чем выбрать замену.',false)
-    ])
-  ]);
-
-  return E('div',{},[
-    action,
+  var feedback=settingFeedback('','watchdog_batch')||E('span',{'class':'dm-setting-feedback'});
+  return E('div',{'class':'dm-watchdog-card'},[
+    E('div',{'class':'dm-section-title'},'Контроль текущих DNS'),
+    E('div',{'class':'dm-setting-desc'},'Контроль выполняется каждые '+intervalMinutes+' мин: проверяется локальный порт назначенного DoH и DNS-ответ на запрос example.com (для слота RU — yandex.ru). Это проверка рабочего пути, а не полный тест каталога DNS. Профиль не требуется.'),
+    toggleRow('Проверка DNS','Включает периодическую проверку назначенных DoH-слотов. Контроль сам по себе DNS не меняет.',en,'watchdog',false),
+    toggleRow('Автозамена DNS','После '+failThreshold+' неудачных проверок подряд заменяет неисправный DNS сервером той же категории; повторная попытка для слота — не раньше чем через '+cooldownMinutes+' мин. Пользовательские DoH автоматически не заменяются.',auto,'watchdog_autoreplace',!en),
+    E('div',{'class':'dm-hint'},'Полный разовый тест текущих DoH и дополнительных системных экземпляров доступен на Дашборде кнопкой «Проверить текущие DNS». Он проверяет реальные DoH-endpoint’ы и не включает периодический контроль.'),
     status,
-    E('div',{'class':'dm-section-title'},'Настройки контроля'),
-    main,
-    advanced,
-    E('div',{'class':'dm-watchdog-save'},[save,feedback])
+    lastView,
+    E('details',{'class':'dm-watchdog-advanced'},[
+      E('summary',{},'Дополнительные параметры'),
+      E('div',{'class':'dm-watchdog-list'},spec.map(function(x){return param(x[0],x[1],x[2],x[3],x[4],x[5],x[6]);})),
+      E('div',{'class':'dm-watchdog-save'},[save,feedback])
+    ])
   ]);
 }
+
 function renderTestAgeCommon(root,st){
   var ageValue=Number(st.test_age_common||6);
   var ageInput=E('input',{'type':'number','min':'1','max':'168','step':'1','value':String(ageValue),'class':'dm-input'});
@@ -3938,6 +5239,71 @@ function renderTime(root,st){
   e.appendChild(card('Серверы точного времени',body));
 }
 
+function saveCustomDns(nameInput,urlInput,root){
+  if(state.busy||!nameInput||!urlInput)return;
+  var name=String(nameInput.value||'').trim();
+  var url=String(urlInput.value||'').trim();
+  if(!name||!url){
+    state.pageNotice.catalog='Заполни название DNS и HTTPS URL DoH.';
+    renderCatalog(root);
+    return;
+  }
+  state.busy=true;
+  state.pageNotice.catalog='Сохраняю пользовательский DoH…';
+  renderCatalog(root);
+  callAddCustomDns(name,url).then(function(r){
+    state.busy=false;
+    if(r&&r.ok){
+      state.category='custom';
+      state.offset=0;
+      window.dmCatalog=null;
+      state.catalogLoaded=false;
+      state.pageNotice.catalog='DNS «'+(r.name||name)+'» добавлен. Открой «Мои DNS», проверь его и назначь в слот.';
+      setAction(true,'Пользовательский DoH добавлен.');
+      refresh(root,true);
+    }else{
+      var msg=(r&&r.error)||'Не удалось сохранить пользовательский DoH.';
+      state.pageNotice.catalog=msg;
+      setAction(false,msg);
+      renderCatalog(root);
+    }
+  }).catch(function(err){
+    state.busy=false;
+    var msg=withRpcError('Не удалось сохранить пользовательский DoH.',err);
+    state.pageNotice.catalog=msg;
+    setAction(false,msg);
+    renderCatalog(root);
+  });
+}
+
+function isUserDnsRecord(d){
+  return !!(d&&d.category==='custom'&&/^custom_[0-9]{3}$/.test(String(d.id||'')));
+}
+function deleteCustomDns(d,root){
+  if(state.busy||state.jobRunning||!isUserDnsRecord(d))return;
+  confirmAction('Удалить пользовательский DNS?',[['Название',d.name||d.id],['URL DoH',d.url||'—'],['Важно','Удалится только эта пользовательская запись. Встроенные DNS не затрагиваются.']],function(){
+    state.busy=true;
+    state.pageNotice.catalog='Удаляю пользовательский DNS…';
+    renderCatalog(root);
+    callDeleteCustomDns(d.id).then(function(r){
+      state.busy=false;
+      if(r&&r.ok){
+        state.category='custom';state.offset=0;window.dmCatalog=null;state.catalogLoaded=false;
+        state.pageNotice.catalog='Пользовательский DNS «'+(d.name||d.id)+'» удалён.';
+        setAction(true,'Пользовательский DNS удалён.');
+        refresh(root,true);
+      }else{
+        var msg=(r&&r.error)||'Не удалось удалить пользовательский DNS.';
+        state.pageNotice.catalog=msg;setAction(false,msg);renderCatalog(root);
+      }
+    }).catch(function(err){
+      state.busy=false;
+      var msg=withRpcError('Не удалось удалить пользовательский DNS.',err);
+      state.pageNotice.catalog=msg;setAction(false,msg);renderCatalog(root);
+    });
+  });
+}
+
 function renderCatalog(root){
   var e=root.querySelector('#dm-catalog');if(!e)return;e.innerHTML='';
   var ageCard=renderTestAgeCommon(root,window.dmState||{});
@@ -3949,6 +5315,24 @@ function renderCatalog(root){
       btn(state.jobRunning&&state.fullTest&&state.fullTest.origin==='catalog'?'Проверяю…':'Проверить все DNS','cbi-button-action',function(){testAll(root,'catalog');},{disabled:!!state.busy||!!state.jobRunning})
     ])
   ];
+
+  var customName=E('input',{'class':'dm-input','type':'text','maxlength':'80','placeholder':'Например, Мой DNS'});
+  var customUrl=E('input',{'class':'dm-input','type':'url','maxlength':'512','placeholder':'https://dns.example/dns-query'});
+  e.appendChild(card('Добавить свой DoH',[
+    E('div',{'class':'dm-mini'},'Добавь собственный HTTPS-адрес DNS over HTTPS. Он сохранится отдельно от официального каталога и не исчезнет при обновлении каталога.'),
+    E('div',{'class':'dm-custom-dns-form'},[
+      E('div',{},[
+        E('div',{'class':'dm-setting-title'},'Название'),
+        customName
+      ]),
+      E('div',{},[
+        E('div',{'class':'dm-setting-title'},'URL DoH'),
+        customUrl
+      ]),
+      btn(state.busy?'Сохраняю…':'Добавить DNS','cbi-button-action',function(){saveCustomDns(customName,customUrl,root);},{disabled:!!state.busy||!!state.jobRunning})
+    ]),
+    E('div',{'class':'dm-mini'},'После добавления выбери «Мои DNS», нажми «Проверить», затем назначь сервер в слот DNS 1–6.')
+  ]));
 
   if(state.fullTest&&state.fullTest.origin==='catalog'&&state.catalogProgress){
     var p=state.catalogProgress;
@@ -3987,20 +5371,24 @@ function renderCatalogBody(root,data){
   var g=E('div',{'class':'dm-catalog'});
   (data.servers||[]).forEach(function(d){
     var ci=checkInfo(d.id,d);
-    var statusText=ci.status==='RUNNING'?'проверяется':stateBadge(ci.status,ci.ping);
-    g.appendChild(E('div',{'class':'dm-card dm-catalog-item'},[
+    var statusText=stateBadge(ci.status,ci.ping);
+    g.appendChild(E('div',{'class':'dm-card dm-catalog-item'+(isUserDnsRecord(d)?' dm-catalog-item-custom':'')},[
       E('h4',{},d.name||d.id),
       E('div',{'class':'dm-meta'},catName(d.category)),
       E('div',{'class':'dm-row'},[
-        E('span',{'class':'dm-slot-ping'},ci.status==='RUNNING'?badge('dm-warn','проверяется'):ping(ci.ping)),
-        E('span',{'class':'dm-slot-state'},typeof statusText==='string'?statusText:statusText),
+        E('span',{'class':'dm-slot-state'},statusText),
         E('span',{'class':'dm-inline'},[
           btn(ci.status==='RUNNING'?'Проверяю…':'Проверить','cbi-button-neutral',function(){testOne(d.id,root,'catalog');},{disabled:ci.status==='RUNNING'||!!state.busy||!!state.jobRunning})
         ])
       ]),
-      E('div',{'class':'dm-catalog-toolbar'},[
-        renderCatalogAssign(d,root)
-      ])
+      E('div',{'class':'dm-catalog-controls'+(isUserDnsRecord(d)?' dm-catalog-controls-custom':'' )},(function(){
+        var assignment=renderCatalogAssign(d,root);
+        if(isUserDnsRecord(d)){
+          assignment.appendChild(btn('Удалить','cbi-button-negative',function(){deleteCustomDns(d,root);},{disabled:!!state.busy||!!state.jobRunning}));
+          return [assignment];
+        }
+        return [E('div',{'class':'dm-catalog-toolbar'},[assignment])];
+      })())
     ]));
   });
   b.appendChild(g);
@@ -4028,6 +5416,7 @@ function render(root,st){
   switch(state.activeTab){
     case 'doh':
       renderDoH(root,st);
+      renderSlots(root,st);
       renderProfiles(root,st);
       break;
     case 'network':
@@ -4051,17 +5440,21 @@ function render(root,st){
 }
 function routeStatusCall(){
   switch(currentRoute()){
-    case 'doh': return callDohStatus();
+    case 'doh': return Promise.all([callDohStatus(),callLanDevices().catch(function(){return {ok:false,devices:[]};})]).then(function(v){window.dmLanDevices=v[1]||{};return v[0]||{};});
     case 'network': return callNetworkStatus();
     case 'time': return callTimeStatus();
     case 'catalog':
       return Promise.all([
         callCatalog(state.category,state.offset,state.limit,0),
+        callDohStatus(),
         callPageMeta()
       ]).then(function(v){
         window.dmCatalog=v[0]||{};
         state.catalogLoaded=true;
-        return v[1]||{};
+        var st=v[1]||{};
+        var meta=v[2]||{};
+        Object.keys(meta).forEach(function(k){st[k]=meta[k];});
+        return st;
       });
     case 'log':
       return callLog(160).then(function(r){
@@ -4355,8 +5748,15 @@ function testOne(id,root,origin,done){
   state.checking[id]={status:'RUNNING',ping:'',started:Date.now()};
   render(root,window.dmState||{});
   callTestOne(id).then(function(r){
-    if(r&&r.ok)pollJob(root,r.job,{mode:'one',dns_id:id,origin:origin||''},done);
-    else{
+    if(r&&r.ok){
+      var onDone=done?function(ns){
+        // The modal picker callback replaces only the modal. Re-render the page
+        // first so controls disabled by jobRunning are enabled without F5.
+        render(root,ns||window.dmState||{});
+        done(ns||window.dmState||{});
+      }:undefined;
+      pollJob(root,r.job,{mode:'one',dns_id:id,origin:origin||''},onDone);
+    }else{
       delete state.checking[id];
       state.jobRunning=false;
       refresh(root,true);
@@ -4369,7 +5769,6 @@ function testOne(id,root,origin,done){
     if(done)done(window.dmState||{});
   });
 }
-
 function testCurrent(root){
   if(state.jobRunning||state.busy)return;
   var targets=(window.dmState&&window.dmState.doh_instances||[]).filter(function(d){
@@ -4726,7 +6125,7 @@ return baseclass.extend({
   render:function(st){
     var root=E('div',{'class':'dm-wrap'});
     var route=currentRoute();
-    var ids={dashboard:['dm-header','dm-overview'],doh:['dm-header','dm-doh','dm-profiles','dm-slots'],network:['dm-header','dm-network'],time:['dm-header','dm-time'],catalog:['dm-header','dm-catalog'],log:['dm-header','dm-log']}[route]||['dm-header','dm-overview'];
+    var ids={dashboard:['dm-header','dm-overview'],doh:['dm-header','dm-doh','dm-slots','dm-profiles'],network:['dm-header','dm-network'],time:['dm-header','dm-time'],catalog:['dm-header','dm-catalog'],log:['dm-header','dm-log']}[route]||['dm-header','dm-overview'];
     ids.forEach(function(id){root.appendChild(E('section',{'id':id}));});
     injectStyle(root);window.dmState=st||{};state.activeTab=route;window.dmCurrentRoot=root;
     render(root,st||{});
@@ -4759,7 +6158,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 1.50
+// DNS Manager LuCI version: 1.102
 return view.extend({
   load: DM.load,
   render: DM.render,
@@ -4838,6 +6237,27 @@ EOF_PAGE
 }
 
 uninstall_files() {
+    # Refuse to remove a similarly named include if it is not exactly ours.
+    if uci -q get firewall.dns_manager_device_dns >/dev/null 2>&1; then
+        if [ "$(uci -q get firewall.dns_manager_device_dns 2>/dev/null || true)" != include ] ||
+           [ "$(uci -q get firewall.dns_manager_device_dns.type 2>/dev/null || true)" != nftables ] ||
+           [ "$(uci -q get firewall.dns_manager_device_dns.path 2>/dev/null || true)" != /etc/dns-manager/device-dns/redirects.nft ] ||
+           [ "$(uci -q get firewall.dns_manager_device_dns.position 2>/dev/null || true)" != chain-pre ] ||
+           [ "$(uci -q get firewall.dns_manager_device_dns.chain 2>/dev/null || true)" != dstnat_lan ]; then
+            err "Найден чужой firewall include с именем dns_manager_device_dns; ничего не удалено."
+            return 1
+        fi
+        uci -q delete firewall.dns_manager_device_dns || return 1
+        uci commit firewall || return 1
+    fi
+    if [ -x /etc/init.d/dns-manager-device-dns ]; then
+        /etc/init.d/dns-manager-device-dns stop >/dev/null 2>&1 || true
+        /etc/init.d/dns-manager-device-dns disable >/dev/null 2>&1 || true
+    fi
+    rm -f /etc/nftables.d/90-dns-manager-device-dns.nft /etc/nftables.d/90-dns-manager-device-dns.nft.tmp.* 2>/dev/null || true
+    rm -f /etc/init.d/dns-manager-device-dns /etc/dns-manager/config/device-dns.conf /etc/dns-manager/config/device-dns-default.conf /etc/dns-manager/device-dns/redirects.nft /etc/dns-manager/device-dns/redirects.nft.tmp.* 2>/dev/null || true
+    rm -rf /etc/dns-manager/device-dns 2>/dev/null || true
+    /etc/init.d/firewall reload >/dev/null 2>&1 || return 1
     rm -f "$RPC_PLUGIN" "$BACKEND_FILE" "$ACL_FILE" "$MENU_FILE" "$VIEW_FILE" 2>/dev/null || true
     rm -rf "$VIEW_DIR" "$RESOURCE_DIR" "$RUNTIME_DIR" "$BACKUP_DIR" 2>/dev/null || true
     rm -f "$STATE_FILE" 2>/dev/null || true
