@@ -4562,7 +4562,7 @@ function renderProfiles(root,st){
 }
 
 function renderSlots(root,st){
-  var e=root.querySelector('#dm-slots');if(!e)return;e.innerHTML='';var rows=[];
+  var e=root.querySelector('#dm-slots');if(!e)return;e.innerHTML='';var rows=[];var deviceChildren=[];
   (st.slots||[]).forEach(function(d){
     var assigned=!!d.id;
     var checking=assigned&&state.checking&&state.checking[d.id];
