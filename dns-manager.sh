@@ -6870,11 +6870,15 @@ watchdog_embedded_loop() {
             # A listener can exist while its https-dns-proxy process is hung.
             # First use the existing service-recovery path; only replace DNS
             # when the same local query still fails and auto-replace is enabled.
+            _recovery_attempted=0
             for _trigger in $_threshold_slots; do
                 watchdog_loop_repair_cooldown_ok "$_trigger" || continue
                 watchdog_loop_mark_repair "$_trigger"
-                log_msg "DNS в слоте $_trigger не отвечает ${WATCHDOG_FAIL_THRESHOLD:-2} проверок подряд. Перезапускаю https-dns-proxy без смены выбранного DNS."
-                watchdog_service_recover_run >/dev/null 2>&1 || true
+                if [ "$_recovery_attempted" = 0 ]; then
+                    log_msg "DNS в слоте $_trigger не отвечает ${WATCHDOG_FAIL_THRESHOLD:-2} проверок подряд. Перезапускаю https-dns-proxy без смены выбранного DNS."
+                    watchdog_service_recover_run >/dev/null 2>&1 || true
+                    _recovery_attempted=1
+                fi
                 load_config >/dev/null 2>&1 || true
                 refresh_runtime_capabilities >/dev/null 2>&1 || true
                 eval "_id=\${SLOT_${_trigger}:-}"
