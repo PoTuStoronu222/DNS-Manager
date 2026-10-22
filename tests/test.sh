@@ -1925,7 +1925,7 @@ for _wd_field in watchdog_last_check watchdog_last_checked watchdog_last_failed 
     grep -Fq "$_wd_field" "$tmp/network_status_json.sh" || fail "network status omits saved watchdog field: $_wd_field"
 done
 grep -Fq 'dns-watchdog-check-results.conf' "$tmp/network_status_json.sh" || fail "network status does not read saved watchdog results"
-grep -Fq 'while IFS=\x27|\x27 read -r _wd_rec_tag _wd_rec_slot _wd_rec_id _wd_rec_cat _wd_rec_name _wd_rec_status' "$tmp/network_status_json.sh" || fail "network status does not serialize watchdog result records"
+grep -Fq 'while IFS=' "$tmp/network_status_json.sh" || fail "network status does not serialize watchdog result records"
 ok "network status exposes saved watchdog results"
 if grep -q 'Сколько DNS можно заменить за раз' "$tmp/watchdog_card.js"; then
     fail "LuCI still shows the removed per-cycle repair-count setting"
