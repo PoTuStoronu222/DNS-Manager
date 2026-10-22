@@ -7537,7 +7537,8 @@ watchdog_restart_slot_hdp() {
     fi
     release_mutation_lock
     [ -n "$_pid" ] || return 1
-    sleep 1
+    # Allow procd time to respawn the killed instance before the same-slot query.
+    sleep 6
     return 0
 }
 watchdog_service_recover_run() {
