@@ -4407,7 +4407,7 @@ function refreshDeviceDnsPanels(root){
   ]).then(function(v){
     window.dmLanDevices=v[0]||{ok:false,devices:[]};
     window.dmState=v[1]||{};
-    renderSlots(root,window.dmState);
+    renderDeviceDns(root,window.dmState);
   });
 }
 function saveDeviceDns(mac,controls,root){
@@ -4435,7 +4435,7 @@ function saveDeviceDns(mac,controls,root){
     state.busy=false;
     var msg=withRpcError('Не удалось применить DNS для устройства.',err);
     state.pageNotice.slots=msg;setAction(false,msg);
-    renderSlots(root,window.dmState||{});
+    renderDeviceDns(root,window.dmState||{});
   });
 }
 
@@ -4853,8 +4853,9 @@ function renderDeviceDns(root,st){
     }
   });
   if(state.lanDevicesMessage){
-    deviceChildren.push(E('div',{'class':'dm-inline-msg '+(state.lanDevicesLoading?'info':'info')},state.lanDevicesMessage));
+    deviceChildren.push(E('div',{'class':'dm-inline-msg info'},state.lanDevicesMessage));
   }
+  if(state.pageNotice.slots)deviceChildren.push(E('div',{'class':'dm-inline-msg info'},state.pageNotice.slots));
   var devices=Array.isArray(inventory.devices)?inventory.devices:[];
   if(!inventory.ok){
     deviceChildren.push(E('div',{'class':'dm-hint'},'Не удалось получить список устройств LAN.'));
