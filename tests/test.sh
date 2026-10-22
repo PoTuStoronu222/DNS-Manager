@@ -427,7 +427,7 @@ grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validat
 grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
 grep -q 'VERSION="3.72"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
-grep -q 'VERSION="1.100"' dns-manager-luci.sh || fail "LuCI version not bumped"
+grep -q 'VERSION="1.101"' dns-manager-luci.sh || fail "LuCI version not bumped"
 grep -Fq 'return m ~ /^[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]$/' dns-manager-luci.sh || fail "LAN inventory merge rejects valid six-octet MAC addresses"
 grep -Fq 'NF >= 2 && $2 ~ /^[1-6](,[1-6])*$/ &&' dns-manager-luci.sh || fail "saved LAN device assignments do not require valid DNS slot lists"
 grep -Fq "state.lanDevicesMessage='Обновляю список устройств LAN… Пожалуйста, подождите.'" dns-manager-luci.sh || fail "LAN refresh does not display a waiting message"
