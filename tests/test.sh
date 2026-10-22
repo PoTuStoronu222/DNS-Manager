@@ -297,13 +297,13 @@ grep -Fq 'setTimeout(function(){location.reload();},3000);' "$tmp/common.js" || 
 ok "LuCI package update and legacy self-update rpcd checks are covered"
 grep -q 'RESOURCE_DIR="/www/luci-static/resources/dns-manager"' dns-manager-luci.sh || fail "shared LuCI resource directory missing"
 grep -q 'COMMON_FILE="$RESOURCE_DIR/common.js"' dns-manager-luci.sh || fail "shared LuCI common module path missing"
-for _view in dashboard doh network time catalog log; do
+for _view in dashboard doh slots devices network time catalog log; do
     grep -q 'action": { "type": "view", "path": "dns-manager/'"$_view"'" }' dns-manager-luci.sh || fail "separate LuCI view route missing: $_view"
 done
 if grep -q 'path": "dns-manager/overview"' dns-manager-luci.sh; then
     fail "legacy shared overview route remains"
 fi
-grep -q 'for _page in dashboard doh network time catalog log; do' dns-manager-luci.sh || fail "separate LuCI page generation loop missing"
+grep -q 'for _page in dashboard doh slots devices network time catalog log; do' dns-manager-luci.sh || fail "separate LuCI page generation loop missing"
 grep -q "'require baseclass';" "$tmp/common.js" || fail "LuCI common module does not use baseclass"
 grep -q "return baseclass.extend({" "$tmp/common.js" || fail "LuCI common module does not return a baseclass constructor"
 for _rpc in doh_status network_status lan_devices time_status page_meta; do
@@ -312,7 +312,17 @@ done
 for _rpc in doh_status network_status lan_devices time_status page_meta; do
     grep -q "${_rpc})" "$tmp/backend.sh" || fail "fast LuCI RPC dispatch is missing: $_rpc"
 done
-grep -Fq "case 'doh': return Promise.all([callDohStatus(),callLanDevices()" "$tmp/common.js" || fail "LuCI DoH page does not load DNS state and LAN devices"
+grep -Fq "case 'doh':" "$tmp/common.js" || fail "LuCI DoH route is missing"
+grep -Fq "case 'slots':" "$tmp/common.js" || fail "LuCI DNS slots route is missing"
+grep -Fq "case 'devices':" "$tmp/common.js" || fail "LuCI LAN devices route is missing"
+grep -Fq 'function renderSlots(root,st){' "$tmp/common.js" || fail "DNS slot/domain panel renderer missing"
+grep -Fq 'function renderDeviceDns(root,st){' "$tmp/common.js" || fail "separate LAN device panel renderer missing"
+grep -Fq "slots:['slots']" "$tmp/common.js" || fail "DNS slot page is not a separate tab"
+grep -Fq "devices:['devices']" "$tmp/common.js" || fail "LAN device page is not a separate tab"
+awk '/^function render\(root,st\)/,/^}/' "$tmp/common.js" > "$tmp/render_routes.js"
+awk "/case 'doh':/,/case 'slots':/" "$tmp/render_routes.js" > "$tmp/doh_route.js"
+if grep -Fq 'renderSlots(root,st);' "$tmp/doh_route.js"; then fail "DNS slots still render inside the DoH page"; fi
+grep -Fq 'callLanDevices().catch(function(){return {ok:false,devices:[]};})' "$tmp/common.js" || fail "LAN device route does not load inventory"
 grep -Fq '"dns_manager": [ "status", "runtime", "doh_status", "network_status", "lan_devices"' dns-manager-luci.sh || fail "LAN inventory RPC is missing from the read ACL"
 grep -Fq 'lan_devices_json() {' "$tmp/backend.sh" || fail "LAN device inventory RPC implementation missing"
 grep -Fq '/tmp/dhcp.leases' "$tmp/backend.sh" || fail "LAN inventory does not include DHCP leases"
