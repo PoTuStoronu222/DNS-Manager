@@ -322,7 +322,7 @@ grep -Fq 'Список объединяет DHCP-аренды, IPv4 ARP, IPv6 ND
 grep -Fq 'Общий выбор DNS применяется ко всем LAN-устройствам без индивидуальной привязки' "$tmp/common.js" || fail "LAN-wide DNS default selector is missing from the LAN inventory"
 grep -Fq 'Включить общий DoH для LAN' "$tmp/common.js" || fail "LAN-wide DoH master switch is missing"
 grep -Fq "defaultToggle.addEventListener('change',updateDefaultControls)" "$tmp/common.js" || fail "LAN-wide DoH master switch does not update slot controls"
-grep -Fq 'if(!defaultToggle||!defaultToggle.checked)selected=[];' "$tmp/common.js" || fail "saving with LAN-wide DoH disabled does not clear the default selection"
+grep -Fq "var defaultToggle=controls.parentNode&&controls.parentNode.querySelector?controls.parentNode.querySelector('input.dm-device-dns-default-enabled'):null;" "$tmp/common.js" || fail "saving does not read the LAN-wide DoH master switch"
 grep -Fq 'Сохранить настройки общего DoH' "$tmp/common.js" || fail "LAN-wide DoH save action is missing"
 ok "LuCI exposes a clearly read-only LAN device inventory"
 awk '/^function routeStatusCall\(\)/,/^}/' "$tmp/common.js" > "$tmp/route_status_call.js"
