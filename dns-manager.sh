@@ -6,8 +6,8 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.81"
-# 3.81: keep visual-refresh test updates pinned to the paired test branch.
+VERSION="3.82"
+# 3.82: keep visual-refresh test updates pinned to the paired test branch.
 # 3.80: publish the full Native LuCI installer with stable main update URLs.
 # 3.79: add noninteractive dependency setup for the Native LuCI installer.
 # 3.78: align the Watchdog startup log fallback with its 2-minute default.
