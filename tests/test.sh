@@ -260,6 +260,44 @@ awk '
 [ -s "$tmp/common.js" ] || fail "embedded JS extraction"
 node --check "$tmp/common.js" >/dev/null 2>&1 || fail "embedded JS: node --check"
 ok "embedded LuCI JS syntax"
+
+# Selected slot assignments must remain visible even when live DoH-instance
+# detection cannot associate one of the running instances with its slot.
+grep -Fq 'function displayDnsRows(st){' "$tmp/common.js" || fail "selected-DNS display normalizer is missing"
+awk '/^function renderOverview\(root,st\)/,/^}/' "$tmp/common.js" > "$tmp/overview_dns.js"
+grep -Fq 'displayDnsRows(st).forEach(function(d){' "$tmp/overview_dns.js" || fail "dashboard DNS list does not use saved slot assignments"
+awk '/^function resolverRows\(st,root\)/,/^}/' "$tmp/common.js" > "$tmp/resolver_rows.js"
+grep -Fq 'rows=displayDnsRows(st)' "$tmp/resolver_rows.js" || fail "DoH tab does not use saved slot assignments"
+COMMON_JS="$tmp/common.js" node <<'NODE' || fail "selected DNS visibility regression"
+const fs = require('fs');
+const vm = require('vm');
+const source = fs.readFileSync(process.env.COMMON_JS, 'utf8');
+const match = source.match(/function displayDnsRows\(st\)\{[\s\S]*?\n\}/);
+if (!match) throw new Error('displayDnsRows function could not be extracted');
+const sandbox = {
+  checkInfo: function (id, d) {
+    return { status: String((d && d.status) || ''), ping: String((d && d.ping) || '') };
+  }
+};
+vm.createContext(sandbox);
+vm.runInContext(match[0], sandbox);
+const rows = sandbox.displayDnsRows({
+  slots: [
+    { slot: '1', id: 'resolver-a', name: 'Resolver A', port: '5053', status: 'OK', ping: '12' },
+    { slot: '2', id: 'resolver-b', name: 'Resolver B', port: '5054', status: 'OK', ping: '18' },
+    { slot: '3', id: '', name: 'Не задан', port: '5055' }
+  ],
+  doh_instances: [
+    { slot: '', id: 'legacy-id', name: 'Detected instance', port: '5053', status: 'OK', ping: '12' },
+    { slot: '', id: 'system-id', name: 'System resolver', port: '5300', status: 'OK', ping: '10' }
+  ]
+});
+if (rows.length !== 3) throw new Error('expected two selected slots and one unrelated system resolver; got ' + rows.length);
+if (rows[0].slot !== '1' || rows[0].id !== 'resolver-a' || rows[0].name !== 'Resolver A') throw new Error('first selected DNS was not preserved');
+if (rows[1].slot !== '2' || rows[1].id !== 'resolver-b' || rows[1].name !== 'Resolver B') throw new Error('selected DNS was lost when no live instance matched it');
+if (rows[2].slot !== '' || rows[2].name !== 'System resolver') throw new Error('unassigned system resolver was lost or duplicated');
+NODE
+ok "selected DNS remains visible when live DoH mapping is incomplete"
 # No saved DNS result is unknown, not proof that the resolver is unavailable.
 awk '/^function stateBadge\(status,pingValue\)/,/^}/' "$tmp/common.js" > "$tmp/state_badge.js"
 grep -Fq "if(!s)return badge('dm-off','нет данных');" "$tmp/state_badge.js" || fail "LuCI marks an untested DNS unavailable"
