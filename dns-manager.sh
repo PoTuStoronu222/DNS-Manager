@@ -6,7 +6,10 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.74"
+VERSION="3.77"
+# 3.77: revalidate the selected slot without shared shell scratch variables.
+# 3.76: preserve slot identity during recovery revalidation after config reload.
+# 3.75: recover a stalled local DoH slot before optional DNS replacement.
 # 3.38: clear the LuCI update flag after a successful CLI update.
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
@@ -6681,10 +6684,92 @@ watchdog_loop_reset_slot() {
     eval "WD_FAIL_${_slot}=0"
     eval "WD_MISSING_${_slot}=0"
 }
+watchdog_slot_instance_pid() {
+    local _port _proc _cmd
+    _port="$1"
+    case "$_port" in ''|*[!0-9]*) return 1;; esac
+    for _proc in /proc/[0-9]*; do
+        [ -r "$_proc/cmdline" ] || continue
+        _cmd="$(tr '\000' ' ' < "$_proc/cmdline" 2>/dev/null)"
+        case "$_cmd" in
+            /usr/sbin/https-dns-proxy\ *)
+                case " $_cmd " in
+                    *" -p $_port "*) printf '%s\n' "${_proc##*/}"; return 0;;
+                esac
+                ;;
+        esac
+    done
+    return 1
+}
+watchdog_slot_config_matches() {
+    # Use positional parameters so load_config's shared scratch variables cannot overwrite the recheck.
+    case "$1" in
+        1) [ "${SLOT_1:-}" = "$2" ] && [ "${PORT_1:-$(hybrid_desired_port 1)}" = "$3" ];;
+        2) [ "${SLOT_2:-}" = "$2" ] && [ "${PORT_2:-$(hybrid_desired_port 2)}" = "$3" ];;
+        3) [ "${SLOT_3:-}" = "$2" ] && [ "${PORT_3:-$(hybrid_desired_port 3)}" = "$3" ];;
+        4) [ "${SLOT_4:-}" = "$2" ] && [ "${PORT_4:-$(hybrid_desired_port 4)}" = "$3" ];;
+        5) [ "${SLOT_5:-}" = "$2" ] && [ "${PORT_5:-$(hybrid_desired_port 5)}" = "$3" ];;
+        6) [ "${SLOT_6:-}" = "$2" ] && [ "${PORT_6:-$(hybrid_desired_port 6)}" = "$3" ];;
+        RU) [ "${SLOT_RU:-}" = "$2" ] && [ "${PORT_RU:-$(hybrid_desired_port RU)}" = "$3" ];;
+        *) return 1;;
+    esac
+}
+watchdog_restart_slot_instance() {
+    local _id _port _domain _pid _new_pid _wait
+    case "$1" in
+        1|2|3|4|5|6) eval "_id=\${SLOT_${1}:-}"; eval "_port=\${PORT_${1}:-}"; _domain="example.com";;
+        RU) _id="${SLOT_RU:-}"; _port="${PORT_RU:-}"; _domain="yandex.ru";;
+        *) return 1;;
+    esac
+    [ -n "$_port" ] || _port="$(hybrid_desired_port "$1")"
+    [ -n "$_id" ] && [ -n "$_port" ] || return 1
+    [ "$_id" = "$2" ] && [ "$_port" = "$3" ] || return 1
+
+    acquire_mutation_lock || return 1
+    if ! watchdog_resource_guard; then
+        release_mutation_lock
+        return 1
+    fi
+    load_config >/dev/null 2>&1 || { release_mutation_lock; return 1; }
+    # Revalidate directly against slot config using positional arguments, not scratch vars.
+    if ! watchdog_slot_config_matches "$1" "$2" "$3"; then
+        release_mutation_lock
+        return 1
+    fi
+    case "$1" in
+        1|2|3|4|5|6) _domain="example.com";;
+        RU) _domain="yandex.ru";;
+    esac
+
+    _pid="$(watchdog_slot_instance_pid "$3" 2>/dev/null || true)"
+    [ -n "$_pid" ] || { release_mutation_lock; return 1; }
+    kill -TERM "$_pid" 2>/dev/null || { release_mutation_lock; return 1; }
+
+    _wait=0
+    while [ "$_wait" -lt 8 ]; do
+        sleep 1
+        _new_pid="$(watchdog_slot_instance_pid "$3" 2>/dev/null || true)"
+        if [ -n "$_new_pid" ] && [ "$_new_pid" != "$_pid" ]; then
+            _wait=0
+            while ! listener_port_exists "$3" && [ "$_wait" -lt 10 ]; do
+                sleep 1
+                _wait=$((_wait+1))
+            done
+            if listener_port_exists "$3" && local_dns_query_ok "$3" "$_domain"; then
+                release_mutation_lock
+                return 0
+            fi
+            break
+        fi
+        _wait=$((_wait+1))
+    done
+    release_mutation_lock
+    return 1
+}
 watchdog_embedded_integrity_guard() {
     _has_slots=0
     for _guard_slot in 1 2 3 4 5 6 RU; do
-        eval "_guard_id=${SLOT_${_guard_slot}:-}"
+        eval "_guard_id=\${SLOT_${_guard_slot}:-}"
         [ -n "$_guard_id" ] && _has_slots=1
     done
     [ "$_has_slots" = 1 ] || return 0
@@ -6842,8 +6927,7 @@ watchdog_embedded_loop() {
             sleep "$_interval"
             continue
         fi
-        watchdog_save_check_results "$_wd_cycle_records" || log_msg "Watchdog: не удалось сохранить результаты цикла проверки DNS."
-        [ "$_checked" -gt 0 ] || { sleep "$_interval"; continue; }
+        [ "$_checked" -gt 0 ] || { rm -f "$_wd_cycle_records" 2>/dev/null || true; sleep "$_interval"; continue; }
 
         _watchdog_action=0
 
@@ -6867,31 +6951,47 @@ watchdog_embedded_loop() {
             for _slot in 1 2 3 4 5 6 RU; do watchdog_loop_reset_slot "$_slot"; done
             sleep 5
         else
-            # Monitoring is independent of rotation. Failures still appear in
-            # the saved results while automatic replacement is disabled.
-            if [ "${WATCHDOG_AUTOREPLACE:-0}" = 1 ]; then
-                for _trigger in $_threshold_slots; do
-                    watchdog_loop_repair_cooldown_ok "$_trigger" || continue
-                    watchdog_loop_mark_repair "$_trigger"
-                    log_msg "DNS в слоте $_trigger не отвечает ${WATCHDOG_FAIL_THRESHOLD:-2} проверок подряд. Ищу замену той же категории."
+            # A listener can remain open while its https-dns-proxy process is stuck.
+            # Restart only that slot first; replace the selected DNS only if recovery fails.
+            for _trigger in $_threshold_slots; do
+                watchdog_loop_repair_cooldown_ok "$_trigger" || continue
+                watchdog_loop_mark_repair "$_trigger"
+                eval "_trigger_id=\${SLOT_${_trigger}:-}"
+                eval "_trigger_port=\${PORT_${_trigger}:-}"
+                [ -n "$_trigger_port" ] || _trigger_port="$(hybrid_desired_port "$_trigger")"
+                [ -n "$_trigger_id" ] && [ -n "$_trigger_port" ] || continue
+                log_msg "DNS в слоте $_trigger не отвечает ${WATCHDOG_FAIL_THRESHOLD:-2} проверок подряд. Перезапускаю только его https-dns-proxy."
+                if watchdog_restart_slot_instance "$_trigger" "$_trigger_id" "$_trigger_port"; then
+                    log_msg "Watchdog: слот $_trigger снова отвечает; выбранный DNS сохранён."
+                    _record_tmp="${_wd_cycle_records}.tmp"
+                    if awk -F'|' -v slot="$_trigger" 'BEGIN { OFS = "|" } $1 == "record" && $2 == slot && $6 == "FAIL" { $6 = "OK" } { print }' "$_wd_cycle_records" > "$_record_tmp"; then
+                        mv -f "$_record_tmp" "$_wd_cycle_records" || rm -f "$_record_tmp" 2>/dev/null || true
+                    else
+                        rm -f "$_record_tmp" 2>/dev/null || true
+                    fi
+                elif [ "${WATCHDOG_AUTOREPLACE:-0}" = 1 ]; then
+                    log_msg "Watchdog: слот $_trigger не восстановился после перезапуска; проверяю замену той же категории."
                     if watchdog_slot_target_run "$_trigger"; then
-                        log_msg "Watchdog: слот $_trigger восстановлен."
+                        log_msg "Watchdog: слот $_trigger восстановлен после замены DNS."
                     else
                         log_msg "Watchdog: замена слота $_trigger не подтверждена; текущий DNS сохранён."
                     fi
-                    _watchdog_action=1
-                    load_config >/dev/null 2>&1 || true
-                    refresh_runtime_capabilities >/dev/null 2>&1 || true
-                    WD_LAST_GUARD_TS="$(date +%s 2>/dev/null)"
-                    eval "WD_FAIL_${_trigger}=0"
-                done
-            fi
+                else
+                    log_msg "Watchdog: слот $_trigger не восстановился после перезапуска; выбранный DNS оставлен без изменений, автозамена выключена."
+                fi
+                _watchdog_action=1
+                load_config >/dev/null 2>&1 || true
+                refresh_runtime_capabilities >/dev/null 2>&1 || true
+                WD_LAST_GUARD_TS="$(date +%s 2>/dev/null)"
+                eval "WD_FAIL_${_trigger}=0"
+            done
         fi
 
         if [ "$_watchdog_action" = 0 ] && [ "$_failed" -eq 0 ] && [ "$_missing" -eq 0 ]; then
             watchdog_embedded_integrity_guard >/dev/null 2>&1 || true
         fi
 
+        watchdog_save_check_results "$_wd_cycle_records" || log_msg "Watchdog: не удалось сохранить результаты цикла проверки DNS."
         sleep "$_interval"
     done
 }
