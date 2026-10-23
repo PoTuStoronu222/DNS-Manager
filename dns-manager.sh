@@ -7708,10 +7708,22 @@ watchdog_slot_target_run() {
     fi
 
     # The auto-replacement toggle applies to every entry point, including the
-    # one-shot CLI command. With replacement disabled, a failed upstream may
-    # still be recovered by restarting only this slot's existing instance, but
-    # the selected DNS identifier must remain unchanged.
+    # one-shot CLI command. With replacement disabled, first avoid per-slot
+    # actions during a common DNS/WAN outage; otherwise only the existing
+    # instance may be restarted and the selected DNS identifier stays unchanged.
     if [ "${WATCHDOG_AUTOREPLACE:-0}" != 1 ]; then
+        if watchdog_common_dns_outage; then
+            log_msg "Watchdog slot $_slot: вероятен общий сбой WAN/upstream; выбранный DNS и экземпляр не меняю."
+            release_mutation_lock
+            return 1
+        else
+            _outage_rc=$?
+            if [ "$_outage_rc" -eq 2 ]; then
+                log_msg "Watchdog slot $_slot: не удалось исключить общий сбой DNS/WAN; выбранный DNS и экземпляр не меняю."
+                release_mutation_lock
+                return 1
+            fi
+        fi
         release_mutation_lock
         if watchdog_restart_slot_instance "$_slot" "$_old_id" "$_target_port"; then
             log_msg "Watchdog slot $_slot: экземпляр DNS восстановлен; выбранный сервер сохранён, автозамена выключена."
