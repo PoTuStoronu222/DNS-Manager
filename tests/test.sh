@@ -1342,8 +1342,8 @@ uci() {
         get)
             case "${2:-}" in
                 https-dns-proxy.config) return 0 ;;
-                https-dns-proxy.config.canary_domains_icloud) printf '%s\n' "$MOCK_ICLOUD" ;;
-                https-dns-proxy.config.canary_domains_mozilla) printf '%s\n' "$MOCK_MOZILLA" ;;
+                https-dns-proxy.config.canary_domains_icloud) printf '%s\\n' "$MOCK_ICLOUD" ;;
+                https-dns-proxy.config.canary_domains_mozilla) printf '%s\\n' "$MOCK_MOZILLA" ;;
                 *) return 1 ;;
             esac
             ;;
@@ -1353,10 +1353,10 @@ uci() {
                 https-dns-proxy.config.canary_domains_mozilla) MOCK_MOZILLA="${2#*=}" ;;
                 *) return 1 ;;
             esac
-            printf 'set %s\n' "$2" >> "$MOCK_LOG"
+            printf 'set %s\\n' "$2" >> "$MOCK_LOG"
             ;;
         commit)
-            printf 'commit %s\n' "$2" >> "$MOCK_LOG"
+            printf 'commit %s\\n' "$2" >> "$MOCK_LOG"
             ;;
         *) return 1 ;;
     esac
@@ -1371,7 +1371,15 @@ apply_encrypted_dns_block || exit 62
 MOCK_MOZILLA=0
 apply_encrypted_dns_block || exit 64
 [ "$MOCK_MOZILLA" = 1 ] || exit 65
-[ "$(grep -c '^commit https-dns-proxyawk '/^remove_dns_dot_block\(\) \{/,/^}/' dns-manager.sh > "$tmp/remove_dot_block.sh"
+[ "$(grep -c '^commit ' "$MOCK_LOG")" -eq 1 ] || exit 66
+[ "$(grep -c '^restart' "$MOCK_LOG")" -eq 1 ] || exit 67
+[ "$(grep -c 'canary_domains_mozilla=1' "$MOCK_LOG")" -eq 1 ] || exit 68
+EOF_ENCRYPTED_DNS_IDEMPOTENCE
+chmod +x "$tmp/encrypted_dns_idempotence_runner.sh"
+"$tmp/encrypted_dns_idempotence_runner.sh" "$tmp/encrypted_dns_apply_mock.sh" "$tmp/encrypted_dns_mock.log" || fail "Watchdog repeatedly commits/restarts https-dns-proxy when encrypted-DNS canaries already match"
+ok "encrypted-DNS Watchdog sync is idempotent and restarts only after a canary changes"
+
+awk '/^remove_dns_dot_block\(\) \{/,/^}/' dns-manager.sh > "$tmp/remove_dot_block.sh"
 if grep -Fq 'firewall_find_exact_rule_signature' "$tmp/remove_dot_block.sh"; then
     fail "encrypted-DNS OFF can delete a matching firewall rule owned by another component"
 fi
