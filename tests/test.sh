@@ -1528,6 +1528,40 @@ chmod +x "$tmp/watchdog_autoreplace_off_runner.sh"
 "$tmp/watchdog_autoreplace_off_runner.sh" "$tmp/watchdog-off-outage-test" "$tmp/watchdog_slot_target_run_only.sh" outage || fail "one-shot Watchdog mutates a slot during a common DNS/WAN outage"
 ok "auto-replacement OFF permits isolated instance recovery but never DNS replacement, and skips mutations during a common outage"
 
+# A failing upstream on a listening slot must not trigger whole-service recovery.
+# Missing listeners may still use the existing service-level recovery path.
+awk '/^watchdog_service_recover\(\) \{/,/^process_matches_doh_slot\(\) \{/' dns-manager.sh | sed '$d' > "$tmp/watchdog_service_recover.sh"
+[ -s "$tmp/watchdog_service_recover.sh" ] || fail "service recovery helper extraction"
+cat > "$tmp/watchdog_service_recover_runner.sh" <<'EOF_WATCHDOG_SERVICE_RECOVER'
+#!/bin/sh
+set -eu
+TMP_DIR="$1"
+MODE="$2"
+mkdir -p "$TMP_DIR"
+. "$3"
+SLOT_1=resolver-a
+PORT_1=5053
+SLOT_2=resolver-b
+PORT_2=5054
+listener_port_exists() {
+    [ "$MODE" != missing ] || [ "$1" != 5054 ]
+}
+local_dns_query_ok() { : > "$TMP_DIR/dns-query-called"; return 1; }
+watchdog_restart_hdp() { : > "$TMP_DIR/global-restart"; return 0; }
+log_msg() { printf '%s\n' "$*" >> "$TMP_DIR/log"; }
+watchdog_service_recover
+if [ "$MODE" = upstream-fail ]; then
+    [ ! -e "$TMP_DIR/global-restart" ] || { echo "a failed upstream with a live listener triggered whole-service restart" >&2; exit 61; }
+    [ ! -e "$TMP_DIR/dns-query-called" ] || { echo "whole-service recovery probes upstream DNS instead of checking listeners" >&2; exit 62; }
+else
+    [ -e "$TMP_DIR/global-restart" ] || { echo "a missing listener did not trigger service recovery" >&2; exit 63; }
+fi
+EOF_WATCHDOG_SERVICE_RECOVER
+chmod +x "$tmp/watchdog_service_recover_runner.sh"
+"$tmp/watchdog_service_recover_runner.sh" "$tmp/watchdog-service-upstream" upstream-fail "$tmp/watchdog_service_recover.sh" || fail "one failed DoH upstream unnecessarily restarts all resolver instances"
+"$tmp/watchdog_service_recover_runner.sh" "$tmp/watchdog-service-missing" missing "$tmp/watchdog_service_recover.sh" || fail "missing DNS listener no longer triggers service recovery"
+ok "whole-service recovery is reserved for missing listeners; upstream failures use isolated slot recovery"
+
 awk '/^watchdog_common_dns_outage\(\) \{/,/^watchdog_slot_target_run\(\) \{/' dns-manager.sh | sed '$d' > "$tmp/watchdog_common_dns_outage.sh"
 [ -s "$tmp/watchdog_common_dns_outage.sh" ] || fail "common DNS outage guard missing"
 cat > "$tmp/watchdog_common_outage_runner.sh" <<'EOF_WATCHDOG_COMMON_OUTAGE'
