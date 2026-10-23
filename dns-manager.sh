@@ -3114,6 +3114,7 @@ remove_dns_force() {
     sync_hdp_force_contract 0
 }
 apply_encrypted_dns_block() {
+    local _want _opt _current _changed
     _want="${BLOCK_EXTERNAL_DNS:-0}"
     case "$_want" in 0|1) ;; *) return 1 ;; esac
 
@@ -3132,11 +3133,20 @@ apply_encrypted_dns_block() {
 
     # Write explicit 0/1 values: the package defaults both canary options to 1
     # when they are absent, so deleting them would not disable this protection.
-    uci set "https-dns-proxy.config.canary_domains_icloud=$_want" || return 1
-    uci set "https-dns-proxy.config.canary_domains_mozilla=$_want" || return 1
-    uci commit https-dns-proxy || return 1
-    if [ -x /etc/init.d/https-dns-proxy ] && /etc/init.d/https-dns-proxy running >/dev/null 2>&1; then
-        /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || return 1
+    # This helper runs inside each Watchdog cycle; do not commit/restart the
+    # entire https-dns-proxy service when both values already match.
+    _changed=0
+    for _opt in canary_domains_icloud canary_domains_mozilla; do
+        _current="$(uci -q get "https-dns-proxy.config.$_opt" 2>/dev/null || true)"
+        [ "$_current" = "$_want" ] && continue
+        uci set "https-dns-proxy.config.$_opt=$_want" || return 1
+        _changed=1
+    done
+    if [ "$_changed" = 1 ]; then
+        uci commit https-dns-proxy || return 1
+        if [ -x /etc/init.d/https-dns-proxy ] && /etc/init.d/https-dns-proxy running >/dev/null 2>&1; then
+            /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || return 1
+        fi
     fi
     return 0
 }
