@@ -1389,24 +1389,89 @@ dns_path_conflict_nft() {
     _lan_dev="$(uci -q get network.lan.device 2>/dev/null)"
     _lan_if="$(uci -q get network.lan.ifname 2>/dev/null)"
     nft -a list ruleset 2>/dev/null | awk -v ld="$_lan_dev" -v li="$_lan_if" '
-        /^[[:space:]]*chain[[:space:]][^ {]+[[:space:]]*\{/ { c=$2; gsub(/[^A-Za-z0-9_.-]/,"",c); next }
-        /iifname[[:space:]]+"[^"]+"/ && /dport[[:space:]]+53/ && /#[[:space:]]*handle[[:space:]]+[0-9]+/ {
-            ok=0; if ($0 ~ /iifname[[:space:]]+"br-lan"/) ok=1
-            if (ld != "" && index($0,"iifname \"" ld "\"")>0) ok=1
-            if (li != "" && index($0,"iifname \"" li "\"")>0) ok=1
-            if (!ok) next
-            port=""
-            if ($0 ~ /redirect[[:space:]]+to[[:space:]]+:[0-9]+/) {
-                line=$0; sub(/^.*redirect[[:space:]]+to[[:space:]]+:/,"",line); port=line; sub(/[^0-9].*$/,"",port)
-            } else if ($0 ~ /dnat[[:space:]]+to[[:space:]]+[^[:space:]]+:[0-9]+/) {
-                line=$0; sub(/^.*dnat[[:space:]]+to[[:space:]]+[^:[:space:]]*:/,"",line); port=line; sub(/[^0-9].*$/,"",port)
+        function lan_iif(line) {
+            if (line ~ /iifname[[:space:]]+"br-lan"/) return 1
+            if (ld != "" && index(line,"iifname \"" ld "\"")>0) return 1
+            if (li != "" && index(line,"iifname \"" li "\"")>0) return 1
+            return 0
+        }
+        /^[[:space:]]*table[[:space:]]+/ {
+            table=$2 "/" $3
+            gsub(/[{}]/,"",table)
+            chain=""
+            next
+        }
+        /^[[:space:]]*chain[[:space:]][^ {]+[[:space:]]*\{/ {
+            chain=$2
+            gsub(/[^A-Za-z0-9_.-]/,"",chain)
+            next
+        }
+        {
+            if (table == "" || chain == "") next
+            line=$0
+
+            # fw4 places the LAN interface match on the parent chain jump
+            # (for example dstnat -> dstnat_lan), not on each child rule.
+            # Keep that chain relationship so LAN-scoped redirects in child
+            # chains are recognized without requiring iifname on every rule.
+            if (match(line, /[[:space:]](jump|goto)[[:space:]]+[A-Za-z0-9_.-]+/)) {
+                jump_text=substr(line,RSTART,RLENGTH)
+                sub(/^[[:space:]]*(jump|goto)[[:space:]]+/,"",jump_text)
+                split(jump_text,jump_parts,/[[:space:]]/)
+                if (jump_parts[1] != "") {
+                    edge_count++
+                    edge_from[edge_count]=table SUBSEP chain
+                    edge_to[edge_count]=table SUBSEP jump_parts[1]
+                    if (lan_iif(line)) reachable[table SUBSEP jump_parts[1]]=1
+                }
             }
-            # https-dns-proxy legitimately creates redirect :53 when
-            # port 53 is already listening (typically dnsmasq). That is still
-            # its own forced-DNS firewall rule, not an inactive path.
-            if (port == "" || (port == "53" && $0 !~ /ubus:https-dns-proxy/)) next
-            h=$0; sub(/^.*#[[:space:]]*handle[[:space:]]+/,"",h); sub(/[^0-9].*$/,"",h)
-            if (c != "" && h != "") print c "|" h "|" $0
+
+            if (line ~ /dport[[:space:]]+53/ &&
+                line ~ /#[[:space:]]*handle[[:space:]]+[0-9]+/ &&
+                line ~ /(redirect[[:space:]]+to|dnat[[:space:]]+to)/) {
+                rule_count++
+                rule_table[rule_count]=table
+                rule_chain[rule_count]=chain
+                rule_line[rule_count]=line
+            }
+        }
+        END {
+            changed=1
+            while (changed) {
+                changed=0
+                for (e=1; e<=edge_count; e++) {
+                    if (reachable[edge_from[e]] && !reachable[edge_to[e]]) {
+                        reachable[edge_to[e]]=1
+                        changed=1
+                    }
+                }
+            }
+            for (r=1; r<=rule_count; r++) {
+                line=rule_line[r]
+                if (!lan_iif(line) && !reachable[rule_table[r] SUBSEP rule_chain[r]]) continue
+                port=""
+                if (line ~ /redirect[[:space:]]+to[[:space:]]+:[0-9]+/) {
+                    target=line
+                    sub(/^.*redirect[[:space:]]+to[[:space:]]+/,"",target)
+                    sub(/^:/,"",target)
+                    port=target
+                    sub(/[^0-9].*$/,"",port)
+                } else if (line ~ /dnat[[:space:]]+to[[:space:]]+[^[:space:]]+:[0-9]+/) {
+                    target=line
+                    sub(/^.*dnat[[:space:]]+to[[:space:]]+[^:[:space:]]*:/,"",target)
+                    port=target
+                    sub(/[^0-9].*$/,"",port)
+                }
+                # https-dns-proxy legitimately creates redirect :53 when
+                # port 53 is already listening (typically dnsmasq). That is still
+                # its own forced-DNS firewall rule, not an inactive path.
+                if (port == "" || (port == "53" && line !~ /ubus:https-dns-proxy/)) continue
+                h=line
+                sub(/^.*#[[:space:]]*handle[[:space:]]+/,"",h)
+                sub(/[^0-9].*$/,"",h)
+                c=rule_chain[r]
+                if (c != "" && h != "") print c "|" h "|" line
+            }
         }
     ' > "$_out"
     if [ -s "$_out" ]; then
