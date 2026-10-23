@@ -88,7 +88,8 @@ flowchart TB
     D --> H["https-dns-proxy"]
     H --> S["DoH-серверы"]
 
-    L["Native LuCI"] --> M["DNS Manager"]\n    CLI["Дополнительная консоль dns-manager"] -.-> M
+    L["Native LuCI"] --> M["DNS Manager"]
+    CLI["Дополнительная консоль dns-manager"] -.-> M
     C["Каталог DNS"] --> M
     W["Watchdog"] --> M
     M --> D
@@ -97,8 +98,7 @@ flowchart TB
 
 ### Один backend
 
-SSH и все отдельные страницы Native LuCI используют один **DNS Manager backend**.  
-LuCI не дублирует DNS-логику.
+Native LuCI использует единый **DNS Manager backend** и не дублирует DNS-логику. Консольный пункт `dns-manager` остаётся дополнительным инструментом обслуживания.
 
 ---
 
