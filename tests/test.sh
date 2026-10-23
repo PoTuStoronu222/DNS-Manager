@@ -275,7 +275,7 @@ ok "embedded LuCI JS syntax"
 
 # Dashboard reads one cached status RPC. Full collection runs in the background,
 # and pending/stale snapshots are polled without blocking an XHR on the slow path.
-awk '/^function routeStatusCall[^)]*\)/,/^function ensureStatusPromise\(\)/' "$tmp/common.js" | sed '$d' > "$tmp/route_status_call.js"
+awk '/^function routeStatusCall[^)]*\)/,/^function ensureStatusPromise[^)]*\)/' "$tmp/common.js" | sed '$d' > "$tmp/route_status_call.js"
 [ -s "$tmp/route_status_call.js" ] || fail "LuCI routeStatusCall extraction"
 sed -n "/case 'dashboard':/,/default:/p" "$tmp/route_status_call.js" > "$tmp/dashboard_route.js"
 grep -Fq 'return callStatus(force ? 1 : 0);' "$tmp/dashboard_route.js" || fail "dashboard is not using the cached status RPC"
