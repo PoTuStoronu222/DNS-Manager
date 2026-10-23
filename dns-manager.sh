@@ -6757,7 +6757,7 @@ watchdog_restart_slot_instance() {
 watchdog_embedded_integrity_guard() {
     _has_slots=0
     for _guard_slot in 1 2 3 4 5 6 RU; do
-        eval "_guard_id=${SLOT_${_guard_slot}:-}"
+        eval "_guard_id=\${SLOT_${_guard_slot}:-}"
         [ -n "$_guard_id" ] && _has_slots=1
     done
     [ "$_has_slots" = 1 ] || return 0
