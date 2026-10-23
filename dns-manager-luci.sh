@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager full installer and LuCI companion
-# Version: 1.111
+# Version: 1.116
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -32,7 +32,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.111"
+VERSION="1.116"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -649,7 +649,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="1.111"
+SELF_VERSION="1.116"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -2017,6 +2017,7 @@ network_status_json() {
     printf ',"profile":'; json_quote "$_profile"; printf ',"profile_mode":'; json_quote "$_mode"; printf ',"selection_category":'; json_quote "$_selection_category"
     printf ',"watchdog_backend":'; json_quote "$_watchdog_backend"
     printf ',"watchdog_interval":%s,"watchdog_service":%s,"watchdog_service_enabled":%s,"watchdog_loop":%s' "$_watchdog_interval" "$_wr" "$_ws" "$_wl"
+    printf ',"watchdog_autoreplace":%s' "$_watchdog_autoreplace"
     printf ',"watchdog_fail_threshold":%s,"watchdog_repair_cooldown":%s,"watchdog_max_restarts":%s,"watchdog_guard_interval":%s' "$_watchdog_threshold" "$_watchdog_repair_cooldown" "$_watchdog_max_restarts" "$_watchdog_guard_interval"
     _watchdog_check_file="$STATE_DIR/dns-watchdog-check-results.conf"
     _watchdog_last_check="$(sed -n 's/^timestamp=//p' "$_watchdog_check_file" 2>/dev/null | head -n1)"
@@ -3781,7 +3782,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI common module version: 1.111
+// DNS Manager LuCI common module version: 1.116
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -4330,6 +4331,66 @@ function renderSystemCard(root){
   old.replaceWith(buildSystemCard(window.dmState||{}));
   tickLocalUptime(root);
 }
+/* The saved slot configuration is authoritative for selected DNS. Live https-dns-proxy
+ * instances are supplementary: port/name detection can fail on a partially migrated
+ * router, but that must not hide a DNS already assigned to a slot. */
+function displayDnsRows(st){
+  st=st||{};
+  var slots=Array.isArray(st.slots)?st.slots:[];
+  var instances=Array.isArray(st.doh_instances)?st.doh_instances:[];
+  var rows=[];
+  slots.forEach(function(slot){
+    if(!slot||!String(slot.id||''))return;
+    var slotKey=String(slot.slot||'');
+    var id=String(slot.id);
+    var instance=null;
+    instances.some(function(candidate){
+      if(!candidate)return false;
+      var sameSlot=!!(slotKey&&String(candidate.slot||'')===slotKey);
+      var sameId=String(candidate.id||'')===id;
+      var samePort=!!(slot.port&&candidate.port&&String(slot.port)===String(candidate.port));
+      if(sameSlot||sameId||samePort){instance=candidate;return true;}
+      return false;
+    });
+    var ci=checkInfo(id,slot);
+    var name=String(slot.name||'').trim();
+    if(!name||name==='Не задан')name=String(instance&&instance.name||'').trim()||id;
+    rows.push({
+      slot:slotKey,
+      id:id,
+      name:name,
+      port:String(slot.port||(instance&&instance.port)||''),
+      url:String((instance&&instance.url)||''),
+      status:String(ci.status||slot.status||(instance&&instance.status)||''),
+      ping:String(ci.ping||slot.ping||(instance&&instance.ping)||''),
+      last_check:String(slot.last_check||(instance&&instance.last_check)||''),
+      running:instance?instance.running:0
+    });
+  });
+  instances.forEach(function(instance){
+    if(!instance)return;
+    var represented=rows.some(function(row){
+      return !!((instance.slot&&row.slot&&String(instance.slot)===row.slot)||
+        (instance.id&&row.id&&String(instance.id)===row.id)||
+        (instance.port&&row.port&&String(instance.port)===row.port));
+    });
+    if(represented)return;
+    var ci=checkInfo(instance.id,instance);
+    rows.push({
+      slot:'',
+      id:String(instance.id||''),
+      name:String(instance.name||instance.url||'Пользовательский DNS'),
+      port:String(instance.port||''),
+      url:String(instance.url||''),
+      status:String(ci.status||instance.status||''),
+      ping:String(ci.ping||instance.ping||''),
+      last_check:String(instance.last_check||''),
+      running:instance.running
+    });
+  });
+  return rows;
+}
+
 function renderOverview(root,st){
   var e=root.querySelector('#dm-overview');if(!e)return;e.innerHTML='';
   var applied=renderActionStatus();if(applied)e.appendChild(applied);
@@ -4359,12 +4420,11 @@ function renderOverview(root,st){
   var wdAutoDetails='Замена после '+Number(st.watchdog_fail_threshold||2)+' последовательных сбоев.';
 
   var dnsItems=[];
-  (st.doh_instances||[]).forEach(function(d){
-    if(!d)return;
+  displayDnsRows(st).forEach(function(d){
     var slot=d.slot?slotLabel(d.slot):'системный DNS';
     var name=d.name||'Пользовательский DNS';
     var ci=checkInfo(d.id,d);
-    var statusNode=stateBadge(ci.status,ci.ping);
+    var statusNode=stateBadge(ci.status||d.status,ci.ping||d.ping);
     dnsItems.push(E('div',{'class':'dm-component-dns'},[
       E('div',{'class':'dm-component-dns-main'},[
         E('span',{'class':'dm-component-dns-slot'},slot),
@@ -4435,38 +4495,21 @@ function renderOverview(root,st){
   if(fullState)e.appendChild(fullState);
 }
 function resolverRows(st,root){
-  var out=[],seen=0;
-  (st.doh_instances||[]).forEach(function(d){
-    if(!d)return;
-    seen++;
-    var slot=d.slot?slotLabel(d.slot):'';
+  var out=[],rows=displayDnsRows(st);
+  rows.forEach(function(d){
+    var slot=d.slot?slotLabel(d.slot):'системный DNS';
     var name=d.name||'Пользовательский DNS';
     var ci=checkInfo(d.id,d);
-    var s=String(ci.status||'').toUpperCase();
-    var running=s==='RUNNING';
-    var statusNode=stateBadge(ci.status,ci.ping);
-    var actions=[];
-    if(d.slot){
-      }
+    var status=String(ci.status||d.status||'').toUpperCase();
+    var statusNode=stateBadge(status,ci.ping||d.ping);
     out.push(E('div',{'class':'dm-doh-row'},[
       E('span',{'class':'dm-doh-slot'},slot),
       E('span',{'class':'dm-doh-name'},name),
       E('span',{'class':'dm-doh-state'},statusNode),
-      E('span',{'class':'dm-doh-actions'},actions)
-    ]));
-  });
-  if(!seen)(st.slots||[]).forEach(function(d){
-    if(!d||!d.id)return;
-    seen++;
-    var ci=checkInfo(d.id,d),status=String(ci.status||d.status||'').toUpperCase(),running=status==='RUNNING';
-    out.push(E('div',{'class':'dm-doh-row'},[
-      E('span',{'class':'dm-doh-slot'},slotLabel(d.slot||'—')),
-      E('span',{'class':'dm-doh-name'},d.name||d.id),
-      E('span',{'class':'dm-doh-state'},stateBadge(status,ci.ping)),
       E('span',{'class':'dm-doh-actions'},[])
     ]));
   });
-  return [out,seen];
+  return [out,rows.length];
 }
 function renderDoH(root,st){
   var e=root.querySelector('#dm-doh');if(!e)return;e.innerHTML='';
@@ -5671,6 +5714,26 @@ function routeStatusCall(){
         state.logText=stripAnsi((r&&r.log)||'');
         return {ok:true};
       });
+    case 'dashboard':
+      return Promise.all([
+        callStatus(0),
+        callDohStatus()
+      ]).then(function(v){
+        var st=v[0]||{};
+        var force=v[1]||{};
+        [
+          'force','force_external','force_owner','force_manager','force_both',
+          'force_source','force_targets','force_state','force_status',
+          'force_notrack','force_update','force_family','force_ports','force_src',
+          'force_canary_icloud','force_canary_mozilla','force_procd_trigger_wan6',
+          'force_heartbeat_domain','force_heartbeat_sleep','force_heartbeat_wait',
+          'force_user','force_group','force_listen','force_consistent',
+          'force_owner_label','zapret_running','steer_dns_active'
+        ].forEach(function(k){
+          if(Object.prototype.hasOwnProperty.call(force,k))st[k]=force[k];
+        });
+        return st;
+      });
     default:
       return callStatus(0);
   }
@@ -6376,7 +6439,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 1.111
+// DNS Manager LuCI version: 1.116
 return view.extend({
   load: DM.load,
   render: DM.render,

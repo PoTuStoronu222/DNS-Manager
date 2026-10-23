@@ -252,6 +252,18 @@ awk '
 sh -n "$tmp/backend.sh" || fail "embedded backend: sh -n"
 ok "embedded backend syntax"
 
+# The dashboard and Network Tuning use different RPC read methods. Both must
+# expose the saved auto-replacement flag; otherwise the tuning toggle renders
+# a false "off" state even while manager.conf contains WATCHDOG_AUTOREPLACE=1.
+awk '/^network_status_json\(\) \{/,/^time_status_json\(\) \{/' "$tmp/backend.sh" | sed '$d' > "$tmp/network_status_json.sh"
+[ -s "$tmp/network_status_json.sh" ] || fail "network status JSON helper extraction"
+grep -Fq 'watchdog_autoreplace":%s' "$tmp/network_status_json.sh" || fail "network status RPC omits Watchdog auto-replacement state"
+ok "network tuning reports the saved Watchdog auto-replacement state"
+grep -Fq "printf ',\"watchdog_autoreplace\":%s'" "$tmp/network_status_json.sh" || fail "network status auto-replacement JSON has invalid quote escaping"
+ok "network tuning auto-replacement JSON uses valid quoting"
+
+
+
 awk '
     /cat > "[^"]*COMMON_STAGE[^"]*"[^<]*<<\x27EOF_COMMON\x27/ { capture=1; next }
     capture && /^EOF_COMMON$/ { exit }
@@ -260,6 +272,82 @@ awk '
 [ -s "$tmp/common.js" ] || fail "embedded JS extraction"
 node --check "$tmp/common.js" >/dev/null 2>&1 || fail "embedded JS: node --check"
 ok "embedded LuCI JS syntax"
+
+# Dashboard must overlay authoritative forced-DNS ownership from doh_status;
+# status_json intentionally stays lightweight and does not carry those fields.
+sed -n '/^function routeStatusCall()/,/^}/p' "$tmp/common.js" > "$tmp/route_status_call.js"
+grep -Fq "case 'dashboard':" "$tmp/route_status_call.js" || fail "dashboard status route missing"
+grep -Fq 'callStatus(0),' "$tmp/route_status_call.js" || fail "dashboard status source missing"
+grep -Fq 'callDohStatus()' "$tmp/route_status_call.js" || fail "dashboard does not fetch forced-DNS runtime state"
+grep -Fq "'force','force_external','force_owner','force_manager','force_both'" "$tmp/route_status_call.js" || fail "dashboard does not merge forced-DNS ownership fields"
+grep -Fq 'if(Object.prototype.hasOwnProperty.call(force,k))st[k]=force[k];' "$tmp/route_status_call.js" || fail "dashboard discards forced-DNS runtime state"
+ok "dashboard uses authoritative forced-DNS runtime status"
+
+# Dashboard must combine its detailed status with the runtime forced-DNS
+# ownership result, otherwise its component can falsely say "disabled".
+awk '/^function routeStatusCall\(\)/,/^function ensureStatusPromise\(\)/' "$tmp/common.js" | sed '$d' > "$tmp/route_status_call.js"
+[ -s "$tmp/route_status_call.js" ] || fail "LuCI routeStatusCall extraction"
+ROUTE_STATUS_JS="$tmp/route_status_call.js" node <<'NODE' || fail "dashboard forced-DNS runtime status regression"
+const fs = require('fs');
+const vm = require('vm');
+const source = fs.readFileSync(process.env.ROUTE_STATUS_JS, 'utf8');
+const sandbox = {
+  currentRoute: () => 'dashboard',
+  callStatus: () => Promise.resolve({ok: true, watchdog: '1', force_manager: 0}),
+  callDohStatus: () => Promise.resolve({
+    ok: true, force_manager: 1, force_owner: 'manager',
+    force_status: 'manager', force_state: 1, force_both: 0
+  })
+};
+vm.createContext(sandbox);
+vm.runInContext(source, sandbox);
+sandbox.routeStatusCall().then(st => {
+  if (st.watchdog !== '1') throw new Error('dashboard detailed status was lost');
+  if (st.force_manager !== 1 || st.force_owner !== 'manager' ||
+      st.force_status !== 'manager' || st.force_state !== 1) {
+    throw new Error('dashboard did not use runtime forced-DNS status');
+  }
+}).catch(err => { console.error(err); process.exitCode = 1; });
+NODE
+ok "dashboard merges runtime forced-DNS ownership state"
+
+# Selected slot assignments must remain visible even when live DoH-instance
+# detection cannot associate one of the running instances with its slot.
+grep -Fq 'function displayDnsRows(st){' "$tmp/common.js" || fail "selected-DNS display normalizer is missing"
+awk '/^function renderOverview\(root,st\)/,/^}/' "$tmp/common.js" > "$tmp/overview_dns.js"
+grep -Fq 'displayDnsRows(st).forEach(function(d){' "$tmp/overview_dns.js" || fail "dashboard DNS list does not use saved slot assignments"
+awk '/^function resolverRows\(st,root\)/,/^}/' "$tmp/common.js" > "$tmp/resolver_rows.js"
+grep -Fq 'rows=displayDnsRows(st)' "$tmp/resolver_rows.js" || fail "DoH tab does not use saved slot assignments"
+COMMON_JS="$tmp/common.js" node <<'NODE' || fail "selected DNS visibility regression"
+const fs = require('fs');
+const vm = require('vm');
+const source = fs.readFileSync(process.env.COMMON_JS, 'utf8');
+const match = source.match(/function displayDnsRows\(st\)\{[\s\S]*?\n\}/);
+if (!match) throw new Error('displayDnsRows function could not be extracted');
+const sandbox = {
+  checkInfo: function (id, d) {
+    return { status: String((d && d.status) || ''), ping: String((d && d.ping) || '') };
+  }
+};
+vm.createContext(sandbox);
+vm.runInContext(match[0], sandbox);
+const rows = sandbox.displayDnsRows({
+  slots: [
+    { slot: '1', id: 'resolver-a', name: 'Resolver A', port: '5053', status: 'OK', ping: '12' },
+    { slot: '2', id: 'resolver-b', name: 'Resolver B', port: '5054', status: 'OK', ping: '18' },
+    { slot: '3', id: '', name: 'Не задан', port: '5055' }
+  ],
+  doh_instances: [
+    { slot: '', id: 'legacy-id', name: 'Detected instance', port: '5053', status: 'OK', ping: '12' },
+    { slot: '', id: 'system-id', name: 'System resolver', port: '5300', status: 'OK', ping: '10' }
+  ]
+});
+if (rows.length !== 3) throw new Error('expected two selected slots and one unrelated system resolver; got ' + rows.length);
+if (rows[0].slot !== '1' || rows[0].id !== 'resolver-a' || rows[0].name !== 'Resolver A') throw new Error('first selected DNS was not preserved');
+if (rows[1].slot !== '2' || rows[1].id !== 'resolver-b' || rows[1].name !== 'Resolver B') throw new Error('selected DNS was lost when no live instance matched it');
+if (rows[2].slot !== '' || rows[2].name !== 'System resolver') throw new Error('unassigned system resolver was lost or duplicated');
+NODE
+ok "selected DNS remains visible when live DoH mapping is incomplete"
 # No saved DNS result is unknown, not proof that the resolver is unavailable.
 awk '/^function stateBadge\(status,pingValue\)/,/^}/' "$tmp/common.js" > "$tmp/state_badge.js"
 grep -Fq "if(!s)return badge('dm-off','нет данных');" "$tmp/state_badge.js" || fail "LuCI marks an untested DNS unavailable"
@@ -435,13 +523,13 @@ grep -Fq "disabled:!!state.busy||!!state.jobRunning||unavailable||checking" dns-
 grep -q "'gaming','Игровые DNS'" dns-manager-luci.sh || fail "gaming catalog label missing in LuCI"
 grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validation missing gaming category"
 grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
-grep -q 'VERSION="3.80"' dns-manager.sh || fail "manager version not bumped"
+grep -q 'VERSION="3.82"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
-grep -q 'VERSION="1.111"' dns-manager-luci.sh || fail "LuCI version not bumped"
+grep -q 'VERSION="1.116"' dns-manager-luci.sh || fail "LuCI version not bumped"
 grep -Fq 'bootstrap_install_dependencies() {' dns-manager.sh || fail "backend noninteractive dependency bootstrap missing"
 grep -Fq 'install-dependencies|--install-dependencies)' dns-manager.sh || fail "backend dependency bootstrap command missing"
 grep -Fq 'install_missing_dependencies || return 1' dns-manager.sh || fail "bootstrap does not install the backend runtime dependencies"
-grep -Fq 'BACKEND_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager.sh"' dns-manager-luci.sh || fail "full installer backend URL is not pinned to main"
+grep -Fq 'BACKEND_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager.sh"' dns-manager-luci.sh || fail "full installer backend URL is not pinned to the test branch"
 grep -Fq 'ensure_luci_webui() {' dns-manager-luci.sh || fail "full installer does not ensure that system LuCI is installed"
 grep -Fq 'install_runtime_packages luci' dns-manager-luci.sh || fail "full installer cannot install missing system LuCI"
 grep -Fq 'if ! DNS_MANAGER_BOOTSTRAP_MARK_FIRST_RUN="$_mark_first_run" "$MANAGER" --install-dependencies; then' dns-manager-luci.sh || fail "full installer does not run the backend bootstrap without opening the menu"
@@ -452,7 +540,7 @@ grep -Fq 'Откройте веб-интерфейс роутера → LuCI →
 grep -Fq 'DNS-профиль автоматически не применялся. Завершите настройку в панели.' dns-manager-luci.sh || fail "installer does not disclose that DNS settings remain unapplied"
 ok "Native LuCI installer bootstraps backend and dependencies without opening the console menu"
 main_luci_url='https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh'
-[ "$(grep -Fc "$main_luci_url" dns-manager-luci.sh)" -eq 2 ] || fail "released LuCI updater URLs are not pinned to main"
+[ "$(grep -Fc "$main_luci_url" dns-manager-luci.sh)" -eq 2 ] || fail "released LuCI updater URLs do not target main"
 grep -Fq 'LUCI_COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"' dns-manager.sh || fail "optional backend LuCI updates do not target main"
 grep -Fq 'UPDATE_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager.sh"' dns-manager.sh || fail "optional backend updates do not target main"
 grep -Fq 'fetch_raw_url "$_tmp" "https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager.sh"' dns-manager-luci.sh || fail "LuCI backend update does not target main"
@@ -687,7 +775,7 @@ view_luci="$(sed -n 's|^// DNS Manager LuCI common module version:[[:space:]]*||
 dashboard_view_luci="$(sed -n 's|^// DNS Manager LuCI version: *||p' dns-manager-luci.sh | head -n1)"
 [ "$top_luci" = "$dashboard_view_luci" ] || fail "dashboard view version marker is stale"
 ok "LuCI version markers synchronized ($top_luci)"
-grep -Fq 'VERSION="3.80"' dns-manager.sh || fail "DNS Manager version marker is not 3.80"
+grep -Fq 'VERSION="3.82"' dns-manager.sh || fail "DNS Manager version marker is not 3.82"
 ok "DNS Manager version marker synchronized (3.80)"
 grep -Fq "assignment.appendChild(btn('Удалить'" dns-manager-luci.sh || fail "Custom DNS delete button is not aligned with the assignment action"
 grep -Fq ".dm-catalog-item-custom{grid-column:auto}" dns-manager-luci.sh || fail "Custom DNS card is wider than a stock catalog card"
@@ -1175,7 +1263,7 @@ fi
 if grep -q "dm-doh-state.*остановлен" "$tmp/common.js"; then
     fail "LuCI DoH rows still expose process stop state instead of test state"
 fi
-grep -q "stateBadge(status,ci.ping)" "$tmp/common.js" || fail "LuCI does not render DNS test ping in the status badge"
+grep -q "stateBadge(status,ci.ping||d.ping)" "$tmp/common.js" || fail "LuCI does not render DNS test ping in the status badge"
 grep -Fq "E('span',{'class':'dm-doh-state'},statusNode)" "$tmp/common.js" || fail "LuCI DoH page does not render the DNS test status badge"
 ok "LuCI DoH rows use test result status and ping"
 awk '/^function forceComponentItem\(st\)\{/,/^function watchdogComponentItem/' "$tmp/common.js" > "$tmp/force_component.js"
@@ -1319,7 +1407,7 @@ fi
 # Background repair follows each selected DNS resolver's own category.
 # The checker and auto-replace toggles are independent; candidate discovery has no fixed cap.
 awk '/^watchdog_embedded_loop\(\) \{/,/^run_watchdog\(\) \{/' dns-manager.sh > "$tmp/watchdog_embedded_loop.sh"
-grep -Fq 'if [ "${WATCHDOG_AUTOREPLACE:-0}" = 1 ]; then' "$tmp/watchdog_embedded_loop.sh" || fail "periodic replacement is not gated by auto-replace toggle"
+grep -Fq 'elif [ "${WATCHDOG_AUTOREPLACE:-0}" = 1 ]; then' "$tmp/watchdog_embedded_loop.sh" || fail "periodic replacement is not gated by auto-replace toggle"
 grep -Fq ': "${WATCHDOG_AUTOREPLACE:=${WATCHDOG_ENABLED:-0}}"' dns-manager.sh || fail "legacy config has no compatible auto-replace default"
 if grep -Fq 'WATCHDOG_MAX_CANDIDATES' dns-manager.sh dns-manager-luci.sh; then
     fail "DNS replacement retains a fixed candidate cap"
@@ -1353,6 +1441,78 @@ if grep -Fq 'watchdog_scope_category' "$tmp/run_watchdog.sh"; then
     fail "one-shot Watchdog still requires a DNS profile"
 fi
 ok "one-shot and background Watchdog share the same safe per-slot repair path"
+# Mutation-lock/resource refusal must never be returned as an apparent DNS-replacement success.
+awk '/^watchdog_slot_target_run\(\) \{/,/^watchdog_service_recover_run\(\) \{/' dns-manager.sh | sed '$d' > "$tmp/watchdog_slot_target_run_only.sh"
+cat > "$tmp/watchdog_lock_refusal_runner.sh" <<'EOF_WATCHDOG_LOCK_REFUSAL'
+#!/bin/sh
+set -eu
+. "$1"
+WATCHDOG_ENABLED=1
+SLOT_1=resolver-a
+PORT_1=5053
+dns_cat() { printf 'privacy\n'; }
+hybrid_desired_port() { printf '5053\n'; }
+watchdog_resource_guard() { return 0; }
+acquire_mutation_lock() { return 1; }
+if watchdog_slot_target_run 1; then
+    printf '%s\n' 'lock refusal was reported as successful replacement' >&2
+    exit 31
+fi
+EOF_WATCHDOG_LOCK_REFUSAL
+chmod +x "$tmp/watchdog_lock_refusal_runner.sh"
+"$tmp/watchdog_lock_refusal_runner.sh" "$tmp/watchdog_slot_target_run_only.sh" || fail "Watchdog reports success when mutation lock acquisition fails"
+ok "Watchdog fails closed when mutation lock acquisition is refused"
+
+awk '/^watchdog_common_dns_outage\(\) \{/,/^watchdog_slot_target_run\(\) \{/' dns-manager.sh | sed '$d' > "$tmp/watchdog_common_dns_outage.sh"
+[ -s "$tmp/watchdog_common_dns_outage.sh" ] || fail "common DNS outage guard missing"
+cat > "$tmp/watchdog_common_outage_runner.sh" <<'EOF_WATCHDOG_COMMON_OUTAGE'
+#!/bin/sh
+set -eu
+. "$1"
+SLOT_1=resolver-a
+SLOT_2=resolver-b
+SLOT_3=
+SLOT_4=
+SLOT_5=
+SLOT_6=
+SLOT_RU=
+PORT_1=5053
+PORT_2=5054
+watchdog_refresh_listener_snapshot() { return 0; }
+watchdog_listener_snapshot_has_port() { return 0; }
+hybrid_desired_port() { case "$1" in 1) printf '5053\n';; 2) printf '5054\n';; *) return 1;; esac; }
+local_dns_query_ok() { return 1; }
+if ! watchdog_common_dns_outage; then
+    printf '%s\n' 'all selected DNS failures were not detected as a common outage' >&2
+    exit 32
+fi
+local_dns_query_ok() { [ "$1" = 5053 ]; }
+if watchdog_common_dns_outage; then
+    printf '%s\n' 'a healthy selected DNS was mistaken for a common outage' >&2
+    exit 33
+fi
+watchdog_listener_snapshot_has_port() { [ "$1" = 5053 ]; }
+local_dns_query_ok() { return 1; }
+if watchdog_common_dns_outage; then
+    printf '%s\n' 'a missing listener was mistaken for a confirmed common outage' >&2
+    exit 34
+else
+    rc=$?
+    [ "$rc" -eq 2 ] || { printf '%s\n' 'missing listener was not treated as uncertain state' >&2; exit 35; }
+fi
+EOF_WATCHDOG_COMMON_OUTAGE
+chmod +x "$tmp/watchdog_common_outage_runner.sh"
+"$tmp/watchdog_common_outage_runner.sh" "$tmp/watchdog_common_dns_outage.sh" || fail "common DNS outage detection"
+ok "common DNS outage and uncertain listener state both suppress automatic rotation"
+
+awk '/^watchdog_embedded_loop\(\) \{/,/^run_watchdog\(\) \{/' dns-manager.sh > "$tmp/watchdog_embedded_loop.sh"
+grep -Fq '_global_dns_failure=1' "$tmp/watchdog_embedded_loop.sh" || fail "background Watchdog does not detect common DNS failure"
+grep -Fq 'if [ "$_slot_recovered" = 1 ]; then' "$tmp/watchdog_embedded_loop.sh" || fail "Watchdog recovery bookkeeping is not conditional on verified recovery"
+grep -Fq 'if [ "$_global_dns_failure" != 0 ]; then' "$tmp/watchdog_embedded_loop.sh" || fail "Watchdog still restarts per-slot proxies during a common/uncertain DNS outage"
+grep -Fq 'общий или неопределённый DNS-сбой; перезапуск отдельных proxy и ротацию откладываю' "$tmp/watchdog_embedded_loop.sh" || fail "Watchdog does not document why slot recovery is paused during a common outage"
+ok "Watchdog pauses both per-slot restarts and DNS rotation during common/uncertain outages"
+grep -Fq 'eval "WD_FAIL_${_trigger}=0"' "$tmp/watchdog_embedded_loop.sh" || fail "Watchdog does not reset a recovered slot counter"
+ok "Watchdog preserves failure counters until slot recovery is verified"
 grep -Fq 'eval "_guard_id=\${SLOT_${_guard_slot}:-}"' dns-manager.sh || fail "integrity guard uses invalid nested slot expansion"
 ok "integrity guard uses BusyBox ash-safe slot expansion"
 
@@ -1369,7 +1529,7 @@ if grep -Fq '/etc/init.d/https-dns-proxy restart' "$tmp/watchdog_slot_restart.sh
     fail "stalled slot recovery restarts every DoH slot instead of the affected instance"
 fi
 grep -Fq 'if watchdog_restart_slot_instance "$_trigger" "$_trigger_id" "$_trigger_port"; then' "$tmp/watchdog_embedded_loop.sh" || fail "background watchdog does not try local slot recovery first"
-grep -Fq 'replace the selected DNS only if recovery fails' "$tmp/watchdog_embedded_loop.sh" || fail "DNS replacement is not gated by failed slot recovery"
+grep -Fq 'replace DNS only if recovery fails and a common outage is excluded' "$tmp/watchdog_embedded_loop.sh" || fail "DNS replacement is not gated by failed slot recovery and the common-outage guard"
 grep -Fq '$6 == "FAIL" { $6 = "OK" }' "$tmp/watchdog_embedded_loop.sh" || fail "successful slot recovery does not clear the recorded false failure"
 ok "stalled DoH slot is restarted in isolation before optional DNS replacement"
 
