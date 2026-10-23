@@ -6995,7 +6995,7 @@ watchdog_embedded_loop() {
             sleep 5
         else
             # A listener can remain open while its https-dns-proxy process is stuck.
-            # Restart only that slot first; replace the selected DNS only if recovery fails.
+            # Restart only that slot first; replace DNS only if recovery fails and a common outage is excluded.
             for _trigger in $_threshold_slots; do
                 watchdog_loop_repair_cooldown_ok "$_trigger" || continue
                 watchdog_loop_mark_repair "$_trigger"
@@ -7579,9 +7579,9 @@ watchdog_common_dns_outage() {
 
     watchdog_refresh_listener_snapshot || return 2
     for _slot in 1 2 3 4 5 6 RU; do
-        eval "_id=\${SLOT_\${_slot}:-}"
+        eval "_id=\${SLOT_${_slot}:-}"
         [ -n "$_id" ] || continue
-        eval "_port=\${PORT_\${_slot}:-}"
+        eval "_port=\${PORT_${_slot}:-}"
         [ -n "$_port" ] || _port="$(hybrid_desired_port "$_slot")"
         if [ -z "$_port" ] || ! watchdog_listener_snapshot_has_port "$_port"; then
             _missing=$((_missing+1))
