@@ -1476,6 +1476,7 @@ cat > "$tmp/watchdog_autoreplace_off_runner.sh" <<'EOF_WATCHDOG_AUTOREPLACE_OFF'
 #!/bin/sh
 set -eu
 TMP_DIR="$1"
+MODE="${3:-isolated}"
 mkdir -p "$TMP_DIR"
 . "$2"
 WATCHDOG_ENABLED=1
@@ -1493,23 +1494,38 @@ watchdog_restart_slot_instance() {
     : > "$TMP_DIR/restarted-slot"
     return 0
 }
-watchdog_common_dns_outage() { : > "$TMP_DIR/common-outage-called"; return 0; }
+watchdog_common_dns_outage() {
+    : > "$TMP_DIR/common-outage-called"
+    [ "$MODE" != outage ]
+}
 watchdog_pick_replacement() { : > "$TMP_DIR/candidate-picked"; return 1; }
 watchdog_apply_slot_candidate() { : > "$TMP_DIR/candidate-applied"; return 1; }
 log_msg() { printf '%s\n' "$*" >> "$TMP_DIR/log"; }
-watchdog_slot_target_run 1 || {
-    echo "one-shot helper did not report successful local slot recovery" >&2
-    exit 43
-}
-[ -f "$TMP_DIR/restarted-slot" ] || { echo "failed slot instance was not restarted" >&2; exit 44; }
-[ ! -e "$TMP_DIR/common-outage-called" ] || { echo "replacement-only outage path ran with auto-replacement OFF" >&2; exit 45; }
-[ ! -e "$TMP_DIR/candidate-picked" ] || { echo "replacement candidate was picked with auto-replacement OFF" >&2; exit 46; }
-[ ! -e "$TMP_DIR/candidate-applied" ] || { echo "replacement candidate was applied with auto-replacement OFF" >&2; exit 47; }
-grep -q 'автозамена выключена' "$TMP_DIR/log" || { echo "auto-replacement OFF status was not logged" >&2; exit 48; }
+if [ "$MODE" = outage ]; then
+    if watchdog_slot_target_run 1; then
+        echo "slot recovery should be skipped during a common DNS/WAN outage" >&2
+        exit 49
+    fi
+    [ -f "$TMP_DIR/common-outage-called" ] || { echo "common-outage guard was not used" >&2; exit 50; }
+    [ ! -e "$TMP_DIR/restarted-slot" ] || { echo "slot was restarted during a common DNS/WAN outage" >&2; exit 51; }
+    [ ! -e "$TMP_DIR/candidate-picked" ] || { echo "replacement candidate was picked during a common outage" >&2; exit 52; }
+    grep -q 'общий сбой WAN/upstream' "$TMP_DIR/log" || { echo "common-outage reason was not logged" >&2; exit 53; }
+else
+    watchdog_slot_target_run 1 || {
+        echo "one-shot helper did not report successful local slot recovery" >&2
+        exit 43
+    }
+    [ -f "$TMP_DIR/restarted-slot" ] || { echo "failed slot instance was not restarted" >&2; exit 44; }
+    [ -f "$TMP_DIR/common-outage-called" ] || { echo "common-outage guard was not used" >&2; exit 45; }
+    [ ! -e "$TMP_DIR/candidate-picked" ] || { echo "replacement candidate was picked with auto-replacement OFF" >&2; exit 46; }
+    [ ! -e "$TMP_DIR/candidate-applied" ] || { echo "replacement candidate was applied with auto-replacement OFF" >&2; exit 47; }
+    grep -q 'автозамена выключена' "$TMP_DIR/log" || { echo "auto-replacement OFF status was not logged" >&2; exit 48; }
+fi
 EOF_WATCHDOG_AUTOREPLACE_OFF
 chmod +x "$tmp/watchdog_autoreplace_off_runner.sh"
-"$tmp/watchdog_autoreplace_off_runner.sh" "$tmp/watchdog-off-test" "$tmp/watchdog_slot_target_run_only.sh" || fail "one-shot Watchdog bypasses the auto-replacement OFF toggle"
-ok "auto-replacement OFF allows isolated instance recovery but never picks or applies a replacement"
+"$tmp/watchdog_autoreplace_off_runner.sh" "$tmp/watchdog-off-test" "$tmp/watchdog_slot_target_run_only.sh" isolated || fail "one-shot Watchdog bypasses the auto-replacement OFF toggle"
+"$tmp/watchdog_autoreplace_off_runner.sh" "$tmp/watchdog-off-outage-test" "$tmp/watchdog_slot_target_run_only.sh" outage || fail "one-shot Watchdog mutates a slot during a common DNS/WAN outage"
+ok "auto-replacement OFF permits isolated instance recovery but never DNS replacement, and skips mutations during a common outage"
 
 awk '/^watchdog_common_dns_outage\(\) \{/,/^watchdog_slot_target_run\(\) \{/' dns-manager.sh | sed '$d' > "$tmp/watchdog_common_dns_outage.sh"
 [ -s "$tmp/watchdog_common_dns_outage.sh" ] || fail "common DNS outage guard missing"
