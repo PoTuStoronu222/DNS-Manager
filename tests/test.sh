@@ -1186,8 +1186,13 @@ ok "forced-DNS-only Apply starts the same procd service after transaction commit
     [ "$FORCED_DNS_ACTIVE" = 0 ] || fail "valid UCI options without a live rule were reported active"
     [ "$FORCED_DNS_EXTERNAL" = 0 ] || fail "missing live rule was misclassified as external"
     force_case 'table inet fw4 {
+ chain dstnat {
+  type nat hook prerouting priority dstnat; policy accept;
+  iifname "br-lan" jump dstnat_lan comment "!fw4: Handle lan IPv4/IPv6 dstnat traffic" # handle 19
+ }
  chain dstnat_lan {
-  iifname "br-lan" udp dport 53 counter redirect to :53 comment "ubus:https-dns-proxy" # handle 41
+  tcp dport 53 counter redirect to :53 comment "!fw4: ubus:https-dns-proxy[instance1] redirect 0" # handle 41
+  udp dport 53 counter redirect to :53 comment "!fw4: ubus:https-dns-proxy[instance1] redirect 0" # handle 42
  }
 }' 1 1 1 0
     [ "$FORCED_DNS_ACTIVE" = 1 ] || fail "https-dns-proxy runtime redirect was not detected"
@@ -1298,7 +1303,82 @@ grep -Fq 'uci set "https-dns-proxy.config.canary_domains_mozilla=$_canary_enable
 awk '/^apply_encrypted_dns_block\(\) \{/,/^}/' dns-manager.sh > "$tmp/encrypted_dns_apply.sh"
 grep -Fq 'ensure_dns_dot_block || return 1' "$tmp/encrypted_dns_apply.sh" || fail "encrypted-DNS protection does not add its DoT rule"
 grep -Fq 'remove_dns_dot_block || return 1' "$tmp/encrypted_dns_apply.sh" || fail "encrypted-DNS protection does not remove its DoT rule"
-grep -Fq 'uci set "https-dns-proxy.config.canary_domains_mozilla=$_want"' "$tmp/encrypted_dns_apply.sh" || fail "encrypted-DNS protection does not configure its independent browser DoH canary state"
+grep -Fq 'for _opt in canary_domains_icloud canary_domains_mozilla; do' "$tmp/encrypted_dns_apply.sh" || fail "encrypted-DNS protection does not configure both independent browser DoH canary states"
+grep -Fq 'uci set "https-dns-proxy.config.$_opt=$_want"' "$tmp/encrypted_dns_apply.sh" || fail "encrypted-DNS protection does not set canary values idempotently"
+
+# The background Watchdog calls this helper every cycle. Matching canary values
+# must not commit package config or restart every DoH instance repeatedly.
+_mock_hdp_config="$tmp/mock-https-dns-proxy-config"
+_mock_hdp_init="$tmp/mock-https-dns-proxy-init"
+touch "$_mock_hdp_config"
+sed \
+    -e "s|/etc/config/https-dns-proxy|$_mock_hdp_config|g" \
+    -e "s|/etc/init.d/https-dns-proxy|$_mock_hdp_init|g" \
+    "$tmp/encrypted_dns_apply.sh" > "$tmp/encrypted_dns_apply_mock.sh"
+cat > "$_mock_hdp_init" <<'EOF_MOCK_HDP_INIT'
+#!/bin/sh
+case "$1" in
+    running) exit 0 ;;
+    restart) printf '%s\n' restart >> "$MOCK_LOG"; exit 0 ;;
+esac
+exit 1
+EOF_MOCK_HDP_INIT
+chmod +x "$_mock_hdp_init"
+cat > "$tmp/encrypted_dns_idempotence_runner.sh" <<'EOF_ENCRYPTED_DNS_IDEMPOTENCE'
+#!/bin/sh
+set -eu
+BLOCK_EXTERNAL_DNS=1
+MOCK_ICLOUD=1
+MOCK_MOZILLA=1
+MOCK_LOG="$2"
+export MOCK_LOG
+: > "$MOCK_LOG"
+
+ensure_dns_dot_block() { return 0; }
+remove_dns_dot_block() { return 0; }
+uci() {
+    [ "${1:-}" = -q ] && shift
+    case "${1:-}" in
+        get)
+            case "${2:-}" in
+                https-dns-proxy.config) return 0 ;;
+                https-dns-proxy.config.canary_domains_icloud) printf '%s\n' "$MOCK_ICLOUD" ;;
+                https-dns-proxy.config.canary_domains_mozilla) printf '%s\n' "$MOCK_MOZILLA" ;;
+                *) return 1 ;;
+            esac
+            ;;
+        set)
+            case "${2%%=*}" in
+                https-dns-proxy.config.canary_domains_icloud) MOCK_ICLOUD="${2#*=}" ;;
+                https-dns-proxy.config.canary_domains_mozilla) MOCK_MOZILLA="${2#*=}" ;;
+                *) return 1 ;;
+            esac
+            printf 'set %s\n' "$2" >> "$MOCK_LOG"
+            ;;
+        commit)
+            printf 'commit %s\n' "$2" >> "$MOCK_LOG"
+            ;;
+        *) return 1 ;;
+    esac
+}
+. "$1"
+
+apply_encrypted_dns_block || exit 61
+apply_encrypted_dns_block || exit 62
+[ ! -s "$MOCK_LOG" ] || { cat "$MOCK_LOG" >&2; exit 63; }
+
+# One changed canary option should cause exactly one commit and one restart.
+MOCK_MOZILLA=0
+apply_encrypted_dns_block || exit 64
+[ "$MOCK_MOZILLA" = 1 ] || exit 65
+[ "$(grep -c '^commit ' "$MOCK_LOG")" -eq 1 ] || exit 66
+[ "$(grep -c '^restart' "$MOCK_LOG")" -eq 1 ] || exit 67
+[ "$(grep -c 'canary_domains_mozilla=1' "$MOCK_LOG")" -eq 1 ] || exit 68
+EOF_ENCRYPTED_DNS_IDEMPOTENCE
+chmod +x "$tmp/encrypted_dns_idempotence_runner.sh"
+"$tmp/encrypted_dns_idempotence_runner.sh" "$tmp/encrypted_dns_apply_mock.sh" "$tmp/encrypted_dns_mock.log" || fail "Watchdog repeatedly commits/restarts https-dns-proxy when encrypted-DNS canaries already match"
+ok "encrypted-DNS Watchdog sync is idempotent and restarts only after a canary changes"
+
 awk '/^remove_dns_dot_block\(\) \{/,/^}/' dns-manager.sh > "$tmp/remove_dot_block.sh"
 if grep -Fq 'firewall_find_exact_rule_signature' "$tmp/remove_dot_block.sh"; then
     fail "encrypted-DNS OFF can delete a matching firewall rule owned by another component"
@@ -1462,6 +1542,100 @@ EOF_WATCHDOG_LOCK_REFUSAL
 chmod +x "$tmp/watchdog_lock_refusal_runner.sh"
 "$tmp/watchdog_lock_refusal_runner.sh" "$tmp/watchdog_slot_target_run_only.sh" || fail "Watchdog reports success when mutation lock acquisition fails"
 ok "Watchdog fails closed when mutation lock acquisition is refused"
+
+# The auto-replacement toggle must also be enforced by the shared repair helper
+# used by the one-shot CLI command: when OFF, only restart the failed slot's
+# existing instance, without choosing or applying another resolver.
+awk '/^watchdog_slot_target_run\(\) \{/,/^watchdog_service_recover_run\(\) \{/' dns-manager.sh | sed '$d' > "$tmp/watchdog_slot_target_run_only.sh"
+cat > "$tmp/watchdog_autoreplace_off_runner.sh" <<'EOF_WATCHDOG_AUTOREPLACE_OFF'
+#!/bin/sh
+set -eu
+TMP_DIR="$1"
+MODE="${3:-isolated}"
+mkdir -p "$TMP_DIR"
+. "$2"
+WATCHDOG_ENABLED=1
+WATCHDOG_AUTOREPLACE=0
+SLOT_1=resolver-a
+PORT_1=5053
+dns_cat() { printf 'clean\n'; }
+hybrid_desired_port() { printf '5053\n'; }
+watchdog_resource_guard() { return 0; }
+acquire_mutation_lock() { return 0; }
+release_mutation_lock() { return 0; }
+watchdog_check_slot() { return 1; }
+watchdog_restart_slot_instance() {
+    [ "$1" = 1 ] && [ "$2" = resolver-a ] && [ "$3" = 5053 ] || exit 42
+    : > "$TMP_DIR/restarted-slot"
+    return 0
+}
+watchdog_common_dns_outage() {
+    : > "$TMP_DIR/common-outage-called"
+    [ "$MODE" = outage ] && return 0
+    return 1
+}
+watchdog_pick_replacement() { : > "$TMP_DIR/candidate-picked"; return 1; }
+watchdog_apply_slot_candidate() { : > "$TMP_DIR/candidate-applied"; return 1; }
+log_msg() { printf '%s\n' "$*" >> "$TMP_DIR/log"; }
+if [ "$MODE" = outage ]; then
+    if watchdog_slot_target_run 1; then
+        echo "slot recovery should be skipped during a common DNS/WAN outage" >&2
+        exit 49
+    fi
+    [ -f "$TMP_DIR/common-outage-called" ] || { echo "common-outage guard was not used" >&2; exit 50; }
+    [ ! -e "$TMP_DIR/restarted-slot" ] || { echo "slot was restarted during a common DNS/WAN outage" >&2; exit 51; }
+    [ ! -e "$TMP_DIR/candidate-picked" ] || { echo "replacement candidate was picked during a common outage" >&2; exit 52; }
+    grep -q 'общий сбой WAN/upstream' "$TMP_DIR/log" || { echo "common-outage reason was not logged" >&2; exit 53; }
+else
+    watchdog_slot_target_run 1 || {
+        echo "one-shot helper did not report successful local slot recovery" >&2
+        exit 43
+    }
+    [ -f "$TMP_DIR/restarted-slot" ] || { echo "failed slot instance was not restarted" >&2; exit 44; }
+    [ -f "$TMP_DIR/common-outage-called" ] || { echo "common-outage guard was not used" >&2; exit 45; }
+    [ ! -e "$TMP_DIR/candidate-picked" ] || { echo "replacement candidate was picked with auto-replacement OFF" >&2; exit 46; }
+    [ ! -e "$TMP_DIR/candidate-applied" ] || { echo "replacement candidate was applied with auto-replacement OFF" >&2; exit 47; }
+    grep -q 'автозамена выключена' "$TMP_DIR/log" || { echo "auto-replacement OFF status was not logged" >&2; exit 48; }
+fi
+EOF_WATCHDOG_AUTOREPLACE_OFF
+chmod +x "$tmp/watchdog_autoreplace_off_runner.sh"
+"$tmp/watchdog_autoreplace_off_runner.sh" "$tmp/watchdog-off-test" "$tmp/watchdog_slot_target_run_only.sh" isolated || fail "one-shot Watchdog bypasses the auto-replacement OFF toggle"
+"$tmp/watchdog_autoreplace_off_runner.sh" "$tmp/watchdog-off-outage-test" "$tmp/watchdog_slot_target_run_only.sh" outage || fail "one-shot Watchdog mutates a slot during a common DNS/WAN outage"
+ok "auto-replacement OFF permits isolated instance recovery but never DNS replacement, and skips mutations during a common outage"
+
+# A failing upstream on a listening slot must not trigger whole-service recovery.
+# Missing listeners may still use the existing service-level recovery path.
+awk '/^watchdog_service_recover\(\) \{/,/^process_matches_doh_slot\(\) \{/' dns-manager.sh | sed '$d' > "$tmp/watchdog_service_recover.sh"
+[ -s "$tmp/watchdog_service_recover.sh" ] || fail "service recovery helper extraction"
+cat > "$tmp/watchdog_service_recover_runner.sh" <<'EOF_WATCHDOG_SERVICE_RECOVER'
+#!/bin/sh
+set -eu
+TMP_DIR="$1"
+MODE="$2"
+mkdir -p "$TMP_DIR"
+. "$3"
+SLOT_1=resolver-a
+PORT_1=5053
+SLOT_2=resolver-b
+PORT_2=5054
+listener_port_exists() {
+    [ "$MODE" != missing ] || [ "$1" != 5054 ]
+}
+local_dns_query_ok() { : > "$TMP_DIR/dns-query-called"; return 1; }
+watchdog_restart_hdp() { : > "$TMP_DIR/global-restart"; return 0; }
+log_msg() { printf '%s\n' "$*" >> "$TMP_DIR/log"; }
+watchdog_service_recover
+if [ "$MODE" = upstream-fail ]; then
+    [ ! -e "$TMP_DIR/global-restart" ] || { echo "a failed upstream with a live listener triggered whole-service restart" >&2; exit 61; }
+    [ ! -e "$TMP_DIR/dns-query-called" ] || { echo "whole-service recovery probes upstream DNS instead of checking listeners" >&2; exit 62; }
+else
+    [ -e "$TMP_DIR/global-restart" ] || { echo "a missing listener did not trigger service recovery" >&2; exit 63; }
+fi
+EOF_WATCHDOG_SERVICE_RECOVER
+chmod +x "$tmp/watchdog_service_recover_runner.sh"
+"$tmp/watchdog_service_recover_runner.sh" "$tmp/watchdog-service-upstream" upstream-fail "$tmp/watchdog_service_recover.sh" || fail "one failed DoH upstream unnecessarily restarts all resolver instances"
+"$tmp/watchdog_service_recover_runner.sh" "$tmp/watchdog-service-missing" missing "$tmp/watchdog_service_recover.sh" || fail "missing DNS listener no longer triggers service recovery"
+ok "whole-service recovery is reserved for missing listeners; upstream failures use isolated slot recovery"
 
 awk '/^watchdog_common_dns_outage\(\) \{/,/^watchdog_slot_target_run\(\) \{/' dns-manager.sh | sed '$d' > "$tmp/watchdog_common_dns_outage.sh"
 [ -s "$tmp/watchdog_common_dns_outage.sh" ] || fail "common DNS outage guard missing"
