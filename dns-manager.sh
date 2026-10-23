@@ -6,7 +6,8 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.75"
+VERSION="3.76"
+# 3.76: preserve slot identity during recovery revalidation after config reload.
 # 3.75: recover a stalled local DoH slot before optional DNS replacement.
 # 3.38: clear the LuCI update flag after a successful CLI update.
 BASE_DIR="/etc/dns-manager"
