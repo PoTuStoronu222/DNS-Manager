@@ -1,8 +1,8 @@
 #!/bin/sh
-# DNS Manager LuCI companion
-# Version: 1.109
-# Installs a native LuCI application for the existing /usr/bin/dns-manager.
-# This file DOES NOT replace, patch or modify the DNS Manager backend.
+# DNS Manager full installer and LuCI companion
+# Version: 1.110
+# install bootstraps the backend, required packages and native LuCI UI.
+# update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
 
 set -eu
@@ -32,10 +32,141 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.109"
+VERSION="1.110"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
+
+BACKEND_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager.sh"
+
+fetch_installer_source() {
+    _out="$1"
+    _url="$2"
+    rm -f "$_out" 2>/dev/null || true
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL --connect-timeout 5 --max-time 60 -o "$_out" "$_url" || return 1
+    elif command -v wget >/dev/null 2>&1; then
+        wget -q -T 60 -O "$_out" "$_url" || return 1
+    elif command -v uclient-fetch >/dev/null 2>&1; then
+        uclient-fetch -q -T 60 -O "$_out" "$_url" || return 1
+    else
+        err "Не найден curl, wget или uclient-fetch для загрузки установщика."
+        return 1
+    fi
+    [ -s "$_out" ] || { err "Загруженный файл пуст: $_url"; return 1; }
+}
+
+install_runtime_packages() {
+    if command -v apk >/dev/null 2>&1; then
+        apk update || { err "Не удалось обновить индекс пакетов apk."; return 1; }
+        apk add "$@" || { err "Не удалось установить пакеты: $*"; return 1; }
+    elif command -v opkg >/dev/null 2>&1; then
+        opkg update || { err "Не удалось обновить список пакетов opkg."; return 1; }
+        opkg install "$@" || { err "Не удалось установить пакеты: $*"; return 1; }
+    else
+        err "Не найден менеджер пакетов apk/opkg."
+        return 1
+    fi
+}
+
+ensure_luci_webui() {
+    if [ -x /www/cgi-bin/luci ]; then
+        say "✓ Системный LuCI уже установлен."
+        return 0
+    fi
+
+    say "↻ Системный LuCI не найден. Устанавливаю официальный пакет luci..."
+    install_runtime_packages luci || return 1
+    [ -x /www/cgi-bin/luci ] || {
+        err "Пакет luci установлен, но точка входа /www/cgi-bin/luci не найдена."
+        return 1
+    }
+
+    if [ -x /etc/init.d/uhttpd ]; then
+        /etc/init.d/uhttpd enable >/dev/null 2>&1 || true
+        /etc/init.d/uhttpd start >/dev/null 2>&1 || true
+    fi
+    if [ -x /etc/init.d/rpcd ]; then
+        /etc/init.d/rpcd enable >/dev/null 2>&1 || true
+        /etc/init.d/rpcd start >/dev/null 2>&1 || /etc/init.d/rpcd restart >/dev/null 2>&1 || true
+    fi
+    say "✓ Системный LuCI установлен."
+}
+
+install_backend() {
+    _candidate="/tmp/dns-manager-backend.$$.download"
+    _stage="/usr/bin/dns-manager.new.$$"
+    _backup="/tmp/dns-manager-backend.$$.backup"
+    _had_manager=0
+    _mark_first_run=0
+
+    fetch_installer_source "$_candidate" "$BACKEND_URL" || {
+        rm -f "$_candidate" "$_stage" 2>/dev/null || true
+        err "Не удалось загрузить backend DNS Manager с GitHub."
+        return 1
+    }
+    sh -n "$_candidate" || {
+        rm -f "$_candidate" "$_stage" 2>/dev/null || true
+        err "Backend DNS Manager не прошёл проверку shell-синтаксиса."
+        return 1
+    }
+    grep -Eq '^VERSION="[0-9]+([.][0-9]+)*"$' "$_candidate" || {
+        rm -f "$_candidate" "$_stage" 2>/dev/null || true
+        err "В backend не найдена корректная версия."
+        return 1
+    }
+    grep -Fq 'install-dependencies|--install-dependencies)' "$_candidate" || {
+        rm -f "$_candidate" "$_stage" 2>/dev/null || true
+        err "Backend не поддерживает подготовку зависимостей без запуска консольного меню."
+        return 1
+    }
+    mkdir -p /usr/bin || return 1
+    if [ -x "$MANAGER" ]; then
+        cp "$MANAGER" "$_backup" || {
+            rm -f "$_candidate" "$_stage" 2>/dev/null || true
+            err "Не удалось сохранить backend для отката."
+            return 1
+        }
+        _had_manager=1
+    fi
+    if [ ! -f "$CONFIG_FILE" ] && [ ! -f "/etc/dns-manager/config/.first-run.done" ]; then
+        _mark_first_run=1
+    fi
+    cp "$_candidate" "$_stage" &&
+        chmod 0755 "$_stage" &&
+        mv -f "$_stage" "$MANAGER" || {
+            [ "$_had_manager" = 1 ] && cp "$_backup" "$MANAGER" 2>/dev/null || true
+            rm -f "$_candidate" "$_stage" "$_backup" 2>/dev/null || true
+            err "Не удалось безопасно установить backend DNS Manager."
+            return 1
+        }
+    rm -f "$_candidate" 2>/dev/null || true
+
+    if ! DNS_MANAGER_BOOTSTRAP_MARK_FIRST_RUN="$_mark_first_run" "$MANAGER" --install-dependencies; then
+        if [ "$_had_manager" = 1 ]; then
+            cp "$_backup" "$MANAGER" 2>/dev/null || true
+        else
+            rm -f "$MANAGER" 2>/dev/null || true
+        fi
+        rm -f "$_backup" 2>/dev/null || true
+        err "Не удалось подготовить зависимости backend. Предыдущий backend восстановлен, если он был."
+        return 1
+    fi
+
+    rm -f "$_backup" 2>/dev/null || true
+    say "✓ DNS Manager backend установлен; зависимости проверены."
+}
+
+full_install() {
+    say "DNS Manager — установка Native LuCI"
+    ensure_luci_webui || return 1
+    install_backend || return 1
+    install_files || return 1
+    say ""
+    say "✓ Установка завершена."
+    say "Откройте веб-интерфейс роутера → LuCI → Службы → DNS Manager."
+    say "DNS-профиль автоматически не применялся. Завершите настройку в панели."
+}
 
 manager_version() {
     [ -r "$MANAGER" ] || return 1
@@ -516,7 +647,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="1.109"
+SELF_VERSION="1.110"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -3648,7 +3779,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI common module version: 1.109
+// DNS Manager LuCI common module version: 1.110
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -6243,7 +6374,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 1.109
+// DNS Manager LuCI version: 1.110
 return view.extend({
   load: DM.load,
   render: DM.render,
@@ -6357,7 +6488,10 @@ uninstall_files() {
 }
 
 case "${1:-install}" in
-    install|update)
+    install|bootstrap)
+        full_install
+        ;;
+    update)
         install_files
         ;;
     remove|uninstall)
