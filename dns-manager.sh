@@ -5493,7 +5493,7 @@ luci_companion_install() {
     fi
     chmod 700 "$LUCI_COMPANION_CACHE" 2>/dev/null || true
 
-    sh "$LUCI_COMPANION_CACHE" install >"$TMP_DIR/luci-install.log" 2>&1
+    sh "$LUCI_COMPANION_CACHE" update >"$TMP_DIR/luci-install.log" 2>&1
     _luci_rc=$?
     if [ "$_luci_rc" -ne 0 ]; then
         [ -s "$TMP_DIR/luci-install.log" ] && while IFS= read -r _luci_line; do [ -n "$_luci_line" ] && log_msg "LuCI installer: $_luci_line"; done < "$TMP_DIR/luci-install.log"
