@@ -451,9 +451,11 @@ grep -Fq 'sh "$LUCI_COMPANION_CACHE" update >"$TMP_DIR/luci-install.log" 2>&1' d
 grep -Fq 'Откройте веб-интерфейс роутера → LuCI → Службы → DNS Manager.' dns-manager-luci.sh || fail "installer does not direct the user to the LuCI menu"
 grep -Fq 'DNS-профиль автоматически не применялся. Завершите настройку в панели.' dns-manager-luci.sh || fail "installer does not disclose that DNS settings remain unapplied"
 ok "Native LuCI installer bootstraps backend and dependencies without opening the console menu"
-main_luci_url='https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh'
-[ "$(grep -Fc "$main_luci_url" dns-manager-luci.sh)" -eq 2 ] || fail "released LuCI updater URLs are not pinned to main"
-if grep -Fq 'https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/luci-dns-sections-tabs-20261022/dns-manager-luci.sh' dns-manager-luci.sh; then fail "released LuCI updater still targets the test branch"; fi
+test_luci_url='https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/luci-full-installer-20261023/dns-manager-luci.sh'
+[ "$(grep -Fc "$test_luci_url" dns-manager-luci.sh)" -eq 2 ] || fail "test LuCI updater URLs are not pinned to the installer test branch"
+grep -Fq 'LUCI_COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/luci-full-installer-20261023/dns-manager-luci.sh"' dns-manager.sh || fail "optional backend LuCI updates do not target the test branch"
+grep -Fq 'UPDATE_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/luci-full-installer-20261023/dns-manager.sh"' dns-manager.sh || fail "optional backend updates do not target the test branch"
+grep -Fq 'fetch_raw_url "$_tmp" "https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/luci-full-installer-20261023/dns-manager.sh"' dns-manager-luci.sh || fail "LuCI backend update does not target the installer test branch"
 grep -Fq '.dm-wrap .dm-watchdog-record{display:grid;grid-template-columns:58px minmax(0,1fr) auto;align-items:center;gap:10px;padding:8px 9px;border:1px solid rgba(110,118,129,.12);border-radius:8px;background:var(--background-color-medium,#fff)' dns-manager-luci.sh || fail "Watchdog result rows do not use the LuCI theme background variable"
 ok "Watchdog result rows follow the active LuCI theme"
 grep -Fq 'WATCHDOG_CHECK_INTERVAL_DEFAULT=120' dns-manager.sh || fail "Watchdog default interval is not 120 seconds"
@@ -462,7 +464,7 @@ grep -Fq 'проверка каждые ${WATCHDOG_INTERVAL:-120}с, восст�
 grep -Fq 'При интервале 2 минуты и пороге 2 сбоя первая попытка восстановления начнётся примерно в течение 4 минут после отказа.' dns-manager-luci.sh || fail "LuCI does not explain the default failure detection time"
 grep -Fq 'Пауза между попытками восстановления DNS' dns-manager-luci.sh || fail "LuCI cooldown label inaccurately describes recovery as replacement only"
 ok "Watchdog uses a 2-minute check interval and 5-minute recovery cooldown by default"
-ok "LuCI version and update source target main"
+ok "LuCI version and updater sources target the paired test branch"
 grep -Fq 'return m ~ /^[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]$/' dns-manager-luci.sh || fail "LAN inventory merge rejects valid six-octet MAC addresses"
 grep -Fq 'NF >= 2 && $2 ~ /^[1-6](,[1-6])*$/ &&' dns-manager-luci.sh || fail "saved LAN device assignments do not require valid DNS slot lists"
 grep -Fq "state.lanDevicesMessage='Обновляю список устройств LAN… Пожалуйста, подождите.'" dns-manager-luci.sh || fail "LAN refresh does not display a waiting message"
