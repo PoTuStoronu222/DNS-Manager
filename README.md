@@ -88,7 +88,8 @@ flowchart TB
     D --> H["https-dns-proxy"]
     H --> S["DoH-серверы"]
 
-    L["SSH / LuCI"] --> M["DNS Manager"]
+    L["Native LuCI"] --> M["DNS Manager"]
+    CLI["Дополнительная консоль dns-manager"] -.-> M
     C["Каталог DNS"] --> M
     W["Watchdog"] --> M
     M --> D
@@ -97,36 +98,27 @@ flowchart TB
 
 ### Один backend
 
-SSH и все отдельные страницы Native LuCI используют один **DNS Manager backend**.  
-LuCI не дублирует DNS-логику.
+Native LuCI использует единый **DNS Manager backend** и не дублирует DNS-логику. Консольный пункт `dns-manager` остаётся дополнительным инструментом обслуживания.
 
 ---
 
 ## ⚡ Установка
 
-### Backend
+### Native LuCI — полный установщик
+
+Одна команда устанавливает всё необходимое: системный LuCI (если его ещё нет), DNS Manager backend, недостающие пакеты и нативные страницы управления. На OpenWrt используется штатный пакетный менеджер: `apk` в 25.12+ или `opkg` в более старых версиях.
 
 ~~~sh
-wget -O /usr/bin/dns-manager \
-  https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager.sh
-
-chmod +x /usr/bin/dns-manager
-dns-manager
+wget -O /tmp/dns-manager-luci.sh https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh && sh /tmp/dns-manager-luci.sh install
 ~~~
 
-### Native LuCI
+Установщик проверяет загруженные shell-скрипты, безопасно обновляет backend и ставит недостающие зависимости. Он **не выбирает и не применяет DNS-профиль автоматически**, не меняет текущий DNS-маршрут и не открывает отдельный HTTP-порт для DNS Manager.
 
-~~~sh
-sh <(wget -qO - \
-  https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh)
-~~~
-
-После установки:
+После сообщения об успешной установке откройте веб-интерфейс роутера:
 
 **LuCI → Службы → DNS Manager**
 
-> [!NOTE]
-> Native LuCI устанавливается отдельно и не заменяет основной backend.
+Первичная настройка DNS, проверка серверов и применение профиля выполняются в этой панели. Консольный пункт `dns-manager` остаётся дополнительным инструментом обслуживания, а не обязательным шагом установки.
 
 ---
 
