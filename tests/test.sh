@@ -252,6 +252,14 @@ awk '
 sh -n "$tmp/backend.sh" || fail "embedded backend: sh -n"
 ok "embedded backend syntax"
 
+# The dashboard and Network Tuning use different RPC read methods. Both must
+# expose the saved auto-replacement flag; otherwise the tuning toggle renders
+# a false "off" state even while manager.conf contains WATCHDOG_AUTOREPLACE=1.
+awk '/^network_status_json\(\) \{/,/^time_status_json\(\) \{/' "$tmp/backend.sh" | sed '$d' > "$tmp/network_status_json.sh"
+[ -s "$tmp/network_status_json.sh" ] || fail "network status JSON helper extraction"
+grep -Fq 'watchdog_autoreplace\":%s' "$tmp/network_status_json.sh" || fail "network status RPC omits Watchdog auto-replacement state"
+ok "network tuning reports the saved Watchdog auto-replacement state"
+
 awk '
     /cat > "[^"]*COMMON_STAGE[^"]*"[^<]*<<\x27EOF_COMMON\x27/ { capture=1; next }
     capture && /^EOF_COMMON$/ { exit }
