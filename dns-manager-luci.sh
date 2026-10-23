@@ -2658,6 +2658,13 @@ status_json() {
     case "$_ss_detail" in 1|true) _ss_force=1;; esac
 
     _ss_now="$(date +%s 2>/dev/null || printf 0)"
+    if [ -d "$RUNTIME_DIR/status-snapshot.lock" ]; then
+        _ss_started="$(cat "$RUNTIME_DIR/status-snapshot.lock/started" 2>/dev/null || true)"
+        case "$_ss_started" in ''|*[!0-9]*) _ss_started=0;; esac
+        if [ "$_ss_started" -gt 0 ] && [ "$((_ss_now-_ss_started))" -gt 90 ] 2>/dev/null; then
+            rm -rf "$RUNTIME_DIR/status-snapshot.lock" 2>/dev/null || true
+        fi
+    fi
     _ss_cached_at="$(cat "$_ss_stamp" 2>/dev/null || printf 0)"
     case "$_ss_cached_at" in ''|*[!0-9]*) _ss_cached_at=0;; esac
     _ss_age=999999
@@ -2668,8 +2675,8 @@ status_json() {
     _ss_refreshing=0
     if [ "$_ss_force" = 1 ] || [ ! -s "$_ss_cache" ] || [ "$_ss_age" -ge 15 ]; then
         status_snapshot_refresh || true
-        _ss_refreshing=1
     fi
+    [ -d "$RUNTIME_DIR/status-snapshot.lock" ] && _ss_refreshing=1
 
     if [ -s "$_ss_cache" ]; then
         if [ "$_ss_refreshing" = 1 ]; then
