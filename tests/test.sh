@@ -475,7 +475,7 @@ grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validat
 grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
 grep -q 'VERSION="3.80"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
-grep -q 'VERSION="1.111"' dns-manager-luci.sh || fail "LuCI version not bumped"
+grep -q 'VERSION="1.112"' dns-manager-luci.sh || fail "LuCI version not bumped"
 grep -Fq 'bootstrap_install_dependencies() {' dns-manager.sh || fail "backend noninteractive dependency bootstrap missing"
 grep -Fq 'install-dependencies|--install-dependencies)' dns-manager.sh || fail "backend dependency bootstrap command missing"
 grep -Fq 'install_missing_dependencies || return 1' dns-manager.sh || fail "bootstrap does not install the backend runtime dependencies"
