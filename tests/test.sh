@@ -435,7 +435,7 @@ grep -Fq "disabled:!!state.busy||!!state.jobRunning||unavailable||checking" dns-
 grep -q "'gaming','Игровые DNS'" dns-manager-luci.sh || fail "gaming catalog label missing in LuCI"
 grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validation missing gaming category"
 grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
-grep -q 'VERSION="3.74"' dns-manager.sh || fail "manager version not bumped"
+grep -q 'VERSION="3.75"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
 grep -q 'VERSION="1.108"' dns-manager-luci.sh || fail "LuCI version not bumped"
 test_luci_url='https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/watchdog-network-status-20261022/dns-manager-luci.sh'
@@ -666,8 +666,8 @@ view_luci="$(sed -n 's|^// DNS Manager LuCI common module version:[[:space:]]*||
 dashboard_view_luci="$(sed -n 's|^// DNS Manager LuCI version: *||p' dns-manager-luci.sh | head -n1)"
 [ "$top_luci" = "$dashboard_view_luci" ] || fail "dashboard view version marker is stale"
 ok "LuCI version markers synchronized ($top_luci)"
-grep -Fq 'VERSION="3.74"' dns-manager.sh || fail "DNS Manager version marker is not 3.74"
-ok "DNS Manager version marker synchronized (3.74)"
+grep -Fq 'VERSION="3.75"' dns-manager.sh || fail "DNS Manager version marker is not 3.75"
+ok "DNS Manager version marker synchronized (3.75)"
 grep -Fq "assignment.appendChild(btn('Удалить'" dns-manager-luci.sh || fail "Custom DNS delete button is not aligned with the assignment action"
 grep -Fq ".dm-catalog-item-custom{grid-column:auto}" dns-manager-luci.sh || fail "Custom DNS card is wider than a stock catalog card"
 grep -Fq ".dm-catalog-controls-custom .dm-assign-inline select{height:30px;min-width:0;width:auto;max-width:100%;flex:1 1 160px" dns-manager-luci.sh || fail "Custom DNS actions do not have a responsive inline layout"
@@ -1332,8 +1332,12 @@ if grep -Fq 'watchdog_scope_category' "$tmp/run_watchdog.sh"; then
     fail "one-shot Watchdog still requires a DNS profile"
 fi
 ok "one-shot and background Watchdog share the same safe per-slot repair path"
-# All watchdog paths must use the same DNS health checks as the verified Manager paths.
+# A failed local DNS query with a live listener first tries the existing service recovery.
+# Recheck the same slot before allowing the independent auto-replace setting to change DNS.
 awk '/^watchdog_embedded_loop\(\) \{/,/^# ==========================================/' dns-manager.sh > "$tmp/watchdog_embedded_loop.sh"
+grep -Fq 'watchdog_service_recover_run >/dev/null 2>&1 || true' "$tmp/watchdog_embedded_loop.sh" || fail "watchdog does not try service recovery for a stalled local DNS listener"
+grep -Fq 'local_dns_query_ok "$_port" "$_domain"; then' "$tmp/watchdog_embedded_loop.sh" || fail "watchdog does not recheck the same slot after service recovery"
+grep -Fq 'if [ "${WATCHDOG_AUTOREPLACE:-0}" = 1 ]; then' "$tmp/watchdog_embedded_loop.sh" || fail "auto-replacement is not kept behind the recovery attempt"
 grep -q 'local_dns_query_ok "\$_port" "\$_domain"' "$tmp/watchdog_embedded_loop.sh" || fail "procd watchdog does not use the canonical local DNS check"
 if grep -q 'watchdog_light_probe' dns-manager.sh; then
     fail "obsolete simplified watchdog DNS probe remains"

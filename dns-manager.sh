@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.74"
+VERSION="3.75"
 # 3.38: clear the LuCI update flag after a successful CLI update.
 BASE_DIR="/etc/dns-manager"
 CFG_DIR="$BASE_DIR/config"
@@ -387,7 +387,7 @@ C_TITLE='\033[0;34m'
 C_SECTION='\033[1;33m'
 # ==========================================
 # ==========================================
-UPDATE_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager.sh"
+UPDATE_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/watchdog-stalled-slot-recovery-20261022/dns-manager.sh"
 _ver_newer() {
     awk -v a="$1" -v b="$2" 'BEGIN{
         na=split(a,x,"\\."); nb=split(b,y,"\\."); n=(na>nb?na:nb);
@@ -6867,25 +6867,43 @@ watchdog_embedded_loop() {
             for _slot in 1 2 3 4 5 6 RU; do watchdog_loop_reset_slot "$_slot"; done
             sleep 5
         else
-            # Monitoring is independent of rotation. Failures still appear in
-            # the saved results while automatic replacement is disabled.
-            if [ "${WATCHDOG_AUTOREPLACE:-0}" = 1 ]; then
-                for _trigger in $_threshold_slots; do
-                    watchdog_loop_repair_cooldown_ok "$_trigger" || continue
-                    watchdog_loop_mark_repair "$_trigger"
-                    log_msg "DNS в слоте $_trigger не отвечает ${WATCHDOG_FAIL_THRESHOLD:-2} проверок подряд. Ищу замену той же категории."
+            # A listener can exist while its https-dns-proxy process is hung.
+            # First use the existing service-recovery path; only replace DNS
+            # when the same local query still fails and auto-replace is enabled.
+            _recovery_attempted=0
+            for _trigger in $_threshold_slots; do
+                watchdog_loop_repair_cooldown_ok "$_trigger" || continue
+                watchdog_loop_mark_repair "$_trigger"
+                if [ "$_recovery_attempted" = 0 ]; then
+                    log_msg "DNS в слоте $_trigger не отвечает ${WATCHDOG_FAIL_THRESHOLD:-2} проверок подряд. Перезапускаю https-dns-proxy без смены выбранного DNS."
+                    watchdog_service_recover_run >/dev/null 2>&1 || true
+                    _recovery_attempted=1
+                fi
+                load_config >/dev/null 2>&1 || true
+                refresh_runtime_capabilities >/dev/null 2>&1 || true
+                eval "_id=\${SLOT_${_trigger}:-}"
+                eval "_port=\${PORT_${_trigger}:-}"
+                [ -n "$_port" ] || _port="$(hybrid_desired_port "$_trigger")"
+                case "$_trigger" in RU) _domain="yandex.ru";; *) _domain="example.com";; esac
+                if [ -n "$_id" ] && [ -n "$_port" ] && listener_port_exists "$_port" && local_dns_query_ok "$_port" "$_domain"; then
+                    log_msg "Watchdog: слот $_trigger восстановлен после перезапуска; выбранный DNS сохранён."
+                    watchdog_loop_reset_slot "$_trigger"
+                elif [ "${WATCHDOG_AUTOREPLACE:-0}" = 1 ]; then
+                    log_msg "Watchdog: слот $_trigger всё ещё не отвечает после перезапуска; пробую замену той же категории."
                     if watchdog_slot_target_run "$_trigger"; then
-                        log_msg "Watchdog: слот $_trigger восстановлен."
+                        log_msg "Watchdog: слот $_trigger восстановлен заменой DNS."
                     else
                         log_msg "Watchdog: замена слота $_trigger не подтверждена; текущий DNS сохранён."
                     fi
-                    _watchdog_action=1
-                    load_config >/dev/null 2>&1 || true
-                    refresh_runtime_capabilities >/dev/null 2>&1 || true
-                    WD_LAST_GUARD_TS="$(date +%s 2>/dev/null)"
-                    eval "WD_FAIL_${_trigger}=0"
-                done
-            fi
+                else
+                    log_msg "Watchdog: слот $_trigger не восстановился после перезапуска; автозамена выключена, выбранный DNS сохранён."
+                fi
+                _watchdog_action=1
+                load_config >/dev/null 2>&1 || true
+                refresh_runtime_capabilities >/dev/null 2>&1 || true
+                WD_LAST_GUARD_TS="$(date +%s 2>/dev/null)"
+                eval "WD_FAIL_${_trigger}=0"
+            done
         fi
 
         if [ "$_watchdog_action" = 0 ] && [ "$_failed" -eq 0 ] && [ "$_missing" -eq 0 ]; then
