@@ -1303,7 +1303,8 @@ grep -Fq 'uci set "https-dns-proxy.config.canary_domains_mozilla=$_canary_enable
 awk '/^apply_encrypted_dns_block\(\) \{/,/^}/' dns-manager.sh > "$tmp/encrypted_dns_apply.sh"
 grep -Fq 'ensure_dns_dot_block || return 1' "$tmp/encrypted_dns_apply.sh" || fail "encrypted-DNS protection does not add its DoT rule"
 grep -Fq 'remove_dns_dot_block || return 1' "$tmp/encrypted_dns_apply.sh" || fail "encrypted-DNS protection does not remove its DoT rule"
-grep -Fq 'uci set "https-dns-proxy.config.canary_domains_mozilla=$_want"' "$tmp/encrypted_dns_apply.sh" || fail "encrypted-DNS protection does not configure its independent browser DoH canary state"
+grep -Fq 'for _opt in canary_domains_icloud canary_domains_mozilla; do' "$tmp/encrypted_dns_apply.sh" || fail "encrypted-DNS protection does not configure both independent browser DoH canary states"
+grep -Fq 'uci set "https-dns-proxy.config.$_opt=$_want"' "$tmp/encrypted_dns_apply.sh" || fail "encrypted-DNS protection does not set canary values idempotently"
 
 # The background Watchdog calls this helper every cycle. Matching canary values
 # must not commit package config or restart every DoH instance repeatedly.
