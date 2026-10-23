@@ -1330,7 +1330,7 @@ if grep -Fq 'watchdog_scope_category' "$tmp/run_watchdog.sh"; then
     fail "one-shot Watchdog still requires a DNS profile"
 fi
 ok "one-shot and background Watchdog share the same safe per-slot repair path"
-grep -Fq 'eval "_guard_id=\\${SLOT_${_guard_slot}:-}"' dns-manager.sh || fail "integrity guard uses invalid nested slot expansion"
+grep -Fq 'eval "_guard_id=\${SLOT_${_guard_slot}:-}"' dns-manager.sh || fail "integrity guard uses invalid nested slot expansion"
 ok "integrity guard uses BusyBox ash-safe slot expansion"
 
 # A stalled local proxy is restarted by its slot port before optional DNS replacement.
