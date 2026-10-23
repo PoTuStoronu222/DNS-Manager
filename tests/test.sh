@@ -1496,7 +1496,8 @@ watchdog_restart_slot_instance() {
 }
 watchdog_common_dns_outage() {
     : > "$TMP_DIR/common-outage-called"
-    [ "$MODE" != outage ]
+    [ "$MODE" = outage ] && return 0
+    return 1
 }
 watchdog_pick_replacement() { : > "$TMP_DIR/candidate-picked"; return 1; }
 watchdog_apply_slot_candidate() { : > "$TMP_DIR/candidate-applied"; return 1; }
