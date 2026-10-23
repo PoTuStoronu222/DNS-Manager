@@ -2632,8 +2632,8 @@ status_snapshot_refresh() {
     printf '%s\n' "$_ss_now" > "$_ss_lock/started" 2>/dev/null || true
 
     (
-        _ss_tmp="$RUNTIME_DIR/status-snapshot.json.tmp.$"
-        _ss_stamp_tmp="$RUNTIME_DIR/status-snapshot.time.tmp.$"
+        _ss_tmp="$RUNTIME_DIR/status-snapshot.json.tmp.$_ss_now"
+        _ss_stamp_tmp="$RUNTIME_DIR/status-snapshot.time.tmp.$_ss_now"
         rm -f "$_ss_tmp" "$_ss_stamp_tmp" 2>/dev/null || true
         if "$0" call status_detail </dev/null > "$_ss_tmp" 2>/dev/null && grep -q '"ok":true' "$_ss_tmp"; then
             if mv -f "$_ss_tmp" "$_ss_cache" 2>/dev/null; then
