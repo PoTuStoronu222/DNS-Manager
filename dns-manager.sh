@@ -6,7 +6,8 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.78"
+VERSION="3.79"
+# 3.79: add noninteractive dependency setup for the Native LuCI installer.
 # 3.78: align the Watchdog startup log fallback with its 2-minute default.
 # 3.77: revalidate the selected slot without shared shell scratch variables.
 # 3.76: preserve slot identity during recovery revalidation after config reload.
@@ -5892,6 +5893,36 @@ ${C_YELLOW}↻ Обнаружены недостающие компоненты.
 
     return 0
 }
+# Install the runtime packages required by Native LuCI without opening the
+# interactive console or applying any DNS profile/settings.
+bootstrap_install_dependencies() {
+    preflight_readonly
+    init_dirs || { err_msg "Не удалось подготовить каталоги DNS Manager."; return 1; }
+    write_catalogs >/dev/null 2>&1 || true
+    load_config || { err_msg "Не удалось загрузить конфигурацию DNS Manager."; return 1; }
+    startup_required_function_check || return 1
+    refresh_runtime_capabilities
+    run_discovery >/dev/null 2>&1 || true
+    install_missing_dependencies || return 1
+
+    if [ "${DNS_MANAGER_BOOTSTRAP_MARK_FIRST_RUN:-0}" = 1 ] && [ "${FIRST_RUN_INITIAL:-0}" = 1 ]; then
+        if {
+            printf 'version=%s\\n' "$VERSION"
+            printf 'completed_at=%s\\n' "$(date +%s 2>/dev/null || printf 0)"
+        } > "${FIRST_RUN_MARKER}.tmp.$" 2>/dev/null &&
+            chmod 600 "${FIRST_RUN_MARKER}.tmp.$" 2>/dev/null &&
+            mv "${FIRST_RUN_MARKER}.tmp.$" "$FIRST_RUN_MARKER" 2>/dev/null; then
+            FIRST_RUN=0
+        else
+            rm -f "${FIRST_RUN_MARKER}.tmp.$" 2>/dev/null || true
+            warn_msg "Зависимости установлены, но маркер первого запуска не сохранён."
+        fi
+    fi
+
+    printf '\\nDNS Manager backend %s: необходимые компоненты проверены.\\n' "$VERSION"
+    printf 'Настройки DNS не применялись. Завершите настройку в LuCI → Службы → DNS Manager.\\n'
+    return 0
+}
 # ==========================================
 # ==========================================
 # ==========================================
@@ -7822,6 +7853,10 @@ startup_required_function_check() {
 # ==========================================
 # ==========================================
 case "${1:-}" in
+install-dependencies|--install-dependencies)
+    bootstrap_install_dependencies || exit 1
+    exit 0
+    ;;
 test-one|--test-one)
     _test_id="${2:-}"
     case "$_test_id" in ''|*[!A-Za-z0-9_-]*) printf '%s|INVALID||||INVALID_ID\n' "$_test_id"; exit 2;; esac
