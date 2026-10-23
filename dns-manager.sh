@@ -6334,20 +6334,22 @@ watchdog_dnsmasq_guard() {
     return 0
 }
 watchdog_service_recover() {
-    local _bad=0 _rs _rid _rport _rdomain
+    local _bad=0 _rs _rid _rport
+    # Whole-service recovery is for missing local listeners only. An upstream
+    # DNS timeout with an existing listener is handled by the shared per-slot
+    # repair path, which avoids restarting every resolver for one bad endpoint.
     for _rs in 1 2 3 4 5 6 RU; do
         eval "_rid=\${SLOT_${_rs}:-}"
         [ -n "$_rid" ] || continue
         eval "_rport=\${PORT_${_rs}:-}"
         [ -n "$_rport" ] || { _bad=1; break; }
-        case "$_rs" in RU) _rdomain="yandex.ru" ;; *) _rdomain="example.com" ;; esac
-        if ! listener_port_exists "$_rport" || ! local_dns_query_ok "$_rport" "$_rdomain"; then
+        if ! listener_port_exists "$_rport"; then
             _bad=1
             break
         fi
     done
     [ "$_bad" = 0 ] && return 0
-    log_msg "Обнаружен неработающий экземпляр https-dns-proxy. Выполняю восстановительный перезапуск."
+    log_msg "Обнаружен отсутствующий локальный listener https-dns-proxy. Выполняю восстановительный перезапуск."
     watchdog_restart_hdp || return 1
     return 0
 }
