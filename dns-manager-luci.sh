@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager full installer and LuCI companion
-# Version: 1.116
+# Version: 1.117
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -32,7 +32,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.116"
+VERSION="1.117"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -649,7 +649,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="1.116"
+SELF_VERSION="1.117"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -2214,7 +2214,7 @@ doh_status_json() {
     printf '}'
 }
 
-status_json() {
+status_detail_json() {
     _mv="$(manager_version 2>/dev/null || true)"
     # Do not use load_config() defaults here. An untouched OpenWrt router must
     # remain "not selected", not appear as the Manager's default bypass profile.
@@ -2612,6 +2612,83 @@ status_json() {
     done
     printf ']}'
 }
+
+status_snapshot_refresh() {
+    _ss_cache="$RUNTIME_DIR/status-snapshot.json"
+    _ss_stamp="$RUNTIME_DIR/status-snapshot.time"
+    _ss_lock="$RUNTIME_DIR/status-snapshot.lock"
+    mkdir -p "$RUNTIME_DIR" 2>/dev/null || return 1
+
+    _ss_now="$(date +%s 2>/dev/null || printf 0)"
+    if [ -d "$_ss_lock" ]; then
+        _ss_started="$(cat "$_ss_lock/started" 2>/dev/null || true)"
+        case "$_ss_started" in ''|*[!0-9]*) _ss_started=0;; esac
+        if [ "$_ss_started" -gt 0 ] && [ "$((_ss_now-_ss_started))" -gt 90 ] 2>/dev/null; then
+            rm -rf "$_ss_lock" 2>/dev/null || true
+        fi
+    fi
+    [ -d "$_ss_lock" ] && return 0
+    mkdir "$_ss_lock" 2>/dev/null || return 0
+    printf '%s\n' "$_ss_now" > "$_ss_lock/started" 2>/dev/null || true
+
+    (
+        _ss_tmp="$RUNTIME_DIR/status-snapshot.json.tmp.$_ss_now"
+        _ss_stamp_tmp="$RUNTIME_DIR/status-snapshot.time.tmp.$_ss_now"
+        rm -f "$_ss_tmp" "$_ss_stamp_tmp" 2>/dev/null || true
+        if "$0" call status_detail </dev/null > "$_ss_tmp" 2>/dev/null && grep -q '"ok":true' "$_ss_tmp"; then
+            if mv -f "$_ss_tmp" "$_ss_cache" 2>/dev/null; then
+                date +%s > "$_ss_stamp_tmp" 2>/dev/null || true
+                [ ! -s "$_ss_stamp_tmp" ] || mv -f "$_ss_stamp_tmp" "$_ss_stamp" 2>/dev/null || true
+            fi
+        fi
+        rm -f "$_ss_tmp" "$_ss_stamp_tmp" 2>/dev/null || true
+        rm -rf "$_ss_lock" 2>/dev/null || true
+    ) </dev/null >/dev/null 2>&1 &
+    return 0
+}
+
+# The dashboard receives a cached snapshot immediately. The expensive,
+# read-only status collection runs in one background process and is shared
+# by subsequent requests instead of blocking the LuCI XHR.
+status_json() {
+    _ss_cache="$RUNTIME_DIR/status-snapshot.json"
+    _ss_stamp="$RUNTIME_DIR/status-snapshot.time"
+    _ss_detail="$(jget detail)"
+    _ss_force=0
+    case "$_ss_detail" in 1|true) _ss_force=1;; esac
+
+    _ss_now="$(date +%s 2>/dev/null || printf 0)"
+    if [ -d "$RUNTIME_DIR/status-snapshot.lock" ]; then
+        _ss_started="$(cat "$RUNTIME_DIR/status-snapshot.lock/started" 2>/dev/null || true)"
+        case "$_ss_started" in ''|*[!0-9]*) _ss_started=0;; esac
+        if [ "$_ss_started" -gt 0 ] && [ "$((_ss_now-_ss_started))" -gt 90 ] 2>/dev/null; then
+            rm -rf "$RUNTIME_DIR/status-snapshot.lock" 2>/dev/null || true
+        fi
+    fi
+    _ss_cached_at="$(cat "$_ss_stamp" 2>/dev/null || printf 0)"
+    case "$_ss_cached_at" in ''|*[!0-9]*) _ss_cached_at=0;; esac
+    _ss_age=999999
+    if [ "$_ss_cached_at" -gt 0 ] && [ "$_ss_now" -ge "$_ss_cached_at" ] 2>/dev/null; then
+        _ss_age=$((_ss_now-_ss_cached_at))
+    fi
+
+    _ss_refreshing=0
+    if [ "$_ss_force" = 1 ] || [ ! -s "$_ss_cache" ] || [ "$_ss_age" -ge 15 ]; then
+        status_snapshot_refresh || true
+    fi
+    [ -d "$RUNTIME_DIR/status-snapshot.lock" ] && _ss_refreshing=1
+
+    if [ -s "$_ss_cache" ]; then
+        if [ "$_ss_refreshing" = 1 ]; then
+            sed '$s/}$/,"status_refreshing":true}/' "$_ss_cache" 2>/dev/null
+        else
+            cat "$_ss_cache"
+        fi
+    else
+        printf '{"ok":true,"status_pending":true}'
+    fi
+}
+
 # ---------- Heavy/authoritative path below ----------
 INPUT=""
 load_manager() {
@@ -3728,6 +3805,7 @@ case "${1:-}" in
     call)
         case "${2:-}" in
             status) INPUT="$(cat 2>/dev/null || true)"; status_json;;
+            status_detail) status_detail_json;;
             doh_status) doh_status_json;;
             network_status) network_status_json;;
             lan_devices) lan_devices_json;;
@@ -3782,7 +3860,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI common module version: 1.116
+// DNS Manager LuCI common module version: 1.117
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -4395,6 +4473,15 @@ function renderOverview(root,st){
   var e=root.querySelector('#dm-overview');if(!e)return;e.innerHTML='';
   var applied=renderActionStatus();if(applied)e.appendChild(applied);
   if(state.statusError)e.appendChild(E('div',{'class':'dm-inline-msg error'},state.statusError+' Проверьте: ubus call dns_manager status.'));
+
+  if(st&&st.status_pending){
+    e.appendChild(card('Состояние DNS',[
+      E('p',{'class':'dm-hint'},'Получаю состояние DNS Manager. Сетевые настройки не изменяются; тяжёлая диагностика выполняется отдельно.')
+    ]));
+    return;
+  }
+  if(st&&st.status_refreshing)
+    e.appendChild(E('div',{'class':'dm-inline-msg info'},'Обновляю подробное состояние в фоне…'));
 
   var dohState=String(st.doh||'').toLowerCase()==='yes'?'ok':'down';
   var doh=dohState==='ok'
@@ -5683,7 +5770,7 @@ function render(root,st){
   }
   setActiveTab(root,state.activeTab);
 }
-function routeStatusCall(){
+function routeStatusCall(force){
   switch(currentRoute()){
     case 'doh':
     case 'slots':
@@ -5715,32 +5802,14 @@ function routeStatusCall(){
         return {ok:true};
       });
     case 'dashboard':
-      return Promise.all([
-        callStatus(0),
-        callDohStatus()
-      ]).then(function(v){
-        var st=v[0]||{};
-        var force=v[1]||{};
-        [
-          'force','force_external','force_owner','force_manager','force_both',
-          'force_source','force_targets','force_state','force_status',
-          'force_notrack','force_update','force_family','force_ports','force_src',
-          'force_canary_icloud','force_canary_mozilla','force_procd_trigger_wan6',
-          'force_heartbeat_domain','force_heartbeat_sleep','force_heartbeat_wait',
-          'force_user','force_group','force_listen','force_consistent',
-          'force_owner_label','zapret_running','steer_dns_active'
-        ].forEach(function(k){
-          if(Object.prototype.hasOwnProperty.call(force,k))st[k]=force[k];
-        });
-        return st;
-      });
+      return callStatus(force ? 1 : 0);
     default:
       return callStatus(0);
   }
 }
-function ensureStatusPromise(){
+function ensureStatusPromise(force){
   if(window.dmStatusPromise)return window.dmStatusPromise;
-  window.dmStatusPromise=routeStatusCall().then(function(st){
+  window.dmStatusPromise=routeStatusCall(force).then(function(st){
     st=st||{};
     window.dmStatusCache={ts:Date.now(),data:st};
     return st;
@@ -5757,6 +5826,33 @@ function ensureStatusPromise(){
   return window.dmStatusPromise;
 }
 
+
+function scheduleDashboardStatusPoll(root,attempt){
+  attempt=Number(attempt||0);
+  if(!rootAlive(root)||currentRoute()!=='dashboard')return;
+  if(window.dmStatusSnapshotPollTimer)return;
+  if(attempt>=60){
+    state.statusError='Подробное состояние DNS пока не обновилось. Повторите обновление страницы позже.';
+    render(root,window.dmState||{});
+    return;
+  }
+  window.dmStatusSnapshotPollTimer=window.setTimeout(function(){
+    window.dmStatusSnapshotPollTimer=null;
+    if(!rootAlive(root)||currentRoute()!=='dashboard')return;
+    callStatus(0).then(function(st){
+      st=st||{};
+      window.dmStatusCache={ts:Date.now(),data:st};
+      window.dmState=st;
+      state.statusError='';
+      render(root,st);
+      if(st.status_pending||st.status_refreshing)
+        scheduleDashboardStatusPoll(root,attempt+1);
+    }).catch(function(){
+      scheduleDashboardStatusPoll(root,attempt+1);
+    });
+  },800);
+}
+
 function applyStatusToCurrentRoot(st){
   var root=window.dmCurrentRoot;
   if(!rootAlive(root))return;
@@ -5764,10 +5860,13 @@ function applyStatusToCurrentRoot(st){
   state.statusFromCache=false;
   window.dmState=st||{};
   render(root,st||{});
+  if(currentRoute()==='dashboard'&&(st.status_pending||st.status_refreshing))
+    scheduleDashboardStatusPoll(root,0);
+  else if(window.dmStatusSnapshotPollTimer){window.clearTimeout(window.dmStatusSnapshotPollTimer);window.dmStatusSnapshotPollTimer=null;}
 }
 function refresh(root,keepPosition){
   if(!rootAlive(root))return Promise.resolve();
-  return ensureStatusPromise().then(function(st){
+  return ensureStatusPromise(true).then(function(st){
     applyStatusToCurrentRoot(st);
   }).catch(function(err){
     if(!rootAlive(root))return;
@@ -6439,7 +6538,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 1.116
+// DNS Manager LuCI version: 1.117
 return view.extend({
   load: DM.load,
   render: DM.render,
