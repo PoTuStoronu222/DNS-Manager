@@ -1341,7 +1341,7 @@ grep -Fq '[ -n "$_port" ] || _port="$(hybrid_desired_port "$_slot")"' "$tmp/watc
 grep -Fq 'eval "_recheck_id=\${SLOT_${_slot}:-}"' "$tmp/watchdog_slot_restart.sh" || fail "stalled slot recovery reuses scratch variables changed by load_config"
 grep -Fq 'if [ "$_recheck_id" != "$_expected_id" ] || [ "$_recheck_port" != "$_expected_port" ]; then' "$tmp/watchdog_slot_restart.sh" || fail "stalled slot recovery does not guard against concurrent slot changes after reloading config"
 grep -Fq 'watchdog_slot_instance_pid "$_recheck_port"' "$tmp/watchdog_slot_restart.sh" || fail "stalled slot recovery does not use the revalidated port"
-grep -Fq 'local_dns_query_ok "$_port" "$_domain"' "$tmp/watchdog_slot_restart.sh" || fail "stalled slot recovery does not verify DNS after respawn"
+grep -Fq 'local_dns_query_ok "$_recheck_port" "$_domain"' "$tmp/watchdog_slot_restart.sh" || fail "stalled slot recovery does not verify DNS after respawn on the revalidated port"
 if grep -Fq '/etc/init.d/https-dns-proxy restart' "$tmp/watchdog_slot_restart.sh"; then
     fail "stalled slot recovery restarts every DoH slot instead of the affected instance"
 fi
