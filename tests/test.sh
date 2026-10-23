@@ -269,6 +269,34 @@ awk '
 node --check "$tmp/common.js" >/dev/null 2>&1 || fail "embedded JS: node --check"
 ok "embedded LuCI JS syntax"
 
+# Dashboard must combine its detailed status with the runtime forced-DNS
+# ownership result, otherwise its component can falsely say "disabled".
+awk '/^function routeStatusCall\(\)/,/^function ensureStatusPromise\(\)/' "$tmp/common.js" | sed '$d' > "$tmp/route_status_call.js"
+[ -s "$tmp/route_status_call.js" ] || fail "LuCI routeStatusCall extraction"
+ROUTE_STATUS_JS="$tmp/route_status_call.js" node <<'NODE' || fail "dashboard forced-DNS runtime status regression"
+const fs = require('fs');
+const vm = require('vm');
+const source = fs.readFileSync(process.env.ROUTE_STATUS_JS, 'utf8');
+const sandbox = {
+  currentRoute: () => 'dashboard',
+  callStatus: () => Promise.resolve({ok: true, watchdog: '1', force_manager: 0}),
+  callDohStatus: () => Promise.resolve({
+    ok: true, force_manager: 1, force_owner: 'manager',
+    force_status: 'manager', force_state: 1, force_both: 0
+  })
+};
+vm.createContext(sandbox);
+vm.runInContext(source, sandbox);
+sandbox.routeStatusCall().then(st => {
+  if (st.watchdog !== '1') throw new Error('dashboard detailed status was lost');
+  if (st.force_manager !== 1 || st.force_owner !== 'manager' ||
+      st.force_status !== 'manager' || st.force_state !== 1) {
+    throw new Error('dashboard did not use runtime forced-DNS status');
+  }
+}).catch(err => { console.error(err); process.exitCode = 1; });
+NODE
+ok "dashboard merges runtime forced-DNS ownership state"
+
 # Selected slot assignments must remain visible even when live DoH-instance
 # detection cannot associate one of the running instances with its slot.
 grep -Fq 'function displayDnsRows(st){' "$tmp/common.js" || fail "selected-DNS display normalizer is missing"
@@ -483,7 +511,7 @@ grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validat
 grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
 grep -q 'VERSION="3.82"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
-grep -q 'VERSION="1.114"' dns-manager-luci.sh || fail "LuCI version not bumped"
+grep -q 'VERSION="1.115"' dns-manager-luci.sh || fail "LuCI version not bumped"
 grep -Fq 'bootstrap_install_dependencies() {' dns-manager.sh || fail "backend noninteractive dependency bootstrap missing"
 grep -Fq 'install-dependencies|--install-dependencies)' dns-manager.sh || fail "backend dependency bootstrap command missing"
 grep -Fq 'install_missing_dependencies || return 1' dns-manager.sh || fail "bootstrap does not install the backend runtime dependencies"
