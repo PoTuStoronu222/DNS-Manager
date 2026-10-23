@@ -273,43 +273,45 @@ awk '
 node --check "$tmp/common.js" >/dev/null 2>&1 || fail "embedded JS: node --check"
 ok "embedded LuCI JS syntax"
 
-# Dashboard must overlay authoritative forced-DNS ownership from doh_status;
-# status_json intentionally stays lightweight and does not carry those fields.
-sed -n '/^function routeStatusCall()/,/^}/p' "$tmp/common.js" > "$tmp/route_status_call.js"
-grep -Fq "case 'dashboard':" "$tmp/route_status_call.js" || fail "dashboard status route missing"
-grep -Fq 'callStatus(0),' "$tmp/route_status_call.js" || fail "dashboard status source missing"
-grep -Fq 'callDohStatus()' "$tmp/route_status_call.js" || fail "dashboard does not fetch forced-DNS runtime state"
-grep -Fq "'force','force_external','force_owner','force_manager','force_both'" "$tmp/route_status_call.js" || fail "dashboard does not merge forced-DNS ownership fields"
-grep -Fq 'if(Object.prototype.hasOwnProperty.call(force,k))st[k]=force[k];' "$tmp/route_status_call.js" || fail "dashboard discards forced-DNS runtime state"
-ok "dashboard uses authoritative forced-DNS runtime status"
-
-# Dashboard must combine its detailed status with the runtime forced-DNS
-# ownership result, otherwise its component can falsely say "disabled".
+# Dashboard reads one cached status RPC. Full collection runs in the background,
+# and pending/stale snapshots are polled without blocking an XHR on the slow path.
 awk '/^function routeStatusCall\(\)/,/^function ensureStatusPromise\(\)/' "$tmp/common.js" | sed '$d' > "$tmp/route_status_call.js"
 [ -s "$tmp/route_status_call.js" ] || fail "LuCI routeStatusCall extraction"
-ROUTE_STATUS_JS="$tmp/route_status_call.js" node <<'NODE' || fail "dashboard forced-DNS runtime status regression"
+sed -n "/case 'dashboard':/,/default:/p" "$tmp/route_status_call.js" > "$tmp/dashboard_route.js"
+grep -Fq 'return callStatus(force ? 1 : 0);' "$tmp/dashboard_route.js" || fail "dashboard is not using the cached status RPC"
+if grep -Fq 'callDohStatus()' "$tmp/dashboard_route.js"; then
+    fail "dashboard repeats forced-DNS diagnostics through a second RPC"
+fi
+grep -Fq 'function scheduleDashboardStatusPoll(root,attempt)' "$tmp/common.js" || fail "dashboard does not poll the background status refresh"
+grep -Fq 'st.status_pending||st.status_refreshing' "$tmp/common.js" || fail "dashboard does not continue polling while the status snapshot is being refreshed"
+grep -Fq 'if(st&&st.status_pending)' "$tmp/common.js" || fail "dashboard does not render a safe loading state while no status snapshot exists"
+grep -Fq 'status_snapshot_refresh() {' "$tmp/backend.sh" || fail "backend status refresh is not backgrounded"
+grep -Fq 'status_detail_json() {' "$tmp/backend.sh" || fail "heavy status collector is not separated from fast RPC"
+grep -Fq '"status_pending":true' "$tmp/backend.sh" || fail "fast status RPC has no first-load response"
+grep -Fq 'status_detail) status_detail_json;;' "$tmp/backend.sh" || fail "background status collector dispatch is missing"
+ok "dashboard RPC is fast, cached, and refreshes detailed state in the background"
+
+ROUTE_STATUS_JS="$tmp/route_status_call.js" node <<'NODE' || fail "dashboard status-only RPC regression"
 const fs = require('fs');
 const vm = require('vm');
 const source = fs.readFileSync(process.env.ROUTE_STATUS_JS, 'utf8');
+const calls = [];
 const sandbox = {
   currentRoute: () => 'dashboard',
-  callStatus: () => Promise.resolve({ok: true, watchdog: '1', force_manager: 0}),
-  callDohStatus: () => Promise.resolve({
-    ok: true, force_manager: 1, force_owner: 'manager',
-    force_status: 'manager', force_state: 1, force_both: 0
-  })
+  callStatus: detail => {
+    calls.push(detail);
+    return Promise.resolve({ok: true, status_pending: true});
+  },
+  callDohStatus: () => { throw new Error('dashboard must not make a second slow RPC'); }
 };
 vm.createContext(sandbox);
 vm.runInContext(source, sandbox);
-sandbox.routeStatusCall().then(st => {
-  if (st.watchdog !== '1') throw new Error('dashboard detailed status was lost');
-  if (st.force_manager !== 1 || st.force_owner !== 'manager' ||
-      st.force_status !== 'manager' || st.force_state !== 1) {
-    throw new Error('dashboard did not use runtime forced-DNS status');
-  }
+sandbox.routeStatusCall(true).then(st => {
+  if (calls.length !== 1 || calls[0] !== 1) throw new Error('forced refresh did not use one status RPC');
+  if (!st.status_pending) throw new Error('dashboard status pending state was discarded');
 }).catch(err => { console.error(err); process.exitCode = 1; });
 NODE
-ok "dashboard merges runtime forced-DNS ownership state"
+ok "dashboard uses one non-blocking status RPC"
 
 # Selected slot assignments must remain visible even when live DoH-instance
 # detection cannot associate one of the running instances with its slot.
