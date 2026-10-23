@@ -595,7 +595,7 @@ ok "NTP status follows actual OpenWrt system.ntp.server configuration"
 awk '/^function watchdogCard\(root,st\)\{/,/^function renderTestAgeCommon/' "$tmp/common.js" > "$tmp/watchdog_card.sh"
 grep -q "Как часто проверять DNS" "$tmp/watchdog_card.sh" || fail "watchdog interval label is not user-friendly"
 grep -q "Ошибок подряд до замены" "$tmp/watchdog_card.sh" || fail "watchdog failure threshold label is not user-friendly"
-grep -q "Пауза между заменами одного DNS" "$tmp/watchdog_card.sh" || fail "watchdog repair cooldown label is not user-friendly"
+grep -q "Пауза между попытками восстановления DNS" "$tmp/watchdog_card.sh" || fail "watchdog repair cooldown label is not user-friendly"
 grep -q "1,60,'мин'" "$tmp/watchdog_card.sh" || fail "watchdog interval range is not practical"
 grep -q "5,120,'мин'" "$tmp/watchdog_card.sh" || fail "watchdog repair cooldown range is not practical"
 grep -q "'step':'1'" "$tmp/watchdog_card.sh" || fail "watchdog fields must use whole-number steps"
@@ -1942,7 +1942,7 @@ save_count="$(grep -o 'Сохранить' "$tmp/watchdog_card.js" | wc -l | tr 
 grep -q 'Сохранить настройки' "$tmp/watchdog_card.js" || fail "common watchdog save button missing"
 grep -q 'Дополнительные параметры' "$tmp/watchdog_card.js" || fail "advanced watchdog section missing"
 grep -q 'Контроль текущих DNS' "$tmp/watchdog_card.js" || fail "watchdog settings section title missing"
-for _wd_label in 'Как часто проверять DNS' 'Ошибок подряд до замены' 'Пауза между заменами одного DNS' 'Проверка DNS' 'Автозамена DNS'; do
+for _wd_label in 'Как часто проверять DNS' 'Ошибок подряд до замены' 'Пауза между попытками восстановления DNS' 'Проверка DNS' 'Автозамена DNS'; do
     grep -q "$_wd_label" "$tmp/watchdog_card.js" || fail "LuCI watchdog control missing: $_wd_label"
 done
 if grep -q 'Проверить сейчас' "$tmp/watchdog_card.js"; then
