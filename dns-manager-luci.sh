@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager full installer and LuCI companion
-# Version: 1.114
+# Version: 1.115
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -32,7 +32,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/luci-visual-refresh-20261023/dns-manager-luci.sh"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.114"
+VERSION="1.115"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -649,7 +649,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/luci-visual-refresh-20261023/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="1.114"
+SELF_VERSION="1.115"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -3781,7 +3781,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI common module version: 1.114
+// DNS Manager LuCI common module version: 1.115
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -4183,25 +4183,22 @@ function injectStyle(root){
    'html.dm-theme-dark .dm-wrap .dm-badge .dm-dot{box-shadow:0 0 0 3px rgba(255,255,255,.055)}html.dm-theme-dark .dm-wrap .dm-inline-msg,html.dm-theme-dark .dm-wrap .dm-update,html.dm-theme-dark .dm-wrap .dm-device-dns-note{background:#202a35;border-color:#354453}html.dm-theme-dark .dm-wrap .dm-applied.running{background:#3a301c;border-color:#705b2e;color:#ffe2a2}html.dm-theme-dark .dm-wrap .dm-setting-saving{background:#19382a;border-color:#2b6044}'+
    'html.dm-theme-dark .dm-wrap .dm-watchdog-record{background:#18212b;border-color:#303e4b}html.dm-theme-dark .dm-wrap .dm-watchdog-record:hover{border-color:#50667b}html.dm-theme-dark .dm-wrap .dm-log{background:#0f151c;border-color:#303b49;color:#d8e1eb}'+
    '@media(max-width:560px){.dm-wrap .dm-header{padding:13px 14px}.dm-wrap .dm-header h2{font-size:17px}.dm-wrap .dm-card{border-radius:11px}.dm-wrap .dm-page-tab{padding:8px 10px!important}}'+
-   /* Visual refresh v3: remove bright outlines and keep dark surfaces calm. */
-   '.dm-wrap .dm-header,.dm-wrap .dm-card,.dm-wrap .dm-page-nav,.dm-wrap .dm-catalog-item,.dm-wrap .dm-setting,.dm-wrap .dm-component-item,.dm-wrap .dm-component-group,.dm-wrap .dm-component-dns,.dm-wrap .dm-doh-row,.dm-wrap .dm-slot-table>.dm-slot-entry:not(.dm-device-dns-entry),.dm-wrap .dm-picker-item,.dm-wrap .dm-device-dns-note,.dm-wrap .dm-watchdog-record{border-color:transparent!important}'+
-   '.dm-wrap .dm-card{box-shadow:0 2px 10px rgba(15,23,42,.045)}.dm-wrap .dm-card:hover{border-color:transparent!important}.dm-wrap .dm-card>h3{border-bottom-color:rgba(110,118,129,.11)}.dm-wrap .dm-page-nav{box-shadow:none!important}.dm-wrap .dm-page-tab.active{border-color:transparent!important}'+
-   '.dm-wrap .dm-badge{border-color:transparent!important}.dm-wrap .dm-device-dns-option{border-color:transparent!important}.dm-wrap .dm-device-dns-option.is-selected{box-shadow:inset 3px 0 #3478c9}.dm-wrap .dm-update,.dm-wrap .dm-inline-msg,.dm-wrap .dm-applied,.dm-wrap .dm-force-external{border-color:transparent!important}'+
-   '.dm-wrap .dm-input,.dm-wrap input:not([type=checkbox]):not([type=radio]),.dm-wrap select,.dm-wrap textarea{border-color:rgba(110,118,129,.24)}.dm-wrap .dm-input:focus,.dm-wrap input:not([type=checkbox]):not([type=radio]):focus,.dm-wrap select:focus,.dm-wrap textarea:focus{box-shadow:none;border-color:#3478c9}'+
-   'html.dm-theme-dark .dm-wrap .dm-header{background:#1b2530!important;border-color:transparent!important;box-shadow:none!important}html.dm-theme-dark .dm-wrap .dm-header-by{background:#232e3a!important;border-color:transparent!important}'+
-   'html.dm-theme-dark .dm-wrap .dm-card{background:#1a232d!important;border-color:transparent!important;box-shadow:0 2px 10px rgba(0,0,0,.12)!important}html.dm-theme-dark .dm-wrap .dm-card:hover{background:#1c2732!important;border-color:transparent!important;box-shadow:0 4px 14px rgba(0,0,0,.18)!important}html.dm-theme-dark .dm-wrap .dm-card>h3{border-bottom-color:#2a3541!important}'+
-   'html.dm-theme-dark .dm-wrap .dm-page-nav{background:#171f29!important;border-color:transparent!important;box-shadow:none!important}html.dm-theme-dark .dm-wrap .dm-page-tab.active{background:#26394d!important;border-color:transparent!important;color:#b5d7ff!important}'+
-   'html.dm-theme-dark .dm-wrap .dm-row{border-bottom-color:rgba(150,170,190,.075)!important}html.dm-theme-dark .dm-wrap .dm-row:hover{background:rgba(150,170,190,.045)!important}'+
+   /* Dark-theme-only refinement: preserve the light theme exactly. */
+   'html.dm-theme-dark .dm-wrap .dm-header{background:#1b2530!important;border-color:transparent!important;box-shadow:none!important}html.dm-theme-dark .dm-wrap .dm-header:before{background:#6aa9f4!important}html.dm-theme-dark .dm-wrap .dm-header h2{color:#f1f5f9!important}html.dm-theme-dark .dm-wrap .dm-header-by{background:#232e3a!important;border-color:transparent!important;color:#c0ccda!important}'+
+   'html.dm-theme-dark .dm-wrap .dm-card{background:#1a232d!important;border-color:transparent!important;box-shadow:0 2px 10px rgba(0,0,0,.12)!important}html.dm-theme-dark .dm-wrap .dm-card:hover{background:#1c2732!important;border-color:transparent!important;box-shadow:0 4px 14px rgba(0,0,0,.18)!important}html.dm-theme-dark .dm-wrap .dm-card>h3{color:#edf2f7!important;border-bottom-color:#2a3541!important}html.dm-theme-dark .dm-wrap .dm-card>h3:before{background:#6aa9f4!important}'+
+   'html.dm-theme-dark .dm-wrap .dm-page-nav{background:#171f29!important;border-color:transparent!important;box-shadow:none!important}html.dm-theme-dark .dm-wrap .dm-page-tab{border-color:transparent!important;color:#c3ceda!important}html.dm-theme-dark .dm-wrap .dm-page-tab.active{background:#26394d!important;border-color:transparent!important;color:#b5d7ff!important;box-shadow:none!important}'+
+   'html.dm-theme-dark .dm-wrap .dm-row{border-bottom-color:rgba(150,170,190,.075)!important}html.dm-theme-dark .dm-wrap .dm-row:hover{background:rgba(150,170,190,.045)!important}html.dm-theme-dark .dm-wrap .dm-label{color:#b8c4d2!important;opacity:1!important}'+
    'html.dm-theme-dark .dm-wrap .dm-setting,html.dm-theme-dark .dm-wrap .dm-component-item,html.dm-theme-dark .dm-wrap .dm-component-group,html.dm-theme-dark .dm-wrap .dm-component-dns,html.dm-theme-dark .dm-wrap .dm-doh-row,html.dm-theme-dark .dm-wrap .dm-slot-table>.dm-slot-entry:not(.dm-device-dns-entry),html.dm-theme-dark .dm-wrap .dm-picker-item,html.dm-theme-dark .dm-wrap .dm-device-dns-note,html.dm-theme-dark .dm-wrap .dm-watchdog-record{background:#202a35!important;border-color:transparent!important;box-shadow:none!important}'+
    'html.dm-theme-dark .dm-wrap .dm-setting:hover,html.dm-theme-dark .dm-wrap .dm-picker-item:hover{background:#25313d!important;border-color:transparent!important}'+
-   'html.dm-theme-dark .dm-wrap .dm-catalog-item{background:#1b2530!important;border-color:transparent!important;box-shadow:0 2px 8px rgba(0,0,0,.12)!important}html.dm-theme-dark .dm-wrap .dm-catalog-item:hover{background:#202c38!important;border-color:transparent!important;box-shadow:0 4px 14px rgba(0,0,0,.2)!important}'+
+   'html.dm-theme-dark .dm-wrap .dm-catalog-item{background:#1b2530!important;border-color:transparent!important;box-shadow:0 2px 8px rgba(0,0,0,.12)!important}html.dm-theme-dark .dm-wrap .dm-catalog-item:hover{background:#202c38!important;border-color:transparent!important;box-shadow:0 4px 14px rgba(0,0,0,.2)!important}html.dm-theme-dark .dm-wrap .dm-catalog-item:before{background:#6aa9f4!important}'+
    'html.dm-theme-dark .dm-wrap .dm-device-dns-option{background:#1b2530!important;border-color:transparent!important}html.dm-theme-dark .dm-wrap .dm-device-dns-option.is-selected{background:#26394d!important;border-color:transparent!important;box-shadow:inset 3px 0 #6aa9f4!important}'+
    'html.dm-theme-dark .dm-wrap .dm-badge,html.dm-theme-dark .dm-wrap .dm-badge.dm-ok,html.dm-theme-dark .dm-wrap .dm-badge.dm-bad,html.dm-theme-dark .dm-wrap .dm-badge.dm-warn,html.dm-theme-dark .dm-wrap .dm-badge.dm-off{border-color:transparent!important}'+
    'html.dm-theme-dark .dm-wrap .dm-inline-msg,html.dm-theme-dark .dm-wrap .dm-update,html.dm-theme-dark .dm-wrap .dm-applied,html.dm-theme-dark .dm-wrap .dm-force-external{border-color:transparent!important}'+
    'html.dm-theme-dark .dm-wrap .dm-input,html.dm-theme-dark .dm-wrap input:not([type=checkbox]):not([type=radio]),html.dm-theme-dark .dm-wrap select,html.dm-theme-dark .dm-wrap textarea{background:#121922!important;border:1px solid #2a3541!important;color:#f0f4f8!important;box-shadow:none!important;outline:none!important;color-scheme:dark}'+
-   'html.dm-theme-dark .dm-wrap .dm-input:focus,html.dm-theme-dark .dm-wrap input:not([type=checkbox]):not([type=radio]):focus,html.dm-theme-dark .dm-wrap select:focus,html.dm-theme-dark .dm-wrap textarea:focus{border-color:#6aa9f4!important;box-shadow:none!important}html.dm-theme-dark .dm-wrap .dm-input:focus-visible,html.dm-theme-dark .dm-wrap input:focus-visible,html.dm-theme-dark .dm-wrap select:focus-visible,html.dm-theme-dark .dm-wrap textarea:focus-visible{outline:2px solid rgba(106,169,244,.55)!important;outline-offset:1px!important}'+
-   'html.dm-theme-dark .dm-wrap .cbi-button{border-color:transparent!important;box-shadow:none}html.dm-theme-dark .dm-wrap .cbi-button:hover:not(:disabled){box-shadow:none!important}html.dm-theme-dark .dm-wrap .dm-log{border-color:transparent!important}'+
-   '@media(prefers-reduced-motion:reduce){.dm-wrap *, .dm-wrap *:before, .dm-wrap *:after{animation-duration:.01ms!important;animation-iteration-count:1!important;scroll-behavior:auto!important;transition-duration:.01ms!important;transform:none!important}}';
+   'html.dm-theme-dark .dm-wrap .dm-input::placeholder,html.dm-theme-dark .dm-wrap input::placeholder,html.dm-theme-dark .dm-wrap textarea::placeholder{color:#9daaba!important;opacity:1!important}'+
+   'html.dm-theme-dark .dm-wrap .dm-input:focus,html.dm-theme-dark .dm-wrap input:not([type=checkbox]):not([type=radio]):focus,html.dm-theme-dark .dm-wrap select:focus,html.dm-theme-dark .dm-wrap textarea:focus{border-color:#6aa9f4!important;box-shadow:none!important}html.dm-theme-dark .dm-wrap .dm-input:focus-visible,html.dm-theme-dark .dm-wrap input:focus-visible,html.dm-theme-dark .dm-wrap select:focus-visible,html.dm-theme-dark .dm-wrap textarea:focus-visible{outline:2px solid rgba(106,169,244,.45)!important;outline-offset:1px!important}'+
+   'html.dm-theme-dark .dm-wrap .cbi-button{border-color:transparent!important;box-shadow:none!important}html.dm-theme-dark .dm-wrap .cbi-button:hover:not(:disabled){box-shadow:none!important}html.dm-theme-dark .dm-wrap .dm-log{border-color:transparent!important}'+
+   @media(prefers-reduced-motion:reduce){.dm-wrap *, .dm-wrap *:before, .dm-wrap *:after{animation-duration:.01ms!important;animation-iteration-count:1!important;scroll-behavior:auto!important;transition-duration:.01ms!important;transform:none!important}}';
 root.appendChild(E('style',{},css));
 }
 
@@ -6428,7 +6425,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 1.114
+// DNS Manager LuCI version: 1.115
 return view.extend({
   load: DM.load,
   render: DM.render,
