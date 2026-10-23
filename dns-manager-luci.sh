@@ -37,7 +37,7 @@ VERSION="1.110"
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
 
-BACKEND_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager.sh"
+BACKEND_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/luci-full-installer-20261023/dns-manager.sh"
 
 fetch_installer_source() {
     _out="$1"
@@ -158,6 +158,8 @@ install_backend() {
 }
 
 full_install() {
+    [ "$(id -u 2>/dev/null)" = 0 ] || { err "Установщик нужно запускать с правами root."; return 1; }
+    [ -f /etc/openwrt_release ] || { err "Этот установщик предназначен для OpenWrt."; return 1; }
     say "DNS Manager — установка Native LuCI"
     ensure_luci_webui || return 1
     install_backend || return 1
