@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.81"
+VERSION="3.82"
 # 3.80: publish the full Native LuCI installer with stable main update URLs.
 # 3.79: add noninteractive dependency setup for the Native LuCI installer.
 # 3.78: align the Watchdog startup log fallback with its 2-minute default.
@@ -6994,9 +6994,12 @@ watchdog_embedded_loop() {
             for _slot in 1 2 3 4 5 6 RU; do watchdog_loop_reset_slot "$_slot"; done
             sleep 5
         else
-            # A listener can remain open while its https-dns-proxy process is stuck.
-            # Restart only that slot first; replace DNS only if recovery fails and a common outage is excluded.
-            for _trigger in $_threshold_slots; do
+            if [ "$_global_dns_failure" != 0 ]; then
+                log_msg "Watchdog: общий или неопределённый DNS-сбой; перезапуск отдельных proxy и ротацию откладываю."
+            else
+                # A listener can remain open while its https-dns-proxy process is stuck.
+                # Restart only that slot first; replace DNS only if recovery fails and a common outage is excluded.
+                for _trigger in $_threshold_slots; do
                 watchdog_loop_repair_cooldown_ok "$_trigger" || continue
                 watchdog_loop_mark_repair "$_trigger"
                 eval "_trigger_id=\${SLOT_${_trigger}:-}"
@@ -7036,7 +7039,8 @@ watchdog_embedded_loop() {
                     WD_LAST_GUARD_TS="$(date +%s 2>/dev/null)"
                     eval "WD_FAIL_${_trigger}=0"
                 fi
-            done
+                done
+            fi
         fi
 
         if [ "$_watchdog_action" = 0 ] && [ "$_failed" -eq 0 ] && [ "$_missing" -eq 0 ]; then
