@@ -437,10 +437,12 @@ grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validat
 grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
 grep -q 'VERSION="3.74"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
-grep -q 'VERSION="1.106"' dns-manager-luci.sh || fail "LuCI version not bumped"
+grep -q 'VERSION="1.108"' dns-manager-luci.sh || fail "LuCI version not bumped"
 main_luci_url='https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh'
 [ "$(grep -Fc "$main_luci_url" dns-manager-luci.sh)" -eq 2 ] || fail "released LuCI updater URLs are not pinned to main"
 if grep -Fq 'https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/luci-dns-sections-tabs-20261022/dns-manager-luci.sh' dns-manager-luci.sh; then fail "released LuCI updater still targets the test branch"; fi
+grep -Fq '.dm-wrap .dm-watchdog-record{display:grid;grid-template-columns:58px minmax(0,1fr) auto;align-items:center;gap:10px;padding:8px 9px;border:1px solid rgba(110,118,129,.12);border-radius:8px;background:var(--background-color-medium,#fff)' dns-manager-luci.sh || fail "Watchdog result rows do not use the LuCI theme background variable"
+ok "Watchdog result rows follow the active LuCI theme"
 ok "LuCI version and update source target main"
 grep -Fq 'return m ~ /^[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]$/' dns-manager-luci.sh || fail "LAN inventory merge rejects valid six-octet MAC addresses"
 grep -Fq 'NF >= 2 && $2 ~ /^[1-6](,[1-6])*$/ &&' dns-manager-luci.sh || fail "saved LAN device assignments do not require valid DNS slot lists"
@@ -1416,6 +1418,12 @@ awk '/^function watchdogComponentItem\(/,/^}/' "$tmp/common.js" | grep -qE 'btn\
 grep -q "function forceComponentItem" "$tmp/common.js" || fail "LuCI forced-DNS component state helper missing"
 awk '/^function forceComponentItem\(/,/^}/' "$tmp/common.js" | grep -qE 'btn\(|setSetting\(' && fail "LuCI components block still contains a forced-DNS action button"
 grep -Fq "watchdogComponentItem(st,wd,wdDetails)" "$tmp/common.js" || fail "LuCI watchdog component helper is not used as a state-only item"
+grep -q "function watchdogReplacementComponentItem" "$tmp/common.js" || fail "LuCI auto-replacement component state helper missing"
+awk '/^function watchdogReplacementComponentItem\(/,/^}/' "$tmp/common.js" | grep -qE 'btn\(|setSetting\(' && fail "LuCI auto-replacement component must remain a state-only item"
+grep -Fq "watchdogReplacementComponentItem(wdAuto,wdAutoDetails)" "$tmp/common.js" || fail "LuCI auto-replacement component is not shown separately"
+grep -Fq "var wdDetails='Интервал: каждые '" "$tmp/common.js" || fail "LuCI check component details must describe interval only"
+grep -Fq "var wdAutoDetails='Замена после '" "$tmp/common.js" || fail "LuCI replacement component details must describe failure threshold separately"
+grep -Fq "var watchdogAutoReplace=yes(st.watchdog_autoreplace)" "$tmp/common.js" || fail "LuCI replacement state does not use the independent auto-replace setting"
 grep -Fq "forceComponentItem(st)" "$tmp/common.js" || fail "LuCI forced-DNS component helper is not used as a state-only item"
 grep -Fq 'if [ "$_module" = watchdog ] && [ "$_new" = 1 ]; then' dns-manager.sh || fail "CLI watchdog no-profile guard missing"
 grep -Fq 'if [ "$_enabled" = 1 ] && [ -z "$SLOT_1$SLOT_2$SLOT_3$SLOT_4$SLOT_5$SLOT_6$SLOT_RU" ]; then' "$tmp/backend.sh" || fail "RPC watchdog no-profile guard missing"
@@ -1916,6 +1924,17 @@ if grep -q 'Проверить сейчас' "$tmp/watchdog_card.js"; then
 fi
 grep -q 'локальный порт назначенного DoH' "$tmp/watchdog_card.js" || fail "Watchdog probe is not explained in LuCI"
 grep -q 'Полный разовый тест текущих DoH' "$tmp/watchdog_card.js" || fail "LuCI does not direct users to the distinct full DNS test"
+
+# The Network tab uses network_status_json rather than the dashboard status RPC.
+# It must expose the latest saved watchdog results as well as the service flags.
+awk '/^network_status_json\(\) \{/,/^}/' dns-manager-luci.sh > "$tmp/network_status_json.sh"
+[ -s "$tmp/network_status_json.sh" ] || fail "network status function extraction"
+for _wd_field in watchdog_last_check watchdog_last_checked watchdog_last_failed watchdog_last_category watchdog_last_records; do
+    grep -Fq "$_wd_field" "$tmp/network_status_json.sh" || fail "network status omits saved watchdog field: $_wd_field"
+done
+grep -Fq 'dns-watchdog-check-results.conf' "$tmp/network_status_json.sh" || fail "network status does not read saved watchdog results"
+grep -Fq 'while IFS=' "$tmp/network_status_json.sh" || fail "network status does not serialize watchdog result records"
+ok "network status exposes saved watchdog results"
 if grep -q 'Сколько DNS можно заменить за раз' "$tmp/watchdog_card.js"; then
     fail "LuCI still shows the removed per-cycle repair-count setting"
 fi
