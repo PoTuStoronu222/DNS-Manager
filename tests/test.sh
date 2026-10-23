@@ -257,7 +257,7 @@ ok "embedded backend syntax"
 # a false "off" state even while manager.conf contains WATCHDOG_AUTOREPLACE=1.
 awk '/^network_status_json\(\) \{/,/^time_status_json\(\) \{/' "$tmp/backend.sh" | sed '$d' > "$tmp/network_status_json.sh"
 [ -s "$tmp/network_status_json.sh" ] || fail "network status JSON helper extraction"
-grep -Fq 'watchdog_autoreplace\":%s' "$tmp/network_status_json.sh" || fail "network status RPC omits Watchdog auto-replacement state"
+grep -Fq 'watchdog_autoreplace":%s' "$tmp/network_status_json.sh" || fail "network status RPC omits Watchdog auto-replacement state"
 ok "network tuning reports the saved Watchdog auto-replacement state"
 grep -Fq "printf ',\"watchdog_autoreplace\":%s'" "$tmp/network_status_json.sh" || fail "network status auto-replacement JSON has invalid quote escaping"
 ok "network tuning auto-replacement JSON uses valid quoting"
@@ -275,7 +275,7 @@ ok "embedded LuCI JS syntax"
 
 # Dashboard must overlay authoritative forced-DNS ownership from doh_status;
 # status_json intentionally stays lightweight and does not carry those fields.
-awk '/^function routeStatusCall\\(\\) \\{/,/^}/' "$tmp/common.js" > "$tmp/route_status_call.js"
+sed -n '/^function routeStatusCall()/,/^}/p' "$tmp/common.js" > "$tmp/route_status_call.js"
 grep -Fq "case 'dashboard':" "$tmp/route_status_call.js" || fail "dashboard status route missing"
 grep -Fq 'callStatus(0),' "$tmp/route_status_call.js" || fail "dashboard status source missing"
 grep -Fq 'callDohStatus()' "$tmp/route_status_call.js" || fail "dashboard does not fetch forced-DNS runtime state"
