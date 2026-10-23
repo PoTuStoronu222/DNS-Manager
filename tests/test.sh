@@ -275,7 +275,7 @@ ok "embedded LuCI JS syntax"
 
 # Dashboard reads one cached status RPC. Full collection runs in the background,
 # and pending/stale snapshots are polled without blocking an XHR on the slow path.
-awk '/^function routeStatusCall\(\)/,/^function ensureStatusPromise\(\)/' "$tmp/common.js" | sed '$d' > "$tmp/route_status_call.js"
+awk '/^function routeStatusCall[^)]*\)/,/^function ensureStatusPromise\(\)/' "$tmp/common.js" | sed '$d' > "$tmp/route_status_call.js"
 [ -s "$tmp/route_status_call.js" ] || fail "LuCI routeStatusCall extraction"
 sed -n "/case 'dashboard':/,/default:/p" "$tmp/route_status_call.js" > "$tmp/dashboard_route.js"
 grep -Fq 'return callStatus(force ? 1 : 0);' "$tmp/dashboard_route.js" || fail "dashboard is not using the cached status RPC"
@@ -424,7 +424,7 @@ grep -Fq "method:'set_device_dns', params:['mac','slots']" dns-manager-luci.sh |
 if grep -Fq 'Общий выбор DNS применяется ко всем LAN-устройствам' "$tmp/common.js"; then fail "global DNS selector remains in LuCI"; fi
 if grep -Fq 'Включить общий DoH для LAN' "$tmp/common.js"; then fail "global DoH switch remains in LuCI"; fi
 ok "LuCI keeps only individual DNS binding and normal DNS for unassigned devices"
-awk '/^function routeStatusCall\(\)/,/^}/' "$tmp/common.js" > "$tmp/route_status_call.js"
+awk '/^function routeStatusCall[^)]*\)/,/^}/' "$tmp/common.js" > "$tmp/route_status_call.js"
 awk "/case 'catalog':/,/case 'log':/" "$tmp/route_status_call.js" > "$tmp/catalog_route_status.js"
 grep -Fq 'callDohStatus()' "$tmp/catalog_route_status.js" || fail "LuCI catalog refresh does not reload live DNS slots"
 grep -Fq 'callPageMeta()' "$tmp/catalog_route_status.js" || fail "LuCI catalog refresh dropped its page metadata"
@@ -527,7 +527,7 @@ grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validat
 grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
 grep -q 'VERSION="3.82"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
-grep -q 'VERSION="1.116"' dns-manager-luci.sh || fail "LuCI version not bumped"
+grep -q 'VERSION="1.117"' dns-manager-luci.sh || fail "LuCI version not bumped"
 grep -Fq 'bootstrap_install_dependencies() {' dns-manager.sh || fail "backend noninteractive dependency bootstrap missing"
 grep -Fq 'install-dependencies|--install-dependencies)' dns-manager.sh || fail "backend dependency bootstrap command missing"
 grep -Fq 'install_missing_dependencies || return 1' dns-manager.sh || fail "bootstrap does not install the backend runtime dependencies"
