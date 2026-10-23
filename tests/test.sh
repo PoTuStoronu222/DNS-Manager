@@ -1342,8 +1342,8 @@ uci() {
         get)
             case "${2:-}" in
                 https-dns-proxy.config) return 0 ;;
-                https-dns-proxy.config.canary_domains_icloud) printf '%s\\n' "$MOCK_ICLOUD" ;;
-                https-dns-proxy.config.canary_domains_mozilla) printf '%s\\n' "$MOCK_MOZILLA" ;;
+                https-dns-proxy.config.canary_domains_icloud) printf '%s\n' "$MOCK_ICLOUD" ;;
+                https-dns-proxy.config.canary_domains_mozilla) printf '%s\n' "$MOCK_MOZILLA" ;;
                 *) return 1 ;;
             esac
             ;;
@@ -1353,10 +1353,10 @@ uci() {
                 https-dns-proxy.config.canary_domains_mozilla) MOCK_MOZILLA="${2#*=}" ;;
                 *) return 1 ;;
             esac
-            printf 'set %s\\n' "$2" >> "$MOCK_LOG"
+            printf 'set %s\n' "$2" >> "$MOCK_LOG"
             ;;
         commit)
-            printf 'commit %s\\n' "$2" >> "$MOCK_LOG"
+            printf 'commit %s\n' "$2" >> "$MOCK_LOG"
             ;;
         *) return 1 ;;
     esac
