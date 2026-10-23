@@ -7706,6 +7706,21 @@ watchdog_slot_target_run() {
         release_mutation_lock
         return 0
     fi
+
+    # The auto-replacement toggle applies to every entry point, including the
+    # one-shot CLI command. With replacement disabled, a failed upstream may
+    # still be recovered by restarting only this slot's existing instance, but
+    # the selected DNS identifier must remain unchanged.
+    if [ "${WATCHDOG_AUTOREPLACE:-0}" != 1 ]; then
+        release_mutation_lock
+        if watchdog_restart_slot_instance "$_slot" "$_old_id" "$_target_port"; then
+            log_msg "Watchdog slot $_slot: экземпляр DNS восстановлен; выбранный сервер сохранён, автозамена выключена."
+            return 0
+        fi
+        log_msg "Watchdog slot $_slot: восстановить экземпляр не удалось; выбранный DNS сохранён, автозамена выключена."
+        return 1
+    fi
+
     if [ "$_target_cat" = custom ]; then
         log_msg "Watchdog slot $_slot: пользовательский DoH $(dns_name "$_old_id") не отвечает; автоматическую замену не выполняю, URL оставляю без изменений."
         release_mutation_lock
