@@ -6,7 +6,8 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.77"
+VERSION="3.78"
+# 3.78: align the Watchdog startup log fallback with its 2-minute default.
 # 3.77: revalidate the selected slot without shared shell scratch variables.
 # 3.76: preserve slot identity during recovery revalidation after config reload.
 # 3.75: recover a stalled local DoH slot before optional DNS replacement.
@@ -6808,7 +6809,7 @@ watchdog_embedded_loop() {
     WD_LAST_GUARD_TS="$(date +%s 2>/dev/null)"
     CHECKER_MISSING_LOGGED=0
     if [ "${WATCHDOG_ENABLED:-0}" = 1 ]; then
-        log_msg "Фоновый DNS Watchdog запущен: проверка каждые ${WATCHDOG_INTERVAL:-600}с, замена после ${WATCHDOG_FAIL_THRESHOLD:-2} последовательных циклов."
+        log_msg "Фоновый DNS Watchdog запущен: проверка каждые ${WATCHDOG_INTERVAL:-120}с, восстановление после ${WATCHDOG_FAIL_THRESHOLD:-2} последовательных сбоев."
     else
         log_msg "Фоновая проверка forced-DNS/Steer запущена; проверка и замена DNS-серверов выключены."
     fi
