@@ -725,7 +725,7 @@ view_luci="$(sed -n 's|^// DNS Manager LuCI common module version:[[:space:]]*||
 dashboard_view_luci="$(sed -n 's|^// DNS Manager LuCI version: *||p' dns-manager-luci.sh | head -n1)"
 [ "$top_luci" = "$dashboard_view_luci" ] || fail "dashboard view version marker is stale"
 ok "LuCI version markers synchronized ($top_luci)"
-grep -Fq 'VERSION="3.81"' dns-manager.sh || fail "DNS Manager version marker is not 3.80"
+grep -Fq 'VERSION="3.81"' dns-manager.sh || fail "DNS Manager version marker is not 3.81"
 ok "DNS Manager version marker synchronized (3.80)"
 grep -Fq "assignment.appendChild(btn('Удалить'" dns-manager-luci.sh || fail "Custom DNS delete button is not aligned with the assignment action"
 grep -Fq ".dm-catalog-item-custom{grid-column:auto}" dns-manager-luci.sh || fail "Custom DNS card is wider than a stock catalog card"
@@ -1357,7 +1357,7 @@ fi
 # Background repair follows each selected DNS resolver's own category.
 # The checker and auto-replace toggles are independent; candidate discovery has no fixed cap.
 awk '/^watchdog_embedded_loop\(\) \{/,/^run_watchdog\(\) \{/' dns-manager.sh > "$tmp/watchdog_embedded_loop.sh"
-grep -Fq 'if [ "${WATCHDOG_AUTOREPLACE:-0}" = 1 ]; then' "$tmp/watchdog_embedded_loop.sh" || fail "periodic replacement is not gated by auto-replace toggle"
+grep -Fq 'elif [ "${WATCHDOG_AUTOREPLACE:-0}" = 1 ]; then' "$tmp/watchdog_embedded_loop.sh" || fail "periodic replacement is not gated by auto-replace toggle"
 grep -Fq ': "${WATCHDOG_AUTOREPLACE:=${WATCHDOG_ENABLED:-0}}"' dns-manager.sh || fail "legacy config has no compatible auto-replace default"
 if grep -Fq 'WATCHDOG_MAX_CANDIDATES' dns-manager.sh dns-manager-luci.sh; then
     fail "DNS replacement retains a fixed candidate cap"
@@ -1476,7 +1476,7 @@ if grep -Fq '/etc/init.d/https-dns-proxy restart' "$tmp/watchdog_slot_restart.sh
     fail "stalled slot recovery restarts every DoH slot instead of the affected instance"
 fi
 grep -Fq 'if watchdog_restart_slot_instance "$_trigger" "$_trigger_id" "$_trigger_port"; then' "$tmp/watchdog_embedded_loop.sh" || fail "background watchdog does not try local slot recovery first"
-grep -Fq 'replace the selected DNS only if slot recovery fails and a common outage is excluded' "$tmp/watchdog_embedded_loop.sh" || fail "DNS replacement is not gated by failed slot recovery and the common-outage guard"
+grep -Fq 'replace DNS only if recovery fails and a common outage is excluded' "$tmp/watchdog_embedded_loop.sh" || fail "DNS replacement is not gated by failed slot recovery and the common-outage guard"
 grep -Fq '$6 == "FAIL" { $6 = "OK" }' "$tmp/watchdog_embedded_loop.sh" || fail "successful slot recovery does not clear the recorded false failure"
 ok "stalled DoH slot is restarted in isolation before optional DNS replacement"
 
