@@ -1389,24 +1389,89 @@ dns_path_conflict_nft() {
     _lan_dev="$(uci -q get network.lan.device 2>/dev/null)"
     _lan_if="$(uci -q get network.lan.ifname 2>/dev/null)"
     nft -a list ruleset 2>/dev/null | awk -v ld="$_lan_dev" -v li="$_lan_if" '
-        /^[[:space:]]*chain[[:space:]][^ {]+[[:space:]]*\{/ { c=$2; gsub(/[^A-Za-z0-9_.-]/,"",c); next }
-        /iifname[[:space:]]+"[^"]+"/ && /dport[[:space:]]+53/ && /#[[:space:]]*handle[[:space:]]+[0-9]+/ {
-            ok=0; if ($0 ~ /iifname[[:space:]]+"br-lan"/) ok=1
-            if (ld != "" && index($0,"iifname \"" ld "\"")>0) ok=1
-            if (li != "" && index($0,"iifname \"" li "\"")>0) ok=1
-            if (!ok) next
-            port=""
-            if ($0 ~ /redirect[[:space:]]+to[[:space:]]+:[0-9]+/) {
-                line=$0; sub(/^.*redirect[[:space:]]+to[[:space:]]+:/,"",line); port=line; sub(/[^0-9].*$/,"",port)
-            } else if ($0 ~ /dnat[[:space:]]+to[[:space:]]+[^[:space:]]+:[0-9]+/) {
-                line=$0; sub(/^.*dnat[[:space:]]+to[[:space:]]+[^:[:space:]]*:/,"",line); port=line; sub(/[^0-9].*$/,"",port)
+        function lan_iif(line) {
+            if (line ~ /iifname[[:space:]]+"br-lan"/) return 1
+            if (ld != "" && index(line,"iifname \"" ld "\"")>0) return 1
+            if (li != "" && index(line,"iifname \"" li "\"")>0) return 1
+            return 0
+        }
+        /^[[:space:]]*table[[:space:]]+/ {
+            table=$2 "/" $3
+            gsub(/[{}]/,"",table)
+            chain=""
+            next
+        }
+        /^[[:space:]]*chain[[:space:]][^ {]+[[:space:]]*\{/ {
+            chain=$2
+            gsub(/[^A-Za-z0-9_.-]/,"",chain)
+            next
+        }
+        {
+            if (table == "" || chain == "") next
+            line=$0
+
+            # fw4 places the LAN interface match on the parent chain jump
+            # (for example dstnat -> dstnat_lan), not on each child rule.
+            # Keep that chain relationship so LAN-scoped redirects in child
+            # chains are recognized without requiring iifname on every rule.
+            if (match(line, /[[:space:]](jump|goto)[[:space:]]+[A-Za-z0-9_.-]+/)) {
+                jump_text=substr(line,RSTART,RLENGTH)
+                sub(/^[[:space:]]*(jump|goto)[[:space:]]+/,"",jump_text)
+                split(jump_text,jump_parts,/[[:space:]]/)
+                if (jump_parts[1] != "") {
+                    edge_count++
+                    edge_from[edge_count]=table SUBSEP chain
+                    edge_to[edge_count]=table SUBSEP jump_parts[1]
+                    if (lan_iif(line)) reachable[table SUBSEP jump_parts[1]]=1
+                }
             }
-            # https-dns-proxy legitimately creates redirect :53 when
-            # port 53 is already listening (typically dnsmasq). That is still
-            # its own forced-DNS firewall rule, not an inactive path.
-            if (port == "" || (port == "53" && $0 !~ /ubus:https-dns-proxy/)) next
-            h=$0; sub(/^.*#[[:space:]]*handle[[:space:]]+/,"",h); sub(/[^0-9].*$/,"",h)
-            if (c != "" && h != "") print c "|" h "|" $0
+
+            if (line ~ /dport[[:space:]]+53/ &&
+                line ~ /#[[:space:]]*handle[[:space:]]+[0-9]+/ &&
+                line ~ /(redirect[[:space:]]+to|dnat[[:space:]]+to)/) {
+                rule_count++
+                rule_table[rule_count]=table
+                rule_chain[rule_count]=chain
+                rule_line[rule_count]=line
+            }
+        }
+        END {
+            changed=1
+            while (changed) {
+                changed=0
+                for (e=1; e<=edge_count; e++) {
+                    if (reachable[edge_from[e]] && !reachable[edge_to[e]]) {
+                        reachable[edge_to[e]]=1
+                        changed=1
+                    }
+                }
+            }
+            for (r=1; r<=rule_count; r++) {
+                line=rule_line[r]
+                if (!lan_iif(line) && !reachable[rule_table[r] SUBSEP rule_chain[r]]) continue
+                port=""
+                if (line ~ /redirect[[:space:]]+to[[:space:]]+:[0-9]+/) {
+                    target=line
+                    sub(/^.*redirect[[:space:]]+to[[:space:]]+/,"",target)
+                    sub(/^:/,"",target)
+                    port=target
+                    sub(/[^0-9].*$/,"",port)
+                } else if (line ~ /dnat[[:space:]]+to[[:space:]]+[^[:space:]]+:[0-9]+/) {
+                    target=line
+                    sub(/^.*dnat[[:space:]]+to[[:space:]]+[^:[:space:]]*:/,"",target)
+                    port=target
+                    sub(/[^0-9].*$/,"",port)
+                }
+                # https-dns-proxy legitimately creates redirect :53 when
+                # port 53 is already listening (typically dnsmasq). That is still
+                # its own forced-DNS firewall rule, not an inactive path.
+                if (port == "" || (port == "53" && line !~ /ubus:https-dns-proxy/)) continue
+                h=line
+                sub(/^.*#[[:space:]]*handle[[:space:]]+/,"",h)
+                sub(/[^0-9].*$/,"",h)
+                c=rule_chain[r]
+                if (c != "" && h != "") print c "|" h "|" line
+            }
         }
     ' > "$_out"
     if [ -s "$_out" ]; then
@@ -3049,6 +3114,7 @@ remove_dns_force() {
     sync_hdp_force_contract 0
 }
 apply_encrypted_dns_block() {
+    local _want _opt _current _changed
     _want="${BLOCK_EXTERNAL_DNS:-0}"
     case "$_want" in 0|1) ;; *) return 1 ;; esac
 
@@ -3067,11 +3133,20 @@ apply_encrypted_dns_block() {
 
     # Write explicit 0/1 values: the package defaults both canary options to 1
     # when they are absent, so deleting them would not disable this protection.
-    uci set "https-dns-proxy.config.canary_domains_icloud=$_want" || return 1
-    uci set "https-dns-proxy.config.canary_domains_mozilla=$_want" || return 1
-    uci commit https-dns-proxy || return 1
-    if [ -x /etc/init.d/https-dns-proxy ] && /etc/init.d/https-dns-proxy running >/dev/null 2>&1; then
-        /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || return 1
+    # This helper runs inside each Watchdog cycle; do not commit/restart the
+    # entire https-dns-proxy service when both values already match.
+    _changed=0
+    for _opt in canary_domains_icloud canary_domains_mozilla; do
+        _current="$(uci -q get "https-dns-proxy.config.$_opt" 2>/dev/null || true)"
+        [ "$_current" = "$_want" ] && continue
+        uci set "https-dns-proxy.config.$_opt=$_want" || return 1
+        _changed=1
+    done
+    if [ "$_changed" = 1 ]; then
+        uci commit https-dns-proxy || return 1
+        if [ -x /etc/init.d/https-dns-proxy ] && /etc/init.d/https-dns-proxy running >/dev/null 2>&1; then
+            /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || return 1
+        fi
     fi
     return 0
 }
@@ -6269,20 +6344,22 @@ watchdog_dnsmasq_guard() {
     return 0
 }
 watchdog_service_recover() {
-    local _bad=0 _rs _rid _rport _rdomain
+    local _bad=0 _rs _rid _rport
+    # Whole-service recovery is for missing local listeners only. An upstream
+    # DNS timeout with an existing listener is handled by the shared per-slot
+    # repair path, which avoids restarting every resolver for one bad endpoint.
     for _rs in 1 2 3 4 5 6 RU; do
         eval "_rid=\${SLOT_${_rs}:-}"
         [ -n "$_rid" ] || continue
         eval "_rport=\${PORT_${_rs}:-}"
         [ -n "$_rport" ] || { _bad=1; break; }
-        case "$_rs" in RU) _rdomain="yandex.ru" ;; *) _rdomain="example.com" ;; esac
-        if ! listener_port_exists "$_rport" || ! local_dns_query_ok "$_rport" "$_rdomain"; then
+        if ! listener_port_exists "$_rport"; then
             _bad=1
             break
         fi
     done
     [ "$_bad" = 0 ] && return 0
-    log_msg "Обнаружен неработающий экземпляр https-dns-proxy. Выполняю восстановительный перезапуск."
+    log_msg "Обнаружен отсутствующий локальный listener https-dns-proxy. Выполняю восстановительный перезапуск."
     watchdog_restart_hdp || return 1
     return 0
 }
@@ -7641,6 +7718,33 @@ watchdog_slot_target_run() {
         release_mutation_lock
         return 0
     fi
+
+    # The auto-replacement toggle applies to every entry point, including the
+    # one-shot CLI command. With replacement disabled, first avoid per-slot
+    # actions during a common DNS/WAN outage; otherwise only the existing
+    # instance may be restarted and the selected DNS identifier stays unchanged.
+    if [ "${WATCHDOG_AUTOREPLACE:-0}" != 1 ]; then
+        if watchdog_common_dns_outage; then
+            log_msg "Watchdog slot $_slot: вероятен общий сбой WAN/upstream; выбранный DNS и экземпляр не меняю."
+            release_mutation_lock
+            return 1
+        else
+            _outage_rc=$?
+            if [ "$_outage_rc" -eq 2 ]; then
+                log_msg "Watchdog slot $_slot: не удалось исключить общий сбой DNS/WAN; выбранный DNS и экземпляр не меняю."
+                release_mutation_lock
+                return 1
+            fi
+        fi
+        release_mutation_lock
+        if watchdog_restart_slot_instance "$_slot" "$_old_id" "$_target_port"; then
+            log_msg "Watchdog slot $_slot: экземпляр DNS восстановлен; выбранный сервер сохранён, автозамена выключена."
+            return 0
+        fi
+        log_msg "Watchdog slot $_slot: восстановить экземпляр не удалось; выбранный DNS сохранён, автозамена выключена."
+        return 1
+    fi
+
     if [ "$_target_cat" = custom ]; then
         log_msg "Watchdog slot $_slot: пользовательский DoH $(dns_name "$_old_id") не отвечает; автоматическую замену не выполняю, URL оставляю без изменений."
         release_mutation_lock
