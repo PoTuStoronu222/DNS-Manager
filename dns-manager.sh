@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.80"
+VERSION="3.81"
 # 3.80: publish the full Native LuCI installer with stable main update URLs.
 # 3.79: add noninteractive dependency setup for the Native LuCI installer.
 # 3.78: align the Watchdog startup log fallback with its 2-minute default.
@@ -97,7 +97,7 @@ WATCHDOG_CRON_PID_COUNT=0
 WATCHDOG_CRON_BOOT_ENABLED="unknown"
 WATCHDOG_CRON_DETECT_SOURCE="none"
 WATCHDOG_CRON_SCHEDULER_STATE="$STATE_DIR/watchdog-scheduler.state"
-LUCI_COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
+LUCI_COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/fix/watchdog-autoreplace-fail-closed-20261023/dns-manager-luci.sh"
 LUCI_COMPANION_CACHE="$BASE_DIR/dns-manager-luci.sh"
 LUCI_STATE_FILE="$CFG_DIR/luci-state.conf"
 LUCI_MENU_FILE="/usr/share/luci/menu.d/luci-app-dns-manager.json"
@@ -393,7 +393,7 @@ C_TITLE='\033[0;34m'
 C_SECTION='\033[1;33m'
 # ==========================================
 # ==========================================
-UPDATE_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager.sh"
+UPDATE_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/fix/watchdog-autoreplace-fail-closed-20261023/dns-manager.sh"
 _ver_newer() {
     awk -v a="$1" -v b="$2" 'BEGIN{
         na=split(a,x,"\\."); nb=split(b,y,"\\."); n=(na>nb?na:nb);
@@ -6963,6 +6963,16 @@ watchdog_embedded_loop() {
         [ "$_checked" -gt 0 ] || { rm -f "$_wd_cycle_records" 2>/dev/null || true; sleep "$_interval"; continue; }
 
         _watchdog_action=0
+        _global_dns_failure=0
+        if [ "$_live" -gt 0 ] && [ "$_failed" -eq "$_live" ]; then
+            if [ "$_missing" -eq 0 ]; then
+                _global_dns_failure=1
+                log_msg "Watchdog: все активные DoH одновременно не отвечают; вероятен общий сбой WAN/upstream. В этом цикле DNS не ротирую."
+            else
+                _global_dns_failure=2
+                log_msg "Watchdog: все отвечающие DoH одновременно не проходят проверку, при этом есть отсутствующий listener; автозамену приостанавливаю до уточнения состояния."
+            fi
+        fi
 
         if [ "$_missing" -eq "$_checked" ] && [ "$_checked" -gt 0 ]; then
             for _slot in 1 2 3 4 5 6 RU; do watchdog_loop_reset_slot "$_slot"; done
@@ -6994,29 +7004,38 @@ watchdog_embedded_loop() {
                 [ -n "$_trigger_port" ] || _trigger_port="$(hybrid_desired_port "$_trigger")"
                 [ -n "$_trigger_id" ] && [ -n "$_trigger_port" ] || continue
                 log_msg "DNS в слоте $_trigger не отвечает ${WATCHDOG_FAIL_THRESHOLD:-2} проверок подряд. Перезапускаю только его https-dns-proxy."
+                _slot_recovered=0
                 if watchdog_restart_slot_instance "$_trigger" "$_trigger_id" "$_trigger_port"; then
                     log_msg "Watchdog: слот $_trigger снова отвечает; выбранный DNS сохранён."
+                    _slot_recovered=1
                     _record_tmp="${_wd_cycle_records}.tmp"
                     if awk -F'|' -v slot="$_trigger" 'BEGIN { OFS = "|" } $1 == "record" && $2 == slot && $6 == "FAIL" { $6 = "OK" } { print }' "$_wd_cycle_records" > "$_record_tmp"; then
                         mv -f "$_record_tmp" "$_wd_cycle_records" || rm -f "$_record_tmp" 2>/dev/null || true
                     else
                         rm -f "$_record_tmp" 2>/dev/null || true
                     fi
+                elif [ "${WATCHDOG_AUTOREPLACE:-0}" = 1 ] && [ "$_global_dns_failure" = 1 ]; then
+                    log_msg "Watchdog: слот $_trigger не восстановился после перезапуска, но все активные DNS не отвечают одновременно; замену не выполняю."
+                elif [ "${WATCHDOG_AUTOREPLACE:-0}" = 1 ] && [ "$_global_dns_failure" = 2 ]; then
+                    log_msg "Watchdog: слот $_trigger не восстановился после перезапуска; общий сбой не исключён, DNS сохраняю без замены."
                 elif [ "${WATCHDOG_AUTOREPLACE:-0}" = 1 ]; then
                     log_msg "Watchdog: слот $_trigger не восстановился после перезапуска; проверяю замену той же категории."
                     if watchdog_slot_target_run "$_trigger"; then
-                        log_msg "Watchdog: слот $_trigger восстановлен после замены DNS."
+                        log_msg "Watchdog: слот $_trigger восстановлен; проверка DNS пройдена."
+                        _slot_recovered=1
                     else
                         log_msg "Watchdog: замена слота $_trigger не подтверждена; текущий DNS сохранён."
                     fi
                 else
                     log_msg "Watchdog: слот $_trigger не восстановился после перезапуска; выбранный DNS оставлен без изменений, автозамена выключена."
                 fi
-                _watchdog_action=1
-                load_config >/dev/null 2>&1 || true
-                refresh_runtime_capabilities >/dev/null 2>&1 || true
-                WD_LAST_GUARD_TS="$(date +%s 2>/dev/null)"
-                eval "WD_FAIL_${_trigger}=0"
+                if [ "$_slot_recovered" = 1 ]; then
+                    _watchdog_action=1
+                    load_config >/dev/null 2>&1 || true
+                    refresh_runtime_capabilities >/dev/null 2>&1 || true
+                    WD_LAST_GUARD_TS="$(date +%s 2>/dev/null)"
+                    eval "WD_FAIL_${_trigger}=0"
+                fi
             done
         fi
 
@@ -7551,6 +7570,43 @@ watchdog_state_word_procd() {
         printf '0'
     fi
 }
+watchdog_common_dns_outage() {
+    local _slot _id _port _domain _live _failed _missing _unknown _probe_rc
+    _live=0
+    _failed=0
+    _missing=0
+    _unknown=0
+
+    watchdog_refresh_listener_snapshot || return 2
+    for _slot in 1 2 3 4 5 6 RU; do
+        eval "_id=\${SLOT_\${_slot}:-}"
+        [ -n "$_id" ] || continue
+        eval "_port=\${PORT_\${_slot}:-}"
+        [ -n "$_port" ] || _port="$(hybrid_desired_port "$_slot")"
+        if [ -z "$_port" ] || ! watchdog_listener_snapshot_has_port "$_port"; then
+            _missing=$((_missing+1))
+            continue
+        fi
+
+        _live=$((_live+1))
+        case "$_slot" in RU) _domain="yandex.ru" ;; *) _domain="example.com" ;; esac
+        local_dns_query_ok "$_port" "$_domain"
+        _probe_rc=$?
+        case "$_probe_rc" in
+            0) ;;
+            1) _failed=$((_failed+1)) ;;
+            *) _unknown=$((_unknown+1)) ;;
+        esac
+    done
+
+    # Fail closed: do not rotate a DNS if all paths are down together, or if
+    # missing/unknown probes prevent us from distinguishing an outage from a bad resolver.
+    [ "$_live" -gt 0 ] || return 2
+    [ "$_missing" -eq 0 ] || return 2
+    [ "$_unknown" -eq 0 ] || return 2
+    [ "$_failed" -eq "$_live" ] && return 0
+    return 1
+}
 watchdog_slot_target_run() {
     local _slot _target_id _target_port _target_cat _promote_fallback _target_live _allow_clean _slot_rc _old_id _old_cat _domain _used _tried _replacement_ok _picked _repl _repl_cat
     _slot="$1"
@@ -7566,9 +7622,9 @@ watchdog_slot_target_run() {
     _allow_clean=0
 
     if ! watchdog_resource_guard; then
-        return 0
+        return 1
     fi
-    acquire_mutation_lock || return 0
+    acquire_mutation_lock || return 1
     WATCHDOG_RESTART_COUNT=0
     _slot_rc=0
     _old_id="$_target_id"
@@ -7585,6 +7641,19 @@ watchdog_slot_target_run() {
         log_msg "Watchdog slot $_slot: пользовательский DoH $(dns_name "$_old_id") не отвечает; автоматическую замену не выполняю, URL оставляю без изменений."
         release_mutation_lock
         return 1
+    fi
+
+    if watchdog_common_dns_outage; then
+        log_msg "Watchdog slot $_slot: все активные DoH одновременно не отвечают; вероятен общий сбой WAN/upstream. DNS не заменяю."
+        release_mutation_lock
+        return 1
+    else
+        _outage_rc=$?
+        if [ "$_outage_rc" -eq 2 ]; then
+            log_msg "Watchdog slot $_slot: не удалось исключить общий сбой DNS/WAN; текущий DNS сохранён."
+            release_mutation_lock
+            return 1
+        fi
     fi
 
     _used="$(mktemp "$TMP_DIR/watchdog-slot-used.XXXXXX" 2>/dev/null)" || { release_mutation_lock; return 1; }
