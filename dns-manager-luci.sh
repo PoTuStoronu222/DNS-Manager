@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager full installer and LuCI companion
-# Version: 1.114
+# Version: 1.115
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -32,7 +32,7 @@ STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/fix/watchdog-autoreplace-fail-closed-20261023/dns-manager-luci.sh"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.114"
+VERSION="1.115"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -649,7 +649,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/fix/watchdog-autoreplace-fail-closed-20261023/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="1.114"
+SELF_VERSION="1.115"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -3782,7 +3782,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI common module version: 1.114
+// DNS Manager LuCI common module version: 1.115
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -5714,6 +5714,26 @@ function routeStatusCall(){
         state.logText=stripAnsi((r&&r.log)||'');
         return {ok:true};
       });
+    case 'dashboard':
+      return Promise.all([
+        callStatus(0),
+        callDohStatus()
+      ]).then(function(v){
+        var st=v[0]||{};
+        var force=v[1]||{};
+        [
+          'force','force_external','force_owner','force_manager','force_both',
+          'force_source','force_targets','force_state','force_status',
+          'force_notrack','force_update','force_family','force_ports','force_src',
+          'force_canary_icloud','force_canary_mozilla','force_procd_trigger_wan6',
+          'force_heartbeat_domain','force_heartbeat_sleep','force_heartbeat_wait',
+          'force_user','force_group','force_listen','force_consistent',
+          'force_owner_label','zapret_running','steer_dns_active'
+        ].forEach(function(k){
+          if(Object.prototype.hasOwnProperty.call(force,k))st[k]=force[k];
+        });
+        return st;
+      });
     default:
       return callStatus(0);
   }
@@ -6419,7 +6439,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 1.114
+// DNS Manager LuCI version: 1.115
 return view.extend({
   load: DM.load,
   render: DM.render,
