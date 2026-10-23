@@ -262,15 +262,7 @@ ok "network tuning reports the saved Watchdog auto-replacement state"
 grep -Fq "printf ',\"watchdog_autoreplace\":%s'" "$tmp/network_status_json.sh" || fail "network status auto-replacement JSON has invalid quote escaping"
 ok "network tuning auto-replacement JSON uses valid quoting"
 
-# Dashboard must overlay authoritative forced-DNS ownership from doh_status;
-# status_json intentionally stays lightweight and does not carry those fields.
-awk '/^function routeStatusCall\\(\\) \\{/,/^}/' "$tmp/common.js" > "$tmp/route_status_call.js"
-grep -Fq "case 'dashboard':" "$tmp/route_status_call.js" || fail "dashboard status route missing"
-grep -Fq 'callStatus(0),' "$tmp/route_status_call.js" || fail "dashboard status source missing"
-grep -Fq 'callDohStatus()' "$tmp/route_status_call.js" || fail "dashboard does not fetch forced-DNS runtime state"
-grep -Fq "'force','force_external','force_owner','force_manager','force_both'" "$tmp/route_status_call.js" || fail "dashboard does not merge forced-DNS ownership fields"
-grep -Fq 'if(Object.prototype.hasOwnProperty.call(force,k))st[k]=force[k];' "$tmp/route_status_call.js" || fail "dashboard discards forced-DNS runtime state"
-ok "dashboard uses authoritative forced-DNS runtime status"
+
 
 awk '
     /cat > "[^"]*COMMON_STAGE[^"]*"[^<]*<<\x27EOF_COMMON\x27/ { capture=1; next }
@@ -280,6 +272,16 @@ awk '
 [ -s "$tmp/common.js" ] || fail "embedded JS extraction"
 node --check "$tmp/common.js" >/dev/null 2>&1 || fail "embedded JS: node --check"
 ok "embedded LuCI JS syntax"
+
+# Dashboard must overlay authoritative forced-DNS ownership from doh_status;
+# status_json intentionally stays lightweight and does not carry those fields.
+awk '/^function routeStatusCall\\(\\) \\{/,/^}/' "$tmp/common.js" > "$tmp/route_status_call.js"
+grep -Fq "case 'dashboard':" "$tmp/route_status_call.js" || fail "dashboard status route missing"
+grep -Fq 'callStatus(0),' "$tmp/route_status_call.js" || fail "dashboard status source missing"
+grep -Fq 'callDohStatus()' "$tmp/route_status_call.js" || fail "dashboard does not fetch forced-DNS runtime state"
+grep -Fq "'force','force_external','force_owner','force_manager','force_both'" "$tmp/route_status_call.js" || fail "dashboard does not merge forced-DNS ownership fields"
+grep -Fq 'if(Object.prototype.hasOwnProperty.call(force,k))st[k]=force[k];' "$tmp/route_status_call.js" || fail "dashboard discards forced-DNS runtime state"
+ok "dashboard uses authoritative forced-DNS runtime status"
 
 # Dashboard must combine its detailed status with the runtime forced-DNS
 # ownership result, otherwise its component can falsely say "disabled".
