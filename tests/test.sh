@@ -259,6 +259,18 @@ awk '/^network_status_json\(\) \{/,/^time_status_json\(\) \{/' "$tmp/backend.sh"
 [ -s "$tmp/network_status_json.sh" ] || fail "network status JSON helper extraction"
 grep -Fq 'watchdog_autoreplace\":%s' "$tmp/network_status_json.sh" || fail "network status RPC omits Watchdog auto-replacement state"
 ok "network tuning reports the saved Watchdog auto-replacement state"
+grep -Fq "printf ',\"watchdog_autoreplace\":%s'" "$tmp/network_status_json.sh" || fail "network status auto-replacement JSON has invalid quote escaping"
+ok "network tuning auto-replacement JSON uses valid quoting"
+
+# Dashboard must overlay authoritative forced-DNS ownership from doh_status;
+# status_json intentionally stays lightweight and does not carry those fields.
+awk '/^function routeStatusCall\\(\\) \\{/,/^}/' "$tmp/common.js" > "$tmp/route_status_call.js"
+grep -Fq "case 'dashboard':" "$tmp/route_status_call.js" || fail "dashboard status route missing"
+grep -Fq 'callStatus(0),' "$tmp/route_status_call.js" || fail "dashboard status source missing"
+grep -Fq 'callDohStatus()' "$tmp/route_status_call.js" || fail "dashboard does not fetch forced-DNS runtime state"
+grep -Fq "'force','force_external','force_owner','force_manager','force_both'" "$tmp/route_status_call.js" || fail "dashboard does not merge forced-DNS ownership fields"
+grep -Fq 'if(Object.prototype.hasOwnProperty.call(force,k))st[k]=force[k];' "$tmp/route_status_call.js" || fail "dashboard discards forced-DNS runtime state"
+ok "dashboard uses authoritative forced-DNS runtime status"
 
 awk '
     /cat > "[^"]*COMMON_STAGE[^"]*"[^<]*<<\x27EOF_COMMON\x27/ { capture=1; next }
@@ -511,7 +523,7 @@ grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validat
 grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
 grep -q 'VERSION="3.82"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
-grep -q 'VERSION="1.115"' dns-manager-luci.sh || fail "LuCI version not bumped"
+grep -q 'VERSION="1.116"' dns-manager-luci.sh || fail "LuCI version not bumped"
 grep -Fq 'bootstrap_install_dependencies() {' dns-manager.sh || fail "backend noninteractive dependency bootstrap missing"
 grep -Fq 'install-dependencies|--install-dependencies)' dns-manager.sh || fail "backend dependency bootstrap command missing"
 grep -Fq 'install_missing_dependencies || return 1' dns-manager.sh || fail "bootstrap does not install the backend runtime dependencies"
