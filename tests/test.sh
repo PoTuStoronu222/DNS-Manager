@@ -1186,8 +1186,13 @@ ok "forced-DNS-only Apply starts the same procd service after transaction commit
     [ "$FORCED_DNS_ACTIVE" = 0 ] || fail "valid UCI options without a live rule were reported active"
     [ "$FORCED_DNS_EXTERNAL" = 0 ] || fail "missing live rule was misclassified as external"
     force_case 'table inet fw4 {
+ chain dstnat {
+  type nat hook prerouting priority dstnat; policy accept;
+  iifname "br-lan" jump dstnat_lan comment "!fw4: Handle lan IPv4/IPv6 dstnat traffic" # handle 19
+ }
  chain dstnat_lan {
-  iifname "br-lan" udp dport 53 counter redirect to :53 comment "ubus:https-dns-proxy" # handle 41
+  tcp dport 53 counter redirect to :53 comment "!fw4: ubus:https-dns-proxy[instance1] redirect 0" # handle 41
+  udp dport 53 counter redirect to :53 comment "!fw4: ubus:https-dns-proxy[instance1] redirect 0" # handle 42
  }
 }' 1 1 1 0
     [ "$FORCED_DNS_ACTIVE" = 1 ] || fail "https-dns-proxy runtime redirect was not detected"
