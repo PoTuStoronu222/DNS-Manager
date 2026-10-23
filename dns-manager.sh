@@ -5907,20 +5907,20 @@ bootstrap_install_dependencies() {
 
     if [ "${DNS_MANAGER_BOOTSTRAP_MARK_FIRST_RUN:-0}" = 1 ] && [ "${FIRST_RUN_INITIAL:-0}" = 1 ]; then
         if {
-            printf 'version=%s\\n' "$VERSION"
-            printf 'completed_at=%s\\n' "$(date +%s 2>/dev/null || printf 0)"
-        } > "${FIRST_RUN_MARKER}.tmp.$" 2>/dev/null &&
-            chmod 600 "${FIRST_RUN_MARKER}.tmp.$" 2>/dev/null &&
-            mv "${FIRST_RUN_MARKER}.tmp.$" "$FIRST_RUN_MARKER" 2>/dev/null; then
+            printf 'version=%s\n' "$VERSION"
+            printf 'completed_at=%s\n' "$(date +%s 2>/dev/null || printf 0)"
+        } > "${FIRST_RUN_MARKER}.tmp.$$" 2>/dev/null &&
+            chmod 600 "${FIRST_RUN_MARKER}.tmp.$$" 2>/dev/null &&
+            mv "${FIRST_RUN_MARKER}.tmp.$$" "$FIRST_RUN_MARKER" 2>/dev/null; then
             FIRST_RUN=0
         else
-            rm -f "${FIRST_RUN_MARKER}.tmp.$" 2>/dev/null || true
+            rm -f "${FIRST_RUN_MARKER}.tmp.$$" 2>/dev/null || true
             warn_msg "Зависимости установлены, но маркер первого запуска не сохранён."
         fi
     fi
 
-    printf '\\nDNS Manager backend %s: необходимые компоненты проверены.\\n' "$VERSION"
-    printf 'Настройки DNS не применялись. Завершите настройку в LuCI → Службы → DNS Manager.\\n'
+    printf '\nDNS Manager backend %s: необходимые компоненты проверены.\n' "$VERSION"
+    printf 'Настройки DNS не применялись. Завершите настройку в LuCI → Службы → DNS Manager.\n'
     return 0
 }
 # ==========================================
