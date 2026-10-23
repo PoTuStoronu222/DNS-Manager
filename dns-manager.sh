@@ -6,7 +6,8 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.76"
+VERSION="3.77"
+# 3.77: revalidate the selected slot without shared shell scratch variables.
 # 3.76: preserve slot identity during recovery revalidation after config reload.
 # 3.75: recover a stalled local DoH slot before optional DNS replacement.
 # 3.38: clear the LuCI update flag after a successful CLI update.
@@ -6700,19 +6701,29 @@ watchdog_slot_instance_pid() {
     done
     return 1
 }
+watchdog_slot_config_matches() {
+    # Use positional parameters so load_config's shared scratch variables cannot overwrite the recheck.
+    case "$1" in
+        1) [ "${SLOT_1:-}" = "$2" ] && [ "${PORT_1:-$(hybrid_desired_port 1)}" = "$3" ];;
+        2) [ "${SLOT_2:-}" = "$2" ] && [ "${PORT_2:-$(hybrid_desired_port 2)}" = "$3" ];;
+        3) [ "${SLOT_3:-}" = "$2" ] && [ "${PORT_3:-$(hybrid_desired_port 3)}" = "$3" ];;
+        4) [ "${SLOT_4:-}" = "$2" ] && [ "${PORT_4:-$(hybrid_desired_port 4)}" = "$3" ];;
+        5) [ "${SLOT_5:-}" = "$2" ] && [ "${PORT_5:-$(hybrid_desired_port 5)}" = "$3" ];;
+        6) [ "${SLOT_6:-}" = "$2" ] && [ "${PORT_6:-$(hybrid_desired_port 6)}" = "$3" ];;
+        RU) [ "${SLOT_RU:-}" = "$2" ] && [ "${PORT_RU:-$(hybrid_desired_port RU)}" = "$3" ];;
+        *) return 1;;
+    esac
+}
 watchdog_restart_slot_instance() {
-    local _slot _expected_id _expected_port _id _port _domain _pid _new_pid _wait _recheck_id _recheck_port
-    _slot="$1"
-    _expected_id="$2"
-    _expected_port="$3"
-    case "$_slot" in
-        1|2|3|4|5|6) eval "_id=\${SLOT_${_slot}:-}"; eval "_port=\${PORT_${_slot}:-}"; _domain="example.com";;
+    local _id _port _domain _pid _new_pid _wait
+    case "$1" in
+        1|2|3|4|5|6) eval "_id=\${SLOT_${1}:-}"; eval "_port=\${PORT_${1}:-}"; _domain="example.com";;
         RU) _id="${SLOT_RU:-}"; _port="${PORT_RU:-}"; _domain="yandex.ru";;
         *) return 1;;
     esac
-    [ -n "$_port" ] || _port="$(hybrid_desired_port "$_slot")"
+    [ -n "$_port" ] || _port="$(hybrid_desired_port "$1")"
     [ -n "$_id" ] && [ -n "$_port" ] || return 1
-    [ "$_id" = "$_expected_id" ] && [ "$_port" = "$_expected_port" ] || return 1
+    [ "$_id" = "$2" ] && [ "$_port" = "$3" ] || return 1
 
     acquire_mutation_lock || return 1
     if ! watchdog_resource_guard; then
@@ -6720,33 +6731,31 @@ watchdog_restart_slot_instance() {
         return 1
     fi
     load_config >/dev/null 2>&1 || { release_mutation_lock; return 1; }
-    # load_config uses generic _id/_port scratch variables in this shell.
-    # Re-read into distinct names so its dynamic scope cannot corrupt the slot guard.
-    case "$_slot" in
-        1|2|3|4|5|6) eval "_recheck_id=\${SLOT_${_slot}:-}"; eval "_recheck_port=\${PORT_${_slot}:-}";;
-        RU) _recheck_id="${SLOT_RU:-}"; _recheck_port="${PORT_RU:-}";;
-    esac
-    [ -n "$_recheck_port" ] || _recheck_port="$(hybrid_desired_port "$_slot")"
-    if [ "$_recheck_id" != "$_expected_id" ] || [ "$_recheck_port" != "$_expected_port" ]; then
+    # Revalidate directly against slot config using positional arguments, not scratch vars.
+    if ! watchdog_slot_config_matches "$1" "$2" "$3"; then
         release_mutation_lock
         return 1
     fi
+    case "$1" in
+        1|2|3|4|5|6) _domain="example.com";;
+        RU) _domain="yandex.ru";;
+    esac
 
-    _pid="$(watchdog_slot_instance_pid "$_recheck_port" 2>/dev/null || true)"
+    _pid="$(watchdog_slot_instance_pid "$3" 2>/dev/null || true)"
     [ -n "$_pid" ] || { release_mutation_lock; return 1; }
     kill -TERM "$_pid" 2>/dev/null || { release_mutation_lock; return 1; }
 
     _wait=0
     while [ "$_wait" -lt 8 ]; do
         sleep 1
-        _new_pid="$(watchdog_slot_instance_pid "$_recheck_port" 2>/dev/null || true)"
+        _new_pid="$(watchdog_slot_instance_pid "$3" 2>/dev/null || true)"
         if [ -n "$_new_pid" ] && [ "$_new_pid" != "$_pid" ]; then
             _wait=0
-            while ! listener_port_exists "$_recheck_port" && [ "$_wait" -lt 10 ]; do
+            while ! listener_port_exists "$3" && [ "$_wait" -lt 10 ]; do
                 sleep 1
                 _wait=$((_wait+1))
             done
-            if listener_port_exists "$_recheck_port" && local_dns_query_ok "$_recheck_port" "$_domain"; then
+            if listener_port_exists "$3" && local_dns_query_ok "$3" "$_domain"; then
                 release_mutation_lock
                 return 0
             fi
