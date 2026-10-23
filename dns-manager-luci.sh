@@ -4500,10 +4500,11 @@ function resolverRows(st,root){
     var name=d.name||'Пользовательский DNS';
     var ci=checkInfo(d.id,d);
     var status=String(ci.status||d.status||'').toUpperCase();
+    var statusNode=stateBadge(status,ci.ping||d.ping);
     out.push(E('div',{'class':'dm-doh-row'},[
       E('span',{'class':'dm-doh-slot'},slot),
       E('span',{'class':'dm-doh-name'},name),
-      E('span',{'class':'dm-doh-state'},stateBadge(status,ci.ping||d.ping)),
+      E('span',{'class':'dm-doh-state'},statusNode),
       E('span',{'class':'dm-doh-actions'},[])
     ]));
   });
