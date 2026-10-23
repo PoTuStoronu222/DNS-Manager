@@ -473,13 +473,13 @@ grep -Fq "disabled:!!state.busy||!!state.jobRunning||unavailable||checking" dns-
 grep -q "'gaming','Игровые DNS'" dns-manager-luci.sh || fail "gaming catalog label missing in LuCI"
 grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validation missing gaming category"
 grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
-grep -q 'VERSION="3.80"' dns-manager.sh || fail "manager version not bumped"
+grep -q 'VERSION="3.81"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
-grep -q 'VERSION="1.112"' dns-manager-luci.sh || fail "LuCI version not bumped"
+grep -q 'VERSION="1.113"' dns-manager-luci.sh || fail "LuCI version not bumped"
 grep -Fq 'bootstrap_install_dependencies() {' dns-manager.sh || fail "backend noninteractive dependency bootstrap missing"
 grep -Fq 'install-dependencies|--install-dependencies)' dns-manager.sh || fail "backend dependency bootstrap command missing"
 grep -Fq 'install_missing_dependencies || return 1' dns-manager.sh || fail "bootstrap does not install the backend runtime dependencies"
-grep -Fq 'BACKEND_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager.sh"' dns-manager-luci.sh || fail "full installer backend URL is not pinned to main"
+grep -Fq 'BACKEND_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/fix/watchdog-autoreplace-fail-closed-20261023/dns-manager.sh"' dns-manager-luci.sh || fail "full installer backend URL is not pinned to the test branch"
 grep -Fq 'ensure_luci_webui() {' dns-manager-luci.sh || fail "full installer does not ensure that system LuCI is installed"
 grep -Fq 'install_runtime_packages luci' dns-manager-luci.sh || fail "full installer cannot install missing system LuCI"
 grep -Fq 'if ! DNS_MANAGER_BOOTSTRAP_MARK_FIRST_RUN="$_mark_first_run" "$MANAGER" --install-dependencies; then' dns-manager-luci.sh || fail "full installer does not run the backend bootstrap without opening the menu"
@@ -489,11 +489,11 @@ grep -Fq 'sh "$LUCI_COMPANION_CACHE" update >"$TMP_DIR/luci-install.log" 2>&1' d
 grep -Fq 'Откройте веб-интерфейс роутера → LuCI → Службы → DNS Manager.' dns-manager-luci.sh || fail "installer does not direct the user to the LuCI menu"
 grep -Fq 'DNS-профиль автоматически не применялся. Завершите настройку в панели.' dns-manager-luci.sh || fail "installer does not disclose that DNS settings remain unapplied"
 ok "Native LuCI installer bootstraps backend and dependencies without opening the console menu"
-main_luci_url='https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh'
-[ "$(grep -Fc "$main_luci_url" dns-manager-luci.sh)" -eq 2 ] || fail "released LuCI updater URLs are not pinned to main"
-grep -Fq 'LUCI_COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"' dns-manager.sh || fail "optional backend LuCI updates do not target main"
-grep -Fq 'UPDATE_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager.sh"' dns-manager.sh || fail "optional backend updates do not target main"
-grep -Fq 'fetch_raw_url "$_tmp" "https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager.sh"' dns-manager-luci.sh || fail "LuCI backend update does not target main"
+test_luci_url='https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/fix/watchdog-autoreplace-fail-closed-20261023/dns-manager-luci.sh'
+[ "$(grep -Fc "$test_luci_url" dns-manager-luci.sh)" -eq 2 ] || fail "released LuCI updater URLs are not pinned to the test branch"
+grep -Fq 'LUCI_COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/fix/watchdog-autoreplace-fail-closed-20261023/dns-manager-luci.sh"' dns-manager.sh || fail "optional backend LuCI updates do not target main"
+grep -Fq 'UPDATE_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/fix/watchdog-autoreplace-fail-closed-20261023/dns-manager.sh"' dns-manager.sh || fail "optional backend updates do not target main"
+grep -Fq 'fetch_raw_url "$_tmp" "https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/fix/watchdog-autoreplace-fail-closed-20261023/dns-manager.sh"' dns-manager-luci.sh || fail "LuCI backend update does not target main"
 grep -Fq '.dm-wrap .dm-watchdog-record{display:grid;grid-template-columns:58px minmax(0,1fr) auto;align-items:center;gap:10px;padding:8px 9px;border:1px solid rgba(110,118,129,.12);border-radius:8px;background:var(--background-color-medium,#fff)' dns-manager-luci.sh || fail "Watchdog result rows do not use the LuCI theme background variable"
 ok "Watchdog result rows follow the active LuCI theme"
 grep -Fq 'WATCHDOG_CHECK_INTERVAL_DEFAULT=120' dns-manager.sh || fail "Watchdog default interval is not 120 seconds"
@@ -725,7 +725,7 @@ view_luci="$(sed -n 's|^// DNS Manager LuCI common module version:[[:space:]]*||
 dashboard_view_luci="$(sed -n 's|^// DNS Manager LuCI version: *||p' dns-manager-luci.sh | head -n1)"
 [ "$top_luci" = "$dashboard_view_luci" ] || fail "dashboard view version marker is stale"
 ok "LuCI version markers synchronized ($top_luci)"
-grep -Fq 'VERSION="3.80"' dns-manager.sh || fail "DNS Manager version marker is not 3.80"
+grep -Fq 'VERSION="3.81"' dns-manager.sh || fail "DNS Manager version marker is not 3.80"
 ok "DNS Manager version marker synchronized (3.80)"
 grep -Fq "assignment.appendChild(btn('Удалить'" dns-manager-luci.sh || fail "Custom DNS delete button is not aligned with the assignment action"
 grep -Fq ".dm-catalog-item-custom{grid-column:auto}" dns-manager-luci.sh || fail "Custom DNS card is wider than a stock catalog card"
@@ -1391,6 +1391,75 @@ if grep -Fq 'watchdog_scope_category' "$tmp/run_watchdog.sh"; then
     fail "one-shot Watchdog still requires a DNS profile"
 fi
 ok "one-shot and background Watchdog share the same safe per-slot repair path"
+# Mutation-lock/resource refusal must never be returned as an apparent DNS-replacement success.
+awk '/^watchdog_slot_target_run\(\) \{/,/^watchdog_service_recover_run\(\) \{/' dns-manager.sh | sed '$d' > "$tmp/watchdog_slot_target_run_only.sh"
+cat > "$tmp/watchdog_lock_refusal_runner.sh" <<'EOF_WATCHDOG_LOCK_REFUSAL'
+#!/bin/sh
+set -eu
+. "$1"
+WATCHDOG_ENABLED=1
+SLOT_1=resolver-a
+PORT_1=5053
+dns_cat() { printf 'privacy\n'; }
+hybrid_desired_port() { printf '5053\n'; }
+watchdog_resource_guard() { return 0; }
+acquire_mutation_lock() { return 1; }
+if watchdog_slot_target_run 1; then
+    printf '%s\n' 'lock refusal was reported as successful replacement' >&2
+    exit 31
+fi
+EOF_WATCHDOG_LOCK_REFUSAL
+chmod +x "$tmp/watchdog_lock_refusal_runner.sh"
+"$tmp/watchdog_lock_refusal_runner.sh" "$tmp/watchdog_slot_target_run_only.sh" || fail "Watchdog reports success when mutation lock acquisition fails"
+ok "Watchdog fails closed when mutation lock acquisition is refused"
+
+awk '/^watchdog_common_dns_outage\(\) \{/,/^watchdog_slot_target_run\(\) \{/' dns-manager.sh | sed '$d' > "$tmp/watchdog_common_dns_outage.sh"
+[ -s "$tmp/watchdog_common_dns_outage.sh" ] || fail "common DNS outage guard missing"
+cat > "$tmp/watchdog_common_outage_runner.sh" <<'EOF_WATCHDOG_COMMON_OUTAGE'
+#!/bin/sh
+set -eu
+. "$1"
+SLOT_1=resolver-a
+SLOT_2=resolver-b
+SLOT_3=
+SLOT_4=
+SLOT_5=
+SLOT_6=
+SLOT_RU=
+PORT_1=5053
+PORT_2=5054
+watchdog_refresh_listener_snapshot() { return 0; }
+watchdog_listener_snapshot_has_port() { return 0; }
+hybrid_desired_port() { case "$1" in 1) printf '5053\n';; 2) printf '5054\n';; *) return 1;; esac; }
+local_dns_query_ok() { return 1; }
+if ! watchdog_common_dns_outage; then
+    printf '%s\n' 'all selected DNS failures were not detected as a common outage' >&2
+    exit 32
+fi
+local_dns_query_ok() { [ "$1" = 5053 ]; }
+if watchdog_common_dns_outage; then
+    printf '%s\n' 'a healthy selected DNS was mistaken for a common outage' >&2
+    exit 33
+fi
+watchdog_listener_snapshot_has_port() { [ "$1" = 5053 ]; }
+local_dns_query_ok() { return 1; }
+if watchdog_common_dns_outage; then
+    printf '%s\n' 'a missing listener was mistaken for a confirmed common outage' >&2
+    exit 34
+else
+    rc=$?
+    [ "$rc" -eq 2 ] || { printf '%s\n' 'missing listener was not treated as uncertain state' >&2; exit 35; }
+fi
+EOF_WATCHDOG_COMMON_OUTAGE
+chmod +x "$tmp/watchdog_common_outage_runner.sh"
+"$tmp/watchdog_common_outage_runner.sh" "$tmp/watchdog_common_dns_outage.sh" || fail "common DNS outage detection"
+ok "common DNS outage and uncertain listener state both suppress automatic rotation"
+
+awk '/^watchdog_embedded_loop\(\) \{/,/^run_watchdog\(\) \{/' dns-manager.sh > "$tmp/watchdog_embedded_loop.sh"
+grep -Fq '_global_dns_failure=1' "$tmp/watchdog_embedded_loop.sh" || fail "background Watchdog does not detect common DNS failure"
+grep -Fq 'if [ "$_slot_recovered" = 1 ]; then' "$tmp/watchdog_embedded_loop.sh" || fail "Watchdog recovery bookkeeping is not conditional on verified recovery"
+grep -Fq 'eval "WD_FAIL_${_trigger}=0"' "$tmp/watchdog_embedded_loop.sh" || fail "Watchdog does not reset a recovered slot counter"
+ok "Watchdog preserves failure counters until slot recovery is verified"
 grep -Fq 'eval "_guard_id=\${SLOT_${_guard_slot}:-}"' dns-manager.sh || fail "integrity guard uses invalid nested slot expansion"
 ok "integrity guard uses BusyBox ash-safe slot expansion"
 
@@ -1407,7 +1476,7 @@ if grep -Fq '/etc/init.d/https-dns-proxy restart' "$tmp/watchdog_slot_restart.sh
     fail "stalled slot recovery restarts every DoH slot instead of the affected instance"
 fi
 grep -Fq 'if watchdog_restart_slot_instance "$_trigger" "$_trigger_id" "$_trigger_port"; then' "$tmp/watchdog_embedded_loop.sh" || fail "background watchdog does not try local slot recovery first"
-grep -Fq 'replace the selected DNS only if recovery fails' "$tmp/watchdog_embedded_loop.sh" || fail "DNS replacement is not gated by failed slot recovery"
+grep -Fq 'replace the selected DNS only if slot recovery fails and a common outage is excluded' "$tmp/watchdog_embedded_loop.sh" || fail "DNS replacement is not gated by failed slot recovery and the common-outage guard"
 grep -Fq '$6 == "FAIL" { $6 = "OK" }' "$tmp/watchdog_embedded_loop.sh" || fail "successful slot recovery does not clear the recorded false failure"
 ok "stalled DoH slot is restarted in isolation before optional DNS replacement"
 
