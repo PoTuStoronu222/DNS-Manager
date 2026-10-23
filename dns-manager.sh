@@ -6700,22 +6700,34 @@ watchdog_slot_instance_pid() {
     return 1
 }
 watchdog_restart_slot_instance() {
-    local _slot _port _domain _pid _new_pid _wait
+    local _slot _expected_id _expected_port _id _port _domain _pid _new_pid _wait
     _slot="$1"
+    _expected_id="$2"
+    _expected_port="$3"
     case "$_slot" in
-        1|2|3|4|5|6) eval "_port=\${PORT_${_slot}:-}"; _domain="example.com";;
-        RU) _port="${PORT_RU:-}"; _domain="yandex.ru";;
+        1|2|3|4|5|6) eval "_id=\${SLOT_${_slot}:-}"; eval "_port=\${PORT_${_slot}:-}"; _domain="example.com";;
+        RU) _id="${SLOT_RU:-}"; _port="${PORT_RU:-}"; _domain="yandex.ru";;
         *) return 1;;
     esac
-    [ -n "$_port" ] || return 1
-    watchdog_resource_guard || return 1
+    [ -n "$_port" ] || _port="$(hybrid_desired_port "$_slot")"
+    [ -n "$_id" ] && [ -n "$_port" ] || return 1
+    [ "$_id" = "$_expected_id" ] && [ "$_port" = "$_expected_port" ] || return 1
+
     acquire_mutation_lock || return 1
+    if ! watchdog_resource_guard; then
+        release_mutation_lock
+        return 1
+    fi
     load_config >/dev/null 2>&1 || { release_mutation_lock; return 1; }
     case "$_slot" in
-        1|2|3|4|5|6) eval "_port=\${PORT_${_slot}:-}";;
-        RU) _port="${PORT_RU:-}";;
+        1|2|3|4|5|6) eval "_id=\${SLOT_${_slot}:-}"; eval "_port=\${PORT_${_slot}:-}";;
+        RU) _id="${SLOT_RU:-}"; _port="${PORT_RU:-}";;
     esac
-    [ -n "$_port" ] || { release_mutation_lock; return 1; }
+    [ -n "$_port" ] || _port="$(hybrid_desired_port "$_slot")"
+    if [ "$_id" != "$_expected_id" ] || [ "$_port" != "$_expected_port" ]; then
+        release_mutation_lock
+        return 1
+    fi
 
     _pid="$(watchdog_slot_instance_pid "$_port" 2>/dev/null || true)"
     [ -n "$_pid" ] || { release_mutation_lock; return 1; }
@@ -6726,7 +6738,11 @@ watchdog_restart_slot_instance() {
         sleep 1
         _new_pid="$(watchdog_slot_instance_pid "$_port" 2>/dev/null || true)"
         if [ -n "$_new_pid" ] && [ "$_new_pid" != "$_pid" ]; then
-            sleep 2
+            _wait=0
+            while ! listener_port_exists "$_port" && [ "$_wait" -lt 10 ]; do
+                sleep 1
+                _wait=$((_wait+1))
+            done
             if listener_port_exists "$_port" && local_dns_query_ok "$_port" "$_domain"; then
                 release_mutation_lock
                 return 0
@@ -6928,8 +6944,12 @@ watchdog_embedded_loop() {
             for _trigger in $_threshold_slots; do
                 watchdog_loop_repair_cooldown_ok "$_trigger" || continue
                 watchdog_loop_mark_repair "$_trigger"
+                eval "_trigger_id=\${SLOT_${_trigger}:-}"
+                eval "_trigger_port=\${PORT_${_trigger}:-}"
+                [ -n "$_trigger_port" ] || _trigger_port="$(hybrid_desired_port "$_trigger")"
+                [ -n "$_trigger_id" ] && [ -n "$_trigger_port" ] || continue
                 log_msg "DNS в слоте $_trigger не отвечает ${WATCHDOG_FAIL_THRESHOLD:-2} проверок подряд. Перезапускаю только его https-dns-proxy."
-                if watchdog_restart_slot_instance "$_trigger"; then
+                if watchdog_restart_slot_instance "$_trigger" "$_trigger_id" "$_trigger_port"; then
                     log_msg "Watchdog: слот $_trigger снова отвечает; выбранный DNS сохранён."
                     _record_tmp="${_wd_cycle_records}.tmp"
                     if awk -F'|' -v slot="$_trigger" 'BEGIN { OFS = "|" } $1 == "record" && $2 == slot && $6 == "FAIL" { $6 = "OK" } { print }' "$_wd_cycle_records" > "$_record_tmp"; then
