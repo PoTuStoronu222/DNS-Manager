@@ -6,7 +6,8 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.82"
+VERSION="3.83"
+# 3.83: include UDP listeners in the Watchdog listener snapshot.
 # 3.80: publish the full Native LuCI installer with stable main update URLs.
 # 3.79: add noninteractive dependency setup for the Native LuCI installer.
 # 3.78: align the Watchdog startup log fallback with its 2-minute default.
@@ -6707,21 +6708,24 @@ watchdog_resource_guard() {
 # ==========================================
 # ==========================================
 watchdog_refresh_listener_snapshot() {
-    # One /proc scan per watchdog cycle. This avoids invoking ss/netstat for
-    # every slot and keeps the normal healthy path cheap on small routers.
+    # One /proc scan per watchdog cycle. Include UDP sockets because the local
+    # DNS listeners can answer over UDP without a TCP LISTEN socket.
     WD_LISTEN_PORTS="$(awk '
         BEGIN { out="" }
-        NR > 1 {
+        FNR > 1 {
             split($2,a,":");
-            if ($4 == "0A") {
-                p=toupper(a[2]);
-                if (p != "") {
-                    out = out p " "
-                }
+            if (FILENAME ~ /\/tcp/) {
+                if ($4 != "0A") next
+            } else {
+                if ($4 != "07") next
+            }
+            p=toupper(a[2]);
+            if (p != "") {
+                out = out p " "
             }
         }
         END { print out }
-    ' /proc/net/tcp /proc/net/tcp6 2>/dev/null)"
+    ' /proc/net/tcp /proc/net/tcp6 /proc/net/udp /proc/net/udp6 2>/dev/null)"
 }
 watchdog_listener_snapshot_has_port() {
     _port="$1"
