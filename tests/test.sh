@@ -438,7 +438,7 @@ grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp
 grep -q 'VERSION="3.74"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
 grep -q 'VERSION="1.108"' dns-manager-luci.sh || fail "LuCI version not bumped"
-test_luci_url='https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/watchdog-network-status-20261022/dns-manager-luci.sh'
+test_luci_url='https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/dns-manager-stock-luci-20261027/dns-manager-luci.sh'
 [ "$(grep -Fc "$test_luci_url" dns-manager-luci.sh)" -eq 2 ] || fail "test LuCI updater URLs are not pinned to this test branch"
 if grep -Fq 'https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh' dns-manager-luci.sh; then fail "test LuCI updater still targets main"; fi
 grep -Fq '.dm-wrap .dm-watchdog-record{display:grid;grid-template-columns:58px minmax(0,1fr) auto;align-items:center;gap:10px;padding:8px 9px;border:1px solid rgba(110,118,129,.12);border-radius:8px;background:var(--background-color-medium,#fff)' dns-manager-luci.sh || fail "Watchdog result rows do not use the LuCI theme background variable"
