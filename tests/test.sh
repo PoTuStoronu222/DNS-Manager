@@ -262,9 +262,9 @@ node --check "$tmp/common.js" >/dev/null 2>&1 || fail "embedded JS: node --check
 ok "embedded LuCI JS syntax"
 # No saved DNS result is unknown, not proof that the resolver is unavailable.
 awk '/^function stateBadge\(status,pingValue\)/,/^}/' "$tmp/common.js" > "$tmp/state_badge.js"
-grep -Fq "if(!s)return badge('dm-off','нет данных');" "$tmp/state_badge.js" || fail "LuCI marks an untested DNS unavailable"
-_guard_line="$(grep -nF "if(!s)return badge('dm-off','нет данных');" "$tmp/state_badge.js" | cut -d: -f1)"
-_failure_line="$(grep -nF "||!hasPing(pingValue))return badge('dm-bad','недоступен');" "$tmp/state_badge.js" | cut -d: -f1)"
+grep -Fq "if(!s)return badge('zm-off','нет данных');" "$tmp/state_badge.js" || fail "LuCI marks an untested DNS unavailable"
+_guard_line="$(grep -nF "if(!s)return badge('zm-off','нет данных');" "$tmp/state_badge.js" | cut -d: -f1)"
+_failure_line="$(grep -nF "||!hasPing(pingValue))return badge('zm-bad','недоступен');" "$tmp/state_badge.js" | cut -d: -f1)"
 [ -n "$_guard_line" ] && [ -n "$_failure_line" ] && [ "$_guard_line" -lt "$_failure_line" ] || fail "LuCI empty-status guard is after the unavailable fallback"
 ok "LuCI distinguishes untested DNS from unavailable DNS"
 grep -Fq 'LUCI_VIEW_DIR="/www/luci-static/resources/view/dns-manager"' dns-manager.sh || fail "manager-side LuCI view directory is stale"
@@ -437,13 +437,24 @@ grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validat
 grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
 grep -q 'VERSION="3.74"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
-grep -q 'VERSION="1.108"' dns-manager-luci.sh || fail "LuCI version not bumped"
-test_luci_url='https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/watchdog-network-status-20261022/dns-manager-luci.sh'
+grep -q 'VERSION="1.109"' dns-manager-luci.sh || fail "LuCI version not bumped"
+test_luci_url='https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/zapret-luci-base-20261027/dns-manager-luci.sh'
 [ "$(grep -Fc "$test_luci_url" dns-manager-luci.sh)" -eq 2 ] || fail "test LuCI updater URLs are not pinned to this test branch"
 if grep -Fq 'https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh' dns-manager-luci.sh; then fail "test LuCI updater still targets main"; fi
-grep -Fq '.dm-wrap .dm-watchdog-record{display:grid;grid-template-columns:58px minmax(0,1fr) auto;align-items:center;gap:10px;padding:8px 9px;border:1px solid rgba(110,118,129,.12);border-radius:8px;background:var(--background-color-medium,#fff)' dns-manager-luci.sh || fail "Watchdog result rows do not use the LuCI theme background variable"
+grep -Fq '.dm-scope .dm-watchdog-record{display:grid;grid-template-columns:58px minmax(0,1fr) auto;align-items:center;gap:10px;padding:8px 9px;border:1px solid rgba(110,118,129,.12);border-radius:8px;background:var(--background-color-medium,#fff)' dns-manager-luci.sh || fail "Watchdog result rows do not use the LuCI theme background variable"
 ok "Watchdog result rows follow the active LuCI theme"
 ok "LuCI version and update source target this test branch"
+grep -Fq 'STYLE_FILE="$RESOURCE_DIR/zapret-style.css"' dns-manager-luci.sh || fail "Zapret Manager stylesheet target missing"
+grep -Fq 'STYLE_STAGE="${STYLE_FILE}.new.$"' dns-manager-luci.sh || fail "Zapret Manager stylesheet staging missing"
+grep -Fq 'DNS_MANAGER_ZAPRET_CSS_20261027_EOF' dns-manager-luci.sh || fail "original stylesheet is not embedded in the installer"
+grep -Fq '.zm-wrap { display: flex; flex-direction: column; gap: 16px; max-width: 1100px; }' dns-manager-luci.sh || fail "original Zapret Manager layout styles were not copied"
+grep -Fq '.zm-card {' dns-manager-luci.sh || fail "original Zapret Manager card styles were not copied"
+grep -Fq '.zm-badge { display: inline-flex;' dns-manager-luci.sh || fail "original Zapret Manager status badge styles were not copied"
+grep -Fq "l.href = '/luci-static/resources/dns-manager/zapret-style.css?v=1.109';" "$tmp/common.js" || fail "DNS Manager does not load the embedded Zapret stylesheet"
+grep -Fq "function detectMissingThemeVar()" "$tmp/common.js" || fail "Zapret Manager theme detection was not reused"
+grep -Fq "function badge(kind,text){ return E('span',{'class':'zm-badge '+kind}" "$tmp/common.js" || fail "DNS status badge does not reuse original style class"
+if grep -Fq "object:'zapret-manager'" "$tmp/common.js" || grep -Fq "object: 'zapret-manager'" "$tmp/common.js"; then fail "DNS UI invokes Zapret Manager RPC instead of DNS Manager RPC"; fi
+ok "DNS Manager uses original Zapret LuCI layout and theme classes without changing DNS RPC"
 grep -Fq 'return m ~ /^[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]:[[:xdigit:]][[:xdigit:]]$/' dns-manager-luci.sh || fail "LAN inventory merge rejects valid six-octet MAC addresses"
 grep -Fq 'NF >= 2 && $2 ~ /^[1-6](,[1-6])*$/ &&' dns-manager-luci.sh || fail "saved LAN device assignments do not require valid DNS slot lists"
 grep -Fq "state.lanDevicesMessage='Обновляю список устройств LAN… Пожалуйста, подождите.'" dns-manager-luci.sh || fail "LAN refresh does not display a waiting message"
@@ -1145,9 +1156,9 @@ ok "profile apply does not rerun the selected DNS test"
 
 grep -q ',"ping":' "$tmp/backend.sh" || fail "LuCI DoH instances do not expose saved ping"
 grep -q ',"status":' "$tmp/backend.sh" || fail "LuCI DoH instances do not expose saved test status"
-grep -q "badge('dm-ok','работает')" "$tmp/common.js" || fail "LuCI does not show DNS test state as работает"
-grep -q "badge('dm-bad','не работает')" "$tmp/common.js" || fail "LuCI does not show failed DNS test state as не работает"
-grep -q "badge('dm-off','не проверено')" "$tmp/common.js" || fail "LuCI does not distinguish an untested DNS"
+grep -q "badge('zm-ok','работает')" "$tmp/common.js" || fail "LuCI does not show DNS test state as работает"
+grep -q "badge('zm-bad','не работает')" "$tmp/common.js" || fail "LuCI does not show failed DNS test state as не работает"
+grep -q "badge('zm-off','не проверено')" "$tmp/common.js" || fail "LuCI does not distinguish an untested DNS"
 if grep -q "dm-doh-state.*запущен" "$tmp/common.js"; then
     fail "LuCI DoH rows still expose process state as пользовательский DNS status"
 fi
@@ -1441,7 +1452,7 @@ if grep -Fq 'Сколько DNS можно заменить за раз' "$tmp/w
     fail "LuCI still exposes the obsolete per-cycle repair count"
 fi
 grep -Fq 'Профиль не требуется.' "$tmp/watchdog_card.js" || fail "LuCI does not describe profile-independent Watchdog"
-grep -Fq "row('Автозамена',badge(!en?'dm-off':(auto?'dm-ok':'dm-off'),!en?'проверка выключена':(auto?'включена':'выключена')))" "$tmp/watchdog_card.js" || fail "LuCI auto-replace status badge has incorrect argument order"
+grep -Fq "row('Автозамена',badge(!en?'zm-off':(auto?'zm-ok':'zm-off'),!en?'проверка выключена':(auto?'включена':'выключена')))" "$tmp/watchdog_card.js" || fail "LuCI auto-replace status badge has incorrect argument order"
 ok "LuCI Watchdog is available for manually configured DNS without a profile"
 
 ok "forced-DNS controls and current-DNS checks retain their existing behavior"
