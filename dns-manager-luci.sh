@@ -3641,7 +3641,7 @@ EOF_RPC_WRAPPER
         return 1
     }
 
-    STYLE_STAGE="${STYLE_FILE}.new.$"
+    STYLE_STAGE="${STYLE_FILE}.new.$$"
     rm -f "$STYLE_STAGE" 2>/dev/null || true
     cat > "$STYLE_STAGE" <<'DNS_MANAGER_ZAPRET_CSS_20261027_EOF'
 .zm-wrap { display: flex; flex-direction: column; gap: 16px; max-width: 1100px; }
@@ -5234,7 +5234,7 @@ DNS_MANAGER_ZAPRET_CSS_20261027_EOF
     chmod 0644 "$STYLE_STAGE"
     mv -f "$STYLE_STAGE" "$STYLE_FILE" || { rm -f "$STYLE_STAGE" 2>/dev/null || true; err "Не удалось установить стили Zapret Manager для DNS Manager."; return 1; }
 
-    COMMON_STAGE="$COMMON_FILE.new.$"
+    COMMON_STAGE="$COMMON_FILE.new.$$"
     rm -f "$COMMON_STAGE" 2>/dev/null || true
     cat > "$COMMON_STAGE" <<'EOF_COMMON'
 'use strict';
@@ -5489,7 +5489,7 @@ function injectStyle(root){
     var l = document.createElement('link');
     l.id = 'dns-manager-zm-css';
     l.rel = 'stylesheet';
-    l.href = '/luci-static/resources/dns-manager/zapret-style.css?v=1.109';
+    l.href = L.resource('dns-manager/zapret-style.css') + '?v=1.109';
     (document.head || document.documentElement).appendChild(l);
   }
   var css = ''+
