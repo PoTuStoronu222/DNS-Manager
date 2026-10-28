@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.87"
+VERSION="3.88"
 # 3.86: make LuCI the primary interface and preserve external DNS on removal.
 # 3.85: revalidate Watchdog settings before recovery.
 # 3.84: cap DNS catalog test concurrency by total RAM on small routers.
@@ -5785,7 +5785,7 @@ package_owner_remove_owned() {
         [ -n "$_pkg" ] || continue
         case "$_pkg" in
             *[!A-Za-z0-9._+:-]*) continue ;;
-            https-dns-proxy)
+            https-dns-proxy|luci-app-https-dns-proxy)
                 # Keep the package if any resolver sections remain: another
                 # service or the administrator may still depend on them.
                 if uci show https-dns-proxy 2>/dev/null | grep -qE '^https-dns-proxy\.[^.=]+=https-dns-proxy$'; then
@@ -5960,6 +5960,7 @@ done
 ensure_dependencies(){
 missing=""
 command -v curl >/dev/null 2>&1 || missing="$missing curl"
+package_is_installed luci-app-https-dns-proxy || missing="$missing luci-app-https-dns-proxy"
 command -v https-dns-proxy >/dev/null 2>&1 || missing="$missing https-dns-proxy"
 CA_OK=no
 [ -s /etc/ssl/certs/ca-certificates.crt ] || [ -s /etc/ssl/certs/ca-bundle.crt ] && CA_OK=yes
