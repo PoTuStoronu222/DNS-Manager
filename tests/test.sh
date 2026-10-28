@@ -524,9 +524,9 @@ grep -Fq "disabled:!!state.busy||!!state.jobRunning||unavailable||checking" dns-
 grep -q "'gaming','Игровые DNS'" dns-manager-luci.sh || fail "gaming catalog label missing in LuCI"
 grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validation missing gaming category"
 grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
-grep -q 'VERSION="3.84"' dns-manager.sh || fail "manager version not bumped"
+grep -q 'VERSION="3.85"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
-grep -q 'VERSION="1.120"' dns-manager-luci.sh || fail "LuCI version not bumped"
+grep -q 'VERSION="1.121"' dns-manager-luci.sh || fail "LuCI version not bumped"
 awk '/^function renderOverview\(root,st\)/ {p=1} p && /^function / && !/^function renderOverview\(root,st\)/ {exit} p {print}' dns-manager-luci.sh > "$tmp/dashboard_watchdog.js"
 grep -Fq "watchdogLastView(st)" "$tmp/dashboard_watchdog.js" || fail "dashboard does not show automatic DNS check results"
 awk '/^function watchdogCard\(root,st\)/,/^function renderTestAgeCommon\(/ {print}' dns-manager-luci.sh > "$tmp/network_watchdog.js"
@@ -793,8 +793,8 @@ view_luci="$(sed -n 's|^// DNS Manager LuCI common module version:[[:space:]]*||
 dashboard_view_luci="$(sed -n 's|^// DNS Manager LuCI version: *||p' dns-manager-luci.sh | head -n1)"
 [ "$top_luci" = "$dashboard_view_luci" ] || fail "dashboard view version marker is stale"
 ok "LuCI version markers synchronized ($top_luci)"
-grep -Fq 'VERSION="3.84"' dns-manager.sh || fail "DNS Manager version marker is not 3.84"
-ok "DNS Manager version marker synchronized (3.84)"
+grep -Fq 'VERSION="3.85"' dns-manager.sh || fail "DNS Manager version marker is not 3.85"
+ok "DNS Manager version marker synchronized (3.85)"
 grep -Fq "assignment.appendChild(btn('Удалить'" dns-manager-luci.sh || fail "Custom DNS delete button is not aligned with the assignment action"
 grep -Fq ".dm-catalog-item-custom{grid-column:auto}" dns-manager-luci.sh || fail "Custom DNS card is wider than a stock catalog card"
 grep -Fq ".dm-catalog-controls-custom .dm-assign-inline select{height:30px;min-width:0;width:auto;max-width:100%;flex:1 1 160px" dns-manager-luci.sh || fail "Custom DNS actions do not have a responsive inline layout"
@@ -1574,6 +1574,7 @@ mkdir -p "$TMP_DIR"
 . "$2"
 WATCHDOG_ENABLED=1
 WATCHDOG_AUTOREPLACE=0
+[ "$MODE" = stale ] && WATCHDOG_AUTOREPLACE=1
 SLOT_1=resolver-a
 PORT_1=5053
 dns_cat() { printf 'clean\n'; }
@@ -1581,6 +1582,8 @@ hybrid_desired_port() { printf '5053\n'; }
 watchdog_resource_guard() { return 0; }
 acquire_mutation_lock() { return 0; }
 release_mutation_lock() { return 0; }
+load_config() { [ "$MODE" = stale ] && WATCHDOG_AUTOREPLACE=0; return 0; }
+watchdog_slot_config_matches() { [ "$1" = 1 ] && [ "$2" = "$SLOT_1" ] && [ "$3" = "$PORT_1" ]; }
 watchdog_check_slot() { return 1; }
 watchdog_restart_slot_instance() {
     [ "$1" = 1 ] && [ "$2" = resolver-a ] && [ "$3" = 5053 ] || exit 42
@@ -1619,6 +1622,7 @@ EOF_WATCHDOG_AUTOREPLACE_OFF
 chmod +x "$tmp/watchdog_autoreplace_off_runner.sh"
 "$tmp/watchdog_autoreplace_off_runner.sh" "$tmp/watchdog-off-test" "$tmp/watchdog_slot_target_run_only.sh" isolated || fail "one-shot Watchdog bypasses the auto-replacement OFF toggle"
 "$tmp/watchdog_autoreplace_off_runner.sh" "$tmp/watchdog-off-outage-test" "$tmp/watchdog_slot_target_run_only.sh" outage || fail "one-shot Watchdog mutates a slot during a common DNS/WAN outage"
+"$tmp/watchdog_autoreplace_off_runner.sh" "$tmp/watchdog-off-stale-test" "$tmp/watchdog_slot_target_run_only.sh" stale || fail "Watchdog ignores a disabled auto-replacement setting after lock acquisition"
 ok "auto-replacement OFF permits isolated instance recovery but never DNS replacement, and skips mutations during a common outage"
 
 # A failing upstream on a listening slot must not trigger whole-service recovery.
