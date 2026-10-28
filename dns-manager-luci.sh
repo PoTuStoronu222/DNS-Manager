@@ -3574,7 +3574,7 @@ uninstall_start_json() {
     rm -f "$_un_dir/result" "$_un_dir/output" || { json_error "Не удалось подготовить журнал удаления"; return; }
     # The worker is a separate procd service so it survives rpcd reload while
     # its own LuCI plugin is being removed. No user input enters the command.
-    if ! ubus call service set '{"name":"dns-manager-uninstall","instances":{"main":{"command":["/bin/sh","-c","sleep 2; SILENT_APPLY=1 /usr/bin/dns-manager --uninstall > /var/run/dns-manager-uninstall/output 2>&1; echo $? > /var/run/dns-manager-uninstall/result"]}}}' >/dev/null 2>&1; then
+    if ! ubus call service set '{"name":"dns-manager-uninstall","instances":{"main":{"command":["/bin/sh","-c","sleep 2; SILENT_APPLY=1 /usr/bin/dns-manager --uninstall > /var/run/dns-manager-uninstall/output 2>&1; echo $? > /var/run/dns-manager-uninstall/result; ubus call service delete \"{\\\"name\\\":\\\"dns-manager-uninstall\\\"}\" >/dev/null 2>&1"]}}}' >/dev/null 2>&1; then
         json_error "Не удалось запустить удаление"
         return
     fi
