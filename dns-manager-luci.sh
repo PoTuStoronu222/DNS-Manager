@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager full installer and LuCI companion
-# Version: 1.119
+# Version: 1.120
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.119"
+VERSION="1.120"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -659,7 +659,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="1.119"
+SELF_VERSION="1.120"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -3792,7 +3792,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI common module version: 1.119
+// DNS Manager LuCI common module version: 1.120
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -4495,6 +4495,7 @@ function renderOverview(root,st){
   var sysCard=buildSystemCard(st);
   e.appendChild(E('div',{'class':'dm-grid2'},[sysCard,verCard]));
   e.appendChild(dnsSlotsCard);
+  e.appendChild(E('div',{'id':'dm-watchdog-results'},[card('Проверка DNS',[watchdogLastView(st)])]));
   e.appendChild(components);
 
 
@@ -5214,6 +5215,40 @@ function settingCard(root,x,st){
     ])
   ]);
 }
+function watchdogLastView(st){
+  var en=yes(st.watchdog);
+  var categoryNames={bypass:'Обход геоблока',clean:'Без фильтрации',security:'Защита от угроз',privacy:'Конфиденциальность',adblock:'Блокировка рекламы',family:'Семейная фильтрация',gaming:'Игры',regional:'Региональный DNS',custom:'Пользовательский DNS',unknown:'Категория не определена'};
+  var records=Array.isArray(st.watchdog_last_records)?st.watchdog_last_records:[];
+  var lastView;
+  if(records.length){
+    var recordRows=records.map(function(d){
+      var status=String(d.status||'SKIPPED');
+      var statusKind=status==='OK'?'dm-ok':(status==='SKIPPED'?'dm-off':'dm-bad');
+      var statusText=status==='OK'?'доступен':status==='FAIL'?'не отвечает':status==='NO_LISTENER'?'нет локального порта':'не проверен';
+      var cat=String(d.category||'unknown');
+      return E('div',{'class':'dm-watchdog-record'},[
+        E('span',{'class':'dm-watchdog-record-slot'},'DNS '+String(d.slot||'—')),
+        E('div',{'class':'dm-watchdog-record-main'},[
+          E('strong',{'class':'dm-watchdog-record-name'},String(d.name||d.id||'DNS')),
+          E('span',{'class':'dm-watchdog-record-category'},categoryNames[cat]||cat)
+        ]),
+        badge(statusKind,statusText)
+      ]);
+    });
+    lastView=E('div',{'class':'dm-watchdog-lastcheck'},[
+      E('div',{'class':'dm-watchdog-lastcheck-head'},[
+        E('strong',{},'Результаты последней автоматической проверки'),
+        E('span',{},'Проверено: '+String(st.watchdog_last_checked||0)+' · проблем: '+String(st.watchdog_last_failed||0))
+      ]),
+      E('div',{'class':'dm-watchdog-records'},recordRows)
+    ]);
+  }else{
+    lastView=E('div',{'class':'dm-watchdog-lastcheck dm-hint'},(en?'Автоматическая проверка ещё не выполнялась.':'Периодическая проверка выключена. Включите «Проверка DNS», чтобы начать контроль.'));
+  }
+
+  return lastView;
+}
+
 function watchdogCard(root,st){
   var en=yes(st.watchdog);
   var auto=yes(st.watchdog_autoreplace);
@@ -5301,42 +5336,6 @@ function watchdogCard(root,st){
     ]);
   }
 
-  var runtimeText=!en?'выключена':loop?'активна':service?'запускается':'не запущена';
-  var runtimeKind=!en?'dm-off':loop?'dm-ok':service?'dm-warn':'dm-bad';
-  var status=E('div',{'class':'dm-watchdog-status'},[
-    row('Состояние проверки',badge(runtimeKind,runtimeText)),
-    row('Автозамена',badge(!en?'dm-off':(auto?'dm-ok':'dm-off'),!en?'проверка выключена':(auto?'включена':'выключена')))
-  ]);
-
-  var categoryNames={bypass:'Обход геоблока',clean:'Без фильтрации',security:'Защита от угроз',privacy:'Конфиденциальность',adblock:'Блокировка рекламы',family:'Семейная фильтрация',gaming:'Игры',regional:'Региональный DNS',custom:'Пользовательский DNS',unknown:'Категория не определена'};
-  var records=Array.isArray(st.watchdog_last_records)?st.watchdog_last_records:[];
-  var lastView;
-  if(records.length){
-    var recordRows=records.map(function(d){
-      var status=String(d.status||'SKIPPED');
-      var statusKind=status==='OK'?'dm-ok':(status==='SKIPPED'?'dm-off':'dm-bad');
-      var statusText=status==='OK'?'доступен':status==='FAIL'?'не отвечает':status==='NO_LISTENER'?'нет локального порта':'не проверен';
-      var cat=String(d.category||'unknown');
-      return E('div',{'class':'dm-watchdog-record'},[
-        E('span',{'class':'dm-watchdog-record-slot'},'DNS '+String(d.slot||'—')),
-        E('div',{'class':'dm-watchdog-record-main'},[
-          E('strong',{'class':'dm-watchdog-record-name'},String(d.name||d.id||'DNS')),
-          E('span',{'class':'dm-watchdog-record-category'},categoryNames[cat]||cat)
-        ]),
-        badge(statusKind,statusText)
-      ]);
-    });
-    lastView=E('div',{'class':'dm-watchdog-lastcheck'},[
-      E('div',{'class':'dm-watchdog-lastcheck-head'},[
-        E('strong',{},'Результаты последней автоматической проверки'),
-        E('span',{},'Проверено: '+String(st.watchdog_last_checked||0)+' · проблем: '+String(st.watchdog_last_failed||0))
-      ]),
-      E('div',{'class':'dm-watchdog-records'},recordRows)
-    ]);
-  }else{
-    lastView=E('div',{'class':'dm-watchdog-lastcheck dm-hint'},(en?'Автоматическая проверка ещё не выполнялась.':'Периодическая проверка выключена. Включите «Проверка DNS», чтобы начать контроль.'));
-  }
-
   var feedback=settingFeedback('','watchdog_batch')||E('span',{'class':'dm-setting-feedback'});
   return E('div',{'class':'dm-watchdog-card'},[
     E('div',{'class':'dm-section-title'},'Контроль текущих DNS'),
@@ -5344,8 +5343,6 @@ function watchdogCard(root,st){
     toggleRow('Проверка DNS','Включает периодическую проверку назначенных DoH-слотов. Контроль сам по себе DNS не меняет.',en,'watchdog',false),
     toggleRow('Автозамена DNS','После '+failThreshold+' неудачных проверок подряд заменяет неисправный DNS сервером той же категории; повторная попытка для слота — не раньше чем через '+cooldownMinutes+' мин. Пользовательские DoH автоматически не заменяются.',auto,'watchdog_autoreplace',!en),
     E('div',{'class':'dm-hint'},'Полный разовый тест текущих DoH и дополнительных системных экземпляров доступен на Дашборде кнопкой «Проверить текущие DNS». Он проверяет реальные DoH-endpoint’ы и не включает периодический контроль.'),
-    status,
-    lastView,
     E('details',{'class':'dm-watchdog-advanced'},[
       E('summary',{},'Дополнительные параметры'),
       E('div',{'class':'dm-watchdog-list'},spec.map(function(x){return param(x[0],x[1],x[2],x[3],x[4],x[5],x[6]);})),
@@ -6384,6 +6381,7 @@ function startAutoStatus(root){
   stopAutoStatus();
   state.systemPollBusy=false;
   var tick=0;
+  var watchdogPollBusy=false;
   pollSystem(root);
   dashboardPollTimer=setInterval(function(){
     if(!rootAlive(root)){
@@ -6395,6 +6393,14 @@ function startAutoStatus(root){
     tickLocalUptime(root);
     if(tick%5===0){
       pollSystem(root);
+    }
+    if(tick%30===0&&!watchdogPollBusy){
+      watchdogPollBusy=true;
+      callNetworkStatus().then(function(st){
+        if(!rootAlive(root)||currentRoute()!=='dashboard'||!st||!st.ok)return;
+        var el=root.querySelector('#dm-watchdog-results');
+        if(el){el.innerHTML='';el.appendChild(card('Проверка DNS',[watchdogLastView(st)]));}
+      }).catch(function(){}).then(function(){watchdogPollBusy=false;});
     }
   },1000);
 }
@@ -6449,7 +6455,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 1.119
+// DNS Manager LuCI version: 1.120
 return view.extend({
   load: DM.load,
   render: DM.render,
