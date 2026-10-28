@@ -2196,8 +2196,7 @@ doh_status_json() {
         _pjp="$(sed -n 's/^profile=//p' "$JOB_DIR/profile/state" 2>/dev/null | head -n1)"
         _pjsd="$(sed -n 's/^started=//p' "$JOB_DIR/profile/state" 2>/dev/null | head -n1)"
         _pjf="$(sed -n 's/^finished=//p' "$JOB_DIR/profile/state" 2>/dev/null | tail -n1)"
-        _pjm="$(tail -n 12 "$JOB_DIR/profile/output" 2>/dev/null | sed '/^[[:space:]]*$/d' | tail -n1 | tr '
-	' '  ' | cut -c1-360)"
+        _pjm="$(tail -n 12 "$JOB_DIR/profile/output" 2>/dev/null | sed '/^[[:space:]]*$/d' | tail -n1 | tr '\r\t' '  ' | cut -c1-360)"
     fi
 
     printf '{"ok":true'; page_header_json
