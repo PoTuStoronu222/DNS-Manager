@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager full installer and LuCI companion
-# Version: 1.121
+# Version: 1.122
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.121"
+VERSION="1.122"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -659,7 +659,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="1.121"
+SELF_VERSION="1.122"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -3792,7 +3792,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI common module version: 1.121
+// DNS Manager LuCI common module version: 1.122
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -4440,7 +4440,10 @@ function renderOverview(root,st){
         E('span',{'class':'dm-component-dns-slot'},slot),
         E('span',{'class':'dm-component-dns-name'},name)
       ]),
-      E('div',{'class':'dm-component-dns-meta'},[statusNode])
+      E('div',{'class':'dm-component-dns-meta'},[
+        statusNode,
+        E('span',{'class':'dm-watchdog-slot-result','data-dns-slot':String(d.slot||''),'data-dns-id':String(d.id||'')},[watchdogSlotResult(st,d.slot,d.id)].filter(Boolean))
+      ])
     ]));
   });
   if(!dnsItems.length)dnsItems.push(E('div',{'class':'dm-hint'},'DNS в слоты не назначены.'));
@@ -4495,7 +4498,6 @@ function renderOverview(root,st){
   var sysCard=buildSystemCard(st);
   e.appendChild(E('div',{'class':'dm-grid2'},[sysCard,verCard]));
   e.appendChild(dnsSlotsCard);
-  e.appendChild(E('div',{'id':'dm-watchdog-results'},[card('Проверка DNS',[watchdogLastView(st)])]));
   e.appendChild(components);
 
 
@@ -5215,38 +5217,15 @@ function settingCard(root,x,st){
     ])
   ]);
 }
-function watchdogLastView(st){
-  var en=yes(st.watchdog);
-  var categoryNames={bypass:'Обход геоблока',clean:'Без фильтрации',security:'Защита от угроз',privacy:'Конфиденциальность',adblock:'Блокировка рекламы',family:'Семейная фильтрация',gaming:'Игры',regional:'Региональный DNS',custom:'Пользовательский DNS',unknown:'Категория не определена'};
+function watchdogSlotResult(st,slot,id){
+  if(!slot||!id)return null;
   var records=Array.isArray(st.watchdog_last_records)?st.watchdog_last_records:[];
-  var lastView;
-  if(records.length){
-    var recordRows=records.map(function(d){
-      var status=String(d.status||'SKIPPED');
-      var statusKind=status==='OK'?'dm-ok':(status==='SKIPPED'?'dm-off':'dm-bad');
-      var statusText=status==='OK'?'доступен':status==='FAIL'?'не отвечает':status==='NO_LISTENER'?'нет локального порта':'не проверен';
-      var cat=String(d.category||'unknown');
-      return E('div',{'class':'dm-watchdog-record'},[
-        E('span',{'class':'dm-watchdog-record-slot'},'DNS '+String(d.slot||'—')),
-        E('div',{'class':'dm-watchdog-record-main'},[
-          E('strong',{'class':'dm-watchdog-record-name'},String(d.name||d.id||'DNS')),
-          E('span',{'class':'dm-watchdog-record-category'},categoryNames[cat]||cat)
-        ]),
-        badge(statusKind,statusText)
-      ]);
-    });
-    lastView=E('div',{'class':'dm-watchdog-lastcheck'},[
-      E('div',{'class':'dm-watchdog-lastcheck-head'},[
-        E('strong',{},'Результаты последней автоматической проверки'),
-        E('span',{},'Проверено: '+String(st.watchdog_last_checked||0)+' · проблем: '+String(st.watchdog_last_failed||0))
-      ]),
-      E('div',{'class':'dm-watchdog-records'},recordRows)
-    ]);
-  }else{
-    lastView=E('div',{'class':'dm-watchdog-lastcheck dm-hint'},(en?'Автоматическая проверка ещё не выполнялась.':'Периодическая проверка выключена. Включите «Проверка DNS», чтобы начать контроль.'));
-  }
-
-  return lastView;
+  var record=records.filter(function(d){return String(d.slot||'')===String(slot)&&String(d.id||'')===String(id);})[0];
+  if(!record)return null;
+  var status=String(record.status||'SKIPPED');
+  var kind=status==='OK'?'dm-ok':(status==='SKIPPED'?'dm-off':'dm-bad');
+  var label=status==='OK'?'доступен':status==='FAIL'?'не отвечает':status==='NO_LISTENER'?'нет локального порта':'не проверен';
+  return badge(kind,'Авто: '+label);
 }
 
 function watchdogCard(root,st){
@@ -6398,8 +6377,11 @@ function startAutoStatus(root){
       watchdogPollBusy=true;
       callNetworkStatus().then(function(st){
         if(!rootAlive(root)||currentRoute()!=='dashboard'||!st||!st.ok)return;
-        var el=root.querySelector('#dm-watchdog-results');
-        if(el){el.innerHTML='';el.appendChild(card('Проверка DNS',[watchdogLastView(st)]));}
+        root.querySelectorAll('.dm-watchdog-slot-result').forEach(function(el){
+          var result=watchdogSlotResult(st,el.getAttribute('data-dns-slot'),el.getAttribute('data-dns-id'));
+          el.innerHTML='';
+          if(result)el.appendChild(result);
+        });
       }).catch(function(){}).then(function(){watchdogPollBusy=false;});
     }
   },1000);
@@ -6455,7 +6437,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 1.121
+// DNS Manager LuCI version: 1.122
 return view.extend({
   load: DM.load,
   render: DM.render,
