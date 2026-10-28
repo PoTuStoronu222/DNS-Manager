@@ -335,6 +335,34 @@ extract_function uninstall_reset_manager_extras "$WORK/uninstall-extras.sh" || f
 ) || fail "uninstall did not respect Manager ownership and later manual settings"
 ok "uninstall resets active Manager extras and preserves later manual changes"
 
+# DNS fallback must not rewrite dnsmasq when Manager never controlled DNS.
+extract_function restore_dns_before_uninstall "$WORK/restore-before-source.sh" || fail "cannot extract uninstall DNS cleanup"
+sed "s|/etc/init.d/dnsmasq|$WORK/test-dnsmasq|g; s|/etc/init.d/https-dns-proxy|$WORK/test-proxy|g" "$WORK/restore-before-source.sh" > "$WORK/restore-before.sh"
+cat > "$WORK/test-dnsmasq" <<'EOF_DNSMASQ_INIT'
+#!/bin/sh
+exit 0
+EOF_DNSMASQ_INIT
+chmod +x "$WORK/test-dnsmasq"
+(
+    . "$WORK/restore-before.sh"
+    OWNERSHIP="$WORK/no-ownership"
+    SLOT_1=''
+    uninstall_reset_manager_extras() { return 0; }
+    rollback_hdp_targeted() { return 0; }
+    uninstall_detach_https_dns_proxy() { return 0; }
+    rollback_dnsmasq_targeted() { return 0; }
+    rollback_firewall_targeted() { return 0; }
+    rollback_ownership_has() { return 1; }
+    reload_fw() { return 0; }
+    uninstall_dnsmasq_resolv_fallback() { : > "$WORK/fallback-used"; }
+    restore_dns_before_uninstall || exit 1
+    [ ! -e "$WORK/fallback-used" ] || exit 2
+    SLOT_1=managed
+    restore_dns_before_uninstall || exit 3
+    [ -e "$WORK/fallback-used" ] || exit 4
+) || fail "uninstall changed DNS without Manager ownership evidence"
+ok "DNS fallback runs only when Manager controlled the DNS path"
+
 # When no explicit upstream remains, disable noresolv so system resolvfile is used.
 extract_function uninstall_dnsmasq_resolv_fallback "$WORK/resolv-fallback.sh" || fail "cannot extract DNS resolvfile fallback"
 . "$WORK/resolv-fallback.sh"
