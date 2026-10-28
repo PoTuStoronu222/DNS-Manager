@@ -70,7 +70,7 @@ rpc() {
     _body="${2:-{}}"
     _reply="$(ubus call dns_manager "$_method" "$_body" 2>&1)" || {
         printf '%s\n' "$_reply"
-        fail "RPC $ _method failed"
+        fail "RPC $_method failed"
     }
     printf '%s\n' "$_reply"
     printf '%s' "$_reply" | grep -q '"error"' && fail "RPC $_method returned an error"
