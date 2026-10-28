@@ -22,18 +22,7 @@ trap 'rm -rf "$tmp"' EXIT INT TERM
 
 # The uninstall request starts a separate supervised process, so rpcd reload
 # cannot stop the removal. Exercise the RPC helper without touching OpenWrt.
-awk '/^uninstall_start_json\(\) \{/,/^run_action\(\) \{/' dns-manager-luci.sh | sed '$d' | sed "s|/var/run/dns-manager-uninstall|$tmp/uninstall-job|g" > "$tmp/uninstall_start.sh"
-node - "$tmp/uninstall_start.sh" <<'EOF_UNINSTALL_JSON_TEST' || fail "uninstall procd request is not valid JSON"
-const fs = require('fs');
-const source = fs.readFileSync(process.argv[2], 'utf8');
-const match = source.match(/ubus call service set '([^']+)'/);
-if (!match) process.exit(1);
-const request = JSON.parse(match[1]);
-const command = request.instances.main.command;
-if (request.name !== 'dns-manager-uninstall' || command[0] !== '/bin/sh' || command[1] !== '-c' ||
-    !command[2].includes('SILENT_APPLY=1 /usr/bin/dns-manager --uninstall') ||
-    !command[2].includes('ubus call service delete "{\\"name\\":\\"dns-manager-uninstall\\"}"')) process.exit(1);
-EOF_UNINSTALL_JSON_TEST
+awk '/^uninstall_start_json\(\) \{/,/^run_action\(\) \{/' dns-manager-luci.sh | sed '$d' | sed -e "s|/var/run/dns-manager-uninstall|$tmp/uninstall-job|g" -e "s|/www/dns-manager-uninstall|$tmp/dns-manager-uninstall|g" > "$tmp/uninstall_start.sh"
 cat > "$tmp/uninstall_start_runner.sh" <<'EOF_UNINSTALL_START_TEST'
 #!/bin/sh
 set -eu
@@ -42,22 +31,29 @@ touch "$MANAGER"
 chmod +x "$MANAGER"
 . "$1/uninstall_start.sh"
 json_error() { printf 'ERROR:%s\n' "$1"; }
-json_ok() { printf 'OK\n'; }
+json_quote() { node -e 'process.stdout.write(JSON.stringify(process.argv[1]))' "$1"; }
 ubus() {
     case "$1:$2:$3" in
         call:service:list) printf '{}\n'; return 0 ;;
         call:service:set)
-            case "$4" in *'"name":"dns-manager-uninstall"'*'SILENT_APPLY=1 /usr/bin/dns-manager --uninstall'*) : > "$UNINSTALL_TEST_WORKER"; return 0;; esac
+            case "$4" in *'"name":"dns-manager-uninstall"'*'SILENT_APPLY=1 /usr/bin/dns-manager --uninstall'*) printf '%s' "$4" > "$UNINSTALL_TEST_WORKER"; return 0;; esac
             return 1 ;;
         *) return 1 ;;
     esac
 }
 UNINSTALL_TEST_WORKER="$1/worker-started"
 uninstall_start_json > "$1/uninstall-reply"
-grep -qx OK "$1/uninstall-reply"
+grep -q '"ok":true,"status_url":' "$1/uninstall-reply"
 [ -f "$1/worker-started" ]
 EOF_UNINSTALL_START_TEST
 sh "$tmp/uninstall_start_runner.sh" "$tmp" || fail "LuCI uninstall worker did not start via procd"
+node - "$tmp/worker-started" <<'EOF_UNINSTALL_JSON_TEST' || fail "uninstall procd request is not valid JSON"
+const request = JSON.parse(require('fs').readFileSync(process.argv[2], 'utf8'));
+const command = request.instances.main.command;
+if (request.name !== 'dns-manager-uninstall' || command[0] !== '/bin/sh' || command[1] !== '-c' ||
+    !command[2].includes('SILENT_APPLY=1 /usr/bin/dns-manager --uninstall') ||
+    !command[2].includes('ubus call service delete') || !command[4].includes('dns-manager-uninstall.')) process.exit(1);
+EOF_UNINSTALL_JSON_TEST
 ok "LuCI uninstall starts a separate procd worker"
 
 # The generated per-device dnsmasq/firewall service is shell-checked independently of the installer heredoc.
@@ -564,9 +560,9 @@ grep -Fq "disabled:!!state.busy||!!state.jobRunning||unavailable||checking" dns-
 grep -q "'gaming','Игровые DNS'" dns-manager-luci.sh || fail "gaming catalog label missing in LuCI"
 grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validation missing gaming category"
 grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
-grep -q 'VERSION="3.86"' dns-manager.sh || fail "manager version not bumped"
+grep -q 'VERSION="3.87"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
-grep -q 'VERSION="1.123"' dns-manager-luci.sh || fail "LuCI version not bumped"
+grep -q 'VERSION="1.124"' dns-manager-luci.sh || fail "LuCI version not bumped"
 if grep -q '^main_menu$' dns-manager.sh; then fail "interactive console menu still starts"; fi
 grep -Fq "btn('Удалить DNS Manager'" dns-manager-luci.sh || fail "LuCI uninstall button missing"
 grep -Fq '"uninstall":{},"uninstall_status":{}' dns-manager-luci.sh || fail "LuCI uninstall RPC is not registered"
@@ -848,8 +844,8 @@ view_luci="$(sed -n 's|^// DNS Manager LuCI common module version:[[:space:]]*||
 dashboard_view_luci="$(sed -n 's|^// DNS Manager LuCI version: *||p' dns-manager-luci.sh | head -n1)"
 [ "$top_luci" = "$dashboard_view_luci" ] || fail "dashboard view version marker is stale"
 ok "LuCI version markers synchronized ($top_luci)"
-grep -Fq 'VERSION="3.86"' dns-manager.sh || fail "DNS Manager version marker is not 3.86"
-ok "DNS Manager version marker synchronized (3.86)"
+grep -Fq 'VERSION="3.87"' dns-manager.sh || fail "DNS Manager version marker is not 3.87"
+ok "DNS Manager version marker synchronized (3.87)"
 grep -Fq "assignment.appendChild(btn('Удалить'" dns-manager-luci.sh || fail "Custom DNS delete button is not aligned with the assignment action"
 grep -Fq ".dm-catalog-item-custom{grid-column:auto}" dns-manager-luci.sh || fail "Custom DNS card is wider than a stock catalog card"
 grep -Fq ".dm-catalog-controls-custom .dm-assign-inline select{height:30px;min-width:0;width:auto;max-width:100%;flex:1 1 160px" dns-manager-luci.sh || fail "Custom DNS actions do not have a responsive inline layout"

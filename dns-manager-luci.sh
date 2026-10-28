@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager full installer and LuCI companion
-# Version: 1.123
+# Version: 1.124
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.123"
+VERSION="1.124"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -659,7 +659,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="1.123"
+SELF_VERSION="1.124"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -3558,7 +3558,9 @@ uninstall_status_json() {
     printf '{"ok":true,"status":'
     json_quote "$_un_state"
     printf ',"output":'
-    json_quote "$(tail -n 30 /var/run/dns-manager-uninstall/output 2>/dev/null || true)"
+    json_quote "$(tail -n 30 /var/run/dns-manager-uninstall/output 2>/dev/null | tr '\n' ' ' || true)"
+    printf ',"phase":'
+    json_quote "$(cat /var/run/dns-manager-uninstall/phase 2>/dev/null || true)"
     printf '}'
 }
 
@@ -3571,14 +3573,25 @@ uninstall_start_json() {
     _un_dir="/var/run/dns-manager-uninstall"
     [ ! -L "$_un_dir" ] || { json_error "Недопустимый каталог удаления"; return; }
     mkdir -p "$_un_dir" && chmod 0700 "$_un_dir" || { json_error "Не удалось подготовить удаление"; return; }
-    rm -f "$_un_dir/result" "$_un_dir/output" || { json_error "Не удалось подготовить журнал удаления"; return; }
+    rm -f "$_un_dir/result" "$_un_dir/output" "$_un_dir/phase" || { json_error "Не удалось подготовить журнал удаления"; return; }
+    _un_web_dir="$(mktemp -d /www/dns-manager-uninstall.XXXXXX)" || { json_error "Не удалось подготовить отображение результата удаления"; return; }
+    if ! chmod 0755 "$_un_web_dir" || ! printf '%s\n' '{"status":"running"}' > "$_un_web_dir/status.json" || ! chmod 0644 "$_un_web_dir/status.json"; then
+        rm -f "$_un_web_dir/status.json"; rmdir "$_un_web_dir" 2>/dev/null
+        json_error "Не удалось подготовить отображение результата удаления"
+        return
+    fi
     # The worker is a separate procd service so it survives rpcd reload while
     # its own LuCI plugin is being removed. No user input enters the command.
-    if ! ubus call service set '{"name":"dns-manager-uninstall","instances":{"main":{"command":["/bin/sh","-c","sleep 2; SILENT_APPLY=1 /usr/bin/dns-manager --uninstall > /var/run/dns-manager-uninstall/output 2>&1; echo $? > /var/run/dns-manager-uninstall/result; ubus call service delete \"{\\\"name\\\":\\\"dns-manager-uninstall\\\"}\" >/dev/null 2>&1"]}}}' >/dev/null 2>&1; then
+    _un_command='sleep 2; DNS_MANAGER_UNINSTALL_PROGRESS=1 SILENT_APPLY=1 /usr/bin/dns-manager --uninstall > /var/run/dns-manager-uninstall/output 2>&1; rc=$?; echo "$rc" > /var/run/dns-manager-uninstall/result; if [ "$rc" = 0 ]; then printf "%s\\n" "{\"status\":\"done\"}" > "$1/status.json"; else printf "%s\\n" "{\"status\":\"failed\"}" > "$1/status.json"; fi; sleep 120; rm -f "$1/status.json"; rmdir "$1" 2>/dev/null; ubus call service delete "{\"name\":\"dns-manager-uninstall\"}" >/dev/null 2>&1'
+    _un_request="$(printf '%s' '{"name":"dns-manager-uninstall","instances":{"main":{"command":["/bin/sh","-c",'; json_quote "$_un_command"; printf '%s' ',"dns-manager-uninstall",'; json_quote "$_un_web_dir"; printf '%s' ']}}}')"
+    if ! ubus call service set "$_un_request" >/dev/null 2>&1; then
+        rm -f "$_un_web_dir/status.json"; rmdir "$_un_web_dir" 2>/dev/null
         json_error "Не удалось запустить удаление"
         return
     fi
-    json_ok
+    printf '{"ok":true,"status_url":'
+    json_quote "/${_un_web_dir##*/}/status.json"
+    printf '}'
 }
 
 run_action() {
@@ -3830,7 +3843,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI common module version: 1.123
+// DNS Manager LuCI common module version: 1.124
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -4618,8 +4631,24 @@ function renderDoH(root,st){
     ch.push(E('div',{'class':'dm-inline-msg info'},'Steer запущен, но активный перехват DNS :53→:5300 не обнаружен. Поэтому DNS Manager не считает Steer владельцем forced-DNS и сохраняет обычную схему принудительного DNS.'));
   }
   if(state.pageNotice.doh)ch.push(E('div',{'class':'dm-inline-msg info'},state.pageNotice.doh));
-  ch.push(E('div',{'class':'dm-actions'},[
-    btn('Удалить DNS Manager','cbi-button-negative',function(){uninstallManager(root);},{disabled:!!state.busy})
+  var un=state.uninstall;
+  if(un){
+    ch.push(E('div',{'class':'dm-inline-msg '+(un.status==='failed'?'error':'info')},[
+      E('strong',{},un.status==='confirm'?'Удаление DNS Manager':un.status==='done'?'Удаление завершено':un.status==='failed'?'Удаление не завершено':'Удаление DNS Manager'),
+      E('p',{},un.message),
+      un.output?E('pre',{},un.output):null
+    ].filter(Boolean)));
+  }
+  ch.push(E('div',{'class':'dm-actions'},un&&un.status==='confirm'?[
+    btn('Подтвердить удаление','cbi-button-negative',function(){uninstallManager(root);}),
+    btn('Отмена','cbi-button-neutral',function(){state.uninstall=null;renderDoH(root,window.dmState||{});})
+  ]:un&&un.status==='done'?[
+    btn('Открыть LuCI','cbi-button-action',function(){window.location.href=L.url('admin/status/overview');})
+  ]:[
+    btn('Удалить DNS Manager','cbi-button-negative',function(){
+      state.uninstall={status:'confirm',message:'Функции менеджера будут отключены, стандартный DNS восстановлен, затем удалятся интерфейс и установленные менеджером пакеты, если они не используются сторонними настройками.'};
+      renderDoH(root,window.dmState||{});
+    },{disabled:!!state.busy})
   ]));
   e.appendChild(card('DNS over HTTPS',ch));
 }
@@ -5900,62 +5929,46 @@ function updateAll(root){
 }
 function uninstallManager(root){
   if(state.busy)return;
-  confirmAction('Удалить DNS Manager',[
-    ['Настройки','Выключить функции DNS Manager и восстановить обычный DNS OpenWrt.'],
-    ['Удаление','Удалить интерфейс, службы и установленные менеджером пакеты, если они не используются другими настройками.'],
-    ['Сторонние настройки','Обнаруженные сторонние DNS-секции и правила сохраняются.']
-  ],function(){
-    state.busy=true;
-    state.pageNotice.doh='Запускаю удаление…';
-    renderDoH(root,window.dmState||{});
-    callUninstall().then(function(r){
-      if(!r||!r.ok)throw new Error((r&&r.error)||'Не удалось запустить удаление.');
-      ui.showModal('Удаление DNS Manager',[
-        E('p',{},'Удаление запущено. Подождите, пока настройки DNS будут восстановлены.'),
-        E('p',{},'После удаления вернитесь на главную страницу LuCI.'),
-        E('div',{'class':'right'},[
-          btn('Открыть LuCI','cbi-button-action',function(){window.location.href=L.url('admin/status/overview');}),
-          btn('Закрыть','cbi-button-neutral',ui.hideModal)
-        ])
-      ]);
-      var attempts=0, unavailable=0;
-      function poll(){
-        if(++attempts>60){
-          ui.showModal('Состояние удаления',[
-            E('p',{},'Не удалось получить окончательное состояние удаления. Откройте главную страницу LuCI и проверьте, исчез ли DNS Manager.'),
-            E('div',{'class':'right'},[btn('Открыть LuCI','cbi-button-action',function(){window.location.href=L.url('admin/status/overview');})])
-          ]);
-          return;
-        }
-        callUninstallStatus().then(function(result){
-          unavailable=0;
-          if(result&&result.status==='failed'){
-            state.busy=false;
-            state.pageNotice.doh='Удаление не завершилось. '+String(result.output||'Повторите попытку.');
-            ui.hideModal();
-            renderDoH(root,window.dmState||{});
-          }else if(result&&result.status==='done'){
-            ui.showModal('Удаление DNS Manager',[E('p',{},'Удаление завершено.'),E('div',{'class':'right'},[btn('Открыть LuCI','cbi-button-action',function(){window.location.href=L.url('admin/status/overview');})])]);
-          }else window.setTimeout(poll,2000);
-        }).catch(function(){
-          // rpcd may be reloading or the plugin may already have been removed.
-          // Do not claim success from a lost connection.
-          if(++unavailable>=3){
-            ui.showModal('Состояние удаления',[
-              E('p',{},'Интерфейс DNS Manager больше не отвечает. Удаление может ещё продолжаться; откройте главную страницу LuCI через несколько секунд.'),
-              E('div',{'class':'right'},[btn('Открыть LuCI','cbi-button-action',function(){window.location.href=L.url('admin/status/overview');})])
-            ]);
-            return;
-          }
-          window.setTimeout(poll,2000);
-        });
-      }
-      window.setTimeout(poll,2000);
-    }).catch(function(err){
-      state.busy=false;
-      state.pageNotice.doh=withRpcError('Не удалось запустить удаление.',err);
+  state.busy=true;
+  state.uninstall={status:'running',message:'Запускаю удаление…'};
+  renderDoH(root,window.dmState||{});
+  callUninstall().then(function(r){
+    if(!r||!r.ok||!r.status_url)throw new Error((r&&r.error)||'Не удалось запустить удаление.');
+    var attempts=0;
+    function show(status,message,output){
+      state.uninstall={status:status,message:message,output:output||''};
+      if(status==='failed')state.busy=false;
       renderDoH(root,window.dmState||{});
-    });
+    }
+    function poll(){
+      if(++attempts>90){
+        show('failed','Не удалось получить окончательный результат. Удаление может продолжаться; проверьте главную страницу LuCI.');
+        return;
+      }
+      fetch(r.status_url,{cache:'no-store'}).then(function(response){
+        if(!response.ok)throw new Error('status unavailable');
+        return response.json();
+      }).then(function(result){
+        if(result.status==='done'){
+          show('done','Функции отключены, системный DNS восстановлен, файлы менеджера удалены.');
+        }else if(result.status==='failed'){
+          callUninstallStatus().then(function(detail){
+            show('failed','Проверьте сообщение ниже и повторите попытку.',detail&&detail.output);
+          }).catch(function(){show('failed','Проверьте состояние DNS Manager в LuCI.');});
+        }else{
+          callUninstallStatus().then(function(detail){
+            show('running',(detail&&detail.phase)||'Подготавливаю удаление…');
+          }).catch(function(){
+            show('running','Завершаю удаление интерфейса и служебных файлов…');
+          }).then(function(){window.setTimeout(poll,2000);});
+        }
+      }).catch(function(){window.setTimeout(poll,2000);});
+    }
+    window.setTimeout(poll,1000);
+  }).catch(function(err){
+    state.busy=false;
+    state.uninstall={status:'failed',message:withRpcError('Не удалось запустить удаление.',err)};
+    renderDoH(root,window.dmState||{});
   });
 }
 function resetDnsCore(root){
@@ -6540,7 +6553,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 1.123
+// DNS Manager LuCI version: 1.124
 return view.extend({
   load: DM.load,
   render: DM.render,

@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.86"
+VERSION="3.87"
 # 3.86: make LuCI the primary interface and preserve external DNS on removal.
 # 3.85: revalidate Watchdog settings before recovery.
 # 3.84: cap DNS catalog test concurrency by total RAM on small routers.
@@ -4561,6 +4561,7 @@ uninstall_manager_impl() {
         pause
         return 1
     }
+    [ "${DNS_MANAGER_UNINSTALL_PROGRESS:-0}" = 1 ] && printf '%s\n' 'Отключаю службы и проверки DNS Manager.' > /var/run/dns-manager-uninstall/phase
     watchdog_cron_remove_owned_block >/dev/null 2>&1 || {
         release_mutation_lock
         err_msg "Не удалось удалить запись DNS Watchdog из cron. Менеджер сохранён для повторной попытки."
@@ -4574,6 +4575,7 @@ uninstall_manager_impl() {
         return 1
     }
 
+    [ "${DNS_MANAGER_UNINSTALL_PROGRESS:-0}" = 1 ] && printf '%s\n' 'Восстанавливаю стандартные настройки DNS.' > /var/run/dns-manager-uninstall/phase
     if ! restore_dns_before_uninstall >/dev/null 2>&1; then
         release_mutation_lock
         err_msg "Не удалось безопасно восстановить системный DNS. Менеджер и пакеты сохранены для повторной попытки."
@@ -4581,12 +4583,14 @@ uninstall_manager_impl() {
         return 1
     fi
 
+    [ "${DNS_MANAGER_UNINSTALL_PROGRESS:-0}" = 1 ] && printf '%s\n' 'Удаляю пакеты, установленные DNS Manager.' > /var/run/dns-manager-uninstall/phase
     if ! package_owner_remove_owned >/dev/null 2>&1; then
         release_mutation_lock
         warn_msg "Не удалось удалить все пакеты, установленные DNS Manager. Файлы менеджера сохранены для повторной попытки."
         pause
         return 1
     fi
+    [ "${DNS_MANAGER_UNINSTALL_PROGRESS:-0}" = 1 ] && printf '%s\n' 'Удаляю интерфейс и файлы DNS Manager.' > /var/run/dns-manager-uninstall/phase
     if ! luci_companion_remove >/dev/null 2>&1; then
         release_mutation_lock
         err_msg "Не удалось полностью удалить LuCI DNS Manager. Файлы менеджера сохранены для повторной попытки."
