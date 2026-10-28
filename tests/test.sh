@@ -1834,7 +1834,8 @@ if grep -Fq 'Сколько DNS можно заменить за раз' "$tmp/w
     fail "LuCI still exposes the obsolete per-cycle repair count"
 fi
 grep -Fq 'Профиль не требуется.' "$tmp/watchdog_card.js" || fail "LuCI does not describe profile-independent Watchdog"
-grep -Fq "row('Автозамена',badge(!en?'dm-off':(auto?'dm-ok':'dm-off'),!en?'проверка выключена':(auto?'включена':'выключена')))" "$tmp/watchdog_card.js" || fail "LuCI auto-replace status badge has incorrect argument order"
+grep -Fq "toggleRow('Автозамена DNS'" "$tmp/watchdog_card.js" || fail "LuCI auto-replace control is missing"
+grep -Fq "watchdogReplacementComponentItem(wdAuto,wdAutoDetails)" "$tmp/dashboard_watchdog.js" || fail "dashboard auto-replace status is missing"
 ok "LuCI Watchdog is available for manually configured DNS without a profile"
 
 ok "forced-DNS controls and current-DNS checks retain their existing behavior"
