@@ -23,6 +23,17 @@ trap 'rm -rf "$tmp"' EXIT INT TERM
 # The uninstall request starts a separate supervised process, so rpcd reload
 # cannot stop the removal. Exercise the RPC helper without touching OpenWrt.
 awk '/^uninstall_start_json\(\) \{/,/^run_action\(\) \{/' dns-manager-luci.sh | sed '$d' | sed "s|/var/run/dns-manager-uninstall|$tmp/uninstall-job|g" > "$tmp/uninstall_start.sh"
+node - "$tmp/uninstall_start.sh" <<'EOF_UNINSTALL_JSON_TEST' || fail "uninstall procd request is not valid JSON"
+const fs = require('fs');
+const source = fs.readFileSync(process.argv[2], 'utf8');
+const match = source.match(/ubus call service set '([^']+)'/);
+if (!match) process.exit(1);
+const request = JSON.parse(match[1]);
+const command = request.instances.main.command;
+if (request.name !== 'dns-manager-uninstall' || command[0] !== '/bin/sh' || command[1] !== '-c' ||
+    !command[2].includes('SILENT_APPLY=1 /usr/bin/dns-manager --uninstall') ||
+    !command[2].includes('ubus call service delete "{\\"name\\":\\"dns-manager-uninstall\\"}"')) process.exit(1);
+EOF_UNINSTALL_JSON_TEST
 cat > "$tmp/uninstall_start_runner.sh" <<'EOF_UNINSTALL_START_TEST'
 #!/bin/sh
 set -eu
