@@ -527,7 +527,7 @@ grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp
 grep -q 'VERSION="3.84"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
 grep -q 'VERSION="1.120"' dns-manager-luci.sh || fail "LuCI version not bumped"
-awk '/^function renderOverview\(root,st\)/,/^function / {print}' dns-manager-luci.sh > "$tmp/dashboard_watchdog.js"
+awk '/^function renderOverview\(root,st\)/ {p=1} p && /^function / && !/^function renderOverview\(root,st\)/ {exit} p {print}' dns-manager-luci.sh > "$tmp/dashboard_watchdog.js"
 grep -Fq "watchdogLastView(st)" "$tmp/dashboard_watchdog.js" || fail "dashboard does not show automatic DNS check results"
 awk '/^function watchdogCard\(root,st\)/,/^function renderTestAgeCommon\(/ {print}' dns-manager-luci.sh > "$tmp/network_watchdog.js"
 if grep -Fq 'watchdogLastView(st)' "$tmp/network_watchdog.js"; then fail "network page still renders automatic DNS check results"; fi
