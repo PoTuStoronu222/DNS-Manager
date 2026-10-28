@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager full installer and LuCI companion
-# Version: 1.122
+# Version: 1.123
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.122"
+VERSION="1.123"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -617,12 +617,12 @@ EOF_MENU
     "description": "DNS Manager native LuCI interface",
     "read": {
       "ubus": {
-        "dns_manager": [ "status", "runtime", "doh_status", "network_status", "lan_devices", "time_status", "page_meta", "catalog", "job", "log", "update_check" ]
+        "dns_manager": [ "status", "runtime", "doh_status", "network_status", "lan_devices", "time_status", "page_meta", "catalog", "job", "log", "update_check", "uninstall_status" ]
       }
     },
     "write": {
       "ubus": {
-        "dns_manager": [ "set_profile", "reset_dns", "set_slot", "set_slot_domains", "set_device_dns", "add_custom_dns", "delete_custom_dns", "set_setting", "set_watchdog_setting", "set_watchdog_settings", "set_ntp", "set_test_age", "test_all", "test_current", "test_one", "test_system", "update", "update_manager", "update_hdp", "update_catalog", "update_all" ]
+        "dns_manager": [ "set_profile", "reset_dns", "set_slot", "set_slot_domains", "set_device_dns", "add_custom_dns", "delete_custom_dns", "set_setting", "set_watchdog_setting", "set_watchdog_settings", "set_ntp", "set_test_age", "test_all", "test_current", "test_one", "test_system", "update", "update_manager", "update_hdp", "update_catalog", "update_all", "uninstall" ]
       }
     }
   }
@@ -659,7 +659,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="1.122"
+SELF_VERSION="1.123"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -3547,6 +3547,40 @@ set_device_dns_json() {
     json_ok
 }
 
+uninstall_status_json() {
+    _un_result="/var/run/dns-manager-uninstall/result"
+    if [ -r "$_un_result" ]; then
+        _un_code="$(cat "$_un_result" 2>/dev/null)"
+        case "$_un_code" in 0) _un_state=done ;; *) _un_state=failed ;; esac
+    else
+        _un_state=running
+    fi
+    printf '{"ok":true,"status":'
+    json_quote "$_un_state"
+    printf ',"output":'
+    json_quote "$(tail -n 30 /var/run/dns-manager-uninstall/output 2>/dev/null || true)"
+    printf '}'
+}
+
+uninstall_start_json() {
+    [ -x "$MANAGER" ] || { json_error "DNS Manager недоступен"; return; }
+    if ubus call service list '{"name":"dns-manager-uninstall"}' 2>/dev/null | grep -qE '"running"[[:space:]]*:[[:space:]]*true'; then
+        json_error "Удаление уже выполняется"
+        return
+    fi
+    _un_dir="/var/run/dns-manager-uninstall"
+    [ ! -L "$_un_dir" ] || { json_error "Недопустимый каталог удаления"; return; }
+    mkdir -p "$_un_dir" && chmod 0700 "$_un_dir" || { json_error "Не удалось подготовить удаление"; return; }
+    rm -f "$_un_dir/result" "$_un_dir/output" || { json_error "Не удалось подготовить журнал удаления"; return; }
+    # The worker is a separate procd service so it survives rpcd reload while
+    # its own LuCI plugin is being removed. No user input enters the command.
+    if ! ubus call service set '{"name":"dns-manager-uninstall","instances":{"main":{"command":["/bin/sh","-c","sleep 2; SILENT_APPLY=1 /usr/bin/dns-manager --uninstall > /var/run/dns-manager-uninstall/output 2>&1; echo $? > /var/run/dns-manager-uninstall/result"]}}}' >/dev/null 2>&1; then
+        json_error "Не удалось запустить удаление"
+        return
+    fi
+    json_ok
+}
+
 run_action() {
     _profile="$(jget profile)"
     case "${RPC_METHOD:-}" in
@@ -3570,6 +3604,9 @@ run_action() {
             else
                 json_error "Не удалось восстановить стандартную настройку DNS"
             fi
+            ;;
+        uninstall)
+            uninstall_start_json
             ;;
         set_slot)
             RPC_SLOT="$(jget slot)"; RPC_ID="$(jget id)"
@@ -3733,7 +3770,7 @@ test_json() { case "${RPC_METHOD:-}" in test_all) job_start_test_all;; test_curr
 
 case "${1:-}" in
     list)
-        printf '{"status":{},"runtime":{},"doh_status":{},"network_status":{},"lan_devices":{},"set_device_dns":{"mac":"String","slots":"String"},"time_status":{},"page_meta":{},"catalog":{"category":"String","offset":0,"limit":0,"only_ok":0},"update_check":{"force":0},"update":{},"update_manager":{},"update_hdp":{},"update_catalog":{},"update_all":{},"set_profile":{"profile":"String"},"reset_dns":{},"set_slot":{"slot":"String","id":"String"},"set_slot_domains":{"slot":"String","domains":"String"},"add_custom_dns":{"name":"String","url":"String"},"delete_custom_dns":{"id":"String"},"set_setting":{"name":"String","enabled":0},"set_watchdog_setting":{"name":"String","value":0},"set_watchdog_settings":{"interval":0,"threshold":0,"repair_cooldown":0,"max_restarts":0,"guard_interval":0},"set_ntp":{"preset":"String"},"set_test_age":{"category":"String","hours":0},"test_all":{},"test_current":{},"test_one":{"id":"String"},"test_system":{},"job":{"id":"String"},"log":{"lines":0}}\n'
+        printf '{"status":{},"runtime":{},"doh_status":{},"network_status":{},"lan_devices":{},"set_device_dns":{"mac":"String","slots":"String"},"time_status":{},"page_meta":{},"catalog":{"category":"String","offset":0,"limit":0,"only_ok":0},"update_check":{"force":0},"update":{},"update_manager":{},"update_hdp":{},"update_catalog":{},"update_all":{},"set_profile":{"profile":"String"},"reset_dns":{},"uninstall":{},"uninstall_status":{},"set_slot":{"slot":"String","id":"String"},"set_slot_domains":{"slot":"String","domains":"String"},"add_custom_dns":{"name":"String","url":"String"},"delete_custom_dns":{"id":"String"},"set_setting":{"name":"String","enabled":0},"set_watchdog_setting":{"name":"String","value":0},"set_watchdog_settings":{"interval":0,"threshold":0,"repair_cooldown":0,"max_restarts":0,"guard_interval":0},"set_ntp":{"preset":"String"},"set_test_age":{"category":"String","hours":0},"test_all":{},"test_current":{},"test_one":{"id":"String"},"test_system":{},"job":{"id":"String"},"log":{"lines":0}}\n'
         ;;
     call)
         case "${2:-}" in
@@ -3746,7 +3783,8 @@ case "${1:-}" in
             runtime) runtime_json;;
             catalog) INPUT="$(cat 2>/dev/null || true)"; catalog_json;;
             update_check) INPUT="$(cat 2>/dev/null || true)"; update_check_json;;            update_catalog) update_catalog_json;;            update_all) update_all_json;;            update) update_json;;            update_manager) update_manager_json;;            update_hdp) update_hdp_json;;
-            add_custom_dns|delete_custom_dns|set_device_dns|reset_dns|set_profile|set_slot|set_slot_domains|set_setting|set_watchdog_setting|set_watchdog_settings|set_ntp) INPUT="$(cat 2>/dev/null || true)"; RPC_METHOD="$2"; run_action;;
+            add_custom_dns|delete_custom_dns|set_device_dns|reset_dns|uninstall|set_profile|set_slot|set_slot_domains|set_setting|set_watchdog_setting|set_watchdog_settings|set_ntp) INPUT="$(cat 2>/dev/null || true)"; RPC_METHOD="$2"; run_action;;
+            uninstall_status) uninstall_status_json;;
             test_all|test_current|test_one|test_system) INPUT="$(cat 2>/dev/null || true)"; RPC_METHOD="$2"; test_json;;
             job) INPUT="$(cat 2>/dev/null || true)"; job_json "$(jget id)";;
             log) INPUT="$(cat 2>/dev/null || true)"; log_json "$(jget lines)";;
@@ -3792,7 +3830,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI common module version: 1.122
+// DNS Manager LuCI common module version: 1.123
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -3826,6 +3864,8 @@ var callHdpUpdate = dmRpc({ object:'dns_manager', method:'update_hdp', expect:{}
 var callUpdateCatalog = dmRpc({ object:'dns_manager', method:'update_catalog', expect:{} });
 var callProfile = dmRpc({ object:'dns_manager', method:'set_profile', params:['profile'], expect:{} });
 var callResetDns = dmRpc({ object:'dns_manager', method:'reset_dns', expect:{} });
+var callUninstall = dmRpc({ object:'dns_manager', method:'uninstall', expect:{} });
+var callUninstallStatus = rpc.declare({ object:'dns_manager', method:'uninstall_status', expect:{} });
 var callSlot = dmRpc({ object:'dns_manager', method:'set_slot', params:['slot','id'], expect:{} });
 var callSlotDomains = dmRpc({ object:'dns_manager', method:'set_slot_domains', params:['slot','domains'], expect:{} });
 var callAddCustomDns = dmRpc({ object:'dns_manager', method:'add_custom_dns', params:['name','url'], expect:{} });
@@ -4578,6 +4618,9 @@ function renderDoH(root,st){
     ch.push(E('div',{'class':'dm-inline-msg info'},'Steer запущен, но активный перехват DNS :53→:5300 не обнаружен. Поэтому DNS Manager не считает Steer владельцем forced-DNS и сохраняет обычную схему принудительного DNS.'));
   }
   if(state.pageNotice.doh)ch.push(E('div',{'class':'dm-inline-msg info'},state.pageNotice.doh));
+  ch.push(E('div',{'class':'dm-actions'},[
+    btn('Удалить DNS Manager','cbi-button-negative',function(){uninstallManager(root);},{disabled:!!state.busy})
+  ]));
   e.appendChild(card('DNS over HTTPS',ch));
 }
 
@@ -5855,6 +5898,66 @@ function updateAll(root){
     }
   });
 }
+function uninstallManager(root){
+  if(state.busy)return;
+  confirmAction('Удалить DNS Manager',[
+    ['Настройки','Выключить функции DNS Manager и восстановить обычный DNS OpenWrt.'],
+    ['Удаление','Удалить интерфейс, службы и установленные менеджером пакеты, если они не используются другими настройками.'],
+    ['Сторонние настройки','Обнаруженные сторонние DNS-секции и правила сохраняются.']
+  ],function(){
+    state.busy=true;
+    state.pageNotice.doh='Запускаю удаление…';
+    renderDoH(root,window.dmState||{});
+    callUninstall().then(function(r){
+      if(!r||!r.ok)throw new Error((r&&r.error)||'Не удалось запустить удаление.');
+      ui.showModal('Удаление DNS Manager',[
+        E('p',{},'Удаление запущено. Подождите, пока настройки DNS будут восстановлены.'),
+        E('p',{},'После удаления вернитесь на главную страницу LuCI.'),
+        E('div',{'class':'right'},[
+          btn('Открыть LuCI','cbi-button-action',function(){window.location.href=L.url('admin/status/overview');}),
+          btn('Закрыть','cbi-button-neutral',ui.hideModal)
+        ])
+      ]);
+      var attempts=0, unavailable=0;
+      function poll(){
+        if(++attempts>60){
+          ui.showModal('Состояние удаления',[
+            E('p',{},'Не удалось получить окончательное состояние удаления. Откройте главную страницу LuCI и проверьте, исчез ли DNS Manager.'),
+            E('div',{'class':'right'},[btn('Открыть LuCI','cbi-button-action',function(){window.location.href=L.url('admin/status/overview');})])
+          ]);
+          return;
+        }
+        callUninstallStatus().then(function(result){
+          unavailable=0;
+          if(result&&result.status==='failed'){
+            state.busy=false;
+            state.pageNotice.doh='Удаление не завершилось. '+String(result.output||'Повторите попытку.');
+            ui.hideModal();
+            renderDoH(root,window.dmState||{});
+          }else if(result&&result.status==='done'){
+            ui.showModal('Удаление DNS Manager',[E('p',{},'Удаление завершено.'),E('div',{'class':'right'},[btn('Открыть LuCI','cbi-button-action',function(){window.location.href=L.url('admin/status/overview');})])]);
+          }else window.setTimeout(poll,2000);
+        }).catch(function(){
+          // rpcd may be reloading or the plugin may already have been removed.
+          // Do not claim success from a lost connection.
+          if(++unavailable>=3){
+            ui.showModal('Состояние удаления',[
+              E('p',{},'Интерфейс DNS Manager больше не отвечает. Удаление может ещё продолжаться; откройте главную страницу LuCI через несколько секунд.'),
+              E('div',{'class':'right'},[btn('Открыть LuCI','cbi-button-action',function(){window.location.href=L.url('admin/status/overview');})])
+            ]);
+            return;
+          }
+          window.setTimeout(poll,2000);
+        });
+      }
+      window.setTimeout(poll,2000);
+    }).catch(function(err){
+      state.busy=false;
+      state.pageNotice.doh=withRpcError('Не удалось запустить удаление.',err);
+      renderDoH(root,window.dmState||{});
+    });
+  });
+}
 function resetDnsCore(root){
   if(state.busy)return;
   confirmAction('Восстановить стандартную настройку DNS',[
@@ -6437,7 +6540,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 1.122
+// DNS Manager LuCI version: 1.123
 return view.extend({
   load: DM.load,
   render: DM.render,
