@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager full installer and LuCI companion
-# Version: 1.116
+# Version: 1.117
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -29,15 +29,25 @@ JOB_MAX_AGE_TEST_ONE=60
 BACKUP_DIR="/etc/dns-manager-luci"
 CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
-COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
+COMPANION_URL="$SOURCE_BASE/dns-manager-luci.sh"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.116"
+VERSION="1.117"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
 
-BACKEND_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager.sh"
+# A test or development branch can be selected explicitly for a complete
+# installer run. Released installs keep using main by default.
+SOURCE_REF="${DNS_MANAGER_SOURCE_REF:-main}"
+case "$SOURCE_REF" in
+    ''|/*|*//*|*..*|*[!A-Za-z0-9._/-]*)
+        err "Некорректное имя ветки DNS_MANAGER_SOURCE_REF."
+        exit 2
+        ;;
+esac
+SOURCE_BASE="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/$SOURCE_REF"
+BACKEND_URL="$SOURCE_BASE/dns-manager.sh"
 
 fetch_installer_source() {
     _out="$1"
@@ -649,7 +659,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="1.116"
+SELF_VERSION="1.117"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -2186,7 +2196,8 @@ doh_status_json() {
         _pjp="$(sed -n 's/^profile=//p' "$JOB_DIR/profile/state" 2>/dev/null | head -n1)"
         _pjsd="$(sed -n 's/^started=//p' "$JOB_DIR/profile/state" 2>/dev/null | head -n1)"
         _pjf="$(sed -n 's/^finished=//p' "$JOB_DIR/profile/state" 2>/dev/null | tail -n1)"
-        _pjm="$(tail -n 12 "$JOB_DIR/profile/output" 2>/dev/null | sed '/^[[:space:]]*$/d' | tail -n1 | tr '	' '  ' | cut -c1-360)"
+        _pjm="$(tail -n 12 "$JOB_DIR/profile/output" 2>/dev/null | sed '/^[[:space:]]*$/d' | tail -n1 | tr '
+	' '  ' | cut -c1-360)"
     fi
 
     printf '{"ok":true'; page_header_json
@@ -3782,7 +3793,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI common module version: 1.116
+// DNS Manager LuCI common module version: 1.117
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -6439,7 +6450,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 1.116
+// DNS Manager LuCI version: 1.117
 return view.extend({
   load: DM.load,
   render: DM.render,
