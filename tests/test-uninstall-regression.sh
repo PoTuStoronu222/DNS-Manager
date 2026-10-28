@@ -309,6 +309,32 @@ EOF_ROLLBACK_SECTIONS
 ) || fail "DoH rollback skipped sections after anonymous UCI indices shifted"
 ok "multiple Manager DoH sections removed; unrelated resolver preserved"
 
+# The uninstall path must reset only controls marked as Manager-owned and
+# must leave a later manual cache or NTP change untouched.
+extract_function uninstall_reset_manager_extras "$WORK/uninstall-extras.sh" || fail "cannot extract extra settings cleanup"
+(
+    . "$WORK/uninstall-extras.sh"
+    DNSMASQ_PERF=1
+    DNSMASQ_CACHE_SIZE=4096
+    NTP_PRESET_USER_SET=1
+    BLOCK_EXTERNAL_DNS=0
+    TEST_CACHE=4096
+    TEST_NTP_MATCH=1
+    get_dnsmasq_section() { printf lan; }
+    uci() { [ "$1" = -q ] && shift; [ "$1:$2" = get:dhcp.lan.cachesize ] && { printf '%s' "$TEST_CACHE"; return 0; }; return 1; }
+    ntp_profile_matches_current() { [ "$TEST_NTP_MATCH" = 1 ]; }
+    remove_dnsmasq_perf() { : > "$WORK/cache-reset"; }
+    remove_ntp_ip_fallback() { : > "$WORK/ntp-reset"; }
+    uninstall_reset_manager_extras || exit 1
+    [ -f "$WORK/cache-reset" ] && [ -f "$WORK/ntp-reset" ] || exit 2
+    rm -f "$WORK/cache-reset" "$WORK/ntp-reset"
+    TEST_CACHE=2048
+    TEST_NTP_MATCH=0
+    uninstall_reset_manager_extras || exit 3
+    [ ! -e "$WORK/cache-reset" ] && [ ! -e "$WORK/ntp-reset" ] || exit 4
+) || fail "uninstall did not respect Manager ownership and later manual settings"
+ok "uninstall resets active Manager extras and preserves later manual changes"
+
 # When no explicit upstream remains, disable noresolv so system resolvfile is used.
 extract_function uninstall_dnsmasq_resolv_fallback "$WORK/resolv-fallback.sh" || fail "cannot extract DNS resolvfile fallback"
 . "$WORK/resolv-fallback.sh"
@@ -317,6 +343,8 @@ DNS_TEST_NORESOLV=1
 DNS_TEST_COMMITS=0
 DNS_TEST_DEL_CALLS=""
 get_dnsmasq_section() { printf 'lan'; }
+rollback_ownership_has() { case "$3" in 127.0.0.1#5056|127.0.0.1#5058) return 0;; *) return 1;; esac; }
+dnsmasq_manager_server_owned() { return 1; }
 uci() {
     [ "${1:-}" = "-q" ] && shift
     case "${1:-}" in
@@ -350,19 +378,26 @@ uci() {
         *) return 1
     esac
 }
-# Reproduce the actual failure mode: domain-only entries coexist with three
-# stale Manager loopback ports. Those ports must go, and the system resolvfile
-# must be enabled even though domain-only rules remain.
+# Recorded Manager ports must go; the unrelated 5054 resolver and domain
+# entries must stay even when they match a historically used port.
 DNS_TEST_SERVER="/mask.icloud.com/ /mask-h2.icloud.com/ /use-application-dns.net/ /unrelated.example/ 127.0.0.1#5054 127.0.0.1#5056 127.0.0.1#5058"
 DNS_TEST_NORESOLV=1
 DNS_TEST_COMMITS=0
 DNS_TEST_DEL_CALLS=""
 uninstall_dnsmasq_resolv_fallback || fail "failed to enable the default resolvfile path"
-case " $DNS_TEST_SERVER " in *"127.0.0.1#5054"*|*"127.0.0.1#5056"*|*"127.0.0.1#5058"*) fail "Manager loopback upstreams remain" ;; esac
-[ -z "$DNS_TEST_NORESOLV" ] || fail "noresolv remained enabled without a general upstream"
+case " $DNS_TEST_SERVER " in *"127.0.0.1#5056"*|*"127.0.0.1#5058"*) fail "Manager loopback upstreams remain" ;; esac
+case " $DNS_TEST_SERVER " in *"127.0.0.1#5054"*) ;; *) fail "unrelated loopback resolver was removed" ;; esac
+[ "$DNS_TEST_NORESOLV" = 1 ] || fail "noresolv changed while a third-party upstream remains"
 case "$DNS_TEST_SERVER" in *"/unrelated.example/"*) ;; *) fail "unrelated domain-only entry was not preserved" ;; esac
-case "$DNS_TEST_SERVER" in *"/mask.icloud.com/"*|*"/mask-h2.icloud.com/"*|*"/use-application-dns.net/"*) fail "https-dns-proxy canary entries remain" ;; esac
-ok "stale Manager ports and proxy canaries removed; unrelated domain rule preserved; system resolvfile enabled"
+case "$DNS_TEST_SERVER" in *"/mask.icloud.com/"*) ;; *) fail "unowned canary entry was removed" ;; esac
+ok "recorded Manager ports removed while unowned DNS and domain entries remain"
+
+DNS_TEST_SERVER="/unrelated.example/ 127.0.0.1#5056"
+DNS_TEST_NORESOLV=1
+uninstall_dnsmasq_resolv_fallback || fail "failed to restore system resolvfile"
+[ -z "$DNS_TEST_NORESOLV" ] || fail "noresolv remained enabled without a general upstream"
+case "$DNS_TEST_SERVER" in *"/unrelated.example/"*) ;; *) fail "unrelated domain rule was removed" ;; esac
+ok "system resolvfile enabled after removing the final Manager upstream"
 
 DNS_TEST_SERVER="9.9.9.9"
 DNS_TEST_NORESOLV=1
@@ -388,7 +423,9 @@ doh_backup_noresolv"
 HD_TEST_COMMITS=0
 # Reproduce the user's exact case: Manager had FORCE_DOH=0 while the proxy
 # config still had force_dns=1. Uninstall must disable the package interception.
-FORCE_DOH=0
+FORCE_DOH=1
+SLOT_1=manager
+HD_HAS_EXTERNAL=0
 HTTPS_DNS_PROXY_INIT="$HD_TEST_DIR/init"
 export HD_TEST_EVENTS
 cat > "$HTTPS_DNS_PROXY_INIT" <<'EOF_HDP_INIT'
@@ -412,8 +449,9 @@ uci() {
             esac
             ;;
         show)
-            [ "${2:-}" = dhcp ] || return 1
-            printf 'dhcp.cfg01411c=dnsmasq\n'
+            [ "${2:-}" = https-dns-proxy ] || return 1
+            [ "$HD_HAS_EXTERNAL" = 1 ] && printf 'https-dns-proxy.cfg123=https-dns-proxy\n'
+            return 0
             ;;
         set)
             case "${2:-}" in
@@ -444,14 +482,24 @@ uninstall_detach_https_dns_proxy || fail "proxy detachment failed"
 grep -qxF 'stop' "$HD_TEST_EVENTS" || fail "proxy stop hook did not run"
 grep -qxF 'commit-hdp' "$HD_TEST_EVENTS" || fail "proxy config was not committed"
 [ "$HD_TEST_COMMITS" -eq 1 ] || fail "proxy config commit count unexpected"
-[ -z "$HD_TEST_META" ] || fail "https-dns-proxy restore metadata remains"
+[ -n "$HD_TEST_META" ] || fail "unowned package metadata was removed"
 [ "$(sed -n '1p' "$HD_TEST_EVENTS")" = stop ] || fail "proxy wasn't stopped before changing integration"
-ok "https-dns-proxy stop journal cleared, auto dnsmasq update disabled, package retained"
+ok "owned forced DNS and package integration switched off after proxy stop"
+
+HD_HAS_EXTERNAL=1
+HD_TEST_CONFIG_UPDATE="*"
+HD_TEST_FORCE_DNS=1
+HD_TEST_COMMITS=0
+FORCE_DOH=0
+uninstall_detach_https_dns_proxy || fail "proxy detachment with external resolver failed"
+[ "$HD_TEST_CONFIG_UPDATE" = "*" ] || fail "external proxy integration was changed"
+[ "$HD_TEST_FORCE_DNS" = 1 ] || fail "unowned forced DNS was changed"
+ok "external proxy integration and forced DNS are preserved"
 
 # The proxy-detachment test above also verifies that Manager forced-DNS is
 # disabled only when the saved Manager setting says it was enabled.
 
-# Verify package removal always preserves https-dns-proxy regardless of ownership.
+# Preserve an owned proxy package when external resolver sections remain.
 extract_function package_owner_remove_owned "$WORK/package-remove-owned.sh" || fail "cannot extract package owner removal"
 . "$WORK/package-remove-owned.sh"
 PACKAGE_OWNERSHIP="$WORK/package-ownership-test.conf"
@@ -463,7 +511,7 @@ apk() {
     case "$*" in
         "info -e https-dns-proxy"|"info -e curl") return 0 ;;
         "del curl") return 0 ;;
-        "del https-dns-proxy") return 99 ;;
+        "del https-dns-proxy") return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -471,9 +519,15 @@ apk() {
 package_owner_remove_owned || fail "owned package removal failed"
 grep -Fq 'del curl' "$APK_CALLS" || fail "other owned packages were not removed"
 if grep -Fq 'del https-dns-proxy' "$APK_CALLS"; then
-    fail "https-dns-proxy must never be removed by DNS Manager uninstall"
+    fail "https-dns-proxy with external resolvers must remain installed"
 fi
-ok "https-dns-proxy remains installed even if ownership file lists it"
+ok "https-dns-proxy with external resolvers remains installed"
+
+HD_HAS_EXTERNAL=0
+: > "$APK_CALLS"
+package_owner_remove_owned || fail "unused owned proxy package could not be removed"
+grep -Fq 'del https-dns-proxy' "$APK_CALLS" || fail "unused owned proxy package remains installed"
+ok "unused proxy package installed by Manager is removed"
 
 # If the cached companion installer is missing, uninstall the known LuCI
 # namespace from its installed marker and fixed paths. Repeating removal is safe.

@@ -20,6 +20,35 @@ ok "shell syntax"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT INT TERM
 
+# The uninstall request starts a separate supervised process, so rpcd reload
+# cannot stop the removal. Exercise the RPC helper without touching OpenWrt.
+awk '/^uninstall_start_json\(\) \{/,/^run_action\(\) \{/' dns-manager-luci.sh | sed '$d' | sed "s|/var/run/dns-manager-uninstall|$tmp/uninstall-job|g" > "$tmp/uninstall_start.sh"
+cat > "$tmp/uninstall_start_runner.sh" <<'EOF_UNINSTALL_START_TEST'
+#!/bin/sh
+set -eu
+MANAGER="$1/manager"
+touch "$MANAGER"
+chmod +x "$MANAGER"
+. "$1/uninstall_start.sh"
+json_error() { printf 'ERROR:%s\n' "$1"; }
+json_ok() { printf 'OK\n'; }
+ubus() {
+    case "$1:$2:$3" in
+        call:service:list) printf '{}\n'; return 0 ;;
+        call:service:set)
+            case "$4" in *'"name":"dns-manager-uninstall"'*'SILENT_APPLY=1 /usr/bin/dns-manager --uninstall'*) : > "$UNINSTALL_TEST_WORKER"; return 0;; esac
+            return 1 ;;
+        *) return 1 ;;
+    esac
+}
+UNINSTALL_TEST_WORKER="$1/worker-started"
+uninstall_start_json > "$1/uninstall-reply"
+grep -qx OK "$1/uninstall-reply"
+[ -f "$1/worker-started" ]
+EOF_UNINSTALL_START_TEST
+sh "$tmp/uninstall_start_runner.sh" "$tmp" || fail "LuCI uninstall worker did not start via procd"
+ok "LuCI uninstall starts a separate procd worker"
+
 # The generated per-device dnsmasq/firewall service is shell-checked independently of the installer heredoc.
 awk '/cat > \/etc\/init.d\/dns-manager-device-dns <<'\''EOF_DEVICE_DNS_SERVICE'\''/ {capture=1; next} capture && /^EOF_DEVICE_DNS_SERVICE$/ {exit} capture {print}' dns-manager-luci.sh > "$tmp/device_dns_service.sh"
 [ -s "$tmp/device_dns_service.sh" ] || fail "per-device DNS service heredoc missing"
@@ -524,9 +553,13 @@ grep -Fq "disabled:!!state.busy||!!state.jobRunning||unavailable||checking" dns-
 grep -q "'gaming','Игровые DNS'" dns-manager-luci.sh || fail "gaming catalog label missing in LuCI"
 grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validation missing gaming category"
 grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
-grep -q 'VERSION="3.85"' dns-manager.sh || fail "manager version not bumped"
+grep -q 'VERSION="3.86"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
-grep -q 'VERSION="1.122"' dns-manager-luci.sh || fail "LuCI version not bumped"
+grep -q 'VERSION="1.123"' dns-manager-luci.sh || fail "LuCI version not bumped"
+if grep -q '^main_menu$' dns-manager.sh; then fail "interactive console menu still starts"; fi
+grep -Fq "btn('Удалить DNS Manager'" dns-manager-luci.sh || fail "LuCI uninstall button missing"
+grep -Fq '"uninstall":{},"uninstall_status":{}' dns-manager-luci.sh || fail "LuCI uninstall RPC is not registered"
+grep -Fq 'ubus call service set' dns-manager-luci.sh || fail "uninstall is not detached under procd"
 awk '/^function renderOverview\(root,st\)/ {p=1} p && /^function / && !/^function renderOverview\(root,st\)/ {exit} p {print}' dns-manager-luci.sh > "$tmp/dashboard_watchdog.js"
 grep -Fq "watchdogSlotResult(st,d.slot,d.id)" "$tmp/dashboard_watchdog.js" || fail "DNS rows do not show automatic DNS check results"
 if grep -Fq "dm-watchdog-results" "$tmp/dashboard_watchdog.js"; then fail "duplicate automatic DNS results card remains"; fi
@@ -804,8 +837,8 @@ view_luci="$(sed -n 's|^// DNS Manager LuCI common module version:[[:space:]]*||
 dashboard_view_luci="$(sed -n 's|^// DNS Manager LuCI version: *||p' dns-manager-luci.sh | head -n1)"
 [ "$top_luci" = "$dashboard_view_luci" ] || fail "dashboard view version marker is stale"
 ok "LuCI version markers synchronized ($top_luci)"
-grep -Fq 'VERSION="3.85"' dns-manager.sh || fail "DNS Manager version marker is not 3.85"
-ok "DNS Manager version marker synchronized (3.85)"
+grep -Fq 'VERSION="3.86"' dns-manager.sh || fail "DNS Manager version marker is not 3.86"
+ok "DNS Manager version marker synchronized (3.86)"
 grep -Fq "assignment.appendChild(btn('Удалить'" dns-manager-luci.sh || fail "Custom DNS delete button is not aligned with the assignment action"
 grep -Fq ".dm-catalog-item-custom{grid-column:auto}" dns-manager-luci.sh || fail "Custom DNS card is wider than a stock catalog card"
 grep -Fq ".dm-catalog-controls-custom .dm-assign-inline select{height:30px;min-width:0;width:auto;max-width:100%;flex:1 1 160px" dns-manager-luci.sh || fail "Custom DNS actions do not have a responsive inline layout"
