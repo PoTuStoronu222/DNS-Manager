@@ -6858,8 +6858,8 @@ watchdog_restart_slot_instance() {
         return 1
     fi
     load_config >/dev/null 2>&1 || { release_mutation_lock; return 1; }
-    # Revalidate directly against slot config using positional arguments, not scratch vars.
-    if ! watchdog_slot_config_matches "$1" "$2" "$3"; then
+    # Revalidate the toggle and slot after obtaining the mutation lock.
+    if [ "${WATCHDOG_ENABLED:-0}" != 1 ] || ! watchdog_slot_config_matches "$1" "$2" "$3"; then
         release_mutation_lock
         return 1
     fi
@@ -7824,6 +7824,10 @@ watchdog_slot_target_run() {
 watchdog_service_recover_run() {
     [ "${WATCHDOG_ENABLED:-0}" = 1 ] || return 0
     acquire_mutation_lock || return 0
+    if ! load_config >/dev/null 2>&1 || [ "${WATCHDOG_ENABLED:-0}" != 1 ]; then
+        release_mutation_lock
+        return 1
+    fi
     if ! watchdog_resource_guard; then
         release_mutation_lock
         return 0
