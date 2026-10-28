@@ -6,7 +6,9 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.84"
+VERSION="3.88"
+# 3.86: make LuCI the primary interface and preserve external DNS on removal.
+# 3.85: revalidate Watchdog settings before recovery.
 # 3.84: cap DNS catalog test concurrency by total RAM on small routers.
 # 3.83: include UDP listeners in the Watchdog listener snapshot.
 # 3.80: publish the full Native LuCI installer with stable main update URLs.
@@ -2935,6 +2937,8 @@ dnsmasq_manager_server_owned() {
             /ru/127.0.0.1#${PORT_RU}|/su/127.0.0.1#${PORT_RU}|/xn--p1ai/127.0.0.1#${PORT_RU}) return 0 ;;
         esac
     fi
+    # Uninstall must not infer ownership of another service from a port alone.
+    [ "${UNINSTALL_STRICT_OWNERSHIP:-0}" = 1 ] && return 1
     # Legacy Hybrid ports remain recognised so an upgrade can safely clean
     # an older manager installation without trusting its stale journal.
     case "$_val" in
@@ -4245,7 +4249,10 @@ rollback_hdp_targeted() {
 
     if [ "$_changed" = 1 ]; then
         uci commit https-dns-proxy >/dev/null 2>&1 || return 1
-        /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || true
+        [ "${UNINSTALL_DEFER_PROXY_RESTART:-0}" != 1 ] || UNINSTALL_PROXY_OWNED=1
+        if [ "${UNINSTALL_DEFER_PROXY_RESTART:-0}" != 1 ]; then
+            /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || true
+        fi
     fi
     return 0
 }
@@ -4325,34 +4332,31 @@ uninstall_detach_https_dns_proxy() {
     # Stop it first so backups are restored, then disable that integration before
     # any later restart. The package and unrelated resolver sections are kept.
     uci -q get https-dns-proxy.config >/dev/null 2>&1 || return 0
+    # A pre-existing proxy with no active Manager DNS or forced-DNS setting
+    # is external state, even if its usual ports match our legacy port range.
+    if [ -z "${SLOT_1:-}${SLOT_2:-}${SLOT_3:-}${SLOT_4:-}${SLOT_5:-}${SLOT_6:-}${SLOT_RU:-}" ] &&
+       [ "${FORCE_DOH:-0}" != 1 ] && [ "${BLOCK_EXTERNAL_DNS:-0}" != 1 ] && [ "${UNINSTALL_PROXY_OWNED:-0}" != 1 ]; then
+        return 0
+    fi
     _init="${HTTPS_DNS_PROXY_INIT:-/etc/init.d/https-dns-proxy}"
     if [ -x "$_init" ]; then
         "$_init" stop >/dev/null 2>&1 || return 1
+        UNINSTALL_PROXY_STOPPED=1
     fi
 
-    # The uninstall contract is to leave the proxy optional, not forced on.
-    # Disable this package's LAN DNS interception regardless of who installed
-    # it or the Manager's previously saved FORCE_DOH value.
-    uci set https-dns-proxy.config.force_dns=0 || return 1
-    uci set "https-dns-proxy.config.dnsmasq_config_update=-" || return 1
-    uci commit https-dns-proxy || return 1
-
-    _dhcp_sections="$(uci show dhcp 2>/dev/null | sed -n 's/^dhcp\.\([^.=]*\)=dnsmasq$/\1/p')"
-    _dhcp_changed=0
-    for _sec in $_dhcp_sections; do
-        # These are private integration bookkeeping fields used by
-        # https-dns-proxy's init script. Clear them so a later package removal
-        # cannot restore the old local DNS Manager ports over manual DNS edits.
-        for _opt in doh_server doh_backup_server doh_backup_noresolv; do
-            if uci -q get "dhcp.$_sec.$_opt" >/dev/null 2>&1; then
-                uci -q delete "dhcp.$_sec.$_opt" || return 1
-                _dhcp_changed=1
-            fi
-        done
-    done
-    if [ "$_dhcp_changed" = 1 ]; then
-        uci commit dhcp || return 1
+    _un_proxy_changed=0
+    _un_other_proxy=0
+    uci show https-dns-proxy 2>/dev/null | grep -qE '^https-dns-proxy\.[^.=]+=https-dns-proxy$' && _un_other_proxy=1
+    if [ "${FORCE_DOH:-0}" = 1 ] || [ "$_un_other_proxy" = 0 ]; then
+        uci set https-dns-proxy.config.force_dns=0 || return 1
+        _un_proxy_changed=1
     fi
+    # When unrelated resolver sections remain, leave their integration intact.
+    if [ "$_un_other_proxy" = 0 ]; then
+        uci set "https-dns-proxy.config.dnsmasq_config_update=-" || return 1
+        _un_proxy_changed=1
+    fi
+    [ "$_un_proxy_changed" = 0 ] || uci commit https-dns-proxy || return 1
     return 0
 }
 
@@ -4365,14 +4369,11 @@ uninstall_dnsmasq_resolv_fallback() {
     _servers="$(uci -q get "dhcp.$_sec.server" 2>/dev/null | tr ' ' '\n')"
     while IFS= read -r _val; do
         [ -n "$_val" ] || continue
-        # DNS Manager's reserved local DoH ports and https-dns-proxy's canary
-        # entries must not remain as active DNS rules after uninstall.
-        case "$_val" in
-            127.0.0.1#505[3-9]|127.0.0.1#5060|/ru/127.0.0.1#505[3-9]|/ru/127.0.0.1#5060|/su/127.0.0.1#505[3-9]|/su/127.0.0.1#5060|/xn--p1ai/127.0.0.1#505[3-9]|/xn--p1ai/127.0.0.1#5060|/mask.icloud.com/|/mask-h2.icloud.com/|/use-application-dns.net/)
-                uci -q del_list "dhcp.$_sec.server=$_val" || return 1
-                _changed=1
-                ;;
-        esac
+        # Only remove entries identified by the Manager's journal or slots.
+        if rollback_ownership_has dnsmasq server "$_val" || dnsmasq_manager_server_owned "$_val"; then
+            uci -q del_list "dhcp.$_sec.server=$_val" || return 1
+            _changed=1
+        fi
     done <<EOF_UNINSTALL_DNSMASQ
 $_servers
 EOF_UNINSTALL_DNSMASQ
@@ -4385,7 +4386,6 @@ EOF_UNINSTALL_DNSMASQ
         [ -n "$_val" ] || continue
         case "$_val" in
             /*) continue ;;
-            127.0.0.1#505[3-9]|127.0.0.1#5060) continue ;;
         esac
         _has_general_upstream=1
         break
@@ -4402,20 +4402,58 @@ EOF_UNINSTALL_REMAINING_DNS
     return 0
 }
 
+uninstall_reset_manager_extras() {
+    # Reset only modules that Manager enabled and whose current state still
+    # matches what Manager applied. Later manual changes are left alone.
+    if [ "${DNSMASQ_PERF:-0}" = 1 ]; then
+        _un_sec="$(get_dnsmasq_section 2>/dev/null || true)"
+        if [ -n "$_un_sec" ] && [ "$(uci -q get "dhcp.$_un_sec.cachesize" 2>/dev/null)" = "$DNSMASQ_CACHE_SIZE" ]; then
+            remove_dnsmasq_perf || return 1
+        fi
+    fi
+    if [ "${NTP_PRESET_USER_SET:-0}" = 1 ] && ntp_profile_matches_current; then
+        remove_ntp_ip_fallback || return 1
+    fi
+    if [ "${BLOCK_EXTERNAL_DNS:-0}" = 1 ] && uci -q get https-dns-proxy.config >/dev/null 2>&1; then
+        _un_canaries_changed=0
+        for _un_opt in canary_domains_icloud canary_domains_mozilla; do
+            [ "$(uci -q get "https-dns-proxy.config.$_un_opt" 2>/dev/null)" = 1 ] || continue
+            uci set "https-dns-proxy.config.$_un_opt=0" || return 1
+            _un_canaries_changed=1
+        done
+        [ "$_un_canaries_changed" = 0 ] || uci commit https-dns-proxy || return 1
+    fi
+    return 0
+}
+
 restore_dns_before_uninstall() {
     _dns_restore_rc=0
+    UNINSTALL_STRICT_OWNERSHIP=1
+    UNINSTALL_PROXY_OWNED=0
+    UNINSTALL_PROXY_STOPPED=0
+    UNINSTALL_MANAGED_DNS=0
+    if [ -n "${SLOT_1:-}${SLOT_2:-}${SLOT_3:-}${SLOT_4:-}${SLOT_5:-}${SLOT_6:-}${SLOT_RU:-}" ] ||
+       rollback_ownership_has dnsmasq noresolv 1 ||
+       { [ -f "$OWNERSHIP" ] && grep -q '^dnsmasq|server|' "$OWNERSHIP"; }; then
+        UNINSTALL_MANAGED_DNS=1
+    fi
 
+    uninstall_reset_manager_extras || _dns_restore_rc=1
     # Detach package-side dnsmasq auto-management before removing Manager DNS.
-    uninstall_detach_https_dns_proxy || _dns_restore_rc=1
+    UNINSTALL_DEFER_PROXY_RESTART=1
     rollback_hdp_targeted >/dev/null 2>&1 || _dns_restore_rc=1
+    uninstall_detach_https_dns_proxy || _dns_restore_rc=1
     rollback_dnsmasq_targeted >/dev/null 2>&1 || _dns_restore_rc=1
-    uninstall_dnsmasq_resolv_fallback || _dns_restore_rc=1
+    if [ "$UNINSTALL_MANAGED_DNS" = 1 ]; then
+        uninstall_dnsmasq_resolv_fallback || _dns_restore_rc=1
+    fi
     rollback_firewall_targeted >/dev/null 2>&1 || _dns_restore_rc=1
 
     # Restart only after the package's auto dnsmasq update and restore journals
     # are detached. The package remains installed for optional manual use/removal.
-    [ ! -x /etc/init.d/https-dns-proxy ] ||
+    if [ "${UNINSTALL_PROXY_STOPPED:-0}" = 1 ] && [ -x /etc/init.d/https-dns-proxy ]; then
         /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || true
+    fi
     /etc/init.d/dnsmasq restart >/dev/null 2>&1 || _dns_restore_rc=1
     reload_fw >/dev/null 2>&1 || _dns_restore_rc=1
 
@@ -4504,10 +4542,18 @@ uninstall_manager_impl() {
     clear_screen
     menu_header "УДАЛЕНИЕ DNS MANAGER"
     warn_msg "DNS Manager, его LuCI, собственные службы и установленные им пакеты будут удалены."
-    printf "\n$C_YELLOW При удалении сначала отключается автоизменение dnsmasq со стороны https-dns-proxy, удаляются привязки DNS Manager и восстанавливается системный DNS. Пакет https-dns-proxy остаётся установленным.$C_NC\n\n"
+    printf "\n$C_YELLOW При удалении отключаются функции DNS Manager и восстанавливается системный DNS. Сторонние DNS-секции и правила сохраняются.$C_NC\n\n"
     confirm_action "Удалить DNS Manager и установленные им пакеты?" || { info_msg "Отменено."; pause; return 0; }
 
     acquire_mutation_lock || return 1
+
+    # If the installation marker is missing, do not silently leave a LuCI
+    # interface behind while deleting its backend.
+    if luci_component_files_present && [ "$(sed -n 's/^installed=//p' "$LUCI_STATE_FILE" 2>/dev/null | head -n1)" != 1; then
+        release_mutation_lock
+        err_msg "Не удалось подтвердить принадлежность файлов LuCI DNS Manager. Удаление остановлено."
+        return 1
+    fi
 
     watchdog_service_stop_disable >/dev/null 2>&1 || {
         release_mutation_lock
@@ -4515,6 +4561,7 @@ uninstall_manager_impl() {
         pause
         return 1
     }
+    [ "${DNS_MANAGER_UNINSTALL_PROGRESS:-0}" = 1 ] && printf '%s\n' 'Отключаю службы и проверки DNS Manager.' > /var/run/dns-manager-uninstall/phase
     watchdog_cron_remove_owned_block >/dev/null 2>&1 || {
         release_mutation_lock
         err_msg "Не удалось удалить запись DNS Watchdog из cron. Менеджер сохранён для повторной попытки."
@@ -4528,6 +4575,7 @@ uninstall_manager_impl() {
         return 1
     }
 
+    [ "${DNS_MANAGER_UNINSTALL_PROGRESS:-0}" = 1 ] && printf '%s\n' 'Восстанавливаю стандартные настройки DNS.' > /var/run/dns-manager-uninstall/phase
     if ! restore_dns_before_uninstall >/dev/null 2>&1; then
         release_mutation_lock
         err_msg "Не удалось безопасно восстановить системный DNS. Менеджер и пакеты сохранены для повторной попытки."
@@ -4535,12 +4583,14 @@ uninstall_manager_impl() {
         return 1
     fi
 
+    [ "${DNS_MANAGER_UNINSTALL_PROGRESS:-0}" = 1 ] && printf '%s\n' 'Удаляю пакеты, установленные DNS Manager.' > /var/run/dns-manager-uninstall/phase
     if ! package_owner_remove_owned >/dev/null 2>&1; then
         release_mutation_lock
         warn_msg "Не удалось удалить все пакеты, установленные DNS Manager. Файлы менеджера сохранены для повторной попытки."
         pause
         return 1
     fi
+    [ "${DNS_MANAGER_UNINSTALL_PROGRESS:-0}" = 1 ] && printf '%s\n' 'Удаляю интерфейс и файлы DNS Manager.' > /var/run/dns-manager-uninstall/phase
     if ! luci_companion_remove >/dev/null 2>&1; then
         release_mutation_lock
         err_msg "Не удалось полностью удалить LuCI DNS Manager. Файлы менеджера сохранены для повторной попытки."
@@ -4566,7 +4616,7 @@ uninstall_manager_impl() {
 
     release_mutation_lock
     printf "\n$C_GREEN$C_BOLD DNS Manager полностью удалён.$C_NC\n"
-    printf "$C_GREEN Удалены DNS Manager, его LuCI и службы. Привязки DNS Manager сняты, системный DNS восстановлен. Пакет https-dns-proxy сохранён.$C_NC\n"
+    printf "$C_GREEN Удалены DNS Manager, его LuCI и службы. Привязки DNS Manager сняты; обнаруженные сторонние DNS-секции сохранены.$C_NC\n"
     exit 0
 }
 uninstall_manager() {
@@ -5735,7 +5785,13 @@ package_owner_remove_owned() {
         [ -n "$_pkg" ] || continue
         case "$_pkg" in
             *[!A-Za-z0-9._+:-]*) continue ;;
-            https-dns-proxy) continue ;; # Keep the proxy installed; uninstall only detaches DNS Manager's configuration.
+            https-dns-proxy|luci-app-https-dns-proxy)
+                # Keep the package if any resolver sections remain: another
+                # service or the administrator may still depend on them.
+                if uci show https-dns-proxy 2>/dev/null | grep -qE '^https-dns-proxy\.[^.=]+=https-dns-proxy$'; then
+                    continue
+                fi
+                ;;
         esac
         # PACKAGE_OWNERSHIP records that the package was absent before installation.
         if [ "$PKG_MGR" = apk ]; then
@@ -5904,6 +5960,7 @@ done
 ensure_dependencies(){
 missing=""
 command -v curl >/dev/null 2>&1 || missing="$missing curl"
+package_is_installed luci-app-https-dns-proxy || missing="$missing luci-app-https-dns-proxy"
 command -v https-dns-proxy >/dev/null 2>&1 || missing="$missing https-dns-proxy"
 CA_OK=no
 [ -s /etc/ssl/certs/ca-certificates.crt ] || [ -s /etc/ssl/certs/ca-bundle.crt ] && CA_OK=yes
@@ -6857,8 +6914,8 @@ watchdog_restart_slot_instance() {
         return 1
     fi
     load_config >/dev/null 2>&1 || { release_mutation_lock; return 1; }
-    # Revalidate directly against slot config using positional arguments, not scratch vars.
-    if ! watchdog_slot_config_matches "$1" "$2" "$3"; then
+    # Revalidate the toggle and slot after obtaining the mutation lock.
+    if [ "${WATCHDOG_ENABLED:-0}" != 1 ] || ! watchdog_slot_config_matches "$1" "$2" "$3"; then
         release_mutation_lock
         return 1
     fi
@@ -7722,6 +7779,17 @@ watchdog_slot_target_run() {
         return 1
     fi
     acquire_mutation_lock || return 1
+    # Re-read the toggles under the same lock used by the LuCI controls.
+    # A disabled check or a changed slot must never use a stale decision.
+    if ! load_config >/dev/null 2>&1; then
+        release_mutation_lock
+        return 1
+    fi
+    _slot="$1"
+    if [ "${WATCHDOG_ENABLED:-0}" != 1 ] || ! watchdog_slot_config_matches "$1" "$_target_id" "$_target_port"; then
+        release_mutation_lock
+        return 1
+    fi
     WATCHDOG_RESTART_COUNT=0
     _slot_rc=0
     _old_id="$_target_id"
@@ -7812,6 +7880,10 @@ watchdog_slot_target_run() {
 watchdog_service_recover_run() {
     [ "${WATCHDOG_ENABLED:-0}" = 1 ] || return 0
     acquire_mutation_lock || return 0
+    if ! load_config >/dev/null 2>&1 || [ "${WATCHDOG_ENABLED:-0}" != 1 ]; then
+        release_mutation_lock
+        return 1
+    fi
     if ! watchdog_resource_guard; then
         release_mutation_lock
         return 0
@@ -8168,60 +8240,5 @@ __watchdog-loop)
     ;;
 esac
 
-printf "\n${C_CYAN}${C_BOLD}▶ DNS Manager $VERSION${C_NC}\n"
-printf "  ${C_CYAN}↻${C_NC} Подготавливаю окружение...\n"
-preflight_readonly
-init_dirs
-printf "  ${C_CYAN}↻${C_NC} Проверяю каталог DNS...\n"
-write_catalogs
-printf "  ${C_CYAN}↻${C_NC} Загружаю конфигурацию...\n"
-load_config
-startup_required_function_check || exit 1
-printf "  ${C_CYAN}↻${C_NC} Проверяю обновления...\n"
-startup_update_check
-case "${AUTO_UPDATE_RESULT:-}" in
-    updated) printf "  ${C_GREEN}✓${C_NC} DNS Manager автоматически обновлён до $VERSION.\n" ;;
-    failed) printf "  ${C_YELLOW}!${C_NC} Проверка обновления DNS Manager не удалась.\n" ;;
-    *) printf "  ${C_GREEN}✓${C_NC} Проверка обновлений завершена.\n" ;;
-esac
-printf "  ${C_CYAN}↻${C_NC} Проверяю состояние роутера...\n"
-run_discovery
-printf "  ${C_GREEN}✓${C_NC} Состояние роутера получено.\n"
-
-if [ "${FIRST_RUN_INITIAL:-0}" = 1 ]; then
-    # Initialization only: do not synchronize or mutate cron on first launch.
-    info_msg "Первый запуск: watchdog-служба procd не запускается и cron не изменяю."
-fi
-
-
-
-if [ "${FIRST_RUN_INITIAL:-0}" = 1 ]; then
-    if mkdir -p "$CFG_DIR" 2>/dev/null && {
-        printf 'version=%s\n' "$VERSION"
-        printf 'completed_at=%s\n' "$(date +%s)"
-    } > "${FIRST_RUN_MARKER}.tmp.$$" 2>/dev/null; then
-        chmod 600 "${FIRST_RUN_MARKER}.tmp.$$" 2>/dev/null || true
-        if mv "${FIRST_RUN_MARKER}.tmp.$$" "$FIRST_RUN_MARKER" 2>/dev/null; then
-            FIRST_RUN=0
-            info_msg "Первичная инициализация завершена. Watchdog procd и cron оставлены без изменений до явного включения автопроверки."
-        else
-            rm -f "${FIRST_RUN_MARKER}.tmp.$$" 2>/dev/null || true
-            warn_msg "Не удалось сохранить маркер первого запуска. Watchdog procd и cron останутся защищёнными до следующего запуска."
-        fi
-    else
-        rm -f "${FIRST_RUN_MARKER}.tmp.$$" 2>/dev/null || true
-        warn_msg "Не удалось сохранить маркер первого запуска. Watchdog procd и cron останутся защищёнными до следующего запуска."
-    fi
-fi
-
-# Existing installations: move watchdog from cron to procd only after a valid baseline exists.
-# FIRST_RUN_INITIAL is immutable for this invocation, so first launch never migrates cron.
-if [ "${FIRST_RUN_INITIAL:-0}" = 0 ] && { [ "${WATCHDOG_ENABLED:-0}" = 1 ] || [ "${FORCE_DOH:-0}" = 1 ]; }; then
-    watchdog_service_migrate_legacy >/dev/null 2>&1 || warn_msg "Не удалось завершить переход watchdog с cron на procd. Состояние watchdog оставлено без самовольной ротации DNS."
-fi
-
-# Check the LuCI companion once before entering the interactive menu.
-# main_menu itself can loop without starting repeated network checks.
-luci_companion_check_update >/dev/null 2>&1 || true
-
-main_menu
+printf '%s\n' "DNS Manager $VERSION: управление через LuCI → Службы → DNS Manager."
+printf '%s\n' "Для диагностики доступны команды --force-state, --test-one и --watchdog."
