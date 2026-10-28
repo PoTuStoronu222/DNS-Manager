@@ -6,7 +6,8 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.83"
+VERSION="3.84"
+# 3.84: cap DNS catalog test concurrency by total RAM on small routers.
 # 3.83: include UDP listeners in the Watchdog listener snapshot.
 # 3.80: publish the full Native LuCI installer with stable main update URLs.
 # 3.79: add noninteractive dependency setup for the Native LuCI installer.
@@ -2275,6 +2276,17 @@ test_dns_catalog() (
     [ "$batch" -ge 1 ] 2>/dev/null || batch=1
     [ "$batch" -le 6 ] 2>/dev/null || batch=6
     if [ -r /proc/meminfo ]; then
+        # Keep the test worker count conservative even when a small router has
+        # plenty of currently free RAM immediately after boot.
+        _mem_total="$(awk '/^MemTotal:/{print $2; exit}' /proc/meminfo 2>/dev/null)"
+        case "$_mem_total" in ''|*[!0-9]*) ;; *)
+            if [ "$_mem_total" -lt 65536 ]; then
+                batch=1
+            elif [ "$_mem_total" -lt 131072 ] && [ "$batch" -gt 2 ]; then
+                batch=2
+            fi
+            ;;
+        esac
         _mem_avail="$(awk '/^MemAvailable:/{print $2; exit}' /proc/meminfo 2>/dev/null)"
         case "$_mem_avail" in ''|*[!0-9]*) ;; *)
             [ "$_mem_avail" -lt 16384 ] && batch=1
