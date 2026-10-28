@@ -4429,6 +4429,12 @@ restore_dns_before_uninstall() {
     UNINSTALL_STRICT_OWNERSHIP=1
     UNINSTALL_PROXY_OWNED=0
     UNINSTALL_PROXY_STOPPED=0
+    UNINSTALL_MANAGED_DNS=0
+    if [ -n "${SLOT_1:-}${SLOT_2:-}${SLOT_3:-}${SLOT_4:-}${SLOT_5:-}${SLOT_6:-}${SLOT_RU:-}" ] ||
+       rollback_ownership_has dnsmasq noresolv 1 ||
+       { [ -f "$OWNERSHIP" ] && grep -q '^dnsmasq|server|' "$OWNERSHIP"; }; then
+        UNINSTALL_MANAGED_DNS=1
+    fi
 
     uninstall_reset_manager_extras || _dns_restore_rc=1
     # Detach package-side dnsmasq auto-management before removing Manager DNS.
@@ -4436,7 +4442,9 @@ restore_dns_before_uninstall() {
     rollback_hdp_targeted >/dev/null 2>&1 || _dns_restore_rc=1
     uninstall_detach_https_dns_proxy || _dns_restore_rc=1
     rollback_dnsmasq_targeted >/dev/null 2>&1 || _dns_restore_rc=1
-    uninstall_dnsmasq_resolv_fallback || _dns_restore_rc=1
+    if [ "$UNINSTALL_MANAGED_DNS" = 1 ]; then
+        uninstall_dnsmasq_resolv_fallback || _dns_restore_rc=1
+    fi
     rollback_firewall_targeted >/dev/null 2>&1 || _dns_restore_rc=1
 
     # Restart only after the package's auto dnsmasq update and restore journals
