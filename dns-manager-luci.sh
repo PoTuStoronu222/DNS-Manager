@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager full installer and LuCI companion
-# Version: 1.120
+# Version: 1.121
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.120"
+VERSION="1.121"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -659,7 +659,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="1.120"
+SELF_VERSION="1.121"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -3661,26 +3661,26 @@ run_action() {
             load_manager || { json_error "DNS Manager недоступен"; return; }
             _rc=0
             case "$_name" in
-                watchdog)
-                    if [ "$_enabled" = 1 ] && [ -z "$SLOT_1$SLOT_2$SLOT_3$SLOT_4$SLOT_5$SLOT_6$SLOT_RU" ]; then
-                        _rc=2
-                        printf '%s\n' "Сначала настройте хотя бы один DNS-сервер." >&2
+                watchdog|watchdog_autoreplace)
+                    # Serialize the controls with Watchdog recovery and other
+                    # DNS changes, then decide using the current configuration.
+                    DNSMGR_WD_REQUEST_NAME="$_name"
+                    DNSMGR_WD_REQUEST_VALUE="$_enabled"
+                    if ! acquire_mutation_lock; then
+                        _rc=1
                     else
-                        SILENT_APPLY=1 watchdog_apply_toggle "$_enabled" >/dev/null 2>&1 || _rc=$?
-                    fi
-                    ;;
-                watchdog_autoreplace)
-                    if [ "$_enabled" = 1 ] && [ "${WATCHDOG_ENABLED:-0}" != 1 ]; then
-                        _rc=2
-                    else
-                        _old_autoreplace="$(cfg_get WATCHDOG_AUTOREPLACE)"
-                        case "$_old_autoreplace" in 0|1) ;; *) _old_autoreplace="${WATCHDOG_ENABLED:-0}";; esac
-                        WATCHDOG_AUTOREPLACE="$_enabled"
-                        if ! save_config >/dev/null 2>&1 || [ "$(cfg_get WATCHDOG_AUTOREPLACE)" != "$_enabled" ]; then
-                            WATCHDOG_AUTOREPLACE="$_old_autoreplace"
-                            save_config >/dev/null 2>&1 || true
+                        if ! load_config >/dev/null 2>&1; then
                             _rc=1
+                        elif [ "$DNSMGR_WD_REQUEST_NAME" = watchdog ]; then
+                            if [ "$DNSMGR_WD_REQUEST_VALUE" = 1 ] && [ -z "$SLOT_1$SLOT_2$SLOT_3$SLOT_4$SLOT_5$SLOT_6$SLOT_RU" ]; then
+                                _rc=2
+                            else
+                                SILENT_APPLY=1 watchdog_apply_toggle "$DNSMGR_WD_REQUEST_VALUE" >/dev/null 2>&1 || _rc=$?
+                            fi
+                        else
+                            watchdog_apply_autoreplace_toggle "$DNSMGR_WD_REQUEST_VALUE" >/dev/null 2>&1 || _rc=$?
                         fi
+                        release_mutation_lock
                     fi
                     ;;
                 force)
@@ -3792,7 +3792,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI common module version: 1.120
+// DNS Manager LuCI common module version: 1.121
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -5340,8 +5340,8 @@ function watchdogCard(root,st){
   return E('div',{'class':'dm-watchdog-card'},[
     E('div',{'class':'dm-section-title'},'Контроль текущих DNS'),
     E('div',{'class':'dm-setting-desc'},'Контроль выполняется каждые '+intervalMinutes+' мин: проверяется локальный порт назначенного DoH и DNS-ответ на запрос example.com (для слота RU — yandex.ru). Это проверка рабочего пути, а не полный тест каталога DNS. Профиль не требуется.'),
-    toggleRow('Проверка DNS','Включает периодическую проверку назначенных DoH-слотов. Контроль сам по себе DNS не меняет.',en,'watchdog',false),
-    toggleRow('Автозамена DNS','После '+failThreshold+' неудачных проверок подряд заменяет неисправный DNS сервером той же категории; повторная попытка для слота — не раньше чем через '+cooldownMinutes+' мин. Пользовательские DoH автоматически не заменяются.',auto,'watchdog_autoreplace',!en),
+    toggleRow('Проверка DNS','Проверяет назначенные DoH-слоты; при сбое может перезапустить их прокси, сохраняя выбранный DNS.',en,'watchdog',false),
+    toggleRow('Автозамена DNS','После '+failThreshold+' ошибок подряд сначала пытается восстановить прокси, затем при необходимости ищет DNS той же категории. При общем сбое замену откладывает; повторная попытка — не раньше чем через '+cooldownMinutes+' мин. Пользовательские DoH не заменяются.',auto,'watchdog_autoreplace',!en),
     E('div',{'class':'dm-hint'},'Полный разовый тест текущих DoH и дополнительных системных экземпляров доступен на Дашборде кнопкой «Проверить текущие DNS». Он проверяет реальные DoH-endpoint’ы и не включает периодический контроль.'),
     E('details',{'class':'dm-watchdog-advanced'},[
       E('summary',{},'Дополнительные параметры'),
@@ -6455,7 +6455,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 1.120
+// DNS Manager LuCI version: 1.121
 return view.extend({
   load: DM.load,
   render: DM.render,
