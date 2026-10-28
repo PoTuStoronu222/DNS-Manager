@@ -526,11 +526,22 @@ grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validat
 grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
 grep -q 'VERSION="3.85"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
-grep -q 'VERSION="1.121"' dns-manager-luci.sh || fail "LuCI version not bumped"
+grep -q 'VERSION="1.122"' dns-manager-luci.sh || fail "LuCI version not bumped"
 awk '/^function renderOverview\(root,st\)/ {p=1} p && /^function / && !/^function renderOverview\(root,st\)/ {exit} p {print}' dns-manager-luci.sh > "$tmp/dashboard_watchdog.js"
-grep -Fq "watchdogLastView(st)" "$tmp/dashboard_watchdog.js" || fail "dashboard does not show automatic DNS check results"
+grep -Fq "watchdogSlotResult(st,d.slot,d.id)" "$tmp/dashboard_watchdog.js" || fail "DNS rows do not show automatic DNS check results"
+if grep -Fq "dm-watchdog-results" "$tmp/dashboard_watchdog.js"; then fail "duplicate automatic DNS results card remains"; fi
+awk '/^function watchdogSlotResult\(st,slot,id\)/ {p=1} p && /^function / && !/^function watchdogSlotResult\(st,slot,id\)/ {exit} p {print}' dns-manager-luci.sh > "$tmp/watchdog_slot_result.js"
+node - "$tmp/watchdog_slot_result.js" <<'EOF_WD_SLOT_RESULT' || fail "automatic results do not match the current DNS slot"
+const fs = require('fs');
+function badge(kind, label) { return {kind, label}; }
+eval(fs.readFileSync(process.argv[2], 'utf8'));
+const st = {watchdog_last_records:[{slot:'1',id:'dns-a',status:'OK'},{slot:'2',id:'dns-b',status:'NO_LISTENER'}]};
+if (watchdogSlotResult(st,'1','dns-a').label !== 'Авто: доступен') process.exit(1);
+if (watchdogSlotResult(st,'2','dns-b').label !== 'Авто: нет локального порта') process.exit(1);
+if (watchdogSlotResult(st,'1','changed') !== null || watchdogSlotResult(st,'','dns-a') !== null) process.exit(1);
+EOF_WD_SLOT_RESULT
 awk '/^function watchdogCard\(root,st\)/,/^function renderTestAgeCommon\(/ {print}' dns-manager-luci.sh > "$tmp/network_watchdog.js"
-if grep -Fq 'watchdogLastView(st)' "$tmp/network_watchdog.js"; then fail "network page still renders automatic DNS check results"; fi
+if grep -Fq 'watchdogSlotResult(' "$tmp/network_watchdog.js"; then fail "network page still renders automatic DNS check results"; fi
 grep -Fq "toggleRow('Проверка DNS'" "$tmp/network_watchdog.js" || fail "network page lost DNS check switch"
 grep -Fq "toggleRow('Автозамена DNS'" "$tmp/network_watchdog.js" || fail "network page lost DNS replacement switch"
 grep -Fq 'if(tick%30===0&&!watchdogPollBusy)' dns-manager-luci.sh || fail "dashboard DNS results are not refreshed"
