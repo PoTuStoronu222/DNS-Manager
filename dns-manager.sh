@@ -6,7 +6,8 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.84"
+VERSION="3.85"
+# 3.85: revalidate Watchdog settings before recovery.
 # 3.84: cap DNS catalog test concurrency by total RAM on small routers.
 # 3.83: include UDP listeners in the Watchdog listener snapshot.
 # 3.80: publish the full Native LuCI installer with stable main update URLs.
@@ -7722,6 +7723,17 @@ watchdog_slot_target_run() {
         return 1
     fi
     acquire_mutation_lock || return 1
+    # Re-read the toggles under the same lock used by the LuCI controls.
+    # A disabled check or a changed slot must never use a stale decision.
+    if ! load_config >/dev/null 2>&1; then
+        release_mutation_lock
+        return 1
+    fi
+    _slot="$1"
+    if [ "${WATCHDOG_ENABLED:-0}" != 1 ] || ! watchdog_slot_config_matches "$1" "$_target_id" "$_target_port"; then
+        release_mutation_lock
+        return 1
+    fi
     WATCHDOG_RESTART_COUNT=0
     _slot_rc=0
     _old_id="$_target_id"
