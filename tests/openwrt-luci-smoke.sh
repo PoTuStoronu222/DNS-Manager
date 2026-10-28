@@ -67,7 +67,8 @@ assert_file() {
 
 rpc() {
     _method="$1"
-    _body="${2:-{}}"
+    _body="${2:-}"
+    [ -n "$_body" ] || _body='{}'
     _reply="$(ubus call dns_manager "$_method" "$_body" 2>&1)" || {
         printf '%s\n' "$_reply"
         fail "RPC $_method failed"
@@ -94,19 +95,20 @@ start_catalog_job() {
         return 1
     }
     printf '%s\n' "$_reply"
-    _job="$(printf '%s' "$_reply" | sed -n 's/.*"job":"\([^"]*\)".*/\1/p')"
+    _job="$(printf '%s' "$_reply" | sed -n 's/.*"job"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
     case "$_job" in ''|*[!A-Za-z0-9_-]*) return 1;; esac
 
     _left=40
     while [ "$_left" -gt 0 ]; do
         _state="$(ubus call dns_manager job "{\"id\":\"$_job\"}" 2>&1)" || return 1
         printf '%s\n' "$_state"
-        _status="$(printf '%s' "$_state" | sed -n 's/.*"status":"\([^"]*\)".*/\1/p')"
+        _status="$(printf '%s' "$_state" | sed -n 's/.*"status"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
         case "$_status" in
-            done|failed)
-                printf '%s' "$_state" | grep -q '"output":' || return 1
+            done)
+                printf '%s' "$_state" | grep -q '"output"[[:space:]]*:' || return 1
                 return 0
                 ;;
+            failed) return 1 ;;
         esac
         sleep 2
         _left=$((_left - 1))
