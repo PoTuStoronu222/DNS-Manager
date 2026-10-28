@@ -451,7 +451,7 @@ doh_backup_noresolv"
 HD_TEST_COMMITS=0
 # Reproduce the user's exact case: Manager had FORCE_DOH=0 while the proxy
 # config still had force_dns=1. Uninstall must disable the package interception.
-FORCE_DOH=1
+FORCE_DOH=0
 SLOT_1=manager
 HD_HAS_EXTERNAL=0
 HTTPS_DNS_PROXY_INIT="$HD_TEST_DIR/init"
