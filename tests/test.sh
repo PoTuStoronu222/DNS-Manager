@@ -20,6 +20,42 @@ ok "shell syntax"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT INT TERM
 
+# The uninstall request starts a separate supervised process, so rpcd reload
+# cannot stop the removal. Exercise the RPC helper without touching OpenWrt.
+awk '/^uninstall_start_json\(\) \{/,/^run_action\(\) \{/' dns-manager-luci.sh | sed '$d' | sed -e "s|/var/run/dns-manager-uninstall|$tmp/uninstall-job|g" -e "s|/www/dns-manager-uninstall|$tmp/dns-manager-uninstall|g" > "$tmp/uninstall_start.sh"
+cat > "$tmp/uninstall_start_runner.sh" <<'EOF_UNINSTALL_START_TEST'
+#!/bin/sh
+set -eu
+MANAGER="$1/manager"
+touch "$MANAGER"
+chmod +x "$MANAGER"
+. "$1/uninstall_start.sh"
+json_error() { printf 'ERROR:%s\n' "$1"; }
+json_quote() { node -e 'process.stdout.write(JSON.stringify(process.argv[1]))' "$1"; }
+ubus() {
+    case "$1:$2:$3" in
+        call:service:list) printf '{}\n'; return 0 ;;
+        call:service:set)
+            case "$4" in *'"name":"dns-manager-uninstall"'*'SILENT_APPLY=1 /usr/bin/dns-manager --uninstall'*) printf '%s' "$4" > "$UNINSTALL_TEST_WORKER"; return 0;; esac
+            return 1 ;;
+        *) return 1 ;;
+    esac
+}
+UNINSTALL_TEST_WORKER="$1/worker-started"
+uninstall_start_json > "$1/uninstall-reply"
+grep -q '"ok":true,"status_url":' "$1/uninstall-reply"
+[ -f "$1/worker-started" ]
+EOF_UNINSTALL_START_TEST
+sh "$tmp/uninstall_start_runner.sh" "$tmp" || fail "LuCI uninstall worker did not start via procd"
+node - "$tmp/worker-started" <<'EOF_UNINSTALL_JSON_TEST' || fail "uninstall procd request is not valid JSON"
+const request = JSON.parse(require('fs').readFileSync(process.argv[2], 'utf8'));
+const command = request.instances.main.command;
+if (request.name !== 'dns-manager-uninstall' || command[0] !== '/bin/sh' || command[1] !== '-c' ||
+    !command[2].includes('SILENT_APPLY=1 /usr/bin/dns-manager --uninstall') ||
+    !command[2].includes('ubus call service delete') || !command[4].includes('dns-manager-uninstall.')) process.exit(1);
+EOF_UNINSTALL_JSON_TEST
+ok "LuCI uninstall starts a separate procd worker"
+
 # The generated per-device dnsmasq/firewall service is shell-checked independently of the installer heredoc.
 awk '/cat > \/etc\/init.d\/dns-manager-device-dns <<'\''EOF_DEVICE_DNS_SERVICE'\''/ {capture=1; next} capture && /^EOF_DEVICE_DNS_SERVICE$/ {exit} capture {print}' dns-manager-luci.sh > "$tmp/device_dns_service.sh"
 [ -s "$tmp/device_dns_service.sh" ] || fail "per-device DNS service heredoc missing"
@@ -524,9 +560,31 @@ grep -Fq "disabled:!!state.busy||!!state.jobRunning||unavailable||checking" dns-
 grep -q "'gaming','Игровые DNS'" dns-manager-luci.sh || fail "gaming catalog label missing in LuCI"
 grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validation missing gaming category"
 grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
-grep -q 'VERSION="3.84"' dns-manager.sh || fail "manager version not bumped"
+grep -q 'VERSION="3.88"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
-grep -q 'VERSION="1.119"' dns-manager-luci.sh || fail "LuCI version not bumped"
+grep -q 'VERSION="1.124"' dns-manager-luci.sh || fail "LuCI version not bumped"
+if grep -q '^main_menu$' dns-manager.sh; then fail "interactive console menu still starts"; fi
+grep -Fq "btn('Удалить DNS Manager'" dns-manager-luci.sh || fail "LuCI uninstall button missing"
+grep -Fq '"uninstall":{},"uninstall_status":{}' dns-manager-luci.sh || fail "LuCI uninstall RPC is not registered"
+grep -Fq 'ubus call service set' dns-manager-luci.sh || fail "uninstall is not detached under procd"
+awk '/^function renderOverview\(root,st\)/ {p=1} p && /^function / && !/^function renderOverview\(root,st\)/ {exit} p {print}' dns-manager-luci.sh > "$tmp/dashboard_watchdog.js"
+grep -Fq "watchdogSlotResult(st,d.slot,d.id)" "$tmp/dashboard_watchdog.js" || fail "DNS rows do not show automatic DNS check results"
+if grep -Fq "dm-watchdog-results" "$tmp/dashboard_watchdog.js"; then fail "duplicate automatic DNS results card remains"; fi
+awk '/^function watchdogSlotResult\(st,slot,id\)/ {p=1} p && /^function / && !/^function watchdogSlotResult\(st,slot,id\)/ {exit} p {print}' dns-manager-luci.sh > "$tmp/watchdog_slot_result.js"
+node - "$tmp/watchdog_slot_result.js" <<'EOF_WD_SLOT_RESULT' || fail "automatic results do not match the current DNS slot"
+const fs = require('fs');
+function badge(kind, label) { return {kind, label}; }
+eval(fs.readFileSync(process.argv[2], 'utf8'));
+const st = {watchdog_last_records:[{slot:'1',id:'dns-a',status:'OK'},{slot:'2',id:'dns-b',status:'NO_LISTENER'}]};
+if (watchdogSlotResult(st,'1','dns-a').label !== 'Авто: доступен') process.exit(1);
+if (watchdogSlotResult(st,'2','dns-b').label !== 'Авто: нет локального порта') process.exit(1);
+if (watchdogSlotResult(st,'1','changed') !== null || watchdogSlotResult(st,'','dns-a') !== null) process.exit(1);
+EOF_WD_SLOT_RESULT
+awk '/^function watchdogCard\(root,st\)/,/^function renderTestAgeCommon\(/ {print}' dns-manager-luci.sh > "$tmp/network_watchdog.js"
+if grep -Fq 'watchdogSlotResult(' "$tmp/network_watchdog.js"; then fail "network page still renders automatic DNS check results"; fi
+grep -Fq "toggleRow('Проверка DNS'" "$tmp/network_watchdog.js" || fail "network page lost DNS check switch"
+grep -Fq "toggleRow('Автозамена DNS'" "$tmp/network_watchdog.js" || fail "network page lost DNS replacement switch"
+grep -Fq 'if(tick%30===0&&!watchdogPollBusy)' dns-manager-luci.sh || fail "dashboard DNS results are not refreshed"
 grep -Fq 'html[data-darkmode="true"] .dm-wrap .dm-card' dns-manager-luci.sh || fail "Bootstrap dark mode styles missing"
 grep -Fq 'bootstrap_install_dependencies() {' dns-manager.sh || fail "backend noninteractive dependency bootstrap missing"
 grep -Fq 'install-dependencies|--install-dependencies)' dns-manager.sh || fail "backend dependency bootstrap command missing"
@@ -786,8 +844,8 @@ view_luci="$(sed -n 's|^// DNS Manager LuCI common module version:[[:space:]]*||
 dashboard_view_luci="$(sed -n 's|^// DNS Manager LuCI version: *||p' dns-manager-luci.sh | head -n1)"
 [ "$top_luci" = "$dashboard_view_luci" ] || fail "dashboard view version marker is stale"
 ok "LuCI version markers synchronized ($top_luci)"
-grep -Fq 'VERSION="3.84"' dns-manager.sh || fail "DNS Manager version marker is not 3.84"
-ok "DNS Manager version marker synchronized (3.84)"
+grep -Fq 'VERSION="3.88"' dns-manager.sh || fail "DNS Manager version marker is not 3.88"
+ok "DNS Manager version marker synchronized (3.88)"
 grep -Fq "assignment.appendChild(btn('Удалить'" dns-manager-luci.sh || fail "Custom DNS delete button is not aligned with the assignment action"
 grep -Fq ".dm-catalog-item-custom{grid-column:auto}" dns-manager-luci.sh || fail "Custom DNS card is wider than a stock catalog card"
 grep -Fq ".dm-catalog-controls-custom .dm-assign-inline select{height:30px;min-width:0;width:auto;max-width:100%;flex:1 1 160px" dns-manager-luci.sh || fail "Custom DNS actions do not have a responsive inline layout"
@@ -844,10 +902,7 @@ if grep -q 'function refreshDashboard' "$tmp/common.js"; then
     fail "obsolete refreshDashboard function remains"
 fi
 ok "dashboard timer is lightweight"
-grep -q 'Подготавливаю окружение' dns-manager.sh || fail "startup progress: environment marker missing"
-grep -q 'Проверяю каталог DNS' dns-manager.sh || fail "startup progress: catalog marker missing"
-grep -q 'Проверяю обновления' dns-manager.sh || fail "startup progress: update marker missing"
-grep -q 'Проверяю состояние роутера' dns-manager.sh || fail "startup progress: discovery marker missing"
+grep -Fq 'управление через LuCI → Службы → DNS Manager' dns-manager.sh || fail "CLI does not direct the user to LuCI"
 ok "CLI startup shows visible progress before potentially slow stages"
 
 grep -q 'UPDATE_CHECK_CACHE="$RUNTIME_DIR/update-check.cache"' dns-manager-luci.sh || fail "version cache path missing"
@@ -1567,6 +1622,7 @@ mkdir -p "$TMP_DIR"
 . "$2"
 WATCHDOG_ENABLED=1
 WATCHDOG_AUTOREPLACE=0
+[ "$MODE" = stale ] && WATCHDOG_AUTOREPLACE=1
 SLOT_1=resolver-a
 PORT_1=5053
 dns_cat() { printf 'clean\n'; }
@@ -1574,6 +1630,8 @@ hybrid_desired_port() { printf '5053\n'; }
 watchdog_resource_guard() { return 0; }
 acquire_mutation_lock() { return 0; }
 release_mutation_lock() { return 0; }
+load_config() { [ "$MODE" = stale ] && WATCHDOG_AUTOREPLACE=0; return 0; }
+watchdog_slot_config_matches() { [ "$1" = 1 ] && [ "$2" = "$SLOT_1" ] && [ "$3" = "$PORT_1" ]; }
 watchdog_check_slot() { return 1; }
 watchdog_restart_slot_instance() {
     [ "$1" = 1 ] && [ "$2" = resolver-a ] && [ "$3" = 5053 ] || exit 42
@@ -1612,6 +1670,7 @@ EOF_WATCHDOG_AUTOREPLACE_OFF
 chmod +x "$tmp/watchdog_autoreplace_off_runner.sh"
 "$tmp/watchdog_autoreplace_off_runner.sh" "$tmp/watchdog-off-test" "$tmp/watchdog_slot_target_run_only.sh" isolated || fail "one-shot Watchdog bypasses the auto-replacement OFF toggle"
 "$tmp/watchdog_autoreplace_off_runner.sh" "$tmp/watchdog-off-outage-test" "$tmp/watchdog_slot_target_run_only.sh" outage || fail "one-shot Watchdog mutates a slot during a common DNS/WAN outage"
+"$tmp/watchdog_autoreplace_off_runner.sh" "$tmp/watchdog-off-stale-test" "$tmp/watchdog_slot_target_run_only.sh" stale || fail "Watchdog ignores a disabled auto-replacement setting after lock acquisition"
 ok "auto-replacement OFF permits isolated instance recovery but never DNS replacement, and skips mutations during a common outage"
 
 # A failing upstream on a listening slot must not trigger whole-service recovery.
@@ -1812,7 +1871,7 @@ grep -Fq "var wdAutoDetails='Замена после '" "$tmp/common.js" || fail
 grep -Fq "var watchdogAutoReplace=yes(st.watchdog_autoreplace)" "$tmp/common.js" || fail "LuCI replacement state does not use the independent auto-replace setting"
 grep -Fq "forceComponentItem(st)" "$tmp/common.js" || fail "LuCI forced-DNS component helper is not used as a state-only item"
 grep -Fq 'if [ "$_module" = watchdog ] && [ "$_new" = 1 ]; then' dns-manager.sh || fail "CLI watchdog no-profile guard missing"
-grep -Fq 'if [ "$_enabled" = 1 ] && [ -z "$SLOT_1$SLOT_2$SLOT_3$SLOT_4$SLOT_5$SLOT_6$SLOT_RU" ]; then' "$tmp/backend.sh" || fail "RPC watchdog no-profile guard missing"
+grep -Fq 'if [ "$DNSMGR_WD_REQUEST_VALUE" = 1 ] && [ -z "$SLOT_1$SLOT_2$SLOT_3$SLOT_4$SLOT_5$SLOT_6$SLOT_RU" ]; then' "$tmp/backend.sh" || fail "RPC watchdog no-profile guard missing"
 grep -q "Проверить текущие DNS','cbi-button-action'" "$tmp/common.js" || fail "Current DNS check button disappeared"
 if grep -q "canTestCurrent=profileSelected" "$tmp/common.js"; then fail "Current DNS check is incorrectly blocked without profile"; fi
 if grep -q "_profile_slots.*Проверить текущие DNS" "$tmp/backend.sh"; then fail "Current DNS check is incorrectly guarded by profile"; fi
@@ -1827,7 +1886,8 @@ if grep -Fq 'Сколько DNS можно заменить за раз' "$tmp/w
     fail "LuCI still exposes the obsolete per-cycle repair count"
 fi
 grep -Fq 'Профиль не требуется.' "$tmp/watchdog_card.js" || fail "LuCI does not describe profile-independent Watchdog"
-grep -Fq "row('Автозамена',badge(!en?'dm-off':(auto?'dm-ok':'dm-off'),!en?'проверка выключена':(auto?'включена':'выключена')))" "$tmp/watchdog_card.js" || fail "LuCI auto-replace status badge has incorrect argument order"
+grep -Fq "toggleRow('Автозамена DNS'" "$tmp/watchdog_card.js" || fail "LuCI auto-replace control is missing"
+grep -Fq "watchdogReplacementComponentItem(wdAuto,wdAutoDetails)" "$tmp/dashboard_watchdog.js" || fail "dashboard auto-replace status is missing"
 ok "LuCI Watchdog is available for manually configured DNS without a profile"
 
 ok "forced-DNS controls and current-DNS checks retain their existing behavior"
