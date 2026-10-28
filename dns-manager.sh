@@ -4345,12 +4345,14 @@ uninstall_detach_https_dns_proxy() {
     fi
 
     _un_proxy_changed=0
-    if [ "${FORCE_DOH:-0}" = 1 ]; then
+    _un_other_proxy=0
+    uci show https-dns-proxy 2>/dev/null | grep -qE '^https-dns-proxy\.[^.=]+=https-dns-proxy$' && _un_other_proxy=1
+    if [ "${FORCE_DOH:-0}" = 1 ] || [ "$_un_other_proxy" = 0 ]; then
         uci set https-dns-proxy.config.force_dns=0 || return 1
         _un_proxy_changed=1
     fi
     # When unrelated resolver sections remain, leave their integration intact.
-    if ! uci show https-dns-proxy 2>/dev/null | grep -qE '^https-dns-proxy\.[^.=]+=https-dns-proxy$'; then
+    if [ "$_un_other_proxy" = 0 ]; then
         uci set "https-dns-proxy.config.dnsmasq_config_update=-" || return 1
         _un_proxy_changed=1
     fi
@@ -4540,7 +4542,7 @@ uninstall_manager_impl() {
     clear_screen
     menu_header "УДАЛЕНИЕ DNS MANAGER"
     warn_msg "DNS Manager, его LuCI, собственные службы и установленные им пакеты будут удалены."
-    printf "\n$C_YELLOW При удалении сначала отключается автоизменение dnsmasq со стороны https-dns-proxy, удаляются привязки DNS Manager и восстанавливается системный DNS. Пакет https-dns-proxy остаётся установленным.$C_NC\n\n"
+    printf "\n$C_YELLOW При удалении отключаются функции DNS Manager и восстанавливается системный DNS. Сторонние DNS-секции и правила сохраняются.$C_NC\n\n"
     confirm_action "Удалить DNS Manager и установленные им пакеты?" || { info_msg "Отменено."; pause; return 0; }
 
     acquire_mutation_lock || return 1
@@ -4610,7 +4612,7 @@ uninstall_manager_impl() {
 
     release_mutation_lock
     printf "\n$C_GREEN$C_BOLD DNS Manager полностью удалён.$C_NC\n"
-    printf "$C_GREEN Удалены DNS Manager, его LuCI и службы. Привязки DNS Manager сняты, системный DNS восстановлен. Пакет https-dns-proxy сохранён.$C_NC\n"
+    printf "$C_GREEN Удалены DNS Manager, его LuCI и службы. Привязки DNS Manager сняты; обнаруженные сторонние DNS-секции сохранены.$C_NC\n"
     exit 0
 }
 uninstall_manager() {
