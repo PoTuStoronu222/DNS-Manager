@@ -129,6 +129,7 @@ wget -O /tmp/dns-manager-luci.sh https://raw.githubusercontent.com/PoTuStoronu22
 | **OpenWrt** | основная платформа |
 | **dnsmasq** | локальный DNS для клиентов |
 | **https-dns-proxy** | локальные DoH-инстансы |
+| **luci-app-https-dns-proxy** | отдельная страница HTTPS DNS Proxy в меню «Службы» |
 | **opkg / apk** | установка системных пакетов |
 | **fw3 / fw4** | определение используемого firewall backend |
 | **curl / wget / uclient-fetch** | загрузка и сетевые проверки |

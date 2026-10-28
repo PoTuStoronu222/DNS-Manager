@@ -71,7 +71,7 @@ TX_LOG="$WORK/manager.tx"
 MANAGER_PATH="$WORK/bin/dns-manager"
 PACKAGE_OWNERSHIP="$BASE_DIR/config/package-ownership.conf"
 mkdir -p "$BASE_DIR/config" "$STATE_DIR" "$WORK/bin"
-printf 'https-dns-proxy\ncurl\n' > "$PACKAGE_OWNERSHIP"
+printf 'luci-app-https-dns-proxy\nhttps-dns-proxy\ncurl\n' > "$PACKAGE_OWNERSHIP"
 printf 'state\n' > "$STATE_DIR/dns-test-results.conf"
 : > "$LOG_FILE"; : > "$TX_LOG"; : > "$MANAGER_PATH"
 package_owner_remove_owned() {
@@ -533,13 +533,14 @@ extract_function package_owner_remove_owned "$WORK/package-remove-owned.sh" || f
 PACKAGE_OWNERSHIP="$WORK/package-ownership-test.conf"
 APK_CALLS="$WORK/apk-calls"
 PKG_MGR=apk
-printf 'https-dns-proxy\ncurl\n' > "$PACKAGE_OWNERSHIP"
+printf 'luci-app-https-dns-proxy\nhttps-dns-proxy\ncurl\n' > "$PACKAGE_OWNERSHIP"
 apk() {
     printf '%s\n' "$*" >> "$APK_CALLS"
     case "$*" in
-        "info -e https-dns-proxy"|"info -e curl") return 0 ;;
+        "info -e https-dns-proxy"|"info -e luci-app-https-dns-proxy"|"info -e curl") return 0 ;;
         "del curl") return 0 ;;
         "del https-dns-proxy") return 0 ;;
+        "del luci-app-https-dns-proxy") return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -549,12 +550,16 @@ grep -Fq 'del curl' "$APK_CALLS" || fail "other owned packages were not removed"
 if grep -Fq 'del https-dns-proxy' "$APK_CALLS"; then
     fail "https-dns-proxy with external resolvers must remain installed"
 fi
+if grep -Fq 'del luci-app-https-dns-proxy' "$APK_CALLS"; then
+    fail "proxy LuCI with external resolvers must remain installed"
+fi
 ok "https-dns-proxy with external resolvers remains installed"
 
 HD_HAS_EXTERNAL=0
 : > "$APK_CALLS"
 package_owner_remove_owned || fail "unused owned proxy package could not be removed"
 grep -Fq 'del https-dns-proxy' "$APK_CALLS" || fail "unused owned proxy package remains installed"
+grep -Fq 'del luci-app-https-dns-proxy' "$APK_CALLS" || fail "unused owned proxy LuCI remains installed"
 ok "unused proxy package installed by Manager is removed"
 
 # If the cached companion installer is missing, uninstall the known LuCI
