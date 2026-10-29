@@ -1,0 +1,46 @@
+#!/bin/sh
+set -eu
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT INT TERM
+awk '/^job_start_setting\(\) \{/,/^}/' "$ROOT/dns-manager-luci.sh" > "$tmp/job"
+awk '/^apply_live_setting\(\) \{/,/^}/' "$ROOT/dns-manager-luci.sh" > "$tmp/apply"
+(
+    . "$tmp/job"
+    JOB_DIR="$tmp/jobs"; mkdir -p "$JOB_DIR"
+    RUNTIME_DIR="$tmp/runtime"; mkdir -p "$RUNTIME_DIR"
+    acquire_runtime_lock() { :; }; release_runtime_lock() { :; }
+    job_active() { return 1; }
+    job_prepare() { mkdir -p "$JOB_DIR/$1"; : > "$JOB_DIR/$1/state"; : > "$JOB_DIR/$1/output"; }
+    job_write() { printf '%s=%s\n' "$2" "$3" >> "$JOB_DIR/$1/state"; }
+    job_record_pid() { :; }
+    json_error() { echo ERROR; }
+    json_quote() { printf '"%s"' "$1"; }
+    run_action() {
+        while [ ! -f "$tmp/continue" ]; do sleep 0.1; done
+        [ "$DNSMGR_SETTING_WORKER" = 1 ] && [ "$RPC_METHOD" = set_setting ]
+        printf '{"ok":true,"force_owner":"steer"}'
+    }
+    job_start_setting force 1 > "$tmp/reply"
+    grep -Fq '"job":"setting"' "$tmp/reply"
+    grep -Fqx 'status=running' "$JOB_DIR/setting/state"
+    : > "$tmp/continue"
+    wait
+    grep -Fqx 'result=ok' "$JOB_DIR/setting/state"
+    grep -Fqx 'status=done' "$JOB_DIR/setting/state"
+    grep -Fq '"force_owner":"steer"' "$JOB_DIR/setting/output"
+)
+(
+    . "$tmp/apply"
+    acquire_mutation_lock() { echo lock >> "$tmp/order"; }
+    release_mutation_lock() { echo unlock >> "$tmp/order"; }
+    load_config() { echo load >> "$tmp/order"; FORCE_DOH=0; BLOCK_EXTERNAL_DNS=1; }
+    _apply_extras_now_impl() { echo "apply:$1:$FORCE_DOH:$BLOCK_EXTERNAL_DNS" >> "$tmp/order"; }
+    FORCE_DOH=1 BLOCK_EXTERNAL_DNS=0
+    apply_live_setting force 1
+    [ "$(cat "$tmp/order")" = "$(printf 'lock\nload\napply:force:1:1\nunlock')" ]
+    : > "$tmp/order"
+    apply_live_setting force 0
+    [ "$(cat "$tmp/order")" = "$(printf 'lock\nload\nunlock')" ]
+)
+echo 'OK: settings run as background jobs and reload state under lock'
