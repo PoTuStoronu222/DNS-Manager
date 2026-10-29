@@ -1564,6 +1564,15 @@ awk '/^sync_dns_manager_canaries\(\) \(/ { capture=1 } capture { print } capture
     grep -Fxq 'server=/use-application-dns.net/' "$tmp/canary-dir/90-dns-manager-canary.conf" || exit 2
     sync_dns_manager_canaries || exit 3
     [ "$(wc -l < "$CANARY_LOG" | tr -d ' ')" = 1 ] || exit 4
+    BLOCK_EXTERNAL_DNS=0
+    sync_dns_manager_canaries || exit 9
+    [ ! -e "$tmp/canary-dir/90-dns-manager-canary.conf" ] || exit 10
+    BLOCK_EXTERNAL_DNS=1
+    FORCE_DOH=0
+    sync_dns_manager_canaries || exit 11
+    [ ! -e "$tmp/canary-dir/90-dns-manager-canary.conf" ] || exit 12
+    FORCE_DOH=1
+    sync_dns_manager_canaries || exit 13
     MOCK_STEER=1
     sync_dns_manager_canaries || exit 5
     [ ! -e "$tmp/canary-dir/90-dns-manager-canary.conf" ] || exit 6
