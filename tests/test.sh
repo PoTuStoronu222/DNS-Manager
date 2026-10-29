@@ -86,7 +86,7 @@ grep -Fq "grep -q '[^1-6,[:space:]]'" "$tmp/device_dns_service.sh" || fail "devi
 grep -Fq 'DMD_NFT_TMP="$(mktemp "$DMD_NFT.tmp.XXXXXX"' dns-manager-luci.sh || fail "per-device nft snippet update does not use a unique temporary file"
 grep -Fq 'set_device_dns)' dns-manager-luci.sh || fail "set-device-DNS RPC dispatch missing"
 grep -Fq '"set_device_dns":{"mac":"String","slots":"String"}' dns-manager-luci.sh || fail "set-device-DNS RPC schema missing"
-grep -Fq '"dns_manager": [ "set_profile", "reset_dns", "set_slot", "set_slot_domains", "set_device_dns"' dns-manager-luci.sh || fail "set-device-DNS RPC is missing from the write ACL"
+grep -Fq '"dns_manager": [ "set_profile", "set_regional", "reset_dns", "set_slot", "set_slot_domains", "set_device_dns"' dns-manager-luci.sh || fail "set-device-DNS RPC is missing from the write ACL"
 grep -Fq 'callSetDeviceDns' dns-manager-luci.sh || fail "LuCI has no client for set-device-DNS RPC"
 grep -Fq 'card(' "dns-manager-luci.sh" >/dev/null || fail "LuCI card renderer missing"
 ok "per-device DNS service, per-MAC nft redirects and multi-DoH assignment contract"
@@ -574,9 +574,9 @@ grep -Fq "disabled:!!state.busy||!!state.jobRunning||unavailable||checking" dns-
 grep -q "'gaming','Игровые DNS'" dns-manager-luci.sh || fail "gaming catalog label missing in LuCI"
 grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validation missing gaming category"
 grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
-grep -q 'VERSION="3.91"' dns-manager.sh || fail "manager version not bumped"
+grep -q 'VERSION="3.92"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
-grep -q 'VERSION="1.126"' dns-manager-luci.sh || fail "LuCI version not bumped"
+grep -q 'VERSION="1.127"' dns-manager-luci.sh || fail "LuCI version not bumped"
 if grep -q '^main_menu$' dns-manager.sh; then fail "interactive console menu still starts"; fi
 grep -Fq "btn('Удалить DNS Manager'" dns-manager-luci.sh || fail "LuCI uninstall button missing"
 grep -Fq '"uninstall":{},"uninstall_status":{}' dns-manager-luci.sh || fail "LuCI uninstall RPC is not registered"
@@ -858,8 +858,8 @@ view_luci="$(sed -n 's|^// DNS Manager LuCI common module version:[[:space:]]*||
 dashboard_view_luci="$(sed -n 's|^// DNS Manager LuCI version: *||p' dns-manager-luci.sh | head -n1)"
 [ "$top_luci" = "$dashboard_view_luci" ] || fail "dashboard view version marker is stale"
 ok "LuCI version markers synchronized ($top_luci)"
-grep -Fq 'VERSION="3.91"' dns-manager.sh || fail "DNS Manager version marker is not 3.91"
-ok "DNS Manager version marker synchronized (3.91)"
+grep -Fq 'VERSION="3.92"' dns-manager.sh || fail "DNS Manager version marker is not 3.92"
+ok "DNS Manager version marker synchronized (3.92)"
 grep -Fq "assignment.appendChild(btn('Удалить'" dns-manager-luci.sh || fail "Custom DNS delete button is not aligned with the assignment action"
 grep -Fq ".dm-catalog-item-custom{grid-column:auto}" dns-manager-luci.sh || fail "Custom DNS card is wider than a stock catalog card"
 grep -Fq ".dm-catalog-controls-custom .dm-assign-inline select{height:30px;min-width:0;width:auto;max-width:100%;flex:1 1 160px" dns-manager-luci.sh || fail "Custom DNS actions do not have a responsive inline layout"
@@ -2793,7 +2793,7 @@ chmod +x "$tmp/watchdog_test_results_usable_runner.sh"
 "$tmp/watchdog_test_results_usable_runner.sh" "$tmp/watchdog_test_results_usable.sh" "$tmp/usable-results" || fail "regional or unrelated DNS result satisfies selected category"
 ok "cached DNS usability requires a working resolver in the requested category"
 
-# Preserve an existing RU DNS only when it passed the fresh regional test.
+# Profile selection never changes the regional DNS selection.
 awk '/^apply_profile_now\(\) \{/,/^menu_category_select\(\)/' dns-manager.sh | sed '$d' > "$tmp/apply_profile_now_ru.sh"
 [ -s "$tmp/apply_profile_now_ru.sh" ] || fail "profile application helper extraction"
 cat > "$tmp/apply_profile_now_ru_runner.sh" <<'EOF_PROFILE_RU'
@@ -2814,11 +2814,16 @@ EOF_RU_OK
 ru_old|regional|Old RU|-1|TIMEOUT
 ru_candidate|regional|Candidate RU|20|OK
 EOF_RU_BAD
-        _expected=ru_candidate
+        _expected=ru_old
+        ;;
+    disabled)
+        : > "$TEST_RESULTS"
+        _expected=''
         ;;
     *) exit 40 ;;
 esac
 SLOT_RU=ru_old
+[ "$2" = disabled ] && SLOT_RU=''
 SLOT_RU_CAT=regional
 DNS_PROFILE=hybrid
 DNS_SELECTION_MODE=profile
@@ -2848,8 +2853,47 @@ apply_profile_now clean || exit 41
 EOF_PROFILE_RU
 chmod +x "$tmp/apply_profile_now_ru_runner.sh"
 "$tmp/apply_profile_now_ru_runner.sh" "$tmp" keep_old "$tmp/apply_profile_now_ru.sh" || fail "working previous RU DNS was not preserved"
-"$tmp/apply_profile_now_ru_runner.sh" "$tmp" replace_old "$tmp/apply_profile_now_ru.sh" || fail "unhealthy previous RU DNS replaced the working candidate"
-ok "profile keeps the previous RU DNS only when its fresh test passed"
+"$tmp/apply_profile_now_ru_runner.sh" "$tmp" replace_old "$tmp/apply_profile_now_ru.sh" || fail "profile changed the existing regional selection"
+"$tmp/apply_profile_now_ru_runner.sh" "$tmp" disabled "$tmp/apply_profile_now_ru.sh" || fail "profile enabled the regional DNS without user action"
+ok "profile preserves the regional DNS selection even when disabled or its test fails"
+
+# Regional control must preserve the current profile and remember the user's
+# resolver across disable/enable, without silently changing general slots.
+awk '/^regional_apply_toggle\(\) \{/,/^}/' dns-manager.sh > "$tmp/regional_toggle.sh"
+(
+    set -eu
+    . "$tmp/regional_toggle.sh"
+    acquire_mutation_lock() { :; }
+    release_mutation_lock() { printf released >> "$tmp/regional-lock"; }
+    load_config() { :; }
+    dns_cat() { case "$1" in ru_old|yandex_ru) printf regional;; *) return 1;; esac; }
+    sync_regional_dns_state() { :; }
+    err_msg() { :; }
+    _apply_settings_impl() {
+        [ "$SLOT_1" = general ] && [ "$DNS_SELECTION_CATEGORY" = clean ] || return 1
+        [ "$CORE_ONLY" = 1 ] && [ "$HYBRID_STAGE_SKIP" = 1 ] && [ "$REGIONAL_TOGGLE_APPLY" = 1 ] || return 1
+        return 0
+    }
+    SLOT_1=general
+    DNS_SELECTION_CATEGORY=clean
+    SLOT_RU=ru_old
+    SLOT_RU_CAT=regional
+    PORT_RU=5059
+    REGIONAL_SAVED_ID=''
+    regional_apply_toggle 0 || exit 1
+    [ -z "$SLOT_RU" ] && [ "$REGIONAL_SAVED_ID" = ru_old ] || exit 2
+    regional_apply_toggle 1 || exit 3
+    [ "$SLOT_RU" = ru_old ] || exit 4
+    SLOT_RU=''
+    REGIONAL_SAVED_ID=''
+    regional_apply_toggle 1 || exit 5
+    [ "$SLOT_RU" = yandex_ru ] || exit 6
+    SLOT_1=''
+    if regional_apply_toggle 1; then exit 7; fi
+) || fail "independent regional control changed the profile or lost its selection"
+grep -Fq '"set_regional":{"enabled":0}' dns-manager-luci.sh || fail "regional RPC is not registered"
+grep -Fq "callRegional(enabled?1:0)" dns-manager-luci.sh || fail "regional control does not call the independent action"
+ok "regional control is independent and retains the selected resolver"
 
 # A failed transaction must reload the just-restored manager configuration into memory.
 awk '/^tx_restore_on_failure\(\) \{/,/^tx_commit\(\) \{/' dns-manager.sh | sed '$d' > "$tmp/tx_restore_on_failure.sh"
