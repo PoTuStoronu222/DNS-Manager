@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager full installer and LuCI companion
-# Version: 1.129
+# Version: 1.130
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.129"
+VERSION="1.130"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -209,6 +209,47 @@ grep -q "^REGIONAL_MODE='isp'$" /etc/dns-manager/config/manager.conf 2>/dev/null
 ( sleep 3; DNS_MANAGER_NO_UPDATE=1 /usr/bin/dns-manager __regional-refresh >/dev/null 2>&1 ) </dev/null >/dev/null 2>&1 &
 EOF_REGIONAL_HOOK
     chmod 0755 "$_rh.tmp.$$" && mv -f "$_rh.tmp.$$" "$_rh" || { rm -f "$_rh.tmp.$$"; return 1; }
+
+    # DNS-only updates do not necessarily emit a netifd interface event.
+    # A sleeping procd process watches the resolver file only in provider mode.
+    _rs=/etc/init.d/dns-manager-regional
+    if [ -e "$_rs" ] && ! grep -Fqx '# DNS_MANAGER_REGIONAL_SERVICE=1' "$_rs"; then
+        err "Найден чужой файл $_rs; обновление остановлено."
+        return 1
+    fi
+    mkdir -p /usr/lib/dns-manager-luci || return 1
+    cat > /usr/lib/dns-manager-luci/regional-watch.sh <<'EOF_REGIONAL_WATCH'
+#!/bin/sh
+_last=''
+while grep -q "^REGIONAL_MODE='isp'$" /etc/dns-manager/config/manager.conf 2>/dev/null; do
+    _file=/tmp/resolv.conf.d/resolv.conf.auto
+    [ -s "$_file" ] || _file=/tmp/resolv.conf.auto
+    _current="$(cksum "$_file" 2>/dev/null || true)"
+    if [ -n "$_current" ] && [ "$_current" != "$_last" ]; then
+        if DNS_MANAGER_NO_UPDATE=1 /usr/bin/dns-manager __regional-refresh >/dev/null 2>&1; then
+            _last="$_current"
+        fi
+    fi
+    sleep 60
+done
+EOF_REGIONAL_WATCH
+    cat > "$_rs.tmp.$$" <<'EOF_REGIONAL_SERVICE'
+#!/bin/sh /etc/rc.common
+# DNS_MANAGER_REGIONAL_SERVICE=1
+USE_PROCD=1
+START=99
+STOP=10
+start_service() {
+    grep -q "^REGIONAL_MODE='isp'$" /etc/dns-manager/config/manager.conf 2>/dev/null || return 0
+    procd_open_instance
+    procd_set_param command /bin/sh /usr/lib/dns-manager-luci/regional-watch.sh
+    procd_set_param respawn 3600 5 5
+    procd_close_instance
+}
+EOF_REGIONAL_SERVICE
+    chmod 0755 "$_rs.tmp.$$" && mv -f "$_rs.tmp.$$" "$_rs" || { rm -f "$_rs.tmp.$$"; return 1; }
+    "$_rs" enable >/dev/null 2>&1 || return 1
+    "$_rs" restart >/dev/null 2>&1 || return 1
 
     command -v jsonfilter >/dev/null 2>&1 || say "ℹ jsonfilter не найден — используется встроенный обработчик RPC-параметров."
     mkdir -p "$VIEW_DIR" "$RESOURCE_DIR" /usr/libexec/rpcd /usr/lib/dns-manager-luci /usr/share/rpcd/acl.d /usr/share/luci/menu.d "$RUNTIME_DIR/checks" "$JOB_DIR" "$BACKUP_DIR" "$(dirname "$STATE_FILE")" /etc/dns-manager/device-dns /etc/nftables.d || return 1
@@ -681,7 +722,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="1.129"
+SELF_VERSION="1.130"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -3913,7 +3954,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI common module version: 1.129
+// DNS Manager LuCI common module version: 1.130
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -6681,7 +6722,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 1.129
+// DNS Manager LuCI version: 1.130
 return view.extend({
   load: DM.load,
   render: DM.render,
@@ -6779,6 +6820,11 @@ uninstall_files() {
     fi
     if [ -f /etc/hotplug.d/iface/95-dns-manager-regional ] && grep -Fqx '# DNS_MANAGER_REGIONAL_HOOK=1' /etc/hotplug.d/iface/95-dns-manager-regional; then
         rm -f /etc/hotplug.d/iface/95-dns-manager-regional || return 1
+    fi
+    if [ -f /etc/init.d/dns-manager-regional ] && grep -Fqx '# DNS_MANAGER_REGIONAL_SERVICE=1' /etc/init.d/dns-manager-regional; then
+        /etc/init.d/dns-manager-regional stop >/dev/null 2>&1 || true
+        /etc/init.d/dns-manager-regional disable >/dev/null 2>&1 || true
+        rm -f /etc/init.d/dns-manager-regional /usr/lib/dns-manager-luci/regional-watch.sh || return 1
     fi
     rm -f /etc/nftables.d/90-dns-manager-device-dns.nft /etc/nftables.d/90-dns-manager-device-dns.nft.tmp.* 2>/dev/null || true
     rm -f /etc/init.d/dns-manager-device-dns /etc/dns-manager/config/device-dns.conf /etc/dns-manager/config/device-dns-default.conf /etc/dns-manager/device-dns/redirects.nft /etc/dns-manager/device-dns/redirects.nft.tmp.* 2>/dev/null || true

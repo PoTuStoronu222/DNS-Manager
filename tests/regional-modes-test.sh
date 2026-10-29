@@ -46,9 +46,26 @@ for REGIONAL_MODE in doh yandex isp legacy; do
     esac
 done
 echo 'OK: regional modes and watchdog routes'
+awk '/^steer_dns_upstream_ready\(\) \{/,/^}/' "$ROOT/dns-manager.sh" > "$tmp/steer-ready"
+(
+    . "$tmp/steer-ready"
+    for REGIONAL_MODE in doh yandex isp legacy; do
+        SLOT_RU= PORT_RU= TLD_RU_ENABLED=0
+        REGIONAL_ISP_IPS='94.230.128.3 10.255.0.2'
+        [ "$REGIONAL_MODE" != legacy ] || { SLOT_RU=regional; PORT_RU=5059; TLD_RU_ENABLED=1; }
+        reconcile_dnsmasq
+        printf '%s\n' '/mask.icloud.com/' '/use-application-dns.net/' >> "$state"
+        steer_dns_upstream_ready || { echo "FAIL: Steer rejected valid $REGIONAL_MODE routes" >&2; exit 1; }
+        printf '%s\n' '127.0.0.1#5059' >> "$state"
+        if steer_dns_upstream_ready; then echo "FAIL: Steer accepted extra general DNS" >&2; exit 1; fi
+    done
+)
+echo 'OK: Steer status accepts expected regional routes and rejects unexpected general DNS'
 
 awk '/^regional_apply_toggle\(\) \{/,/^}/' "$ROOT/dns-manager.sh" > "$tmp/toggle"
 awk '/^regional_refresh_provider\(\) \{/,/^}/' "$ROOT/dns-manager.sh" > "$tmp/refresh"
+printf '%s\n' '#!/bin/sh' '# DNS_MANAGER_REGIONAL_SERVICE=1' 'exit 0' > "$tmp/regional-service"
+chmod +x "$tmp/regional-service"
 (
     . "$tmp/toggle"
     acquire_mutation_lock() { :; }; release_mutation_lock() { :; }; load_config() { :; }
@@ -56,10 +73,15 @@ awk '/^regional_refresh_provider\(\) \{/,/^}/' "$ROOT/dns-manager.sh" > "$tmp/re
     regional_provider_addresses() { printf '%s\n' "${MOCK_PROVIDER:-}"; }
     dns_cat() { echo regional; }
     _apply_settings_impl() { [ "$SLOT_1" = one ]; }
+    REGIONAL_SERVICE_INIT="$tmp/regional-service"
     SLOT_RU=old PORT_RU=5059 REGIONAL_SAVED_ID=old
     regional_apply_toggle 2
     [ "$REGIONAL_MODE" = yandex ] && [ -z "$SLOT_RU" ] && [ "$REGIONAL_SAVED_ID" = old ]
     MOCK_PROVIDER=94.230.128.3
+    REGIONAL_SERVICE_INIT="$tmp/missing-service"
+    if regional_apply_toggle 3; then exit 1; fi
+    [ "$REGIONAL_MODE" = yandex ]
+    REGIONAL_SERVICE_INIT="$tmp/regional-service"
     regional_apply_toggle 3
     [ "$REGIONAL_MODE" = isp ] && [ "$REGIONAL_ISP_IPS" = "$MOCK_PROVIDER" ]
     MOCK_PROVIDER=''
@@ -111,3 +133,18 @@ awk '/^clear_dns_core_runtime_state\(\) \{/,/^}/' "$ROOT/dns-manager.sh" > "$tmp
     [ "$REGIONAL_MODE" = doh ] && [ -z "$REGIONAL_ISP_IPS" ] && [ -z "$SLOT_RU" ]
 )
 echo 'OK: DNS reset clears the regional mode'
+
+awk '/^normalize_ownership_snapshot\(\) \{/,/^}/' "$ROOT/dns-manager.sh" > "$tmp/ownership-fns"
+awk '/^dnsmasq_manager_server_owned\(\) \{/,/^}/' "$ROOT/dns-manager.sh" >> "$tmp/ownership-fns"
+(
+    . "$tmp/ownership-fns"
+    OWNERSHIP="$tmp/owned"
+    REGIONAL_MODE=isp REGIONAL_ISP_IPS=94.230.128.3 PORT_RU=
+    printf '%s\n' 'dnsmasq|server|/ru/94.230.128.3|section=main' 'dnsmasq|server|/ru/192.0.2.123|section=main' > "$OWNERSHIP"
+    normalize_ownership_snapshot
+    grep -Fxq 'dnsmasq|server|/ru/94.230.128.3|section=main' "$OWNERSHIP"
+    ! grep -Fq '/ru/192.0.2.123' "$OWNERSHIP"
+    UNINSTALL_STRICT_OWNERSHIP=1
+    if dnsmasq_manager_server_owned /ru/94.230.128.3; then exit 1; fi
+)
+echo 'OK: regional ownership survives cleanup without inferring ownership during uninstall'
