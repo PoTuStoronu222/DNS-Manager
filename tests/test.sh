@@ -17,6 +17,8 @@ sh -n dns-manager-luci.sh || fail "dns-manager-luci.sh: sh -n"
 sh -n tests/openwrt-luci-smoke.sh || fail "tests/openwrt-luci-smoke.sh: sh -n"
 ok "shell syntax"
 
+sh tests/regional-provider-test.sh || fail "regional provider address parsing"
+
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT INT TERM
 

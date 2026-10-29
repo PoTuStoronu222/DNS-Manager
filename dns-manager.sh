@@ -804,6 +804,52 @@ write_catalogs() {
     err_msg "Каталог DNS $DNSCAT_VERSION не удалось получить и локальная копия отсутствует/повреждена."
     return 1
 }
+# Read upstream addresses from OpenWrt's WAN resolv file, never from the
+# router's own /tmp/resolv.conf, which normally points back to dnsmasq.
+# An optional path lets the parser be exercised without changing the router.
+regional_provider_addresses() {
+    local _rpa_file
+    if [ "$#" -gt 0 ]; then
+        _rpa_file="$1"
+    elif [ -s /tmp/resolv.conf.d/resolv.conf.auto ]; then
+        _rpa_file=/tmp/resolv.conf.d/resolv.conf.auto
+    else
+        _rpa_file=/tmp/resolv.conf.auto
+    fi
+    [ -r "$_rpa_file" ] || return 0
+    LC_ALL=C awk '
+        function ipv4(s, a,n,i) {
+            n=split(s,a,"."); if (n != 4) return 0
+            for (i=1; i<=4; i++) if (a[i] !~ /^[0-9]+$/ || length(a[i]) > 3 || a[i]+0 > 255) return 0
+            return a[1]+0 != 0 && a[1]+0 != 127 && !(a[1]+0 == 169 && a[2]+0 == 254)
+        }
+        function ipv6(s, a,n,i,compressed,groups,nonzero,last) {
+            if (s !~ /^[0-9a-fA-F:]+$/ || s !~ /:/ || s ~ /:::/ || s ~ /^:[^:]/ || s ~ /[^:]:$/) return 0
+            compressed = index(s,"::") > 0
+            if (compressed && index(substr(s,index(s,"::")+2),"::")) return 0
+            if (!compressed && (s ~ /^:/ || s ~ /:$/)) return 0
+            n=split(s,a,":"); groups=0; nonzero=0; last=""
+            for (i=1; i<=n; i++) {
+                if (length(a[i]) > 4) return 0
+                if (a[i] != "") {
+                    groups++; last=a[i]
+                    if (a[i] !~ /^0+$/) nonzero++
+                }
+            }
+            if (compressed ? groups >= 8 : groups != 8) return 0
+            s=tolower(s)
+            if (!nonzero || (nonzero == 1 && last ~ /^0*1$/ && s !~ /:$/) || s ~ /^fe[89ab][0-9]:/) return 0
+            return 1
+        }
+        $1 == "nameserver" && NF >= 2 {
+            ip=$2
+            if ((ipv4(ip) || ipv6(ip)) && !seen[tolower(ip)]++) {
+                print ip
+                if (++count == 4) exit
+            }
+        }
+    ' "$_rpa_file"
+}
 sync_regional_dns_state() {
     if [ -n "${SLOT_RU:-}" ]; then
         TLD_RU_ENABLED=1
