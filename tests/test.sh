@@ -86,7 +86,7 @@ grep -Fq "grep -q '[^1-6,[:space:]]'" "$tmp/device_dns_service.sh" || fail "devi
 grep -Fq 'DMD_NFT_TMP="$(mktemp "$DMD_NFT.tmp.XXXXXX"' dns-manager-luci.sh || fail "per-device nft snippet update does not use a unique temporary file"
 grep -Fq 'set_device_dns)' dns-manager-luci.sh || fail "set-device-DNS RPC dispatch missing"
 grep -Fq '"set_device_dns":{"mac":"String","slots":"String"}' dns-manager-luci.sh || fail "set-device-DNS RPC schema missing"
-grep -Fq '"dns_manager": [ "set_profile", "reset_dns", "set_slot", "set_slot_domains", "set_device_dns"' dns-manager-luci.sh || fail "set-device-DNS RPC is missing from the write ACL"
+grep -Fq '"dns_manager": [ "set_profile", "set_regional", "reset_dns", "set_slot", "set_slot_domains", "set_device_dns"' dns-manager-luci.sh || fail "set-device-DNS RPC is missing from the write ACL"
 grep -Fq 'callSetDeviceDns' dns-manager-luci.sh || fail "LuCI has no client for set-device-DNS RPC"
 grep -Fq 'card(' "dns-manager-luci.sh" >/dev/null || fail "LuCI card renderer missing"
 ok "per-device DNS service, per-MAC nft redirects and multi-DoH assignment contract"
@@ -574,9 +574,9 @@ grep -Fq "disabled:!!state.busy||!!state.jobRunning||unavailable||checking" dns-
 grep -q "'gaming','Игровые DNS'" dns-manager-luci.sh || fail "gaming catalog label missing in LuCI"
 grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validation missing gaming category"
 grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
-grep -q 'VERSION="3.91"' dns-manager.sh || fail "manager version not bumped"
+grep -q 'VERSION="3.92"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
-grep -q 'VERSION="1.126"' dns-manager-luci.sh || fail "LuCI version not bumped"
+grep -q 'VERSION="1.127"' dns-manager-luci.sh || fail "LuCI version not bumped"
 if grep -q '^main_menu$' dns-manager.sh; then fail "interactive console menu still starts"; fi
 grep -Fq "btn('Удалить DNS Manager'" dns-manager-luci.sh || fail "LuCI uninstall button missing"
 grep -Fq '"uninstall":{},"uninstall_status":{}' dns-manager-luci.sh || fail "LuCI uninstall RPC is not registered"
@@ -858,8 +858,8 @@ view_luci="$(sed -n 's|^// DNS Manager LuCI common module version:[[:space:]]*||
 dashboard_view_luci="$(sed -n 's|^// DNS Manager LuCI version: *||p' dns-manager-luci.sh | head -n1)"
 [ "$top_luci" = "$dashboard_view_luci" ] || fail "dashboard view version marker is stale"
 ok "LuCI version markers synchronized ($top_luci)"
-grep -Fq 'VERSION="3.91"' dns-manager.sh || fail "DNS Manager version marker is not 3.91"
-ok "DNS Manager version marker synchronized (3.91)"
+grep -Fq 'VERSION="3.92"' dns-manager.sh || fail "DNS Manager version marker is not 3.92"
+ok "DNS Manager version marker synchronized (3.92)"
 grep -Fq "assignment.appendChild(btn('Удалить'" dns-manager-luci.sh || fail "Custom DNS delete button is not aligned with the assignment action"
 grep -Fq ".dm-catalog-item-custom{grid-column:auto}" dns-manager-luci.sh || fail "Custom DNS card is wider than a stock catalog card"
 grep -Fq ".dm-catalog-controls-custom .dm-assign-inline select{height:30px;min-width:0;width:auto;max-width:100%;flex:1 1 160px" dns-manager-luci.sh || fail "Custom DNS actions do not have a responsive inline layout"
@@ -2793,7 +2793,7 @@ chmod +x "$tmp/watchdog_test_results_usable_runner.sh"
 "$tmp/watchdog_test_results_usable_runner.sh" "$tmp/watchdog_test_results_usable.sh" "$tmp/usable-results" || fail "regional or unrelated DNS result satisfies selected category"
 ok "cached DNS usability requires a working resolver in the requested category"
 
-# Preserve an existing RU DNS only when it passed the fresh regional test.
+# Profile selection never changes the regional DNS selection.
 awk '/^apply_profile_now\(\) \{/,/^menu_category_select\(\)/' dns-manager.sh | sed '$d' > "$tmp/apply_profile_now_ru.sh"
 [ -s "$tmp/apply_profile_now_ru.sh" ] || fail "profile application helper extraction"
 cat > "$tmp/apply_profile_now_ru_runner.sh" <<'EOF_PROFILE_RU'
@@ -2814,11 +2814,16 @@ EOF_RU_OK
 ru_old|regional|Old RU|-1|TIMEOUT
 ru_candidate|regional|Candidate RU|20|OK
 EOF_RU_BAD
-        _expected=ru_candidate
+        _expected=ru_old
+        ;;
+    disabled)
+        : > "$TEST_RESULTS"
+        _expected=''
         ;;
     *) exit 40 ;;
 esac
 SLOT_RU=ru_old
+[ "$2" = disabled ] && SLOT_RU=''
 SLOT_RU_CAT=regional
 DNS_PROFILE=hybrid
 DNS_SELECTION_MODE=profile
@@ -2848,8 +2853,167 @@ apply_profile_now clean || exit 41
 EOF_PROFILE_RU
 chmod +x "$tmp/apply_profile_now_ru_runner.sh"
 "$tmp/apply_profile_now_ru_runner.sh" "$tmp" keep_old "$tmp/apply_profile_now_ru.sh" || fail "working previous RU DNS was not preserved"
-"$tmp/apply_profile_now_ru_runner.sh" "$tmp" replace_old "$tmp/apply_profile_now_ru.sh" || fail "unhealthy previous RU DNS replaced the working candidate"
-ok "profile keeps the previous RU DNS only when its fresh test passed"
+"$tmp/apply_profile_now_ru_runner.sh" "$tmp" replace_old "$tmp/apply_profile_now_ru.sh" || fail "profile changed the existing regional selection"
+"$tmp/apply_profile_now_ru_runner.sh" "$tmp" disabled "$tmp/apply_profile_now_ru.sh" || fail "profile enabled the regional DNS without user action"
+ok "profile preserves the regional DNS selection even when disabled or its test fails"
+
+# A profile may finish its DNS tests after another client changes the regional
+# setting. The profile re-reads that setting only after acquiring the lock.
+awk '/^reload_regional_for_profile\(\) \{/,/^}/' dns-manager.sh > "$tmp/regional-reload.sh"
+(
+    set -eu
+    . "$tmp/regional-reload.sh"
+    CONFIG_FILE="$tmp/regional-concurrent.conf"
+    printf "%s\n" "SLOT_RU=''" "PORT_RU=''" "SLOT_RU_CAT='regional'" "REGIONAL_SAVED_ID='ru_new'" > "$CONFIG_FILE"
+    SLOT_RU=ru_old PORT_RU=5059 SLOT_RU_CAT=regional REGIONAL_SAVED_ID=ru_old
+    sync_regional_dns_state() { [ -z "$SLOT_RU" ]; }
+    reload_regional_for_profile || exit 1
+    [ -z "$SLOT_RU" ] && [ -z "$PORT_RU" ] && [ "$REGIONAL_SAVED_ID" = ru_new ] || exit 2
+) || fail "profile did not preserve a concurrent regional change"
+awk '/^apply_settings\(\) \{/,/^}/' dns-manager.sh > "$tmp/regional-apply-lock.sh"
+_lock_line="$(grep -n 'acquire_mutation_lock' "$tmp/regional-apply-lock.sh" | head -n1 | cut -d: -f1)"
+_reload_line="$(grep -n 'reload_regional_for_profile' "$tmp/regional-apply-lock.sh" | head -n1 | cut -d: -f1)"
+[ -n "$_lock_line" ] && [ -n "$_reload_line" ] && [ "$_lock_line" -lt "$_reload_line" ] || fail "regional state was read before acquiring the profile lock"
+ok "profile preserves a regional change made while profile tests were running"
+
+# Regional control must preserve the current profile and remember the user's
+# resolver across disable/enable, without silently changing general slots.
+awk '/^regional_apply_toggle\(\) \{/,/^}/' dns-manager.sh > "$tmp/regional_toggle.sh"
+(
+    set -eu
+    . "$tmp/regional_toggle.sh"
+    acquire_mutation_lock() { :; }
+    release_mutation_lock() { printf released >> "$tmp/regional-lock"; }
+    load_config() { :; }
+    dns_cat() { case "$1" in ru_old|yandex_ru) printf regional;; *) return 1;; esac; }
+    sync_regional_dns_state() { :; }
+    err_msg() { :; }
+    _apply_settings_impl() {
+        [ "$SLOT_1" = general ] && [ "$DNS_SELECTION_CATEGORY" = clean ] || return 1
+        [ "$CORE_ONLY" = 1 ] && [ "$HYBRID_STAGE_SKIP" = 1 ] && [ "$REGIONAL_TOGGLE_APPLY" = 1 ] || return 1
+        return 0
+    }
+    SLOT_1=general
+    DNS_SELECTION_CATEGORY=clean
+    SLOT_RU=ru_old
+    SLOT_RU_CAT=regional
+    PORT_RU=5059
+    REGIONAL_SAVED_ID=''
+    regional_apply_toggle 0 || exit 1
+    [ -z "$SLOT_RU" ] && [ "$REGIONAL_SAVED_ID" = ru_old ] || exit 2
+    regional_apply_toggle 1 || exit 3
+    [ "$SLOT_RU" = ru_old ] || exit 4
+    SLOT_RU=''
+    REGIONAL_SAVED_ID=''
+    regional_apply_toggle 1 || exit 5
+    [ "$SLOT_RU" = yandex_ru ] || exit 6
+    SLOT_1=''
+    if regional_apply_toggle 1; then exit 7; fi
+) || fail "independent regional control changed the profile or lost its selection"
+grep -Fq '"set_regional":{"enabled":0}' dns-manager-luci.sh || fail "regional RPC is not registered"
+grep -Fq "callRegional(enabled?1:0)" dns-manager-luci.sh || fail "regional control does not call the independent action"
+ok "regional control is independent and retains the selected resolver"
+
+# The RPC starts a background job and returns a result without waiting for
+# profile application; the final state remains readable after page reload.
+awk '/^job_start_regional\(\) \{/,/^}/' "$tmp/backend.sh" > "$tmp/regional_job.sh"
+(
+    set -eu
+    . "$tmp/regional_job.sh"
+    JOB_DIR="$tmp/regional-jobs"
+    mkdir -p "$JOB_DIR"
+    job_active() { return 1; }
+    job_prepare() { mkdir -p "$JOB_DIR/$1"; : > "$JOB_DIR/$1/state"; : > "$JOB_DIR/$1/output"; }
+    json_error() { return 1; }
+    json_quote() { printf '"%s"' "$1"; }
+    load_manager() { return 0; }
+    regional_apply_toggle() { printf '%s' "$1" > "$JOB_DIR/argument"; return 0; }
+    job_write() { printf '%s=%s\n' "$2" "$3" >> "$JOB_DIR/$1/state"; }
+    job_record_pid() { :; }
+    job_start_regional 1 > "$tmp/regional-reply"
+    wait
+    grep -Fq '"job":"regional"' "$tmp/regional-reply" || exit 1
+    grep -qx 'enabled=1' "$JOB_DIR/regional/state" || exit 2
+    grep -qx 'status=done' "$JOB_DIR/regional/state" || exit 3
+    [ "$(cat "$JOB_DIR/argument")" = 1 ] || exit 4
+) || fail "regional background job does not expose its result"
+ok "regional action runs in a resumable background job"
+
+# Exercise the actual LuCI callbacks for success and failure, not just their
+# presence in the generated JavaScript.
+awk '/^function setRegional\(enabled,root\)/,/^function applyProfile\(name,root\)/' "$tmp/common.js" | sed '$d' > "$tmp/regional-ui.js"
+REGIONAL_UI_JS="$tmp/regional-ui.js" node <<'NODE' || fail "regional UI does not report job result"
+const vm = require('vm'), fs = require('fs');
+const source = fs.readFileSync(process.env.REGIONAL_UI_JS, 'utf8');
+async function check(status, result, expected) {
+  let refreshes = 0;
+  const sandbox = {
+    state: {busy:false}, window: {dmState:{}, setTimeout},
+    renderProfiles: () => {}, refresh: () => { refreshes++; },
+    callRegional: () => Promise.resolve({ok:true,job:'regional'}),
+    callJob: () => Promise.resolve({ok:true,status,result,output:'Ошибка'}),
+    stripAnsi: x => x, withRpcError: (s,e) => s+String(e),
+    rootAlive: () => true
+  };
+  vm.createContext(sandbox);
+  vm.runInContext(source, sandbox);
+  sandbox.setRegional(true, {});
+  await new Promise(resolve => setTimeout(resolve, 20));
+  if (sandbox.state.busy || sandbox.state.regionalNoticeType !== expected || refreshes !== 1)
+    throw Error(JSON.stringify(sandbox.state));
+}
+Promise.all([check('done','ok','ok'),check('failed','fail','error')])
+  .catch(e => { console.error(e); process.exitCode=1; });
+NODE
+ok "regional LuCI action reports success and failure inline"
+
+# The bypass shortcut must preserve both an active and an empty regional slot.
+awk '/^quick_max_bypass\(\) \{/,/^}/' dns-manager.sh > "$tmp/quick-regional.sh"
+(
+    . "$tmp/quick-regional.sh"
+    C_WHITE='' C_NC='' C_GREEN=''
+    menu_header() { :; }
+    info_msg() { :; }
+    auto_fill_slots() { SLOT_RU=unexpected; SLOT_RU_CAT=regional; PORT_RU=9999; }
+    sync_regional_dns_state() { :; }
+    apply_settings() { [ "$SLOT_RU" = "$EXPECT_RU" ] && [ "$PORT_RU" = "$EXPECT_PORT" ]; }
+    PROFILE_FULL_TEST=1
+    BOOTSTRAP_DNS_ALL=1.1.1.1
+    HYBRID_PORT_1=5053 HYBRID_PORT_2=5054 HYBRID_PORT_3=5055
+    HYBRID_PORT_4=5056 HYBRID_PORT_5=5057 HYBRID_PORT_6=5058
+    SLOT_RU=ru_old SLOT_RU_CAT=regional PORT_RU=5059 EXPECT_RU=ru_old EXPECT_PORT=5059
+    quick_max_bypass >/dev/null || exit 1
+    SLOT_RU='' SLOT_RU_CAT=regional PORT_RU='' EXPECT_RU='' EXPECT_PORT=''
+    quick_max_bypass >/dev/null || exit 2
+) || fail "bypass profile changed regional DNS selection"
+ok "bypass profile preserves active and disabled regional DNS"
+
+# A failed regional toggle must roll back rather than repair or replace slots.
+awk '/^verify_after_apply_with_repair\(\) \{/,/^}/' dns-manager.sh > "$tmp/regional_verify.sh"
+(
+    . "$tmp/regional_verify.sh"
+    REGIONAL_TOGGLE_APPLY=1
+    verify_after_apply() { return 1; }
+    replace_failed_slot_from_test() { : > "$tmp/regional-replaced"; return 0; }
+    if verify_after_apply_with_repair; then exit 1; fi
+    [ ! -e "$tmp/regional-replaced" ] || exit 2
+) || fail "regional toggle replaced DNS after a verification failure"
+ok "regional verification failure does not replace other DNS slots"
+
+# Profile verification must not silently prune a failing regional slot.
+awk '/^profile_prune_failed_slots\(\) \{/,/^}/' dns-manager.sh > "$tmp/profile-regional-prune.sh"
+(
+    . "$tmp/profile-regional-prune.sh"
+    TMP_DIR="$tmp"
+    SLOT_1=general SLOT_2='' SLOT_3='' SLOT_4='' SLOT_5='' SLOT_6='' SLOT_RU=ru_old
+    PORT_1=5053 PORT_RU=5059
+    listener_port_exists() { return 0; }
+    local_dns_query_ok() { [ "$1" != 5059 ]; }
+    slot_set() { : > "$tmp/regional-pruned"; }
+    if profile_prune_failed_slots; then exit 1; fi
+    [ ! -e "$tmp/regional-pruned" ] || exit 2
+) || fail "profile removed the independent regional DNS after a failed check"
+ok "failed regional DNS causes profile rollback instead of changing the selection"
 
 # A failed transaction must reload the just-restored manager configuration into memory.
 awk '/^tx_restore_on_failure\(\) \{/,/^tx_commit\(\) \{/' dns-manager.sh | sed '$d' > "$tmp/tx_restore_on_failure.sh"

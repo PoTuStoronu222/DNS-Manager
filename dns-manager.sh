@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.91"
+VERSION="3.92"
 # 3.86: make LuCI the primary interface and preserve external DNS on removal.
 # 3.85: revalidate Watchdog settings before recovery.
 # 3.84: cap DNS catalog test concurrency by total RAM on small routers.
@@ -853,6 +853,7 @@ esac
 : "${SLOT_1:=}"; : "${SLOT_2:=}"; : "${SLOT_3:=}"; : "${SLOT_4:=}"; : "${SLOT_5:=}"; : "${SLOT_6:=}"
 : "${SLOT_1_DOMAINS:=}"; : "${SLOT_2_DOMAINS:=}"; : "${SLOT_3_DOMAINS:=}"; : "${SLOT_4_DOMAINS:=}"; : "${SLOT_5_DOMAINS:=}"; : "${SLOT_6_DOMAINS:=}"
 : "${SLOT_RU:=}"
+: "${REGIONAL_SAVED_ID:=}"
 : "${SLOT_1_CAT:=}"; : "${SLOT_2_CAT:=}"; : "${SLOT_3_CAT:=}"; : "${SLOT_4_CAT:=}"; : "${SLOT_5_CAT:=}"; : "${SLOT_6_CAT:=}"
 : "${SLOT_RU_CAT:=}"
 : "${PORT_1:=}"; : "${PORT_2:=}"; : "${PORT_3:=}"; : "${PORT_4:=}"; : "${PORT_5:=}"; : "${PORT_6:=}"
@@ -929,6 +930,7 @@ shell_quote() {
 }
 save_config() {
     [ "${TX_ACTIVE:-0}" = 1 ] && [ "${DEFER_CONFIG_SAVE:-0}" = 1 ] && return 0
+    [ -n "${SLOT_RU:-}" ] && REGIONAL_SAVED_ID="$SLOT_RU"
 sync_regional_dns_state
 mkdir -p "$CFG_DIR" 2>/dev/null || return 1
 _cfg_tmp="$(mktemp "${CONFIG_FILE}.tmp.XXXXXX" 2>/dev/null)" || return 1
@@ -947,6 +949,7 @@ SLOT_5_DOMAINS=$(shell_quote "$SLOT_5_DOMAINS")
 SLOT_6=$(shell_quote "$SLOT_6")
 SLOT_6_DOMAINS=$(shell_quote "$SLOT_6_DOMAINS")
 SLOT_RU=$(shell_quote "$SLOT_RU")
+REGIONAL_SAVED_ID=$(shell_quote "${REGIONAL_SAVED_ID:-}")
 SLOT_1_CAT=$(shell_quote "$SLOT_1_CAT")
 SLOT_2_CAT=$(shell_quote "$SLOT_2_CAT")
 SLOT_3_CAT=$(shell_quote "$SLOT_3_CAT")
@@ -3606,6 +3609,10 @@ profile_prune_failed_slots() {
         [ -n "$_id" ] || continue
         eval "_port=\$PORT_$_slot"
         [ -n "$_port" ] || {
+            if [ "$_slot" = RU ]; then
+                rm -f "$_bad"
+                return 1
+            fi
             printf "%s\n" "$_slot" >> "$_bad"
             _bad_n=$((_bad_n+1))
             continue
@@ -3614,6 +3621,10 @@ profile_prune_failed_slots() {
         if listener_port_exists "$_port" && local_dns_query_ok "$_port" "$_domain"; then
             _live_n=$((_live_n+1))
         else
+            if [ "$_slot" = RU ]; then
+                rm -f "$_bad"
+                return 1
+            fi
             printf "%s\n" "$_slot" >> "$_bad"
             _bad_n=$((_bad_n+1))
         fi
@@ -3647,6 +3658,10 @@ profile_prune_failed_slots() {
     return 0
 }
 verify_after_apply_with_repair() {
+    if [ "${REGIONAL_TOGGLE_APPLY:-0}" = 1 ]; then
+        verify_after_apply
+        return $?
+    fi
     if [ "$PROFILE_APPLY" = 1 ] 2>/dev/null; then
         if verify_after_apply; then
             return 0
@@ -4319,6 +4334,17 @@ firewall_backend_require() {
     err_msg "Не удалось однозначно определить активный firewall backend (fw4/fw3). Firewall-зависимые изменения не применяются."
     return 1
 }
+# A profile may spend time testing candidates before it acquires the mutation
+# lock. Re-read the independent regional choice after acquiring it, so a
+# regional toggle completed during that test is not overwritten.
+reload_regional_for_profile() {
+    [ -f "$CONFIG_FILE" ] || return 0
+    SLOT_RU="$(SLOT_RU=''; . "$CONFIG_FILE" || exit 1; printf '%s' "$SLOT_RU")" || return 1
+    PORT_RU="$(PORT_RU=''; . "$CONFIG_FILE" || exit 1; printf '%s' "$PORT_RU")" || return 1
+    SLOT_RU_CAT="$(SLOT_RU_CAT=''; . "$CONFIG_FILE" || exit 1; printf '%s' "$SLOT_RU_CAT")" || return 1
+    REGIONAL_SAVED_ID="$(REGIONAL_SAVED_ID=''; . "$CONFIG_FILE" || exit 1; printf '%s' "$REGIONAL_SAVED_ID")" || return 1
+    sync_regional_dns_state
+}
 apply_settings() {
     if [ "${CORE_ONLY:-0}" = 1 ]; then
         apply_wait_message "Применяю выбранную конфигурацию DNS"
@@ -4327,7 +4353,12 @@ apply_settings() {
     fi
     acquire_mutation_lock || return 1
     _rc=0
-    install_missing_dependencies || _rc=$?
+    if [ "${PROFILE_APPLY:-0}" = 1 ]; then
+        reload_regional_for_profile || _rc=$?
+    fi
+    if [ "$_rc" -eq 0 ]; then
+        install_missing_dependencies || _rc=$?
+    fi
     if [ "$_rc" -eq 0 ]; then
         _apply_settings_impl "$@" || _rc=$?
     fi
@@ -5111,14 +5142,12 @@ clean|security|privacy|adblock|family|all)
     _profile_old_ru_cat="${SLOT_RU_CAT:-regional}"
 
     _profile_old_tld="${TLD_RU_ENABLED:-0}"
+    _profile_old_port_ru="${PORT_RU:-}"
     # Every ready-made category uses the same Hybrid DNS engine.
-    # The category changes only which DNS candidates are selected; Hybrid remains
-    # the core layout with general slots plus regional RU routing.
+    # The category changes only which general DNS candidates are selected.
     DNS_PROFILE="hybrid"
     DNS_SELECTION_MODE="profile"
     DNS_SELECTION_CATEGORY="$goal"
-    TLD_RU_ENABLED=1
-    TLD_SPLIT=1
     BALANCER_ENABLED=1
     PORT_1="$HYBRID_PORT_1"; PORT_2="$HYBRID_PORT_2"; PORT_3="$HYBRID_PORT_3"
     PORT_4="$HYBRID_PORT_4"; PORT_5="$HYBRID_PORT_5"; PORT_6="$HYBRID_PORT_6"
@@ -5129,18 +5158,12 @@ clean|security|privacy|adblock|family|all)
         # and would reselect the default bypass pool.
         _profile_old_stage_skip="${HYBRID_STAGE_SKIP:-0}"
         HYBRID_STAGE_SKIP=1
-        # On first profile selection there may be no prior RU slot. In that
-        # case keep the RU server selected by auto_fill_slots(). Only restore
-        # the old RU state when it actually existed before this profile change.
-        if [ -n "$_profile_old_ru" ] &&
-           awk -F'|' -v id="$_profile_old_ru" '$1==id && $2=="regional" && $5=="OK" && $4 ~ /^[0-9]+$/ {found=1; exit} END {exit !found}' "$TEST_RESULTS" 2>/dev/null; then
-            SLOT_RU="$_profile_old_ru"
-            SLOT_RU_CAT="$_profile_old_ru_cat"
-            # Hybrid core always keeps regional routing enabled for every category.
-            TLD_RU_ENABLED=1
-            TLD_SPLIT=1
-            PORT_RU="$HYBRID_PORT_RU"
-        fi
+        # Regional routing is independent of profile selection.
+        SLOT_RU="$_profile_old_ru"
+        SLOT_RU_CAT="$_profile_old_ru_cat"
+        TLD_RU_ENABLED="$_profile_old_tld"
+        TLD_SPLIT="$_profile_old_tld"
+        PORT_RU="$_profile_old_port_ru"
         CORE_ONLY=1
         apply_settings
         _profile_rc=$?
@@ -5266,23 +5289,7 @@ while [ "$i" -le 6 ]; do
     slot_cat_set "$i" "bypass" || return 1
     i=$((i+1))
 done
-_ru1=""
-_yandex_ok="$(awk -F'|' 'NF>=5 && $1=="yandex_ru" && $2=="regional" && $5=="OK" && $4 ~ /^[0-9]+$/ {print "yes";exit}' "$TEST_RESULTS" 2>/dev/null)"
-if [ "$_yandex_ok" = yes ]; then
-    SLOT_RU="yandex_ru"
-    SLOT_RU_CAT="regional"
-    _ru1="yandex_ru"
-else
-    _ru1="$(awk -F'|' 'NF>=5 && $2=="regional" && $5=="OK" && $4 ~ /^[0-9]+$/ {print $1;exit}' "$TEST_RESULTS" 2>/dev/null)"
-    if [ -n "$_ru1" ]; then
-        SLOT_RU="$_ru1"
-        SLOT_RU_CAT="regional"
-    else
-        warn_msg "Нет проверенных региональных DNS. RU-сегмент оставлен без нового назначения."
-        SLOT_RU=""
-        SLOT_RU_CAT="regional"
-    fi
-fi
+# This selection changes only the six general DNS slots.
 return 0
 }
 # ==========================================
@@ -6249,10 +6256,11 @@ bootstrap_install_dependencies() {
 # ==========================================
 # ==========================================
 quick_max_bypass() {
+local _quick_old_ru="${SLOT_RU:-}" _quick_old_ru_cat="${SLOT_RU_CAT:-regional}" _quick_old_ru_port="${PORT_RU:-}"
 menu_header "МАКСИМАЛЬНЫЙ ОБХОД"
 printf "${C_WHITE}В этом пункте:${C_NC}\n"
 printf "  ${C_GREEN}✓${C_NC} до 6 рабочих DNS-серверов (можно начать с одного)\n"
-printf "  ${C_GREEN}✓${C_NC} отдельный DNS для .ru / .su / .рф\n"
+printf "  ${C_GREEN}✓${C_NC} региональный DNS остаётся без изменения\n"
 printf "  ${C_GREEN}✓${C_NC} автоматическая замена неработающих серверов\n"
 printf "  ${C_GREEN}✓${C_NC} одновременная работа выбранных DNS\n"
 printf "  ${C_GREEN}✓${C_NC} проверка после настройки\n"
@@ -6273,13 +6281,15 @@ DNS_SELECTION_CATEGORY="bypass"
 SLOT_1=""; SLOT_2=""; SLOT_3=""; SLOT_4=""; SLOT_5=""; SLOT_6=""
 SLOT_1_CAT="bypass"; SLOT_2_CAT="bypass"; SLOT_3_CAT="bypass"
 SLOT_4_CAT="bypass"; SLOT_5_CAT="bypass"; SLOT_6_CAT="bypass"
-TLD_RU_ENABLED=1
-TLD_SPLIT=1
 BALANCER_ENABLED=1
 BOOTSTRAP_DNS="$BOOTSTRAP_DNS_ALL"
 PORT_1="$HYBRID_PORT_1"; PORT_2="$HYBRID_PORT_2"; PORT_3="$HYBRID_PORT_3"
 PORT_4="$HYBRID_PORT_4"; PORT_5="$HYBRID_PORT_5"; PORT_6="$HYBRID_PORT_6"
 auto_fill_slots bypass || return 1
+SLOT_RU="$_quick_old_ru"
+SLOT_RU_CAT="$_quick_old_ru_cat"
+PORT_RU="$_quick_old_ru_port"
+sync_regional_dns_state
 HYBRID_STAGE_SKIP=1
 CORE_ONLY=1
 apply_settings
@@ -6287,6 +6297,41 @@ _rc=$?
 CORE_ONLY=0
 HYBRID_STAGE_SKIP=0
 return "$_rc"
+}
+
+regional_apply_toggle() {
+    local _enabled _id _cat _rc
+    _enabled="$1"
+    case "$_enabled" in 0|1) ;; *) return 1;; esac
+    acquire_mutation_lock || return 1
+    if ! load_config; then release_mutation_lock; return 1; fi
+    if [ -z "${SLOT_1:-}${SLOT_2:-}${SLOT_3:-}${SLOT_4:-}${SLOT_5:-}${SLOT_6:-}" ]; then
+        err_msg "Сначала примените основной DNS-профиль."
+        release_mutation_lock
+        return 1
+    fi
+    if [ "$_enabled" = 1 ]; then
+        _id="${SLOT_RU:-${REGIONAL_SAVED_ID:-yandex_ru}}"
+        _cat="$(dns_cat "$_id" 2>/dev/null || true)"
+        if [ "$_cat" != regional ]; then
+            err_msg "Региональный DNS не найден в каталоге. Выберите его в слотах."
+            release_mutation_lock
+            return 1
+        fi
+        SLOT_RU="$_id"
+        SLOT_RU_CAT=regional
+        REGIONAL_SAVED_ID="$_id"
+    else
+        [ -n "${SLOT_RU:-}" ] && REGIONAL_SAVED_ID="$SLOT_RU"
+        SLOT_RU=""
+        SLOT_RU_CAT=regional
+        PORT_RU=""
+    fi
+    sync_regional_dns_state
+    CORE_ONLY=1 HYBRID_STAGE_SKIP=1 REGIONAL_TOGGLE_APPLY=1 SILENT_APPLY=1 _apply_settings_impl
+    _rc=$?
+    release_mutation_lock
+    return "$_rc"
 }
 # ==========================================
 # ==========================================
