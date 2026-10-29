@@ -2895,6 +2895,38 @@ grep -Fq '"set_regional":{"enabled":0}' dns-manager-luci.sh || fail "regional RP
 grep -Fq "callRegional(enabled?1:0)" dns-manager-luci.sh || fail "regional control does not call the independent action"
 ok "regional control is independent and retains the selected resolver"
 
+# The bypass shortcut must preserve both an active and an empty regional slot.
+awk '/^quick_max_bypass\(\) \{/,/^}/' dns-manager.sh > "$tmp/quick-regional.sh"
+(
+    . "$tmp/quick-regional.sh"
+    menu_header() { :; }
+    info_msg() { :; }
+    auto_fill_slots() { SLOT_RU=unexpected; SLOT_RU_CAT=regional; PORT_RU=9999; }
+    sync_regional_dns_state() { :; }
+    apply_settings() { [ "$SLOT_RU" = "$EXPECT_RU" ] && [ "$PORT_RU" = "$EXPECT_PORT" ]; }
+    PROFILE_FULL_TEST=1
+    BOOTSTRAP_DNS_ALL=1.1.1.1
+    HYBRID_PORT_1=5053 HYBRID_PORT_2=5054 HYBRID_PORT_3=5055
+    HYBRID_PORT_4=5056 HYBRID_PORT_5=5057 HYBRID_PORT_6=5058
+    SLOT_RU=ru_old SLOT_RU_CAT=regional PORT_RU=5059 EXPECT_RU=ru_old EXPECT_PORT=5059
+    quick_max_bypass >/dev/null || exit 1
+    SLOT_RU='' SLOT_RU_CAT=regional PORT_RU='' EXPECT_RU='' EXPECT_PORT=''
+    quick_max_bypass >/dev/null || exit 2
+) || fail "bypass profile changed regional DNS selection"
+ok "bypass profile preserves active and disabled regional DNS"
+
+# A failed regional toggle must roll back rather than repair or replace slots.
+awk '/^verify_after_apply_with_repair\(\) \{/,/^}/' dns-manager.sh > "$tmp/regional_verify.sh"
+(
+    . "$tmp/regional_verify.sh"
+    REGIONAL_TOGGLE_APPLY=1
+    verify_after_apply() { return 1; }
+    replace_failed_slot_from_test() { : > "$tmp/regional-replaced"; return 0; }
+    if verify_after_apply_with_repair; then exit 1; fi
+    [ ! -e "$tmp/regional-replaced" ] || exit 2
+) || fail "regional toggle replaced DNS after a verification failure"
+ok "regional verification failure does not replace other DNS slots"
+
 # A failed transaction must reload the just-restored manager configuration into memory.
 awk '/^tx_restore_on_failure\(\) \{/,/^tx_commit\(\) \{/' dns-manager.sh | sed '$d' > "$tmp/tx_restore_on_failure.sh"
 [ -s "$tmp/tx_restore_on_failure.sh" ] || fail "transaction rollback helper extraction"
