@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.94"
+VERSION="3.95"
 # 3.86: make LuCI the primary interface and preserve external DNS on removal.
 # 3.85: revalidate Watchdog settings before recovery.
 # 3.84: cap DNS catalog test concurrency by total RAM on small routers.
@@ -6445,8 +6445,19 @@ regional_apply_toggle() {
     fi
     return "$_rc"
 }
+regional_reconcile_with_canaries() {
+    local _canaries _rc_sec _canary
+    _canaries="$1"
+    reconcile_dnsmasq || return 1
+    [ -n "$_canaries" ] || return 0
+    _rc_sec="$(get_dnsmasq_section)" || return 1
+    for _canary in $_canaries; do
+        exact_list_has "dhcp.$_rc_sec.server" "$_canary" || uci add_list "dhcp.$_rc_sec.server=$_canary" || return 1
+    done
+    uci commit dhcp || return 1
+}
 regional_refresh_provider() {
-    local _new _old _rc _sec _actual _expected
+    local _new _old _rc _sec _actual _expected _canaries _servers
     acquire_mutation_lock || return 1
     load_config || { release_mutation_lock; return 1; }
     [ "${REGIONAL_MODE:-}" = isp ] || { release_mutation_lock; return 0; }
@@ -6459,7 +6470,9 @@ regional_refresh_provider() {
     _sec="$(get_dnsmasq_section)"
     _expected="$(watchdog_expected_servers)"
     _actual="$TMP_DIR/regional-actual-$$"
-    uci -q get "dhcp.$_sec.server" 2>/dev/null | tr ' ' '\n' | sed -e '/^$/d' -e '\|^/mask\.icloud\.com/$|d' -e '\|^/mask-h2\.icloud\.com/$|d' -e '\|^/use-application-dns\.net/$|d' | sort -u > "$_actual"
+    _servers="$(uci -q get "dhcp.$_sec.server" 2>/dev/null | tr ' ' '\n')"
+    _canaries="$(printf '%s\n' "$_servers" | grep -E '^/(mask\.icloud\.com|mask-h2\.icloud\.com|use-application-dns\.net)/$' | sort -u | tr '\n' ' ')"
+    printf '%s\n' "$_servers" | sed -e '/^$/d' -e '\|^/mask\.icloud\.com/$|d' -e '\|^/mask-h2\.icloud\.com/$|d' -e '\|^/use-application-dns\.net/$|d' | sort -u > "$_actual"
     if ! cmp -s "$_actual" "$_expected"; then
         rm -f "$_actual" "$_expected"
         log_msg "DNS провайдера не обновлён: обнаружены сторонние изменения dnsmasq."
@@ -6470,11 +6483,11 @@ regional_refresh_provider() {
     _old="${REGIONAL_ISP_IPS:-}"
     REGIONAL_ISP_IPS="$_new"
     _rc=0
-    reconcile_dnsmasq && APPLY_OUTPUT_QUIET=1 dnsmasq_restart_checked && save_config && refresh_device_dns_runtime || _rc=1
+    regional_reconcile_with_canaries "$_canaries" && APPLY_OUTPUT_QUIET=1 dnsmasq_restart_checked && save_config && refresh_device_dns_runtime || _rc=1
     if [ "$_rc" != 0 ]; then
         REGIONAL_ISP_IPS="$_old"
         save_config >/dev/null 2>&1 || true
-        reconcile_dnsmasq >/dev/null 2>&1 && /etc/init.d/dnsmasq restart >/dev/null 2>&1 || true
+        regional_reconcile_with_canaries "$_canaries" >/dev/null 2>&1 && /etc/init.d/dnsmasq restart >/dev/null 2>&1 || true
         refresh_device_dns_runtime >/dev/null 2>&1 || true
         log_msg "Не удалось обновить DNS провайдера; предыдущие адреса восстановлены, где это возможно."
     else
