@@ -1674,6 +1674,8 @@ steer_dns_upstream_ready() {
 # A narrowly scoped repair for the proxy's own dnsmasq backup. Run inside
 # a subshell: many legacy helpers use global temporary variables.
 steer_restore_proxy_backup() (
+    _desired_force="${1:-1}"
+    case "$_desired_force" in 0|1) ;; *) exit 1;; esac
     [ -n "${SLOT_RU:-}" ] && [ -n "${PORT_RU:-}" ] || exit 1
     case "$PORT_RU" in *[!0-9]*|'') exit 1;; esac
     [ -x /etc/init.d/https-dns-proxy ] || exit 1
@@ -1712,7 +1714,7 @@ steer_restore_proxy_backup() (
     _ok=0
     if /etc/init.d/https-dns-proxy stop >/dev/null 2>&1 &&
        steer_dns_upstream_ready &&
-       sync_hdp_force_contract 1 &&
+       sync_hdp_force_contract "$_desired_force" &&
        /etc/init.d/https-dns-proxy start >/dev/null 2>&1 &&
        sync_dns_manager_canaries &&
        steer_dns_upstream_ready; then
@@ -3218,6 +3220,12 @@ apply_dns_force() {
 
 remove_dns_force() {
     detect_steer_dns_path >/dev/null 2>&1 || true
+    _dns_section="$(get_dnsmasq_section)"
+    if [ "$(uci -q get https-dns-proxy.config.dnsmasq_config_update 2>/dev/null)" = '*' ] &&
+       uci -q get "dhcp.$_dns_section.doh_backup_server" >/dev/null 2>&1; then
+        steer_restore_proxy_backup 0
+        return $?
+    fi
     if [ "${STEER_DNS_ACTIVE:-0}" = 1 ]; then
         sync_hdp_force_contract 0
         return $?

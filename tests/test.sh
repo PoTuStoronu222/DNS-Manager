@@ -1654,6 +1654,7 @@ awk '/^steer_restore_proxy_backup\(\) \(/ { capture=1 } capture { print } captur
     sync_dns_manager_canaries() { [ "$FAIL_AT" != canary ]; }
     sync_hdp_force_contract() {
         printf '%s\n' sync >> "$MOCK_DIR/log"
+        printf '%s' "$1" > "$MOCK_DIR/want"
         [ "$FAIL_AT" != sync ] || return 1
         printf changed > "$MOCK_DIR/proxy"
     }
@@ -1694,6 +1695,9 @@ awk '/^steer_restore_proxy_backup\(\) \(/ { capture=1 } capture { print } captur
     printf '%s' '127.0.0.1#5053 /ru/127.0.0.1#5059 127.0.0.1#5059' > "$MOCK_DIR/current"
     steer_restore_proxy_backup || exit 7
     grep -qx sync "$MOCK_DIR/log" || exit 8
+    printf '%s' '127.0.0.1#5053 /ru/127.0.0.1#5059 127.0.0.1#5059' > "$MOCK_DIR/current"
+    steer_restore_proxy_backup 0 || exit 11
+    [ "$(cat "$MOCK_DIR/want")" = 0 ] || exit 12
     STEER_DNS_ACTIVE=1
     printf '%s' '8.8.8.8' > "$MOCK_DIR/backup"
     : > "$MOCK_DIR/log"
