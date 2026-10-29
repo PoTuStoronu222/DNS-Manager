@@ -4334,6 +4334,17 @@ firewall_backend_require() {
     err_msg "Не удалось однозначно определить активный firewall backend (fw4/fw3). Firewall-зависимые изменения не применяются."
     return 1
 }
+# A profile may spend time testing candidates before it acquires the mutation
+# lock. Re-read the independent regional choice after acquiring it, so a
+# regional toggle completed during that test is not overwritten.
+reload_regional_for_profile() {
+    [ -f "$CONFIG_FILE" ] || return 0
+    SLOT_RU="$(SLOT_RU=''; . "$CONFIG_FILE" || exit 1; printf '%s' "$SLOT_RU")" || return 1
+    PORT_RU="$(PORT_RU=''; . "$CONFIG_FILE" || exit 1; printf '%s' "$PORT_RU")" || return 1
+    SLOT_RU_CAT="$(SLOT_RU_CAT=''; . "$CONFIG_FILE" || exit 1; printf '%s' "$SLOT_RU_CAT")" || return 1
+    REGIONAL_SAVED_ID="$(REGIONAL_SAVED_ID=''; . "$CONFIG_FILE" || exit 1; printf '%s' "$REGIONAL_SAVED_ID")" || return 1
+    sync_regional_dns_state
+}
 apply_settings() {
     if [ "${CORE_ONLY:-0}" = 1 ]; then
         apply_wait_message "Применяю выбранную конфигурацию DNS"
@@ -4342,7 +4353,12 @@ apply_settings() {
     fi
     acquire_mutation_lock || return 1
     _rc=0
-    install_missing_dependencies || _rc=$?
+    if [ "${PROFILE_APPLY:-0}" = 1 ]; then
+        reload_regional_for_profile || _rc=$?
+    fi
+    if [ "$_rc" -eq 0 ]; then
+        install_missing_dependencies || _rc=$?
+    fi
     if [ "$_rc" -eq 0 ]; then
         _apply_settings_impl "$@" || _rc=$?
     fi

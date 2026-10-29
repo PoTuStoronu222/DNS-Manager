@@ -2857,6 +2857,25 @@ chmod +x "$tmp/apply_profile_now_ru_runner.sh"
 "$tmp/apply_profile_now_ru_runner.sh" "$tmp" disabled "$tmp/apply_profile_now_ru.sh" || fail "profile enabled the regional DNS without user action"
 ok "profile preserves the regional DNS selection even when disabled or its test fails"
 
+# A profile may finish its DNS tests after another client changes the regional
+# setting. The profile re-reads that setting only after acquiring the lock.
+awk '/^reload_regional_for_profile\(\) \{/,/^}/' dns-manager.sh > "$tmp/regional-reload.sh"
+(
+    set -eu
+    . "$tmp/regional-reload.sh"
+    CONFIG_FILE="$tmp/regional-concurrent.conf"
+    printf "%s\n" "SLOT_RU=''" "PORT_RU=''" "SLOT_RU_CAT='regional'" "REGIONAL_SAVED_ID='ru_new'" > "$CONFIG_FILE"
+    SLOT_RU=ru_old PORT_RU=5059 SLOT_RU_CAT=regional REGIONAL_SAVED_ID=ru_old
+    sync_regional_dns_state() { [ -z "$SLOT_RU" ]; }
+    reload_regional_for_profile || exit 1
+    [ -z "$SLOT_RU" ] && [ -z "$PORT_RU" ] && [ "$REGIONAL_SAVED_ID" = ru_new ] || exit 2
+) || fail "profile did not preserve a concurrent regional change"
+awk '/^apply_settings\(\) \{/,/^}/' dns-manager.sh > "$tmp/regional-apply-lock.sh"
+_lock_line="$(grep -n 'acquire_mutation_lock' "$tmp/regional-apply-lock.sh" | head -n1 | cut -d: -f1)"
+_reload_line="$(grep -n 'reload_regional_for_profile' "$tmp/regional-apply-lock.sh" | head -n1 | cut -d: -f1)"
+[ -n "$_lock_line" ] && [ -n "$_reload_line" ] && [ "$_lock_line" -lt "$_reload_line" ] || fail "regional state was read before acquiring the profile lock"
+ok "profile preserves a regional change made while profile tests were running"
+
 # Regional control must preserve the current profile and remember the user's
 # resolver across disable/enable, without silently changing general slots.
 awk '/^regional_apply_toggle\(\) \{/,/^}/' dns-manager.sh > "$tmp/regional_toggle.sh"
