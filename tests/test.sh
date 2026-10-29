@@ -2895,10 +2895,36 @@ grep -Fq '"set_regional":{"enabled":0}' dns-manager-luci.sh || fail "regional RP
 grep -Fq "callRegional(enabled?1:0)" dns-manager-luci.sh || fail "regional control does not call the independent action"
 ok "regional control is independent and retains the selected resolver"
 
+# The RPC starts a background job and returns a result without waiting for
+# profile application; the final state remains readable after page reload.
+awk '/^job_start_regional\(\) \{/,/^}/' "$tmp/backend.sh" > "$tmp/regional_job.sh"
+(
+    set -eu
+    . "$tmp/regional_job.sh"
+    JOB_DIR="$tmp/regional-jobs"
+    mkdir -p "$JOB_DIR"
+    job_active() { return 1; }
+    job_prepare() { mkdir -p "$JOB_DIR/$1"; : > "$JOB_DIR/$1/state"; : > "$JOB_DIR/$1/output"; }
+    json_error() { return 1; }
+    json_quote() { printf '"%s"' "$1"; }
+    load_manager() { return 0; }
+    regional_apply_toggle() { printf '%s' "$1" > "$JOB_DIR/argument"; return 0; }
+    job_write() { printf '%s=%s\n' "$2" "$3" >> "$JOB_DIR/$1/state"; }
+    job_record_pid() { :; }
+    job_start_regional 1 > "$tmp/regional-reply"
+    wait
+    grep -Fq '"job":"regional"' "$tmp/regional-reply" || exit 1
+    grep -qx 'enabled=1' "$JOB_DIR/regional/state" || exit 2
+    grep -qx 'status=done' "$JOB_DIR/regional/state" || exit 3
+    [ "$(cat "$JOB_DIR/argument")" = 1 ] || exit 4
+) || fail "regional background job does not expose its result"
+ok "regional action runs in a resumable background job"
+
 # The bypass shortcut must preserve both an active and an empty regional slot.
 awk '/^quick_max_bypass\(\) \{/,/^}/' dns-manager.sh > "$tmp/quick-regional.sh"
 (
     . "$tmp/quick-regional.sh"
+    C_WHITE='' C_NC='' C_GREEN=''
     menu_header() { :; }
     info_msg() { :; }
     auto_fill_slots() { SLOT_RU=unexpected; SLOT_RU_CAT=regional; PORT_RU=9999; }
@@ -2926,6 +2952,21 @@ awk '/^verify_after_apply_with_repair\(\) \{/,/^}/' dns-manager.sh > "$tmp/regio
     [ ! -e "$tmp/regional-replaced" ] || exit 2
 ) || fail "regional toggle replaced DNS after a verification failure"
 ok "regional verification failure does not replace other DNS slots"
+
+# Profile verification must not silently prune a failing regional slot.
+awk '/^profile_prune_failed_slots\(\) \{/,/^}/' dns-manager.sh > "$tmp/profile-regional-prune.sh"
+(
+    . "$tmp/profile-regional-prune.sh"
+    TMP_DIR="$tmp"
+    SLOT_1=general SLOT_2='' SLOT_3='' SLOT_4='' SLOT_5='' SLOT_6='' SLOT_RU=ru_old
+    PORT_1=5053 PORT_RU=5059
+    listener_port_exists() { return 0; }
+    local_dns_query_ok() { [ "$1" != 5059 ]; }
+    slot_set() { : > "$tmp/regional-pruned"; }
+    if profile_prune_failed_slots; then exit 1; fi
+    [ ! -e "$tmp/regional-pruned" ] || exit 2
+) || fail "profile removed the independent regional DNS after a failed check"
+ok "failed regional DNS causes profile rollback instead of changing the selection"
 
 # A failed transaction must reload the just-restored manager configuration into memory.
 awk '/^tx_restore_on_failure\(\) \{/,/^tx_commit\(\) \{/' dns-manager.sh | sed '$d' > "$tmp/tx_restore_on_failure.sh"
