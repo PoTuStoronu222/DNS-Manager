@@ -5128,13 +5128,10 @@ clean|security|privacy|adblock|family|all)
     _profile_old_tld="${TLD_RU_ENABLED:-0}"
     _profile_old_port_ru="${PORT_RU:-}"
     # Every ready-made category uses the same Hybrid DNS engine.
-    # The category changes only which DNS candidates are selected; Hybrid remains
-    # the core layout with general slots plus regional RU routing.
+    # The category changes only which general DNS candidates are selected.
     DNS_PROFILE="hybrid"
     DNS_SELECTION_MODE="profile"
     DNS_SELECTION_CATEGORY="$goal"
-    TLD_RU_ENABLED=1
-    TLD_SPLIT=1
     BALANCER_ENABLED=1
     PORT_1="$HYBRID_PORT_1"; PORT_2="$HYBRID_PORT_2"; PORT_3="$HYBRID_PORT_3"
     PORT_4="$HYBRID_PORT_4"; PORT_5="$HYBRID_PORT_5"; PORT_6="$HYBRID_PORT_6"
@@ -6247,7 +6244,7 @@ local _quick_old_ru="${SLOT_RU:-}" _quick_old_ru_cat="${SLOT_RU_CAT:-regional}" 
 menu_header "МАКСИМАЛЬНЫЙ ОБХОД"
 printf "${C_WHITE}В этом пункте:${C_NC}\n"
 printf "  ${C_GREEN}✓${C_NC} до 6 рабочих DNS-серверов (можно начать с одного)\n"
-printf "  ${C_GREEN}✓${C_NC} отдельный DNS для .ru / .su / .рф\n"
+printf "  ${C_GREEN}✓${C_NC} региональный DNS остаётся без изменения\n"
 printf "  ${C_GREEN}✓${C_NC} автоматическая замена неработающих серверов\n"
 printf "  ${C_GREEN}✓${C_NC} одновременная работа выбранных DNS\n"
 printf "  ${C_GREEN}✓${C_NC} проверка после настройки\n"
@@ -6268,8 +6265,6 @@ DNS_SELECTION_CATEGORY="bypass"
 SLOT_1=""; SLOT_2=""; SLOT_3=""; SLOT_4=""; SLOT_5=""; SLOT_6=""
 SLOT_1_CAT="bypass"; SLOT_2_CAT="bypass"; SLOT_3_CAT="bypass"
 SLOT_4_CAT="bypass"; SLOT_5_CAT="bypass"; SLOT_6_CAT="bypass"
-TLD_RU_ENABLED=1
-TLD_SPLIT=1
 BALANCER_ENABLED=1
 BOOTSTRAP_DNS="$BOOTSTRAP_DNS_ALL"
 PORT_1="$HYBRID_PORT_1"; PORT_2="$HYBRID_PORT_2"; PORT_3="$HYBRID_PORT_3"
