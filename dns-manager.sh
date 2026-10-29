@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.93"
+VERSION="3.94"
 # 3.86: make LuCI the primary interface and preserve external DNS on removal.
 # 3.85: revalidate Watchdog settings before recovery.
 # 3.84: cap DNS catalog test concurrency by total RAM on small routers.
@@ -3092,6 +3092,7 @@ normalize_ownership_snapshot() {
     return 0
 }
 dnsmasq_manager_server_owned() {
+    local _val _s _p _ru_ip _ru_ips _ru_zone
     _val="$1"
     [ -n "$_val" ] || return 1
     # Ownership is derived from the current DNS Manager selection. The
@@ -3106,6 +3107,16 @@ dnsmasq_manager_server_owned() {
     fi
     # Uninstall must not infer ownership of another service from a port alone.
     [ "${UNINSTALL_STRICT_OWNERSHIP:-0}" = 1 ] && return 1
+    case "${REGIONAL_MODE:-}" in
+        yandex) _ru_ips='77.88.8.8 77.88.8.1' ;;
+        isp) _ru_ips="${REGIONAL_ISP_IPS:-}" ;;
+        *) _ru_ips='' ;;
+    esac
+    for _ru_zone in ru su xn--p1ai; do
+        for _ru_ip in $_ru_ips; do
+            [ "$_val" = "/$_ru_zone/$_ru_ip" ] && return 0
+        done
+    done
     # Legacy Hybrid ports remain recognised so an upgrade can safely clean
     # an older manager installation without trusting its stale journal.
     case "$_val" in
@@ -4802,6 +4813,9 @@ restore_dns_core() {
     /etc/init.d/dnsmasq restart >/dev/null 2>&1 || true
     reload_fw >/dev/null 2>&1 || true
     clear_dns_core_runtime_state || _rc=1
+    if [ -x /etc/init.d/dns-manager-regional ] && grep -Fqx '# DNS_MANAGER_REGIONAL_SERVICE=1' /etc/init.d/dns-manager-regional; then
+        /etc/init.d/dns-manager-regional stop >/dev/null 2>&1 || _rc=1
+    fi
     refresh_device_dns_runtime >/dev/null 2>&1 || _rc=1
 
     if [ "$_rc" -eq 0 ]; then
@@ -4874,6 +4888,11 @@ uninstall_manager_impl() {
     fi
     if [ -f /etc/hotplug.d/iface/95-dns-manager-regional ] && grep -Fqx '# DNS_MANAGER_REGIONAL_HOOK=1' /etc/hotplug.d/iface/95-dns-manager-regional; then
         rm -f /etc/hotplug.d/iface/95-dns-manager-regional || { release_mutation_lock; return 1; }
+    fi
+    if [ -f /etc/init.d/dns-manager-regional ] && grep -Fqx '# DNS_MANAGER_REGIONAL_SERVICE=1' /etc/init.d/dns-manager-regional; then
+        /etc/init.d/dns-manager-regional stop >/dev/null 2>&1 || true
+        /etc/init.d/dns-manager-regional disable >/dev/null 2>&1 || true
+        rm -f /etc/init.d/dns-manager-regional /usr/lib/dns-manager-luci/regional-watch.sh || { release_mutation_lock; return 1; }
     fi
 
     rm -f "$LOG_FILE" "$TX_LOG" 2>/dev/null || true
@@ -6371,11 +6390,17 @@ return "$_rc"
 }
 
 regional_apply_toggle() {
-    local _enabled _id _cat _rc _new_ips
+    local _enabled _id _cat _rc _new_ips _regional_service
     _enabled="$1"
     case "$_enabled" in 0|1|2|3) ;; *) return 1;; esac
     acquire_mutation_lock || return 1
     if ! load_config; then release_mutation_lock; return 1; fi
+    _regional_service="${REGIONAL_SERVICE_INIT:-/etc/init.d/dns-manager-regional}"
+    if [ "$_enabled" = 3 ] && { [ ! -x "$_regional_service" ] || ! grep -Fqx '# DNS_MANAGER_REGIONAL_SERVICE=1' "$_regional_service"; }; then
+        err_msg "Служба контроля DNS провайдера не установлена или принадлежит другому приложению."
+        release_mutation_lock
+        return 1
+    fi
     if [ -z "${SLOT_1:-}${SLOT_2:-}${SLOT_3:-}${SLOT_4:-}${SLOT_5:-}${SLOT_6:-}" ]; then
         err_msg "Сначала примените основной DNS-профиль."
         release_mutation_lock
@@ -6409,6 +6434,15 @@ regional_apply_toggle() {
     CORE_ONLY=1 HYBRID_STAGE_SKIP=1 REGIONAL_TOGGLE_APPLY=1 SILENT_APPLY=1 _apply_settings_impl
     _rc=$?
     release_mutation_lock
+    if [ "$_rc" = 0 ] && [ -x "$_regional_service" ] && grep -Fqx '# DNS_MANAGER_REGIONAL_SERVICE=1' "$_regional_service"; then
+        if ! "$_regional_service" restart >/dev/null 2>&1; then
+            err_msg "DNS применён, но не удалось запустить контроль адресов провайдера."
+            return 1
+        fi
+    elif [ "$_rc" = 0 ] && [ "${REGIONAL_MODE:-}" = isp ]; then
+        err_msg "DNS применён, но служба контроля адресов провайдера не установлена."
+        return 1
+    fi
     return "$_rc"
 }
 regional_refresh_provider() {
