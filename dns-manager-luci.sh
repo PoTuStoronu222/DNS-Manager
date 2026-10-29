@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager full installer and LuCI companion
-# Version: 1.128
+# Version: 2.00
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.128"
+VERSION="2.00"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -192,6 +192,64 @@ require_manager() {
 
 install_files() {
     require_manager || return 1
+
+    # Run only on interface events and only while the provider mode is selected.
+    # The marker prevents replacing another package's hook at the same path.
+    _rh=/etc/hotplug.d/iface/95-dns-manager-regional
+    if [ -e "$_rh" ] && ! grep -Fqx '# DNS_MANAGER_REGIONAL_HOOK=1' "$_rh"; then
+        err "Найден чужой файл $_rh; обновление остановлено."
+        return 1
+    fi
+    mkdir -p /etc/hotplug.d/iface || return 1
+    cat > "$_rh.tmp.$$" <<'EOF_REGIONAL_HOOK'
+#!/bin/sh
+# DNS_MANAGER_REGIONAL_HOOK=1
+case "${ACTION:-}" in ifup|ifupdate) ;; *) exit 0;; esac
+grep -q "^REGIONAL_MODE='isp'$" /etc/dns-manager/config/manager.conf 2>/dev/null || exit 0
+( sleep 3; DNS_MANAGER_NO_UPDATE=1 /usr/bin/dns-manager __regional-refresh >/dev/null 2>&1 ) </dev/null >/dev/null 2>&1 &
+EOF_REGIONAL_HOOK
+    chmod 0755 "$_rh.tmp.$$" && mv -f "$_rh.tmp.$$" "$_rh" || { rm -f "$_rh.tmp.$$"; return 1; }
+
+    # DNS-only updates do not necessarily emit a netifd interface event.
+    # A sleeping procd process watches the resolver file only in provider mode.
+    _rs=/etc/init.d/dns-manager-regional
+    if [ -e "$_rs" ] && ! grep -Fqx '# DNS_MANAGER_REGIONAL_SERVICE=1' "$_rs"; then
+        err "Найден чужой файл $_rs; обновление остановлено."
+        return 1
+    fi
+    mkdir -p /usr/lib/dns-manager-luci || return 1
+    cat > /usr/lib/dns-manager-luci/regional-watch.sh <<'EOF_REGIONAL_WATCH'
+#!/bin/sh
+_last=''
+while grep -q "^REGIONAL_MODE='isp'$" /etc/dns-manager/config/manager.conf 2>/dev/null; do
+    _file=/tmp/resolv.conf.d/resolv.conf.auto
+    [ -s "$_file" ] || _file=/tmp/resolv.conf.auto
+    _current="$(cat "$_file" 2>/dev/null || true)"
+    if [ -n "$_current" ] && [ "$_current" != "$_last" ]; then
+        if DNS_MANAGER_NO_UPDATE=1 /usr/bin/dns-manager __regional-refresh >/dev/null 2>&1; then
+            _last="$_current"
+        fi
+    fi
+    sleep 60
+done
+EOF_REGIONAL_WATCH
+    cat > "$_rs.tmp.$$" <<'EOF_REGIONAL_SERVICE'
+#!/bin/sh /etc/rc.common
+# DNS_MANAGER_REGIONAL_SERVICE=1
+USE_PROCD=1
+START=99
+STOP=10
+start_service() {
+    grep -q "^REGIONAL_MODE='isp'$" /etc/dns-manager/config/manager.conf 2>/dev/null || return 0
+    procd_open_instance
+    procd_set_param command /bin/sh /usr/lib/dns-manager-luci/regional-watch.sh
+    procd_set_param respawn 3600 5 5
+    procd_close_instance
+}
+EOF_REGIONAL_SERVICE
+    chmod 0755 "$_rs.tmp.$$" && mv -f "$_rs.tmp.$$" "$_rs" || { rm -f "$_rs.tmp.$$"; return 1; }
+    "$_rs" enable >/dev/null 2>&1 || return 1
+    "$_rs" restart >/dev/null 2>&1 || return 1
 
     command -v jsonfilter >/dev/null 2>&1 || say "ℹ jsonfilter не найден — используется встроенный обработчик RPC-параметров."
     mkdir -p "$VIEW_DIR" "$RESOURCE_DIR" /usr/libexec/rpcd /usr/lib/dns-manager-luci /usr/share/rpcd/acl.d /usr/share/luci/menu.d "$RUNTIME_DIR/checks" "$JOB_DIR" "$BACKUP_DIR" "$(dirname "$STATE_FILE")" /etc/dns-manager/device-dns /etc/nftables.d || return 1
@@ -421,7 +479,12 @@ dmd_ensure_profile() {
                 printf 'server=/%s/127.0.0.1#%s\n' "$_dmd_domain" "$_dmd_upstream_port"
             done
         done
-        if [ -n "${SLOT_RU:-}" ] && [ -n "${PORT_RU:-}" ]; then
+        if [ "${REGIONAL_MODE:-legacy}" = yandex ] || [ "${REGIONAL_MODE:-legacy}" = isp ]; then
+            if [ "$REGIONAL_MODE" = yandex ]; then _dmd_ru_ips='77.88.8.8 77.88.8.1'; else _dmd_ru_ips="${REGIONAL_ISP_IPS:-}"; fi
+            for _dmd_tld in /ru /su /xn--p1ai; do
+                for _dmd_ru_ip in $_dmd_ru_ips; do printf 'server=%s/%s\n' "$_dmd_tld" "$_dmd_ru_ip"; done
+            done
+        elif [ -n "${SLOT_RU:-}" ] && [ -n "${PORT_RU:-}" ]; then
             for _dmd_tld in /ru /su /xn--p1ai; do
                 printf 'server=%s/127.0.0.1#%s\n' "$_dmd_tld" "$PORT_RU"
             done
@@ -659,7 +722,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="1.128"
+SELF_VERSION="2.00"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -1888,6 +1951,10 @@ page_header_json() {
     printf ',"luci_version":'; json_quote "$_ph_lv"
     printf ',"last_full_test":'; json_quote "$_ph_last"
     printf ',"last_full_test_scope":'; json_quote "$_ph_scope"
+    _ph_regional="$(cfg_get REGIONAL_MODE)"
+    case "$_ph_regional" in doh|legacy|yandex|isp) ;; *) [ -n "$(cfg_get SLOT_RU)" ] && _ph_regional=legacy || _ph_regional=doh;; esac
+    printf ',"regional_mode":'; json_quote "$_ph_regional"
+    printf ',"regional_isp_ips":'; json_quote "$(cfg_get REGIONAL_ISP_IPS)"
 }
 
 lan_devices_json() {
@@ -3072,7 +3139,7 @@ profile_job_running() {
 
 job_start_regional() {
     DNSMGR_REGIONAL_ENABLED="$1"
-    case "$DNSMGR_REGIONAL_ENABLED" in 0|1) ;; *) json_error "Неверное состояние регионального DNS"; return;; esac
+    case "$DNSMGR_REGIONAL_ENABLED" in 0|1|2|3) ;; *) json_error "Неверное состояние регионального DNS"; return;; esac
     DNSMGR_REGIONAL_JOB_ID="regional"
     if job_active "$DNSMGR_REGIONAL_JOB_ID" && job_process_alive "$JOB_DIR/$DNSMGR_REGIONAL_JOB_ID"; then
         json_error "Региональный DNS уже изменяется"
@@ -3672,7 +3739,7 @@ run_action() {
             case "$RPC_SLOT" in RU) [ "$_cat" = regional ] || { json_error "Этот DNS нельзя поставить в региональный слот"; return; } ;; *) [ "$_cat" != regional ] || { json_error "Региональный DNS нельзя поставить в общий слот"; return; } ;; esac
             eval "SLOT_${RPC_SLOT}=\"$RPC_ID\""
             slot_cat_set "$RPC_SLOT" "$_cat" || { json_error "Не удалось сохранить категорию DNS"; return; }
-            [ "$RPC_SLOT" = RU ] && SLOT_RU_CAT=regional || true
+            if [ "$RPC_SLOT" = RU ]; then SLOT_RU_CAT=regional; REGIONAL_MODE=legacy; fi
             sync_profile_from_selected_categories >/dev/null
             _old_hybrid_stage_skip="${HYBRID_STAGE_SKIP:-0}"
             [ "$DNS_PROFILE" = hybrid ] && HYBRID_STAGE_SKIP=1
@@ -3887,7 +3954,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI common module version: 1.128
+// DNS Manager LuCI common module version: 2.00
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -5108,16 +5175,21 @@ function renderProfiles(root,st){
     E('div',{'class':'dm-mini'},'Профиль определяет схему выбора DNS и используется сейчас.')
   ];
   var regionalSlot=(st.slots||[]).filter(function(s){return String(s.slot)==='RU';})[0]||{};
-  var regionalOn=!!regionalSlot.id;
+  var regionalMode=String(st.regional_mode|| (regionalSlot.id?'legacy':'doh'));
   var hasGeneral=(st.slots||[]).some(function(s){return String(s.slot)!=='RU'&&!!s.id;});
-  pch.push(E('div',{'class':'dm-row','style':'margin-top:14px'},[
-    E('span',{'class':'dm-label'},'Региональный DNS'),
-    badge(regionalOn?'dm-ok':'dm-off',regionalOn?'включён':'выключен')
-  ]));
-  pch.push(E('p',{'class':'dm-hint'},regionalOn
-    ? 'Для .ru, .su и .рф: '+String(regionalSlot.name||regionalSlot.id)+'. Смена профиля не меняет этот DNS.'
-    : 'Отдельный DNS для .ru, .su и .рф. При первом включении используется Yandex RU; затем — ранее выбранный региональный DNS.'));
-  pch.push(btn(regionalOn?'Выключить региональный DNS':'Включить региональный DNS','cbi-button',function(){setRegional(!regionalOn,root);},{disabled:!!state.busy||!hasGeneral}));
+  pch.push(E('div',{'class':'dm-row','style':'margin-top:14px'},[E('span',{'class':'dm-label'},'Российские сайты — .ru, .su, .рф')]));
+  pch.push(E('p',{'class':'dm-hint'},'У кого роутер узнаёт их адреса. Смена профиля не меняет этот выбор.'));
+  var regionalChoices=E('div',{'class':'dm-seg'});
+  [['doh','Через DoH',0],['yandex','Яндекс DNS',2],['isp','DNS провайдера',3]].forEach(function(choice){
+    regionalChoices.appendChild(btn(choice[1],regionalMode===choice[0]?'active cbi-button':'cbi-button',function(){setRegional(choice[2],root);},{disabled:!!state.busy||!hasGeneral||regionalMode===choice[0]}));
+  });
+  pch.push(regionalChoices);
+  pch.push(E('p',{'class':'dm-hint'},regionalMode==='legacy'
+    ? 'Сейчас выбран региональный DoH: '+String(regionalSlot.name||regionalSlot.id)+'. Он сохранён после обновления; новый режим включится только после выбора.'
+    : regionalMode==='doh' ? 'Все сайты используют общие DoH-серверы.'
+    : regionalMode==='yandex' ? 'Российские зоны используют Яндекс DNS (77.88.8.8, 77.88.8.1) напрямую, без шифрования.'
+    : 'Российские зоны используют DNS провайдера напрямую, без шифрования: '+String(st.regional_isp_ips||'—')+'.'));
+  if(Number(st.steer_dns_active)===1)pch.push(E('p',{'class':'dm-hint'},'Правила DNS в Steer могут обрабатывать отдельные запросы до dnsmasq.'));
   if(!hasGeneral)pch.push(E('div',{'class':'dm-inline-msg info'},'Сначала примените основной DNS-профиль.'));
   if(state.regionalNotice)pch.push(E('div',{'class':'dm-inline-msg '+(state.regionalNoticeType||'info')},state.regionalNotice));
 
@@ -6047,7 +6119,7 @@ function setRegional(enabled,root){
   state.regionalNotice='Применяю региональный DNS…';
   state.regionalNoticeType='info';
   renderProfiles(root,window.dmState||{});
-  callRegional(enabled?1:0).then(function(r){
+  callRegional(enabled).then(function(r){
     if(!r||!r.ok||!r.job)throw new Error((r&&r.error)||'Не удалось запустить изменение.');
     watchRegional(r.job,enabled,root);
   }).catch(function(err){
@@ -6065,7 +6137,7 @@ function watchRegional(job,enabled,root){
         state.busy=false;
         var ok=j&&j.status==='done'&&j.result==='ok';
         state.regionalNoticeType=ok?'ok':'error';
-        state.regionalNotice=ok?(enabled?'Региональный DNS включён.':'Региональный DNS выключен.'):
+        state.regionalNotice=ok?'Настройка российских сайтов применена.':
           ((j&&j.output&&stripAnsi(j.output).split('\n').filter(function(x){return String(x||'').trim();}).pop())||'Не удалось подтвердить изменение регионального DNS.');
         refresh(root,true);
       }).catch(function(err){
@@ -6087,7 +6159,7 @@ function resumeRegional(root){
     state.regionalNotice='Применяю региональный DNS…';
     state.regionalNoticeType='info';
     renderProfiles(root,window.dmState||{});
-    watchRegional('regional',String(j.enabled)==='1',root);
+    watchRegional('regional',Number(j.enabled),root);
   }).catch(function(){});
 }
 function applyProfile(name,root){
@@ -6650,7 +6722,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 1.128
+// DNS Manager LuCI version: 2.00
 return view.extend({
   load: DM.load,
   render: DM.render,
@@ -6745,6 +6817,14 @@ uninstall_files() {
     if [ -x /etc/init.d/dns-manager-device-dns ]; then
         /etc/init.d/dns-manager-device-dns stop >/dev/null 2>&1 || true
         /etc/init.d/dns-manager-device-dns disable >/dev/null 2>&1 || true
+    fi
+    if [ -f /etc/hotplug.d/iface/95-dns-manager-regional ] && grep -Fqx '# DNS_MANAGER_REGIONAL_HOOK=1' /etc/hotplug.d/iface/95-dns-manager-regional; then
+        rm -f /etc/hotplug.d/iface/95-dns-manager-regional || return 1
+    fi
+    if [ -f /etc/init.d/dns-manager-regional ] && grep -Fqx '# DNS_MANAGER_REGIONAL_SERVICE=1' /etc/init.d/dns-manager-regional; then
+        /etc/init.d/dns-manager-regional stop >/dev/null 2>&1 || true
+        /etc/init.d/dns-manager-regional disable >/dev/null 2>&1 || true
+        rm -f /etc/init.d/dns-manager-regional /usr/lib/dns-manager-luci/regional-watch.sh || return 1
     fi
     rm -f /etc/nftables.d/90-dns-manager-device-dns.nft /etc/nftables.d/90-dns-manager-device-dns.nft.tmp.* 2>/dev/null || true
     rm -f /etc/init.d/dns-manager-device-dns /etc/dns-manager/config/device-dns.conf /etc/dns-manager/config/device-dns-default.conf /etc/dns-manager/device-dns/redirects.nft /etc/dns-manager/device-dns/redirects.nft.tmp.* 2>/dev/null || true
