@@ -6760,9 +6760,6 @@ EOF_PAGE
 }
 
 uninstall_files() {
-    if [ -f /etc/hotplug.d/iface/95-dns-manager-regional ] && grep -Fqx '# DNS_MANAGER_REGIONAL_HOOK=1' /etc/hotplug.d/iface/95-dns-manager-regional; then
-        rm -f /etc/hotplug.d/iface/95-dns-manager-regional || return 1
-    fi
     # Refuse to remove a similarly named include if it is not exactly ours.
     if uci -q get firewall.dns_manager_device_dns >/dev/null 2>&1; then
         if [ "$(uci -q get firewall.dns_manager_device_dns 2>/dev/null || true)" != include ] ||
@@ -6779,6 +6776,9 @@ uninstall_files() {
     if [ -x /etc/init.d/dns-manager-device-dns ]; then
         /etc/init.d/dns-manager-device-dns stop >/dev/null 2>&1 || true
         /etc/init.d/dns-manager-device-dns disable >/dev/null 2>&1 || true
+    fi
+    if [ -f /etc/hotplug.d/iface/95-dns-manager-regional ] && grep -Fqx '# DNS_MANAGER_REGIONAL_HOOK=1' /etc/hotplug.d/iface/95-dns-manager-regional; then
+        rm -f /etc/hotplug.d/iface/95-dns-manager-regional || return 1
     fi
     rm -f /etc/nftables.d/90-dns-manager-device-dns.nft /etc/nftables.d/90-dns-manager-device-dns.nft.tmp.* 2>/dev/null || true
     rm -f /etc/init.d/dns-manager-device-dns /etc/dns-manager/config/device-dns.conf /etc/dns-manager/config/device-dns-default.conf /etc/dns-manager/device-dns/redirects.nft /etc/dns-manager/device-dns/redirects.nft.tmp.* 2>/dev/null || true
