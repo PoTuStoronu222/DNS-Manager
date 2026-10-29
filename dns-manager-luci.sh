@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager full installer and LuCI companion
-# Version: 2.01
+# Version: 2.02
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.01"
+VERSION="2.02"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -722,7 +722,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.01"
+SELF_VERSION="2.02"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -3137,6 +3137,37 @@ profile_job_running() {
     return 1
 }
 
+job_start_action() {
+    DNSMGR_ACTION_METHOD="$1"
+    case "$DNSMGR_ACTION_METHOD" in set_slot|set_slot_domains|set_device_dns|reset_dns|set_ntp) ;; *) json_error "Неверное действие"; return;; esac
+    DNSMGR_ACTION_JOB=action
+    acquire_runtime_lock "$RUNTIME_DIR/action-start.lock" || { json_error "Другое действие уже запускается"; return; }
+    if job_active "$DNSMGR_ACTION_JOB" && job_process_alive "$JOB_DIR/$DNSMGR_ACTION_JOB"; then
+        release_runtime_lock "$RUNTIME_DIR/action-start.lock"
+        json_error "Другое действие уже выполняется"
+        return
+    fi
+    job_prepare "$DNSMGR_ACTION_JOB" || { release_runtime_lock "$RUNTIME_DIR/action-start.lock"; json_error "Не удалось подготовить задачу"; return; }
+    printf 'status=running\nstarted=%s\nmode=action\nname=%s\n' "$(date +%s)" "$DNSMGR_ACTION_METHOD" > "$JOB_DIR/$DNSMGR_ACTION_JOB/state"
+    (
+        exec > "$JOB_DIR/$DNSMGR_ACTION_JOB/output" 2>&1 </dev/null
+        DNSMGR_ACTION_WORKER=1
+        RPC_METHOD="$DNSMGR_ACTION_METHOD"
+        run_action
+        if grep -q '"ok"[[:space:]]*:[[:space:]]*true' "$JOB_DIR/$DNSMGR_ACTION_JOB/output"; then
+            job_write "$DNSMGR_ACTION_JOB" result ok
+            job_write "$DNSMGR_ACTION_JOB" status done
+        else
+            job_write "$DNSMGR_ACTION_JOB" result fail
+            job_write "$DNSMGR_ACTION_JOB" status failed
+        fi
+        job_write "$DNSMGR_ACTION_JOB" finished "$(date +%s)"
+    ) &
+    job_record_pid "$DNSMGR_ACTION_JOB" "$!"
+    release_runtime_lock "$RUNTIME_DIR/action-start.lock"
+    printf '{"ok":true,"job":'; json_quote "$DNSMGR_ACTION_JOB"; printf '}'
+}
+
 job_start_setting() {
     DNSMGR_SETTING_NAME="$1"
     DNSMGR_SETTING_VALUE="$2"
@@ -3746,6 +3777,9 @@ apply_live_setting() {
 
 run_action() {
     _profile="$(jget profile)"
+    if [ "${DNSMGR_ACTION_WORKER:-0}" != 1 ]; then
+        case "${RPC_METHOD:-}" in set_slot|set_slot_domains|set_device_dns|reset_dns|set_ntp) job_start_action "$RPC_METHOD"; return;; esac
+    fi
     case "${RPC_METHOD:-}" in
         add_custom_dns)
             add_custom_dns_json
@@ -4008,7 +4042,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI common module version: 2.01
+// DNS Manager LuCI common module version: 2.02
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -4687,9 +4721,11 @@ function renderOverview(root,st){
     ]),
     E('div',{'class':'dm-component-dns-list'},dnsItems),
     E('div',{'class':'dm-actions'},(function(){
-      return [btn('Проверить текущие DNS','cbi-button-action',function(){testCurrent(root);},{disabled:!!state.busy||state.jobRunning})];
-    })())
-  ]);
+      return [btn(state.currentTest&&state.currentTest.status==='RUNNING'?'Проверяю…':'Проверить текущие DNS','cbi-button-action',function(){testCurrent(root);},{disabled:!!state.busy||state.jobRunning})];
+    })()),
+    state.currentTest?E('div',{'class':'dm-inline-msg '+(state.currentTest.status==='RUNNING'?'info':state.currentTest.status==='DONE'?'ok':'error')},
+      state.currentTest.status==='RUNNING'?'Проверка текущих DNS выполняется…':state.currentTest.status==='DONE'?'Проверка текущих DNS завершена.':state.currentTest.total===0?'Текущих DNS для проверки нет.':'Проверка текущих DNS завершилась с ошибками.'):null
+  ].filter(Boolean));
 
   var verCard=card('Версии',[
     E('div',{'class':'dm-version-line'},[
@@ -4844,7 +4880,7 @@ function assign(id,slot,root,nextName){
   if(current===next)return;
   confirmAction('Подтвердить назначение DNS',[['Слот',slotLabel(slot)],['Сейчас',current],['Новый DNS',next]],function(){
     state.busy=true;state.pageNotice.slots='Назначаю «'+slotLabel(slot)+'»…';renderSlots(root,window.dmState||{});
-    callSlot(slot,id).then(function(r){
+    callSlot(slot,id).then(awaitSettingResult).then(function(r){
       state.busy=false;
       if(r&&r.ok){setAction(true,slotLabel(slot)+': «'+next+'».');state.pageNotice.slots='DNS назначен в '+slotLabel(slot)+'.';}
       else{setAction(false,(r&&r.error)||'DNS не удалось применить.');state.pageNotice.slots=(r&&r.error)||'DNS не удалось применить.';}
@@ -4854,13 +4890,17 @@ function assign(id,slot,root,nextName){
 }
 function saveSlotDomains(slot,input,root){
   if(state.busy||!input)return;
-  var value=String(input.value||'').replace(/\r/g,'').split(/[\s,]+/).filter(Boolean).join(',');
+  var raw=String(input.value||'');
+  var value=raw.replace(/\r/g,'').split(/[\s,]+/).filter(Boolean).join(',');
+  state.slotDomainDrafts=state.slotDomainDrafts||{};
+  state.slotDomainDrafts[String(slot)]=raw;
   state.busy=true;
   state.pageNotice.slots='Применяю список доменов для '+slotLabel(slot)+'…';
   renderSlots(root,window.dmState||{});
-  callSlotDomains(slot,value).then(function(r){
+  callSlotDomains(slot,value).then(awaitSettingResult).then(function(r){
     state.busy=false;
     if(r&&r.ok){
+      delete state.slotDomainDrafts[String(slot)];
       setAction(true,'Домены для '+slotLabel(slot)+' сохранены.');
       state.pageNotice.slots='Маршруты доменов для '+slotLabel(slot)+' обновлены.';
     }else{
@@ -4875,12 +4915,13 @@ function saveSlotDomains(slot,input,root){
   });
 }
 function refreshDeviceDnsPanels(root){
-  return Promise.all([
-    callLanDevices().catch(function(){return {ok:false,devices:[]};}),
-    callDohStatus().catch(function(){return window.dmState||{};})
-  ]).then(function(v){
-    window.dmLanDevices=v[0]||{ok:false,devices:[]};
-    window.dmState=v[1]||{};
+  return callLanDevices().then(function(v){
+    if(!v||v.ok===false)throw new Error((v&&v.error)||'список устройств недоступен');
+    window.dmLanDevices=v;
+    state.lanDevicesMessage='';
+    renderDeviceDns(root,window.dmState||{});
+  }).catch(function(err){
+    state.lanDevicesMessage=withRpcError('Не удалось обновить список устройств.',err);
     renderDeviceDns(root,window.dmState);
   });
 }
@@ -4893,7 +4934,9 @@ function saveDeviceDns(mac,controls,root){
   });
   selected.sort(function(a,b){return Number(a)-Number(b);});
   state.busy=true;
-  callSetDeviceDns(String(mac||''),selected.join(',')).then(function(r){
+  state.pageNotice.slots='Сохраняю привязку DNS для '+mac+'…';
+  renderDeviceDns(root,window.dmState||{});
+  callSetDeviceDns(String(mac||''),selected.join(',')).then(awaitSettingResult).then(function(r){
     state.busy=false;
     if(r&&r.ok){
       state.pageNotice.slots=selected.length
@@ -4948,7 +4991,7 @@ function assignDirect(id,slot,root,nextName,nextUrl){
   state.busy=true;
   state.pageNotice.catalog='Назначаю «'+next+'» в '+slotLabel(slot)+'…';
   renderCatalog(root);
-  callSlot(slot,id).then(function(r){
+  callSlot(slot,id).then(awaitSettingResult).then(function(r){
     state.busy=false;
     if(r&&r.ok){
       setAction(true,slotLabel(slot)+': «'+next+'».');
@@ -5268,7 +5311,7 @@ function renderProfiles(root,st){
     var pp=renderProfileProgress(root);
     if(pp)pch.push(pp);
   }
-  if(state.pageNotice.profiles)pch.push(E('div',{'class':'dm-inline-msg '+(state.busy?'info':'error')},state.pageNotice.profiles));
+  if(state.pageNotice.profiles)pch.push(E('div',{'class':'dm-inline-msg '+(state.profileNoticeType||'info')},state.pageNotice.profiles));
   e.appendChild(card('Профили DNS',pch));
   var newOut=e.querySelector('.dm-profile-output');
   if(newOut){
@@ -5304,7 +5347,8 @@ function renderSlots(root,st){
           : 'Слот RU не назначен: отдельного маршрута для .ru, .su и .рф нет. Настройка DNS 1–6 вручную его не включает.')
       ]));
     }else{
-      var initial=String(d.domains||'').trim().split(/\s+/).filter(Boolean).join('\n');
+      var initial=state.slotDomainDrafts&&Object.prototype.hasOwnProperty.call(state.slotDomainDrafts,String(d.slot))
+        ? state.slotDomainDrafts[String(d.slot)] : String(d.domains||'').trim().split(/\s+/).filter(Boolean).join('\n');
       var domainAttrs={'class':'dm-slot-domains-input','rows':'2','spellcheck':'false','placeholder':'youtube.com\nexample.org'};
       if(!assigned)domainAttrs.disabled='';
       var domainInput=E('textarea',domainAttrs);
@@ -5698,19 +5742,20 @@ function renderTime(root,st){
           if(state.busy)return;
           if(active)return;
           confirmAction('Подтвердить изменение серверов времени',[['Сейчас',selected],['Новый набор',x[1]]],function(){
-            state.busy=true;state.busySetting='ntp';state.pageNotice.time='';
+            state.busy=true;state.busySetting='ntp';state.pageNotice.time='Применяю набор серверов времени…';state.timeNoticeType='info';
             renderTime(root,window.dmState||{});
-            callNtp(x[0]).then(function(r){
+            callNtp(x[0]).then(awaitSettingResult).then(function(r){
               state.busy=false;state.busySetting='';
               if(r&&r.ok){
+                state.timeNoticeType='ok';
                 state.pageNotice.time='Набор серверов времени «'+x[1]+'» применён.';
                 return refresh(root,true);
               }
-              state.pageNotice.time=(r&&r.error)||'Не удалось применить набор серверов времени.';
+              state.timeNoticeType='error';state.pageNotice.time=(r&&r.error)||'Не удалось применить набор серверов времени.';
               renderTime(root,window.dmState||{});
             }).catch(function(err){
               state.busy=false;state.busySetting='';
-              state.pageNotice.time=withRpcError('Не удалось применить серверы точного времени.',err);
+              state.timeNoticeType='error';state.pageNotice.time=withRpcError('Не удалось применить серверы точного времени.',err);
               renderTime(root,window.dmState||{});
             });
           });
@@ -5718,7 +5763,7 @@ function renderTime(root,st){
       ])
     ]));
   });
-  if(state.pageNotice.time)body.unshift(E('div',{'class':'dm-inline-msg '+(state.busy?'info':'ok')},state.pageNotice.time));
+  if(state.pageNotice.time)body.unshift(E('div',{'class':'dm-inline-msg '+(state.timeNoticeType||'info')},state.pageNotice.time));
   e.appendChild(card('Серверы точного времени',body));
 }
 
@@ -5791,7 +5836,7 @@ function renderCatalog(root){
   var e=root.querySelector('#dm-catalog');if(!e)return;e.innerHTML='';
   var ageCard=renderTestAgeCommon(root,window.dmState||{});
   var body=E('div',{'id':'dm-cat-body'});
-  if(!window.dmCatalog)body.appendChild(E('div',{'class':'dm-hint'},'Загрузка каталога DNS…'));
+  if(!window.dmCatalog&&!state.pageNotice.catalog)body.appendChild(E('div',{'class':'dm-hint'},state.catalogLoading?'Загрузка каталога DNS…':'Каталог DNS недоступен.'));
   var ch=[
     E('div',{'class':'dm-mini'},'Каталог DNS отображается постоянно. Выбор категории и назначение доступны ниже.'),
     E('div',{'class':'dm-actions'},[
@@ -5843,7 +5888,7 @@ function renderCatalog(root){
 
   ch.push(ageCard);
   ch.push(body);
-  if(state.fullTest&&state.fullTest.status==='FAILED'&&state.pageNotice.catalog)ch.push(E('div',{'class':'dm-inline-msg error'},state.pageNotice.catalog));
+  if(state.pageNotice.catalog)ch.push(E('div',{'class':'dm-inline-msg '+(state.fullTest&&state.fullTest.status==='FAILED'?'error':'info')},state.pageNotice.catalog));
   e.appendChild(card('Каталог DNS',ch));
   if(window.dmCatalog)renderCatalogBody(root,window.dmCatalog);
 }
@@ -5947,8 +5992,10 @@ function routeStatusCall(){
         callDohStatus(),
         callPageMeta()
       ]).then(function(v){
-        window.dmCatalog=v[0]||{};
-        state.catalogLoaded=true;
+        if(!v[0]||v[0].ok===false){
+          window.dmCatalog=null;state.catalogLoaded=false;state.catalogLoadFailed=true;
+          state.pageNotice.catalog=(v[0]&&v[0].error)||'Не удалось загрузить каталог DNS.';
+        }else{window.dmCatalog=v[0];state.catalogLoaded=true;if(state.catalogLoadFailed)state.pageNotice.catalog='';state.catalogLoadFailed=false;}
         var st=v[1]||{};
         var meta=v[2]||{};
         Object.keys(meta).forEach(function(k){st[k]=meta[k];});
@@ -5956,6 +6003,7 @@ function routeStatusCall(){
       });
     case 'log':
       return callLog(160).then(function(r){
+        if(!r||r.ok===false){state.logLoaded=false;state.pageNotice.log=(r&&r.error)||'Не удалось загрузить журнал.';return {ok:true};}
         state.logLoaded=true;
         state.logText=stripAnsi((r&&r.log)||'');
         return {ok:true};
@@ -5994,6 +6042,7 @@ function applyStatusToCurrentRoot(st){
   render(root,st||{});
 }
 function refresh(root,keepPosition){
+  if(!rootAlive(root))root=window.dmCurrentRoot;
   if(!rootAlive(root))return Promise.resolve();
   return ensureStatusPromise().then(function(st){
     applyStatusToCurrentRoot(st);
@@ -6053,10 +6102,12 @@ function updateAll(root){
 
   var results=[];
   var anyUpdate=false;
+  var anyError=false;
   var luciUpdated=false;
+  var updateInterrupted=false;
 
   function textOf(r){return r&&String(r.message||r.error||'')||'';}
-  function isCurrent(r){var t=textOf(r);return /Новой версии|актуал|не новее|уже актуален/.test(t);}
+  function isCurrent(r){var t=textOf(r);return !!(r&&r.ok)&&/Новой версии|актуал|не новее|уже актуален/.test(t);}
   function add(name,r){
     if(r&&r.ok&&r.updated){
       anyUpdate=true;
@@ -6065,6 +6116,7 @@ function updateAll(root){
     }else if(isCurrent(r)){
       results.push(name+' уже актуален');
     }else{
+      anyError=true;
       results.push(name+': '+(textOf(r)||'не удалось обновить'));
     }
   }
@@ -6072,25 +6124,32 @@ function updateAll(root){
     return call().then(function(r){
       return r||{ok:false,error:'Пустой ответ от '+label+'.'};
     }).catch(function(err){
-      return {ok:false,error:withRpcError('RPC-ошибка: '+label,err)};
+      return {ok:false,unknown:true,error:withRpcError('Результат обновления неизвестен: '+label,err)};
     });
   }
 
   return safeUpdateCall(callManagerUpdate,'DNS Manager').then(function(r){
     add('DNS Manager',r);
+    if(r.unknown){updateInterrupted=true;return null;}
     return safeUpdateCall(callHdpUpdate,'Защищённый DNS');
   }).then(function(r){
+    if(updateInterrupted)return null;
     add('Защищённый DNS',r);
+    if(r.unknown){updateInterrupted=true;return null;}
     return safeUpdateCall(callUpdateCatalog,'Каталог DNS');
   }).then(function(r){
+    if(updateInterrupted)return null;
     add('Каталог DNS',r);
+    if(r.unknown){updateInterrupted=true;return null;}
     return safeUpdateCall(callUpdate,'LuCI');
   }).then(function(r){
-    add('LuCI',r);
+    if(!updateInterrupted){add('LuCI',r);if(r.unknown)updateInterrupted=true;}
     state.updatingAll=false;
     var msg=results.join('; ');
-    globalUpdateNotice(msg,anyUpdate?'ok':'info');
-    if(luciUpdated){
+    if(updateInterrupted)msg+='; дальнейшие обновления не запускались. Проверьте состояние перед повтором.';
+    if(luciUpdated&&anyError)msg+='; обновите страницу после проверки ошибок.';
+    globalUpdateNotice(msg,anyError?'error':(anyUpdate?'ok':'info'));
+    if(luciUpdated&&!anyError){
       setTimeout(function(){location.reload();},3000);
     }else{
       refresh(root,true);
@@ -6147,20 +6206,24 @@ function resetDnsCore(root){
     ['Действие','Удалить выбранные DNS Manager DNS и вернуть обычный DNS роутера']
   ],function(){
     state.busy=true;
+    state.profileNoticeType='info';
     state.pageNotice.profiles='Восстанавливаю стандартную настройку DNS…';
     renderProfiles(root,window.dmState||{});
-    callResetDns().then(function(r){
+    callResetDns().then(awaitSettingResult).then(function(r){
       state.busy=false;
       if(r&&r.ok){
+        state.profileNoticeType='ok';
         setAction(true,'Стандартная настройка DNS восстановлена.');
         state.pageNotice.profiles='Стандартная настройка DNS восстановлена.';
       }else{
+        state.profileNoticeType='error';
         setAction(false,(r&&r.error)||'Не удалось восстановить стандартную настройку DNS.');
         state.pageNotice.profiles=(r&&r.error)||'Не удалось восстановить стандартную настройку DNS.';
       }
       refresh(root,true);
     }).catch(function(err){
       state.busy=false;
+      state.profileNoticeType='error';
       setAction(false,withRpcError('Не удалось восстановить стандартную настройку DNS.',err));
       state.pageNotice.profiles=withRpcError('Не удалось восстановить стандартную настройку DNS.',err);
       refresh(root,true);
@@ -6237,6 +6300,7 @@ function applyProfile(name,root){
         state.profileProgress={p:100,label:'Профиль применён.',detail:''};
         state.pageNotice.profiles='';
       }else{
+        state.profileNoticeType='error';
         setAction(false,(r&&r.error)||'Профиль не удалось запустить.');
         state.pageNotice.profiles=(r&&r.error)||'Профиль не удалось запустить.';
       }
@@ -6244,6 +6308,7 @@ function applyProfile(name,root){
     }).catch(function(err){
       state.busy=false;
       state.profileProgress=null;
+      state.profileNoticeType='error';
       setAction(false,withRpcError('Не удалось запустить применение профиля.',err));
       state.pageNotice.profiles=withRpcError('Не удалось запустить применение профиля.',err);
       refresh(root,true);
@@ -6351,6 +6416,35 @@ function resumeSetting(root){
     });
   }).catch(function(){});
 }
+function resumeAction(root){
+  if(state.actionResumeStarted||!rootAlive(root))return;
+  state.actionResumeStarted=true;
+  callJob('action').then(function(j){
+    if(!j||!j.ok||j.status!=='running'||state.busy){state.actionResumeStarted=false;return;}
+    var route=currentRoute(),name=String(j.name||'');
+    var applies=(name==='set_slot'&&(route==='slots'||route==='catalog'))||
+      (name==='set_slot_domains'&&route==='slots')||(name==='set_device_dns'&&route==='devices')||
+      (name==='set_ntp'&&route==='time')||(name==='reset_dns'&&route==='doh');
+    if(!applies){state.actionResumeStarted=false;return;}
+    var key=route==='devices'?'slots':route==='doh'?'profiles':route;
+    state.busy=true;state.pageNotice[key]='Операция выполняется…';
+    if(route==='doh')state.profileNoticeType='info';
+    if(route==='time')state.timeNoticeType='info';
+    render(root,window.dmState||{});
+    return awaitSettingResult({ok:true,job:'action'}).then(function(r){
+      state.busy=false;state.actionResumeStarted=false;
+      state.pageNotice[key]=r&&r.ok?'Операция выполнена.':((r&&r.error)||'Не удалось подтвердить результат.');
+      if(route==='doh')state.profileNoticeType=r&&r.ok?'ok':'error';
+      if(route==='time')state.timeNoticeType=r&&r.ok?'ok':'error';
+      return refresh(root,true);
+    }).catch(function(err){
+      state.busy=false;state.actionResumeStarted=false;state.pageNotice[key]=withRpcError('Не удалось получить результат операции.',err);
+      if(route==='doh')state.profileNoticeType='error';
+      if(route==='time')state.timeNoticeType='error';
+      return refresh(root,true);
+    });
+  }).catch(function(){state.actionResumeStarted=false;});
+}
 function testAll(root,origin){
   if(state.jobRunning||state.busy)return;
   var from=origin||state.activeTab||'overview';
@@ -6372,7 +6466,7 @@ function testAll(root,origin){
     else{
       state.fullTest={status:'FAILED',origin:from};
       state.jobRunning=false;
-      state.pageNotice.catalog=from==='catalog'?'Полная проверка DNS не запущена.':state.pageNotice.catalog;
+      state.pageNotice.catalog=from==='catalog'?((r&&r.error)||'Полная проверка DNS не запущена.'):state.pageNotice.catalog;
       refresh(root,true);
     }
   }).catch(function(err){
@@ -6399,12 +6493,18 @@ function testOne(id,root,origin,done){
     }else{
       delete state.checking[id];
       state.jobRunning=false;
+      var msg=(r&&r.error)||'Не удалось запустить проверку DNS.';
+      setAction(false,msg);
+      if(origin==='catalog')state.pageNotice.catalog=msg;else state.pageNotice.slots=msg;
       refresh(root,true);
       if(done)done(window.dmState||{});
     }
   }).catch(function(err){
     delete state.checking[id];
     state.jobRunning=false;
+    var msg=withRpcError('Не удалось запустить проверку DNS.',err);
+    setAction(false,msg);
+    if(origin==='catalog')state.pageNotice.catalog=msg;else state.pageNotice.slots=msg;
     refresh(root,true);
     if(done)done(window.dmState||{});
   });
@@ -6421,6 +6521,7 @@ function testCurrent(root){
     state.currentTest={status:'FAILED',total:0};
     state.checking={};
     state.pageNotice.doh='Текущих DNS для проверки нет.';
+    setAction(false,'Текущих DNS для проверки нет.');
     render(root,window.dmState||{});
     return;
   }
@@ -6460,7 +6561,8 @@ function testCurrent(root){
     render(root,window.dmState||{});
     callTestSystem().then(function(r){
       if(r&&r.ok){
-        pollJob(root,r.job,{mode:'system'},function(ns){
+        pollJob(root,r.job,{mode:'system'},function(ns,j){
+          if(!j||String(j.status||'').toLowerCase()!=='done'||j.result!=='ok')combinedFailed=true;
           finishCombined(ns);
         });
       }else{
@@ -6483,7 +6585,8 @@ function testCurrent(root){
 
   callTestCurrent().then(function(r){
     if(r&&r.ok){
-      pollJob(root,r.job,{mode:'current'},function(ns){
+      pollJob(root,r.job,{mode:'current'},function(ns,j){
+        if(!j||String(j.status||'').toLowerCase()!=='done'||j.result!=='ok')combinedFailed=true;
         startSystemChecks();
       });
     }else{
@@ -6502,6 +6605,10 @@ function pollJob(root,job,meta,done){
     state.jobRunning=false;
     var noJob='Фоновая задача DNS Manager не вернула идентификатор.';
     setAction(false,noJob);
+    if(meta&&meta.mode==='one'&&meta.dns_id)delete state.checking[meta.dns_id];
+    if(meta&&meta.mode==='all')state.fullTest={status:'FAILED',result:'fail',origin:meta.origin||''};
+    if(done)done(window.dmState||{},{status:'failed',result:'fail'});
+    else render(root,window.dmState||{});
     return;
   }
   var ticks=0;
@@ -6513,9 +6620,11 @@ function pollJob(root,job,meta,done){
     var ok=String(j&&j.status||'').toUpperCase()==='DONE' && String(j&&j.result||'')==='ok';
     state.busy=false;
     if(ok){
+      state.profileNoticeType='ok';
       setAction(true,'Профиль: «'+label+'».');
       state.pageNotice.profiles='Профиль «'+label+'» применён.';
     }else{
+      state.profileNoticeType='error';
       var out=stripAnsi(j&&j.output||'').trim().split('\n').filter(function(x){return String(x||'').trim();});
       var detail=out.length?String(out[out.length-1]).trim():'';
       if(detail.length>360)detail=detail.slice(0,357)+'…';
@@ -6530,12 +6639,12 @@ function pollJob(root,job,meta,done){
     if(meta&&meta.mode==='profile'){
       profileFinish(j);
     }
-    callStatus(statusDetail()).then(function(ns){
+    (meta&&meta.mode==='profile'&&currentRoute()==='doh'?callDohStatus():callStatus(statusDetail())).then(function(ns){
       ns=ns||{};window.dmState=ns;
       if(meta&&meta.mode==='one'&&meta.dns_id)delete state.checking[meta.dns_id];
       if(meta&&meta.mode==='current')state.checking={};
       state.jobRunning=false;
-      if(done)done(ns);
+      if(done)done(ns,j);
       else{
         if(meta&&meta.mode==='one'&&meta.origin==='catalog'&&window.dmCatalog){
           return callCatalog(state.category,state.offset,state.limit,0).then(function(cd){
@@ -6571,6 +6680,7 @@ function pollJob(root,job,meta,done){
       if(meta&&meta.mode==='profile'){
         state.busy=false;
         state.profileProgress=null;
+        state.profileNoticeType='error';
         setAction(false,'Применение профиля завершилось, но состояние роутера не удалось обновить.');
         state.pageNotice.profiles='Применение профиля завершилось, но состояние роутера не удалось обновить.';
       }
@@ -6581,7 +6691,7 @@ function pollJob(root,job,meta,done){
       }
       if(meta&&meta.mode==='current')state.checking={};
       state.jobRunning=false;
-      if(done)done(window.dmState||{});
+      if(done)done(window.dmState||{},{status:'failed',result:'fail'});
       else{if(meta&&meta.mode==='all')state.fullTest={status:'FAILED',result:'fail'};if(meta&&meta.mode==='current')state.currentTest={status:'FAILED',result:'fail'};render(root,window.dmState||{});}
     });
   }
@@ -6673,15 +6783,17 @@ function loadCatalog(root){
   if(state.catalogLoading)return Promise.resolve();
   state.catalogLoading=true;
   return callCatalog(state.category,state.offset,state.limit,0).then(function(d){
+    if(!d||d.ok===false)throw new Error((d&&d.error)||'Каталог DNS недоступен.');
+    if(state.catalogLoadFailed)state.pageNotice.catalog='';state.catalogLoadFailed=false;
     state.catalogLoading=false;state.catalogLoaded=true;window.dmCatalog=d||{};renderCatalog(root);renderCatalogBody(root,window.dmCatalog);
   }).catch(function(err){
-    state.catalogLoading=false;state.pageNotice.catalog=withRpcError('Не удалось загрузить каталог DNS.',err);renderCatalog(root);
+    state.catalogLoading=false;state.catalogLoaded=false;state.catalogLoadFailed=true;window.dmCatalog=null;state.pageNotice.catalog=withRpcError('Не удалось загрузить каталог DNS.',err);renderCatalog(root);
   });
 }
 function showLog(root){
   if(state.logLoading)return Promise.resolve();
   state.logLoading=true;
-  return callLog(160).then(function(r){state.logLoading=false;state.logLoaded=true;state.logText=stripAnsi(r.log||'');renderLog(root);}).catch(function(err){state.logLoading=false;state.pageNotice.log=withRpcError('Не удалось загрузить журнал.',err);renderLog(root);});
+  return callLog(160).then(function(r){if(!r||r.ok===false)throw new Error((r&&r.error)||'Журнал недоступен.');state.logLoading=false;state.logLoaded=true;state.logText=stripAnsi(r.log||'');renderLog(root);}).catch(function(err){state.logLoading=false;state.pageNotice.log=withRpcError('Не удалось загрузить журнал.',err);renderLog(root);});
 }
 
 var autoStatusTimer=null;
@@ -6805,6 +6917,9 @@ return baseclass.extend({
     if(!state.settingResumeStarted&&route==='doh')window.setTimeout(function(){
       if(rootAlive(root))resumeSetting(root);
     },0);
+    if(!state.actionResumeStarted)window.setTimeout(function(){
+      if(rootAlive(root))resumeAction(root);
+    },0);
     return root;
   },
   remove:function(){stopAutoStatus();}
@@ -6825,7 +6940,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 2.01
+// DNS Manager LuCI version: 2.02
 return view.extend({
   load: DM.load,
   render: DM.render,

@@ -314,6 +314,8 @@ awk '
 [ -s "$tmp/common.js" ] || fail "embedded JS extraction"
 node --check "$tmp/common.js" >/dev/null 2>&1 || fail "embedded JS: node --check"
 ok "embedded LuCI JS syntax"
+node tests/ui-button-flow-test.js "$tmp/common.js" || fail "button result and error display"
+ok "button result and error display across dashboard, profiles and catalog"
 awk '/^function awaitSettingResult\(reply\)/,/^function setSetting\(name,en,root\)/' "$tmp/common.js" | sed '$d' > "$tmp/setting-result.js"
 SETTING_RESULT_JS="$tmp/setting-result.js" node <<'NODE' || fail "settings job result is not shown correctly"
 const fs=require('fs'), vm=require('vm');
@@ -581,7 +583,7 @@ grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validat
 grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
 grep -q 'VERSION="3.95"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
-grep -q 'VERSION="2.01"' dns-manager-luci.sh || fail "LuCI version not bumped"
+grep -q 'VERSION="2.02"' dns-manager-luci.sh || fail "LuCI version not bumped"
 if grep -q '^main_menu$' dns-manager.sh; then fail "interactive console menu still starts"; fi
 grep -Fq "btn('Удалить DNS Manager'" dns-manager-luci.sh || fail "LuCI uninstall button missing"
 grep -Fq '"uninstall":{},"uninstall_status":{}' dns-manager-luci.sh || fail "LuCI uninstall RPC is not registered"

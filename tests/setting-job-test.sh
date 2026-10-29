@@ -4,6 +4,7 @@ ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT INT TERM
 awk '/^job_start_setting\(\) \{/,/^}/' "$ROOT/dns-manager-luci.sh" > "$tmp/job"
+awk '/^job_start_action\(\) \{/,/^}/' "$ROOT/dns-manager-luci.sh" > "$tmp/action"
 awk '/^apply_live_setting\(\) \{/,/^}/' "$ROOT/dns-manager-luci.sh" > "$tmp/apply"
 (
     . "$tmp/job"
@@ -42,5 +43,22 @@ awk '/^apply_live_setting\(\) \{/,/^}/' "$ROOT/dns-manager-luci.sh" > "$tmp/appl
     : > "$tmp/order"
     apply_live_setting force 0
     [ "$(cat "$tmp/order")" = "$(printf 'lock\nload\nunlock')" ]
+)
+(
+    . "$tmp/action"
+    JOB_DIR="$tmp/actions"; RUNTIME_DIR="$tmp/runtime-actions"; mkdir -p "$JOB_DIR" "$RUNTIME_DIR"
+    acquire_runtime_lock() { :; }; release_runtime_lock() { :; }
+    job_active() { return 1; }
+    job_prepare() { mkdir -p "$JOB_DIR/$1"; : > "$JOB_DIR/$1/state"; : > "$JOB_DIR/$1/output"; }
+    job_write() { printf '%s=%s\n' "$2" "$3" >> "$JOB_DIR/$1/state"; }
+    job_record_pid() { :; }; json_error() { echo ERROR; }; json_quote() { printf '"%s"' "$1"; }
+    INPUT='{"mac":"aa:bb:cc:dd:ee:ff","slots":"1,2"}'
+    run_action() { [ "$DNSMGR_ACTION_WORKER:$RPC_METHOD" = '1:set_device_dns' ]; [ "$INPUT" = '{"mac":"aa:bb:cc:dd:ee:ff","slots":"1,2"}' ]; printf '{"ok":true}'; }
+    job_start_action set_device_dns > "$tmp/action-reply"
+    grep -Fq '"job":"action"' "$tmp/action-reply"
+    wait
+    grep -Fqx 'name=set_device_dns' "$JOB_DIR/action/state"
+    grep -Fqx 'result=ok' "$JOB_DIR/action/state"
+    grep -Fqx 'status=done' "$JOB_DIR/action/state"
 )
 echo 'OK: settings run as background jobs and reload state under lock'
