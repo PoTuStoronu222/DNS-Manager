@@ -1671,6 +1671,60 @@ steer_dns_upstream_ready() {
     rm -f "$_actual" "$_expected" 2>/dev/null || true
     [ "$_ok" = 1 ]
 }
+
+# A narrowly scoped repair for the proxy's own dnsmasq backup. Run inside
+# a subshell: many legacy helpers use global temporary variables.
+steer_restore_proxy_backup() (
+    [ "${STEER_DNS_ACTIVE:-0}" = 1 ] || exit 1
+    [ -n "${SLOT_RU:-}" ] && [ -n "${PORT_RU:-}" ] || exit 1
+    case "$PORT_RU" in *[!0-9]*|'') exit 1;; esac
+    [ -x /etc/init.d/https-dns-proxy ] || exit 1
+    /etc/init.d/https-dns-proxy running >/dev/null 2>&1 || exit 1
+    [ "$(uci -q get https-dns-proxy.config.dnsmasq_config_update 2>/dev/null)" = '*' ] || exit 1
+    [ -z "$(uci -q changes dhcp 2>/dev/null)" ] || exit 1
+    [ -z "$(uci -q changes https-dns-proxy 2>/dev/null)" ] || exit 1
+    _sections="$(uci show dhcp 2>/dev/null | sed -n 's/^dhcp\.\([^.=]*\)=dnsmasq$/\1/p')"
+    [ "$(printf '%s\n' "$_sections" | sed '/^$/d' | wc -l | tr -d ' ')" = 1 ] || exit 1
+    _sec="$(get_dnsmasq_section)" || exit 1
+    [ -n "$_sec" ] || exit 1
+    [ "$(uci -q get "dhcp.$_sec.noresolv" 2>/dev/null)" = 1 ] || exit 1
+    [ "$(uci -q get "dhcp.$_sec.doh_backup_noresolv" 2>/dev/null)" = 1 ] || exit 1
+    _expected="$(watchdog_expected_servers 2>/dev/null)" || exit 1
+    [ -n "$_expected" ] && [ -s "$_expected" ] || exit 1
+    _expected_value="$(sort -u "$_expected")"
+    rm -f "$_expected"
+    _backup="$(uci -q get "dhcp.$_sec.doh_backup_server" 2>/dev/null | tr ' ' '\n' | sed '/^$/d' | sort -u)"
+    [ "$_backup" = "$_expected_value" ] || exit 1
+    _extra="127.0.0.1#$PORT_RU"
+    printf '%s\n' "$(uci -q get "dhcp.$_sec.doh_server" 2>/dev/null)" | tr ' ' '\n' | grep -Fxq -- "$_extra" || exit 1
+    _current="$(uci -q get "dhcp.$_sec.server" 2>/dev/null | tr ' ' '\n' |
+        sed -e '/^$/d' -e '\|^/mask\.icloud\.com/$|d' -e '\|^/mask-h2\.icloud\.com/$|d' -e '\|^/use-application-dns\.net/$|d' | sort -u)"
+    _allowed="$(printf '%s\n%s\n' "$_expected_value" "$_extra" | sort -u)"
+    [ "$_current" = "$_allowed" ] || exit 1
+
+    _dir="$(mktemp -d "$STATE_DIR/steer-restore.XXXXXX")" || exit 1
+    if ! cp -p /etc/config/dhcp "$_dir/dhcp" || ! cp -p /etc/config/https-dns-proxy "$_dir/proxy"; then
+        rm -f "$_dir/dhcp" "$_dir/proxy"; rmdir "$_dir" 2>/dev/null; exit 1
+    fi
+    _ok=0
+    if /etc/init.d/https-dns-proxy stop >/dev/null 2>&1 &&
+       steer_dns_upstream_ready &&
+       sync_hdp_force_contract 1 &&
+       /etc/init.d/https-dns-proxy start >/dev/null 2>&1 &&
+       steer_dns_upstream_ready; then
+        _ok=1
+    fi
+    if [ "$_ok" != 1 ]; then
+        /etc/init.d/https-dns-proxy stop >/dev/null 2>&1 || true
+        cp -p "$_dir/proxy" /etc/config/https-dns-proxy || exit 1
+        cp -p "$_dir/dhcp" /etc/config/dhcp || exit 1
+        /etc/init.d/https-dns-proxy start >/dev/null 2>&1 || exit 1
+        /etc/init.d/dnsmasq restart >/dev/null 2>&1 || exit 1
+    fi
+    rm -f "$_dir/dhcp" "$_dir/proxy"
+    rmdir "$_dir" 2>/dev/null || true
+    [ "$_ok" = 1 ]
+)
 dns_dot_block_ready() {
     firewall_resolve_zones >/dev/null 2>&1 || true
     if [ "$(uci -q get "firewall.$FW_DOT_SECTION" 2>/dev/null)" = rule ] && firewall_dot_rule_matches "$FW_DOT_SECTION"; then
@@ -3135,7 +3189,10 @@ apply_dns_force() {
     # A toggle must not rebuild dnsmasq behind Steer. Require the already
     # applied Manager upstreams before changing the shared proxy settings.
     if [ "${STEER_DNS_ACTIVE:-0}" = 1 ]; then
-        (steer_dns_upstream_ready) || return 1
+        if ! (steer_dns_upstream_ready); then
+            steer_restore_proxy_backup
+            return $?
+        fi
     fi
     sync_hdp_force_contract 1
 }

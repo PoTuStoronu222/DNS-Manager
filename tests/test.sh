@@ -1582,6 +1582,81 @@ awk '/^steer_dns_upstream_ready\(\) \{/,/^}/' dns-manager.sh > "$tmp/steer_upstr
 ) || fail "Steer DNS matching mishandles canaries, foreign or missing upstreams"
 ok "Steer DNS matching ignores known canaries but rejects different or absent upstreams"
 
+# Reproduce OpenWrt proxy backup/restore behavior without touching real services.
+awk '/^steer_restore_proxy_backup\(\) \(/ { capture=1 } capture { print } capture && /^\)$/ { exit }' dns-manager.sh |
+    sed -e 's|/etc/config/dhcp|"$MOCK_DIR/dhcp"|g' -e 's|/etc/config/https-dns-proxy|"$MOCK_DIR/proxy"|g' -e 's|/etc/init.d/https-dns-proxy|mock_proxy|g' -e 's|/etc/init.d/dnsmasq|mock_dnsmasq|g' -e 's|\[ -x mock_proxy \]|true|g' > "$tmp/steer_restore_mock.sh"
+(
+    set -eu
+    . "$tmp/steer_restore_mock.sh"
+    MOCK_DIR="$tmp/steer-recovery"
+    mkdir -p "$MOCK_DIR"
+    STATE_DIR="$MOCK_DIR"
+    STEER_DNS_ACTIVE=1
+    SLOT_RU=yandex
+    PORT_RU=5059
+    get_dnsmasq_section() { printf cfg; }
+    watchdog_expected_servers() { printf '%s\n' '127.0.0.1#5053' '/ru/127.0.0.1#5059' > "$MOCK_DIR/expected"; printf '%s\n' "$MOCK_DIR/expected"; }
+    uci() {
+        case "$*" in
+            '-q changes dhcp'|'-q changes https-dns-proxy') return 0 ;;
+            'show dhcp') printf '%s\n' 'dhcp.cfg=dnsmasq' ;;
+            '-q get https-dns-proxy.config.dnsmasq_config_update') printf '*' ;;
+            '-q get dhcp.cfg.noresolv'|'-q get dhcp.cfg.doh_backup_noresolv') printf 1 ;;
+            '-q get dhcp.cfg.doh_backup_server') cat "$MOCK_DIR/backup" ;;
+            '-q get dhcp.cfg.doh_server') printf '127.0.0.1#5053 127.0.0.1#5059' ;;
+            '-q get dhcp.cfg.server') cat "$MOCK_DIR/current" ;;
+            *) return 1 ;;
+        esac
+    }
+    steer_dns_upstream_ready() { [ "$(cat "$MOCK_DIR/current")" = '127.0.0.1#5053 /ru/127.0.0.1#5059' ]; }
+    sync_hdp_force_contract() {
+        printf '%s\n' sync >> "$MOCK_DIR/log"
+        [ "$FAIL_AT" != sync ] || return 1
+        printf changed > "$MOCK_DIR/proxy"
+    }
+    mock_proxy() {
+        printf '%s\n' "$1" >> "$MOCK_DIR/log"
+        case "$1" in
+            running) return 0 ;;
+            stop)
+                if [ "$FAIL_AT" = stop ] && [ ! -e "$MOCK_DIR/failed" ]; then : > "$MOCK_DIR/failed"; return 1; fi
+                printf '%s' '127.0.0.1#5053 /ru/127.0.0.1#5059' > "$MOCK_DIR/current"
+                printf changed > "$MOCK_DIR/dhcp" ;;
+            start)
+                if [ "$FAIL_AT" = start ] && [ ! -e "$MOCK_DIR/failed" ]; then : > "$MOCK_DIR/failed"; return 1; fi
+                if [ "$FAIL_AT" = verify ] && [ ! -e "$MOCK_DIR/failed" ]; then : > "$MOCK_DIR/failed"; printf bad > "$MOCK_DIR/current"; fi ;;
+        esac
+    }
+    mock_dnsmasq() { return 0; }
+    for FAIL_AT in none stop sync start verify; do
+        rm -f "$MOCK_DIR/failed"
+        printf original-dhcp > "$MOCK_DIR/dhcp"
+        printf original-proxy > "$MOCK_DIR/proxy"
+        printf '%s' '127.0.0.1#5053 /ru/127.0.0.1#5059' > "$MOCK_DIR/backup"
+        printf '%s' '127.0.0.1#5053 /ru/127.0.0.1#5059 127.0.0.1#5059 /mask.icloud.com/' > "$MOCK_DIR/current"
+        : > "$MOCK_DIR/log"
+        if [ "$FAIL_AT" = none ]; then
+            steer_restore_proxy_backup || exit 1
+            grep -qx sync "$MOCK_DIR/log" || exit 2
+        else
+            if steer_restore_proxy_backup; then exit 3; fi
+            [ "$(cat "$MOCK_DIR/dhcp")" = original-dhcp ] || exit 4
+            [ "$(cat "$MOCK_DIR/proxy")" = original-proxy ] || exit 5
+            grep -qx start "$MOCK_DIR/log" || exit 6
+        fi
+    done
+    FAIL_AT=none
+    STEER_DNS_ACTIVE=0
+    : > "$MOCK_DIR/log"
+    if steer_restore_proxy_backup; then exit 7; fi
+    [ ! -s "$MOCK_DIR/log" ] || exit 8
+    STEER_DNS_ACTIVE=1
+    printf '%s' '8.8.8.8' > "$MOCK_DIR/backup"
+    if steer_restore_proxy_backup; then exit 9; fi
+    if grep -qx stop "$MOCK_DIR/log"; then exit 10; fi
+) || fail "proxy backup recovery or rollback regression"
+ok "proxy backup recovery validates ownership, rolls back failures and leaves non-Steer untouched"
+
 awk '
     /^test_dns_catalog\(\) \(/ { capture=1 }
     capture { print }
