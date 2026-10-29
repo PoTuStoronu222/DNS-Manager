@@ -574,7 +574,7 @@ grep -Fq "disabled:!!state.busy||!!state.jobRunning||unavailable||checking" dns-
 grep -q "'gaming','Игровые DNS'" dns-manager-luci.sh || fail "gaming catalog label missing in LuCI"
 grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validation missing gaming category"
 grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
-grep -q 'VERSION="3.89"' dns-manager.sh || fail "manager version not bumped"
+grep -q 'VERSION="3.90"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
 grep -q 'VERSION="1.125"' dns-manager-luci.sh || fail "LuCI version not bumped"
 if grep -q '^main_menu$' dns-manager.sh; then fail "interactive console menu still starts"; fi
@@ -858,8 +858,8 @@ view_luci="$(sed -n 's|^// DNS Manager LuCI common module version:[[:space:]]*||
 dashboard_view_luci="$(sed -n 's|^// DNS Manager LuCI version: *||p' dns-manager-luci.sh | head -n1)"
 [ "$top_luci" = "$dashboard_view_luci" ] || fail "dashboard view version marker is stale"
 ok "LuCI version markers synchronized ($top_luci)"
-grep -Fq 'VERSION="3.89"' dns-manager.sh || fail "DNS Manager version marker is not 3.89"
-ok "DNS Manager version marker synchronized (3.89)"
+grep -Fq 'VERSION="3.90"' dns-manager.sh || fail "DNS Manager version marker is not 3.90"
+ok "DNS Manager version marker synchronized (3.90)"
 grep -Fq "assignment.appendChild(btn('Удалить'" dns-manager-luci.sh || fail "Custom DNS delete button is not aligned with the assignment action"
 grep -Fq ".dm-catalog-item-custom{grid-column:auto}" dns-manager-luci.sh || fail "Custom DNS card is wider than a stock catalog card"
 grep -Fq ".dm-catalog-controls-custom .dm-assign-inline select{height:30px;min-width:0;width:auto;max-width:100%;flex:1 1 160px" dns-manager-luci.sh || fail "Custom DNS actions do not have a responsive inline layout"
@@ -1558,6 +1558,29 @@ done
 EOF_STEER_INDEPENDENT
 sh "$tmp/check_steer_independent.sh" "$tmp/check_force_state.sh" || fail "Steer forced DNS incorrectly depends on independent DoT block"
 ok "Steer forced-DNS state is independent of the DoT block"
+
+# Canary domains added by https-dns-proxy are not forwarding servers.
+awk '/^steer_dns_upstream_ready\(\) \{/,/^}/' dns-manager.sh > "$tmp/steer_upstream_ready.sh"
+(
+    set -eu
+    . "$tmp/steer_upstream_ready.sh"
+    TMP_DIR="$tmp"
+    STEER_DNS_ACTIVE=1
+    get_dnsmasq_section() { printf lan; }
+    watchdog_expected_servers() { printf '%s' "$TEST_EXPECTED" > "$tmp/expected-servers"; printf '%s\n' "$tmp/expected-servers"; }
+    uci() { printf '%s\n' "$TEST_ACTUAL"; }
+    TEST_EXPECTED='127.0.0.1#5053'
+    TEST_ACTUAL='127.0.0.1#5053 /mask.icloud.com/ /mask-h2.icloud.com/ /use-application-dns.net/'
+    steer_dns_upstream_ready || exit 1
+    TEST_ACTUAL='127.0.0.1#5053 8.8.8.8'
+    if steer_dns_upstream_ready; then exit 2; fi
+    TEST_ACTUAL='/mask.icloud.com/'
+    if steer_dns_upstream_ready; then exit 3; fi
+    TEST_EXPECTED=''
+    TEST_ACTUAL=''
+    if steer_dns_upstream_ready; then exit 4; fi
+) || fail "Steer DNS matching mishandles canaries, foreign or missing upstreams"
+ok "Steer DNS matching ignores known canaries but rejects different or absent upstreams"
 
 awk '
     /^test_dns_catalog\(\) \(/ { capture=1 }

@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.89"
+VERSION="3.90"
 # 3.86: make LuCI the primary interface and preserve external DNS on removal.
 # 3.85: revalidate Watchdog settings before recovery.
 # 3.84: cap DNS catalog test concurrency by total RAM on small routers.
@@ -1655,8 +1655,16 @@ steer_dns_upstream_ready() {
     [ -n "$_sec" ] || return 1
     _expected="$(watchdog_expected_servers 2>/dev/null || true)"
     [ -n "$_expected" ] || return 1
+    if [ ! -s "$_expected" ]; then
+        rm -f "$_expected" 2>/dev/null || true
+        return 1
+    fi
     _actual="$TMP_DIR/steer-dns-actual-$$"
-    printf "%s\n" "$(uci -q get "dhcp.$_sec.server" 2>/dev/null)" | tr " " "\n" | sed "/^$/d" | sort -u > "$_actual"
+    # https-dns-proxy adds these domain-only canaries to dnsmasq's server
+    # list. They are not upstreams and must not invalidate the selected DNS.
+    printf "%s\n" "$(uci -q get "dhcp.$_sec.server" 2>/dev/null)" | tr " " "\n" |
+        sed -e "/^$/d" -e '\|^/mask\.icloud\.com/$|d' -e '\|^/mask-h2\.icloud\.com/$|d' -e '\|^/use-application-dns\.net/$|d' |
+        sort -u > "$_actual"
     _want="$(sort -u "$_expected" 2>/dev/null)"
     _ok=0
     [ "$_want" = "$(cat "$_actual" 2>/dev/null)" ] && _ok=1
