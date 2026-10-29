@@ -102,3 +102,12 @@ echo 'OK: regional selection and missing provider addresses'
     grep -Fxq 'save:94.230.129.3' "$tmp/actions"
 )
 echo 'OK: provider change, empty WAN, external settings and rollback'
+awk '/^clear_dns_core_runtime_state\(\) \{/,/^}/' "$ROOT/dns-manager.sh" > "$tmp/reset"
+(
+    . "$tmp/reset"
+    save_config() { [ "$REGIONAL_MODE" = doh ] && [ -z "$REGIONAL_ISP_IPS" ] && [ -z "$SLOT_RU" ]; }
+    REGIONAL_MODE=isp REGIONAL_ISP_IPS=94.230.128.3 SLOT_RU=old
+    clear_dns_core_runtime_state
+    [ "$REGIONAL_MODE" = doh ] && [ -z "$REGIONAL_ISP_IPS" ] && [ -z "$SLOT_RU" ]
+)
+echo 'OK: DNS reset clears the regional mode'
