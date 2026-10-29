@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.90"
+VERSION="3.91"
 # 3.86: make LuCI the primary interface and preserve external DNS on removal.
 # 3.85: revalidate Watchdog settings before recovery.
 # 3.84: cap DNS catalog test concurrency by total RAM on small routers.
@@ -2912,6 +2912,24 @@ configure_hdp_manager_control() {
     [ "${PROFILE_APPLY:-0}" = 1 ] && return 0
     sync_hdp_force_contract "${FORCE_DOH:-0}"
 }
+
+# Profile application owns dnsmasq's selected upstreams even in CORE_ONLY
+# mode. Stop the proxy under the surrounding transaction before disabling its
+# auto-management, so its own backup is restored before dnsmasq is rebuilt.
+detach_proxy_dnsmasq_for_profile() {
+    [ -f /etc/config/https-dns-proxy ] || return 0
+    [ "$(uci -q get https-dns-proxy.config.dnsmasq_config_update 2>/dev/null)" = '-' ] && return 0
+    [ -z "$(uci -q changes dhcp 2>/dev/null)" ] || return 1
+    [ -z "$(uci -q changes https-dns-proxy 2>/dev/null)" ] || return 1
+    _sections="$(uci show dhcp 2>/dev/null | sed -n 's/^dhcp\.\([^.=]*\)=dnsmasq$/\1/p')"
+    [ "$(printf '%s\n' "$_sections" | sed '/^$/d' | wc -l | tr -d ' ')" = 1 ] || return 1
+    if [ -x /etc/init.d/https-dns-proxy ] && /etc/init.d/https-dns-proxy running >/dev/null 2>&1; then
+        /etc/init.d/https-dns-proxy stop >/dev/null 2>&1 || return 1
+    fi
+    uci set https-dns-proxy.config.dnsmasq_config_update='-' || return 1
+    uci commit https-dns-proxy || return 1
+    return 0
+}
 ensure_doh_slot() {
 slot="$1"; id="$2"; [ -n "$id" ] || return 0
 url="$(normalize_url "$(dns_url "$id")")"; name="$(dns_name "$id")"
@@ -3161,6 +3179,11 @@ _apply_extras_now_impl() {
             return 0
             ;;
         encrypted_dns)
+            _dns_section="$(get_dnsmasq_section)"
+            if [ "$(uci -q get https-dns-proxy.config.dnsmasq_config_update 2>/dev/null)" = '*' ] &&
+               uci -q get "dhcp.$_dns_section.doh_backup_server" >/dev/null 2>&1; then
+                steer_restore_proxy_backup "${FORCE_DOH:-0}" || return 1
+            fi
             apply_encrypted_dns_block || return 1
             sync_dns_manager_canaries || return 1
             save_config || return 1
@@ -3274,6 +3297,7 @@ sync_dns_manager_canaries() (
         [ -e "$_file" ] || exit 0
         rm -f "$_file" || exit 1
     fi
+    [ "${DNSMGR_CANARY_DEFER_RESTART:-0}" = 1 ] && exit 0
     [ ! -x /etc/init.d/dnsmasq ] || /etc/init.d/dnsmasq restart >/dev/null 2>&1
 )
 apply_encrypted_dns_block() {
@@ -4143,10 +4167,11 @@ _apply_settings_impl() {
     fi
     if [ "$DOH_REBUILD_NEEDED" = 1 ] && [ "${DOH_TOTAL:-0}" -gt 0 ]; then
         apply_progress "Останавливаю текущие экземпляры https-dns-proxy перед пересборкой."
-        /etc/init.d/https-dns-proxy stop >/dev/null 2>&1 || true
+        /etc/init.d/https-dns-proxy stop >/dev/null 2>&1 || { err_msg "Не удалось остановить https-dns-proxy."; tx_restore_on_failure; return 1; }
         apply_progress_ok "Текущие экземпляры https-dns-proxy остановлены."
         sleep 1
     fi
+    detach_proxy_dnsmasq_for_profile || { err_msg "Не удалось отключить автоматическое изменение dnsmasq."; tx_restore_on_failure; return 1; }
     configure_hdp_manager_control || {
         err_msg "Не удалось подготовить настройки DNS."
         tx_restore_on_failure
@@ -4216,7 +4241,8 @@ _apply_settings_impl() {
         apply_progress_ok "Фоновая автопроверка DNS обработана."
     fi
     apply_progress "Запускаю https-dns-proxy с выбранными экземплярами."
-    /etc/init.d/https-dns-proxy restart || true
+    /etc/init.d/https-dns-proxy restart || { err_msg "Не удалось запустить https-dns-proxy."; tx_restore_on_failure; return 1; }
+    DNSMGR_CANARY_DEFER_RESTART=1 sync_dns_manager_canaries || { err_msg "Не удалось настроить canary DNS."; tx_restore_on_failure; return 1; }
     apply_progress "Перезапускаю dnsmasq."
     dnsmasq_restart_checked || { tx_restore_on_failure; return 1; }
     sleep 2
@@ -6422,6 +6448,12 @@ watchdog_enforce_hdp_control() {
             [ "$(uci -q get https-dns-proxy.config.force_ip_family 2>/dev/null)" = "auto" ] || _changed=1
         fi
         if [ "$_changed" = 1 ]; then
+            _dns_section="$(get_dnsmasq_section)"
+            if [ "$(uci -q get https-dns-proxy.config.dnsmasq_config_update 2>/dev/null)" = '*' ] &&
+               uci -q get "dhcp.$_dns_section.doh_backup_server" >/dev/null 2>&1; then
+                steer_restore_proxy_backup || return 1
+                return 0
+            fi
             uci set https-dns-proxy.config.force_dns="0" || return 1
             if [ "${FORCE_DOH:-0}" = 1 ]; then
                 for _k in notrack_dns force_dns_port force_dns_src_interface; do
