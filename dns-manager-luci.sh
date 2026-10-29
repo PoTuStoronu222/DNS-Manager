@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager full installer and LuCI companion
-# Version: 1.126
+# Version: 1.127
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.126"
+VERSION="1.127"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -622,7 +622,7 @@ EOF_MENU
     },
     "write": {
       "ubus": {
-        "dns_manager": [ "set_profile", "reset_dns", "set_slot", "set_slot_domains", "set_device_dns", "add_custom_dns", "delete_custom_dns", "set_setting", "set_watchdog_setting", "set_watchdog_settings", "set_ntp", "set_test_age", "test_all", "test_current", "test_one", "test_system", "update", "update_manager", "update_hdp", "update_catalog", "update_all", "uninstall" ]
+        "dns_manager": [ "set_profile", "set_regional", "reset_dns", "set_slot", "set_slot_domains", "set_device_dns", "add_custom_dns", "delete_custom_dns", "set_setting", "set_watchdog_setting", "set_watchdog_settings", "set_ntp", "set_test_age", "test_all", "test_current", "test_one", "test_system", "update", "update_manager", "update_hdp", "update_catalog", "update_all", "uninstall" ]
       }
     }
   }
@@ -659,7 +659,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="1.126"
+SELF_VERSION="1.127"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -2925,6 +2925,7 @@ commit_single_test_result() {
 new_job_id() {
     case "${1:-}" in
         profile) printf 'profile' ;;
+        regional) printf 'regional' ;;
         test_all) printf 'test_all' ;;
         test_current) printf 'test_current' ;;
         test_one) printf 'test_one' ;;
@@ -2955,6 +2956,7 @@ job_max_age() {
     _mode="$1"
     case "$_mode" in
         profile) printf '%s\n' "$JOB_MAX_AGE_PROFILE" ;;
+        regional) printf '%s\n' "$JOB_MAX_AGE_PROFILE" ;;
         all) printf '%s\n' "$JOB_MAX_AGE_TEST_ALL" ;;
         current) printf '%s\n' "$JOB_MAX_AGE_TEST_CURRENT" ;;
         one) printf '%s\n' "$JOB_MAX_AGE_TEST_ONE" ;;
@@ -3071,6 +3073,31 @@ profile_job_running() {
         fi
     done
     return 1
+}
+
+job_start_regional() {
+    DNSMGR_REGIONAL_ENABLED="$1"
+    case "$DNSMGR_REGIONAL_ENABLED" in 0|1) ;; *) json_error "Неверное состояние регионального DNS"; return;; esac
+    DNSMGR_REGIONAL_JOB_ID="regional"
+    if job_active "$DNSMGR_REGIONAL_JOB_ID" && job_process_alive "$JOB_DIR/$DNSMGR_REGIONAL_JOB_ID"; then
+        json_error "Региональный DNS уже изменяется"
+        return
+    fi
+    job_prepare "$DNSMGR_REGIONAL_JOB_ID" || { json_error "Не удалось подготовить задачу"; return; }
+    printf 'status=running\nstarted=%s\nmode=regional\n' "$(date +%s)" > "$JOB_DIR/$DNSMGR_REGIONAL_JOB_ID/state"
+    (
+        exec >>"$JOB_DIR/$DNSMGR_REGIONAL_JOB_ID/output" 2>&1
+        if load_manager && DNS_MANAGER_NO_UPDATE=1 regional_apply_toggle "$DNSMGR_REGIONAL_ENABLED"; then
+            job_write "$DNSMGR_REGIONAL_JOB_ID" status done
+            job_write "$DNSMGR_REGIONAL_JOB_ID" result ok
+        else
+            job_write "$DNSMGR_REGIONAL_JOB_ID" status failed
+            job_write "$DNSMGR_REGIONAL_JOB_ID" result fail
+        fi
+        job_write "$DNSMGR_REGIONAL_JOB_ID" finished "$(date +%s)"
+    ) &
+    job_record_pid "$DNSMGR_REGIONAL_JOB_ID" "$!"
+    printf '{"ok":true,"job":'; json_quote "$DNSMGR_REGIONAL_JOB_ID"; printf '}'
 }
 
 job_start_profile() {
@@ -3617,6 +3644,9 @@ run_action() {
             case "$_profile" in clean2) _profile=clean;; bypass|clean|security|privacy|adblock|family|all) ;; *) json_error "Неверный профиль"; return;; esac
             job_start_profile "$_profile"
             ;;
+        set_regional)
+            job_start_regional "$(jget enabled)"
+            ;;
         reset_dns)
             load_manager || { json_error "DNS Manager недоступен"; return; }
             if SILENT_APPLY=1 restore_dns_core >/dev/null 2>&1; then
@@ -3801,7 +3831,7 @@ test_json() { case "${RPC_METHOD:-}" in test_all) job_start_test_all;; test_curr
 
 case "${1:-}" in
     list)
-        printf '{"status":{},"runtime":{},"doh_status":{},"network_status":{},"lan_devices":{},"set_device_dns":{"mac":"String","slots":"String"},"time_status":{},"page_meta":{},"catalog":{"category":"String","offset":0,"limit":0,"only_ok":0},"update_check":{"force":0},"update":{},"update_manager":{},"update_hdp":{},"update_catalog":{},"update_all":{},"set_profile":{"profile":"String"},"reset_dns":{},"uninstall":{},"uninstall_status":{},"set_slot":{"slot":"String","id":"String"},"set_slot_domains":{"slot":"String","domains":"String"},"add_custom_dns":{"name":"String","url":"String"},"delete_custom_dns":{"id":"String"},"set_setting":{"name":"String","enabled":0},"set_watchdog_setting":{"name":"String","value":0},"set_watchdog_settings":{"interval":0,"threshold":0,"repair_cooldown":0,"max_restarts":0,"guard_interval":0},"set_ntp":{"preset":"String"},"set_test_age":{"category":"String","hours":0},"test_all":{},"test_current":{},"test_one":{"id":"String"},"test_system":{},"job":{"id":"String"},"log":{"lines":0}}\n'
+        printf '{"status":{},"runtime":{},"doh_status":{},"network_status":{},"lan_devices":{},"set_device_dns":{"mac":"String","slots":"String"},"time_status":{},"page_meta":{},"catalog":{"category":"String","offset":0,"limit":0,"only_ok":0},"update_check":{"force":0},"update":{},"update_manager":{},"update_hdp":{},"update_catalog":{},"update_all":{},"set_profile":{"profile":"String"},"set_regional":{"enabled":0},"reset_dns":{},"uninstall":{},"uninstall_status":{},"set_slot":{"slot":"String","id":"String"},"set_slot_domains":{"slot":"String","domains":"String"},"add_custom_dns":{"name":"String","url":"String"},"delete_custom_dns":{"id":"String"},"set_setting":{"name":"String","enabled":0},"set_watchdog_setting":{"name":"String","value":0},"set_watchdog_settings":{"interval":0,"threshold":0,"repair_cooldown":0,"max_restarts":0,"guard_interval":0},"set_ntp":{"preset":"String"},"set_test_age":{"category":"String","hours":0},"test_all":{},"test_current":{},"test_one":{"id":"String"},"test_system":{},"job":{"id":"String"},"log":{"lines":0}}\n'
         ;;
     call)
         case "${2:-}" in
@@ -3814,7 +3844,7 @@ case "${1:-}" in
             runtime) runtime_json;;
             catalog) INPUT="$(cat 2>/dev/null || true)"; catalog_json;;
             update_check) INPUT="$(cat 2>/dev/null || true)"; update_check_json;;            update_catalog) update_catalog_json;;            update_all) update_all_json;;            update) update_json;;            update_manager) update_manager_json;;            update_hdp) update_hdp_json;;
-            add_custom_dns|delete_custom_dns|set_device_dns|reset_dns|uninstall|set_profile|set_slot|set_slot_domains|set_setting|set_watchdog_setting|set_watchdog_settings|set_ntp) INPUT="$(cat 2>/dev/null || true)"; RPC_METHOD="$2"; run_action;;
+            add_custom_dns|delete_custom_dns|set_device_dns|reset_dns|uninstall|set_profile|set_regional|set_slot|set_slot_domains|set_setting|set_watchdog_setting|set_watchdog_settings|set_ntp) INPUT="$(cat 2>/dev/null || true)"; RPC_METHOD="$2"; run_action;;
             uninstall_status) uninstall_status_json;;
             test_all|test_current|test_one|test_system) INPUT="$(cat 2>/dev/null || true)"; RPC_METHOD="$2"; test_json;;
             job) INPUT="$(cat 2>/dev/null || true)"; job_json "$(jget id)";;
@@ -3861,7 +3891,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI common module version: 1.126
+// DNS Manager LuCI common module version: 1.127
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -3894,6 +3924,7 @@ var callManagerUpdate = dmRpc({ object:'dns_manager', method:'update_manager', e
 var callHdpUpdate = dmRpc({ object:'dns_manager', method:'update_hdp', expect:{} });
 var callUpdateCatalog = dmRpc({ object:'dns_manager', method:'update_catalog', expect:{} });
 var callProfile = dmRpc({ object:'dns_manager', method:'set_profile', params:['profile'], expect:{} });
+var callRegional = dmRpc({ object:'dns_manager', method:'set_regional', params:['enabled'], expect:{} });
 var callResetDns = dmRpc({ object:'dns_manager', method:'reset_dns', expect:{} });
 var callUninstall = dmRpc({ object:'dns_manager', method:'uninstall', expect:{} });
 var callUninstallStatus = rpc.declare({ object:'dns_manager', method:'uninstall_status', expect:{} });
@@ -5080,6 +5111,19 @@ function renderProfiles(root,st){
     g,
     E('div',{'class':'dm-mini'},'Профиль определяет схему выбора DNS и используется сейчас.')
   ];
+  var regionalSlot=(st.slots||[]).filter(function(s){return String(s.slot)==='RU';})[0]||{};
+  var regionalOn=!!regionalSlot.id;
+  var hasGeneral=(st.slots||[]).some(function(s){return String(s.slot)!=='RU'&&!!s.id;});
+  pch.push(E('div',{'class':'dm-row','style':'margin-top:14px'},[
+    E('span',{'class':'dm-label'},'Региональный DNS'),
+    badge(regionalOn?'dm-ok':'dm-off',regionalOn?'включён':'выключен')
+  ]));
+  pch.push(E('p',{'class':'dm-hint'},regionalOn
+    ? 'Для .ru, .su и .рф: '+String(regionalSlot.name||regionalSlot.id)+'. Смена профиля не меняет этот DNS.'
+    : 'Отдельный DNS для .ru, .su и .рф. При первом включении используется Yandex RU; затем — ранее выбранный региональный DNS.'));
+  pch.push(btn(regionalOn?'Выключить региональный DNS':'Включить региональный DNS','cbi-button',function(){setRegional(!regionalOn,root);},{disabled:!!state.busy||!hasGeneral}));
+  if(!hasGeneral)pch.push(E('div',{'class':'dm-inline-msg info'},'Сначала примените основной DNS-профиль.'));
+  if(state.regionalNotice)pch.push(E('div',{'class':'dm-inline-msg '+(state.regionalNoticeType||'info')},state.regionalNotice));
 
   var pj=String(st.profile_job_status||'').toLowerCase();
   var pp=String(st.profile_job_profile||'');
@@ -6019,6 +6063,40 @@ function resetDnsCore(root){
     });
   });
 }
+function setRegional(enabled,root){
+  if(state.busy)return;
+  state.busy=true;
+  state.regionalNotice='Применяю региональный DNS…';
+  state.regionalNoticeType='info';
+  renderProfiles(root,window.dmState||{});
+  callRegional(enabled?1:0).then(function(r){
+    if(!r||!r.ok||!r.job)throw new Error((r&&r.error)||'Не удалось запустить изменение.');
+    var attempts=0;
+    function poll(){
+      callJob(r.job).then(function(j){
+        if(j&&j.status==='running'&&++attempts<450){window.setTimeout(poll,2000);return;}
+        state.busy=false;
+        var ok=j&&j.status==='done'&&j.result==='ok';
+        state.regionalNoticeType=ok?'ok':'error';
+        state.regionalNotice=ok?(enabled?'Региональный DNS включён.':'Региональный DNS выключен.'):
+          ((j&&j.output&&stripAnsi(j.output).split('\n').filter(function(x){return String(x||'').trim();}).pop())||'Не удалось подтвердить изменение регионального DNS.');
+        refresh(root,true);
+      }).catch(function(err){
+        if(++attempts<450){window.setTimeout(poll,2000);return;}
+        state.busy=false;
+        state.regionalNoticeType='error';
+        state.regionalNotice=withRpcError('Не удалось получить результат.',err);
+        renderProfiles(root,window.dmState||{});
+      });
+    }
+    poll();
+  }).catch(function(err){
+    state.busy=false;
+    state.regionalNoticeType='error';
+    state.regionalNotice=withRpcError('Не удалось запустить изменение.',err);
+    renderProfiles(root,window.dmState||{});
+  });
+}
 function applyProfile(name,root){
   if(state.busy)return;
   var st=window.dmState||{};
@@ -6576,7 +6654,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 1.126
+// DNS Manager LuCI version: 1.127
 return view.extend({
   load: DM.load,
   render: DM.render,
