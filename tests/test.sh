@@ -574,7 +574,7 @@ grep -Fq "disabled:!!state.busy||!!state.jobRunning||unavailable||checking" dns-
 grep -q "'gaming','Игровые DNS'" dns-manager-luci.sh || fail "gaming catalog label missing in LuCI"
 grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validation missing gaming category"
 grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
-grep -q 'VERSION="3.90"' dns-manager.sh || fail "manager version not bumped"
+grep -q 'VERSION="3.91"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
 grep -q 'VERSION="1.126"' dns-manager-luci.sh || fail "LuCI version not bumped"
 if grep -q '^main_menu$' dns-manager.sh; then fail "interactive console menu still starts"; fi
@@ -858,8 +858,8 @@ view_luci="$(sed -n 's|^// DNS Manager LuCI common module version:[[:space:]]*||
 dashboard_view_luci="$(sed -n 's|^// DNS Manager LuCI version: *||p' dns-manager-luci.sh | head -n1)"
 [ "$top_luci" = "$dashboard_view_luci" ] || fail "dashboard view version marker is stale"
 ok "LuCI version markers synchronized ($top_luci)"
-grep -Fq 'VERSION="3.90"' dns-manager.sh || fail "DNS Manager version marker is not 3.90"
-ok "DNS Manager version marker synchronized (3.90)"
+grep -Fq 'VERSION="3.91"' dns-manager.sh || fail "DNS Manager version marker is not 3.91"
+ok "DNS Manager version marker synchronized (3.91)"
 grep -Fq "assignment.appendChild(btn('Удалить'" dns-manager-luci.sh || fail "Custom DNS delete button is not aligned with the assignment action"
 grep -Fq ".dm-catalog-item-custom{grid-column:auto}" dns-manager-luci.sh || fail "Custom DNS card is wider than a stock catalog card"
 grep -Fq ".dm-catalog-controls-custom .dm-assign-inline select{height:30px;min-width:0;width:auto;max-width:100%;flex:1 1 160px" dns-manager-luci.sh || fail "Custom DNS actions do not have a responsive inline layout"
@@ -1136,6 +1136,46 @@ touch "$tmp/force-config"
 ) || fail "force toggle changed the wrong settings with or without Steer"
 if grep -Fq 'reconcile_dnsmasq' "$tmp/force_sync_fn.sh"; then fail "force toggle rebuilds dnsmasq behind Steer"; fi
 ok "force toggle preserves Steer and avoids unrelated dnsmasq changes"
+
+# Applying a profile (including CORE_ONLY) disables proxy dnsmasq integration
+# before rebuilding the selected upstreams, independently of Steer.
+awk '/^detach_proxy_dnsmasq_for_profile\(\) \{/,/^}/' dns-manager.sh |
+    sed -e "s|/etc/config/https-dns-proxy|$tmp/force-config|g" -e 's|/etc/init.d/https-dns-proxy|mock_profile_proxy|g' -e 's|\[ -x mock_profile_proxy \]|true|g' > "$tmp/profile-detach.sh"
+(
+    set -eu
+    . "$tmp/profile-detach.sh"
+    UCI_LOG="$tmp/profile-detach.log"
+    mock_profile_proxy() {
+        printf '%s\n' "$1" >> "$UCI_LOG"
+        case "$1" in running) return 0 ;; stop) [ "$MOCK_FAIL" != stop ] ;; esac
+    }
+    uci() {
+        case "$*" in
+            '-q get https-dns-proxy.config.dnsmasq_config_update') printf '%s' "$MOCK_UPDATE" ;;
+            '-q changes dhcp'|'-q changes https-dns-proxy') return 0 ;;
+            'show dhcp') printf '%s\n' 'dhcp.cfg=dnsmasq' ;;
+            'set https-dns-proxy.config.dnsmasq_config_update=-') printf '%s\n' set >> "$UCI_LOG" ;;
+            'commit https-dns-proxy') printf '%s\n' commit >> "$UCI_LOG"; [ "$MOCK_FAIL" != commit ] ;;
+            *) return 1 ;;
+        esac
+    }
+    for STEER_DNS_ACTIVE in 0 1; do
+        MOCK_UPDATE='*'; MOCK_FAIL=none; : > "$UCI_LOG"
+        detach_proxy_dnsmasq_for_profile || exit 1
+        [ "$(cat "$UCI_LOG")" = "$(printf 'running\nstop\nset\ncommit')" ] || exit 2
+        MOCK_UPDATE='-'; : > "$UCI_LOG"
+        detach_proxy_dnsmasq_for_profile || exit 3
+        [ ! -s "$UCI_LOG" ] || exit 4
+        MOCK_UPDATE='*'; MOCK_FAIL=stop; : > "$UCI_LOG"
+        if detach_proxy_dnsmasq_for_profile; then exit 5; fi
+        if grep -qx set "$UCI_LOG"; then exit 6; fi
+        MOCK_FAIL=commit; : > "$UCI_LOG"
+        if detach_proxy_dnsmasq_for_profile; then exit 7; fi
+    done
+) || fail "profile proxy detachment changes DNS incorrectly"
+grep -Fq 'detach_proxy_dnsmasq_for_profile ||' dns-manager.sh || fail "profile application does not detach proxy dnsmasq management"
+grep -Fq 'DNSMGR_CANARY_DEFER_RESTART=1 sync_dns_manager_canaries' dns-manager.sh || fail "profile application does not retain independent canary protection"
+ok "profile application detaches proxy management before rebuilding DNS"
 
 # Runtime controller must be a no-op when forced-DNS is OFF and when an
 # unrelated active redirect owns the path. This tests behavior, not only text.
