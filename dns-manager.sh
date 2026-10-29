@@ -1676,8 +1676,11 @@ steer_dns_upstream_ready() {
 steer_restore_proxy_backup() (
     _desired_force="${1:-1}"
     case "$_desired_force" in 0|1) ;; *) exit 1;; esac
-    [ -n "${SLOT_RU:-}" ] && [ -n "${PORT_RU:-}" ] || exit 1
-    case "$PORT_RU" in *[!0-9]*|'') exit 1;; esac
+    _extra=''
+    if [ -n "${SLOT_RU:-}" ]; then
+        case "${PORT_RU:-}" in *[!0-9]*|'') exit 1;; esac
+        _extra="127.0.0.1#$PORT_RU"
+    fi
     [ -x /etc/init.d/https-dns-proxy ] || exit 1
     /etc/init.d/https-dns-proxy running >/dev/null 2>&1 || exit 1
     [ "$(uci -q get https-dns-proxy.config.dnsmasq_config_update 2>/dev/null)" = '*' ] || exit 1
@@ -1695,12 +1698,14 @@ steer_restore_proxy_backup() (
     rm -f "$_expected"
     _backup="$(uci -q get "dhcp.$_sec.doh_backup_server" 2>/dev/null | tr ' ' '\n' | sed '/^$/d' | sort -u)"
     [ "$_backup" = "$_expected_value" ] || exit 1
-    _extra="127.0.0.1#$PORT_RU"
-    printf '%s\n' "$(uci -q get "dhcp.$_sec.doh_server" 2>/dev/null)" | tr ' ' '\n' | grep -Fxq -- "$_extra" || exit 1
     _current="$(uci -q get "dhcp.$_sec.server" 2>/dev/null | tr ' ' '\n' |
         sed -e '/^$/d' -e '\|^/mask\.icloud\.com/$|d' -e '\|^/mask-h2\.icloud\.com/$|d' -e '\|^/use-application-dns\.net/$|d' | sort -u)"
-    _allowed="$(printf '%s\n%s\n' "$_expected_value" "$_extra" | sort -u)"
-    [ "$_current" = "$_allowed" ] || [ "$_current" = "$_expected_value" ] || exit 1
+    if [ "$_current" != "$_expected_value" ]; then
+        [ -n "$_extra" ] || exit 1
+        printf '%s\n' "$(uci -q get "dhcp.$_sec.doh_server" 2>/dev/null)" | tr ' ' '\n' | grep -Fxq -- "$_extra" || exit 1
+        _allowed="$(printf '%s\n%s\n' "$_expected_value" "$_extra" | sort -u)"
+        [ "$_current" = "$_allowed" ] || exit 1
+    fi
 
     _dir="$(mktemp -d "$STATE_DIR/steer-restore.XXXXXX")" || exit 1
     if ! cp -p /etc/config/dhcp "$_dir/dhcp" || ! cp -p /etc/config/https-dns-proxy "$_dir/proxy"; then
@@ -1714,7 +1719,15 @@ steer_restore_proxy_backup() (
     _ok=0
     if /etc/init.d/https-dns-proxy stop >/dev/null 2>&1 &&
        steer_dns_upstream_ready &&
-       sync_hdp_force_contract "$_desired_force" &&
+       {
+           if [ "$_desired_force" = 0 ] && [ "${STEER_DNS_ACTIVE:-0}" != 1 ]; then
+               uci set https-dns-proxy.config.force_dns=0 &&
+               uci set https-dns-proxy.config.dnsmasq_config_update=- &&
+               uci commit https-dns-proxy
+           else
+               sync_hdp_force_contract "$_desired_force"
+           fi
+       } &&
        /etc/init.d/https-dns-proxy start >/dev/null 2>&1 &&
        sync_dns_manager_canaries &&
        steer_dns_upstream_ready; then
