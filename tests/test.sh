@@ -309,6 +309,20 @@ awk '
 [ -s "$tmp/common.js" ] || fail "embedded JS extraction"
 node --check "$tmp/common.js" >/dev/null 2>&1 || fail "embedded JS: node --check"
 ok "embedded LuCI JS syntax"
+awk '/^function forceMode\(st\)/,/^function dateText\(v\)/' "$tmp/common.js" | sed '$d' > "$tmp/force_mode.js"
+FORCE_MODE_JS="$tmp/force_mode.js" node <<'NODE' || fail "forced-DNS control must reflect the saved Manager setting"
+const vm = require('vm'), fs = require('fs');
+const s = {};
+vm.createContext(s);
+vm.runInContext(fs.readFileSync(process.env.FORCE_MODE_JS, 'utf8'), s);
+for (const [state, expected] of [
+  [{force:'0', force_owner:'steer', force_status:'other'}, 'off'],
+  [{force:'1', force_owner:'steer', force_status:'steer'}, 'auto'],
+  [{force:'1', force_owner:'external', force_status:'external'}, 'auto'],
+  [{force:'0', force_owner:'external', force_status:'external'}, 'off']
+]) if (s.forceMode(state) !== expected) throw Error(JSON.stringify(state));
+NODE
+ok "forced-DNS control follows the saved Manager setting with Steer and external interception"
 
 # Dashboard must overlay authoritative forced-DNS ownership from doh_status;
 # status_json intentionally stays lightweight and does not carry those fields.
@@ -560,9 +574,9 @@ grep -Fq "disabled:!!state.busy||!!state.jobRunning||unavailable||checking" dns-
 grep -q "'gaming','Игровые DNS'" dns-manager-luci.sh || fail "gaming catalog label missing in LuCI"
 grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validation missing gaming category"
 grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
-grep -q 'VERSION="3.88"' dns-manager.sh || fail "manager version not bumped"
+grep -q 'VERSION="3.89"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
-grep -q 'VERSION="1.124"' dns-manager-luci.sh || fail "LuCI version not bumped"
+grep -q 'VERSION="1.125"' dns-manager-luci.sh || fail "LuCI version not bumped"
 if grep -q '^main_menu$' dns-manager.sh; then fail "interactive console menu still starts"; fi
 grep -Fq "btn('Удалить DNS Manager'" dns-manager-luci.sh || fail "LuCI uninstall button missing"
 grep -Fq '"uninstall":{},"uninstall_status":{}' dns-manager-luci.sh || fail "LuCI uninstall RPC is not registered"
@@ -844,8 +858,8 @@ view_luci="$(sed -n 's|^// DNS Manager LuCI common module version:[[:space:]]*||
 dashboard_view_luci="$(sed -n 's|^// DNS Manager LuCI version: *||p' dns-manager-luci.sh | head -n1)"
 [ "$top_luci" = "$dashboard_view_luci" ] || fail "dashboard view version marker is stale"
 ok "LuCI version markers synchronized ($top_luci)"
-grep -Fq 'VERSION="3.88"' dns-manager.sh || fail "DNS Manager version marker is not 3.88"
-ok "DNS Manager version marker synchronized (3.88)"
+grep -Fq 'VERSION="3.89"' dns-manager.sh || fail "DNS Manager version marker is not 3.89"
+ok "DNS Manager version marker synchronized (3.89)"
 grep -Fq "assignment.appendChild(btn('Удалить'" dns-manager-luci.sh || fail "Custom DNS delete button is not aligned with the assignment action"
 grep -Fq ".dm-catalog-item-custom{grid-column:auto}" dns-manager-luci.sh || fail "Custom DNS card is wider than a stock catalog card"
 grep -Fq ".dm-catalog-controls-custom .dm-assign-inline select{height:30px;min-width:0;width:auto;max-width:100%;flex:1 1 160px" dns-manager-luci.sh || fail "Custom DNS actions do not have a responsive inline layout"
@@ -946,6 +960,9 @@ chmod 0755 "$STEER_INIT"
 
 cat > "$tmp/bin/nft" <<'EOF_NFT'
 #!/bin/sh
+case "$*" in
+    *"list chain inet steer prerouting_dns"*) grep -q 'table inet steer' "$NFT_FIXTURE" || exit 1 ;;
+esac
 cat "$NFT_FIXTURE"
 EOF_NFT
 chmod 0755 "$tmp/bin/nft"
@@ -987,6 +1004,11 @@ steer_case 'table inet test { chain prerouting { iifname "br-lan" udp dport 53 c
 steer_case 'table ip test { chain prerouting { iifname "br-lan" tcp dport 53 dnat to 127.0.0.1:5300 } }' 1 1 Steer
 steer_case 'table inet test { chain prerouting { iifname "br-lan" udp dport 53 counter redirect to :5053 } }' 1 0 none
 steer_case 'table inet test { chain prerouting { iifname "eth0" udp dport 53 counter redirect to :5300 } }' 1 0 none
+steer_case 'table inet steer {
+ chain prerouting_dns {
+  ip saddr 192.168.1.0/24 udp dport 53 counter redirect to :5300
+ }
+}' 1 1 Steer
 steer_case 'table inet test { chain prerouting { iifname "br-lan" udp dport 53 counter redirect to :5300 } }' 0 0 none
 # The legacy fw3 path must still recognize a real LAN redirect.
 cat > "$tmp/bin/iptables-save" <<'EOF_IPTABLES'
@@ -1033,6 +1055,11 @@ sed 's#/etc/init.d/steer#"$STEER_INIT"#g' "$tmp/luci_steer_fn.sh" > "$tmp/luci_s
     }
     steer_luci_case 'table inet test { chain prerouting { iifname "br-lan" udp dport 53 counter redirect to :5300 } }' 1 1
     steer_luci_case 'table inet test { chain prerouting { iifname "eth0" udp dport 53 counter redirect to :5300 } }' 1 0
+    steer_luci_case 'table inet steer {
+ chain prerouting_dns {
+  ip saddr 192.168.1.0/24 udp dport 53 counter redirect to :5300
+ }
+}' 1 1
     steer_luci_case 'table inet test { chain prerouting { iifname "br-lan" udp dport 53 counter redirect to :5300 } }' 0 0
 )
 ok "LuCI Steer detection matches LAN/runtime contract"
@@ -1061,6 +1088,48 @@ _detect_external_line="$(grep -nF 'detect_forced_dns_path' "$tmp/force_enforce_s
 awk '/^[[:space:]]*force\)/,/^[[:space:]]*dnsmasq_perf\)/' dns-manager.sh > "$tmp/force_state.sh"
 grep -Fq '[ "$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null)" = "0" ] || _ok=0' "$tmp/force_state.sh" || fail "Steer force-state check does not expect explicit force_dns=0"
 ok "Steer forced-DNS avoids the package default interception"
+
+# Exercise both force-toggle paths without touching the host's OpenWrt config.
+awk '/^sync_hdp_force_contract\(\) \{/,/^configure_hdp_manager_control\(\) \{/' dns-manager.sh | sed '$d' | sed "s|/etc/config/https-dns-proxy|$tmp/force-config|g; s|/etc/init.d/https-dns-proxy|$tmp/no-proxy-service|g" > "$tmp/force_sync_mock.sh"
+awk '/^apply_dns_force\(\) \{/,/^}/' dns-manager.sh >> "$tmp/force_sync_mock.sh"
+awk '/^remove_dns_force\(\) \{/,/^}/' dns-manager.sh | sed "s|/etc/config/https-dns-proxy|$tmp/force-config|g; s|/etc/init.d/https-dns-proxy|$tmp/no-proxy-service|g" >> "$tmp/force_sync_mock.sh"
+touch "$tmp/force-config"
+(
+    set -eu
+    . "$tmp/force_sync_mock.sh"
+    UCI_LOG="$tmp/force-toggle-uci.log"
+    firewall_resolve_zones() { :; }
+    detect_steer_dns_path() { STEER_DNS_ACTIVE="$MOCK_STEER"; }
+    steer_dns_upstream_ready() { _want=overwritten; [ "$MOCK_READY" = 1 ]; }
+    force_dns_expected_src_interfaces() { printf '%s\n' lan; }
+    uci() { printf '%s\n' "$*" >> "$UCI_LOG"; return 0; }
+    BLOCK_EXTERNAL_DNS=0
+    FORCE_DOH=1
+    MOCK_STEER=1
+    MOCK_READY=0
+    : > "$UCI_LOG"
+    if apply_dns_force; then exit 1; fi
+    [ ! -s "$UCI_LOG" ] || exit 2
+    MOCK_READY=1
+    apply_dns_force
+    grep -Fq 'set https-dns-proxy.config.force_dns=0' "$UCI_LOG" || exit 3
+    grep -Fq 'set https-dns-proxy.config.dnsmasq_config_update=-' "$UCI_LOG" || exit 4
+    : > "$UCI_LOG"
+    remove_dns_force
+    grep -Fq 'set https-dns-proxy.config.dnsmasq_config_update=-' "$UCI_LOG" || exit 5
+    if grep -Fq 'delete https-dns-proxy.config.dnsmasq_config_update' "$UCI_LOG"; then exit 6; fi
+    MOCK_STEER=0
+    : > "$UCI_LOG"
+    sync_hdp_force_contract 1
+    grep -Fq 'set https-dns-proxy.config.force_dns=1' "$UCI_LOG" || exit 7
+    if grep -Fq 'delete https-dns-proxy.config.heartbeat' "$UCI_LOG"; then exit 8; fi
+    : > "$UCI_LOG"
+    remove_dns_force
+    grep -Fq 'set https-dns-proxy.config.force_dns=0' "$UCI_LOG" || exit 9
+    if grep -Fq 'dnsmasq_config_update' "$UCI_LOG"; then exit 10; fi
+) || fail "force toggle changed the wrong settings with or without Steer"
+if grep -Fq 'reconcile_dnsmasq' "$tmp/force_sync_fn.sh"; then fail "force toggle rebuilds dnsmasq behind Steer"; fi
+ok "force toggle preserves Steer and avoids unrelated dnsmasq changes"
 
 # Runtime controller must be a no-op when forced-DNS is OFF and when an
 # unrelated active redirect owns the path. This tests behavior, not only text.
@@ -1351,7 +1420,7 @@ awk '/^function renderDoH\(root,st\)\{/,/^function slotLabel/' "$tmp/common.js" 
 grep -q "setForceMode('auto',root)" "$tmp/doh_panel.js" || fail "LuCI DoH page has no force-DNS auto action"
 grep -q "setForceMode('off',root)" "$tmp/doh_panel.js" || fail "LuCI DoH page has no force-DNS disable action"
 grep -q "Авто (рекомендуется)" "$tmp/doh_panel.js" || fail "LuCI DoH page lost force-DNS auto label"
-grep -q "Не перехватывать" "$tmp/doh_panel.js" || fail "LuCI DoH page lost force-DNS disable label"
+grep -q "Выключить в DNS Manager" "$tmp/doh_panel.js" || fail "LuCI DoH page lost force-DNS disable label"
 ok "LuCI forced-DNS component is state-only; controls live in the DoH page"
 
 # Encrypted-DNS bypass protection is an independent setting; force DNS must not
@@ -1461,6 +1530,34 @@ grep -Fq "setSetting('encrypted_dns',0,root)" dns-manager-luci.sh || fail "LuCI 
 grep -Fq 'Направляет обычные DNS-запросы устройств на DNS роутера.' dns-manager-luci.sh || fail "LuCI is missing the forced-DNS explanation"
 grep -Fq 'Дополнительно ограничивает использование сторонних зашифрованных DNS-сервисов' dns-manager-luci.sh || fail "LuCI is missing the encrypted-DNS protection explanation"
 ok "Forced DNS and encrypted-DNS bypass protection are independently controlled"
+
+awk '/^check_module_state\(\) \{/,/^}/' dns-manager.sh > "$tmp/check_force_state.sh"
+cat > "$tmp/check_steer_independent.sh" <<'EOF_STEER_INDEPENDENT'
+#!/bin/sh
+set -eu
+. "$1"
+disc_network() { :; }
+get_dnsmasq_section() { printf lan; }
+firewall_resolve_zones() { :; }
+detect_forced_dns_path() { :; }
+detect_steer_dns_path() { STEER_DNS_ACTIVE=1; }
+steer_dns_upstream_ready() { return 0; }
+dns_dot_block_ready() { return 1; }
+uci() {
+    case "$*" in
+        *https-dns-proxy.config.dnsmasq_config_update) printf '%s' '-' ;;
+        *https-dns-proxy.config.force_ip_family) printf auto ;;
+        *https-dns-proxy.config.force_dns) printf 0 ;;
+        *) return 1 ;;
+    esac
+}
+FORCE_DOH=1
+for BLOCK_EXTERNAL_DNS in 0 1; do
+    [ "$(check_module_state force)" = 1 ] || exit 1
+done
+EOF_STEER_INDEPENDENT
+sh "$tmp/check_steer_independent.sh" "$tmp/check_force_state.sh" || fail "Steer forced DNS incorrectly depends on independent DoT block"
+ok "Steer forced-DNS state is independent of the DoT block"
 
 awk '
     /^test_dns_catalog\(\) \(/ { capture=1 }

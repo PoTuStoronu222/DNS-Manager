@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.88"
+VERSION="3.89"
 # 3.86: make LuCI the primary interface and preserve external DNS on removal.
 # 3.85: revalidate Watchdog settings before recovery.
 # 3.84: cap DNS catalog test concurrency by total RAM on small routers.
@@ -1535,7 +1535,7 @@ detect_steer_dns_path() {
     # the manager immediately uses its normal standalone DNS path.
     if [ -x /etc/init.d/steer ] && /etc/init.d/steer running >/dev/null 2>&1; then
         :
-    elif command -v pgrep >/dev/null 2>&1 && pgrep -x steer >/dev/null 2>&1; then
+    elif command -v pgrep >/dev/null 2>&1 && { pgrep -x steer >/dev/null 2>&1 || pgrep -x steerd >/dev/null 2>&1; }; then
         :
     else
         return 0
@@ -1545,6 +1545,14 @@ detect_steer_dns_path() {
     _lan_if="$(uci -q get network.lan.ifname 2>/dev/null)"
     case "$SYS_FW" in
         fw4)
+            # The official Steer chain can match a source subnet instead of
+            # an input interface. Query its own chain directly.
+            if nft -a list chain inet steer prerouting_dns 2>/dev/null |
+                awk '/dport[[:space:]]+53/ && /redirect[[:space:]]+to[[:space:]]*:5300([[:space:]]|$)/ { found=1 } END { exit(found ? 0 : 1) }'; then
+                STEER_DNS_ACTIVE=1
+                STEER_DNS_SOURCE="Steer"
+                return 0
+            fi
             # Only accept an actual LAN ingress rule. A random WAN/other-zone
             # 53 -> 5300 redirect must never make DNS Manager treat Steer as
             # the active DNS owner.
@@ -1703,6 +1711,7 @@ detect_forced_dns_path() {
     _external=0
     _steer=0
     detect_steer_dns_path >/dev/null 2>&1 || true
+
     [ "${STEER_DNS_ACTIVE:-0}" = 1 ] && _steer=1
 
     [ "${FORCE_DOH:-0}" = 1 ] &&
@@ -2755,12 +2764,12 @@ sync_hdp_force_contract() {
                 /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || return 1
             fi
 
-            reconcile_dnsmasq || return 1
-            if [ -x /etc/init.d/dnsmasq ]; then /etc/init.d/dnsmasq restart >/dev/null 2>&1 || return 1; fi
         else
-            for _k in notrack_dns force_dns_port force_dns_src_interface force_ip_family dnsmasq_config_update; do
+            for _k in notrack_dns force_dns_port force_dns_src_interface force_ip_family; do
                 uci -q delete "https-dns-proxy.config.$_k" || true
             done
+            # An absent option defaults to "*", which can rewrite dnsmasq.
+            uci set https-dns-proxy.config.dnsmasq_config_update="-" || return 1
             uci commit https-dns-proxy || return 1
 
             if [ -x /etc/init.d/https-dns-proxy ] && /etc/init.d/https-dns-proxy running >/dev/null 2>&1; then
@@ -2770,15 +2779,7 @@ sync_hdp_force_contract() {
         return 0
     fi
 
-    # Rebuild the main section from the shared contract so stray/foreign
-    # stray options cannot leave a configuration that only partially matches the shared contract.
-    _main_opts="$(uci -q show https-dns-proxy.config 2>/dev/null | sed -n 's/^https-dns-proxy\.config\.\([^.=]*\)=.*/\1/p' | sort -u)"
-    for _opt in $_main_opts; do
-        case "$_opt" in
-            dnsmasq_config_update|force_dns|notrack_dns|force_dns_port|force_dns_src_interface|procd_trigger_wan6|heartbeat_domain|heartbeat_sleep_timeout|heartbeat_wait_timeout|user|group|listen_addr|force_ip_family|canary_domains_icloud|canary_domains_mozilla) ;;
-            *) uci -q delete "https-dns-proxy.config.$_opt" || true ;;
-        esac
-    done
+    # Preserve other package options which may have been configured separately.
     uci set https-dns-proxy.config.dnsmasq_config_update='*' || return 1
     uci set https-dns-proxy.config.force_dns="$_want" || return 1
     uci set https-dns-proxy.config.notrack_dns='1' || return 1
@@ -3122,13 +3123,28 @@ remove_dnsmasq_perf() {
 }
 apply_dns_force() {
     [ "${FORCE_DOH:-0}" = 1 ] || return 0
+    detect_steer_dns_path >/dev/null 2>&1 || true
+    # A toggle must not rebuild dnsmasq behind Steer. Require the already
+    # applied Manager upstreams before changing the shared proxy settings.
+    if [ "${STEER_DNS_ACTIVE:-0}" = 1 ]; then
+        (steer_dns_upstream_ready) || return 1
+    fi
     sync_hdp_force_contract 1
 }
 
 remove_dns_force() {
-    # The shared forced-DNS contract switches only
-    # force_dns to 0 when interception is disabled.
-    sync_hdp_force_contract 0
+    detect_steer_dns_path >/dev/null 2>&1 || true
+    if [ "${STEER_DNS_ACTIVE:-0}" = 1 ]; then
+        sync_hdp_force_contract 0
+        return $?
+    fi
+    [ -f /etc/config/https-dns-proxy ] || return 0
+    uci set https-dns-proxy.config.force_dns=0 || return 1
+    uci commit https-dns-proxy || return 1
+    if [ -x /etc/init.d/https-dns-proxy ] && /etc/init.d/https-dns-proxy running >/dev/null 2>&1; then
+        /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || return 1
+    fi
+    return 0
 }
 apply_encrypted_dns_block() {
     local _want _opt _current _changed
@@ -5326,7 +5342,6 @@ check_module_state() {
                     [ -z "$(uci -q get https-dns-proxy.config.force_dns_port 2>/dev/null)" ] || _ok=0
                     [ -z "$(uci -q get https-dns-proxy.config.force_dns_src_interface 2>/dev/null)" ] || _ok=0
                     steer_dns_upstream_ready || _ok=0
-                    dns_dot_block_ready || _ok=0
                     [ "$_ok" = 1 ] && printf 1 || printf 2
                 else
                     printf 2
