@@ -1716,6 +1716,10 @@ steer_restore_proxy_backup() (
     fi
     if [ "$_ok" != 1 ]; then
         /etc/init.d/https-dns-proxy stop >/dev/null 2>&1 || true
+        # The preflight requires no pending UCI changes; discard any partial
+        # changes made by this recovery before restoring the saved files.
+        uci -q revert dhcp >/dev/null 2>&1 || true
+        uci -q revert https-dns-proxy >/dev/null 2>&1 || true
         cp -p "$_dir/proxy" /etc/config/https-dns-proxy || exit 1
         cp -p "$_dir/dhcp" /etc/config/dhcp || exit 1
         /etc/init.d/https-dns-proxy start >/dev/null 2>&1 || exit 1
