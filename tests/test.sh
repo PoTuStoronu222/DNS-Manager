@@ -2920,6 +2920,34 @@ awk '/^job_start_regional\(\) \{/,/^}/' "$tmp/backend.sh" > "$tmp/regional_job.s
 ) || fail "regional background job does not expose its result"
 ok "regional action runs in a resumable background job"
 
+# Exercise the actual LuCI callbacks for success and failure, not just their
+# presence in the generated JavaScript.
+awk '/^function setRegional\(enabled,root\)/,/^function applyProfile\(name,root\)/' "$tmp/common.js" | sed '$d' > "$tmp/regional-ui.js"
+REGIONAL_UI_JS="$tmp/regional-ui.js" node <<'NODE' || fail "regional UI does not report job result"
+const vm = require('vm'), fs = require('fs');
+const source = fs.readFileSync(process.env.REGIONAL_UI_JS, 'utf8');
+async function check(status, result, expected) {
+  let refreshes = 0;
+  const sandbox = {
+    state: {busy:false}, window: {dmState:{}, setTimeout},
+    renderProfiles: () => {}, refresh: () => { refreshes++; },
+    callRegional: () => Promise.resolve({ok:true,job:'regional'}),
+    callJob: () => Promise.resolve({ok:true,status,result,output:'Ошибка'}),
+    stripAnsi: x => x, withRpcError: (s,e) => s+String(e),
+    rootAlive: () => true
+  };
+  vm.createContext(sandbox);
+  vm.runInContext(source, sandbox);
+  sandbox.setRegional(true, {});
+  await new Promise(resolve => setTimeout(resolve, 20));
+  if (sandbox.state.busy || sandbox.state.regionalNoticeType !== expected || refreshes !== 1)
+    throw Error(JSON.stringify(sandbox.state));
+}
+Promise.all([check('done','ok','ok'),check('failed','fail','error')])
+  .catch(e => { console.error(e); process.exitCode=1; });
+NODE
+ok "regional LuCI action reports success and failure inline"
+
 # The bypass shortcut must preserve both an active and an empty regional slot.
 awk '/^quick_max_bypass\(\) \{/,/^}/' dns-manager.sh > "$tmp/quick-regional.sh"
 (
