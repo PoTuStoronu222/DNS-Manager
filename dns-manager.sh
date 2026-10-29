@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.92"
+VERSION="3.93"
 # 3.86: make LuCI the primary interface and preserve external DNS on removal.
 # 3.85: revalidate Watchdog settings before recovery.
 # 3.84: cap DNS catalog test concurrency by total RAM on small routers.
@@ -900,6 +900,12 @@ esac
 : "${SLOT_1_DOMAINS:=}"; : "${SLOT_2_DOMAINS:=}"; : "${SLOT_3_DOMAINS:=}"; : "${SLOT_4_DOMAINS:=}"; : "${SLOT_5_DOMAINS:=}"; : "${SLOT_6_DOMAINS:=}"
 : "${SLOT_RU:=}"
 : "${REGIONAL_SAVED_ID:=}"
+: "${REGIONAL_MODE:=}"
+: "${REGIONAL_ISP_IPS:=}"
+case "$REGIONAL_MODE" in
+    doh|legacy|yandex|isp) ;;
+    *) if [ -n "$SLOT_RU" ]; then REGIONAL_MODE=legacy; else REGIONAL_MODE=doh; fi ;;
+esac
 : "${SLOT_1_CAT:=}"; : "${SLOT_2_CAT:=}"; : "${SLOT_3_CAT:=}"; : "${SLOT_4_CAT:=}"; : "${SLOT_5_CAT:=}"; : "${SLOT_6_CAT:=}"
 : "${SLOT_RU_CAT:=}"
 : "${PORT_1:=}"; : "${PORT_2:=}"; : "${PORT_3:=}"; : "${PORT_4:=}"; : "${PORT_5:=}"; : "${PORT_6:=}"
@@ -996,6 +1002,8 @@ SLOT_6=$(shell_quote "$SLOT_6")
 SLOT_6_DOMAINS=$(shell_quote "$SLOT_6_DOMAINS")
 SLOT_RU=$(shell_quote "$SLOT_RU")
 REGIONAL_SAVED_ID=$(shell_quote "${REGIONAL_SAVED_ID:-}")
+REGIONAL_MODE=$(shell_quote "${REGIONAL_MODE:-doh}")
+REGIONAL_ISP_IPS=$(shell_quote "${REGIONAL_ISP_IPS:-}")
 SLOT_1_CAT=$(shell_quote "$SLOT_1_CAT")
 SLOT_2_CAT=$(shell_quote "$SLOT_2_CAT")
 SLOT_3_CAT=$(shell_quote "$SLOT_3_CAT")
@@ -3130,7 +3138,17 @@ reconcile_dnsmasq() {
             done
         fi
     done
-    if [ "$TLD_RU_ENABLED" = 1 ] && [ -n "$SLOT_RU" ] && [ -n "$PORT_RU" ]; then
+    if [ "${REGIONAL_MODE:-legacy}" = yandex ] || [ "${REGIONAL_MODE:-legacy}" = isp ]; then
+        if [ "$REGIONAL_MODE" = yandex ]; then _regional_ips='77.88.8.8 77.88.8.1'; else _regional_ips="${REGIONAL_ISP_IPS:-}"; fi
+        [ -n "$_regional_ips" ] || return 1
+        for t in /ru /su /xn--p1ai; do
+            for _regional_ip in $_regional_ips; do
+                val="$t/$_regional_ip"
+                exact_list_has "dhcp.$sec.server" "$val" || uci add_list "dhcp.$sec.server=$val" || return 1
+                record_own "dnsmasq" "server" "$val" "section=$sec"
+            done
+        done
+    elif [ "$TLD_RU_ENABLED" = 1 ] && [ -n "$SLOT_RU" ] && [ -n "$PORT_RU" ]; then
         for t in /ru /su /xn--p1ai; do
             val="$t/127.0.0.1#$PORT_RU"
             exact_list_has "dhcp.$sec.server" "$val" || uci add_list "dhcp.$sec.server=$val" || return 1
@@ -4389,6 +4407,8 @@ reload_regional_for_profile() {
     PORT_RU="$(PORT_RU=''; . "$CONFIG_FILE" || exit 1; printf '%s' "$PORT_RU")" || return 1
     SLOT_RU_CAT="$(SLOT_RU_CAT=''; . "$CONFIG_FILE" || exit 1; printf '%s' "$SLOT_RU_CAT")" || return 1
     REGIONAL_SAVED_ID="$(REGIONAL_SAVED_ID=''; . "$CONFIG_FILE" || exit 1; printf '%s' "$REGIONAL_SAVED_ID")" || return 1
+    REGIONAL_MODE="$(REGIONAL_MODE=''; . "$CONFIG_FILE" || exit 1; printf '%s' "$REGIONAL_MODE")" || return 1
+    REGIONAL_ISP_IPS="$(REGIONAL_ISP_IPS=''; . "$CONFIG_FILE" || exit 1; printf '%s' "$REGIONAL_ISP_IPS")" || return 1
     sync_regional_dns_state
 }
 apply_settings() {
@@ -4562,6 +4582,8 @@ rollback_firewall_targeted() {
 clear_dns_core_runtime_state() {
     SLOT_1=""; SLOT_2=""; SLOT_3=""; SLOT_4=""; SLOT_5=""; SLOT_6=""
     SLOT_RU=""
+    REGIONAL_MODE=doh
+    REGIONAL_ISP_IPS=""
     PORT_1=""; PORT_2=""; PORT_3=""; PORT_4=""; PORT_5=""; PORT_6=""
     PORT_RU=""
     SLOT_1_CAT=""; SLOT_2_CAT=""; SLOT_3_CAT=""; SLOT_4_CAT=""; SLOT_5_CAT=""; SLOT_6_CAT=""
@@ -4849,6 +4871,9 @@ uninstall_manager_impl() {
         err_msg "Не удалось полностью удалить LuCI DNS Manager. Файлы менеджера сохранены для повторной попытки."
         pause
         return 1
+    fi
+    if [ -f /etc/hotplug.d/iface/95-dns-manager-regional ] && grep -Fqx '# DNS_MANAGER_REGIONAL_HOOK=1' /etc/hotplug.d/iface/95-dns-manager-regional; then
+        rm -f /etc/hotplug.d/iface/95-dns-manager-regional || { release_mutation_lock; return 1; }
     fi
 
     rm -f "$LOG_FILE" "$TX_LOG" 2>/dev/null || true
@@ -6346,9 +6371,9 @@ return "$_rc"
 }
 
 regional_apply_toggle() {
-    local _enabled _id _cat _rc
+    local _enabled _id _cat _rc _new_ips
     _enabled="$1"
-    case "$_enabled" in 0|1) ;; *) return 1;; esac
+    case "$_enabled" in 0|1|2|3) ;; *) return 1;; esac
     acquire_mutation_lock || return 1
     if ! load_config; then release_mutation_lock; return 1; fi
     if [ -z "${SLOT_1:-}${SLOT_2:-}${SLOT_3:-}${SLOT_4:-}${SLOT_5:-}${SLOT_6:-}" ]; then
@@ -6367,7 +6392,14 @@ regional_apply_toggle() {
         SLOT_RU="$_id"
         SLOT_RU_CAT=regional
         REGIONAL_SAVED_ID="$_id"
+        REGIONAL_MODE=legacy
     else
+        if [ "$_enabled" = 3 ]; then
+            _new_ips="$(regional_provider_addresses | tr '\n' ' ' | sed 's/ *$//')"
+            [ -n "$_new_ips" ] || { err_msg "Провайдер не предоставил DNS-адреса."; release_mutation_lock; return 1; }
+            REGIONAL_ISP_IPS="$_new_ips"
+        fi
+        case "$_enabled" in 0) REGIONAL_MODE=doh;; 2) REGIONAL_MODE=yandex;; 3) REGIONAL_MODE=isp;; esac
         [ -n "${SLOT_RU:-}" ] && REGIONAL_SAVED_ID="$SLOT_RU"
         SLOT_RU=""
         SLOT_RU_CAT=regional
@@ -6376,6 +6408,44 @@ regional_apply_toggle() {
     sync_regional_dns_state
     CORE_ONLY=1 HYBRID_STAGE_SKIP=1 REGIONAL_TOGGLE_APPLY=1 SILENT_APPLY=1 _apply_settings_impl
     _rc=$?
+    release_mutation_lock
+    return "$_rc"
+}
+regional_refresh_provider() {
+    local _new _old _rc _sec _actual _expected
+    acquire_mutation_lock || return 1
+    load_config || { release_mutation_lock; return 1; }
+    [ "${REGIONAL_MODE:-}" = isp ] || { release_mutation_lock; return 0; }
+    _new="$(regional_provider_addresses | tr '\n' ' ' | sed 's/ *$//')"
+    # WAN can briefly have no DNS during reconnect. Retain the last usable set.
+    [ -n "$_new" ] || { release_mutation_lock; return 0; }
+    [ "$_new" != "${REGIONAL_ISP_IPS:-}" ] || { release_mutation_lock; return 0; }
+    # Do not rebuild somebody else's pending or additional dnsmasq configuration.
+    [ -z "$(uci -q changes dhcp 2>/dev/null)" ] || { release_mutation_lock; return 1; }
+    _sec="$(get_dnsmasq_section)"
+    _expected="$(watchdog_expected_servers)"
+    _actual="$TMP_DIR/regional-actual-$$"
+    uci -q get "dhcp.$_sec.server" 2>/dev/null | tr ' ' '\n' | sed -e '/^$/d' -e '\|^/mask\.icloud\.com/$|d' -e '\|^/mask-h2\.icloud\.com/$|d' -e '\|^/use-application-dns\.net/$|d' | sort -u > "$_actual"
+    if ! cmp -s "$_actual" "$_expected"; then
+        rm -f "$_actual" "$_expected"
+        log_msg "DNS провайдера не обновлён: обнаружены сторонние изменения dnsmasq."
+        release_mutation_lock
+        return 1
+    fi
+    rm -f "$_actual" "$_expected"
+    _old="${REGIONAL_ISP_IPS:-}"
+    REGIONAL_ISP_IPS="$_new"
+    _rc=0
+    reconcile_dnsmasq && APPLY_OUTPUT_QUIET=1 dnsmasq_restart_checked && save_config && refresh_device_dns_runtime || _rc=1
+    if [ "$_rc" != 0 ]; then
+        REGIONAL_ISP_IPS="$_old"
+        save_config >/dev/null 2>&1 || true
+        reconcile_dnsmasq >/dev/null 2>&1 && /etc/init.d/dnsmasq restart >/dev/null 2>&1 || true
+        refresh_device_dns_runtime >/dev/null 2>&1 || true
+        log_msg "Не удалось обновить DNS провайдера; предыдущие адреса восстановлены, где это возможно."
+    else
+        log_msg "Адреса DNS провайдера для российских зон обновлены."
+    fi
     release_mutation_lock
     return "$_rc"
 }
@@ -6651,7 +6721,12 @@ watchdog_expected_servers() {
             done
         fi
     done
-    if [ "${TLD_RU_ENABLED:-0}" = 1 ]; then
+    if [ "${REGIONAL_MODE:-legacy}" = yandex ] || [ "${REGIONAL_MODE:-legacy}" = isp ]; then
+        if [ "$REGIONAL_MODE" = yandex ]; then _regional_ips='77.88.8.8 77.88.8.1'; else _regional_ips="${REGIONAL_ISP_IPS:-}"; fi
+        for _t in /ru /su /xn--p1ai; do
+            for _regional_ip in $_regional_ips; do printf '%s/%s\n' "$_t" "$_regional_ip" >> "$_out"; done
+        done
+    elif [ "${TLD_RU_ENABLED:-0}" = 1 ]; then
         if [ -n "$SLOT_RU" ] && [ -n "$PORT_RU" ]; then
             for _t in /ru /su /xn--p1ai; do printf '%s/127.0.0.1#%s\n' "$_t" "$PORT_RU" >> "$_out"; done
         fi
@@ -8398,6 +8473,12 @@ startup_required_function_check() {
 # ==========================================
 # ==========================================
 case "${1:-}" in
+__regional-refresh)
+    preflight_readonly >/dev/null 2>&1 || exit 1
+    init_dirs >/dev/null 2>&1 || exit 1
+    regional_refresh_provider
+    exit $?
+    ;;
 install-dependencies|--install-dependencies)
     bootstrap_install_dependencies || exit 1
     exit 0
