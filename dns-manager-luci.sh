@@ -3084,7 +3084,7 @@ job_start_regional() {
         return
     fi
     job_prepare "$DNSMGR_REGIONAL_JOB_ID" || { json_error "Не удалось подготовить задачу"; return; }
-    printf 'status=running\nstarted=%s\nmode=regional\n' "$(date +%s)" > "$JOB_DIR/$DNSMGR_REGIONAL_JOB_ID/state"
+    printf 'status=running\nstarted=%s\nmode=regional\nenabled=%s\n' "$(date +%s)" "$DNSMGR_REGIONAL_ENABLED" > "$JOB_DIR/$DNSMGR_REGIONAL_JOB_ID/state"
     (
         exec >>"$JOB_DIR/$DNSMGR_REGIONAL_JOB_ID/output" 2>&1
         if load_manager && DNS_MANAGER_NO_UPDATE=1 regional_apply_toggle "$DNSMGR_REGIONAL_ENABLED"; then
@@ -3388,6 +3388,7 @@ job_json() {
     printf ',"status":'; json_quote "$(sed -n 's/^status=//p' "$_d/state" 2>/dev/null | tail -n1)"
     printf ',"result":'; json_quote "$(sed -n 's/^result=//p' "$_d/state" 2>/dev/null | tail -n1)"
     printf ',"mode":'; json_quote "$(sed -n 's/^mode=//p' "$_d/state" 2>/dev/null | head -n1)"
+    printf ',"enabled":'; json_quote "$(sed -n 's/^enabled=//p' "$_d/state" 2>/dev/null | head -n1)"
     printf ',"profile":'; json_quote "$(sed -n 's/^profile=//p' "$_d/state" 2>/dev/null | head -n1)"
     printf ',"dns_id":'; json_quote "$(sed -n 's/^dns_id=//p' "$_d/state" 2>/dev/null | head -n1)"
     printf ',"progress_done":'; json_quote "$(sed -n 's/^progress_done=//p' "$_d/state" 2>/dev/null | tail -n1)"
@@ -6071,9 +6072,18 @@ function setRegional(enabled,root){
   renderProfiles(root,window.dmState||{});
   callRegional(enabled?1:0).then(function(r){
     if(!r||!r.ok||!r.job)throw new Error((r&&r.error)||'Не удалось запустить изменение.');
+    watchRegional(r.job,enabled,root);
+  }).catch(function(err){
+    state.busy=false;
+    state.regionalNoticeType='error';
+    state.regionalNotice=withRpcError('Не удалось запустить изменение.',err);
+    renderProfiles(root,window.dmState||{});
+  });
+}
+function watchRegional(job,enabled,root){
     var attempts=0;
     function poll(){
-      callJob(r.job).then(function(j){
+      callJob(job).then(function(j){
         if(j&&j.status==='running'&&++attempts<450){window.setTimeout(poll,2000);return;}
         state.busy=false;
         var ok=j&&j.status==='done'&&j.result==='ok';
@@ -6090,12 +6100,18 @@ function setRegional(enabled,root){
       });
     }
     poll();
-  }).catch(function(err){
-    state.busy=false;
-    state.regionalNoticeType='error';
-    state.regionalNotice=withRpcError('Не удалось запустить изменение.',err);
+}
+function resumeRegional(root){
+  if(state.regionalResumeStarted||!rootAlive(root))return;
+  state.regionalResumeStarted=true;
+  callJob('regional').then(function(j){
+    if(!j||!j.ok||j.status!=='running'||state.busy)return;
+    state.busy=true;
+    state.regionalNotice='Применяю региональный DNS…';
+    state.regionalNoticeType='info';
     renderProfiles(root,window.dmState||{});
-  });
+    watchRegional('regional',String(j.enabled)==='1',root);
+  }).catch(function(){});
 }
 function applyProfile(name,root){
   if(state.busy)return;
@@ -6633,6 +6649,9 @@ return baseclass.extend({
     }
     if(!state.profileResumeStarted&&route==='doh')window.setTimeout(function(){
       if(rootAlive(root))resumeRunningProfile(root);
+    },0);
+    if(!state.regionalResumeStarted&&route==='doh')window.setTimeout(function(){
+      if(rootAlive(root))resumeRegional(root);
     },0);
     return root;
   },
