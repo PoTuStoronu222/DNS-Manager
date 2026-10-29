@@ -1703,6 +1703,7 @@ detect_forced_dns_path() {
     _external=0
     _steer=0
     detect_steer_dns_path >/dev/null 2>&1 || true
+
     [ "${STEER_DNS_ACTIVE:-0}" = 1 ] && _steer=1
 
     [ "${FORCE_DOH:-0}" = 1 ] &&
@@ -2755,12 +2756,12 @@ sync_hdp_force_contract() {
                 /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || return 1
             fi
 
-            reconcile_dnsmasq || return 1
-            if [ -x /etc/init.d/dnsmasq ]; then /etc/init.d/dnsmasq restart >/dev/null 2>&1 || return 1; fi
         else
-            for _k in notrack_dns force_dns_port force_dns_src_interface force_ip_family dnsmasq_config_update; do
+            for _k in notrack_dns force_dns_port force_dns_src_interface force_ip_family; do
                 uci -q delete "https-dns-proxy.config.$_k" || true
             done
+            # An absent option defaults to "*", which can rewrite dnsmasq.
+            uci set https-dns-proxy.config.dnsmasq_config_update="-" || return 1
             uci commit https-dns-proxy || return 1
 
             if [ -x /etc/init.d/https-dns-proxy ] && /etc/init.d/https-dns-proxy running >/dev/null 2>&1; then
@@ -2770,15 +2771,7 @@ sync_hdp_force_contract() {
         return 0
     fi
 
-    # Rebuild the main section from the shared contract so stray/foreign
-    # stray options cannot leave a configuration that only partially matches the shared contract.
-    _main_opts="$(uci -q show https-dns-proxy.config 2>/dev/null | sed -n 's/^https-dns-proxy\.config\.\([^.=]*\)=.*/\1/p' | sort -u)"
-    for _opt in $_main_opts; do
-        case "$_opt" in
-            dnsmasq_config_update|force_dns|notrack_dns|force_dns_port|force_dns_src_interface|procd_trigger_wan6|heartbeat_domain|heartbeat_sleep_timeout|heartbeat_wait_timeout|user|group|listen_addr|force_ip_family|canary_domains_icloud|canary_domains_mozilla) ;;
-            *) uci -q delete "https-dns-proxy.config.$_opt" || true ;;
-        esac
-    done
+    # Preserve other package options which may have been configured separately.
     uci set https-dns-proxy.config.dnsmasq_config_update='*' || return 1
     uci set https-dns-proxy.config.force_dns="$_want" || return 1
     uci set https-dns-proxy.config.notrack_dns='1' || return 1
@@ -3122,13 +3115,28 @@ remove_dnsmasq_perf() {
 }
 apply_dns_force() {
     [ "${FORCE_DOH:-0}" = 1 ] || return 0
+    detect_steer_dns_path >/dev/null 2>&1 || true
+    # A toggle must not rebuild dnsmasq behind Steer. Require the already
+    # applied Manager upstreams before changing the shared proxy settings.
+    if [ "${STEER_DNS_ACTIVE:-0}" = 1 ]; then
+        (steer_dns_upstream_ready) || return 1
+    fi
     sync_hdp_force_contract 1
 }
 
 remove_dns_force() {
-    # The shared forced-DNS contract switches only
-    # force_dns to 0 when interception is disabled.
-    sync_hdp_force_contract 0
+    detect_steer_dns_path >/dev/null 2>&1 || true
+    if [ "${STEER_DNS_ACTIVE:-0}" = 1 ]; then
+        sync_hdp_force_contract 0
+        return $?
+    fi
+    [ -f /etc/config/https-dns-proxy ] || return 0
+    uci set https-dns-proxy.config.force_dns=0 || return 1
+    uci commit https-dns-proxy || return 1
+    if [ -x /etc/init.d/https-dns-proxy ] && /etc/init.d/https-dns-proxy running >/dev/null 2>&1; then
+        /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || return 1
+    fi
+    return 0
 }
 apply_encrypted_dns_block() {
     local _want _opt _current _changed

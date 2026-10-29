@@ -1076,6 +1076,48 @@ awk '/^[[:space:]]*force\)/,/^[[:space:]]*dnsmasq_perf\)/' dns-manager.sh > "$tm
 grep -Fq '[ "$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null)" = "0" ] || _ok=0' "$tmp/force_state.sh" || fail "Steer force-state check does not expect explicit force_dns=0"
 ok "Steer forced-DNS avoids the package default interception"
 
+# Exercise both force-toggle paths without touching the host's OpenWrt config.
+awk '/^sync_hdp_force_contract\(\) \{/,/^configure_hdp_manager_control\(\) \{/' dns-manager.sh | sed '$d' | sed "s|/etc/config/https-dns-proxy|$tmp/force-config|g; s|/etc/init.d/https-dns-proxy|$tmp/no-proxy-service|g" > "$tmp/force_sync_mock.sh"
+awk '/^apply_dns_force\(\) \{/,/^}/' dns-manager.sh >> "$tmp/force_sync_mock.sh"
+awk '/^remove_dns_force\(\) \{/,/^}/' dns-manager.sh | sed "s|/etc/config/https-dns-proxy|$tmp/force-config|g; s|/etc/init.d/https-dns-proxy|$tmp/no-proxy-service|g" >> "$tmp/force_sync_mock.sh"
+touch "$tmp/force-config"
+(
+    set -eu
+    . "$tmp/force_sync_mock.sh"
+    UCI_LOG="$tmp/force-toggle-uci.log"
+    firewall_resolve_zones() { :; }
+    detect_steer_dns_path() { STEER_DNS_ACTIVE="$MOCK_STEER"; }
+    steer_dns_upstream_ready() { _want=overwritten; [ "$MOCK_READY" = 1 ]; }
+    force_dns_expected_src_interfaces() { printf '%s\n' lan; }
+    uci() { printf '%s\n' "$*" >> "$UCI_LOG"; return 0; }
+    BLOCK_EXTERNAL_DNS=0
+    FORCE_DOH=1
+    MOCK_STEER=1
+    MOCK_READY=0
+    : > "$UCI_LOG"
+    if apply_dns_force; then exit 1; fi
+    [ ! -s "$UCI_LOG" ] || exit 2
+    MOCK_READY=1
+    apply_dns_force
+    grep -Fq 'set https-dns-proxy.config.force_dns=0' "$UCI_LOG" || exit 3
+    grep -Fq 'set https-dns-proxy.config.dnsmasq_config_update=-' "$UCI_LOG" || exit 4
+    : > "$UCI_LOG"
+    remove_dns_force
+    grep -Fq 'set https-dns-proxy.config.dnsmasq_config_update=-' "$UCI_LOG" || exit 5
+    if grep -Fq 'delete https-dns-proxy.config.dnsmasq_config_update' "$UCI_LOG"; then exit 6; fi
+    MOCK_STEER=0
+    : > "$UCI_LOG"
+    sync_hdp_force_contract 1
+    grep -Fq 'set https-dns-proxy.config.force_dns=1' "$UCI_LOG" || exit 7
+    if grep -Fq 'delete https-dns-proxy.config.heartbeat' "$UCI_LOG"; then exit 8; fi
+    : > "$UCI_LOG"
+    remove_dns_force
+    grep -Fq 'set https-dns-proxy.config.force_dns=0' "$UCI_LOG" || exit 9
+    if grep -Fq 'dnsmasq_config_update' "$UCI_LOG"; then exit 10; fi
+) || fail "force toggle changed the wrong settings with or without Steer"
+if grep -Fq 'reconcile_dnsmasq' "$tmp/force_sync_fn.sh"; then fail "force toggle rebuilds dnsmasq behind Steer"; fi
+ok "force toggle preserves Steer and avoids unrelated dnsmasq changes"
+
 # Runtime controller must be a no-op when forced-DNS is OFF and when an
 # unrelated active redirect owns the path. This tests behavior, not only text.
 awk '/^watchdog_enforce_hdp_control\(\) \{/ { capture=1 } capture { print } capture && /^}$/ { exit }' dns-manager.sh > "$tmp/force_enforce_fn.sh"
