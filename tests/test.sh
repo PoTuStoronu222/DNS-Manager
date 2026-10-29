@@ -20,6 +20,7 @@ ok "shell syntax"
 sh tests/regional-provider-test.sh || fail "regional provider address parsing"
 sh tests/regional-modes-test.sh || fail "regional mode routes"
 sh tests/regional-watch-test.sh || fail "regional provider watcher"
+sh tests/setting-job-test.sh || fail "settings background job"
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT INT TERM
@@ -313,6 +314,24 @@ awk '
 [ -s "$tmp/common.js" ] || fail "embedded JS extraction"
 node --check "$tmp/common.js" >/dev/null 2>&1 || fail "embedded JS: node --check"
 ok "embedded LuCI JS syntax"
+awk '/^function awaitSettingResult\(reply\)/,/^function setSetting\(name,en,root\)/' "$tmp/common.js" | sed '$d' > "$tmp/setting-result.js"
+SETTING_RESULT_JS="$tmp/setting-result.js" node <<'NODE' || fail "settings job result is not shown correctly"
+const fs=require('fs'), vm=require('vm');
+const source=fs.readFileSync(process.env.SETTING_RESULT_JS,'utf8');
+async function check(result,expected){
+  let calls=0;
+  const ctx={window:{setTimeout:(f)=>setTimeout(f,0)},callJob:()=>Promise.resolve(++calls===1?{status:'running'}:result)};
+  vm.createContext(ctx);vm.runInContext(source,ctx);
+  const out=await ctx.awaitSettingResult({ok:true,job:'setting'});
+  if(out.ok!==expected||calls!==2)throw Error(JSON.stringify(out));
+  if(!expected&&out.error!=='ошибка')throw Error('missing backend error');
+}
+Promise.all([
+  check({status:'done',result:'ok',output:'{"ok":true,"force_owner":"steer"}'},true),
+  check({status:'failed',result:'fail',output:'{"ok":false,"error":"ошибка"}'},false)
+]).catch(e=>{console.error(e);process.exitCode=1;});
+NODE
+ok "settings UI waits for background result and preserves backend errors"
 awk '/^function forceMode\(st\)/,/^function dateText\(v\)/' "$tmp/common.js" | sed '$d' > "$tmp/force_mode.js"
 FORCE_MODE_JS="$tmp/force_mode.js" node <<'NODE' || fail "forced-DNS control must reflect the saved Manager setting"
 const vm = require('vm'), fs = require('fs');
@@ -562,7 +581,7 @@ grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validat
 grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
 grep -q 'VERSION="3.95"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
-grep -q 'VERSION="2.00"' dns-manager-luci.sh || fail "LuCI version not bumped"
+grep -q 'VERSION="2.01"' dns-manager-luci.sh || fail "LuCI version not bumped"
 if grep -q '^main_menu$' dns-manager.sh; then fail "interactive console menu still starts"; fi
 grep -Fq "btn('Удалить DNS Manager'" dns-manager-luci.sh || fail "LuCI uninstall button missing"
 grep -Fq '"uninstall":{},"uninstall_status":{}' dns-manager-luci.sh || fail "LuCI uninstall RPC is not registered"
@@ -676,7 +695,7 @@ if awk '/^        set_setting\)/ { capture=1 } capture { print } capture && /^  
 fi
 grep -q 'watchdog_apply_toggle .*|| _rc=' "$tmp/backend.sh" || fail "watchdog toggle result is not checked"
 grep -q '\[ "\$_rc" -eq 0 \] || { json_error "Настройку «\$_name» не удалось применить"; return; }' "$tmp/backend.sh" || fail "watchdog toggle error is not propagated"
-grep -q 'apply_extras_now force .*|| _rc=' "$tmp/backend.sh" || fail "force apply result is not checked"
+grep -Fq 'if apply_live_setting force "$DNSMGR_SETTING_REQUEST_VALUE"; then _rc=0; else _rc=$?; fi' "$tmp/backend.sh" || fail "force apply result is not checked"
 grep -q 'apply_extras_now dnsmasq_perf .*|| _rc=' "$tmp/backend.sh" || fail "dnsmasq_perf apply result is not checked"
 
 cache_state_block="$(sed -n '/^        dnsmasq_perf)/,/^        watchdog)/p' dns-manager.sh)"
@@ -928,8 +947,8 @@ awk '
 [ "$(version_gt 1.6.7 1.6.6)" = 1 ] || fail "version_gt newer"
 [ "$(version_gt 1.6.6 1.6.7)" = 0 ] || fail "version_gt older"
 [ "$(version_gt 1.6.7 1.6.7)" = 0 ] || fail "version_gt equal"
-[ "$(version_gt 2.00 1.130)" = 1 ] || fail "two-digit LuCI version must upgrade the former three-digit version"
-[ "$(version_gt 2.00 1.128)" = 1 ] || fail "two-digit LuCI version must upgrade stable installations"
+[ "$(version_gt 2.01 1.130)" = 1 ] || fail "two-digit LuCI version must upgrade the former three-digit version"
+[ "$(version_gt 2.01 1.128)" = 1 ] || fail "two-digit LuCI version must upgrade stable installations"
 [ "$(version_gt 2.01 2.00)" = 1 ] || fail "next two-digit LuCI version must be newer"
 [ "$(json_update_state '{"ok":true,"updated":true,"version":"1.0"}')" = updated ] || fail "structured updated result"
 [ "$(json_update_state '{"ok":true,"updated":false,"version":"1.0"}')" = current ] || fail "structured current result"

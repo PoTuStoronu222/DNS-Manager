@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager full installer and LuCI companion
-# Version: 2.00
+# Version: 2.01
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.00"
+VERSION="2.01"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -722,7 +722,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.00"
+SELF_VERSION="2.01"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -3137,6 +3137,38 @@ profile_job_running() {
     return 1
 }
 
+job_start_setting() {
+    DNSMGR_SETTING_NAME="$1"
+    DNSMGR_SETTING_VALUE="$2"
+    case "$DNSMGR_SETTING_NAME:$DNSMGR_SETTING_VALUE" in force:0|force:1|encrypted_dns:0|encrypted_dns:1) ;; *) json_error "Неверная настройка"; return;; esac
+    DNSMGR_SETTING_JOB=setting
+    acquire_runtime_lock "$RUNTIME_DIR/setting-start.lock" || { json_error "Другая настройка уже запускается"; return; }
+    if job_active "$DNSMGR_SETTING_JOB" && job_process_alive "$JOB_DIR/$DNSMGR_SETTING_JOB"; then
+        release_runtime_lock "$RUNTIME_DIR/setting-start.lock"
+        json_error "Другая настройка уже применяется"
+        return
+    fi
+    job_prepare "$DNSMGR_SETTING_JOB" || { release_runtime_lock "$RUNTIME_DIR/setting-start.lock"; json_error "Не удалось подготовить задачу"; return; }
+    printf 'status=running\nstarted=%s\nmode=setting\nname=%s\nenabled=%s\n' "$(date +%s)" "$DNSMGR_SETTING_NAME" "$DNSMGR_SETTING_VALUE" > "$JOB_DIR/$DNSMGR_SETTING_JOB/state"
+    (
+        exec > "$JOB_DIR/$DNSMGR_SETTING_JOB/output" 2>&1 </dev/null
+        DNSMGR_SETTING_WORKER=1
+        RPC_METHOD=set_setting
+        run_action
+        if grep -q '"ok"[[:space:]]*:[[:space:]]*true' "$JOB_DIR/$DNSMGR_SETTING_JOB/output"; then
+            job_write "$DNSMGR_SETTING_JOB" result ok
+            job_write "$DNSMGR_SETTING_JOB" status done
+        else
+            job_write "$DNSMGR_SETTING_JOB" result fail
+            job_write "$DNSMGR_SETTING_JOB" status failed
+        fi
+        job_write "$DNSMGR_SETTING_JOB" finished "$(date +%s)"
+    ) &
+    job_record_pid "$DNSMGR_SETTING_JOB" "$!"
+    release_runtime_lock "$RUNTIME_DIR/setting-start.lock"
+    printf '{"ok":true,"job":'; json_quote "$DNSMGR_SETTING_JOB"; printf '}'
+}
+
 job_start_regional() {
     DNSMGR_REGIONAL_ENABLED="$1"
     case "$DNSMGR_REGIONAL_ENABLED" in 0|1|2|3) ;; *) json_error "Неверное состояние регионального DNS"; return;; esac
@@ -3150,11 +3182,11 @@ job_start_regional() {
     (
         exec >>"$JOB_DIR/$DNSMGR_REGIONAL_JOB_ID/output" 2>&1
         if load_manager && DNS_MANAGER_NO_UPDATE=1 regional_apply_toggle "$DNSMGR_REGIONAL_ENABLED"; then
-            job_write "$DNSMGR_REGIONAL_JOB_ID" status done
             job_write "$DNSMGR_REGIONAL_JOB_ID" result ok
+            job_write "$DNSMGR_REGIONAL_JOB_ID" status done
         else
-            job_write "$DNSMGR_REGIONAL_JOB_ID" status failed
             job_write "$DNSMGR_REGIONAL_JOB_ID" result fail
+            job_write "$DNSMGR_REGIONAL_JOB_ID" status failed
         fi
         job_write "$DNSMGR_REGIONAL_JOB_ID" finished "$(date +%s)"
     ) &
@@ -3200,11 +3232,11 @@ job_start_profile() {
 
         _now="$(date +%s)"
         if [ "$_rc" -eq 0 ]; then
-            job_write "$_jid" status done
             job_write "$_jid" result ok
+            job_write "$_jid" status done
         else
-            job_write "$_jid" status failed
             job_write "$_jid" result fail
+            job_write "$_jid" status failed
         fi
         job_write "$_jid" finished "$_now"
         exit "$_rc"
@@ -3451,6 +3483,7 @@ job_json() {
     printf ',"result":'; json_quote "$(sed -n 's/^result=//p' "$_d/state" 2>/dev/null | tail -n1)"
     printf ',"mode":'; json_quote "$(sed -n 's/^mode=//p' "$_d/state" 2>/dev/null | head -n1)"
     printf ',"enabled":'; json_quote "$(sed -n 's/^enabled=//p' "$_d/state" 2>/dev/null | head -n1)"
+    printf ',"name":'; json_quote "$(sed -n 's/^name=//p' "$_d/state" 2>/dev/null | head -n1)"
     printf ',"profile":'; json_quote "$(sed -n 's/^profile=//p' "$_d/state" 2>/dev/null | head -n1)"
     printf ',"dns_id":'; json_quote "$(sed -n 's/^dns_id=//p' "$_d/state" 2>/dev/null | head -n1)"
     printf ',"progress_done":'; json_quote "$(sed -n 's/^progress_done=//p' "$_d/state" 2>/dev/null | tail -n1)"
@@ -3691,6 +3724,26 @@ uninstall_start_json() {
     printf '}'
 }
 
+apply_live_setting() {
+    local _als_name _als_value _als_rc
+    _als_name="$1"; _als_value="$2"; _als_rc=0
+    acquire_mutation_lock || return 1
+    if ! load_config >/dev/null 2>&1; then
+        release_mutation_lock
+        return 1
+    fi
+    case "$_als_name" in
+        force)
+            if [ "$_als_value" = 0 ] && [ "${FORCE_DOH:-0}" != 1 ]; then release_mutation_lock; return 0; fi
+            FORCE_DOH="$_als_value" ;;
+        encrypted_dns) BLOCK_EXTERNAL_DNS="$_als_value" ;;
+        *) release_mutation_lock; return 1 ;;
+    esac
+    SILENT_APPLY=1 _apply_extras_now_impl "$_als_name" >/dev/null 2>&1 || _als_rc=$?
+    release_mutation_lock
+    return "$_als_rc"
+}
+
 run_action() {
     _profile="$(jget profile)"
     case "${RPC_METHOD:-}" in
@@ -3808,7 +3861,14 @@ run_action() {
                 watchdog|watchdog_autoreplace|force|encrypted_dns|dnsmasq_perf) ;;
                 *) json_error "Недопустимая настройка"; return;;
             esac
+            if [ "${DNSMGR_SETTING_WORKER:-0}" != 1 ]; then
+                case "$_name" in force|encrypted_dns) job_start_setting "$_name" "$_enabled"; return;; esac
+            fi
+            DNSMGR_SETTING_REQUEST_NAME="$_name"
+            DNSMGR_SETTING_REQUEST_VALUE="$_enabled"
             load_manager || { json_error "DNS Manager недоступен"; return; }
+            _name="$DNSMGR_SETTING_REQUEST_NAME"
+            _enabled="$DNSMGR_SETTING_REQUEST_VALUE"
             _rc=0
             case "$_name" in
                 watchdog|watchdog_autoreplace)
@@ -3834,17 +3894,12 @@ run_action() {
                     fi
                     ;;
                 force)
-                    if [ "$_enabled" = 0 ] && [ "$(cfg_get FORCE_DOH)" != 1 ]; then
-                        force_readback_json
-                        return
-                    fi
-                    FORCE_DOH="$_enabled"
-                    SILENT_APPLY=1 apply_extras_now force >/dev/null 2>&1 || _rc=$?
+                    if apply_live_setting force "$DNSMGR_SETTING_REQUEST_VALUE"; then _rc=0; else _rc=$?; fi
                     if [ "$_rc" -eq 0 ]; then
                         force_readback_json
                         return
                     fi
-                    if [ "$_enabled" = 1 ]; then
+                    if [ "$DNSMGR_SETTING_REQUEST_VALUE" = 1 ]; then
                         detect_steer_dns_path >/dev/null 2>&1 || true
                         if [ "${STEER_DNS_ACTIVE:-0}" = 1 ] && ! (steer_dns_upstream_ready); then
                             json_error "Steer активен, но текущие DNS-серверы dnsmasq не совпадают с выбранными в DNS Manager. Проверьте применённый DNS-профиль."
@@ -3853,8 +3908,7 @@ run_action() {
                     fi
                     ;;
                 encrypted_dns)
-                    BLOCK_EXTERNAL_DNS="$_enabled"
-                    SILENT_APPLY=1 apply_extras_now encrypted_dns >/dev/null 2>&1 || _rc=$?
+                    if apply_live_setting encrypted_dns "$DNSMGR_SETTING_REQUEST_VALUE"; then _rc=0; else _rc=$?; fi
                     ;;
                 dnsmasq_perf)
                     DNSMASQ_PERF="$_enabled"
@@ -3954,7 +4008,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI common module version: 2.00
+// DNS Manager LuCI common module version: 2.01
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -6196,14 +6250,35 @@ function applyProfile(name,root){
     });
   });
 }
+function awaitSettingResult(reply){
+  if(!reply||!reply.ok||!reply.job)return Promise.resolve(reply);
+  var attempts=0;
+  return new Promise(function(resolve,reject){
+    function poll(){
+      callJob(reply.job).then(function(j){
+        if(j&&j.status==='running'&&attempts++<200){window.setTimeout(poll,1500);return;}
+        if(j&&(j.status==='done'||j.status==='failed')){
+          var result;
+          try{result=JSON.parse(String(j.output||'').trim());}catch(e){result=null;}
+          if(j.status==='done'&&j.result==='ok'&&result&&result.ok){resolve(result);return;}
+          resolve({ok:false,error:(result&&result.error)||String(j.output||'').trim()||'Не удалось подтвердить результат настройки.'});
+          return;
+        }
+        reject(new Error('Не удалось подтвердить результат фоновой задачи.'));
+      }).catch(function(err){if(attempts++<200){window.setTimeout(poll,1500);return;}reject(err);});
+    }
+    poll();
+  });
+}
 function setSetting(name,en,root){
   if(state.busy)return;
   clearSettingFeedback();
   state.busy=true;state.busySetting=name;
+  setSettingFeedback(name,'Применяю настройку…','info');
   if(state.activeTab==='network')renderNetwork(root,window.dmState||{});
   else if(state.activeTab==='doh')renderDoH(root,window.dmState||{});
   else if(state.activeTab==='catalog')renderCatalog(root);
-  callSetting(name,en).then(function(r){
+  callSetting(name,en).then(awaitSettingResult).then(function(r){
     state.busy=false;state.busySetting='';
     if(r&&r.ok){
       if(window.dmState)window.dmState[name]=String(en);
@@ -6226,7 +6301,7 @@ function setForceMode(mode,root){
   state.busySetting='force';
   state.pageNotice.doh='Изменение перехвата DNS…';
   renderDoH(root,window.dmState||{});
-  callSetting('force',en).then(function(r){
+  callSetting('force',en).then(awaitSettingResult).then(function(r){
     state.busy=false;state.busySetting='';
     if(r&&r.ok){
       window.dmState=window.dmState||{};
@@ -6250,6 +6325,31 @@ function setForceMode(mode,root){
     state.pageNotice.doh=withRpcError('Не удалось изменить перехват DNS.',err);
     renderDoH(root,window.dmState||{});
   });
+}
+function resumeSetting(root){
+  if(state.settingResumeStarted||!rootAlive(root))return;
+  state.settingResumeStarted=true;
+  callJob('setting').then(function(j){
+    if(!j||!j.ok||j.status!=='running'||state.busy)return;
+    var name=String(j.name||'');
+    if(name!=='force'&&name!=='encrypted_dns')return;
+    state.busy=true;state.busySetting=name;
+    if(name==='force')state.pageNotice.doh='Изменение перехвата DNS…';
+    else setSettingFeedback(name,'Применяю настройку…','info');
+    renderDoH(root,window.dmState||{});
+    return awaitSettingResult({ok:true,job:'setting'}).then(function(r){
+      state.busy=false;state.busySetting='';
+      var message=(r&&r.ok)?'Настройка применена.':((r&&r.error)||'Не удалось подтвердить результат настройки.');
+      if(name==='force')state.pageNotice.doh=message;
+      else setSettingFeedback(name,message,r&&r.ok?'ok':'error');
+      return refresh(root,true);
+    }).catch(function(err){
+      state.busy=false;state.busySetting='';
+      var message=withRpcError('Не удалось получить результат настройки.',err);
+      if(name==='force')state.pageNotice.doh=message;else setSettingFeedback(name,message,'error');
+      renderDoH(root,window.dmState||{});
+    });
+  }).catch(function(){});
 }
 function testAll(root,origin){
   if(state.jobRunning||state.busy)return;
@@ -6702,6 +6802,9 @@ return baseclass.extend({
     if(!state.regionalResumeStarted&&route==='doh')window.setTimeout(function(){
       if(rootAlive(root))resumeRegional(root);
     },0);
+    if(!state.settingResumeStarted&&route==='doh')window.setTimeout(function(){
+      if(rootAlive(root))resumeSetting(root);
+    },0);
     return root;
   },
   remove:function(){stopAutoStatus();}
@@ -6722,7 +6825,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 2.00
+// DNS Manager LuCI version: 2.01
 return view.extend({
   load: DM.load,
   render: DM.render,
