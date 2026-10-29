@@ -1647,6 +1647,8 @@ awk '/^steer_restore_proxy_backup\(\) \(/ { capture=1 } capture { print } captur
             '-q get dhcp.cfg.doh_backup_server') cat "$MOCK_DIR/backup" ;;
             '-q get dhcp.cfg.doh_server') printf '127.0.0.1#5053 127.0.0.1#5059' ;;
             '-q get dhcp.cfg.server') cat "$MOCK_DIR/current" ;;
+            'set https-dns-proxy.config.dnsmasq_config_update=-') printf '%s\n' "$*" >> "$MOCK_DIR/log"; printf '-' > "$MOCK_DIR/proxy" ;;
+            'set https-dns-proxy.config.force_dns=0'|'commit https-dns-proxy') printf '%s\n' "$*" >> "$MOCK_DIR/log" ;;
             *) return 1 ;;
         esac
     }
@@ -1656,7 +1658,7 @@ awk '/^steer_restore_proxy_backup\(\) \(/ { capture=1 } capture { print } captur
         printf '%s\n' sync >> "$MOCK_DIR/log"
         printf '%s' "$1" > "$MOCK_DIR/want"
         [ "$FAIL_AT" != sync ] || return 1
-        printf changed > "$MOCK_DIR/proxy"
+        printf '-' > "$MOCK_DIR/proxy"
     }
     mock_proxy() {
         printf '%s\n' "$1" >> "$MOCK_DIR/log"
@@ -1668,7 +1670,8 @@ awk '/^steer_restore_proxy_backup\(\) \(/ { capture=1 } capture { print } captur
                 printf changed > "$MOCK_DIR/dhcp" ;;
             start)
                 if [ "$FAIL_AT" = start ] && [ ! -e "$MOCK_DIR/failed" ]; then : > "$MOCK_DIR/failed"; return 1; fi
-                if [ "$FAIL_AT" = verify ] && [ ! -e "$MOCK_DIR/failed" ]; then : > "$MOCK_DIR/failed"; printf bad > "$MOCK_DIR/current"; fi ;;
+                if [ "$FAIL_AT" = verify ] && [ ! -e "$MOCK_DIR/failed" ]; then : > "$MOCK_DIR/failed"; printf bad > "$MOCK_DIR/current"; fi
+                if [ "$(cat "$MOCK_DIR/proxy")" = '*' ]; then printf '%s' ' 127.0.0.1#5059' >> "$MOCK_DIR/current"; fi ;;
         esac
     }
     mock_dnsmasq() { return 0; }
@@ -1695,14 +1698,24 @@ awk '/^steer_restore_proxy_backup\(\) \(/ { capture=1 } capture { print } captur
     printf '%s' '127.0.0.1#5053 /ru/127.0.0.1#5059 127.0.0.1#5059' > "$MOCK_DIR/current"
     steer_restore_proxy_backup || exit 7
     grep -qx sync "$MOCK_DIR/log" || exit 8
+    [ "$(cat "$MOCK_DIR/proxy")" = '-' ] || exit 14
+    mock_proxy start
+    [ "$(cat "$MOCK_DIR/current")" = '127.0.0.1#5053 /ru/127.0.0.1#5059' ] || exit 15
     printf '%s' '127.0.0.1#5053 /ru/127.0.0.1#5059 127.0.0.1#5059' > "$MOCK_DIR/current"
     steer_restore_proxy_backup 0 || exit 11
-    [ "$(cat "$MOCK_DIR/want")" = 0 ] || exit 12
+    grep -Fxq 'set https-dns-proxy.config.force_dns=0' "$MOCK_DIR/log" || exit 12
     STEER_DNS_ACTIVE=1
     printf '%s' '8.8.8.8' > "$MOCK_DIR/backup"
     : > "$MOCK_DIR/log"
     if steer_restore_proxy_backup; then exit 9; fi
     if grep -qx stop "$MOCK_DIR/log"; then exit 10; fi
+    SLOT_RU=''
+    watchdog_expected_servers() { printf '%s\n' '127.0.0.1#5053' > "$MOCK_DIR/expected"; printf '%s\n' "$MOCK_DIR/expected"; }
+    steer_dns_upstream_ready() { [ "$(cat "$MOCK_DIR/current")" = '127.0.0.1#5053' ]; }
+    mock_proxy() { case "$1" in stop) printf '%s' '127.0.0.1#5053' > "$MOCK_DIR/current";; esac; return 0; }
+    printf '%s' '127.0.0.1#5053' > "$MOCK_DIR/backup"
+    printf '%s' '127.0.0.1#5053' > "$MOCK_DIR/current"
+    steer_restore_proxy_backup || exit 13
 ) || fail "proxy backup recovery or rollback regression"
 ok "proxy backup recovery validates ownership and rolls back failures with or without Steer"
 
