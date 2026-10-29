@@ -1650,7 +1650,6 @@ force_dns_ports_match_expected() {
     [ "$_cur" = "53 853" ]
 }
 steer_dns_upstream_ready() {
-    [ "${STEER_DNS_ACTIVE:-0}" = 1 ] || return 1
     _sec="$(get_dnsmasq_section)"
     [ -n "$_sec" ] || return 1
     _expected="$(watchdog_expected_servers 2>/dev/null || true)"
@@ -1675,7 +1674,6 @@ steer_dns_upstream_ready() {
 # A narrowly scoped repair for the proxy's own dnsmasq backup. Run inside
 # a subshell: many legacy helpers use global temporary variables.
 steer_restore_proxy_backup() (
-    [ "${STEER_DNS_ACTIVE:-0}" = 1 ] || exit 1
     [ -n "${SLOT_RU:-}" ] && [ -n "${PORT_RU:-}" ] || exit 1
     case "$PORT_RU" in *[!0-9]*|'') exit 1;; esac
     [ -x /etc/init.d/https-dns-proxy ] || exit 1
@@ -1700,17 +1698,23 @@ steer_restore_proxy_backup() (
     _current="$(uci -q get "dhcp.$_sec.server" 2>/dev/null | tr ' ' '\n' |
         sed -e '/^$/d' -e '\|^/mask\.icloud\.com/$|d' -e '\|^/mask-h2\.icloud\.com/$|d' -e '\|^/use-application-dns\.net/$|d' | sort -u)"
     _allowed="$(printf '%s\n%s\n' "$_expected_value" "$_extra" | sort -u)"
-    [ "$_current" = "$_allowed" ] || exit 1
+    [ "$_current" = "$_allowed" ] || [ "$_current" = "$_expected_value" ] || exit 1
 
     _dir="$(mktemp -d "$STATE_DIR/steer-restore.XXXXXX")" || exit 1
     if ! cp -p /etc/config/dhcp "$_dir/dhcp" || ! cp -p /etc/config/https-dns-proxy "$_dir/proxy"; then
         rm -f "$_dir/dhcp" "$_dir/proxy"; rmdir "$_dir" 2>/dev/null; exit 1
+    fi
+    _canary_existed=0
+    if [ -e /etc/dnsmasq.d/90-dns-manager-canary.conf ]; then
+        cp -p /etc/dnsmasq.d/90-dns-manager-canary.conf "$_dir/canary" || exit 1
+        _canary_existed=1
     fi
     _ok=0
     if /etc/init.d/https-dns-proxy stop >/dev/null 2>&1 &&
        steer_dns_upstream_ready &&
        sync_hdp_force_contract 1 &&
        /etc/init.d/https-dns-proxy start >/dev/null 2>&1 &&
+       sync_dns_manager_canaries &&
        steer_dns_upstream_ready; then
         _ok=1
     fi
@@ -1722,10 +1726,16 @@ steer_restore_proxy_backup() (
         uci -q revert https-dns-proxy >/dev/null 2>&1 || true
         cp -p "$_dir/proxy" /etc/config/https-dns-proxy || exit 1
         cp -p "$_dir/dhcp" /etc/config/dhcp || exit 1
+        if [ "$_canary_existed" = 1 ]; then
+            cp -p "$_dir/canary" /etc/dnsmasq.d/90-dns-manager-canary.conf || exit 1
+        elif [ -f /etc/dnsmasq.d/90-dns-manager-canary.conf ] &&
+             [ "$(sed -n '1p' /etc/dnsmasq.d/90-dns-manager-canary.conf 2>/dev/null)" = '# DNS Manager canary domains' ]; then
+            rm -f /etc/dnsmasq.d/90-dns-manager-canary.conf || exit 1
+        fi
         /etc/init.d/https-dns-proxy start >/dev/null 2>&1 || exit 1
         /etc/init.d/dnsmasq restart >/dev/null 2>&1 || exit 1
     fi
-    rm -f "$_dir/dhcp" "$_dir/proxy"
+    rm -f "$_dir/dhcp" "$_dir/proxy" "$_dir/canary"
     rmdir "$_dir" 2>/dev/null || true
     [ "$_ok" = 1 ]
 )
@@ -2846,7 +2856,7 @@ sync_hdp_force_contract() {
     fi
 
     # Preserve other package options which may have been configured separately.
-    uci set https-dns-proxy.config.dnsmasq_config_update='*' || return 1
+    uci set https-dns-proxy.config.dnsmasq_config_update='-' || return 1
     uci set https-dns-proxy.config.force_dns="$_want" || return 1
     uci set https-dns-proxy.config.notrack_dns='1' || return 1
     uci set https-dns-proxy.config.procd_trigger_wan6='0' || return 1
@@ -3124,6 +3134,7 @@ _apply_extras_now_impl() {
             else
                 remove_dns_force || return 1
             fi
+            sync_dns_manager_canaries || return 1
             # https-dns-proxy reload already marks the firewall config
             # for re-generation; do not perform a second full firewall reload.
             # Forced-DNS changes are fully represented by the applied UCI/firewall
@@ -3136,6 +3147,7 @@ _apply_extras_now_impl() {
             ;;
         encrypted_dns)
             apply_encrypted_dns_block || return 1
+            sync_dns_manager_canaries || return 1
             save_config || return 1
             refresh_device_dns_runtime >/dev/null 2>&1 || return 1
             return 0
@@ -3190,13 +3202,16 @@ remove_dnsmasq_perf() {
 apply_dns_force() {
     [ "${FORCE_DOH:-0}" = 1 ] || return 0
     detect_steer_dns_path >/dev/null 2>&1 || true
-    # A toggle must not rebuild dnsmasq behind Steer. Require the already
-    # applied Manager upstreams before changing the shared proxy settings.
-    if [ "${STEER_DNS_ACTIVE:-0}" = 1 ]; then
-        if ! (steer_dns_upstream_ready); then
-            steer_restore_proxy_backup
-            return $?
-        fi
+    # Restore an owned proxy backup before switching off its dnsmasq
+    # integration, in either mode. Other differences are left untouched.
+    _dns_section="$(get_dnsmasq_section)"
+    if [ "$(uci -q get https-dns-proxy.config.dnsmasq_config_update 2>/dev/null)" = '*' ] &&
+       uci -q get "dhcp.$_dns_section.doh_backup_server" >/dev/null 2>&1; then
+        steer_restore_proxy_backup
+        return $?
+    fi
+    if ! (steer_dns_upstream_ready); then
+        return 1
     fi
     sync_hdp_force_contract 1
 }
@@ -3215,6 +3230,31 @@ remove_dns_force() {
     fi
     return 0
 }
+sync_dns_manager_canaries() (
+    _file="/etc/dnsmasq.d/90-dns-manager-canary.conf"
+    _marker='# DNS Manager canary domains'
+    _want=0
+    detect_steer_dns_path >/dev/null 2>&1 || true
+    if [ "${FORCE_DOH:-0}" = 1 ] && [ "${BLOCK_EXTERNAL_DNS:-0}" = 1 ] && [ "${STEER_DNS_ACTIVE:-0}" != 1 ]; then
+        _want=1
+    fi
+    if [ -e "$_file" ] && [ "$(sed -n '1p' "$_file" 2>/dev/null)" != "$_marker" ]; then
+        exit 1
+    fi
+    if [ "$_want" = 1 ]; then
+        _sec="$(get_dnsmasq_section)" || exit 1
+        exact_list_has "dhcp.$_sec.confdir" /etc/dnsmasq.d || exit 1
+        mkdir -p /etc/dnsmasq.d || exit 1
+        _tmp="${_file}.$$"
+        printf '%s\n' "$_marker" 'server=/mask.icloud.com/' 'server=/mask-h2.icloud.com/' 'server=/use-application-dns.net/' > "$_tmp" || exit 1
+        if [ -f "$_file" ] && cmp -s "$_tmp" "$_file"; then rm -f "$_tmp"; exit 0; fi
+        mv "$_tmp" "$_file" || { rm -f "$_tmp"; exit 1; }
+    else
+        [ -e "$_file" ] || exit 0
+        rm -f "$_file" || exit 1
+    fi
+    [ ! -x /etc/init.d/dnsmasq ] || /etc/init.d/dnsmasq restart >/dev/null 2>&1
+)
 apply_encrypted_dns_block() {
     local _want _opt _current _changed
     _want="${BLOCK_EXTERNAL_DNS:-0}"
@@ -3756,7 +3796,7 @@ if [ -x "$WATCHDOG_SERVICE_PATH" ]; then
     "$WATCHDOG_SERVICE_PATH" enabled >/dev/null 2>&1 && TX_WD_ENABLED=yes || TX_WD_ENABLED=no
     "$WATCHDOG_SERVICE_PATH" running >/dev/null 2>&1 && TX_WD_RUNNING=yes || TX_WD_RUNNING=no
 fi
-for f in "$CONFIG_FILE" "$OWNERSHIP" "$WATCHDOG_SERVICE_PATH" "$WATCHDOG_LEGACY_DAEMON_PATH" /etc/config/dhcp /etc/config/https-dns-proxy /etc/config/firewall /etc/config/system /etc/dnsmasq.d/90-dns-manager-bogus.conf ; do
+for f in "$CONFIG_FILE" "$OWNERSHIP" "$WATCHDOG_SERVICE_PATH" "$WATCHDOG_LEGACY_DAEMON_PATH" /etc/config/dhcp /etc/config/https-dns-proxy /etc/config/firewall /etc/config/system /etc/dnsmasq.d/90-dns-manager-bogus.conf /etc/dnsmasq.d/90-dns-manager-canary.conf ; do
 key="$(printf '%s' "$f" | sed 's#^/##; s#[/ ]#_#g')"
 if [ -f "$f" ]; then cp -p "$f" "$TX_DIR/files/$key"; file_hash "$f" > "$TX_DIR/$key.before"; printf '%s|%s|1\n' "$f" "$key" >> "$TX_DIR/manifest"; else printf '%s|%s|0\n' "$f" "$key" >> "$TX_DIR/manifest"; fi
 done
@@ -4513,6 +4553,10 @@ uninstall_reset_manager_extras() {
 
 restore_dns_before_uninstall() {
     _dns_restore_rc=0
+    if [ -f /etc/dnsmasq.d/90-dns-manager-canary.conf ] &&
+       [ "$(sed -n '1p' /etc/dnsmasq.d/90-dns-manager-canary.conf 2>/dev/null)" = '# DNS Manager canary domains' ]; then
+        rm -f /etc/dnsmasq.d/90-dns-manager-canary.conf || _dns_restore_rc=1
+    fi
     UNINSTALL_STRICT_OWNERSHIP=1
     UNINSTALL_PROXY_OWNED=0
     UNINSTALL_PROXY_STOPPED=0
@@ -5426,7 +5470,7 @@ check_module_state() {
                 _ok=1
                 [ "$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null)" = 1 ] || _ok=0
                 [ "$(uci -q get https-dns-proxy.config.notrack_dns 2>/dev/null)" = 1 ] || _ok=0
-                [ "$(uci -q get https-dns-proxy.config.dnsmasq_config_update 2>/dev/null)" = '*' ] || _ok=0
+                [ "$(uci -q get https-dns-proxy.config.dnsmasq_config_update 2>/dev/null)" = '-' ] || _ok=0
                 [ "$(uci -q get https-dns-proxy.config.procd_trigger_wan6 2>/dev/null)" = 0 ] || _ok=0
                 [ "$(uci -q get https-dns-proxy.config.heartbeat_domain 2>/dev/null)" = heartbeat.mossdef.org ] || _ok=0
                 [ "$(uci -q get https-dns-proxy.config.heartbeat_sleep_timeout 2>/dev/null)" = 10 ] || _ok=0
@@ -6328,6 +6372,7 @@ watchdog_target_live_count() {
     printf "%s\n" "$_target_live"
 }
 watchdog_enforce_hdp_control() {
+    sync_dns_manager_canaries || return 1
     # Keep the independent encrypted-DNS protection active even with forced DNS OFF.
     if [ "${BLOCK_EXTERNAL_DNS:-0}" = 1 ]; then
         apply_encrypted_dns_block || return 1
@@ -6372,7 +6417,7 @@ watchdog_enforce_hdp_control() {
     [ "${FORCE_DOH:-0}" = 1 ] || return 0
 
     _changed=0
-    [ "$(uci -q get https-dns-proxy.config.dnsmasq_config_update 2>/dev/null)" = "*" ] || _changed=1
+    [ "$(uci -q get https-dns-proxy.config.dnsmasq_config_update 2>/dev/null)" = "-" ] || _changed=1
     [ "$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null)" = "1" ] || _changed=1
     [ "$(uci -q get https-dns-proxy.config.notrack_dns 2>/dev/null)" = "1" ] || _changed=1
     [ "$(uci -q get https-dns-proxy.config.procd_trigger_wan6 2>/dev/null)" = "0" ] || _changed=1
@@ -6388,6 +6433,12 @@ watchdog_enforce_hdp_control() {
     force_dns_ports_match_expected || _changed=1
     force_dns_src_matches_expected || _changed=1
     if [ "$_changed" = 1 ]; then
+        _dns_section="$(get_dnsmasq_section)"
+        if [ "$(uci -q get https-dns-proxy.config.dnsmasq_config_update 2>/dev/null)" = '*' ] &&
+           uci -q get "dhcp.$_dns_section.doh_backup_server" >/dev/null 2>&1; then
+            steer_restore_proxy_backup || return 1
+            return 0
+        fi
         log_msg "Обнаружен drift forced-DNS. Возвращаю конфигурацию DNS Manager."
         sync_hdp_force_contract 1 || return 1
     fi

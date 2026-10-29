@@ -576,7 +576,7 @@ grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validat
 grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
 grep -q 'VERSION="3.90"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
-grep -q 'VERSION="1.125"' dns-manager-luci.sh || fail "LuCI version not bumped"
+grep -q 'VERSION="1.126"' dns-manager-luci.sh || fail "LuCI version not bumped"
 if grep -q '^main_menu$' dns-manager.sh; then fail "interactive console menu still starts"; fi
 grep -Fq "btn('Удалить DNS Manager'" dns-manager-luci.sh || fail "LuCI uninstall button missing"
 grep -Fq '"uninstall":{},"uninstall_status":{}' dns-manager-luci.sh || fail "LuCI uninstall RPC is not registered"
@@ -1100,9 +1100,15 @@ touch "$tmp/force-config"
     UCI_LOG="$tmp/force-toggle-uci.log"
     firewall_resolve_zones() { :; }
     detect_steer_dns_path() { STEER_DNS_ACTIVE="$MOCK_STEER"; }
+    get_dnsmasq_section() { printf lan; }
     steer_dns_upstream_ready() { _want=overwritten; [ "$MOCK_READY" = 1 ]; }
     force_dns_expected_src_interfaces() { printf '%s\n' lan; }
-    uci() { printf '%s\n' "$*" >> "$UCI_LOG"; return 0; }
+    uci() {
+        case "$1:${2:-}" in
+            -q:get) return 1 ;;
+            *) printf '%s\n' "$*" >> "$UCI_LOG"; return 0 ;;
+        esac
+    }
     BLOCK_EXTERNAL_DNS=0
     FORCE_DOH=1
     MOCK_STEER=1
@@ -1156,6 +1162,7 @@ awk '/^watchdog_enforce_hdp_control\(\) \{/ { capture=1 } capture { print } capt
         return 0
     }
     watchdog_restart_hdp() { RESTARTS=$((RESTARTS+1)); return 0; }
+    sync_dns_manager_canaries() { return 0; }
     FORCE_DOH=0
     watchdog_enforce_hdp_control
     [ "$DETECT_CALLS" = 0 ] || exit 1
@@ -1531,6 +1538,41 @@ grep -Fq 'Направляет обычные DNS-запросы устройс�
 grep -Fq 'Дополнительно ограничивает использование сторонних зашифрованных DNS-сервисов' dns-manager-luci.sh || fail "LuCI is missing the encrypted-DNS protection explanation"
 ok "Forced DNS and encrypted-DNS bypass protection are independently controlled"
 
+# The proxy does not manage dnsmasq in standalone mode; Manager owns only
+# its own canary file and must not disturb a foreign file at that path.
+mkdir -p "$tmp/canary-dir"
+cat > "$tmp/canary-dnsmasq" <<'EOF_CANARY_SERVICE'
+#!/bin/sh
+printf '%s\n' "$*" >> "$CANARY_LOG"
+EOF_CANARY_SERVICE
+chmod +x "$tmp/canary-dnsmasq"
+awk '/^sync_dns_manager_canaries\(\) \(/ { capture=1 } capture { print } capture && /^\)$/ { exit }' dns-manager.sh |
+    sed -e "s|/etc/dnsmasq.d|$tmp/canary-dir|g" -e "s|/etc/init.d/dnsmasq|$tmp/canary-dnsmasq|g" > "$tmp/canary-sync.sh"
+(
+    set -eu
+    . "$tmp/canary-sync.sh"
+    CANARY_LOG="$tmp/canary.log"
+    export CANARY_LOG
+    : > "$CANARY_LOG"
+    detect_steer_dns_path() { STEER_DNS_ACTIVE="$MOCK_STEER"; }
+    get_dnsmasq_section() { printf lan; }
+    exact_list_has() { return 0; }
+    FORCE_DOH=1
+    BLOCK_EXTERNAL_DNS=1
+    MOCK_STEER=0
+    sync_dns_manager_canaries || exit 1
+    grep -Fxq 'server=/use-application-dns.net/' "$tmp/canary-dir/90-dns-manager-canary.conf" || exit 2
+    sync_dns_manager_canaries || exit 3
+    [ "$(wc -l < "$CANARY_LOG" | tr -d ' ')" = 1 ] || exit 4
+    MOCK_STEER=1
+    sync_dns_manager_canaries || exit 5
+    [ ! -e "$tmp/canary-dir/90-dns-manager-canary.conf" ] || exit 6
+    printf '%s\n' foreign > "$tmp/canary-dir/90-dns-manager-canary.conf"
+    if sync_dns_manager_canaries; then exit 7; fi
+    [ "$(cat "$tmp/canary-dir/90-dns-manager-canary.conf")" = foreign ] || exit 8
+) || fail "standalone canary lifecycle regression"
+ok "standalone canaries are idempotent and preserve foreign files"
+
 awk '/^check_module_state\(\) \{/,/^}/' dns-manager.sh > "$tmp/check_force_state.sh"
 cat > "$tmp/check_steer_independent.sh" <<'EOF_STEER_INDEPENDENT'
 #!/bin/sh
@@ -1584,7 +1626,7 @@ ok "Steer DNS matching ignores known canaries but rejects different or absent up
 
 # Reproduce OpenWrt proxy backup/restore behavior without touching real services.
 awk '/^steer_restore_proxy_backup\(\) \(/ { capture=1 } capture { print } capture && /^\)$/ { exit }' dns-manager.sh |
-    sed -e 's|/etc/config/dhcp|"$MOCK_DIR/dhcp"|g' -e 's|/etc/config/https-dns-proxy|"$MOCK_DIR/proxy"|g' -e 's|/etc/init.d/https-dns-proxy|mock_proxy|g' -e 's|/etc/init.d/dnsmasq|mock_dnsmasq|g' -e 's|\[ -x mock_proxy \]|true|g' > "$tmp/steer_restore_mock.sh"
+    sed -e 's|/etc/config/dhcp|"$MOCK_DIR/dhcp"|g' -e 's|/etc/config/https-dns-proxy|"$MOCK_DIR/proxy"|g' -e 's|/etc/dnsmasq.d/90-dns-manager-canary.conf|"$MOCK_DIR/canary"|g' -e 's|/etc/init.d/https-dns-proxy|mock_proxy|g' -e 's|/etc/init.d/dnsmasq|mock_dnsmasq|g' -e 's|\[ -x mock_proxy \]|true|g' > "$tmp/steer_restore_mock.sh"
 (
     set -eu
     . "$tmp/steer_restore_mock.sh"
@@ -1609,6 +1651,7 @@ awk '/^steer_restore_proxy_backup\(\) \(/ { capture=1 } capture { print } captur
         esac
     }
     steer_dns_upstream_ready() { [ "$(cat "$MOCK_DIR/current")" = '127.0.0.1#5053 /ru/127.0.0.1#5059' ]; }
+    sync_dns_manager_canaries() { [ "$FAIL_AT" != canary ]; }
     sync_hdp_force_contract() {
         printf '%s\n' sync >> "$MOCK_DIR/log"
         [ "$FAIL_AT" != sync ] || return 1
@@ -1628,7 +1671,7 @@ awk '/^steer_restore_proxy_backup\(\) \(/ { capture=1 } capture { print } captur
         esac
     }
     mock_dnsmasq() { return 0; }
-    for FAIL_AT in none stop sync start verify; do
+    for FAIL_AT in none stop sync start canary verify; do
         rm -f "$MOCK_DIR/failed"
         printf original-dhcp > "$MOCK_DIR/dhcp"
         printf original-proxy > "$MOCK_DIR/proxy"
@@ -1648,14 +1691,16 @@ awk '/^steer_restore_proxy_backup\(\) \(/ { capture=1 } capture { print } captur
     FAIL_AT=none
     STEER_DNS_ACTIVE=0
     : > "$MOCK_DIR/log"
-    if steer_restore_proxy_backup; then exit 7; fi
-    [ ! -s "$MOCK_DIR/log" ] || exit 8
+    printf '%s' '127.0.0.1#5053 /ru/127.0.0.1#5059 127.0.0.1#5059' > "$MOCK_DIR/current"
+    steer_restore_proxy_backup || exit 7
+    grep -qx sync "$MOCK_DIR/log" || exit 8
     STEER_DNS_ACTIVE=1
     printf '%s' '8.8.8.8' > "$MOCK_DIR/backup"
+    : > "$MOCK_DIR/log"
     if steer_restore_proxy_backup; then exit 9; fi
     if grep -qx stop "$MOCK_DIR/log"; then exit 10; fi
 ) || fail "proxy backup recovery or rollback regression"
-ok "proxy backup recovery validates ownership, rolls back failures and leaves non-Steer untouched"
+ok "proxy backup recovery validates ownership and rolls back failures with or without Steer"
 
 awk '
     /^test_dns_catalog\(\) \(/ { capture=1 }
