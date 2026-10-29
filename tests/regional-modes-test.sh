@@ -46,6 +46,16 @@ for REGIONAL_MODE in doh yandex isp legacy; do
     esac
 done
 echo 'OK: regional modes and watchdog routes'
+awk '/^regional_reconcile_with_canaries\(\) \{/,/^}/' "$ROOT/dns-manager.sh" > "$tmp/canaries"
+(
+    . "$tmp/canaries"
+    REGIONAL_MODE=isp REGIONAL_ISP_IPS=94.230.128.3
+    regional_reconcile_with_canaries '/mask.icloud.com/ /use-application-dns.net/'
+    grep -Fxq '/mask.icloud.com/' "$state"
+    grep -Fxq '/use-application-dns.net/' "$state"
+    grep -Fxq '/ru/94.230.128.3' "$state"
+)
+echo 'OK: updating provider routes preserves existing dnsmasq canaries'
 awk '/^steer_dns_upstream_ready\(\) \{/,/^}/' "$ROOT/dns-manager.sh" > "$tmp/steer-ready"
 (
     . "$tmp/steer-ready"
@@ -101,6 +111,7 @@ echo 'OK: regional selection and missing provider addresses'
     watchdog_expected_servers() { printf '%s\n' '127.0.0.1#5053' '/ru/94.230.128.3' | sort > "$tmp/expected"; echo "$tmp/expected"; }
     uci() { [ "$1" != -q ] || shift; case "$1:$2" in changes:dhcp) printf '%s' "${MOCK_PENDING:-}";; get:dhcp.main.server) printf '%s\n' "${MOCK_ACTUAL:-127.0.0.1#5053 /ru/94.230.128.3}";; *) return 1;; esac; }
     reconcile_dnsmasq() { printf 'reconcile\n' >> "$tmp/actions"; }
+    regional_reconcile_with_canaries() { reconcile_dnsmasq; }
     dnsmasq_restart_checked() { [ "${MOCK_FAIL:-0}" != 1 ]; }
     save_config() { printf 'save:%s\n' "$REGIONAL_ISP_IPS" >> "$tmp/actions"; }
     refresh_device_dns_runtime() { :; }; log_msg() { :; }
