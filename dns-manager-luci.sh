@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager full installer and LuCI companion
-# Version: 1.124
+# Version: 1.125
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="1.124"
+VERSION="1.125"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -659,7 +659,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="1.124"
+SELF_VERSION="1.125"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -1820,13 +1820,19 @@ detect_steer_dns_runtime() {
     # Steer is optional. Absence of Steer is the normal standalone mode.
     if [ -x /etc/init.d/steer ] && /etc/init.d/steer running >/dev/null 2>&1; then
         :
-    elif ps w 2>/dev/null | grep -Eq '[s]teer([[:space:]]|/)' ; then
+    elif ps w 2>/dev/null | grep -Eq '[s]teer(d)?([[:space:]]|/)' ; then
         :
     else
         return 0
     fi
     _lan_dev="$(uci -q get network.lan.device 2>/dev/null)"
     _lan_if="$(uci -q get network.lan.ifname 2>/dev/null)"
+    if command -v nft >/dev/null 2>&1 && nft -a list chain inet steer prerouting_dns 2>/dev/null |
+        awk '/dport[[:space:]]+53/ && /redirect[[:space:]]+to[[:space:]]*:5300([[:space:]]|$)/ { found=1 } END { exit(found ? 0 : 1) }'; then
+        STEER_DNS_ACTIVE=1
+        STEER_DNS_SOURCE="Steer"
+        return 0
+    fi
     if command -v nft >/dev/null 2>&1 && nft -a list ruleset 2>/dev/null | awk -v ld="$_lan_dev" -v li="$_lan_if" '
         /dport[[:space:]]+53/ && /5300/ && /(redirect[[:space:]]+to|dnat[[:space:]]+to)/ {
             ok=0
@@ -2201,6 +2207,7 @@ doh_status_json() {
 
     printf '{"ok":true'; page_header_json
     printf ',"doh_total":%s,"doh":' "$_doh_total"; json_quote "$([ "$_doh_running" -gt 0 ] && printf yes || printf no)"
+    printf ',"force":'; json_quote "$_force"
     printf ',"force_manager":%s,"force_external":%s,"force_owner":' "$_force_manager" "$_force_external"; json_quote "$_force_owner"
     printf ',"force_status":'; json_quote "$_force_status"; printf ',"force_source":'; json_quote "$_force_source"; printf ',"force_both":%s' "$_force_both"
     printf ',"steer_installed":%s,"steer_running":%s,"steer_dns_active":%s,"steer_dns_source":' "$_steer_installed" "$_steer_running" "$STEER_DNS_ACTIVE"; json_quote "$STEER_DNS_SOURCE"
@@ -3734,11 +3741,22 @@ run_action() {
                     fi
                     ;;
                 force)
+                    if [ "$_enabled" = 0 ] && [ "$(cfg_get FORCE_DOH)" != 1 ]; then
+                        force_readback_json
+                        return
+                    fi
                     FORCE_DOH="$_enabled"
                     SILENT_APPLY=1 apply_extras_now force >/dev/null 2>&1 || _rc=$?
                     if [ "$_rc" -eq 0 ]; then
                         force_readback_json
                         return
+                    fi
+                    if [ "$_enabled" = 1 ]; then
+                        detect_steer_dns_path >/dev/null 2>&1 || true
+                        if [ "${STEER_DNS_ACTIVE:-0}" = 1 ] && ! (steer_dns_upstream_ready); then
+                            json_error "Steer активен, но текущие DNS-серверы dnsmasq не совпадают с выбранными в DNS Manager. Проверьте применённый DNS-профиль."
+                            return
+                        fi
                     fi
                     ;;
                 encrypted_dns)
@@ -3843,7 +3861,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI common module version: 1.124
+// DNS Manager LuCI common module version: 1.125
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -3961,7 +3979,10 @@ function badge(kind,text){ return E('span',{'class':'dm-badge '+kind},[E('span',
 function btn(label,cls,fn,extra){ var a={'class':'cbi-button '+(cls||''),'type':'button','click':function(ev){ if(ev&&ev.preventDefault)ev.preventDefault(); return fn?fn.call(this,ev):undefined; }}; Object.keys(extra||{}).forEach(function(k){ if(k==='disabled'){ if(extra[k]) a.disabled=true; } else { a[k]=extra[k]; } }); return E('button',a,label); }
 function row(label,node){ return E('div',{'class':'dm-row'},[E('span',{'class':'dm-label'},label),E('span',{'class':'dm-row-value'},node)]); }
 function card(title,children,cls){ return E('div',{'class':'dm-card '+(cls||'')},[E('h3',{},title)].concat(children||[])); }
-function forceMode(st){ return (st.force_status==='manager'||st.force_status==='steer'||(st.force_status==='other'&&st.force_owner==='steer')) ? 'auto' : 'off'; }
+function forceMode(st){
+  if(st.force!==undefined && st.force!==null)return yes(st.force)?'auto':'off';
+  return (st.force_status==='manager'||st.force_status==='steer')?'auto':'off';
+}
 function yes(v){ return v===1 || v==='1' || v===true; }
 function dateText(v){ if(!v || !/^\d+$/.test(String(v))) return '—'; try { return new Date(Number(v)*1000).toLocaleString(); } catch(e){ return '—'; } }
 function shortVal(v){ return (v===undefined || v===null || v==='') ? '—' : String(v); }
@@ -4581,7 +4602,7 @@ function renderDoH(root,st){
   var e=root.querySelector('#dm-doh');if(!e)return;e.innerHTML='';
   var rr=resolverRows(st,root), rows=rr[0], count=rr[1];
   var ch=[];
-  ch.push(E('p',{'class':'dm-hint'},'Шифрованный DNS для всей сети: запросы устройств уходят к выбранным резолверам по HTTPS.'));
+  ch.push(E('p',{'class':'dm-hint'},'DNS Manager настраивает DoH для DNS роутера. При работе Steer для его правил могут использоваться другие DNS-серверы.'));
   ch.push(row('Пакет',st.doh_total>0?badge('dm-ok','установлен'):badge('dm-off','не установлен')));
   ch.push(row('Служба',st.doh==='yes'?badge('dm-ok','включена'):st.doh_total>0?badge('dm-bad','остановлена'):badge('dm-off','не установлена')));
   if(count){
@@ -4595,7 +4616,7 @@ function renderDoH(root,st){
   var forceEnabled=fm==='auto';
   var forceButtons=E('div',{'class':'dm-seg'},[
     btn('Авто (рекомендуется)',fm==='auto'?'active cbi-button':'cbi-button',function(){setForceMode('auto',root);},{disabled:state.busy||forceEnableLocked}),
-    btn('Не перехватывать',fm==='off'?'active cbi-button':'cbi-button',function(){setForceMode('off',root);},{disabled:state.busy})
+    btn('Выключить в DNS Manager',fm==='off'?'active cbi-button':'cbi-button',function(){setForceMode('off',root);},{disabled:state.busy})
   ]);
   var encryptedEnabled=yes(st.encrypted_dns);
   var encryptedButtons=E('div',{'class':'dm-seg'},[
@@ -4619,14 +4640,15 @@ function renderDoH(root,st){
     ]),
     E('p',{'class':'dm-hint'},'Дополнительно ограничивает использование сторонних зашифрованных DNS-сервисов, через которые устройство может обходить DNS-фильтрацию роутера.'),
     encryptedButtons,
-    E('p',{'class':'dm-hint'},'Блокировка DoT на порту 853 работает независимо. Canary-проверки автоматического DoH через https-dns-proxy работают только когда сам пакет выполняет принудительный DNS; при перехвате через Steer эта часть защиты не действует. Произвольный DoH поверх HTTPS/443 эта настройка не гарантированно блокирует.')
+    settingFeedback('','encrypted_dns'),
+    E('p',{'class':'dm-hint'},'Эта настройка отклоняет соединения LAN → WAN на порту 853. При принудительном DNS порт 853 может также ограничивать сам https-dns-proxy; сторонние правила сохраняются. Canary-проверки работают только когда пакет выполняет принудительный DNS, а при перехвате через Steer — нет. Произвольный DoH поверх HTTPS/443 эта настройка не гарантированно блокирует.')
   ].filter(Boolean)));
   if(st.force_both){
     ch.push(E('div',{'class':'dm-force-external'},'Принудительный DNS обнаружен одновременно с внешним перехватом. Источник: '+shortVal(st.force_source)+'. При переключении DNS Manager приведёт общую конфигурацию forced-DNS к своей схеме.'));
   } else if(st.force_owner==='external'){
     ch.push(E('div',{'class':'dm-force-external'},'Обнаружен '+shortVal(st.force_source)+'. Переключение выше может заменить его общей конфигурацией forced-DNS DNS Manager.'));
   } else if(steer){
-    ch.push(E('div',{'class':'dm-inline-msg info'},'Steer перехватывает DNS :53. DNS Manager не создаёт второй перехват: обычные DNS-запросы идут через dnsmasq к выбранному DoH. Ограничение DoT :853 управляется отдельным переключателем выше.'));
+    ch.push(E('div',{'class':'dm-inline-msg info'},'Steer перехватывает DNS :53. DNS Manager не создаёт второй перехват. Выключение настройки DNS Manager не отключает перехват Steer.'));
   } else if(Number(st.steer_running)===1 && Number(st.steer_dns_active)!==1){
     ch.push(E('div',{'class':'dm-inline-msg info'},'Steer запущен, но активный перехват DNS :53→:5300 не обнаружен. Поэтому DNS Manager не считает Steer владельцем forced-DNS и сохраняет обычную схему принудительного DNS.'));
   }
@@ -6036,6 +6058,7 @@ function setSetting(name,en,root){
   clearSettingFeedback();
   state.busy=true;state.busySetting=name;
   if(state.activeTab==='network')renderNetwork(root,window.dmState||{});
+  else if(state.activeTab==='doh')renderDoH(root,window.dmState||{});
   else if(state.activeTab==='catalog')renderCatalog(root);
   callSetting(name,en).then(function(r){
     state.busy=false;state.busySetting='';
@@ -6059,7 +6082,7 @@ function setForceMode(mode,root){
   state.busy=true;
   state.busySetting='force';
   state.pageNotice.doh='Изменение перехвата DNS…';
-  renderOverview(root,window.dmState||{});
+  renderDoH(root,window.dmState||{});
   callSetting('force',en).then(function(r){
     state.busy=false;state.busySetting='';
     if(r&&r.ok){
@@ -6073,7 +6096,7 @@ function setForceMode(mode,root){
         'force_user','force_group','force_listen','force_consistent',
         'force_owner_label','zapret_running','steer_dns_active'
       ].forEach(function(k){if(Object.prototype.hasOwnProperty.call(r,k))window.dmState[k]=r[k];});
-      state.pageNotice.doh=en?'Перехват DNS включён.':'Перехват DNS выключен.';
+      state.pageNotice.doh=en?'Настройка принудительного DNS Manager включена.':(r.force_owner==='steer'?'Настройка DNS Manager выключена; перехват Steer продолжает работать.':yes(r.force_external)?'Настройка DNS Manager выключена; внешний перехват может продолжать работать.':'Настройка принудительного DNS Manager выключена.');
       renderDoH(root,window.dmState);
     }else{
       state.pageNotice.doh=(r&&r.error)||'Не удалось изменить перехват DNS.';
@@ -6553,7 +6576,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 1.124
+// DNS Manager LuCI version: 1.125
 return view.extend({
   load: DM.load,
   render: DM.render,
