@@ -960,6 +960,9 @@ chmod 0755 "$STEER_INIT"
 
 cat > "$tmp/bin/nft" <<'EOF_NFT'
 #!/bin/sh
+case "$*" in
+    *"list chain inet steer prerouting_dns"*) grep -q 'table inet steer' "$NFT_FIXTURE" || exit 1 ;;
+esac
 cat "$NFT_FIXTURE"
 EOF_NFT
 chmod 0755 "$tmp/bin/nft"
@@ -1001,6 +1004,11 @@ steer_case 'table inet test { chain prerouting { iifname "br-lan" udp dport 53 c
 steer_case 'table ip test { chain prerouting { iifname "br-lan" tcp dport 53 dnat to 127.0.0.1:5300 } }' 1 1 Steer
 steer_case 'table inet test { chain prerouting { iifname "br-lan" udp dport 53 counter redirect to :5053 } }' 1 0 none
 steer_case 'table inet test { chain prerouting { iifname "eth0" udp dport 53 counter redirect to :5300 } }' 1 0 none
+steer_case 'table inet steer {
+ chain prerouting_dns {
+  ip saddr 192.168.1.0/24 udp dport 53 counter redirect to :5300
+ }
+}' 1 1 Steer
 steer_case 'table inet test { chain prerouting { iifname "br-lan" udp dport 53 counter redirect to :5300 } }' 0 0 none
 # The legacy fw3 path must still recognize a real LAN redirect.
 cat > "$tmp/bin/iptables-save" <<'EOF_IPTABLES'
@@ -1047,6 +1055,11 @@ sed 's#/etc/init.d/steer#"$STEER_INIT"#g' "$tmp/luci_steer_fn.sh" > "$tmp/luci_s
     }
     steer_luci_case 'table inet test { chain prerouting { iifname "br-lan" udp dport 53 counter redirect to :5300 } }' 1 1
     steer_luci_case 'table inet test { chain prerouting { iifname "eth0" udp dport 53 counter redirect to :5300 } }' 1 0
+    steer_luci_case 'table inet steer {
+ chain prerouting_dns {
+  ip saddr 192.168.1.0/24 udp dport 53 counter redirect to :5300
+ }
+}' 1 1
     steer_luci_case 'table inet test { chain prerouting { iifname "br-lan" udp dport 53 counter redirect to :5300 } }' 0 0
 )
 ok "LuCI Steer detection matches LAN/runtime contract"

@@ -1820,13 +1820,19 @@ detect_steer_dns_runtime() {
     # Steer is optional. Absence of Steer is the normal standalone mode.
     if [ -x /etc/init.d/steer ] && /etc/init.d/steer running >/dev/null 2>&1; then
         :
-    elif ps w 2>/dev/null | grep -Eq '[s]teer([[:space:]]|/)' ; then
+    elif ps w 2>/dev/null | grep -Eq '[s]teer(d)?([[:space:]]|/)' ; then
         :
     else
         return 0
     fi
     _lan_dev="$(uci -q get network.lan.device 2>/dev/null)"
     _lan_if="$(uci -q get network.lan.ifname 2>/dev/null)"
+    if command -v nft >/dev/null 2>&1 && nft -a list chain inet steer prerouting_dns 2>/dev/null |
+        awk '/dport[[:space:]]+53/ && /redirect[[:space:]]+to[[:space:]]*:5300([[:space:]]|$)/ { found=1 } END { exit(found ? 0 : 1) }'; then
+        STEER_DNS_ACTIVE=1
+        STEER_DNS_SOURCE="Steer"
+        return 0
+    fi
     if command -v nft >/dev/null 2>&1 && nft -a list ruleset 2>/dev/null | awk -v ld="$_lan_dev" -v li="$_lan_if" '
         /dport[[:space:]]+53/ && /5300/ && /(redirect[[:space:]]+to|dnat[[:space:]]+to)/ {
             ok=0
@@ -4596,7 +4602,7 @@ function renderDoH(root,st){
   var e=root.querySelector('#dm-doh');if(!e)return;e.innerHTML='';
   var rr=resolverRows(st,root), rows=rr[0], count=rr[1];
   var ch=[];
-  ch.push(E('p',{'class':'dm-hint'},'Шифрованный DNS для всей сети: запросы устройств уходят к выбранным резолверам по HTTPS.'));
+  ch.push(E('p',{'class':'dm-hint'},'DNS Manager настраивает DoH для DNS роутера. При работе Steer для его правил могут использоваться другие DNS-серверы.'));
   ch.push(row('Пакет',st.doh_total>0?badge('dm-ok','установлен'):badge('dm-off','не установлен')));
   ch.push(row('Служба',st.doh==='yes'?badge('dm-ok','включена'):st.doh_total>0?badge('dm-bad','остановлена'):badge('dm-off','не установлена')));
   if(count){
@@ -4635,7 +4641,7 @@ function renderDoH(root,st){
     E('p',{'class':'dm-hint'},'Дополнительно ограничивает использование сторонних зашифрованных DNS-сервисов, через которые устройство может обходить DNS-фильтрацию роутера.'),
     encryptedButtons,
     settingFeedback('','encrypted_dns'),
-    E('p',{'class':'dm-hint'},'Эта настройка управляет отдельным правилом DoT на порту 853. При принудительном DNS порт 853 может также ограничивать сам https-dns-proxy; сторонние правила сохраняются. Canary-проверки работают только когда пакет выполняет принудительный DNS, а при перехвате через Steer — нет. Произвольный DoH поверх HTTPS/443 эта настройка не гарантированно блокирует.')
+    E('p',{'class':'dm-hint'},'Эта настройка отклоняет соединения LAN → WAN на порту 853. При принудительном DNS порт 853 может также ограничивать сам https-dns-proxy; сторонние правила сохраняются. Canary-проверки работают только когда пакет выполняет принудительный DNS, а при перехвате через Steer — нет. Произвольный DoH поверх HTTPS/443 эта настройка не гарантированно блокирует.')
   ].filter(Boolean)));
   if(st.force_both){
     ch.push(E('div',{'class':'dm-force-external'},'Принудительный DNS обнаружен одновременно с внешним перехватом. Источник: '+shortVal(st.force_source)+'. При переключении DNS Manager приведёт общую конфигурацию forced-DNS к своей схеме.'));

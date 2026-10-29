@@ -1535,7 +1535,7 @@ detect_steer_dns_path() {
     # the manager immediately uses its normal standalone DNS path.
     if [ -x /etc/init.d/steer ] && /etc/init.d/steer running >/dev/null 2>&1; then
         :
-    elif command -v pgrep >/dev/null 2>&1 && pgrep -x steer >/dev/null 2>&1; then
+    elif command -v pgrep >/dev/null 2>&1 && { pgrep -x steer >/dev/null 2>&1 || pgrep -x steerd >/dev/null 2>&1; }; then
         :
     else
         return 0
@@ -1545,6 +1545,14 @@ detect_steer_dns_path() {
     _lan_if="$(uci -q get network.lan.ifname 2>/dev/null)"
     case "$SYS_FW" in
         fw4)
+            # The official Steer chain can match a source subnet instead of
+            # an input interface. Query its own chain directly.
+            if nft -a list chain inet steer prerouting_dns 2>/dev/null |
+                awk '/dport[[:space:]]+53/ && /redirect[[:space:]]+to[[:space:]]*:5300([[:space:]]|$)/ { found=1 } END { exit(found ? 0 : 1) }'; then
+                STEER_DNS_ACTIVE=1
+                STEER_DNS_SOURCE="Steer"
+                return 0
+            fi
             # Only accept an actual LAN ingress rule. A random WAN/other-zone
             # 53 -> 5300 redirect must never make DNS Manager treat Steer as
             # the active DNS owner.
