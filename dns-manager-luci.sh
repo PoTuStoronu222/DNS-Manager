@@ -3735,11 +3735,22 @@ run_action() {
                     fi
                     ;;
                 force)
+                    if [ "$_enabled" = 0 ] && [ "$(cfg_get FORCE_DOH)" != 1 ]; then
+                        force_readback_json
+                        return
+                    fi
                     FORCE_DOH="$_enabled"
                     SILENT_APPLY=1 apply_extras_now force >/dev/null 2>&1 || _rc=$?
                     if [ "$_rc" -eq 0 ]; then
                         force_readback_json
                         return
+                    fi
+                    if [ "$_enabled" = 1 ]; then
+                        detect_steer_dns_path >/dev/null 2>&1 || true
+                        if [ "${STEER_DNS_ACTIVE:-0}" = 1 ] && ! (steer_dns_upstream_ready); then
+                            json_error "Steer активен, но текущие DNS-серверы dnsmasq не совпадают с выбранными в DNS Manager. Проверьте применённый DNS-профиль."
+                            return
+                        fi
                     fi
                     ;;
                 encrypted_dns)
