@@ -69,7 +69,7 @@ async function testRouteCache(){
   if(!cached||cached.force_owner!=='steer'||cached.__dmCachedRoute!=='slots')throw Error('compatible route cache missing');
   ctx.window.dmRouteCache=undefined;
   if(ctx.cachedRouteStatus('slots').force_owner!=='steer')throw Error('cache did not survive page navigation');
-  ctx.window.dmRouteCache={doh:JSON.parse(store['dns-manager-route-2.11-doh'])};
+  ctx.window.dmRouteCache={doh:JSON.parse(store['dns-manager-route-2.12-doh'])};
   cached.slots.length=0;
   if(ctx.cachedRouteStatus('doh').slots.length!==1)throw Error('cache was mutated by view');
   ctx.applyStatusToCurrentRoot({ok:true,force_owner:'steer'},'doh');
@@ -105,7 +105,7 @@ async function testAdditionalRouteCache(){
   ctx.state.category='security';if(ctx.cachedRouteStatus('catalog'))throw Error('wrong catalog category reused');ctx.state.category='all';
   failDevices=true;failCatalog=true;failLog=true;
   const previous={...store};for(const route of ['devices','catalog','log'])await ctx.ensureStatusPromise(route);
-  for(const route of ['devices','catalog','log'])if(store['dns-manager-route-2.11-'+route]!==previous['dns-manager-route-2.11-'+route])throw Error('failed '+route+' replaced good cache');
+  for(const route of ['devices','catalog','log'])if(store['dns-manager-route-2.12-'+route]!==previous['dns-manager-route-2.12-'+route])throw Error('failed '+route+' replaced good cache');
 }
 async function testSequentialWarmup(){
   let active=0,max=0,calls=[],allowed=true;
@@ -119,9 +119,9 @@ async function testSequentialWarmup(){
   let blocked=false;allowed=false;await ctx.warmupFetch('log',()=>allowed).catch(()=>{blocked=true;});if(!blocked||calls.includes('log'))throw Error('warmup ignored idle guard');
 }
 async function testWarmupResourceGuard(){
-  let timers=[],reads=0,ram=20000,cpu=0,hidden=false;
+  let timers=[],reads=0,runtimeCalls=0,ram=20000,cpu=0,hidden=false;
   const root={},ctx={window:{dmCurrentRoot:null,setTimeout:f=>{timers.push(f);}},document:{get hidden(){return hidden;}},state:{},Date,JSON,Promise,Object,Array,Error,
-    currentRoute:()=> 'dashboard',rootAlive:()=>true,callRuntime:()=>Promise.resolve({ok:true,memory_available_kb:ram,cpu_load:cpu}),
+    currentRoute:()=> 'dashboard',rootAlive:()=>true,callRuntime:()=>{runtimeCalls++;return Promise.resolve({ok:true,memory_available_kb:ram,cpu_load:cpu});},
     callDohStatus:()=>{reads++;return Promise.resolve({ok:true});}};
   ctx.window.dmCurrentRoot=root;
   vm.createContext(ctx);vm.runInContext(extract('function routeStatusCall(){','function checkUpdate(root,force){'),ctx);
@@ -130,9 +130,17 @@ async function testWarmupResourceGuard(){
   ram=100000;cpu=90;timers.shift()();await delay();
   if(reads)throw Error('warmup ran with high CPU');
   cpu=0;hidden=true;timers.shift()();await delay();
-  if(reads)throw Error('warmup ran in hidden tab');
+  if(reads||runtimeCalls!==2)throw Error('warmup ran in hidden tab');
   hidden=false;ctx.state.busy=true;timers.shift()();await delay();
-  if(reads)throw Error('warmup ran during action');
+  if(reads||runtimeCalls!==2)throw Error('warmup ran during action');
+  ctx.state.busy=false;
+  for(const flag of ['updatingAll','managerUpdating','hdpUpdating','lanDevicesLoading']){
+    ctx.state[flag]=true;timers.shift()();await delay();
+    if(reads||runtimeCalls!==2)throw Error('warmup ran during '+flag);
+    ctx.state[flag]=false;
+  }
+  ctx.state.versionCheck={running:true};timers.shift()();await delay();
+  if(reads||runtimeCalls!==2)throw Error('warmup ran during update check');
 }
 async function testUpdateErrors(){
   let notice='',kind='',reloaded=false;
