@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager full installer and LuCI companion
-# Version: 2.08
+# Version: 2.09
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.08"
+VERSION="2.09"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -722,7 +722,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.08"
+SELF_VERSION="2.09"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -4085,7 +4085,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI common module version: 2.08
+// DNS Manager LuCI common module version: 2.09
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -4693,6 +4693,7 @@ function displayDnsRows(st){
     rows.push({
       slot:'',
       id:String(instance.id||''),
+      index:instance.index,
       name:String(instance.name||instance.url||'Пользовательский DNS'),
       port:String(instance.port||''),
       url:String(instance.url||''),
@@ -4708,7 +4709,7 @@ function displayDnsRows(st){
 function renderOverview(root,st){
   var e=root.querySelector('#dm-overview');if(!e)return;e.innerHTML='';
   var applied=renderActionStatus();if(applied)e.appendChild(applied);
-  if(state.statusError)e.appendChild(E('div',{'class':'dm-inline-msg error'},state.statusError+' Проверьте: ubus call dns_manager status.'));
+  if(state.statusError&&!state.statusFromCache)e.appendChild(E('div',{'class':'dm-inline-msg error'},state.statusError+' Проверьте: ubus call dns_manager status.'));
 
   var dohState=String(st.doh||'').toLowerCase()==='yes'?'ok':'down';
   var doh=dohState==='ok'
@@ -6142,9 +6143,15 @@ function render(root,st){
       break;
   }
   setActiveTab(root,state.activeTab);
+  if(state.statusFromCache){
+    var header=root.querySelector('#dm-header');
+    if(header)header.appendChild(E('div',{'class':'dm-inline-msg '+(state.statusError?'error':'info')},state.statusError||'Показаны предыдущие данные. Обновляю состояние…'));
+    root.querySelectorAll('button,input,select,textarea').forEach(function(el){el.disabled=true;});
+  }
 }
 function routeStatusCall(){
-  switch(currentRoute()){
+  var route=arguments[0]||currentRoute();
+  switch(route){
     case 'doh':
     case 'slots':
       return callDohStatus();
@@ -6184,25 +6191,41 @@ function routeStatusCall(){
   }
 }
 function ensureStatusPromise(){
-  if(window.dmStatusPromise)return window.dmStatusPromise;
-  window.dmStatusPromise=routeStatusCall().then(function(st){
-    st=st||{};
-    window.dmStatusCache={ts:Date.now(),data:st};
+  var route=arguments[0]||currentRoute(),promiseKey=statusCacheKey(route)||route;
+  window.dmStatusPromises=window.dmStatusPromises||Object.create(null);
+  if(window.dmStatusPromises[promiseKey])return window.dmStatusPromises[promiseKey];
+  var promise=routeStatusCall(route).then(function(st){
+    if(!st||st.ok!==true)throw new Error((st&&st.error)||'Пустой ответ состояния');
+    var key=statusCacheKey(route);
+    if(key){
+      try{window.dmRouteCache=window.dmRouteCache||Object.create(null);window.dmRouteCache[key]={ts:Date.now(),data:JSON.parse(JSON.stringify(st))};}catch(e){}
+    }
     return st;
   }).catch(function(err){
     window.dmStatusError=err;
     throw err;
   }).then(function(st){
-    window.dmStatusPromise=null;
+    delete window.dmStatusPromises[promiseKey];
     return st;
   },function(err){
-    window.dmStatusPromise=null;
+    delete window.dmStatusPromises[promiseKey];
     throw err;
   });
-  return window.dmStatusPromise;
+  window.dmStatusPromises[promiseKey]=promise;
+  return promise;
 }
 
-function applyStatusToCurrentRoot(st){
+function statusCacheKey(route){
+  if(route==='doh'||route==='slots')return 'doh';
+  return route==='dashboard'||route==='network'||route==='time'?route:'';
+}
+function cachedRouteStatus(route){
+  var key=statusCacheKey(route),entry=key&&window.dmRouteCache&&window.dmRouteCache[key];
+  if(!entry||Date.now()-entry.ts>30000)return null;
+  try{var st=JSON.parse(JSON.stringify(entry.data));st.__dmCachedRoute=route;return st;}catch(e){return null;}
+}
+function applyStatusToCurrentRoot(st,route){
+  if(route&&currentRoute()!==route)return;
   var root=window.dmCurrentRoot;
   if(!rootAlive(root))return;
   state.statusError='';
@@ -6213,23 +6236,30 @@ function applyStatusToCurrentRoot(st){
 function refresh(root,keepPosition){
   if(!rootAlive(root))root=window.dmCurrentRoot;
   if(!rootAlive(root))return Promise.resolve();
-  return ensureStatusPromise().then(function(st){
-    applyStatusToCurrentRoot(st);
+  var route=currentRoute();
+  return ensureStatusPromise(route).then(function(st){
+    if(window.dmCurrentRoot!==root)return;
+    applyStatusToCurrentRoot(st,route);
   }).catch(function(err){
-    if(!rootAlive(root))return;
+    if(!rootAlive(root)||window.dmCurrentRoot!==root||currentRoute()!==route)return;
     state.statusError=withRpcError('Не удалось получить состояние DNS Manager через RPC (status).',err);
     window.dmState=window.dmState||{};
     render(root,window.dmState||{});
   });
 }
 function scheduleBackgroundStatus(root){
-  if(!rootAlive(root))return;
+  var route=currentRoute();
   if(window.dmStatusRefreshTimer)window.clearTimeout(window.dmStatusRefreshTimer);
   window.dmStatusRefreshTimer=window.setTimeout(function(){
     window.dmStatusRefreshTimer=null;
-    ensureStatusPromise().then(function(st){
-      applyStatusToCurrentRoot(st);
-    }).catch(function(){});
+    if(!rootAlive(root)||window.dmCurrentRoot!==root||currentRoute()!==route)return;
+    ensureStatusPromise(route).then(function(st){
+      if(window.dmCurrentRoot===root)applyStatusToCurrentRoot(st,route);
+    }).catch(function(err){
+      if(!rootAlive(root)||window.dmCurrentRoot!==root||currentRoute()!==route)return;
+      state.statusError=withRpcError('Не удалось обновить состояние. Откройте вкладку повторно.',err);
+      render(root,window.dmState||{});
+    });
   },0);
 }
 function checkUpdate(root,force){
@@ -6683,11 +6713,10 @@ function testOne(id,root,origin,done){
 }
 function testCurrent(root){
   if(state.jobRunning||state.busy)return;
-  var targets=(window.dmState&&window.dmState.doh_instances||[]).filter(function(d){
-    return d&&(d.id||(!d.slot&&d.url&&d.port));
-  });
-  var slots=targets.filter(function(d){return d&&d.id;});
-  var systems=targets.filter(function(d){return d&&!d.slot&&d.url&&d.port;});
+  var rows=displayDnsRows(window.dmState||{});
+  var slots=rows.filter(function(d){return d&&d.slot&&d.id;});
+  var systems=rows.filter(function(d){return d&&!d.slot&&d.url&&d.port;});
+  var targets=slots.concat(systems);
   var total=targets.length;
   if(!total){
     state.currentTest={status:'FAILED',total:0};
@@ -6710,27 +6739,29 @@ function testCurrent(root){
 
   function finishCombined(ns){
     ns=ns||{};
-    window.dmState=ns;
+    var active=(!window.dmCurrentRoot||window.dmCurrentRoot===root)&&(!root.__dmRoute||currentRoute()===root.__dmRoute);
+    if(active)window.dmState=ns;
     state.checking={};
     state.jobRunning=false;
     var bad=combinedFailed;
-    (ns.doh_instances||[]).forEach(function(d){
-      if(!d)return;
-      if(String(d.status||'').toUpperCase()!=='OK')bad=true;
+    var finalRows=displayDnsRows(ns).filter(function(d){return d&&((d.slot&&d.id)||(!d.slot&&d.url&&d.port));});
+    if(finalRows.length!==total)bad=true;
+    finalRows.forEach(function(d){
+      if(String(d.status||'').toUpperCase()!=='OK'||!hasPing(d.ping))bad=true;
     });
     state.currentTest={status:bad?'FAILED':'DONE',result:bad?'fail':'ok',total:total,finished:Date.now()};
     state.pageNotice.doh=bad?'Проверка текущих DNS завершена с ошибками.':'Проверка текущих DNS завершена.';
-    render(root,ns);
+    if(active)render(root,ns);
   }
 
-  function startSystemChecks(){
+  function startSystemChecks(ns){
     if(!systems.length){
-      finishCombined(window.dmState||{});
+      finishCombined(ns||window.dmState||{});
       return;
     }
     state.jobRunning=true;
     state.pageNotice.doh='Проверяю системные DNS…';
-    render(root,window.dmState||{});
+    if((!window.dmCurrentRoot||window.dmCurrentRoot===root)&&(!root.__dmRoute||currentRoute()===root.__dmRoute))render(root,window.dmState||{});
     callTestSystem().then(function(r){
       if(r&&r.ok){
         pollJob(root,r.job,{mode:'system'},function(ns,j){
@@ -6751,7 +6782,7 @@ function testCurrent(root){
   }
 
   if(!slots.length){
-    startSystemChecks();
+    startSystemChecks(window.dmState||{});
     return;
   }
 
@@ -6759,7 +6790,7 @@ function testCurrent(root){
     if(r&&r.ok){
       pollJob(root,r.job,{mode:'current'},function(ns,j){
         if(!j||String(j.status||'').toLowerCase()!=='done'||j.result!=='ok')combinedFailed=true;
-        startSystemChecks();
+        startSystemChecks(ns);
       });
     }else{
       combinedFailed=true;
@@ -6812,7 +6843,7 @@ function pollJob(root,job,meta,done){
       profileFinish(j);
     }
     (meta&&meta.mode==='profile'&&currentRoute()==='doh'?callDohStatus():callStatus(statusDetail())).then(function(ns){
-      ns=ns||{};window.dmState=ns;
+      ns=ns||{};if((!window.dmCurrentRoot||window.dmCurrentRoot===root)&&(!root.__dmRoute||currentRoute()===root.__dmRoute))window.dmState=ns;
       if(meta&&meta.mode==='one'&&meta.dns_id)delete state.checking[meta.dns_id];
       if(meta&&meta.mode==='current')state.checking={};
       state.jobRunning=false;
@@ -7054,13 +7085,20 @@ function startAutoStatus(root){
 }
 return baseclass.extend({
   load:function(){
-    state.statusFromCache=false;
-    state.statusRefreshAfterRender=false;
-    return ensureStatusPromise();
+    var route=currentRoute(),cached=cachedRouteStatus(route);
+    return cached?Promise.resolve(cached):ensureStatusPromise(route);
   },
   render:function(st){
     var root=E('div',{'class':'dm-wrap'});
     var route=currentRoute();
+    root.__dmRoute=route;
+    state.statusFromCache=!!(st&&st.__dmCachedRoute===route);
+    state.statusRefreshAfterRender=state.statusFromCache;
+    state.statusError='';
+    if(st&&st.__dmCachedRoute)delete st.__dmCachedRoute;
+    root.addEventListener('click',function(ev){if(state.statusFromCache){ev.preventDefault();ev.stopPropagation();}},true);
+    root.addEventListener('keydown',function(ev){if(state.statusFromCache&&(ev.key==='Enter'||ev.key===' '||/^(INPUT|TEXTAREA|SELECT)$/.test(String(ev.target&&ev.target.tagName||'')))){ev.preventDefault();ev.stopPropagation();}},true);
+    root.addEventListener('beforeinput',function(ev){if(state.statusFromCache){ev.preventDefault();ev.stopPropagation();}},true);
     var ids={
       dashboard:['dm-header','dm-overview'],
       doh:['dm-header','dm-doh','dm-profiles'],
@@ -7112,7 +7150,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 2.08
+// DNS Manager LuCI version: 2.09
 return view.extend({
   load: DM.load,
   render: DM.render,
