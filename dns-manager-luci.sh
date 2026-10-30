@@ -3813,26 +3813,33 @@ run_action() {
             case "$RPC_SLOT" in 1|2|3|4|5|6|RU) ;; *) json_error "Неверный слот"; return;; esac
             case "$RPC_ID" in ''|*[!A-Za-z0-9_-]*) json_error "Неверный DNS ID"; return;; esac
             load_manager || { json_error "DNS Manager недоступен"; return; }
+            acquire_mutation_lock || { json_error "Другая операция DNS Manager уже выполняется"; return; }
+            load_config >/dev/null 2>&1 || { release_mutation_lock; json_error "Не удалось загрузить настройки"; return; }
             _slot="$RPC_SLOT"; _id="$RPC_ID"
-            _cat="$(dns_cat "$RPC_ID" 2>/dev/null || true)"; [ -n "$_cat" ] || { json_error "DNS не найден в каталоге"; return; }
+            _cat="$(dns_cat "$RPC_ID" 2>/dev/null || true)"; [ -n "$_cat" ] || { release_mutation_lock; json_error "DNS не найден в каталоге"; return; }
             for _check_slot in 1 2 3 4 5 6 RU; do
                 [ "$_check_slot" = "$RPC_SLOT" ] && continue
                 _check_id="$(cfg_get "SLOT_$_check_slot")"
                 if [ -n "$_check_id" ] && [ "$_check_id" = "$RPC_ID" ]; then
+                    release_mutation_lock
                     json_error "DNS уже назначен в слоте $_check_slot"
                     return
                 fi
             done
-            case "$RPC_SLOT" in RU) [ "$_cat" = regional ] || { json_error "Этот DNS нельзя поставить в региональный слот"; return; } ;; *) [ "$_cat" != regional ] || { json_error "Региональный DNS нельзя поставить в общий слот"; return; } ;; esac
+            case "$RPC_SLOT" in RU) [ "$_cat" = regional ] || { release_mutation_lock; json_error "Этот DNS нельзя поставить в региональный слот"; return; } ;; *) [ "$_cat" != regional ] || { release_mutation_lock; json_error "Региональный DNS нельзя поставить в общий слот"; return; } ;; esac
             eval "SLOT_${RPC_SLOT}=\"$RPC_ID\""
-            slot_cat_set "$RPC_SLOT" "$_cat" || { json_error "Не удалось сохранить категорию DNS"; return; }
+            slot_cat_set "$RPC_SLOT" "$_cat" || { release_mutation_lock; json_error "Не удалось сохранить категорию DNS"; return; }
             if [ "$RPC_SLOT" = RU ]; then SLOT_RU_CAT=regional; REGIONAL_MODE=legacy; fi
             sync_profile_from_selected_categories >/dev/null
             _old_hybrid_stage_skip="${HYBRID_STAGE_SKIP:-0}"
             [ "$DNS_PROFILE" = hybrid ] && HYBRID_STAGE_SKIP=1
-            SILENT_APPLY=1 CORE_ONLY=1 SKIP_POST_APPLY_VERIFY=1 DNS_MANAGER_NO_UPDATE=1 apply_settings >/dev/null 2>&1
-            _rc=$?
+            _rc=0
+            if install_missing_dependencies >/dev/null 2>&1; then _rc=0; else _rc=$?; fi
+            if [ "$_rc" -eq 0 ]; then
+                if SILENT_APPLY=1 CORE_ONLY=1 SKIP_POST_APPLY_VERIFY=1 DNS_MANAGER_NO_UPDATE=1 _apply_settings_impl >/dev/null 2>&1; then _rc=0; else _rc=$?; fi
+            fi
             HYBRID_STAGE_SKIP="$_old_hybrid_stage_skip"
+            release_mutation_lock
             [ "$_rc" -eq 0 ] && json_ok || json_error "DNS не удалось применить"
             ;;
         set_slot_domains)
@@ -3851,13 +3858,18 @@ run_action() {
                 vniiftri_moscow|nist_ip|cf_ip|google_ip) ;;
                 *) json_error "Неверный набор серверов точного времени"; return;;
             esac
+            DNSMGR_NTP_REQUEST="$_preset"
             load_manager || { json_error "DNS Manager недоступен"; return; }
-            NTP_PRESET="$_preset"
+            acquire_mutation_lock || { json_error "Другая операция DNS Manager уже выполняется"; return; }
+            load_config >/dev/null 2>&1 || { release_mutation_lock; json_error "Не удалось загрузить настройки"; return; }
+            NTP_PRESET="$DNSMGR_NTP_REQUEST"
             if apply_ntp_ip_fallback >/dev/null 2>&1; then
                 NTP_PRESET_USER_SET=1
-                save_config >/dev/null 2>&1 || { json_error "Набор серверов времени применён, но выбор не удалось сохранить"; return; }
+                save_config >/dev/null 2>&1 || { release_mutation_lock; json_error "Набор серверов времени применён, но выбор не удалось сохранить"; return; }
+                release_mutation_lock
                 json_ok
             else
+                release_mutation_lock
                 json_error "Не удалось применить выбранный набор серверов времени"
             fi
             ;;
@@ -3866,22 +3878,27 @@ run_action() {
             case "$_category" in all|bypass|clean|security|privacy|adblock|family|gaming|regional) ;; *) json_error "Неверная категория DNS"; return;; esac
             case "$_hours" in ''|*[!0-9]*) json_error "Неверный срок проверки"; return;; esac
             [ "$_hours" -ge 1 ] 2>/dev/null && [ "$_hours" -le 168 ] 2>/dev/null || { json_error "Срок проверки должен быть от 1 до 168 часов"; return; }
+            DNSMGR_AGE_CATEGORY="$_category"; DNSMGR_AGE_HOURS="$_hours"
             load_manager || { json_error "DNS Manager недоступен"; return; }
+            acquire_mutation_lock || { json_error "Другая операция DNS Manager уже выполняется"; return; }
+            load_config >/dev/null 2>&1 || { release_mutation_lock; json_error "Не удалось загрузить настройки"; return; }
+            _category="$DNSMGR_AGE_CATEGORY"; _hours="$DNSMGR_AGE_HOURS"
             _expected="$((_hours*3600))"
             if [ "$_category" = all ]; then
                 TEST_RESULTS_MAX_AGE="$_expected"
-                for _age_var in TEST_RESULTS_MAX_AGE_BYPASS TEST_RESULTS_MAX_AGE_CLEAN TEST_RESULTS_MAX_AGE_SECURITY TEST_RESULTS_MAX_AGE_PRIVACY TEST_RESULTS_MAX_AGE_ADBLOCK TEST_RESULTS_MAX_AGE_FAMILY TEST_RESULTS_MAX_AGE_REGIONAL; do
+                for _age_var in TEST_RESULTS_MAX_AGE_BYPASS TEST_RESULTS_MAX_AGE_CLEAN TEST_RESULTS_MAX_AGE_SECURITY TEST_RESULTS_MAX_AGE_PRIVACY TEST_RESULTS_MAX_AGE_ADBLOCK TEST_RESULTS_MAX_AGE_FAMILY TEST_RESULTS_MAX_AGE_GAMING TEST_RESULTS_MAX_AGE_REGIONAL; do
                     eval "$_age_var=$_expected"
                 done
-                save_config >/dev/null 2>&1 || { json_error "Срок проверки не удалось сохранить"; return; }
+                save_config >/dev/null 2>&1 || { release_mutation_lock; json_error "Срок проверки не удалось сохранить"; return; }
                 _saved="$(cfg_get TEST_RESULTS_MAX_AGE)"
             else
                 _var="TEST_RESULTS_MAX_AGE_$(printf '%s' "$_category" | tr '[:lower:]' '[:upper:]')"
                 eval "$_var=$_expected"
-                save_config >/dev/null 2>&1 || { json_error "Срок проверки не удалось сохранить"; return; }
+                save_config >/dev/null 2>&1 || { release_mutation_lock; json_error "Срок проверки не удалось сохранить"; return; }
                 _saved="$(cfg_get "$_var")"
             fi
-            [ "$_saved" = "$_expected" ] || { json_error "Срок проверки не сохранился"; return; }
+            [ "$_saved" = "$_expected" ] || { release_mutation_lock; json_error "Срок проверки не сохранился"; return; }
+            release_mutation_lock
             json_ok
             ;;
         set_setting)
