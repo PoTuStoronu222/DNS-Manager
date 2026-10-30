@@ -6,7 +6,7 @@ awk '/^catalog_validate_file\(\) \{/,/^}/' dns-manager.sh > "$tmp/validate.sh"
 awk '/^write_catalogs\(\) \{/,/^}/' dns-manager.sh > "$tmp/update.sh"
 . "$tmp/validate.sh"
 . "$tmp/update.sh"
-DNSCAT_VERSION=8.7-RU-NOSOCIAL DNSCAT_REVISION=8
+DNSCAT_VERSION=8.7-RU-NOSOCIAL DNSCAT_REVISION=9
 CFG_DIR="$tmp/config"; DNS_CATALOG="$CFG_DIR/catalog"; TEST_RESULTS="$tmp/results"
 PERSIST_STATE_DIR="$tmp/persist"; mkdir -p "$CFG_DIR" "$PERSIST_STATE_DIR"
 catalog_download() { cp catalogs/dns-8.7-RU-NOSOCIAL.conf "$1"; }
@@ -17,6 +17,8 @@ awk -F'|' '
   /^# DNSCATREV=/ {$0="# DNSCATREV=7"}
   /^# ENTRIES=/ {$0="# ENTRIES=107"}
   $1 ~ /^(malw_cloudflare|geohide_eu|geohide_us|magicdns|wlrus|geodema)$/ {next}
+  $1=="cznic_odvr" {sub(/\|clean\|/, "|security|")}
+  $1=="iijjp" {sub(/\|privacy\|/, "|family|")}
   {print}
 ' catalogs/dns-8.7-RU-NOSOCIAL.conf > "$DNS_CATALOG"
 cp "$DNS_CATALOG" "$tmp/old"
@@ -26,9 +28,13 @@ catalog_validate_file "$DNS_CATALOG"
 for id in malw_cloudflare geohide_eu geohide_us magicdns wlrus geodema; do
     grep -q "^$id|" "$DNS_CATALOG"
 done
-# The old slot identities, categories and endpoints remain untouched.
+# The old identities and endpoints remain untouched. Only two categories are corrected.
 awk -F'|' 'NR==FNR {if ($1 !~ /^#/ && NF>=5) {cat[$1]=$2; url[$1]=$5; count++}; next}
-  $1 !~ /^#/ && NF>=5 && ($1 in url) {if ($2 != cat[$1] || $5 != url[$1]) bad=1; seen++}
+  $1 !~ /^#/ && NF>=5 && ($1 in url) {
+    if ($5 != url[$1]) bad=1
+    if ($2 != cat[$1] && !($1=="cznic_odvr" && $2=="clean" && cat[$1]=="security") && !($1=="iijjp" && $2=="privacy" && cat[$1]=="family")) bad=1
+    seen++
+  }
   END {exit (bad || seen != count || count != 107)}' "$tmp/old" "$DNS_CATALOG"
 grep -q '^astracat|.*|OK$' "$TEST_RESULTS"
 grep -q '^shecan|.*|OK$' "$TEST_RESULTS"
