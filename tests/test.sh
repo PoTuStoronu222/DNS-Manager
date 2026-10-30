@@ -549,14 +549,14 @@ grep -q 'updated) exit 0' dns-manager.sh || fail "manager update-check exit cont
 grep -q 'current|throttled) exit 2' dns-manager.sh || fail "manager current exit contract missing"
 grep -q "xbox_dns|gaming|games+supercell|Xbox DNS|" catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "Xbox DNS is not in gaming catalog category"
 grep -Fq '# DNSCATREV=8' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog revision not bumped"
-grep -Fq '# ENTRIES=114' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog entry count header is incorrect"
+grep -Fq '# ENTRIES=113' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog entry count header is incorrect"
 awk '/^catalog_validate_file\(\) \{/,/^}/' dns-manager.sh > "$tmp/catalog_validate.sh"
 ( DNSCAT_VERSION=8.7-RU-NOSOCIAL DNSCAT_REVISION=8; . "$tmp/catalog_validate.sh"; catalog_validate_file catalogs/dns-8.7-RU-NOSOCIAL.conf ) || fail "updated catalog does not pass the manager validator"
 sh tests/catalog-audit-update-test.sh || fail "catalog upgrade or fallback failed"
 sed -n '/^DNSCAT_REF=/,/^DNSCAT_URL=/p' dns-manager.sh > "$tmp/catalog_ref.sh"
 ( DNS_MANAGER_SOURCE_REF=test/doh-catalog-audit; . "$tmp/catalog_ref.sh"; case "$DNSCAT_URL" in */test/doh-catalog-audit/catalogs/*) :;; *) exit 1;; esac ) || fail "test installer does not load its own catalog"
 ( DNS_MANAGER_SOURCE_REF='../invalid'; . "$tmp/catalog_ref.sh"; case "$DNSCAT_URL" in */main/catalogs/*) :;; *) exit 1;; esac ) || fail "unsafe catalog ref was not rejected"
-for _catalog_id in malw_cloudflare geohide_ru geohide_eu geohide_us magicdns wlrus geodema; do
+for _catalog_id in malw_cloudflare geohide_eu geohide_us magicdns wlrus geodema; do
     grep -q "^${_catalog_id}|" catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "new catalog ID missing: $_catalog_id"
 done
 grep -Fq 'astracat|bypass|geo+ads+services|AstraCat DNS|https://dns.commonnet.work/dns-query|ru/global|official-current' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "AstraCat catalog endpoint is stale"
@@ -566,7 +566,7 @@ grep -Fq 'dagami|bypass|geo+services|Dagami DNS|https://dns.dagami.ru/dns-query|
 grep -Fq 'webshift|bypass|geo+services|WebShift DNS|https://d.webshiftvpn.ru/dns-query|' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "WebShift DNS entry missing"
 grep -Fq 'libredns_clean|bypass|privacy+geo+services|LibreDNS|https://doh.libredns.gr/dns-query|' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "LibreDNS category is incorrect"
 grep -Fq 'shecan|bypass|geo+services|Zapret DNS|https://dns.zapret.moe/dns-query|' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "Zapret DNS identity changed"
-grep -Fq '# ENTRIES=114' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog entry count was not updated"
+grep -Fq '# ENTRIES=113' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog entry count was not updated"
 grep -Fq 'bezmezhau|bypass|geo+services|Bezmezhau DNS|https://dns.bezmezhau.com/dns-query|' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "Bezmezhau geo DNS entry missing"
 grep -Fq 'dagami|bypass|geo+services|Dagami DNS|https://dns.dagami.ru/dns-query|' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "Dagami geo DNS entry missing"
 grep -Fq "function resolverAvailable(ci)" dns-manager-luci.sh || fail "DoH availability helper missing"
