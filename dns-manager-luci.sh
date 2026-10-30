@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager full installer and LuCI companion
-# Version: 2.13
+# Version: 2.14
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,8 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.13"
+VERSION="2.14"
+ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -188,6 +189,44 @@ manager_version() {
 require_manager() {
     [ -x "$MANAGER" ] || { err "Не найден $MANAGER. Сначала установите DNS Manager."; return 1; }
     [ -n "$(manager_version 2>/dev/null || true)" ] || { err "Не удалось определить версию DNS Manager."; return 1; }
+}
+
+# Publish every asset before changing the menu. The old menu and its files
+# remain usable if any step fails. Keep the previous version for open tabs.
+publish_versioned_assets() {
+    [ -s "$COMMON_FILE" ] || { err 'Общий модуль LuCI не готов.'; return 1; }
+    for _asset_page in dashboard doh slots devices network time catalog log; do
+        [ -s "$VIEW_DIR/${_asset_page}.js" ] || { err "Страница LuCI $_asset_page не готова."; return 1; }
+    done
+    _asset_hash="$(cat "$COMMON_FILE" "$VIEW_DIR/dashboard.js" "$VIEW_DIR/doh.js" "$VIEW_DIR/slots.js" "$VIEW_DIR/devices.js" "$VIEW_DIR/network.js" "$VIEW_DIR/time.js" "$VIEW_DIR/catalog.js" "$VIEW_DIR/log.js" 2>/dev/null | sha256sum 2>/dev/null | awk '{print $1}')"
+    case "$_asset_hash" in ''|*[!0-9a-f]*) err 'Не удалось вычислить версию файлов LuCI.'; return 1;; esac
+    [ "${#_asset_hash}" = 64 ] || { err 'Неполная контрольная сумма файлов LuCI.'; return 1; }
+    _asset_id="${ASSET_VERSION}_${_asset_hash}"
+    case "${_asset_id#v}" in ''|*[!0-9a-f_]*) err 'Некорректная версия файлов LuCI.'; return 1;; esac
+    _prev_asset="$(sed -n 's|.*"path": "dns-manager/\(v[0-9a-f_]*\)/dashboard".*|\1|p' "$MENU_FILE" 2>/dev/null | head -n1)"
+    case "${_prev_asset#v}" in ''|*[!0-9a-f_]*) _prev_asset='';; esac
+    mkdir -p "$RESOURCE_DIR/$_asset_id" "$VIEW_DIR/$_asset_id" || return 1
+    _common_tmp="$RESOURCE_DIR/$_asset_id/common.js.new.$$"
+    cp "$COMMON_FILE" "$_common_tmp" && chmod 0644 "$_common_tmp" && mv -f "$_common_tmp" "$RESOURCE_DIR/$_asset_id/common.js" || { rm -f "$_common_tmp"; return 1; }
+    for _asset_page in dashboard doh slots devices network time catalog log; do
+        _asset_tmp="$VIEW_DIR/$_asset_id/${_asset_page}.js.new.$$"
+        sed "s|'require dns-manager.common as DM';|'require dns-manager.${_asset_id}.common as DM';|" "$VIEW_DIR/${_asset_page}.js" > "$_asset_tmp" || return 1
+        grep -Fq "'require dns-manager.${_asset_id}.common as DM';" "$_asset_tmp" || return 1
+        chmod 0644 "$_asset_tmp" && mv -f "$_asset_tmp" "$VIEW_DIR/$_asset_id/${_asset_page}.js" || return 1
+    done
+    _menu_versioned="${_menu_stage}.versioned"
+    sed "s|\"path\": \"dns-manager/|\"path\": \"dns-manager/${_asset_id}/|g" "$_menu_stage" > "$_menu_versioned" || return 1
+    [ "$(grep -c "\"path\": \"dns-manager/${_asset_id}/" "$_menu_versioned")" = 8 ] || return 1
+    chmod 0644 "$_menu_versioned" && mv -f "$_menu_versioned" "$MENU_FILE" || return 1
+    rm -f "$_menu_stage" 2>/dev/null || true
+    for _asset_dir in "$RESOURCE_DIR"/v* "$VIEW_DIR"/v*; do
+        [ -d "$_asset_dir" ] || continue
+        _asset_name="${_asset_dir##*/}"
+        case "${_asset_name#v}" in ''|*[!0-9a-f_]*) continue;; esac
+        [ "$_asset_name" = "$_asset_id" ] && continue
+        [ -n "$_prev_asset" ] && [ "$_asset_name" = "$_prev_asset" ] && continue
+        rm -rf "$_asset_dir" 2>/dev/null || true
+    done
 }
 
 install_files() {
@@ -618,7 +657,8 @@ EOF_DEVICE_DNS_SERVICE
         say "ПРЕДУПРЕЖДЕНИЕ: не удалось запустить проверку привязок DNS по устройствам; они остаются без активных правил."
     fi
 
-    cat > "$MENU_FILE" <<'EOF_MENU'
+    _menu_stage="${MENU_FILE}.new.$$"
+    cat > "$_menu_stage" <<'EOF_MENU'
 {
   "admin/services/dns-manager": {
     "title": "DNS Manager",
@@ -722,7 +762,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.13"
+SELF_VERSION="2.14"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -4086,7 +4126,7 @@ EOF_RPC_WRAPPER
 'require ui';
 'require session';
 
-// DNS Manager LuCI common module version: 2.13
+// DNS Manager LuCI common module version: 2.14
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -6225,13 +6265,13 @@ function saveRouteCache(key,st,aux){
     var entry=JSON.parse(JSON.stringify({ts:Date.now(),data:st,aux:aux}));
     window.dmRouteCache[key]=entry;
     if(typeof session!=='undefined'&&session.setLocalData)
-      session.setLocalData('dns-manager-route-2.13-'+key,entry);
+      session.setLocalData('dns-manager-route-2.14-'+key,entry);
   }catch(e){}
 }
 function routeCacheEntry(key){
   var entry=key&&window.dmRouteCache&&window.dmRouteCache[key];
   if(!entry&&key){
-    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.13-'+key);}catch(e){}
+    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.14-'+key);}catch(e){}
   }
   if(!entry||typeof entry.ts!=='number'||Date.now()-entry.ts<0||Date.now()-entry.ts>300000||!entry.data||entry.data.ok!==true)return null;
   return entry;
@@ -7242,7 +7282,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 2.13
+// DNS Manager LuCI version: 2.14
 return view.extend({
   load: DM.load,
   render: DM.render,
@@ -7261,6 +7301,7 @@ EOF_PAGE
             return 1
         }
     done
+    publish_versioned_assets || return 1
     chmod 0644 "$MENU_FILE" "$ACL_FILE"
 
     # The current native LuCI page is a JavaScript view and no longer uses
