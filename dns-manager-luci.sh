@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager full installer and LuCI companion
-# Version: 2.14
+# Version: 2.16
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.14"
+VERSION="2.16"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -762,7 +762,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.14"
+SELF_VERSION="2.16"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -1414,6 +1414,14 @@ update_catalog_direct() {
     case "$_count" in ''|*[!0-9]*) _count=0;; esac
     [ -n "$_remote_ver" ] && [ -n "$_remote_rev" ] && [ "$_decl" = "$_count" ] && [ "$_count" -gt 0 ] || { rm -f "$_tmp" 2>/dev/null || true; return 4; }
     awk -F'|' '/^[[:space:]]*#/ || /^[[:space:]]*$/ {next} {if(NF!=7 || $1=="" || $4=="" || $5 !~ /^https:\/\//) bad=1; if($1 !~ /^[A-Za-z0-9_-]+$/) bad=1; if($2 !~ /^(bypass|clean|security|privacy|adblock|family|gaming|regional)$/) bad=1; ids[$1]++; if(ids[$1]>1) bad=1; n++} END{if(bad || n<1) exit 1}' "$_tmp" >/dev/null 2>&1 || { rm -f "$_tmp" 2>/dev/null || true; return 4; }
+    # Never silently downgrade the installed revision when a test branch is
+    # ahead of the stable catalog, or when a mirror returns stale content.
+    _local_ver="$(catalog_version 2>/dev/null || true)"
+    _local_rev="$(catalog_revision 2>/dev/null || true)"
+    case "$_remote_rev:$_local_rev" in
+        *[!0-9:]*|:*|*:) ;;
+        *) if [ "$_remote_ver" = "$_local_ver" ] && [ "$_remote_rev" -lt "$_local_rev" ] 2>/dev/null; then rm -f "$_tmp"; return 2; fi ;;
+    esac
     _rb="$TMP_ROOT/catalog-remote-all.$"
     _lb="$TMP_ROOT/catalog-local-all.$"
     _old_shecan_url="$(awk -F'|' '$1=="shecan" {print $5; exit}' "$CATALOG_FILE" 2>/dev/null)"
@@ -2272,7 +2280,7 @@ doh_status_json() {
         _r=""; [ -n "$_result_id" ] && _r="$(result_for_id "$_result_id" 2>/dev/null || true)"
         _ms="$(printf '%s' "$_r" | awk -F'|' 'NF>=5 {print $4;exit}')"
         _rawst="$(printf '%s' "$_r" | awk -F'|' 'NF>=5 {print $5;exit}')"
-        case "$_rawst" in OK) case "$_ms" in ''|*[!0-9]*) _result_status=FAIL;; *) _result_status=OK;; esac;; '') _result_status="";; *) _result_status=FAIL;; esac
+        case "$_rawst" in OK) _result_status=OK;; '') _result_status="";; *) _result_status=FAIL;; esac
         [ "$_doh_first" = 1 ] || _doh_instances="$_doh_instances,"
         _doh_first=0
         _last_check=""; [ -n "$_result_id" ] && _last_check="$(last_check_for_id "$_result_id")"
@@ -2332,7 +2340,7 @@ doh_status_json() {
         _r="$(result_for_id "$_id" 2>/dev/null || true)"
         _ms="$(printf '%s' "$_r" | awk -F'|' 'NF>=5 {print $4;exit}')"
         _rawst="$(printf '%s' "$_r" | awk -F'|' 'NF>=5 {print $5;exit}')"
-        _st=""; case "$_rawst" in OK) case "$_ms" in ''|*[!0-9]*) _st=FAIL;; *) _st=OK;; esac;; RUNNING) _st=RUNNING;; '') ;; *) _st=FAIL;; esac
+        _st=""; case "$_rawst" in OK) _st=OK;; RUNNING) _st=RUNNING;; '') ;; *) _st=FAIL;; esac
         [ "$_first" = 1 ] || printf ','; _first=0
         printf '{"slot":'; json_quote "$_s"; printf ',"id":'; json_quote "$_id"; printf ',"name":'; json_quote "$_name"; printf ',"category":'; json_quote "$_cat"; printf ',"port":'; json_quote "$_port"; printf ',"ping":'; json_quote "$_ms"; printf ',"status":'; json_quote "$_st"; printf ',"last_check":'; json_quote "$(last_check_for_id "$_id")"; printf ',"domains":'; json_quote "$_domains"; printf '}'
     done
@@ -2695,9 +2703,7 @@ status_json() {
             _rawst="$(printf '%s' "$_r" | awk -F'|' 'NF>=5 {print $5;exit}')"
         fi
         case "$_rawst" in
-            OK)
-                case "$_ms" in ''|*[!0-9]*) _result_status=FAIL;; *) _result_status=OK;; esac
-                ;;
+            OK) _result_status=OK ;;
             '')
                 _result_status=""
                 ;;
@@ -2729,7 +2735,7 @@ status_json() {
         _name="$(catalog_field "$_id" 4 2>/dev/null || true)"; [ -n "$_name" ] || _name='Не задан'
         _r="$(result_for_id "$_id" 2>/dev/null || true)"
         _ms="$(printf '%s' "$_r" | awk -F'|' 'NF>=5 {print $4;exit}')"; _rawst="$(printf '%s' "$_r" | awk -F'|' 'NF>=5 {print $5;exit}')"
-        _st=""; case "$_rawst" in OK) case "$_ms" in ''|*[!0-9]*) _st=FAIL;; *) _st=OK;; esac;; RUNNING) _st=RUNNING;; '') ;; *) _st=FAIL;; esac
+        _st=""; case "$_rawst" in OK) _st=OK;; RUNNING) _st=RUNNING;; '') ;; *) _st=FAIL;; esac
         [ "$_first" = 1 ] || printf ','; _first=0
         printf '{"slot":'; json_quote "$_s"; printf ',"id":'; json_quote "$_id"; printf ',"name":'; json_quote "$_name"; printf ',"category":'; json_quote "$_cat"; printf ',"port":'; json_quote "$_port"; printf ',"ping":'; json_quote "$_ms"; printf ',"status":'; json_quote "$_st"; printf ',"last_check":'; json_quote "$(last_check_for_id "$_id")"; printf ',"domains":'; json_quote "$_domains"; printf '}'
     done
@@ -2799,10 +2805,6 @@ job_start_test_system() {
                 else
                     _ms=-1
                     _st="TEST_NO_RESULT"
-                fi
-
-                if [ "$_st" = OK ]; then
-                    case "$_ms" in ''|*[!0-9]*|-1) _st=FAIL; _ms=-1;; esac
                 fi
 
                 if [ -n "$_st" ] && [ "$_st" != "TEST_NO_RESULT" ]; then
@@ -4126,7 +4128,7 @@ EOF_RPC_WRAPPER
 'require ui';
 'require session';
 
-// DNS Manager LuCI common module version: 2.14
+// DNS Manager LuCI common module version: 2.16
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -4315,9 +4317,8 @@ function stateBadge(status,pingValue){
   var s=String(status||'').toUpperCase();
   if(s==='RUNNING')return badge('dm-warn','проверяется…');
   if(!s)return badge('dm-off','нет данных');
-  if(s==='OK'&&hasPing(pingValue))return badge('dm-ok',ping(pingValue)+' · доступен');
-  if(s==='OK'||s==='FAIL'||s==='FAILED'||s.indexOf('_FAIL')>0||s.indexOf('TIMEOUT')>=0||s.indexOf('ERROR')>=0||s.indexOf('HTTP_')===0||!hasPing(pingValue))return badge('dm-bad','недоступен');
-  return badge('dm-off','нет данных');
+  if(s==='OK')return badge('dm-ok',hasPing(pingValue)?ping(pingValue)+' · доступен':'ответ получен');
+  return badge('dm-bad','недоступен');
 }
 function settingName(n){ var m={watchdog:'Проверка DNS',watchdog_autoreplace:'Автозамена DNS',force:'Принудительный DNS',encrypted_dns:'Не давать устройствам обходить блокировку',dnsmasq_perf:'Увеличенный кэш DNS'}; return m[n]||n; }
 function settingModuleState(st,key){
@@ -4567,11 +4568,10 @@ function checkInfo(id,d){
   var x=state.checking&&state.checking[key];
   if(x&&String(x.status||'').toUpperCase()==='RUNNING')return {status:'RUNNING',ping:''};
   var r={status:d&&d.status?d.status:'',ping:d&&d.ping?d.ping:''};
-  if(String(r.status||'').toUpperCase()==='OK'&&!hasPing(r.ping))r.status='FAIL';
   return r;
 }
 function resolverAvailable(ci){
-  return String(ci&&ci.status||'').toUpperCase()==='OK'&&hasPing(ci&&ci.ping);
+  return String(ci&&ci.status||'').toUpperCase()==='OK';
 }
 function componentItem(title,statusNode,details){
   return E('div',{'class':'dm-component-item'},[
@@ -5160,7 +5160,7 @@ function slotCatalogOptionLabel(slot){
   var x=slotCatalogInfo(slot);
   if(x.name==='не назначен')return slotLabel(slot)+' — не назначен';
   var s=String(x.status||'').toUpperCase();
-  var avail=(s==='OK'&&hasPing(x.ping))?'доступен':(s==='RUNNING'?'проверяется':'недоступен');
+  var avail=(s==='OK')?'доступен':(s==='RUNNING'?'проверяется':'недоступен');
   var tm=hasPing(x.ping)?' · '+x.ping+' мс':'';
   return slotLabel(slot)+' — '+x.name+' · '+avail+tm;
 }
@@ -6265,13 +6265,13 @@ function saveRouteCache(key,st,aux){
     var entry=JSON.parse(JSON.stringify({ts:Date.now(),data:st,aux:aux}));
     window.dmRouteCache[key]=entry;
     if(typeof session!=='undefined'&&session.setLocalData)
-      session.setLocalData('dns-manager-route-2.14-'+key,entry);
+      session.setLocalData('dns-manager-route-2.16-'+key,entry);
   }catch(e){}
 }
 function routeCacheEntry(key){
   var entry=key&&window.dmRouteCache&&window.dmRouteCache[key];
   if(!entry&&key){
-    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.14-'+key);}catch(e){}
+    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.16-'+key);}catch(e){}
   }
   if(!entry||typeof entry.ts!=='number'||Date.now()-entry.ts<0||Date.now()-entry.ts>300000||!entry.data||entry.data.ok!==true)return null;
   return entry;
@@ -6786,7 +6786,7 @@ function testAll(root,origin){
   if(from==='catalog'){
     state.catalogProgress={
       done:0,
-      total:Number(window.dmCatalog&&window.dmCatalog.total||0),
+      total:0,
       ok:0,
       fail:0,
       detail:'Запускаю полную проверку каталога…'
@@ -6878,7 +6878,7 @@ function testCurrent(root){
     var finalRows=displayDnsRows(ns).filter(function(d){return d&&((d.slot&&d.id)||(!d.slot&&d.url&&d.port));});
     if(finalRows.length!==total)bad=true;
     finalRows.forEach(function(d){
-      if(String(d.status||'').toUpperCase()!=='OK'||!hasPing(d.ping))bad=true;
+      if(String(d.status||'').toUpperCase()!=='OK')bad=true;
     });
     state.currentTest={status:bad?'FAILED':'DONE',result:bad?'fail':'ok',total:total,finished:Date.now()};
     state.pageNotice.doh=bad?'Проверка текущих DNS завершена с ошибками.':'Проверка текущих DNS завершена.';
@@ -6946,7 +6946,7 @@ function pollJob(root,job,meta,done){
     return;
   }
   var ticks=0;
-  var maxTicks=(meta&&meta.mode==='profile')?900:180;
+  var maxTicks=(meta&&meta.mode==='profile')?900:((meta&&meta.mode==='all')?1600:180);
   var maxErrors=(meta&&meta.mode==='profile')?30:8;
   function profileFinish(j){
     if(!meta||meta.mode!=='profile')return;
@@ -6991,10 +6991,10 @@ function pollJob(root,job,meta,done){
           state.fullTest={status:allOk?'DONE':'FAILED',result:j.result||'fail',finished:Date.now(),origin:meta.origin||''};
           if(meta.origin==='catalog'){
             if(!state.catalogProgress)state.catalogProgress={done:0,total:0,ok:0,fail:0,detail:''};
-            state.catalogProgress.done=Number(j.progress_done||state.catalogProgress.done||0);
-            state.catalogProgress.total=Number(j.progress_total||state.catalogProgress.total||0);
-            state.catalogProgress.ok=Number(j.progress_ok||state.catalogProgress.ok||0);
-            state.catalogProgress.fail=Number(j.progress_fail||state.catalogProgress.fail||0);
+            if(j.progress_done!==''&&j.progress_done!=null)state.catalogProgress.done=Number(j.progress_done);
+            if(j.progress_total!==''&&j.progress_total!=null)state.catalogProgress.total=Number(j.progress_total);
+            if(j.progress_ok!==''&&j.progress_ok!=null)state.catalogProgress.ok=Number(j.progress_ok);
+            if(j.progress_fail!==''&&j.progress_fail!=null)state.catalogProgress.fail=Number(j.progress_fail);
             state.catalogProgress.detail=allOk
               ? ''
               : (state.catalogProgress.detail||'Проверка завершилась с ошибкой.');
@@ -7025,6 +7025,20 @@ function pollJob(root,job,meta,done){
       }
       if(meta&&meta.mode==='current')state.checking={};
       state.jobRunning=false;
+      if(meta&&meta.mode==='all'&&!done){
+        var allOk=String(j&&j.status||'').toUpperCase()==='DONE'&&j.result==='ok';
+        state.fullTest={status:allOk?'DONE':'FAILED',result:j.result||'fail',finished:Date.now(),origin:meta.origin||''};
+        if(meta.origin==='catalog'){
+          if(!state.catalogProgress)state.catalogProgress={done:0,total:0,ok:0,fail:0,detail:''};
+          ['done','total','ok','fail'].forEach(function(k){var v=j['progress_'+k];if(v!==''&&v!=null)state.catalogProgress[k]=Number(v);});
+          state.catalogProgress.detail=allOk?'':'Проверка завершилась с ошибкой.';
+          state.pageNotice.catalog=allOk?'Проверка завершена, но состояние роутера не удалось обновить.':'Полная проверка DNS завершилась с ошибкой.';
+          window.dmCatalog=null;state.catalogLoaded=false;
+        }
+        render(root,window.dmState||{});
+        if(meta.origin==='catalog'&&state.activeTab==='catalog')loadCatalog(root);
+        return;
+      }
       if(done)done(window.dmState||{},{status:'failed',result:'fail'});
       else{if(meta&&meta.mode==='all')state.fullTest={status:'FAILED',result:'fail'};if(meta&&meta.mode==='current')state.currentTest={status:'FAILED',result:'fail'};render(root,window.dmState||{});}
     });
@@ -7053,7 +7067,7 @@ function pollJob(root,job,meta,done){
         }
         state.catalogProgress={
           done:pd||Number(j.progress_done||0),
-          total:pt||Number(j.progress_total||0)||Number((window.dmCatalog&&window.dmCatalog.total)||0),
+          total:pt||Number(j.progress_total||0),
           ok:po||Number(j.progress_ok||0),
           fail:pf||Number(j.progress_fail||0),
           detail:lastProgress||(
@@ -7282,7 +7296,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 2.14
+// DNS Manager LuCI version: 2.16
 return view.extend({
   load: DM.load,
   render: DM.render,

@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.98"
+VERSION="4.00"
 # 3.86: make LuCI the primary interface and preserve external DNS on removal.
 # 3.85: revalidate Watchdog settings before recovery.
 # 3.84: cap DNS catalog test concurrency by total RAM on small routers.
@@ -29,8 +29,10 @@ CUSTOM_DNS_CATALOG="$CFG_DIR/dns-custom-catalog.conf"
 NTP_CATALOG="$CFG_DIR/ntp-catalog.conf"
 BOOTSTRAP_DNS_ALL="77.88.8.8,77.88.8.1,94.140.14.14,1.1.1.1,1.0.0.1,8.8.8.8,8.8.4.4,9.9.9.9,149.112.112.112,208.67.222.222,208.67.220.220,149.112.121.10,149.112.122.10,76.76.2.0,76.76.10.0,2606:4700:4700::1111,2606:4700:4700::1001,2001:4860:4860::8888,2001:4860:4860::8844,2620:fe::fe,2620:fe::9"
 DNSCAT_VERSION="8.7-RU-NOSOCIAL"
-DNSCAT_REVISION="7"
-DNSCAT_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/catalogs/dns-8.7-RU-NOSOCIAL.conf"
+DNSCAT_REVISION="9"
+DNSCAT_REF="${DNS_MANAGER_SOURCE_REF:-main}"
+case "$DNSCAT_REF" in ''|/*|*//*|*..*|*[!A-Za-z0-9._/-]*) DNSCAT_REF=main;; esac
+DNSCAT_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/$DNSCAT_REF/catalogs/dns-8.7-RU-NOSOCIAL.conf"
 WATCHDOG_RESTART_COOLDOWN=300
 WATCHDOG_BACKEND="procd"
 WATCHDOG_CHECK_INTERVAL_DEFAULT=120
@@ -745,7 +747,7 @@ catalog_validate_file() {
     [ "$_ver" = "$DNSCAT_VERSION" ] || return 1
     if [ "$_mode" != "legacy" ]; then
         grep -Fqx "# DNSCATREV=$DNSCAT_REVISION" "$_f" 2>/dev/null || return 1
-        grep -Fqx "# ENTRIES=107" "$_f" 2>/dev/null || return 1
+        grep -Fqx "# ENTRIES=113" "$_f" 2>/dev/null || return 1
     fi
     awk -F'|' -v strict="$_mode" '
         /^[[:space:]]*#/ || /^[[:space:]]*$/ { next }
@@ -757,7 +759,7 @@ catalog_validate_file() {
             ids[$1]++
             if (ids[$1] > 1) bad=1
         }
-        END { if (bad || count < 1 || (strict != "legacy" && count != 107)) exit 1 }
+        END { if (bad || count < 1 || (strict != "legacy" && count != 113)) exit 1 }
     ' "$_f" >/dev/null 2>&1 || return 1
     return 0
 }
@@ -792,7 +794,7 @@ write_catalogs() {
                         rm -f "$_result_tmp" 2>/dev/null || true
                 done
             fi
-            log_msg "Каталог DNS: загружен внешний $DNSCAT_VERSION (revision $DNSCAT_REVISION, 107 записей)."
+            log_msg "Каталог DNS: загружен внешний $DNSCAT_VERSION (revision $DNSCAT_REVISION, 113 записей)."
             return 0
         fi
     fi
@@ -2488,7 +2490,13 @@ validate_dns_message() {
     _n="$(wc -c < "$_file" 2>/dev/null | tr -d " ")"
     case "$_n" in ''|*[!0-9]*) return 1;; esac
     [ "$_n" -ge 12 ] || return 1
-    return 0
+    # A DNS response has QR=1 in the third byte. Do not require an A record,
+    # a specific IP, response ID, or RCODE: even negative DNS responses are
+    # answers from the DoH endpoint. Keep legacy compatibility on builds that
+    # omit the standard BusyBox hexdump applet.
+    command -v hexdump >/dev/null 2>&1 || return 0
+    _header="$(hexdump -n 3 -e '3/1 "%02x"' "$_file" 2>/dev/null)" || return 0
+    case "$_header" in ????[89abcdef]?) return 0;; *) return 1;; esac
 }
 test_one_dns() {
 id="$1"; url="$(normalize_url "$(dns_url "$id")")"; name="$(dns_name "$id")"; cat="$(dns_cat "$id")"
@@ -2629,6 +2637,8 @@ test_dns_catalog() (
         _bad=$((_done-_ok))
         printf "  ${C_CYAN}Промежуточный результат:${C_NC} проверено %s из %s | работают %s | ошибки %s\n" "$_done" "$total" "$_ok" "$_bad"
     }
+    # Publish the actual scope size before the first batch completes.
+    test_progress
     n=0
     batch="${TEST_BATCH:-$TEST_BATCH_DEFAULT}"
     case "$batch" in ''|*[!0-9]*) batch="$TEST_BATCH_DEFAULT";; esac
@@ -2968,7 +2978,7 @@ validate_selected_slots() {
                     ;;
             esac
             ensure_test_results_fresh "$_validate_scope" || return 1
-            _tested_ok="$(awk -F'|' -v id="$_id" 'NF>=5 && $1==id && $5=="OK" && $4 ~ /^[0-9]+$/ {print "yes"; exit}' "$TEST_RESULTS" 2>/dev/null)"
+            _tested_ok="$(awk -F'|' -v id="$_id" 'NF>=5 && $1==id && $5=="OK" {print "yes"; exit}' "$TEST_RESULTS" 2>/dev/null)"
             if [ "$_tested_ok" != yes ]; then
                 err_msg "DNS «$(dns_name "$_id")» не прошёл последнюю полную проверку. Он не может быть применён."
                 return 1
@@ -4217,11 +4227,11 @@ adaptive_hybrid_prepare() {
     : > "$_tried" || return 1
     : > "$_selected_urls" || { rm -f "$_tried" 2>/dev/null; return 1; }
     printf "\n${C_CYAN}Формирую набор только из DNS, которые прошли последнюю полную проверку DoH.${C_NC}\n"
-    _hybrid_ok_count="$(awk -F'|' '$1!="" && NF>=5 && $5=="OK" && $4 ~ /^[0-9]+$/{n++} END{print n+0}' "$TEST_RESULTS" 2>/dev/null)"
+    _hybrid_ok_count="$(awk -F'|' '$1!="" && NF>=5 && $5=="OK"{n++} END{print n+0}' "$TEST_RESULTS" 2>/dev/null)"
     printf "  В последней полной проверке подтверждено: %s DNS.\n" "$_hybrid_ok_count"
     _pool="$TMP_DIR/hybrid-pool-$$"
     : > "$_pool"
-    awk -F'|' 'NF>=5 && $2=="bypass" && $5=="OK" && $4 ~ /^[0-9]+$/ {print}' "$TEST_RESULTS" 2>/dev/null | sort -t'|' -k4,4n > "$_pool.bypass"
+    awk -F'|' 'BEGIN{OFS="|"} NF>=5 && $2=="bypass" && $5=="OK" {if($4 !~ /^[0-9]+$/)$4=2147483647;print}' "$TEST_RESULTS" 2>/dev/null | sort -t'|' -k4,4n > "$_pool.bypass"
     _fill=0
     _hybrid_max_slots=6
     _hybrid_min_slots=3
@@ -4241,7 +4251,7 @@ adaptive_hybrid_prepare() {
     _hybrid_clean_fallback=0
     if [ "$_fill" -lt "$_hybrid_max_slots" ]; then
         _hybrid_clean_pool="$TMP_DIR/hybrid-pool-clean-$$"
-        awk -F'|' 'NF>=5 && $2=="clean" && $5=="OK" && $4 ~ /^[0-9]+$/ {print}' "$TEST_RESULTS" 2>/dev/null | sort -t'|' -k4,4n > "$_hybrid_clean_pool"
+        awk -F'|' 'BEGIN{OFS="|"} NF>=5 && $2=="clean" && $5=="OK" {if($4 !~ /^[0-9]+$/)$4=2147483647;print}' "$TEST_RESULTS" 2>/dev/null | sort -t'|' -k4,4n > "$_hybrid_clean_pool"
         while [ "$_fill" -lt "$_hybrid_max_slots" ]; do
             _picked_clean=""
             while IFS='|' read -r _cid _ccat _cname _cms _cst; do
@@ -4305,12 +4315,12 @@ adaptive_hybrid_prepare() {
 
     SLOT_RU=""
     SLOT_RU_CAT="regional"
-    _yandex_ok="$(awk -F'|' 'NF>=5 && $1=="yandex_ru" && $2=="regional" && $5=="OK" && $4 ~ /^[0-9]+$/ {print "yes";exit}' "$TEST_RESULTS" 2>/dev/null)"
+    _yandex_ok="$(awk -F'|' 'NF>=5 && $1=="yandex_ru" && $2=="regional" && $5=="OK" {print "yes";exit}' "$TEST_RESULTS" 2>/dev/null)"
     if [ "$_yandex_ok" = yes ]; then
         SLOT_RU="yandex_ru"
         printf "  ${C_GREEN}✓ RU: Yandex RU → 127.0.0.1:%s${C_NC}\n" "$(hybrid_desired_port RU)"
     else
-        _ru1="$(awk -F'|' 'NF>=5 && $2=="regional" && $5=="OK" && $4 ~ /^[0-9]+$/ {print $1;exit}' "$TEST_RESULTS" 2>/dev/null)"
+        _ru1="$(awk -F'|' 'NF>=5 && $2=="regional" && $5=="OK" {print $1;exit}' "$TEST_RESULTS" 2>/dev/null)"
         if [ -n "$_ru1" ]; then
             SLOT_RU="$_ru1"
             warn_msg "Yandex RU не прошёл последнюю проверку. Для RU выбран другой подтверждённый региональный DNS: $(dns_name "$_ru1")."
@@ -5368,7 +5378,7 @@ else
     case "$total" in ''|*[!0-9]*) total=0;; esac
     _scope_label="последняя сохранённая проверка (результаты неактуальны)"
 fi
-okn="$(awk -F'|' 'NF==5 && $5=="OK" && $4 ~ /^[0-9]+$/ {n++} END{print n+0}' "$TEST_RESULTS" 2>/dev/null)"
+okn="$(awk -F'|' 'NF==5 && $5=="OK" {n++} END{print n+0}' "$TEST_RESULTS" 2>/dev/null)"
 failn=$((total-okn))
 if [ "$_results_fresh" = 1 ]; then
     printf "${C_GREEN}✓ Работают: %s${C_NC}    ${C_RED}✗ Ошибки: %s${C_NC}    ${C_WHITE}Всего: %s${C_NC}
@@ -5518,9 +5528,9 @@ _src="$TMP_DIR/auto-candidates"
 : > "$_pool"
 : > "$_src"
 if [ "$_cat" = all ]; then
-    awk -F'|' 'NF>=5 && $5=="OK" && $2!="regional" && $4 ~ /^[0-9]+$/ {print}' "$TEST_RESULTS" 2>/dev/null | sort -t'|' -k4,4n > "$_src"
+    awk -F'|' 'BEGIN{OFS="|"} NF>=5 && $5=="OK" && $2!="regional" {if($4 !~ /^[0-9]+$/)$4=2147483647;print}' "$TEST_RESULTS" 2>/dev/null | sort -t'|' -k4,4n > "$_src"
 else
-    awk -F'|' -v c="$_cat" 'NF>=5 && $2==c && $5=="OK" && $4 ~ /^[0-9]+$/ {print}' "$TEST_RESULTS" 2>/dev/null | sort -t'|' -k4,4n > "$_src"
+    awk -F'|' -v c="$_cat" 'BEGIN{OFS="|"} NF>=5 && $2==c && $5=="OK" {if($4 !~ /^[0-9]+$/)$4=2147483647;print}' "$TEST_RESULTS" 2>/dev/null | sort -t'|' -k4,4n > "$_src"
 fi
 [ -s "$_src" ] || {
     _cat_ok_count="$(awk -F'|' -v c="$_cat" 'NF>=5 && $2==c && $5=="OK" {n++} END{print n+0}' "$TEST_RESULTS" 2>/dev/null)"
@@ -6771,7 +6781,7 @@ watchdog_test_results_usable() {
     # Regional DNS is tested alongside a category, but it cannot stand in for
     # a working general resolver when that category is selected.
     awk -F'|' -v c="$_usable_scope" '
-        NF==5 && $5=="OK" && $4 ~ /^[0-9]+$/ && $2!="regional" &&
+        NF==5 && $5=="OK" && $2!="regional" &&
         (c=="all" || $2==c) {found=1}
         END {exit !found}
     ' "$TEST_RESULTS" 2>/dev/null
@@ -7184,11 +7194,11 @@ watchdog_pick_replacement() {
             [ -n "$_passcat" ] || continue
             if [ "$_profile_all_scope" = 1 ] && [ "$_slot" != RU ]; then
                 awk -F'|' '
-                    NF>=5 && $1 !~ /^#/ && $2!="regional" && $5=="OK" && $4 ~ /^[0-9]+$/ {print}
+                    BEGIN{OFS="|"} NF>=5 && $1 !~ /^#/ && $2!="regional" && $5=="OK" {if($4 !~ /^[0-9]+$/)$4=2147483647;print}
                 ' "$TEST_RESULTS" 2>/dev/null | sort -t'|' -k4,4n > "$_fresh_pass_source"
             else
                 awk -F'|' -v c="$_passcat" '
-                    NF>=5 && $1 !~ /^#/ && $2==c && $5=="OK" && $4 ~ /^[0-9]+$/ {print}
+                    BEGIN{OFS="|"} NF>=5 && $1 !~ /^#/ && $2==c && $5=="OK" {if($4 !~ /^[0-9]+$/)$4=2147483647;print}
                 ' "$TEST_RESULTS" 2>/dev/null | sort -t'|' -k4,4n > "$_fresh_pass_source"
             fi
 
