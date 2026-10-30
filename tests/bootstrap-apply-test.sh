@@ -19,7 +19,7 @@ uci() {
     case "$1:$2" in
         changes:*) [ ! -e "$tmp/pending" ] || printf 'pending-change'; return 0 ;;
         get:https-dns-proxy.config.dnsmasq_config_update) cat "$tmp/integration" ;;
-        get:https-dns-proxy.config.force_dns) printf 0 ;;
+        get:https-dns-proxy.config.force_dns) if [ -e "$tmp/force-enabled" ]; then printf 1; else printf 0; fi ;;
         get:https-dns-proxy.@https-dns-proxy\[0\]) printf 'https-dns-proxy' ;;
         get:https-dns-proxy.@https-dns-proxy\[1\]) printf 'https-dns-proxy' ;;
         get:https-dns-proxy.@https-dns-proxy\[0\].listen_port) if [ -e "$tmp/moved" ]; then printf 5070; else printf 5053; fi ;;
@@ -80,4 +80,8 @@ case "$BOOTSTRAP_ERROR" in *'откат не завершён'*) ;; *) exit 23;;
 rm -f "$tmp/trigger-move" "$tmp/moved" "$tmp/boot0"; : > "$tmp/fail-query"
 if bootstrap_apply_selection '8.8.4.4'; then exit 24; fi
 [ ! -e "$tmp/boot0" ] && [ ! -e "$tmp/integration" ] || exit 25
+rm -f "$tmp/fail-query"; TEST_STEER=1; : > "$tmp/force-enabled"
+if bootstrap_apply_selection '8.8.8.8'; then exit 26; fi
+[ ! -e "$tmp/boot0" ] && [ ! -e "$tmp/integration" ] || exit 27
+case "$BOOTSTRAP_ERROR" in *Steer*) ;; *) exit 28;; esac
 echo 'OK: bootstrap applies to selected DNS and rolls back after failed probe'
