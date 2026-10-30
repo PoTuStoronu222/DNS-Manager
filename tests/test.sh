@@ -2645,6 +2645,18 @@ awk '/^load_config\(\) \{/,/^}/' dns-manager.sh > "$tmp/bootstrap-load-config.sh
 ) || fail "bootstrap default and selected values were not loaded correctly"
 ok "bootstrap selection loads independently of legacy settings"
 
+awk '/^bootstrap_normalize_addresses\(\) \{/,/^}/' dns-manager.sh > "$tmp/bootstrap-validate.sh"
+(
+    . "$tmp/bootstrap-validate.sh"
+    [ "$(bootstrap_normalize_addresses '1.1.1.1 9.9.9.9,2606:4700:4700::1111')" = '1.1.1.1,9.9.9.9,2606:4700:4700::1111' ] || exit 1
+    [ "$(bootstrap_normalize_addresses '::ABCD')" = '::abcd' ] || exit 2
+    for bad in '' '1.1.1.999' '127.0.0.1' 'example.com' '1.1.1.1,1.1.1.1' '2001:::1' '1:2:3:4:5:6:7:8:9' '::1' '1.1.1.1;reboot'; do
+        if bootstrap_normalize_addresses "$bad" >/dev/null; then exit 3; fi
+    done
+    if bootstrap_normalize_addresses "$(printf '1.1.1.1\n9.9.9.9')" >/dev/null; then exit 4; fi
+) || fail "bootstrap literal address validation"
+ok "bootstrap validation accepts IPv4 and IPv6 literals and rejects invalid input"
+
 # Exercise concurrent lock acquisition in two independent shell processes.
 STATE_DIR="$tmp/lock-concurrent"
 MUTATION_LOCK_DIR="$STATE_DIR/mutation.lock"
