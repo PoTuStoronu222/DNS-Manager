@@ -27,7 +27,9 @@ uci() {
         get:https-dns-proxy.@https-dns-proxy\[0\].resolver_url) printf 'https://dns.example/query' ;;
         get:https-dns-proxy.@https-dns-proxy\[1\].resolver_url) printf 'https://other.example/query' ;;
         get:https-dns-proxy.@https-dns-proxy\[0\].bootstrap_dns) cat "$tmp/boot0" ;;
-        set:https-dns-proxy.config.dnsmasq_config_update=*) printf '%s' "${2#*=}" > "$tmp/integration" ;;
+        set:https-dns-proxy.config.dnsmasq_config_update=*)
+            [ "${2#*=}" != '-' ] || [ ! -e "$tmp/fail-detach" ] || return 1
+            printf '%s' "${2#*=}" > "$tmp/integration" ;;
         delete:https-dns-proxy.config.dnsmasq_config_update) rm -f "$tmp/integration" ;;
         set:https-dns-proxy.@https-dns-proxy\[0\].bootstrap_dns=*) printf '%s' "${2#*=}" > "$tmp/boot0" ;;
         delete:https-dns-proxy.@https-dns-proxy\[0\].bootstrap_dns) rm -f "$tmp/boot0" ;;
@@ -84,4 +86,10 @@ rm -f "$tmp/fail-query"; TEST_STEER=1; : > "$tmp/force-enabled"
 if bootstrap_apply_selection '8.8.8.8'; then exit 26; fi
 [ ! -e "$tmp/boot0" ] && [ ! -e "$tmp/integration" ] || exit 27
 case "$BOOTSTRAP_ERROR" in *Steer*) ;; *) exit 28;; esac
+rm -f "$tmp/force-enabled"; TEST_STEER=0
+printf '*' > "$tmp/integration"; printf '9.9.9.9' > "$tmp/boot0"; : > "$tmp/fail-detach"
+before="$(wc -l < "$tmp/restarts" | tr -d ' ')"
+if bootstrap_apply_selection '8.8.8.8'; then exit 29; fi
+[ "$(cat "$tmp/integration")" = '*' ] && [ "$(cat "$tmp/boot0")" = '9.9.9.9' ] || exit 30
+[ "$(wc -l < "$tmp/restarts" | tr -d ' ')" = "$before" ] || exit 31
 echo 'OK: bootstrap applies to selected DNS and rolls back after failed probe'
