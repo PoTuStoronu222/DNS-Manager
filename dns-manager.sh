@@ -920,7 +920,11 @@ bootstrap_apply_selection() {
         done
     fi
     if [ -z "$bs_new" ]; then bs_ids=''; bs_extra='';
-    elif [ -n "$bs_ids$bs_extra" ]; then bs_snapshot="$bs_new"; fi
+    elif [ -n "$bs_ids$bs_extra" ]; then bs_snapshot="$bs_new"
+    elif [ "$bs_new" = "$bs_old" ] && [ "$bs_old_snapshot" = "$bs_old" ]; then
+        # An older cached LuCI may submit the same addresses without metadata.
+        bs_ids="$bs_old_ids"; bs_extra="$bs_old_extra"; bs_snapshot="$bs_old_snapshot"
+    fi
     bs_effective="${bs_new:-$BOOTSTRAP_DNS_ALL}"
     bs_pending="$(uci -q changes https-dns-proxy 2>/dev/null)" || { BOOTSTRAP_ERROR='Не удалось проверить изменения UCI.'; return 1; }
     [ -z "$bs_pending" ] || { BOOTSTRAP_ERROR='Есть несохранённые изменения UCI. Сохраните их и повторите.'; return 1; }
