@@ -56,7 +56,9 @@ async function testPollNavigation(){
 async function testRouteCache(){
   let route='dashboard',resolveDashboard,resolveDoh,draws=[];
   const root={};
-  const ctx={window:{dmCurrentRoot:root},state:{statusError:'',statusFromCache:false},currentRoute:()=>route,rootAlive:()=>true,render:(r,s)=>draws.push(s),callStatus:()=>new Promise(r=>{resolveDashboard=r;}),callDohStatus:()=>new Promise(r=>{resolveDoh=r;}),callTimeStatus:()=>Promise.resolve({}),Date,JSON,Promise,Object,Error};
+  const store={};
+  const session={setLocalData:(k,v)=>{store[k]=JSON.stringify(v);},getLocalData:k=>store[k]?JSON.parse(store[k]):null};
+  const ctx={session,window:{dmCurrentRoot:root},state:{statusError:'',statusFromCache:false},currentRoute:()=>route,rootAlive:()=>true,render:(r,s)=>draws.push(s),callStatus:()=>new Promise(r=>{resolveDashboard=r;}),callDohStatus:()=>new Promise(r=>{resolveDoh=r;}),callTimeStatus:()=>Promise.resolve({}),Date,JSON,Promise,Object,Error};
   vm.createContext(ctx);vm.runInContext(extract('function routeStatusCall(){','function checkUpdate(root,force){'),ctx);
   const a=ctx.ensureStatusPromise('dashboard'),b=ctx.ensureStatusPromise('doh');
   if(a===b||!resolveDashboard||!resolveDoh)throw Error('different routes shared one RPC');
@@ -65,13 +67,16 @@ async function testRouteCache(){
   await Promise.all([a,b]);
   const cached=ctx.cachedRouteStatus('slots');
   if(!cached||cached.force_owner!=='steer'||cached.__dmCachedRoute!=='slots')throw Error('compatible route cache missing');
+  ctx.window.dmRouteCache=undefined;
+  if(ctx.cachedRouteStatus('slots').force_owner!=='steer')throw Error('cache did not survive page navigation');
+  ctx.window.dmRouteCache={doh:JSON.parse(store['dns-manager-route-2.10-doh'])};
   cached.slots.length=0;
   if(ctx.cachedRouteStatus('doh').slots.length!==1)throw Error('cache was mutated by view');
   ctx.applyStatusToCurrentRoot({ok:true,force_owner:'steer'},'doh');
   if(draws.length)throw Error('late response rendered on another route');
   ctx.applyStatusToCurrentRoot({ok:true,force_owner:'none',slots:[]},'dashboard');
   if(draws.length!==1||ctx.window.dmState.force_owner!=='none'||ctx.window.dmState.slots.length)throw Error('fresh empty values were not applied');
-  ctx.window.dmRouteCache.doh.ts=Date.now()-31000;
+  ctx.window.dmRouteCache.doh.ts=Date.now()-301000;
   if(ctx.cachedRouteStatus('doh')!==null)throw Error('expired cache was reused');
   let rejected=false;await ctx.ensureStatusPromise('time').catch(()=>{rejected=true;});
   if(!rejected||ctx.cachedRouteStatus('time'))throw Error('invalid status was cached as valid');

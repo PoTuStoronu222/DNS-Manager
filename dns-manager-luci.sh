@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager full installer and LuCI companion
-# Version: 2.09
+# Version: 2.10
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.09"
+VERSION="2.10"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -722,7 +722,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.09"
+SELF_VERSION="2.10"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -4084,8 +4084,9 @@ EOF_RPC_WRAPPER
 'require baseclass';
 'require rpc';
 'require ui';
+'require session';
 
-// DNS Manager LuCI common module version: 2.09
+// DNS Manager LuCI common module version: 2.10
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -6198,7 +6199,13 @@ function ensureStatusPromise(){
     if(!st||st.ok!==true)throw new Error((st&&st.error)||'Пустой ответ состояния');
     var key=statusCacheKey(route);
     if(key){
-      try{window.dmRouteCache=window.dmRouteCache||Object.create(null);window.dmRouteCache[key]={ts:Date.now(),data:JSON.parse(JSON.stringify(st))};}catch(e){}
+      try{
+        window.dmRouteCache=window.dmRouteCache||Object.create(null);
+        var entry={ts:Date.now(),data:JSON.parse(JSON.stringify(st))};
+        window.dmRouteCache[key]=entry;
+        if(typeof session!=='undefined'&&session.setLocalData)
+          session.setLocalData('dns-manager-route-2.10-'+key,entry);
+      }catch(e){}
     }
     return st;
   }).catch(function(err){
@@ -6221,7 +6228,10 @@ function statusCacheKey(route){
 }
 function cachedRouteStatus(route){
   var key=statusCacheKey(route),entry=key&&window.dmRouteCache&&window.dmRouteCache[key];
-  if(!entry||Date.now()-entry.ts>30000)return null;
+  if(!entry&&key){
+    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.10-'+key);}catch(e){}
+  }
+  if(!entry||typeof entry.ts!=='number'||Date.now()-entry.ts<0||Date.now()-entry.ts>300000||!entry.data||entry.data.ok!==true)return null;
   try{var st=JSON.parse(JSON.stringify(entry.data));st.__dmCachedRoute=route;return st;}catch(e){return null;}
 }
 function applyStatusToCurrentRoot(st,route){
@@ -7150,7 +7160,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 2.09
+// DNS Manager LuCI version: 2.10
 return view.extend({
   load: DM.load,
   render: DM.render,
