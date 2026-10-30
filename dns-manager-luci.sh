@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager full installer and LuCI companion
-# Version: 2.03
+# Version: 2.04
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.03"
+VERSION="2.04"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -722,7 +722,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.03"
+SELF_VERSION="2.04"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -4059,7 +4059,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI common module version: 2.03
+// DNS Manager LuCI common module version: 2.04
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -4336,6 +4336,7 @@ function injectStyle(root){
   '.dm-wrap .cbi-button:focus-visible{outline:2px solid var(--primary-color,#0969da);outline-offset:2px}'+
   '.dm-wrap .cbi-button:disabled{opacity:.48;cursor:not-allowed;box-shadow:none}'+
   '.dm-wrap .dm-seg{gap:7px;margin:8px 0}'+
+  '.dm-fold>summary{cursor:pointer;list-style:none;font-size:12px;font-weight:600}.dm-fold>summary::-webkit-details-marker{display:none}.dm-fold>summary:before{content:"▸";display:inline-block;margin-right:7px;transition:transform .15s}.dm-fold[open]>summary:before{transform:rotate(90deg)}.dm-device-fold>summary{display:flex;align-items:center;gap:7px}.dm-device-fold>summary .dm-device-dns-head{flex:1;min-width:0}.dm-device-fold-body{display:flex;flex-direction:column;gap:12px;margin-top:12px}'+
   '.dm-wrap .dm-seg .cbi-button{min-height:32px;padding:7px 12px;border-radius:9px}'+
   '.dm-wrap .dm-input,.dm-wrap input:not([type=checkbox]):not([type=radio]),.dm-wrap select,.dm-wrap textarea{max-width:100%;border:1px solid rgba(110,118,129,.28);border-radius:8px;background:var(--background-color-medium,#fff);color:inherit;box-shadow:none}'+
   'html[data-darkmode="true"] .dm-wrap .dm-input,html[data-darkmode="true"] .dm-wrap input:not([type=checkbox]):not([type=radio]),html[data-darkmode="true"] .dm-wrap select,html[data-darkmode="true"] .dm-wrap textarea{background:#22272e;color:#e6edf3;border-color:#545d68;color-scheme:dark}'+
@@ -4958,6 +4959,7 @@ function saveDeviceDns(mac,controls,root){
   callSetDeviceDns(String(mac||''),selected.join(',')).then(awaitSettingResult).then(function(r){
     state.busy=false;
     if(r&&r.ok){
+      if(state.deviceDnsDrafts)delete state.deviceDnsDrafts[String(mac||'')];
       state.pageNotice.slots=selected.length
         ? 'Для устройства '+mac+' сохранены DNS '+selected.join(', ')+'.'
         : 'Индивидуальная привязка для '+mac+' удалена; устройство использует обычный DNS роутера.';
@@ -5339,6 +5341,15 @@ function renderProfiles(root,st){
   }
 }
 
+function foldSection(key,summary,content,classes){
+  state.openSections=state.openSections||{};
+  var attrs={'class':'dm-fold '+(classes||'')};
+  if(state.openSections[key])attrs.open='';
+  var details=E('details',attrs,[E('summary',{},summary),content]);
+  details.addEventListener('toggle',function(){state.openSections[key]=details.open;});
+  return details;
+}
+
 function renderSlots(root,st){
   var e=root.querySelector('#dm-slots');if(!e)return;e.innerHTML='';var rows=[];
   (st.slots||[]).forEach(function(d){
@@ -5359,12 +5370,11 @@ function renderSlots(root,st){
     ]);
     var children=[rowNode];
     if(String(d.slot)==='RU'){
-      children.push(E('div',{'class':'dm-slot-domain-panel dm-slot-regional-panel'},[
-        E('div',{'class':'dm-slot-domains-heading'},'Что направляется через региональный DNS'),
+      children.push(foldSection('slot-RU','Что направляется через региональный DNS',E('div',{'class':'dm-slot-domain-panel dm-slot-regional-panel'},[
         E('div',{'class':'dm-slot-domains-help'},assigned
           ? 'После применения настроек запросы к зонам .ru, .su и .рф направляются через назначенный здесь DNS. Правило действует и при ручной настройке DNS 1–6.'
           : 'Слот RU не назначен: отдельного маршрута для .ru, .su и .рф нет. Настройка DNS 1–6 вручную его не включает.')
-      ]));
+      ])));
     }else{
       var initial=state.slotDomainDrafts&&Object.prototype.hasOwnProperty.call(state.slotDomainDrafts,String(d.slot))
         ? state.slotDomainDrafts[String(d.slot)] : String(d.domains||'').trim().split(/\s+/).filter(Boolean).join('\n');
@@ -5372,8 +5382,8 @@ function renderSlots(root,st){
       if(!assigned)domainAttrs.disabled='';
       var domainInput=E('textarea',domainAttrs);
       domainInput.value=initial;
-      children.push(E('div',{'class':'dm-slot-domain-panel'},[
-        E('div',{'class':'dm-slot-domains-heading'},'Домены только через '+slotLabel(d.slot)),
+      domainInput.addEventListener('input',function(){state.slotDomainDrafts=state.slotDomainDrafts||{};state.slotDomainDrafts[String(d.slot)]=domainInput.value;});
+      children.push(foldSection('slot-'+d.slot,'Домены только через '+slotLabel(d.slot),E('div',{'class':'dm-slot-domain-panel'},[
         E('div',{'class':'dm-slot-domains-help'},assigned
           ? 'Один домен на строку. Поддомены тоже пойдут через этот DNS; остальные запросы останутся в общей схеме. Для доменов на кириллице используйте Punycode.'
           : 'Чтобы привязать сайты к этому DNS, сначала нажмите «Выбрать» и назначьте резолвер в слот.'),
@@ -5381,7 +5391,7 @@ function renderSlots(root,st){
           domainInput,
           btn(state.busy?'Применяю…':'Сохранить домены','cbi-button-neutral',function(){saveSlotDomains(d.slot,domainInput,root);},{disabled:!assigned||!!state.busy||!!state.jobRunning})
         ])
-      ]));
+      ])));
     }
     rows.push(E('div',{'class':'dm-slot-entry'},children));
   });
@@ -5424,10 +5434,12 @@ function renderDeviceDns(root,st){
       var source=String(d.source||'');
       var sourceLabel=source==='DHCP'?'DHCP-аренда':(source==='ARP'?'ARP-кэш':(source==='NDP'?'IPv6-сосед (NDP)':(source==='ASSIGN'?'сохранённая привязка':'статическая DHCP-запись')));
       var chosen=String(d.assigned_slots||'').split(',').filter(Boolean);
+      var draft=state.deviceDnsDrafts&&state.deviceDnsDrafts[String(d.mac||'')];
+      var selectedSlots=Array.isArray(draft)?draft:chosen;
       var options=[];
       for(var i=1;i<=6;i++){
         var key=String(i);
-        var selected=chosen.indexOf(key)>=0;
+        var selected=selectedSlots.indexOf(key)>=0;
         var usable=available[key]===true;
         var cbAttrs={'type':'checkbox','class':'dm-device-dns-checkbox','value':key,'data-available':usable?'1':'0'};
         if(selected)cbAttrs.checked='';
@@ -5443,6 +5455,10 @@ function renderDeviceDns(root,st){
         ]));
       }
       var controls=E('div',{'class':'dm-device-dns-options'},options);
+      controls.addEventListener('change',function(){
+        state.deviceDnsDrafts=state.deviceDnsDrafts||{};
+        state.deviceDnsDrafts[String(d.mac||'')]=Array.prototype.filter.call(controls.querySelectorAll('input.dm-device-dns-checkbox'),function(input){return input.checked;}).map(function(input){return String(input.value);});
+      });
       var statusText=active?'В сети':(source==='ASSIGN'?'Не в сети · привязка сохранена':'Неактивно');
       var effectiveText=chosen.length
         ? 'DNS '+chosen.join(', ')+' назначены этому устройству.'
@@ -5450,11 +5466,11 @@ function renderDeviceDns(root,st){
       var savedWarning=chosen.some(function(n){return available[n]!==true;})
         ? E('div',{'class':'dm-inline-msg info'},'В привязке есть слот, который сейчас не назначен. При сохранении он будет удалён из выбора.')
         : null;
-      var children=[
-        E('div',{'class':'dm-device-dns-head'},[
+      var deviceHeading=E('span',{'class':'dm-device-dns-head'},[
           E('div',{'class':'dm-device-dns-name'},name),
           E('span',{'class':'dm-device-dns-status '+(active?'is-online':'is-offline')},statusText)
-        ]),
+        ]);
+      var children=[
         E('div',{'class':'dm-device-dns-meta'},[
           E('div',{'class':'dm-device-dns-meta-item'},[
             E('span',{'class':'dm-device-dns-meta-label'},'IP'),
@@ -5481,7 +5497,9 @@ function renderDeviceDns(root,st){
       children.push(E('div',{'class':'dm-device-dns-actions'},[
         btn(state.busy?'Сохраняю…':'Сохранить привязку','cbi-button-apply dm-device-dns-save',function(){saveDeviceDns(d.mac,controls,root);},{disabled:!!state.busy||!!state.jobRunning})
       ]));
-      deviceRows.push(E('div',{'class':'dm-slot-entry dm-device-dns-entry'},children));
+      deviceRows.push(E('div',{'class':'dm-slot-entry dm-device-dns-entry'},[
+        foldSection('device-'+String(d.mac||''),deviceHeading,E('div',{'class':'dm-device-fold-body'},children),'dm-device-fold')
+      ]));
     });
 
     deviceChildren.push(E('div',{'class':'dm-slot-table'},deviceRows));
@@ -6959,7 +6977,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 2.03
+// DNS Manager LuCI version: 2.04
 return view.extend({
   load: DM.load,
   render: DM.render,
