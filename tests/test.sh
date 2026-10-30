@@ -2640,11 +2640,14 @@ awk '/^load_config\(\) \{/,/^}/' dns-manager.sh > "$tmp/bootstrap-load-config.sh
     BOOTSTRAP_DNS_ALL='1.1.1.1,8.8.8.8'
     printf "%s\n" "DNS_PROFILE='custom'" "BOOTSTRAP_DNS='old-ignored-value'" > "$CONFIG_FILE"
     BOOTSTRAP_DNS_SELECTED='stale-previous-value'
+    BOOTSTRAP_PRESET_IDS='stale' BOOTSTRAP_EXTRA='stale' BOOTSTRAP_METADATA_SNAPSHOT='stale'
     load_config
     [ "$BOOTSTRAP_DNS" = "$BOOTSTRAP_DNS_ALL" ] || exit 1
-    printf "%s\n" "BOOTSTRAP_DNS_SELECTED='9.9.9.9,149.112.112.112'" >> "$CONFIG_FILE"
+    [ -z "$BOOTSTRAP_PRESET_IDS$BOOTSTRAP_EXTRA$BOOTSTRAP_METADATA_SNAPSHOT" ] || exit 3
+    printf "%s\n" "BOOTSTRAP_DNS_SELECTED='9.9.9.9,149.112.112.112'" "BOOTSTRAP_PRESET_IDS='quad9'" "BOOTSTRAP_EXTRA='9.9.9.9'" "BOOTSTRAP_METADATA_SNAPSHOT='9.9.9.9,149.112.112.112'" >> "$CONFIG_FILE"
     load_config
     [ "$BOOTSTRAP_DNS" = '9.9.9.9,149.112.112.112' ] || exit 2
+    [ "$BOOTSTRAP_PRESET_IDS" = quad9 ] && [ "$BOOTSTRAP_EXTRA" = '9.9.9.9' ] && [ "$BOOTSTRAP_METADATA_SNAPSHOT" = "$BOOTSTRAP_DNS" ] || exit 4
 ) || fail "bootstrap default and selected values were not loaded correctly"
 ok "bootstrap selection loads independently of legacy settings"
 
