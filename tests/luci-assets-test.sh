@@ -47,4 +47,17 @@ printf '%s\n' '// changed log view' >> "$VIEW_DIR/log.js"
 make_menu; publish_versioned_assets
 fourth="$(asset_id)"; [ "$third" != "$fourth" ]
 [ -f "$VIEW_DIR/$third/log.js" ] && [ -f "$VIEW_DIR/$fourth/log.js" ]
+# Upgrade from 2.14: both the view URL and its dependency URL must change,
+# even when an old browser response for every old URL remains cached.
+ASSET_VERSION=v2_15
+printf '%s\n' 'common for next release' > "$COMMON_FILE"
+make_menu; publish_versioned_assets
+fifth="$(asset_id)"; [ "$fourth" != "$fifth" ]
+case "$fourth:$fifth" in v2_14_*:v2_15_*) ;; *) exit 1;; esac
+for page in dashboard doh slots devices network time catalog log; do
+    grep -Fq "\"path\": \"dns-manager/$fifth/$page\"" "$MENU_FILE"
+    grep -Fq "'require dns-manager.$fifth.common as DM';" "$VIEW_DIR/$fifth/$page.js"
+done
+grep -Fxq 'common third' "$RESOURCE_DIR/$fourth/common.js"
+grep -Fxq 'common for next release' "$RESOURCE_DIR/$fifth/common.js"
 printf '%s\n' 'OK: versioned LuCI assets, safe publication and cleanup'
