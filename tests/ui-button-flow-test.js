@@ -77,6 +77,9 @@ async function testCustomDnsFeedback(){
   const name={value:'Мой DNS'},url={value:'https://example.org/dns-query'};
   ctx.saveCustomDns(name,url,{});await delay();
   if(ctx.state.customDnsNotice.type!=='error'||!ctx.state.customDnsNotice.text.includes('Пример')||ctx.state.customDnsDraft.url!==url.value||ctx.state.customDnsDraft.name!==name.value)throw Error('duplicate message or input lost');
+  ctx.callAddCustomDns=()=>Promise.reject(Error('timeout'));ctx.saveCustomDns(name,url,{});await delay();
+  if(ctx.state.customDnsNotice.type!=='error'||!ctx.state.customDnsNotice.text.includes('timeout')||ctx.state.customDnsDraft.url!==url.value)throw Error('RPC failure or input lost');
+  ctx.callAddCustomDns=()=>Promise.resolve(reply);
   reply={ok:true,name:'Мой DNS'};ctx.saveCustomDns(name,url,{});await delay();
   if(ctx.state.customDnsNotice.type!=='ok'||ctx.state.customDnsDraft.url||ctx.state.customDnsDraft.name||ctx.state.category!=='custom')throw Error('custom DNS success feedback incorrect');
 }
