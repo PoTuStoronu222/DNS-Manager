@@ -2657,6 +2657,31 @@ awk '/^bootstrap_normalize_addresses\(\) \{/,/^}/' dns-manager.sh > "$tmp/bootst
 ) || fail "bootstrap literal address validation"
 ok "bootstrap validation accepts IPv4 and IPv6 literals and rejects invalid input"
 
+# Recovery must rebuild each selected proxy with the chosen bootstrap list.
+awk '/^rebuild_selected_hdp_sections\(\) \{/,/^}/' dns-manager.sh > "$tmp/bootstrap-rebuild.sh"
+(
+    set -eu
+    . "$tmp/bootstrap-rebuild.sh"
+    TMP_DIR="$tmp/bootstrap-rebuild"; mkdir -p "$TMP_DIR"
+    DNS_PROFILE=custom SLOT_1=dns1 SLOT_2='' SLOT_3='' SLOT_4='' SLOT_5='' SLOT_6='' SLOT_RU=dnsru
+    PORT_1=5053 PORT_RU=5059
+    BOOTSTRAP_DNS='9.9.9.9,149.112.112.112' BOOTSTRAP_DNS_ALL='1.1.1.1'
+    dns_url() { printf 'https://%s.example/dns-query' "$1"; }
+    normalize_url() { printf '%s' "$1"; }
+    uci() {
+        case "$1" in
+            -q) return 1 ;;
+            add) printf 'section%s' "$$" ;;
+            set) printf '%s\n' "$2" >> "$TMP_DIR/sets" ;;
+            commit) return 0 ;;
+            *) return 1 ;;
+        esac
+    }
+    rebuild_selected_hdp_sections || exit 1
+    [ "$(grep -c 'bootstrap_dns=9.9.9.9,149.112.112.112$' "$TMP_DIR/sets")" = 2 ] || exit 2
+) || fail "recovery did not preserve the selected bootstrap servers"
+ok "recovery rebuilds selected and regional proxies with selected bootstrap servers"
+
 # Exercise concurrent lock acquisition in two independent shell processes.
 STATE_DIR="$tmp/lock-concurrent"
 MUTATION_LOCK_DIR="$STATE_DIR/mutation.lock"
