@@ -58,4 +58,16 @@ async function testCatalogError(){
   await ctx.loadCatalog({});
   if(ctx.window.dmCatalog!==null||!ctx.state.pageNotice.catalog.includes('failed'))throw Error('catalog failure or stale entries hidden');
 }
-Promise.all([testCurrent({status:'failed',result:'fail'},'FAILED'),testCurrent({status:'done',result:'ok'},'DONE'),testSingleError(),testUpdateErrors(),testUpdateTimeout(),testProfileStatus(),testSlotDraft(),testDeviceSave(),testCatalogError()]).catch(e=>{console.error(e);process.exitCode=1;});
+async function testFoldState(){
+  const ctx={state:{},E:(tag,attrs,children)=>({tag,attrs,children,open:Object.prototype.hasOwnProperty.call(attrs,'open'),addEventListener(name,fn){this[name]=fn;}})};
+  vm.createContext(ctx);vm.runInContext(extract('function foldSection(key,summary,content,classes){','function renderSlots(root,st){'),ctx);
+  const first=ctx.foldSection('slot-1','Domains',{},'');
+  if(first.open)throw Error('section should start closed');
+  first.open=true;first.toggle();
+  const second=ctx.foldSection('slot-1','Domains',{},'');
+  if(!second.open)throw Error('open section not restored');
+  second.open=false;second.toggle();
+  if(ctx.foldSection('slot-1','Domains',{},'').open)throw Error('closed section not restored');
+  if(ctx.foldSection('device-a','Device',{},'').open)throw Error('section state leaked to another entry');
+}
+Promise.all([testCurrent({status:'failed',result:'fail'},'FAILED'),testCurrent({status:'done',result:'ok'},'DONE'),testSingleError(),testUpdateErrors(),testUpdateTimeout(),testProfileStatus(),testSlotDraft(),testDeviceSave(),testCatalogError(),testFoldState()]).catch(e=>{console.error(e);process.exitCode=1;});
