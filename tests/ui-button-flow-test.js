@@ -17,6 +17,20 @@ async function testSingleError(){
   ctx.testOne('dns1',{},'catalog');await delay();
   if(ctx.state.jobRunning||!String(ctx.state.pageNotice.catalog).includes('timeout'))throw Error('single DNS error hidden');
 }
+async function testCurrentWithoutDuration(){
+  const st={slots:[{id:'dns1',slot:'1',status:'OK',ping:'-1'}],doh_instances:[]};
+  const ctx={state:{busy:false,jobRunning:false,checking:{},pageNotice:{}},window:{dmState:st},render:()=>{},setAction:()=>{},checkKey:id=>id,displayDnsRows:s=>s.slots||[],callTestCurrent:()=>Promise.resolve({ok:true,job:'j'}),pollJob:(root,job,meta,done)=>done(st,{status:'done',result:'ok'})};
+  vm.createContext(ctx);vm.runInContext(extract('function testCurrent(root){','function pollJob(root,job,meta,done){'),ctx);
+  ctx.testCurrent({});await delay();
+  if(ctx.state.currentTest.status!=='DONE')throw Error('DNS response rejected without a duration');
+}
+async function testBadgeWithoutDuration(){
+  const ctx={badge:(kind,label)=>({kind,label}),ping:x=>x+' мс'};
+  vm.createContext(ctx);vm.runInContext(extract('function hasPing(v){','function settingName(n){'),ctx);
+  if(ctx.stateBadge('OK','-1').kind!=='dm-ok')throw Error('answer marked unavailable without timing');
+  if(ctx.stateBadge('BAD_DOH_RESPONSE','-1').kind!=='dm-bad')throw Error('bad answer not marked unavailable');
+  if(ctx.stateBadge('','').kind!=='dm-off')throw Error('untested DNS not marked unknown');
+}
 async function testMixedCurrent(){
   const st={rows:[{id:'slot1',slot:'1',status:'OK',ping:'12'},{id:'catalogid',slot:'',url:'https://dns.example/query',port:'5054',status:'OK',ping:'30'}]};
   let calls=[];
@@ -52,6 +66,14 @@ async function testPollNavigation(){
   vm.createContext(ctx);vm.runInContext(extract('function pollJob(root,job,meta,done){','function resumeRunningProfile(root){'),ctx);
   ctx.pollJob(root,'test_current',{mode:'current'},()=>{done=true;});await delay();
   if(!done||ctx.window.dmState!==newState||ctx.state.jobRunning||Object.keys(ctx.state.checking).length)throw Error('late job status replaced another route');
+}
+async function testLongCatalogProgress(total,statusFails){
+  let calls=0,completed;const finished=new Promise(resolve=>{completed=resolve;});
+  const state={busy:false,jobRunning:true,checking:{},pageNotice:{},activeTab:'catalog',catalogLoaded:true,fullTest:{status:'RUNNING',origin:'catalog'},catalogProgress:null};
+  const ctx={state,window:{dmState:{},dmCatalog:{total:3}},currentRoute:()=> 'catalog',statusDetail:()=>0,callJob:()=>Promise.resolve(++calls<205?{status:'running',output:'Промежуточный результат: проверено 0 из '+total+' | работают 0 | ошибки 0'}:{status:'done',result:'ok',progress_done:String(total),progress_total:String(total),progress_ok:String(total),progress_fail:'0'}),callStatus:()=>statusFails?Promise.reject(Error('status timeout')):Promise.resolve({}),render:()=>{},renderCatalog:()=>{},loadCatalog:()=>{completed();},setAction:()=>{},setTimeout:f=>setImmediate(f),stripAnsi:x=>x,rpcErrorText:()=>''};
+  vm.createContext(ctx);vm.runInContext(extract('function pollJob(root,job,meta,done){','function resumeRunningProfile(root){'),ctx);
+  ctx.pollJob({},'test_all',{mode:'all',origin:'catalog'});await Promise.race([finished,new Promise((_,reject)=>setTimeout(()=>reject(Error('catalog poll did not finish')),3000))]);
+  if(calls!==205||state.fullTest.status!=='DONE'||state.catalogProgress.total!==total||state.catalogProgress.done!==total||state.catalogProgress.fail!==0)throw Error('long catalog check stopped early or reported wrong counts');
 }
 async function testRouteCache(){
   let route='dashboard',resolveDashboard,resolveDoh,draws=[];
@@ -241,4 +263,4 @@ async function testBootstrapForm(){
   const applyRows=missingBody.filter(x=>x.attrs&&x.attrs.class==='dm-actions');sent=null;applyRows[applyRows.length-1].children[1].click();
   if(sent||ctx.state.bootstrapNotice.type!=='error')throw Error('removed preset applied without explicit removal');
 }
-Promise.all([testCurrent({status:'failed',result:'fail'},'FAILED'),testCurrent({status:'done',result:'ok'},'DONE'),testSingleError(),testMixedCurrent(),testCurrentNoJob(),testCurrentSystemOnly(),testCurrentNavigation(),testPollNavigation(),testRouteCache(),testCachedReadOnly(),testAdditionalRouteCache(),testSequentialWarmup(),testWarmupResourceGuard(),testUpdateErrors(),testUpdateTimeout(),testProfileStatus(),testSlotDraft(),testDeviceSave(),testCatalogError(),testFoldState(),testCustomDnsFeedback(),testBootstrapForm()]).catch(e=>{console.error(e);process.exitCode=1;});
+Promise.all([testCurrent({status:'failed',result:'fail'},'FAILED'),testCurrent({status:'done',result:'ok'},'DONE'),testSingleError(),testCurrentWithoutDuration(),testBadgeWithoutDuration(),testMixedCurrent(),testCurrentNoJob(),testCurrentSystemOnly(),testCurrentNavigation(),testPollNavigation(),testLongCatalogProgress(117),testLongCatalogProgress(5,true),testRouteCache(),testCachedReadOnly(),testAdditionalRouteCache(),testSequentialWarmup(),testWarmupResourceGuard(),testUpdateErrors(),testUpdateTimeout(),testProfileStatus(),testSlotDraft(),testDeviceSave(),testCatalogError(),testFoldState(),testCustomDnsFeedback(),testBootstrapForm()]).catch(e=>{console.error(e);process.exitCode=1;});
