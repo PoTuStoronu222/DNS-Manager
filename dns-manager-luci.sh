@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager full installer and LuCI companion
-# Version: 2.04
+# Version: 2.05
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.04"
+VERSION="2.05"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -722,7 +722,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.04"
+SELF_VERSION="2.05"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -4059,7 +4059,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI common module version: 2.04
+// DNS Manager LuCI common module version: 2.05
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -5808,13 +5808,14 @@ function saveCustomDns(nameInput,urlInput,root){
   if(state.busy||!nameInput||!urlInput)return;
   var name=String(nameInput.value||'').trim();
   var url=String(urlInput.value||'').trim();
+  state.customDnsDraft={name:name,url:url};
   if(!name||!url){
-    state.pageNotice.catalog='Заполни название DNS и HTTPS URL DoH.';
+    state.customDnsNotice={type:'error',text:'Заполните название DNS и HTTPS URL DoH.'};
     renderCatalog(root);
     return;
   }
   state.busy=true;
-  state.pageNotice.catalog='Сохраняю пользовательский DoH…';
+  state.customDnsNotice={type:'info',text:'Сохраняю пользовательский DoH…'};
   renderCatalog(root);
   callAddCustomDns(name,url).then(function(r){
     state.busy=false;
@@ -5823,20 +5824,19 @@ function saveCustomDns(nameInput,urlInput,root){
       state.offset=0;
       window.dmCatalog=null;
       state.catalogLoaded=false;
-      state.pageNotice.catalog='DNS «'+(r.name||name)+'» добавлен. Открой «Мои DNS», проверь его и назначь в слот.';
+      state.customDnsDraft={name:'',url:''};
+      state.customDnsNotice={type:'ok',text:'DNS «'+(r.name||name)+'» добавлен. Откройте «Мои DNS», проверьте его и назначьте в слот.'};
       setAction(true,'Пользовательский DoH добавлен.');
       refresh(root,true);
     }else{
       var msg=(r&&r.error)||'Не удалось сохранить пользовательский DoH.';
-      state.pageNotice.catalog=msg;
-      setAction(false,msg);
+      state.customDnsNotice={type:'error',text:msg};
       renderCatalog(root);
     }
   }).catch(function(err){
     state.busy=false;
     var msg=withRpcError('Не удалось сохранить пользовательский DoH.',err);
-    state.pageNotice.catalog=msg;
-    setAction(false,msg);
+    state.customDnsNotice={type:'error',text:msg};
     renderCatalog(root);
   });
 }
@@ -5883,6 +5883,10 @@ function renderCatalog(root){
 
   var customName=E('input',{'class':'dm-input','type':'text','maxlength':'80','placeholder':'Например, Мой DNS'});
   var customUrl=E('input',{'class':'dm-input','type':'url','maxlength':'512','placeholder':'https://dns.example/dns-query'});
+  var customDraft=state.customDnsDraft||{};
+  customName.value=customDraft.name||'';customUrl.value=customDraft.url||'';
+  function rememberCustomDns(){state.customDnsDraft={name:customName.value,url:customUrl.value};}
+  customName.addEventListener('input',rememberCustomDns);customUrl.addEventListener('input',rememberCustomDns);
   e.appendChild(card('Добавить свой DoH',[
     E('div',{'class':'dm-mini'},'Добавь собственный HTTPS-адрес DNS over HTTPS. Он сохранится отдельно от официального каталога и не исчезнет при обновлении каталога.'),
     E('div',{'class':'dm-custom-dns-form'},[
@@ -5896,8 +5900,9 @@ function renderCatalog(root){
       ]),
       btn(state.busy?'Сохраняю…':'Добавить DNS','cbi-button-action',function(){saveCustomDns(customName,customUrl,root);},{disabled:!!state.busy||!!state.jobRunning})
     ]),
+    state.customDnsNotice?E('div',{'class':'dm-inline-msg '+state.customDnsNotice.type},state.customDnsNotice.text):null,
     E('div',{'class':'dm-mini'},'После добавления выбери «Мои DNS», нажми «Проверить», затем назначь сервер в слот DNS 1–6.')
-  ]));
+  ].filter(Boolean)));
 
   if(state.fullTest&&state.fullTest.origin==='catalog'&&state.catalogProgress){
     var p=state.catalogProgress;
@@ -6977,7 +6982,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 2.04
+// DNS Manager LuCI version: 2.05
 return view.extend({
   load: DM.load,
   render: DM.render,
