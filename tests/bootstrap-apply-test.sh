@@ -99,6 +99,8 @@ if bootstrap_apply_selection '8.8.8.8'; then exit 29; fi
 rm -f "$tmp/fail-detach"; SLOT_1=''
 bootstrap_apply_selection '1.1.1.1,9.9.9.9' 'cloudflare,quad9' '9.9.9.9' || exit 36
 [ "$(cat "$tmp/saved-ids")" = 'cloudflare,quad9' ] && [ "$(cat "$tmp/saved-extra")" = '9.9.9.9' ] && [ "$(cat "$tmp/saved-snapshot")" = '1.1.1.1,9.9.9.9' ] || exit 37
+bootstrap_apply_selection '1.1.1.1,9.9.9.9' || exit 41
+[ "$(cat "$tmp/saved-ids")" = 'cloudflare,quad9' ] && [ "$(cat "$tmp/saved-extra")" = '9.9.9.9' ] || exit 42
 if bootstrap_apply_selection '1.1.1.1' 'cloudflare,cloudflare' ''; then exit 38; fi
 bootstrap_apply_selection '' '' '' || exit 39
 [ ! -s "$tmp/saved-ids" ] && [ ! -s "$tmp/saved-extra" ] && [ ! -s "$tmp/saved-snapshot" ] || exit 40
