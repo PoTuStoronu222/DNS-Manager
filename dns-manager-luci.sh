@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager full installer and LuCI companion
-# Version: 2.09
+# Version: 2.13
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.09"
+VERSION="2.13"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -722,7 +722,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.09"
+SELF_VERSION="2.13"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -4084,8 +4084,9 @@ EOF_RPC_WRAPPER
 'require baseclass';
 'require rpc';
 'require ui';
+'require session';
 
-// DNS Manager LuCI common module version: 2.09
+// DNS Manager LuCI common module version: 2.13
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -4839,18 +4840,18 @@ function resolverRows(st,root){
 // https://www.opendns.com/setupguide/ | https://cleanbrowsing.org/filters
 // https://www.cira.ca/en/canadian-shield/configure/summary-cira-canadian-shield-dns-resolver-addresses/
 var bootstrapPresets=[
-  {id:'cloudflare',name:'Cloudflare',detail:'без фильтрации',ips:'1.1.1.1,1.0.0.1,2606:4700:4700::1111,2606:4700:4700::1001'},
-  {id:'google',name:'Google',detail:'обычный DNS',ips:'8.8.8.8,8.8.4.4,2001:4860:4860::8888,2001:4860:4860::8844'},
-  {id:'quad9',name:'Quad9 Secure',detail:'блокирует угрозы',ips:'9.9.9.9,149.112.112.112,2620:fe::fe,2620:fe::9'},
-  {id:'quad9plain',name:'Quad9 без блокировок',detail:'без блокировки угроз',ips:'9.9.9.10,149.112.112.10,2620:fe::10,2620:fe::fe:10'},
-  {id:'yandex',name:'Яндекс DNS',detail:'базовый',ips:'77.88.8.8,77.88.8.1,2a02:6b8::feed:0ff,2a02:6b8:0:1::feed:0ff'},
-  {id:'adguardplain',name:'AdGuard без фильтрации',detail:'без фильтрации',ips:'94.140.14.140,94.140.14.141,2a10:50c0::1:ff,2a10:50c0::2:ff'},
-  {id:'adguard',name:'AdGuard Default',detail:'блокирует рекламу и угрозы',ips:'94.140.14.14,94.140.15.15,2a10:50c0::ad1:ff,2a10:50c0::ad2:ff'},
-  {id:'controld',name:'Control D Unfiltered',detail:'без фильтрации',ips:'76.76.2.0,76.76.10.0,2606:1a40::0,2606:1a40:1::0'},
-  {id:'controlduncensored',name:'Control D Uncensored',detail:'обход ограничений',ips:'76.76.2.5,76.76.10.5,2606:1a40::5,2606:1a40:1::5'},
-  {id:'opendns',name:'OpenDNS',detail:'обычный DNS',ips:'208.67.222.222,208.67.220.220'},
-  {id:'cira',name:'CIRA Canadian Shield Private',detail:'без фильтрации',ips:'149.112.121.10,149.112.122.10,2620:10a:80bb::10,2620:10a:80bc::10'},
-  {id:'cleanbrowsing',name:'CleanBrowsing Security',detail:'блокирует угрозы',ips:'185.228.168.9,185.228.169.9,2a0d:2a00:1::2,2a0d:2a00:2::2'}
+  {id:'cloudflare',name:'Cloudflare',ips:'1.1.1.1,1.0.0.1,2606:4700:4700::1111,2606:4700:4700::1001'},
+  {id:'google',name:'Google',ips:'8.8.8.8,8.8.4.4,2001:4860:4860::8888,2001:4860:4860::8844'},
+  {id:'quad9',name:'Quad9 Secure',ips:'9.9.9.9,149.112.112.112,2620:fe::fe,2620:fe::9'},
+  {id:'quad9plain',name:'Quad9 (9.9.9.10)',ips:'9.9.9.10,149.112.112.10,2620:fe::10,2620:fe::fe:10'},
+  {id:'yandex',name:'Яндекс DNS',ips:'77.88.8.8,77.88.8.1,2a02:6b8::feed:0ff,2a02:6b8:0:1::feed:0ff'},
+  {id:'adguardplain',name:'AdGuard DNS (94.140.14.140)',ips:'94.140.14.140,94.140.14.141,2a10:50c0::1:ff,2a10:50c0::2:ff'},
+  {id:'adguard',name:'AdGuard Default',ips:'94.140.14.14,94.140.15.15,2a10:50c0::ad1:ff,2a10:50c0::ad2:ff'},
+  {id:'controld',name:'Control D (76.76.2.0)',ips:'76.76.2.0,76.76.10.0,2606:1a40::0,2606:1a40:1::0'},
+  {id:'controlduncensored',name:'Control D (76.76.2.5)',ips:'76.76.2.5,76.76.10.5,2606:1a40::5,2606:1a40:1::5'},
+  {id:'opendns',name:'OpenDNS',ips:'208.67.222.222,208.67.220.220'},
+  {id:'cira',name:'CIRA Canadian Shield Private',ips:'149.112.121.10,149.112.122.10,2620:10a:80bb::10,2620:10a:80bc::10'},
+  {id:'cleanbrowsing',name:'CleanBrowsing Security',ips:'185.228.168.9,185.228.169.9,2a0d:2a00:1::2,2a0d:2a00:2::2'}
 ];
 // Historical 2.07 snapshot: never edit these entries when updating providers.
 // Existing installations saved only IPs, so this recovers their selected IDs.
@@ -4894,7 +4895,7 @@ function renderBootstrap(root,st){
     var attrs={'type':'checkbox','value':p.id};if(draft.ids.indexOf(p.id)>=0)attrs.checked='';
     var checkbox=E('input',attrs);controls.push(checkbox);
     checkbox.addEventListener('change',remember);
-    return E('label',{'class':'dm-bootstrap-option'},[checkbox,E('span',{},p.name+' · '+p.detail)]);
+    return E('label',{'class':'dm-bootstrap-option'},[checkbox,E('span',{},p.name)]);
   });
   missingIds.forEach(function(id){
     var checkbox=E('input',{'type':'checkbox','value':id,'checked':''});controls.push(checkbox);checkbox.addEventListener('change',remember);
@@ -6197,9 +6198,8 @@ function ensureStatusPromise(){
   var promise=routeStatusCall(route).then(function(st){
     if(!st||st.ok!==true)throw new Error((st&&st.error)||'Пустой ответ состояния');
     var key=statusCacheKey(route);
-    if(key){
-      try{window.dmRouteCache=window.dmRouteCache||Object.create(null);window.dmRouteCache[key]={ts:Date.now(),data:JSON.parse(JSON.stringify(st))};}catch(e){}
-    }
+    var aux=routeCacheAux(route);
+    if(key&&aux!==false)saveRouteCache(key,st,aux);
     return st;
   }).catch(function(err){
     window.dmStatusError=err;
@@ -6217,12 +6217,52 @@ function ensureStatusPromise(){
 
 function statusCacheKey(route){
   if(route==='doh'||route==='slots')return 'doh';
-  return route==='dashboard'||route==='network'||route==='time'?route:'';
+  return ['dashboard','network','time','devices','catalog','log'].indexOf(route)>=0?route:'';
+}
+function saveRouteCache(key,st,aux){
+  try{
+    window.dmRouteCache=window.dmRouteCache||Object.create(null);
+    var entry=JSON.parse(JSON.stringify({ts:Date.now(),data:st,aux:aux}));
+    window.dmRouteCache[key]=entry;
+    if(typeof session!=='undefined'&&session.setLocalData)
+      session.setLocalData('dns-manager-route-2.13-'+key,entry);
+  }catch(e){}
+}
+function routeCacheEntry(key){
+  var entry=key&&window.dmRouteCache&&window.dmRouteCache[key];
+  if(!entry&&key){
+    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.13-'+key);}catch(e){}
+  }
+  if(!entry||typeof entry.ts!=='number'||Date.now()-entry.ts<0||Date.now()-entry.ts>300000||!entry.data||entry.data.ok!==true)return null;
+  return entry;
+}
+function routeCacheAux(route){
+  if(route==='devices')return window.dmLanDevices&&window.dmLanDevices.ok?{devices:window.dmLanDevices}:false;
+  if(route==='catalog')return state.catalogLoaded&&state.category==='all'&&state.offset===0&&window.dmCatalog?{catalog:window.dmCatalog,limit:state.limit}:false;
+  if(route==='log')return state.logLoaded?{log:String(state.logText||'').slice(-131072)}:false;
+  return null;
+}
+function restoreRouteAux(route,aux){
+  if(route==='devices'){
+    if(!aux||!aux.devices||aux.devices.ok!==true||!Array.isArray(aux.devices.devices))return false;
+    window.dmLanDevices=aux.devices;
+  }else if(route==='catalog'){
+    if(!aux||!aux.catalog||aux.catalog.ok===false||!Array.isArray(aux.catalog.servers)||aux.limit!==state.limit||state.category!=='all'||state.offset!==0)return false;
+    window.dmCatalog=aux.catalog;state.catalogLoaded=true;state.catalogLoadFailed=false;
+  }else if(route==='log'){
+    if(!aux||typeof aux.log!=='string'||aux.log.length>131072)return false;
+    state.logText=aux.log;state.logLoaded=true;
+  }
+  return true;
 }
 function cachedRouteStatus(route){
-  var key=statusCacheKey(route),entry=key&&window.dmRouteCache&&window.dmRouteCache[key];
-  if(!entry||Date.now()-entry.ts>30000)return null;
-  try{var st=JSON.parse(JSON.stringify(entry.data));st.__dmCachedRoute=route;return st;}catch(e){return null;}
+  var key=statusCacheKey(route),entry=routeCacheEntry(key);
+  if(!entry)return null;
+  try{
+    var copy=JSON.parse(JSON.stringify(entry));
+    if(!restoreRouteAux(route,copy.aux))return null;
+    var st=copy.data;st.__dmCachedRoute=route;return st;
+  }catch(e){return null;}
 }
 function applyStatusToCurrentRoot(st,route){
   if(route&&currentRoute()!==route)return;
@@ -6261,6 +6301,57 @@ function scheduleBackgroundStatus(root){
       render(root,window.dmState||{});
     });
   },0);
+}
+// Warm one read-only request at a time, only while this page is idle.
+function warmupFetch(route,allowed){
+  function get(fn){if(!allowed())return Promise.reject(new Error('warmup stopped'));return fn();}
+  if(route==='dashboard')return get(function(){return callStatus(0);}).then(function(st){return {data:st,aux:null};});
+  if(route==='doh')return get(callDohStatus).then(function(st){return {data:st,aux:null};});
+  if(route==='network')return get(callNetworkStatus).then(function(st){return {data:st,aux:null};});
+  if(route==='time')return get(callTimeStatus).then(function(st){return {data:st,aux:null};});
+  if(route==='log')return get(function(){return callLog(160);}).then(function(log){
+    if(!log||log.ok!==true)throw new Error('log unavailable');
+    return {data:{ok:true},aux:{log:stripAnsi(String(log.log||'')).slice(-131072)}};
+  });
+  if(route==='devices')return get(callDohStatus).then(function(st){
+    return get(callLanDevices).then(function(devices){
+      if(!devices||devices.ok!==true||!Array.isArray(devices.devices))throw new Error('devices unavailable');
+      return {data:st,aux:{devices:devices}};
+    });
+  });
+  if(route==='catalog')return get(function(){return callCatalog('all',0,18,0);}).then(function(catalog){
+    if(!catalog||catalog.ok!==true||!Array.isArray(catalog.servers))throw new Error('catalog unavailable');
+    return get(callDohStatus).then(function(st){return get(callPageMeta).then(function(meta){
+      if(!st||st.ok!==true||!meta||meta.ok!==true)throw new Error('catalog status unavailable');
+      var result=Object.assign({},st,meta);
+      return {data:result,aux:{catalog:catalog,limit:18}};
+    });});
+  });
+  return Promise.reject(new Error('unsupported warmup'));
+}
+function scheduleRouteWarmup(root){
+  var routes=['doh','network','time','dashboard','devices','catalog','log'],index=0;
+  var originalRoute=currentRoute();
+  function allowed(){
+    return rootAlive(root)&&window.dmCurrentRoot===root&&currentRoute()===originalRoute&&!document.hidden&&
+      !state.statusFromCache&&!state.busy&&!state.jobRunning&&!state.catalogLoading&&!state.logLoading&&!state.lanDevicesLoading&&
+      !state.updatingAll&&!state.managerUpdating&&!state.hdpUpdating&&!(state.versionCheck&&state.versionCheck.running)&&
+      !Object.keys(window.dmStatusPromises||{}).length;
+  }
+  function next(){
+    if(!rootAlive(root)||window.dmCurrentRoot!==root||currentRoute()!==originalRoute||index>=routes.length)return;
+    if(!allowed()){window.setTimeout(next,10000);return;}
+    var route=routes[index++],key=statusCacheKey(route);
+    if(routeCacheEntry(key)){window.setTimeout(next,1000);return;}
+    callRuntime().then(function(rt){
+      if(!allowed()||!rt||rt.ok!==true||rt.memory_available_kb==null||!isFinite(Number(rt.memory_available_kb))||Number(rt.memory_available_kb)<32768||
+         rt.cpu_load==null||!isFinite(Number(rt.cpu_load))||Number(rt.cpu_load)>75)return null;
+      return warmupFetch(route,allowed);
+    }).then(function(v){
+      if(allowed()&&v&&v.data&&v.data.ok===true&&!routeCacheEntry(key))saveRouteCache(key,v.data,v.aux);
+    }).catch(function(){}).then(function(){window.setTimeout(next,5000);});
+  }
+  window.setTimeout(next,10000);
 }
 function checkUpdate(root,force){
   if(state.versionCheck&&state.versionCheck.running)return;
@@ -7118,6 +7209,7 @@ return baseclass.extend({
       state.statusRefreshAfterRender=false;
       scheduleBackgroundStatus(root);
     }
+    scheduleRouteWarmup(root);
     if(!state.profileResumeStarted&&route==='doh')window.setTimeout(function(){
       if(rootAlive(root))resumeRunningProfile(root);
     },0);
@@ -7150,7 +7242,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 2.09
+// DNS Manager LuCI version: 2.13
 return view.extend({
   load: DM.load,
   render: DM.render,
