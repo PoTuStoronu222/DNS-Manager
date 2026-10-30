@@ -83,4 +83,12 @@ async function testCustomDnsFeedback(){
   reply={ok:true,name:'Мой DNS'};ctx.saveCustomDns(name,url,{});await delay();
   if(ctx.state.customDnsNotice.type!=='ok'||ctx.state.customDnsDraft.url||ctx.state.customDnsDraft.name||ctx.state.category!=='custom')throw Error('custom DNS success feedback incorrect');
 }
-Promise.all([testCurrent({status:'failed',result:'fail'},'FAILED'),testCurrent({status:'done',result:'ok'},'DONE'),testSingleError(),testUpdateErrors(),testUpdateTimeout(),testProfileStatus(),testSlotDraft(),testDeviceSave(),testCatalogError(),testFoldState(),testCustomDnsFeedback()]).catch(e=>{console.error(e);process.exitCode=1;});
+async function testBootstrapForm(){
+  let sent=null;
+  const ctx={state:{busy:false,jobRunning:false},window:{dmState:{}},E:(tag,attrs,children)=>({tag,attrs,children,value:'',disabled:false,addEventListener(k,f){this[k]=f;}}),btn:(label,klass,click)=>({tag:'button',click}),card:(title,children)=>({tag:'card',children}),foldSection:(key,summary,content)=>content,renderDoH:()=>{},refresh:()=>Promise.resolve(),awaitSettingResult:r=>Promise.resolve(r),withRpcError:(s,e)=>s+e.message,callBootstrap:(m,a)=>{sent=[m,a];return Promise.resolve({ok:true});}};
+  vm.createContext(ctx);vm.runInContext(extract('function renderBootstrap(root,st){','function renderDoH(root,st){'),ctx);
+  const tree=ctx.renderBootstrap({},{}),actions=tree.children[0].children[2].children;
+  actions[0].value='custom';actions[0].change();actions[1].value='9.9.9.9';actions[1].input();actions[2].click();await delay();
+  if(!sent||sent[0]!=='custom'||sent[1]!=='9.9.9.9'||ctx.state.bootstrapNotice.type!=='ok'||ctx.state.bootstrapDraft!==null)throw Error('bootstrap form did not save selected values');
+}
+Promise.all([testCurrent({status:'failed',result:'fail'},'FAILED'),testCurrent({status:'done',result:'ok'},'DONE'),testSingleError(),testUpdateErrors(),testUpdateTimeout(),testProfileStatus(),testSlotDraft(),testDeviceSave(),testCatalogError(),testFoldState(),testCustomDnsFeedback(),testBootstrapForm()]).catch(e=>{console.error(e);process.exitCode=1;});

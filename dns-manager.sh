@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.95"
+VERSION="3.96"
 # 3.86: make LuCI the primary interface and preserve external DNS on removal.
 # 3.85: revalidate Watchdog settings before recovery.
 # 3.84: cap DNS catalog test concurrency by total RAM on small routers.
@@ -890,6 +890,136 @@ bootstrap_normalize_addresses() {
         }
     }
     END { if(bad || NR!=1) exit 1; print result }'
+}
+
+# Caller holds the mutation lock and has freshly loaded manager.conf.
+# Only selected manager ports/URLs are touched. The proxy's automatic dnsmasq
+# integration is temporarily disabled during restart, including with Steer.
+bootstrap_apply_selection() {
+    local bs_new bs_old bs_effective bs_dir bs_slot bs_id bs_port bs_url bs_i bs_u bs_p bs_found bs_state bs_value bs_count bs_init bs_integration bs_int_state bs_rc bs_entry bs_oldvalue bs_current bs_current_state bs_query bs_pending
+    bs_new="$1"; bs_old="${BOOTSTRAP_DNS_SELECTED:-}"
+    BOOTSTRAP_ERROR='Не удалось применить bootstrap DNS.'
+    if [ -n "$bs_new" ]; then
+        bs_new="$(bootstrap_normalize_addresses "$bs_new")" || { BOOTSTRAP_ERROR='Укажите от 1 до 8 корректных IP-адресов bootstrap DNS.'; return 1; }
+    fi
+    bs_effective="${bs_new:-$BOOTSTRAP_DNS_ALL}"
+    bs_pending="$(uci -q changes https-dns-proxy 2>/dev/null)" || { BOOTSTRAP_ERROR='Не удалось проверить изменения UCI.'; return 1; }
+    [ -z "$bs_pending" ] || { BOOTSTRAP_ERROR='Есть несохранённые изменения UCI. Сохраните их и повторите.'; return 1; }
+    bs_pending="$(uci -q changes dhcp 2>/dev/null)" || { BOOTSTRAP_ERROR='Не удалось проверить изменения UCI.'; return 1; }
+    [ -z "$bs_pending" ] || { BOOTSTRAP_ERROR='Есть несохранённые изменения UCI. Сохраните их и повторите.'; return 1; }
+    bs_dir="$(mktemp -d "${TMP_DIR:-/tmp}/bootstrap-apply.XXXXXX")" || return 1
+    : > "$bs_dir/sections" || { rmdir "$bs_dir"; return 1; }
+    bs_count=0
+    for bs_slot in 1 2 3 4 5 6 RU; do
+        eval "bs_id=\${SLOT_${bs_slot}:-}; bs_port=\${PORT_${bs_slot}:-}"
+        [ -n "$bs_id" ] || continue
+        bs_url="$(normalize_url "$(dns_url "$bs_id")")"
+        [ -n "$bs_url" ] && [ -n "$bs_port" ] || { BOOTSTRAP_ERROR='Не удалось определить выбранные DNS-секции.'; rm -rf "$bs_dir"; return 1; }
+        bs_i=0; bs_found=0
+        while uci -q get "https-dns-proxy.@https-dns-proxy[$bs_i]" >/dev/null 2>&1; do
+            bs_p="$(uci -q get "https-dns-proxy.@https-dns-proxy[$bs_i].listen_port" 2>/dev/null || true)"
+            bs_u="$(normalize_url "$(uci -q get "https-dns-proxy.@https-dns-proxy[$bs_i].resolver_url" 2>/dev/null || true)")"
+            if [ "$bs_p" = "$bs_port" ] && [ "$bs_u" = "$bs_url" ]; then
+                [ "$bs_found" = 0 ] || { BOOTSTRAP_ERROR='Найдены повторяющиеся DNS-секции.'; rm -rf "$bs_dir"; return 1; }
+                bs_found=1; bs_state=present
+                bs_value="$(uci -q get "https-dns-proxy.@https-dns-proxy[$bs_i].bootstrap_dns" 2>/dev/null)" || { bs_state=missing; bs_value=''; }
+                case "$bs_value" in *'|'*|*'
+'*) BOOTSTRAP_ERROR='Невозможно безопасно сохранить прежний bootstrap.'; rm -rf "$bs_dir"; return 1;; esac
+                printf '%s|%s|%s|%s|%s\n' "$bs_i" "$bs_state" "$bs_value" "$bs_port" "$bs_url" >> "$bs_dir/sections"
+            fi
+            bs_i=$((bs_i+1))
+        done
+        [ "$bs_found" = 1 ] || { BOOTSTRAP_ERROR='Выбранная DNS-секция не найдена; сначала примените профиль.'; rm -rf "$bs_dir"; return 1; }
+        bs_count=$((bs_count+1))
+    done
+    if [ "$bs_count" = 0 ]; then
+        BOOTSTRAP_DNS_SELECTED="$bs_new"; BOOTSTRAP_DNS="$bs_effective"
+        if save_config; then rm -rf "$bs_dir"; return 0; fi
+        BOOTSTRAP_DNS_SELECTED="$bs_old"; BOOTSTRAP_DNS="${bs_old:-$BOOTSTRAP_DNS_ALL}"
+        BOOTSTRAP_ERROR='Не удалось сохранить bootstrap DNS.'; rm -rf "$bs_dir"; return 1
+    fi
+    bs_init="${HTTPS_DNS_PROXY_INIT:-/etc/init.d/https-dns-proxy}"
+    [ -x "$bs_init" ] && "$bs_init" running >/dev/null 2>&1 || { BOOTSTRAP_ERROR='https-dns-proxy не запущен; настройки не изменены.'; rm -rf "$bs_dir"; return 1; }
+    detect_steer_dns_path >/dev/null 2>&1 || true
+    if [ "${STEER_DNS_ACTIVE:-0}" = 1 ] && [ "$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null || printf 1)" != 0 ]; then
+        BOOTSTRAP_ERROR='Steer активен, но принудительный DNS https-dns-proxy не отключён. Сначала проверьте настройки перехвата.'; rm -rf "$bs_dir"; return 1
+    fi
+    bs_int_state=present
+    bs_integration="$(uci -q get https-dns-proxy.config.dnsmasq_config_update 2>/dev/null)" || { bs_int_state=missing; bs_integration=''; }
+    bs_rc=0
+    uci set 'https-dns-proxy.config.dnsmasq_config_update=-' && uci commit https-dns-proxy || bs_rc=1
+    if [ "$bs_rc" = 0 ]; then
+        while IFS='|' read -r bs_i bs_state bs_value bs_port bs_url; do
+            bs_p="$(uci -q get "https-dns-proxy.@https-dns-proxy[$bs_i].listen_port" 2>/dev/null || true)"
+            bs_u="$(normalize_url "$(uci -q get "https-dns-proxy.@https-dns-proxy[$bs_i].resolver_url" 2>/dev/null || true)")"
+            [ "$bs_p" = "$bs_port" ] && [ "$bs_u" = "$bs_url" ] || { bs_rc=1; break; }
+            uci set "https-dns-proxy.@https-dns-proxy[$bs_i].bootstrap_dns=$bs_effective" || { bs_rc=1; break; }
+        done < "$bs_dir/sections"
+    fi
+    [ "$bs_rc" != 0 ] || uci commit https-dns-proxy || bs_rc=1
+    [ "$bs_rc" != 0 ] || "$bs_init" restart >/dev/null 2>&1 || bs_rc=1
+    if [ "$bs_rc" = 0 ]; then
+        for bs_slot in 1 2 3 4 5 6 RU; do
+            eval "bs_id=\${SLOT_${bs_slot}:-}; bs_port=\${PORT_${bs_slot}:-}"
+            [ -n "$bs_id" ] || continue
+            bs_query=example.com; [ "$bs_slot" = RU ] && bs_query=yandex.ru
+            if ! listener_port_exists "$bs_port" || ! local_dns_query_ok "$bs_port" "$bs_query"; then bs_rc=1; break; fi
+        done
+    fi
+    if [ "$bs_rc" = 0 ]; then
+        bs_current="$(uci -q get https-dns-proxy.config.dnsmasq_config_update 2>/dev/null || true)"
+        [ "$bs_current" = '-' ] || bs_rc=1
+        if [ "$bs_rc" = 0 ]; then
+            if [ "$bs_int_state" = present ]; then uci set "https-dns-proxy.config.dnsmasq_config_update=$bs_integration" || bs_rc=1
+            else uci -q delete https-dns-proxy.config.dnsmasq_config_update >/dev/null 2>&1 || bs_rc=1; fi
+        fi
+        [ "$bs_rc" != 0 ] || uci commit https-dns-proxy || bs_rc=1
+    fi
+    if [ "$bs_rc" = 0 ]; then
+        BOOTSTRAP_DNS_SELECTED="$bs_new"; BOOTSTRAP_DNS="$bs_effective"
+        save_config || bs_rc=1
+    fi
+    if [ "$bs_rc" != 0 ]; then
+        BOOTSTRAP_DNS_SELECTED="$bs_old"; BOOTSTRAP_DNS="${bs_old:-$BOOTSTRAP_DNS_ALL}"
+        BOOTSTRAP_ERROR='Проверка bootstrap не прошла; прежние настройки восстановлены.'
+        bs_current_state=present
+        bs_current="$(uci -q get https-dns-proxy.config.dnsmasq_config_update 2>/dev/null)" || { bs_current_state=missing; bs_current=''; }
+        if [ "$bs_current" != '-' ] && { [ "$bs_current_state" != "$bs_int_state" ] || [ "$bs_current" != "$bs_integration" ]; }; then
+            BOOTSTRAP_ERROR='Конфигурация прокси изменилась во время применения; автоматический откат не завершён. Проверьте DNS на роутере.'
+            rm -rf "$bs_dir"; return 1
+        fi
+        bs_rc=0
+        uci set 'https-dns-proxy.config.dnsmasq_config_update=-' || bs_rc=1
+        while IFS='|' read -r bs_i bs_state bs_value bs_port bs_url; do
+            bs_p="$(uci -q get "https-dns-proxy.@https-dns-proxy[$bs_i].listen_port" 2>/dev/null || true)"
+            bs_u="$(normalize_url "$(uci -q get "https-dns-proxy.@https-dns-proxy[$bs_i].resolver_url" 2>/dev/null || true)")"
+            if [ "$bs_p" != "$bs_port" ] || [ "$bs_u" != "$bs_url" ]; then bs_rc=1; continue; fi
+            bs_current_state=present
+            bs_current="$(uci -q get "https-dns-proxy.@https-dns-proxy[$bs_i].bootstrap_dns" 2>/dev/null)" || { bs_current_state=missing; bs_current=''; }
+            if [ "$bs_current" != "$bs_effective" ] && { [ "$bs_current_state" != "$bs_state" ] || [ "$bs_current" != "$bs_value" ]; }; then bs_rc=1; continue; fi
+            if [ "$bs_state" = present ]; then uci set "https-dns-proxy.@https-dns-proxy[$bs_i].bootstrap_dns=$bs_value" || bs_rc=1
+            elif uci -q get "https-dns-proxy.@https-dns-proxy[$bs_i].bootstrap_dns" >/dev/null 2>&1; then
+                uci -q delete "https-dns-proxy.@https-dns-proxy[$bs_i].bootstrap_dns" >/dev/null 2>&1 || bs_rc=1
+            fi
+        done < "$bs_dir/sections"
+        uci commit https-dns-proxy && "$bs_init" restart >/dev/null 2>&1 || bs_rc=1
+        if [ "$bs_int_state" = present ]; then uci set "https-dns-proxy.config.dnsmasq_config_update=$bs_integration" || bs_rc=1
+        else uci -q delete https-dns-proxy.config.dnsmasq_config_update >/dev/null 2>&1 || bs_rc=1; fi
+        uci commit https-dns-proxy || bs_rc=1
+        "$bs_init" running >/dev/null 2>&1 || bs_rc=1
+        while IFS='|' read -r bs_i bs_state bs_value bs_port bs_url; do
+            bs_p="$(uci -q get "https-dns-proxy.@https-dns-proxy[$bs_i].listen_port" 2>/dev/null || true)"
+            bs_u="$(normalize_url "$(uci -q get "https-dns-proxy.@https-dns-proxy[$bs_i].resolver_url" 2>/dev/null || true)")"
+            if [ "$bs_p" != "$bs_port" ] || [ "$bs_u" != "$bs_url" ]; then bs_rc=1; continue; fi
+            if [ "$bs_state" = present ]; then
+                bs_current="$(uci -q get "https-dns-proxy.@https-dns-proxy[$bs_i].bootstrap_dns" 2>/dev/null)" || bs_rc=1
+                [ "$bs_current" = "$bs_value" ] || bs_rc=1
+            elif uci -q get "https-dns-proxy.@https-dns-proxy[$bs_i].bootstrap_dns" >/dev/null 2>&1; then bs_rc=1; fi
+        done < "$bs_dir/sections"
+        [ "$bs_rc" = 0 ] || BOOTSTRAP_ERROR='Ошибка bootstrap; автоматический откат не завершён. Проверьте DNS на роутере.'
+        rm -rf "$bs_dir"; return 1
+    fi
+    rm -rf "$bs_dir"; return 0
 }
 load_config() {
 _had_dns_profile=0
