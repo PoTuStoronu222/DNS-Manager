@@ -85,16 +85,34 @@ async function testCustomDnsFeedback(){
 }
 async function testBootstrapForm(){
   let sent=null;
-  const ctx={state:{busy:false,jobRunning:false},window:{dmState:{}},E:(tag,attrs,children)=>({tag,attrs,children,value:attrs.value||'',checked:Object.prototype.hasOwnProperty.call(attrs,'checked'),disabled:false,addEventListener(k,f){this[k]=f;}}),btn:(label,klass,click)=>({tag:'button',click}),card:(title,children)=>({tag:'card',children}),foldSection:(key,summary,content)=>content,renderDoH:()=>{},refresh:()=>Promise.resolve(),awaitSettingResult:r=>Promise.resolve(r),withRpcError:(s,e)=>s+e.message,callBootstrap:(m,a)=>{sent=[m,a];return Promise.resolve({ok:true});}};
+  const ctx={state:{busy:false,jobRunning:false},window:{dmState:{}},E:(tag,attrs,children)=>({tag,attrs,children,value:attrs.value||'',checked:Object.prototype.hasOwnProperty.call(attrs,'checked'),disabled:false,addEventListener(k,f){this[k]=f;}}),btn:(label,klass,click)=>({tag:'button',click}),card:(title,children)=>({tag:'card',children}),foldSection:(key,summary,content)=>content,renderDoH:()=>{},refresh:()=>Promise.resolve(),awaitSettingResult:r=>Promise.resolve(r),withRpcError:(s,e)=>s+e.message,callBootstrap:(m,a,ids,extra)=>{sent=[m,a,ids,extra];return Promise.resolve({ok:true});}};
   vm.createContext(ctx);vm.runInContext(extract('var bootstrapPresets=[','function renderDoH(root,st){'),ctx);
   const tree=ctx.renderBootstrap({},{}),body=tree.children[0].children,select=body[2].children[0],choices=body[3].children,actions=body[5].children;
   select.value='choose';select.change();choices[0].children[0].checked=true;choices[0].children[0].change();choices[1].children[0].checked=true;choices[1].children[0].change();
   actions[0].value='9.9.9.9,1.1.1.1';actions[0].input();actions[1].click();await delay();
   if(!sent||sent[0]!=='custom'||sent[1].split(',').length!==9||!sent[1].includes('9.9.9.9')||ctx.state.bootstrapNotice.type!=='ok'||ctx.state.bootstrapDraft!==null)throw Error('bootstrap combined form values incorrect');
+  if(sent[2]!=='cloudflare,google'||sent[3]!=='9.9.9.9,1.1.1.1')throw Error('bootstrap selection metadata lost');
   const restored=ctx.bootstrapSplitSelection(sent[1]);
   if(restored.ids.join(',')!=='cloudflare,google'||restored.addresses!=='9.9.9.9')throw Error('bootstrap combined selection was not restored');
   if(ctx.bootstrapSplitSelection('').mode!=='default')throw Error('default bootstrap mode lost');
   const all=ctx.bootstrapComposeSelection(ctx.bootstrapPresets.map(p=>p.id),'').split(',');
   if(all.length<30||all.length>48||all.some(ip=>!require('net').isIP(ip)))throw Error('invalid or excessive preset addresses');
+  ctx.bootstrapPresets[0].ips='1.1.1.9,1.0.0.9';
+  const withMetadata=ctx.bootstrapSplitSelection(sent[1],sent[2],sent[3],sent[1]);
+  if(withMetadata.ids.join(',')!=='cloudflare,google'||withMetadata.addresses!==sent[3])throw Error('saved choices lost after provider update');
+  const updated=ctx.renderBootstrap({}, {bootstrap_selected:sent[1],bootstrap_preset_ids:sent[2],bootstrap_extra:sent[3],bootstrap_metadata_snapshot:sent[1]});
+  const updatedBody=updated.children[0].children, warning=updatedBody.find(x=>x.attrs&&x.attrs.class==='dm-inline-msg info');
+  const updatedOptions=updatedBody.find(x=>x.attrs&&x.attrs.class==='dm-bootstrap-options').children;
+  if(!warning||!updatedOptions[0].children[0].checked||!updatedOptions[1].children[0].checked)throw Error('updated preset selection or warning not displayed');
+  const legacy=ctx.bootstrapSplitSelection(sent[1]);
+  if(legacy.ids.join(',')!=='cloudflare,google'||legacy.addresses!=='9.9.9.9')throw Error('legacy choices lost after provider update');
+  const stale=ctx.bootstrapSplitSelection(sent[1],'wrong','', 'not-the-current-snapshot');
+  if(stale.ids.join(',')!=='cloudflare,google')throw Error('stale metadata was trusted');
+  const before=sent.slice();ctx.bootstrapPresets.shift();
+  const missing=ctx.renderBootstrap({}, {bootstrap_selected:before[1],bootstrap_preset_ids:before[2],bootstrap_extra:before[3],bootstrap_metadata_snapshot:before[1]});
+  const missingBody=missing.children[0].children, missingOptions=missingBody.find(x=>x.attrs&&x.attrs.class==='dm-bootstrap-options').children;
+  if(!missingOptions.some(x=>String(x.children[1].children).includes('cloudflare')))throw Error('removed preset was silently discarded');
+  const applyRows=missingBody.filter(x=>x.attrs&&x.attrs.class==='dm-actions');sent=null;applyRows[applyRows.length-1].children[1].click();
+  if(sent||ctx.state.bootstrapNotice.type!=='error')throw Error('removed preset applied without explicit removal');
 }
 Promise.all([testCurrent({status:'failed',result:'fail'},'FAILED'),testCurrent({status:'done',result:'ok'},'DONE'),testSingleError(),testUpdateErrors(),testUpdateTimeout(),testProfileStatus(),testSlotDraft(),testDeviceSave(),testCatalogError(),testFoldState(),testCustomDnsFeedback(),testBootstrapForm()]).catch(e=>{console.error(e);process.exitCode=1;});

@@ -13,7 +13,7 @@ normalize_url() { printf '%s' "$1"; }
 listener_port_exists() { return 0; }
 local_dns_query_ok() { if [ -e "$tmp/trigger-move" ]; then : > "$tmp/moved"; return 1; fi; [ ! -e "$tmp/fail-query" ]; }
 detect_steer_dns_path() { STEER_DNS_ACTIVE="${TEST_STEER:-0}"; }
-save_config() { [ ! -e "$tmp/fail-save" ] || return 1; printf '%s' "$BOOTSTRAP_DNS_SELECTED" > "$tmp/saved"; }
+save_config() { [ ! -e "$tmp/fail-save" ] || return 1; printf '%s' "$BOOTSTRAP_DNS_SELECTED" > "$tmp/saved"; printf '%s' "${BOOTSTRAP_PRESET_IDS:-}" > "$tmp/saved-ids"; printf '%s' "${BOOTSTRAP_EXTRA:-}" > "$tmp/saved-extra"; printf '%s' "${BOOTSTRAP_METADATA_SNAPSHOT:-}" > "$tmp/saved-snapshot"; }
 uci() {
     [ "$1" != -q ] || shift
     case "$1:$2" in
@@ -48,12 +48,14 @@ EOF
 chmod +x "$tmp/init"
 HTTPS_DNS_PROXY_INIT="$tmp/init" BOOTSTRAP_TEST_DIR="$tmp"; export BOOTSTRAP_TEST_DIR
 TEST_STEER=1
-bootstrap_apply_selection '9.9.9.9' || exit 1
+bootstrap_apply_selection '9.9.9.9' 'quad9' '' || exit 1
 [ "$(cat "$tmp/boot0")" = '9.9.9.9' ] && [ "$(cat "$tmp/boot1")" = unrelated ] && [ "$(cat "$tmp/integration")" = '*' ] || exit 2
 [ "$(cat "$tmp/saved")" = '9.9.9.9' ] || exit 3
+[ "$(cat "$tmp/saved-ids")" = 'quad9' ] && [ "$(cat "$tmp/saved-snapshot")" = '9.9.9.9' ] || exit 32
 : > "$tmp/fail-query"
 if bootstrap_apply_selection '1.0.0.1'; then exit 4; fi
 [ "$(cat "$tmp/boot0")" = '9.9.9.9' ] && [ "$(cat "$tmp/integration")" = '*' ] && [ "$(cat "$tmp/saved")" = '9.9.9.9' ] || exit 5
+[ "$BOOTSTRAP_PRESET_IDS" = 'quad9' ] && [ "$BOOTSTRAP_METADATA_SNAPSHOT" = '9.9.9.9' ] || exit 33
 [ "$(wc -l < "$tmp/restarts" | tr -d ' ')" = 3 ] || exit 6
 rm -f "$tmp/fail-query"; : > "$tmp/pending"
 if bootstrap_apply_selection '8.8.4.4'; then exit 7; fi
@@ -66,6 +68,8 @@ if bootstrap_apply_selection '8.8.4.4'; then exit 11; fi
 [ "$(cat "$tmp/boot0")" = '1.0.0.1' ] && [ "$(cat "$tmp/saved")" = '1.0.0.1' ] && [ "$(cat "$tmp/integration")" = '*' ] || exit 12
 rm -f "$tmp/fail-save"
 if bootstrap_apply_selection 'invalid'; then exit 13; fi
+if bootstrap_apply_selection '9.9.9.9' 'quad9;bad' ''; then exit 34; fi
+if bootstrap_apply_selection '9.9.9.9' 'quad9' '1.1.1.1'; then exit 35; fi
 [ "$(cat "$tmp/boot0")" = '1.0.0.1' ] || exit 14
 SLOT_1=''; bootstrap_apply_selection '' || exit 15
 [ ! -s "$tmp/saved" ] && [ "$(cat "$tmp/boot1")" = unrelated ] || exit 16
@@ -92,4 +96,12 @@ before="$(wc -l < "$tmp/restarts" | tr -d ' ')"
 if bootstrap_apply_selection '8.8.8.8'; then exit 29; fi
 [ "$(cat "$tmp/integration")" = '*' ] && [ "$(cat "$tmp/boot0")" = '9.9.9.9' ] || exit 30
 [ "$(wc -l < "$tmp/restarts" | tr -d ' ')" = "$before" ] || exit 31
+rm -f "$tmp/fail-detach"; SLOT_1=''
+bootstrap_apply_selection '1.1.1.1,9.9.9.9' 'cloudflare,quad9' '9.9.9.9' || exit 36
+[ "$(cat "$tmp/saved-ids")" = 'cloudflare,quad9' ] && [ "$(cat "$tmp/saved-extra")" = '9.9.9.9' ] && [ "$(cat "$tmp/saved-snapshot")" = '1.1.1.1,9.9.9.9' ] || exit 37
+bootstrap_apply_selection '1.1.1.1,9.9.9.9' || exit 41
+[ "$(cat "$tmp/saved-ids")" = 'cloudflare,quad9' ] && [ "$(cat "$tmp/saved-extra")" = '9.9.9.9' ] || exit 42
+if bootstrap_apply_selection '1.1.1.1' 'cloudflare,cloudflare' ''; then exit 38; fi
+bootstrap_apply_selection '' '' '' || exit 39
+[ ! -s "$tmp/saved-ids" ] && [ ! -s "$tmp/saved-extra" ] && [ ! -s "$tmp/saved-snapshot" ] || exit 40
 echo 'OK: bootstrap applies to selected DNS and rolls back after failed probe'
