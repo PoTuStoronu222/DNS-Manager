@@ -4,17 +4,85 @@ const source=fs.readFileSync(process.argv[2],'utf8');
 function extract(start,end){const a=source.indexOf(start),b=source.indexOf(end,a);if(a<0||b<0)throw Error('missing '+start);return source.slice(a,b);}
 const delay=()=>new Promise(resolve=>setTimeout(resolve,20));
 async function testCurrent(result,expected){
-  const st={doh_instances:[{id:'dns1',slot:'1',status:'OK'}]};
-  const ctx={state:{busy:false,jobRunning:false,checking:{},pageNotice:{}},window:{dmState:st},render:()=>{},setAction:()=>{},checkKey:id=>id,callTestCurrent:()=>Promise.resolve({ok:true,job:'j'}),pollJob:(root,job,meta,done)=>done(st,result)};
+  const st={slots:[{id:'dns1',slot:'1',status:'OK',ping:'42'}],doh_instances:[]};let calls=0;
+  const ctx={state:{busy:false,jobRunning:false,checking:{},pageNotice:{}},window:{dmState:st},render:()=>{},setAction:()=>{},checkKey:id=>id,displayDnsRows:s=>s.slots||[],hasPing:x=>/^\d+$/.test(String(x)),callTestCurrent:()=>{calls++;return Promise.resolve({ok:true,job:'j'});},pollJob:(root,job,meta,done)=>done(st,result)};
   vm.createContext(ctx);vm.runInContext(extract('function testCurrent(root){','function pollJob(root,job,meta,done){'),ctx);
   ctx.testCurrent({});await delay();
   if(ctx.state.currentTest.status!==expected)throw Error('current DNS result: '+JSON.stringify(ctx.state.currentTest));
+  if(calls!==1||ctx.state.jobRunning||Object.keys(ctx.state.checking).length)throw Error('saved slot was skipped or checking state remained');
 }
 async function testSingleError(){
   const ctx={state:{busy:false,jobRunning:false,checking:{},pageNotice:{}},window:{dmState:{}},render:()=>{},refresh:()=>Promise.resolve(),setAction:()=>{},withRpcError:(s,e)=>s+' '+e.message,callTestOne:()=>Promise.reject(Error('timeout'))};
   vm.createContext(ctx);vm.runInContext(extract('function testOne(id,root,origin,done){','function testCurrent(root){'),ctx);
   ctx.testOne('dns1',{},'catalog');await delay();
   if(ctx.state.jobRunning||!String(ctx.state.pageNotice.catalog).includes('timeout'))throw Error('single DNS error hidden');
+}
+async function testMixedCurrent(){
+  const st={rows:[{id:'slot1',slot:'1',status:'OK',ping:'12'},{id:'catalogid',slot:'',url:'https://dns.example/query',port:'5054',status:'OK',ping:'30'}]};
+  let calls=[];
+  const ctx={state:{busy:false,jobRunning:false,checking:{},pageNotice:{}},window:{dmState:st},render:()=>{},setAction:()=>{},checkKey:(id,d)=>id||String(d.port),displayDnsRows:s=>s.rows||[],hasPing:x=>/^\d+$/.test(String(x)),callTestCurrent:()=>{calls.push('slot');return Promise.resolve({ok:true,job:'slots'});},callTestSystem:()=>{calls.push('system');return Promise.resolve({ok:true,job:'system'});},pollJob:(root,job,meta,done)=>done(st,{status:'done',result:'ok'})};
+  vm.createContext(ctx);vm.runInContext(extract('function testCurrent(root){','function pollJob(root,job,meta,done){'),ctx);
+  ctx.testCurrent({});await delay();
+  if(calls.join(',')!=='slot,system'||ctx.state.currentTest.status!=='DONE'||ctx.state.currentTest.total!==2)throw Error('mixed DNS tests were not completed');
+}
+async function testCurrentNoJob(){
+  const st={rows:[{id:'dns1',slot:'1',status:'OK',ping:'12'}]};
+  const ctx={state:{busy:false,jobRunning:false,checking:{},pageNotice:{}},window:{dmState:st},render:()=>{},setAction:()=>{},checkKey:id=>id,displayDnsRows:s=>s.rows||[],hasPing:x=>/^\d+$/.test(String(x)),callTestCurrent:()=>Promise.resolve({ok:true})};
+  vm.createContext(ctx);vm.runInContext(extract('function testCurrent(root){','function resumeRunningProfile(root){'),ctx);
+  ctx.testCurrent({});await delay();
+  if(ctx.state.currentTest.status!=='FAILED'||ctx.state.jobRunning||Object.keys(ctx.state.checking).length)throw Error('missing job left stale success or loading state');
+}
+async function testCurrentSystemOnly(){
+  const st={rows:[{id:'',slot:'',url:'https://dns.example/query',port:'5054',status:'OK',ping:'30'}]};let calls=0;
+  const ctx={state:{busy:false,jobRunning:false,checking:{},pageNotice:{}},window:{dmState:st},render:()=>{},setAction:()=>{},checkKey:(id,d)=>id||d.port,displayDnsRows:s=>s.rows||[],hasPing:x=>/^\d+$/.test(String(x)),callTestSystem:()=>{calls++;return Promise.resolve({ok:true,job:'system'});},pollJob:(r,j,m,done)=>done(st,{status:'done',result:'ok'})};
+  vm.createContext(ctx);vm.runInContext(extract('function testCurrent(root){','function pollJob(root,job,meta,done){'),ctx);
+  ctx.testCurrent({});await delay();
+  if(calls!==1||ctx.state.currentTest.status!=='DONE')throw Error('system-only DNS test did not complete');
+}
+async function testCurrentNavigation(){
+  const root={},other={},oldState={rows:[{id:'dns1',slot:'1',status:'OK',ping:'12'}]},newState={watchdog:'1'};let finish;
+  const ctx={state:{busy:false,jobRunning:false,checking:{},pageNotice:{}},window:{dmState:oldState,dmCurrentRoot:root},render:()=>{},setAction:()=>{},checkKey:id=>id,displayDnsRows:s=>s.rows||[],hasPing:x=>/^\d+$/.test(String(x)),callTestCurrent:()=>Promise.resolve({ok:true,job:'j'}),pollJob:(r,j,m,done)=>{finish=done;}};
+  vm.createContext(ctx);vm.runInContext(extract('function testCurrent(root){','function pollJob(root,job,meta,done){'),ctx);
+  ctx.testCurrent(root);await delay();ctx.window.dmCurrentRoot=other;ctx.window.dmState=newState;finish(oldState,{status:'done',result:'ok'});await delay();
+  if(ctx.window.dmState!==newState||ctx.state.currentTest.status!=='DONE'||ctx.state.jobRunning)throw Error('DNS completion overwrote a different page');
+}
+async function testPollNavigation(){
+  const root={__dmRoute:'dashboard'},newState={ntp_preset:'new'},oldState={slots:[]};let done=false;
+  const ctx={state:{busy:false,jobRunning:true,checking:{x:{}},pageNotice:{}},window:{dmState:newState,dmCurrentRoot:root},currentRoute:()=> 'time',statusDetail:()=>0,callJob:()=>Promise.resolve({status:'done',result:'ok'}),callStatus:()=>Promise.resolve(oldState),render:()=>{},setAction:()=>{},setTimeout,stripAnsi:x=>x,rpcErrorText:()=>''};
+  vm.createContext(ctx);vm.runInContext(extract('function pollJob(root,job,meta,done){','function resumeRunningProfile(root){'),ctx);
+  ctx.pollJob(root,'test_current',{mode:'current'},()=>{done=true;});await delay();
+  if(!done||ctx.window.dmState!==newState||ctx.state.jobRunning||Object.keys(ctx.state.checking).length)throw Error('late job status replaced another route');
+}
+async function testRouteCache(){
+  let route='dashboard',resolveDashboard,resolveDoh,draws=[];
+  const root={};
+  const ctx={window:{dmCurrentRoot:root},state:{statusError:'',statusFromCache:false},currentRoute:()=>route,rootAlive:()=>true,render:(r,s)=>draws.push(s),callStatus:()=>new Promise(r=>{resolveDashboard=r;}),callDohStatus:()=>new Promise(r=>{resolveDoh=r;}),callTimeStatus:()=>Promise.resolve({}),Date,JSON,Promise,Object,Error};
+  vm.createContext(ctx);vm.runInContext(extract('function routeStatusCall(){','function checkUpdate(root,force){'),ctx);
+  const a=ctx.ensureStatusPromise('dashboard'),b=ctx.ensureStatusPromise('doh');
+  if(a===b||!resolveDashboard||!resolveDoh)throw Error('different routes shared one RPC');
+  if(ctx.ensureStatusPromise('slots')!==b)throw Error('compatible pages issued duplicate RPCs');
+  resolveDoh({ok:true,force_owner:'steer',slots:[{id:'one'}]});resolveDashboard({ok:true,force_owner:'none',slots:[]});
+  await Promise.all([a,b]);
+  const cached=ctx.cachedRouteStatus('slots');
+  if(!cached||cached.force_owner!=='steer'||cached.__dmCachedRoute!=='slots')throw Error('compatible route cache missing');
+  cached.slots.length=0;
+  if(ctx.cachedRouteStatus('doh').slots.length!==1)throw Error('cache was mutated by view');
+  ctx.applyStatusToCurrentRoot({ok:true,force_owner:'steer'},'doh');
+  if(draws.length)throw Error('late response rendered on another route');
+  ctx.applyStatusToCurrentRoot({ok:true,force_owner:'none',slots:[]},'dashboard');
+  if(draws.length!==1||ctx.window.dmState.force_owner!=='none'||ctx.window.dmState.slots.length)throw Error('fresh empty values were not applied');
+  ctx.window.dmRouteCache.doh.ts=Date.now()-31000;
+  if(ctx.cachedRouteStatus('doh')!==null)throw Error('expired cache was reused');
+  let rejected=false;await ctx.ensureStatusPromise('time').catch(()=>{rejected=true;});
+  if(!rejected||ctx.cachedRouteStatus('time'))throw Error('invalid status was cached as valid');
+}
+async function testCachedReadOnly(){
+  const controls=[{disabled:false},{disabled:false}],messages=[];
+  const root={querySelector:()=>({appendChild:x=>messages.push(x)}),querySelectorAll:()=>controls};
+  const ctx={state:{statusFromCache:true,statusError:'',activeTab:'dashboard'},currentRoute:()=> 'dashboard',renderHeader:()=>{},renderOverview:()=>{},setActiveTab:()=>{},E:(tag,attrs,text)=>({tag,attrs,text})};
+  vm.createContext(ctx);vm.runInContext(extract('function render(root,st){','function routeStatusCall(){'),ctx);
+  ctx.render(root,{ok:true});
+  if(controls.some(x=>!x.disabled)||!messages.some(x=>String(x.text).includes('предыдущие данные')))throw Error('cached state was not marked read-only');
 }
 async function testUpdateErrors(){
   let notice='',kind='',reloaded=false;
@@ -115,4 +183,4 @@ async function testBootstrapForm(){
   const applyRows=missingBody.filter(x=>x.attrs&&x.attrs.class==='dm-actions');sent=null;applyRows[applyRows.length-1].children[1].click();
   if(sent||ctx.state.bootstrapNotice.type!=='error')throw Error('removed preset applied without explicit removal');
 }
-Promise.all([testCurrent({status:'failed',result:'fail'},'FAILED'),testCurrent({status:'done',result:'ok'},'DONE'),testSingleError(),testUpdateErrors(),testUpdateTimeout(),testProfileStatus(),testSlotDraft(),testDeviceSave(),testCatalogError(),testFoldState(),testCustomDnsFeedback(),testBootstrapForm()]).catch(e=>{console.error(e);process.exitCode=1;});
+Promise.all([testCurrent({status:'failed',result:'fail'},'FAILED'),testCurrent({status:'done',result:'ok'},'DONE'),testSingleError(),testMixedCurrent(),testCurrentNoJob(),testCurrentSystemOnly(),testCurrentNavigation(),testPollNavigation(),testRouteCache(),testCachedReadOnly(),testUpdateErrors(),testUpdateTimeout(),testProfileStatus(),testSlotDraft(),testDeviceSave(),testCatalogError(),testFoldState(),testCustomDnsFeedback(),testBootstrapForm()]).catch(e=>{console.error(e);process.exitCode=1;});
