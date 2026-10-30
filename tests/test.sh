@@ -268,9 +268,7 @@ grep -Fq 'ubus -v list dns_manager' "$tmp/luci_state_fn.sh" || fail "manager-sid
 ok "LuCI runtime validation checks the current page layout and RPC contract"
 
 # Keep DoH response acceptance aligned with the known-working main branch.
-# The test verifies that an HTTP 200 response has a DNS-message content type
-# and a non-empty payload at least as large as a DNS header; it does not parse
-# every resolver's answer packet.
+# Check the minimum DNS response header without requiring records or an RCODE.
 for _fn in validate_dns_message normalize_url; do
     awk -v fn="$_fn" '$0 ~ ("^" fn "\\(\\) \\{") { capture=1 } capture { print } capture && /^}$/ { exit }' dns-manager.sh > "$tmp/$_fn.sh"
     [ -s "$tmp/$_fn.sh" ] || fail "DNS helper extraction: $_fn"
@@ -280,7 +278,14 @@ done
 printf '\000\000\000\000\000\001\000\000\000\000\000' > "$tmp/dns-short"
 if validate_dns_message "$tmp/dns-short"; then fail "short DNS body accepted"; fi
 printf '\022\064\001\000\000\001\000\000\000\000\000\000\007example\003com\000\000\001\000\001' > "$tmp/dns-query"
-validate_dns_message "$tmp/dns-query" || fail "DNS message with a complete header rejected"
+if validate_dns_message "$tmp/dns-query"; then fail "DNS query accepted as a response"; fi
+printf '\000\000\000\000\000\000\000\000\000\000\000\000' > "$tmp/dns-zero"
+if validate_dns_message "$tmp/dns-zero"; then fail "zero DNS header accepted as a response"; fi
+for _flag in 200 203 202 205; do
+    printf "\\022\\064\\201\\${_flag}\\000\\001\\000\\000\\000\\000\\000\\000" > "$tmp/dns-response"
+    validate_dns_message "$tmp/dns-response" || fail "valid response header with arbitrary RCODE rejected"
+done
+( hexdump() { return 1; }; validate_dns_message "$tmp/dns-query" ) || fail "missing hexdump must preserve previous compatibility"
 
 [ "$(normalize_url 'https://doh.cleanbrowsing.org/doh/security-filter/')" = 'https://doh.cleanbrowsing.org/doh/security-filter/' ] || fail "DoH path trailing slash was stripped"
 [ "$(normalize_url 'https://dns.example/')" = 'https://dns.example' ] || fail "origin-root slash normalization changed"
@@ -411,8 +416,9 @@ ok "selected DNS remains visible when live DoH mapping is incomplete"
 awk '/^function stateBadge\(status,pingValue\)/,/^}/' "$tmp/common.js" > "$tmp/state_badge.js"
 grep -Fq "if(!s)return badge('dm-off','нет данных');" "$tmp/state_badge.js" || fail "LuCI marks an untested DNS unavailable"
 _guard_line="$(grep -nF "if(!s)return badge('dm-off','нет данных');" "$tmp/state_badge.js" | cut -d: -f1)"
-_failure_line="$(grep -nF "||!hasPing(pingValue))return badge('dm-bad','недоступен');" "$tmp/state_badge.js" | cut -d: -f1)"
+_failure_line="$(grep -nF "return badge('dm-bad','недоступен');" "$tmp/state_badge.js" | cut -d: -f1)"
 [ -n "$_guard_line" ] && [ -n "$_failure_line" ] && [ "$_guard_line" -lt "$_failure_line" ] || fail "LuCI empty-status guard is after the unavailable fallback"
+grep -Fq "if(s==='OK')return badge('dm-ok',hasPing(pingValue)?ping(pingValue)+' · доступен':'ответ получен');" "$tmp/state_badge.js" || fail "LuCI must accept an OK response without a duration"
 ok "LuCI distinguishes untested DNS from unavailable DNS"
 grep -Fq 'LUCI_VIEW_DIR="/www/luci-static/resources/view/dns-manager"' dns-manager.sh || fail "manager-side LuCI view directory is stale"
 grep -Fq 'LUCI_COMMON_FILE="/www/luci-static/resources/dns-manager/common.js"' dns-manager.sh || fail "manager-side LuCI common path is stale"
@@ -1817,7 +1823,7 @@ if grep -Fq 'if [ $((n % TEST_PROGRESS_EVERY)) -eq 0 ] || [ "$n" -eq "$total" ];
     fail "catalog progress still prints a duplicate final intermediate result"
 fi
 _progress_calls="$(grep -c 'test_progress$' "$tmp/catalog_test.sh" 2>/dev/null || printf 0)"
-[ "$_progress_calls" = 1 ] || fail "catalog progress has an unexpected final call"
+[ "$_progress_calls" = 2 ] || fail "catalog progress must include its initial count and interval updates"
 if grep -A2 -F '    wait' "$tmp/catalog_test.sh" | grep -q '^    test_progress$'; then
     fail "catalog test still has a separate final test_progress call"
 fi
@@ -2418,6 +2424,9 @@ dns_url() { case "$1" in cznic_odvr|cznic_odvr_doh) printf '%s' 'https://odvr.ni
 printf '%s\n' 'cznic_odvr|clean|CZ.NIC|10|OK' 'cznic_odvr_doh|clean|CZ.NIC duplicate|20|OK' 'd3|clean|D3|30|OK' > "$TEST_RESULTS"
 auto_fill_slots clean
 [ "$SLOT_1" = cznic_odvr ] && [ "$SLOT_2" = d3 ] && [ -z "$SLOT_3" ] || exit 42
+printf '%s\n' 'unknown|bypass|Unknown|-1|OK' 'measured|bypass|Measured|25|OK' > "$TEST_RESULTS"
+auto_fill_slots bypass
+[ "$SLOT_1" = measured ] && [ "$SLOT_2" = unknown ] && [ -z "$SLOT_3" ] || exit 43
 EOF_AUTO_FILL_FEWER
 chmod +x "$tmp/auto_fill_slots_runner.sh"
 "$tmp/auto_fill_slots_runner.sh" "$tmp" "$tmp/auto_fill_slots.sh" || fail "profile selection does not accept fewer than six DNS servers"
@@ -2915,6 +2924,8 @@ if watchdog_test_results_usable bypass; then exit 41; fi
 if watchdog_test_results_usable all; then exit 42; fi
 printf 'yandex_ru|regional|Yandex RU|10|OK\ncomss_bypass|bypass|Comss|20|OK\n' > "$TEST_RESULTS"
 watchdog_test_results_usable bypass || exit 43
+printf 'comss_bypass|bypass|Comss|-1|OK\n' > "$TEST_RESULTS"
+watchdog_test_results_usable bypass || exit 45
 printf 'adguard_default|adblock|AdGuard|20|OK\n' > "$TEST_RESULTS"
 if watchdog_test_results_usable bypass; then exit 44; fi
 EOF_USABLE_RESULTS
