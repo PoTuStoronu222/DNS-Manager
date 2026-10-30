@@ -2616,14 +2616,34 @@ _quote_marker="$tmp/config-save-injection-marker"
 _expected_config_value="value with 'quotes'; \$(touch '$_quote_marker')"
 SLOT_1="$_expected_config_value"
 BOOTSTRAP_DNS_ALL="$_expected_config_value"
+BOOTSTRAP_DNS_SELECTED='1.1.1.1,9.9.9.9'
 save_config || fail "save_config failed for a value with shell metacharacters"
 SLOT_1=""
 BOOTSTRAP_DNS=""
 . "$CONFIG_FILE" || fail "saved manager.conf could not be sourced"
 [ "$SLOT_1" = "$_expected_config_value" ] || fail "SLOT_1 did not round-trip from manager.conf"
 [ "$BOOTSTRAP_DNS" = "$_expected_config_value" ] || fail "bootstrap DNS did not round-trip from manager.conf"
+[ "$BOOTSTRAP_DNS_SELECTED" = '1.1.1.1,9.9.9.9' ] || fail "bootstrap selection did not round-trip"
 [ ! -e "$_quote_marker" ] || fail "sourcing manager.conf executed embedded shell syntax"
 ok "manager.conf safely saves and reloads special characters"
+
+awk '/^load_config\(\) \{/,/^}/' dns-manager.sh > "$tmp/bootstrap-load-config.sh"
+(
+    set -eu
+    . "$tmp/bootstrap-load-config.sh"
+    repair_catalog_category_state() { :; }
+    sync_regional_dns_state() { :; }
+    CONFIG_FILE="$tmp/bootstrap-load.conf"
+    BOOTSTRAP_DNS_ALL='1.1.1.1,8.8.8.8'
+    printf "%s\n" "DNS_PROFILE='custom'" "BOOTSTRAP_DNS='old-ignored-value'" > "$CONFIG_FILE"
+    BOOTSTRAP_DNS_SELECTED='stale-previous-value'
+    load_config
+    [ "$BOOTSTRAP_DNS" = "$BOOTSTRAP_DNS_ALL" ] || exit 1
+    printf "%s\n" "BOOTSTRAP_DNS_SELECTED='9.9.9.9,149.112.112.112'" >> "$CONFIG_FILE"
+    load_config
+    [ "$BOOTSTRAP_DNS" = '9.9.9.9,149.112.112.112' ] || exit 2
+) || fail "bootstrap default and selected values were not loaded correctly"
+ok "bootstrap selection loads independently of legacy settings"
 
 # Exercise concurrent lock acquisition in two independent shell processes.
 STATE_DIR="$tmp/lock-concurrent"
@@ -2889,11 +2909,13 @@ awk '/^reload_regional_for_profile\(\) \{/,/^}/' dns-manager.sh > "$tmp/regional
     set -eu
     . "$tmp/regional-reload.sh"
     CONFIG_FILE="$tmp/regional-concurrent.conf"
-    printf "%s\n" "SLOT_RU=''" "PORT_RU=''" "SLOT_RU_CAT='regional'" "REGIONAL_SAVED_ID='ru_new'" > "$CONFIG_FILE"
+    BOOTSTRAP_DNS_ALL='1.1.1.1,8.8.8.8'
+    printf "%s\n" "SLOT_RU=''" "PORT_RU=''" "SLOT_RU_CAT='regional'" "REGIONAL_SAVED_ID='ru_new'" "BOOTSTRAP_DNS_SELECTED='9.9.9.9'" > "$CONFIG_FILE"
     SLOT_RU=ru_old PORT_RU=5059 SLOT_RU_CAT=regional REGIONAL_SAVED_ID=ru_old
     sync_regional_dns_state() { [ -z "$SLOT_RU" ]; }
     reload_regional_for_profile || exit 1
     [ -z "$SLOT_RU" ] && [ -z "$PORT_RU" ] && [ "$REGIONAL_SAVED_ID" = ru_new ] || exit 2
+    [ "$BOOTSTRAP_DNS" = '9.9.9.9' ] || exit 3
 ) || fail "profile did not preserve a concurrent regional change"
 awk '/^apply_settings\(\) \{/,/^}/' dns-manager.sh > "$tmp/regional-apply-lock.sh"
 _lock_line="$(grep -n 'acquire_mutation_lock' "$tmp/regional-apply-lock.sh" | head -n1 | cut -d: -f1)"

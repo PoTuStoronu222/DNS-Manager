@@ -861,10 +861,12 @@ sync_regional_dns_state() {
 }
 load_config() {
 _had_dns_profile=0
+BOOTSTRAP_DNS_SELECTED=""
 [ -f "$CONFIG_FILE" ] && grep -q '^DNS_PROFILE=' "$CONFIG_FILE" 2>/dev/null && _had_dns_profile=1
 [ -f "$CONFIG_FILE" ] && . "$CONFIG_FILE" 2>/dev/null
-# Deprecated tuning flags from older releases are ignored by the active manager.
-BOOTSTRAP_DNS="$BOOTSTRAP_DNS_ALL"
+# The legacy BOOTSTRAP_DNS entry is intentionally ignored for compatibility.
+# Only the new explicit selection overrides the built-in default.
+BOOTSTRAP_DNS="${BOOTSTRAP_DNS_SELECTED:-$BOOTSTRAP_DNS_ALL}"
 # procd watchdog tuning is persisted in manager.conf and validated on load.
 # The defaults below remain the safe baseline for small OpenWrt routers.
 WATCHDOG_BACKEND="procd"
@@ -1019,6 +1021,7 @@ PORT_5=$(shell_quote "$PORT_5")
 PORT_6=$(shell_quote "$PORT_6")
 PORT_RU=$(shell_quote "$PORT_RU")
 BOOTSTRAP_DNS=$(shell_quote "$BOOTSTRAP_DNS_ALL")
+BOOTSTRAP_DNS_SELECTED=$(shell_quote "${BOOTSTRAP_DNS_SELECTED:-}")
 TLD_RU_ENABLED=$(shell_quote "$TLD_RU_ENABLED")
 NTP_IP_FALLBACK=$(shell_quote "$NTP_IP_FALLBACK")
 FORCE_DOH=$(shell_quote "$FORCE_DOH")
@@ -3594,7 +3597,7 @@ rebuild_selected_hdp_sections() {
     while IFS='|' read -r _rs _rport _rurl; do
         [ -n "$_rs" ] || continue
         _sec="$(uci add https-dns-proxy https-dns-proxy 2>/dev/null)" || { rm -f "$_keep_file"; return 1; }
-        _bl="${BOOTSTRAP_DNS_ALL:-1.1.1.1}"
+        _bl="${BOOTSTRAP_DNS:-${BOOTSTRAP_DNS_ALL:-1.1.1.1}}"
         uci set "https-dns-proxy.$_sec.bootstrap_dns=$_bl" || { rm -f "$_keep_file"; return 1; }
         uci set "https-dns-proxy.$_sec.listen_addr=127.0.0.1" || { rm -f "$_keep_file"; return 1; }
         uci set "https-dns-proxy.$_sec.listen_port=$_rport" || { rm -f "$_keep_file"; return 1; }
@@ -4165,7 +4168,7 @@ _apply_settings_impl() {
         SLOT_4_CAT="bypass"; SLOT_5_CAT="bypass"; SLOT_6_CAT="bypass"
         SLOT_RU_CAT="regional"
     fi
-    BOOTSTRAP_DNS="$BOOTSTRAP_DNS_ALL"
+    BOOTSTRAP_DNS="${BOOTSTRAP_DNS_SELECTED:-$BOOTSTRAP_DNS_ALL}"
     BALANCER_ENABLED=1
     HYBRID_SELECTION_READY=0
     HYBRID_PREFLIGHT_WAS_RUNNING=0
@@ -4420,6 +4423,8 @@ reload_regional_for_profile() {
     REGIONAL_SAVED_ID="$(REGIONAL_SAVED_ID=''; . "$CONFIG_FILE" || exit 1; printf '%s' "$REGIONAL_SAVED_ID")" || return 1
     REGIONAL_MODE="$(REGIONAL_MODE=''; . "$CONFIG_FILE" || exit 1; printf '%s' "$REGIONAL_MODE")" || return 1
     REGIONAL_ISP_IPS="$(REGIONAL_ISP_IPS=''; . "$CONFIG_FILE" || exit 1; printf '%s' "$REGIONAL_ISP_IPS")" || return 1
+    BOOTSTRAP_DNS_SELECTED="$(BOOTSTRAP_DNS_SELECTED=''; . "$CONFIG_FILE" || exit 1; printf '%s' "$BOOTSTRAP_DNS_SELECTED")" || return 1
+    BOOTSTRAP_DNS="${BOOTSTRAP_DNS_SELECTED:-$BOOTSTRAP_DNS_ALL}"
     sync_regional_dns_state
 }
 apply_settings() {
@@ -6372,7 +6377,7 @@ SLOT_1=""; SLOT_2=""; SLOT_3=""; SLOT_4=""; SLOT_5=""; SLOT_6=""
 SLOT_1_CAT="bypass"; SLOT_2_CAT="bypass"; SLOT_3_CAT="bypass"
 SLOT_4_CAT="bypass"; SLOT_5_CAT="bypass"; SLOT_6_CAT="bypass"
 BALANCER_ENABLED=1
-BOOTSTRAP_DNS="$BOOTSTRAP_DNS_ALL"
+BOOTSTRAP_DNS="${BOOTSTRAP_DNS_SELECTED:-$BOOTSTRAP_DNS_ALL}"
 PORT_1="$HYBRID_PORT_1"; PORT_2="$HYBRID_PORT_2"; PORT_3="$HYBRID_PORT_3"
 PORT_4="$HYBRID_PORT_4"; PORT_5="$HYBRID_PORT_5"; PORT_6="$HYBRID_PORT_6"
 auto_fill_slots bypass || return 1
