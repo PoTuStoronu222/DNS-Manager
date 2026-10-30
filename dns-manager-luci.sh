@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager full installer and LuCI companion
-# Version: 2.12
+# Version: 2.13
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.12"
+VERSION="2.13"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -722,7 +722,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.12"
+SELF_VERSION="2.13"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -4086,7 +4086,7 @@ EOF_RPC_WRAPPER
 'require ui';
 'require session';
 
-// DNS Manager LuCI common module version: 2.12
+// DNS Manager LuCI common module version: 2.13
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -4840,18 +4840,18 @@ function resolverRows(st,root){
 // https://www.opendns.com/setupguide/ | https://cleanbrowsing.org/filters
 // https://www.cira.ca/en/canadian-shield/configure/summary-cira-canadian-shield-dns-resolver-addresses/
 var bootstrapPresets=[
-  {id:'cloudflare',name:'Cloudflare',detail:'без фильтрации',ips:'1.1.1.1,1.0.0.1,2606:4700:4700::1111,2606:4700:4700::1001'},
-  {id:'google',name:'Google',detail:'обычный DNS',ips:'8.8.8.8,8.8.4.4,2001:4860:4860::8888,2001:4860:4860::8844'},
-  {id:'quad9',name:'Quad9 Secure',detail:'блокирует угрозы',ips:'9.9.9.9,149.112.112.112,2620:fe::fe,2620:fe::9'},
-  {id:'quad9plain',name:'Quad9 без блокировок',detail:'без блокировки угроз',ips:'9.9.9.10,149.112.112.10,2620:fe::10,2620:fe::fe:10'},
-  {id:'yandex',name:'Яндекс DNS',detail:'базовый',ips:'77.88.8.8,77.88.8.1,2a02:6b8::feed:0ff,2a02:6b8:0:1::feed:0ff'},
-  {id:'adguardplain',name:'AdGuard без фильтрации',detail:'без фильтрации',ips:'94.140.14.140,94.140.14.141,2a10:50c0::1:ff,2a10:50c0::2:ff'},
-  {id:'adguard',name:'AdGuard Default',detail:'блокирует рекламу и угрозы',ips:'94.140.14.14,94.140.15.15,2a10:50c0::ad1:ff,2a10:50c0::ad2:ff'},
-  {id:'controld',name:'Control D Unfiltered',detail:'без фильтрации',ips:'76.76.2.0,76.76.10.0,2606:1a40::0,2606:1a40:1::0'},
-  {id:'controlduncensored',name:'Control D Uncensored',detail:'обход ограничений',ips:'76.76.2.5,76.76.10.5,2606:1a40::5,2606:1a40:1::5'},
-  {id:'opendns',name:'OpenDNS',detail:'обычный DNS',ips:'208.67.222.222,208.67.220.220'},
-  {id:'cira',name:'CIRA Canadian Shield Private',detail:'без фильтрации',ips:'149.112.121.10,149.112.122.10,2620:10a:80bb::10,2620:10a:80bc::10'},
-  {id:'cleanbrowsing',name:'CleanBrowsing Security',detail:'блокирует угрозы',ips:'185.228.168.9,185.228.169.9,2a0d:2a00:1::2,2a0d:2a00:2::2'}
+  {id:'cloudflare',name:'Cloudflare',ips:'1.1.1.1,1.0.0.1,2606:4700:4700::1111,2606:4700:4700::1001'},
+  {id:'google',name:'Google',ips:'8.8.8.8,8.8.4.4,2001:4860:4860::8888,2001:4860:4860::8844'},
+  {id:'quad9',name:'Quad9 Secure',ips:'9.9.9.9,149.112.112.112,2620:fe::fe,2620:fe::9'},
+  {id:'quad9plain',name:'Quad9 (9.9.9.10)',ips:'9.9.9.10,149.112.112.10,2620:fe::10,2620:fe::fe:10'},
+  {id:'yandex',name:'Яндекс DNS',ips:'77.88.8.8,77.88.8.1,2a02:6b8::feed:0ff,2a02:6b8:0:1::feed:0ff'},
+  {id:'adguardplain',name:'AdGuard DNS (94.140.14.140)',ips:'94.140.14.140,94.140.14.141,2a10:50c0::1:ff,2a10:50c0::2:ff'},
+  {id:'adguard',name:'AdGuard Default',ips:'94.140.14.14,94.140.15.15,2a10:50c0::ad1:ff,2a10:50c0::ad2:ff'},
+  {id:'controld',name:'Control D (76.76.2.0)',ips:'76.76.2.0,76.76.10.0,2606:1a40::0,2606:1a40:1::0'},
+  {id:'controlduncensored',name:'Control D (76.76.2.5)',ips:'76.76.2.5,76.76.10.5,2606:1a40::5,2606:1a40:1::5'},
+  {id:'opendns',name:'OpenDNS',ips:'208.67.222.222,208.67.220.220'},
+  {id:'cira',name:'CIRA Canadian Shield Private',ips:'149.112.121.10,149.112.122.10,2620:10a:80bb::10,2620:10a:80bc::10'},
+  {id:'cleanbrowsing',name:'CleanBrowsing Security',ips:'185.228.168.9,185.228.169.9,2a0d:2a00:1::2,2a0d:2a00:2::2'}
 ];
 // Historical 2.07 snapshot: never edit these entries when updating providers.
 // Existing installations saved only IPs, so this recovers their selected IDs.
@@ -4895,7 +4895,7 @@ function renderBootstrap(root,st){
     var attrs={'type':'checkbox','value':p.id};if(draft.ids.indexOf(p.id)>=0)attrs.checked='';
     var checkbox=E('input',attrs);controls.push(checkbox);
     checkbox.addEventListener('change',remember);
-    return E('label',{'class':'dm-bootstrap-option'},[checkbox,E('span',{},p.name+' · '+p.detail)]);
+    return E('label',{'class':'dm-bootstrap-option'},[checkbox,E('span',{},p.name)]);
   });
   missingIds.forEach(function(id){
     var checkbox=E('input',{'type':'checkbox','value':id,'checked':''});controls.push(checkbox);checkbox.addEventListener('change',remember);
@@ -6225,13 +6225,13 @@ function saveRouteCache(key,st,aux){
     var entry=JSON.parse(JSON.stringify({ts:Date.now(),data:st,aux:aux}));
     window.dmRouteCache[key]=entry;
     if(typeof session!=='undefined'&&session.setLocalData)
-      session.setLocalData('dns-manager-route-2.12-'+key,entry);
+      session.setLocalData('dns-manager-route-2.13-'+key,entry);
   }catch(e){}
 }
 function routeCacheEntry(key){
   var entry=key&&window.dmRouteCache&&window.dmRouteCache[key];
   if(!entry&&key){
-    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.12-'+key);}catch(e){}
+    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.13-'+key);}catch(e){}
   }
   if(!entry||typeof entry.ts!=='number'||Date.now()-entry.ts<0||Date.now()-entry.ts>300000||!entry.data||entry.data.ok!==true)return null;
   return entry;
@@ -7242,7 +7242,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 2.12
+// DNS Manager LuCI version: 2.13
 return view.extend({
   load: DM.load,
   render: DM.render,
