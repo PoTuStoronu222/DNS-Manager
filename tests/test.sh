@@ -583,7 +583,7 @@ grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validat
 grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
 grep -q 'VERSION="3.95"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
-grep -q 'VERSION="2.04"' dns-manager-luci.sh || fail "LuCI version not bumped"
+grep -q 'VERSION="2.05"' dns-manager-luci.sh || fail "LuCI version not bumped"
 if grep -q '^main_menu$' dns-manager.sh; then fail "interactive console menu still starts"; fi
 grep -Fq "btn('Удалить DNS Manager'" dns-manager-luci.sh || fail "LuCI uninstall button missing"
 grep -Fq '"uninstall":{},"uninstall_status":{}' dns-manager-luci.sh || fail "LuCI uninstall RPC is not registered"
@@ -911,6 +911,21 @@ EOF_CUSTOM_DNS_SAVE
 chmod +x "$tmp/add_custom_dns_runner.sh"
 "$tmp/add_custom_dns_runner.sh" "$tmp/add_custom_dns_json_fn.sh" "$tmp/custom-dns-save" || fail "Custom DNS URL was lost when the manager backend reused _url"
 ok "Custom DNS URL survives backend loading and is written to catalog field 5"
+
+# The same complete endpoint is rejected in either catalog; a different path
+# on the same host remains a valid distinct DoH service.
+awk '/^catalog_url_normalize\(\) \{/,/^}/' dns-manager-luci.sh > "$tmp/custom_lookup.sh"
+awk '/^catalog_id_for_url\(\) \{/,/^}/' dns-manager-luci.sh >> "$tmp/custom_lookup.sh"
+(
+    . "$tmp/custom_lookup.sh"
+    CATALOG_FILE="$tmp/catalog-duplicate"; CUSTOM_CATALOG_FILE="$tmp/custom-duplicate"
+    printf '%s\n' 'official|clean|x|Official|https://dns.example/filter|x' > "$CATALOG_FILE"
+    printf '%s\n' 'custom_001|custom|x|Mine|https://other.example/dns-query|x' > "$CUSTOM_CATALOG_FILE"
+    [ "$(catalog_id_for_url 'https://dns.example/filter')" = official ] || exit 1
+    [ "$(catalog_id_for_url 'https://other.example/dns-query')" = custom_001 ] || exit 1
+    if catalog_id_for_url 'https://dns.example/another-filter' >/dev/null; then exit 1; fi
+) || fail "Custom DNS duplicate lookup"
+ok "Duplicate DoH endpoints are detected across both catalogs without conflating paths"
 
 if awk '
     /function startAutoStatus\(root\)/ { capture=1 }
