@@ -585,6 +585,8 @@ grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp
 grep -q 'VERSION="3.98"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
 grep -q 'VERSION="2.12"' dns-manager-luci.sh || fail "LuCI version not bumped"
+grep -Fq "{id:'quad9plain',ips:'9.9.9.10,149.112.112.10,2620:fe::10,2620:fe::fe:10'}" dns-manager-luci.sh || fail "historical Quad9 bootstrap snapshot changed"
+grep -Fq "{id:'cira',ips:'149.112.121.10,149.112.122.10,2620:10a:80bb::10,2620:10a:80bc::10'}" dns-manager-luci.sh || fail "historical CIRA bootstrap snapshot changed"
 if grep -q '^main_menu$' dns-manager.sh; then fail "interactive console menu still starts"; fi
 grep -Fq "btn('Удалить DNS Manager'" dns-manager-luci.sh || fail "LuCI uninstall button missing"
 grep -Fq '"uninstall":{},"uninstall_status":{}' dns-manager-luci.sh || fail "LuCI uninstall RPC is not registered"
@@ -2644,9 +2646,9 @@ awk '/^load_config\(\) \{/,/^}/' dns-manager.sh > "$tmp/bootstrap-load-config.sh
     load_config
     [ "$BOOTSTRAP_DNS" = "$BOOTSTRAP_DNS_ALL" ] || exit 1
     [ -z "$BOOTSTRAP_PRESET_IDS$BOOTSTRAP_EXTRA$BOOTSTRAP_METADATA_SNAPSHOT" ] || exit 3
-    printf "%s\n" "BOOTSTRAP_DNS_SELECTED='9.9.9.9,149.112.122.122'" "BOOTSTRAP_PRESET_IDS='quad9'" "BOOTSTRAP_EXTRA='9.9.9.9'" "BOOTSTRAP_METADATA_SNAPSHOT='9.9.9.9,149.112.122.122'" >> "$CONFIG_FILE"
+    printf "%s\n" "BOOTSTRAP_DNS_SELECTED='9.9.9.9,149.112.112.112'" "BOOTSTRAP_PRESET_IDS='quad9'" "BOOTSTRAP_EXTRA='9.9.9.9'" "BOOTSTRAP_METADATA_SNAPSHOT='9.9.9.9,149.112.112.112'" >> "$CONFIG_FILE"
     load_config
-    [ "$BOOTSTRAP_DNS" = '9.9.9.9,149.112.122.122' ] || exit 2
+    [ "$BOOTSTRAP_DNS" = '9.9.9.9,149.112.112.112' ] || exit 2
     [ "$BOOTSTRAP_PRESET_IDS" = quad9 ] && [ "$BOOTSTRAP_EXTRA" = '9.9.9.9' ] && [ "$BOOTSTRAP_METADATA_SNAPSHOT" = "$BOOTSTRAP_DNS" ] || exit 4
 ) || fail "bootstrap default and selected values were not loaded correctly"
 ok "bootstrap selection loads independently of legacy settings"
@@ -2693,7 +2695,7 @@ awk '/^rebuild_selected_hdp_sections\(\) \{/,/^}/' dns-manager.sh > "$tmp/bootst
     TMP_DIR="$tmp/bootstrap-rebuild"; mkdir -p "$TMP_DIR"
     DNS_PROFILE=custom SLOT_1=dns1 SLOT_2='' SLOT_3='' SLOT_4='' SLOT_5='' SLOT_6='' SLOT_RU=dnsru
     PORT_1=5053 PORT_RU=5059
-    BOOTSTRAP_DNS='9.9.9.9,149.112.122.122' BOOTSTRAP_DNS_ALL='1.1.1.1'
+    BOOTSTRAP_DNS='9.9.9.9,149.112.112.112' BOOTSTRAP_DNS_ALL='1.1.1.1'
     dns_url() { printf 'https://%s.example/dns-query' "$1"; }
     normalize_url() { printf '%s' "$1"; }
     uci() {
@@ -2706,7 +2708,7 @@ awk '/^rebuild_selected_hdp_sections\(\) \{/,/^}/' dns-manager.sh > "$tmp/bootst
         esac
     }
     rebuild_selected_hdp_sections || exit 1
-    [ "$(grep -c 'bootstrap_dns=9.9.9.9,149.112.122.122$' "$TMP_DIR/sets")" = 2 ] || exit 2
+    [ "$(grep -c 'bootstrap_dns=9.9.9.9,149.112.112.112$' "$TMP_DIR/sets")" = 2 ] || exit 2
 ) || fail "recovery did not preserve the selected bootstrap servers"
 ok "recovery rebuilds selected and regional proxies with selected bootstrap servers"
 

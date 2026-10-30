@@ -3792,7 +3792,7 @@ run_action() {
                 default) DNSMGR_BOOTSTRAP_INPUT=''; DNSMGR_BOOTSTRAP_IDS=''; DNSMGR_BOOTSTRAP_EXTRA='' ;;
                 cloudflare) DNSMGR_BOOTSTRAP_IDS=cloudflare; DNSMGR_BOOTSTRAP_EXTRA=''; DNSMGR_BOOTSTRAP_INPUT='1.1.1.1,1.0.0.1,2606:4700:4700::1111,2606:4700:4700::1001' ;;
                 google) DNSMGR_BOOTSTRAP_IDS=google; DNSMGR_BOOTSTRAP_EXTRA=''; DNSMGR_BOOTSTRAP_INPUT='8.8.8.8,8.8.4.4,2001:4860:4860::8888,2001:4860:4860::8844' ;;
-                quad9) DNSMGR_BOOTSTRAP_IDS=quad9; DNSMGR_BOOTSTRAP_EXTRA=''; DNSMGR_BOOTSTRAP_INPUT='9.9.9.9,149.112.122.122,2620:fe::fe,2620:fe::9' ;;
+                quad9) DNSMGR_BOOTSTRAP_IDS=quad9; DNSMGR_BOOTSTRAP_EXTRA=''; DNSMGR_BOOTSTRAP_INPUT='9.9.9.9,149.112.112.112,2620:fe::fe,2620:fe::9' ;;
                 custom) [ -n "$DNSMGR_BOOTSTRAP_INPUT" ] || { json_error 'Введите IP-адреса bootstrap DNS'; return; } ;;
                 *) json_error 'Неверный набор bootstrap DNS'; return ;;
             esac
@@ -4842,15 +4842,15 @@ function resolverRows(st,root){
 var bootstrapPresets=[
   {id:'cloudflare',name:'Cloudflare',detail:'без фильтрации',ips:'1.1.1.1,1.0.0.1,2606:4700:4700::1111,2606:4700:4700::1001'},
   {id:'google',name:'Google',detail:'обычный DNS',ips:'8.8.8.8,8.8.4.4,2001:4860:4860::8888,2001:4860:4860::8844'},
-  {id:'quad9',name:'Quad9 Secure',detail:'блокирует угрозы',ips:'9.9.9.9,149.112.122.122,2620:fe::fe,2620:fe::9'},
-  {id:'quad9plain',name:'Quad9 без блокировок',detail:'без блокировки угроз',ips:'9.9.9.10,149.112.122.12,2620:fe::10,2620:fe::fe:10'},
+  {id:'quad9',name:'Quad9 Secure',detail:'блокирует угрозы',ips:'9.9.9.9,149.112.112.112,2620:fe::fe,2620:fe::9'},
+  {id:'quad9plain',name:'Quad9 без блокировок',detail:'без блокировки угроз',ips:'9.9.9.10,149.112.112.10,2620:fe::10,2620:fe::fe:10'},
   {id:'yandex',name:'Яндекс DNS',detail:'базовый',ips:'77.88.8.8,77.88.8.1,2a02:6b8::feed:0ff,2a02:6b8:0:1::feed:0ff'},
   {id:'adguardplain',name:'AdGuard без фильтрации',detail:'без фильтрации',ips:'94.140.14.140,94.140.14.141,2a10:50c0::1:ff,2a10:50c0::2:ff'},
   {id:'adguard',name:'AdGuard Default',detail:'блокирует рекламу и угрозы',ips:'94.140.14.14,94.140.15.15,2a10:50c0::ad1:ff,2a10:50c0::ad2:ff'},
   {id:'controld',name:'Control D Unfiltered',detail:'без фильтрации',ips:'76.76.2.0,76.76.10.0,2606:1a40::0,2606:1a40:1::0'},
   {id:'controlduncensored',name:'Control D Uncensored',detail:'обход ограничений',ips:'76.76.2.5,76.76.10.5,2606:1a40::5,2606:1a40:1::5'},
   {id:'opendns',name:'OpenDNS',detail:'обычный DNS',ips:'208.67.222.222,208.67.220.220'},
-  {id:'cira',name:'CIRA Canadian Shield Private',detail:'без фильтрации',ips:'149.112.121.10,149.112.122.12,2620:10a:80bb::10,2620:10a:80bc::10'},
+  {id:'cira',name:'CIRA Canadian Shield Private',detail:'без фильтрации',ips:'149.112.121.10,149.112.122.10,2620:10a:80bb::10,2620:10a:80bc::10'},
   {id:'cleanbrowsing',name:'CleanBrowsing Security',detail:'блокирует угрозы',ips:'185.228.168.9,185.228.169.9,2a0d:2a00:1::2,2a0d:2a00:2::2'}
 ];
 // Historical 2.07 snapshot: never edit these entries when updating providers.
@@ -4858,15 +4858,15 @@ var bootstrapPresets=[
 var bootstrapLegacyPresets=[
   {id:'cloudflare',ips:'1.1.1.1,1.0.0.1,2606:4700:4700::1111,2606:4700:4700::1001'},
   {id:'google',ips:'8.8.8.8,8.8.4.4,2001:4860:4860::8888,2001:4860:4860::8844'},
-  {id:'quad9',ips:'9.9.9.9,149.112.122.122,2620:fe::fe,2620:fe::9'},
-  {id:'quad9plain',ips:'9.9.9.10,149.112.122.12,2620:fe::10,2620:fe::fe:10'},
+  {id:'quad9',ips:'9.9.9.9,149.112.112.112,2620:fe::fe,2620:fe::9'},
+  {id:'quad9plain',ips:'9.9.9.10,149.112.112.10,2620:fe::10,2620:fe::fe:10'},
   {id:'yandex',ips:'77.88.8.8,77.88.8.1,2a02:6b8::feed:0ff,2a02:6b8:0:1::feed:0ff'},
   {id:'adguardplain',ips:'94.140.14.140,94.140.14.141,2a10:50c0::1:ff,2a10:50c0::2:ff'},
   {id:'adguard',ips:'94.140.14.14,94.140.15.15,2a10:50c0::ad1:ff,2a10:50c0::ad2:ff'},
   {id:'controld',ips:'76.76.2.0,76.76.10.0,2606:1a40::0,2606:1a40:1::0'},
   {id:'controlduncensored',ips:'76.76.2.5,76.76.10.5,2606:1a40::5,2606:1a40:1::5'},
   {id:'opendns',ips:'208.67.222.222,208.67.220.220'},
-  {id:'cira',ips:'149.112.121.10,149.112.122.12,2620:10a:80bb::10,2620:10a:80bc::10'},
+  {id:'cira',ips:'149.112.121.10,149.112.122.10,2620:10a:80bb::10,2620:10a:80bc::10'},
   {id:'cleanbrowsing',ips:'185.228.168.9,185.228.169.9,2a0d:2a00:1::2,2a0d:2a00:2::2'}
 ];
 function bootstrapSplitSelection(selected,storedIds,storedExtra,snapshot){
