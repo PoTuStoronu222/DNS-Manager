@@ -506,7 +506,7 @@ grep -q "Проверить текущие DNS" "$tmp/common.js" || fail "LuCI c
 if grep -q "Проверить DNS в слотах" "$tmp/common.js" || grep -q "Проверить системные DNS" "$tmp/common.js"; then
     fail "LuCI still exposes separate slot/system DNS check buttons"
 fi
-grep -q "var systems=targets.filter(function(d){return d&&!d.slot&&d.url&&d.port;});" "$tmp/common.js" || fail "LuCI current-DNS check does not classify unassigned system resolvers"
+grep -q "var systems=rows.filter(function(d){return d&&!d.slot&&d.url&&d.port;});" "$tmp/common.js" || fail "LuCI current-DNS check does not classify unassigned system resolvers"
 grep -q "callTestSystem().then" "$tmp/common.js" || fail "LuCI common current-DNS check does not include system DNS"
 ok "LuCI current-DNS check covers slots and system resolvers with one button"
 
