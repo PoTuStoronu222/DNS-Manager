@@ -4336,6 +4336,7 @@ function injectStyle(root){
   '.dm-wrap .cbi-button:focus-visible{outline:2px solid var(--primary-color,#0969da);outline-offset:2px}'+
   '.dm-wrap .cbi-button:disabled{opacity:.48;cursor:not-allowed;box-shadow:none}'+
   '.dm-wrap .dm-seg{gap:7px;margin:8px 0}'+
+  '.dm-custom-dns-content{margin-top:10px}'+
   '.dm-fold>summary{cursor:pointer;list-style:none;font-size:12px;font-weight:600}.dm-fold>summary::-webkit-details-marker{display:none}.dm-fold>summary:before{content:"▸";display:inline-block;margin-right:7px;transition:transform .15s}.dm-fold[open]>summary:before{transform:rotate(90deg)}.dm-device-fold>summary{display:flex;align-items:center;gap:7px}.dm-device-fold>summary .dm-device-dns-head{flex:1;min-width:0}.dm-device-fold-body{display:flex;flex-direction:column;gap:12px;margin-top:12px}'+
   '.dm-wrap .dm-seg .cbi-button{min-height:32px;padding:7px 12px;border-radius:9px}'+
   '.dm-wrap .dm-input,.dm-wrap input:not([type=checkbox]):not([type=radio]),.dm-wrap select,.dm-wrap textarea{max-width:100%;border:1px solid rgba(110,118,129,.28);border-radius:8px;background:var(--background-color-medium,#fff);color:inherit;box-shadow:none}'+
@@ -5887,7 +5888,7 @@ function renderCatalog(root){
   customName.value=customDraft.name||'';customUrl.value=customDraft.url||'';
   function rememberCustomDns(){state.customDnsDraft={name:customName.value,url:customUrl.value};}
   customName.addEventListener('input',rememberCustomDns);customUrl.addEventListener('input',rememberCustomDns);
-  e.appendChild(card('Добавить свой DoH',[
+  e.appendChild(card('Добавить свой DoH',[foldSection('custom-doh','Форма добавления',E('div',{'class':'dm-custom-dns-content'},[
     E('div',{'class':'dm-mini'},'Добавь собственный HTTPS-адрес DNS over HTTPS. Он сохранится отдельно от официального каталога и не исчезнет при обновлении каталога.'),
     E('div',{'class':'dm-custom-dns-form'},[
       E('div',{},[
@@ -5902,7 +5903,7 @@ function renderCatalog(root){
     ]),
     state.customDnsNotice?E('div',{'class':'dm-inline-msg '+state.customDnsNotice.type},state.customDnsNotice.text):null,
     E('div',{'class':'dm-mini'},'После добавления выбери «Мои DNS», нажми «Проверить», затем назначь сервер в слот DNS 1–6.')
-  ].filter(Boolean)));
+  ].filter(Boolean)))]));
 
   if(state.fullTest&&state.fullTest.origin==='catalog'&&state.catalogProgress){
     var p=state.catalogProgress;
