@@ -859,6 +859,38 @@ sync_regional_dns_state() {
         TLD_SPLIT=0
     fi
 }
+# Validate literal bootstrap addresses without DNS lookups. Mixed IPv4-in-IPv6
+# notation and scoped IPv6 addresses are intentionally not accepted.
+bootstrap_normalize_addresses() {
+    printf '%s\n' "$1" | LC_ALL=C awk '
+    function ipv4(s, a,n,i) {
+        n=split(s,a,"."); if(n!=4) return 0
+        for(i=1;i<=4;i++) if(a[i] !~ /^[0-9]+$/ || length(a[i])>3 || a[i]+0>255 || (length(a[i])>1 && substr(a[i],1,1)=="0")) return 0
+        return a[1]+0>0 && a[1]+0!=127 && a[1]+0<224
+    }
+    function ipv6(s, a,n,i,parts,compressed,nonzero) {
+        if(s !~ /^[0-9a-fA-F:]+$/ || index(s,":")==0 || s=="::" || s=="::1") return 0
+        if(s ~ /^:[^:]/ || s ~ /[^:]:$/ || s ~ /:::/) return 0
+        compressed=(index(s,"::")>0)
+        if(compressed) { if(index(substr(s,index(s,"::")+2),"::")>0) return 0; sub(/::/,":Z:",s); sub(/^:/,"",s); sub(/:$/,"",s) }
+        if(s ~ /^:/ || s ~ /:$/ || s ~ /::/) return 0
+        n=split(s,a,":"); parts=0; nonzero=0
+        for(i=1;i<=n;i++) { if(a[i]=="Z") continue; if(a[i] !~ /^[0-9a-fA-F]+$/ || length(a[i])>4) return 0; parts++; if(a[i] !~ /^0+$/) nonzero++ }
+        if(nonzero==0 || (nonzero==1 && a[n] ~ /^0*1$/)) return 0
+        return compressed ? parts<8 : parts==8
+    }
+    NR>1 { bad=1; exit }
+    {
+        gsub(/[,[:space:]]+/," "); sub(/^ /,""); sub(/ $/,"")
+        n=split($0,items," "); if(n<1 || n>8 || items[1]=="") { bad=1; exit }
+        for(i=1;i<=n;i++) {
+            item=tolower(items[i]); if(!ipv4(item) && !ipv6(item)) { bad=1; exit }
+            if(seen[item]++) { bad=1; exit }
+            result=result (i==1 ? "" : ",") item
+        }
+    }
+    END { if(bad || NR!=1) exit 1; print result }'
+}
 load_config() {
 _had_dns_profile=0
 BOOTSTRAP_DNS_SELECTED=""
