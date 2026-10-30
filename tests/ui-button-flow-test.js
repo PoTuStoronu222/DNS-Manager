@@ -56,7 +56,9 @@ async function testPollNavigation(){
 async function testRouteCache(){
   let route='dashboard',resolveDashboard,resolveDoh,draws=[];
   const root={};
-  const ctx={window:{dmCurrentRoot:root},state:{statusError:'',statusFromCache:false},currentRoute:()=>route,rootAlive:()=>true,render:(r,s)=>draws.push(s),callStatus:()=>new Promise(r=>{resolveDashboard=r;}),callDohStatus:()=>new Promise(r=>{resolveDoh=r;}),callTimeStatus:()=>Promise.resolve({}),Date,JSON,Promise,Object,Error};
+  const store={};
+  const session={setLocalData:(k,v)=>{store[k]=JSON.stringify(v);},getLocalData:k=>store[k]?JSON.parse(store[k]):null};
+  const ctx={session,window:{dmCurrentRoot:root},state:{statusError:'',statusFromCache:false},currentRoute:()=>route,rootAlive:()=>true,render:(r,s)=>draws.push(s),callStatus:()=>new Promise(r=>{resolveDashboard=r;}),callDohStatus:()=>new Promise(r=>{resolveDoh=r;}),callTimeStatus:()=>Promise.resolve({}),Date,JSON,Promise,Object,Error};
   vm.createContext(ctx);vm.runInContext(extract('function routeStatusCall(){','function checkUpdate(root,force){'),ctx);
   const a=ctx.ensureStatusPromise('dashboard'),b=ctx.ensureStatusPromise('doh');
   if(a===b||!resolveDashboard||!resolveDoh)throw Error('different routes shared one RPC');
@@ -65,13 +67,16 @@ async function testRouteCache(){
   await Promise.all([a,b]);
   const cached=ctx.cachedRouteStatus('slots');
   if(!cached||cached.force_owner!=='steer'||cached.__dmCachedRoute!=='slots')throw Error('compatible route cache missing');
+  ctx.window.dmRouteCache=undefined;
+  if(ctx.cachedRouteStatus('slots').force_owner!=='steer')throw Error('cache did not survive page navigation');
+  ctx.window.dmRouteCache={doh:JSON.parse(store['dns-manager-route-2.13-doh'])};
   cached.slots.length=0;
   if(ctx.cachedRouteStatus('doh').slots.length!==1)throw Error('cache was mutated by view');
   ctx.applyStatusToCurrentRoot({ok:true,force_owner:'steer'},'doh');
   if(draws.length)throw Error('late response rendered on another route');
   ctx.applyStatusToCurrentRoot({ok:true,force_owner:'none',slots:[]},'dashboard');
   if(draws.length!==1||ctx.window.dmState.force_owner!=='none'||ctx.window.dmState.slots.length)throw Error('fresh empty values were not applied');
-  ctx.window.dmRouteCache.doh.ts=Date.now()-31000;
+  ctx.window.dmRouteCache.doh.ts=Date.now()-301000;
   if(ctx.cachedRouteStatus('doh')!==null)throw Error('expired cache was reused');
   let rejected=false;await ctx.ensureStatusPromise('time').catch(()=>{rejected=true;});
   if(!rejected||ctx.cachedRouteStatus('time'))throw Error('invalid status was cached as valid');
@@ -83,6 +88,59 @@ async function testCachedReadOnly(){
   vm.createContext(ctx);vm.runInContext(extract('function render(root,st){','function routeStatusCall(){'),ctx);
   ctx.render(root,{ok:true});
   if(controls.some(x=>!x.disabled)||!messages.some(x=>String(x.text).includes('предыдущие данные')))throw Error('cached state was not marked read-only');
+}
+async function testAdditionalRouteCache(){
+  const store={};let failDevices=false,failCatalog=false,failLog=false;
+  const ctx={window:{},state:{category:'all',offset:0,limit:18,pageNotice:{}},session:{setLocalData:(k,v)=>{store[k]=JSON.stringify(v);},getLocalData:k=>store[k]?JSON.parse(store[k]):null},
+    callDohStatus:()=>Promise.resolve({ok:true,slots:[]}),
+    callLanDevices:()=>Promise.resolve(failDevices?{ok:false}:{ok:true,devices:[{mac:'aa'}]}),
+    callCatalog:()=>Promise.resolve(failCatalog?{ok:false}:{ok:true,servers:[{id:'dns'}]}),
+    callPageMeta:()=>Promise.resolve({ok:true}),callLog:()=>Promise.resolve(failLog?{ok:false}:{ok:true,log:'log text'}),
+    stripAnsi:s=>s,Date,JSON,Promise,Object,Array,Error};
+  vm.createContext(ctx);vm.runInContext(extract('function routeStatusCall(){','function checkUpdate(root,force){'),ctx);
+  for(const route of ['devices','catalog','log'])await ctx.ensureStatusPromise(route);
+  ctx.window.dmRouteCache=undefined;ctx.window.dmLanDevices=undefined;ctx.window.dmCatalog=undefined;ctx.state.logText='';ctx.state.logLoaded=false;ctx.state.catalogLoaded=false;
+  for(const route of ['devices','catalog','log'])if(!ctx.cachedRouteStatus(route))throw Error(route+' cache missing after navigation');
+  if(ctx.window.dmLanDevices.devices[0].mac!=='aa'||ctx.window.dmCatalog.servers[0].id!=='dns'||ctx.state.logText!=='log text')throw Error('route-specific data not restored');
+  ctx.state.category='security';if(ctx.cachedRouteStatus('catalog'))throw Error('wrong catalog category reused');ctx.state.category='all';
+  failDevices=true;failCatalog=true;failLog=true;
+  const previous={...store};for(const route of ['devices','catalog','log'])await ctx.ensureStatusPromise(route);
+  for(const route of ['devices','catalog','log'])if(store['dns-manager-route-2.13-'+route]!==previous['dns-manager-route-2.13-'+route])throw Error('failed '+route+' replaced good cache');
+}
+async function testSequentialWarmup(){
+  let active=0,max=0,calls=[],allowed=true;
+  const rpc=(name,result)=>()=>{calls.push(name);active++;max=Math.max(max,active);return Promise.resolve().then(()=>{active--;return result;});};
+  const ctx={window:{},state:{},Date,JSON,Promise,Object,Array,Error,stripAnsi:s=>s,
+    callStatus:rpc('status',{ok:true}),callDohStatus:rpc('doh',{ok:true}),callNetworkStatus:rpc('network',{ok:true}),callTimeStatus:rpc('time',{ok:true}),
+    callLanDevices:rpc('devices',{ok:true,devices:[]}),callCatalog:rpc('catalog',{ok:true,servers:[]}),callPageMeta:rpc('meta',{ok:true}),callLog:rpc('log',{ok:true,log:'x'})};
+  vm.createContext(ctx);vm.runInContext(extract('function routeStatusCall(){','function checkUpdate(root,force){'),ctx);
+  const catalog=await ctx.warmupFetch('catalog',()=>allowed),devices=await ctx.warmupFetch('devices',()=>allowed);
+  if(max!==1||calls.join(',')!=='catalog,doh,meta,doh,devices'||!catalog.aux.catalog||!devices.aux.devices)throw Error('warmup was not sequential');
+  let blocked=false;allowed=false;await ctx.warmupFetch('log',()=>allowed).catch(()=>{blocked=true;});if(!blocked||calls.includes('log'))throw Error('warmup ignored idle guard');
+}
+async function testWarmupResourceGuard(){
+  let timers=[],reads=0,runtimeCalls=0,ram=20000,cpu=0,hidden=false;
+  const root={},ctx={window:{dmCurrentRoot:null,setTimeout:f=>{timers.push(f);}},document:{get hidden(){return hidden;}},state:{},Date,JSON,Promise,Object,Array,Error,
+    currentRoute:()=> 'dashboard',rootAlive:()=>true,callRuntime:()=>{runtimeCalls++;return Promise.resolve({ok:true,memory_available_kb:ram,cpu_load:cpu});},
+    callDohStatus:()=>{reads++;return Promise.resolve({ok:true});}};
+  ctx.window.dmCurrentRoot=root;
+  vm.createContext(ctx);vm.runInContext(extract('function routeStatusCall(){','function checkUpdate(root,force){'),ctx);
+  ctx.scheduleRouteWarmup(root);timers.shift()();await delay();
+  if(reads)throw Error('warmup ran with low available memory');
+  ram=100000;cpu=90;timers.shift()();await delay();
+  if(reads)throw Error('warmup ran with high CPU');
+  cpu=0;hidden=true;timers.shift()();await delay();
+  if(reads||runtimeCalls!==2)throw Error('warmup ran in hidden tab');
+  hidden=false;ctx.state.busy=true;timers.shift()();await delay();
+  if(reads||runtimeCalls!==2)throw Error('warmup ran during action');
+  ctx.state.busy=false;
+  for(const flag of ['updatingAll','managerUpdating','hdpUpdating','lanDevicesLoading']){
+    ctx.state[flag]=true;timers.shift()();await delay();
+    if(reads||runtimeCalls!==2)throw Error('warmup ran during '+flag);
+    ctx.state[flag]=false;
+  }
+  ctx.state.versionCheck={running:true};timers.shift()();await delay();
+  if(reads||runtimeCalls!==2)throw Error('warmup ran during update check');
 }
 async function testUpdateErrors(){
   let notice='',kind='',reloaded=false;
@@ -183,4 +241,4 @@ async function testBootstrapForm(){
   const applyRows=missingBody.filter(x=>x.attrs&&x.attrs.class==='dm-actions');sent=null;applyRows[applyRows.length-1].children[1].click();
   if(sent||ctx.state.bootstrapNotice.type!=='error')throw Error('removed preset applied without explicit removal');
 }
-Promise.all([testCurrent({status:'failed',result:'fail'},'FAILED'),testCurrent({status:'done',result:'ok'},'DONE'),testSingleError(),testMixedCurrent(),testCurrentNoJob(),testCurrentSystemOnly(),testCurrentNavigation(),testPollNavigation(),testRouteCache(),testCachedReadOnly(),testUpdateErrors(),testUpdateTimeout(),testProfileStatus(),testSlotDraft(),testDeviceSave(),testCatalogError(),testFoldState(),testCustomDnsFeedback(),testBootstrapForm()]).catch(e=>{console.error(e);process.exitCode=1;});
+Promise.all([testCurrent({status:'failed',result:'fail'},'FAILED'),testCurrent({status:'done',result:'ok'},'DONE'),testSingleError(),testMixedCurrent(),testCurrentNoJob(),testCurrentSystemOnly(),testCurrentNavigation(),testPollNavigation(),testRouteCache(),testCachedReadOnly(),testAdditionalRouteCache(),testSequentialWarmup(),testWarmupResourceGuard(),testUpdateErrors(),testUpdateTimeout(),testProfileStatus(),testSlotDraft(),testDeviceSave(),testCatalogError(),testFoldState(),testCustomDnsFeedback(),testBootstrapForm()]).catch(e=>{console.error(e);process.exitCode=1;});
