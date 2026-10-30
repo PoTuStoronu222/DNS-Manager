@@ -953,10 +953,14 @@ bootstrap_apply_selection() {
             bs_p="$(uci -q get "https-dns-proxy.@https-dns-proxy[$bs_i].listen_port" 2>/dev/null || true)"
             bs_u="$(normalize_url "$(uci -q get "https-dns-proxy.@https-dns-proxy[$bs_i].resolver_url" 2>/dev/null || true)")"
             [ "$bs_p" = "$bs_port" ] && [ "$bs_u" = "$bs_url" ] || { bs_rc=1; break; }
+            bs_current_state=present
+            bs_current="$(uci -q get "https-dns-proxy.@https-dns-proxy[$bs_i].bootstrap_dns" 2>/dev/null)" || { bs_current_state=missing; bs_current=''; }
+            [ "$bs_current_state" = "$bs_state" ] && [ "$bs_current" = "$bs_value" ] || { bs_rc=1; break; }
             uci set "https-dns-proxy.@https-dns-proxy[$bs_i].bootstrap_dns=$bs_effective" || { bs_rc=1; break; }
         done < "$bs_dir/sections"
     fi
     [ "$bs_rc" != 0 ] || uci commit https-dns-proxy || bs_rc=1
+    [ "$bs_rc" != 0 ] || [ "$(uci -q get https-dns-proxy.config.dnsmasq_config_update 2>/dev/null)" = '-' ] || bs_rc=1
     [ "$bs_rc" != 0 ] || "$bs_init" restart >/dev/null 2>&1 || bs_rc=1
     if [ "$bs_rc" = 0 ]; then
         for bs_slot in 1 2 3 4 5 6 RU; do
@@ -1002,7 +1006,11 @@ bootstrap_apply_selection() {
                 uci -q delete "https-dns-proxy.@https-dns-proxy[$bs_i].bootstrap_dns" >/dev/null 2>&1 || bs_rc=1
             fi
         done < "$bs_dir/sections"
-        uci commit https-dns-proxy && "$bs_init" restart >/dev/null 2>&1 || bs_rc=1
+        if uci commit https-dns-proxy && [ "$(uci -q get https-dns-proxy.config.dnsmasq_config_update 2>/dev/null)" = '-' ]; then
+            "$bs_init" restart >/dev/null 2>&1 || bs_rc=1
+        else
+            bs_rc=1
+        fi
         if [ "$bs_int_state" = present ]; then uci set "https-dns-proxy.config.dnsmasq_config_update=$bs_integration" || bs_rc=1
         else uci -q delete https-dns-proxy.config.dnsmasq_config_update >/dev/null 2>&1 || bs_rc=1; fi
         uci commit https-dns-proxy || bs_rc=1
