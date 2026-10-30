@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.97"
+VERSION="3.98"
 # 3.86: make LuCI the primary interface and preserve external DNS on removal.
 # 3.85: revalidate Watchdog settings before recovery.
 # 3.84: cap DNS catalog test concurrency by total RAM on small routers.
@@ -895,13 +895,32 @@ bootstrap_normalize_addresses() {
 # Caller holds the mutation lock and has freshly loaded manager.conf.
 # Only selected manager ports/URLs are touched. The proxy's automatic dnsmasq
 # integration is temporarily disabled during restart, including with Steer.
+bootstrap_metadata_supported() { return 0; }
 bootstrap_apply_selection() {
-    local bs_new bs_old bs_effective bs_dir bs_slot bs_id bs_port bs_url bs_i bs_u bs_p bs_found bs_state bs_value bs_count bs_init bs_integration bs_int_state bs_rc bs_entry bs_oldvalue bs_current bs_current_state bs_query bs_pending
+    local bs_new bs_old bs_effective bs_dir bs_slot bs_id bs_port bs_url bs_i bs_u bs_p bs_found bs_state bs_value bs_count bs_init bs_integration bs_int_state bs_rc bs_entry bs_oldvalue bs_current bs_current_state bs_query bs_pending bs_ids bs_extra bs_snapshot bs_old_ids bs_old_extra bs_old_snapshot bs_part bs_seen
     bs_new="$1"; bs_old="${BOOTSTRAP_DNS_SELECTED:-}"
+    bs_ids="${2:-}"; bs_extra="${3:-}"; bs_snapshot=''
+    bs_old_ids="${BOOTSTRAP_PRESET_IDS:-}"; bs_old_extra="${BOOTSTRAP_EXTRA:-}"; bs_old_snapshot="${BOOTSTRAP_METADATA_SNAPSHOT:-}"
     BOOTSTRAP_ERROR='Не удалось применить bootstrap DNS.'
     if [ -n "$bs_new" ]; then
         bs_new="$(bootstrap_normalize_addresses "$bs_new")" || { BOOTSTRAP_ERROR='Укажите от 1 до 48 различных корректных IP-адресов bootstrap DNS.'; return 1; }
     fi
+    case "$bs_ids" in *[!a-z0-9_,-]*|,*|*,|*,,*) BOOTSTRAP_ERROR='Некорректный список наборов bootstrap DNS.'; return 1;; esac
+    [ "${#bs_ids}" -le 512 ] || { BOOTSTRAP_ERROR='Слишком длинный список наборов bootstrap DNS.'; return 1; }
+    bs_seen=','
+    for bs_part in $(printf '%s' "$bs_ids" | tr ',' ' '); do
+        [ "${#bs_part}" -le 64 ] || { BOOTSTRAP_ERROR='Некорректный идентификатор набора.'; return 1; }
+        case "$bs_seen" in *",$bs_part,"*) BOOTSTRAP_ERROR='Набор bootstrap DNS выбран повторно.'; return 1;; esac
+        bs_seen="$bs_seen$bs_part,"
+    done
+    if [ -n "$bs_extra" ]; then
+        bs_extra="$(bootstrap_normalize_addresses "$bs_extra")" || { BOOTSTRAP_ERROR='Некорректные собственные IP-адреса bootstrap DNS.'; return 1; }
+        for bs_part in $(printf '%s' "$bs_extra" | tr ',' ' '); do
+            case ",$bs_new," in *",$bs_part,"*) ;; *) BOOTSTRAP_ERROR='Список собственных адресов не совпадает с применяемым.'; return 1;; esac
+        done
+    fi
+    if [ -z "$bs_new" ]; then bs_ids=''; bs_extra='';
+    elif [ -n "$bs_ids$bs_extra" ]; then bs_snapshot="$bs_new"; fi
     bs_effective="${bs_new:-$BOOTSTRAP_DNS_ALL}"
     bs_pending="$(uci -q changes https-dns-proxy 2>/dev/null)" || { BOOTSTRAP_ERROR='Не удалось проверить изменения UCI.'; return 1; }
     [ -z "$bs_pending" ] || { BOOTSTRAP_ERROR='Есть несохранённые изменения UCI. Сохраните их и повторите.'; return 1; }
@@ -933,9 +952,9 @@ bootstrap_apply_selection() {
         bs_count=$((bs_count+1))
     done
     if [ "$bs_count" = 0 ]; then
-        BOOTSTRAP_DNS_SELECTED="$bs_new"; BOOTSTRAP_DNS="$bs_effective"
+        BOOTSTRAP_DNS_SELECTED="$bs_new"; BOOTSTRAP_DNS="$bs_effective"; BOOTSTRAP_PRESET_IDS="$bs_ids"; BOOTSTRAP_EXTRA="$bs_extra"; BOOTSTRAP_METADATA_SNAPSHOT="$bs_snapshot"
         if save_config; then rm -rf "$bs_dir"; return 0; fi
-        BOOTSTRAP_DNS_SELECTED="$bs_old"; BOOTSTRAP_DNS="${bs_old:-$BOOTSTRAP_DNS_ALL}"
+        BOOTSTRAP_DNS_SELECTED="$bs_old"; BOOTSTRAP_DNS="${bs_old:-$BOOTSTRAP_DNS_ALL}"; BOOTSTRAP_PRESET_IDS="$bs_old_ids"; BOOTSTRAP_EXTRA="$bs_old_extra"; BOOTSTRAP_METADATA_SNAPSHOT="$bs_old_snapshot"
         BOOTSTRAP_ERROR='Не удалось сохранить bootstrap DNS.'; rm -rf "$bs_dir"; return 1
     fi
     bs_init="${HTTPS_DNS_PROXY_INIT:-/etc/init.d/https-dns-proxy}"
@@ -980,11 +999,11 @@ bootstrap_apply_selection() {
         [ "$bs_rc" != 0 ] || uci commit https-dns-proxy || bs_rc=1
     fi
     if [ "$bs_rc" = 0 ]; then
-        BOOTSTRAP_DNS_SELECTED="$bs_new"; BOOTSTRAP_DNS="$bs_effective"
+        BOOTSTRAP_DNS_SELECTED="$bs_new"; BOOTSTRAP_DNS="$bs_effective"; BOOTSTRAP_PRESET_IDS="$bs_ids"; BOOTSTRAP_EXTRA="$bs_extra"; BOOTSTRAP_METADATA_SNAPSHOT="$bs_snapshot"
         save_config || bs_rc=1
     fi
     if [ "$bs_rc" != 0 ]; then
-        BOOTSTRAP_DNS_SELECTED="$bs_old"; BOOTSTRAP_DNS="${bs_old:-$BOOTSTRAP_DNS_ALL}"
+        BOOTSTRAP_DNS_SELECTED="$bs_old"; BOOTSTRAP_DNS="${bs_old:-$BOOTSTRAP_DNS_ALL}"; BOOTSTRAP_PRESET_IDS="$bs_old_ids"; BOOTSTRAP_EXTRA="$bs_old_extra"; BOOTSTRAP_METADATA_SNAPSHOT="$bs_old_snapshot"
         BOOTSTRAP_ERROR='Проверка bootstrap не прошла; прежние настройки восстановлены.'
         bs_current_state=present
         bs_current="$(uci -q get https-dns-proxy.config.dnsmasq_config_update 2>/dev/null)" || { bs_current_state=missing; bs_current=''; }
@@ -1032,6 +1051,7 @@ bootstrap_apply_selection() {
 load_config() {
 _had_dns_profile=0
 BOOTSTRAP_DNS_SELECTED=""
+BOOTSTRAP_PRESET_IDS=""; BOOTSTRAP_EXTRA=""; BOOTSTRAP_METADATA_SNAPSHOT=""
 [ -f "$CONFIG_FILE" ] && grep -q '^DNS_PROFILE=' "$CONFIG_FILE" 2>/dev/null && _had_dns_profile=1
 [ -f "$CONFIG_FILE" ] && . "$CONFIG_FILE" 2>/dev/null
 # The legacy BOOTSTRAP_DNS entry is intentionally ignored for compatibility.
@@ -1192,6 +1212,9 @@ PORT_6=$(shell_quote "$PORT_6")
 PORT_RU=$(shell_quote "$PORT_RU")
 BOOTSTRAP_DNS=$(shell_quote "$BOOTSTRAP_DNS_ALL")
 BOOTSTRAP_DNS_SELECTED=$(shell_quote "${BOOTSTRAP_DNS_SELECTED:-}")
+BOOTSTRAP_PRESET_IDS=$(shell_quote "${BOOTSTRAP_PRESET_IDS:-}")
+BOOTSTRAP_EXTRA=$(shell_quote "${BOOTSTRAP_EXTRA:-}")
+BOOTSTRAP_METADATA_SNAPSHOT=$(shell_quote "${BOOTSTRAP_METADATA_SNAPSHOT:-}")
 TLD_RU_ENABLED=$(shell_quote "$TLD_RU_ENABLED")
 NTP_IP_FALLBACK=$(shell_quote "$NTP_IP_FALLBACK")
 FORCE_DOH=$(shell_quote "$FORCE_DOH")
@@ -4594,6 +4617,9 @@ reload_regional_for_profile() {
     REGIONAL_MODE="$(REGIONAL_MODE=''; . "$CONFIG_FILE" || exit 1; printf '%s' "$REGIONAL_MODE")" || return 1
     REGIONAL_ISP_IPS="$(REGIONAL_ISP_IPS=''; . "$CONFIG_FILE" || exit 1; printf '%s' "$REGIONAL_ISP_IPS")" || return 1
     BOOTSTRAP_DNS_SELECTED="$(BOOTSTRAP_DNS_SELECTED=''; . "$CONFIG_FILE" || exit 1; printf '%s' "$BOOTSTRAP_DNS_SELECTED")" || return 1
+    BOOTSTRAP_PRESET_IDS="$(BOOTSTRAP_PRESET_IDS=''; . "$CONFIG_FILE" || exit 1; printf '%s' "$BOOTSTRAP_PRESET_IDS")" || return 1
+    BOOTSTRAP_EXTRA="$(BOOTSTRAP_EXTRA=''; . "$CONFIG_FILE" || exit 1; printf '%s' "$BOOTSTRAP_EXTRA")" || return 1
+    BOOTSTRAP_METADATA_SNAPSHOT="$(BOOTSTRAP_METADATA_SNAPSHOT=''; . "$CONFIG_FILE" || exit 1; printf '%s' "$BOOTSTRAP_METADATA_SNAPSHOT")" || return 1
     BOOTSTRAP_DNS="${BOOTSTRAP_DNS_SELECTED:-$BOOTSTRAP_DNS_ALL}"
     sync_regional_dns_state
 }
