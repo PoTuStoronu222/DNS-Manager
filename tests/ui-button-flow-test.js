@@ -85,10 +85,16 @@ async function testCustomDnsFeedback(){
 }
 async function testBootstrapForm(){
   let sent=null;
-  const ctx={state:{busy:false,jobRunning:false},window:{dmState:{}},E:(tag,attrs,children)=>({tag,attrs,children,value:'',disabled:false,addEventListener(k,f){this[k]=f;}}),btn:(label,klass,click)=>({tag:'button',click}),card:(title,children)=>({tag:'card',children}),foldSection:(key,summary,content)=>content,renderDoH:()=>{},refresh:()=>Promise.resolve(),awaitSettingResult:r=>Promise.resolve(r),withRpcError:(s,e)=>s+e.message,callBootstrap:(m,a)=>{sent=[m,a];return Promise.resolve({ok:true});}};
-  vm.createContext(ctx);vm.runInContext(extract('function renderBootstrap(root,st){','function renderDoH(root,st){'),ctx);
-  const tree=ctx.renderBootstrap({},{}),actions=tree.children[0].children[2].children;
-  actions[0].value='custom';actions[0].change();actions[1].value='9.9.9.9';actions[1].input();actions[2].click();await delay();
-  if(!sent||sent[0]!=='custom'||sent[1]!=='9.9.9.9'||ctx.state.bootstrapNotice.type!=='ok'||ctx.state.bootstrapDraft!==null)throw Error('bootstrap form did not save selected values');
+  const ctx={state:{busy:false,jobRunning:false},window:{dmState:{}},E:(tag,attrs,children)=>({tag,attrs,children,value:attrs.value||'',checked:Object.prototype.hasOwnProperty.call(attrs,'checked'),disabled:false,addEventListener(k,f){this[k]=f;}}),btn:(label,klass,click)=>({tag:'button',click}),card:(title,children)=>({tag:'card',children}),foldSection:(key,summary,content)=>content,renderDoH:()=>{},refresh:()=>Promise.resolve(),awaitSettingResult:r=>Promise.resolve(r),withRpcError:(s,e)=>s+e.message,callBootstrap:(m,a)=>{sent=[m,a];return Promise.resolve({ok:true});}};
+  vm.createContext(ctx);vm.runInContext(extract('var bootstrapPresets=[','function renderDoH(root,st){'),ctx);
+  const tree=ctx.renderBootstrap({},{}),body=tree.children[0].children,select=body[2].children[0],choices=body[3].children,actions=body[5].children;
+  select.value='choose';select.change();choices[0].children[0].checked=true;choices[0].children[0].change();choices[1].children[0].checked=true;choices[1].children[0].change();
+  actions[0].value='9.9.9.9,1.1.1.1';actions[0].input();actions[1].click();await delay();
+  if(!sent||sent[0]!=='custom'||sent[1].split(',').length!==9||!sent[1].includes('9.9.9.9')||ctx.state.bootstrapNotice.type!=='ok'||ctx.state.bootstrapDraft!==null)throw Error('bootstrap combined form values incorrect');
+  const restored=ctx.bootstrapSplitSelection(sent[1]);
+  if(restored.ids.join(',')!=='cloudflare,google'||restored.addresses!=='9.9.9.9')throw Error('bootstrap combined selection was not restored');
+  if(ctx.bootstrapSplitSelection('').mode!=='default')throw Error('default bootstrap mode lost');
+  const all=ctx.bootstrapComposeSelection(ctx.bootstrapPresets.map(p=>p.id),'').split(',');
+  if(all.length<30||all.length>48||all.some(ip=>!require('net').isIP(ip)))throw Error('invalid or excessive preset addresses');
 }
 Promise.all([testCurrent({status:'failed',result:'fail'},'FAILED'),testCurrent({status:'done',result:'ok'},'DONE'),testSingleError(),testUpdateErrors(),testUpdateTimeout(),testProfileStatus(),testSlotDraft(),testDeviceSave(),testCatalogError(),testFoldState(),testCustomDnsFeedback(),testBootstrapForm()]).catch(e=>{console.error(e);process.exitCode=1;});

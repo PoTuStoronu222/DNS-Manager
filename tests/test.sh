@@ -582,9 +582,9 @@ grep -Fq "disabled:!!state.busy||!!state.jobRunning||unavailable||checking" dns-
 grep -q "'gaming','Игровые DNS'" dns-manager-luci.sh || fail "gaming catalog label missing in LuCI"
 grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validation missing gaming category"
 grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
-grep -q 'VERSION="3.96"' dns-manager.sh || fail "manager version not bumped"
+grep -q 'VERSION="3.97"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
-grep -q 'VERSION="2.06"' dns-manager-luci.sh || fail "LuCI version not bumped"
+grep -q 'VERSION="2.07"' dns-manager-luci.sh || fail "LuCI version not bumped"
 if grep -q '^main_menu$' dns-manager.sh; then fail "interactive console menu still starts"; fi
 grep -Fq "btn('Удалить DNS Manager'" dns-manager-luci.sh || fail "LuCI uninstall button missing"
 grep -Fq '"uninstall":{},"uninstall_status":{}' dns-manager-luci.sh || fail "LuCI uninstall RPC is not registered"
@@ -866,8 +866,8 @@ view_luci="$(sed -n 's|^// DNS Manager LuCI common module version:[[:space:]]*||
 dashboard_view_luci="$(sed -n 's|^// DNS Manager LuCI version: *||p' dns-manager-luci.sh | head -n1)"
 [ "$top_luci" = "$dashboard_view_luci" ] || fail "dashboard view version marker is stale"
 ok "LuCI version markers synchronized ($top_luci)"
-grep -Fq 'VERSION="3.96"' dns-manager.sh || fail "DNS Manager version marker is not 3.96"
-ok "DNS Manager version marker synchronized (3.96)"
+grep -Fq 'VERSION="3.97"' dns-manager.sh || fail "DNS Manager version marker is not 3.97"
+ok "DNS Manager version marker synchronized (3.97)"
 grep -Fq "assignment.appendChild(btn('Удалить'" dns-manager-luci.sh || fail "Custom DNS delete button is not aligned with the assignment action"
 grep -Fq ".dm-catalog-item-custom{grid-column:auto}" dns-manager-luci.sh || fail "Custom DNS card is wider than a stock catalog card"
 grep -Fq ".dm-catalog-controls-custom .dm-assign-inline select{height:30px;min-width:0;width:auto;max-width:100%;flex:1 1 160px" dns-manager-luci.sh || fail "Custom DNS actions do not have a responsive inline layout"
@@ -2655,8 +2655,30 @@ awk '/^bootstrap_normalize_addresses\(\) \{/,/^}/' dns-manager.sh > "$tmp/bootst
         if bootstrap_normalize_addresses "$bad" >/dev/null; then exit 3; fi
     done
     if bootstrap_normalize_addresses "$(printf '1.1.1.1\n9.9.9.9')" >/dev/null; then exit 4; fi
+    list48="$(awk 'BEGIN { for(i=1;i<=48;i++) printf "%s10.0.0.%d",i==1?"":",",i }')"
+    [ "$(bootstrap_normalize_addresses "$list48")" = "$list48" ] || exit 5
+    if bootstrap_normalize_addresses "$list48,10.0.0.49" >/dev/null; then exit 6; fi
 ) || fail "bootstrap literal address validation"
 ok "bootstrap validation accepts IPv4 and IPv6 literals and rejects invalid input"
+
+if grep '^BOOTSTRAP_DNS_ALL=' dns-manager.sh | grep -Eq '194\.242\.2\.(2|3)(,|[" ])'; then
+    fail "encrypted-only Mullvad endpoints must not be used as plaintext bootstrap DNS"
+fi
+
+COMMON_JS="$tmp/common.js" node > "$tmp/bootstrap-all-presets" <<'NODE_BOOTSTRAP_PRESETS' || fail "bootstrap preset extraction"
+const fs=require('fs'),vm=require('vm');
+const s=fs.readFileSync(process.env.COMMON_JS,'utf8');
+const a=s.indexOf('var bootstrapPresets=['), b=s.indexOf('function bootstrapSplitSelection',a);
+if(a<0||b<0)process.exit(1);
+const presets=vm.runInNewContext(s.slice(a,b)+'\nbootstrapPresets');
+process.stdout.write(presets.map(p=>p.ips).join(','));
+NODE_BOOTSTRAP_PRESETS
+(
+    . "$tmp/bootstrap-validate.sh"
+    addresses="$(cat "$tmp/bootstrap-all-presets")"
+    [ "$(bootstrap_normalize_addresses "$addresses")" = "$addresses" ]
+) || fail "combined bootstrap presets rejected by backend validation"
+ok "every bootstrap preset can be combined and accepted by backend validation"
 
 # Recovery must rebuild each selected proxy with the chosen bootstrap list.
 awk '/^rebuild_selected_hdp_sections\(\) \{/,/^}/' dns-manager.sh > "$tmp/bootstrap-rebuild.sh"
