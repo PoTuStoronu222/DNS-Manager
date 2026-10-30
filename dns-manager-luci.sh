@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager full installer and LuCI companion
-# Version: 2.06
+# Version: 2.07
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.06"
+VERSION="2.07"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -722,7 +722,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.06"
+SELF_VERSION="2.07"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -4081,7 +4081,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI common module version: 2.06
+// DNS Manager LuCI common module version: 2.07
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -4359,7 +4359,7 @@ function injectStyle(root){
   '.dm-wrap .cbi-button:focus-visible{outline:2px solid var(--primary-color,#0969da);outline-offset:2px}'+
   '.dm-wrap .cbi-button:disabled{opacity:.48;cursor:not-allowed;box-shadow:none}'+
   '.dm-wrap .dm-seg{gap:7px;margin:8px 0}'+
-  '.dm-custom-dns-content{margin-top:10px}'+
+  '.dm-custom-dns-content{margin-top:10px}.dm-bootstrap-options{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:7px;margin:10px 0}.dm-bootstrap-option{display:flex;align-items:center;gap:7px;font-size:12px}.dm-bootstrap-option input{flex:none}'+
   '.dm-fold>summary{cursor:pointer;list-style:none;font-size:12px;font-weight:600}.dm-fold>summary::-webkit-details-marker{display:none}.dm-fold>summary:before{content:"▸";display:inline-block;margin-right:7px;transition:transform .15s}.dm-fold[open]>summary:before{transform:rotate(90deg)}.dm-device-fold>summary{display:flex;align-items:center;gap:7px}.dm-device-fold>summary .dm-device-dns-head{flex:1;min-width:0}.dm-device-fold-body{display:flex;flex-direction:column;gap:12px;margin-top:12px}'+
   '.dm-wrap .dm-seg .cbi-button{min-height:32px;padding:7px 12px;border-radius:9px}'+
   '.dm-wrap .dm-input,.dm-wrap input:not([type=checkbox]):not([type=radio]),.dm-wrap select,.dm-wrap textarea{max-width:100%;border:1px solid rgba(110,118,129,.28);border-radius:8px;background:var(--background-color-medium,#fff);color:inherit;box-shadow:none}'+
@@ -4826,26 +4826,62 @@ function resolverRows(st,root){
   });
   return [out,rows.length];
 }
+// Public resolver addresses checked against provider documentation on 2026-10-30:
+// https://developers.cloudflare.com/1.1.1.1/ip-addresses/
+// https://developers.google.com/speed/public-dns/docs/using
+// https://docs.quad9.net/services/ | https://dns.yandex.com/
+// https://adguard-dns.io/kb/general/dns-providers/ | https://docs.controld.com/docs/free-dns
+// https://www.opendns.com/setupguide/ | https://cleanbrowsing.org/filters
+// https://www.cira.ca/en/canadian-shield/configure/summary-cira-canadian-shield-dns-resolver-addresses/
+var bootstrapPresets=[
+  {id:'cloudflare',name:'Cloudflare',detail:'без фильтрации',ips:'1.1.1.1,1.0.0.1,2606:4700:4700::1111,2606:4700:4700::1001'},
+  {id:'google',name:'Google',detail:'обычный DNS',ips:'8.8.8.8,8.8.4.4,2001:4860:4860::8888,2001:4860:4860::8844'},
+  {id:'quad9',name:'Quad9 Secure',detail:'блокирует угрозы',ips:'9.9.9.9,149.112.112.112,2620:fe::fe,2620:fe::9'},
+  {id:'quad9plain',name:'Quad9 без блокировок',detail:'без блокировки угроз',ips:'9.9.9.10,149.112.112.10,2620:fe::10,2620:fe::fe:10'},
+  {id:'yandex',name:'Яндекс DNS',detail:'базовый',ips:'77.88.8.8,77.88.8.1,2a02:6b8::feed:0ff,2a02:6b8:0:1::feed:0ff'},
+  {id:'adguardplain',name:'AdGuard без фильтрации',detail:'без фильтрации',ips:'94.140.14.140,94.140.14.141,2a10:50c0::1:ff,2a10:50c0::2:ff'},
+  {id:'adguard',name:'AdGuard Default',detail:'блокирует рекламу и угрозы',ips:'94.140.14.14,94.140.15.15,2a10:50c0::ad1:ff,2a10:50c0::ad2:ff'},
+  {id:'controld',name:'Control D Unfiltered',detail:'без фильтрации',ips:'76.76.2.0,76.76.10.0,2606:1a40::0,2606:1a40:1::0'},
+  {id:'controlduncensored',name:'Control D Uncensored',detail:'обход ограничений',ips:'76.76.2.5,76.76.10.5,2606:1a40::5,2606:1a40:1::5'},
+  {id:'opendns',name:'OpenDNS',detail:'обычный DNS',ips:'208.67.222.222,208.67.220.220'},
+  {id:'cira',name:'CIRA Canadian Shield Private',detail:'без фильтрации',ips:'149.112.121.10,149.112.122.10,2620:10a:80bb::10,2620:10a:80bc::10'},
+  {id:'cleanbrowsing',name:'CleanBrowsing Security',detail:'блокирует угрозы',ips:'185.228.168.9,185.228.169.9,2a0d:2a00:1::2,2a0d:2a00:2::2'}
+];
+function bootstrapSplitSelection(selected){
+  var remaining=String(selected||'').split(',').filter(Boolean),ids=[];
+  bootstrapPresets.forEach(function(p){var parts=p.ips.split(',');if(parts.every(function(x){return remaining.indexOf(x)>=0;})){ids.push(p.id);parts.forEach(function(x){remaining.splice(remaining.indexOf(x),1);});}});
+  return {mode:selected?'choose':'default',ids:ids,addresses:remaining.join(', ')};
+}
+function bootstrapComposeSelection(ids,extra){
+  var out=[],seen=Object.create(null);
+  bootstrapPresets.forEach(function(p){if(ids.indexOf(p.id)>=0)p.ips.split(',').forEach(add);});
+  String(extra||'').split(/[\s,]+/).filter(Boolean).forEach(add);
+  function add(x){var key=x.toLowerCase();if(!seen[key]){seen[key]=true;out.push(key);}}
+  return out.join(',');
+}
 function renderBootstrap(root,st){
-  var presets={default:'',cloudflare:'1.1.1.1,1.0.0.1,2606:4700:4700::1111,2606:4700:4700::1001',google:'8.8.8.8,8.8.4.4,2001:4860:4860::8888,2001:4860:4860::8844',quad9:'9.9.9.9,149.112.112.112,2620:fe::fe,2620:fe::9'};
-  var selected=String(st.bootstrap_selected||''),mode='custom';
-  Object.keys(presets).forEach(function(k){if(presets[k]===selected)mode=k;});
-  var draft=state.bootstrapDraft||{mode:mode,addresses:selected};
-  var select=E('select',{'class':'dm-input'},[
-    E('option',{'value':'default'},'По умолчанию'),E('option',{'value':'cloudflare'},'Cloudflare'),
-    E('option',{'value':'google'},'Google'),E('option',{'value':'quad9'},'Quad9'),E('option',{'value':'custom'},'Свой список')
-  ]);
+  var selected=String(st.bootstrap_selected||''),draft=state.bootstrapDraft||bootstrapSplitSelection(selected);
+  var select=E('select',{'class':'dm-input'},[E('option',{'value':'default'},'По умолчанию'),E('option',{'value':'choose'},'Выбрать наборы и свои адреса')]);
   select.value=draft.mode;
-  var input=E('input',{'class':'dm-input','type':'text','placeholder':'Например: 1.1.1.1, 9.9.9.9'});
-  input.value=draft.addresses||'';input.disabled=draft.mode!=='custom';
-  select.addEventListener('change',function(){input.disabled=select.value!=='custom';state.bootstrapDraft={mode:select.value,addresses:input.value};});
-  input.addEventListener('input',function(){state.bootstrapDraft={mode:select.value,addresses:input.value};});
+  var input=E('input',{'class':'dm-input','type':'text','placeholder':'Свои IP-адреса через запятую'});
+  input.value=draft.addresses||'';
+  var controls=[], options=bootstrapPresets.map(function(p){
+    var attrs={'type':'checkbox','value':p.id};if(draft.ids.indexOf(p.id)>=0)attrs.checked='';
+    var checkbox=E('input',attrs);controls.push(checkbox);
+    checkbox.addEventListener('change',remember);
+    return E('label',{'class':'dm-bootstrap-option'},[checkbox,E('span',{},p.name+' · '+p.detail)]);
+  });
+  function remember(){state.bootstrapDraft={mode:select.value,ids:controls.filter(function(c){return c.checked;}).map(function(c){return c.value;}),addresses:input.value};}
+  function toggle(){var disabled=select.value!=='choose';input.disabled=disabled;controls.forEach(function(c){c.disabled=disabled;});}
+  select.addEventListener('change',function(){toggle();remember();});input.addEventListener('input',remember);toggle();
   var button=btn(state.busySetting==='bootstrap'?'Применяю…':'Применить','cbi-button-action',function(){
     if(state.busy)return;
-    var value=select.value,addresses=String(input.value||'').trim();
-    state.bootstrapDraft={mode:value,addresses:addresses};state.busy=true;state.busySetting='bootstrap';
+    remember();var value=select.value,addresses=bootstrapComposeSelection(state.bootstrapDraft.ids,input.value);
+    if(value==='choose'&&!addresses){state.bootstrapNotice={type:'error',text:'Выберите набор или укажите свои IP-адреса.'};renderDoH(root,window.dmState||{});return;}
+    if(value==='choose'&&addresses&&addresses.split(',').length>48){state.bootstrapNotice={type:'error',text:'Можно выбрать не более 48 разных IP-адресов.'};renderDoH(root,window.dmState||{});return;}
+    state.busy=true;state.busySetting='bootstrap';
     state.bootstrapNotice={type:'info',text:'Применяю bootstrap DNS и проверяю выбранные DNS…'};renderDoH(root,window.dmState||{});
-    callBootstrap(value,addresses).then(awaitSettingResult).then(function(r){
+    callBootstrap(value==='default'?'default':'custom',addresses).then(awaitSettingResult).then(function(r){
       state.busy=false;state.busySetting='';
       if(r&&r.ok){state.bootstrapDraft=null;state.bootstrapNotice={type:'ok',text:'Bootstrap DNS сохранён.'};}
       else state.bootstrapNotice={type:'error',text:(r&&r.error)||'Не удалось применить bootstrap DNS.'};
@@ -4855,7 +4891,10 @@ function renderBootstrap(root,st){
   return card('Bootstrap DNS',[foldSection('bootstrap','Настроить bootstrap DNS',E('div',{'class':'dm-custom-dns-content'},[
     E('p',{'class':'dm-hint'},'Bootstrap DNS определяет IP-адреса DoH-серверов до установления защищённого соединения. Эти начальные DNS-запросы не шифруются. Изменение не выбирает DNS-профиль.'),
     E('div',{'class':'dm-mini'},'Сейчас: '+(selected||'по умолчанию')),
-    E('div',{'class':'dm-actions'},[select,input,button]),
+    E('div',{'class':'dm-actions'},[select]),
+    E('div',{'class':'dm-bootstrap-options'},options),
+    E('div',{'class':'dm-mini'},'Можно объединить несколько наборов и добавить свои IP. Максимум 48 адресов. Фильтрующие серверы могут блокировать домены DoH; доступность IPv6 зависит от сети.'),
+    E('div',{'class':'dm-actions'},[input,button]),
     state.bootstrapNotice?E('div',{'class':'dm-inline-msg '+state.bootstrapNotice.type},state.bootstrapNotice.text):null
   ].filter(Boolean)))]);
 }
@@ -7043,7 +7082,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 2.06
+// DNS Manager LuCI version: 2.07
 return view.extend({
   load: DM.load,
   render: DM.render,

@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="3.96"
+VERSION="3.97"
 # 3.86: make LuCI the primary interface and preserve external DNS on removal.
 # 3.85: revalidate Watchdog settings before recovery.
 # 3.84: cap DNS catalog test concurrency by total RAM on small routers.
@@ -27,7 +27,7 @@ CONFIG_FILE="$CFG_DIR/manager.conf"
 DNS_CATALOG="$CFG_DIR/dns-catalog.conf"
 CUSTOM_DNS_CATALOG="$CFG_DIR/dns-custom-catalog.conf"
 NTP_CATALOG="$CFG_DIR/ntp-catalog.conf"
-BOOTSTRAP_DNS_ALL="77.88.8.8,77.88.8.1,94.140.14.14,1.1.1.1,1.0.0.1,8.8.8.8,8.8.4.4,9.9.9.9,149.112.112.112,208.67.222.222,208.67.220.220,149.112.121.10,149.112.122.10,76.76.2.0,76.76.10.0,194.242.2.2,194.242.2.3,2606:4700:4700::1111,2606:4700:4700::1001,2001:4860:4860::8888,2001:4860:4860::8844,2620:fe::fe,2620:fe::9"
+BOOTSTRAP_DNS_ALL="77.88.8.8,77.88.8.1,94.140.14.14,1.1.1.1,1.0.0.1,8.8.8.8,8.8.4.4,9.9.9.9,149.112.112.112,208.67.222.222,208.67.220.220,149.112.121.10,149.112.122.10,76.76.2.0,76.76.10.0,2606:4700:4700::1111,2606:4700:4700::1001,2001:4860:4860::8888,2001:4860:4860::8844,2620:fe::fe,2620:fe::9"
 DNSCAT_VERSION="8.7-RU-NOSOCIAL"
 DNSCAT_REVISION="7"
 DNSCAT_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/catalogs/dns-8.7-RU-NOSOCIAL.conf"
@@ -882,7 +882,7 @@ bootstrap_normalize_addresses() {
     NR>1 { bad=1; exit }
     {
         gsub(/[,[:space:]]+/," "); sub(/^ /,""); sub(/ $/,"")
-        n=split($0,items," "); if(n<1 || n>8 || items[1]=="") { bad=1; exit }
+        n=split($0,items," "); if(n<1 || n>48 || items[1]=="") { bad=1; exit }
         for(i=1;i<=n;i++) {
             item=tolower(items[i]); if(!ipv4(item) && !ipv6(item)) { bad=1; exit }
             if(seen[item]++) { bad=1; exit }
@@ -900,7 +900,7 @@ bootstrap_apply_selection() {
     bs_new="$1"; bs_old="${BOOTSTRAP_DNS_SELECTED:-}"
     BOOTSTRAP_ERROR='Не удалось применить bootstrap DNS.'
     if [ -n "$bs_new" ]; then
-        bs_new="$(bootstrap_normalize_addresses "$bs_new")" || { BOOTSTRAP_ERROR='Укажите от 1 до 8 корректных IP-адресов bootstrap DNS.'; return 1; }
+        bs_new="$(bootstrap_normalize_addresses "$bs_new")" || { BOOTSTRAP_ERROR='Укажите от 1 до 48 различных корректных IP-адресов bootstrap DNS.'; return 1; }
     fi
     bs_effective="${bs_new:-$BOOTSTRAP_DNS_ALL}"
     bs_pending="$(uci -q changes https-dns-proxy 2>/dev/null)" || { BOOTSTRAP_ERROR='Не удалось проверить изменения UCI.'; return 1; }
