@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager full installer and LuCI companion
-# Version: 2.05
+# Version: 2.07
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.05"
+VERSION="2.07"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -685,7 +685,7 @@ EOF_MENU
     },
     "write": {
       "ubus": {
-        "dns_manager": [ "set_profile", "set_regional", "reset_dns", "set_slot", "set_slot_domains", "set_device_dns", "add_custom_dns", "delete_custom_dns", "set_setting", "set_watchdog_setting", "set_watchdog_settings", "set_ntp", "set_test_age", "test_all", "test_current", "test_one", "test_system", "update", "update_manager", "update_hdp", "update_catalog", "update_all", "uninstall" ]
+        "dns_manager": [ "set_profile", "set_regional", "reset_dns", "set_slot", "set_slot_domains", "set_device_dns", "add_custom_dns", "delete_custom_dns", "set_setting", "set_bootstrap", "set_watchdog_setting", "set_watchdog_settings", "set_ntp", "set_test_age", "test_all", "test_current", "test_one", "test_system", "update", "update_manager", "update_hdp", "update_catalog", "update_all", "uninstall" ]
       }
     }
   }
@@ -722,7 +722,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.05"
+SELF_VERSION="2.07"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -1955,6 +1955,7 @@ page_header_json() {
     case "$_ph_regional" in doh|legacy|yandex|isp) ;; *) [ -n "$(cfg_get SLOT_RU)" ] && _ph_regional=legacy || _ph_regional=doh;; esac
     printf ',"regional_mode":'; json_quote "$_ph_regional"
     printf ',"regional_isp_ips":'; json_quote "$(cfg_get REGIONAL_ISP_IPS)"
+    printf ',"bootstrap_selected":'; json_quote "$(cfg_get BOOTSTRAP_DNS_SELECTED)"
 }
 
 lan_devices_json() {
@@ -3139,7 +3140,7 @@ profile_job_running() {
 
 job_start_action() {
     DNSMGR_ACTION_METHOD="$1"
-    case "$DNSMGR_ACTION_METHOD" in set_slot|set_slot_domains|set_device_dns|reset_dns|set_ntp) ;; *) json_error "Неверное действие"; return;; esac
+    case "$DNSMGR_ACTION_METHOD" in set_slot|set_slot_domains|set_device_dns|reset_dns|set_ntp|set_bootstrap) ;; *) json_error "Неверное действие"; return;; esac
     DNSMGR_ACTION_JOB=action
     acquire_runtime_lock "$RUNTIME_DIR/action-start.lock" || { json_error "Другое действие уже запускается"; return; }
     if job_active "$DNSMGR_ACTION_JOB" && job_process_alive "$JOB_DIR/$DNSMGR_ACTION_JOB"; then
@@ -3778,9 +3779,30 @@ apply_live_setting() {
 run_action() {
     _profile="$(jget profile)"
     if [ "${DNSMGR_ACTION_WORKER:-0}" != 1 ]; then
-        case "${RPC_METHOD:-}" in set_slot|set_slot_domains|set_device_dns|reset_dns|set_ntp) job_start_action "$RPC_METHOD"; return;; esac
+        case "${RPC_METHOD:-}" in set_slot|set_slot_domains|set_device_dns|reset_dns|set_ntp|set_bootstrap) job_start_action "$RPC_METHOD"; return;; esac
     fi
     case "${RPC_METHOD:-}" in
+        set_bootstrap)
+            DNSMGR_BOOTSTRAP_MODE="$(jget mode)"; DNSMGR_BOOTSTRAP_INPUT="$(jget addresses)"
+            case "$DNSMGR_BOOTSTRAP_MODE" in
+                default) DNSMGR_BOOTSTRAP_INPUT='' ;;
+                cloudflare) DNSMGR_BOOTSTRAP_INPUT='1.1.1.1,1.0.0.1,2606:4700:4700::1111,2606:4700:4700::1001' ;;
+                google) DNSMGR_BOOTSTRAP_INPUT='8.8.8.8,8.8.4.4,2001:4860:4860::8888,2001:4860:4860::8844' ;;
+                quad9) DNSMGR_BOOTSTRAP_INPUT='9.9.9.9,149.112.112.112,2620:fe::fe,2620:fe::9' ;;
+                custom) [ -n "$DNSMGR_BOOTSTRAP_INPUT" ] || { json_error 'Введите IP-адреса bootstrap DNS'; return; } ;;
+                *) json_error 'Неверный набор bootstrap DNS'; return ;;
+            esac
+            load_manager || { json_error 'DNS Manager недоступен'; return; }
+            type bootstrap_apply_selection >/dev/null 2>&1 || { json_error 'Обновите backend DNS Manager для настройки bootstrap DNS'; return; }
+            acquire_mutation_lock || { json_error 'Другая операция DNS Manager уже выполняется'; return; }
+            load_config >/dev/null 2>&1 || { release_mutation_lock; json_error 'Не удалось загрузить настройки'; return; }
+            if bootstrap_apply_selection "$DNSMGR_BOOTSTRAP_INPUT" >/dev/null 2>&1; then
+                release_mutation_lock; json_ok
+            else
+                DNSMGR_BOOTSTRAP_ERROR="${BOOTSTRAP_ERROR:-Не удалось применить bootstrap DNS}"
+                release_mutation_lock; json_error "$DNSMGR_BOOTSTRAP_ERROR"
+            fi
+            ;;
         add_custom_dns)
             add_custom_dns_json
             ;;
@@ -3999,7 +4021,7 @@ test_json() { case "${RPC_METHOD:-}" in test_all) job_start_test_all;; test_curr
 
 case "${1:-}" in
     list)
-        printf '{"status":{},"runtime":{},"doh_status":{},"network_status":{},"lan_devices":{},"set_device_dns":{"mac":"String","slots":"String"},"time_status":{},"page_meta":{},"catalog":{"category":"String","offset":0,"limit":0,"only_ok":0},"update_check":{"force":0},"update":{},"update_manager":{},"update_hdp":{},"update_catalog":{},"update_all":{},"set_profile":{"profile":"String"},"set_regional":{"enabled":0},"reset_dns":{},"uninstall":{},"uninstall_status":{},"set_slot":{"slot":"String","id":"String"},"set_slot_domains":{"slot":"String","domains":"String"},"add_custom_dns":{"name":"String","url":"String"},"delete_custom_dns":{"id":"String"},"set_setting":{"name":"String","enabled":0},"set_watchdog_setting":{"name":"String","value":0},"set_watchdog_settings":{"interval":0,"threshold":0,"repair_cooldown":0,"max_restarts":0,"guard_interval":0},"set_ntp":{"preset":"String"},"set_test_age":{"category":"String","hours":0},"test_all":{},"test_current":{},"test_one":{"id":"String"},"test_system":{},"job":{"id":"String"},"log":{"lines":0}}\n'
+        printf '{"status":{},"runtime":{},"doh_status":{},"network_status":{},"lan_devices":{},"set_device_dns":{"mac":"String","slots":"String"},"time_status":{},"page_meta":{},"catalog":{"category":"String","offset":0,"limit":0,"only_ok":0},"update_check":{"force":0},"update":{},"update_manager":{},"update_hdp":{},"update_catalog":{},"update_all":{},"set_profile":{"profile":"String"},"set_regional":{"enabled":0},"reset_dns":{},"uninstall":{},"uninstall_status":{},"set_slot":{"slot":"String","id":"String"},"set_slot_domains":{"slot":"String","domains":"String"},"add_custom_dns":{"name":"String","url":"String"},"delete_custom_dns":{"id":"String"},"set_setting":{"name":"String","enabled":0},"set_bootstrap":{"mode":"String","addresses":"String"},"set_watchdog_setting":{"name":"String","value":0},"set_watchdog_settings":{"interval":0,"threshold":0,"repair_cooldown":0,"max_restarts":0,"guard_interval":0},"set_ntp":{"preset":"String"},"set_test_age":{"category":"String","hours":0},"test_all":{},"test_current":{},"test_one":{"id":"String"},"test_system":{},"job":{"id":"String"},"log":{"lines":0}}\n'
         ;;
     call)
         case "${2:-}" in
@@ -4012,7 +4034,7 @@ case "${1:-}" in
             runtime) runtime_json;;
             catalog) INPUT="$(cat 2>/dev/null || true)"; catalog_json;;
             update_check) INPUT="$(cat 2>/dev/null || true)"; update_check_json;;            update_catalog) update_catalog_json;;            update_all) update_all_json;;            update) update_json;;            update_manager) update_manager_json;;            update_hdp) update_hdp_json;;
-            add_custom_dns|delete_custom_dns|set_device_dns|reset_dns|uninstall|set_profile|set_regional|set_slot|set_slot_domains|set_setting|set_watchdog_setting|set_watchdog_settings|set_ntp) INPUT="$(cat 2>/dev/null || true)"; RPC_METHOD="$2"; run_action;;
+            add_custom_dns|delete_custom_dns|set_device_dns|reset_dns|uninstall|set_profile|set_regional|set_slot|set_slot_domains|set_setting|set_bootstrap|set_watchdog_setting|set_watchdog_settings|set_ntp) INPUT="$(cat 2>/dev/null || true)"; RPC_METHOD="$2"; run_action;;
             uninstall_status) uninstall_status_json;;
             test_all|test_current|test_one|test_system) INPUT="$(cat 2>/dev/null || true)"; RPC_METHOD="$2"; test_json;;
             job) INPUT="$(cat 2>/dev/null || true)"; job_json "$(jget id)";;
@@ -4059,7 +4081,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI common module version: 2.05
+// DNS Manager LuCI common module version: 2.07
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -4101,6 +4123,7 @@ var callSlotDomains = dmRpc({ object:'dns_manager', method:'set_slot_domains', p
 var callAddCustomDns = dmRpc({ object:'dns_manager', method:'add_custom_dns', params:['name','url'], expect:{} });
 var callDeleteCustomDns = dmRpc({ object:'dns_manager', method:'delete_custom_dns', params:['id'], expect:{} });
 var callSetting = dmRpc({ object:'dns_manager', method:'set_setting', params:['name','enabled'], expect:{} });
+var callBootstrap = dmRpc({ object:'dns_manager', method:'set_bootstrap', params:['mode','addresses'], expect:{} });
 var callWatchdogSettings = dmRpc({ object:'dns_manager', method:'set_watchdog_settings', params:['interval','threshold','repair_cooldown','max_restarts','guard_interval'], expect:{} });
 var callNtp = dmRpc({ object:'dns_manager', method:'set_ntp', params:['preset'], expect:{} });
 var callTestAge = dmRpc({ object:'dns_manager', method:'set_test_age', params:['category','hours'], expect:{} });
@@ -4336,7 +4359,7 @@ function injectStyle(root){
   '.dm-wrap .cbi-button:focus-visible{outline:2px solid var(--primary-color,#0969da);outline-offset:2px}'+
   '.dm-wrap .cbi-button:disabled{opacity:.48;cursor:not-allowed;box-shadow:none}'+
   '.dm-wrap .dm-seg{gap:7px;margin:8px 0}'+
-  '.dm-custom-dns-content{margin-top:10px}'+
+  '.dm-custom-dns-content{margin-top:10px}.dm-bootstrap-options{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:7px;margin:10px 0}.dm-bootstrap-option{display:flex;align-items:center;gap:7px;font-size:12px}.dm-bootstrap-option input{flex:none}'+
   '.dm-fold>summary{cursor:pointer;list-style:none;font-size:12px;font-weight:600}.dm-fold>summary::-webkit-details-marker{display:none}.dm-fold>summary:before{content:"▸";display:inline-block;margin-right:7px;transition:transform .15s}.dm-fold[open]>summary:before{transform:rotate(90deg)}.dm-device-fold>summary{display:flex;align-items:center;gap:7px}.dm-device-fold>summary .dm-device-dns-head{flex:1;min-width:0}.dm-device-fold-body{display:flex;flex-direction:column;gap:12px;margin-top:12px}'+
   '.dm-wrap .dm-seg .cbi-button{min-height:32px;padding:7px 12px;border-radius:9px}'+
   '.dm-wrap .dm-input,.dm-wrap input:not([type=checkbox]):not([type=radio]),.dm-wrap select,.dm-wrap textarea{max-width:100%;border:1px solid rgba(110,118,129,.28);border-radius:8px;background:var(--background-color-medium,#fff);color:inherit;box-shadow:none}'+
@@ -4803,6 +4826,78 @@ function resolverRows(st,root){
   });
   return [out,rows.length];
 }
+// Public resolver addresses checked against provider documentation on 2026-10-30:
+// https://developers.cloudflare.com/1.1.1.1/ip-addresses/
+// https://developers.google.com/speed/public-dns/docs/using
+// https://docs.quad9.net/services/ | https://dns.yandex.com/
+// https://adguard-dns.io/kb/general/dns-providers/ | https://docs.controld.com/docs/free-dns
+// https://www.opendns.com/setupguide/ | https://cleanbrowsing.org/filters
+// https://www.cira.ca/en/canadian-shield/configure/summary-cira-canadian-shield-dns-resolver-addresses/
+var bootstrapPresets=[
+  {id:'cloudflare',name:'Cloudflare',detail:'без фильтрации',ips:'1.1.1.1,1.0.0.1,2606:4700:4700::1111,2606:4700:4700::1001'},
+  {id:'google',name:'Google',detail:'обычный DNS',ips:'8.8.8.8,8.8.4.4,2001:4860:4860::8888,2001:4860:4860::8844'},
+  {id:'quad9',name:'Quad9 Secure',detail:'блокирует угрозы',ips:'9.9.9.9,149.112.112.112,2620:fe::fe,2620:fe::9'},
+  {id:'quad9plain',name:'Quad9 без блокировок',detail:'без блокировки угроз',ips:'9.9.9.10,149.112.112.10,2620:fe::10,2620:fe::fe:10'},
+  {id:'yandex',name:'Яндекс DNS',detail:'базовый',ips:'77.88.8.8,77.88.8.1,2a02:6b8::feed:0ff,2a02:6b8:0:1::feed:0ff'},
+  {id:'adguardplain',name:'AdGuard без фильтрации',detail:'без фильтрации',ips:'94.140.14.140,94.140.14.141,2a10:50c0::1:ff,2a10:50c0::2:ff'},
+  {id:'adguard',name:'AdGuard Default',detail:'блокирует рекламу и угрозы',ips:'94.140.14.14,94.140.15.15,2a10:50c0::ad1:ff,2a10:50c0::ad2:ff'},
+  {id:'controld',name:'Control D Unfiltered',detail:'без фильтрации',ips:'76.76.2.0,76.76.10.0,2606:1a40::0,2606:1a40:1::0'},
+  {id:'controlduncensored',name:'Control D Uncensored',detail:'обход ограничений',ips:'76.76.2.5,76.76.10.5,2606:1a40::5,2606:1a40:1::5'},
+  {id:'opendns',name:'OpenDNS',detail:'обычный DNS',ips:'208.67.222.222,208.67.220.220'},
+  {id:'cira',name:'CIRA Canadian Shield Private',detail:'без фильтрации',ips:'149.112.121.10,149.112.122.10,2620:10a:80bb::10,2620:10a:80bc::10'},
+  {id:'cleanbrowsing',name:'CleanBrowsing Security',detail:'блокирует угрозы',ips:'185.228.168.9,185.228.169.9,2a0d:2a00:1::2,2a0d:2a00:2::2'}
+];
+function bootstrapSplitSelection(selected){
+  var remaining=String(selected||'').split(',').filter(Boolean),ids=[];
+  bootstrapPresets.forEach(function(p){var parts=p.ips.split(',');if(parts.every(function(x){return remaining.indexOf(x)>=0;})){ids.push(p.id);parts.forEach(function(x){remaining.splice(remaining.indexOf(x),1);});}});
+  return {mode:selected?'choose':'default',ids:ids,addresses:remaining.join(', ')};
+}
+function bootstrapComposeSelection(ids,extra){
+  var out=[],seen=Object.create(null);
+  bootstrapPresets.forEach(function(p){if(ids.indexOf(p.id)>=0)p.ips.split(',').forEach(add);});
+  String(extra||'').split(/[\s,]+/).filter(Boolean).forEach(add);
+  function add(x){var key=x.toLowerCase();if(!seen[key]){seen[key]=true;out.push(key);}}
+  return out.join(',');
+}
+function renderBootstrap(root,st){
+  var selected=String(st.bootstrap_selected||''),draft=state.bootstrapDraft||bootstrapSplitSelection(selected);
+  var select=E('select',{'class':'dm-input'},[E('option',{'value':'default'},'По умолчанию'),E('option',{'value':'choose'},'Выбрать наборы и свои адреса')]);
+  select.value=draft.mode;
+  var input=E('input',{'class':'dm-input','type':'text','placeholder':'Свои IP-адреса через запятую'});
+  input.value=draft.addresses||'';
+  var controls=[], options=bootstrapPresets.map(function(p){
+    var attrs={'type':'checkbox','value':p.id};if(draft.ids.indexOf(p.id)>=0)attrs.checked='';
+    var checkbox=E('input',attrs);controls.push(checkbox);
+    checkbox.addEventListener('change',remember);
+    return E('label',{'class':'dm-bootstrap-option'},[checkbox,E('span',{},p.name+' · '+p.detail)]);
+  });
+  function remember(){state.bootstrapDraft={mode:select.value,ids:controls.filter(function(c){return c.checked;}).map(function(c){return c.value;}),addresses:input.value};}
+  function toggle(){var disabled=select.value!=='choose';input.disabled=disabled;controls.forEach(function(c){c.disabled=disabled;});}
+  select.addEventListener('change',function(){toggle();remember();});input.addEventListener('input',remember);toggle();
+  var button=btn(state.busySetting==='bootstrap'?'Применяю…':'Применить','cbi-button-action',function(){
+    if(state.busy)return;
+    remember();var value=select.value,addresses=bootstrapComposeSelection(state.bootstrapDraft.ids,input.value);
+    if(value==='choose'&&!addresses){state.bootstrapNotice={type:'error',text:'Выберите набор или укажите свои IP-адреса.'};renderDoH(root,window.dmState||{});return;}
+    if(value==='choose'&&addresses&&addresses.split(',').length>48){state.bootstrapNotice={type:'error',text:'Можно выбрать не более 48 разных IP-адресов.'};renderDoH(root,window.dmState||{});return;}
+    state.busy=true;state.busySetting='bootstrap';
+    state.bootstrapNotice={type:'info',text:'Применяю bootstrap DNS и проверяю выбранные DNS…'};renderDoH(root,window.dmState||{});
+    callBootstrap(value==='default'?'default':'custom',addresses).then(awaitSettingResult).then(function(r){
+      state.busy=false;state.busySetting='';
+      if(r&&r.ok){state.bootstrapDraft=null;state.bootstrapNotice={type:'ok',text:'Bootstrap DNS сохранён.'};}
+      else state.bootstrapNotice={type:'error',text:(r&&r.error)||'Не удалось применить bootstrap DNS.'};
+      return refresh(root,true);
+    }).catch(function(err){state.busy=false;state.busySetting='';state.bootstrapNotice={type:'error',text:withRpcError('Не удалось получить результат bootstrap DNS.',err)};renderDoH(root,window.dmState||{});});
+  },{disabled:!!state.busy||!!state.jobRunning});
+  return card('Bootstrap DNS',[foldSection('bootstrap','Настроить bootstrap DNS',E('div',{'class':'dm-custom-dns-content'},[
+    E('p',{'class':'dm-hint'},'Bootstrap DNS определяет IP-адреса DoH-серверов до установления защищённого соединения. Эти начальные DNS-запросы не шифруются. Изменение не выбирает DNS-профиль.'),
+    E('div',{'class':'dm-mini'},'Сейчас: '+(selected||'по умолчанию')),
+    E('div',{'class':'dm-actions'},[select]),
+    E('div',{'class':'dm-bootstrap-options'},options),
+    E('div',{'class':'dm-mini'},'Можно объединить несколько наборов и добавить свои IP. Максимум 48 адресов. Фильтрующие серверы могут блокировать домены DoH; доступность IPv6 зависит от сети.'),
+    E('div',{'class':'dm-actions'},[input,button]),
+    state.bootstrapNotice?E('div',{'class':'dm-inline-msg '+state.bootstrapNotice.type},state.bootstrapNotice.text):null
+  ].filter(Boolean)))]);
+}
 function renderDoH(root,st){
   var e=root.querySelector('#dm-doh');if(!e)return;e.innerHTML='';
   var rr=resolverRows(st,root), rows=rr[0], count=rr[1];
@@ -4878,6 +4973,7 @@ function renderDoH(root,st){
     },{disabled:!!state.busy})
   ]));
   e.appendChild(card('DNS over HTTPS',ch));
+  e.appendChild(renderBootstrap(root,st));
 }
 
 function slotLabel(slot){var m={'1':'DNS 1','2':'DNS 2','3':'DNS 3','4':'DNS 4','5':'DNS 5','6':'DNS 6','RU':'Региональный DNS'};return m[slot]||('DNS '+slot);}
@@ -6467,21 +6563,24 @@ function resumeAction(root){
     var route=currentRoute(),name=String(j.name||'');
     var applies=(name==='set_slot'&&(route==='slots'||route==='catalog'))||
       (name==='set_slot_domains'&&route==='slots')||(name==='set_device_dns'&&route==='devices')||
-      (name==='set_ntp'&&route==='time')||(name==='reset_dns'&&route==='doh');
+      (name==='set_ntp'&&route==='time')||((name==='reset_dns'||name==='set_bootstrap')&&route==='doh');
     if(!applies){state.actionResumeStarted=false;return;}
     var key=route==='devices'?'slots':route==='doh'?'profiles':route;
     state.busy=true;state.pageNotice[key]='Операция выполняется…';
+    if(name==='set_bootstrap'){state.busySetting='bootstrap';state.bootstrapNotice={type:'info',text:'Применяю bootstrap DNS…'};state.pageNotice[key]='';}
     if(route==='doh')state.profileNoticeType='info';
     if(route==='time')state.timeNoticeType='info';
     render(root,window.dmState||{});
     return awaitSettingResult({ok:true,job:'action'}).then(function(r){
       state.busy=false;state.actionResumeStarted=false;
       state.pageNotice[key]=r&&r.ok?'Операция выполнена.':((r&&r.error)||'Не удалось подтвердить результат.');
+      if(name==='set_bootstrap'){state.busySetting='';state.bootstrapNotice={type:r&&r.ok?'ok':'error',text:state.pageNotice[key]};state.pageNotice[key]='';if(r&&r.ok)state.bootstrapDraft=null;}
       if(route==='doh')state.profileNoticeType=r&&r.ok?'ok':'error';
       if(route==='time')state.timeNoticeType=r&&r.ok?'ok':'error';
       return refresh(root,true);
     }).catch(function(err){
       state.busy=false;state.actionResumeStarted=false;state.pageNotice[key]=withRpcError('Не удалось получить результат операции.',err);
+      if(name==='set_bootstrap'){state.busySetting='';state.bootstrapNotice={type:'error',text:state.pageNotice[key]};state.pageNotice[key]='';}
       if(route==='doh')state.profileNoticeType='error';
       if(route==='time')state.timeNoticeType='error';
       return refresh(root,true);
@@ -6983,7 +7082,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 2.05
+// DNS Manager LuCI version: 2.07
 return view.extend({
   load: DM.load,
   render: DM.render,

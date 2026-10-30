@@ -21,6 +21,7 @@ sh tests/regional-provider-test.sh || fail "regional provider address parsing"
 sh tests/regional-modes-test.sh || fail "regional mode routes"
 sh tests/regional-watch-test.sh || fail "regional provider watcher"
 sh tests/setting-job-test.sh || fail "settings background job"
+sh tests/bootstrap-apply-test.sh || fail "bootstrap apply and rollback"
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT INT TERM
@@ -581,9 +582,9 @@ grep -Fq "disabled:!!state.busy||!!state.jobRunning||unavailable||checking" dns-
 grep -q "'gaming','Игровые DNS'" dns-manager-luci.sh || fail "gaming catalog label missing in LuCI"
 grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validation missing gaming category"
 grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
-grep -q 'VERSION="3.95"' dns-manager.sh || fail "manager version not bumped"
+grep -q 'VERSION="3.97"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
-grep -q 'VERSION="2.05"' dns-manager-luci.sh || fail "LuCI version not bumped"
+grep -q 'VERSION="2.07"' dns-manager-luci.sh || fail "LuCI version not bumped"
 if grep -q '^main_menu$' dns-manager.sh; then fail "interactive console menu still starts"; fi
 grep -Fq "btn('Удалить DNS Manager'" dns-manager-luci.sh || fail "LuCI uninstall button missing"
 grep -Fq '"uninstall":{},"uninstall_status":{}' dns-manager-luci.sh || fail "LuCI uninstall RPC is not registered"
@@ -865,8 +866,8 @@ view_luci="$(sed -n 's|^// DNS Manager LuCI common module version:[[:space:]]*||
 dashboard_view_luci="$(sed -n 's|^// DNS Manager LuCI version: *||p' dns-manager-luci.sh | head -n1)"
 [ "$top_luci" = "$dashboard_view_luci" ] || fail "dashboard view version marker is stale"
 ok "LuCI version markers synchronized ($top_luci)"
-grep -Fq 'VERSION="3.95"' dns-manager.sh || fail "DNS Manager version marker is not 3.95"
-ok "DNS Manager version marker synchronized (3.95)"
+grep -Fq 'VERSION="3.97"' dns-manager.sh || fail "DNS Manager version marker is not 3.97"
+ok "DNS Manager version marker synchronized (3.97)"
 grep -Fq "assignment.appendChild(btn('Удалить'" dns-manager-luci.sh || fail "Custom DNS delete button is not aligned with the assignment action"
 grep -Fq ".dm-catalog-item-custom{grid-column:auto}" dns-manager-luci.sh || fail "Custom DNS card is wider than a stock catalog card"
 grep -Fq ".dm-catalog-controls-custom .dm-assign-inline select{height:30px;min-width:0;width:auto;max-width:100%;flex:1 1 160px" dns-manager-luci.sh || fail "Custom DNS actions do not have a responsive inline layout"
@@ -2616,14 +2617,93 @@ _quote_marker="$tmp/config-save-injection-marker"
 _expected_config_value="value with 'quotes'; \$(touch '$_quote_marker')"
 SLOT_1="$_expected_config_value"
 BOOTSTRAP_DNS_ALL="$_expected_config_value"
+BOOTSTRAP_DNS_SELECTED='1.1.1.1,9.9.9.9'
 save_config || fail "save_config failed for a value with shell metacharacters"
 SLOT_1=""
 BOOTSTRAP_DNS=""
 . "$CONFIG_FILE" || fail "saved manager.conf could not be sourced"
 [ "$SLOT_1" = "$_expected_config_value" ] || fail "SLOT_1 did not round-trip from manager.conf"
 [ "$BOOTSTRAP_DNS" = "$_expected_config_value" ] || fail "bootstrap DNS did not round-trip from manager.conf"
+[ "$BOOTSTRAP_DNS_SELECTED" = '1.1.1.1,9.9.9.9' ] || fail "bootstrap selection did not round-trip"
 [ ! -e "$_quote_marker" ] || fail "sourcing manager.conf executed embedded shell syntax"
 ok "manager.conf safely saves and reloads special characters"
+
+awk '/^load_config\(\) \{/,/^}/' dns-manager.sh > "$tmp/bootstrap-load-config.sh"
+(
+    set -eu
+    . "$tmp/bootstrap-load-config.sh"
+    repair_catalog_category_state() { :; }
+    sync_regional_dns_state() { :; }
+    CONFIG_FILE="$tmp/bootstrap-load.conf"
+    BOOTSTRAP_DNS_ALL='1.1.1.1,8.8.8.8'
+    printf "%s\n" "DNS_PROFILE='custom'" "BOOTSTRAP_DNS='old-ignored-value'" > "$CONFIG_FILE"
+    BOOTSTRAP_DNS_SELECTED='stale-previous-value'
+    load_config
+    [ "$BOOTSTRAP_DNS" = "$BOOTSTRAP_DNS_ALL" ] || exit 1
+    printf "%s\n" "BOOTSTRAP_DNS_SELECTED='9.9.9.9,149.112.112.112'" >> "$CONFIG_FILE"
+    load_config
+    [ "$BOOTSTRAP_DNS" = '9.9.9.9,149.112.112.112' ] || exit 2
+) || fail "bootstrap default and selected values were not loaded correctly"
+ok "bootstrap selection loads independently of legacy settings"
+
+awk '/^bootstrap_normalize_addresses\(\) \{/,/^}/' dns-manager.sh > "$tmp/bootstrap-validate.sh"
+(
+    . "$tmp/bootstrap-validate.sh"
+    [ "$(bootstrap_normalize_addresses '1.1.1.1 9.9.9.9,2606:4700:4700::1111')" = '1.1.1.1,9.9.9.9,2606:4700:4700::1111' ] || exit 1
+    [ "$(bootstrap_normalize_addresses '::ABCD')" = '::abcd' ] || exit 2
+    for bad in '' '1.1.1.999' '127.0.0.1' 'example.com' '1.1.1.1,1.1.1.1' '2001:::1' '1:2:3:4:5:6:7:8:9' '::1' '1.1.1.1;reboot'; do
+        if bootstrap_normalize_addresses "$bad" >/dev/null; then exit 3; fi
+    done
+    if bootstrap_normalize_addresses "$(printf '1.1.1.1\n9.9.9.9')" >/dev/null; then exit 4; fi
+    list48="$(awk 'BEGIN { for(i=1;i<=48;i++) printf "%s10.0.0.%d",i==1?"":",",i }')"
+    [ "$(bootstrap_normalize_addresses "$list48")" = "$list48" ] || exit 5
+    if bootstrap_normalize_addresses "$list48,10.0.0.49" >/dev/null; then exit 6; fi
+) || fail "bootstrap literal address validation"
+ok "bootstrap validation accepts IPv4 and IPv6 literals and rejects invalid input"
+
+if grep '^BOOTSTRAP_DNS_ALL=' dns-manager.sh | grep -Eq '194\.242\.2\.(2|3)(,|[" ])'; then
+    fail "encrypted-only Mullvad endpoints must not be used as plaintext bootstrap DNS"
+fi
+
+COMMON_JS="$tmp/common.js" node > "$tmp/bootstrap-all-presets" <<'NODE_BOOTSTRAP_PRESETS' || fail "bootstrap preset extraction"
+const fs=require('fs'),vm=require('vm');
+const s=fs.readFileSync(process.env.COMMON_JS,'utf8');
+const a=s.indexOf('var bootstrapPresets=['), b=s.indexOf('function bootstrapSplitSelection',a);
+if(a<0||b<0)process.exit(1);
+const presets=vm.runInNewContext(s.slice(a,b)+'\nbootstrapPresets');
+process.stdout.write(presets.map(p=>p.ips).join(','));
+NODE_BOOTSTRAP_PRESETS
+(
+    . "$tmp/bootstrap-validate.sh"
+    addresses="$(cat "$tmp/bootstrap-all-presets")"
+    [ "$(bootstrap_normalize_addresses "$addresses")" = "$addresses" ]
+) || fail "combined bootstrap presets rejected by backend validation"
+ok "every bootstrap preset can be combined and accepted by backend validation"
+
+# Recovery must rebuild each selected proxy with the chosen bootstrap list.
+awk '/^rebuild_selected_hdp_sections\(\) \{/,/^}/' dns-manager.sh > "$tmp/bootstrap-rebuild.sh"
+(
+    set -eu
+    . "$tmp/bootstrap-rebuild.sh"
+    TMP_DIR="$tmp/bootstrap-rebuild"; mkdir -p "$TMP_DIR"
+    DNS_PROFILE=custom SLOT_1=dns1 SLOT_2='' SLOT_3='' SLOT_4='' SLOT_5='' SLOT_6='' SLOT_RU=dnsru
+    PORT_1=5053 PORT_RU=5059
+    BOOTSTRAP_DNS='9.9.9.9,149.112.112.112' BOOTSTRAP_DNS_ALL='1.1.1.1'
+    dns_url() { printf 'https://%s.example/dns-query' "$1"; }
+    normalize_url() { printf '%s' "$1"; }
+    uci() {
+        case "$1" in
+            -q) return 1 ;;
+            add) printf 'section%s' "$$" ;;
+            set) printf '%s\n' "$2" >> "$TMP_DIR/sets" ;;
+            commit) return 0 ;;
+            *) return 1 ;;
+        esac
+    }
+    rebuild_selected_hdp_sections || exit 1
+    [ "$(grep -c 'bootstrap_dns=9.9.9.9,149.112.112.112$' "$TMP_DIR/sets")" = 2 ] || exit 2
+) || fail "recovery did not preserve the selected bootstrap servers"
+ok "recovery rebuilds selected and regional proxies with selected bootstrap servers"
 
 # Exercise concurrent lock acquisition in two independent shell processes.
 STATE_DIR="$tmp/lock-concurrent"
@@ -2889,11 +2969,13 @@ awk '/^reload_regional_for_profile\(\) \{/,/^}/' dns-manager.sh > "$tmp/regional
     set -eu
     . "$tmp/regional-reload.sh"
     CONFIG_FILE="$tmp/regional-concurrent.conf"
-    printf "%s\n" "SLOT_RU=''" "PORT_RU=''" "SLOT_RU_CAT='regional'" "REGIONAL_SAVED_ID='ru_new'" > "$CONFIG_FILE"
+    BOOTSTRAP_DNS_ALL='1.1.1.1,8.8.8.8'
+    printf "%s\n" "SLOT_RU=''" "PORT_RU=''" "SLOT_RU_CAT='regional'" "REGIONAL_SAVED_ID='ru_new'" "BOOTSTRAP_DNS_SELECTED='9.9.9.9'" > "$CONFIG_FILE"
     SLOT_RU=ru_old PORT_RU=5059 SLOT_RU_CAT=regional REGIONAL_SAVED_ID=ru_old
     sync_regional_dns_state() { [ -z "$SLOT_RU" ]; }
     reload_regional_for_profile || exit 1
     [ -z "$SLOT_RU" ] && [ -z "$PORT_RU" ] && [ "$REGIONAL_SAVED_ID" = ru_new ] || exit 2
+    [ "$BOOTSTRAP_DNS" = '9.9.9.9' ] || exit 3
 ) || fail "profile did not preserve a concurrent regional change"
 awk '/^apply_settings\(\) \{/,/^}/' dns-manager.sh > "$tmp/regional-apply-lock.sh"
 _lock_line="$(grep -n 'acquire_mutation_lock' "$tmp/regional-apply-lock.sh" | head -n1 | cut -d: -f1)"
