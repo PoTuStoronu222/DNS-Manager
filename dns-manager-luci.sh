@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager full installer and LuCI companion
-# Version: 2.02
+# Version: 2.03
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.02"
+VERSION="2.03"
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
@@ -722,7 +722,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.02"
+SELF_VERSION="2.03"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -4059,7 +4059,7 @@ EOF_RPC_WRAPPER
 'require rpc';
 'require ui';
 
-// DNS Manager LuCI common module version: 2.02
+// DNS Manager LuCI common module version: 2.03
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -4338,6 +4338,8 @@ function injectStyle(root){
   '.dm-wrap .dm-seg{gap:7px;margin:8px 0}'+
   '.dm-wrap .dm-seg .cbi-button{min-height:32px;padding:7px 12px;border-radius:9px}'+
   '.dm-wrap .dm-input,.dm-wrap input:not([type=checkbox]):not([type=radio]),.dm-wrap select,.dm-wrap textarea{max-width:100%;border:1px solid rgba(110,118,129,.28);border-radius:8px;background:var(--background-color-medium,#fff);color:inherit;box-shadow:none}'+
+  'html[data-darkmode="true"] .dm-wrap .dm-input,html[data-darkmode="true"] .dm-wrap input:not([type=checkbox]):not([type=radio]),html[data-darkmode="true"] .dm-wrap select,html[data-darkmode="true"] .dm-wrap textarea{background:#22272e;color:#e6edf3;border-color:#545d68;color-scheme:dark}'+
+  'html[data-darkmode="true"] .dm-wrap input::placeholder,html[data-darkmode="true"] .dm-wrap textarea::placeholder{color:#a5adb7;opacity:1}'+
   '.dm-wrap .dm-input:focus,.dm-wrap input:not([type=checkbox]):not([type=radio]):focus,.dm-wrap select:focus,.dm-wrap textarea:focus{outline:none;border-color:var(--primary-color,#0969da);box-shadow:0 0 0 3px rgba(9,105,218,.1)}'+
   '.dm-wrap .dm-setting{margin-top:8px;padding:13px;border:1px solid rgba(110,118,129,.18);border-radius:10px;background:rgba(110,118,129,.035)}'+
   '.dm-wrap .dm-setting-title{font-size:12.5px;font-weight:750;line-height:1.4}'+
@@ -6957,7 +6959,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 2.02
+// DNS Manager LuCI version: 2.03
 return view.extend({
   load: DM.load,
   render: DM.render,
