@@ -747,7 +747,7 @@ catalog_validate_file() {
     [ "$_ver" = "$DNSCAT_VERSION" ] || return 1
     if [ "$_mode" != "legacy" ]; then
         grep -Fqx "# DNSCATREV=$DNSCAT_REVISION" "$_f" 2>/dev/null || return 1
-        grep -Fqx "# ENTRIES=114" "$_f" 2>/dev/null || return 1
+        grep -Fqx "# ENTRIES=113" "$_f" 2>/dev/null || return 1
     fi
     awk -F'|' -v strict="$_mode" '
         /^[[:space:]]*#/ || /^[[:space:]]*$/ { next }
@@ -759,7 +759,7 @@ catalog_validate_file() {
             ids[$1]++
             if (ids[$1] > 1) bad=1
         }
-        END { if (bad || count < 1 || (strict != "legacy" && count != 114)) exit 1 }
+        END { if (bad || count < 1 || (strict != "legacy" && count != 113)) exit 1 }
     ' "$_f" >/dev/null 2>&1 || return 1
     return 0
 }
@@ -794,7 +794,7 @@ write_catalogs() {
                         rm -f "$_result_tmp" 2>/dev/null || true
                 done
             fi
-            log_msg "Каталог DNS: загружен внешний $DNSCAT_VERSION (revision $DNSCAT_REVISION, 114 записей)."
+            log_msg "Каталог DNS: загружен внешний $DNSCAT_VERSION (revision $DNSCAT_REVISION, 113 записей)."
             return 0
         fi
     fi

@@ -16,14 +16,14 @@ err_msg() { :; }
 awk -F'|' '
   /^# DNSCATREV=/ {$0="# DNSCATREV=7"}
   /^# ENTRIES=/ {$0="# ENTRIES=107"}
-  $1 ~ /^(malw_cloudflare|geohide_ru|geohide_eu|geohide_us|magicdns|wlrus|geodema)$/ {next}
+  $1 ~ /^(malw_cloudflare|geohide_eu|geohide_us|magicdns|wlrus|geodema)$/ {next}
   {print}
 ' catalogs/dns-8.7-RU-NOSOCIAL.conf > "$DNS_CATALOG"
 cp "$DNS_CATALOG" "$tmp/old"
 printf '%s\n' 'astracat|bypass|AstraCat DNS|20|OK' 'shecan|bypass|Zapret DNS|25|OK' > "$TEST_RESULTS"
 write_catalogs
 catalog_validate_file "$DNS_CATALOG"
-for id in malw_cloudflare geohide_ru geohide_eu geohide_us magicdns wlrus geodema; do
+for id in malw_cloudflare geohide_eu geohide_us magicdns wlrus geodema; do
     grep -q "^$id|" "$DNS_CATALOG"
 done
 # The old slot identities, categories and endpoints remain untouched.

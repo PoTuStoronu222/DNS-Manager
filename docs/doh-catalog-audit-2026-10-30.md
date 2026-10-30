@@ -46,7 +46,6 @@
 | xbox_dns | Xbox DNS | https://xbox-dns.ru/dns-query | DNS-ответ | [источник](https://family.xbox-dns.ru/) |
 | geohide | GeoHide DNS | https://dns.geohide.ru:444/dns-query | не подтверждён (HTTP 503, код 0) | — |
 | geohide_8443 | GeoHide DNS :8443 | https://dns.geohide.ru:8443/dns-query | не подтверждён (HTTP 503, код 0) | — |
-| geohide_ru | GeoHide RU | https://geohide.ru/dns-query | не подтверждён (HTTP 503, код 0) | — |
 | geohide_eu | GeoHide EU | https://eu.geohide.ru/dns-query | DNS-ответ | — |
 | geohide_us | GeoHide US | https://us.geohide.ru/dns-query | DNS-ответ | — |
 | comss_ru | Comss DNS RU | https://dns.comss.ru/dns-query | не подтверждён (HTTP 000, код 6) | — |
