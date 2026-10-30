@@ -548,10 +548,10 @@ grep -q 'json_update_state() {' "$tmp/backend.sh" || fail "structured update res
 grep -q 'updated) exit 0' dns-manager.sh || fail "manager update-check exit contract missing"
 grep -q 'current|throttled) exit 2' dns-manager.sh || fail "manager current exit contract missing"
 grep -q "xbox_dns|gaming|games+supercell|Xbox DNS|" catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "Xbox DNS is not in gaming catalog category"
-grep -Fq '# DNSCATREV=8' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog revision not bumped"
+grep -Fq '# DNSCATREV=9' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog revision not bumped"
 grep -Fq '# ENTRIES=113' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog entry count header is incorrect"
 awk '/^catalog_validate_file\(\) \{/,/^}/' dns-manager.sh > "$tmp/catalog_validate.sh"
-( DNSCAT_VERSION=8.7-RU-NOSOCIAL DNSCAT_REVISION=8; . "$tmp/catalog_validate.sh"; catalog_validate_file catalogs/dns-8.7-RU-NOSOCIAL.conf ) || fail "updated catalog does not pass the manager validator"
+( DNSCAT_VERSION=8.7-RU-NOSOCIAL DNSCAT_REVISION=9; . "$tmp/catalog_validate.sh"; catalog_validate_file catalogs/dns-8.7-RU-NOSOCIAL.conf ) || fail "updated catalog does not pass the manager validator"
 sh tests/catalog-audit-update-test.sh || fail "catalog upgrade or fallback failed"
 sed -n '/^DNSCAT_REF=/,/^DNSCAT_URL=/p' dns-manager.sh > "$tmp/catalog_ref.sh"
 ( DNS_MANAGER_SOURCE_REF=test/doh-catalog-audit; . "$tmp/catalog_ref.sh"; case "$DNSCAT_URL" in */test/doh-catalog-audit/catalogs/*) :;; *) exit 1;; esac ) || fail "test installer does not load its own catalog"
@@ -580,7 +580,7 @@ EOF_NORMALIZE_URL
 node "$tmp/normalize_url.js" || fail "LuCI URL normalizer strips a significant DoH path slash"
 grep -Fq '$1!="shecan" {print}' dns-manager-luci.sh || fail "LuCI does not invalidate the changed resolver test result"
 grep -Fq '$1!="shecan" {print}' dns-manager.sh || fail "Manager does not invalidate the changed resolver test result"
-grep -Fq 'DNSCAT_REVISION="8"' dns-manager.sh || fail "backend catalog revision is not synchronized"
+grep -Fq 'DNSCAT_REVISION="9"' dns-manager.sh || fail "backend catalog revision is not synchronized"
 grep -Fq '_old_astracat_url=' dns-manager.sh || fail "old AstraCat endpoint is not tracked during catalog update"
 grep -Fq '_new_astracat_url=' dns-manager.sh || fail "new AstraCat endpoint is not tracked during catalog update"
 grep -Fq '$1!="astracat" {print}' dns-manager.sh || fail "AstraCat cached test result is not invalidated after endpoint change"
@@ -2413,10 +2413,17 @@ SLOT_1= SLOT_2= SLOT_3= SLOT_4= SLOT_5= SLOT_6= SLOT_RU=
 auto_fill_slots bypass
 [ "$SLOT_1" = d1 ] && [ "$SLOT_2" = d2 ] && [ "$SLOT_3" = d3 ] &&
 [ "$SLOT_4" = d4 ] && [ "$SLOT_5" = d5 ] && [ -z "$SLOT_6" ] || exit 41
+# Existing aliases remain addressable but a profile must not use the same URL twice.
+dns_url() { case "$1" in cznic_odvr|cznic_odvr_doh) printf '%s' 'https://odvr.nic.cz/doh';; *) printf 'https://%s.example/dns-query' "$1";; esac; }
+printf '%s\n' 'cznic_odvr|clean|CZ.NIC|10|OK' 'cznic_odvr_doh|clean|CZ.NIC duplicate|20|OK' 'd3|clean|D3|30|OK' > "$TEST_RESULTS"
+auto_fill_slots clean
+[ "$SLOT_1" = cznic_odvr ] && [ "$SLOT_2" = d3 ] && [ -z "$SLOT_3" ] || exit 42
 EOF_AUTO_FILL_FEWER
 chmod +x "$tmp/auto_fill_slots_runner.sh"
 "$tmp/auto_fill_slots_runner.sh" "$tmp" "$tmp/auto_fill_slots.sh" || fail "profile selection does not accept fewer than six DNS servers"
 ok "profiles accept fewer than six available DNS servers"
+awk -F'|' '$1=="cznic_odvr" {a=($2=="clean" && $5=="https://odvr.nic.cz/doh")} $1=="cznic_odvr_doh" {b=($2=="clean" && $5=="https://odvr.nic.cz/doh")} $1=="iijjp" {c=($2=="privacy" && $5=="https://public.dns.iij.jp/dns-query")} END {exit !(a && b && c)}' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "corrected catalog categories or existing URLs changed"
+ok "profile categories and duplicate URL remain consistent"
 
 # Profile post-apply verification must prune failed DNS only for a slot-specific failure.
 awk '/^profile_prune_failed_slots\(\) \{/,/^verify_after_apply_with_repair\(\) \{/' dns-manager.sh | sed '$d' > "$tmp/profile_prune.sh"
