@@ -582,9 +582,9 @@ grep -Fq "disabled:!!state.busy||!!state.jobRunning||unavailable||checking" dns-
 grep -q "'gaming','Игровые DNS'" dns-manager-luci.sh || fail "gaming catalog label missing in LuCI"
 grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validation missing gaming category"
 grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
-grep -q 'VERSION="3.97"' dns-manager.sh || fail "manager version not bumped"
+grep -q 'VERSION="3.98"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
-grep -q 'VERSION="2.07"' dns-manager-luci.sh || fail "LuCI version not bumped"
+grep -q 'VERSION="2.08"' dns-manager-luci.sh || fail "LuCI version not bumped"
 if grep -q '^main_menu$' dns-manager.sh; then fail "interactive console menu still starts"; fi
 grep -Fq "btn('Удалить DNS Manager'" dns-manager-luci.sh || fail "LuCI uninstall button missing"
 grep -Fq '"uninstall":{},"uninstall_status":{}' dns-manager-luci.sh || fail "LuCI uninstall RPC is not registered"
@@ -866,8 +866,8 @@ view_luci="$(sed -n 's|^// DNS Manager LuCI common module version:[[:space:]]*||
 dashboard_view_luci="$(sed -n 's|^// DNS Manager LuCI version: *||p' dns-manager-luci.sh | head -n1)"
 [ "$top_luci" = "$dashboard_view_luci" ] || fail "dashboard view version marker is stale"
 ok "LuCI version markers synchronized ($top_luci)"
-grep -Fq 'VERSION="3.97"' dns-manager.sh || fail "DNS Manager version marker is not 3.97"
-ok "DNS Manager version marker synchronized (3.97)"
+grep -Fq 'VERSION="3.98"' dns-manager.sh || fail "DNS Manager version marker is not 3.98"
+ok "DNS Manager version marker synchronized (3.98)"
 grep -Fq "assignment.appendChild(btn('Удалить'" dns-manager-luci.sh || fail "Custom DNS delete button is not aligned with the assignment action"
 grep -Fq ".dm-catalog-item-custom{grid-column:auto}" dns-manager-luci.sh || fail "Custom DNS card is wider than a stock catalog card"
 grep -Fq ".dm-catalog-controls-custom .dm-assign-inline select{height:30px;min-width:0;width:auto;max-width:100%;flex:1 1 160px" dns-manager-luci.sh || fail "Custom DNS actions do not have a responsive inline layout"
@@ -2618,6 +2618,7 @@ _expected_config_value="value with 'quotes'; \$(touch '$_quote_marker')"
 SLOT_1="$_expected_config_value"
 BOOTSTRAP_DNS_ALL="$_expected_config_value"
 BOOTSTRAP_DNS_SELECTED='1.1.1.1,9.9.9.9'
+BOOTSTRAP_PRESET_IDS='cloudflare,quad9' BOOTSTRAP_EXTRA='9.9.9.9' BOOTSTRAP_METADATA_SNAPSHOT="$BOOTSTRAP_DNS_SELECTED"
 save_config || fail "save_config failed for a value with shell metacharacters"
 SLOT_1=""
 BOOTSTRAP_DNS=""
@@ -2625,6 +2626,7 @@ BOOTSTRAP_DNS=""
 [ "$SLOT_1" = "$_expected_config_value" ] || fail "SLOT_1 did not round-trip from manager.conf"
 [ "$BOOTSTRAP_DNS" = "$_expected_config_value" ] || fail "bootstrap DNS did not round-trip from manager.conf"
 [ "$BOOTSTRAP_DNS_SELECTED" = '1.1.1.1,9.9.9.9' ] || fail "bootstrap selection did not round-trip"
+[ "$BOOTSTRAP_PRESET_IDS" = 'cloudflare,quad9' ] && [ "$BOOTSTRAP_EXTRA" = '9.9.9.9' ] && [ "$BOOTSTRAP_METADATA_SNAPSHOT" = "$BOOTSTRAP_DNS_SELECTED" ] || fail "bootstrap preset metadata did not round-trip"
 [ ! -e "$_quote_marker" ] || fail "sourcing manager.conf executed embedded shell syntax"
 ok "manager.conf safely saves and reloads special characters"
 
@@ -2970,12 +2972,13 @@ awk '/^reload_regional_for_profile\(\) \{/,/^}/' dns-manager.sh > "$tmp/regional
     . "$tmp/regional-reload.sh"
     CONFIG_FILE="$tmp/regional-concurrent.conf"
     BOOTSTRAP_DNS_ALL='1.1.1.1,8.8.8.8'
-    printf "%s\n" "SLOT_RU=''" "PORT_RU=''" "SLOT_RU_CAT='regional'" "REGIONAL_SAVED_ID='ru_new'" "BOOTSTRAP_DNS_SELECTED='9.9.9.9'" > "$CONFIG_FILE"
+    printf "%s\n" "SLOT_RU=''" "PORT_RU=''" "SLOT_RU_CAT='regional'" "REGIONAL_SAVED_ID='ru_new'" "BOOTSTRAP_DNS_SELECTED='9.9.9.9'" "BOOTSTRAP_PRESET_IDS='quad9'" "BOOTSTRAP_EXTRA=''" "BOOTSTRAP_METADATA_SNAPSHOT='9.9.9.9'" > "$CONFIG_FILE"
     SLOT_RU=ru_old PORT_RU=5059 SLOT_RU_CAT=regional REGIONAL_SAVED_ID=ru_old
     sync_regional_dns_state() { [ -z "$SLOT_RU" ]; }
     reload_regional_for_profile || exit 1
     [ -z "$SLOT_RU" ] && [ -z "$PORT_RU" ] && [ "$REGIONAL_SAVED_ID" = ru_new ] || exit 2
     [ "$BOOTSTRAP_DNS" = '9.9.9.9' ] || exit 3
+    [ "$BOOTSTRAP_PRESET_IDS" = 'quad9' ] && [ "$BOOTSTRAP_METADATA_SNAPSHOT" = '9.9.9.9' ] || exit 4
 ) || fail "profile did not preserve a concurrent regional change"
 awk '/^apply_settings\(\) \{/,/^}/' dns-manager.sh > "$tmp/regional-apply-lock.sh"
 _lock_line="$(grep -n 'acquire_mutation_lock' "$tmp/regional-apply-lock.sh" | head -n1 | cut -d: -f1)"
