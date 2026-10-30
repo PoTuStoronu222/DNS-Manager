@@ -268,9 +268,7 @@ grep -Fq 'ubus -v list dns_manager' "$tmp/luci_state_fn.sh" || fail "manager-sid
 ok "LuCI runtime validation checks the current page layout and RPC contract"
 
 # Keep DoH response acceptance aligned with the known-working main branch.
-# The test verifies that an HTTP 200 response has a DNS-message content type
-# and a non-empty payload at least as large as a DNS header; it does not parse
-# every resolver's answer packet.
+# Check the minimum DNS response header without requiring records or an RCODE.
 for _fn in validate_dns_message normalize_url; do
     awk -v fn="$_fn" '$0 ~ ("^" fn "\\(\\) \\{") { capture=1 } capture { print } capture && /^}$/ { exit }' dns-manager.sh > "$tmp/$_fn.sh"
     [ -s "$tmp/$_fn.sh" ] || fail "DNS helper extraction: $_fn"
@@ -280,7 +278,14 @@ done
 printf '\000\000\000\000\000\001\000\000\000\000\000' > "$tmp/dns-short"
 if validate_dns_message "$tmp/dns-short"; then fail "short DNS body accepted"; fi
 printf '\022\064\001\000\000\001\000\000\000\000\000\000\007example\003com\000\000\001\000\001' > "$tmp/dns-query"
-validate_dns_message "$tmp/dns-query" || fail "DNS message with a complete header rejected"
+if validate_dns_message "$tmp/dns-query"; then fail "DNS query accepted as a response"; fi
+printf '\000\000\000\000\000\000\000\000\000\000\000\000' > "$tmp/dns-zero"
+if validate_dns_message "$tmp/dns-zero"; then fail "zero DNS header accepted as a response"; fi
+for _flag in 200 203 202 205; do
+    printf "\\022\\064\\201\\${_flag}\\000\\001\\000\\000\\000\\000\\000\\000" > "$tmp/dns-response"
+    validate_dns_message "$tmp/dns-response" || fail "valid response header with arbitrary RCODE rejected"
+done
+( hexdump() { return 1; }; validate_dns_message "$tmp/dns-query" ) || fail "missing hexdump must preserve previous compatibility"
 
 [ "$(normalize_url 'https://doh.cleanbrowsing.org/doh/security-filter/')" = 'https://doh.cleanbrowsing.org/doh/security-filter/' ] || fail "DoH path trailing slash was stripped"
 [ "$(normalize_url 'https://dns.example/')" = 'https://dns.example' ] || fail "origin-root slash normalization changed"
@@ -411,8 +416,9 @@ ok "selected DNS remains visible when live DoH mapping is incomplete"
 awk '/^function stateBadge\(status,pingValue\)/,/^}/' "$tmp/common.js" > "$tmp/state_badge.js"
 grep -Fq "if(!s)return badge('dm-off','нет данных');" "$tmp/state_badge.js" || fail "LuCI marks an untested DNS unavailable"
 _guard_line="$(grep -nF "if(!s)return badge('dm-off','нет данных');" "$tmp/state_badge.js" | cut -d: -f1)"
-_failure_line="$(grep -nF "||!hasPing(pingValue))return badge('dm-bad','недоступен');" "$tmp/state_badge.js" | cut -d: -f1)"
+_failure_line="$(grep -nF "return badge('dm-bad','недоступен');" "$tmp/state_badge.js" | cut -d: -f1)"
 [ -n "$_guard_line" ] && [ -n "$_failure_line" ] && [ "$_guard_line" -lt "$_failure_line" ] || fail "LuCI empty-status guard is after the unavailable fallback"
+grep -Fq "if(s==='OK')return badge('dm-ok',hasPing(pingValue)?ping(pingValue)+' · доступен':'ответ получен');" "$tmp/state_badge.js" || fail "LuCI must accept an OK response without a duration"
 ok "LuCI distinguishes untested DNS from unavailable DNS"
 grep -Fq 'LUCI_VIEW_DIR="/www/luci-static/resources/view/dns-manager"' dns-manager.sh || fail "manager-side LuCI view directory is stale"
 grep -Fq 'LUCI_COMMON_FILE="/www/luci-static/resources/dns-manager/common.js"' dns-manager.sh || fail "manager-side LuCI common path is stale"
@@ -548,16 +554,25 @@ grep -q 'json_update_state() {' "$tmp/backend.sh" || fail "structured update res
 grep -q 'updated) exit 0' dns-manager.sh || fail "manager update-check exit contract missing"
 grep -q 'current|throttled) exit 2' dns-manager.sh || fail "manager current exit contract missing"
 grep -q "xbox_dns|gaming|games+supercell|Xbox DNS|" catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "Xbox DNS is not in gaming catalog category"
-grep -Fq '# DNSCATREV=7' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog revision not bumped"
-grep -Fq '# ENTRIES=107' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog entry count header is incorrect"
+grep -Fq '# DNSCATREV=9' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog revision not bumped"
+grep -Fq '# ENTRIES=113' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog entry count header is incorrect"
+awk '/^catalog_validate_file\(\) \{/,/^}/' dns-manager.sh > "$tmp/catalog_validate.sh"
+( DNSCAT_VERSION=8.7-RU-NOSOCIAL DNSCAT_REVISION=9; . "$tmp/catalog_validate.sh"; catalog_validate_file catalogs/dns-8.7-RU-NOSOCIAL.conf ) || fail "updated catalog does not pass the manager validator"
+sh tests/catalog-audit-update-test.sh || fail "catalog upgrade or fallback failed"
+sed -n '/^DNSCAT_REF=/,/^DNSCAT_URL=/p' dns-manager.sh > "$tmp/catalog_ref.sh"
+( DNS_MANAGER_SOURCE_REF=test/doh-catalog-audit; . "$tmp/catalog_ref.sh"; case "$DNSCAT_URL" in */test/doh-catalog-audit/catalogs/*) :;; *) exit 1;; esac ) || fail "test installer does not load its own catalog"
+( DNS_MANAGER_SOURCE_REF='../invalid'; . "$tmp/catalog_ref.sh"; case "$DNSCAT_URL" in */main/catalogs/*) :;; *) exit 1;; esac ) || fail "unsafe catalog ref was not rejected"
+for _catalog_id in malw_cloudflare geohide_eu geohide_us magicdns wlrus geodema; do
+    grep -q "^${_catalog_id}|" catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "new catalog ID missing: $_catalog_id"
+done
 grep -Fq 'astracat|bypass|geo+ads+services|AstraCat DNS|https://dns.commonnet.work/dns-query|ru/global|official-current' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "AstraCat catalog endpoint is stale"
 if grep -Eq '^astracat_(1498|8443)[|]' catalogs/dns-8.7-RU-NOSOCIAL.conf; then fail "obsolete AstraCat alternate-port entries remain"; fi
 grep -Fq 'cubedns|privacy|privacy+no-logs|CubeDNS|https://cubedns.com/dns-query|' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "CubeDNS DoH entry missing"
 grep -Fq 'dagami|bypass|geo+services|Dagami DNS|https://dns.dagami.ru/dns-query|' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "Dagami DNS entry missing"
 grep -Fq 'webshift|bypass|geo+services|WebShift DNS|https://d.webshiftvpn.ru/dns-query|' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "WebShift DNS entry missing"
 grep -Fq 'libredns_clean|bypass|privacy+geo+services|LibreDNS|https://doh.libredns.gr/dns-query|' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "LibreDNS category is incorrect"
-grep -Fq 'shecan|bypass|geo+services|zapret.moe|https://dns.zapret.moe/dns-query|' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "Shecan entry was not replaced by zapret.moe DoH"
-grep -Fq '# ENTRIES=107' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog entry count was not updated"
+grep -Fq 'shecan|bypass|geo+services|Zapret DNS|https://dns.zapret.moe/dns-query|' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "Zapret DNS identity changed"
+grep -Fq '# ENTRIES=113' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog entry count was not updated"
 grep -Fq 'bezmezhau|bypass|geo+services|Bezmezhau DNS|https://dns.bezmezhau.com/dns-query|' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "Bezmezhau geo DNS entry missing"
 grep -Fq 'dagami|bypass|geo+services|Dagami DNS|https://dns.dagami.ru/dns-query|' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "Dagami geo DNS entry missing"
 grep -Fq "function resolverAvailable(ci)" dns-manager-luci.sh || fail "DoH availability helper missing"
@@ -571,7 +586,7 @@ EOF_NORMALIZE_URL
 node "$tmp/normalize_url.js" || fail "LuCI URL normalizer strips a significant DoH path slash"
 grep -Fq '$1!="shecan" {print}' dns-manager-luci.sh || fail "LuCI does not invalidate the changed resolver test result"
 grep -Fq '$1!="shecan" {print}' dns-manager.sh || fail "Manager does not invalidate the changed resolver test result"
-grep -Fq 'DNSCAT_REVISION="7"' dns-manager.sh || fail "backend catalog revision is not synchronized"
+grep -Fq 'DNSCAT_REVISION="9"' dns-manager.sh || fail "backend catalog revision is not synchronized"
 grep -Fq '_old_astracat_url=' dns-manager.sh || fail "old AstraCat endpoint is not tracked during catalog update"
 grep -Fq '_new_astracat_url=' dns-manager.sh || fail "new AstraCat endpoint is not tracked during catalog update"
 grep -Fq '$1!="astracat" {print}' dns-manager.sh || fail "AstraCat cached test result is not invalidated after endpoint change"
@@ -583,9 +598,9 @@ grep -Fq "disabled:!!state.busy||!!state.jobRunning||unavailable||checking" dns-
 grep -q "'gaming','Игровые DNS'" dns-manager-luci.sh || fail "gaming catalog label missing in LuCI"
 grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validation missing gaming category"
 grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
-grep -q 'VERSION="3.98"' dns-manager.sh || fail "manager version not bumped"
+grep -q 'VERSION="4.00"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
-grep -q 'VERSION="2.14"' dns-manager-luci.sh || fail "LuCI version not bumped"
+grep -q 'VERSION="2.16"' dns-manager-luci.sh || fail "LuCI version not bumped"
 grep -Fq "{id:'quad9plain',ips:'9.9.9.10,149.112.112.10,2620:fe::10,2620:fe::fe:10'}" dns-manager-luci.sh || fail "historical Quad9 bootstrap snapshot changed"
 grep -Fq "{id:'cira',ips:'149.112.121.10,149.112.122.10,2620:10a:80bb::10,2620:10a:80bc::10'}" dns-manager-luci.sh || fail "historical CIRA bootstrap snapshot changed"
 if grep -q '^main_menu$' dns-manager.sh; then fail "interactive console menu still starts"; fi
@@ -869,8 +884,8 @@ view_luci="$(sed -n 's|^// DNS Manager LuCI common module version:[[:space:]]*||
 dashboard_view_luci="$(sed -n 's|^// DNS Manager LuCI version: *||p' dns-manager-luci.sh | head -n1)"
 [ "$top_luci" = "$dashboard_view_luci" ] || fail "dashboard view version marker is stale"
 ok "LuCI version markers synchronized ($top_luci)"
-grep -Fq 'VERSION="3.98"' dns-manager.sh || fail "DNS Manager version marker is not 3.98"
-ok "DNS Manager version marker synchronized (3.98)"
+grep -Fq 'VERSION="4.00"' dns-manager.sh || fail "DNS Manager version marker is not 4.00"
+ok "DNS Manager version marker synchronized (4.00)"
 grep -Fq "assignment.appendChild(btn('Удалить'" dns-manager-luci.sh || fail "Custom DNS delete button is not aligned with the assignment action"
 grep -Fq ".dm-catalog-item-custom{grid-column:auto}" dns-manager-luci.sh || fail "Custom DNS card is wider than a stock catalog card"
 grep -Fq ".dm-catalog-controls-custom .dm-assign-inline select{height:30px;min-width:0;width:auto;max-width:100%;flex:1 1 160px" dns-manager-luci.sh || fail "Custom DNS actions do not have a responsive inline layout"
@@ -1808,11 +1823,12 @@ if grep -Fq 'if [ $((n % TEST_PROGRESS_EVERY)) -eq 0 ] || [ "$n" -eq "$total" ];
     fail "catalog progress still prints a duplicate final intermediate result"
 fi
 _progress_calls="$(grep -c 'test_progress$' "$tmp/catalog_test.sh" 2>/dev/null || printf 0)"
-[ "$_progress_calls" = 1 ] || fail "catalog progress has an unexpected final call"
+[ "$_progress_calls" = 2 ] || fail "catalog progress must include its initial count and interval updates"
 if grep -A2 -F '    wait' "$tmp/catalog_test.sh" | grep -q '^    test_progress$'; then
     fail "catalog test still has a separate final test_progress call"
 fi
 ok "catalog progress omits the duplicate final intermediate result"
+sh tests/catalog-run-count-test.sh || fail "full DNS check miscounts a changed catalog"
 
 # Ready-made profiles must not fall through into the generic Hybrid/Max
 # Bypass selector after auto_fill_slots().
@@ -2404,10 +2420,20 @@ SLOT_1= SLOT_2= SLOT_3= SLOT_4= SLOT_5= SLOT_6= SLOT_RU=
 auto_fill_slots bypass
 [ "$SLOT_1" = d1 ] && [ "$SLOT_2" = d2 ] && [ "$SLOT_3" = d3 ] &&
 [ "$SLOT_4" = d4 ] && [ "$SLOT_5" = d5 ] && [ -z "$SLOT_6" ] || exit 41
+# Existing aliases remain addressable but a profile must not use the same URL twice.
+dns_url() { case "$1" in cznic_odvr|cznic_odvr_doh) printf '%s' 'https://odvr.nic.cz/doh';; *) printf 'https://%s.example/dns-query' "$1";; esac; }
+printf '%s\n' 'cznic_odvr|clean|CZ.NIC|10|OK' 'cznic_odvr_doh|clean|CZ.NIC duplicate|20|OK' 'd3|clean|D3|30|OK' > "$TEST_RESULTS"
+auto_fill_slots clean
+[ "$SLOT_1" = cznic_odvr ] && [ "$SLOT_2" = d3 ] && [ -z "$SLOT_3" ] || exit 42
+printf '%s\n' 'unknown|bypass|Unknown|-1|OK' 'measured|bypass|Measured|25|OK' > "$TEST_RESULTS"
+auto_fill_slots bypass
+[ "$SLOT_1" = measured ] && [ "$SLOT_2" = unknown ] && [ -z "$SLOT_3" ] || exit 43
 EOF_AUTO_FILL_FEWER
 chmod +x "$tmp/auto_fill_slots_runner.sh"
 "$tmp/auto_fill_slots_runner.sh" "$tmp" "$tmp/auto_fill_slots.sh" || fail "profile selection does not accept fewer than six DNS servers"
 ok "profiles accept fewer than six available DNS servers"
+awk -F'|' '$1=="cznic_odvr" {a=($2=="clean" && $5=="https://odvr.nic.cz/doh")} $1=="cznic_odvr_doh" {b=($2=="clean" && $5=="https://odvr.nic.cz/doh")} $1=="iijjp" {c=($2=="privacy" && $5=="https://public.dns.iij.jp/dns-query")} END {exit !(a && b && c)}' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "corrected catalog categories or existing URLs changed"
+ok "profile categories and duplicate URL remain consistent"
 
 # Profile post-apply verification must prune failed DNS only for a slot-specific failure.
 awk '/^profile_prune_failed_slots\(\) \{/,/^verify_after_apply_with_repair\(\) \{/' dns-manager.sh | sed '$d' > "$tmp/profile_prune.sh"
@@ -2899,6 +2925,8 @@ if watchdog_test_results_usable bypass; then exit 41; fi
 if watchdog_test_results_usable all; then exit 42; fi
 printf 'yandex_ru|regional|Yandex RU|10|OK\ncomss_bypass|bypass|Comss|20|OK\n' > "$TEST_RESULTS"
 watchdog_test_results_usable bypass || exit 43
+printf 'comss_bypass|bypass|Comss|-1|OK\n' > "$TEST_RESULTS"
+watchdog_test_results_usable bypass || exit 45
 printf 'adguard_default|adblock|AdGuard|20|OK\n' > "$TEST_RESULTS"
 if watchdog_test_results_usable bypass; then exit 44; fi
 EOF_USABLE_RESULTS
