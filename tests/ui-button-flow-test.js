@@ -70,4 +70,17 @@ async function testFoldState(){
   if(ctx.foldSection('slot-1','Domains',{},'').open)throw Error('closed section not restored');
   if(ctx.foldSection('device-a','Device',{},'').open)throw Error('section state leaked to another entry');
 }
-Promise.all([testCurrent({status:'failed',result:'fail'},'FAILED'),testCurrent({status:'done',result:'ok'},'DONE'),testSingleError(),testUpdateErrors(),testUpdateTimeout(),testProfileStatus(),testSlotDraft(),testDeviceSave(),testCatalogError(),testFoldState()]).catch(e=>{console.error(e);process.exitCode=1;});
+async function testCustomDnsFeedback(){
+  let reply={ok:false,error:'Этот DoH URL уже есть в каталоге: Пример'};
+  const ctx={state:{busy:false,pageNotice:{}},window:{},renderCatalog:()=>{},refresh:()=>Promise.resolve(),setAction:()=>{},withRpcError:(s,e)=>s+e.message,callAddCustomDns:()=>Promise.resolve(reply)};
+  vm.createContext(ctx);vm.runInContext(extract('function saveCustomDns(nameInput,urlInput,root){','function isUserDnsRecord(d){'),ctx);
+  const name={value:'Мой DNS'},url={value:'https://example.org/dns-query'};
+  ctx.saveCustomDns(name,url,{});await delay();
+  if(ctx.state.customDnsNotice.type!=='error'||!ctx.state.customDnsNotice.text.includes('Пример')||ctx.state.customDnsDraft.url!==url.value||ctx.state.customDnsDraft.name!==name.value)throw Error('duplicate message or input lost');
+  ctx.callAddCustomDns=()=>Promise.reject(Error('timeout'));ctx.saveCustomDns(name,url,{});await delay();
+  if(ctx.state.customDnsNotice.type!=='error'||!ctx.state.customDnsNotice.text.includes('timeout')||ctx.state.customDnsDraft.url!==url.value)throw Error('RPC failure or input lost');
+  ctx.callAddCustomDns=()=>Promise.resolve(reply);
+  reply={ok:true,name:'Мой DNS'};ctx.saveCustomDns(name,url,{});await delay();
+  if(ctx.state.customDnsNotice.type!=='ok'||ctx.state.customDnsDraft.url||ctx.state.customDnsDraft.name||ctx.state.category!=='custom')throw Error('custom DNS success feedback incorrect');
+}
+Promise.all([testCurrent({status:'failed',result:'fail'},'FAILED'),testCurrent({status:'done',result:'ok'},'DONE'),testSingleError(),testUpdateErrors(),testUpdateTimeout(),testProfileStatus(),testSlotDraft(),testDeviceSave(),testCatalogError(),testFoldState(),testCustomDnsFeedback()]).catch(e=>{console.error(e);process.exitCode=1;});
