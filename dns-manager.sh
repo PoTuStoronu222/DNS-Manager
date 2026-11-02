@@ -8617,6 +8617,7 @@ watchdog_slot_target_run() {
     if [ "$_category_stale" = 1 ] || ! watchdog_select_category_results "$_target_cat"; then
         # The full category scan may take minutes. It uses the shared test lock
         # but never holds the configuration lock or overwrites manual results.
+        log_msg "Watchdog: проверяю DNS категории $_target_cat; текущие настройки пока не меняются."
         release_mutation_lock
         _scan_ok=0
         watchdog_refresh_category_results "$_target_cat" && _scan_ok=1
