@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager full installer and LuCI companion
-# Version: 2.17
+# Version: 2.18
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.17"
+VERSION="2.18"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -762,7 +762,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.17"
+SELF_VERSION="2.18"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -1622,7 +1622,7 @@ result_for_id() {
     [ -s "$STATE_DIR/dns-test-results.conf" ] || [ -s "$PERSIST_STATE_DIR/dns-test-results.conf" ] || return 1
     _f="$STATE_DIR/dns-test-results.conf"
     [ -s "$_f" ] || _f="$PERSIST_STATE_DIR/dns-test-results.conf"
-    awk -F'|' -v id="$_id" '$1==id {print; exit}' "$_f" 2>/dev/null
+    awk -F'|' -v id="$_id" '$1==id {print; found=1; exit} END {if(!found) exit 1}' "$_f" 2>/dev/null
 }
 
 system_result_id() {
@@ -3000,8 +3000,12 @@ watchdog_apply_batch() {
 
 
 set_check_stamp() {
-    _id="$1"; _ts="$2"
+    _id="$1"; _ts="$2"; _previous_stamp=""
     case "$_id" in ''|*[!A-Za-z0-9_-]*) return 1;; esac
+    case "$_ts" in ''|*[!0-9]*) return 1;; esac
+    if [ -r "$CHECK_DIR/$_id" ]; then IFS= read -r _previous_stamp < "$CHECK_DIR/$_id" || true; fi
+    case "$_previous_stamp" in ''|*[!0-9]*) _previous_stamp=0;; esac
+    [ "$_previous_stamp" -le "$_ts" ] 2>/dev/null || return 0
     printf '%s\n' "$_ts" > "$CHECK_DIR/$_id" 2>/dev/null
 }
 commit_single_test_result() {
@@ -3356,7 +3360,10 @@ job_start_test_all() {
             job_write "$_jid" progress_total "$_final_total"
             job_write "$_jid" progress_ok "$_final_ok"
             job_write "$_jid" progress_fail "$_final_fail"
-            now="$(date +%s)"; while IFS='|' read -r _id _rest; do [ -n "$_id" ] && set_check_stamp "$_id" "$now"; done < "$TEST_RESULTS"
+            now="$(date +%s)"
+            _full_stamp="$(sed -n 's/^timestamp=//p' "$TEST_RESULTS_META" 2>/dev/null | head -n1)"
+            case "$_full_stamp" in ''|*[!0-9]*) _full_stamp="$now";; esac
+            while IFS='|' read -r _id _rest; do [ -n "$_id" ] && set_check_stamp "$_id" "$_full_stamp"; done < "$TEST_RESULTS"
             job_write "$_jid" status done; job_write "$_jid" result ok; job_write "$_jid" finished "$now"
         else
             job_write "$_jid" status failed; job_write "$_jid" result fail; job_write "$_jid" finished "$(date +%s)"
@@ -4141,7 +4148,7 @@ EOF_RPC_WRAPPER
 'require ui';
 'require session';
 
-// DNS Manager LuCI common module version: 2.17
+// DNS Manager LuCI common module version: 2.18
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -6278,13 +6285,13 @@ function saveRouteCache(key,st,aux){
     var entry=JSON.parse(JSON.stringify({ts:Date.now(),data:st,aux:aux}));
     window.dmRouteCache[key]=entry;
     if(typeof session!=='undefined'&&session.setLocalData)
-      session.setLocalData('dns-manager-route-2.17-'+key,entry);
+      session.setLocalData('dns-manager-route-2.18-'+key,entry);
   }catch(e){}
 }
 function routeCacheEntry(key){
   var entry=key&&window.dmRouteCache&&window.dmRouteCache[key];
   if(!entry&&key){
-    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.17-'+key);}catch(e){}
+    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.18-'+key);}catch(e){}
   }
   if(!entry||typeof entry.ts!=='number'||Date.now()-entry.ts<0||Date.now()-entry.ts>300000||!entry.data||entry.data.ok!==true)return null;
   return entry;
@@ -7309,7 +7316,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 2.17
+// DNS Manager LuCI version: 2.18
 return view.extend({
   load: DM.load,
   render: DM.render,
