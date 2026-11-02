@@ -8451,7 +8451,7 @@ watchdog_common_dns_outage() {
     return 1
 }
 watchdog_slot_target_run() {
-    local _slot _target_id _target_port _target_cat _promote_fallback _target_live _allow_clean _slot_rc _old_id _old_cat _domain _used _tried _replacement_ok _picked _repl _repl_cat _expected_id _expected_port _single_mode _configured _history _candidate_url
+    local _slot _target_id _target_port _target_cat _promote_fallback _target_live _allow_clean _slot_rc _old_id _old_cat _domain _used _tried _replacement_ok _picked _repl _repl_cat _expected_id _expected_port _single_mode _configured _history _candidate_url _probe_ok
     _slot="$1"
     WATCHDOG_ROLLBACK_UNCERTAIN=0
     _expected_id="${2:-}"; _expected_port="${3:-}"
@@ -8588,7 +8588,16 @@ watchdog_slot_target_run() {
             eval "WD_SINGLE_TRIED_${_slot}=\$_history"
             _candidate_url="$(dns_url "$_repl" 2>/dev/null || true)"
             [ -n "$_candidate_url" ] || break
-            if ! watchdog_probe_single_candidate "$_repl"; then
+            # Network probes do not mutate UCI. Release the lock so slow or
+            # unreachable bootstrap servers cannot block the LuCI controls.
+            release_mutation_lock
+            _probe_ok=0
+            watchdog_probe_single_candidate "$_repl" && _probe_ok=1
+            if ! acquire_mutation_lock; then
+                rm -f "$_used" "$_tried"
+                return 1
+            fi
+            if [ "$_probe_ok" != 1 ]; then
                 log_msg "Watchdog slot $_slot: кандидат не подтвердился напрямую; существующие DNS-настройки сохранены."
                 break
             fi
