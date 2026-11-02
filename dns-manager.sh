@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="4.02"
+VERSION="4.03"
 # 3.86: make LuCI the primary interface and preserve external DNS on removal.
 # 3.85: revalidate Watchdog settings before recovery.
 # 3.84: cap DNS catalog test concurrency by total RAM on small routers.
@@ -7482,6 +7482,7 @@ watchdog_loop_reset_slot() {
     _slot="$1"
     eval "WD_FAIL_${_slot}=0"
     eval "WD_MISSING_${_slot}=0"
+    eval "WD_SINGLE_TRIED_${_slot}=''"
 }
 watchdog_loop_track_slot() {
     local _previous
@@ -7827,6 +7828,7 @@ watchdog_embedded_loop() {
                         refresh_runtime_capabilities >/dev/null 2>&1 || true
                         WD_LAST_GUARD_TS="$(date +%s 2>/dev/null)"
                         eval "WD_FAIL_${_trigger}=0"
+                        eval "WD_SINGLE_TRIED_${_trigger}=''"
                     elif [ "${WATCHDOG_ROLLBACK_UNCERTAIN:-0}" = 1 ]; then
                         log_msg "Watchdog: откат слота $_trigger не подтверждён. Проверьте конфигурацию https-dns-proxy и DNS."
                     fi
@@ -7877,6 +7879,7 @@ watchdog_embedded_loop() {
                     refresh_runtime_capabilities >/dev/null 2>&1 || true
                     WD_LAST_GUARD_TS="$(date +%s 2>/dev/null)"
                     eval "WD_FAIL_${_trigger}=0"
+                    eval "WD_SINGLE_TRIED_${_trigger}=''"
                 fi
                 done
             fi
@@ -8451,7 +8454,7 @@ watchdog_common_dns_outage() {
     return 1
 }
 watchdog_slot_target_run() {
-    local _slot _target_id _target_port _target_cat _promote_fallback _target_live _allow_clean _slot_rc _old_id _old_cat _domain _used _tried _replacement_ok _picked _repl _repl_cat _expected_id _expected_port _single_mode _configured _history _candidate_url _probe_ok
+    local _slot _target_id _target_port _target_cat _promote_fallback _target_live _allow_clean _slot_rc _old_id _old_cat _domain _used _tried _replacement_ok _picked _repl _repl_cat _expected_id _expected_port _single_mode _configured _history _candidate_url _probe_ok _probe_count _apply_count
     _slot="$1"
     WATCHDOG_ROLLBACK_UNCERTAIN=0
     _expected_id="${2:-}"; _expected_port="${3:-}"
@@ -8569,25 +8572,31 @@ watchdog_slot_target_run() {
     done
 
     _replacement_ok=0
-    if [ "$_single_mode" = single ]; then
-        eval "_history=\${WD_SINGLE_TRIED_${_slot}:-}"
-        [ -n "$_history" ] && printf '%s\n' "$_history" > "$_tried"
-    fi
+    # Keep per-slot candidate history across cooldowns so a dead first entry
+    # cannot prevent later resolvers from ever being attempted.
+    eval "_history=\${WD_SINGLE_TRIED_${_slot}:-}"
+    [ -n "$_history" ] && printf '%s\n' "$_history" > "$_tried"
+    _probe_count=0
+    _apply_count=0
     while :; do
         _picked="$(watchdog_pick_replacement "$_slot" "$_used" "$_tried" 0 "$_target_cat")"
         _repl="${_picked%%|*}"
         _repl_cat="${_picked#*|}"
         if [ -z "$_repl" ]; then
-            [ "$_single_mode" = single ] && eval "WD_SINGLE_TRIED_${_slot}=''"
+            eval "WD_SINGLE_TRIED_${_slot}=''"
             break
         fi
         [ "$_repl" = "$_old_id" ] && { printf '%s\n' "$_repl" >> "$_tried"; continue; }
         printf '%s\n' "$_repl" >> "$_tried"
+        _history="$(cat "$_tried")"
+        eval "WD_SINGLE_TRIED_${_slot}=\$_history"
         if [ "$_single_mode" = single ]; then
-            _history="$(cat "$_tried")"
-            eval "WD_SINGLE_TRIED_${_slot}=\$_history"
+            _probe_count=$((_probe_count+1))
             _candidate_url="$(dns_url "$_repl" 2>/dev/null || true)"
-            [ -n "$_candidate_url" ] || break
+            if [ -z "$_candidate_url" ]; then
+                [ "$_probe_count" -lt 3 ] && continue
+                break
+            fi
             # Network probes do not mutate UCI. Release the lock so slow or
             # unreachable bootstrap servers cannot block the LuCI controls.
             release_mutation_lock
@@ -8596,10 +8605,6 @@ watchdog_slot_target_run() {
             if ! acquire_mutation_lock; then
                 rm -f "$_used" "$_tried"
                 return 1
-            fi
-            if [ "$_probe_ok" != 1 ]; then
-                log_msg "Watchdog slot $_slot: кандидат не подтвердился напрямую; существующие DNS-настройки сохранены."
-                break
             fi
             # The direct probe may take time. Re-read both toggles and the
             # slot before applying; an endpoint may also have recovered.
@@ -8613,6 +8618,11 @@ watchdog_slot_target_run() {
                 [ -n "$_uid" ] && _configured=$((_configured+1))
             done
             [ "$_configured" = 1 ] || break
+            if [ "$_probe_ok" != 1 ]; then
+                log_msg "Watchdog slot $_slot: кандидат не подтвердился напрямую; существующие DNS-настройки сохранены."
+                [ "$_probe_count" -lt 3 ] && continue
+                break
+            fi
             [ "$(dns_cat "$_repl" 2>/dev/null || true)" = "$_target_cat" ] || break
             [ "$(dns_url "$_repl" 2>/dev/null || true)" = "$_candidate_url" ] || break
             if watchdog_check_slot "$_slot"; then
@@ -8623,14 +8633,17 @@ watchdog_slot_target_run() {
             watchdog_resource_guard || break
         fi
         log_msg "Watchdog slot $_slot: заменяю $(dns_name "$_old_id") на $(dns_name "$_repl")."
+        _apply_count=$((_apply_count+1))
         if watchdog_apply_slot_candidate "$_slot" "$_repl" "$_repl_cat" "$_old_id" "$_old_cat"; then
             log_msg "Watchdog slot $_slot: замена подтверждена на 127.0.0.1:$(eval "printf %s \"\${PORT_${_slot}:-}\"")."
             _replacement_ok=1
-            [ "$_single_mode" = single ] && eval "WD_SINGLE_TRIED_${_slot}=''"
+            eval "WD_SINGLE_TRIED_${_slot}=''"
             break
         fi
         [ "${WATCHDOG_ROLLBACK_UNCERTAIN:-0}" = 1 ] && break
         [ "$_single_mode" = single ] && break
+        [ "$_apply_count" -ge 2 ] && break
+        [ "${WATCHDOG_RESTART_COUNT:-0}" -ge "${WATCHDOG_MAX_RESTARTS:-2}" ] 2>/dev/null && break
     done
     [ "$_replacement_ok" = 1 ] || _slot_rc=1
     rm -f "$_used" "$_tried"
