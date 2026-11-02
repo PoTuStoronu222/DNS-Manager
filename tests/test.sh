@@ -313,6 +313,24 @@ grep -Fq '_catalog_avail="$(catalog_cached_update_available ' "$tmp/backend.sh" 
 ok "cached catalog status follows the installed version, revision and count"
 ok "embedded backend syntax"
 
+# The journal uses the same header data as the other pages, including the
+# newest automatic check. Test the actual RPC JSON with and without its files.
+awk '/^page_header_json\(\) \{/,/^}/' "$tmp/backend.sh" > "$tmp/log_header.sh"
+awk '/^log_json\(\)/ {print; exit}' "$tmp/backend.sh" >> "$tmp/log_header.sh"
+mkdir -p "$tmp/log-state" "$tmp/log-persist"
+printf 'timestamp=100\ntest_scope=all\n' > "$tmp/log-state/dns-test-results.meta"
+printf 'timestamp=200\ncategory=clean\n' > "$tmp/log-state/dns-watchdog-check-results.conf"
+(
+    STATE_DIR="$tmp/log-state"; PERSIST_STATE_DIR="$tmp/log-persist"
+    read_installed_luci_version() { printf 2.19; }
+    cfg_get() { :; }
+    json_quote() { node -e 'process.stdout.write(JSON.stringify(process.argv[1]))' "$1"; }
+    . "$tmp/log_header.sh"
+    log_json 1
+) > "$tmp/log-header.json"
+node -e 'const x=require(process.argv[1]);if(!x.ok||x.luci_version!=="2.19"||x.last_full_test!=="100"||x.watchdog_last_check!==200||x.watchdog_last_category!=="clean"||typeof x.log!=="string")process.exit(1)' "$tmp/log-header.json" || fail "journal header metadata is missing"
+ok "journal RPC includes version and current check metadata"
+
 # The dashboard and Network Tuning use different RPC read methods. Both must
 # expose the saved auto-replacement flag; otherwise the tuning toggle renders
 # a false "off" state even while manager.conf contains WATCHDOG_AUTOREPLACE=1.
@@ -613,7 +631,7 @@ grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validat
 grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
 grep -q 'VERSION="4.05"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
-grep -q 'VERSION="2.18"' dns-manager-luci.sh || fail "LuCI version not bumped"
+grep -q 'VERSION="2.19"' dns-manager-luci.sh || fail "LuCI version not bumped"
 grep -Fq "{id:'quad9plain',ips:'9.9.9.10,149.112.112.10,2620:fe::10,2620:fe::fe:10'}" dns-manager-luci.sh || fail "historical Quad9 bootstrap snapshot changed"
 grep -Fq "{id:'cira',ips:'149.112.121.10,149.112.122.10,2620:10a:80bb::10,2620:10a:80bc::10'}" dns-manager-luci.sh || fail "historical CIRA bootstrap snapshot changed"
 if grep -q '^main_menu$' dns-manager.sh; then fail "interactive console menu still starts"; fi
