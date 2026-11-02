@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="4.04"
+VERSION="4.05"
 # 3.86: make LuCI the primary interface and preserve external DNS on removal.
 # 3.85: revalidate Watchdog settings before recovery.
 # 3.84: cap DNS catalog test concurrency by total RAM on small routers.
@@ -54,6 +54,7 @@ LUCI_UPDATE_CHECK_MAX_AGE=43200
 AUTO_UPDATE_LOCK_DIR="$STATE_DIR/auto-update.lock"
 TEST_RESULTS_META="$STATE_DIR/dns-test-results.meta"
 WATCHDOG_CHECK_RESULTS="$STATE_DIR/dns-watchdog-check-results.conf"
+DNS_CHECK_STAMP_DIR="/var/run/dns-manager-luci/checks"
 TEST_RESULTS_MAX_AGE=21600
 # Freshness window for DNS test results, by catalog category.
 # Values are stored in seconds and exposed in LuCI as hours.
@@ -2711,8 +2712,12 @@ test_dns_catalog() (
         warn_msg "Каталог DNS изменился во время проверки. Результат отброшен; запустите проверку повторно."
         return 1
     fi
+    _results_timestamp="$(date +%s)"
+    # A background category scan can take minutes; its oldest result must
+    # never appear newer than the start of the scan.
+    case "${WD_CATEGORY_SCAN_STARTED:-}" in ''|*[!0-9]*) ;; *) _results_timestamp="$WD_CATEGORY_SCAN_STARTED";; esac
     {
-        printf 'timestamp=%s\n' "$(date +%s)"
+        printf 'timestamp=%s\n' "$_results_timestamp"
         printf 'catalog_version=%s\n' "$_catalog_version"
         printf 'catalog_count=%s\n' "$total"
         printf 'catalog_hash=%s\n' "$_catalog_hash"
@@ -6822,6 +6827,54 @@ watchdog_bootstrap_resolve() {
     done
     return 1
 }
+watchdog_merge_category_results() {
+    local _wm_results _wm_meta _wm_scope _wm_timestamp _wm_full_ts _wm_common _wm_input _wm_out _wm_ids _wm_id
+    _wm_results="$1"; _wm_meta="$2"; _wm_scope="$3"
+    case "$_wm_scope" in bypass|clean|security|privacy|adblock|family|gaming|regional) ;; *) return 1;; esac
+    [ -s "$_wm_results" ] && [ -s "$_wm_meta" ] || return 1
+    _wm_timestamp="$(sed -n 's/^timestamp=//p' "$_wm_meta" 2>/dev/null | head -n1)"
+    case "$_wm_timestamp" in ''|*[!0-9]*|0) return 1;; esac
+    acquire_test_lock || return 1
+    [ "$(sed -n 's/^timestamp=//p' "$_wm_meta" 2>/dev/null | head -n1)" = "$_wm_timestamp" ] || { release_test_lock; return 1; }
+    if ! (TEST_RESULTS="$_wm_results"; TEST_RESULTS_META="$_wm_meta"; watchdog_test_results_fresh "$_wm_scope"); then
+        release_test_lock; return 1
+    fi
+    mkdir -p "$DNS_CHECK_STAMP_DIR" || { release_test_lock; return 1; }
+    _wm_common="$STATE_DIR/dns-test-results.conf"
+    _wm_full_ts="$(sed -n 's/^timestamp=//p' "$STATE_DIR/dns-test-results.meta" 2>/dev/null | head -n1)"
+    case "$_wm_full_ts" in ''|*[!0-9]*) _wm_full_ts=0;; esac
+    # A completed manual full/category run that is at least as new wins.
+    if [ "$_wm_full_ts" -ge "$_wm_timestamp" ] 2>/dev/null; then release_test_lock; return 0; fi
+    _wm_out="$(mktemp "$STATE_DIR/dns-test-results.merge.XXXXXX" 2>/dev/null)" || { release_test_lock; return 1; }
+    _wm_ids="$(mktemp "$STATE_DIR/dns-test-results.ids.XXXXXX" 2>/dev/null)" || { rm -f "$_wm_out"; release_test_lock; return 1; }
+    _wm_input="$_wm_common"
+    [ -f "$_wm_input" ] || _wm_input=/dev/null
+    if ! awk -F'|' -v stamps="$DNS_CHECK_STAMP_DIR" -v ts="$_wm_timestamp" -v ids="$_wm_ids" '
+        NR==FNR {
+            id=$1
+            if(NF<5 || id !~ /^[A-Za-z0-9_-]+$/ || seen[id]++) next
+            stamp=0; f=stamps "/" id
+            if ((getline old < f)>0 && old ~ /^[0-9]+$/) stamp=old+0
+            close(f)
+            if(stamp>=ts+0) next
+            update[id]=$0; order[++n]=id; next
+        }
+        !($1 in update) {print}
+        END {for(i=1;i<=n;i++){id=order[i]; print update[id]; print id > ids}}
+    ' "$_wm_results" "$_wm_input" > "$_wm_out"; then
+        rm -f "$_wm_out" "$_wm_ids"; release_test_lock; return 1
+    fi
+    if [ ! -s "$_wm_ids" ]; then rm -f "$_wm_out" "$_wm_ids"; release_test_lock; return 0; fi
+    chmod 600 "$_wm_out" 2>/dev/null || true
+    if ! mv -f "$_wm_out" "$_wm_common"; then rm -f "$_wm_out" "$_wm_ids"; release_test_lock; return 1; fi
+    while IFS= read -r _wm_id; do
+        case "$_wm_id" in ''|*[!A-Za-z0-9_-]*) continue;; esac
+        printf '%s\n' "$_wm_timestamp" > "$DNS_CHECK_STAMP_DIR/$_wm_id" 2>/dev/null || true
+    done < "$_wm_ids"
+    rm -f "$_wm_ids"
+    release_test_lock
+    return 0
+}
 watchdog_refresh_category_results() (
     _wd_category="$1"
     case "$_wd_category" in bypass|clean|security|privacy|adblock|family|gaming|regional) ;; *) return 1;; esac
@@ -6831,6 +6884,7 @@ watchdog_refresh_category_results() (
     TMP_DIR="$_wd_dir"
     TEST_RESULTS="$STATE_DIR/watchdog-category-$_wd_category.results"
     TEST_RESULTS_META="$STATE_DIR/watchdog-category-$_wd_category.meta"
+    _wd_before="$(file_hash "$TEST_RESULTS" 2>/dev/null):$(file_hash "$TEST_RESULTS_META" 2>/dev/null)"
     BOOTSTRAP_DNS="$(printf '%s' "${BOOTSTRAP_DNS:-}" | tr ',' '\n' | awk 'NF {if(n++) printf ","; printf "%s", $0; if(n==3) exit}')"
     [ -n "$BOOTSTRAP_DNS" ] || return 1
     if [ "${HAS_DIG:-no}" != yes ]; then
@@ -6838,7 +6892,15 @@ watchdog_refresh_category_results() (
     fi
     # At most two workers; the catalog runner further reduces this under RAM pressure.
     TEST_BATCH=2
-    test_dns_catalog "$_wd_category" >/dev/null 2>&1 || return 1
+    WD_CATEGORY_SCAN_STARTED="$(date +%s)"
+    _wd_scan_rc=0
+    test_dns_catalog "$_wd_category" >/dev/null 2>&1 || _wd_scan_rc=$?
+    _wd_after="$(file_hash "$TEST_RESULTS" 2>/dev/null):$(file_hash "$TEST_RESULTS_META" 2>/dev/null)"
+    if [ "$_wd_before" != "$_wd_after" ]; then
+        watchdog_merge_category_results "$TEST_RESULTS" "$TEST_RESULTS_META" "$_wd_category" ||
+            log_msg "Watchdog: результаты категории не удалось объединить с общими; настройки DNS не изменены."
+    fi
+    [ "$_wd_scan_rc" = 0 ] || return 1
     watchdog_select_category_results "$_wd_category"
 )
 ensure_test_results_fresh() {

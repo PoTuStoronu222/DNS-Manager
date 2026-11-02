@@ -2,15 +2,15 @@
 set -eu
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT HUP INT TERM
-for fn in test_results_max_age_for_category watchdog_test_results_fresh watchdog_select_category_results; do
+for fn in test_results_max_age_for_category watchdog_test_results_fresh watchdog_select_category_results watchdog_merge_category_results; do
     awk -v fn="$fn" '$0==fn "() {" {p=1} p {print} p && /^}$/ {exit}' dns-manager.sh >> "$tmp/functions.sh"
 done
 awk '/^watchdog_refresh_category_results\(\) \(/ {p=1} p {print} p && /^\)$/ {exit}' dns-manager.sh >> "$tmp/functions.sh"
 awk '/^test_dns_catalog\(\) \(/ {p=1} p {print} p && /^\)$/ {exit}' dns-manager.sh >> "$tmp/functions.sh"
 awk '/^watchdog_pick_replacement\(\) \{/,/^watchdog_apply_slot_candidate\(\) \{/' dns-manager.sh | sed '$d' >> "$tmp/functions.sh"
 . "$tmp/functions.sh"
-STATE_DIR="$tmp/state"; TMP_DIR="$tmp/work"; mkdir -p "$STATE_DIR" "$TMP_DIR"
-DNS_CATALOG="$tmp/catalog"; TEST_RESULTS="$tmp/manual"; TEST_RESULTS_META="$tmp/manual.meta"
+STATE_DIR="$tmp/state"; TMP_DIR="$tmp/work"; DNS_CHECK_STAMP_DIR="$tmp/checks"; mkdir -p "$STATE_DIR" "$TMP_DIR" "$DNS_CHECK_STAMP_DIR"
+DNS_CATALOG="$tmp/catalog"; TEST_RESULTS="$STATE_DIR/dns-test-results.conf"; TEST_RESULTS_META="$STATE_DIR/dns-test-results.meta"
 cat > "$DNS_CATALOG" <<'EOF_CATALOG'
 # DNSCATVER=test
 slow|clean|tag|Slow|https://slow.example/query|global|ok
@@ -18,12 +18,13 @@ fast|clean|tag|Fast|https://fast.example/query|global|ok
 ru|regional|tag|RU|https://ru.example/query|ru|ok
 ads|adblock|tag|Ads|https://ads.example/query|global|ok
 EOF_CATALOG
-printf 'manual results must survive\n' > "$TEST_RESULTS"
-printf 'manual metadata must survive\n' > "$TEST_RESULTS_META"
+printf '%s\n' 'untouched|other|Untouched|11|OK' 'slow|clean|Newer|7|OK' > "$TEST_RESULTS"
+printf 'timestamp=1\ntest_scope=all\n' > "$TEST_RESULTS_META"
+printf '%s\n' "$(($(date +%s)+60))" > "$DNS_CHECK_STAMP_DIR/slow"
 HAS_CURL=yes HAS_DIG=yes BOOTSTRAP_DNS='1.1.1.1,8.8.8.8'
 TEST_BATCH_DEFAULT=2 TEST_PROGRESS_EVERY=2 TEST_RESULTS_MAX_AGE=21600
 C_WHITE= C_CYAN= C_GREEN= C_YELLOW= C_NC=
-acquire_test_lock() { :; }
+acquire_test_lock() { [ "${LOCK_BUSY:-0}" != 1 ]; }
 release_test_lock() { :; }
 warn_msg() { :; }
 log_tx() { :; }
@@ -41,8 +42,12 @@ test_one_dns() {
     printf '%s|%s|name|%s|OK\n' "$1" "$_cat" "$_ms" > "$TMP_DIR/t.$1"
 }
 watchdog_refresh_category_results clean || exit 1
-[ "$(cat "$TEST_RESULTS")" = 'manual results must survive' ] || exit 2
-[ "$(cat "$TEST_RESULTS_META")" = 'manual metadata must survive' ] || exit 3
+grep -Fxq 'untouched|other|Untouched|11|OK' "$TEST_RESULTS" || exit 2
+grep -Fxq 'slow|clean|Newer|7|OK' "$TEST_RESULTS" || exit 3
+grep -Fxq 'fast|clean|name|20|OK' "$TEST_RESULTS" || exit 20
+grep -Fxq 'timestamp=1' "$TEST_RESULTS_META" || exit 21
+[ -s "$DNS_CHECK_STAMP_DIR/fast" ] && [ -s "$DNS_CHECK_STAMP_DIR/ru" ] || exit 22
+[ "$(cat "$DNS_CHECK_STAMP_DIR/fast")" = "$(sed -n 's/^timestamp=//p' "$STATE_DIR/watchdog-category-clean.meta")" ] || exit 26
 grep -Fxq 'test_scope=clean' "$STATE_DIR/watchdog-category-clean.meta" || exit 4
 [ "$(wc -l < "$STATE_DIR/watchdog-category-clean.results" | tr -d ' ')" = 3 ] || exit 5
 watchdog_select_category_results clean || exit 6
@@ -57,6 +62,14 @@ if watchdog_pick_replacement 1 "$tmp/used" "$tmp/tried" 0 clean; then exit 10; f
 watchdog_refresh_category_results regional || exit 11
 grep -Fxq 'test_scope=regional' "$STATE_DIR/watchdog-category-regional.meta" || exit 12
 [ "$(wc -l < "$STATE_DIR/watchdog-category-regional.results" | tr -d ' ')" = 1 ] || exit 13
+# A newer completed manual check must not be replaced by an older background scan.
+_before="$(cksum "$STATE_DIR/dns-test-results.conf")"
+printf 'timestamp=%s\ntest_scope=all\n' "$(($(date +%s)+60))" > "$STATE_DIR/dns-test-results.meta"
+watchdog_merge_category_results "$STATE_DIR/watchdog-category-clean.results" "$STATE_DIR/watchdog-category-clean.meta" clean || exit 23
+[ "$(cksum "$STATE_DIR/dns-test-results.conf")" = "$_before" ] || exit 24
+LOCK_BUSY=1
+if watchdog_merge_category_results "$STATE_DIR/watchdog-category-clean.results" "$STATE_DIR/watchdog-category-clean.meta" clean; then exit 25; fi
+LOCK_BUSY=0
 cat > "$tmp/manual" <<'EOF_FULL_RESULTS'
 slow|clean|Slow|80|OK
 fast|clean|Fast|20|OK
