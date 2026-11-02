@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="4.03"
+VERSION="4.04"
 # 3.86: make LuCI the primary interface and preserve external DNS on removal.
 # 3.85: revalidate Watchdog settings before recovery.
 # 3.84: cap DNS catalog test concurrency by total RAM on small routers.
@@ -2584,7 +2584,7 @@ test_dns_catalog() (
     DNS_TEST_RAM_ONLY=1
     _test_scope="${1:-all}"
     case "$_test_scope" in
-        all|bypass|clean|security|privacy|adblock|family|gaming) ;;
+        all|bypass|clean|security|privacy|adblock|family|gaming|regional) ;;
         *) _test_scope=all ;;
     esac
     [ "$HAS_CURL" = yes ] || { warn_msg "Полную проверку DNS нельзя выполнить: curl не установлен."; return 1; }
@@ -6739,7 +6739,7 @@ test_results_max_age_for_category() {
 
 watchdog_test_results_fresh() {
     _fresh_cat="${1:-}"
-    _fresh_max="$(test_results_max_age_for_category "$_fresh_cat")"
+    _fresh_max="$(test_results_max_age_for_category "${2:-$_fresh_cat}")"
     case "$_fresh_max" in ''|*[!0-9]*) _fresh_max="${TEST_RESULTS_MAX_AGE:-21600}";; esac
     [ -s "$TEST_RESULTS" ] || return 1
     [ -s "$TEST_RESULTS_META" ] || return 1
@@ -6751,7 +6751,7 @@ watchdog_test_results_fresh() {
     [ -n "$_scope" ] || _scope=all
     _expected_scope="${1:-all}"
     case "$_expected_scope" in
-        all|bypass|clean|security|privacy|adblock|family|gaming) ;;
+        all|bypass|clean|security|privacy|adblock|family|gaming|regional) ;;
         *) _expected_scope=all ;;
     esac
     [ "$_scope" = "$_expected_scope" ] || return 1
@@ -6786,6 +6786,61 @@ watchdog_test_results_usable() {
         END {exit !found}
     ' "$TEST_RESULTS" 2>/dev/null
 }
+watchdog_select_category_results() {
+    local _wd_category _wd_cache_results _wd_cache_meta
+    _wd_category="$1"
+    case "$_wd_category" in bypass|clean|security|privacy|adblock|family|gaming|regional) ;; *) return 1;; esac
+    WD_CATEGORY_RESULTS=""; WD_CATEGORY_META=""
+    if { watchdog_test_results_fresh "$_wd_category" || watchdog_test_results_fresh all "$_wd_category"; } &&
+       awk -F'|' -v c="$_wd_category" 'NF>=5 && $2==c && $5=="OK" {found=1;exit} END{exit !found}' "$TEST_RESULTS"; then
+        WD_CATEGORY_RESULTS="$TEST_RESULTS"; WD_CATEGORY_META="$TEST_RESULTS_META"; return 0
+    fi
+    _wd_cache_results="$STATE_DIR/watchdog-category-$_wd_category.results"
+    _wd_cache_meta="$STATE_DIR/watchdog-category-$_wd_category.meta"
+    if (
+        TEST_RESULTS="$_wd_cache_results"; TEST_RESULTS_META="$_wd_cache_meta"
+        { watchdog_test_results_fresh "$_wd_category" || watchdog_test_results_fresh all "$_wd_category"; } &&
+        awk -F'|' -v c="$_wd_category" 'NF>=5 && $2==c && $5=="OK" {found=1;exit} END{exit !found}' "$TEST_RESULTS"
+    ); then
+        WD_CATEGORY_RESULTS="$_wd_cache_results"; WD_CATEGORY_META="$_wd_cache_meta"; return 0
+    fi
+    return 1
+}
+watchdog_bootstrap_resolve() {
+    local _wd_host _wd_bs _wd_ip
+    _wd_host="$1"
+    command -v nslookup >/dev/null 2>&1 && command -v timeout >/dev/null 2>&1 || return 1
+    for _wd_bs in $(printf '%s' "$BOOTSTRAP_DNS" | tr ',' ' '); do
+        _wd_ip="$(timeout 3 nslookup "$_wd_host" "$_wd_bs" 2>/dev/null | awk '
+            /^Name[[:space:]]*:/ {answer=1; next}
+            answer && /^Address/ {
+                ip=$NF; n=split(ip,a,"."); ok=(n==4)
+                for(i=1;i<=n;i++) if(a[i] !~ /^[0-9]+$/ || a[i]+0>255) ok=0
+                if(ok && a[1]+0!=127 && ip!="0.0.0.0") {print ip; exit}
+            }')"
+        [ -n "$_wd_ip" ] && { printf '%s\n' "$_wd_ip"; return 0; }
+    done
+    return 1
+}
+watchdog_refresh_category_results() (
+    _wd_category="$1"
+    case "$_wd_category" in bypass|clean|security|privacy|adblock|family|gaming|regional) ;; *) return 1;; esac
+    [ "${HAS_CURL:-no}" = yes ] || return 1
+    _wd_dir="$(mktemp -d "$TMP_DIR/wd-category.XXXXXX" 2>/dev/null)" || return 1
+    trap 'rm -rf "$_wd_dir"' EXIT HUP INT TERM
+    TMP_DIR="$_wd_dir"
+    TEST_RESULTS="$STATE_DIR/watchdog-category-$_wd_category.results"
+    TEST_RESULTS_META="$STATE_DIR/watchdog-category-$_wd_category.meta"
+    BOOTSTRAP_DNS="$(printf '%s' "${BOOTSTRAP_DNS:-}" | tr ',' '\n' | awk 'NF {if(n++) printf ","; printf "%s", $0; if(n==3) exit}')"
+    [ -n "$BOOTSTRAP_DNS" ] || return 1
+    if [ "${HAS_DIG:-no}" != yes ]; then
+        resolve_host_fallback() { watchdog_bootstrap_resolve "$1"; }
+    fi
+    # At most two workers; the catalog runner further reduces this under RAM pressure.
+    TEST_BATCH=2
+    test_dns_catalog "$_wd_category" >/dev/null 2>&1 || return 1
+    watchdog_select_category_results "$_wd_category"
+)
 ensure_test_results_fresh() {
     _fresh_cat="${1:-}"
     if watchdog_test_results_usable "$_fresh_cat"; then
@@ -7184,7 +7239,7 @@ watchdog_pick_replacement() {
     # few catalog entries. Pick the fastest fresh OK candidate not already
     # used/tried and let the local post-apply check confirm the actual listener.
     _results_scope="$_selection_kind"
-    if watchdog_test_results_fresh "$_results_scope" 2>/dev/null; then
+    if watchdog_test_results_fresh "$_results_scope" 2>/dev/null || watchdog_test_results_fresh all "$_results_scope" 2>/dev/null; then
         _fresh_source="$TMP_DIR/watchdog-fresh-candidates-$$-$_slot"
         _fresh_pass_source="$TMP_DIR/watchdog-fresh-pass-$$-$_slot"
         : > "$_fresh_source" || return 1
@@ -7228,6 +7283,7 @@ watchdog_pick_replacement() {
         rm -f "$_fresh_source" "$_fresh_pass_source" 2>/dev/null || true
     fi
 
+    [ "${WATCHDOG_VERIFIED_ONLY:-0}" != 1 ] || return 1
     # Emergency fallback for watchdog/runtime situations where no fresh scoped
     # result exists. Try each eligible same-category catalog entry in order; the
     # real local DNS listener must confirm a candidate before it is accepted.
@@ -7485,6 +7541,7 @@ watchdog_loop_reset_slot() {
     eval "WD_FAIL_${_slot}=0"
     eval "WD_MISSING_${_slot}=0"
     eval "WD_SINGLE_TRIED_${_slot}=''"
+    eval "WD_CATEGORY_STALE_${_slot}=0"
 }
 watchdog_loop_track_slot() {
     local _previous
@@ -7514,22 +7571,7 @@ watchdog_probe_single_candidate() (
     if [ "${HAS_DIG:-no}" != yes ]; then
         # Without dig, do not use the router's failing DNS as bootstrap.
         # A timeout is required so a missing upstream cannot hold the lock.
-        resolve_host_fallback() {
-            local _wd_host _wd_bs _wd_ip
-            _wd_host="$1"
-            command -v nslookup >/dev/null 2>&1 && command -v timeout >/dev/null 2>&1 || return 1
-            for _wd_bs in $(printf '%s' "$BOOTSTRAP_DNS" | tr ',' ' '); do
-                _wd_ip="$(timeout 3 nslookup "$_wd_host" "$_wd_bs" 2>/dev/null | awk '
-                    /^Name[[:space:]]*:/ {answer=1; next}
-                    answer && /^Address/ {
-                        ip=$NF; n=split(ip,a,"."); ok=(n==4)
-                        for(i=1;i<=n;i++) if(a[i] !~ /^[0-9]+$/ || a[i]+0>255) ok=0
-                        if(ok && a[1]+0!=127 && ip!="0.0.0.0") {print ip; exit}
-                    }')"
-                [ -n "$_wd_ip" ] && { printf '%s\n' "$_wd_ip"; return 0; }
-            done
-            return 1
-        }
+        resolve_host_fallback() { watchdog_bootstrap_resolve "$1"; }
     fi
     test_one_dns "$_probe_id" >/dev/null 2>&1
 )
@@ -7652,6 +7694,7 @@ watchdog_embedded_loop() {
         eval "WD_MISSING_${_slot}=0"
         eval "WD_ID_${_slot}=''"
         eval "WD_SINGLE_TRIED_${_slot}=''"
+        eval "WD_CATEGORY_STALE_${_slot}=0"
         eval "WD_RECOVERY_BLOCKED_${_slot}=0"
         eval "WD_REPAIR_TS_${_slot}=0"
     done
@@ -8461,7 +8504,8 @@ watchdog_common_dns_outage() {
     return 1
 }
 watchdog_slot_target_run() {
-    local _slot _target_id _target_port _target_cat _promote_fallback _target_live _allow_clean _slot_rc _old_id _old_cat _domain _used _tried _replacement_ok _picked _repl _repl_cat _expected_id _expected_port _single_mode _configured _history _candidate_url _probe_ok _probe_count _apply_count
+    local _slot _target_id _target_port _target_cat _promote_fallback _target_live _allow_clean _slot_rc _old_id _old_cat _domain _used _tried _replacement_ok _picked _repl _repl_cat _expected_id _expected_port _single_mode _configured _history _candidate_url _probe_ok _probe_count _apply_count _category_stale _scan_ok _scan_outage
+    local TEST_RESULTS="${TEST_RESULTS:-}" TEST_RESULTS_META="${TEST_RESULTS_META:-}" WATCHDOG_VERIFIED_ONLY=1
     _slot="$1"
     WATCHDOG_ROLLBACK_UNCERTAIN=0
     _expected_id="${2:-}"; _expected_port="${3:-}"
@@ -8569,6 +8613,43 @@ watchdog_slot_target_run() {
         fi
     fi
 
+    eval "_category_stale=\${WD_CATEGORY_STALE_${_slot}:-0}"
+    if [ "$_category_stale" = 1 ] || ! watchdog_select_category_results "$_target_cat"; then
+        # The full category scan may take minutes. It uses the shared test lock
+        # but never holds the configuration lock or overwrites manual results.
+        release_mutation_lock
+        _scan_ok=0
+        watchdog_refresh_category_results "$_target_cat" && _scan_ok=1
+        acquire_mutation_lock || return 1
+        if ! load_config >/dev/null 2>&1 || [ "${WATCHDOG_ENABLED:-0}" != 1 ] ||
+           [ "${WATCHDOG_AUTOREPLACE:-0}" != 1 ] || ! watchdog_slot_config_matches "$_slot" "$_target_id" "$_target_port" ||
+           [ "$(dns_cat "$_target_id" 2>/dev/null || true)" != "$_target_cat" ]; then
+            release_mutation_lock; return 1
+        fi
+        if [ "$_single_mode" = single ]; then
+            _configured=0
+            for _s in 1 2 3 4 5 6 RU; do eval "_uid=\${SLOT_${_s}:-}"; [ -n "$_uid" ] && _configured=$((_configured+1)); done
+            [ "$_configured" = 1 ] || { release_mutation_lock; return 1; }
+        fi
+        if watchdog_check_slot "$_slot"; then
+            eval "WD_SINGLE_TRIED_${_slot}=''"; eval "WD_CATEGORY_STALE_${_slot}=0"
+            release_mutation_lock; return 0
+        fi
+        if watchdog_common_dns_outage; then
+            [ "$_single_mode" = single ] || { release_mutation_lock; return 1; }
+        else
+            _scan_outage=$?
+            [ "$_scan_outage" != 2 ] || { release_mutation_lock; return 1; }
+        fi
+        watchdog_resource_guard || { release_mutation_lock; return 1; }
+        [ "$_scan_ok" = 1 ] || { log_msg "Watchdog: проверка категории DNS не завершена; выбранный DNS сохранён."; release_mutation_lock; return 1; }
+        TEST_RESULTS="$STATE_DIR/watchdog-category-$_target_cat.results"
+        TEST_RESULTS_META="$STATE_DIR/watchdog-category-$_target_cat.meta"
+        watchdog_select_category_results "$_target_cat" || { release_mutation_lock; return 1; }
+        eval "WD_CATEGORY_STALE_${_slot}=0"
+    fi
+    TEST_RESULTS="$WD_CATEGORY_RESULTS"; TEST_RESULTS_META="$WD_CATEGORY_META"
+
     _used="$(mktemp "$TMP_DIR/watchdog-slot-used.XXXXXX" 2>/dev/null)" || { release_mutation_lock; return 1; }
     _tried="$(mktemp "$TMP_DIR/watchdog-slot-tried.XXXXXX" 2>/dev/null)" || { rm -f "$_used"; release_mutation_lock; return 1; }
     for _s in 1 2 3 4 5 6 RU; do
@@ -8591,6 +8672,7 @@ watchdog_slot_target_run() {
         _repl_cat="${_picked#*|}"
         if [ -z "$_repl" ]; then
             eval "WD_SINGLE_TRIED_${_slot}=''"
+            eval "WD_CATEGORY_STALE_${_slot}=1"
             break
         fi
         [ "$_repl" = "$_old_id" ] && { printf '%s\n' "$_repl" >> "$_tried"; continue; }
@@ -8626,6 +8708,7 @@ watchdog_slot_target_run() {
             done
             [ "$_configured" = 1 ] || break
             if [ "$_probe_ok" != 1 ]; then
+                eval "WD_CATEGORY_STALE_${_slot}=1"
                 log_msg "Watchdog slot $_slot: кандидат не подтвердился напрямую; существующие DNS-настройки сохранены."
                 [ "$_probe_count" -lt 3 ] && continue
                 break
@@ -8645,8 +8728,10 @@ watchdog_slot_target_run() {
             log_msg "Watchdog slot $_slot: замена подтверждена на 127.0.0.1:$(eval "printf %s \"\${PORT_${_slot}:-}\"")."
             _replacement_ok=1
             eval "WD_SINGLE_TRIED_${_slot}=''"
+            eval "WD_CATEGORY_STALE_${_slot}=0"
             break
         fi
+        eval "WD_CATEGORY_STALE_${_slot}=1"
         [ "${WATCHDOG_ROLLBACK_UNCERTAIN:-0}" = 1 ] && break
         [ "$_single_mode" = single ] && break
         [ "$_apply_count" -ge 2 ] && break
