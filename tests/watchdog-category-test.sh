@@ -9,7 +9,7 @@ awk '/^watchdog_refresh_category_results\(\) \(/ {p=1} p {print} p && /^\)$/ {ex
 awk '/^test_dns_catalog\(\) \(/ {p=1} p {print} p && /^\)$/ {exit}' dns-manager.sh >> "$tmp/functions.sh"
 awk '/^watchdog_pick_replacement\(\) \{/,/^watchdog_apply_slot_candidate\(\) \{/' dns-manager.sh | sed '$d' >> "$tmp/functions.sh"
 . "$tmp/functions.sh"
-STATE_DIR="$tmp/state"; TMP_DIR="$tmp/work"; DNS_CHECK_STAMP_DIR="$tmp/checks"; mkdir -p "$STATE_DIR" "$TMP_DIR" "$DNS_CHECK_STAMP_DIR"
+BASE_DIR="$tmp/base"; STATE_DIR="$tmp/state"; TMP_DIR="$tmp/work"; DNS_CHECK_STAMP_DIR="$tmp/checks"; mkdir -p "$BASE_DIR/state" "$STATE_DIR" "$TMP_DIR" "$DNS_CHECK_STAMP_DIR"
 DNS_CATALOG="$tmp/catalog"; TEST_RESULTS="$STATE_DIR/dns-test-results.conf"; TEST_RESULTS_META="$STATE_DIR/dns-test-results.meta"
 cat > "$DNS_CATALOG" <<'EOF_CATALOG'
 # DNSCATVER=test
@@ -62,6 +62,13 @@ if watchdog_pick_replacement 1 "$tmp/used" "$tmp/tried" 0 clean; then exit 10; f
 watchdog_refresh_category_results regional || exit 11
 grep -Fxq 'test_scope=regional' "$STATE_DIR/watchdog-category-regional.meta" || exit 12
 [ "$(wc -l < "$STATE_DIR/watchdog-category-regional.results" | tr -d ' ')" = 1 ] || exit 13
+# After reboot, preserve untouched entries from the persistent results.
+printf '%s\n' 'persisted|other|Persisted|10|OK' 'fast|clean|Old|99|OK' > "$BASE_DIR/state/dns-test-results.conf"
+printf 'timestamp=1\ntest_scope=all\n' > "$BASE_DIR/state/dns-test-results.meta"
+rm -f "$STATE_DIR/dns-test-results.conf" "$STATE_DIR/dns-test-results.meta" "$DNS_CHECK_STAMP_DIR/fast" "$DNS_CHECK_STAMP_DIR/ru"
+watchdog_merge_category_results "$STATE_DIR/watchdog-category-clean.results" "$STATE_DIR/watchdog-category-clean.meta" clean || exit 27
+grep -Fxq 'persisted|other|Persisted|10|OK' "$STATE_DIR/dns-test-results.conf" || exit 28
+grep -Fxq 'fast|clean|name|20|OK' "$STATE_DIR/dns-test-results.conf" || exit 29
 # A newer completed manual check must not be replaced by an older background scan.
 _before="$(cksum "$STATE_DIR/dns-test-results.conf")"
 printf 'timestamp=%s\ntest_scope=all\n' "$(($(date +%s)+60))" > "$STATE_DIR/dns-test-results.meta"

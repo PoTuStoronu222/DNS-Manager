@@ -6828,7 +6828,7 @@ watchdog_bootstrap_resolve() {
     return 1
 }
 watchdog_merge_category_results() {
-    local _wm_results _wm_meta _wm_scope _wm_timestamp _wm_full_ts _wm_common _wm_input _wm_out _wm_ids _wm_id
+    local _wm_results _wm_meta _wm_scope _wm_timestamp _wm_full_ts _wm_full_meta _wm_common _wm_input _wm_out _wm_ids _wm_id
     _wm_results="$1"; _wm_meta="$2"; _wm_scope="$3"
     case "$_wm_scope" in bypass|clean|security|privacy|adblock|family|gaming|regional) ;; *) return 1;; esac
     [ -s "$_wm_results" ] && [ -s "$_wm_meta" ] || return 1
@@ -6841,14 +6841,17 @@ watchdog_merge_category_results() {
     fi
     mkdir -p "$DNS_CHECK_STAMP_DIR" || { release_test_lock; return 1; }
     _wm_common="$STATE_DIR/dns-test-results.conf"
-    _wm_full_ts="$(sed -n 's/^timestamp=//p' "$STATE_DIR/dns-test-results.meta" 2>/dev/null | head -n1)"
+    _wm_full_meta="$STATE_DIR/dns-test-results.meta"
+    [ -r "$_wm_full_meta" ] || _wm_full_meta="$BASE_DIR/state/dns-test-results.meta"
+    _wm_full_ts="$(sed -n 's/^timestamp=//p' "$_wm_full_meta" 2>/dev/null | head -n1)"
     case "$_wm_full_ts" in ''|*[!0-9]*) _wm_full_ts=0;; esac
     # A completed manual full/category run that is at least as new wins.
     if [ "$_wm_full_ts" -ge "$_wm_timestamp" ] 2>/dev/null; then release_test_lock; return 0; fi
     _wm_out="$(mktemp "$STATE_DIR/dns-test-results.merge.XXXXXX" 2>/dev/null)" || { release_test_lock; return 1; }
     _wm_ids="$(mktemp "$STATE_DIR/dns-test-results.ids.XXXXXX" 2>/dev/null)" || { rm -f "$_wm_out"; release_test_lock; return 1; }
     _wm_input="$_wm_common"
-    [ -f "$_wm_input" ] || _wm_input=/dev/null
+    [ -s "$_wm_input" ] || _wm_input="$BASE_DIR/state/dns-test-results.conf"
+    [ -s "$_wm_input" ] || _wm_input=/dev/null
     if ! awk -F'|' -v stamps="$DNS_CHECK_STAMP_DIR" -v ts="$_wm_timestamp" -v ids="$_wm_ids" '
         NR==FNR {
             id=$1
