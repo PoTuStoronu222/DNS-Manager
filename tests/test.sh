@@ -611,7 +611,7 @@ grep -Fq "disabled:!!state.busy||!!state.jobRunning||unavailable||checking" dns-
 grep -q "'gaming','Игровые DNS'" dns-manager-luci.sh || fail "gaming catalog label missing in LuCI"
 grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validation missing gaming category"
 grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
-grep -q 'VERSION="4.00"' dns-manager.sh || fail "manager version not bumped"
+grep -q 'VERSION="4.01"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
 grep -q 'VERSION="2.17"' dns-manager-luci.sh || fail "LuCI version not bumped"
 grep -Fq "{id:'quad9plain',ips:'9.9.9.10,149.112.112.10,2620:fe::10,2620:fe::fe:10'}" dns-manager-luci.sh || fail "historical Quad9 bootstrap snapshot changed"
@@ -897,8 +897,8 @@ view_luci="$(sed -n 's|^// DNS Manager LuCI common module version:[[:space:]]*||
 dashboard_view_luci="$(sed -n 's|^// DNS Manager LuCI version: *||p' dns-manager-luci.sh | head -n1)"
 [ "$top_luci" = "$dashboard_view_luci" ] || fail "dashboard view version marker is stale"
 ok "LuCI version markers synchronized ($top_luci)"
-grep -Fq 'VERSION="4.00"' dns-manager.sh || fail "DNS Manager version marker is not 4.00"
-ok "DNS Manager version marker synchronized (4.00)"
+grep -Fq 'VERSION="4.01"' dns-manager.sh || fail "DNS Manager version marker is not 4.01"
+ok "DNS Manager version marker synchronized (4.01)"
 grep -Fq "assignment.appendChild(btn('Удалить'" dns-manager-luci.sh || fail "Custom DNS delete button is not aligned with the assignment action"
 grep -Fq ".dm-catalog-item-custom{grid-column:auto}" dns-manager-luci.sh || fail "Custom DNS card is wider than a stock catalog card"
 grep -Fq ".dm-catalog-controls-custom .dm-assign-inline select{height:30px;min-width:0;width:auto;max-width:100%;flex:1 1 160px" dns-manager-luci.sh || fail "Custom DNS actions do not have a responsive inline layout"
@@ -1953,6 +1953,38 @@ fi
 ok "one-shot and background Watchdog share the same safe per-slot repair path"
 # Mutation-lock/resource refusal must never be returned as an apparent DNS-replacement success.
 awk '/^watchdog_slot_target_run\(\) \{/,/^watchdog_service_recover_run\(\) \{/' dns-manager.sh | sed '$d' > "$tmp/watchdog_slot_target_run_only.sh"
+awk '/^watchdog_loop_reset_slot\(\) \{/,/^}/' dns-manager.sh > "$tmp/watchdog_track_slot.sh"
+awk '/^watchdog_loop_track_slot\(\) \{/,/^}/' dns-manager.sh >> "$tmp/watchdog_track_slot.sh"
+(
+    . "$tmp/watchdog_track_slot.sh"
+    WD_ID_1=old WD_FAIL_1=1 WD_MISSING_1=1 WD_REPAIR_TS_1=123
+    watchdog_loop_track_slot 1 old
+    [ "$WD_FAIL_1" = 1 ] && [ "$WD_MISSING_1" = 1 ] || exit 1
+    watchdog_loop_track_slot 1 new
+    [ "$WD_ID_1" = new ] && [ "$WD_FAIL_1" = 0 ] && [ "$WD_MISSING_1" = 0 ] && [ "$WD_REPAIR_TS_1" = 123 ] || exit 2
+    WD_FAIL_1=1
+    watchdog_loop_track_slot 1 ''
+    [ -z "$WD_ID_1" ] && [ "$WD_FAIL_1" = 0 ] || exit 3
+    if watchdog_loop_track_slot invalid x; then exit 4; fi
+) || fail "watchdog failure counts follow a previous DNS after slot change"
+grep -Fq 'watchdog_loop_track_slot "$_slot" "$_id"' "$tmp/watchdog_embedded_loop.sh" || fail "watchdog loop does not track slot identity"
+grep -Fq 'watchdog_slot_target_run "$_trigger" "$_trigger_id" "$_trigger_port"' "$tmp/watchdog_embedded_loop.sh" || fail "watchdog replacement does not pin the failing DNS"
+(
+    . "$tmp/watchdog_slot_target_run_only.sh"
+    WATCHDOG_ENABLED=1 SLOT_1=new PORT_1=5053
+    dns_cat() { printf clean; }
+    watchdog_resource_guard() { return 0; }
+    acquire_mutation_lock() { return 0; }
+    release_mutation_lock() { return 0; }
+    watchdog_slot_config_matches() { [ "$SLOT_1" = "$2" ] && [ "$PORT_1" = "$3" ]; }
+    load_config() { SLOT_1=new; return 0; }
+    if watchdog_slot_target_run 1 old 5053; then exit 1; fi
+    SLOT_1=old
+    if watchdog_slot_target_run 1 old 5053; then exit 2; fi
+    SLOT_1=old
+    if watchdog_slot_target_run 1 old 5054; then exit 3; fi
+) || fail "watchdog can act on a replacement DNS using a stale decision"
+ok "watchdog isolates slot failure counts and rejects stale replacement decisions"
 cat > "$tmp/watchdog_lock_refusal_runner.sh" <<'EOF_WATCHDOG_LOCK_REFUSAL'
 #!/bin/sh
 set -eu
