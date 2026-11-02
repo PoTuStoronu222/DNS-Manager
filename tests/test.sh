@@ -1957,11 +1957,11 @@ awk '/^watchdog_loop_reset_slot\(\) \{/,/^}/' dns-manager.sh > "$tmp/watchdog_tr
 awk '/^watchdog_loop_track_slot\(\) \{/,/^}/' dns-manager.sh >> "$tmp/watchdog_track_slot.sh"
 (
     . "$tmp/watchdog_track_slot.sh"
-    WD_ID_1=old WD_FAIL_1=1 WD_MISSING_1=1 WD_REPAIR_TS_1=123
+    WD_ID_1=old WD_FAIL_1=1 WD_MISSING_1=1 WD_REPAIR_TS_1=123 WD_RECOVERY_BLOCKED_1=1
     watchdog_loop_track_slot 1 old
-    [ "$WD_FAIL_1" = 1 ] && [ "$WD_MISSING_1" = 1 ] || exit 1
+    [ "$WD_FAIL_1" = 1 ] && [ "$WD_MISSING_1" = 1 ] && [ "$WD_RECOVERY_BLOCKED_1" = 1 ] || exit 1
     watchdog_loop_track_slot 1 new
-    [ "$WD_ID_1" = new ] && [ "$WD_FAIL_1" = 0 ] && [ "$WD_MISSING_1" = 0 ] && [ "$WD_REPAIR_TS_1" = 123 ] || exit 2
+    [ "$WD_ID_1" = new ] && [ "$WD_FAIL_1" = 0 ] && [ "$WD_MISSING_1" = 0 ] && [ "$WD_REPAIR_TS_1" = 123 ] && [ "$WD_RECOVERY_BLOCKED_1" = 0 ] || exit 2
     WD_FAIL_1=1
     watchdog_loop_track_slot 1 ''
     [ -z "$WD_ID_1" ] && [ "$WD_FAIL_1" = 0 ] || exit 3
@@ -1987,6 +1987,7 @@ grep -Fq 'watchdog_slot_target_run "$_trigger" "$_trigger_id" "$_trigger_port"' 
 ok "watchdog isolates slot failure counts and rejects stale replacement decisions"
 sh tests/watchdog-single-dns-test.sh || fail "single DNS watchdog candidate safety"
 sh tests/watchdog-candidate-rollback-test.sh || fail "watchdog candidate rollback"
+sh tests/watchdog-restart-cooldown-test.sh || fail "watchdog service restart cooldown"
 cat > "$tmp/watchdog_lock_refusal_runner.sh" <<'EOF_WATCHDOG_LOCK_REFUSAL'
 #!/bin/sh
 set -eu

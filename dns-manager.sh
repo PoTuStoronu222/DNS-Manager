@@ -7462,8 +7462,10 @@ watchdog_save_check_results() {
     return 0
 }
 watchdog_loop_repair_cooldown_ok() {
-    local _slot _last _now
+    local _slot _last _now _blocked
     _slot="$1"
+    eval "_blocked=\${WD_RECOVERY_BLOCKED_${_slot}:-0}"
+    [ "$_blocked" != 1 ] || return 1
     eval "_last=\${WD_REPAIR_TS_${_slot}:-0}"
     case "$_last" in ''|*[!0-9]*) _last=0;; esac
     _now="$(date +%s 2>/dev/null)"
@@ -7493,6 +7495,7 @@ watchdog_loop_track_slot() {
     # Assignment expansion is not re-evaluated as shell code.
     eval "WD_ID_${1}=\$2"
     eval "WD_SINGLE_TRIED_${1}=''"
+    eval "WD_RECOVERY_BLOCKED_${1}=0"
 }
 watchdog_probe_single_candidate() (
     # Run the existing DoH wire test in an isolated tmpfs directory. No UCI,
@@ -7649,6 +7652,7 @@ watchdog_embedded_loop() {
         eval "WD_MISSING_${_slot}=0"
         eval "WD_ID_${_slot}=''"
         eval "WD_SINGLE_TRIED_${_slot}=''"
+        eval "WD_RECOVERY_BLOCKED_${_slot}=0"
         eval "WD_REPAIR_TS_${_slot}=0"
     done
     WD_RESTART_COUNT=0
@@ -7758,6 +7762,7 @@ watchdog_embedded_loop() {
             if [ "$_probe_rc" = 0 ]; then
                 watchdog_append_check_record "$_wd_cycle_records" "$_slot" "$_id" "$_current_slot_cat" OK
                 watchdog_loop_reset_slot "$_slot"
+                eval "WD_RECOVERY_BLOCKED_${_slot}=0"
                 continue
             fi
             watchdog_append_check_record "$_wd_cycle_records" "$_slot" "$_id" "$_current_slot_cat" FAIL
@@ -7830,6 +7835,7 @@ watchdog_embedded_loop() {
                         eval "WD_FAIL_${_trigger}=0"
                         eval "WD_SINGLE_TRIED_${_trigger}=''"
                     elif [ "${WATCHDOG_ROLLBACK_UNCERTAIN:-0}" = 1 ]; then
+                        eval "WD_RECOVERY_BLOCKED_${_trigger}=1"
                         log_msg "Watchdog: откат слота $_trigger не подтверждён. Проверьте конфигурацию https-dns-proxy и DNS."
                     fi
                 done
@@ -7866,6 +7872,7 @@ watchdog_embedded_loop() {
                         log_msg "Watchdog: слот $_trigger восстановлен; проверка DNS пройдена."
                         _slot_recovered=1
                     elif [ "${WATCHDOG_ROLLBACK_UNCERTAIN:-0}" = 1 ]; then
+                        eval "WD_RECOVERY_BLOCKED_${_trigger}=1"
                         log_msg "Watchdog: откат слота $_trigger не подтверждён. Проверьте конфигурацию https-dns-proxy и DNS."
                     else
                         log_msg "Watchdog: замена слота $_trigger не подтверждена; текущий DNS сохранён."
@@ -8662,7 +8669,9 @@ watchdog_service_recover_run() {
         return 0
     fi
     WATCHDOG_RESTART_COUNT=0
-    watchdog_restart_hdp burst
+    # Global service recovery must obey the shared cooldown, even when every
+    # listener is missing on successive cycles.
+    watchdog_restart_hdp
     _rc=$?
     release_mutation_lock
     return "$_rc"
