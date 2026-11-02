@@ -2126,6 +2126,14 @@ if ! watchdog_common_dns_outage; then
     printf '%s\n' 'all selected DNS failures were not detected as a common outage' >&2
     exit 32
 fi
+# With only one configured DNS, a failed probe cannot distinguish an isolated
+# resolver outage from a WAN outage, so keep the existing server.
+SLOT_2=
+if ! watchdog_common_dns_outage; then
+    printf '%s\n' 'one failed DNS was not treated as a possible common outage' >&2
+    exit 36
+fi
+SLOT_2=resolver-b
 local_dns_query_ok() { [ "$1" = 5053 ]; }
 if watchdog_common_dns_outage; then
     printf '%s\n' 'a healthy selected DNS was mistaken for a common outage' >&2
@@ -2139,6 +2147,15 @@ if watchdog_common_dns_outage; then
 else
     rc=$?
     [ "$rc" -eq 2 ] || { printf '%s\n' 'missing listener was not treated as uncertain state' >&2; exit 35; }
+fi
+watchdog_listener_snapshot_has_port() { return 0; }
+local_dns_query_ok() { return 2; }
+if watchdog_common_dns_outage; then
+    printf '%s\n' 'an inconclusive probe was treated as a confirmed outage' >&2
+    exit 37
+else
+    rc=$?
+    [ "$rc" -eq 2 ] || exit 38
 fi
 EOF_WATCHDOG_COMMON_OUTAGE
 chmod +x "$tmp/watchdog_common_outage_runner.sh"
