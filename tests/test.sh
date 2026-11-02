@@ -1986,6 +1986,7 @@ grep -Fq 'watchdog_slot_target_run "$_trigger" "$_trigger_id" "$_trigger_port"' 
 ) || fail "watchdog can act on a replacement DNS using a stale decision"
 ok "watchdog isolates slot failure counts and rejects stale replacement decisions"
 sh tests/watchdog-single-dns-test.sh || fail "single DNS watchdog candidate safety"
+sh tests/watchdog-candidate-rollback-test.sh || fail "watchdog candidate rollback"
 cat > "$tmp/watchdog_lock_refusal_runner.sh" <<'EOF_WATCHDOG_LOCK_REFUSAL'
 #!/bin/sh
 set -eu
