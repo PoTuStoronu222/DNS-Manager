@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="4.06"
+VERSION="4.07"
 # 3.86: make LuCI the primary interface and preserve external DNS on removal.
 # 3.85: revalidate Watchdog settings before recovery.
 # 3.84: cap DNS catalog test concurrency by total RAM on small routers.
@@ -590,11 +590,9 @@ info_msg() { log_msg "Информация: $*"; printf "${C_CYAN}[ℹ] %s${C_NC
 warn_msg() { log_msg "Внимание: $*"; printf "${C_YELLOW}[!] %s${C_NC}\n" "$*"; }
 err_msg() { log_msg "Ошибка: $*"; printf "${C_RED}[✗] %s${C_NC}\n" "$*"; }
 apply_progress() {
-    log_msg "$*"
     [ "${APPLY_OUTPUT_QUIET:-0}" = 1 ] || printf "  ${C_CYAN}↻${C_NC} %s\n" "$*"
 }
 apply_progress_ok() {
-    log_msg "$*"
     [ "${APPLY_OUTPUT_QUIET:-0}" = 1 ] || printf "  ${C_GREEN}✓${C_NC} %s\n" "$*"
 }
 safe_read() {
@@ -609,7 +607,6 @@ safe_read() {
 confirm_action() {
     _prompt="$1"
     if [ "${SILENT_APPLY:-0}" = 1 ]; then
-        log_msg "Автоматическое подтверждение: $_prompt"
         return 0
     fi
     printf "\n${C_WHITE}%s${C_NC}\n" "$_prompt"
@@ -4063,7 +4060,9 @@ dnsmasq_restart_checked() {
         apply_progress "Вывод команды перезапуска dnsmasq:"
         while IFS= read -r _dnsmasq_line; do
             [ -n "$_dnsmasq_line" ] || continue
-            log_msg "Перезапуск dnsmasq: $_dnsmasq_line"
+            if [ "$_dnsmasq_rc" -ne 0 ] || printf '%s\n' "$_dnsmasq_line" | grep -Eiq 'fail|error|warn|ошибк'; then
+                log_msg "Перезапуск dnsmasq: $_dnsmasq_line"
+            fi
             [ "${APPLY_OUTPUT_QUIET:-0}" = 1 ] || printf "    %s\n" "$_dnsmasq_line"
         done < "$_dnsmasq_output"
     fi
@@ -7580,7 +7579,7 @@ watchdog_save_check_results() {
     chmod 600 "$_tmp" 2>/dev/null || true
     mv -f "$_tmp" "$WATCHDOG_CHECK_RESULTS" || { rm -f "$_tmp" "$_src" 2>/dev/null || true; return 1; }
     rm -f "$_src" 2>/dev/null || true
-    log_msg "Проверка DNS: проверено $_checked, проблем: $_failed."
+    [ "$_failed" -eq 0 ] || log_msg "Проверка DNS: проверено $_checked, проблем: $_failed."
     return 0
 }
 watchdog_loop_repair_cooldown_ok() {
