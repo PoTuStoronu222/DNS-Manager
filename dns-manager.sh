@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="4.00"
+VERSION="4.01"
 # 3.86: make LuCI the primary interface and preserve external DNS on removal.
 # 3.85: revalidate Watchdog settings before recovery.
 # 3.84: cap DNS catalog test concurrency by total RAM on small routers.
@@ -7483,6 +7483,15 @@ watchdog_loop_reset_slot() {
     eval "WD_FAIL_${_slot}=0"
     eval "WD_MISSING_${_slot}=0"
 }
+watchdog_loop_track_slot() {
+    local _previous
+    case "$1" in 1|2|3|4|5|6|RU) ;; *) return 1;; esac
+    eval "_previous=\${WD_ID_${1}:-}"
+    [ "$_previous" = "$2" ] && return 0
+    watchdog_loop_reset_slot "$1"
+    # Assignment expansion is not re-evaluated as shell code.
+    eval "WD_ID_${1}=\$2"
+}
 watchdog_slot_instance_pid() {
     local _port _proc _cmd
     _port="$1"
@@ -7600,6 +7609,7 @@ watchdog_embedded_loop() {
     for _slot in 1 2 3 4 5 6 RU; do
         eval "WD_FAIL_${_slot}=0"
         eval "WD_MISSING_${_slot}=0"
+        eval "WD_ID_${_slot}=''"
         eval "WD_REPAIR_TS_${_slot}=0"
     done
     WD_RESTART_COUNT=0
@@ -7665,6 +7675,7 @@ watchdog_embedded_loop() {
 
         for _slot in 1 2 3 4 5 6 RU; do
             eval "_id=\${SLOT_${_slot}:-}"
+            watchdog_loop_track_slot "$_slot" "$_id"
             if [ -z "$_id" ]; then
                 watchdog_loop_reset_slot "$_slot"
                 continue
@@ -7789,7 +7800,7 @@ watchdog_embedded_loop() {
                     log_msg "Watchdog: слот $_trigger не восстановился после перезапуска; общий сбой не исключён, DNS сохраняю без замены."
                 elif [ "${WATCHDOG_AUTOREPLACE:-0}" = 1 ]; then
                     log_msg "Watchdog: слот $_trigger не восстановился после перезапуска; проверяю замену той же категории."
-                    if watchdog_slot_target_run "$_trigger"; then
+                    if watchdog_slot_target_run "$_trigger" "$_trigger_id" "$_trigger_port"; then
                         log_msg "Watchdog: слот $_trigger восстановлен; проверка DNS пройдена."
                         _slot_recovered=1
                     else
@@ -8378,8 +8389,9 @@ watchdog_common_dns_outage() {
     return 1
 }
 watchdog_slot_target_run() {
-    local _slot _target_id _target_port _target_cat _promote_fallback _target_live _allow_clean _slot_rc _old_id _old_cat _domain _used _tried _replacement_ok _picked _repl _repl_cat
+    local _slot _target_id _target_port _target_cat _promote_fallback _target_live _allow_clean _slot_rc _old_id _old_cat _domain _used _tried _replacement_ok _picked _repl _repl_cat _expected_id _expected_port
     _slot="$1"
+    _expected_id="${2:-}"; _expected_port="${3:-}"
     case "$_slot" in 1|2|3|4|5|6|RU) ;; *) return 2 ;; esac
     [ "${WATCHDOG_ENABLED:-0}" = 1 ] || return 0
     eval "_target_id=\${SLOT_${_slot}:-}"
@@ -8387,6 +8399,8 @@ watchdog_slot_target_run() {
     eval "_target_port=\${PORT_${_slot}:-}"
     [ -n "$_target_port" ] || _target_port="$(hybrid_desired_port "$_slot")"
     [ -n "$_target_port" ] || return 2
+    [ -z "$_expected_id" ] || [ "$_target_id" = "$_expected_id" ] || return 1
+    [ -z "$_expected_port" ] || [ "$_target_port" = "$_expected_port" ] || return 1
     _target_cat="$(dns_cat "$_target_id" 2>/dev/null || true)"
     [ -n "$_target_cat" ] || return 1
     _allow_clean=0
