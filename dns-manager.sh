@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="4.01"
+VERSION="4.02"
 # 3.86: make LuCI the primary interface and preserve external DNS on removal.
 # 3.85: revalidate Watchdog settings before recovery.
 # 3.84: cap DNS catalog test concurrency by total RAM on small routers.
@@ -7491,7 +7491,24 @@ watchdog_loop_track_slot() {
     watchdog_loop_reset_slot "$1"
     # Assignment expansion is not re-evaluated as shell code.
     eval "WD_ID_${1}=\$2"
+    eval "WD_SINGLE_TRIED_${1}=''"
 }
+watchdog_probe_single_candidate() (
+    # Run the existing DoH wire test in an isolated tmpfs directory. No UCI,
+    # dnsmasq or running proxy configuration is changed by this probe.
+    [ "${HAS_CURL:-no}" = yes ] || return 1
+    _probe_id="$1"
+    case "$_probe_id" in ''|*[!A-Za-z0-9_-]*) return 1;; esac
+    _probe_dir="$(mktemp -d "$TMP_DIR/wd-single-probe.XXXXXX" 2>/dev/null)" || return 1
+    trap 'rm -rf "$_probe_dir"' EXIT HUP INT TERM
+    TMP_DIR="$_probe_dir"
+    DNS_TEST_RAM_ONLY=1
+    # Bound work on small routers. A failed bootstrap is inconclusive and is
+    # never permission to change the active DNS.
+    BOOTSTRAP_DNS="$(printf '%s' "${BOOTSTRAP_DNS:-}" | tr ',' '\n' | awk 'NF {if(n++) printf ","; printf "%s", $0; if(n==3) exit}')"
+    [ -n "$BOOTSTRAP_DNS" ] || return 1
+    test_one_dns "$_probe_id" >/dev/null 2>&1
+)
 watchdog_slot_instance_pid() {
     local _port _proc _cmd
     _port="$1"
@@ -7610,6 +7627,7 @@ watchdog_embedded_loop() {
         eval "WD_FAIL_${_slot}=0"
         eval "WD_MISSING_${_slot}=0"
         eval "WD_ID_${_slot}=''"
+        eval "WD_SINGLE_TRIED_${_slot}=''"
         eval "WD_REPAIR_TS_${_slot}=0"
     done
     WD_RESTART_COUNT=0
@@ -7771,7 +7789,23 @@ watchdog_embedded_loop() {
             for _slot in 1 2 3 4 5 6 RU; do watchdog_loop_reset_slot "$_slot"; done
             sleep 5
         else
-            if [ "$_global_dns_failure" != 0 ]; then
+            if [ "$_global_dns_failure" = 1 ] && [ "$_checked" = 1 ] && [ "$_live" = 1 ] && [ "${WATCHDOG_AUTOREPLACE:-0}" = 1 ]; then
+                for _trigger in $_threshold_slots; do
+                    watchdog_loop_repair_cooldown_ok "$_trigger" || continue
+                    watchdog_loop_mark_repair "$_trigger"
+                    eval "_trigger_id=\${SLOT_${_trigger}:-}"
+                    eval "_trigger_port=\${PORT_${_trigger}:-}"
+                    [ -n "$_trigger_port" ] || _trigger_port="$(hybrid_desired_port "$_trigger")"
+                    [ -n "$_trigger_id" ] && [ -n "$_trigger_port" ] || continue
+                    if watchdog_slot_target_run "$_trigger" "$_trigger_id" "$_trigger_port" single; then
+                        _watchdog_action=1
+                        load_config >/dev/null 2>&1 || true
+                        refresh_runtime_capabilities >/dev/null 2>&1 || true
+                        WD_LAST_GUARD_TS="$(date +%s 2>/dev/null)"
+                        eval "WD_FAIL_${_trigger}=0"
+                    fi
+                done
+            elif [ "$_global_dns_failure" != 0 ]; then
                 log_msg "Watchdog: общий или неопределённый DNS-сбой; перезапуск отдельных proxy и ротацию откладываю."
             else
                 # A listener can remain open while its https-dns-proxy process is stuck.
@@ -8389,9 +8423,11 @@ watchdog_common_dns_outage() {
     return 1
 }
 watchdog_slot_target_run() {
-    local _slot _target_id _target_port _target_cat _promote_fallback _target_live _allow_clean _slot_rc _old_id _old_cat _domain _used _tried _replacement_ok _picked _repl _repl_cat _expected_id _expected_port
+    local _slot _target_id _target_port _target_cat _promote_fallback _target_live _allow_clean _slot_rc _old_id _old_cat _domain _used _tried _replacement_ok _picked _repl _repl_cat _expected_id _expected_port _single_mode _configured _history
     _slot="$1"
     _expected_id="${2:-}"; _expected_port="${3:-}"
+    _single_mode="${4:-}"
+    case "$_single_mode" in ''|single) ;; *) return 2;; esac
     case "$_slot" in 1|2|3|4|5|6|RU) ;; *) return 2 ;; esac
     [ "${WATCHDOG_ENABLED:-0}" = 1 ] || return 0
     eval "_target_id=\${SLOT_${_slot}:-}"
@@ -8419,6 +8455,15 @@ watchdog_slot_target_run() {
     if [ "${WATCHDOG_ENABLED:-0}" != 1 ] || ! watchdog_slot_config_matches "$1" "$_target_id" "$_target_port"; then
         release_mutation_lock
         return 1
+    fi
+    if [ "$_single_mode" = single ]; then
+        _configured=0
+        for _s in 1 2 3 4 5 6 RU; do
+            eval "_uid=\${SLOT_${_s}:-}"
+            [ -n "$_uid" ] && _configured=$((_configured+1))
+        done
+        [ "$_configured" = 1 ] || { release_mutation_lock; return 1; }
+        [ "${WATCHDOG_AUTOREPLACE:-0}" = 1 ] || { release_mutation_lock; return 1; }
     fi
     WATCHDOG_RESTART_COUNT=0
     _slot_rc=0
@@ -8466,9 +8511,16 @@ watchdog_slot_target_run() {
     fi
 
     if watchdog_common_dns_outage; then
-        log_msg "Watchdog slot $_slot: все активные DoH одновременно не отвечают; вероятен общий сбой WAN/upstream. DNS не заменяю."
-        release_mutation_lock
-        return 1
+        _configured=0
+        for _s in 1 2 3 4 5 6 RU; do
+            eval "_uid=\${SLOT_${_s}:-}"
+            [ -n "$_uid" ] && _configured=$((_configured+1))
+        done
+        if [ "$_single_mode" != single ] || [ "$_configured" != 1 ]; then
+            log_msg "Watchdog slot $_slot: все активные DoH одновременно не отвечают; вероятен общий сбой WAN/upstream. DNS не заменяю."
+            release_mutation_lock
+            return 1
+        fi
     else
         _outage_rc=$?
         if [ "$_outage_rc" -eq 2 ]; then
@@ -8488,19 +8540,47 @@ watchdog_slot_target_run() {
     done
 
     _replacement_ok=0
+    if [ "$_single_mode" = single ]; then
+        eval "_history=\${WD_SINGLE_TRIED_${_slot}:-}"
+        [ -n "$_history" ] && printf '%s\n' "$_history" > "$_tried"
+    fi
     while :; do
         _picked="$(watchdog_pick_replacement "$_slot" "$_used" "$_tried" 0 "$_target_cat")"
         _repl="${_picked%%|*}"
         _repl_cat="${_picked#*|}"
-        [ -n "$_repl" ] || break
+        if [ -z "$_repl" ]; then
+            [ "$_single_mode" = single ] && eval "WD_SINGLE_TRIED_${_slot}=''"
+            break
+        fi
         [ "$_repl" = "$_old_id" ] && { printf '%s\n' "$_repl" >> "$_tried"; continue; }
         printf '%s\n' "$_repl" >> "$_tried"
+        if [ "$_single_mode" = single ]; then
+            _history="$(cat "$_tried")"
+            eval "WD_SINGLE_TRIED_${_slot}=\$_history"
+            if ! watchdog_probe_single_candidate "$_repl"; then
+                log_msg "Watchdog slot $_slot: кандидат не подтвердился напрямую; существующие DNS-настройки сохранены."
+                break
+            fi
+            # The direct probe may take time. Re-read both toggles and the
+            # slot before applying; an endpoint may also have recovered.
+            if ! load_config >/dev/null 2>&1 || [ "${WATCHDOG_ENABLED:-0}" != 1 ] ||
+               [ "${WATCHDOG_AUTOREPLACE:-0}" != 1 ] || ! watchdog_slot_config_matches "$_slot" "$_target_id" "$_target_port"; then
+                break
+            fi
+            if watchdog_check_slot "$_slot"; then
+                _replacement_ok=1
+                eval "WD_SINGLE_TRIED_${_slot}=''"
+                break
+            fi
+        fi
         log_msg "Watchdog slot $_slot: заменяю $(dns_name "$_old_id") на $(dns_name "$_repl")."
         if watchdog_apply_slot_candidate "$_slot" "$_repl" "$_repl_cat" "$_old_id" "$_old_cat"; then
             log_msg "Watchdog slot $_slot: замена подтверждена на 127.0.0.1:$(eval "printf %s \"\${PORT_${_slot}:-}\"")."
             _replacement_ok=1
+            [ "$_single_mode" = single ] && eval "WD_SINGLE_TRIED_${_slot}=''"
             break
         fi
+        [ "$_single_mode" = single ] && break
     done
     [ "$_replacement_ok" = 1 ] || _slot_rc=1
     rm -f "$_used" "$_tried"
