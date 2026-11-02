@@ -298,6 +298,19 @@ awk '
 ' dns-manager-luci.sh > "$tmp/backend.sh"
 [ -s "$tmp/backend.sh" ] || fail "embedded backend extraction"
 sh -n "$tmp/backend.sh" || fail "embedded backend: sh -n"
+awk '/^catalog_cached_update_available\(\) \{/,/^}/' "$tmp/backend.sh" > "$tmp/catalog_cached_update.sh"
+(
+    . "$tmp/catalog_cached_update.sh"
+    [ "$(catalog_cached_update_available 1 1 v 9 113 v 9 113)" = 0 ] || exit 1
+    [ "$(catalog_cached_update_available 1 1 v 9 113 v 8 113)" = 1 ] || exit 1
+    [ "$(catalog_cached_update_available 1 1 v 9 113 v 9 112)" = 1 ] || exit 1
+    [ "$(catalog_cached_update_available 1 1 v 9 113 older 9 113)" = 1 ] || exit 1
+    [ "$(catalog_cached_update_available 1 0 v 9 113 v 9 113)" = 1 ] || exit 1
+    [ "$(catalog_cached_update_available 1 1 v '' 113 v '' 113)" = 1 ] || exit 1
+    [ "$(catalog_cached_update_available 0 1 v 9 113 v 8 113)" = 0 ] || exit 1
+) || fail "cached catalog update flag does not follow the installed revision"
+grep -Fq '_catalog_avail="$(catalog_cached_update_available ' "$tmp/backend.sh" || fail "status does not reconcile the cached catalog flag"
+ok "cached catalog status follows the installed version, revision and count"
 ok "embedded backend syntax"
 
 # The dashboard and Network Tuning use different RPC read methods. Both must
@@ -600,7 +613,7 @@ grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validat
 grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
 grep -q 'VERSION="4.00"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
-grep -q 'VERSION="2.16"' dns-manager-luci.sh || fail "LuCI version not bumped"
+grep -q 'VERSION="2.17"' dns-manager-luci.sh || fail "LuCI version not bumped"
 grep -Fq "{id:'quad9plain',ips:'9.9.9.10,149.112.112.10,2620:fe::10,2620:fe::fe:10'}" dns-manager-luci.sh || fail "historical Quad9 bootstrap snapshot changed"
 grep -Fq "{id:'cira',ips:'149.112.121.10,149.112.122.10,2620:10a:80bb::10,2620:10a:80bc::10'}" dns-manager-luci.sh || fail "historical CIRA bootstrap snapshot changed"
 if grep -q '^main_menu$' dns-manager.sh; then fail "interactive console menu still starts"; fi
