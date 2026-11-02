@@ -7271,6 +7271,7 @@ watchdog_pick_replacement() {
 watchdog_apply_slot_candidate() {
     local _slot _new_id _new_cat _old_id _old_cat _port _new_url
     _slot="$1"; _new_id="$2"; _new_cat="$3"; _old_id="$4"; _old_cat="$5"
+    WATCHDOG_ROLLBACK_UNCERTAIN=0
     eval "_port=\${PORT_${_slot}:-}"
     [ -n "$_slot" ] || return 1
     slot_set "$_slot" "$_new_id" || return 1
@@ -7288,25 +7289,24 @@ watchdog_apply_slot_candidate() {
             return 1
         }
         sleep 3
-        if [ -n "$_old_id" ]; then
-            watchdog_check_slot "$_slot"
-        else
-            return 0
+        if [ -n "$_old_id" ] && ! watchdog_check_slot "$_slot"; then
+            log_msg "Watchdog: прежняя конфигурация DNS восстановлена, но сервер в слоте $_slot всё ещё не отвечает."
         fi
+        return 0
     }
 
     if ! rebuild_selected_hdp_sections >/dev/null 2>&1; then
-        watchdog_candidate_rollback >/dev/null 2>&1 || true
+        watchdog_candidate_rollback >/dev/null 2>&1 || WATCHDOG_ROLLBACK_UNCERTAIN=1
         return 1
     fi
     if ! watchdog_restart_hdp burst; then
-        watchdog_candidate_rollback >/dev/null 2>&1 || true
+        watchdog_candidate_rollback >/dev/null 2>&1 || WATCHDOG_ROLLBACK_UNCERTAIN=1
         return 1
     fi
     sleep 3
     if [ -z "$_new_id" ]; then
         if ! save_config; then
-            watchdog_candidate_rollback >/dev/null 2>&1 || true
+            watchdog_candidate_rollback >/dev/null 2>&1 || WATCHDOG_ROLLBACK_UNCERTAIN=1
             return 1
         fi
         normalize_ownership_snapshot >/dev/null 2>&1 || true
@@ -7314,7 +7314,7 @@ watchdog_apply_slot_candidate() {
     fi
     if watchdog_check_slot "$_slot"; then
         if ! save_config; then
-            watchdog_candidate_rollback >/dev/null 2>&1 || true
+            watchdog_candidate_rollback >/dev/null 2>&1 || WATCHDOG_ROLLBACK_UNCERTAIN=1
             return 1
         fi
         normalize_ownership_snapshot >/dev/null 2>&1 || true
@@ -7322,7 +7322,7 @@ watchdog_apply_slot_candidate() {
         [ -n "$_new_url" ] && record_own "doh" "$_port" "$_new_url" "slot=$_slot;name=$(dns_name "$_new_id")"
         return 0
     fi
-    watchdog_candidate_rollback >/dev/null 2>&1 || true
+    watchdog_candidate_rollback >/dev/null 2>&1 || WATCHDOG_ROLLBACK_UNCERTAIN=1
     return 1
 }
 
@@ -7507,6 +7507,26 @@ watchdog_probe_single_candidate() (
     # never permission to change the active DNS.
     BOOTSTRAP_DNS="$(printf '%s' "${BOOTSTRAP_DNS:-}" | tr ',' '\n' | awk 'NF {if(n++) printf ","; printf "%s", $0; if(n==3) exit}')"
     [ -n "$BOOTSTRAP_DNS" ] || return 1
+    if [ "${HAS_DIG:-no}" != yes ]; then
+        # Without dig, do not use the router's failing DNS as bootstrap.
+        # A timeout is required so a missing upstream cannot hold the lock.
+        resolve_host_fallback() {
+            local _wd_host _wd_bs _wd_ip
+            _wd_host="$1"
+            command -v nslookup >/dev/null 2>&1 && command -v timeout >/dev/null 2>&1 || return 1
+            for _wd_bs in $(printf '%s' "$BOOTSTRAP_DNS" | tr ',' ' '); do
+                _wd_ip="$(timeout 3 nslookup "$_wd_host" "$_wd_bs" 2>/dev/null | awk '
+                    /^Name[[:space:]]*:/ {answer=1; next}
+                    answer && /^Address/ {
+                        ip=$NF; n=split(ip,a,"."); ok=(n==4)
+                        for(i=1;i<=n;i++) if(a[i] !~ /^[0-9]+$/ || a[i]+0>255) ok=0
+                        if(ok && a[1]+0!=127 && ip!="0.0.0.0") {print ip; exit}
+                    }')"
+                [ -n "$_wd_ip" ] && { printf '%s\n' "$_wd_ip"; return 0; }
+            done
+            return 1
+        }
+    fi
     test_one_dns "$_probe_id" >/dev/null 2>&1
 )
 watchdog_slot_instance_pid() {
@@ -7762,7 +7782,11 @@ watchdog_embedded_loop() {
         if [ "$_live" -gt 0 ] && [ "$_failed" -eq "$_live" ]; then
             if [ "$_missing" -eq 0 ]; then
                 _global_dns_failure=1
-                log_msg "Watchdog: все активные DoH одновременно не отвечают; вероятен общий сбой WAN/upstream. В этом цикле DNS не ротирую."
+                if [ "$_checked" = 1 ] && [ "${WATCHDOG_AUTOREPLACE:-0}" = 1 ]; then
+                    log_msg "Watchdog: единственный DNS не отвечает; замену разрешит только независимая проверка кандидата."
+                else
+                    log_msg "Watchdog: все активные DoH одновременно не отвечают; вероятен общий сбой WAN/upstream. В этом цикле DNS не ротирую."
+                fi
             else
                 _global_dns_failure=2
                 log_msg "Watchdog: все отвечающие DoH одновременно не проходят проверку, при этом есть отсутствующий listener; автозамену приостанавливаю до уточнения состояния."
@@ -7803,6 +7827,8 @@ watchdog_embedded_loop() {
                         refresh_runtime_capabilities >/dev/null 2>&1 || true
                         WD_LAST_GUARD_TS="$(date +%s 2>/dev/null)"
                         eval "WD_FAIL_${_trigger}=0"
+                    elif [ "${WATCHDOG_ROLLBACK_UNCERTAIN:-0}" = 1 ]; then
+                        log_msg "Watchdog: откат слота $_trigger не подтверждён. Проверьте конфигурацию https-dns-proxy и DNS."
                     fi
                 done
             elif [ "$_global_dns_failure" != 0 ]; then
@@ -7837,6 +7863,8 @@ watchdog_embedded_loop() {
                     if watchdog_slot_target_run "$_trigger" "$_trigger_id" "$_trigger_port"; then
                         log_msg "Watchdog: слот $_trigger восстановлен; проверка DNS пройдена."
                         _slot_recovered=1
+                    elif [ "${WATCHDOG_ROLLBACK_UNCERTAIN:-0}" = 1 ]; then
+                        log_msg "Watchdog: откат слота $_trigger не подтверждён. Проверьте конфигурацию https-dns-proxy и DNS."
                     else
                         log_msg "Watchdog: замена слота $_trigger не подтверждена; текущий DNS сохранён."
                     fi
@@ -8425,6 +8453,7 @@ watchdog_common_dns_outage() {
 watchdog_slot_target_run() {
     local _slot _target_id _target_port _target_cat _promote_fallback _target_live _allow_clean _slot_rc _old_id _old_cat _domain _used _tried _replacement_ok _picked _repl _repl_cat _expected_id _expected_port _single_mode _configured _history _candidate_url
     _slot="$1"
+    WATCHDOG_ROLLBACK_UNCERTAIN=0
     _expected_id="${2:-}"; _expected_port="${3:-}"
     _single_mode="${4:-}"
     case "$_single_mode" in ''|single) ;; *) return 2;; esac
@@ -8582,6 +8611,7 @@ watchdog_slot_target_run() {
                 eval "WD_SINGLE_TRIED_${_slot}=''"
                 break
             fi
+            watchdog_resource_guard || break
         fi
         log_msg "Watchdog slot $_slot: заменяю $(dns_name "$_old_id") на $(dns_name "$_repl")."
         if watchdog_apply_slot_candidate "$_slot" "$_repl" "$_repl_cat" "$_old_id" "$_old_cat"; then
@@ -8590,6 +8620,7 @@ watchdog_slot_target_run() {
             [ "$_single_mode" = single ] && eval "WD_SINGLE_TRIED_${_slot}=''"
             break
         fi
+        [ "${WATCHDOG_ROLLBACK_UNCERTAIN:-0}" = 1 ] && break
         [ "$_single_mode" = single ] && break
     done
     [ "$_replacement_ok" = 1 ] || _slot_rc=1
