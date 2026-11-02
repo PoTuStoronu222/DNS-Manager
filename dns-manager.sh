@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="4.05"
+VERSION="4.06"
 # 3.86: make LuCI the primary interface and preserve external DNS on removal.
 # 3.85: revalidate Watchdog settings before recovery.
 # 3.84: cap DNS catalog test concurrency by total RAM on small routers.
@@ -7580,6 +7580,7 @@ watchdog_save_check_results() {
     chmod 600 "$_tmp" 2>/dev/null || true
     mv -f "$_tmp" "$WATCHDOG_CHECK_RESULTS" || { rm -f "$_tmp" "$_src" 2>/dev/null || true; return 1; }
     rm -f "$_src" 2>/dev/null || true
+    log_msg "Проверка DNS: проверено $_checked, проблем: $_failed."
     return 0
 }
 watchdog_loop_repair_cooldown_ok() {
@@ -8828,6 +8829,7 @@ watchdog_service_recover_run() {
     return "$_rc"
 }
 watchdog_apply_toggle() {
+    local _wd_log_requested _wd_log_enabled _wd_log_autoreplace
     _new="$1"
     case "$_new" in
         0|1) ;;
@@ -8838,6 +8840,7 @@ watchdog_apply_toggle() {
     [ "$_old_enabled" = 1 ] || _old_enabled=0
     _old_autoreplace="$(cfg_get WATCHDOG_AUTOREPLACE 2>/dev/null || true)"
     [ "$_old_autoreplace" = 1 ] || _old_autoreplace=0
+    _wd_log_requested="$_new"; _wd_log_enabled="$_old_enabled"; _wd_log_autoreplace="$_old_autoreplace"
 
     _old_service_present=0
     [ -x "$WATCHDOG_SERVICE_PATH" ] && watchdog_service_file_owned "$WATCHDOG_SERVICE_PATH" "$WATCHDOG_SERVICE_MARKER" && _old_service_present=1
@@ -8849,6 +8852,10 @@ watchdog_apply_toggle() {
     WATCHDOG_ENABLED="$_new"
     [ "$_new" = 1 ] || WATCHDOG_AUTOREPLACE=0
     if apply_watchdog; then
+        if [ "$_wd_log_requested" != "$_wd_log_enabled" ]; then
+            if [ "$_wd_log_requested" = 1 ]; then log_msg "Проверка DNS включена."; else log_msg "Проверка DNS выключена."; fi
+        fi
+        if [ "$_wd_log_requested" = 0 ] && [ "$_wd_log_autoreplace" = 1 ]; then log_msg "Автозамена DNS выключена."; fi
         return 0
     fi
 
@@ -8876,13 +8883,20 @@ watchdog_apply_toggle() {
     return 1
 }
 watchdog_apply_autoreplace_toggle() {
+    local _wd_log_requested _wd_log_old
     _new="$1"
     case "$_new" in 0|1) ;; *) return 1;; esac
     [ "$_new" = 0 ] || [ "${WATCHDOG_ENABLED:-0}" = 1 ] || return 2
     _old="$(cfg_get WATCHDOG_AUTOREPLACE 2>/dev/null || true)"
     [ "$_old" = 1 ] || _old=0
+    _wd_log_requested="$_new"; _wd_log_old="$_old"
     WATCHDOG_AUTOREPLACE="$_new"
-    if save_config >/dev/null 2>&1 && [ "$(cfg_get WATCHDOG_AUTOREPLACE)" = "$_new" ]; then return 0; fi
+    if save_config >/dev/null 2>&1 && [ "$(cfg_get WATCHDOG_AUTOREPLACE)" = "$_new" ]; then
+        if [ "$_wd_log_requested" != "$_wd_log_old" ]; then
+            if [ "$_wd_log_requested" = 1 ]; then log_msg "Автозамена DNS включена."; else log_msg "Автозамена DNS выключена."; fi
+        fi
+        return 0
+    fi
     WATCHDOG_AUTOREPLACE="$_old"
     save_config >/dev/null 2>&1 || true
     return 1
