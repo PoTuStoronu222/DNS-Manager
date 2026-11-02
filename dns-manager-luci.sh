@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager full installer and LuCI companion
-# Version: 2.19
+# Version: 2.20
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.19"
+VERSION="2.20"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -762,7 +762,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.19"
+SELF_VERSION="2.20"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -3610,7 +3610,27 @@ job_json() {
     printf ',"output":'; json_quote "$(tail -n 80 "$_d/output" 2>/dev/null || true)"
     printf '}' 
 }
-log_json() { _n="$1"; case "$_n" in ''|*[!0-9]*) _n=80;; esac; [ "$_n" -gt 300 ] && _n=300; printf '{"ok":true'; page_header_json; printf ',"log":'; json_quote "$(tail -n "$_n" /var/log/dns-manager.log 2>/dev/null || true)"; printf '}'; }
+log_json() {
+    _n="$1"; case "$_n" in ''|*[!0-9]*) _n=80;; esac
+    [ "$_n" -gt 300 ] && _n=300
+    _manager_log="$(tail -n "$_n" /var/log/dns-manager.log 2>/dev/null || true)"
+    _system_log=""
+    if command -v logread >/dev/null 2>&1; then
+        _system_log="$(logread -e 'dns-manager:' 2>/dev/null | tail -n "$_n" || true)"
+    fi
+    _log_text=""
+    [ -z "$_manager_log" ] || _log_text="Журнал DNS Manager:
+$_manager_log"
+    if [ -n "$_system_log" ]; then
+        [ -z "$_log_text" ] || _log_text="$_log_text
+
+"
+        _log_text="${_log_text}Фоновая проверка и события DNS Manager:
+$_system_log"
+    fi
+    printf '{"ok":true'; page_header_json
+    printf ',"log":'; json_quote "$_log_text"; printf '}'
+}
 
 catalog_json() {
     _category="$(jget category)"; _offset="$(jget offset)"; _limit="$(jget limit)"; _only_ok="$(jget only_ok)"
@@ -4153,7 +4173,7 @@ EOF_RPC_WRAPPER
 'require ui';
 'require session';
 
-// DNS Manager LuCI common module version: 2.19
+// DNS Manager LuCI common module version: 2.20
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -6167,11 +6187,16 @@ function renderCatalogBody(root,data){
 }
 
 function renderLog(root){
-  var e=root.querySelector('#dm-log');if(!e)return;e.innerHTML='';
+  var e=root.querySelector('#dm-log');if(!e)return;
+  var previous=e.querySelector('.dm-log'),oldTop=previous?previous.scrollTop:0;
+  var follow=!previous||previous.scrollHeight-previous.clientHeight-oldTop<20;
+  e.innerHTML='';
   var ch=[];if(state.pageNotice.log)ch.push(E('div',{'class':'dm-inline-msg info'},state.pageNotice.log));
   if(state.logLoaded)ch.push(E('pre',{'class':'dm-log'},stripAnsi(state.logText||'')));
   else ch.push(E('div',{'class':'dm-hint'},'Журнал загружается автоматически при открытии этой вкладки.'));
   e.appendChild(card('Журнал',ch));
+  var log=e.querySelector('.dm-log');
+  if(log)window.setTimeout(function(){if(e.querySelector('.dm-log')===log)log.scrollTop=follow?log.scrollHeight:oldTop;},0);
 }
 
 function renderJobIdle(root,st){
@@ -6290,13 +6315,13 @@ function saveRouteCache(key,st,aux){
     var entry=JSON.parse(JSON.stringify({ts:Date.now(),data:st,aux:aux}));
     window.dmRouteCache[key]=entry;
     if(typeof session!=='undefined'&&session.setLocalData)
-      session.setLocalData('dns-manager-route-2.19-'+key,entry);
+      session.setLocalData('dns-manager-route-2.20-'+key,entry);
   }catch(e){}
 }
 function routeCacheEntry(key){
   var entry=key&&window.dmRouteCache&&window.dmRouteCache[key];
   if(!entry&&key){
-    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.19-'+key);}catch(e){}
+    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.20-'+key);}catch(e){}
   }
   if(!entry||typeof entry.ts!=='number'||Date.now()-entry.ts<0||Date.now()-entry.ts>300000||!entry.data||entry.data.ok!==true)return null;
   return entry;
@@ -7322,7 +7347,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 2.19
+// DNS Manager LuCI version: 2.20
 return view.extend({
   load: DM.load,
   render: DM.render,
