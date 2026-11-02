@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager full installer and LuCI companion
-# Version: 2.18
+# Version: 2.19
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.18"
+VERSION="2.19"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -762,7 +762,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.18"
+SELF_VERSION="2.19"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -2009,6 +2009,12 @@ page_header_json() {
     printf ',"luci_version":'; json_quote "$_ph_lv"
     printf ',"last_full_test":'; json_quote "$_ph_last"
     printf ',"last_full_test_scope":'; json_quote "$_ph_scope"
+    _ph_watchdog_file="$STATE_DIR/dns-watchdog-check-results.conf"
+    _ph_watchdog_at="$(sed -n 's/^timestamp=//p' "$_ph_watchdog_file" 2>/dev/null | head -n1)"
+    _ph_watchdog_cat="$(sed -n 's/^category=//p' "$_ph_watchdog_file" 2>/dev/null | head -n1)"
+    case "$_ph_watchdog_at" in ''|*[!0-9]*) _ph_watchdog_at=0;; esac
+    [ -n "$_ph_watchdog_cat" ] || _ph_watchdog_cat=unknown
+    printf ',"watchdog_last_check":%s,"watchdog_last_category":' "$_ph_watchdog_at"; json_quote "$_ph_watchdog_cat"
     _ph_regional="$(cfg_get REGIONAL_MODE)"
     case "$_ph_regional" in doh|legacy|yandex|isp) ;; *) [ -n "$(cfg_get SLOT_RU)" ] && _ph_regional=legacy || _ph_regional=doh;; esac
     printf ',"regional_mode":'; json_quote "$_ph_regional"
@@ -2173,8 +2179,7 @@ network_status_json() {
     case "$_watchdog_last_checked" in ''|*[!0-9]*) _watchdog_last_checked=0;; esac
     case "$_watchdog_last_failed" in ''|*[!0-9]*) _watchdog_last_failed=0;; esac
     [ -n "$_watchdog_last_category" ] || _watchdog_last_category=unknown
-    printf ',"watchdog_last_check":%s,"watchdog_last_checked":%s,"watchdog_last_failed":%s,"watchdog_last_category":' "$_watchdog_last_check" "$_watchdog_last_checked" "$_watchdog_last_failed"
-    json_quote "$_watchdog_last_category"
+    printf ',"watchdog_last_checked":%s,"watchdog_last_failed":%s' "$_watchdog_last_checked" "$_watchdog_last_failed"
     printf ',"watchdog_last_records":['
     _wd_rec_sep=""
     if [ -r "$_watchdog_check_file" ]; then
@@ -3605,7 +3610,7 @@ job_json() {
     printf ',"output":'; json_quote "$(tail -n 80 "$_d/output" 2>/dev/null || true)"
     printf '}' 
 }
-log_json() { _n="$1"; case "$_n" in ''|*[!0-9]*) _n=80;; esac; [ "$_n" -gt 300 ] && _n=300; printf '{"ok":true,"log":'; json_quote "$(tail -n "$_n" /var/log/dns-manager.log 2>/dev/null || true)"; printf '}'; }
+log_json() { _n="$1"; case "$_n" in ''|*[!0-9]*) _n=80;; esac; [ "$_n" -gt 300 ] && _n=300; printf '{"ok":true'; page_header_json; printf ',"log":'; json_quote "$(tail -n "$_n" /var/log/dns-manager.log 2>/dev/null || true)"; printf '}'; }
 
 catalog_json() {
     _category="$(jget category)"; _offset="$(jget offset)"; _limit="$(jget limit)"; _only_ok="$(jget only_ok)"
@@ -4148,7 +4153,7 @@ EOF_RPC_WRAPPER
 'require ui';
 'require session';
 
-// DNS Manager LuCI common module version: 2.18
+// DNS Manager LuCI common module version: 2.19
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -6243,7 +6248,7 @@ function routeStatusCall(){
         if(!r||r.ok===false){state.logLoaded=false;state.pageNotice.log=(r&&r.error)||'Не удалось загрузить журнал.';return {ok:true};}
         state.logLoaded=true;
         state.logText=stripAnsi((r&&r.log)||'');
-        return {ok:true};
+        var st=Object.assign({},r);delete st.log;return st;
       });
     case 'dashboard':
       return callStatus(0);
@@ -6285,13 +6290,13 @@ function saveRouteCache(key,st,aux){
     var entry=JSON.parse(JSON.stringify({ts:Date.now(),data:st,aux:aux}));
     window.dmRouteCache[key]=entry;
     if(typeof session!=='undefined'&&session.setLocalData)
-      session.setLocalData('dns-manager-route-2.18-'+key,entry);
+      session.setLocalData('dns-manager-route-2.19-'+key,entry);
   }catch(e){}
 }
 function routeCacheEntry(key){
   var entry=key&&window.dmRouteCache&&window.dmRouteCache[key];
   if(!entry&&key){
-    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.18-'+key);}catch(e){}
+    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.19-'+key);}catch(e){}
   }
   if(!entry||typeof entry.ts!=='number'||Date.now()-entry.ts<0||Date.now()-entry.ts>300000||!entry.data||entry.data.ok!==true)return null;
   return entry;
@@ -6371,7 +6376,8 @@ function warmupFetch(route,allowed){
   if(route==='time')return get(callTimeStatus).then(function(st){return {data:st,aux:null};});
   if(route==='log')return get(function(){return callLog(160);}).then(function(log){
     if(!log||log.ok!==true)throw new Error('log unavailable');
-    return {data:{ok:true},aux:{log:stripAnsi(String(log.log||'')).slice(-131072)}};
+    var st=Object.assign({},log);delete st.log;
+    return {data:st,aux:{log:stripAnsi(String(log.log||'')).slice(-131072)}};
   });
   if(route==='devices')return get(callDohStatus).then(function(st){
     return get(callLanDevices).then(function(devices){
@@ -7316,7 +7322,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 2.18
+// DNS Manager LuCI version: 2.19
 return view.extend({
   load: DM.load,
   render: DM.render,
