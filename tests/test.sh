@@ -611,7 +611,7 @@ grep -Fq "disabled:!!state.busy||!!state.jobRunning||unavailable||checking" dns-
 grep -q "'gaming','Игровые DNS'" dns-manager-luci.sh || fail "gaming catalog label missing in LuCI"
 grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validation missing gaming category"
 grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
-grep -q 'VERSION="4.02"' dns-manager.sh || fail "manager version not bumped"
+grep -q 'VERSION="4.03"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
 grep -q 'VERSION="2.17"' dns-manager-luci.sh || fail "LuCI version not bumped"
 grep -Fq "{id:'quad9plain',ips:'9.9.9.10,149.112.112.10,2620:fe::10,2620:fe::fe:10'}" dns-manager-luci.sh || fail "historical Quad9 bootstrap snapshot changed"
@@ -897,8 +897,8 @@ view_luci="$(sed -n 's|^// DNS Manager LuCI common module version:[[:space:]]*||
 dashboard_view_luci="$(sed -n 's|^// DNS Manager LuCI version: *||p' dns-manager-luci.sh | head -n1)"
 [ "$top_luci" = "$dashboard_view_luci" ] || fail "dashboard view version marker is stale"
 ok "LuCI version markers synchronized ($top_luci)"
-grep -Fq 'VERSION="4.02"' dns-manager.sh || fail "DNS Manager version marker is not 4.02"
-ok "DNS Manager version marker synchronized (4.02)"
+grep -Fq 'VERSION="4.03"' dns-manager.sh || fail "DNS Manager version marker is not 4.03"
+ok "DNS Manager version marker synchronized (4.03)"
 grep -Fq "assignment.appendChild(btn('Удалить'" dns-manager-luci.sh || fail "Custom DNS delete button is not aligned with the assignment action"
 grep -Fq ".dm-catalog-item-custom{grid-column:auto}" dns-manager-luci.sh || fail "Custom DNS card is wider than a stock catalog card"
 grep -Fq ".dm-catalog-controls-custom .dm-assign-inline select{height:30px;min-width:0;width:auto;max-width:100%;flex:1 1 160px" dns-manager-luci.sh || fail "Custom DNS actions do not have a responsive inline layout"
@@ -1957,11 +1957,11 @@ awk '/^watchdog_loop_reset_slot\(\) \{/,/^}/' dns-manager.sh > "$tmp/watchdog_tr
 awk '/^watchdog_loop_track_slot\(\) \{/,/^}/' dns-manager.sh >> "$tmp/watchdog_track_slot.sh"
 (
     . "$tmp/watchdog_track_slot.sh"
-    WD_ID_1=old WD_FAIL_1=1 WD_MISSING_1=1 WD_REPAIR_TS_1=123
+    WD_ID_1=old WD_FAIL_1=1 WD_MISSING_1=1 WD_REPAIR_TS_1=123 WD_RECOVERY_BLOCKED_1=1
     watchdog_loop_track_slot 1 old
-    [ "$WD_FAIL_1" = 1 ] && [ "$WD_MISSING_1" = 1 ] || exit 1
+    [ "$WD_FAIL_1" = 1 ] && [ "$WD_MISSING_1" = 1 ] && [ "$WD_RECOVERY_BLOCKED_1" = 1 ] || exit 1
     watchdog_loop_track_slot 1 new
-    [ "$WD_ID_1" = new ] && [ "$WD_FAIL_1" = 0 ] && [ "$WD_MISSING_1" = 0 ] && [ "$WD_REPAIR_TS_1" = 123 ] || exit 2
+    [ "$WD_ID_1" = new ] && [ "$WD_FAIL_1" = 0 ] && [ "$WD_MISSING_1" = 0 ] && [ "$WD_REPAIR_TS_1" = 123 ] && [ "$WD_RECOVERY_BLOCKED_1" = 0 ] || exit 2
     WD_FAIL_1=1
     watchdog_loop_track_slot 1 ''
     [ -z "$WD_ID_1" ] && [ "$WD_FAIL_1" = 0 ] || exit 3
@@ -1987,6 +1987,7 @@ grep -Fq 'watchdog_slot_target_run "$_trigger" "$_trigger_id" "$_trigger_port"' 
 ok "watchdog isolates slot failure counts and rejects stale replacement decisions"
 sh tests/watchdog-single-dns-test.sh || fail "single DNS watchdog candidate safety"
 sh tests/watchdog-candidate-rollback-test.sh || fail "watchdog candidate rollback"
+sh tests/watchdog-restart-cooldown-test.sh || fail "watchdog service restart cooldown"
 cat > "$tmp/watchdog_lock_refusal_runner.sh" <<'EOF_WATCHDOG_LOCK_REFUSAL'
 #!/bin/sh
 set -eu
