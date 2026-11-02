@@ -8423,7 +8423,7 @@ watchdog_common_dns_outage() {
     return 1
 }
 watchdog_slot_target_run() {
-    local _slot _target_id _target_port _target_cat _promote_fallback _target_live _allow_clean _slot_rc _old_id _old_cat _domain _used _tried _replacement_ok _picked _repl _repl_cat _expected_id _expected_port _single_mode _configured _history
+    local _slot _target_id _target_port _target_cat _promote_fallback _target_live _allow_clean _slot_rc _old_id _old_cat _domain _used _tried _replacement_ok _picked _repl _repl_cat _expected_id _expected_port _single_mode _configured _history _candidate_url
     _slot="$1"
     _expected_id="${2:-}"; _expected_port="${3:-}"
     _single_mode="${4:-}"
@@ -8557,6 +8557,8 @@ watchdog_slot_target_run() {
         if [ "$_single_mode" = single ]; then
             _history="$(cat "$_tried")"
             eval "WD_SINGLE_TRIED_${_slot}=\$_history"
+            _candidate_url="$(dns_url "$_repl" 2>/dev/null || true)"
+            [ -n "$_candidate_url" ] || break
             if ! watchdog_probe_single_candidate "$_repl"; then
                 log_msg "Watchdog slot $_slot: кандидат не подтвердился напрямую; существующие DNS-настройки сохранены."
                 break
@@ -8567,6 +8569,14 @@ watchdog_slot_target_run() {
                [ "${WATCHDOG_AUTOREPLACE:-0}" != 1 ] || ! watchdog_slot_config_matches "$_slot" "$_target_id" "$_target_port"; then
                 break
             fi
+            _configured=0
+            for _s in 1 2 3 4 5 6 RU; do
+                eval "_uid=\${SLOT_${_s}:-}"
+                [ -n "$_uid" ] && _configured=$((_configured+1))
+            done
+            [ "$_configured" = 1 ] || break
+            [ "$(dns_cat "$_repl" 2>/dev/null || true)" = "$_target_cat" ] || break
+            [ "$(dns_url "$_repl" 2>/dev/null || true)" = "$_candidate_url" ] || break
             if watchdog_check_slot "$_slot"; then
                 _replacement_ok=1
                 eval "WD_SINGLE_TRIED_${_slot}=''"

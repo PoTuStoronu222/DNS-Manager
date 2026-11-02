@@ -22,12 +22,12 @@ WD_SINGLE_TRIED_1=
 MODE=ok CHECKS=0 APPLY=0 PROBES=0 LOADS=0
 dns_cat() { if [ "$MODE" = custom ]; then printf custom; else printf clean; fi; }
 dns_name() { printf '%s' "$1"; }
-dns_url() { printf 'https://%s.example/dns-query' "$1"; }
+dns_url() { if [ "$MODE" = urlchange ] && [ -f "$tmp/urlchanged" ] && [ "$1" = candidate ]; then printf 'https://changed.example/dns-query'; else printf 'https://%s.example/dns-query' "$1"; fi; }
 normalize_url() { printf '%s' "$1"; }
 watchdog_resource_guard() { return 0; }
 acquire_mutation_lock() { return 0; }
 release_mutation_lock() { return 0; }
-load_config() { LOADS=$((LOADS+1)); [ "$MODE" != changed ] || [ "$LOADS" -lt 2 ] || SLOT_1=new; [ "$MODE" != disabled ] || [ "$LOADS" -lt 2 ] || WATCHDOG_AUTOREPLACE=0; return 0; }
+load_config() { LOADS=$((LOADS+1)); [ "$MODE" != changed ] || [ "$LOADS" -lt 2 ] || SLOT_1=new; [ "$MODE" != disabled ] || [ "$LOADS" -lt 2 ] || WATCHDOG_AUTOREPLACE=0; [ "$MODE" != added ] || [ "$LOADS" -lt 2 ] || SLOT_2=other; return 0; }
 watchdog_slot_config_matches() { [ "$SLOT_1" = "$2" ] && [ "$PORT_1" = "$3" ]; }
 watchdog_check_slot() { CHECKS=$((CHECKS+1)); [ "$MODE" = recovered ] && [ "$CHECKS" -ge 2 ]; }
 watchdog_common_dns_outage() { case "$MODE" in uncertain) return 2;; *) return 0;; esac; }
@@ -37,10 +37,10 @@ watchdog_pick_replacement() {
     elif ! grep -qxF candidate2 "$3"; then printf 'candidate2|clean\n'
     fi
 }
-watchdog_probe_single_candidate() { PROBES=$((PROBES+1)); [ "$MODE" != offline ]; }
+watchdog_probe_single_candidate() { PROBES=$((PROBES+1)); [ "$MODE" != urlchange ] || : > "$tmp/urlchanged"; [ "$MODE" != offline ]; }
 watchdog_apply_slot_candidate() { APPLY=$((APPLY+1)); [ "$MODE" != rollback ]; }
 log_msg() { :; }
-reset_case() { SLOT_1=old SLOT_2= PORT_1=5053 WATCHDOG_ENABLED=1 WATCHDOG_AUTOREPLACE=1 WD_SINGLE_TRIED_1= CHECKS=0 APPLY=0 PROBES=0 LOADS=0; }
+reset_case() { SLOT_1=old SLOT_2= PORT_1=5053 WATCHDOG_ENABLED=1 WATCHDOG_AUTOREPLACE=1 WD_SINGLE_TRIED_1= CHECKS=0 APPLY=0 PROBES=0 LOADS=0; rm -f "$tmp/urlchanged"; }
 reset_case; MODE=offline
 if watchdog_slot_target_run 1 old 5053 single; then exit 11; fi
 [ "$PROBES" = 1 ] && [ "$APPLY" = 0 ] && [ "$SLOT_1" = old ] || exit 12
@@ -58,6 +58,12 @@ if watchdog_slot_target_run 1 old 5053 single; then exit 17; fi
 reset_case; MODE=disabled
 if watchdog_slot_target_run 1 old 5053 single; then exit 29; fi
 [ "$PROBES" = 1 ] && [ "$APPLY" = 0 ] || exit 30
+reset_case; MODE=added
+if watchdog_slot_target_run 1 old 5053 single; then exit 33; fi
+[ "$PROBES" = 1 ] && [ "$APPLY" = 0 ] || exit 34
+reset_case; MODE=urlchange
+if watchdog_slot_target_run 1 old 5053 single; then exit 35; fi
+[ "$PROBES" = 1 ] && [ "$APPLY" = 0 ] || exit 36
 reset_case; MODE=custom
 if watchdog_slot_target_run 1 old 5053 single; then exit 31; fi
 [ "$PROBES" = 0 ] && [ "$APPLY" = 0 ] || exit 32
