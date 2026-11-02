@@ -31,14 +31,14 @@ HAS_DIG=yes
 WATCHDOG_ENABLED=1 WATCHDOG_AUTOREPLACE=1
 SLOT_1=old SLOT_2= SLOT_3= SLOT_4= SLOT_5= SLOT_6= SLOT_RU= PORT_1=5053
 WD_SINGLE_TRIED_1=
-MODE=ok CHECKS=0 APPLY=0 PROBES=0 LOADS=0 GUARDS=0
+MODE=ok CHECKS=0 APPLY=0 PROBES=0 LOADS=0 GUARDS=0 LOCKED=0 LOCKS=0
 dns_cat() { if [ "$MODE" = custom ]; then printf custom; else printf clean; fi; }
 dns_name() { printf '%s' "$1"; }
 dns_url() { if [ "$MODE" = urlchange ] && [ -f "$tmp/urlchanged" ] && [ "$1" = candidate ]; then printf 'https://changed.example/dns-query'; else printf 'https://%s.example/dns-query' "$1"; fi; }
 normalize_url() { printf '%s' "$1"; }
 watchdog_resource_guard() { GUARDS=$((GUARDS+1)); [ "$MODE" != lowmem ] || [ "$GUARDS" -lt 2 ]; }
-acquire_mutation_lock() { return 0; }
-release_mutation_lock() { return 0; }
+acquire_mutation_lock() { LOCKS=$((LOCKS+1)); [ "$MODE" != relock_fail ] || [ "$LOCKS" -lt 2 ] || return 1; LOCKED=1; return 0; }
+release_mutation_lock() { LOCKED=0; return 0; }
 load_config() { LOADS=$((LOADS+1)); [ "$MODE" != changed ] || [ "$LOADS" -lt 2 ] || SLOT_1=new; [ "$MODE" != disabled ] || [ "$LOADS" -lt 2 ] || WATCHDOG_AUTOREPLACE=0; [ "$MODE" != added ] || [ "$LOADS" -lt 2 ] || SLOT_2=other; return 0; }
 watchdog_slot_config_matches() { [ "$SLOT_1" = "$2" ] && [ "$PORT_1" = "$3" ]; }
 watchdog_check_slot() { CHECKS=$((CHECKS+1)); [ "$MODE" = recovered ] && [ "$CHECKS" -ge 2 ]; }
@@ -49,10 +49,10 @@ watchdog_pick_replacement() {
     elif ! grep -qxF candidate2 "$3"; then printf 'candidate2|clean\n'
     fi
 }
-watchdog_probe_single_candidate() { PROBES=$((PROBES+1)); [ "$MODE" != urlchange ] || : > "$tmp/urlchanged"; [ "$MODE" != offline ]; }
+watchdog_probe_single_candidate() { [ "$LOCKED" = 0 ] || exit 41; PROBES=$((PROBES+1)); [ "$MODE" != urlchange ] || : > "$tmp/urlchanged"; [ "$MODE" != offline ]; }
 watchdog_apply_slot_candidate() { APPLY=$((APPLY+1)); [ "$MODE" != rollback ]; }
 log_msg() { :; }
-reset_case() { SLOT_1=old SLOT_2= PORT_1=5053 WATCHDOG_ENABLED=1 WATCHDOG_AUTOREPLACE=1 WD_SINGLE_TRIED_1= CHECKS=0 APPLY=0 PROBES=0 LOADS=0 GUARDS=0; rm -f "$tmp/urlchanged"; }
+reset_case() { SLOT_1=old SLOT_2= PORT_1=5053 WATCHDOG_ENABLED=1 WATCHDOG_AUTOREPLACE=1 WD_SINGLE_TRIED_1= CHECKS=0 APPLY=0 PROBES=0 LOADS=0 GUARDS=0 LOCKED=0 LOCKS=0; rm -f "$tmp/urlchanged"; }
 reset_case; MODE=offline
 if watchdog_slot_target_run 1 old 5053 single; then exit 11; fi
 [ "$PROBES" = 1 ] && [ "$APPLY" = 0 ] && [ "$SLOT_1" = old ] || exit 12
@@ -79,6 +79,9 @@ if watchdog_slot_target_run 1 old 5053 single; then exit 35; fi
 reset_case; MODE=lowmem
 if watchdog_slot_target_run 1 old 5053 single; then exit 39; fi
 [ "$PROBES" = 1 ] && [ "$APPLY" = 0 ] && [ "$SLOT_1" = old ] || exit 40
+reset_case; MODE=relock_fail
+if watchdog_slot_target_run 1 old 5053 single; then exit 42; fi
+[ "$PROBES" = 1 ] && [ "$APPLY" = 0 ] && [ "$LOCKED" = 0 ] && [ "$SLOT_1" = old ] || exit 43
 reset_case; MODE=custom
 if watchdog_slot_target_run 1 old 5053 single; then exit 31; fi
 [ "$PROBES" = 0 ] && [ "$APPLY" = 0 ] || exit 32
