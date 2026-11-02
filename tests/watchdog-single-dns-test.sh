@@ -42,7 +42,7 @@ release_mutation_lock() { LOCKED=0; return 0; }
 load_config() { LOADS=$((LOADS+1)); [ "$MODE" != changed ] || [ "$LOADS" -lt 2 ] || SLOT_1=new; [ "$MODE" != disabled ] || [ "$LOADS" -lt 2 ] || WATCHDOG_AUTOREPLACE=0; [ "$MODE" != added ] || [ "$LOADS" -lt 2 ] || SLOT_2=other; return 0; }
 watchdog_slot_config_matches() { [ "$SLOT_1" = "$2" ] && [ "$PORT_1" = "$3" ]; }
 watchdog_check_slot() { CHECKS=$((CHECKS+1)); [ "$MODE" = recovered ] && [ "$CHECKS" -ge 2 ]; }
-watchdog_common_dns_outage() { case "$MODE" in uncertain|multi_unknown) return 2;; multi|multi_norestart) return 1;; *) return 0;; esac; }
+watchdog_common_dns_outage() { case "$MODE" in uncertain|multi_unknown) return 2;; multi|multi_norestart|multi_uncertain) return 1;; *) return 0;; esac; }
 watchdog_pick_replacement() {
     [ "$5" = clean ] || return 1
     if ! grep -qxF candidate "$3"; then printf 'candidate|clean\n'
@@ -51,8 +51,8 @@ watchdog_pick_replacement() {
     elif ! grep -qxF candidate4 "$3"; then printf 'candidate4|clean\n'
     fi
 }
-watchdog_probe_single_candidate() { [ "$LOCKED" = 0 ] || exit 41; PROBES=$((PROBES+1)); [ "$MODE" != urlchange ] || : > "$tmp/urlchanged"; [ "$MODE" != offline ] && { [ "$MODE" != first_down ] || [ "$1" != candidate ]; }; }
-watchdog_apply_slot_candidate() { APPLY=$((APPLY+1)); [ "$MODE" = multi_norestart ] || WATCHDOG_RESTART_COUNT=$((WATCHDOG_RESTART_COUNT+1)); [ "$MODE" != rollback ] && [ "$MODE" != multi_norestart ] && { [ "$MODE" != multi ] || [ "$2" = candidate3 ]; }; }
+watchdog_probe_single_candidate() { [ "$LOCKED" = 0 ] || exit 41; PROBES=$((PROBES+1)); [ "$MODE" != urlchange ] || : > "$tmp/urlchanged"; [ "$MODE" != offline ] && { [ "$MODE" != first_down ] || [ "$1" != candidate ]; } && { [ "$MODE" != late ] || [ "$1" = candidate4 ]; }; }
+watchdog_apply_slot_candidate() { APPLY=$((APPLY+1)); [ "$MODE" = multi_norestart ] || WATCHDOG_RESTART_COUNT=$((WATCHDOG_RESTART_COUNT+1)); if [ "$MODE" = multi_uncertain ]; then WATCHDOG_ROLLBACK_UNCERTAIN=1; return 1; fi; [ "$MODE" != rollback ] && [ "$MODE" != multi_norestart ] && { [ "$MODE" != multi ] || [ "$2" = candidate3 ]; }; }
 log_msg() { :; }
 reset_case() { SLOT_1=old SLOT_2= PORT_1=5053 WATCHDOG_ENABLED=1 WATCHDOG_AUTOREPLACE=1 WD_SINGLE_TRIED_1= CHECKS=0 APPLY=0 PROBES=0 LOADS=0 GUARDS=0 LOCKED=0 LOCKS=0; rm -f "$tmp/urlchanged"; }
 reset_case; MODE=offline
@@ -66,6 +66,11 @@ watchdog_slot_target_run 1 old 5053 single || exit 13
 reset_case; MODE=first_down
 watchdog_slot_target_run 1 old 5053 single || exit 44
 [ "$PROBES" = 2 ] && [ "$APPLY" = 1 ] || exit 45
+reset_case; MODE=late
+if watchdog_slot_target_run 1 old 5053 single; then exit 56; fi
+[ "$PROBES" = 3 ] && [ "$APPLY" = 0 ] || exit 57
+watchdog_slot_target_run 1 old 5053 single || exit 58
+[ "$PROBES" = 4 ] && [ "$APPLY" = 1 ] && [ -z "$WD_SINGLE_TRIED_1" ] || exit 59
 reset_case; MODE=multi; SLOT_2=other
 if watchdog_slot_target_run 1 old 5053; then exit 46; fi
 [ "$APPLY" = 2 ] && printf '%s\n' "$WD_SINGLE_TRIED_1" | grep -qxF candidate2 || exit 47
@@ -74,6 +79,9 @@ watchdog_slot_target_run 1 old 5053 || exit 48
 reset_case; MODE=multi_norestart; SLOT_2=other
 if watchdog_slot_target_run 1 old 5053; then exit 50; fi
 [ "$APPLY" = 2 ] && printf '%s\n' "$WD_SINGLE_TRIED_1" | grep -qxF candidate2 || exit 51
+reset_case; MODE=multi_uncertain; SLOT_2=other
+if watchdog_slot_target_run 1 old 5053; then exit 60; fi
+[ "$APPLY" = 1 ] && [ "$WATCHDOG_ROLLBACK_UNCERTAIN" = 1 ] || exit 61
 reset_case; MODE=multi_outage; SLOT_2=other
 if watchdog_slot_target_run 1 old 5053; then exit 52; fi
 [ "$APPLY" = 0 ] && [ "$PROBES" = 0 ] && [ "$SLOT_1" = old ] || exit 53
