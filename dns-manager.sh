@@ -3772,7 +3772,7 @@ verify_selected_doh() {
         eval "_p=\${PORT_$s:-}"
         [ -n "$_id" ] || continue
         [ -n "$_p" ] || { err_msg "Слот $s: боевой порт не определён."; return 1; }
-        if listener_port_exists "$_p" && local_dns_query_ok "$_p" "example.com"; then
+        if listener_port_exists "$_p" && local_dns_query_ok "$_p" "example.com" && { [ "${DNS_SELECTION_MODE:-}" != profile ] || [ "${DNS_SELECTION_CATEGORY:-}" != dnssec ] || dnssec_probe_local "$_p"; }; then
             [ "${APPLY_OUTPUT_QUIET:-0}" = 1 ] || printf "  ${C_GREEN}✓${C_NC} Слот %s работает: 127.0.0.1:%s ← %s\n" "$s" "$_p" "$(dns_name "$_id")"
             _checked=$((_checked+1))
         else
@@ -3907,11 +3907,12 @@ replace_failed_slot_from_test() {
     return 1
 }
 profile_prune_failed_slots() {
-    local _bad _bad_n _live_n _slot _id _port _domain
+    local _bad _bad_n _live_n _general_live _slot _id _port _domain
     _bad="$TMP_DIR/profile-bad-slots-$$"
     : > "$_bad" || return 1
     _bad_n=0
     _live_n=0
+    _general_live=0
 
     for _slot in 1 2 3 4 5 6 RU; do
         eval "_id=\$SLOT_$_slot"
@@ -3927,8 +3928,9 @@ profile_prune_failed_slots() {
             continue
         }
         case "$_slot" in RU) _domain="yandex.ru" ;; *) _domain="example.com" ;; esac
-        if listener_port_exists "$_port" && local_dns_query_ok "$_port" "$_domain"; then
+        if listener_port_exists "$_port" && local_dns_query_ok "$_port" "$_domain" && { [ "$_slot" = RU ] || [ "${DNS_SELECTION_MODE:-}" != profile ] || [ "${DNS_SELECTION_CATEGORY:-}" != dnssec ] || dnssec_probe_local "$_port"; }; then
             _live_n=$((_live_n+1))
+            [ "$_slot" = RU ] || _general_live=$((_general_live+1))
         else
             if [ "$_slot" = RU ]; then
                 rm -f "$_bad"
@@ -3939,6 +3941,10 @@ profile_prune_failed_slots() {
         fi
     done
 
+    if [ "${DNS_SELECTION_MODE:-}" = profile ] && [ "${DNS_SELECTION_CATEGORY:-}" = dnssec ] && [ "$_general_live" -eq 0 ]; then
+        rm -f "$_bad"
+        return 1
+    fi
     if [ "$_bad_n" -eq 0 ]; then
         rm -f "$_bad"
         return 0
@@ -7454,7 +7460,7 @@ watchdog_apply_slot_candidate() {
         normalize_ownership_snapshot >/dev/null 2>&1 || true
         return 0
     fi
-    if watchdog_check_slot "$_slot"; then
+    if watchdog_check_slot "$_slot" && { [ "$_slot" = RU ] || [ "${DNS_SELECTION_MODE:-}" != profile ] || [ "${DNS_SELECTION_CATEGORY:-}" != dnssec ] || dnssec_probe_local "$_port"; }; then
         if ! save_config; then
             watchdog_candidate_rollback >/dev/null 2>&1 || WATCHDOG_ROLLBACK_UNCERTAIN=1
             return 1
