@@ -3285,6 +3285,7 @@ chmod +x "$tmp/tx_restore_on_failure_runner.sh"
 "$tmp/tx_restore_on_failure_runner.sh" "$tmp/tx_restore_on_failure.sh" "$tmp" || fail "transaction rollback left stale profile variables in memory"
 ok "transaction rollback restores the in-memory manager profile"
 
+sh tests/dnssec-probe-test.sh || fail "DNSSEC probe test"
 sh tests/test-uninstall-regression.sh || fail "uninstall regression tests"
 
 printf '%s\n' "All DNS Manager regression checks passed."
