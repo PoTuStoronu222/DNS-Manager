@@ -100,3 +100,15 @@ unknown results reset the corresponding streak. It makes no UCI changes, does
 not track state across calls, and is not called by the watchdog. Crash/reboot
 persistence, transition rollback, concurrent changes, and actual routing remain
 unimplemented and require independent validation before integration.
+## Local NAT experiment
+
+In an isolated Linux network namespace with nftables 1.0.9, a temporary
+output-chain redirect of UDP loopback traffic from a DoH port to a mock
+provider listener could be installed and removed without touching UCI. The
+same rule also intercepted the local watchdog query to the original DoH
+listener: it saw the mock provider response. It therefore cannot be used as
+written to decide recovery. TCP, process-specific scoping, real dnsmasq,
+firewall reload, Steer ordering, local IPv6, provider changes, user changes,
+crash and reboot are not covered. This is an experiment, not a design approved
+for integration. Run `tests/provider-fallback-nft-lab.py` only inside a new
+network namespace with loopback enabled, a working nft binary, and the original namespace inode passed as DNS_LAB_PARENT_NETNS.
