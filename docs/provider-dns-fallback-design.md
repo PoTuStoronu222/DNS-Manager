@@ -134,3 +134,16 @@ establishes behavior in the Linux lab; conntrack availability on OpenWrt,
 UDP/TCP teardown, crash safety, lifecycle ownership, unrelated conntrack
 entries, and integration with Steer and procd are not verified. No cleanup or
 failover code has been connected to production.
+## Steer and return-path limits
+
+Steer v2 documents its own per-rule DNS resolver and separate upstreams, so
+redirecting only local dnsmasq-to-proxy traffic cannot guarantee fallback for
+requests handled by Steer itself. No Steer DNS rule is modified by the lab.
+See https://splify2.github.io/docs/steer/ .
+
+The namespace lab additionally records what happens to a held UDP tuple when
+the redirect table is deleted, then performs targeted conntrack deletion and
+confirms the original listener answers. On the tested kernel that tuple
+reached the original listener immediately after table deletion; no conclusion
+is drawn for OpenWrt kernels, active TCP streams, or unrelated firewall rules.
+This remains isolated experimental code and does not implement failover.

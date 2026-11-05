@@ -119,8 +119,14 @@ try:
             held.bind(('127.0.0.1', old_port))
             subprocess.run([conntrack, '-D', '-p', 'udp', '--orig-src', '127.0.0.1', '--orig-dst', '127.0.0.1', '--sport', str(old_port), '--dport', '5053'], check=True, stdout=subprocess.DEVNULL)
             assert query(socket.SOCK_DGRAM, held) == b'provider'
-        print('OK: targeted conntrack deletion switches that held UDP tuple')
-    rule('delete', 'table', 'ip', 'provider_fallback_lab')
+            print('OK: targeted conntrack deletion switches that held UDP tuple')
+            rule('delete', 'table', 'ip', 'provider_fallback_lab')
+            still_provider = query(socket.SOCK_DGRAM, held)
+            print('same UDP tuple after deleting redirect:', still_provider.decode())
+            subprocess.run([conntrack, '-D', '-p', 'udp', '--orig-src', '127.0.0.1', '--orig-dst', '127.0.0.1', '--sport', str(old_port), '--dport', '5053'], check=True, stdout=subprocess.DEVNULL)
+            assert query(socket.SOCK_DGRAM, held) == b'doh'
+    else:
+        rule('delete', 'table', 'ip', 'provider_fallback_lab')
     assert all(query(k) == b'doh' for k in (socket.SOCK_DGRAM, socket.SOCK_STREAM))
     print('OK: UDP/TCP redirect, held ports, concurrent isolated probes, and removal in a network namespace')
 finally:
