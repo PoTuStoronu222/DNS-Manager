@@ -24,8 +24,11 @@ Before enabling the feature, the implementation must satisfy these conditions:
    missing rule. The UCI helper uses a private save directory and attempts
    rollback on verification failure. Current OpenWrt UCI still reads shared
    pending deltas with a custom save directory; concurrent edits between the
-   last check and commit remain unresolved, so this helper must not be enabled.
-   Integration with real OpenWrt remains to be tested.
+   last check and commit remain unresolved. This was reproduced using a
+   locally built official UCI in an isolated directory. The transaction helpers
+   now fail closed without touching UCI. The standalone development test
+   `tests/provider-fallback-real-uci-race.sh /path/to/uci-source` must pass
+   before removing those guards. Integration with real OpenWrt remains untested.
 5. Preserve and restore per-device DNS bindings and support Steer without
    altering its own rules. A successful fallback must be verified through the
    path actually used by clients, not just by querying the upstream directly.

@@ -1037,6 +1037,10 @@ provider_fallback_journal_classify() (
 # the remaining concurrency window must be resolved before this is connected.
 # This helper does not restart services.
 provider_fallback_replace_servers() (
+    # Disabled: the shared UCI delta can be committed by another process in
+    # the interval between checking it and committing the private delta.
+    # Do not remove this guard until the real-UCI race test is resolved.
+    return 3
     _pfr_section="$1"; _pfr_expected="$2"; _pfr_new="$3"
     case "$_pfr_section" in '@dnsmasq[0]') ;; ''|*[!A-Za-z0-9_]*) return 1;; esac
     [ -s "$_pfr_expected" ] && [ -s "$_pfr_new" ] || return 1
@@ -1120,6 +1124,8 @@ provider_fallback_restore_journal() (
     esac
 )
 provider_fallback_apply_journal() (
+    # Do not create a journal or alter DNS while the UCI race is unresolved.
+    return 3
     _pft_dir="$1"; _pft_section="$2"; _pft_before="$3"; _pft_after="$4"; _pft_config="$5"
     provider_fallback_journal_create "$_pft_dir" "$_pft_section" "$_pft_before" "$_pft_after" "$_pft_config" || return 1
     if ! provider_fallback_replace_servers "$_pft_section" "$_pft_dir/before" "$_pft_dir/after"; then
