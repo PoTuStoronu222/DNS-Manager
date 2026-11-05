@@ -2011,6 +2011,7 @@ sh tests/watchdog-candidate-rollback-test.sh || fail "watchdog candidate rollbac
 sh tests/watchdog-restart-cooldown-test.sh || fail "watchdog service restart cooldown"
 sh tests/watchdog-category-test.sh || fail "watchdog category selection and isolated scan"
 sh tests/provider-fallback-preflight-test.sh || fail "provider fallback candidate and route preflight"
+sh tests/provider-fallback-uci-test.sh || fail "provider fallback UCI staging and conflict checks"
 cat > "$tmp/watchdog_lock_refusal_runner.sh" <<'EOF_WATCHDOG_LOCK_REFUSAL'
 #!/bin/sh
 set -eu

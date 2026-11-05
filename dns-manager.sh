@@ -966,21 +966,22 @@ provider_fallback_plan_servers() (
 # never interpreted as permission to change dnsmasq. The caller holds the
 # mutation lock and must use files from the same validated plan.
 provider_fallback_journal_create() (
-    _pfj_dir="$1"; _pfj_section="$2"; _pfj_before="$3"; _pfj_after="$4"
+    _pfj_dir="$1"; _pfj_section="$2"; _pfj_before="$3"; _pfj_after="$4"; _pfj_config="$5"
     case "$_pfj_section" in
         '@dnsmasq[0]') ;;
         ''|*[!A-Za-z0-9_]*) return 1;;
     esac
-    [ -s "$_pfj_before" ] && [ -s "$_pfj_after" ] || return 1
+    [ -s "$_pfj_before" ] && [ -s "$_pfj_after" ] && [ -s "$_pfj_config" ] || return 1
     cmp -s "$_pfj_before" "$_pfj_after" && return 1
     (umask 077; mkdir "$_pfj_dir") 2>/dev/null || return 1
     if ! (umask 077
         printf '%s\n' "$_pfj_section" > "$_pfj_dir/section" &&
         cp "$_pfj_before" "$_pfj_dir/before" &&
         cp "$_pfj_after" "$_pfj_dir/after" &&
+        cp "$_pfj_config" "$_pfj_dir/config" &&
         printf '%s\n' 'prepared-v1' > "$_pfj_dir/ready"
     ); then
-        rm -f "$_pfj_dir/ready" "$_pfj_dir/section" "$_pfj_dir/before" "$_pfj_dir/after" 2>/dev/null || true
+        rm -f "$_pfj_dir/ready" "$_pfj_dir/section" "$_pfj_dir/before" "$_pfj_dir/after" "$_pfj_dir/config" 2>/dev/null || true
         rmdir "$_pfj_dir" 2>/dev/null || true
         return 1
     fi
@@ -991,7 +992,7 @@ provider_fallback_journal_create() (
 provider_fallback_journal_classify() (
     _pfj_dir="$1"; _pfj_current="$2"
     [ -f "$_pfj_dir/ready" ] && [ "$(cat "$_pfj_dir/ready" 2>/dev/null)" = prepared-v1 ] || return 1
-    [ -s "$_pfj_dir/section" ] && [ -s "$_pfj_dir/before" ] && [ -s "$_pfj_dir/after" ] && [ -f "$_pfj_current" ] || return 1
+    [ -s "$_pfj_dir/section" ] && [ -s "$_pfj_dir/before" ] && [ -s "$_pfj_dir/after" ] && [ -s "$_pfj_dir/config" ] && [ -f "$_pfj_current" ] || return 1
     _pfj_section="$(cat "$_pfj_dir/section" 2>/dev/null)"
     case "$_pfj_section" in '@dnsmasq[0]') ;; ''|*[!A-Za-z0-9_]*) return 1;; esac
     cmp -s "$_pfj_dir/before" "$_pfj_dir/after" && return 1
@@ -999,6 +1000,103 @@ provider_fallback_journal_classify() (
     if cmp -s "$_pfj_current" "$_pfj_dir/after"; then printf '%s\n' after; return 0; fi
     printf '%s\n' changed
     return 0
+)
+# Replace only the server list and only if it still matches the caller's
+# snapshot. Use a private UCI delta directory so unrelated pending LuCI edits
+# are never committed or reverted. This helper does not restart services.
+provider_fallback_replace_servers() (
+    _pfr_section="$1"; _pfr_expected="$2"; _pfr_new="$3"
+    case "$_pfr_section" in '@dnsmasq[0]') ;; ''|*[!A-Za-z0-9_]*) return 1;; esac
+    [ -s "$_pfr_expected" ] && [ -s "$_pfr_new" ] || return 1
+    _pfr_dir="$(mktemp -d "$STATE_DIR/provider-uci.XXXXXX" 2>/dev/null)" || return 1
+    trap 'rm -f "$_pfr_dir/dhcp" "$_pfr_dir/current"; rmdir "$_pfr_dir" 2>/dev/null || true' EXIT HUP INT TERM
+    # Do not race or commit unrelated uncommitted dhcp changes.
+    _pfr_pending="$(uci -q changes dhcp 2>/dev/null)" || return 1
+    [ -z "$_pfr_pending" ] || return 2
+    [ "$(uci -q -P "$_pfr_dir" -x get "dhcp.$_pfr_section" 2>/dev/null)" = dnsmasq ] || return 1
+    uci -q -P "$_pfr_dir" -x get "dhcp.$_pfr_section.server" 2>/dev/null |
+        tr ' ' '\n' | sed '/^$/d' > "$_pfr_dir/current" || return 1
+    cmp -s "$_pfr_expected" "$_pfr_dir/current" || return 2
+    uci -q -P "$_pfr_dir" -x delete "dhcp.$_pfr_section.server" || return 1
+    while IFS= read -r _pfr_server || [ -n "$_pfr_server" ]; do
+        [ -n "$_pfr_server" ] || return 1
+        case "$_pfr_server" in *' '*|*'	'*) return 1;; esac
+        uci -q -P "$_pfr_dir" -x add_list "dhcp.$_pfr_section.server=$_pfr_server" || return 1
+    done < "$_pfr_new"
+    # Recheck the live list immediately before commit. A mismatch must not be
+    # overwritten; the caller retains its journal for inspection.
+    _pfr_pending="$(uci -q changes dhcp 2>/dev/null)" || return 1
+    [ -z "$_pfr_pending" ] || return 2
+    uci -q get "dhcp.$_pfr_section.server" 2>/dev/null |
+        tr ' ' '\n' | sed '/^$/d' > "$_pfr_dir/current" || return 1
+    cmp -s "$_pfr_expected" "$_pfr_dir/current" || return 2
+    uci -q -P "$_pfr_dir" -x commit dhcp || return 1
+    uci -q get "dhcp.$_pfr_section.server" 2>/dev/null |
+        tr ' ' '\n' | sed '/^$/d' > "$_pfr_dir/current" || return 1
+    cmp -s "$_pfr_new" "$_pfr_dir/current" || return 2
+)
+provider_fallback_read_servers() (
+    _pfs_section="$1"
+    case "$_pfs_section" in '@dnsmasq[0]') ;; ''|*[!A-Za-z0-9_]*) return 1;; esac
+    _pfs_value="$(uci -q get "dhcp.$_pfs_section.server" 2>/dev/null)" || return 1
+    [ -n "$_pfs_value" ] || return 1
+    printf '%s\n' "$_pfs_value" | tr ' ' '\n' | sed '/^$/d'
+)
+provider_fallback_restart_dnsmasq() {
+    /etc/init.d/dnsmasq restart >/dev/null 2>&1
+}
+provider_fallback_verify_local() (
+    _pfv_local="$(mktemp "$STATE_DIR/provider-local.XXXXXX" 2>/dev/null)" || return 1
+    trap 'rm -f "$_pfv_local"' EXIT HUP INT TERM
+    printf '127.0.0.1\n' > "$_pfv_local" || return 1
+    provider_fallback_verified_candidates "$_pfv_local" >/dev/null
+)
+# The journal is removed only after dnsmasq has been restored successfully.
+provider_fallback_remove_journal() (
+    _pfj_dir="$1"
+    rm -f "$_pfj_dir/ready" "$_pfj_dir/section" "$_pfj_dir/before" "$_pfj_dir/after" "$_pfj_dir/config" || return 1
+    rmdir "$_pfj_dir"
+)
+provider_fallback_restore_journal() (
+    _pft_dir="$1"; _pft_config="$2"
+    [ -s "$_pft_dir/config" ] && [ -s "$_pft_config" ] || return 1
+    cmp -s "$_pft_dir/config" "$_pft_config" || return 2
+    _pft_section="$(cat "$_pft_dir/section" 2>/dev/null)" || return 1
+    _pft_current="$(mktemp "$STATE_DIR/provider-current.XXXXXX" 2>/dev/null)" || return 1
+    trap 'rm -f "$_pft_current"' EXIT HUP INT TERM
+    provider_fallback_read_servers "$_pft_section" > "$_pft_current" || return 1
+    _pft_state="$(provider_fallback_journal_classify "$_pft_dir" "$_pft_current")" || return 1
+    case "$_pft_state" in
+        before)
+            # A previous process may have stopped after writing UCI but before
+            # restarting dnsmasq. Re-apply the current original list once.
+            provider_fallback_restart_dnsmasq || return 1
+            provider_fallback_remove_journal "$_pft_dir"
+            ;;
+        after)
+            provider_fallback_replace_servers "$_pft_section" "$_pft_dir/after" "$_pft_dir/before" || return $?
+            if provider_fallback_restart_dnsmasq; then
+                provider_fallback_remove_journal "$_pft_dir"
+            else
+                # If recovery failed, try to restore the last verified fallback.
+                provider_fallback_replace_servers "$_pft_section" "$_pft_dir/before" "$_pft_dir/after" >/dev/null 2>&1 &&
+                    provider_fallback_restart_dnsmasq >/dev/null 2>&1 || true
+                return 1
+            fi
+            ;;
+        *) return 2 ;;
+    esac
+)
+provider_fallback_apply_journal() (
+    _pft_dir="$1"; _pft_section="$2"; _pft_before="$3"; _pft_after="$4"; _pft_config="$5"
+    provider_fallback_journal_create "$_pft_dir" "$_pft_section" "$_pft_before" "$_pft_after" "$_pft_config" || return 1
+    if ! provider_fallback_replace_servers "$_pft_section" "$_pft_dir/before" "$_pft_dir/after"; then
+        # Retain the journal when the commit result is uncertain.
+        return 1
+    fi
+    if provider_fallback_restart_dnsmasq && provider_fallback_verify_local; then return 0; fi
+    provider_fallback_restore_journal "$_pft_dir" "$_pft_config" || return 1
+    return 1
 )
 sync_regional_dns_state() {
     if [ -n "${SLOT_RU:-}" ]; then

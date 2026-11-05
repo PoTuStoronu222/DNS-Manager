@@ -90,12 +90,13 @@ if provider_fallback_plan_servers "$tmp/original" "$tmp/ports" "$tmp/providers" 
     echo 'FAIL: missing managed route was silently ignored' >&2
     exit 1
 fi
-provider_fallback_journal_create "$tmp/journal" cfg123 "$tmp/original" "$tmp/planned"
+printf 'SLOT_1=one\n' > "$tmp/config"
+provider_fallback_journal_create "$tmp/journal" cfg123 "$tmp/original" "$tmp/planned" "$tmp/config"
 [ "$(provider_fallback_journal_classify "$tmp/journal" "$tmp/original")" = before ] || exit 1
 [ "$(provider_fallback_journal_classify "$tmp/journal" "$tmp/planned")" = after ] || exit 1
 printf '/new-third-party/192.168.7.1\n' >> "$tmp/planned"
 [ "$(provider_fallback_journal_classify "$tmp/journal" "$tmp/planned")" = changed ] || exit 1
-if provider_fallback_journal_create "$tmp/journal" cfg123 "$tmp/original" "$tmp/planned"; then
+if provider_fallback_journal_create "$tmp/journal" cfg123 "$tmp/original" "$tmp/planned" "$tmp/config"; then
     echo 'FAIL: replaced an existing recovery journal' >&2
     exit 1
 fi
