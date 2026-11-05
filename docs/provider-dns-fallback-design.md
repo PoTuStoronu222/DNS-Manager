@@ -112,3 +112,9 @@ firewall reload, Steer ordering, local IPv6, provider changes, user changes,
 crash and reboot are not covered. This is an experiment, not a design approved
 for integration. Run `tests/provider-fallback-nft-lab.py` only inside a new
 network namespace with loopback enabled, a working nft binary, and the original namespace inode passed as DNS_LAB_PARENT_NETNS.
+A follow-up isolated UDP test added an exception for a dedicated source port:
+a probe explicitly bound to that port reached the original local listener,
+while an ordinary query reached the redirected listener. This is a possible
+building block, not a safe implementation: source-port collisions, concurrent
+probes, dig variants, timeout behavior, TCP, conntrack, firewall interference,
+Steer, provider listeners and reboot still require implementation and tests.

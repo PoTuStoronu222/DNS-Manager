@@ -30,9 +30,11 @@ def serve(port, answer):
     threading.Thread(target=loop, daemon=True).start()
     return s
 
-def query():
+def query(source_port=None):
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
         s.settimeout(3)
+        if source_port is not None:
+            s.bind(('127.0.0.1', source_port))
         s.sendto(b'probe', ('127.0.0.1', 5053))
         return s.recvfrom(64)[0]
 
@@ -50,6 +52,10 @@ try:
     client = query()
     watchdog = query()
     assert client == b'provider' and watchdog == b'provider'
+    rule('insert', 'rule', 'ip', 'provider_fallback_lab', 'output', 'ip', 'daddr', '127.0.0.1', 'udp', 'sport', '15453', 'udp', 'dport', '5053', 'return')
+    assert query(15453) == b'doh', 'explicitly bound probe did not reach DoH'
+    assert query() == b'provider', 'client did not reach provider'
+    print('OK: dedicated source port bypasses the rule in this isolated experiment')
     rule('delete', 'table', 'ip', 'provider_fallback_lab')
     assert query() == b'doh'
     print('OK: redirect and removal work; unrestricted local watchdog probe is also redirected')
