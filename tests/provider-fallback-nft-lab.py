@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Run only in a disposable network namespace: python3 SCRIPT /path/to/nft.
+"""Isolated Linux networking lab; not production fallback code.
 
-Demonstrates that a simple NAT rule also intercepts local DoH health checks.
-Requires loopback up and CAP_NET_ADMIN in the current network namespace.
+Provide DNS_LAB_PARENT_NETNS and run in a different network namespace with
+loopback up, CAP_NET_ADMIN and a path to nft as argv[1].
 """
+import concurrent.futures
 import os
 import socket
 import subprocess
@@ -13,54 +14,103 @@ import threading
 if len(sys.argv) != 2:
     raise SystemExit('usage: python3 provider-fallback-nft-lab.py /path/to/nft')
 nft = sys.argv[1]
-parent_netns = os.environ.get('DNS_LAB_PARENT_NETNS', '')
-if not parent_netns.isdigit() or os.stat('/proc/self/ns/net').st_ino == int(parent_netns):
+parent = os.environ.get('DNS_LAB_PARENT_NETNS', '')
+if not parent.isdigit() or os.stat('/proc/self/ns/net').st_ino == int(parent):
     raise SystemExit('run in a new network namespace and provide DNS_LAB_PARENT_NETNS')
 
-def serve(port, answer):
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    s.bind(('127.0.0.1', port))
+def serve(port, answer, kind):
+    sock = socket.socket(socket.AF_INET, kind)
+    sock.bind(('127.0.0.1', port))
+    if kind == socket.SOCK_STREAM:
+        sock.listen(16)
     def loop():
         while True:
             try:
-                _, peer = s.recvfrom(64)
-                s.sendto(answer, peer)
+                if kind == socket.SOCK_DGRAM:
+                    _, peer = sock.recvfrom(64)
+                    sock.sendto(answer, peer)
+                else:
+                    conn, _ = sock.accept()
+                    with conn:
+                        conn.recv(64)
+                        conn.sendall(answer)
             except OSError:
                 return
     threading.Thread(target=loop, daemon=True).start()
-    return s
-
-def query(source_port=None):
-    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-        s.settimeout(3)
-        if source_port is not None:
-            s.bind(('127.0.0.1', source_port))
-        s.sendto(b'probe', ('127.0.0.1', 5053))
-        return s.recvfrom(64)[0]
+    return sock
 
 def rule(*args):
     subprocess.run([nft, *args], check=True, stdout=subprocess.DEVNULL)
 
-original, backup = serve(5053, b'doh'), serve(15053, b'provider')
+def socket_for(kind):
+    sock = socket.socket(socket.AF_INET, kind)
+    sock.settimeout(3)
+    return sock
+
+def query(kind, sock=None):
+    own = sock is None
+    sock = sock or socket_for(kind)
+    try:
+        if kind == socket.SOCK_DGRAM:
+            sock.sendto(b'probe', ('127.0.0.1', 5053))
+            return sock.recvfrom(64)[0]
+        sock.connect(('127.0.0.1', 5053))
+        sock.sendall(b'probe')
+        return sock.recv(64)
+    finally:
+        if own:
+            sock.close()
+
+servers = [serve(5053, b'doh', k) for k in (socket.SOCK_DGRAM, socket.SOCK_STREAM)]
+servers += [serve(15053, b'provider', k) for k in (socket.SOCK_DGRAM, socket.SOCK_STREAM)]
 created = False
 try:
-    assert query() == b'doh'
+    assert all(query(k) == b'doh' for k in (socket.SOCK_DGRAM, socket.SOCK_STREAM))
     rule('add', 'table', 'ip', 'provider_fallback_lab')
     created = True
     rule('add', 'chain', 'ip', 'provider_fallback_lab', 'output', '{', 'type', 'nat', 'hook', 'output', 'priority', 'dstnat', ';', '}')
-    rule('add', 'rule', 'ip', 'provider_fallback_lab', 'output', 'ip', 'daddr', '127.0.0.1', 'udp', 'dport', '5053', 'redirect', 'to', ':15053')
-    client = query()
-    watchdog = query()
-    assert client == b'provider' and watchdog == b'provider'
-    rule('insert', 'rule', 'ip', 'provider_fallback_lab', 'output', 'ip', 'daddr', '127.0.0.1', 'udp', 'sport', '15453', 'udp', 'dport', '5053', 'return')
-    assert query(15453) == b'doh', 'explicitly bound probe did not reach DoH'
-    assert query() == b'provider', 'client did not reach provider'
-    print('OK: dedicated source port bypasses the rule in this isolated experiment')
+    for proto in ('udp', 'tcp'):
+        rule('add', 'rule', 'ip', 'provider_fallback_lab', 'output', 'ip', 'daddr', '127.0.0.1', proto, 'dport', '5053', 'redirect', 'to', ':15053')
+    assert all(query(k) == b'provider' for k in (socket.SOCK_DGRAM, socket.SOCK_STREAM))
+
+    # Keep an occupied port open while another socket requests an available one.
+    occupied = socket_for(socket.SOCK_DGRAM)
+    occupied.bind(('127.0.0.1', 0))
+    probe = socket_for(socket.SOCK_DGRAM)
+    probe.bind(('127.0.0.1', 0))
+    assert occupied.getsockname()[1] != probe.getsockname()[1]
+    occupied.close()
+    probe.close()
+
+    # A probe keeps its socket bound while registering an exception for its
+    # kernel-assigned port. In production this would require an actual socket
+    # owner and lifecycle/cleanup mechanism, not a shell reservation.
+    gate = threading.Barrier(4)
+    registered = []
+    def probe_direct(kind):
+        proto = 'udp' if kind == socket.SOCK_DGRAM else 'tcp'
+        with socket_for(kind) as sock:
+            sock.bind(('127.0.0.1', 0))
+            port = sock.getsockname()[1]
+            registered.append((kind, port))
+            rule('insert', 'rule', 'ip', 'provider_fallback_lab', 'output', 'ip', 'daddr', '127.0.0.1', proto, 'sport', str(port), proto, 'dport', '5053', 'return')
+            gate.wait(timeout=5)
+            return query(kind, sock)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+        jobs = [pool.submit(probe_direct, k) for k in (socket.SOCK_DGRAM, socket.SOCK_DGRAM, socket.SOCK_STREAM, socket.SOCK_STREAM)]
+        assert [x.result() for x in jobs] == [b'doh'] * 4
+    assert all(query(k) == b'provider' for k in (socket.SOCK_DGRAM, socket.SOCK_STREAM))
+    # A stale exception also exempts a new socket after its original owner closes.
+    old_port = next(port for kind, port in registered if kind == socket.SOCK_DGRAM)
+    with socket_for(socket.SOCK_DGRAM) as reused:
+        reused.bind(('127.0.0.1', old_port))
+        assert query(socket.SOCK_DGRAM, reused) == b'doh'
+    print('WARNING: stale probe exception also exempts a reused source port')
     rule('delete', 'table', 'ip', 'provider_fallback_lab')
-    assert query() == b'doh'
-    print('OK: redirect and removal work; unrestricted local watchdog probe is also redirected')
+    assert all(query(k) == b'doh' for k in (socket.SOCK_DGRAM, socket.SOCK_STREAM))
+    print('OK: UDP/TCP redirect, held ports, concurrent isolated probes, and removal in a network namespace')
 finally:
     if created:
         subprocess.run([nft, 'delete', 'table', 'ip', 'provider_fallback_lab'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    original.close()
-    backup.close()
+    for server in servers:
+        server.close()

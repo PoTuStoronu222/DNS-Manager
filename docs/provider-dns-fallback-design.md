@@ -118,3 +118,10 @@ while an ordinary query reached the redirected listener. This is a possible
 building block, not a safe implementation: source-port collisions, concurrent
 probes, dig variants, timeout behavior, TCP, conntrack, firewall interference,
 Steer, provider listeners and reboot still require implementation and tests.
+The namespace lab now exercises UDP and TCP, kernel-assigned source ports held
+open by the querying sockets, four simultaneous probes, and deletion of the
+NAT table. It also demonstrates that a stale source-port exception applies to
+a different socket if that port is reused. The script intentionally leaves
+exceptions in place to expose this risk. It does not implement safe atomic
+rule cleanup, watchdog integration, provider DNS forwarding, Steer, device
+bindings, firewall reload handling or reboot recovery. Those remain required.
