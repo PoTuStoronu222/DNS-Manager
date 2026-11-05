@@ -76,3 +76,18 @@ writes UCI; it does not solve the concurrent-pending-delta issue.
 
 Source: https://github.com/StressOzz/Zapret-Manager/blob/main/ZapretManager_LuCI.sh
 and https://github.com/openwrt/packages/blob/master/net/https-dns-proxy/files/etc/init.d/https-dns-proxy
+## Mixed-upstream and device-service experiment
+
+A local dnsmasq 2.91 experiment used two UDP DNS stubs: one immediately
+returned SERVFAIL, the other returned a valid NOERROR answer after 150 ms. The
+working stub passed a control query. With `all-servers`, dnsmasq returned
+SERVFAIL for both a general query and an explicitly routed domain when both
+upstreams were configured for each. Thus simply adding provider servers
+alongside failing DoH listeners is insufficient. Reproduce with
+`python3 tests/provider-fallback-dnsmasq-routing-lab.py /path/to/dnsmasq`;
+this intentionally fails on the observed behavior. It is an isolated upstream
+experiment and is not an OpenWrt device or Steer end-to-end test.
+
+The per-device service's stop/start also modifies and commits the UCI firewall
+package and reloads fw4. Restarting it during fallback has its own pending-UCI
+conflict and needs a safe design; it is not an independent runtime-only step.
