@@ -3286,6 +3286,7 @@ chmod +x "$tmp/tx_restore_on_failure_runner.sh"
 ok "transaction rollback restores the in-memory manager profile"
 
 sh tests/dnssec-probe-test.sh || fail "DNSSEC probe test"
+if command -v dig >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then python3 tests/dnssec-real-dig-test.py || fail "DNSSEC real-dig probe test"; fi
 sh tests/test-uninstall-regression.sh || fail "uninstall regression tests"
 
 printf '%s\n' "All DNS Manager regression checks passed."

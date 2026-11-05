@@ -39,3 +39,8 @@ The experimental dnssec_probe_local helper and its mock tests are not used by pr
 References:
 - https://developers.google.com/speed/public-dns/faq
 - https://developers.cloudflare.com/1.1.1.1/faq/
+
+On 2026-11-05 the probe passed local synthetic DNS wire-response tests using
+actual BIND dig 9.18.39 in a Linux development environment. This validates
+parsing for that dig version only; OpenWrt package variants and live DoH
+paths remain untested.
