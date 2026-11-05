@@ -10,6 +10,7 @@ import socket
 import subprocess
 import sys
 import threading
+import time
 
 if len(sys.argv) != 2:
     raise SystemExit('usage: python3 provider-fallback-nft-lab.py /path/to/nft')
@@ -109,6 +110,19 @@ try:
     rule('flush', 'chain', 'ip', 'provider_fallback_lab', 'output')
     for proto in ('udp', 'tcp'):
         rule('add', 'rule', 'ip', 'provider_fallback_lab', 'output', 'ip', 'daddr', '127.0.0.1', proto, 'dport', '5053', 'redirect', 'to', ':15053')
+    # An expiring nft set cannot by itself expire an existing conntrack flow.
+    rule('add', 'set', 'ip', 'provider_fallback_lab', 'probeports', '{', 'type', 'inet_service', ';', 'flags', 'timeout', ';', 'timeout', '2s', ';', '}')
+    rule('insert', 'rule', 'ip', 'provider_fallback_lab', 'output', 'udp', 'sport', '@probeports', 'udp', 'dport', '5053', 'return')
+    with socket_for(socket.SOCK_DGRAM) as expiring:
+        expiring.bind(('127.0.0.1', 0))
+        expire_port = expiring.getsockname()[1]
+        rule('add', 'element', 'ip', 'provider_fallback_lab', 'probeports', '{', str(expire_port), '}')
+        assert query(socket.SOCK_DGRAM, expiring) == b'doh'
+        time.sleep(2.5)
+        expired = subprocess.run([nft, 'get', 'element', 'ip', 'provider_fallback_lab', 'probeports', '{', str(expire_port), '}'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        assert expired.returncode != 0, 'probe exception did not expire'
+        expired_flow = query(socket.SOCK_DGRAM, expiring)
+        print('held UDP flow after timeout on exception:', expired_flow.decode())
     with socket_for(socket.SOCK_DGRAM) as reused:
         reused.bind(('127.0.0.1', old_port))
         after_removal = query(socket.SOCK_DGRAM, reused)

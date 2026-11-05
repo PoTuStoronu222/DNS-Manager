@@ -147,3 +147,9 @@ confirms the original listener answers. On the tested kernel that tuple
 reached the original listener immediately after table deletion; no conclusion
 is drawn for OpenWrt kernels, active TCP streams, or unrelated firewall rules.
 This remains isolated experimental code and does not implement failover.
+An nftables set timeout was tested as a crash-cleanup aid: after its probe-port
+element expired (verified via `nft get element`), an existing UDP flow still
+followed the earlier bypass decision in the isolated Linux namespace. Timeout
+alone is therefore insufficient to guarantee immediate cleanup of conntrack.
+This test does not model a process crash, OpenWrt, Steer or a production
+recovery path.
