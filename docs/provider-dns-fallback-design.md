@@ -43,3 +43,19 @@ Before enabling the feature, the implementation must satisfy these conditions:
 9. Display the active state, failure reason and transition in LuCI and the log.
 
 These conditions are not yet implemented or verified on an OpenWrt router.
+
+## Runtime servers-file investigation
+
+OpenWrt exposes dnsmasq `serversfile`, and dnsmasq can reread this file on
+SIGHUP. This does not by itself replace existing UCI server entries or routes
+through per-device dnsmasq instances. It therefore is not a complete fallback.
+Also, dnsmasq 2.91 built from the upstream release rejects a second
+`servers-file` option: adding one without checking an existing option may
+prevent dnsmasq from starting. Reproduce with
+`sh tests/provider-fallback-dnsmasq-compat-test.sh /path/to/dnsmasq`. The test
+only runs configuration validation in a temporary directory; it does not alter
+a running resolver. A real OpenWrt build and the Steer packet path have not
+been verified.
+
+Sources: https://openwrt.org/docs/guide-user/base-system/dhcp and
+https://thekelleys.org.uk/dnsmasq/docs/dnsmasq-man.html
