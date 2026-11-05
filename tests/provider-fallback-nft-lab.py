@@ -106,6 +106,20 @@ try:
         reused.bind(('127.0.0.1', old_port))
         assert query(socket.SOCK_DGRAM, reused) == b'doh'
     print('WARNING: stale probe exception also exempts a reused source port')
+    rule('flush', 'chain', 'ip', 'provider_fallback_lab', 'output')
+    for proto in ('udp', 'tcp'):
+        rule('add', 'rule', 'ip', 'provider_fallback_lab', 'output', 'ip', 'daddr', '127.0.0.1', proto, 'dport', '5053', 'redirect', 'to', ':15053')
+    with socket_for(socket.SOCK_DGRAM) as reused:
+        reused.bind(('127.0.0.1', old_port))
+        after_removal = query(socket.SOCK_DGRAM, reused)
+    print('reused UDP flow after deleting exception:', after_removal.decode())
+    conntrack = os.environ.get('DNS_LAB_CONNTRACK', '')
+    if conntrack:
+        with socket_for(socket.SOCK_DGRAM) as held:
+            held.bind(('127.0.0.1', old_port))
+            subprocess.run([conntrack, '-D', '-p', 'udp', '--orig-src', '127.0.0.1', '--orig-dst', '127.0.0.1', '--sport', str(old_port), '--dport', '5053'], check=True, stdout=subprocess.DEVNULL)
+            assert query(socket.SOCK_DGRAM, held) == b'provider'
+        print('OK: targeted conntrack deletion switches that held UDP tuple')
     rule('delete', 'table', 'ip', 'provider_fallback_lab')
     assert all(query(k) == b'doh' for k in (socket.SOCK_DGRAM, socket.SOCK_STREAM))
     print('OK: UDP/TCP redirect, held ports, concurrent isolated probes, and removal in a network namespace')

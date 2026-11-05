@@ -125,3 +125,12 @@ a different socket if that port is reused. The script intentionally leaves
 exceptions in place to expose this risk. It does not implement safe atomic
 rule cleanup, watchdog integration, provider DNS forwarding, Steer, device
 bindings, firewall reload handling or reboot recovery. Those remain required.
+The namespace lab also reproduced a conntrack issue: after deleting the source
+port exception, a new UDP socket using the same tuple still reached the DoH
+listener because the old NAT decision persisted. With an explicitly supplied
+conntrack binary, a targeted deletion of that one tuple while the source port
+was held allowed the same socket to reach the provider listener. This only
+establishes behavior in the Linux lab; conntrack availability on OpenWrt,
+UDP/TCP teardown, crash safety, lifecycle ownership, unrelated conntrack
+entries, and integration with Steer and procd are not verified. No cleanup or
+failover code has been connected to production.
