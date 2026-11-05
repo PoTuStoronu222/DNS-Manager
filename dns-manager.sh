@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="4.10"
+VERSION="4.11"
 # 3.86: make LuCI the primary interface and preserve external DNS on removal.
 # 3.85: revalidate Watchdog settings before recovery.
 # 3.84: cap DNS catalog test concurrency by total RAM on small routers.
@@ -2504,6 +2504,36 @@ validate_dns_message() {
     _header="$(hexdump -n 3 -e '3/1 "%02x"' "$_file" 2>/dev/null)" || return 0
     case "$_header" in ????[89abcdef]?) return 0;; *) return 1;; esac
 }
+# A prefilter only; applied slots are independently rechecked via dig.
+# The candidate query never changes DNS settings or the shared test status.
+dnssec_probe_doh() (
+    _dp_url="$1"; _dp_host="$2"; _dp_port="$3"; _dp_ip="$4"; _dp_id="$5"
+    case "$_dp_id" in ''|*[!A-Za-z0-9_-]*) return 1;; esac
+    [ -d "${DNSSEC_SCREEN_DIR:-}" ] || return 1
+    command -v od >/dev/null 2>&1 || return 1
+    _dp_base="$DNSSEC_SCREEN_DIR/probe-$_dp_id"
+    trap 'rm -f "$_dp_base.good" "$_dp_base.bad" "$_dp_base.cd" "$_dp_base.body" "$_dp_base.hdr"' EXIT HUP INT TERM
+    printf '\022\064\001\040\000\001\000\000\000\000\000\000\012cloudflare\003com\000\000\001\000\001' > "$_dp_base.good" || return 1
+    printf '\022\064\001\040\000\001\000\000\000\000\000\000\015dnssec-failed\003org\000\000\001\000\001' > "$_dp_base.bad" || return 1
+    printf '\022\064\001\060\000\001\000\000\000\000\000\000\015dnssec-failed\003org\000\000\001\000\001' > "$_dp_base.cd" || return 1
+    for _dp_kind in good bad cd; do
+        : > "$_dp_base.body"; : > "$_dp_base.hdr"
+        _dp_code="$(curl -q --noproxy '*' -sS -o "$_dp_base.body" -D "$_dp_base.hdr" -w '%{http_code}' --connect-timeout 1 --max-time 3 --resolve "$_dp_host:$_dp_port:$_dp_ip" -H 'Content-Type: application/dns-message' -H 'Accept: application/dns-message' --data-binary "@$_dp_base.$_dp_kind" "$_dp_url" 2>/dev/null)" || return 1
+        [ "$_dp_code" = 200 ] || return 1
+        _dp_type="$(awk -F': *' 'tolower($1)=="content-type"{print tolower($2)}' "$_dp_base.hdr" | tail -n1 | tr -d '\r')"
+        case "$_dp_type" in application/dns-message*) ;; *) return 1;; esac
+        set -- $(od -An -v -tu1 -N12 "$_dp_base.body" 2>/dev/null) || return 1
+        [ "$#" -eq 12 ] || return 1
+        [ "$1" -eq 18 ] && [ "$2" -eq 52 ] && [ $(( $3 & 128 )) -ne 0 ] || return 1
+        [ "$5" -eq 0 ] && [ "$6" -eq 1 ] || return 1
+        case "$_dp_kind" in
+            good) [ $(( $4 & 15 )) -eq 0 ] && [ $(( $4 & 32 )) -ne 0 ] && [ $(( $7 + $8 )) -gt 0 ] || return 1;;
+            bad) [ $(( $4 & 15 )) -eq 2 ] || return 1;;
+            cd) [ $(( $4 & 15 )) -eq 0 ] && [ $(( $7 + $8 )) -gt 0 ] || return 1;;
+        esac
+    done
+    return 0
+)
 test_one_dns() {
 id="$1"; url="$(normalize_url "$(dns_url "$id")")"; name="$(dns_name "$id")"; cat="$(dns_cat "$id")"
 host="$(url_host "$url")"
@@ -2576,6 +2606,13 @@ while IFS= read -r ipx; do
 done <<EOF_IPS
 $_ips
 EOF_IPS
+# Profile-specific DNSSEC observations are temporary and never overwrite the
+# ordinary availability result or its freshness metadata.
+if [ "$st" = OK ] && [ -n "${DNSSEC_SCREEN_DIR:-}" ] && dnssec_candidate_eligible "$id"; then
+    if dnssec_probe_doh "$url" "$host" "$port" "$ipx" "$id"; then
+        : > "$DNSSEC_SCREEN_DIR/$id" || true
+    fi
+fi
 [ "$st" = OK ] && ms="$_best_ms" || ms=-1
 printf '%s|%s|%s|%s|%s\n' "$id" "$cat" "$name" "$ms" "$st" > "$TMP_DIR/t.$id"
 rm -f "$body" "$hdr"
@@ -2595,6 +2632,13 @@ test_dns_catalog() (
     esac
     [ "$HAS_CURL" = yes ] || { warn_msg "Полную проверку DNS нельзя выполнить: curl не установлен."; return 1; }
     acquire_test_lock || { warn_msg "Полная проверка DNS уже выполняется другим процессом. Текущая проверка отменена."; return 1; }
+    # A re-run must not reuse DNSSEC evidence from an earlier catalog snapshot.
+    if [ -n "${DNSSEC_SCREEN_DIR:-}" ]; then
+        case "$DNSSEC_SCREEN_DIR" in
+            "$TMP_DIR"/dnssec-screen.*) rm -f "$DNSSEC_SCREEN_DIR"/* 2>/dev/null || { release_test_lock; return 1; };;
+            *) release_test_lock; return 1;;
+        esac
+    fi
     rm -f "$TMP_DIR/t."* "$TMP_DIR/q."* "$TMP_DIR/dns_query.bin" "$TMP_DIR/body."* "$TMP_DIR/h."* 2>/dev/null
     # Create the immutable shared DNS wire query before launching any parallel
     # test workers. This removes the worker-to-worker race on dns_query.bin.
@@ -5465,10 +5509,23 @@ profile_apply_begin() {
     PROFILE_OLD_FORCE_DOH="${FORCE_DOH:-0}"
     PROFILE_OLD_DNSMASQ_PERF="${DNSMASQ_PERF:-0}"
     PROFILE_OLD_WATCHDOG_ENABLED="${WATCHDOG_ENABLED:-0}"
-    _profile_test_scope="$1"; [ "$_profile_test_scope" != dnssec ] || _profile_test_scope=all
-    test_dns_catalog "$_profile_test_scope" || { PROFILE_FULL_TEST=0; PROFILE_APPLY=0; return 1; }
+    _profile_test_scope="$1"; DNSSEC_SCREEN_DIR=""
+    if [ "$_profile_test_scope" = dnssec ]; then
+        if ! command -v dig >/dev/null 2>&1 || ! command -v od >/dev/null 2>&1; then
+            warn_msg "Для проверки DNSSEC нужны dig и od. Настройки DNS не изменены."
+            PROFILE_FULL_TEST=0; PROFILE_APPLY=0; return 1
+        fi
+        _profile_test_scope=all
+        DNSSEC_SCREEN_DIR="$(mktemp -d "$TMP_DIR/dnssec-screen.XXXXXX" 2>/dev/null)" || { PROFILE_FULL_TEST=0; PROFILE_APPLY=0; return 1; }
+    fi
+    if ! test_dns_catalog "$_profile_test_scope"; then
+        [ -z "$DNSSEC_SCREEN_DIR" ] || rm -rf "$DNSSEC_SCREEN_DIR"
+        DNSSEC_SCREEN_DIR=""; PROFILE_FULL_TEST=0; PROFILE_APPLY=0; return 1
+    fi
 }
 profile_apply_end() {
+    case "${DNSSEC_SCREEN_DIR:-}" in "$TMP_DIR"/dnssec-screen.*) rm -rf "$DNSSEC_SCREEN_DIR" 2>/dev/null || true;; esac
+    DNSSEC_SCREEN_DIR=""
     NTP_IP_FALLBACK="$PROFILE_OLD_NTP_IP_FALLBACK"
     FORCE_DOH="$PROFILE_OLD_FORCE_DOH"
     DNSMASQ_PERF="$PROFILE_OLD_DNSMASQ_PERF"
@@ -5597,7 +5654,10 @@ _seen_urls="$TMP_DIR/auto-seen-urls"
 i=1
 while IFS='|' read -r _id _cat2 _name _ms _st; do
     [ -n "$_id" ] || continue
-    if [ "$_cat" = dnssec ] && ! dnssec_candidate_eligible "$_id"; then continue; fi
+    if [ "$_cat" = dnssec ]; then
+        dnssec_candidate_eligible "$_id" || continue
+        [ -n "${DNSSEC_SCREEN_DIR:-}" ] && [ -f "$DNSSEC_SCREEN_DIR/$_id" ] || continue
+    fi
     _url="$(normalize_url "$(dns_url "$_id")")"
     [ -n "$_url" ] || continue
     grep -qxF "$_url" "$_seen_urls" 2>/dev/null && continue
@@ -5606,7 +5666,11 @@ while IFS='|' read -r _id _cat2 _name _ms _st; do
     i=$((i+1))
     [ "$i" -gt 6 ] && break
 done < "$_src"
-[ -s "$_pool" ] || { warn_msg "Не удалось сформировать набор DNS."; pause; return 1; }
+[ -s "$_pool" ] || {
+    if [ "$_cat" = dnssec ]; then warn_msg "Не найдено доступных серверов, подтвердивших DNSSEC. Настройки не изменены."
+    else warn_msg "Не удалось сформировать набор DNS."; fi
+    pause; return 1
+}
 if [ "$_cat" = all ]; then
     _src2="$TMP_DIR/auto-candidates-all"
     : > "$_src2"
