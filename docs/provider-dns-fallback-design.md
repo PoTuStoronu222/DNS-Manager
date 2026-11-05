@@ -59,3 +59,20 @@ been verified.
 
 Sources: https://openwrt.org/docs/guide-user/base-system/dhcp and
 https://thekelleys.org.uk/dnsmasq/docs/dnsmasq-man.html
+## Zapret Manager comparison
+
+Reviewed `ZapretManager_LuCI.sh` (`doh_watch`) from Zapret Manager main.
+Its opt-in direct fallback stops https-dns-proxy and restarts dnsmasq; it
+checks DoH endpoints while in direct mode and starts the proxy again when a
+candidate responds. It explicitly skips its watcher when DNS Manager is
+present (`_dnsm_present && return 0`).
+
+That mechanism cannot be transplanted directly: DNS Manager configures
+`dnsmasq_config_update=-` in its normal owned configuration and its dnsmasq
+server entries and per-device resolver instances continue pointing to the
+local proxy ports. Stopping the proxy alone can leave them without an upstream.
+Where https-dns-proxy integration is enabled, its own backup/restore also
+writes UCI; it does not solve the concurrent-pending-delta issue.
+
+Source: https://github.com/StressOzz/Zapret-Manager/blob/main/ZapretManager_LuCI.sh
+and https://github.com/openwrt/packages/blob/master/net/https-dns-proxy/files/etc/init.d/https-dns-proxy
