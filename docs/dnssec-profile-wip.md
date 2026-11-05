@@ -44,3 +44,11 @@ On 2026-11-05 the probe passed local synthetic DNS wire-response tests using
 actual BIND dig 9.18.39 in a Linux development environment. This validates
 parsing for that dig version only; OpenWrt package variants and live DoH
 paths remain untested.
+
+The test branch now has dormant guards for `profile:dnssec`: general slots
+must pass the local DNSSEC probe during application and before an automatically
+selected replacement is saved; a regional slot is not counted as a surviving
+general DNS. Mock tests exercise these conditions and restoration of the prior
+slot variables on a failed candidate. Profile selection and the UI do not yet
+expose `dnssec`, candidate selection is not implemented, and the guards are not
+verified end-to-end on OpenWrt, Steer, LAN devices, or low-memory hardware.
