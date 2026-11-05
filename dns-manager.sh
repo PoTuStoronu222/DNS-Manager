@@ -3715,6 +3715,28 @@ listener_port_exists() {
     fi
     return 1
 }
+# Experimental probe for a future validating-resolver profile. It is not
+# connected to profile application or watchdog; it never changes DNS state.
+# A successful observation is not a cryptographic validation by this router.
+dnssec_probe_local() (
+    _dsp_port="$1"
+    case "$_dsp_port" in ''|*[!0-9]*) return 1;; esac
+    [ "$_dsp_port" -ge 1 ] 2>/dev/null && [ "$_dsp_port" -le 65535 ] 2>/dev/null || return 1
+    command -v dig >/dev/null 2>&1 || return 1
+    _dsp_good="$(dig @127.0.0.1 -p "$_dsp_port" cloudflare.com A +adflag +nocdflag +time=2 +tries=1 +comments +answer +noquestion +nostats 2>/dev/null)" || return 1
+    printf '%s\n' "$_dsp_good" | grep -Eq '^;; ->>HEADER<<-.*status: NOERROR[, ]' || return 1
+    printf '%s\n' "$_dsp_good" | grep -Eq '^;; flags:.*(^|[ ;])qr([ ;]|$)' || return 1
+    printf '%s\n' "$_dsp_good" | grep -Eq '^;; flags:.*(^|[ ;])ad([ ;]|$)' || return 1
+    printf '%s\n' "$_dsp_good" | grep -Eq '^;; flags:.*ANSWER: [1-9][0-9]*[, ]' || return 1
+    _dsp_bad="$(dig @127.0.0.1 -p "$_dsp_port" dnssec-failed.org A +adflag +nocdflag +time=2 +tries=1 +comments +answer +noquestion +nostats 2>/dev/null)" || return 1
+    printf '%s\n' "$_dsp_bad" | grep -Eq '^;; flags:.*(^|[ ;])qr([ ;]|$)' || return 1
+    printf '%s\n' "$_dsp_bad" | grep -Eq '^;; ->>HEADER<<-.*status: SERVFAIL[, ]' || return 1
+    _dsp_cd="$(dig @127.0.0.1 -p "$_dsp_port" dnssec-failed.org A +adflag +cdflag +time=2 +tries=1 +comments +answer +noquestion +nostats 2>/dev/null)" || return 1
+    printf '%s\n' "$_dsp_cd" | grep -Eq '^;; flags:.*(^|[ ;])qr([ ;]|$)' || return 1
+    printf '%s\n' "$_dsp_cd" | grep -Eq '^;; ->>HEADER<<-.*status: NOERROR[, ]' || return 1
+    printf '%s\n' "$_dsp_cd" | grep -Eq '^;; flags:.*ANSWER: [1-9][0-9]*[, ]' || return 1
+    return 0
+)
 local_dns_query_ok() {
     _lp="$1"
     _domain="${2:-example.com}"
