@@ -7,6 +7,8 @@ awk '/^regional_provider_addresses\(\) \{/,/^}/' dns-manager.sh > "$tmp/function
 awk '/^provider_fallback_candidates\(\) \(/,/^\)/' dns-manager.sh >> "$tmp/functions"
 awk '/^provider_fallback_verified_candidates\(\) \(/,/^\)/' dns-manager.sh >> "$tmp/functions"
 awk '/^provider_fallback_plan_servers\(\) \(/,/^\)/' dns-manager.sh >> "$tmp/functions"
+awk '/^provider_fallback_journal_create\(\) \(/,/^\)/' dns-manager.sh >> "$tmp/functions"
+awk '/^provider_fallback_journal_classify\(\) \(/,/^\)/' dns-manager.sh >> "$tmp/functions"
 . "$tmp/functions"
 ip() {
     printf '%s\n' '1: lo    inet 127.0.0.1/8 scope host lo' \
@@ -65,20 +67,47 @@ cat > "$tmp/original" <<'EOF_ORIGINAL'
 /ru/127.0.0.1#5059
 /use-application-dns.net/
 /internal/192.168.9.1
+/foreign/127.0.0.1#5053
 127.0.0.1#9999
 EOF_ORIGINAL
 printf '%s\n' 5053 5054 5059 > "$tmp/ports"
 printf '%s\n' 8.8.8.8 1.1.1.1 > "$tmp/providers"
-provider_fallback_plan_servers "$tmp/original" "$tmp/ports" "$tmp/providers" > "$tmp/planned"
+printf '%s\n' '127.0.0.1#5053' '127.0.0.1#5054' '/example.org/127.0.0.1#5053' '/ru/127.0.0.1#5059' > "$tmp/owned"
+provider_fallback_plan_servers "$tmp/original" "$tmp/ports" "$tmp/providers" "$tmp/owned" > "$tmp/planned"
 for line in '8.8.8.8' '1.1.1.1' '/example.org/8.8.8.8' '/example.org/1.1.1.1' \
-    '/ru/8.8.8.8' '/ru/1.1.1.1' '/use-application-dns.net/' '/internal/192.168.9.1' '127.0.0.1#9999'; do
+    '/ru/8.8.8.8' '/ru/1.1.1.1' '/use-application-dns.net/' '/internal/192.168.9.1' '/foreign/127.0.0.1#5053' '127.0.0.1#9999'; do
     grep -Fxq "$line" "$tmp/planned" || { echo "FAIL: missing planned route $line" >&2; exit 1; }
 done
 [ "$(grep -Fxc '8.8.8.8' "$tmp/planned")" = 1 ] || exit 1
-if grep -Fq '127.0.0.1#5053' "$tmp/planned"; then echo 'FAIL: managed DoH route left in fallback' >&2; exit 1; fi
+if grep -Fxq '127.0.0.1#5053' "$tmp/planned"; then echo 'FAIL: managed DoH route left in fallback' >&2; exit 1; fi
 printf '/internal/192.168.9.1\n' > "$tmp/no-general"
-if provider_fallback_plan_servers "$tmp/no-general" "$tmp/ports" "$tmp/providers" > /dev/null; then
+if provider_fallback_plan_servers "$tmp/no-general" "$tmp/ports" "$tmp/providers" "$tmp/owned" > /dev/null; then
     echo 'FAIL: accepted a configuration with no managed general DNS' >&2
     exit 1
 fi
-echo 'OK: fallback preflight rejects unsafe candidates, probes DNS and preserves external routes'
+printf '%s\n' '/missing.example/127.0.0.1#5053' >> "$tmp/owned"
+if provider_fallback_plan_servers "$tmp/original" "$tmp/ports" "$tmp/providers" "$tmp/owned" > /dev/null; then
+    echo 'FAIL: missing managed route was silently ignored' >&2
+    exit 1
+fi
+provider_fallback_journal_create "$tmp/journal" cfg123 "$tmp/original" "$tmp/planned"
+[ "$(provider_fallback_journal_classify "$tmp/journal" "$tmp/original")" = before ] || exit 1
+[ "$(provider_fallback_journal_classify "$tmp/journal" "$tmp/planned")" = after ] || exit 1
+printf '/new-third-party/192.168.7.1\n' >> "$tmp/planned"
+[ "$(provider_fallback_journal_classify "$tmp/journal" "$tmp/planned")" = changed ] || exit 1
+if provider_fallback_journal_create "$tmp/journal" cfg123 "$tmp/original" "$tmp/planned"; then
+    echo 'FAIL: replaced an existing recovery journal' >&2
+    exit 1
+fi
+printf '%s\n' 'bad;section' > "$tmp/journal/section"
+if provider_fallback_journal_classify "$tmp/journal" "$tmp/original" > /dev/null; then
+    echo 'FAIL: accepted a damaged recovery journal' >&2
+    exit 1
+fi
+printf '%s\n' cfg123 > "$tmp/journal/section"
+rm "$tmp/journal/ready"
+if provider_fallback_journal_classify "$tmp/journal" "$tmp/original" > /dev/null; then
+    echo 'FAIL: accepted an incomplete recovery journal' >&2
+    exit 1
+fi
+echo 'OK: fallback candidate, route and recovery-journal preflight'

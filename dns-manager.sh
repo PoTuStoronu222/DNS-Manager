@@ -919,8 +919,8 @@ provider_fallback_verified_candidates() (
 # Produce a proposed dnsmasq server list in a temporary file. The caller must
 # validate candidates and owns the actual transaction; this never changes UCI.
 provider_fallback_plan_servers() (
-    _pfp_original="$1"; _pfp_ports="$2"; _pfp_candidates="$3"
-    [ -s "$_pfp_original" ] && [ -s "$_pfp_ports" ] && [ -s "$_pfp_candidates" ] || return 1
+    _pfp_original="$1"; _pfp_ports="$2"; _pfp_candidates="$3"; _pfp_owned="$4"
+    [ -s "$_pfp_original" ] && [ -s "$_pfp_ports" ] && [ -s "$_pfp_candidates" ] && [ -s "$_pfp_owned" ] || return 1
     LC_ALL=C awk '
         FILENAME==ARGV[1] {
             if ($0 !~ /^[0-9]+$/ || $0+0<1 || $0+0>65535) {bad=1; next}
@@ -931,6 +931,10 @@ provider_fallback_plan_servers() (
             if (!provider_seen[$0]++) providers[++count]=$0
             next
         }
+        FILENAME==ARGV[3] {
+            if ($0=="") {bad=1; next}
+            owned[$0]=1; next
+        }
         {
             original=$0
             if (original=="") next
@@ -940,19 +944,61 @@ provider_fallback_plan_servers() (
                 target=pieces[n]
                 prefix=substr(original,1,length(original)-length(target))
             }
-            if (target ~ /^127\.0\.0\.1#[0-9]+$/) {
+            if (original in owned) {
+                matched[original]=1
+                if (target !~ /^127\.0\.0\.1#[0-9]+$/) {bad=1; next}
                 p=substr(target,index(target,"#")+1)
-                if (p in port) {
-                    if (prefix=="") found_general=1
-                    for(i=1;i<=count;i++) emit(prefix providers[i])
-                    next
-                }
+                if (!(p in port)) {bad=1; next}
+                if (prefix=="") found_general=1
+                for(i=1;i<=count;i++) emit(prefix providers[i])
+                next
             }
             emit(original)
         }
         function emit(value) {if (!seen[value]++) print value}
-        END {if (bad || count==0 || !found_general) exit 1}
-    ' "$_pfp_ports" "$_pfp_candidates" "$_pfp_original"
+        END {
+            for (entry in owned) if (!(entry in matched)) bad=1
+            if (bad || count==0 || !found_general) exit 1
+        }
+    ' "$_pfp_ports" "$_pfp_candidates" "$_pfp_owned" "$_pfp_original"
+)
+# Create the recovery journal before any UCI writes. Incomplete journals are
+# never interpreted as permission to change dnsmasq. The caller holds the
+# mutation lock and must use files from the same validated plan.
+provider_fallback_journal_create() (
+    _pfj_dir="$1"; _pfj_section="$2"; _pfj_before="$3"; _pfj_after="$4"
+    case "$_pfj_section" in
+        '@dnsmasq[0]') ;;
+        ''|*[!A-Za-z0-9_]*) return 1;;
+    esac
+    [ -s "$_pfj_before" ] && [ -s "$_pfj_after" ] || return 1
+    cmp -s "$_pfj_before" "$_pfj_after" && return 1
+    (umask 077; mkdir "$_pfj_dir") 2>/dev/null || return 1
+    if ! (umask 077
+        printf '%s\n' "$_pfj_section" > "$_pfj_dir/section" &&
+        cp "$_pfj_before" "$_pfj_dir/before" &&
+        cp "$_pfj_after" "$_pfj_dir/after" &&
+        printf '%s\n' 'prepared-v1' > "$_pfj_dir/ready"
+    ); then
+        rm -f "$_pfj_dir/ready" "$_pfj_dir/section" "$_pfj_dir/before" "$_pfj_dir/after" 2>/dev/null || true
+        rmdir "$_pfj_dir" 2>/dev/null || true
+        return 1
+    fi
+    return 0
+)
+# Do not infer ownership from a port: recovery is permitted only when the
+# complete current list is identical to a journaled list.
+provider_fallback_journal_classify() (
+    _pfj_dir="$1"; _pfj_current="$2"
+    [ -f "$_pfj_dir/ready" ] && [ "$(cat "$_pfj_dir/ready" 2>/dev/null)" = prepared-v1 ] || return 1
+    [ -s "$_pfj_dir/section" ] && [ -s "$_pfj_dir/before" ] && [ -s "$_pfj_dir/after" ] && [ -f "$_pfj_current" ] || return 1
+    _pfj_section="$(cat "$_pfj_dir/section" 2>/dev/null)"
+    case "$_pfj_section" in '@dnsmasq[0]') ;; ''|*[!A-Za-z0-9_]*) return 1;; esac
+    cmp -s "$_pfj_dir/before" "$_pfj_dir/after" && return 1
+    if cmp -s "$_pfj_current" "$_pfj_dir/before"; then printf '%s\n' before; return 0; fi
+    if cmp -s "$_pfj_current" "$_pfj_dir/after"; then printf '%s\n' after; return 0; fi
+    printf '%s\n' changed
+    return 0
 )
 sync_regional_dns_state() {
     if [ -n "${SLOT_RU:-}" ]; then
