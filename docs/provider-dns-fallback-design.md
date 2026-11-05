@@ -153,3 +153,11 @@ followed the earlier bypass decision in the isolated Linux namespace. Timeout
 alone is therefore insufficient to guarantee immediate cleanup of conntrack.
 This test does not model a process crash, OpenWrt, Steer or a production
 recovery path.
+A further Linux namespace experiment marked UDP probes and replies `notrack`
+in raw-priority chains using a timed source-port set. The probe reached the
+original listener. After the element was no longer found by `nft get element`,
+both the still-open socket and a newly bound socket using the same source port
+continued reaching that listener; an independently sourced query reached the
+provider listener. No matching original-direction conntrack entry was listed.
+The cause and behavior across OpenWrt kernels are not established. Therefore
+this is not a verified solution to stale probe exceptions or crash cleanup.

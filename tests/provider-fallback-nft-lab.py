@@ -112,17 +112,29 @@ try:
         rule('add', 'rule', 'ip', 'provider_fallback_lab', 'output', 'ip', 'daddr', '127.0.0.1', proto, 'dport', '5053', 'redirect', 'to', ':15053')
     # An expiring nft set cannot by itself expire an existing conntrack flow.
     rule('add', 'set', 'ip', 'provider_fallback_lab', 'probeports', '{', 'type', 'inet_service', ';', 'flags', 'timeout', ';', 'timeout', '2s', ';', '}')
-    rule('insert', 'rule', 'ip', 'provider_fallback_lab', 'output', 'udp', 'sport', '@probeports', 'udp', 'dport', '5053', 'return')
+    rule('add', 'chain', 'ip', 'provider_fallback_lab', 'rawoutput', '{', 'type', 'filter', 'hook', 'output', 'priority', 'raw', ';', '}')
+    rule('add', 'chain', 'ip', 'provider_fallback_lab', 'rawpre', '{', 'type', 'filter', 'hook', 'prerouting', 'priority', 'raw', ';', '}')
+    rule('add', 'rule', 'ip', 'provider_fallback_lab', 'rawoutput', 'ip', 'saddr', '127.0.0.1', 'ip', 'daddr', '127.0.0.1', 'udp', 'sport', '@probeports', 'udp', 'dport', '5053', 'notrack')
+    rule('add', 'rule', 'ip', 'provider_fallback_lab', 'rawpre', 'ip', 'saddr', '127.0.0.1', 'ip', 'daddr', '127.0.0.1', 'udp', 'sport', '5053', 'udp', 'dport', '@probeports', 'notrack')
     with socket_for(socket.SOCK_DGRAM) as expiring:
         expiring.bind(('127.0.0.1', 0))
         expire_port = expiring.getsockname()[1]
         rule('add', 'element', 'ip', 'provider_fallback_lab', 'probeports', '{', str(expire_port), '}')
         assert query(socket.SOCK_DGRAM, expiring) == b'doh'
+        present = subprocess.run([nft, 'get', 'element', 'ip', 'provider_fallback_lab', 'probeports', '{', str(expire_port), '}'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        assert present.returncode == 0, 'probe exception was not present'
         time.sleep(2.5)
         expired = subprocess.run([nft, 'get', 'element', 'ip', 'provider_fallback_lab', 'probeports', '{', str(expire_port), '}'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         assert expired.returncode != 0, 'probe exception did not expire'
         expired_flow = query(socket.SOCK_DGRAM, expiring)
-        print('held UDP flow after timeout on exception:', expired_flow.decode())
+        print('held UDP flow after timeout on untracked exception:', expired_flow.decode())
+        if os.environ.get('DNS_LAB_CONNTRACK'):
+            subprocess.run([os.environ['DNS_LAB_CONNTRACK'], '-L', '-p', 'udp', '--orig-src', '127.0.0.1', '--orig-dst', '127.0.0.1', '--sport', str(expire_port), '--dport', '5053'], check=False)
+    with socket_for(socket.SOCK_DGRAM) as fresh:
+        fresh.bind(('127.0.0.1', expire_port))
+        fresh_flow = query(socket.SOCK_DGRAM, fresh)
+        print('new UDP socket after timeout on untracked exception:', fresh_flow.decode())
+        print('different source port at same time:', query(socket.SOCK_DGRAM).decode())
     with socket_for(socket.SOCK_DGRAM) as reused:
         reused.bind(('127.0.0.1', old_port))
         after_removal = query(socket.SOCK_DGRAM, reused)
