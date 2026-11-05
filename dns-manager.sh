@@ -962,6 +962,36 @@ provider_fallback_plan_servers() (
         }
     ' "$_pfp_ports" "$_pfp_candidates" "$_pfp_owned" "$_pfp_original"
 )
+# Pure decision only: never modifies network state. Integration remains disabled.
+# Output: action|consecutive complete failures|consecutive complete recoveries.
+provider_fallback_decide() (
+    _pfd_mode="$1"; _pfd_fail="$2"; _pfd_ok="$3"; _pfd_observation="$4"; _pfd_provider="$5"
+    case "$_pfd_mode" in normal|direct) ;; *) return 1;; esac
+    case "$_pfd_fail:$_pfd_ok" in *[!0-9:]*|:*|*:) return 1;; esac
+    [ "$_pfd_fail" -le 2 ] 2>/dev/null && [ "$_pfd_ok" -le 2 ] 2>/dev/null || return 1
+    case "$_pfd_provider" in ready|unavailable) ;; *) return 1;; esac
+    case "$_pfd_observation" in all_failed|recovered|partial|unknown) ;; *) return 1;; esac
+    if [ "$_pfd_mode" = normal ]; then
+        _pfd_ok=0
+        if [ "$_pfd_observation" = all_failed ]; then
+            [ "$_pfd_fail" -ge 2 ] || _pfd_fail=$((_pfd_fail + 1))
+            if [ "$_pfd_fail" -ge 2 ] && [ "$_pfd_provider" = ready ]; then
+                printf 'enter|%s|0\n' "$_pfd_fail"; return 0
+            fi
+        else
+            _pfd_fail=0
+        fi
+    else
+        _pfd_fail=0
+        if [ "$_pfd_observation" = recovered ]; then
+            [ "$_pfd_ok" -ge 2 ] || _pfd_ok=$((_pfd_ok + 1))
+            if [ "$_pfd_ok" -ge 2 ]; then printf 'restore|0|%s\n' "$_pfd_ok"; return 0; fi
+        else
+            _pfd_ok=0
+        fi
+    fi
+    printf 'none|%s|%s\n' "$_pfd_fail" "$_pfd_ok"
+)
 # Classify a completed watchdog cycle without changing DNS. Expected entries
 # are slot|id; records come from watchdog_append_check_record. A regional slot
 # cannot hide a complete failure of the general slots, but all selected slots

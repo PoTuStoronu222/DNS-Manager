@@ -7,6 +7,7 @@ awk '/^regional_provider_addresses\(\) \{/,/^}/' dns-manager.sh > "$tmp/function
 awk '/^provider_fallback_candidates\(\) \(/,/^\)/' dns-manager.sh >> "$tmp/functions"
 awk '/^provider_fallback_verified_candidates\(\) \(/,/^\)/' dns-manager.sh >> "$tmp/functions"
 awk '/^provider_fallback_plan_servers\(\) \(/,/^\)/' dns-manager.sh >> "$tmp/functions"
+awk '/^provider_fallback_decide\(\) \(/,/^\)/' dns-manager.sh >> "$tmp/functions"
 awk '/^provider_fallback_cycle_state\(\) \(/,/^\)/' dns-manager.sh >> "$tmp/functions"
 awk '/^provider_fallback_journal_create\(\) \(/,/^\)/' dns-manager.sh >> "$tmp/functions"
 awk '/^provider_fallback_journal_classify\(\) \(/,/^\)/' dns-manager.sh >> "$tmp/functions"
@@ -91,6 +92,16 @@ if provider_fallback_plan_servers "$tmp/original" "$tmp/ports" "$tmp/providers" 
     echo 'FAIL: missing managed route was silently ignored' >&2
     exit 1
 fi
+[ "$(provider_fallback_decide normal 0 0 all_failed ready)" = 'none|1|0' ] || exit 1
+[ "$(provider_fallback_decide normal 1 0 all_failed ready)" = 'enter|2|0' ] || exit 1
+[ "$(provider_fallback_decide normal 1 0 unknown ready)" = 'none|0|0' ] || exit 1
+[ "$(provider_fallback_decide normal 1 0 partial ready)" = 'none|0|0' ] || exit 1
+[ "$(provider_fallback_decide normal 1 0 all_failed unavailable)" = 'none|2|0' ] || exit 1
+[ "$(provider_fallback_decide direct 0 0 recovered ready)" = 'none|0|1' ] || exit 1
+[ "$(provider_fallback_decide direct 0 1 recovered ready)" = 'restore|0|2' ] || exit 1
+[ "$(provider_fallback_decide direct 0 1 unknown ready)" = 'none|0|0' ] || exit 1
+[ "$(provider_fallback_decide direct 0 1 partial ready)" = 'none|0|0' ] || exit 1
+if provider_fallback_decide direct x 0 recovered ready >/dev/null; then echo 'FAIL: invalid counters' >&2; exit 1; fi
 printf '%s\n' '1|one' '2|two' 'RU|regional' > "$tmp/expected"
 printf '%s\n' 'record|1|one|clean|One|FAIL' 'record|2|two|clean|Two|NO_LISTENER' 'record|RU|regional|regional|RU|OK' > "$tmp/records"
 [ "$(provider_fallback_cycle_state "$tmp/expected" "$tmp/records")" = all_failed ] || { echo 'FAIL: regional DNS hid general outage' >&2; exit 1; }

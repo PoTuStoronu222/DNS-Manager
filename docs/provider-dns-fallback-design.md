@@ -91,3 +91,12 @@ experiment and is not an OpenWrt device or Steer end-to-end test.
 The per-device service's stop/start also modifies and commits the UCI firewall
 package and reloads fw4. Restarting it during fallback has its own pending-UCI
 conflict and needs a safe design; it is not an independent runtime-only step.
+## Transition decision (not integrated)
+
+A pure, side-effect-free helper now models two consecutive complete failures
+before proposing fallback, only with a verified provider available, and two
+consecutive fully recovered cycles before proposing restoration. Partial or
+unknown results reset the corresponding streak. It makes no UCI changes, does
+not track state across calls, and is not called by the watchdog. Crash/reboot
+persistence, transition rollback, concurrent changes, and actual routing remain
+unimplemented and require independent validation before integration.
