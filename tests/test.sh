@@ -324,14 +324,14 @@ printf 'timestamp=100\ntest_scope=all\n' > "$tmp/log-state/dns-test-results.meta
 printf 'timestamp=200\ncategory=clean\n' > "$tmp/log-state/dns-watchdog-check-results.conf"
 (
     STATE_DIR="$tmp/log-state"; PERSIST_STATE_DIR="$tmp/log-persist"
-    read_installed_luci_version() { printf 2.21; }
+    read_installed_luci_version() { printf 2.22; }
     cfg_get() { :; }
     logread() { printf '%s\n' 'dns-manager: Проверка DNS: проверено 2, проблем: 0.' 'dns-manager: Проверка DNS: проверено 2, проблем: 1.' 'dns-manager: Watchdog: замена подтверждена.'; }
     json_quote() { node -e 'process.stdout.write(JSON.stringify(process.argv[1]))' "$1"; }
     . "$tmp/log_header_test.sh"
     log_json 10
 ) > "$tmp/log-header.json"
-node -e 'const x=require(process.argv[1]);if(!x.ok||x.luci_version!=="2.21"||x.last_full_test!=="100"||x.watchdog_last_check!==200||x.watchdog_last_category!=="clean"||!x.log.includes("проблем: 1")||!x.log.includes("замена подтверждена")||!x.log.includes("no lease, failing")||x.log.includes("проблем: 0")||x.log.includes("Удаляется DNS-секция"))process.exit(1)' "$tmp/log-header.json" || fail "journal filtering or background events are incorrect"
+node -e 'const x=require(process.argv[1]);if(!x.ok||x.luci_version!=="2.22"||x.last_full_test!=="100"||x.watchdog_last_check!==200||x.watchdog_last_category!=="clean"||!x.log.includes("проблем: 1")||!x.log.includes("замена подтверждена")||!x.log.includes("no lease, failing")||x.log.includes("проблем: 0")||x.log.includes("Удаляется DNS-секция"))process.exit(1)' "$tmp/log-header.json" || fail "journal filtering or background events are incorrect"
 ok "journal RPC includes version and current check metadata"
 
 # The dashboard and Network Tuning use different RPC read methods. Both must
@@ -632,9 +632,9 @@ grep -Fq "disabled:!!state.busy||!!state.jobRunning||unavailable||checking" dns-
 grep -q "'gaming','Игровые DNS'" dns-manager-luci.sh || fail "gaming catalog label missing in LuCI"
 grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validation missing gaming category"
 grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
-grep -q 'VERSION="4.09"' dns-manager.sh || fail "manager version not bumped"
+grep -q 'VERSION="4.10"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
-grep -q 'VERSION="2.21"' dns-manager-luci.sh || fail "LuCI version not bumped"
+grep -q 'VERSION="2.22"' dns-manager-luci.sh || fail "LuCI version not bumped"
 grep -Fq "{id:'quad9plain',ips:'9.9.9.10,149.112.112.10,2620:fe::10,2620:fe::fe:10'}" dns-manager-luci.sh || fail "historical Quad9 bootstrap snapshot changed"
 grep -Fq "{id:'cira',ips:'149.112.121.10,149.112.122.10,2620:10a:80bb::10,2620:10a:80bc::10'}" dns-manager-luci.sh || fail "historical CIRA bootstrap snapshot changed"
 if grep -q '^main_menu$' dns-manager.sh; then fail "interactive console menu still starts"; fi
@@ -918,8 +918,8 @@ view_luci="$(sed -n 's|^// DNS Manager LuCI common module version:[[:space:]]*||
 dashboard_view_luci="$(sed -n 's|^// DNS Manager LuCI version: *||p' dns-manager-luci.sh | head -n1)"
 [ "$top_luci" = "$dashboard_view_luci" ] || fail "dashboard view version marker is stale"
 ok "LuCI version markers synchronized ($top_luci)"
-grep -Fq 'VERSION="4.09"' dns-manager.sh || fail "DNS Manager version marker is not 4.09"
-ok "DNS Manager version marker synchronized (4.09)"
+grep -Fq 'VERSION="4.10"' dns-manager.sh || fail "DNS Manager version marker is not 4.10"
+ok "DNS Manager version marker synchronized (4.10)"
 grep -Fq "assignment.appendChild(btn('Удалить'" dns-manager-luci.sh || fail "Custom DNS delete button is not aligned with the assignment action"
 grep -Fq ".dm-catalog-item-custom{grid-column:auto}" dns-manager-luci.sh || fail "Custom DNS card is wider than a stock catalog card"
 grep -Fq ".dm-catalog-controls-custom .dm-assign-inline select{height:30px;min-width:0;width:auto;max-width:100%;flex:1 1 160px" dns-manager-luci.sh || fail "Custom DNS actions do not have a responsive inline layout"
@@ -2330,10 +2330,10 @@ ok "LuCI Watchdog is available for manually configured DNS without a profile"
 
 ok "forced-DNS controls and current-DNS checks retain their existing behavior"
 
-grep -q 'test_dns_catalog "\$1"' dns-manager.sh || fail "profile apply does not pass its category to the DNS test"
+grep -q 'test_dns_catalog "\$_profile_test_scope"' dns-manager.sh || fail "profile apply does not pass its category to the DNS test"
 grep -q 'test_scope=' dns-manager.sh || fail "DNS test scope is not persisted"
-grep -q 'ensure_test_results_fresh "\$_cat"' dns-manager.sh || fail "category selector does not request category-scoped freshness"
-grep -q 'test_dns_catalog "$1"' dns-manager.sh || fail "profile apply does not start a category-scoped DNS test"
+grep -q 'ensure_test_results_fresh "\$_auto_fresh_scope"' dns-manager.sh || fail "category selector does not request category-scoped freshness"
+grep -Fq 'test_dns_catalog "$_profile_test_scope"' dns-manager.sh || fail "profile apply does not start a category-scoped DNS test"
 grep -q '($2==c || $2=="regional")' dns-manager.sh || fail "category-scoped test does not include the regional DNS set"
 grep -Fq '_test_scope="${1:-all}"' dns-manager.sh || fail "DNS test scope argument missing"
 grep -q 'last_full_test_scope' "$tmp/backend.sh" || fail "LuCI status does not expose DNS test scope"
@@ -3287,6 +3287,7 @@ ok "transaction rollback restores the in-memory manager profile"
 
 sh tests/dnssec-probe-test.sh || fail "DNSSEC probe test"
 sh tests/dnssec-integration-guard-test.sh || fail "DNSSEC profile and replacement guard test"
+sh tests/dnssec-selection-test.sh || fail "DNSSEC candidate selection test"
 if command -v dig >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then python3 tests/dnssec-real-dig-test.py || fail "DNSSEC real-dig probe test"; fi
 sh tests/test-uninstall-regression.sh || fail "uninstall regression tests"
 

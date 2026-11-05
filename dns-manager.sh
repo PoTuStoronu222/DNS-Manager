@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="4.09"
+VERSION="4.10"
 # 3.86: make LuCI the primary interface and preserve external DNS on removal.
 # 3.85: revalidate Watchdog settings before recovery.
 # 3.84: cap DNS catalog test concurrency by total RAM on small routers.
@@ -2213,6 +2213,14 @@ dns_field() {
 dns_name() { dns_field "$1" 4 | sed 's/\\\\\././g'; }
 dns_url() { dns_field "$1" 5; }
 dns_cat() { dns_field "$1" 2; }
+# Potential DNSSEC validators observed in the catalog audit. This is only a
+# candidate pool: dnssec_probe_local must pass before a slot is committed.
+dnssec_candidate_eligible() {
+    case "$1" in
+        malw_cloudflare|geodema|dagami|paesa|cloudflare_clean|shecan|google_clean|aquilenet|cynthia|digitalsize|cloudflare_security|doh_lacontrevoie|hostux|opendns_standard|dnsforge_strict|dnsbunker|adguard_default|dnsforge|nextdns_anycast|wikimedia|ffmuc|cloudflare_family|nwps_standard|dnsforge_youth|nwps_kids|opendns_family|iijjp) return 0;;
+        *) return 1;;
+    esac
+}
 count_dns() { grep -v '^#' "$DNS_CATALOG" 2>/dev/null | grep -c '|'; }
 dns_catalog_version() { sed -n 's/^# DNSCATVER=//p' "$DNS_CATALOG" 2>/dev/null | head -n1; }
 # ==========================================
@@ -2974,6 +2982,7 @@ validate_selected_slots() {
             case "${DNS_SELECTION_MODE:-}" in
                 profile)
                     _validate_scope="${DNS_SELECTION_CATEGORY:-all}"
+                    [ "$_validate_scope" != dnssec ] || _validate_scope=all
                     ;;
                 quick)
                     _validate_scope=bypass
@@ -3780,7 +3789,11 @@ verify_selected_doh() {
             FAILED_SLOT_ID="$_id"
             FAILED_SLOT_PORT="$_p"
             FAILED_SLOT_CAT="$(watchdog_desired_cat "$s" 2>/dev/null || dns_cat "$_id")"
-            err_msg "Слот $s ($(dns_name "$_id")): DNS не ответил через 127.0.0.1:$_p."
+            if [ "${DNS_SELECTION_MODE:-}" = profile ] && [ "${DNS_SELECTION_CATEGORY:-}" = dnssec ]; then
+                err_msg "Слот $s ($(dns_name "$_id")): DNS или проверка DNSSEC не подтвердились через 127.0.0.1:$_p."
+            else
+                err_msg "Слот $s ($(dns_name "$_id")): DNS не ответил через 127.0.0.1:$_p."
+            fi
             return 1
         fi
     done
@@ -3958,7 +3971,9 @@ profile_prune_failed_slots() {
     while IFS= read -r _slot; do
         [ -n "$_slot" ] || continue
         eval "_id=\$SLOT_$_slot"
-        printf "%s\n" "Слот $_slot освобождён: $(dns_name "$_id") не отвечает локально."
+        if [ "${DNS_SELECTION_MODE:-}" = profile ] && [ "${DNS_SELECTION_CATEGORY:-}" = dnssec ]; then
+            printf "%s\n" "Слот $_slot освобождён: DNS или DNSSEC не подтвердились для $(dns_name "$_id")."
+        else printf "%s\n" "Слот $_slot освобождён: $(dns_name "$_id") не отвечает локально."; fi
         slot_set "$_slot" "" || { rm -f "$_bad"; return 1; }
         slot_cat_set "$_slot" "" || { rm -f "$_bad"; return 1; }
     done < "$_bad"
@@ -5325,6 +5340,7 @@ case "${DNS_SELECTION_MODE:-}:${DNS_SELECTION_CATEGORY:-}" in
     profile:privacy) _profile_name="Конфиденциальность";;
     profile:adblock) _profile_name="Блокировка рекламы";;
     profile:family) _profile_name="Семейная фильтрация";;
+    profile:dnssec) _profile_name="DNSSEC";;
     manual:none) _profile_name="Собственный выбор";;
     *) ;;
 esac
@@ -5449,7 +5465,8 @@ profile_apply_begin() {
     PROFILE_OLD_FORCE_DOH="${FORCE_DOH:-0}"
     PROFILE_OLD_DNSMASQ_PERF="${DNSMASQ_PERF:-0}"
     PROFILE_OLD_WATCHDOG_ENABLED="${WATCHDOG_ENABLED:-0}"
-    test_dns_catalog "$1" || { PROFILE_FULL_TEST=0; PROFILE_APPLY=0; return 1; }
+    _profile_test_scope="$1"; [ "$_profile_test_scope" != dnssec ] || _profile_test_scope=all
+    test_dns_catalog "$_profile_test_scope" || { PROFILE_FULL_TEST=0; PROFILE_APPLY=0; return 1; }
 }
 profile_apply_end() {
     NTP_IP_FALLBACK="$PROFILE_OLD_NTP_IP_FALLBACK"
@@ -5470,7 +5487,7 @@ bypass)
     profile_apply_end
     return "$_profile_rc"
     ;;
-clean|security|privacy|adblock|family|all)
+clean|security|privacy|adblock|family|all|dnssec)
     profile_apply_begin "$goal" || { _profile_rc=$?; profile_apply_end; return "$_profile_rc"; }
     # Profile selection changes only the DNS selection. Preserve the operator's
     # current regional DNS where requested, while the Hybrid DNS core remains on.
@@ -5548,18 +5565,19 @@ done
 
 auto_fill_slots() {
 _cat="$1"
-if ! case "$_cat" in bypass|clean|security|privacy|adblock|family|all) true;; *) false;; esac; then
+if ! case "$_cat" in bypass|clean|security|privacy|adblock|family|all|dnssec) true;; *) false;; esac; then
     warn_msg "Неизвестная категория DNS."
     pause
     return 1
 fi
-ensure_test_results_fresh "$_cat" || { warn_msg "Не удалось получить свежие результаты теста."; pause; return 1; }
+_auto_fresh_scope="$_cat"; [ "$_cat" != dnssec ] || _auto_fresh_scope=all
+ensure_test_results_fresh "$_auto_fresh_scope" || { warn_msg "Не удалось получить свежие результаты теста."; pause; return 1; }
 [ -s "$TEST_RESULTS" ] || { warn_msg "Не удалось получить результаты теста."; pause; return 1; }
 _pool="$TMP_DIR/auto-slots"
 _src="$TMP_DIR/auto-candidates"
 : > "$_pool"
 : > "$_src"
-if [ "$_cat" = all ]; then
+if [ "$_cat" = all ] || [ "$_cat" = dnssec ]; then
     awk -F'|' 'BEGIN{OFS="|"} NF>=5 && $5=="OK" && $2!="regional" {if($4 !~ /^[0-9]+$/)$4=2147483647;print}' "$TEST_RESULTS" 2>/dev/null | sort -t'|' -k4,4n > "$_src"
 else
     awk -F'|' -v c="$_cat" 'BEGIN{OFS="|"} NF>=5 && $2==c && $5=="OK" {if($4 !~ /^[0-9]+$/)$4=2147483647;print}' "$TEST_RESULTS" 2>/dev/null | sort -t'|' -k4,4n > "$_src"
@@ -5579,6 +5597,7 @@ _seen_urls="$TMP_DIR/auto-seen-urls"
 i=1
 while IFS='|' read -r _id _cat2 _name _ms _st; do
     [ -n "$_id" ] || continue
+    if [ "$_cat" = dnssec ] && ! dnssec_candidate_eligible "$_id"; then continue; fi
     _url="$(normalize_url "$(dns_url "$_id")")"
     [ -n "$_url" ] || continue
     grep -qxF "$_url" "$_seen_urls" 2>/dev/null && continue
@@ -6960,7 +6979,7 @@ watchdog_scope_category() {
         quick) printf "%s\n" bypass ;;
         profile)
             case "${DNS_SELECTION_CATEGORY:-}" in
-                bypass|clean|security|privacy|adblock|family) printf "%s\n" "$DNS_SELECTION_CATEGORY" ;;
+                bypass|clean|security|privacy|adblock|family|dnssec) printf "%s\n" "$DNS_SELECTION_CATEGORY" ;;
                 *) return 1 ;;
             esac
             ;;
@@ -6972,7 +6991,11 @@ watchdog_desired_cat() {
     _slot="$1"
     case "$_slot" in
         RU) printf "%s\n" regional ;;
-        1|2|3|4|5|6) watchdog_scope_category ;;
+        1|2|3|4|5|6)
+            if [ "${DNS_SELECTION_MODE:-}" = profile ] && [ "${DNS_SELECTION_CATEGORY:-}" = dnssec ]; then
+                eval "_wdi=\${SLOT_${_slot}:-}"; [ -n "$_wdi" ] || return 1
+                dns_cat "$_wdi"
+            else watchdog_scope_category; fi ;;
         *) return 1 ;;
     esac
 }
@@ -6983,7 +7006,7 @@ watchdog_target_live_count() {
     for _tls in 1 2 3 4 5 6; do
         eval "_tlid=\${SLOT_${_tls}:-}"
         [ -n "$_tlid" ] || continue
-        [ "$(dns_cat "$_tlid" 2>/dev/null || true)" = "$_target_cat" ] || continue
+        if [ "$_target_cat" != dnssec ]; then [ "$(dns_cat "$_tlid" 2>/dev/null || true)" = "$_target_cat" ] || continue; fi
         watchdog_check_slot "$_tls" >/dev/null 2>&1 && _target_live=$((_target_live+1))
     done
     printf "%s\n" "$_target_live"

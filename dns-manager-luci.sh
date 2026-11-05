@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager full installer and LuCI companion
-# Version: 2.21
+# Version: 2.22
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.21"
+VERSION="2.22"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -762,7 +762,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.21"
+SELF_VERSION="2.22"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -2324,7 +2324,7 @@ doh_status_json() {
     _profile=none; _mode=none; _selection_category=none
     if [ "$_doh_total" -gt 0 ] && [ "$_doh_total" -eq "$_expected" ] && [ "$_match" -eq "$_expected" ]; then
         case "$_mode_cfg:$_selection_category_cfg" in
-            quick:bypass|profile:bypass|profile:clean|profile:security|profile:privacy|profile:adblock|profile:family) _profile=hybrid; _mode="$_mode_cfg"; _selection_category="$_selection_category_cfg";;
+            quick:bypass|profile:bypass|profile:clean|profile:security|profile:privacy|profile:adblock|profile:family|profile:dnssec) _profile=hybrid; _mode="$_mode_cfg"; _selection_category="$_selection_category_cfg";;
             *) _profile=custom; _mode=manual;;
         esac
     fi
@@ -2498,7 +2498,7 @@ status_json() {
         # The saved profile category is the intended category. A runtime clean
         # fallback does not turn a profile into a custom selection.
         case "${_mode_cfg}:${_selection_category_cfg}" in
-            quick:bypass|profile:bypass|profile:clean|profile:security|profile:privacy|profile:adblock|profile:family)
+            quick:bypass|profile:bypass|profile:clean|profile:security|profile:privacy|profile:adblock|profile:family|profile:dnssec)
                 _profile=hybrid
                 _mode="${_mode_cfg}"
                 _selection_category="${_selection_category_cfg}"
@@ -3297,7 +3297,7 @@ job_start_profile() {
     _profile="$1"
     case "$_profile" in
         clean2) _profile=clean ;;
-        bypass|clean|security|privacy|adblock|family|all) ;;
+        bypass|clean|security|privacy|adblock|family|all|dnssec) ;;
         *) json_error "Неверный профиль"; return ;;
     esac
 
@@ -3906,7 +3906,7 @@ run_action() {
             set_device_dns_json "$(jget mac)" "$(jget slots)"
             ;;
         set_profile)
-            case "$_profile" in clean2) _profile=clean;; bypass|clean|security|privacy|adblock|family|all) ;; *) json_error "Неверный профиль"; return;; esac
+            case "$_profile" in clean2) _profile=clean;; bypass|clean|security|privacy|adblock|family|all|dnssec) ;; *) json_error "Неверный профиль"; return;; esac
             job_start_profile "$_profile"
             ;;
         set_regional)
@@ -4175,7 +4175,7 @@ EOF_RPC_WRAPPER
 'require ui';
 'require session';
 
-// DNS Manager LuCI common module version: 2.21
+// DNS Manager LuCI common module version: 2.22
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -4231,7 +4231,7 @@ var callLog = dmRpc({ object:'dns_manager', method:'log', params:['lines'], expe
 var PROFILE = [
   ['bypass','Обход геоблока'], ['clean','Без фильтрации'],
   ['security','Защита от угроз'], ['privacy','Конфиденциальность'],
-  ['adblock','Блокировка рекламы'], ['family','Семейная фильтрация']
+  ['adblock','Блокировка рекламы'], ['family','Семейная фильтрация'], ['dnssec','DNSSEC']
 ];
 var CATEGORY = [
   ['all','Все DNS'], ['bypass','Обход геоблока'], ['security','Защита от угроз'], ['privacy','Конфиденциальность'],
@@ -5509,6 +5509,7 @@ function renderProfiles(root,st){
     g,
     E('div',{'class':'dm-mini'},'Профиль определяет схему выбора DNS и используется сейчас.')
   ];
+  if(currentId==='dnssec')pch.push(E('div',{'class':'dm-hint'},'DNSSEC проверяется выбранными серверами; фильтрация может различаться. Региональный DNS, Steer и привязки устройств работают по своим правилам.'));
   var regionalSlot=(st.slots||[]).filter(function(s){return String(s.slot)==='RU';})[0]||{};
   var regionalMode=String(st.regional_mode|| (regionalSlot.id?'legacy':'doh'));
   var hasGeneral=(st.slots||[]).some(function(s){return String(s.slot)!=='RU'&&!!s.id;});
@@ -6318,13 +6319,13 @@ function saveRouteCache(key,st,aux){
     var entry=JSON.parse(JSON.stringify({ts:Date.now(),data:st,aux:aux}));
     window.dmRouteCache[key]=entry;
     if(typeof session!=='undefined'&&session.setLocalData)
-      session.setLocalData('dns-manager-route-2.21-'+key,entry);
+      session.setLocalData('dns-manager-route-2.22-'+key,entry);
   }catch(e){}
 }
 function routeCacheEntry(key){
   var entry=key&&window.dmRouteCache&&window.dmRouteCache[key];
   if(!entry&&key){
-    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.21-'+key);}catch(e){}
+    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.22-'+key);}catch(e){}
   }
   if(!entry||typeof entry.ts!=='number'||Date.now()-entry.ts<0||Date.now()-entry.ts>300000||!entry.data||entry.data.ok!==true)return null;
   return entry;
@@ -7350,7 +7351,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 2.21
+// DNS Manager LuCI version: 2.22
 return view.extend({
   load: DM.load,
   render: DM.render,
