@@ -6,7 +6,7 @@ awk '/^catalog_validate_file\(\) \{/,/^}/' dns-manager.sh > "$tmp/validate.sh"
 awk '/^write_catalogs\(\) \{/,/^}/' dns-manager.sh > "$tmp/update.sh"
 . "$tmp/validate.sh"
 . "$tmp/update.sh"
-DNSCAT_VERSION=8.7-RU-NOSOCIAL DNSCAT_REVISION=10
+DNSCAT_VERSION=8.7-RU-NOSOCIAL DNSCAT_REVISION=11
 CFG_DIR="$tmp/config"; DNS_CATALOG="$CFG_DIR/catalog"; TEST_RESULTS="$tmp/results"
 PERSIST_STATE_DIR="$tmp/persist"; mkdir -p "$CFG_DIR" "$PERSIST_STATE_DIR"
 catalog_download() { cp catalogs/dns-8.7-RU-NOSOCIAL.conf "$1"; }
@@ -38,11 +38,11 @@ awk -F'|' 'NR==FNR {if ($1 !~ /^#/ && NF>=5) {cat[$1]=$2; url[$1]=$5; count++}; 
   END {exit (bad || seen != count || count != 107)}' "$tmp/old" "$DNS_CATALOG"
 grep -q '^astracat|.*|OK$' "$TEST_RESULTS"
 grep -q '^shecan|.*|OK$' "$TEST_RESULTS"
-# Revision 9 -> 10 changes the visible Comss Router label only.
-awk -F'|' 'BEGIN {OFS="|"} /^# DNSCATREV=/ {$0="# DNSCATREV=9"} $1=="comss_adblock_bypass" {$4="Comss.one Router"} {print}' catalogs/dns-8.7-RU-NOSOCIAL.conf > "$DNS_CATALOG"
+# Revision 10 -> 11 changes the visible Comss Router label only.
+awk -F'|' 'BEGIN {OFS="|"} /^# DNSCATREV=/ {$0="# DNSCATREV=10"} $1=="comss_adblock_bypass" {$4="Comss.one Router (блокировка рекламы)"} {print}' catalogs/dns-8.7-RU-NOSOCIAL.conf > "$DNS_CATALOG"
 printf '%s\n' 'comss_adblock_bypass|bypass|Comss.one Router|25|OK' > "$TEST_RESULTS"
 write_catalogs
-awk -F'|' '$1=="comss_adblock_bypass" {if ($2!="bypass" || $4!="Comss.one Router (блокировка рекламы)" || $5!="https://router.comss.one/dns-query") exit 1; found=1} END {if (!found) exit 1}' "$DNS_CATALOG"
+awk -F'|' '$1=="comss_adblock_bypass" {if ($2!="bypass" || $4!="Comss Router · без рекламы" || $5!="https://router.comss.one/dns-query") exit 1; found=1} END {if (!found) exit 1}' "$DNS_CATALOG"
 grep -q '^comss_adblock_bypass|.*|OK$' "$TEST_RESULTS"
 # On download failure, a compatible old catalogue is retained.
 cp "$tmp/old" "$DNS_CATALOG"
