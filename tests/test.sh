@@ -2010,6 +2010,7 @@ sh tests/watchdog-single-dns-test.sh || fail "single DNS watchdog candidate safe
 sh tests/watchdog-candidate-rollback-test.sh || fail "watchdog candidate rollback"
 sh tests/watchdog-restart-cooldown-test.sh || fail "watchdog service restart cooldown"
 sh tests/watchdog-category-test.sh || fail "watchdog category selection and isolated scan"
+sh tests/provider-fallback-preflight-test.sh || fail "provider fallback candidate and route preflight"
 cat > "$tmp/watchdog_lock_refusal_runner.sh" <<'EOF_WATCHDOG_LOCK_REFUSAL'
 #!/bin/sh
 set -eu

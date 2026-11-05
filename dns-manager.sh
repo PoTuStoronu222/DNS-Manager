@@ -808,8 +808,8 @@ write_catalogs() {
 # router's own /tmp/resolv.conf, which normally points back to dnsmasq.
 # An optional path lets the parser be exercised without changing the router.
 regional_provider_addresses() {
-    local _rpa_file
-    if [ "$#" -gt 0 ]; then
+    local _rpa_file _rpa_limit
+    if [ "$#" -gt 0 ] && [ -n "$1" ]; then
         _rpa_file="$1"
     elif [ -s /tmp/resolv.conf.d/resolv.conf.auto ]; then
         _rpa_file=/tmp/resolv.conf.d/resolv.conf.auto
@@ -817,7 +817,10 @@ regional_provider_addresses() {
         _rpa_file=/tmp/resolv.conf.auto
     fi
     [ -r "$_rpa_file" ] || return 0
-    LC_ALL=C awk '
+    _rpa_limit="${2:-4}"
+    case "$_rpa_limit" in ''|*[!0-9]*) return 1;; esac
+    [ "$_rpa_limit" -ge 1 ] && [ "$_rpa_limit" -le 32 ] || return 1
+    LC_ALL=C awk -v limit="$_rpa_limit" '
         function ipv4(s, a,n,i) {
             n=split(s,a,"."); if (n != 4) return 0
             for (i=1; i<=4; i++) if (a[i] !~ /^[0-9]+$/ || length(a[i]) > 3 || a[i]+0 > 255) return 0
@@ -845,11 +848,112 @@ regional_provider_addresses() {
             ip=$2
             if ((ipv4(ip) || ipv6(ip)) && !seen[tolower(ip)]++) {
                 print ip
-                if (++count == 4) exit
+                if (++count == limit) exit
             }
         }
     ' "$_rpa_file"
 }
+# Candidate collection only: the recovery path is not enabled by this helper.
+# Exclude every local interface address to avoid forwarding DNS to this router.
+provider_fallback_candidates() (
+    command -v ip >/dev/null 2>&1 || return 1
+    _pfc_local="$(ip -o address show 2>/dev/null | awk '
+        $3=="inet" || $3=="inet6" {sub(/\/.*/, "", $4); print tolower($4)}
+    ')"
+    [ -n "$_pfc_local" ] || return 1
+    regional_provider_addresses "${1:-}" 32 | LC_ALL=C awk -v locals="$_pfc_local" '
+        function key(s, parts, left, right, n, m, r, i, zeros, result, x) {
+            s=tolower(s)
+            if (!index(s,":")) return s
+            n=split(s,parts,"::")
+            m=split(parts[1],left,":"); if(parts[1]=="") m=0
+            zeros=0
+            r=0
+            if(n==2) {zeros=8-m; if(parts[2]!="") {r=split(parts[2],right,":"); zeros-=r}}
+            result=""
+            for(i=1;i<=m;i++) {x=left[i]; sub(/^0+/,"",x); if(x=="") x="0"; result=result ":" x}
+            for(i=1;i<=zeros;i++) result=result ":0"
+            for(i=1;i<=r;i++) {x=right[i]; sub(/^0+/,"",x); if(x=="") x="0"; result=result ":" x}
+            return result
+        }
+        BEGIN {n=split(locals,a,"\n"); for(i=1;i<=n;i++) own[key(a[i])]=1}
+        {
+            ip=tolower($0)
+            if (key(ip) in own) next
+            if (index(ip,":")) {
+                if (ip ~ /^ff/ || ip ~ /^fe[89ab]/ || ip=="::1" || ip=="::") next
+            } else {
+                split(ip,a,".")
+                if (a[1]+0>=224 || a[1]+0==0 || a[1]+0==127) next
+                if (a[1]+0==169 && a[2]+0==254) next
+                for(i=1;i<=4;i++) if(length(a[i])>1 && substr(a[i],1,1)=="0") next
+            }
+            if (!seen[key(ip)]++) {print ip; if(++count==4) exit}
+        }
+    '
+)
+# Probe literal addresses directly with a unique name, avoiding a positive
+# cached answer from the router. No DNS configuration is changed here.
+provider_fallback_verified_candidates() (
+    _pfv_file="$1"
+    [ -s "$_pfv_file" ] || return 1
+    command -v dig >/dev/null 2>&1 || return 1
+    _pfv_timestamp="$(date +%s 2>/dev/null)"
+    case "$_pfv_timestamp" in ''|*[!0-9]*) return 1;; esac
+    _pfv_name="dns-manager-${_pfv_timestamp}-$$.example.com"
+    _pfv_count=0
+    while IFS= read -r _pfv_ip; do
+        [ -n "$_pfv_ip" ] || continue
+        _pfv_answer="$(dig "@$_pfv_ip" "$_pfv_name" A +time=2 +tries=1 2>/dev/null || true)"
+        if printf '%s\n' "$_pfv_answer" | awk '
+            /^;; ->>HEADER<<-/ && /status: (NOERROR|NXDOMAIN)[, ]/ {header=1}
+            /^;; flags:/ && /(^|[ ;])qr([ ;]|$)/ {response=1}
+            END {exit !(header && response)}
+        '; then
+            printf '%s\n' "$_pfv_ip"
+            _pfv_count=$((_pfv_count+1))
+        fi
+    done < "$_pfv_file"
+    [ "$_pfv_count" -gt 0 ]
+)
+# Produce a proposed dnsmasq server list in a temporary file. The caller must
+# validate candidates and owns the actual transaction; this never changes UCI.
+provider_fallback_plan_servers() (
+    _pfp_original="$1"; _pfp_ports="$2"; _pfp_candidates="$3"
+    [ -s "$_pfp_original" ] && [ -s "$_pfp_ports" ] && [ -s "$_pfp_candidates" ] || return 1
+    LC_ALL=C awk '
+        FILENAME==ARGV[1] {
+            if ($0 !~ /^[0-9]+$/ || $0+0<1 || $0+0>65535) {bad=1; next}
+            port[$0]=1; next
+        }
+        FILENAME==ARGV[2] {
+            if ($0 !~ /^[0-9A-Fa-f:.]+$/ || $0=="") {bad=1; next}
+            if (!provider_seen[$0]++) providers[++count]=$0
+            next
+        }
+        {
+            original=$0
+            if (original=="") next
+            target=original; prefix=""
+            if (substr(original,1,1)=="/") {
+                n=split(original,pieces,"/")
+                target=pieces[n]
+                prefix=substr(original,1,length(original)-length(target))
+            }
+            if (target ~ /^127\.0\.0\.1#[0-9]+$/) {
+                p=substr(target,index(target,"#")+1)
+                if (p in port) {
+                    if (prefix=="") found_general=1
+                    for(i=1;i<=count;i++) emit(prefix providers[i])
+                    next
+                }
+            }
+            emit(original)
+        }
+        function emit(value) {if (!seen[value]++) print value}
+        END {if (bad || count==0 || !found_general) exit 1}
+    ' "$_pfp_ports" "$_pfp_candidates" "$_pfp_original"
+)
 sync_regional_dns_state() {
     if [ -n "${SLOT_RU:-}" ]; then
         TLD_RU_ENABLED=1
