@@ -34,10 +34,13 @@ On 2026-11-05 a development host made HTTPS wire-format DNS requests to the 113 
 - `shecan` — Zapret DNS
 - `wikimedia` — Wikimedia DNS
 
-The profile tests the full catalog for availability, takes up to six candidates
-from the observed pool by response time, then checks their DNSSEC behavior
-through the local proxy before accepting the configuration. Unconfirmed slots
-are removed; if no general slot is confirmed the apply transaction fails.
+The profile tests the full catalog for availability and screens every available
+entry in the observed pool for DNSSEC over DoH. It selects up to six screened
+candidates by response time and checks them again through the local proxy before
+accepting the configuration. DNSSEC prefilter failures are kept separate from
+ordinary DNS availability. If no general slot is confirmed, the transaction
+fails. A candidate that passes direct screening but fails the local proxy check
+is removed; a slower candidate is not currently retried after that later error.
 Auto replacement continues to pick within the existing slot category and
 checks DNSSEC before saving a replacement. The independent regional setting is
 not changed, and is not a DNSSEC-validation guarantee. Server filtering
@@ -65,10 +68,6 @@ An additional Linux development test built https-dns-proxy from upstream
 source and passed the actual BIND dig probe through that proxy to Cloudflare.
 This is not an OpenWrt build or a real router/Steer/LAN-device test.
 
-Current limitation: the profile selects at most the six fastest available
-entries from the observed candidate pool before DNSSEC probing. If all six
-fail DNSSEC validation, it aborts rather than trying slower candidates. A
-passing test here is only an observation of the selected resolver; signed
-answers on regional or Steer-owned paths are not covered. The 113-resolver
-availability scan is resource-limited by the existing runner but has not
-been benchmarked on weak routers.
+
+The full 113-resolver availability scan and extra candidate checks use the
+existing bounded worker count, but have not been benchmarked on weak routers.
