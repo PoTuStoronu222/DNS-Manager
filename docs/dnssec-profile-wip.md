@@ -38,9 +38,12 @@ The profile tests the full catalog for availability and screens every available
 entry in the observed pool for DNSSEC over DoH. It selects up to six screened
 candidates by response time and checks them again through the local proxy before
 accepting the configuration. DNSSEC prefilter failures are kept separate from
-ordinary DNS availability. If no general slot is confirmed, the transaction
-fails. A candidate that passes direct screening but fails the local proxy check
-is removed; a slower candidate is not currently retried after that later error.
+ordinary DNS availability. If a candidate fails the local proxy check, the
+profile tries later screened candidates in the same transaction, with at most
+six restart batches. At the cap, a final cleanup may restart services once
+more to remove failed slots. It retains only locally validated general
+slots; if none remain, the transaction fails. The independent regional slot is
+not substituted or counted as a surviving general resolver.
 Auto replacement continues to pick within the existing slot category and
 checks DNSSEC before saving a replacement. The independent regional setting is
 not changed, and is not a DNSSEC-validation guarantee. Server filtering

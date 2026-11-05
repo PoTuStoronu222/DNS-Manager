@@ -41,7 +41,11 @@ auto_fill_slots dnssec || { echo 'FAIL: candidate selection failed' >&2; exit 1;
 [ "$(watchdog_desired_cat RU)" = regional ] || exit 1
 [ "$(watchdog_target_live_count)" = 2 ] || exit 1
 if dnssec_candidate_eligible nonvalidator; then echo 'FAIL: unobserved candidate admitted' >&2; exit 1; fi
-rm -f "$DNSSEC_SCREEN_DIR/aquilenet" "$DNSSEC_SCREEN_DIR/digitalsize"
+# Keep slower confirmed candidates for local-proxy retries after the first six.
+for id in cloudflare_clean google_clean dagami geodema paesa cynthia; do : > "$DNSSEC_SCREEN_DIR/$id"; done
+auto_fill_slots dnssec || exit 1
+[ "$(wc -l < "$DNSSEC_SCREEN_DIR/candidates" | tr -d ' ')" = 8 ] || { echo 'FAIL: slower candidates were discarded' >&2; exit 1; }
+for id in cloudflare_clean google_clean dagami geodema paesa cynthia aquilenet digitalsize; do rm -f "$DNSSEC_SCREEN_DIR/$id"; done
 SLOT_1=unchanged
 if auto_fill_slots dnssec; then echo 'FAIL: selection succeeded without screened candidates' >&2; exit 1; fi
 [ "$SLOT_1" = unchanged ] && [ "$SLOT_RU" = region ] || { echo 'FAIL: empty selection changed slots' >&2; exit 1; }

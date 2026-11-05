@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="4.11"
+VERSION="4.12"
 # 3.86: make LuCI the primary interface and preserve external DNS on removal.
 # 3.85: revalidate Watchdog settings before recovery.
 # 3.84: cap DNS catalog test concurrency by total RAM on small routers.
@@ -3768,8 +3768,7 @@ listener_port_exists() {
     fi
     return 1
 }
-# Experimental probe for a future validating-resolver profile. It is not
-# connected to profile application or watchdog; it never changes DNS state.
+# Test the selected local DoH listener without modifying DNS state.
 # A successful observation is not a cryptographic validation by this router.
 dnssec_probe_local() (
     _dsp_port="$1"
@@ -4031,6 +4030,82 @@ profile_prune_failed_slots() {
     sleep 3
     return 0
 }
+# Retry screened DNSSEC candidates in bounded batches while the existing profile
+# transaction and mutation lock are held. Regional DNS is never a candidate.
+profile_dnssec_restart_services() {
+    sync_regional_dns_state
+    rebuild_selected_hdp_sections || return 1
+    reconcile_dnsmasq || return 1
+    /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || return 1
+    dnsmasq_restart_checked || return 1
+    sleep 3
+}
+profile_retry_dnssec_slots() {
+    local _dsr_round _dsr_slot _dsr_id _dsr_port _dsr_good _dsr_bad _dsr_added _dsr_line _dsr_new _dsr_cat _dsr_rest _dsr_candidates _dsr_tried _dsr_badfile _dsr_url _dsr_other _dsr_oid _dsr_ourl _dsr_dup
+    case "${DNSSEC_SCREEN_DIR:-}" in "$TMP_DIR"/dnssec-screen.*) ;; *) return 1;; esac
+    _dsr_candidates="$DNSSEC_SCREEN_DIR/candidates"
+    _dsr_tried="$DNSSEC_SCREEN_DIR/local-tried"
+    _dsr_badfile="$DNSSEC_SCREEN_DIR/local-bad"
+    [ -s "$_dsr_candidates" ] || return 1
+    : > "$_dsr_tried" || return 1
+    for _dsr_slot in 1 2 3 4 5 6; do
+        eval "_dsr_id=\${SLOT_${_dsr_slot}:-}"
+        [ -z "$_dsr_id" ] || printf '%s\n' "$_dsr_id" >> "$_dsr_tried"
+    done
+    _dsr_round=0
+    while [ "$_dsr_round" -lt 6 ]; do
+        command -v dig >/dev/null 2>&1 || return 1
+        _dsr_round=$((_dsr_round+1)); _dsr_good=0; _dsr_bad=0; _dsr_added=0
+        : > "$_dsr_badfile" || return 1
+        for _dsr_slot in 1 2 3 4 5 6; do
+            eval "_dsr_id=\${SLOT_${_dsr_slot}:-}"
+            [ -n "$_dsr_id" ] || continue
+            eval "_dsr_port=\${PORT_${_dsr_slot}:-}"
+            if [ -n "$_dsr_port" ] && listener_port_exists "$_dsr_port" && local_dns_query_ok "$_dsr_port" example.com && dnssec_probe_local "$_dsr_port"; then
+                _dsr_good=$((_dsr_good+1))
+            else
+                printf '%s\n' "$_dsr_slot" >> "$_dsr_badfile" || return 1
+                _dsr_bad=$((_dsr_bad+1))
+            fi
+        done
+        if [ "$_dsr_bad" -eq 0 ]; then [ "$_dsr_good" -gt 0 ] && return 0; return 1; fi
+        while IFS= read -r _dsr_slot; do
+            [ -n "$_dsr_slot" ] || continue
+            _dsr_line=''
+            while IFS='|' read -r _dsr_new _dsr_cat _dsr_rest; do
+                [ -n "$_dsr_new" ] && dnssec_candidate_eligible "$_dsr_new" || continue
+                [ -f "$DNSSEC_SCREEN_DIR/$_dsr_new" ] || continue
+                grep -qxF "$_dsr_new" "$_dsr_tried" 2>/dev/null && continue
+                [ "$(dns_cat "$_dsr_new" 2>/dev/null)" = "$_dsr_cat" ] || continue
+                _dsr_url="$(normalize_url "$(dns_url "$_dsr_new")")"
+                [ -n "$_dsr_url" ] || continue
+                _dsr_dup=0
+                for _dsr_other in 1 2 3 4 5 6 RU; do
+                    [ "$_dsr_other" = "$_dsr_slot" ] && continue
+                    eval "_dsr_oid=\${SLOT_${_dsr_other}:-}"
+                    [ -n "$_dsr_oid" ] || continue
+                    _dsr_ourl="$(normalize_url "$(dns_url "$_dsr_oid")")"
+                    [ "$_dsr_ourl" != "$_dsr_url" ] || { _dsr_dup=1; break; }
+                done
+                [ "$_dsr_dup" = 0 ] || continue
+                _dsr_line="$_dsr_new|$_dsr_cat"; break
+            done < "$_dsr_candidates"
+            if [ -n "$_dsr_line" ]; then
+                _dsr_new="${_dsr_line%%|*}"; _dsr_cat="${_dsr_line#*|}"
+                printf '%s\n' "$_dsr_new" >> "$_dsr_tried" || return 1
+                slot_set "$_dsr_slot" "$_dsr_new" && slot_cat_set "$_dsr_slot" "$_dsr_cat" || return 1
+                _dsr_added=$((_dsr_added+1))
+            else
+                slot_set "$_dsr_slot" "" && slot_cat_set "$_dsr_slot" "" || return 1
+            fi
+        done < "$_dsr_badfile"
+        [ "$_dsr_good" -gt 0 ] || [ "$_dsr_added" -gt 0 ] || return 1
+        apply_progress "DNSSEC: проверяю следующие доступные серверы (попытка $_dsr_round из 6)."
+        profile_dnssec_restart_services || return 1
+    done
+    # At the retry cap keep only validated general slots, or fail and roll back.
+    profile_prune_failed_slots
+}
 verify_after_apply_with_repair() {
     if [ "${REGIONAL_TOGGLE_APPLY:-0}" = 1 ]; then
         verify_after_apply
@@ -4044,7 +4119,13 @@ verify_after_apply_with_repair() {
         # specific failed slot. Service/configuration failures must roll back
         # the transaction without discarding otherwise valid DNS selections.
         [ -n "${FAILED_SLOT:-}" ] || return 1
-        if profile_prune_failed_slots; then
+        if [ "${DNS_SELECTION_MODE:-}" = profile ] && [ "${DNS_SELECTION_CATEGORY:-}" = dnssec ]; then
+            [ "$FAILED_SLOT" != RU ] || return 1
+            if profile_retry_dnssec_slots; then
+                tx_snapshot_after_apply
+                verify_after_apply && return 0
+            fi
+        elif profile_prune_failed_slots; then
             tx_snapshot_after_apply
             verify_after_apply && return 0
         fi
@@ -5664,13 +5745,16 @@ while IFS='|' read -r _id _cat2 _name _ms _st; do
     printf '%s\n' "$_url" >> "$_seen_urls"
     printf '%s\n' "$_id|$_cat2|$_name|$_ms|$_st" >> "$_pool"
     i=$((i+1))
-    [ "$i" -gt 6 ] && break
+    if [ "$_cat" != dnssec ] && [ "$i" -gt 6 ]; then break; fi
 done < "$_src"
 [ -s "$_pool" ] || {
     if [ "$_cat" = dnssec ]; then warn_msg "Не найдено доступных серверов, подтвердивших DNSSEC. Настройки не изменены."
     else warn_msg "Не удалось сформировать набор DNS."; fi
     pause; return 1
 }
+if [ "$_cat" = dnssec ]; then
+    cp "$_pool" "$DNSSEC_SCREEN_DIR/candidates" || return 1
+fi
 if [ "$_cat" = all ]; then
     _src2="$TMP_DIR/auto-candidates-all"
     : > "$_src2"
