@@ -43,6 +43,10 @@ PROBE_OK=1; REBUILD_COUNT=0
 verify_selected_doh || { echo 'FAIL: validated general plus regional slot rejected' >&2; exit 1; }
 watchdog_apply_slot_candidate 1 candidate clean old clean || { echo 'FAIL: validated replacement rejected' >&2; exit 1; }
 [ "$SLOT_1" = candidate ] && [ "$SAVED" -eq 1 ] || exit 1
+# Regional DoH retains independent behavior even if DNSSEC probing fails.
+PROBE_OK=0; REBUILD_COUNT=0; SAVED=0; SLOT_RU=ru_old; SLOT_RU_CAT=regional
+watchdog_apply_slot_candidate RU ru_new regional ru_old regional || { echo 'FAIL: regional replacement forced DNSSEC' >&2; exit 1; }
+[ "$SLOT_RU" = ru_new ] && [ "$SAVED" -eq 1 ] || exit 1
 DNS_SELECTION_CATEGORY=clean; PROBE_OK=0
 verify_selected_doh || { echo 'FAIL: existing profile behavior changed' >&2; exit 1; }
 echo 'OK: DNSSEC gates reject unverified general candidates without changing regional behavior'
