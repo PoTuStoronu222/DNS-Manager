@@ -962,6 +962,36 @@ provider_fallback_plan_servers() (
         }
     ' "$_pfp_ports" "$_pfp_candidates" "$_pfp_owned" "$_pfp_original"
 )
+# Classify a completed watchdog cycle without changing DNS. Expected entries
+# are slot|id; records come from watchdog_append_check_record. A regional slot
+# cannot hide a complete failure of the general slots, but all selected slots
+# must be healthy before this conservative policy reports full recovery.
+provider_fallback_cycle_state() (
+    _pfc_expected="$1"; _pfc_records="$2"
+    [ -s "$_pfc_expected" ] && [ -s "$_pfc_records" ] || return 1
+    LC_ALL=C awk -F'|' '
+        FILENAME==ARGV[1] {
+            if (NF!=2 || $1 !~ /^(1|2|3|4|5|6|RU)$/ || $2 !~ /^[A-Za-z0-9_-]+$/ || ($1 in expected)) {bad=1; next}
+            expected[$1]=$2; expected_total++; if($1!="RU") general++; next
+        }
+        $1=="record" {
+            if (NF!=6 || !($2 in expected) || expected[$2]!=$3 || ($2 in seen)) {bad=1; next}
+            seen[$2]=1; status[$2]=$6
+        }
+        END {
+            if (bad || general<1) {print "unknown"; exit 0}
+            total_ok=0; general_failed=0
+            for (slot in expected) {
+                if (!(slot in seen) || status[slot]=="SKIPPED" || status[slot] !~ /^(OK|FAIL|NO_LISTENER)$/) {print "unknown"; exit 0}
+                if (status[slot]=="OK") total_ok++
+                else if (slot!="RU") general_failed++
+            }
+            if (general_failed==general) print "all_failed"
+            else if (total_ok==expected_total) print "recovered"
+            else print "partial"
+        }
+    ' "$_pfc_expected" "$_pfc_records"
+)
 # Create the recovery journal before any UCI writes. Incomplete journals are
 # never interpreted as permission to change dnsmasq. The caller holds the
 # mutation lock and must use files from the same validated plan.
@@ -1002,8 +1032,10 @@ provider_fallback_journal_classify() (
     return 0
 )
 # Replace only the server list and only if it still matches the caller's
-# snapshot. Use a private UCI delta directory so unrelated pending LuCI edits
-# are never committed or reverted. This helper does not restart services.
+# snapshot. A private UCI save directory separates our staged changes, but
+# UCI may still read the shared delta path. The checks below reduce conflicts;
+# the remaining concurrency window must be resolved before this is connected.
+# This helper does not restart services.
 provider_fallback_replace_servers() (
     _pfr_section="$1"; _pfr_expected="$2"; _pfr_new="$3"
     case "$_pfr_section" in '@dnsmasq[0]') ;; ''|*[!A-Za-z0-9_]*) return 1;; esac
@@ -1013,15 +1045,15 @@ provider_fallback_replace_servers() (
     # Do not race or commit unrelated uncommitted dhcp changes.
     _pfr_pending="$(uci -q changes dhcp 2>/dev/null)" || return 1
     [ -z "$_pfr_pending" ] || return 2
-    [ "$(uci -q -P "$_pfr_dir" -x get "dhcp.$_pfr_section" 2>/dev/null)" = dnsmasq ] || return 1
-    uci -q -P "$_pfr_dir" -x get "dhcp.$_pfr_section.server" 2>/dev/null |
+    [ "$(uci -q -t "$_pfr_dir" get "dhcp.$_pfr_section" 2>/dev/null)" = dnsmasq ] || return 1
+    uci -q -t "$_pfr_dir" get "dhcp.$_pfr_section.server" 2>/dev/null |
         tr ' ' '\n' | sed '/^$/d' > "$_pfr_dir/current" || return 1
     cmp -s "$_pfr_expected" "$_pfr_dir/current" || return 2
-    uci -q -P "$_pfr_dir" -x delete "dhcp.$_pfr_section.server" || return 1
+    uci -q -t "$_pfr_dir" delete "dhcp.$_pfr_section.server" || return 1
     while IFS= read -r _pfr_server || [ -n "$_pfr_server" ]; do
         [ -n "$_pfr_server" ] || return 1
         case "$_pfr_server" in *' '*|*'	'*) return 1;; esac
-        uci -q -P "$_pfr_dir" -x add_list "dhcp.$_pfr_section.server=$_pfr_server" || return 1
+        uci -q -t "$_pfr_dir" add_list "dhcp.$_pfr_section.server=$_pfr_server" || return 1
     done < "$_pfr_new"
     # Recheck the live list immediately before commit. A mismatch must not be
     # overwritten; the caller retains its journal for inspection.
@@ -1030,7 +1062,7 @@ provider_fallback_replace_servers() (
     uci -q get "dhcp.$_pfr_section.server" 2>/dev/null |
         tr ' ' '\n' | sed '/^$/d' > "$_pfr_dir/current" || return 1
     cmp -s "$_pfr_expected" "$_pfr_dir/current" || return 2
-    uci -q -P "$_pfr_dir" -x commit dhcp || return 1
+    uci -q -t "$_pfr_dir" commit dhcp || return 1
     uci -q get "dhcp.$_pfr_section.server" 2>/dev/null |
         tr ' ' '\n' | sed '/^$/d' > "$_pfr_dir/current" || return 1
     cmp -s "$_pfr_new" "$_pfr_dir/current" || return 2

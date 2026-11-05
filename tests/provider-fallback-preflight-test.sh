@@ -7,6 +7,7 @@ awk '/^regional_provider_addresses\(\) \{/,/^}/' dns-manager.sh > "$tmp/function
 awk '/^provider_fallback_candidates\(\) \(/,/^\)/' dns-manager.sh >> "$tmp/functions"
 awk '/^provider_fallback_verified_candidates\(\) \(/,/^\)/' dns-manager.sh >> "$tmp/functions"
 awk '/^provider_fallback_plan_servers\(\) \(/,/^\)/' dns-manager.sh >> "$tmp/functions"
+awk '/^provider_fallback_cycle_state\(\) \(/,/^\)/' dns-manager.sh >> "$tmp/functions"
 awk '/^provider_fallback_journal_create\(\) \(/,/^\)/' dns-manager.sh >> "$tmp/functions"
 awk '/^provider_fallback_journal_classify\(\) \(/,/^\)/' dns-manager.sh >> "$tmp/functions"
 . "$tmp/functions"
@@ -90,6 +91,17 @@ if provider_fallback_plan_servers "$tmp/original" "$tmp/ports" "$tmp/providers" 
     echo 'FAIL: missing managed route was silently ignored' >&2
     exit 1
 fi
+printf '%s\n' '1|one' '2|two' 'RU|regional' > "$tmp/expected"
+printf '%s\n' 'record|1|one|clean|One|FAIL' 'record|2|two|clean|Two|NO_LISTENER' 'record|RU|regional|regional|RU|OK' > "$tmp/records"
+[ "$(provider_fallback_cycle_state "$tmp/expected" "$tmp/records")" = all_failed ] || { echo 'FAIL: regional DNS hid general outage' >&2; exit 1; }
+printf '%s\n' 'record|1|one|clean|One|OK' 'record|2|two|clean|Two|OK' 'record|RU|regional|regional|RU|OK' > "$tmp/records"
+[ "$(provider_fallback_cycle_state "$tmp/expected" "$tmp/records")" = recovered ] || exit 1
+printf '%s\n' 'record|1|one|clean|One|OK' 'record|2|two|clean|Two|FAIL' 'record|RU|regional|regional|RU|OK' > "$tmp/records"
+[ "$(provider_fallback_cycle_state "$tmp/expected" "$tmp/records")" = partial ] || exit 1
+printf '%s\n' 'record|1|one|clean|One|FAIL' 'record|2|two|clean|Two|SKIPPED' 'record|RU|regional|regional|RU|OK' > "$tmp/records"
+[ "$(provider_fallback_cycle_state "$tmp/expected" "$tmp/records")" = unknown ] || { echo 'FAIL: incomplete probe accepted' >&2; exit 1; }
+printf '%s\n' 'record|1|wrong|clean|One|FAIL' 'record|2|two|clean|Two|FAIL' 'record|RU|regional|regional|RU|OK' > "$tmp/records"
+[ "$(provider_fallback_cycle_state "$tmp/expected" "$tmp/records")" = unknown ] || { echo 'FAIL: stale slot result accepted' >&2; exit 1; }
 printf 'SLOT_1=one\n' > "$tmp/config"
 provider_fallback_journal_create "$tmp/journal" cfg123 "$tmp/original" "$tmp/planned" "$tmp/config"
 [ "$(provider_fallback_journal_classify "$tmp/journal" "$tmp/original")" = before ] || exit 1

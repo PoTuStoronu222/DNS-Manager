@@ -2,16 +2,18 @@
 
 This branch does not activate fallback or change the router's DNS settings.
 The current implementation only selects potential upstream addresses,
-provides an isolated upstream probe, constructs a proposed server list and
-prepares a recovery journal. It also includes an isolated UCI transaction and
-rollback helper with mocked tests. These helpers are not connected to Watchdog.
+provides an isolated upstream probe, classifies completed watchdog results,
+constructs a proposed server list and prepares a recovery journal. It also
+includes an isolated UCI transaction and rollback helper with mocked tests.
+These helpers are not connected to Watchdog.
 
 Before enabling the feature, the implementation must satisfy these conditions:
 
 1. The fallback is opt-in, clearly says that queries to the upstream DNS are
    not protected by DoH and that the provider can apply different filtering.
 2. Trigger only after a complete, repeated failure of the selected general
-   DoH slots. Unknown or incomplete probes must not count as failures.
+   DoH slots. Unknown or incomplete probes must not count as failures. The
+   cycle classifier is tested; repeated-cycle integration is unfinished.
 3. Before switching, query the candidate upstream directly and require a
    valid reply. Reject local interface addresses and prevent forwarding loops.
    Handle missing, changing, IPv4-only and IPv6-only upstreams. The isolated
@@ -19,8 +21,11 @@ Before enabling the feature, the implementation must satisfy these conditions:
    verified.
 4. Preserve unrelated dnsmasq rules, canary domains and regional routes.
    The planner requires an exact list of Manager-owned rules and refuses a
-   missing rule. The UCI helper stages changes separately and attempts rollback
-   on verification failure; integration with real OpenWrt remains to be tested.
+   missing rule. The UCI helper uses a private save directory and attempts
+   rollback on verification failure. Current OpenWrt UCI still reads shared
+   pending deltas with a custom save directory; concurrent edits between the
+   last check and commit remain unresolved, so this helper must not be enabled.
+   Integration with real OpenWrt remains to be tested.
 5. Preserve and restore per-device DNS bindings and support Steer without
    altering its own rules. A successful fallback must be verified through the
    path actually used by clients, not just by querying the upstream directly.

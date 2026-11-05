@@ -12,8 +12,9 @@ uci() {
     _mock_dir=""
     while [ "$#" -gt 0 ]; do
         case "$1" in
-            -q|-x) shift ;;
-            -P) _mock_dir="$2"; shift 2 ;;
+            -q) shift ;;
+            -t) _mock_dir="$2"; shift 2 ;;
+            -*) return 1 ;;
             *) break ;;
         esac
     done
