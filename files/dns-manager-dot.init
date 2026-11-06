@@ -1,0 +1,42 @@
+#!/bin/sh /etc/rc.common
+# Experimental, isolated procd service; not installed or enabled by default.
+START=95
+STOP=10
+USE_PROCD=1
+
+DOT_CONFIG=/etc/dns-manager/config/dot-slots.conf
+DOT_CATALOG=/usr/share/dns-manager/dot-endpoints.conf
+DOT_GENERATOR=/usr/libexec/dns-manager-dot-config
+DOT_RUN=/var/run/dns-manager-dot
+
+start_service() {
+    [ -x "$DOT_GENERATOR" ] && [ -r "$DOT_CATALOG" ] && [ -r "$DOT_CONFIG" ] || return 1
+    command -v stubby >/dev/null 2>&1 || return 1
+    mkdir -p "$DOT_RUN" || return 1
+    _dot_stage="$(mktemp -d "$DOT_RUN/stage.XXXXXX")" || return 1
+    _dot_seen=' '
+    _dot_count=0
+    while IFS='|' read -r _dot_slot _dot_id _dot_extra; do
+        [ -n "$_dot_slot" ] || continue
+        [ -z "$_dot_extra" ] || { rm -rf "$_dot_stage"; return 1; }
+        case "$_dot_slot" in 1|2|3|4|5|6) _dot_port=$((5052 + _dot_slot));; RU) _dot_port=5059;; *) rm -rf "$_dot_stage"; return 1;; esac
+        case "$_dot_seen" in *" $_dot_slot "*) rm -rf "$_dot_stage"; return 1;; esac
+        _dot_seen="$_dot_seen$_dot_slot "
+        "$DOT_GENERATOR" "$_dot_id" "$_dot_port" "$DOT_CATALOG" > "$_dot_stage/$_dot_slot.yml" || { rm -rf "$_dot_stage"; return 1; }
+        stubby -i -C "$_dot_stage/$_dot_slot.yml" >/dev/null 2>&1 || { rm -rf "$_dot_stage"; return 1; }
+        _dot_count=$((_dot_count+1))
+    done < "$DOT_CONFIG"
+    [ "$_dot_count" -gt 0 ] || { rm -rf "$_dot_stage"; return 1; }
+    for _dot_slot in 1 2 3 4 5 6 RU; do
+        [ -f "$_dot_stage/$_dot_slot.yml" ] || continue
+        mv -f "$_dot_stage/$_dot_slot.yml" "$DOT_RUN/$_dot_slot.yml" || { rm -rf "$_dot_stage"; return 1; }
+    done
+    rm -rf "$_dot_stage"
+    for _dot_slot in 1 2 3 4 5 6 RU; do
+        case "$_dot_seen" in *" $_dot_slot "*) ;; *) continue;; esac
+        procd_open_instance "slot_$_dot_slot"
+        procd_set_param command stubby -C "$DOT_RUN/$_dot_slot.yml"
+        procd_set_param respawn 3600 5 5
+        procd_close_instance
+    done
+}

@@ -8,6 +8,11 @@ grep -qx 'tls_authentication: GETDNS_AUTHENTICATION_REQUIRED' "$t/stubby.yml"
 grep -qx '  - GETDNS_TRANSPORT_TLS' "$t/stubby.yml"
 [ "$(grep -c '^  - address_data:' "$t/stubby.yml")" = 2 ]
 grep -qx '    tls_auth_name: "one.one.one.one"' "$t/stubby.yml"
+while IFS='|' read -r id host addresses; do
+    case "$id" in ''|\#*) continue;; esac
+    [ "$(awk -F'|' -v id="$id" '$1==id {n++} END{print n+0}' catalogs/dns-8.7-RU-NOSOCIAL.conf)" = 1 ] || { echo "FAIL: DoT ID $id is absent or ambiguous in DNS catalog" >&2; exit 1; }
+    sh "$script" "$id" 5053 "$catalog" > /dev/null || exit 1
+done < "$catalog"
 if sh "$script" missing 5053 "$catalog" > /dev/null 2>&1; then exit 1; fi
 if sh "$script" cloudflare_clean '5053;evil' "$catalog" > /dev/null 2>&1; then exit 1; fi
 printf '%s\n' 'bad|dns.example|999.1.1.1' > "$t/bad"

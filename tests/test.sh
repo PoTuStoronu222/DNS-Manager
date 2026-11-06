@@ -22,6 +22,9 @@ sh tests/regional-modes-test.sh || fail "regional mode routes"
 sh tests/regional-watch-test.sh || fail "regional provider watcher"
 sh tests/setting-job-test.sh || fail "settings background job"
 sh tests/bootstrap-apply-test.sh || fail "bootstrap apply and rollback"
+sh tests/dot-config-test.sh || fail "DoT strict TLS configuration"
+sh tests/dot-service-test.sh || fail "DoT slot service preflight"
+sh tests/dot-selection-test.sh || fail "DoT selection validation"
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT INT TERM
