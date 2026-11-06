@@ -74,6 +74,16 @@ therefore not be treated as a harmless way to release ports. The optional
 device traffic or recovery of an interrupted switch. It must not be run on a
 production router.
 
+On that VM, a separate experiment captured the actual https-dns-proxy procd
+instances, removed each using `ubus service delete` (without invoking the init
+script stop handler), then restored them with `ubus service add`. The DHCP and
+proxy config files were unchanged, the instances restarted, and Steer DNS
+responded again. `tests/dot-openwrt-procd-stop-vm-test.sh` reproduces only this
+limited case on a disposable VM. This technique is not yet used by DNS Manager:
+it needs conflict detection, firewall ownership handoff when force DNS is on,
+process/port verification, interruption recovery, startup ordering and tests
+of the manager watchdog, profiles and live device traffic before integration.
+
 The selection, save and preflight helpers discover both Manager device-binding
 files by default and fail if a discovered file cannot be read. Explicit paths
 are supported for tests and override discovery; callers using that override
