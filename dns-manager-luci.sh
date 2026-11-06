@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager full installer and LuCI companion
-# Version: 2.22
+# Version: 2.23
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.22"
+VERSION="2.23"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -762,7 +762,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.22"
+SELF_VERSION="2.23"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -3924,13 +3924,42 @@ run_action() {
             uninstall_start_json
             ;;
         set_slot)
-            RPC_SLOT="$(jget slot)"; RPC_ID="$(jget id)"
+            RPC_SLOT="$(jget slot)"; RPC_ID="$(jget id)"; RPC_EXPECTED="$(jget expected)"
             case "$RPC_SLOT" in 1|2|3|4|5|6|RU) ;; *) json_error "Неверный слот"; return;; esac
-            case "$RPC_ID" in ''|*[!A-Za-z0-9_-]*) json_error "Неверный DNS ID"; return;; esac
+            case "$RPC_ID" in *[!A-Za-z0-9_-]*) json_error "Неверный DNS ID"; return;; esac
             load_manager || { json_error "DNS Manager недоступен"; return; }
             acquire_mutation_lock || { json_error "Другая операция DNS Manager уже выполняется"; return; }
             load_config >/dev/null 2>&1 || { release_mutation_lock; json_error "Не удалось загрузить настройки"; return; }
             _slot="$RPC_SLOT"; _id="$RPC_ID"
+            if [ -z "$RPC_ID" ]; then
+                case "$RPC_SLOT" in RU) release_mutation_lock; json_error "Региональный DNS меняется в настройках регионального DNS"; return;; esac
+                eval "_remove_id=\${SLOT_${RPC_SLOT}:-}"
+                [ -n "$_remove_id" ] || { release_mutation_lock; json_error "Слот уже пуст"; return; }
+                [ -n "$RPC_EXPECTED" ] && [ "$RPC_EXPECTED" = "$_remove_id" ] || { release_mutation_lock; json_error "DNS в слоте изменился. Обновите страницу и повторите."; return; }
+                _remaining=0
+                for _check_slot in 1 2 3 4 5 6; do
+                    [ "$_check_slot" = "$RPC_SLOT" ] && continue
+                    eval "_check_id=\${SLOT_${_check_slot}:-}"
+                    [ -z "$_check_id" ] || _remaining=$((_remaining+1))
+                done
+                [ "$_remaining" -gt 0 ] || { release_mutation_lock; json_error "Последний общий DNS удалить нельзя. Для отключения используйте восстановление стандартной настройки DNS."; return; }
+                for _bindings in /etc/dns-manager/config/device-dns.conf /etc/dns-manager/config/device-dns-default.conf; do
+                    [ -r "$_bindings" ] || continue
+                    if awk -F '[|,[:space:]]+' -v slot="$RPC_SLOT" '{for (i=2;i<=NF;i++) if ($i==slot) found=1} END {exit !found}' "$_bindings"; then
+                        release_mutation_lock; json_error "Слот используется в привязке устройств. Сначала измените привязку."; return
+                    fi
+                done
+                eval "SLOT_${RPC_SLOT}=''"
+                slot_cat_set "$RPC_SLOT" "" || { release_mutation_lock; json_error "Не удалось освободить слот"; return; }
+                _old_hybrid_stage_skip="${HYBRID_STAGE_SKIP:-0}"
+                [ "$DNS_PROFILE" = hybrid ] && HYBRID_STAGE_SKIP=1
+                _rc=0
+                if SILENT_APPLY=1 CORE_ONLY=1 SKIP_POST_APPLY_VERIFY=1 DNS_MANAGER_NO_UPDATE=1 _apply_settings_impl >/dev/null 2>&1; then _rc=0; else _rc=$?; fi
+                HYBRID_STAGE_SKIP="$_old_hybrid_stage_skip"
+                release_mutation_lock
+                [ "$_rc" -eq 0 ] && json_ok || json_error "Не удалось удалить DNS из слота"
+                return
+            fi
             _cat="$(dns_cat "$RPC_ID" 2>/dev/null || true)"; [ -n "$_cat" ] || { release_mutation_lock; json_error "DNS не найден в каталоге"; return; }
             for _check_slot in 1 2 3 4 5 6 RU; do
                 [ "$_check_slot" = "$RPC_SLOT" ] && continue
@@ -4114,7 +4143,7 @@ test_json() { case "${RPC_METHOD:-}" in test_all) job_start_test_all;; test_curr
 
 case "${1:-}" in
     list)
-        printf '{"status":{},"runtime":{},"doh_status":{},"network_status":{},"lan_devices":{},"set_device_dns":{"mac":"String","slots":"String"},"time_status":{},"page_meta":{},"catalog":{"category":"String","offset":0,"limit":0,"only_ok":0},"update_check":{"force":0},"update":{},"update_manager":{},"update_hdp":{},"update_catalog":{},"update_all":{},"set_profile":{"profile":"String"},"set_regional":{"enabled":0},"reset_dns":{},"uninstall":{},"uninstall_status":{},"set_slot":{"slot":"String","id":"String"},"set_slot_domains":{"slot":"String","domains":"String"},"add_custom_dns":{"name":"String","url":"String"},"delete_custom_dns":{"id":"String"},"set_setting":{"name":"String","enabled":0},"set_bootstrap":{"mode":"String","addresses":"String","preset_ids":"String","extra_addresses":"String"},"set_watchdog_setting":{"name":"String","value":0},"set_watchdog_settings":{"interval":0,"threshold":0,"repair_cooldown":0,"max_restarts":0,"guard_interval":0},"set_ntp":{"preset":"String"},"set_test_age":{"category":"String","hours":0},"test_all":{},"test_current":{},"test_one":{"id":"String"},"test_system":{},"job":{"id":"String"},"log":{"lines":0}}\n'
+        printf '{"status":{},"runtime":{},"doh_status":{},"network_status":{},"lan_devices":{},"set_device_dns":{"mac":"String","slots":"String"},"time_status":{},"page_meta":{},"catalog":{"category":"String","offset":0,"limit":0,"only_ok":0},"update_check":{"force":0},"update":{},"update_manager":{},"update_hdp":{},"update_catalog":{},"update_all":{},"set_profile":{"profile":"String"},"set_regional":{"enabled":0},"reset_dns":{},"uninstall":{},"uninstall_status":{},"set_slot":{"slot":"String","id":"String","expected":"String"},"set_slot_domains":{"slot":"String","domains":"String"},"add_custom_dns":{"name":"String","url":"String"},"delete_custom_dns":{"id":"String"},"set_setting":{"name":"String","enabled":0},"set_bootstrap":{"mode":"String","addresses":"String","preset_ids":"String","extra_addresses":"String"},"set_watchdog_setting":{"name":"String","value":0},"set_watchdog_settings":{"interval":0,"threshold":0,"repair_cooldown":0,"max_restarts":0,"guard_interval":0},"set_ntp":{"preset":"String"},"set_test_age":{"category":"String","hours":0},"test_all":{},"test_current":{},"test_one":{"id":"String"},"test_system":{},"job":{"id":"String"},"log":{"lines":0}}\n'
         ;;
     call)
         case "${2:-}" in
@@ -4175,7 +4204,7 @@ EOF_RPC_WRAPPER
 'require ui';
 'require session';
 
-// DNS Manager LuCI common module version: 2.22
+// DNS Manager LuCI common module version: 2.23
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -4212,7 +4241,7 @@ var callRegional = dmRpc({ object:'dns_manager', method:'set_regional', params:[
 var callResetDns = dmRpc({ object:'dns_manager', method:'reset_dns', expect:{} });
 var callUninstall = dmRpc({ object:'dns_manager', method:'uninstall', expect:{} });
 var callUninstallStatus = rpc.declare({ object:'dns_manager', method:'uninstall_status', expect:{} });
-var callSlot = dmRpc({ object:'dns_manager', method:'set_slot', params:['slot','id'], expect:{} });
+var callSlot = dmRpc({ object:'dns_manager', method:'set_slot', params:['slot','id','expected'], expect:{} });
 var callSlotDomains = dmRpc({ object:'dns_manager', method:'set_slot_domains', params:['slot','domains'], expect:{} });
 var callAddCustomDns = dmRpc({ object:'dns_manager', method:'add_custom_dns', params:['name','url'], expect:{} });
 var callDeleteCustomDns = dmRpc({ object:'dns_manager', method:'delete_custom_dns', params:['id'], expect:{} });
@@ -4911,14 +4940,30 @@ function resolverRows(st,root){
     var ci=checkInfo(d.id,d);
     var status=String(ci.status||d.status||'').toUpperCase();
     var statusNode=stateBadge(status,ci.ping||d.ping);
+    var actions=[];
+    if(/^[1-6]$/.test(String(d.slot||'')) && d.id && (st.slots||[]).some(function(s){return s&&String(s.slot)===String(d.slot)&&String(s.id||'')===String(d.id);})){
+      actions.push(btn('Заменить','cbi-button-neutral',function(){openSlotPicker(d.slot,root);},{disabled:!!state.busy||!!state.jobRunning}));
+      actions.push(btn('Удалить','cbi-button-negative',function(){removeSelectedSlot(d,root);},{disabled:!!state.busy||!!state.jobRunning}));
+    }
     out.push(E('div',{'class':'dm-doh-row'},[
       E('span',{'class':'dm-doh-slot'},slot),
       E('span',{'class':'dm-doh-name'},name),
       E('span',{'class':'dm-doh-state'},statusNode),
-      E('span',{'class':'dm-doh-actions'},[])
+      E('span',{'class':'dm-doh-actions'},actions)
     ]));
   });
   return [out,rows.length];
+}
+function removeSelectedSlot(d,root){
+  if(state.busy||state.jobRunning||!d||!/^[1-6]$/.test(String(d.slot||'')))return;
+  confirmAction('Удалить DNS из слота?',[['Слот',slotLabel(d.slot)],['DNS',d.name||d.id],['Домены','Маршруты слота перестанут действовать до назначения другого DNS.']],function(){
+    state.busy=true;state.pageNotice.doh='Удаляю DNS из '+slotLabel(d.slot)+'…';renderDoH(root,window.dmState||{});
+    callSlot(String(d.slot),'',String(d.id)).then(awaitSettingResult).then(function(r){
+      state.busy=false;
+      state.pageNotice.doh=r&&r.ok?'DNS удалён из '+slotLabel(d.slot)+'.':((r&&r.error)||'Не удалось удалить DNS.');
+      setAction(!!(r&&r.ok),state.pageNotice.doh);return refresh(root,true);
+    }).catch(function(err){state.busy=false;state.pageNotice.doh=withRpcError('Не удалось удалить DNS.',err);setAction(false,state.pageNotice.doh);return refresh(root,true);});
+  });
 }
 // Public resolver addresses checked against provider documentation on 2026-10-30:
 // https://developers.cloudflare.com/1.1.1.1/ip-addresses/
@@ -5107,22 +5152,23 @@ function assignedSlotInfo(id,excludeSlot){
 }
 function assign(id,slot,root,nextName){
   if(state.busy)return;
+  var noticeKey=currentRoute()==='doh'?'doh':'slots';
   var occupied=assignedSlotInfo(id,slot);
   if(occupied){
-    state.pageNotice.slots='DNS «'+(nextName||id)+'» уже назначен в '+slotLabel(occupied.slot)+(occupied.port?' · 127.0.0.1:'+occupied.port:'')+'. Сначала освободите тот слот.';
-    renderSlots(root,window.dmState||{});
+    state.pageNotice[noticeKey]='DNS «'+(nextName||id)+'» уже назначен в '+slotLabel(occupied.slot)+(occupied.port?' · 127.0.0.1:'+occupied.port:'')+'. Сначала освободите тот слот.';
+    render(root,window.dmState||{});
     return;
   }
   var current=slotCurrentName(slot),next=nextName||id;
   if(current===next)return;
   confirmAction('Подтвердить назначение DNS',[['Слот',slotLabel(slot)],['Сейчас',current],['Новый DNS',next]],function(){
-    state.busy=true;state.pageNotice.slots='Назначаю «'+slotLabel(slot)+'»…';renderSlots(root,window.dmState||{});
+    state.busy=true;state.pageNotice[noticeKey]='Назначаю «'+slotLabel(slot)+'»…';render(root,window.dmState||{});
     callSlot(slot,id).then(awaitSettingResult).then(function(r){
       state.busy=false;
-      if(r&&r.ok){setAction(true,slotLabel(slot)+': «'+next+'».');state.pageNotice.slots='DNS назначен в '+slotLabel(slot)+'.';}
-      else{setAction(false,(r&&r.error)||'DNS не удалось применить.');state.pageNotice.slots=(r&&r.error)||'DNS не удалось применить.';}
+      if(r&&r.ok){setAction(true,slotLabel(slot)+': «'+next+'».');state.pageNotice[noticeKey]='DNS назначен в '+slotLabel(slot)+'.';}
+      else{setAction(false,(r&&r.error)||'DNS не удалось применить.');state.pageNotice[noticeKey]=(r&&r.error)||'DNS не удалось применить.';}
       refresh(root,true);
-    }).catch(function(){state.busy=false;setAction(false,'DNS не удалось применить.');state.pageNotice.slots='DNS не удалось применить.';refresh(root,true);});
+    }).catch(function(){state.busy=false;setAction(false,'DNS не удалось применить.');state.pageNotice[noticeKey]='DNS не удалось применить.';refresh(root,true);});
   });
 }
 function saveSlotDomains(slot,input,root){
@@ -6319,13 +6365,13 @@ function saveRouteCache(key,st,aux){
     var entry=JSON.parse(JSON.stringify({ts:Date.now(),data:st,aux:aux}));
     window.dmRouteCache[key]=entry;
     if(typeof session!=='undefined'&&session.setLocalData)
-      session.setLocalData('dns-manager-route-2.22-'+key,entry);
+      session.setLocalData('dns-manager-route-2.23-'+key,entry);
   }catch(e){}
 }
 function routeCacheEntry(key){
   var entry=key&&window.dmRouteCache&&window.dmRouteCache[key];
   if(!entry&&key){
-    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.22-'+key);}catch(e){}
+    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.23-'+key);}catch(e){}
   }
   if(!entry||typeof entry.ts!=='number'||Date.now()-entry.ts<0||Date.now()-entry.ts>300000||!entry.data||entry.data.ok!==true)return null;
   return entry;
@@ -6807,11 +6853,11 @@ function resumeAction(root){
   callJob('action').then(function(j){
     if(!j||!j.ok||j.status!=='running'||state.busy){state.actionResumeStarted=false;return;}
     var route=currentRoute(),name=String(j.name||'');
-    var applies=(name==='set_slot'&&(route==='slots'||route==='catalog'))||
+    var applies=(name==='set_slot'&&(route==='slots'||route==='catalog'||route==='doh'))||
       (name==='set_slot_domains'&&route==='slots')||(name==='set_device_dns'&&route==='devices')||
       (name==='set_ntp'&&route==='time')||((name==='reset_dns'||name==='set_bootstrap')&&route==='doh');
     if(!applies){state.actionResumeStarted=false;return;}
-    var key=route==='devices'?'slots':route==='doh'?'profiles':route;
+    var key=route==='devices'?'slots':route==='doh'?(name==='set_slot'?'doh':'profiles'):route;
     state.busy=true;state.pageNotice[key]='Операция выполняется…';
     if(name==='set_bootstrap'){state.busySetting='bootstrap';state.bootstrapNotice={type:'info',text:'Применяю bootstrap DNS…'};state.pageNotice[key]='';}
     if(route==='doh')state.profileNoticeType='info';
@@ -7351,7 +7397,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 2.22
+// DNS Manager LuCI version: 2.23
 return view.extend({
   load: DM.load,
   render: DM.render,
