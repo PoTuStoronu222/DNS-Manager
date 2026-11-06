@@ -53,6 +53,16 @@ The fixture does not derive user options, transfer rule ownership, test
 traffic, Steer or boot recovery, and is not connected to switching. Do not
 run this destructive test on an actual router.
 
+The experimental `dns-manager-dot-firewall.sh` takes one existing proxy-owned
+firewall metadata array and registers an identical temporary procd guard. It
+refuses multiple metadata owners, duplicate guard state and changed guard data;
+no proxy rules is handled without installing a guard. In the disposable VM,
+the actual proxy rules survived stopping the proxy and reloading fw4, and the
+guard was removed after restarting the proxy. The VM test also checks duplicate
+startup and changed guard state. This is not installed or called by the manager:
+it has no reboot recovery and is not atomic against unrelated service changes.
+It does not establish compatibility with Steer or a full transport switch.
+
 The selection, save and preflight helpers discover both Manager device-binding
 files by default and fail if a discovered file cannot be read. Explicit paths
 are supported for tests and override discovery; callers using that override
