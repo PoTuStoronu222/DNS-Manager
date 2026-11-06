@@ -44,10 +44,12 @@ With that VM's LAN port-853 reject rules present, a router-originated DoT
 preflight also completed successfully. This is not a packet-level test from
 a LAN client, nor a test of Steer or a complete transport switch.
 
-The selection, save and preflight helpers can validate more than one device
-binding file. The future switch must explicitly supply both Manager binding
-files when present, under the shared mutation lock; helper callers that omit
-them do not validate device bindings. The on-router behavior remains untested.
+The selection, save and preflight helpers discover both Manager device-binding
+files by default and fail if a discovered file cannot be read. Explicit paths
+are supported for tests and override discovery; callers using that override
+must provide every relevant binding file. The eventual switch must hold the
+shared mutation lock across validation and application. This check does not
+yet cover a full transport switch or live device traffic.
 
 The optional UCI experiment uses the actual UCI executable and libraries from
 the SHA-256-verified OpenWrt 25.12.2 x86-64 root filesystem, with temporary

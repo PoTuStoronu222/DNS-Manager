@@ -4,7 +4,6 @@ set -eu
 selection="${1:-}"; dot_catalog="${2:-}"; dns_catalog="${3:-}"
 [ "$#" -ge 3 ] || { echo 'Selection or catalog is unavailable' >&2; exit 1; }
 shift 3
-[ "$#" -gt 0 ] || set -- /dev/null
 validator="${DOT_SELECTION_VALIDATOR:-/usr/libexec/dns-manager-dot-selection}"
 generator="${DOT_CONFIG_GENERATOR:-/usr/libexec/dns-manager-dot-config}"
 stubby="${DOT_STUBBY:-stubby}"

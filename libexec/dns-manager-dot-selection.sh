@@ -4,7 +4,17 @@ set -eu
 selection="${1:-}"; dot_catalog="${2:-}"; dns_catalog="${3:-}"
 [ "$#" -ge 3 ] || { echo 'Selection or catalog is unavailable' >&2; exit 1; }
 shift 3
-[ "$#" -gt 0 ] || set -- /dev/null
+if [ "$#" -eq 0 ]; then
+    binding_dir="${DOT_DEVICE_CONFIG_DIR:-/etc/dns-manager/config}"
+    for binding_file in "$binding_dir/device-dns.conf" "$binding_dir/device-dns-default.conf"; do
+        # Missing files mean no bindings. An existing but unreadable file,
+        # including a broken symlink, must never be interpreted as empty.
+        if [ -e "$binding_file" ] || [ -L "$binding_file" ]; then
+            set -- "$@" "$binding_file"
+        fi
+    done
+    [ "$#" -gt 0 ] || set -- /dev/null
+fi
 [ -r "$selection" ] && [ -r "$dot_catalog" ] && [ -r "$dns_catalog" ] || { echo 'Selection or catalog is unavailable' >&2; exit 1; }
 for bindings do
     [ -r "$bindings" ] || { echo 'Device bindings are unavailable' >&2; exit 1; }

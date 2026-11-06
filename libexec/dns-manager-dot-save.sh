@@ -5,7 +5,6 @@ set -eu
 input="${1:-}"; destination="${2:-}"; dot_catalog="${3:-}"; dns_catalog="${4:-}"
 [ "$#" -ge 4 ] || { echo 'DoT storage is unavailable' >&2; exit 1; }
 shift 4
-[ "$#" -gt 0 ] || set -- /dev/null
 validator="${DOT_SELECTION_VALIDATOR:-/usr/libexec/dns-manager-dot-selection}"
 [ -n "$destination" ] && [ -x "$validator" ] || { echo 'DoT storage is unavailable' >&2; exit 1; }
 "$validator" "$input" "$dot_catalog" "$dns_catalog" "$@" || exit 1
