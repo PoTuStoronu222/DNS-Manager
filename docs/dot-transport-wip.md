@@ -24,6 +24,23 @@ The journal is not connected to UCI, switching or the web interface. Its compari
 are not an atomic lock against other programs; it must not be used as evidence
 that concurrent Steer/UCI writes are safe.
 
+An isolated OpenWrt 25.12.2 x86-64 virtual machine was used for an additional
+prototype check. The preflight succeeded using OpenWrt's Stubby and dig. Two
+procd-managed instances answered DNS queries over UDP and TCP, left the
+operator's `/etc/config/stubby` untouched, and came back after reboot. A
+simulated interrupted change to the owned slot file was restored on reboot,
+before both slot instances started. This exercises only the experimental
+single-file recovery, not DNS Manager's UCI changes or a transport switch.
+The VM is not representative of a weak MIPS router or an actual Steer setup.
+
+With DNS Manager 4.15 and LuCI 2.25 installed in that VM, the running
+https-dns-proxy service exposed its forced DNS redirect and port-853 rejection
+as procd firewall metadata. Stopping the service removed its procd instances
+and their metadata. In this default setup the DHCP file did not change on
+stop; other configurations can invoke its DHCP backup restoration. A safe
+switch must account for both effects instead of assuming that stopping the
+service only releases local DNS ports.
+
 The optional UCI experiment uses the actual UCI executable and libraries from
 the SHA-256-verified OpenWrt 25.12.2 x86-64 root filesystem, with temporary
 config and delta directories. An explicitly added foreign delta path was
@@ -65,3 +82,4 @@ References: [OpenWrt Stubby package](https://github.com/openwrt/packages/blob/ma
 and [Cloudflare DoT addresses](https://developers.cloudflare.com/1.1.1.1/infrastructure/network-operators/).
 The package behavior above is visible in the
 [OpenWrt https-dns-proxy init script](https://github.com/openwrt/packages/blob/master/net/https-dns-proxy/files/etc/init.d/https-dns-proxy).
+
