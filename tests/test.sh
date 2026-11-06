@@ -26,6 +26,7 @@ sh tests/bootstrap-apply-test.sh || fail "bootstrap apply and rollback"
 sh tests/dot-config-test.sh || fail "DoT strict TLS configuration"
 sh tests/dot-service-test.sh || fail "DoT slot service preflight"
 sh tests/dot-selection-test.sh || fail "DoT selection validation"
+sh tests/dot-draft-test.sh || fail "DoT draft selection"
 sh tests/dot-save-test.sh || fail "DoT selection save"
 sh tests/dot-journal-test.sh || fail "DoT guarded journal"
 sh tests/dot-recover-service-test.sh || fail "DoT owned selection boot recovery"
@@ -3313,3 +3314,4 @@ if command -v dig >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then py
 sh tests/test-uninstall-regression.sh || fail "uninstall regression tests"
 
 printf '%s\n' "All DNS Manager regression checks passed."
+

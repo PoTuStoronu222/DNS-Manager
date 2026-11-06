@@ -104,6 +104,11 @@ The intended interface is a DoH/DoT choice followed by Apply, with independent
 saved selections; selecting a tab alone must not change the active DNS. The
 older saved selection for each protocol is retained. When no DoT selection
 exists, only explicitly verified matching endpoints may be proposed.
+The experimental draft helper implements this suggestion for slot-list input:
+it keeps an existing DoT selection, or matches the current slots against exact
+documented DoT identifiers, and checks device bindings before returning a
+complete draft. It does not modify or save the running configuration and is
+not yet connected to LuCI or the switching logic.
 
 The selection, save and preflight helpers discover both Manager device-binding
 files by default and fail if a discovered file cannot be read. Explicit paths
