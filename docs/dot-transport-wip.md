@@ -31,6 +31,13 @@ concurrent committed option survived, but a same-option concurrent commit was
 overwritten by the later staged commit. Separate delta directories alone do not
 provide conflict detection. This does not emulate the Steer service or reboot.
 
+OpenWrt's `https-dns-proxy` init script attaches forced-DNS firewall data to
+its procd instance and its stop path can restore a DHCP backup and commit
+`dhcp`. Merely stopping that service to free ports is therefore not a safe
+transport switch: it can change forced interception or interact with a
+concurrent UCI delta. A replacement interception mechanism and a guarded UCI
+strategy must be verified first, for both Steer-present and Steer-absent cases.
+
 Remaining design and validation requirements:
 
 * Maintain independent saved selections for DoH and DoT, including the previous
@@ -55,3 +62,5 @@ Remaining design and validation requirements:
 References: [OpenWrt Stubby package](https://github.com/openwrt/packages/blob/master/net/stubby/files/README.md),
 [Stubby strict TLS configuration](https://github.com/getdnsapi/stubby#configure-stubby),
 and [Cloudflare DoT addresses](https://developers.cloudflare.com/1.1.1.1/infrastructure/network-operators/).
+The package behavior above is visible in the
+[OpenWrt https-dns-proxy init script](https://github.com/openwrt/packages/blob/master/net/https-dns-proxy/files/etc/init.d/https-dns-proxy).
