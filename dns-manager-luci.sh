@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager full installer and LuCI companion
-# Version: 2.23
+# Version: 2.24
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.23"
+VERSION="2.24"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -762,7 +762,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.23"
+SELF_VERSION="2.24"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -4204,7 +4204,7 @@ EOF_RPC_WRAPPER
 'require ui';
 'require session';
 
-// DNS Manager LuCI common module version: 2.23
+// DNS Manager LuCI common module version: 2.24
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -4886,12 +4886,7 @@ function renderOverview(root,st){
         E('span',{'class':'dm-doh-profile-value'},activeProfileLabel(st))
       ])
     ]),
-    E('div',{'class':'dm-component-dns-list'},dnsItems),
-    E('div',{'class':'dm-actions'},(function(){
-      return [btn(state.currentTest&&state.currentTest.status==='RUNNING'?'Проверяю…':'Проверить текущие DNS','cbi-button-action',function(){testCurrent(root);},{disabled:!!state.busy||state.jobRunning})];
-    })()),
-    state.currentTest?E('div',{'class':'dm-inline-msg '+(state.currentTest.status==='RUNNING'?'info':state.currentTest.status==='DONE'?'ok':'error')},
-      state.currentTest.status==='RUNNING'?'Проверка текущих DNS выполняется…':state.currentTest.status==='DONE'?'Проверка текущих DNS завершена.':state.currentTest.total===0?'Текущих DNS для проверки нет.':'Проверка текущих DNS завершилась с ошибками.'):null
+    E('div',{'class':'dm-component-dns-list'},dnsItems)
   ].filter(Boolean));
 
   var verCard=card('Версии',[
@@ -5074,6 +5069,11 @@ function renderDoH(root,st){
     ch.push(E('div',{'class':'dm-row'},[E('span',{'class':'dm-label'},count>1?'Сейчас используются':'Сейчас используется')]));
     ch.push(E('div',{'class':'dm-doh-list'},rows));
   } else ch.push(row('Сейчас используется',E('span',{},'резолверы не настроены')));
+  ch.push(E('div',{'class':'dm-actions'},[
+    btn(state.currentTest&&state.currentTest.status==='RUNNING'?'Проверяю…':'Проверить текущие DNS','cbi-button-action',function(){testCurrent(root);},{disabled:!!state.busy||!!state.jobRunning})
+  ]));
+  if(state.currentTest)ch.push(E('div',{'class':'dm-inline-msg '+(state.currentTest.status==='RUNNING'?'info':state.currentTest.status==='DONE'?'ok':'error')},
+    state.currentTest.status==='RUNNING'?'Проверка текущих DNS выполняется…':state.currentTest.status==='DONE'?'Проверка текущих DNS завершена.':state.currentTest.total===0?'Текущих DNS для проверки нет.':'Проверка текущих DNS завершилась с ошибками.'));
 
   var fm=forceMode(st);
   var profileSelected=String(st.profile||'none')!=='none';
@@ -5117,7 +5117,7 @@ function renderDoH(root,st){
   } else if(Number(st.steer_running)===1 && Number(st.steer_dns_active)!==1){
     ch.push(E('div',{'class':'dm-inline-msg info'},'Steer запущен, но активный перехват DNS :53→:5300 не обнаружен. Поэтому DNS Manager не считает Steer владельцем forced-DNS и сохраняет обычную схему принудительного DNS.'));
   }
-  if(state.pageNotice.doh)ch.push(E('div',{'class':'dm-inline-msg info'},state.pageNotice.doh));
+  if(state.pageNotice.doh && !(state.currentTest && ['Текущих DNS для проверки нет.','Проверяю текущие DNS…','Проверяю системные DNS…','Проверка текущих DNS завершена.','Проверка текущих DNS завершена с ошибками.'].indexOf(state.pageNotice.doh)!==-1))ch.push(E('div',{'class':'dm-inline-msg info'},state.pageNotice.doh));
   var un=state.uninstall;
   if(un){
     ch.push(E('div',{'class':'dm-inline-msg '+(un.status==='failed'?'error':'info')},[
@@ -5926,7 +5926,7 @@ function watchdogCard(root,st){
     E('div',{'class':'dm-setting-desc'},'Контроль выполняется каждые '+intervalMinutes+' мин: проверяется локальный порт назначенного DoH и DNS-ответ на запрос example.com (для слота RU — yandex.ru). Это проверка рабочего пути, а не полный тест каталога DNS. Профиль не требуется.'),
     toggleRow('Проверка DNS','Проверяет назначенные DoH-слоты; при сбое может перезапустить их прокси, сохраняя выбранный DNS.',en,'watchdog',false),
     toggleRow('Автозамена DNS','После '+failThreshold+' ошибок подряд сначала пытается восстановить прокси, затем при необходимости ищет DNS той же категории. При общем сбое замену откладывает; повторная попытка — не раньше чем через '+cooldownMinutes+' мин. Пользовательские DoH не заменяются.',auto,'watchdog_autoreplace',!en),
-    E('div',{'class':'dm-hint'},'Полный разовый тест текущих DoH и дополнительных системных экземпляров доступен на Дашборде кнопкой «Проверить текущие DNS». Он проверяет реальные DoH-endpoint’ы и не включает периодический контроль.'),
+    E('div',{'class':'dm-hint'},'Разовая проверка текущих DoH и дополнительных системных экземпляров доступна на вкладке «DNS over HTTPS» кнопкой «Проверить текущие DNS». Она проверяет реальные DoH-endpoint’ы и не включает периодический контроль.'),
     E('details',{'class':'dm-watchdog-advanced'},[
       E('summary',{},'Дополнительные параметры'),
       E('div',{'class':'dm-watchdog-list'},spec.map(function(x){return param(x[0],x[1],x[2],x[3],x[4],x[5],x[6]);})),
@@ -6365,13 +6365,13 @@ function saveRouteCache(key,st,aux){
     var entry=JSON.parse(JSON.stringify({ts:Date.now(),data:st,aux:aux}));
     window.dmRouteCache[key]=entry;
     if(typeof session!=='undefined'&&session.setLocalData)
-      session.setLocalData('dns-manager-route-2.23-'+key,entry);
+      session.setLocalData('dns-manager-route-2.24-'+key,entry);
   }catch(e){}
 }
 function routeCacheEntry(key){
   var entry=key&&window.dmRouteCache&&window.dmRouteCache[key];
   if(!entry&&key){
-    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.23-'+key);}catch(e){}
+    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.24-'+key);}catch(e){}
   }
   if(!entry||typeof entry.ts!=='number'||Date.now()-entry.ts<0||Date.now()-entry.ts>300000||!entry.data||entry.data.ok!==true)return null;
   return entry;
@@ -7074,7 +7074,7 @@ function pollJob(root,job,meta,done){
     if(meta&&meta.mode==='profile'){
       profileFinish(j);
     }
-    (meta&&meta.mode==='profile'&&currentRoute()==='doh'?callDohStatus():callStatus(statusDetail())).then(function(ns){
+    (meta&&['profile','current','system'].indexOf(meta.mode)!==-1&&currentRoute()==='doh'?callDohStatus():callStatus(statusDetail())).then(function(ns){
       ns=ns||{};if((!window.dmCurrentRoot||window.dmCurrentRoot===root)&&(!root.__dmRoute||currentRoute()===root.__dmRoute))window.dmState=ns;
       if(meta&&meta.mode==='one'&&meta.dns_id)delete state.checking[meta.dns_id];
       if(meta&&meta.mode==='current')state.checking={};
@@ -7397,7 +7397,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 2.23
+// DNS Manager LuCI version: 2.24
 return view.extend({
   load: DM.load,
   render: DM.render,

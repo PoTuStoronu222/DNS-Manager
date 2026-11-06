@@ -324,14 +324,14 @@ printf 'timestamp=100\ntest_scope=all\n' > "$tmp/log-state/dns-test-results.meta
 printf 'timestamp=200\ncategory=clean\n' > "$tmp/log-state/dns-watchdog-check-results.conf"
 (
     STATE_DIR="$tmp/log-state"; PERSIST_STATE_DIR="$tmp/log-persist"
-    read_installed_luci_version() { printf 2.23; }
+    read_installed_luci_version() { printf 2.24; }
     cfg_get() { :; }
     logread() { printf '%s\n' 'dns-manager: Проверка DNS: проверено 2, проблем: 0.' 'dns-manager: Проверка DNS: проверено 2, проблем: 1.' 'dns-manager: Watchdog: замена подтверждена.'; }
     json_quote() { node -e 'process.stdout.write(JSON.stringify(process.argv[1]))' "$1"; }
     . "$tmp/log_header_test.sh"
     log_json 10
 ) > "$tmp/log-header.json"
-node -e 'const x=require(process.argv[1]);if(!x.ok||x.luci_version!=="2.23"||x.last_full_test!=="100"||x.watchdog_last_check!==200||x.watchdog_last_category!=="clean"||!x.log.includes("проблем: 1")||!x.log.includes("замена подтверждена")||!x.log.includes("no lease, failing")||x.log.includes("проблем: 0")||x.log.includes("Удаляется DNS-секция"))process.exit(1)' "$tmp/log-header.json" || fail "journal filtering or background events are incorrect"
+node -e 'const x=require(process.argv[1]);if(!x.ok||x.luci_version!=="2.24"||x.last_full_test!=="100"||x.watchdog_last_check!==200||x.watchdog_last_category!=="clean"||!x.log.includes("проблем: 1")||!x.log.includes("замена подтверждена")||!x.log.includes("no lease, failing")||x.log.includes("проблем: 0")||x.log.includes("Удаляется DNS-секция"))process.exit(1)' "$tmp/log-header.json" || fail "journal filtering or background events are incorrect"
 ok "journal RPC includes version and current check metadata"
 
 # The dashboard and Network Tuning use different RPC read methods. Both must
@@ -544,6 +544,11 @@ ok "LuCI uses separate native page views with one shared module"
 sh tests/luci-assets-test.sh || fail "LuCI asset versioning or safe publication failed"
 
 grep -q "Проверить текущие DNS" "$tmp/common.js" || fail "LuCI common current-DNS check button missing"
+awk '/^function renderOverview\(/{p=1;next} p&&/^function /{exit} p{print}' "$tmp/common.js" > "$tmp/overview-current-test.js"
+awk '/^function renderDoH\(/{p=1;next} p&&/^function /{exit} p{print}' "$tmp/common.js" > "$tmp/doh-current-test.js"
+if grep -q 'Проверить текущие DNS' "$tmp/overview-current-test.js"; then fail "Current DNS check button remains on dashboard"; fi
+grep -Fq "function(){testCurrent(root);}" "$tmp/doh-current-test.js" || fail "DoH page does not invoke the current DNS check"
+grep -Fq "state.currentTest.status==='RUNNING'" "$tmp/doh-current-test.js" || fail "DoH page does not show current DNS check progress"
 if grep -q "Проверить DNS в слотах" "$tmp/common.js" || grep -q "Проверить системные DNS" "$tmp/common.js"; then
     fail "LuCI still exposes separate slot/system DNS check buttons"
 fi
@@ -634,7 +639,7 @@ grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validat
 grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
 grep -q 'VERSION="4.15"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
-grep -q 'VERSION="2.23"' dns-manager-luci.sh || fail "LuCI version not bumped"
+grep -q 'VERSION="2.24"' dns-manager-luci.sh || fail "LuCI version not bumped"
 grep -Fq "{id:'quad9plain',ips:'9.9.9.10,149.112.112.10,2620:fe::10,2620:fe::fe:10'}" dns-manager-luci.sh || fail "historical Quad9 bootstrap snapshot changed"
 grep -Fq "{id:'cira',ips:'149.112.121.10,149.112.122.10,2620:10a:80bb::10,2620:10a:80bc::10'}" dns-manager-luci.sh || fail "historical CIRA bootstrap snapshot changed"
 if grep -q '^main_menu$' dns-manager.sh; then fail "interactive console menu still starts"; fi
@@ -2901,7 +2906,7 @@ if grep -q 'Проверить сейчас' "$tmp/watchdog_card.js"; then
     fail "Watchdog panel must not duplicate the full current-DNS test action"
 fi
 grep -q 'локальный порт назначенного DoH' "$tmp/watchdog_card.js" || fail "Watchdog probe is not explained in LuCI"
-grep -q 'Полный разовый тест текущих DoH' "$tmp/watchdog_card.js" || fail "LuCI does not direct users to the distinct full DNS test"
+grep -q 'на вкладке «DNS over HTTPS» кнопкой «Проверить текущие DNS»' "$tmp/watchdog_card.js" || fail "LuCI does not direct users to the current DNS test"
 
 # The Network tab uses network_status_json rather than the dashboard status RPC.
 # It must expose the latest saved watchdog results as well as the service flags.
