@@ -14,6 +14,7 @@ ok() {
 
 sh -n dns-manager.sh || fail "dns-manager.sh: sh -n"
 sh -n dns-manager-luci.sh || fail "dns-manager-luci.sh: sh -n"
+sh -n libexec/dns-manager-dot-probe.sh || fail "DoT probe: sh -n"
 sh -n tests/openwrt-luci-smoke.sh || fail "tests/openwrt-luci-smoke.sh: sh -n"
 ok "shell syntax"
 
@@ -26,6 +27,8 @@ sh tests/dot-config-test.sh || fail "DoT strict TLS configuration"
 sh tests/dot-service-test.sh || fail "DoT slot service preflight"
 sh tests/dot-selection-test.sh || fail "DoT selection validation"
 sh tests/dot-save-test.sh || fail "DoT selection save"
+sh tests/dot-journal-test.sh || fail "DoT guarded journal"
+sh tests/dot-probe-guard-test.sh || fail "DoT preflight input guards"
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT INT TERM

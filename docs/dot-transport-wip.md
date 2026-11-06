@@ -14,13 +14,29 @@ and requires authenticated TLS, with no plaintext upstream. The service uses
 its own config and must never overwrite `/etc/config/stubby`, which may belong
 to the operator. The optional development-host test checks two independent
 listeners and rejects a mismatched TLS name; it does not prove OpenWrt behavior.
+An experimental preflight now launches one temporary instance at a time,
+checks exclusive ownership of both loopback sockets, probes UDP and TCP, and
+stops only the process it started. It does not install or activate DoT.
+An isolated single-file journal prototype also tests interruption recovery and
+refuses to overwrite a file changed externally. It is not connected to UCI,
+service control, the web interface or boot recovery. Its comparison and rename
+are not an atomic lock against other programs; it must not be used as evidence
+that concurrent Steer/UCI writes are safe.
+
+The optional UCI experiment uses the actual UCI executable and libraries from
+the SHA-256-verified OpenWrt 25.12.2 x86-64 root filesystem, with temporary
+config and delta directories. An explicitly added foreign delta path was
+included in a commit while its pending delta file remained. An unrelated
+concurrent committed option survived, but a same-option concurrent commit was
+overwritten by the later staged commit. Separate delta directories alone do not
+provide conflict detection. This does not emulate the Steer service or reboot.
 
 Remaining design and validation requirements:
 
 * Maintain independent saved selections for DoH and DoT, including the previous
   routes and user choices, and never infer DoT support from a DoH URL.
-* Stage candidate DoT listeners on genuinely free temporary ports and test DNS
-  responses before stopping the current DoH service; handle port collisions.
+* Connect the temporary DoT preflight to the future switch and test it on
+  OpenWrt, including address-family and port ownership edge cases.
 * Under the shared mutation lock, snapshot the manager state and owned UCI
   changes, switch the slot listeners, verify DNS, and roll back on failure.
   Recover safely if the process or router is interrupted between these steps.
