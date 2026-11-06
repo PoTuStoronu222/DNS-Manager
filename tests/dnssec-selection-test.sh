@@ -58,6 +58,7 @@ HYBRID_PORT_4=5056; HYBRID_PORT_5=5057; HYBRID_PORT_6=5058
 SLOT_RU=region; SLOT_RU_CAT=regional; PORT_RU=5059; TLD_RU_ENABLED=1
 TEST_SCOPE=''; APPLIED=0
 dig() { :; }
+ensure_dnssec_dependencies() { :; }
 test_dns_catalog() { TEST_SCOPE="$1"; }
 auto_fill_slots() { [ "$1" = dnssec ] || return 1; SLOT_1=cloudflare_clean; SLOT_RU=wrong; PORT_RU=1; TLD_RU_ENABLED=0; }
 apply_settings() {
@@ -67,4 +68,8 @@ apply_settings() {
 }
 apply_profile_now dnssec || { echo 'FAIL: profile orchestration failed' >&2; exit 1; }
 [ "$TEST_SCOPE" = all ] && [ "$APPLIED" = 1 ] || exit 1
+ensure_dnssec_dependencies() { return 1; }
+TEST_SCOPE=''; APPLIED=0
+if apply_profile_now dnssec; then echo 'FAIL: profile ignored dependency failure' >&2; exit 1; fi
+[ -z "$TEST_SCOPE" ] && [ "$APPLIED" = 0 ] || { echo 'FAIL: DNS test or apply started after dependency failure' >&2; exit 1; }
 echo 'OK: DNSSEC candidate pool is separate from categories and preserves regional selection'

@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="4.12"
+VERSION="4.13"
 # 3.86: make LuCI the primary interface and preserve external DNS on removal.
 # 3.85: revalidate Watchdog settings before recovery.
 # 3.84: cap DNS catalog test concurrency by total RAM on small routers.
@@ -5583,6 +5583,37 @@ printf "%-28s %-18s %-9s %b
 done
 pause
 }
+ensure_dnssec_dependencies() {
+    local _ddep_need _ddep_pkg _ddep_was_installed
+    _ddep_need=''
+    command -v dig >/dev/null 2>&1 || _ddep_need="$_ddep_need bind-dig"
+    command -v od >/dev/null 2>&1 || _ddep_need="$_ddep_need coreutils-od"
+    if [ -n "$_ddep_need" ]; then
+        case "$PKG_MGR" in apk|opkg) ;; *) warn_msg "Не удалось определить пакетный менеджер для установки:$_ddep_need. Настройки DNS не изменены."; return 1;; esac
+        printf 'Устанавливаю компоненты проверки DNSSEC:%s\n' "$_ddep_need"
+        if ! "$PKG_MGR" update; then
+            warn_msg "Не удалось обновить списки пакетов для DNSSEC. Настройки DNS не изменены."
+            return 1
+        fi
+        for _ddep_pkg in $_ddep_need; do
+            _ddep_was_installed=0
+            package_is_installed "$_ddep_pkg" && _ddep_was_installed=1
+            if [ "$PKG_MGR" = apk ]; then
+                apk add "$_ddep_pkg" || { warn_msg "Не удалось установить $_ddep_pkg. Настройки DNS не изменены."; return 1; }
+            else
+                opkg install "$_ddep_pkg" || { warn_msg "Не удалось установить $_ddep_pkg. Настройки DNS не изменены."; return 1; }
+            fi
+            if [ "$_ddep_was_installed" = 0 ] && package_is_installed "$_ddep_pkg"; then
+                mkdir -p "$CFG_DIR" && touch "$PACKAGE_OWNERSHIP" && { grep -Fqx -- "$_ddep_pkg" "$PACKAGE_OWNERSHIP" || printf '%s\n' "$_ddep_pkg" >> "$PACKAGE_OWNERSHIP"; } || warn_msg "Не удалось записать установленный пакет $_ddep_pkg для последующего удаления."
+            fi
+        done
+        hash -r 2>/dev/null || true
+    fi
+    command -v dig >/dev/null 2>&1 || { warn_msg "Команда dig недоступна после установки bind-dig. Настройки DNS не изменены."; return 1; }
+    command -v od >/dev/null 2>&1 || { warn_msg "Команда od недоступна после установки coreutils-od. Настройки DNS не изменены."; return 1; }
+    od -An -v -tu1 -N12 /dev/null >/dev/null 2>&1 || { warn_msg "Установленная od не поддерживает проверку DNSSEC. Настройки DNS не изменены."; return 1; }
+    run_discovery >/dev/null 2>&1 || true
+}
 profile_apply_begin() {
     PROFILE_APPLY=1
     PROFILE_FULL_TEST=1
@@ -5592,8 +5623,7 @@ profile_apply_begin() {
     PROFILE_OLD_WATCHDOG_ENABLED="${WATCHDOG_ENABLED:-0}"
     _profile_test_scope="$1"; DNSSEC_SCREEN_DIR=""
     if [ "$_profile_test_scope" = dnssec ]; then
-        if ! command -v dig >/dev/null 2>&1 || ! command -v od >/dev/null 2>&1; then
-            warn_msg "Для проверки DNSSEC нужны dig и od. Настройки DNS не изменены."
+        if ! ensure_dnssec_dependencies; then
             PROFILE_FULL_TEST=0; PROFILE_APPLY=0; return 1
         fi
         _profile_test_scope=all
