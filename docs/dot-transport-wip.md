@@ -8,7 +8,9 @@ updates, rollback, the watchdog and status. Substituting an unrelated resolver
 without updating those paths would break slot routes or cause the watchdog to
 restore the old proxy. A working DoT option must handle all of them together.
 
-The prototype maps only documented endpoint identities and addresses. One
+The prototype maps only documented endpoint identities and addresses, including
+Yandex's published regional DoT endpoints (https://dns.yandex.ru/). The basic
+Yandex regional endpoint responded over DoT during a VM preflight. One
 isolated Stubby instance per occupied slot retains the existing local slot port
 and requires authenticated TLS, with no plaintext upstream. The service uses
 its own config and must never overwrite `/etc/config/stubby`, which may belong
