@@ -44,6 +44,15 @@ With that VM's LAN port-853 reject rules present, a router-originated DoT
 preflight also completed successfully. This is not a packet-level test from
 a LAN client, nor a test of Steer or a complete transport switch.
 
+`tests/dot-openwrt-firewall-vm-test.sh` exercises a possible building block
+on a disposable OpenWrt VM only: a temporary procd instance supplies fixed
+LAN DNS redirect and TCP/UDP port-853 reject metadata. The test checks rules
+attributed to that instance after stopping https-dns-proxy and reloading fw4,
+then removes it and restarts the proxy. It passed on OpenWrt 25.12.2 x86-64.
+The fixture does not derive user options, transfer rule ownership, test
+traffic, Steer or boot recovery, and is not connected to switching. Do not
+run this destructive test on an actual router.
+
 The selection, save and preflight helpers discover both Manager device-binding
 files by default and fail if a discovered file cannot be read. Explicit paths
 are supported for tests and override discovery; callers using that override
