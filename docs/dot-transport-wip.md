@@ -84,6 +84,20 @@ it needs conflict detection, firewall ownership handoff when force DNS is on,
 process/port verification, interruption recovery, startup ordering and tests
 of the manager watchdog, profiles and live device traffic before integration.
 
+A disposable OpenWrt VM experiment now temporarily replaces two DoH proxy
+instances with two DoT instances on the same ports and verifies queries through
+dnsmasq. It passed with real Steer active and, separately, without Steer while
+the procd firewall guard preserved the proxy's forced-DNS rules through an fw4
+reload. An injected failure restored the previous DoH instances and DNS
+responses in each setup. This is `tests/dot-openwrt-switchover-vm-test.sh`, not
+a usable controller: it always returns to DoH, does not handle power failure,
+profiles, watchdog or per-device traffic, and is not connected to LuCI.
+
+The intended interface is a DoH/DoT choice followed by Apply, with independent
+saved selections; selecting a tab alone must not change the active DNS. The
+older saved selection for each protocol is retained. When no DoT selection
+exists, only explicitly verified matching endpoints may be proposed.
+
 The selection, save and preflight helpers discover both Manager device-binding
 files by default and fail if a discovered file cannot be read. Explicit paths
 are supported for tests and override discovery; callers using that override
