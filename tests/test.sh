@@ -324,14 +324,14 @@ printf 'timestamp=100\ntest_scope=all\n' > "$tmp/log-state/dns-test-results.meta
 printf 'timestamp=200\ncategory=clean\n' > "$tmp/log-state/dns-watchdog-check-results.conf"
 (
     STATE_DIR="$tmp/log-state"; PERSIST_STATE_DIR="$tmp/log-persist"
-    read_installed_luci_version() { printf 2.24; }
+    read_installed_luci_version() { printf 2.25; }
     cfg_get() { :; }
     logread() { printf '%s\n' 'dns-manager: Проверка DNS: проверено 2, проблем: 0.' 'dns-manager: Проверка DNS: проверено 2, проблем: 1.' 'dns-manager: Watchdog: замена подтверждена.'; }
     json_quote() { node -e 'process.stdout.write(JSON.stringify(process.argv[1]))' "$1"; }
     . "$tmp/log_header_test.sh"
     log_json 10
 ) > "$tmp/log-header.json"
-node -e 'const x=require(process.argv[1]);if(!x.ok||x.luci_version!=="2.24"||x.last_full_test!=="100"||x.watchdog_last_check!==200||x.watchdog_last_category!=="clean"||!x.log.includes("проблем: 1")||!x.log.includes("замена подтверждена")||!x.log.includes("no lease, failing")||x.log.includes("проблем: 0")||x.log.includes("Удаляется DNS-секция"))process.exit(1)' "$tmp/log-header.json" || fail "journal filtering or background events are incorrect"
+node -e 'const x=require(process.argv[1]);if(!x.ok||x.luci_version!=="2.25"||x.last_full_test!=="100"||x.watchdog_last_check!==200||x.watchdog_last_category!=="clean"||!x.log.includes("проблем: 1")||!x.log.includes("замена подтверждена")||!x.log.includes("no lease, failing")||x.log.includes("проблем: 0")||x.log.includes("Удаляется DNS-секция"))process.exit(1)' "$tmp/log-header.json" || fail "journal filtering or background events are incorrect"
 ok "journal RPC includes version and current check metadata"
 
 # The dashboard and Network Tuning use different RPC read methods. Both must
@@ -542,6 +542,7 @@ grep -q "'require dns-manager.common as DM';" dns-manager-luci.sh || fail "LuCI 
 grep -q "return view.extend({" dns-manager-luci.sh || fail "LuCI page wrapper does not use native view constructor"
 ok "LuCI uses separate native page views with one shared module"
 sh tests/luci-assets-test.sh || fail "LuCI asset versioning or safe publication failed"
+sh tests/luci-published-installer-test.sh || fail "LuCI published installer format or update validation failed"
 
 grep -q "Проверить текущие DNS" "$tmp/common.js" || fail "LuCI common current-DNS check button missing"
 awk '/^function renderOverview\(/{p=1;next} p&&/^function /{exit} p{print}' "$tmp/common.js" > "$tmp/overview-current-test.js"
@@ -639,7 +640,7 @@ grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validat
 grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
 grep -q 'VERSION="4.15"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
-grep -q 'VERSION="2.24"' dns-manager-luci.sh || fail "LuCI version not bumped"
+grep -q 'VERSION="2.25"' dns-manager-luci.sh || fail "LuCI version not bumped"
 grep -Fq "{id:'quad9plain',ips:'9.9.9.10,149.112.112.10,2620:fe::10,2620:fe::fe:10'}" dns-manager-luci.sh || fail "historical Quad9 bootstrap snapshot changed"
 grep -Fq "{id:'cira',ips:'149.112.121.10,149.112.122.10,2620:10a:80bb::10,2620:10a:80bc::10'}" dns-manager-luci.sh || fail "historical CIRA bootstrap snapshot changed"
 if grep -q '^main_menu$' dns-manager.sh; then fail "interactive console menu still starts"; fi
