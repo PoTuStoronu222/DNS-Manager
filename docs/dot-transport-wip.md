@@ -63,6 +63,17 @@ startup and changed guard state. This is not installed or called by the manager:
 it has no reboot recovery and is not atomic against unrelated service changes.
 It does not establish compatibility with Steer or a full transport switch.
 
+An additional isolated OpenWrt 25.12.2 VM test used actual Steer 2.0.4 from
+the upstream distribution and an empty v2 policy. Steer redirected LAN DNS to
+its local resolver, and UDP and TCP queries to that resolver succeeded after
+reboot. With proxy forced DNS disabled, guard preparation made no proxy guard
+and did not change the Steer DNS chain. In that setup stopping https-dns-proxy
+changed `/etc/config/dhcp` while the Steer redirect remained: proxy stop must
+therefore not be treated as a harmless way to release ports. The optional
+`tests/dot-openwrt-steer-vm-test.sh` checks this baseline, not a DoT switch,
+device traffic or recovery of an interrupted switch. It must not be run on a
+production router.
+
 The selection, save and preflight helpers discover both Manager device-binding
 files by default and fail if a discovered file cannot be read. Explicit paths
 are supported for tests and override discovery; callers using that override
