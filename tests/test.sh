@@ -28,6 +28,7 @@ sh tests/dot-service-test.sh || fail "DoT slot service preflight"
 sh tests/dot-selection-test.sh || fail "DoT selection validation"
 sh tests/dot-save-test.sh || fail "DoT selection save"
 sh tests/dot-journal-test.sh || fail "DoT guarded journal"
+sh tests/dot-recover-service-test.sh || fail "DoT owned selection boot recovery"
 sh tests/dot-probe-guard-test.sh || fail "DoT preflight input guards"
 
 tmp="$(mktemp -d)"

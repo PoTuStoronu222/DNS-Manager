@@ -1,0 +1,17 @@
+#!/bin/sh /etc/rc.common
+# Experimental recovery of the owned DoT selection only; not installed by default.
+START=12
+STOP=99
+
+JOURNAL=/etc/dns-manager/config/dns-manager-dot-journal
+TARGET=/etc/dns-manager/config/dot-slots.conf
+HELPER=/usr/libexec/dns-manager-dot-journal
+
+start() {
+    [ -e "$JOURNAL" ] || return 0
+    [ -d "$JOURNAL" ] && [ ! -L "$JOURNAL" ] && [ -r "$JOURNAL/target" ] && [ ! -L "$JOURNAL/target" ] || return 1
+    [ "$(cat "$JOURNAL/target")" = "$TARGET" ] || { logger -t dns-manager-dot 'Refusing to recover an unexpected journal target'; return 1; }
+    [ -x "$HELPER" ] || return 1
+    "$HELPER" recover "$JOURNAL" || { logger -t dns-manager-dot 'DoT selection recovery failed; journal preserved'; return 1; }
+    logger -t dns-manager-dot 'Recovered an interrupted DoT selection'
+}

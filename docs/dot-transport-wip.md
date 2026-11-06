@@ -18,8 +18,9 @@ An experimental preflight now launches one temporary instance at a time,
 checks exclusive ownership of both loopback sockets, probes UDP and TCP, and
 stops only the process it started. It does not install or activate DoT.
 An isolated single-file journal prototype also tests interruption recovery and
-refuses to overwrite a file changed externally. It is not connected to UCI,
-service control, the web interface or boot recovery. Its comparison and rename
+refuses to overwrite a file changed externally. A separate experimental boot
+helper can recover the owned DoT selection, but is not installed by default.
+The journal is not connected to UCI, switching or the web interface. Its comparison and rename
 are not an atomic lock against other programs; it must not be used as evidence
 that concurrent Steer/UCI writes are safe.
 
