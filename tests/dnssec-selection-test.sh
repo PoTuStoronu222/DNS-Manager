@@ -44,6 +44,10 @@ auto_fill_slots dnssec || { echo 'FAIL: candidate selection failed' >&2; exit 1;
 [ "$(watchdog_desired_cat 1)" = clean ] || exit 1
 [ "$(watchdog_desired_cat RU)" = regional ] || exit 1
 [ "$(watchdog_target_live_count)" = 2 ] || exit 1
+rm -f "$DNSSEC_SCREEN_DIR/digitalsize"
+auto_fill_slots dnssec || { echo 'FAIL: one eligible DNS rejected' >&2; exit 1; }
+[ "$SLOT_1" = aquilenet ] && [ -z "$SLOT_2" ] && [ -z "$SLOT_6" ] && [ "$SLOT_RU" = region ] || { echo 'FAIL: one-DNS profile not preserved' >&2; exit 1; }
+: > "$DNSSEC_SCREEN_DIR/digitalsize"
 if dnssec_candidate_eligible nonvalidator; then echo 'FAIL: unobserved candidate admitted' >&2; exit 1; fi
 # Keep slower confirmed candidates for local-proxy retries after the first six.
 for id in cloudflare_clean google_clean dagami geodema paesa cynthia cloudflare_family hostux doh_lacontrevoie opendns_standard; do : > "$DNSSEC_SCREEN_DIR/$id"; done
