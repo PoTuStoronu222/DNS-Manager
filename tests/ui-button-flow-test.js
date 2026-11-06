@@ -91,7 +91,7 @@ async function testRouteCache(){
   if(!cached||cached.force_owner!=='steer'||cached.__dmCachedRoute!=='slots')throw Error('compatible route cache missing');
   ctx.window.dmRouteCache=undefined;
   if(ctx.cachedRouteStatus('slots').force_owner!=='steer')throw Error('cache did not survive page navigation');
-  ctx.window.dmRouteCache={doh:JSON.parse(store['dns-manager-route-2.22-doh'])};
+  ctx.window.dmRouteCache={doh:JSON.parse(store['dns-manager-route-2.23-doh'])};
   cached.slots.length=0;
   if(ctx.cachedRouteStatus('doh').slots.length!==1)throw Error('cache was mutated by view');
   ctx.applyStatusToCurrentRoot({ok:true,force_owner:'steer'},'doh');
@@ -117,11 +117,11 @@ async function testAdditionalRouteCache(){
     callDohStatus:()=>Promise.resolve({ok:true,slots:[]}),
     callLanDevices:()=>Promise.resolve(failDevices?{ok:false}:{ok:true,devices:[{mac:'aa'}]}),
     callCatalog:()=>Promise.resolve(failCatalog?{ok:false}:{ok:true,servers:[{id:'dns'}]}),
-    callPageMeta:()=>Promise.resolve({ok:true}),callLog:()=>Promise.resolve(failLog?{ok:false}:{ok:true,log:'log text',luci_version:'2.22',last_full_test:'100',watchdog_last_check:200,watchdog_last_category:'clean'}),
+    callPageMeta:()=>Promise.resolve({ok:true}),callLog:()=>Promise.resolve(failLog?{ok:false}:{ok:true,log:'log text',luci_version:'2.23',last_full_test:'100',watchdog_last_check:200,watchdog_last_category:'clean'}),
     stripAnsi:s=>s,Date,JSON,Promise,Object,Array,Error};
   vm.createContext(ctx);vm.runInContext(extract('function routeStatusCall(){','function checkUpdate(root,force){'),ctx);
   for(const route of ['devices','catalog','log'])await ctx.ensureStatusPromise(route);
-  if(ctx.window.dmRouteCache.log.data.luci_version!=='2.22'||ctx.window.dmRouteCache.log.data.watchdog_last_check!==200||ctx.window.dmRouteCache.log.data.log!==undefined)throw Error('log header metadata missing or log duplicated in status');
+  if(ctx.window.dmRouteCache.log.data.luci_version!=='2.23'||ctx.window.dmRouteCache.log.data.watchdog_last_check!==200||ctx.window.dmRouteCache.log.data.log!==undefined)throw Error('log header metadata missing or log duplicated in status');
   ctx.window.dmRouteCache=undefined;ctx.window.dmLanDevices=undefined;ctx.window.dmCatalog=undefined;ctx.state.logText='';ctx.state.logLoaded=false;ctx.state.catalogLoaded=false;
   for(const route of ['devices','catalog','log'])if(!ctx.cachedRouteStatus(route))throw Error(route+' cache missing after navigation');
   if(ctx.cachedRouteStatus('log').watchdog_last_category!=='clean')throw Error('log header metadata lost after navigation');
@@ -129,19 +129,19 @@ async function testAdditionalRouteCache(){
   ctx.state.category='security';if(ctx.cachedRouteStatus('catalog'))throw Error('wrong catalog category reused');ctx.state.category='all';
   failDevices=true;failCatalog=true;failLog=true;
   const previous={...store};for(const route of ['devices','catalog','log'])await ctx.ensureStatusPromise(route);
-  for(const route of ['devices','catalog','log'])if(store['dns-manager-route-2.22-'+route]!==previous['dns-manager-route-2.22-'+route])throw Error('failed '+route+' replaced good cache');
+  for(const route of ['devices','catalog','log'])if(store['dns-manager-route-2.23-'+route]!==previous['dns-manager-route-2.23-'+route])throw Error('failed '+route+' replaced good cache');
 }
 async function testSequentialWarmup(){
   let active=0,max=0,calls=[],allowed=true;
   const rpc=(name,result)=>()=>{calls.push(name);active++;max=Math.max(max,active);return Promise.resolve().then(()=>{active--;return result;});};
   const ctx={window:{},state:{},Date,JSON,Promise,Object,Array,Error,stripAnsi:s=>s,
     callStatus:rpc('status',{ok:true}),callDohStatus:rpc('doh',{ok:true}),callNetworkStatus:rpc('network',{ok:true}),callTimeStatus:rpc('time',{ok:true}),
-    callLanDevices:rpc('devices',{ok:true,devices:[]}),callCatalog:rpc('catalog',{ok:true,servers:[]}),callPageMeta:rpc('meta',{ok:true}),callLog:rpc('log',{ok:true,log:'x',luci_version:'2.22',watchdog_last_check:200})};
+    callLanDevices:rpc('devices',{ok:true,devices:[]}),callCatalog:rpc('catalog',{ok:true,servers:[]}),callPageMeta:rpc('meta',{ok:true}),callLog:rpc('log',{ok:true,log:'x',luci_version:'2.23',watchdog_last_check:200})};
   vm.createContext(ctx);vm.runInContext(extract('function routeStatusCall(){','function checkUpdate(root,force){'),ctx);
   const catalog=await ctx.warmupFetch('catalog',()=>allowed),devices=await ctx.warmupFetch('devices',()=>allowed);
   if(max!==1||calls.join(',')!=='catalog,doh,meta,doh,devices'||!catalog.aux.catalog||!devices.aux.devices)throw Error('warmup was not sequential');
   const log=await ctx.warmupFetch('log',()=>allowed);
-  if(log.data.luci_version!=='2.22'||log.data.watchdog_last_check!==200||log.data.log!==undefined||log.aux.log!=='x')throw Error('log warmup lost header metadata');
+  if(log.data.luci_version!=='2.23'||log.data.watchdog_last_check!==200||log.data.log!==undefined||log.aux.log!=='x')throw Error('log warmup lost header metadata');
   let blocked=false;allowed=false;await ctx.warmupFetch('log',()=>allowed).catch(()=>{blocked=true;});if(!blocked||calls.filter(x=>x==='log').length!==1)throw Error('warmup ignored idle guard');
 }
 async function testWarmupResourceGuard(){
@@ -288,4 +288,11 @@ async function testHeaderCheckKind(){
   if(!text({last_full_test:100,watchdog_last_check:200,watchdog_last_category:'clean'}).includes('Автопроверка слотов: 200 · Без фильтрации'))throw Error('automatic check label missing');
   if(!text({}).includes('Проверка DNS: не выполнялась'))throw Error('empty check label missing');
 }
-Promise.all([testCurrent({status:'failed',result:'fail'},'FAILED'),testCurrent({status:'done',result:'ok'},'DONE'),testSingleError(),testCurrentWithoutDuration(),testBadgeWithoutDuration(),testMixedCurrent(),testCurrentNoJob(),testCurrentSystemOnly(),testCurrentNavigation(),testPollNavigation(),testLongCatalogProgress(117),testLongCatalogProgress(5,true),testRouteCache(),testCachedReadOnly(),testAdditionalRouteCache(),testSequentialWarmup(),testWarmupResourceGuard(),testUpdateErrors(),testUpdateTimeout(),testProfileStatus(),testSlotDraft(),testDeviceSave(),testCatalogError(),testFoldState(),testCustomDnsFeedback(),testBootstrapForm(),testLogScroll(),testHeaderCheckKind()]).catch(e=>{console.error(e);process.exitCode=1;});
+async function testDoHRemove(){
+  let request;
+  const ctx={state:{busy:false,jobRunning:false,pageNotice:{}},window:{dmState:{}},slotLabel:s=>'DNS '+s,confirmAction:(title,rows,fn)=>fn(),renderDoH:()=>{},callSlot:(...args)=>{request=args;return Promise.resolve({ok:true});},awaitSettingResult:x=>Promise.resolve(x),setAction:()=>{},refresh:()=>Promise.resolve(),withRpcError:(s,e)=>s+e};
+  vm.createContext(ctx);vm.runInContext(extract('function removeSelectedSlot(d,root){','// Public resolver addresses'),ctx);
+  ctx.removeSelectedSlot({slot:'1',id:'old',name:'Old'},{});await delay();
+  if(!request||request.join('|')!=='1||old'||ctx.state.busy||!ctx.state.pageNotice.doh.includes('удалён'))throw Error('DoH removal did not preserve expected slot id or report success');
+}
+Promise.all([testDoHRemove(),testCurrent({status:'failed',result:'fail'},'FAILED'),testCurrent({status:'done',result:'ok'},'DONE'),testSingleError(),testCurrentWithoutDuration(),testBadgeWithoutDuration(),testMixedCurrent(),testCurrentNoJob(),testCurrentSystemOnly(),testCurrentNavigation(),testPollNavigation(),testLongCatalogProgress(117),testLongCatalogProgress(5,true),testRouteCache(),testCachedReadOnly(),testAdditionalRouteCache(),testSequentialWarmup(),testWarmupResourceGuard(),testUpdateErrors(),testUpdateTimeout(),testProfileStatus(),testSlotDraft(),testDeviceSave(),testCatalogError(),testFoldState(),testCustomDnsFeedback(),testBootstrapForm(),testLogScroll(),testHeaderCheckKind()]).catch(e=>{console.error(e);process.exitCode=1;});
