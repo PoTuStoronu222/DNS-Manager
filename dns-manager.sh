@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="4.14"
+VERSION="4.15"
 # 3.86: make LuCI the primary interface and preserve external DNS on removal.
 # 3.85: revalidate Watchdog settings before recovery.
 # 3.84: cap DNS catalog test concurrency by total RAM on small routers.
@@ -27,7 +27,7 @@ CONFIG_FILE="$CFG_DIR/manager.conf"
 DNS_CATALOG="$CFG_DIR/dns-catalog.conf"
 CUSTOM_DNS_CATALOG="$CFG_DIR/dns-custom-catalog.conf"
 NTP_CATALOG="$CFG_DIR/ntp-catalog.conf"
-BOOTSTRAP_DNS_ALL="77.88.8.8,77.88.8.1,94.140.14.14,1.1.1.1,1.0.0.1,8.8.8.8,8.8.4.4,9.9.9.9,149.112.112.112,208.67.222.222,208.67.220.220,149.112.121.10,149.112.122.10,76.76.2.0,76.76.10.0,2606:4700:4700::1111,2606:4700:4700::1001,2001:4860:4860::8888,2001:4860:4860::8844,2620:fe::fe,2620:fe::9"
+BOOTSTRAP_DNS_ALL="77.88.8.8,77.88.8.1,94.150.14.15,1.1.1.1,1.0.0.1,8.8.8.8,8.8.4.4,9.9.9.9,149.112.112.112,208.67.222.222,208.67.220.220,149.112.121.10,149.112.122.10,76.76.2.0,76.76.10.0,2606:4700:4700::1111,2606:4700:4700::1001,2001:4860:4860::8888,2001:4860:4860::8844,2620:fe::fe,2620:fe::9"
 DNSCAT_VERSION="8.7-RU-NOSOCIAL"
 DNSCAT_REVISION="11"
 DNSCAT_REF="${DNS_MANAGER_SOURCE_REF:-main}"
@@ -8899,7 +8899,7 @@ watchdog_slot_target_run() {
         return 1
     fi
 
-    if [ "$_target_cat" = custom ]; then
+    if [ "$_source_cat" = custom ]; then
         log_msg "Watchdog slot $_slot: пользовательский DoH $(dns_name "$_old_id") не отвечает; автоматическую замену не выполняю, URL оставляю без изменений."
         release_mutation_lock
         return 1

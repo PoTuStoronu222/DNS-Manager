@@ -23,12 +23,12 @@ awk '/^watchdog_slot_target_run\(\) \{/,/^watchdog_service_recover_run\(\) \{/' 
 . "$t/target"
 STATE_DIR="$t"; SLOT_1=old; SLOT_2=; SLOT_3=; SLOT_4=; SLOT_5=; SLOT_6=; SLOT_RU=; PORT_1=5053
 WATCHDOG_ENABLED=1; WATCHDOG_AUTOREPLACE=1; WD_SINGLE_TRIED_1=''; WD_CATEGORY_STALE_1=0; WD_DNSSEC_CATEGORY_1=''; APPLIED=0; MODE=normal
-dns_cat() { case "$1" in old) printf family;; wikimedia) printf privacy;; *) printf clean;; esac; }
+dns_cat() { case "$1" in old) if [ "$MODE" = custom ]; then printf custom; else printf family; fi;; wikimedia) printf privacy;; *) printf clean;; esac; }
 dns_name() { printf '%s' "$1"; }; watchdog_resource_guard() { :; }; acquire_mutation_lock() { :; }; release_mutation_lock() { :; }; load_config() { :; }
 watchdog_slot_config_matches() { [ "$SLOT_1" = "$2" ] && [ "$PORT_1" = "$3" ]; }
-watchdog_check_slot() { return 1; }; watchdog_common_dns_outage() { [ "$MODE" != unknown ] || return 2; return 0; }
+watchdog_check_slot() { return 1; }; watchdog_common_dns_outage() { [ "$MODE" != unknown ] || return 2; case "$MODE" in multi_ok|rollback) return 1;; *) return 0;; esac; }
 watchdog_select_category_results() { WD_CATEGORY_RESULTS="$t/results"; WD_CATEGORY_META="$t/meta"; }
-watchdog_pick_replacement() { case "$5" in privacy) printf 'wikimedia|privacy\n';; esac; }
+watchdog_pick_replacement() { case "$5" in privacy) grep -qxF wikimedia "$3" || printf 'wikimedia|privacy\n';; esac; }
 watchdog_probe_single_candidate() { [ "$MODE" != down ]; }
 watchdog_apply_slot_candidate() { APPLIED=$((APPLIED+1)); [ "$MODE" != rollback ] || return 1; SLOT_1="$2"; }
 log_msg() { :; }
@@ -41,4 +41,12 @@ if watchdog_slot_target_run 1 old 5053 single; then exit 1; fi
 [ "$SLOT_1" = old ] && [ "$APPLIED" = 0 ] || { echo 'FAIL: offline candidate changed DNS' >&2; exit 1; }
 MODE=unknown; if watchdog_slot_target_run 1 old 5053 single; then exit 1; fi
 [ "$SLOT_1" = old ] && [ "$APPLIED" = 0 ] || exit 1
+MODE=custom; WD_DNSSEC_CATEGORY_1=privacy; WD_SINGLE_TRIED_1=''; if watchdog_slot_target_run 1 old 5053 single; then exit 1; fi
+[ "$SLOT_1" = old ] && [ "$APPLIED" = 0 ] || { echo 'FAIL: custom DNS was automatically replaced' >&2; exit 1; }
+MODE=normal; SLOT_2=other; if watchdog_slot_target_run 1 old 5053; then exit 1; fi
+[ "$SLOT_1" = old ] && [ "$APPLIED" = 0 ] || { echo 'FAIL: global outage changed DNS' >&2; exit 1; }
+MODE=rollback; WD_DNSSEC_CATEGORY_1=privacy; WD_SINGLE_TRIED_1=''; WD_CATEGORY_STALE_1=0; if watchdog_slot_target_run 1 old 5053; then exit 1; fi
+[ "$SLOT_1" = old ] && [ "$APPLIED" = 1 ] || { echo 'FAIL: failed multi-DNS replacement did not preserve selection' >&2; exit 1; }
+MODE=multi_ok; WD_DNSSEC_CATEGORY_1=privacy; WD_SINGLE_TRIED_1=''; WD_CATEGORY_STALE_1=0; APPLIED=0; watchdog_slot_target_run 1 old 5053 || exit 1
+[ "$SLOT_1" = wikimedia ] && [ "$APPLIED" = 1 ] || { echo 'FAIL: multi-DNS privacy fallback' >&2; exit 1; }
 echo 'OK: DNSSEC replacement prefers clean, then privacy, rejects family and preserves DNS on outage'
