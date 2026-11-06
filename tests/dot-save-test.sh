@@ -16,4 +16,9 @@ printf '%s\n' '1|google_clean' > "$t/input"
 printf '%s\n' 'aa:bb:cc:dd:ee:ff|2' > "$t/bindings"
 if sh libexec/dns-manager-dot-save.sh "$t/input" "$t/dot-slots.conf" "$dot" "$dns" "$t/bindings" >/dev/null 2>&1; then exit 1; fi
 [ "$(cat "$t/dot-slots.conf")" = '1|cloudflare_clean' ] || exit 1
+printf '%s\n' 'aa:bb:cc:dd:ee:ff|1' > "$t/bindings"
+printf '%s\n' '11:22:33:44:55:66|2' > "$t/default-bindings"
+if sh libexec/dns-manager-dot-save.sh "$t/input" "$t/dot-slots.conf" "$dot" "$dns" "$t/bindings" "$t/default-bindings" >/dev/null 2>&1; then echo 'FAIL: second bindings file was ignored' >&2; exit 1; fi
+[ "$(cat "$t/dot-slots.conf")" = '1|cloudflare_clean' ] || exit 1
 echo 'OK: DoT selections save atomically and preserve DoH and previous selection on failure'
+

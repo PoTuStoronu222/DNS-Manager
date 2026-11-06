@@ -40,6 +40,14 @@ and their metadata. In this default setup the DHCP file did not change on
 stop; other configurations can invoke its DHCP backup restoration. A safe
 switch must account for both effects instead of assuming that stopping the
 service only releases local DNS ports.
+With that VM's LAN port-853 reject rules present, a router-originated DoT
+preflight also completed successfully. This is not a packet-level test from
+a LAN client, nor a test of Steer or a complete transport switch.
+
+The selection, save and preflight helpers can validate more than one device
+binding file. The future switch must explicitly supply both Manager binding
+files when present, under the shared mutation lock; helper callers that omit
+them do not validate device bindings. The on-router behavior remains untested.
 
 The optional UCI experiment uses the actual UCI executable and libraries from
 the SHA-256-verified OpenWrt 25.12.2 x86-64 root filesystem, with temporary

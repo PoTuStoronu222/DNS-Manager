@@ -1,9 +1,14 @@
 #!/bin/sh
 # Validate an independent DoT slot selection without changing router state.
 set -eu
-selection="${1:-}"; dot_catalog="${2:-}"; dns_catalog="${3:-}"; bindings="${4:-/dev/null}"
+selection="${1:-}"; dot_catalog="${2:-}"; dns_catalog="${3:-}"
+[ "$#" -ge 3 ] || { echo 'Selection or catalog is unavailable' >&2; exit 1; }
+shift 3
+[ "$#" -gt 0 ] || set -- /dev/null
 [ -r "$selection" ] && [ -r "$dot_catalog" ] && [ -r "$dns_catalog" ] || { echo 'Selection or catalog is unavailable' >&2; exit 1; }
-[ -r "$bindings" ] || { echo 'Device bindings are unavailable' >&2; exit 1; }
+for bindings do
+    [ -r "$bindings" ] || { echo 'Device bindings are unavailable' >&2; exit 1; }
+done
 awk -F'|' '
     FILENAME==ARGV[1] {
         if ($0 ~ /^#/ || $0 ~ /^[[:space:]]*$/) next
@@ -24,7 +29,7 @@ awk -F'|' '
         if ($1!="RU") general++
         next
     }
-    FILENAME==ARGV[4] {
+    {
         if ($0 ~ /^[[:space:]]*$/) next
         if (NF!=2 || $1 !~ /^[0-9A-Fa-f:]+$/ || $2 !~ /^[1-6,]+$/) { error="Invalid device binding"; exit 1 }
         n=split($2,device_slots,",")
@@ -34,4 +39,5 @@ awk -F'|' '
         if (error!="") { print error > "/dev/stderr"; exit 1 }
         if (!general) { print "At least one general DoT slot is required" > "/dev/stderr"; exit 1 }
     }
-' "$dot_catalog" "$dns_catalog" "$selection" "$bindings"
+' "$dot_catalog" "$dns_catalog" "$selection" "$@"
+

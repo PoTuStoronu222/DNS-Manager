@@ -1,7 +1,10 @@
 #!/bin/sh
 # Probe DoT on temporary loopback ports without changing DNS or UCI.
 set -eu
-selection="${1:-}"; dot_catalog="${2:-}"; dns_catalog="${3:-}"; bindings="${4:-/dev/null}"
+selection="${1:-}"; dot_catalog="${2:-}"; dns_catalog="${3:-}"
+[ "$#" -ge 3 ] || { echo 'Selection or catalog is unavailable' >&2; exit 1; }
+shift 3
+[ "$#" -gt 0 ] || set -- /dev/null
 validator="${DOT_SELECTION_VALIDATOR:-/usr/libexec/dns-manager-dot-selection}"
 generator="${DOT_CONFIG_GENERATOR:-/usr/libexec/dns-manager-dot-config}"
 stubby="${DOT_STUBBY:-stubby}"
@@ -11,7 +14,7 @@ case "$start_port" in ''|*[!0-9]*) echo 'Invalid temporary DNS port' >&2; exit 1
 [ "$start_port" -ge 1024 ] 2>/dev/null && [ "$start_port" -le 60000 ] 2>/dev/null || { echo 'Invalid temporary DNS port' >&2; exit 1; }
 [ -x "$validator" ] && [ -x "$generator" ] || { echo 'DoT helpers unavailable' >&2; exit 1; }
 command -v "$stubby" >/dev/null 2>&1 && command -v "$dig" >/dev/null 2>&1 || { echo 'Stubby or dig unavailable' >&2; exit 1; }
-"$validator" "$selection" "$dot_catalog" "$dns_catalog" "$bindings" || exit 1
+"$validator" "$selection" "$dot_catalog" "$dns_catalog" "$@" || exit 1
 for table in /proc/net/tcp /proc/net/tcp6 /proc/net/udp /proc/net/udp6; do
     [ -r "$table" ] || { echo 'Cannot inspect local DNS ports' >&2; exit 1; }
 done
@@ -83,3 +86,4 @@ while IFS='|' read -r slot id extra; do
     stop_child
     printf 'DoT slot %s: OK\n' "$slot"
 done < "$selection"
+
