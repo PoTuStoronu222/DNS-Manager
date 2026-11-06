@@ -25,6 +25,7 @@ sh tests/bootstrap-apply-test.sh || fail "bootstrap apply and rollback"
 sh tests/dot-config-test.sh || fail "DoT strict TLS configuration"
 sh tests/dot-service-test.sh || fail "DoT slot service preflight"
 sh tests/dot-selection-test.sh || fail "DoT selection validation"
+sh tests/dot-save-test.sh || fail "DoT selection save"
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT INT TERM

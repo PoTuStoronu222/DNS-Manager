@@ -17,6 +17,25 @@ def ask(port):
         s.sendto(QUERY, ('127.0.0.1', port))
         return s.recv(2048)
 
+def ask_tcp(port):
+    with socket.create_connection(('127.0.0.1', port), timeout=12) as s:
+        s.settimeout(12)
+        s.sendall(len(QUERY).to_bytes(2, 'big') + QUERY)
+        prefix = b''
+        while len(prefix) < 2:
+            chunk = s.recv(2 - len(prefix))
+            if not chunk:
+                raise RuntimeError('short DNS over TCP length')
+            prefix += chunk
+        length = int.from_bytes(prefix, 'big')
+        response = b''
+        while len(response) < length:
+            chunk = s.recv(length - len(response))
+            if not chunk:
+                raise RuntimeError('short DNS over TCP response')
+            response += chunk
+        return response
+
 with tempfile.TemporaryDirectory(prefix='dns-manager-dot-test-') as td:
     processes = []
     try:
@@ -42,13 +61,22 @@ with tempfile.TemporaryDirectory(prefix='dns-manager-dot-test-') as td:
                 time.sleep(1)
             if len(response) < 12 or response[:2] != QUERY[:2] or response[3] & 15 or int.from_bytes(response[6:8], 'big') < 1:
                 raise RuntimeError('No valid DNS response through DoT on port %d: %s' % (port, response[:12].hex()))
+            tcp_response = ask_tcp(port)
+            if len(tcp_response) < 12 or tcp_response[:2] != QUERY[:2] or tcp_response[3] & 15 or int.from_bytes(tcp_response[6:8], 'big') < 1:
+                raise RuntimeError('No valid TCP DNS response through DoT on port %d' % port)
         try:
             response = ask(15455)
         except socket.timeout:
             response = b''
         if len(response) >= 12 and response[3] & 15 == 0 and int.from_bytes(response[6:8], 'big'):
             raise RuntimeError('DoT query succeeded despite wrong TLS authentication name')
-        print('OK: independent Stubby listeners answered via DoT and rejected an incorrect TLS name')
+        try:
+            response = ask_tcp(15455)
+        except (socket.timeout, OSError, RuntimeError):
+            response = b''
+        if len(response) >= 12 and response[3] & 15 == 0 and int.from_bytes(response[6:8], 'big'):
+            raise RuntimeError('TCP query succeeded despite wrong TLS authentication name')
+        print('OK: independent Stubby listeners answered over UDP and TCP via DoT and rejected an incorrect TLS name')
     finally:
         for process in processes:
             process.terminate()
