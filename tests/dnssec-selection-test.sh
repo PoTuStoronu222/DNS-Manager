@@ -19,7 +19,11 @@ geodema|bypass|Geodema|13|OK
 paesa|bypass|Paesa|14|OK
 cynthia|privacy|Cynthia|15|OK
 aquilenet|clean|Aquilenet|20|OK
+hostux|clean|Hostux|21|OK
+doh_lacontrevoie|clean|LaContreVoie|22|OK
+opendns_standard|clean|OpenDNS|23|OK
 digitalsize|privacy|DigitalSize|30|OK
+cloudflare_family|family|Cloudflare Family|1|OK
 adguard_default|adblock|AdGuard|40|FAIL
 region|regional|Regional|2|OK
 EOF_RESULTS
@@ -42,10 +46,11 @@ auto_fill_slots dnssec || { echo 'FAIL: candidate selection failed' >&2; exit 1;
 [ "$(watchdog_target_live_count)" = 2 ] || exit 1
 if dnssec_candidate_eligible nonvalidator; then echo 'FAIL: unobserved candidate admitted' >&2; exit 1; fi
 # Keep slower confirmed candidates for local-proxy retries after the first six.
-for id in cloudflare_clean google_clean dagami geodema paesa cynthia; do : > "$DNSSEC_SCREEN_DIR/$id"; done
+for id in cloudflare_clean google_clean dagami geodema paesa cynthia cloudflare_family hostux doh_lacontrevoie opendns_standard; do : > "$DNSSEC_SCREEN_DIR/$id"; done
 auto_fill_slots dnssec || exit 1
-[ "$(wc -l < "$DNSSEC_SCREEN_DIR/candidates" | tr -d ' ')" = 8 ] || { echo 'FAIL: slower candidates were discarded' >&2; exit 1; }
-for id in cloudflare_clean google_clean dagami geodema paesa cynthia aquilenet digitalsize; do rm -f "$DNSSEC_SCREEN_DIR/$id"; done
+[ "$(wc -l < "$DNSSEC_SCREEN_DIR/candidates" | tr -d ' ')" = 8 ] || { echo 'FAIL: candidate category filter or lost backup candidates' >&2; exit 1; }
+[ "$SLOT_1" = cloudflare_clean ] && [ "$SLOT_2" = google_clean ] && [ "$SLOT_3" = aquilenet ] && [ "$SLOT_4" = hostux ] && [ "$SLOT_5" = doh_lacontrevoie ] && [ "$SLOT_6" = opendns_standard ] && [ "$(tail -n 2 "$DNSSEC_SCREEN_DIR/candidates" | cut -d'|' -f1 | tr '\n' ' ')" = 'cynthia digitalsize ' ] || { echo 'FAIL: clean DNS must precede privacy DNS' >&2; exit 1; }
+for id in cloudflare_clean google_clean dagami geodema paesa cynthia aquilenet digitalsize cloudflare_family hostux doh_lacontrevoie opendns_standard; do rm -f "$DNSSEC_SCREEN_DIR/$id"; done
 SLOT_1=unchanged
 if auto_fill_slots dnssec; then echo 'FAIL: selection succeeded without screened candidates' >&2; exit 1; fi
 [ "$SLOT_1" = unchanged ] && [ "$SLOT_RU" = region ] || { echo 'FAIL: empty selection changed slots' >&2; exit 1; }

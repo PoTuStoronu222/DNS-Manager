@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="4.13"
+VERSION="4.14"
 # 3.86: make LuCI the primary interface and preserve external DNS on removal.
 # 3.85: revalidate Watchdog settings before recovery.
 # 3.84: cap DNS catalog test concurrency by total RAM on small routers.
@@ -5745,7 +5745,9 @@ _pool="$TMP_DIR/auto-slots"
 _src="$TMP_DIR/auto-candidates"
 : > "$_pool"
 : > "$_src"
-if [ "$_cat" = all ] || [ "$_cat" = dnssec ]; then
+if [ "$_cat" = dnssec ]; then
+    awk -F'|' 'BEGIN{OFS="|"} NF>=5 && $5=="OK" && ($2=="clean" || $2=="privacy") {if($4 !~ /^[0-9]+$/)$4=2147483647; print ($2=="clean" ? 0 : 1),$0}' "$TEST_RESULTS" 2>/dev/null | sort -t'|' -k1,1n -k5,5n | cut -d'|' -f2- > "$_src"
+elif [ "$_cat" = all ]; then
     awk -F'|' 'BEGIN{OFS="|"} NF>=5 && $5=="OK" && $2!="regional" {if($4 !~ /^[0-9]+$/)$4=2147483647;print}' "$TEST_RESULTS" 2>/dev/null | sort -t'|' -k4,4n > "$_src"
 else
     awk -F'|' -v c="$_cat" 'BEGIN{OFS="|"} NF>=5 && $2==c && $5=="OK" {if($4 !~ /^[0-9]+$/)$4=2147483647;print}' "$TEST_RESULTS" 2>/dev/null | sort -t'|' -k4,4n > "$_src"
@@ -7552,6 +7554,10 @@ watchdog_pick_replacement() {
 
             while IFS="|" read -r _rid _rcat _rname _rms _rst; do
                 [ -n "$_rid" ] || continue
+                if [ "$_slot" != RU ] && [ "${DNS_SELECTION_MODE:-}" = profile ] && [ "${DNS_SELECTION_CATEGORY:-}" = dnssec ]; then
+                    case "$_rcat" in clean|privacy) ;; *) continue;; esac
+                    dnssec_candidate_eligible "$_rid" || continue
+                fi
                 [ "$_rid" != "${_current_id:-}" ] || continue
                 [ -n "${REPAIR_BAD_IDS:-}" ] && grep -qxF "$_rid" "$REPAIR_BAD_IDS" 2>/dev/null && continue
                 _rurl="$(normalize_url "$(dns_url "$_rid")")"
@@ -7596,6 +7602,10 @@ watchdog_pick_replacement() {
         while IFS="|" read -r _rid _rcat _rname _rms _rst; do
             [ -n "$_rid" ] || continue
             case "$_rid" in \#*) continue ;; esac
+            if [ "$_slot" != RU ] && [ "${DNS_SELECTION_MODE:-}" = profile ] && [ "${DNS_SELECTION_CATEGORY:-}" = dnssec ]; then
+                case "$_rcat" in clean|privacy) ;; *) continue;; esac
+                dnssec_candidate_eligible "$_rid" || continue
+            fi
             if [ "$_passcat" = all ] && [ "$_slot" != RU ]; then
                 [ "$_rcat" != regional ] || continue
             else
@@ -7836,6 +7846,7 @@ watchdog_loop_reset_slot() {
     eval "WD_MISSING_${_slot}=0"
     eval "WD_SINGLE_TRIED_${_slot}=''"
     eval "WD_CATEGORY_STALE_${_slot}=0"
+    eval "WD_DNSSEC_CATEGORY_${_slot}=''"
 }
 watchdog_loop_track_slot() {
     local _previous
@@ -8798,7 +8809,7 @@ watchdog_common_dns_outage() {
     return 1
 }
 watchdog_slot_target_run() {
-    local _slot _target_id _target_port _target_cat _promote_fallback _target_live _allow_clean _slot_rc _old_id _old_cat _domain _used _tried _replacement_ok _picked _repl _repl_cat _expected_id _expected_port _single_mode _configured _history _candidate_url _probe_ok _probe_count _apply_count _category_stale _scan_ok _scan_outage
+    local _slot _target_id _target_port _target_cat _source_cat _dnssec_scope _promote_fallback _target_live _allow_clean _slot_rc _old_id _old_cat _domain _used _tried _replacement_ok _picked _repl _repl_cat _expected_id _expected_port _single_mode _configured _history _candidate_url _probe_ok _probe_count _apply_count _category_stale _scan_ok _scan_outage
     local TEST_RESULTS="${TEST_RESULTS:-}" TEST_RESULTS_META="${TEST_RESULTS_META:-}" WATCHDOG_VERIFIED_ONLY=1
     _slot="$1"
     WATCHDOG_ROLLBACK_UNCERTAIN=0
@@ -8816,6 +8827,12 @@ watchdog_slot_target_run() {
     [ -z "$_expected_port" ] || [ "$_target_port" = "$_expected_port" ] || return 1
     _target_cat="$(dns_cat "$_target_id" 2>/dev/null || true)"
     [ -n "$_target_cat" ] || return 1
+    _source_cat="$_target_cat"; _dnssec_scope=0
+    if [ "$_slot" != RU ] && [ "${DNS_SELECTION_MODE:-}" = profile ] && [ "${DNS_SELECTION_CATEGORY:-}" = dnssec ]; then
+        _dnssec_scope=1
+        eval "_target_cat=\${WD_DNSSEC_CATEGORY_${_slot}:-clean}"
+        case "$_target_cat" in clean|privacy) ;; *) _target_cat=clean;; esac
+    fi
     _allow_clean=0
 
     if ! watchdog_resource_guard; then
@@ -8829,7 +8846,8 @@ watchdog_slot_target_run() {
         return 1
     fi
     _slot="$1"
-    if [ "${WATCHDOG_ENABLED:-0}" != 1 ] || ! watchdog_slot_config_matches "$1" "$_target_id" "$_target_port"; then
+    if [ "${WATCHDOG_ENABLED:-0}" != 1 ] || ! watchdog_slot_config_matches "$1" "$_target_id" "$_target_port" ||
+       { [ "$_dnssec_scope" = 1 ] && { [ "${DNS_SELECTION_MODE:-}" != profile ] || [ "${DNS_SELECTION_CATEGORY:-}" != dnssec ]; }; }; then
         release_mutation_lock
         return 1
     fi
@@ -8918,7 +8936,8 @@ watchdog_slot_target_run() {
         acquire_mutation_lock || return 1
         if ! load_config >/dev/null 2>&1 || [ "${WATCHDOG_ENABLED:-0}" != 1 ] ||
            [ "${WATCHDOG_AUTOREPLACE:-0}" != 1 ] || ! watchdog_slot_config_matches "$_slot" "$_target_id" "$_target_port" ||
-           [ "$(dns_cat "$_target_id" 2>/dev/null || true)" != "$_target_cat" ]; then
+           [ "$(dns_cat "$_target_id" 2>/dev/null || true)" != "$_source_cat" ] ||
+           { [ "$_dnssec_scope" = 1 ] && { [ "${DNS_SELECTION_MODE:-}" != profile ] || [ "${DNS_SELECTION_CATEGORY:-}" != dnssec ]; }; }; then
             release_mutation_lock; return 1
         fi
         if [ "$_single_mode" = single ]; then
@@ -8937,7 +8956,10 @@ watchdog_slot_target_run() {
             [ "$_scan_outage" != 2 ] || { release_mutation_lock; return 1; }
         fi
         watchdog_resource_guard || { release_mutation_lock; return 1; }
-        [ "$_scan_ok" = 1 ] || { log_msg "Watchdog: проверка категории DNS не завершена; выбранный DNS сохранён."; release_mutation_lock; return 1; }
+        if [ "$_scan_ok" != 1 ]; then
+            if [ "$_dnssec_scope" = 1 ] && [ "$_target_cat" = clean ]; then eval "WD_DNSSEC_CATEGORY_${_slot}=privacy"; eval "WD_CATEGORY_STALE_${_slot}=0"; fi
+            log_msg "Watchdog: проверка категории DNS не завершена; выбранный DNS сохранён."; release_mutation_lock; return 1
+        fi
         TEST_RESULTS="$STATE_DIR/watchdog-category-$_target_cat.results"
         TEST_RESULTS_META="$STATE_DIR/watchdog-category-$_target_cat.meta"
         watchdog_select_category_results "$_target_cat" || { release_mutation_lock; return 1; }
@@ -8968,6 +8990,9 @@ watchdog_slot_target_run() {
         if [ -z "$_repl" ]; then
             eval "WD_SINGLE_TRIED_${_slot}=''"
             eval "WD_CATEGORY_STALE_${_slot}=1"
+            if [ "$_dnssec_scope" = 1 ]; then
+                if [ "$_target_cat" = clean ]; then eval "WD_DNSSEC_CATEGORY_${_slot}=privacy"; eval "WD_CATEGORY_STALE_${_slot}=0"; else eval "WD_DNSSEC_CATEGORY_${_slot}=clean"; fi
+            fi
             break
         fi
         [ "$_repl" = "$_old_id" ] && { printf '%s\n' "$_repl" >> "$_tried"; continue; }
@@ -8993,7 +9018,8 @@ watchdog_slot_target_run() {
             # The direct probe may take time. Re-read both toggles and the
             # slot before applying; an endpoint may also have recovered.
             if ! load_config >/dev/null 2>&1 || [ "${WATCHDOG_ENABLED:-0}" != 1 ] ||
-               [ "${WATCHDOG_AUTOREPLACE:-0}" != 1 ] || ! watchdog_slot_config_matches "$_slot" "$_target_id" "$_target_port"; then
+               [ "${WATCHDOG_AUTOREPLACE:-0}" != 1 ] || ! watchdog_slot_config_matches "$_slot" "$_target_id" "$_target_port" ||
+               { [ "$_dnssec_scope" = 1 ] && { [ "${DNS_SELECTION_MODE:-}" != profile ] || [ "${DNS_SELECTION_CATEGORY:-}" != dnssec ]; }; }; then
                 break
             fi
             _configured=0
@@ -9024,6 +9050,7 @@ watchdog_slot_target_run() {
             _replacement_ok=1
             eval "WD_SINGLE_TRIED_${_slot}=''"
             eval "WD_CATEGORY_STALE_${_slot}=0"
+            [ "$_dnssec_scope" != 1 ] || eval "WD_DNSSEC_CATEGORY_${_slot}=''"
             break
         fi
         eval "WD_CATEGORY_STALE_${_slot}=1"
