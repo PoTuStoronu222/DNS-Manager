@@ -8,18 +8,28 @@ DOT_CONFIG=/etc/dns-manager/config/dot-slots.conf
 DOT_CATALOG=/usr/share/dns-manager/dot-endpoints.conf
 DOT_GENERATOR=/usr/libexec/dns-manager-dot-config
 DOT_RUN=/var/run/dns-manager-dot
+DOT_PORTS=/etc/dns-manager/config/manager.conf
 
 start_service() {
-    [ -x "$DOT_GENERATOR" ] && [ -r "$DOT_CATALOG" ] && [ -r "$DOT_CONFIG" ] || return 1
+    [ -x "$DOT_GENERATOR" ] && [ -r "$DOT_CATALOG" ] && [ -r "$DOT_CONFIG" ] && [ -r "$DOT_PORTS" ] || return 1
     command -v stubby >/dev/null 2>&1 || return 1
     mkdir -p "$DOT_RUN" || return 1
     _dot_stage="$(mktemp -d "$DOT_RUN/stage.XXXXXX")" || return 1
     _dot_seen=' '
+    _dot_ports_seen=' '
     _dot_count=0
     while IFS='|' read -r _dot_slot _dot_id _dot_extra; do
         [ -n "$_dot_slot" ] || continue
         [ -z "$_dot_extra" ] || { rm -rf "$_dot_stage"; return 1; }
-        case "$_dot_slot" in 1|2|3|4|5|6) _dot_port=$((5052 + _dot_slot));; RU) _dot_port=5059;; *) rm -rf "$_dot_stage"; return 1;; esac
+        case "$_dot_slot" in 1|2|3|4|5|6|RU) ;; *) rm -rf "$_dot_stage"; return 1;; esac
+        # Read only the manager's single-quoted numeric port field; do not
+        # source configuration as shell code. Preserve ports used by dnsmasq
+        # and per-device listeners, including installations with custom ports.
+        _dot_port="$(sed -n "s/^PORT_${_dot_slot}='\([0-9][0-9]*\)'$/\1/p" "$DOT_PORTS")"
+        case "$_dot_port" in ''|0*|*[!0-9]*) rm -rf "$_dot_stage"; return 1;; esac
+        [ "$_dot_port" -ge 1 ] 2>/dev/null && [ "$_dot_port" -le 65535 ] 2>/dev/null || { rm -rf "$_dot_stage"; return 1; }
+        case "$_dot_ports_seen" in *" $_dot_port "*) rm -rf "$_dot_stage"; return 1;; esac
+        _dot_ports_seen="$_dot_ports_seen$_dot_port "
         case "$_dot_seen" in *" $_dot_slot "*) rm -rf "$_dot_stage"; return 1;; esac
         _dot_seen="$_dot_seen$_dot_slot "
         "$DOT_GENERATOR" "$_dot_id" "$_dot_port" "$DOT_CATALOG" > "$_dot_stage/$_dot_slot.yml" || { rm -rf "$_dot_stage"; return 1; }
@@ -40,3 +50,4 @@ start_service() {
         procd_close_instance
     done
 }
+

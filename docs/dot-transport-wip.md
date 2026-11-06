@@ -16,6 +16,11 @@ and requires authenticated TLS, with no plaintext upstream. The service uses
 its own config and must never overwrite `/etc/config/stubby`, which may belong
 to the operator. The optional development-host test checks two independent
 listeners and rejects a mismatched TLS name; it does not prove OpenWrt behavior.
+The experimental service now reads each port from the manager's saved numeric
+`PORT_*` field, rejecting missing, duplicate or invalid fields instead of
+assuming ports 5053–5059. Two non-default ports were exercised in a disposable
+OpenWrt VM. This preserves the port mapping needed by device resolvers, but does
+not by itself update slot identities or prove end-to-end device bindings.
 An experimental preflight now launches one temporary instance at a time,
 checks exclusive ownership of both loopback sockets, probes UDP and TCP, and
 stops only the process it started. It does not install or activate DoT.
