@@ -6,7 +6,7 @@ awk '/^catalog_validate_file\(\) \{/,/^}/' dns-manager.sh > "$tmp/validate.sh"
 awk '/^write_catalogs\(\) \{/,/^}/' dns-manager.sh > "$tmp/update.sh"
 . "$tmp/validate.sh"
 . "$tmp/update.sh"
-DNSCAT_VERSION=8.7-RU-NOSOCIAL DNSCAT_REVISION=11
+DNSCAT_VERSION=8.7-RU-NOSOCIAL DNSCAT_REVISION=12
 CFG_DIR="$tmp/config"; DNS_CATALOG="$CFG_DIR/catalog"; TEST_RESULTS="$tmp/results"
 PERSIST_STATE_DIR="$tmp/persist"; mkdir -p "$CFG_DIR" "$PERSIST_STATE_DIR"
 catalog_download() { cp catalogs/dns-8.7-RU-NOSOCIAL.conf "$1"; }
@@ -44,6 +44,16 @@ printf '%s\n' 'comss_adblock_bypass|bypass|Comss.one Router|25|OK' > "$TEST_RESU
 write_catalogs
 awk -F'|' '$1=="comss_adblock_bypass" {if ($2!="bypass" || $4!="Comss Router · без рекламы" || $5!="https://router.comss.one/dns-query") exit 1; found=1} END {if (!found) exit 1}' "$DNS_CATALOG"
 grep -q '^comss_adblock_bypass|.*|OK$' "$TEST_RESULTS"
+# Revision 12 changes MagicDNS's endpoint while keeping its ID and category.
+awk -F'|' 'BEGIN {OFS="|"} /^# DNSCATREV=/ {$0="# DNSCATREV=11"} $1=="magicdns" {$5="https://dns.magicdns.ru/dns-query"} {print}' catalogs/dns-8.7-RU-NOSOCIAL.conf > "$DNS_CATALOG"
+printf '%s\n' 'magicdns|bypass|MagicDNS|20|OK' 'astracat|bypass|AstraCat|25|OK' > "$TEST_RESULTS"
+cp "$TEST_RESULTS" "$PERSIST_STATE_DIR/dns-test-results.conf"
+write_catalogs
+awk -F'|' '$1=="magicdns" {if ($2!="bypass" || $5!="https://api.magicdns.ru/sync") exit 1; found=1} END {if (!found) exit 1}' "$DNS_CATALOG"
+for result in "$TEST_RESULTS" "$PERSIST_STATE_DIR/dns-test-results.conf"; do
+    ! grep -q '^magicdns|' "$result"
+    grep -q '^astracat|' "$result"
+done
 # On download failure, a compatible old catalogue is retained.
 cp "$tmp/old" "$DNS_CATALOG"
 catalog_download() { return 1; }
@@ -60,4 +70,17 @@ catalog_version() { sed -n 's/^# DNSCATVER=//p' "$CATALOG_FILE" | head -n1; }
 catalog_revision() { sed -n 's/^# DNSCATREV=//p' "$CATALOG_FILE" | head -n1; }
 if update_catalog_direct; then exit 1; else rc=$?; fi
 [ "$rc" = 2 ] && cmp -s catalogs/dns-8.7-RU-NOSOCIAL.conf "$CATALOG_FILE"
+# LuCI catalog-only updates also discard results for the old endpoint.
+awk -F'|' 'BEGIN {OFS="|"} /^# DNSCATREV=/ {$0="# DNSCATREV=11"} $1=="magicdns" {$5="https://dns.magicdns.ru/dns-query"} {print}' catalogs/dns-8.7-RU-NOSOCIAL.conf > "$CATALOG_FILE"
+STATE_DIR="$tmp/state"; CHECK_DIR="$tmp/check"; mkdir -p "$STATE_DIR" "$CHECK_DIR"
+printf '%s\n' 'magicdns|bypass|MagicDNS|20|OK' 'astracat|bypass|AstraCat|25|OK' > "$STATE_DIR/dns-test-results.conf"
+cp "$STATE_DIR/dns-test-results.conf" "$PERSIST_STATE_DIR/dns-test-results.conf"
+touch "$CHECK_DIR/magicdns"
+fetch_raw_url() { cp catalogs/dns-8.7-RU-NOSOCIAL.conf "$1"; }
+update_catalog_direct
+for result in "$STATE_DIR/dns-test-results.conf" "$PERSIST_STATE_DIR/dns-test-results.conf"; do
+    ! grep -q '^magicdns|' "$result"
+    grep -q '^astracat|' "$result"
+done
+[ ! -e "$CHECK_DIR/magicdns" ]
 printf '%s\n' 'OK: catalog upgrade preserves existing IDs, URLs and fallback'

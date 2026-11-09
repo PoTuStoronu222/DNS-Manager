@@ -324,14 +324,14 @@ printf 'timestamp=100\ntest_scope=all\n' > "$tmp/log-state/dns-test-results.meta
 printf 'timestamp=200\ncategory=clean\n' > "$tmp/log-state/dns-watchdog-check-results.conf"
 (
     STATE_DIR="$tmp/log-state"; PERSIST_STATE_DIR="$tmp/log-persist"
-    read_installed_luci_version() { printf 2.25; }
+    read_installed_luci_version() { printf 2.26; }
     cfg_get() { :; }
     logread() { printf '%s\n' 'dns-manager: Проверка DNS: проверено 2, проблем: 0.' 'dns-manager: Проверка DNS: проверено 2, проблем: 1.' 'dns-manager: Watchdog: замена подтверждена.'; }
     json_quote() { node -e 'process.stdout.write(JSON.stringify(process.argv[1]))' "$1"; }
     . "$tmp/log_header_test.sh"
     log_json 10
 ) > "$tmp/log-header.json"
-node -e 'const x=require(process.argv[1]);if(!x.ok||x.luci_version!=="2.25"||x.last_full_test!=="100"||x.watchdog_last_check!==200||x.watchdog_last_category!=="clean"||!x.log.includes("проблем: 1")||!x.log.includes("замена подтверждена")||!x.log.includes("no lease, failing")||x.log.includes("проблем: 0")||x.log.includes("Удаляется DNS-секция"))process.exit(1)' "$tmp/log-header.json" || fail "journal filtering or background events are incorrect"
+node -e 'const x=require(process.argv[1]);if(!x.ok||x.luci_version!=="2.26"||x.last_full_test!=="100"||x.watchdog_last_check!==200||x.watchdog_last_category!=="clean"||!x.log.includes("проблем: 1")||!x.log.includes("замена подтверждена")||!x.log.includes("no lease, failing")||x.log.includes("проблем: 0")||x.log.includes("Удаляется DNS-секция"))process.exit(1)' "$tmp/log-header.json" || fail "journal filtering or background events are incorrect"
 ok "journal RPC includes version and current check metadata"
 
 # The dashboard and Network Tuning use different RPC read methods. Both must
@@ -594,10 +594,10 @@ grep -q 'json_update_state() {' "$tmp/backend.sh" || fail "structured update res
 grep -q 'updated) exit 0' dns-manager.sh || fail "manager update-check exit contract missing"
 grep -q 'current|throttled) exit 2' dns-manager.sh || fail "manager current exit contract missing"
 grep -q "xbox_dns|gaming|games+supercell|Xbox DNS|" catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "Xbox DNS is not in gaming catalog category"
-grep -Fq '# DNSCATREV=11' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog revision not bumped"
+grep -Fq '# DNSCATREV=12' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog revision not bumped"
 grep -Fq '# ENTRIES=113' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog entry count header is incorrect"
 awk '/^catalog_validate_file\(\) \{/,/^}/' dns-manager.sh > "$tmp/catalog_validate.sh"
-( DNSCAT_VERSION=8.7-RU-NOSOCIAL DNSCAT_REVISION=11; . "$tmp/catalog_validate.sh"; catalog_validate_file catalogs/dns-8.7-RU-NOSOCIAL.conf ) || fail "updated catalog does not pass the manager validator"
+( DNSCAT_VERSION=8.7-RU-NOSOCIAL DNSCAT_REVISION=12; . "$tmp/catalog_validate.sh"; catalog_validate_file catalogs/dns-8.7-RU-NOSOCIAL.conf ) || fail "updated catalog does not pass the manager validator"
 sh tests/catalog-audit-update-test.sh || fail "catalog upgrade or fallback failed"
 sed -n '/^DNSCAT_REF=/,/^DNSCAT_URL=/p' dns-manager.sh > "$tmp/catalog_ref.sh"
 ( DNS_MANAGER_SOURCE_REF=test/doh-catalog-audit; . "$tmp/catalog_ref.sh"; case "$DNSCAT_URL" in */test/doh-catalog-audit/catalogs/*) :;; *) exit 1;; esac ) || fail "test installer does not load its own catalog"
@@ -626,7 +626,7 @@ EOF_NORMALIZE_URL
 node "$tmp/normalize_url.js" || fail "LuCI URL normalizer strips a significant DoH path slash"
 grep -Fq '$1!="shecan" {print}' dns-manager-luci.sh || fail "LuCI does not invalidate the changed resolver test result"
 grep -Fq '$1!="shecan" {print}' dns-manager.sh || fail "Manager does not invalidate the changed resolver test result"
-grep -Fq 'DNSCAT_REVISION="11"' dns-manager.sh || fail "backend catalog revision is not synchronized"
+grep -Fq 'DNSCAT_REVISION="12"' dns-manager.sh || fail "backend catalog revision is not synchronized"
 grep -Fq '_old_astracat_url=' dns-manager.sh || fail "old AstraCat endpoint is not tracked during catalog update"
 grep -Fq '_new_astracat_url=' dns-manager.sh || fail "new AstraCat endpoint is not tracked during catalog update"
 grep -Fq '$1!="astracat" {print}' dns-manager.sh || fail "AstraCat cached test result is not invalidated after endpoint change"
@@ -638,9 +638,9 @@ grep -Fq "disabled:!!state.busy||!!state.jobRunning||unavailable||checking" dns-
 grep -q "'gaming','Игровые DNS'" dns-manager-luci.sh || fail "gaming catalog label missing in LuCI"
 grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validation missing gaming category"
 grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
-grep -q 'VERSION="4.15"' dns-manager.sh || fail "manager version not bumped"
+grep -q 'VERSION="4.16"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
-grep -q 'VERSION="2.25"' dns-manager-luci.sh || fail "LuCI version not bumped"
+grep -q 'VERSION="2.26"' dns-manager-luci.sh || fail "LuCI version not bumped"
 grep -Fq "{id:'quad9plain',ips:'9.9.9.10,149.112.112.10,2620:fe::10,2620:fe::fe:10'}" dns-manager-luci.sh || fail "historical Quad9 bootstrap snapshot changed"
 grep -Fq "{id:'cira',ips:'149.112.121.10,149.112.122.10,2620:10a:80bb::10,2620:10a:80bc::10'}" dns-manager-luci.sh || fail "historical CIRA bootstrap snapshot changed"
 if grep -q '^main_menu$' dns-manager.sh; then fail "interactive console menu still starts"; fi
@@ -924,8 +924,8 @@ view_luci="$(sed -n 's|^// DNS Manager LuCI common module version:[[:space:]]*||
 dashboard_view_luci="$(sed -n 's|^// DNS Manager LuCI version: *||p' dns-manager-luci.sh | head -n1)"
 [ "$top_luci" = "$dashboard_view_luci" ] || fail "dashboard view version marker is stale"
 ok "LuCI version markers synchronized ($top_luci)"
-grep -Fq 'VERSION="4.15"' dns-manager.sh || fail "DNS Manager version marker is not 4.15"
-ok "DNS Manager version marker synchronized (4.15)"
+grep -Fq 'VERSION="4.16"' dns-manager.sh || fail "DNS Manager version marker is not 4.16"
+ok "DNS Manager version marker synchronized (4.16)"
 grep -Fq "assignment.appendChild(btn('Удалить'" dns-manager-luci.sh || fail "Custom DNS delete button is not aligned with the assignment action"
 grep -Fq ".dm-catalog-item-custom{grid-column:auto}" dns-manager-luci.sh || fail "Custom DNS card is wider than a stock catalog card"
 grep -Fq ".dm-catalog-controls-custom .dm-assign-inline select{height:30px;min-width:0;width:auto;max-width:100%;flex:1 1 160px" dns-manager-luci.sh || fail "Custom DNS actions do not have a responsive inline layout"
