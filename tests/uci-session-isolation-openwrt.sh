@@ -37,3 +37,27 @@ grep -q "option min_cache_ttl '180'" "$file"
 if sh /tmp/dns-manager-uci-cache.sh main 10001 0 "$pkg"; then exit 1; fi
 grep -q "option cachesize '800'" "$file"
 printf '%s\n' 'OK: cache helper commits only validated cache options and retains foreign changes'
+# Test the lock order against real libuci: readers may proceed, a writer must
+# wait until both shared locks are released. Never run against real DHCP data.
+uci -q revert "$pkg"
+mkdir -p /tmp/.uci
+exec 8<"$file"
+exec 9>>"/tmp/.uci/$pkg"
+flock -s -n 8
+flock -s -n 9
+uci set "$pkg.main.foreign=concurrent" 8>&- 9>&- &
+writer=$!
+sleep 1
+kill -0 "$writer" || { echo 'Writer was not blocked' >&2; exit 1; }
+uci -S -n export "$pkg" | grep -q "option foreign 'old'"
+flock -u 9
+flock -u 8
+wait "$writer"
+[ "$(uci -q get "$pkg.main.foreign")" = concurrent ]
+printf '%s\n' 'OK: UCI readers proceed while concurrent writer waits for shared locks'
+if sh /tmp/dns-manager-uci-read-guard.sh "$pkg" /bin/true 2>/dev/null; then
+    echo 'Guard accepted pending UCI changes' >&2; exit 1
+fi
+uci -q revert "$pkg"
+sh /tmp/dns-manager-uci-read-guard.sh "$pkg" /sbin/uci -S -n export "$pkg" | grep -q "option foreign 'old'"
+printf '%s\n' 'OK: read guard refuses pending changes and allows clean config loading'
