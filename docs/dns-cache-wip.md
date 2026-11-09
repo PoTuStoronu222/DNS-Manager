@@ -7,6 +7,12 @@ the user's limit. If system dnsmasq performs DNSSEC validation, the main cache
 keeps at least 150 entries, as required by dnsmasq. The caller still needs to
 assign the planned device values to the actual unique profiles.
 
+`dns-manager-cache-plan.sh` derives the profile masks from saved device
+bindings, counts each distinct slot combination once and maps a share to each
+mask. Its test covers devices joining an existing group, adding and removing a
+group, and malformed bindings. This is a read-only plan, not runtime
+reallocation; it has not been tested on the router.
+
 The optional TTL lab uses a synthetic upstream and an isolated dnsmasq. It
 verifies that a short TTL is respected by default and extended when an
 explicit minimum is configured. It does not emulate OpenWrt, Steer, or
