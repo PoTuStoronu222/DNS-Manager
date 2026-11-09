@@ -50,10 +50,10 @@ An experimental read guard uses shared advisory locks in libuci's order
 empty. On OpenWrt 25.12.2 userspace, a concurrent CLI writer waited while a
 reader continued and the guard refused an existing pending change. A further
 isolated OpenWrt 25.12.2 userspace test starts dnsmasq with procd, verifies a
-guarded restart applies the requested options, checks that a concurrent CLI
-write waits and that locks are released after the restart. This lab disables
-ujail, which cannot start in that environment. It does not test rpcd
-contention, Steer, reboot or programs bypassing libuci advisory locks. The
+guarded restart applies the requested options, checks that concurrent CLI
+writes and an rpcd session commit wait, and that locks are released after the
+restart. This lab disables ujail, which cannot start in that environment. It
+does not test Steer, reboot or programs bypassing libuci advisory locks. The
 guard alone does not implement transaction rollback or cache application.
 
 The optional TTL lab uses a synthetic upstream and an isolated dnsmasq. It

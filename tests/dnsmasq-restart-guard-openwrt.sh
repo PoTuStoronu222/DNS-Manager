@@ -9,6 +9,15 @@ if [ "${1:-}" = during_restart ]; then
     /etc/init.d/dnsmasq restart
     exit
 fi
+if [ "${1:-}" = rpc_during_restart ]; then
+    sid="$(cat /tmp/dns-cache-test-sid)"
+    ubus call uci commit "{\"ubus_rpc_session\":\"$sid\",\"config\":\"dhcp\"}" 8>&- 9>&- &
+    writer=$!
+    sleep 1
+    kill -0 "$writer" || { echo 'ERROR: concurrent RPC commit did not wait' >&2; exit 1; }
+    /etc/init.d/dnsmasq restart
+    exit
+fi
 uci set dhcp.main.local=/pending/
 if sh /tmp/dns-manager-uci-read-guard.sh dhcp /etc/init.d/dnsmasq restart 2>/dev/null; then
     echo 'ERROR: restart accepted pending dhcp changes' >&2; exit 1
@@ -34,4 +43,13 @@ sleep 1
 [ "$(uci -q get dhcp.main.local)" = /concurrent/ ]
 if grep -q 'local=/concurrent/' /var/etc/dnsmasq.conf.main; then echo 'ERROR: concurrent change was applied' >&2; exit 1; fi
 uci -q revert dhcp
+sid="$(ubus call session create '{"timeout":60}' | jsonfilter -e '@.ubus_rpc_session')"
+ubus call session grant "{\"ubus_rpc_session\":\"$sid\",\"scope\":\"uci\",\"objects\":[[\"dhcp\",\"read\"],[\"dhcp\",\"write\"]]}" >/dev/null
+ubus call uci set "{\"ubus_rpc_session\":\"$sid\",\"config\":\"dhcp\",\"section\":\"main\",\"values\":{\"local\":\"/rpc-concurrent/\"}}" >/dev/null
+printf '%s' "$sid" > /tmp/dns-cache-test-sid
+sh /tmp/dns-manager-uci-read-guard.sh dhcp /bin/sh /tmp/dnsmasq-restart-guard-openwrt.sh rpc_during_restart
+sleep 1
+[ "$(uci -q get dhcp.main.local)" = /rpc-concurrent/ ]
+if grep -q 'local=/rpc-concurrent/' /var/etc/dnsmasq.conf.main; then echo 'ERROR: concurrent RPC commit was applied' >&2; exit 1; fi
+ubus call session destroy "{\"ubus_rpc_session\":\"$sid\"}" >/dev/null
 echo 'OK: guarded restart rejects pending changes, applies cache and releases UCI locks'
