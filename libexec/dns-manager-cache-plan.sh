@@ -1,7 +1,7 @@
 #!/bin/sh
 # Experimental read-only plan. The assignment file uses MAC|slot,slot.
 set -eu
-[ "$#" = 4 ] || { echo 'Expected total, DNSSEC state, bindings and budget helper' >&2; exit 1; }
+[ "$#" = 4 ] || [ "$#" = 5 ] || { echo 'Expected total, DNSSEC state, bindings, budget helper and optional active profiles' >&2; exit 1; }
 total="$1"; dnssec="$2"; bindings="$3"; budget="$4"
 [ -r "$bindings" ] && [ -x "$budget" ] || { echo 'Bindings or cache allocator are unavailable' >&2; exit 1; }
 t="$(mktemp -d "${TMPDIR:-/tmp}/dns-cache-plan.XXXXXX")" || exit 1
@@ -29,6 +29,15 @@ awk -F'|' '
     END {if (bad) exit 1}
 ' "$bindings" > "$t/masks-raw" || { echo 'Invalid device bindings' >&2; exit 1; }
 sort -n -u "$t/masks-raw" > "$t/masks"
+if [ "$#" = 5 ]; then
+    # The live service can skip a binding when its upstream is unavailable.
+    # Allocate only for profiles it actually prepared, not every saved binding.
+    [ -f "$5" ] && [ ! -L "$5" ] || exit 1
+    awk -F'|' 'NF!=3 || $2 !~ /^[0-9]+$/ || $2<1 || $2>63 || seen[$2]++ {bad=1; next} {print $2} END {if (bad) exit 1}' "$5" > "$t/active-raw" || exit 1
+    sort -n -u "$t/active-raw" > "$t/active"
+    awk 'FILENAME==ARGV[1] {allowed[$1]=1; next} !($1 in allowed) {bad=1} END {exit bad?1:0}' "$t/masks" "$t/active" || { echo 'Active profile is not present in bindings' >&2; exit 1; }
+    cp "$t/active" "$t/masks"
+fi
 count="$(wc -l < "$t/masks" | tr -d ' ')"
 "$budget" "$total" "$count" "$dnssec" > "$t/budget"
 awk -F'|' 'NR==FNR {if ($1=="main") main=$2; else values[++n]=$2; next}
@@ -37,4 +46,3 @@ awk -F'|' 'NR==FNR {if ($1=="main") main=$2; else values[++n]=$2; next}
            ' "$t/budget" "$t/masks" > "$t/devices"
 sed -n '1p' "$t/budget"
 cat "$t/devices"
-
