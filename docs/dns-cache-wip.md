@@ -31,6 +31,11 @@ to a disposable package while an unrelated change is pending and verifies
 that the unrelated change remains uncommitted. It does not restart dnsmasq,
 handle rollback, resolve concurrent edits of the same options, or integrate
 with the manager. It is not installed or called by DNS Manager yet.
+The 25.12.2 test also demonstrates that the standard `uci export` includes
+uncommitted changes from the global delta directory. OpenWrt's dnsmasq init
+script loads DHCP configuration through this export, so isolated commit alone
+does not isolate a subsequent service restart from other pending changes.
+Do not hook this helper into a live dnsmasq restart until that is handled.
 
 The optional TTL lab uses a synthetic upstream and an isolated dnsmasq. It
 verifies that a short TTL is respected by default and extended when an
