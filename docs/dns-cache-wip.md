@@ -25,6 +25,13 @@ operation on a private staging directory. Its tests exercise multiple devices
 sharing one profile, adding a group, and disabling a custom minimum TTL. The
 result is a staged configuration only; no live UCI or dnsmasq is modified.
 
+`dns-manager-uci-cache.sh` is an experimental isolated rpcd-session writer for
+the two dnsmasq UCI options. The OpenWrt 25.12.2 userspace test commits values
+to a disposable package while an unrelated change is pending and verifies
+that the unrelated change remains uncommitted. It does not restart dnsmasq,
+handle rollback, resolve concurrent edits of the same options, or integrate
+with the manager. It is not installed or called by DNS Manager yet.
+
 The optional TTL lab uses a synthetic upstream and an isolated dnsmasq. It
 verifies that a short TTL is respected by default and extended when an
 explicit minimum is configured. It does not emulate OpenWrt, Steer, or
@@ -34,4 +41,3 @@ Still required: atomic safe application and restore of existing UCI settings,
 reallocation when device bindings change, installer and uninstall handling,
 UI, and integration tests for Steer, reboot and constrained devices. No user
 DNS settings are changed by these prototypes.
-
