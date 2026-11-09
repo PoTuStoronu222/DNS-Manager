@@ -22,6 +22,14 @@ if [ "${1:-}" = fail_once ]; then
     if [ ! -e /tmp/dns-cache-restart-failed ]; then touch /tmp/dns-cache-restart-failed; exit 1; fi
     exec /etc/init.d/dnsmasq restart
 fi
+if [ "${1:-}" = false_success_once ]; then
+    if [ ! -e /tmp/dns-cache-false-success ]; then
+        touch /tmp/dns-cache-false-success
+        /etc/init.d/dnsmasq stop
+        exit 0
+    fi
+    exec /etc/init.d/dnsmasq restart
+fi
 uci set dhcp.main.local=/pending/
 if sh /tmp/dns-manager-uci-read-guard.sh dhcp /etc/init.d/dnsmasq restart 2>/dev/null; then
     echo 'ERROR: restart accepted pending dhcp changes' >&2; exit 1
@@ -67,6 +75,10 @@ if sh "$tx" main 800 30 "$guard" /bin/sh /tmp/dnsmasq-restart-guard-openwrt.sh f
 [ "$(uci -q get dhcp.main.cachesize)" = 900 ]
 [ "$(uci -q get dhcp.main.min_cache_ttl)" = 180 ]
 grep -qx 'cache-size=900' /var/etc/dnsmasq.conf.main
+rm -f /tmp/dns-cache-false-success
+if sh "$tx" '@dnsmasq[0]' 800 30 "$guard" /bin/sh /tmp/dnsmasq-restart-guard-openwrt.sh false_success_once; then echo 'ERROR: stopped dnsmasq was accepted as success' >&2; exit 1; fi
+[ "$(uci -q get dhcp.main.cachesize)" = 900 ]
+[ "$(ubus call service list '{"name":"dnsmasq"}' | jsonfilter -e '@.dnsmasq.instances.main.running')" = true ]
 uci -q delete dhcp.main.min_cache_ttl
 uci commit dhcp
 rm -f /tmp/dns-cache-restart-failed

@@ -32,6 +32,9 @@ end_session() {
 }
 read_options() {
     ubus call uci get "{\"ubus_rpc_session\":\"$sid\",\"config\":\"dhcp\",\"section\":\"$section\"}" > "$t/current" || return 1
+    grep -Eq '"\.type"[[:space:]]*:[[:space:]]*"dnsmasq"' "$t/current" || return 1
+    instance="$(sed -n 's/.*"\.name"[[:space:]]*:[[:space:]]*"\([A-Za-z0-9_]*\)".*/\1/p' "$t/current")"
+    case "$instance" in ''|*[!A-Za-z0-9_]*) return 1 ;; esac
     current_size='unset'; current_ttl='unset'
     if grep -q '"cachesize"[[:space:]]*:' "$t/current"; then current_size="$(jsonfilter -i "$t/current" -e '@.values.cachesize')"; fi
     if grep -q '"min_cache_ttl"[[:space:]]*:' "$t/current"; then current_ttl="$(jsonfilter -i "$t/current" -e '@.values.min_cache_ttl')"; fi
@@ -50,12 +53,20 @@ write_option() {
 sh "$guard" "$package" /bin/true || { echo 'Pending or busy UCI configuration' >&2; exit 1; }
 new_session; read_options
 old_size=$current_size; old_ttl=$current_ttl
+expected_instance=$instance
 write_option cachesize "$wanted_size" "$old_size"
 write_option min_cache_ttl "$wanted_ttl" "$old_ttl"
 ubus call uci commit "{\"ubus_rpc_session\":\"$sid\",\"config\":\"dhcp\"}" >/dev/null
 end_session
 # Marker distinguishes a refused guard from a service that was actually run.
-if sh "$guard" "$package" /bin/sh -c 'touch "$1"; shift; exec "$@"' sh "$t/restarted" "$@"; then
+if sh "$guard" "$package" /bin/sh -c '
+    touch "$1"; shift
+    instance=$1; shift
+    "$@" || exit 1
+    sleep 1
+    state=$(ubus call service list '\''{"name":"dnsmasq"}'\'' | jsonfilter -e "@.dnsmasq.instances.$instance.running") || exit 1
+    [ "$state" = true ]
+' sh "$t/restarted" "$expected_instance" "$@"; then
     exit 0
 fi
 echo 'Cache restart failed; attempting to restore previous cache options' >&2

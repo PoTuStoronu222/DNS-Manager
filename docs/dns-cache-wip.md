@@ -60,7 +60,9 @@ guard alone does not implement transaction rollback or cache application.
 restarting under the read guard and restoring the original options if restart
 fails. A 25.12.2 procd/dnsmasq lab (without ujail) covers success, an injected
 restart failure, restoring an initially absent TTL and refusal with a pending
-foreign UCI change. This helper is not connected to DNS Manager, does not
+foreign UCI change. It also checks procd's running state for the selected
+dnsmasq instance; the lab tests a restart command that returns success while
+leaving the service stopped. This helper is not connected to DNS Manager, does not
 persist the requested total or handle per-device instances, and has not been
 verified against a same-option concurrent writer or a reboot.
 
