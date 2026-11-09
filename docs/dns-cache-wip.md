@@ -24,6 +24,14 @@ script is not installed or called by DNS Manager yet.
 operation on a private staging directory. Its tests exercise multiple devices
 sharing one profile, adding a group, and disabling a custom minimum TTL. The
 result is a staged configuration only; no live UCI or dnsmasq is modified.
+The optional active profile map excludes bindings for which the device service
+could not prepare a resolver; its tests cover a skipped unavailable upstream and
+reject an active mask absent from the saved bindings.
+
+Steer has its own response cache and optional TTL rules for requests handled by
+Steer itself (see https://github.com/splify2/steer/blob/main/docs/spec-v2.md#dns).
+The proposed shared budget covers DNS Manager's dnsmasq instances only; it must
+not silently modify or claim to limit Steer's independent cache.
 
 `dns-manager-uci-cache.sh` is an experimental isolated rpcd-session writer for
 the two dnsmasq UCI options. The OpenWrt 25.12.2 userspace test commits values
