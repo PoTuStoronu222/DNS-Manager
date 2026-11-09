@@ -45,6 +45,14 @@ script loads DHCP configuration through this export, so isolated commit alone
 does not isolate a subsequent service restart from other pending changes.
 Do not hook this helper into a live dnsmasq restart until that is handled.
 
+An experimental read guard uses shared advisory locks in libuci's order
+(base file then global delta) and refuses to run if the global delta is not
+empty. On OpenWrt 25.12.2 userspace, a concurrent CLI writer waited while a
+reader continued and the guard refused an existing pending change. This has
+not been exercised with the real dnsmasq init, rpcd contention, Steer or
+reboot. It does not cover programs that bypass libuci's advisory locking, and
+does not by itself implement transaction rollback or cache application.
+
 The optional TTL lab uses a synthetic upstream and an isolated dnsmasq. It
 verifies that a short TTL is respected by default and extended when an
 explicit minimum is configured. It does not emulate OpenWrt, Steer, or
