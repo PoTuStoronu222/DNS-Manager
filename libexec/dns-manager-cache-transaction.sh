@@ -54,6 +54,12 @@ sh "$guard" "$package" /bin/true || { echo 'Pending or busy UCI configuration' >
 new_session; read_options
 old_size=$current_size; old_ttl=$current_ttl
 expected_instance=$instance
+if [ "$old_size" = "$wanted_size" ] && [ "$old_ttl" = "$wanted_ttl" ]; then
+    end_session
+    state="$(ubus call service list '{"name":"dnsmasq"}' | jsonfilter -e "@.dnsmasq.instances.$expected_instance.running")" || exit 1
+    [ "$state" = true ] || { echo 'dnsmasq is not running' >&2; exit 1; }
+    exit 0
+fi
 write_option cachesize "$wanted_size" "$old_size"
 write_option min_cache_ttl "$wanted_ttl" "$old_ttl"
 ubus call uci commit "{\"ubus_rpc_session\":\"$sid\",\"config\":\"dhcp\"}" >/dev/null

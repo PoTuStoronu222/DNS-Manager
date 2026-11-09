@@ -70,6 +70,11 @@ sh "$tx" main 900 180 "$guard" /etc/init.d/dnsmasq restart
 [ "$(uci -q get dhcp.main.cachesize)" = 900 ]
 [ "$(uci -q get dhcp.main.min_cache_ttl)" = 180 ]
 grep -qx 'cache-size=900' /var/etc/dnsmasq.conf.main
+# Rebuilding unchanged device bindings must not restart the primary resolver.
+sh "$tx" main 900 180 "$guard" /bin/false
+/etc/init.d/dnsmasq stop
+if sh "$tx" main 900 180 "$guard" /bin/false 2>/dev/null; then echo 'ERROR: stopped dnsmasq accepted on no-op' >&2; exit 1; fi
+/etc/init.d/dnsmasq start
 rm -f /tmp/dns-cache-restart-failed
 if sh "$tx" main 800 30 "$guard" /bin/sh /tmp/dnsmasq-restart-guard-openwrt.sh fail_once; then echo 'ERROR: failed restart was accepted' >&2; exit 1; fi
 [ "$(uci -q get dhcp.main.cachesize)" = 900 ]
