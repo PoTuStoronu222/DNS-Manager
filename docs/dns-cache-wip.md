@@ -13,6 +13,13 @@ mask. Its test covers devices joining an existing group, adding and removing a
 group, and malformed bindings. This is a read-only plan, not runtime
 reallocation; it has not been tested on the router.
 
+`dns-manager-cache-profiles.sh` applies a verified plan and minimum TTL to a
+private staging directory of generated per-device dnsmasq profiles. It checks
+that all staged profiles have exactly one allocation before writing. Tests
+cover missing and duplicate masks, unallocated profiles, invalid TTL, and TTL
+zero; one generated profile also passed `dnsmasq --test` in a Linux lab. The
+script is not installed or called by DNS Manager yet.
+
 The optional TTL lab uses a synthetic upstream and an isolated dnsmasq. It
 verifies that a short TTL is respected by default and extended when an
 explicit minimum is configured. It does not emulate OpenWrt, Steer, or
