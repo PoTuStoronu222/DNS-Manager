@@ -18,6 +18,10 @@ if [ "${1:-}" = rpc_during_restart ]; then
     /etc/init.d/dnsmasq restart
     exit
 fi
+if [ "${1:-}" = fail_once ]; then
+    if [ ! -e /tmp/dns-cache-restart-failed ]; then touch /tmp/dns-cache-restart-failed; exit 1; fi
+    exec /etc/init.d/dnsmasq restart
+fi
 uci set dhcp.main.local=/pending/
 if sh /tmp/dns-manager-uci-read-guard.sh dhcp /etc/init.d/dnsmasq restart 2>/dev/null; then
     echo 'ERROR: restart accepted pending dhcp changes' >&2; exit 1
@@ -52,4 +56,27 @@ sleep 1
 [ "$(uci -q get dhcp.main.local)" = /rpc-concurrent/ ]
 if grep -q 'local=/rpc-concurrent/' /var/etc/dnsmasq.conf.main; then echo 'ERROR: concurrent RPC commit was applied' >&2; exit 1; fi
 ubus call session destroy "{\"ubus_rpc_session\":\"$sid\"}" >/dev/null
+tx=/tmp/dns-manager-cache-transaction.sh
+guard=/tmp/dns-manager-uci-read-guard.sh
+sh "$tx" main 900 180 "$guard" /etc/init.d/dnsmasq restart
+[ "$(uci -q get dhcp.main.cachesize)" = 900 ]
+[ "$(uci -q get dhcp.main.min_cache_ttl)" = 180 ]
+grep -qx 'cache-size=900' /var/etc/dnsmasq.conf.main
+rm -f /tmp/dns-cache-restart-failed
+if sh "$tx" main 800 30 "$guard" /bin/sh /tmp/dnsmasq-restart-guard-openwrt.sh fail_once; then echo 'ERROR: failed restart was accepted' >&2; exit 1; fi
+[ "$(uci -q get dhcp.main.cachesize)" = 900 ]
+[ "$(uci -q get dhcp.main.min_cache_ttl)" = 180 ]
+grep -qx 'cache-size=900' /var/etc/dnsmasq.conf.main
+uci -q delete dhcp.main.min_cache_ttl
+uci commit dhcp
+rm -f /tmp/dns-cache-restart-failed
+if sh "$tx" main 800 30 "$guard" /bin/sh /tmp/dnsmasq-restart-guard-openwrt.sh fail_once; then echo 'ERROR: failed restart was accepted' >&2; exit 1; fi
+[ "$(uci -q get dhcp.main.cachesize)" = 900 ]
+if uci -q get dhcp.main.min_cache_ttl >/dev/null; then echo 'ERROR: absent TTL was not restored' >&2; exit 1; fi
+uci set dhcp.main.local=/pending-transaction/
+if sh "$tx" main 800 30 "$guard" /etc/init.d/dnsmasq restart 2>/dev/null; then echo 'ERROR: transaction accepted pending UCI changes' >&2; exit 1; fi
+[ "$(uci -q get dhcp.main.cachesize)" = 900 ]
+[ "$(uci -q get dhcp.main.local)" = /pending-transaction/ ]
+uci -q revert dhcp
+echo 'OK: cache transaction restores previous options, including an absent TTL'
 echo 'OK: guarded restart rejects pending changes, applies cache and releases UCI locks'
