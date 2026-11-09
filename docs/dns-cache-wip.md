@@ -56,6 +56,14 @@ restart. This lab disables ujail, which cannot start in that environment. It
 does not test Steer, reboot or programs bypassing libuci advisory locks. The
 guard alone does not implement transaction rollback or cache application.
 
+`dns-manager-cache-transaction.sh` experiments with applying both UCI options,
+restarting under the read guard and restoring the original options if restart
+fails. A 25.12.2 procd/dnsmasq lab (without ujail) covers success, an injected
+restart failure, restoring an initially absent TTL and refusal with a pending
+foreign UCI change. This helper is not connected to DNS Manager, does not
+persist the requested total or handle per-device instances, and has not been
+verified against a same-option concurrent writer or a reboot.
+
 The optional TTL lab uses a synthetic upstream and an isolated dnsmasq. It
 verifies that a short TTL is respected by default and extended when an
 explicit minimum is configured. It does not emulate OpenWrt, Steer, or
