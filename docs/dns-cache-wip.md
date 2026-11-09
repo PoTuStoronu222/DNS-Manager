@@ -20,6 +20,11 @@ cover missing and duplicate masks, unallocated profiles, invalid TTL, and TTL
 zero; one generated profile also passed `dnsmasq --test` in a Linux lab. The
 script is not installed or called by DNS Manager yet.
 
+`dns-manager-cache-stage.sh` combines planning and profile rendering in one
+operation on a private staging directory. Its tests exercise multiple devices
+sharing one profile, adding a group, and disabling a custom minimum TTL. The
+result is a staged configuration only; no live UCI or dnsmasq is modified.
+
 The optional TTL lab uses a synthetic upstream and an isolated dnsmasq. It
 verifies that a short TTL is respected by default and extended when an
 explicit minimum is configured. It does not emulate OpenWrt, Steer, or
