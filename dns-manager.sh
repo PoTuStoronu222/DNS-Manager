@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="4.16"
+VERSION="4.17"
 # 3.86: make LuCI the primary interface and preserve external DNS on removal.
 # 3.85: revalidate Watchdog settings before recovery.
 # 3.84: cap DNS catalog test concurrency by total RAM on small routers.
@@ -3571,7 +3571,10 @@ apply_extras_now() {
     return "$_rc"
 }
 
+dns_cache_total_supported() { :; }
+
 apply_dnsmasq_perf() {
+    [ ! -f /etc/dns-manager/config/cache.conf ] || return 0
     [ "${DNSMASQ_PERF:-0}" = 1 ] || return 0
     sec="$(get_dnsmasq_section)"
     [ -n "$sec" ] || return 1
@@ -4786,7 +4789,8 @@ refresh_device_dns_runtime() {
     # The LuCI companion owns the per-device resolver service and rule include.
     # Rebuild only after manager.conf has been atomically saved.
     [ -x /etc/init.d/dns-manager-device-dns ] || return 0
-    if /etc/init.d/dns-manager-device-dns restart >/dev/null 2>&1; then
+    rm -f /var/run/dns-manager-device-dns/apply-result
+    if /etc/init.d/dns-manager-device-dns restart >/dev/null 2>&1 && { ! grep -Fqx '# DNS_MANAGER_DEVICE_APPLY_RESULT=1' /etc/init.d/dns-manager-device-dns || [ "$(cat /var/run/dns-manager-device-dns/apply-result 2>/dev/null)" = ok ]; }; then
         log_msg "Привязки DNS по устройствам обновлены."
         return 0
     fi
