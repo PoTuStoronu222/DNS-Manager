@@ -819,7 +819,7 @@ EOF_DEVICE_DNS_SERVICE
     "action": { "type": "view", "path": "dns-manager/time" }
   },
   "admin/services/dns-manager/catalog": {
-    "title": "Каталог DNS",
+    "title": "Каталог DoH",
     "order": 50,
     "action": { "type": "view", "path": "dns-manager/catalog" }
   },
@@ -3802,7 +3802,7 @@ catalog_json() {
     _first=1
     while IFS='|' read -r _id _cat _prof _name _url _region _status; do
         [ -n "$_id" ] || continue; [ "$_first" = 1 ] || printf ','; _first=0; _r="$(result_for_id "$_id" 2>/dev/null || true)"; _ms="$(printf '%s' "$_r" | awk -F'|' 'NF>=5 {print $4;exit}')"; _st="$(printf '%s' "$_r" | awk -F'|' 'NF>=5 {print $5;exit}')"
-        printf '{"id":'; json_quote "$_id"; printf ',"category":'; json_quote "$_cat"; printf ',"name":'; json_quote "$_name"; printf ',"url":'; json_quote "$_url"; printf ',"region":'; json_quote "$_region"; printf ',"catalog_status":'; json_quote "$_status"; printf ',"ping":'; json_quote "$_ms"; printf ',"status":'; json_quote "$_st"; printf ',"last_check":'; json_quote "$(last_check_for_id "$_id")"; printf '}'
+        printf '{"id":'; json_quote "$_id"; printf ',"category":'; json_quote "$_cat"; printf ',"tags":'; json_quote "$_prof"; printf ',"name":'; json_quote "$_name"; printf ',"url":'; json_quote "$_url"; printf ',"region":'; json_quote "$_region"; printf ',"catalog_status":'; json_quote "$_status"; printf ',"ping":'; json_quote "$_ms"; printf ',"status":'; json_quote "$_st"; printf ',"last_check":'; json_quote "$(last_check_for_id "$_id")"; printf '}'
     done < "$_paged"
     printf ']}'; rm -f "$_filtered" "$_paged" 2>/dev/null || true
 }
@@ -4441,8 +4441,8 @@ var PROFILE = [
   ['adblock','Блокировка рекламы'], ['family','Семейная фильтрация'], ['dnssec','DNSSEC']
 ];
 var CATEGORY = [
-  ['all','Все DNS'], ['bypass','Обход геоблока'], ['security','Защита от угроз'], ['privacy','Конфиденциальность'],
-  ['adblock','Блокировка рекламы'], ['family','Семейная фильтрация'], ['clean','Без фильтрации'], ['gaming','Игровые DNS'], ['regional','Региональные DNS'], ['custom','Мои DNS']
+  ['all','Все DNS'], ['bypass','Для геоблока'], ['security','От угроз'], ['privacy','Приватность'],
+  ['adblock','Без рекламы'], ['family','Для семьи'], ['clean','Без фильтрации'], ['gaming','Для игр'], ['regional','Для зон .ru'], ['custom','Мои DNS']
 ];
 var state = { slotPickerCheck:null, slotPickerRequest:0, lanDevicesLoading:false, lanDevicesMessage:'', luciUpdateReloadTimer:null, hdpUpdating:false, managerUpdating:false, updatingAll:false, category:'all', offset:0, limit:18, catalogLoaded:false, catalogLoading:false, advanced:true, logLoaded:false, logLoading:false, busy:false, busySetting:'', settingMessage:'', settingMessageType:'', settingMessageKey:'', pageNotice:{}, statusError:'', activeTab:'dashboard', jobRunning:false, lastJob:null, checking:{}, fullTest:null, catalogProgress:null, profileProgress:null, profileOutput:'', versionCheck:null, lastAction:null, runtimeCpuLoad:null, runtimeMemoryTotal:null, runtimeMemoryAvailable:null, boardInfo:null, systemPollBusy:false, profileResumeStarted:false };
 
@@ -4475,6 +4475,60 @@ function activeProfileLabel(st){
   return profileName(st.profile);
 }
 function catName(c){ var x=CATEGORY.filter(function(v){return v[0]===c;})[0]; return x?x[1]:(c||'—'); }
+// Описания не влияют на выбор DNS, сохранение слотов и категории backend.
+var DNS_CATEGORY_HELP={
+  all:'Выбирайте DNS по назначению, а не только по стране. У провайдеров есть разные профили.',
+  bypass:'Специальные ответы для геоограничений и сервисов. Это не VPN: обход DPI и блокировки IP не гарантирован.',
+  security:'Блокировка известных вредоносных и фишинговых доменов. Не замена антивирусу.',
+  privacy:'DoH защищает передачу до DNS, но оператор видит запросы. Проверяйте политику логов и юрисдикцию.',
+  adblock:'Блокирует часть рекламы и трекеров. Может мешать работе сайтов; всю рекламу DNS не убирает.',
+  family:'Ограничивает нежелательный контент. Списки зависят от профиля; это не полный родительский контроль.',
+  clean:'Без дополнительной контент-фильтрации. Не гарантирует обход блокировок и отсутствие ограничений сети.',
+  gaming:'Специальные DNS-ответы для отдельных игр. Не универсальный сервис обхода.',
+  regional:'DNS для .ru, .su и .рф; проверяйте владельца и правовой режим сервиса.',
+  custom:'Собственные DoH-адреса. Хранятся отдельно от встроенного каталога.'
+};
+var DNS_PROFILE_HELP={
+  bypass:DNS_CATEGORY_HELP.bypass,clean:DNS_CATEGORY_HELP.clean,security:DNS_CATEGORY_HELP.security,
+  privacy:DNS_CATEGORY_HELP.privacy,adblock:DNS_CATEGORY_HELP.adblock,family:DNS_CATEGORY_HELP.family,
+  dnssec:'DNSSEC проверяет подлинность DNS-ответов при поддержке резолвера; не шифрует DNS и не означает отсутствие блокировок.'
+};
+var DNS_TAG_HELP={
+  geo:'Гео/сервисы',services:'Специальные сервисы',ads:'Реклама',tracking:'Трекеры',
+  malware:'Опасные домены',phishing:'Фишинг',adult:'Контент 18+',gambling:'Азартные сайты',
+  social:'Соцсети',child:'Детский режим',kids:'Детский режим',family:'Для семьи',
+  'ip-block':'IP-фильтрация',dnssec:'DNSSEC',anycast:'Anycast',ecs:'ECS',
+  unfiltered:'Без фильтрации (заявлено)',uncensored:'Без цензуры (заявлено)',
+  privacy:'Приватность (заявлено)','no-logging':'Без логов (заявлено)','no-logs':'Без логов (заявлено)',
+  'no-ads':'Без рекламы (заявлено)',community:'Сообщество',youtube:'YouTube',games:'Игры',
+  supercell:'Supercell','strict-filtering':'Строгая фильтрация','balanced-threat':'Защита от угроз',
+  'threat-only':'Только угрозы','limited-blocking':'Частичная фильтрация','youth-protection':'Защита детей',
+  ru:'Зоны .ru/.su/.рф'
+};
+function dnsCategoryHint(c){return DNS_CATEGORY_HELP[c]||'Возможности зависят от конкретного DoH-профиля.';}
+function dnsProfileHint(c){return DNS_PROFILE_HELP[c]||'Выберите профиль по назначению.';}
+function dnsTagSummary(tags){
+  var names=[],seen={};
+  String(tags||'').split('+').forEach(function(t){var hint=DNS_TAG_HELP[t];if(hint&&!seen[hint]){seen[hint]=true;names.push(hint);}});
+  return names.join(' · ');
+}
+function dnsCardNote(d){
+  if(!d)return '';
+  if(d.id==='mullvad_family'||d.id==='mullvad_all')
+    return '⚠ Публичный Mullvad DNS закрыт 02.11.2026. Запись сохранена для совместимости; лучше выбрать другой сервер.';
+  if(d.catalog_status==='shutdown-announced')return '⚠ Для сервиса объявлено завершение работы.';
+  if(['runtime-check','review-runtime','user-supplied-runtime','source-listed'].indexOf(String(d.catalog_status||''))>=0)
+    return 'Доступность из вашей сети пока не подтверждена — сначала проверьте сервер.';
+  if(d.category==='bypass')return 'Обход через DNS не заменяет VPN или прокси.';
+  if(d.category==='regional')return 'Учитывайте юрисдикцию DNS-оператора.';
+  return '';
+}
+function dnsJurisdictionNotice(){
+  return E('div',{'class':'dm-inline-msg info'},[
+    E('div',{'class':'dm-setting-title'},'⚠ Про юрисдикцию РФ — важно'),
+    E('div',{},'Операторы связи в РФ выполняют применимые требования по ограничению доступа. Обязанности конкретного DNS-сервиса зависят от его правового статуса: ТСПУ применяются в сетях операторов связи, а не автоматически на каждом DNS-сервере. DoH/DoT шифрует канал до DNS-оператора, но не мешает ему вести журналы, фильтровать или изменять ответы. Для приватности проверяйте владельца, юрисдикцию и политику логирования; названия категорий «Приватность» и «Глобальные» сами по себе не гарантируют ничего.')
+  ]);
+}
 function ping(v){ return v && /^\d+$/.test(String(v)) ? v+' мс' : '—'; }
 function uptime(sec){
   var n=Number(sec);
@@ -5594,7 +5648,8 @@ function openSlotPicker(slot,root,requestedCategory,requestedOffset,preserveScro
           });
         },{disabled:checking||!!state.busy||!!state.jobRunning});
         var mainChildren=[
-          E('div',{'class':'dm-picker-name'},x.name||x.id),
+          E('div',{'class':'dm-picker-name','title':String(x.url||'')},x.name||x.id),
+          E('div',{'class':'dm-mini'},dnsTagSummary(x.tags)||dnsCategoryHint(x.category)),
           E('div',{'class':'dm-picker-meta'},[
             status,
             occupiedMark||currentMark||E('span',{})
@@ -5627,8 +5682,11 @@ function openSlotPicker(slot,root,requestedCategory,requestedOffset,preserveScro
     if(!regional){
       modalChildren.push(E('div',{'class':'dm-mini'},'Выберите категорию, затем DNS из неё. Доступны все обычные категории каталога; региональные DNS назначаются только в слот RU.'));
       modalChildren.push(categoryControls);
+      modalChildren.push(E('div',{'class':'dm-hint'},dnsCategoryHint(category)));
     }else{
       modalChildren.push(E('div',{'class':'dm-mini'},'Категория: '+catName(category)));
+      modalChildren.push(E('div',{'class':'dm-hint'},dnsCategoryHint(category)));
+      modalChildren.push(dnsJurisdictionNotice());
     }
     modalChildren.push(list);
     if(!regional&&total>48){
@@ -5720,12 +5778,13 @@ function renderProfiles(root,st){
   e.innerHTML='';
   var g=E('div',{'class':'dm-seg dm-profile-seg'});
   var currentId=activeProfileId(st);
-  PROFILE.forEach(function(p){g.appendChild(btn(p[1],currentId===p[0]?'active cbi-button':'cbi-button',function(){applyProfile(p[0],root);},{disabled:!!state.busy}));});
+  PROFILE.forEach(function(p){g.appendChild(btn(p[1],currentId===p[0]?'active cbi-button':'cbi-button',function(){applyProfile(p[0],root);},{disabled:!!state.busy,title:dnsProfileHint(p[0])}));});
   var current=activeProfileLabel(st);
   var pch=[
     row('Работает сейчас',badge('dm-ok',current)),
     g,
-    E('div',{'class':'dm-mini'},'Профиль определяет схему выбора DNS и используется сейчас.')
+    E('div',{'class':'dm-mini'},'Выбор профиля сразу запускает применение настроек.'),
+    E('div',{'class':'dm-hint'},dnsProfileHint(currentId))
   ];
   if(currentId==='dnssec')pch.push(E('div',{'class':'dm-hint'},'DNSSEC проверяется выбранными серверами; фильтрация может различаться. Региональный DNS, Steer и привязки устройств работают по своим правилам.'));
   var regionalSlot=(st.slots||[]).filter(function(s){return String(s.slot)==='RU';})[0]||{};
@@ -5743,6 +5802,7 @@ function renderProfiles(root,st){
     : regionalMode==='doh' ? 'Все сайты используют общие DoH-серверы.'
     : regionalMode==='yandex' ? 'Российские зоны используют Яндекс DNS (77.88.8.8, 77.88.8.1) напрямую, без шифрования.'
     : 'Российские зоны используют DNS провайдера напрямую, без шифрования: '+String(st.regional_isp_ips||'—')+'.'));
+  if(regionalMode==='yandex'||regionalMode==='isp'||regionalMode==='legacy')pch.push(dnsJurisdictionNotice());
   if(Number(st.steer_dns_active)===1)pch.push(E('p',{'class':'dm-hint'},'Правила DNS в Steer могут обрабатывать отдельные запросы до dnsmasq.'));
   if(!hasGeneral)pch.push(E('div',{'class':'dm-inline-msg info'},'Сначала примените основной DNS-профиль.'));
   if(state.regionalNotice)pch.push(E('div',{'class':'dm-inline-msg '+(state.regionalNoticeType||'info')},state.regionalNotice));
@@ -6327,7 +6387,8 @@ function renderCatalog(root){
   var body=E('div',{'id':'dm-cat-body'});
   if(!window.dmCatalog&&!state.pageNotice.catalog)body.appendChild(E('div',{'class':'dm-hint'},state.catalogLoading?'Загрузка каталога DNS…':'Каталог DNS недоступен.'));
   var ch=[
-    E('div',{'class':'dm-mini'},'Каталог DNS отображается постоянно. Выбор категории и назначение доступны ниже.'),
+    E('div',{'class':'dm-mini'},'Каталог DoH: выбирайте сервер по задаче. Все существующие DNS и категории сохранены.'),
+    dnsJurisdictionNotice(),
     E('div',{'class':'dm-actions'},[
       btn(state.jobRunning&&state.fullTest&&state.fullTest.origin==='catalog'?'Проверяю…':'Проверить все DNS','cbi-button-action',function(){testAll(root,'catalog');},{disabled:!!state.busy||!!state.jobRunning})
     ])
@@ -6383,15 +6444,16 @@ function renderCatalog(root){
   ch.push(ageCard);
   ch.push(body);
   if(state.pageNotice.catalog)ch.push(E('div',{'class':'dm-inline-msg '+(state.fullTest&&state.fullTest.status==='FAILED'?'error':'info')},state.pageNotice.catalog));
-  e.appendChild(card('Каталог DNS',ch));
+  e.appendChild(card('Каталог DoH · по назначению',ch));
   if(window.dmCatalog)renderCatalogBody(root,window.dmCatalog);
 }
 
 function renderCatalogBody(root,data){
   var b=root.querySelector('#dm-cat-body');if(!b)return;b.innerHTML='';
   var f=E('div',{'class':'dm-seg'});
-  CATEGORY.forEach(function(c){f.appendChild(btn(c[1],c[0]===state.category?'active cbi-button':'cbi-button',function(){state.category=c[0];state.offset=0;loadCatalog(root);}));});
+  CATEGORY.forEach(function(c){f.appendChild(btn(c[1],c[0]===state.category?'active cbi-button':'cbi-button',function(){state.category=c[0];state.offset=0;loadCatalog(root);},{title:dnsCategoryHint(c[0])}));});
   b.appendChild(f);
+  b.appendChild(E('div',{'class':'dm-hint'},dnsCategoryHint(state.category)));
   b.appendChild(E('div',{'class':'dm-mini'},'Показано '+(data.servers||[]).length+' из '+(data.total||0)));
   var g=E('div',{'class':'dm-catalog'});
   (data.servers||[]).forEach(function(d){
@@ -6400,6 +6462,9 @@ function renderCatalogBody(root,data){
     g.appendChild(E('div',{'class':'dm-card dm-catalog-item'+(isUserDnsRecord(d)?' dm-catalog-item-custom':'')},[
       E('h4',{},d.name||d.id),
       E('div',{'class':'dm-meta'},catName(d.category)),
+      E('div',{'class':'dm-mini'},dnsTagSummary(d.tags)||dnsCategoryHint(d.category)),
+      E('div',{'class':'dm-mini','style':'overflow-wrap:anywhere'},'DoH: '+String(d.url||'—')),
+      dnsCardNote(d)?E('div',{'class':'dm-hint'},dnsCardNote(d)):null,
       E('div',{'class':'dm-row'},[
         E('span',{'class':'dm-slot-state'},statusText),
         E('span',{'class':'dm-inline'},[
