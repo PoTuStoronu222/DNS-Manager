@@ -6,7 +6,7 @@ awk '/^catalog_validate_file\(\) \{/,/^}/' dns-manager.sh > "$tmp/validate.sh"
 awk '/^write_catalogs\(\) \{/,/^}/' dns-manager.sh > "$tmp/update.sh"
 . "$tmp/validate.sh"
 . "$tmp/update.sh"
-DNSCAT_VERSION=8.7-RU-NOSOCIAL DNSCAT_REVISION=12
+DNSCAT_VERSION=8.7-RU-NOSOCIAL DNSCAT_REVISION=13
 CFG_DIR="$tmp/config"; DNS_CATALOG="$CFG_DIR/catalog"; TEST_RESULTS="$tmp/results"
 PERSIST_STATE_DIR="$tmp/persist"; mkdir -p "$CFG_DIR" "$PERSIST_STATE_DIR"
 catalog_download() { cp catalogs/dns-8.7-RU-NOSOCIAL.conf "$1"; }
@@ -16,7 +16,7 @@ err_msg() { :; }
 awk -F'|' '
   /^# DNSCATREV=/ {$0="# DNSCATREV=7"}
   /^# ENTRIES=/ {$0="# ENTRIES=107"}
-  $1 ~ /^(malw_cloudflare|geohide_eu|geohide_us|magicdns|wlrus|geodema)$/ {next}
+  $1 ~ /^(malw_cloudflare|geohide_eu|geohide_us|magicdns|wlrus|geodema|quic_best|semqka|tamaev)$/ {next}
   $1=="cznic_odvr" {sub(/\|clean\|/, "|security|")}
   $1=="iijjp" {sub(/\|privacy\|/, "|family|")}
   {print}
@@ -25,8 +25,11 @@ cp "$DNS_CATALOG" "$tmp/old"
 printf '%s\n' 'astracat|bypass|AstraCat DNS|20|OK' 'shecan|bypass|Zapret DNS|25|OK' > "$TEST_RESULTS"
 write_catalogs
 catalog_validate_file "$DNS_CATALOG"
-for id in malw_cloudflare geohide_eu geohide_us magicdns wlrus geodema; do
+for id in malw_cloudflare geohide_eu geohide_us magicdns wlrus geodema quic_best semqka tamaev; do
     grep -q "^$id|" "$DNS_CATALOG"
+done
+for url in 'https://w.quic.best/dns-query' 'https://dns.semqka.xyz/dns-query' 'https://tamaev-gifts.xyz/dns-query'; do
+    [ "$(awk -F'|' -v url="$url" '$1 !~ /^#/ && $5==url {n++} END {print n+0}' "$DNS_CATALOG")" = 1 ]
 done
 # The old identities and endpoints remain untouched. Only two categories are corrected.
 awk -F'|' 'NR==FNR {if ($1 !~ /^#/ && NF>=5) {cat[$1]=$2; url[$1]=$5; count++}; next}
