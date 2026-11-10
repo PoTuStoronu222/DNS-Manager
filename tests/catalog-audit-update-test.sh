@@ -6,7 +6,7 @@ awk '/^catalog_validate_file\(\) \{/,/^}/' dns-manager.sh > "$tmp/validate.sh"
 awk '/^write_catalogs\(\) \{/,/^}/' dns-manager.sh > "$tmp/update.sh"
 . "$tmp/validate.sh"
 . "$tmp/update.sh"
-DNSCAT_VERSION=8.7-RU-NOSOCIAL DNSCAT_REVISION=13
+DNSCAT_VERSION=8.7-RU-NOSOCIAL DNSCAT_REVISION=14
 CFG_DIR="$tmp/config"; DNS_CATALOG="$CFG_DIR/catalog"; TEST_RESULTS="$tmp/results"
 PERSIST_STATE_DIR="$tmp/persist"; mkdir -p "$CFG_DIR" "$PERSIST_STATE_DIR"
 catalog_download() { cp catalogs/dns-8.7-RU-NOSOCIAL.conf "$1"; }
@@ -57,6 +57,15 @@ for result in "$TEST_RESULTS" "$PERSIST_STATE_DIR/dns-test-results.conf"; do
     ! grep -q '^magicdns|' "$result"
     grep -q '^astracat|' "$result"
 done
+# A corrected GeoHide URL keeps the ID but discards its old test result.
+awk -F'|' 'BEGIN {OFS="|"} /^# DNSCATREV=/ {$0="# DNSCATREV=13"} $1=="geohide" {$5="https://dns.geohide.ru:444/dns-query"} {print}' catalogs/dns-8.7-RU-NOSOCIAL.conf > "$DNS_CATALOG"
+printf '%s\n' 'geohide|bypass|GeoHide|20|OK' 'astracat|bypass|AstraCat|25|OK' > "$TEST_RESULTS"
+cp "$TEST_RESULTS" "$PERSIST_STATE_DIR/dns-test-results.conf"
+write_catalogs
+for result in "$TEST_RESULTS" "$PERSIST_STATE_DIR/dns-test-results.conf"; do
+    ! grep -q '^geohide|' "$result"
+    grep -q '^astracat|' "$result"
+done
 # On download failure, a compatible old catalogue is retained.
 cp "$tmp/old" "$DNS_CATALOG"
 catalog_download() { return 1; }
@@ -86,4 +95,14 @@ for result in "$STATE_DIR/dns-test-results.conf" "$PERSIST_STATE_DIR/dns-test-re
     grep -q '^astracat|' "$result"
 done
 [ ! -e "$CHECK_DIR/magicdns" ]
+awk -F'|' 'BEGIN {OFS="|"} /^# DNSCATREV=/ {$0="# DNSCATREV=13"} $1=="geohide" {$5="https://dns.geohide.ru:444/dns-query"} {print}' catalogs/dns-8.7-RU-NOSOCIAL.conf > "$CATALOG_FILE"
+printf '%s\n' 'geohide|bypass|GeoHide|20|OK' 'astracat|bypass|AstraCat|25|OK' > "$STATE_DIR/dns-test-results.conf"
+cp "$STATE_DIR/dns-test-results.conf" "$PERSIST_STATE_DIR/dns-test-results.conf"
+touch "$CHECK_DIR/geohide"
+update_catalog_direct
+for result in "$STATE_DIR/dns-test-results.conf" "$PERSIST_STATE_DIR/dns-test-results.conf"; do
+    ! grep -q '^geohide|' "$result"
+    grep -q '^astracat|' "$result"
+done
+[ ! -e "$CHECK_DIR/geohide" ]
 printf '%s\n' 'OK: catalog upgrade preserves existing IDs, URLs and fallback'
