@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager full installer and LuCI companion
-# Version: 2.27
+# Version: 2.28
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.27"
+VERSION="2.28"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -879,7 +879,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.27"
+SELF_VERSION="2.28"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -4369,7 +4369,7 @@ EOF_RPC_WRAPPER
 'require ui';
 'require session';
 
-// DNS Manager LuCI common module version: 2.27
+// DNS Manager LuCI common module version: 2.28
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -6130,7 +6130,10 @@ function renderTestAgeCommon(root,st){
 
 function cacheCard(root,st){
   var total=E('input',{'type':'number','min':'0','max':'10000','step':'1','value':String(st.cache_total==null?1000:st.cache_total),'class':'dm-input'});
-  var ttl=E('input',{'type':'number','min':'0','max':'3600','step':'1','value':String(st.cache_ttl==null?0:st.cache_ttl),'class':'dm-input'});
+  var currentTtl=Number(st.cache_ttl)||0;
+  var ttlOptions=[E('option',{'value':'0'},'Как у DNS-сервера'),E('option',{'value':'300'},'5 минут'),E('option',{'value':'900'},'15 минут'),E('option',{'value':'1800'},'30 минут')];
+  if(currentTtl>0&&[300,900,1800].indexOf(currentTtl)<0)ttlOptions.push(E('option',{'value':String(currentTtl)},'Текущее значение: '+currentTtl+' сек.'));
+  var ttl=E('select',{'class':'dm-input'},ttlOptions);ttl.value=String(currentTtl);
   var busy=state.busySetting==='dns_cache';
   var save=btn(busy?'Сохраняю…':'Сохранить','cbi-button-apply',function(){
     if(state.busy)return;
@@ -6139,7 +6142,7 @@ function cacheCard(root,st){
     state.busy=true;state.busySetting='dns_cache';setSettingFeedback('dns_cache','Применяю настройки…','info');renderNetwork(root,st);
     callSetCache(Number(a),Number(b)).then(awaitSettingResult).then(function(r){state.busy=false;state.busySetting='';setSettingFeedback('dns_cache',r&&r.ok?'Настройки кэша сохранены.':((r&&r.error)||'Не удалось применить кэш.'),r&&r.ok?'ok':'error');return refresh(root,true);}).catch(function(e){state.busy=false;state.busySetting='';setSettingFeedback('dns_cache',withRpcError('Не удалось применить кэш.',e),'error');refresh(root,true);});
   },{disabled:!!state.busy});
-  return E('div',{'class':'dm-card'},[E('div',{'class':'dm-section-title'},'Кэш DNS'),E('div',{'class':'dm-setting-desc'},'Кэш основного DNS роутера. Для DNS привязанных устройств кэш отключён; их выбор DNS сохраняется. Кэш Steer настраивается отдельно.'),E('div',{'class':'dm-watchdog-row'},[E('span',{},'Размер кэша DNS'),total,E('span',{},'0–10000 записей')]),E('div',{'class':'dm-watchdog-row'},[E('span',{},'Минимальный TTL'),ttl,E('span',{},'0–3600 секунд')]),E('div',{'class':'dm-setting-desc'},'0 — соблюдать TTL в ответе DNS. Настройка не влияет на привязанные устройства. Увеличение TTL может сохранять устаревшие адреса.'),save,settingFeedback('','dns_cache')||E('span',{})]);
+  return E('div',{'class':'dm-card'},[E('div',{'class':'dm-section-title'},'Кэш DNS'),E('div',{'class':'dm-setting-desc'},'Кэш основного DNS роутера. Для DNS привязанных устройств кэш отключён; их выбор DNS сохраняется. Кэш Steer настраивается отдельно.'),E('div',{'class':'dm-watchdog-row'},[E('span',{},'Размер кэша DNS'),total,E('span',{},'0–10000 записей')]),E('div',{'class':'dm-watchdog-row'},[E('span',{},'Минимальное время хранения'),ttl]),E('div',{'class':'dm-setting-desc'},'Если DNS-сервер задал больший срок, он сохраняется. Настройка не влияет на привязанные устройства. Увеличение срока может сохранять устаревшие адреса.'),save,settingFeedback('','dns_cache')||E('span',{})]);
 }
 function renderNetwork(root,st){
   var e=root.querySelector('#dm-network');if(!e)return;e.innerHTML='';
@@ -6538,13 +6541,13 @@ function saveRouteCache(key,st,aux){
     var entry=JSON.parse(JSON.stringify({ts:Date.now(),data:st,aux:aux}));
     window.dmRouteCache[key]=entry;
     if(typeof session!=='undefined'&&session.setLocalData)
-      session.setLocalData('dns-manager-route-2.27-'+key,entry);
+      session.setLocalData('dns-manager-route-2.28-'+key,entry);
   }catch(e){}
 }
 function routeCacheEntry(key){
   var entry=key&&window.dmRouteCache&&window.dmRouteCache[key];
   if(!entry&&key){
-    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.27-'+key);}catch(e){}
+    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.28-'+key);}catch(e){}
   }
   if(!entry||typeof entry.ts!=='number'||Date.now()-entry.ts<0||Date.now()-entry.ts>300000||!entry.data||entry.data.ok!==true)return null;
   return entry;
@@ -7570,7 +7573,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 2.27
+// DNS Manager LuCI version: 2.28
 return view.extend({
   load: DM.load,
   render: DM.render,
