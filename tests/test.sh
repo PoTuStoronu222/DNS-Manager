@@ -17,6 +17,8 @@ sh -n dns-manager-luci.sh || fail "dns-manager-luci.sh: sh -n"
 sh -n tests/openwrt-luci-smoke.sh || fail "tests/openwrt-luci-smoke.sh: sh -n"
 ok "shell syntax"
 
+sh tests/luci-dns-guidance-test.sh || fail "LuCI DNS role guidance and catalog preservation"
+
 sh tests/regional-provider-test.sh || fail "regional provider address parsing"
 sh tests/regional-modes-test.sh || fail "regional mode routes"
 sh tests/regional-watch-test.sh || fail "regional provider watcher"
