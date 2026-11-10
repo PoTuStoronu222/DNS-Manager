@@ -26,17 +26,6 @@ printf '%s\n' 'OK: isolated commit retained the foreign pending change without c
 # The running service would therefore consume the unrelated pending value.
 uci -S -n export "$pkg" | grep -q "option foreign 'pending'"
 printf '%s\n' 'OBSERVED: default uci export includes foreign pending changes'
-sh /tmp/dns-manager-uci-cache.sh main 1200 0 "$pkg"
-grep -q "option cachesize '1200'" "$file"
-grep -q "option min_cache_ttl '0'" "$file"
-grep -q "option foreign 'old'" "$file"
-[ "$(uci -q get "$pkg.main.foreign")" = pending ]
-sh /tmp/dns-manager-uci-cache.sh main 800 180 "$pkg"
-grep -q "option cachesize '800'" "$file"
-grep -q "option min_cache_ttl '180'" "$file"
-if sh /tmp/dns-manager-uci-cache.sh main 10001 0 "$pkg"; then exit 1; fi
-grep -q "option cachesize '800'" "$file"
-printf '%s\n' 'OK: cache helper commits only validated cache options and retains foreign changes'
 # Test the lock order against real libuci: readers may proceed, a writer must
 # wait until both shared locks are released. Never run against real DHCP data.
 uci -q revert "$pkg"

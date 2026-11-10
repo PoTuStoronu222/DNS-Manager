@@ -69,12 +69,11 @@ sh -n "$tmp/device_dns_service.sh" || fail "per-device DNS service shell syntax"
 grep -Fq 'DMD_CHAIN="dstnat_lan"' "$tmp/device_dns_service.sh" || fail "per-device DNS rules target the wrong fw4 chain"
 grep -Fq 'START=99' "$tmp/device_dns_service.sh" || fail "per-device DNS service can start before https-dns-proxy at boot"
 grep -Fq 'pid-file=/var/run/dns-manager-device-dns/profile_%s.pid' "$tmp/device_dns_service.sh" || fail "per-device dnsmasq instances do not have unique PID files"
-grep -Fq 'device-firewall.sh' "$tmp/device_dns_service.sh" || fail "per-device DNS include does not use the isolated firewall helper"
-grep -Fq '\"position\":\"chain-pre\"' dns-manager-luci.sh || fail "per-device DNS rules are not inserted ahead of generic redirects"
+grep -Fq 'position=chain-pre' "$tmp/device_dns_service.sh" || fail "per-device DNS rules are not inserted ahead of generic redirects"
 grep -Fq 'Never overwrite' "$tmp/device_dns_service.sh" || fail "per-device DNS service does not document ownership preflight"
 grep -Fq 'dmd_include_is_owned || {' "$tmp/device_dns_service.sh" || fail "per-device DNS service does not verify include ownership before writing"
-grep -Fq 'fw4 print > "$1"' "$tmp/device_dns_service.sh" || fail "per-device ruleset is not validated before reload"
-grep -Fq 'nft -c -f "$1"' "$tmp/device_dns_service.sh" || fail "per-device nft rules are not syntax-checked"
+grep -Fq 'fw4 print > "$DMD_FW4_CHECK"' "$tmp/device_dns_service.sh" || fail "per-device ruleset is not validated before reload"
+grep -Fq 'nft -c -f "$DMD_FW4_CHECK"' "$tmp/device_dns_service.sh" || fail "per-device nft rules are not syntax-checked"
 if grep -Fq 'type nat hook prerouting' "$tmp/device_dns_service.sh"; then fail "per-device service must not create a competing base NAT chain"; fi
 grep -Fq 'ether saddr %s udp dport 53 redirect to :%s' "$tmp/device_dns_service.sh" || fail "per-device UDP DNS redirect missing"
 grep -Fq 'ether saddr %s tcp dport 53 redirect to :%s' "$tmp/device_dns_service.sh" || fail "per-device TCP DNS redirect missing"
@@ -2732,6 +2731,11 @@ _save_funcs="$(sed -n -e '/^shell_quote() {/,/^}/p' -e '/^save_config() {/,/^}/p
 [ -n "$_save_funcs" ] || fail "config save functions missing"
 eval "$_save_funcs"
 sync_regional_dns_state() { :; }
+# The isolated writer normally receives these defaults from load_config.
+# Initialize them here so nounset errors cannot be hidden inside substitutions.
+for _cfg_key in $(printf '%s\n' "$_save_funcs" | sed -n 's/.*shell_quote "\$\([A-Z0-9_]*\)".*/\1/p'); do
+    eval ": \"\${$_cfg_key:=}\""
+done
 CFG_DIR="$tmp/config-save"
 CONFIG_FILE="$CFG_DIR/manager.conf"
 TX_ACTIVE=0

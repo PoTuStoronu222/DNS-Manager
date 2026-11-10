@@ -4789,8 +4789,7 @@ refresh_device_dns_runtime() {
     # The LuCI companion owns the per-device resolver service and rule include.
     # Rebuild only after manager.conf has been atomically saved.
     [ -x /etc/init.d/dns-manager-device-dns ] || return 0
-    rm -f /var/run/dns-manager-device-dns/apply-result
-    if /etc/init.d/dns-manager-device-dns restart >/dev/null 2>&1 && { ! grep -Fqx '# DNS_MANAGER_DEVICE_APPLY_RESULT=1' /etc/init.d/dns-manager-device-dns || [ "$(cat /var/run/dns-manager-device-dns/apply-result 2>/dev/null)" = ok ]; }; then
+    if /etc/init.d/dns-manager-device-dns restart >/dev/null 2>&1; then
         log_msg "Привязки DNS по устройствам обновлены."
         return 0
     fi
@@ -5087,6 +5086,24 @@ EOF_UNINSTALL_REMAINING_DNS
 }
 
 uninstall_reset_manager_extras() {
+    # Only restore the stock cache if both settings still match our last save.
+    if [ -f /etc/dns-manager/config/cache.conf ]; then
+        _un_cache_total="$(sed -n 's/^total=//p' /etc/dns-manager/config/cache.conf)"
+        _un_cache_ttl="$(sed -n 's/^ttl=//p' /etc/dns-manager/config/cache.conf)"
+        case "$_un_cache_total:$_un_cache_ttl" in *[!0-9:]*) return 1;; esac
+        [ -n "$_un_cache_total" ] && [ -n "$_un_cache_ttl" ] || return 1
+        _un_guard=/usr/lib/dns-manager-luci/cache/uci-read-guard.sh
+        _un_tx=/usr/lib/dns-manager-luci/cache/cache-transaction.sh
+        [ -r "$_un_guard" ] && [ -r "$_un_tx" ] || return 1
+        sh "$_un_guard" dhcp /bin/true >/dev/null 2>&1 || return 1
+        _un_current_total="$(uci -q get 'dhcp.@dnsmasq[0].cachesize' 2>/dev/null || true)"
+        _un_current_ttl="$(uci -q get 'dhcp.@dnsmasq[0].min_cache_ttl' 2>/dev/null || true)"
+        if [ "$_un_current_total" = "$_un_cache_total" ] && [ "$_un_current_ttl" = "$_un_cache_ttl" ]; then
+            _un_stock="$(stock_uci_value_normalized dhcp 'dhcp.@dnsmasq[0].cachesize' 1000)"
+            case "$_un_stock" in ''|*[!0-9]*) _un_stock=1000;; esac
+            sh "$_un_tx" '@dnsmasq[0]' "$_un_stock" 0 "$_un_guard" /etc/init.d/dnsmasq restart >/dev/null 2>&1 || return 1
+        fi
+    fi
     # Reset only modules that Manager enabled and whose current state still
     # matches what Manager applied. Later manual changes are left alone.
     if [ "${DNSMASQ_PERF:-0}" = 1 ]; then

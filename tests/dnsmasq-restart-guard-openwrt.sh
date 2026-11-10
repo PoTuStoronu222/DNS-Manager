@@ -36,8 +36,7 @@ if sh /tmp/dns-manager-uci-read-guard.sh dhcp /etc/init.d/dnsmasq restart 2>/dev
 fi
 [ "$(ubus call service list '{"name":"dnsmasq"}' | jsonfilter -e '@.dnsmasq.instances.main.running')" = true ]
 uci -q revert dhcp
-sh /tmp/dns-manager-uci-cache.sh main 700 120
-sh /tmp/dns-manager-uci-read-guard.sh dhcp /etc/init.d/dnsmasq restart
+sh /tmp/dns-manager-cache-transaction.sh main 700 120 /tmp/dns-manager-uci-read-guard.sh /etc/init.d/dnsmasq restart
 sleep 1
 grep -qx 'cache-size=700' /var/etc/dnsmasq.conf.main
 grep -qx 'min-cache-ttl=120' /var/etc/dnsmasq.conf.main
