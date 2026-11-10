@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager full installer and LuCI companion
-# Version: 2.28
+# Version: 2.29
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.28"
+VERSION="2.29"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -879,7 +879,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.28"
+SELF_VERSION="2.29"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -1554,9 +1554,11 @@ update_catalog_direct() {
     _old_shecan_url="$(awk -F'|' '$1=="shecan" {print $5; exit}' "$CATALOG_FILE" 2>/dev/null)"
     _old_astracat_url="$(awk -F'|' '$1=="astracat" {print $5; exit}' "$CATALOG_FILE" 2>/dev/null)"
     _old_magicdns_url="$(awk -F'|' '$1=="magicdns" {print $5; exit}' "$CATALOG_FILE" 2>/dev/null)"
+    _old_geohide_url="$(awk -F'|' '$1=="geohide" {print $5; exit}' "$CATALOG_FILE" 2>/dev/null)"
     _new_shecan_url="$(awk -F'|' '$1=="shecan" {print $5; exit}' "$_tmp" 2>/dev/null)"
     _new_astracat_url="$(awk -F'|' '$1=="astracat" {print $5; exit}' "$_tmp" 2>/dev/null)"
     _new_magicdns_url="$(awk -F'|' '$1=="magicdns" {print $5; exit}' "$_tmp" 2>/dev/null)"
+    _new_geohide_url="$(awk -F'|' '$1=="geohide" {print $5; exit}' "$_tmp" 2>/dev/null)"
     sed '/^[[:space:]]*#/d;/^[[:space:]]*$/d' "$_tmp" > "$_rb" 2>/dev/null || true
     sed '/^[[:space:]]*#/d;/^[[:space:]]*$/d' "$CATALOG_FILE" > "$_lb" 2>/dev/null || true
     if cmp -s "$_rb" "$_lb" 2>/dev/null; then rm -f "$_tmp" "$_rb" "$_lb" 2>/dev/null || true; return 2; fi
@@ -1591,6 +1593,16 @@ update_catalog_direct() {
                 rm -f "$_result_tmp" 2>/dev/null || true
         done
         rm -f "$CHECK_DIR/magicdns" 2>/dev/null || true
+    fi
+    if [ "$_old_geohide_url" != "$_new_geohide_url" ]; then
+        for _result_file in "$STATE_DIR/dns-test-results.conf" "$PERSIST_STATE_DIR/dns-test-results.conf"; do
+            [ -s "$_result_file" ] || continue
+            _result_tmp="${_result_file}.tmp.$"
+            awk -F'|' '$1!="geohide" {print}' "$_result_file" > "$_result_tmp" 2>/dev/null &&
+                mv -f "$_result_tmp" "$_result_file" 2>/dev/null ||
+                rm -f "$_result_tmp" 2>/dev/null || true
+        done
+        rm -f "$CHECK_DIR/geohide" 2>/dev/null || true
     fi
     rm -f "$_rb" "$_lb" 2>/dev/null || true
     return 0
@@ -4369,7 +4381,7 @@ EOF_RPC_WRAPPER
 'require ui';
 'require session';
 
-// DNS Manager LuCI common module version: 2.28
+// DNS Manager LuCI common module version: 2.29
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -6541,13 +6553,13 @@ function saveRouteCache(key,st,aux){
     var entry=JSON.parse(JSON.stringify({ts:Date.now(),data:st,aux:aux}));
     window.dmRouteCache[key]=entry;
     if(typeof session!=='undefined'&&session.setLocalData)
-      session.setLocalData('dns-manager-route-2.28-'+key,entry);
+      session.setLocalData('dns-manager-route-2.29-'+key,entry);
   }catch(e){}
 }
 function routeCacheEntry(key){
   var entry=key&&window.dmRouteCache&&window.dmRouteCache[key];
   if(!entry&&key){
-    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.28-'+key);}catch(e){}
+    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.29-'+key);}catch(e){}
   }
   if(!entry||typeof entry.ts!=='number'||Date.now()-entry.ts<0||Date.now()-entry.ts>300000||!entry.data||entry.data.ok!==true)return null;
   return entry;
@@ -7573,7 +7585,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 2.28
+// DNS Manager LuCI version: 2.29
 return view.extend({
   load: DM.load,
   render: DM.render,
