@@ -4442,7 +4442,7 @@ var PROFILE = [
 ];
 var CATEGORY = [
   ['all','Все DNS'], ['bypass','Для геоблока'], ['security','От угроз'], ['privacy','Приватность'],
-  ['adblock','Без рекламы'], ['family','Для семьи'], ['clean','Без фильтрации'], ['gaming','Для игр'], ['regional','Для зон .ru'], ['custom','Мои DNS']
+  ['adblock','Без рекламы'], ['family','Для семьи'], ['clean','Без фильтрации'], ['gaming','Игровые DNS'], ['regional','Для зон .ru'], ['custom','Мои DNS']
 ];
 var state = { slotPickerCheck:null, slotPickerRequest:0, lanDevicesLoading:false, lanDevicesMessage:'', luciUpdateReloadTimer:null, hdpUpdating:false, managerUpdating:false, updatingAll:false, category:'all', offset:0, limit:18, catalogLoaded:false, catalogLoading:false, advanced:true, logLoaded:false, logLoading:false, busy:false, busySetting:'', settingMessage:'', settingMessageType:'', settingMessageKey:'', pageNotice:{}, statusError:'', activeTab:'dashboard', jobRunning:false, lastJob:null, checking:{}, fullTest:null, catalogProgress:null, profileProgress:null, profileOutput:'', versionCheck:null, lastAction:null, runtimeCpuLoad:null, runtimeMemoryTotal:null, runtimeMemoryAvailable:null, boardInfo:null, systemPollBusy:false, profileResumeStarted:false };
 
@@ -6464,7 +6464,7 @@ function renderCatalogBody(root,data){
       E('div',{'class':'dm-meta'},catName(d.category)),
       E('div',{'class':'dm-mini'},dnsTagSummary(d.tags)||dnsCategoryHint(d.category)),
       E('div',{'class':'dm-mini','style':'overflow-wrap:anywhere'},'DoH: '+String(d.url||'—')),
-      dnsCardNote(d)?E('div',{'class':'dm-hint'},dnsCardNote(d)):null,
+      dnsCardNote(d)?E('div',{'class':'dm-hint'},dnsCardNote(d)):E('span',{}),
       E('div',{'class':'dm-row'},[
         E('span',{'class':'dm-slot-state'},statusText),
         E('span',{'class':'dm-inline'},[
