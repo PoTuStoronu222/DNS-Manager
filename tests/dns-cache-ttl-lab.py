@@ -34,7 +34,13 @@ def run_case(minimum, expected):
             except socket.timeout:
                 continue
             count[0] += 1
-            response = data[:2] + b"\x81\x80\x00\x01\x00\x01\x00\x00\x00\x00" + data[12:]
+            # The forwarded query can contain an EDNS OPT record. Only copy
+            # the question; placing that OPT before the answer is malformed.
+            end = 12
+            while end < len(data) and data[end]:
+                end += 1 + data[end]
+            end += 5
+            response = data[:2] + b"\x81\x80\x00\x01\x00\x01\x00\x00\x00\x00" + data[12:end]
             response += b"\xc0\x0c\x00\x01\x00\x01" + struct.pack("!I", 1) + b"\x00\x04\xc0\x00\x02\x2a"
             upstream.sendto(response, peer)
 
@@ -80,4 +86,3 @@ def run_case(minimum, expected):
 run_case(0, 2)
 run_case(5, 1)
 print("OK: configured minimum TTL keeps short-lived DNS answers in memory longer")
-

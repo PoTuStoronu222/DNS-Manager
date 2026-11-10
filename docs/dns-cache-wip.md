@@ -1,19 +1,26 @@
-# DNS cache controls — experimental, not ready for router testing
+# DNS cache settings — test branch
 
-The test branch connects the LuCI form to a saved total cache-entry budget and
-minimum TTL. The device DNS service distributes the budget between the main
-dnsmasq and its actual device-specific profiles. Zero minimum TTL leaves DNS
-answers' original TTL unchanged. Steer's own cache remains independent.
+The LuCI network page controls the main dnsmasq cache size in entries and its
+minimum TTL in seconds. Zero TTL keeps the upstream TTL. Device-specific
+dnsmasq instances use `cache-size=0`; their DNS bindings still select the same
+upstreams and are not restarted when cache settings change. Steer's own cache
+is separate and is not modified.
 
-The disposable OpenWrt 25.12.2 userspace lab verifies procd/dnsmasq execution,
-RPC worker application, adding and removing device groups, TTL changes,
-service restart, failed dnsmasq restart, and pre-existing pending DHCP/firewall
-UCI changes. The lab disables ujail and uses firewall/nft stubs. It is not a
-full router, reboot, firewall or Steer integration test.
+The save operation uses an isolated rpcd UCI session, checks for unrelated
+pending DHCP changes, restarts the main dnsmasq under a read guard and checks
+its procd state. If the restart fails, the previous cache settings are
+restored where they have not been changed externally. On uninstall, stock
+cache settings are restored only when the current values still match the
+manager's last saved values.
 
-Do not install this experiment yet. In particular, a concurrent firewall UCI
-change occurring after preflight but while device DNS is restarting could
-prevent removal of an old firewall redirect after its listener stops. Review
-and test this failure path using real fw4 and Steer before enabling use. Also
-verify recovery after router reboot, uninstall handling, and concurrent writes
-to the same cache options.
+The test environment uses OpenWrt 25.12.2 x86-64 userspace and the actual
+fw4, nftables and Steer 2.0.5 binaries in isolated Linux network namespaces.
+It checks UDP and TCP DNS traffic with and without Steer, the unchanged nft
+rules and device-service PID after saving, pending UCI changes, simulated
+restart with persistent configuration, and injected restart failures. The
+environment runs without OpenWrt's ujail and is not a physical router reboot.
+
+In this Steer configuration its DNS redirect handles the test client's
+requests before the existing fw4 device binding, so the client uses the
+router's common resolver both before and after cache changes. This existing
+interaction is separate from cache settings and needs independent attention.

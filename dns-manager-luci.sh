@@ -306,158 +306,6 @@ EOF_REGIONAL_SERVICE
         done
     fi
     mkdir -p /usr/lib/dns-manager-luci/cache || return 1
-    cat > /usr/lib/dns-manager-luci/cache/cache-budget.sh <<'EOF_DM_HELPER_CACHE_BUDGET'
-#!/bin/sh
-# Experimental allocation helper. It prints a plan and changes no settings.
-# Usage: total-records number-of-device-profiles dnsmasq-validates-dnssec(0|1)
-set -eu
-[ "$#" = 3 ] || { echo 'Expected cache size, profile count and DNSSEC state' >&2; exit 1; }
-total="$1"; profiles="$2"; dnssec="$3"
-for value in "$total" "$profiles"; do
-    case "$value" in ''|*[!0-9]*|0[0-9]*) echo 'Invalid cache allocation' >&2; exit 1;; esac
-    [ "${#value}" -le 5 ] || { echo 'Invalid cache allocation' >&2; exit 1; }
-done
-[ "$total" -le 10000 ] && [ "$profiles" -le 63 ] || { echo 'Cache allocation exceeds its limit' >&2; exit 1; }
-case "$dnssec" in 0|1) ;; *) echo 'Invalid DNSSEC state' >&2; exit 1;; esac
-if [ "$dnssec" = 1 ] && [ "$total" -lt 150 ]; then
-    echo 'dnsmasq DNSSEC requires at least 150 cache records' >&2; exit 1
-fi
-base=$((total / (profiles + 1)))
-remainder=$((total % (profiles + 1)))
-main="$base"
-if [ "$remainder" -gt 0 ]; then main=$((main + 1)); remainder=$((remainder - 1)); fi
-if [ "$dnssec" = 1 ] && [ "$main" -lt 150 ]; then
-    main=150
-    remaining=$((total - main))
-    if [ "$profiles" -gt 0 ]; then base=$((remaining / profiles)); remainder=$((remaining % profiles)); fi
-fi
-printf 'main|%s\n' "$main"
-i=1
-while [ "$i" -le "$profiles" ]; do
-    size="$base"
-    if [ "$remainder" -gt 0 ]; then size=$((size + 1)); remainder=$((remainder - 1)); fi
-    printf 'device_%s|%s\n' "$i" "$size"
-    i=$((i + 1))
-done
-EOF_DM_HELPER_CACHE_BUDGET
-    chmod 0755 /usr/lib/dns-manager-luci/cache/cache-budget.sh || return 1
-    cat > /usr/lib/dns-manager-luci/cache/cache-plan.sh <<'EOF_DM_HELPER_CACHE_PLAN'
-#!/bin/sh
-# Experimental read-only plan. The assignment file uses MAC|slot,slot.
-set -eu
-[ "$#" = 4 ] || [ "$#" = 5 ] || { echo 'Expected total, DNSSEC state, bindings, budget helper and optional active profiles' >&2; exit 1; }
-total="$1"; dnssec="$2"; bindings="$3"; budget="$4"
-[ -r "$bindings" ] && [ -x "$budget" ] || { echo 'Bindings or cache allocator are unavailable' >&2; exit 1; }
-t="$(mktemp -d "${TMPDIR:-/tmp}/dns-cache-plan.XXXXXX")" || exit 1
-trap 'rm -rf "$t"' EXIT HUP INT TERM
-# Match the device service's unique slot bit masks. Reject malformed inputs
-# rather than undercounting profiles and potentially exceeding the budget.
-awk -F'|' '
-    /^[[:space:]]*$/ {next}
-    {
-        if (NF!=2) {bad=1; next}
-        n=split($1, mac, ":")
-        if (n!=6) {bad=1; next}
-        for(i=1;i<=6;i++) if (mac[i] !~ /^[[:xdigit:]][[:xdigit:]]$/) {bad=1; next}
-        if ($2 ~ /[^1-6,[:space:]]/) {bad=1; next}
-        n=split($2, slots, /[,[:space:]]+/); mask=0; seen=" "
-        for(i=1;i<=n;i++) {
-            if (slots[i]=="") continue
-            if (slots[i] !~ /^[1-6]$/) {bad=1; continue}
-            token=" " slots[i] " "
-            if (index(seen, token)==0) {mask += 2^(slots[i]-1); seen=seen slots[i] " "}
-        }
-        if (mask==0) {bad=1; next}
-        print mask
-    }
-    END {if (bad) exit 1}
-' "$bindings" > "$t/masks-raw" || { echo 'Invalid device bindings' >&2; exit 1; }
-sort -n -u "$t/masks-raw" > "$t/masks"
-if [ "$#" = 5 ]; then
-    # The live service can skip a binding when its upstream is unavailable.
-    # Allocate only for profiles it actually prepared, not every saved binding.
-    [ -f "$5" ] && [ ! -L "$5" ] || exit 1
-    awk -F'|' 'NF!=3 || $2 !~ /^[0-9]+$/ || $2<1 || $2>63 || seen[$2]++ {bad=1; next} {print $2} END {if (bad) exit 1}' "$5" > "$t/active-raw" || exit 1
-    sort -n -u "$t/active-raw" > "$t/active"
-    awk 'FILENAME==ARGV[1] {allowed[$1]=1; next} !($1 in allowed) {bad=1} END {exit bad?1:0}' "$t/masks" "$t/active" || { echo 'Active profile is not present in bindings' >&2; exit 1; }
-    cp "$t/active" "$t/masks"
-fi
-count="$(wc -l < "$t/masks" | tr -d ' ')"
-"$budget" "$total" "$count" "$dnssec" > "$t/budget"
-awk -F'|' 'NR==FNR {if ($1=="main") main=$2; else values[++n]=$2; next}
-            {print "mask_" $1 "|" values[++i]}
-            END {if (main=="") exit 1}
-           ' "$t/budget" "$t/masks" > "$t/devices"
-sed -n '1p' "$t/budget"
-cat "$t/devices"
-EOF_DM_HELPER_CACHE_PLAN
-    chmod 0755 /usr/lib/dns-manager-luci/cache/cache-plan.sh || return 1
-    cat > /usr/lib/dns-manager-luci/cache/cache-profiles.sh <<'EOF_DM_HELPER_CACHE_PROFILES'
-#!/bin/sh
-# Experimental: modify generated dnsmasq profiles in a staging directory only.
-# Usage: profile-directory plan-file minimum-ttl total-cache-records
-set -eu
-[ "$#" = 4 ] || { echo 'Invalid cache profile inputs' >&2; exit 1; }
-directory="$1"; plan="$2"; ttl="$3"; total="$4"
-for value in "$ttl" "$total"; do
-    case "$value" in ''|*[!0-9]*|0[0-9]*) echo 'Invalid cache profile settings' >&2; exit 1;; esac
-    [ "${#value}" -le 5 ] || exit 1
-done
-[ "$ttl" -le 3600 ] && [ "$total" -le 10000 ] || exit 1
-[ -d "$directory" ] && [ ! -L "$directory" ] && [ -f "$plan" ] && [ ! -L "$plan" ] || exit 1
-t="$(mktemp -d "$directory/.cache-profiles.XXXXXX")" || exit 1
-trap 'rm -rf "$t"' EXIT HUP INT TERM
-awk -F'|' -v total="$total" '
-    NF!=2 || $2 !~ /^[0-9]+$/ || $2>10000 {bad=1; next}
-    NR==1 {if ($1!="main") bad=1; sum+=$2; next}
-    $1 !~ /^mask_[0-9]+$/ {bad=1; next}
-    {mask=substr($1,6); if (mask<1 || mask>63 || mask ~ /^0/ || seen[mask]++) bad=1; sum+=$2; print mask "|" $2}
-    END {if (bad || NR<1 || sum!=total) exit 1}
-' "$plan" > "$t/masks" || { echo 'Invalid cache allocation plan' >&2; exit 1; }
-for file in "$directory"/profile_*.conf; do
-    [ -e "$file" ] || [ -L "$file" ] || continue
-    name="${file##*/}"; mask="${name#profile_}"; mask="${mask%.conf}"
-    case "$mask" in ''|*[!0-9]*|0*) echo 'Invalid profile name' >&2; exit 1;; esac
-    awk -F'|' -v mask="$mask" '$1==mask {found=1} END {exit !found}' "$t/masks" || { echo "Unallocated profile $mask" >&2; exit 1; }
-done
-while IFS='|' read -r mask size; do
-    file="$directory/profile_$mask.conf"
-    [ -f "$file" ] && [ ! -L "$file" ] || { echo "Missing profile $mask" >&2; exit 1; }
-    [ "$(grep -c '^cache-size=' "$file" || true)" = 1 ] || { echo "Invalid cache field in profile $mask" >&2; exit 1; }
-    awk -v size="$size" -v ttl="$ttl" '
-        /^cache-size=/ {print "cache-size=" size; if (ttl>0) print "min-cache-ttl=" ttl; next}
-        /^min-cache-ttl=/ {next}
-        {print}
-    ' "$file" > "$t/profile_$mask.conf" || exit 1
-done < "$t/masks"
-# The caller must only pass a private staging directory, so no live dnsmasq
-# observes a partially updated set of profile files.
-while IFS='|' read -r mask size; do
-    mv -f "$t/profile_$mask.conf" "$directory/profile_$mask.conf" || exit 1
-done < "$t/masks"
-EOF_DM_HELPER_CACHE_PROFILES
-    chmod 0755 /usr/lib/dns-manager-luci/cache/cache-profiles.sh || return 1
-    cat > /usr/lib/dns-manager-luci/cache/cache-stage.sh <<'EOF_DM_HELPER_CACHE_STAGE'
-#!/bin/sh
-# Experimental: prepare a shared cache plan and private staged dnsmasq files.
-# No UCI settings, live services, or DNS traffic are changed.
-# total ttl dnssec bindings staged-profile-dir budget-helper plan-helper profile-helper
-set -eu
-[ "$#" = 8 ] || [ "$#" = 9 ] || { echo 'Invalid cache staging inputs' >&2; exit 1; }
-total="$1"; ttl="$2"; dnssec="$3"; bindings="$4"; profiles="$5"
-budget="$6"; planner="$7"; renderer="$8"
-[ -x "$budget" ] && [ -x "$planner" ] && [ -x "$renderer" ] || { echo 'Cache staging helper unavailable' >&2; exit 1; }
-t="$(mktemp "${TMPDIR:-/tmp}/dns-cache-stage.XXXXXX")" || exit 1
-trap 'rm -f "$t"' EXIT HUP INT TERM
-if [ "$#" = 9 ]; then
-    "$planner" "$total" "$dnssec" "$bindings" "$budget" "$9" > "$t" || exit 1
-else
-    "$planner" "$total" "$dnssec" "$bindings" "$budget" > "$t" || exit 1
-fi
-"$renderer" "$profiles" "$t" "$ttl" "$total" || exit 1
-cat "$t"
-EOF_DM_HELPER_CACHE_STAGE
-    chmod 0755 /usr/lib/dns-manager-luci/cache/cache-stage.sh || return 1
     cat > /usr/lib/dns-manager-luci/cache/uci-read-guard.sh <<'EOF_DM_HELPER_UCI_READ_GUARD'
 #!/bin/sh
 # Experimental: guard a read/reload using UCI's shared file-lock convention.
@@ -574,56 +422,15 @@ fi
 exit 1
 EOF_DM_HELPER_CACHE_TRANSACTION
     chmod 0755 /usr/lib/dns-manager-luci/cache/cache-transaction.sh || return 1
-    cat > /usr/lib/dns-manager-luci/cache/device-firewall.sh <<'EOF_DM_HELPER_DEVICE_FIREWALL'
-#!/bin/sh
-# Isolated rpcd UCI session for DNS Manager's single named firewall include.
-set -eu
-operation=${1:-}
-path=/etc/dns-manager/device-dns/redirects.nft
-name=dns_manager_device_dns
-case "$operation" in ensure|remove) ;; *) exit 2 ;; esac
-sid=''
-cleanup() { [ -z "$sid" ] || ubus call session destroy "{\"ubus_rpc_session\":\"$sid\"}" >/dev/null 2>&1 || true; }
-trap cleanup EXIT HUP INT TERM
-sid="$(ubus call session create '{"timeout":60}' | jsonfilter -e '@.ubus_rpc_session')"
-case "$sid" in ''|*[!a-f0-9]*) exit 1;; esac
-[ "${#sid}" -eq 32 ] || exit 1
-ubus call session grant "{\"ubus_rpc_session\":\"$sid\",\"scope\":\"uci\",\"objects\":[[\"firewall\",\"read\"],[\"firewall\",\"write\"]]}" >/dev/null
-req="{\"ubus_rpc_session\":\"$sid\",\"config\":\"firewall\",\"section\":\"$name\"}"
-rc=0
-existing="$(ubus call uci get "$req" 2>/dev/null)" || rc=$?
-[ "$rc" = 0 ] || [ "$rc" = 4 ] || exit 1
-if [ -n "$existing" ]; then
-    printf '%s' "$existing" | grep -Eq '"\.type"[[:space:]]*:[[:space:]]*"include"' || exit 1
-    [ "$(printf '%s' "$existing" | jsonfilter -e '@.values.type')" = nftables ] || exit 1
-    [ "$(printf '%s' "$existing" | jsonfilter -e '@.values.path')" = "$path" ] || exit 1
-    [ "$(printf '%s' "$existing" | jsonfilter -e '@.values.position')" = chain-pre ] || exit 1
-    [ "$(printf '%s' "$existing" | jsonfilter -e '@.values.chain')" = dstnat_lan ] || exit 1
-    if [ "$operation" = remove ]; then
-        ubus call uci delete "$req" >/dev/null
-        ubus call uci commit "{\"ubus_rpc_session\":\"$sid\",\"config\":\"firewall\"}" >/dev/null
-    elif [ "$(printf '%s' "$existing" | jsonfilter -e '@.values.enabled')" != 1 ]; then
-        ubus call uci set "{\"ubus_rpc_session\":\"$sid\",\"config\":\"firewall\",\"section\":\"$name\",\"values\":{\"enabled\":\"1\"}}" >/dev/null
-        ubus call uci commit "{\"ubus_rpc_session\":\"$sid\",\"config\":\"firewall\"}" >/dev/null
-    fi
-elif [ "$operation" = ensure ]; then
-    ubus call uci add "{\"ubus_rpc_session\":\"$sid\",\"config\":\"firewall\",\"type\":\"include\",\"name\":\"$name\",\"values\":{\"enabled\":\"1\",\"type\":\"nftables\",\"path\":\"$path\",\"position\":\"chain-pre\",\"chain\":\"dstnat_lan\"}}" >/dev/null
-    ubus call uci commit "{\"ubus_rpc_session\":\"$sid\",\"config\":\"firewall\"}" >/dev/null
-fi
-EOF_DM_HELPER_DEVICE_FIREWALL
-    chmod 0755 /usr/lib/dns-manager-luci/cache/device-firewall.sh || return 1
     cat > /etc/init.d/dns-manager-device-dns <<'EOF_DEVICE_DNS_SERVICE'
 #!/bin/sh /etc/rc.common
 # DNS Manager per-device DoH listeners. This does not provide DHCP.
-# DNS_MANAGER_DEVICE_APPLY_RESULT=1
 START=99
 STOP=10
 USE_PROCD=1
 DMD_BASE="/etc/dns-manager/device-dns"
 DMD_ASSIGNMENTS="/etc/dns-manager/config/device-dns.conf"
 DMD_MANAGER_CONFIG="/etc/dns-manager/config/manager.conf"
-DMD_CACHE_CONFIG="/etc/dns-manager/config/cache.conf"
-DMD_CACHE_HELPERS="/usr/lib/dns-manager-luci/cache"
 DMD_NFT="/etc/dns-manager/device-dns/redirects.nft"
 DMD_INCLUDE="dns_manager_device_dns"
 DMD_CHAIN="dstnat_lan"
@@ -734,20 +541,42 @@ dmd_include_is_owned() {
 }
 
 dmd_remove_include() {
-    sh "$DMD_CACHE_HELPERS/device-firewall.sh" remove || return 1
+    if uci -q get "firewall.$DMD_INCLUDE" >/dev/null 2>&1; then
+        dmd_include_is_owned || {
+            dmd_log "Refusing to remove unrelated firewall include named $DMD_INCLUDE."
+            return 1
+        }
+        uci -q delete "firewall.$DMD_INCLUDE" || return 1
+        uci commit firewall || return 1
+    fi
     rm -f "$DMD_NFT" "$DMD_NFT".tmp.* /etc/nftables.d/90-dns-manager-device-dns.nft /etc/nftables.d/90-dns-manager-device-dns.nft.tmp.* 2>/dev/null || true
-    sh "$DMD_CACHE_HELPERS/uci-read-guard.sh" firewall /etc/init.d/firewall reload >/dev/null 2>&1 || return 1
+    /etc/init.d/firewall reload >/dev/null 2>&1 || return 1
     return 0
 }
 
 dmd_configure_include() {
-    sh "$DMD_CACHE_HELPERS/device-firewall.sh" ensure || return 1
+    if uci -q get "firewall.$DMD_INCLUDE" >/dev/null 2>&1; then
+        dmd_include_is_owned || {
+            dmd_log "Refusing to overwrite unrelated firewall include named $DMD_INCLUDE."
+            return 1
+        }
+    else
+        uci set "firewall.$DMD_INCLUDE=include" || return 1
+    fi
+    uci set "firewall.$DMD_INCLUDE.enabled=1" || return 1
+    uci set "firewall.$DMD_INCLUDE.type=nftables" || return 1
+    uci set "firewall.$DMD_INCLUDE.path=$DMD_NFT" || return 1
+    uci set "firewall.$DMD_INCLUDE.position=chain-pre" || return 1
+    uci set "firewall.$DMD_INCLUDE.chain=$DMD_CHAIN" || return 1
+    uci commit firewall || return 1
+
     DMD_FW4_CHECK="$DMD_STAGE/fw4-check.nft"
-    sh "$DMD_CACHE_HELPERS/uci-read-guard.sh" firewall /bin/sh -c '
-        fw4 print > "$1" 2>/dev/null || exit 1
-        nft -c -f "$1" >/dev/null 2>&1 || exit 1
-        /etc/init.d/firewall reload >/dev/null 2>&1
-    ' sh "$DMD_FW4_CHECK" || { dmd_log "Firewall configuration could not be safely reloaded."; return 1; }
+    fw4 print > "$DMD_FW4_CHECK" 2>/dev/null || return 1
+    nft -c -f "$DMD_FW4_CHECK" >/dev/null 2>&1 || {
+        dmd_log "fw4/nft rejected the per-device DNS include."
+        return 1
+    }
+    /etc/init.d/firewall reload >/dev/null 2>&1 || return 1
     return 0
 }
 
@@ -794,7 +623,7 @@ dmd_ensure_profile() {
         printf 'pid-file=/var/run/dns-manager-device-dns/profile_%s.pid\n' "$_dmd_mask"
         printf 'interface=%s\n' "$DMD_LAN_DEV"
         printf 'bind-dynamic\nexcept-interface=lo\nno-dhcp-interface=%s\n' "$DMD_LAN_DEV"
-        printf 'no-resolv\nno-poll\nno-hosts\ndomain-needed\nbogus-priv\ncache-size=1000\n'
+        printf 'no-resolv\nno-poll\nno-hosts\ndomain-needed\nbogus-priv\ncache-size=0\n'
         printf 'server=/lan/127.0.0.1#53\n'
         [ "$_dmd_count" -le 1 ] || printf 'all-servers\n'
         for _dmd_slot in $(printf '%s' "$_dmd_slots" | tr ',' ' '); do
@@ -880,30 +709,6 @@ dmd_build_and_install() {
         done < "$DMD_ASSIGNMENTS"
     fi
 
-    # The feature is opt-in. Never change the existing setup before its
-    # settings have explicitly been saved.
-    DMD_CACHE_MAIN=""; DMD_CACHE_TTL=""
-    if [ -f "$DMD_CACHE_CONFIG" ]; then
-        DMD_CACHE_TOTAL="$(sed -n 's/^total=//p' "$DMD_CACHE_CONFIG")"
-        DMD_CACHE_TTL="$(sed -n 's/^ttl=//p' "$DMD_CACHE_CONFIG")"
-        for DMD_NUMBER in "$DMD_CACHE_TOTAL" "$DMD_CACHE_TTL"; do
-            case "$DMD_NUMBER" in ''|*[!0-9]*|0[0-9]*) dmd_cleanup_stage; return 1;; esac
-            [ "${#DMD_NUMBER}" -le 5 ] || { dmd_cleanup_stage; return 1; }
-        done
-        [ "$DMD_CACHE_TOTAL" -le 10000 ] && [ "$DMD_CACHE_TTL" -le 3600 ] || { dmd_cleanup_stage; return 1; }
-        DMD_DNSSEC="$(uci -q get 'dhcp.@dnsmasq[0].dnssec' 2>/dev/null || true)"
-        case "$DMD_DNSSEC" in 1) ;; *) DMD_DNSSEC=0;; esac
-        DMD_CACHE_BINDINGS="$DMD_ASSIGNMENTS"
-        if [ ! -r "$DMD_CACHE_BINDINGS" ]; then : > "$DMD_STAGE/no-bindings"; DMD_CACHE_BINDINGS="$DMD_STAGE/no-bindings"; fi
-        sh "$DMD_CACHE_HELPERS/cache-stage.sh" "$DMD_CACHE_TOTAL" "$DMD_CACHE_TTL" "$DMD_DNSSEC" "$DMD_CACHE_BINDINGS" "$DMD_STAGE/profiles" "$DMD_CACHE_HELPERS/cache-budget.sh" "$DMD_CACHE_HELPERS/cache-plan.sh" "$DMD_CACHE_HELPERS/cache-profiles.sh" "$DMD_STAGE/profiles.map" > "$DMD_STAGE/cache-plan" || { dmd_cleanup_stage; return 1; }
-        DMD_CACHE_MAIN="$(sed -n 's/^main|//p' "$DMD_STAGE/cache-plan")"
-        case "$DMD_CACHE_MAIN" in ''|*[!0-9]*) dmd_cleanup_stage; return 1;; esac
-        for DMD_VALIDATE_PROFILE in "$DMD_STAGE"/profiles/profile_*.conf; do
-            [ -f "$DMD_VALIDATE_PROFILE" ] || continue
-            /usr/sbin/dnsmasq --test --conf-file="$DMD_VALIDATE_PROFILE" >/dev/null 2>&1 || { dmd_cleanup_stage; return 1; }
-        done
-    fi
-
     if [ "$DMD_ACTIVE" -gt 0 ]; then
         mv "$DMD_STAGE/nft.rules" "$DMD_STAGE/device-rules.nft" || { dmd_cleanup_stage; return 1; }
     else
@@ -928,10 +733,6 @@ dmd_build_and_install() {
         dmd_remove_include || { dmd_cleanup_stage; return 1; }
     fi
 
-    # Apply the main resolver share only after profile and firewall preparation.
-    if [ -n "$DMD_CACHE_MAIN" ]; then
-        sh "$DMD_CACHE_HELPERS/cache-transaction.sh" '@dnsmasq[0]' "$DMD_CACHE_MAIN" "$DMD_CACHE_TTL" "$DMD_CACHE_HELPERS/uci-read-guard.sh" /etc/init.d/dnsmasq restart || { dmd_cleanup_stage; return 1; }
-    fi
     rm -rf "$DMD_BASE/profiles.old" 2>/dev/null || true
     rm -f "$DMD_STAGE/profiles.map" "$DMD_STAGE/nft.rules" "$DMD_STAGE/fw4-check.nft" 2>/dev/null || true
     dmd_cleanup_stage
@@ -944,8 +745,6 @@ stop_service() {
 }
 
 start_service() {
-    mkdir -p /var/run/dns-manager-device-dns || return 1
-    printf 'failed\n' > /var/run/dns-manager-device-dns/apply-result
     if ! dmd_build_and_install; then
         dmd_fail_open
         return 1
@@ -959,7 +758,6 @@ start_service() {
         procd_set_param respawn 3600 5 5
         procd_close_instance
     done
-    printf 'ok\n' > /var/run/dns-manager-device-dns/apply-result
 }
 
 reload_service() {
@@ -2528,14 +2326,11 @@ network_status_json() {
         done < "$_watchdog_check_file"
     fi
     printf ']'
-    _cache_total="$(sed -n 's/^total=//p' /etc/dns-manager/config/cache.conf 2>/dev/null || true)"
-    _cache_ttl="$(sed -n 's/^ttl=//p' /etc/dns-manager/config/cache.conf 2>/dev/null || true)"
-    _cache_custom=1
-    case "$_cache_total" in ''|*[!0-9]*) _cache_total="${_cache_cur:-1000}"; _cache_custom=0;; esac
-    case "$_cache_total" in ''|*[!0-9]*) _cache_total=1000;; esac
-    case "$_cache_ttl" in ''|*[!0-9]*) _cache_ttl="$(uci -q get 'dhcp.@dnsmasq[0].min_cache_ttl' 2>/dev/null || true)";; esac
-    case "$_cache_ttl" in ''|*[!0-9]*) _cache_ttl=0;; esac
-    printf ',"dnsmasq_perf_state":%s,"cache_total":%s,"cache_ttl":%s,"cache_custom":%s}' "$_cache_state" "$_cache_total" "$_cache_ttl" "$_cache_custom"
+    _cache_total="${_cache_cur:-1000}"
+    _cache_ttl="$(uci -q get 'dhcp.@dnsmasq[0].min_cache_ttl' 2>/dev/null || true)"
+    case "$_cache_total" in ''|*[!0-9]*|0[0-9]*) _cache_total=1000;; esac
+    case "$_cache_ttl" in ''|*[!0-9]*|0[0-9]*) _cache_ttl=0;; esac
+    printf ',"dnsmasq_perf_state":%s,"cache_total":%s,"cache_ttl":%s}' "$_cache_state" "$_cache_total" "$_cache_ttl"
 }
 
 time_status_json() {
@@ -2982,6 +2777,7 @@ status_json() {
      fi
      printf ']'
      printf ',"dnsmasq_perf_state":%s' "$_dnsmasq_perf_state"
+     printf ',"dnsmasq_cache_size":'; json_quote "$_dnsmasq_cache_cur"
     printf ',"ntp_enabled":%s,"ntp_use_dhcp":%s' "$_ntp_enabled" "$_ntp_use_dhcp"
     printf ',"ntp_preset":'; json_quote "$_ntp_preset"
     printf ',"ntp_servers":'; json_quote "$_ntp_servers"
@@ -4072,11 +3868,6 @@ set_device_dns_json() {
         }
     done
 
-    if ! sh /usr/lib/dns-manager-luci/cache/uci-read-guard.sh firewall /bin/true >/dev/null 2>&1 || ! sh /usr/lib/dns-manager-luci/cache/uci-read-guard.sh dhcp /bin/true >/dev/null 2>&1; then
-        release_mutation_lock
-        json_error 'Есть несохранённые изменения DHCP или firewall. Завершите их применение и повторите.'
-        return
-    fi
     DMD_RPC_FILE="/etc/dns-manager/config/device-dns.conf"
     mkdir -p "$(dirname "$DMD_RPC_FILE")" || {
         release_mutation_lock
@@ -4128,8 +3919,7 @@ set_device_dns_json() {
         return
     }
 
-    rm -f /var/run/dns-manager-device-dns/apply-result
-    if [ ! -x /etc/init.d/dns-manager-device-dns ] || ! /etc/init.d/dns-manager-device-dns restart >/dev/null 2>&1 || [ "$(cat /var/run/dns-manager-device-dns/apply-result 2>/dev/null)" != ok ]; then
+    if [ ! -x /etc/init.d/dns-manager-device-dns ] || ! /etc/init.d/dns-manager-device-dns restart >/dev/null 2>&1; then
         if [ "$DMD_RPC_HAD_FILE" = 1 ]; then
             mv -f "$DMD_RPC_BACKUP" "$DMD_RPC_FILE" 2>/dev/null || true
         else
@@ -4257,8 +4047,9 @@ run_action() {
             type dns_cache_total_supported >/dev/null 2>&1 || { json_error 'Для настройки кэша обновите backend DNS Manager из тестовой ветки'; return; }
             acquire_mutation_lock || { json_error 'Другая операция DNS Manager уже выполняется'; return; }
             CACHE_GUARD=/usr/lib/dns-manager-luci/cache/uci-read-guard.sh
-            if ! sh "$CACHE_GUARD" dhcp /bin/true >/dev/null 2>&1 || ! sh "$CACHE_GUARD" firewall /bin/true >/dev/null 2>&1; then
-                release_mutation_lock; json_error 'Есть несохранённые изменения DHCP или firewall. Завершите их применение и повторите.'; return
+            CACHE_TX=/usr/lib/dns-manager-luci/cache/cache-transaction.sh
+            if ! sh "$CACHE_GUARD" dhcp /bin/true >/dev/null 2>&1; then
+                release_mutation_lock; json_error 'Есть несохранённые изменения DHCP. Завершите их применение и повторите.'; return
             fi
             CACHE_FILE=/etc/dns-manager/config/cache.conf
             mkdir -p /etc/dns-manager/config || { release_mutation_lock; json_error 'Не удалось создать каталог настроек'; return; }
@@ -4268,15 +4059,9 @@ run_action() {
             if [ -f "$CACHE_FILE" ]; then CACHE_HAD=1; cp -p "$CACHE_FILE" "$CACHE_BACK" || { rm -f "$CACHE_TMP" "$CACHE_BACK"; release_mutation_lock; json_error 'Не удалось сохранить прежние настройки'; return; }; fi
             printf 'total=%s\nttl=%s\n' "$CACHE_REQUEST_TOTAL" "$CACHE_REQUEST_TTL" > "$CACHE_TMP"
             chmod 0600 "$CACHE_TMP" && mv -f "$CACHE_TMP" "$CACHE_FILE" || { rm -f "$CACHE_TMP" "$CACHE_BACK"; release_mutation_lock; json_error 'Не удалось записать настройки'; return; }
-            rm -f /var/run/dns-manager-device-dns/apply-result
-            if ! /etc/init.d/dns-manager-device-dns restart >/dev/null 2>&1 || [ "$(cat /var/run/dns-manager-device-dns/apply-result 2>/dev/null)" != ok ]; then
+            if ! CACHE_OUTPUT="$(sh "$CACHE_TX" '@dnsmasq[0]' "$CACHE_REQUEST_TOTAL" "$CACHE_REQUEST_TTL" "$CACHE_GUARD" /etc/init.d/dnsmasq restart 2>&1)"; then
                 if [ "$CACHE_HAD" = 1 ]; then mv -f "$CACHE_BACK" "$CACHE_FILE"; else rm -f "$CACHE_FILE" "$CACHE_BACK"; fi
-                rm -f /var/run/dns-manager-device-dns/apply-result
-                /etc/init.d/dns-manager-device-dns restart >/dev/null 2>&1 || true
-                if [ "$(cat /var/run/dns-manager-device-dns/apply-result 2>/dev/null)" != ok ]; then
-                    release_mutation_lock; json_error 'Не удалось применить кэш. Настройки сохранены прежние, но привязки DNS не запущены; проверьте несохранённые изменения UCI и состояние DNS.'; return
-                fi
-                release_mutation_lock; json_error 'Не удалось применить кэш. Прежние настройки восстановлены.'; return
+                release_mutation_lock; json_error 'Не удалось применить кэш. Проверьте состояние dnsmasq и незавершённые изменения DHCP.'; return
             fi
             rm -f "$CACHE_BACK"
             release_mutation_lock; json_ok
@@ -5040,12 +4825,6 @@ function componentItem(title,statusNode,details){
     details?E('div',{'class':'dm-component-details'},details):E('span',{})
   ]);
 }
-function componentSettingItem(title,key){
-  var st=window.dmState||{}, raw=st[key+'_state'];
-  var n=(raw===undefined||raw===null||raw==='')?-1:Number(raw);
-  var node=n===1?badge('dm-ok','включено'):n===2?badge('dm-bad','другое'):badge('dm-off','выключено');
-  return componentItem(title,node);
-}
 function forceComponentItem(st){
   st=st||{};
   var busy=!!state.busy;
@@ -5255,7 +5034,7 @@ function renderOverview(root,st){
     watchdogComponentItem(st,wd,wdDetails),
     watchdogReplacementComponentItem(wdAuto,wdAutoDetails),
     forceComponentItem(st),
-    componentSettingItem('Увеличенный кэш DNS','dnsmasq_perf'),
+    componentItem('Кэш DNS',badge(st.dnsmasq_cache_size==null||String(st.dnsmasq_cache_size)===''||Number(st.dnsmasq_cache_size)===0?'dm-off':'dm-ok',st.dnsmasq_cache_size==null||String(st.dnsmasq_cache_size)===''?'неизвестно':String(st.dnsmasq_cache_size)+' записей')),
   ]);
 
   var dnsSlotsCard=E('div',{'class':'dm-card'},[
@@ -6360,7 +6139,7 @@ function cacheCard(root,st){
     state.busy=true;state.busySetting='dns_cache';setSettingFeedback('dns_cache','Применяю настройки…','info');renderNetwork(root,st);
     callSetCache(Number(a),Number(b)).then(awaitSettingResult).then(function(r){state.busy=false;state.busySetting='';setSettingFeedback('dns_cache',r&&r.ok?'Настройки кэша сохранены.':((r&&r.error)||'Не удалось применить кэш.'),r&&r.ok?'ok':'error');return refresh(root,true);}).catch(function(e){state.busy=false;state.busySetting='';setSettingFeedback('dns_cache',withRpcError('Не удалось применить кэш.',e),'error');refresh(root,true);});
   },{disabled:!!state.busy});
-  return E('div',{'class':'dm-card'},[E('div',{'class':'dm-section-title'},'Кэш DNS'),E('div',{'class':'dm-setting-desc'},'Общий лимит записей распределяется между dnsmasq роутера и DNS привязанных устройств. Кэш Steer настраивается отдельно.'),E('div',{'class':'dm-watchdog-row'},[E('span',{},'Общий размер кэша'),total,E('span',{},'0–10000 записей')]),E('div',{'class':'dm-watchdog-row'},[E('span',{},'Минимальный TTL'),ttl,E('span',{},'0–3600 секунд')]),E('div',{'class':'dm-setting-desc'},'0 — соблюдать TTL в ответе DNS. Увеличение TTL может сохранять устаревшие адреса.'),save,settingFeedback('','dns_cache')||E('span',{})]);
+  return E('div',{'class':'dm-card'},[E('div',{'class':'dm-section-title'},'Кэш DNS'),E('div',{'class':'dm-setting-desc'},'Кэш основного DNS роутера. Для DNS привязанных устройств кэш отключён; их выбор DNS сохраняется. Кэш Steer настраивается отдельно.'),E('div',{'class':'dm-watchdog-row'},[E('span',{},'Размер кэша DNS'),total,E('span',{},'0–10000 записей')]),E('div',{'class':'dm-watchdog-row'},[E('span',{},'Минимальный TTL'),ttl,E('span',{},'0–3600 секунд')]),E('div',{'class':'dm-setting-desc'},'0 — соблюдать TTL в ответе DNS. Настройка не влияет на привязанные устройства. Увеличение TTL может сохранять устаревшие адреса.'),save,settingFeedback('','dns_cache')||E('span',{})]);
 }
 function renderNetwork(root,st){
   var e=root.querySelector('#dm-network');if(!e)return;e.innerHTML='';

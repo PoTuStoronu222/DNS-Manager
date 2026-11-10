@@ -10,11 +10,6 @@ check() {
     cmp "$source" "$t/helper"
     sh -n "$t/helper"
 }
-check EOF_DM_HELPER_CACHE_BUDGET libexec/dns-manager-cache-budget.sh
-check EOF_DM_HELPER_CACHE_PLAN libexec/dns-manager-cache-plan.sh
-check EOF_DM_HELPER_CACHE_PROFILES libexec/dns-manager-cache-profiles.sh
-check EOF_DM_HELPER_CACHE_STAGE libexec/dns-manager-cache-stage.sh
 check EOF_DM_HELPER_UCI_READ_GUARD libexec/dns-manager-uci-read-guard.sh
 check EOF_DM_HELPER_CACHE_TRANSACTION libexec/dns-manager-cache-transaction.sh
-check EOF_DM_HELPER_DEVICE_FIREWALL libexec/dns-manager-uci-device-firewall.sh
 echo 'OK: installer embeds the tested cache and UCI helpers'
