@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="4.19"
+VERSION="4.20"
 # 3.86: make LuCI the primary interface and preserve external DNS on removal.
 # 3.85: revalidate Watchdog settings before recovery.
 # 3.84: cap DNS catalog test concurrency by total RAM on small routers.
@@ -3389,7 +3389,7 @@ dnsmasq_manager_server_owned() {
     done
     if [ -n "${PORT_RU:-}" ]; then
         case "$_val" in
-            /ru/127.0.0.1#${PORT_RU}|/su/127.0.0.1#${PORT_RU}|/xn--p1ai/127.0.0.1#${PORT_RU}) return 0 ;;
+            /ru/127.0.0.1#${PORT_RU}|/su/127.0.0.1#${PORT_RU}|/xn--p1ai/127.0.0.1#${PORT_RU}|/by/127.0.0.1#${PORT_RU}|/kz/127.0.0.1#${PORT_RU}|/avito.st/127.0.0.1#${PORT_RU}|/wbcontent.net/127.0.0.1#${PORT_RU}|/wbstatic.net/127.0.0.1#${PORT_RU}|/ozonusercontent.com/127.0.0.1#${PORT_RU}) return 0 ;;
         esac
     fi
     # Uninstall must not infer ownership of another service from a port alone.
@@ -3399,7 +3399,7 @@ dnsmasq_manager_server_owned() {
         isp) _ru_ips="${REGIONAL_ISP_IPS:-}" ;;
         *) _ru_ips='' ;;
     esac
-    for _ru_zone in ru su xn--p1ai; do
+    for _ru_zone in ru su xn--p1ai by kz avito.st wbcontent.net wbstatic.net ozonusercontent.com; do
         for _ru_ip in $_ru_ips; do
             [ "$_val" = "/$_ru_zone/$_ru_ip" ] && return 0
         done
@@ -3418,6 +3418,7 @@ reconcile_dnsmasq() {
     # Rebuild the server list from scratch so stale entries from an earlier apply
     # cannot survive. Full rollback is handled by the baseline snapshot.
     uci -q delete "dhcp.$sec.server" >/dev/null 2>&1 || true
+    _regional_custom_domains=""
     for s in 1 2 3 4 5 6; do
         eval "id=\${SLOT_$s}"; eval "p=\${PORT_$s}"
         [ -n "$id" ] && [ -n "$p" ] || continue
@@ -3429,6 +3430,7 @@ reconcile_dnsmasq() {
         _slot_domains="$(slot_domains_get "$s")" || return 1
         if [ -n "$_slot_domains" ]; then
             _slot_domains="$(normalize_slot_domains "$_slot_domains")" || return 1
+            _regional_custom_domains="$_regional_custom_domains $_slot_domains"
             for _domain in $_slot_domains; do
                 val="/$_domain/127.0.0.1#$p"
                 exact_list_has "dhcp.$sec.server" "$val" || uci add_list "dhcp.$sec.server=$val" || return 1
@@ -3439,7 +3441,12 @@ reconcile_dnsmasq() {
     if [ "${REGIONAL_MODE:-legacy}" = yandex ] || [ "${REGIONAL_MODE:-legacy}" = isp ]; then
         if [ "$REGIONAL_MODE" = yandex ]; then _regional_ips='77.88.8.8 77.88.8.1'; else _regional_ips="${REGIONAL_ISP_IPS:-}"; fi
         [ -n "$_regional_ips" ] || return 1
-        for t in /ru /su /xn--p1ai; do
+        for t in /ru /su /xn--p1ai /by /kz /avito.st /wbcontent.net /wbstatic.net /ozonusercontent.com; do
+            _regional_overridden=0
+            for _custom_domain in $_regional_custom_domains; do
+                case "${t#/}" in "$_custom_domain"|*."$_custom_domain") _regional_overridden=1; break;; esac
+            done
+            [ "$_regional_overridden" = 0 ] || continue
             for _regional_ip in $_regional_ips; do
                 val="$t/$_regional_ip"
                 exact_list_has "dhcp.$sec.server" "$val" || uci add_list "dhcp.$sec.server=$val" || return 1
@@ -3447,7 +3454,12 @@ reconcile_dnsmasq() {
             done
         done
     elif [ "$TLD_RU_ENABLED" = 1 ] && [ -n "$SLOT_RU" ] && [ -n "$PORT_RU" ]; then
-        for t in /ru /su /xn--p1ai; do
+        for t in /ru /su /xn--p1ai /by /kz /avito.st /wbcontent.net /wbstatic.net /ozonusercontent.com; do
+            _regional_overridden=0
+            for _custom_domain in $_regional_custom_domains; do
+                case "${t#/}" in "$_custom_domain"|*."$_custom_domain") _regional_overridden=1; break;; esac
+            done
+            [ "$_regional_overridden" = 0 ] || continue
             val="$t/127.0.0.1#$PORT_RU"
             exact_list_has "dhcp.$sec.server" "$val" || uci add_list "dhcp.$sec.server=$val" || return 1
             record_own "dnsmasq" "server" "$val" "section=$sec"
@@ -7363,6 +7375,7 @@ watchdog_enforce_doh_authority() {
 watchdog_expected_servers() {
     _out="$TMP_DIR/watchdog-expected-servers-$$"
     : > "$_out"
+    _regional_custom_domains=""
     for _ws in 1 2 3 4 5 6; do
         case "$_ws" in 1) _wid="${SLOT_1:-}"; _wp="${PORT_1:-}";; 2) _wid="${SLOT_2:-}"; _wp="${PORT_2:-}";; 3) _wid="${SLOT_3:-}"; _wp="${PORT_3:-}";; 4) _wid="${SLOT_4:-}"; _wp="${PORT_4:-}";; 5) _wid="${SLOT_5:-}"; _wp="${PORT_5:-}";; 6) _wid="${SLOT_6:-}"; _wp="${PORT_6:-}";; esac
         [ -n "$_wid" ] || continue
@@ -7371,6 +7384,7 @@ watchdog_expected_servers() {
         _ws_domains="$(slot_domains_get "$_ws")" || return 1
         if [ -n "$_ws_domains" ]; then
             _ws_domains="$(normalize_slot_domains "$_ws_domains")" || return 1
+            _regional_custom_domains="$_regional_custom_domains $_ws_domains"
             for _ws_domain in $_ws_domains; do
                 printf '/%s/127.0.0.1#%s\n' "$_ws_domain" "$_wp" >> "$_out"
             done
@@ -7378,12 +7392,24 @@ watchdog_expected_servers() {
     done
     if [ "${REGIONAL_MODE:-legacy}" = yandex ] || [ "${REGIONAL_MODE:-legacy}" = isp ]; then
         if [ "$REGIONAL_MODE" = yandex ]; then _regional_ips='77.88.8.8 77.88.8.1'; else _regional_ips="${REGIONAL_ISP_IPS:-}"; fi
-        for _t in /ru /su /xn--p1ai; do
+        for _t in /ru /su /xn--p1ai /by /kz /avito.st /wbcontent.net /wbstatic.net /ozonusercontent.com; do
+            _regional_overridden=0
+            for _custom_domain in $_regional_custom_domains; do
+                case "${_t#/}" in "$_custom_domain"|*."$_custom_domain") _regional_overridden=1; break;; esac
+            done
+            [ "$_regional_overridden" = 0 ] || continue
             for _regional_ip in $_regional_ips; do printf '%s/%s\n' "$_t" "$_regional_ip" >> "$_out"; done
         done
     elif [ "${TLD_RU_ENABLED:-0}" = 1 ]; then
         if [ -n "$SLOT_RU" ] && [ -n "$PORT_RU" ]; then
-            for _t in /ru /su /xn--p1ai; do printf '%s/127.0.0.1#%s\n' "$_t" "$PORT_RU" >> "$_out"; done
+            for _t in /ru /su /xn--p1ai /by /kz /avito.st /wbcontent.net /wbstatic.net /ozonusercontent.com; do
+                _regional_overridden=0
+                for _custom_domain in $_regional_custom_domains; do
+                    case "${_t#/}" in "$_custom_domain"|*."$_custom_domain") _regional_overridden=1; break;; esac
+                done
+                [ "$_regional_overridden" = 0 ] || continue
+                printf '%s/127.0.0.1#%s\n' "$_t" "$PORT_RU" >> "$_out"
+            done
         fi
     fi
     sort -u "$_out" -o "$_out" 2>/dev/null || true

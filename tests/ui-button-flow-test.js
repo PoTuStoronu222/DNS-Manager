@@ -47,7 +47,7 @@ async function testRouteCache(){
   if(!cached||cached.force_owner!=='steer'||cached.__dmCachedRoute!=='slots')throw Error('compatible route cache missing');
   ctx.window.dmRouteCache=undefined;
   if(ctx.cachedRouteStatus('slots').force_owner!=='steer')throw Error('cache did not survive page navigation');
-  ctx.window.dmRouteCache={doh:JSON.parse(store['dns-manager-route-2.32-doh'])};
+  ctx.window.dmRouteCache={doh:JSON.parse(store['dns-manager-route-2.33-doh'])};
   cached.slots.length=0;
   if(ctx.cachedRouteStatus('doh').slots.length!==1)throw Error('cache was mutated by view');
   ctx.applyStatusToCurrentRoot({ok:true,force_owner:'steer'},'doh');
@@ -85,7 +85,7 @@ async function testAdditionalRouteCache(){
   ctx.state.category='security';if(ctx.cachedRouteStatus('catalog'))throw Error('wrong catalog category reused');ctx.state.category='all';
   failDevices=true;failCatalog=true;failLog=true;
   const previous={...store};for(const route of ['devices','catalog','log'])await ctx.ensureStatusPromise(route);
-  for(const route of ['devices','catalog','log'])if(store['dns-manager-route-2.32-'+route]!==previous['dns-manager-route-2.32-'+route])throw Error('failed '+route+' replaced good cache');
+  for(const route of ['devices','catalog','log'])if(store['dns-manager-route-2.33-'+route]!==previous['dns-manager-route-2.33-'+route])throw Error('failed '+route+' replaced good cache');
 }
 async function testSequentialWarmup(){
   let active=0,max=0,calls=[],allowed=true;
@@ -361,4 +361,17 @@ async function testResumeCatalog(){
     if(status==='done'&&(state.fullTest.status!=='DONE'||!state.pageNotice.catalog.includes('завершена')))throw Error('catalog result was not restored');
   }
 }
-Promise.all([testResumeCatalog(),testBackgroundStartTimeout(),testBackgroundUnknown(),testBackgroundNavigation(),testBackgroundFailure(),testDoHRemove(),testSingleError(),testBadgeWithoutDuration(),testPollNavigation(),testLongCatalogProgress(117),testLongCatalogProgress(5,true),testRouteCache(),testCachedReadOnly(),testAdditionalRouteCache(),testSequentialWarmup(),testWarmupResourceGuard(),testResumeCache(),testSettingConnectionLoss(),testRegionalConnectionLoss(),testProfileMissingJob(),testJobTransientError(),testUninstallUnresponsiveStatus(),testProfileStatus(),testSlotDraft(),testDeviceSave(),testCatalogError(),testFoldState(),testCustomDnsFeedback(),testBootstrapForm(),testLogScroll(),testHeaderCheckKind()]).catch(e=>{console.error(e);process.exitCode=1;});
+async function testRegionalReapply(){
+  const buttons=[],calls=[],state={busy:false};
+  const ctx={state,regionalMode:'isp',hasGeneral:true,root:{},pch:[],E:()=>({appendChild:x=>buttons.push(x)}),btn:(text,cls,click,opts)=>({text,cls,click,opts}),setRegional:(v)=>calls.push(v)};
+  vm.createContext(ctx);vm.runInContext(extract("  var regionalChoices=E('div',{'class':'dm-seg'});","  pch.push(E('p',{'class':'dm-hint'},regionalMode==='legacy'"),ctx);
+  const active=buttons.find(b=>b.text==='DNS провайдера');
+  if(!active||active.opts.disabled)throw Error('current regional mode cannot be reapplied after update');
+  active.click();if(calls.join(',')!=='3')throw Error('reapplying provider DNS used the wrong mode');
+  buttons.length=0;calls.length=0;ctx.regionalMode='legacy';
+  vm.runInContext(extract("  var regionalChoices=E('div',{'class':'dm-seg'});","  pch.push(E('p',{'class':'dm-hint'},regionalMode==='legacy'"),ctx);
+  const legacy=buttons.find(b=>b.text==='Применить повторно');
+  if(!legacy||legacy.opts.disabled)throw Error('legacy regional DoH cannot be reapplied');
+  legacy.click();if(calls.join(',')!=='1')throw Error('reapplying legacy regional DoH used the wrong mode');
+}
+Promise.all([testRegionalReapply(),testResumeCatalog(),testBackgroundStartTimeout(),testBackgroundUnknown(),testBackgroundNavigation(),testBackgroundFailure(),testDoHRemove(),testSingleError(),testBadgeWithoutDuration(),testPollNavigation(),testLongCatalogProgress(117),testLongCatalogProgress(5,true),testRouteCache(),testCachedReadOnly(),testAdditionalRouteCache(),testSequentialWarmup(),testWarmupResourceGuard(),testResumeCache(),testSettingConnectionLoss(),testRegionalConnectionLoss(),testProfileMissingJob(),testJobTransientError(),testUninstallUnresponsiveStatus(),testProfileStatus(),testSlotDraft(),testDeviceSave(),testCatalogError(),testFoldState(),testCustomDnsFeedback(),testBootstrapForm(),testLogScroll(),testHeaderCheckKind()]).catch(e=>{console.error(e);process.exitCode=1;});
