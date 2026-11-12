@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager full installer and LuCI companion
-# Version: 2.29
+# Version: 2.30
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.29"
+VERSION="2.30"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -879,7 +879,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.29"
+SELF_VERSION="2.30"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -4381,7 +4381,7 @@ EOF_RPC_WRAPPER
 'require ui';
 'require session';
 
-// DNS Manager LuCI common module version: 2.29
+// DNS Manager LuCI common module version: 2.30
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -4765,7 +4765,7 @@ function injectStyle(root){
 }
 
 function rootAlive(root){return !!root&&!!document&&!!document.documentElement&&document.documentElement.contains(root);}
-function globalUpdateNotice(msg,type){}
+function globalUpdateNotice(msg,type){state.updateNotice=msg?{text:String(msg),type:type||'info'}:null;}
 function renderHeader(root,st){
   var e=root.querySelector('#dm-header');if(!e)return;e.innerHTML='';
   var fullAt=Number(st.last_full_test||0),watchdogAt=Number(st.watchdog_last_check||0);
@@ -5072,7 +5072,7 @@ function renderOverview(root,st){
     ]),
     E('div',{'class':'dm-version-line'},[
       E('span',{'class':'dm-version-name'},'Защищённый DNS'),
-      E('span',{'class':'dm-version-state'},versionState(st.hdp_version,st.hdp_update_available,st.hdp_latest_version,true,'актуальна',state.versionCheck&&state.versionCheck.hdp==='running'))
+      E('span',{'class':'dm-version-state'},!st.hdp_version&&!(state.versionCheck&&state.versionCheck.hdp==='running')?badge('dm-off','версия не определена'):versionState(st.hdp_version,st.hdp_update_available,st.hdp_latest_version,true,'актуальна',state.versionCheck&&state.versionCheck.hdp==='running'))
     ]),
     E('div',{'class':'dm-version-line'},[
       E('span',{'class':'dm-version-name'},'Каталог DNS'),
@@ -5080,12 +5080,14 @@ function renderOverview(root,st){
     ]),
     row('Проверено',dateText(st.components_checked_at)),
     E('div',{'class':'dm-actions'},[
-      btn(state.versionCheck&&state.versionCheck.running?'Проверяю актуальность…':'Проверить актуальность','cbi-button-neutral',function(){checkUpdate(root,true);},{disabled:!!(state.versionCheck&&state.versionCheck.running)}),
+      btn(state.versionCheck&&state.versionCheck.running?'Проверяю актуальность…':'Проверить актуальность','cbi-button-neutral',function(){checkUpdate(root,true);},{disabled:!!state.updatingAll||!!(state.versionCheck&&state.versionCheck.running)}),
       (yes(st.manager_update_available)||yes(st.luci_update_available)||yes(st.hdp_update_available)||yes(st.catalog_update_available)) ?
-        btn(state.updatingAll?'Обновляю…':'Обновить','cbi-button-positive',function(){updateAll(root);},{disabled:!!state.updatingAll||!!state.busy}) :
+        btn(state.updatingAll?'Обновляю…':'Обновить','cbi-button-positive',function(){updateAll(root);},{disabled:!!state.updatingAll||!!state.busy||!!(state.versionCheck&&state.versionCheck.running)}) :
         null
-    ].filter(Boolean))
-  ]);
+    ].filter(Boolean)),
+    state.updateNotice?E('div',{'class':'dm-inline-msg '+state.updateNotice.type},state.updateNotice.text):null,
+    state.pageNotice.overview?E('div',{'class':'dm-inline-msg error'},state.pageNotice.overview):null
+  ].filter(Boolean));
 
   var sysCard=buildSystemCard(st);
   e.appendChild(E('div',{'class':'dm-grid2'},[sysCard,verCard]));
@@ -6553,13 +6555,13 @@ function saveRouteCache(key,st,aux){
     var entry=JSON.parse(JSON.stringify({ts:Date.now(),data:st,aux:aux}));
     window.dmRouteCache[key]=entry;
     if(typeof session!=='undefined'&&session.setLocalData)
-      session.setLocalData('dns-manager-route-2.29-'+key,entry);
+      session.setLocalData('dns-manager-route-2.30-'+key,entry);
   }catch(e){}
 }
 function routeCacheEntry(key){
   var entry=key&&window.dmRouteCache&&window.dmRouteCache[key];
   if(!entry&&key){
-    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.29-'+key);}catch(e){}
+    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.30-'+key);}catch(e){}
   }
   if(!entry||typeof entry.ts!=='number'||Date.now()-entry.ts<0||Date.now()-entry.ts>300000||!entry.data||entry.data.ok!==true)return null;
   return entry;
@@ -6683,7 +6685,8 @@ function scheduleRouteWarmup(root){
   window.setTimeout(next,10000);
 }
 function checkUpdate(root,force){
-  if(state.versionCheck&&state.versionCheck.running)return;
+  if(state.updatingAll||(state.versionCheck&&state.versionCheck.running))return;
+  globalUpdateNotice('', 'info');
   state.versionCheck={running:true,manager:'running',luci:'running',hdp:'running',catalog:'running',started:Date.now(),job:''};
   renderOverview(root,window.dmState||{});
   callUpdateCheck(force?1:0).then(function(r){
@@ -6714,7 +6717,7 @@ function checkUpdate(root,force){
 }
 
 function updateAll(root){
-  if(state.updatingAll||state.busy)return;
+  if(state.updatingAll||state.busy||(state.versionCheck&&state.versionCheck.running))return;
   state.updatingAll=true;
   globalUpdateNotice('Обновляю доступные компоненты…','info');
   renderOverview(root,window.dmState||{});
@@ -6740,6 +6743,8 @@ function updateAll(root){
     }
   }
   function safeUpdateCall(call,label){
+    globalUpdateNotice('Обновляю: '+label+'…','info');
+    renderOverview(root,window.dmState||{});
     return call().then(function(r){
       return r||{ok:false,error:'Пустой ответ от '+label+'.'};
     }).catch(function(err){
@@ -6768,6 +6773,7 @@ function updateAll(root){
     if(updateInterrupted)msg+='; дальнейшие обновления не запускались. Проверьте состояние перед повтором.';
     if(luciUpdated&&anyError)msg+='; обновите страницу после проверки ошибок.';
     globalUpdateNotice(msg,anyError?'error':(anyUpdate?'ok':'info'));
+    renderOverview(root,window.dmState||{});
     if(luciUpdated&&!anyError){
       setTimeout(function(){location.reload();},3000);
     }else{
@@ -7585,7 +7591,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 2.29
+// DNS Manager LuCI version: 2.30
 return view.extend({
   load: DM.load,
   render: DM.render,

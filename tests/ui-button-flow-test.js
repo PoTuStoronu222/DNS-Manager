@@ -91,7 +91,7 @@ async function testRouteCache(){
   if(!cached||cached.force_owner!=='steer'||cached.__dmCachedRoute!=='slots')throw Error('compatible route cache missing');
   ctx.window.dmRouteCache=undefined;
   if(ctx.cachedRouteStatus('slots').force_owner!=='steer')throw Error('cache did not survive page navigation');
-  ctx.window.dmRouteCache={doh:JSON.parse(store['dns-manager-route-2.29-doh'])};
+  ctx.window.dmRouteCache={doh:JSON.parse(store['dns-manager-route-2.30-doh'])};
   cached.slots.length=0;
   if(ctx.cachedRouteStatus('doh').slots.length!==1)throw Error('cache was mutated by view');
   ctx.applyStatusToCurrentRoot({ok:true,force_owner:'steer'},'doh');
@@ -129,7 +129,7 @@ async function testAdditionalRouteCache(){
   ctx.state.category='security';if(ctx.cachedRouteStatus('catalog'))throw Error('wrong catalog category reused');ctx.state.category='all';
   failDevices=true;failCatalog=true;failLog=true;
   const previous={...store};for(const route of ['devices','catalog','log'])await ctx.ensureStatusPromise(route);
-  for(const route of ['devices','catalog','log'])if(store['dns-manager-route-2.29-'+route]!==previous['dns-manager-route-2.29-'+route])throw Error('failed '+route+' replaced good cache');
+  for(const route of ['devices','catalog','log'])if(store['dns-manager-route-2.30-'+route]!==previous['dns-manager-route-2.30-'+route])throw Error('failed '+route+' replaced good cache');
 }
 async function testSequentialWarmup(){
   let active=0,max=0,calls=[],allowed=true;
@@ -181,6 +181,25 @@ async function testUpdateTimeout(){
   vm.createContext(ctx);vm.runInContext(extract('function updateAll(root){','function uninstallManager(root){'),ctx);
   await ctx.updateAll({});
   if(otherCalls!==0||kind!=='error'||!notice.includes('неизвестен'))throw Error('continued after uncertain update');
+}
+async function testUpdateProgress(){
+  let finishManager, renders=[], managerCalls=0;
+  const ctx={state:{updatingAll:false,busy:false,pageNotice:{}},window:{dmState:{}},location:{reload:()=>{}},setTimeout,
+    renderOverview:()=>renders.push(ctx.state.updateNotice&&ctx.state.updateNotice.text),refresh:()=>Promise.resolve(),withRpcError:(m,e)=>m+' '+e.message,
+    callManagerUpdate:()=>{managerCalls++;return new Promise(resolve=>{finishManager=resolve;});},callHdpUpdate:()=>Promise.resolve({ok:true,updated:false,message:'уже актуален'}),
+    callUpdateCatalog:()=>Promise.resolve({ok:false,error:'каталог недоступен'}),callUpdate:()=>Promise.resolve({ok:true,updated:false,message:'уже актуальна'})};
+  vm.createContext(ctx);
+  vm.runInContext(extract('function globalUpdateNotice(msg,type){','function renderHeader(root,st){'),ctx);
+  vm.runInContext(extract('function updateAll(root){','function uninstallManager(root){'),ctx);
+  const pending=ctx.updateAll({});
+  if(!ctx.state.updatingAll||!ctx.state.updateNotice.text.includes('DNS Manager'))throw Error('pending update is not visible');
+  ctx.updateAll({});
+  if(managerCalls!==1)throw Error('parallel update started');
+  finishManager({ok:true,updated:false,message:'уже актуален'});await pending;
+  if(ctx.state.updatingAll||ctx.state.updateNotice.type!=='error'||!ctx.state.updateNotice.text.includes('каталог недоступен'))throw Error('update result is not visible');
+  if(!renders.some(x=>x&&x.includes('Защищённый DNS'))||!renders.some(x=>x&&x.includes('Каталог DNS'))||!renders.some(x=>x&&x.includes('LuCI')))throw Error('component progress missing');
+  ctx.state.versionCheck={running:true};ctx.updateAll({});if(managerCalls!==1)throw Error('update started during version check');
+  if(!source.includes("state.updateNotice?E('div',{'class':'dm-inline-msg '+state.updateNotice.type}"))throw Error('version card does not display update result');
 }
 async function testProfileStatus(){
   const st={regional_mode:'isp',slots:[]};let dohCalls=0,rendered=null;
@@ -295,4 +314,4 @@ async function testDoHRemove(){
   ctx.removeSelectedSlot({slot:'1',id:'old',name:'Old'},{});await delay();
   if(!request||request.join('|')!=='1||old'||ctx.state.busy||!ctx.state.pageNotice.doh.includes('удалён'))throw Error('DoH removal did not preserve expected slot id or report success');
 }
-Promise.all([testDoHRemove(),testCurrent({status:'failed',result:'fail'},'FAILED'),testCurrent({status:'done',result:'ok'},'DONE'),testSingleError(),testCurrentWithoutDuration(),testBadgeWithoutDuration(),testMixedCurrent(),testCurrentNoJob(),testCurrentSystemOnly(),testCurrentNavigation(),testPollNavigation(),testLongCatalogProgress(117),testLongCatalogProgress(5,true),testRouteCache(),testCachedReadOnly(),testAdditionalRouteCache(),testSequentialWarmup(),testWarmupResourceGuard(),testUpdateErrors(),testUpdateTimeout(),testProfileStatus(),testSlotDraft(),testDeviceSave(),testCatalogError(),testFoldState(),testCustomDnsFeedback(),testBootstrapForm(),testLogScroll(),testHeaderCheckKind()]).catch(e=>{console.error(e);process.exitCode=1;});
+Promise.all([testDoHRemove(),testCurrent({status:'failed',result:'fail'},'FAILED'),testCurrent({status:'done',result:'ok'},'DONE'),testSingleError(),testCurrentWithoutDuration(),testBadgeWithoutDuration(),testMixedCurrent(),testCurrentNoJob(),testCurrentSystemOnly(),testCurrentNavigation(),testPollNavigation(),testLongCatalogProgress(117),testLongCatalogProgress(5,true),testRouteCache(),testCachedReadOnly(),testAdditionalRouteCache(),testSequentialWarmup(),testWarmupResourceGuard(),testUpdateErrors(),testUpdateTimeout(),testUpdateProgress(),testProfileStatus(),testSlotDraft(),testDeviceSave(),testCatalogError(),testFoldState(),testCustomDnsFeedback(),testBootstrapForm(),testLogScroll(),testHeaderCheckKind()]).catch(e=>{console.error(e);process.exitCode=1;});
