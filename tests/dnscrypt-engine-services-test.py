@@ -21,6 +21,7 @@ case "$1" in
   enable) touch "$dir/$name.enabled" ;;
   enabled) [ -e "$dir/$name.enabled" ] ;;
   running) [ -e "$dir/$name.running" ] ;;
+  check) [ ! -e "$dir/$name.fail-check" ] ;;
   start) [ ! -e "$dir/$name.fail-start" ] || exit 1; touch "$dir/$name.running" ;;
   *) exit 2 ;;
 esac
@@ -53,6 +54,10 @@ esac
     assert run('quiesce', 'dnscrypt-proxy2').returncode != 0
     assert not state('dns-manager-dnscrypt', 'enabled')
     (directory / 'https-dns-proxy.fail-stop').unlink()
+    (directory / 'dns-manager-dnscrypt.fail-check').touch()
+    assert run('start', 'dnscrypt-proxy2').returncode != 0
+    assert not state('dns-manager-dnscrypt', 'enabled')
+    (directory / 'dns-manager-dnscrypt.fail-check').unlink()
     (directory / 'dns-manager-dnscrypt.fail-start').touch()
     assert run('start', 'dnscrypt-proxy2').returncode != 0
     assert not state('dns-manager-dnscrypt', 'enabled')
