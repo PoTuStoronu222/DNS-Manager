@@ -91,7 +91,7 @@ async function testRouteCache(){
   if(!cached||cached.force_owner!=='steer'||cached.__dmCachedRoute!=='slots')throw Error('compatible route cache missing');
   ctx.window.dmRouteCache=undefined;
   if(ctx.cachedRouteStatus('slots').force_owner!=='steer')throw Error('cache did not survive page navigation');
-  ctx.window.dmRouteCache={doh:JSON.parse(store['dns-manager-route-2.30-doh'])};
+  ctx.window.dmRouteCache={doh:JSON.parse(store['dns-manager-route-2.31-doh'])};
   cached.slots.length=0;
   if(ctx.cachedRouteStatus('doh').slots.length!==1)throw Error('cache was mutated by view');
   ctx.applyStatusToCurrentRoot({ok:true,force_owner:'steer'},'doh');
@@ -129,7 +129,7 @@ async function testAdditionalRouteCache(){
   ctx.state.category='security';if(ctx.cachedRouteStatus('catalog'))throw Error('wrong catalog category reused');ctx.state.category='all';
   failDevices=true;failCatalog=true;failLog=true;
   const previous={...store};for(const route of ['devices','catalog','log'])await ctx.ensureStatusPromise(route);
-  for(const route of ['devices','catalog','log'])if(store['dns-manager-route-2.30-'+route]!==previous['dns-manager-route-2.30-'+route])throw Error('failed '+route+' replaced good cache');
+  for(const route of ['devices','catalog','log'])if(store['dns-manager-route-2.31-'+route]!==previous['dns-manager-route-2.31-'+route])throw Error('failed '+route+' replaced good cache');
 }
 async function testSequentialWarmup(){
   let active=0,max=0,calls=[],allowed=true;
@@ -170,21 +170,21 @@ async function testWarmupResourceGuard(){
 }
 async function testUpdateErrors(){
   let notice='',kind='',reloaded=false;
-  const ctx={state:{updatingAll:false,busy:false},window:{},location:{reload:()=>{reloaded=true;}},setTimeout:(f)=>setTimeout(f,0),renderOverview:()=>{},refresh:()=>Promise.resolve(),globalUpdateNotice:(m,k)=>{notice=m;kind=k;},withRpcError:(m,e)=>m+String(e),callManagerUpdate:()=>Promise.resolve({ok:false,error:'не удалось проверить актуальность'}),callHdpUpdate:()=>Promise.resolve({ok:true,updated:false,message:'уже актуален'}),callUpdateCatalog:()=>Promise.resolve({ok:true,updated:false,message:'уже актуален'}),callUpdate:()=>Promise.resolve({ok:true,updated:true})};
+  const ctx={state:{updatingAll:false,busy:false},window:{},location:{reload:()=>{reloaded=true;}},setTimeout,clearTimeout,renderOverview:()=>{},refresh:()=>Promise.resolve(),globalUpdateNotice:(m,k)=>{notice=m;kind=k;},withRpcError:(m,e)=>m+String(e),callManagerUpdate:()=>Promise.resolve({ok:false,error:'не удалось проверить актуальность'}),callHdpUpdate:()=>Promise.resolve({ok:true,updated:false,message:'уже актуален'}),callUpdateCatalog:()=>Promise.resolve({ok:true,updated:false,message:'уже актуален'}),callUpdate:()=>Promise.resolve({ok:true,updated:true})};
   vm.createContext(ctx);vm.runInContext(extract('function updateAll(root){','function uninstallManager(root){'),ctx);
   await ctx.updateAll({});await delay();
   if(kind!=='error'||reloaded||!notice.includes('не удалось'))throw Error('update failure hidden: '+kind+' '+notice);
 }
 async function testUpdateTimeout(){
   let otherCalls=0,kind='',notice='';
-  const ctx={state:{updatingAll:false,busy:false},window:{},location:{reload:()=>{}},setTimeout,renderOverview:()=>{},refresh:()=>Promise.resolve(),globalUpdateNotice:(m,k)=>{notice=m;kind=k;},withRpcError:(m,e)=>m+' '+e.message,callManagerUpdate:()=>Promise.reject(Error('timeout')),callHdpUpdate:()=>{otherCalls++;return Promise.resolve({ok:true});},callUpdateCatalog:()=>{otherCalls++;return Promise.resolve({ok:true});},callUpdate:()=>{otherCalls++;return Promise.resolve({ok:true});}};
+  const ctx={state:{updatingAll:false,busy:false},window:{},location:{reload:()=>{}},setTimeout,clearTimeout,renderOverview:()=>{},refresh:()=>Promise.resolve(),globalUpdateNotice:(m,k)=>{notice=m;kind=k;},withRpcError:(m,e)=>m+' '+e.message,callManagerUpdate:()=>Promise.reject(Error('timeout')),callHdpUpdate:()=>{otherCalls++;return Promise.resolve({ok:true});},callUpdateCatalog:()=>{otherCalls++;return Promise.resolve({ok:true});},callUpdate:()=>{otherCalls++;return Promise.resolve({ok:true});}};
   vm.createContext(ctx);vm.runInContext(extract('function updateAll(root){','function uninstallManager(root){'),ctx);
   await ctx.updateAll({});
   if(otherCalls!==0||kind!=='error'||!notice.includes('неизвестен'))throw Error('continued after uncertain update');
 }
 async function testUpdateProgress(){
   let finishManager, renders=[], managerCalls=0;
-  const ctx={state:{updatingAll:false,busy:false,pageNotice:{}},window:{dmState:{}},location:{reload:()=>{}},setTimeout,
+  const ctx={state:{updatingAll:false,busy:false,pageNotice:{}},window:{dmState:{}},location:{reload:()=>{}},setTimeout,clearTimeout,
     renderOverview:()=>renders.push(ctx.state.updateNotice&&ctx.state.updateNotice.text),refresh:()=>Promise.resolve(),withRpcError:(m,e)=>m+' '+e.message,
     callManagerUpdate:()=>{managerCalls++;return new Promise(resolve=>{finishManager=resolve;});},callHdpUpdate:()=>Promise.resolve({ok:true,updated:false,message:'уже актуален'}),
     callUpdateCatalog:()=>Promise.resolve({ok:false,error:'каталог недоступен'}),callUpdate:()=>Promise.resolve({ok:true,updated:false,message:'уже актуальна'})};
@@ -194,12 +194,84 @@ async function testUpdateProgress(){
   const pending=ctx.updateAll({});
   if(!ctx.state.updatingAll||!ctx.state.updateNotice.text.includes('DNS Manager'))throw Error('pending update is not visible');
   ctx.updateAll({});
+  await Promise.resolve();
   if(managerCalls!==1)throw Error('parallel update started');
   finishManager({ok:true,updated:false,message:'уже актуален'});await pending;
   if(ctx.state.updatingAll||ctx.state.updateNotice.type!=='error'||!ctx.state.updateNotice.text.includes('каталог недоступен'))throw Error('update result is not visible');
   if(!renders.some(x=>x&&x.includes('Защищённый DNS'))||!renders.some(x=>x&&x.includes('Каталог DNS'))||!renders.some(x=>x&&x.includes('LuCI')))throw Error('component progress missing');
   ctx.state.versionCheck={running:true};ctx.updateAll({});if(managerCalls!==1)throw Error('update started during version check');
   if(!source.includes("state.updateNotice?E('div',{'class':'dm-inline-msg '+state.updateNotice.type}"))throw Error('version card does not display update result');
+}
+async function testUpdateNeverResponds(){
+  let timer,otherCalls=0;
+  const ctx={state:{updatingAll:false,busy:false},window:{},location:{reload:()=>{}},setTimeout:(f,ms)=>{if(ms===120000)timer=f;return 1;},clearTimeout:()=>{},
+    renderOverview:()=>{},refresh:()=>Promise.resolve(),globalUpdateNotice:(text,type)=>{ctx.notice={text,type};},withRpcError:(s,e)=>s+' '+e.message,
+    callManagerUpdate:()=>new Promise(()=>{}),callHdpUpdate:()=>{otherCalls++;return Promise.resolve({ok:true});},callUpdateCatalog:()=>{otherCalls++;},callUpdate:()=>{otherCalls++;}};
+  vm.createContext(ctx);vm.runInContext(extract('function updateAll(root){','function uninstallManager(root){'),ctx);
+  const pending=ctx.updateAll({});if(!ctx.state.updatingAll||!timer)throw Error('update timeout not armed');
+  timer();await pending;
+  if(ctx.state.updatingAll||otherCalls||ctx.notice.type!=='error'||!ctx.notice.text.includes('неизвестен'))throw Error('hung update did not stop safely');
+}
+async function testResumeCache(){
+  let resolveJob, feedback=[];
+  const ctx={state:{busy:false,pageNotice:{}},window:{dmState:{}},rootAlive:()=>true,currentRoute:()=> 'network',
+    callJob:()=>Promise.resolve({ok:true,status:'running',name:'set_cache'}),awaitSettingResult:()=>new Promise(r=>{resolveJob=r;}),
+    setSettingFeedback:(key,msg,type)=>feedback.push({key,msg,type}),render:()=>{},refresh:()=>Promise.resolve(),withRpcError:(s,e)=>s+' '+e.message};
+  vm.createContext(ctx);vm.runInContext(extract('function resumeAction(root){','function testAll(root,origin){'),ctx);
+  ctx.resumeAction({});await delay();
+  if(!ctx.state.busy||ctx.state.busySetting!=='dns_cache'||feedback[0].type!=='info')throw Error('cache action was not resumed');
+  resolveJob({ok:true});await delay();
+  if(ctx.state.busy||ctx.state.busySetting||feedback[feedback.length-1].type!=='ok')throw Error('cache resume did not complete');
+}
+async function testSettingConnectionLoss(){
+  let calls=0,queue=[];
+  const ctx={window:{setTimeout:fn=>queue.push(fn)},Date,Promise,callJob:()=>{calls++;return Promise.reject(Error('timeout'));}};
+  vm.createContext(ctx);vm.runInContext(extract('function awaitSettingResult(reply){','function setSetting(name,en,root){'),ctx);
+  let error='';const pending=ctx.awaitSettingResult({ok:true,job:'action'}).catch(e=>{error=e.message;});
+  for(let i=0;i<4&&!error;i++){await delay();if(queue.length)queue.shift()();}
+  await pending;
+  if(calls!==3||!error.includes('может продолжаться'))throw Error('setting loss did not stop with an uncertain result');
+}
+async function testRegionalConnectionLoss(){
+  let calls=0,queue=[];
+  const ctx={state:{busy:true},window:{setTimeout:fn=>queue.push(fn)},Date,callJob:()=>{calls++;return Promise.reject(Error('timeout'));},
+    renderProfiles:()=>{},refresh:()=>Promise.resolve(),withRpcError:(s,e)=>s+' '+e.message};
+  vm.createContext(ctx);vm.runInContext(extract('function watchRegional(job,enabled,root){','function resumeRegional(root){'),ctx);
+  ctx.watchRegional('regional',1,{});
+  for(let i=0;i<4&&ctx.state.busy;i++){await delay();if(queue.length)queue.shift()();}
+  await delay();
+  if(calls!==3||ctx.state.busy||!ctx.state.regionalNotice.includes('может продолжаться'))throw Error('regional loss left the interface locked');
+}
+async function testProfileMissingJob(){
+  const ctx={state:{busy:true,jobRunning:true,checking:{},pageNotice:{}},window:{dmState:{}},setAction:()=>{},render:()=>{}};
+  vm.createContext(ctx);vm.runInContext(extract('function pollJob(root,job,meta,done){','function resumeRunningProfile(root){'),ctx);
+  ctx.pollJob({},'',{mode:'profile'});
+  if(ctx.state.busy||ctx.state.jobRunning||!ctx.state.pageNotice.profiles)throw Error('missing profile job left interface locked');
+}
+async function testJobTransientError(){
+  let calls=0,queue=[],finished=null;
+  const ctx={state:{busy:false,jobRunning:true,checking:{item:{}},pageNotice:{}},window:{dmState:{}},setAction:()=>{},render:()=>{},
+    setTimeout:fn=>queue.push(fn),currentRoute:()=> 'slots',statusDetail:()=>0,callStatus:()=>Promise.resolve({ok:true}),
+    callJob:()=>{calls++;if(calls===13)return Promise.reject(Error('temporary'));if(calls===14)return Promise.resolve({ok:false,error:'temporary'});return Promise.resolve(calls<15?{status:'running'}:{status:'done',result:'ok'});}};
+  vm.createContext(ctx);vm.runInContext(extract('function pollJob(root,job,meta,done){','function resumeRunningProfile(root){'),ctx);
+  ctx.pollJob({},'test_one',{mode:'one',dns_id:'item'},(st,j)=>{finished=j;});
+  for(let i=0;i<16&&!finished;i++){await delay();if(queue.length)queue.shift()();}
+  await delay();
+  if(!finished||finished.status!=='done'||calls!==15||ctx.state.jobRunning)throw Error('transient RPC failure stopped a running job');
+}
+async function testUninstallUnresponsiveStatus(){
+  let now=0,timers=[];
+  const clock={setTimeout:(fn,ms)=>{const item={fn,ms};timers.push(item);return item;},clearTimeout:item=>{timers=timers.filter(x=>x!==item);}};
+  const ctx={state:{busy:false},window:Object.assign({dmState:{}},clock),Date:{now:()=>now},Promise,
+    renderDoH:()=>{},callUninstall:()=>Promise.resolve({ok:true,status_url:'/status'}),fetch:()=>new Promise(()=>{}),withRpcError:(s,e)=>s+' '+e.message};
+  vm.createContext(ctx);vm.runInContext(extract('function uninstallManager(root){','function resetDnsCore(root){'),ctx);
+  ctx.uninstallManager({});await delay();
+  if(!ctx.state.busy||timers.length!==1)throw Error('uninstall did not start polling');
+  timers.shift().fn();const timeout=timers.find(x=>x.ms===10000);if(!timeout)throw Error('uninstall status has no request timeout');
+  timeout.fn();await delay();now=181000;
+  const retry=timers.find(x=>x.ms===2000);if(!retry)throw Error('uninstall did not retry timed-out status');
+  retry.fn();
+  if(ctx.state.busy||ctx.state.uninstall.status!=='failed'||!ctx.state.uninstall.message.includes('может продолжаться'))throw Error('uninstall remained locked or concealed uncertainty');
 }
 async function testProfileStatus(){
   const st={regional_mode:'isp',slots:[]};let dohCalls=0,rendered=null;
@@ -314,4 +386,4 @@ async function testDoHRemove(){
   ctx.removeSelectedSlot({slot:'1',id:'old',name:'Old'},{});await delay();
   if(!request||request.join('|')!=='1||old'||ctx.state.busy||!ctx.state.pageNotice.doh.includes('удалён'))throw Error('DoH removal did not preserve expected slot id or report success');
 }
-Promise.all([testDoHRemove(),testCurrent({status:'failed',result:'fail'},'FAILED'),testCurrent({status:'done',result:'ok'},'DONE'),testSingleError(),testCurrentWithoutDuration(),testBadgeWithoutDuration(),testMixedCurrent(),testCurrentNoJob(),testCurrentSystemOnly(),testCurrentNavigation(),testPollNavigation(),testLongCatalogProgress(117),testLongCatalogProgress(5,true),testRouteCache(),testCachedReadOnly(),testAdditionalRouteCache(),testSequentialWarmup(),testWarmupResourceGuard(),testUpdateErrors(),testUpdateTimeout(),testUpdateProgress(),testProfileStatus(),testSlotDraft(),testDeviceSave(),testCatalogError(),testFoldState(),testCustomDnsFeedback(),testBootstrapForm(),testLogScroll(),testHeaderCheckKind()]).catch(e=>{console.error(e);process.exitCode=1;});
+Promise.all([testDoHRemove(),testCurrent({status:'failed',result:'fail'},'FAILED'),testCurrent({status:'done',result:'ok'},'DONE'),testSingleError(),testCurrentWithoutDuration(),testBadgeWithoutDuration(),testMixedCurrent(),testCurrentNoJob(),testCurrentSystemOnly(),testCurrentNavigation(),testPollNavigation(),testLongCatalogProgress(117),testLongCatalogProgress(5,true),testRouteCache(),testCachedReadOnly(),testAdditionalRouteCache(),testSequentialWarmup(),testWarmupResourceGuard(),testUpdateErrors(),testUpdateTimeout(),testUpdateProgress(),testUpdateNeverResponds(),testResumeCache(),testSettingConnectionLoss(),testRegionalConnectionLoss(),testProfileMissingJob(),testJobTransientError(),testUninstallUnresponsiveStatus(),testProfileStatus(),testSlotDraft(),testDeviceSave(),testCatalogError(),testFoldState(),testCustomDnsFeedback(),testBootstrapForm(),testLogScroll(),testHeaderCheckKind()]).catch(e=>{console.error(e);process.exitCode=1;});

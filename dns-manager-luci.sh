@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager full installer and LuCI companion
-# Version: 2.30
+# Version: 2.31
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.30"
+VERSION="2.31"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -879,7 +879,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.30"
+SELF_VERSION="2.31"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -4381,7 +4381,7 @@ EOF_RPC_WRAPPER
 'require ui';
 'require session';
 
-// DNS Manager LuCI common module version: 2.30
+// DNS Manager LuCI common module version: 2.31
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -6555,13 +6555,13 @@ function saveRouteCache(key,st,aux){
     var entry=JSON.parse(JSON.stringify({ts:Date.now(),data:st,aux:aux}));
     window.dmRouteCache[key]=entry;
     if(typeof session!=='undefined'&&session.setLocalData)
-      session.setLocalData('dns-manager-route-2.30-'+key,entry);
+      session.setLocalData('dns-manager-route-2.31-'+key,entry);
   }catch(e){}
 }
 function routeCacheEntry(key){
   var entry=key&&window.dmRouteCache&&window.dmRouteCache[key];
   if(!entry&&key){
-    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.30-'+key);}catch(e){}
+    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.31-'+key);}catch(e){}
   }
   if(!entry||typeof entry.ts!=='number'||Date.now()-entry.ts<0||Date.now()-entry.ts>300000||!entry.data||entry.data.ok!==true)return null;
   return entry;
@@ -6745,11 +6745,13 @@ function updateAll(root){
   function safeUpdateCall(call,label){
     globalUpdateNotice('Обновляю: '+label+'…','info');
     renderOverview(root,window.dmState||{});
-    return call().then(function(r){
+    var timer;
+    var timeout=new Promise(function(resolve,reject){timer=setTimeout(function(){reject(new Error('время ожидания ответа истекло'));},120000);});
+    return Promise.race([Promise.resolve().then(call),timeout]).then(function(r){
       return r||{ok:false,error:'Пустой ответ от '+label+'.'};
     }).catch(function(err){
       return {ok:false,unknown:true,error:withRpcError('Результат обновления неизвестен: '+label,err)};
-    });
+    }).then(function(r){clearTimeout(timer);return r;});
   }
 
   return safeUpdateCall(callManagerUpdate,'DNS Manager').then(function(r){
@@ -6788,21 +6790,27 @@ function uninstallManager(root){
   renderDoH(root,window.dmState||{});
   callUninstall().then(function(r){
     if(!r||!r.ok||!r.status_url)throw new Error((r&&r.error)||'Не удалось запустить удаление.');
-    var attempts=0;
+    var attempts=0, started=Date.now();
     function show(status,message,output){
       state.uninstall={status:status,message:message,output:output||''};
       if(status==='failed')state.busy=false;
       renderDoH(root,window.dmState||{});
     }
     function poll(){
-      if(++attempts>90){
+      if(++attempts>90||Date.now()-started>=180000){
         show('failed','Не удалось получить окончательный результат. Удаление может продолжаться; проверьте главную страницу LuCI.');
         return;
       }
-      fetch(r.status_url,{cache:'no-store'}).then(function(response){
+      var controller=typeof AbortController==='function'?new AbortController():null;
+      var options={cache:'no-store'};if(controller)options.signal=controller.signal;
+      var timer;
+      var request=fetch(r.status_url,options).then(function(response){
         if(!response.ok)throw new Error('status unavailable');
         return response.json();
-      }).then(function(result){
+      });
+      var timeout=new Promise(function(resolve,reject){timer=window.setTimeout(function(){if(controller)controller.abort();reject(new Error('status timeout'));},10000);});
+      Promise.race([request,timeout]).then(function(result){
+        window.clearTimeout(timer);
         if(result.status==='done'){
           show('done','Функции отключены, системный DNS восстановлен, файлы менеджера удалены.');
         }else if(result.status==='failed'){
@@ -6816,7 +6824,7 @@ function uninstallManager(root){
             show('running','Завершаю удаление интерфейса и служебных файлов…');
           }).then(function(){window.setTimeout(poll,2000);});
         }
-      }).catch(function(){window.setTimeout(poll,2000);});
+      }).catch(function(){window.clearTimeout(timer);window.setTimeout(poll,2000);});
     }
     window.setTimeout(poll,1000);
   }).catch(function(err){
@@ -6872,21 +6880,22 @@ function setRegional(enabled,root){
   });
 }
 function watchRegional(job,enabled,root){
-    var attempts=0;
+    var attempts=0,errors=0,started=Date.now();
     function poll(){
       callJob(job).then(function(j){
-        if(j&&j.status==='running'&&++attempts<450){window.setTimeout(poll,2000);return;}
+        errors=0;
+        if(j&&j.status==='running'&&++attempts<450&&Date.now()-started<930000){window.setTimeout(poll,2000);return;}
         state.busy=false;
         var ok=j&&j.status==='done'&&j.result==='ok';
         state.regionalNoticeType=ok?'ok':'error';
         state.regionalNotice=ok?'Настройка российских сайтов применена.':
-          ((j&&j.output&&stripAnsi(j.output).split('\n').filter(function(x){return String(x||'').trim();}).pop())||'Не удалось подтвердить изменение регионального DNS.');
+          ((j&&j.status==='running')?'Результат неизвестен: операция может продолжаться. Проверьте состояние перед повтором.':((j&&j.output&&stripAnsi(j.output).split('\n').filter(function(x){return String(x||'').trim();}).pop())||'Не удалось подтвердить изменение регионального DNS.'));
         refresh(root,true);
       }).catch(function(err){
-        if(++attempts<450){window.setTimeout(poll,2000);return;}
+        if(++errors<3&&Date.now()-started<930000){window.setTimeout(poll,2000);return;}
         state.busy=false;
         state.regionalNoticeType='error';
-        state.regionalNotice=withRpcError('Не удалось получить результат.',err);
+        state.regionalNotice=withRpcError('Результат неизвестен: операция может продолжаться. Проверьте состояние перед повтором.',err);
         renderProfiles(root,window.dmState||{});
       });
     }
@@ -6942,11 +6951,12 @@ function applyProfile(name,root){
 }
 function awaitSettingResult(reply){
   if(!reply||!reply.ok||!reply.job)return Promise.resolve(reply);
-  var attempts=0;
+  var attempts=0,errors=0,started=Date.now();
   return new Promise(function(resolve,reject){
     function poll(){
       callJob(reply.job).then(function(j){
-        if(j&&j.status==='running'&&attempts++<200){window.setTimeout(poll,1500);return;}
+        errors=0;
+        if(j&&j.status==='running'&&attempts++<200&&Date.now()-started<330000){window.setTimeout(poll,1500);return;}
         if(j&&(j.status==='done'||j.status==='failed')){
           var result;
           try{result=JSON.parse(String(j.output||'').trim());}catch(e){result=null;}
@@ -6954,8 +6964,8 @@ function awaitSettingResult(reply){
           resolve({ok:false,error:(result&&result.error)||String(j.output||'').trim()||'Не удалось подтвердить результат настройки.'});
           return;
         }
-        reject(new Error('Не удалось подтвердить результат фоновой задачи.'));
-      }).catch(function(err){if(attempts++<200){window.setTimeout(poll,1500);return;}reject(err);});
+        reject(new Error('Результат неизвестен: операция может продолжаться. Проверьте состояние перед повтором.'));
+      }).catch(function(err){if(++errors<3&&Date.now()-started<330000){window.setTimeout(poll,1500);return;}reject(new Error('Результат неизвестен: операция может продолжаться. Проверьте состояние перед повтором.'));});
     }
     poll();
   });
@@ -7049,11 +7059,12 @@ function resumeAction(root){
     var route=currentRoute(),name=String(j.name||'');
     var applies=(name==='set_slot'&&(route==='slots'||route==='catalog'||route==='doh'))||
       (name==='set_slot_domains'&&route==='slots')||(name==='set_device_dns'&&route==='devices')||
-      (name==='set_ntp'&&route==='time')||((name==='reset_dns'||name==='set_bootstrap')&&route==='doh');
+      (name==='set_ntp'&&route==='time')||(name==='set_cache'&&route==='network')||((name==='reset_dns'||name==='set_bootstrap')&&route==='doh');
     if(!applies){state.actionResumeStarted=false;return;}
     var key=route==='devices'?'slots':route==='doh'?(name==='set_slot'?'doh':'profiles'):route;
     state.busy=true;state.pageNotice[key]='Операция выполняется…';
     if(name==='set_bootstrap'){state.busySetting='bootstrap';state.bootstrapNotice={type:'info',text:'Применяю bootstrap DNS…'};state.pageNotice[key]='';}
+    if(name==='set_cache'){state.busySetting='dns_cache';setSettingFeedback('dns_cache','Применяю настройки…','info');state.pageNotice[key]='';}
     if(route==='doh')state.profileNoticeType='info';
     if(route==='time')state.timeNoticeType='info';
     render(root,window.dmState||{});
@@ -7061,12 +7072,14 @@ function resumeAction(root){
       state.busy=false;state.actionResumeStarted=false;
       state.pageNotice[key]=r&&r.ok?'Операция выполнена.':((r&&r.error)||'Не удалось подтвердить результат.');
       if(name==='set_bootstrap'){state.busySetting='';state.bootstrapNotice={type:r&&r.ok?'ok':'error',text:state.pageNotice[key]};state.pageNotice[key]='';if(r&&r.ok)state.bootstrapDraft=null;}
+      if(name==='set_cache'){state.busySetting='';setSettingFeedback('dns_cache',state.pageNotice[key],r&&r.ok?'ok':'error');state.pageNotice[key]='';}
       if(route==='doh')state.profileNoticeType=r&&r.ok?'ok':'error';
       if(route==='time')state.timeNoticeType=r&&r.ok?'ok':'error';
       return refresh(root,true);
     }).catch(function(err){
       state.busy=false;state.actionResumeStarted=false;state.pageNotice[key]=withRpcError('Не удалось получить результат операции.',err);
       if(name==='set_bootstrap'){state.busySetting='';state.bootstrapNotice={type:'error',text:state.pageNotice[key]};state.pageNotice[key]='';}
+      if(name==='set_cache'){state.busySetting='';setSettingFeedback('dns_cache',state.pageNotice[key],'error');state.pageNotice[key]='';}
       if(route==='doh')state.profileNoticeType='error';
       if(route==='time')state.timeNoticeType='error';
       return refresh(root,true);
@@ -7234,13 +7247,14 @@ function pollJob(root,job,meta,done){
     state.jobRunning=false;
     var noJob='Фоновая задача DNS Manager не вернула идентификатор.';
     setAction(false,noJob);
+    if(meta&&meta.mode==='profile'){state.busy=false;state.profileProgress=null;state.profileNoticeType='error';state.pageNotice.profiles=noJob;}
     if(meta&&meta.mode==='one'&&meta.dns_id)delete state.checking[meta.dns_id];
     if(meta&&meta.mode==='all')state.fullTest={status:'FAILED',result:'fail',origin:meta.origin||''};
     if(done)done(window.dmState||{},{status:'failed',result:'fail'});
     else render(root,window.dmState||{});
     return;
   }
-  var ticks=0;
+  var ticks=0, errors=0;
   var maxTicks=(meta&&meta.mode==='profile')?900:((meta&&meta.mode==='all')?1600:180);
   var maxErrors=(meta&&meta.mode==='profile')?30:8;
   function profileFinish(j){
@@ -7257,7 +7271,7 @@ function pollJob(root,job,meta,done){
       var out=stripAnsi(j&&j.output||'').trim().split('\n').filter(function(x){return String(x||'').trim();});
       var detail=out.length?String(out[out.length-1]).trim():'';
       if(detail.length>360)detail=detail.slice(0,357)+'…';
-      var msg='Профиль «'+label+'» не удалось применить.';
+      var msg=j&&j.unknown?'Не удалось получить результат применения профиля «'+label+'». Операция может продолжаться; проверьте состояние перед повтором.':'Профиль «'+label+'» не удалось применить.';
       if(detail)msg+=' '+detail;
       state.profileProgress=null;
       setAction(false,msg);
@@ -7341,6 +7355,8 @@ function pollJob(root,job,meta,done){
   function poll(){
     callJob(jobId).then(function(j){
       j=j||{};
+      if(j.ok===false)throw new Error(j.error||'RPC задачи недоступен');
+      errors=0;
       if(meta&&meta.mode==='profile'){
         state.profileOutput=stripAnsi(j.output||'');
         profileProgressUpdate(j);
@@ -7383,10 +7399,10 @@ function pollJob(root,job,meta,done){
         }
       }
       if(s==='DONE'||s==='FAILED'){finish(j);return;}
-      if(ticks++>maxTicks){finish({status:'FAILED',result:'fail',output:'Превышено время ожидания фоновой задачи.'});return;}
+      if(ticks++>maxTicks){finish({status:'FAILED',result:'fail',unknown:true,output:'Превышено время ожидания фоновой задачи; её результат неизвестен.'});return;}
       setTimeout(poll,1200);
     }).catch(function(){
-      if(ticks++>maxErrors){finish({status:'FAILED',result:'fail',output:'RPC job временно недоступен.'});return;}
+      if(++errors>maxErrors){finish({status:'FAILED',result:'fail',unknown:true,output:'RPC задачи недоступен; её результат неизвестен.'});return;}
       setTimeout(poll,1200);
     });
   }
@@ -7591,7 +7607,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 2.30
+// DNS Manager LuCI version: 2.31
 return view.extend({
   load: DM.load,
   render: DM.render,

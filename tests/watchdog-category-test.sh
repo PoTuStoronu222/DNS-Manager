@@ -27,6 +27,7 @@ C_WHITE= C_CYAN= C_GREEN= C_YELLOW= C_NC=
 acquire_test_lock() { [ "${LOCK_BUSY:-0}" != 1 ]; }
 release_test_lock() { :; }
 warn_msg() { :; }
+log_msg() { :; }
 log_tx() { :; }
 category_ru() { printf '%s' "$1"; }
 dns_catalog_version() { printf test; }
