@@ -10,13 +10,30 @@ case "$action:$engine" in
     *) printf '%s\n' 'Expected quiesce|start and https-dns-proxy|dnscrypt-proxy2' >&2; exit 2 ;;
 esac
 
+service_absent() {
+    # A failed procd delete can mean either "already absent" or a real ubus
+    # failure. Only accept the former after a successful, valid service list.
+    _service_reply=$(ubus -t 5 call service list "{\"name\":\"$1\"}" 2>/dev/null) || return 1
+    _service_root=$(jsonfilter -s "$_service_reply" -e '@' 2>/dev/null) || return 1
+    case "$_service_root" in \{*\}) ;; *) return 1 ;; esac
+    if jsonfilter -s "$_service_reply" -e "@['$1']" >/dev/null 2>&1; then
+        return 1
+    else
+        _service_filter_rc=$?
+        [ "$_service_filter_rc" -eq 1 ]
+    fi
+}
+
 stop_disable() {
     script="$initdir/$1"
     [ -x "$script" ] || return 0
-    "$script" stop || { printf 'Failed to stop %s\n' "$1" >&2; return 1; }
+    if ! "$script" stop && ! service_absent "$1"; then
+        printf 'Failed to stop %s\n' "$1" >&2
+        return 1
+    fi
     "$script" disable || { printf 'Failed to disable %s\n' "$1" >&2; return 1; }
-    if "$script" running >/dev/null 2>&1; then
-        printf 'Still running: %s\n' "$1" >&2
+    if ! service_absent "$1"; then
+        printf 'Service still registered or procd unavailable: %s\n' "$1" >&2
         return 1
     fi
     if "$script" enabled >/dev/null 2>&1; then
@@ -45,7 +62,7 @@ for service in https-dns-proxy dnscrypt-proxy dns-manager-dnscrypt; do
     [ "$service" = "$target" ] && continue
     script="$initdir/$service"
     [ -x "$script" ] || continue
-    if "$script" enabled >/dev/null 2>&1 || "$script" running >/dev/null 2>&1; then
+    if "$script" enabled >/dev/null 2>&1 || ! service_absent "$service"; then
         printf 'Conflicting service is active or enabled: %s\n' "$service" >&2
         exit 1
     fi

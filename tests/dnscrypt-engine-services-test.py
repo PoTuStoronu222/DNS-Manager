@@ -16,7 +16,7 @@ with tempfile.TemporaryDirectory(prefix='engine-services-test-') as tmp:
 dir=$(dirname "$0"); name=$(basename "$0")
 echo "$name $1" >> "$dir/log"
 case "$1" in
-  stop) [ ! -e "$dir/$name.fail-stop" ] || exit 1; rm -f "$dir/$name.running" ;;
+  stop) [ ! -e "$dir/$name.fail-stop" ] || exit 1; [ -e "$dir/$name.running" ] || exit 1; rm -f "$dir/$name.running" ;;
   disable) rm -f "$dir/$name.enabled" ;;
   enable) touch "$dir/$name.enabled" ;;
   enabled) [ -e "$dir/$name.enabled" ] ;;
@@ -27,7 +27,28 @@ case "$1" in
 esac
 ''')
         script.chmod(0o755)
-    env = {**os.environ, 'DNS_MANAGER_INIT_DIR': str(directory)}
+    ubus = directory / 'ubus'
+    ubus.write_text('''#!/usr/bin/env python3
+import json, os, pathlib, sys
+root = pathlib.Path(os.environ['DNS_MANAGER_INIT_DIR'])
+if (root / 'ubus.fail').exists(): sys.exit(1)
+if (root / 'ubus.invalid').exists(): print('invalid'); sys.exit(0)
+name = json.loads(sys.argv[-1])['name']
+print(json.dumps({name: {}} if (root / (name + '.running')).exists() else {}))
+''')
+    ubus.chmod(0o755)
+    jsonfilter = directory / 'jsonfilter'
+    jsonfilter.write_text('''#!/usr/bin/env python3
+import json, sys
+data = json.loads(sys.argv[sys.argv.index('-s') + 1])
+expr = sys.argv[sys.argv.index('-e') + 1]
+if expr == '@': print(json.dumps(data)); sys.exit(0)
+name = expr[3:-2]
+if name not in data: sys.exit(1)
+print(json.dumps(data[name]))
+''')
+    jsonfilter.chmod(0o755)
+    env = {**os.environ, 'DNS_MANAGER_INIT_DIR': str(directory), 'PATH': str(directory) + os.pathsep + os.environ['PATH']}
 
     def run(action, engine):
         return subprocess.run(['sh', str(helper), action, engine], env=env, capture_output=True, text=True)
@@ -51,9 +72,19 @@ esac
         assert run('quiesce', engine).returncode == 0
 
     (directory / 'https-dns-proxy.fail-stop').touch()
+    (directory / 'https-dns-proxy.running').touch()
     assert run('quiesce', 'dnscrypt-proxy2').returncode != 0
     assert not state('dns-manager-dnscrypt', 'enabled')
     (directory / 'https-dns-proxy.fail-stop').unlink()
+    (directory / 'https-dns-proxy.running').unlink()
+    (directory / 'ubus.fail').touch()
+    assert run('quiesce', 'dnscrypt-proxy2').returncode != 0
+    assert run('start', 'dnscrypt-proxy2').returncode != 0
+    (directory / 'ubus.fail').unlink()
+    (directory / 'ubus.invalid').touch()
+    assert run('quiesce', 'dnscrypt-proxy2').returncode != 0
+    assert run('start', 'dnscrypt-proxy2').returncode != 0
+    (directory / 'ubus.invalid').unlink()
     (directory / 'dns-manager-dnscrypt.fail-check').touch()
     assert run('start', 'dnscrypt-proxy2').returncode != 0
     assert not state('dns-manager-dnscrypt', 'enabled')
