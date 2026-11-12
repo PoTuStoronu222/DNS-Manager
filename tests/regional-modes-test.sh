@@ -38,7 +38,7 @@ for REGIONAL_MODE in doh yandex isp legacy; do
     cmp -s "$tmp/actual" "$expected" || { echo "FAIL: inconsistent expected routes for $REGIONAL_MODE" >&2; exit 1; }
     grep -Fxq '127.0.0.1#5053' "$state"
     grep -Fxq '/example.com/127.0.0.1#5053' "$state"
-    for _extra in by kz avito.st wbcontent.net wbstatic.net ozonusercontent.com; do
+    for _extra in by kz avito.st wbcontent.net wbstatic.net ozonusercontent.com ae-pic-a1.aliexpress-media.com yastatic.net; do
         case "$REGIONAL_MODE" in
             doh) ! grep -Fq "/$_extra/" "$state" ;;
             yandex) grep -Fxq "/$_extra/77.88.8.8" "$state"; grep -Fxq "/$_extra/77.88.8.1" "$state" ;;
@@ -54,9 +54,13 @@ for REGIONAL_MODE in doh yandex isp legacy; do
     esac
 done
 # Explicit slot routes win for identical domains; more specific routes coexist.
-SLOT_1_DOMAINS='avito.st images.wbstatic.net' REGIONAL_MODE=yandex
+SLOT_1_DOMAINS='avito.st images.wbstatic.net ae-pic-a1.aliexpress-media.com YASTATIC.NET' REGIONAL_MODE=yandex
 reconcile_dnsmasq
 grep -Fxq '/avito.st/127.0.0.1#5053' "$state"
+grep -Fxq '/ae-pic-a1.aliexpress-media.com/127.0.0.1#5053' "$state"
+grep -Fxq '/yastatic.net/127.0.0.1#5053' "$state"
+! grep -Fq '/ae-pic-a1.aliexpress-media.com/77.88.8.' "$state"
+! grep -Fq '/yastatic.net/77.88.8.' "$state"
 ! grep -Fq '/avito.st/77.88.8.' "$state"
 grep -Fxq '/images.wbstatic.net/127.0.0.1#5053' "$state"
 grep -Fxq '/wbstatic.net/77.88.8.8' "$state"
@@ -175,6 +179,8 @@ awk '/^dnsmasq_manager_server_owned\(\) \{/,/^}/' "$ROOT/dns-manager.sh" >> "$tm
     grep -Fxq 'dnsmasq|server|/ru/94.230.128.3|section=main' "$OWNERSHIP"
     ! grep -Fq '/ru/192.0.2.123' "$OWNERSHIP"
     dnsmasq_manager_server_owned /avito.st/94.230.128.3
+    dnsmasq_manager_server_owned /ae-pic-a1.aliexpress-media.com/94.230.128.3
+    dnsmasq_manager_server_owned /yastatic.net/94.230.128.3
     dnsmasq_manager_server_owned /by/94.230.128.3
     ! dnsmasq_manager_server_owned /avito.st/192.0.2.123
     UNINSTALL_STRICT_OWNERSHIP=1

@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager full installer and LuCI companion
-# Version: 2.33
+# Version: 2.34
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.33"
+VERSION="2.34"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -639,7 +639,7 @@ dmd_ensure_profile() {
         done
         if [ "${REGIONAL_MODE:-legacy}" = yandex ] || [ "${REGIONAL_MODE:-legacy}" = isp ]; then
             if [ "$REGIONAL_MODE" = yandex ]; then _dmd_ru_ips='77.88.8.8 77.88.8.1'; else _dmd_ru_ips="${REGIONAL_ISP_IPS:-}"; fi
-            for _dmd_tld in /ru /su /xn--p1ai /by /kz /avito.st /wbcontent.net /wbstatic.net /ozonusercontent.com; do
+            for _dmd_tld in /ru /su /xn--p1ai /by /kz /avito.st /wbcontent.net /wbstatic.net /ozonusercontent.com /ae-pic-a1.aliexpress-media.com /yastatic.net; do
                 _dmd_overridden=0
                 for _dmd_custom in $_dmd_explicit_domains; do
                     case "${_dmd_tld#/}" in "$_dmd_custom"|*."$_dmd_custom") _dmd_overridden=1; break;; esac
@@ -648,7 +648,7 @@ dmd_ensure_profile() {
                 for _dmd_ru_ip in $_dmd_ru_ips; do printf 'server=%s/%s\n' "$_dmd_tld" "$_dmd_ru_ip"; done
             done
         elif [ -n "${SLOT_RU:-}" ] && [ -n "${PORT_RU:-}" ]; then
-            for _dmd_tld in /ru /su /xn--p1ai /by /kz /avito.st /wbcontent.net /wbstatic.net /ozonusercontent.com; do
+            for _dmd_tld in /ru /su /xn--p1ai /by /kz /avito.st /wbcontent.net /wbstatic.net /ozonusercontent.com /ae-pic-a1.aliexpress-media.com /yastatic.net; do
                 _dmd_overridden=0
                 for _dmd_custom in $_dmd_explicit_domains; do
                     case "${_dmd_tld#/}" in "$_dmd_custom"|*."$_dmd_custom") _dmd_overridden=1; break;; esac
@@ -891,7 +891,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.33"
+SELF_VERSION="2.34"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -4500,7 +4500,7 @@ EOF_RPC_WRAPPER
 'require ui';
 'require session';
 
-// DNS Manager LuCI common module version: 2.33
+// DNS Manager LuCI common module version: 2.34
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -5855,7 +5855,7 @@ function renderProfiles(root,st){
   var regionalMode=String(st.regional_mode|| (regionalSlot.id?'legacy':'doh'));
   var hasGeneral=(st.slots||[]).some(function(s){return String(s.slot)!=='RU'&&!!s.id;});
   pch.push(E('div',{'class':'dm-row','style':'margin-top:14px'},[E('span',{'class':'dm-label'},'Российские сайты и сайты СНГ')]));
-  pch.push(E('p',{'class':'dm-hint'},'DNS для .ru, .su, .рф, .by, .kz и ресурсов Авито, Wildberries и Ozon. Смена профиля не меняет этот выбор.'));
+  pch.push(E('p',{'class':'dm-hint'},'DNS для .ru, .su, .рф, .by, .kz и отдельных ресурсов маркетплейсов и Яндекса. Смена профиля не меняет этот выбор.'));
   var regionalChoices=E('div',{'class':'dm-seg'});
   [['doh','Через DoH',0],['yandex','Яндекс DNS',2],['isp','DNS провайдера',3]].forEach(function(choice){
     regionalChoices.appendChild(btn(choice[1],regionalMode===choice[0]?'active cbi-button':'cbi-button',function(){setRegional(choice[2],root);},{disabled:!!state.busy||!hasGeneral}));
@@ -6677,13 +6677,13 @@ function saveRouteCache(key,st,aux){
     var entry=JSON.parse(JSON.stringify({ts:Date.now(),data:st,aux:aux}));
     window.dmRouteCache[key]=entry;
     if(typeof session!=='undefined'&&session.setLocalData)
-      session.setLocalData('dns-manager-route-2.33-'+key,entry);
+      session.setLocalData('dns-manager-route-2.34-'+key,entry);
   }catch(e){}
 }
 function routeCacheEntry(key){
   var entry=key&&window.dmRouteCache&&window.dmRouteCache[key];
   if(!entry&&key){
-    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.33-'+key);}catch(e){}
+    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.34-'+key);}catch(e){}
   }
   if(!entry||typeof entry.ts!=='number'||Date.now()-entry.ts<0||Date.now()-entry.ts>300000||!entry.data||entry.data.ok!==true)return null;
   return entry;
@@ -7643,7 +7643,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 2.33
+// DNS Manager LuCI version: 2.34
 return view.extend({
   load: DM.load,
   render: DM.render,
