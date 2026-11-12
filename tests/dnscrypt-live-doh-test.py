@@ -10,9 +10,7 @@ import time
 
 root = pathlib.Path(__file__).resolve().parent.parent
 binary = os.environ['DNSCRYPT_BIN']
-bootstrap = os.environ.get('DNSCRYPT_BOOTSTRAP', '1.1.1.1:53')
-if any(c not in '0123456789abcdefABCDEF.:[]' for c in bootstrap):
-    raise SystemExit('DNSCRYPT_BOOTSTRAP must be a literal DNS address with port')
+bootstrap = os.environ.get('DNSCRYPT_BOOTSTRAP', '1.1.1.1')
 
 
 def free_port(used):
@@ -60,17 +58,10 @@ with tempfile.TemporaryDirectory(prefix='dnscrypt-live-') as tmp:
         for number, url in enumerate(('https://cloudflare-dns.com/dns-query',
                                       'https://dns.google/dns-query'), 1):
             port = free_port(used_ports)
-            stamp = subprocess.check_output(['sh', str(root / 'libexec/dns-manager-doh-stamp.sh'), url], text=True).strip()
+            generated = subprocess.check_output(['sh', str(root / 'libexec/dns-manager-dnscrypt-config.sh'),
+                                                  str(port), url, bootstrap], text=True)
             config = pathlib.Path(tmp) / f'slot-{number}.toml'
-            config.write_text(f"""server_names = ['test']
-listen_addresses = ['127.0.0.1:{port}']
-cache = false
-bootstrap_resolvers = ['{bootstrap}']
-ignore_system_dns = true
-netprobe_timeout = 0
-[static.test]
-stamp = '{stamp}'
-""")
+            config.write_text(generated)
             log = open(pathlib.Path(tmp) / f'slot-{number}.log', 'w+')
             proc = subprocess.Popen([binary, '-config', str(config)], stdout=log, stderr=log)
             processes.append((proc, log, port, url))
