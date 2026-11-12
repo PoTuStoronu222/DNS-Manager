@@ -31,12 +31,18 @@ lp() {
 
 # DNS-over-HTTPS, zero properties, no fixed IP or certificate pin.
 # With no pin dnscrypt-proxy uses its normal TLS certificate validation.
-command -v base64 >/dev/null 2>&1 || fail 'base64 is unavailable'
+if command -v base64 >/dev/null 2>&1; then
+    encode() { base64; }
+elif command -v ucode >/dev/null 2>&1; then
+    encode() { ucode -e 'import { stdin } from "fs"; print(b64enc(stdin.read("all")));'; }
+else
+    fail 'neither base64 nor ucode is available'
+fi
 encoded=$({
     printf '\002\000\000\000\000\000\000\000\000\000\000'
     lp "$host"
     lp "$path"
-} | base64) || fail 'base64 encoding failed'
+} | encode) || fail 'base64 encoding failed'
 [ -n "$encoded" ] || fail 'base64 encoding failed'
 encoded=$(printf '%s' "$encoded" | tr -d '\n=' | tr '/+' '_-')
 printf 'sdns://%s\n' "$encoded"
