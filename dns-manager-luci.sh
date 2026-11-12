@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager full installer and LuCI companion
-# Version: 2.31
+# Version: 2.32
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.31"
+VERSION="2.32"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -842,7 +842,7 @@ EOF_MENU
     },
     "write": {
       "ubus": {
-        "dns_manager": [ "set_profile", "set_regional", "reset_dns", "set_slot", "set_slot_domains", "set_device_dns", "set_cache", "add_custom_dns", "delete_custom_dns", "set_setting", "set_bootstrap", "set_watchdog_setting", "set_watchdog_settings", "set_ntp", "set_test_age", "test_all", "test_current", "test_one", "test_system", "update", "update_manager", "update_hdp", "update_catalog", "update_all", "uninstall" ]
+        "dns_manager": [ "set_profile", "set_regional", "reset_dns", "set_slot", "set_slot_domains", "set_device_dns", "set_cache", "add_custom_dns", "delete_custom_dns", "set_setting", "set_bootstrap", "set_watchdog_setting", "set_watchdog_settings", "set_ntp", "set_test_age", "test_all", "test_current", "test_one", "test_system", "test_combined", "update", "update_manager", "update_hdp", "update_catalog", "update_all", "update_background", "uninstall" ]
       }
     }
   }
@@ -879,7 +879,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.31"
+SELF_VERSION="2.32"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -1624,6 +1624,7 @@ update_all_json() {
     _message=""
     _failed=""
 
+    [ "${DM_BACKGROUND_ID:-}" != update ] || job_write update name 'DNS Manager'
     _old_m="$(manager_version 2>/dev/null || true)"
     _mr="$(update_manager_json 2>/dev/null || true)"
     _new_m="$(manager_version 2>/dev/null || true)"
@@ -1635,6 +1636,7 @@ update_all_json() {
         *) append_failure_message "DNS Manager: не удалось обновить" ;;
     esac
 
+    [ "${DM_BACKGROUND_ID:-}" != update ] || job_write update name 'Защищённый DNS'
     _old_h="$(package_version https-dns-proxy 2>/dev/null || true)"
     _hr="$(update_hdp_json 2>/dev/null || true)"
     _new_h="$(package_version https-dns-proxy 2>/dev/null || true)"
@@ -1646,6 +1648,7 @@ update_all_json() {
         *) append_failure_message "Защищённый DNS: не удалось обновить" ;;
     esac
 
+    [ "${DM_BACKGROUND_ID:-}" != update ] || job_write update name 'Каталог DNS'
     _old_cv="$(catalog_version 2>/dev/null || true)"
     _old_cr="$(catalog_revision 2>/dev/null || true)"
     update_catalog_direct
@@ -1658,6 +1661,7 @@ update_all_json() {
         *) append_failure_message "Каталог DNS: не удалось обновить" ;;
     esac
 
+    [ "${DM_BACKGROUND_ID:-}" != update ] || job_write update name 'LuCI'
     _old_l="$(read_installed_luci_version)"
     _lr="$(update_json 2>/dev/null || true)"
     _new_l="$(read_installed_luci_version)"
@@ -3235,6 +3239,8 @@ job_max_age() {
         regional) printf '%s\n' "$JOB_MAX_AGE_PROFILE" ;;
         all) printf '%s\n' "$JOB_MAX_AGE_TEST_ALL" ;;
         current) printf '%s\n' "$JOB_MAX_AGE_TEST_CURRENT" ;;
+        combined) printf '%s\n' 900 ;;
+        update) printf '%s\n' 1800 ;;
         one) printf '%s\n' "$JOB_MAX_AGE_TEST_ONE" ;;
         *) printf '%s\n' 300 ;;
     esac
@@ -3307,6 +3313,9 @@ job_process_alive() {
     if [ -n "$_started" ] && [ -n "$_now" ] && [ "$_now" -ge "$_started" ] 2>/dev/null; then
         _age=$((_now-_started))
         if [ "$_age" -ge "$_max_age" ] 2>/dev/null; then
+            # Never kill a live package update: opkg/apk could be mid-write.
+            # Keep its button locked until the worker actually exits.
+            if [ "$_mode" = update ] && [ -n "$_pid" ] && kill -0 "$_pid" 2>/dev/null; then return 0; fi
             if [ -n "$_pid" ]; then
                 _safe_to_kill=1
                 if [ -n "$_stored_token" ] && [ -n "$_current_token" ]; then
@@ -3320,6 +3329,12 @@ job_process_alive() {
     fi
 
     if [ -z "$_pid" ]; then
+        # procd starts the worker asynchronously; allow it time to record PID.
+        if { [ "$_mode" = update ] || [ "$_mode" = combined ]; } &&
+           [ -n "$_started" ] && [ -n "$_now" ] && [ "$_now" -ge "$_started" ] &&
+           [ $((_now-_started)) -lt 30 ]; then
+            return 0
+        fi
         job_mark_failed "$_id" "$_now" "Фоновая задача DNS Manager не имеет рабочего PID."
         return 1
     fi
@@ -3349,6 +3364,95 @@ profile_job_running() {
         fi
     done
     return 1
+}
+
+# Operations that span multiple RPC calls must be owned by procd rather than
+# by a browser page or rpcd. The worker writes its result to the normal job
+# directory so another page (or a new browser session) can read it.
+background_start() {
+    case "$1" in update|combined) DM_BACKGROUND_ID="$1";; *) json_error "Недопустимая задача"; return;; esac
+    DM_BACKGROUND_SERVICE="dns-manager-job-$DM_BACKGROUND_ID"
+    acquire_runtime_lock "$RUNTIME_DIR/$DM_BACKGROUND_ID-start.lock" || { json_error "Задача уже запускается"; return; }
+    if job_active "$DM_BACKGROUND_ID" && job_process_alive "$JOB_DIR/$DM_BACKGROUND_ID"; then
+        release_runtime_lock "$RUNTIME_DIR/$DM_BACKGROUND_ID-start.lock"
+        printf '{"ok":true,"job":'; json_quote "$DM_BACKGROUND_ID"; printf ',"resumed":true}'
+        return
+    fi
+    if ubus call service list "{\"name\":\"$DM_BACKGROUND_SERVICE\"}" 2>/dev/null | grep -qE '"running"[[:space:]]*:[[:space:]]*true'; then
+        release_runtime_lock "$RUNTIME_DIR/$DM_BACKGROUND_ID-start.lock"
+        json_error "Предыдущая задача ещё завершается"
+        return
+    fi
+    ubus call service delete "{\"name\":\"$DM_BACKGROUND_SERVICE\"}" >/dev/null 2>&1 || true
+    job_prepare "$DM_BACKGROUND_ID" || { release_runtime_lock "$RUNTIME_DIR/$DM_BACKGROUND_ID-start.lock"; json_error "Не удалось подготовить задачу"; return; }
+    printf 'status=running\nstarted=%s\nmode=%s\n' "$(date +%s)" "$DM_BACKGROUND_ID" > "$JOB_DIR/$DM_BACKGROUND_ID/state"
+    DM_BACKGROUND_REQUEST="{\"name\":\"$DM_BACKGROUND_SERVICE\",\"instances\":{\"main\":{\"command\":[\"/bin/sh\",\"/usr/lib/dns-manager-luci/backend.sh\",\"worker\",\"$DM_BACKGROUND_ID\"]}}}"
+    if ! ubus call service set "$DM_BACKGROUND_REQUEST" >/dev/null 2>&1; then
+        job_write "$DM_BACKGROUND_ID" result fail
+        job_write "$DM_BACKGROUND_ID" finished "$(date +%s)"
+        job_write "$DM_BACKGROUND_ID" status failed
+        release_runtime_lock "$RUNTIME_DIR/$DM_BACKGROUND_ID-start.lock"
+        json_error "Не удалось запустить фоновую задачу"
+        return
+    fi
+    release_runtime_lock "$RUNTIME_DIR/$DM_BACKGROUND_ID-start.lock"
+    printf '{"ok":true,"job":'; json_quote "$DM_BACKGROUND_ID"; printf '}'
+}
+
+background_wait_test() {
+    DM_WAIT_ID="$1"
+    DM_WAIT_START="$(date +%s)"
+    while :; do
+        DM_WAIT_STATUS="$(job_state_value "$JOB_DIR/$DM_WAIT_ID/state" status)"
+        DM_WAIT_FINISHED="$(job_state_value "$JOB_DIR/$DM_WAIT_ID/state" finished)"
+        if [ -n "$DM_WAIT_FINISHED" ]; then
+            [ "$DM_WAIT_STATUS" = done ] && [ "$(job_state_value "$JOB_DIR/$DM_WAIT_ID/state" result)" = ok ]
+            return $?
+        fi
+        DM_WAIT_NOW="$(date +%s)"
+        [ $((DM_WAIT_NOW-DM_WAIT_START)) -lt 600 ] || return 1
+        case "$DM_WAIT_STATUS" in done|failed) sleep 1; continue;; esac
+        if ! (job_process_alive "$JOB_DIR/$DM_WAIT_ID") >/dev/null 2>&1; then return 1; fi
+        sleep 1
+    done
+}
+
+background_worker() {
+    case "$1" in update|combined) DM_BACKGROUND_ID="$1";; *) exit 1;; esac
+    job_record_pid "$DM_BACKGROUND_ID" "$$"
+    if [ "$DM_BACKGROUND_ID" = update ]; then
+        update_all_json > "$JOB_DIR/update/output" 2>&1
+        if grep -q '"ok":true' "$JOB_DIR/update/output"; then DM_BACKGROUND_RESULT=ok; else DM_BACKGROUND_RESULT=fail; fi
+    else
+        DM_BACKGROUND_RESULT=ok
+        DM_BACKGROUND_SLOTS=0
+        load_manager || DM_BACKGROUND_RESULT=fail
+        for DM_BACKGROUND_SLOT in 1 2 3 4 5 6 RU; do
+            [ -z "$(cfg_get "SLOT_$DM_BACKGROUND_SLOT" 2>/dev/null)" ] || DM_BACKGROUND_SLOTS=1
+        done
+        DM_BACKGROUND_SYSTEM=0
+        DM_BACKGROUND_INDEX=0
+        while uci -q get "https-dns-proxy.@https-dns-proxy[$DM_BACKGROUND_INDEX]" >/dev/null 2>&1; do
+            DM_BACKGROUND_URL="$(uci -q get "https-dns-proxy.@https-dns-proxy[$DM_BACKGROUND_INDEX].resolver_url" 2>/dev/null)"
+            DM_BACKGROUND_PORT="$(uci -q get "https-dns-proxy.@https-dns-proxy[$DM_BACKGROUND_INDEX].listen_port" 2>/dev/null)"
+            if [ -n "$DM_BACKGROUND_URL" ] && [ -n "$DM_BACKGROUND_PORT" ] && ! system_instance_slot "$DM_BACKGROUND_URL" "$DM_BACKGROUND_PORT"; then DM_BACKGROUND_SYSTEM=1; fi
+            DM_BACKGROUND_INDEX=$((DM_BACKGROUND_INDEX+1))
+        done
+        if [ "$DM_BACKGROUND_SLOTS" = 1 ]; then
+            printf '%s\n' 'Проверяю DNS в слотах…' >> "$JOB_DIR/combined/output"
+            DM_BACKGROUND_REPLY="$(job_start_test_current)"
+            case "$DM_BACKGROUND_REPLY" in *'"ok":true'*) background_wait_test test_current || DM_BACKGROUND_RESULT=fail;; *) DM_BACKGROUND_RESULT=fail;; esac
+        fi
+        if [ "$DM_BACKGROUND_SYSTEM" = 1 ]; then
+            printf '%s\n' 'Проверяю системные DNS…' >> "$JOB_DIR/combined/output"
+            DM_BACKGROUND_REPLY="$(job_start_test_system)"
+            case "$DM_BACKGROUND_REPLY" in *'"ok":true'*) background_wait_test test_system || DM_BACKGROUND_RESULT=fail;; *) DM_BACKGROUND_RESULT=fail;; esac
+        fi
+        [ "$DM_BACKGROUND_SLOTS$DM_BACKGROUND_SYSTEM" != 00 ] || DM_BACKGROUND_RESULT=fail
+    fi
+    job_write "$DM_BACKGROUND_ID" result "$DM_BACKGROUND_RESULT"
+    job_write "$DM_BACKGROUND_ID" finished "$(date +%s)"
+    if [ "$DM_BACKGROUND_RESULT" = ok ]; then job_write "$DM_BACKGROUND_ID" status done; else job_write "$DM_BACKGROUND_ID" status failed; fi
 }
 
 job_start_action() {
@@ -3731,7 +3835,7 @@ job_json() {
     printf ',"result":'; json_quote "$(sed -n 's/^result=//p' "$_d/state" 2>/dev/null | tail -n1)"
     printf ',"mode":'; json_quote "$(sed -n 's/^mode=//p' "$_d/state" 2>/dev/null | head -n1)"
     printf ',"enabled":'; json_quote "$(sed -n 's/^enabled=//p' "$_d/state" 2>/dev/null | head -n1)"
-    printf ',"name":'; json_quote "$(sed -n 's/^name=//p' "$_d/state" 2>/dev/null | head -n1)"
+    printf ',"name":'; json_quote "$(sed -n 's/^name=//p' "$_d/state" 2>/dev/null | tail -n1)"
     printf ',"profile":'; json_quote "$(sed -n 's/^profile=//p' "$_d/state" 2>/dev/null | head -n1)"
     printf ',"dns_id":'; json_quote "$(sed -n 's/^dns_id=//p' "$_d/state" 2>/dev/null | head -n1)"
     printf ',"progress_done":'; json_quote "$(sed -n 's/^progress_done=//p' "$_d/state" 2>/dev/null | tail -n1)"
@@ -3753,7 +3857,7 @@ job_json() {
     fi
     printf ',"started":'; json_quote "$(sed -n 's/^started=//p' "$_d/state" 2>/dev/null | head -n1)"
     printf ',"finished":'; json_quote "$(sed -n 's/^finished=//p' "$_d/state" 2>/dev/null | tail -n1)"
-    printf ',"output":'; json_quote "$(tail -n 80 "$_d/output" 2>/dev/null || true)"
+    printf ',"output":'; printf '"'; tail -n 80 "$_d/output" 2>/dev/null | sed 's/\\/\\\\/g; s/"/\\"/g; s/\r/ /g; s/\t/\\t/g' | awk 'NR>1 {printf "\\n"} {printf "%s", $0}'; printf '"'
     printf '}' 
 }
 log_json() {
@@ -4319,8 +4423,9 @@ watchdog_restore_service_state() {
 test_json() { case "${RPC_METHOD:-}" in test_all) job_start_test_all;; test_current) job_start_test_current;; test_one) job_start_test_one "$(jget id)";; test_system) job_start_test_system;; *) json_error "Недопустимый метод проверки";; esac; }
 
 case "${1:-}" in
+    worker) background_worker "$2";;
     list)
-        printf '{"status":{},"runtime":{},"doh_status":{},"network_status":{},"lan_devices":{},"set_device_dns":{"mac":"String","slots":"String"},"set_cache":{"total":0,"ttl":0},"time_status":{},"page_meta":{},"catalog":{"category":"String","offset":0,"limit":0,"only_ok":0},"update_check":{"force":0},"update":{},"update_manager":{},"update_hdp":{},"update_catalog":{},"update_all":{},"set_profile":{"profile":"String"},"set_regional":{"enabled":0},"reset_dns":{},"uninstall":{},"uninstall_status":{},"set_slot":{"slot":"String","id":"String","expected":"String"},"set_slot_domains":{"slot":"String","domains":"String"},"add_custom_dns":{"name":"String","url":"String"},"delete_custom_dns":{"id":"String"},"set_setting":{"name":"String","enabled":0},"set_bootstrap":{"mode":"String","addresses":"String","preset_ids":"String","extra_addresses":"String"},"set_watchdog_setting":{"name":"String","value":0},"set_watchdog_settings":{"interval":0,"threshold":0,"repair_cooldown":0,"max_restarts":0,"guard_interval":0},"set_ntp":{"preset":"String"},"set_test_age":{"category":"String","hours":0},"test_all":{},"test_current":{},"test_one":{"id":"String"},"test_system":{},"job":{"id":"String"},"log":{"lines":0}}\n'
+        printf '{"status":{},"runtime":{},"doh_status":{},"network_status":{},"lan_devices":{},"set_device_dns":{"mac":"String","slots":"String"},"set_cache":{"total":0,"ttl":0},"time_status":{},"page_meta":{},"catalog":{"category":"String","offset":0,"limit":0,"only_ok":0},"update_check":{"force":0},"update":{},"update_manager":{},"update_hdp":{},"update_catalog":{},"update_all":{},"update_background":{},"test_combined":{},"set_profile":{"profile":"String"},"set_regional":{"enabled":0},"reset_dns":{},"uninstall":{},"uninstall_status":{},"set_slot":{"slot":"String","id":"String","expected":"String"},"set_slot_domains":{"slot":"String","domains":"String"},"add_custom_dns":{"name":"String","url":"String"},"delete_custom_dns":{"id":"String"},"set_setting":{"name":"String","enabled":0},"set_bootstrap":{"mode":"String","addresses":"String","preset_ids":"String","extra_addresses":"String"},"set_watchdog_setting":{"name":"String","value":0},"set_watchdog_settings":{"interval":0,"threshold":0,"repair_cooldown":0,"max_restarts":0,"guard_interval":0},"set_ntp":{"preset":"String"},"set_test_age":{"category":"String","hours":0},"test_all":{},"test_current":{},"test_one":{"id":"String"},"test_system":{},"job":{"id":"String"},"log":{"lines":0}}\n'
         ;;
     call)
         case "${2:-}" in
@@ -4333,6 +4438,8 @@ case "${1:-}" in
             runtime) runtime_json;;
             catalog) INPUT="$(cat 2>/dev/null || true)"; catalog_json;;
             update_check) INPUT="$(cat 2>/dev/null || true)"; update_check_json;;            update_catalog) update_catalog_json;;            update_all) update_all_json;;            update) update_json;;            update_manager) update_manager_json;;            update_hdp) update_hdp_json;;
+            update_background) background_start update;;
+            test_combined) background_start combined;;
             add_custom_dns|delete_custom_dns|set_device_dns|set_cache|reset_dns|uninstall|set_profile|set_regional|set_slot|set_slot_domains|set_setting|set_bootstrap|set_watchdog_setting|set_watchdog_settings|set_ntp) INPUT="$(cat 2>/dev/null || true)"; RPC_METHOD="$2"; run_action;;
             uninstall_status) uninstall_status_json;;
             test_all|test_current|test_one|test_system) INPUT="$(cat 2>/dev/null || true)"; RPC_METHOD="$2"; test_json;;
@@ -4381,7 +4488,7 @@ EOF_RPC_WRAPPER
 'require ui';
 'require session';
 
-// DNS Manager LuCI common module version: 2.31
+// DNS Manager LuCI common module version: 2.32
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -4410,6 +4517,8 @@ var callRuntime = dmRpc({ object:'dns_manager', method:'runtime', expect:{} });
 function statusDetail(){return currentRoute()==='network'?1:0;}
 var callCatalog = dmRpc({ object:'dns_manager', method:'catalog', params:['category','offset','limit','only_ok'], expect:{} });
 var callUpdateCheck = dmRpc({ object:'dns_manager', method:'update_check', params:['force'], expect:{} });
+var callBackgroundUpdate = dmRpc({ object:'dns_manager', method:'update_background', expect:{} });
+var callCombinedTest = dmRpc({ object:'dns_manager', method:'test_combined', expect:{} });
 var callUpdate = dmRpc({ object:'dns_manager', method:'update', expect:{} });
 var callManagerUpdate = dmRpc({ object:'dns_manager', method:'update_manager', expect:{} });
 var callHdpUpdate = dmRpc({ object:'dns_manager', method:'update_hdp', expect:{} });
@@ -5247,7 +5356,7 @@ function renderDoH(root,st){
     btn(state.currentTest&&state.currentTest.status==='RUNNING'?'Проверяю…':'Проверить текущие DNS','cbi-button-action',function(){testCurrent(root);},{disabled:!!state.busy||!!state.jobRunning})
   ]));
   if(state.currentTest)ch.push(E('div',{'class':'dm-inline-msg '+(state.currentTest.status==='RUNNING'?'info':state.currentTest.status==='DONE'?'ok':'error')},
-    state.currentTest.status==='RUNNING'?'Проверка текущих DNS выполняется…':state.currentTest.status==='DONE'?'Проверка текущих DNS завершена.':state.currentTest.total===0?'Текущих DNS для проверки нет.':'Проверка текущих DNS завершилась с ошибками.'));
+    state.currentTest.status==='RUNNING'?'Проверка текущих DNS выполняется…':state.currentTest.status==='DONE'?'Проверка текущих DNS завершена.':state.currentTest.status==='UNKNOWN'?'Результат проверки пока неизвестен.':state.currentTest.total===0?'Текущих DNS для проверки нет.':'Проверка текущих DNS завершилась с ошибками.'));
 
   var fm=forceMode(st);
   var profileSelected=String(st.profile||'none')!=='none';
@@ -6555,13 +6664,13 @@ function saveRouteCache(key,st,aux){
     var entry=JSON.parse(JSON.stringify({ts:Date.now(),data:st,aux:aux}));
     window.dmRouteCache[key]=entry;
     if(typeof session!=='undefined'&&session.setLocalData)
-      session.setLocalData('dns-manager-route-2.31-'+key,entry);
+      session.setLocalData('dns-manager-route-2.32-'+key,entry);
   }catch(e){}
 }
 function routeCacheEntry(key){
   var entry=key&&window.dmRouteCache&&window.dmRouteCache[key];
   if(!entry&&key){
-    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.31-'+key);}catch(e){}
+    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.32-'+key);}catch(e){}
   }
   if(!entry||typeof entry.ts!=='number'||Date.now()-entry.ts<0||Date.now()-entry.ts>300000||!entry.data||entry.data.ok!==true)return null;
   return entry;
@@ -6716,72 +6825,47 @@ function checkUpdate(root,force){
   });
 }
 
+function backgroundRequest(fn){
+  var timer;
+  var timeout=new Promise(function(resolve,reject){timer=setTimeout(function(){reject(new Error('Время ожидания ответа истекло'));},20000);});
+  return Promise.race([Promise.resolve().then(fn),timeout]).then(function(v){clearTimeout(timer);return v;},function(e){clearTimeout(timer);throw e;});
+}
+function watchBackground(root,id){
+  if(!rootAlive(root)||root.__dmBackgroundWatch===id)return;
+  root.__dmBackgroundWatch=id;
+  var errors=0;
+  function poll(){
+    if(!rootAlive(root)){root.__dmBackgroundWatch=null;return;}
+    backgroundRequest(function(){return callJob(id);}).then(function(j){
+      if(!rootAlive(root)){root.__dmBackgroundWatch=null;return;}
+      if(!j||!j.ok){root.__dmBackgroundWatch=null;if(id==='update'&&state.updatingAll){state.updatingAll=false;globalUpdateNotice('Не удалось получить состояние обновления; проверьте версии перед повтором.','error');renderOverview(root,window.dmState||{});}else if(id==='combined'&&state.jobRunning){state.jobRunning=false;state.currentTest={status:'UNKNOWN'};state.pageNotice.doh='Не удалось получить состояние проверки; она может продолжаться.';renderDoH(root,window.dmState||{});}return;}
+      errors=0;var running=String(j.status||'')==='running';
+      if(id==='update'){
+        state.updatingAll=running;
+        var msg=j.name?'Обновляю: '+j.name+'…':'Обновление выполняется на роутере…';
+        if(!running){try {var result=JSON.parse(j.output||'{}');msg=result.message||result.error||'Обновление завершено.';}catch(e){msg=j.result==='ok'?'Обновление завершено.':'Не удалось завершить обновление.';}if(j.result==='ok')msg+=' Обновите страницу для загрузки нового интерфейса.';}
+        globalUpdateNotice(msg,running?'info':(j.result==='ok'?'ok':'error'));renderOverview(root,window.dmState||{});
+      }else{
+        state.jobRunning=running;state.currentTest={status:running?'RUNNING':(j.result==='ok'?'DONE':'FAILED'),result:j.result||''};
+        state.pageNotice.doh=running?'Проверка текущих DNS выполняется на роутере…':(j.result==='ok'?'Проверка текущих DNS завершена.':'Проверка текущих DNS завершилась с ошибками.');renderDoH(root,window.dmState||{});
+      }
+      if(running)window.setTimeout(poll,1500);else{root.__dmBackgroundWatch=null;refresh(root,true);}
+    }).catch(function(){
+      if(!rootAlive(root)){root.__dmBackgroundWatch=null;return;}
+      if(++errors<5){window.setTimeout(poll,1500);return;}
+      root.__dmBackgroundWatch=null;
+      if(id==='update'){state.updatingAll=false;globalUpdateNotice('Не удалось получить состояние обновления. Оно может продолжаться на роутере.','error');renderOverview(root,window.dmState||{});}
+      else{state.jobRunning=false;state.currentTest={status:'UNKNOWN'};state.pageNotice.doh='Не удалось получить состояние проверки. Она может продолжаться на роутере.';renderDoH(root,window.dmState||{});}
+    });
+  }poll();
+}
 function updateAll(root){
   if(state.updatingAll||state.busy||(state.versionCheck&&state.versionCheck.running))return;
-  state.updatingAll=true;
-  globalUpdateNotice('Обновляю доступные компоненты…','info');
-  renderOverview(root,window.dmState||{});
-
-  var results=[];
-  var anyUpdate=false;
-  var anyError=false;
-  var luciUpdated=false;
-  var updateInterrupted=false;
-
-  function textOf(r){return r&&String(r.message||r.error||'')||'';}
-  function isCurrent(r){var t=textOf(r);return !!(r&&r.ok)&&/Новой версии|актуал|не новее|уже актуален/.test(t);}
-  function add(name,r){
-    if(r&&r.ok&&r.updated){
-      anyUpdate=true;
-      results.push(name+' обновлён');
-      if(name==='LuCI')luciUpdated=true;
-    }else if(isCurrent(r)){
-      results.push(name+' уже актуален');
-    }else{
-      anyError=true;
-      results.push(name+': '+(textOf(r)||'не удалось обновить'));
-    }
-  }
-  function safeUpdateCall(call,label){
-    globalUpdateNotice('Обновляю: '+label+'…','info');
-    renderOverview(root,window.dmState||{});
-    var timer;
-    var timeout=new Promise(function(resolve,reject){timer=setTimeout(function(){reject(new Error('время ожидания ответа истекло'));},120000);});
-    return Promise.race([Promise.resolve().then(call),timeout]).then(function(r){
-      return r||{ok:false,error:'Пустой ответ от '+label+'.'};
-    }).catch(function(err){
-      return {ok:false,unknown:true,error:withRpcError('Результат обновления неизвестен: '+label,err)};
-    }).then(function(r){clearTimeout(timer);return r;});
-  }
-
-  return safeUpdateCall(callManagerUpdate,'DNS Manager').then(function(r){
-    add('DNS Manager',r);
-    if(r.unknown){updateInterrupted=true;return null;}
-    return safeUpdateCall(callHdpUpdate,'Защищённый DNS');
-  }).then(function(r){
-    if(updateInterrupted)return null;
-    add('Защищённый DNS',r);
-    if(r.unknown){updateInterrupted=true;return null;}
-    return safeUpdateCall(callUpdateCatalog,'Каталог DNS');
-  }).then(function(r){
-    if(updateInterrupted)return null;
-    add('Каталог DNS',r);
-    if(r.unknown){updateInterrupted=true;return null;}
-    return safeUpdateCall(callUpdate,'LuCI');
-  }).then(function(r){
-    if(!updateInterrupted){add('LuCI',r);if(r.unknown)updateInterrupted=true;}
-    state.updatingAll=false;
-    var msg=results.join('; ');
-    if(updateInterrupted)msg+='; дальнейшие обновления не запускались. Проверьте состояние перед повтором.';
-    if(luciUpdated&&anyError)msg+='; обновите страницу после проверки ошибок.';
-    globalUpdateNotice(msg,anyError?'error':(anyUpdate?'ok':'info'));
-    renderOverview(root,window.dmState||{});
-    if(luciUpdated&&!anyError){
-      setTimeout(function(){location.reload();},3000);
-    }else{
-      refresh(root,true);
-    }
-  });
+  state.updatingAll=true;globalUpdateNotice('Запускаю обновление на роутере…','info');renderOverview(root,window.dmState||{});
+  return backgroundRequest(callBackgroundUpdate).then(function(r){
+    if(r&&r.ok){watchBackground(root,'update');return;}
+    state.updatingAll=false;globalUpdateNotice((r&&r.error)||'Не удалось запустить обновление.','error');renderOverview(root,window.dmState||{});
+  }).catch(function(){state.updatingAll=false;globalUpdateNotice('Ответ о запуске не получен. Проверяю состояние задачи.','info');watchBackground(root,'update');});
 }
 function uninstallManager(root){
   if(state.busy)return;
@@ -7086,6 +7170,23 @@ function resumeAction(root){
     });
   }).catch(function(){state.actionResumeStarted=false;});
 }
+function resumeCatalogTest(root){
+  if(!rootAlive(root)||root.__dmCatalogResumed||state.jobRunning)return;
+  root.__dmCatalogResumed=true;
+  backgroundRequest(function(){return callJob('test_all');}).then(function(j){
+    if(!rootAlive(root)||!j||!j.ok||state.jobRunning)return;
+    if(j.status==='running'){
+      state.jobRunning=true;state.fullTest={status:'RUNNING',origin:'catalog'};
+      state.pageNotice.catalog='Проверка каталога продолжается на роутере…';
+      renderCatalog(root);pollJob(root,'test_all',{mode:'all',origin:'catalog'});
+    }else if(j.status==='done'||j.status==='failed'){
+      var ok=j.status==='done'&&j.result==='ok';
+      state.fullTest={status:ok?'DONE':'FAILED',result:j.result||'fail',origin:'catalog'};
+      state.pageNotice.catalog=ok?'Полная проверка каталога завершена.':'Полная проверка DNS завершилась с ошибкой.';
+      renderCatalog(root);
+    }
+  }).catch(function(){root.__dmCatalogResumed=false;});
+}
 function testAll(root,origin){
   if(state.jobRunning||state.busy)return;
   var from=origin||state.activeTab||'overview';
@@ -7152,94 +7253,13 @@ function testOne(id,root,origin,done){
 }
 function testCurrent(root){
   if(state.jobRunning||state.busy)return;
-  var rows=displayDnsRows(window.dmState||{});
-  var slots=rows.filter(function(d){return d&&d.slot&&d.id;});
-  var systems=rows.filter(function(d){return d&&!d.slot&&d.url&&d.port;});
-  var targets=slots.concat(systems);
-  var total=targets.length;
-  if(!total){
-    state.currentTest={status:'FAILED',total:0};
-    state.checking={};
-    state.pageNotice.doh='Текущих DNS для проверки нет.';
-    setAction(false,'Текущих DNS для проверки нет.');
-    render(root,window.dmState||{});
-    return;
-  }
-
-  state.currentTest={status:'RUNNING',total:total,started:Date.now()};
-  state.jobRunning=true;
-  targets.forEach(function(d){
-    state.checking[checkKey(d.id,d)]={status:'RUNNING',ping:'',started:Date.now()};
-  });
-  state.pageNotice.doh='Проверяю текущие DNS…';
-  render(root,window.dmState||{});
-
-  var combinedFailed=false;
-
-  function finishCombined(ns){
-    ns=ns||{};
-    var active=(!window.dmCurrentRoot||window.dmCurrentRoot===root)&&(!root.__dmRoute||currentRoute()===root.__dmRoute);
-    if(active)window.dmState=ns;
-    state.checking={};
-    state.jobRunning=false;
-    var bad=combinedFailed;
-    var finalRows=displayDnsRows(ns).filter(function(d){return d&&((d.slot&&d.id)||(!d.slot&&d.url&&d.port));});
-    if(finalRows.length!==total)bad=true;
-    finalRows.forEach(function(d){
-      if(String(d.status||'').toUpperCase()!=='OK')bad=true;
-    });
-    state.currentTest={status:bad?'FAILED':'DONE',result:bad?'fail':'ok',total:total,finished:Date.now()};
-    state.pageNotice.doh=bad?'Проверка текущих DNS завершена с ошибками.':'Проверка текущих DNS завершена.';
-    if(active)render(root,ns);
-  }
-
-  function startSystemChecks(ns){
-    if(!systems.length){
-      finishCombined(ns||window.dmState||{});
-      return;
-    }
-    state.jobRunning=true;
-    state.pageNotice.doh='Проверяю системные DNS…';
-    if((!window.dmCurrentRoot||window.dmCurrentRoot===root)&&(!root.__dmRoute||currentRoute()===root.__dmRoute))render(root,window.dmState||{});
-    callTestSystem().then(function(r){
-      if(r&&r.ok){
-        pollJob(root,r.job,{mode:'system'},function(ns,j){
-          if(!j||String(j.status||'').toLowerCase()!=='done'||j.result!=='ok')combinedFailed=true;
-          finishCombined(ns);
-        });
-      }else{
-        combinedFailed=true;
-        state.jobRunning=false;
-        finishCombined(window.dmState||{});
-      }
-    }).catch(function(err){
-      combinedFailed=true;
-      state.jobRunning=false;
-      state.pageNotice.doh=withRpcError('Не удалось выполнить проверку системных DNS.',err);
-      finishCombined(window.dmState||{});
-    });
-  }
-
-  if(!slots.length){
-    startSystemChecks(window.dmState||{});
-    return;
-  }
-
-  callTestCurrent().then(function(r){
-    if(r&&r.ok){
-      pollJob(root,r.job,{mode:'current'},function(ns,j){
-        if(!j||String(j.status||'').toLowerCase()!=='done'||j.result!=='ok')combinedFailed=true;
-        startSystemChecks(ns);
-      });
-    }else{
-      combinedFailed=true;
-      startSystemChecks();
-    }
-  }).catch(function(err){
-    combinedFailed=true;
-    state.pageNotice.doh=withRpcError('Не удалось выполнить проверку DNS в слотах.',err);
-    startSystemChecks();
-  });
+  var targets=displayDnsRows(window.dmState||{}).filter(function(d){return d&&((d.slot&&d.id)||(!d.slot&&d.url&&d.port));});
+  if(!targets.length){state.currentTest={status:'FAILED',total:0};state.pageNotice.doh='Текущих DNS для проверки нет.';renderDoH(root,window.dmState||{});return;}
+  state.jobRunning=true;state.currentTest={status:'RUNNING'};state.pageNotice.doh='Запускаю проверку на роутере…';renderDoH(root,window.dmState||{});
+  return backgroundRequest(callCombinedTest).then(function(r){
+    if(r&&r.ok){watchBackground(root,'combined');return;}
+    state.jobRunning=false;state.currentTest={status:'FAILED'};state.pageNotice.doh=(r&&r.error)||'Не удалось запустить проверку.';renderDoH(root,window.dmState||{});
+  }).catch(function(){state.jobRunning=false;state.pageNotice.doh='Ответ о запуске не получен. Проверяю состояние задачи.';watchBackground(root,'combined');});
 }
 function pollJob(root,job,meta,done){
   var jobId=(typeof job==='string')?job:(job&&job.id)||'';
@@ -7575,6 +7595,9 @@ return baseclass.extend({
       scheduleBackgroundStatus(root);
     }
     scheduleRouteWarmup(root);
+    if(route==='dashboard')window.setTimeout(function(){watchBackground(root,'update');},0);
+    if(route==='doh')window.setTimeout(function(){watchBackground(root,'combined');},0);
+    if(route==='catalog')window.setTimeout(function(){resumeCatalogTest(root);},0);
     if(!state.profileResumeStarted&&route==='doh')window.setTimeout(function(){
       if(rootAlive(root))resumeRunningProfile(root);
     },0);
@@ -7607,7 +7630,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 2.31
+// DNS Manager LuCI version: 2.32
 return view.extend({
   load: DM.load,
   render: DM.render,

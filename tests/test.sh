@@ -17,6 +17,7 @@ sh -n dns-manager-luci.sh || fail "dns-manager-luci.sh: sh -n"
 sh -n tests/openwrt-luci-smoke.sh || fail "tests/openwrt-luci-smoke.sh: sh -n"
 ok "shell syntax"
 
+sh tests/background-jobs-test.sh || fail "background operation sequences"
 sh tests/regional-provider-test.sh || fail "regional provider address parsing"
 sh tests/regional-modes-test.sh || fail "regional mode routes"
 sh tests/regional-watch-test.sh || fail "regional provider watcher"
@@ -480,7 +481,7 @@ if grep -Fq '/etc/init.d/rpcd restart' "$tmp/luci_self_update.sh"; then
 fi
 awk '/^    if \[ "\${DNS_MANAGER_LUCI_SKIP_RPC_RELOAD:-0}" = 1 \]; then$/,/^    elif \[ -x \/etc\/init.d\/rpcd \]; then$/ { print }' dns-manager-luci.sh > "$tmp/luci_legacy_restart.sh"
 grep -Fq '/etc/init.d/rpcd restart' "$tmp/luci_legacy_restart.sh" || fail "LuCI installer does not schedule rpcd restart for legacy self-updates"
-grep -Fq 'setTimeout(function(){location.reload();},3000);' "$tmp/common.js" || fail "LuCI reload delay is not aligned with rpcd restart"
+grep -Fq 'Обновите страницу для загрузки нового интерфейса.' "$tmp/common.js" || fail "LuCI update does not explain how to load the new interface"
 ok "LuCI package update and legacy self-update rpcd checks are covered"
 grep -q 'RESOURCE_DIR="/www/luci-static/resources/dns-manager"' dns-manager-luci.sh || fail "shared LuCI resource directory missing"
 grep -q 'COMMON_FILE="$RESOURCE_DIR/common.js"' dns-manager-luci.sh || fail "shared LuCI common module path missing"
@@ -553,8 +554,8 @@ grep -Fq "state.currentTest.status==='RUNNING'" "$tmp/doh-current-test.js" || fa
 if grep -q "Проверить DNS в слотах" "$tmp/common.js" || grep -q "Проверить системные DNS" "$tmp/common.js"; then
     fail "LuCI still exposes separate slot/system DNS check buttons"
 fi
-grep -q "var systems=rows.filter(function(d){return d&&!d.slot&&d.url&&d.port;});" "$tmp/common.js" || fail "LuCI current-DNS check does not classify unassigned system resolvers"
-grep -q "callTestSystem().then" "$tmp/common.js" || fail "LuCI common current-DNS check does not include system DNS"
+grep -q "callCombinedTest" "$tmp/common.js" || fail "LuCI does not start the combined DNS check"
+grep -q "job_start_test_system" "$tmp/backend.sh" || fail "Backend does not include system DNS"
 ok "LuCI current-DNS check covers slots and system resolvers with one button"
 
 DOLLAR='$'
@@ -640,7 +641,7 @@ grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validat
 grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
 grep -q 'VERSION="4.19"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
-grep -q 'VERSION="2.31"' dns-manager-luci.sh || fail "LuCI version not bumped"
+grep -q 'VERSION="2.32"' dns-manager-luci.sh || fail "LuCI version not bumped"
 grep -Fq "{id:'quad9plain',ips:'9.9.9.10,149.112.112.10,2620:fe::10,2620:fe::fe:10'}" dns-manager-luci.sh || fail "historical Quad9 bootstrap snapshot changed"
 grep -Fq "{id:'cira',ips:'149.112.121.10,149.112.122.10,2620:10a:80bb::10,2620:10a:80bc::10'}" dns-manager-luci.sh || fail "historical CIRA bootstrap snapshot changed"
 if grep -q '^main_menu$' dns-manager.sh; then fail "interactive console menu still starts"; fi
