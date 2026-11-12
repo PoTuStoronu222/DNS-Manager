@@ -52,6 +52,11 @@ for service in https-dns-proxy dnscrypt-proxy dns-manager-dnscrypt; do
 done
 script="$initdir/$target"
 [ -x "$script" ] || { printf 'Missing service: %s\n' "$target" >&2; exit 1; }
+# rc.common's procd start may not propagate start_service's failure. Validate
+# explicitly before enabling the experimental slot service at boot.
+if [ "$engine" = dnscrypt-proxy2 ]; then
+    "$script" check || { printf 'Invalid dnscrypt-proxy2 configuration\n' >&2; exit 1; }
+fi
 "$script" enable || { printf 'Failed to enable %s\n' "$target" >&2; exit 1; }
 if ! "$script" start; then
     "$script" disable >/dev/null 2>&1 || true
