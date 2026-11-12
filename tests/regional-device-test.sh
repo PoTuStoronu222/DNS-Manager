@@ -21,10 +21,14 @@ for REGIONAL_MODE in doh yandex isp legacy; do
     : > "$DMD_STAGE/profiles.map"
     SLOT_RU='' PORT_RU='' REGIONAL_ISP_IPS='94.230.128.3 10.255.0.2'
     [ "$REGIONAL_MODE" != legacy ] || { SLOT_RU=regional; PORT_RU=5059; }
-    SLOT_1_DOMAINS='Avito.St images.wbstatic.net'
+    SLOT_1_DOMAINS='Avito.St images.wbstatic.net ae-pic-a1.aliexpress-media.com YASTATIC.NET'
     dmd_ensure_profile 1 device >/dev/null
     profile="$DMD_STAGE/profiles/profile_1.conf"
     grep -Fxq 'server=/avito.st/127.0.0.1#5053' "$profile"
+    grep -Fxq 'server=/ae-pic-a1.aliexpress-media.com/127.0.0.1#5053' "$profile"
+    grep -Fxq 'server=/yastatic.net/127.0.0.1#5053' "$profile"
+    ! grep -Fq 'server=/ae-pic-a1.aliexpress-media.com/77.88.8.' "$profile"
+    ! grep -Fq 'server=/yastatic.net/77.88.8.' "$profile"
     grep -Fxq 'server=/images.wbstatic.net/127.0.0.1#5053' "$profile"
     ! grep -Fq 'server=/avito.st/77.88.8.' "$profile"
     ! grep -Fq 'server=/avito.st/94.230.128.' "$profile"

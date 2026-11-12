@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="4.20"
+VERSION="4.21"
 # 3.86: make LuCI the primary interface and preserve external DNS on removal.
 # 3.85: revalidate Watchdog settings before recovery.
 # 3.84: cap DNS catalog test concurrency by total RAM on small routers.
@@ -3389,7 +3389,7 @@ dnsmasq_manager_server_owned() {
     done
     if [ -n "${PORT_RU:-}" ]; then
         case "$_val" in
-            /ru/127.0.0.1#${PORT_RU}|/su/127.0.0.1#${PORT_RU}|/xn--p1ai/127.0.0.1#${PORT_RU}|/by/127.0.0.1#${PORT_RU}|/kz/127.0.0.1#${PORT_RU}|/avito.st/127.0.0.1#${PORT_RU}|/wbcontent.net/127.0.0.1#${PORT_RU}|/wbstatic.net/127.0.0.1#${PORT_RU}|/ozonusercontent.com/127.0.0.1#${PORT_RU}) return 0 ;;
+            /ru/127.0.0.1#${PORT_RU}|/su/127.0.0.1#${PORT_RU}|/xn--p1ai/127.0.0.1#${PORT_RU}|/by/127.0.0.1#${PORT_RU}|/kz/127.0.0.1#${PORT_RU}|/avito.st/127.0.0.1#${PORT_RU}|/wbcontent.net/127.0.0.1#${PORT_RU}|/wbstatic.net/127.0.0.1#${PORT_RU}|/ozonusercontent.com/127.0.0.1#${PORT_RU}|/ae-pic-a1.aliexpress-media.com/127.0.0.1#${PORT_RU}|/yastatic.net/127.0.0.1#${PORT_RU}) return 0 ;;
         esac
     fi
     # Uninstall must not infer ownership of another service from a port alone.
@@ -3399,7 +3399,7 @@ dnsmasq_manager_server_owned() {
         isp) _ru_ips="${REGIONAL_ISP_IPS:-}" ;;
         *) _ru_ips='' ;;
     esac
-    for _ru_zone in ru su xn--p1ai by kz avito.st wbcontent.net wbstatic.net ozonusercontent.com; do
+    for _ru_zone in ru su xn--p1ai by kz avito.st wbcontent.net wbstatic.net ozonusercontent.com ae-pic-a1.aliexpress-media.com yastatic.net; do
         for _ru_ip in $_ru_ips; do
             [ "$_val" = "/$_ru_zone/$_ru_ip" ] && return 0
         done
@@ -3441,7 +3441,7 @@ reconcile_dnsmasq() {
     if [ "${REGIONAL_MODE:-legacy}" = yandex ] || [ "${REGIONAL_MODE:-legacy}" = isp ]; then
         if [ "$REGIONAL_MODE" = yandex ]; then _regional_ips='77.88.8.8 77.88.8.1'; else _regional_ips="${REGIONAL_ISP_IPS:-}"; fi
         [ -n "$_regional_ips" ] || return 1
-        for t in /ru /su /xn--p1ai /by /kz /avito.st /wbcontent.net /wbstatic.net /ozonusercontent.com; do
+        for t in /ru /su /xn--p1ai /by /kz /avito.st /wbcontent.net /wbstatic.net /ozonusercontent.com /ae-pic-a1.aliexpress-media.com /yastatic.net; do
             _regional_overridden=0
             for _custom_domain in $_regional_custom_domains; do
                 case "${t#/}" in "$_custom_domain"|*."$_custom_domain") _regional_overridden=1; break;; esac
@@ -3454,7 +3454,7 @@ reconcile_dnsmasq() {
             done
         done
     elif [ "$TLD_RU_ENABLED" = 1 ] && [ -n "$SLOT_RU" ] && [ -n "$PORT_RU" ]; then
-        for t in /ru /su /xn--p1ai /by /kz /avito.st /wbcontent.net /wbstatic.net /ozonusercontent.com; do
+        for t in /ru /su /xn--p1ai /by /kz /avito.st /wbcontent.net /wbstatic.net /ozonusercontent.com /ae-pic-a1.aliexpress-media.com /yastatic.net; do
             _regional_overridden=0
             for _custom_domain in $_regional_custom_domains; do
                 case "${t#/}" in "$_custom_domain"|*."$_custom_domain") _regional_overridden=1; break;; esac
@@ -7392,7 +7392,7 @@ watchdog_expected_servers() {
     done
     if [ "${REGIONAL_MODE:-legacy}" = yandex ] || [ "${REGIONAL_MODE:-legacy}" = isp ]; then
         if [ "$REGIONAL_MODE" = yandex ]; then _regional_ips='77.88.8.8 77.88.8.1'; else _regional_ips="${REGIONAL_ISP_IPS:-}"; fi
-        for _t in /ru /su /xn--p1ai /by /kz /avito.st /wbcontent.net /wbstatic.net /ozonusercontent.com; do
+        for _t in /ru /su /xn--p1ai /by /kz /avito.st /wbcontent.net /wbstatic.net /ozonusercontent.com /ae-pic-a1.aliexpress-media.com /yastatic.net; do
             _regional_overridden=0
             for _custom_domain in $_regional_custom_domains; do
                 case "${_t#/}" in "$_custom_domain"|*."$_custom_domain") _regional_overridden=1; break;; esac
@@ -7402,7 +7402,7 @@ watchdog_expected_servers() {
         done
     elif [ "${TLD_RU_ENABLED:-0}" = 1 ]; then
         if [ -n "$SLOT_RU" ] && [ -n "$PORT_RU" ]; then
-            for _t in /ru /su /xn--p1ai /by /kz /avito.st /wbcontent.net /wbstatic.net /ozonusercontent.com; do
+            for _t in /ru /su /xn--p1ai /by /kz /avito.st /wbcontent.net /wbstatic.net /ozonusercontent.com /ae-pic-a1.aliexpress-media.com /yastatic.net; do
                 _regional_overridden=0
                 for _custom_domain in $_regional_custom_domains; do
                     case "${_t#/}" in "$_custom_domain"|*."$_custom_domain") _regional_overridden=1; break;; esac
