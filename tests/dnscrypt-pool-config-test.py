@@ -20,6 +20,7 @@ config = tomllib.loads(result.stdout)
 assert config['server_names'] == ['manager-1', 'manager-2']
 assert config['listen_addresses'] == ['127.0.0.1:5053']
 assert config['cache'] is True
+assert config['cache_min_ttl'] == 0 and config['cache_neg_min_ttl'] == 0
 assert config['bootstrap_resolvers'] == ['1.1.1.1:53', '[2606:4700:4700::1111]:53']
 for name, host, path in [('manager-1', 'dns.google', '/dns-query'),
                          ('manager-2', 'api.magicdns.ru', '/sync')]:

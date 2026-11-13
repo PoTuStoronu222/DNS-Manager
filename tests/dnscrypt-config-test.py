@@ -18,6 +18,7 @@ config = tomllib.loads(result.stdout)
 assert config['listen_addresses'] == ['127.0.0.1:5059']
 assert config['server_names'] == ['manager-slot']
 assert config['cache'] is True
+assert config['cache_min_ttl'] == 0 and config['cache_neg_min_ttl'] == 0
 assert config['ignore_system_dns'] is True
 assert config['bootstrap_resolvers'] == ['1.1.1.1:53', '[2606:4700:4700::1111]:53']
 assert config['static']['manager-slot']['stamp'].startswith('sdns://')

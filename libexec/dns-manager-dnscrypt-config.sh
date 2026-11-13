@@ -49,6 +49,9 @@ printf "server_names = ['manager-slot']\n"
 printf "listen_addresses = ['127.0.0.1:%s']\n" "$port"
 # dnsmasq's cache is disabled in DNSCrypt mode; keep one cache in the proxy.
 printf "cache = true\n"
+# Do not extend upstream TTLs by default (dnscrypt-proxy defaults to 60s).
+printf "cache_min_ttl = 0\n"
+printf "cache_neg_min_ttl = 0\n"
 printf "bootstrap_resolvers = [%s]\n" "$resolvers"
 printf "ignore_system_dns = true\n"
 printf "[static.manager-slot]\n"
