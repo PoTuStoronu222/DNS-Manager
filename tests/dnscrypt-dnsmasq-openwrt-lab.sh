@@ -29,6 +29,7 @@ uci revert dhcp
 sh /tmp/dns-manager-dnscrypt-dnsmasq.sh 5053 /tmp/dns-manager-uci-read-guard.sh /bin/true
 [ "$(uci -q get dhcp.main.noresolv)" = 1 ]
 [ "$(uci -q get dhcp.main.cachesize)" = 0 ]
+[ "$(uci -q get dhcp.main.localuse)" = 1 ]
 [ "$(uci -q get dhcp.main.server)" = '/ru/77.88.8.8 127.0.0.1#5053' ]
 [ "$(uci -q get dhcp.main.local)" = /lan/ ]
 echo 'PASS: isolated UCI apply preserves regional route and rejects pending changes'
@@ -77,3 +78,17 @@ uci commit dhcp
 sh /tmp/dns-manager-dnscrypt-dnsmasq.sh restore 5053 /tmp/dns-manager-uci-read-guard.sh /bin/true
 [ "$(uci -q get dhcp.main.server)" = '/steer.example/127.0.0.1#5300' ]
 echo 'PASS: reset removes Manager-owned domain route but retains unrelated route'
+
+# Clean-slate switching removes general and domain forwards, with other DHCP options intact.
+uci set dhcp.main.local=/pending-clean/
+if sh /tmp/dns-manager-dnscrypt-dnsmasq.sh clean 5053 /tmp/dns-manager-uci-read-guard.sh /bin/true; then
+    echo "ERROR: clean accepted pending DHCP changes" >&2; exit 1
+fi
+uci revert dhcp
+sh /tmp/dns-manager-dnscrypt-dnsmasq.sh clean 5053 /tmp/dns-manager-uci-read-guard.sh /bin/true
+for option in noresolv cachesize server localuse; do
+    if uci -q get "dhcp.main.$option" >/dev/null; then echo "ERROR: clean left $option" >&2; exit 1; fi
+done
+[ "$(uci -q get dhcp.main.local)" = /lan/ ]
+sh /tmp/dns-manager-dnscrypt-dnsmasq.sh clean 5053 /tmp/dns-manager-uci-read-guard.sh /bin/true
+echo "PASS: clean-slate DNS reset is isolated and idempotent"

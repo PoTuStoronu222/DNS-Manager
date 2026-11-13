@@ -1,11 +1,11 @@
 #!/bin/sh
 # Experimental dnsmasq upstream transaction. The caller serializes Manager
 # mutations and verifies that the DNSCrypt listener is answering first.
-# Usage: script [restore] port guard restart-command [args...]
+# Usage: script [restore|clean] port guard restart-command [args...]
 # jshn uses optional shell variables and is not compatible with nounset.
 set -e
 request_mode=encrypted
-if [ "${1:-}" = restore ]; then request_mode=stock; shift; fi
+case "${1:-}" in restore) request_mode=stock; shift ;; clean) request_mode=clean; shift ;; esac
 [ "$#" -ge 3 ] || exit 2
 port=$1; guard=$2; shift 2
 case "$port" in ''|*[!0-9]*) exit 2;; esac
@@ -86,6 +86,7 @@ build_request() {
     if [ "$mode" = encrypted ]; then
         json_add_string noresolv 1
         json_add_string cachesize 0
+        json_add_string localuse 1
     else
         json_add_string noresolv 0
         json_add_string cachesize 1000
@@ -93,10 +94,20 @@ build_request() {
     json_close_object
     json_dump
 }
-if [ "$request_mode" = stock ] && [ ! -s "$dir/domains" ] && [ -n "$server_type" ]; then
-    ubus call uci delete "{\"ubus_rpc_session\":\"$sid\",\"config\":\"dhcp\",\"section\":\"$section\",\"option\":\"server\"}" >/dev/null || exit 1
+if [ "$request_mode" = clean ]; then
+    # Explicit clean-slate switch: delete all four settings in one UCI
+    # session, including domain forwards. The caller must warn the user.
+    for key in noresolv cachesize server localuse; do
+        json_get_type option_type "$key" || option_type=''
+        [ -n "$option_type" ] || continue
+        ubus call uci delete "{\"ubus_rpc_session\":\"$sid\",\"config\":\"dhcp\",\"section\":\"$section\",\"option\":\"$key\"}" >/dev/null || exit 1
+    done
+else
+    if [ "$request_mode" = stock ] && [ ! -s "$dir/domains" ] && [ -n "$server_type" ]; then
+        ubus call uci delete "{\"ubus_rpc_session\":\"$sid\",\"config\":\"dhcp\",\"section\":\"$section\",\"option\":\"server\"}" >/dev/null || exit 1
+    fi
+    ubus call uci set "$(build_request "$request_mode")" >/dev/null || exit 1
 fi
-ubus call uci set "$(build_request "$request_mode")" >/dev/null || exit 1
 ubus call uci commit "{\"ubus_rpc_session\":\"$sid\",\"config\":\"dhcp\"}" >/dev/null || exit 1
 session_close
 if sh "$guard" dhcp /bin/sh -c '
@@ -111,7 +122,7 @@ if sh "$guard" dhcp /bin/sh -c '
 ' sh "$instance" "$@"; then
     exit 0
 fi
-if [ "$request_mode" = stock ]; then
+if [ "$request_mode" != encrypted ]; then
     echo 'Standard DNS settings were saved, but dnsmasq did not start' >&2
     exit 1
 fi
@@ -126,7 +137,8 @@ json_load "$(cat "$dir/after")" || exit 1
 json_select values || exit 1
 json_get_var after_noresolv noresolv
 json_get_var after_cachesize cachesize
-[ "$after_noresolv" = 1 ] && [ "$after_cachesize" = 0 ] || { echo 'DNS settings changed concurrently; not overwriting them' >&2; exit 1; }
+json_get_var after_localuse localuse
+[ "$after_noresolv" = 1 ] && [ "$after_cachesize" = 0 ] && [ "$after_localuse" = 1 ] || { echo 'DNS settings changed concurrently; not overwriting them' >&2; exit 1; }
 json_get_type after_type server
 [ "$after_type" = array ] || { echo 'DNS servers changed concurrently; not overwriting them' >&2; exit 1; }
 json_select server || exit 1
