@@ -5394,6 +5394,7 @@ function isProfileId(p){
 }
 function activeProfileId(st){
   st=st||{};
+  if(st.dnscrypt_engine==='dnscrypt-proxy2')return isProfileId(st.dnscrypt_profile)?st.dnscrypt_profile:'';
   var mode=String(st.profile_mode||'').toLowerCase();
   var category=String(st.selection_category||'').toLowerCase();
   if(mode==='profile' && isProfileId(category))return category;
@@ -5406,6 +5407,7 @@ function activeProfileLabel(st){
   st=st||{};
   var id=activeProfileId(st);
   if(id)return profileName(id);
+  if(st.dnscrypt_engine==='dnscrypt-proxy2')return profileName('none');
   if(String(st.profile_mode||'').toLowerCase()==='profile'){
     var category=String(st.selection_category||'').toLowerCase();
     if(category==='all')return 'Все категории';
@@ -5878,6 +5880,7 @@ function renderSystemCard(root){
  * router, but that must not hide a DNS already assigned to a slot. */
 function displayDnsRows(st){
   st=st||{};
+  if(st.dnscrypt_engine==='dnscrypt-proxy2')return (Array.isArray(st.dnscrypt_servers)?st.dnscrypt_servers:[]).map(function(id){return {id:String(id),name:String(id),slot:'',running:Number(st.dnscrypt_running)===1};});
   var slots=Array.isArray(st.slots)?st.slots:[];
   var instances=Array.isArray(st.doh_instances)?st.doh_instances:[];
   var rows=[];
@@ -5939,7 +5942,7 @@ function renderOverview(root,st){
   var applied=renderActionStatus();if(applied)e.appendChild(applied);
   if(state.statusError&&!state.statusFromCache)e.appendChild(E('div',{'class':'dm-inline-msg error'},state.statusError+' Проверьте: ubus call dns_manager status.'));
 
-  var dohState=String(st.doh||'').toLowerCase()==='yes'?'ok':'down';
+  var dohState=st.dnscrypt_engine==='dnscrypt-proxy2'?(Number(st.dnscrypt_running)===1?'ok':'down'):(String(st.doh||'').toLowerCase()==='yes'?'ok':'down');
   var doh=dohState==='ok'
     ? badge('dm-ok','работает')
     : dohState==='down'
@@ -6172,6 +6175,14 @@ function renderBootstrap(root,st){
 }
 function renderDoH(root,st){
   var e=root.querySelector('#dm-doh');if(!e)return;e.innerHTML='';
+  if(st.dnscrypt_engine==='dnscrypt-proxy2'){
+    var servers=Array.isArray(st.dnscrypt_servers)?st.dnscrypt_servers:[];
+    var details=[row('Движок',E('span',{},'dnscrypt-proxy2')),row('Служба',Number(st.dnscrypt_running)===1?badge('dm-ok','работает'):badge('dm-bad','остановлена')),row('Профиль',E('span',{},activeProfileLabel(st)))];
+    details.push(E('p',{'class':'dm-hint'},'Один процесс использует общий набор DNS. Отдельные слоты и привязки устройств в этом режиме недоступны.'));
+    details.push(servers.length?E('div',{'class':'dm-doh-list'},servers.map(function(id){return E('div',{'class':'dm-row'},String(id));})):E('div',{'class':'dm-hint'},'DNS ещё не выбраны: примените профиль.'));
+    e.appendChild(card('DNS over HTTPS',details));
+    return;
+  }
   var rr=resolverRows(st,root), rows=rr[0], count=rr[1];
   var ch=[];
   ch.push(E('p',{'class':'dm-hint'},'DNS Manager настраивает DoH для DNS роутера. При работе Steer для его правил могут использоваться другие DNS-серверы.'));
@@ -6667,7 +6678,10 @@ function renderProfiles(root,st){
     g,
     E('div',{'class':'dm-mini'},'Профиль определяет схему выбора DNS и используется сейчас.')
   ];
-  if(currentId==='dnssec')pch.push(E('div',{'class':'dm-hint'},'DNSSEC проверяется выбранными серверами; фильтрация может различаться. Региональный DNS, Steer и привязки устройств работают по своим правилам.'));
+  if(currentId==='dnssec')pch.push(E('div',{'class':'dm-hint'},'DNSSEC проверяется выбранными серверами; фильтрация может различаться.'+(st.dnscrypt_engine==='dnscrypt-proxy2'?'':' Региональный DNS, Steer и привязки устройств работают по своим правилам.')));
+  if(st.dnscrypt_engine==='dnscrypt-proxy2'){
+    pch.push(E('div',{'class':'dm-hint'},'Региональный DNS и привязки устройств в этом режиме пока недоступны.'));
+  }else{
   var regionalSlot=(st.slots||[]).filter(function(s){return String(s.slot)==='RU';})[0]||{};
   var regionalMode=String(st.regional_mode|| (regionalSlot.id?'legacy':'doh'));
   var hasGeneral=(st.slots||[]).some(function(s){return String(s.slot)!=='RU'&&!!s.id;});
@@ -6687,6 +6701,7 @@ function renderProfiles(root,st){
   if(Number(st.steer_dns_active)===1)pch.push(E('p',{'class':'dm-hint'},'Правила DNS в Steer могут обрабатывать отдельные запросы до dnsmasq.'));
   if(!hasGeneral)pch.push(E('div',{'class':'dm-inline-msg info'},'Сначала примените основной DNS-профиль.'));
   if(state.regionalNotice)pch.push(E('div',{'class':'dm-inline-msg '+(state.regionalNoticeType||'info')},state.regionalNotice));
+  }
 
   var pj=String(st.profile_job_status||'').toLowerCase();
   var pp=String(st.profile_job_profile||'');
