@@ -82,3 +82,13 @@ if ! "$script" start; then
     printf 'Failed to start %s\n' "$target" >&2
     exit 1
 fi
+# rc.common may report a successful start even if no procd instance was
+# registered. Do not tell the caller it is safe to point dnsmasq at it then.
+for attempt in 1 2 3; do
+    if "$script" running >/dev/null 2>&1; then exit 0; fi
+    [ "$attempt" -eq 3 ] || sleep 1
+done
+"$script" stop >/dev/null 2>&1 || true
+"$script" disable >/dev/null 2>&1 || true
+printf 'Service did not become ready: %s\n' "$target" >&2
+exit 1
