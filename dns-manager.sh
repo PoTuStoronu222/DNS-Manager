@@ -8741,7 +8741,10 @@ watchdog_service_enabled() {
 watchdog_service_stop_disable() {
     if [ -x "$WATCHDOG_SERVICE_PATH" ]; then
         "$WATCHDOG_SERVICE_PATH" stop >/dev/null 2>&1 || true
-        "$WATCHDOG_SERVICE_PATH" disable >/dev/null 2>&1 || true
+        if ! "$WATCHDOG_SERVICE_PATH" disable >/dev/null 2>&1; then
+            err_msg "Не удалось отключить автозапуск DNS Watchdog."
+            return 1
+        fi
 
         # procd stops asynchronously; give the service a short grace period
         # before declaring a safe stop failure. This does not change watchdog
@@ -8754,6 +8757,10 @@ watchdog_service_stop_disable() {
 
         if watchdog_service_running; then
             err_msg "Служба dns-watchdog не остановилась. Изменение watchdog прекращено для безопасности."
+            return 1
+        fi
+        if watchdog_service_enabled; then
+            err_msg "DNS Watchdog остался в автозапуске. Изменение прекращено для безопасности."
             return 1
         fi
     fi

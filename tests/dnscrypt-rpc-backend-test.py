@@ -47,7 +47,10 @@ else: print('{}')
     manager.write_text('''#!/bin/sh
 preflight_readonly() { :; }
 init_dirs() { :; }
-load_config() { BOOTSTRAP_DNS=1.1.1.1; }
+load_config() { BOOTSTRAP_DNS=1.1.1.1; WATCHDOG_ENABLED=1; WATCHDOG_AUTOREPLACE=1; }
+watchdog_service_stop_disable() { [ ! -e "$LAB_ROOT/watchdog-fail" ]; }
+watchdog_cron_remove_owned_block() { [ ! -e "$LAB_ROOT/cron-fail" ]; }
+save_config() { [ ! -e "$LAB_ROOT/save-fail" ] && [ "$WATCHDOG_ENABLED:$WATCHDOG_AUTOREPLACE" = 0:0 ] && touch "$LAB_ROOT/watchdog-disabled"; }
 acquire_mutation_lock() { [ "${LAB_SWITCH:-0}" != 1 ] || printf 'https-dns-proxy\\n' > "$DNS_MANAGER_DNSCRYPT_CONFIG_DIR/dnscrypt-engine"; }
 release_mutation_lock() { :; }
 restore_persistent_test_results() { :; }
@@ -127,6 +130,21 @@ dnscrypt_apply_profile_pool() {
     assert result.returncode != 0 and (config / 'dnscrypt-profile.state').exists()
     assert not (d / 'restore').exists()
     (d / 'hdp-active').unlink()
+    (d / 'watchdog-fail').touch()
+    result = run('reset_worker')
+    assert result.returncode != 0 and (config / 'dnscrypt-profile.state').exists()
+    assert not (d / 'restore').exists()
+    (d / 'watchdog-fail').unlink()
+    (d / 'cron-fail').touch()
+    result = run('reset_worker')
+    assert result.returncode != 0 and (config / 'dnscrypt-profile.state').exists()
+    assert not (d / 'restore').exists()
+    (d / 'cron-fail').unlink()
+    (d / 'save-fail').touch()
+    result = run('reset_worker')
+    assert result.returncode != 0 and (config / 'dnscrypt-profile.state').exists()
+    assert not (d / 'restore').exists()
+    (d / 'save-fail').unlink()
     (d / 'restore-fail').touch()
     result = run('reset_worker')
     assert result.returncode != 0 and (config / 'dnscrypt-profile.state').exists()
@@ -138,6 +156,7 @@ dnscrypt_apply_profile_pool() {
     (d / 'quiesce-fail').unlink()
     result = run('reset_worker')
     assert result.returncode == 0 and not (config / 'dnscrypt-profile.state').exists()
+    assert (d / 'watchdog-disabled').exists()
     assert json.loads((jobs / 'action/output').read_text())['ok'] is True
 
 print('DNSCrypt RPC dispatch and profile job use isolated state and reject unsupported actions')
