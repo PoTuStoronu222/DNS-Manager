@@ -543,9 +543,11 @@ EOF_DNSCRYPT_ASSET_6
 #!/bin/sh
 # Experimental dnsmasq upstream transaction. The caller serializes Manager
 # mutations and verifies that the DNSCrypt listener is answering first.
-# Usage: script port guard restart-command [args...]
+# Usage: script [restore] port guard restart-command [args...]
 # jshn uses optional shell variables and is not compatible with nounset.
 set -e
+request_mode=encrypted
+if [ "${1:-}" = restore ]; then request_mode=stock; shift; fi
 [ "$#" -ge 3 ] || exit 2
 port=$1; guard=$2; shift 2
 case "$port" in ''|*[!0-9]*) exit 2;; esac
@@ -553,6 +555,7 @@ case "$port" in ''|*[!0-9]*) exit 2;; esac
 [ -r "$guard" ] || exit 1
 . /usr/share/libubox/jshn.sh
 section='@dnsmasq[0]'
+ownership=${DNS_MANAGER_OWNERSHIP_FILE:-/etc/dns-manager/config/ownership.conf}
 dir=$(mktemp -d /tmp/dnscrypt-dnsmasq.XXXXXX) || exit 1
 sid=''
 cleanup() {
@@ -583,6 +586,16 @@ case "$instance" in ''|*[!A-Za-z0-9_]*) exit 1;; esac
 # Keep domain-specific entries, including regional routing, but replace common
 # upstreams as requested for a fresh Manager configuration.
 : > "$dir/domains"
+keep_domain() {
+    case "$1" in /*/*) ;; *) return 0;; esac
+    # A reset drops only domain routes recorded as Manager-owned; Steer and
+    # other domain-specific routes are not identified by port or name alone.
+    if [ "$request_mode" = stock ] && [ -r "$ownership" ] &&
+       awk -F'|' -v value="$1" '$1=="dnsmasq" && $2=="server" && $3==value { found=1; exit } END { exit !found }' "$ownership"; then
+        return 0
+    fi
+    printf '%s\n' "$1" >> "$dir/domains"
+}
 json_get_type server_type server || server_type=''
 case "$server_type" in
     array)
@@ -590,12 +603,12 @@ case "$server_type" in
         json_get_keys keys
         for key in $keys; do
             json_get_var value "$key"
-            case "$value" in /*/*) printf '%s\n' "$value" >> "$dir/domains";; esac
+            keep_domain "$value"
         done
         json_select .. || exit 1 ;;
     string)
         json_get_var value server
-        case "$value" in /*/*) printf '%s\n' "$value" >> "$dir/domains";; esac ;;
+        keep_domain "$value" ;;
     '') ;;
     *) echo 'Unsupported dnsmasq server option' >&2; exit 1 ;;
 esac
@@ -622,7 +635,10 @@ build_request() {
     json_close_object
     json_dump
 }
-ubus call uci set "$(build_request encrypted)" >/dev/null || exit 1
+if [ "$request_mode" = stock ] && [ ! -s "$dir/domains" ] && [ -n "$server_type" ]; then
+    ubus call uci delete "{\"ubus_rpc_session\":\"$sid\",\"config\":\"dhcp\",\"section\":\"$section\",\"option\":\"server\"}" >/dev/null || exit 1
+fi
+ubus call uci set "$(build_request "$request_mode")" >/dev/null || exit 1
 ubus call uci commit "{\"ubus_rpc_session\":\"$sid\",\"config\":\"dhcp\"}" >/dev/null || exit 1
 session_close
 if sh "$guard" dhcp /bin/sh -c '
@@ -636,6 +652,10 @@ if sh "$guard" dhcp /bin/sh -c '
     exit 1
 ' sh "$instance" "$@"; then
     exit 0
+fi
+if [ "$request_mode" = stock ]; then
+    echo 'Standard DNS settings were saved, but dnsmasq did not start' >&2
+    exit 1
 fi
 # The caller requested stock DNS as the failure state. Isolate the UCI
 # session so another interface's pending changes are not committed here.
@@ -658,6 +678,12 @@ for key in $after_keys; do json_get_var value "$key"; printf '%s\n' "$value" >> 
 cat "$dir/domains" > "$dir/expected-servers"
 printf '127.0.0.1#%s\n' "$port" >> "$dir/expected-servers"
 cmp -s "$dir/expected-servers" "$dir/after-servers" || { echo 'DNS servers changed concurrently; not overwriting them' >&2; exit 1; }
+# The fallback is a reset too: drop routes recorded as Manager-owned only
+# after verifying that no concurrent actor changed our applied server list.
+mv "$dir/domains" "$dir/domains-before-reset"
+: > "$dir/domains"
+request_mode=stock
+while IFS= read -r value; do keep_domain "$value"; done < "$dir/domains-before-reset"
 if [ ! -s "$dir/domains" ]; then
     # rpcd rejects an empty UCI list. Delete the previously installed server
     # option within this same session instead of sending server: [].
