@@ -48,6 +48,20 @@ if name not in data: sys.exit(1)
 print(json.dumps(data[name]))
 ''')
     jsonfilter.chmod(0o755)
+    uci = directory / 'uci'
+    uci.write_text("""#!/bin/sh
+case "$3" in
+  https-dns-proxy.config.force_dns)
+    [ ! -e "$DNS_MANAGER_INIT_DIR/force-on" ] || { echo 1; exit 0; }
+    [ ! -e "$DNS_MANAGER_INIT_DIR/force-missing" ] || exit 1
+    echo 0 ;;
+  https-dns-proxy.config.dnsmasq_config_update)
+    [ ! -e "$DNS_MANAGER_INIT_DIR/integration-on" ] || { echo '*'; exit 0; }
+    echo - ;;
+  *) exit 1 ;;
+esac
+""")
+    uci.chmod(0o755)
     binary = directory / 'dnscrypt-binary'
     binary.write_text('#!/bin/sh\n[ ! -e "$DNS_MANAGER_INIT_DIR/fail-check" ]\n')
     binary.chmod(0o755)
@@ -77,6 +91,13 @@ print(json.dumps(data[name]))
         result = run('start', engine)
         assert result.returncode == 0 and state(target, 'running') and state(target, 'enabled'), result.stderr
         assert run('quiesce', engine).returncode == 0
+
+    for flag in ('force-on', 'force-missing', 'integration-on'):
+        (directory / flag).touch()
+        result = run('start', 'https-dns-proxy')
+        assert result.returncode != 0 and 'integration must be disabled' in result.stderr
+        assert not state('https-dns-proxy', 'running') and not state('https-dns-proxy', 'enabled')
+        (directory / flag).unlink()
 
     (directory / 'https-dns-proxy.fail-stop').touch()
     (directory / 'https-dns-proxy.running').touch()
