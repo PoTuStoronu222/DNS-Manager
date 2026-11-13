@@ -68,6 +68,7 @@ dnscrypt_apply_profile_pool() {
 ''')
     (helpers / 'dns-manager-dnscrypt-dnsmasq.sh').write_text('#!/bin/sh\nprintf "%s\\n" "$*" > "$LAB_ROOT/restore"\n[ ! -e "$LAB_ROOT/restore-fail" ]\n')
     (helpers / 'dns-manager-engine-services.sh').write_text('#!/bin/sh\n[ ! -e "$LAB_ROOT/quiesce-fail" ]\n')
+    (helpers / 'dns-manager-device-detach.sh').write_text('#!/bin/sh\n[ ! -e "$LAB_ROOT/detach-fail" ]\n')
     env = {**os.environ, 'PATH': str(d) + os.pathsep + os.environ['PATH'],
            'LAB_ROOT': str(d), 'DNS_MANAGER_MANAGER': str(manager),
            'DNS_MANAGER_LEGACY_BACKEND': str(legacy),
@@ -145,6 +146,11 @@ dnscrypt_apply_profile_pool() {
     assert result.returncode != 0 and (config / 'dnscrypt-profile.state').exists()
     assert not (d / 'restore').exists()
     (d / 'save-fail').unlink()
+    (d / 'detach-fail').touch()
+    result = run('reset_worker')
+    assert result.returncode != 0 and (config / 'dnscrypt-profile.state').exists()
+    assert not (d / 'restore').exists()
+    (d / 'detach-fail').unlink()
     (d / 'restore-fail').touch()
     result = run('reset_worker')
     assert result.returncode != 0 and (config / 'dnscrypt-profile.state').exists()

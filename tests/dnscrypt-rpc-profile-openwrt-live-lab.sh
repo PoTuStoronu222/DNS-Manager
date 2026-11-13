@@ -4,7 +4,11 @@ set -eu
 [ "${DNSCRYPT_DISPOSABLE_LAB:-0}" = 1 ] || { echo 'Run only in a disposable OpenWrt lab' >&2; exit 2; }
 : "${DNSCRYPT_BOOTSTRAP:?Set DNSCRYPT_BOOTSTRAP to a reachable resolver}"
 mkdir -p /var/run /var/lock /etc/rc.d /tmp/.uci /tmp/resolv.conf.d \
-    /etc/dns-manager/config /etc/dnscrypt-proxy2 /usr/lib/dns-manager-luci/cache
+    /etc/dns-manager/config /etc/dnscrypt-proxy2 /usr/lib/dns-manager-luci/cache /usr/lib/dns-manager-luci/dnscrypt
+if [ "${1:-}" != after-restart ]; then
+    # Device/firewall detachment is covered separately by device-detach-openwrt-lab.sh.
+    printf '#!/bin/sh\nexit 0\n' > /usr/lib/dns-manager-luci/dnscrypt/dns-manager-device-detach.sh
+fi
 if [ "${1:-}" = after-restart ]; then
     printf 'nameserver %s\n' "$DNSCRYPT_BOOTSTRAP" > /tmp/resolv.conf.d/resolv.conf.auto
     /sbin/ubusd >/tmp/ubus2.log 2>&1 & sleep 1
