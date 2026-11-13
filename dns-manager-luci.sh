@@ -4479,9 +4479,19 @@ EOF_RPC
     cat > "$RPC_STAGE" <<'EOF_RPC_WRAPPER'
 #!/bin/sh
 # DNS Manager LuCI rpcd plugin
-# Thin bridge; all DNS Manager logic lives in the dedicated backend.
-BACKEND="/usr/lib/dns-manager-luci/backend.sh"
-[ -x "$BACKEND" ] || { printf '{"ok":false,"error":"DNS Manager LuCI backend not found"}'; exit 1; }
+# Fail closed if the selected engine has no backend; do not run the other one.
+ENGINE_FILE="/etc/dns-manager/config/dnscrypt-engine"
+ENGINE='https-dns-proxy'
+if [ -e "$ENGINE_FILE" ] || [ -L "$ENGINE_FILE" ]; then
+    [ -r "$ENGINE_FILE" ] || { printf '{"ok":false,"error":"DNS engine selection is unreadable"}'; exit 1; }
+    ENGINE="$(cat "$ENGINE_FILE")" || { printf '{"ok":false,"error":"DNS engine selection is unreadable"}'; exit 1; }
+fi
+case "$ENGINE" in
+    https-dns-proxy) BACKEND="/usr/lib/dns-manager-luci/backend.sh" ;;
+    dnscrypt-proxy2) BACKEND="/usr/lib/dns-manager-luci/backend-dnscrypt.sh" ;;
+    *) printf '{"ok":false,"error":"Unknown DNS engine"}'; exit 1 ;;
+esac
+[ -x "$BACKEND" ] || { printf '{"ok":false,"error":"Selected DNS engine backend not found"}'; exit 1; }
 exec "$BACKEND" "$@"
 EOF_RPC_WRAPPER
     chmod 0755 "$RPC_STAGE"
