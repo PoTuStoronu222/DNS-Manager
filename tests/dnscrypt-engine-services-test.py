@@ -48,7 +48,8 @@ if name not in data: sys.exit(1)
 print(json.dumps(data[name]))
 ''')
     jsonfilter.chmod(0o755)
-    env = {**os.environ, 'DNS_MANAGER_INIT_DIR': str(directory), 'PATH': str(directory) + os.pathsep + os.environ['PATH']}
+    env = {**os.environ, 'DNS_MANAGER_INIT_DIR': str(directory),
+           'PATH': str(directory) + os.pathsep + os.environ['PATH']}
 
     def run(action, engine):
         return subprocess.run(['sh', str(helper), action, engine], env=env, capture_output=True, text=True)

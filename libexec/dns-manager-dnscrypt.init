@@ -1,55 +1,28 @@
 #!/bin/sh /etc/rc.common
-# Experimental service: not installed or enabled by the current installer.
+# One dnscrypt-proxy2 process using DNS Manager's own configuration.
 USE_PROCD=1
 START=18
 STOP=89
 EXTRA_COMMANDS="check"
-EXTRA_HELP="\tcheck\t\tValidate the selected slot configurations\n"
+EXTRA_HELP="\tcheck\t\tValidate DNS Manager's dnscrypt-proxy2 configuration\n"
 
 PROG=/usr/sbin/dnscrypt-proxy
+CONFIG=/etc/dns-manager/config/dnscrypt-pool.toml
 ENGINE_FILE=/etc/dns-manager/config/dnscrypt-engine
-SLOTS_FILE=/etc/dns-manager/config/dnscrypt-slots
-CONFIG_DIR=/etc/dns-manager/config/dnscrypt
 
 check() {
-    local slot seen config validated
-    DNSCRYPT_VALIDATED_SLOTS=''
-    [ -r "$ENGINE_FILE" ] || return 1
-    [ "$(cat "$ENGINE_FILE" 2>/dev/null)" = dnscrypt-proxy2 ] || return 1
-    [ -x "$PROG" ] && [ -r "$SLOTS_FILE" ] || return 1
-
-    # Validate the complete list before registering any instance with procd.
-    seen=','
-    validated=''
-    while IFS= read -r slot || [ -n "$slot" ]; do
-        case "$slot" in 1|2|3|4|5|6|RU) ;; *) return 1 ;; esac
-        case "$seen" in *",$slot,"*) return 1 ;; esac
-        seen="$seen$slot,"
-        validated="$validated $slot"
-        config="$CONFIG_DIR/slot-$slot.toml"
-        [ -f "$config" ] && [ -r "$config" ] || return 1
-        "$PROG" -config "$config" -check >/dev/null 2>&1 || return 1
-    done < "$SLOTS_FILE"
-    # A fresh engine has no slots until the user chooses a profile.
-    DNSCRYPT_VALIDATED_SLOTS="$validated"
-    return 0
+    [ -r "$ENGINE_FILE" ] && [ "$(cat "$ENGINE_FILE" 2>/dev/null)" = dnscrypt-proxy2 ] || return 1
+    [ -x "$PROG" ] && [ -r "$CONFIG" ] || return 1
+    "$PROG" -config "$CONFIG" -check >/dev/null 2>&1
 }
 
 start_service() {
-    local slot config
-    # Absence of the marker always leaves the existing DNS service alone.
-    [ -r "$ENGINE_FILE" ] || return 0
-    [ "$(cat "$ENGINE_FILE" 2>/dev/null)" = dnscrypt-proxy2 ] || return 0
     check || return 1
-
-    for slot in $DNSCRYPT_VALIDATED_SLOTS; do
-        config="$CONFIG_DIR/slot-$slot.toml"
-        procd_open_instance "slot_$slot"
-        procd_set_param command "$PROG" -config "$config"
-        procd_set_param file "$config"
-        procd_set_param stdout 1
-        procd_set_param stderr 1
-        procd_set_param respawn 3600 5 5
-        procd_close_instance
-    done
+    procd_open_instance dns-manager
+    procd_set_param command "$PROG" -config "$CONFIG"
+    procd_set_param file "$CONFIG"
+    procd_set_param stdout 1
+    procd_set_param stderr 1
+    procd_set_param respawn 3600 5 5
+    procd_close_instance
 }

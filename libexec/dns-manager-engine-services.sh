@@ -43,8 +43,7 @@ stop_disable() {
 }
 
 if [ "$action" = quiesce ]; then
-    # Both the package service and our slot service must be stopped: installing
-    # dnscrypt-proxy2 may automatically enable and start its own service.
+    # The package may auto-start its own service during installation.
     for service in https-dns-proxy dnscrypt-proxy dns-manager-dnscrypt; do
         stop_disable "$service" || exit 1
     done
@@ -70,9 +69,12 @@ done
 script="$initdir/$target"
 [ -x "$script" ] || { printf 'Missing service: %s\n' "$target" >&2; exit 1; }
 # rc.common's procd start may not propagate start_service's failure. Validate
-# explicitly before enabling the experimental slot service at boot.
+# the Manager-owned single-process configuration before enabling it at boot.
 if [ "$engine" = dnscrypt-proxy2 ]; then
-    "$script" check || { printf 'Invalid dnscrypt-proxy2 configuration\n' >&2; exit 1; }
+    "$script" check || {
+        printf 'Invalid dnscrypt-proxy2 configuration\n' >&2
+        exit 1
+    }
 fi
 "$script" enable || { printf 'Failed to enable %s\n' "$target" >&2; exit 1; }
 if ! "$script" start; then
