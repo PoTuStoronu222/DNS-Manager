@@ -839,6 +839,15 @@ error() { printf '{"ok":false,"error":"%s"}\n' "$1"; }
 valid_profile() { case "$1" in bypass|clean|security|privacy|adblock|family|all|dnssec) return 0;; *) return 1;; esac; }
 engine_selected() { [ -r "$ENGINE_FILE" ] && [ "$(cat "$ENGINE_FILE" 2>/dev/null)" = dnscrypt-proxy2 ]; }
 hdp_active() { [ -x "$HDP_INIT" ] && { "$HDP_INIT" enabled >/dev/null 2>&1 || "$HDP_INIT" running >/dev/null 2>&1; }; }
+disable_legacy_watchdog() {
+    watchdog_service_stop_disable || return 1
+    watchdog_cron_remove_owned_block || return 1
+    if [ "${WATCHDOG_ENABLED:-0}" != 0 ] || [ "${WATCHDOG_AUTOREPLACE:-0}" != 0 ]; then
+        WATCHDOG_ENABLED=0
+        WATCHDOG_AUTOREPLACE=0
+        save_config || return 1
+    fi
+}
 job_write() { printf '%s=%s\n' "$1" "$2" >> "$JOB_DIR/profile/state"; }
 action_write() { printf '%s=%s\n' "$1" "$2" >> "$JOB_DIR/action/state"; }
 
@@ -954,7 +963,7 @@ reset_worker() {
         rm -f "$src"
         if engine_selected && preflight_readonly >/dev/null 2>&1 && init_dirs >/dev/null 2>&1 &&
            load_config >/dev/null 2>&1 && acquire_mutation_lock; then
-            if engine_selected && ! hdp_active &&
+            if engine_selected && ! hdp_active && disable_legacy_watchdog &&
                sh "$HELPERS/dns-manager-dnscrypt-dnsmasq.sh" restore 5053 /usr/lib/dns-manager-luci/cache/uci-read-guard.sh /etc/init.d/dnsmasq restart > "$RUNTIME_DIR/dnscrypt-reset.log" 2>&1; then
                 # The profile is no longer active once dnsmasq is restored,
                 # even if disabling the proxy service fails afterward.

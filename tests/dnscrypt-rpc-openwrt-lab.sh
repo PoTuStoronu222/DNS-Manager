@@ -9,6 +9,8 @@ cat > /usr/bin/dns-manager <<'MANAGER'
 preflight_readonly() { :; }
 init_dirs() { :; }
 load_config() { BOOTSTRAP_DNS=1.1.1.1; }
+watchdog_service_stop_disable() { :; }
+watchdog_cron_remove_owned_block() { :; }
 acquire_mutation_lock() { :; }
 release_mutation_lock() { :; }
 restore_persistent_test_results() { :; }
