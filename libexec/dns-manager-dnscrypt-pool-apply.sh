@@ -1,7 +1,8 @@
 #!/bin/sh
 # Apply a Manager-owned pool. Caller must hold DNS Manager's mutation lock.
 # Reads DoH URLs from stdin; no dnsmasq, firewall or other package settings
-# are changed here. Requires an existing Manager-owned config for recovery.
+# are changed here. For initial setup the caller must keep dnsmasq on its
+# previous working upstream until this function has succeeded.
 set -eu
 
 [ "$#" -eq 2 ] || { echo 'Expected local port and bootstrap IP list' >&2; exit 1; }
@@ -11,7 +12,12 @@ binary=${DNS_MANAGER_DNSCRYPT_BIN:-/usr/sbin/dnscrypt-proxy}
 init=${DNS_MANAGER_DNSCRYPT_INIT:-/etc/init.d/dns-manager-dnscrypt}
 config=${DNS_MANAGER_DNSCRYPT_CONFIG:-/etc/dns-manager/config/dnscrypt-pool.toml}
 generator="$(dirname "$0")/dns-manager-dnscrypt-pool.sh"
-[ -x "$binary" ] && [ -x "$init" ] && [ -f "$config" ] && [ ! -L "$config" ] || { echo 'DNSCrypt service or existing config unavailable' >&2; exit 1; }
+[ -x "$binary" ] && [ -x "$init" ] && [ ! -L "$config" ] || { echo 'DNSCrypt service or config unavailable' >&2; exit 1; }
+had_config=0
+if [ -e "$config" ]; then
+    [ -f "$config" ] || { echo 'DNSCrypt config is not a regular file' >&2; exit 1; }
+    had_config=1
+fi
 
 dir=$(dirname "$config")
 candidate=$(mktemp "$dir/.dnscrypt-pool-new.XXXXXX") || exit 1
@@ -20,7 +26,10 @@ changed=0
 cleanup() {
     rm -f "$candidate"
     if [ "$changed" -eq 1 ]; then
-        if mv -f "$backup" "$config"; then
+        if [ "$had_config" -eq 0 ]; then
+            "$init" stop >/dev/null 2>&1 || echo 'Failed to stop new DNSCrypt service' >&2
+            rm -f "$config" "$backup" || echo 'Failed to remove new DNSCrypt config' >&2
+        elif mv -f "$backup" "$config"; then
             "$init" restart >/dev/null 2>&1 || echo 'Failed to restart restored DNSCrypt config' >&2
         else
             echo "Failed to restore previous DNSCrypt config; backup retained at $backup" >&2
@@ -33,7 +42,7 @@ trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
 sh "$generator" "$port" "$bootstrap" > "$candidate" || exit 1
 "$binary" -config "$candidate" -check >/dev/null 2>&1 || { echo 'Invalid DNSCrypt pool configuration' >&2; exit 1; }
-cp -p "$config" "$backup" || exit 1
+[ "$had_config" -eq 0 ] || cp -p "$config" "$backup" || exit 1
 chmod 0600 "$candidate" || exit 1
 mv -f "$candidate" "$config" || exit 1
 changed=1

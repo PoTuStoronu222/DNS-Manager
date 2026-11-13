@@ -19,6 +19,7 @@ with tempfile.TemporaryDirectory(prefix='dnscrypt-pool-apply-') as tmp:
     init.write_text('''#!/bin/sh
 case "$1" in
   restart) echo restart >> "$TEST_ROOT/restarts"; [ ! -e "$TEST_ROOT/restart-fails" ]; ;;
+  stop) echo stop >> "$TEST_ROOT/restarts"; exit 0 ;;
   running) exit 0 ;;
   *) exit 1 ;;
 esac
@@ -57,5 +58,17 @@ esac
     result = run('https://cloudflare-dns.com/dns-query\n')
     assert result.returncode != 0 and config.read_text() == installed
     assert 'Failed to restart restored DNSCrypt config' in result.stderr
+    (path / 'restart-fails').unlink()
+    config.unlink()
+    (path / 'no-answer').touch()
+    result = run()
+    assert result.returncode != 0 and not config.exists()
+    assert (path / 'restarts').read_text().splitlines()[-1] == 'stop'
+    assert not list(path.glob('.dnscrypt-pool-*'))
+    (path / 'no-answer').unlink()
+    result = run()
+    assert result.returncode == 0, result.stderr
+    assert tomllib.loads(config.read_text())['server_names'] == ['manager-1']
+    assert not list(path.glob('.dnscrypt-pool-*'))
 
 print('DNSCrypt pool apply validates first and restores previous config on failed DNS')
