@@ -121,6 +121,12 @@ dnscrypt_apply_profile_pool() {
     assert json.loads(run('call', 'reset_dns', input='{}').stdout)['job'] == 'action'
     request = json.loads((d / 'request').read_text())
     assert request['instances']['main']['command'][-1] == 'reset_worker'
+    (d / 'hdp-active').touch()
+    (d / 'restore').unlink()
+    result = run('reset_worker')
+    assert result.returncode != 0 and (config / 'dnscrypt-profile.state').exists()
+    assert not (d / 'restore').exists()
+    (d / 'hdp-active').unlink()
     (d / 'restore-fail').touch()
     result = run('reset_worker')
     assert result.returncode != 0 and (config / 'dnscrypt-profile.state').exists()
