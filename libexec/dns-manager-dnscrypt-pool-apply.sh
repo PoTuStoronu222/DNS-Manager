@@ -9,8 +9,8 @@ set -eu
 port=$1
 bootstrap=$2
 binary=${DNS_MANAGER_DNSCRYPT_BIN:-/usr/sbin/dnscrypt-proxy}
-init=${DNS_MANAGER_DNSCRYPT_INIT:-/etc/init.d/dns-manager-dnscrypt}
-config=${DNS_MANAGER_DNSCRYPT_CONFIG:-/etc/dns-manager/config/dnscrypt-pool.toml}
+init=${DNS_MANAGER_DNSCRYPT_INIT:-/etc/init.d/dnscrypt-proxy}
+config=${DNS_MANAGER_DNSCRYPT_CONFIG:-/etc/dnscrypt-proxy2/dnscrypt-proxy.toml}
 generator="$(dirname "$0")/dns-manager-dnscrypt-pool.sh"
 [ -x "$binary" ] && [ -x "$init" ] && [ ! -L "$config" ] || { echo 'DNSCrypt service or config unavailable' >&2; exit 1; }
 had_config=0
