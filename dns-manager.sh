@@ -3999,6 +3999,11 @@ replace_failed_slot_from_test() {
     warn_msg "Для слота $_slot не найден подтверждённый DNS в целевой категории."
     return 1
 }
+# Keep profile service control in one place while preserving the current engine.
+dns_engine_restart() {
+    /etc/init.d/https-dns-proxy restart
+}
+
 profile_prune_failed_slots() {
     local _bad _bad_n _live_n _general_live _slot _id _port _domain
     _bad="$TMP_DIR/profile-bad-slots-$$"
@@ -4062,7 +4067,7 @@ profile_prune_failed_slots() {
     sync_regional_dns_state
     rebuild_selected_hdp_sections || return 1
     reconcile_dnsmasq || return 1
-    /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || return 1
+    dns_engine_restart >/dev/null 2>&1 || return 1
     dnsmasq_restart_checked || return 1
     sleep 3
     return 0
@@ -4073,7 +4078,7 @@ profile_dnssec_restart_services() {
     sync_regional_dns_state
     rebuild_selected_hdp_sections || return 1
     reconcile_dnsmasq || return 1
-    /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || return 1
+    dns_engine_restart >/dev/null 2>&1 || return 1
     dnsmasq_restart_checked || return 1
     sleep 3
 }
@@ -4750,7 +4755,7 @@ _apply_settings_impl() {
         apply_progress_ok "Фоновая автопроверка DNS обработана."
     fi
     apply_progress "Запускаю https-dns-proxy с выбранными экземплярами."
-    /etc/init.d/https-dns-proxy restart || { err_msg "Не удалось запустить https-dns-proxy."; tx_restore_on_failure; return 1; }
+    dns_engine_restart || { err_msg "Не удалось запустить https-dns-proxy."; tx_restore_on_failure; return 1; }
     DNSMGR_CANARY_DEFER_RESTART=1 sync_dns_manager_canaries || { err_msg "Не удалось настроить canary DNS."; tx_restore_on_failure; return 1; }
     apply_progress "Перезапускаю dnsmasq."
     dnsmasq_restart_checked || { tx_restore_on_failure; return 1; }
