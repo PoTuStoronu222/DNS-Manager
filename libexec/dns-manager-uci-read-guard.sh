@@ -5,7 +5,7 @@ set -eu
 [ "$#" -ge 2 ] || exit 2
 package=$1
 shift
-case "$package" in ''|*[!A-Za-z0-9_]*) exit 2 ;; esac
+case "$package" in ''|*[!A-Za-z0-9_-]*) exit 2 ;; esac
 file="/etc/config/$package"
 delta="/tmp/.uci/$package"
 [ -f "$file" ] && [ ! -L "$file" ] || exit 1
