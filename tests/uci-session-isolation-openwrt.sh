@@ -1,7 +1,7 @@
 #!/bin/sh
 # Run on an isolated OpenWrt installation. Uses a temporary UCI package only.
 set -eu
-pkg="dns_cache_isolation_$$"
+pkg="dns-cache-isolation-$"
 file="/etc/config/$pkg"
 sid=''
 cleanup() {
