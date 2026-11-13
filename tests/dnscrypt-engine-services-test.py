@@ -22,7 +22,7 @@ case "$1" in
   enabled) [ -e "$dir/$name.enabled" ] ;;
   running) [ -e "$dir/$name.running" ] ;;
   check) [ ! -e "$dir/$name.fail-check" ] ;;
-  start) [ ! -e "$dir/$name.fail-start" ] || exit 1; touch "$dir/$name.running" ;;
+  start) [ ! -e "$dir/$name.fail-start" ] || exit 1; [ -e "$dir/$name.false-start" ] || touch "$dir/$name.running" ;;
   *) exit 2 ;;
 esac
 ''')
@@ -92,6 +92,11 @@ print(json.dumps(data[name]))
     (directory / 'dns-manager-dnscrypt.fail-check').unlink()
     (directory / 'dns-manager-dnscrypt.fail-start').touch()
     assert run('start', 'dnscrypt-proxy2').returncode != 0
+    assert not state('dns-manager-dnscrypt', 'enabled')
+    (directory / 'dns-manager-dnscrypt.fail-start').unlink()
+    (directory / 'dns-manager-dnscrypt.false-start').touch()
+    result = run('start', 'dnscrypt-proxy2')
+    assert result.returncode != 0 and 'did not become ready' in result.stderr
     assert not state('dns-manager-dnscrypt', 'enabled')
     assert run('start', 'invalid').returncode == 2
 
