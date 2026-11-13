@@ -229,8 +229,556 @@ publish_versioned_assets() {
     done
 }
 
+install_dnscrypt_assets() (
+    set -eu
+    _dc_dest="${DNS_MANAGER_DNSCRYPT_INSTALL_DIR:-/usr/lib/dns-manager-luci/dnscrypt}"
+    mkdir -p "$_dc_dest"
+    _dc_stage="$(mktemp -d "$_dc_dest/.stage.XXXXXX")"
+    trap 'rm -rf "$_dc_stage"' EXIT
+    cat > "$_dc_stage/dns-manager-doh-stamp.sh" <<'EOF_DNSCRYPT_ASSET_1'
+#!/bin/sh
+# Convert an HTTPS DoH endpoint to the DNS stamp format used by dnscrypt-proxy.
+# This helper does not change DNS settings or start any service.
+set -eu
+LC_ALL=C
+export LC_ALL
+
+fail() { printf '%s\n' "Unsupported DoH URL: $1" >&2; exit 1; }
+[ "$#" -eq 1 ] || fail 'expected one URL'
+case "$1" in https://*) rest=${1#https://} ;; *) fail 'HTTPS is required' ;; esac
+case "$rest" in *'?'*|*'#'*|*'@'*|*[![:graph:]]*) fail 'query, fragment, credentials or whitespace' ;; esac
+case "$rest" in */*) host=${rest%%/*}; path=/${rest#*/} ;; *) host=$rest; path=/ ;; esac
+[ -n "$host" ] || fail 'missing hostname'
+case "$host" in *[!a-zA-Z0-9.:-]*|.*|*..*|*:|:*|*:*:*) fail 'invalid hostname or port' ;; esac
+case "$host" in
+    *:*) port=${host##*:}; host_name=${host%:*};
+        case "$port" in ''|*[!0-9]*) fail 'invalid port' ;; esac
+        [ "${#port}" -le 5 ] && [ "$port" -gt 0 ] && [ "$port" -le 65535 ] || fail 'invalid port'
+        ;;
+    *) host_name=$host ;;
+esac
+[ -n "$host_name" ] || fail 'missing hostname'
+case "$path" in *[!a-zA-Z0-9._~/%!\$\&\'\(\)\*\+,\;=:@-]*) fail 'unsupported path character' ;; esac
+[ "${#host}" -le 255 ] && [ "${#path}" -le 255 ] || fail 'hostname or path too long'
+
+lp() {
+    length=${#1}
+    octal=$(printf '%03o' "$length")
+    printf "\\$octal%s" "$1"
+}
+
+# DNS-over-HTTPS, zero properties, no fixed IP or certificate pin.
+# With no pin dnscrypt-proxy uses its normal TLS certificate validation.
+if command -v base64 >/dev/null 2>&1; then
+    encode() { base64; }
+elif command -v ucode >/dev/null 2>&1; then
+    encode() { ucode -e 'import { stdin } from "fs"; print(b64enc(stdin.read("all")));'; }
+else
+    fail 'neither base64 nor ucode is available'
+fi
+encoded=$({
+    printf '\002\000\000\000\000\000\000\000\000\000\000'
+    lp "$host"
+    lp "$path"
+} | encode) || fail 'base64 encoding failed'
+[ -n "$encoded" ] || fail 'base64 encoding failed'
+encoded=$(printf '%s' "$encoded" | tr -d '\n=' | tr '/+' '_-')
+printf 'sdns://%s\n' "$encoded"
+EOF_DNSCRYPT_ASSET_1
+    cat > "$_dc_stage/dns-manager-dnscrypt-config.sh" <<'EOF_DNSCRYPT_ASSET_2'
+#!/bin/sh
+# Experimental config generator. It only prints TOML; it never starts a service.
+set -eu
+LC_ALL=C
+export LC_ALL
+
+fail() { printf '%s\n' "$1" >&2; exit 1; }
+[ "$#" -eq 3 ] || fail 'Expected local port, DoH URL and bootstrap IP list'
+port=$1
+case "$port" in ''|*[!0-9]*) fail 'Invalid local port' ;; esac
+[ "${#port}" -le 5 ] && [ "$port" -gt 0 ] && [ "$port" -le 65535 ] || fail 'Invalid local port'
+helper="$(dirname "$0")/dns-manager-doh-stamp.sh"
+stamp=$(sh "$helper" "$2") || fail 'Unable to encode DoH address'
+
+# Same public literal-address rules as bootstrap_normalize_addresses in the
+# manager. Formatting is performed only after validating the complete list.
+resolvers=$(printf '%s\n' "$3" | awk '
+function ipv4(s,a,n,i) {
+ n=split(s,a,"."); if(n!=4) return 0
+ for(i=1;i<=4;i++) if(a[i] !~ /^[0-9]+$/ || length(a[i])>3 || a[i]+0>255 || (length(a[i])>1 && substr(a[i],1,1)=="0")) return 0
+ return a[1]+0>0 && a[1]+0!=127 && a[1]+0<224
+}
+function ipv6(s,a,n,i,parts,compressed,nonzero) {
+ if(s !~ /^[0-9a-fA-F:]+$/ || index(s,":")==0 || s=="::" || s=="::1") return 0
+ if(s ~ /^:[^:]/ || s ~ /[^:]:$/ || s ~ /:::/) return 0
+ compressed=(index(s,"::")>0)
+ if(compressed) { if(index(substr(s,index(s,"::")+2),"::")>0) return 0; sub(/::/,":Z:",s); sub(/^:/,"",s); sub(/:$/,"",s) }
+ if(s ~ /^:/ || s ~ /:$/ || s ~ /::/) return 0
+ n=split(s,a,":"); parts=0; nonzero=0
+ for(i=1;i<=n;i++) { if(a[i]=="Z") continue; if(a[i] !~ /^[0-9a-fA-F]+$/ || length(a[i])>4) return 0; parts++; if(a[i] !~ /^0+$/) nonzero++ }
+ if(nonzero==0 || (nonzero==1 && a[n] ~ /^0*1$/)) return 0
+ return compressed ? parts<8 : parts==8
+}
+NR>1 { bad=1; exit }
+{
+ gsub(/[,[:space:]]+/," "); sub(/^ /,""); sub(/ $/,"")
+ n=split($0,a," "); if(n<1 || n>48 || a[1]=="") { bad=1; exit }
+ for(i=1;i<=n;i++) {
+  ip=tolower(a[i]); if((!ipv4(ip) && !ipv6(ip)) || seen[ip]++) { bad=1; exit }
+  addr=index(ip,":") ? "[" ip "]:53" : ip ":53"
+  result=result (i==1 ? "" : ", ") "\047" addr "\047"
+ }
+}
+END { if(bad || NR!=1) exit 1; print result }
+') || fail 'Invalid bootstrap addresses'
+[ -n "$resolvers" ] || fail 'Empty bootstrap list'
+
+printf "server_names = ['manager-slot']\n"
+printf "listen_addresses = ['127.0.0.1:%s']\n" "$port"
+# dnsmasq's cache is disabled in DNSCrypt mode; keep one cache in the proxy.
+printf "cache = true\n"
+# Do not extend upstream TTLs by default (dnscrypt-proxy defaults to 60s).
+printf "cache_min_ttl = 0\n"
+printf "cache_neg_min_ttl = 0\n"
+printf "bootstrap_resolvers = [%s]\n" "$resolvers"
+printf "ignore_system_dns = true\n"
+printf "[static.manager-slot]\n"
+printf "stamp = '%s'\n" "$stamp"
+EOF_DNSCRYPT_ASSET_2
+    cat > "$_dc_stage/dns-manager-dnscrypt-pool.sh" <<'EOF_DNSCRYPT_ASSET_3'
+#!/bin/sh
+# Experimental one-process DoH pool. Reads one endpoint URL per input line.
+# Prints a complete config only after all endpoints and bootstrap IPs validate.
+set -eu
+LC_ALL=C
+export LC_ALL
+
+[ "$#" -eq 2 ] || { echo 'Expected local port and bootstrap IP list' >&2; exit 1; }
+port=$1
+bootstrap=$2
+generator="$(dirname "$0")/dns-manager-dnscrypt-config.sh"
+dir=$(mktemp -d /tmp/dns-manager-pool.XXXXXX) || exit 1
+trap 'rm -rf "$dir"' EXIT HUP INT TERM
+: > "$dir/urls"
+: > "$dir/stamps"
+count=0
+
+while IFS= read -r url || [ -n "$url" ]; do
+    [ -n "$url" ] || { echo 'Empty DoH URL' >&2; exit 1; }
+    count=$((count + 1))
+    [ "$count" -le 6 ] || { echo 'At most six DoH endpoints are supported' >&2; exit 1; }
+    # An absent path and the root path name the same HTTP endpoint.
+    key=$url
+    case "${url#https://}" in */*) [ "${url#https://*/}" != '' ] || key=${url%/} ;; esac
+    if grep -Fqx -- "$key" "$dir/urls"; then echo 'Duplicate DoH URL' >&2; exit 1; fi
+    printf '%s\n' "$key" >> "$dir/urls"
+    sh "$generator" "$port" "$url" "$bootstrap" > "$dir/item" || exit 1
+    stamp=$(sed -n "s/^stamp = '\(sdns:\/\/[A-Za-z0-9_-]*\)'$/\1/p" "$dir/item")
+    [ -n "$stamp" ] || { echo 'Invalid generated DNS stamp' >&2; exit 1; }
+    [ "$count" -ne 1 ] || cp "$dir/item" "$dir/first"
+    printf '%s\n' "$stamp" >> "$dir/stamps"
+done
+[ "$count" -gt 0 ] || { echo 'At least one DoH endpoint is required' >&2; exit 1; }
+
+{
+    printf 'server_names = ['
+    i=1
+    while [ "$i" -le "$count" ]; do
+        [ "$i" -eq 1 ] || printf ', '
+        printf "'manager-%s'" "$i"
+        i=$((i + 1))
+    done
+    printf ']\n'
+    sed -n '2,/^\[static\./{ /^\[static\./d; p; }' "$dir/first"
+    i=1
+    while IFS= read -r stamp; do
+        printf "[static.manager-%s]\nstamp = '%s'\n" "$i" "$stamp"
+        i=$((i + 1))
+    done < "$dir/stamps"
+} > "$dir/output"
+cat "$dir/output"
+EOF_DNSCRYPT_ASSET_3
+    cat > "$_dc_stage/dns-manager-dnscrypt-pool-apply.sh" <<'EOF_DNSCRYPT_ASSET_4'
+#!/bin/sh
+# Apply a Manager-owned pool. Caller must hold DNS Manager's mutation lock.
+# Reads DoH URLs from stdin; no dnsmasq, firewall or other package settings
+# are changed here. For initial setup the caller must keep dnsmasq on its
+# previous working upstream until this function has succeeded.
+set -eu
+
+[ "$#" -eq 2 ] || { echo 'Expected local port and bootstrap IP list' >&2; exit 1; }
+port=$1
+bootstrap=$2
+binary=${DNS_MANAGER_DNSCRYPT_BIN:-/usr/sbin/dnscrypt-proxy}
+init=${DNS_MANAGER_DNSCRYPT_INIT:-/etc/init.d/dnscrypt-proxy}
+config=${DNS_MANAGER_DNSCRYPT_CONFIG:-/etc/dnscrypt-proxy2/dnscrypt-proxy.toml}
+generator="$(dirname "$0")/dns-manager-dnscrypt-pool.sh"
+[ -x "$binary" ] && [ -x "$init" ] && [ ! -L "$config" ] || { echo 'DNSCrypt service or config unavailable' >&2; exit 1; }
+had_config=0
+if [ -e "$config" ]; then
+    [ -f "$config" ] || { echo 'DNSCrypt config is not a regular file' >&2; exit 1; }
+    had_config=1
+fi
+
+dir=$(dirname "$config")
+candidate=$(mktemp "$dir/.dnscrypt-pool-new.XXXXXX") || exit 1
+backup=$(mktemp "$dir/.dnscrypt-pool-old.XXXXXX") || { rm -f "$candidate"; exit 1; }
+changed=0
+cleanup() {
+    rm -f "$candidate"
+    if [ "$changed" -eq 1 ]; then
+        if [ "$had_config" -eq 0 ]; then
+            "$init" stop >/dev/null 2>&1 || echo 'Failed to stop new DNSCrypt service' >&2
+            rm -f "$config" "$backup" || echo 'Failed to remove new DNSCrypt config' >&2
+        elif mv -f "$backup" "$config"; then
+            "$init" restart >/dev/null 2>&1 || echo 'Failed to restart restored DNSCrypt config' >&2
+        else
+            echo "Failed to restore previous DNSCrypt config; backup retained at $backup" >&2
+        fi
+    else
+        rm -f "$backup"
+    fi
+}
+trap cleanup EXIT
+trap 'exit 1' HUP INT TERM
+sh "$generator" "$port" "$bootstrap" > "$candidate" || exit 1
+"$binary" -config "$candidate" -check >/dev/null 2>&1 || { echo 'Invalid DNSCrypt pool configuration' >&2; exit 1; }
+[ "$had_config" -eq 0 ] || cp -p "$config" "$backup" || exit 1
+chmod 0600 "$candidate" || exit 1
+mv -f "$candidate" "$config" || exit 1
+changed=1
+
+pool_query_ok() {
+    if command -v dig >/dev/null 2>&1; then
+        dig @127.0.0.1 -p "$port" example.com A +time=2 +tries=1 +short 2>/dev/null |
+            awk '/^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ && $0 !~ /^127\./ && $0 != "0.0.0.0" {ok=1} END {exit !ok}'
+    elif command -v nslookup >/dev/null 2>&1; then
+        nslookup -port="$port" example.com 127.0.0.1 2>/dev/null |
+            awk '/^Address [0-9]+: / {a=$NF} /^Address: / {a=$2} a ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ && a !~ /^127\./ && a != "0.0.0.0" {ok=1} END {exit !ok}'
+    else
+        return 1
+    fi
+}
+
+ok=0
+if "$init" restart >/dev/null 2>&1; then
+    for attempt in 1 2 3 4 5 6 7 8 9 10; do
+        if "$init" running >/dev/null 2>&1 && pool_query_ok; then ok=1; break; fi
+        sleep 1
+    done
+fi
+if [ "$ok" -eq 1 ]; then changed=0; exit 0; fi
+
+# Preserve the previous pool when the new service or DNS query fails.
+echo 'New DNSCrypt pool did not answer; restoring previous config' >&2
+exit 1
+EOF_DNSCRYPT_ASSET_4
+    cat > "$_dc_stage/dns-manager-dnscrypt-profile.sh" <<'EOF_DNSCRYPT_ASSET_5'
+#!/bin/sh
+# Sourced by a future DNSCrypt backend after the existing manager functions are
+# loaded. Selects DNS using the existing checks without applying configuration.
+# On success stdout contains one catalog ID and URL per line, separated by '|'.
+dnscrypt_select_profile() (
+    local goal tmp started id url count
+    goal=${1:-}
+    case "$goal" in bypass|clean|security|privacy|adblock|family|all|dnssec) ;; *) return 1 ;; esac
+    tmp=$(mktemp "${TMP_DIR:-/tmp}/dnscrypt-profile.XXXXXX") || return 1
+    started=0
+    cleanup_dnscrypt_profile() {
+        if [ "$started" = 1 ]; then profile_apply_end >&2; fi
+        rm -f "$tmp"
+    }
+    trap cleanup_dnscrypt_profile EXIT
+    trap 'exit 1' HUP INT TERM
+    # This invokes the existing direct DoH tests, including DNSSEC screening.
+    started=1
+    profile_apply_begin "$goal" >&2 || return 1
+    auto_fill_slots "$goal" >&2 || return 1
+    count=0
+    for id in "${SLOT_1:-}" "${SLOT_2:-}" "${SLOT_3:-}" "${SLOT_4:-}" "${SLOT_5:-}" "${SLOT_6:-}"; do
+        [ -n "$id" ] || continue
+        case "$id" in *[!A-Za-z0-9_-]*) return 1 ;; esac
+        url=$(normalize_url "$(dns_url "$id")") || return 1
+        case "$url" in https://*) ;; *) return 1 ;; esac
+        case "$url" in *'|'*|*[![:graph:]]*) return 1 ;; esac
+        printf '%s|%s\n' "$id" "$url" >> "$tmp" || return 1
+        count=$((count + 1))
+    done
+    [ "$count" -gt 0 ] || return 1
+    cat "$tmp"
+)
+EOF_DNSCRYPT_ASSET_5
+    cat > "$_dc_stage/dns-manager-dnscrypt-profile-apply.sh" <<'EOF_DNSCRYPT_ASSET_6'
+#!/bin/sh
+# Sourced by the DNSCrypt backend after the manager and selector are loaded.
+# The caller owns the DNS Manager mutation lock and commits UI metadata only
+# after this function succeeds. stdout is the applied catalog ID|URL list.
+dnscrypt_apply_profile_pool() (
+    local goal port bootstrap apply dnsmasq_apply guard records urls
+    goal=${1:-}
+    port=${2:-}
+    bootstrap=${3:-}
+    apply=${DNS_MANAGER_DNSCRYPT_POOL_APPLY:-/usr/lib/dns-manager-luci/dnscrypt/dns-manager-dnscrypt-pool-apply.sh}
+    dnsmasq_apply=${DNS_MANAGER_DNSCRYPT_DNSMASQ_APPLY:-/usr/lib/dns-manager-luci/dnscrypt/dns-manager-dnscrypt-dnsmasq.sh}
+    guard=${DNS_MANAGER_DNSCRYPT_UCI_GUARD:-/usr/lib/dns-manager-luci/cache/uci-read-guard.sh}
+    [ -r "$apply" ] || { echo 'DNSCrypt pool apply helper is unavailable' >&2; return 1; }
+    [ -r "$dnsmasq_apply" ] && [ -r "$guard" ] || { echo 'DNSCrypt dnsmasq transaction is unavailable' >&2; return 1; }
+    # Refuse pending DHCP changes before restarting an already active pool.
+    sh "$guard" dhcp /bin/true || { echo 'Pending DHCP changes; profile not changed' >&2; return 1; }
+    records=$(mktemp "${TMP_DIR:-/tmp}/dnscrypt-selected.XXXXXX") || return 1
+    urls=$(mktemp "${TMP_DIR:-/tmp}/dnscrypt-urls.XXXXXX") || { rm -f "$records"; return 1; }
+    trap 'rm -f "$records" "$urls"' EXIT
+    trap 'exit 1' HUP INT TERM
+    dnscrypt_select_profile "$goal" > "$records" || return 1
+    [ -s "$records" ] || return 1
+    # Selector validates and bounds the records; pool helper independently
+    # validates every URL and the bootstrap list before changing anything.
+    cut -d '|' -f 2 "$records" > "$urls" || return 1
+    sh "$apply" "$port" "$bootstrap" < "$urls" || return 1
+    sh "$dnsmasq_apply" "$port" "$guard" /etc/init.d/dnsmasq restart || return 1
+    cat "$records"
+)
+EOF_DNSCRYPT_ASSET_6
+    cat > "$_dc_stage/dns-manager-dnscrypt-dnsmasq.sh" <<'EOF_DNSCRYPT_ASSET_7'
+#!/bin/sh
+# Experimental dnsmasq upstream transaction. The caller serializes Manager
+# mutations and verifies that the DNSCrypt listener is answering first.
+# Usage: script port guard restart-command [args...]
+# jshn uses optional shell variables and is not compatible with nounset.
+set -e
+[ "$#" -ge 3 ] || exit 2
+port=$1; guard=$2; shift 2
+case "$port" in ''|*[!0-9]*) exit 2;; esac
+[ "${#port}" -le 5 ] && [ "$port" -gt 0 ] && [ "$port" -le 65535 ] || exit 2
+[ -r "$guard" ] || exit 1
+. /usr/share/libubox/jshn.sh
+section='@dnsmasq[0]'
+dir=$(mktemp -d /tmp/dnscrypt-dnsmasq.XXXXXX) || exit 1
+sid=''
+cleanup() {
+    [ -z "$sid" ] || ubus call session destroy "{\"ubus_rpc_session\":\"$sid\"}" >/dev/null 2>&1 || :
+    rm -rf "$dir"
+}
+trap cleanup EXIT
+trap 'exit 1' HUP INT TERM
+session_open() {
+    sid=$(ubus call session create '{"timeout":60}' | jsonfilter -e '@.ubus_rpc_session') || return 1
+    case "$sid" in ''|*[!0-9a-f]*) return 1;; esac
+    [ "${#sid}" -eq 32 ] || return 1
+    ubus call session grant "{\"ubus_rpc_session\":\"$sid\",\"scope\":\"uci\",\"objects\":[[\"dhcp\",\"read\"],[\"dhcp\",\"write\"]]}" >/dev/null
+}
+session_close() {
+    ubus call session destroy "{\"ubus_rpc_session\":\"$sid\"}" >/dev/null || return 1
+    sid=''
+}
+sh "$guard" dhcp /bin/true || { echo 'Pending DHCP changes; not changing DNS' >&2; exit 1; }
+session_open
+ubus call uci get "{\"ubus_rpc_session\":\"$sid\",\"config\":\"dhcp\",\"section\":\"$section\"}" > "$dir/current" || exit 1
+json_load "$(cat "$dir/current")" || exit 1
+json_select values || exit 1
+json_get_var type '.type'
+[ "$type" = dnsmasq ] || exit 1
+json_get_var instance '.name'
+case "$instance" in ''|*[!A-Za-z0-9_]*) exit 1;; esac
+# Keep domain-specific entries, including regional routing, but replace common
+# upstreams as requested for a fresh Manager configuration.
+: > "$dir/domains"
+json_get_type server_type server || server_type=''
+case "$server_type" in
+    array)
+        json_select server || exit 1
+        json_get_keys keys
+        for key in $keys; do
+            json_get_var value "$key"
+            case "$value" in /*/*) printf '%s\n' "$value" >> "$dir/domains";; esac
+        done
+        json_select .. || exit 1 ;;
+    string)
+        json_get_var value server
+        case "$value" in /*/*) printf '%s\n' "$value" >> "$dir/domains";; esac ;;
+    '') ;;
+    *) echo 'Unsupported dnsmasq server option' >&2; exit 1 ;;
+esac
+build_request() {
+    mode=$1
+    json_init
+    json_add_string ubus_rpc_session "$sid"
+    json_add_string config dhcp
+    json_add_string section "$section"
+    json_add_object values
+    if [ "$mode" = encrypted ] || [ -s "$dir/domains" ]; then
+        json_add_array server
+        while IFS= read -r value; do [ -n "$value" ] && json_add_string '' "$value"; done < "$dir/domains"
+        [ "$mode" != encrypted ] || json_add_string '' "127.0.0.1#$port"
+        json_close_array
+    fi
+    if [ "$mode" = encrypted ]; then
+        json_add_string noresolv 1
+        json_add_string cachesize 0
+    else
+        json_add_string noresolv 0
+        json_add_string cachesize 1000
+    fi
+    json_close_object
+    json_dump
+}
+ubus call uci set "$(build_request encrypted)" >/dev/null || exit 1
+ubus call uci commit "{\"ubus_rpc_session\":\"$sid\",\"config\":\"dhcp\"}" >/dev/null || exit 1
+session_close
+if sh "$guard" dhcp /bin/sh -c '
+    instance=$1; shift
+    "$@" || exit 1
+    for attempt in 1 2 3 4 5 6 7 8 9 10; do
+        state=$(ubus -t 3 call service list '\''{"name":"dnsmasq"}'\'' | jsonfilter -e "@.dnsmasq.instances.$instance.running") || state=unknown
+        [ "$state" = true ] && exit 0
+        sleep 1
+    done
+    exit 1
+' sh "$instance" "$@"; then
+    exit 0
+fi
+# The caller requested stock DNS as the failure state. Isolate the UCI
+# session so another interface's pending changes are not committed here.
+echo 'dnsmasq restart failed; restoring standard DNS' >&2
+session_open
+# Another actor may have changed the active options after our commit. Do not
+# overwrite those later changes while attempting recovery.
+ubus call uci get "{\"ubus_rpc_session\":\"$sid\",\"config\":\"dhcp\",\"section\":\"$section\"}" > "$dir/after" || exit 1
+json_load "$(cat "$dir/after")" || exit 1
+json_select values || exit 1
+json_get_var after_noresolv noresolv
+json_get_var after_cachesize cachesize
+[ "$after_noresolv" = 1 ] && [ "$after_cachesize" = 0 ] || { echo 'DNS settings changed concurrently; not overwriting them' >&2; exit 1; }
+json_get_type after_type server
+[ "$after_type" = array ] || { echo 'DNS servers changed concurrently; not overwriting them' >&2; exit 1; }
+json_select server || exit 1
+json_get_keys after_keys
+: > "$dir/after-servers"
+for key in $after_keys; do json_get_var value "$key"; printf '%s\n' "$value" >> "$dir/after-servers"; done
+cat "$dir/domains" > "$dir/expected-servers"
+printf '127.0.0.1#%s\n' "$port" >> "$dir/expected-servers"
+cmp -s "$dir/expected-servers" "$dir/after-servers" || { echo 'DNS servers changed concurrently; not overwriting them' >&2; exit 1; }
+if [ ! -s "$dir/domains" ]; then
+    # rpcd rejects an empty UCI list. Delete the previously installed server
+    # option within this same session instead of sending server: [].
+    ubus call uci delete "{\"ubus_rpc_session\":\"$sid\",\"config\":\"dhcp\",\"section\":\"$section\",\"option\":\"server\"}" >/dev/null || exit 1
+fi
+ubus call uci set "$(build_request stock)" >/dev/null || exit 1
+ubus call uci commit "{\"ubus_rpc_session\":\"$sid\",\"config\":\"dhcp\"}" >/dev/null || exit 1
+session_close
+sh "$guard" dhcp "$@" || echo 'Standard DNS saved, but dnsmasq restart failed' >&2
+exit 1
+EOF_DNSCRYPT_ASSET_7
+    cat > "$_dc_stage/dns-manager-engine-services.sh" <<'EOF_DNSCRYPT_ASSET_8'
+#!/bin/sh
+# Experimental service lifecycle helper; does not install packages or change DNS.
+set -eu
+
+initdir=${DNS_MANAGER_INIT_DIR:-/etc/init.d}
+action=${1:-}
+engine=${2:-}
+case "$action:$engine" in
+    quiesce:https-dns-proxy|quiesce:dnscrypt-proxy2|start:https-dns-proxy|start:dnscrypt-proxy2) ;;
+    *) printf '%s\n' 'Expected quiesce|start and https-dns-proxy|dnscrypt-proxy2' >&2; exit 2 ;;
+esac
+
+service_absent() {
+    # A failed procd delete can mean either "already absent" or a real ubus
+    # failure. Only accept the former after a successful, valid service list.
+    _service_reply=$(ubus -t 5 call service list "{\"name\":\"$1\"}" 2>/dev/null) || return 1
+    _service_root=$(jsonfilter -s "$_service_reply" -e '@' 2>/dev/null) || return 1
+    case "$_service_root" in \{*\}) ;; *) return 1 ;; esac
+    if jsonfilter -s "$_service_reply" -e "@['$1']" >/dev/null 2>&1; then
+        return 1
+    else
+        _service_filter_rc=$?
+        [ "$_service_filter_rc" -eq 1 ]
+    fi
+}
+
+stop_disable() {
+    script="$initdir/$1"
+    [ -x "$script" ] || return 0
+    if ! "$script" stop && ! service_absent "$1"; then
+        printf 'Failed to stop %s\n' "$1" >&2
+        return 1
+    fi
+    "$script" disable || { printf 'Failed to disable %s\n' "$1" >&2; return 1; }
+    if ! service_absent "$1"; then
+        printf 'Service still registered or procd unavailable: %s\n' "$1" >&2
+        return 1
+    fi
+    if "$script" enabled >/dev/null 2>&1; then
+        printf 'Still enabled: %s\n' "$1" >&2
+        return 1
+    fi
+}
+
+if [ "$action" = quiesce ]; then
+    # The package may auto-start its own service during installation.
+    for service in https-dns-proxy dnscrypt-proxy dns-manager-dnscrypt; do
+        stop_disable "$service" || exit 1
+    done
+    exit 0
+fi
+
+case "$engine" in
+    https-dns-proxy) target=https-dns-proxy ;;
+    dnscrypt-proxy2) target=dnscrypt-proxy ;;
+esac
+
+# Never knowingly start a second manager while another service is enabled or
+# running. The caller must have restored DNS and performed quiesce first.
+for service in https-dns-proxy dnscrypt-proxy dns-manager-dnscrypt; do
+    [ "$service" = "$target" ] && continue
+    script="$initdir/$service"
+    [ -x "$script" ] || continue
+    if "$script" enabled >/dev/null 2>&1 || ! service_absent "$service"; then
+        printf 'Conflicting service is active or enabled: %s\n' "$service" >&2
+        exit 1
+    fi
+done
+script="$initdir/$target"
+[ -x "$script" ] || { printf 'Missing service: %s\n' "$target" >&2; exit 1; }
+# rc.common's procd start may not propagate start_service's failure. Validate
+# the Manager-owned single-process configuration before enabling it at boot.
+if [ "$engine" = dnscrypt-proxy2 ]; then
+    binary=${DNS_MANAGER_DNSCRYPT_BIN:-/usr/sbin/dnscrypt-proxy}
+    config=${DNS_MANAGER_DNSCRYPT_CONFIG:-/etc/dnscrypt-proxy2/dnscrypt-proxy.toml}
+    [ -x "$binary" ] && [ -f "$config" ] && "$binary" -config "$config" -check >/dev/null 2>&1 || {
+        printf 'Invalid dnscrypt-proxy2 configuration\n' >&2
+        exit 1
+    }
+fi
+"$script" enable || { printf 'Failed to enable %s\n' "$target" >&2; exit 1; }
+if ! "$script" start; then
+    "$script" disable >/dev/null 2>&1 || true
+    printf 'Failed to start %s\n' "$target" >&2
+    exit 1
+fi
+# rc.common may report a successful start even if no procd instance was
+# registered. Do not tell the caller it is safe to point dnsmasq at it then.
+for attempt in 1 2 3; do
+    if "$script" running >/dev/null 2>&1; then exit 0; fi
+    [ "$attempt" -eq 3 ] || sleep 1
+done
+"$script" stop >/dev/null 2>&1 || true
+"$script" disable >/dev/null 2>&1 || true
+printf 'Service did not become ready: %s\n' "$target" >&2
+exit 1
+EOF_DNSCRYPT_ASSET_8
+    for _dc_name in 'dns-manager-doh-stamp.sh' 'dns-manager-dnscrypt-config.sh' 'dns-manager-dnscrypt-pool.sh' 'dns-manager-dnscrypt-pool-apply.sh' 'dns-manager-dnscrypt-profile.sh' 'dns-manager-dnscrypt-profile-apply.sh' 'dns-manager-dnscrypt-dnsmasq.sh' 'dns-manager-engine-services.sh'; do
+        sh -n "$_dc_stage/$_dc_name"
+    done
+    for _dc_name in 'dns-manager-doh-stamp.sh' 'dns-manager-dnscrypt-config.sh' 'dns-manager-dnscrypt-pool.sh' 'dns-manager-dnscrypt-pool-apply.sh' 'dns-manager-dnscrypt-profile.sh' 'dns-manager-dnscrypt-profile-apply.sh' 'dns-manager-dnscrypt-dnsmasq.sh' 'dns-manager-engine-services.sh'; do
+        chmod 0755 "$_dc_stage/$_dc_name"
+        mv -f "$_dc_stage/$_dc_name" "$_dc_dest/$_dc_name"
+    done
+)
+
 install_files() {
     require_manager || return 1
+    install_dnscrypt_assets || { err "Не удалось установить файлы dnscrypt-proxy2."; return 1; }
 
     # Run only on interface events and only while the provider mode is selected.
     # The marker prevents replacing another package's hook at the same path.
