@@ -47,7 +47,8 @@ END { if(bad || NR!=1) exit 1; print result }
 
 printf "server_names = ['manager-slot']\n"
 printf "listen_addresses = ['127.0.0.1:%s']\n" "$port"
-printf "cache = false\n"
+# dnsmasq's cache is disabled in DNSCrypt mode; keep one cache in the proxy.
+printf "cache = true\n"
 printf "bootstrap_resolvers = [%s]\n" "$resolvers"
 printf "ignore_system_dns = true\n"
 printf "[static.manager-slot]\n"

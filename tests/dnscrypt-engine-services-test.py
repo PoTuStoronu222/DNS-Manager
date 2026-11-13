@@ -48,7 +48,13 @@ if name not in data: sys.exit(1)
 print(json.dumps(data[name]))
 ''')
     jsonfilter.chmod(0o755)
+    binary = directory / 'dnscrypt-binary'
+    binary.write_text('#!/bin/sh\n[ ! -e "$DNS_MANAGER_INIT_DIR/fail-check" ]\n')
+    binary.chmod(0o755)
+    config = directory / 'dnscrypt.toml'
+    config.write_text('test\n')
     env = {**os.environ, 'DNS_MANAGER_INIT_DIR': str(directory),
+           'DNS_MANAGER_DNSCRYPT_BIN': str(binary), 'DNS_MANAGER_DNSCRYPT_CONFIG': str(config),
            'PATH': str(directory) + os.pathsep + os.environ['PATH']}
 
     def run(action, engine):
@@ -57,8 +63,8 @@ print(json.dumps(data[name]))
     def state(service, value):
         return (directory / f'{service}.{value}').exists()
 
-    for engine, target, other in [('dnscrypt-proxy2', 'dns-manager-dnscrypt', 'https-dns-proxy'),
-                                   ('https-dns-proxy', 'https-dns-proxy', 'dns-manager-dnscrypt')]:
+    for engine, target, other in [('dnscrypt-proxy2', 'dnscrypt-proxy', 'https-dns-proxy'),
+                                   ('https-dns-proxy', 'https-dns-proxy', 'dnscrypt-proxy')]:
         (directory / f'{other}.enabled').touch()
         (directory / f'{other}.running').touch()
         # Starting without quiescing is refused.
@@ -75,7 +81,7 @@ print(json.dumps(data[name]))
     (directory / 'https-dns-proxy.fail-stop').touch()
     (directory / 'https-dns-proxy.running').touch()
     assert run('quiesce', 'dnscrypt-proxy2').returncode != 0
-    assert not state('dns-manager-dnscrypt', 'enabled')
+    assert not state('dnscrypt-proxy', 'enabled')
     (directory / 'https-dns-proxy.fail-stop').unlink()
     (directory / 'https-dns-proxy.running').unlink()
     (directory / 'ubus.fail').touch()
@@ -86,18 +92,18 @@ print(json.dumps(data[name]))
     assert run('quiesce', 'dnscrypt-proxy2').returncode != 0
     assert run('start', 'dnscrypt-proxy2').returncode != 0
     (directory / 'ubus.invalid').unlink()
-    (directory / 'dns-manager-dnscrypt.fail-check').touch()
+    (directory / 'fail-check').touch()
     assert run('start', 'dnscrypt-proxy2').returncode != 0
-    assert not state('dns-manager-dnscrypt', 'enabled')
-    (directory / 'dns-manager-dnscrypt.fail-check').unlink()
-    (directory / 'dns-manager-dnscrypt.fail-start').touch()
+    assert not state('dnscrypt-proxy', 'enabled')
+    (directory / 'fail-check').unlink()
+    (directory / 'dnscrypt-proxy.fail-start').touch()
     assert run('start', 'dnscrypt-proxy2').returncode != 0
-    assert not state('dns-manager-dnscrypt', 'enabled')
-    (directory / 'dns-manager-dnscrypt.fail-start').unlink()
-    (directory / 'dns-manager-dnscrypt.false-start').touch()
+    assert not state('dnscrypt-proxy', 'enabled')
+    (directory / 'dnscrypt-proxy.fail-start').unlink()
+    (directory / 'dnscrypt-proxy.false-start').touch()
     result = run('start', 'dnscrypt-proxy2')
     assert result.returncode != 0 and 'did not become ready' in result.stderr
-    assert not state('dns-manager-dnscrypt', 'enabled')
+    assert not state('dnscrypt-proxy', 'enabled')
     assert run('start', 'invalid').returncode == 2
 
 print('Experimental service lifecycle checks passed')

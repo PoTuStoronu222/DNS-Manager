@@ -52,7 +52,7 @@ fi
 
 case "$engine" in
     https-dns-proxy) target=https-dns-proxy ;;
-    dnscrypt-proxy2) target=dns-manager-dnscrypt ;;
+    dnscrypt-proxy2) target=dnscrypt-proxy ;;
 esac
 
 # Never knowingly start a second manager while another service is enabled or
@@ -71,7 +71,9 @@ script="$initdir/$target"
 # rc.common's procd start may not propagate start_service's failure. Validate
 # the Manager-owned single-process configuration before enabling it at boot.
 if [ "$engine" = dnscrypt-proxy2 ]; then
-    "$script" check || {
+    binary=${DNS_MANAGER_DNSCRYPT_BIN:-/usr/sbin/dnscrypt-proxy}
+    config=${DNS_MANAGER_DNSCRYPT_CONFIG:-/etc/dnscrypt-proxy2/dnscrypt-proxy.toml}
+    [ -x "$binary" ] && [ -f "$config" ] && "$binary" -config "$config" -check >/dev/null 2>&1 || {
         printf 'Invalid dnscrypt-proxy2 configuration\n' >&2
         exit 1
     }
