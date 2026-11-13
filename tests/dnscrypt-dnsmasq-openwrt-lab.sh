@@ -32,6 +32,14 @@ sh /tmp/dns-manager-dnscrypt-dnsmasq.sh 5053 /tmp/dns-manager-uci-read-guard.sh 
 [ "$(uci -q get dhcp.main.server)" = '/ru/77.88.8.8 127.0.0.1#5053' ]
 [ "$(uci -q get dhcp.main.local)" = /lan/ ]
 echo 'PASS: isolated UCI apply preserves regional route and rejects pending changes'
+sh /tmp/dns-manager-dnscrypt-dnsmasq.sh restore 5053 /tmp/dns-manager-uci-read-guard.sh /bin/true
+[ "$(uci -q get dhcp.main.noresolv)" = 0 ]
+[ "$(uci -q get dhcp.main.cachesize)" = 1000 ]
+[ "$(uci -q get dhcp.main.server)" = '/ru/77.88.8.8' ]
+# Applying again after restore must be safe and should not duplicate servers.
+sh /tmp/dns-manager-dnscrypt-dnsmasq.sh 5053 /tmp/dns-manager-uci-read-guard.sh /bin/true
+[ "$(uci -q get dhcp.main.server)" = '/ru/77.88.8.8 127.0.0.1#5053' ]
+echo 'PASS: explicit restore and reapply with regional route'
 cat > /tmp/fail-once <<'FAIL'
 #!/bin/sh
 [ -e /tmp/failed ] && exit 0
@@ -57,4 +65,15 @@ fi
 [ "$(uci -q get dhcp.main.noresolv)" = 0 ]
 [ "$(uci -q get dhcp.main.cachesize)" = 1000 ]
 [ -z "$(uci -q get dhcp.main.server || true)" ]
+sh /tmp/dns-manager-dnscrypt-dnsmasq.sh restore 5053 /tmp/dns-manager-uci-read-guard.sh /bin/true
+[ -z "$(uci -q get dhcp.main.server || true)" ]
 echo 'PASS: stock baseline without domain routes'
+DNS_MANAGER_OWNERSHIP_FILE=/tmp/manager-ownership
+export DNS_MANAGER_OWNERSHIP_FILE
+printf '%s\n' 'dnsmasq|server|/legacy.example/127.0.0.1#5059|section=main' > "$DNS_MANAGER_OWNERSHIP_FILE"
+uci add_list 'dhcp.main.server=/legacy.example/127.0.0.1#5059'
+uci add_list 'dhcp.main.server=/steer.example/127.0.0.1#5300'
+uci commit dhcp
+sh /tmp/dns-manager-dnscrypt-dnsmasq.sh restore 5053 /tmp/dns-manager-uci-read-guard.sh /bin/true
+[ "$(uci -q get dhcp.main.server)" = '/steer.example/127.0.0.1#5300' ]
+echo 'PASS: reset removes Manager-owned domain route but retains unrelated route'

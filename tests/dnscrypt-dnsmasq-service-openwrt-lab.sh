@@ -43,3 +43,9 @@ if ! nslookup -type=A -port=25664 dns-manager-test.example.com 127.0.0.1 > /tmp/
     exit 1
 fi
 echo 'PASS: actual OpenWrt dnsmasq forwards to the configured local listener'
+sh /tmp/dns-manager-dnscrypt-dnsmasq.sh restore 25663 /tmp/dns-manager-uci-read-guard.sh /etc/init.d/dnsmasq restart
+[ "$(uci -q get dhcp.main.noresolv)" = 0 ]
+[ "$(uci -q get dhcp.main.cachesize)" = 1000 ]
+[ -z "$(uci -q get dhcp.main.server || true)" ]
+/etc/init.d/dnsmasq running
+echo 'PASS: standard DNS settings restored and dnsmasq running'
