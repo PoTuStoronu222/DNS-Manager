@@ -6766,7 +6766,12 @@ function foldSection(key,summary,content,classes){
 }
 
 function renderSlots(root,st){
-  var e=root.querySelector('#dm-slots');if(!e)return;e.innerHTML='';var rows=[];
+  var e=root.querySelector('#dm-slots');if(!e)return;e.innerHTML='';
+  if(st.dnscrypt_engine==='dnscrypt-proxy2'){
+    e.appendChild(card('DNS по слотам',[E('p',{'class':'dm-hint'},'В режиме dnscrypt-proxy2 используется общий набор DNS. Отдельные слоты недоступны.')]));
+    return;
+  }
+  var rows=[];
   (st.slots||[]).forEach(function(d){
     var assigned=!!d.id;
     var checking=assigned&&state.checking&&state.checking[d.id];
@@ -6821,7 +6826,12 @@ function renderSlots(root,st){
 }
 
 function renderDeviceDns(root,st){
-  var e=root.querySelector('#dm-devices');if(!e)return;e.innerHTML='';var deviceChildren=[];
+  var e=root.querySelector('#dm-devices');if(!e)return;e.innerHTML='';
+  if(st.dnscrypt_engine==='dnscrypt-proxy2'){
+    e.appendChild(card('Устройства LAN',[E('p',{'class':'dm-hint'},'В режиме dnscrypt-proxy2 привязка устройств к отдельным слотам недоступна. Для dnsmasq используется общий набор DNS.')]));
+    return;
+  }
+  var deviceChildren=[];
   var inventory=window.dmLanDevices||{};
   var available={};
   var slotNames={};

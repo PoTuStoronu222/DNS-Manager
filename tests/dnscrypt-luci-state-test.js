@@ -25,4 +25,16 @@ assert.equal(ctx.activeProfileId(current), '');
 assert.equal(ctx.activeProfileLabel(current), 'Не выбран');
 assert.equal(ctx.activeProfileId({profile:'clean'}), 'clean');
 assert.equal(ctx.displayDnsRows({slots:[], doh_instances:[]}).length, 0);
+ctx.E = (tag, attrs, text) => ({tag, attrs, text});
+ctx.card = (title, children) => ({title, children});
+vm.runInContext(section('function renderSlots(', 'function settingCard('), ctx);
+for (const [fn, selector] of [['renderSlots', '#dm-slots'], ['renderDeviceDns', '#dm-devices']]) {
+  const panel = {innerHTML:'old', children:[], appendChild(node) { this.children.push(node); }};
+  const root = {querySelector(value) { assert.equal(value, selector); return panel; }};
+  const status = {dnscrypt_engine:'dnscrypt-proxy2', get slots() { throw Error('legacy slots read'); }};
+  ctx[fn](root, status);
+  assert.equal(panel.innerHTML, '');
+  assert.equal(panel.children.length, 1);
+  assert.match(panel.children[0].children[0].text, /недоступн/);
+}
 console.log('PASS: DNSCrypt profile and pooled servers do not inherit legacy slots');
