@@ -70,6 +70,17 @@ script="$initdir/$target"
 [ -x "$script" ] || { printf 'Missing service: %s\n' "$target" >&2; exit 1; }
 # rc.common's procd start may not propagate start_service's failure. Validate
 # the Manager-owned single-process configuration before enabling it at boot.
+if [ "$engine" = https-dns-proxy ]; then
+    # A fresh engine switch leaves dnsmasq on provider DNS until the user
+    # selects a profile. Package defaults otherwise redirect DNS and may
+    # compete with Steer as soon as the service starts.
+    force=$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null) || force=''
+    integration=$(uci -q get https-dns-proxy.config.dnsmasq_config_update 2>/dev/null) || integration=''
+    if [ "$force" != 0 ] || [ "$integration" != - ]; then
+        printf 'HTTPS DNS Proxy integration must be disabled before start\n' >&2
+        exit 1
+    fi
+fi
 if [ "$engine" = dnscrypt-proxy2 ]; then
     binary=${DNS_MANAGER_DNSCRYPT_BIN:-/usr/sbin/dnscrypt-proxy}
     config=${DNS_MANAGER_DNSCRYPT_CONFIG:-/etc/dnscrypt-proxy2/dnscrypt-proxy.toml}
