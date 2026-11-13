@@ -42,7 +42,7 @@ WATCHDOG_GUARD_INTERVAL=3600
 DNSMASQ_CACHE_SIZE=4096
 WATCHDOG_SERVICE_PATH="/etc/init.d/dns-watchdog"
 WATCHDOG_SERVICE_MARKER="# DNS_MANAGER_WATCHDOG_SERVICE=2"
-WATCHDOG_SERVICE_VERSION_MARKER="# DNS_MANAGER_WATCHDOG_SERVICE_VERSION=3.11.9"
+WATCHDOG_SERVICE_VERSION_MARKER="# DNS_MANAGER_WATCHDOG_SERVICE_VERSION=3.11.10"
 WATCHDOG_LEGACY_DAEMON_PATH="/usr/bin/dns-watchdog-daemon.sh"
 WATCHDOG_LEGACY_DAEMON_MARKER="# DNS_MANAGER_WATCHDOG_DAEMON=1"
 WATCHDOG_LEGACY_RUNTIME_DIR="/var/run/dns-watchdog"
@@ -8059,7 +8059,16 @@ watchdog_embedded_integrity_guard() {
     release_mutation_lock
     return 0
 }
+watchdog_legacy_engine_allowed() {
+    _wd_engine_file="${CFG_DIR:-/etc/dns-manager/config}/dnscrypt-engine"
+    if [ -e "$_wd_engine_file" ] || [ -L "$_wd_engine_file" ]; then
+        [ -r "$_wd_engine_file" ] || return 1
+        [ "$(cat "$_wd_engine_file" 2>/dev/null)" = https-dns-proxy ] || return 1
+    fi
+    return 0
+}
 watchdog_embedded_loop() {
+    watchdog_legacy_engine_allowed || return 0
     # Forced-DNS Auto must track Steer even when DNS probing/rotation is off.
     # When WATCHDOG_ENABLED=0 this loop runs only the lightweight path guard.
     DNS_MANAGER_RAM_LOG=1
@@ -8091,6 +8100,7 @@ watchdog_embedded_loop() {
     sleep 12
 
     while :; do
+        watchdog_legacy_engine_allowed || return 0
         load_config >/dev/null 2>&1 || true
         [ "${WATCHDOG_ENABLED:-0}" = 1 ] || [ "${FORCE_DOH:-0}" = 1 ] || return 0
 
@@ -8671,7 +8681,7 @@ watchdog_service_install_files() {
     cat > "$_stmp" <<'EOF_DNS_WATCHDOG_SERVICE'
 #!/bin/sh /etc/rc.common
 # DNS_MANAGER_WATCHDOG_SERVICE=2
-# DNS_MANAGER_WATCHDOG_SERVICE_VERSION=3.11.9
+# DNS_MANAGER_WATCHDOG_SERVICE_VERSION=3.11.10
 
 USE_PROCD=1
 START=95
@@ -8682,6 +8692,10 @@ CMD="__watchdog-loop"
 
 start_service() {
     [ -x "$PROG" ] || return 1
+    _engine=/etc/dns-manager/config/dnscrypt-engine
+    if [ -e "$_engine" ] || [ -L "$_engine" ]; then
+        [ -r "$_engine" ] && [ "$(cat "$_engine" 2>/dev/null)" = https-dns-proxy ] || return 0
+    fi
     [ -r /etc/dns-manager/config/manager.conf ] || return 0
     . /etc/dns-manager/config/manager.conf
     _wd_enabled="${WATCHDOG_ENABLED:-0}"
