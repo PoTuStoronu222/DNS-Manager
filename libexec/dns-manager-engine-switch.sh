@@ -9,8 +9,6 @@ helpers=${DNS_MANAGER_DNSCRYPT_HELPERS:-/usr/lib/dns-manager-luci/dnscrypt}
 runtime=${DNS_MANAGER_DNSCRYPT_RUNTIME_DIR:-/var/run/dns-manager-luci}
 config_dir=${DNS_MANAGER_DNSCRYPT_CONFIG_DIR:-/etc/dns-manager/config}
 job_dir=${DNS_MANAGER_DNSCRYPT_JOB_DIR:-$runtime/jobs}/engine
-guard=${DNS_MANAGER_UCI_GUARD:-/usr/lib/dns-manager-luci/cache/uci-read-guard.sh}
-dnsmasq_init=${DNS_MANAGER_DNSMASQ_INIT:-/etc/init.d/dnsmasq}
 init_dir=${DNS_MANAGER_INIT_DIR:-/etc/init.d}
 engine_file=${DNS_MANAGER_DNSCRYPT_ENGINE_FILE:-$config_dir/dnscrypt-engine}
 mkdir -p "$job_dir" "$runtime" "$config_dir"
@@ -26,7 +24,7 @@ cleanup() {
     if [ "$success" != 1 ]; then
         if [ "$changed" = 1 ]; then
             echo 'Ошибка переключения. Восстанавливаю стандартный DNS.'
-            if ! sh "$helpers/dns-manager-dnscrypt-dnsmasq.sh" clean 5053 "$guard" "$dnsmasq_init" restart; then
+            if ! sh "$helpers/dns-manager-dnscrypt-dnsmasq.sh" clean 5053; then
                 echo 'Не удалось подтвердить запуск dnsmasq; проверьте настройки DNS и системный журнал.'
             fi
             rm -f "$config_dir/dnscrypt-profile.state" || true
@@ -48,7 +46,7 @@ preflight_readonly >/dev/null 2>&1 && init_dirs >/dev/null 2>&1 && load_config >
 acquire_mutation_lock || { echo 'Другая операция DNS Manager уже выполняется.'; exit 1; }
 locked=1
 # Refuse a global UCI commit when another interface has staged changes.
-for package in dhcp firewall https-dns-proxy; do
+for package in firewall https-dns-proxy; do
     pending=$(uci -q changes "$package" 2>/dev/null || true)
     [ -z "$pending" ] || { echo "Есть несохранённые изменения UCI: $package"; exit 1; }
 done
@@ -71,7 +69,7 @@ echo 'Останавливаю DNS-службы.'
 sh "$helpers/dns-manager-engine-services.sh" quiesce "$target" || exit 1
 rollback_firewall_targeted || exit 1
 echo 'Восстанавливаю стандартный DNS.'
-sh "$helpers/dns-manager-dnscrypt-dnsmasq.sh" clean 5053 "$guard" "$dnsmasq_init" restart || exit 1
+sh "$helpers/dns-manager-dnscrypt-dnsmasq.sh" clean 5053 || exit 1
 SLOT_1_DOMAINS=''; SLOT_2_DOMAINS=''; SLOT_3_DOMAINS=''; SLOT_4_DOMAINS=''; SLOT_5_DOMAINS=''; SLOT_6_DOMAINS=''
 REGIONAL_SAVED_ID=''; FORCE_DOH=0; BLOCK_EXTERNAL_DNS=0
 clear_dns_core_runtime_state || exit 1
@@ -107,7 +105,7 @@ if [ "$target" = dnscrypt-proxy2 ]; then
     bootstrap=$(printf '%s' "$BOOTSTRAP_DNS" | tr ',' '\n' | awk 'NF {if(n++) printf ","; printf "%s", $0; if(n==3) exit}')
     printf '%s\n' 'https://cloudflare-dns.com/dns-query' 'https://dns.google/dns-query' | sh "$helpers/dns-manager-dnscrypt-pool-apply.sh" 5053 "$bootstrap" || exit 1
     "$init_dir/dnscrypt-proxy" enable || exit 1
-    sh "$helpers/dns-manager-dnscrypt-dnsmasq.sh" 5053 "$guard" "$dnsmasq_init" restart || exit 1
+    sh "$helpers/dns-manager-dnscrypt-dnsmasq.sh" 5053 || exit 1
     state_tmp=$(mktemp "$config_dir/.dnscrypt-state.XXXXXX") || exit 1
     if ! { printf '%s\n' 'profile=none' 'server=cloudflare_clean|https://cloudflare-dns.com/dns-query' 'server=google_clean|https://dns.google/dns-query' > "$state_tmp" && chmod 600 "$state_tmp" && mv -f "$state_tmp" "$config_dir/dnscrypt-profile.state"; }; then
         rm -f "$state_tmp"; exit 1

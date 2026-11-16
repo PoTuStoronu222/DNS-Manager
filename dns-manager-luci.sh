@@ -514,19 +514,16 @@ EOF_DNSCRYPT_ASSET_5
 # The caller owns the DNS Manager mutation lock and commits UI metadata only
 # after this function succeeds. stdout is the applied catalog ID|URL list.
 dnscrypt_apply_profile_pool() (
-    local goal port bootstrap apply dnsmasq_apply guard records urls config init backup had_config
+    local goal port bootstrap apply dnsmasq_apply records urls config init backup had_config
     goal=${1:-}
     port=${2:-}
     bootstrap=${3:-}
     apply=${DNS_MANAGER_DNSCRYPT_POOL_APPLY:-/usr/lib/dns-manager-luci/dnscrypt/dns-manager-dnscrypt-pool-apply.sh}
     dnsmasq_apply=${DNS_MANAGER_DNSCRYPT_DNSMASQ_APPLY:-/usr/lib/dns-manager-luci/dnscrypt/dns-manager-dnscrypt-dnsmasq.sh}
-    guard=${DNS_MANAGER_DNSCRYPT_UCI_GUARD:-/usr/lib/dns-manager-luci/cache/uci-read-guard.sh}
     config=${DNS_MANAGER_DNSCRYPT_CONFIG:-/etc/dnscrypt-proxy2/dnscrypt-proxy.toml}
     init=${DNS_MANAGER_DNSCRYPT_INIT:-/etc/init.d/dnscrypt-proxy}
     [ -r "$apply" ] || { echo 'DNSCrypt pool apply helper is unavailable' >&2; return 1; }
-    [ -r "$dnsmasq_apply" ] && [ -r "$guard" ] || { echo 'DNSCrypt dnsmasq transaction is unavailable' >&2; return 1; }
-    # Refuse pending DHCP changes before restarting an already active pool.
-    sh "$guard" dhcp /bin/true || { echo 'Pending DHCP changes; profile not changed' >&2; return 1; }
+    [ -r "$dnsmasq_apply" ] || { echo 'DNSCrypt dnsmasq helper is unavailable' >&2; return 1; }
     records=$(mktemp "${TMP_DIR:-/tmp}/dnscrypt-selected.XXXXXX") || return 1
     urls=$(mktemp "${TMP_DIR:-/tmp}/dnscrypt-urls.XXXXXX") || { rm -f "$records"; return 1; }
     backup=$(mktemp "$(dirname "$config")/.dnscrypt-previous.XXXXXX") || { rm -f "$records" "$urls"; return 1; }
@@ -544,7 +541,7 @@ dnscrypt_apply_profile_pool() (
         had_config=1
     fi
     sh "$apply" "$port" "$bootstrap" < "$urls" || return 1
-    if ! sh "$dnsmasq_apply" "$port" "$guard" /etc/init.d/dnsmasq restart; then
+    if ! sh "$dnsmasq_apply" "$port"; then
         # The pool helper has already switched the proxy. Restore its previous
         # configuration so a failed dnsmasq update does not silently change
         # the DNS servers behind an existing profile.
@@ -568,171 +565,46 @@ dnscrypt_apply_profile_pool() (
 EOF_DNSCRYPT_ASSET_6
     cat > "$_dc_stage/dns-manager-dnscrypt-dnsmasq.sh" <<'EOF_DNSCRYPT_ASSET_7'
 #!/bin/sh
-# Experimental dnsmasq upstream transaction. The caller serializes Manager
-# mutations and verifies that the DNSCrypt listener is answering first.
-# Usage: script [restore|clean] port guard restart-command [args...]
-# jshn uses optional shell variables and is not compatible with nounset.
+# Configure the main dnsmasq instance for DNSCrypt or restore OpenWrt defaults.
 set -e
-request_mode=encrypted
-case "${1:-}" in restore) request_mode=stock; shift ;; clean) request_mode=clean; shift ;; esac
-[ "$#" -ge 3 ] || exit 2
-port=$1; guard=$2; shift 2
+mode=encrypted
+case "${1:-}" in restore|clean) mode=stock; shift ;; esac
+[ "$#" -eq 1 ] || exit 2
+port=$1
 case "$port" in ''|*[!0-9]*) exit 2;; esac
-[ "${#port}" -le 5 ] && [ "$port" -gt 0 ] && [ "$port" -le 65535 ] || exit 2
-[ -r "$guard" ] || exit 1
-. /usr/share/libubox/jshn.sh
-section='@dnsmasq[0]'
-ownership=${DNS_MANAGER_OWNERSHIP_FILE:-/etc/dns-manager/config/ownership.conf}
-dir=$(mktemp -d /tmp/dnscrypt-dnsmasq.XXXXXX) || exit 1
-sid=''
-cleanup() {
-    [ -z "$sid" ] || ubus call session destroy "{\"ubus_rpc_session\":\"$sid\"}" >/dev/null 2>&1 || :
-    rm -rf "$dir"
+[ "$port" -gt 0 ] && [ "$port" -le 65535 ] || exit 2
+
+restore_dns() {
+    uci -q delete 'dhcp.@dnsmasq[0].noresolv' || :
+    uci -q delete 'dhcp.@dnsmasq[0].localuse' || :
+    uci -q delete 'dhcp.@dnsmasq[0].cachesize' || :
+    uci -q delete 'dhcp.@dnsmasq[0].server' || :
+    uci commit dhcp
 }
-trap cleanup EXIT
-trap 'exit 1' HUP INT TERM
-session_open() {
-    sid=$(ubus call session create '{"timeout":60}' | jsonfilter -e '@.ubus_rpc_session') || return 1
-    case "$sid" in ''|*[!0-9a-f]*) return 1;; esac
-    [ "${#sid}" -eq 32 ] || return 1
-    ubus call session grant "{\"ubus_rpc_session\":\"$sid\",\"scope\":\"uci\",\"objects\":[[\"dhcp\",\"read\"],[\"dhcp\",\"write\"]]}" >/dev/null
-}
-session_close() {
-    ubus call session destroy "{\"ubus_rpc_session\":\"$sid\"}" >/dev/null || return 1
-    sid=''
-}
-sh "$guard" dhcp /bin/true || { echo 'Pending DHCP changes; not changing DNS' >&2; exit 1; }
-session_open
-ubus call uci get "{\"ubus_rpc_session\":\"$sid\",\"config\":\"dhcp\",\"section\":\"$section\"}" > "$dir/current" || exit 1
-json_load "$(cat "$dir/current")" || exit 1
-json_select values || exit 1
-json_get_var type '.type'
-[ "$type" = dnsmasq ] || exit 1
-json_get_var instance '.name'
-case "$instance" in ''|*[!A-Za-z0-9_]*) exit 1;; esac
-# Keep domain-specific entries, including regional routing, but replace common
-# upstreams as requested for a fresh Manager configuration.
-: > "$dir/domains"
-keep_domain() {
-    case "$1" in /*/*) ;; *) return 0;; esac
-    # A reset drops only domain routes recorded as Manager-owned; Steer and
-    # other domain-specific routes are not identified by port or name alone.
-    if [ "$request_mode" = stock ] && [ -r "$ownership" ] &&
-       awk -F'|' -v value="$1" '$1=="dnsmasq" && $2=="server" && $3==value { found=1; exit } END { exit !found }' "$ownership"; then
-        return 0
+
+service dnsmasq stop
+trap 'restore_dns || :; service dnsmasq start || :; exit 1' HUP INT TERM
+if [ "$mode" = encrypted ]; then
+    if ! {
+        uci set 'dhcp.@dnsmasq[0].noresolv=1' &&
+        uci set 'dhcp.@dnsmasq[0].localuse=1' &&
+        uci set 'dhcp.@dnsmasq[0].cachesize=0' &&
+        { uci -q delete 'dhcp.@dnsmasq[0].server' || :; } &&
+        uci add_list "dhcp.@dnsmasq[0].server=127.0.0.1#$port" &&
+        uci commit dhcp && service dnsmasq start
+    }; then
+        restore_dns || :
+        service dnsmasq start || :
+        exit 1
     fi
-    printf '%s\n' "$1" >> "$dir/domains"
-}
-json_get_type server_type server || server_type=''
-case "$server_type" in
-    array)
-        json_select server || exit 1
-        json_get_keys keys
-        for key in $keys; do
-            json_get_var value "$key"
-            keep_domain "$value"
-        done
-        json_select .. || exit 1 ;;
-    string)
-        json_get_var value server
-        keep_domain "$value" ;;
-    '') ;;
-    *) echo 'Unsupported dnsmasq server option' >&2; exit 1 ;;
-esac
-build_request() {
-    mode=$1
-    json_init
-    json_add_string ubus_rpc_session "$sid"
-    json_add_string config dhcp
-    json_add_string section "$section"
-    json_add_object values
-    if [ "$mode" = encrypted ] || [ -s "$dir/domains" ]; then
-        json_add_array server
-        while IFS= read -r value; do [ -n "$value" ] && json_add_string '' "$value"; done < "$dir/domains"
-        [ "$mode" != encrypted ] || json_add_string '' "127.0.0.1#$port"
-        json_close_array
-    fi
-    if [ "$mode" = encrypted ]; then
-        json_add_string noresolv 1
-        json_add_string cachesize 0
-        json_add_string localuse 1
-    else
-        json_add_string noresolv 0
-        json_add_string cachesize 1000
-    fi
-    json_close_object
-    json_dump
-}
-if [ "$request_mode" = clean ]; then
-    # Explicit clean-slate switch: delete all four settings in one UCI
-    # session, including domain forwards. The caller must warn the user.
-    for key in noresolv cachesize server localuse; do
-        json_get_type option_type "$key" || option_type=''
-        [ -n "$option_type" ] || continue
-        ubus call uci delete "{\"ubus_rpc_session\":\"$sid\",\"config\":\"dhcp\",\"section\":\"$section\",\"option\":\"$key\"}" >/dev/null || exit 1
-    done
 else
-    if [ "$request_mode" = stock ] && [ ! -s "$dir/domains" ] && [ -n "$server_type" ]; then
-        ubus call uci delete "{\"ubus_rpc_session\":\"$sid\",\"config\":\"dhcp\",\"section\":\"$section\",\"option\":\"server\"}" >/dev/null || exit 1
+    if ! restore_dns; then
+        service dnsmasq start || :
+        exit 1
     fi
-    ubus call uci set "$(build_request "$request_mode")" >/dev/null || exit 1
+    service dnsmasq start
 fi
-ubus call uci commit "{\"ubus_rpc_session\":\"$sid\",\"config\":\"dhcp\"}" >/dev/null || exit 1
-session_close
-if sh "$guard" dhcp /bin/sh -c '
-    instance=$1; shift
-    "$@" || exit 1
-    for attempt in 1 2 3 4 5 6 7 8 9 10; do
-        state=$(ubus -t 3 call service list '\''{"name":"dnsmasq"}'\'' | jsonfilter -e "@.dnsmasq.instances.$instance.running") || state=unknown
-        [ "$state" = true ] && exit 0
-        sleep 1
-    done
-    exit 1
-' sh "$instance" "$@"; then
-    exit 0
-fi
-if [ "$request_mode" != encrypted ]; then
-    echo 'Standard DNS settings were saved, but dnsmasq did not start' >&2
-    exit 1
-fi
-# The caller requested stock DNS as the failure state. Isolate the UCI
-# session so another interface's pending changes are not committed here.
-echo 'dnsmasq restart failed; restoring standard DNS' >&2
-session_open
-# Another actor may have changed the active options after our commit. Do not
-# overwrite those later changes while attempting recovery.
-ubus call uci get "{\"ubus_rpc_session\":\"$sid\",\"config\":\"dhcp\",\"section\":\"$section\"}" > "$dir/after" || exit 1
-json_load "$(cat "$dir/after")" || exit 1
-json_select values || exit 1
-json_get_var after_noresolv noresolv
-json_get_var after_cachesize cachesize
-json_get_var after_localuse localuse
-[ "$after_noresolv" = 1 ] && [ "$after_cachesize" = 0 ] && [ "$after_localuse" = 1 ] || { echo 'DNS settings changed concurrently; not overwriting them' >&2; exit 1; }
-json_get_type after_type server
-[ "$after_type" = array ] || { echo 'DNS servers changed concurrently; not overwriting them' >&2; exit 1; }
-json_select server || exit 1
-json_get_keys after_keys
-: > "$dir/after-servers"
-for key in $after_keys; do json_get_var value "$key"; printf '%s\n' "$value" >> "$dir/after-servers"; done
-cat "$dir/domains" > "$dir/expected-servers"
-printf '127.0.0.1#%s\n' "$port" >> "$dir/expected-servers"
-cmp -s "$dir/expected-servers" "$dir/after-servers" || { echo 'DNS servers changed concurrently; not overwriting them' >&2; exit 1; }
-# The fallback is a reset too: drop routes recorded as Manager-owned only
-# after verifying that no concurrent actor changed our applied server list.
-mv "$dir/domains" "$dir/domains-before-reset"
-: > "$dir/domains"
-request_mode=stock
-while IFS= read -r value; do keep_domain "$value"; done < "$dir/domains-before-reset"
-if [ ! -s "$dir/domains" ]; then
-    # rpcd rejects an empty UCI list. Delete the previously installed server
-    # option within this same session instead of sending server: [].
-    ubus call uci delete "{\"ubus_rpc_session\":\"$sid\",\"config\":\"dhcp\",\"section\":\"$section\",\"option\":\"server\"}" >/dev/null || exit 1
-fi
-ubus call uci set "$(build_request stock)" >/dev/null || exit 1
-ubus call uci commit "{\"ubus_rpc_session\":\"$sid\",\"config\":\"dhcp\"}" >/dev/null || exit 1
-session_close
-sh "$guard" dhcp "$@" || echo 'Standard DNS saved, but dnsmasq restart failed' >&2
-exit 1
+trap - HUP INT TERM
 EOF_DNSCRYPT_ASSET_7
     cat > "$_dc_stage/dns-manager-engine-services.sh" <<'EOF_DNSCRYPT_ASSET_8'
 #!/bin/sh
@@ -986,7 +858,7 @@ profile_worker() {
                         rc=0
                     else
                         printf '%s\n' 'Не удалось включить автозапуск или сохранить профиль. Восстанавливаю стандартный DNS.'
-                        if sh "$HELPERS/dns-manager-dnscrypt-dnsmasq.sh" restore 5053 /usr/lib/dns-manager-luci/cache/uci-read-guard.sh /etc/init.d/dnsmasq restart; then
+                        if sh "$HELPERS/dns-manager-dnscrypt-dnsmasq.sh" restore 5053; then
                             rm -f "$STATE_FILE"
                             "$DNSCRYPT_INIT" stop >/dev/null 2>&1 || true
                             "$DNSCRYPT_INIT" disable >/dev/null 2>&1 || true
@@ -1052,7 +924,7 @@ reset_worker() {
             : > "$RUNTIME_DIR/dnscrypt-reset.log"
             if engine_selected && ! hdp_active && disable_legacy_watchdog &&
                sh "$HELPERS/dns-manager-device-detach.sh" >> "$RUNTIME_DIR/dnscrypt-reset.log" 2>&1 &&
-               sh "$HELPERS/dns-manager-dnscrypt-dnsmasq.sh" restore 5053 /usr/lib/dns-manager-luci/cache/uci-read-guard.sh /etc/init.d/dnsmasq restart >> "$RUNTIME_DIR/dnscrypt-reset.log" 2>&1; then
+               sh "$HELPERS/dns-manager-dnscrypt-dnsmasq.sh" restore 5053 >> "$RUNTIME_DIR/dnscrypt-reset.log" 2>&1; then
                 # The profile is no longer active once dnsmasq is restored,
                 # even if disabling the proxy service fails afterward.
                 if rm -f "$STATE_FILE" &&
@@ -1253,8 +1125,6 @@ helpers=${DNS_MANAGER_DNSCRYPT_HELPERS:-/usr/lib/dns-manager-luci/dnscrypt}
 runtime=${DNS_MANAGER_DNSCRYPT_RUNTIME_DIR:-/var/run/dns-manager-luci}
 config_dir=${DNS_MANAGER_DNSCRYPT_CONFIG_DIR:-/etc/dns-manager/config}
 job_dir=${DNS_MANAGER_DNSCRYPT_JOB_DIR:-$runtime/jobs}/engine
-guard=${DNS_MANAGER_UCI_GUARD:-/usr/lib/dns-manager-luci/cache/uci-read-guard.sh}
-dnsmasq_init=${DNS_MANAGER_DNSMASQ_INIT:-/etc/init.d/dnsmasq}
 init_dir=${DNS_MANAGER_INIT_DIR:-/etc/init.d}
 engine_file=${DNS_MANAGER_DNSCRYPT_ENGINE_FILE:-$config_dir/dnscrypt-engine}
 mkdir -p "$job_dir" "$runtime" "$config_dir"
@@ -1270,7 +1140,7 @@ cleanup() {
     if [ "$success" != 1 ]; then
         if [ "$changed" = 1 ]; then
             echo 'Ошибка переключения. Восстанавливаю стандартный DNS.'
-            if ! sh "$helpers/dns-manager-dnscrypt-dnsmasq.sh" clean 5053 "$guard" "$dnsmasq_init" restart; then
+            if ! sh "$helpers/dns-manager-dnscrypt-dnsmasq.sh" clean 5053; then
                 echo 'Не удалось подтвердить запуск dnsmasq; проверьте настройки DNS и системный журнал.'
             fi
             rm -f "$config_dir/dnscrypt-profile.state" || true
@@ -1292,7 +1162,7 @@ preflight_readonly >/dev/null 2>&1 && init_dirs >/dev/null 2>&1 && load_config >
 acquire_mutation_lock || { echo 'Другая операция DNS Manager уже выполняется.'; exit 1; }
 locked=1
 # Refuse a global UCI commit when another interface has staged changes.
-for package in dhcp firewall https-dns-proxy; do
+for package in firewall https-dns-proxy; do
     pending=$(uci -q changes "$package" 2>/dev/null || true)
     [ -z "$pending" ] || { echo "Есть несохранённые изменения UCI: $package"; exit 1; }
 done
@@ -1315,7 +1185,7 @@ echo 'Останавливаю DNS-службы.'
 sh "$helpers/dns-manager-engine-services.sh" quiesce "$target" || exit 1
 rollback_firewall_targeted || exit 1
 echo 'Восстанавливаю стандартный DNS.'
-sh "$helpers/dns-manager-dnscrypt-dnsmasq.sh" clean 5053 "$guard" "$dnsmasq_init" restart || exit 1
+sh "$helpers/dns-manager-dnscrypt-dnsmasq.sh" clean 5053 || exit 1
 SLOT_1_DOMAINS=''; SLOT_2_DOMAINS=''; SLOT_3_DOMAINS=''; SLOT_4_DOMAINS=''; SLOT_5_DOMAINS=''; SLOT_6_DOMAINS=''
 REGIONAL_SAVED_ID=''; FORCE_DOH=0; BLOCK_EXTERNAL_DNS=0
 clear_dns_core_runtime_state || exit 1
@@ -1351,7 +1221,7 @@ if [ "$target" = dnscrypt-proxy2 ]; then
     bootstrap=$(printf '%s' "$BOOTSTRAP_DNS" | tr ',' '\n' | awk 'NF {if(n++) printf ","; printf "%s", $0; if(n==3) exit}')
     printf '%s\n' 'https://cloudflare-dns.com/dns-query' 'https://dns.google/dns-query' | sh "$helpers/dns-manager-dnscrypt-pool-apply.sh" 5053 "$bootstrap" || exit 1
     "$init_dir/dnscrypt-proxy" enable || exit 1
-    sh "$helpers/dns-manager-dnscrypt-dnsmasq.sh" 5053 "$guard" "$dnsmasq_init" restart || exit 1
+    sh "$helpers/dns-manager-dnscrypt-dnsmasq.sh" 5053 || exit 1
     state_tmp=$(mktemp "$config_dir/.dnscrypt-state.XXXXXX") || exit 1
     if ! { printf '%s\n' 'profile=none' 'server=cloudflare_clean|https://cloudflare-dns.com/dns-query' 'server=google_clean|https://dns.google/dns-query' > "$state_tmp" && chmod 600 "$state_tmp" && mv -f "$state_tmp" "$config_dir/dnscrypt-profile.state"; }; then
         rm -f "$state_tmp"; exit 1

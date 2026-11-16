@@ -3,19 +3,16 @@
 # The caller owns the DNS Manager mutation lock and commits UI metadata only
 # after this function succeeds. stdout is the applied catalog ID|URL list.
 dnscrypt_apply_profile_pool() (
-    local goal port bootstrap apply dnsmasq_apply guard records urls config init backup had_config
+    local goal port bootstrap apply dnsmasq_apply records urls config init backup had_config
     goal=${1:-}
     port=${2:-}
     bootstrap=${3:-}
     apply=${DNS_MANAGER_DNSCRYPT_POOL_APPLY:-/usr/lib/dns-manager-luci/dnscrypt/dns-manager-dnscrypt-pool-apply.sh}
     dnsmasq_apply=${DNS_MANAGER_DNSCRYPT_DNSMASQ_APPLY:-/usr/lib/dns-manager-luci/dnscrypt/dns-manager-dnscrypt-dnsmasq.sh}
-    guard=${DNS_MANAGER_DNSCRYPT_UCI_GUARD:-/usr/lib/dns-manager-luci/cache/uci-read-guard.sh}
     config=${DNS_MANAGER_DNSCRYPT_CONFIG:-/etc/dnscrypt-proxy2/dnscrypt-proxy.toml}
     init=${DNS_MANAGER_DNSCRYPT_INIT:-/etc/init.d/dnscrypt-proxy}
     [ -r "$apply" ] || { echo 'DNSCrypt pool apply helper is unavailable' >&2; return 1; }
-    [ -r "$dnsmasq_apply" ] && [ -r "$guard" ] || { echo 'DNSCrypt dnsmasq transaction is unavailable' >&2; return 1; }
-    # Refuse pending DHCP changes before restarting an already active pool.
-    sh "$guard" dhcp /bin/true || { echo 'Pending DHCP changes; profile not changed' >&2; return 1; }
+    [ -r "$dnsmasq_apply" ] || { echo 'DNSCrypt dnsmasq helper is unavailable' >&2; return 1; }
     records=$(mktemp "${TMP_DIR:-/tmp}/dnscrypt-selected.XXXXXX") || return 1
     urls=$(mktemp "${TMP_DIR:-/tmp}/dnscrypt-urls.XXXXXX") || { rm -f "$records"; return 1; }
     backup=$(mktemp "$(dirname "$config")/.dnscrypt-previous.XXXXXX") || { rm -f "$records" "$urls"; return 1; }
@@ -33,7 +30,7 @@ dnscrypt_apply_profile_pool() (
         had_config=1
     fi
     sh "$apply" "$port" "$bootstrap" < "$urls" || return 1
-    if ! sh "$dnsmasq_apply" "$port" "$guard" /etc/init.d/dnsmasq restart; then
+    if ! sh "$dnsmasq_apply" "$port"; then
         # The pool helper has already switched the proxy. Restore its previous
         # configuration so a failed dnsmasq update does not silently change
         # the DNS servers behind an existing profile.
