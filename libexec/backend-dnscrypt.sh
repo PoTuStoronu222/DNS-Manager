@@ -128,7 +128,7 @@ profile_worker() {
                         rc=0
                     else
                         printf '%s\n' 'Не удалось включить автозапуск или сохранить профиль. Восстанавливаю стандартный DNS.'
-                        if sh "$HELPERS/dns-manager-dnscrypt-dnsmasq.sh" restore 5053 /usr/lib/dns-manager-luci/cache/uci-read-guard.sh /etc/init.d/dnsmasq restart; then
+                        if sh "$HELPERS/dns-manager-dnscrypt-dnsmasq.sh" restore 5053; then
                             rm -f "$STATE_FILE"
                             "$DNSCRYPT_INIT" stop >/dev/null 2>&1 || true
                             "$DNSCRYPT_INIT" disable >/dev/null 2>&1 || true
@@ -194,7 +194,7 @@ reset_worker() {
             : > "$RUNTIME_DIR/dnscrypt-reset.log"
             if engine_selected && ! hdp_active && disable_legacy_watchdog &&
                sh "$HELPERS/dns-manager-device-detach.sh" >> "$RUNTIME_DIR/dnscrypt-reset.log" 2>&1 &&
-               sh "$HELPERS/dns-manager-dnscrypt-dnsmasq.sh" restore 5053 /usr/lib/dns-manager-luci/cache/uci-read-guard.sh /etc/init.d/dnsmasq restart >> "$RUNTIME_DIR/dnscrypt-reset.log" 2>&1; then
+               sh "$HELPERS/dns-manager-dnscrypt-dnsmasq.sh" restore 5053 >> "$RUNTIME_DIR/dnscrypt-reset.log" 2>&1; then
                 # The profile is no longer active once dnsmasq is restored,
                 # even if disabling the proxy service fails afterward.
                 if rm -f "$STATE_FILE" &&
