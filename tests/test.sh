@@ -648,7 +648,7 @@ grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validat
 grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
 grep -q 'VERSION="4.22"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
-grep -q 'VERSION="2.38"' dns-manager-luci.sh || fail "LuCI version not bumped"
+grep -q 'VERSION="2.39"' dns-manager-luci.sh || fail "LuCI version not bumped"
 grep -Fq "{id:'quad9plain',ips:'9.9.9.10,149.112.112.10,2620:fe::10,2620:fe::fe:10'}" dns-manager-luci.sh || fail "historical Quad9 bootstrap snapshot changed"
 grep -Fq "{id:'cira',ips:'149.112.121.10,149.112.122.10,2620:10a:80bb::10,2620:10a:80bc::10'}" dns-manager-luci.sh || fail "historical CIRA bootstrap snapshot changed"
 if grep -q '^main_menu$' dns-manager.sh; then fail "interactive console menu still starts"; fi
@@ -2234,7 +2234,8 @@ grep -Fq "watchdogComponentItem(st,wd,wdDetails)" "$tmp/common.js" || fail "LuCI
 grep -q "function watchdogReplacementComponentItem" "$tmp/common.js" || fail "LuCI auto-replacement component state helper missing"
 awk '/^function watchdogReplacementComponentItem\(/,/^}/' "$tmp/common.js" | grep -qE 'btn\(|setSetting\(' && fail "LuCI auto-replacement component must remain a state-only item"
 grep -Fq "watchdogReplacementComponentItem(wdAuto,wdAutoDetails)" "$tmp/common.js" || fail "LuCI auto-replacement component is not shown separately"
-grep -Fq "var wdDetails='Интервал: каждые 2 мин.'" "$tmp/common.js" || fail "LuCI check component details must describe interval only"
+grep -Fq "dateText(st.watchdog_cron_last_run)" "$tmp/common.js" || fail "LuCI check component must show the last cron run"
+grep -Fq "st.watchdog_last_failed" "$tmp/common.js" || fail "LuCI check component must show the number of failures"
 grep -Fq "var wdAutoDetails='Замена после 3 последовательных сбоев.'" "$tmp/common.js" || fail "LuCI replacement component details must describe failure threshold separately"
 grep -Fq "var watchdogAutoReplace=yes(st.watchdog_autoreplace)" "$tmp/common.js" || fail "LuCI replacement state does not use the independent auto-replace setting"
 grep -Fq "forceComponentItem(st)" "$tmp/common.js" || fail "LuCI forced-DNS component helper is not used as a state-only item"
