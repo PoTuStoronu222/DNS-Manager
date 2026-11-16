@@ -44,6 +44,11 @@ release_mutation_lock() { :; }
 watchdog_service_stop_disable() { return 0; }
 watchdog_cron_remove_owned_block() { return 0; }
 watchdog_service_remove_files() { return 0; }
+luci_component_files_present() { return 1; }
+uninstall_stop_engines_and_restore() { : > "$WORK/engines-stopped"; return 0; }
+DNS_MANAGER_WATCHDOG_STATE_FILE="$WORK/watchdog.json"
+DNS_MANAGER_UCI_CONFIG_FILE="$WORK/dns-manager-uci"
+: > "$DNS_MANAGER_WATCHDOG_STATE_FILE"; : > "$DNS_MANAGER_UCI_CONFIG_FILE"
 luci_companion_remove() { : > "$WORK/luci-removed"; return 0; }
 restore_dns_before_uninstall() {
     printf 'restored\n' >> "$WORK/dns-restore-attempts"
@@ -95,6 +100,8 @@ if ! (uninstall_manager_impl >"$WORK/uninstall.log" 2>&1); then
 fi
 [ ! -e "$MANAGER_PATH" ] && [ ! -e "$BASE_DIR" ] || fail "successful retry left Manager files"
 [ -e "$WORK/luci-removed" ] || fail "successful uninstall did not remove LuCI"
+[ -e "$WORK/engines-stopped" ] || fail "engine cleanup not performed"
+[ ! -e "$DNS_MANAGER_WATCHDOG_STATE_FILE" ] && [ ! -e "$DNS_MANAGER_UCI_CONFIG_FILE" ] || fail "manager state was not removed"
 cmp -s "$DNS_STATE" "$WORK/dns-state.expected" || fail "uninstall changed DNS/DoH/firewall state"
 [ ! -s "$UCI_CALLS" ] || fail "uninstall called UCI"
 [ ! -e "$WORK/forbidden-dns-call" ] || fail "uninstall called a DNS cleanup helper"
