@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="4.24"
+VERSION="4.25"
 # 3.86: make LuCI the primary interface and preserve external DNS on removal.
 # 3.85: revalidate Watchdog settings before recovery.
 # 3.84: cap DNS catalog test concurrency by total RAM on small routers.
@@ -2884,7 +2884,7 @@ cf_ip) echo "162.159.200.1 162.159.200.123";;
 nist_ip) echo "129.6.15.28 129.6.15.29 129.6.15.30 129.6.15.27 129.6.15.26";;
 google_ip) echo "216.239.35.0 216.239.35.4 216.239.35.8 216.239.35.12";;
 vniiftri_moscow) echo "89.109.251.21 89.109.251.22 89.109.251.23 89.109.251.24 89.109.251.25";;
-vniiftri_all) echo "89.109.251.21 89.109.251.22 89.109.251.23 89.109.251.24 89.109.251.25 46.254.241.74 46.254.241.75 212.19.6.218 212.19.17.26 80.242.83.227 80.242.83.228 91.189.237.182";;
+vniiftri_all) echo "89.109.251.21 89.109.251.22 89.109.251.23 89.109.251.24 89.109.251.25 46.254.251.74 46.254.251.75 212.19.6.218 212.19.17.26 80.242.83.227 80.242.83.228 91.189.237.182";;
 *) echo "";;
 esac
 }
@@ -4954,6 +4954,12 @@ rollback_hdp_targeted() {
 rollback_firewall_targeted() {
     firewall_resolve_zones >/dev/null 2>&1 || true
     _changed=0
+
+    if [ "$(uci -q get firewall.dns_forced 2>/dev/null)" = redirect ] &&
+       [ "$(uci -q get firewall.dns_forced.name 2>/dev/null)" = Force-DNS-DNSCrypt ]; then
+        uci -q delete firewall.dns_forced || return 1
+        _changed=1
+    fi
 
     if [ "$(uci -q get "firewall.$FW_DNS_REDIRECT_SECTION" 2>/dev/null)" = redirect ] && \
        [ -n "${FIREWALL_LAN_ZONE:-}" ] && \
