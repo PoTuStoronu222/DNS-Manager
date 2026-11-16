@@ -24,6 +24,7 @@ cleanup() {
     if [ "$success" != 1 ]; then
         if [ "$changed" = 1 ]; then
             echo 'Ошибка переключения. Восстанавливаю стандартный DNS.'
+            sh "$helpers/dns-manager-engine-services.sh" quiesce "$target" || echo 'Не удалось остановить DNS-службы.'
             if ! sh "$helpers/dns-manager-dnscrypt-dnsmasq.sh" clean 5053; then
                 echo 'Не удалось подтвердить запуск dnsmasq; проверьте настройки DNS и системный журнал.'
             fi
@@ -45,10 +46,18 @@ rm -f "$src"
 preflight_readonly >/dev/null 2>&1 && init_dirs >/dev/null 2>&1 && load_config >/dev/null 2>&1 || exit 1
 acquire_mutation_lock || { echo 'Другая операция DNS Manager уже выполняется.'; exit 1; }
 locked=1
+if [ "$target" = dnscrypt-proxy2 ]; then
+    package=dnscrypt-proxy2; executable=${DNS_MANAGER_DNSCRYPT_BIN:-/usr/sbin/dnscrypt-proxy}
+else
+    package=https-dns-proxy; executable=${DNS_MANAGER_HDP_BIN:-/usr/sbin/https-dns-proxy}
+fi
+if [ ! -x "$executable" ] && ! command -v apk >/dev/null 2>&1 && ! command -v opkg >/dev/null 2>&1; then
+    echo 'Менеджер пакетов не найден.'; exit 1
+fi
 # Refuse a global UCI commit when another interface has staged changes.
-for package in firewall https-dns-proxy; do
-    pending=$(uci -q changes "$package" 2>/dev/null || true)
-    [ -z "$pending" ] || { echo "Есть несохранённые изменения UCI: $package"; exit 1; }
+for config_package in firewall https-dns-proxy; do
+    pending=$(uci -q changes "$config_package" 2>/dev/null || true)
+    [ -z "$pending" ] || { echo "Есть несохранённые изменения UCI: $config_package"; exit 1; }
 done
 watchdog_service_stop_disable || exit 1
 wd_reply=$(ubus -t 5 call service list '{"name":"dns-watchdog"}' 2>/dev/null) || exit 1
@@ -74,11 +83,6 @@ SLOT_1_DOMAINS=''; SLOT_2_DOMAINS=''; SLOT_3_DOMAINS=''; SLOT_4_DOMAINS=''; SLOT
 REGIONAL_SAVED_ID=''; FORCE_DOH=0; BLOCK_EXTERNAL_DNS=0
 clear_dns_core_runtime_state || exit 1
 rm -f "$config_dir/dnscrypt-profile.state" "$CUSTOM_DNS_CATALOG" || exit 1
-if [ "$target" = dnscrypt-proxy2 ]; then
-    package=dnscrypt-proxy2; executable=${DNS_MANAGER_DNSCRYPT_BIN:-/usr/sbin/dnscrypt-proxy}
-else
-    package=https-dns-proxy; executable=${DNS_MANAGER_HDP_BIN:-/usr/sbin/https-dns-proxy}
-fi
 if [ ! -x "$executable" ]; then
     echo "Устанавливаю $package."
     if [ "$target" = https-dns-proxy ]; then
