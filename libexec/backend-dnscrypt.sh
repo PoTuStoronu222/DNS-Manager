@@ -50,11 +50,15 @@ dnscrypt_set_setting() {
     input=$(cat)
     name=$(printf '%s' "$input" | jsonfilter -e '@.name' 2>/dev/null)
     enabled=$(printf '%s' "$input" | jsonfilter -e '@.enabled' 2>/dev/null)
-    [ "$name" = watchdog ] || { error 'Эта настройка пока недоступна для DNSCrypt'; return; }
+    case "$name" in watchdog|watchdog_autoreplace) ;; *) error 'Эта настройка пока недоступна для DNSCrypt'; return;; esac
     case "$enabled" in 0|1) ;; *) error 'Неверное значение настройки'; return;; esac
     load_manager_functions && load_config && acquire_mutation_lock || { error 'Не удалось изменить проверку DNS'; return; }
     rc=0
-    watchdog_apply_toggle "$enabled" >/dev/null 2>&1 || rc=$?
+    if [ "$name" = watchdog ]; then
+        watchdog_apply_toggle "$enabled" >/dev/null 2>&1 || rc=$?
+    else
+        watchdog_apply_autoreplace_toggle "$enabled" >/dev/null 2>&1 || rc=$?
+    fi
     release_mutation_lock
     [ "$rc" -eq 0 ] || { error 'Не удалось изменить проверку DNS'; return; }
     printf '{"ok":true}\n'

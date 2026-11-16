@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager full installer and LuCI companion
-# Version: 2.48
+# Version: 2.49
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.48"
+VERSION="2.49"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -796,11 +796,15 @@ dnscrypt_set_setting() {
     input=$(cat)
     name=$(printf '%s' "$input" | jsonfilter -e '@.name' 2>/dev/null)
     enabled=$(printf '%s' "$input" | jsonfilter -e '@.enabled' 2>/dev/null)
-    [ "$name" = watchdog ] || { error 'Эта настройка пока недоступна для DNSCrypt'; return; }
+    case "$name" in watchdog|watchdog_autoreplace) ;; *) error 'Эта настройка пока недоступна для DNSCrypt'; return;; esac
     case "$enabled" in 0|1) ;; *) error 'Неверное значение настройки'; return;; esac
     load_manager_functions && load_config && acquire_mutation_lock || { error 'Не удалось изменить проверку DNS'; return; }
     rc=0
-    watchdog_apply_toggle "$enabled" >/dev/null 2>&1 || rc=$?
+    if [ "$name" = watchdog ]; then
+        watchdog_apply_toggle "$enabled" >/dev/null 2>&1 || rc=$?
+    else
+        watchdog_apply_autoreplace_toggle "$enabled" >/dev/null 2>&1 || rc=$?
+    fi
     release_mutation_lock
     [ "$rc" -eq 0 ] || { error 'Не удалось изменить проверку DNS'; return; }
     printf '{"ok":true}\n'
@@ -2284,7 +2288,7 @@ if [ "$(uci -q get dns-manager.global.active_engine 2>/dev/null)" = dnscrypt-pro
 fi
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.48"
+SELF_VERSION="2.49"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -5962,7 +5966,7 @@ EOF_RPC_WRAPPER
 'require ui';
 'require session';
 
-// DNS Manager LuCI common module version: 2.48
+// DNS Manager LuCI common module version: 2.49
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -6644,7 +6648,7 @@ function renderOverview(root,st){
     st.dnscrypt_engine==='dnscrypt-proxy2'&&st.dnscrypt_cache_entries!=null?componentItem('Кэш DNSCrypt',badge('dm-ok',String(st.dnscrypt_cache_entries)+' записей')):null,
     st.dnscrypt_engine==='dnscrypt-proxy2'&&st.dnscrypt_avg_response_ms!=null?componentItem('Среднее время ответа DNS',badge('dm-ok',String(st.dnscrypt_avg_response_ms)+' мс')):null,
     watchdogComponentItem(st,wd,wdDetails),
-    st.dnscrypt_engine==='dnscrypt-proxy2'?componentItem('Автозамена DNS',badge('dm-muted','недоступна в DNSCrypt')):watchdogReplacementComponentItem(wdAuto,wdAutoDetails),
+    watchdogReplacementComponentItem(wdAuto,wdAutoDetails),
     forceComponentItem(st),
     st.dnscrypt_engine==='dnscrypt-proxy2'?null:componentItem('Кэш DNS',badge(st.dnsmasq_cache_size==null||String(st.dnsmasq_cache_size)===''||Number(st.dnsmasq_cache_size)===0?'dm-off':'dm-ok',st.dnsmasq_cache_size==null||String(st.dnsmasq_cache_size)===''?'неизвестно':String(st.dnsmasq_cache_size)+' записей')),
   ].filter(Boolean));
@@ -7854,8 +7858,13 @@ function renderNetwork(root,st){
         E('div',{'class':'dm-setting-desc'},'Каждые 2 минуты проверяется ответ локального DNSCrypt. Ответ может быть из кэша. При сбое настройки DNS не изменяются.'),
         badge(yes(st.watchdog)?'dm-ok':'dm-muted',yes(st.watchdog)?'включена':'выключена'),
         btn(yes(st.watchdog)?'Выключить':'Включить','cbi-button-neutral',function(){setSetting('watchdog',yes(st.watchdog)?0:1,root);},{disabled:!!state.busy}),
-        settingFeedback('','watchdog')||E('span',{})
-      ]), E('div',{'class':'dm-hint'},'Автозамена и принудительный DNS для DNSCrypt пока недоступны.')]
+        settingFeedback('','watchdog')||E('span',{}),
+        E('div',{'class':'dm-section-title'},'Автозамена DNS'),
+        E('div',{'class':'dm-setting-desc'},'После трёх сбоев и проверки связи один раз применяет стандартный пул Cloudflare и Google. Выбранный профиль изменится. При отсутствии связи замена откладывается.'),
+        badge(yes(st.watchdog_autoreplace)?'dm-ok':'dm-muted',yes(st.watchdog_autoreplace)?'включена':'выключена'),
+        btn(yes(st.watchdog_autoreplace)?'Выключить':'Включить','cbi-button-neutral',function(){setSetting('watchdog_autoreplace',yes(st.watchdog_autoreplace)?0:1,root);},{disabled:!!state.busy||!yes(st.watchdog)}),
+        settingFeedback('','watchdog_autoreplace')||E('span',{})
+      ]), E('div',{'class':'dm-hint'},'Принудительный DNS для DNSCrypt пока недоступен.')]
     : [watchdogCard(root,st), cacheCard(root,st)];
   e.appendChild(card('Сетевой тюнинг',body));
 }
@@ -8262,7 +8271,7 @@ function saveRouteCache(key,st,aux){
     var entry=JSON.parse(JSON.stringify({ts:Date.now(),data:st,aux:aux}));
     window.dmRouteCache[key]=entry;
     if(typeof session!=='undefined'&&session.setLocalData)
-      session.setLocalData('dns-manager-route-2.48-'+key,entry);
+      session.setLocalData('dns-manager-route-2.49-'+key,entry);
   }catch(e){}
 }
 function clearEngineUiState(){
@@ -8270,7 +8279,7 @@ function clearEngineUiState(){
   window.dmRouteCache=Object.create(null);
   window.dmStatusPromises=Object.create(null);
   ['dashboard','doh','network','time','devices','catalog','log'].forEach(function(key){
-    try{if(typeof session!=='undefined'&&session.setLocalData)session.setLocalData('dns-manager-route-2.48-'+key,null);}catch(e){}
+    try{if(typeof session!=='undefined'&&session.setLocalData)session.setLocalData('dns-manager-route-2.49-'+key,null);}catch(e){}
   });
   state.pageNotice={};state.profileProgress=null;state.profileOutput='';state.profileResumeStarted=false;
   state.regionalNotice='';state.dnscryptDiagnostic='';state.dnscryptDiagnosticKind='';state.dnscryptProfileChoice='';
@@ -8282,7 +8291,7 @@ function clearEngineUiState(){
 function routeCacheEntry(key){
   var entry=key&&window.dmRouteCache&&window.dmRouteCache[key];
   if(!entry&&key){
-    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.48-'+key);}catch(e){}
+    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.49-'+key);}catch(e){}
   }
   if(!entry||typeof entry.ts!=='number'||Date.now()-entry.ts<0||Date.now()-entry.ts>300000||!entry.data||entry.data.ok!==true)return null;
   return entry;
@@ -9336,7 +9345,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 2.48
+// DNS Manager LuCI version: 2.49
 return view.extend({
   load: DM.load,
   render: DM.render,
