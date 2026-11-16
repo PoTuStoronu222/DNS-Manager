@@ -63,6 +63,13 @@ unset FAIL_BEGIN FAIL_SELECT
 dnscrypt_select_profile clean > "$TMP_DIR/result"
 printf 'c1|https://c1.example/dns-query\nc2|https://c2.example/dns-query\n' > "$TMP_DIR/expected"
 cmp "$TMP_DIR/expected" "$TMP_DIR/result"
+# The all-profile pool must use the six fastest working entries, rather than
+# reserving a place for each category; failed and duplicate URLs are skipped.
+printf 'a|clean|A|10|OK\nb|clean|B|20|OK\nc|privacy|C|30|OK\nd|clean|D|40|OK\ne|clean|E|50|OK\nf|clean|F|60|OK\ng|bypass|G|500|OK\nh|clean|H|1|FAIL\n' > "$TEST_RESULTS"
+dnscrypt_select_profile all > "$TMP_DIR/result"
+printf 'a|https://a.example/dns-query\nb|https://b.example/dns-query\nc|https://c.example/dns-query\nd|https://d.example/dns-query\ne|https://e.example/dns-query\nf|https://f.example/dns-query\n' > "$TMP_DIR/expected"
+cmp "$TMP_DIR/expected" "$TMP_DIR/result"
+printf 'c1|clean|Clean fast|20|OK\nc2|clean|Clean slow|80|OK\np1|privacy|Privacy|5|OK\nf1|family|Family|1|OK\nb1|bypass|Bypass|9|FAIL\n' > "$TEST_RESULTS"
 dnscrypt_select_profile dnssec > "$TMP_DIR/result"
 printf 'c1|https://c1.example/dns-query\np1|https://p1.example/dns-query\n' > "$TMP_DIR/expected"
 cmp "$TMP_DIR/expected" "$TMP_DIR/result"
