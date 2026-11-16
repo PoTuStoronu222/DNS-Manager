@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager full installer and LuCI companion
-# Version: 2.50
+# Version: 2.51
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.50"
+VERSION="2.51"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -2327,7 +2327,7 @@ if [ "$(uci -q get dns-manager.global.active_engine 2>/dev/null)" = dnscrypt-pro
 fi
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.50"
+SELF_VERSION="2.51"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -6005,7 +6005,7 @@ EOF_RPC_WRAPPER
 'require ui';
 'require session';
 
-// DNS Manager LuCI common module version: 2.50
+// DNS Manager LuCI common module version: 2.51
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -6260,7 +6260,7 @@ function injectStyle(root){
   '.dm-grid2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.dm-system-card{margin-bottom:0}.dm-system-layout{display:flex;flex-direction:column;gap:10px}.dm-system-rows{min-width:0}.dm-system-meters{min-width:0;width:100%}.dm-system-meter{padding:7px 0}.dm-system-meter-head{display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:12.5px}.dm-system-meter-head strong{font-size:12px;white-space:nowrap}.dm-system-meter-track{height:8px;margin-top:6px;border-radius:999px;background:rgba(110,118,129,.16);overflow:hidden}.dm-system-meter-track i{display:block;height:100%;border-radius:999px;background:#1a7f37;transition:width .25s ease}.dm-system-hint{font-size:10.5px;opacity:.58;margin-top:3px}.dm-grid3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}.dm-grid4{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}'+
   '.dm-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:11px}.dm-slot-picker-categories{gap:5px;margin:0 0 9px}.dm-slot-picker-categories .cbi-button{padding:4px 8px;font-size:11.5px}.dm-picker-list{display:flex;flex-direction:column;gap:7px;max-height:60vh;overflow:auto}.dm-picker-item{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 0;border-bottom:1px solid rgba(110,118,129,.14)}.dm-picker-main{min-width:0;flex:1}.dm-picker-name{font-size:13px;font-weight:600;overflow-wrap:anywhere}.dm-picker-meta{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:3px}.dm-picker-actions{display:flex;gap:6px;flex-shrink:0;flex-wrap:wrap}.dm-component-item{padding:8px 0;border-bottom:1px solid rgba(110,118,129,.14)}.dm-component-group{padding:8px 0;border-bottom:1px solid rgba(110,118,129,.14)}.dm-component-dns-list{margin-top:6px;display:flex;flex-direction:column;gap:5px}.dm-component-dns{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:6px 0;border-top:1px solid rgba(110,118,129,.08);flex-wrap:wrap}.dm-component-dns:first-child{border-top:0}.dm-component-dns-main{display:flex;align-items:center;gap:8px;min-width:0;flex:1 1 260px}.dm-component-dns-slot{font-size:11.5px;font-weight:700;opacity:.62;min-width:118px}.dm-component-dns-name{font-size:12.5px;font-weight:600;overflow-wrap:anywhere}.dm-component-dns-meta{display:flex;align-items:center;gap:9px;font-size:11.5px;opacity:.78;flex:0 0 auto}.dm-component-dns-ping{font-size:12px;white-space:nowrap;opacity:.8}.dm-component-item:last-of-type{border-bottom:0}.dm-component-head{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}.dm-component-title{font-size:13px;font-weight:600}.dm-component-details{font-size:11.5px;line-height:1.45;opacity:.66;margin-top:3px;overflow-wrap:anywhere}.dm-component-date{font-size:12.5px;opacity:.82}.dm-profile-progress{margin-top:11px}.dm-profile-progress-status{font-size:12.5px;font-weight:600;margin-top:8px}.dm-profile-progress-detail{font-size:11px;opacity:.62;margin-top:4px;overflow-wrap:anywhere}'+'.dm-actions .cbi-button{margin:0;padding:5px 11px;font-size:12.5px}'+
   '.dm-hint{font-size:12.5px;opacity:.68;line-height:1.5;margin:0 0 8px}.dm-mini{font-size:11px;opacity:.62}.dm-meta{font-size:11px;line-height:1.45;opacity:.66}.dm-update{padding:8px 10px;border-radius:8px;background:rgba(26,127,55,.08);border:1px solid rgba(26,127,55,.18);font-size:12.5px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}'+
-  '.dm-seg{display:flex;flex-wrap:wrap;gap:6px;margin:5px 0}.dm-profile-seg{flex-wrap:nowrap;overflow-x:auto;padding-bottom:2px}.dm-seg .cbi-button{padding:5px 11px;border-radius:7px;font-size:12.5px;font-weight:600}.dm-seg .active{background:#1a7f37;color:#fff;border-color:#1a7f37}'+
+  '.dm-seg{display:flex;flex-wrap:wrap;gap:6px;margin:5px 0}.dm-profile-seg{flex-wrap:wrap}.dm-seg .cbi-button{padding:5px 11px;border-radius:7px;font-size:12.5px;font-weight:600}'+
   '.dm-force-note{font-size:12px;line-height:1.56;opacity:.72}.dm-inline-msg{display:block;margin:8px 0 0;padding:7px 10px;border-radius:7px;font-size:12px;line-height:1.4}.dm-inline-msg.info{background:rgba(9,105,218,.08);border:1px solid rgba(9,105,218,.16)}.dm-inline-msg.ok{background:rgba(26,127,55,.08);border:1px solid rgba(26,127,55,.16)}.dm-inline-msg.error{background:rgba(207,34,46,.08);border:1px solid rgba(207,34,46,.16)}.dm-applied{display:flex;align-items:center;gap:9px;padding:9px 11px;border-radius:8px;font-size:12.5px;line-height:1.45}.dm-applied.ok{background:rgba(26,127,55,.08);border:1px solid rgba(26,127,55,.18)}.dm-applied.running{background:rgba(191,135,0,.08);border:1px solid rgba(191,135,0,.18)}.dm-applied.error{background:rgba(207,34,46,.08);border:1px solid rgba(207,34,46,.18)}.dm-applied strong{font-weight:700}.dm-confirm-body{min-width:min(440px,calc(100vw - 70px))}.dm-setting{padding:11px 12px}.dm-setting-title{font-size:13px;font-weight:600}.dm-setting-desc{font-size:11.5px;line-height:1.45;opacity:.68;margin-top:3px}.dm-setting-line{display:flex;align-items:center;justify-content:space-between;gap:10px}.dm-setting-text{min-width:0}.dm-setting-controls{display:flex;align-items:center;justify-content:flex-end;gap:7px;margin-top:9px}.dm-setting-actions{display:flex;align-items:center;gap:7px;flex-shrink:0}.dm-setting-actions .cbi-button{padding:4px 9px;font-size:12px}.dm-setting-saving{opacity:.7}.dm-force-external{padding:8px 10px;border-radius:8px;background:rgba(191,135,0,.10);border:1px solid rgba(191,135,0,.22);font-size:12.5px;line-height:1.5;margin-top:8px}'+
   '.dm-doh-list{display:flex;flex-direction:column}.dm-doh-row{display:grid;grid-template-columns:max-content minmax(0,max-content) max-content max-content minmax(0,1fr);gap:8px;align-items:center;padding:7px 0;border-top:1px solid rgba(0,0,0,.07);font-size:13px}.dm-doh-row:first-child{border-top:0}.dm-doh-slot{font-size:12px;white-space:nowrap;opacity:.7}.dm-doh-name{font-weight:600;min-width:0;max-width:260px;overflow-wrap:anywhere}.dm-doh-url{overflow-wrap:anywhere;opacity:.88}.dm-doh-state{white-space:nowrap}.dm-doh-port,.dm-doh-ping{font-size:12px;opacity:.7;white-space:nowrap}.dm-doh-actions{display:flex;gap:6px;justify-content:flex-start;flex-wrap:wrap}.dm-doh-actions .cbi-button{padding:4px 8px;font-size:12px}'+
   '.dm-device-dns-options{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:3px}.dm-device-dns-option{display:flex;align-items:flex-start;gap:9px;min-width:0;min-height:56px;padding:10px;border:1px solid rgba(110,118,129,.24);border-radius:9px;background:rgba(110,118,129,.035);cursor:pointer;font-size:12px;transition:border-color .15s,background .15s}.dm-device-dns-option.is-selected{border-color:var(--primary-color,#0069c7);background:rgba(31,111,235,.07)}.dm-device-dns-option.is-empty{opacity:.55;cursor:default}.dm-device-dns-checkbox{flex:0 0 auto;width:16px;height:16px;margin:2px 0 0;accent-color:var(--primary-color,#0069c7)}.dm-device-dns-option-content{display:flex;flex-direction:column;gap:3px;min-width:0}.dm-device-dns-option-slot{font-size:10.5px;font-weight:700;letter-spacing:.04em;opacity:.68}.dm-device-dns-option-name{font-size:12px;font-weight:600;line-height:1.35;overflow-wrap:anywhere}.dm-slot-entry.dm-device-dns-entry{gap:12px;padding:14px;margin:8px 0 0;border:1px solid rgba(110,118,129,.22);border-radius:11px;background:rgba(110,118,129,.025)}.dm-device-dns-head{display:flex;align-items:center;justify-content:space-between;gap:12px;min-width:0}.dm-device-dns-name{font-size:15px;font-weight:700;line-height:1.35;overflow-wrap:anywhere}.dm-device-dns-status{flex:0 0 auto;padding:4px 8px;border-radius:999px;font-size:10.5px;font-weight:700;white-space:nowrap}.dm-device-dns-status.is-online{color:var(--success-color,#238636);background:rgba(35,134,54,.1)}.dm-device-dns-status.is-offline{color:var(--text-color-high,#666);background:rgba(110,118,129,.1)}.dm-device-dns-meta{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}.dm-device-dns-meta-item{display:flex;flex-direction:column;gap:3px;min-width:0;padding:8px 10px;border-radius:7px;background:rgba(110,118,129,.055)}.dm-device-dns-meta-label{font-size:10.5px;font-weight:700;letter-spacing:.035em;opacity:.62;text-transform:uppercase}.dm-device-dns-meta-value{font-size:12px;line-height:1.4;overflow-wrap:anywhere}.dm-device-dns-mac{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px}.dm-device-dns-current{display:flex;align-items:flex-start;gap:8px;flex-wrap:wrap;padding:9px 11px;border-radius:8px;background:rgba(110,118,129,.07)}.dm-device-dns-current.has-selection{background:rgba(35,134,54,.075)}.dm-device-dns-current-label{flex:0 0 auto;font-size:11px;font-weight:700;opacity:.75}.dm-device-dns-current-value{min-width:0;font-size:12px;line-height:1.45;overflow-wrap:anywhere}.dm-device-dns-section-title{font-size:12.5px;font-weight:700;margin-bottom:-7px}.dm-device-dns-section-help{font-size:11.5px;opacity:.65;margin-top:-6px}.dm-device-dns-actions{display:flex;justify-content:flex-end;margin-top:1px}.dm-device-dns-save{padding:7px 14px;font-weight:600}.dm-device-dns-note{padding:11px 13px;margin-top:12px;border:1px solid rgba(110,118,129,.18);border-radius:9px;background:rgba(110,118,129,.045)}.dm-device-dns-note-title{font-size:12px;font-weight:700;margin-bottom:5px}.dm-device-dns-note-text{font-size:11.5px;line-height:1.5;opacity:.78;margin-top:3px}.dm-slot-table{display:flex;flex-direction:column}.dm-slot-entry{display:flex;flex-direction:column;gap:4px;border-top:1px solid rgba(0,0,0,.07);padding:6px 0}.dm-slot-entry:first-child{border-top:0}.dm-slot-domain-panel{display:flex;flex-direction:column;gap:5px;padding:0 0 10px 68px}.dm-slot-domains-heading{font-size:12px;font-weight:600}.dm-slot-domains-help{font-size:12px;opacity:.72}.dm-slot-domain-controls{display:flex;align-items:stretch;gap:8px}.dm-slot-domains-input{width:100%;min-width:0;min-height:48px;resize:vertical}.dm-slot-domain-controls .cbi-button{align-self:flex-start;white-space:nowrap}@media(max-width:560px){.dm-slot-domain-panel{padding-left:0}.dm-slot-domain-controls{flex-direction:column}.dm-slot-domain-controls .cbi-button{align-self:flex-start}}.dm-slot-row{display:grid;grid-template-columns:42px minmax(0,max-content) max-content max-content max-content minmax(175px,auto);gap:8px;align-items:center;padding:7px 0;border-top:1px solid rgba(0,0,0,.07);font-size:13px}.dm-slot-row:first-child{border-top:0}.dm-slot-id{font-weight:700;opacity:.62;white-space:nowrap}.dm-slot-name{font-weight:600;min-width:0;max-width:220px;overflow-wrap:anywhere}.dm-slot-endpoint,.dm-slot-ping{font-size:12px;opacity:.72;white-space:nowrap}.dm-inline{display:flex;gap:6px;justify-content:flex-end}.dm-inline .cbi-button{padding:4px 9px;font-size:12px}.dm-assign-list{display:flex;flex-direction:column;gap:7px;min-width:min(430px,calc(100vw - 70px))}.dm-assign-item{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:9px 10px;border:1px solid rgba(0,0,0,.08);border-radius:8px}.dm-assign-info{min-width:0;flex:1}.dm-assign-slot{font-weight:700}.dm-assign-current{font-size:12px;opacity:.7;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}'+
@@ -6289,6 +6289,8 @@ function injectStyle(root){
   '.dm-wrap .dm-inline-msg{margin-top:10px;padding:10px 12px;border-radius:9px;font-size:12px;line-height:1.5}'+
   '.dm-wrap .dm-applied{gap:10px;padding:11px 13px;margin-bottom:10px;border-radius:10px}'+
   '.dm-wrap .cbi-button{min-height:30px;border-radius:8px;font-weight:650;transition:filter .15s ease,border-color .15s ease,box-shadow .15s ease}'+
+  '.dm-wrap .cbi-button-neutral{border:1px solid rgba(110,118,129,.30);background:rgba(110,118,129,.05);color:inherit;box-shadow:none}'+
+  '.dm-wrap .cbi-button-neutral:hover:not(:disabled){background:rgba(110,118,129,.11);border-color:rgba(110,118,129,.55)}'+
   '.dm-wrap .cbi-button:hover:not(:disabled){filter:brightness(.98);box-shadow:0 1px 4px rgba(15,23,42,.07)}'+
   '.dm-wrap .cbi-button:focus-visible{outline:2px solid var(--primary-color,#0969da);outline-offset:2px}'+
   '.dm-wrap .cbi-button:disabled{opacity:.48;cursor:not-allowed;box-shadow:none}'+
@@ -6296,6 +6298,11 @@ function injectStyle(root){
   '.dm-custom-dns-content{margin-top:10px}.dm-bootstrap-options{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:7px;margin:10px 0}.dm-bootstrap-option{display:flex;align-items:center;gap:7px;font-size:12px}.dm-bootstrap-option input{flex:none}'+
   '.dm-fold>summary{cursor:pointer;list-style:none;font-size:12px;font-weight:600}.dm-fold>summary::-webkit-details-marker{display:none}.dm-fold>summary:before{content:"▸";display:inline-block;margin-right:7px;transition:transform .15s}.dm-fold[open]>summary:before{transform:rotate(90deg)}.dm-device-fold>summary{display:flex;align-items:center;gap:7px}.dm-device-fold>summary .dm-device-dns-head{flex:1;min-width:0}.dm-device-fold-body{display:flex;flex-direction:column;gap:12px;margin-top:12px}'+
   '.dm-wrap .dm-seg .cbi-button{min-height:32px;padding:7px 12px;border-radius:9px}'+
+  '.dm-seg .cbi-button{border:1px solid rgba(110,118,129,.30)!important;border-radius:10px!important;background:rgba(110,118,129,.05)!important;color:inherit!important;box-shadow:none!important;white-space:normal;text-align:center;transition:background .15s ease,border-color .15s ease,box-shadow .15s ease}'+
+  '.dm-seg .cbi-button:hover:not(:disabled){background:rgba(110,118,129,.11)!important;border-color:rgba(110,118,129,.55)!important}'+
+  '.dm-seg .cbi-button.active{border-color:rgba(35,134,54,.65)!important;background:rgba(35,134,54,.10)!important;color:inherit!important}'+
+  '.dm-seg .cbi-button.active::before{content:"";display:inline-block;width:7px;height:7px;margin-right:7px;border-radius:50%;background:#2da44e;vertical-align:middle}'+
+  '.dm-seg .cbi-button:focus-visible{outline:2px solid var(--primary-color,#0969da);outline-offset:2px}.dm-seg .cbi-button:disabled{opacity:.5;cursor:not-allowed}'+
   '.dm-wrap .dm-input,.dm-wrap input:not([type=checkbox]):not([type=radio]),.dm-wrap select,.dm-wrap textarea{max-width:100%;border:1px solid rgba(110,118,129,.28);border-radius:8px;background:var(--background-color-medium,#fff);color:inherit;box-shadow:none}'+
   'html[data-darkmode="true"] .dm-wrap .dm-input,html[data-darkmode="true"] .dm-wrap input:not([type=checkbox]):not([type=radio]),html[data-darkmode="true"] .dm-wrap select,html[data-darkmode="true"] .dm-wrap textarea{background:#22272e;color:#e6edf3;border-color:#545d68;color-scheme:dark}'+
   'html[data-darkmode="true"] .dm-wrap input::placeholder,html[data-darkmode="true"] .dm-wrap textarea::placeholder{color:#a5adb7;opacity:1}'+
@@ -7425,15 +7432,10 @@ function renderProfiles(root,st){
   var currentId=activeProfileId(st);
   if(st.dnscrypt_engine==='dnscrypt-proxy2'){
     var selected=state.dnscryptProfileChoice||currentId||'';
-    var select=E('select',{'class':'cbi-input-select'},[E('option',{'value':''},'Выберите профиль')].concat(PROFILE.map(function(p){
-      return E('option',{'value':p[0]},p[1]);
-    })));
-    select.value=selected; select.disabled=!!state.busy||!!state.jobRunning;
-    var applyButton=btn('Применить профиль','cbi-button-action',function(){if(isProfileId(select.value))applyProfile(select.value,root);},{disabled:!!state.busy||!!state.jobRunning||!isProfileId(selected)});
-    select.addEventListener('change',function(){state.dnscryptProfileChoice=select.value;applyButton.disabled=!!state.busy||!!state.jobRunning||!isProfileId(select.value);});
-    g.appendChild(select);
+    PROFILE.forEach(function(p){g.appendChild(btn(p[1],selected===p[0]?'active cbi-button':'cbi-button',function(){state.dnscryptProfileChoice=p[0];renderProfiles(root,st);},{disabled:!!state.busy||!!state.jobRunning,'aria-pressed':selected===p[0]?'true':'false'}));});
+    var applyButton=btn('Применить профиль','cbi-button-action',function(){if(isProfileId(selected))applyProfile(selected,root);},{disabled:!!state.busy||!!state.jobRunning||!isProfileId(selected)});
     g.appendChild(applyButton);
-  }else PROFILE.forEach(function(p){g.appendChild(btn(p[1],currentId===p[0]?'active cbi-button':'cbi-button',function(){applyProfile(p[0],root);},{disabled:!!state.busy||!!state.jobRunning||Number(st.engine_installed)===0}));});
+  }else PROFILE.forEach(function(p){g.appendChild(btn(p[1],currentId===p[0]?'active cbi-button':'cbi-button',function(){applyProfile(p[0],root);},{disabled:!!state.busy||!!state.jobRunning||Number(st.engine_installed)===0,'aria-pressed':currentId===p[0]?'true':'false'}));});
   var current=activeProfileLabel(st);
   var pch=[
     row('Работает сейчас',badge('dm-ok',current)),
@@ -7449,13 +7451,17 @@ function renderProfiles(root,st){
   var regionalChoices=E('div',{'class':'dm-seg'});
   var regionalOptions=[['doh',st.dnscrypt_engine==='dnscrypt-proxy2'?'Через DNSCrypt':'Через DoH',0],['yandex','Яндекс DNS',2],['isp','DNS провайдера',3]];
   if(st.dnscrypt_engine==='dnscrypt-proxy2'){
-    var regionalSelect=E('select',{'class':'cbi-input-select'},regionalOptions.map(function(choice){return E('option',{'value':String(choice[2])},choice[1]);}));
-    regionalSelect.value=regionalMode==='yandex'?'2':regionalMode==='isp'?'3':'0';
-    regionalSelect.disabled=!!state.busy||!hasGeneral;
-    regionalChoices.appendChild(regionalSelect);
-    regionalChoices.appendChild(btn('Применить','cbi-button-action',function(){setRegional(Number(regionalSelect.value),root);},{disabled:!!state.busy||!hasGeneral}));
+    var regionalSelected=regionalMode==='yandex'?2:regionalMode==='isp'?3:0;
+    regionalOptions.forEach(function(choice){
+      var choiceButton=btn(choice[1],regionalSelected===choice[2]?'active cbi-button':'cbi-button',function(){
+        regionalSelected=choice[2];
+        regionalChoices.querySelectorAll('[data-regional-choice]').forEach(function(node){var active=Number(node.getAttribute('data-regional-choice'))===regionalSelected;node.classList.toggle('active',active);node.setAttribute('aria-pressed',active?'true':'false');});
+      },{disabled:!!state.busy||!hasGeneral,'data-regional-choice':String(choice[2]),'aria-pressed':regionalSelected===choice[2]?'true':'false'});
+      regionalChoices.appendChild(choiceButton);
+    });
+    regionalChoices.appendChild(btn('Применить','cbi-button-action',function(){setRegional(regionalSelected,root);},{disabled:!!state.busy||!hasGeneral}));
   }else regionalOptions.forEach(function(choice){
-    regionalChoices.appendChild(btn(choice[1],regionalMode===choice[0]?'active cbi-button':'cbi-button',function(){setRegional(choice[2],root);},{disabled:!!state.busy||!hasGeneral}));
+    regionalChoices.appendChild(btn(choice[1],regionalMode===choice[0]?'active cbi-button':'cbi-button',function(){setRegional(choice[2],root);},{disabled:!!state.busy||!hasGeneral,'aria-pressed':regionalMode===choice[0]?'true':'false'}));
   });
   if(regionalMode==='legacy')regionalChoices.appendChild(btn('Применить повторно','cbi-button',function(){setRegional(1,root);},{disabled:!!state.busy||!hasGeneral}));
   pch.push(regionalChoices);
@@ -8321,7 +8327,7 @@ function saveRouteCache(key,st,aux){
     var entry=JSON.parse(JSON.stringify({ts:Date.now(),data:st,aux:aux}));
     window.dmRouteCache[key]=entry;
     if(typeof session!=='undefined'&&session.setLocalData)
-      session.setLocalData('dns-manager-route-2.50-'+key,entry);
+      session.setLocalData('dns-manager-route-2.51-'+key,entry);
   }catch(e){}
 }
 function clearEngineUiState(){
@@ -8329,7 +8335,7 @@ function clearEngineUiState(){
   window.dmRouteCache=Object.create(null);
   window.dmStatusPromises=Object.create(null);
   ['dashboard','doh','network','time','devices','catalog','log'].forEach(function(key){
-    try{if(typeof session!=='undefined'&&session.setLocalData)session.setLocalData('dns-manager-route-2.50-'+key,null);}catch(e){}
+    try{if(typeof session!=='undefined'&&session.setLocalData)session.setLocalData('dns-manager-route-2.51-'+key,null);}catch(e){}
   });
   state.pageNotice={};state.profileProgress=null;state.profileOutput='';state.profileResumeStarted=false;
   state.regionalNotice='';state.dnscryptDiagnostic='';state.dnscryptDiagnosticKind='';state.dnscryptProfileChoice='';
@@ -8341,7 +8347,7 @@ function clearEngineUiState(){
 function routeCacheEntry(key){
   var entry=key&&window.dmRouteCache&&window.dmRouteCache[key];
   if(!entry&&key){
-    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.50-'+key);}catch(e){}
+    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.51-'+key);}catch(e){}
   }
   if(!entry||typeof entry.ts!=='number'||Date.now()-entry.ts<0||Date.now()-entry.ts>300000||!entry.data||entry.data.ok!==true)return null;
   return entry;
@@ -9395,7 +9401,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 2.50
+// DNS Manager LuCI version: 2.51
 return view.extend({
   load: DM.load,
   render: DM.render,
