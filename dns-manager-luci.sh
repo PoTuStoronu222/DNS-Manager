@@ -557,8 +557,9 @@ dnscrypt_apply_profile_pool() (
                 backup=''
             fi
         else
-            "$init" stop >/dev/null 2>&1 || true
-            rm -f "$config" || echo 'Failed to remove new DNSCrypt configuration' >&2
+            # dnsmasq may still reference this listener if even its fallback
+            # restart failed; keep the answering pool alive in that case.
+            echo 'Previous DNSCrypt configuration absent; keeping the new listener running' >&2
         fi
         return 1
     fi

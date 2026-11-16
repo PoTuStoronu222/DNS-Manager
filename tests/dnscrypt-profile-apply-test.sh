@@ -61,8 +61,8 @@ if dnscrypt_apply_profile_pool clean 5053 1.1.1.1 > "$TMP_DIR/result"; then exit
 [ "$(tail -n 1 "$TMP_DIR/init-calls")" = restart ]
 rm -f "$DNS_MANAGER_DNSCRYPT_CONFIG"
 if dnscrypt_apply_profile_pool clean 5053 1.1.1.1 > "$TMP_DIR/result"; then exit 1; fi
-[ ! -e "$DNS_MANAGER_DNSCRYPT_CONFIG" ]
-[ "$(tail -n 1 "$TMP_DIR/init-calls")" = stop ]
+[ "$(cat "$DNS_MANAGER_DNSCRYPT_CONFIG")" = new ]
+[ "$(tail -n 1 "$TMP_DIR/init-calls")" = restart ]
 DNSMASQ_FAIL=0
 
 APPLY_FAIL=1
