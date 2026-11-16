@@ -3061,11 +3061,6 @@ package_upgrade_hdp() {
     fi
     /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || return 1
 }
-package_update_hdp() {
-    package_update_index || return 1
-    package_upgrade_hdp
-}
-
 runtime_lan_input_match() {
     _ref="$1"
     [ -n "$_ref" ] || return 1
