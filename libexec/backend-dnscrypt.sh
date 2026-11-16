@@ -18,7 +18,13 @@ HDP_INIT=${DNS_MANAGER_HDP_INIT:-/etc/init.d/https-dns-proxy}
 umask 077
 
 error() { printf '{"ok":false,"error":"%s"}\n' "$1"; }
-valid_profile() { case "$1" in bypass|clean|security|privacy|adblock|family|all|dnssec|default) return 0;; *) return 1;; esac; }
+valid_profile() { case "$1" in bypass|clean|security|privacy|adblock|family|all|dnssec|default) return 0;; server:*) id=${1#server:}; case "$id" in ''|*[!A-Za-z0-9_-]*) return 1;; *) return 0;; esac;; *) return 1;; esac; }
+# A manually selected server must come from the current pool, never from RPC input.
+dnscrypt_pool_records() {
+    [ -r "$STATE_FILE" ] || return 1
+    if grep -q '^available=' "$STATE_FILE"; then sed -n 's/^available=//p' "$STATE_FILE"
+    else sed -n 's/^server=//p' "$STATE_FILE"; fi
+}
 engine_selected() { [ -r "$ENGINE_FILE" ] && [ "$(cat "$ENGINE_FILE" 2>/dev/null)" = dnscrypt-proxy2 ]; }
 hdp_active() { [ -x "$HDP_INIT" ] && { "$HDP_INIT" enabled >/dev/null 2>&1 || "$HDP_INIT" running >/dev/null 2>&1; }; }
 load_manager_functions() {
@@ -112,13 +118,22 @@ profile_worker() {
                         dnscrypt_select_profile() {
                             printf '%s\n' 'cloudflare_clean|https://cloudflare-dns.com/dns-query' 'google_clean|https://dns.google/dns-query'
                         }
+                    else
+                        case "$goal" in server:*)
+                            chosen=${goal#server:}
+                            dnscrypt_select_profile() {
+                                dnscrypt_pool_records | awk -F '|' -v id="$chosen" '$1 == id {print; found=1; exit} END {if (!found) exit 1}'
+                            } ;;
+                        esac
                     fi
                     DNS_MANAGER_NO_UPDATE=1 SILENT_APPLY=1 dnscrypt_apply_profile_pool "$goal" 5053 "$BOOTSTRAP_DNS"
                 ) > "$records"; then
                     state_profile=$goal
-                    [ "$state_profile" != default ] || state_profile=none
+                    case "$goal" in default|server:*) state_profile=none;; esac
                     if "$DNSCRYPT_INIT" enable &&
-                       { printf 'profile=%s\n' "$state_profile"; sed 's/^/server=/' "$records"; } > "$state_tmp" &&
+                       { printf 'profile=%s\n' "$state_profile";
+                         case "$goal" in server:*) printf 'selected=%s\n' "${goal#server:}"; dnscrypt_pool_records | sed 's/^/available=/';; esac
+                         sed 's/^/server=/' "$records"; } > "$state_tmp" &&
                        chmod 0600 "$state_tmp" && mv -f "$state_tmp" "$STATE_FILE"; then
                         rc=0
                     else
@@ -428,6 +443,17 @@ status_extra() {
     profile=$(sed -n 's/^profile=//p' "$STATE_FILE" 2>/dev/null | head -n1)
     valid_profile "$profile" || profile=none
     json_add_string dnscrypt_profile "$profile"
+    selected=$(sed -n 's/^selected=//p' "$STATE_FILE" 2>/dev/null | head -n1)
+    case "$selected" in *[!A-Za-z0-9_-]*) selected='';; esac
+    json_add_string dnscrypt_selected_server "$selected"
+    json_add_array dnscrypt_available_servers
+    while IFS='|' read -r id url; do
+        case "$id" in ''|*[!A-Za-z0-9_-]*) continue;; esac
+        json_add_string '' "$id"
+    done <<EOF_POOL
+$(dnscrypt_pool_records)
+EOF_POOL
+    json_close_array
     regional_mode=$(uci -q get dns-manager.global.dnscrypt_regional_mode || :)
     case "$regional_mode" in yandex|isp) ;; *) regional_mode=doh;; esac
     json_add_string dnscrypt_regional_mode "$regional_mode"
@@ -444,7 +470,7 @@ status_extra() {
     json_add_object dnscrypt_server_names
     if [ -r "$STATE_FILE" ]; then
         while IFS='|' read -r id url; do
-            case "$id" in server=*) id=${id#server=};; *) continue;; esac
+            case "$id" in server=*) id=${id#server=};; available=*) id=${id#available=};; *) continue;; esac
             case "$id" in ''|*[!A-Za-z0-9_-]*) continue;; esac
             name=''
             for catalog in "$CONFIG_DIR/dns-catalog.conf" "$CONFIG_DIR/dns-custom-catalog.conf"; do
