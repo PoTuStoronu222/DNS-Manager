@@ -493,7 +493,7 @@ dnscrypt_select_profile() (
     # This invokes the existing direct DoH tests, including DNSSEC screening.
     started=1
     profile_apply_begin "$goal" >&2 || return 1
-    auto_fill_slots "$goal" >&2 || return 1
+    DNSCRYPT_FASTEST_ALL=1 auto_fill_slots "$goal" >&2 || return 1
     count=0
     for id in "${SLOT_1:-}" "${SLOT_2:-}" "${SLOT_3:-}" "${SLOT_4:-}" "${SLOT_5:-}" "${SLOT_6:-}"; do
         [ -n "$id" ] || continue

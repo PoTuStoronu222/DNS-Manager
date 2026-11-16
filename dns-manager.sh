@@ -5851,7 +5851,7 @@ done < "$_src"
 if [ "$_cat" = dnssec ]; then
     cp "$_pool" "$DNSSEC_SCREEN_DIR/candidates" || return 1
 fi
-if [ "$_cat" = all ]; then
+if [ "$_cat" = all ] && [ "${DNSCRYPT_FASTEST_ALL:-0}" != 1 ]; then
     _src2="$TMP_DIR/auto-candidates-all"
     : > "$_src2"
     for _c in bypass clean security privacy adblock family; do
