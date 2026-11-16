@@ -6516,7 +6516,7 @@ function renderDoH(root,st){
   if(st.dnscrypt_engine==='dnscrypt-proxy2'){
     var servers=Array.isArray(st.dnscrypt_servers)?st.dnscrypt_servers:[];
     var details=[row('Движок',E('span',{},'dnscrypt-proxy2')),row('Служба',Number(st.dnscrypt_running)===1?badge('dm-ok','работает'):badge('dm-bad','остановлена')),row('Профиль',E('span',{},activeProfileLabel(st)))];
-    details.push(E('p',{'class':'dm-hint'},'Один процесс использует общий набор DNS. Отдельные слоты и привязки устройств в этом режиме недоступны.'));
+    details.push(E('p',{'class':'dm-hint'},'Один процесс использует общий набор DNS. Ниже перечислены настроенные серверы; текущий сервер выбирается автоматически. Отдельные слоты и привязки устройств недоступны.'));
     details.push(servers.length?E('div',{'class':'dm-doh-list'},servers.map(function(id){return E('div',{'class':'dm-row'},String(id));})):E('div',{'class':'dm-hint'},'DNS ещё не выбраны: примените профиль.'));
     e.appendChild(card('DNS over HTTPS',details));
     return;
@@ -7009,7 +7009,16 @@ function renderProfiles(root,st){
   e.innerHTML='';
   var g=E('div',{'class':'dm-seg dm-profile-seg'});
   var currentId=activeProfileId(st);
-  PROFILE.forEach(function(p){g.appendChild(btn(p[1],currentId===p[0]?'active cbi-button':'cbi-button',function(){applyProfile(p[0],root);},{disabled:!!state.busy}));});
+  if(st.dnscrypt_engine==='dnscrypt-proxy2'){
+    var selected=state.dnscryptProfileChoice||currentId||'clean';
+    var select=E('select',{'class':'cbi-input-select'},PROFILE.map(function(p){
+      return E('option',{'value':p[0]},p[1]);
+    }));
+    select.value=selected; select.disabled=!!state.busy||!!state.jobRunning;
+    select.addEventListener('change',function(){state.dnscryptProfileChoice=select.value;});
+    g.appendChild(select);
+    g.appendChild(btn('Применить профиль','cbi-button-action',function(){applyProfile(select.value,root);},{disabled:!!state.busy||!!state.jobRunning}));
+  }else PROFILE.forEach(function(p){g.appendChild(btn(p[1],currentId===p[0]?'active cbi-button':'cbi-button',function(){applyProfile(p[0],root);},{disabled:!!state.busy}));});
   var current=activeProfileLabel(st);
   var pch=[
     row('Работает сейчас',badge('dm-ok',current)),
@@ -7745,6 +7754,11 @@ function renderJobIdle(root,st){
   var e=root.querySelector('#dm-job');if(!e)return;e.innerHTML='';
 }
 function render(root,st){
+  // These views require separate per-device listeners, unavailable in the pool.
+  document.querySelectorAll('a[href*="/dns-manager/slots"],a[href*="/dns-manager/devices"]').forEach(function(link){
+    var item=link.closest('li')||link;
+    item.hidden=st.dnscrypt_engine==='dnscrypt-proxy2';
+  });
   renderHeader(root,st);
   state.activeTab=currentRoute();
   switch(state.activeTab){
