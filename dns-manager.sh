@@ -1338,7 +1338,7 @@ firewall_resolve_zones() {
         for _z in $_zones; do
             _zname="$(uci -q get "firewall.$_z.name" 2>/dev/null)"
             case "$_z|$_zname" in
-                wan|wan\|wan)
+                wan\|*|*\|wan)
                     _wan_named_count=$((_wan_named_count + 1))
                     _wan_named_zone="$_z"
                     _wan_named_name="$_zname"
@@ -1367,7 +1367,7 @@ firewall_resolve_zones() {
             for _n in $_nets; do
                 [ -n "$_n" ] || continue
                 case "$_n|$_z|$_zname" in
-                    *'|zmvpn|'*|*'|zmvpn|zmvpn'*) continue ;;
+                    *'|zmvpn|'*) continue ;;
                 esac
                 _udev="$(uci -q get "network.$_n.device" 2>/dev/null)"
                 [ -n "$_udev" ] || _udev="$(uci -q get "network.$_n.ifname" 2>/dev/null)"
@@ -3283,8 +3283,9 @@ local desired=""
 local existing_own
 existing_own="$(find_doh_by_url "$url")"
 if [ -n "$existing_own" ]; then
-local sec_idx="$(printf '%s' "$existing_own" | cut -d'|' -f1)"
-local current="$(printf '%s' "$existing_own" | cut -d'|' -f2)"
+local sec_idx current
+sec_idx="$(printf '%s' "$existing_own" | cut -d'|' -f1)"
+current="$(printf '%s' "$existing_own" | cut -d'|' -f2)"
 local target="$current"
 if [ -n "$desired" ] && [ "$current" != "$desired" ]; then
 port_used_anywhere "$desired"; rc=$?
@@ -3334,7 +3335,7 @@ fi
 fi
 local sec
 sec="$(uci add https-dns-proxy https-dns-proxy 2>/dev/null)" || return 1
-local b_list="$(printf '%s' "$BOOTSTRAP_DNS")"
+local b_list="$BOOTSTRAP_DNS"
 [ -z "$b_list" ] && b_list="1.1.1.1"
 uci set "https-dns-proxy.$sec.bootstrap_dns=$b_list" || return 1
 uci set "https-dns-proxy.$sec.listen_port=$target" || return 1
@@ -3355,7 +3356,7 @@ normalize_ownership_snapshot() {
             dnsmasq\|server)
                 dnsmasq_manager_server_owned "$_ov" && printf '%s|%s|%s|%s\n' "$_ot" "$_ok" "$_ov" "$_od" >> "$_own_tmp"
                 ;;
-            doh)
+            doh\|*)
                 _live=0
                 for _os in 1 2 3 4 5 6 RU; do
                     eval "_oid=\${SLOT_${_os}:-}"
@@ -3389,7 +3390,7 @@ dnsmasq_manager_server_owned() {
     done
     if [ -n "${PORT_RU:-}" ]; then
         case "$_val" in
-            /ru/127.0.0.1#${PORT_RU}|/su/127.0.0.1#${PORT_RU}|/xn--p1ai/127.0.0.1#${PORT_RU}|/by/127.0.0.1#${PORT_RU}|/kz/127.0.0.1#${PORT_RU}|/avito.st/127.0.0.1#${PORT_RU}|/wbcontent.net/127.0.0.1#${PORT_RU}|/wbstatic.net/127.0.0.1#${PORT_RU}|/ozonusercontent.com/127.0.0.1#${PORT_RU}|/ae-pic-a1.aliexpress-media.com/127.0.0.1#${PORT_RU}|/yastatic.net/127.0.0.1#${PORT_RU}) return 0 ;;
+            /ru/127.0.0.1#"${PORT_RU}"|/su/127.0.0.1#"${PORT_RU}"|/xn--p1ai/127.0.0.1#"${PORT_RU}"|/by/127.0.0.1#"${PORT_RU}"|/kz/127.0.0.1#"${PORT_RU}"|/avito.st/127.0.0.1#"${PORT_RU}"|/wbcontent.net/127.0.0.1#"${PORT_RU}"|/wbstatic.net/127.0.0.1#"${PORT_RU}"|/ozonusercontent.com/127.0.0.1#"${PORT_RU}"|/ae-pic-a1.aliexpress-media.com/127.0.0.1#"${PORT_RU}"|/yastatic.net/127.0.0.1#"${PORT_RU}") return 0 ;;
         esac
     fi
     # Uninstall must not infer ownership of another service from a port alone.
