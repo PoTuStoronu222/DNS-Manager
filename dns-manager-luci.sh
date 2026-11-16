@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager full installer and LuCI companion
-# Version: 2.38
+# Version: 2.39
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.38"
+VERSION="2.39"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -2200,7 +2200,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.38"
+SELF_VERSION="2.39"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -3990,6 +3990,8 @@ status_json() {
 
     _last=""; _test_scope="all"; _meta="$STATE_DIR/dns-test-results.meta"; [ -r "$_meta" ] || _meta="$PERSIST_STATE_DIR/dns-test-results.meta"; _last="$(sed -n 's/^timestamp=//p' "$_meta" 2>/dev/null | head -n1)"; _test_scope="$(sed -n 's/^test_scope=//p' "$_meta" 2>/dev/null | head -n1)"; [ -n "$_test_scope" ] || _test_scope=all
     _watchdog_check_file="$STATE_DIR/dns-watchdog-check-results.conf"
+    _watchdog_cron_last_run="$(jsonfilter -i /var/run/dns-manager-watchdog.json -e '@.last_check' 2>/dev/null || true)"
+    case "$_watchdog_cron_last_run" in ''|*[!0-9]*) _watchdog_cron_last_run=0;; esac
     _watchdog_last_check="$(sed -n 's/^timestamp=//p' "$_watchdog_check_file" 2>/dev/null | head -n1)"
     _watchdog_last_checked="$(sed -n 's/^checked=//p' "$_watchdog_check_file" 2>/dev/null | head -n1)"
     _watchdog_last_failed="$(sed -n 's/^failed=//p' "$_watchdog_check_file" 2>/dev/null | head -n1)"
@@ -4070,6 +4072,9 @@ status_json() {
     fi
 
     printf '{"ok":true,"manager_version":'; json_quote "$_mv"
+    _engine_running=0
+    /etc/init.d/https-dns-proxy running >/dev/null 2>&1 && _engine_running=1 || true
+    printf ',"engine_running":%s,"watchdog_cron_last_run":%s' "$_engine_running" "$_watchdog_cron_last_run"
     if command -v https-dns-proxy >/dev/null 2>&1; then printf ',"engine_installed":1'; else printf ',"engine_installed":0'; fi
     printf ',"luci_version":'; json_quote "$_luciv"; printf ',"luci_latest_version":'; json_quote "$_luci_latest"
     printf ',"luci_update_available":%s,"luci_update_checked":%s,"luci_update_checked_at":%s' "$_luci_avail" "$_luci_checked" "$_luci_checked_at"
@@ -5841,7 +5846,7 @@ EOF_RPC_WRAPPER
 'require ui';
 'require session';
 
-// DNS Manager LuCI common module version: 2.38
+// DNS Manager LuCI common module version: 2.39
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -6486,12 +6491,13 @@ function renderOverview(root,st){
     :badge('dm-off','выключен');
 
   var watchdogEnabled=yes(st.watchdog);
-  var watchdogLoop=Number(st.watchdog_loop||0)===1;
   var watchdogService=Number(st.watchdog_service||0)===1;
+  var watchdogScheduled=Number(st.watchdog_service_enabled||0)===1;
   var watchdogAutoReplace=yes(st.watchdog_autoreplace);
-  var wd=watchdogEnabled?(st.watchdog_backend==='cron'?(watchdogLoop?badge('dm-ok','работает'):watchdogService?badge('dm-warn','служба запущена, цикл не найден'):badge('dm-bad','служба не запущена')):badge('dm-warn','неизвестный механизм')):badge('dm-off','выключена');
-  var wdDetails='Интервал: каждые 2 мин.';
-  var wdAuto=!watchdogEnabled?badge('dm-off','проверка выключена'):watchdogAutoReplace?(watchdogLoop?badge('dm-ok','включена'):badge('dm-warn','проверка не работает')):badge('dm-off','выключена');
+  var wd=watchdogEnabled?(watchdogService?badge('dm-ok','cron работает'):badge('dm-warn',watchdogScheduled?'cron не запущен':'задание cron отсутствует')):badge('dm-off','выключена');
+  var wdDetails='Интервал: каждые 2 мин. Последний запуск: '+dateText(st.watchdog_cron_last_run)+'.';
+  if(Number(st.watchdog_last_check)>0)wdDetails+=' Проверено: '+Number(st.watchdog_last_checked||0)+', ошибок: '+Number(st.watchdog_last_failed||0)+'.';
+  var wdAuto=!watchdogEnabled?badge('dm-off','проверка выключена'):watchdogAutoReplace?(watchdogService?badge('dm-ok','включена'):badge('dm-warn','проверка не работает')):badge('dm-off','выключена');
   var wdAutoDetails='Замена после 3 последовательных сбоев.';
 
   var dnsItems=[];
@@ -6513,6 +6519,7 @@ function renderOverview(root,st){
   });
   if(!dnsItems.length)dnsItems.push(E('div',{'class':'dm-hint'},'DNS в слоты не назначены.'));
   var components=card('Компоненты',[
+    componentItem('DNS-движок',st.dnscrypt_engine==='dnscrypt-proxy2'?badge(Number(st.dnscrypt_running)===1?'dm-ok':'dm-bad','dnscrypt-proxy2 · '+(Number(st.dnscrypt_running)===1?'работает':'остановлен')):Number(st.engine_installed)===0?badge('dm-off','не выбран'):badge(Number(st.engine_running)===1?'dm-ok':'dm-bad','HTTPS DNS Proxy · '+(Number(st.engine_running)===1?'работает':'остановлен'))),
     watchdogComponentItem(st,wd,wdDetails),
     watchdogReplacementComponentItem(wdAuto,wdAutoDetails),
     forceComponentItem(st),
@@ -8091,13 +8098,13 @@ function saveRouteCache(key,st,aux){
     var entry=JSON.parse(JSON.stringify({ts:Date.now(),data:st,aux:aux}));
     window.dmRouteCache[key]=entry;
     if(typeof session!=='undefined'&&session.setLocalData)
-      session.setLocalData('dns-manager-route-2.38-'+key,entry);
+      session.setLocalData('dns-manager-route-2.39-'+key,entry);
   }catch(e){}
 }
 function routeCacheEntry(key){
   var entry=key&&window.dmRouteCache&&window.dmRouteCache[key];
   if(!entry&&key){
-    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.38-'+key);}catch(e){}
+    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.39-'+key);}catch(e){}
   }
   if(!entry||typeof entry.ts!=='number'||Date.now()-entry.ts<0||Date.now()-entry.ts>300000||!entry.data||entry.data.ok!==true)return null;
   return entry;
@@ -9129,7 +9136,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 2.38
+// DNS Manager LuCI version: 2.39
 return view.extend({
   load: DM.load,
   render: DM.render,
