@@ -705,8 +705,8 @@ grep -Fq '.dm-wrap .dm-watchdog-record{display:grid;grid-template-columns:58px m
 ok "Watchdog result rows follow the active LuCI theme"
 grep -Fq 'WATCHDOG_CHECK_INTERVAL_DEFAULT=120' dns-manager.sh || fail "Watchdog default interval is not 120 seconds"
 grep -Fq ': "${WATCHDOG_REPAIR_COOLDOWN:=300}"' dns-manager.sh || fail "Watchdog default repair cooldown is not 300 seconds"
-grep -Fq 'проверка каждые ${WATCHDOG_INTERVAL:-120}с, восстановление после ${WATCHDOG_FAIL_THRESHOLD:-2} последовательных сбоев' dns-manager.sh || fail "Watchdog startup message does not match the fast recovery default"
-grep -Fq 'При интервале 2 минуты и пороге 2 сбоя первая попытка восстановления начнётся примерно в течение 4 минут после отказа.' dns-manager-luci.sh || fail "LuCI does not explain the default failure detection time"
+grep -Fq '*/2 * * * * /usr/bin/dns-manager-watchdog >/dev/null 2>&1 # dm-watchdog' dns-manager.sh || fail "two-minute cron entry missing"
+grep -Fq "var failThreshold=3;" dns-manager-luci.sh || fail "LuCI does not show the three-failure threshold"
 grep -Fq 'Пауза между попытками восстановления DNS' dns-manager-luci.sh || fail "LuCI cooldown label inaccurately describes recovery as replacement only"
 ok "Watchdog uses a 2-minute check interval and 5-minute recovery cooldown by default"
 ok "LuCI version and updater sources target the paired test branch"
@@ -853,10 +853,9 @@ grep -q "row('Выбранный набор'" "$tmp/ntp_view.js" || fail "LuCI N
 ok "NTP status follows actual OpenWrt system.ntp.server configuration"
 # Watchdog time controls are shown to users in minutes, while the RPC still receives seconds.
 awk '/^function watchdogCard\(root,st\)\{/,/^function renderTestAgeCommon/' "$tmp/common.js" > "$tmp/watchdog_card.sh"
-grep -q "Как часто проверять DNS" "$tmp/watchdog_card.sh" || fail "watchdog interval label is not user-friendly"
-grep -q "Ошибок подряд до замены" "$tmp/watchdog_card.sh" || fail "watchdog failure threshold label is not user-friendly"
+grep -Fq "var intervalMinutes=2;" "$tmp/watchdog_card.sh" || fail "cron watchdog interval is not displayed"
+grep -Fq "var failThreshold=3;" "$tmp/watchdog_card.sh" || fail "watchdog failure threshold is not displayed"
 grep -q "Пауза между попытками восстановления DNS" "$tmp/watchdog_card.sh" || fail "watchdog repair cooldown label is not user-friendly"
-grep -q "1,60,'мин'" "$tmp/watchdog_card.sh" || fail "watchdog interval range is not practical"
 grep -q "5,120,'мин'" "$tmp/watchdog_card.sh" || fail "watchdog repair cooldown range is not practical"
 grep -q "'step':'1'" "$tmp/watchdog_card.sh" || fail "watchdog fields must use whole-number steps"
 grep -q "Math.round(n\*60)" "$tmp/watchdog_card.sh" || fail "watchdog minute values are not converted back to seconds"
@@ -870,7 +869,7 @@ fi
 if grep -q "Сколько раз можно перезапустить DNS" "$tmp/watchdog_card.sh"; then
     fail "internal watchdog restart limit is still exposed in LuCI"
 fi
-grep -q "callWatchdogSettings(values\[0\],values\[1\],values\[2\],Math.round(restarts),Math.round(guard))" "$tmp/watchdog_card.sh" || fail "internal watchdog defaults are not preserved when saving"
+grep -q "callWatchdogSettings(120,3,values\[0\],Math.round(restarts),Math.round(guard))" "$tmp/watchdog_card.sh" || fail "internal watchdog defaults are not preserved when saving"
 if grep -q "Интервал проверки.*30.*600.*'с'" "$tmp/watchdog_card.sh"; then
     fail "watchdog interval still exposes seconds"
 fi
@@ -1336,77 +1335,20 @@ awk '/^watchdog_forced_dns_runtime_guard/ { capture=1 } capture { print } captur
     [ "$LOCK_RELEASES" = 2 ] || exit 10
 ) || fail "forced-DNS runtime guard lock/error handling"
 awk '/^watchdog_embedded_loop/ { capture=1 } capture { print } capture && /^run_watchdog/ { exit }' dns-manager.sh > "$tmp/watchdog_embedded_loop.sh"
-grep -Fq 'if ! watchdog_forced_dns_runtime_guard; then' "$tmp/watchdog_embedded_loop.sh" || fail "background loop does not reconcile forced-DNS runtime"
-_guard_line="$(grep -n 'watchdog_forced_dns_runtime_guard' "$tmp/watchdog_embedded_loop.sh" | head -n1 | cut -d: -f1)"
-_slot_check_line="$(grep -n 'watchdog_refresh_listener_snapshot' "$tmp/watchdog_embedded_loop.sh" | head -n1 | cut -d: -f1)"
-[ -n "$_guard_line" ] && [ -n "$_slot_check_line" ] && [ "$_guard_line" -lt "$_slot_check_line" ] || fail "forced-DNS runtime reconciliation is skipped by DNS-loop guards"
-if grep -Fq '_selection_kind=' "$tmp/watchdog_embedded_loop.sh"; then
-    fail "background DNS checks still depend on a selected profile"
+grep -Fq 'detect_forced_dns_path' "$tmp/watchdog_embedded_loop.sh" || fail "watchdog does not observe forced-DNS"
+grep -Fq 'WD_FORCE_ERROR=1' "$tmp/watchdog_embedded_loop.sh" || fail "forced-DNS error flag missing"
+grep -Fq 'logger -t dns-manager-watchdog' "$tmp/watchdog_embedded_loop.sh" || fail "forced-DNS error is not logged"
+if grep -Eq 'watchdog_forced_dns_runtime_guard|watchdog_embedded_integrity_guard|sleep |while :' "$tmp/watchdog_embedded_loop.sh"; then
+    fail "cron watchdog attempts repair or loops"
 fi
-ok "forced-DNS Steer transitions are reconciled on each background-check cycle"
-
-# Forced-DNS Auto must keep the lightweight runtime service active even when
-# DNS testing/replacement is disabled; the watchdog menu state remains OFF.
-grep -Fq '[ "${WATCHDOG_ENABLED:-0}" = 1 ] || [ "${FORCE_DOH:-0}" = 1 ] || return 0' "$tmp/watchdog_embedded_loop.sh" || fail "runtime loop exits while forced-DNS Auto is enabled"
-grep -Fq 'if [ "${WATCHDOG_ENABLED:-0}" != 1 ]; then' "$tmp/watchdog_embedded_loop.sh" || fail "forced-DNS-only loop lacks monitor-only branch"
-grep -Fq 'sleep 60' "$tmp/watchdog_embedded_loop.sh" || fail "forced-DNS-only loop has no bounded polling interval"
-awk '/^watchdog_state_word_procd\(\) \{/ { capture=1 } capture { print } capture && /^}/ { exit }' dns-manager.sh > "$tmp/watchdog_state_fn.sh"
-grep -Fq '[ "${WATCHDOG_ENABLED:-0}" = 1 ] || { printf '\''0'\''; return 0; }' "$tmp/watchdog_state_fn.sh" || fail "runtime-only service falsely reports DNS replacement watchdog as enabled"
-grep -Fq '_force_enabled="${FORCE_DOH:-0}"' dns-manager.sh || fail "procd service does not read the forced-DNS setting"
-if grep -Fq 'watchdog_runtime_service_sync' dns-manager.sh; then
-    fail "separate forced-DNS service lifecycle helper remains"
-fi
-awk '/^apply_watchdog\(\) \{/,/^menu_dns\(\) \{/' dns-manager.sh > "$tmp/apply_watchdog_fn.sh"
-grep -Fq 'if [ "${WATCHDOG_ENABLED:-0}" = 1 ] || [ "${FORCE_DOH:-0}" = 1 ]; then' "$tmp/apply_watchdog_fn.sh" || fail "one procd service is not shared by DNS checks and forced-DNS tracking"
-watchdog_version=$(sed -n 's/^WATCHDOG_SERVICE_VERSION_MARKER="# DNS_MANAGER_WATCHDOG_SERVICE_VERSION=\([^"]*\)".*/\1/p' dns-manager.sh | head -n1)
-[ -n "$watchdog_version" ] || fail "watchdog service marker missing"
-grep -Fxq "# DNS_MANAGER_WATCHDOG_SERVICE_VERSION=$watchdog_version" dns-manager.sh || fail "generated procd service marker does not match"
-grep -Fq '[ "${WATCHDOG_ENABLED:-0}" = 1 ] || [ "${FORCE_DOH:-0}" = 1 ] || return 0' dns-manager.sh || fail "forced-DNS-only runtime is not a service start condition"
-grep -Fq '[ "${FORCE_DOH:-0}" = 1 ] || return 0' dns-manager.sh || fail "forced-DNS service migration does not check its own enable flag"
-ok "forced-DNS Auto tracks Steer without enabling DNS tests or rotation"
-
-# Service migration must remove legacy ownership before starting the one procd service.
+grep -Fq '[ "${WATCHDOG_ENABLED:-0}" = 1 ] || [ "${FORCE_DOH:-0}" = 1 ] || return 0' "$tmp/watchdog_embedded_loop.sh" || fail "forced-DNS-only mode missing"
+grep -Fq 'load_watchdog_state' "$tmp/watchdog_embedded_loop.sh" || fail "watchdog state is not loaded"
+grep -Fq 'save_watchdog_state' "$tmp/watchdog_embedded_loop.sh" || fail "watchdog state is not saved"
 awk '/^watchdog_service_start_enable\(\) \{/,/^}/' dns-manager.sh > "$tmp/watchdog_service_start_enable.sh"
-[ -s "$tmp/watchdog_service_start_enable.sh" ] || fail "watchdog start helper extraction"
-(
-    set -eu
-    . "$tmp/watchdog_service_start_enable.sh"
-    CALL_LOG="$tmp/watchdog-service-calls"
-    export CALL_LOG
-    WATCHDOG_SERVICE_PATH="$tmp/fake-dns-watchdog"
-    export WATCHDOG_SERVICE_PATH
-    cat > "$WATCHDOG_SERVICE_PATH" <<'EOF_FAKE_SERVICE'
-#!/bin/sh
-printf 'service %s\n' "$1" >> "$CALL_LOG"
-exit 0
-EOF_FAKE_SERVICE
-    chmod 755 "$WATCHDOG_SERVICE_PATH"
-    CRON_PRESENT=1
-    watchdog_remove_legacy_daemon() { printf 'legacy\n' >> "$CALL_LOG"; return "${LEGACY_RC:-0}"; }
-    watchdog_cron_marker_exists() { [ "$CRON_PRESENT" = 1 ]; }
-    watchdog_cron_remove_owned_block() { printf 'cron-remove\n' >> "$CALL_LOG"; CRON_PRESENT=0; return 0; }
-    watchdog_service_install_files() { printf 'install\n' >> "$CALL_LOG"; return 0; }
-    watchdog_service_running() { printf 'running\n' >> "$CALL_LOG"; return 0; }
-    sleep() { :; }
-    watchdog_service_start_enable
-    awk 'NR==1 { if ($0!="legacy") exit 1 } NR==2 { if ($0!="cron-remove") exit 1 } NR==3 { if ($0!="install") exit 1 } NR==4 { if ($0!="service enable") exit 1 } NR==5 { if ($0!="service start") exit 1 } NR==6 { if ($0!="running") exit 1 } END { if (NR!=6) exit 1 }' "$CALL_LOG"
-    : > "$CALL_LOG"
-    LEGACY_RC=1
-    if watchdog_service_start_enable; then exit 2; fi
-    if grep -q '^service start$' "$CALL_LOG"; then exit 3; fi
-) || fail "watchdog service starts before legacy ownership is cleared"
-awk '/^watchdog_service_start_enable\(\) \{/,/^}/' dns-manager.sh > "$tmp/watchdog_service_start_enable.sh"
-awk '/^watchdog_service_migrate_legacy\(\) \{/,/^}/' dns-manager.sh > "$tmp/watchdog_service_migrate_legacy.sh"
-_legacy_line="$(grep -nF 'watchdog_remove_legacy_daemon || return 1' "$tmp/watchdog_service_start_enable.sh" | head -n1 | cut -d: -f1)"
-_start_line="$(grep -nF '"$WATCHDOG_SERVICE_PATH" start' "$tmp/watchdog_service_start_enable.sh" | head -n1 | cut -d: -f1)"
-[ -n "$_legacy_line" ] && [ -n "$_start_line" ] && [ "$_legacy_line" -lt "$_start_line" ] || fail "procd starts before legacy daemon is removed"
-_migrate_legacy_line="$(grep -nF 'watchdog_remove_legacy_daemon || return 1' "$tmp/watchdog_service_migrate_legacy.sh" | head -n1 | cut -d: -f1)"
-_migrate_start_line="$(grep -nF '"$WATCHDOG_SERVICE_PATH" start' "$tmp/watchdog_service_migrate_legacy.sh" | head -n1 | cut -d: -f1)"
-[ -n "$_migrate_legacy_line" ] && [ -n "$_migrate_start_line" ] && [ "$_migrate_legacy_line" -lt "$_migrate_start_line" ] || fail "legacy migration starts procd before legacy daemon preflight"
-ok "watchdog migration checks legacy ownership before starting the single procd service"
-grep -Fq 'if [ "${WATCHDOG_ENABLED:-0}" = 1 ] || [ "${FORCE_DOH:-0}" = 1 ]; then' "$tmp/apply_watchdog_fn.sh" || fail "forced-DNS-only Apply does not use the shared service"
-grep -Fq 'if [ "${WATCHDOG_ENABLED:-0}" = 1 ] || [ "${FORCE_DOH:-0}" = 1 ]; then' dns-manager.sh || fail "post-Apply does not start service for forced-DNS-only mode"
-ok "forced-DNS-only Apply starts the same procd service after transaction commit"
+grep -Fq 'watchdog_service_stop_disable || return 1' "$tmp/watchdog_service_start_enable.sh" || fail "old service is not stopped before cron"
+grep -Fq 'watchdog_service_enabled || printf' "$tmp/watchdog_service_start_enable.sh" || fail "cron entry is not checked for duplicates"
+grep -Fq '/etc/init.d/cron restart' "$tmp/watchdog_service_start_enable.sh" || fail "cron is not restarted"
+ok "forced-DNS is observed without recovery; watchdog uses one cron pass"
 
 # Runtime detection must not trust config alone; it must parse both redirect and DNAT rules.
 (
@@ -1953,7 +1895,7 @@ fi
 # Background repair follows each selected DNS resolver's own category.
 # The checker and auto-replace toggles are independent; candidate discovery has no fixed cap.
 awk '/^watchdog_embedded_loop\(\) \{/,/^run_watchdog\(\) \{/' dns-manager.sh > "$tmp/watchdog_embedded_loop.sh"
-grep -Fq 'elif [ "${WATCHDOG_AUTOREPLACE:-0}" = 1 ]; then' "$tmp/watchdog_embedded_loop.sh" || fail "periodic replacement is not gated by auto-replace toggle"
+grep -Fq 'if [ "${WATCHDOG_AUTOREPLACE:-0}" = 1 ] && [ -n "$_threshold_slots" ]; then' "$tmp/watchdog_embedded_loop.sh" || fail "periodic replacement is not gated by auto-replace toggle"
 grep -Fq ': "${WATCHDOG_AUTOREPLACE:=${WATCHDOG_ENABLED:-0}}"' dns-manager.sh || fail "legacy config has no compatible auto-replace default"
 if grep -Fq 'WATCHDOG_MAX_CANDIDATES' dns-manager.sh dns-manager-luci.sh; then
     fail "DNS replacement retains a fixed candidate cap"
@@ -1970,7 +1912,7 @@ fi
 grep -Fq '[ -n "$_target_id" ] || return 0' "$tmp/watchdog_slot_target_run.sh" || fail "watchdog does not skip empty slots"
 awk '/^watchdog_embedded_loop\(\) \{/,/^run_watchdog\(\) \{/' dns-manager.sh > "$tmp/watchdog_embedded_loop.sh"
 grep -Fq 'for _trigger in $_threshold_slots; do' "$tmp/watchdog_embedded_loop.sh" || fail "watchdog does not process every failed configured slot"
-grep -Fq 'if [ -z "$_id" ]; then' "$tmp/watchdog_embedded_loop.sh" || fail "watchdog probes an unconfigured slot"
+grep -Fq '[ -n "$_id" ] || continue' "$tmp/watchdog_embedded_loop.sh" || fail "watchdog probes an unconfigured slot"
 if grep -Fq 'WATCHDOG_MAX_REPAIRS' "$tmp/watchdog_embedded_loop.sh"; then
     fail "watchdog still limits how many slots it may repair in one cycle"
 fi
@@ -2004,7 +1946,7 @@ awk '/^watchdog_loop_track_slot\(\) \{/,/^}/' dns-manager.sh >> "$tmp/watchdog_t
     if watchdog_loop_track_slot invalid x; then exit 4; fi
 ) || fail "watchdog failure counts follow a previous DNS after slot change"
 grep -Fq 'watchdog_loop_track_slot "$_slot" "$_id"' "$tmp/watchdog_embedded_loop.sh" || fail "watchdog loop does not track slot identity"
-grep -Fq 'watchdog_slot_target_run "$_trigger" "$_trigger_id" "$_trigger_port"' "$tmp/watchdog_embedded_loop.sh" || fail "watchdog replacement does not pin the failing DNS"
+grep -Fq 'watchdog_slot_target_run "$_trigger" "$_trigger_id" "$_trigger_port" "$_single"' "$tmp/watchdog_embedded_loop.sh" || fail "watchdog replacement does not pin the failing DNS"
 (
     . "$tmp/watchdog_slot_target_run_only.sh"
     WATCHDOG_ENABLED=1 SLOT_1=new PORT_1=5053
@@ -2203,32 +2145,12 @@ chmod +x "$tmp/watchdog_common_outage_runner.sh"
 ok "common DNS outage and uncertain listener state both suppress automatic rotation"
 
 awk '/^watchdog_embedded_loop\(\) \{/,/^run_watchdog\(\) \{/' dns-manager.sh > "$tmp/watchdog_embedded_loop.sh"
-grep -Fq '_global_dns_failure=1' "$tmp/watchdog_embedded_loop.sh" || fail "background Watchdog does not detect common DNS failure"
-grep -Fq 'if [ "$_slot_recovered" = 1 ]; then' "$tmp/watchdog_embedded_loop.sh" || fail "Watchdog recovery bookkeeping is not conditional on verified recovery"
-grep -Fq 'if [ "$_global_dns_failure" != 0 ]; then' "$tmp/watchdog_embedded_loop.sh" || fail "Watchdog still restarts per-slot proxies during a common/uncertain DNS outage"
-grep -Fq 'общий или неопределённый DNS-сбой; перезапуск отдельных proxy и ротацию откладываю' "$tmp/watchdog_embedded_loop.sh" || fail "Watchdog does not document why slot recovery is paused during a common outage"
-ok "Watchdog pauses both per-slot restarts and DNS rotation during common/uncertain outages"
-grep -Fq 'eval "WD_FAIL_${_trigger}=0"' "$tmp/watchdog_embedded_loop.sh" || fail "Watchdog does not reset a recovered slot counter"
-ok "Watchdog preserves failure counters until slot recovery is verified"
-grep -Fq 'eval "_guard_id=\${SLOT_${_guard_slot}:-}"' dns-manager.sh || fail "integrity guard uses invalid nested slot expansion"
-ok "integrity guard uses BusyBox ash-safe slot expansion"
-
-# A stalled local proxy is restarted by its slot port before optional DNS replacement.
-awk '/^watchdog_slot_instance_pid\(\) \{/,/^watchdog_embedded_integrity_guard\(\) \{/' dns-manager.sh > "$tmp/watchdog_slot_restart.sh"
-grep -Fq 'kill -TERM "$_pid"' "$tmp/watchdog_slot_restart.sh" || fail "stalled slot recovery does not terminate only the matching proxy process"
-grep -Fq '*" -p $_port "*)' "$tmp/watchdog_slot_restart.sh" || fail "stalled slot recovery does not match the selected slot port"
-grep -Fq '[ -n "$_port" ] || _port="$(hybrid_desired_port "$1")"' "$tmp/watchdog_slot_restart.sh" || fail "stalled slot recovery does not resolve the effective slot port"
-grep -Fq 'watchdog_slot_config_matches "$1" "$2" "$3"' "$tmp/watchdog_slot_restart.sh" || fail "stalled slot recovery does not revalidate using stable positional arguments"
-grep -Fq '1) [ "${SLOT_1:-}" = "$2" ] && [ "${PORT_1:-$(hybrid_desired_port 1)}" = "$3" ];;' "$tmp/watchdog_slot_restart.sh" || fail "slot revalidation is vulnerable to load_config scratch-variable collisions"
-grep -Fq 'watchdog_slot_instance_pid "$3"' "$tmp/watchdog_slot_restart.sh" || fail "stalled slot recovery does not use the revalidated port"
-grep -Fq 'local_dns_query_ok "$3" "$_domain"' "$tmp/watchdog_slot_restart.sh" || fail "stalled slot recovery does not verify DNS after respawn on the expected port"
-if grep -Fq '/etc/init.d/https-dns-proxy restart' "$tmp/watchdog_slot_restart.sh"; then
-    fail "stalled slot recovery restarts every DoH slot instead of the affected instance"
-fi
-grep -Fq 'if watchdog_restart_slot_instance "$_trigger" "$_trigger_id" "$_trigger_port"; then' "$tmp/watchdog_embedded_loop.sh" || fail "background watchdog does not try local slot recovery first"
-grep -Fq 'replace DNS only if recovery fails and a common outage is excluded' "$tmp/watchdog_embedded_loop.sh" || fail "DNS replacement is not gated by failed slot recovery and the common-outage guard"
-grep -Fq '$6 == "FAIL" { $6 = "OK" }' "$tmp/watchdog_embedded_loop.sh" || fail "successful slot recovery does not clear the recorded false failure"
-ok "stalled DoH slot is restarted in isolation before optional DNS replacement"
+grep -Fq '[ "$_checked" -gt 1 ] && [ "$_failed" -eq "$_checked" ]' "$tmp/watchdog_embedded_loop.sh" || fail "common outage does not suppress replacement"
+grep -Fq 'watchdog_loop_reset_slot "$_trigger"' "$tmp/watchdog_embedded_loop.sh" || fail "successful replacement does not reset failure counter"
+grep -Fq '[ "$_fc" -lt 3 ]' "$tmp/watchdog_embedded_loop.sh" || fail "replacement threshold is not three failures"
+grep -Fq 'watchdog_slot_target_run "$_trigger" "$_trigger_id" "$_trigger_port" "$_single"' "$tmp/watchdog_embedded_loop.sh" || fail "candidate selection is not invoked"
+if grep -Fq 'watchdog_restart_slot_instance' "$tmp/watchdog_embedded_loop.sh"; then fail "cron watchdog still restarts slot proxies"; fi
+ok "cron watchdog protects against common outage and resets confirmed replacements"
 
 # All watchdog paths must use the same DNS health checks as the verified Manager paths.
 awk '/^watchdog_embedded_loop\(\) \{/,/^# ==========================================/' dns-manager.sh > "$tmp/watchdog_embedded_loop.sh"
@@ -2246,18 +2168,11 @@ grep -A2 -F 'watchdog_apply_slot_candidate() {' dns-manager.sh | grep -q '^    l
 grep -A2 -F 'watchdog_slot_target_run() {' dns-manager.sh | grep -q '^    local _slot' || fail "watchdog_slot_target_run does not isolate _slot"
 grep -q 'dig @127\.0\.0\.1' dns-manager.sh || fail "canonical local DNS check does not use dig"
 ok "watchdog candidate acceptance uses the canonical local DNS response check"
-awk '/^watchdog_service_install_files\(\) \{/,/^watchdog_service_running\(\) \{/' dns-manager.sh > "$tmp/watchdog_service.sh"
-grep -q 'USE_PROCD=1' "$tmp/watchdog_service.sh" || fail "watchdog service is not managed by procd"
-grep -Fq '. /etc/dns-manager/config/manager.conf' "$tmp/watchdog_service.sh" || fail "watchdog service does not load shell-quoted manager settings"
-grep -Fq '_wd_enabled="${WATCHDOG_ENABLED:-0}"' "$tmp/watchdog_service.sh" || fail "watchdog service does not read the saved watchdog setting"
-grep -Fq '_force_enabled="${FORCE_DOH:-0}"' "$tmp/watchdog_service.sh" || fail "watchdog service does not read the saved forced-DNS setting"
-grep -q 'procd_set_param command /bin/sh "\$PROG" "\$CMD"' "$tmp/watchdog_service.sh" || fail "watchdog procd command is missing"
-grep -q 'procd_set_param respawn 3600 5 5' "$tmp/watchdog_service.sh" || fail "watchdog procd respawn is missing"
-grep -q 'procd_add_interface_trigger "interface.*.up" "\$wan" /etc/init.d/dns-watchdog restart' "$tmp/watchdog_service.sh" || fail "watchdog WAN-up trigger is missing"
-if grep -Eq '^(watchdog_cron_scheduler_require|watchdog_cron_scheduler_start|watchdog_cron_write_state|watchdog_cron_file_prepare|watchdog_cron_desired_line|watchdog_cron_line_exists|watchdog_cron_owned_block_status)\(\) \{' dns-manager.sh; then
-    fail "obsolete watchdog cron mutation helpers remain"
-fi
-ok "watchdog uses procd as the active scheduler; obsolete cron mutation helpers are removed"
+awk '/^watchdog_service_install_files\(\) \{/,/^watchdog_remove_legacy_daemon\(\) \{/' dns-manager.sh > "$tmp/watchdog_service.sh"
+grep -Fq 'exec /usr/bin/dns-manager __watchdog-once' "$tmp/watchdog_service.sh" || fail "watchdog launcher is not one-shot"
+grep -Fq '# dm-watchdog' "$tmp/watchdog_service.sh" || fail "cron entry lookup missing"
+if grep -Fq 'procd_set_param' "$tmp/watchdog_service.sh"; then fail "watchdog still creates a procd daemon"; fi
+ok "watchdog launcher uses cron and one-shot execution"
 
 # Watchdog keeps the intended profile category while using clean as a temporary fallback.
 awk '
@@ -2319,8 +2234,8 @@ grep -Fq "watchdogComponentItem(st,wd,wdDetails)" "$tmp/common.js" || fail "LuCI
 grep -q "function watchdogReplacementComponentItem" "$tmp/common.js" || fail "LuCI auto-replacement component state helper missing"
 awk '/^function watchdogReplacementComponentItem\(/,/^}/' "$tmp/common.js" | grep -qE 'btn\(|setSetting\(' && fail "LuCI auto-replacement component must remain a state-only item"
 grep -Fq "watchdogReplacementComponentItem(wdAuto,wdAutoDetails)" "$tmp/common.js" || fail "LuCI auto-replacement component is not shown separately"
-grep -Fq "var wdDetails='Интервал: каждые '" "$tmp/common.js" || fail "LuCI check component details must describe interval only"
-grep -Fq "var wdAutoDetails='Замена после '" "$tmp/common.js" || fail "LuCI replacement component details must describe failure threshold separately"
+grep -Fq "var wdDetails='Интервал: каждые 2 мин.'" "$tmp/common.js" || fail "LuCI check component details must describe interval only"
+grep -Fq "var wdAutoDetails='Замена после 3 последовательных сбоев.'" "$tmp/common.js" || fail "LuCI replacement component details must describe failure threshold separately"
 grep -Fq "var watchdogAutoReplace=yes(st.watchdog_autoreplace)" "$tmp/common.js" || fail "LuCI replacement state does not use the independent auto-replace setting"
 grep -Fq "forceComponentItem(st)" "$tmp/common.js" || fail "LuCI forced-DNS component helper is not used as a state-only item"
 grep -Fq 'if [ "$_module" = watchdog ] && [ "$_new" = 1 ]; then' dns-manager.sh || fail "CLI watchdog no-profile guard missing"
@@ -2914,7 +2829,7 @@ save_count="$(grep -o 'Сохранить' "$tmp/watchdog_card.js" | wc -l | tr 
 grep -q 'Сохранить настройки' "$tmp/watchdog_card.js" || fail "common watchdog save button missing"
 grep -q 'Дополнительные параметры' "$tmp/watchdog_card.js" || fail "advanced watchdog section missing"
 grep -q 'Контроль текущих DNS' "$tmp/watchdog_card.js" || fail "watchdog settings section title missing"
-for _wd_label in 'Как часто проверять DNS' 'Ошибок подряд до замены' 'Пауза между попытками восстановления DNS' 'Проверка DNS' 'Автозамена DNS'; do
+for _wd_label in 'Пауза между попытками восстановления DNS' 'Проверка DNS' 'Автозамена DNS'; do
     grep -q "$_wd_label" "$tmp/watchdog_card.js" || fail "LuCI watchdog control missing: $_wd_label"
 done
 if grep -q 'Проверить сейчас' "$tmp/watchdog_card.js"; then
@@ -2947,9 +2862,9 @@ fi
 ok "watchdog numeric field validation accepts normal integer values"
 
 wd_stop_block="$(sed -n '/^watchdog_service_stop_disable() {/,/^}/p' dns-manager.sh)"
-printf '%s\\n' "$wd_stop_block" | grep -Fq 'while watchdog_service_running && [ "$_wd_wait" -lt 5 ]' || fail "watchdog stop path has no bounded procd grace wait"
-printf '%s\\n' "$wd_stop_block" | grep -Fq 'sleep 1' || fail "watchdog stop grace wait has no sleep"
-ok "watchdog settings save tolerates asynchronous procd stop"
+printf '%s\n' "$wd_stop_block" | grep -Fq '# dm-watchdog' || fail "watchdog stop does not remove cron entry"
+printf '%s\n' "$wd_stop_block" | grep -Fq '"$WATCHDOG_SERVICE_PATH" disable' || fail "legacy watchdog autostart is not disabled"
+ok "watchdog stop disables the legacy service and removes cron entry"
 
 ok "watchdog tuning is persisted through one atomic RPC and exposed as a compact LuCI form"
 
