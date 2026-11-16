@@ -249,10 +249,10 @@ ok "update-chain temporary names and LuCI version detection"
 
 # Self-update must not lose the interactive terminal when replacing the running shell.
 grep -Fq 'exec </dev/tty >/dev/tty 2>&1' dns-manager.sh || fail "self-update TTY recovery is missing"
-grep -Fq '    DNS_MANAGER_SCHEDULED_UPDATE=1 auto_update_manager || true' dns-manager.sh || fail "startup update check is not using scheduled throttling"
+grep -Fq 'DNS_MANAGER_SCHEDULED_UPDATE=1 DNS_MANAGER_UPDATE_NO_EXEC=1 auto_update_manager --scheduled' dns-manager.sh || fail "scheduled update check is not using throttling"
 grep -Fq 'uclient-fetch -q -T 15 -O "$_upd_tmp" "$_update_url"' dns-manager.sh || fail "Manager update uclient-fetch has no timeout"
 grep -Fq 'uclient-fetch -q -T 30 -O "$_tmp" "$_fetch_url"' dns-manager.sh || fail "LuCI companion fetch uclient-fetch has no timeout"
-ok "startup self-update output and fetch timeouts are bounded"
+ok "scheduled self-update and fetch timeouts are bounded"
 
 
 # LuCI update must not remove the current interface before the new installer
@@ -1358,8 +1358,9 @@ if grep -Fq 'watchdog_runtime_service_sync' dns-manager.sh; then
 fi
 awk '/^apply_watchdog\(\) \{/,/^menu_dns\(\) \{/' dns-manager.sh > "$tmp/apply_watchdog_fn.sh"
 grep -Fq 'if [ "${WATCHDOG_ENABLED:-0}" = 1 ] || [ "${FORCE_DOH:-0}" = 1 ]; then' "$tmp/apply_watchdog_fn.sh" || fail "one procd service is not shared by DNS checks and forced-DNS tracking"
-grep -Fq 'WATCHDOG_SERVICE_VERSION_MARKER="# DNS_MANAGER_WATCHDOG_SERVICE_VERSION=3.11.9"' dns-manager.sh || fail "watchdog service marker not bumped"
-grep -Fq 'DNS_MANAGER_WATCHDOG_SERVICE_VERSION=3.11.9' dns-manager.sh || fail "generated procd service marker not bumped"
+watchdog_version=$(sed -n 's/^WATCHDOG_SERVICE_VERSION_MARKER="# DNS_MANAGER_WATCHDOG_SERVICE_VERSION=\([^"]*\)".*/\1/p' dns-manager.sh | head -n1)
+[ -n "$watchdog_version" ] || fail "watchdog service marker missing"
+grep -Fxq "# DNS_MANAGER_WATCHDOG_SERVICE_VERSION=$watchdog_version" dns-manager.sh || fail "generated procd service marker does not match"
 grep -Fq '[ "${WATCHDOG_ENABLED:-0}" = 1 ] || [ "${FORCE_DOH:-0}" = 1 ] || return 0' dns-manager.sh || fail "forced-DNS-only runtime is not a service start condition"
 grep -Fq '[ "${FORCE_DOH:-0}" = 1 ] || return 0' dns-manager.sh || fail "forced-DNS service migration does not check its own enable flag"
 ok "forced-DNS Auto tracks Steer without enabling DNS tests or rotation"

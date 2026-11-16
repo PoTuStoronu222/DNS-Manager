@@ -62,7 +62,7 @@ async function testRouteCache(){
 async function testCachedReadOnly(){
   const controls=[{disabled:false},{disabled:false}],messages=[];
   const root={querySelector:()=>({appendChild:x=>messages.push(x)}),querySelectorAll:()=>controls};
-  const ctx={state:{statusFromCache:true,statusError:'',activeTab:'dashboard'},currentRoute:()=> 'dashboard',renderHeader:()=>{},renderOverview:()=>{},setActiveTab:()=>{},E:(tag,attrs,text)=>({tag,attrs,text})};
+  const ctx={document:{querySelectorAll:()=>[]},state:{statusFromCache:true,statusError:'',activeTab:'dashboard'},currentRoute:()=> 'dashboard',renderHeader:()=>{},renderOverview:()=>{},setActiveTab:()=>{},E:(tag,attrs,text)=>({tag,attrs,text})};
   vm.createContext(ctx);vm.runInContext(extract('function render(root,st){','function routeStatusCall(){'),ctx);
   ctx.render(root,{ok:true});
   if(controls.some(x=>!x.disabled)||!messages.some(x=>String(x.text).includes('предыдущие данные')))throw Error('cached state was not marked read-only');
@@ -363,7 +363,7 @@ async function testResumeCatalog(){
 }
 async function testRegionalReapply(){
   const buttons=[],calls=[],state={busy:false};
-  const ctx={state,regionalMode:'isp',hasGeneral:true,root:{},pch:[],E:()=>({appendChild:x=>buttons.push(x)}),btn:(text,cls,click,opts)=>({text,cls,click,opts}),setRegional:(v)=>calls.push(v)};
+  const ctx={state,st:{dnscrypt_engine:'https-dns-proxy'},regionalMode:'isp',hasGeneral:true,root:{},pch:[],E:()=>({appendChild:x=>buttons.push(x)}),btn:(text,cls,click,opts)=>({text,cls,click,opts}),setRegional:(v)=>calls.push(v)};
   vm.createContext(ctx);vm.runInContext(extract("  var regionalChoices=E('div',{'class':'dm-seg'});","  pch.push(E('p',{'class':'dm-hint'},regionalMode==='legacy'"),ctx);
   const active=buttons.find(b=>b.text==='DNS провайдера');
   if(!active||active.opts.disabled)throw Error('current regional mode cannot be reapplied after update');

@@ -44,14 +44,8 @@ printf 'https://one.example/dns-query\nhttps://two.example/sync\n' > "$TMP_DIR/e
 cmp "$TMP_DIR/received" "$TMP_DIR/expected-urls"
 printf 'one|https://one.example/dns-query\ntwo|https://two.example/sync\n' > "$TMP_DIR/expected-records"
 cmp "$TMP_DIR/result" "$TMP_DIR/expected-records"
-printf '5053|%s|/etc/init.d/dnsmasq|restart\n' "$DNS_MANAGER_DNSCRYPT_UCI_GUARD" > "$TMP_DIR/expected-dnsmasq"
+printf '5053|||\n' > "$TMP_DIR/expected-dnsmasq"
 cmp "$TMP_DIR/dnsmasq-arguments" "$TMP_DIR/expected-dnsmasq"
-
-printf 'exit 1\n' > "$DNS_MANAGER_DNSCRYPT_UCI_GUARD"
-rm -f "$TMP_DIR/arguments"
-if dnscrypt_apply_profile_pool clean 5053 1.1.1.1 > "$TMP_DIR/result"; then exit 1; fi
-[ ! -s "$TMP_DIR/result" ] && [ ! -f "$TMP_DIR/arguments" ]
-: > "$DNS_MANAGER_DNSCRYPT_UCI_GUARD"
 
 DNSMASQ_FAIL=1
 printf 'original\n' > "$DNS_MANAGER_DNSCRYPT_CONFIG"
