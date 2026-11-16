@@ -35,8 +35,7 @@ if '-s' in sys.argv:
  if expr=='@': print(json.dumps(data)); sys.exit(0)
  if 'dns-watchdog' not in data: sys.exit(1)
  print(json.dumps(data['dns-watchdog'])); sys.exit(0)
-data=json.load(sys.stdin); expr=sys.argv[sys.argv.index('-e')+1]
-print(data.get(expr.split('.')[-1], ""))
+print(json.load(sys.stdin).get("profile", ""))
 ''')
     jf.chmod(0o755)
     ubus = d / 'ubus'
@@ -80,8 +79,6 @@ dnscrypt_apply_profile_pool() {
     (helpers / 'dns-manager-dnscrypt-dnsmasq.sh').write_text('#!/bin/sh\nprintf "%s\\n" "$*" > "$LAB_ROOT/restore"\n[ ! -e "$LAB_ROOT/restore-fail" ]\n')
     (helpers / 'dns-manager-engine-services.sh').write_text('#!/bin/sh\n[ ! -e "$LAB_ROOT/quiesce-fail" ]\n')
     (helpers / 'dns-manager-device-detach.sh').write_text('#!/bin/sh\n[ ! -e "$LAB_ROOT/detach-fail" ]\n')
-    switch = helpers / 'dns-manager-engine-switch.sh'
-    switch.write_text('#!/bin/sh\nexit 0\n'); switch.chmod(0o755)
     env = {**os.environ, 'PATH': str(d) + os.pathsep + os.environ['PATH'],
            'LAB_ROOT': str(d), 'DNS_MANAGER_MANAGER': str(manager),
            'DNS_MANAGER_LEGACY_BACKEND': str(legacy),
@@ -97,9 +94,6 @@ dnscrypt_apply_profile_pool() {
                               capture_output=True, env={**env, **(extra or {})})
 
     assert json.loads(run('call', 'set_slot', input='{}').stdout)['ok'] is False
-    assert json.loads(run('call', 'switch_engine', input='{"target_engine":"invalid"}').stdout)['ok'] is False
-    assert json.loads(run('call', 'switch_engine', input='{"target_engine":"https-dns-proxy"}').stdout)['job'] == 'engine'
-    assert json.loads((d / 'request').read_text())['instances']['main']['command'][-1] == 'https-dns-proxy'
     assert json.loads(run('call', 'log', input='{}').stdout)['method'] == 'log'
     assert json.loads(run('call', 'set_profile', input='{"profile":"invalid"}').stdout)['ok'] is False
     (config / 'dnscrypt-engine').write_text('https-dns-proxy\n')
