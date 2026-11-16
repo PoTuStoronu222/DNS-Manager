@@ -21,6 +21,16 @@ error() { printf '{"ok":false,"error":"%s"}\n' "$1"; }
 valid_profile() { case "$1" in bypass|clean|security|privacy|adblock|family|all|dnssec|default) return 0;; *) return 1;; esac; }
 engine_selected() { [ -r "$ENGINE_FILE" ] && [ "$(cat "$ENGINE_FILE" 2>/dev/null)" = dnscrypt-proxy2 ]; }
 hdp_active() { [ -x "$HDP_INIT" ] && { "$HDP_INIT" enabled >/dev/null 2>&1 || "$HDP_INIT" running >/dev/null 2>&1; }; }
+load_manager_functions() {
+    local manager_src
+    mkdir -p "$RUNTIME_DIR" || return 1
+    manager_src=$(mktemp "$RUNTIME_DIR/dnscrypt-manager.XXXXXX") || return 1
+    if ! sed '/^case "${1:-}" in$/,$d' "$MANAGER" > "$manager_src" || ! . "$manager_src"; then
+        rm -f "$manager_src"
+        return 1
+    fi
+    rm -f "$manager_src"
+}
 disable_legacy_watchdog() {
     watchdog_service_stop_disable || return 1
     # The init file can be missing while procd still owns a running instance.
@@ -82,11 +92,7 @@ profile_worker() {
         job_write result fail; job_write status failed; job_write finished "$(date +%s)"
         exit 1
     fi
-    src=$(mktemp "$RUNTIME_DIR/dnscrypt-manager.XXXXXX") || exit 1
-    sed '/^case "${1:-}" in$/,$d' "$MANAGER" > "$src" || { rm -f "$src"; exit 1; }
-    # Manager functions are sourced exactly as in the existing LuCI backend.
-    . "$src" || { rm -f "$src"; exit 1; }
-    rm -f "$src"
+    load_manager_functions || exit 1
     rc=1
     if preflight_readonly >/dev/null 2>&1 && init_dirs >/dev/null 2>&1 &&
        load_config >/dev/null 2>&1 && acquire_mutation_lock; then
@@ -186,9 +192,7 @@ reset_worker() {
     token=$(awk '{print $22}' "/proc/$$/stat" 2>/dev/null || true)
     [ -z "$token" ] || action_write pid_start "$token"
     rc=1
-    src=$(mktemp "$RUNTIME_DIR/dnscrypt-manager.XXXXXX") || exit 1
-    if sed '/^case "${1:-}" in$/,$d' "$MANAGER" > "$src" && . "$src"; then
-        rm -f "$src"
+    if load_manager_functions; then
         if engine_selected && preflight_readonly >/dev/null 2>&1 && init_dirs >/dev/null 2>&1 &&
            load_config >/dev/null 2>&1 && acquire_mutation_lock; then
             : > "$RUNTIME_DIR/dnscrypt-reset.log"
@@ -207,8 +211,6 @@ reset_worker() {
             fi
             release_mutation_lock
         fi
-    else
-        rm -f "$src"
     fi
     if [ "$rc" = 0 ]; then
         printf '{"ok":true}\n' > "$JOB_DIR/action/output"
@@ -266,10 +268,7 @@ regional_worker() {
     requested=$1
     refresh=${2:-0}
     rc=1
-    mkdir -p "$RUNTIME_DIR" || return 1
-    src=$(mktemp "$RUNTIME_DIR/dnscrypt-regional.XXXXXX") || return 1
-    if ! sed '/^case "${1:-}" in$/,$d' "$MANAGER" > "$src" || ! . "$src"; then rm -f "$src"; return 1; fi
-    rm -f "$src"
+    load_manager_functions || return 1
     preflight_readonly >/dev/null 2>&1 && init_dirs >/dev/null 2>&1 && load_config >/dev/null 2>&1 && acquire_mutation_lock || return 1
     old_mode=$(uci -q get dns-manager.global.dnscrypt_regional_mode || :)
     old_ips=$(uci -q get dns-manager.global.dnscrypt_regional_ips || :)
