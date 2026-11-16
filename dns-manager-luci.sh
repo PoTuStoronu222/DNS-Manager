@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager full installer and LuCI companion
-# Version: 2.46
+# Version: 2.47
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.46"
+VERSION="2.47"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -2270,7 +2270,7 @@ if [ "$(uci -q get dns-manager.global.active_engine 2>/dev/null)" = dnscrypt-pro
 fi
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.46"
+SELF_VERSION="2.47"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -5948,7 +5948,7 @@ EOF_RPC_WRAPPER
 'require ui';
 'require session';
 
-// DNS Manager LuCI common module version: 2.46
+// DNS Manager LuCI common module version: 2.47
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -6421,8 +6421,9 @@ function forceComponentItem(st){
   var owner=String(st.force_owner||'none');
   var both=yes(st.force_both);
   var active=(mode==='manager'||mode==='steer');
-  var stateKind=active?'dm-ok':(both||mode==='external'||owner==='external'||mode==='other'?'dm-bad':'dm-off');
-  var stateText=both?'DNS Manager + внешний'
+  var unavailable=st.dnscrypt_engine==='dnscrypt-proxy2'&&!active&&!both&&owner==='none'&&mode==='off';
+  var stateKind=unavailable?'dm-muted':active?'dm-ok':(both||mode==='external'||owner==='external'||mode==='other'?'dm-bad':'dm-off');
+  var stateText=unavailable?'недоступен в DNSCrypt':both?'DNS Manager + внешний'
     :owner==='external'?'внешний сервис'
     :owner==='steer'&&mode==='other'?'ДРУГОЕ • Steer'
     :owner==='steer'&&mode==='steer'?'включён • Steer'
@@ -6626,10 +6627,10 @@ function renderOverview(root,st){
   var components=card('Компоненты',[
     componentItem('DNS-движок',st.dnscrypt_engine==='dnscrypt-proxy2'?badge(Number(st.dnscrypt_running)===1?'dm-ok':'dm-bad','DNSCrypt Proxy · '+(Number(st.dnscrypt_running)===1?'работает':'остановлен')):Number(st.engine_installed)===0?badge('dm-off','не выбран'):badge(Number(st.engine_running)===1?'dm-ok':'dm-bad','HTTPS DNS Proxy · '+(Number(st.engine_running)===1?'работает':'остановлен'))),
     st.dnscrypt_engine==='dnscrypt-proxy2'?componentItem('Выбор сервера',st.dnscrypt_selected_server?badge('dm-ok',dnscryptServerName(st,st.dnscrypt_selected_server)):badge('dm-muted','автоматически из пула')):null,
-    st.dnscrypt_engine==='dnscrypt-proxy2'?componentItem('Кэш DNSCrypt',badge(st.dnscrypt_cache_entries==null?'dm-muted':'dm-ok',st.dnscrypt_cache_entries==null?'нет данных':String(st.dnscrypt_cache_entries)+' записей')):null,
-    st.dnscrypt_engine==='dnscrypt-proxy2'?componentItem('Среднее время ответа DNS',badge(st.dnscrypt_avg_response_ms==null?'dm-muted':'dm-ok',st.dnscrypt_avg_response_ms==null?'нет данных':String(st.dnscrypt_avg_response_ms)+' мс')):null,
-    watchdogComponentItem(st,wd,wdDetails),
-    watchdogReplacementComponentItem(wdAuto,wdAutoDetails),
+    st.dnscrypt_engine==='dnscrypt-proxy2'&&st.dnscrypt_cache_entries!=null?componentItem('Кэш DNSCrypt',badge('dm-ok',String(st.dnscrypt_cache_entries)+' записей')):null,
+    st.dnscrypt_engine==='dnscrypt-proxy2'&&st.dnscrypt_avg_response_ms!=null?componentItem('Среднее время ответа DNS',badge('dm-ok',String(st.dnscrypt_avg_response_ms)+' мс')):null,
+    st.dnscrypt_engine==='dnscrypt-proxy2'?componentItem('Проверка DNS',badge('dm-muted','недоступна в DNSCrypt')):watchdogComponentItem(st,wd,wdDetails),
+    st.dnscrypt_engine==='dnscrypt-proxy2'?componentItem('Автозамена DNS',badge('dm-muted','недоступна в DNSCrypt')):watchdogReplacementComponentItem(wdAuto,wdAutoDetails),
     forceComponentItem(st),
     st.dnscrypt_engine==='dnscrypt-proxy2'?null:componentItem('Кэш DNS',badge(st.dnsmasq_cache_size==null||String(st.dnsmasq_cache_size)===''||Number(st.dnsmasq_cache_size)===0?'dm-off':'dm-ok',st.dnsmasq_cache_size==null||String(st.dnsmasq_cache_size)===''?'неизвестно':String(st.dnsmasq_cache_size)+' записей')),
   ].filter(Boolean));
@@ -8241,7 +8242,7 @@ function saveRouteCache(key,st,aux){
     var entry=JSON.parse(JSON.stringify({ts:Date.now(),data:st,aux:aux}));
     window.dmRouteCache[key]=entry;
     if(typeof session!=='undefined'&&session.setLocalData)
-      session.setLocalData('dns-manager-route-2.46-'+key,entry);
+      session.setLocalData('dns-manager-route-2.47-'+key,entry);
   }catch(e){}
 }
 function clearEngineUiState(){
@@ -8249,7 +8250,7 @@ function clearEngineUiState(){
   window.dmRouteCache=Object.create(null);
   window.dmStatusPromises=Object.create(null);
   ['dashboard','doh','network','time','devices','catalog','log'].forEach(function(key){
-    try{if(typeof session!=='undefined'&&session.setLocalData)session.setLocalData('dns-manager-route-2.46-'+key,null);}catch(e){}
+    try{if(typeof session!=='undefined'&&session.setLocalData)session.setLocalData('dns-manager-route-2.47-'+key,null);}catch(e){}
   });
   state.pageNotice={};state.profileProgress=null;state.profileOutput='';state.profileResumeStarted=false;
   state.regionalNotice='';state.dnscryptDiagnostic='';state.dnscryptDiagnosticKind='';state.dnscryptProfileChoice='';
@@ -8261,7 +8262,7 @@ function clearEngineUiState(){
 function routeCacheEntry(key){
   var entry=key&&window.dmRouteCache&&window.dmRouteCache[key];
   if(!entry&&key){
-    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.46-'+key);}catch(e){}
+    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.47-'+key);}catch(e){}
   }
   if(!entry||typeof entry.ts!=='number'||Date.now()-entry.ts<0||Date.now()-entry.ts>300000||!entry.data||entry.data.ok!==true)return null;
   return entry;
@@ -9315,7 +9316,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 2.46
+// DNS Manager LuCI version: 2.47
 return view.extend({
   load: DM.load,
   render: DM.render,
