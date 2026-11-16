@@ -5,6 +5,7 @@ STOP=89
 
 PROG=/usr/sbin/dnscrypt-proxy
 CONFIG=/etc/dnscrypt-proxy2/dnscrypt-proxy.toml
+extra_command 'network_ready' 'Restart DNSCrypt after a network interface event'
 
 boot() {
     [ "$(uci -q get dns-manager.global.active_engine 2>/dev/null)" = dnscrypt-proxy2 ] || return 0
@@ -19,4 +20,23 @@ start_service() {
     procd_set_param stderr 1
     procd_set_param respawn 3600 5 5
     procd_close_instance
+}
+
+service_triggers() {
+    local iface
+    for iface in wan wan6; do
+        uci -q get "network.$iface" >/dev/null 2>&1 || continue
+        procd_add_interface_trigger "interface.up" "$iface" /etc/init.d/dnscrypt-proxy network_ready
+        procd_add_interface_trigger "interface.update" "$iface" /etc/init.d/dnscrypt-proxy network_ready
+    done
+    if ! uci -q get network.wan >/dev/null 2>&1 && ! uci -q get network.wan6 >/dev/null 2>&1; then
+        procd_add_interface_trigger "interface.up" lan /etc/init.d/dnscrypt-proxy network_ready
+        procd_add_interface_trigger "interface.update" lan /etc/init.d/dnscrypt-proxy network_ready
+    fi
+}
+
+network_ready() {
+    [ "$(uci -q get dns-manager.global.active_engine 2>/dev/null)" = dnscrypt-proxy2 ] || return 0
+    enabled || return 0
+    restart
 }

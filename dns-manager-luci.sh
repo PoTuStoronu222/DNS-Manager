@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager full installer and LuCI companion
-# Version: 2.37
+# Version: 2.38
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.37"
+VERSION="2.38"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -1016,6 +1016,9 @@ $system_output"
 В dnsmasq не настроена пересылка на 127.0.0.1#5053."
             fi
         fi
+        if [ "$rc" -ne 0 ] && ! ip -4 route get 8.8.8.8 >/dev/null 2>&1 && ! ip -6 route get 2606:4700:4700::1111 >/dev/null 2>&1; then
+            output='Ожидание подключения к сети.'; rc=0
+        fi
         if [ "$rc" -eq 0 ]; then json_add_boolean ok 1; else json_add_boolean ok 0; fi
     else
         output=$(logread -e dnscrypt-proxy 2>&1 | tail -n 80)
@@ -1182,8 +1185,8 @@ case "${1:-}" in
             switch_engine) switch_start ;;
             dnscrypt_test|system_dns_test) diagnostic_start "$2" ;;
             dnscrypt_log) diagnostic "$2" ;;
-            status|doh_status|network_status) status_extra "$2" ;;
-            runtime|time_status|page_meta|catalog|lan_devices|job|log|update_check|uninstall_status)
+            status|doh_status|network_status|time_status|log|update_check) status_extra "$2" ;;
+            runtime|page_meta|catalog|lan_devices|job|set_ntp|uninstall_status)
                 exec "$LEGACY" "$@" ;;
             *) error 'Действие пока недоступно для dnscrypt-proxy2' ;;
         esac ;;
@@ -1437,6 +1440,7 @@ STOP=89
 
 PROG=/usr/sbin/dnscrypt-proxy
 CONFIG=/etc/dnscrypt-proxy2/dnscrypt-proxy.toml
+extra_command 'network_ready' 'Restart DNSCrypt after a network interface event'
 
 boot() {
     [ "$(uci -q get dns-manager.global.active_engine 2>/dev/null)" = dnscrypt-proxy2 ] || return 0
@@ -1451,6 +1455,25 @@ start_service() {
     procd_set_param stderr 1
     procd_set_param respawn 3600 5 5
     procd_close_instance
+}
+
+service_triggers() {
+    local iface
+    for iface in wan wan6; do
+        uci -q get "network.$iface" >/dev/null 2>&1 || continue
+        procd_add_interface_trigger "interface.up" "$iface" /etc/init.d/dnscrypt-proxy network_ready
+        procd_add_interface_trigger "interface.update" "$iface" /etc/init.d/dnscrypt-proxy network_ready
+    done
+    if ! uci -q get network.wan >/dev/null 2>&1 && ! uci -q get network.wan6 >/dev/null 2>&1; then
+        procd_add_interface_trigger "interface.up" lan /etc/init.d/dnscrypt-proxy network_ready
+        procd_add_interface_trigger "interface.update" lan /etc/init.d/dnscrypt-proxy network_ready
+    fi
+}
+
+network_ready() {
+    [ "$(uci -q get dns-manager.global.active_engine 2>/dev/null)" = dnscrypt-proxy2 ] || return 0
+    enabled || return 0
+    restart
 }
 EOF_DNSCRYPT_ASSET_12
     cat > "$_dc_stage/dns-manager-watchdog-common.sh" <<'EOF_DNSCRYPT_ASSET_13'
@@ -2170,7 +2193,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.37"
+SELF_VERSION="2.38"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -5790,7 +5813,7 @@ EOF_RPC_WRAPPER
 'require ui';
 'require session';
 
-// DNS Manager LuCI common module version: 2.37
+// DNS Manager LuCI common module version: 2.38
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -6499,7 +6522,7 @@ function renderOverview(root,st){
     row('Проверено',dateText(st.components_checked_at)),
     E('div',{'class':'dm-actions'},[
       btn(state.versionCheck&&state.versionCheck.running?'Проверяю актуальность…':'Проверить актуальность','cbi-button-neutral',function(){checkUpdate(root,true);},{disabled:!!state.updatingAll||!!(state.versionCheck&&state.versionCheck.running)}),
-      (yes(st.manager_update_available)||yes(st.luci_update_available)||yes(st.hdp_update_available)||yes(st.catalog_update_available)) ?
+      (st.dnscrypt_engine!=='dnscrypt-proxy2'&&(yes(st.manager_update_available)||yes(st.luci_update_available)||yes(st.hdp_update_available)||yes(st.catalog_update_available))) ?
         btn(state.updatingAll?'Обновляю…':'Обновить','cbi-button-positive',function(){updateAll(root);},{disabled:!!state.updatingAll||!!state.busy||!!(state.versionCheck&&state.versionCheck.running)}) :
         null
     ].filter(Boolean)),
@@ -7630,10 +7653,9 @@ function cacheCard(root,st){
 }
 function renderNetwork(root,st){
   var e=root.querySelector('#dm-network');if(!e)return;e.innerHTML='';
-  var body=[
-    watchdogCard(root,st),
-    cacheCard(root,st)
-  ];
+  var body=st.dnscrypt_engine==='dnscrypt-proxy2'
+    ? [E('div',{'class':'dm-hint'},'Проверка слотов, автозамена и настройки кэша dnsmasq доступны для HTTPS DNS Proxy. В режиме DNSCrypt используется кэш DNSCrypt.')]
+    : [watchdogCard(root,st), cacheCard(root,st)];
   e.appendChild(card('Сетевой тюнинг',body));
 }
 function ntpPresetName(p){
@@ -7795,6 +7817,13 @@ function deleteCustomDns(d,root){
 
 function renderCatalog(root){
   var e=root.querySelector('#dm-catalog');if(!e)return;e.innerHTML='';
+  if((window.dmState||{}).dnscrypt_engine==='dnscrypt-proxy2'){
+    var data=window.dmCatalog||{}, controls=E('div',{'class':'dm-seg'});
+    CATEGORY.forEach(function(c){controls.appendChild(btn(c[1],c[0]===state.category?'active cbi-button':'cbi-button',function(){state.category=c[0];state.offset=0;loadCatalog(root);}));});
+    var rows=(data.servers||[]).map(function(d){return E('div',{'class':'dm-card'},[E('h4',{},d.name||d.id),E('div',{'class':'dm-meta'},catName(d.category))]);});
+    e.appendChild(card('Каталог DNS',[E('div',{'class':'dm-hint'},'В режиме DNSCrypt каталог доступен для просмотра. Серверы выбираются через профили.'),controls,E('div',{'class':'dm-catalog'},rows),E('div',{'class':'dm-page'},[btn('←','cbi-button-neutral',function(){if(state.offset>0){state.offset=Math.max(0,state.offset-state.limit);loadCatalog(root);}}),E('span',{'class':'dm-mini'},(Math.floor(state.offset/state.limit)+1)+' / '+Math.max(1,Math.ceil((data.total||0)/state.limit))),btn('→','cbi-button-neutral',function(){if(state.offset+state.limit<(data.total||0)){state.offset+=state.limit;loadCatalog(root);}})])]));
+    return;
+  }
   var ageCard=renderTestAgeCommon(root,window.dmState||{});
   var body=E('div',{'id':'dm-cat-body'});
   if(!window.dmCatalog&&!state.pageNotice.catalog)body.appendChild(E('div',{'class':'dm-hint'},state.catalogLoading?'Загрузка каталога DNS…':'Каталог DNS недоступен.'));
@@ -8030,13 +8059,13 @@ function saveRouteCache(key,st,aux){
     var entry=JSON.parse(JSON.stringify({ts:Date.now(),data:st,aux:aux}));
     window.dmRouteCache[key]=entry;
     if(typeof session!=='undefined'&&session.setLocalData)
-      session.setLocalData('dns-manager-route-2.37-'+key,entry);
+      session.setLocalData('dns-manager-route-2.38-'+key,entry);
   }catch(e){}
 }
 function routeCacheEntry(key){
   var entry=key&&window.dmRouteCache&&window.dmRouteCache[key];
   if(!entry&&key){
-    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.37-'+key);}catch(e){}
+    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.38-'+key);}catch(e){}
   }
   if(!entry||typeof entry.ts!=='number'||Date.now()-entry.ts<0||Date.now()-entry.ts>300000||!entry.data||entry.data.ok!==true)return null;
   return entry;
@@ -9068,7 +9097,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 2.37
+// DNS Manager LuCI version: 2.38
 return view.extend({
   load: DM.load,
   render: DM.render,
