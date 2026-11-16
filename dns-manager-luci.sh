@@ -736,7 +736,12 @@ service_absent() {
 
 stop_disable() {
     script="$initdir/$1"
-    [ -x "$script" ] || return 0
+    if [ ! -x "$script" ]; then
+        # A removed package can leave a procd instance alive until reboot.
+        # Do not start a competing engine unless absence is confirmed.
+        service_absent "$1" || { printf 'Service exists without init script: %s\n' "$1" >&2; return 1; }
+        return 0
+    fi
     # rc.common may run stop_service even when procd has no instance.
     # In https-dns-proxy this can restore old dnsmasq settings, so do not
     # call it a second time after the service has already stopped.
@@ -778,8 +783,7 @@ esac
 for service in https-dns-proxy dnscrypt-proxy dns-manager-dnscrypt; do
     [ "$service" = "$target" ] && continue
     script="$initdir/$service"
-    [ -x "$script" ] || continue
-    if "$script" enabled >/dev/null 2>&1 || ! service_absent "$service"; then
+    if { [ -x "$script" ] && "$script" enabled >/dev/null 2>&1; } || ! service_absent "$service"; then
         printf 'Conflicting service is active or enabled: %s\n' "$service" >&2
         exit 1
     fi
