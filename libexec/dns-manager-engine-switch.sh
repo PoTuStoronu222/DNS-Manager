@@ -109,7 +109,7 @@ if [ "$target" = dnscrypt-proxy2 ]; then
     bootstrap=$(printf '%s' "$BOOTSTRAP_DNS" | tr ',' '\n' | awk 'NF {if(n++) printf ","; printf "%s", $0; if(n==3) exit}')
     printf '%s\n' 'https://cloudflare-dns.com/dns-query' 'https://dns.google/dns-query' | sh "$helpers/dns-manager-dnscrypt-pool-apply.sh" 5053 "$bootstrap" || exit 1
     "$init_dir/dnscrypt-proxy" enable || exit 1
-    sh "$helpers/dns-manager-dnscrypt-dnsmasq.sh" 5053 || exit 1
+    DNS_MANAGER_IGNORE_REGIONAL=1 sh "$helpers/dns-manager-dnscrypt-dnsmasq.sh" 5053 || exit 1
     state_tmp=$(mktemp "$config_dir/.dnscrypt-state.XXXXXX") || exit 1
     if ! { printf '%s\n' 'profile=none' 'server=cloudflare_clean|https://cloudflare-dns.com/dns-query' 'server=google_clean|https://dns.google/dns-query' > "$state_tmp" && chmod 600 "$state_tmp" && mv -f "$state_tmp" "$config_dir/dnscrypt-profile.state"; }; then
         rm -f "$state_tmp"; exit 1
@@ -129,9 +129,12 @@ if [ ! -f "$engine_uci" ]; then (umask 077; : > "$engine_uci") || exit 1; fi
 pending=$(uci -q changes dns-manager 2>/dev/null || true)
 [ -z "$pending" ] || { echo 'Есть несохранённые изменения UCI: dns-manager'; exit 1; }
 uci -q get dns-manager.global >/dev/null 2>&1 || uci set dns-manager.global=manager
+uci -q delete dns-manager.global.dnscrypt_regional_mode || :
+uci -q delete dns-manager.global.dnscrypt_regional_ips || :
 uci set "dns-manager.global.active_engine=$target" || exit 1
 uci commit dns-manager || exit 1
 tmp=$(mktemp "$config_dir/.dnscrypt-engine.XXXXXX") || exit 1
 printf '%s\n' "$target" > "$tmp" && chmod 600 "$tmp" && mv -f "$tmp" "$engine_file" || { rm -f "$tmp"; exit 1; }
+[ ! -x "$init_dir/dns-manager-regional" ] || "$init_dir/dns-manager-regional" restart >/dev/null 2>&1 || :
 echo 'Движок переключён. Выберите DNS-профиль.'
 success=1

@@ -582,6 +582,22 @@ restore_dns() {
     uci commit dhcp
 }
 
+add_regional_servers() {
+    [ "${DNS_MANAGER_IGNORE_REGIONAL:-0}" != 1 ] || return 0
+    regional_mode=$(uci -q get dns-manager.global.dnscrypt_regional_mode || :)
+    case "$regional_mode" in
+        yandex) regional_ips='77.88.8.8 77.88.8.1' ;;
+        isp) regional_ips=$(uci -q get dns-manager.global.dnscrypt_regional_ips || :)
+             [ -n "$regional_ips" ] || return 1 ;;
+        *) return 0 ;;
+    esac
+    for zone in ru su xn--p1ai by kz avito.st wbcontent.net wbstatic.net ozonusercontent.com ae-pic-a1.aliexpress-media.com yastatic.net; do
+        for ip in $regional_ips; do
+            uci add_list "dhcp.@dnsmasq[0].server=/$zone/$ip" || return 1
+        done
+    done
+}
+
 service dnsmasq stop
 trap 'restore_dns || :; service dnsmasq start || :; exit 1' HUP INT TERM
 if [ "$mode" = encrypted ]; then
@@ -591,6 +607,7 @@ if [ "$mode" = encrypted ]; then
         uci set 'dhcp.@dnsmasq[0].cachesize=0' &&
         { uci -q delete 'dhcp.@dnsmasq[0].server' || :; } &&
         uci add_list "dhcp.@dnsmasq[0].server=127.0.0.1#$port" &&
+        add_regional_servers &&
         uci commit dhcp && service dnsmasq start
     }; then
         restore_dns || :
@@ -929,7 +946,10 @@ reset_worker() {
                 # even if disabling the proxy service fails afterward.
                 if rm -f "$STATE_FILE" &&
                    sh "$HELPERS/dns-manager-engine-services.sh" quiesce dnscrypt-proxy2 >> "$RUNTIME_DIR/dnscrypt-reset.log" 2>&1; then
-                    rc=0
+                    uci -q delete dns-manager.global.dnscrypt_regional_mode || :
+                    uci -q delete dns-manager.global.dnscrypt_regional_ips || :
+                    if uci commit dns-manager; then rc=0; fi
+                    /etc/init.d/dns-manager-regional restart >/dev/null 2>&1 || :
                 fi
             fi
             release_mutation_lock
@@ -987,6 +1007,81 @@ diagnostic() {
     json_dump
 }
 
+
+# The regional routes are dnsmasq rules; the encrypted pool remains unchanged.
+regional_worker() {
+    requested=$1
+    refresh=${2:-0}
+    rc=1
+    mkdir -p "$RUNTIME_DIR" || return 1
+    src=$(mktemp "$RUNTIME_DIR/dnscrypt-regional.XXXXXX") || return 1
+    if ! sed '/^case "${1:-}" in$/,$d' "$MANAGER" > "$src" || ! . "$src"; then rm -f "$src"; return 1; fi
+    rm -f "$src"
+    preflight_readonly >/dev/null 2>&1 && init_dirs >/dev/null 2>&1 && load_config >/dev/null 2>&1 && acquire_mutation_lock || return 1
+    old_mode=$(uci -q get dns-manager.global.dnscrypt_regional_mode || :)
+    old_ips=$(uci -q get dns-manager.global.dnscrypt_regional_ips || :)
+    if ! engine_selected || ! "$DNSCRYPT_INIT" running >/dev/null 2>&1; then
+        echo 'DNSCrypt не запущен.'
+    else
+        case "$requested" in 0) mode=doh;; 2) mode=yandex;; 3) mode=isp;; refresh) mode=$old_mode;; *) mode=invalid;; esac
+        ips=''
+        [ "$mode" != isp ] || ips=$(regional_provider_addresses | tr '\n' ' ' | sed 's/ *$//')
+        if [ "$mode" = isp ] && [ -z "$ips" ]; then
+            if [ "$refresh" = 1 ]; then release_mutation_lock; return 0; fi
+            echo 'Провайдер не предоставил DNS-адреса.'
+        elif [ "$mode" = invalid ] || { [ "$refresh" = 1 ] && [ "$mode" != isp ]; }; then
+            [ "$refresh" != 1 ] || rc=0
+        elif [ "$refresh" = 1 ] && [ "$ips" = "$old_ips" ]; then
+            rc=0
+        elif uci -q get dns-manager.global >/dev/null 2>&1 &&
+             uci set "dns-manager.global.dnscrypt_regional_mode=$mode" &&
+             uci set "dns-manager.global.dnscrypt_regional_ips=$ips" && uci commit dns-manager &&
+             sh "$HELPERS/dns-manager-dnscrypt-dnsmasq.sh" 5053; then
+            rc=0
+            echo 'Настройка регионального DNS применена.'
+        else
+            echo 'Не удалось применить региональный DNS. Восстанавливаю предыдущую настройку.'
+            uci set "dns-manager.global.dnscrypt_regional_mode=$old_mode" || :
+            uci set "dns-manager.global.dnscrypt_regional_ips=$old_ips" || :
+            uci commit dns-manager || :
+            sh "$HELPERS/dns-manager-dnscrypt-dnsmasq.sh" 5053 || :
+        fi
+    fi
+    release_mutation_lock
+    [ "$refresh" = 1 ] || /etc/init.d/dns-manager-regional restart >/dev/null 2>&1 || :
+    return "$rc"
+}
+
+regional_job() {
+    enabled=$1
+    printf 'pid=%s\n' "$$" >> "$JOB_DIR/regional/state"
+    token=$(awk '{print $22}' "/proc/$$/stat" 2>/dev/null || :)
+    [ -z "$token" ] || printf 'pid_start=%s\n' "$token" >> "$JOB_DIR/regional/state"
+    exec >> "$JOB_DIR/regional/output" 2>&1 </dev/null
+    if regional_worker "$enabled"; then result=ok; status=done; else result=fail; status=failed; fi
+    printf 'result=%s\nstatus=%s\nfinished=%s\n' "$result" "$status" "$(date +%s)" >> "$JOB_DIR/regional/state"
+}
+
+regional_start() {
+    input=$(cat)
+    enabled=$(printf '%s' "$input" | jsonfilter -e '@.enabled' 2>/dev/null || :)
+    case "$enabled" in 0|2|3) ;; *) error 'Неверный региональный режим'; return;; esac
+    mkdir -p "$JOB_DIR/regional" "$RUNTIME_DIR" || { error 'Не удалось подготовить задачу'; return; }
+    exec 9>"$RUNTIME_DIR/dnscrypt-regional-start.lock" || return 1
+    flock -n 9 || { error 'Настройка уже запускается'; return; }
+    reply=$(ubus -t 5 call service list '{"name":"dns-manager-dnscrypt-regional"}' 2>/dev/null) || { error 'Служба задач недоступна'; return; }
+    if printf '%s' "$reply" | grep -q '"running"[[:space:]]*:[[:space:]]*true'; then error 'Настройка уже применяется'; return; fi
+    ubus -t 5 call service delete '{"name":"dns-manager-dnscrypt-regional"}' >/dev/null 2>&1 || :
+    printf 'status=running\nstarted=%s\nmode=regional\nenabled=%s\n' "$(date +%s)" "$enabled" > "$JOB_DIR/regional/state"
+    : > "$JOB_DIR/regional/output"
+    request="{\"name\":\"dns-manager-dnscrypt-regional\",\"instances\":{\"main\":{\"command\":[\"/bin/sh\",\"/usr/lib/dns-manager-luci/backend-dnscrypt.sh\",\"regional_worker\",\"$enabled\"]}}}"
+    if ! ubus -t 5 call service set "$request" >/dev/null 2>&1; then
+        printf 'result=fail\nstatus=failed\nfinished=%s\n' "$(date +%s)" >> "$JOB_DIR/regional/state"
+        error 'Не удалось запустить изменение'; return
+    fi
+    printf '{"ok":true,"job":"regional"}\n'
+}
+
 status_extra() {
     method=$1
     input=$(cat)
@@ -1001,6 +1096,10 @@ status_extra() {
     profile=$(sed -n 's/^profile=//p' "$STATE_FILE" 2>/dev/null | head -n1)
     valid_profile "$profile" || profile=none
     json_add_string dnscrypt_profile "$profile"
+    regional_mode=$(uci -q get dns-manager.global.dnscrypt_regional_mode || :)
+    case "$regional_mode" in yandex|isp) ;; *) regional_mode=doh;; esac
+    json_add_string dnscrypt_regional_mode "$regional_mode"
+    json_add_string dnscrypt_regional_ips "$(uci -q get dns-manager.global.dnscrypt_regional_ips || :)"
     json_add_array dnscrypt_servers
     if [ -r "$STATE_FILE" ]; then
         while IFS='|' read -r id url; do
@@ -1019,10 +1118,13 @@ status_extra() {
 case "${1:-}" in
     worker) profile_worker "${2:-}" ;;
     reset_worker) reset_worker ;;
+    regional_worker) regional_job "${2:-}" ;;
+    refresh_regional) regional_worker refresh 1 ;;
     list) exec "$LEGACY" list ;;
     call)
         case "${2:-}" in
             set_profile) profile_start ;;
+            set_regional) regional_start ;;
             reset_dns) reset_start ;;
             switch_engine) switch_start ;;
             dnscrypt_test|dnscrypt_log) diagnostic "$2" ;;
@@ -1225,7 +1327,7 @@ if [ "$target" = dnscrypt-proxy2 ]; then
     bootstrap=$(printf '%s' "$BOOTSTRAP_DNS" | tr ',' '\n' | awk 'NF {if(n++) printf ","; printf "%s", $0; if(n==3) exit}')
     printf '%s\n' 'https://cloudflare-dns.com/dns-query' 'https://dns.google/dns-query' | sh "$helpers/dns-manager-dnscrypt-pool-apply.sh" 5053 "$bootstrap" || exit 1
     "$init_dir/dnscrypt-proxy" enable || exit 1
-    sh "$helpers/dns-manager-dnscrypt-dnsmasq.sh" 5053 || exit 1
+    DNS_MANAGER_IGNORE_REGIONAL=1 sh "$helpers/dns-manager-dnscrypt-dnsmasq.sh" 5053 || exit 1
     state_tmp=$(mktemp "$config_dir/.dnscrypt-state.XXXXXX") || exit 1
     if ! { printf '%s\n' 'profile=none' 'server=cloudflare_clean|https://cloudflare-dns.com/dns-query' 'server=google_clean|https://dns.google/dns-query' > "$state_tmp" && chmod 600 "$state_tmp" && mv -f "$state_tmp" "$config_dir/dnscrypt-profile.state"; }; then
         rm -f "$state_tmp"; exit 1
@@ -1245,10 +1347,13 @@ if [ ! -f "$engine_uci" ]; then (umask 077; : > "$engine_uci") || exit 1; fi
 pending=$(uci -q changes dns-manager 2>/dev/null || true)
 [ -z "$pending" ] || { echo 'Есть несохранённые изменения UCI: dns-manager'; exit 1; }
 uci -q get dns-manager.global >/dev/null 2>&1 || uci set dns-manager.global=manager
+uci -q delete dns-manager.global.dnscrypt_regional_mode || :
+uci -q delete dns-manager.global.dnscrypt_regional_ips || :
 uci set "dns-manager.global.active_engine=$target" || exit 1
 uci commit dns-manager || exit 1
 tmp=$(mktemp "$config_dir/.dnscrypt-engine.XXXXXX") || exit 1
 printf '%s\n' "$target" > "$tmp" && chmod 600 "$tmp" && mv -f "$tmp" "$engine_file" || { rm -f "$tmp"; exit 1; }
+[ ! -x "$init_dir/dns-manager-regional" ] || "$init_dir/dns-manager-regional" restart >/dev/null 2>&1 || :
 echo 'Движок переключён. Выберите DNS-профиль.'
 success=1
 EOF_DNSCRYPT_ASSET_11
@@ -1312,8 +1417,13 @@ install_files() {
 #!/bin/sh
 # DNS_MANAGER_REGIONAL_HOOK=1
 case "${ACTION:-}" in ifup|ifupdate) ;; *) exit 0;; esac
-grep -q "^REGIONAL_MODE='isp'$" /etc/dns-manager/config/manager.conf 2>/dev/null || exit 0
-( sleep 3; DNS_MANAGER_NO_UPDATE=1 /usr/bin/dns-manager __regional-refresh >/dev/null 2>&1 ) </dev/null >/dev/null 2>&1 &
+if [ "$(uci -q get dns-manager.global.active_engine)" = dnscrypt-proxy2 ]; then
+    [ "$(uci -q get dns-manager.global.dnscrypt_regional_mode)" = isp ] || exit 0
+    ( sleep 3; /usr/lib/dns-manager-luci/backend-dnscrypt.sh refresh_regional >/dev/null 2>&1 ) </dev/null >/dev/null 2>&1 &
+else
+    grep -q "^REGIONAL_MODE='isp'$" /etc/dns-manager/config/manager.conf 2>/dev/null || exit 0
+    ( sleep 3; DNS_MANAGER_NO_UPDATE=1 /usr/bin/dns-manager __regional-refresh >/dev/null 2>&1 ) </dev/null >/dev/null 2>&1 &
+fi
 EOF_REGIONAL_HOOK
     chmod 0755 "$_rh.tmp.$$" && mv -f "$_rh.tmp.$$" "$_rh" || { rm -f "$_rh.tmp.$$"; return 1; }
 
@@ -1328,12 +1438,20 @@ EOF_REGIONAL_HOOK
     cat > /usr/lib/dns-manager-luci/regional-watch.sh <<'EOF_REGIONAL_WATCH'
 #!/bin/sh
 _last=''
-while grep -q "^REGIONAL_MODE='isp'$" /etc/dns-manager/config/manager.conf 2>/dev/null; do
+while :; do
+    if [ "$(uci -q get dns-manager.global.active_engine)" = dnscrypt-proxy2 ]; then
+        [ "$(uci -q get dns-manager.global.dnscrypt_regional_mode)" = isp ] || break
+        _backend=dnscrypt
+    else
+        grep -q "^REGIONAL_MODE='isp'$" /etc/dns-manager/config/manager.conf 2>/dev/null || break
+        _backend=https
+    fi
     _file=/tmp/resolv.conf.d/resolv.conf.auto
     [ -s "$_file" ] || _file=/tmp/resolv.conf.auto
     _current="$(cat "$_file" 2>/dev/null || true)"
     if [ -n "$_current" ] && [ "$_current" != "$_last" ]; then
-        if DNS_MANAGER_NO_UPDATE=1 /usr/bin/dns-manager __regional-refresh >/dev/null 2>&1; then
+        if { [ "$_backend" = dnscrypt ] && /usr/lib/dns-manager-luci/backend-dnscrypt.sh refresh_regional >/dev/null 2>&1; } ||
+           { [ "$_backend" = https ] && DNS_MANAGER_NO_UPDATE=1 /usr/bin/dns-manager __regional-refresh >/dev/null 2>&1; }; then
             _last="$_current"
         fi
     fi
@@ -1347,7 +1465,11 @@ USE_PROCD=1
 START=99
 STOP=10
 start_service() {
-    grep -q "^REGIONAL_MODE='isp'$" /etc/dns-manager/config/manager.conf 2>/dev/null || return 0
+    if [ "$(uci -q get dns-manager.global.active_engine)" = dnscrypt-proxy2 ]; then
+        [ "$(uci -q get dns-manager.global.dnscrypt_regional_mode)" = isp ] || return 0
+    else
+        grep -q "^REGIONAL_MODE='isp'$" /etc/dns-manager/config/manager.conf 2>/dev/null || return 0
+    fi
     procd_open_instance
     procd_set_param command /bin/sh /usr/lib/dns-manager-luci/regional-watch.sh
     procd_set_param respawn 3600 5 5
@@ -6971,16 +7093,21 @@ function renderProfiles(root,st){
     E('div',{'class':'dm-mini'},'Профиль определяет схему выбора DNS и используется сейчас.')
   ];
   if(currentId==='dnssec')pch.push(E('div',{'class':'dm-hint'},'DNSSEC проверяется выбранными серверами; фильтрация может различаться.'+(st.dnscrypt_engine==='dnscrypt-proxy2'?'':' Региональный DNS, Steer и привязки устройств работают по своим правилам.')));
-  if(st.dnscrypt_engine==='dnscrypt-proxy2'){
-    pch.push(E('div',{'class':'dm-hint'},'Региональный DNS и привязки устройств в этом режиме пока недоступны.'));
-  }else{
+  if(st.dnscrypt_engine==='dnscrypt-proxy2')pch.push(E('div',{'class':'dm-hint'},'Привязки устройств в этом режиме недоступны.'));
   var regionalSlot=(st.slots||[]).filter(function(s){return String(s.slot)==='RU';})[0]||{};
-  var regionalMode=String(st.regional_mode|| (regionalSlot.id?'legacy':'doh'));
-  var hasGeneral=(st.slots||[]).some(function(s){return String(s.slot)!=='RU'&&!!s.id;});
+  var regionalMode=String(st.dnscrypt_engine==='dnscrypt-proxy2'?(st.dnscrypt_regional_mode||'doh'):(st.regional_mode|| (regionalSlot.id?'legacy':'doh')));
+  var hasGeneral=st.dnscrypt_engine==='dnscrypt-proxy2'?Number(st.dnscrypt_running)===1:(st.slots||[]).some(function(s){return String(s.slot)!=='RU'&&!!s.id;});
   pch.push(E('div',{'class':'dm-row','style':'margin-top:14px'},[E('span',{'class':'dm-label'},'Российские сайты и сайты СНГ')]));
   pch.push(E('p',{'class':'dm-hint'},'DNS для .ru, .su, .рф, .by, .kz и отдельных ресурсов маркетплейсов и Яндекса. Смена профиля не меняет этот выбор.'));
   var regionalChoices=E('div',{'class':'dm-seg'});
-  [['doh','Через DoH',0],['yandex','Яндекс DNS',2],['isp','DNS провайдера',3]].forEach(function(choice){
+  var regionalOptions=[['doh','Через DoH',0],['yandex','Яндекс DNS',2],['isp','DNS провайдера',3]];
+  if(st.dnscrypt_engine==='dnscrypt-proxy2'){
+    var regionalSelect=E('select',{'class':'cbi-input-select'},regionalOptions.map(function(choice){return E('option',{'value':String(choice[2])},choice[1]);}));
+    regionalSelect.value=regionalMode==='yandex'?'2':regionalMode==='isp'?'3':'0';
+    regionalSelect.disabled=!!state.busy||!hasGeneral;
+    regionalChoices.appendChild(regionalSelect);
+    regionalChoices.appendChild(btn('Применить','cbi-button-action',function(){setRegional(Number(regionalSelect.value),root);},{disabled:!!state.busy||!hasGeneral}));
+  }else regionalOptions.forEach(function(choice){
     regionalChoices.appendChild(btn(choice[1],regionalMode===choice[0]?'active cbi-button':'cbi-button',function(){setRegional(choice[2],root);},{disabled:!!state.busy||!hasGeneral}));
   });
   if(regionalMode==='legacy')regionalChoices.appendChild(btn('Применить повторно','cbi-button',function(){setRegional(1,root);},{disabled:!!state.busy||!hasGeneral}));
@@ -6989,11 +7116,10 @@ function renderProfiles(root,st){
     ? 'Сейчас выбран региональный DoH: '+String(regionalSlot.name||regionalSlot.id)+'. Он сохранён после обновления; новый режим включится только после выбора.'
     : regionalMode==='doh' ? 'Все сайты используют общие DoH-серверы.'
     : regionalMode==='yandex' ? 'Указанные домены используют Яндекс DNS (77.88.8.8, 77.88.8.1) напрямую, без шифрования.'
-    : 'Указанные домены используют DNS провайдера напрямую, без шифрования: '+String(st.regional_isp_ips||'—')+'.'));
+    : 'Указанные домены используют DNS провайдера напрямую, без шифрования: '+String((st.dnscrypt_engine==='dnscrypt-proxy2'?st.dnscrypt_regional_ips:st.regional_isp_ips)||'—')+'.'));
   if(Number(st.steer_dns_active)===1)pch.push(E('p',{'class':'dm-hint'},'Правила DNS в Steer могут обрабатывать отдельные запросы до dnsmasq.'));
   if(!hasGeneral)pch.push(E('div',{'class':'dm-inline-msg info'},'Сначала примените основной DNS-профиль.'));
   if(state.regionalNotice)pch.push(E('div',{'class':'dm-inline-msg '+(state.regionalNoticeType||'info')},state.regionalNotice));
-  }
 
   var pj=String(st.profile_job_status||'').toLowerCase();
   var pp=String(st.profile_job_profile||'');
