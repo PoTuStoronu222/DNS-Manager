@@ -5285,7 +5285,7 @@ uninstall_manager_impl() {
 
     # If the installation marker is missing, do not silently leave a LuCI
     # interface behind while deleting its backend.
-    if luci_component_files_present && [ "$(sed -n 's/^installed=//p' "$LUCI_STATE_FILE" 2>/dev/null | head -n1)" != 1; then
+    if luci_component_files_present && [ "$(sed -n 's/^installed=//p' "$LUCI_STATE_FILE" 2>/dev/null | head -n1)" != 1 ]; then
         release_mutation_lock
         err_msg "Не удалось подтвердить принадлежность файлов LuCI DNS Manager. Удаление остановлено."
         return 1
