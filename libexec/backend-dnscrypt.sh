@@ -402,6 +402,29 @@ status_extra() {
     running=0
     "$DNSCRYPT_INIT" running >/dev/null 2>&1 && running=1
     json_add_int dnscrypt_running "$running"
+    # Monitoring is optional; an unavailable endpoint must not look like zero activity.
+    if [ "$method" = status ] && [ "$running" -eq 1 ] && command -v curl >/dev/null 2>&1; then
+        metrics=$(curl --noproxy '*' --silent --fail --max-time 1 http://127.0.0.1:9100/api/metrics 2>/dev/null || :)
+        if [ -n "$metrics" ]; then
+            queries=$(printf '%s' "$metrics" | jsonfilter -e '@.total_queries' 2>/dev/null || :)
+            cache_enabled=$(printf '%s' "$metrics" | jsonfilter -e '@.cache_stats.enabled' 2>/dev/null || :)
+            capacity=$(printf '%s' "$metrics" | jsonfilter -e '@.cache_stats.capacity' 2>/dev/null || :)
+            entries=$(printf '%s' "$metrics" | jsonfilter -e '@.cache_stats.entries' 2>/dev/null || :)
+            average=$(printf '%s' "$metrics" | jsonfilter -e '@.avg_response_time' 2>/dev/null || :)
+            case "$queries" in ''|*[!0-9]*) queries= ;; esac
+            if [ -n "$queries" ]; then
+                json_add_int dnscrypt_monitoring_available 1
+                case "$capacity:$entries" in *[!0-9:]*|:*|*:) ;; *)
+                    if [ "$cache_enabled" = true ] && [ "$capacity" -gt 0 ] 2>/dev/null; then
+                        json_add_string dnscrypt_cache_entries "$entries"
+                    fi ;;
+                esac
+                case "$average" in ''|*[!0-9.]*) ;; *)
+                    [ "$queries" -eq 0 ] 2>/dev/null || json_add_string dnscrypt_avg_response_ms "$average" ;;
+                esac
+            fi
+        fi
+    fi
     profile=$(sed -n 's/^profile=//p' "$STATE_FILE" 2>/dev/null | head -n1)
     valid_profile "$profile" || profile=none
     json_add_string dnscrypt_profile "$profile"
