@@ -19,6 +19,7 @@ token=$(awk '{print $22}' "/proc/$$/stat" 2>/dev/null || true)
 locked=0
 changed=0
 success=0
+install_error=''
 cleanup() {
     trap - EXIT HUP INT TERM
     if [ "$success" != 1 ]; then
@@ -30,6 +31,7 @@ cleanup() {
             fi
             rm -f "$config_dir/dnscrypt-profile.state" || true
         fi
+        [ -z "$install_error" ] || echo "$install_error"
         printf 'result=fail\nstatus=failed\n' >> "$job_dir/state"
     else
         printf 'result=ok\nstatus=done\n' >> "$job_dir/state"
@@ -92,9 +94,19 @@ if [ ! -x "$executable" ]; then
         uci set https-dns-proxy.config.dnsmasq_config_update=-
         uci commit https-dns-proxy
     fi
-    if command -v apk >/dev/null 2>&1; then apk update && apk add "$package" || exit 1
-    elif command -v opkg >/dev/null 2>&1; then opkg update && opkg install "$package" || exit 1
-    else echo 'Менеджер пакетов не найден.'; exit 1; fi
+    package_was_missing=0
+    package_is_installed "$package" || package_was_missing=1
+    if [ "$PKG_MGR" = apk ]; then
+        apk update && apk add "$package" || install_error="Не удалось установить пакет $package. Проверьте интернет и репозитории."
+    elif [ "$PKG_MGR" = opkg ]; then
+        opkg update && opkg install "$package" || install_error="Не удалось установить пакет $package. Проверьте интернет и репозитории."
+    else
+        install_error='Менеджер пакетов не найден.'
+    fi
+    [ -z "$install_error" ] || exit 1
+    if [ "$package_was_missing" = 1 ]; then
+        touch "$PACKAGE_OWNERSHIP" && { grep -Fqx -- "$package" "$PACKAGE_OWNERSHIP" || printf '%s\n' "$package" >> "$PACKAGE_OWNERSHIP"; } || echo 'Не удалось записать установленный пакет.'
+    fi
     sh "$helpers/dns-manager-engine-services.sh" quiesce "$target" || exit 1
 fi
 if [ "$target" = dnscrypt-proxy2 ]; then

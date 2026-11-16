@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager full installer and LuCI companion
-# Version: 2.35
+# Version: 2.36
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.35"
+VERSION="2.36"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -983,11 +983,26 @@ reset_start() {
 diagnostic() {
     method=$1
     cat >/dev/null
-    engine_selected || { error 'Выбран другой DNS-движок'; return; }
+    if [ "$method" != system_dns_test ]; then
+        engine_selected || { error 'Выбран другой DNS-движок'; return; }
+    fi
     . /usr/share/libubox/jshn.sh
     json_init
-    if [ "$method" = dnscrypt_test ]; then
-        output=$(timeout 12 nslookup -port=5053 ya.ru 127.0.0.1 2>&1); rc=$?
+    if [ "$method" = system_dns_test ]; then
+        output=$(timeout 8 nslookup ya.ru 127.0.0.1 2>&1); rc=$?
+        if [ "$rc" -eq 0 ]; then output="Системный DNS работает нормально.
+$output"; json_add_boolean ok 1
+        else output="Системный DNS не ответил.
+$output"; json_add_boolean ok 0; fi
+    elif [ "$method" = dnscrypt_test ]; then
+        output=$(timeout 8 nslookup -port=5053 ya.ru 127.0.0.1 2>&1); rc=$?
+        if [ "$rc" -eq 0 ]; then
+            system_output=$(timeout 8 nslookup ya.ru 127.0.0.1 2>&1); rc=$?
+            output="DNSCrypt (порт 5053):
+$output
+dnsmasq (порт 53):
+$system_output"
+        fi
         if [ "$rc" -eq 0 ]; then json_add_boolean ok 1; else json_add_boolean ok 0; fi
     else
         output=$(logread -e dnscrypt-proxy 2>&1 | tail -n 80)
@@ -1114,7 +1129,7 @@ case "${1:-}" in
             set_regional) regional_start ;;
             reset_dns) reset_start ;;
             switch_engine) switch_start ;;
-            dnscrypt_test|dnscrypt_log) diagnostic "$2" ;;
+            dnscrypt_test|dnscrypt_log|system_dns_test) diagnostic "$2" ;;
             status|doh_status|network_status) status_extra "$2" ;;
             runtime|time_status|page_meta|catalog|lan_devices|job|log|update_check|uninstall_status)
                 exec "$LEGACY" "$@" ;;
@@ -1224,6 +1239,7 @@ token=$(awk '{print $22}' "/proc/$$/stat" 2>/dev/null || true)
 locked=0
 changed=0
 success=0
+install_error=''
 cleanup() {
     trap - EXIT HUP INT TERM
     if [ "$success" != 1 ]; then
@@ -1235,6 +1251,7 @@ cleanup() {
             fi
             rm -f "$config_dir/dnscrypt-profile.state" || true
         fi
+        [ -z "$install_error" ] || echo "$install_error"
         printf 'result=fail\nstatus=failed\n' >> "$job_dir/state"
     else
         printf 'result=ok\nstatus=done\n' >> "$job_dir/state"
@@ -1297,9 +1314,19 @@ if [ ! -x "$executable" ]; then
         uci set https-dns-proxy.config.dnsmasq_config_update=-
         uci commit https-dns-proxy
     fi
-    if command -v apk >/dev/null 2>&1; then apk update && apk add "$package" || exit 1
-    elif command -v opkg >/dev/null 2>&1; then opkg update && opkg install "$package" || exit 1
-    else echo 'Менеджер пакетов не найден.'; exit 1; fi
+    package_was_missing=0
+    package_is_installed "$package" || package_was_missing=1
+    if [ "$PKG_MGR" = apk ]; then
+        apk update && apk add "$package" || install_error="Не удалось установить пакет $package. Проверьте интернет и репозитории."
+    elif [ "$PKG_MGR" = opkg ]; then
+        opkg update && opkg install "$package" || install_error="Не удалось установить пакет $package. Проверьте интернет и репозитории."
+    else
+        install_error='Менеджер пакетов не найден.'
+    fi
+    [ -z "$install_error" ] || exit 1
+    if [ "$package_was_missing" = 1 ]; then
+        touch "$PACKAGE_OWNERSHIP" && { grep -Fqx -- "$package" "$PACKAGE_OWNERSHIP" || printf '%s\n' "$package" >> "$PACKAGE_OWNERSHIP"; } || echo 'Не удалось записать установленный пакет.'
+    fi
     sh "$helpers/dns-manager-engine-services.sh" quiesce "$target" || exit 1
 fi
 if [ "$target" = dnscrypt-proxy2 ]; then
@@ -2040,7 +2067,7 @@ EOF_MENU
     "description": "DNS Manager native LuCI interface",
     "read": {
       "ubus": {
-        "dns_manager": [ "dnscrypt_test", "dnscrypt_log", "status", "runtime", "doh_status", "network_status", "lan_devices", "time_status", "page_meta", "catalog", "job", "log", "update_check", "uninstall_status" ]
+        "dns_manager": [ "dnscrypt_test", "dnscrypt_log", "system_dns_test", "status", "runtime", "doh_status", "network_status", "lan_devices", "time_status", "page_meta", "catalog", "job", "log", "update_check", "uninstall_status" ]
       }
     },
     "write": {
@@ -2082,7 +2109,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.35"
+SELF_VERSION="2.36"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -3687,6 +3714,7 @@ doh_status_json() {
     fi
 
     printf '{"ok":true'; page_header_json
+    if command -v https-dns-proxy >/dev/null 2>&1; then printf ',"engine_installed":1'; else printf ',"engine_installed":0'; fi
     printf ',"doh_total":%s,"doh":' "$_doh_total"; json_quote "$([ "$_doh_running" -gt 0 ] && printf yes || printf no)"
     printf ',"force":'; json_quote "$_force"
     printf ',"force_manager":%s,"force_external":%s,"force_owner":' "$_force_manager" "$_force_external"; json_quote "$_force_owner"
@@ -3955,6 +3983,7 @@ status_json() {
     fi
 
     printf '{"ok":true,"manager_version":'; json_quote "$_mv"
+    if command -v https-dns-proxy >/dev/null 2>&1; then printf ',"engine_installed":1'; else printf ',"engine_installed":0'; fi
     printf ',"luci_version":'; json_quote "$_luciv"; printf ',"luci_latest_version":'; json_quote "$_luci_latest"
     printf ',"luci_update_available":%s,"luci_update_checked":%s,"luci_update_checked_at":%s' "$_luci_avail" "$_luci_checked" "$_luci_checked_at"
     printf ',"luci_update_error":'; json_quote "$_luci_error"
@@ -5623,7 +5652,7 @@ test_json() { case "${RPC_METHOD:-}" in test_all) job_start_test_all;; test_curr
 case "${1:-}" in
     worker) background_worker "$2";;
     list)
-        printf '{"status":{},"runtime":{},"doh_status":{},"network_status":{},"lan_devices":{},"set_device_dns":{"mac":"String","slots":"String"},"set_cache":{"total":0,"ttl":0},"time_status":{},"page_meta":{},"catalog":{"category":"String","offset":0,"limit":0,"only_ok":0},"update_check":{"force":0},"update":{},"update_manager":{},"update_hdp":{},"update_catalog":{},"update_all":{},"update_background":{},"test_combined":{},"switch_engine":{"target_engine":"String"},"dnscrypt_test":{},"dnscrypt_log":{},"set_profile":{"profile":"String"},"set_regional":{"enabled":0},"reset_dns":{},"uninstall":{},"uninstall_status":{},"set_slot":{"slot":"String","id":"String","expected":"String"},"set_slot_domains":{"slot":"String","domains":"String"},"add_custom_dns":{"name":"String","url":"String"},"delete_custom_dns":{"id":"String"},"set_setting":{"name":"String","enabled":0},"set_bootstrap":{"mode":"String","addresses":"String","preset_ids":"String","extra_addresses":"String"},"set_watchdog_setting":{"name":"String","value":0},"set_watchdog_settings":{"interval":0,"threshold":0,"repair_cooldown":0,"max_restarts":0,"guard_interval":0},"set_ntp":{"preset":"String"},"set_test_age":{"category":"String","hours":0},"test_all":{},"test_current":{},"test_one":{"id":"String"},"test_system":{},"job":{"id":"String"},"log":{"lines":0}}\n'
+        printf '{"status":{},"runtime":{},"doh_status":{},"network_status":{},"lan_devices":{},"set_device_dns":{"mac":"String","slots":"String"},"set_cache":{"total":0,"ttl":0},"time_status":{},"page_meta":{},"catalog":{"category":"String","offset":0,"limit":0,"only_ok":0},"update_check":{"force":0},"update":{},"update_manager":{},"update_hdp":{},"update_catalog":{},"update_all":{},"update_background":{},"test_combined":{},"switch_engine":{"target_engine":"String"},"dnscrypt_test":{},"dnscrypt_log":{},"system_dns_test":{},"set_profile":{"profile":"String"},"set_regional":{"enabled":0},"reset_dns":{},"uninstall":{},"uninstall_status":{},"set_slot":{"slot":"String","id":"String","expected":"String"},"set_slot_domains":{"slot":"String","domains":"String"},"add_custom_dns":{"name":"String","url":"String"},"delete_custom_dns":{"id":"String"},"set_setting":{"name":"String","enabled":0},"set_bootstrap":{"mode":"String","addresses":"String","preset_ids":"String","extra_addresses":"String"},"set_watchdog_setting":{"name":"String","value":0},"set_watchdog_settings":{"interval":0,"threshold":0,"repair_cooldown":0,"max_restarts":0,"guard_interval":0},"set_ntp":{"preset":"String"},"set_test_age":{"category":"String","hours":0},"test_all":{},"test_current":{},"test_one":{"id":"String"},"test_system":{},"job":{"id":"String"},"log":{"lines":0}}\n'
         ;;
     call)
         case "${2:-}" in
@@ -5666,7 +5695,7 @@ EOF_RPC
 #!/bin/sh
 # DNS Manager LuCI rpcd plugin
 # Fail closed if the selected engine has no backend; do not run the other one.
-if [ "${1:-}" = call ] && [ "${2:-}" = switch_engine ]; then
+if [ "${1:-}" = call ] && { [ "${2:-}" = switch_engine ] || [ "${2:-}" = system_dns_test ]; }; then
     exec /usr/lib/dns-manager-luci/backend-dnscrypt.sh "$@"
 fi
 ENGINE_FILE="/etc/dns-manager/config/dnscrypt-engine"
@@ -5699,7 +5728,7 @@ EOF_RPC_WRAPPER
 'require ui';
 'require session';
 
-// DNS Manager LuCI common module version: 2.35
+// DNS Manager LuCI common module version: 2.36
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -5737,6 +5766,7 @@ var callUpdateCatalog = dmRpc({ object:'dns_manager', method:'update_catalog', e
 var callProfile = dmRpc({ object:'dns_manager', method:'set_profile', params:['profile'], expect:{} });
 var callRegional = dmRpc({ object:'dns_manager', method:'set_regional', params:['enabled'], expect:{} });
 var callResetDns = dmRpc({ object:'dns_manager', method:'reset_dns', expect:{} });
+var callSystemDnsTest = dmRpc({ object:'dns_manager', method:'system_dns_test', expect:{} });
 var callDnscryptTest = dmRpc({ object:'dns_manager', method:'dnscrypt_test', expect:{} });
 var callDnscryptLog = dmRpc({ object:'dns_manager', method:'dnscrypt_log', expect:{} });
 var callSwitchEngine = dmRpc({ object:'dns_manager', method:'switch_engine', params:['target_engine'], expect:{} });
@@ -6560,7 +6590,7 @@ function renderBootstrap(root,st){
 }
 function renderDoH(root,st){
   var e=root.querySelector('#dm-doh');if(!e)return;e.innerHTML='';
-  var engine=st.dnscrypt_engine==='dnscrypt-proxy2'?'dnscrypt-proxy2':'https-dns-proxy';
+  var engine=st.dnscrypt_engine==='dnscrypt-proxy2'?'dnscrypt-proxy2':(Number(st.engine_installed)===0?'none':'https-dns-proxy');
   e.appendChild(card('DNS-движок',[
     E('p',{'class':'dm-hint'},'При смене движка профили, слоты и привязки сбрасываются. После переключения выберите DNS-профиль.'),
     E('div',{'class':'dm-seg'},[
@@ -6587,7 +6617,7 @@ function renderDoH(root,st){
   var rr=resolverRows(st,root), rows=rr[0], count=rr[1];
   var ch=[];
   ch.push(E('p',{'class':'dm-hint'},'DNS Manager настраивает DoH для DNS роутера. При работе Steer для его правил могут использоваться другие DNS-серверы.'));
-  ch.push(row('Пакет',st.doh_total>0?badge('dm-ok','установлен'):badge('dm-off','не установлен')));
+  ch.push(row('Пакет',Number(st.engine_installed)!==0?badge('dm-ok','установлен'):badge('dm-off','не установлен')));
   ch.push(row('Служба',st.doh==='yes'?badge('dm-ok','включена'):st.doh_total>0?badge('dm-bad','остановлена'):badge('dm-off','не установлена')));
   if(count){
     ch.push(E('div',{'class':'dm-row'},[E('span',{'class':'dm-label'},count>1?'Сейчас используются':'Сейчас используется')]));
@@ -7081,7 +7111,7 @@ function renderProfiles(root,st){
     select.addEventListener('change',function(){state.dnscryptProfileChoice=select.value;});
     g.appendChild(select);
     g.appendChild(btn('Применить профиль','cbi-button-action',function(){applyProfile(select.value,root);},{disabled:!!state.busy||!!state.jobRunning}));
-  }else PROFILE.forEach(function(p){g.appendChild(btn(p[1],currentId===p[0]?'active cbi-button':'cbi-button',function(){applyProfile(p[0],root);},{disabled:!!state.busy}));});
+  }else PROFILE.forEach(function(p){g.appendChild(btn(p[1],currentId===p[0]?'active cbi-button':'cbi-button',function(){applyProfile(p[0],root);},{disabled:!!state.busy||!!state.jobRunning||Number(st.engine_installed)===0}));});
   var current=activeProfileLabel(st);
   var pch=[
     row('Работает сейчас',badge('dm-ok',current)),
@@ -7938,13 +7968,13 @@ function saveRouteCache(key,st,aux){
     var entry=JSON.parse(JSON.stringify({ts:Date.now(),data:st,aux:aux}));
     window.dmRouteCache[key]=entry;
     if(typeof session!=='undefined'&&session.setLocalData)
-      session.setLocalData('dns-manager-route-2.35-'+key,entry);
+      session.setLocalData('dns-manager-route-2.36-'+key,entry);
   }catch(e){}
 }
 function routeCacheEntry(key){
   var entry=key&&window.dmRouteCache&&window.dmRouteCache[key];
   if(!entry&&key){
-    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.35-'+key);}catch(e){}
+    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.36-'+key);}catch(e){}
   }
   if(!entry||typeof entry.ts!=='number'||Date.now()-entry.ts<0||Date.now()-entry.ts>300000||!entry.data||entry.data.ok!==true)return null;
   return entry;
@@ -8585,7 +8615,12 @@ function testOne(id,root,origin,done){
 function testCurrent(root){
   if(state.jobRunning||state.busy)return;
   var targets=displayDnsRows(window.dmState||{}).filter(function(d){return d&&((d.slot&&d.id)||(!d.slot&&d.url&&d.port));});
-  if(!targets.length){state.currentTest={status:'FAILED',total:0};state.pageNotice.doh='Текущих DNS для проверки нет.';renderDoH(root,window.dmState||{});return;}
+  if(!targets.length){
+    state.busy=true;state.currentTest=null;state.pageNotice.doh='Проверяю системный DNS…';renderDoH(root,window.dmState||{});
+    return callSystemDnsTest().then(function(r){state.pageNotice.doh=(r&&r.output)||'Не удалось проверить системный DNS.';})
+      .catch(function(err){state.pageNotice.doh=withRpcError('Не удалось проверить системный DNS.',err);})
+      .then(function(){state.busy=false;renderDoH(root,window.dmState||{});});
+  }
   state.jobRunning=true;state.currentTest={status:'RUNNING'};state.pageNotice.doh='Запускаю проверку на роутере…';renderDoH(root,window.dmState||{});
   return backgroundRequest(callCombinedTest).then(function(r){
     if(r&&r.ok){watchBackground(root,'combined');return;}
@@ -8961,7 +8996,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 2.35
+// DNS Manager LuCI version: 2.36
 return view.extend({
   load: DM.load,
   render: DM.render,

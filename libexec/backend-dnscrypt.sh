@@ -237,11 +237,26 @@ reset_start() {
 diagnostic() {
     method=$1
     cat >/dev/null
-    engine_selected || { error 'Выбран другой DNS-движок'; return; }
+    if [ "$method" != system_dns_test ]; then
+        engine_selected || { error 'Выбран другой DNS-движок'; return; }
+    fi
     . /usr/share/libubox/jshn.sh
     json_init
-    if [ "$method" = dnscrypt_test ]; then
-        output=$(timeout 12 nslookup -port=5053 ya.ru 127.0.0.1 2>&1); rc=$?
+    if [ "$method" = system_dns_test ]; then
+        output=$(timeout 8 nslookup ya.ru 127.0.0.1 2>&1); rc=$?
+        if [ "$rc" -eq 0 ]; then output="Системный DNS работает нормально.
+$output"; json_add_boolean ok 1
+        else output="Системный DNS не ответил.
+$output"; json_add_boolean ok 0; fi
+    elif [ "$method" = dnscrypt_test ]; then
+        output=$(timeout 8 nslookup -port=5053 ya.ru 127.0.0.1 2>&1); rc=$?
+        if [ "$rc" -eq 0 ]; then
+            system_output=$(timeout 8 nslookup ya.ru 127.0.0.1 2>&1); rc=$?
+            output="DNSCrypt (порт 5053):
+$output
+dnsmasq (порт 53):
+$system_output"
+        fi
         if [ "$rc" -eq 0 ]; then json_add_boolean ok 1; else json_add_boolean ok 0; fi
     else
         output=$(logread -e dnscrypt-proxy 2>&1 | tail -n 80)
@@ -368,7 +383,7 @@ case "${1:-}" in
             set_regional) regional_start ;;
             reset_dns) reset_start ;;
             switch_engine) switch_start ;;
-            dnscrypt_test|dnscrypt_log) diagnostic "$2" ;;
+            dnscrypt_test|dnscrypt_log|system_dns_test) diagnostic "$2" ;;
             status|doh_status|network_status) status_extra "$2" ;;
             runtime|time_status|page_meta|catalog|lan_devices|job|log|update_check|uninstall_status)
                 exec "$LEGACY" "$@" ;;
