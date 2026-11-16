@@ -270,6 +270,9 @@ $system_output"
 В dnsmasq не настроена пересылка на 127.0.0.1#5053."
             fi
         fi
+        if [ "$rc" -ne 0 ] && ! ip -4 route get 8.8.8.8 >/dev/null 2>&1 && ! ip -6 route get 2606:4700:4700::1111 >/dev/null 2>&1; then
+            output='Ожидание подключения к сети.'; rc=0
+        fi
         if [ "$rc" -eq 0 ]; then json_add_boolean ok 1; else json_add_boolean ok 0; fi
     else
         output=$(logread -e dnscrypt-proxy 2>&1 | tail -n 80)
@@ -436,8 +439,8 @@ case "${1:-}" in
             switch_engine) switch_start ;;
             dnscrypt_test|system_dns_test) diagnostic_start "$2" ;;
             dnscrypt_log) diagnostic "$2" ;;
-            status|doh_status|network_status) status_extra "$2" ;;
-            runtime|time_status|page_meta|catalog|lan_devices|job|log|update_check|uninstall_status)
+            status|doh_status|network_status|time_status|log|update_check) status_extra "$2" ;;
+            runtime|page_meta|catalog|lan_devices|job|set_ntp|uninstall_status)
                 exec "$LEGACY" "$@" ;;
             *) error 'Действие пока недоступно для dnscrypt-proxy2' ;;
         esac ;;
