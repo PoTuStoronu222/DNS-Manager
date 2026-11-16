@@ -119,6 +119,16 @@ esac
     assert run('quiesce', 'dnscrypt-proxy2').returncode != 0
     assert run('start', 'dnscrypt-proxy2').returncode != 0
     (directory / 'ubus.invalid').unlink()
+    # An absent init script does not prove that its procd instance is gone.
+    missing = directory / 'https-dns-proxy'
+    saved = directory / 'https-dns-proxy.saved'
+    missing.rename(saved)
+    (directory / 'https-dns-proxy.running').touch()
+    assert run('quiesce', 'dnscrypt-proxy2').returncode != 0
+    assert run('start', 'dnscrypt-proxy2').returncode != 0
+    (directory / 'https-dns-proxy.running').unlink()
+    assert run('quiesce', 'dnscrypt-proxy2').returncode == 0
+    saved.rename(missing)
     (directory / 'fail-check').touch()
     assert run('start', 'dnscrypt-proxy2').returncode != 0
     assert not state('dnscrypt-proxy', 'enabled')
