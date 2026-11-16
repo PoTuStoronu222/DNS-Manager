@@ -9308,59 +9308,6 @@ done
 }
 # ==========================================
 # ==========================================
-main_menu() {
-while :; do
-    menu_header "DNS Manager $VERSION"
-    menu_item "[1]" "Настроить DNS"
-    menu_item "[2]" "Серверы точного времени"
-    menu_item "[3]" "Сетевой тюнинг"
-    menu_item "[4]" "Состояние и журнал"
-    menu_item "[5]" "Удалить DNS Manager"
-    _luci_state="$(check_module_state luci)"
-    if [ "$_luci_state" = 1 ]; then
-        if [ "${LUCI_UPDATE_AVAILABLE:-0}" = 1 ]; then
-            menu_item "[6]" "Обновить LuCI → ${LUCI_REMOTE_VERSION}"
-        else
-            menu_item "[6]" "Удалить Нативный интерфейс DNS Manager"
-        fi
-    else
-        case "$_luci_state" in
-            0) menu_item "[6]" "Установить Нативный интерфейс DNS Manager" ;;
-            2) menu_item "[6]" "Восстановить Нативный интерфейс DNS Manager" ;;
-            *) menu_item "[6]" "Нативный интерфейс DNS Manager" ;;
-        esac
-    fi
-    menu_back
-    menu_prompt
-    safe_read c
-    [ -z "$c" ] && { clear_screen; printf "${C_GREEN}DNS Manager завершён.${C_NC}\n"; exit 0; }
-    case "$c" in
-        1) prepare_dns_operation || { pause; continue; }; menu_dns ;;
-        2) prepare_dns_operation || { pause; continue; }; menu_ntp ;;
-        3) prepare_dns_operation || { pause; continue; }; menu_extras ;;
-        4) show_map ;;
-        5) uninstall_manager ;;
-        6)
-            _luci_state="$(check_module_state luci)"
-            if [ "$_luci_state" = 1 ] && [ "${LUCI_UPDATE_AVAILABLE:-0}" = 1 ]; then
-                luci_companion_update; _rc=$?
-                case "$_rc" in
-                    0) ok_msg "LuCI обновлена до версии ${LUCI_REMOTE_VERSION:-новой версии}." ;;
-                    2) info_msg "Новой версии LuCI нет." ;;
-                    *) err_msg "LuCI не удалось обновить." ;;
-                esac
-                pause
-            elif [ "$_luci_state" = 1 ]; then
-                setting_process luci "Удалить Нативный интерфейс DNS Manager" "Нативный интерфейс DNS Manager в LuCI." "$_luci_state"
-            else
-                setting_process luci "Нативный интерфейс DNS Manager" "Нативный интерфейс DNS Manager в LuCI." "$_luci_state"
-            fi
-            ;;
-        *) warn_msg "Неизвестный пункт."; pause ;;
-    esac
-done
-}
-# ==========================================
 expected_managed_slots() {
     _n=0
     for _s in 1 2 3 4 5 6 RU; do
@@ -9374,32 +9321,6 @@ expected_managed_slots() {
 
 
 
-# ==========================================
-# STARTUP UPDATE CHECK
-# ==========================================
-startup_update_check() {
-    # During the re-exec after a successful manager update, never start another
-    # network check. The new process only needs to continue normal startup.
-    if [ "${DNS_MANAGER_NO_UPDATE:-0}" = 1 ]; then
-        return 0
-    fi
-
-    # Only the DNS Manager backend checks itself during startup. LuCI/companion
-    # updates are checked explicitly from LuCI, not as a hidden second network
-    # request during every manager launch.
-    DNS_MANAGER_SCHEDULED_UPDATE=1 auto_update_manager || true
-    case "${AUTO_UPDATE_RESULT:-}" in
-        updated) info_msg "DNS Manager автоматически обновлён до версии $VERSION." ;;
-        failed)
-            if [ -n "${AUTO_UPDATE_REASON:-}" ]; then
-                log_msg "Проверка обновления DNS Manager не удалась: $AUTO_UPDATE_REASON"
-            else
-                log_msg "Проверка обновления DNS Manager не удалась."
-            fi
-            ;;
-    esac
-    return 0
-}
 # ==========================================
 # STARTUP REQUIRED FUNCTION CHECK
 # ==========================================
