@@ -28,6 +28,12 @@ sh tests/bootstrap-apply-test.sh || fail "bootstrap apply and rollback"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT INT TERM
 
+# Read the installer ACL as JSON so method order and formatting do not matter.
+awk '/EOF_ACL/ { if (capture) exit; capture=1; next } capture { print }' dns-manager-luci.sh > "$tmp/acl.json"
+acl_has_method() {
+    node -e 'const acl = require(process.argv[1]); const methods = acl["luci-app-dns-manager"]?.[process.argv[2]]?.ubus?.dns_manager; process.exit(Array.isArray(methods) && methods.includes(process.argv[3]) ? 0 : 1);' "$tmp/acl.json" "$1" "$2"
+}
+
 # The uninstall request starts a separate supervised process, so rpcd reload
 # cannot stop the removal. Exercise the RPC helper without touching OpenWrt.
 awk '/^uninstall_start_json\(\) \{/,/^run_action\(\) \{/' dns-manager-luci.sh | sed '$d' | sed -e "s|/var/run/dns-manager-uninstall|$tmp/uninstall-job|g" -e "s|/www/dns-manager-uninstall|$tmp/dns-manager-uninstall|g" > "$tmp/uninstall_start.sh"
@@ -94,7 +100,7 @@ grep -Fq "grep -q '[^1-6,[:space:]]'" "$tmp/device_dns_service.sh" || fail "devi
 grep -Fq 'DMD_NFT_TMP="$(mktemp "$DMD_NFT.tmp.XXXXXX"' dns-manager-luci.sh || fail "per-device nft snippet update does not use a unique temporary file"
 grep -Fq 'set_device_dns)' dns-manager-luci.sh || fail "set-device-DNS RPC dispatch missing"
 grep -Fq '"set_device_dns":{"mac":"String","slots":"String"}' dns-manager-luci.sh || fail "set-device-DNS RPC schema missing"
-grep -Fq '"dns_manager": [ "set_profile", "set_regional", "reset_dns", "set_slot", "set_slot_domains", "set_device_dns"' dns-manager-luci.sh || fail "set-device-DNS RPC is missing from the write ACL"
+acl_has_method write set_device_dns || fail "set-device-DNS RPC is missing from the write ACL"
 grep -Fq 'callSetDeviceDns' dns-manager-luci.sh || fail "LuCI has no client for set-device-DNS RPC"
 grep -Fq 'card(' "dns-manager-luci.sh" >/dev/null || fail "LuCI card renderer missing"
 ok "per-device DNS service, per-MAC nft redirects and multi-DoH assignment contract"
@@ -512,7 +518,7 @@ awk '/^function render\(root,st\)/,/^}/' "$tmp/common.js" > "$tmp/render_routes.
 awk "/case 'doh':/,/case 'slots':/" "$tmp/render_routes.js" > "$tmp/doh_route.js"
 if grep -Fq 'renderSlots(root,st);' "$tmp/doh_route.js"; then fail "DNS slots still render inside the DoH page"; fi
 grep -Fq 'callLanDevices().catch(function(){return {ok:false,devices:[]};})' "$tmp/common.js" || fail "LAN device route does not load inventory"
-grep -Fq '"dns_manager": [ "status", "runtime", "doh_status", "network_status", "lan_devices"' dns-manager-luci.sh || fail "LAN inventory RPC is missing from the read ACL"
+acl_has_method read lan_devices || fail "LAN inventory RPC is missing from the read ACL"
 grep -Fq 'lan_devices_json() {' "$tmp/backend.sh" || fail "LAN device inventory RPC implementation missing"
 grep -Fq '/tmp/dhcp.leases' "$tmp/backend.sh" || fail "LAN inventory does not include DHCP leases"
 grep -Fq '/proc/net/arp' "$tmp/backend.sh" || fail "LAN inventory does not include ARP neighbours"
@@ -2951,7 +2957,7 @@ grep -q 'watchdog_apply_single' "$tmp/backend.sh" || fail "legacy watchdog sette
 grep -q 'watchdog_apply_batch' "$tmp/backend.sh" || fail "batch watchdog setter helper missing"
 ok "legacy watchdog RPC compatibility is preserved"
 # NTP RPC must be explicitly allowed by the LuCI ACL; the backend alone is not enough.
-grep -Fq '"set_ntp", "set_test_age"' dns-manager-luci.sh || fail "LuCI write ACL does not allow set_ntp"
+acl_has_method write set_ntp || fail "LuCI write ACL does not allow set_ntp"
 if grep -Fq '192.168.1.1' dns-manager.sh; then
     fail "DNS Manager contains a fixed LAN IP fallback"
 fi
