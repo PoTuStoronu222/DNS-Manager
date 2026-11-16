@@ -27,6 +27,9 @@ assert.equal(ctx.activeProfileId({profile:'clean'}), 'clean');
 assert.equal(ctx.displayDnsRows({slots:[], doh_instances:[]}).length, 0);
 ctx.E = (tag, attrs, text) => ({tag, attrs, text});
 ctx.card = (title, children) => ({title, children});
+ctx.state = {busy:false};
+ctx.window = {dmLanDevices:{ok:true,devices:[]}};
+ctx.btn = (label, style, action, options) => ({label,style,action,options});
 vm.runInContext(section('function renderSlots(', 'function settingCard('), ctx);
 for (const [fn, selector] of [['renderSlots', '#dm-slots'], ['renderDeviceDns', '#dm-devices']]) {
   const panel = {innerHTML:'old', children:[], appendChild(node) { this.children.push(node); }};
@@ -35,7 +38,8 @@ for (const [fn, selector] of [['renderSlots', '#dm-slots'], ['renderDeviceDns', 
   ctx[fn](root, status);
   assert.equal(panel.innerHTML, '');
   assert.equal(panel.children.length, 1);
-  assert.match(panel.children[0].children[0].text, /недоступн/);
+  assert.match(panel.children[0].children[0].text, fn === 'renderSlots' ? /общего набора/ : /DNS роутера/);
+  assert(panel.children[0].children.some(x => x.label === (fn === 'renderSlots' ? 'Проверить DNS' : 'Обновить список')));
 }
 console.log('PASS: DNSCrypt profile and pooled servers do not inherit legacy slots');
 
