@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager full installer and LuCI companion
-# Version: 2.43
+# Version: 2.44
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.43"
+VERSION="2.44"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -1148,6 +1148,29 @@ status_extra() {
     running=0
     "$DNSCRYPT_INIT" running >/dev/null 2>&1 && running=1
     json_add_int dnscrypt_running "$running"
+    # Monitoring is optional; an unavailable endpoint must not look like zero activity.
+    if [ "$method" = status ] && [ "$running" -eq 1 ] && command -v curl >/dev/null 2>&1; then
+        metrics=$(curl --noproxy '*' --silent --fail --max-time 1 http://127.0.0.1:9100/api/metrics 2>/dev/null || :)
+        if [ -n "$metrics" ]; then
+            queries=$(printf '%s' "$metrics" | jsonfilter -e '@.total_queries' 2>/dev/null || :)
+            cache_enabled=$(printf '%s' "$metrics" | jsonfilter -e '@.cache_stats.enabled' 2>/dev/null || :)
+            capacity=$(printf '%s' "$metrics" | jsonfilter -e '@.cache_stats.capacity' 2>/dev/null || :)
+            entries=$(printf '%s' "$metrics" | jsonfilter -e '@.cache_stats.entries' 2>/dev/null || :)
+            average=$(printf '%s' "$metrics" | jsonfilter -e '@.avg_response_time' 2>/dev/null || :)
+            case "$queries" in ''|*[!0-9]*) queries= ;; esac
+            if [ -n "$queries" ]; then
+                json_add_int dnscrypt_monitoring_available 1
+                case "$capacity:$entries" in *[!0-9:]*|:*|*:) ;; *)
+                    if [ "$cache_enabled" = true ] && [ "$capacity" -gt 0 ] 2>/dev/null; then
+                        json_add_string dnscrypt_cache_entries "$entries"
+                    fi ;;
+                esac
+                case "$average" in ''|*[!0-9.]*) ;; *)
+                    [ "$queries" -eq 0 ] 2>/dev/null || json_add_string dnscrypt_avg_response_ms "$average" ;;
+                esac
+            fi
+        fi
+    fi
     profile=$(sed -n 's/^profile=//p' "$STATE_FILE" 2>/dev/null | head -n1)
     valid_profile "$profile" || profile=none
     json_add_string dnscrypt_profile "$profile"
@@ -2219,7 +2242,7 @@ if [ "$(uci -q get dns-manager.global.active_engine 2>/dev/null)" = dnscrypt-pro
 fi
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.43"
+SELF_VERSION="2.44"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -5897,7 +5920,7 @@ EOF_RPC_WRAPPER
 'require ui';
 'require session';
 
-// DNS Manager LuCI common module version: 2.43
+// DNS Manager LuCI common module version: 2.44
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -6575,6 +6598,8 @@ function renderOverview(root,st){
   var components=card('Компоненты',[
     componentItem('DNS-движок',st.dnscrypt_engine==='dnscrypt-proxy2'?badge(Number(st.dnscrypt_running)===1?'dm-ok':'dm-bad','DNSCrypt Proxy · '+(Number(st.dnscrypt_running)===1?'работает':'остановлен')):Number(st.engine_installed)===0?badge('dm-off','не выбран'):badge(Number(st.engine_running)===1?'dm-ok':'dm-bad','HTTPS DNS Proxy · '+(Number(st.engine_running)===1?'работает':'остановлен'))),
     st.dnscrypt_engine==='dnscrypt-proxy2'?componentItem('Выбор сервера',badge('dm-off','автоматически из пула')):null,
+    st.dnscrypt_engine==='dnscrypt-proxy2'?componentItem('Кэш DNSCrypt',badge(st.dnscrypt_cache_entries==null?'dm-off':'dm-ok',st.dnscrypt_cache_entries==null?'нет данных':String(st.dnscrypt_cache_entries)+' записей')):null,
+    st.dnscrypt_engine==='dnscrypt-proxy2'?componentItem('Среднее время ответа DNS',badge(st.dnscrypt_avg_response_ms==null?'dm-off':'dm-ok',st.dnscrypt_avg_response_ms==null?'нет данных':String(st.dnscrypt_avg_response_ms)+' мс')):null,
     watchdogComponentItem(st,wd,wdDetails),
     watchdogReplacementComponentItem(wdAuto,wdAutoDetails),
     forceComponentItem(st),
@@ -8178,13 +8203,13 @@ function saveRouteCache(key,st,aux){
     var entry=JSON.parse(JSON.stringify({ts:Date.now(),data:st,aux:aux}));
     window.dmRouteCache[key]=entry;
     if(typeof session!=='undefined'&&session.setLocalData)
-      session.setLocalData('dns-manager-route-2.43-'+key,entry);
+      session.setLocalData('dns-manager-route-2.44-'+key,entry);
   }catch(e){}
 }
 function routeCacheEntry(key){
   var entry=key&&window.dmRouteCache&&window.dmRouteCache[key];
   if(!entry&&key){
-    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.43-'+key);}catch(e){}
+    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.44-'+key);}catch(e){}
   }
   if(!entry||typeof entry.ts!=='number'||Date.now()-entry.ts<0||Date.now()-entry.ts>300000||!entry.data||entry.data.ok!==true)return null;
   return entry;
@@ -9220,7 +9245,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 2.43
+// DNS Manager LuCI version: 2.44
 return view.extend({
   load: DM.load,
   render: DM.render,
