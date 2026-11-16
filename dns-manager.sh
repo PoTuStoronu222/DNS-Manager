@@ -9522,6 +9522,12 @@ watchdog|--watchdog|-w)
     exit $?
     ;;
 __watchdog-loop)
+    # BusyBox ash accepts single-digit file descriptors. Keep the lock until
+    # this process exits, including while it is waiting or checking DNS.
+    command -v flock >/dev/null 2>&1 || { err_msg "Для DNS Watchdog требуется flock."; exit 1; }
+    mkdir -p /var/lock || exit 1
+    exec 9>/var/lock/dns-manager-watchdog.lock || exit 1
+    flock -n 9 || exit 0
     preflight_readonly
     init_dirs
     load_config
