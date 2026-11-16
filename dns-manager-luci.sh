@@ -1186,7 +1186,7 @@ case "${1:-}" in
             dnscrypt_test|system_dns_test) diagnostic_start "$2" ;;
             dnscrypt_log) diagnostic "$2" ;;
             status|doh_status|network_status|time_status|log|update_check) status_extra "$2" ;;
-            runtime|page_meta|catalog|lan_devices|job|job_status|multi|set_ntp|uninstall_status)
+            runtime|page_meta|catalog|lan_devices|job|job_status|multi|set_ntp|uninstall|uninstall_status)
                 exec "$LEGACY" "$@" ;;
             *) error 'Действие пока недоступно для dnscrypt-proxy2' ;;
         esac ;;
@@ -1360,6 +1360,9 @@ changed=1
 rollback_firewall_targeted || exit 1
 echo 'Останавливаю DNS-службы.'
 sh "$helpers/dns-manager-engine-services.sh" quiesce "$target" || exit 1
+UNINSTALL_DEFER_PROXY_RESTART=1
+rollback_hdp_targeted || exit 1
+unset UNINSTALL_DEFER_PROXY_RESTART
 echo 'Восстанавливаю стандартный DNS.'
 sh "$helpers/dns-manager-dnscrypt-dnsmasq.sh" clean 5053 || exit 1
 SLOT_1_DOMAINS=''; SLOT_2_DOMAINS=''; SLOT_3_DOMAINS=''; SLOT_4_DOMAINS=''; SLOT_5_DOMAINS=''; SLOT_6_DOMAINS=''
@@ -6699,6 +6702,27 @@ function renderBootstrap(root,st){
     state.bootstrapNotice?E('div',{'class':'dm-inline-msg '+state.bootstrapNotice.type},state.bootstrapNotice.text):null
   ].filter(Boolean)))]);
 }
+function appendUninstall(ch,root){
+  var un=state.uninstall;
+  if(un){
+    ch.push(E('div',{'class':'dm-inline-msg '+(un.status==='failed'?'error':'info')},[
+      E('strong',{},un.status==='confirm'?'Удаление DNS Manager':un.status==='done'?'Удаление завершено':un.status==='failed'?'Удаление не завершено':'Удаление DNS Manager'),
+      E('p',{},un.message),
+      un.output?E('pre',{},un.output):null
+    ].filter(Boolean)));
+  }
+  ch.push(E('div',{'class':'dm-actions'},un&&un.status==='confirm'?[
+    btn('Подтвердить удаление','cbi-button-negative',function(){uninstallManager(root);}),
+    btn('Отмена','cbi-button-neutral',function(){state.uninstall=null;renderDoH(root,window.dmState||{});})
+  ]:un&&un.status==='done'?[
+    btn('Открыть LuCI','cbi-button-action',function(){window.location.href=L.url('admin/status/overview');})
+  ]:[
+    btn('Удалить DNS Manager','cbi-button-negative',function(){
+      state.uninstall={status:'confirm',message:'Функции менеджера будут отключены, стандартный DNS восстановлен, затем удалятся интерфейс и установленные менеджером пакеты, если они не используются сторонними настройками.'};
+      renderDoH(root,window.dmState||{});
+    },{disabled:!!state.busy})
+  ]));
+}
 function renderDoH(root,st){
   var e=root.querySelector('#dm-doh');if(!e)return;e.innerHTML='';
   var engine=st.dnscrypt_engine==='dnscrypt-proxy2'?'dnscrypt-proxy2':(Number(st.engine_installed)===0?'none':'https-dns-proxy');
@@ -6722,6 +6746,7 @@ function renderDoH(root,st){
       btn('Показать журнал','cbi-button-neutral',function(){dnscryptDiagnostic(root,true);},{disabled:!!state.busy})
     ]));
     if(state.dnscryptDiagnostic)details.push(E('pre',{'class':'dm-log'},state.dnscryptDiagnostic));
+    appendUninstall(details,root);
     e.appendChild(card('DNS over HTTPS',details));
     return;
   }
@@ -6783,25 +6808,7 @@ function renderDoH(root,st){
     ch.push(E('div',{'class':'dm-inline-msg info'},'Steer запущен, но активный перехват DNS :53→:5300 не обнаружен. Поэтому DNS Manager не считает Steer владельцем forced-DNS и сохраняет обычную схему принудительного DNS.'));
   }
   if(state.pageNotice.doh && !(state.currentTest && ['Текущих DNS для проверки нет.','Проверяю текущие DNS…','Проверяю системные DNS…','Проверка текущих DNS завершена.','Проверка текущих DNS завершена с ошибками.'].indexOf(state.pageNotice.doh)!==-1))ch.push(E('div',{'class':'dm-inline-msg info'},state.pageNotice.doh));
-  var un=state.uninstall;
-  if(un){
-    ch.push(E('div',{'class':'dm-inline-msg '+(un.status==='failed'?'error':'info')},[
-      E('strong',{},un.status==='confirm'?'Удаление DNS Manager':un.status==='done'?'Удаление завершено':un.status==='failed'?'Удаление не завершено':'Удаление DNS Manager'),
-      E('p',{},un.message),
-      un.output?E('pre',{},un.output):null
-    ].filter(Boolean)));
-  }
-  ch.push(E('div',{'class':'dm-actions'},un&&un.status==='confirm'?[
-    btn('Подтвердить удаление','cbi-button-negative',function(){uninstallManager(root);}),
-    btn('Отмена','cbi-button-neutral',function(){state.uninstall=null;renderDoH(root,window.dmState||{});})
-  ]:un&&un.status==='done'?[
-    btn('Открыть LuCI','cbi-button-action',function(){window.location.href=L.url('admin/status/overview');})
-  ]:[
-    btn('Удалить DNS Manager','cbi-button-negative',function(){
-      state.uninstall={status:'confirm',message:'Функции менеджера будут отключены, стандартный DNS восстановлен, затем удалятся интерфейс и установленные менеджером пакеты, если они не используются сторонними настройками.'};
-      renderDoH(root,window.dmState||{});
-    },{disabled:!!state.busy})
-  ]));
+  appendUninstall(ch,root);
   e.appendChild(card('DNS over HTTPS',ch));
   e.appendChild(renderBootstrap(root,st));
 }

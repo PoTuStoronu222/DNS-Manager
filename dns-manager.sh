@@ -4346,16 +4346,8 @@ TX_DIR="$STATE_DIR/tx-$TX_ID"
 rm -rf "$TX_DIR" 2>/dev/null
 mkdir -p "$TX_DIR/files" || return 1
 TX_ACTIVE=1
-TX_WD_LEGACY_DAEMON_EXISTED=0
-TX_WD_SERVICE_EXISTED=0
-[ -f "$WATCHDOG_LEGACY_DAEMON_PATH" ] && TX_WD_LEGACY_DAEMON_EXISTED=1
-[ -f "$WATCHDOG_SERVICE_PATH" ] && TX_WD_SERVICE_EXISTED=1
-TX_WD_ENABLED=unknown
-TX_WD_RUNNING=unknown
-if [ -x "$WATCHDOG_SERVICE_PATH" ]; then
-    "$WATCHDOG_SERVICE_PATH" enabled >/dev/null 2>&1 && TX_WD_ENABLED=yes || TX_WD_ENABLED=no
-    "$WATCHDOG_SERVICE_PATH" running >/dev/null 2>&1 && TX_WD_RUNNING=yes || TX_WD_RUNNING=no
-fi
+TX_WD_CRON_ENABLED=0
+watchdog_service_enabled && TX_WD_CRON_ENABLED=1
 for f in "$CONFIG_FILE" "$OWNERSHIP" "$WATCHDOG_SERVICE_PATH" "$WATCHDOG_LEGACY_DAEMON_PATH" /etc/config/dhcp /etc/config/https-dns-proxy /etc/config/firewall /etc/config/system /etc/dnsmasq.d/90-dns-manager-bogus.conf /etc/dnsmasq.d/90-dns-manager-canary.conf ; do
 key="$(printf '%s' "$f" | sed 's#^/##; s#[/ ]#_#g')"
 if [ -f "$f" ]; then cp -p "$f" "$TX_DIR/files/$key"; file_hash "$f" > "$TX_DIR/$key.before"; printf '%s|%s|1\n' "$f" "$key" >> "$TX_DIR/manifest"; else printf '%s|%s|0\n' "$f" "$key" >> "$TX_DIR/manifest"; fi
@@ -4377,23 +4369,11 @@ fi
 done < "$TX_DIR/manifest"
 }
 tx_restore_watchdog_state() {
-    # Restore the watchdog supervisor state that existed before the transaction.
-    if [ "${TX_WD_SERVICE_EXISTED:-0}" = 1 ]; then
-        if [ -x "$WATCHDOG_SERVICE_PATH" ]; then
-            case "${TX_WD_ENABLED:-unknown}" in
-                yes) "$WATCHDOG_SERVICE_PATH" enable >/dev/null 2>&1 || true ;;
-                no) "$WATCHDOG_SERVICE_PATH" disable >/dev/null 2>&1 || true ;;
-            esac
-            case "${TX_WD_RUNNING:-unknown}" in
-                yes) "$WATCHDOG_SERVICE_PATH" start >/dev/null 2>&1 || true ;;
-                no) "$WATCHDOG_SERVICE_PATH" stop >/dev/null 2>&1 || true ;;
-            esac
-        fi
+    if [ "${TX_WD_CRON_ENABLED:-0}" = 1 ]; then
+        watchdog_service_start_enable
     else
-        watchdog_service_stop_disable >/dev/null 2>&1 || true
-        watchdog_service_remove_files >/dev/null 2>&1 || true
+        watchdog_service_stop_disable
     fi
-    return 0
 }
 tx_restore_on_failure() {
 [ "$TX_ACTIVE" = 1 ] || return 0
@@ -5275,6 +5255,12 @@ restore_dns_core() {
     release_mutation_lock
     return "$_rc"
 }
+uninstall_stop_engines_and_restore() {
+    _uninstall_helpers=/usr/lib/dns-manager-luci/dnscrypt
+    sh "$_uninstall_helpers/dns-manager-engine-services.sh" quiesce dnscrypt-proxy2 &&
+        sh "$_uninstall_helpers/dns-manager-dnscrypt-dnsmasq.sh" clean 5053
+}
+
 uninstall_manager_impl() {
     clear_screen
     menu_header "УДАЛЕНИЕ DNS MANAGER"
@@ -5320,6 +5306,12 @@ uninstall_manager_impl() {
         return 1
     fi
 
+    if ! uninstall_stop_engines_and_restore; then
+        release_mutation_lock
+        err_msg "Не удалось остановить DNS-службы или восстановить стандартный DNS. Менеджер сохранён."
+        return 1
+    fi
+
     [ "${DNS_MANAGER_UNINSTALL_PROGRESS:-0}" = 1 ] && printf '%s\n' 'Удаляю пакеты, установленные DNS Manager.' > /var/run/dns-manager-uninstall/phase
     if ! package_owner_remove_owned >/dev/null 2>&1; then
         release_mutation_lock
@@ -5343,6 +5335,7 @@ uninstall_manager_impl() {
         rm -f /etc/init.d/dns-manager-regional /usr/lib/dns-manager-luci/regional-watch.sh || { release_mutation_lock; return 1; }
     fi
 
+    rm -f "${DNS_MANAGER_WATCHDOG_STATE_FILE:-/var/run/dns-manager-watchdog.json}" "${DNS_MANAGER_UCI_CONFIG_FILE:-/etc/config/dns-manager}" || { release_mutation_lock; return 1; }
     rm -f "$LOG_FILE" "$TX_LOG" 2>/dev/null || true
     find "$STATE_DIR" -mindepth 1 -maxdepth 1 ! -path "$MUTATION_LOCK_DIR" -exec rm -rf {} \; 2>/dev/null || true
 
