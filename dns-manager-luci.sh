@@ -1380,21 +1380,12 @@ success=1
 EOF_DNSCRYPT_ASSET_11
     cat > "$_dc_stage/dns-manager-dnscrypt.init" <<'EOF_DNSCRYPT_ASSET_12'
 #!/bin/sh /etc/rc.common
-# One dnscrypt-proxy2 process using DNS Manager's own configuration.
 USE_PROCD=1
 START=18
 STOP=89
-EXTRA_COMMANDS="check"
-EXTRA_HELP="\tcheck\t\tValidate DNS Manager's dnscrypt-proxy2 configuration\n"
 
 PROG=/usr/sbin/dnscrypt-proxy
 CONFIG=/etc/dnscrypt-proxy2/dnscrypt-proxy.toml
-ENGINE_FILE=/etc/dns-manager/config/dnscrypt-engine
-
-check() {
-    [ -x "$PROG" ] && [ -r "$CONFIG" ] || return 1
-    "$PROG" -config "$CONFIG" -check >/dev/null 2>&1
-}
 
 boot() {
     [ "$(uci -q get dns-manager.global.active_engine 2>/dev/null)" = dnscrypt-proxy2 ] || return 0
@@ -1402,7 +1393,6 @@ boot() {
 }
 
 start_service() {
-    check || return 1
     procd_open_instance dns-manager
     procd_set_param command "$PROG" -config "$CONFIG"
     procd_set_param file "$CONFIG"
@@ -1413,10 +1403,11 @@ start_service() {
 }
 EOF_DNSCRYPT_ASSET_12
     sh -n "$_dc_stage/backend-dnscrypt.sh"
-    for _dc_name in 'dns-manager-doh-stamp.sh' 'dns-manager-dnscrypt-config.sh' 'dns-manager-dnscrypt-pool.sh' 'dns-manager-dnscrypt-pool-apply.sh' 'dns-manager-dnscrypt-profile.sh' 'dns-manager-dnscrypt-profile-apply.sh' 'dns-manager-dnscrypt-dnsmasq.sh' 'dns-manager-engine-services.sh' 'dns-manager-device-detach.sh' 'dns-manager-engine-switch.sh' 'dns-manager-dnscrypt.init'; do
+    _dc_names="dns-manager-doh-stamp.sh dns-manager-dnscrypt-config.sh dns-manager-dnscrypt-pool.sh dns-manager-dnscrypt-pool-apply.sh dns-manager-dnscrypt-profile.sh dns-manager-dnscrypt-profile-apply.sh dns-manager-dnscrypt-dnsmasq.sh dns-manager-engine-services.sh dns-manager-device-detach.sh dns-manager-engine-switch.sh dns-manager-dnscrypt.init"
+    for _dc_name in $_dc_names; do
         sh -n "$_dc_stage/$_dc_name"
     done
-    for _dc_name in 'dns-manager-doh-stamp.sh' 'dns-manager-dnscrypt-config.sh' 'dns-manager-dnscrypt-pool.sh' 'dns-manager-dnscrypt-pool-apply.sh' 'dns-manager-dnscrypt-profile.sh' 'dns-manager-dnscrypt-profile-apply.sh' 'dns-manager-dnscrypt-dnsmasq.sh' 'dns-manager-engine-services.sh' 'dns-manager-device-detach.sh' 'dns-manager-engine-switch.sh' 'dns-manager-dnscrypt.init'; do
+    for _dc_name in $_dc_names; do
         chmod 0755 "$_dc_stage/$_dc_name"
         mv -f "$_dc_stage/$_dc_name" "$_dc_dest/$_dc_name"
     done
