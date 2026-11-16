@@ -53,6 +53,9 @@ elif 'set' in sys.argv:
 else: print('{}')
 ''')
     ubus.chmod(0o755)
+    uci = d / 'uci'
+    uci.write_text('#!/bin/sh\nexit 0\n')
+    uci.chmod(0o755)
     manager = d / 'manager'
     manager.write_text('''#!/bin/sh
 preflight_readonly() { :; }
@@ -69,6 +72,7 @@ case "${1:-}" in
   *) exit 1;;
 esac
 ''')
+    (helpers / 'dns-manager-watchdog-common.sh').write_text((root / 'libexec/dns-manager-watchdog-common.sh').read_text())
     (helpers / 'dns-manager-dnscrypt-profile.sh').write_text('#!/bin/sh\n')
     (helpers / 'dns-manager-dnscrypt-profile-apply.sh').write_text('''#!/bin/sh
 dnscrypt_apply_profile_pool() {
@@ -121,7 +125,7 @@ dnscrypt_apply_profile_pool() {
     result = run('worker', 'clean')
     assert result.returncode != 0
     assert not (config / 'dnscrypt-profile.state').exists()
-    assert (d / 'restore').read_text().startswith('restore 5053 ')
+    assert (d / 'restore').read_text() == 'restore 5053\n'
     (d / 'enable-fail').unlink()
     (config / 'dnscrypt-profile.state').write_text(state)
     result = run('worker', 'clean', extra={'LAB_SWITCH': '1'})

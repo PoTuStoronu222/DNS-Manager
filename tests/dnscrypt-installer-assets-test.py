@@ -13,7 +13,8 @@ end = source.index('\n)\n\ninstall_files()', start) + 2
 function = source[start:end]
 pattern = r'cat > "\$_dc_stage/([^"\n]+)" <<\'(EOF_DNSCRYPT_ASSET_[0-9]+)\'\n(.*?)\n\2\n'
 assets = re.findall(pattern, function, re.DOTALL)
-assert len(assets) == 12
+assert len(assets) == 13
+assert any(name == 'dns-manager-watchdog-common.sh' for name, _, _ in assets)
 for name, _, content in assets:
     assert content + '\n' == (root / 'libexec' / name).read_text(encoding='utf-8'), name
 
