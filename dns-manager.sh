@@ -501,7 +501,11 @@ auto_update_manager() {
     _upd_syntax="${_upd_tmp}.syntax"
     UPDATE_TMP_FILE="$_upd_tmp"
     rm -f "$_upd_tmp" "$_upd_syntax" 2>/dev/null || true
-    _update_url="${UPDATE_URL}?_dmcb=$(date +%s 2>/dev/null || printf 0)-$$"
+    _update_source="$UPDATE_URL"
+    if [ "$(uci -q get dns-manager.global.active_engine 2>/dev/null)" = dnscrypt-proxy2 ]; then
+        _update_source="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/dnscrypt-proxy2-engine/dns-manager.sh"
+    fi
+    _update_url="${_update_source}?_dmcb=$(date +%s 2>/dev/null || printf 0)-$$"
 
     if command -v curl >/dev/null 2>&1; then
         curl -fsSL --connect-timeout 4 --max-time 15 -H "Cache-Control: no-cache" -H "Pragma: no-cache" -o "$_upd_tmp" "$_update_url" >/dev/null 2>&1 || { AUTO_UPDATE_RESULT="failed"; AUTO_UPDATE_REASON="не удалось скачать файл с GitHub"; rm -f "$_upd_tmp" "$_upd_syntax"; UPDATE_TMP_FILE=""; release_auto_update_lock; return 0; }
