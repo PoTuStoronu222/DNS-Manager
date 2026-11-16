@@ -8156,14 +8156,18 @@ watchdog_embedded_loop() {
     WD_LAST_GUARD_TS="$(date +%s 2>/dev/null)"
     load_watchdog_state >/dev/null 2>&1 || true
     CHECKER_MISSING_LOGGED=0
-    if [ "${WATCHDOG_ENABLED:-0}" = 1 ]; then
+    if [ "${WATCHDOG_SINGLE_CYCLE:-0}" = 1 ]; then
+        _wd_now="$(date +%s 2>/dev/null)"
+        case "$_wd_now:${WATCHDOG_STATE_LAST_CHECK:-0}" in *[!0-9:]*|:*) return 1;; esac
+        if [ "$_wd_now" -ge "${WATCHDOG_STATE_LAST_CHECK:-0}" ] && [ $((_wd_now-${WATCHDOG_STATE_LAST_CHECK:-0})) -lt 90 ]; then return 0; fi
+    elif [ "${WATCHDOG_ENABLED:-0}" = 1 ]; then
         log_msg "Фоновый DNS Watchdog запущен: проверка каждые ${WATCHDOG_INTERVAL:-120}с, восстановление после ${WATCHDOG_FAIL_THRESHOLD:-2} последовательных сбоев."
     else
         log_msg "Фоновая проверка forced-DNS/Steer запущена; проверка и замена DNS-серверов выключены."
     fi
 
     # Give network + https-dns-proxy a short settling window after procd start/WAN-up.
-    sleep 12
+    [ "${WATCHDOG_SINGLE_CYCLE:-0}" = 1 ] || sleep 12
 
     while :; do
         watchdog_legacy_engine_allowed || return 0
@@ -8176,6 +8180,7 @@ watchdog_embedded_loop() {
 
         # Forced-DNS-only mode does not test or rotate selected DNS servers.
         if [ "${WATCHDOG_ENABLED:-0}" != 1 ]; then
+            if [ "${WATCHDOG_SINGLE_CYCLE:-0}" = 1 ]; then save_watchdog_state >/dev/null 2>&1 || true; return 0; fi
             sleep 60
             continue
         fi
@@ -8186,6 +8191,7 @@ watchdog_embedded_loop() {
         [ "$_interval" -le 3600 ] 2>/dev/null || _interval=600
 
         if ! watchdog_resource_guard; then
+            if [ "${WATCHDOG_SINGLE_CYCLE:-0}" = 1 ]; then save_watchdog_state >/dev/null 2>&1 || true; return 0; fi
             sleep "$_interval"
             continue
         fi
@@ -8195,6 +8201,7 @@ watchdog_embedded_loop() {
                 log_msg "DNS-проверка временно приостановлена: dig/nslookup недоступен. Ротацию не выполняю."
                 CHECKER_MISSING_LOGGED=1
             fi
+            if [ "${WATCHDOG_SINGLE_CYCLE:-0}" = 1 ]; then save_watchdog_state >/dev/null 2>&1 || true; return 0; fi
             sleep "$_interval"
             continue
         fi
@@ -8210,7 +8217,7 @@ watchdog_embedded_loop() {
         _threshold_slots=""
         _local_recover_slots=""
         _probe_rc=0
-        _wd_cycle_records="$(mktemp "$STATE_DIR/dns-watchdog-cycle.XXXXXX" 2>/dev/null)" || { sleep "$_interval"; continue; }
+        _wd_cycle_records="$(mktemp "$STATE_DIR/dns-watchdog-cycle.XXXXXX" 2>/dev/null)" || { [ "${WATCHDOG_SINGLE_CYCLE:-0}" != 1 ] || return 1; sleep "$_interval"; continue; }
 
         watchdog_refresh_listener_snapshot
 
@@ -8276,10 +8283,11 @@ watchdog_embedded_loop() {
 
         if [ "$_probe_rc" = 2 ]; then
             rm -f "$_wd_cycle_records" 2>/dev/null || true
+            if [ "${WATCHDOG_SINGLE_CYCLE:-0}" = 1 ]; then save_watchdog_state >/dev/null 2>&1 || true; return 0; fi
             sleep "$_interval"
             continue
         fi
-        [ "$_checked" -gt 0 ] || { rm -f "$_wd_cycle_records" 2>/dev/null || true; sleep "$_interval"; continue; }
+        [ "$_checked" -gt 0 ] || { rm -f "$_wd_cycle_records" 2>/dev/null || true; [ "${WATCHDOG_SINGLE_CYCLE:-0}" != 1 ] || { save_watchdog_state >/dev/null 2>&1 || true; return 0; }; sleep "$_interval"; continue; }
 
         _watchdog_action=0
         _global_dns_failure=0
@@ -8396,6 +8404,7 @@ watchdog_embedded_loop() {
 
         watchdog_save_check_results "$_wd_cycle_records" || log_msg "Watchdog: не удалось сохранить результаты цикла проверки DNS."
         save_watchdog_state >/dev/null 2>&1 || true
+        [ "${WATCHDOG_SINGLE_CYCLE:-0}" != 1 ] || return 0
         sleep "$_interval"
     done
 }
@@ -9521,7 +9530,8 @@ watchdog|--watchdog|-w)
     run_watchdog
     exit $?
     ;;
-__watchdog-loop)
+__watchdog-loop|__watchdog-once)
+    [ "${1:-}" != __watchdog-once ] || WATCHDOG_SINGLE_CYCLE=1
     # BusyBox ash accepts single-digit file descriptors. Keep the lock until
     # this process exits, including while it is waiting or checking DNS.
     command -v flock >/dev/null 2>&1 || { err_msg "Для DNS Watchdog требуется flock."; exit 1; }
