@@ -1,2 +1,3 @@
 shell=sh
-exclude=SC3043,SC2034
+# OpenWrt ash supports local; rc.common also reads variables indirectly.
+disable=SC3043,SC2034

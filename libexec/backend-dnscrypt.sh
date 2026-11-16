@@ -32,19 +32,8 @@ load_manager_functions() {
     rm -f "$manager_src"
 }
 disable_legacy_watchdog() {
-    watchdog_service_stop_disable || return 1
-    # The init file can be missing while procd still owns a running instance.
-    # Treat an unavailable or malformed procd response as unknown, not stopped.
-    wd_reply=$(ubus -t 5 call service list '{"name":"dns-watchdog"}' 2>/dev/null) || return 1
-    wd_root=$(jsonfilter -s "$wd_reply" -e '@' 2>/dev/null) || return 1
-    case "$wd_root" in \{*\}) ;; *) return 1 ;; esac
-    if jsonfilter -s "$wd_reply" -e "@['dns-watchdog']" >/dev/null 2>&1; then
-        return 1
-    else
-        wd_rc=$?
-        [ "$wd_rc" -eq 1 ] || return 1
-    fi
-    watchdog_cron_remove_owned_block || return 1
+    . "$HELPERS/dns-manager-watchdog-common.sh" || return 1
+    dns_manager_stop_watchdog || return 1
     if [ "${WATCHDOG_ENABLED:-0}" != 0 ] || [ "${WATCHDOG_AUTOREPLACE:-0}" != 0 ]; then
         WATCHDOG_ENABLED=0
         WATCHDOG_AUTOREPLACE=0

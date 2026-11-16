@@ -581,7 +581,7 @@ log_tx() {
         fi
         return 0
     fi
-    printf 'TX|%s|%s|%s|%s|%s|%s\n' "$TX_ID" "$(date +%s)" "$1" "$2" "$3" "$4" "$5" >> "$TX_LOG" 2>/dev/null
+    printf 'TX|%s|%s|%s|%s|%s|%s|%s\n' "$TX_ID" "$(date +%s)" "$1" "$2" "$3" "$4" "$5" >> "$TX_LOG" 2>/dev/null
     LOG_TX_COUNT=$(( ${LOG_TX_COUNT:-0} + 1 ))
     if [ $((LOG_TX_COUNT % 32)) -eq 0 ]; then rotate_runtime_logs; fi
 }
