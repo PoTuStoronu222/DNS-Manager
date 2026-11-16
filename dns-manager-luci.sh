@@ -876,7 +876,7 @@ HDP_INIT=${DNS_MANAGER_HDP_INIT:-/etc/init.d/https-dns-proxy}
 umask 077
 
 error() { printf '{"ok":false,"error":"%s"}\n' "$1"; }
-valid_profile() { case "$1" in bypass|clean|security|privacy|adblock|family|all|dnssec) return 0;; *) return 1;; esac; }
+valid_profile() { case "$1" in bypass|clean|security|privacy|adblock|family|all|dnssec|default) return 0;; *) return 1;; esac; }
 engine_selected() { [ -r "$ENGINE_FILE" ] && [ "$(cat "$ENGINE_FILE" 2>/dev/null)" = dnscrypt-proxy2 ]; }
 hdp_active() { [ -x "$HDP_INIT" ] && { "$HDP_INIT" enabled >/dev/null 2>&1 || "$HDP_INIT" running >/dev/null 2>&1; }; }
 disable_legacy_watchdog() {
@@ -970,9 +970,18 @@ profile_worker() {
             if mkdir -p "$CONFIG_DIR" && records=$(mktemp "$CONFIG_DIR/.dnscrypt-profile.XXXXXX") &&
                state_tmp=$(mktemp "$CONFIG_DIR/.dnscrypt-state.XXXXXX"); then
                 printf '%s\n' 'Проверяю DNS и применяю профиль.'
-                if DNS_MANAGER_NO_UPDATE=1 SILENT_APPLY=1 dnscrypt_apply_profile_pool "$goal" 5053 "$BOOTSTRAP_DNS" > "$records"; then
+                if (
+                    if [ "$goal" = default ]; then
+                        dnscrypt_select_profile() {
+                            printf '%s\n' 'cloudflare_clean|https://cloudflare-dns.com/dns-query' 'google_clean|https://dns.google/dns-query'
+                        }
+                    fi
+                    DNS_MANAGER_NO_UPDATE=1 SILENT_APPLY=1 dnscrypt_apply_profile_pool "$goal" 5053 "$BOOTSTRAP_DNS"
+                ) > "$records"; then
+                    state_profile=$goal
+                    [ "$state_profile" != default ] || state_profile=none
                     if "$DNSCRYPT_INIT" enable &&
-                       { printf 'profile=%s\n' "$goal"; sed 's/^/server=/' "$records"; } > "$state_tmp" &&
+                       { printf 'profile=%s\n' "$state_profile"; sed 's/^/server=/' "$records"; } > "$state_tmp" &&
                        chmod 0600 "$state_tmp" && mv -f "$state_tmp" "$STATE_FILE"; then
                         rc=0
                     else
@@ -1089,6 +1098,23 @@ reset_start() {
     printf '{"ok":true,"job":"action"}\n'
 }
 
+diagnostic() {
+    method=$1
+    cat >/dev/null
+    engine_selected || { error 'Выбран другой DNS-движок'; return; }
+    . /usr/share/libubox/jshn.sh
+    json_init
+    if [ "$method" = dnscrypt_test ]; then
+        output=$(timeout 12 nslookup -port=5053 ya.ru 127.0.0.1 2>&1); rc=$?
+        if [ "$rc" -eq 0 ]; then json_add_boolean ok 1; else json_add_boolean ok 0; fi
+    else
+        output=$(logread -e dnscrypt-proxy 2>&1 | tail -n 80)
+        json_add_boolean ok 1
+    fi
+    json_add_string output "$output"
+    json_dump
+}
+
 status_extra() {
     method=$1
     input=$(cat)
@@ -1127,6 +1153,7 @@ case "${1:-}" in
             set_profile) profile_start ;;
             reset_dns) reset_start ;;
             switch_engine) switch_start ;;
+            dnscrypt_test|dnscrypt_log) diagnostic "$2" ;;
             status|doh_status|network_status) status_extra "$2" ;;
             runtime|time_status|page_meta|catalog|lan_devices|job|log|update_check|uninstall_status)
                 exec "$LEGACY" "$@" ;;
@@ -1316,6 +1343,10 @@ if [ ! -x "$executable" ]; then
     sh "$helpers/dns-manager-engine-services.sh" quiesce "$target" || exit 1
 fi
 if [ "$target" = dnscrypt-proxy2 ]; then
+    # Package installation may replace the init script; install our boot guard afterwards.
+    [ -r "$helpers/dns-manager-dnscrypt.init" ] || exit 1
+    cp "$helpers/dns-manager-dnscrypt.init" "$init_dir/dnscrypt-proxy.new" || exit 1
+    chmod 0755 "$init_dir/dnscrypt-proxy.new" && mv -f "$init_dir/dnscrypt-proxy.new" "$init_dir/dnscrypt-proxy" || exit 1
     echo 'Запускаю DNSCrypt и проверяю DNS.'
     bootstrap=$(printf '%s' "$BOOTSTRAP_DNS" | tr ',' '\n' | awk 'NF {if(n++) printf ","; printf "%s", $0; if(n==3) exit}')
     printf '%s\n' 'https://cloudflare-dns.com/dns-query' 'https://dns.google/dns-query' | sh "$helpers/dns-manager-dnscrypt-pool-apply.sh" 5053 "$bootstrap" || exit 1
@@ -1347,16 +1378,57 @@ printf '%s\n' "$target" > "$tmp" && chmod 600 "$tmp" && mv -f "$tmp" "$engine_fi
 echo 'Движок переключён. Выберите DNS-профиль.'
 success=1
 EOF_DNSCRYPT_ASSET_11
+    cat > "$_dc_stage/dns-manager-dnscrypt.init" <<'EOF_DNSCRYPT_ASSET_12'
+#!/bin/sh /etc/rc.common
+# One dnscrypt-proxy2 process using DNS Manager's own configuration.
+USE_PROCD=1
+START=18
+STOP=89
+EXTRA_COMMANDS="check"
+EXTRA_HELP="\tcheck\t\tValidate DNS Manager's dnscrypt-proxy2 configuration\n"
+
+PROG=/usr/sbin/dnscrypt-proxy
+CONFIG=/etc/dnscrypt-proxy2/dnscrypt-proxy.toml
+ENGINE_FILE=/etc/dns-manager/config/dnscrypt-engine
+
+check() {
+    [ -x "$PROG" ] && [ -r "$CONFIG" ] || return 1
+    "$PROG" -config "$CONFIG" -check >/dev/null 2>&1
+}
+
+boot() {
+    [ "$(uci -q get dns-manager.global.active_engine 2>/dev/null)" = dnscrypt-proxy2 ] || return 0
+    start "$@"
+}
+
+start_service() {
+    check || return 1
+    procd_open_instance dns-manager
+    procd_set_param command "$PROG" -config "$CONFIG"
+    procd_set_param file "$CONFIG"
+    procd_set_param stdout 1
+    procd_set_param stderr 1
+    procd_set_param respawn 3600 5 5
+    procd_close_instance
+}
+EOF_DNSCRYPT_ASSET_12
     sh -n "$_dc_stage/backend-dnscrypt.sh"
-    for _dc_name in 'dns-manager-doh-stamp.sh' 'dns-manager-dnscrypt-config.sh' 'dns-manager-dnscrypt-pool.sh' 'dns-manager-dnscrypt-pool-apply.sh' 'dns-manager-dnscrypt-profile.sh' 'dns-manager-dnscrypt-profile-apply.sh' 'dns-manager-dnscrypt-dnsmasq.sh' 'dns-manager-engine-services.sh' 'dns-manager-device-detach.sh' 'dns-manager-engine-switch.sh'; do
+    for _dc_name in 'dns-manager-doh-stamp.sh' 'dns-manager-dnscrypt-config.sh' 'dns-manager-dnscrypt-pool.sh' 'dns-manager-dnscrypt-pool-apply.sh' 'dns-manager-dnscrypt-profile.sh' 'dns-manager-dnscrypt-profile-apply.sh' 'dns-manager-dnscrypt-dnsmasq.sh' 'dns-manager-engine-services.sh' 'dns-manager-device-detach.sh' 'dns-manager-engine-switch.sh' 'dns-manager-dnscrypt.init'; do
         sh -n "$_dc_stage/$_dc_name"
     done
-    for _dc_name in 'dns-manager-doh-stamp.sh' 'dns-manager-dnscrypt-config.sh' 'dns-manager-dnscrypt-pool.sh' 'dns-manager-dnscrypt-pool-apply.sh' 'dns-manager-dnscrypt-profile.sh' 'dns-manager-dnscrypt-profile-apply.sh' 'dns-manager-dnscrypt-dnsmasq.sh' 'dns-manager-engine-services.sh' 'dns-manager-device-detach.sh' 'dns-manager-engine-switch.sh'; do
+    for _dc_name in 'dns-manager-doh-stamp.sh' 'dns-manager-dnscrypt-config.sh' 'dns-manager-dnscrypt-pool.sh' 'dns-manager-dnscrypt-pool-apply.sh' 'dns-manager-dnscrypt-profile.sh' 'dns-manager-dnscrypt-profile-apply.sh' 'dns-manager-dnscrypt-dnsmasq.sh' 'dns-manager-engine-services.sh' 'dns-manager-device-detach.sh' 'dns-manager-engine-switch.sh' 'dns-manager-dnscrypt.init'; do
         chmod 0755 "$_dc_stage/$_dc_name"
         mv -f "$_dc_stage/$_dc_name" "$_dc_dest/$_dc_name"
     done
     chmod 0755 "$_dc_stage/backend-dnscrypt.sh"
     mv -f "$_dc_stage/backend-dnscrypt.sh" "${_dc_dest%/*}/backend-dnscrypt.sh"
+    # Existing DNSCrypt installations receive the same boot guard on update.
+    if [ "$(uci -q get dns-manager.global.active_engine 2>/dev/null)" = dnscrypt-proxy2 ] && [ -x /etc/init.d/dnscrypt-proxy ]; then
+        cp "$_dc_dest/dns-manager-dnscrypt.init" /etc/init.d/dnscrypt-proxy.new
+        chmod 0755 /etc/init.d/dnscrypt-proxy.new
+        mv -f /etc/init.d/dnscrypt-proxy.new /etc/init.d/dnscrypt-proxy
+        /etc/init.d/dnscrypt-proxy enable
+    fi
 )
 
 install_files() {
@@ -1980,7 +2052,7 @@ EOF_MENU
     "description": "DNS Manager native LuCI interface",
     "read": {
       "ubus": {
-        "dns_manager": [ "status", "runtime", "doh_status", "network_status", "lan_devices", "time_status", "page_meta", "catalog", "job", "log", "update_check", "uninstall_status" ]
+        "dns_manager": [ "dnscrypt_test", "dnscrypt_log", "status", "runtime", "doh_status", "network_status", "lan_devices", "time_status", "page_meta", "catalog", "job", "log", "update_check", "uninstall_status" ]
       }
     },
     "write": {
@@ -5568,7 +5640,7 @@ test_json() { case "${RPC_METHOD:-}" in test_all) job_start_test_all;; test_curr
 case "${1:-}" in
     worker) background_worker "$2";;
     list)
-        printf '{"status":{},"runtime":{},"doh_status":{},"network_status":{},"lan_devices":{},"set_device_dns":{"mac":"String","slots":"String"},"set_cache":{"total":0,"ttl":0},"time_status":{},"page_meta":{},"catalog":{"category":"String","offset":0,"limit":0,"only_ok":0},"update_check":{"force":0},"update":{},"update_manager":{},"update_hdp":{},"update_catalog":{},"update_all":{},"update_background":{},"test_combined":{},"switch_engine":{"target_engine":"String"},"set_profile":{"profile":"String"},"set_regional":{"enabled":0},"reset_dns":{},"uninstall":{},"uninstall_status":{},"set_slot":{"slot":"String","id":"String","expected":"String"},"set_slot_domains":{"slot":"String","domains":"String"},"add_custom_dns":{"name":"String","url":"String"},"delete_custom_dns":{"id":"String"},"set_setting":{"name":"String","enabled":0},"set_bootstrap":{"mode":"String","addresses":"String","preset_ids":"String","extra_addresses":"String"},"set_watchdog_setting":{"name":"String","value":0},"set_watchdog_settings":{"interval":0,"threshold":0,"repair_cooldown":0,"max_restarts":0,"guard_interval":0},"set_ntp":{"preset":"String"},"set_test_age":{"category":"String","hours":0},"test_all":{},"test_current":{},"test_one":{"id":"String"},"test_system":{},"job":{"id":"String"},"log":{"lines":0}}\n'
+        printf '{"status":{},"runtime":{},"doh_status":{},"network_status":{},"lan_devices":{},"set_device_dns":{"mac":"String","slots":"String"},"set_cache":{"total":0,"ttl":0},"time_status":{},"page_meta":{},"catalog":{"category":"String","offset":0,"limit":0,"only_ok":0},"update_check":{"force":0},"update":{},"update_manager":{},"update_hdp":{},"update_catalog":{},"update_all":{},"update_background":{},"test_combined":{},"switch_engine":{"target_engine":"String"},"dnscrypt_test":{},"dnscrypt_log":{},"set_profile":{"profile":"String"},"set_regional":{"enabled":0},"reset_dns":{},"uninstall":{},"uninstall_status":{},"set_slot":{"slot":"String","id":"String","expected":"String"},"set_slot_domains":{"slot":"String","domains":"String"},"add_custom_dns":{"name":"String","url":"String"},"delete_custom_dns":{"id":"String"},"set_setting":{"name":"String","enabled":0},"set_bootstrap":{"mode":"String","addresses":"String","preset_ids":"String","extra_addresses":"String"},"set_watchdog_setting":{"name":"String","value":0},"set_watchdog_settings":{"interval":0,"threshold":0,"repair_cooldown":0,"max_restarts":0,"guard_interval":0},"set_ntp":{"preset":"String"},"set_test_age":{"category":"String","hours":0},"test_all":{},"test_current":{},"test_one":{"id":"String"},"test_system":{},"job":{"id":"String"},"log":{"lines":0}}\n'
         ;;
     call)
         case "${2:-}" in
@@ -5682,6 +5754,8 @@ var callUpdateCatalog = dmRpc({ object:'dns_manager', method:'update_catalog', e
 var callProfile = dmRpc({ object:'dns_manager', method:'set_profile', params:['profile'], expect:{} });
 var callRegional = dmRpc({ object:'dns_manager', method:'set_regional', params:['enabled'], expect:{} });
 var callResetDns = dmRpc({ object:'dns_manager', method:'reset_dns', expect:{} });
+var callDnscryptTest = dmRpc({ object:'dns_manager', method:'dnscrypt_test', expect:{} });
+var callDnscryptLog = dmRpc({ object:'dns_manager', method:'dnscrypt_log', expect:{} });
 var callSwitchEngine = dmRpc({ object:'dns_manager', method:'switch_engine', params:['target_engine'], expect:{} });
 var callUninstall = dmRpc({ object:'dns_manager', method:'uninstall', expect:{} });
 var callUninstallStatus = rpc.declare({ object:'dns_manager', method:'uninstall_status', expect:{} });
@@ -5714,7 +5788,7 @@ var state = { slotPickerCheck:null, slotPickerRequest:0, lanDevicesLoading:false
 
 function profileName(p){
   var x=PROFILE.filter(function(v){return v[0]===p;})[0];
-  return x?x[1]:(p==='hybrid'?'Обход геоблока':p==='custom'?'Собственный выбор':p==='none'?'Не выбран':(p||'—'));
+  return x?x[1]:(p==='default'?'DNS по умолчанию':p==='hybrid'?'Обход геоблока':p==='custom'?'Собственный выбор':p==='none'?'Не выбран':(p||'—'));
 }
 function isProfileId(p){
   for(var i=0;i<PROFILE.length;i++)if(PROFILE[i][0]===p)return true;
@@ -6518,6 +6592,12 @@ function renderDoH(root,st){
     var details=[row('Движок',E('span',{},'dnscrypt-proxy2')),row('Служба',Number(st.dnscrypt_running)===1?badge('dm-ok','работает'):badge('dm-bad','остановлена')),row('Профиль',E('span',{},activeProfileLabel(st)))];
     details.push(E('p',{'class':'dm-hint'},'Один процесс использует общий набор DNS. Ниже перечислены настроенные серверы; текущий сервер выбирается автоматически. Отдельные слоты и привязки устройств недоступны.'));
     details.push(servers.length?E('div',{'class':'dm-doh-list'},servers.map(function(id){return E('div',{'class':'dm-row'},String(id));})):E('div',{'class':'dm-hint'},'DNS ещё не выбраны: примените профиль.'));
+    details.push(E('div',{'class':'dm-actions'},[
+      btn('Сбросить профиль','cbi-button-neutral',function(){applyProfile('default',root);},{disabled:!!state.busy}),
+      btn('Проверить DNS','cbi-button-neutral',function(){dnscryptDiagnostic(root,false);},{disabled:!!state.busy}),
+      btn('Показать журнал','cbi-button-neutral',function(){dnscryptDiagnostic(root,true);},{disabled:!!state.busy})
+    ]));
+    if(state.dnscryptDiagnostic)details.push(E('pre',{'class':'dm-log'},state.dnscryptDiagnostic));
     e.appendChild(card('DNS over HTTPS',details));
     return;
   }
@@ -8161,6 +8241,13 @@ function resumeEngine(root){
       renderDoH(root,window.dmState||{});
     }
   }).catch(function(){});
+}
+function dnscryptDiagnostic(root,log){
+  if(state.busy)return;
+  state.busy=true;state.dnscryptDiagnostic=log?'Загружаю журнал…':'Проверяю DNS…';renderDoH(root,window.dmState||{});
+  (log?callDnscryptLog():callDnscryptTest()).then(function(r){
+    state.dnscryptDiagnostic=(r&&r.ok?'':'Ошибка проверки.\n')+String(r&&r.output||'Нет данных.');
+  }).catch(function(err){state.dnscryptDiagnostic=withRpcError('Не удалось выполнить действие.',err);}).then(function(){state.busy=false;renderDoH(root,window.dmState||{});});
 }
 function switchEngine(target,root){
   if(state.busy)return;

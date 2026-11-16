@@ -18,7 +18,7 @@ HDP_INIT=${DNS_MANAGER_HDP_INIT:-/etc/init.d/https-dns-proxy}
 umask 077
 
 error() { printf '{"ok":false,"error":"%s"}\n' "$1"; }
-valid_profile() { case "$1" in bypass|clean|security|privacy|adblock|family|all|dnssec) return 0;; *) return 1;; esac; }
+valid_profile() { case "$1" in bypass|clean|security|privacy|adblock|family|all|dnssec|default) return 0;; *) return 1;; esac; }
 engine_selected() { [ -r "$ENGINE_FILE" ] && [ "$(cat "$ENGINE_FILE" 2>/dev/null)" = dnscrypt-proxy2 ]; }
 hdp_active() { [ -x "$HDP_INIT" ] && { "$HDP_INIT" enabled >/dev/null 2>&1 || "$HDP_INIT" running >/dev/null 2>&1; }; }
 disable_legacy_watchdog() {
@@ -112,9 +112,18 @@ profile_worker() {
             if mkdir -p "$CONFIG_DIR" && records=$(mktemp "$CONFIG_DIR/.dnscrypt-profile.XXXXXX") &&
                state_tmp=$(mktemp "$CONFIG_DIR/.dnscrypt-state.XXXXXX"); then
                 printf '%s\n' 'Проверяю DNS и применяю профиль.'
-                if DNS_MANAGER_NO_UPDATE=1 SILENT_APPLY=1 dnscrypt_apply_profile_pool "$goal" 5053 "$BOOTSTRAP_DNS" > "$records"; then
+                if (
+                    if [ "$goal" = default ]; then
+                        dnscrypt_select_profile() {
+                            printf '%s\n' 'cloudflare_clean|https://cloudflare-dns.com/dns-query' 'google_clean|https://dns.google/dns-query'
+                        }
+                    fi
+                    DNS_MANAGER_NO_UPDATE=1 SILENT_APPLY=1 dnscrypt_apply_profile_pool "$goal" 5053 "$BOOTSTRAP_DNS"
+                ) > "$records"; then
+                    state_profile=$goal
+                    [ "$state_profile" != default ] || state_profile=none
                     if "$DNSCRYPT_INIT" enable &&
-                       { printf 'profile=%s\n' "$goal"; sed 's/^/server=/' "$records"; } > "$state_tmp" &&
+                       { printf 'profile=%s\n' "$state_profile"; sed 's/^/server=/' "$records"; } > "$state_tmp" &&
                        chmod 0600 "$state_tmp" && mv -f "$state_tmp" "$STATE_FILE"; then
                         rc=0
                     else
@@ -231,6 +240,23 @@ reset_start() {
     printf '{"ok":true,"job":"action"}\n'
 }
 
+diagnostic() {
+    method=$1
+    cat >/dev/null
+    engine_selected || { error 'Выбран другой DNS-движок'; return; }
+    . /usr/share/libubox/jshn.sh
+    json_init
+    if [ "$method" = dnscrypt_test ]; then
+        output=$(timeout 12 nslookup -port=5053 ya.ru 127.0.0.1 2>&1); rc=$?
+        if [ "$rc" -eq 0 ]; then json_add_boolean ok 1; else json_add_boolean ok 0; fi
+    else
+        output=$(logread -e dnscrypt-proxy 2>&1 | tail -n 80)
+        json_add_boolean ok 1
+    fi
+    json_add_string output "$output"
+    json_dump
+}
+
 status_extra() {
     method=$1
     input=$(cat)
@@ -269,6 +295,7 @@ case "${1:-}" in
             set_profile) profile_start ;;
             reset_dns) reset_start ;;
             switch_engine) switch_start ;;
+            dnscrypt_test|dnscrypt_log) diagnostic "$2" ;;
             status|doh_status|network_status) status_extra "$2" ;;
             runtime|time_status|page_meta|catalog|lan_devices|job|log|update_check|uninstall_status)
                 exec "$LEGACY" "$@" ;;

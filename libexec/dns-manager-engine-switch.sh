@@ -99,6 +99,10 @@ if [ ! -x "$executable" ]; then
     sh "$helpers/dns-manager-engine-services.sh" quiesce "$target" || exit 1
 fi
 if [ "$target" = dnscrypt-proxy2 ]; then
+    # Package installation may replace the init script; install our boot guard afterwards.
+    [ -r "$helpers/dns-manager-dnscrypt.init" ] || exit 1
+    cp "$helpers/dns-manager-dnscrypt.init" "$init_dir/dnscrypt-proxy.new" || exit 1
+    chmod 0755 "$init_dir/dnscrypt-proxy.new" && mv -f "$init_dir/dnscrypt-proxy.new" "$init_dir/dnscrypt-proxy" || exit 1
     echo 'Запускаю DNSCrypt и проверяю DNS.'
     bootstrap=$(printf '%s' "$BOOTSTRAP_DNS" | tr ',' '\n' | awk 'NF {if(n++) printf ","; printf "%s", $0; if(n==3) exit}')
     printf '%s\n' 'https://cloudflare-dns.com/dns-query' 'https://dns.google/dns-query' | sh "$helpers/dns-manager-dnscrypt-pool-apply.sh" 5053 "$bootstrap" || exit 1
