@@ -1181,9 +1181,9 @@ save_config || exit 1
 echo 'Удаляю привязки устройств.'
 sh "$helpers/dns-manager-device-detach.sh" || exit 1
 changed=1
+rollback_firewall_targeted || exit 1
 echo 'Останавливаю DNS-службы.'
 sh "$helpers/dns-manager-engine-services.sh" quiesce "$target" || exit 1
-rollback_firewall_targeted || exit 1
 echo 'Восстанавливаю стандартный DNS.'
 sh "$helpers/dns-manager-dnscrypt-dnsmasq.sh" clean 5053 || exit 1
 SLOT_1_DOMAINS=''; SLOT_2_DOMAINS=''; SLOT_3_DOMAINS=''; SLOT_4_DOMAINS=''; SLOT_5_DOMAINS=''; SLOT_6_DOMAINS=''
