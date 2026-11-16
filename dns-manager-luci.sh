@@ -1519,6 +1519,7 @@ EOF_DNSCRYPT_ASSET_13
 install_files() {
     require_manager || return 1
     install_dnscrypt_assets || { err "Не удалось установить файлы dnscrypt-proxy2."; return 1; }
+    DNS_MANAGER_NO_UPDATE=1 "$MANAGER" __watchdog-migrate || { err "Не удалось перенести DNS Watchdog на cron."; return 1; }
 
     # Run only on interface events and only while the provider mode is selected.
     # The marker prevents replacing another package's hook at the same path.
@@ -2283,21 +2284,14 @@ manager_const_num() {
     esac
 }
 
-watchdog_service_running() {
-    [ -x /etc/init.d/dns-watchdog ] && /etc/init.d/dns-watchdog running >/dev/null 2>&1
-}
 watchdog_service_enabled() {
-    [ -x /etc/init.d/dns-watchdog ] && /etc/init.d/dns-watchdog enabled >/dev/null 2>&1
+    grep -Fqx '*/2 * * * * /usr/bin/dns-manager-watchdog >/dev/null 2>&1 # dm-watchdog' /etc/crontabs/root 2>/dev/null
+}
+watchdog_service_running() {
+    watchdog_service_enabled && /etc/init.d/cron running >/dev/null 2>&1
 }
 watchdog_loop_running() {
-    for _p in /proc/[0-9]*; do
-        [ -r "$_p/cmdline" ] || continue
-        _cmd="$(tr '\000' ' ' < "$_p/cmdline" 2>/dev/null || true)"
-        case "$_cmd" in
-            *dns-manager*__watchdog-loop*) return 0 ;;
-        esac
-    done
-    return 1
+    watchdog_service_running
 }
 
 cfg_get() {
@@ -3015,6 +3009,9 @@ update_manager_json() {
     _rc=0
     DNS_MANAGER_FORCE_UPDATE=1 DNS_MANAGER_UPDATE_NO_EXEC=1 "$MANAGER_PATH" update-check >"$_out" 2>&1 || _rc=$?
     _after="$(manager_version 2>/dev/null || true)"
+    if [ "$_rc" = 0 ]; then
+        DNS_MANAGER_NO_UPDATE=1 "$MANAGER_PATH" __watchdog-migrate >>"$_out" 2>&1 || _rc=1
+    fi
     case "$_rc" in
         0)
             [ -n "$_after" ] || _after="$_installed"
@@ -3603,9 +3600,9 @@ network_status_json() {
     _watchdog="$(cfg_get WATCHDOG_ENABLED)"; [ -n "$_watchdog" ] || _watchdog=0
     _watchdog_autoreplace="$(cfg_get WATCHDOG_AUTOREPLACE)"
     case "$_watchdog_autoreplace" in 0|1) ;; *) _watchdog_autoreplace="$_watchdog";; esac
-    _watchdog_interval="$(cfg_get WATCHDOG_INTERVAL)"; [ -n "$_watchdog_interval" ] || _watchdog_interval=120
-    _watchdog_backend="$(cfg_get WATCHDOG_BACKEND)"; [ -n "$_watchdog_backend" ] || _watchdog_backend=procd
-    _watchdog_threshold="$(manager_const_num WATCHDOG_FAIL_THRESHOLD 2)"
+    _watchdog_interval=120
+    _watchdog_backend=cron
+    _watchdog_threshold=3
     _watchdog_repair_cooldown="$(manager_const_num WATCHDOG_REPAIR_COOLDOWN 300)"
     _watchdog_max_restarts="$(manager_const_num WATCHDOG_MAX_RESTARTS 2)"
     _watchdog_guard_interval="$(manager_const_num WATCHDOG_GUARD_INTERVAL 3600)"
@@ -3840,9 +3837,9 @@ status_json() {
     _watchdog="$(cfg_get WATCHDOG_ENABLED)"; [ -n "$_watchdog" ] || _watchdog=0
     _watchdog_autoreplace="$(cfg_get WATCHDOG_AUTOREPLACE)"
     case "$_watchdog_autoreplace" in 0|1) ;; *) _watchdog_autoreplace="$_watchdog";; esac
-    _watchdog_interval="$(cfg_get WATCHDOG_INTERVAL)"; [ -n "$_watchdog_interval" ] || _watchdog_interval=120
-    _watchdog_backend="$(cfg_get WATCHDOG_BACKEND)"; [ -n "$_watchdog_backend" ] || _watchdog_backend=procd
-    _watchdog_threshold="$(manager_const_num WATCHDOG_FAIL_THRESHOLD 2)"
+    _watchdog_interval=120
+    _watchdog_backend=cron
+    _watchdog_threshold=3
     _watchdog_repair_cooldown="$(manager_const_num WATCHDOG_REPAIR_COOLDOWN 300)"
     _watchdog_max_restarts="$(manager_const_num WATCHDOG_MAX_RESTARTS 2)"
     _watchdog_guard_interval="$(manager_const_num WATCHDOG_GUARD_INTERVAL 3600)"
@@ -5735,19 +5732,9 @@ run_action() {
 }
 
 watchdog_restore_service_state() {
-    _enabled="$1"; _running="$2"
-    [ -x /etc/init.d/dns-watchdog ] || return 0
-    if [ "$_enabled" = 1 ]; then
-        /etc/init.d/dns-watchdog enable >/dev/null 2>&1 || true
-    else
-        /etc/init.d/dns-watchdog disable >/dev/null 2>&1 || true
-    fi
-    if [ "$_running" = 1 ]; then
-        /etc/init.d/dns-watchdog start >/dev/null 2>&1 || true
-    else
-        /etc/init.d/dns-watchdog stop >/dev/null 2>&1 || true
-    fi
+    if [ "$1" = 1 ]; then watchdog_service_start_enable; else watchdog_service_stop_disable; fi
 }
+
 # Batch only methods already available to the read-only ACL. Dispatch through
 # the installed rpcd executable so engine-specific status stays authoritative.
 multi_json() {
@@ -6499,10 +6486,10 @@ function renderOverview(root,st){
   var watchdogLoop=Number(st.watchdog_loop||0)===1;
   var watchdogService=Number(st.watchdog_service||0)===1;
   var watchdogAutoReplace=yes(st.watchdog_autoreplace);
-  var wd=watchdogEnabled?(st.watchdog_backend==='procd'?(watchdogLoop?badge('dm-ok','работает'):watchdogService?badge('dm-warn','служба запущена, цикл не найден'):badge('dm-bad','служба не запущена')):badge('dm-warn','неизвестный механизм')):badge('dm-off','выключена');
-  var wdDetails='Интервал: каждые '+Number(st.watchdog_interval||120)/60+' мин.';
+  var wd=watchdogEnabled?(st.watchdog_backend==='cron'?(watchdogLoop?badge('dm-ok','работает'):watchdogService?badge('dm-warn','служба запущена, цикл не найден'):badge('dm-bad','служба не запущена')):badge('dm-warn','неизвестный механизм')):badge('dm-off','выключена');
+  var wdDetails='Интервал: каждые 2 мин.';
   var wdAuto=!watchdogEnabled?badge('dm-off','проверка выключена'):watchdogAutoReplace?(watchdogLoop?badge('dm-ok','включена'):badge('dm-warn','проверка не работает')):badge('dm-off','выключена');
-  var wdAutoDetails='Замена после '+Number(st.watchdog_fail_threshold||2)+' последовательных сбоев.';
+  var wdAutoDetails='Замена после 3 последовательных сбоев.';
 
   var dnsItems=[];
   displayDnsRows(st).forEach(function(d){
@@ -7566,13 +7553,10 @@ function watchdogCard(root,st){
     ]);
   }
 
-  var intervalMinutes=minuteValue(st.watchdog_interval,2);
-  var failThreshold=Number(st.watchdog_fail_threshold||2);
-  if(!isFinite(failThreshold)||failThreshold<1||failThreshold>5)failThreshold=2;
+  var intervalMinutes=2;
+  var failThreshold=3;
   var cooldownMinutes=minuteValue(st.watchdog_repair_cooldown,5);
   var spec=[
-    ['watchdog_interval','Как часто проверять DNS',1,60,'мин','При интервале 2 минуты и пороге 2 сбоя первая попытка восстановления начнётся примерно в течение 4 минут после отказа.',true],
-    ['watchdog_fail_threshold','Ошибок подряд до замены',1,5,'проверок','Сколько подряд неудачных проверок нужно для признания DNS неисправным.',false],
     ['watchdog_repair_cooldown','Пауза между попытками восстановления DNS',5,120,'мин','Минимальная пауза перед следующей попыткой восстановления или замены того же слота.',true]
   ];
   var save=btn(busy?'Сохраняю…':'Сохранить настройки','cbi-button-apply',function(){
@@ -7596,7 +7580,7 @@ function watchdogCard(root,st){
     clearSettingFeedback();
     state.busy=true;state.busySetting='watchdog_batch';
     renderNetwork(root,window.dmState||{});
-    callWatchdogSettings(values[0],values[1],values[2],Math.round(restarts),Math.round(guard)).then(function(r){
+    callWatchdogSettings(120,3,values[0],Math.round(restarts),Math.round(guard)).then(function(r){
       state.busy=false;state.busySetting='';
       setSettingFeedback('watchdog_batch',r&&r.ok?'Настройки проверки сохранены.':((r&&r.error)||'Не удалось сохранить настройки контроля.'),r&&r.ok?'ok':'error');
       refresh(root,true);
@@ -7630,8 +7614,8 @@ function watchdogCard(root,st){
   return E('div',{'class':'dm-watchdog-card'},[
     E('div',{'class':'dm-section-title'},'Контроль текущих DNS'),
     E('div',{'class':'dm-setting-desc'},'Контроль выполняется каждые '+intervalMinutes+' мин: проверяется локальный порт назначенного DoH и DNS-ответ на запрос example.com (для слота RU — yandex.ru). Это проверка рабочего пути, а не полный тест каталога DNS. Профиль не требуется.'),
-    toggleRow('Проверка DNS','Проверяет назначенные DoH-слоты; при сбое может перезапустить их прокси, сохраняя выбранный DNS.',en,'watchdog',false),
-    toggleRow('Автозамена DNS','После '+failThreshold+' ошибок подряд сначала пытается восстановить прокси, затем при необходимости ищет DNS той же категории. При общем сбое замену откладывает; повторная попытка — не раньше чем через '+cooldownMinutes+' мин. Пользовательские DoH не заменяются.',auto,'watchdog_autoreplace',!en),
+    toggleRow('Проверка DNS','Проверяет назначенные DoH-слоты.',en,'watchdog',false),
+    toggleRow('Автозамена DNS','После '+failThreshold+' ошибок подряд ищет рабочий DNS той же категории. При общем сбое замену откладывает; повторная попытка — не раньше чем через '+cooldownMinutes+' мин. Пользовательские DoH не заменяются.',auto,'watchdog_autoreplace',!en),
     E('div',{'class':'dm-hint'},'Разовая проверка текущих DoH и дополнительных системных экземпляров доступна на вкладке «DNS over HTTPS» кнопкой «Проверить текущие DNS». Она проверяет реальные DoH-endpoint’ы и не включает периодический контроль.'),
     E('details',{'class':'dm-watchdog-advanced'},[
       E('summary',{},'Дополнительные параметры'),

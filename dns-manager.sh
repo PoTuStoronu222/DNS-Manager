@@ -34,7 +34,7 @@ DNSCAT_REF="${DNS_MANAGER_SOURCE_REF:-main}"
 case "$DNSCAT_REF" in ''|/*|*//*|*..*|*[!A-Za-z0-9._/-]*) DNSCAT_REF=main;; esac
 DNSCAT_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/$DNSCAT_REF/catalogs/dns-8.7-RU-NOSOCIAL.conf"
 WATCHDOG_RESTART_COOLDOWN=300
-WATCHDOG_BACKEND="procd"
+WATCHDOG_BACKEND="cron"
 WATCHDOG_CHECK_INTERVAL_DEFAULT=120
 WATCHDOG_FAIL_THRESHOLD=2
 WATCHDOG_REPAIR_COOLDOWN=300
@@ -1085,7 +1085,7 @@ BOOTSTRAP_PRESET_IDS=""; BOOTSTRAP_EXTRA=""; BOOTSTRAP_METADATA_SNAPSHOT=""
 BOOTSTRAP_DNS="${BOOTSTRAP_DNS_SELECTED:-$BOOTSTRAP_DNS_ALL}"
 # procd watchdog tuning is persisted in manager.conf and validated on load.
 # The defaults below remain the safe baseline for small OpenWrt routers.
-WATCHDOG_BACKEND="procd"
+WATCHDOG_BACKEND="cron"
 : "${WATCHDOG_INTERVAL:=${WATCHDOG_CHECK_INTERVAL_DEFAULT:-120}}"
 case "$WATCHDOG_INTERVAL" in
     ''|*[!0-9]*) WATCHDOG_INTERVAL="${WATCHDOG_CHECK_INTERVAL_DEFAULT:-120}" ;;
@@ -8075,6 +8075,8 @@ load_watchdog_state() {
     [ -r /usr/share/libubox/jshn.sh ] || return 1
     . /usr/share/libubox/jshn.sh
     json_load "$(cat "$_state_file")" || return 1
+    json_get_var _value force_error
+    case "$_value" in 1) WD_FORCE_ERROR=1;; *) WD_FORCE_ERROR=0;; esac
     json_get_var _value last_check
     case "$_value" in ''|*[!0-9]*) _value=0;; esac
     WATCHDOG_STATE_LAST_CHECK="$_value"
@@ -8109,6 +8111,7 @@ save_watchdog_state() {
     json_init
     _now="$(date +%s 2>/dev/null)"
     case "$_now" in ''|*[!0-9]*) _now=0;; esac
+    json_add_int force_error "${WD_FORCE_ERROR:-0}"
     json_add_int last_check "$_now"
     json_add_int last_guard "${WD_LAST_GUARD_TS:-0}"
     json_add_int last_restart "${WATCHDOG_LAST_RESTART_TS:-0}"
@@ -8134,283 +8137,100 @@ save_watchdog_state() {
 }
 watchdog_embedded_loop() {
     watchdog_legacy_engine_allowed || return 0
-    # Forced-DNS Auto must track Steer even when DNS probing/rotation is off.
-    # When WATCHDOG_ENABLED=0 this loop runs only the lightweight path guard.
     DNS_MANAGER_RAM_LOG=1
-    mkdir -p "$STATE_DIR" 2>/dev/null || return 1
+    mkdir -p "$STATE_DIR" || return 1
     load_config
     [ "${WATCHDOG_ENABLED:-0}" = 1 ] || [ "${FORCE_DOH:-0}" = 1 ] || return 0
     refresh_runtime_capabilities
-
     for _slot in 1 2 3 4 5 6 RU; do
-        eval "WD_FAIL_${_slot}=0"
-        eval "WD_MISSING_${_slot}=0"
-        eval "WD_ID_${_slot}=''"
-        eval "WD_SINGLE_TRIED_${_slot}=''"
-        eval "WD_CATEGORY_STALE_${_slot}=0"
-        eval "WD_RECOVERY_BLOCKED_${_slot}=0"
-        eval "WD_REPAIR_TS_${_slot}=0"
+        eval "WD_FAIL_${_slot}=0 WD_MISSING_${_slot}=0 WD_ID_${_slot}='' WD_SINGLE_TRIED_${_slot}='' WD_CATEGORY_STALE_${_slot}=0 WD_RECOVERY_BLOCKED_${_slot}=0 WD_REPAIR_TS_${_slot}=0"
     done
-    WD_RESTART_COUNT=0
-    WATCHDOG_LAST_RESTART_TS=0
-    WD_LAST_GUARD_TS="$(date +%s 2>/dev/null)"
-    load_watchdog_state >/dev/null 2>&1 || true
-    CHECKER_MISSING_LOGGED=0
-    if [ "${WATCHDOG_SINGLE_CYCLE:-0}" = 1 ]; then
-        _wd_now="$(date +%s 2>/dev/null)"
-        case "$_wd_now:${WATCHDOG_STATE_LAST_CHECK:-0}" in *[!0-9:]*|:*) return 1;; esac
-        if [ "$_wd_now" -ge "${WATCHDOG_STATE_LAST_CHECK:-0}" ] && [ $((_wd_now-${WATCHDOG_STATE_LAST_CHECK:-0})) -lt 90 ]; then return 0; fi
-    elif [ "${WATCHDOG_ENABLED:-0}" = 1 ]; then
-        log_msg "Фоновый DNS Watchdog запущен: проверка каждые ${WATCHDOG_INTERVAL:-120}с, восстановление после ${WATCHDOG_FAIL_THRESHOLD:-2} последовательных сбоев."
+    WD_FORCE_ERROR=0
+    load_watchdog_state || return 1
+
+    # Only observe the active interception path: Steer owns its own rules.
+    detect_forced_dns_path
+    if [ "${FORCE_DOH:-0}" = 1 ] && [ "${FORCED_DNS_ACTIVE:-0}" != 1 ]; then
+        if [ "${WD_FORCE_ERROR:-0}" != 1 ]; then
+            logger -t dns-manager-watchdog 'Ошибка Steer/Forced DNS: перехват DNS не обнаружен. Требуется внимание.'
+        fi
+        WD_FORCE_ERROR=1
     else
-        log_msg "Фоновая проверка forced-DNS/Steer запущена; проверка и замена DNS-серверов выключены."
+        WD_FORCE_ERROR=0
     fi
-
-    # Give network + https-dns-proxy a short settling window after procd start/WAN-up.
-    [ "${WATCHDOG_SINGLE_CYCLE:-0}" = 1 ] || sleep 12
-
-    while :; do
-        watchdog_legacy_engine_allowed || return 0
-        load_config >/dev/null 2>&1 || true
-        [ "${WATCHDOG_ENABLED:-0}" = 1 ] || [ "${FORCE_DOH:-0}" = 1 ] || return 0
-
-        if ! watchdog_forced_dns_runtime_guard; then
-            log_msg "Watchdog: не удалось синхронизировать forced-DNS по текущему состоянию Steer."
-        fi
-
-        # Forced-DNS-only mode does not test or rotate selected DNS servers.
-        if [ "${WATCHDOG_ENABLED:-0}" != 1 ]; then
-            if [ "${WATCHDOG_SINGLE_CYCLE:-0}" = 1 ]; then save_watchdog_state >/dev/null 2>&1 || true; return 0; fi
-            sleep 60
-            continue
-        fi
-
-        _interval="${WATCHDOG_INTERVAL:-600}"
-        case "$_interval" in ''|*[!0-9]*) _interval=600;; esac
-        [ "$_interval" -ge 60 ] 2>/dev/null || _interval=600
-        [ "$_interval" -le 3600 ] 2>/dev/null || _interval=600
-
-        if ! watchdog_resource_guard; then
-            if [ "${WATCHDOG_SINGLE_CYCLE:-0}" = 1 ]; then save_watchdog_state >/dev/null 2>&1 || true; return 0; fi
-            sleep "$_interval"
-            continue
-        fi
-
-        if ! command -v dig >/dev/null 2>&1 && ! command -v nslookup >/dev/null 2>&1; then
-            if [ "${CHECKER_MISSING_LOGGED:-0}" != 1 ]; then
-                log_msg "DNS-проверка временно приостановлена: dig/nslookup недоступен. Ротацию не выполняю."
-                CHECKER_MISSING_LOGGED=1
-            fi
-            if [ "${WATCHDOG_SINGLE_CYCLE:-0}" = 1 ]; then save_watchdog_state >/dev/null 2>&1 || true; return 0; fi
-            sleep "$_interval"
-            continue
-        fi
-        if [ "${CHECKER_MISSING_LOGGED:-0}" = 1 ]; then
-            log_msg "Утилита DNS-проверки снова доступна; embedded watchdog продолжил работу."
-            CHECKER_MISSING_LOGGED=0
-        fi
-
-        _checked=0
-        _failed=0
-        _live=0
-        _missing=0
-        _threshold_slots=""
-        _local_recover_slots=""
-        _probe_rc=0
-        _wd_cycle_records="$(mktemp "$STATE_DIR/dns-watchdog-cycle.XXXXXX" 2>/dev/null)" || { [ "${WATCHDOG_SINGLE_CYCLE:-0}" != 1 ] || return 1; sleep "$_interval"; continue; }
-
-        watchdog_refresh_listener_snapshot
-
-        for _slot in 1 2 3 4 5 6 RU; do
-            eval "_id=\${SLOT_${_slot}:-}"
-            watchdog_loop_track_slot "$_slot" "$_id"
-            if [ -z "$_id" ]; then
-                watchdog_loop_reset_slot "$_slot"
-                continue
-            fi
-            _current_slot_cat="$(dns_cat "$_id" 2>/dev/null || true)"
-            if [ -z "$_current_slot_cat" ]; then
-                watchdog_append_check_record "$_wd_cycle_records" "$_slot" "$_id" unknown SKIPPED
-                watchdog_loop_reset_slot "$_slot"
-                continue
-            fi
-            eval "_port=\${PORT_${_slot}:-}"
-            [ -n "$_port" ] || _port="$(hybrid_desired_port "$_slot")"
-            if [ -z "$_port" ]; then
-                watchdog_append_check_record "$_wd_cycle_records" "$_slot" "$_id" "$_current_slot_cat" NO_LISTENER
-                continue
-            fi
-            case "$_slot" in RU) _domain="yandex.ru" ;; *) _domain="example.com" ;; esac
-
-            _checked=$((_checked+1))
-            if ! watchdog_listener_snapshot_has_port "$_port"; then
-                watchdog_append_check_record "$_wd_cycle_records" "$_slot" "$_id" "$_current_slot_cat" NO_LISTENER
-                _missing=$((_missing+1))
-                eval "WD_FAIL_${_slot}=0"
-                eval "_mc=\${WD_MISSING_${_slot}:-0}"
-                _mc=$((_mc+1))
-                eval "WD_MISSING_${_slot}=\$_mc"
-                if [ "$_mc" -ge "${WATCHDOG_FAIL_THRESHOLD:-2}" ] 2>/dev/null; then
-                    _local_recover_slots="$_local_recover_slots $_slot"
-                fi
-                continue
-            fi
-
-            _live=$((_live+1))
-            eval "WD_MISSING_${_slot}=0"
+    if [ "${WATCHDOG_ENABLED:-0}" != 1 ]; then
+        save_watchdog_state
+        return $?
+    fi
+    watchdog_resource_guard || { save_watchdog_state; return 0; }
+    if ! command -v dig >/dev/null 2>&1 && ! command -v nslookup >/dev/null 2>&1; then
+        log_msg "DNS-проверка приостановлена: dig/nslookup недоступен."
+        save_watchdog_state
+        return 0
+    fi
+    _wd_cycle_records="$(mktemp "$STATE_DIR/dns-watchdog-cycle.XXXXXX")" || return 1
+    _checked=0; _failed=0; _threshold_slots=''
+    watchdog_refresh_listener_snapshot
+    for _slot in 1 2 3 4 5 6 RU; do
+        eval "_id=\${SLOT_${_slot}:-}"
+        watchdog_loop_track_slot "$_slot" "$_id"
+        [ -n "$_id" ] || continue
+        _category="$(dns_cat "$_id" 2>/dev/null)"
+        [ -n "$_category" ] || continue
+        eval "_port=\${PORT_${_slot}:-}"
+        [ -n "$_port" ] || _port="$(hybrid_desired_port "$_slot")"
+        [ -n "$_port" ] || continue
+        _checked=$((_checked+1))
+        case "$_slot" in RU) _domain=yandex.ru ;; *) _domain=example.com ;; esac
+        _probe_rc=1
+        if watchdog_listener_snapshot_has_port "$_port"; then
             local_dns_query_ok "$_port" "$_domain"
             _probe_rc=$?
-            if [ "$_probe_rc" = 2 ]; then
-                watchdog_append_check_record "$_wd_cycle_records" "$_slot" "$_id" "$_current_slot_cat" SKIPPED
-                break
-            fi
-            if [ "$_probe_rc" = 0 ]; then
-                watchdog_append_check_record "$_wd_cycle_records" "$_slot" "$_id" "$_current_slot_cat" OK
-                watchdog_loop_reset_slot "$_slot"
-                eval "WD_RECOVERY_BLOCKED_${_slot}=0"
-                continue
-            fi
-            watchdog_append_check_record "$_wd_cycle_records" "$_slot" "$_id" "$_current_slot_cat" FAIL
-
+        fi
+        if [ "$_probe_rc" = 2 ]; then
+            watchdog_append_check_record "$_wd_cycle_records" "$_slot" "$_id" "$_category" SKIPPED
+            continue
+        fi
+        if [ "$_probe_rc" = 0 ]; then
+            watchdog_append_check_record "$_wd_cycle_records" "$_slot" "$_id" "$_category" OK
+            watchdog_loop_reset_slot "$_slot"
+            eval "WD_RECOVERY_BLOCKED_${_slot}=0"
+        else
+            watchdog_append_check_record "$_wd_cycle_records" "$_slot" "$_id" "$_category" FAIL
             _failed=$((_failed+1))
             eval "_fc=\${WD_FAIL_${_slot}:-0}"
             _fc=$((_fc+1))
             eval "WD_FAIL_${_slot}=\$_fc"
-            if [ "$_fc" -ge "${WATCHDOG_FAIL_THRESHOLD:-2}" ] 2>/dev/null; then
-                _threshold_slots="$_threshold_slots $_slot"
-            fi
-        done
-
-        if [ "$_probe_rc" = 2 ]; then
-            rm -f "$_wd_cycle_records" 2>/dev/null || true
-            if [ "${WATCHDOG_SINGLE_CYCLE:-0}" = 1 ]; then save_watchdog_state >/dev/null 2>&1 || true; return 0; fi
-            sleep "$_interval"
-            continue
+            [ "$_fc" -lt 3 ] || _threshold_slots="$_threshold_slots $_slot"
         fi
-        [ "$_checked" -gt 0 ] || { rm -f "$_wd_cycle_records" 2>/dev/null || true; [ "${WATCHDOG_SINGLE_CYCLE:-0}" != 1 ] || { save_watchdog_state >/dev/null 2>&1 || true; return 0; }; sleep "$_interval"; continue; }
-
-        _watchdog_action=0
-        _global_dns_failure=0
-        if [ "$_live" -gt 0 ] && [ "$_failed" -eq "$_live" ]; then
-            if [ "$_missing" -eq 0 ]; then
-                _global_dns_failure=1
-                if [ "$_checked" = 1 ] && [ "${WATCHDOG_AUTOREPLACE:-0}" = 1 ]; then
-                    log_msg "Watchdog: единственный DNS не отвечает; замену разрешит только независимая проверка кандидата."
-                else
-                    log_msg "Watchdog: все активные DoH одновременно не отвечают; вероятен общий сбой WAN/upstream. В этом цикле DNS не ротирую."
-                fi
-            else
-                _global_dns_failure=2
-                log_msg "Watchdog: все отвечающие DoH одновременно не проходят проверку, при этом есть отсутствующий listener; автозамену приостанавливаю до уточнения состояния."
-            fi
-        fi
-
-        if [ "$_missing" -eq "$_checked" ] && [ "$_checked" -gt 0 ]; then
-            for _slot in 1 2 3 4 5 6 RU; do watchdog_loop_reset_slot "$_slot"; done
-            log_msg "Все локальные DoH-listener одновременно отсутствуют. Запрашиваю восстановление https-dns-proxy без ротации DNS."
-            watchdog_service_recover_run >/dev/null 2>&1 || true
-            _watchdog_action=1
-            load_config
-            refresh_runtime_capabilities
-            WD_LAST_GUARD_TS="$(date +%s 2>/dev/null)"
-            sleep 5
-        elif [ -n "$_local_recover_slots" ]; then
-            _local_trigger="${_local_recover_slots# }"
-            log_msg "Локальный DoH-listener слота $_local_trigger отсутствует два цикла подряд. Запрашиваю восстановление https-dns-proxy без ротации DNS."
-            watchdog_service_recover_run >/dev/null 2>&1 || true
-            _watchdog_action=1
-            load_config
-            refresh_runtime_capabilities
-            WD_LAST_GUARD_TS="$(date +%s 2>/dev/null)"
-            for _slot in 1 2 3 4 5 6 RU; do watchdog_loop_reset_slot "$_slot"; done
-            sleep 5
+    done
+    if [ "${WATCHDOG_AUTOREPLACE:-0}" = 1 ] && [ -n "$_threshold_slots" ]; then
+        if [ "$_checked" -gt 1 ] && [ "$_failed" -eq "$_checked" ]; then
+            log_msg 'Watchdog: общий сбой DNS; автоматическая замена отложена.'
         else
-            if [ "$_global_dns_failure" = 1 ] && [ "$_checked" = 1 ] && [ "$_live" = 1 ] && [ "${WATCHDOG_AUTOREPLACE:-0}" = 1 ]; then
-                for _trigger in $_threshold_slots; do
-                    watchdog_loop_repair_cooldown_ok "$_trigger" || continue
-                    watchdog_loop_mark_repair "$_trigger"
-                    eval "_trigger_id=\${SLOT_${_trigger}:-}"
-                    eval "_trigger_port=\${PORT_${_trigger}:-}"
-                    [ -n "$_trigger_port" ] || _trigger_port="$(hybrid_desired_port "$_trigger")"
-                    [ -n "$_trigger_id" ] && [ -n "$_trigger_port" ] || continue
-                    if watchdog_slot_target_run "$_trigger" "$_trigger_id" "$_trigger_port" single; then
-                        _watchdog_action=1
-                        load_config >/dev/null 2>&1 || true
-                        refresh_runtime_capabilities >/dev/null 2>&1 || true
-                        WD_LAST_GUARD_TS="$(date +%s 2>/dev/null)"
-                        eval "WD_FAIL_${_trigger}=0"
-                        eval "WD_SINGLE_TRIED_${_trigger}=''"
-                    elif [ "${WATCHDOG_ROLLBACK_UNCERTAIN:-0}" = 1 ]; then
-                        eval "WD_RECOVERY_BLOCKED_${_trigger}=1"
-                        log_msg "Watchdog: откат слота $_trigger не подтверждён. Проверьте конфигурацию https-dns-proxy и DNS."
-                    fi
-                done
-            elif [ "$_global_dns_failure" != 0 ]; then
-                log_msg "Watchdog: общий или неопределённый DNS-сбой; перезапуск отдельных proxy и ротацию откладываю."
-            else
-                # A listener can remain open while its https-dns-proxy process is stuck.
-                # Restart only that slot first; replace DNS only if recovery fails and a common outage is excluded.
-                for _trigger in $_threshold_slots; do
+            _attempts=0
+            for _trigger in $_threshold_slots; do
+                [ "$_attempts" -lt 3 ] || break
                 watchdog_loop_repair_cooldown_ok "$_trigger" || continue
-                watchdog_loop_mark_repair "$_trigger"
                 eval "_trigger_id=\${SLOT_${_trigger}:-}"
                 eval "_trigger_port=\${PORT_${_trigger}:-}"
                 [ -n "$_trigger_port" ] || _trigger_port="$(hybrid_desired_port "$_trigger")"
                 [ -n "$_trigger_id" ] && [ -n "$_trigger_port" ] || continue
-                log_msg "DNS в слоте $_trigger не отвечает ${WATCHDOG_FAIL_THRESHOLD:-2} проверок подряд. Перезапускаю только его https-dns-proxy."
-                _slot_recovered=0
-                if watchdog_restart_slot_instance "$_trigger" "$_trigger_id" "$_trigger_port"; then
-                    log_msg "Watchdog: слот $_trigger снова отвечает; выбранный DNS сохранён."
-                    _slot_recovered=1
-                    _record_tmp="${_wd_cycle_records}.tmp"
-                    if awk -F'|' -v slot="$_trigger" 'BEGIN { OFS = "|" } $1 == "record" && $2 == slot && $6 == "FAIL" { $6 = "OK" } { print }' "$_wd_cycle_records" > "$_record_tmp"; then
-                        mv -f "$_record_tmp" "$_wd_cycle_records" || rm -f "$_record_tmp" 2>/dev/null || true
-                    else
-                        rm -f "$_record_tmp" 2>/dev/null || true
-                    fi
-                elif [ "${WATCHDOG_AUTOREPLACE:-0}" = 1 ] && [ "$_global_dns_failure" = 1 ]; then
-                    log_msg "Watchdog: слот $_trigger не восстановился после перезапуска, но все активные DNS не отвечают одновременно; замену не выполняю."
-                elif [ "${WATCHDOG_AUTOREPLACE:-0}" = 1 ] && [ "$_global_dns_failure" = 2 ]; then
-                    log_msg "Watchdog: слот $_trigger не восстановился после перезапуска; общий сбой не исключён, DNS сохраняю без замены."
-                elif [ "${WATCHDOG_AUTOREPLACE:-0}" = 1 ]; then
-                    log_msg "Watchdog: слот $_trigger не восстановился после перезапуска; проверяю замену той же категории."
-                    if watchdog_slot_target_run "$_trigger" "$_trigger_id" "$_trigger_port"; then
-                        log_msg "Watchdog: слот $_trigger восстановлен; проверка DNS пройдена."
-                        _slot_recovered=1
-                    elif [ "${WATCHDOG_ROLLBACK_UNCERTAIN:-0}" = 1 ]; then
-                        eval "WD_RECOVERY_BLOCKED_${_trigger}=1"
-                        log_msg "Watchdog: откат слота $_trigger не подтверждён. Проверьте конфигурацию https-dns-proxy и DNS."
-                    else
-                        log_msg "Watchdog: замена слота $_trigger не подтверждена; текущий DNS сохранён."
-                    fi
+                watchdog_loop_mark_repair "$_trigger"
+                _attempts=$((_attempts+1))
+                _single=''; [ "$_checked" != 1 ] || _single=single
+                if watchdog_slot_target_run "$_trigger" "$_trigger_id" "$_trigger_port" "$_single"; then
+                    watchdog_loop_reset_slot "$_trigger"
                 else
-                    log_msg "Watchdog: слот $_trigger не восстановился после перезапуска; выбранный DNS оставлен без изменений, автозамена выключена."
+                    log_msg "Watchdog: не удалось подобрать замену для DNS $_trigger."
                 fi
-                if [ "$_slot_recovered" = 1 ]; then
-                    _watchdog_action=1
-                    load_config >/dev/null 2>&1 || true
-                    refresh_runtime_capabilities >/dev/null 2>&1 || true
-                    WD_LAST_GUARD_TS="$(date +%s 2>/dev/null)"
-                    eval "WD_FAIL_${_trigger}=0"
-                    eval "WD_SINGLE_TRIED_${_trigger}=''"
-                fi
-                done
-            fi
+            done
         fi
-
-        if [ "$_watchdog_action" = 0 ] && [ "$_failed" -eq 0 ] && [ "$_missing" -eq 0 ]; then
-            watchdog_embedded_integrity_guard >/dev/null 2>&1 || true
-        fi
-
-        watchdog_save_check_results "$_wd_cycle_records" || log_msg "Watchdog: не удалось сохранить результаты цикла проверки DNS."
-        save_watchdog_state >/dev/null 2>&1 || true
-        [ "${WATCHDOG_SINGLE_CYCLE:-0}" != 1 ] || return 0
-        sleep "$_interval"
-    done
+    fi
+    watchdog_save_check_results "$_wd_cycle_records"
+    save_watchdog_state
 }
 
-# ==========================================
-# ==========================================
 run_watchdog() {
     [ "${WATCHDOG_ENABLED:-0}" = 1 ] || return 0
     _wd_rc=0
@@ -8751,97 +8571,29 @@ watchdog_service_file_matches() {
     return 0
 }
 watchdog_service_install_files() {
-    # DNS Manager owns this path and may replace an older or external file when enabled.
-    mkdir -p "$(dirname "$WATCHDOG_SERVICE_PATH")" || return 1
-    _stmp="${WATCHDOG_SERVICE_PATH}.tmp.$$"
-    cat > "$_stmp" <<'EOF_DNS_WATCHDOG_SERVICE'
-#!/bin/sh /etc/rc.common
-# DNS_MANAGER_WATCHDOG_SERVICE=2
-# DNS_MANAGER_WATCHDOG_SERVICE_VERSION=3.11.10
-
-USE_PROCD=1
-START=95
-STOP=10
-
-PROG="/usr/bin/dns-manager"
-CMD="__watchdog-loop"
-
-start_service() {
-    [ -x "$PROG" ] || return 1
-    _engine=/etc/dns-manager/config/dnscrypt-engine
-    if [ -e "$_engine" ] || [ -L "$_engine" ]; then
-        [ -r "$_engine" ] && [ "$(cat "$_engine" 2>/dev/null)" = https-dns-proxy ] || return 0
-    fi
-    [ -r /etc/dns-manager/config/manager.conf ] || return 0
-    . /etc/dns-manager/config/manager.conf
-    _wd_enabled="${WATCHDOG_ENABLED:-0}"
-    _force_enabled="${FORCE_DOH:-0}"
-    [ "$_wd_enabled" = 1 ] || [ "$_force_enabled" = 1 ] || return 0
-    procd_open_instance "dns-watchdog"
-    procd_set_param command /bin/sh "$PROG" "$CMD"
-    procd_set_param respawn 3600 5 5
-    procd_set_param stdout 0
-    procd_set_param stderr 1
-    procd_close_instance
-}
-
-service_stopped() {
-    procd_running "dns-watchdog" || return 0
-    return 1
-}
-
-service_triggers() {
-    . /lib/functions/network.sh 2>/dev/null || true
-    network_flush_cache 2>/dev/null || true
-    network_find_wan wan 2>/dev/null || true
-    wan="${wan:-wan}"
-    procd_add_interface_trigger "interface.*.up" "$wan" /etc/init.d/dns-watchdog restart
-}
-EOF_DNS_WATCHDOG_SERVICE
-    chmod 755 "$_stmp" 2>/dev/null || { rm -f "$_stmp"; return 1; }
-    mv "$_stmp" "$WATCHDOG_SERVICE_PATH" 2>/dev/null || { rm -f "$_stmp"; return 1; }
-
-    rm -rf "$WATCHDOG_LEGACY_RUNTIME_DIR" 2>/dev/null || true
-    chmod 755 "$WATCHDOG_SERVICE_PATH" 2>/dev/null || return 1
-    [ -x "$WATCHDOG_SERVICE_PATH" ] || return 1
-    return 0
-}
-watchdog_service_running() {
-    [ -x "$WATCHDOG_SERVICE_PATH" ] || return 1
-    "$WATCHDOG_SERVICE_PATH" running >/dev/null 2>&1
+    cat > /usr/bin/dns-manager-watchdog <<'EOF_WATCHDOG'
+#!/bin/sh
+exec /usr/bin/dns-manager __watchdog-once
+EOF_WATCHDOG
+    chmod 755 /usr/bin/dns-manager-watchdog
 }
 watchdog_service_enabled() {
-    [ -x "$WATCHDOG_SERVICE_PATH" ] || return 1
-    "$WATCHDOG_SERVICE_PATH" enabled >/dev/null 2>&1
+    grep -Fqx '*/2 * * * * /usr/bin/dns-manager-watchdog >/dev/null 2>&1 # dm-watchdog' /etc/crontabs/root 2>/dev/null
+}
+watchdog_service_running() {
+    watchdog_service_enabled && /etc/init.d/cron running >/dev/null 2>&1
 }
 watchdog_service_stop_disable() {
     if [ -x "$WATCHDOG_SERVICE_PATH" ]; then
         "$WATCHDOG_SERVICE_PATH" stop >/dev/null 2>&1 || true
-        if ! "$WATCHDOG_SERVICE_PATH" disable >/dev/null 2>&1; then
-            err_msg "Не удалось отключить автозапуск DNS Watchdog."
-            return 1
-        fi
-
-        # procd stops asynchronously; give the service a short grace period
-        # before declaring a safe stop failure. This does not change watchdog
-        # monitoring logic or restart limits.
-        _wd_wait=0
-        while watchdog_service_running && [ "$_wd_wait" -lt 5 ]; do
-            sleep 1
-            _wd_wait=$((_wd_wait + 1))
-        done
-
-        if watchdog_service_running; then
-            err_msg "Служба dns-watchdog не остановилась. Изменение watchdog прекращено для безопасности."
-            return 1
-        fi
-        if watchdog_service_enabled; then
-            err_msg "DNS Watchdog остался в автозапуске. Изменение прекращено для безопасности."
-            return 1
-        fi
+        "$WATCHDOG_SERVICE_PATH" disable >/dev/null 2>&1 || true
     fi
-    return 0
+    if [ -f /etc/crontabs/root ]; then
+        sed -i '\|^\*/2 \* \* \* \* /usr/bin/dns-manager-watchdog >/dev/null 2>\&1 # dm-watchdog$|d' /etc/crontabs/root || return 1
+        /etc/init.d/cron restart >/dev/null 2>&1 || return 1
+    fi
 }
+
 watchdog_remove_legacy_daemon() {
     if pgrep -f "$WATCHDOG_LEGACY_DAEMON_PATH" >/dev/null 2>&1; then
         err_msg "Старый watchdog-daemon всё ещё запущен; не удаляю его до полной остановки."
@@ -8857,91 +8609,41 @@ watchdog_remove_legacy_daemon() {
     return 0
 }
 watchdog_service_start_enable() {
-    # Never start procd alongside a legacy daemon or manager-owned cron job.
+    watchdog_service_stop_disable || return 1
     watchdog_remove_legacy_daemon || return 1
     if watchdog_cron_marker_exists >/dev/null 2>&1; then
-        watchdog_cron_remove_owned_block >/dev/null 2>&1 || return 1
-        watchdog_cron_marker_exists >/dev/null 2>&1 && return 1
+        watchdog_cron_remove_owned_block || return 1
+    fi
+    if [ -f "$WATCHDOG_SERVICE_PATH" ] && watchdog_service_file_owned "$WATCHDOG_SERVICE_PATH" "$WATCHDOG_SERVICE_MARKER"; then
+        rm -f "$WATCHDOG_SERVICE_PATH" || return 1
     fi
     watchdog_service_install_files || return 1
-    "$WATCHDOG_SERVICE_PATH" enable >/dev/null 2>&1 || return 1
-    "$WATCHDOG_SERVICE_PATH" start >/dev/null 2>&1 || return 1
-    sleep 1
-    watchdog_service_running || return 1
-    return 0
+    mkdir -p /etc/crontabs || return 1
+    touch /etc/crontabs/root || return 1
+    watchdog_service_enabled || printf '%s\n' '*/2 * * * * /usr/bin/dns-manager-watchdog >/dev/null 2>&1 # dm-watchdog' >> /etc/crontabs/root || return 1
+    /etc/init.d/cron enable >/dev/null 2>&1 || return 1
+    /etc/init.d/cron restart >/dev/null 2>&1 || return 1
+    watchdog_service_running
 }
 watchdog_service_remove_files() {
-    # Keep the existing launcher if a legacy daemon is still active.
-    watchdog_remove_legacy_daemon || return 1
-    if [ -x "$WATCHDOG_SERVICE_PATH" ]; then
-        "$WATCHDOG_SERVICE_PATH" stop >/dev/null 2>&1 || true
-        "$WATCHDOG_SERVICE_PATH" disable >/dev/null 2>&1 || true
+    watchdog_service_stop_disable || return 1
+    rm -f /usr/bin/dns-manager-watchdog
+    if [ -f "$WATCHDOG_SERVICE_PATH" ] && watchdog_service_file_owned "$WATCHDOG_SERVICE_PATH" "$WATCHDOG_SERVICE_MARKER"; then
+        rm -f "$WATCHDOG_SERVICE_PATH"
     fi
-    rm -f "$WATCHDOG_SERVICE_PATH" 2>/dev/null || return 1
-    rm -rf "$WATCHDOG_LEGACY_RUNTIME_DIR" 2>/dev/null || true
-    return 0
 }
 watchdog_service_migrate_legacy() {
-    [ "${FIRST_RUN_INITIAL:-0}" = 1 ] && return 0
+    watchdog_service_stop_disable || return 1
     [ "${WATCHDOG_ENABLED:-0}" = 1 ] || [ "${FORCE_DOH:-0}" = 1 ] || return 0
-    _legacy_cron=0
-    watchdog_cron_marker_exists >/dev/null 2>&1 && _legacy_cron=1
-
-    _service_ready=0
-    watchdog_service_file_matches "$WATCHDOG_SERVICE_PATH" "$WATCHDOG_SERVICE_MARKER" "$WATCHDOG_SERVICE_VERSION_MARKER" && _service_ready=1
-
-    # A legacy daemon must be gone before procd starts; never run both.
-    watchdog_remove_legacy_daemon || return 1
-
-    # If cron is still active, remove its owned block before starting procd.
-    # If this cannot be done safely, leave procd stopped/disabled.
-    if [ "$_legacy_cron" = 1 ]; then
-        "$WATCHDOG_SERVICE_PATH" stop >/dev/null 2>&1 || true
-        "$WATCHDOG_SERVICE_PATH" disable >/dev/null 2>&1 || true
-        watchdog_cron_remove_owned_block >/dev/null 2>&1 || return 1
-        watchdog_cron_marker_exists >/dev/null 2>&1 && return 1
-    fi
-
-    # If the service is manager-owned but old, stop it before replacing the launcher.
-    if [ "$_service_ready" != 1 ] && watchdog_service_running >/dev/null 2>&1; then
-        "$WATCHDOG_SERVICE_PATH" stop >/dev/null 2>&1 || return 1
-        sleep 1
-    fi
-
-    if [ "$_service_ready" = 0 ]; then
-        watchdog_service_install_files || return 1
-    fi
-
-    "$WATCHDOG_SERVICE_PATH" enable >/dev/null 2>&1 || return 1
-    "$WATCHDOG_SERVICE_PATH" start >/dev/null 2>&1 || return 1
-    sleep 1
-    watchdog_service_running || return 1
-
-    if [ "$_legacy_cron" = 1 ]; then
-        log_msg "Watchdog: миграция на embedded procd завершена."
-    elif [ "$_service_ready" = 0 ]; then
-        log_msg "Watchdog: embedded procd-служба DNS Manager установлена и запущена."
-    fi
-    return 0
+    watchdog_legacy_engine_allowed || return 0
+    watchdog_service_start_enable
 }
+
 watchdog_state_word_procd() {
-    [ "${WATCHDOG_ENABLED:-0}" = 1 ] || { printf '0'; return 0; }
-    _service=0
-    _enabled=0
-    _running=0
-    _service_file=0
-    [ -x "$WATCHDOG_SERVICE_PATH" ] && watchdog_service_file_owned "$WATCHDOG_SERVICE_PATH" "$WATCHDOG_SERVICE_MARKER" && _service_file=1
-    watchdog_service_enabled && _enabled=1
-    watchdog_service_running && _running=1
-    [ "$_service_file" = 1 ] && _service=1
-    if [ "$_service" = 1 ] && [ "$_enabled" = 1 ] && [ "$_running" = 1 ]; then
-        printf '1'
-    elif [ "$_service" = 1 ] || [ "$_enabled" = 1 ] || [ "$_running" = 1 ]; then
-        printf '2'
-    else
-        printf '0'
-    fi
+    [ "${WATCHDOG_ENABLED:-0}" = 1 ] || { printf '0'; return; }
+    if watchdog_service_running; then printf '1'; elif watchdog_service_enabled; then printf '2'; else printf '0'; fi
 }
+
 watchdog_common_dns_outage() {
     local _slot _id _port _domain _live _failed _missing _unknown _probe_rc
     _live=0
@@ -9268,12 +8970,8 @@ watchdog_apply_toggle() {
     [ "$_old_autoreplace" = 1 ] || _old_autoreplace=0
     _wd_log_requested="$_new"; _wd_log_enabled="$_old_enabled"; _wd_log_autoreplace="$_old_autoreplace"
 
-    _old_service_present=0
-    [ -x "$WATCHDOG_SERVICE_PATH" ] && watchdog_service_file_owned "$WATCHDOG_SERVICE_PATH" "$WATCHDOG_SERVICE_MARKER" && _old_service_present=1
     _old_service_enabled=0
-    _old_service_running=0
-    [ "$_old_service_present" = 1 ] && watchdog_service_enabled && _old_service_enabled=1 || true
-    [ "$_old_service_present" = 1 ] && watchdog_service_running && _old_service_running=1 || true
+    watchdog_service_enabled && _old_service_enabled=1 || true
 
     WATCHDOG_ENABLED="$_new"
     [ "$_new" = 1 ] || WATCHDOG_AUTOREPLACE=0
@@ -9289,21 +8987,10 @@ watchdog_apply_toggle() {
     WATCHDOG_AUTOREPLACE="$_old_autoreplace"
     save_config >/dev/null 2>&1 || true
 
-    if [ "$_old_service_present" = 1 ]; then
-        watchdog_service_install_files >/dev/null 2>&1 || true
-        if [ "$_old_service_enabled" = 1 ]; then
-            "$WATCHDOG_SERVICE_PATH" enable >/dev/null 2>&1 || true
-        else
-            "$WATCHDOG_SERVICE_PATH" disable >/dev/null 2>&1 || true
-        fi
-        if [ "$_old_service_running" = 1 ]; then
-            "$WATCHDOG_SERVICE_PATH" start >/dev/null 2>&1 || true
-        else
-            "$WATCHDOG_SERVICE_PATH" stop >/dev/null 2>&1 || true
-        fi
-    elif [ "$_old_enabled" = 0 ]; then
+    if [ "$_old_service_enabled" = 1 ]; then
+        watchdog_service_start_enable >/dev/null 2>&1 || true
+    else
         watchdog_service_stop_disable >/dev/null 2>&1 || true
-        watchdog_service_remove_files >/dev/null 2>&1 || true
     fi
 
     return 1
@@ -9331,7 +9018,7 @@ apply_watchdog() {
     # Stop first so a running watchdog cannot race an in-progress Apply.
     watchdog_service_stop_disable || return 1
 
-    WATCHDOG_BACKEND="procd"
+    WATCHDOG_BACKEND="cron"
     [ "${WATCHDOG_ENABLED:-0}" = 1 ] || rm -f /var/run/dns-manager-watchdog.json
     : "${WATCHDOG_INTERVAL:=${WATCHDOG_CHECK_INTERVAL_DEFAULT:-120}}"
     save_config || return 1
@@ -9530,8 +9217,15 @@ watchdog|--watchdog|-w)
     run_watchdog
     exit $?
     ;;
+__watchdog-migrate)
+    preflight_readonly
+    init_dirs
+    load_config
+    watchdog_service_migrate_legacy
+    exit $?
+    ;;
 __watchdog-loop|__watchdog-once)
-    [ "${1:-}" != __watchdog-once ] || WATCHDOG_SINGLE_CYCLE=1
+    WATCHDOG_SINGLE_CYCLE=1
     # BusyBox ash accepts single-digit file descriptors. Keep the lock until
     # this process exits, including while it is waiting or checking DNS.
     command -v flock >/dev/null 2>&1 || { err_msg "Для DNS Watchdog требуется flock."; exit 1; }
