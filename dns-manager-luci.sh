@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager full installer and LuCI companion
-# Version: 2.53
+# Version: 2.54
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.53"
+VERSION="2.54"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -2327,7 +2327,7 @@ if [ "$(uci -q get dns-manager.global.active_engine 2>/dev/null)" = dnscrypt-pro
 fi
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.53"
+SELF_VERSION="2.54"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -6005,7 +6005,7 @@ EOF_RPC_WRAPPER
 'require ui';
 'require session';
 
-// DNS Manager LuCI common module version: 2.53
+// DNS Manager LuCI common module version: 2.54
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -7947,7 +7947,7 @@ function ntpPresetServers(p){
   return map[String(p||'')]||'';
 }
 function ntpActualPreset(servers){
-  var cur=String(servers||'').trim().split(/\\s+/).filter(function(x){return x;}).join(' ');
+  var cur=String(servers||'').trim().split(/\s+/).filter(function(x){return x;}).join(' ');
   if(!cur)return 'none';
   if(cur==='0.openwrt.pool.ntp.org 1.openwrt.pool.ntp.org 2.openwrt.pool.ntp.org 3.openwrt.pool.ntp.org')return 'openwrt_default';
   var ids=['vniiftri_moscow','nist_ip','cf_ip','google_ip'];
@@ -7970,7 +7970,7 @@ function renderTime(root,st){
   ]));
   body.push(E('div',{'class':'dm-section-title'},'Текущие серверы времени'));
   if(servers){
-    body.push(E('div',{'class':'dm-log','style':'max-height:none;overflow:visible'},servers.split(/[\\s]+/).filter(function(x){return x;}).map(function(x){return x;}).join('\\n')));
+    body.push(E('div',{'class':'dm-log','style':'max-height:none;overflow:visible'},servers.split(/\s+/).filter(function(x){return x;}).map(function(x){return x;}).join('\n')));
   }else{
     body.push(E('div',{'class':'dm-hint'},'Серверы времени не настроены.'));
   }
@@ -8329,7 +8329,7 @@ function saveRouteCache(key,st,aux){
     var entry=JSON.parse(JSON.stringify({ts:Date.now(),data:st,aux:aux}));
     window.dmRouteCache[key]=entry;
     if(typeof session!=='undefined'&&session.setLocalData)
-      session.setLocalData('dns-manager-route-2.53-'+key,entry);
+      session.setLocalData('dns-manager-route-2.54-'+key,entry);
   }catch(e){}
 }
 function clearEngineUiState(){
@@ -8337,7 +8337,7 @@ function clearEngineUiState(){
   window.dmRouteCache=Object.create(null);
   window.dmStatusPromises=Object.create(null);
   ['dashboard','doh','network','time','devices','catalog','log'].forEach(function(key){
-    try{if(typeof session!=='undefined'&&session.setLocalData)session.setLocalData('dns-manager-route-2.53-'+key,null);}catch(e){}
+    try{if(typeof session!=='undefined'&&session.setLocalData)session.setLocalData('dns-manager-route-2.54-'+key,null);}catch(e){}
   });
   state.pageNotice={};state.profileProgress=null;state.profileOutput='';state.profileResumeStarted=false;
   state.regionalNotice='';state.dnscryptDiagnostic='';state.dnscryptDiagnosticKind='';
@@ -8349,7 +8349,7 @@ function clearEngineUiState(){
 function routeCacheEntry(key){
   var entry=key&&window.dmRouteCache&&window.dmRouteCache[key];
   if(!entry&&key){
-    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.53-'+key);}catch(e){}
+    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.54-'+key);}catch(e){}
   }
   if(!entry||typeof entry.ts!=='number'||Date.now()-entry.ts<0||Date.now()-entry.ts>300000||!entry.data||entry.data.ok!==true)return null;
   return entry;
@@ -8760,7 +8760,7 @@ function selectDnscryptServer(id,root){
     pollJob(root,r.job,{mode:'server',origin:'doh'},function(ns,j){
       var ok=j&&j.status==='done'&&j.result==='ok';
       if(ok)clearEngineUiState();
-      state.busy=false;state.dnscryptDiagnostic=ok?'Сервер выбран.':('Не удалось применить сервер. '+stripAnsi(String(j&&j.output||'')));
+      state.busy=false;state.dnscryptDiagnostic=ok?(j.status_error?'Сервер выбран, но состояние не обновилось. Обновите страницу.':'Сервер выбран.'):('Не удалось применить сервер. '+stripAnsi(String(j&&j.output||'')));
       state.dnscryptDiagnosticKind='test';renderDnscryptDiagnostic(root);
     });
   }).catch(function(err){state.busy=false;state.dnscryptDiagnostic=withRpcError('Не удалось применить сервер.',err);renderDnscryptDiagnostic(root);});
@@ -9075,7 +9075,7 @@ function pollJob(root,job,meta,done){
     if(meta&&meta.mode==='profile'){
       profileFinish(j);
     }
-    (meta&&['profile','server','current','system'].indexOf(meta.mode)!==-1&&currentRoute()==='doh'?callDohStatus():callStatus(statusDetail())).then(function(ns){
+    (meta&&((['profile','server','current','system'].indexOf(meta.mode)!==-1&&currentRoute()==='doh')||(meta.mode==='server'&&currentRoute()==='slots'))?callDohStatus():callStatus(statusDetail())).then(function(ns){
       ns=ns||{};if((!window.dmCurrentRoot||window.dmCurrentRoot===root)&&(!root.__dmRoute||currentRoute()===root.__dmRoute))window.dmState=ns;
       if(meta&&meta.mode==='one'&&meta.dns_id)delete state.checking[meta.dns_id];
       if(meta&&meta.mode==='current')state.checking={};
@@ -9141,7 +9141,7 @@ function pollJob(root,job,meta,done){
         if(meta.origin==='catalog'&&state.activeTab==='catalog')loadCatalog(root);
         return;
       }
-      if(done)done(window.dmState||{},{status:'failed',result:'fail'});
+      if(done)done(window.dmState||{},meta&&meta.mode==='server'?Object.assign({},j,{status_error:true}):{status:'failed',result:'fail'});
       else{if(meta&&meta.mode==='all')state.fullTest={status:'FAILED',result:'fail'};if(meta&&meta.mode==='current')state.currentTest={status:'FAILED',result:'fail'};render(root,window.dmState||{});}
     });
   }
@@ -9226,7 +9226,7 @@ function removeLegacyCbiActions(){
   var nodes=document.querySelectorAll('.cbi-page-actions');
   Array.prototype.forEach.call(nodes,function(n){
     if(n.closest && n.closest('.dm-wrap'))return;
-    var t=String(n.textContent||'').replace(/\\s+/g,' ').trim();
+    var t=String(n.textContent||'').replace(/\s+/g,' ').trim();
     if(/(Применить|Сохранить|Сброс|Save & Apply|Save|Reset)/i.test(t))n.remove();
   });
 }
@@ -9403,7 +9403,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 2.53
+// DNS Manager LuCI version: 2.54
 return view.extend({
   load: DM.load,
   render: DM.render,

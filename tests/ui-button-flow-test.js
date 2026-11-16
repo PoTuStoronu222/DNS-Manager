@@ -47,7 +47,7 @@ async function testRouteCache(){
   if(!cached||cached.force_owner!=='steer'||cached.__dmCachedRoute!=='slots')throw Error('compatible route cache missing');
   ctx.window.dmRouteCache=undefined;
   if(ctx.cachedRouteStatus('slots').force_owner!=='steer')throw Error('cache did not survive page navigation');
-  ctx.window.dmRouteCache={doh:JSON.parse(store['dns-manager-route-2.53-doh'])};
+  ctx.window.dmRouteCache={doh:JSON.parse(store['dns-manager-route-2.54-doh'])};
   cached.slots.length=0;
   if(ctx.cachedRouteStatus('doh').slots.length!==1)throw Error('cache was mutated by view');
   ctx.applyStatusToCurrentRoot({ok:true,force_owner:'steer'},'doh');
@@ -95,7 +95,7 @@ async function testAdditionalRouteCache(){
   ctx.state.category='security';if(ctx.cachedRouteStatus('catalog'))throw Error('wrong catalog category reused');ctx.state.category='all';
   failDevices=true;failCatalog=true;failLog=true;
   const previous={...store};for(const route of ['devices','catalog','log'])await ctx.ensureStatusPromise(route);
-  for(const route of ['devices','catalog','log'])if(store['dns-manager-route-2.53-'+route]!==previous['dns-manager-route-2.53-'+route])throw Error('failed '+route+' replaced good cache');
+  for(const route of ['devices','catalog','log'])if(store['dns-manager-route-2.54-'+route]!==previous['dns-manager-route-2.54-'+route])throw Error('failed '+route+' replaced good cache');
 }
 async function testSequentialWarmup(){
   let active=0,max=0,calls=[],allowed=true;
@@ -417,4 +417,17 @@ async function testProfileClickBothEngines(){
     if(buttons.some(b=>b.label==='Применить профиль'))throw Error('unexpected separate apply button');
   }
 }
-Promise.all([testProfileClickBothEngines(),testDnscryptPoolPresentation(),testDnscryptRegionalSelection(),testRegionalReapply(),testResumeCatalog(),testBackgroundStartTimeout(),testBackgroundUnknown(),testBackgroundNavigation(),testBackgroundFailure(),testDoHRemove(),testSingleError(),testBadgeWithoutDuration(),testPollNavigation(),testLongCatalogProgress(117),testLongCatalogProgress(5,true),testRouteCache(),testCachedReadOnly(),testAdditionalRouteCache(),testSequentialWarmup(),testWarmupResourceGuard(),testResumeCache(),testSettingConnectionLoss(),testRegionalConnectionLoss(),testProfileMissingJob(),testJobTransientError(),testUninstallUnresponsiveStatus(),testProfileStatus(),testSlotDraft(),testDeviceSave(),testCatalogError(),testFoldState(),testCustomDnsFeedback(),testBootstrapForm(),testLogScroll(),testHeaderCheckKind()]).catch(e=>{console.error(e);process.exitCode=1;});
+async function testTimePresetWhitespace(){
+  const ctx={};vm.createContext(ctx);vm.runInContext(extract('function ntpPresetName(p){','function renderTime(root,st){'),ctx);
+  if(ctx.ntpActualPreset('0.openwrt.pool.ntp.org 1.openwrt.pool.ntp.org 2.openwrt.pool.ntp.org 3.openwrt.pool.ntp.org')!=='openwrt_default')throw Error('default time preset not recognized');
+  if(ctx.ntpActualPreset('162.159.200.1  162.159.200.123')!=='cf_ip')throw Error('time preset whitespace not recognized');
+}
+async function testPoolSelectionRefresh(){
+  let dohCalls=0,completed=false;const st={dnscrypt_engine:'dnscrypt-proxy2',dnscrypt_servers:['new']},root={__dmRoute:'slots'};
+  const ctx={state:{busy:true,jobRunning:true,checking:{},pageNotice:{}},window:{dmState:{},dmCurrentRoot:root},currentRoute:()=> 'slots',statusDetail:()=>0,
+    callJob:()=>Promise.resolve({status:'done',result:'ok'}),callDohStatus:()=>{dohCalls++;return Promise.resolve(st);},callStatus:()=>Promise.resolve({}),render:()=>{},setAction:()=>{},setTimeout,stripAnsi:x=>x,rpcErrorText:()=>''};
+  vm.createContext(ctx);vm.runInContext(extract('function pollJob(root,job,meta,done){','function resumeRunningProfile(root){'),ctx);
+  ctx.pollJob(root,'profile',{mode:'server',origin:'doh'},()=>{completed=true;});await delay();
+  if(!completed||dohCalls!==1||ctx.window.dmState!==st)throw Error('server selection did not refresh pool status');
+}
+Promise.all([testTimePresetWhitespace(),testPoolSelectionRefresh(),testProfileClickBothEngines(),testDnscryptPoolPresentation(),testDnscryptRegionalSelection(),testRegionalReapply(),testResumeCatalog(),testBackgroundStartTimeout(),testBackgroundUnknown(),testBackgroundNavigation(),testBackgroundFailure(),testDoHRemove(),testSingleError(),testBadgeWithoutDuration(),testPollNavigation(),testLongCatalogProgress(117),testLongCatalogProgress(5,true),testRouteCache(),testCachedReadOnly(),testAdditionalRouteCache(),testSequentialWarmup(),testWarmupResourceGuard(),testResumeCache(),testSettingConnectionLoss(),testRegionalConnectionLoss(),testProfileMissingJob(),testJobTransientError(),testUninstallUnresponsiveStatus(),testProfileStatus(),testSlotDraft(),testDeviceSave(),testCatalogError(),testFoldState(),testCustomDnsFeedback(),testBootstrapForm(),testLogScroll(),testHeaderCheckKind()]).catch(e=>{console.error(e);process.exitCode=1;});
