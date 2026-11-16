@@ -77,6 +77,7 @@ esac
     (helpers / 'dns-manager-dnscrypt-profile-apply.sh').write_text('''#!/bin/sh
 dnscrypt_apply_profile_pool() {
     [ "${LAB_FAIL:-0}" != 1 ] || return 1
+    case "$1" in server:*) dnscrypt_select_profile "$1"; return $?;; esac
     printf 'cloudflare|https://cloudflare-dns.com/dns-query\\n'
 }
 ''')
@@ -117,6 +118,21 @@ dnscrypt_apply_profile_pool() {
     state = (config / 'dnscrypt-profile.state').read_text()
     assert state == 'profile=clean\nserver=cloudflare|https://cloudflare-dns.com/dns-query\n'
     assert 'status=done\n' in (jobs / 'profile/state').read_text()
+    pool = ('profile=none\nserver=cloudflare|https://cloudflare-dns.com/dns-query\n'
+            'server=google|https://dns.google/dns-query\n')
+    (config / 'dnscrypt-profile.state').write_text(pool)
+    assert json.loads(run('call', 'set_profile', input='{"profile":"server:google"}').stdout)['job'] == 'profile'
+    result = run('worker', 'server:google')
+    assert result.returncode == 0, result.stderr
+    selected = (config / 'dnscrypt-profile.state').read_text()
+    assert 'selected=google\n' in selected and 'server=google|https://dns.google/dns-query\n' in selected
+    assert 'available=cloudflare|' in selected and 'available=google|' in selected
+    result = run('worker', 'server:cloudflare')
+    assert result.returncode == 0 and 'selected=cloudflare\n' in (config / 'dnscrypt-profile.state').read_text()
+    selected = (config / 'dnscrypt-profile.state').read_text()
+    result = run('worker', 'server:missing')
+    assert result.returncode != 0 and (config / 'dnscrypt-profile.state').read_text() == selected
+    (config / 'dnscrypt-profile.state').write_text(state)
     result = run('worker', 'clean', extra={'LAB_FAIL': '1'})
     assert result.returncode != 0
     assert (config / 'dnscrypt-profile.state').read_text() == state
