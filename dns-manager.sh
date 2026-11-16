@@ -8066,6 +8066,72 @@ watchdog_legacy_engine_allowed() {
     fi
     return 0
 }
+# Preserve the per-slot decision state across watchdog process restarts.
+# The file is in tmpfs and is never interpreted as shell code.
+load_watchdog_state() {
+    local _state_file _slot _key _value
+    _state_file=/var/run/dns-manager-watchdog.json
+    [ -r "$_state_file" ] || return 0
+    [ -r /usr/share/libubox/jshn.sh ] || return 1
+    . /usr/share/libubox/jshn.sh
+    json_load "$(cat "$_state_file")" || return 1
+    json_get_var _value last_check
+    case "$_value" in ''|*[!0-9]*) _value=0;; esac
+    WATCHDOG_STATE_LAST_CHECK="$_value"
+    json_get_var _value last_guard
+    case "$_value" in ''|*[!0-9]*) _value=0;; esac
+    WD_LAST_GUARD_TS="$_value"
+    json_get_var _value last_restart
+    case "$_value" in ''|*[!0-9]*) _value=0;; esac
+    WATCHDOG_LAST_RESTART_TS="$_value"
+    json_select fail_counts || return 0
+    for _slot in 1 2 3 4 5 6 RU; do
+        json_select "$_slot" || continue
+        for _key in FAIL MISSING CATEGORY_STALE RECOVERY_BLOCKED REPAIR_TS; do
+            json_get_var _value "$_key"
+            case "$_value" in ''|*[!0-9]*) _value=0;; esac
+            eval "WD_${_key}_${_slot}=\$_value"
+        done
+        for _key in ID SINGLE_TRIED DNSSEC_CATEGORY; do
+            json_get_var _value "$_key"
+            eval "WD_${_key}_${_slot}=\$_value"
+        done
+        json_select ..
+    done
+    json_select ..
+}
+save_watchdog_state() {
+    local _state_file _tmp _slot _key _value _now
+    [ -r /usr/share/libubox/jshn.sh ] || return 1
+    . /usr/share/libubox/jshn.sh
+    _state_file=/var/run/dns-manager-watchdog.json
+    _tmp="$(mktemp /var/run/.dns-manager-watchdog.XXXXXX)" || return 1
+    json_init
+    _now="$(date +%s 2>/dev/null)"
+    case "$_now" in ''|*[!0-9]*) _now=0;; esac
+    json_add_int last_check "$_now"
+    json_add_int last_guard "${WD_LAST_GUARD_TS:-0}"
+    json_add_int last_restart "${WATCHDOG_LAST_RESTART_TS:-0}"
+    json_add_object fail_counts
+    for _slot in 1 2 3 4 5 6 RU; do
+        json_add_object "$_slot"
+        for _key in FAIL MISSING CATEGORY_STALE RECOVERY_BLOCKED REPAIR_TS; do
+            eval "_value=\${WD_${_key}_${_slot}:-0}"
+            case "$_value" in ''|*[!0-9]*) _value=0;; esac
+            json_add_int "$_key" "$_value"
+        done
+        for _key in ID SINGLE_TRIED DNSSEC_CATEGORY; do
+            eval "_value=\${WD_${_key}_${_slot}:-}"
+            json_add_string "$_key" "$_value"
+        done
+        json_close_object
+    done
+    json_close_object
+    if ! json_dump > "$_tmp" || ! chmod 600 "$_tmp" || ! mv -f "$_tmp" "$_state_file"; then
+        rm -f "$_tmp"
+        return 1
+    fi
+}
 watchdog_embedded_loop() {
     watchdog_legacy_engine_allowed || return 0
     # Forced-DNS Auto must track Steer even when DNS probing/rotation is off.
@@ -8088,6 +8154,7 @@ watchdog_embedded_loop() {
     WD_RESTART_COUNT=0
     WATCHDOG_LAST_RESTART_TS=0
     WD_LAST_GUARD_TS="$(date +%s 2>/dev/null)"
+    load_watchdog_state >/dev/null 2>&1 || true
     CHECKER_MISSING_LOGGED=0
     if [ "${WATCHDOG_ENABLED:-0}" = 1 ]; then
         log_msg "Фоновый DNS Watchdog запущен: проверка каждые ${WATCHDOG_INTERVAL:-120}с, восстановление после ${WATCHDOG_FAIL_THRESHOLD:-2} последовательных сбоев."
@@ -8328,6 +8395,7 @@ watchdog_embedded_loop() {
         fi
 
         watchdog_save_check_results "$_wd_cycle_records" || log_msg "Watchdog: не удалось сохранить результаты цикла проверки DNS."
+        save_watchdog_state >/dev/null 2>&1 || true
         sleep "$_interval"
     done
 }
@@ -9255,6 +9323,7 @@ apply_watchdog() {
     watchdog_service_stop_disable || return 1
 
     WATCHDOG_BACKEND="procd"
+    [ "${WATCHDOG_ENABLED:-0}" = 1 ] || rm -f /var/run/dns-manager-watchdog.json
     : "${WATCHDOG_INTERVAL:=${WATCHDOG_CHECK_INTERVAL_DEFAULT:-120}}"
     save_config || return 1
 
