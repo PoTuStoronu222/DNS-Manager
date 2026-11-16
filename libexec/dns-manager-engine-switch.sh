@@ -59,16 +59,8 @@ for config_package in firewall https-dns-proxy; do
     pending=$(uci -q changes "$config_package" 2>/dev/null || true)
     [ -z "$pending" ] || { echo "Есть несохранённые изменения UCI: $config_package"; exit 1; }
 done
-watchdog_service_stop_disable || exit 1
-wd_reply=$(ubus -t 5 call service list '{"name":"dns-watchdog"}' 2>/dev/null) || exit 1
-wd_root=$(jsonfilter -s "$wd_reply" -e '@' 2>/dev/null) || exit 1
-case "$wd_root" in \{*\}) ;; *) exit 1;; esac
-if jsonfilter -s "$wd_reply" -e "@['dns-watchdog']" >/dev/null 2>&1; then
-    echo 'DNS Watchdog ещё зарегистрирован в procd.'; exit 1
-else
-    wd_rc=$?; [ "$wd_rc" -eq 1 ] || exit 1
-fi
-watchdog_cron_remove_owned_block || exit 1
+. "$helpers/dns-manager-watchdog-common.sh" || exit 1
+dns_manager_stop_watchdog || { echo 'Не удалось остановить DNS Watchdog.'; exit 1; }
 WATCHDOG_ENABLED=0; WATCHDOG_AUTOREPLACE=0
 save_config || exit 1
 echo 'Удаляю привязки устройств.'

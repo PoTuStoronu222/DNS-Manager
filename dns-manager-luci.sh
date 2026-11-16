@@ -778,19 +778,8 @@ load_manager_functions() {
     rm -f "$manager_src"
 }
 disable_legacy_watchdog() {
-    watchdog_service_stop_disable || return 1
-    # The init file can be missing while procd still owns a running instance.
-    # Treat an unavailable or malformed procd response as unknown, not stopped.
-    wd_reply=$(ubus -t 5 call service list '{"name":"dns-watchdog"}' 2>/dev/null) || return 1
-    wd_root=$(jsonfilter -s "$wd_reply" -e '@' 2>/dev/null) || return 1
-    case "$wd_root" in \{*\}) ;; *) return 1 ;; esac
-    if jsonfilter -s "$wd_reply" -e "@['dns-watchdog']" >/dev/null 2>&1; then
-        return 1
-    else
-        wd_rc=$?
-        [ "$wd_rc" -eq 1 ] || return 1
-    fi
-    watchdog_cron_remove_owned_block || return 1
+    . "$HELPERS/dns-manager-watchdog-common.sh" || return 1
+    dns_manager_stop_watchdog || return 1
     if [ "${WATCHDOG_ENABLED:-0}" != 0 ] || [ "${WATCHDOG_AUTOREPLACE:-0}" != 0 ]; then
         WATCHDOG_ENABLED=0
         WATCHDOG_AUTOREPLACE=0
@@ -1275,16 +1264,8 @@ for config_package in firewall https-dns-proxy; do
     pending=$(uci -q changes "$config_package" 2>/dev/null || true)
     [ -z "$pending" ] || { echo "Есть несохранённые изменения UCI: $config_package"; exit 1; }
 done
-watchdog_service_stop_disable || exit 1
-wd_reply=$(ubus -t 5 call service list '{"name":"dns-watchdog"}' 2>/dev/null) || exit 1
-wd_root=$(jsonfilter -s "$wd_reply" -e '@' 2>/dev/null) || exit 1
-case "$wd_root" in \{*\}) ;; *) exit 1;; esac
-if jsonfilter -s "$wd_reply" -e "@['dns-watchdog']" >/dev/null 2>&1; then
-    echo 'DNS Watchdog ещё зарегистрирован в procd.'; exit 1
-else
-    wd_rc=$?; [ "$wd_rc" -eq 1 ] || exit 1
-fi
-watchdog_cron_remove_owned_block || exit 1
+. "$helpers/dns-manager-watchdog-common.sh" || exit 1
+dns_manager_stop_watchdog || { echo 'Не удалось остановить DNS Watchdog.'; exit 1; }
 WATCHDOG_ENABLED=0; WATCHDOG_AUTOREPLACE=0
 save_config || exit 1
 echo 'Удаляю привязки устройств.'
@@ -1379,8 +1360,25 @@ start_service() {
     procd_close_instance
 }
 EOF_DNSCRYPT_ASSET_12
+    cat > "$_dc_stage/dns-manager-watchdog-common.sh" <<'EOF_DNSCRYPT_ASSET_13'
+#!/bin/sh
+# Stop the legacy watchdog before DNSCrypt operations or engine changes.
+dns_manager_stop_watchdog() {
+    watchdog_service_stop_disable || return 1
+    wd_reply=$(ubus -t 5 call service list '{"name":"dns-watchdog"}' 2>/dev/null) || return 1
+    wd_root=$(jsonfilter -s "$wd_reply" -e '@' 2>/dev/null) || return 1
+    case "$wd_root" in \{*\}) ;; *) return 1 ;; esac
+    if jsonfilter -s "$wd_reply" -e "@['dns-watchdog']" >/dev/null 2>&1; then
+        return 1
+    else
+        wd_rc=$?
+        [ "$wd_rc" -eq 1 ] || return 1
+    fi
+    watchdog_cron_remove_owned_block
+}
+EOF_DNSCRYPT_ASSET_13
     sh -n "$_dc_stage/backend-dnscrypt.sh"
-    _dc_names="dns-manager-doh-stamp.sh dns-manager-dnscrypt-config.sh dns-manager-dnscrypt-pool.sh dns-manager-dnscrypt-pool-apply.sh dns-manager-dnscrypt-profile.sh dns-manager-dnscrypt-profile-apply.sh dns-manager-dnscrypt-dnsmasq.sh dns-manager-engine-services.sh dns-manager-device-detach.sh dns-manager-engine-switch.sh dns-manager-dnscrypt.init"
+    _dc_names="dns-manager-watchdog-common.sh dns-manager-doh-stamp.sh dns-manager-dnscrypt-config.sh dns-manager-dnscrypt-pool.sh dns-manager-dnscrypt-pool-apply.sh dns-manager-dnscrypt-profile.sh dns-manager-dnscrypt-profile-apply.sh dns-manager-dnscrypt-dnsmasq.sh dns-manager-engine-services.sh dns-manager-device-detach.sh dns-manager-engine-switch.sh dns-manager-dnscrypt.init"
     for _dc_name in $_dc_names; do
         sh -n "$_dc_stage/$_dc_name"
     done
