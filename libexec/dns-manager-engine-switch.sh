@@ -41,8 +41,13 @@ trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
 src=$(mktemp "$runtime/engine-manager.XXXXXX") || exit 1
 if ! sed '/^case "${1:-}" in$/,$d' "$manager" > "$src"; then rm -f "$src"; exit 1; fi
-. "$src" || { rm -f "$src"; exit 1; }
+source_rc=0
+. "$src" || source_rc=$?
+# The manager installs its own traps when sourced; keep the switch cleanup.
+trap cleanup EXIT
+trap 'exit 1' HUP INT TERM
 rm -f "$src"
+[ "$source_rc" -eq 0 ] || exit 1
 preflight_readonly >/dev/null 2>&1 && init_dirs >/dev/null 2>&1 && load_config >/dev/null 2>&1 || exit 1
 acquire_mutation_lock || { echo 'Другая операция DNS Manager уже выполняется.'; exit 1; }
 locked=1
