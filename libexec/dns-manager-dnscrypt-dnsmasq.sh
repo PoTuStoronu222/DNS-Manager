@@ -9,10 +9,9 @@ case "$port" in ''|*[!0-9]*) exit 2;; esac
 [ "$port" -gt 0 ] && [ "$port" -le 65535 ] || exit 2
 
 restore_dns() {
-    uci -q delete 'dhcp.@dnsmasq[0].noresolv' || :
-    uci -q delete 'dhcp.@dnsmasq[0].localuse' || :
-    uci -q delete 'dhcp.@dnsmasq[0].cachesize' || :
-    uci -q delete 'dhcp.@dnsmasq[0].server' || :
+    for option in noresolv localuse cachesize server; do
+        uci -q delete "dhcp.@dnsmasq[0].$option" || :
+    done
     uci commit dhcp
 }
 
