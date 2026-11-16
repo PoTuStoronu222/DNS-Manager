@@ -199,7 +199,10 @@ reset_worker() {
                 # even if disabling the proxy service fails afterward.
                 if rm -f "$STATE_FILE" &&
                    sh "$HELPERS/dns-manager-engine-services.sh" quiesce dnscrypt-proxy2 >> "$RUNTIME_DIR/dnscrypt-reset.log" 2>&1; then
-                    rc=0
+                    uci -q delete dns-manager.global.dnscrypt_regional_mode || :
+                    uci -q delete dns-manager.global.dnscrypt_regional_ips || :
+                    if uci commit dns-manager; then rc=0; fi
+                    /etc/init.d/dns-manager-regional restart >/dev/null 2>&1 || :
                 fi
             fi
             release_mutation_lock
@@ -257,6 +260,81 @@ diagnostic() {
     json_dump
 }
 
+
+# The regional routes are dnsmasq rules; the encrypted pool remains unchanged.
+regional_worker() {
+    requested=$1
+    refresh=${2:-0}
+    rc=1
+    mkdir -p "$RUNTIME_DIR" || return 1
+    src=$(mktemp "$RUNTIME_DIR/dnscrypt-regional.XXXXXX") || return 1
+    if ! sed '/^case "${1:-}" in$/,$d' "$MANAGER" > "$src" || ! . "$src"; then rm -f "$src"; return 1; fi
+    rm -f "$src"
+    preflight_readonly >/dev/null 2>&1 && init_dirs >/dev/null 2>&1 && load_config >/dev/null 2>&1 && acquire_mutation_lock || return 1
+    old_mode=$(uci -q get dns-manager.global.dnscrypt_regional_mode || :)
+    old_ips=$(uci -q get dns-manager.global.dnscrypt_regional_ips || :)
+    if ! engine_selected || ! "$DNSCRYPT_INIT" running >/dev/null 2>&1; then
+        echo 'DNSCrypt не запущен.'
+    else
+        case "$requested" in 0) mode=doh;; 2) mode=yandex;; 3) mode=isp;; refresh) mode=$old_mode;; *) mode=invalid;; esac
+        ips=''
+        [ "$mode" != isp ] || ips=$(regional_provider_addresses | tr '\n' ' ' | sed 's/ *$//')
+        if [ "$mode" = isp ] && [ -z "$ips" ]; then
+            if [ "$refresh" = 1 ]; then release_mutation_lock; return 0; fi
+            echo 'Провайдер не предоставил DNS-адреса.'
+        elif [ "$mode" = invalid ] || { [ "$refresh" = 1 ] && [ "$mode" != isp ]; }; then
+            [ "$refresh" != 1 ] || rc=0
+        elif [ "$refresh" = 1 ] && [ "$ips" = "$old_ips" ]; then
+            rc=0
+        elif uci -q get dns-manager.global >/dev/null 2>&1 &&
+             uci set "dns-manager.global.dnscrypt_regional_mode=$mode" &&
+             uci set "dns-manager.global.dnscrypt_regional_ips=$ips" && uci commit dns-manager &&
+             sh "$HELPERS/dns-manager-dnscrypt-dnsmasq.sh" 5053; then
+            rc=0
+            echo 'Настройка регионального DNS применена.'
+        else
+            echo 'Не удалось применить региональный DNS. Восстанавливаю предыдущую настройку.'
+            uci set "dns-manager.global.dnscrypt_regional_mode=$old_mode" || :
+            uci set "dns-manager.global.dnscrypt_regional_ips=$old_ips" || :
+            uci commit dns-manager || :
+            sh "$HELPERS/dns-manager-dnscrypt-dnsmasq.sh" 5053 || :
+        fi
+    fi
+    release_mutation_lock
+    [ "$refresh" = 1 ] || /etc/init.d/dns-manager-regional restart >/dev/null 2>&1 || :
+    return "$rc"
+}
+
+regional_job() {
+    enabled=$1
+    printf 'pid=%s\n' "$$" >> "$JOB_DIR/regional/state"
+    token=$(awk '{print $22}' "/proc/$$/stat" 2>/dev/null || :)
+    [ -z "$token" ] || printf 'pid_start=%s\n' "$token" >> "$JOB_DIR/regional/state"
+    exec >> "$JOB_DIR/regional/output" 2>&1 </dev/null
+    if regional_worker "$enabled"; then result=ok; status=done; else result=fail; status=failed; fi
+    printf 'result=%s\nstatus=%s\nfinished=%s\n' "$result" "$status" "$(date +%s)" >> "$JOB_DIR/regional/state"
+}
+
+regional_start() {
+    input=$(cat)
+    enabled=$(printf '%s' "$input" | jsonfilter -e '@.enabled' 2>/dev/null || :)
+    case "$enabled" in 0|2|3) ;; *) error 'Неверный региональный режим'; return;; esac
+    mkdir -p "$JOB_DIR/regional" "$RUNTIME_DIR" || { error 'Не удалось подготовить задачу'; return; }
+    exec 9>"$RUNTIME_DIR/dnscrypt-regional-start.lock" || return 1
+    flock -n 9 || { error 'Настройка уже запускается'; return; }
+    reply=$(ubus -t 5 call service list '{"name":"dns-manager-dnscrypt-regional"}' 2>/dev/null) || { error 'Служба задач недоступна'; return; }
+    if printf '%s' "$reply" | grep -q '"running"[[:space:]]*:[[:space:]]*true'; then error 'Настройка уже применяется'; return; fi
+    ubus -t 5 call service delete '{"name":"dns-manager-dnscrypt-regional"}' >/dev/null 2>&1 || :
+    printf 'status=running\nstarted=%s\nmode=regional\nenabled=%s\n' "$(date +%s)" "$enabled" > "$JOB_DIR/regional/state"
+    : > "$JOB_DIR/regional/output"
+    request="{\"name\":\"dns-manager-dnscrypt-regional\",\"instances\":{\"main\":{\"command\":[\"/bin/sh\",\"/usr/lib/dns-manager-luci/backend-dnscrypt.sh\",\"regional_worker\",\"$enabled\"]}}}"
+    if ! ubus -t 5 call service set "$request" >/dev/null 2>&1; then
+        printf 'result=fail\nstatus=failed\nfinished=%s\n' "$(date +%s)" >> "$JOB_DIR/regional/state"
+        error 'Не удалось запустить изменение'; return
+    fi
+    printf '{"ok":true,"job":"regional"}\n'
+}
+
 status_extra() {
     method=$1
     input=$(cat)
@@ -271,6 +349,10 @@ status_extra() {
     profile=$(sed -n 's/^profile=//p' "$STATE_FILE" 2>/dev/null | head -n1)
     valid_profile "$profile" || profile=none
     json_add_string dnscrypt_profile "$profile"
+    regional_mode=$(uci -q get dns-manager.global.dnscrypt_regional_mode || :)
+    case "$regional_mode" in yandex|isp) ;; *) regional_mode=doh;; esac
+    json_add_string dnscrypt_regional_mode "$regional_mode"
+    json_add_string dnscrypt_regional_ips "$(uci -q get dns-manager.global.dnscrypt_regional_ips || :)"
     json_add_array dnscrypt_servers
     if [ -r "$STATE_FILE" ]; then
         while IFS='|' read -r id url; do
@@ -289,10 +371,13 @@ status_extra() {
 case "${1:-}" in
     worker) profile_worker "${2:-}" ;;
     reset_worker) reset_worker ;;
+    regional_worker) regional_job "${2:-}" ;;
+    refresh_regional) regional_worker refresh 1 ;;
     list) exec "$LEGACY" list ;;
     call)
         case "${2:-}" in
             set_profile) profile_start ;;
+            set_regional) regional_start ;;
             reset_dns) reset_start ;;
             switch_engine) switch_start ;;
             dnscrypt_test|dnscrypt_log) diagnostic "$2" ;;
