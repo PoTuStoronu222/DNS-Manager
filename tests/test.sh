@@ -648,7 +648,7 @@ grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validat
 grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
 grep -q 'VERSION="4.22"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
-grep -q 'VERSION="2.40"' dns-manager-luci.sh || fail "LuCI version not bumped"
+grep -q 'VERSION="2.41"' dns-manager-luci.sh || fail "LuCI version not bumped"
 grep -Fq "{id:'quad9plain',ips:'9.9.9.10,149.112.112.10,2620:fe::10,2620:fe::fe:10'}" dns-manager-luci.sh || fail "historical Quad9 bootstrap snapshot changed"
 grep -Fq "{id:'cira',ips:'149.112.121.10,149.112.122.10,2620:10a:80bb::10,2620:10a:80bc::10'}" dns-manager-luci.sh || fail "historical CIRA bootstrap snapshot changed"
 if grep -q '^main_menu$' dns-manager.sh; then fail "interactive console menu still starts"; fi
@@ -2837,7 +2837,7 @@ if grep -q 'Проверить сейчас' "$tmp/watchdog_card.js"; then
     fail "Watchdog panel must not duplicate the full current-DNS test action"
 fi
 grep -q 'локальный порт назначенного DoH' "$tmp/watchdog_card.js" || fail "Watchdog probe is not explained in LuCI"
-grep -q 'на вкладке «DNS over HTTPS» кнопкой «Проверить текущие DNS»' "$tmp/watchdog_card.js" || fail "LuCI does not direct users to the current DNS test"
+grep -q 'на вкладке «Защищённый DNS» кнопкой «Проверить текущие DNS»' "$tmp/watchdog_card.js" || fail "LuCI does not direct users to the current DNS test"
 
 # The Network tab uses network_status_json rather than the dashboard status RPC.
 # It must expose the latest saved watchdog results as well as the service flags.

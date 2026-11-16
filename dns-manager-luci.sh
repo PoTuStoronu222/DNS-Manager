@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager full installer and LuCI companion
-# Version: 2.40
+# Version: 2.41
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.40"
+VERSION="2.41"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -2115,7 +2115,7 @@ EOF_DEVICE_DNS_SERVICE
     "action": { "type": "view", "path": "dns-manager/dashboard" }
   },
   "admin/services/dns-manager/doh": {
-    "title": "DNS over HTTPS",
+    "title": "Защищённый DNS",
     "order": 20,
     "action": { "type": "view", "path": "dns-manager/doh" }
   },
@@ -2203,7 +2203,7 @@ if [ "$(uci -q get dns-manager.global.active_engine 2>/dev/null)" = dnscrypt-pro
 fi
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.40"
+SELF_VERSION="2.41"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -5881,7 +5881,7 @@ EOF_RPC_WRAPPER
 'require ui';
 'require session';
 
-// DNS Manager LuCI common module version: 2.40
+// DNS Manager LuCI common module version: 2.41
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -6132,6 +6132,7 @@ function injectStyle(root){
   '.dm-version-action{display:flex;align-items:center;gap:7px;flex-wrap:wrap}.dm-version-action .cbi-button{padding:4px 9px;font-size:12px}.dm-version-error{display:inline-flex;align-items:center;gap:7px;flex-wrap:wrap}.dm-version-error-text{font-size:11.5px;opacity:.72}.dm-version-line{display:flex;align-items:center;gap:9px;margin:7px 0;flex-wrap:wrap}.dm-version-name{font-size:13px;font-weight:600;flex:0 1 160px;min-width:135px}.dm-version-state{min-width:0;flex:1 1 auto}.dm-card h3{margin:0 0 10px;font-size:15px;font-weight:600;display:flex;align-items:center;gap:7px;flex-wrap:wrap}.dm-doh-profile{display:inline-flex;align-items:center;gap:5px;margin-left:auto;padding:4px 9px;border:1px solid rgba(110,118,129,.18);border-radius:999px;background:rgba(110,118,129,.06);font-size:11.5px;font-weight:500;white-space:nowrap}.dm-doh-profile-label{opacity:.62}.dm-doh-profile-value{font-weight:650}.dm-row{display:flex;align-items:center;gap:10px;margin:6px 0;font-size:13px;flex-wrap:wrap}.dm-label{opacity:.65;flex-shrink:0}.dm-row-value{overflow-wrap:anywhere}'+
   '.dm-badge{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:999px;font-size:12px;font-weight:600;white-space:nowrap}.dm-dot{width:8px;height:8px;border-radius:50%;display:inline-block;flex-shrink:0}'+
   '.dm-ok{background:rgba(46,160,67,.12);color:#1a7f37}.dm-ok .dm-dot{background:#1a7f37}.dm-bad{background:rgba(207,34,46,.10);color:#cf222e}.dm-bad .dm-dot{background:#cf222e}.dm-warn{background:rgba(191,135,0,.12);color:#9a6700}.dm-warn .dm-dot{background:#9a6700}.dm-off{background:rgba(9,105,218,.10);color:#0969da}.dm-off .dm-dot{background:#0969da}'+
+  '.dm-engine-choices{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr));gap:12px;margin:14px 0}.dm-engine-choice{display:flex;flex-direction:column;align-items:flex-start;gap:10px;padding:16px;border:1px solid rgba(110,118,129,.24);border-radius:12px;background:rgba(110,118,129,.04)}.dm-engine-choice-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.dm-engine-choice p{margin:0;flex:1}.dm-engine-selected{border-color:rgba(35,134,54,.55);background:rgba(35,134,54,.06)}'+
   '.dm-grid2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.dm-system-card{margin-bottom:0}.dm-system-layout{display:flex;flex-direction:column;gap:10px}.dm-system-rows{min-width:0}.dm-system-meters{min-width:0;width:100%}.dm-system-meter{padding:7px 0}.dm-system-meter-head{display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:12.5px}.dm-system-meter-head strong{font-size:12px;white-space:nowrap}.dm-system-meter-track{height:8px;margin-top:6px;border-radius:999px;background:rgba(110,118,129,.16);overflow:hidden}.dm-system-meter-track i{display:block;height:100%;border-radius:999px;background:#1a7f37;transition:width .25s ease}.dm-system-hint{font-size:10.5px;opacity:.58;margin-top:3px}.dm-grid3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}.dm-grid4{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}'+
   '.dm-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:11px}.dm-slot-picker-categories{gap:5px;margin:0 0 9px}.dm-slot-picker-categories .cbi-button{padding:4px 8px;font-size:11.5px}.dm-picker-list{display:flex;flex-direction:column;gap:7px;max-height:60vh;overflow:auto}.dm-picker-item{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 0;border-bottom:1px solid rgba(110,118,129,.14)}.dm-picker-main{min-width:0;flex:1}.dm-picker-name{font-size:13px;font-weight:600;overflow-wrap:anywhere}.dm-picker-meta{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:3px}.dm-picker-actions{display:flex;gap:6px;flex-shrink:0;flex-wrap:wrap}.dm-component-item{padding:8px 0;border-bottom:1px solid rgba(110,118,129,.14)}.dm-component-group{padding:8px 0;border-bottom:1px solid rgba(110,118,129,.14)}.dm-component-dns-list{margin-top:6px;display:flex;flex-direction:column;gap:5px}.dm-component-dns{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:6px 0;border-top:1px solid rgba(110,118,129,.08);flex-wrap:wrap}.dm-component-dns:first-child{border-top:0}.dm-component-dns-main{display:flex;align-items:center;gap:8px;min-width:0;flex:1 1 260px}.dm-component-dns-slot{font-size:11.5px;font-weight:700;opacity:.62;min-width:118px}.dm-component-dns-name{font-size:12.5px;font-weight:600;overflow-wrap:anywhere}.dm-component-dns-meta{display:flex;align-items:center;gap:9px;font-size:11.5px;opacity:.78;flex:0 0 auto}.dm-component-dns-ping{font-size:12px;white-space:nowrap;opacity:.8}.dm-component-item:last-of-type{border-bottom:0}.dm-component-head{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}.dm-component-title{font-size:13px;font-weight:600}.dm-component-details{font-size:11.5px;line-height:1.45;opacity:.66;margin-top:3px;overflow-wrap:anywhere}.dm-component-date{font-size:12.5px;opacity:.82}.dm-profile-progress{margin-top:11px}.dm-profile-progress-status{font-size:12.5px;font-weight:600;margin-top:8px}.dm-profile-progress-detail{font-size:11px;opacity:.62;margin-top:4px;overflow-wrap:anywhere}'+'.dm-actions .cbi-button{margin:0;padding:5px 11px;font-size:12.5px}'+
   '.dm-hint{font-size:12.5px;opacity:.68;line-height:1.5;margin:0 0 8px}.dm-mini{font-size:11px;opacity:.62}.dm-meta{font-size:11px;line-height:1.45;opacity:.66}.dm-update{padding:8px 10px;border-radius:8px;background:rgba(26,127,55,.08);border:1px solid rgba(26,127,55,.18);font-size:12.5px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}'+
@@ -6511,6 +6512,7 @@ function renderOverview(root,st){
   var applied=renderActionStatus();if(applied)e.appendChild(applied);
   if(state.statusError&&!state.statusFromCache)e.appendChild(E('div',{'class':'dm-inline-msg error'},state.statusError+' Проверьте: ubus call dns_manager status.'));
 
+  var noEngine=st.dnscrypt_engine!=='dnscrypt-proxy2'&&Number(st.engine_installed)===0;
   var dohState=st.dnscrypt_engine==='dnscrypt-proxy2'?(Number(st.dnscrypt_running)===1?'ok':'down'):(String(st.doh||'').toLowerCase()==='yes'?'ok':'down');
   var doh=dohState==='ok'
     ? badge('dm-ok','работает')
@@ -6563,7 +6565,7 @@ function renderOverview(root,st){
 
   var dnsSlotsCard=E('div',{'class':'dm-card'},[
     E('h3',{},[
-      E('span',{},'DNS over HTTPS'),
+      E('span',{},st.dnscrypt_engine==='dnscrypt-proxy2'?'dnscrypt-proxy2':'DNS over HTTPS'),
       doh,
       E('span',{'class':'dm-doh-profile'},[
         E('span',{'class':'dm-doh-profile-label'},'Профиль DNS'),
@@ -6603,7 +6605,8 @@ function renderOverview(root,st){
 
   var sysCard=buildSystemCard(st);
   e.appendChild(E('div',{'class':'dm-grid2'},[sysCard,verCard]));
-  e.appendChild(dnsSlotsCard);
+  if(noEngine)e.appendChild(card('Начало работы',[E('p',{'class':'dm-hint'},'Выберите DNS-движок, чтобы настроить защищённый DNS.'),btn('Выбрать DNS-движок','cbi-button-action',function(){window.location.href=L.url('admin/services/dns-manager/doh');})]));
+  else e.appendChild(dnsSlotsCard);
   e.appendChild(components);
 
 
@@ -6768,15 +6771,28 @@ function appendUninstall(ch,root){
 function renderDoH(root,st){
   var e=root.querySelector('#dm-doh');if(!e)return;e.innerHTML='';
   var engine=st.dnscrypt_engine==='dnscrypt-proxy2'?'dnscrypt-proxy2':(Number(st.engine_installed)===0?'none':'https-dns-proxy');
+  function engineChoice(id,title,description){
+    var selected=engine===id;
+    return E('div',{'class':'dm-engine-choice'+(selected?' dm-engine-selected':'')},[
+      E('div',{'class':'dm-engine-choice-head'},[E('strong',{},title),selected?badge('dm-ok','выбран'):null].filter(Boolean)),
+      E('p',{'class':'dm-mini'},description),
+      btn(selected?'Используется':engine==='none'?'Установить':'Выбрать',selected?'cbi-button-neutral':'cbi-button-action',function(){switchEngine(id,root);},{disabled:!!state.busy||!!state.jobRunning||selected})
+    ]);
+  }
   e.appendChild(card('DNS-движок',[
-    E('p',{'class':'dm-hint'},'При смене движка профили, слоты и привязки сбрасываются. После переключения выберите DNS-профиль.'),
-    E('div',{'class':'dm-seg'},[
-      btn('HTTPS DNS Proxy',engine==='https-dns-proxy'?'active cbi-button':'cbi-button',function(){switchEngine('https-dns-proxy',root);},{disabled:!!state.busy||!!state.jobRunning||engine==='https-dns-proxy'}),
-      btn('dnscrypt-proxy2',engine==='dnscrypt-proxy2'?'active cbi-button':'cbi-button',function(){switchEngine('dnscrypt-proxy2',root);},{disabled:!!state.busy||!!state.jobRunning||engine==='dnscrypt-proxy2'})
+    E('p',{'class':'dm-hint'},engine==='none'?'Выберите и установите DNS-движок, затем настройте профиль.':'При смене движка профили, слоты и привязки сбрасываются.'),
+    E('div',{'class':'dm-engine-choices'},[
+      engineChoice('https-dns-proxy','HTTPS DNS Proxy','Отдельные DNS-слоты и привязки устройств.'),
+      engineChoice('dnscrypt-proxy2','dnscrypt-proxy2','Один процесс и общий набор DNS-серверов.')
     ]),
     state.engineNotice?E('div',{'class':'dm-inline-msg '+(state.engineNoticeType||'info')},state.engineNotice):null
   ].filter(Boolean)));
   resumeEngine(root);
+  if(engine==='none'){
+    var cleanActions=[];appendUninstall(cleanActions,root);
+    e.appendChild(card('Управление DNS Manager',cleanActions));
+    return;
+  }
   if(st.dnscrypt_engine==='dnscrypt-proxy2'){
     var servers=Array.isArray(st.dnscrypt_servers)?st.dnscrypt_servers:[];
     var details=[row('Движок',E('span',{},'dnscrypt-proxy2')),row('Служба',Number(st.dnscrypt_running)===1?badge('dm-ok','работает'):badge('dm-bad','остановлена')),row('Профиль',E('span',{},activeProfileLabel(st)))];
@@ -6789,7 +6805,7 @@ function renderDoH(root,st){
     ]));
     if(state.dnscryptDiagnostic)details.push(E('pre',{'class':'dm-log'},state.dnscryptDiagnostic));
     appendUninstall(details,root);
-    e.appendChild(card('DNS over HTTPS',details));
+    e.appendChild(card('dnscrypt-proxy2',details));
     return;
   }
   var rr=resolverRows(st,root), rows=rr[0], count=rr[1];
@@ -7260,6 +7276,7 @@ function renderProfiles(root,st){
   var oldScrollTop=oldOut?oldOut.scrollTop:0;
   var oldAtBottom=oldOut?((oldOut.scrollHeight-oldOut.clientHeight-oldOut.scrollTop)<=8):false;
   e.innerHTML='';
+  if(st.dnscrypt_engine!=='dnscrypt-proxy2'&&Number(st.engine_installed)===0)return;
   var g=E('div',{'class':'dm-seg dm-profile-seg'});
   var currentId=activeProfileId(st);
   if(st.dnscrypt_engine==='dnscrypt-proxy2'){
@@ -7665,7 +7682,7 @@ function watchdogCard(root,st){
     E('div',{'class':'dm-setting-desc'},'Контроль выполняется каждые '+intervalMinutes+' мин: проверяется локальный порт назначенного DoH и DNS-ответ на запрос example.com (для слота RU — yandex.ru). Это проверка рабочего пути, а не полный тест каталога DNS. Профиль не требуется.'),
     toggleRow('Проверка DNS','Проверяет назначенные DoH-слоты.',en,'watchdog',false),
     toggleRow('Автозамена DNS','После '+failThreshold+' ошибок подряд ищет рабочий DNS той же категории. При общем сбое замену откладывает; повторная попытка — не раньше чем через '+cooldownMinutes+' мин. Пользовательские DoH не заменяются.',auto,'watchdog_autoreplace',!en),
-    E('div',{'class':'dm-hint'},'Разовая проверка текущих DoH и дополнительных системных экземпляров доступна на вкладке «DNS over HTTPS» кнопкой «Проверить текущие DNS». Она проверяет реальные DoH-endpoint’ы и не включает периодический контроль.'),
+    E('div',{'class':'dm-hint'},'Разовая проверка текущих DoH и дополнительных системных экземпляров доступна на вкладке «Защищённый DNS» кнопкой «Проверить текущие DNS». Она проверяет реальные DoH-endpoint’ы и не включает периодический контроль.'),
     E('details',{'class':'dm-watchdog-advanced'},[
       E('summary',{},'Дополнительные параметры'),
       E('div',{'class':'dm-watchdog-list'},spec.map(function(x){return param(x[0],x[1],x[2],x[3],x[4],x[5],x[6]);})),
@@ -8133,13 +8150,13 @@ function saveRouteCache(key,st,aux){
     var entry=JSON.parse(JSON.stringify({ts:Date.now(),data:st,aux:aux}));
     window.dmRouteCache[key]=entry;
     if(typeof session!=='undefined'&&session.setLocalData)
-      session.setLocalData('dns-manager-route-2.40-'+key,entry);
+      session.setLocalData('dns-manager-route-2.41-'+key,entry);
   }catch(e){}
 }
 function routeCacheEntry(key){
   var entry=key&&window.dmRouteCache&&window.dmRouteCache[key];
   if(!entry&&key){
-    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.40-'+key);}catch(e){}
+    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.41-'+key);}catch(e){}
   }
   if(!entry||typeof entry.ts!=='number'||Date.now()-entry.ts<0||Date.now()-entry.ts>300000||!entry.data||entry.data.ok!==true)return null;
   return entry;
@@ -8397,7 +8414,7 @@ function watchEngine(root){
       state.engineWatching=false;state.busy=false;
       var ok=j&&j.status==='done'&&j.result==='ok';
       state.engineNoticeType=ok?'ok':'error';
-      state.engineNotice=ok?'Движок переключён. Выберите DNS-профиль.':((j&&j.output&&stripAnsi(j.output).split('\n').filter(function(x){return String(x||'').trim();}).pop())||'Не удалось подтвердить переключение. Проверьте DNS перед повтором.');
+      state.engineNotice=ok?'DNS-движок готов. Выберите DNS-профиль.':((j&&j.output&&stripAnsi(j.output).split('\n').filter(function(x){return String(x||'').trim();}).pop())||'Не удалось подтвердить переключение. Проверьте DNS перед повтором.');
       refresh(root,true);
     }).catch(function(){
       if(++errors<3){window.setTimeout(poll,2000);return;}
@@ -8419,7 +8436,7 @@ function resumeEngine(root){
     }else if(j.status==='done'||j.status==='failed'){
       var ok=j.status==='done'&&j.result==='ok';
       state.engineNoticeType=ok?'ok':'error';
-      state.engineNotice=ok?'Движок переключён. Выберите DNS-профиль.':((j.output&&stripAnsi(j.output).split('\n').filter(function(x){return String(x||'').trim();}).pop())||'Переключение завершилось с ошибкой.');
+      state.engineNotice=ok?'DNS-движок готов. Выберите DNS-профиль.':((j.output&&stripAnsi(j.output).split('\n').filter(function(x){return String(x||'').trim();}).pop())||'Переключение завершилось с ошибкой.');
       renderDoH(root,window.dmState||{});
     }
   }).catch(function(){});
@@ -8443,9 +8460,12 @@ function dnscryptDiagnostic(root,log){
 }
 function switchEngine(target,root){
   if(state.busy||state.jobRunning)return;
-  confirmAction('Внимание! Переключение движка полностью сбросит текущие профили, слоты и привязки. Продолжить?',
-    [['Новый движок',target]],function(){
-      state.busy=true;state.engineNoticeType='info';state.engineNotice='Запускаю переключение…';
+  var st=window.dmState||{};
+  var firstInstall=st.dnscrypt_engine!=='dnscrypt-proxy2'&&Number(st.engine_installed)===0&&!displayDnsRows(st).length&&(!st.profile||st.profile==='none');
+  var message=firstInstall?'Установить выбранный DNS-движок? DNS роутера будет возвращён к стандартным настройкам OpenWrt. Сохранённые настройки DNS Manager, если они есть, будут сброшены.':'Внимание! Переключение движка полностью сбросит текущие профили, слоты и привязки. Продолжить?';
+  confirmAction(message,
+    [['DNS-движок',target]],function(){
+      state.busy=true;state.engineNoticeType='info';state.engineNotice='Запускаю настройку DNS-движка…';
       renderDoH(root,window.dmState||{});
       callSwitchEngine(target).then(function(r){
         if(!r||!r.ok||r.job!=='engine')throw new Error((r&&r.error)||'Не удалось запустить переключение.');
@@ -9171,7 +9191,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 2.40
+// DNS Manager LuCI version: 2.41
 return view.extend({
   load: DM.load,
   render: DM.render,
