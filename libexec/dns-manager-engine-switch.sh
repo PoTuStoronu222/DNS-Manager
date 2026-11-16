@@ -38,6 +38,7 @@ cleanup() {
     fi
     printf 'finished=%s\n' "$(date +%s)" >> "$job_dir/state"
     [ "$locked" != 1 ] || release_mutation_lock
+    if [ "$success" = 1 ]; then printf '__DONE__ 0\n'; else printf '__DONE__ 1\n'; fi
 }
 trap cleanup EXIT
 trap 'exit 1' HUP INT TERM

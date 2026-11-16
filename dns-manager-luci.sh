@@ -1186,7 +1186,7 @@ case "${1:-}" in
             dnscrypt_test|system_dns_test) diagnostic_start "$2" ;;
             dnscrypt_log) diagnostic "$2" ;;
             status|doh_status|network_status|time_status|log|update_check) status_extra "$2" ;;
-            runtime|page_meta|catalog|lan_devices|job|multi|set_ntp|uninstall_status)
+            runtime|page_meta|catalog|lan_devices|job|job_status|multi|set_ntp|uninstall_status)
                 exec "$LEGACY" "$@" ;;
             *) error 'Действие пока недоступно для dnscrypt-proxy2' ;;
         esac ;;
@@ -1313,6 +1313,7 @@ cleanup() {
     fi
     printf 'finished=%s\n' "$(date +%s)" >> "$job_dir/state"
     [ "$locked" != 1 ] || release_mutation_lock
+    if [ "$success" = 1 ]; then printf '__DONE__ 0\n'; else printf '__DONE__ 1\n'; fi
 }
 trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
@@ -2151,7 +2152,7 @@ EOF_MENU
     "description": "DNS Manager native LuCI interface",
     "read": {
       "ubus": {
-        "dns_manager": [ "dnscrypt_test", "dnscrypt_log", "system_dns_test", "status", "runtime", "doh_status", "network_status", "lan_devices", "time_status", "page_meta", "catalog", "job", "multi", "log", "update_check", "uninstall_status" ]
+        "dns_manager": [ "dnscrypt_test", "dnscrypt_log", "system_dns_test", "status", "runtime", "doh_status", "network_status", "lan_devices", "time_status", "page_meta", "catalog", "job", "job_status", "multi", "log", "update_check", "uninstall_status" ]
       }
     },
     "write": {
@@ -4763,7 +4764,13 @@ background_worker() {
     fi
     job_write "$DM_BACKGROUND_ID" result "$DM_BACKGROUND_RESULT"
     job_write "$DM_BACKGROUND_ID" finished "$(date +%s)"
-    if [ "$DM_BACKGROUND_RESULT" = ok ]; then job_write "$DM_BACKGROUND_ID" status done; else job_write "$DM_BACKGROUND_ID" status failed; fi
+    if [ "$DM_BACKGROUND_RESULT" = ok ]; then
+        job_write "$DM_BACKGROUND_ID" status done
+        printf '\n__DONE__ 0\n' >> "$JOB_DIR/$DM_BACKGROUND_ID/output"
+    else
+        job_write "$DM_BACKGROUND_ID" status failed
+        printf '\n__DONE__ 1\n' >> "$JOB_DIR/$DM_BACKGROUND_ID/output"
+    fi
 }
 
 job_start_action() {
@@ -5142,8 +5149,15 @@ job_json() {
         job_process_alive "$_d" >/dev/null 2>&1 || true
     fi
     printf '{"ok":true,"job":'; json_quote "$_jid"
-    printf ',"status":'; json_quote "$(sed -n 's/^status=//p' "$_d/state" 2>/dev/null | tail -n1)"
-    printf ',"result":'; json_quote "$(sed -n 's/^result=//p' "$_d/state" 2>/dev/null | tail -n1)"
+    _job_status="$(sed -n 's/^status=//p' "$_d/state" 2>/dev/null | tail -n1)"
+    _job_result="$(sed -n 's/^result=//p' "$_d/state" 2>/dev/null | tail -n1)"
+    # New workers finish with a marker; older workers remain compatible.
+    case "$(tail -n1 "$_d/output" 2>/dev/null)" in
+        '__DONE__ 0') _job_status=done; _job_result=ok;;
+        '__DONE__ 1') _job_status=failed; _job_result=fail;;
+    esac
+    printf ',"status":'; json_quote "$_job_status"
+    printf ',"result":'; json_quote "$_job_result"
     printf ',"mode":'; json_quote "$(sed -n 's/^mode=//p' "$_d/state" 2>/dev/null | head -n1)"
     printf ',"enabled":'; json_quote "$(sed -n 's/^enabled=//p' "$_d/state" 2>/dev/null | head -n1)"
     printf ',"name":'; json_quote "$(sed -n 's/^name=//p' "$_d/state" 2>/dev/null | tail -n1)"
@@ -5169,7 +5183,7 @@ job_json() {
     fi
     printf ',"started":'; json_quote "$(sed -n 's/^started=//p' "$_d/state" 2>/dev/null | head -n1)"
     printf ',"finished":'; json_quote "$(sed -n 's/^finished=//p' "$_d/state" 2>/dev/null | tail -n1)"
-    printf ',"output":'; printf '"'; tail -n 80 "$_d/output" 2>/dev/null | sed 's/\\/\\\\/g; s/"/\\"/g; s/\r/ /g; s/\t/\\t/g' | awk 'NR>1 {printf "\\n"} {printf "%s", $0}'; printf '"'
+    printf ',"output":'; printf '"'; tail -n 80 "$_d/output" 2>/dev/null | sed '/^__DONE__ [01]$/d' | sed 's/\\/\\\\/g; s/"/\\"/g; s/\r/ /g; s/\t/\\t/g' | awk 'NR>1 {printf "\\n"} {printf "%s", $0}'; printf '"'
     printf '}' 
 }
 log_json() {
@@ -5758,7 +5772,7 @@ test_json() { case "${RPC_METHOD:-}" in test_all) job_start_test_all;; test_curr
 case "${1:-}" in
     worker) background_worker "$2";;
     list)
-        printf '{"status":{},"runtime":{},"doh_status":{},"network_status":{},"lan_devices":{},"set_device_dns":{"mac":"String","slots":"String"},"set_cache":{"total":0,"ttl":0},"time_status":{},"page_meta":{},"catalog":{"category":"String","offset":0,"limit":0,"only_ok":0},"update_check":{"force":0},"update":{},"update_manager":{},"update_hdp":{},"update_catalog":{},"update_all":{},"update_background":{},"test_combined":{},"switch_engine":{"target_engine":"String"},"dnscrypt_test":{},"dnscrypt_log":{},"system_dns_test":{},"set_profile":{"profile":"String"},"set_regional":{"enabled":0},"reset_dns":{},"uninstall":{},"uninstall_status":{},"set_slot":{"slot":"String","id":"String","expected":"String"},"set_slot_domains":{"slot":"String","domains":"String"},"add_custom_dns":{"name":"String","url":"String"},"delete_custom_dns":{"id":"String"},"set_setting":{"name":"String","enabled":0},"set_bootstrap":{"mode":"String","addresses":"String","preset_ids":"String","extra_addresses":"String"},"set_watchdog_setting":{"name":"String","value":0},"set_watchdog_settings":{"interval":0,"threshold":0,"repair_cooldown":0,"max_restarts":0,"guard_interval":0},"set_ntp":{"preset":"String"},"set_test_age":{"category":"String","hours":0},"test_all":{},"test_current":{},"test_one":{"id":"String"},"test_system":{},"job":{"id":"String"},"multi":{"calls":"String"},"log":{"lines":0}}\n'
+        printf '{"status":{},"runtime":{},"doh_status":{},"network_status":{},"lan_devices":{},"set_device_dns":{"mac":"String","slots":"String"},"set_cache":{"total":0,"ttl":0},"time_status":{},"page_meta":{},"catalog":{"category":"String","offset":0,"limit":0,"only_ok":0},"update_check":{"force":0},"update":{},"update_manager":{},"update_hdp":{},"update_catalog":{},"update_all":{},"update_background":{},"test_combined":{},"switch_engine":{"target_engine":"String"},"dnscrypt_test":{},"dnscrypt_log":{},"system_dns_test":{},"set_profile":{"profile":"String"},"set_regional":{"enabled":0},"reset_dns":{},"uninstall":{},"uninstall_status":{},"set_slot":{"slot":"String","id":"String","expected":"String"},"set_slot_domains":{"slot":"String","domains":"String"},"add_custom_dns":{"name":"String","url":"String"},"delete_custom_dns":{"id":"String"},"set_setting":{"name":"String","enabled":0},"set_bootstrap":{"mode":"String","addresses":"String","preset_ids":"String","extra_addresses":"String"},"set_watchdog_setting":{"name":"String","value":0},"set_watchdog_settings":{"interval":0,"threshold":0,"repair_cooldown":0,"max_restarts":0,"guard_interval":0},"set_ntp":{"preset":"String"},"set_test_age":{"category":"String","hours":0},"test_all":{},"test_current":{},"test_one":{"id":"String"},"test_system":{},"job":{"id":"String"},"job_status":{"id":"String"},"multi":{"calls":"String"},"log":{"lines":0}}\n'
         ;;
     call)
         case "${2:-}" in
@@ -5776,7 +5790,7 @@ case "${1:-}" in
             add_custom_dns|delete_custom_dns|set_device_dns|set_cache|reset_dns|uninstall|set_profile|set_regional|set_slot|set_slot_domains|set_setting|set_bootstrap|set_watchdog_setting|set_watchdog_settings|set_ntp) INPUT="$(cat 2>/dev/null || true)"; RPC_METHOD="$2"; run_action;;
             uninstall_status) uninstall_status_json;;
             test_all|test_current|test_one|test_system) INPUT="$(cat 2>/dev/null || true)"; RPC_METHOD="$2"; test_json;;
-            job) INPUT="$(cat 2>/dev/null || true)"; job_json "$(jget id)";;
+            job|job_status) INPUT="$(cat 2>/dev/null || true)"; job_json "$(jget id)";;
             multi) INPUT="$(cat 2>/dev/null || true)"; multi_json;;
             log) INPUT="$(cat 2>/dev/null || true)"; log_json "$(jget lines)";;
             *) json_error "Недопустимый метод";;
@@ -5893,7 +5907,7 @@ var callTestAll = dmRpc({ object:'dns_manager', method:'test_all', expect:{} });
 var callTestCurrent = dmRpc({ object:'dns_manager', method:'test_current', expect:{} });
 var callTestOne = dmRpc({ object:'dns_manager', method:'test_one', params:['id'], expect:{} });
 var callTestSystem = dmRpc({ object:'dns_manager', method:'test_system', expect:{} });
-var callJob = dmRpc({ object:'dns_manager', method:'job', params:['id'], expect:{} });
+var callJob = dmRpc({ object:'dns_manager', method:'job_status', params:['id'], expect:{} });
 var callLog = dmRpc({ object:'dns_manager', method:'log', params:['lines'], expect:{} });
 
 var PROFILE = [
