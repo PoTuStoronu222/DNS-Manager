@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager full installer and LuCI companion
-# Version: 2.34
+# Version: 2.35
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.34"
+VERSION="2.35"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -2082,7 +2082,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.34"
+SELF_VERSION="2.35"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -5699,7 +5699,7 @@ EOF_RPC_WRAPPER
 'require ui';
 'require session';
 
-// DNS Manager LuCI common module version: 2.34
+// DNS Manager LuCI common module version: 2.35
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -6564,8 +6564,8 @@ function renderDoH(root,st){
   e.appendChild(card('DNS-движок',[
     E('p',{'class':'dm-hint'},'При смене движка профили, слоты и привязки сбрасываются. После переключения выберите DNS-профиль.'),
     E('div',{'class':'dm-seg'},[
-      btn('HTTPS DNS Proxy',engine==='https-dns-proxy'?'active cbi-button':'cbi-button',function(){switchEngine('https-dns-proxy',root);},{disabled:!!state.busy||engine==='https-dns-proxy'}),
-      btn('dnscrypt-proxy2',engine==='dnscrypt-proxy2'?'active cbi-button':'cbi-button',function(){switchEngine('dnscrypt-proxy2',root);},{disabled:!!state.busy||engine==='dnscrypt-proxy2'})
+      btn('HTTPS DNS Proxy',engine==='https-dns-proxy'?'active cbi-button':'cbi-button',function(){switchEngine('https-dns-proxy',root);},{disabled:!!state.busy||!!state.jobRunning||engine==='https-dns-proxy'}),
+      btn('dnscrypt-proxy2',engine==='dnscrypt-proxy2'?'active cbi-button':'cbi-button',function(){switchEngine('dnscrypt-proxy2',root);},{disabled:!!state.busy||!!state.jobRunning||engine==='dnscrypt-proxy2'})
     ]),
     state.engineNotice?E('div',{'class':'dm-inline-msg '+(state.engineNoticeType||'info')},state.engineNotice):null
   ].filter(Boolean)));
@@ -7938,13 +7938,13 @@ function saveRouteCache(key,st,aux){
     var entry=JSON.parse(JSON.stringify({ts:Date.now(),data:st,aux:aux}));
     window.dmRouteCache[key]=entry;
     if(typeof session!=='undefined'&&session.setLocalData)
-      session.setLocalData('dns-manager-route-2.34-'+key,entry);
+      session.setLocalData('dns-manager-route-2.35-'+key,entry);
   }catch(e){}
 }
 function routeCacheEntry(key){
   var entry=key&&window.dmRouteCache&&window.dmRouteCache[key];
   if(!entry&&key){
-    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.34-'+key);}catch(e){}
+    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.35-'+key);}catch(e){}
   }
   if(!entry||typeof entry.ts!=='number'||Date.now()-entry.ts<0||Date.now()-entry.ts>300000||!entry.data||entry.data.ok!==true)return null;
   return entry;
@@ -8237,7 +8237,7 @@ function dnscryptDiagnostic(root,log){
   }).catch(function(err){state.dnscryptDiagnostic=withRpcError('Не удалось выполнить действие.',err);}).then(function(){state.busy=false;renderDoH(root,window.dmState||{});});
 }
 function switchEngine(target,root){
-  if(state.busy)return;
+  if(state.busy||state.jobRunning)return;
   confirmAction('Внимание! Переключение движка полностью сбросит текущие профили, слоты и привязки. Продолжить?',
     [['Новый движок',target]],function(){
       state.busy=true;state.engineNoticeType='info';state.engineNotice='Запускаю переключение…';
@@ -8961,7 +8961,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 2.34
+// DNS Manager LuCI version: 2.35
 return view.extend({
   load: DM.load,
   render: DM.render,
