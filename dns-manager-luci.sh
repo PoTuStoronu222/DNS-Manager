@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager full installer and LuCI companion
-# Version: 2.39
+# Version: 2.40
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.39"
+VERSION="2.40"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -1186,7 +1186,7 @@ case "${1:-}" in
             dnscrypt_test|system_dns_test) diagnostic_start "$2" ;;
             dnscrypt_log) diagnostic "$2" ;;
             status|doh_status|network_status|time_status|log|update_check) status_extra "$2" ;;
-            runtime|page_meta|catalog|lan_devices|job|job_status|multi|set_ntp|uninstall|uninstall_status)
+            runtime|page_meta|catalog|lan_devices|job|job_status|multi|set_ntp|update_background|uninstall|uninstall_status)
                 exec "$LEGACY" "$@" ;;
             *) error 'Действие пока недоступно для dnscrypt-proxy2' ;;
         esac ;;
@@ -2198,9 +2198,12 @@ UPDATE_STATE="/etc/dns-manager-luci/update.state"
 UPDATE_CHECK_CACHE="$RUNTIME_DIR/update-check.cache"
 UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
+if [ "$(uci -q get dns-manager.global.active_engine 2>/dev/null)" = dnscrypt-proxy2 ]; then
+    COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/dnscrypt-proxy2-engine/dns-manager-luci.sh"
+fi
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.39"
+SELF_VERSION="2.40"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -2647,7 +2650,10 @@ component_update_check() {
     if [ -z "$_manager_installed" ]; then
         _manager_error="DNS Manager не найден на роутере"
         UPDATE_CHECK_COMPONENTS_OK=0
-    elif fetch_raw_url "$_tmp" "https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager.sh"; then
+    elif { [ "$(uci -q get dns-manager.global.active_engine 2>/dev/null)" = dnscrypt-proxy2 ] &&
+           fetch_raw_url "$_tmp" "https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/dnscrypt-proxy2-engine/dns-manager.sh"; } ||
+         { [ "$(uci -q get dns-manager.global.active_engine 2>/dev/null)" != dnscrypt-proxy2 ] &&
+           fetch_raw_url "$_tmp" "https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager.sh"; }; then
         _manager_latest="$(sed -n 's/^VERSION="\([^"]*\)"$/\1/p' "$_tmp" 2>/dev/null | head -n1)"
         if [ -n "$_manager_latest" ]; then
             _manager_ok=1
@@ -2950,30 +2956,35 @@ update_all_json() {
         *) append_failure_message "DNS Manager: не удалось обновить" ;;
     esac
 
-    [ "${DM_BACKGROUND_ID:-}" != update ] || job_write update name 'Защищённый DNS'
-    _old_h="$(package_version https-dns-proxy 2>/dev/null || true)"
-    _hr="$(update_hdp_json 2>/dev/null || true)"
-    _new_h="$(package_version https-dns-proxy 2>/dev/null || true)"
-    case "$(json_update_state "$_hr")" in
-        updated)
-            if [ -n "$_old_h" ] && [ -n "$_new_h" ] && [ "$_new_h" != "$_old_h" ]; then append_update_message "Защищённый DNS $_old_h → $_new_h"; else append_update_message "Защищённый DNS обновлён"; fi
-            ;;
-        current) append_update_message "Защищённый DNS $_old_h · актуален" ;;
-        *) append_failure_message "Защищённый DNS: не удалось обновить" ;;
-    esac
+    # DNSCrypt uses its own static pool. Do not update or restart HTTPS DNS Proxy
+    # or replace its catalog while updating the manager in this mode.
+    if [ "$(uci -q get dns-manager.global.active_engine 2>/dev/null)" != dnscrypt-proxy2 ]; then
+        [ "${DM_BACKGROUND_ID:-}" != update ] || job_write update name 'Защищённый DNS'
+        _old_h="$(package_version https-dns-proxy 2>/dev/null || true)"
+        _hr="$(update_hdp_json 2>/dev/null || true)"
+        _new_h="$(package_version https-dns-proxy 2>/dev/null || true)"
+        case "$(json_update_state "$_hr")" in
+            updated)
+                if [ -n "$_old_h" ] && [ -n "$_new_h" ] && [ "$_new_h" != "$_old_h" ]; then append_update_message "Защищённый DNS $_old_h → $_new_h"; else append_update_message "Защищённый DNS обновлён"; fi
+                ;;
+            current) append_update_message "Защищённый DNS $_old_h · актуален" ;;
+            *) append_failure_message "Защищённый DNS: не удалось обновить" ;;
+        esac
 
-    [ "${DM_BACKGROUND_ID:-}" != update ] || job_write update name 'Каталог DNS'
-    _old_cv="$(catalog_version 2>/dev/null || true)"
-    _old_cr="$(catalog_revision 2>/dev/null || true)"
-    update_catalog_direct
-    _rc=$?
-    _new_cv="$(catalog_version 2>/dev/null || true)"
-    _new_cr="$(catalog_revision 2>/dev/null || true)"
-    case "$_rc" in
-        0) append_update_message "Каталог DNS $_old_cv rev.$_old_cr → $_new_cv rev.$_new_cr" ;;
-        2) append_update_message "Каталог DNS $_old_cv rev.$_old_cr · актуален" ;;
-        *) append_failure_message "Каталог DNS: не удалось обновить" ;;
-    esac
+        [ "${DM_BACKGROUND_ID:-}" != update ] || job_write update name 'Каталог DNS'
+        _old_cv="$(catalog_version 2>/dev/null || true)"
+        _old_cr="$(catalog_revision 2>/dev/null || true)"
+        update_catalog_direct
+        _rc=$?
+        _new_cv="$(catalog_version 2>/dev/null || true)"
+        _new_cr="$(catalog_revision 2>/dev/null || true)"
+        case "$_rc" in
+            0) append_update_message "Каталог DNS $_old_cv rev.$_old_cr → $_new_cv rev.$_new_cr" ;;
+            2) append_update_message "Каталог DNS $_old_cv rev.$_old_cr · актуален" ;;
+            *) append_failure_message "Каталог DNS: не удалось обновить" ;;
+        esac
+
+    fi
 
     [ "${DM_BACKGROUND_ID:-}" != update ] || job_write update name 'LuCI'
     _old_l="$(read_installed_luci_version)"
@@ -5846,7 +5857,7 @@ EOF_RPC_WRAPPER
 'require ui';
 'require session';
 
-// DNS Manager LuCI common module version: 2.39
+// DNS Manager LuCI common module version: 2.40
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -6558,7 +6569,7 @@ function renderOverview(root,st){
     row('Проверено',dateText(st.components_checked_at)),
     E('div',{'class':'dm-actions'},[
       btn(state.versionCheck&&state.versionCheck.running?'Проверяю актуальность…':'Проверить актуальность','cbi-button-neutral',function(){checkUpdate(root,true);},{disabled:!!state.updatingAll||!!(state.versionCheck&&state.versionCheck.running)}),
-      (st.dnscrypt_engine!=='dnscrypt-proxy2'&&(yes(st.manager_update_available)||yes(st.luci_update_available)||yes(st.hdp_update_available)||yes(st.catalog_update_available))) ?
+      (st.dnscrypt_engine==='dnscrypt-proxy2'||yes(st.manager_update_available)||yes(st.luci_update_available)||yes(st.hdp_update_available)||yes(st.catalog_update_available)) ?
         btn(state.updatingAll?'Обновляю…':'Обновить','cbi-button-positive',function(){updateAll(root);},{disabled:!!state.updatingAll||!!state.busy||!!(state.versionCheck&&state.versionCheck.running)}) :
         null
     ].filter(Boolean)),
@@ -8098,13 +8109,13 @@ function saveRouteCache(key,st,aux){
     var entry=JSON.parse(JSON.stringify({ts:Date.now(),data:st,aux:aux}));
     window.dmRouteCache[key]=entry;
     if(typeof session!=='undefined'&&session.setLocalData)
-      session.setLocalData('dns-manager-route-2.39-'+key,entry);
+      session.setLocalData('dns-manager-route-2.40-'+key,entry);
   }catch(e){}
 }
 function routeCacheEntry(key){
   var entry=key&&window.dmRouteCache&&window.dmRouteCache[key];
   if(!entry&&key){
-    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.39-'+key);}catch(e){}
+    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.40-'+key);}catch(e){}
   }
   if(!entry||typeof entry.ts!=='number'||Date.now()-entry.ts<0||Date.now()-entry.ts>300000||!entry.data||entry.data.ok!==true)return null;
   return entry;
@@ -9136,7 +9147,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 2.39
+// DNS Manager LuCI version: 2.40
 return view.extend({
   load: DM.load,
   render: DM.render,
