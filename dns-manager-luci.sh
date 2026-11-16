@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager full installer and LuCI companion
-# Version: 2.51
+# Version: 2.52
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.51"
+VERSION="2.52"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -2327,7 +2327,7 @@ if [ "$(uci -q get dns-manager.global.active_engine 2>/dev/null)" = dnscrypt-pro
 fi
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.51"
+SELF_VERSION="2.52"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -6005,7 +6005,7 @@ EOF_RPC_WRAPPER
 'require ui';
 'require session';
 
-// DNS Manager LuCI common module version: 2.51
+// DNS Manager LuCI common module version: 2.52
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -6909,12 +6909,18 @@ function appendUninstall(ch,root){
     },{disabled:!!state.busy})
   ]));
 }
+function dnscryptCurrentPool(st){
+  var servers=Array.isArray(st.dnscrypt_servers)?st.dnscrypt_servers:[];
+  return servers.length?E('div',{'class':'dm-doh-list'},servers.map(function(id){
+    return E('div',{'class':'dm-row'},[E('span',{},dnscryptServerName(st,id))]);
+  })):E('div',{'class':'dm-hint'},'DNS ещё не выбраны: примените профиль.');
+}
 function dnscryptPoolList(st,root){
   var servers=Array.isArray(st.dnscrypt_servers)?st.dnscrypt_servers:[];
   var available=Array.isArray(st.dnscrypt_available_servers)&&st.dnscrypt_available_servers.length?st.dnscrypt_available_servers:servers;
   var selected=String(st.dnscrypt_selected_server||'');
   return available.length?E('div',{'class':'dm-doh-list'},available.map(function(id){
-    return E('div',{'class':'dm-row'},[E('span',{},dnscryptServerName(st,id)),btn(id===selected?'Выбран':'Выбрать','cbi-button-neutral',function(){selectDnscryptServer(id,root);},{disabled:!!state.busy||!!state.jobRunning||id===selected})]);
+    return E('div',{'class':'dm-row'},[E('span',{},dnscryptServerName(st,id)),btn(id===selected?'Выбран':'Использовать только этот','cbi-button-neutral',function(){confirmAction('Выбрать один DNS-сервер',[['DNS',dnscryptServerName(st,id)],['Изменение','Вместо текущего набора будет использоваться только этот сервер.']],function(){selectDnscryptServer(id,root);});},{disabled:!!state.busy||!!state.jobRunning||id===selected})]);
   })):E('div',{'class':'dm-hint'},'DNS ещё не выбраны: примените профиль.');
 }
 function renderDoH(root,st){
@@ -6945,10 +6951,11 @@ function renderDoH(root,st){
   if(st.dnscrypt_engine==='dnscrypt-proxy2'){
     var servers=Array.isArray(st.dnscrypt_servers)?st.dnscrypt_servers:[];
     var selectedServer=String(st.dnscrypt_selected_server||'');
-    var details=[row('Движок',E('span',{},'DNSCrypt Proxy')),row('Служба',Number(st.dnscrypt_running)===1?badge('dm-ok','работает'):badge('dm-bad','остановлена')),row('Профиль',!activeProfileId(st)&&!selectedServer?badge('dm-warn','не выбран'):E('span',{},activeProfileLabel(st)))];
+    var details=[row('Движок',E('span',{},'DNSCrypt Proxy')),row('Служба',Number(st.dnscrypt_running)===1?badge('dm-ok','работает'):badge('dm-bad','остановлена')),selectedServer?row('Режим',E('span',{},'Один сервер выбран вручную')):row('Профиль',!activeProfileId(st)?badge('dm-warn','не выбран'):E('span',{},activeProfileLabel(st)))];
     if(!activeProfileId(st)&&!selectedServer)details.push(E('div',{'class':'dm-force-external'},'Профиль не выбран. Доступен начальный набор серверов; выберите сервер или профиль и проверьте DNS.'));
-    details.push(E('p',{'class':'dm-hint'},selectedServer?'Выбран один сервер из набора.':'Сервер выбирается автоматически из общего набора.'));
-    details.push(dnscryptPoolList(st,root));
+    details.push(E('div',{'class':'dm-row'},[E('span',{'class':'dm-label'},servers.length===1?'Сейчас используется':'Сейчас используются')]));
+    details.push(dnscryptCurrentPool(st));
+    details.push(E('p',{'class':'dm-hint'},selectedServer?'Используется один выбранный вручную сервер.':'DNSCrypt автоматически выбирает сервер из этого набора.'));
     details.push(E('div',{'class':'dm-actions'},[
       btn('Сбросить профиль','cbi-button-neutral',function(){applyProfile('default',root);},{disabled:!!state.busy}),
       btn('Проверить DNS','cbi-button-neutral',function(){dnscryptDiagnostic(root,false);},{disabled:!!state.busy}),
@@ -7517,7 +7524,7 @@ function foldSection(key,summary,content,classes){
 function renderSlots(root,st){
   var e=root.querySelector('#dm-slots');if(!e)return;e.innerHTML='';
   if(st.dnscrypt_engine==='dnscrypt-proxy2'){
-    var poolContent=[E('p',{'class':'dm-hint'},st.dnscrypt_selected_server?'Выбран один сервер из набора.':'DNSCrypt выбирает сервер из общего набора автоматически.'),dnscryptPoolList(st,root)];
+    var poolContent=[E('p',{'class':'dm-hint'},'Сейчас используются:'),dnscryptCurrentPool(st),E('p',{'class':'dm-hint'},'Ручной выбор заменит весь текущий набор одним сервером. Чтобы снова использовать несколько DNS, примените профиль.'),dnscryptPoolList(st,root)];
     poolContent.push(btn('Проверить DNS','cbi-button-neutral',function(){dnscryptDiagnostic(root,false);},{disabled:!!state.busy}));
     if(state.dnscryptDiagnostic)poolContent.push(E('pre',{'class':'dm-log'},state.dnscryptDiagnostic));
     e.appendChild(card('Пул серверов',poolContent));
@@ -8327,7 +8334,7 @@ function saveRouteCache(key,st,aux){
     var entry=JSON.parse(JSON.stringify({ts:Date.now(),data:st,aux:aux}));
     window.dmRouteCache[key]=entry;
     if(typeof session!=='undefined'&&session.setLocalData)
-      session.setLocalData('dns-manager-route-2.51-'+key,entry);
+      session.setLocalData('dns-manager-route-2.52-'+key,entry);
   }catch(e){}
 }
 function clearEngineUiState(){
@@ -8335,7 +8342,7 @@ function clearEngineUiState(){
   window.dmRouteCache=Object.create(null);
   window.dmStatusPromises=Object.create(null);
   ['dashboard','doh','network','time','devices','catalog','log'].forEach(function(key){
-    try{if(typeof session!=='undefined'&&session.setLocalData)session.setLocalData('dns-manager-route-2.51-'+key,null);}catch(e){}
+    try{if(typeof session!=='undefined'&&session.setLocalData)session.setLocalData('dns-manager-route-2.52-'+key,null);}catch(e){}
   });
   state.pageNotice={};state.profileProgress=null;state.profileOutput='';state.profileResumeStarted=false;
   state.regionalNotice='';state.dnscryptDiagnostic='';state.dnscryptDiagnosticKind='';state.dnscryptProfileChoice='';
@@ -8347,7 +8354,7 @@ function clearEngineUiState(){
 function routeCacheEntry(key){
   var entry=key&&window.dmRouteCache&&window.dmRouteCache[key];
   if(!entry&&key){
-    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.51-'+key);}catch(e){}
+    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.52-'+key);}catch(e){}
   }
   if(!entry||typeof entry.ts!=='number'||Date.now()-entry.ts<0||Date.now()-entry.ts>300000||!entry.data||entry.data.ok!==true)return null;
   return entry;
@@ -9401,7 +9408,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 2.51
+// DNS Manager LuCI version: 2.52
 return view.extend({
   load: DM.load,
   render: DM.render,
