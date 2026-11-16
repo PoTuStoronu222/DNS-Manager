@@ -50,11 +50,13 @@ dnscrypt_set_setting() {
     input=$(cat)
     name=$(printf '%s' "$input" | jsonfilter -e '@.name' 2>/dev/null)
     enabled=$(printf '%s' "$input" | jsonfilter -e '@.enabled' 2>/dev/null)
-    case "$name" in watchdog|watchdog_autoreplace) ;; *) error 'Эта настройка пока недоступна для DNSCrypt'; return;; esac
+    case "$name" in watchdog|watchdog_autoreplace|force) ;; *) error 'Эта настройка пока недоступна для DNSCrypt'; return;; esac
     case "$enabled" in 0|1) ;; *) error 'Неверное значение настройки'; return;; esac
     load_manager_functions && load_config && acquire_mutation_lock || { error 'Не удалось изменить проверку DNS'; return; }
     rc=0
-    if [ "$name" = watchdog ]; then
+    if [ "$name" = force ]; then
+        dnscrypt_set_force "$enabled" >/dev/null 2>&1 || rc=$?
+    elif [ "$name" = watchdog ]; then
         watchdog_apply_toggle "$enabled" >/dev/null 2>&1 || rc=$?
     else
         watchdog_apply_autoreplace_toggle "$enabled" >/dev/null 2>&1 || rc=$?
@@ -62,6 +64,39 @@ dnscrypt_set_setting() {
     release_mutation_lock
     [ "$rc" -eq 0 ] || { error 'Не удалось изменить проверку DNS'; return; }
     printf '{"ok":true}\n'
+}
+
+# Keep the LAN redirect in an owned UCI section so firewall reloads retain it.
+dnscrypt_set_force() {
+    local enabled current owner lan_ip
+    enabled=$1
+    current=$(uci -q get firewall.dns_forced || :)
+    owner=$(uci -q get firewall.dns_forced.name || :)
+    [ -z "$current" ] || { [ "$current" = redirect ] && [ "$owner" = Force-DNS-DNSCrypt ]; } || return 1
+    [ -z "$(uci -q changes firewall)" ] || return 1
+    if [ "$enabled" = 1 ]; then
+        refresh_runtime_capabilities >/dev/null 2>&1 || return 1
+        detect_steer_dns_path >/dev/null 2>&1 || return 1
+        # A second redirect would compete with Steer's own LAN DNS hook.
+        [ "${STEER_DNS_ACTIVE:-0}" != 1 ] || return 1
+        lan_ip=$(uci -q get network.lan.ipaddr | sed 's-/.*$--')
+        case "$lan_ip" in ''|*[!0-9.]*) return 1;; esac
+        uci -q delete firewall.dns_forced || :
+        uci set firewall.dns_forced=redirect &&
+        uci set firewall.dns_forced.name=Force-DNS-DNSCrypt &&
+        uci set firewall.dns_forced.src=lan &&
+        uci set firewall.dns_forced.src_dport=53 &&
+        uci set firewall.dns_forced.dest=lan &&
+        uci set "firewall.dns_forced.dest_ip=$lan_ip" &&
+        uci set firewall.dns_forced.dest_port=53 &&
+        uci set 'firewall.dns_forced.proto=tcp udp' &&
+        uci set firewall.dns_forced.target=DNAT || return 1
+    elif [ -n "$current" ]; then
+        uci -q delete firewall.dns_forced || return 1
+    else
+        return 0
+    fi
+    uci commit firewall && /etc/init.d/firewall reload
 }
 job_write() { printf '%s=%s\n' "$1" "$2" >> "$JOB_DIR/profile/state"; }
 action_write() { printf '%s=%s\n' "$1" "$2" >> "$JOB_DIR/action/state"; }
@@ -431,6 +466,10 @@ status_extra() {
     . /usr/share/libubox/jshn.sh
     json_init
     json_add_string dnscrypt_engine dnscrypt-proxy2
+    force_active=0
+    [ "$(uci -q get firewall.dns_forced 2>/dev/null)" = redirect ] &&
+        [ "$(uci -q get firewall.dns_forced.name 2>/dev/null)" = Force-DNS-DNSCrypt ] && force_active=1
+    json_add_int dnscrypt_forced_dns "$force_active"
     running=0
     "$DNSCRYPT_INIT" running >/dev/null 2>&1 && running=1
     json_add_int dnscrypt_running "$running"

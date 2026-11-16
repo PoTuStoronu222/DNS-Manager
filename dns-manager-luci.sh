@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager full installer and LuCI companion
-# Version: 2.49
+# Version: 2.50
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.49"
+VERSION="2.50"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -796,11 +796,13 @@ dnscrypt_set_setting() {
     input=$(cat)
     name=$(printf '%s' "$input" | jsonfilter -e '@.name' 2>/dev/null)
     enabled=$(printf '%s' "$input" | jsonfilter -e '@.enabled' 2>/dev/null)
-    case "$name" in watchdog|watchdog_autoreplace) ;; *) error 'Эта настройка пока недоступна для DNSCrypt'; return;; esac
+    case "$name" in watchdog|watchdog_autoreplace|force) ;; *) error 'Эта настройка пока недоступна для DNSCrypt'; return;; esac
     case "$enabled" in 0|1) ;; *) error 'Неверное значение настройки'; return;; esac
     load_manager_functions && load_config && acquire_mutation_lock || { error 'Не удалось изменить проверку DNS'; return; }
     rc=0
-    if [ "$name" = watchdog ]; then
+    if [ "$name" = force ]; then
+        dnscrypt_set_force "$enabled" >/dev/null 2>&1 || rc=$?
+    elif [ "$name" = watchdog ]; then
         watchdog_apply_toggle "$enabled" >/dev/null 2>&1 || rc=$?
     else
         watchdog_apply_autoreplace_toggle "$enabled" >/dev/null 2>&1 || rc=$?
@@ -808,6 +810,39 @@ dnscrypt_set_setting() {
     release_mutation_lock
     [ "$rc" -eq 0 ] || { error 'Не удалось изменить проверку DNS'; return; }
     printf '{"ok":true}\n'
+}
+
+# Keep the LAN redirect in an owned UCI section so firewall reloads retain it.
+dnscrypt_set_force() {
+    local enabled current owner lan_ip
+    enabled=$1
+    current=$(uci -q get firewall.dns_forced || :)
+    owner=$(uci -q get firewall.dns_forced.name || :)
+    [ -z "$current" ] || { [ "$current" = redirect ] && [ "$owner" = Force-DNS-DNSCrypt ]; } || return 1
+    [ -z "$(uci -q changes firewall)" ] || return 1
+    if [ "$enabled" = 1 ]; then
+        refresh_runtime_capabilities >/dev/null 2>&1 || return 1
+        detect_steer_dns_path >/dev/null 2>&1 || return 1
+        # A second redirect would compete with Steer's own LAN DNS hook.
+        [ "${STEER_DNS_ACTIVE:-0}" != 1 ] || return 1
+        lan_ip=$(uci -q get network.lan.ipaddr | sed 's-/.*$--')
+        case "$lan_ip" in ''|*[!0-9.]*) return 1;; esac
+        uci -q delete firewall.dns_forced || :
+        uci set firewall.dns_forced=redirect &&
+        uci set firewall.dns_forced.name=Force-DNS-DNSCrypt &&
+        uci set firewall.dns_forced.src=lan &&
+        uci set firewall.dns_forced.src_dport=53 &&
+        uci set firewall.dns_forced.dest=lan &&
+        uci set "firewall.dns_forced.dest_ip=$lan_ip" &&
+        uci set firewall.dns_forced.dest_port=53 &&
+        uci set 'firewall.dns_forced.proto=tcp udp' &&
+        uci set firewall.dns_forced.target=DNAT || return 1
+    elif [ -n "$current" ]; then
+        uci -q delete firewall.dns_forced || return 1
+    else
+        return 0
+    fi
+    uci commit firewall && /etc/init.d/firewall reload
 }
 job_write() { printf '%s=%s\n' "$1" "$2" >> "$JOB_DIR/profile/state"; }
 action_write() { printf '%s=%s\n' "$1" "$2" >> "$JOB_DIR/action/state"; }
@@ -1177,6 +1212,10 @@ status_extra() {
     . /usr/share/libubox/jshn.sh
     json_init
     json_add_string dnscrypt_engine dnscrypt-proxy2
+    force_active=0
+    [ "$(uci -q get firewall.dns_forced 2>/dev/null)" = redirect ] &&
+        [ "$(uci -q get firewall.dns_forced.name 2>/dev/null)" = Force-DNS-DNSCrypt ] && force_active=1
+    json_add_int dnscrypt_forced_dns "$force_active"
     running=0
     "$DNSCRYPT_INIT" running >/dev/null 2>&1 && running=1
     json_add_int dnscrypt_running "$running"
@@ -2288,7 +2327,7 @@ if [ "$(uci -q get dns-manager.global.active_engine 2>/dev/null)" = dnscrypt-pro
 fi
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.49"
+SELF_VERSION="2.50"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -5966,7 +6005,7 @@ EOF_RPC_WRAPPER
 'require ui';
 'require session';
 
-// DNS Manager LuCI common module version: 2.49
+// DNS Manager LuCI common module version: 2.50
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -6433,6 +6472,11 @@ function componentItem(title,statusNode,details){
   ]);
 }
 function forceComponentItem(st){
+  if(st.dnscrypt_engine==='dnscrypt-proxy2'){
+    var dnscryptForce=Number(st.dnscrypt_forced_dns)===1;
+    var steerActive=Number(st.steer_dns_active)===1;
+    return componentItem('Принудительный DNS для устройств',badge(dnscryptForce||steerActive?'dm-ok':'dm-muted',dnscryptForce?'DNS Manager':steerActive?'Steer':'выключен'));
+  }
   st=st||{};
   var busy=!!state.busy;
   var mode=String(st.force_status||'off');
@@ -7864,7 +7908,13 @@ function renderNetwork(root,st){
         badge(yes(st.watchdog_autoreplace)?'dm-ok':'dm-muted',yes(st.watchdog_autoreplace)?'включена':'выключена'),
         btn(yes(st.watchdog_autoreplace)?'Выключить':'Включить','cbi-button-neutral',function(){setSetting('watchdog_autoreplace',yes(st.watchdog_autoreplace)?0:1,root);},{disabled:!!state.busy||!yes(st.watchdog)}),
         settingFeedback('','watchdog_autoreplace')||E('span',{})
-      ]), E('div',{'class':'dm-hint'},'Принудительный DNS для DNSCrypt пока недоступен.')]
+      ]), E('div',{'class':'dm-watchdog-card'},[
+        E('div',{'class':'dm-section-title'},'Принудительный DNS'),
+        E('div',{'class':'dm-setting-desc'},'Направляет обычные DNS-запросы устройств на DNS роутера через dnsmasq. При активном перехвате Steer используется его правило.'),
+        badge(Number(st.dnscrypt_forced_dns)===1?'dm-ok':'dm-muted',Number(st.dnscrypt_forced_dns)===1?'включён':Number(st.steer_dns_active)===1?'работает Steer':'выключен'),
+        btn(Number(st.dnscrypt_forced_dns)===1?'Выключить':'Включить','cbi-button-neutral',function(){setSetting('force',Number(st.dnscrypt_forced_dns)===1?0:1,root);},{disabled:!!state.busy||(Number(st.steer_dns_active)===1&&Number(st.dnscrypt_forced_dns)!==1)}),
+        settingFeedback('','force')||E('span',{})
+      ])]
     : [watchdogCard(root,st), cacheCard(root,st)];
   e.appendChild(card('Сетевой тюнинг',body));
 }
@@ -8271,7 +8321,7 @@ function saveRouteCache(key,st,aux){
     var entry=JSON.parse(JSON.stringify({ts:Date.now(),data:st,aux:aux}));
     window.dmRouteCache[key]=entry;
     if(typeof session!=='undefined'&&session.setLocalData)
-      session.setLocalData('dns-manager-route-2.49-'+key,entry);
+      session.setLocalData('dns-manager-route-2.50-'+key,entry);
   }catch(e){}
 }
 function clearEngineUiState(){
@@ -8279,7 +8329,7 @@ function clearEngineUiState(){
   window.dmRouteCache=Object.create(null);
   window.dmStatusPromises=Object.create(null);
   ['dashboard','doh','network','time','devices','catalog','log'].forEach(function(key){
-    try{if(typeof session!=='undefined'&&session.setLocalData)session.setLocalData('dns-manager-route-2.49-'+key,null);}catch(e){}
+    try{if(typeof session!=='undefined'&&session.setLocalData)session.setLocalData('dns-manager-route-2.50-'+key,null);}catch(e){}
   });
   state.pageNotice={};state.profileProgress=null;state.profileOutput='';state.profileResumeStarted=false;
   state.regionalNotice='';state.dnscryptDiagnostic='';state.dnscryptDiagnosticKind='';state.dnscryptProfileChoice='';
@@ -8291,7 +8341,7 @@ function clearEngineUiState(){
 function routeCacheEntry(key){
   var entry=key&&window.dmRouteCache&&window.dmRouteCache[key];
   if(!entry&&key){
-    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.49-'+key);}catch(e){}
+    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.50-'+key);}catch(e){}
   }
   if(!entry||typeof entry.ts!=='number'||Date.now()-entry.ts<0||Date.now()-entry.ts>300000||!entry.data||entry.data.ok!==true)return null;
   return entry;
@@ -9345,7 +9395,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 2.49
+// DNS Manager LuCI version: 2.50
 return view.extend({
   load: DM.load,
   render: DM.render,
