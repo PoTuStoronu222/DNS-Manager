@@ -46,6 +46,19 @@ disable_legacy_watchdog() {
         save_config || return 1
     fi
 }
+dnscrypt_set_setting() {
+    input=$(cat)
+    name=$(printf '%s' "$input" | jsonfilter -e '@.name' 2>/dev/null)
+    enabled=$(printf '%s' "$input" | jsonfilter -e '@.enabled' 2>/dev/null)
+    [ "$name" = watchdog ] || { error 'Эта настройка пока недоступна для DNSCrypt'; return; }
+    case "$enabled" in 0|1) ;; *) error 'Неверное значение настройки'; return;; esac
+    load_manager_functions && load_config && acquire_mutation_lock || { error 'Не удалось изменить проверку DNS'; return; }
+    rc=0
+    watchdog_apply_toggle "$enabled" >/dev/null 2>&1 || rc=$?
+    release_mutation_lock
+    [ "$rc" -eq 0 ] || { error 'Не удалось изменить проверку DNS'; return; }
+    printf '{"ok":true}\n'
+}
 job_write() { printf '%s=%s\n' "$1" "$2" >> "$JOB_DIR/profile/state"; }
 action_write() { printf '%s=%s\n' "$1" "$2" >> "$JOB_DIR/action/state"; }
 
@@ -501,6 +514,7 @@ case "${1:-}" in
             set_profile) profile_start ;;
             set_regional) regional_start ;;
             reset_dns) reset_start ;;
+            set_setting) dnscrypt_set_setting ;;
             switch_engine) switch_start ;;
             dnscrypt_test|system_dns_test) diagnostic_start "$2" ;;
             dnscrypt_log) diagnostic "$2" ;;

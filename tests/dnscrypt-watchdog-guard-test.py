@@ -18,6 +18,7 @@ CFG_DIR=$1
 STATE_DIR=$1
 SENTINEL=$2
 load_config() { : > "$SENTINEL"; WATCHDOG_ENABLED=0; FORCE_DOH=0; }
+watchdog_dnscrypt_check() { :; }
 watchdog_embedded_loop
 '''
 

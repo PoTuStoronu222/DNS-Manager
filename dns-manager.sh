@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="4.22"
+VERSION="4.23"
 # 3.86: make LuCI the primary interface and preserve external DNS on removal.
 # 3.85: revalidate Watchdog settings before recovery.
 # 3.84: cap DNS catalog test concurrency by total RAM on small routers.
@@ -8133,7 +8133,11 @@ save_watchdog_state() {
     fi
 }
 watchdog_embedded_loop() {
-    watchdog_legacy_engine_allowed || return 0
+    if ! watchdog_legacy_engine_allowed; then
+        [ "$(cat "${CFG_DIR:-/etc/dns-manager/config}/dnscrypt-engine" 2>/dev/null)" = dnscrypt-proxy2 ] || return 0
+        watchdog_dnscrypt_check
+        return $?
+    fi
     DNS_MANAGER_RAM_LOG=1
     mkdir -p "$STATE_DIR" || return 1
     load_config
@@ -8226,6 +8230,22 @@ watchdog_embedded_loop() {
     fi
     watchdog_save_check_results "$_wd_cycle_records"
     save_watchdog_state
+}
+
+# DNSCrypt has a single listener for its pool. This check is observational:
+# it must not modify the pool when the network or the listener is unavailable.
+watchdog_dnscrypt_check() {
+    local _records _result
+    load_config
+    [ "${WATCHDOG_ENABLED:-0}" = 1 ] || return 0
+    mkdir -p "$STATE_DIR" || return 1
+    _records="$(mktemp "$STATE_DIR/dns-watchdog-cycle.XXXXXX")" || return 1
+    _result=FAIL
+    if /etc/init.d/dnscrypt-proxy running >/dev/null 2>&1 && local_dns_query_ok 5053 example.com; then
+        _result=OK
+    fi
+    watchdog_append_check_record "$_records" 1 dnscrypt_pool dnscrypt "$_result"
+    watchdog_save_check_results "$_records"
 }
 
 run_watchdog() {
@@ -8632,7 +8652,9 @@ watchdog_service_remove_files() {
 watchdog_service_migrate_legacy() {
     watchdog_service_stop_disable || return 1
     [ "${WATCHDOG_ENABLED:-0}" = 1 ] || [ "${FORCE_DOH:-0}" = 1 ] || return 0
-    watchdog_legacy_engine_allowed || return 0
+    if ! watchdog_legacy_engine_allowed; then
+        [ "$(cat "${CFG_DIR:-/etc/dns-manager/config}/dnscrypt-engine" 2>/dev/null)" = dnscrypt-proxy2 ] || return 0
+    fi
     watchdog_service_start_enable
 }
 
