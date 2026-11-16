@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="4.23"
+VERSION="4.24"
 # 3.86: make LuCI the primary interface and preserve external DNS on removal.
 # 3.85: revalidate Watchdog settings before recovery.
 # 3.84: cap DNS catalog test concurrency by total RAM on small routers.
@@ -8235,17 +8235,55 @@ watchdog_embedded_loop() {
 # DNSCrypt has a single listener for its pool. This check is observational:
 # it must not modify the pool when the network or the listener is unavailable.
 watchdog_dnscrypt_check() {
-    local _records _result
+    local _records _result _reply _ok _job _attempt _job_result
     load_config
     [ "${WATCHDOG_ENABLED:-0}" = 1 ] || return 0
     mkdir -p "$STATE_DIR" || return 1
+    WD_FAIL_1=0
+    WD_RECOVERY_BLOCKED_1=0
+    load_watchdog_state || return 1
     _records="$(mktemp "$STATE_DIR/dns-watchdog-cycle.XXXXXX")" || return 1
     _result=FAIL
-    if /etc/init.d/dnscrypt-proxy running >/dev/null 2>&1 && local_dns_query_ok 5053 example.com; then
+    if "${DNS_MANAGER_DNSCRYPT_INIT:-/etc/init.d/dnscrypt-proxy}" running >/dev/null 2>&1 && local_dns_query_ok 5053 example.com; then
         _result=OK
     fi
     watchdog_append_check_record "$_records" 1 dnscrypt_pool dnscrypt "$_result"
-    watchdog_save_check_results "$_records"
+    watchdog_save_check_results "$_records" || return 1
+    if [ "$_result" = OK ]; then
+        WD_FAIL_1=0
+        save_watchdog_state
+        return $?
+    fi
+    if ! ping -c 1 -W 2 8.8.8.8 >/dev/null 2>&1; then
+        WD_FAIL_1=0
+        logger -t dns-manager-watchdog 'WAN offline, skipping DNS replacement'
+        save_watchdog_state
+        return $?
+    fi
+    WD_FAIL_1=$((${WD_FAIL_1:-0}+1))
+    if [ "${WATCHDOG_AUTOREPLACE:-0}" != 1 ] || [ "$WD_FAIL_1" -lt 3 ] || [ "${WD_RECOVERY_BLOCKED_1:-0}" = 1 ]; then
+        save_watchdog_state
+        return $?
+    fi
+    # Persist the circuit breaker before starting a separate background job.
+    WD_RECOVERY_BLOCKED_1=1
+    save_watchdog_state || return 1
+    _reply=$(ubus -t 5 call dns_manager set_profile '{"profile":"default"}' 2>/dev/null) || _reply=''
+    _ok=$(printf '%s' "$_reply" | jsonfilter -e '@.ok' 2>/dev/null)
+    [ "$_ok" = true ] || { logger -t dns-manager-watchdog 'DNSCrypt pool failed'; return 0; }
+    _job=/var/run/dns-manager-luci/jobs/profile/state
+    _attempt=0
+    while [ "$_attempt" -lt 60 ]; do
+        _job_result=$(sed -n 's/^result=//p' "$_job" 2>/dev/null | tail -n 1)
+        case "$_job_result" in
+            ok) logger -t dns-manager-watchdog 'DNSCrypt: применён резервный пул'; return 0;;
+            fail) logger -t dns-manager-watchdog 'DNSCrypt pool failed'; return 0;;
+        esac
+        _attempt=$((_attempt+1))
+        sleep 2
+    done
+    logger -t dns-manager-watchdog 'DNSCrypt: время ожидания восстановления истекло'
+    return 0
 }
 
 run_watchdog() {
