@@ -28,13 +28,23 @@ with tempfile.TemporaryDirectory(prefix='dnscrypt-rpc-') as tmp:
     legacy.write_text('#!/bin/sh\nprintf "{\\"ok\\":true,\\"method\\":\\"%s\\"}\\n" "$2"\n')
     legacy.chmod(0o755)
     jf = d / 'jsonfilter'
-    jf.write_text('#!/usr/bin/env python3\nimport json,sys\nprint(json.load(sys.stdin).get("profile", ""))\n')
+    jf.write_text('''#!/usr/bin/env python3
+import json,sys
+if '-s' in sys.argv:
+ data=json.loads(sys.argv[sys.argv.index('-s')+1]); expr=sys.argv[sys.argv.index('-e')+1]
+ if expr=='@': print(json.dumps(data)); sys.exit(0)
+ if 'dns-watchdog' not in data: sys.exit(1)
+ print(json.dumps(data['dns-watchdog'])); sys.exit(0)
+print(json.load(sys.stdin).get("profile", ""))
+''')
     jf.chmod(0o755)
     ubus = d / 'ubus'
     ubus.write_text('''#!/usr/bin/env python3
 import os,pathlib,sys
 p=pathlib.Path(os.environ['LAB_ROOT'])
 if (p/'ubus-fail').exists(): sys.exit(1)
+if 'dns-watchdog' in sys.argv[-1]:
+ print('{"dns-watchdog":{}}' if (p/'watchdog-still-active').exists() else '{}'); sys.exit(0)
 if sys.argv[-2:] == ['service','list']: print('{}'); sys.exit(0)
 if 'list' in sys.argv:
  print('{"service":{"instances":{"main":{"running":true}}}}' if (p/'running').exists() else '{}')
@@ -136,6 +146,12 @@ dnscrypt_apply_profile_pool() {
     assert result.returncode != 0 and (config / 'dnscrypt-profile.state').exists()
     assert not (d / 'restore').exists()
     (d / 'watchdog-fail').unlink()
+    for flag in ('watchdog-still-active', 'ubus-fail'):
+        (d / flag).touch()
+        result = run('reset_worker')
+        assert result.returncode != 0 and (config / 'dnscrypt-profile.state').exists()
+        assert not (d / 'restore').exists()
+        (d / flag).unlink()
     (d / 'cron-fail').touch()
     result = run('reset_worker')
     assert result.returncode != 0 and (config / 'dnscrypt-profile.state').exists()
