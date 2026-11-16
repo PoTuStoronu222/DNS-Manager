@@ -243,19 +243,32 @@ diagnostic() {
     . /usr/share/libubox/jshn.sh
     json_init
     if [ "$method" = system_dns_test ]; then
-        output=$(timeout 8 nslookup ya.ru 127.0.0.1 2>&1); rc=$?
+        output=$(timeout 8 nslookup openwrt.org 127.0.0.1 2>&1); rc=$?
         if [ "$rc" -eq 0 ]; then output="Системный DNS работает нормально.
 $output"; json_add_boolean ok 1
+        elif ! ip -4 route get 8.8.8.8 >/dev/null 2>&1 && ! ip -6 route get 2606:4700:4700::1111 >/dev/null 2>&1; then
+            output='Ожидание подключения к сети.'; json_add_boolean ok 1
         else output="Системный DNS не ответил.
 $output"; json_add_boolean ok 0; fi
     elif [ "$method" = dnscrypt_test ]; then
-        output=$(timeout 8 nslookup -port=5053 ya.ru 127.0.0.1 2>&1); rc=$?
+        output=$(timeout 8 nslookup -port=5053 openwrt.org 127.0.0.1 2>&1); rc=$?
         if [ "$rc" -eq 0 ]; then
-            system_output=$(timeout 8 nslookup ya.ru 127.0.0.1 2>&1); rc=$?
+            system_output=$(timeout 8 nslookup openwrt.org 127.0.0.1 2>&1); rc=$?
             output="DNSCrypt (порт 5053):
 $output
 dnsmasq (порт 53):
 $system_output"
+        fi
+        if [ "$rc" -eq 0 ]; then
+            upstream=0
+            for item in $(uci -q get 'dhcp.@dnsmasq[0].server'); do
+                [ "$item" != '127.0.0.1#5053' ] || upstream=1
+            done
+            if [ "$upstream" != 1 ]; then
+                rc=1
+                output="$output
+В dnsmasq не настроена пересылка на 127.0.0.1#5053."
+            fi
         fi
         if [ "$rc" -eq 0 ]; then json_add_boolean ok 1; else json_add_boolean ok 0; fi
     else
@@ -266,6 +279,43 @@ $system_output"
     json_dump
 }
 
+
+
+diagnostic_worker() {
+    method=$1
+    mkdir -p "$JOB_DIR/health"
+    printf 'pid=%s\n' "$$" >> "$JOB_DIR/health/state"
+    token=$(awk '{print $22}' "/proc/$$/stat" 2>/dev/null || true)
+    [ -z "$token" ] || printf 'pid_start=%s\n' "$token" >> "$JOB_DIR/health/state"
+    reply=$(diagnostic "$method" </dev/null)
+    result=$(jsonfilter -s "$reply" -e '@.ok' 2>/dev/null)
+    jsonfilter -s "$reply" -e '@.output' > "$JOB_DIR/health/output" 2>/dev/null || true
+    [ -s "$JOB_DIR/health/output" ] || jsonfilter -s "$reply" -e '@.error' > "$JOB_DIR/health/output" 2>/dev/null || true
+    if [ "$result" = true ] || [ "$result" = 1 ]; then result=ok; else result=fail; fi
+    printf 'result=%s\nstatus=done\nfinished=%s\n' "$result" "$(date +%s)" >> "$JOB_DIR/health/state"
+}
+
+diagnostic_start() {
+    method=$1
+    cat >/dev/null
+    mkdir -p "$JOB_DIR/health" "$RUNTIME_DIR" || { error 'Не удалось подготовить проверку DNS'; return; }
+    exec 9>"$RUNTIME_DIR/health-start.lock" || { error 'Не удалось подготовить проверку DNS'; return; }
+    flock -n 9 || { error 'Проверка DNS уже запускается'; return; }
+    service=dns-manager-health-check
+    reply=$(ubus -t 5 call service list "{\"name\":\"$service\"}" 2>/dev/null) || { error 'Служба задач недоступна'; return; }
+    if printf '%s\n' "$reply" | grep -q '"running"[[:space:]]*:[[:space:]]*true'; then
+        error 'Проверка DNS уже выполняется'; return
+    fi
+    ubus -t 5 call service delete "{\"name\":\"$service\"}" >/dev/null 2>&1 || true
+    printf 'status=running\nstarted=%s\nmode=update\n' "$(date +%s)" > "$JOB_DIR/health/state"
+    : > "$JOB_DIR/health/output"
+    request="{\"name\":\"$service\",\"instances\":{\"main\":{\"command\":[\"/bin/sh\",\"/usr/lib/dns-manager-luci/backend-dnscrypt.sh\",\"diagnostic_worker\",\"$method\"]}}}"
+    if ! ubus -t 5 call service set "$request" >/dev/null 2>&1; then
+        printf 'result=fail\nstatus=failed\nfinished=%s\n' "$(date +%s)" >> "$JOB_DIR/health/state"
+        error 'Не удалось запустить проверку DNS'; return
+    fi
+    printf '{"ok":true,"job":"health"}\n'
+}
 
 # The regional routes are dnsmasq rules; the encrypted pool remains unchanged.
 regional_worker() {
@@ -372,6 +422,7 @@ status_extra() {
 }
 
 case "${1:-}" in
+    diagnostic_worker) diagnostic_worker "${2:-}" ;;
     worker) profile_worker "${2:-}" ;;
     reset_worker) reset_worker ;;
     regional_worker) regional_job "${2:-}" ;;
@@ -383,7 +434,8 @@ case "${1:-}" in
             set_regional) regional_start ;;
             reset_dns) reset_start ;;
             switch_engine) switch_start ;;
-            dnscrypt_test|dnscrypt_log|system_dns_test) diagnostic "$2" ;;
+            dnscrypt_test|system_dns_test) diagnostic_start "$2" ;;
+            dnscrypt_log) diagnostic "$2" ;;
             status|doh_status|network_status) status_extra "$2" ;;
             runtime|time_status|page_meta|catalog|lan_devices|job|log|update_check|uninstall_status)
                 exec "$LEGACY" "$@" ;;

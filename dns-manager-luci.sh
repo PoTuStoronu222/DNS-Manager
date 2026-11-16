@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager full installer and LuCI companion
-# Version: 2.36
+# Version: 2.37
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.36"
+VERSION="2.37"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -989,19 +989,32 @@ diagnostic() {
     . /usr/share/libubox/jshn.sh
     json_init
     if [ "$method" = system_dns_test ]; then
-        output=$(timeout 8 nslookup ya.ru 127.0.0.1 2>&1); rc=$?
+        output=$(timeout 8 nslookup openwrt.org 127.0.0.1 2>&1); rc=$?
         if [ "$rc" -eq 0 ]; then output="Системный DNS работает нормально.
 $output"; json_add_boolean ok 1
+        elif ! ip -4 route get 8.8.8.8 >/dev/null 2>&1 && ! ip -6 route get 2606:4700:4700::1111 >/dev/null 2>&1; then
+            output='Ожидание подключения к сети.'; json_add_boolean ok 1
         else output="Системный DNS не ответил.
 $output"; json_add_boolean ok 0; fi
     elif [ "$method" = dnscrypt_test ]; then
-        output=$(timeout 8 nslookup -port=5053 ya.ru 127.0.0.1 2>&1); rc=$?
+        output=$(timeout 8 nslookup -port=5053 openwrt.org 127.0.0.1 2>&1); rc=$?
         if [ "$rc" -eq 0 ]; then
-            system_output=$(timeout 8 nslookup ya.ru 127.0.0.1 2>&1); rc=$?
+            system_output=$(timeout 8 nslookup openwrt.org 127.0.0.1 2>&1); rc=$?
             output="DNSCrypt (порт 5053):
 $output
 dnsmasq (порт 53):
 $system_output"
+        fi
+        if [ "$rc" -eq 0 ]; then
+            upstream=0
+            for item in $(uci -q get 'dhcp.@dnsmasq[0].server'); do
+                [ "$item" != '127.0.0.1#5053' ] || upstream=1
+            done
+            if [ "$upstream" != 1 ]; then
+                rc=1
+                output="$output
+В dnsmasq не настроена пересылка на 127.0.0.1#5053."
+            fi
         fi
         if [ "$rc" -eq 0 ]; then json_add_boolean ok 1; else json_add_boolean ok 0; fi
     else
@@ -1012,6 +1025,43 @@ $system_output"
     json_dump
 }
 
+
+
+diagnostic_worker() {
+    method=$1
+    mkdir -p "$JOB_DIR/health"
+    printf 'pid=%s\n' "$$" >> "$JOB_DIR/health/state"
+    token=$(awk '{print $22}' "/proc/$$/stat" 2>/dev/null || true)
+    [ -z "$token" ] || printf 'pid_start=%s\n' "$token" >> "$JOB_DIR/health/state"
+    reply=$(diagnostic "$method" </dev/null)
+    result=$(jsonfilter -s "$reply" -e '@.ok' 2>/dev/null)
+    jsonfilter -s "$reply" -e '@.output' > "$JOB_DIR/health/output" 2>/dev/null || true
+    [ -s "$JOB_DIR/health/output" ] || jsonfilter -s "$reply" -e '@.error' > "$JOB_DIR/health/output" 2>/dev/null || true
+    if [ "$result" = true ] || [ "$result" = 1 ]; then result=ok; else result=fail; fi
+    printf 'result=%s\nstatus=done\nfinished=%s\n' "$result" "$(date +%s)" >> "$JOB_DIR/health/state"
+}
+
+diagnostic_start() {
+    method=$1
+    cat >/dev/null
+    mkdir -p "$JOB_DIR/health" "$RUNTIME_DIR" || { error 'Не удалось подготовить проверку DNS'; return; }
+    exec 9>"$RUNTIME_DIR/health-start.lock" || { error 'Не удалось подготовить проверку DNS'; return; }
+    flock -n 9 || { error 'Проверка DNS уже запускается'; return; }
+    service=dns-manager-health-check
+    reply=$(ubus -t 5 call service list "{\"name\":\"$service\"}" 2>/dev/null) || { error 'Служба задач недоступна'; return; }
+    if printf '%s\n' "$reply" | grep -q '"running"[[:space:]]*:[[:space:]]*true'; then
+        error 'Проверка DNS уже выполняется'; return
+    fi
+    ubus -t 5 call service delete "{\"name\":\"$service\"}" >/dev/null 2>&1 || true
+    printf 'status=running\nstarted=%s\nmode=update\n' "$(date +%s)" > "$JOB_DIR/health/state"
+    : > "$JOB_DIR/health/output"
+    request="{\"name\":\"$service\",\"instances\":{\"main\":{\"command\":[\"/bin/sh\",\"/usr/lib/dns-manager-luci/backend-dnscrypt.sh\",\"diagnostic_worker\",\"$method\"]}}}"
+    if ! ubus -t 5 call service set "$request" >/dev/null 2>&1; then
+        printf 'result=fail\nstatus=failed\nfinished=%s\n' "$(date +%s)" >> "$JOB_DIR/health/state"
+        error 'Не удалось запустить проверку DNS'; return
+    fi
+    printf '{"ok":true,"job":"health"}\n'
+}
 
 # The regional routes are dnsmasq rules; the encrypted pool remains unchanged.
 regional_worker() {
@@ -1118,6 +1168,7 @@ status_extra() {
 }
 
 case "${1:-}" in
+    diagnostic_worker) diagnostic_worker "${2:-}" ;;
     worker) profile_worker "${2:-}" ;;
     reset_worker) reset_worker ;;
     regional_worker) regional_job "${2:-}" ;;
@@ -1129,7 +1180,8 @@ case "${1:-}" in
             set_regional) regional_start ;;
             reset_dns) reset_start ;;
             switch_engine) switch_start ;;
-            dnscrypt_test|dnscrypt_log|system_dns_test) diagnostic "$2" ;;
+            dnscrypt_test|system_dns_test) diagnostic_start "$2" ;;
+            dnscrypt_log) diagnostic "$2" ;;
             status|doh_status|network_status) status_extra "$2" ;;
             runtime|time_status|page_meta|catalog|lan_devices|job|log|update_check|uninstall_status)
                 exec "$LEGACY" "$@" ;;
@@ -1278,8 +1330,13 @@ if [ "$target" = dnscrypt-proxy2 ]; then
 else
     package=https-dns-proxy; executable=${DNS_MANAGER_HDP_BIN:-/usr/sbin/https-dns-proxy}
 fi
-if [ ! -x "$executable" ] && ! command -v apk >/dev/null 2>&1 && ! command -v opkg >/dev/null 2>&1; then
-    echo 'Менеджер пакетов не найден.'; exit 1
+# Check for an upstream route before clearing the current DNS configuration.
+if [ ! -x "$executable" ]; then
+    printf 'phase=Проверка подключения к сети…\n' >> "$job_dir/state"
+    if ! ip -4 route get 8.8.8.8 >/dev/null 2>&1 && ! ip -6 route get 2606:4700:4700::1111 >/dev/null 2>&1; then
+        echo 'Нет подключения к интернету для загрузки пакета: отсутствует маршрут.'
+        exit 1
+    fi
 fi
 # Refuse a global UCI commit when another interface has staged changes.
 for config_package in firewall https-dns-proxy; do
@@ -1290,6 +1347,7 @@ done
 dns_manager_stop_watchdog || { echo 'Не удалось остановить DNS Watchdog.'; exit 1; }
 WATCHDOG_ENABLED=0; WATCHDOG_AUTOREPLACE=0
 save_config || exit 1
+printf 'phase=Сброс настроек DNS…\n' >> "$job_dir/state"
 echo 'Удаляю привязки устройств.'
 sh "$helpers/dns-manager-device-detach.sh" || exit 1
 changed=1
@@ -1316,10 +1374,12 @@ if [ ! -x "$executable" ]; then
     fi
     package_was_missing=0
     package_is_installed "$package" || package_was_missing=1
+    # Try existing package indexes first; refresh only if installation fails.
+    printf 'phase=Загрузка и установка пакета…\n' >> "$job_dir/state"
     if [ "$PKG_MGR" = apk ]; then
-        apk update && apk add "$package" || install_error="Не удалось установить пакет $package. Проверьте интернет и репозитории."
+        apk add "$package" || { printf 'phase=Обновление списка пакетов…\n' >> "$job_dir/state"; apk update && { printf 'phase=Загрузка и установка пакета…\n' >> "$job_dir/state"; apk add "$package"; }; } || install_error="Не удалось установить пакет $package. Проверьте интернет и репозитории."
     elif [ "$PKG_MGR" = opkg ]; then
-        opkg update && opkg install "$package" || install_error="Не удалось установить пакет $package. Проверьте интернет и репозитории."
+        opkg install "$package" || { printf 'phase=Обновление списка пакетов…\n' >> "$job_dir/state"; opkg update && { printf 'phase=Загрузка и установка пакета…\n' >> "$job_dir/state"; opkg install "$package"; }; } || install_error="Не удалось установить пакет $package. Проверьте интернет и репозитории."
     else
         install_error='Менеджер пакетов не найден.'
     fi
@@ -1329,6 +1389,7 @@ if [ ! -x "$executable" ]; then
     fi
     sh "$helpers/dns-manager-engine-services.sh" quiesce "$target" || exit 1
 fi
+printf 'phase=Запуск службы и настройка DNS…\n' >> "$job_dir/state"
 if [ "$target" = dnscrypt-proxy2 ]; then
     # Package installation may replace the init script; install our boot guard afterwards.
     [ -r "$helpers/dns-manager-dnscrypt.init" ] || exit 1
@@ -1371,7 +1432,7 @@ EOF_DNSCRYPT_ASSET_11
     cat > "$_dc_stage/dns-manager-dnscrypt.init" <<'EOF_DNSCRYPT_ASSET_12'
 #!/bin/sh /etc/rc.common
 USE_PROCD=1
-START=18
+START=99
 STOP=89
 
 PROG=/usr/sbin/dnscrypt-proxy
@@ -2109,7 +2170,7 @@ UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.36"
+SELF_VERSION="2.37"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -5065,6 +5126,7 @@ job_json() {
     printf ',"name":'; json_quote "$(sed -n 's/^name=//p' "$_d/state" 2>/dev/null | tail -n1)"
     printf ',"profile":'; json_quote "$(sed -n 's/^profile=//p' "$_d/state" 2>/dev/null | head -n1)"
     printf ',"dns_id":'; json_quote "$(sed -n 's/^dns_id=//p' "$_d/state" 2>/dev/null | head -n1)"
+    printf ',"phase":'; json_quote "$(sed -n 's/^phase=//p' "$_d/state" 2>/dev/null | tail -n1)"
     printf ',"progress_done":'; json_quote "$(sed -n 's/^progress_done=//p' "$_d/state" 2>/dev/null | tail -n1)"
     printf ',"progress_total":'; json_quote "$(sed -n 's/^progress_total=//p' "$_d/state" 2>/dev/null | tail -n1)"
     printf ',"progress_ok":'; json_quote "$(sed -n 's/^progress_ok=//p' "$_d/state" 2>/dev/null | tail -n1)"
@@ -5728,7 +5790,7 @@ EOF_RPC_WRAPPER
 'require ui';
 'require session';
 
-// DNS Manager LuCI common module version: 2.36
+// DNS Manager LuCI common module version: 2.37
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -7968,13 +8030,13 @@ function saveRouteCache(key,st,aux){
     var entry=JSON.parse(JSON.stringify({ts:Date.now(),data:st,aux:aux}));
     window.dmRouteCache[key]=entry;
     if(typeof session!=='undefined'&&session.setLocalData)
-      session.setLocalData('dns-manager-route-2.36-'+key,entry);
+      session.setLocalData('dns-manager-route-2.37-'+key,entry);
   }catch(e){}
 }
 function routeCacheEntry(key){
   var entry=key&&window.dmRouteCache&&window.dmRouteCache[key];
   if(!entry&&key){
-    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.36-'+key);}catch(e){}
+    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.37-'+key);}catch(e){}
   }
   if(!entry||typeof entry.ts!=='number'||Date.now()-entry.ts<0||Date.now()-entry.ts>300000||!entry.data||entry.data.ok!==true)return null;
   return entry;
@@ -8228,7 +8290,7 @@ function watchEngine(root){
   function poll(){
     callJob('engine').then(function(j){
       errors=0;
-      if(j&&j.status==='running'){window.setTimeout(poll,2000);return;}
+      if(j&&j.status==='running'){state.engineNotice=String(j.phase||'Переключение выполняется на роутере…');renderDoH(root,window.dmState||{});window.setTimeout(poll,2000);return;}
       state.engineWatching=false;state.busy=false;
       var ok=j&&j.status==='done'&&j.result==='ok';
       state.engineNoticeType=ok?'ok':'error';
@@ -8249,7 +8311,7 @@ function resumeEngine(root){
   callJob('engine').then(function(j){
     if(!j||!j.ok)return;
     if(j.status==='running'){
-      state.busy=true;state.engineNoticeType='info';state.engineNotice='Переключение выполняется на роутере…';
+      state.busy=true;state.engineNoticeType='info';state.engineNotice=String(j.phase||'Переключение выполняется на роутере…');
       renderDoH(root,window.dmState||{});watchEngine(root);
     }else if(j.status==='done'||j.status==='failed'){
       var ok=j.status==='done'&&j.result==='ok';
@@ -8259,10 +8321,20 @@ function resumeEngine(root){
     }
   }).catch(function(){});
 }
+function waitDnsHealth(r){
+  if(!r||!r.ok||r.job!=='health')return Promise.reject(new Error((r&&r.error)||'Не удалось запустить проверку DNS.'));
+  var tries=0;
+  function poll(){return callJob('health').then(function(j){
+    if(j&&j.status==='running'&&tries++<30)return new Promise(function(resolve){window.setTimeout(resolve,1000);}).then(poll);
+    if(!j||j.status!=='done')throw new Error('Не удалось получить результат проверки DNS.');
+    return {ok:j.result==='ok',output:j.output};
+  });}
+  return poll();
+}
 function dnscryptDiagnostic(root,log){
   if(state.busy)return;
   state.busy=true;state.dnscryptDiagnostic=log?'Загружаю журнал…':'Проверяю DNS…';renderDoH(root,window.dmState||{});
-  (log?callDnscryptLog():callDnscryptTest()).then(function(r){
+  (log?callDnscryptLog():callDnscryptTest().then(waitDnsHealth)).then(function(r){
     state.dnscryptDiagnostic=(r&&r.ok?'':'Ошибка проверки.\n')+String(r&&r.output||'Нет данных.');
   }).catch(function(err){state.dnscryptDiagnostic=withRpcError('Не удалось выполнить действие.',err);}).then(function(){state.busy=false;renderDoH(root,window.dmState||{});});
 }
@@ -8617,7 +8689,7 @@ function testCurrent(root){
   var targets=displayDnsRows(window.dmState||{}).filter(function(d){return d&&((d.slot&&d.id)||(!d.slot&&d.url&&d.port));});
   if(!targets.length){
     state.busy=true;state.currentTest=null;state.pageNotice.doh='Проверяю системный DNS…';renderDoH(root,window.dmState||{});
-    return callSystemDnsTest().then(function(r){state.pageNotice.doh=(r&&r.output)||'Не удалось проверить системный DNS.';})
+    return callSystemDnsTest().then(waitDnsHealth).then(function(r){state.pageNotice.doh=(r&&r.output)||'Не удалось проверить системный DNS.';})
       .catch(function(err){state.pageNotice.doh=withRpcError('Не удалось проверить системный DNS.',err);})
       .then(function(){state.busy=false;renderDoH(root,window.dmState||{});});
   }
@@ -8996,7 +9068,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 2.36
+// DNS Manager LuCI version: 2.37
 return view.extend({
   load: DM.load,
   render: DM.render,

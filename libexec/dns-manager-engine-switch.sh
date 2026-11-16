@@ -58,8 +58,13 @@ if [ "$target" = dnscrypt-proxy2 ]; then
 else
     package=https-dns-proxy; executable=${DNS_MANAGER_HDP_BIN:-/usr/sbin/https-dns-proxy}
 fi
-if [ ! -x "$executable" ] && ! command -v apk >/dev/null 2>&1 && ! command -v opkg >/dev/null 2>&1; then
-    echo 'Менеджер пакетов не найден.'; exit 1
+# Check for an upstream route before clearing the current DNS configuration.
+if [ ! -x "$executable" ]; then
+    printf 'phase=Проверка подключения к сети…\n' >> "$job_dir/state"
+    if ! ip -4 route get 8.8.8.8 >/dev/null 2>&1 && ! ip -6 route get 2606:4700:4700::1111 >/dev/null 2>&1; then
+        echo 'Нет подключения к интернету для загрузки пакета: отсутствует маршрут.'
+        exit 1
+    fi
 fi
 # Refuse a global UCI commit when another interface has staged changes.
 for config_package in firewall https-dns-proxy; do
@@ -70,6 +75,7 @@ done
 dns_manager_stop_watchdog || { echo 'Не удалось остановить DNS Watchdog.'; exit 1; }
 WATCHDOG_ENABLED=0; WATCHDOG_AUTOREPLACE=0
 save_config || exit 1
+printf 'phase=Сброс настроек DNS…\n' >> "$job_dir/state"
 echo 'Удаляю привязки устройств.'
 sh "$helpers/dns-manager-device-detach.sh" || exit 1
 changed=1
@@ -96,10 +102,12 @@ if [ ! -x "$executable" ]; then
     fi
     package_was_missing=0
     package_is_installed "$package" || package_was_missing=1
+    # Try existing package indexes first; refresh only if installation fails.
+    printf 'phase=Загрузка и установка пакета…\n' >> "$job_dir/state"
     if [ "$PKG_MGR" = apk ]; then
-        apk update && apk add "$package" || install_error="Не удалось установить пакет $package. Проверьте интернет и репозитории."
+        apk add "$package" || { printf 'phase=Обновление списка пакетов…\n' >> "$job_dir/state"; apk update && { printf 'phase=Загрузка и установка пакета…\n' >> "$job_dir/state"; apk add "$package"; }; } || install_error="Не удалось установить пакет $package. Проверьте интернет и репозитории."
     elif [ "$PKG_MGR" = opkg ]; then
-        opkg update && opkg install "$package" || install_error="Не удалось установить пакет $package. Проверьте интернет и репозитории."
+        opkg install "$package" || { printf 'phase=Обновление списка пакетов…\n' >> "$job_dir/state"; opkg update && { printf 'phase=Загрузка и установка пакета…\n' >> "$job_dir/state"; opkg install "$package"; }; } || install_error="Не удалось установить пакет $package. Проверьте интернет и репозитории."
     else
         install_error='Менеджер пакетов не найден.'
     fi
@@ -109,6 +117,7 @@ if [ ! -x "$executable" ]; then
     fi
     sh "$helpers/dns-manager-engine-services.sh" quiesce "$target" || exit 1
 fi
+printf 'phase=Запуск службы и настройка DNS…\n' >> "$job_dir/state"
 if [ "$target" = dnscrypt-proxy2 ]; then
     # Package installation may replace the init script; install our boot guard afterwards.
     [ -r "$helpers/dns-manager-dnscrypt.init" ] || exit 1
