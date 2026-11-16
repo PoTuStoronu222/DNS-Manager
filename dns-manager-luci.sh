@@ -1186,7 +1186,7 @@ case "${1:-}" in
             dnscrypt_test|system_dns_test) diagnostic_start "$2" ;;
             dnscrypt_log) diagnostic "$2" ;;
             status|doh_status|network_status|time_status|log|update_check) status_extra "$2" ;;
-            runtime|page_meta|catalog|lan_devices|job|set_ntp|uninstall_status)
+            runtime|page_meta|catalog|lan_devices|job|multi|set_ntp|uninstall_status)
                 exec "$LEGACY" "$@" ;;
             *) error 'Действие пока недоступно для dnscrypt-proxy2' ;;
         esac ;;
@@ -2151,7 +2151,7 @@ EOF_MENU
     "description": "DNS Manager native LuCI interface",
     "read": {
       "ubus": {
-        "dns_manager": [ "dnscrypt_test", "dnscrypt_log", "system_dns_test", "status", "runtime", "doh_status", "network_status", "lan_devices", "time_status", "page_meta", "catalog", "job", "log", "update_check", "uninstall_status" ]
+        "dns_manager": [ "dnscrypt_test", "dnscrypt_log", "system_dns_test", "status", "runtime", "doh_status", "network_status", "lan_devices", "time_status", "page_meta", "catalog", "job", "multi", "log", "update_check", "uninstall_status" ]
       }
     },
     "write": {
@@ -5732,12 +5732,33 @@ watchdog_restore_service_state() {
         /etc/init.d/dns-watchdog stop >/dev/null 2>&1 || true
     fi
 }
+# Batch only methods already available to the read-only ACL. Dispatch through
+# the installed rpcd executable so engine-specific status stays authoritative.
+multi_json() {
+    _multi_calls="$(jget calls)"
+    _multi_count=0
+    for _multi_method in $_multi_calls; do
+        case "$_multi_method" in status|runtime|doh_status|network_status|time_status|page_meta) ;; *) json_error "Недопустимый метод"; return;; esac
+        _multi_count=$((_multi_count + 1))
+        [ "$_multi_count" -le 4 ] || { json_error "Слишком много методов"; return; }
+    done
+    [ "$_multi_count" -gt 0 ] || { json_error "Не указаны методы"; return; }
+    printf '{"ok":true,"results":{'
+    _multi_sep=''
+    for _multi_method in $_multi_calls; do
+        _multi_result="$(printf '%s' '{}' | /usr/libexec/rpcd/dns_manager call "$_multi_method" 2>/dev/null)" || _multi_result=''
+        case "$_multi_result" in \{*\}) ;; *) _multi_result='{"ok":false}';; esac
+        printf '%s"%s":%s' "$_multi_sep" "$_multi_method" "$_multi_result"
+        _multi_sep=','
+    done
+    printf '}}'
+}
 test_json() { case "${RPC_METHOD:-}" in test_all) job_start_test_all;; test_current) job_start_test_current;; test_one) job_start_test_one "$(jget id)";; test_system) job_start_test_system;; *) json_error "Недопустимый метод проверки";; esac; }
 
 case "${1:-}" in
     worker) background_worker "$2";;
     list)
-        printf '{"status":{},"runtime":{},"doh_status":{},"network_status":{},"lan_devices":{},"set_device_dns":{"mac":"String","slots":"String"},"set_cache":{"total":0,"ttl":0},"time_status":{},"page_meta":{},"catalog":{"category":"String","offset":0,"limit":0,"only_ok":0},"update_check":{"force":0},"update":{},"update_manager":{},"update_hdp":{},"update_catalog":{},"update_all":{},"update_background":{},"test_combined":{},"switch_engine":{"target_engine":"String"},"dnscrypt_test":{},"dnscrypt_log":{},"system_dns_test":{},"set_profile":{"profile":"String"},"set_regional":{"enabled":0},"reset_dns":{},"uninstall":{},"uninstall_status":{},"set_slot":{"slot":"String","id":"String","expected":"String"},"set_slot_domains":{"slot":"String","domains":"String"},"add_custom_dns":{"name":"String","url":"String"},"delete_custom_dns":{"id":"String"},"set_setting":{"name":"String","enabled":0},"set_bootstrap":{"mode":"String","addresses":"String","preset_ids":"String","extra_addresses":"String"},"set_watchdog_setting":{"name":"String","value":0},"set_watchdog_settings":{"interval":0,"threshold":0,"repair_cooldown":0,"max_restarts":0,"guard_interval":0},"set_ntp":{"preset":"String"},"set_test_age":{"category":"String","hours":0},"test_all":{},"test_current":{},"test_one":{"id":"String"},"test_system":{},"job":{"id":"String"},"log":{"lines":0}}\n'
+        printf '{"status":{},"runtime":{},"doh_status":{},"network_status":{},"lan_devices":{},"set_device_dns":{"mac":"String","slots":"String"},"set_cache":{"total":0,"ttl":0},"time_status":{},"page_meta":{},"catalog":{"category":"String","offset":0,"limit":0,"only_ok":0},"update_check":{"force":0},"update":{},"update_manager":{},"update_hdp":{},"update_catalog":{},"update_all":{},"update_background":{},"test_combined":{},"switch_engine":{"target_engine":"String"},"dnscrypt_test":{},"dnscrypt_log":{},"system_dns_test":{},"set_profile":{"profile":"String"},"set_regional":{"enabled":0},"reset_dns":{},"uninstall":{},"uninstall_status":{},"set_slot":{"slot":"String","id":"String","expected":"String"},"set_slot_domains":{"slot":"String","domains":"String"},"add_custom_dns":{"name":"String","url":"String"},"delete_custom_dns":{"id":"String"},"set_setting":{"name":"String","enabled":0},"set_bootstrap":{"mode":"String","addresses":"String","preset_ids":"String","extra_addresses":"String"},"set_watchdog_setting":{"name":"String","value":0},"set_watchdog_settings":{"interval":0,"threshold":0,"repair_cooldown":0,"max_restarts":0,"guard_interval":0},"set_ntp":{"preset":"String"},"set_test_age":{"category":"String","hours":0},"test_all":{},"test_current":{},"test_one":{"id":"String"},"test_system":{},"job":{"id":"String"},"multi":{"calls":"String"},"log":{"lines":0}}\n'
         ;;
     call)
         case "${2:-}" in
@@ -5756,6 +5777,7 @@ case "${1:-}" in
             uninstall_status) uninstall_status_json;;
             test_all|test_current|test_one|test_system) INPUT="$(cat 2>/dev/null || true)"; RPC_METHOD="$2"; test_json;;
             job) INPUT="$(cat 2>/dev/null || true)"; job_json "$(jget id)";;
+            multi) INPUT="$(cat 2>/dev/null || true)"; multi_json;;
             log) INPUT="$(cat 2>/dev/null || true)"; log_json "$(jget lines)";;
             *) json_error "Недопустимый метод";;
         esac
@@ -5831,6 +5853,7 @@ function dmRpc(o){
 }
 var callStatus = dmRpc({ object:'dns_manager', method:'status', params:['detail'], expect:{} });
 var callDohStatus = dmRpc({ object:'dns_manager', method:'doh_status', expect:{} });
+var callMulti = dmRpc({ object:'dns_manager', method:'multi', params:['calls'], expect:{} });
 var callNetworkStatus = dmRpc({ object:'dns_manager', method:'network_status', expect:{} });
 var callLanDevices = dmRpc({ object:'dns_manager', method:'lan_devices', expect:{} });
 var callSetDeviceDns = dmRpc({ object:'dns_manager', method:'set_device_dns', params:['mac','slots'], expect:{} });
@@ -8000,15 +8023,17 @@ function routeStatusCall(){
     case 'catalog':
       return Promise.all([
         callCatalog(state.category,state.offset,state.limit,0),
-        callDohStatus(),
-        callPageMeta()
+        (typeof callMulti==='function' ? callMulti('doh_status\npage_meta').then(function(r){
+          if(!r || !r.ok || !r.results || !r.results.doh_status || !r.results.page_meta || r.results.doh_status.ok===false || r.results.page_meta.ok===false) throw new Error('multi failed');
+          return [r.results.doh_status,r.results.page_meta];
+        }).catch(function(){return Promise.all([callDohStatus(),callPageMeta()]);}) : Promise.all([callDohStatus(),callPageMeta()]))
       ]).then(function(v){
         if(!v[0]||v[0].ok===false){
           window.dmCatalog=null;state.catalogLoaded=false;state.catalogLoadFailed=true;
           state.pageNotice.catalog=(v[0]&&v[0].error)||'Не удалось загрузить каталог DNS.';
         }else{window.dmCatalog=v[0];state.catalogLoaded=true;if(state.catalogLoadFailed)state.pageNotice.catalog='';state.catalogLoadFailed=false;}
-        var st=v[1]||{};
-        var meta=v[2]||{};
+        var st=v[1][0]||{};
+        var meta=v[1][1]||{};
         Object.keys(meta).forEach(function(k){st[k]=meta[k];});
         return st;
       });
