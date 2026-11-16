@@ -47,7 +47,7 @@ async function testRouteCache(){
   if(!cached||cached.force_owner!=='steer'||cached.__dmCachedRoute!=='slots')throw Error('compatible route cache missing');
   ctx.window.dmRouteCache=undefined;
   if(ctx.cachedRouteStatus('slots').force_owner!=='steer')throw Error('cache did not survive page navigation');
-  ctx.window.dmRouteCache={doh:JSON.parse(store['dns-manager-route-2.44-doh'])};
+  ctx.window.dmRouteCache={doh:JSON.parse(store['dns-manager-route-2.45-doh'])};
   cached.slots.length=0;
   if(ctx.cachedRouteStatus('doh').slots.length!==1)throw Error('cache was mutated by view');
   ctx.applyStatusToCurrentRoot({ok:true,force_owner:'steer'},'doh');
@@ -58,6 +58,16 @@ async function testRouteCache(){
   if(ctx.cachedRouteStatus('doh')!==null)throw Error('expired cache was reused');
   let rejected=false;await ctx.ensureStatusPromise('time').catch(()=>{rejected=true;});
   if(!rejected||ctx.cachedRouteStatus('time'))throw Error('invalid status was cached as valid');
+  const stale=ctx.ensureStatusPromise('dashboard'), resolveStale=resolveDashboard;
+  ctx.state.pageNotice={profiles:'old'};ctx.state.profileProgress={};ctx.window.dmState.profile_job_status='done';
+  ctx.clearEngineUiState();
+  if(ctx.cachedRouteStatus('doh')||ctx.state.pageNotice.profiles||ctx.state.profileProgress||ctx.window.dmState.profile_job_status)throw Error('engine switch retained old state');
+  const fresh=ctx.ensureStatusPromise('dashboard');
+  resolveDashboard({ok:true,dnscrypt_engine:'dnscrypt-proxy2'});
+  await fresh;
+  resolveStale({ok:true,engine_installed:1});
+  let staleRejected=false;await stale.catch(()=>{staleRejected=true;});
+  if(!staleRejected||ctx.cachedRouteStatus('dashboard').dnscrypt_engine!=='dnscrypt-proxy2')throw Error('stale response replaced new engine state');
 }
 async function testCachedReadOnly(){
   const controls=[{disabled:false},{disabled:false}],messages=[];
@@ -85,7 +95,7 @@ async function testAdditionalRouteCache(){
   ctx.state.category='security';if(ctx.cachedRouteStatus('catalog'))throw Error('wrong catalog category reused');ctx.state.category='all';
   failDevices=true;failCatalog=true;failLog=true;
   const previous={...store};for(const route of ['devices','catalog','log'])await ctx.ensureStatusPromise(route);
-  for(const route of ['devices','catalog','log'])if(store['dns-manager-route-2.44-'+route]!==previous['dns-manager-route-2.44-'+route])throw Error('failed '+route+' replaced good cache');
+  for(const route of ['devices','catalog','log'])if(store['dns-manager-route-2.45-'+route]!==previous['dns-manager-route-2.45-'+route])throw Error('failed '+route+' replaced good cache');
 }
 async function testSequentialWarmup(){
   let active=0,max=0,calls=[],allowed=true;

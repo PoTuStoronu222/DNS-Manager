@@ -93,6 +93,8 @@ sh "$helpers/dns-manager-dnscrypt-dnsmasq.sh" clean 5053 || exit 1
 SLOT_1_DOMAINS=''; SLOT_2_DOMAINS=''; SLOT_3_DOMAINS=''; SLOT_4_DOMAINS=''; SLOT_5_DOMAINS=''; SLOT_6_DOMAINS=''
 REGIONAL_SAVED_ID=''; FORCE_DOH=0; BLOCK_EXTERNAL_DNS=0
 clear_dns_core_runtime_state || exit 1
+# Completed profile jobs belong to the old engine after the DNS reset.
+rm -f "$(dirname "$job_dir")/profile/state" "$(dirname "$job_dir")/profile/output" || exit 1
 rm -f "$config_dir/dnscrypt-profile.state" "$CUSTOM_DNS_CATALOG" || exit 1
 if [ ! -x "$executable" ]; then
     echo "Устанавливаю $package."
