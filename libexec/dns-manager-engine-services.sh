@@ -13,24 +13,32 @@ esac
 service_absent() {
     # A failed procd delete can mean either "already absent" or a real ubus
     # failure. Only accept the former after a successful, valid service list.
-    _service_reply=$(ubus -t 5 call service list "{\"name\":\"$1\"}" 2>/dev/null) || return 1
-    _service_root=$(jsonfilter -s "$_service_reply" -e '@' 2>/dev/null) || return 1
-    case "$_service_root" in \{*\}) ;; *) return 1 ;; esac
+    _service_reply=$(ubus -t 5 call service list "{\"name\":\"$1\"}" 2>/dev/null) || return 2
+    _service_root=$(jsonfilter -s "$_service_reply" -e '@' 2>/dev/null) || return 2
+    case "$_service_root" in \{*\}) ;; *) return 2 ;; esac
     if jsonfilter -s "$_service_reply" -e "@['$1']" >/dev/null 2>&1; then
         return 1
     else
         _service_filter_rc=$?
-        [ "$_service_filter_rc" -eq 1 ]
+        [ "$_service_filter_rc" -eq 1 ] || return 2
     fi
 }
 
 stop_disable() {
     script="$initdir/$1"
     [ -x "$script" ] || return 0
-    if ! "$script" stop && ! service_absent "$1"; then
-        printf 'Failed to stop %s\n' "$1" >&2
-        return 1
-    fi
+    # rc.common may run stop_service even when procd has no instance.
+    # In https-dns-proxy this can restore old dnsmasq settings, so do not
+    # call it a second time after the service has already stopped.
+    _service_state=0
+    service_absent "$1" || _service_state=$?
+    case "$_service_state" in
+        0) ;;
+        1) if ! "$script" stop && ! service_absent "$1"; then
+               printf 'Failed to stop %s\n' "$1" >&2; return 1
+           fi ;;
+        *) printf 'Cannot verify service state: %s\n' "$1" >&2; return 1 ;;
+    esac
     "$script" disable || { printf 'Failed to disable %s\n' "$1" >&2; return 1; }
     if ! service_absent "$1"; then
         printf 'Service still registered or procd unavailable: %s\n' "$1" >&2

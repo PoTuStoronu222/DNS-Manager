@@ -105,8 +105,14 @@ esac
     assert not state('dnscrypt-proxy', 'enabled')
     (directory / 'https-dns-proxy.fail-stop').unlink()
     (directory / 'https-dns-proxy.running').unlink()
+    # A stopped proxy must not receive stop again: its real stop_service
+    # can restore stale DNS settings even without a running process.
+    (directory / 'log').unlink(missing_ok=True)
+    assert run('quiesce', 'dnscrypt-proxy2').returncode == 0
+    assert 'https-dns-proxy stop' not in (directory / 'log').read_text()
     (directory / 'ubus.fail').touch()
     assert run('quiesce', 'dnscrypt-proxy2').returncode != 0
+    assert 'https-dns-proxy stop' not in (directory / 'log').read_text()
     assert run('start', 'dnscrypt-proxy2').returncode != 0
     (directory / 'ubus.fail').unlink()
     (directory / 'ubus.invalid').touch()
