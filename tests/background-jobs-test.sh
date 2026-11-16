@@ -63,7 +63,8 @@ job_prepare update; : > "$TMPCASE/steps"
 background_worker update
 [ "$(cat "$TMPCASE/steps")" = update ]
 [ "$(job_state_value "$JOB_DIR/update/state" status)" = done ]
-[ "$(cat "$JOB_DIR/update/output")" = '{"ok":true,"message":"updated"}' ]
+[ "$(sed '/^__DONE__ [01]$/d; /^$/d' "$JOB_DIR/update/output")" = '{"ok":true,"message":"updated"}' ]
+[ "$(tail -n1 "$JOB_DIR/update/output")" = '__DONE__ 0' ]
 awk '/^job_json\(\) \{/{copy=1} /^log_json\(\) \{/{copy=0} copy{print}' "$ROOT/dns-manager-luci.sh" > "$TMPCASE/job-json.sh"
 . "$TMPCASE/job-json.sh"
 printf 'one "quoted"\ntwo \\path\n' > "$JOB_DIR/combined/output"
