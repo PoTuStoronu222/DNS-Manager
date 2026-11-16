@@ -243,7 +243,7 @@ diagnostic() {
     . /usr/share/libubox/jshn.sh
     json_init
     if [ "$method" = system_dns_test ]; then
-        output=$(timeout 8 nslookup openwrt.org 127.0.0.1 2>&1); rc=$?
+        output=$(nslookup -type=A -timeout=3 -retry=1 openwrt.org 127.0.0.1 2>&1); rc=$?
         if [ "$rc" -eq 0 ]; then output="Системный DNS работает нормально.
 $output"; json_add_boolean ok 1
         elif ! ip -4 route get 8.8.8.8 >/dev/null 2>&1 && ! ip -6 route get 2606:4700:4700::1111 >/dev/null 2>&1; then
@@ -251,9 +251,9 @@ $output"; json_add_boolean ok 1
         else output="Системный DNS не ответил.
 $output"; json_add_boolean ok 0; fi
     elif [ "$method" = dnscrypt_test ]; then
-        output=$(timeout 8 nslookup -port=5053 openwrt.org 127.0.0.1 2>&1); rc=$?
+        output=$(nslookup -type=A -timeout=3 -retry=1 -port=5053 openwrt.org 127.0.0.1 2>&1); rc=$?
         if [ "$rc" -eq 0 ]; then
-            system_output=$(timeout 8 nslookup openwrt.org 127.0.0.1 2>&1); rc=$?
+            system_output=$(nslookup -type=A -timeout=3 -retry=1 openwrt.org 127.0.0.1 2>&1); rc=$?
             output="DNSCrypt (порт 5053):
 $output
 dnsmasq (порт 53):
@@ -418,6 +418,22 @@ status_extra() {
         done < "$STATE_FILE"
     fi
     json_close_array
+    json_add_object dnscrypt_server_names
+    if [ -r "$STATE_FILE" ]; then
+        while IFS='|' read -r id url; do
+            case "$id" in server=*) id=${id#server=};; *) continue;; esac
+            case "$id" in ''|*[!A-Za-z0-9_-]*) continue;; esac
+            name=''
+            for catalog in "$CONFIG_DIR/dns-catalog.conf" "$CONFIG_DIR/dns-custom-catalog.conf"; do
+                [ -r "$catalog" ] || continue
+                name=$(awk -F '|' -v id="$id" '$1 == id {print $4; exit}' "$catalog")
+                [ -z "$name" ] || break
+            done
+            case "$id:$name" in cloudflare_clean:) name='Cloudflare';; google_clean:) name='Google Public DNS';; esac
+            json_add_string "$id" "${name:-$id}"
+        done < "$STATE_FILE"
+    fi
+    json_close_object
     extra=$(json_dump)
     base=${base%\}}
     extra=${extra#\{}
