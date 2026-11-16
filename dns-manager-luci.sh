@@ -3018,6 +3018,30 @@ update_manager_json() {
     trap 'release_runtime_lock "$RUNTIME_DIR/manager-update.lock"' EXIT INT TERM
     _installed="$(manager_version 2>/dev/null || true)"
     [ -n "$_installed" ] || { json_error "DNS Manager не найден"; return; }
+    if [ "$(uci -q get dns-manager.global.active_engine 2>/dev/null)" = dnscrypt-proxy2 ]; then
+        _candidate="$TMP_ROOT/dnscrypt-manager-update.$$"
+        _staged="${MANAGER_PATH}.new.$$"
+        if ! fetch_raw_url "$_candidate" "https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/dnscrypt-proxy2-engine/dns-manager.sh" ||
+           ! sh -n "$_candidate"; then
+            rm -f "$_candidate"
+            json_error "Не удалось загрузить корректный DNS Manager из тестовой ветки"; return
+        fi
+        _latest="$(sed -n 's/^VERSION="\([^"]*\)"$/\1/p' "$_candidate" | head -n1)"
+        case "$_latest" in ''|*[!0-9.]*) rm -f "$_candidate"; json_error "Не удалось определить версию DNS Manager"; return;; esac
+        if { [ "$_latest" = "$_installed" ] && cmp -s "$_candidate" "$MANAGER_PATH"; } ||
+           { [ "$_latest" != "$_installed" ] && [ "$(version_gt "$_latest" "$_installed")" != 1 ]; }; then
+            rm -f "$_candidate"
+            printf '{"ok":true,"updated":false,"version":'; json_quote "$_installed"; printf '}'
+            return
+        fi
+        if ! cp "$_candidate" "$_staged" || ! chmod 755 "$_staged" || ! mv -f "$_staged" "$MANAGER_PATH"; then
+            rm -f "$_candidate" "$_staged"
+            json_error "Не удалось установить DNS Manager"; return
+        fi
+        rm -f "$_candidate"
+        printf '{"ok":true,"updated":true,"version":'; json_quote "$_latest"; printf '}'
+        return
+    fi
     _out="$TMP_ROOT/manager-update.log"
     rm -f "$_out" 2>/dev/null || true
     _rc=0
