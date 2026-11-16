@@ -1349,6 +1349,8 @@ for config_package in firewall https-dns-proxy; do
 done
 . "$helpers/dns-manager-watchdog-common.sh" || exit 1
 dns_manager_stop_watchdog || { echo 'Не удалось остановить DNS Watchdog.'; exit 1; }
+# Old failure counts and candidate history must not survive a clean engine switch.
+rm -f /var/run/dns-manager-watchdog.json || exit 1
 WATCHDOG_ENABLED=0; WATCHDOG_AUTOREPLACE=0
 save_config || exit 1
 printf 'phase=Сброс настроек DNS…\n' >> "$job_dir/state"
