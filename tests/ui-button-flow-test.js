@@ -47,7 +47,7 @@ async function testRouteCache(){
   if(!cached||cached.force_owner!=='steer'||cached.__dmCachedRoute!=='slots')throw Error('compatible route cache missing');
   ctx.window.dmRouteCache=undefined;
   if(ctx.cachedRouteStatus('slots').force_owner!=='steer')throw Error('cache did not survive page navigation');
-  ctx.window.dmRouteCache={doh:JSON.parse(store['dns-manager-route-2.52-doh'])};
+  ctx.window.dmRouteCache={doh:JSON.parse(store['dns-manager-route-2.53-doh'])};
   cached.slots.length=0;
   if(ctx.cachedRouteStatus('doh').slots.length!==1)throw Error('cache was mutated by view');
   ctx.applyStatusToCurrentRoot({ok:true,force_owner:'steer'},'doh');
@@ -95,7 +95,7 @@ async function testAdditionalRouteCache(){
   ctx.state.category='security';if(ctx.cachedRouteStatus('catalog'))throw Error('wrong catalog category reused');ctx.state.category='all';
   failDevices=true;failCatalog=true;failLog=true;
   const previous={...store};for(const route of ['devices','catalog','log'])await ctx.ensureStatusPromise(route);
-  for(const route of ['devices','catalog','log'])if(store['dns-manager-route-2.52-'+route]!==previous['dns-manager-route-2.52-'+route])throw Error('failed '+route+' replaced good cache');
+  for(const route of ['devices','catalog','log'])if(store['dns-manager-route-2.53-'+route]!==previous['dns-manager-route-2.53-'+route])throw Error('failed '+route+' replaced good cache');
 }
 async function testSequentialWarmup(){
   let active=0,max=0,calls=[],allowed=true;
@@ -407,4 +407,14 @@ async function testDnscryptPoolPresentation(){
   choose.click();if(changes.length||confirmations.length!==1)throw Error('manual server choice must ask for confirmation');
   confirmations[0]();if(changes.join(',')!=='google')throw Error('manual server selection failed');
 }
-Promise.all([testDnscryptPoolPresentation(),testDnscryptRegionalSelection(),testRegionalReapply(),testResumeCatalog(),testBackgroundStartTimeout(),testBackgroundUnknown(),testBackgroundNavigation(),testBackgroundFailure(),testDoHRemove(),testSingleError(),testBadgeWithoutDuration(),testPollNavigation(),testLongCatalogProgress(117),testLongCatalogProgress(5,true),testRouteCache(),testCachedReadOnly(),testAdditionalRouteCache(),testSequentialWarmup(),testWarmupResourceGuard(),testResumeCache(),testSettingConnectionLoss(),testRegionalConnectionLoss(),testProfileMissingJob(),testJobTransientError(),testUninstallUnresponsiveStatus(),testProfileStatus(),testSlotDraft(),testDeviceSave(),testCatalogError(),testFoldState(),testCustomDnsFeedback(),testBootstrapForm(),testLogScroll(),testHeaderCheckKind()]).catch(e=>{console.error(e);process.exitCode=1;});
+async function testProfileClickBothEngines(){
+  for(const engine of ['dnscrypt-proxy2','https-dns-proxy']){
+    const calls=[],buttons=[],root={},ctx={state:{busy:false,jobRunning:false},st:{dnscrypt_engine:engine,engine_installed:1},root,
+      PROFILE:[['clean','Без фильтрации'],['privacy','Конфиденциальность']],activeProfileId:()=>'',
+      E:()=>({appendChild:b=>buttons.push(b)}),btn:(label,cls,click,opts)=>({label,click,opts}),applyProfile:(id,r)=>calls.push([id,r])};
+    vm.createContext(ctx);vm.runInContext(extract("  var g=E('div',{'class':'dm-seg dm-profile-seg'});","  var current=activeProfileLabel(st);"),ctx);
+    buttons[0].click();if(calls.length!==1||calls[0][0]!=='clean'||calls[0][1]!==root)throw Error('profile button did not invoke apply for '+engine);
+    if(buttons.some(b=>b.label==='Применить профиль'))throw Error('unexpected separate apply button');
+  }
+}
+Promise.all([testProfileClickBothEngines(),testDnscryptPoolPresentation(),testDnscryptRegionalSelection(),testRegionalReapply(),testResumeCatalog(),testBackgroundStartTimeout(),testBackgroundUnknown(),testBackgroundNavigation(),testBackgroundFailure(),testDoHRemove(),testSingleError(),testBadgeWithoutDuration(),testPollNavigation(),testLongCatalogProgress(117),testLongCatalogProgress(5,true),testRouteCache(),testCachedReadOnly(),testAdditionalRouteCache(),testSequentialWarmup(),testWarmupResourceGuard(),testResumeCache(),testSettingConnectionLoss(),testRegionalConnectionLoss(),testProfileMissingJob(),testJobTransientError(),testUninstallUnresponsiveStatus(),testProfileStatus(),testSlotDraft(),testDeviceSave(),testCatalogError(),testFoldState(),testCustomDnsFeedback(),testBootstrapForm(),testLogScroll(),testHeaderCheckKind()]).catch(e=>{console.error(e);process.exitCode=1;});

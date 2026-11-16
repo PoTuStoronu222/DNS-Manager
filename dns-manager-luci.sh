@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager full installer and LuCI companion
-# Version: 2.52
+# Version: 2.53
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.52"
+VERSION="2.53"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -2327,7 +2327,7 @@ if [ "$(uci -q get dns-manager.global.active_engine 2>/dev/null)" = dnscrypt-pro
 fi
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.52"
+SELF_VERSION="2.53"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -6005,7 +6005,7 @@ EOF_RPC_WRAPPER
 'require ui';
 'require session';
 
-// DNS Manager LuCI common module version: 2.52
+// DNS Manager LuCI common module version: 2.53
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -7437,12 +7437,7 @@ function renderProfiles(root,st){
   if(st.dnscrypt_engine!=='dnscrypt-proxy2'&&Number(st.engine_installed)===0)return;
   var g=E('div',{'class':'dm-seg dm-profile-seg'});
   var currentId=activeProfileId(st);
-  if(st.dnscrypt_engine==='dnscrypt-proxy2'){
-    var selected=state.dnscryptProfileChoice||currentId||'';
-    PROFILE.forEach(function(p){g.appendChild(btn(p[1],selected===p[0]?'active cbi-button':'cbi-button',function(){state.dnscryptProfileChoice=p[0];renderProfiles(root,st);},{disabled:!!state.busy||!!state.jobRunning,'aria-pressed':selected===p[0]?'true':'false'}));});
-    var applyButton=btn('Применить профиль','cbi-button-action',function(){if(isProfileId(selected))applyProfile(selected,root);},{disabled:!!state.busy||!!state.jobRunning||!isProfileId(selected)});
-    g.appendChild(applyButton);
-  }else PROFILE.forEach(function(p){g.appendChild(btn(p[1],currentId===p[0]?'active cbi-button':'cbi-button',function(){applyProfile(p[0],root);},{disabled:!!state.busy||!!state.jobRunning||Number(st.engine_installed)===0,'aria-pressed':currentId===p[0]?'true':'false'}));});
+  PROFILE.forEach(function(p){g.appendChild(btn(p[1],currentId===p[0]?'active cbi-button':'cbi-button',function(){applyProfile(p[0],root);},{disabled:!!state.busy||!!state.jobRunning||(st.dnscrypt_engine!=='dnscrypt-proxy2'&&Number(st.engine_installed)===0),'aria-pressed':currentId===p[0]?'true':'false'}));});
   var current=activeProfileLabel(st);
   var pch=[
     row('Работает сейчас',badge('dm-ok',current)),
@@ -8334,7 +8329,7 @@ function saveRouteCache(key,st,aux){
     var entry=JSON.parse(JSON.stringify({ts:Date.now(),data:st,aux:aux}));
     window.dmRouteCache[key]=entry;
     if(typeof session!=='undefined'&&session.setLocalData)
-      session.setLocalData('dns-manager-route-2.52-'+key,entry);
+      session.setLocalData('dns-manager-route-2.53-'+key,entry);
   }catch(e){}
 }
 function clearEngineUiState(){
@@ -8342,10 +8337,10 @@ function clearEngineUiState(){
   window.dmRouteCache=Object.create(null);
   window.dmStatusPromises=Object.create(null);
   ['dashboard','doh','network','time','devices','catalog','log'].forEach(function(key){
-    try{if(typeof session!=='undefined'&&session.setLocalData)session.setLocalData('dns-manager-route-2.52-'+key,null);}catch(e){}
+    try{if(typeof session!=='undefined'&&session.setLocalData)session.setLocalData('dns-manager-route-2.53-'+key,null);}catch(e){}
   });
   state.pageNotice={};state.profileProgress=null;state.profileOutput='';state.profileResumeStarted=false;
-  state.regionalNotice='';state.dnscryptDiagnostic='';state.dnscryptDiagnosticKind='';state.dnscryptProfileChoice='';
+  state.regionalNotice='';state.dnscryptDiagnostic='';state.dnscryptDiagnosticKind='';
   state.lastAction=null;state.lastJob=null;state.checking={};state.fullTest=null;state.catalogProgress=null;
   if(window.dmState){
     ['profile_job_status','profile_job_result','profile_job_profile','profile_job_started','profile_job_finished','profile_job_message'].forEach(function(key){delete window.dmState[key];});
@@ -8354,7 +8349,7 @@ function clearEngineUiState(){
 function routeCacheEntry(key){
   var entry=key&&window.dmRouteCache&&window.dmRouteCache[key];
   if(!entry&&key){
-    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.52-'+key);}catch(e){}
+    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.53-'+key);}catch(e){}
   }
   if(!entry||typeof entry.ts!=='number'||Date.now()-entry.ts<0||Date.now()-entry.ts>300000||!entry.data||entry.data.ok!==true)return null;
   return entry;
@@ -9408,7 +9403,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 2.52
+// DNS Manager LuCI version: 2.53
 return view.extend({
   load: DM.load,
   render: DM.render,
