@@ -13,6 +13,15 @@ dnscrypt_select_profile() {
 DNS_MANAGER_DNSCRYPT_POOL_APPLY="$TMP_DIR/apply.sh"
 DNS_MANAGER_DNSCRYPT_DNSMASQ_APPLY="$TMP_DIR/dnsmasq.sh"
 DNS_MANAGER_DNSCRYPT_UCI_GUARD="$TMP_DIR/guard.sh"
+DNS_MANAGER_DNSCRYPT_CONFIG="$TMP_DIR/dnscrypt.toml"
+DNS_MANAGER_DNSCRYPT_INIT="$TMP_DIR/init.sh"
+export DNS_MANAGER_DNSCRYPT_CONFIG DNS_MANAGER_DNSCRYPT_INIT
+printf 'original\n' > "$DNS_MANAGER_DNSCRYPT_CONFIG"
+cat > "$DNS_MANAGER_DNSCRYPT_INIT" <<'EOF_INIT'
+#!/bin/sh
+printf '%s\n' "$1" >> "$TMP_DIR/init-calls"
+EOF_INIT
+chmod +x "$DNS_MANAGER_DNSCRYPT_INIT"
 : > "$DNS_MANAGER_DNSCRYPT_UCI_GUARD"
 cat > "$DNS_MANAGER_DNSCRYPT_DNSMASQ_APPLY" <<'EOF_DNSMASQ'
 #!/bin/sh
@@ -23,7 +32,8 @@ cat > "$DNS_MANAGER_DNSCRYPT_POOL_APPLY" <<'EOF_FAKE'
 #!/bin/sh
 printf '%s|%s\n' "$1" "$2" > "$TMP_DIR/arguments"
 cat > "$TMP_DIR/received"
-[ "${APPLY_FAIL:-0}" = 0 ]
+[ "${APPLY_FAIL:-0}" = 0 ] || exit 1
+printf 'new\n' > "$DNS_MANAGER_DNSCRYPT_CONFIG"
 EOF_FAKE
 export TMP_DIR APPLY_FAIL DNSMASQ_FAIL
 
@@ -44,8 +54,15 @@ if dnscrypt_apply_profile_pool clean 5053 1.1.1.1 > "$TMP_DIR/result"; then exit
 : > "$DNS_MANAGER_DNSCRYPT_UCI_GUARD"
 
 DNSMASQ_FAIL=1
+printf 'original\n' > "$DNS_MANAGER_DNSCRYPT_CONFIG"
 if dnscrypt_apply_profile_pool clean 5053 1.1.1.1 > "$TMP_DIR/result"; then exit 1; fi
 [ ! -s "$TMP_DIR/result" ]
+[ "$(cat "$DNS_MANAGER_DNSCRYPT_CONFIG")" = original ]
+[ "$(tail -n 1 "$TMP_DIR/init-calls")" = restart ]
+rm -f "$DNS_MANAGER_DNSCRYPT_CONFIG"
+if dnscrypt_apply_profile_pool clean 5053 1.1.1.1 > "$TMP_DIR/result"; then exit 1; fi
+[ ! -e "$DNS_MANAGER_DNSCRYPT_CONFIG" ]
+[ "$(tail -n 1 "$TMP_DIR/init-calls")" = stop ]
 DNSMASQ_FAIL=0
 
 APPLY_FAIL=1
