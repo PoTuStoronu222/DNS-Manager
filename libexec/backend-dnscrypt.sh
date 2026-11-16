@@ -12,6 +12,7 @@ STATE_FILE="$CONFIG_DIR/dnscrypt-profile.state"
 ENGINE_FILE=${DNS_MANAGER_DNSCRYPT_ENGINE_FILE:-$CONFIG_DIR/dnscrypt-engine}
 SERVICE=dns-manager-dnscrypt-profile
 RESET_SERVICE=dns-manager-dnscrypt-reset
+SWITCH_SERVICE=dns-manager-engine-switch
 DNSCRYPT_INIT=${DNS_MANAGER_DNSCRYPT_INIT:-/etc/init.d/dnscrypt-proxy}
 HDP_INIT=${DNS_MANAGER_HDP_INIT:-/etc/init.d/https-dns-proxy}
 umask 077
@@ -42,6 +43,32 @@ disable_legacy_watchdog() {
 }
 job_write() { printf '%s=%s\n' "$1" "$2" >> "$JOB_DIR/profile/state"; }
 action_write() { printf '%s=%s\n' "$1" "$2" >> "$JOB_DIR/action/state"; }
+
+switch_start() {
+    input=$(cat)
+    target=$(printf '%s' "$input" | jsonfilter -e '@.target_engine' 2>/dev/null || true)
+    case "$target" in https-dns-proxy|dnscrypt-proxy2) ;; *) error 'Неверный DNS-движок'; return;; esac
+    [ -x "$HELPERS/dns-manager-engine-switch.sh" ] || { error 'Файл переключения отсутствует'; return; }
+    mkdir -p "$JOB_DIR/engine" "$RUNTIME_DIR" || { error 'Не удалось подготовить задачу'; return; }
+    exec 9>"$RUNTIME_DIR/engine-switch-start.lock" || { error 'Не удалось подготовить блокировку'; return; }
+    flock -n 9 || { error 'Переключение уже запускается'; return; }
+    reply=$(ubus -t 5 call service list "{\"name\":\"$SWITCH_SERVICE\"}" 2>/dev/null) || { error 'Служба задач недоступна'; return; }
+    case "$reply" in \{*\}) ;; *) error 'Некорректный ответ службы задач'; return;; esac
+    if printf '%s\n' "$reply" | grep -q '"running"[[:space:]]*:[[:space:]]*true'; then
+        error 'Переключение уже выполняется'; return
+    fi
+    ubus -t 5 call service delete "{\"name\":\"$SWITCH_SERVICE\"}" >/dev/null 2>&1 || true
+    # A package installation may take longer than a normal action. The job
+    # reader must not terminate a live package manager on the action timeout.
+    printf 'status=running\nstarted=%s\nmode=update\nname=switch_engine\n' "$(date +%s)" > "$JOB_DIR/engine/state"
+    : > "$JOB_DIR/engine/output"
+    request="{\"name\":\"$SWITCH_SERVICE\",\"instances\":{\"main\":{\"command\":[\"/bin/sh\",\"/usr/lib/dns-manager-luci/dnscrypt/dns-manager-engine-switch.sh\",\"$target\"]}}}"
+    if ! ubus -t 5 call service set "$request" >/dev/null 2>&1; then
+        printf 'result=fail\nstatus=failed\nfinished=%s\n' "$(date +%s)" >> "$JOB_DIR/engine/state"
+        error 'Не удалось запустить переключение'; return
+    fi
+    printf '{"ok":true,"job":"engine"}\n'
+}
 
 profile_worker() {
     goal=$1
@@ -241,6 +268,7 @@ case "${1:-}" in
         case "${2:-}" in
             set_profile) profile_start ;;
             reset_dns) reset_start ;;
+            switch_engine) switch_start ;;
             status|doh_status|network_status) status_extra "$2" ;;
             runtime|time_status|page_meta|catalog|lan_devices|job|log|update_check|uninstall_status)
                 exec "$LEGACY" "$@" ;;
