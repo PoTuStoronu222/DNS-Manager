@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.99"
+VERSION="2.100"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -2583,7 +2583,7 @@ if [ "$(uci -q get dns-manager.global.active_engine 2>/dev/null)" = dnscrypt-pro
 fi
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.99"
+SELF_VERSION="2.100"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -7883,18 +7883,19 @@ function renderSlots(root,st){
     var available=Array.isArray(st.dnscrypt_available_servers)&&st.dnscrypt_available_servers.length?st.dnscrypt_available_servers:(st.dnscrypt_servers||[]);
     if(pending&&available.indexOf(pending)<0){pending='';state.pendingDnscryptServer='';}
     var poolContent=[
-      E('div',{'class':'dm-pool-heading'},[E('strong',{},'Текущий набор'),E('span',{'class':'dm-mini'},selected?'Один сервер':'Автоматический выбор')]),
+      E('p',{'class':'dm-mini'},'Профиль определяет набор DNS-серверов. DNSCrypt автоматически выбирает из него доступные серверы.'),
+      E('div',{'class':'dm-pool-heading'},[E('strong',{},'Используемые серверы'),E('span',{'class':'dm-mini'},selected?'Выбран один сервер':'Автоматический выбор')]),
       dnscryptCurrentPool(st),
-      E('p',{'class':'dm-mini'},selected?'Используется выбранный сервер.':'DNSCrypt выбирает сервер из этого набора автоматически.'),
+      E('p',{'class':'dm-mini'},selected?'Используется только выбранный сервер. Чтобы вернуть набор, примените профиль.':'Чтобы изменить набор серверов, выберите профиль на вкладке «Защищённый DNS».'),
       E('div',{'class':'dm-pool-actions'},[btn('Проверить DNS','cbi-button-neutral',function(){dnscryptDiagnostic(root,false);},{disabled:!!state.busy||!!state.jobRunning})])
     ];
     if(state.dnscryptDiagnostic){var diagnosticView=dnscryptDiagnosticView();if(diagnosticView)poolContent.push(diagnosticView);}
     if(available.length){
-      var manual=[E('p',{'class':'dm-mini'},'Выбранный сервер заменит весь набор. Чтобы снова использовать несколько DNS, примените профиль.'),dnscryptPoolList(st,root)];
+      var manual=[E('p',{'class':'dm-mini'},'Выберите сервер из текущего набора. После применения остальные использоваться не будут.'),dnscryptPoolList(st,root)];
       if(pending&&pending!==selected)manual.push(E('div',{'class':'dm-pool-actions'},[btn('Применить изменения','cbi-button-action',function(){selectDnscryptServer(pending,root);},{disabled:!!state.busy||!!state.jobRunning})]));
-      poolContent.push(foldSection('dnscrypt-manual','Выбрать один сервер',E('div',{'class':'dm-pool-manual'},manual)));
+      poolContent.push(foldSection('dnscrypt-manual','Использовать только один сервер',E('div',{'class':'dm-pool-manual'},manual)));
     }
-    e.appendChild(card('Пул серверов',poolContent));
+    e.appendChild(card('DNS-серверы',poolContent));
     return;
   }
   var rows=[];
@@ -8670,7 +8671,7 @@ function render(root,st){
     if(list&&list.querySelectorAll('a[href*="/dns-manager/"]').length>=3)list.classList.add('dm-native-tabs');
   });
   document.querySelectorAll('a[href*="/dns-manager/slots"]').forEach(function(link){
-    link.textContent=st.dnscrypt_engine==='dnscrypt-proxy2'?'Пул серверов':'DNS по слотам';
+    link.textContent=st.dnscrypt_engine==='dnscrypt-proxy2'?'DNS-серверы':'DNS по слотам';
   });
   renderHeader(root,st);
   state.activeTab=currentRoute();

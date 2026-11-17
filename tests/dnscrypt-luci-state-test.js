@@ -46,7 +46,7 @@ for (const [fn, selector] of [['renderSlots', '#dm-slots'], ['renderDeviceDns', 
   assert.equal(panel.innerHTML, '');
   assert.equal(panel.children.length, 1);
   if(fn==='renderSlots') {
-    assert.equal(panel.children[0].title, 'Пул серверов');
+    assert.equal(panel.children[0].title, 'DNS-серверы');
     assert(panel.children[0].children.some(x => x.attrs && x.attrs.class==='dm-pool-actions'));
   } else {
     assert.match(panel.children[0].children[0].text, /DNS роутера/);
@@ -85,7 +85,7 @@ assert.notEqual(panel2.children[1].title, 'Браузеры и DNS');
 const details=panel2.children[1].children;
 const serverList=details.find(x => x && x.attrs && x.attrs.class==='dm-doh-list');
 assert.equal(serverList.text[0].text[0].text,'Cloudflare');
-assert.equal(serverList.text[0].text[1].text,'48 мс · последний замер');
+assert.equal(serverList.text[0].text[1].text,'48 мс · замер DNSCrypt · время неизвестно');
 const actions=details.find(x => x && x.attrs && x.attrs.class==='dm-actions');
 assert(actions.text.some(x => x.label==='Проверить DNS'));
 assert(!actions.text.some(x => /журнал/i.test(x.label)));
