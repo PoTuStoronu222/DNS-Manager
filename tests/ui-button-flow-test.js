@@ -455,8 +455,8 @@ async function testRunningProfileTimeout(){
 async function testDnscryptCatalogNativeLatency(){
   const ctx={badge:(kind,label)=>({kind,label})};vm.createContext(ctx);
   vm.runInContext(extract('function dnscryptCatalogBadge(st,id){','function renderCatalog(root){'),ctx);
-  const st={dnscrypt_running:1,dnscrypt_servers:['cloudflare','google'],dnscrypt_server_latency:{'manager-1':42,'manager-2':99}};
-  if(ctx.dnscryptCatalogBadge(st,'google').label!=='99 мс · замер DNSCrypt')throw Error('native DNSCrypt latency missing');
+  const st={dnscrypt_running:1,dnscrypt_servers:['cloudflare','google'],dnscrypt_catalog_latency:{'manager-1':42,'manager-2':99}};
+  if(ctx.dnscryptCatalogBadge(st,'google').label!=='99 мс · последний замер')throw Error('native DNSCrypt latency missing');
   if(ctx.dnscryptCatalogBadge(st,'other').label!=='нет данных')throw Error('unmeasured catalog server marked available');
   st.dnscrypt_running=0;if(ctx.dnscryptCatalogBadge(st,'google').label!=='нет данных')throw Error('stopped proxy shown as measured');
 }
