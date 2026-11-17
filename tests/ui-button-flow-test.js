@@ -455,10 +455,11 @@ async function testRunningProfileTimeout(){
 async function testDnscryptCatalogNativeLatency(){
   const ctx={badge:(kind,label)=>({kind,label})};vm.createContext(ctx);
   vm.runInContext(extract('function dnscryptCatalogBadge(st,id){','function renderCatalog(root){'),ctx);
-  const st={dnscrypt_running:1,dnscrypt_servers:['cloudflare','google'],dnscrypt_catalog_latency:{'manager-1':42,'manager-2':99}};
+  const st={dnscrypt_running:1,dnscrypt_servers:['cloudflare','google'],dnscrypt_catalog_results:JSON.stringify({cloudflare:42,google:99})};
   if(ctx.dnscryptCatalogBadge(st,'google').label!=='99 мс · последний замер')throw Error('native DNSCrypt latency missing');
+  st.dnscrypt_catalog_results=JSON.stringify({cloudflare:42,google:99,broken:-1});if(ctx.dnscryptCatalogBadge(st,'broken').label!=='недоступен')throw Error('failed DNS shown as available');
   if(ctx.dnscryptCatalogBadge(st,'other').label!=='нет данных')throw Error('unmeasured catalog server marked available');
-  st.dnscrypt_running=0;if(ctx.dnscryptCatalogBadge(st,'google').label!=='нет данных')throw Error('stopped proxy shown as measured');
+  st.dnscrypt_catalog_results='{}';if(ctx.dnscryptCatalogBadge(st,'google').label!=='нет данных')throw Error('unmeasured server shown as measured');
 }
 async function testDnscryptDiagnosticDisplay(){
   const state={dnscryptDiagnosticKind:'test',dnscryptDiagnosticResult:'ok',dnscryptDiagnostic:'raw output'};

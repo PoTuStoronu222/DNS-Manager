@@ -340,25 +340,91 @@ reset_start() {
 }
 
 dnscrypt_catalog_snapshot() (
-    "$DNSCRYPT_INIT" running >/dev/null 2>&1 || exit 1
-    pid=$(pidof dnscrypt-proxy 2>/dev/null)
-    case "$pid" in ''|*[!0-9]*) exit 1;; esac
-    [ -r "$STATE_FILE" ] || exit 1
-    pool=$(sed -n '/^server=/p' "$STATE_FILE" | cksum)
-    records=$(dnscrypt_pool_latency 1)
+    load_manager_functions || exit 1
+    probe=''; dir=''
+    cleanup_catalog_probe() {
+        if [ -n "$probe" ]; then kill "$probe" 2>/dev/null || :; wait "$probe" 2>/dev/null || :; fi
+        [ -z "$dir" ] || rm -rf "$dir"
+        case "${TMP_DIR:-}" in /tmp/dnsmgr.*) rm -rf "$TMP_DIR";; esac
+    }
+    trap cleanup_catalog_probe EXIT
+    trap 'exit 1' HUP INT TERM
+    load_config || exit 1
+    [ -r "$DNS_CATALOG" ] || exit 1
+    command -v dnscrypt-proxy >/dev/null 2>&1 || exit 1
+    dir=$(mktemp -d "$RUNTIME_DIR/catalog-probe.XXXXXX") || exit 1
+    catalog_hash=$(cksum "$DNS_CATALOG")
+    custom_hash=$(cksum "$CUSTOM_DNS_CATALOG" 2>/dev/null || :)
+    awk -F'|' 'NF >= 5 && $1 !~ /^#/ && $1 ~ /^[A-Za-z0-9_-]+$/ && $5 ~ /^https:\/\// {print $1 "|" $5}' "$DNS_CATALOG" > "$dir/source"
+    if [ -r "$CUSTOM_DNS_CATALOG" ]; then
+        awk -F'|' 'NF >= 5 && $1 !~ /^#/ && $1 ~ /^[A-Za-z0-9_-]+$/ && $5 ~ /^https:\/\// {print $1 "|" $5}' "$CUSTOM_DNS_CATALOG" >> "$dir/source"
+    fi
+    total=$(wc -l < "$dir/source" | tr -d ' ')
+    [ "$total" -gt 0 ] || exit 1
+    printf 'name=dnscrypt_catalog\nprogress_total=%s\nprogress_done=0\n' "$total" >> "$JOB_DIR/health/state"
+    : > "$dir/results"
+    offset=1
+    while [ "$offset" -le "$total" ]; do
+        end=$((offset + 5))
+        sed -n "${offset},${end}p" "$dir/source" > "$dir/group"
+        : > "$dir/stamps"; : > "$dir/ids"; : > "$dir/valid"
+        while IFS='|' read -r id url; do
+            stamp=$(sh "$HELPERS/dns-manager-doh-stamp.sh" "$url" 2>/dev/null) || continue
+            printf '%s\n' "$id" >> "$dir/ids"
+            printf '%s\n' "$stamp" >> "$dir/stamps"
+            printf '%s\n' "$url" >> "$dir/valid"
+        done < "$dir/group"
+        count=$(wc -l < "$dir/ids" | tr -d ' ')
+        if [ "$count" -gt 0 ]; then
+            # One temporary process, with a distinct loopback port, tests at most six servers.
+            port=$((49152 + ($$ + offset) % 12000))
+            first_url=$(sed -n '1p' "$dir/valid")
+            sh "$HELPERS/dns-manager-dnscrypt-config.sh" "$port" "$first_url" "$BOOTSTRAP_DNS" > "$dir/base" || exit 1
+            {
+                printf 'server_names = ['
+                n=1; while [ "$n" -le "$count" ]; do [ "$n" -eq 1 ] || printf ', '; printf "'manager-%s'" "$n"; n=$((n + 1)); done
+                printf ']\n'
+                printf "log_file = '%s'\nuse_syslog = false\n" "$dir/probe.log"
+                sed -n '2,/^\[static\./{ /^\[static\./d; p; }' "$dir/base"
+                n=1; while IFS= read -r stamp; do printf "[static.manager-%s]\nstamp = '%s'\n" "$n" "$stamp"; n=$((n + 1)); done < "$dir/stamps"
+            } > "$dir/probe.toml"
+            : > "$dir/probe.log"
+            dnscrypt-proxy -config "$dir/probe.toml" -netprobe-timeout 5 > "$dir/process.log" 2>&1 &
+            probe=$!
+            tries=0
+            while kill -0 "$probe" 2>/dev/null && [ "$tries" -lt 30 ]; do
+                grep -q 'Server with the lowest initial latency:' "$dir/probe.log" && break
+                sleep 1; tries=$((tries + 1))
+            done
+            kill "$probe" 2>/dev/null || :; wait "$probe" 2>/dev/null || :; probe=''
+            if grep -Eqi 'address already in use|permission denied|failed to listen' "$dir/probe.log" "$dir/process.log"; then exit 1; fi
+            completed=0; grep -q 'Server with the lowest initial latency:' "$dir/probe.log" && completed=1
+            awk '
+                /Sorted latencies:/ {delete values; collecting=1; next}
+                collecting && /ms manager-[1-6]$/ {v=$(NF-1); sub(/ms$/, "", v); if(v ~ /^[0-9]+$/) values[$NF]=v; next}
+                /Server with the lowest initial latency:/ {
+                    if (!collecting) for(i=1;i<=NF;i++) if($i ~ /^manager-[1-6]$/ && $(i+1)=="(rtt:") {v=$(i+2); sub(/ms\).*/, "", v); if(v ~ /^[0-9]+$/) values[$i]=v}
+                    for(k in values) print k, values[k]; collecting=0
+                }' "$dir/probe.log" > "$dir/latencies"
+            n=1; while IFS= read -r id; do
+                latency=$(awk -v s="manager-$n" '$1==s {print $2; exit}' "$dir/latencies")
+                case "$latency" in ''|*[!0-9]*) [ "$completed" = 0 ] || printf '%s|-1\n' "$id" >> "$dir/results";; *) printf '%s|%s\n' "$id" "$latency" >> "$dir/results";; esac
+                n=$((n + 1))
+            done < "$dir/ids"
+        fi
+        done_count=$end; [ "$done_count" -le "$total" ] || done_count=$total
+        printf 'progress_done=%s\n' "$done_count" >> "$JOB_DIR/health/state"
+        offset=$((end + 1))
+    done
+    [ "$catalog_hash" = "$(cksum "$DNS_CATALOG" 2>/dev/null)" ] || exit 1
+    [ "$custom_hash" = "$(cksum "$CUSTOM_DNS_CATALOG" 2>/dev/null || :)" ] || exit 1
     . /usr/share/libubox/jshn.sh
     json_init
-    json_add_string pid "$pid"
-    json_add_string pool "$pool"
-    json_add_object servers
-    while read -r server latency; do
-        case "$server:$latency" in manager-[1-6]:*[!0-9]*|manager-[1-6]:|*[!A-Za-z0-9:-]*) continue;; manager-[1-6]:*) json_add_int "$server" "$latency";; esac
-    done <<EOF_CATALOG_LATENCY
-$records
-EOF_CATALOG_LATENCY
-    json_close_object
+    while IFS='|' read -r id latency; do json_add_int "$id" "$latency"; done < "$dir/results"
     tmp="$RUNTIME_DIR/dnscrypt-catalog-latencies.$$"
-    json_dump > "$tmp" && mv -f "$tmp" "$RUNTIME_DIR/dnscrypt-catalog-latencies.json"
+    json_dump > "$tmp" || exit 1
+    printf '%s\n%s\n' "$catalog_hash" "$custom_hash" > "$RUNTIME_DIR/dnscrypt-catalog-checksum"
+    mv -f "$tmp" "$RUNTIME_DIR/dnscrypt-catalog-latencies.json"
 )
 
 diagnostic() {
@@ -470,6 +536,7 @@ diagnostic_start() {
     fi
     ubus -t 5 call service delete "{\"name\":\"$service\"}" >/dev/null 2>&1 || true
     printf 'status=running\nstarted=%s\nmode=update\n' "$(date +%s)" > "$JOB_DIR/health/state"
+    [ "$method" != dnscrypt_latencies ] || printf 'name=dnscrypt_catalog\n' >> "$JOB_DIR/health/state"
     : > "$JOB_DIR/health/output"
     request="{\"name\":\"$service\",\"instances\":{\"main\":{\"command\":[\"/bin/sh\",\"/usr/lib/dns-manager-luci/backend-dnscrypt.sh\",\"diagnostic_worker\",\"$method\"]}}}"
     if ! ubus -t 5 call service set "$request" >/dev/null 2>&1; then
@@ -601,21 +668,16 @@ status_extra() {
 $latency_records
 EOF_LATENCY
     json_close_object
-    json_add_object dnscrypt_catalog_latency
     latency_cache="$RUNTIME_DIR/dnscrypt-catalog-latencies.json"
-    if [ "$running" = 1 ] && [ -r "$STATE_FILE" ] && [ -r "$latency_cache" ]; then
-        cache_pid=$(jsonfilter -i "$latency_cache" -e '@.pid' 2>/dev/null)
-        cache_pool=$(jsonfilter -i "$latency_cache" -e '@.pool' 2>/dev/null)
-        current_pid=$(pidof dnscrypt-proxy 2>/dev/null)
-        current_pool=$(sed -n '/^server=/p' "$STATE_FILE" | cksum)
-        if [ -n "$current_pid" ] && [ "$cache_pid" = "$current_pid" ] && [ "$cache_pool" = "$current_pool" ]; then
-            for n in 1 2 3 4 5 6; do
-                value=$(jsonfilter -i "$latency_cache" -e "@.servers[\"manager-$n\"]" 2>/dev/null)
-                case "$value" in ''|*[!0-9]*) ;; *) json_add_int "manager-$n" "$value";; esac
-            done
+    if [ -r "$latency_cache" ] && [ -r "$RUNTIME_DIR/dnscrypt-catalog-checksum" ] && [ -r "$CONFIG_DIR/dns-catalog.conf" ]; then
+        cache_catalog=$(sed -n '1p' "$RUNTIME_DIR/dnscrypt-catalog-checksum")
+        cache_custom=$(sed -n '2p' "$RUNTIME_DIR/dnscrypt-catalog-checksum")
+        current_catalog=$(cksum "$CONFIG_DIR/dns-catalog.conf")
+        current_custom=$(cksum "$CONFIG_DIR/dns-custom-catalog.conf" 2>/dev/null || :)
+        if [ "$cache_catalog" = "$current_catalog" ] && [ "$cache_custom" = "$current_custom" ]; then
+            json_add_string dnscrypt_catalog_results "$(cat "$latency_cache")"
         fi
     fi
-    json_close_object
     # Monitoring is optional; an unavailable endpoint must not look like zero activity.
     if [ "$method" = status ] && [ "$running" -eq 1 ] && command -v curl >/dev/null 2>&1; then
         metrics=$(curl --noproxy '*' --silent --fail --max-time 1 http://127.0.0.1:9100/api/metrics 2>/dev/null || :)
