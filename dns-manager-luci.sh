@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.89"
+VERSION="2.90"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -796,7 +796,7 @@ dnscrypt_set_setting() {
     input=$(cat)
     name=$(printf '%s' "$input" | jsonfilter -e '@.name' 2>/dev/null)
     enabled=$(printf '%s' "$input" | jsonfilter -e '@.enabled' 2>/dev/null)
-    case "$name" in watchdog|watchdog_autoreplace|force|browser_dns) ;; *) error 'Эта настройка пока недоступна для DNSCrypt'; return;; esac
+    case "$name" in watchdog|force|browser_dns) ;; *) error 'Эта настройка пока недоступна для DNSCrypt'; return;; esac
     case "$enabled" in 0|1) ;; *) error 'Неверное значение настройки'; return;; esac
     load_manager_functions && load_config && acquire_mutation_lock || { error 'Не удалось применить настройку DNS'; return; }
     rc=0
@@ -804,10 +804,8 @@ dnscrypt_set_setting() {
         set_browser_dns_hint "$enabled" >/dev/null 2>&1 || rc=$?
     elif [ "$name" = force ]; then
         dnscrypt_set_force "$enabled" >/dev/null 2>&1 || rc=$?
-    elif [ "$name" = watchdog ]; then
-        watchdog_apply_toggle "$enabled" >/dev/null 2>&1 || rc=$?
     else
-        watchdog_apply_autoreplace_toggle "$enabled" >/dev/null 2>&1 || rc=$?
+        watchdog_apply_toggle "$enabled" >/dev/null 2>&1 || rc=$?
     fi
     release_mutation_lock
     [ "$rc" -eq 0 ] || { error 'Не удалось применить настройку DNS'; return; }
@@ -829,7 +827,7 @@ dnscrypt_setting_start() {
     input=$(cat)
     name=$(printf '%s' "$input" | jsonfilter -e '@.name' 2>/dev/null)
     enabled=$(printf '%s' "$input" | jsonfilter -e '@.enabled' 2>/dev/null)
-    case "$name:$enabled" in watchdog:0|watchdog:1|watchdog_autoreplace:0|watchdog_autoreplace:1|force:0|force:1|browser_dns:0|browser_dns:1) ;; *) error 'Неверная настройка'; return;; esac
+    case "$name:$enabled" in watchdog:0|watchdog:1|force:0|force:1|browser_dns:0|browser_dns:1) ;; *) error 'Неверная настройка'; return;; esac
     mkdir -p "$JOB_DIR/setting" "$RUNTIME_DIR" || { error 'Не удалось подготовить задачу'; return; }
     exec 9>"$RUNTIME_DIR/setting-start.lock" || { error 'Не удалось подготовить блокировку'; return; }
     flock -n 9 || { error 'Другая настройка уже запускается'; return; }
@@ -2585,7 +2583,7 @@ if [ "$(uci -q get dns-manager.global.active_engine 2>/dev/null)" = dnscrypt-pro
 fi
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.89"
+SELF_VERSION="2.90"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -4053,7 +4051,7 @@ network_status_json() {
     case "$_watchdog_last_checked" in ''|*[!0-9]*) _watchdog_last_checked=0;; esac
     case "$_watchdog_last_failed" in ''|*[!0-9]*) _watchdog_last_failed=0;; esac
     [ -n "$_watchdog_last_category" ] || _watchdog_last_category=unknown
-    printf ',"watchdog_last_checked":%s,"watchdog_last_failed":%s' "$_watchdog_last_checked" "$_watchdog_last_failed"
+    printf ',"watchdog_last_check":%s,"watchdog_last_checked":%s,"watchdog_last_failed":%s' "$_watchdog_last_check" "$_watchdog_last_checked" "$_watchdog_last_failed"
     printf ',"watchdog_last_records":['
     _wd_rec_sep=""
     if [ -r "$_watchdog_check_file" ]; then
@@ -6977,6 +6975,8 @@ function renderOverview(root,st){
   var watchdogScheduled=Number(st.watchdog_service_enabled||0)===1;
   var watchdogAutoReplace=yes(st.watchdog_autoreplace);
   var wd=watchdogEnabled?(watchdogService?badge('dm-ok','cron работает'):badge('dm-warn',watchdogScheduled?'cron не запущен':'задание cron отсутствует')):badge('dm-muted','выключена');
+  var dnscryptFailed=st.dnscrypt_engine==='dnscrypt-proxy2'&&yes(st.watchdog)&&Number(st.watchdog_last_failed)>0&&(st.watchdog_last_records||[]).some(function(r){return r.id==='dnscrypt_pool'&&r.status==='FAIL';});
+  if(dnscryptFailed&&watchdogService)wd=badge('dm-bad','DNS не отвечает');
   var wdDetails='Интервал: каждые 2 мин. Последний запуск: '+dateText(st.watchdog_cron_last_run)+'.';
   if(Number(st.watchdog_last_check)>0)wdDetails+=' Проверено: '+Number(st.watchdog_last_checked||0)+', ошибок: '+Number(st.watchdog_last_failed||0)+'.';
   var wdAuto=!watchdogEnabled?badge('dm-muted','проверка выключена'):watchdogAutoReplace?(watchdogService?badge('dm-ok','включена'):badge('dm-warn','проверка не работает')):badge('dm-muted','выключена');
@@ -7006,7 +7006,7 @@ function renderOverview(root,st){
     st.dnscrypt_engine==='dnscrypt-proxy2'&&st.dnscrypt_cache_entries!=null?componentItem('Кэш DNSCrypt',badge('dm-ok',String(st.dnscrypt_cache_entries)+' записей')):null,
     st.dnscrypt_engine==='dnscrypt-proxy2'&&st.dnscrypt_avg_response_ms!=null?componentItem('Среднее время ответа DNS',badge('dm-ok',String(st.dnscrypt_avg_response_ms)+' мс')):null,
     watchdogComponentItem(st,wd,wdDetails),
-    watchdogReplacementComponentItem(wdAuto,wdAutoDetails),
+    st.dnscrypt_engine==='dnscrypt-proxy2'?null:watchdogReplacementComponentItem(wdAuto,wdAutoDetails),
     forceComponentItem(st),
     st.dnscrypt_engine==='dnscrypt-proxy2'?null:componentItem('Кэш DNS',badge(st.dnsmasq_cache_size==null||String(st.dnsmasq_cache_size)===''||Number(st.dnsmasq_cache_size)===0?'dm-off':'dm-ok',st.dnsmasq_cache_size==null||String(st.dnsmasq_cache_size)===''?'неизвестно':String(st.dnsmasq_cache_size)+' записей')),
   ].filter(Boolean));
@@ -8263,9 +8263,10 @@ function renderNetwork(root,st){
   var body=st.dnscrypt_engine==='dnscrypt-proxy2'
     ? [E('div',{'class':'dm-watchdog-card'},[
         settingToggle(root,'Проверка DNS','Каждые 2 минуты проверяется ответ локального DNSCrypt. Ответ может быть из кэша. При сбое настройки DNS не изменяются.',yes(st.watchdog),'watchdog',false),
-        settingToggle(root,'Автозамена DNS','После трёх сбоев и проверки связи один раз применяет стандартный пул Cloudflare и Google. Выбранный профиль изменится. При отсутствии связи замена откладывается.',yes(st.watchdog_autoreplace),'watchdog_autoreplace',!yes(st.watchdog),!yes(st.watchdog)?'Сначала включите проверку DNS.':''),
+        yes(st.watchdog)&&Number(st.watchdog_last_failed)>0&&(st.watchdog_last_records||[]).some(function(r){return r.id==='dnscrypt_pool'&&r.status==='FAIL';})?E('div',{'class':'dm-inline-msg error'},'DNSCrypt не ответил при последней проверке ('+dateText(st.watchdog_last_check)+'). Проверьте подключение и DNS-серверы.'):null,
+        E('div',{'class':'dm-setting-desc'},'DNSCrypt автоматически выбирает доступные серверы из выбранного набора. Профиль не меняется.'),
         settingToggle(root,'Принудительный DNS','Направляет обычные DNS-запросы устройств на DNS роутера через dnsmasq. При активном перехвате Steer используется его правило.',Number(st.dnscrypt_forced_dns)===1,'force',Number(st.steer_dns_active)===1&&Number(st.dnscrypt_forced_dns)!==1,Number(st.steer_dns_active)===1&&Number(st.dnscrypt_forced_dns)!==1?'Управляется Steer.':'',Number(st.dnscrypt_forced_dns)===1?'включён':Number(st.steer_dns_active)===1?'работает Steer':'выключен')
-      ])]
+      ].filter(Boolean))]
     : [watchdogCard(root,st), cacheCard(root,st)];
   e.appendChild(card('Сетевой тюнинг',body));
   var browserEnabled=yes(st.browser_dns), browserLoaded=yes(st.browser_dns_loaded);
