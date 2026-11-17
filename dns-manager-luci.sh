@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.92"
+VERSION="2.93"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -2583,7 +2583,7 @@ if [ "$(uci -q get dns-manager.global.active_engine 2>/dev/null)" = dnscrypt-pro
 fi
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.92"
+SELF_VERSION="2.93"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -7829,7 +7829,7 @@ function renderProfiles(root,st){
     pch.push(E('div',{'class':'dm-inline-msg error'},failText+(pf?' · '+dateText(pf):'')));
   }
 
-  pch.push(btn(st.dnscrypt_engine==='dnscrypt-proxy2'?'Отключить защищённый DNS':'Восстановить стандартную настройку DNS','cbi-button-negative',function(){resetDnsCore(root);},{disabled:!!state.busy}));
+  pch.push(btn(st.dnscrypt_engine==='dnscrypt-proxy2'?'Отключить защищённый DNS':'Вернуть DNS по умолчанию','cbi-button-negative',function(){resetDnsCore(root);},{disabled:!!state.busy}));
   if(state.profileProgress){
     var pp=renderProfileProgress(root);
     if(pp)pch.push(pp);
@@ -9130,7 +9130,7 @@ function resetDnsCore(root){
   if(state.busy)return;
   var dnscrypt=(window.dmState||{}).dnscrypt_engine==='dnscrypt-proxy2';
   confirmAction(dnscrypt?'Отключить защищённый DNS':'Восстановить стандартную настройку DNS',[
-    ['Действие',dnscrypt?'Остановить DNSCrypt и вернуть обычный DNS роутера':'Удалить выбранные DNS Manager DNS и вернуть обычный DNS роутера']
+    ['Действие',dnscrypt?'Остановить DNSCrypt и вернуть обычный DNS роутера':'Сбросить настройки DNS Manager и восстановить стандартные серверы HTTPS DNS Proxy: Cloudflare и Google']
   ],function(){
     state.busy=true;
     state.profileNoticeType='info';
