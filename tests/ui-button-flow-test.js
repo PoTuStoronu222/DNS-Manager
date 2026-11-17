@@ -409,6 +409,7 @@ async function testDnscryptPoolPresentation(){
   st.dnscrypt_running=1;st.dnscrypt_server_latency={'manager-1':48};
   const current=ctx.dnscryptCurrentPool(st);
   if(current.children[0].children[1].label!=='48 мс · последний замер'||ctx.dnscryptLatencyBadge(st,1).label!=='нет данных')throw Error('DNSCrypt latency display incorrect');
+  state.busy=true;state.dnscryptDiagnosticKind='test';state.dnscryptDiagnosticResult='';if(ctx.dnscryptLatencyBadge(st,0).label!=='Проверяю DNS…')throw Error('server checking state missing');state.busy=false;
   st.dnscrypt_server_checks={cloudflare:'OK:35'};if(ctx.dnscryptLatencyBadge(st,0).kind!=='dm-ok'||ctx.dnscryptLatencyBadge(st,0).label!=='35 мс · доступен')throw Error('fresh result not shown');
   st.dnscrypt_server_checks={cloudflare:'fail'};if(ctx.dnscryptLatencyBadge(st,0).kind!=='dm-bad')throw Error('failed server not shown');
   st.dnscrypt_running=0;if(ctx.dnscryptLatencyBadge(st,0).label!=='нет данных')throw Error('stopped DNSCrypt showed old latency');
@@ -457,6 +458,7 @@ async function testDnscryptDiagnosticDisplay(){
   vm.runInContext(extract('function dnscryptDiagnosticView(){','function dnscryptDiagnostic(root,log){'),ctx);
   let view=ctx.dnscryptDiagnosticView();
   if(view!==null)throw Error('successful DNS check should not leave a banner');
+  state.dnscryptDiagnosticResult='';if(ctx.dnscryptDiagnosticView()!==null)throw Error('checking banner should be hidden');
   state.dnscryptDiagnosticResult='waiting';view=ctx.dnscryptDiagnosticView();
   if(!view.children.includes('Ожидание')||view.attrs.class.includes('ok'))throw Error('offline state shown as successful DNS');
   state.dnscryptDiagnosticResult='error';view=ctx.dnscryptDiagnosticView();
