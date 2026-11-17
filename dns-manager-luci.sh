@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager full installer and LuCI companion
-# Version: 2.55
+# Version: 2.56
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.55"
+VERSION="2.56"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -2327,7 +2327,7 @@ if [ "$(uci -q get dns-manager.global.active_engine 2>/dev/null)" = dnscrypt-pro
 fi
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.55"
+SELF_VERSION="2.56"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -6005,7 +6005,7 @@ EOF_RPC_WRAPPER
 'require ui';
 'require session';
 
-// DNS Manager LuCI common module version: 2.55
+// DNS Manager LuCI common module version: 2.56
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -6297,6 +6297,7 @@ function injectStyle(root){
   '.dm-wrap .dm-seg{gap:7px;margin:8px 0}'+
   '.dm-custom-dns-content{margin-top:10px}.dm-bootstrap-options{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:7px;margin:10px 0}.dm-bootstrap-option{display:flex;align-items:center;gap:7px;font-size:12px}.dm-bootstrap-option input{flex:none}'+
   '.dm-fold>summary{cursor:pointer;list-style:none;font-size:12px;font-weight:600}.dm-fold>summary::-webkit-details-marker{display:none}.dm-fold>summary:before{content:"▸";display:inline-block;margin-right:7px;transition:transform .15s}.dm-fold[open]>summary:before{transform:rotate(90deg)}.dm-device-fold>summary{display:flex;align-items:center;gap:7px}.dm-device-fold>summary .dm-device-dns-head{flex:1;min-width:0}.dm-device-fold-body{display:flex;flex-direction:column;gap:12px;margin-top:12px}'+
+  '.dm-dnscrypt-server{display:flex;align-items:center;gap:10px;padding:10px 12px;margin-top:6px;border:1px solid rgba(110,118,129,.22);border-radius:9px;background:rgba(110,118,129,.035);font-weight:600}.dm-dnscrypt-result{margin-top:12px}.dm-dnscrypt-result .dm-fold{margin-top:8px}.dm-dnscrypt-result .dm-log{margin-top:8px}'+
   '.dm-wrap .dm-seg .cbi-button{min-height:32px;padding:7px 12px;border-radius:9px}'+
   '.dm-seg .cbi-button{border:1px solid rgba(110,118,129,.30)!important;border-radius:10px!important;background:rgba(110,118,129,.05)!important;color:inherit!important;box-shadow:none!important;white-space:normal;text-align:center;transition:background .15s ease,border-color .15s ease,box-shadow .15s ease}'+
   '.dm-seg .cbi-button:hover:not(:disabled){background:rgba(110,118,129,.11)!important;border-color:rgba(110,118,129,.55)!important}'+
@@ -6912,7 +6913,7 @@ function appendUninstall(ch,root){
 function dnscryptCurrentPool(st){
   var servers=Array.isArray(st.dnscrypt_servers)?st.dnscrypt_servers:[];
   return servers.length?E('div',{'class':'dm-doh-list'},servers.map(function(id){
-    return E('div',{'class':'dm-row'},[E('span',{},dnscryptServerName(st,id))]);
+    return E('div',{'class':'dm-dnscrypt-server'},[E('span',{},dnscryptServerName(st,id))]);
   })):E('div',{'class':'dm-hint'},'DNS ещё не выбраны: примените профиль.');
 }
 function dnscryptPoolList(st,root){
@@ -6951,8 +6952,8 @@ function renderDoH(root,st){
   if(st.dnscrypt_engine==='dnscrypt-proxy2'){
     var servers=Array.isArray(st.dnscrypt_servers)?st.dnscrypt_servers:[];
     var selectedServer=String(st.dnscrypt_selected_server||'');
-    var details=[row('Движок',E('span',{},'DNSCrypt Proxy')),row('Служба',Number(st.dnscrypt_running)===1?badge('dm-ok','работает'):badge('dm-bad','остановлена')),selectedServer?row('Режим',E('span',{},'Один сервер выбран вручную')):row('Профиль',!activeProfileId(st)?badge('dm-warn','не выбран'):E('span',{},activeProfileLabel(st)))];
-    if(!activeProfileId(st)&&!selectedServer)details.push(E('div',{'class':'dm-force-external'},'Профиль не выбран. Доступен начальный набор серверов; выберите сервер или профиль и проверьте DNS.'));
+    var details=[row('Движок',E('span',{},'DNSCrypt Proxy')),row('Служба',Number(st.dnscrypt_running)===1?badge('dm-ok','работает'):badge('dm-bad','остановлена')),selectedServer?row('Режим',E('span',{},'Один сервер выбран вручную')):row('Профиль',!activeProfileId(st)?badge('dm-muted','не выбран'):E('span',{},activeProfileLabel(st)))];
+    if(!activeProfileId(st)&&!selectedServer)details.push(E('p',{'class':'dm-hint'},servers.length?'Используется начальный набор DNS. При необходимости выберите профиль ниже.':'Выберите профиль ниже, чтобы настроить DNS.'));
     details.push(E('div',{'class':'dm-row'},[E('span',{'class':'dm-label'},servers.length===1?'Сейчас используется':'Сейчас используются')]));
     details.push(dnscryptCurrentPool(st));
     details.push(E('p',{'class':'dm-hint'},selectedServer?'Используется один выбранный вручную сервер.':'DNSCrypt автоматически выбирает сервер из этого набора.'));
@@ -6961,7 +6962,7 @@ function renderDoH(root,st){
       btn('Проверить DNS','cbi-button-neutral',function(){dnscryptDiagnostic(root,false);},{disabled:!!state.busy}),
       btn(state.dnscryptDiagnosticKind==='log'?'Скрыть журнал':'Показать журнал','cbi-button-neutral',function(){if(state.dnscryptDiagnosticKind==='log'){state.dnscryptDiagnostic='';state.dnscryptDiagnosticKind='';renderDoH(root,st);}else dnscryptDiagnostic(root,true);},{disabled:!!state.busy})
     ]));
-    if(state.dnscryptDiagnostic)details.push(E('pre',{'class':'dm-log'},state.dnscryptDiagnostic));
+    if(state.dnscryptDiagnostic)details.push(dnscryptDiagnosticView());
     e.appendChild(card('DNSCrypt Proxy',details));
     var danger=[];appendUninstall(danger,root);e.appendChild(card('Удаление DNS Manager',danger));
     return;
@@ -7521,7 +7522,7 @@ function renderSlots(root,st){
   if(st.dnscrypt_engine==='dnscrypt-proxy2'){
     var poolContent=[E('p',{'class':'dm-hint'},'Сейчас используются:'),dnscryptCurrentPool(st),E('p',{'class':'dm-hint'},'Ручной выбор заменит весь текущий набор одним сервером. Чтобы снова использовать несколько DNS, примените профиль.'),dnscryptPoolList(st,root)];
     poolContent.push(btn('Проверить DNS','cbi-button-neutral',function(){dnscryptDiagnostic(root,false);},{disabled:!!state.busy}));
-    if(state.dnscryptDiagnostic)poolContent.push(E('pre',{'class':'dm-log'},state.dnscryptDiagnostic));
+    if(state.dnscryptDiagnostic)poolContent.push(dnscryptDiagnosticView());
     e.appendChild(card('Пул серверов',poolContent));
     return;
   }
@@ -8329,7 +8330,7 @@ function saveRouteCache(key,st,aux){
     var entry=JSON.parse(JSON.stringify({ts:Date.now(),data:st,aux:aux}));
     window.dmRouteCache[key]=entry;
     if(typeof session!=='undefined'&&session.setLocalData)
-      session.setLocalData('dns-manager-route-2.55-'+key,entry);
+      session.setLocalData('dns-manager-route-2.56-'+key,entry);
   }catch(e){}
 }
 function clearEngineUiState(){
@@ -8337,10 +8338,10 @@ function clearEngineUiState(){
   window.dmRouteCache=Object.create(null);
   window.dmStatusPromises=Object.create(null);
   ['dashboard','doh','network','time','devices','catalog','log'].forEach(function(key){
-    try{if(typeof session!=='undefined'&&session.setLocalData)session.setLocalData('dns-manager-route-2.55-'+key,null);}catch(e){}
+    try{if(typeof session!=='undefined'&&session.setLocalData)session.setLocalData('dns-manager-route-2.56-'+key,null);}catch(e){}
   });
   state.pageNotice={};state.profileProgress=null;state.profileOutput='';state.profileResumeStarted=false;
-  state.regionalNotice='';state.dnscryptDiagnostic='';state.dnscryptDiagnosticKind='';
+  state.regionalNotice='';state.dnscryptDiagnostic='';state.dnscryptDiagnosticKind='';state.dnscryptDiagnosticResult='';
   state.lastAction=null;state.lastJob=null;state.checking={};state.fullTest=null;state.catalogProgress=null;
   if(window.dmState){
     ['profile_job_status','profile_job_result','profile_job_profile','profile_job_started','profile_job_finished','profile_job_message'].forEach(function(key){delete window.dmState[key];});
@@ -8349,7 +8350,7 @@ function clearEngineUiState(){
 function routeCacheEntry(key){
   var entry=key&&window.dmRouteCache&&window.dmRouteCache[key];
   if(!entry&&key){
-    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.55-'+key);}catch(e){}
+    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.56-'+key);}catch(e){}
   }
   if(!entry||typeof entry.ts!=='number'||Date.now()-entry.ts<0||Date.now()-entry.ts>300000||!entry.data||entry.data.ok!==true)return null;
   return entry;
@@ -8647,12 +8648,23 @@ function waitDnsHealth(r){
   return poll();
 }
 function renderDnscryptDiagnostic(root){if(currentRoute()==='slots')renderSlots(root,window.dmState||{});else renderDoH(root,window.dmState||{});}
+function dnscryptDiagnosticView(){
+  if(state.dnscryptDiagnosticKind==='log')return E('pre',{'class':'dm-log'},state.dnscryptDiagnostic);
+  if(state.dnscryptDiagnosticKind!=='test'||!state.dnscryptDiagnosticResult)return E('div',{'class':'dm-inline-msg info'},state.dnscryptDiagnostic);
+  var result=state.dnscryptDiagnosticResult;
+  return E('div',{'class':'dm-dnscrypt-result'},[
+    E('div',{'class':'dm-inline-msg '+(result==='ok'?'ok':result==='waiting'?'info':'error')},result==='ok'?'DNS отвечает. Проверены DNSCrypt и DNS роутера.':result==='waiting'?'Ожидание подключения к сети.':'Проверка DNS не завершилась успешно.'),
+    E('details',{'class':'dm-fold'},[E('summary',{},'Подробности проверки'),E('pre',{'class':'dm-log'},state.dnscryptDiagnostic)])
+  ]);
+}
 function dnscryptDiagnostic(root,log){
   if(state.busy)return;
-  state.busy=true;state.dnscryptDiagnosticKind=log?'log':'test';state.dnscryptDiagnostic=log?'Загружаю журнал…':'Проверяю DNS…';renderDnscryptDiagnostic(root);
+  state.busy=true;state.dnscryptDiagnosticKind=log?'log':'test';state.dnscryptDiagnosticResult='';state.dnscryptDiagnostic=log?'Загружаю журнал…':'Проверяю DNS…';renderDnscryptDiagnostic(root);
   (log?callDnscryptLog():callDnscryptTest().then(waitDnsHealth)).then(function(r){
-    state.dnscryptDiagnostic=(r&&r.ok?(log?'':'Проверка DNS завершена успешно.\n'):(log?'Не удалось получить журнал.\n':'Ошибка проверки DNS.\n'))+String(r&&r.output||(log?'Записей пока нет.':'Нет данных.'));
-  }).catch(function(err){state.dnscryptDiagnostic=withRpcError('Не удалось выполнить действие.',err);}).then(function(){state.busy=false;renderDnscryptDiagnostic(root);});
+    state.dnscryptDiagnosticResult=r&&r.ok?(String(r.output||'').trim()==='Ожидание подключения к сети.'?'waiting':'ok'):'error';
+    state.dnscryptDiagnostic=String(r&&r.output||(log?'Записей пока нет.':'Нет данных.'));
+    if(log&&(!r||!r.ok))state.dnscryptDiagnostic='Не удалось получить журнал.\n'+state.dnscryptDiagnostic;
+  }).catch(function(err){state.dnscryptDiagnosticResult='error';state.dnscryptDiagnostic=withRpcError('Не удалось выполнить действие.',err);}).then(function(){state.busy=false;renderDnscryptDiagnostic(root);});
 }
 function switchEngine(target,root){
   if(state.busy||state.jobRunning)return;
@@ -8752,7 +8764,7 @@ function resumeRegional(root){
 }
 function selectDnscryptServer(id,root){
   if(state.busy||state.jobRunning||!/^[A-Za-z0-9_-]+$/.test(String(id)))return;
-  state.busy=true;state.dnscryptDiagnostic='Применяю выбранный сервер…';state.dnscryptDiagnosticKind='test';
+  state.busy=true;state.dnscryptDiagnostic='Применяю выбранный сервер…';state.dnscryptDiagnosticKind='action';
   renderDnscryptDiagnostic(root);
   callProfile('server:'+id).then(function(r){
     if(!r||!r.ok||r.job!=='profile')throw new Error((r&&r.error)||'Не удалось начать применение сервера.');
@@ -8761,7 +8773,7 @@ function selectDnscryptServer(id,root){
       var ok=j&&j.status==='done'&&j.result==='ok';
       if(ok)clearEngineUiState();
       state.busy=false;state.dnscryptDiagnostic=ok?(j.status_error?'Сервер выбран, но состояние не обновилось. Обновите страницу.':'Сервер выбран.'):(j&&j.unknown?'Результат неизвестен: операция может продолжаться. Проверьте состояние перед повтором.':('Не удалось применить сервер. '+stripAnsi(String(j&&j.output||''))));
-      state.dnscryptDiagnosticKind='test';renderDnscryptDiagnostic(root);
+      state.dnscryptDiagnosticKind='action';renderDnscryptDiagnostic(root);
     });
   }).catch(function(err){state.busy=false;state.dnscryptDiagnostic=withRpcError('Не удалось применить сервер.',err);renderDnscryptDiagnostic(root);});
 }
@@ -9403,7 +9415,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 2.55
+// DNS Manager LuCI version: 2.56
 return view.extend({
   load: DM.load,
   render: DM.render,
