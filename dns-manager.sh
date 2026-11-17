@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="4.30"
+VERSION="4.31"
 # 3.86: make LuCI the primary interface and preserve external DNS on removal.
 # 3.85: revalidate Watchdog settings before recovery.
 # 3.84: cap DNS catalog test concurrency by total RAM on small routers.
@@ -28,11 +28,11 @@ DNS_CATALOG="$CFG_DIR/dns-catalog.conf"
 CUSTOM_DNS_CATALOG="$CFG_DIR/dns-custom-catalog.conf"
 NTP_CATALOG="$CFG_DIR/ntp-catalog.conf"
 BOOTSTRAP_DNS_ALL="77.88.8.8,77.88.8.1,94.150.14.15,1.1.1.1,1.0.0.1,8.8.8.8,8.8.4.4,9.9.9.9,149.112.112.112,208.67.222.222,208.67.220.220,149.112.121.10,149.112.122.10,76.76.2.0,76.76.10.0,2606:4700:4700::1111,2606:4700:4700::1001,2001:4860:4860::8888,2001:4860:4860::8844,2620:fe::fe,2620:fe::9"
-DNSCAT_VERSION="8.7-RU-NOSOCIAL"
-DNSCAT_REVISION="14"
-DNSCAT_REF="${DNS_MANAGER_SOURCE_REF:-main}"
-case "$DNSCAT_REF" in ''|/*|*//*|*..*|*[!A-Za-z0-9._/-]*) DNSCAT_REF=main;; esac
-DNSCAT_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/$DNSCAT_REF/catalogs/dns-8.7-RU-NOSOCIAL.conf"
+DNSCAT_VERSION="8.8-FULL-CONFIG-CLEAN"
+DNSCAT_REVISION="1"
+DNSCAT_REF="${DNS_MANAGER_SOURCE_REF:-test/dnscrypt-proxy2-engine}"
+case "$DNSCAT_REF" in ''|/*|*//*|*..*|*[!A-Za-z0-9._/-]*) DNSCAT_REF=test/dnscrypt-proxy2-engine;; esac
+DNSCAT_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/$DNSCAT_REF/catalogs/dns-8.8-FULL-CONFIG-CLEAN.conf"
 WATCHDOG_RESTART_COOLDOWN=300
 WATCHDOG_BACKEND="cron"
 WATCHDOG_CHECK_INTERVAL_DEFAULT=120
@@ -746,10 +746,10 @@ catalog_validate_file() {
     _mode="${2:-strict}"
     [ -s "$_f" ] || return 1
     _ver="$(sed -n "s/^# DNSCATVER=//p" "$_f" 2>/dev/null | head -n1)"
-    [ "$_ver" = "$DNSCAT_VERSION" ] || return 1
+    [ "$_ver" = "$DNSCAT_VERSION" ] || { [ "$_mode" = legacy ] && [ "$_ver" = 8.7-RU-NOSOCIAL ]; } || return 1
     if [ "$_mode" != "legacy" ]; then
         grep -Fqx "# DNSCATREV=$DNSCAT_REVISION" "$_f" 2>/dev/null || return 1
-        grep -Fqx "# ENTRIES=116" "$_f" 2>/dev/null || return 1
+        grep -Fqx "# ENTRIES=117" "$_f" 2>/dev/null || return 1
     fi
     awk -F'|' -v strict="$_mode" '
         /^[[:space:]]*#/ || /^[[:space:]]*$/ { next }
@@ -761,7 +761,7 @@ catalog_validate_file() {
             ids[$1]++
             if (ids[$1] > 1) bad=1
         }
-        END { if (bad || count < 1 || (strict != "legacy" && count != 116)) exit 1 }
+        END { if (bad || count < 1 || (strict != "legacy" && count != 117)) exit 1 }
     ' "$_f" >/dev/null 2>&1 || return 1
     return 0
 }
@@ -818,13 +818,13 @@ write_catalogs() {
                         rm -f "$_result_tmp" 2>/dev/null || true
                 done
             fi
-            log_msg "Каталог DNS: загружен внешний $DNSCAT_VERSION (revision $DNSCAT_REVISION, 116 записей)."
+            log_msg "Каталог DNS: загружен внешний $DNSCAT_VERSION (revision $DNSCAT_REVISION, 117 записей)."
             return 0
         fi
     fi
     rm -f "$_catalog_tmp" 2>/dev/null || true
     if catalog_validate_file "$DNS_CATALOG" legacy; then
-        log_msg "Каталог DNS: внешний источник недоступен; использую локальную совместимую копию $DNSCAT_VERSION."
+        log_msg "Каталог DNS: внешний источник недоступен; использую локальную совместимую копию."
         return 0
     fi
     err_msg "Каталог DNS $DNSCAT_VERSION не удалось получить и локальная копия отсутствует/повреждена."
