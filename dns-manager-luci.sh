@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager full installer and LuCI companion
-# Version: 2.65
+# Version: 2.66
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.65"
+VERSION="2.66"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -2363,7 +2363,7 @@ if [ "$(uci -q get dns-manager.global.active_engine 2>/dev/null)" = dnscrypt-pro
 fi
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.65"
+SELF_VERSION="2.66"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -6041,7 +6041,7 @@ EOF_RPC_WRAPPER
 'require ui';
 'require session';
 
-// DNS Manager LuCI common module version: 2.65
+// DNS Manager LuCI common module version: 2.66
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -7921,36 +7921,31 @@ function watchdogCard(root,st){
 }
 
 function renderTestAgeCommon(root,st){
-  var ageValue=Number(st.test_age_common||6);
-  var ageInput=E('input',{'type':'number','min':'1','max':'168','step':'1','value':String(ageValue),'class':'dm-input'});
-  var ageBusy=state.busySetting==='testages';
-  var ageFeedback=settingFeedback('', 'testages');
-  var ageSave=btn(ageBusy?'Сохраняю…':'Сохранить','cbi-button-neutral',function(){
-    if(state.busy)return;
-    var n=String(ageInput.value||'').trim();
-    if(!/^\d+$/.test(n)||Number(n)<1||Number(n)>168){
-      setSettingFeedback('testages','Срок: от 1 до 168 часов.','error');
-      renderCatalog(root);
-      return;
-    }
-    clearSettingFeedback();
-    state.busy=true;state.busySetting='testages';
-    renderCatalog(root);
-    callTestAge('all',Number(n)).then(function(r){
-      state.busy=false;state.busySetting='';
-      if(r&&r.ok)setSettingFeedback('testages','Срок результатов проверки сохранён.','ok');
-      else setSettingFeedback('testages',(r&&r.error)||'Срок результатов проверки не удалось сохранить.','error');
-      refresh(root,true);
-    }).catch(function(){
-      state.busy=false;state.busySetting='';
-      setSettingFeedback('testages','Срок результатов проверки не удалось сохранить.','error');
-      refresh(root,true);
-    });
-  },{disabled:!!state.busy});
+  var current=Number(st.test_age_common)||6;
+  var locked=!!state.busy||!!state.jobRunning;
+  var presets=[[1,'1 час'],[6,'6 часов'],[12,'12 часов'],[24,'1 день'],[72,'3 дня'],[168,'7 дней']];
+  if(!presets.some(function(p){return p[0]===current;}))presets.push([current,current+' ч · текущий']);
+  var choices=E('div',{'class':'dm-seg'});
+  presets.forEach(function(p){
+    var active=current===p[0];
+    choices.appendChild(btn(p[1],active?'active cbi-button':'cbi-button',function(){
+      if(locked||active)return;
+      state.busy=true;state.busySetting='testages';clearSettingFeedback();
+      setSettingFeedback('testages','Сохраняю срок результатов…','info');renderCatalog(root);
+      callTestAge('all',p[0]).then(function(r){
+        state.busy=false;state.busySetting='';
+        if(r&&r.ok)setSettingFeedback('testages','Срок результатов проверки сохранён.','ok');
+        else setSettingFeedback('testages',(r&&r.error)||'Срок результатов проверки не удалось сохранить.','error');
+        return refresh(root,true);
+      }).catch(function(err){
+        state.busy=false;state.busySetting='';setSettingFeedback('testages',withRpcError('Срок результатов проверки не удалось сохранить.',err),'error');refresh(root,true);
+      });
+    },{disabled:locked,'aria-pressed':active?'true':'false'}));
+  });
   return card('Срок результатов проверки',[
-    E('div',{'class':'dm-hint'},'Общий срок свежести результатов полной проверки DNS.'),
-    E('div',{'class':'dm-test-age-common'},[ageInput,E('span',{'class':'dm-test-age-unit'},'ч'),ageSave,ageFeedback||E('span',{})])
-  ]);
+    E('div',{'class':'dm-setting-desc'},'Как долго считать результаты проверки DNS актуальными.'),
+    choices,settingFeedback('','testages')
+  ].filter(Boolean));
 }
 
 function cacheCard(root,st){
@@ -8393,7 +8388,7 @@ function saveRouteCache(key,st,aux){
     var entry=JSON.parse(JSON.stringify({ts:Date.now(),data:st,aux:aux}));
     window.dmRouteCache[key]=entry;
     if(typeof session!=='undefined'&&session.setLocalData)
-      session.setLocalData('dns-manager-route-2.65-'+key,entry);
+      session.setLocalData('dns-manager-route-2.66-'+key,entry);
   }catch(e){}
 }
 function clearEngineUiState(){
@@ -8401,7 +8396,7 @@ function clearEngineUiState(){
   window.dmRouteCache=Object.create(null);
   window.dmStatusPromises=Object.create(null);
   ['dashboard','doh','network','time','devices','catalog','log'].forEach(function(key){
-    try{if(typeof session!=='undefined'&&session.setLocalData)session.setLocalData('dns-manager-route-2.65-'+key,null);}catch(e){}
+    try{if(typeof session!=='undefined'&&session.setLocalData)session.setLocalData('dns-manager-route-2.66-'+key,null);}catch(e){}
   });
   state.pageNotice={};state.profileProgress=null;state.profileOutput='';state.profileResumeStarted=false;
   state.regionalNotice='';state.pendingProfile='';state.pendingRegional=null;state.pendingDnscryptServer='';state.dnscryptDiagnostic='';state.dnscryptDiagnosticKind='';state.dnscryptDiagnosticResult='';
@@ -8413,7 +8408,7 @@ function clearEngineUiState(){
 function routeCacheEntry(key){
   var entry=key&&window.dmRouteCache&&window.dmRouteCache[key];
   if(!entry&&key){
-    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.65-'+key);}catch(e){}
+    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.66-'+key);}catch(e){}
   }
   if(!entry||typeof entry.ts!=='number'||Date.now()-entry.ts<0||Date.now()-entry.ts>300000||!entry.data||entry.data.ok!==true)return null;
   return entry;
@@ -9480,7 +9475,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 2.65
+// DNS Manager LuCI version: 2.66
 return view.extend({
   load: DM.load,
   render: DM.render,
