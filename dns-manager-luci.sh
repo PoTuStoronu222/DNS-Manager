@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.94"
+VERSION="2.95"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -2583,7 +2583,7 @@ if [ "$(uci -q get dns-manager.global.active_engine 2>/dev/null)" = dnscrypt-pro
 fi
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.94"
+SELF_VERSION="2.95"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -4523,6 +4523,9 @@ status_json() {
     printf ',"watchdog_interval":%s,"watchdog_service":%s,"watchdog_service_enabled":%s,"watchdog_loop":%s,"watchdog_fail_threshold":%s,"watchdog_repair_cooldown":%s,"watchdog_max_restarts":%s,"watchdog_guard_interval":%s,"watchdog_autoreplace":%s' "$_watchdog_interval" "$_watchdog_service_running" "$_watchdog_service_enabled" "$_watchdog_loop_running" "$_watchdog_threshold" "$_watchdog_repair_cooldown" "$_watchdog_max_restarts" "$_watchdog_guard_interval" "$_watchdog_autoreplace"
      printf ',"watchdog_last_check":%s,"watchdog_last_checked":%s,"watchdog_last_failed":%s,"watchdog_last_category":' "$_watchdog_last_check" "$_watchdog_last_checked" "$_watchdog_last_failed"
      json_quote "$_watchdog_last_category"
+     _watchdog_dnscrypt_status="$(awk -F'|' '$1=="record" && $3=="dnscrypt_pool" {print $6; exit}' "$_watchdog_check_file" 2>/dev/null)"
+     case "$_watchdog_dnscrypt_status" in OK|FAIL) ;; *) _watchdog_dnscrypt_status=unknown;; esac
+     printf ',"watchdog_dnscrypt_status":'; json_quote "$_watchdog_dnscrypt_status"
      printf ',"watchdog_last_records":['
      _wd_rec_sep=""
      if [ -r "$_watchdog_check_file" ]; then
@@ -6990,10 +6993,14 @@ function renderOverview(root,st){
   var watchdogAutoReplace=yes(st.watchdog_autoreplace);
   var wd=watchdogEnabled?(watchdogService?badge('dm-ok','cron работает'):badge('dm-warn',watchdogScheduled?'cron не запущен':'задание cron отсутствует')):badge('dm-muted','выключена');
   if(st.dnscrypt_engine==='dnscrypt-proxy2'&&watchdogEnabled&&watchdogService)wd=dnscryptAutoCheckNode(st);
-  var wdDetails='Интервал: каждые 2 мин. Последний запуск: '+dateText(st.watchdog_cron_last_run)+'.';
-  if(Number(st.watchdog_last_check)>0)wdDetails+=' Проверено: '+Number(st.watchdog_last_checked||0)+', ошибок: '+Number(st.watchdog_last_failed||0)+'.';
+  var isDnscrypt=st.dnscrypt_engine==='dnscrypt-proxy2';
+  var currentCheck=Number(st.watchdog_last_check)>0 && (isDnscrypt?st.watchdog_last_category==='dnscrypt':st.watchdog_last_category!=='dnscrypt');
+  var wdDetails=!watchdogEnabled?'Периодическая проверка выключена.':
+    !currentCheck?'Проверка каждые 2 минуты. Результатов пока нет.':
+    'Последняя проверка: '+dateText(st.watchdog_last_check)+'.';
+  if(watchdogEnabled&&currentCheck&&!isDnscrypt)wdDetails+=' Проверено: '+Number(st.watchdog_last_checked||0)+', ошибок: '+Number(st.watchdog_last_failed||0)+'.';
   var wdAuto=!watchdogEnabled?badge('dm-muted','проверка выключена'):watchdogAutoReplace?(watchdogService?badge('dm-ok','включена'):badge('dm-warn','проверка не работает')):badge('dm-muted','выключена');
-  var wdAutoDetails='Замена после 3 последовательных сбоев.';
+  var wdAutoDetails='Замена после '+(Number(st.watchdog_fail_threshold)||3)+' последовательных сбоев.';
 
   var dnsItems=[];
   displayDnsRows(st).forEach(function(d,index){
@@ -7015,7 +7022,7 @@ function renderOverview(root,st){
   if(!dnsItems.length)dnsItems.push(E('div',{'class':'dm-hint'},'DNS в слоты не назначены.'));
   var components=card('Компоненты',[
     componentItem('DNS-движок',st.dnscrypt_engine==='dnscrypt-proxy2'?badge(Number(st.dnscrypt_running)===1?'dm-ok':'dm-bad','DNSCrypt Proxy 2 · '+(Number(st.dnscrypt_running)===1?'работает':'остановлен')):Number(st.engine_installed)===0?badge('dm-off','не выбран'):badge(Number(st.engine_running)===1?'dm-ok':'dm-bad','HTTPS DNS Proxy · '+(Number(st.engine_running)===1?'работает':'остановлен'))),
-    st.dnscrypt_engine==='dnscrypt-proxy2'?componentItem('Выбор сервера',st.dnscrypt_selected_server?badge('dm-ok',dnscryptServerName(st,st.dnscrypt_selected_server)):badge('dm-muted','автоматически из пула')):null,
+    st.dnscrypt_engine==='dnscrypt-proxy2'?componentItem('Выбор сервера',st.dnscrypt_selected_server?badge('dm-ok',dnscryptServerName(st,st.dnscrypt_selected_server)):badge('dm-muted',Array.isArray(st.dnscrypt_servers)&&st.dnscrypt_servers.length?'автоматически из пула':'серверы не настроены')):null,
     st.dnscrypt_engine==='dnscrypt-proxy2'&&st.dnscrypt_cache_entries!=null?componentItem('Кэш DNSCrypt',badge('dm-ok',String(st.dnscrypt_cache_entries)+' записей')):null,
     st.dnscrypt_engine==='dnscrypt-proxy2'&&st.dnscrypt_avg_response_ms!=null?componentItem('Среднее время ответа DNS',badge('dm-ok',String(st.dnscrypt_avg_response_ms)+' мс')):null,
     watchdogComponentItem(st,wd,wdDetails),
