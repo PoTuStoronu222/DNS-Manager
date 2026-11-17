@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.93"
+VERSION="2.94"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -2583,7 +2583,7 @@ if [ "$(uci -q get dns-manager.global.active_engine 2>/dev/null)" = dnscrypt-pro
 fi
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.93"
+SELF_VERSION="2.94"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -5989,11 +5989,12 @@ run_action() {
             ;;
         reset_dns)
             load_manager || { json_error "DNS Manager недоступен"; return; }
-            if SILENT_APPLY=1 restore_dns_core >/dev/null 2>&1; then
-                json_ok
-            else
-                json_error "Не удалось восстановить стандартную настройку DNS"
-            fi
+            _reset_mode="$(jget mode)"
+            case "$_reset_mode" in
+                disable) if disable_https_dns >/dev/null 2>&1; then json_ok; else json_error "Не удалось отключить защищённый DNS"; fi ;;
+                ''|default) if SILENT_APPLY=1 restore_dns_core >/dev/null 2>&1 && /etc/init.d/https-dns-proxy enable >/dev/null 2>&1; then json_ok; else json_error "Не удалось восстановить стандартные DNS"; fi ;;
+                *) json_error "Неверное действие" ;;
+            esac
             ;;
         uninstall)
             uninstall_start_json
@@ -6232,7 +6233,7 @@ case "${1:-}" in
     mutation_worker) mutation_worker "$2" "$3" "$4";;
     test_worker) test_worker "$2" "$3";;
     list)
-        printf '{"status":{},"runtime":{},"doh_status":{},"network_status":{},"lan_devices":{},"set_device_dns":{"mac":"String","slots":"String"},"set_cache":{"total":0,"ttl":0},"time_status":{},"page_meta":{},"catalog":{"category":"String","offset":0,"limit":0,"only_ok":0},"update_check":{"force":0},"update":{},"update_manager":{},"update_hdp":{},"update_catalog":{},"update_all":{},"update_background":{},"test_combined":{},"switch_engine":{"target_engine":"String"},"dnscrypt_test":{},"dnscrypt_latencies":{},"dnscrypt_log":{},"system_dns_test":{},"set_profile":{"profile":"String"},"set_regional":{"enabled":0},"reset_dns":{},"uninstall":{},"uninstall_status":{},"set_slot":{"slot":"String","id":"String","expected":"String"},"set_slot_domains":{"slot":"String","domains":"String"},"add_custom_dns":{"name":"String","url":"String"},"delete_custom_dns":{"id":"String"},"set_setting":{"name":"String","enabled":0},"set_bootstrap":{"mode":"String","addresses":"String","preset_ids":"String","extra_addresses":"String"},"set_watchdog_setting":{"name":"String","value":0},"set_watchdog_settings":{"interval":0,"threshold":0,"repair_cooldown":0,"max_restarts":0,"guard_interval":0},"set_ntp":{"preset":"String"},"set_test_age":{"category":"String","hours":0},"test_all":{},"test_current":{},"test_one":{"id":"String"},"test_system":{},"job":{"id":"String"},"job_status":{"id":"String"},"multi":{"calls":"String"},"log":{"lines":0}}\n'
+        printf '{"status":{},"runtime":{},"doh_status":{},"network_status":{},"lan_devices":{},"set_device_dns":{"mac":"String","slots":"String"},"set_cache":{"total":0,"ttl":0},"time_status":{},"page_meta":{},"catalog":{"category":"String","offset":0,"limit":0,"only_ok":0},"update_check":{"force":0},"update":{},"update_manager":{},"update_hdp":{},"update_catalog":{},"update_all":{},"update_background":{},"test_combined":{},"switch_engine":{"target_engine":"String"},"dnscrypt_test":{},"dnscrypt_latencies":{},"dnscrypt_log":{},"system_dns_test":{},"set_profile":{"profile":"String"},"set_regional":{"enabled":0},"reset_dns":{"mode":"String"},"uninstall":{},"uninstall_status":{},"set_slot":{"slot":"String","id":"String","expected":"String"},"set_slot_domains":{"slot":"String","domains":"String"},"add_custom_dns":{"name":"String","url":"String"},"delete_custom_dns":{"id":"String"},"set_setting":{"name":"String","enabled":0},"set_bootstrap":{"mode":"String","addresses":"String","preset_ids":"String","extra_addresses":"String"},"set_watchdog_setting":{"name":"String","value":0},"set_watchdog_settings":{"interval":0,"threshold":0,"repair_cooldown":0,"max_restarts":0,"guard_interval":0},"set_ntp":{"preset":"String"},"set_test_age":{"category":"String","hours":0},"test_all":{},"test_current":{},"test_one":{"id":"String"},"test_system":{},"job":{"id":"String"},"job_status":{"id":"String"},"multi":{"calls":"String"},"log":{"lines":0}}\n'
         ;;
     call)
         case "${2:-}" in
@@ -6347,7 +6348,7 @@ var callHdpUpdate = dmRpc({ object:'dns_manager', method:'update_hdp', expect:{}
 var callUpdateCatalog = dmRpc({ object:'dns_manager', method:'update_catalog', expect:{} });
 var callProfile = dmRpc({ object:'dns_manager', method:'set_profile', params:['profile'], expect:{} });
 var callRegional = dmRpc({ object:'dns_manager', method:'set_regional', params:['enabled'], expect:{} });
-var callResetDns = dmRpc({ object:'dns_manager', method:'reset_dns', expect:{} });
+var callResetDns = dmRpc({ object:'dns_manager', method:'reset_dns', params:['mode'], expect:{} });
 var callSystemDnsTest = dmRpc({ object:'dns_manager', method:'system_dns_test', expect:{} });
 var callDnscryptTest = dmRpc({ object:'dns_manager', method:'dnscrypt_test', expect:{} });
 var callDnscryptLatencies = dmRpc({ object:'dns_manager', method:'dnscrypt_latencies', expect:{} });
@@ -7315,6 +7316,7 @@ function renderDoH(root,st){
     ch.push(E('div',{'class':'dm-doh-list'},rows));
   } else ch.push(row('Сейчас используется',E('span',{},'резолверы не настроены')));
   ch.push(E('div',{'class':'dm-actions'},[
+    btn('Вернуть начальные серверы','cbi-button-neutral',function(){resetDnsCore(root,'default');},{disabled:!!state.busy||!!state.jobRunning}),
     btn(state.currentTest&&state.currentTest.status==='RUNNING'?'Проверяю…':'Проверить текущие DNS','cbi-button-action',function(){testCurrent(root);},{disabled:!!state.busy||!!state.jobRunning})
   ]));
   if(state.currentTest && !(state.currentTest.status==='DONE' && (!state.currentTest.result || state.currentTest.result==='ok')))ch.push(E('div',{'class':'dm-inline-msg '+(state.currentTest.status==='RUNNING'?'info':'error')},
@@ -7829,7 +7831,7 @@ function renderProfiles(root,st){
     pch.push(E('div',{'class':'dm-inline-msg error'},failText+(pf?' · '+dateText(pf):'')));
   }
 
-  pch.push(btn(st.dnscrypt_engine==='dnscrypt-proxy2'?'Отключить защищённый DNS':'Вернуть DNS по умолчанию','cbi-button-negative',function(){resetDnsCore(root);},{disabled:!!state.busy}));
+  pch.push(btn('Отключить защищённый DNS','cbi-button-negative',function(){resetDnsCore(root,'disable');},{disabled:!!state.busy}));
   if(state.profileProgress){
     var pp=renderProfileProgress(root);
     if(pp)pch.push(pp);
@@ -9126,33 +9128,33 @@ function switchEngine(target,root){
       }).catch(function(err){state.busy=false;state.engineNoticeType='error';state.engineNotice=withRpcError('Не удалось запустить переключение.',err);renderDoH(root,window.dmState||{});});
     });
 }
-function resetDnsCore(root){
+function resetDnsCore(root,mode){
   if(state.busy)return;
-  var dnscrypt=(window.dmState||{}).dnscrypt_engine==='dnscrypt-proxy2';
-  confirmAction(dnscrypt?'Отключить защищённый DNS':'Восстановить стандартную настройку DNS',[
-    ['Действие',dnscrypt?'Остановить DNSCrypt и вернуть обычный DNS роутера':'Сбросить настройки DNS Manager и восстановить стандартные серверы HTTPS DNS Proxy: Cloudflare и Google']
+  var disable=mode==='disable', dnscrypt=(window.dmState||{}).dnscrypt_engine==='dnscrypt-proxy2';
+  confirmAction(disable?'Отключить защищённый DNS':'Вернуть начальные серверы',[
+    ['Действие',disable?(dnscrypt?'Остановить DNSCrypt и вернуть обычный DNS роутера':'Остановить HTTPS DNS Proxy и вернуть обычный DNS роутера'):'Сбросить настройки DNS Manager и вернуть Cloudflare и Google']
   ],function(){
     state.busy=true;
     state.profileNoticeType='info';
-    state.pageNotice.profiles='Восстанавливаю стандартную настройку DNS…';
+    state.pageNotice.profiles=disable?'Отключаю защищённый DNS…':'Восстанавливаю начальные серверы…';
     renderProfiles(root,window.dmState||{});
-    callResetDns().then(awaitSettingResult).then(function(r){
+    callResetDns(disable?'disable':'default').then(awaitSettingResult).then(function(r){
       state.busy=false;
       if(r&&r.ok){
         state.profileNoticeType='ok';
-        setAction(true,'Стандартная настройка DNS восстановлена.');
-        state.pageNotice.profiles='Стандартная настройка DNS восстановлена.';
+        setAction(true,(disable?'Защищённый DNS отключён.':'Начальные серверы восстановлены.'));
+        state.pageNotice.profiles=(disable?'Защищённый DNS отключён.':'Начальные серверы восстановлены.');
       }else{
         state.profileNoticeType='error';
-        setAction(false,(r&&r.error)||'Не удалось восстановить стандартную настройку DNS.');
-        state.pageNotice.profiles=(r&&r.error)||'Не удалось восстановить стандартную настройку DNS.';
+        setAction(false,(r&&r.error)||(disable?'Не удалось отключить защищённый DNS.':'Не удалось восстановить начальные серверы.'));
+        state.pageNotice.profiles=(r&&r.error)||(disable?'Не удалось отключить защищённый DNS.':'Не удалось восстановить начальные серверы.');
       }
       refresh(root,true);
     }).catch(function(err){
       state.busy=false;
       state.profileNoticeType='error';
-      setAction(false,withRpcError('Не удалось восстановить стандартную настройку DNS.',err));
-      state.pageNotice.profiles=withRpcError('Не удалось восстановить стандартную настройку DNS.',err);
+      setAction(false,withRpcError((disable?'Не удалось отключить защищённый DNS.':'Не удалось восстановить начальные серверы.'),err));
+      state.pageNotice.profiles=withRpcError((disable?'Не удалось отключить защищённый DNS.':'Не удалось восстановить начальные серверы.'),err);
       refresh(root,true);
     });
   });
