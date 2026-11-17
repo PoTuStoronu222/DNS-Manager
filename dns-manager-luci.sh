@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.79"
+VERSION="2.80"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -796,11 +796,13 @@ dnscrypt_set_setting() {
     input=$(cat)
     name=$(printf '%s' "$input" | jsonfilter -e '@.name' 2>/dev/null)
     enabled=$(printf '%s' "$input" | jsonfilter -e '@.enabled' 2>/dev/null)
-    case "$name" in watchdog|watchdog_autoreplace|force) ;; *) error 'Эта настройка пока недоступна для DNSCrypt'; return;; esac
+    case "$name" in watchdog|watchdog_autoreplace|force|browser_dns) ;; *) error 'Эта настройка пока недоступна для DNSCrypt'; return;; esac
     case "$enabled" in 0|1) ;; *) error 'Неверное значение настройки'; return;; esac
-    load_manager_functions && load_config && acquire_mutation_lock || { error 'Не удалось изменить проверку DNS'; return; }
+    load_manager_functions && load_config && acquire_mutation_lock || { error 'Не удалось применить настройку DNS'; return; }
     rc=0
-    if [ "$name" = force ]; then
+    if [ "$name" = browser_dns ]; then
+        set_browser_dns_hint "$enabled" >/dev/null 2>&1 || rc=$?
+    elif [ "$name" = force ]; then
         dnscrypt_set_force "$enabled" >/dev/null 2>&1 || rc=$?
     elif [ "$name" = watchdog ]; then
         watchdog_apply_toggle "$enabled" >/dev/null 2>&1 || rc=$?
@@ -808,7 +810,7 @@ dnscrypt_set_setting() {
         watchdog_apply_autoreplace_toggle "$enabled" >/dev/null 2>&1 || rc=$?
     fi
     release_mutation_lock
-    [ "$rc" -eq 0 ] || { error 'Не удалось изменить проверку DNS'; return; }
+    [ "$rc" -eq 0 ] || { error 'Не удалось применить настройку DNS'; return; }
     printf '{"ok":true}\n'
 }
 
@@ -827,7 +829,7 @@ dnscrypt_setting_start() {
     input=$(cat)
     name=$(printf '%s' "$input" | jsonfilter -e '@.name' 2>/dev/null)
     enabled=$(printf '%s' "$input" | jsonfilter -e '@.enabled' 2>/dev/null)
-    case "$name:$enabled" in watchdog:0|watchdog:1|watchdog_autoreplace:0|watchdog_autoreplace:1|force:0|force:1) ;; *) error 'Неверная настройка'; return;; esac
+    case "$name:$enabled" in watchdog:0|watchdog:1|watchdog_autoreplace:0|watchdog_autoreplace:1|force:0|force:1|browser_dns:0|browser_dns:1) ;; *) error 'Неверная настройка'; return;; esac
     mkdir -p "$JOB_DIR/setting" "$RUNTIME_DIR" || { error 'Не удалось подготовить задачу'; return; }
     exec 9>"$RUNTIME_DIR/setting-start.lock" || { error 'Не удалось подготовить блокировку'; return; }
     flock -n 9 || { error 'Другая настройка уже запускается'; return; }
@@ -1632,6 +1634,9 @@ uci commit dns-manager || exit 1
 tmp=$(mktemp "$config_dir/.dnscrypt-engine.XXXXXX") || exit 1
 printf '%s\n' "$target" > "$tmp" && chmod 600 "$tmp" && mv -f "$tmp" "$engine_file" || { rm -f "$tmp"; exit 1; }
 [ ! -x "$init_dir/dns-manager-regional" ] || "$init_dir/dns-manager-regional" restart >/dev/null 2>&1 || :
+if [ -f /etc/dnsmasq.d/91-dns-manager-browser.conf ] && [ "$(sed -n '1p' /etc/dnsmasq.d/91-dns-manager-browser.conf 2>/dev/null)" = '# DNS Manager browser DNS hints' ]; then
+    set_browser_dns_hint 1 || echo 'Не удалось восстановить подсказку браузерам; проверьте её в LuCI.'
+fi
 echo 'Движок переключён. Выберите DNS-профиль.'
 success=1
 EOF_DNSCRYPT_ASSET_11
@@ -2400,7 +2405,7 @@ if [ "$(uci -q get dns-manager.global.active_engine 2>/dev/null)" = dnscrypt-pro
 fi
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.79"
+SELF_VERSION="2.80"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -4056,6 +4061,17 @@ doh_status_json() {
     printf '],"system_dns_count":%s' "$_system_dns_total"
     printf ',"profile_job_status":'; json_quote "$_pjs"; printf ',"profile_job_result":'; json_quote "$_pjr"; printf ',"profile_job_profile":'; json_quote "$_pjp"; printf ',"profile_job_started":'; json_quote "$_pjsd"; printf ',"profile_job_finished":'; json_quote "$_pjf"; printf ',"profile_job_message":'; json_quote "$_pjm"
     printf ',"encrypted_dns":%s' "$_encrypted_dns"
+    _browser_dns=0; _browser_loaded=0
+    if [ -f /etc/dnsmasq.d/91-dns-manager-browser.conf ] && [ "$(sed -n '1p' /etc/dnsmasq.d/91-dns-manager-browser.conf 2>/dev/null)" = '# DNS Manager browser DNS hints' ]; then
+        _browser_dns=1
+        _browser_sec=''
+        for _browser_candidate in $(uci show dhcp 2>/dev/null | sed -n 's/^dhcp\.\([^. =]*\)=dnsmasq$/\1/p'); do
+            [ -n "$_browser_sec" ] || _browser_sec="$_browser_candidate"
+            [ "$(uci -q get "dhcp.$_browser_candidate.interface" 2>/dev/null)" != lan ] || { _browser_sec="$_browser_candidate"; break; }
+        done
+        [ -n "$_browser_sec" ] && uci -q get "dhcp.$_browser_sec.confdir" 2>/dev/null | tr ' ' '\n' | grep -Fxq /etc/dnsmasq.d && _browser_loaded=1
+    fi
+    printf ',"browser_dns":%s,"browser_dns_loaded":%s' "$_browser_dns" "$_browser_loaded"
     printf '}'
 }
 
@@ -5110,7 +5126,7 @@ job_start_version_check() {
 
 job_start_setting() {
     DNSMGR_SETTING_NAME="$1"; DNSMGR_SETTING_VALUE="$2"
-    case "$DNSMGR_SETTING_NAME:$DNSMGR_SETTING_VALUE" in force:0|force:1|encrypted_dns:0|encrypted_dns:1|watchdog:0|watchdog:1|watchdog_autoreplace:0|watchdog_autoreplace:1|dnsmasq_perf:0|dnsmasq_perf:1) ;; *) json_error "Неверная настройка"; return;; esac
+    case "$DNSMGR_SETTING_NAME:$DNSMGR_SETTING_VALUE" in force:0|force:1|encrypted_dns:0|encrypted_dns:1|browser_dns:0|browser_dns:1|watchdog:0|watchdog:1|watchdog_autoreplace:0|watchdog_autoreplace:1|dnsmasq_perf:0|dnsmasq_perf:1) ;; *) json_error "Неверная настройка"; return;; esac
     acquire_runtime_lock "$RUNTIME_DIR/setting-start.lock" || { json_error "Другая настройка уже запускается"; return; }
     if job_active setting && job_process_alive "$JOB_DIR/setting"; then release_runtime_lock "$RUNTIME_DIR/setting-start.lock"; json_error "Другая настройка уже применяется"; return; fi
     bg_service_idle setting || { release_runtime_lock "$RUNTIME_DIR/setting-start.lock"; return; }
@@ -5708,6 +5724,7 @@ apply_live_setting() {
             if [ "$_als_value" = 0 ] && [ "${FORCE_DOH:-0}" != 1 ]; then release_mutation_lock; return 0; fi
             FORCE_DOH="$_als_value" ;;
         encrypted_dns) BLOCK_EXTERNAL_DNS="$_als_value" ;;
+        browser_dns) set_browser_dns_hint "$_als_value" || _als_rc=$?; release_mutation_lock; return "$_als_rc" ;;
         *) release_mutation_lock; return 1 ;;
     esac
     SILENT_APPLY=1 _apply_extras_now_impl "$_als_name" >/dev/null 2>&1 || _als_rc=$?
@@ -5930,7 +5947,7 @@ run_action() {
                 *) json_error "Неверное значение enabled"; return;;
             esac
             case "$_name" in
-                watchdog|watchdog_autoreplace|force|encrypted_dns|dnsmasq_perf) ;;
+                watchdog|watchdog_autoreplace|force|encrypted_dns|browser_dns|dnsmasq_perf) ;;
                 *) json_error "Недопустимая настройка"; return;;
             esac
             if [ "${DNSMGR_SETTING_WORKER:-0}" != 1 ]; then
@@ -5977,6 +5994,9 @@ run_action() {
                     ;;
                 encrypted_dns)
                     if apply_live_setting encrypted_dns "$DNSMGR_SETTING_REQUEST_VALUE"; then _rc=0; else _rc=$?; fi
+                    ;;
+                browser_dns)
+                    if apply_live_setting browser_dns "$DNSMGR_SETTING_REQUEST_VALUE"; then _rc=0; else _rc=$?; fi
                     ;;
                 dnsmasq_perf)
                     if [ -f /etc/dns-manager/config/cache.conf ]; then json_error 'Используйте настройки кэша на вкладке «Сеть»'; return; fi
@@ -6310,7 +6330,7 @@ function stateBadge(status,pingValue){
   if(s==='OK')return badge('dm-ok',hasPing(pingValue)?ping(pingValue)+' · доступен':'ответ получен');
   return badge('dm-bad','недоступен');
 }
-function settingName(n){ var m={watchdog:'Проверка DNS',watchdog_autoreplace:'Автозамена DNS',force:'Принудительный DNS',encrypted_dns:'Не давать устройствам обходить блокировку',dnsmasq_perf:'Увеличенный кэш DNS'}; return m[n]||n; }
+function settingName(n){ var m={watchdog:'Проверка DNS',watchdog_autoreplace:'Автозамена DNS',force:'Принудительный DNS',browser_dns:'Подсказка браузерам',encrypted_dns:'Не давать устройствам обходить блокировку',dnsmasq_perf:'Увеличенный кэш DNS'}; return m[n]||n; }
 function settingModuleState(st,key){
   var raw=st[key+'_state'];
   if(raw===undefined||raw===null||raw==='')return -1;
@@ -7067,6 +7087,17 @@ function renderDoH(root,st){
     e.appendChild(card('Управление DNS Manager',cleanActions));
     return;
   }
+  var browserEnabled=yes(st.browser_dns), browserLoaded=yes(st.browser_dns_loaded);
+  e.appendChild(card('Браузеры и DNS',[
+    E('div',{'class':'dm-row'},[E('span',{'class':'dm-label'},'Предлагать браузерам использовать DNS роутера'),badge(browserEnabled?(browserLoaded?'dm-ok':'dm-bad'):'dm-off',browserEnabled?(browserLoaded?'настроено':'не применено'):'выключено')]),
+    E('p',{'class':'dm-mini'},'Подсказывает Firefox и Частному узлу iCloud не включать собственный DNS автоматически. Ручные настройки браузеров могут это игнорировать.'),
+    E('div',{'class':'dm-seg'},[
+      btn('Включено',browserEnabled?'active cbi-button':'cbi-button',function(){setSetting('browser_dns',1,root);},{disabled:!!state.busy||!!state.jobRunning||(browserEnabled&&browserLoaded),'aria-pressed':browserEnabled?'true':'false'}),
+      btn('Выключено',!browserEnabled?'active cbi-button':'cbi-button',function(){setSetting('browser_dns',0,root);},{disabled:!!state.busy||!!state.jobRunning||!browserEnabled,'aria-pressed':!browserEnabled?'true':'false'})
+    ]),
+    settingFeedback('','browser_dns'),
+    E('div',{'class':'dm-mini'},'После выключения те же подсказки могут остаться из-за других настроек. Правила Steer и DNS отдельных устройств также могут обрабатывать запросы отдельно.')
+  ].filter(Boolean)));
   if(st.dnscrypt_engine==='dnscrypt-proxy2'){
     var servers=Array.isArray(st.dnscrypt_servers)?st.dnscrypt_servers:[];
     var selectedServer=String(st.dnscrypt_selected_server||'');
@@ -9063,7 +9094,7 @@ function resumeSetting(root){
   callJob('setting').then(function(j){
     if(!j||!j.ok||j.status!=='running'||state.busy)return;
     var name=String(j.name||'');
-    if(['force','encrypted_dns','watchdog','watchdog_autoreplace','dnsmasq_perf'].indexOf(name)<0)return;
+    if(['force','encrypted_dns','browser_dns','watchdog','watchdog_autoreplace','dnsmasq_perf'].indexOf(name)<0)return;
     state.busy=true;state.busySetting=name;
     if(name==='force')state.pageNotice.doh='Изменение перехвата DNS…';
     else setSettingFeedback(name,'Применяю настройку…','info');

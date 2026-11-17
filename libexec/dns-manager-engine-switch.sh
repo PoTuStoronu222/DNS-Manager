@@ -162,5 +162,8 @@ uci commit dns-manager || exit 1
 tmp=$(mktemp "$config_dir/.dnscrypt-engine.XXXXXX") || exit 1
 printf '%s\n' "$target" > "$tmp" && chmod 600 "$tmp" && mv -f "$tmp" "$engine_file" || { rm -f "$tmp"; exit 1; }
 [ ! -x "$init_dir/dns-manager-regional" ] || "$init_dir/dns-manager-regional" restart >/dev/null 2>&1 || :
+if [ -f /etc/dnsmasq.d/91-dns-manager-browser.conf ] && [ "$(sed -n '1p' /etc/dnsmasq.d/91-dns-manager-browser.conf 2>/dev/null)" = '# DNS Manager browser DNS hints' ]; then
+    set_browser_dns_hint 1 || echo 'Не удалось восстановить подсказку браузерам; проверьте её в LuCI.'
+fi
 echo 'Движок переключён. Выберите DNS-профиль.'
 success=1

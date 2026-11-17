@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="4.27"
+VERSION="4.28"
 # 3.86: make LuCI the primary interface and preserve external DNS on removal.
 # 3.85: revalidate Watchdog settings before recovery.
 # 3.84: cap DNS catalog test concurrency by total RAM on small routers.
@@ -3659,6 +3659,51 @@ remove_dns_force() {
     fi
     return 0
 }
+# Independent browser hints; never modifies Steer or package rules.
+set_browser_dns_hint() (
+    _enable="$1"
+    _file=/etc/dnsmasq.d/91-dns-manager-browser.conf
+    _marker='# DNS Manager browser DNS hints'
+    case "$_enable" in 0|1) ;; *) exit 1;; esac
+    [ ! -e "$_file" ] || [ "$(sed -n '1p' "$_file" 2>/dev/null)" = "$_marker" ] || exit 1
+    [ -x /etc/init.d/dnsmasq ] || exit 1
+    _sec="$(get_dnsmasq_section)" || exit 1
+    _had=0; [ -f "$_file" ] && _had=1
+    _added=0
+    if [ "$_enable" = 1 ]; then
+        mkdir -p /etc/dnsmasq.d || exit 1
+        _tmp="${_file}.$$"
+        printf '%s\n' "$_marker" 'server=/mask.icloud.com/' 'server=/mask-h2.icloud.com/' 'server=/use-application-dns.net/' > "$_tmp" || { rm -f "$_tmp"; exit 1; }
+        if ! exact_list_has "dhcp.$_sec.confdir" /etc/dnsmasq.d; then
+            [ -z "$(uci -q changes dhcp 2>/dev/null)" ] || { rm -f "$_tmp"; exit 1; }
+            uci add_list "dhcp.$_sec.confdir=/etc/dnsmasq.d" && uci commit dhcp || { rm -f "$_tmp"; exit 1; }
+            _added=1
+        fi
+        if ! mv -f "$_tmp" "$_file"; then
+            rm -f "$_tmp"
+            [ "$_added" = 0 ] || { uci -q del_list "dhcp.$_sec.confdir=/etc/dnsmasq.d" && uci commit dhcp || :; }
+            exit 1
+        fi
+    else
+        [ "$_had" = 1 ] || exit 0
+        rm -f "$_file" || exit 1
+    fi
+    if ! /etc/init.d/dnsmasq restart >/dev/null 2>&1; then
+        if [ "$_had" = 1 ]; then
+            printf '%s\n' "$_marker" 'server=/mask.icloud.com/' 'server=/mask-h2.icloud.com/' 'server=/use-application-dns.net/' > "$_file"
+        else
+            rm -f "$_file"
+        fi
+        if [ "$_added" = 1 ]; then
+            uci -q del_list "dhcp.$_sec.confdir=/etc/dnsmasq.d" && uci commit dhcp || :
+        fi
+        /etc/init.d/dnsmasq restart >/dev/null 2>&1 || :
+        exit 1
+    fi
+    [ "$_added" = 0 ] || record_own dnsmasq confdir /etc/dnsmasq.d "section=$_sec"
+    exit 0
+)
+
 sync_dns_manager_canaries() (
     _file="/etc/dnsmasq.d/90-dns-manager-canary.conf"
     _marker='# DNS Manager canary domains'
@@ -5148,6 +5193,10 @@ uninstall_reset_manager_extras() {
 
 restore_dns_before_uninstall() {
     _dns_restore_rc=0
+    if [ -f /etc/dnsmasq.d/91-dns-manager-browser.conf ] &&
+       [ "$(sed -n '1p' /etc/dnsmasq.d/91-dns-manager-browser.conf 2>/dev/null)" = '# DNS Manager browser DNS hints' ]; then
+        rm -f /etc/dnsmasq.d/91-dns-manager-browser.conf || _dns_restore_rc=1
+    fi
     if [ -f /etc/dnsmasq.d/90-dns-manager-canary.conf ] &&
        [ "$(sed -n '1p' /etc/dnsmasq.d/90-dns-manager-canary.conf 2>/dev/null)" = '# DNS Manager canary domains' ]; then
         rm -f /etc/dnsmasq.d/90-dns-manager-canary.conf || _dns_restore_rc=1

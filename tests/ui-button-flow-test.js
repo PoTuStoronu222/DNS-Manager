@@ -540,6 +540,16 @@ async function testEncryptedDnsControls(){
     if(buttons[enabled?0:1].attrs['aria-pressed']!=='true')throw Error('selected encrypted DNS state is not marked');
   }
 }
+async function testBrowserDnsControls(){
+  const code=extract('  var browserEnabled=yes(st.browser_dns)',"  if(st.dnscrypt_engine==='dnscrypt-proxy2'){");
+  for(const engine of ['https-dns-proxy','dnscrypt-proxy2'])for(const enabled of [false,true]){
+    const calls=[],buttons=[],root={},state={busy:false,jobRunning:false};
+    const ctx={root,state,st:{dnscrypt_engine:engine,browser_dns:enabled,browser_dns_loaded:enabled},e:{appendChild(){}},yes:v=>!!v,E:(tag,attrs,children)=>({tag,attrs,children}),card:(title,children)=>({title,children}),badge:(kind,label)=>({kind,label}),settingFeedback:()=>null,setSetting:(name,value)=>calls.push([name,value]),btn:(label,cls,click,attrs)=>{buttons.push({label,click,attrs});return {};}};
+    vm.createContext(ctx);vm.runInContext(code,ctx);
+    if(buttons.length!==2||buttons[0].attrs.disabled!==enabled||buttons[1].attrs.disabled!==!enabled)throw Error('browser DNS state mismatch');
+    buttons[enabled?1:0].click();if(JSON.stringify(calls)!==JSON.stringify([['browser_dns',enabled?0:1]]))throw Error('browser DNS action mismatch');
+  }
+}
 async function testProfileNotice(){
   const part=extract('  var pj=String(st.profile_job_status',"\n\n  pch.push(btn('Восстановить стандартную настройку DNS'");
   for(const [status,result,count] of [['done','ok',0],['running','',1],['failed','fail',1]]){
@@ -589,4 +599,4 @@ async function testVersionCheckBackground(){
   resolveJob({ok:true});await delay();
   if(ctx.state.versionCheck.running||refreshed!==1)throw Error('version result was not refreshed');
 }
-Promise.all([testVersionCheckBackground(),testEngineCardsBothDirections(),testEngineSwitchConfirmation(),testSystemDnsSuccessNotice(),testProfileNotice(),testForcedDnsControls(),testEncryptedDnsControls(),testCurrentDnsNotice(),testTestAgePresets(),testCatalogCardActions(),testCachePresets(),testTimePresetCards(),testSettingToggle(),testProfileApplyWithoutPopup(),testDnscryptDiagnosticDisplay(),testRunningProfileTimeout(),testTimePresetWhitespace(),testPoolSelectionRefresh(),testProfileClickBothEngines(),testDnscryptPoolPresentation(),testRegionalSelection(),testResumeCatalog(),testBackgroundStartTimeout(),testBackgroundUnknown(),testBackgroundNavigation(),testBackgroundFailure(),testDoHRemove(),testSingleError(),testBadgeWithoutDuration(),testPollNavigation(),testLongCatalogProgress(117),testLongCatalogProgress(5,true),testRouteCache(),testCachedReadOnly(),testAdditionalRouteCache(),testSequentialWarmup(),testWarmupResourceGuard(),testResumeCache(),testSettingConnectionLoss(),testRegionalConnectionLoss(),testProfileMissingJob(),testJobTransientError(),testUninstallUnresponsiveStatus(),testProfileStatus(),testSlotDraft(),testDeviceSave(),testCatalogError(),testFoldState(),testCustomDnsFeedback(),testBootstrapForm(),testLogScroll(),testHeaderCheckKind()]).catch(e=>{console.error(e);process.exitCode=1;});
+Promise.all([testVersionCheckBackground(),testEngineCardsBothDirections(),testEngineSwitchConfirmation(),testSystemDnsSuccessNotice(),testProfileNotice(),testForcedDnsControls(),testEncryptedDnsControls(),testBrowserDnsControls(),testCurrentDnsNotice(),testTestAgePresets(),testCatalogCardActions(),testCachePresets(),testTimePresetCards(),testSettingToggle(),testProfileApplyWithoutPopup(),testDnscryptDiagnosticDisplay(),testRunningProfileTimeout(),testTimePresetWhitespace(),testPoolSelectionRefresh(),testProfileClickBothEngines(),testDnscryptPoolPresentation(),testRegionalSelection(),testResumeCatalog(),testBackgroundStartTimeout(),testBackgroundUnknown(),testBackgroundNavigation(),testBackgroundFailure(),testDoHRemove(),testSingleError(),testBadgeWithoutDuration(),testPollNavigation(),testLongCatalogProgress(117),testLongCatalogProgress(5,true),testRouteCache(),testCachedReadOnly(),testAdditionalRouteCache(),testSequentialWarmup(),testWarmupResourceGuard(),testResumeCache(),testSettingConnectionLoss(),testRegionalConnectionLoss(),testProfileMissingJob(),testJobTransientError(),testUninstallUnresponsiveStatus(),testProfileStatus(),testSlotDraft(),testDeviceSave(),testCatalogError(),testFoldState(),testCustomDnsFeedback(),testBootstrapForm(),testLogScroll(),testHeaderCheckKind()]).catch(e=>{console.error(e);process.exitCode=1;});
