@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.91"
+VERSION="2.92"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -2583,7 +2583,7 @@ if [ "$(uci -q get dns-manager.global.active_engine 2>/dev/null)" = dnscrypt-pro
 fi
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.91"
+SELF_VERSION="2.92"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -7299,7 +7299,7 @@ function renderDoH(root,st){
     details.push(dnscryptCurrentPool(st));
     details.push(E('p',{'class':'dm-hint'},selectedServer?'Используется один выбранный вручную сервер.':'DNSCrypt автоматически выбирает сервер из этого набора.'));
     details.push(E('div',{'class':'dm-actions'},[
-      btn('Сбросить профиль','cbi-button-neutral',function(){applyProfile('default',root);},{disabled:!!state.busy}),
+      btn('Вернуть начальные серверы','cbi-button-neutral',function(){applyProfile('default',root);},{disabled:!!state.busy}),
       btn('Проверить DNS','cbi-button-neutral',function(){dnscryptDiagnostic(root,false);},{disabled:!!state.busy})
     ]));
     if(state.dnscryptDiagnostic){var diagnosticView=dnscryptDiagnosticView();if(diagnosticView)details.push(diagnosticView);}
@@ -7829,7 +7829,7 @@ function renderProfiles(root,st){
     pch.push(E('div',{'class':'dm-inline-msg error'},failText+(pf?' · '+dateText(pf):'')));
   }
 
-  pch.push(btn('Восстановить стандартную настройку DNS','cbi-button-negative',function(){resetDnsCore(root);},{disabled:!!state.busy}));
+  pch.push(btn(st.dnscrypt_engine==='dnscrypt-proxy2'?'Отключить защищённый DNS':'Восстановить стандартную настройку DNS','cbi-button-negative',function(){resetDnsCore(root);},{disabled:!!state.busy}));
   if(state.profileProgress){
     var pp=renderProfileProgress(root);
     if(pp)pch.push(pp);
@@ -9128,8 +9128,9 @@ function switchEngine(target,root){
 }
 function resetDnsCore(root){
   if(state.busy)return;
-  confirmAction('Восстановить стандартную настройку DNS',[
-    ['Действие','Удалить выбранные DNS Manager DNS и вернуть обычный DNS роутера']
+  var dnscrypt=(window.dmState||{}).dnscrypt_engine==='dnscrypt-proxy2';
+  confirmAction(dnscrypt?'Отключить защищённый DNS':'Восстановить стандартную настройку DNS',[
+    ['Действие',dnscrypt?'Остановить DNSCrypt и вернуть обычный DNS роутера':'Удалить выбранные DNS Manager DNS и вернуть обычный DNS роутера']
   ],function(){
     state.busy=true;
     state.profileNoticeType='info';
@@ -9257,6 +9258,7 @@ function applyProfile(name,root,confirmed){
     });
   }
   if(confirmed)startProfile();
+  else if(name==='default'&&st.dnscrypt_engine==='dnscrypt-proxy2')confirmAction('Вернуть начальные серверы',[['DNS','Cloudflare и Google'],['Профиль','Текущий выбор будет сброшен']],startProfile);
   else confirmAction(repeat?'Повторно применить профиль':'Подтвердить изменение профиля',[['Сейчас',current],[repeat?'Профиль':'Новый профиль',next]],startProfile);
 }
 function awaitSettingResult(reply){

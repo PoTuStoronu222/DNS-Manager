@@ -585,7 +585,7 @@ async function testBrowserDnsControls(){
   }
 }
 async function testProfileNotice(){
-  const part=extract('  var pj=String(st.profile_job_status',"\n\n  pch.push(btn('Восстановить стандартную настройку DNS'");
+  const part=extract('  var pj=String(st.profile_job_status',"\n\n  pch.push(btn(st.dnscrypt_engine===");
   for(const [status,result,count] of [['done','ok',0],['running','',1],['failed','fail',1]]){
     const pch=[],ctx={st:{profile_job_status:status,profile_job_result:result,profile_job_profile:'clean',profile_job_message:'Ошибка',profile_job_finished:String(Math.floor(Date.now()/1000))},state:{busy:false},pch,stripAnsi:x=>x,profileName:x=>x,dateText:()=>'',E:(tag,attrs,text)=>({text})};
     vm.createContext(ctx);vm.runInContext(part,ctx);if(pch.length!==count)throw Error('incorrect profile notice '+status);
