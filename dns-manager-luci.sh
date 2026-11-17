@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager full installer and LuCI companion
-# Version: 2.61
+# Version: 2.62
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.61"
+VERSION="2.62"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -2363,7 +2363,7 @@ if [ "$(uci -q get dns-manager.global.active_engine 2>/dev/null)" = dnscrypt-pro
 fi
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.61"
+SELF_VERSION="2.62"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -5904,7 +5904,7 @@ run_action() {
                     fi
                     if [ "$DNSMGR_SETTING_REQUEST_VALUE" = 1 ]; then
                         detect_steer_dns_path >/dev/null 2>&1 || true
-                        if [ "${STEER_DNS_ACTIVE:-0}" = 1 ] && ! (steer_dns_upstream_ready); then
+                        if [ "${STEER_DNS_ACTIVE:-0}" = 1 ] && [ -n "${SLOT_1:-}${SLOT_2:-}${SLOT_3:-}${SLOT_4:-}${SLOT_5:-}${SLOT_6:-}${SLOT_RU:-}" ] && ! (steer_dns_upstream_ready); then
                             json_error "Steer активен, но текущие DNS-серверы dnsmasq не совпадают с выбранными в DNS Manager. Проверьте применённый DNS-профиль."
                             return
                         fi
@@ -6041,7 +6041,7 @@ EOF_RPC_WRAPPER
 'require ui';
 'require session';
 
-// DNS Manager LuCI common module version: 2.61
+// DNS Manager LuCI common module version: 2.62
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -7018,7 +7018,6 @@ function renderDoH(root,st){
   }
   var rr=resolverRows(st,root), rows=rr[0], count=rr[1];
   var ch=[];
-  ch.push(E('p',{'class':'dm-hint'},'DNS Manager настраивает DoH для DNS роутера. При работе Steer для его правил могут использоваться другие DNS-серверы.'));
   ch.push(row('Пакет',Number(st.engine_installed)!==0?badge('dm-ok','установлен'):badge('dm-off','не установлен')));
   ch.push(row('Служба',st.doh==='yes'?badge('dm-ok','включена'):st.doh_total>0?badge('dm-bad','остановлена'):badge('dm-off','не установлена')));
   if(count){
@@ -7032,12 +7031,10 @@ function renderDoH(root,st){
     state.currentTest.status==='RUNNING'?'Проверка текущих DNS выполняется…':state.currentTest.status==='DONE'?'Проверка текущих DNS завершена.':state.currentTest.status==='UNKNOWN'?'Результат проверки пока неизвестен.':state.currentTest.total===0?'Текущих DNS для проверки нет.':'Проверка текущих DNS завершилась с ошибками.'));
 
   var fm=forceMode(st);
-  var profileSelected=String(st.profile||'none')!=='none';
-  var forceEnableLocked=!profileSelected && fm!=='auto';
   var forceEnabled=fm==='auto';
   var forceButtons=E('div',{'class':'dm-seg'},[
-    btn('Авто (рекомендуется)',fm==='auto'?'active cbi-button':'cbi-button',function(){setForceMode('auto',root);},{disabled:state.busy||forceEnableLocked}),
-    btn('Выключить в DNS Manager',fm==='off'?'active cbi-button':'cbi-button',function(){setForceMode('off',root);},{disabled:state.busy})
+    btn('Авто (рекомендуется)',fm==='auto'?'active cbi-button':'cbi-button',function(){setForceMode('auto',root);},{disabled:state.busy||state.jobRunning}),
+    btn('Выключено',fm==='off'?'active cbi-button':'cbi-button',function(){setForceMode('off',root);},{disabled:state.busy})
   ]);
   var encryptedEnabled=yes(st.encrypted_dns);
   var encryptedButtons=E('div',{'class':'dm-seg'},[
@@ -7051,8 +7048,7 @@ function renderDoH(root,st){
       badge(st.force_status==='external'||st.force_status==='other'?'dm-bad':(st.force_status==='manager'||st.force_status==='steer')?'dm-ok':'dm-off',st.force_status==='external'?'внешний':st.force_status==='other'?'другое':st.force_status==='steer'?'включён • Steer':st.force_status==='manager'?'включён':'выключен')
     ]),
     E('p',{'class':'dm-hint'},'Направляет обычные DNS-запросы устройств на DNS роутера. В конфигурации https-dns-proxy задействованы порты 53 и 853.'),
-    forceButtons,
-    (!profileSelected && fm!=='auto') ? E('div',{'class':'dm-inline-msg info'},'Сначала выберите профиль DNS Manager.') : null
+    forceButtons
   ].filter(Boolean)));
   ch.push(E('div',{'style':'margin-top:14px'},[
     E('div',{'class':'dm-row'},[
@@ -8384,7 +8380,7 @@ function saveRouteCache(key,st,aux){
     var entry=JSON.parse(JSON.stringify({ts:Date.now(),data:st,aux:aux}));
     window.dmRouteCache[key]=entry;
     if(typeof session!=='undefined'&&session.setLocalData)
-      session.setLocalData('dns-manager-route-2.61-'+key,entry);
+      session.setLocalData('dns-manager-route-2.62-'+key,entry);
   }catch(e){}
 }
 function clearEngineUiState(){
@@ -8392,7 +8388,7 @@ function clearEngineUiState(){
   window.dmRouteCache=Object.create(null);
   window.dmStatusPromises=Object.create(null);
   ['dashboard','doh','network','time','devices','catalog','log'].forEach(function(key){
-    try{if(typeof session!=='undefined'&&session.setLocalData)session.setLocalData('dns-manager-route-2.61-'+key,null);}catch(e){}
+    try{if(typeof session!=='undefined'&&session.setLocalData)session.setLocalData('dns-manager-route-2.62-'+key,null);}catch(e){}
   });
   state.pageNotice={};state.profileProgress=null;state.profileOutput='';state.profileResumeStarted=false;
   state.regionalNotice='';state.pendingProfile='';state.pendingRegional=null;state.pendingDnscryptServer='';state.dnscryptDiagnostic='';state.dnscryptDiagnosticKind='';state.dnscryptDiagnosticResult='';
@@ -8404,7 +8400,7 @@ function clearEngineUiState(){
 function routeCacheEntry(key){
   var entry=key&&window.dmRouteCache&&window.dmRouteCache[key];
   if(!entry&&key){
-    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.61-'+key);}catch(e){}
+    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.62-'+key);}catch(e){}
   }
   if(!entry||typeof entry.ts!=='number'||Date.now()-entry.ts<0||Date.now()-entry.ts>300000||!entry.data||entry.data.ok!==true)return null;
   return entry;
@@ -8915,7 +8911,6 @@ function setSetting(name,en,root){
 }
 function setForceMode(mode,root){
   if(state.busy)return;
-  if(mode==='auto' && String((window.dmState||{}).profile||'none')==='none')return;
   var en=mode==='auto'?1:0;
   state.busy=true;
   state.busySetting='force';
@@ -8934,7 +8929,7 @@ function setForceMode(mode,root){
         'force_user','force_group','force_listen','force_consistent',
         'force_owner_label','zapret_running','steer_dns_active'
       ].forEach(function(k){if(Object.prototype.hasOwnProperty.call(r,k))window.dmState[k]=r[k];});
-      state.pageNotice.doh=en?'Настройка принудительного DNS Manager включена.':(r.force_owner==='steer'?'Настройка DNS Manager выключена; перехват Steer продолжает работать.':yes(r.force_external)?'Настройка DNS Manager выключена; внешний перехват может продолжать работать.':'Настройка принудительного DNS Manager выключена.');
+      state.pageNotice.doh=en?(r.force_status==='manager'||r.force_status==='steer'?'Принудительный DNS включён.':'Настройка сохранена, но перехват DNS не обнаружен. Проверьте службу DNS и правила сети.'):(r.force_owner==='steer'?'Настройка DNS Manager выключена; перехват Steer продолжает работать.':yes(r.force_external)?'Настройка DNS Manager выключена; внешний перехват может продолжать работать.':'Настройка принудительного DNS Manager выключена.');
       renderDoH(root,window.dmState);
     }else{
       state.pageNotice.doh=(r&&r.error)||'Не удалось изменить перехват DNS.';
@@ -9472,7 +9467,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 2.61
+// DNS Manager LuCI version: 2.62
 return view.extend({
   load: DM.load,
   render: DM.render,
