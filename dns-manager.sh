@@ -8749,11 +8749,14 @@ watchdog_service_stop_disable() {
             err_msg "Обнаружена сторонняя служба watchdog; автоматический перенос остановлен."
             return 1
         }
-        "$WATCHDOG_SERVICE_PATH" stop >/dev/null 2>&1 || {
-            "$WATCHDOG_SERVICE_PATH" running >/dev/null 2>&1 && return 1
-        }
         "$WATCHDOG_SERVICE_PATH" disable >/dev/null 2>&1 || return 1
-        "$WATCHDOG_SERVICE_PATH" running >/dev/null 2>&1 && return 1
+        "$WATCHDOG_SERVICE_PATH" stop >/dev/null 2>&1 || true
+        local _stop_wait=0
+        while "$WATCHDOG_SERVICE_PATH" running >/dev/null 2>&1; do
+            [ "$_stop_wait" -lt 10 ] || return 1
+            sleep 1
+            _stop_wait=$((_stop_wait + 1))
+        done
         "$WATCHDOG_SERVICE_PATH" enabled >/dev/null 2>&1 && return 1
     fi
     if [ -f /etc/crontabs/root ]; then
