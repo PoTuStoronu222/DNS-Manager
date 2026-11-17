@@ -47,7 +47,7 @@ async function testRouteCache(){
   if(!cached||cached.force_owner!=='steer'||cached.__dmCachedRoute!=='slots')throw Error('compatible route cache missing');
   ctx.window.dmRouteCache=undefined;
   if(ctx.cachedRouteStatus('slots').force_owner!=='steer')throw Error('cache did not survive page navigation');
-  ctx.window.dmRouteCache={doh:JSON.parse(store['dns-manager-route-2.56-doh'])};
+  ctx.window.dmRouteCache={doh:JSON.parse(store['dns-manager-route-2.57-doh'])};
   cached.slots.length=0;
   if(ctx.cachedRouteStatus('doh').slots.length!==1)throw Error('cache was mutated by view');
   ctx.applyStatusToCurrentRoot({ok:true,force_owner:'steer'},'doh');
@@ -95,7 +95,7 @@ async function testAdditionalRouteCache(){
   ctx.state.category='security';if(ctx.cachedRouteStatus('catalog'))throw Error('wrong catalog category reused');ctx.state.category='all';
   failDevices=true;failCatalog=true;failLog=true;
   const previous={...store};for(const route of ['devices','catalog','log'])await ctx.ensureStatusPromise(route);
-  for(const route of ['devices','catalog','log'])if(store['dns-manager-route-2.56-'+route]!==previous['dns-manager-route-2.56-'+route])throw Error('failed '+route+' replaced good cache');
+  for(const route of ['devices','catalog','log'])if(store['dns-manager-route-2.57-'+route]!==previous['dns-manager-route-2.57-'+route])throw Error('failed '+route+' replaced good cache');
 }
 async function testSequentialWarmup(){
   let active=0,max=0,calls=[],allowed=true;
@@ -371,29 +371,17 @@ async function testResumeCatalog(){
     if(status==='done'&&(state.fullTest.status!=='DONE'||!state.pageNotice.catalog.includes('завершена')))throw Error('catalog result was not restored');
   }
 }
-async function testRegionalReapply(){
-  const buttons=[],calls=[],state={busy:false};
-  const ctx={state,st:{dnscrypt_engine:'https-dns-proxy'},regionalMode:'isp',hasGeneral:true,root:{},pch:[],E:()=>({appendChild:x=>buttons.push(x)}),btn:(text,cls,click,opts)=>({text,cls,click,opts}),setRegional:(v)=>calls.push(v)};
-  vm.createContext(ctx);vm.runInContext(extract("  var regionalChoices=E('div',{'class':'dm-seg'});","  pch.push(E('p',{'class':'dm-hint'},regionalMode==='legacy'"),ctx);
-  const active=buttons.find(b=>b.text==='DNS провайдера');
-  if(!active||active.opts.disabled)throw Error('current regional mode cannot be reapplied after update');
-  active.click();if(calls.join(',')!=='3')throw Error('reapplying provider DNS used the wrong mode');
-  buttons.length=0;calls.length=0;ctx.regionalMode='legacy';
-  vm.runInContext(extract("  var regionalChoices=E('div',{'class':'dm-seg'});","  pch.push(E('p',{'class':'dm-hint'},regionalMode==='legacy'"),ctx);
-  const legacy=buttons.find(b=>b.text==='Применить повторно');
-  if(!legacy||legacy.opts.disabled)throw Error('legacy regional DoH cannot be reapplied');
-  legacy.click();if(calls.join(',')!=='1')throw Error('reapplying legacy regional DoH used the wrong mode');
-}
-async function testDnscryptRegionalSelection(){
-  const calls=[],state={busy:false};
-  const container={children:[],appendChild(node){this.children.push(node);},querySelectorAll(){return this.children.filter(node=>node.opts&&node.opts['data-regional-choice']!==undefined);}};
-  const ctx={state,st:{dnscrypt_engine:'dnscrypt-proxy2'},regionalMode:'doh',hasGeneral:true,root:{},pch:[],E:()=>container,
-    btn:(text,cls,click,opts)=>({text,cls,click,opts,getAttribute(k){return this.opts[k];},setAttribute(k,v){this.opts[k]=v;},classList:{toggle(){}}}),setRegional:v=>calls.push(v)};
-  vm.createContext(ctx);vm.runInContext(extract("  var regionalChoices=E('div',{'class':'dm-seg'});","  pch.push(E('p',{'class':'dm-hint'},regionalMode==='legacy'"),ctx);
-  container.children.find(b=>b.text==='Яндекс DNS').click();
-  if(calls.length)throw Error('regional choice applied before confirmation');
-  container.children.find(b=>b.text==='Применить').click();
-  if(calls.join(',')!=='2')throw Error('DNSCrypt regional choice was not applied');
+async function testRegionalSelection(){
+  for(const engine of ['https-dns-proxy','dnscrypt-proxy2']){
+    const calls=[],state={busy:false,jobRunning:false,pendingRegional:null},root={},st={dnscrypt_engine:engine};let buttons=[],pch=[];
+    const ctx={state,st,regionalMode:'doh',hasGeneral:true,root,pch,E:(tag,attrs,children)=>tag==='div'&&attrs.class==='dm-seg'?{appendChild:x=>buttons.push(x)}:{tag,children},btn:(text,cls,click,opts)=>({text,cls,click,opts}),setRegional:v=>calls.push(v),renderProfiles:()=>{}};
+    vm.createContext(ctx);const snippet=extract("  var regionalChoices=E('div',{'class':'dm-seg'});","  pch.push(E('p',{'class':'dm-hint'},regionalMode==='legacy'");
+    vm.runInContext(snippet,ctx);if(pch.length!==1)throw Error('regional apply visible before changes');
+    buttons.find(b=>b.text==='Яндекс DNS').click();if(calls.length||state.pendingRegional!==2)throw Error('regional selection applied early');
+    buttons=[];pch=[];ctx.pch=pch;vm.runInContext(snippet,ctx);const action=pch[1].children[0];action.click();if(calls.join(',')!=='2')throw Error('regional change not applied');
+    state.pendingRegional=2;buttons=[];pch=[];ctx.pch=pch;vm.runInContext(snippet,ctx);buttons.find(b=>b.text.includes('Через')).click();
+    if(state.pendingRegional!==null)throw Error('regional change not cancelled by selecting current mode');
+  }
 }
 async function testDnscryptPoolPresentation(){
   const changes=[],confirmations=[],state={busy:false,jobRunning:false};
@@ -409,12 +397,14 @@ async function testDnscryptPoolPresentation(){
 }
 async function testProfileClickBothEngines(){
   for(const engine of ['dnscrypt-proxy2','https-dns-proxy']){
-    const calls=[],buttons=[],root={},ctx={state:{busy:false,jobRunning:false},st:{dnscrypt_engine:engine,engine_installed:1},root,
-      PROFILE:[['clean','Без фильтрации'],['privacy','Конфиденциальность']],activeProfileId:()=>'',
-      E:()=>({appendChild:b=>buttons.push(b)}),btn:(label,cls,click,opts)=>({label,click,opts}),applyProfile:(id,r)=>calls.push([id,r])};
-    vm.createContext(ctx);vm.runInContext(extract("  var g=E('div',{'class':'dm-seg dm-profile-seg'});","  var current=activeProfileLabel(st);"),ctx);
-    buttons[0].click();if(calls.length!==1||calls[0][0]!=='clean'||calls[0][1]!==root)throw Error('profile button did not invoke apply for '+engine);
-    if(buttons.some(b=>b.label==='Применить профиль'))throw Error('unexpected separate apply button');
+    const calls=[],state={busy:false,jobRunning:false,pendingProfile:''},root={};let buttons=[];
+    const ctx={state,st:{dnscrypt_engine:engine,engine_installed:1},root,PROFILE:[['clean','Без фильтрации'],['privacy','Конфиденциальность']],activeProfileId:()=>'clean',
+      E:(tag,attrs,children)=>attrs.class==='dm-seg dm-profile-seg'?{appendChild:b=>buttons.push(b)}:{tag,children},btn:(label,cls,click,opts)=>({label,click,opts}),applyProfile:(...args)=>calls.push(args),renderProfiles:()=>{}};
+    vm.createContext(ctx);const snippet=extract("  var g=E('div',{'class':'dm-seg dm-profile-seg'});","  var current=activeProfileLabel(st);");
+    vm.runInContext(snippet,ctx);if(ctx.profileAction!==null)throw Error('profile apply visible before changes');
+    buttons[1].click();if(calls.length||state.pendingProfile!=='privacy')throw Error('profile selection applied early');
+    buttons=[];vm.runInContext(snippet,ctx);ctx.profileAction.children[0].click();if(calls.length!==1||calls[0][0]!=='privacy'||calls[0][2]!==true)throw Error('profile change not applied');
+    state.pendingProfile='privacy';buttons=[];vm.runInContext(snippet,ctx);buttons[0].click();if(state.pendingProfile!=='')throw Error('profile change not cancelled by selecting current profile');
   }
 }
 async function testTimePresetWhitespace(){
@@ -450,4 +440,12 @@ async function testDnscryptDiagnosticDisplay(){
   if(!view.children[0].attrs.class.includes('error'))throw Error('DNS error not shown');
   state.dnscryptDiagnosticKind='log';if(ctx.dnscryptDiagnosticView().tag!=='pre')throw Error('journal display changed');
 }
-Promise.all([testDnscryptDiagnosticDisplay(),testRunningProfileTimeout(),testTimePresetWhitespace(),testPoolSelectionRefresh(),testProfileClickBothEngines(),testDnscryptPoolPresentation(),testDnscryptRegionalSelection(),testRegionalReapply(),testResumeCatalog(),testBackgroundStartTimeout(),testBackgroundUnknown(),testBackgroundNavigation(),testBackgroundFailure(),testDoHRemove(),testSingleError(),testBadgeWithoutDuration(),testPollNavigation(),testLongCatalogProgress(117),testLongCatalogProgress(5,true),testRouteCache(),testCachedReadOnly(),testAdditionalRouteCache(),testSequentialWarmup(),testWarmupResourceGuard(),testResumeCache(),testSettingConnectionLoss(),testRegionalConnectionLoss(),testProfileMissingJob(),testJobTransientError(),testUninstallUnresponsiveStatus(),testProfileStatus(),testSlotDraft(),testDeviceSave(),testCatalogError(),testFoldState(),testCustomDnsFeedback(),testBootstrapForm(),testLogScroll(),testHeaderCheckKind()]).catch(e=>{console.error(e);process.exitCode=1;});
+async function testProfileApplyWithoutPopup(){
+  let called=0,modal=0;const root={},state={busy:false,pageNotice:{}};
+  const ctx={state,window:{dmState:{}},activeProfileId:()=>'',activeProfileLabel:()=>'',profileName:x=>x,confirmAction:()=>{modal++;},renderProfiles:()=>{},
+    callProfile:()=>{called++;return Promise.resolve({ok:true,job:'profile'});},pollJob:()=>{},refresh:()=>{},setAction:()=>{},withRpcError:s=>s};
+  vm.createContext(ctx);vm.runInContext(extract('function applyProfile(name,root,confirmed){','function awaitSettingResult(reply){'),ctx);
+  ctx.applyProfile('clean',root,true);await delay();
+  if(modal||called!==1)throw Error('confirmed profile unexpectedly showed a popup or did not start');
+}
+Promise.all([testProfileApplyWithoutPopup(),testDnscryptDiagnosticDisplay(),testRunningProfileTimeout(),testTimePresetWhitespace(),testPoolSelectionRefresh(),testProfileClickBothEngines(),testDnscryptPoolPresentation(),testRegionalSelection(),testResumeCatalog(),testBackgroundStartTimeout(),testBackgroundUnknown(),testBackgroundNavigation(),testBackgroundFailure(),testDoHRemove(),testSingleError(),testBadgeWithoutDuration(),testPollNavigation(),testLongCatalogProgress(117),testLongCatalogProgress(5,true),testRouteCache(),testCachedReadOnly(),testAdditionalRouteCache(),testSequentialWarmup(),testWarmupResourceGuard(),testResumeCache(),testSettingConnectionLoss(),testRegionalConnectionLoss(),testProfileMissingJob(),testJobTransientError(),testUninstallUnresponsiveStatus(),testProfileStatus(),testSlotDraft(),testDeviceSave(),testCatalogError(),testFoldState(),testCustomDnsFeedback(),testBootstrapForm(),testLogScroll(),testHeaderCheckKind()]).catch(e=>{console.error(e);process.exitCode=1;});
