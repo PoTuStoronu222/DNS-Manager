@@ -793,12 +793,12 @@ ok "LuCI RPC dispatch contract"
 # Every asynchronous DNS test must record the PID of the process it started.
 # job_process_alive() relies on this PID; without it a valid job is immediately
 # reported as having no working PID.
-awk '/^job_start_test_all\(\) \{/,/^job_start_test_current\(\) \{/' "$tmp/backend.sh" | grep -q '_job_pid=\$!' || fail "test_all job PID is not recorded"
-awk '/^job_start_test_all\(\) \{/,/^job_start_test_current\(\) \{/' "$tmp/backend.sh" | grep -q 'job_record_pid "\$_jid" "\$_job_pid"' || fail "test_all job PID is not registered"
-awk '/^job_start_test_current\(\) \{/,/^job_start_test_one\(\) \{/' "$tmp/backend.sh" | grep -q '_job_pid=\$!' || fail "test_current job PID is not recorded"
-awk '/^job_start_test_current\(\) \{/,/^job_start_test_one\(\) \{/' "$tmp/backend.sh" | grep -q 'job_record_pid "\$_jid" "\$_job_pid"' || fail "test_current job PID is not registered"
-awk '/^job_start_test_one\(\) \{/,/^job_json\(\) \{/' "$tmp/backend.sh" | grep -q 'DNSMGR_SINGLE_TEST_PID=\$!' || fail "test_one job PID is not recorded"
-awk '/^job_start_test_one\(\) \{/,/^job_json\(\) \{/' "$tmp/backend.sh" | grep -q 'job_record_pid "\$DNSMGR_SINGLE_TEST_JOB_ID" "\$DNSMGR_SINGLE_TEST_PID"' || fail "test_one job PID is not registered"
+awk '/^job_execute_test_all\(\) \{/,/^job_execute_test_current\(\) \{/' "$tmp/backend.sh" | grep -q '_job_pid=\$!' || fail "test_all job PID is not recorded"
+awk '/^job_execute_test_all\(\) \{/,/^job_execute_test_current\(\) \{/' "$tmp/backend.sh" | grep -q 'job_record_pid "\$_jid" "\$_job_pid"' || fail "test_all job PID is not registered"
+awk '/^job_execute_test_current\(\) \{/,/^job_execute_test_one\(\) \{/' "$tmp/backend.sh" | grep -q '_job_pid=\$!' || fail "test_current job PID is not recorded"
+awk '/^job_execute_test_current\(\) \{/,/^job_execute_test_one\(\) \{/' "$tmp/backend.sh" | grep -q 'job_record_pid "\$_jid" "\$_job_pid"' || fail "test_current job PID is not registered"
+awk '/^job_execute_test_one\(\) \{/,/^job_json\(\) \{/' "$tmp/backend.sh" | grep -q 'DNSMGR_SINGLE_TEST_PID=\$!' || fail "test_one job PID is not recorded"
+awk '/^job_execute_test_one\(\) \{/,/^job_json\(\) \{/' "$tmp/backend.sh" | grep -q 'job_record_pid "\$DNSMGR_SINGLE_TEST_JOB_ID" "\$DNSMGR_SINGLE_TEST_PID"' || fail "test_one job PID is not registered"
 ok "all asynchronous DNS jobs register their working PID"
 # NTP status must follow the real OpenWrt system.ntp.server list, not the manager preference.
 grep -q '^ntp_current_preset() {' dns-manager.sh || fail "NTP actual-state detector missing"
@@ -1450,7 +1450,7 @@ fi
 grep -Fq -- '--connect-timeout 1 --max-time 3 --resolve "$host:$port:$ipx"' dns-manager.sh || fail "direct DoH timeout was not reduced"
 grep -q '(trap - EXIT; test_one_dns "\$_id") &' "$tmp/backend.sh" || fail "selected DNS checks are not parallelized"
 awk '
-    /^job_start_test_current\(\) \{/ { capture=1 }
+    /^job_execute_test_current\(\) \{/ { capture=1 }
     capture && /q="\$TMP_DIR\/dns_query\.bin"/ { query_line=NR }
     capture && /if ! printf .*example.*com/ { create_line=NR }
     capture && /\(trap - EXIT; test_one_dns/ { worker_line=NR; exit }
@@ -2215,7 +2215,7 @@ grep -Fq '_desired_for_pick="$_explicit_cat"' "$tmp/watchdog_pick_function.sh" |
 grep -Fq 'if [ -z "$_explicit_cat" ]; then' "$tmp/watchdog_pick_function.sh" || fail "profile fallback behavior is not isolated from runtime replacement"
 ok "watchdog category selection is independent of profile selection"
 
-awk '/^job_start_test_all\(\) \{/,/^\}/' "$tmp/backend.sh" > "$tmp/test_all_job.sh"
+awk '/^job_execute_test_all\(\) \{/,/^\}/' "$tmp/backend.sh" > "$tmp/test_all_job.sh"
 grep -Fq 'job_write "$_jid" progress_done "$_final_total"' "$tmp/test_all_job.sh" || fail "LuCI full catalog job does not publish final progress_done"
 grep -Fq 'job_write "$_jid" progress_total "$_final_total"' "$tmp/test_all_job.sh" || fail "LuCI full catalog job does not publish final progress_total"
 grep -Fq 'job_write "$_jid" progress_ok "$_final_ok"' "$tmp/test_all_job.sh" || fail "LuCI full catalog job does not publish final progress_ok"
