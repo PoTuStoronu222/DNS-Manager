@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager full installer and LuCI companion
-# Version: 2.72
+# Version: 2.73
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.72"
+VERSION="2.73"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -2363,7 +2363,7 @@ if [ "$(uci -q get dns-manager.global.active_engine 2>/dev/null)" = dnscrypt-pro
 fi
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.72"
+SELF_VERSION="2.73"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -6037,7 +6037,7 @@ EOF_RPC_WRAPPER
 'require ui';
 'require session';
 
-// DNS Manager LuCI common module version: 2.72
+// DNS Manager LuCI common module version: 2.73
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -6288,7 +6288,7 @@ function injectStyle(root){
   '.dm-version-action{display:flex;align-items:center;gap:7px;flex-wrap:wrap}.dm-version-action .cbi-button{padding:4px 9px;font-size:12px}.dm-version-error{display:inline-flex;align-items:center;gap:7px;flex-wrap:wrap}.dm-version-error-text{font-size:11.5px;opacity:.72}.dm-version-line{display:flex;align-items:center;gap:9px;margin:7px 0;flex-wrap:wrap}.dm-version-name{font-size:13px;font-weight:600;flex:0 1 160px;min-width:135px}.dm-version-state{min-width:0;flex:1 1 auto}.dm-card h3{margin:0 0 10px;font-size:15px;font-weight:600;display:flex;align-items:center;gap:7px;flex-wrap:wrap}.dm-doh-profile{display:inline-flex;align-items:center;gap:5px;margin-left:auto;padding:4px 9px;border:1px solid rgba(110,118,129,.18);border-radius:999px;background:rgba(110,118,129,.06);font-size:11.5px;font-weight:500;white-space:nowrap}.dm-doh-profile-label{opacity:.62}.dm-doh-profile-value{font-weight:650}.dm-row{display:flex;align-items:center;gap:10px;margin:6px 0;font-size:13px;flex-wrap:wrap}.dm-label{opacity:.65;flex-shrink:0}.dm-row-value{overflow-wrap:anywhere}'+
   '.dm-badge{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:999px;font-size:12px;font-weight:600;white-space:nowrap}.dm-dot{width:8px;height:8px;border-radius:50%;display:inline-block;flex-shrink:0}'+
   '.dm-ok{background:rgba(46,160,67,.12);color:#1a7f37}.dm-ok .dm-dot{background:#1a7f37}.dm-bad{background:rgba(207,34,46,.10);color:#cf222e}.dm-bad .dm-dot{background:#cf222e}.dm-warn{background:rgba(191,135,0,.12);color:#9a6700}.dm-warn .dm-dot{background:#9a6700}.dm-off{background:rgba(9,105,218,.10);color:#0969da}.dm-off .dm-dot{background:#0969da}.dm-muted{background:transparent;color:inherit;opacity:.6}.dm-muted .dm-dot{background:currentColor}'+
-  '.dm-engine-choices{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr));gap:12px;margin:14px 0}.dm-engine-choice{display:flex;flex-direction:column;align-items:flex-start;gap:10px;padding:16px;border:1px solid rgba(110,118,129,.24);border-radius:12px;background:rgba(110,118,129,.04)}.dm-engine-choice-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.dm-engine-choice p{margin:0;flex:1}.dm-engine-selected{border-color:rgba(35,134,54,.55);background:rgba(35,134,54,.06)}'+
+  '.dm-engine-choices{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr));gap:12px;margin:14px 0}.dm-engine-choice{display:flex;flex-direction:column;align-items:flex-start;gap:10px;padding:16px;border:1px solid rgba(110,118,129,.24);border-radius:12px;background:rgba(110,118,129,.04)}.dm-engine-choice-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.dm-engine-choice{width:100%;text-align:left;color:inherit;font:inherit;cursor:pointer;transition:border-color .18s,background-color .18s,box-shadow .18s}.dm-engine-choice:hover:not(:disabled){border-color:rgba(35,134,54,.7);background:rgba(35,134,54,.08)}.dm-engine-choice:focus-visible{outline:2px solid #238636;outline-offset:2px}.dm-engine-choice:disabled{cursor:default;opacity:1}.dm-engine-choice-head{width:100%;justify-content:space-between}.dm-engine-choice-action{color:#35a86a;font-size:.85em}.dm-engine-selected{border-color:rgba(35,134,54,.55);background:rgba(35,134,54,.06)}'+
   '.dm-grid2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.dm-system-card{margin-bottom:0}.dm-system-layout{display:flex;flex-direction:column;gap:10px}.dm-system-rows{min-width:0}.dm-system-meters{min-width:0;width:100%}.dm-system-meter{padding:7px 0}.dm-system-meter-head{display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:12.5px}.dm-system-meter-head strong{font-size:12px;white-space:nowrap}.dm-system-meter-track{height:8px;margin-top:6px;border-radius:999px;background:rgba(110,118,129,.16);overflow:hidden}.dm-system-meter-track i{display:block;height:100%;border-radius:999px;background:#1a7f37;transition:width .25s ease}.dm-system-hint{font-size:10.5px;opacity:.58;margin-top:3px}.dm-grid3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}.dm-grid4{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}'+
   '.dm-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:11px}.dm-slot-picker-categories{gap:5px;margin:0 0 9px}.dm-slot-picker-categories .cbi-button{padding:4px 8px;font-size:11.5px}.dm-picker-list{display:flex;flex-direction:column;gap:7px;max-height:60vh;overflow:auto}.dm-picker-item{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 0;border-bottom:1px solid rgba(110,118,129,.14)}.dm-picker-main{min-width:0;flex:1}.dm-picker-name{font-size:13px;font-weight:600;overflow-wrap:anywhere}.dm-picker-meta{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:3px}.dm-picker-actions{display:flex;gap:6px;flex-shrink:0;flex-wrap:wrap}.dm-component-item{padding:8px 0;border-bottom:1px solid rgba(110,118,129,.14)}.dm-component-group{padding:8px 0;border-bottom:1px solid rgba(110,118,129,.14)}.dm-component-dns-list{margin-top:6px;display:flex;flex-direction:column;gap:5px}.dm-component-dns{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:6px 0;border-top:1px solid rgba(110,118,129,.08);flex-wrap:wrap}.dm-component-dns:first-child{border-top:0}.dm-component-dns-main{display:flex;align-items:center;gap:8px;min-width:0;flex:1 1 260px}.dm-component-dns-slot{font-size:11.5px;font-weight:700;opacity:.62;min-width:118px}.dm-component-dns-name{font-size:12.5px;font-weight:600;overflow-wrap:anywhere}.dm-component-dns-meta{display:flex;align-items:center;gap:9px;font-size:11.5px;opacity:.78;flex:0 0 auto}.dm-component-dns-ping{font-size:12px;white-space:nowrap;opacity:.8}.dm-component-item:last-of-type{border-bottom:0}.dm-component-head{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}.dm-component-title{font-size:13px;font-weight:600}.dm-component-details{font-size:11.5px;line-height:1.45;opacity:.66;margin-top:3px;overflow-wrap:anywhere}.dm-component-date{font-size:12.5px;opacity:.82}.dm-profile-progress{margin-top:11px}.dm-profile-progress-status{font-size:12.5px;font-weight:600;margin-top:8px}.dm-profile-progress-detail{font-size:11px;opacity:.62;margin-top:4px;overflow-wrap:anywhere}'+'.dm-actions .cbi-button{margin:0;padding:5px 11px;font-size:12.5px}'+
   '.dm-hint{font-size:12.5px;opacity:.68;line-height:1.5;margin:0 0 8px}.dm-mini{font-size:11px;opacity:.62}.dm-meta{font-size:11px;line-height:1.45;opacity:.66}.dm-update{padding:8px 10px;border-radius:8px;background:rgba(26,127,55,.08);border:1px solid rgba(26,127,55,.18);font-size:12.5px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}'+
@@ -6974,10 +6974,11 @@ function renderDoH(root,st){
   var engine=st.dnscrypt_engine==='dnscrypt-proxy2'?'dnscrypt-proxy2':(Number(st.engine_installed)===0?'none':'https-dns-proxy');
   function engineChoice(id,title,description){
     var selected=engine===id;
-    return E('div',{'class':'dm-engine-choice'+(selected?' dm-engine-selected':'')},[
-      E('div',{'class':'dm-engine-choice-head'},[E('strong',{},title),selected?badge('dm-ok','выбран'):null].filter(Boolean)),
-      E('p',{'class':'dm-mini'},description),
-      btn(selected?'Используется':engine==='none'?'Установить':'Выбрать',selected?'cbi-button-neutral':'cbi-button-action',function(){switchEngine(id,root);},{disabled:!!state.busy||!!state.jobRunning||selected})
+    var attrs={'type':'button','class':'dm-engine-choice'+(selected?' dm-engine-selected':''),'aria-pressed':selected?'true':'false','click':function(){if(!selected&&!state.busy&&!state.jobRunning)switchEngine(id,root);}};
+    if(selected||state.busy||state.jobRunning)attrs.disabled=true;
+    return E('button',attrs,[
+      E('span',{'class':'dm-engine-choice-head'},[E('strong',{},title),selected?badge('dm-ok','выбран'):E('span',{'class':'dm-engine-choice-action'},engine==='none'?'Установить':'Выбрать')]),
+      E('span',{'class':'dm-mini'},description)
     ]);
   }
   e.appendChild(card('DNS-движок',[
@@ -7064,7 +7065,7 @@ function renderDoH(root,st){
   } else if(Number(st.steer_running)===1 && Number(st.steer_dns_active)!==1){
     ch.push(E('div',{'class':'dm-inline-msg info'},'Steer запущен, но активный перехват DNS :53→:5300 не обнаружен. Поэтому DNS Manager не считает Steer владельцем forced-DNS и сохраняет обычную схему принудительного DNS.'));
   }
-  if(state.pageNotice.doh && !(state.currentTest && ['Текущих DNS для проверки нет.','Проверяю текущие DNS…','Проверяю системные DNS…','Проверка текущих DNS завершена.','Проверка текущих DNS завершена с ошибками.'].indexOf(state.pageNotice.doh)!==-1))ch.push(E('div',{'class':'dm-inline-msg info'},state.pageNotice.doh));
+  if(state.pageNotice.doh && state.pageNotice.doh!=='Проверка текущих DNS завершена.' && !(state.currentTest && ['Текущих DNS для проверки нет.','Проверяю текущие DNS…','Проверяю системные DNS…','Проверка текущих DNS завершена с ошибками.'].indexOf(state.pageNotice.doh)!==-1))ch.push(E('div',{'class':'dm-inline-msg info'},state.pageNotice.doh));
   appendUninstall(ch,root);
   e.appendChild(card('DNS over HTTPS',ch));
   e.appendChild(renderBootstrap(root,st));
@@ -8381,7 +8382,7 @@ function saveRouteCache(key,st,aux){
     var entry=JSON.parse(JSON.stringify({ts:Date.now(),data:st,aux:aux}));
     window.dmRouteCache[key]=entry;
     if(typeof session!=='undefined'&&session.setLocalData)
-      session.setLocalData('dns-manager-route-2.72-'+key,entry);
+      session.setLocalData('dns-manager-route-2.73-'+key,entry);
   }catch(e){}
 }
 function clearEngineUiState(){
@@ -8389,7 +8390,7 @@ function clearEngineUiState(){
   window.dmRouteCache=Object.create(null);
   window.dmStatusPromises=Object.create(null);
   ['dashboard','doh','network','time','devices','catalog','log'].forEach(function(key){
-    try{if(typeof session!=='undefined'&&session.setLocalData)session.setLocalData('dns-manager-route-2.72-'+key,null);}catch(e){}
+    try{if(typeof session!=='undefined'&&session.setLocalData)session.setLocalData('dns-manager-route-2.73-'+key,null);}catch(e){}
   });
   state.pageNotice={};state.profileProgress=null;state.profileOutput='';state.profileResumeStarted=false;
   state.regionalNotice='';state.pendingProfile='';state.pendingRegional=null;state.pendingDnscryptServer='';state.dnscryptDiagnostic='';state.dnscryptDiagnosticKind='';state.dnscryptDiagnosticResult='';
@@ -8401,7 +8402,7 @@ function clearEngineUiState(){
 function routeCacheEntry(key){
   var entry=key&&window.dmRouteCache&&window.dmRouteCache[key];
   if(!entry&&key){
-    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.72-'+key);}catch(e){}
+    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.73-'+key);}catch(e){}
   }
   if(!entry||typeof entry.ts!=='number'||Date.now()-entry.ts<0||Date.now()-entry.ts>300000||!entry.data||entry.data.ok!==true)return null;
   return entry;
@@ -9089,7 +9090,7 @@ function testCurrent(root){
   var targets=displayDnsRows(window.dmState||{}).filter(function(d){return d&&((d.slot&&d.id)||(!d.slot&&d.url&&d.port));});
   if(!targets.length){
     state.busy=true;state.currentTest=null;state.pageNotice.doh='Проверяю системный DNS…';renderDoH(root,window.dmState||{});
-    return callSystemDnsTest().then(waitDnsHealth).then(function(r){state.pageNotice.doh=(r&&r.output)||'Не удалось проверить системный DNS.';})
+    return callSystemDnsTest().then(waitDnsHealth).then(function(r){state.pageNotice.doh=r&&r.ok?(String(r.output||'').trim()==='Ожидание подключения к сети.'?'Ожидание подключения к сети.':''):((r&&r.output)||'Не удалось проверить системный DNS.');})
       .catch(function(err){state.pageNotice.doh=withRpcError('Не удалось проверить системный DNS.',err);})
       .then(function(){state.busy=false;renderDoH(root,window.dmState||{});});
   }
@@ -9463,7 +9464,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 2.72
+// DNS Manager LuCI version: 2.73
 return view.extend({
   load: DM.load,
   render: DM.render,
