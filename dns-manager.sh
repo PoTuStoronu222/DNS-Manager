@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="4.31"
+VERSION="4.32"
 # 3.86: make LuCI the primary interface and preserve external DNS on removal.
 # 3.85: revalidate Watchdog settings before recovery.
 # 3.84: cap DNS catalog test concurrency by total RAM on small routers.
@@ -29,9 +29,13 @@ CUSTOM_DNS_CATALOG="$CFG_DIR/dns-custom-catalog.conf"
 NTP_CATALOG="$CFG_DIR/ntp-catalog.conf"
 BOOTSTRAP_DNS_ALL="77.88.8.8,77.88.8.1,94.150.14.15,1.1.1.1,1.0.0.1,8.8.8.8,8.8.4.4,9.9.9.9,149.112.112.112,208.67.222.222,208.67.220.220,149.112.121.10,149.112.122.10,76.76.2.0,76.76.10.0,2606:4700:4700::1111,2606:4700:4700::1001,2001:4860:4860::8888,2001:4860:4860::8844,2620:fe::fe,2620:fe::9"
 DNSCAT_VERSION="8.8-FULL-CONFIG-CLEAN"
-DNSCAT_REVISION="1"
-DNSCAT_REF="${DNS_MANAGER_SOURCE_REF:-test/dnscrypt-proxy2-engine}"
-case "$DNSCAT_REF" in ''|/*|*//*|*..*|*[!A-Za-z0-9._/-]*) DNSCAT_REF=test/dnscrypt-proxy2-engine;; esac
+DNSCAT_REVISION="2"
+DNSCAT_REF="${DNS_MANAGER_SOURCE_REF:-}"
+if [ -z "$DNSCAT_REF" ]; then
+    _source_url="$(sed -n 's/^source=//p' /etc/dns-manager-luci/version 2>/dev/null | head -n1)"
+    case "$_source_url" in https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/*/dns-manager-luci.sh) DNSCAT_REF="${_source_url#https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/}"; DNSCAT_REF="${DNSCAT_REF%/dns-manager-luci.sh}";; esac
+fi
+case "$DNSCAT_REF" in ''|/*|*//*|*..*|*[!A-Za-z0-9._/-]*) DNSCAT_REF=main;; esac
 DNSCAT_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/$DNSCAT_REF/catalogs/dns-8.8-FULL-CONFIG-CLEAN.conf"
 WATCHDOG_RESTART_COOLDOWN=300
 WATCHDOG_BACKEND="cron"
@@ -104,7 +108,7 @@ WATCHDOG_CRON_PID_COUNT=0
 WATCHDOG_CRON_BOOT_ENABLED="unknown"
 WATCHDOG_CRON_DETECT_SOURCE="none"
 WATCHDOG_CRON_SCHEDULER_STATE="$STATE_DIR/watchdog-scheduler.state"
-LUCI_COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
+LUCI_COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/$DNSCAT_REF/dns-manager-luci.sh"
 LUCI_COMPANION_CACHE="$BASE_DIR/dns-manager-luci.sh"
 LUCI_STATE_FILE="$CFG_DIR/luci-state.conf"
 LUCI_MENU_FILE="/usr/share/luci/menu.d/luci-app-dns-manager.json"
@@ -400,7 +404,7 @@ C_TITLE='\033[0;34m'
 C_SECTION='\033[1;33m'
 # ==========================================
 # ==========================================
-UPDATE_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager.sh"
+UPDATE_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/$DNSCAT_REF/dns-manager.sh"
 _ver_newer() {
     awk -v a="$1" -v b="$2" 'BEGIN{
         na=split(a,x,"\\."); nb=split(b,y,"\\."); n=(na>nb?na:nb);
@@ -502,9 +506,6 @@ auto_update_manager() {
     UPDATE_TMP_FILE="$_upd_tmp"
     rm -f "$_upd_tmp" "$_upd_syntax" 2>/dev/null || true
     _update_source="$UPDATE_URL"
-    if [ "$(uci -q get dns-manager.global.active_engine 2>/dev/null)" = dnscrypt-proxy2 ]; then
-        _update_source="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/dnscrypt-proxy2-engine/dns-manager.sh"
-    fi
     _update_url="${_update_source}?_dmcb=$(date +%s 2>/dev/null || printf 0)-$$"
 
     if command -v curl >/dev/null 2>&1; then
@@ -749,7 +750,7 @@ catalog_validate_file() {
     [ "$_ver" = "$DNSCAT_VERSION" ] || { [ "$_mode" = legacy ] && [ "$_ver" = 8.7-RU-NOSOCIAL ]; } || return 1
     if [ "$_mode" != "legacy" ]; then
         grep -Fqx "# DNSCATREV=$DNSCAT_REVISION" "$_f" 2>/dev/null || return 1
-        grep -Fqx "# ENTRIES=117" "$_f" 2>/dev/null || return 1
+        grep -Fqx "# ENTRIES=122" "$_f" 2>/dev/null || return 1
     fi
     awk -F'|' -v strict="$_mode" '
         /^[[:space:]]*#/ || /^[[:space:]]*$/ { next }
@@ -761,9 +762,20 @@ catalog_validate_file() {
             ids[$1]++
             if (ids[$1] > 1) bad=1
         }
-        END { if (bad || count < 1 || (strict != "legacy" && count != 117)) exit 1 }
+        END { if (bad || count < 1 || (strict != "legacy" && count != 122)) exit 1 }
     ' "$_f" >/dev/null 2>&1 || return 1
     return 0
+}
+catalog_migrate_selected_ids() {
+    local _old _new _tmp
+    _old="$1"; _new="$2"
+    [ -f "$CONFIG_FILE" ] && [ -r "$_old" ] && [ -r "$_new" ] || return 0
+    [ "$(awk -F'|' '$1=="shecan" {print $5; exit}' "$_old")" = "https://dns.zapret.moe/dns-query" ] || return 0
+    [ "$(awk -F'|' '$1=="zapret_moe" {print $5; exit}' "$_new")" = "https://dns.zapret.moe/dns-query" ] || return 1
+    grep -Eq "^(SLOT_[1-6]|SLOT_RU|REGIONAL_SAVED_ID)='shecan'$" "$CONFIG_FILE" || return 0
+    _tmp="$(mktemp "${CONFIG_FILE}.migrate.XXXXXX")" || return 1
+    sed "s/^\(SLOT_[1-6]\|SLOT_RU\|REGIONAL_SAVED_ID\)='shecan'$/\1='zapret_moe'/" "$CONFIG_FILE" > "$_tmp" &&
+        chmod 600 "$_tmp" && mv -f "$_tmp" "$CONFIG_FILE" || { rm -f "$_tmp"; return 1; }
 }
 write_catalogs() {
     if catalog_validate_file "$DNS_CATALOG"; then
@@ -775,12 +787,19 @@ write_catalogs() {
     _old_magicdns_url="$(awk -F'|' '$1=="magicdns" {print $5; exit}' "$DNS_CATALOG" 2>/dev/null)"
     _old_geohide_url="$(awk -F'|' '$1=="geohide" {print $5; exit}' "$DNS_CATALOG" 2>/dev/null)"
     if catalog_download "$_catalog_tmp" && catalog_validate_file "$_catalog_tmp"; then
+        _catalog_config_backup=""
+        if [ -f "$CONFIG_FILE" ]; then
+            _catalog_config_backup="$(mktemp "${CONFIG_FILE}.backup.XXXXXX")" || { rm -f "$_catalog_tmp"; return 1; }
+            cp -p "$CONFIG_FILE" "$_catalog_config_backup" || { rm -f "$_catalog_tmp" "$_catalog_config_backup"; return 1; }
+        fi
+        catalog_migrate_selected_ids "$DNS_CATALOG" "$_catalog_tmp" || { rm -f "$_catalog_tmp" "$_catalog_config_backup"; err_msg "Не удалось сохранить выбранный DNS при обновлении каталога."; return 1; }
         _new_shecan_url="$(awk -F'|' '$1=="shecan" {print $5; exit}' "$_catalog_tmp" 2>/dev/null)"
         _new_astracat_url="$(awk -F'|' '$1=="astracat" {print $5; exit}' "$_catalog_tmp" 2>/dev/null)"
         _new_magicdns_url="$(awk -F'|' '$1=="magicdns" {print $5; exit}' "$_catalog_tmp" 2>/dev/null)"
         _new_geohide_url="$(awk -F'|' '$1=="geohide" {print $5; exit}' "$_catalog_tmp" 2>/dev/null)"
         mkdir -p "$CFG_DIR" 2>/dev/null || true
         if mv -f "$_catalog_tmp" "$DNS_CATALOG" 2>/dev/null; then
+            [ -z "$_catalog_config_backup" ] || rm -f "$_catalog_config_backup"
             chmod 600 "$DNS_CATALOG" 2>/dev/null || true
             if [ "$_old_shecan_url" != "$_new_shecan_url" ]; then
                 for _result_file in "$TEST_RESULTS" "$PERSIST_STATE_DIR/dns-test-results.conf"; do
@@ -818,9 +837,10 @@ write_catalogs() {
                         rm -f "$_result_tmp" 2>/dev/null || true
                 done
             fi
-            log_msg "Каталог DNS: загружен внешний $DNSCAT_VERSION (revision $DNSCAT_REVISION, 117 записей)."
+            log_msg "Каталог DNS: загружен внешний $DNSCAT_VERSION (revision $DNSCAT_REVISION, 122 записи)."
             return 0
         fi
+        [ -z "$_catalog_config_backup" ] || mv -f "$_catalog_config_backup" "$CONFIG_FILE" || return 1
     fi
     rm -f "$_catalog_tmp" 2>/dev/null || true
     if catalog_validate_file "$DNS_CATALOG" legacy; then
@@ -8222,6 +8242,14 @@ save_watchdog_state() {
         return 1
     fi
 }
+watchdog_check_due() {
+    local _now _elapsed
+    _now="$(date +%s 2>/dev/null)"
+    case "$_now:${WATCHDOG_STATE_LAST_CHECK:-0}" in *[!0-9:]*) return 0;; esac
+    [ "${WATCHDOG_STATE_LAST_CHECK:-0}" -gt 0 ] || return 0
+    _elapsed=$((_now-WATCHDOG_STATE_LAST_CHECK))
+    [ "$_elapsed" -lt 0 ] || [ "$_elapsed" -ge "${WATCHDOG_INTERVAL:-120}" ]
+}
 watchdog_embedded_loop() {
     if ! watchdog_legacy_engine_allowed; then
         [ "$(cat "${CFG_DIR:-/etc/dns-manager/config}/dnscrypt-engine" 2>/dev/null)" = dnscrypt-proxy2 ] || return 0
@@ -8238,6 +8266,7 @@ watchdog_embedded_loop() {
     done
     WD_FORCE_ERROR=0
     load_watchdog_state || return 1
+    watchdog_check_due || return 0
 
     # Only observe the active interception path: Steer owns its own rules.
     detect_forced_dns_path
@@ -8292,7 +8321,7 @@ watchdog_embedded_loop() {
             eval "_fc=\${WD_FAIL_${_slot}:-0}"
             _fc=$((_fc+1))
             eval "WD_FAIL_${_slot}=\$_fc"
-            [ "$_fc" -lt 3 ] || _threshold_slots="$_threshold_slots $_slot"
+            [ "$_fc" -lt "${WATCHDOG_FAIL_THRESHOLD:-2}" ] || _threshold_slots="$_threshold_slots $_slot"
         fi
     done
     # System instances are monitored without changing their configuration.
@@ -8351,6 +8380,7 @@ watchdog_dnscrypt_check() {
     WD_FAIL_1=0
     WD_RECOVERY_BLOCKED_1=0
     load_watchdog_state || return 1
+    watchdog_check_due || return 0
     _records="$(mktemp "$STATE_DIR/dns-watchdog-cycle.XXXXXX")" || return 1
     _result=FAIL
     if "${DNS_MANAGER_DNSCRYPT_INIT:-/etc/init.d/dnscrypt-proxy}" running >/dev/null 2>&1 && local_dns_query_ok 5053 example.com; then
@@ -8708,18 +8738,26 @@ EOF_WATCHDOG
     chmod 755 /usr/bin/dns-manager-watchdog
 }
 watchdog_service_enabled() {
-    grep -Fqx '*/2 * * * * /usr/bin/dns-manager-watchdog >/dev/null 2>&1 # dm-watchdog' /etc/crontabs/root 2>/dev/null
+    grep -Fqx '* * * * * /usr/bin/dns-manager-watchdog >/dev/null 2>&1 # dm-watchdog' /etc/crontabs/root 2>/dev/null || grep -Fqx '*/2 * * * * /usr/bin/dns-manager-watchdog >/dev/null 2>&1 # dm-watchdog' /etc/crontabs/root 2>/dev/null
 }
 watchdog_service_running() {
     watchdog_service_enabled && /etc/init.d/cron running >/dev/null 2>&1
 }
 watchdog_service_stop_disable() {
     if [ -x "$WATCHDOG_SERVICE_PATH" ]; then
-        "$WATCHDOG_SERVICE_PATH" stop >/dev/null 2>&1 || true
-        "$WATCHDOG_SERVICE_PATH" disable >/dev/null 2>&1 || true
+        watchdog_service_file_owned "$WATCHDOG_SERVICE_PATH" "$WATCHDOG_SERVICE_MARKER" || {
+            err_msg "Обнаружена сторонняя служба watchdog; автоматический перенос остановлен."
+            return 1
+        }
+        "$WATCHDOG_SERVICE_PATH" stop >/dev/null 2>&1 || {
+            "$WATCHDOG_SERVICE_PATH" running >/dev/null 2>&1 && return 1
+        }
+        "$WATCHDOG_SERVICE_PATH" disable >/dev/null 2>&1 || return 1
+        "$WATCHDOG_SERVICE_PATH" running >/dev/null 2>&1 && return 1
+        "$WATCHDOG_SERVICE_PATH" enabled >/dev/null 2>&1 && return 1
     fi
     if [ -f /etc/crontabs/root ]; then
-        sed -i '\|^\*/2 \* \* \* \* /usr/bin/dns-manager-watchdog >/dev/null 2>\&1 # dm-watchdog$|d' /etc/crontabs/root || return 1
+        sed -i '\|^\*/2 \* \* \* \* /usr/bin/dns-manager-watchdog >/dev/null 2>\&1 # dm-watchdog$|d;\|^\* \* \* \* \* /usr/bin/dns-manager-watchdog >/dev/null 2>\&1 # dm-watchdog$|d' /etc/crontabs/root || return 1
         /etc/init.d/cron restart >/dev/null 2>&1 || return 1
     fi
 }
@@ -8750,7 +8788,7 @@ watchdog_service_start_enable() {
     watchdog_service_install_files || return 1
     mkdir -p /etc/crontabs || return 1
     touch /etc/crontabs/root || return 1
-    watchdog_service_enabled || printf '%s\n' '*/2 * * * * /usr/bin/dns-manager-watchdog >/dev/null 2>&1 # dm-watchdog' >> /etc/crontabs/root || return 1
+    watchdog_service_enabled || printf '%s\n' '* * * * * /usr/bin/dns-manager-watchdog >/dev/null 2>&1 # dm-watchdog' >> /etc/crontabs/root || return 1
     /etc/init.d/cron enable >/dev/null 2>&1 || return 1
     /etc/init.d/cron restart >/dev/null 2>&1 || return 1
     watchdog_service_running
@@ -9349,7 +9387,14 @@ watchdog|--watchdog|-w)
     run_watchdog
     exit $?
     ;;
+__catalog-migrate)
+    catalog_migrate_selected_ids "$DNS_CATALOG" "${2:-}"
+    exit $?
+    ;;
 __watchdog-migrate)
+    mkdir -p /var/lock || exit 1
+    exec 8>/var/lock/dns-manager-watchdog-migrate.lock || exit 1
+    flock -w 30 8 || exit 1
     preflight_readonly
     init_dirs
     load_config
@@ -9357,6 +9402,11 @@ __watchdog-migrate)
     exit $?
     ;;
 __watchdog-loop|__watchdog-once)
+    # procd owns this migration separately, so stopping the old service is safe.
+    if [ "${1:-}" = __watchdog-loop ] && watchdog_service_file_owned "$WATCHDOG_SERVICE_PATH" "$WATCHDOG_SERVICE_MARKER"; then
+        ubus call service set '{"name":"dns-manager-watchdog-migrate","instances":{"main":{"command":["/bin/sh","/usr/bin/dns-manager","__watchdog-migrate"]}}}' >/dev/null 2>&1 || exit 1
+        exit 0
+    fi
     WATCHDOG_SINGLE_CYCLE=1
     # BusyBox ash accepts single-digit file descriptors. Keep the lock until
     # this process exits, including while it is waiting or checking DNS.

@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager full installer and LuCI companion
-# Version: 2.107
+# Version: 2.108
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.107"
+VERSION="2.108"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -1919,6 +1919,7 @@ EOF_DNSCRYPT_ASSET_13
 
 install_files() {
     require_manager || return 1
+    grep -Fq '__watchdog-migrate)' "$MANAGER" || { err "Сначала обновите DNS Manager, затем повторите обновление LuCI."; return 1; }
     install_dnscrypt_assets || { err "Не удалось установить файлы dnscrypt-proxy2."; return 1; }
     DNS_MANAGER_NO_UPDATE=1 "$MANAGER" __watchdog-migrate || { err "Не удалось перенести DNS Watchdog на cron."; return 1; }
 
@@ -2595,13 +2596,17 @@ TMP_ROOT="$RUNTIME_DIR/tmp"
 UPDATE_STATE="/etc/dns-manager-luci/update.state"
 UPDATE_CHECK_CACHE="$RUNTIME_DIR/update-check.cache"
 UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
-COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"
-if [ "$(uci -q get dns-manager.global.active_engine 2>/dev/null)" = dnscrypt-proxy2 ]; then
-    COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/dnscrypt-proxy2-engine/dns-manager-luci.sh"
-fi
+COMPANION_URL="$(sed -n 's/^source=//p' /etc/dns-manager-luci/version 2>/dev/null | head -n1)"
+case "$COMPANION_URL" in
+    https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/*/dns-manager-luci.sh) _dm_ref="${COMPANION_URL#https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/}"; _dm_ref="${_dm_ref%/dns-manager-luci.sh}";;
+    *) _dm_ref=main;;
+esac
+case "$_dm_ref" in ''|/*|*//*|*..*|*[!A-Za-z0-9._/-]*) _dm_ref=main;; esac
+DM_SOURCE_BASE="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/$_dm_ref"
+COMPANION_URL="$DM_SOURCE_BASE/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.107"
+SELF_VERSION="2.108"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -2689,7 +2694,7 @@ manager_const_num() {
 }
 
 watchdog_service_enabled() {
-    grep -Fqx '*/2 * * * * /usr/bin/dns-manager-watchdog >/dev/null 2>&1 # dm-watchdog' /etc/crontabs/root 2>/dev/null
+    grep -Fqx '* * * * * /usr/bin/dns-manager-watchdog >/dev/null 2>&1 # dm-watchdog' /etc/crontabs/root 2>/dev/null || grep -Fqx '*/2 * * * * /usr/bin/dns-manager-watchdog >/dev/null 2>&1 # dm-watchdog' /etc/crontabs/root 2>/dev/null
 }
 watchdog_service_running() {
     watchdog_service_enabled && /etc/init.d/cron running >/dev/null 2>&1
@@ -3049,9 +3054,9 @@ component_update_check() {
         _manager_error="DNS Manager не найден на роутере"
         UPDATE_CHECK_COMPONENTS_OK=0
     elif { [ "$(uci -q get dns-manager.global.active_engine 2>/dev/null)" = dnscrypt-proxy2 ] &&
-           fetch_raw_url "$_tmp" "https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/dnscrypt-proxy2-engine/dns-manager.sh"; } ||
+           fetch_raw_url "$_tmp" "$DM_SOURCE_BASE/dns-manager.sh"; } ||
          { [ "$(uci -q get dns-manager.global.active_engine 2>/dev/null)" != dnscrypt-proxy2 ] &&
-           fetch_raw_url "$_tmp" "https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager.sh"; }; then
+           fetch_raw_url "$_tmp" "$DM_SOURCE_BASE/dns-manager.sh"; }; then
         _manager_latest="$(sed -n 's/^VERSION="\([^"]*\)"$/\1/p' "$_tmp" 2>/dev/null | head -n1)"
         if [ -n "$_manager_latest" ]; then
             _manager_ok=1
@@ -3068,7 +3073,7 @@ component_update_check() {
 
     _catalog_latest=""; _catalog_latest_rev=""; _catalog_latest_total=0; _catalog_available=0; _catalog_ok=0; _catalog_error=""
     _tmp="$TMP_ROOT/catalog-check.$$"
-    if fetch_raw_url "$_tmp" "https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/dnscrypt-proxy2-engine/catalogs/dns-8.8-FULL-CONFIG-CLEAN.conf"; then
+    if fetch_raw_url "$_tmp" "$DM_SOURCE_BASE/catalogs/dns-8.8-FULL-CONFIG-CLEAN.conf"; then
         _catalog_latest="$(sed -n 's/^# DNSCATVER=//p' "$_tmp" 2>/dev/null | head -n1)"
         _catalog_latest_rev="$(sed -n 's/^# DNSCATREV=//p' "$_tmp" 2>/dev/null | head -n1)"
         _catalog_latest_total="$(grep -v '^#' "$_tmp" 2>/dev/null | grep -c '^[^|][^|]*|' 2>/dev/null || printf 0)"
@@ -3251,7 +3256,7 @@ update_check_json() {
 }
 update_catalog_direct() {
     _tmp="$TMP_ROOT/catalog-update-all.$$"
-    fetch_raw_url "$_tmp" "https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/dnscrypt-proxy2-engine/catalogs/dns-8.8-FULL-CONFIG-CLEAN.conf" || { rm -f "$_tmp" 2>/dev/null || true; return 3; }
+    fetch_raw_url "$_tmp" "$DM_SOURCE_BASE/catalogs/dns-8.8-FULL-CONFIG-CLEAN.conf" || { rm -f "$_tmp" 2>/dev/null || true; return 3; }
     _remote_ver="$(sed -n 's/^# DNSCATVER=//p' "$_tmp" 2>/dev/null | head -n1)"
     _remote_rev="$(sed -n 's/^# DNSCATREV=//p' "$_tmp" 2>/dev/null | head -n1)"
     _decl="$(sed -n 's/^# ENTRIES=//p' "$_tmp" 2>/dev/null | head -n1)"
@@ -3280,7 +3285,17 @@ update_catalog_direct() {
     sed '/^[[:space:]]*#/d;/^[[:space:]]*$/d' "$_tmp" > "$_rb" 2>/dev/null || true
     sed '/^[[:space:]]*#/d;/^[[:space:]]*$/d' "$CATALOG_FILE" > "$_lb" 2>/dev/null || true
     if cmp -s "$_rb" "$_lb" 2>/dev/null; then rm -f "$_tmp" "$_rb" "$_lb" 2>/dev/null || true; return 2; fi
-    mv -f "$_tmp" "$CATALOG_FILE" 2>/dev/null || { rm -f "$_rb" "$_lb" 2>/dev/null || true; return 5; }
+    _config_backup=""
+    if [ -f "$CONFIG_FILE" ]; then
+        _config_backup="$(mktemp "${CONFIG_FILE}.backup.XXXXXX")" || return 5
+        cp -p "$CONFIG_FILE" "$_config_backup" || { rm -f "$_config_backup"; return 5; }
+    fi
+    "$MANAGER_PATH" __catalog-migrate "$_tmp" >/dev/null 2>&1 || { rm -f "$_tmp" "$_rb" "$_lb" "$_config_backup"; return 5; }
+    mv -f "$_tmp" "$CATALOG_FILE" 2>/dev/null || {
+        [ -z "$_config_backup" ] || mv -f "$_config_backup" "$CONFIG_FILE"
+        rm -f "$_tmp" "$_rb" "$_lb"; return 5
+    }
+    [ -z "$_config_backup" ] || rm -f "$_config_backup"
     chmod 600 "$CATALOG_FILE" 2>/dev/null || true
     if [ "$_old_shecan_url" != "$_new_shecan_url" ]; then
         for _result_file in "$STATE_DIR/dns-test-results.conf" "$PERSIST_STATE_DIR/dns-test-results.conf"; do
@@ -3419,10 +3434,10 @@ update_manager_json() {
     if [ "$(uci -q get dns-manager.global.active_engine 2>/dev/null)" = dnscrypt-proxy2 ]; then
         _candidate="$TMP_ROOT/dnscrypt-manager-update.$$"
         _staged="${MANAGER_PATH}.new.$$"
-        if ! fetch_raw_url "$_candidate" "https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/test/dnscrypt-proxy2-engine/dns-manager.sh" ||
+        if ! fetch_raw_url "$_candidate" "$DM_SOURCE_BASE/dns-manager.sh" ||
            ! sh -n "$_candidate"; then
             rm -f "$_candidate"
-            json_error "Не удалось загрузить корректный DNS Manager из тестовой ветки"; return
+            json_error "Не удалось загрузить корректный DNS Manager из выбранной ветки"; return
         fi
         _latest="$(sed -n 's/^VERSION="\([^"]*\)"$/\1/p' "$_candidate" | head -n1)"
         case "$_latest" in ''|*[!0-9.]*) rm -f "$_candidate"; json_error "Не удалось определить версию DNS Manager"; return;; esac
@@ -3437,6 +3452,7 @@ update_manager_json() {
             json_error "Не удалось установить DNS Manager"; return
         fi
         rm -f "$_candidate"
+        DNS_MANAGER_NO_UPDATE=1 "$MANAGER_PATH" __watchdog-migrate >/dev/null 2>&1 || { json_error "DNS Manager обновлён, но перенос проверки DNS не завершён"; return; }
         printf '{"ok":true,"updated":true,"version":'; json_quote "$_latest"; printf '}'
         return
     fi
@@ -3485,7 +3501,7 @@ update_json() {
     fi
     _log="$TMP_ROOT/companion-update.log"
     rm -f "$_log" 2>/dev/null || true
-    if ! DNS_MANAGER_LUCI_SKIP_RPC_RELOAD=1 sh "$_tmp" update >"$_log" 2>&1; then
+    if ! DNS_MANAGER_SOURCE_REF="$_dm_ref" DNS_MANAGER_LUCI_SKIP_RPC_RELOAD=1 sh "$_tmp" update >"$_log" 2>&1; then
         _detail="$(tail -n 12 "$_log" 2>/dev/null | awk 'BEGIN{ORS=" "} {print}' | cut -c1-900)"
         rm -f "$_tmp" "$_log" 2>/dev/null || true
         [ -n "$_detail" ] || _detail="Установщик завершился с ненулевым кодом."
@@ -4039,9 +4055,11 @@ network_status_json() {
     _watchdog="$(cfg_get WATCHDOG_ENABLED)"; [ -n "$_watchdog" ] || _watchdog=0
     _watchdog_autoreplace="$(cfg_get WATCHDOG_AUTOREPLACE)"
     case "$_watchdog_autoreplace" in 0|1) ;; *) _watchdog_autoreplace="$_watchdog";; esac
-    _watchdog_interval=120
+    _watchdog_interval="$(cfg_get WATCHDOG_INTERVAL 2>/dev/null || printf 120)"
+    case "$_watchdog_interval" in ''|*[!0-9]*) _watchdog_interval=120;; esac
     _watchdog_backend=cron
-    _watchdog_threshold=3
+    _watchdog_threshold="$(cfg_get WATCHDOG_FAIL_THRESHOLD 2>/dev/null || printf 2)"
+    case "$_watchdog_threshold" in ''|*[!0-9]*) _watchdog_threshold=2;; esac
     _watchdog_repair_cooldown="$(manager_const_num WATCHDOG_REPAIR_COOLDOWN 300)"
     _watchdog_max_restarts="$(manager_const_num WATCHDOG_MAX_RESTARTS 2)"
     _watchdog_guard_interval="$(manager_const_num WATCHDOG_GUARD_INTERVAL 3600)"
@@ -4287,9 +4305,11 @@ status_json() {
     _watchdog="$(cfg_get WATCHDOG_ENABLED)"; [ -n "$_watchdog" ] || _watchdog=0
     _watchdog_autoreplace="$(cfg_get WATCHDOG_AUTOREPLACE)"
     case "$_watchdog_autoreplace" in 0|1) ;; *) _watchdog_autoreplace="$_watchdog";; esac
-    _watchdog_interval=120
+    _watchdog_interval="$(cfg_get WATCHDOG_INTERVAL 2>/dev/null || printf 120)"
+    case "$_watchdog_interval" in ''|*[!0-9]*) _watchdog_interval=120;; esac
     _watchdog_backend=cron
-    _watchdog_threshold=3
+    _watchdog_threshold="$(cfg_get WATCHDOG_FAIL_THRESHOLD 2>/dev/null || printf 2)"
+    case "$_watchdog_threshold" in ''|*[!0-9]*) _watchdog_threshold=2;; esac
     _watchdog_repair_cooldown="$(manager_const_num WATCHDOG_REPAIR_COOLDOWN 300)"
     _watchdog_max_restarts="$(manager_const_num WATCHDOG_MAX_RESTARTS 2)"
     _watchdog_guard_interval="$(manager_const_num WATCHDOG_GUARD_INTERVAL 3600)"
@@ -7033,7 +7053,7 @@ function renderOverview(root,st){
   var isDnscrypt=st.dnscrypt_engine==='dnscrypt-proxy2';
   var currentCheck=Number(st.watchdog_last_check)>0 && (isDnscrypt?st.watchdog_last_category==='dnscrypt':st.watchdog_last_category!=='dnscrypt');
   var wdDetails=!watchdogEnabled?'Периодическая проверка выключена.':
-    !currentCheck?'Проверка каждые 2 минуты. Результатов пока нет.':
+    !currentCheck?'Интервал проверки: '+Number(st.watchdog_interval||120)+' сек. Результатов пока нет.':
     'Последняя проверка: '+dateText(st.watchdog_last_check)+'.';
   if(watchdogEnabled&&currentCheck&&!isDnscrypt)wdDetails+=' Проверено: '+Number(st.watchdog_last_checked||0)+', ошибок: '+Number(st.watchdog_last_failed||0)+'.';
   var wdAuto=!watchdogEnabled?badge('dm-muted','проверка выключена'):watchdogAutoReplace?(watchdogService?badge('dm-ok','включена'):badge('dm-warn','проверка не работает')):badge('dm-muted','выключена');
