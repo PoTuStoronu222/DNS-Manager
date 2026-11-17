@@ -430,6 +430,13 @@ async function testDnscryptPoolPresentation(){
   const draft=ctx.dnscryptPoolDraft(st);
   if(draft.items.length!==1||draft.items[0].id!=='cloudflare')throw Error('draft does not begin with current pool');
   if(ctx.dnscryptPoolRows(st,root).children.length!==1)throw Error('pool editor does not show current server');
+  st.dnscrypt_running=1;st.dnscrypt_server_checks={cloudflare:'OK:35'};
+  ctx.window.sessionStorage.getItem=()=>JSON.stringify({base:'cloudflare',items:[{id:'google',name:'Google'},{id:'cloudflare',name:'Cloudflare'}]});
+  const rows=ctx.dnscryptPoolRows(st,root).children;
+  if(rows[0].children[1].children[0].label!=='ещё не применён')throw Error('draft server was shown as tested');
+  if(rows[1].children[1].children[0].kind!=='dm-ok'||!rows[1].children[1].children[0].label.includes('35 мс'))throw Error('current server check was not matched by id');
+  state.busy=true;state.dnscryptDiagnosticKind='test';state.dnscryptDiagnosticResult='';
+  if(ctx.dnscryptPoolRows(st,root).children[1].children[1].children[0].label!=='Проверяю DNS…')throw Error('pool row does not show checking');
 }
 async function testProfileClickBothEngines(){
   for(const engine of ['dnscrypt-proxy2','https-dns-proxy']){
