@@ -513,9 +513,10 @@ dnscrypt_check_pool() (
         rm -f "$TMP_DIR/t.$_entry_id"
         ( dns_url() { printf '%s' "$_entry_url"; }; dns_name() { printf '%s' "$_entry_id"; }; dns_cat() { printf '%s' dnscrypt; }; test_one_dns "$_entry_id" ) >/dev/null 2>&1 || :
         _check_result=$(awk -F'|' -v id="$_entry_id" '$1==id && NF>=5 {print $4 "|" $5;exit}' "$TMP_DIR/t.$_entry_id" 2>/dev/null)
-        case "$_check_result" in *'|'*) printf '%s|%s|%s|%s\n' "$_entry_id" "$_entry_url" "$_check_result" "$(date +%s)" >> "$_checks_tmp";; esac
+        case "$_check_result" in *'|'*) printf '%s|%s|%s|%s\n' "$_entry_id" "$_entry_url" "$_check_result" "$(date +%s)" >> "$_checks_tmp" || exit 1;; *) exit 1;; esac
     done < "$STATE_FILE"
-    mv -f "$_checks_tmp" "$RUNTIME_DIR/dnscrypt-server-checks"
+    [ -s "$_checks_tmp" ] || exit 1
+    mv -f "$_checks_tmp" "$RUNTIME_DIR/dnscrypt-server-checks" || exit 1
     rm -rf "$TMP_DIR"
 )
 
@@ -527,7 +528,8 @@ diagnostic_worker() {
     [ -z "$token" ] || printf 'pid_start=%s\n' "$token" >> "$JOB_DIR/health/state"
     reply=$(diagnostic "$method" </dev/null)
     if [ "$method" = dnscrypt_test ] && engine_selected && [ -r "$STATE_FILE" ]; then
-        dnscrypt_check_pool || :
+        rm -f "$RUNTIME_DIR/dnscrypt-server-checks"
+        dnscrypt_check_pool || reply='{"ok":false,"output":"Не удалось проверить серверы DNSCrypt."}'
     fi
     result=$(jsonfilter -s "$reply" -e '@.ok' 2>/dev/null)
     jsonfilter -s "$reply" -e '@.output' > "$JOB_DIR/health/output" 2>/dev/null || true
@@ -651,7 +653,12 @@ dnscrypt_pool_latency() {
                     if (value ~ /^[0-9]+$/) pending[$i]=value
                 }
             }
-            for (server in latest) delete latest[server]; for (server in pending) latest[server]=pending[server]
+            stamp=""
+            months="JanFebMarAprMayJunJulAugSepOctNovDec"
+            month=index(months,$2)
+            if ($1 ~ /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)$/ && month>0 && $3 ~ /^[0-9]+$/ && $4 ~ /^[0-9][0-9]:[0-9][0-9]:[0-9][0-9]$/ && $5 ~ /^[0-9][0-9][0-9][0-9]$/)
+                stamp=sprintf("%02d.%02d.%s,%s",$3,(month+2)/3,$5,$4)
+            for (server in latest) delete latest[server]; for (server in pending) latest[server]=pending[server] " " stamp
             collecting=0
         }
         END { for (server in latest) print server " " latest[server] }
@@ -675,11 +682,18 @@ status_extra() {
     json_add_int dnscrypt_running "$running"
     json_add_object dnscrypt_server_latency
     latency_records=$(dnscrypt_pool_latency "$running")
-    while read -r latency_server latency_ms; do
+    while read -r latency_server latency_ms latency_time; do
         case "$latency_server:$latency_ms" in manager-[1-6]:*[!0-9]*|manager-[1-6]:|*[!A-Za-z0-9:-]*) continue;; manager-[1-6]:*) json_add_int "$latency_server" "$latency_ms";; esac
     done <<EOF_LATENCY
 $latency_records
 EOF_LATENCY
+    json_close_object
+    json_add_object dnscrypt_server_latency_times
+    while read -r latency_server latency_ms latency_time; do
+        case "$latency_server:$latency_time" in manager-[1-6]:[0-9][0-9].[0-9][0-9].[0-9][0-9][0-9][0-9],[0-9][0-9]:[0-9][0-9]:[0-9][0-9]) json_add_string "$latency_server" "$latency_time";; esac
+    done <<EOF_LATENCY_TIME
+$latency_records
+EOF_LATENCY_TIME
     json_close_object
     latency_cache="$RUNTIME_DIR/dnscrypt-catalog-latencies.json"
     if [ -r "$latency_cache" ] && [ -r "$RUNTIME_DIR/dnscrypt-catalog-checksum" ] && [ -r "$CONFIG_DIR/dns-catalog.conf" ]; then
@@ -737,13 +751,23 @@ EOF_POOL
         while IFS='|' read -r check_id check_url check_ms check_status check_time; do
             case "$check_id" in ''|*[!A-Za-z0-9_-]*) continue;; esac
             case "$check_time" in ''|*[!0-9]*) continue;; esac
-            check_now=$(date +%s)
-            [ "$check_now" -ge "$check_time" ] && [ $((check_now - check_time)) -le 300 ] || continue
             grep -Fqx "server=$check_id|$check_url" "$STATE_FILE" || continue
             case "$check_status:$check_ms" in OK:*[!0-9]*|OK:) continue;; OK:*) json_add_string "$check_id" "OK:$check_ms";; *) json_add_string "$check_id" fail;; esac
         done < "$RUNTIME_DIR/dnscrypt-server-checks"
     fi
     json_close_object
+    json_add_object dnscrypt_server_check_times
+    if [ "$running" -eq 1 ] && [ -r "$STATE_FILE" ] && [ -r "$RUNTIME_DIR/dnscrypt-server-checks" ]; then
+        while IFS='|' read -r check_id check_url check_ms check_status check_time; do
+            case "$check_id" in ''|*[!A-Za-z0-9_-]*) continue;; esac
+            case "$check_time" in ''|*[!0-9]*) continue;; esac
+            grep -Fqx "server=$check_id|$check_url" "$STATE_FILE" || continue
+            case "$check_status:$check_ms" in OK:*[!0-9]*|OK:) continue;; esac
+            json_add_int "$check_id" "$check_time"
+        done < "$RUNTIME_DIR/dnscrypt-server-checks"
+    fi
+    json_close_object
+    json_add_int dnscrypt_check_now "$(date +%s)"
     json_add_array dnscrypt_servers
     if [ -r "$STATE_FILE" ]; then
         while IFS='|' read -r id url; do

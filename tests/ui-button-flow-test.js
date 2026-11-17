@@ -402,15 +402,16 @@ async function testSettingToggle(){
 }
 async function testDnscryptPoolPresentation(){
   const changes=[],state={busy:false,jobRunning:false},root={};
-  const ctx={state,E:(tag,attrs,children)=>({tag,attrs,children}),dnscryptServerName:(st,id)=>id,badge:(kind,label)=>({kind,label}),
+  const ctx={state,E:(tag,attrs,children)=>({tag,attrs,children}),dnscryptServerName:(st,id)=>id,badge:(kind,label)=>({kind,label}),dateText:()=> '17.11.2026, 12:00:00',
     btn:(label,cls,click,opts)=>({label,click,opts}),renderSlots:()=>{},selectDnscryptServer:id=>changes.push(id)};
   vm.createContext(ctx);vm.runInContext(extract('function dnscryptLatencyBadge(st,index){','function renderDoH(root,st){'),ctx);
   const st={dnscrypt_servers:['cloudflare'],dnscrypt_available_servers:['cloudflare','google'],dnscrypt_selected_server:'cloudflare'};
-  st.dnscrypt_running=1;st.dnscrypt_server_latency={'manager-1':48};
+  st.dnscrypt_running=1;st.dnscrypt_server_latency={'manager-1':48};st.dnscrypt_server_latency_times={'manager-1':'17.11.2026,12:00:00'};
   const current=ctx.dnscryptCurrentPool(st);
-  if(current.children[0].children[1].label!=='48 мс · последний замер'||ctx.dnscryptLatencyBadge(st,1).label!=='нет данных')throw Error('DNSCrypt latency display incorrect');
+  if(current.children[0].children[1].label!=='48 мс · замер DNSCrypt 17.11.2026, 12:00:00'||ctx.dnscryptLatencyBadge(st,1).label!=='нет данных')throw Error('DNSCrypt latency display incorrect');
   state.busy=true;state.dnscryptDiagnosticKind='test';state.dnscryptDiagnosticResult='';if(ctx.dnscryptLatencyBadge(st,0).label!=='Проверяю DNS…')throw Error('server checking state missing');state.busy=false;
-  st.dnscrypt_server_checks={cloudflare:'OK:35'};if(ctx.dnscryptLatencyBadge(st,0).kind!=='dm-ok'||ctx.dnscryptLatencyBadge(st,0).label!=='35 мс · доступен')throw Error('fresh result not shown');
+  st.dnscrypt_server_checks={cloudflare:'OK:35'};st.dnscrypt_server_check_times={cloudflare:1000};st.dnscrypt_check_now=1050;if(ctx.dnscryptLatencyBadge(st,0).kind!=='dm-ok'||ctx.dnscryptLatencyBadge(st,0).label!=='35 мс · доступен · проверено 17.11.2026, 12:00:00')throw Error('fresh result not shown');
+  st.dnscrypt_check_now=1400;if(ctx.dnscryptLatencyBadge(st,0).kind!=='dm-muted')throw Error('stale result shown as current');st.dnscrypt_check_now=1050;
   st.dnscrypt_server_checks={cloudflare:'fail'};if(ctx.dnscryptLatencyBadge(st,0).kind!=='dm-bad')throw Error('failed server not shown');
   st.dnscrypt_running=0;if(ctx.dnscryptLatencyBadge(st,0).label!=='нет данных')throw Error('stopped DNSCrypt showed old latency');
   if(current.children.length!==1||current.children[0].children[0].children!=='cloudflare')throw Error('current DNS list includes unused servers');
