@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager full installer and LuCI companion
-# Version: 2.77
+# Version: 2.78
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.77"
+VERSION="2.78"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -1380,8 +1380,8 @@ case "${1:-}" in
             switch_engine) switch_start ;;
             dnscrypt_test|system_dns_test) diagnostic_start "$2" ;;
             dnscrypt_log) diagnostic "$2" ;;
-            status|doh_status|network_status|time_status|log|update_check) status_extra "$2" ;;
-            runtime|page_meta|catalog|lan_devices|job|job_status|multi|set_ntp|update_background|uninstall|uninstall_status)
+            status|doh_status|network_status|time_status|log) status_extra "$2" ;;
+            runtime|page_meta|catalog|lan_devices|job|job_status|multi|set_ntp|update_check|update_background|uninstall|uninstall_status)
                 exec "$LEGACY" "$@" ;;
             *) error 'Действие пока недоступно для dnscrypt-proxy2' ;;
         esac ;;
@@ -2400,7 +2400,7 @@ if [ "$(uci -q get dns-manager.global.active_engine 2>/dev/null)" = dnscrypt-pro
 fi
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.77"
+SELF_VERSION="2.78"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -4864,7 +4864,7 @@ job_process_alive() {
         if [ "$_age" -ge "$_max_age" ] 2>/dev/null; then
             # Do not interrupt live state changes merely because a page polled late.
             case "$_mode" in
-                update|profile|regional|action|setting)
+                update|profile|regional|action|setting|version)
                     if [ -n "$_pid" ] && kill -0 "$_pid" 2>/dev/null; then return 0; fi ;;
             esac
             if [ -n "$_pid" ]; then
@@ -4881,7 +4881,7 @@ job_process_alive() {
 
     if [ -z "$_pid" ]; then
         # procd starts the worker asynchronously; allow it time to record PID.
-        if { [ "$_mode" = update ] || [ "$_mode" = combined ] || [ "$_mode" = profile ] || [ "$_mode" = action ] || [ "$_mode" = setting ] || [ "$_mode" = regional ] || [ "$_mode" = all ] || [ "$_mode" = current ] || [ "$_mode" = one ] || [ "$_mode" = system ]; } &&
+        if { [ "$_mode" = update ] || [ "$_mode" = combined ] || [ "$_mode" = profile ] || [ "$_mode" = action ] || [ "$_mode" = setting ] || [ "$_mode" = regional ] || [ "$_mode" = version ] || [ "$_mode" = all ] || [ "$_mode" = current ] || [ "$_mode" = one ] || [ "$_mode" = system ]; } &&
            [ -n "$_started" ] && [ -n "$_now" ] && [ "$_now" -ge "$_started" ] &&
            [ $((_now-_started)) -lt 30 ]; then
             return 0
@@ -5046,7 +5046,7 @@ run_bg_job() {
 
 mutation_worker() {
     DNSMGR_WORK_JOB="$1"; DNSMGR_WORK_KIND="$2"; DNSMGR_WORK_ARG="$3"
-    case "$DNSMGR_WORK_JOB:$DNSMGR_WORK_KIND" in action:action|setting:setting|profile:profile|regional:regional) ;; *) return 1;; esac
+    case "$DNSMGR_WORK_JOB:$DNSMGR_WORK_KIND" in action:action|setting:setting|profile:profile|regional:regional|version:version) ;; *) return 1;; esac
     job_record_pid "$DNSMGR_WORK_JOB" "$$"
     exec >>"$JOB_DIR/$DNSMGR_WORK_JOB/output" 2>&1 </dev/null
     DNSMGR_WORK_RC=1
@@ -5056,6 +5056,11 @@ mutation_worker() {
             RPC_METHOD="$DNSMGR_WORK_ARG"
             DNSMGR_ACTION_WORKER=1; DNSMGR_SETTING_WORKER=1
             run_action
+            grep -q '"ok"[[:space:]]*:[[:space:]]*true' "$JOB_DIR/$DNSMGR_WORK_JOB/output" && DNSMGR_WORK_RC=0
+            ;;
+        version)
+            INPUT="{\"force\":$DNSMGR_WORK_ARG}"
+            update_check_json
             grep -q '"ok"[[:space:]]*:[[:space:]]*true' "$JOB_DIR/$DNSMGR_WORK_JOB/output" && DNSMGR_WORK_RC=0
             ;;
         profile)
@@ -5085,6 +5090,22 @@ job_start_action() {
     printf 'status=running\nstarted=%s\nmode=action\nname=%s\n' "$(date +%s)" "$DNSMGR_ACTION_METHOD" > "$JOB_DIR/action/state"
     if run_bg_job action action "$DNSMGR_ACTION_METHOD"; then printf '{"ok":true,"job":"action"}'; fi
     release_runtime_lock "$RUNTIME_DIR/action-start.lock"
+}
+
+job_start_version_check() {
+    DNSMGR_VERSION_FORCE="$(jget force 2>/dev/null || true)"
+    [ "$DNSMGR_VERSION_FORCE" = 1 ] || DNSMGR_VERSION_FORCE=0
+    acquire_runtime_lock "$RUNTIME_DIR/version-start.lock" || { json_error "Проверка версий уже запускается"; return; }
+    if job_active version && job_process_alive "$JOB_DIR/version"; then
+        release_runtime_lock "$RUNTIME_DIR/version-start.lock"
+        printf '{"ok":true,"job":"version","resumed":true}'
+        return
+    fi
+    bg_service_idle version || { release_runtime_lock "$RUNTIME_DIR/version-start.lock"; return; }
+    job_prepare version || { release_runtime_lock "$RUNTIME_DIR/version-start.lock"; json_error "Не удалось подготовить проверку версий"; return; }
+    printf 'status=running\nstarted=%s\nmode=version\n' "$(date +%s)" > "$JOB_DIR/version/state"
+    if run_bg_job version version "$DNSMGR_VERSION_FORCE"; then printf '{"ok":true,"job":"version"}'; fi
+    release_runtime_lock "$RUNTIME_DIR/version-start.lock"
 }
 
 job_start_setting() {
@@ -6022,7 +6043,7 @@ case "${1:-}" in
             page_meta) page_meta_json;;
             runtime) runtime_json;;
             catalog) INPUT="$(cat 2>/dev/null || true)"; catalog_json;;
-            update_check) INPUT="$(cat 2>/dev/null || true)"; update_check_json;;            update_catalog) update_catalog_json;;            update_all) update_all_json;;            update) update_json;;            update_manager) update_manager_json;;            update_hdp) update_hdp_json;;
+            update_check) INPUT="$(cat 2>/dev/null || true)"; job_start_version_check;;            update_catalog) update_catalog_json;;            update_all) update_all_json;;            update) update_json;;            update_manager) update_manager_json;;            update_hdp) update_hdp_json;;
             update_background) background_start update;;
             test_combined) background_start combined;;
             add_custom_dns|delete_custom_dns|set_device_dns|set_cache|reset_dns|uninstall|set_profile|set_regional|set_slot|set_slot_domains|set_setting|set_bootstrap|set_watchdog_setting|set_watchdog_settings|set_ntp|set_test_age) INPUT="$(cat 2>/dev/null || true)"; RPC_METHOD="$2"; run_action;;
@@ -6087,7 +6108,7 @@ EOF_RPC_WRAPPER
 'require ui';
 'require session';
 
-// DNS Manager LuCI common module version: 2.77
+// DNS Manager LuCI common module version: 2.78
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -8432,7 +8453,7 @@ function saveRouteCache(key,st,aux){
     var entry=JSON.parse(JSON.stringify({ts:Date.now(),data:st,aux:aux}));
     window.dmRouteCache[key]=entry;
     if(typeof session!=='undefined'&&session.setLocalData)
-      session.setLocalData('dns-manager-route-2.77-'+key,entry);
+      session.setLocalData('dns-manager-route-2.78-'+key,entry);
   }catch(e){}
 }
 function clearEngineUiState(){
@@ -8440,7 +8461,7 @@ function clearEngineUiState(){
   window.dmRouteCache=Object.create(null);
   window.dmStatusPromises=Object.create(null);
   ['dashboard','doh','network','time','devices','catalog','log'].forEach(function(key){
-    try{if(typeof session!=='undefined'&&session.setLocalData)session.setLocalData('dns-manager-route-2.77-'+key,null);}catch(e){}
+    try{if(typeof session!=='undefined'&&session.setLocalData)session.setLocalData('dns-manager-route-2.78-'+key,null);}catch(e){}
   });
   state.pageNotice={};state.profileProgress=null;state.profileOutput='';state.profileResumeStarted=false;
   state.regionalNotice='';state.pendingProfile='';state.pendingRegional=null;state.pendingDnscryptServer='';state.dnscryptDiagnostic='';state.dnscryptDiagnosticKind='';state.dnscryptDiagnosticResult='';
@@ -8452,7 +8473,7 @@ function clearEngineUiState(){
 function routeCacheEntry(key){
   var entry=key&&window.dmRouteCache&&window.dmRouteCache[key];
   if(!entry&&key){
-    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.77-'+key);}catch(e){}
+    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.78-'+key);}catch(e){}
   }
   if(!entry||typeof entry.ts!=='number'||Date.now()-entry.ts<0||Date.now()-entry.ts>300000||!entry.data||entry.data.ok!==true)return null;
   return entry;
@@ -8580,7 +8601,7 @@ function checkUpdate(root,force){
   globalUpdateNotice('', 'info');
   state.versionCheck={running:true,manager:'running',luci:'running',hdp:'running',catalog:'running',started:Date.now(),job:''};
   renderOverview(root,window.dmState||{});
-  callUpdateCheck(force?1:0).then(function(r){
+  callUpdateCheck(force?1:0).then(awaitSettingResult).then(function(r){
     state.versionCheck.manager='done';
     state.versionCheck.luci='done';
     state.versionCheck.hdp='done';
@@ -8588,9 +8609,8 @@ function checkUpdate(root,force){
     state.versionCheck.running=false;
     state.versionCheck.error=!(r&&r.ok);
     if(r&&r.ok){
-      window.dmState=r;
       state.pageNotice.overview='';
-      renderOverview(root,r);
+      return refresh(root,true);
     }else{
       state.pageNotice.overview=(r&&r.error)||'Проверка актуальности не выполнена.';
       renderOverview(root,window.dmState||{});
@@ -8605,6 +8625,25 @@ function checkUpdate(root,force){
     state.pageNotice.overview=withRpcError('Проверка актуальности не выполнена.',err);
     renderOverview(root,window.dmState||{});
   });
+}
+
+function resumeVersionCheck(root){
+  if(state.versionResumeStarted||!rootAlive(root))return;
+  state.versionResumeStarted=true;
+  callJob('version').then(function(j){
+    if(!j||!j.ok||j.status!=='running'||state.updatingAll||(state.versionCheck&&state.versionCheck.running))return;
+    state.versionCheck={running:true,manager:'running',luci:'running',hdp:'running',catalog:'running',job:'version'};
+    renderOverview(root,window.dmState||{});
+    return awaitSettingResult({ok:true,job:'version'}).then(function(r){
+      state.versionCheck.running=false;
+      if(!r||!r.ok)state.pageNotice.overview=(r&&r.error)||'Проверка актуальности не выполнена.';
+      return refresh(root,true);
+    }).catch(function(err){
+      state.versionCheck.running=false;
+      state.pageNotice.overview=withRpcError('Результат проверки версий неизвестен.',err);
+      if(rootAlive(root))renderOverview(root,window.dmState||{});
+    });
+  }).catch(function(){});
 }
 
 function backgroundRequest(fn){
@@ -9315,8 +9354,8 @@ function pollJob(root,job,meta,done){
 
 // Recover the most recent operation when a page is opened again.
 function showRecentJob(root){
-  var ids=['profile','regional','action','setting','engine','update','test_all','test_current','test_one','test_system'];
-  var labels={profile:'Применение профиля',regional:'Региональный DNS',action:'Изменение настроек',setting:'Изменение настройки',engine:'Смена DNS-движка',update:'Обновление',test_all:'Проверка каталога DNS',test_current:'Проверка выбранных DNS',test_one:'Проверка DNS',test_system:'Проверка системных DNS'};
+  var ids=['profile','regional','action','setting','engine','update','version','test_all','test_current','test_one','test_system'];
+  var labels={profile:'Применение профиля',regional:'Региональный DNS',action:'Изменение настроек',setting:'Изменение настройки',engine:'Смена DNS-движка',update:'Обновление',version:'Проверка версий',test_all:'Проверка каталога DNS',test_current:'Проверка выбранных DNS',test_one:'Проверка DNS',test_system:'Проверка системных DNS'};
   function read(id){return callJob(id).catch(function(){return null;});}
   function display(j){
     if(!rootAlive(root)||!j)return;
@@ -9515,7 +9554,7 @@ return baseclass.extend({
     }
     scheduleRouteWarmup(root);
     window.setTimeout(function(){if(rootAlive(root))showRecentJob(root);},0);
-    if(route==='dashboard')window.setTimeout(function(){watchBackground(root,'update');},0);
+    if(route==='dashboard')window.setTimeout(function(){watchBackground(root,'update');resumeVersionCheck(root);},0);
     if(route==='doh')window.setTimeout(function(){watchBackground(root,'combined');},0);
     if(route==='catalog')window.setTimeout(function(){resumeCatalogTest(root);},0);
     if(!state.profileResumeStarted&&route==='doh')window.setTimeout(function(){
@@ -9550,7 +9589,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 2.77
+// DNS Manager LuCI version: 2.78
 return view.extend({
   load: DM.load,
   render: DM.render,
