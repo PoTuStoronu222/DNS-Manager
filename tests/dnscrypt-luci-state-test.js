@@ -66,17 +66,20 @@ const panel = {innerHTML:'', children:[], appendChild(node) { this.children.push
 ctx.renderDoH({querySelector: () => panel}, {engine_installed:0, slots:[], doh_instances:[]});
 const choices=panel.children[0].children[1].text;
 assert.equal(choices.length, 2);
-assert.equal(choices[0].text[2].label, 'Установить');
-assert.equal(choices[1].text[2].label, 'Установить');
+assert.equal(choices[0].text[0].text[1].text, 'Установить');
+assert.equal(choices[1].text[0].text[1].text, 'Установить');
 assert.equal(panel.children.length, 2);
 assert.equal(panel.children[0].title, 'DNS-движок');
 console.log('PASS: fresh installation offers engine installation without inactive DoH controls');
 
 ctx.row = (label, value) => ({label,value});
+ctx.yes = value => String(value) === '1';
+ctx.settingFeedback = () => null;
 const panel2 = {innerHTML:'', children:[], appendChild(node) { this.children.push(node); }};
 const dnscryptState = {dnscrypt_engine:'dnscrypt-proxy2', dnscrypt_running:1, dnscrypt_servers:['cloudflare'], dnscrypt_server_names:{cloudflare:'Cloudflare'}, dnscrypt_profile:'clean', dnscrypt_server_latency:{'manager-1':48}};
 ctx.renderDoH({querySelector: () => panel2}, dnscryptState);
-const details=panel2.children[1].children;
+assert.equal(panel2.children[1].title, 'Браузеры и DNS');
+const details=panel2.children[2].children;
 const serverList=details.find(x => x && x.attrs && x.attrs.class==='dm-doh-list');
 assert.equal(serverList.text[0].text[0].text,'Cloudflare');
 assert.equal(serverList.text[0].text[1].text,'48 мс · последний замер');
