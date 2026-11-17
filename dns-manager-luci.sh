@@ -8220,6 +8220,18 @@ function backgroundRequest(fn){
   var timeout=new Promise(function(resolve,reject){timer=setTimeout(function(){reject(new Error('Время ожидания ответа истекло'));},20000);});
   return Promise.race([Promise.resolve().then(fn),timeout]).then(function(v){clearTimeout(timer);return v;},function(e){clearTimeout(timer);throw e;});
 }
+function showUpdateResult(root,job,msg){
+  var key='dns-manager-update-'+String(job.started||'')+'-'+String(job.finished||'');
+  var finished=Number(job.finished||0), age=finished?Date.now()/1000-finished:0;
+  try { if(sessionStorage.getItem(key)==='seen')return; } catch(e) {}
+  if(age>300){try {sessionStorage.setItem(key,'seen');} catch(e) {} return;}
+  globalUpdateNotice(msg,'ok');
+  var notice=state.updateNotice;
+  window.setTimeout(function(){
+    try {sessionStorage.setItem(key,'seen');} catch(e) {}
+    if(state.updateNotice===notice){state.updateNotice=null;if(rootAlive(root))renderOverview(root,window.dmState||{});}
+  },8000);
+}
 function watchBackground(root,id){
   if(!rootAlive(root)||root.__dmBackgroundWatch===id)return;
   root.__dmBackgroundWatch=id;
@@ -8234,7 +8246,10 @@ function watchBackground(root,id){
         state.updatingAll=running;
         var msg=j.name?'Обновляю: '+j.name+'…':'Обновление выполняется на роутере…';
         if(!running){try {var result=JSON.parse(j.output||'{}');msg=result.message||result.error||'Обновление завершено.';}catch(e){msg=j.result==='ok'?'Обновление завершено.':'Не удалось завершить обновление.';}if(j.result==='ok')msg+=' Обновите страницу для загрузки нового интерфейса.';}
-        globalUpdateNotice(msg,running?'info':(j.result==='ok'?'ok':'error'));renderOverview(root,window.dmState||{});
+        if(running)globalUpdateNotice(msg,'info');
+        else if(j.result==='ok')showUpdateResult(root,j,msg);
+        else globalUpdateNotice(msg,'error');
+        renderOverview(root,window.dmState||{});
       }else{
         state.jobRunning=running;state.currentTest={status:running?'RUNNING':(j.result==='ok'?'DONE':'FAILED'),result:j.result||''};
         state.pageNotice.doh=running?'Проверка текущих DNS выполняется на роутере…':(j.result==='ok'?'':'Проверка текущих DNS завершилась с ошибками.');renderDoH(root,window.dmState||{});
