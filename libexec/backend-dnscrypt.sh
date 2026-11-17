@@ -66,6 +66,42 @@ dnscrypt_set_setting() {
     printf '{"ok":true}\n'
 }
 
+# The setting worker is managed by procd and survives the RPC connection.
+dnscrypt_setting_worker() {
+    printf 'pid=%s\n' "$$" >> "$JOB_DIR/setting/state"
+    token=$(awk '{print $22}' "/proc/$$/stat" 2>/dev/null || :)
+    [ -z "$token" ] || printf 'pid_start=%s\n' "$token" >> "$JOB_DIR/setting/state"
+    dnscrypt_set_setting < "$JOB_DIR/setting/input" > "$JOB_DIR/setting/output" 2>&1
+    rm -f "$JOB_DIR/setting/input"
+    if grep -q '"ok"[[:space:]]*:[[:space:]]*true' "$JOB_DIR/setting/output"; then result=ok; status=done; rc=0; else result=fail; status=failed; rc=1; fi
+    printf 'result=%s\nstatus=%s\nfinished=%s\n' "$result" "$status" "$(date +%s)" >> "$JOB_DIR/setting/state"
+    printf '\n__DONE__ %s\n' "$rc" >> "$JOB_DIR/setting/output"
+}
+dnscrypt_setting_start() {
+    input=$(cat)
+    name=$(printf '%s' "$input" | jsonfilter -e '@.name' 2>/dev/null)
+    enabled=$(printf '%s' "$input" | jsonfilter -e '@.enabled' 2>/dev/null)
+    case "$name:$enabled" in watchdog:0|watchdog:1|watchdog_autoreplace:0|watchdog_autoreplace:1|force:0|force:1) ;; *) error 'Неверная настройка'; return;; esac
+    mkdir -p "$JOB_DIR/setting" "$RUNTIME_DIR" || { error 'Не удалось подготовить задачу'; return; }
+    exec 9>"$RUNTIME_DIR/setting-start.lock" || { error 'Не удалось подготовить блокировку'; return; }
+    flock -n 9 || { error 'Другая настройка уже запускается'; return; }
+    service=dns-manager-dnscrypt-setting
+    reply=$(ubus -t 5 call service list "{\"name\":\"$service\"}" 2>/dev/null) || { error 'Служба задач недоступна'; return; }
+    if printf '%s' "$reply" | grep -q '"running"[[:space:]]*:[[:space:]]*true'; then error 'Другая настройка уже применяется'; return; fi
+    ubus -t 5 call service delete "{\"name\":\"$service\"}" >/dev/null 2>&1 || :
+    umask 077
+    printf '%s' "$input" > "$JOB_DIR/setting/input" || { error 'Не удалось сохранить запрос'; return; }
+    : > "$JOB_DIR/setting/output"
+    printf 'status=running\nstarted=%s\nmode=setting\nname=%s\nenabled=%s\n' "$(date +%s)" "$name" "$enabled" > "$JOB_DIR/setting/state"
+    request="{\"name\":\"$service\",\"instances\":{\"main\":{\"command\":[\"/bin/sh\",\"/usr/lib/dns-manager-luci/backend-dnscrypt.sh\",\"setting_worker\"]}}}"
+    if ! ubus -t 5 call service set "$request" >/dev/null 2>&1; then
+        rm -f "$JOB_DIR/setting/input"
+        printf 'result=fail\nstatus=failed\nfinished=%s\n' "$(date +%s)" >> "$JOB_DIR/setting/state"
+        error 'Не удалось запустить настройку'; return
+    fi
+    printf '{"ok":true,"job":"setting"}\n'
+}
+
 # Keep the LAN redirect in an owned UCI section so firewall reloads retain it.
 dnscrypt_set_force() {
     local enabled current owner lan_ip
@@ -582,6 +618,7 @@ EOF_POOL
 }
 
 case "${1:-}" in
+    setting_worker) dnscrypt_setting_worker ;;
     diagnostic_worker) diagnostic_worker "${2:-}" ;;
     worker) profile_worker "${2:-}" ;;
     reset_worker) reset_worker ;;
@@ -593,7 +630,7 @@ case "${1:-}" in
             set_profile) profile_start ;;
             set_regional) regional_start ;;
             reset_dns) reset_start ;;
-            set_setting) dnscrypt_set_setting ;;
+            set_setting) dnscrypt_setting_start ;;
             switch_engine) switch_start ;;
             dnscrypt_test|system_dns_test) diagnostic_start "$2" ;;
             dnscrypt_log) diagnostic "$2" ;;
