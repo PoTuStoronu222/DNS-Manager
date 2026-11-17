@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.95"
+VERSION="2.96"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -2583,7 +2583,7 @@ if [ "$(uci -q get dns-manager.global.active_engine 2>/dev/null)" = dnscrypt-pro
 fi
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.95"
+SELF_VERSION="2.96"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -4451,7 +4451,9 @@ status_json() {
     if [ "$_catalog_avail" = 1 ]; then
         _catalog_avail="$(catalog_cached_update_available "$_catalog_avail" "$_catalog_checked" "$_catalog_latest" "$_catalog_latest_rev" "$_catalog_latest_total" "$(catalog_version)" "$(catalog_revision)" "$_cat_total")"
     fi
-    _hdp_installed="$(package_version https-dns-proxy 2>/dev/null || true)"
+    _engine_package=https-dns-proxy
+    [ "$(uci -q get dns-manager.global.active_engine 2>/dev/null)" = dnscrypt-proxy2 ] && _engine_package=dnscrypt-proxy2
+    _hdp_installed="$(package_version "$_engine_package" 2>/dev/null || true)"
     _hdp_latest="$(sed -n 's/^hdp_latest=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"
     _hdp_avail="$(sed -n 's/^hdp_available=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"; [ -n "$_hdp_avail" ] || _hdp_avail=0
     _hdp_checked="$(sed -n 's/^hdp_checked=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"; [ -n "$_hdp_checked" ] || _hdp_checked=0
@@ -6534,8 +6536,7 @@ function versionState(v,available,latest,checked,okWord,pending,error){
   if(pending)return badge('dm-warn','проверяется…');
   if(!v)return badge('dm-bad','не установлена');
   if(error)return E('span',{'class':'dm-version-error'},[badge('dm-bad','ошибка'),E('span',{'class':'dm-version-error-text'},String(error).slice(0,180))]);
-  if(latest&&String(v)===String(latest))return badge('dm-ok',shortVal(v)+' · '+okWord);
-  if(yes(available))return badge('dm-warn',shortVal(v)+' → '+shortVal(latest||'новая версия')+' · неактуальна');
+  if(yes(checked)&&yes(available))return badge('dm-warn',shortVal(v)+' → '+shortVal(latest||'новая версия')+' · неактуальна');
   if(yes(checked))return badge('dm-ok',shortVal(v)+' · '+okWord);
   return badge('dm-off',shortVal(v)+' · проверка не выполнена');
 }
@@ -6544,13 +6545,20 @@ function catalogVersionState(v,rev,total,available,latest,latestRev,checked,pend
   if(!v)return badge('dm-bad','не установлен');
   if(error)return E('span',{'class':'dm-version-error'},[badge('dm-bad','ошибка'),E('span',{'class':'dm-version-error-text'},String(error).slice(0,180))]);
   var local=shortVal(v)+(rev?' rev.'+shortVal(rev):'');
-  if(yes(available)){
+  if(yes(checked)&&yes(available)){
     var tail=latest?shortVal(latest):'новая версия';
     if(latestRev)tail+=' rev.'+shortVal(latestRev);
     return badge('dm-warn',local+' → '+tail+' · неактуален');
   }
   if(yes(checked)&&latest)return badge('dm-ok',local+' · актуален');
   return badge('dm-off',local+' · проверка не выполнена');
+}
+
+function hasAvailableUpdates(st){
+  return (yes(st.manager_check_ok)&&!st.manager_update_error&&yes(st.manager_update_available)) ||
+    (yes(st.luci_update_checked)&&!st.luci_update_error&&yes(st.luci_update_available)) ||
+    (yes(st.catalog_check_ok)&&!st.catalog_update_error&&yes(st.catalog_update_available)) ||
+    (st.dnscrypt_engine!=='dnscrypt-proxy2'&&yes(st.hdp_check_ok)&&yes(st.hdp_update_available));
 }
 
 function injectStyle(root){
@@ -7053,8 +7061,8 @@ function renderOverview(root,st){
       E('span',{'class':'dm-version-state'},versionState(st.luci_version,st.luci_update_available,st.luci_latest_version,st.luci_update_checked,'актуальна',state.versionCheck&&state.versionCheck.luci==='running',st.luci_update_error))
     ]),
     E('div',{'class':'dm-version-line'},[
-      E('span',{'class':'dm-version-name'},'Защищённый DNS'),
-      E('span',{'class':'dm-version-state'},!st.hdp_version&&!(state.versionCheck&&state.versionCheck.hdp==='running')?badge('dm-off','версия не определена'):versionState(st.hdp_version,st.hdp_update_available,st.hdp_latest_version,true,'актуальна',state.versionCheck&&state.versionCheck.hdp==='running'))
+      E('span',{'class':'dm-version-name'},st.dnscrypt_engine==='dnscrypt-proxy2'?'DNSCrypt Proxy 2':'HTTPS DNS Proxy'),
+      E('span',{'class':'dm-version-state'},st.hdp_version?badge('dm-muted',shortVal(st.hdp_version)+' · установлен'):badge('dm-muted','не установлен'))
     ]),
     E('div',{'class':'dm-version-line'},[
       E('span',{'class':'dm-version-name'},'Каталог DNS'),
@@ -7063,7 +7071,7 @@ function renderOverview(root,st){
     row('Проверено',dateText(st.components_checked_at)),
     E('div',{'class':'dm-actions'},[
       btn(state.versionCheck&&state.versionCheck.running?'Проверяю актуальность…':'Проверить актуальность','cbi-button-neutral',function(){checkUpdate(root,true);},{disabled:!!state.updatingAll||!!(state.versionCheck&&state.versionCheck.running)}),
-      (st.dnscrypt_engine==='dnscrypt-proxy2'||yes(st.manager_update_available)||yes(st.luci_update_available)||yes(st.hdp_update_available)||yes(st.catalog_update_available)) ?
+      (state.updatingAll||hasAvailableUpdates(st)) ?
         btn(state.updatingAll?'Обновляю…':'Обновить','cbi-button-positive',function(){updateAll(root);},{disabled:!!state.updatingAll||!!state.busy||!!(state.versionCheck&&state.versionCheck.running)}) :
         null
     ].filter(Boolean)),
