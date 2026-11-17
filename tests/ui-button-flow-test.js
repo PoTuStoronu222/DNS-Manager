@@ -47,7 +47,7 @@ async function testRouteCache(){
   if(!cached||cached.force_owner!=='steer'||cached.__dmCachedRoute!=='slots')throw Error('compatible route cache missing');
   ctx.window.dmRouteCache=undefined;
   if(ctx.cachedRouteStatus('slots').force_owner!=='steer')throw Error('cache did not survive page navigation');
-  ctx.window.dmRouteCache={doh:JSON.parse(store['dns-manager-route-2.57-doh'])};
+  ctx.window.dmRouteCache={doh:JSON.parse(store['dns-manager-route-2.58-doh'])};
   cached.slots.length=0;
   if(ctx.cachedRouteStatus('doh').slots.length!==1)throw Error('cache was mutated by view');
   ctx.applyStatusToCurrentRoot({ok:true,force_owner:'steer'},'doh');
@@ -95,7 +95,7 @@ async function testAdditionalRouteCache(){
   ctx.state.category='security';if(ctx.cachedRouteStatus('catalog'))throw Error('wrong catalog category reused');ctx.state.category='all';
   failDevices=true;failCatalog=true;failLog=true;
   const previous={...store};for(const route of ['devices','catalog','log'])await ctx.ensureStatusPromise(route);
-  for(const route of ['devices','catalog','log'])if(store['dns-manager-route-2.57-'+route]!==previous['dns-manager-route-2.57-'+route])throw Error('failed '+route+' replaced good cache');
+  for(const route of ['devices','catalog','log'])if(store['dns-manager-route-2.58-'+route]!==previous['dns-manager-route-2.58-'+route])throw Error('failed '+route+' replaced good cache');
 }
 async function testSequentialWarmup(){
   let active=0,max=0,calls=[],allowed=true;
@@ -384,16 +384,17 @@ async function testRegionalSelection(){
   }
 }
 async function testDnscryptPoolPresentation(){
-  const changes=[],confirmations=[],state={busy:false,jobRunning:false};
+  const changes=[],state={busy:false,jobRunning:false},root={};
   const ctx={state,E:(tag,attrs,children)=>({tag,attrs,children}),dnscryptServerName:(st,id)=>id,
-    btn:(label,cls,click,opts)=>({label,click,opts}),confirmAction:(title,rows,run)=>confirmations.push(run),selectDnscryptServer:id=>changes.push(id)};
+    btn:(label,cls,click,opts)=>({label,click,opts}),renderSlots:()=>{},selectDnscryptServer:id=>changes.push(id)};
   vm.createContext(ctx);vm.runInContext(extract('function dnscryptCurrentPool(st){','function renderDoH(root,st){'),ctx);
   const st={dnscrypt_servers:['cloudflare'],dnscrypt_available_servers:['cloudflare','google'],dnscrypt_selected_server:'cloudflare'};
   const current=ctx.dnscryptCurrentPool(st);
-  if(current.children.length!==1||current.children[0].children[0].children!=='cloudflare')throw Error('current DNS list includes available but unused servers');
-  const manual=ctx.dnscryptPoolList(st,{}),choose=manual.children[1].children[1];
-  choose.click();if(changes.length||confirmations.length!==1)throw Error('manual server choice must ask for confirmation');
-  confirmations[0]();if(changes.join(',')!=='google')throw Error('manual server selection failed');
+  if(current.children.length!==1||current.children[0].children[0].children!=='cloudflare')throw Error('current DNS list includes unused servers');
+  ctx.dnscryptPoolList(st,root).children[1].click();
+  if(changes.length||state.pendingDnscryptServer!=='google')throw Error('server selection applied before confirmation');
+  ctx.dnscryptPoolList(st,root).children[0].click();
+  if(state.pendingDnscryptServer)throw Error('selecting current server did not cancel pending selection');
 }
 async function testProfileClickBothEngines(){
   for(const engine of ['dnscrypt-proxy2','https-dns-proxy']){
