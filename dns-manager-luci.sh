@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.78"
+VERSION="2.79"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -2400,7 +2400,7 @@ if [ "$(uci -q get dns-manager.global.active_engine 2>/dev/null)" = dnscrypt-pro
 fi
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.78"
+SELF_VERSION="2.79"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -6444,6 +6444,7 @@ function injectStyle(root){
   '.dm-wrap .dm-picker-meta{gap:7px;margin-top:5px}'+
   '.dm-wrap .dm-slot-picker-categories{gap:6px;margin:8px 0 12px}'+
   '.dm-wrap .dm-slot-picker-categories .cbi-button{border-radius:8px;padding:6px 9px}'+
+  '.dm-catalog-family-wrap{min-width:0}.dm-catalog-family{width:100%;display:flex;align-items:center;gap:8px;text-align:left;cursor:pointer;color:inherit}.dm-catalog-family .dm-mini{flex:1}.dm-catalog-family-items{display:grid;gap:8px;margin-top:8px}.dm-catalog-family:focus-visible{outline:2px solid var(--primary-color,#0969da);outline-offset:2px}'+
   '.dm-wrap .dm-catalog{gap:12px;margin-top:12px}'+
   '.dm-wrap .dm-catalog-item{gap:9px;padding:14px;border:1px solid rgba(110,118,129,.19);border-radius:12px;background:var(--background-color-medium,#fff);box-shadow:0 1px 4px rgba(15,23,42,.035);transition:border-color .18s ease,box-shadow .18s ease}'+
   '.dm-wrap .dm-catalog-item:hover{border-color:rgba(110,118,129,.34);box-shadow:0 4px 12px rgba(15,23,42,.065)}'+
@@ -8216,7 +8217,7 @@ function renderCatalog(root){
   if((window.dmState||{}).dnscrypt_engine==='dnscrypt-proxy2'){
     var data=window.dmCatalog||{}, controls=E('div',{'class':'dm-seg'});
     CATEGORY.forEach(function(c){controls.appendChild(btn(c[1],c[0]===state.category?'active cbi-button':'cbi-button',function(){if(state.catalogLoading)return;state.category=c[0];state.offset=0;loadCatalog(root);},{disabled:!!state.catalogLoading,'aria-pressed':c[0]===state.category?'true':'false'}));});
-    var rows=(data.servers||[]).map(function(d){return E('div',{'class':'dm-card'},[E('h4',{},d.name||d.id),E('div',{'class':'dm-meta'},catName(d.category))]);});
+    var rows=catalogGroups(data.servers||[],function(d){return E('div',{'class':'dm-card dm-catalog-item'},[E('h4',{},d.name||d.id),E('div',{'class':'dm-meta'},catName(d.category))]);},function(){renderCatalog(root);});
     e.appendChild(card('Каталог DNS',[E('div',{'class':'dm-hint'},'В режиме DNSCrypt каталог доступен для просмотра. Серверы выбираются через профили.'),controls,state.pageNotice.catalog?E('div',{'class':'dm-inline-msg error'},state.pageNotice.catalog):null,state.catalogLoading?E('div',{'class':'dm-hint'},'Загрузка каталога DNS…'):null,E('div',{'class':'dm-catalog'},rows),E('div',{'class':'dm-page'},[btn('←','cbi-button-neutral',function(){if(!state.catalogLoading&&state.offset>0){state.offset=Math.max(0,state.offset-state.limit);loadCatalog(root);}},{disabled:!!state.catalogLoading||state.offset<=0,'aria-label':'Предыдущая страница'}),E('span',{'class':'dm-mini'},(Math.floor(state.offset/state.limit)+1)+' / '+Math.max(1,Math.ceil((data.total||0)/state.limit))),btn('→','cbi-button-neutral',function(){if(!state.catalogLoading&&state.offset+state.limit<(data.total||0)){state.offset+=state.limit;loadCatalog(root);}},{disabled:!!state.catalogLoading||state.offset+state.limit>=(data.total||0),'aria-label':'Следующая страница'})])].filter(Boolean)));
     return;
   }
@@ -8284,6 +8285,30 @@ function renderCatalog(root){
   if(window.dmCatalog)renderCatalogBody(root,window.dmCatalog);
 }
 
+// Group only known catalog entries on the current page; IDs and category filters stay unchanged.
+function catalogGroups(servers,renderItem,rerender){
+  var families={cloudflare:'Cloudflare',quad9:'Quad9',controld:'Control D',dns4eu:'DNS4EU',yandex:'Яндекс',geohide:'GeoHide'};
+  var members={}, result=[], emitted={};
+  servers.forEach(function(d){
+    if(isUserDnsRecord(d))return;
+    var key=String(d.id||'').split('_')[0];
+    if(families[key])(members[key]=members[key]||[]).push(d);
+  });
+  state.catalogOpenGroups=state.catalogOpenGroups||{};
+  servers.forEach(function(d){
+    var key=String(d.id||'').split('_')[0], group=members[key];
+    if(isUserDnsRecord(d)||!group||group.length<2){result.push(renderItem(d));return;}
+    if(emitted[key])return;
+    emitted[key]=true;
+    var open=!!state.catalogOpenGroups[key];
+    var toggle=E('button',{'type':'button','class':'dm-card dm-catalog-family','aria-expanded':open?'true':'false','click':function(){state.catalogOpenGroups[key]=!open;rerender();}},[
+      E('strong',{},families[key]),E('span',{'class':'dm-mini'},group.length+' варианта на странице'),E('span',{'aria-hidden':'true'},open?'⌃':'›')
+    ]);
+    result.push(E('div',{'class':'dm-catalog-family-wrap'},[toggle,open?E('div',{'class':'dm-catalog-family-items'},group.map(renderItem)):null].filter(Boolean)));
+  });
+  return result;
+}
+
 function renderCatalogBody(root,data){
   var b=root.querySelector('#dm-cat-body');if(!b)return;b.innerHTML='';
   var f=E('div',{'class':'dm-seg'});
@@ -8291,10 +8316,10 @@ function renderCatalogBody(root,data){
   b.appendChild(f);
   b.appendChild(E('div',{'class':'dm-mini'},'Показано '+(data.servers||[]).length+' из '+(data.total||0)));
   var g=E('div',{'class':'dm-catalog'});
-  (data.servers||[]).forEach(function(d){
+  catalogGroups(data.servers||[],function(d){
     var ci=checkInfo(d.id,d);
     var statusText=stateBadge(ci.status,ci.ping);
-    g.appendChild(E('div',{'class':'dm-card dm-catalog-item'+(isUserDnsRecord(d)?' dm-catalog-item-custom':'')},[
+    return E('div',{'class':'dm-card dm-catalog-item'+(isUserDnsRecord(d)?' dm-catalog-item-custom':'')},[
       E('h4',{},d.name||d.id),
       E('div',{'class':'dm-meta'},catName(d.category)),
       E('div',{'class':'dm-slot-state'},[statusText]),
@@ -8307,8 +8332,8 @@ function renderCatalogBody(root,data){
         }
         return [E('div',{'class':'dm-catalog-toolbar'},[assignment])];
       })())
-    ]));
-  });
+    ]);
+  },function(){renderCatalogBody(root,data);}).forEach(function(item){g.appendChild(item);});
   b.appendChild(g);
   b.appendChild(E('div',{'class':'dm-page'},[
     btn('←','cbi-button-neutral',function(){if(!state.catalogLoading&&state.offset>0){state.offset=Math.max(0,state.offset-state.limit);loadCatalog(root);}},{disabled:!!state.catalogLoading||state.offset<=0,'aria-label':'Предыдущая страница'}),
