@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager full installer and LuCI companion
-# Version: 2.71
+# Version: 2.72
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.71"
+VERSION="2.72"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -2363,7 +2363,7 @@ if [ "$(uci -q get dns-manager.global.active_engine 2>/dev/null)" = dnscrypt-pro
 fi
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.71"
+SELF_VERSION="2.72"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -6037,7 +6037,7 @@ EOF_RPC_WRAPPER
 'require ui';
 'require session';
 
-// DNS Manager LuCI common module version: 2.71
+// DNS Manager LuCI common module version: 2.72
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -8186,13 +8186,13 @@ function renderCatalog(root){
     var total=Number(p.total||0),done=Number(p.done||0),okn=Number(p.ok||0),failn=Number(p.fail||0);
     var pct=total>0?Math.max(0,Math.min(100,Math.round(done*100/total))):0;
     var running=state.jobRunning&&state.fullTest.status==='RUNNING';
-    var title=running?'Проверка каталога DNS выполняется':'Результат полной проверки каталога';
+    var failed=state.fullTest.status==='FAILED';
+    var title=running?'Проверка каталога DNS':(failed?'Проверка каталога не завершена':'Проверка каталога завершена');
     var summary=total>0
-      ? 'Проверено '+done+' из '+total+' · доступно '+okn+' · ошибки '+failn
-      : 'Подготавливаю список DNS-серверов…';
+      ? (running?'Проверено '+done+' из '+total:'Проверено: '+done+' из '+total)+' · доступно: '+okn+' · не ответили: '+failn
+      : (running?'Подготавливаю список DNS-серверов…':'Сведения о количестве проверенных серверов недоступны.');
     var detail=String(p.detail||'').trim();
-    if(!running&&detail==='Проверка запущена…')detail='';
-    if(!detail&&running)detail='Проверка запущена…';
+    if(running||!failed)detail='';
     var method=[
       E('div',{'class':'dm-mini'},title),
       E('div',{'class':'dm-mem-line'},[
@@ -8201,8 +8201,8 @@ function renderCatalog(root){
       ]),
       E('div',{'class':'dm-mem-meta'},summary)
     ];
-    if(detail)method.push(E('div',{'class':'dm-inline-msg info'},detail));
-    ch.push(card('Ход проверки',method));
+    if(detail)method.push(E('div',{'class':'dm-inline-msg error'},detail));
+    ch.push(card(running?'Ход проверки':'Результат проверки',method));
   }
 
   ch.push(ageCard);
@@ -8381,7 +8381,7 @@ function saveRouteCache(key,st,aux){
     var entry=JSON.parse(JSON.stringify({ts:Date.now(),data:st,aux:aux}));
     window.dmRouteCache[key]=entry;
     if(typeof session!=='undefined'&&session.setLocalData)
-      session.setLocalData('dns-manager-route-2.71-'+key,entry);
+      session.setLocalData('dns-manager-route-2.72-'+key,entry);
   }catch(e){}
 }
 function clearEngineUiState(){
@@ -8389,7 +8389,7 @@ function clearEngineUiState(){
   window.dmRouteCache=Object.create(null);
   window.dmStatusPromises=Object.create(null);
   ['dashboard','doh','network','time','devices','catalog','log'].forEach(function(key){
-    try{if(typeof session!=='undefined'&&session.setLocalData)session.setLocalData('dns-manager-route-2.71-'+key,null);}catch(e){}
+    try{if(typeof session!=='undefined'&&session.setLocalData)session.setLocalData('dns-manager-route-2.72-'+key,null);}catch(e){}
   });
   state.pageNotice={};state.profileProgress=null;state.profileOutput='';state.profileResumeStarted=false;
   state.regionalNotice='';state.pendingProfile='';state.pendingRegional=null;state.pendingDnscryptServer='';state.dnscryptDiagnostic='';state.dnscryptDiagnosticKind='';state.dnscryptDiagnosticResult='';
@@ -8401,7 +8401,7 @@ function clearEngineUiState(){
 function routeCacheEntry(key){
   var entry=key&&window.dmRouteCache&&window.dmRouteCache[key];
   if(!entry&&key){
-    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.71-'+key);}catch(e){}
+    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.72-'+key);}catch(e){}
   }
   if(!entry||typeof entry.ts!=='number'||Date.now()-entry.ts<0||Date.now()-entry.ts>300000||!entry.data||entry.data.ok!==true)return null;
   return entry;
@@ -9009,12 +9009,13 @@ function resumeCatalogTest(root){
     if(!rootAlive(root)||!j||!j.ok||state.jobRunning)return;
     if(j.status==='running'){
       state.jobRunning=true;state.fullTest={status:'RUNNING',origin:'catalog'};
-      state.pageNotice.catalog='Проверка каталога продолжается на роутере…';
+      state.pageNotice.catalog='';
       renderCatalog(root);pollJob(root,'test_all',{mode:'all',origin:'catalog'});
     }else if(j.status==='done'||j.status==='failed'){
       var ok=j.status==='done'&&j.result==='ok';
       state.fullTest={status:ok?'DONE':'FAILED',result:j.result||'fail',origin:'catalog'};
-      state.pageNotice.catalog=ok?'Полная проверка каталога завершена.':'Полная проверка DNS завершилась с ошибкой.';
+      state.catalogProgress={done:Number(j.progress_done||0),total:Number(j.progress_total||0),ok:Number(j.progress_ok||0),fail:Number(j.progress_fail||0),detail:ok?'':'Полная проверка DNS завершилась с ошибкой.'};
+      state.pageNotice.catalog='';
       renderCatalog(root);
     }
   }).catch(function(){root.__dmCatalogResumed=false;});
@@ -9033,20 +9034,20 @@ function testAll(root,origin){
       detail:'Запускаю полную проверку каталога…'
     };
   }
-  state.pageNotice.catalog=from==='catalog'?'Проверяю каталог: каждый DNS проверяется напрямую по HTTPS DoH…':state.pageNotice.catalog;
+  if(from==='catalog')state.pageNotice.catalog='';
   if(from==='catalog')renderCatalog(root);else renderOverview(root,window.dmState||{});
   callTestAll().then(function(r){
     if(r&&r.ok)pollJob(root,r.job,{mode:'all',origin:from});
     else{
       state.fullTest={status:'FAILED',origin:from};
       state.jobRunning=false;
-      state.pageNotice.catalog=from==='catalog'?((r&&r.error)||'Полная проверка DNS не запущена.'):state.pageNotice.catalog;
+      if(from==='catalog')state.catalogProgress.detail=(r&&r.error)||'Полная проверка DNS не запущена.';
       refresh(root,true);
     }
   }).catch(function(err){
     state.fullTest={status:'FAILED',origin:from};
     state.jobRunning=false;
-    state.pageNotice.catalog=from==='catalog'?withRpcError('Не удалось запустить полную проверку DNS.',err):state.pageNotice.catalog;
+    if(from==='catalog')state.catalogProgress.detail=withRpcError('Не удалось запустить полную проверку DNS.',err);
     refresh(root,true);
   });
 }
@@ -9162,10 +9163,8 @@ function pollJob(root,job,meta,done){
             if(j.progress_total!==''&&j.progress_total!=null)state.catalogProgress.total=Number(j.progress_total);
             if(j.progress_ok!==''&&j.progress_ok!=null)state.catalogProgress.ok=Number(j.progress_ok);
             if(j.progress_fail!==''&&j.progress_fail!=null)state.catalogProgress.fail=Number(j.progress_fail);
-            state.catalogProgress.detail=allOk
-              ? ''
-              : (state.catalogProgress.detail||'Проверка завершилась с ошибкой.');
-            state.pageNotice.catalog=allOk?'Полная проверка каталога завершена.':((j.output&&stripAnsi(j.output).split('\n').filter(function(x){return String(x||'').trim();}).pop())||'Полная проверка DNS завершилась с ошибкой.');
+            state.catalogProgress.detail=allOk?'':((j.output&&stripAnsi(j.output).split('\n').filter(function(x){return String(x||'').trim();}).pop())||'Полная проверка DNS завершилась с ошибкой.');
+            state.pageNotice.catalog='';
             window.dmCatalog=null;
             state.catalogLoaded=false;
           }
@@ -9198,8 +9197,8 @@ function pollJob(root,job,meta,done){
         if(meta.origin==='catalog'){
           if(!state.catalogProgress)state.catalogProgress={done:0,total:0,ok:0,fail:0,detail:''};
           ['done','total','ok','fail'].forEach(function(k){var v=j['progress_'+k];if(v!==''&&v!=null)state.catalogProgress[k]=Number(v);});
-          state.catalogProgress.detail=allOk?'':'Проверка завершилась с ошибкой.';
-          state.pageNotice.catalog=allOk?'Проверка завершена, но состояние роутера не удалось обновить.':'Полная проверка DNS завершилась с ошибкой.';
+          state.catalogProgress.detail=allOk?'': 'Проверка завершилась с ошибкой.';
+          state.pageNotice.catalog=allOk?'Проверка завершена, но состояние роутера не удалось обновить.':'';
           window.dmCatalog=null;state.catalogLoaded=false;
         }
         render(root,window.dmState||{});
@@ -9239,11 +9238,7 @@ function pollJob(root,job,meta,done){
           total:pt||Number(j.progress_total||0),
           ok:po||Number(j.progress_ok||0),
           fail:pf||Number(j.progress_fail||0),
-          detail:lastProgress||(
-            Number(j.progress_done||0)>0
-              ? 'Проверено '+Number(j.progress_done||0)+' DNS. Ожидаю следующий результат…'
-              : 'Проверяю: разрешение адреса → TLS/HTTPS → DNS wire-ответ → время ответа'
-          )
+          detail:''
         };
         renderCatalog(root);
       }
@@ -9468,7 +9463,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 2.71
+// DNS Manager LuCI version: 2.72
 return view.extend({
   load: DM.load,
   render: DM.render,
