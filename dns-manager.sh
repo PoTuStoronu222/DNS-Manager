@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="4.25"
+VERSION="4.26"
 # 3.86: make LuCI the primary interface and preserve external DNS on removal.
 # 3.85: revalidate Watchdog settings before recovery.
 # 3.84: cap DNS catalog test concurrency by total RAM on small routers.
@@ -3633,7 +3633,7 @@ apply_dns_force() {
         steer_restore_proxy_backup
         return $?
     fi
-    if ! (steer_dns_upstream_ready); then
+    if [ -n "${SLOT_1:-}${SLOT_2:-}${SLOT_3:-}${SLOT_4:-}${SLOT_5:-}${SLOT_6:-}${SLOT_RU:-}" ] && ! (steer_dns_upstream_ready); then
         return 1
     fi
     sync_hdp_force_contract 1
@@ -6108,7 +6108,9 @@ check_module_state() {
                     [ -z "$(uci -q get https-dns-proxy.config.notrack_dns 2>/dev/null)" ] || _ok=0
                     [ -z "$(uci -q get https-dns-proxy.config.force_dns_port 2>/dev/null)" ] || _ok=0
                     [ -z "$(uci -q get https-dns-proxy.config.force_dns_src_interface 2>/dev/null)" ] || _ok=0
-                    steer_dns_upstream_ready || _ok=0
+                    if [ -n "${SLOT_1:-}${SLOT_2:-}${SLOT_3:-}${SLOT_4:-}${SLOT_5:-}${SLOT_6:-}${SLOT_RU:-}" ]; then
+                        steer_dns_upstream_ready || _ok=0
+                    fi
                     [ "$_ok" = 1 ] && printf 1 || printf 2
                 else
                     printf 2

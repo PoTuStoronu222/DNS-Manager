@@ -646,9 +646,9 @@ grep -Fq "disabled:!!state.busy||!!state.jobRunning||unavailable||checking" dns-
 grep -q "'gaming','Игровые DNS'" dns-manager-luci.sh || fail "gaming catalog label missing in LuCI"
 grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validation missing gaming category"
 grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
-grep -q 'VERSION="4.25"' dns-manager.sh || fail "manager version not bumped"
+grep -q 'VERSION="4.26"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
-grep -q 'VERSION="2.61"' dns-manager-luci.sh || fail "LuCI version not bumped"
+grep -q 'VERSION="2.62"' dns-manager-luci.sh || fail "LuCI version not bumped"
 grep -Fq "{id:'quad9plain',ips:'9.9.9.10,149.112.112.10,2620:fe::10,2620:fe::fe:10'}" dns-manager-luci.sh || fail "historical Quad9 bootstrap snapshot changed"
 grep -Fq "{id:'cira',ips:'149.112.121.10,149.112.122.10,2620:10a:80bb::10,2620:10a:80bc::10'}" dns-manager-luci.sh || fail "historical CIRA bootstrap snapshot changed"
 if grep -q '^main_menu$' dns-manager.sh; then fail "interactive console menu still starts"; fi
@@ -931,8 +931,8 @@ view_luci="$(sed -n 's|^// DNS Manager LuCI common module version:[[:space:]]*||
 dashboard_view_luci="$(sed -n 's|^// DNS Manager LuCI version: *||p' dns-manager-luci.sh | head -n1)"
 [ "$top_luci" = "$dashboard_view_luci" ] || fail "dashboard view version marker is stale"
 ok "LuCI version markers synchronized ($top_luci)"
-grep -Fq 'VERSION="4.25"' dns-manager.sh || fail "DNS Manager version marker is not 4.25"
-ok "DNS Manager version marker synchronized (4.25)"
+grep -Fq 'VERSION="4.26"' dns-manager.sh || fail "DNS Manager version marker is not 4.26"
+ok "DNS Manager version marker synchronized (4.26)"
 grep -Fq "assignment.appendChild(btn('Удалить'" dns-manager-luci.sh || fail "Custom DNS delete button is not aligned with the assignment action"
 grep -Fq ".dm-catalog-item-custom{grid-column:auto}" dns-manager-luci.sh || fail "Custom DNS card is wider than a stock catalog card"
 grep -Fq ".dm-catalog-controls-custom .dm-assign-inline select{height:30px;min-width:0;width:auto;max-width:100%;flex:1 1 160px" dns-manager-luci.sh || fail "Custom DNS actions do not have a responsive inline layout"
@@ -1204,9 +1204,13 @@ touch "$tmp/force-config"
     FORCE_DOH=1
     MOCK_STEER=1
     MOCK_READY=0
+    SLOT_1=cloudflare
     : > "$UCI_LOG"
     if apply_dns_force; then exit 1; fi
     [ ! -s "$UCI_LOG" ] || exit 2
+    SLOT_1=''
+    apply_dns_force
+    SLOT_1=cloudflare
     MOCK_READY=1
     apply_dns_force
     grep -Fq 'set https-dns-proxy.config.force_dns=0' "$UCI_LOG" || exit 3
@@ -1502,7 +1506,7 @@ awk '/^function renderDoH\(root,st\)\{/,/^function slotLabel/' "$tmp/common.js" 
 grep -q "setForceMode('auto',root)" "$tmp/doh_panel.js" || fail "LuCI DoH page has no force-DNS auto action"
 grep -q "setForceMode('off',root)" "$tmp/doh_panel.js" || fail "LuCI DoH page has no force-DNS disable action"
 grep -q "Авто (рекомендуется)" "$tmp/doh_panel.js" || fail "LuCI DoH page lost force-DNS auto label"
-grep -q "Выключить в DNS Manager" "$tmp/doh_panel.js" || fail "LuCI DoH page lost force-DNS disable label"
+grep -q "Выключено" "$tmp/doh_panel.js" || fail "LuCI DoH page lost force-DNS disable label"
 ok "LuCI forced-DNS component is state-only; controls live in the DoH page"
 
 # Encrypted-DNS bypass protection is an independent setting; force DNS must not
@@ -2224,8 +2228,7 @@ for _field in progress_done progress_total progress_ok progress_fail; do
 done
 ok "LuCI job RPC exposes final progress counts"
 
-grep -q "profileSelected=String(st.profile||'none')!=='none'" "$tmp/common.js" || fail "LuCI does not detect missing DNS Manager profile"
-grep -q "Сначала выберите профиль DNS Manager" "$tmp/common.js" || fail "LuCI missing no-profile reason"
+if grep -Fq "forceEnableLocked" "$tmp/doh_panel.js"; then fail "Forced DNS is blocked without a profile"; fi
 grep -q "function watchdogComponentItem" "$tmp/common.js" || fail "LuCI watchdog component state helper missing"
 awk '/^function watchdogComponentItem\(/,/^}/' "$tmp/common.js" | grep -qE 'btn\(|setSetting\(' && fail "LuCI components block still contains a watchdog action button"
 grep -q "function forceComponentItem" "$tmp/common.js" || fail "LuCI forced-DNS component state helper missing"
