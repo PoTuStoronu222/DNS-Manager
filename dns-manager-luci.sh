@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.84"
+VERSION="2.85"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -2443,7 +2443,7 @@ if [ "$(uci -q get dns-manager.global.active_engine 2>/dev/null)" = dnscrypt-pro
 fi
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.84"
+SELF_VERSION="2.85"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -8283,13 +8283,20 @@ function deleteCustomDns(d,root){
   });
 }
 
+function dnscryptCatalogBadge(st,id){
+  var servers=Array.isArray(st.dnscrypt_servers)?st.dnscrypt_servers:[];
+  var index=servers.indexOf(String(id)), latency=index<0?null:(st.dnscrypt_server_latency||{})['manager-'+(index+1)];
+  return Number(st.dnscrypt_running)===1&&latency!=null&&/^\d+$/.test(String(latency))
+    ? badge('dm-muted',String(latency)+' мс · замер DNSCrypt')
+    : badge('dm-muted','нет данных');
+}
 function renderCatalog(root){
   var e=root.querySelector('#dm-catalog');if(!e)return;e.innerHTML='';
   if((window.dmState||{}).dnscrypt_engine==='dnscrypt-proxy2'){
     var data=window.dmCatalog||{}, controls=E('div',{'class':'dm-seg'});
     CATEGORY.forEach(function(c){controls.appendChild(btn(c[1],c[0]===state.category?'active cbi-button':'cbi-button',function(){if(state.catalogLoading)return;state.category=c[0];state.offset=0;loadCatalog(root);},{disabled:!!state.catalogLoading,'aria-pressed':c[0]===state.category?'true':'false'}));});
-    var rows=catalogGroups(data.servers||[],function(d){return E('div',{'class':'dm-card dm-catalog-item'},[E('h4',{},d.name||d.id),E('div',{'class':'dm-meta'},catName(d.category))]);},function(){renderCatalog(root);});
-    e.appendChild(card('Каталог DNS',[E('div',{'class':'dm-hint'},'В режиме DNSCrypt каталог доступен для просмотра. Серверы выбираются через профили.'),controls,state.pageNotice.catalog?E('div',{'class':'dm-inline-msg error'},state.pageNotice.catalog):null,state.catalogLoading?E('div',{'class':'dm-hint'},'Загрузка каталога DNS…'):null,E('div',{'class':'dm-catalog'},rows),E('div',{'class':'dm-page'},[btn('←','cbi-button-neutral',function(){if(!state.catalogLoading&&state.offset>0){state.offset=Math.max(0,state.offset-state.limit);loadCatalog(root);}},{disabled:!!state.catalogLoading||state.offset<=0,'aria-label':'Предыдущая страница'}),E('span',{'class':'dm-mini'},(Math.floor(state.offset/state.limit)+1)+' / '+Math.max(1,Math.ceil((data.total||0)/state.limit))),btn('→','cbi-button-neutral',function(){if(!state.catalogLoading&&state.offset+state.limit<(data.total||0)){state.offset+=state.limit;loadCatalog(root);}},{disabled:!!state.catalogLoading||state.offset+state.limit>=(data.total||0),'aria-label':'Следующая страница'})])].filter(Boolean)));
+    var rows=catalogGroups(data.servers||[],function(d){return E('div',{'class':'dm-card dm-catalog-item'},[E('h4',{},d.name||d.id),E('div',{'class':'dm-meta'},catName(d.category)),E('div',{'class':'dm-slot-state'},[dnscryptCatalogBadge(window.dmState||{},d.id)])]);},function(){renderCatalog(root);});
+    e.appendChild(card('Каталог DNS',[E('div',{'class':'dm-hint'},'DNSCrypt показывает последние замеры для серверов текущего набора. Для остальных серверов данных нет.'),controls,state.pageNotice.catalog?E('div',{'class':'dm-inline-msg error'},state.pageNotice.catalog):null,state.catalogLoading?E('div',{'class':'dm-hint'},'Загрузка каталога DNS…'):null,E('div',{'class':'dm-catalog'},rows),E('div',{'class':'dm-page'},[btn('←','cbi-button-neutral',function(){if(!state.catalogLoading&&state.offset>0){state.offset=Math.max(0,state.offset-state.limit);loadCatalog(root);}},{disabled:!!state.catalogLoading||state.offset<=0,'aria-label':'Предыдущая страница'}),E('span',{'class':'dm-mini'},(Math.floor(state.offset/state.limit)+1)+' / '+Math.max(1,Math.ceil((data.total||0)/state.limit))),btn('→','cbi-button-neutral',function(){if(!state.catalogLoading&&state.offset+state.limit<(data.total||0)){state.offset+=state.limit;loadCatalog(root);}},{disabled:!!state.catalogLoading||state.offset+state.limit>=(data.total||0),'aria-label':'Следующая страница'})])].filter(Boolean)));
     return;
   }
   var ageCard=renderTestAgeCommon(root,window.dmState||{});
