@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.82"
+VERSION="2.83"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -2443,7 +2443,7 @@ if [ "$(uci -q get dns-manager.global.active_engine 2>/dev/null)" = dnscrypt-pro
 fi
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.82"
+SELF_VERSION="2.83"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -7104,6 +7104,8 @@ function dnscryptPoolList(st,root){
 }
 function renderDoH(root,st){
   var e=root.querySelector('#dm-doh');if(!e)return;e.innerHTML='';
+  var uninstall=root.querySelector('#dm-uninstall');
+  if(uninstall){uninstall.innerHTML='';var danger=[];appendUninstall(danger,root);uninstall.appendChild(card('Удаление DNS Manager',danger));}
   var engine=st.dnscrypt_engine==='dnscrypt-proxy2'?'dnscrypt-proxy2':(Number(st.engine_installed)===0?'none':'https-dns-proxy');
   function engineChoice(id,title,description){
     var selected=engine===id;
@@ -7124,8 +7126,6 @@ function renderDoH(root,st){
   ].filter(Boolean)));
   resumeEngine(root);
   if(engine==='none'){
-    var cleanActions=[];appendUninstall(cleanActions,root);
-    e.appendChild(card('Управление DNS Manager',cleanActions));
     return;
   }
   if(st.dnscrypt_engine==='dnscrypt-proxy2'){
@@ -7142,7 +7142,6 @@ function renderDoH(root,st){
     ]));
     if(state.dnscryptDiagnostic)details.push(dnscryptDiagnosticView());
     e.appendChild(card('DNSCrypt Proxy 2',details));
-    var danger=[];appendUninstall(danger,root);e.appendChild(card('Удаление DNS Manager',danger));
     return;
   }
   var rr=resolverRows(st,root), rows=rr[0], count=rr[1];
@@ -7199,7 +7198,6 @@ function renderDoH(root,st){
     ch.push(E('div',{'class':'dm-inline-msg info'},'Steer запущен, но активный перехват DNS :53→:5300 не обнаружен. Поэтому DNS Manager не считает Steer владельцем forced-DNS и сохраняет обычную схему принудительного DNS.'));
   }
   if(state.pageNotice.doh && state.pageNotice.doh!=='Проверка текущих DNS завершена.' && !(state.currentTest && ['Текущих DNS для проверки нет.','Проверяю текущие DNS…','Проверяю системные DNS…','Проверка текущих DNS завершена с ошибками.'].indexOf(state.pageNotice.doh)!==-1))ch.push(E('div',{'class':'dm-inline-msg info'},state.pageNotice.doh));
-  appendUninstall(ch,root);
   e.appendChild(card('DNS over HTTPS',ch));
   e.appendChild(renderBootstrap(root,st));
 }
@@ -9630,7 +9628,7 @@ return baseclass.extend({
     root.addEventListener('beforeinput',function(ev){if(state.statusFromCache){ev.preventDefault();ev.stopPropagation();}},true);
     var ids={
       dashboard:['dm-header','dm-overview'],
-      doh:['dm-header','dm-doh','dm-profiles'],
+      doh:['dm-header','dm-doh','dm-profiles','dm-uninstall'],
       slots:['dm-header','dm-slots'],
       devices:['dm-header','dm-devices'],
       network:['dm-header','dm-network'],
