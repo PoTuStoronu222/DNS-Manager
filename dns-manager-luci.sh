@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.101"
+VERSION="2.102"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -2601,7 +2601,7 @@ if [ "$(uci -q get dns-manager.global.active_engine 2>/dev/null)" = dnscrypt-pro
 fi
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.101"
+SELF_VERSION="2.102"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -5019,6 +5019,9 @@ job_mark_failed() {
     _d="$JOB_DIR/$_id"
     _now="$2"
     _msg="$3"
+    # The worker can finish between the first state read and the PID check.
+    # Never overwrite a result it has already recorded.
+    [ "$(job_state_value "$_d/state" status)" = running ] || return 0
     [ -n "$_now" ] || _now="$(date +%s 2>/dev/null || printf 0)"
     job_write "$_id" status failed
     job_write "$_id" result fail

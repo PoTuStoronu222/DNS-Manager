@@ -22,4 +22,11 @@ for mode in profile action; do
     if job_process_alive "$job"; then echo "Stale $mode job was accepted" >&2; exit 1; fi
     grep -q '^status=failed$' "$job/state"
 done
-echo 'PASS: procd profile and action jobs get bounded time to record PID'
+# Simulate the worker finishing after the initial status read but before kill.
+mkdir -p "$JOB_DIR/engine"
+printf 'status=running\nmode=update\nstarted=%s\npid=999999\n' "$(date +%s)" > "$JOB_DIR/engine/state"
+kill() { printf 'result=ok\nstatus=done\n' >> "$JOB_DIR/engine/state"; return 1; }
+job_process_alive "$JOB_DIR/engine" || :
+[ "$(job_state_value "$JOB_DIR/engine/state" status)" = done ] || { echo 'Completed job overwritten by stale PID check' >&2; exit 1; }
+[ ! -s "$JOB_DIR/engine/output" ] || { echo 'Completed job incorrectly reported as failed' >&2; exit 1; }
+echo 'PASS: startup grace and completed-job race'
