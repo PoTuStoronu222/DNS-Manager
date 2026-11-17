@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.80"
+VERSION="2.81"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -2405,7 +2405,7 @@ if [ "$(uci -q get dns-manager.global.active_engine 2>/dev/null)" = dnscrypt-pro
 fi
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.80"
+SELF_VERSION="2.81"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -7087,17 +7087,6 @@ function renderDoH(root,st){
     e.appendChild(card('Управление DNS Manager',cleanActions));
     return;
   }
-  var browserEnabled=yes(st.browser_dns), browserLoaded=yes(st.browser_dns_loaded);
-  e.appendChild(card('Браузеры и DNS',[
-    E('div',{'class':'dm-row'},[E('span',{'class':'dm-label'},'Предлагать браузерам использовать DNS роутера'),badge(browserEnabled?(browserLoaded?'dm-ok':'dm-bad'):'dm-off',browserEnabled?(browserLoaded?'настроено':'не применено'):'выключено')]),
-    E('p',{'class':'dm-mini'},'Подсказывает Firefox и Частному узлу iCloud не включать собственный DNS автоматически. Ручные настройки браузеров могут это игнорировать.'),
-    E('div',{'class':'dm-seg'},[
-      btn('Включено',browserEnabled?'active cbi-button':'cbi-button',function(){setSetting('browser_dns',1,root);},{disabled:!!state.busy||!!state.jobRunning||(browserEnabled&&browserLoaded),'aria-pressed':browserEnabled?'true':'false'}),
-      btn('Выключено',!browserEnabled?'active cbi-button':'cbi-button',function(){setSetting('browser_dns',0,root);},{disabled:!!state.busy||!!state.jobRunning||!browserEnabled,'aria-pressed':!browserEnabled?'true':'false'})
-    ]),
-    settingFeedback('','browser_dns'),
-    E('div',{'class':'dm-mini'},'После выключения те же подсказки могут остаться из-за других настроек. Правила Steer и DNS отдельных устройств также могут обрабатывать запросы отдельно.')
-  ].filter(Boolean)));
   if(st.dnscrypt_engine==='dnscrypt-proxy2'){
     var servers=Array.isArray(st.dnscrypt_servers)?st.dnscrypt_servers:[];
     var selectedServer=String(st.dnscrypt_selected_server||'');
@@ -8091,6 +8080,17 @@ function renderNetwork(root,st){
       ])]
     : [watchdogCard(root,st), cacheCard(root,st)];
   e.appendChild(card('Сетевой тюнинг',body));
+  var browserEnabled=yes(st.browser_dns), browserLoaded=yes(st.browser_dns_loaded);
+  e.appendChild(card('Браузеры и DNS',[
+    E('div',{'class':'dm-row'},[E('span',{'class':'dm-label'},'Предлагать браузерам использовать DNS роутера'),badge(browserEnabled?(browserLoaded?'dm-ok':'dm-bad'):'dm-off',browserEnabled?(browserLoaded?'настроено':'не применено'):'выключено')]),
+    E('p',{'class':'dm-mini'},'Подсказывает Firefox и Частному узлу iCloud не включать собственный DNS автоматически. Ручные настройки браузеров могут это игнорировать.'),
+    E('div',{'class':'dm-seg'},[
+      btn('Включено',browserEnabled?'active cbi-button':'cbi-button',function(){setSetting('browser_dns',1,root);},{disabled:!!state.busy||!!state.jobRunning||(browserEnabled&&browserLoaded),'aria-pressed':browserEnabled?'true':'false'}),
+      btn('Выключено',!browserEnabled?'active cbi-button':'cbi-button',function(){setSetting('browser_dns',0,root);},{disabled:!!state.busy||!!state.jobRunning||!browserEnabled,'aria-pressed':!browserEnabled?'true':'false'})
+    ]),
+    settingFeedback('','browser_dns'),
+    E('div',{'class':'dm-mini'},'После выключения те же подсказки могут остаться из-за других настроек. Правила Steer и DNS отдельных устройств также могут обрабатывать запросы отдельно.')
+  ].filter(Boolean)));
 }
 function ntpPresetName(p){
   var map={
