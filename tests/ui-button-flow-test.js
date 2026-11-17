@@ -494,7 +494,12 @@ async function testCatalogCardActions(){
   let nodes=[],checked=[],selected=[],removed=[];const status={ok:'OK',bad:'FAIL',running:'RUNNING',custom:'OK'},state={busy:false,jobRunning:false,catalogLoading:false,category:'all',offset:0,limit:20},root={querySelector:()=>({innerHTML:'',appendChild:()=>{}})};
   const E=(tag,attrs,children)=>{let n={tag,attrs,children:Array.isArray(children)?children:[],appendChild(x){this.children.push(x);},insertBefore(x){this.children.unshift(x);}};Object.defineProperty(n,'firstChild',{get(){return this.children[0];}});nodes.push(n);return n;};
   const ctx={state,E,CATEGORY:[],checkInfo:id=>({status:status[id]}),resolverAvailable:ci=>ci.status==='OK',stateBadge:()=>({}),catName:x=>x,isUserDnsRecord:d=>d.id==='custom',btn:(text,cls,click,attrs)=>({text,cls,click,attrs}),testOne:id=>checked.push(id),openCatalogSlotPicker:d=>selected.push(d.id),deleteCustomDns:d=>removed.push(d.id),loadCatalog:()=>{}};
-  vm.createContext(ctx);vm.runInContext(extract('function renderCatalogAssign(d,root){','function openCatalogSlotPicker('),ctx);vm.runInContext(extract('function renderCatalogBody(root,data){','function renderLog('),ctx);
+  vm.createContext(ctx);vm.runInContext(extract('function renderCatalogAssign(d,root){','function openCatalogSlotPicker('),ctx);vm.runInContext(extract('function catalogGroups(servers,renderItem,rerender){','function renderLog('),ctx);
+  let grouped=ctx.catalogGroups([{id:'quad9_secure'},{id:'quad9_ecs'},{id:'custom'}],d=>d.id,()=>{});
+  if(grouped.length!==2||grouped[0].children[0].attrs['aria-expanded']!=='false')throw Error('catalog family was not grouped');
+  grouped[0].children[0].attrs.click();
+  grouped=ctx.catalogGroups([{id:'quad9_secure'},{id:'quad9_ecs'},{id:'custom'}],d=>d.id,()=>{});
+  if(grouped[0].children[1].children.join()!=='quad9_secure,quad9_ecs')throw Error('catalog family did not expose variants');
   ctx.renderCatalogBody(root,{servers:[{id:'ok'},{id:'bad'},{id:'running'},{id:'custom'}],total:4});
   const rows=nodes.filter(n=>n.attrs&&n.attrs.class==='dm-catalog-assign');if(rows.length!==4)throw Error('catalog controls missing');
   for(const row of rows)if(!row.children[0].text.startsWith('Провер')||row.children[1].text!=='Выбрать')throw Error('catalog actions are not adjacent');
