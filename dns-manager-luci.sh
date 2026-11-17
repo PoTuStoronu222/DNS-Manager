@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager full installer and LuCI companion
-# Version: 2.74
+# Version: 2.75
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.74"
+VERSION="2.75"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -2363,7 +2363,7 @@ if [ "$(uci -q get dns-manager.global.active_engine 2>/dev/null)" = dnscrypt-pro
 fi
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.74"
+SELF_VERSION="2.75"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -6037,7 +6037,7 @@ EOF_RPC_WRAPPER
 'require ui';
 'require session';
 
-// DNS Manager LuCI common module version: 2.74
+// DNS Manager LuCI common module version: 2.75
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -7033,9 +7033,9 @@ function renderDoH(root,st){
     btn('Выключено',fm==='off'?'active cbi-button':'cbi-button',function(){setForceMode('off',root);},{disabled:!!state.busy||!!state.jobRunning||fm==='off','aria-pressed':fm==='off'?'true':'false'})
   ]);
   var encryptedEnabled=yes(st.encrypted_dns);
-  var encryptedButtons=E('div',{'class':'dm-seg'},[
-    btn('Включено',encryptedEnabled?'active cbi-button':'cbi-button',function(){setSetting('encrypted_dns',1,root);},{disabled:state.busy||encryptedEnabled}),
-    btn('Выключено',!encryptedEnabled?'active cbi-button':'cbi-button',function(){setSetting('encrypted_dns',0,root);},{disabled:state.busy||!encryptedEnabled})
+  var encryptedButtons=E('div',{'class':'dm-seg dm-force-seg'},[
+    btn('Включено',encryptedEnabled?'active cbi-button':'cbi-button',function(){setSetting('encrypted_dns',1,root);},{disabled:!!state.busy||!!state.jobRunning||encryptedEnabled,'aria-pressed':encryptedEnabled?'true':'false'}),
+    btn('Выключено',!encryptedEnabled?'active cbi-button':'cbi-button',function(){setSetting('encrypted_dns',0,root);},{disabled:!!state.busy||!!state.jobRunning||!encryptedEnabled,'aria-pressed':!encryptedEnabled?'true':'false'})
   ]);
   var steer=st.force_owner==='steer';
   ch.push(E('div',{'style':'margin-top:9px'},[
@@ -8382,7 +8382,7 @@ function saveRouteCache(key,st,aux){
     var entry=JSON.parse(JSON.stringify({ts:Date.now(),data:st,aux:aux}));
     window.dmRouteCache[key]=entry;
     if(typeof session!=='undefined'&&session.setLocalData)
-      session.setLocalData('dns-manager-route-2.74-'+key,entry);
+      session.setLocalData('dns-manager-route-2.75-'+key,entry);
   }catch(e){}
 }
 function clearEngineUiState(){
@@ -8390,7 +8390,7 @@ function clearEngineUiState(){
   window.dmRouteCache=Object.create(null);
   window.dmStatusPromises=Object.create(null);
   ['dashboard','doh','network','time','devices','catalog','log'].forEach(function(key){
-    try{if(typeof session!=='undefined'&&session.setLocalData)session.setLocalData('dns-manager-route-2.74-'+key,null);}catch(e){}
+    try{if(typeof session!=='undefined'&&session.setLocalData)session.setLocalData('dns-manager-route-2.75-'+key,null);}catch(e){}
   });
   state.pageNotice={};state.profileProgress=null;state.profileOutput='';state.profileResumeStarted=false;
   state.regionalNotice='';state.pendingProfile='';state.pendingRegional=null;state.pendingDnscryptServer='';state.dnscryptDiagnostic='';state.dnscryptDiagnosticKind='';state.dnscryptDiagnosticResult='';
@@ -8402,7 +8402,7 @@ function clearEngineUiState(){
 function routeCacheEntry(key){
   var entry=key&&window.dmRouteCache&&window.dmRouteCache[key];
   if(!entry&&key){
-    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.74-'+key);}catch(e){}
+    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.75-'+key);}catch(e){}
   }
   if(!entry||typeof entry.ts!=='number'||Date.now()-entry.ts<0||Date.now()-entry.ts>300000||!entry.data||entry.data.ok!==true)return null;
   return entry;
@@ -9464,7 +9464,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 2.74
+// DNS Manager LuCI version: 2.75
 return view.extend({
   load: DM.load,
   render: DM.render,
