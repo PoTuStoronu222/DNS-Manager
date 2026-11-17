@@ -50,7 +50,7 @@ dnscrypt_set_setting() {
     input=$(cat)
     name=$(printf '%s' "$input" | jsonfilter -e '@.name' 2>/dev/null)
     enabled=$(printf '%s' "$input" | jsonfilter -e '@.enabled' 2>/dev/null)
-    case "$name" in watchdog|watchdog_autoreplace|force|browser_dns) ;; *) error 'Эта настройка пока недоступна для DNSCrypt'; return;; esac
+    case "$name" in watchdog|force|browser_dns) ;; *) error 'Эта настройка пока недоступна для DNSCrypt'; return;; esac
     case "$enabled" in 0|1) ;; *) error 'Неверное значение настройки'; return;; esac
     load_manager_functions && load_config && acquire_mutation_lock || { error 'Не удалось применить настройку DNS'; return; }
     rc=0
@@ -58,10 +58,8 @@ dnscrypt_set_setting() {
         set_browser_dns_hint "$enabled" >/dev/null 2>&1 || rc=$?
     elif [ "$name" = force ]; then
         dnscrypt_set_force "$enabled" >/dev/null 2>&1 || rc=$?
-    elif [ "$name" = watchdog ]; then
-        watchdog_apply_toggle "$enabled" >/dev/null 2>&1 || rc=$?
     else
-        watchdog_apply_autoreplace_toggle "$enabled" >/dev/null 2>&1 || rc=$?
+        watchdog_apply_toggle "$enabled" >/dev/null 2>&1 || rc=$?
     fi
     release_mutation_lock
     [ "$rc" -eq 0 ] || { error 'Не удалось применить настройку DNS'; return; }
@@ -83,7 +81,7 @@ dnscrypt_setting_start() {
     input=$(cat)
     name=$(printf '%s' "$input" | jsonfilter -e '@.name' 2>/dev/null)
     enabled=$(printf '%s' "$input" | jsonfilter -e '@.enabled' 2>/dev/null)
-    case "$name:$enabled" in watchdog:0|watchdog:1|watchdog_autoreplace:0|watchdog_autoreplace:1|force:0|force:1|browser_dns:0|browser_dns:1) ;; *) error 'Неверная настройка'; return;; esac
+    case "$name:$enabled" in watchdog:0|watchdog:1|force:0|force:1|browser_dns:0|browser_dns:1) ;; *) error 'Неверная настройка'; return;; esac
     mkdir -p "$JOB_DIR/setting" "$RUNTIME_DIR" || { error 'Не удалось подготовить задачу'; return; }
     exec 9>"$RUNTIME_DIR/setting-start.lock" || { error 'Не удалось подготовить блокировку'; return; }
     flock -n 9 || { error 'Другая настройка уже запускается'; return; }
