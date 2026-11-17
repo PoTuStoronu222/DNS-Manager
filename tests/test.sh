@@ -648,7 +648,7 @@ grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validat
 grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
 grep -q 'VERSION="4.26"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
-grep -q 'VERSION="2.69"' dns-manager-luci.sh || fail "LuCI version not bumped"
+grep -q 'VERSION="2.70"' dns-manager-luci.sh || fail "LuCI version not bumped"
 grep -Fq "{id:'quad9plain',ips:'9.9.9.10,149.112.112.10,2620:fe::10,2620:fe::fe:10'}" dns-manager-luci.sh || fail "historical Quad9 bootstrap snapshot changed"
 grep -Fq "{id:'cira',ips:'149.112.121.10,149.112.122.10,2620:10a:80bb::10,2620:10a:80bc::10'}" dns-manager-luci.sh || fail "historical CIRA bootstrap snapshot changed"
 if grep -q '^main_menu$' dns-manager.sh; then fail "interactive console menu still starts"; fi
@@ -2518,7 +2518,7 @@ grep -q 'profile_job_result' "$tmp/backend.sh" || fail "persistent profile job r
 grep -q 'profile_job_message' "$tmp/backend.sh" || fail "persistent profile job message missing"
 grep -q '"profile_job_status"' "$tmp/backend.sh" || fail "profile job status is not returned by status JSON"
 grep -q '"profile_job_message"' "$tmp/backend.sh" || fail "profile job message is not returned by status JSON"
-grep -q 'Последняя операция: профиль' "$tmp/common.js" || fail "LuCI does not show the last profile operation after reopen"
+grep -q 'Последняя операция: профиль' "$tmp/common.js" || fail "LuCI does not show profile errors after reopen"
 grep -q 'Причина:' "$tmp/common.js" || fail "LuCI does not show the profile failure reason"
 grep -q 'Закрытие LuCI не останавливает операцию' "$tmp/common.js" || fail "LuCI does not explain persistent running profile jobs"
 grep -Fq "setAction(true,p?'Профиль «'+profileName(p)+'» уже применяется. Связь восстановлена.':'Применение профиля уже выполняется. Связь восстановлена.','running')" "$tmp/common.js" || fail "running profile resume is not labeled as running"

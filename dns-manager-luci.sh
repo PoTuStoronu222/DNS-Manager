@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager full installer and LuCI companion
-# Version: 2.69
+# Version: 2.70
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.69"
+VERSION="2.70"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -2363,7 +2363,7 @@ if [ "$(uci -q get dns-manager.global.active_engine 2>/dev/null)" = dnscrypt-pro
 fi
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.69"
+SELF_VERSION="2.70"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -6041,7 +6041,7 @@ EOF_RPC_WRAPPER
 'require ui';
 'require session';
 
-// DNS Manager LuCI common module version: 2.69
+// DNS Manager LuCI common module version: 2.70
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -7531,11 +7531,8 @@ function renderProfiles(root,st){
   var pm=stripAnsi(String(st.profile_job_message||'')).trim();
   var pf=String(st.profile_job_finished||'');
   var localProfileRunning=!!(state.busy&&state.profileProgress);
-  if(!localProfileRunning&&pf&&Number(pf)>0&&Date.now()/1000-Number(pf)>=600&&state.profileNoticeType==='ok'&&String(state.pageNotice.profiles||'').indexOf('Профиль «')===0){state.pageNotice.profiles='';state.profileProgress=null;}
   if(!localProfileRunning&&pj==='running'){
     pch.push(E('div',{'class':'dm-inline-msg info'},'⟳ Сейчас выполняется: профиль «'+(pp?profileName(pp):'DNS')+'». Закрытие LuCI не останавливает операцию; при открытии она продолжится здесь.'));
-  }else if(!localProfileRunning&&pf&&Number(pf)>0&&Date.now()/1000>=Number(pf)&&Date.now()/1000-Number(pf)<600&&pj==='done'&&pr==='ok'){
-    pch.push(E('div',{'class':'dm-inline-msg ok'},'✓ Последняя операция: профиль «'+(pp?profileName(pp):'DNS')+'» применён.'+(pf?' · '+dateText(pf):'')));
   }else if(!localProfileRunning&&pf&&Number(pf)>0&&Date.now()/1000>=Number(pf)&&Date.now()/1000-Number(pf)<600&&pj==='failed'){
     var failText='✗ Последняя операция: профиль «'+(pp?profileName(pp):'DNS')+'» не применён.';
     if(pm)failText+=' Причина: '+pm;
@@ -8388,7 +8385,7 @@ function saveRouteCache(key,st,aux){
     var entry=JSON.parse(JSON.stringify({ts:Date.now(),data:st,aux:aux}));
     window.dmRouteCache[key]=entry;
     if(typeof session!=='undefined'&&session.setLocalData)
-      session.setLocalData('dns-manager-route-2.69-'+key,entry);
+      session.setLocalData('dns-manager-route-2.70-'+key,entry);
   }catch(e){}
 }
 function clearEngineUiState(){
@@ -8396,7 +8393,7 @@ function clearEngineUiState(){
   window.dmRouteCache=Object.create(null);
   window.dmStatusPromises=Object.create(null);
   ['dashboard','doh','network','time','devices','catalog','log'].forEach(function(key){
-    try{if(typeof session!=='undefined'&&session.setLocalData)session.setLocalData('dns-manager-route-2.69-'+key,null);}catch(e){}
+    try{if(typeof session!=='undefined'&&session.setLocalData)session.setLocalData('dns-manager-route-2.70-'+key,null);}catch(e){}
   });
   state.pageNotice={};state.profileProgress=null;state.profileOutput='';state.profileResumeStarted=false;
   state.regionalNotice='';state.pendingProfile='';state.pendingRegional=null;state.pendingDnscryptServer='';state.dnscryptDiagnostic='';state.dnscryptDiagnosticKind='';state.dnscryptDiagnosticResult='';
@@ -8408,7 +8405,7 @@ function clearEngineUiState(){
 function routeCacheEntry(key){
   var entry=key&&window.dmRouteCache&&window.dmRouteCache[key];
   if(!entry&&key){
-    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.69-'+key);}catch(e){}
+    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.70-'+key);}catch(e){}
   }
   if(!entry||typeof entry.ts!=='number'||Date.now()-entry.ts<0||Date.now()-entry.ts>300000||!entry.data||entry.data.ok!==true)return null;
   return entry;
@@ -9130,7 +9127,7 @@ function pollJob(root,job,meta,done){
       state.profileProgress=null;
       state.profileNoticeType='ok';
       setAction(true,'Профиль: «'+label+'».');
-      state.pageNotice.profiles='Профиль «'+label+'» применён.';
+      state.pageNotice.profiles='';
     }else{
       state.profileNoticeType='error';
       var out=stripAnsi(j&&j.output||'').trim().split('\n').filter(function(x){return String(x||'').trim();});
@@ -9475,7 +9472,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 2.69
+// DNS Manager LuCI version: 2.70
 return view.extend({
   load: DM.load,
   render: DM.render,
