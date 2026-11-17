@@ -9394,7 +9394,7 @@ __catalog-migrate)
 __watchdog-migrate)
     mkdir -p /var/lock || exit 1
     exec 8>/var/lock/dns-manager-watchdog-migrate.lock || exit 1
-    flock -w 30 8 || exit 1
+    flock 8 || exit 1
     preflight_readonly
     init_dirs
     load_config
