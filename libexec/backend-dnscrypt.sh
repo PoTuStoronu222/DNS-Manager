@@ -355,20 +355,22 @@ dnscrypt_catalog_snapshot() (
     dir=$(mktemp -d "$RUNTIME_DIR/catalog-probe.XXXXXX") || exit 1
     catalog_hash=$(cksum "$DNS_CATALOG")
     custom_hash=$(cksum "$CUSTOM_DNS_CATALOG" 2>/dev/null || :)
-    awk -F'|' 'NF >= 5 && $1 !~ /^#/ && $1 ~ /^[A-Za-z0-9_-]+$/ && $5 ~ /^https:\/\// {print $1 "|" $5}' "$DNS_CATALOG" > "$dir/source"
+    awk -F'|' 'NF >= 5 && $1 !~ /^#/ && $1 ~ /^[A-Za-z0-9_-]+$/ && $5 ~ /^https:\/\// {gsub(/[\r\n]/, " ", $4); print $1 "|" $5 "|" $4}' "$DNS_CATALOG" > "$dir/source"
     if [ -r "$CUSTOM_DNS_CATALOG" ]; then
-        awk -F'|' 'NF >= 5 && $1 !~ /^#/ && $1 ~ /^[A-Za-z0-9_-]+$/ && $5 ~ /^https:\/\// {print $1 "|" $5}' "$CUSTOM_DNS_CATALOG" >> "$dir/source"
+        awk -F'|' 'NF >= 5 && $1 !~ /^#/ && $1 ~ /^[A-Za-z0-9_-]+$/ && $5 ~ /^https:\/\// {gsub(/[\r\n]/, " ", $4); print $1 "|" $5 "|" $4}' "$CUSTOM_DNS_CATALOG" >> "$dir/source"
     fi
     total=$(wc -l < "$dir/source" | tr -d ' ')
     [ "$total" -gt 0 ] || exit 1
-    printf 'name=dnscrypt_catalog\nprogress_total=%s\nprogress_done=0\n' "$total" >> "$JOB_DIR/health/state"
+    printf 'name=dnscrypt_catalog\nprogress_total=%s\nprogress_done=0\nprogress_ok=0\nprogress_fail=0\n' "$total" >> "$JOB_DIR/health/state"
     : > "$dir/results"
-    offset=1
+    offset=1; success_count=0; failed_count=0
     while [ "$offset" -le "$total" ]; do
         end=$((offset + 5))
         sed -n "${offset},${end}p" "$dir/source" > "$dir/group"
+        names=$(awk -F'|' '{if (NR>1) printf ", "; printf "%s", ($3 != "" ? $3 : $1)}' "$dir/group")
+        printf 'phase=%s\n' "$names" >> "$JOB_DIR/health/state"
         : > "$dir/stamps"; : > "$dir/ids"; : > "$dir/valid"
-        while IFS='|' read -r id url; do
+        while IFS='|' read -r id url name; do
             stamp=$(sh "$HELPERS/dns-manager-doh-stamp.sh" "$url" 2>/dev/null) || continue
             printf '%s\n' "$id" >> "$dir/ids"
             printf '%s\n' "$stamp" >> "$dir/stamps"
@@ -398,22 +400,33 @@ dnscrypt_catalog_snapshot() (
             done
             kill "$probe" 2>/dev/null || :; wait "$probe" 2>/dev/null || :; probe=''
             if grep -Eqi 'address already in use|permission denied|failed to listen' "$dir/probe.log" "$dir/process.log"; then exit 1; fi
+            [ -s "$dir/probe.log" ] || exit 1
             completed=0; grep -q 'Server with the lowest initial latency:' "$dir/probe.log" && completed=1
             awk '
-                /Sorted latencies:/ {delete values; collecting=1; next}
+                /\[manager-[1-6]\] OK .*rtt: [0-9]+ms/ {
+                    for(i=1;i<=NF;i++) if($i ~ /^\[manager-[1-6]\]$/) {
+                        server=$i; gsub(/[\[\]]/, "", server)
+                        for(j=i+1;j<NF;j++) if($j=="rtt:") {v=$(j+1); sub(/ms.*/, "", v); if(v ~ /^[0-9]+$/) values[server]=v}
+                    }
+                }
+                /Sorted latencies:/ {collecting=1; next}
                 collecting && /ms manager-[1-6]$/ {v=$(NF-1); sub(/ms$/, "", v); if(v ~ /^[0-9]+$/) values[$NF]=v; next}
                 /Server with the lowest initial latency:/ {
                     if (!collecting) for(i=1;i<=NF;i++) if($i ~ /^manager-[1-6]$/ && $(i+1)=="(rtt:") {v=$(i+2); sub(/ms\).*/, "", v); if(v ~ /^[0-9]+$/) values[$i]=v}
-                    for(k in values) print k, values[k]; collecting=0
-                }' "$dir/probe.log" > "$dir/latencies"
+                    collecting=0
+                }
+                END {for(k in values) print k, values[k]}' "$dir/probe.log" > "$dir/latencies"
             n=1; while IFS= read -r id; do
                 latency=$(awk -v s="manager-$n" '$1==s {print $2; exit}' "$dir/latencies")
-                case "$latency" in ''|*[!0-9]*) [ "$completed" = 0 ] || printf '%s|-1\n' "$id" >> "$dir/results";; *) printf '%s|%s\n' "$id" "$latency" >> "$dir/results";; esac
+                case "$latency" in
+                    ''|*[!0-9]*) if [ "$completed" = 1 ]; then printf '%s|-1\n' "$id" >> "$dir/results"; failed_count=$((failed_count + 1)); fi;;
+                    *) printf '%s|%s\n' "$id" "$latency" >> "$dir/results"; success_count=$((success_count + 1));;
+                esac
                 n=$((n + 1))
             done < "$dir/ids"
         fi
         done_count=$end; [ "$done_count" -le "$total" ] || done_count=$total
-        printf 'progress_done=%s\n' "$done_count" >> "$JOB_DIR/health/state"
+        printf 'progress_done=%s\nprogress_ok=%s\nprogress_fail=%s\n' "$done_count" "$success_count" "$failed_count" >> "$JOB_DIR/health/state"
         offset=$((end + 1))
     done
     [ "$catalog_hash" = "$(cksum "$DNS_CATALOG" 2>/dev/null)" ] || exit 1

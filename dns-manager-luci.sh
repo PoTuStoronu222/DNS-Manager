@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.87"
+VERSION="2.88"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -1101,20 +1101,22 @@ dnscrypt_catalog_snapshot() (
     dir=$(mktemp -d "$RUNTIME_DIR/catalog-probe.XXXXXX") || exit 1
     catalog_hash=$(cksum "$DNS_CATALOG")
     custom_hash=$(cksum "$CUSTOM_DNS_CATALOG" 2>/dev/null || :)
-    awk -F'|' 'NF >= 5 && $1 !~ /^#/ && $1 ~ /^[A-Za-z0-9_-]+$/ && $5 ~ /^https:\/\// {print $1 "|" $5}' "$DNS_CATALOG" > "$dir/source"
+    awk -F'|' 'NF >= 5 && $1 !~ /^#/ && $1 ~ /^[A-Za-z0-9_-]+$/ && $5 ~ /^https:\/\// {gsub(/[\r\n]/, " ", $4); print $1 "|" $5 "|" $4}' "$DNS_CATALOG" > "$dir/source"
     if [ -r "$CUSTOM_DNS_CATALOG" ]; then
-        awk -F'|' 'NF >= 5 && $1 !~ /^#/ && $1 ~ /^[A-Za-z0-9_-]+$/ && $5 ~ /^https:\/\// {print $1 "|" $5}' "$CUSTOM_DNS_CATALOG" >> "$dir/source"
+        awk -F'|' 'NF >= 5 && $1 !~ /^#/ && $1 ~ /^[A-Za-z0-9_-]+$/ && $5 ~ /^https:\/\// {gsub(/[\r\n]/, " ", $4); print $1 "|" $5 "|" $4}' "$CUSTOM_DNS_CATALOG" >> "$dir/source"
     fi
     total=$(wc -l < "$dir/source" | tr -d ' ')
     [ "$total" -gt 0 ] || exit 1
-    printf 'name=dnscrypt_catalog\nprogress_total=%s\nprogress_done=0\n' "$total" >> "$JOB_DIR/health/state"
+    printf 'name=dnscrypt_catalog\nprogress_total=%s\nprogress_done=0\nprogress_ok=0\nprogress_fail=0\n' "$total" >> "$JOB_DIR/health/state"
     : > "$dir/results"
-    offset=1
+    offset=1; success_count=0; failed_count=0
     while [ "$offset" -le "$total" ]; do
         end=$((offset + 5))
         sed -n "${offset},${end}p" "$dir/source" > "$dir/group"
+        names=$(awk -F'|' '{if (NR>1) printf ", "; printf "%s", ($3 != "" ? $3 : $1)}' "$dir/group")
+        printf 'phase=%s\n' "$names" >> "$JOB_DIR/health/state"
         : > "$dir/stamps"; : > "$dir/ids"; : > "$dir/valid"
-        while IFS='|' read -r id url; do
+        while IFS='|' read -r id url name; do
             stamp=$(sh "$HELPERS/dns-manager-doh-stamp.sh" "$url" 2>/dev/null) || continue
             printf '%s\n' "$id" >> "$dir/ids"
             printf '%s\n' "$stamp" >> "$dir/stamps"
@@ -1144,22 +1146,33 @@ dnscrypt_catalog_snapshot() (
             done
             kill "$probe" 2>/dev/null || :; wait "$probe" 2>/dev/null || :; probe=''
             if grep -Eqi 'address already in use|permission denied|failed to listen' "$dir/probe.log" "$dir/process.log"; then exit 1; fi
+            [ -s "$dir/probe.log" ] || exit 1
             completed=0; grep -q 'Server with the lowest initial latency:' "$dir/probe.log" && completed=1
             awk '
-                /Sorted latencies:/ {delete values; collecting=1; next}
+                /\[manager-[1-6]\] OK .*rtt: [0-9]+ms/ {
+                    for(i=1;i<=NF;i++) if($i ~ /^\[manager-[1-6]\]$/) {
+                        server=$i; gsub(/[\[\]]/, "", server)
+                        for(j=i+1;j<NF;j++) if($j=="rtt:") {v=$(j+1); sub(/ms.*/, "", v); if(v ~ /^[0-9]+$/) values[server]=v}
+                    }
+                }
+                /Sorted latencies:/ {collecting=1; next}
                 collecting && /ms manager-[1-6]$/ {v=$(NF-1); sub(/ms$/, "", v); if(v ~ /^[0-9]+$/) values[$NF]=v; next}
                 /Server with the lowest initial latency:/ {
                     if (!collecting) for(i=1;i<=NF;i++) if($i ~ /^manager-[1-6]$/ && $(i+1)=="(rtt:") {v=$(i+2); sub(/ms\).*/, "", v); if(v ~ /^[0-9]+$/) values[$i]=v}
-                    for(k in values) print k, values[k]; collecting=0
-                }' "$dir/probe.log" > "$dir/latencies"
+                    collecting=0
+                }
+                END {for(k in values) print k, values[k]}' "$dir/probe.log" > "$dir/latencies"
             n=1; while IFS= read -r id; do
                 latency=$(awk -v s="manager-$n" '$1==s {print $2; exit}' "$dir/latencies")
-                case "$latency" in ''|*[!0-9]*) [ "$completed" = 0 ] || printf '%s|-1\n' "$id" >> "$dir/results";; *) printf '%s|%s\n' "$id" "$latency" >> "$dir/results";; esac
+                case "$latency" in
+                    ''|*[!0-9]*) if [ "$completed" = 1 ]; then printf '%s|-1\n' "$id" >> "$dir/results"; failed_count=$((failed_count + 1)); fi;;
+                    *) printf '%s|%s\n' "$id" "$latency" >> "$dir/results"; success_count=$((success_count + 1));;
+                esac
                 n=$((n + 1))
             done < "$dir/ids"
         fi
         done_count=$end; [ "$done_count" -le "$total" ] || done_count=$total
-        printf 'progress_done=%s\n' "$done_count" >> "$JOB_DIR/health/state"
+        printf 'progress_done=%s\nprogress_ok=%s\nprogress_fail=%s\n' "$done_count" "$success_count" "$failed_count" >> "$JOB_DIR/health/state"
         offset=$((end + 1))
     done
     [ "$catalog_hash" = "$(cksum "$DNS_CATALOG" 2>/dev/null)" ] || exit 1
@@ -2548,7 +2561,7 @@ if [ "$(uci -q get dns-manager.global.active_engine 2>/dev/null)" = dnscrypt-pro
 fi
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.87"
+SELF_VERSION="2.88"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -8397,12 +8410,15 @@ function dnscryptCatalogBadge(st,id){
     ? badge('dm-ok',String(latency)+' мс · последний замер')
     : badge('dm-muted','нет данных');
 }
+function updateDnscryptCatalogProgress(root,j){
+  state.dnscryptCatalogProgress={done:Number(j.progress_done)||0,total:Number(j.progress_total)||0,ok:Number(j.progress_ok)||0,fail:Number(j.progress_fail)||0,phase:String(j.phase||'')};
+  renderCatalog(root);
+}
 function refreshDnscryptCatalogLatency(root){
   if(state.busy||state.jobRunning)return;
-  state.busy=true;state.dnscryptCatalogChecking=true;state.pageNotice.catalog='';renderCatalog(root);
+  state.busy=true;state.dnscryptCatalogChecking=true;state.dnscryptCatalogProgress=null;state.pageNotice.catalog='';renderCatalog(root);
   callDnscryptLatencies().then(function(r){return waitDnsHealth(r,true,function(j){
-    state.dnscryptCatalogProgress=Number(j.progress_total)?Number(j.progress_done||0)+' / '+Number(j.progress_total):'';
-    renderCatalog(root);
+    updateDnscryptCatalogProgress(root,j);
   });}).then(function(result){
     if(!result.ok)throw new Error(result.output||'Не удалось получить замеры DNSCrypt.');
     state.busy=false;state.dnscryptCatalogChecking=false;return refresh(root,true);
@@ -8417,8 +8433,7 @@ function resumeDnscryptCatalogLatency(root){
     if(!j||j.name!=='dnscrypt_catalog'||j.status!=='running'||state.dnscryptCatalogChecking)return;
     state.busy=true;state.dnscryptCatalogChecking=true;renderCatalog(root);
     return waitDnsHealth({ok:true,job:'health'},true,function(progress){
-      state.dnscryptCatalogProgress=Number(progress.progress_total)?Number(progress.progress_done||0)+' / '+Number(progress.progress_total):'';
-      renderCatalog(root);
+      updateDnscryptCatalogProgress(root,progress);
     }).then(function(result){
       state.busy=false;state.dnscryptCatalogChecking=false;
       if(!result.ok)state.pageNotice.catalog=result.output||'Не удалось проверить каталог DNS.';
@@ -8430,7 +8445,16 @@ function renderCatalog(root){
   var e=root.querySelector('#dm-catalog');if(!e)return;e.innerHTML='';
   if((window.dmState||{}).dnscrypt_engine==='dnscrypt-proxy2'){
     var data=window.dmCatalog||{}, controls=E('div',{'class':'dm-seg'});
-    e.appendChild(E('div',{'class':'dm-actions'},[btn(state.dnscryptCatalogChecking?'Проверяю DNS'+(state.dnscryptCatalogProgress?' · '+state.dnscryptCatalogProgress:'')+'…':'Проверить все DNS','cbi-button-action',function(){refreshDnscryptCatalogLatency(root);},{disabled:!!state.busy||!!state.jobRunning})]));
+    e.appendChild(E('div',{'class':'dm-actions'},[btn(state.dnscryptCatalogChecking?'Проверяю DNS…':'Проверить все DNS','cbi-button-action',function(){refreshDnscryptCatalogLatency(root);},{disabled:!!state.busy||!!state.jobRunning})]));
+    if(state.dnscryptCatalogChecking){
+      var progress=state.dnscryptCatalogProgress||{}, done=progress.done||0, total=progress.total||0;
+      var progressItems=[E('strong',{},total?'Проверено '+done+' из '+total:'Подготавливаю проверку каталога…')];
+      if(total)progressItems.push(E('progress',{'value':Math.min(done,total),'max':total,'aria-label':'Проверено серверов DNS'}));
+      if(progress.phase)progressItems.push(E('div',{'class':'dm-mini'},'Сейчас проверяются: '+progress.phase));
+      if(done)progressItems.push(E('div',{'class':'dm-mini'},'Доступны: '+progress.ok+' · Недоступны: '+progress.fail+(done-progress.ok-progress.fail>0?' · Нет данных: '+(done-progress.ok-progress.fail):'')));
+      progressItems.push(E('div',{'class':'dm-mini'},'Серверы проверяются группами до шести. Можно закрыть страницу — проверка продолжится.'));
+      e.appendChild(E('div',{'class':'dm-hint'},progressItems));
+    }
     CATEGORY.forEach(function(c){controls.appendChild(btn(c[1],c[0]===state.category?'active cbi-button':'cbi-button',function(){if(state.catalogLoading)return;state.category=c[0];state.offset=0;loadCatalog(root);},{disabled:!!state.catalogLoading,'aria-pressed':c[0]===state.category?'true':'false'}));});
     var rows=catalogGroups(data.servers||[],function(d){return E('div',{'class':'dm-card dm-catalog-item'},[E('h4',{},d.name||d.id),E('div',{'class':'dm-meta'},catName(d.category)),E('div',{'class':'dm-slot-state'},[dnscryptCatalogBadge(window.dmState||{},d.id)])]);},function(){renderCatalog(root);});
     e.appendChild(card('Каталог DNS',[E('div',{'class':'dm-hint'},'Проверка выполняется небольшими группами, не меняя текущие DNS.'),controls,state.pageNotice.catalog?E('div',{'class':'dm-inline-msg error'},state.pageNotice.catalog):null,state.catalogLoading?E('div',{'class':'dm-hint'},'Загрузка каталога DNS…'):null,E('div',{'class':'dm-catalog'},rows),E('div',{'class':'dm-page'},[btn('←','cbi-button-neutral',function(){if(!state.catalogLoading&&state.offset>0){state.offset=Math.max(0,state.offset-state.limit);loadCatalog(root);}},{disabled:!!state.catalogLoading||state.offset<=0,'aria-label':'Предыдущая страница'}),E('span',{'class':'dm-mini'},(Math.floor(state.offset/state.limit)+1)+' / '+Math.max(1,Math.ceil((data.total||0)/state.limit))),btn('→','cbi-button-neutral',function(){if(!state.catalogLoading&&state.offset+state.limit<(data.total||0)){state.offset+=state.limit;loadCatalog(root);}},{disabled:!!state.catalogLoading||state.offset+state.limit>=(data.total||0),'aria-label':'Следующая страница'})])].filter(Boolean)));
