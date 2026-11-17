@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager full installer and LuCI companion
-# Version: 2.75
+# Version: 2.76
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.75"
+VERSION="2.76"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -812,6 +812,42 @@ dnscrypt_set_setting() {
     printf '{"ok":true}\n'
 }
 
+# The setting worker is managed by procd and survives the RPC connection.
+dnscrypt_setting_worker() {
+    printf 'pid=%s\n' "$$" >> "$JOB_DIR/setting/state"
+    token=$(awk '{print $22}' "/proc/$$/stat" 2>/dev/null || :)
+    [ -z "$token" ] || printf 'pid_start=%s\n' "$token" >> "$JOB_DIR/setting/state"
+    dnscrypt_set_setting < "$JOB_DIR/setting/input" > "$JOB_DIR/setting/output" 2>&1
+    rm -f "$JOB_DIR/setting/input"
+    if grep -q '"ok"[[:space:]]*:[[:space:]]*true' "$JOB_DIR/setting/output"; then result=ok; status=done; rc=0; else result=fail; status=failed; rc=1; fi
+    printf 'result=%s\nstatus=%s\nfinished=%s\n' "$result" "$status" "$(date +%s)" >> "$JOB_DIR/setting/state"
+    printf '\n__DONE__ %s\n' "$rc" >> "$JOB_DIR/setting/output"
+}
+dnscrypt_setting_start() {
+    input=$(cat)
+    name=$(printf '%s' "$input" | jsonfilter -e '@.name' 2>/dev/null)
+    enabled=$(printf '%s' "$input" | jsonfilter -e '@.enabled' 2>/dev/null)
+    case "$name:$enabled" in watchdog:0|watchdog:1|watchdog_autoreplace:0|watchdog_autoreplace:1|force:0|force:1) ;; *) error 'Неверная настройка'; return;; esac
+    mkdir -p "$JOB_DIR/setting" "$RUNTIME_DIR" || { error 'Не удалось подготовить задачу'; return; }
+    exec 9>"$RUNTIME_DIR/setting-start.lock" || { error 'Не удалось подготовить блокировку'; return; }
+    flock -n 9 || { error 'Другая настройка уже запускается'; return; }
+    service=dns-manager-dnscrypt-setting
+    reply=$(ubus -t 5 call service list "{\"name\":\"$service\"}" 2>/dev/null) || { error 'Служба задач недоступна'; return; }
+    if printf '%s' "$reply" | grep -q '"running"[[:space:]]*:[[:space:]]*true'; then error 'Другая настройка уже применяется'; return; fi
+    ubus -t 5 call service delete "{\"name\":\"$service\"}" >/dev/null 2>&1 || :
+    umask 077
+    printf '%s' "$input" > "$JOB_DIR/setting/input" || { error 'Не удалось сохранить запрос'; return; }
+    : > "$JOB_DIR/setting/output"
+    printf 'status=running\nstarted=%s\nmode=setting\nname=%s\nenabled=%s\n' "$(date +%s)" "$name" "$enabled" > "$JOB_DIR/setting/state"
+    request="{\"name\":\"$service\",\"instances\":{\"main\":{\"command\":[\"/bin/sh\",\"/usr/lib/dns-manager-luci/backend-dnscrypt.sh\",\"setting_worker\"]}}}"
+    if ! ubus -t 5 call service set "$request" >/dev/null 2>&1; then
+        rm -f "$JOB_DIR/setting/input"
+        printf 'result=fail\nstatus=failed\nfinished=%s\n' "$(date +%s)" >> "$JOB_DIR/setting/state"
+        error 'Не удалось запустить настройку'; return
+    fi
+    printf '{"ok":true,"job":"setting"}\n'
+}
+
 # Keep the LAN redirect in an owned UCI section so firewall reloads retain it.
 dnscrypt_set_force() {
     local enabled current owner lan_ip
@@ -1328,6 +1364,7 @@ EOF_POOL
 }
 
 case "${1:-}" in
+    setting_worker) dnscrypt_setting_worker ;;
     diagnostic_worker) diagnostic_worker "${2:-}" ;;
     worker) profile_worker "${2:-}" ;;
     reset_worker) reset_worker ;;
@@ -1339,7 +1376,7 @@ case "${1:-}" in
             set_profile) profile_start ;;
             set_regional) regional_start ;;
             reset_dns) reset_start ;;
-            set_setting) dnscrypt_set_setting ;;
+            set_setting) dnscrypt_setting_start ;;
             switch_engine) switch_start ;;
             dnscrypt_test|system_dns_test) diagnostic_start "$2" ;;
             dnscrypt_log) diagnostic "$2" ;;
@@ -2363,7 +2400,7 @@ if [ "$(uci -q get dns-manager.global.active_engine 2>/dev/null)" = dnscrypt-pro
 fi
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.75"
+SELF_VERSION="2.76"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -4827,9 +4864,11 @@ job_process_alive() {
     if [ -n "$_started" ] && [ -n "$_now" ] && [ "$_now" -ge "$_started" ] 2>/dev/null; then
         _age=$((_now-_started))
         if [ "$_age" -ge "$_max_age" ] 2>/dev/null; then
-            # Never kill a live package update: opkg/apk could be mid-write.
-            # Keep its button locked until the worker actually exits.
-            if [ "$_mode" = update ] && [ -n "$_pid" ] && kill -0 "$_pid" 2>/dev/null; then return 0; fi
+            # Do not interrupt live state changes merely because a page polled late.
+            case "$_mode" in
+                update|profile|regional|action|setting)
+                    if [ -n "$_pid" ] && kill -0 "$_pid" 2>/dev/null; then return 0; fi ;;
+            esac
             if [ -n "$_pid" ]; then
                 _safe_to_kill=1
                 if [ -n "$_stored_token" ] && [ -n "$_current_token" ]; then
@@ -4844,7 +4883,7 @@ job_process_alive() {
 
     if [ -z "$_pid" ]; then
         # procd starts the worker asynchronously; allow it time to record PID.
-        if { [ "$_mode" = update ] || [ "$_mode" = combined ] || [ "$_mode" = profile ] || [ "$_mode" = action ]; } &&
+        if { [ "$_mode" = update ] || [ "$_mode" = combined ] || [ "$_mode" = profile ] || [ "$_mode" = action ] || [ "$_mode" = setting ] || [ "$_mode" = regional ]; } &&
            [ -n "$_started" ] && [ -n "$_now" ] && [ "$_now" -ge "$_started" ] &&
            [ $((_now-_started)) -lt 30 ]; then
             return 0
@@ -4975,145 +5014,119 @@ background_worker() {
     fi
 }
 
+# Check the old service before clearing its previous result.
+bg_service_idle() {
+    DNSMGR_BG_SERVICE="dns-manager-job-$1"
+    DNSMGR_BG_REPLY="$(ubus -t 5 call service list "{\"name\":\"$DNSMGR_BG_SERVICE\"}" 2>/dev/null)" || { json_error "Служба фоновых задач недоступна"; return 1; }
+    if printf '%s' "$DNSMGR_BG_REPLY" | grep -qE '"running"[[:space:]]*:[[:space:]]*true'; then
+        json_error "Предыдущее действие ещё выполняется"; return 1
+    fi
+}
+
+# Start a worker under procd so it survives rpcd and browser disconnects.
+run_bg_job() {
+    DNSMGR_BG_JOB="$1"; DNSMGR_BG_KIND="$2"; DNSMGR_BG_ARG="$3"
+    DNSMGR_BG_SERVICE="dns-manager-job-$DNSMGR_BG_JOB"
+    if ubus call service list "{\"name\":\"$DNSMGR_BG_SERVICE\"}" 2>/dev/null | grep -qE '"running"[[:space:]]*:[[:space:]]*true'; then
+        json_error "Предыдущее действие ещё выполняется"; return 1
+    fi
+    ubus call service delete "{\"name\":\"$DNSMGR_BG_SERVICE\"}" >/dev/null 2>&1 || true
+    # setsid is optional in OpenWrt builds; procd already owns the worker.
+    if command -v setsid >/dev/null 2>&1; then
+        DNSMGR_BG_COMMAND="\"$(command -v setsid)\",\"/bin/sh\""
+    else
+        DNSMGR_BG_COMMAND='"/bin/sh"'
+    fi
+    DNSMGR_BG_REQUEST="{\"name\":\"$DNSMGR_BG_SERVICE\",\"instances\":{\"main\":{\"command\":[$DNSMGR_BG_COMMAND,\"/usr/lib/dns-manager-luci/backend.sh\",\"mutation_worker\",\"$DNSMGR_BG_JOB\",\"$DNSMGR_BG_KIND\",\"$DNSMGR_BG_ARG\"]}}}"
+    if ! ubus call service set "$DNSMGR_BG_REQUEST" >/dev/null 2>&1; then
+        job_write "$DNSMGR_BG_JOB" result fail; job_write "$DNSMGR_BG_JOB" status failed; job_write "$DNSMGR_BG_JOB" finished "$(date +%s)"
+        json_error "Не удалось запустить фоновую задачу"; return 1
+    fi
+    return 0
+}
+
+mutation_worker() {
+    DNSMGR_WORK_JOB="$1"; DNSMGR_WORK_KIND="$2"; DNSMGR_WORK_ARG="$3"
+    case "$DNSMGR_WORK_JOB:$DNSMGR_WORK_KIND" in action:action|setting:setting|profile:profile|regional:regional) ;; *) return 1;; esac
+    job_record_pid "$DNSMGR_WORK_JOB" "$$"
+    exec >>"$JOB_DIR/$DNSMGR_WORK_JOB/output" 2>&1 </dev/null
+    DNSMGR_WORK_RC=1
+    case "$DNSMGR_WORK_KIND" in
+        action|setting)
+            INPUT="$(cat "$JOB_DIR/$DNSMGR_WORK_JOB/input" 2>/dev/null)"
+            RPC_METHOD="$DNSMGR_WORK_ARG"
+            DNSMGR_ACTION_WORKER=1; DNSMGR_SETTING_WORKER=1
+            run_action
+            grep -q '"ok"[[:space:]]*:[[:space:]]*true' "$JOB_DIR/$DNSMGR_WORK_JOB/output" && DNSMGR_WORK_RC=0
+            ;;
+        profile)
+            if load_manager; then
+                DNS_MANAGER_NO_UPDATE=1 SILENT_APPLY=1 HYBRID_SELECTION_QUIET=1 PROFILE_APPLY=1 apply_profile_now "$DNSMGR_WORK_ARG" && DNSMGR_WORK_RC=0
+            else printf '%s\n' 'DNS Manager недоступен.'; fi
+            ;;
+        regional) load_manager && DNS_MANAGER_NO_UPDATE=1 regional_apply_toggle "$DNSMGR_WORK_ARG" && DNSMGR_WORK_RC=0;;
+    esac
+    rm -f "$JOB_DIR/$DNSMGR_WORK_JOB/input"
+    if [ "$DNSMGR_WORK_RC" = 0 ]; then
+        job_write "$DNSMGR_WORK_JOB" result ok; job_write "$DNSMGR_WORK_JOB" status done
+    else
+        job_write "$DNSMGR_WORK_JOB" result fail; job_write "$DNSMGR_WORK_JOB" status failed
+    fi
+    job_write "$DNSMGR_WORK_JOB" finished "$(date +%s)"
+    printf '\n__DONE__ %s\n' "$DNSMGR_WORK_RC"
+}
+
 job_start_action() {
     DNSMGR_ACTION_METHOD="$1"
-    case "$DNSMGR_ACTION_METHOD" in set_slot|set_slot_domains|set_device_dns|set_cache|reset_dns|set_ntp|set_bootstrap) ;; *) json_error "Неверное действие"; return;; esac
-    DNSMGR_ACTION_JOB=action
+    case "$DNSMGR_ACTION_METHOD" in set_slot|set_slot_domains|set_device_dns|set_cache|reset_dns|set_ntp|set_bootstrap|add_custom_dns|delete_custom_dns|set_watchdog_setting|set_watchdog_settings|set_test_age) ;; *) json_error "Неверное действие"; return;; esac
     acquire_runtime_lock "$RUNTIME_DIR/action-start.lock" || { json_error "Другое действие уже запускается"; return; }
-    if job_active "$DNSMGR_ACTION_JOB" && job_process_alive "$JOB_DIR/$DNSMGR_ACTION_JOB"; then
-        release_runtime_lock "$RUNTIME_DIR/action-start.lock"
-        json_error "Другое действие уже выполняется"
-        return
-    fi
-    job_prepare "$DNSMGR_ACTION_JOB" || { release_runtime_lock "$RUNTIME_DIR/action-start.lock"; json_error "Не удалось подготовить задачу"; return; }
-    printf 'status=running\nstarted=%s\nmode=action\nname=%s\n' "$(date +%s)" "$DNSMGR_ACTION_METHOD" > "$JOB_DIR/$DNSMGR_ACTION_JOB/state"
-    (
-        exec > "$JOB_DIR/$DNSMGR_ACTION_JOB/output" 2>&1 </dev/null
-        DNSMGR_ACTION_WORKER=1
-        RPC_METHOD="$DNSMGR_ACTION_METHOD"
-        run_action
-        if grep -q '"ok"[[:space:]]*:[[:space:]]*true' "$JOB_DIR/$DNSMGR_ACTION_JOB/output"; then
-            job_write "$DNSMGR_ACTION_JOB" result ok
-            job_write "$DNSMGR_ACTION_JOB" status done
-        else
-            job_write "$DNSMGR_ACTION_JOB" result fail
-            job_write "$DNSMGR_ACTION_JOB" status failed
-        fi
-        job_write "$DNSMGR_ACTION_JOB" finished "$(date +%s)"
-    ) &
-    job_record_pid "$DNSMGR_ACTION_JOB" "$!"
+    if job_active action && job_process_alive "$JOB_DIR/action"; then release_runtime_lock "$RUNTIME_DIR/action-start.lock"; json_error "Другое действие уже выполняется"; return; fi
+    bg_service_idle action || { release_runtime_lock "$RUNTIME_DIR/action-start.lock"; return; }
+    job_prepare action && printf '%s' "$INPUT" > "$JOB_DIR/action/input" || { release_runtime_lock "$RUNTIME_DIR/action-start.lock"; json_error "Не удалось подготовить задачу"; return; }
+    printf 'status=running\nstarted=%s\nmode=action\nname=%s\n' "$(date +%s)" "$DNSMGR_ACTION_METHOD" > "$JOB_DIR/action/state"
+    if run_bg_job action action "$DNSMGR_ACTION_METHOD"; then printf '{"ok":true,"job":"action"}'; fi
     release_runtime_lock "$RUNTIME_DIR/action-start.lock"
-    printf '{"ok":true,"job":'; json_quote "$DNSMGR_ACTION_JOB"; printf '}'
 }
 
 job_start_setting() {
-    DNSMGR_SETTING_NAME="$1"
-    DNSMGR_SETTING_VALUE="$2"
-    case "$DNSMGR_SETTING_NAME:$DNSMGR_SETTING_VALUE" in force:0|force:1|encrypted_dns:0|encrypted_dns:1) ;; *) json_error "Неверная настройка"; return;; esac
-    DNSMGR_SETTING_JOB=setting
+    DNSMGR_SETTING_NAME="$1"; DNSMGR_SETTING_VALUE="$2"
+    case "$DNSMGR_SETTING_NAME:$DNSMGR_SETTING_VALUE" in force:0|force:1|encrypted_dns:0|encrypted_dns:1|watchdog:0|watchdog:1|watchdog_autoreplace:0|watchdog_autoreplace:1|dnsmasq_perf:0|dnsmasq_perf:1) ;; *) json_error "Неверная настройка"; return;; esac
     acquire_runtime_lock "$RUNTIME_DIR/setting-start.lock" || { json_error "Другая настройка уже запускается"; return; }
-    if job_active "$DNSMGR_SETTING_JOB" && job_process_alive "$JOB_DIR/$DNSMGR_SETTING_JOB"; then
-        release_runtime_lock "$RUNTIME_DIR/setting-start.lock"
-        json_error "Другая настройка уже применяется"
-        return
-    fi
-    job_prepare "$DNSMGR_SETTING_JOB" || { release_runtime_lock "$RUNTIME_DIR/setting-start.lock"; json_error "Не удалось подготовить задачу"; return; }
-    printf 'status=running\nstarted=%s\nmode=setting\nname=%s\nenabled=%s\n' "$(date +%s)" "$DNSMGR_SETTING_NAME" "$DNSMGR_SETTING_VALUE" > "$JOB_DIR/$DNSMGR_SETTING_JOB/state"
-    (
-        exec > "$JOB_DIR/$DNSMGR_SETTING_JOB/output" 2>&1 </dev/null
-        DNSMGR_SETTING_WORKER=1
-        RPC_METHOD=set_setting
-        run_action
-        if grep -q '"ok"[[:space:]]*:[[:space:]]*true' "$JOB_DIR/$DNSMGR_SETTING_JOB/output"; then
-            job_write "$DNSMGR_SETTING_JOB" result ok
-            job_write "$DNSMGR_SETTING_JOB" status done
-        else
-            job_write "$DNSMGR_SETTING_JOB" result fail
-            job_write "$DNSMGR_SETTING_JOB" status failed
-        fi
-        job_write "$DNSMGR_SETTING_JOB" finished "$(date +%s)"
-    ) &
-    job_record_pid "$DNSMGR_SETTING_JOB" "$!"
+    if job_active setting && job_process_alive "$JOB_DIR/setting"; then release_runtime_lock "$RUNTIME_DIR/setting-start.lock"; json_error "Другая настройка уже применяется"; return; fi
+    bg_service_idle setting || { release_runtime_lock "$RUNTIME_DIR/setting-start.lock"; return; }
+    job_prepare setting && printf '%s' "$INPUT" > "$JOB_DIR/setting/input" || { release_runtime_lock "$RUNTIME_DIR/setting-start.lock"; json_error "Не удалось подготовить задачу"; return; }
+    printf 'status=running\nstarted=%s\nmode=setting\nname=%s\nenabled=%s\n' "$(date +%s)" "$DNSMGR_SETTING_NAME" "$DNSMGR_SETTING_VALUE" > "$JOB_DIR/setting/state"
+    if run_bg_job setting setting set_setting; then printf '{"ok":true,"job":"setting"}'; fi
     release_runtime_lock "$RUNTIME_DIR/setting-start.lock"
-    printf '{"ok":true,"job":'; json_quote "$DNSMGR_SETTING_JOB"; printf '}'
 }
 
 job_start_regional() {
     DNSMGR_REGIONAL_ENABLED="$1"
     case "$DNSMGR_REGIONAL_ENABLED" in 0|1|2|3) ;; *) json_error "Неверное состояние регионального DNS"; return;; esac
-    DNSMGR_REGIONAL_JOB_ID="regional"
-    if job_active "$DNSMGR_REGIONAL_JOB_ID" && job_process_alive "$JOB_DIR/$DNSMGR_REGIONAL_JOB_ID"; then
-        json_error "Региональный DNS уже изменяется"
-        return
-    fi
-    job_prepare "$DNSMGR_REGIONAL_JOB_ID" || { json_error "Не удалось подготовить задачу"; return; }
-    printf 'status=running\nstarted=%s\nmode=regional\nenabled=%s\n' "$(date +%s)" "$DNSMGR_REGIONAL_ENABLED" > "$JOB_DIR/$DNSMGR_REGIONAL_JOB_ID/state"
-    (
-        exec >>"$JOB_DIR/$DNSMGR_REGIONAL_JOB_ID/output" 2>&1
-        if load_manager && DNS_MANAGER_NO_UPDATE=1 regional_apply_toggle "$DNSMGR_REGIONAL_ENABLED"; then
-            job_write "$DNSMGR_REGIONAL_JOB_ID" result ok
-            job_write "$DNSMGR_REGIONAL_JOB_ID" status done
-        else
-            job_write "$DNSMGR_REGIONAL_JOB_ID" result fail
-            job_write "$DNSMGR_REGIONAL_JOB_ID" status failed
-        fi
-        job_write "$DNSMGR_REGIONAL_JOB_ID" finished "$(date +%s)"
-    ) &
-    job_record_pid "$DNSMGR_REGIONAL_JOB_ID" "$!"
-    printf '{"ok":true,"job":'; json_quote "$DNSMGR_REGIONAL_JOB_ID"; printf '}'
+    acquire_runtime_lock "$RUNTIME_DIR/regional-start.lock" || { json_error "Настройка уже запускается"; return; }
+    if job_active regional && job_process_alive "$JOB_DIR/regional"; then release_runtime_lock "$RUNTIME_DIR/regional-start.lock"; json_error "Региональный DNS уже изменяется"; return; fi
+    bg_service_idle regional || { release_runtime_lock "$RUNTIME_DIR/regional-start.lock"; return; }
+    job_prepare regional || { release_runtime_lock "$RUNTIME_DIR/regional-start.lock"; json_error "Не удалось подготовить задачу"; return; }
+    printf 'status=running\nstarted=%s\nmode=regional\nenabled=%s\n' "$(date +%s)" "$DNSMGR_REGIONAL_ENABLED" > "$JOB_DIR/regional/state"
+    if run_bg_job regional regional "$DNSMGR_REGIONAL_ENABLED"; then printf '{"ok":true,"job":"regional"}'; fi
+    release_runtime_lock "$RUNTIME_DIR/regional-start.lock"
 }
 
 job_start_profile() {
-    _profile="$1"
-    case "$_profile" in
-        clean2) _profile=clean ;;
-        bypass|clean|security|privacy|adblock|family|all|dnssec) ;;
-        *) json_error "Неверный профиль"; return ;;
-    esac
-
+    DNSMGR_PROFILE_REQUEST="$1"
+    case "$DNSMGR_PROFILE_REQUEST" in clean2) DNSMGR_PROFILE_REQUEST=clean;; bypass|clean|security|privacy|adblock|family|all|dnssec) ;; *) json_error "Неверный профиль"; return;; esac
+    acquire_runtime_lock "$RUNTIME_DIR/profile-start.lock" || { json_error "Профиль уже запускается"; return; }
     if profile_job_running; then
-        if [ "$PROFILE_RUNNING_PROFILE" = "$_profile" ]; then
-            printf '{"ok":true,"job":'; json_quote "${PROFILE_RUNNING_JOB:-profile}"; printf ',"resumed":true,"profile":'; json_quote "$_profile"; printf '}'
-            return
-        fi
-        _running_name="$PROFILE_RUNNING_PROFILE"
-        [ -n "$_running_name" ] || _running_name="другой профиль"
-        json_error "Сейчас уже применяется профиль «$_running_name». Текущая операция продолжается."
-        return
+        if [ "$PROFILE_RUNNING_PROFILE" = "$DNSMGR_PROFILE_REQUEST" ]; then
+            printf '{"ok":true,"job":"profile","resumed":true,"profile":'; json_quote "$DNSMGR_PROFILE_REQUEST"; printf '}'
+        else json_error "Сейчас уже применяется другой профиль."; fi
+        release_runtime_lock "$RUNTIME_DIR/profile-start.lock"; return
     fi
-
-    _jid="$(new_job_id profile)"
-    job_active "$_jid" && { json_error "Другая операция применения профиля уже выполняется"; return; }
-    job_prepare "$_jid" || { json_error "Не удалось подготовить задачу"; return; }
-    printf 'status=running\nstarted=%s\nmode=profile\nprofile=%s\n' "$(date +%s)" "$_profile" > "$JOB_DIR/$_jid/state"
-
-    (
-        exec >>"$JOB_DIR/$_jid/output" 2>&1
-        if load_manager; then
-            # Profile-specific selection is owned by apply_profile_now().
-            # SSH and LuCI therefore use exactly the same application path.
-            DNS_MANAGER_NO_UPDATE=1 SILENT_APPLY=1 HYBRID_SELECTION_QUIET=1 PROFILE_APPLY=1 apply_profile_now "$_profile"
-            _rc=$?
-        else
-            _rc=1
-            printf '%s\n' "DNS Manager недоступен."
-        fi
-
-        _now="$(date +%s)"
-        if [ "$_rc" -eq 0 ]; then
-            job_write "$_jid" result ok
-            job_write "$_jid" status done
-        else
-            job_write "$_jid" result fail
-            job_write "$_jid" status failed
-        fi
-        job_write "$_jid" finished "$_now"
-        exit "$_rc"
-    ) &
-    _job_pid=$!
-    job_record_pid "$_jid" "$_job_pid"
-
-    printf '{"ok":true,"job":'; json_quote "$_jid"; printf '}'
+    bg_service_idle profile || { release_runtime_lock "$RUNTIME_DIR/profile-start.lock"; return; }
+    job_prepare profile || { release_runtime_lock "$RUNTIME_DIR/profile-start.lock"; json_error "Не удалось подготовить задачу"; return; }
+    printf 'status=running\nstarted=%s\nmode=profile\nprofile=%s\n' "$(date +%s)" "$DNSMGR_PROFILE_REQUEST" > "$JOB_DIR/profile/state"
+    if run_bg_job profile profile "$DNSMGR_PROFILE_REQUEST"; then printf '{"ok":true,"job":"profile"}'; fi
+    release_runtime_lock "$RUNTIME_DIR/profile-start.lock"
 }
 
 job_start_test_all() {
@@ -5385,6 +5398,7 @@ job_json() {
     fi
     printf ',"started":'; json_quote "$(sed -n 's/^started=//p' "$_d/state" 2>/dev/null | head -n1)"
     printf ',"finished":'; json_quote "$(sed -n 's/^finished=//p' "$_d/state" 2>/dev/null | tail -n1)"
+    printf ',"error":'; json_quote "$(sed -n 's/^error=//p' "$_d/state" 2>/dev/null | tail -n1)"
     printf ',"output":'; printf '"'; tail -n 80 "$_d/output" 2>/dev/null | sed '/^__DONE__ [01]$/d' | sed 's/\\/\\\\/g; s/"/\\"/g; s/\r/ /g; s/\t/\\t/g' | awk 'NR>1 {printf "\\n"} {printf "%s", $0}'; printf '"'
     printf '}' 
 }
@@ -5649,7 +5663,7 @@ apply_live_setting() {
 run_action() {
     _profile="$(jget profile)"
     if [ "${DNSMGR_ACTION_WORKER:-0}" != 1 ]; then
-        case "${RPC_METHOD:-}" in set_slot|set_slot_domains|set_device_dns|set_cache|reset_dns|set_ntp|set_bootstrap) job_start_action "$RPC_METHOD"; return;; esac
+        case "${RPC_METHOD:-}" in set_slot|set_slot_domains|set_device_dns|set_cache|reset_dns|set_ntp|set_bootstrap|add_custom_dns|delete_custom_dns|set_watchdog_setting|set_watchdog_settings|set_test_age) job_start_action "$RPC_METHOD"; return;; esac
     fi
     case "${RPC_METHOD:-}" in
         set_bootstrap)
@@ -5865,7 +5879,7 @@ run_action() {
                 *) json_error "Недопустимая настройка"; return;;
             esac
             if [ "${DNSMGR_SETTING_WORKER:-0}" != 1 ]; then
-                case "$_name" in force|encrypted_dns) job_start_setting "$_name" "$_enabled"; return;; esac
+                job_start_setting "$_name" "$_enabled"; return
             fi
             DNSMGR_SETTING_REQUEST_NAME="$_name"
             DNSMGR_SETTING_REQUEST_VALUE="$_enabled"
@@ -5959,6 +5973,7 @@ test_json() { case "${RPC_METHOD:-}" in test_all) job_start_test_all;; test_curr
 
 case "${1:-}" in
     worker) background_worker "$2";;
+    mutation_worker) mutation_worker "$2" "$3" "$4";;
     list)
         printf '{"status":{},"runtime":{},"doh_status":{},"network_status":{},"lan_devices":{},"set_device_dns":{"mac":"String","slots":"String"},"set_cache":{"total":0,"ttl":0},"time_status":{},"page_meta":{},"catalog":{"category":"String","offset":0,"limit":0,"only_ok":0},"update_check":{"force":0},"update":{},"update_manager":{},"update_hdp":{},"update_catalog":{},"update_all":{},"update_background":{},"test_combined":{},"switch_engine":{"target_engine":"String"},"dnscrypt_test":{},"dnscrypt_log":{},"system_dns_test":{},"set_profile":{"profile":"String"},"set_regional":{"enabled":0},"reset_dns":{},"uninstall":{},"uninstall_status":{},"set_slot":{"slot":"String","id":"String","expected":"String"},"set_slot_domains":{"slot":"String","domains":"String"},"add_custom_dns":{"name":"String","url":"String"},"delete_custom_dns":{"id":"String"},"set_setting":{"name":"String","enabled":0},"set_bootstrap":{"mode":"String","addresses":"String","preset_ids":"String","extra_addresses":"String"},"set_watchdog_setting":{"name":"String","value":0},"set_watchdog_settings":{"interval":0,"threshold":0,"repair_cooldown":0,"max_restarts":0,"guard_interval":0},"set_ntp":{"preset":"String"},"set_test_age":{"category":"String","hours":0},"test_all":{},"test_current":{},"test_one":{"id":"String"},"test_system":{},"job":{"id":"String"},"job_status":{"id":"String"},"multi":{"calls":"String"},"log":{"lines":0}}\n'
         ;;
@@ -5975,7 +5990,7 @@ case "${1:-}" in
             update_check) INPUT="$(cat 2>/dev/null || true)"; update_check_json;;            update_catalog) update_catalog_json;;            update_all) update_all_json;;            update) update_json;;            update_manager) update_manager_json;;            update_hdp) update_hdp_json;;
             update_background) background_start update;;
             test_combined) background_start combined;;
-            add_custom_dns|delete_custom_dns|set_device_dns|set_cache|reset_dns|uninstall|set_profile|set_regional|set_slot|set_slot_domains|set_setting|set_bootstrap|set_watchdog_setting|set_watchdog_settings|set_ntp) INPUT="$(cat 2>/dev/null || true)"; RPC_METHOD="$2"; run_action;;
+            add_custom_dns|delete_custom_dns|set_device_dns|set_cache|reset_dns|uninstall|set_profile|set_regional|set_slot|set_slot_domains|set_setting|set_bootstrap|set_watchdog_setting|set_watchdog_settings|set_ntp|set_test_age) INPUT="$(cat 2>/dev/null || true)"; RPC_METHOD="$2"; run_action;;
             uninstall_status) uninstall_status_json;;
             test_all|test_current|test_one|test_system) INPUT="$(cat 2>/dev/null || true)"; RPC_METHOD="$2"; test_json;;
             job|job_status) INPUT="$(cat 2>/dev/null || true)"; job_json "$(jget id)";;
@@ -6037,7 +6052,7 @@ EOF_RPC_WRAPPER
 'require ui';
 'require session';
 
-// DNS Manager LuCI common module version: 2.75
+// DNS Manager LuCI common module version: 2.76
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -7881,7 +7896,7 @@ function watchdogCard(root,st){
     clearSettingFeedback();
     state.busy=true;state.busySetting='watchdog_batch';
     renderNetwork(root,window.dmState||{});
-    callWatchdogSettings(120,3,values[0],Math.round(restarts),Math.round(guard)).then(function(r){
+    callWatchdogSettings(120,3,values[0],Math.round(restarts),Math.round(guard)).then(awaitSettingResult).then(function(r){
       state.busy=false;state.busySetting='';
       if(r&&r.ok)state.watchdogCooldownDraft=null;
       setSettingFeedback('watchdog_batch',r&&r.ok?'Настройки проверки сохранены.':((r&&r.error)||'Не удалось сохранить настройки контроля.'),r&&r.ok?'ok':'error');
@@ -7926,7 +7941,7 @@ function renderTestAgeCommon(root,st){
       if(locked||active)return;
       state.busy=true;state.busySetting='testages';clearSettingFeedback();
       setSettingFeedback('testages','Сохраняю срок результатов…','info');renderCatalog(root);
-      callTestAge('all',p[0]).then(function(r){
+      callTestAge('all',p[0]).then(awaitSettingResult).then(function(r){
         state.busy=false;state.busySetting='';
         if(r&&r.ok)setSettingFeedback('testages','Срок результатов проверки сохранён.','ok');
         else setSettingFeedback('testages',(r&&r.error)||'Срок результатов проверки не удалось сохранить.','error');
@@ -8088,7 +8103,7 @@ function saveCustomDns(nameInput,urlInput,root){
   state.busy=true;
   state.customDnsNotice={type:'info',text:'Сохраняю пользовательский DoH…'};
   renderCatalog(root);
-  callAddCustomDns(name,url).then(function(r){
+  callAddCustomDns(name,url).then(awaitSettingResult).then(function(r){
     state.busy=false;
     if(r&&r.ok){
       state.category='custom';
@@ -8121,7 +8136,7 @@ function deleteCustomDns(d,root){
     state.busy=true;
     state.pageNotice.catalog='Удаляю пользовательский DNS…';
     renderCatalog(root);
-    callDeleteCustomDns(d.id).then(function(r){
+    callDeleteCustomDns(d.id).then(awaitSettingResult).then(function(r){
       state.busy=false;
       if(r&&r.ok){
         state.category='custom';state.offset=0;window.dmCatalog=null;state.catalogLoaded=false;
@@ -8382,7 +8397,7 @@ function saveRouteCache(key,st,aux){
     var entry=JSON.parse(JSON.stringify({ts:Date.now(),data:st,aux:aux}));
     window.dmRouteCache[key]=entry;
     if(typeof session!=='undefined'&&session.setLocalData)
-      session.setLocalData('dns-manager-route-2.75-'+key,entry);
+      session.setLocalData('dns-manager-route-2.76-'+key,entry);
   }catch(e){}
 }
 function clearEngineUiState(){
@@ -8390,7 +8405,7 @@ function clearEngineUiState(){
   window.dmRouteCache=Object.create(null);
   window.dmStatusPromises=Object.create(null);
   ['dashboard','doh','network','time','devices','catalog','log'].forEach(function(key){
-    try{if(typeof session!=='undefined'&&session.setLocalData)session.setLocalData('dns-manager-route-2.75-'+key,null);}catch(e){}
+    try{if(typeof session!=='undefined'&&session.setLocalData)session.setLocalData('dns-manager-route-2.76-'+key,null);}catch(e){}
   });
   state.pageNotice={};state.profileProgress=null;state.profileOutput='';state.profileResumeStarted=false;
   state.regionalNotice='';state.pendingProfile='';state.pendingRegional=null;state.pendingDnscryptServer='';state.dnscryptDiagnostic='';state.dnscryptDiagnosticKind='';state.dnscryptDiagnosticResult='';
@@ -8402,7 +8417,7 @@ function clearEngineUiState(){
 function routeCacheEntry(key){
   var entry=key&&window.dmRouteCache&&window.dmRouteCache[key];
   if(!entry&&key){
-    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.75-'+key);}catch(e){}
+    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.76-'+key);}catch(e){}
   }
   if(!entry||typeof entry.ts!=='number'||Date.now()-entry.ts<0||Date.now()-entry.ts>300000||!entry.data||entry.data.ok!==true)return null;
   return entry;
@@ -8949,11 +8964,11 @@ function resumeSetting(root){
   callJob('setting').then(function(j){
     if(!j||!j.ok||j.status!=='running'||state.busy)return;
     var name=String(j.name||'');
-    if(name!=='force'&&name!=='encrypted_dns')return;
+    if(['force','encrypted_dns','watchdog','watchdog_autoreplace','dnsmasq_perf'].indexOf(name)<0)return;
     state.busy=true;state.busySetting=name;
     if(name==='force')state.pageNotice.doh='Изменение перехвата DNS…';
     else setSettingFeedback(name,'Применяю настройку…','info');
-    renderDoH(root,window.dmState||{});
+    render(root,window.dmState||{});
     return awaitSettingResult({ok:true,job:'setting'}).then(function(r){
       state.busy=false;state.busySetting='';
       var message=(r&&r.ok)?'Настройка применена.':((r&&r.error)||'Не удалось подтвердить результат настройки.');
@@ -8964,7 +8979,7 @@ function resumeSetting(root){
       state.busy=false;state.busySetting='';
       var message=withRpcError('Не удалось получить результат настройки.',err);
       if(name==='force')state.pageNotice.doh=message;else setSettingFeedback(name,message,'error');
-      renderDoH(root,window.dmState||{});
+      render(root,window.dmState||{});
     });
   }).catch(function(){});
 }
@@ -8976,7 +8991,7 @@ function resumeAction(root){
     var route=currentRoute(),name=String(j.name||'');
     var applies=(name==='set_slot'&&(route==='slots'||route==='catalog'||route==='doh'))||
       (name==='set_slot_domains'&&route==='slots')||(name==='set_device_dns'&&route==='devices')||
-      (name==='set_ntp'&&route==='time')||(name==='set_cache'&&route==='network')||((name==='reset_dns'||name==='set_bootstrap')&&route==='doh');
+      (name==='set_ntp'&&route==='time')||((name==='set_cache'||name==='set_watchdog_setting'||name==='set_watchdog_settings')&&route==='network')||((name==='add_custom_dns'||name==='delete_custom_dns'||name==='set_test_age')&&route==='catalog')||((name==='reset_dns'||name==='set_bootstrap')&&route==='doh');
     if(!applies){state.actionResumeStarted=false;return;}
     var key=route==='devices'?'slots':route==='doh'?(name==='set_slot'?'doh':'profiles'):route;
     state.busy=true;state.pageNotice[key]='Операция выполняется…';
@@ -9263,6 +9278,41 @@ function pollJob(root,job,meta,done){
   poll();
 }
 
+// Recover the most recent operation when a page is opened again.
+function showRecentJob(root){
+  var ids=['profile','regional','action','setting','engine','update'];
+  var labels={profile:'Применение профиля',regional:'Региональный DNS',action:'Изменение настроек',setting:'Изменение настройки',engine:'Смена DNS-движка',update:'Обновление'};
+  function read(id){return callJob(id).catch(function(){return null;});}
+  function display(j){
+    if(!rootAlive(root)||!j)return;
+    var running=j.status==='running',ok=j.status==='done'&&j.result==='ok';
+    var key='dns-manager-job-'+j.job+'-'+j.started;
+    var age=Date.now()/1000-Number(j.finished||0);
+    if(!running&&(age<0||age>300))return;
+    try{if(!running&&window.sessionStorage.getItem(key))return;}catch(e){}
+    var text=(labels[j.job]||'Операция')+': '+(running?'выполняется…':ok?'выполнено':'ошибка');
+    if(!running&&!ok){
+      var detail=String(j.error||'');
+      if(!detail){try{detail=String(JSON.parse(String(j.output||'')).error||'');}catch(e){}}
+      if(detail)text+=' — '+detail;
+    }
+    var old=root.querySelector('.dm-job-recovery');if(old)old.remove();
+    var box=E('div',{'class':'dm-job-recovery'},[badge(running?'dm-warn':ok?'dm-ok':'dm-bad',text)]);
+    root.insertBefore(box,root.children[1]||null);
+    if(running){
+      window.setTimeout(function(){read(j.job).then(display);},1000);
+    }else{
+      try{window.sessionStorage.setItem(key,'1');}catch(e){}
+      window.setTimeout(function(){if(box.parentNode)box.remove();},8000);
+    }
+  }
+  Promise.all(ids.map(read)).then(function(jobs){
+    var recent=jobs.filter(function(j){return j&&j.ok&&(j.status==='running'||j.status==='done'||j.status==='failed');});
+    recent.sort(function(a,b){return Number(b.started||0)-Number(a.started||0);});
+    if(recent.length)display(recent[0]);
+  });
+}
+
 function resumeRunningProfile(root){
   if(state.profileResumeStarted||!rootAlive(root))return;
   state.profileResumeStarted=true;
@@ -9429,6 +9479,7 @@ return baseclass.extend({
       scheduleBackgroundStatus(root);
     }
     scheduleRouteWarmup(root);
+    window.setTimeout(function(){if(rootAlive(root))showRecentJob(root);},0);
     if(route==='dashboard')window.setTimeout(function(){watchBackground(root,'update');},0);
     if(route==='doh')window.setTimeout(function(){watchBackground(root,'combined');},0);
     if(route==='catalog')window.setTimeout(function(){resumeCatalogTest(root);},0);
@@ -9438,7 +9489,7 @@ return baseclass.extend({
     if(!state.regionalResumeStarted&&route==='doh')window.setTimeout(function(){
       if(rootAlive(root))resumeRegional(root);
     },0);
-    if(!state.settingResumeStarted&&route==='doh')window.setTimeout(function(){
+    if(!state.settingResumeStarted&&(route==='doh'||route==='network'))window.setTimeout(function(){
       if(rootAlive(root))resumeSetting(root);
     },0);
     if(!state.actionResumeStarted)window.setTimeout(function(){
@@ -9464,7 +9515,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 2.75
+// DNS Manager LuCI version: 2.76
 return view.extend({
   load: DM.load,
   render: DM.render,

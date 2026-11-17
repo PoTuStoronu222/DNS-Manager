@@ -5,9 +5,14 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT INT TERM
 awk '/^job_start_setting\(\) \{/,/^}/' "$ROOT/dns-manager-luci.sh" > "$tmp/job"
 awk '/^job_start_action\(\) \{/,/^}/' "$ROOT/dns-manager-luci.sh" > "$tmp/action"
+awk '/^mutation_worker\(\) \{/,/^}/' "$ROOT/dns-manager-luci.sh" > "$tmp/worker"
 awk '/^apply_live_setting\(\) \{/,/^}/' "$ROOT/dns-manager-luci.sh" > "$tmp/apply"
 (
     . "$tmp/job"
+    . "$tmp/worker"
+    bg_service_idle() { :; }
+    run_bg_job() { ( mutation_worker "$1" "$2" "$3" ) & }
+    INPUT='{"name":"force","enabled":1}'
     JOB_DIR="$tmp/jobs"; mkdir -p "$JOB_DIR"
     RUNTIME_DIR="$tmp/runtime"; mkdir -p "$RUNTIME_DIR"
     acquire_runtime_lock() { :; }; release_runtime_lock() { :; }
@@ -46,6 +51,9 @@ awk '/^apply_live_setting\(\) \{/,/^}/' "$ROOT/dns-manager-luci.sh" > "$tmp/appl
 )
 (
     . "$tmp/action"
+    . "$tmp/worker"
+    bg_service_idle() { :; }
+    run_bg_job() { ( mutation_worker "$1" "$2" "$3" ) & }
     JOB_DIR="$tmp/actions"; RUNTIME_DIR="$tmp/runtime-actions"; mkdir -p "$JOB_DIR" "$RUNTIME_DIR"
     acquire_runtime_lock() { :; }; release_runtime_lock() { :; }
     job_active() { return 1; }

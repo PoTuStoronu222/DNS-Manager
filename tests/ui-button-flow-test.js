@@ -47,7 +47,7 @@ async function testRouteCache(){
   if(!cached||cached.force_owner!=='steer'||cached.__dmCachedRoute!=='slots')throw Error('compatible route cache missing');
   ctx.window.dmRouteCache=undefined;
   if(ctx.cachedRouteStatus('slots').force_owner!=='steer')throw Error('cache did not survive page navigation');
-  ctx.window.dmRouteCache={doh:JSON.parse(store['dns-manager-route-2.75-doh'])};
+  ctx.window.dmRouteCache={doh:JSON.parse(store['dns-manager-route-2.76-doh'])};
   cached.slots.length=0;
   if(ctx.cachedRouteStatus('doh').slots.length!==1)throw Error('cache was mutated by view');
   ctx.applyStatusToCurrentRoot({ok:true,force_owner:'steer'},'doh');
@@ -95,7 +95,7 @@ async function testAdditionalRouteCache(){
   ctx.state.category='security';if(ctx.cachedRouteStatus('catalog'))throw Error('wrong catalog category reused');ctx.state.category='all';
   failDevices=true;failCatalog=true;failLog=true;
   const previous={...store};for(const route of ['devices','catalog','log'])await ctx.ensureStatusPromise(route);
-  for(const route of ['devices','catalog','log'])if(store['dns-manager-route-2.75-'+route]!==previous['dns-manager-route-2.75-'+route])throw Error('failed '+route+' replaced good cache');
+  for(const route of ['devices','catalog','log'])if(store['dns-manager-route-2.76-'+route]!==previous['dns-manager-route-2.76-'+route])throw Error('failed '+route+' replaced good cache');
 }
 async function testSequentialWarmup(){
   let active=0,max=0,calls=[],allowed=true;
@@ -242,7 +242,7 @@ async function testFoldState(){
 }
 async function testCustomDnsFeedback(){
   let reply={ok:false,error:'Этот DoH URL уже есть в каталоге: Пример'};
-  const ctx={state:{busy:false,pageNotice:{}},window:{},renderCatalog:()=>{},refresh:()=>Promise.resolve(),setAction:()=>{},withRpcError:(s,e)=>s+e.message,callAddCustomDns:()=>Promise.resolve(reply)};
+  const ctx={awaitSettingResult:r=>Promise.resolve(r),state:{busy:false,pageNotice:{}},window:{},renderCatalog:()=>{},refresh:()=>Promise.resolve(),setAction:()=>{},withRpcError:(s,e)=>s+e.message,callAddCustomDns:()=>Promise.resolve(reply)};
   vm.createContext(ctx);vm.runInContext(extract('function saveCustomDns(nameInput,urlInput,root){','function isUserDnsRecord(d){'),ctx);
   const name={value:'Мой DNS'},url={value:'https://example.org/dns-query'};
   ctx.saveCustomDns(name,url,{});await delay();
@@ -503,7 +503,7 @@ async function testCatalogCardActions(){
 }
 async function testTestAgePresets(){
   let buttons=[],calls=[],refreshes=0;const state={busy:false,jobRunning:false},root={};
-  const ctx={state,E:(tag,attrs,children)=>({tag,attrs,children,appendChild:function(x){this.children=this.children||[];this.children.push(x);}}),btn:(text,cls,click,attrs)=>{let b={text,cls,click,attrs};buttons.push(b);return b;},card:(name,children)=>({name,children}),settingFeedback:()=>null,clearSettingFeedback:()=>{},setSettingFeedback:()=>{},renderCatalog:()=>{},callTestAge:(cat,n)=>{calls.push([cat,n]);return Promise.resolve({ok:true});},refresh:()=>{refreshes++;},withRpcError:s=>s};
+  const ctx={awaitSettingResult:r=>Promise.resolve(r),state,E:(tag,attrs,children)=>({tag,attrs,children,appendChild:function(x){this.children=this.children||[];this.children.push(x);}}),btn:(text,cls,click,attrs)=>{let b={text,cls,click,attrs};buttons.push(b);return b;},card:(name,children)=>({name,children}),settingFeedback:()=>null,clearSettingFeedback:()=>{},setSettingFeedback:()=>{},renderCatalog:()=>{},callTestAge:(cat,n)=>{calls.push([cat,n]);return Promise.resolve({ok:true});},refresh:()=>{refreshes++;},withRpcError:s=>s};
   vm.createContext(ctx);vm.runInContext(extract('function renderTestAgeCommon(root,st){','function cacheCard(root,st){'),ctx);
   ctx.renderTestAgeCommon(root,{test_age_common:7});if(!buttons.some(b=>b.text==='7 ч · текущий'&&b.attrs['aria-pressed']==='true'))throw Error('custom test age lost');
   if(buttons.some(b=>b.text.includes('Применить')||b.text==='Сохранить'))throw Error('unnecessary confirmation');
