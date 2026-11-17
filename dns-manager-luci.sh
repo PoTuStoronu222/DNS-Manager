@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.83"
+VERSION="2.84"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -2443,7 +2443,7 @@ if [ "$(uci -q get dns-manager.global.active_engine 2>/dev/null)" = dnscrypt-pro
 fi
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.83"
+SELF_VERSION="2.84"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -7074,6 +7074,7 @@ function appendUninstall(ch,root){
   ]));
 }
 function dnscryptLatencyBadge(st,index){
+  if(state.busy&&state.dnscryptDiagnosticKind==='test'&&!state.dnscryptDiagnosticResult)return badge('dm-off','Проверяю DNS…');
   var id=(st.dnscrypt_servers||[])[index], check=(st.dnscrypt_server_checks||{})[id];
   if(Number(st.dnscrypt_running)===1&&check==='fail')return badge('dm-bad','недоступен');
   if(Number(st.dnscrypt_running)===1&&/^OK:[0-9]+$/.test(String(check||'')))return badge('dm-ok',String(check).slice(3)+' мс · доступен');
@@ -7140,7 +7141,7 @@ function renderDoH(root,st){
       btn('Сбросить профиль','cbi-button-neutral',function(){applyProfile('default',root);},{disabled:!!state.busy}),
       btn('Проверить DNS','cbi-button-neutral',function(){dnscryptDiagnostic(root,false);},{disabled:!!state.busy})
     ]));
-    if(state.dnscryptDiagnostic)details.push(dnscryptDiagnosticView());
+    if(state.dnscryptDiagnostic){var diagnosticView=dnscryptDiagnosticView();if(diagnosticView)details.push(diagnosticView);}
     e.appendChild(card('DNSCrypt Proxy 2',details));
     return;
   }
@@ -7703,7 +7704,7 @@ function renderSlots(root,st){
       E('p',{'class':'dm-mini'},selected?'Используется выбранный сервер.':'DNSCrypt выбирает сервер из этого набора автоматически.'),
       E('div',{'class':'dm-pool-actions'},[btn('Проверить DNS','cbi-button-neutral',function(){dnscryptDiagnostic(root,false);},{disabled:!!state.busy||!!state.jobRunning})])
     ];
-    if(state.dnscryptDiagnostic)poolContent.push(dnscryptDiagnosticView());
+    if(state.dnscryptDiagnostic){var diagnosticView=dnscryptDiagnosticView();if(diagnosticView)poolContent.push(diagnosticView);}
     if(available.length){
       var manual=[E('p',{'class':'dm-mini'},'Выбранный сервер заменит весь набор. Чтобы снова использовать несколько DNS, примените профиль.'),dnscryptPoolList(st,root)];
       if(pending&&pending!==selected)manual.push(E('div',{'class':'dm-pool-actions'},[btn('Применить изменения','cbi-button-action',function(){selectDnscryptServer(pending,root);},{disabled:!!state.busy||!!state.jobRunning})]));
@@ -8886,7 +8887,8 @@ function waitDnsHealth(r){
 function renderDnscryptDiagnostic(root){if(currentRoute()==='slots')renderSlots(root,window.dmState||{});else renderDoH(root,window.dmState||{});}
 function dnscryptDiagnosticView(){
   if(state.dnscryptDiagnosticKind==='log')return E('pre',{'class':'dm-log'},state.dnscryptDiagnostic);
-  if(state.dnscryptDiagnosticKind!=='test'||!state.dnscryptDiagnosticResult)return E('div',{'class':'dm-inline-msg info'},state.dnscryptDiagnostic);
+  if(state.dnscryptDiagnosticKind==='test'&&!state.dnscryptDiagnosticResult)return null;
+  if(state.dnscryptDiagnosticKind!=='test')return E('div',{'class':'dm-inline-msg info'},state.dnscryptDiagnostic);
   var result=state.dnscryptDiagnosticResult;
   if(result==='ok')return null;
   return E('div',{'class':'dm-inline-msg '+(result==='waiting'?'info':'error')},result==='waiting'?'Ожидание подключения к сети.':'Не удалось проверить DNS роутера.');
