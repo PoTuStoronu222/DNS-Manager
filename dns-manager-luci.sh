@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.90"
+VERSION="2.91"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -2583,7 +2583,7 @@ if [ "$(uci -q get dns-manager.global.active_engine 2>/dev/null)" = dnscrypt-pro
 fi
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.90"
+SELF_VERSION="2.91"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -3887,6 +3887,9 @@ page_header_json() {
     case "$_ph_watchdog_at" in ''|*[!0-9]*) _ph_watchdog_at=0;; esac
     [ -n "$_ph_watchdog_cat" ] || _ph_watchdog_cat=unknown
     printf ',"watchdog_last_check":%s,"watchdog_last_category":' "$_ph_watchdog_at"; json_quote "$_ph_watchdog_cat"
+    _ph_dnscrypt_status="$(awk -F'|' '$1=="record" && $3=="dnscrypt_pool" {print $6; exit}' "$_ph_watchdog_file" 2>/dev/null)"
+    case "$_ph_dnscrypt_status" in OK|FAIL) ;; *) _ph_dnscrypt_status=unknown;; esac
+    printf ',"watchdog_dnscrypt_status":'; json_quote "$_ph_dnscrypt_status"
     _ph_regional="$(cfg_get REGIONAL_MODE)"
     case "$_ph_regional" in doh|legacy|yandex|isp) ;; *) [ -n "$(cfg_get SLOT_RU)" ] && _ph_regional=legacy || _ph_regional=doh;; esac
     printf ',"regional_mode":'; json_quote "$_ph_regional"
@@ -6720,8 +6723,10 @@ function renderHeader(root,st){
   var scope=String(useWatchdog?st.watchdog_last_category:(st.last_full_test_scope||'all'));
   var scopeNames={all:'весь каталог',bypass:'Обход геоблока',clean:'Без фильтрации',security:'Защита от угроз',privacy:'Конфиденциальность',adblock:'Блокировка рекламы',family:'Семейная фильтрация',gaming:'Игры',regional:'Региональный DNS',custom:'Пользовательский DNS',mixed:'Несколько категорий',unknown:'DNS'};
   var scopeLabel=scopeNames[scope]||scope;
-  var testKind=useWatchdog?'Автопроверка слотов':(scope==='all'?'Проверка всего каталога':'Проверка категории');
-  var testText=lastTest==='—'?'Проверка DNS: не выполнялась':testKind+': '+lastTest+(scope==='all'&&!useWatchdog?'':' · '+scopeLabel);
+  var dnscryptCheck=useWatchdog&&scope==='dnscrypt';
+  var testKind=useWatchdog?(dnscryptCheck?'Автопроверка DNSCrypt':'Автопроверка слотов'):(scope==='all'?'Проверка всего каталога':'Проверка категории');
+  var dnscryptResult=st.watchdog_dnscrypt_status==='OK'?' · отвечает':st.watchdog_dnscrypt_status==='FAIL'?' · нет ответа':' · нет данных';
+  var testText=lastTest==='—'?'Проверка DNS: не выполнялась':testKind+': '+lastTest+(dnscryptCheck?dnscryptResult:(scope==='all'&&!useWatchdog?'':' · '+scopeLabel));
   e.appendChild(E('div',{'class':'dm-header'},[
     E('h2',{},'DNS Manager LUCI'),
     E('span',{'class':'dm-header-by'},'by PoTuStoronu222'),
@@ -6807,8 +6812,16 @@ function forceComponentItem(st){
     badge(busy?'dm-warn':stateKind,busy?'изменение':stateText)
   );
 }
+function dnscryptAutoCheckBadge(st){
+  var status=st.watchdog_last_category==='dnscrypt'?String(st.watchdog_dnscrypt_status||''):'';
+  var label=status==='OK'?'отвечает':status==='FAIL'?'нет ответа':'нет данных';
+  return badge(status==='OK'?'dm-ok':status==='FAIL'?'dm-bad':'dm-muted',label);
+}
+function dnscryptAutoCheckNode(st){
+  return E('span',{'data-dm-dnscrypt-check':'1'},[dnscryptAutoCheckBadge(st)]);
+}
 function watchdogComponentItem(st,wd,wdDetails){
-  return componentItem('Проверка DNS',
+  return componentItem(st.dnscrypt_engine==='dnscrypt-proxy2'?'Автопроверка DNSCrypt':'Проверка DNS',
     wd,
     E('div',{'class':'dm-component-details'},wdDetails)
   );
@@ -6975,8 +6988,7 @@ function renderOverview(root,st){
   var watchdogScheduled=Number(st.watchdog_service_enabled||0)===1;
   var watchdogAutoReplace=yes(st.watchdog_autoreplace);
   var wd=watchdogEnabled?(watchdogService?badge('dm-ok','cron работает'):badge('dm-warn',watchdogScheduled?'cron не запущен':'задание cron отсутствует')):badge('dm-muted','выключена');
-  var dnscryptFailed=st.dnscrypt_engine==='dnscrypt-proxy2'&&yes(st.watchdog)&&Number(st.watchdog_last_failed)>0&&(st.watchdog_last_records||[]).some(function(r){return r.id==='dnscrypt_pool'&&r.status==='FAIL';});
-  if(dnscryptFailed&&watchdogService)wd=badge('dm-bad','DNS не отвечает');
+  if(st.dnscrypt_engine==='dnscrypt-proxy2'&&watchdogEnabled&&watchdogService)wd=dnscryptAutoCheckNode(st);
   var wdDetails='Интервал: каждые 2 мин. Последний запуск: '+dateText(st.watchdog_cron_last_run)+'.';
   if(Number(st.watchdog_last_check)>0)wdDetails+=' Проверено: '+Number(st.watchdog_last_checked||0)+', ошибок: '+Number(st.watchdog_last_failed||0)+'.';
   var wdAuto=!watchdogEnabled?badge('dm-muted','проверка выключена'):watchdogAutoReplace?(watchdogService?badge('dm-ok','включена'):badge('dm-warn','проверка не работает')):badge('dm-muted','выключена');
@@ -7280,7 +7292,8 @@ function renderDoH(root,st){
   if(st.dnscrypt_engine==='dnscrypt-proxy2'){
     var servers=Array.isArray(st.dnscrypt_servers)?st.dnscrypt_servers:[];
     var selectedServer=String(st.dnscrypt_selected_server||'');
-    var details=[row('Движок',E('span',{},'DNSCrypt Proxy 2')),row('Служба',Number(st.dnscrypt_running)===1?badge('dm-ok','работает'):badge('dm-bad','остановлена')),selectedServer?row('Режим',E('span',{},'Один сервер выбран вручную')):row('Профиль',!activeProfileId(st)?badge('dm-muted','не выбран'):E('span',{},activeProfileLabel(st)))];
+    var details=[row('Движок',E('span',{},'DNSCrypt Proxy 2')),row('Служба',Number(st.dnscrypt_running)===1?badge('dm-ok','работает'):badge('dm-bad','остановлена')),yes(st.watchdog)?row('Автопроверка DNSCrypt',dnscryptAutoCheckNode(st)):null,selectedServer?row('Режим',E('span',{},'Один сервер выбран вручную')):row('Профиль',!activeProfileId(st)?badge('dm-muted','не выбран'):E('span',{},activeProfileLabel(st)))];
+    details=details.filter(Boolean);
     if(!activeProfileId(st)&&!selectedServer)details.push(E('p',{'class':'dm-hint'},servers.length?'Используется начальный набор DNS. При необходимости выберите профиль ниже.':'Выберите профиль ниже, чтобы настроить DNS.'));
     details.push(E('div',{'class':'dm-row'},[E('span',{'class':'dm-label'},servers.length===1?'Сейчас используется':'Сейчас используются')]));
     details.push(dnscryptCurrentPool(st));
@@ -9782,22 +9795,26 @@ function startAutoStatus(root){
   state.systemPollBusy=false;
   var tick=0;
   var watchdogPollBusy=false;
-  pollSystem(root);
+  if(currentRoute()==='dashboard')pollSystem(root);
   dashboardPollTimer=setInterval(function(){
     if(!rootAlive(root)){
       stopAutoStatus();
       return;
     }
-    if(document.hidden||currentRoute()!=='dashboard')return;
+    var route=currentRoute();
+    if(document.hidden||(route!=='dashboard'&&route!=='doh'))return;
     tick++;
-    tickLocalUptime(root);
-    if(tick%5===0){
+    if(route==='dashboard')tickLocalUptime(root);
+    if(route==='dashboard'&&tick%5===0){
       pollSystem(root);
     }
     if(tick%30===0&&!watchdogPollBusy){
       watchdogPollBusy=true;
       callNetworkStatus().then(function(st){
-        if(!rootAlive(root)||currentRoute()!=='dashboard'||!st||!st.ok)return;
+        if(!rootAlive(root)||currentRoute()!==route||!st||!st.ok)return;
+        var combined=Object.assign({},window.dmState||{},st);
+        renderHeader(root,combined);
+        root.querySelectorAll('[data-dm-dnscrypt-check]').forEach(function(el){el.innerHTML='';el.appendChild(dnscryptAutoCheckBadge(combined));});
         root.querySelectorAll('.dm-watchdog-slot-result').forEach(function(el){
           var result=watchdogSlotResult(st,el.getAttribute('data-dns-slot'),el.getAttribute('data-dns-id'));
           el.innerHTML='';
@@ -9837,7 +9854,7 @@ return baseclass.extend({
     injectStyle(root);window.dmState=st||{};state.activeTab=route;window.dmCurrentRoot=root;
     render(root,st||{});
     removeLegacyCbiActions();if(window.setTimeout)window.setTimeout(removeLegacyCbiActions,0);
-    if(route==='dashboard')startAutoStatus(root);else stopAutoStatus();
+    if(route==='dashboard'||route==='doh')startAutoStatus(root);else stopAutoStatus();
     if(state.statusRefreshAfterRender){
       state.statusRefreshAfterRender=false;
       scheduleBackgroundStatus(root);
