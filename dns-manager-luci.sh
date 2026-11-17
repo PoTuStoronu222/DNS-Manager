@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager full installer and LuCI companion
-# Version: 2.58
+# Version: 2.59
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.58"
+VERSION="2.59"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -2327,7 +2327,7 @@ if [ "$(uci -q get dns-manager.global.active_engine 2>/dev/null)" = dnscrypt-pro
 fi
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.58"
+SELF_VERSION="2.59"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -6005,7 +6005,7 @@ EOF_RPC_WRAPPER
 'require ui';
 'require session';
 
-// DNS Manager LuCI common module version: 2.58
+// DNS Manager LuCI common module version: 2.59
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -6366,6 +6366,7 @@ function injectStyle(root){
   '.dm-wrap .dm-custom-dns-form>.cbi-button{justify-self:start}'+
   '.dm-wrap .dm-test-age-row{min-height:40px;border-bottom:1px solid rgba(110,118,129,.1)}'+
   '.dm-wrap .dm-watchdog-row{min-height:42px;padding:6px 0;border-bottom:1px solid rgba(110,118,129,.1)}'+
+   '.dm-wrap .dm-toggle-card{width:100%;display:flex;align-items:center;justify-content:space-between;gap:16px;text-align:left;color:inherit;font:inherit;padding:14px 16px;border:1px solid rgba(110,118,129,.25);border-radius:11px;background:rgba(110,118,129,.035);cursor:pointer;transition:border-color .16s,background .16s,box-shadow .16s}.dm-wrap .dm-toggle-card:hover:not(:disabled){background:rgba(110,118,129,.08);border-color:rgba(110,118,129,.5)}.dm-wrap .dm-toggle-card:focus-visible{outline:2px solid var(--primary-color,#0969da);outline-offset:2px}.dm-wrap .dm-toggle-card.is-on{border-color:rgba(35,134,54,.55);background:rgba(35,134,54,.07)}.dm-wrap .dm-toggle-card:disabled{cursor:not-allowed;opacity:.65}.dm-wrap .dm-toggle-main{min-width:0;flex:1}.dm-wrap .dm-toggle-main .dm-setting-title,.dm-wrap .dm-toggle-main .dm-setting-desc{display:block}.dm-wrap .dm-toggle-side{display:flex;align-items:flex-end;flex-direction:column;gap:5px;flex-shrink:0}.dm-wrap .dm-toggle-action{font-size:11px;opacity:.67}.dm-wrap .dm-toggle-feedback{margin:5px 2px 0}@media(max-width:480px){.dm-wrap .dm-toggle-card{gap:8px;padding:12px}.dm-wrap .dm-toggle-side{align-items:flex-end}}'+
    '.dm-wrap .dm-watchdog-card{display:flex;flex-direction:column;gap:14px;padding:2px 0 15px;border-bottom:1px solid rgba(110,118,129,.18)}'+
    '.dm-wrap .dm-watchdog-status{gap:10px}'+
    '.dm-wrap .dm-watchdog-status .dm-row{min-width:0;padding:11px 12px;border:1px solid rgba(110,118,129,.16);border-radius:9px;background:rgba(110,118,129,.035)}'+
@@ -7779,6 +7780,22 @@ function watchdogSlotResult(st,slot,id){
   return badge(kind,'Авто: '+label);
 }
 
+function settingToggle(root,title,desc,enabled,key,disabled,disabledReason,statusText){
+  var saving=state.busySetting===key;
+  var locked=!!state.busy||!!state.jobRunning||!!disabled;
+  var attrs={'type':'button','class':'dm-toggle-card'+(enabled?' is-on':''),'aria-pressed':enabled?'true':'false','click':function(){if(!locked)setSetting(key,enabled?0:1,root);}};
+  if(locked)attrs.disabled=true;
+  var status=saving?'изменение':(statusText||(enabled?'включено':'выключено'));
+  var action=saving?'Применяется…':(disabledReason|| (enabled?'Нажмите, чтобы выключить':'Нажмите, чтобы включить'));
+  var feedback=settingFeedback('',key);
+  return E('div',{'class':'dm-toggle-wrap'},[
+    E('button',attrs,[
+      E('span',{'class':'dm-toggle-main'},[E('span',{'class':'dm-setting-title'},title),E('span',{'class':'dm-setting-desc'},desc)]),
+      E('span',{'class':'dm-toggle-side'},[badge(saving?'dm-warn':(enabled?'dm-ok':'dm-muted'),status),E('span',{'class':'dm-toggle-action'},action)])
+    ]),
+    feedback?E('div',{'class':'dm-toggle-feedback'},[feedback]):null
+  ].filter(Boolean));
+}
 function watchdogCard(root,st){
   var en=yes(st.watchdog);
   var auto=yes(st.watchdog_autoreplace);
@@ -7845,22 +7862,7 @@ function watchdogCard(root,st){
   },{disabled:!!state.busy});
 
   function toggleRow(title,desc,enabled,key,disabled){
-    var settingBusy=state.busySetting===key;
-    var actionLabel=settingBusy?'Сохраняю…':(enabled?'Выключить':'Включить');
-    return E('div',{'class':'dm-setting dm-watchdog-toggle '+(settingBusy?'dm-setting-saving':'')},[
-      E('div',{'class':'dm-setting-text'},[
-        E('div',{'class':'dm-setting-title'},title),
-        E('div',{'class':'dm-setting-desc'},desc)
-      ]),
-      E('div',{'class':'dm-setting-controls'},[
-        E('div',{'class':'dm-setting-actions'},[
-          badge(settingBusy?'dm-warn':(enabled?'dm-ok':'dm-off'),settingBusy?'изменение':(enabled?'включено':'выключено')),
-          btn(actionLabel,settingBusy?'cbi-button-neutral':(enabled?'cbi-button-remove':'cbi-button-add'),function(){
-            setSetting(key,enabled?0:1,root);
-          },{disabled:!!state.busy||!!disabled})
-        ])
-      ])
-    ]);
+    return settingToggle(root,title,desc,enabled,key,disabled,disabled?'Сначала включите проверку DNS.':'');
   }
 
   var feedback=settingFeedback('','watchdog_batch')||E('span',{'class':'dm-setting-feedback'});
@@ -7931,22 +7933,9 @@ function renderNetwork(root,st){
   var e=root.querySelector('#dm-network');if(!e)return;e.innerHTML='';
   var body=st.dnscrypt_engine==='dnscrypt-proxy2'
     ? [E('div',{'class':'dm-watchdog-card'},[
-        E('div',{'class':'dm-section-title'},'Проверка DNS'),
-        E('div',{'class':'dm-setting-desc'},'Каждые 2 минуты проверяется ответ локального DNSCrypt. Ответ может быть из кэша. При сбое настройки DNS не изменяются.'),
-        badge(yes(st.watchdog)?'dm-ok':'dm-muted',yes(st.watchdog)?'включена':'выключена'),
-        btn(yes(st.watchdog)?'Выключить':'Включить','cbi-button-neutral',function(){setSetting('watchdog',yes(st.watchdog)?0:1,root);},{disabled:!!state.busy}),
-        settingFeedback('','watchdog')||E('span',{}),
-        E('div',{'class':'dm-section-title'},'Автозамена DNS'),
-        E('div',{'class':'dm-setting-desc'},'После трёх сбоев и проверки связи один раз применяет стандартный пул Cloudflare и Google. Выбранный профиль изменится. При отсутствии связи замена откладывается.'),
-        badge(yes(st.watchdog_autoreplace)?'dm-ok':'dm-muted',yes(st.watchdog_autoreplace)?'включена':'выключена'),
-        btn(yes(st.watchdog_autoreplace)?'Выключить':'Включить','cbi-button-neutral',function(){setSetting('watchdog_autoreplace',yes(st.watchdog_autoreplace)?0:1,root);},{disabled:!!state.busy||!yes(st.watchdog)}),
-        settingFeedback('','watchdog_autoreplace')||E('span',{})
-      ]), E('div',{'class':'dm-watchdog-card'},[
-        E('div',{'class':'dm-section-title'},'Принудительный DNS'),
-        E('div',{'class':'dm-setting-desc'},'Направляет обычные DNS-запросы устройств на DNS роутера через dnsmasq. При активном перехвате Steer используется его правило.'),
-        badge(Number(st.dnscrypt_forced_dns)===1?'dm-ok':'dm-muted',Number(st.dnscrypt_forced_dns)===1?'включён':Number(st.steer_dns_active)===1?'работает Steer':'выключен'),
-        btn(Number(st.dnscrypt_forced_dns)===1?'Выключить':'Включить','cbi-button-neutral',function(){setSetting('force',Number(st.dnscrypt_forced_dns)===1?0:1,root);},{disabled:!!state.busy||(Number(st.steer_dns_active)===1&&Number(st.dnscrypt_forced_dns)!==1)}),
-        settingFeedback('','force')||E('span',{})
+        settingToggle(root,'Проверка DNS','Каждые 2 минуты проверяется ответ локального DNSCrypt. Ответ может быть из кэша. При сбое настройки DNS не изменяются.',yes(st.watchdog),'watchdog',false),
+        settingToggle(root,'Автозамена DNS','После трёх сбоев и проверки связи один раз применяет стандартный пул Cloudflare и Google. Выбранный профиль изменится. При отсутствии связи замена откладывается.',yes(st.watchdog_autoreplace),'watchdog_autoreplace',!yes(st.watchdog),!yes(st.watchdog)?'Сначала включите проверку DNS.':''),
+        settingToggle(root,'Принудительный DNS','Направляет обычные DNS-запросы устройств на DNS роутера через dnsmasq. При активном перехвате Steer используется его правило.',Number(st.dnscrypt_forced_dns)===1,'force',Number(st.steer_dns_active)===1&&Number(st.dnscrypt_forced_dns)!==1,Number(st.steer_dns_active)===1&&Number(st.dnscrypt_forced_dns)!==1?'Управляется Steer.':'',Number(st.dnscrypt_forced_dns)===1?'включён':Number(st.steer_dns_active)===1?'работает Steer':'выключен')
       ])]
     : [watchdogCard(root,st), cacheCard(root,st)];
   e.appendChild(card('Сетевой тюнинг',body));
@@ -8354,7 +8343,7 @@ function saveRouteCache(key,st,aux){
     var entry=JSON.parse(JSON.stringify({ts:Date.now(),data:st,aux:aux}));
     window.dmRouteCache[key]=entry;
     if(typeof session!=='undefined'&&session.setLocalData)
-      session.setLocalData('dns-manager-route-2.58-'+key,entry);
+      session.setLocalData('dns-manager-route-2.59-'+key,entry);
   }catch(e){}
 }
 function clearEngineUiState(){
@@ -8362,7 +8351,7 @@ function clearEngineUiState(){
   window.dmRouteCache=Object.create(null);
   window.dmStatusPromises=Object.create(null);
   ['dashboard','doh','network','time','devices','catalog','log'].forEach(function(key){
-    try{if(typeof session!=='undefined'&&session.setLocalData)session.setLocalData('dns-manager-route-2.58-'+key,null);}catch(e){}
+    try{if(typeof session!=='undefined'&&session.setLocalData)session.setLocalData('dns-manager-route-2.59-'+key,null);}catch(e){}
   });
   state.pageNotice={};state.profileProgress=null;state.profileOutput='';state.profileResumeStarted=false;
   state.regionalNotice='';state.pendingProfile='';state.pendingRegional=null;state.pendingDnscryptServer='';state.dnscryptDiagnostic='';state.dnscryptDiagnosticKind='';state.dnscryptDiagnosticResult='';
@@ -8374,7 +8363,7 @@ function clearEngineUiState(){
 function routeCacheEntry(key){
   var entry=key&&window.dmRouteCache&&window.dmRouteCache[key];
   if(!entry&&key){
-    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.58-'+key);}catch(e){}
+    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.59-'+key);}catch(e){}
   }
   if(!entry||typeof entry.ts!=='number'||Date.now()-entry.ts<0||Date.now()-entry.ts>300000||!entry.data||entry.data.ok!==true)return null;
   return entry;
@@ -9442,7 +9431,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 2.58
+// DNS Manager LuCI version: 2.59
 return view.extend({
   load: DM.load,
   render: DM.render,

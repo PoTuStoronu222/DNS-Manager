@@ -47,7 +47,7 @@ async function testRouteCache(){
   if(!cached||cached.force_owner!=='steer'||cached.__dmCachedRoute!=='slots')throw Error('compatible route cache missing');
   ctx.window.dmRouteCache=undefined;
   if(ctx.cachedRouteStatus('slots').force_owner!=='steer')throw Error('cache did not survive page navigation');
-  ctx.window.dmRouteCache={doh:JSON.parse(store['dns-manager-route-2.58-doh'])};
+  ctx.window.dmRouteCache={doh:JSON.parse(store['dns-manager-route-2.59-doh'])};
   cached.slots.length=0;
   if(ctx.cachedRouteStatus('doh').slots.length!==1)throw Error('cache was mutated by view');
   ctx.applyStatusToCurrentRoot({ok:true,force_owner:'steer'},'doh');
@@ -95,7 +95,7 @@ async function testAdditionalRouteCache(){
   ctx.state.category='security';if(ctx.cachedRouteStatus('catalog'))throw Error('wrong catalog category reused');ctx.state.category='all';
   failDevices=true;failCatalog=true;failLog=true;
   const previous={...store};for(const route of ['devices','catalog','log'])await ctx.ensureStatusPromise(route);
-  for(const route of ['devices','catalog','log'])if(store['dns-manager-route-2.58-'+route]!==previous['dns-manager-route-2.58-'+route])throw Error('failed '+route+' replaced good cache');
+  for(const route of ['devices','catalog','log'])if(store['dns-manager-route-2.59-'+route]!==previous['dns-manager-route-2.59-'+route])throw Error('failed '+route+' replaced good cache');
 }
 async function testSequentialWarmup(){
   let active=0,max=0,calls=[],allowed=true;
@@ -383,6 +383,18 @@ async function testRegionalSelection(){
     if(state.pendingRegional!==null)throw Error('regional change not cancelled by selecting current mode');
   }
 }
+async function testSettingToggle(){
+  const calls=[],state={busy:false,jobRunning:false,busySetting:''};
+  const ctx={state,E:(tag,attrs,children)=>({tag,attrs,children}),badge:(kind,label)=>({kind,label}),settingFeedback:()=>null,setSetting:(...args)=>calls.push(args)};
+  vm.createContext(ctx);vm.runInContext(extract('function settingToggle(root,title,desc,enabled,key,disabled,disabledReason,statusText){','function watchdogCard(root,st){'),ctx);
+  let card=ctx.settingToggle({},'Проверка','Описание',false,'watchdog',false),button=card.children[0];
+  if(button.tag!=='button'||button.attrs.disabled||button.attrs['aria-pressed']!=='false')throw Error('setting toggle is not an accessible button');
+  button.attrs.click();if(calls.length!==1||calls[0][0]!=='watchdog'||calls[0][1]!==1)throw Error('setting toggle did not enable DNS checking');
+  card=ctx.settingToggle({},'Автозамена','Описание',false,'watchdog_autoreplace',true,'Сначала включите проверку DNS.');button=card.children[0];button.attrs.click();
+  if(!button.attrs.disabled||calls.length!==1)throw Error('disabled setting toggle invoked RPC');
+  state.busy=true;button=ctx.settingToggle({},'Проверка','Описание',true,'watchdog',false).children[0];button.attrs.click();
+  if(!button.attrs.disabled||calls.length!==1)throw Error('busy setting toggle invoked RPC');
+}
 async function testDnscryptPoolPresentation(){
   const changes=[],state={busy:false,jobRunning:false},root={};
   const ctx={state,E:(tag,attrs,children)=>({tag,attrs,children}),dnscryptServerName:(st,id)=>id,
@@ -449,4 +461,4 @@ async function testProfileApplyWithoutPopup(){
   ctx.applyProfile('clean',root,true);await delay();
   if(modal||called!==1)throw Error('confirmed profile unexpectedly showed a popup or did not start');
 }
-Promise.all([testProfileApplyWithoutPopup(),testDnscryptDiagnosticDisplay(),testRunningProfileTimeout(),testTimePresetWhitespace(),testPoolSelectionRefresh(),testProfileClickBothEngines(),testDnscryptPoolPresentation(),testRegionalSelection(),testResumeCatalog(),testBackgroundStartTimeout(),testBackgroundUnknown(),testBackgroundNavigation(),testBackgroundFailure(),testDoHRemove(),testSingleError(),testBadgeWithoutDuration(),testPollNavigation(),testLongCatalogProgress(117),testLongCatalogProgress(5,true),testRouteCache(),testCachedReadOnly(),testAdditionalRouteCache(),testSequentialWarmup(),testWarmupResourceGuard(),testResumeCache(),testSettingConnectionLoss(),testRegionalConnectionLoss(),testProfileMissingJob(),testJobTransientError(),testUninstallUnresponsiveStatus(),testProfileStatus(),testSlotDraft(),testDeviceSave(),testCatalogError(),testFoldState(),testCustomDnsFeedback(),testBootstrapForm(),testLogScroll(),testHeaderCheckKind()]).catch(e=>{console.error(e);process.exitCode=1;});
+Promise.all([testSettingToggle(),testProfileApplyWithoutPopup(),testDnscryptDiagnosticDisplay(),testRunningProfileTimeout(),testTimePresetWhitespace(),testPoolSelectionRefresh(),testProfileClickBothEngines(),testDnscryptPoolPresentation(),testRegionalSelection(),testResumeCatalog(),testBackgroundStartTimeout(),testBackgroundUnknown(),testBackgroundNavigation(),testBackgroundFailure(),testDoHRemove(),testSingleError(),testBadgeWithoutDuration(),testPollNavigation(),testLongCatalogProgress(117),testLongCatalogProgress(5,true),testRouteCache(),testCachedReadOnly(),testAdditionalRouteCache(),testSequentialWarmup(),testWarmupResourceGuard(),testResumeCache(),testSettingConnectionLoss(),testRegionalConnectionLoss(),testProfileMissingJob(),testJobTransientError(),testUninstallUnresponsiveStatus(),testProfileStatus(),testSlotDraft(),testDeviceSave(),testCatalogError(),testFoldState(),testCustomDnsFeedback(),testBootstrapForm(),testLogScroll(),testHeaderCheckKind()]).catch(e=>{console.error(e);process.exitCode=1;});
