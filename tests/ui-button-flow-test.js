@@ -541,7 +541,9 @@ async function testEncryptedDnsControls(){
   }
 }
 async function testBrowserDnsControls(){
-  const code=extract('  var browserEnabled=yes(st.browser_dns)',"  if(st.dnscrypt_engine==='dnscrypt-proxy2'){");
+  const network=extract('function renderNetwork(root,st){','function ntpPresetName(p){');
+  if(!network.includes("card('Браузеры и DNS'"))throw Error('browser DNS control missing from network');
+  const code=extract('  var browserEnabled=yes(st.browser_dns)',"}\nfunction ntpPresetName(p){");
   for(const engine of ['https-dns-proxy','dnscrypt-proxy2'])for(const enabled of [false,true]){
     const calls=[],buttons=[],root={},state={busy:false,jobRunning:false};
     const ctx={root,state,st:{dnscrypt_engine:engine,browser_dns:enabled,browser_dns_loaded:enabled},e:{appendChild(){}},yes:v=>!!v,E:(tag,attrs,children)=>({tag,attrs,children}),card:(title,children)=>({title,children}),badge:(kind,label)=>({kind,label}),settingFeedback:()=>null,setSetting:(name,value)=>calls.push([name,value]),btn:(label,cls,click,attrs)=>{buttons.push({label,click,attrs});return {};}};
