@@ -30,11 +30,13 @@ assert.equal(ctx.activeProfileId({profile:'clean'}), 'clean');
 assert.equal(ctx.displayDnsRows({slots:[], doh_instances:[]}).length, 0);
 ctx.E = (tag, attrs, text) => ({tag, attrs, text});
 ctx.card = (title, children) => ({title, children});
-ctx.state = {busy:false};
+ctx.state = {busy:false,openSections:{}};
+ctx.badge = (type, text) => ({type,text});
+ctx.foldSection = (key,title,content) => ({key,title,content});
 ctx.window = {dmLanDevices:{ok:true,devices:[]}};
 ctx.btn = (label, style, action, options) => ({label,style,action,options});
 ctx.selectDnscryptServer = (id) => { ctx.selectedServer=id; };
-vm.runInContext(section('function dnscryptPoolList(', 'function renderDoH('), ctx);
+vm.runInContext(section('function dnscryptLatencyBadge(', 'function renderDoH('), ctx);
 vm.runInContext(section('function renderSlots(', 'function settingCard('), ctx);
 for (const [fn, selector] of [['renderSlots', '#dm-slots'], ['renderDeviceDns', '#dm-devices']]) {
   const panel = {innerHTML:'old', children:[], appendChild(node) { this.children.push(node); }};
@@ -43,8 +45,13 @@ for (const [fn, selector] of [['renderSlots', '#dm-slots'], ['renderDeviceDns', 
   ctx[fn](root, status);
   assert.equal(panel.innerHTML, '');
   assert.equal(panel.children.length, 1);
-  assert.match(panel.children[0].children[0].text, fn === 'renderSlots' ? /общего набора/ : /DNS роутера/);
-  assert(panel.children[0].children.some(x => x.label === (fn === 'renderSlots' ? 'Проверить DNS' : 'Обновить список')));
+  if(fn==='renderSlots') {
+    assert.equal(panel.children[0].title, 'Пул серверов');
+    assert(panel.children[0].children.some(x => x.attrs && x.attrs.class==='dm-pool-actions'));
+  } else {
+    assert.match(panel.children[0].children[0].text, /DNS роутера/);
+    assert(panel.children[0].children.some(x => x.label === 'Обновить список'));
+  }
 }
 console.log('PASS: DNSCrypt profile and pooled servers do not inherit legacy slots');
 
@@ -66,21 +73,14 @@ assert.equal(panel.children[0].title, 'DNS-движок');
 console.log('PASS: fresh installation offers engine installation without inactive DoH controls');
 
 ctx.row = (label, value) => ({label,value});
-ctx.state.dnscryptDiagnosticKind='log';
-ctx.state.dnscryptDiagnostic='journal';
 const panel2 = {innerHTML:'', children:[], appendChild(node) { this.children.push(node); }};
-const root2 = {querySelector: () => panel2};
-const dnscryptState = {dnscrypt_engine:'dnscrypt-proxy2', dnscrypt_running:1, dnscrypt_servers:['cloudflare'], dnscrypt_server_names:{cloudflare:'Cloudflare'}, dnscrypt_profile:'clean'};
-ctx.renderDoH(root2, dnscryptState);
+const dnscryptState = {dnscrypt_engine:'dnscrypt-proxy2', dnscrypt_running:1, dnscrypt_servers:['cloudflare'], dnscrypt_server_names:{cloudflare:'Cloudflare'}, dnscrypt_profile:'clean', dnscrypt_server_latency:{'manager-1':48}};
+ctx.renderDoH({querySelector: () => panel2}, dnscryptState);
 const details=panel2.children[1].children;
 const serverList=details.find(x => x && x.attrs && x.attrs.class==='dm-doh-list');
-serverList.text[0].text[1].action();
-assert.equal(ctx.selectedServer, 'cloudflare');
-assert.equal(panel2.children[2].title, 'Удаление DNS Manager');
+assert.equal(serverList.text[0].text[0].text,'Cloudflare');
+assert.equal(serverList.text[0].text[1].text,'48 мс · последний замер');
 const actions=details.find(x => x && x.attrs && x.attrs.class==='dm-actions');
-const close=actions.text.find(x => x.label==='Скрыть журнал');
-assert(close);
-close.action();
-assert.equal(ctx.state.dnscryptDiagnostic, '');
-assert.equal(ctx.state.dnscryptDiagnosticKind, '');
-console.log('PASS: DNSCrypt journal can be closed');
+assert(actions.text.some(x => x.label==='Проверить DNS'));
+assert(!actions.text.some(x => /журнал/i.test(x.label)));
+console.log('PASS: DNSCrypt latency is shown next to the server');

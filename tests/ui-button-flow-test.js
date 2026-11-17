@@ -47,7 +47,7 @@ async function testRouteCache(){
   if(!cached||cached.force_owner!=='steer'||cached.__dmCachedRoute!=='slots')throw Error('compatible route cache missing');
   ctx.window.dmRouteCache=undefined;
   if(ctx.cachedRouteStatus('slots').force_owner!=='steer')throw Error('cache did not survive page navigation');
-  ctx.window.dmRouteCache={doh:JSON.parse(store['dns-manager-route-2.60-doh'])};
+  ctx.window.dmRouteCache={doh:JSON.parse(store['dns-manager-route-2.61-doh'])};
   cached.slots.length=0;
   if(ctx.cachedRouteStatus('doh').slots.length!==1)throw Error('cache was mutated by view');
   ctx.applyStatusToCurrentRoot({ok:true,force_owner:'steer'},'doh');
@@ -95,7 +95,7 @@ async function testAdditionalRouteCache(){
   ctx.state.category='security';if(ctx.cachedRouteStatus('catalog'))throw Error('wrong catalog category reused');ctx.state.category='all';
   failDevices=true;failCatalog=true;failLog=true;
   const previous={...store};for(const route of ['devices','catalog','log'])await ctx.ensureStatusPromise(route);
-  for(const route of ['devices','catalog','log'])if(store['dns-manager-route-2.60-'+route]!==previous['dns-manager-route-2.60-'+route])throw Error('failed '+route+' replaced good cache');
+  for(const route of ['devices','catalog','log'])if(store['dns-manager-route-2.61-'+route]!==previous['dns-manager-route-2.61-'+route])throw Error('failed '+route+' replaced good cache');
 }
 async function testSequentialWarmup(){
   let active=0,max=0,calls=[],allowed=true;
@@ -402,11 +402,14 @@ async function testSettingToggle(){
 }
 async function testDnscryptPoolPresentation(){
   const changes=[],state={busy:false,jobRunning:false},root={};
-  const ctx={state,E:(tag,attrs,children)=>({tag,attrs,children}),dnscryptServerName:(st,id)=>id,
+  const ctx={state,E:(tag,attrs,children)=>({tag,attrs,children}),dnscryptServerName:(st,id)=>id,badge:(kind,label)=>({kind,label}),
     btn:(label,cls,click,opts)=>({label,click,opts}),renderSlots:()=>{},selectDnscryptServer:id=>changes.push(id)};
-  vm.createContext(ctx);vm.runInContext(extract('function dnscryptCurrentPool(st){','function renderDoH(root,st){'),ctx);
+  vm.createContext(ctx);vm.runInContext(extract('function dnscryptLatencyBadge(st,index){','function renderDoH(root,st){'),ctx);
   const st={dnscrypt_servers:['cloudflare'],dnscrypt_available_servers:['cloudflare','google'],dnscrypt_selected_server:'cloudflare'};
+  st.dnscrypt_running=1;st.dnscrypt_server_latency={'manager-1':48};
   const current=ctx.dnscryptCurrentPool(st);
+  if(current.children[0].children[1].label!=='48 мс · последний замер'||ctx.dnscryptLatencyBadge(st,1).label!=='нет данных')throw Error('DNSCrypt latency display incorrect');
+  st.dnscrypt_running=0;if(ctx.dnscryptLatencyBadge(st,0).label!=='нет данных')throw Error('stopped DNSCrypt showed old latency');
   if(current.children.length!==1||current.children[0].children[0].children!=='cloudflare')throw Error('current DNS list includes unused servers');
   ctx.dnscryptPoolList(st,root).children[1].click();
   if(changes.length||state.pendingDnscryptServer!=='google')throw Error('server selection applied before confirmation');

@@ -458,6 +458,34 @@ regional_start() {
     printf '{"ok":true,"job":"regional"}\n'
 }
 
+# DNSCrypt logs initial resolver RTTs, not a continuous reachability check.
+dnscrypt_pool_latency() {
+    [ "$1" = 1 ] || return 0
+    pids=$(pidof dnscrypt-proxy 2>/dev/null || :)
+    case "$pids" in ''|*[!0-9]*) return 0;; esac
+    logread -l 300 -e dnscrypt-proxy 2>/dev/null | awk -v pid="$pids" '
+        index($0, "dnscrypt-proxy[" pid "]") == 0 { next }
+        /Sorted latencies:/ { for (server in pending) delete pending[server]; collecting=1; next }
+        collecting && /ms manager-[0-9]+$/ {
+            server=$NF; value=$(NF-1); sub(/ms$/, "", value)
+            if (server ~ /^manager-[1-6]$/ && value ~ /^[0-9]+$/) pending[server]=value
+            next
+        }
+        /Server with the lowest initial latency:/ {
+            if (!collecting) {
+                for (server in pending) delete pending[server]
+                for (i=1; i<=NF; i++) if ($i ~ /^manager-[1-6]$/ && $(i+1)=="(rtt:") {
+                    value=$(i+2); sub(/ms\).*/, "", value)
+                    if (value ~ /^[0-9]+$/) pending[$i]=value
+                }
+            }
+            for (server in latest) delete latest[server]; for (server in pending) latest[server]=pending[server]
+            collecting=0
+        }
+        END { for (server in latest) print server " " latest[server] }
+    '
+}
+
 status_extra() {
     method=$1
     input=$(cat)
@@ -473,6 +501,14 @@ status_extra() {
     running=0
     "$DNSCRYPT_INIT" running >/dev/null 2>&1 && running=1
     json_add_int dnscrypt_running "$running"
+    json_add_object dnscrypt_server_latency
+    latency_records=$(dnscrypt_pool_latency "$running")
+    while read -r latency_server latency_ms; do
+        case "$latency_server:$latency_ms" in manager-[1-6]:*[!0-9]*|manager-[1-6]:|*[!A-Za-z0-9:-]*) continue;; manager-[1-6]:*) json_add_int "$latency_server" "$latency_ms";; esac
+    done <<EOF_LATENCY
+$latency_records
+EOF_LATENCY
+    json_close_object
     # Monitoring is optional; an unavailable endpoint must not look like zero activity.
     if [ "$method" = status ] && [ "$running" -eq 1 ] && command -v curl >/dev/null 2>&1; then
         metrics=$(curl --noproxy '*' --silent --fail --max-time 1 http://127.0.0.1:9100/api/metrics 2>/dev/null || :)
