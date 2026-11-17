@@ -8802,6 +8802,10 @@ watchdog_service_remove_files() {
 }
 watchdog_service_migrate_legacy() {
     watchdog_service_stop_disable || return 1
+    watchdog_remove_legacy_daemon || return 1
+    if [ -f "$WATCHDOG_SERVICE_PATH" ] && watchdog_service_file_owned "$WATCHDOG_SERVICE_PATH" "$WATCHDOG_SERVICE_MARKER"; then
+        rm -f "$WATCHDOG_SERVICE_PATH" || return 1
+    fi
     [ "${WATCHDOG_ENABLED:-0}" = 1 ] || [ "${FORCE_DOH:-0}" = 1 ] || return 0
     if ! watchdog_legacy_engine_allowed; then
         [ "$(cat "${CFG_DIR:-/etc/dns-manager/config}/dnscrypt-engine" 2>/dev/null)" = dnscrypt-proxy2 ] || return 0
