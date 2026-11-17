@@ -533,4 +533,37 @@ async function testProfileNotice(){
     vm.createContext(ctx);vm.runInContext(part,ctx);if(pch.length!==count)throw Error('incorrect profile notice '+status);
   }
 }
-Promise.all([testProfileNotice(),testForcedDnsControls(),testCurrentDnsNotice(),testTestAgePresets(),testCatalogCardActions(),testCachePresets(),testTimePresetCards(),testSettingToggle(),testProfileApplyWithoutPopup(),testDnscryptDiagnosticDisplay(),testRunningProfileTimeout(),testTimePresetWhitespace(),testPoolSelectionRefresh(),testProfileClickBothEngines(),testDnscryptPoolPresentation(),testRegionalSelection(),testResumeCatalog(),testBackgroundStartTimeout(),testBackgroundUnknown(),testBackgroundNavigation(),testBackgroundFailure(),testDoHRemove(),testSingleError(),testBadgeWithoutDuration(),testPollNavigation(),testLongCatalogProgress(117),testLongCatalogProgress(5,true),testRouteCache(),testCachedReadOnly(),testAdditionalRouteCache(),testSequentialWarmup(),testWarmupResourceGuard(),testResumeCache(),testSettingConnectionLoss(),testRegionalConnectionLoss(),testProfileMissingJob(),testJobTransientError(),testUninstallUnresponsiveStatus(),testProfileStatus(),testSlotDraft(),testDeviceSave(),testCatalogError(),testFoldState(),testCustomDnsFeedback(),testBootstrapForm(),testLogScroll(),testHeaderCheckKind()]).catch(e=>{console.error(e);process.exitCode=1;});
+async function testEngineCardsBothDirections(){
+  const code=extract('  function engineChoice(id,title,description){',"  e.appendChild(card('DNS-движок'");
+  for(const current of ['https-dns-proxy','dnscrypt-proxy2']){
+    const calls=[],root={},state={busy:false,jobRunning:false};
+    const ctx={engine:current,state,root,E:(tag,attrs,children)=>({tag,attrs,children}),badge:(kind,label)=>({kind,label}),switchEngine:(id,r)=>calls.push([id,r])};
+    vm.createContext(ctx);vm.runInContext(code,ctx);
+    for(const id of ['https-dns-proxy','dnscrypt-proxy2']){
+      const el=ctx.engineChoice(id,id,'description');
+      if(el.tag!=='button'||!!el.attrs.disabled!==(id===current)||el.attrs['aria-pressed']!==(id===current?'true':'false'))throw Error('wrong engine card '+current+'/'+id);
+      el.attrs.click();
+    }
+    if(calls.length!==1||calls[0][0]===current||calls[0][1]!==root)throw Error('engine card routed incorrectly from '+current);
+    state.jobRunning=true;const disabled=ctx.engineChoice(current==='dnscrypt-proxy2'?'https-dns-proxy':'dnscrypt-proxy2','other','description');disabled.attrs.click();
+    if(!disabled.attrs.disabled||calls.length!==1)throw Error('engine card active during job');
+  }
+}
+async function testEngineSwitchConfirmation(){
+  for(const target of ['https-dns-proxy','dnscrypt-proxy2']){
+    let confirm,requests=[],watching=0;const root={},state={busy:false,jobRunning:false},ctx={state,window:{dmState:{engine_installed:1,profile:'clean'}},displayDnsRows:()=>[{id:'dns'}],confirmAction:(message,rows,accept)=>{confirm=accept;},clearEngineUiState:()=>{},renderDoH:()=>{},callSwitchEngine:id=>{requests.push(id);return Promise.resolve({ok:true,job:'engine'});},watchEngine:()=>{watching++;},withRpcError:(s,e)=>s+e.message};
+    vm.createContext(ctx);vm.runInContext(extract('function switchEngine(target,root){','function resetDnsCore(root){'),ctx);
+    ctx.switchEngine(target,root);if(requests.length||typeof confirm!=='function')throw Error('engine switch did not require confirmation');
+    confirm();await delay();if(requests.join(',')!==target||watching!==1||!state.busy)throw Error('engine switch did not start '+target);
+  }
+}
+async function testSystemDnsSuccessNotice(){
+  for(const [result,output,expected] of [[true,'DNS работает',''],[true,'Ожидание подключения к сети.','Ожидание подключения к сети.'],[false,'Ошибка DNS','Ошибка DNS']]){
+    const state={busy:false,jobRunning:false,pageNotice:{}},root={};
+    const ctx={state,window:{dmState:{}},displayDnsRows:()=>[],renderDoH:()=>{},callSystemDnsTest:()=>Promise.resolve({}),waitDnsHealth:()=>Promise.resolve({ok:result,output}),withRpcError:(s,e)=>s+e.message};
+    vm.createContext(ctx);vm.runInContext(extract('function testCurrent(root){','function pollJob(root,job,meta,done){'),ctx);
+    await ctx.testCurrent(root);
+    if(state.busy||state.pageNotice.doh!==expected)throw Error('incorrect system DNS result notice');
+  }
+}
+Promise.all([testEngineCardsBothDirections(),testEngineSwitchConfirmation(),testSystemDnsSuccessNotice(),testProfileNotice(),testForcedDnsControls(),testCurrentDnsNotice(),testTestAgePresets(),testCatalogCardActions(),testCachePresets(),testTimePresetCards(),testSettingToggle(),testProfileApplyWithoutPopup(),testDnscryptDiagnosticDisplay(),testRunningProfileTimeout(),testTimePresetWhitespace(),testPoolSelectionRefresh(),testProfileClickBothEngines(),testDnscryptPoolPresentation(),testRegionalSelection(),testResumeCatalog(),testBackgroundStartTimeout(),testBackgroundUnknown(),testBackgroundNavigation(),testBackgroundFailure(),testDoHRemove(),testSingleError(),testBadgeWithoutDuration(),testPollNavigation(),testLongCatalogProgress(117),testLongCatalogProgress(5,true),testRouteCache(),testCachedReadOnly(),testAdditionalRouteCache(),testSequentialWarmup(),testWarmupResourceGuard(),testResumeCache(),testSettingConnectionLoss(),testRegionalConnectionLoss(),testProfileMissingJob(),testJobTransientError(),testUninstallUnresponsiveStatus(),testProfileStatus(),testSlotDraft(),testDeviceSave(),testCatalogError(),testFoldState(),testCustomDnsFeedback(),testBootstrapForm(),testLogScroll(),testHeaderCheckKind()]).catch(e=>{console.error(e);process.exitCode=1;});
