@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.100"
+VERSION="2.101"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -764,7 +764,15 @@ HDP_INIT=${DNS_MANAGER_HDP_INIT:-/etc/init.d/https-dns-proxy}
 umask 077
 
 error() { printf '{"ok":false,"error":"%s"}\n' "$1"; }
-valid_profile() { case "$1" in bypass|clean|security|privacy|adblock|family|all|dnssec|default) return 0;; server:*) id=${1#server:}; case "$id" in ''|*[!A-Za-z0-9_-]*) return 1;; *) return 0;; esac;; *) return 1;; esac; }
+valid_profile() (
+ case "$1" in
+ bypass|clean|security|privacy|adblock|family|all|dnssec|default) return 0;;
+ server:*) id=${1#server:}; case "$id" in ''|*[!A-Za-z0-9_-]*) return 1;; esac;;
+ pool:*) ids=${1#pool:}; case "$ids" in ''|,*|*,|*,,*|*[!A-Za-z0-9_,-]*) return 1;; esac
+ set -f; IFS=,; set -- $ids; [ "$#" -le 6 ] || return 1; seen=,
+ for id do case "$seen" in *",$id,"*) return 1;; esac; seen="$seen$id,"; done;;
+ *) return 1;; esac
+)
 # A manually selected server must come from the current pool, never from RPC input.
 dnscrypt_pool_records() {
     [ -r "$STATE_FILE" ] || return 1
@@ -953,7 +961,17 @@ profile_worker() {
                             printf '%s\n' 'cloudflare_clean|https://cloudflare-dns.com/dns-query' 'google_clean|https://dns.google/dns-query'
                         }
                     else
-                        case "$goal" in server:*)
+                        case "$goal" in pool:*)
+ dnscrypt_select_profile() (
+ set -f; IFS=,; set -- ${goal#pool:}
+ for chosen do
+ url=$(normalize_url "$(dns_url "$chosen")") || return 1
+ case "$url" in https://*) ;; *) return 1;; esac
+ case "$url" in *'|'*|*[![:graph:]]*) return 1;; esac
+ printf '%s|%s\n' "$chosen" "$url"
+ done
+ ) ;;
+ server:*)
                             chosen=${goal#server:}
                             dnscrypt_select_profile() {
                                 dnscrypt_pool_records | awk -F '|' -v id="$chosen" '$1 == id {print; found=1; exit} END {if (!found) exit 1}'
@@ -963,7 +981,7 @@ profile_worker() {
                     DNS_MANAGER_NO_UPDATE=1 SILENT_APPLY=1 dnscrypt_apply_profile_pool "$goal" 5053 "$BOOTSTRAP_DNS"
                 ) > "$records"; then
                     state_profile=$goal
-                    case "$goal" in default|server:*) state_profile=none;; esac
+                    case "$goal" in default|server:*|pool:*) state_profile=none;; esac
                     if "$DNSCRYPT_INIT" enable &&
                        { printf 'profile=%s\n' "$state_profile";
                          case "$goal" in server:*) printf 'selected=%s\n' "${goal#server:}"; dnscrypt_pool_records | sed 's/^/available=/';; esac
@@ -2583,7 +2601,7 @@ if [ "$(uci -q get dns-manager.global.active_engine 2>/dev/null)" = dnscrypt-pro
 fi
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.100"
+SELF_VERSION="2.101"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -7271,19 +7289,37 @@ function dnscryptCurrentPool(st){
     return E('div',{'class':'dm-dnscrypt-server'},[E('span',{},dnscryptServerName(st,id)),dnscryptLatencyBadge(st,index)]);
   })):E('div',{'class':'dm-hint'},'DNS ещё не выбраны: примените профиль.');
 }
-function dnscryptPoolList(st,root){
-  var servers=Array.isArray(st.dnscrypt_servers)?st.dnscrypt_servers:[];
-  var available=Array.isArray(st.dnscrypt_available_servers)&&st.dnscrypt_available_servers.length?st.dnscrypt_available_servers:servers;
-  var selected=String(st.dnscrypt_selected_server||'');
-  var pending=String(state.pendingDnscryptServer||'');
-  return available.length?E('div',{'class':'dm-seg'},available.map(function(id){
-    var chosen=(pending||selected)===id;
-    return btn(dnscryptServerName(st,id),'cbi-button-neutral'+(chosen?' active':''),function(){
-      state.pendingDnscryptServer=(id===selected||id===pending)?'':id;
-      state.openSections=state.openSections||{};state.openSections['dnscrypt-manual']=true;
-      renderSlots(root,st);
-    },{disabled:!!state.busy||!!state.jobRunning,'aria-pressed':chosen?'true':'false'});
-  })):E('div',{'class':'dm-hint'},'DNS ещё не выбраны: примените профиль.');
+function dnscryptPoolDraft(st){
+  var current=Array.isArray(st.dnscrypt_servers)?st.dnscrypt_servers:[], base=current.join(','), draft;
+  try{draft=JSON.parse(window.sessionStorage.getItem('dm-dnscrypt-pool')||'null');}catch(e){draft=state.dnscryptPoolDraft;}
+  if(!draft||draft.base!==base||!Array.isArray(draft.items))draft={base:base,items:current.map(function(id){return {id:id,name:dnscryptServerName(st,id)};})};
+  return draft;
+}
+function saveDnscryptPoolDraft(draft){state.dnscryptPoolDraft=draft;try{window.sessionStorage.setItem('dm-dnscrypt-pool',JSON.stringify(draft));}catch(e){}}
+function dnscryptPoolRows(st,root){
+  var draft=dnscryptPoolDraft(st),items=draft.items;
+  if(!items.length)return E('p',{'class':'dm-mini'},'Добавьте серверы из каталога.');
+  return E('div',{'class':'dm-doh-list'},items.map(function(item,index){
+    function change(action){if(action==='remove')items.splice(index,1);else{var other=index+action,tmp=items[other];items[other]=items[index];items[index]=tmp;}saveDnscryptPoolDraft(draft);renderSlots(root,st);}
+    return E('div',{'class':'dm-dnscrypt-server'},[E('span',{},(index+1)+'. '+item.name),E('span',{'class':'dm-actions'},[
+      btn('↑','cbi-button-neutral',function(){change(-1);},{disabled:index===0||!!state.busy,'aria-label':'Переместить выше'}),
+      btn('↓','cbi-button-neutral',function(){change(1);},{disabled:index===items.length-1||!!state.busy,'aria-label':'Переместить ниже'}),
+      btn('Убрать','cbi-button-neutral',function(){change('remove');},{disabled:!!state.busy})])]);
+  }));
+}
+function applyDnscryptPool(root,st){
+  var ids=dnscryptPoolDraft(st).items.map(function(x){return x.id;});
+  if(!ids.length||state.busy||state.jobRunning)return;
+  state.busy=true;state.dnscryptDiagnostic='Применяю набор DNS…';state.dnscryptDiagnosticKind='action';renderSlots(root,st);
+  callProfile('pool:'+ids.join(',')).then(function(r){
+    if(!r||!r.ok||r.job!=='profile')throw new Error((r&&r.error)||'Не удалось запустить применение.');
+    state.jobRunning=true;pollJob(root,r.job,{mode:'server',origin:'slots'},function(ns,j){
+      var ok=j&&j.status==='done'&&j.result==='ok';
+      if(ok){try{window.sessionStorage.removeItem('dm-dnscrypt-pool');}catch(e){}state.dnscryptPoolDraft=null;}
+      state.busy=false;state.dnscryptDiagnostic=ok?'Набор DNS применён.':('Не удалось применить набор. '+stripAnsi(String(j&&j.output||'')));
+      state.dnscryptDiagnosticKind='action';renderSlots(root,ns||window.dmState||{});
+    });
+  }).catch(function(err){state.busy=false;state.dnscryptDiagnostic=withRpcError('Не удалось применить набор.',err);renderSlots(root,window.dmState||{});});
 }
 function renderDoH(root,st){
   var e=root.querySelector('#dm-doh');if(!e)return;e.innerHTML='';
@@ -7878,23 +7914,13 @@ function foldSection(key,summary,content,classes){
 function renderSlots(root,st){
   var e=root.querySelector('#dm-slots');if(!e)return;e.innerHTML='';
   if(st.dnscrypt_engine==='dnscrypt-proxy2'){
-    var selected=String(st.dnscrypt_selected_server||'');
-    var pending=String(state.pendingDnscryptServer||'');
-    var available=Array.isArray(st.dnscrypt_available_servers)&&st.dnscrypt_available_servers.length?st.dnscrypt_available_servers:(st.dnscrypt_servers||[]);
-    if(pending&&available.indexOf(pending)<0){pending='';state.pendingDnscryptServer='';}
-    var poolContent=[
-      E('p',{'class':'dm-mini'},'Профиль определяет набор DNS-серверов. DNSCrypt автоматически выбирает из него доступные серверы.'),
-      E('div',{'class':'dm-pool-heading'},[E('strong',{},'Используемые серверы'),E('span',{'class':'dm-mini'},selected?'Выбран один сервер':'Автоматический выбор')]),
-      dnscryptCurrentPool(st),
-      E('p',{'class':'dm-mini'},selected?'Используется только выбранный сервер. Чтобы вернуть набор, примените профиль.':'Чтобы изменить набор серверов, выберите профиль на вкладке «Защищённый DNS».'),
-      E('div',{'class':'dm-pool-actions'},[btn('Проверить DNS','cbi-button-neutral',function(){dnscryptDiagnostic(root,false);},{disabled:!!state.busy||!!state.jobRunning})])
-    ];
+    var draft=dnscryptPoolDraft(st), changed=draft.items.map(function(x){return x.id;}).join(',')!==draft.base;
+    var poolContent=[E('p',{'class':'dm-mini'},'Выберите до шести DNS в каталоге. DNSCrypt автоматически использует доступные серверы.'),
+      E('div',{'class':'dm-pool-heading'},[E('strong',{},'Ваш набор DNS'),E('span',{'class':'dm-mini'},draft.items.length+' из 6')]),dnscryptPoolRows(st,root),
+      E('p',{'class':'dm-mini'},'Порядок удобен для просмотра: DNSCrypt выбирает сервер автоматически, а не по месту в списке.'),
+      E('div',{'class':'dm-pool-actions'},[btn('Выбрать в каталоге','cbi-button-neutral',function(){window.location.href=L.url('admin/services/dns-manager/catalog');}),btn('Проверить DNS','cbi-button-neutral',function(){dnscryptDiagnostic(root,false);},{disabled:!!state.busy||!!state.jobRunning})])];
+    if(changed)poolContent.push(E('div',{'class':'dm-pool-actions'},[btn('Применить набор','cbi-button-action',function(){applyDnscryptPool(root,st);},{disabled:!draft.items.length||!!state.busy||!!state.jobRunning}),btn('Отменить изменения','cbi-button-neutral',function(){try{window.sessionStorage.removeItem('dm-dnscrypt-pool');}catch(e){}state.dnscryptPoolDraft=null;renderSlots(root,st);},{disabled:!!state.busy})]));
     if(state.dnscryptDiagnostic){var diagnosticView=dnscryptDiagnosticView();if(diagnosticView)poolContent.push(diagnosticView);}
-    if(available.length){
-      var manual=[E('p',{'class':'dm-mini'},'Выберите сервер из текущего набора. После применения остальные использоваться не будут.'),dnscryptPoolList(st,root)];
-      if(pending&&pending!==selected)manual.push(E('div',{'class':'dm-pool-actions'},[btn('Применить изменения','cbi-button-action',function(){selectDnscryptServer(pending,root);},{disabled:!!state.busy||!!state.jobRunning})]));
-      poolContent.push(foldSection('dnscrypt-manual','Использовать только один сервер',E('div',{'class':'dm-pool-manual'},manual)));
-    }
     e.appendChild(card('DNS-серверы',poolContent));
     return;
   }
@@ -8523,7 +8549,9 @@ function renderCatalog(root){
       e.appendChild(E('div',{'class':'dm-hint'},progressItems));
     }
     CATEGORY.forEach(function(c){controls.appendChild(btn(c[1],c[0]===state.category?'active cbi-button':'cbi-button',function(){if(state.catalogLoading)return;state.category=c[0];state.offset=0;loadCatalog(root);},{disabled:!!state.catalogLoading,'aria-pressed':c[0]===state.category?'true':'false'}));});
-    var rows=catalogGroups(data.servers||[],function(d){return E('div',{'class':'dm-card dm-catalog-item'},[E('h4',{},d.name||d.id),E('div',{'class':'dm-meta'},catName(d.category)),E('div',{'class':'dm-slot-state'},[dnscryptCatalogBadge(window.dmState||{},d.id)])]);},function(){renderCatalog(root);});
+    var draft=dnscryptPoolDraft(window.dmState||{});
+    var rows=catalogGroups(data.servers||[],function(d){var index=draft.items.findIndex(function(x){return x.id===d.id;}),chosen=index>=0;return E('div',{'class':'dm-card dm-catalog-item'},[E('h4',{},d.name||d.id),E('div',{'class':'dm-meta'},catName(d.category)),E('div',{'class':'dm-slot-state'},[dnscryptCatalogBadge(window.dmState||{},d.id)]),btn(chosen?'Убрать из набора':'Добавить в набор','cbi-button-neutral'+(chosen?' active':''),function(){if(chosen)draft.items.splice(index,1);else draft.items.push({id:d.id,name:d.name||d.id});saveDnscryptPoolDraft(draft);renderCatalog(root);},{disabled:!!state.busy||!!state.jobRunning||(!chosen&&draft.items.length>=6)})]);},function(){renderCatalog(root);});
+    e.appendChild(E('div',{'class':'dm-hint'},[E('span',{},'В наборе: '+draft.items.length+' из 6. '),E('a',{'href':L.url('admin/services/dns-manager/slots')},'Открыть набор и применить')]));
     e.appendChild(card('Каталог DNS',[E('div',{'class':'dm-hint'},'Проверка выполняется небольшими группами, не меняя текущие DNS.'),controls,state.pageNotice.catalog?E('div',{'class':'dm-inline-msg error'},state.pageNotice.catalog):null,state.catalogLoading?E('div',{'class':'dm-hint'},'Загрузка каталога DNS…'):null,E('div',{'class':'dm-catalog'},rows),E('div',{'class':'dm-page'},[btn('←','cbi-button-neutral',function(){if(!state.catalogLoading&&state.offset>0){state.offset=Math.max(0,state.offset-state.limit);loadCatalog(root);}},{disabled:!!state.catalogLoading||state.offset<=0,'aria-label':'Предыдущая страница'}),E('span',{'class':'dm-mini'},(Math.floor(state.offset/state.limit)+1)+' / '+Math.max(1,Math.ceil((data.total||0)/state.limit))),btn('→','cbi-button-neutral',function(){if(!state.catalogLoading&&state.offset+state.limit<(data.total||0)){state.offset+=state.limit;loadCatalog(root);}},{disabled:!!state.catalogLoading||state.offset+state.limit>=(data.total||0),'aria-label':'Следующая страница'})])].filter(Boolean)));
     return;
   }

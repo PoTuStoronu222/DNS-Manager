@@ -18,7 +18,15 @@ HDP_INIT=${DNS_MANAGER_HDP_INIT:-/etc/init.d/https-dns-proxy}
 umask 077
 
 error() { printf '{"ok":false,"error":"%s"}\n' "$1"; }
-valid_profile() { case "$1" in bypass|clean|security|privacy|adblock|family|all|dnssec|default) return 0;; server:*) id=${1#server:}; case "$id" in ''|*[!A-Za-z0-9_-]*) return 1;; *) return 0;; esac;; *) return 1;; esac; }
+valid_profile() (
+ case "$1" in
+ bypass|clean|security|privacy|adblock|family|all|dnssec|default) return 0;;
+ server:*) id=${1#server:}; case "$id" in ''|*[!A-Za-z0-9_-]*) return 1;; esac;;
+ pool:*) ids=${1#pool:}; case "$ids" in ''|,*|*,|*,,*|*[!A-Za-z0-9_,-]*) return 1;; esac
+ set -f; IFS=,; set -- $ids; [ "$#" -le 6 ] || return 1; seen=,
+ for id do case "$seen" in *",$id,"*) return 1;; esac; seen="$seen$id,"; done;;
+ *) return 1;; esac
+)
 # A manually selected server must come from the current pool, never from RPC input.
 dnscrypt_pool_records() {
     [ -r "$STATE_FILE" ] || return 1
@@ -207,7 +215,17 @@ profile_worker() {
                             printf '%s\n' 'cloudflare_clean|https://cloudflare-dns.com/dns-query' 'google_clean|https://dns.google/dns-query'
                         }
                     else
-                        case "$goal" in server:*)
+                        case "$goal" in pool:*)
+ dnscrypt_select_profile() (
+ set -f; IFS=,; set -- ${goal#pool:}
+ for chosen do
+ url=$(normalize_url "$(dns_url "$chosen")") || return 1
+ case "$url" in https://*) ;; *) return 1;; esac
+ case "$url" in *'|'*|*[![:graph:]]*) return 1;; esac
+ printf '%s|%s\n' "$chosen" "$url"
+ done
+ ) ;;
+ server:*)
                             chosen=${goal#server:}
                             dnscrypt_select_profile() {
                                 dnscrypt_pool_records | awk -F '|' -v id="$chosen" '$1 == id {print; found=1; exit} END {if (!found) exit 1}'
@@ -217,7 +235,7 @@ profile_worker() {
                     DNS_MANAGER_NO_UPDATE=1 SILENT_APPLY=1 dnscrypt_apply_profile_pool "$goal" 5053 "$BOOTSTRAP_DNS"
                 ) > "$records"; then
                     state_profile=$goal
-                    case "$goal" in default|server:*) state_profile=none;; esac
+                    case "$goal" in default|server:*|pool:*) state_profile=none;; esac
                     if "$DNSCRYPT_INIT" enable &&
                        { printf 'profile=%s\n' "$state_profile";
                          case "$goal" in server:*) printf 'selected=%s\n' "${goal#server:}"; dnscrypt_pool_records | sed 's/^/available=/';; esac

@@ -412,7 +412,7 @@ async function testSettingToggle(){
 }
 async function testDnscryptPoolPresentation(){
   const changes=[],state={busy:false,jobRunning:false},root={};
-  const ctx={state,E:(tag,attrs,children)=>({tag,attrs,children}),dnscryptServerName:(st,id)=>id,badge:(kind,label)=>({kind,label}),dateText:()=> '17.11.2026, 12:00:00',
+  const ctx={state,window:{sessionStorage:{getItem:()=>null,setItem:()=>{}}},E:(tag,attrs,children)=>({tag,attrs,children}),dnscryptServerName:(st,id)=>id,badge:(kind,label)=>({kind,label}),dateText:()=> '17.11.2026, 12:00:00',
     btn:(label,cls,click,opts)=>({label,click,opts}),renderSlots:()=>{},selectDnscryptServer:id=>changes.push(id)};
   vm.createContext(ctx);vm.runInContext(extract('function dnscryptLatencyBadge(st,index){','function renderDoH(root,st){'),ctx);
   const st={dnscrypt_servers:['cloudflare'],dnscrypt_available_servers:['cloudflare','google'],dnscrypt_selected_server:'cloudflare'};
@@ -425,10 +425,9 @@ async function testDnscryptPoolPresentation(){
   st.dnscrypt_server_checks={cloudflare:'fail'};if(ctx.dnscryptLatencyBadge(st,0).kind!=='dm-bad')throw Error('failed server not shown');
   st.dnscrypt_running=0;if(ctx.dnscryptLatencyBadge(st,0).label!=='нет данных')throw Error('stopped DNSCrypt showed old latency');
   if(current.children.length!==1||current.children[0].children[0].children!=='cloudflare')throw Error('current DNS list includes unused servers');
-  ctx.dnscryptPoolList(st,root).children[1].click();
-  if(changes.length||state.pendingDnscryptServer!=='google')throw Error('server selection applied before confirmation');
-  ctx.dnscryptPoolList(st,root).children[0].click();
-  if(state.pendingDnscryptServer)throw Error('selecting current server did not cancel pending selection');
+  const draft=ctx.dnscryptPoolDraft(st);
+  if(draft.items.length!==1||draft.items[0].id!=='cloudflare')throw Error('draft does not begin with current pool');
+  if(ctx.dnscryptPoolRows(st,root).children.length!==1)throw Error('pool editor does not show current server');
 }
 async function testProfileClickBothEngines(){
   for(const engine of ['dnscrypt-proxy2','https-dns-proxy']){
