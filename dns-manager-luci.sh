@@ -1,6 +1,6 @@
 #!/bin/sh
-# DNS Manager full installer and LuCI companion
-# Version: 2.108
+# DNS Manager LuCI companion and full installer
+# Version: 2.109
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.108"
+VERSION="2.109"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -743,848 +743,198 @@ done
 printf 'Service did not become ready: %s\n' "$target" >&2
 exit 1
 EOF_DNSCRYPT_ASSET_8
-    cat > "$_dc_stage/backend-dnscrypt.sh" <<'EOF_DNSCRYPT_ASSET_9'
-#!/bin/sh
-# Experimental RPC backend for the single-process DNSCrypt engine.
-# Methods that still depend on individual https-dns-proxy instances are
-# rejected until they have an engine-aware implementation.
-LEGACY=${DNS_MANAGER_LEGACY_BACKEND:-/usr/lib/dns-manager-luci/backend.sh}
-MANAGER=${DNS_MANAGER_MANAGER:-/usr/bin/dns-manager}
-HELPERS=${DNS_MANAGER_DNSCRYPT_HELPERS:-/usr/lib/dns-manager-luci/dnscrypt}
-CONFIG_DIR=${DNS_MANAGER_DNSCRYPT_CONFIG_DIR:-/etc/dns-manager/config}
-JOB_DIR=${DNS_MANAGER_DNSCRYPT_JOB_DIR:-/var/run/dns-manager-luci/jobs}
-RUNTIME_DIR=${DNS_MANAGER_DNSCRYPT_RUNTIME_DIR:-/var/run/dns-manager-luci}
-STATE_FILE="$CONFIG_DIR/dnscrypt-profile.state"
-ENGINE_FILE=${DNS_MANAGER_DNSCRYPT_ENGINE_FILE:-$CONFIG_DIR/dnscrypt-engine}
-SERVICE=dns-manager-dnscrypt-profile
-RESET_SERVICE=dns-manager-dnscrypt-reset
-SWITCH_SERVICE=dns-manager-engine-switch
-DNSCRYPT_INIT=${DNS_MANAGER_DNSCRYPT_INIT:-/etc/init.d/dnscrypt-proxy}
-HDP_INIT=${DNS_MANAGER_HDP_INIT:-/etc/init.d/https-dns-proxy}
-umask 077
-
-error() { printf '{"ok":false,"error":"%s"}\n' "$1"; }
-valid_profile() (
- case "$1" in
- bypass|clean|security|privacy|adblock|family|all|dnssec|default) return 0;;
- server:*) id=${1#server:}; case "$id" in ''|*[!A-Za-z0-9_-]*) return 1;; esac;;
- pool:*) ids=${1#pool:}; case "$ids" in ''|,*|*,|*,,*|*[!A-Za-z0-9_,-]*) return 1;; esac
- set -f; IFS=,; set -- $ids; [ "$#" -le 6 ] || return 1; seen=,
- for id do case "$seen" in *",$id,"*) return 1;; esac; seen="$seen$id,"; done;;
- *) return 1;; esac
-)
-# A manually selected server must come from the current pool, never from RPC input.
-dnscrypt_pool_records() {
-    [ -r "$STATE_FILE" ] || return 1
-    if grep -q '^available=' "$STATE_FILE"; then sed -n 's/^available=//p' "$STATE_FILE"
-    else sed -n 's/^server=//p' "$STATE_FILE"; fi
-}
-engine_selected() { [ -r "$ENGINE_FILE" ] && [ "$(cat "$ENGINE_FILE" 2>/dev/null)" = dnscrypt-proxy2 ]; }
-hdp_active() { [ -x "$HDP_INIT" ] && { "$HDP_INIT" enabled >/dev/null 2>&1 || "$HDP_INIT" running >/dev/null 2>&1; }; }
-load_manager_functions() {
-    local manager_src
-    mkdir -p "$RUNTIME_DIR" || return 1
-    manager_src=$(mktemp "$RUNTIME_DIR/dnscrypt-manager.XXXXXX") || return 1
-    if ! sed '/^case "${1:-}" in$/,$d' "$MANAGER" > "$manager_src" || ! . "$manager_src"; then
-        rm -f "$manager_src"
-        return 1
-    fi
-    rm -f "$manager_src"
-}
-disable_legacy_watchdog() {
-    . "$HELPERS/dns-manager-watchdog-common.sh" || return 1
-    dns_manager_stop_watchdog || return 1
-    if [ "${WATCHDOG_ENABLED:-0}" != 0 ] || [ "${WATCHDOG_AUTOREPLACE:-0}" != 0 ]; then
-        WATCHDOG_ENABLED=0
-        WATCHDOG_AUTOREPLACE=0
-        save_config || return 1
-    fi
-}
-dnscrypt_set_setting() {
-    input=$(cat)
-    name=$(printf '%s' "$input" | jsonfilter -e '@.name' 2>/dev/null)
-    enabled=$(printf '%s' "$input" | jsonfilter -e '@.enabled' 2>/dev/null)
-    case "$name" in watchdog|force|browser_dns) ;; *) error 'Эта настройка пока недоступна для DNSCrypt'; return;; esac
-    case "$enabled" in 0|1) ;; *) error 'Неверное значение настройки'; return;; esac
-    load_manager_functions && load_config && acquire_mutation_lock || { error 'Не удалось применить настройку DNS'; return; }
-    rc=0
-    if [ "$name" = browser_dns ]; then
-        set_browser_dns_hint "$enabled" >/dev/null 2>&1 || rc=$?
-    elif [ "$name" = force ]; then
-        dnscrypt_set_force "$enabled" >/dev/null 2>&1 || rc=$?
-    else
-        watchdog_apply_toggle "$enabled" >/dev/null 2>&1 || rc=$?
-    fi
-    release_mutation_lock
-    [ "$rc" -eq 0 ] || { error 'Не удалось применить настройку DNS'; return; }
-    printf '{"ok":true}\n'
-}
-
-# The setting worker is managed by procd and survives the RPC connection.
-dnscrypt_setting_worker() {
-    printf 'pid=%s\n' "$$" >> "$JOB_DIR/setting/state"
-    token=$(awk '{print $22}' "/proc/$$/stat" 2>/dev/null || :)
-    [ -z "$token" ] || printf 'pid_start=%s\n' "$token" >> "$JOB_DIR/setting/state"
-    dnscrypt_set_setting < "$JOB_DIR/setting/input" > "$JOB_DIR/setting/output" 2>&1
-    rm -f "$JOB_DIR/setting/input"
-    if grep -q '"ok"[[:space:]]*:[[:space:]]*true' "$JOB_DIR/setting/output"; then result=ok; status=done; rc=0; else result=fail; status=failed; rc=1; fi
-    printf 'result=%s\nstatus=%s\nfinished=%s\n' "$result" "$status" "$(date +%s)" >> "$JOB_DIR/setting/state"
-    printf '\n__DONE__ %s\n' "$rc" >> "$JOB_DIR/setting/output"
-}
-dnscrypt_setting_start() {
-    input=$(cat)
-    name=$(printf '%s' "$input" | jsonfilter -e '@.name' 2>/dev/null)
-    enabled=$(printf '%s' "$input" | jsonfilter -e '@.enabled' 2>/dev/null)
-    case "$name:$enabled" in watchdog:0|watchdog:1|force:0|force:1|browser_dns:0|browser_dns:1) ;; *) error 'Неверная настройка'; return;; esac
-    mkdir -p "$JOB_DIR/setting" "$RUNTIME_DIR" || { error 'Не удалось подготовить задачу'; return; }
-    exec 9>"$RUNTIME_DIR/setting-start.lock" || { error 'Не удалось подготовить блокировку'; return; }
-    flock -n 9 || { error 'Другая настройка уже запускается'; return; }
-    service=dns-manager-dnscrypt-setting
-    reply=$(ubus -t 5 call service list "{\"name\":\"$service\"}" 2>/dev/null) || { error 'Служба задач недоступна'; return; }
-    if printf '%s' "$reply" | grep -q '"running"[[:space:]]*:[[:space:]]*true'; then error 'Другая настройка уже применяется'; return; fi
-    ubus -t 5 call service delete "{\"name\":\"$service\"}" >/dev/null 2>&1 || :
-    umask 077
-    printf '%s' "$input" > "$JOB_DIR/setting/input" || { error 'Не удалось сохранить запрос'; return; }
-    : > "$JOB_DIR/setting/output"
-    printf 'status=running\nstarted=%s\nmode=setting\nname=%s\nenabled=%s\n' "$(date +%s)" "$name" "$enabled" > "$JOB_DIR/setting/state"
-    request="{\"name\":\"$service\",\"instances\":{\"main\":{\"command\":[\"/bin/sh\",\"/usr/lib/dns-manager-luci/backend-dnscrypt.sh\",\"setting_worker\"]}}}"
-    if ! ubus -t 5 call service set "$request" >/dev/null 2>&1; then
-        rm -f "$JOB_DIR/setting/input"
-        printf 'result=fail\nstatus=failed\nfinished=%s\n' "$(date +%s)" >> "$JOB_DIR/setting/state"
-        error 'Не удалось запустить настройку'; return
-    fi
-    printf '{"ok":true,"job":"setting"}\n'
-}
-
-# Keep the LAN redirect in an owned UCI section so firewall reloads retain it.
-dnscrypt_set_force() {
-    local enabled current owner lan_ip
-    enabled=$1
-    current=$(uci -q get firewall.dns_forced || :)
-    owner=$(uci -q get firewall.dns_forced.name || :)
-    [ -z "$current" ] || { [ "$current" = redirect ] && [ "$owner" = Force-DNS-DNSCrypt ]; } || return 1
-    [ -z "$(uci -q changes firewall)" ] || return 1
-    if [ "$enabled" = 1 ]; then
-        refresh_runtime_capabilities >/dev/null 2>&1 || return 1
-        detect_steer_dns_path >/dev/null 2>&1 || return 1
-        # A second redirect would compete with Steer's own LAN DNS hook.
-        [ "${STEER_DNS_ACTIVE:-0}" != 1 ] || return 1
-        lan_ip=$(uci -q get network.lan.ipaddr | sed 's-/.*$--')
-        case "$lan_ip" in ''|*[!0-9.]*) return 1;; esac
-        uci -q delete firewall.dns_forced || :
-        uci set firewall.dns_forced=redirect &&
-        uci set firewall.dns_forced.name=Force-DNS-DNSCrypt &&
-        uci set firewall.dns_forced.src=lan &&
-        uci set firewall.dns_forced.src_dport=53 &&
-        uci set firewall.dns_forced.dest=lan &&
-        uci set "firewall.dns_forced.dest_ip=$lan_ip" &&
-        uci set firewall.dns_forced.dest_port=53 &&
-        uci set 'firewall.dns_forced.proto=tcp udp' &&
-        uci set firewall.dns_forced.target=DNAT || return 1
-    elif [ -n "$current" ]; then
-        uci -q delete firewall.dns_forced || return 1
-    else
-        return 0
-    fi
-    uci commit firewall && /etc/init.d/firewall reload
-}
-job_write() { printf '%s=%s\n' "$1" "$2" >> "$JOB_DIR/profile/state"; }
-action_write() { printf '%s=%s\n' "$1" "$2" >> "$JOB_DIR/action/state"; }
-
-switch_start() {
-    input=$(cat)
-    target=$(printf '%s' "$input" | jsonfilter -e '@.target_engine' 2>/dev/null || true)
-    case "$target" in https-dns-proxy|dnscrypt-proxy2) ;; *) error 'Неверный DNS-движок'; return;; esac
-    [ -x "$HELPERS/dns-manager-engine-switch.sh" ] || { error 'Файл переключения отсутствует'; return; }
-    mkdir -p "$JOB_DIR/engine" "$RUNTIME_DIR" || { error 'Не удалось подготовить задачу'; return; }
-    exec 9>"$RUNTIME_DIR/engine-switch-start.lock" || { error 'Не удалось подготовить блокировку'; return; }
-    flock -n 9 || { error 'Переключение уже запускается'; return; }
-    reply=$(ubus -t 5 call service list "{\"name\":\"$SWITCH_SERVICE\"}" 2>/dev/null) || { error 'Служба задач недоступна'; return; }
-    case "$reply" in \{*\}) ;; *) error 'Некорректный ответ службы задач'; return;; esac
-    if printf '%s\n' "$reply" | grep -q '"running"[[:space:]]*:[[:space:]]*true'; then
-        error 'Переключение уже выполняется'; return
-    fi
-    ubus -t 5 call service delete "{\"name\":\"$SWITCH_SERVICE\"}" >/dev/null 2>&1 || true
-    # A package installation may take longer than a normal action. The job
-    # reader must not terminate a live package manager on the action timeout.
-    printf 'status=running\nstarted=%s\nmode=update\nname=switch_engine\n' "$(date +%s)" > "$JOB_DIR/engine/state"
-    : > "$JOB_DIR/engine/output"
-    request="{\"name\":\"$SWITCH_SERVICE\",\"instances\":{\"main\":{\"command\":[\"/bin/sh\",\"/usr/lib/dns-manager-luci/dnscrypt/dns-manager-engine-switch.sh\",\"$target\"]}}}"
-    if ! ubus -t 5 call service set "$request" >/dev/null 2>&1; then
-        printf 'result=fail\nstatus=failed\nfinished=%s\n' "$(date +%s)" >> "$JOB_DIR/engine/state"
-        error 'Не удалось запустить переключение'; return
-    fi
-    printf '{"ok":true,"job":"engine"}\n'
-}
-
-profile_worker() {
-    goal=$1
-    valid_profile "$goal" || exit 1
-    job_write pid "$$"
-    token=$(awk '{print $22}' "/proc/$$/stat" 2>/dev/null || true)
-    [ -z "$token" ] || job_write pid_start "$token"
-    exec >>"$JOB_DIR/profile/output" 2>&1
-    if ! engine_selected; then
-        printf '%s\n' 'Выбран другой DNS-движок.'
-        job_write result fail; job_write status failed; job_write finished "$(date +%s)"
-        exit 1
-    fi
-    load_manager_functions || exit 1
-    rc=1
-    if preflight_readonly >/dev/null 2>&1 && init_dirs >/dev/null 2>&1 &&
-       load_config >/dev/null 2>&1 && acquire_mutation_lock; then
-        if ! engine_selected; then
-            printf '%s\n' 'DNS-движок изменился до начала применения.'
-            release_mutation_lock
-            job_write result fail; job_write status failed; job_write finished "$(date +%s)"
-            exit 1
-        fi
-        if hdp_active; then
-            printf '%s\n' 'https-dns-proxy ещё работает или включён в автозапуске.'
-            release_mutation_lock
-            job_write result fail; job_write status failed; job_write finished "$(date +%s)"
-            exit 1
-        fi
-        restore_persistent_test_results >/dev/null 2>&1 || true
-        refresh_runtime_capabilities >/dev/null 2>&1 || true
-        if [ -r "$HELPERS/dns-manager-dnscrypt-profile.sh" ] &&
-           [ -r "$HELPERS/dns-manager-dnscrypt-profile-apply.sh" ]; then
-            . "$HELPERS/dns-manager-dnscrypt-profile.sh"
-            . "$HELPERS/dns-manager-dnscrypt-profile-apply.sh"
-            records=''; state_tmp=''
-            if mkdir -p "$CONFIG_DIR" && records=$(mktemp "$CONFIG_DIR/.dnscrypt-profile.XXXXXX") &&
-               state_tmp=$(mktemp "$CONFIG_DIR/.dnscrypt-state.XXXXXX"); then
-                printf '%s\n' 'Проверяю DNS и применяю профиль.'
-                if (
-                    if [ "$goal" = default ]; then
-                        dnscrypt_select_profile() {
-                            printf '%s\n' 'cloudflare_clean|https://cloudflare-dns.com/dns-query' 'google_clean|https://dns.google/dns-query'
-                        }
-                    else
-                        case "$goal" in pool:*)
- dnscrypt_select_profile() (
- set -f; IFS=,; set -- ${goal#pool:}
- for chosen do
- url=$(normalize_url "$(dns_url "$chosen")") || return 1
- case "$url" in https://*) ;; *) return 1;; esac
- case "$url" in *'|'*|*[![:graph:]]*) return 1;; esac
- printf '%s|%s\n' "$chosen" "$url"
- done
- ) ;;
- server:*)
-                            chosen=${goal#server:}
-                            dnscrypt_select_profile() {
-                                dnscrypt_pool_records | awk -F '|' -v id="$chosen" '$1 == id {print; found=1; exit} END {if (!found) exit 1}'
-                            } ;;
-                        esac
-                    fi
-                    DNS_MANAGER_NO_UPDATE=1 SILENT_APPLY=1 dnscrypt_apply_profile_pool "$goal" 5053 "$BOOTSTRAP_DNS"
-                ) > "$records"; then
-                    state_profile=$goal
-                    case "$goal" in default|server:*|pool:*) state_profile=none;; esac
-                    if "$DNSCRYPT_INIT" enable &&
-                       { printf 'profile=%s\n' "$state_profile";
-                         case "$goal" in server:*) printf 'selected=%s\n' "${goal#server:}"; dnscrypt_pool_records | sed 's/^/available=/';; esac
-                         sed 's/^/server=/' "$records"; } > "$state_tmp" &&
-                       chmod 0600 "$state_tmp" && mv -f "$state_tmp" "$STATE_FILE"; then
-                        rc=0
-                    else
-                        printf '%s\n' 'Не удалось включить автозапуск или сохранить профиль. Восстанавливаю стандартный DNS.'
-                        if sh "$HELPERS/dns-manager-dnscrypt-dnsmasq.sh" restore 5053; then
-                            rm -f "$STATE_FILE"
-                            "$DNSCRYPT_INIT" stop >/dev/null 2>&1 || true
-                            "$DNSCRYPT_INIT" disable >/dev/null 2>&1 || true
-                        else
-                            printf '%s\n' 'Не удалось полностью восстановить стандартный DNS.'
-                        fi
-                    fi
-                fi
-            else
-                printf '%s\n' 'Не удалось подготовить файлы профиля.'
-            fi
-            [ -z "$records" ] || rm -f "$records"
-            [ -z "$state_tmp" ] || rm -f "$state_tmp"
-        else
-            printf '%s\n' 'Файлы профиля DNSCrypt отсутствуют.'
-        fi
-        release_mutation_lock
-    fi
-    now=$(date +%s)
-    if [ "$rc" = 0 ]; then job_write result ok; job_write status done
-    else job_write result fail; job_write status failed; fi
-    job_write finished "$now"
-    exit "$rc"
-}
-
-profile_start() {
-    input=$(cat)
-    engine_selected || { error 'Выбран другой DNS-движок'; return; }
-    goal=$(printf '%s' "$input" | jsonfilter -e '@.profile' 2>/dev/null || true)
-    valid_profile "$goal" || { error 'Неверный профиль'; return; }
-    mkdir -p "$JOB_DIR/profile" "$RUNTIME_DIR" || { error 'Не удалось подготовить задачу'; return; }
-    lock="$RUNTIME_DIR/dnscrypt-profile-start.lock"
-    exec 9>"$lock" || { error 'Не удалось подготовить блокировку'; return; }
-    flock -n 9 || { error 'Профиль уже запускается'; return; }
-    reply=$(ubus -t 5 call service list "{\"name\":\"$SERVICE\"}" 2>/dev/null) || {
-        error 'Служба задач недоступна'; return
-    }
-    case "$reply" in \{*\}) ;; *) error 'Некорректный ответ службы задач'; return;; esac
-    if printf '%s\n' "$reply" | grep -q '"running"[[:space:]]*:[[:space:]]*true'; then
-        error 'Профиль уже применяется'; return
-    fi
-    ubus -t 5 call service delete "{\"name\":\"$SERVICE\"}" >/dev/null 2>&1 || true
-    printf 'status=running\nstarted=%s\nmode=profile\nprofile=%s\n' "$(date +%s)" "$goal" > "$JOB_DIR/profile/state"
-    : > "$JOB_DIR/profile/output"
-    request="{\"name\":\"$SERVICE\",\"instances\":{\"main\":{\"command\":[\"/bin/sh\",\"/usr/lib/dns-manager-luci/backend-dnscrypt.sh\",\"worker\",\"$goal\"]}}}"
-    if ! ubus -t 5 call service set "$request" >/dev/null 2>&1; then
-        job_write result fail; job_write status failed; job_write finished "$(date +%s)"
-        error 'Не удалось запустить задачу профиля'; return
-    fi
-    printf '{"ok":true,"job":"profile"}\n'
-}
-
-reset_worker() {
-    action_write pid "$$"
-    token=$(awk '{print $22}' "/proc/$$/stat" 2>/dev/null || true)
-    [ -z "$token" ] || action_write pid_start "$token"
-    rc=1
-    if load_manager_functions; then
-        if engine_selected && preflight_readonly >/dev/null 2>&1 && init_dirs >/dev/null 2>&1 &&
-           load_config >/dev/null 2>&1 && acquire_mutation_lock; then
-            : > "$RUNTIME_DIR/dnscrypt-reset.log"
-            if engine_selected && ! hdp_active && disable_legacy_watchdog &&
-               sh "$HELPERS/dns-manager-device-detach.sh" >> "$RUNTIME_DIR/dnscrypt-reset.log" 2>&1 &&
-               sh "$HELPERS/dns-manager-dnscrypt-dnsmasq.sh" restore 5053 >> "$RUNTIME_DIR/dnscrypt-reset.log" 2>&1; then
-                # The profile is no longer active once dnsmasq is restored,
-                # even if disabling the proxy service fails afterward.
-                if rm -f "$STATE_FILE" &&
-                   sh "$HELPERS/dns-manager-engine-services.sh" quiesce dnscrypt-proxy2 >> "$RUNTIME_DIR/dnscrypt-reset.log" 2>&1; then
-                    uci -q delete dns-manager.global.dnscrypt_regional_mode || :
-                    uci -q delete dns-manager.global.dnscrypt_regional_ips || :
-                    if uci commit dns-manager; then rc=0; fi
-                    /etc/init.d/dns-manager-regional restart >/dev/null 2>&1 || :
-                fi
-            fi
-            release_mutation_lock
-        fi
-    fi
-    if [ "$rc" = 0 ]; then
-        printf '{"ok":true}\n' > "$JOB_DIR/action/output"
-        action_write result ok; action_write status done
-    else
-        printf '{"ok":false,"error":"Не удалось восстановить стандартный DNS; проверьте состояние служб и UCI."}\n' > "$JOB_DIR/action/output"
-        action_write result fail; action_write status failed
-    fi
-    action_write finished "$(date +%s)"
-    exit "$rc"
-}
-
-reset_start() {
-    cat >/dev/null
-    engine_selected || { error 'Выбран другой DNS-движок'; return; }
-    mkdir -p "$JOB_DIR/action" "$RUNTIME_DIR" || { error 'Не удалось подготовить задачу'; return; }
-    exec 9>"$RUNTIME_DIR/dnscrypt-reset-start.lock" || { error 'Не удалось подготовить блокировку'; return; }
-    flock -n 9 || { error 'Восстановление уже запускается'; return; }
-    reply=$(ubus -t 5 call service list "{\"name\":\"$RESET_SERVICE\"}" 2>/dev/null) || { error 'Служба задач недоступна'; return; }
-    case "$reply" in \{*\}) ;; *) error 'Некорректный ответ службы задач'; return;; esac
-    if printf '%s\n' "$reply" | grep -q '"running"[[:space:]]*:[[:space:]]*true'; then
-        error 'Восстановление уже выполняется'; return
-    fi
-    ubus -t 5 call service delete "{\"name\":\"$RESET_SERVICE\"}" >/dev/null 2>&1 || true
-    printf 'status=running\nstarted=%s\nmode=action\nname=reset_dns\n' "$(date +%s)" > "$JOB_DIR/action/state"
-    : > "$JOB_DIR/action/output"
-    request="{\"name\":\"$RESET_SERVICE\",\"instances\":{\"main\":{\"command\":[\"/bin/sh\",\"/usr/lib/dns-manager-luci/backend-dnscrypt.sh\",\"reset_worker\"]}}}"
-    if ! ubus -t 5 call service set "$request" >/dev/null 2>&1; then
-        action_write result fail; action_write status failed; action_write finished "$(date +%s)"
-        error 'Не удалось запустить восстановление'; return
-    fi
-    printf '{"ok":true,"job":"action"}\n'
-}
-
-dnscrypt_catalog_snapshot() (
-    load_manager_functions || exit 1
-    probe=''; dir=''
-    cleanup_catalog_probe() {
-        if [ -n "$probe" ]; then kill "$probe" 2>/dev/null || :; wait "$probe" 2>/dev/null || :; fi
-        [ -z "$dir" ] || rm -rf "$dir"
-        case "${TMP_DIR:-}" in /tmp/dnsmgr.*) rm -rf "$TMP_DIR";; esac
-    }
-    trap cleanup_catalog_probe EXIT
-    trap 'exit 1' HUP INT TERM
-    load_config || exit 1
-    [ -r "$DNS_CATALOG" ] || exit 1
-    command -v dnscrypt-proxy >/dev/null 2>&1 || exit 1
-    dir=$(mktemp -d "$RUNTIME_DIR/catalog-probe.XXXXXX") || exit 1
-    catalog_hash=$(cksum "$DNS_CATALOG")
-    custom_hash=$(cksum "$CUSTOM_DNS_CATALOG" 2>/dev/null || :)
-    awk -F'|' 'NF >= 5 && $1 !~ /^#/ && $1 ~ /^[A-Za-z0-9_-]+$/ && $5 ~ /^https:\/\// {gsub(/[\r\n]/, " ", $4); print $1 "|" $5 "|" $4}' "$DNS_CATALOG" > "$dir/source"
-    if [ -r "$CUSTOM_DNS_CATALOG" ]; then
-        awk -F'|' 'NF >= 5 && $1 !~ /^#/ && $1 ~ /^[A-Za-z0-9_-]+$/ && $5 ~ /^https:\/\// {gsub(/[\r\n]/, " ", $4); print $1 "|" $5 "|" $4}' "$CUSTOM_DNS_CATALOG" >> "$dir/source"
-    fi
-    total=$(wc -l < "$dir/source" | tr -d ' ')
-    [ "$total" -gt 0 ] || exit 1
-    printf 'name=dnscrypt_catalog\nprogress_total=%s\nprogress_done=0\nprogress_ok=0\nprogress_fail=0\n' "$total" >> "$JOB_DIR/health/state"
-    : > "$dir/results"
-    offset=1; success_count=0; failed_count=0
-    while [ "$offset" -le "$total" ]; do
-        end=$((offset + 5))
-        sed -n "${offset},${end}p" "$dir/source" > "$dir/group"
-        names=$(awk -F'|' '{if (NR>1) printf ", "; printf "%s", ($3 != "" ? $3 : $1)}' "$dir/group")
-        printf 'phase=%s\n' "$names" >> "$JOB_DIR/health/state"
-        : > "$dir/stamps"; : > "$dir/ids"; : > "$dir/valid"
-        while IFS='|' read -r id url name; do
-            stamp=$(sh "$HELPERS/dns-manager-doh-stamp.sh" "$url" 2>/dev/null) || continue
-            printf '%s\n' "$id" >> "$dir/ids"
-            printf '%s\n' "$stamp" >> "$dir/stamps"
-            printf '%s\n' "$url" >> "$dir/valid"
-        done < "$dir/group"
-        count=$(wc -l < "$dir/ids" | tr -d ' ')
-        if [ "$count" -gt 0 ]; then
-            # One temporary process, with a distinct loopback port, tests at most six servers.
-            port=$((49152 + ($$ + offset) % 12000))
-            first_url=$(sed -n '1p' "$dir/valid")
-            sh "$HELPERS/dns-manager-dnscrypt-config.sh" "$port" "$first_url" "$BOOTSTRAP_DNS" > "$dir/base" || exit 1
-            {
-                printf 'server_names = ['
-                n=1; while [ "$n" -le "$count" ]; do [ "$n" -eq 1 ] || printf ', '; printf "'manager-%s'" "$n"; n=$((n + 1)); done
-                printf ']\n'
-                printf "log_file = '%s'\nuse_syslog = false\n" "$dir/probe.log"
-                sed -n '2,/^\[static\./{ /^\[static\./d; p; }' "$dir/base"
-                n=1; while IFS= read -r stamp; do printf "[static.manager-%s]\nstamp = '%s'\n" "$n" "$stamp"; n=$((n + 1)); done < "$dir/stamps"
-            } > "$dir/probe.toml"
-            : > "$dir/probe.log"
-            dnscrypt-proxy -config "$dir/probe.toml" -netprobe-timeout 5 > "$dir/process.log" 2>&1 &
-            probe=$!
-            tries=0
-            while kill -0 "$probe" 2>/dev/null && [ "$tries" -lt 30 ]; do
-                grep -q 'Server with the lowest initial latency:' "$dir/probe.log" && break
-                sleep 1; tries=$((tries + 1))
-            done
-            kill "$probe" 2>/dev/null || :; wait "$probe" 2>/dev/null || :; probe=''
-            if grep -Eqi 'address already in use|permission denied|failed to listen' "$dir/probe.log" "$dir/process.log"; then exit 1; fi
-            [ -s "$dir/probe.log" ] || exit 1
-            completed=0; grep -q 'Server with the lowest initial latency:' "$dir/probe.log" && completed=1
-            awk '
-                /\[manager-[1-6]\] OK .*rtt: [0-9]+ms/ {
-                    for(i=1;i<=NF;i++) if($i ~ /^\[manager-[1-6]\]$/) {
-                        server=$i; gsub(/[\[\]]/, "", server)
-                        for(j=i+1;j<NF;j++) if($j=="rtt:") {v=$(j+1); sub(/ms.*/, "", v); if(v ~ /^[0-9]+$/) values[server]=v}
-                    }
-                }
-                /Sorted latencies:/ {collecting=1; next}
-                collecting && /ms manager-[1-6]$/ {v=$(NF-1); sub(/ms$/, "", v); if(v ~ /^[0-9]+$/) values[$NF]=v; next}
-                /Server with the lowest initial latency:/ {
-                    if (!collecting) for(i=1;i<=NF;i++) if($i ~ /^manager-[1-6]$/ && $(i+1)=="(rtt:") {v=$(i+2); sub(/ms\).*/, "", v); if(v ~ /^[0-9]+$/) values[$i]=v}
-                    collecting=0
-                }
-                END {for(k in values) print k, values[k]}' "$dir/probe.log" > "$dir/latencies"
-            n=1; while IFS= read -r id; do
-                latency=$(awk -v s="manager-$n" '$1==s {print $2; exit}' "$dir/latencies")
-                case "$latency" in
-                    ''|*[!0-9]*) if [ "$completed" = 1 ]; then printf '%s|-1\n' "$id" >> "$dir/results"; failed_count=$((failed_count + 1)); fi;;
-                    *) printf '%s|%s\n' "$id" "$latency" >> "$dir/results"; success_count=$((success_count + 1));;
-                esac
-                n=$((n + 1))
-            done < "$dir/ids"
-        fi
-        done_count=$end; [ "$done_count" -le "$total" ] || done_count=$total
-        printf 'progress_done=%s\nprogress_ok=%s\nprogress_fail=%s\n' "$done_count" "$success_count" "$failed_count" >> "$JOB_DIR/health/state"
-        offset=$((end + 1))
-    done
-    [ "$catalog_hash" = "$(cksum "$DNS_CATALOG" 2>/dev/null)" ] || exit 1
-    [ "$custom_hash" = "$(cksum "$CUSTOM_DNS_CATALOG" 2>/dev/null || :)" ] || exit 1
-    . /usr/share/libubox/jshn.sh
-    json_init
-    while IFS='|' read -r id latency; do json_add_int "$id" "$latency"; done < "$dir/results"
-    tmp="$RUNTIME_DIR/dnscrypt-catalog-latencies.$$"
-    json_dump > "$tmp" || exit 1
-    printf '%s\n%s\n' "$catalog_hash" "$custom_hash" > "$RUNTIME_DIR/dnscrypt-catalog-checksum"
-    mv -f "$tmp" "$RUNTIME_DIR/dnscrypt-catalog-latencies.json"
-)
-
-diagnostic() {
-    method=$1
-    cat >/dev/null
-    if [ "$method" != system_dns_test ]; then
-        engine_selected || { error 'Выбран другой DNS-движок'; return; }
-    fi
-    . /usr/share/libubox/jshn.sh
-    json_init
-    if [ "$method" = system_dns_test ]; then
-        output=$(nslookup -type=A -timeout=3 -retry=1 openwrt.org 127.0.0.1 2>&1); rc=$?
-        if [ "$rc" -eq 0 ]; then output="Системный DNS работает нормально.
-$output"; json_add_boolean ok 1
-        elif ! ip -4 route get 8.8.8.8 >/dev/null 2>&1 && ! ip -6 route get 2606:4700:4700::1111 >/dev/null 2>&1; then
-            output='Ожидание подключения к сети.'; json_add_boolean ok 1
-        else output="Системный DNS не ответил.
-$output"; json_add_boolean ok 0; fi
-    elif [ "$method" = dnscrypt_latencies ]; then
-        if dnscrypt_catalog_snapshot; then
-            output='Замеры DNSCrypt обновлены.'; json_add_boolean ok 1
-        else
-            output='Не удалось получить замеры DNSCrypt.'; json_add_boolean ok 0
-        fi
-    elif [ "$method" = dnscrypt_test ]; then
-        output=$(nslookup -type=A -timeout=3 -retry=1 -port=5053 openwrt.org 127.0.0.1 2>&1); rc=$?
-        if [ "$rc" -eq 0 ]; then
-            system_output=$(nslookup -type=A -timeout=3 -retry=1 openwrt.org 127.0.0.1 2>&1); rc=$?
-            output="DNSCrypt (порт 5053):
-$output
-dnsmasq (порт 53):
-$system_output"
-        fi
-        if [ "$rc" -eq 0 ]; then
-            upstream=0
-            for item in $(uci -q get 'dhcp.@dnsmasq[0].server'); do
-                [ "$item" != '127.0.0.1#5053' ] || upstream=1
-            done
-            if [ "$upstream" != 1 ]; then
-                rc=1
-                output="$output
-В dnsmasq не настроена пересылка на 127.0.0.1#5053."
-            fi
-        fi
-        if [ "$rc" -ne 0 ] && ! ip -4 route get 8.8.8.8 >/dev/null 2>&1 && ! ip -6 route get 2606:4700:4700::1111 >/dev/null 2>&1; then
-            output='Ожидание подключения к сети.'; rc=0
-        fi
-        if [ "$rc" -eq 0 ]; then json_add_boolean ok 1; else json_add_boolean ok 0; fi
-    else
-        output=$(logread -e dnscrypt-proxy 2>&1 | tail -n 80)
-        json_add_boolean ok 1
-    fi
-    json_add_string output "$output"
-    json_dump
-}
-
-
-
-# Check each configured endpoint independently without changing the running pool.
-dnscrypt_check_pool() (
-    load_manager_functions || exit 1
-    trap - EXIT INT TERM
-    trap 'rm -rf "$TMP_DIR"; rm -f "$_checks_tmp"' EXIT
-    trap 'exit 1' INT TERM
-    load_config || exit 1
-    command -v dig >/dev/null 2>&1 && HAS_DIG=yes || HAS_DIG=no
-    _checks_tmp="$RUNTIME_DIR/dnscrypt-server-checks.$"
-    : > "$_checks_tmp" || exit 1
-    while IFS='|' read -r _entry_id _entry_url; do
-        case "$_entry_id" in server=*) _entry_id=${_entry_id#server=};; *) continue;; esac
-        case "$_entry_id" in ''|*[!A-Za-z0-9_-]*) continue;; esac
-        case "$_entry_url" in https://*) ;; *) continue;; esac
-        rm -f "$TMP_DIR/t.$_entry_id"
-        ( dns_url() { printf '%s' "$_entry_url"; }; dns_name() { printf '%s' "$_entry_id"; }; dns_cat() { printf '%s' dnscrypt; }; test_one_dns "$_entry_id" ) >/dev/null 2>&1 || :
-        _check_result=$(awk -F'|' -v id="$_entry_id" '$1==id && NF>=5 {print $4 "|" $5;exit}' "$TMP_DIR/t.$_entry_id" 2>/dev/null)
-        case "$_check_result" in *'|'*) printf '%s|%s|%s|%s\n' "$_entry_id" "$_entry_url" "$_check_result" "$(date +%s)" >> "$_checks_tmp" || exit 1;; *) exit 1;; esac
-    done < "$STATE_FILE"
-    [ -s "$_checks_tmp" ] || exit 1
-    mv -f "$_checks_tmp" "$RUNTIME_DIR/dnscrypt-server-checks" || exit 1
-    rm -rf "$TMP_DIR"
-)
-
-diagnostic_worker() {
-    method=$1
-    mkdir -p "$JOB_DIR/health"
-    printf 'pid=%s\n' "$$" >> "$JOB_DIR/health/state"
-    token=$(awk '{print $22}' "/proc/$$/stat" 2>/dev/null || true)
-    [ -z "$token" ] || printf 'pid_start=%s\n' "$token" >> "$JOB_DIR/health/state"
-    reply=$(diagnostic "$method" </dev/null)
-    if [ "$method" = dnscrypt_test ] && engine_selected && [ -r "$STATE_FILE" ]; then
-        rm -f "$RUNTIME_DIR/dnscrypt-server-checks"
-        dnscrypt_check_pool || reply='{"ok":false,"output":"Не удалось проверить серверы DNSCrypt."}'
-    fi
-    result=$(jsonfilter -s "$reply" -e '@.ok' 2>/dev/null)
-    jsonfilter -s "$reply" -e '@.output' > "$JOB_DIR/health/output" 2>/dev/null || true
-    [ -s "$JOB_DIR/health/output" ] || jsonfilter -s "$reply" -e '@.error' > "$JOB_DIR/health/output" 2>/dev/null || true
-    if [ "$result" = true ] || [ "$result" = 1 ]; then result=ok; else result=fail; fi
-    printf 'result=%s\nstatus=done\nfinished=%s\n' "$result" "$(date +%s)" >> "$JOB_DIR/health/state"
-}
-
-diagnostic_start() {
-    method=$1
-    cat >/dev/null
-    mkdir -p "$JOB_DIR/health" "$RUNTIME_DIR" || { error 'Не удалось подготовить проверку DNS'; return; }
-    exec 9>"$RUNTIME_DIR/health-start.lock" || { error 'Не удалось подготовить проверку DNS'; return; }
-    flock -n 9 || { error 'Проверка DNS уже запускается'; return; }
-    service=dns-manager-health-check
-    reply=$(ubus -t 5 call service list "{\"name\":\"$service\"}" 2>/dev/null) || { error 'Служба задач недоступна'; return; }
-    if printf '%s\n' "$reply" | grep -q '"running"[[:space:]]*:[[:space:]]*true'; then
-        error 'Проверка DNS уже выполняется'; return
-    fi
-    ubus -t 5 call service delete "{\"name\":\"$service\"}" >/dev/null 2>&1 || true
-    printf 'status=running\nstarted=%s\nmode=update\n' "$(date +%s)" > "$JOB_DIR/health/state"
-    [ "$method" != dnscrypt_latencies ] || printf 'name=dnscrypt_catalog\n' >> "$JOB_DIR/health/state"
-    : > "$JOB_DIR/health/output"
-    request="{\"name\":\"$service\",\"instances\":{\"main\":{\"command\":[\"/bin/sh\",\"/usr/lib/dns-manager-luci/backend-dnscrypt.sh\",\"diagnostic_worker\",\"$method\"]}}}"
-    if ! ubus -t 5 call service set "$request" >/dev/null 2>&1; then
-        printf 'result=fail\nstatus=failed\nfinished=%s\n' "$(date +%s)" >> "$JOB_DIR/health/state"
-        error 'Не удалось запустить проверку DNS'; return
-    fi
-    printf '{"ok":true,"job":"health"}\n'
-}
-
-# The regional routes are dnsmasq rules; the encrypted pool remains unchanged.
-regional_worker() {
-    requested=$1
-    refresh=${2:-0}
-    rc=1
-    load_manager_functions || return 1
-    preflight_readonly >/dev/null 2>&1 && init_dirs >/dev/null 2>&1 && load_config >/dev/null 2>&1 && acquire_mutation_lock || return 1
-    old_mode=$(uci -q get dns-manager.global.dnscrypt_regional_mode || :)
-    old_ips=$(uci -q get dns-manager.global.dnscrypt_regional_ips || :)
-    if ! engine_selected || ! "$DNSCRYPT_INIT" running >/dev/null 2>&1; then
-        echo 'DNSCrypt не запущен.'
-    else
-        case "$requested" in 0) mode=doh;; 2) mode=yandex;; 3) mode=isp;; refresh) mode=$old_mode;; *) mode=invalid;; esac
-        ips=''
-        [ "$mode" != isp ] || ips=$(regional_provider_addresses | tr '\n' ' ' | sed 's/ *$//')
-        if [ "$mode" = isp ] && [ -z "$ips" ]; then
-            if [ "$refresh" = 1 ]; then release_mutation_lock; return 0; fi
-            echo 'Провайдер не предоставил DNS-адреса.'
-        elif [ "$mode" = invalid ] || { [ "$refresh" = 1 ] && [ "$mode" != isp ]; }; then
-            [ "$refresh" != 1 ] || rc=0
-        elif [ "$refresh" = 1 ] && [ "$ips" = "$old_ips" ]; then
-            rc=0
-        elif uci -q get dns-manager.global >/dev/null 2>&1 &&
-             uci set "dns-manager.global.dnscrypt_regional_mode=$mode" &&
-             uci set "dns-manager.global.dnscrypt_regional_ips=$ips" && uci commit dns-manager &&
-             sh "$HELPERS/dns-manager-dnscrypt-dnsmasq.sh" 5053; then
-            rc=0
-            echo 'Настройка регионального DNS применена.'
-        else
-            echo 'Не удалось применить региональный DNS. Восстанавливаю предыдущую настройку.'
-            uci set "dns-manager.global.dnscrypt_regional_mode=$old_mode" || :
-            uci set "dns-manager.global.dnscrypt_regional_ips=$old_ips" || :
-            uci commit dns-manager || :
-            sh "$HELPERS/dns-manager-dnscrypt-dnsmasq.sh" 5053 || :
-        fi
-    fi
-    release_mutation_lock
-    [ "$refresh" = 1 ] || /etc/init.d/dns-manager-regional restart >/dev/null 2>&1 || :
-    return "$rc"
-}
-
-regional_job() {
-    enabled=$1
-    printf 'pid=%s\n' "$$" >> "$JOB_DIR/regional/state"
-    token=$(awk '{print $22}' "/proc/$$/stat" 2>/dev/null || :)
-    [ -z "$token" ] || printf 'pid_start=%s\n' "$token" >> "$JOB_DIR/regional/state"
-    exec >> "$JOB_DIR/regional/output" 2>&1 </dev/null
-    if regional_worker "$enabled"; then result=ok; status=done; else result=fail; status=failed; fi
-    printf 'result=%s\nstatus=%s\nfinished=%s\n' "$result" "$status" "$(date +%s)" >> "$JOB_DIR/regional/state"
-}
-
-regional_start() {
-    input=$(cat)
-    enabled=$(printf '%s' "$input" | jsonfilter -e '@.enabled' 2>/dev/null || :)
-    case "$enabled" in 0|2|3) ;; *) error 'Неверный региональный режим'; return;; esac
-    mkdir -p "$JOB_DIR/regional" "$RUNTIME_DIR" || { error 'Не удалось подготовить задачу'; return; }
-    exec 9>"$RUNTIME_DIR/dnscrypt-regional-start.lock" || return 1
-    flock -n 9 || { error 'Настройка уже запускается'; return; }
-    reply=$(ubus -t 5 call service list '{"name":"dns-manager-dnscrypt-regional"}' 2>/dev/null) || { error 'Служба задач недоступна'; return; }
-    if printf '%s' "$reply" | grep -q '"running"[[:space:]]*:[[:space:]]*true'; then error 'Настройка уже применяется'; return; fi
-    ubus -t 5 call service delete '{"name":"dns-manager-dnscrypt-regional"}' >/dev/null 2>&1 || :
-    printf 'status=running\nstarted=%s\nmode=regional\nenabled=%s\n' "$(date +%s)" "$enabled" > "$JOB_DIR/regional/state"
-    : > "$JOB_DIR/regional/output"
-    request="{\"name\":\"dns-manager-dnscrypt-regional\",\"instances\":{\"main\":{\"command\":[\"/bin/sh\",\"/usr/lib/dns-manager-luci/backend-dnscrypt.sh\",\"regional_worker\",\"$enabled\"]}}}"
-    if ! ubus -t 5 call service set "$request" >/dev/null 2>&1; then
-        printf 'result=fail\nstatus=failed\nfinished=%s\n' "$(date +%s)" >> "$JOB_DIR/regional/state"
-        error 'Не удалось запустить изменение'; return
-    fi
-    printf '{"ok":true,"job":"regional"}\n'
-}
-
-# DNSCrypt logs initial resolver RTTs, not a continuous reachability check.
-dnscrypt_pool_latency() {
-    [ "$1" = 1 ] || return 0
-    pids=$(pidof dnscrypt-proxy 2>/dev/null || :)
-    case "$pids" in ''|*[!0-9]*) return 0;; esac
-    logread -l 300 -e dnscrypt-proxy 2>/dev/null | awk -v pid="$pids" '
-        index($0, "dnscrypt-proxy[" pid "]") == 0 { next }
-        /Sorted latencies:/ { for (server in pending) delete pending[server]; collecting=1; next }
-        collecting && /ms manager-[0-9]+$/ {
-            server=$NF; value=$(NF-1); sub(/ms$/, "", value)
-            if (server ~ /^manager-[1-6]$/ && value ~ /^[0-9]+$/) pending[server]=value
-            next
-        }
-        /Server with the lowest initial latency:/ {
-            if (!collecting) {
-                for (server in pending) delete pending[server]
-                for (i=1; i<=NF; i++) if ($i ~ /^manager-[1-6]$/ && $(i+1)=="(rtt:") {
-                    value=$(i+2); sub(/ms\).*/, "", value)
-                    if (value ~ /^[0-9]+$/) pending[$i]=value
-                }
-            }
-            stamp=""
-            months="JanFebMarAprMayJunJulAugSepOctNovDec"
-            month=index(months,$2)
-            if ($1 ~ /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)$/ && month>0 && $3 ~ /^[0-9]+$/ && $4 ~ /^[0-9][0-9]:[0-9][0-9]:[0-9][0-9]$/ && $5 ~ /^[0-9][0-9][0-9][0-9]$/)
-                stamp=sprintf("%02d.%02d.%s,%s",$3,(month+2)/3,$5,$4)
-            for (server in latest) delete latest[server]; for (server in pending) latest[server]=pending[server] " " stamp
-            collecting=0
-        }
-        END { for (server in latest) print server " " latest[server] }
-    '
-}
-
-status_extra() {
-    method=$1
-    input=$(cat)
-    base=$(printf '%s' "$input" | "$LEGACY" call "$method") || { error 'Не удалось получить состояние'; return; }
-    case "$base" in \{*\}) ;; *) error 'Некорректное состояние'; return;; esac
-    . /usr/share/libubox/jshn.sh
-    json_init
-    json_add_string dnscrypt_engine dnscrypt-proxy2
-    force_active=0
-    [ "$(uci -q get firewall.dns_forced 2>/dev/null)" = redirect ] &&
-        [ "$(uci -q get firewall.dns_forced.name 2>/dev/null)" = Force-DNS-DNSCrypt ] && force_active=1
-    json_add_int dnscrypt_forced_dns "$force_active"
-    running=0
-    "$DNSCRYPT_INIT" running >/dev/null 2>&1 && running=1
-    json_add_int dnscrypt_running "$running"
-    json_add_object dnscrypt_server_latency
-    latency_records=$(dnscrypt_pool_latency "$running")
-    while read -r latency_server latency_ms latency_time; do
-        case "$latency_server:$latency_ms" in manager-[1-6]:*[!0-9]*|manager-[1-6]:|*[!A-Za-z0-9:-]*) continue;; manager-[1-6]:*) json_add_int "$latency_server" "$latency_ms";; esac
-    done <<EOF_LATENCY
-$latency_records
-EOF_LATENCY
-    json_close_object
-    json_add_object dnscrypt_server_latency_times
-    while read -r latency_server latency_ms latency_time; do
-        case "$latency_server:$latency_time" in manager-[1-6]:[0-9][0-9].[0-9][0-9].[0-9][0-9][0-9][0-9],[0-9][0-9]:[0-9][0-9]:[0-9][0-9]) json_add_string "$latency_server" "$latency_time";; esac
-    done <<EOF_LATENCY_TIME
-$latency_records
-EOF_LATENCY_TIME
-    json_close_object
-    latency_cache="$RUNTIME_DIR/dnscrypt-catalog-latencies.json"
-    if [ -r "$latency_cache" ] && [ -r "$RUNTIME_DIR/dnscrypt-catalog-checksum" ] && [ -r "$CONFIG_DIR/dns-catalog.conf" ]; then
-        cache_catalog=$(sed -n '1p' "$RUNTIME_DIR/dnscrypt-catalog-checksum")
-        cache_custom=$(sed -n '2p' "$RUNTIME_DIR/dnscrypt-catalog-checksum")
-        current_catalog=$(cksum "$CONFIG_DIR/dns-catalog.conf")
-        current_custom=$(cksum "$CONFIG_DIR/dns-custom-catalog.conf" 2>/dev/null || :)
-        if [ "$cache_catalog" = "$current_catalog" ] && [ "$cache_custom" = "$current_custom" ]; then
-            json_add_string dnscrypt_catalog_results "$(cat "$latency_cache")"
-        fi
-    fi
-    # Monitoring is optional; an unavailable endpoint must not look like zero activity.
-    if [ "$method" = status ] && [ "$running" -eq 1 ] && command -v curl >/dev/null 2>&1; then
-        metrics=$(curl --noproxy '*' --silent --fail --max-time 1 http://127.0.0.1:9100/api/metrics 2>/dev/null || :)
-        if [ -n "$metrics" ]; then
-            queries=$(printf '%s' "$metrics" | jsonfilter -e '@.total_queries' 2>/dev/null || :)
-            cache_enabled=$(printf '%s' "$metrics" | jsonfilter -e '@.cache_stats.enabled' 2>/dev/null || :)
-            capacity=$(printf '%s' "$metrics" | jsonfilter -e '@.cache_stats.capacity' 2>/dev/null || :)
-            entries=$(printf '%s' "$metrics" | jsonfilter -e '@.cache_stats.entries' 2>/dev/null || :)
-            average=$(printf '%s' "$metrics" | jsonfilter -e '@.avg_response_time' 2>/dev/null || :)
-            case "$queries" in ''|*[!0-9]*) queries= ;; esac
-            if [ -n "$queries" ]; then
-                json_add_int dnscrypt_monitoring_available 1
-                case "$capacity:$entries" in *[!0-9:]*|:*|*:) ;; *)
-                    if [ "$cache_enabled" = true ] && [ "$capacity" -gt 0 ] 2>/dev/null; then
-                        json_add_string dnscrypt_cache_entries "$entries"
-                    fi ;;
-                esac
-                case "$average" in ''|*[!0-9.]*) ;; *)
-                    [ "$queries" -eq 0 ] 2>/dev/null || json_add_string dnscrypt_avg_response_ms "$average" ;;
-                esac
-            fi
-        fi
-    fi
-    profile=$(sed -n 's/^profile=//p' "$STATE_FILE" 2>/dev/null | head -n1)
-    valid_profile "$profile" || profile=none
-    json_add_string dnscrypt_profile "$profile"
-    selected=$(sed -n 's/^selected=//p' "$STATE_FILE" 2>/dev/null | head -n1)
-    case "$selected" in *[!A-Za-z0-9_-]*) selected='';; esac
-    json_add_string dnscrypt_selected_server "$selected"
-    json_add_array dnscrypt_available_servers
-    while IFS='|' read -r id url; do
-        case "$id" in ''|*[!A-Za-z0-9_-]*) continue;; esac
-        json_add_string '' "$id"
-    done <<EOF_POOL
-$(dnscrypt_pool_records)
-EOF_POOL
-    json_close_array
-    regional_mode=$(uci -q get dns-manager.global.dnscrypt_regional_mode || :)
-    case "$regional_mode" in yandex|isp) ;; *) regional_mode=doh;; esac
-    json_add_string dnscrypt_regional_mode "$regional_mode"
-    json_add_string dnscrypt_regional_ips "$(uci -q get dns-manager.global.dnscrypt_regional_ips || :)"
-    json_add_object dnscrypt_server_checks
-    if [ "$running" -eq 1 ] && [ -r "$STATE_FILE" ] && [ -r "$RUNTIME_DIR/dnscrypt-server-checks" ]; then
-        while IFS='|' read -r check_id check_url check_ms check_status check_time; do
-            case "$check_id" in ''|*[!A-Za-z0-9_-]*) continue;; esac
-            case "$check_time" in ''|*[!0-9]*) continue;; esac
-            grep -Fqx "server=$check_id|$check_url" "$STATE_FILE" || continue
-            case "$check_status:$check_ms" in OK:*[!0-9]*|OK:) continue;; OK:*) json_add_string "$check_id" "OK:$check_ms";; *) json_add_string "$check_id" fail;; esac
-        done < "$RUNTIME_DIR/dnscrypt-server-checks"
-    fi
-    json_close_object
-    json_add_object dnscrypt_server_check_times
-    if [ "$running" -eq 1 ] && [ -r "$STATE_FILE" ] && [ -r "$RUNTIME_DIR/dnscrypt-server-checks" ]; then
-        while IFS='|' read -r check_id check_url check_ms check_status check_time; do
-            case "$check_id" in ''|*[!A-Za-z0-9_-]*) continue;; esac
-            case "$check_time" in ''|*[!0-9]*) continue;; esac
-            grep -Fqx "server=$check_id|$check_url" "$STATE_FILE" || continue
-            case "$check_status:$check_ms" in OK:*[!0-9]*|OK:) continue;; esac
-            json_add_int "$check_id" "$check_time"
-        done < "$RUNTIME_DIR/dnscrypt-server-checks"
-    fi
-    json_close_object
-    json_add_int dnscrypt_check_now "$(date +%s)"
-    json_add_array dnscrypt_servers
-    if [ -r "$STATE_FILE" ]; then
-        while IFS='|' read -r id url; do
-            case "$id" in server=*) id=${id#server=};; *) continue;; esac
-            case "$id" in ''|*[!A-Za-z0-9_-]*) continue;; esac
-            json_add_string '' "$id"
-        done < "$STATE_FILE"
-    fi
-    json_close_array
-    json_add_object dnscrypt_server_names
-    if [ -r "$STATE_FILE" ]; then
-        while IFS='|' read -r id url; do
-            case "$id" in server=*) id=${id#server=};; available=*) id=${id#available=};; *) continue;; esac
-            case "$id" in ''|*[!A-Za-z0-9_-]*) continue;; esac
-            name=''
-            for catalog in "$CONFIG_DIR/dns-catalog.conf" "$CONFIG_DIR/dns-custom-catalog.conf"; do
-                [ -r "$catalog" ] || continue
-                name=$(awk -F '|' -v id="$id" '$1 == id {print $4; exit}' "$catalog")
-                [ -z "$name" ] || break
-            done
-            case "$id:$name" in cloudflare_clean:) name='Cloudflare';; google_clean:) name='Google Public DNS';; esac
-            json_add_string "$id" "${name:-$id}"
-        done < "$STATE_FILE"
-    fi
-    json_close_object
-    extra=$(json_dump)
-    base=${base%\}}
-    extra=${extra#\{}
-    printf '%s,%s\n' "$base" "$extra"
-}
-
-case "${1:-}" in
-    setting_worker) dnscrypt_setting_worker ;;
-    diagnostic_worker) diagnostic_worker "${2:-}" ;;
-    worker) profile_worker "${2:-}" ;;
-    reset_worker) reset_worker ;;
-    regional_worker) regional_job "${2:-}" ;;
-    refresh_regional) regional_worker refresh 1 ;;
-    list) exec "$LEGACY" list ;;
-    call)
-        case "${2:-}" in
-            set_profile) profile_start ;;
-            set_regional) regional_start ;;
-            reset_dns) reset_start ;;
-            set_setting) dnscrypt_setting_start ;;
-            switch_engine) switch_start ;;
-            dnscrypt_test|dnscrypt_latencies|system_dns_test) diagnostic_start "$2" ;;
-            dnscrypt_log) diagnostic "$2" ;;
-            status|doh_status|network_status|time_status|log) status_extra "$2" ;;
-            runtime|page_meta|catalog|lan_devices|job|job_status|multi|set_ntp|update_check|update_background|uninstall|uninstall_status)
-                exec "$LEGACY" "$@" ;;
-            *) error 'Действие пока недоступно для dnscrypt-proxy2' ;;
-        esac ;;
-    *) exit 1 ;;
-esac
+    base64 -d <<'EOF_DNSCRYPT_ASSET_9' | gzip -dc > "$_dc_stage/backend-dnscrypt.sh"
+H4sIAAAAAAACCu19a28bR5bod/6KcpsxRVl8yXFmQ4be0dhy4oktG5ays7mSQrTYJbKtZjfd1ZSs
+iLxwnL1YLBIk2MEC99PcxQL79QKOJ57JjCfOX2j+o8WpV1d1V/Mh23ksVoOJ2d31PHXq1HnXxQu1
+A9evkX7hItp8NMShO8B+ZHvo/r3r6MDuHmHfQYdBiKI+RsT1ex6uDMOgiwlBN7a2r4enwwhhv+f6
+uFq4iO7gqB84BEV9O0Ikcj0POXgIbQQ+cn3HPXadke2hfhQNScXxCTT26BS5Polsv4sJskNcuIhC
+/AB3I+ygkR+5HnR+ivr2MUa2z3ur2Cd2iJE7GHqYDjlyA79auL35/sb1j9vFsxtb2507G1sb72/e
+77CXnd9sXP9wc+tGs1IbkbDmuQc1GMDA9u0eDiveqOvW+IyrpD8p8Nqptvi/vBGAndLIpPDB5u17
+m/e3U5UAUvc/vrfT4Z9nDcHxSRegOilcv7t189b7nRu37uc1l5RoVmo46qqt1bqBf+j2JoXf3v3N
+rDb452aldmyHtXDkZ4f0IDggk8L9j7Z2bt3ZnNWWUmRGe5PC9s7Gzmbn5q3bm22rmExCzh2w4tD1
+cJVEdoStwubW+7e2eIWcrpUizYqxTYY3k8L25v1/uHV9s60OK91x4f7m9uZOZ2bREBMcFbZ/d2vn
++gfGkhxRyYkbdfsFOdJbW7d28mYB3/hSur4bVR0NJI9OJ4UPbtwztSBe65VT22xSGA1scoTqv/pV
+oYDDMAhXyugMDUPXjw5R6cwKjqzmoe0RvGbRz1bTeotYkz2/hKxiw2qhSeHY9lynw8G0UkYrBdS1
+CabfkesX0MHp0CZk3PWw7Y8J7o5CNzodD0P32O6ejm3nwAu6R+NDe+B6p2Pb88aOTwjujh18aI+8
+qIxCHI1CH9VbrQIiODzGYXO1jFynXTxrXOQvJi3Rq+tAt6hUGq/uXtio/C+78mm98m6nsr8qW2q0
+WggTuwsNDoPAY80R2h59Vlsjorm11fHq2nh1Df5VW14zNQ0jjVDlsIVu3dxur7XYYwVBgy20i6zi
+RQtVPIzeQftoPE6qI4Kx314rUBrrOsgJxFDgAx3LqrVWdJ01yzAhVpuVpWVayAl8DBM1jLFcuIg2
+0MD2R7bnnSKCPUZjGUzRYEQi1A0GGB2GwYAS/O4oDLEfUaitIR9DMfoRTgfXH46iakEgaAcKdULc
+DUKHAF4VEEJoF1VCZBWTDW/pAKCF3EPUC/EQVR6i0if2se169oGH2yW9YguG5COCHVTxUYnUlKK1
+2jBVmjaMPYLVCmymhtItdOgWJgW2YzsCMnR38Bko9AWmcOkSXdWVrh2lP65fqzn4uOaPPK9soTbS
+d/A62odt1HeGHbsbucdYdPIIWUWxi3kPZ9or7MNUHZQ0j9avXWoANNVi4cj3Xb+XLtZCE+jXC2yn
+wwlU53Dkd+HYTJbLC7q2h8R3Enbp28GR44aoMkRWUaHwVmYdlXrt4srgKMKDVJ2EnPGy1X+kf1bZ
+hBQX6NqVap/wLXHWaFYmsCeKtbWiA0vIyZ+FriGrqHRPx3YBVVNvGQrR5uEvHKDKYapI8lEdzKFb
+yK0wKTgugaXpeLhnd087J3bU7TtBT0IVhsFPfu0wFAUr3WAwCPwq6Wdh6vhErheJgqFs3QQwQMmz
+323sXP/gxt33O5tbG7+5vXmjWalPLHShjeps6+mFNj7auXt/897tjeubasEUpNJttuvZT0pLymdi
+H+MOY0UyI6Z7TtIPgun/I9dPIEdpTJtuszJ94dsD3C6uiCPrLQJYQEtZaIweEOjIi3CIKhiVfl2F
+4iVtRzK6wLbSEg3xGoa2OG5CT5Rci/UZHwZhF48PwuCE4LDj+KSMWi2gy/RoRaX4/0+fxE9R/H38
+dPrZ9Mn0cfwy/kv8V3j1Q/yS/fg+fh5/G7+k3z+Pf4CyKP42fjH9WnLfpRYHqjyKkkHxUdNx1ceN
+9AD+ED+Pn8XPp4/j7+OX8XMU/5kO5p/j5/H38XfwIj2274y9mYkKUDD6ha/+pUvI7j4cuSHuDEaM
+X+8ALwBocaaOCU0/j7+Nn8Yv6MS/RPEP08fxd/Hf2LCmT+BVamDTzwEeyeDQhO3XLsdEvjfYIrWR
+sigZVAc0VL53+q4fqaA0kF8gd3/PD5xUTxQJMn1oOM+KLN4DwbIdgWsdezj0TjtR0Ot5izcliBr2
+sE1Si8IPb6sItLSCHwri8YYWSmdBo3CEgeksTAqFi2gHJE9GF9BJEB7hELmEnzUOOjhFII86yPYd
+REbhsXuMCWVegEfpBr6Pu0w0VIEOjXVYY5LWiDEMXaf9FmE8b9FC1+Bo4UJSjVetcbkEqkXBEfbb
+xRX75AiVzmgjqLi+PikhqwYjqxWLtLjGGAAom2XBIX2KrCJthjNHykg6JLLDSI6Hl5o3JhNNRe8Z
+6nCCZ2ouGEX0G+CNdviZ28gwcrCSu7tNMrS7uLm/v9pUH2CFS/mdclYvxGTkRe3gqIVgciPSptwt
+3dYtxtzxIoe268lC8IAdWqzRElguYMorAEB5cfh56Pou6eNk4VkxC/hwWgp+rTh2hNHlt0h5/gqI
+7vb8TufG3a3NTgfJprs51fnkU2ciRVWKBb/QU7GpHUOCZDXrY/mzwc7KZp3/21BPzWZde5p5iD2d
+fm04T41nlsLTptbBMrC5c8he/DL+Nv5j/HL6JH4ZPxOk78/xUyg3/efp5xmChx/hLnr3ms4c8wFU
+6GpXgQyfv/NvoASc2BQOz4DyZgZxSI/fio/e1bv5t+nj6efxH3PACSP4E+MWnsY/TD+ffgZv4+fT
+J9PPpl9nOgGZy+1isw6Fz5ifQ0PvtF1cGR2MCKpE6Crq2p4n6iPPJRGyzvYswKk9q7kHYi/9tGdN
+dKlLn81/xC/oiL8B3kmuiZG3ygzePUT6XqCDhL2Q0DkucM0hdpykLQli5UCdfm0AMSduOSBzsIcj
+PANoBvagyRqUeiKVmGnk4Fr+cTIPZ6efxS+n/2f6OH6a8AkMmR5DicwqNGcdUNoIOUnnS0JJfBhx
+sj4IHNzmlfd8SjLhtaB6gjyrVF7wcSpHNZvuh/jhCJOonQPztT1Lqrr3rObZnjWwXZ/9AiHQ9p09
+q7m7Z3GtPK0xV10t91OV19A5nD1rfzKZWIlUnYMuoLMCDKczsLIKBKPsPIMbMBy7cDTLg5ed04bD
+d5mDlhLTGeRREqnpk1yWVCKcyhZnWdI160FwYDUFdK2ERf0Q4yHlOW9vbKEQO26IuxGcdraPghMf
+O+ij67cQYZwoIgE6dEN8ArAPMYhIBPq3XR+5kc6nMuEgpZ4RiiChnYMeQuTZfscd6gc5Y9x4OSCt
+XRdoVg9HcgRVkHFoL47ClNIm51agjESWleX9WUJi2FXftRP4SC0a7Q0+3YRmKze2tivStgTasozi
+gHckhtft234PEznEco6ScVfdyG3UyMhlIT4MMel3QjA7DXCnaw/tA9dzIxcToyyldkAZbxzhbtQh
+EebS49CO+gvVBNUswd3AdxIAnQQjzwGV7BDI+Ikb9dE2tFwisEAU2W5sbaN+EBxVZUNUvbO9s8nM
+Cp2N6zu3/iFR7TQMkKGYRbFHX3EfR0BAqp7tV92h7TghGjONHKnUqqvFSqVUlg1who+1o6jk65V3
+q0aFOf/j/fGjKg8rteLEjI1tCbdLlxYpT7G3bUC5BauDltOz/SWKd5xhEEbtq1cWrePAUZLTh5VX
+ga6jWIclOurMGFzJVGkYBlHQjrpDNHKGpUW7iuywh6P2ja2NnQwmcvVJxdeoSGqTLoQxqWYVnYkw
+L6m0HpqE49dNhgy0STWlpSh2YVJ4EBx0TkI3wpoR7S0ij7EGMA7rqSOMW874EQYcjk1PhXM0xSoq
+LRWYqXGetMhXYHExj1XoMOtIKa3HgKNRE/pYcUoDUgbIccoWMkOWm34R/wWoWyX+FoSa+E8gzRgl
+OWE7MSjYNQssVa+nlFj/GT+N/xK/ACkKen0e/zV+Mf1KaECBN39Jee7P6X+fxM+mnwMXnuFQDdIk
+6/unEya1uf/kIuW/m+DLul5CllxeRNTN829QUuS4z+VD10d7Z6t7ExOC/zV+OX3MgDF9whGdghow
+/wkIR3wU0y+UURhRXxNPheLqlQTUDE89b+GeTb+g+PLCKKFqRHYJIdWwbAYmCsZdEMzT0O4e2T3M
+XIk8j6qy0cA+RZF9hJEX+D0MXky2j2zkB+HA9hAjoFWqYX4QHPCmQmw7whzuBxGKcDhwfZBIbOS5
+x1j2xKkMuDYB789aQ8A4BmAYX0ouHQ1B5uFiKSfjbAcbRKIMlVEFoqbpuyorm0XUNMRfs6QqCP9M
+8kzb4MfHGxFaX680moX9OYTRH8z7a0mRlB82QiLlTEbawtELbE8IhZofD7KK8I0eDfiRG3G+SXI4
+aOg61BryahaPhFMwGD20zhgLI0skp9y1a1lWKmOpoPiS8uXIwQS2yKX499Mv4m+YRgrF33Ll3EsD
+C1ItyTaSETN8QswKkbxmmIWEPSL5IHBMx64EhZIl4CufY2HVlwvsHcmxgA89t9ePOkDOAt87zRDQ
+S5cQ8LYdxw2J4aMYjWrCNTRhNOmmgL3AehjWJA15FH8X/1kYF+MXcM6ALfwl4kZr2GdPdRsk5+KU
+NZtt8HzjK5taXWWFOZwSv6D5AEo70cbPp/8y/VdEsfgbylFQTgrg9iL+DgHHxojM9F8By5+h+Gn8
+jLJ4Kvf1/JcCrRCTKAhxZ4hD4pII+1EnAjGWDYLMZBjOo+zRKjM5NcyRO7J+rH3m0qVObYn6FWrf
+Z60Y8KK6xDDOVTHpP4Ua1NmvXSox2yvuRINhu6Tjj3uoSkeJYy7oJmQLireY4rpbzUxAeovpoKR2
+JjmAeY3RkrIpAzxNB8S/c6Hn+fTx9OvpV1TxBptKs9BMv0LciPFPlER9mdpLHB4rmZeKgpIdxG3E
+/WGNC67+KepioKyKa+5Zbh3DBLteMHIOPTvEHea6S6lLs1ZLPgBaVLvBgKLKwxEOT0uo1AuCnpeu
+AwXZB6Vs7mgmxi+a0ib9x6UtBivXF269hRnQWMn10T2DZrgnMHPE7fYDgn3kBAU0Cr12cYUJDO6n
+uDMKPUqtfMJ/srJWOe3CyIc4Cr1EE9Ks1VaFSJhRiKYqrJbGJep6vNvshfawD4KaoVayjGPBsPIR
+8bYK1CW4gKBfxaF6Jm6wFtocMsLnemaV86KhVld1IUZjBAxm5SYqjUuocgwe4MncSsUGarfBY5ox
+oC10GIx8Bxw+4MSYoM2tG+gM9toF+qHMD5JJaeZoJhRIOX+a3lr9Uw4l9U/1z9+62/no3o2Nnc12
+A23fur25tdPZuHfv9sftRjJ75sQleHeAhUTxq/WrV5BV/M3duzvbO/c37oFq38p0WqaiH4efNYNu
+MFrJe2rTPgqLbDNOk8YCi8bCnV5v0Kc+6PnwcsFwqMU8CO9mA10Xf4leVHQj8F3r3Mpfv8x0kugC
+Kadz7lS2re8A8K/PwVVmF6l9UlOc0kuzgMCdDXkt4Zle0hZwQhdUnmzWDPB0+4PAQfV36vV0DTQ4
+ZqZa5a3BsT53kNKJcikKnT4/TeKwZEiFMGzgRwX3avIZ0I9aFP+eNvwZZXy/h8agZvwsfjr9CsnX
+oE17LBVvN7a2q/kkwT1EpD+PR3J8MrDJQ8qdcZ6U7tc5YFWN6Om4hby/zK4Bj/C5vOpCLXEf9qUb
+m4kEiyICVyByFeuXwEY909Yy0UKfax1zCLThdeqVcXaLziirQp/+E7M3gGZXRd60hJoaBdeWCLrA
+Tbgcd8RbUw1lx2t1kveF3JmmZ/mfOUNPwkCztpLpV9MnytQ04S1PquSF/OCkrQiFqgkfHCiVIIWs
+/AkOoxnpk3FBIihoWZmVj8oouvrBidBQuREbn6qEm2ONS+lFdIvEwmqpjD2C6foWNvHxwc4w7uUq
+DM9yzXc6gV7EaCYO8R/DagYY186JThJyr2I20y1tP6ElTYXpm7efzTKcZXTe5zGgFRIR8L+tDc24
+ZLN9O89tOVvQZLawZYpvhT0/zXbrjpKMHOR7OhhsUyn9/Szj1BuySuX5Twq/STBHwcTeiDHqzZkP
+lrNAKTQydbQvaYQSxFtYoWiAfNoGpXq7/BhmpXR/JsuSajgxW1qyBo30sX3p0mu0ubwmu0uy5YyH
+HF2fqhf0rLTC1jC5C4ppAp5zYl5NitlcCQrDpqk4OLK5d861BcZqgtXsbuYJaot3myPSsRg1wRq5
+BPmBcDjgAAt8oNesfyjAu3fWDG3hY+zDIjAIQ+RWxFp/dCoJDdAEguzDCIcnduhUTVpmg3CZoz/I
+BZ0w0LNeCYXcw5GLCZuNFtb+qkDMuvYpI6n2vODA9qQOvxPinhv4tteBM0p3EX3FBt0hyW/PPVR9
+BZX2RMQajUzLETdTaT0klEXXFCuAOOWGZcyQEVOPs612vDD/xyxWZUzlemwmMngiqgd5htYrspn2
+3iSe5fSdSk2So1NaVm/Q4qceN+58OX0CzX7G2NX45fRr4fEkmUow/Hx0/VbVehVAsNPeBAp24Ksr
+pJWacfrrAig7f3XxE/JVJOj1JgVQg3THpvHTuUTqFOkn94n8fQZVX/xofpFafqP/cYtcWqRbZO3e
+jGtkduVei5jH9iZ3QGSUw/HJbOdDzQHdIOAZqKFZvkvN6UeS8lT55I1IeOch+62Fif05RL1n+Vi7
+pKzHSbkQ9SQb1bUj2wt6HeLbQ9IPImZ4X9SDbRgGB5i6kzhuKBxJqGvBaCibpoU0u3ISNEK/SScZ
+dAQJCOXbdP6FFjqx6XmZ+11hqrho6bihoksPD/mrdBjU2c6deywLHs1XhGrRYAiIOeiFVbDii7q8
+mKVSL0Y4o9AemqeONv/x1k5SpsTgV0IffHQP3draQTub9+8U0hKkDmfuegQG6usbOxu3777PJ6WU
+4RsNLO86q2+iN0o9WDnpgVNxUkIBn0mFzkRL/qR2zafbt0kfVOVHZDRIDZcHnIxIFAzS5a5/tL1z
+905Hm5059wZzMAD/gtLWTXStja6CaFtsoAv/G9U+uVjjT/Cwq+aWu1xkn67ST8y1Y6+2V6uhsx4Z
+HazUdvfCPX+/toYsZK2h4tvlFuIKjQayxhbUpP+8DdoNfR2uMZSqkWAUdrFV0L3NTHNLM+w/k1mZ
+hnrNNDu+y6IgoiaLky6qeDRbiVIQwZkG6FRCpbJMTkOrWKjSi0R+Go2YMOJFT7Q0gaLqzF6ICemw
+fuEglK9AGGnXlRfBkfYIpBpelJIxaJ7hfWx7UT97MMKEuHsiex0cHhIcgdcKGXUhqWqnG4z8iAqR
+9DgQz7T0SR/0CzRiltZjKQXlEPZb1GNJHA0+ZPJYYSXRZXS1XC6obgeUXp6xz5O14hn2nQn1DFCh
+LgbdC4ORYiwEkBKuquOYRn1ttu5fa0hnCmsNWS358Bax1tBK8QoEoVoW+ntUvIKaqNgoU1xJ+ihn
+ZL9h3yaJ1pl2PRfcOshJZA+G4E+RvHId/Zlat5K6DNLgJwaTA3UebD/XAXcwOnsN1Nylhroe5quh
+AhqFNRhSLQr380oz3d3Aj1x/NMsSy1JeXlMnMrM07VPdeQwYM+vQsV3LgQ1sDrk9U4jBsDW9h2lW
+zcwGVlQPtJrcxwYF0UV018cIjpQgtEOW8gkTssaCom3QlUWu342QFwRD4PcQBLOuIXAIJsiO0CAg
+ESLuI+7zQ3SNGY18La6svP1u4+o6uoxWikV0mW/OMnoLNdbr9Xq5nFK4hCTqMPdAkWKyMSxpMNNr
+zNdQssOaIwgMCv6VHVkZDzCJvgc2wenoDek4levAwGDRoVsKtdFu1oHCB9KUkB1fUBy+YJTiyC/4
+oQgvFx2soVJCAUpium+REk2tYbUQ6PtXfHQZNcrlVqIDMg12H1jNnI8WcAtU+dqmpu49f0Rwh5wS
+L+hBEjbQG+35grgx3iOj91YIY2l9rfbJ3i4QFLe7V62dIe3RaaFhC0nCRYE/C3RARyQRofuPwk0M
+njdcTeCzTwW0wVBOh8FL7mYT4JIT07DBJxJT2OSjYOBZBjvBDPCkmECOq9lWUcXHEX2u8FA4dFVt
+G/atqshPESIQAIoXtJdR6GKS8kFjgKX8faVuZuF5cglaG/A2QlfqqTNS/EmlwDZLhUupCmjdveAE
+k4jabFzbQ54dYb972ixlQAW9HYTYPsqilAfJQUA0pNMorqzQH2zpdAin0f9VxRchTqXNO2y6mw9d
+VIKsDpDL3fYAPyEROxoRPB5CzCMhEM/oYN/FzpixIygKqDYJ+wYQZJdYJD2iRKllcGsi2Vb2c8gY
+pMEAdYgDzNHrWbCkSb0raoHMLGRtb1fs0N1G5Z39vX1090NUXQ2jqIl265V39y8PSC3H3fkwCFfc
+dqPlvtfeutlyL18uI/dwpehSVjvTcLE2y22a+4oW3RYSfPnu3j7ly601/jXfvxtG8qDtXm60Hry3
+dbP1QAzlQbttwVSsMjo7bhdXHlxulIEtPVipDUh1lbd+XG5B6WMmPdBJw2CPbW+EyS7re799bPYV
+z77NvqltB6CY4ivnYtKsobNu4IFy2vV7QFR9/CjKVkzK0NQNA5EikgO1WGPT2rpZUeZVXGhaxa2b
+++3jvI5rC+JgHmpQJ/Vk9OXZuJKeFAhsK+7lRrndtlbU9XMvryfz3CsvuIJFN3f1lEWoL7CQ1AEf
+pnIERIU1z2UDdLQm+jvanxj2pjguJBLoR1He0eo6RurOF0DIK8eItC0BxiKLJWi3CZIuBzyEoJQZ
+RHZTyaw3tAeWAN/wJ1PhQAiH5Hk58dFSEanxHJWGgd8X4mNKQCyurKjPgjE4dHPiGRSfdyVyBHpS
+ZmPoVBdTiysr2gvebbZLoxe8ysNkDkJNeDB5kEIhMQzsOyzLfvIyLRvDqaJWoe+zsqamAdB0AsGR
+/kx1AAJwar9WUYMJZeGVpVlIduV6geLKCtydkkBIsggUgxQ1GSCRZVaVpRLS72d0gZBrR+rRUg0t
+pEvLNlpFVB1P+naIQSk/Ogge1R6QPuQ4Z460JPA7QCELM8VtjoqUXaZVbMfpsITMOq6meGBNyQIx
+gTmGQKGOlHu8KryRaG/OaDCkxIi6UJvVS4ACMvJKW5EUXHP9I8Qgun1Mwc4GIKI2eLzGgsOHYVuF
+cqHguHbPD0jkdqWqfEAv55FZ4bKWYE6ZWDmaLoyckggPaCYzEKUzsvkbsh3zbb4kFqWGP3/0zDAF
+4X3EC4Kj0RBVotMhbm8gIbq0r6BKiKPwtN1AwRD7J2FUDcIeaqz/qlqv1qsNKsSUW0pW7ZRHBc+d
+zak779GK/yP+jtphnsd/SzwRDKHbEBPxOP4b2HWmX8JTtVCUSZLljjgIArAUoOBIYZppMq0LyB2i
+ytsoDEYRplnd/q5K/2fyKWOF31EKr79Tf6f59q/qdfafZqPRaMwxeimALcX/L/5T/B01S/GE8syM
+nsmy9Few7z4HQ1W1NH9eBM8DJNimFesxuDPOA1zityOTuCeYJNXHcqdlkAk8tvKsYLNA9H/jp+AE
+PH08/UINpYi/US100y8Wg4u5i9yQm+nnSezVnw3jyOu0nj6QZ4HsNWy9CktNB756r2EX6ko5RiPe
+GClQJmvJ5V0B8IMXEvU/LDcFahaEi6BSgH7WRmnl5I6YP9nRkEQhtgcpBp7ePRThATDqWgbIktPv
+Dqu/5qPare9XmYRXKhsZbRgAtEOPjpIEzEWYZInxCHIEjdmqDz4dUVzkrszxHZQOvCaoC9jGv5ce
+mIw8qHlgn7OrNXg2nuln0y/iF+IKjqdIn0rVyvO8y1kPH1PzlKSwvzByrAWALoByZjrFE/bPI70K
+DZN70gOWG3jCtNcptz+jyHY90Nv+XT0RJPKJpYjlEgVIFILWgHWHBL6k2EDwcoBUv9eBSUPY7vYR
+04COQuyAsW0YAF/q+uy+Q+xH3ilVCYAClCaoFZ684oImCCBWsv1S7o9GFS/nM0GdACrUKUA3/zPv
+gKyrgXQMZl0SGgdYyvMqWNCjQPUWMDusf7Cx3blx6/32KaYzEI8+IyPKWPJ4dUZ6OJdcLap2VXUm
+qYGZRYsO9qPwtOM64tco9DSSxgV7WU6JF2+vlpP67eKZ/M3DxNsT5twmbHnpIHBj08b76xZrITfD
+RF51sf4cI2pRVRmMLLWCeI6LVE7Skt4zvVcMSoIVKb+o6yQlu3aUKShWmRaiaXxAoob7eTRIlWf7
+RvNNxNO7qfZpkT9CaYuqfVwa3LB181r7qlQAvc2dGVpSDWSEVPbSC3Vt1JEk+TxSWpexontRGtaX
+NtOYISWdeQNwJ0vxWyKBFJXTcedcI6+1lhbthVyqFVpky6Z3ZoYy6WJrOnBIl14N3sVMk2ItfJdP
+VvPyZiKQlrvNJzsq4dybgEbhs99LoeA8Nhyw3RDdY7qmMSfh/wILnb3nKjncWJIcmJHu1M8P3Ryv
+fsVBX/rz04dnaYnF4hle5OVWnBSoEc8kcQhm0c/BkeEKm9k16HB153++dEk6wgyOqJsspxbLhTir
+a6peOVfPgmHjdKRNvySXAibvE3W0cgVT9r6luVcrAaGZeblSbm5NfRtMNMKgRzTM1Wrlk4rXFYig
+YmfeDWfGgAQ2jtcSiLDIGGaGlIu68VOminrlS3745OjW/2Vc8PMGo79zoPtmQgTmXPGzfHCAyE48
+Kxgge3CldMkmHZp6Pub4aZYWc600k8Kf0Z08Gc6GhZczAP0Csh2bDVXLZjueQaUWCzzgpFu/HjKJ
+oARVCUF2mETbhiMPs/hthH26ItihsjcKMSw0QSOfXSDjVAsyCjTFfHKIJ3fq8OSh7eLZOtytooeR
+58vt2rUUrx4vfq4g8cw4As+hYbT67S/LRd+WZUvukJyjIRF1W85N4MxudM7krcq97lqnxd1+QDMK
+c/X69+rR9i+g+OJpijQFlAxe44vP7tEtIwosJ+i3WmidP53avoMftVroCn/hkmGrJdCEvysKSDPB
+jJXzqatoWkYHKCqOW5SUBg6mhNQlQ0Y5GaglDIdhcOw6OOxwpy5QtIDTbYkmcEKlJEsdWi3Walk3
+XNaD6ICJBSDNuENiTjwrGUo6yzTnaIhAbsnrVzLeYGyJ5GkJyaa+BTrBF+sHGhrIj3Oa2+27+AWz
+JD4F4yIobeOnSrKpxCQhZsUgrd5KpQ9ceAzqgGYaifTMtdrKvUqqqlSOwNwNhSoY2/muMYM42+LM
+rTUnqYRyfdDC+7vNAfJqLVFcpbO8dCknhj7Tw3IpHXJy7mXSF3JE+0P20kXAsD/G38UvafZAbnAF
+VpvZFNOZxXVsSxnfZC+L3JJs6lmmtZud11BsjOkX8bdAyyDpmuGKu1SCufNggSBeVjYfwTlQQSK9
+sTEDcmTKLY8deht6EoQ5t2DrO3g8fg3JHDglVML1OXweBAeS8Uhd5beIXku087O6pNo0KH6hg6mU
+eqWDouMSzEGKTVOu9Ztzc/TcO6N/hNui06BQl35ursDXcUOzsq6cw1EvaK6P18dX5l3MlUuw6Acw
+Mv5t0VuXxdx/Fmkh2FDSChmNW85TovzhFe9JXkQ7UjqjAqzVtIz0ToJyUvql3Yf8hzd7BfISgMul
+1wtrS0Rr8+4WNt4pbCKUTTSLSObrOGbO9UdMs6ARa6b24HP/Beg9TAtyDs1HcnfN+RIuJCgqNR9S
+nPWCHpHhBiEmgQfxCPd3dsgavcHMFqbgYASpx+xun110coqoclZxQqBJzblPrTyGdtkFlOnLYxlX
+PXTp9R1D1wkOs94ZM86cIY0KVe+JVe43qKuHhnT/8NCVet3oBaL0g7iT/5Dae1kvCfML/hmPVor1
+NcqrKo3sWiwb4b5VhosF6uiMhnsogQ3GyBTqO7XCzF/0IgrsOzSIgxMe/iwiY1ooG8qidDEjhoUH
+aqRiSEQo0NbNFouoyI9wga/ltPQuRp4TWUIrpQJFUjNq0zJ6eAZ+FBWygSHnjZPJxMdkw2iWWwRz
+dYi4QSzkBvGYG7RU0I0xzkIsSm40TnZZ1HnPWgAaqpMBfjYYZ2KIU7d0F7ZB4Ed90rZ+a/s38cEd
+O9wYhnfs09+O/N+OvI1RbxsP73ajreD4Bu4aarbZrmKtrBXXs2jG002s3An88c4Ij3+HnfFOfzS+
+GbrjbTsab4/8MoMrbeRanYL4ijZz+urt5BX9T9P4U0tkkbxWC2RhziBDGAlesd6qrztV9h+yBtkL
+ilfW2BQvr5drV9aKV9eKb5cLM9AQEJpEEgvZY0IJ8pBWL9dOIS/k3mBDLcwNzkpWngZj5Y2PiYP8
+PTSvj4A3Qw8ddop28KMotHMssBmhBcKj8yUWq3h78/2N6x9b7MCXFqPyYvy/6sKczdmXl46Mhcsv
+kY0MPERntq8cV0tGLaTdEOVZzPTf6TybBY5oXcyTsfL1hkNa1bqb7sXWA4HayUXz2tVkC7REr07P
+NGe4Sp0qO7XRNvRJA+bJGbPGudeXWovzuIzj5hNe1BJArxnjNWd1LqpbRSHA6IWDgwcAKuWeI5o8
+gZ9aBSXQsJPcamZkrJQuyoqPovBNFK3wDSkeB0T+BI90k7eiXrNZTKpSZNdOsabgucb6a80NsZl2
+Q0w1UU4HZekjUAK0YAxZF7T3Nu/e7Nze2Nncuv5xoZgCX0H9KJei6wUE88VYZoEo0MiPAm4obwB4
+cvpUjT+T/6zNO9/KGaoxC/R0PLOB3wFlyMwVYCXyl0FU7drdPm4vGa+m57jSmrKkJSpcOH5Oq6Jc
+AQgiKy9cBaNp1uJCuxS+B5nELov1Xk63RoMAlcbWz9fYKAzhjstkcDJGc8YMDfXFcPKq0+8pOJkl
+OTWDjwo4ZtZKDdhKLF8qXFJl+TuTJSz3oBTRVuLiT4syHxlEKls5qv+L6E7gu1FAW3UJCoYRFbVb
+yPbRyJcXeiVe/vJucIgVQp57hNGnOAxYtm83Oq3mxCOyRI8SDuIUkKlzWE4K4UjfhWRTs1UdAxyF
+bhdOGlq4UvEDJhKXVkuoUiGuh3245PCQBkhUBvYjGs6EGtRbvFmryciW5ruNer1mD90ab3PemtP8
+YbysecHg2keW8kTn/WQlg76ahmV3eM3SjDEk+ytPKT6rG1YT1oPMU5EnnQ3trhudnrsf0cC8jsD1
+e1mw6fOJFgGefYxDu4eX6sY+prtsGPgE02NlPtDoScnXM6vuESiCTDflJWgm6+cFgJlZuoHc1p1k
+EzfykjiI9WkWOQSZ2z4da3N/ddxcHa82uaww6wJXDSsVL1tJ/Fg3SdpCBYRz7oybQQJZnyy1kCVn
+kHPtGVo0RQMHDccVff2q+6uzoLGrrhuPD0tjS+58NEQbEHUIiww9G5In9av8ykt5GJPaJ+JlrUYP
+ZtUJXtcs9inL6DfMF2LJu6uocTS5CXO2lJetzx1q+UWU2kjl2yWHypdRVBeInQo3kq2XtIsrc4cu
+ygvWWelAr2iHoX2qLi7fi7wiKcxLuWjivs8TOJWeSoknPUlzxffu3r1dSEtvnCkuF2SJFDdMp8mt
+MZrnxKu61Uk/NOUznTzzOhu7ZJjcKqz2zHzU5q+k3nG6pwXrgguf9Qqef4vJ24wz1sIZDFyUKZ5l
+nhiRClZKHzVm/GSBLa7DfwATxn4NCP/BmT72kBEl1fOHN7U8WmcakRKodtjOqs7MtzcfPkKWsCmI
+8YyLcm6pi2NzM5Zqg2EAaBYFXOjA7n6YKCDuftjUBgffTBJuAiDr7odKewzzZ5Wnrh6pWcsguEUD
+mtSw4aW1EMm6/A/u/nfG3czgUgoyBYfV+b5prNTYYtavH5wYLhXIO7PVkzrR1MyKF1z4PM+e6Umc
+NQ2wXjiy+hW5g7kcwszY2exCJPzAPOpAM/D+DGCb3F2ufE9evnnw0xigVMJSsFpxFQ+0OUejt5A+
+Kyd7CYW7oq7KIxFypCLCHKkh5jy2HLwIXCcJKleyCoouyqYxfMqTnPMBZJPKZnKlSJg3eUXXR10v
+GDmHnh3iDr1EolnmsL0uPwCT3wuCnpcu8j59ie6NDjy3y0J0FtgpIiPbGTTSrBRdZ3KuXaOQL2pm
+5LG7NAmHalA8g3/e2ptM1KJn9N+Le2eTVI62NeHnw0x/VpEWpM6X4sqOBr+sg8tfERhTuc9SWd2x
+6gchjWaCu8rZV9DHOu2DVxIlxUXROcXUa2rK2lNSQvOwUqSAB8GBoT3qyyw58HLGnZaXQA1RBZwP
+y8x5MrHXUo9EXgBst5kcCLzbVE5MGD6fcTJ15iqdEu2hpGGQxrLyxiIBodwW+QIaltRc5cSNun1u
+jC2LR2NRLdR+nA13HKfy0Wk4Iq4lXbdym/WCnlrFWJgxLGMn6HPeZezjCJZVPAK7IX7TBlWTvrHJ
+cORDpfHQ7uHOAEf2mNOvsWf7HXaJJxk/CA7g/6LpwciL3DHA24+GYxY/yhgP8QDugnB7gO+MRz71
+Q/S85BdvJ0shU0hoFX+dGbBiyv+3+Hn8F3YbfZLwiKd1Snu7vkTxt/RC+5TFvaS2D2RQPMvcGvCC
+0sf/Ascsj8hOuQAA
 EOF_DNSCRYPT_ASSET_9
     cat > "$_dc_stage/dns-manager-device-detach.sh" <<'EOF_DNSCRYPT_ASSET_10'
 #!/bin/sh
@@ -2606,7 +1956,7 @@ DM_SOURCE_BASE="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/$_d
 COMPANION_URL="$DM_SOURCE_BASE/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.108"
+SELF_VERSION="2.109"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
