@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager full installer and LuCI companion
-# Version: 2.106
+# Version: 2.107
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.106"
+VERSION="2.107"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -2601,7 +2601,7 @@ if [ "$(uci -q get dns-manager.global.active_engine 2>/dev/null)" = dnscrypt-pro
 fi
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.106"
+SELF_VERSION="2.107"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -8888,6 +8888,7 @@ function applyStatusToCurrentRoot(st,route){
   if(!rootAlive(root))return;
   state.statusError='';
   state.statusFromCache=false;
+  var loading=root.querySelector&&root.querySelector('#dm-initial-loading');if(loading)loading.remove();
   window.dmState=st||{};
   render(root,st||{});
 }
@@ -8905,18 +8906,21 @@ function refresh(root,keepPosition){
     render(root,window.dmState||{});
   });
 }
-function scheduleBackgroundStatus(root){
+function scheduleBackgroundStatus(root,initial){
   var route=currentRoute();
   if(window.dmStatusRefreshTimer)window.clearTimeout(window.dmStatusRefreshTimer);
   window.dmStatusRefreshTimer=window.setTimeout(function(){
     window.dmStatusRefreshTimer=null;
     if(!rootAlive(root)||window.dmCurrentRoot!==root||currentRoute()!==route)return;
     ensureStatusPromise(route).then(function(st){
-      if(window.dmCurrentRoot===root&&!state.busy&&!state.jobRunning&&!state.catalogLoading&&!(root.contains(document.activeElement)&&/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName)))applyStatusToCurrentRoot(st,route);
+      if(window.dmCurrentRoot===root&&!state.busy&&!state.jobRunning&&!state.catalogLoading&&!(root.contains(document.activeElement)&&/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName))){applyStatusToCurrentRoot(st,route);if(initial)scheduleRouteWarmup(root);}
     }).catch(function(err){
       if(!rootAlive(root)||window.dmCurrentRoot!==root||currentRoute()!==route)return;
-      state.statusError=withRpcError('Не удалось обновить состояние. Откройте вкладку повторно.',err);
-      render(root,window.dmState||{});
+      state.statusError=withRpcError('Не удалось загрузить состояние DNS Manager.',err);
+      if(initial){
+        var loading=root.querySelector('#dm-initial-loading');
+        if(loading){loading.innerHTML='';loading.appendChild(card('DNS Manager',[E('div',{'class':'dm-inline-msg error'},state.statusError),btn('Повторить','cbi-button-neutral',function(){loading.innerHTML='';loading.appendChild(card('DNS Manager',[E('div',{'class':'dm-mini'},'Загружаю данные…')]));scheduleBackgroundStatus(root,true);})]));}
+      }else render(root,window.dmState||{});
     });
   },0);
 }
@@ -9901,7 +9905,7 @@ function startAutoStatus(root){
 return baseclass.extend({
   load:function(){
     var route=currentRoute(),cached=cachedRouteStatus(route);
-    return cached?Promise.resolve(cached):ensureStatusPromise(route);
+    return Promise.resolve(cached||{__dmLoading:true});
   },
   render:function(st){
     var root=E('div',{'class':'dm-wrap'});
@@ -9927,14 +9931,18 @@ return baseclass.extend({
     }[route]||['dm-header','dm-overview'];
     ids.forEach(function(id){root.appendChild(E('section',{'id':id}));});
     injectStyle(root);window.dmState=st||{};state.activeTab=route;window.dmCurrentRoot=root;
-    render(root,st||{});
+    if(st&&st.__dmLoading){
+      var loading=E('div',{'id':'dm-initial-loading'},[card('DNS Manager',[E('div',{'class':'dm-mini'},'Загружаю данные…')])]);
+      root.appendChild(loading);
+      scheduleBackgroundStatus(root,true);
+    }else render(root,st||{});
     removeLegacyCbiActions();if(window.setTimeout)window.setTimeout(removeLegacyCbiActions,0);
     if(route==='dashboard'||route==='doh')startAutoStatus(root);else stopAutoStatus();
     if(state.statusRefreshAfterRender){
       state.statusRefreshAfterRender=false;
       scheduleBackgroundStatus(root);
     }
-    scheduleRouteWarmup(root);
+    if(!(st&&st.__dmLoading))scheduleRouteWarmup(root);
     window.setTimeout(function(){if(rootAlive(root))showRecentJob(root);},0);
     if(route==='dashboard')window.setTimeout(function(){watchBackground(root,'update');resumeVersionCheck(root);},0);
     if(route==='doh')window.setTimeout(function(){watchBackground(root,'combined');},0);
