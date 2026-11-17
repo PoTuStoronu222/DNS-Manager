@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager full installer and LuCI companion
-# Version: 2.70
+# Version: 2.71
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.70"
+VERSION="2.71"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -2363,7 +2363,7 @@ if [ "$(uci -q get dns-manager.global.active_engine 2>/dev/null)" = dnscrypt-pro
 fi
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.70"
+SELF_VERSION="2.71"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -5885,11 +5885,7 @@ run_action() {
                         if ! load_config >/dev/null 2>&1; then
                             _rc=1
                         elif [ "$DNSMGR_WD_REQUEST_NAME" = watchdog ]; then
-                            if [ "$DNSMGR_WD_REQUEST_VALUE" = 1 ] && [ -z "$SLOT_1$SLOT_2$SLOT_3$SLOT_4$SLOT_5$SLOT_6$SLOT_RU" ]; then
-                                _rc=2
-                            else
-                                SILENT_APPLY=1 watchdog_apply_toggle "$DNSMGR_WD_REQUEST_VALUE" >/dev/null 2>&1 || _rc=$?
-                            fi
+                            SILENT_APPLY=1 watchdog_apply_toggle "$DNSMGR_WD_REQUEST_VALUE" >/dev/null 2>&1 || _rc=$?
                         else
                             watchdog_apply_autoreplace_toggle "$DNSMGR_WD_REQUEST_VALUE" >/dev/null 2>&1 || _rc=$?
                         fi
@@ -6041,7 +6037,7 @@ EOF_RPC_WRAPPER
 'require ui';
 'require session';
 
-// DNS Manager LuCI common module version: 2.70
+// DNS Manager LuCI common module version: 2.71
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -6726,7 +6722,7 @@ function renderOverview(root,st){
       ]),
       E('div',{'class':'dm-component-dns-meta'},[
         statusNode,
-        E('span',{'class':'dm-watchdog-slot-result','data-dns-slot':String(d.slot||''),'data-dns-id':String(d.id||'')},[watchdogSlotResult(st,d.slot,d.id)].filter(Boolean))
+        E('span',{'class':'dm-watchdog-slot-result','data-dns-slot':String(d.slot||('system_'+d.port)),'data-dns-id':String(d.slot?d.id:('system_'+d.port))},[watchdogSlotResult(st,d.slot||('system_'+d.port),d.slot?d.id:('system_'+d.port))].filter(Boolean))
       ])
     ]));
   });
@@ -7906,8 +7902,8 @@ function watchdogCard(root,st){
   return E('div',{'class':'dm-watchdog-card'},[
     E('div',{'class':'dm-section-title'},'Контроль текущих DNS'),
     E('div',{'class':'dm-setting-desc'},'Контроль выполняется каждые '+intervalMinutes+' мин: проверяется локальный порт назначенного DoH и DNS-ответ на запрос example.com (для слота RU — yandex.ru). Это проверка рабочего пути, а не полный тест каталога DNS. Профиль не требуется.'),
-    toggleRow('Проверка DNS','Проверяет назначенные DoH-слоты.',en,'watchdog',false),
-    toggleRow('Автозамена DNS','После '+failThreshold+' ошибок подряд ищет рабочий DNS той же категории. При общем сбое замену откладывает; повторная попытка — не раньше чем через '+cooldownMinutes+' мин. Пользовательские DoH не заменяются.',auto,'watchdog_autoreplace',!en),
+    toggleRow('Проверка DNS','Проверяет DoH в слотах или системные DoH, если слоты не заданы.',en,'watchdog',false),
+    toggleRow('Автозамена DNS','После '+failThreshold+' ошибок подряд ищет рабочий DNS той же категории. При общем сбое замену откладывает; повторная попытка — не раньше чем через '+cooldownMinutes+' мин. Системные и пользовательские DoH не заменяются.',auto,'watchdog_autoreplace',!en),
     E('div',{'class':'dm-hint'},'Разовая проверка текущих DoH и дополнительных системных экземпляров доступна на вкладке «Защищённый DNS» кнопкой «Проверить текущие DNS». Она проверяет реальные DoH-endpoint’ы и не включает периодический контроль.'),
     E('details',{'class':'dm-watchdog-advanced'},[
       E('summary',{},'Дополнительные параметры'),
@@ -8385,7 +8381,7 @@ function saveRouteCache(key,st,aux){
     var entry=JSON.parse(JSON.stringify({ts:Date.now(),data:st,aux:aux}));
     window.dmRouteCache[key]=entry;
     if(typeof session!=='undefined'&&session.setLocalData)
-      session.setLocalData('dns-manager-route-2.70-'+key,entry);
+      session.setLocalData('dns-manager-route-2.71-'+key,entry);
   }catch(e){}
 }
 function clearEngineUiState(){
@@ -8393,7 +8389,7 @@ function clearEngineUiState(){
   window.dmRouteCache=Object.create(null);
   window.dmStatusPromises=Object.create(null);
   ['dashboard','doh','network','time','devices','catalog','log'].forEach(function(key){
-    try{if(typeof session!=='undefined'&&session.setLocalData)session.setLocalData('dns-manager-route-2.70-'+key,null);}catch(e){}
+    try{if(typeof session!=='undefined'&&session.setLocalData)session.setLocalData('dns-manager-route-2.71-'+key,null);}catch(e){}
   });
   state.pageNotice={};state.profileProgress=null;state.profileOutput='';state.profileResumeStarted=false;
   state.regionalNotice='';state.pendingProfile='';state.pendingRegional=null;state.pendingDnscryptServer='';state.dnscryptDiagnostic='';state.dnscryptDiagnosticKind='';state.dnscryptDiagnosticResult='';
@@ -8405,7 +8401,7 @@ function clearEngineUiState(){
 function routeCacheEntry(key){
   var entry=key&&window.dmRouteCache&&window.dmRouteCache[key];
   if(!entry&&key){
-    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.70-'+key);}catch(e){}
+    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.71-'+key);}catch(e){}
   }
   if(!entry||typeof entry.ts!=='number'||Date.now()-entry.ts<0||Date.now()-entry.ts>300000||!entry.data||entry.data.ok!==true)return null;
   return entry;
@@ -9472,7 +9468,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 2.70
+// DNS Manager LuCI version: 2.71
 return view.extend({
   load: DM.load,
   render: DM.render,

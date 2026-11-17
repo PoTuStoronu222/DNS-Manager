@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="4.26"
+VERSION="4.27"
 # 3.86: make LuCI the primary interface and preserve external DNS on removal.
 # 3.85: revalidate Watchdog settings before recovery.
 # 3.84: cap DNS catalog test concurrency by total RAM on small routers.
@@ -8213,6 +8213,25 @@ watchdog_embedded_loop() {
             [ "$_fc" -lt 3 ] || _threshold_slots="$_threshold_slots $_slot"
         fi
     done
+    # System instances are monitored without changing their configuration.
+    if [ -z "${SLOT_1:-}${SLOT_2:-}${SLOT_3:-}${SLOT_4:-}${SLOT_5:-}${SLOT_6:-}${SLOT_RU:-}" ]; then
+        _wd_system_index=0
+        while uci -q get "https-dns-proxy.@https-dns-proxy[$_wd_system_index]" >/dev/null 2>&1; do
+            _wd_system_port="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_wd_system_index].listen_port" 2>/dev/null)"
+            _wd_system_addr="$(uci -q get "https-dns-proxy.@https-dns-proxy[$_wd_system_index].listen_addr" 2>/dev/null)"
+            case "$_wd_system_addr" in ''|127.0.0.1) ;; *) _wd_system_index=$((_wd_system_index+1)); continue;; esac
+            case "$_wd_system_port" in ''|*[!0-9]*) _wd_system_index=$((_wd_system_index+1)); continue;; esac
+            if [ "$_wd_system_port" -gt 0 ] && [ "$_wd_system_port" -le 65535 ]; then
+                _wd_system_result=FAIL
+                if watchdog_listener_snapshot_has_port "$_wd_system_port"; then
+                    local_dns_query_ok "$_wd_system_port" example.com
+                    case "$?" in 0) _wd_system_result=OK;; 2) _wd_system_result=SKIPPED;; esac
+                fi
+                printf 'record|system_%s|system_%s|system|Системный DNS|%s\n' "$_wd_system_port" "$_wd_system_port" "$_wd_system_result" >> "$_wd_cycle_records"
+            fi
+            _wd_system_index=$((_wd_system_index+1))
+        done
+    fi
     if [ "${WATCHDOG_AUTOREPLACE:-0}" = 1 ] && [ -n "$_threshold_slots" ]; then
         if [ "$_checked" -gt 1 ] && [ "$_failed" -eq "$_checked" ]; then
             log_msg 'Watchdog: общий сбой DNS; автоматическая замена отложена.'
