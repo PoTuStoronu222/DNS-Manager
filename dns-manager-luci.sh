@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager full installer and LuCI companion
-# Version: 2.76
+# Version: 2.77
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.76"
+VERSION="2.77"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -2400,7 +2400,7 @@ if [ "$(uci -q get dns-manager.global.active_engine 2>/dev/null)" = dnscrypt-pro
 fi
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.76"
+SELF_VERSION="2.77"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -4486,10 +4486,8 @@ system_instance_slot() {
     return 1
 }
 
-job_start_test_system() {
+job_execute_test_system() {
     _jid="$(new_job_id test_system)"
-    job_active "$_jid" && { json_error "Проверка системных DNS уже выполняется"; return; }
-    job_prepare "$_jid" || { json_error "Не удалось подготовить задачу"; return; }
     printf 'status=running\nstarted=%s\nmode=system\n' "$(date +%s)" > "$JOB_DIR/$_jid/state"
     (
         exec >>"$JOB_DIR/$_jid/output" 2>&1
@@ -4883,7 +4881,7 @@ job_process_alive() {
 
     if [ -z "$_pid" ]; then
         # procd starts the worker asynchronously; allow it time to record PID.
-        if { [ "$_mode" = update ] || [ "$_mode" = combined ] || [ "$_mode" = profile ] || [ "$_mode" = action ] || [ "$_mode" = setting ] || [ "$_mode" = regional ]; } &&
+        if { [ "$_mode" = update ] || [ "$_mode" = combined ] || [ "$_mode" = profile ] || [ "$_mode" = action ] || [ "$_mode" = setting ] || [ "$_mode" = regional ] || [ "$_mode" = all ] || [ "$_mode" = current ] || [ "$_mode" = one ] || [ "$_mode" = system ]; } &&
            [ -n "$_started" ] && [ -n "$_now" ] && [ "$_now" -ge "$_started" ] &&
            [ $((_now-_started)) -lt 30 ]; then
             return 0
@@ -5037,7 +5035,8 @@ run_bg_job() {
     else
         DNSMGR_BG_COMMAND='"/bin/sh"'
     fi
-    DNSMGR_BG_REQUEST="{\"name\":\"$DNSMGR_BG_SERVICE\",\"instances\":{\"main\":{\"command\":[$DNSMGR_BG_COMMAND,\"/usr/lib/dns-manager-luci/backend.sh\",\"mutation_worker\",\"$DNSMGR_BG_JOB\",\"$DNSMGR_BG_KIND\",\"$DNSMGR_BG_ARG\"]}}}"
+    if [ "$DNSMGR_BG_KIND" = test ]; then DNSMGR_BG_ENTRY=test_worker; DNSMGR_BG_ARGS="\"$DNSMGR_BG_JOB\",\"$DNSMGR_BG_ARG\""; else DNSMGR_BG_ENTRY=mutation_worker; DNSMGR_BG_ARGS="\"$DNSMGR_BG_JOB\",\"$DNSMGR_BG_KIND\",\"$DNSMGR_BG_ARG\""; fi
+    DNSMGR_BG_REQUEST="{\"name\":\"$DNSMGR_BG_SERVICE\",\"instances\":{\"main\":{\"command\":[$DNSMGR_BG_COMMAND,\"/usr/lib/dns-manager-luci/backend.sh\",\"$DNSMGR_BG_ENTRY\",$DNSMGR_BG_ARGS]}}}"
     if ! ubus call service set "$DNSMGR_BG_REQUEST" >/dev/null 2>&1; then
         job_write "$DNSMGR_BG_JOB" result fail; job_write "$DNSMGR_BG_JOB" status failed; job_write "$DNSMGR_BG_JOB" finished "$(date +%s)"
         json_error "Не удалось запустить фоновую задачу"; return 1
@@ -5129,10 +5128,47 @@ job_start_profile() {
     release_runtime_lock "$RUNTIME_DIR/profile-start.lock"
 }
 
-job_start_test_all() {
+# Catalog tests are launched by procd, not by the rpcd request process.
+job_start_test() {
+    DNSMGR_TEST_ID="$1"; DNSMGR_TEST_ARG="${2:-}"
+    case "$DNSMGR_TEST_ID" in test_all|test_current|test_system) ;; test_one) case "$DNSMGR_TEST_ARG" in ''|*[!A-Za-z0-9_-]*) json_error "Неверный ID DNS"; return;; esac ;; *) json_error "Неверная проверка"; return;; esac
+    acquire_runtime_lock "$RUNTIME_DIR/$DNSMGR_TEST_ID-start.lock" || { json_error "Проверка уже запускается"; return; }
+    if job_active "$DNSMGR_TEST_ID" && job_process_alive "$JOB_DIR/$DNSMGR_TEST_ID"; then release_runtime_lock "$RUNTIME_DIR/$DNSMGR_TEST_ID-start.lock"; json_error "Проверка уже выполняется"; return; fi
+    bg_service_idle "$DNSMGR_TEST_ID" || { release_runtime_lock "$RUNTIME_DIR/$DNSMGR_TEST_ID-start.lock"; return; }
+    job_prepare "$DNSMGR_TEST_ID" || { release_runtime_lock "$RUNTIME_DIR/$DNSMGR_TEST_ID-start.lock"; json_error "Не удалось подготовить проверку"; return; }
+    case "$DNSMGR_TEST_ID" in test_all) DNSMGR_TEST_MODE=all;; test_current) DNSMGR_TEST_MODE=current;; test_one) DNSMGR_TEST_MODE=one;; test_system) DNSMGR_TEST_MODE=system;; esac
+    printf 'status=running\nstarted=%s\nmode=%s\n' "$(date +%s)" "$DNSMGR_TEST_MODE" > "$JOB_DIR/$DNSMGR_TEST_ID/state"
+    [ "$DNSMGR_TEST_ID" != test_one ] || job_write "$DNSMGR_TEST_ID" dns_id "$DNSMGR_TEST_ARG"
+    if run_bg_job "$DNSMGR_TEST_ID" test "$DNSMGR_TEST_ARG"; then printf '{"ok":true,"job":'; json_quote "$DNSMGR_TEST_ID"; printf '}'; fi
+    release_runtime_lock "$RUNTIME_DIR/$DNSMGR_TEST_ID-start.lock"
+}
+job_start_test_all() { job_start_test test_all; }
+job_start_test_current() { job_start_test test_current; }
+job_start_test_one() { job_start_test test_one "$1"; }
+job_start_test_system() { job_start_test test_system; }
+
+test_worker() {
+    DM_TEST_ID="$1"; DM_TEST_ARG="${2:-}"
+    case "$DM_TEST_ID" in
+        test_all) job_execute_test_all >/dev/null ;;
+        test_current) job_execute_test_current >/dev/null ;;
+        test_system) job_execute_test_system >/dev/null ;;
+        test_one) job_execute_test_one "$DM_TEST_ARG" >/dev/null ;;
+        *) exit 1 ;;
+    esac
+    while [ "$(job_state_value "$JOB_DIR/$DM_TEST_ID/state" status)" = running ]; do
+        if ! (job_process_alive "$JOB_DIR/$DM_TEST_ID") >/dev/null 2>&1; then break; fi
+        sleep 1
+    done
+    if [ "$(job_state_value "$JOB_DIR/$DM_TEST_ID/state" status)" = done ]; then
+        printf '\n__DONE__ 0\n' >> "$JOB_DIR/$DM_TEST_ID/output"
+    else
+        printf '\n__DONE__ 1\n' >> "$JOB_DIR/$DM_TEST_ID/output"
+    fi
+}
+
+job_execute_test_all() {
     _jid="$(new_job_id test_all)"
-    job_active "$_jid" && { json_error "Полная проверка уже выполняется"; return; }
-    job_prepare "$_jid" || { json_error "Не удалось подготовить задачу"; return; }
     printf 'status=running\nstarted=%s\nmode=all\n' "$(date +%s)" > "$JOB_DIR/$_jid/state"
     (
         exec >>"$JOB_DIR/$_jid/output" 2>&1
@@ -5162,10 +5198,8 @@ job_start_test_all() {
     printf '{"ok":true,"job":'; json_quote "$_jid"; printf '}'
 }
 
-job_start_test_current() {
+job_execute_test_current() {
     _jid="$(new_job_id test_current)"
-    job_active "$_jid" && { json_error "Проверка выбранных DNS уже выполняется"; return; }
-    job_prepare "$_jid" || { json_error "Не удалось подготовить задачу"; return; }
     printf 'status=running\nstarted=%s\nmode=current\n' "$(date +%s)" > "$JOB_DIR/$_jid/state"
     (
         exec >>"$JOB_DIR/$_jid/output" 2>&1
@@ -5291,14 +5325,12 @@ job_start_test_current() {
     job_record_pid "$_jid" "$_job_pid"
     printf '{"ok":true,"job":'; json_quote "$_jid"; printf '}'
 }
-job_start_test_one() {
+job_execute_test_one() {
     # Keep the requested DNS ID separate from helpers such as job_active(),
     # job_prepare() and job_write(), which reuse the global variable _id.
     DNSMGR_SINGLE_TEST_DNS_ID="$1"
     case "$DNSMGR_SINGLE_TEST_DNS_ID" in ''|*[!A-Za-z0-9_-]*) json_error "Неверный ID DNS"; return;; esac
     DNSMGR_SINGLE_TEST_JOB_ID="$(new_job_id test_one)"
-    job_active "$DNSMGR_SINGLE_TEST_JOB_ID" && { json_error "Проверка DNS уже выполняется"; return; }
-    job_prepare "$DNSMGR_SINGLE_TEST_JOB_ID" || { json_error "Не удалось подготовить задачу"; return; }
     printf 'status=running\nstarted=%s\nmode=one\n' "$(date +%s)" > "$JOB_DIR/$DNSMGR_SINGLE_TEST_JOB_ID/state"
     job_write "$DNSMGR_SINGLE_TEST_JOB_ID" dns_id "$DNSMGR_SINGLE_TEST_DNS_ID"
     (
@@ -5367,10 +5399,12 @@ job_json() {
     _job_status="$(sed -n 's/^status=//p' "$_d/state" 2>/dev/null | tail -n1)"
     _job_result="$(sed -n 's/^result=//p' "$_d/state" 2>/dev/null | tail -n1)"
     # New workers finish with a marker; older workers remain compatible.
-    case "$(tail -n1 "$_d/output" 2>/dev/null)" in
-        '__DONE__ 0') _job_status=done; _job_result=ok;;
-        '__DONE__ 1') _job_status=failed; _job_result=fail;;
-    esac
+    if [ -z "$_job_status" ] || [ "$_job_status" = running ]; then
+        case "$(tail -n1 "$_d/output" 2>/dev/null)" in
+            '__DONE__ 0') _job_status=done; _job_result=ok;;
+            '__DONE__ 1') _job_status=failed; _job_result=fail;;
+        esac
+    fi
     printf ',"status":'; json_quote "$_job_status"
     printf ',"result":'; json_quote "$_job_result"
     printf ',"mode":'; json_quote "$(sed -n 's/^mode=//p' "$_d/state" 2>/dev/null | head -n1)"
@@ -5974,6 +6008,7 @@ test_json() { case "${RPC_METHOD:-}" in test_all) job_start_test_all;; test_curr
 case "${1:-}" in
     worker) background_worker "$2";;
     mutation_worker) mutation_worker "$2" "$3" "$4";;
+    test_worker) test_worker "$2" "$3";;
     list)
         printf '{"status":{},"runtime":{},"doh_status":{},"network_status":{},"lan_devices":{},"set_device_dns":{"mac":"String","slots":"String"},"set_cache":{"total":0,"ttl":0},"time_status":{},"page_meta":{},"catalog":{"category":"String","offset":0,"limit":0,"only_ok":0},"update_check":{"force":0},"update":{},"update_manager":{},"update_hdp":{},"update_catalog":{},"update_all":{},"update_background":{},"test_combined":{},"switch_engine":{"target_engine":"String"},"dnscrypt_test":{},"dnscrypt_log":{},"system_dns_test":{},"set_profile":{"profile":"String"},"set_regional":{"enabled":0},"reset_dns":{},"uninstall":{},"uninstall_status":{},"set_slot":{"slot":"String","id":"String","expected":"String"},"set_slot_domains":{"slot":"String","domains":"String"},"add_custom_dns":{"name":"String","url":"String"},"delete_custom_dns":{"id":"String"},"set_setting":{"name":"String","enabled":0},"set_bootstrap":{"mode":"String","addresses":"String","preset_ids":"String","extra_addresses":"String"},"set_watchdog_setting":{"name":"String","value":0},"set_watchdog_settings":{"interval":0,"threshold":0,"repair_cooldown":0,"max_restarts":0,"guard_interval":0},"set_ntp":{"preset":"String"},"set_test_age":{"category":"String","hours":0},"test_all":{},"test_current":{},"test_one":{"id":"String"},"test_system":{},"job":{"id":"String"},"job_status":{"id":"String"},"multi":{"calls":"String"},"log":{"lines":0}}\n'
         ;;
@@ -6052,7 +6087,7 @@ EOF_RPC_WRAPPER
 'require ui';
 'require session';
 
-// DNS Manager LuCI common module version: 2.76
+// DNS Manager LuCI common module version: 2.77
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -8397,7 +8432,7 @@ function saveRouteCache(key,st,aux){
     var entry=JSON.parse(JSON.stringify({ts:Date.now(),data:st,aux:aux}));
     window.dmRouteCache[key]=entry;
     if(typeof session!=='undefined'&&session.setLocalData)
-      session.setLocalData('dns-manager-route-2.76-'+key,entry);
+      session.setLocalData('dns-manager-route-2.77-'+key,entry);
   }catch(e){}
 }
 function clearEngineUiState(){
@@ -8405,7 +8440,7 @@ function clearEngineUiState(){
   window.dmRouteCache=Object.create(null);
   window.dmStatusPromises=Object.create(null);
   ['dashboard','doh','network','time','devices','catalog','log'].forEach(function(key){
-    try{if(typeof session!=='undefined'&&session.setLocalData)session.setLocalData('dns-manager-route-2.76-'+key,null);}catch(e){}
+    try{if(typeof session!=='undefined'&&session.setLocalData)session.setLocalData('dns-manager-route-2.77-'+key,null);}catch(e){}
   });
   state.pageNotice={};state.profileProgress=null;state.profileOutput='';state.profileResumeStarted=false;
   state.regionalNotice='';state.pendingProfile='';state.pendingRegional=null;state.pendingDnscryptServer='';state.dnscryptDiagnostic='';state.dnscryptDiagnosticKind='';state.dnscryptDiagnosticResult='';
@@ -8417,7 +8452,7 @@ function clearEngineUiState(){
 function routeCacheEntry(key){
   var entry=key&&window.dmRouteCache&&window.dmRouteCache[key];
   if(!entry&&key){
-    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.76-'+key);}catch(e){}
+    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.77-'+key);}catch(e){}
   }
   if(!entry||typeof entry.ts!=='number'||Date.now()-entry.ts<0||Date.now()-entry.ts>300000||!entry.data||entry.data.ok!==true)return null;
   return entry;
@@ -9280,8 +9315,8 @@ function pollJob(root,job,meta,done){
 
 // Recover the most recent operation when a page is opened again.
 function showRecentJob(root){
-  var ids=['profile','regional','action','setting','engine','update'];
-  var labels={profile:'Применение профиля',regional:'Региональный DNS',action:'Изменение настроек',setting:'Изменение настройки',engine:'Смена DNS-движка',update:'Обновление'};
+  var ids=['profile','regional','action','setting','engine','update','test_all','test_current','test_one','test_system'];
+  var labels={profile:'Применение профиля',regional:'Региональный DNS',action:'Изменение настроек',setting:'Изменение настройки',engine:'Смена DNS-движка',update:'Обновление',test_all:'Проверка каталога DNS',test_current:'Проверка выбранных DNS',test_one:'Проверка DNS',test_system:'Проверка системных DNS'};
   function read(id){return callJob(id).catch(function(){return null;});}
   function display(j){
     if(!rootAlive(root)||!j)return;
@@ -9515,7 +9550,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 2.76
+// DNS Manager LuCI version: 2.77
 return view.extend({
   load: DM.load,
   render: DM.render,
