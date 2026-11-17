@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.85"
+VERSION="2.86"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -1085,6 +1085,28 @@ reset_start() {
     printf '{"ok":true,"job":"action"}\n'
 }
 
+dnscrypt_catalog_snapshot() (
+    "$DNSCRYPT_INIT" running >/dev/null 2>&1 || exit 1
+    pid=$(pidof dnscrypt-proxy 2>/dev/null)
+    case "$pid" in ''|*[!0-9]*) exit 1;; esac
+    [ -r "$STATE_FILE" ] || exit 1
+    pool=$(sed -n '/^server=/p' "$STATE_FILE" | cksum)
+    records=$(dnscrypt_pool_latency 1)
+    . /usr/share/libubox/jshn.sh
+    json_init
+    json_add_string pid "$pid"
+    json_add_string pool "$pool"
+    json_add_object servers
+    while read -r server latency; do
+        case "$server:$latency" in manager-[1-6]:*[!0-9]*|manager-[1-6]:|*[!A-Za-z0-9:-]*) continue;; manager-[1-6]:*) json_add_int "$server" "$latency";; esac
+    done <<EOF_CATALOG_LATENCY
+$records
+EOF_CATALOG_LATENCY
+    json_close_object
+    tmp="$RUNTIME_DIR/dnscrypt-catalog-latencies.$$"
+    json_dump > "$tmp" && mv -f "$tmp" "$RUNTIME_DIR/dnscrypt-catalog-latencies.json"
+)
+
 diagnostic() {
     method=$1
     cat >/dev/null
@@ -1101,6 +1123,12 @@ $output"; json_add_boolean ok 1
             output='Ожидание подключения к сети.'; json_add_boolean ok 1
         else output="Системный DNS не ответил.
 $output"; json_add_boolean ok 0; fi
+    elif [ "$method" = dnscrypt_latencies ]; then
+        if dnscrypt_catalog_snapshot; then
+            output='Замеры DNSCrypt обновлены.'; json_add_boolean ok 1
+        else
+            output='Не удалось получить замеры DNSCrypt.'; json_add_boolean ok 0
+        fi
     elif [ "$method" = dnscrypt_test ]; then
         output=$(nslookup -type=A -timeout=3 -retry=1 -port=5053 openwrt.org 127.0.0.1 2>&1); rc=$?
         if [ "$rc" -eq 0 ]; then
@@ -1319,6 +1347,21 @@ status_extra() {
 $latency_records
 EOF_LATENCY
     json_close_object
+    json_add_object dnscrypt_catalog_latency
+    latency_cache="$RUNTIME_DIR/dnscrypt-catalog-latencies.json"
+    if [ "$running" = 1 ] && [ -r "$STATE_FILE" ] && [ -r "$latency_cache" ]; then
+        cache_pid=$(jsonfilter -i "$latency_cache" -e '@.pid' 2>/dev/null)
+        cache_pool=$(jsonfilter -i "$latency_cache" -e '@.pool' 2>/dev/null)
+        current_pid=$(pidof dnscrypt-proxy 2>/dev/null)
+        current_pool=$(sed -n '/^server=/p' "$STATE_FILE" | cksum)
+        if [ -n "$current_pid" ] && [ "$cache_pid" = "$current_pid" ] && [ "$cache_pool" = "$current_pool" ]; then
+            for n in 1 2 3 4 5 6; do
+                value=$(jsonfilter -i "$latency_cache" -e "@.servers[\"manager-$n\"]" 2>/dev/null)
+                case "$value" in ''|*[!0-9]*) ;; *) json_add_int "manager-$n" "$value";; esac
+            done
+        fi
+    fi
+    json_close_object
     # Monitoring is optional; an unavailable endpoint must not look like zero activity.
     if [ "$method" = status ] && [ "$running" -eq 1 ] && command -v curl >/dev/null 2>&1; then
         metrics=$(curl --noproxy '*' --silent --fail --max-time 1 http://127.0.0.1:9100/api/metrics 2>/dev/null || :)
@@ -1418,7 +1461,7 @@ case "${1:-}" in
             reset_dns) reset_start ;;
             set_setting) dnscrypt_setting_start ;;
             switch_engine) switch_start ;;
-            dnscrypt_test|system_dns_test) diagnostic_start "$2" ;;
+            dnscrypt_test|dnscrypt_latencies|system_dns_test) diagnostic_start "$2" ;;
             dnscrypt_log) diagnostic "$2" ;;
             status|doh_status|network_status|time_status|log) status_extra "$2" ;;
             runtime|page_meta|catalog|lan_devices|job|job_status|multi|set_ntp|update_check|update_background|uninstall|uninstall_status)
@@ -2403,7 +2446,7 @@ EOF_MENU
     },
     "write": {
       "ubus": {
-        "dns_manager": [ "switch_engine", "set_profile", "set_regional", "reset_dns", "set_slot", "set_slot_domains", "set_device_dns", "set_cache", "add_custom_dns", "delete_custom_dns", "set_setting", "set_bootstrap", "set_watchdog_setting", "set_watchdog_settings", "set_ntp", "set_test_age", "test_all", "test_current", "test_one", "test_system", "test_combined", "update", "update_manager", "update_hdp", "update_catalog", "update_all", "update_background", "uninstall" ]
+        "dns_manager": [ "dnscrypt_latencies", "switch_engine", "set_profile", "set_regional", "reset_dns", "set_slot", "set_slot_domains", "set_device_dns", "set_cache", "add_custom_dns", "delete_custom_dns", "set_setting", "set_bootstrap", "set_watchdog_setting", "set_watchdog_settings", "set_ntp", "set_test_age", "test_all", "test_current", "test_one", "test_system", "test_combined", "update", "update_manager", "update_hdp", "update_catalog", "update_all", "update_background", "uninstall" ]
       }
     }
   }
@@ -2443,7 +2486,7 @@ if [ "$(uci -q get dns-manager.global.active_engine 2>/dev/null)" = dnscrypt-pro
 fi
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.85"
+SELF_VERSION="2.86"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -6089,7 +6132,7 @@ case "${1:-}" in
     mutation_worker) mutation_worker "$2" "$3" "$4";;
     test_worker) test_worker "$2" "$3";;
     list)
-        printf '{"status":{},"runtime":{},"doh_status":{},"network_status":{},"lan_devices":{},"set_device_dns":{"mac":"String","slots":"String"},"set_cache":{"total":0,"ttl":0},"time_status":{},"page_meta":{},"catalog":{"category":"String","offset":0,"limit":0,"only_ok":0},"update_check":{"force":0},"update":{},"update_manager":{},"update_hdp":{},"update_catalog":{},"update_all":{},"update_background":{},"test_combined":{},"switch_engine":{"target_engine":"String"},"dnscrypt_test":{},"dnscrypt_log":{},"system_dns_test":{},"set_profile":{"profile":"String"},"set_regional":{"enabled":0},"reset_dns":{},"uninstall":{},"uninstall_status":{},"set_slot":{"slot":"String","id":"String","expected":"String"},"set_slot_domains":{"slot":"String","domains":"String"},"add_custom_dns":{"name":"String","url":"String"},"delete_custom_dns":{"id":"String"},"set_setting":{"name":"String","enabled":0},"set_bootstrap":{"mode":"String","addresses":"String","preset_ids":"String","extra_addresses":"String"},"set_watchdog_setting":{"name":"String","value":0},"set_watchdog_settings":{"interval":0,"threshold":0,"repair_cooldown":0,"max_restarts":0,"guard_interval":0},"set_ntp":{"preset":"String"},"set_test_age":{"category":"String","hours":0},"test_all":{},"test_current":{},"test_one":{"id":"String"},"test_system":{},"job":{"id":"String"},"job_status":{"id":"String"},"multi":{"calls":"String"},"log":{"lines":0}}\n'
+        printf '{"status":{},"runtime":{},"doh_status":{},"network_status":{},"lan_devices":{},"set_device_dns":{"mac":"String","slots":"String"},"set_cache":{"total":0,"ttl":0},"time_status":{},"page_meta":{},"catalog":{"category":"String","offset":0,"limit":0,"only_ok":0},"update_check":{"force":0},"update":{},"update_manager":{},"update_hdp":{},"update_catalog":{},"update_all":{},"update_background":{},"test_combined":{},"switch_engine":{"target_engine":"String"},"dnscrypt_test":{},"dnscrypt_latencies":{},"dnscrypt_log":{},"system_dns_test":{},"set_profile":{"profile":"String"},"set_regional":{"enabled":0},"reset_dns":{},"uninstall":{},"uninstall_status":{},"set_slot":{"slot":"String","id":"String","expected":"String"},"set_slot_domains":{"slot":"String","domains":"String"},"add_custom_dns":{"name":"String","url":"String"},"delete_custom_dns":{"id":"String"},"set_setting":{"name":"String","enabled":0},"set_bootstrap":{"mode":"String","addresses":"String","preset_ids":"String","extra_addresses":"String"},"set_watchdog_setting":{"name":"String","value":0},"set_watchdog_settings":{"interval":0,"threshold":0,"repair_cooldown":0,"max_restarts":0,"guard_interval":0},"set_ntp":{"preset":"String"},"set_test_age":{"category":"String","hours":0},"test_all":{},"test_current":{},"test_one":{"id":"String"},"test_system":{},"job":{"id":"String"},"job_status":{"id":"String"},"multi":{"calls":"String"},"log":{"lines":0}}\n'
         ;;
     call)
         case "${2:-}" in
@@ -6207,6 +6250,7 @@ var callRegional = dmRpc({ object:'dns_manager', method:'set_regional', params:[
 var callResetDns = dmRpc({ object:'dns_manager', method:'reset_dns', expect:{} });
 var callSystemDnsTest = dmRpc({ object:'dns_manager', method:'system_dns_test', expect:{} });
 var callDnscryptTest = dmRpc({ object:'dns_manager', method:'dnscrypt_test', expect:{} });
+var callDnscryptLatencies = dmRpc({ object:'dns_manager', method:'dnscrypt_latencies', expect:{} });
 var callDnscryptLog = dmRpc({ object:'dns_manager', method:'dnscrypt_log', expect:{} });
 var callSwitchEngine = dmRpc({ object:'dns_manager', method:'switch_engine', params:['target_engine'], expect:{} });
 var callUninstall = dmRpc({ object:'dns_manager', method:'uninstall', expect:{} });
@@ -8285,15 +8329,27 @@ function deleteCustomDns(d,root){
 
 function dnscryptCatalogBadge(st,id){
   var servers=Array.isArray(st.dnscrypt_servers)?st.dnscrypt_servers:[];
-  var index=servers.indexOf(String(id)), latency=index<0?null:(st.dnscrypt_server_latency||{})['manager-'+(index+1)];
+  var index=servers.indexOf(String(id)), latency=index<0?null:(st.dnscrypt_catalog_latency||{})['manager-'+(index+1)];
   return Number(st.dnscrypt_running)===1&&latency!=null&&/^\d+$/.test(String(latency))
-    ? badge('dm-muted',String(latency)+' мс · замер DNSCrypt')
+    ? badge('dm-ok',String(latency)+' мс · последний замер')
     : badge('dm-muted','нет данных');
+}
+function refreshDnscryptCatalogLatency(root){
+  if(state.busy||state.jobRunning)return;
+  state.busy=true;state.dnscryptCatalogChecking=true;state.pageNotice.catalog='';renderCatalog(root);
+  callDnscryptLatencies().then(waitDnsHealth).then(function(result){
+    if(!result.ok)throw new Error(result.output||'Не удалось получить замеры DNSCrypt.');
+    state.busy=false;state.dnscryptCatalogChecking=false;return refresh(root,true);
+  }).catch(function(err){
+    state.busy=false;state.dnscryptCatalogChecking=false;
+    state.pageNotice.catalog=(err&&err.message)||'Не удалось получить замеры DNSCrypt.';renderCatalog(root);
+  });
 }
 function renderCatalog(root){
   var e=root.querySelector('#dm-catalog');if(!e)return;e.innerHTML='';
   if((window.dmState||{}).dnscrypt_engine==='dnscrypt-proxy2'){
     var data=window.dmCatalog||{}, controls=E('div',{'class':'dm-seg'});
+    e.appendChild(E('div',{'class':'dm-actions'},[btn(state.dnscryptCatalogChecking?'Обновляю замеры…':'Обновить замеры','cbi-button-action',function(){refreshDnscryptCatalogLatency(root);},{disabled:!!state.busy||!!state.jobRunning})]));
     CATEGORY.forEach(function(c){controls.appendChild(btn(c[1],c[0]===state.category?'active cbi-button':'cbi-button',function(){if(state.catalogLoading)return;state.category=c[0];state.offset=0;loadCatalog(root);},{disabled:!!state.catalogLoading,'aria-pressed':c[0]===state.category?'true':'false'}));});
     var rows=catalogGroups(data.servers||[],function(d){return E('div',{'class':'dm-card dm-catalog-item'},[E('h4',{},d.name||d.id),E('div',{'class':'dm-meta'},catName(d.category)),E('div',{'class':'dm-slot-state'},[dnscryptCatalogBadge(window.dmState||{},d.id)])]);},function(){renderCatalog(root);});
     e.appendChild(card('Каталог DNS',[E('div',{'class':'dm-hint'},'DNSCrypt показывает последние замеры для серверов текущего набора. Для остальных серверов данных нет.'),controls,state.pageNotice.catalog?E('div',{'class':'dm-inline-msg error'},state.pageNotice.catalog):null,state.catalogLoading?E('div',{'class':'dm-hint'},'Загрузка каталога DNS…'):null,E('div',{'class':'dm-catalog'},rows),E('div',{'class':'dm-page'},[btn('←','cbi-button-neutral',function(){if(!state.catalogLoading&&state.offset>0){state.offset=Math.max(0,state.offset-state.limit);loadCatalog(root);}},{disabled:!!state.catalogLoading||state.offset<=0,'aria-label':'Предыдущая страница'}),E('span',{'class':'dm-mini'},(Math.floor(state.offset/state.limit)+1)+' / '+Math.max(1,Math.ceil((data.total||0)/state.limit))),btn('→','cbi-button-neutral',function(){if(!state.catalogLoading&&state.offset+state.limit<(data.total||0)){state.offset+=state.limit;loadCatalog(root);}},{disabled:!!state.catalogLoading||state.offset+state.limit>=(data.total||0),'aria-label':'Следующая страница'})])].filter(Boolean)));
@@ -8493,10 +8549,7 @@ function routeStatusCall(){
     case 'catalog':
       return Promise.all([
         callCatalog(state.category,state.offset,state.limit,0),
-        (typeof callMulti==='function' ? callMulti('doh_status\npage_meta').then(function(r){
-          if(!r || !r.ok || !r.results || !r.results.doh_status || !r.results.page_meta || r.results.doh_status.ok===false || r.results.page_meta.ok===false) throw new Error('multi failed');
-          return [r.results.doh_status,r.results.page_meta];
-        }).catch(function(){return Promise.all([callDohStatus(),callPageMeta()]);}) : Promise.all([callDohStatus(),callPageMeta()]))
+        Promise.all([callDohStatus(),callPageMeta()])
       ]).then(function(v){
         if(!v[0]||v[0].ok===false){
           window.dmCatalog=null;state.catalogLoaded=false;state.catalogLoadFailed=true;

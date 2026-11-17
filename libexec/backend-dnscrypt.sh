@@ -339,6 +339,28 @@ reset_start() {
     printf '{"ok":true,"job":"action"}\n'
 }
 
+dnscrypt_catalog_snapshot() (
+    "$DNSCRYPT_INIT" running >/dev/null 2>&1 || exit 1
+    pid=$(pidof dnscrypt-proxy 2>/dev/null)
+    case "$pid" in ''|*[!0-9]*) exit 1;; esac
+    [ -r "$STATE_FILE" ] || exit 1
+    pool=$(sed -n '/^server=/p' "$STATE_FILE" | cksum)
+    records=$(dnscrypt_pool_latency 1)
+    . /usr/share/libubox/jshn.sh
+    json_init
+    json_add_string pid "$pid"
+    json_add_string pool "$pool"
+    json_add_object servers
+    while read -r server latency; do
+        case "$server:$latency" in manager-[1-6]:*[!0-9]*|manager-[1-6]:|*[!A-Za-z0-9:-]*) continue;; manager-[1-6]:*) json_add_int "$server" "$latency";; esac
+    done <<EOF_CATALOG_LATENCY
+$records
+EOF_CATALOG_LATENCY
+    json_close_object
+    tmp="$RUNTIME_DIR/dnscrypt-catalog-latencies.$$"
+    json_dump > "$tmp" && mv -f "$tmp" "$RUNTIME_DIR/dnscrypt-catalog-latencies.json"
+)
+
 diagnostic() {
     method=$1
     cat >/dev/null
@@ -355,6 +377,12 @@ $output"; json_add_boolean ok 1
             output='Ожидание подключения к сети.'; json_add_boolean ok 1
         else output="Системный DNS не ответил.
 $output"; json_add_boolean ok 0; fi
+    elif [ "$method" = dnscrypt_latencies ]; then
+        if dnscrypt_catalog_snapshot; then
+            output='Замеры DNSCrypt обновлены.'; json_add_boolean ok 1
+        else
+            output='Не удалось получить замеры DNSCrypt.'; json_add_boolean ok 0
+        fi
     elif [ "$method" = dnscrypt_test ]; then
         output=$(nslookup -type=A -timeout=3 -retry=1 -port=5053 openwrt.org 127.0.0.1 2>&1); rc=$?
         if [ "$rc" -eq 0 ]; then
@@ -573,6 +601,21 @@ status_extra() {
 $latency_records
 EOF_LATENCY
     json_close_object
+    json_add_object dnscrypt_catalog_latency
+    latency_cache="$RUNTIME_DIR/dnscrypt-catalog-latencies.json"
+    if [ "$running" = 1 ] && [ -r "$STATE_FILE" ] && [ -r "$latency_cache" ]; then
+        cache_pid=$(jsonfilter -i "$latency_cache" -e '@.pid' 2>/dev/null)
+        cache_pool=$(jsonfilter -i "$latency_cache" -e '@.pool' 2>/dev/null)
+        current_pid=$(pidof dnscrypt-proxy 2>/dev/null)
+        current_pool=$(sed -n '/^server=/p' "$STATE_FILE" | cksum)
+        if [ -n "$current_pid" ] && [ "$cache_pid" = "$current_pid" ] && [ "$cache_pool" = "$current_pool" ]; then
+            for n in 1 2 3 4 5 6; do
+                value=$(jsonfilter -i "$latency_cache" -e "@.servers[\"manager-$n\"]" 2>/dev/null)
+                case "$value" in ''|*[!0-9]*) ;; *) json_add_int "manager-$n" "$value";; esac
+            done
+        fi
+    fi
+    json_close_object
     # Monitoring is optional; an unavailable endpoint must not look like zero activity.
     if [ "$method" = status ] && [ "$running" -eq 1 ] && command -v curl >/dev/null 2>&1; then
         metrics=$(curl --noproxy '*' --silent --fail --max-time 1 http://127.0.0.1:9100/api/metrics 2>/dev/null || :)
@@ -672,7 +715,7 @@ case "${1:-}" in
             reset_dns) reset_start ;;
             set_setting) dnscrypt_setting_start ;;
             switch_engine) switch_start ;;
-            dnscrypt_test|system_dns_test) diagnostic_start "$2" ;;
+            dnscrypt_test|dnscrypt_latencies|system_dns_test) diagnostic_start "$2" ;;
             dnscrypt_log) diagnostic "$2" ;;
             status|doh_status|network_status|time_status|log) status_extra "$2" ;;
             runtime|page_meta|catalog|lan_devices|job|job_status|multi|set_ntp|update_check|update_background|uninstall|uninstall_status)
