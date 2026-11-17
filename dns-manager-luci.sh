@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager full installer and LuCI companion
-# Version: 2.73
+# Version: 2.74
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.73"
+VERSION="2.74"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -2363,7 +2363,7 @@ if [ "$(uci -q get dns-manager.global.active_engine 2>/dev/null)" = dnscrypt-pro
 fi
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.73"
+SELF_VERSION="2.74"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -6037,7 +6037,7 @@ EOF_RPC_WRAPPER
 'require ui';
 'require session';
 
-// DNS Manager LuCI common module version: 2.73
+// DNS Manager LuCI common module version: 2.74
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -6728,7 +6728,7 @@ function renderOverview(root,st){
   });
   if(!dnsItems.length)dnsItems.push(E('div',{'class':'dm-hint'},'DNS в слоты не назначены.'));
   var components=card('Компоненты',[
-    componentItem('DNS-движок',st.dnscrypt_engine==='dnscrypt-proxy2'?badge(Number(st.dnscrypt_running)===1?'dm-ok':'dm-bad','DNSCrypt Proxy · '+(Number(st.dnscrypt_running)===1?'работает':'остановлен')):Number(st.engine_installed)===0?badge('dm-off','не выбран'):badge(Number(st.engine_running)===1?'dm-ok':'dm-bad','HTTPS DNS Proxy · '+(Number(st.engine_running)===1?'работает':'остановлен'))),
+    componentItem('DNS-движок',st.dnscrypt_engine==='dnscrypt-proxy2'?badge(Number(st.dnscrypt_running)===1?'dm-ok':'dm-bad','DNSCrypt Proxy 2 · '+(Number(st.dnscrypt_running)===1?'работает':'остановлен')):Number(st.engine_installed)===0?badge('dm-off','не выбран'):badge(Number(st.engine_running)===1?'dm-ok':'dm-bad','HTTPS DNS Proxy · '+(Number(st.engine_running)===1?'работает':'остановлен'))),
     st.dnscrypt_engine==='dnscrypt-proxy2'?componentItem('Выбор сервера',st.dnscrypt_selected_server?badge('dm-ok',dnscryptServerName(st,st.dnscrypt_selected_server)):badge('dm-muted','автоматически из пула')):null,
     st.dnscrypt_engine==='dnscrypt-proxy2'&&st.dnscrypt_cache_entries!=null?componentItem('Кэш DNSCrypt',badge('dm-ok',String(st.dnscrypt_cache_entries)+' записей')):null,
     st.dnscrypt_engine==='dnscrypt-proxy2'&&st.dnscrypt_avg_response_ms!=null?componentItem('Среднее время ответа DNS',badge('dm-ok',String(st.dnscrypt_avg_response_ms)+' мс')):null,
@@ -6740,7 +6740,7 @@ function renderOverview(root,st){
 
   var dnsSlotsCard=E('div',{'class':'dm-card'},[
     E('h3',{},[
-      E('span',{},st.dnscrypt_engine==='dnscrypt-proxy2'?'DNSCrypt Proxy':'DNS over HTTPS'),
+      E('span',{},st.dnscrypt_engine==='dnscrypt-proxy2'?'DNSCrypt Proxy 2':'DNS over HTTPS'),
       doh,
       E('span',{'class':'dm-doh-profile'},[
         E('span',{'class':'dm-doh-profile-label'},'Профиль DNS'),
@@ -6985,7 +6985,7 @@ function renderDoH(root,st){
     E('p',{'class':'dm-hint'},engine==='none'?'Выберите и установите DNS-движок, затем настройте профиль.':'При смене движка профили, слоты и привязки сбрасываются.'),
     E('div',{'class':'dm-engine-choices'},[
       engineChoice('https-dns-proxy','HTTPS DNS Proxy','Отдельные DNS-слоты и привязки устройств.'),
-      engineChoice('dnscrypt-proxy2','DNSCrypt Proxy','Один процесс и общий набор DNS-серверов.')
+      engineChoice('dnscrypt-proxy2','DNSCrypt Proxy 2','Один процесс и общий набор DNS-серверов.')
     ]),
     state.engineNotice?E('div',{'class':'dm-inline-msg '+(state.engineNoticeType||'info')},state.engineNotice):null
   ].filter(Boolean)));
@@ -6998,7 +6998,7 @@ function renderDoH(root,st){
   if(st.dnscrypt_engine==='dnscrypt-proxy2'){
     var servers=Array.isArray(st.dnscrypt_servers)?st.dnscrypt_servers:[];
     var selectedServer=String(st.dnscrypt_selected_server||'');
-    var details=[row('Движок',E('span',{},'DNSCrypt Proxy')),row('Служба',Number(st.dnscrypt_running)===1?badge('dm-ok','работает'):badge('dm-bad','остановлена')),selectedServer?row('Режим',E('span',{},'Один сервер выбран вручную')):row('Профиль',!activeProfileId(st)?badge('dm-muted','не выбран'):E('span',{},activeProfileLabel(st)))];
+    var details=[row('Движок',E('span',{},'DNSCrypt Proxy 2')),row('Служба',Number(st.dnscrypt_running)===1?badge('dm-ok','работает'):badge('dm-bad','остановлена')),selectedServer?row('Режим',E('span',{},'Один сервер выбран вручную')):row('Профиль',!activeProfileId(st)?badge('dm-muted','не выбран'):E('span',{},activeProfileLabel(st)))];
     if(!activeProfileId(st)&&!selectedServer)details.push(E('p',{'class':'dm-hint'},servers.length?'Используется начальный набор DNS. При необходимости выберите профиль ниже.':'Выберите профиль ниже, чтобы настроить DNS.'));
     details.push(E('div',{'class':'dm-row'},[E('span',{'class':'dm-label'},servers.length===1?'Сейчас используется':'Сейчас используются')]));
     details.push(dnscryptCurrentPool(st));
@@ -7008,7 +7008,7 @@ function renderDoH(root,st){
       btn('Проверить DNS','cbi-button-neutral',function(){dnscryptDiagnostic(root,false);},{disabled:!!state.busy})
     ]));
     if(state.dnscryptDiagnostic)details.push(dnscryptDiagnosticView());
-    e.appendChild(card('DNSCrypt Proxy',details));
+    e.appendChild(card('DNSCrypt Proxy 2',details));
     var danger=[];appendUninstall(danger,root);e.appendChild(card('Удаление DNS Manager',danger));
     return;
   }
@@ -8382,7 +8382,7 @@ function saveRouteCache(key,st,aux){
     var entry=JSON.parse(JSON.stringify({ts:Date.now(),data:st,aux:aux}));
     window.dmRouteCache[key]=entry;
     if(typeof session!=='undefined'&&session.setLocalData)
-      session.setLocalData('dns-manager-route-2.73-'+key,entry);
+      session.setLocalData('dns-manager-route-2.74-'+key,entry);
   }catch(e){}
 }
 function clearEngineUiState(){
@@ -8390,7 +8390,7 @@ function clearEngineUiState(){
   window.dmRouteCache=Object.create(null);
   window.dmStatusPromises=Object.create(null);
   ['dashboard','doh','network','time','devices','catalog','log'].forEach(function(key){
-    try{if(typeof session!=='undefined'&&session.setLocalData)session.setLocalData('dns-manager-route-2.73-'+key,null);}catch(e){}
+    try{if(typeof session!=='undefined'&&session.setLocalData)session.setLocalData('dns-manager-route-2.74-'+key,null);}catch(e){}
   });
   state.pageNotice={};state.profileProgress=null;state.profileOutput='';state.profileResumeStarted=false;
   state.regionalNotice='';state.pendingProfile='';state.pendingRegional=null;state.pendingDnscryptServer='';state.dnscryptDiagnostic='';state.dnscryptDiagnosticKind='';state.dnscryptDiagnosticResult='';
@@ -8402,7 +8402,7 @@ function clearEngineUiState(){
 function routeCacheEntry(key){
   var entry=key&&window.dmRouteCache&&window.dmRouteCache[key];
   if(!entry&&key){
-    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.73-'+key);}catch(e){}
+    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.74-'+key);}catch(e){}
   }
   if(!entry||typeof entry.ts!=='number'||Date.now()-entry.ts<0||Date.now()-entry.ts>300000||!entry.data||entry.data.ok!==true)return null;
   return entry;
@@ -8724,7 +8724,7 @@ function switchEngine(target,root){
   var firstInstall=st.dnscrypt_engine!=='dnscrypt-proxy2'&&Number(st.engine_installed)===0&&!displayDnsRows(st).length&&(!st.profile||st.profile==='none');
   var message=firstInstall?'Установить выбранный DNS-движок? DNS роутера будет возвращён к стандартным настройкам OpenWrt. Сохранённые настройки DNS Manager, если они есть, будут сброшены.':'Внимание! Переключение движка полностью сбросит текущие профили, слоты и привязки. Продолжить?';
   confirmAction(message,
-    [['DNS-движок',target==='dnscrypt-proxy2'?'DNSCrypt Proxy':'HTTPS DNS Proxy']],function(){
+    [['DNS-движок',target==='dnscrypt-proxy2'?'DNSCrypt Proxy 2':'HTTPS DNS Proxy']],function(){
       clearEngineUiState();
       state.busy=true;state.engineNoticeType='info';state.engineNotice='Запускаю настройку DNS-движка…';
       renderDoH(root,window.dmState||{});
@@ -9464,7 +9464,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 2.73
+// DNS Manager LuCI version: 2.74
 return view.extend({
   load: DM.load,
   render: DM.render,
