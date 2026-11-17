@@ -389,6 +389,29 @@ $system_output"
 
 
 
+# Check each configured endpoint independently without changing the running pool.
+dnscrypt_check_pool() (
+    load_manager_functions || exit 1
+    trap - EXIT INT TERM
+    trap 'rm -rf "$TMP_DIR"; rm -f "$_checks_tmp"' EXIT
+    trap 'exit 1' INT TERM
+    load_config || exit 1
+    command -v dig >/dev/null 2>&1 && HAS_DIG=yes || HAS_DIG=no
+    _checks_tmp="$RUNTIME_DIR/dnscrypt-server-checks.$"
+    : > "$_checks_tmp" || exit 1
+    while IFS='|' read -r _entry_id _entry_url; do
+        case "$_entry_id" in server=*) _entry_id=${_entry_id#server=};; *) continue;; esac
+        case "$_entry_id" in ''|*[!A-Za-z0-9_-]*) continue;; esac
+        case "$_entry_url" in https://*) ;; *) continue;; esac
+        rm -f "$TMP_DIR/t.$_entry_id"
+        ( dns_url() { printf '%s' "$_entry_url"; }; dns_name() { printf '%s' "$_entry_id"; }; dns_cat() { printf '%s' dnscrypt; }; test_one_dns "$_entry_id" ) >/dev/null 2>&1 || :
+        _check_result=$(awk -F'|' -v id="$_entry_id" '$1==id && NF>=5 {print $4 "|" $5;exit}' "$TMP_DIR/t.$_entry_id" 2>/dev/null)
+        case "$_check_result" in *'|'*) printf '%s|%s|%s|%s\n' "$_entry_id" "$_entry_url" "$_check_result" "$(date +%s)" >> "$_checks_tmp";; esac
+    done < "$STATE_FILE"
+    mv -f "$_checks_tmp" "$RUNTIME_DIR/dnscrypt-server-checks"
+    rm -rf "$TMP_DIR"
+)
+
 diagnostic_worker() {
     method=$1
     mkdir -p "$JOB_DIR/health"
@@ -396,6 +419,9 @@ diagnostic_worker() {
     token=$(awk '{print $22}' "/proc/$$/stat" 2>/dev/null || true)
     [ -z "$token" ] || printf 'pid_start=%s\n' "$token" >> "$JOB_DIR/health/state"
     reply=$(diagnostic "$method" </dev/null)
+    if [ "$method" = dnscrypt_test ] && engine_selected && [ -r "$STATE_FILE" ]; then
+        dnscrypt_check_pool || :
+    fi
     result=$(jsonfilter -s "$reply" -e '@.ok' 2>/dev/null)
     jsonfilter -s "$reply" -e '@.output' > "$JOB_DIR/health/output" 2>/dev/null || true
     [ -s "$JOB_DIR/health/output" ] || jsonfilter -s "$reply" -e '@.error' > "$JOB_DIR/health/output" 2>/dev/null || true
@@ -588,6 +614,18 @@ EOF_POOL
     case "$regional_mode" in yandex|isp) ;; *) regional_mode=doh;; esac
     json_add_string dnscrypt_regional_mode "$regional_mode"
     json_add_string dnscrypt_regional_ips "$(uci -q get dns-manager.global.dnscrypt_regional_ips || :)"
+    json_add_object dnscrypt_server_checks
+    if [ "$running" -eq 1 ] && [ -r "$STATE_FILE" ] && [ -r "$RUNTIME_DIR/dnscrypt-server-checks" ]; then
+        while IFS='|' read -r check_id check_url check_ms check_status check_time; do
+            case "$check_id" in ''|*[!A-Za-z0-9_-]*) continue;; esac
+            case "$check_time" in ''|*[!0-9]*) continue;; esac
+            check_now=$(date +%s)
+            [ "$check_now" -ge "$check_time" ] && [ $((check_now - check_time)) -le 300 ] || continue
+            grep -Fqx "server=$check_id|$check_url" "$STATE_FILE" || continue
+            case "$check_status:$check_ms" in OK:*[!0-9]*|OK:) continue;; OK:*) json_add_string "$check_id" "OK:$check_ms";; *) json_add_string "$check_id" fail;; esac
+        done < "$RUNTIME_DIR/dnscrypt-server-checks"
+    fi
+    json_close_object
     json_add_array dnscrypt_servers
     if [ -r "$STATE_FILE" ]; then
         while IFS='|' read -r id url; do

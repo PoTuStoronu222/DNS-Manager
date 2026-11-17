@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.81"
+VERSION="2.82"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -1135,6 +1135,29 @@ $system_output"
 
 
 
+# Check each configured endpoint independently without changing the running pool.
+dnscrypt_check_pool() (
+    load_manager_functions || exit 1
+    trap - EXIT INT TERM
+    trap 'rm -rf "$TMP_DIR"; rm -f "$_checks_tmp"' EXIT
+    trap 'exit 1' INT TERM
+    load_config || exit 1
+    command -v dig >/dev/null 2>&1 && HAS_DIG=yes || HAS_DIG=no
+    _checks_tmp="$RUNTIME_DIR/dnscrypt-server-checks.$"
+    : > "$_checks_tmp" || exit 1
+    while IFS='|' read -r _entry_id _entry_url; do
+        case "$_entry_id" in server=*) _entry_id=${_entry_id#server=};; *) continue;; esac
+        case "$_entry_id" in ''|*[!A-Za-z0-9_-]*) continue;; esac
+        case "$_entry_url" in https://*) ;; *) continue;; esac
+        rm -f "$TMP_DIR/t.$_entry_id"
+        ( dns_url() { printf '%s' "$_entry_url"; }; dns_name() { printf '%s' "$_entry_id"; }; dns_cat() { printf '%s' dnscrypt; }; test_one_dns "$_entry_id" ) >/dev/null 2>&1 || :
+        _check_result=$(awk -F'|' -v id="$_entry_id" '$1==id && NF>=5 {print $4 "|" $5;exit}' "$TMP_DIR/t.$_entry_id" 2>/dev/null)
+        case "$_check_result" in *'|'*) printf '%s|%s|%s|%s\n' "$_entry_id" "$_entry_url" "$_check_result" "$(date +%s)" >> "$_checks_tmp";; esac
+    done < "$STATE_FILE"
+    mv -f "$_checks_tmp" "$RUNTIME_DIR/dnscrypt-server-checks"
+    rm -rf "$TMP_DIR"
+)
+
 diagnostic_worker() {
     method=$1
     mkdir -p "$JOB_DIR/health"
@@ -1142,6 +1165,9 @@ diagnostic_worker() {
     token=$(awk '{print $22}' "/proc/$$/stat" 2>/dev/null || true)
     [ -z "$token" ] || printf 'pid_start=%s\n' "$token" >> "$JOB_DIR/health/state"
     reply=$(diagnostic "$method" </dev/null)
+    if [ "$method" = dnscrypt_test ] && engine_selected && [ -r "$STATE_FILE" ]; then
+        dnscrypt_check_pool || :
+    fi
     result=$(jsonfilter -s "$reply" -e '@.ok' 2>/dev/null)
     jsonfilter -s "$reply" -e '@.output' > "$JOB_DIR/health/output" 2>/dev/null || true
     [ -s "$JOB_DIR/health/output" ] || jsonfilter -s "$reply" -e '@.error' > "$JOB_DIR/health/output" 2>/dev/null || true
@@ -1334,6 +1360,18 @@ EOF_POOL
     case "$regional_mode" in yandex|isp) ;; *) regional_mode=doh;; esac
     json_add_string dnscrypt_regional_mode "$regional_mode"
     json_add_string dnscrypt_regional_ips "$(uci -q get dns-manager.global.dnscrypt_regional_ips || :)"
+    json_add_object dnscrypt_server_checks
+    if [ "$running" -eq 1 ] && [ -r "$STATE_FILE" ] && [ -r "$RUNTIME_DIR/dnscrypt-server-checks" ]; then
+        while IFS='|' read -r check_id check_url check_ms check_status check_time; do
+            case "$check_id" in ''|*[!A-Za-z0-9_-]*) continue;; esac
+            case "$check_time" in ''|*[!0-9]*) continue;; esac
+            check_now=$(date +%s)
+            [ "$check_now" -ge "$check_time" ] && [ $((check_now - check_time)) -le 300 ] || continue
+            grep -Fqx "server=$check_id|$check_url" "$STATE_FILE" || continue
+            case "$check_status:$check_ms" in OK:*[!0-9]*|OK:) continue;; OK:*) json_add_string "$check_id" "OK:$check_ms";; *) json_add_string "$check_id" fail;; esac
+        done < "$RUNTIME_DIR/dnscrypt-server-checks"
+    fi
+    json_close_object
     json_add_array dnscrypt_servers
     if [ -r "$STATE_FILE" ]; then
         while IFS='|' read -r id url; do
@@ -2405,7 +2443,7 @@ if [ "$(uci -q get dns-manager.global.active_engine 2>/dev/null)" = dnscrypt-pro
 fi
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.81"
+SELF_VERSION="2.82"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -7036,6 +7074,9 @@ function appendUninstall(ch,root){
   ]));
 }
 function dnscryptLatencyBadge(st,index){
+  var id=(st.dnscrypt_servers||[])[index], check=(st.dnscrypt_server_checks||{})[id];
+  if(Number(st.dnscrypt_running)===1&&check==='fail')return badge('dm-bad','недоступен');
+  if(Number(st.dnscrypt_running)===1&&/^OK:[0-9]+$/.test(String(check||'')))return badge('dm-ok',String(check).slice(3)+' мс · доступен');
   var values=st.dnscrypt_server_latency||{}, value=values['manager-'+(index+1)];
   return Number(st.dnscrypt_running)===1&&value!=null&&/^\d+$/.test(String(value))
     ? badge('dm-muted',String(value)+' мс · последний замер')
@@ -8838,7 +8879,7 @@ function waitDnsHealth(r){
   if(!r||!r.ok||r.job!=='health')return Promise.reject(new Error((r&&r.error)||'Не удалось запустить проверку DNS.'));
   var tries=0;
   function poll(){return callJob('health').then(function(j){
-    if(j&&j.status==='running'&&tries++<30)return new Promise(function(resolve){window.setTimeout(resolve,1000);}).then(poll);
+    if(j&&j.status==='running'&&tries++<120)return new Promise(function(resolve){window.setTimeout(resolve,1000);}).then(poll);
     if(!j||j.status!=='done')throw new Error('Не удалось получить результат проверки DNS.');
     return {ok:j.result==='ok',output:j.output};
   });}
@@ -8849,10 +8890,8 @@ function dnscryptDiagnosticView(){
   if(state.dnscryptDiagnosticKind==='log')return E('pre',{'class':'dm-log'},state.dnscryptDiagnostic);
   if(state.dnscryptDiagnosticKind!=='test'||!state.dnscryptDiagnosticResult)return E('div',{'class':'dm-inline-msg info'},state.dnscryptDiagnostic);
   var result=state.dnscryptDiagnosticResult;
-  return E('div',{'class':'dm-dnscrypt-result'},[
-    E('div',{'class':'dm-inline-msg '+(result==='ok'?'ok':result==='waiting'?'info':'error')},result==='ok'?'DNS отвечает. Проверены DNSCrypt и DNS роутера.':result==='waiting'?'Ожидание подключения к сети.':'Проверка DNS не завершилась успешно.'),
-    E('details',{'class':'dm-fold'},[E('summary',{},'Подробности проверки'),E('pre',{'class':'dm-log'},state.dnscryptDiagnostic)])
-  ]);
+  if(result==='ok')return null;
+  return E('div',{'class':'dm-inline-msg '+(result==='waiting'?'info':'error')},result==='waiting'?'Ожидание подключения к сети.':'Не удалось проверить DNS роутера.');
 }
 function dnscryptDiagnostic(root,log){
   if(state.busy)return;
@@ -8861,7 +8900,7 @@ function dnscryptDiagnostic(root,log){
     state.dnscryptDiagnosticResult=r&&r.ok?(String(r.output||'').trim()==='Ожидание подключения к сети.'?'waiting':'ok'):'error';
     state.dnscryptDiagnostic=String(r&&r.output||(log?'Записей пока нет.':'Нет данных.'));
     if(log&&(!r||!r.ok))state.dnscryptDiagnostic='Не удалось получить журнал.\n'+state.dnscryptDiagnostic;
-  }).catch(function(err){state.dnscryptDiagnosticResult='error';state.dnscryptDiagnostic=withRpcError('Не удалось выполнить действие.',err);}).then(function(){state.busy=false;renderDnscryptDiagnostic(root);});
+  }).catch(function(err){state.dnscryptDiagnosticResult='error';state.dnscryptDiagnostic=withRpcError('Не удалось выполнить действие.',err);}).then(function(){state.busy=false;if(log)renderDnscryptDiagnostic(root);else refresh(root,true);});
 }
 function switchEngine(target,root){
   if(state.busy||state.jobRunning)return;
