@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager full installer and LuCI companion
-# Version: 2.63
+# Version: 2.64
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.63"
+VERSION="2.64"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -2363,7 +2363,7 @@ if [ "$(uci -q get dns-manager.global.active_engine 2>/dev/null)" = dnscrypt-pro
 fi
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.63"
+SELF_VERSION="2.64"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -6041,7 +6041,7 @@ EOF_RPC_WRAPPER
 'require ui';
 'require session';
 
-// DNS Manager LuCI common module version: 2.63
+// DNS Manager LuCI common module version: 2.64
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -7848,7 +7848,8 @@ function watchdogCard(root,st){
   }
   function param(name,title,min,max,unit,desc,minutes){
     var value=minutes?minuteValue(st[name],min):Number(st[name]||min);
-    var input=E('input',{'type':'number','min':String(min),'max':String(max),'step':'1','value':String(value),'class':'dm-input'});
+    var input=E('input',{'type':'number','min':String(min),'max':String(max),'step':'1','value':String(state.watchdogCooldownDraft==null?value:state.watchdogCooldownDraft),'class':'dm-input'});
+    input.addEventListener('input',function(){state.watchdogCooldownDraft=input.value;save.style.display=String(input.value)===String(value)?'none':'';});
     inputs[name]=input;
     return E('div',{'class':'dm-watchdog-row'},[
       E('div',{},[
@@ -7889,6 +7890,7 @@ function watchdogCard(root,st){
     renderNetwork(root,window.dmState||{});
     callWatchdogSettings(120,3,values[0],Math.round(restarts),Math.round(guard)).then(function(r){
       state.busy=false;state.busySetting='';
+      if(r&&r.ok)state.watchdogCooldownDraft=null;
       setSettingFeedback('watchdog_batch',r&&r.ok?'Настройки проверки сохранены.':((r&&r.error)||'Не удалось сохранить настройки контроля.'),r&&r.ok?'ok':'error');
       refresh(root,true);
     }).catch(function(err){
@@ -7897,6 +7899,8 @@ function watchdogCard(root,st){
       refresh(root,true);
     });
   },{disabled:!!state.busy});
+
+  save.style.display=state.watchdogCooldownDraft!=null&&String(state.watchdogCooldownDraft)!==String(cooldownMinutes)?'':'none';
 
   function toggleRow(title,desc,enabled,key,disabled){
     return settingToggle(root,title,desc,enabled,key,disabled,disabled?'Сначала включите проверку DNS.':'');
@@ -7951,20 +7955,40 @@ function renderTestAgeCommon(root,st){
 }
 
 function cacheCard(root,st){
-  var total=E('input',{'type':'number','min':'0','max':'10000','step':'1','value':String(st.cache_total==null?1000:st.cache_total),'class':'dm-input'});
-  var currentTtl=Number(st.cache_ttl)||0;
-  var ttlOptions=[E('option',{'value':'0'},'Как у DNS-сервера'),E('option',{'value':'300'},'5 минут'),E('option',{'value':'900'},'15 минут'),E('option',{'value':'1800'},'30 минут')];
-  if(currentTtl>0&&[300,900,1800].indexOf(currentTtl)<0)ttlOptions.push(E('option',{'value':String(currentTtl)},'Текущее значение: '+currentTtl+' сек.'));
-  var ttl=E('select',{'class':'dm-input'},ttlOptions);ttl.value=String(currentTtl);
-  var busy=state.busySetting==='dns_cache';
-  var save=btn(busy?'Сохраняю…':'Сохранить','cbi-button-apply',function(){
-    if(state.busy)return;
-    var a=String(total.value).trim(),b=String(ttl.value).trim();
-    if(!/^(0|[1-9]\d*)$/.test(a)||! /^(0|[1-9]\d*)$/.test(b)||Number(a)>10000||Number(b)>3600){setSettingFeedback('dns_cache','Кэш: 0–10000 записей; TTL: 0–3600 секунд.','error');renderNetwork(root,st);return;}
+  var currentTotal=Number(st.cache_total==null?1000:st.cache_total), currentTtl=Number(st.cache_ttl)||0;
+  if(!state.cacheDraft)state.cacheDraft={total:currentTotal,ttl:currentTtl};
+  var draft=state.cacheDraft, locked=!!state.busy||!!state.jobRunning;
+  var sizes=[[1000,'Стандартный','1 000 записей'],[4096,'Расширенный','4 096 записей'],[10000,'Большой','10 000 записей']];
+  var times=[[0,'Как у DNS-сервера'],[300,'5 минут'],[900,'15 минут'],[1800,'30 минут']];
+  function choices(items,key){
+    var group=E('div',{'class':'dm-seg'});
+    items.forEach(function(x){
+      var active=draft[key]===x[0];
+      group.appendChild(btn(x[1]+(x[2]?' · '+x[2]:''),active?'active cbi-button':'cbi-button',function(){
+        if(locked)return;draft[key]=x[0];clearSettingFeedback();renderNetwork(root,st);
+      },{disabled:locked,'aria-pressed':active?'true':'false'}));
+    });
+    if(!items.some(function(x){return x[0]===draft[key];}))group.appendChild(E('span',{'class':'dm-setting-desc'},'Текущее значение: '+draft[key]+(key==='total'?' записей':' сек.')));
+    return group;
+  }
+  var changed=draft.total!==currentTotal||draft.ttl!==currentTtl;
+  var save=changed?btn(state.busySetting==='dns_cache'?'Применяю…':'Применить изменения','cbi-button-action',function(){
+    if(locked)return;
+    var total=draft.total,ttl=draft.ttl;
     state.busy=true;state.busySetting='dns_cache';setSettingFeedback('dns_cache','Применяю настройки…','info');renderNetwork(root,st);
-    callSetCache(Number(a),Number(b)).then(awaitSettingResult).then(function(r){state.busy=false;state.busySetting='';setSettingFeedback('dns_cache',r&&r.ok?'Настройки кэша сохранены.':((r&&r.error)||'Не удалось применить кэш.'),r&&r.ok?'ok':'error');return refresh(root,true);}).catch(function(e){state.busy=false;state.busySetting='';setSettingFeedback('dns_cache',withRpcError('Не удалось применить кэш.',e),'error');refresh(root,true);});
-  },{disabled:!!state.busy});
-  return E('div',{'class':'dm-card'},[E('div',{'class':'dm-section-title'},'Кэш DNS'),E('div',{'class':'dm-setting-desc'},'Кэш основного DNS роутера. Для DNS привязанных устройств кэш отключён; их выбор DNS сохраняется. Кэш Steer настраивается отдельно.'),E('div',{'class':'dm-watchdog-row'},[E('span',{},'Размер кэша DNS'),total,E('span',{},'0–10000 записей')]),E('div',{'class':'dm-watchdog-row'},[E('span',{},'Минимальное время хранения'),ttl]),E('div',{'class':'dm-setting-desc'},'Если DNS-сервер задал больший срок, он сохраняется. Настройка не влияет на привязанные устройства. Увеличение срока может сохранять устаревшие адреса.'),save,settingFeedback('','dns_cache')||E('span',{})]);
+    callSetCache(total,ttl).then(awaitSettingResult).then(function(r){
+      state.busy=false;state.busySetting='';if(r&&r.ok)state.cacheDraft=null;
+      setSettingFeedback('dns_cache',r&&r.ok?'Настройки кэша сохранены.':((r&&r.error)||'Не удалось применить кэш.'),r&&r.ok?'ok':'error');return refresh(root,true);
+    }).catch(function(e){state.busy=false;state.busySetting='';setSettingFeedback('dns_cache',withRpcError('Не удалось применить кэш.',e),'error');refresh(root,true);});
+  },{disabled:locked}):null;
+  return E('div',{'class':'dm-card'},[
+    E('div',{'class':'dm-section-title'},'Кэш DNS'),
+    E('div',{'class':'dm-setting-desc'},'Кэш основного DNS роутера. Для привязанных устройств кэш отключён. Кэш Steer настраивается отдельно.'),
+    E('div',{'class':'dm-section-title'},'Размер кэша'),choices(sizes,'total'),
+    E('div',{'class':'dm-section-title'},'Минимальное время хранения'),choices(times,'ttl'),
+    E('div',{'class':'dm-setting-desc'},'Если DNS-сервер задал больший срок, он сохраняется. Увеличение срока может сохранять устаревшие адреса.'),
+    save?E('div',{'class':'dm-actions'},[save]):null,settingFeedback('','dns_cache')
+  ].filter(Boolean));
 }
 function renderNetwork(root,st){
   var e=root.querySelector('#dm-network');if(!e)return;e.innerHTML='';
@@ -8374,7 +8398,7 @@ function saveRouteCache(key,st,aux){
     var entry=JSON.parse(JSON.stringify({ts:Date.now(),data:st,aux:aux}));
     window.dmRouteCache[key]=entry;
     if(typeof session!=='undefined'&&session.setLocalData)
-      session.setLocalData('dns-manager-route-2.63-'+key,entry);
+      session.setLocalData('dns-manager-route-2.64-'+key,entry);
   }catch(e){}
 }
 function clearEngineUiState(){
@@ -8382,7 +8406,7 @@ function clearEngineUiState(){
   window.dmRouteCache=Object.create(null);
   window.dmStatusPromises=Object.create(null);
   ['dashboard','doh','network','time','devices','catalog','log'].forEach(function(key){
-    try{if(typeof session!=='undefined'&&session.setLocalData)session.setLocalData('dns-manager-route-2.63-'+key,null);}catch(e){}
+    try{if(typeof session!=='undefined'&&session.setLocalData)session.setLocalData('dns-manager-route-2.64-'+key,null);}catch(e){}
   });
   state.pageNotice={};state.profileProgress=null;state.profileOutput='';state.profileResumeStarted=false;
   state.regionalNotice='';state.pendingProfile='';state.pendingRegional=null;state.pendingDnscryptServer='';state.dnscryptDiagnostic='';state.dnscryptDiagnosticKind='';state.dnscryptDiagnosticResult='';
@@ -8394,7 +8418,7 @@ function clearEngineUiState(){
 function routeCacheEntry(key){
   var entry=key&&window.dmRouteCache&&window.dmRouteCache[key];
   if(!entry&&key){
-    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.63-'+key);}catch(e){}
+    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.64-'+key);}catch(e){}
   }
   if(!entry||typeof entry.ts!=='number'||Date.now()-entry.ts<0||Date.now()-entry.ts>300000||!entry.data||entry.data.ok!==true)return null;
   return entry;
@@ -8981,7 +9005,7 @@ function resumeAction(root){
       state.busy=false;state.actionResumeStarted=false;
       state.pageNotice[key]=r&&r.ok?'Операция выполнена.':((r&&r.error)||'Не удалось подтвердить результат.');
       if(name==='set_bootstrap'){state.busySetting='';state.bootstrapNotice={type:r&&r.ok?'ok':'error',text:state.pageNotice[key]};state.pageNotice[key]='';if(r&&r.ok)state.bootstrapDraft=null;}
-      if(name==='set_cache'){state.busySetting='';setSettingFeedback('dns_cache',state.pageNotice[key],r&&r.ok?'ok':'error');state.pageNotice[key]='';}
+      if(name==='set_cache'){state.busySetting='';if(r&&r.ok)state.cacheDraft=null;setSettingFeedback('dns_cache',state.pageNotice[key],r&&r.ok?'ok':'error');state.pageNotice[key]='';}
       if(route==='doh')state.profileNoticeType=r&&r.ok?'ok':'error';
       if(route==='time')state.timeNoticeType=r&&r.ok?'ok':'error';
       return refresh(root,true);
@@ -9461,7 +9485,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 2.63
+// DNS Manager LuCI version: 2.64
 return view.extend({
   load: DM.load,
   render: DM.render,

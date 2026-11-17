@@ -47,7 +47,7 @@ async function testRouteCache(){
   if(!cached||cached.force_owner!=='steer'||cached.__dmCachedRoute!=='slots')throw Error('compatible route cache missing');
   ctx.window.dmRouteCache=undefined;
   if(ctx.cachedRouteStatus('slots').force_owner!=='steer')throw Error('cache did not survive page navigation');
-  ctx.window.dmRouteCache={doh:JSON.parse(store['dns-manager-route-2.63-doh'])};
+  ctx.window.dmRouteCache={doh:JSON.parse(store['dns-manager-route-2.64-doh'])};
   cached.slots.length=0;
   if(ctx.cachedRouteStatus('doh').slots.length!==1)throw Error('cache was mutated by view');
   ctx.applyStatusToCurrentRoot({ok:true,force_owner:'steer'},'doh');
@@ -95,7 +95,7 @@ async function testAdditionalRouteCache(){
   ctx.state.category='security';if(ctx.cachedRouteStatus('catalog'))throw Error('wrong catalog category reused');ctx.state.category='all';
   failDevices=true;failCatalog=true;failLog=true;
   const previous={...store};for(const route of ['devices','catalog','log'])await ctx.ensureStatusPromise(route);
-  for(const route of ['devices','catalog','log'])if(store['dns-manager-route-2.63-'+route]!==previous['dns-manager-route-2.63-'+route])throw Error('failed '+route+' replaced good cache');
+  for(const route of ['devices','catalog','log'])if(store['dns-manager-route-2.64-'+route]!==previous['dns-manager-route-2.64-'+route])throw Error('failed '+route+' replaced good cache');
 }
 async function testSequentialWarmup(){
   let active=0,max=0,calls=[],allowed=true;
@@ -478,4 +478,14 @@ async function testTimePresetCards(){
   cards[2].attrs.click();if(calls.length)throw Error('active time preset reapplied');
   cards[1].attrs.click();await delay();if(calls.join()!=='nist_ip'||refreshes!==1||state.busy)throw Error('time preset card did not apply');
 }
-Promise.all([testTimePresetCards(),testSettingToggle(),testProfileApplyWithoutPopup(),testDnscryptDiagnosticDisplay(),testRunningProfileTimeout(),testTimePresetWhitespace(),testPoolSelectionRefresh(),testProfileClickBothEngines(),testDnscryptPoolPresentation(),testRegionalSelection(),testResumeCatalog(),testBackgroundStartTimeout(),testBackgroundUnknown(),testBackgroundNavigation(),testBackgroundFailure(),testDoHRemove(),testSingleError(),testBadgeWithoutDuration(),testPollNavigation(),testLongCatalogProgress(117),testLongCatalogProgress(5,true),testRouteCache(),testCachedReadOnly(),testAdditionalRouteCache(),testSequentialWarmup(),testWarmupResourceGuard(),testResumeCache(),testSettingConnectionLoss(),testRegionalConnectionLoss(),testProfileMissingJob(),testJobTransientError(),testUninstallUnresponsiveStatus(),testProfileStatus(),testSlotDraft(),testDeviceSave(),testCatalogError(),testFoldState(),testCustomDnsFeedback(),testBootstrapForm(),testLogScroll(),testHeaderCheckKind()]).catch(e=>{console.error(e);process.exitCode=1;});
+async function testCachePresets(){
+  let buttons=[],calls=[];const state={busy:false,jobRunning:false},st={cache_total:1000,cache_ttl:0},root={};
+  const ctx={state,E:(tag,attrs,children)=>({tag,attrs,children,appendChild:function(x){this.children=this.children||[];this.children.push(x);}}),btn:(text,cls,click,attrs)=>{let b={text,cls,click,attrs};buttons.push(b);return b;},clearSettingFeedback:()=>{},settingFeedback:()=>null,setSettingFeedback:()=>{},renderNetwork:()=>{},callSetCache:(a,b)=>{calls.push([a,b]);return Promise.resolve({ok:true});},awaitSettingResult:r=>r,refresh:()=>{},withRpcError:s=>s};
+  vm.createContext(ctx);vm.runInContext(extract('function cacheCard(root,st){','function renderNetwork(root,st){'),ctx);
+  ctx.cacheCard(root,st);if(buttons.some(b=>b.text==='Применить изменения'))throw Error('unchanged cache shows apply');
+  buttons.find(b=>b.text.startsWith('Расширенный')).click();buttons=[];ctx.cacheCard(root,st);
+  buttons.find(b=>b.text==='15 минут').click();buttons=[];ctx.cacheCard(root,st);buttons.find(b=>b.text==='Применить изменения').click();await delay();
+  if(JSON.stringify(calls)!=='[[4096,900]]'||state.cacheDraft!==null||state.busy)throw Error('cache preset values not applied');
+  buttons=[];ctx.cacheCard(root,{cache_total:777,cache_ttl:42});if(state.cacheDraft.total!==777||state.cacheDraft.ttl!==42||buttons.some(b=>b.text==='Применить изменения'))throw Error('custom values not preserved');
+}
+Promise.all([testCachePresets(),testTimePresetCards(),testSettingToggle(),testProfileApplyWithoutPopup(),testDnscryptDiagnosticDisplay(),testRunningProfileTimeout(),testTimePresetWhitespace(),testPoolSelectionRefresh(),testProfileClickBothEngines(),testDnscryptPoolPresentation(),testRegionalSelection(),testResumeCatalog(),testBackgroundStartTimeout(),testBackgroundUnknown(),testBackgroundNavigation(),testBackgroundFailure(),testDoHRemove(),testSingleError(),testBadgeWithoutDuration(),testPollNavigation(),testLongCatalogProgress(117),testLongCatalogProgress(5,true),testRouteCache(),testCachedReadOnly(),testAdditionalRouteCache(),testSequentialWarmup(),testWarmupResourceGuard(),testResumeCache(),testSettingConnectionLoss(),testRegionalConnectionLoss(),testProfileMissingJob(),testJobTransientError(),testUninstallUnresponsiveStatus(),testProfileStatus(),testSlotDraft(),testDeviceSave(),testCatalogError(),testFoldState(),testCustomDnsFeedback(),testBootstrapForm(),testLogScroll(),testHeaderCheckKind()]).catch(e=>{console.error(e);process.exitCode=1;});
