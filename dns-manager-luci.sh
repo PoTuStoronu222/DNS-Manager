@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager full installer and LuCI companion
-# Version: 2.64
+# Version: 2.65
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.64"
+VERSION="2.65"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -2363,7 +2363,7 @@ if [ "$(uci -q get dns-manager.global.active_engine 2>/dev/null)" = dnscrypt-pro
 fi
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.64"
+SELF_VERSION="2.65"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -6041,7 +6041,7 @@ EOF_RPC_WRAPPER
 'require ui';
 'require session';
 
-// DNS Manager LuCI common module version: 2.64
+// DNS Manager LuCI common module version: 2.65
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -6382,9 +6382,8 @@ function injectStyle(root){
   '.dm-wrap .dm-catalog-item:hover{border-color:rgba(110,118,129,.34);box-shadow:0 4px 12px rgba(15,23,42,.065)}'+
   '.dm-wrap .dm-catalog-item h4{font-size:14px;font-weight:750;line-height:1.45;overflow-wrap:anywhere}'+
   '.dm-wrap .dm-catalog-item>.dm-meta{display:inline-flex;align-self:flex-start;padding:4px 8px;border-radius:6px;background:rgba(110,118,129,.075);font-size:10.5px;opacity:.82}'+
-  '.dm-wrap .dm-catalog-item .dm-catalog-controls{margin-top:auto;padding-top:9px;border-top:1px solid rgba(110,118,129,.13)}'+
-  '.dm-wrap .dm-catalog-assign{display:flex;align-items:center;gap:8px;flex-wrap:wrap;width:100%;min-width:0}'+
-  '.dm-wrap .dm-catalog-assign>.cbi-button-action{flex:1 1 auto;min-width:100px}'+
+  '.dm-wrap .dm-catalog-item .dm-catalog-controls{margin-top:auto;padding-top:2px}'+
+  '.dm-wrap .dm-catalog-assign{display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-width:0}'+
   '.dm-wrap .dm-catalog-controls-custom .dm-catalog-assign>.cbi-button-negative{flex:0 0 auto}'+
   '.dm-catalog-slot-picker{display:flex;flex-direction:column;gap:8px;min-width:min(460px,calc(100vw - 64px));margin-top:10px}'+
   '.dm-catalog-slot-option{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:12px;padding:11px 12px;border:1px solid rgba(110,118,129,.18);border-radius:10px;background:rgba(110,118,129,.035)}'+
@@ -6396,7 +6395,7 @@ function injectStyle(root){
   '.dm-catalog-slot-status{margin-top:1px}'+
   '.dm-catalog-slot-port{font-size:10.5px;opacity:.6}'+
   'html[data-darkmode="true"] .dm-catalog-slot-option{background:rgba(255,255,255,.025);border-color:rgba(255,255,255,.1)}'+
-  '@media(max-width:560px){.dm-catalog-slot-picker{min-width:0;width:100%}.dm-catalog-slot-option{grid-template-columns:minmax(0,1fr);gap:8px}.dm-catalog-slot-option>.cbi-button{width:100%}.dm-wrap .dm-catalog-assign>.cbi-button-action{width:100%}}'+
+  '@media(max-width:560px){.dm-catalog-slot-picker{min-width:0;width:100%}.dm-catalog-slot-option{grid-template-columns:minmax(0,1fr);gap:8px}.dm-catalog-slot-option>.cbi-button{width:100%}.dm-wrap .dm-catalog-assign>.cbi-button{max-width:100%}}'+
   '.dm-wrap .dm-custom-dns-form{display:grid;grid-template-columns:minmax(180px,1fr) minmax(240px,1.4fr) auto;align-items:end;gap:12px;margin:12px 0}'+
   '.dm-wrap .dm-custom-dns-form>div{display:flex;flex-direction:column;gap:6px;min-width:0}'+
   '.dm-wrap .dm-custom-dns-form>.cbi-button{justify-self:start}'+
@@ -7231,7 +7230,7 @@ function renderCatalogAssign(d,root){
   var checking=String(ci.status||'').toUpperCase()==='RUNNING';
   var unavailable=!checking&&!resolverAvailable(ci);
   return E('div',{'class':'dm-catalog-assign'},[
-    btn(checking?'Проверяется…':(unavailable?'Недоступен':'Назначить'),'cbi-button-action',function(){
+    btn('Выбрать','cbi-button-neutral',function(){
       if(unavailable||checking)return;
       openCatalogSlotPicker(d,root);
     },{disabled:!!state.busy||!!state.jobRunning||unavailable||checking,title:unavailable?'DNS не прошёл последнюю проверку. Повторите проверку после восстановления.':''})
@@ -8238,14 +8237,10 @@ function renderCatalogBody(root,data){
     g.appendChild(E('div',{'class':'dm-card dm-catalog-item'+(isUserDnsRecord(d)?' dm-catalog-item-custom':'')},[
       E('h4',{},d.name||d.id),
       E('div',{'class':'dm-meta'},catName(d.category)),
-      E('div',{'class':'dm-row'},[
-        E('span',{'class':'dm-slot-state'},statusText),
-        E('span',{'class':'dm-inline'},[
-          btn(ci.status==='RUNNING'?'Проверяю…':'Проверить','cbi-button-neutral',function(){testOne(d.id,root,'catalog');},{disabled:ci.status==='RUNNING'||!!state.busy||!!state.jobRunning})
-        ])
-      ]),
+      E('div',{'class':'dm-slot-state'},[statusText]),
       E('div',{'class':'dm-catalog-controls'+(isUserDnsRecord(d)?' dm-catalog-controls-custom':'' )},(function(){
         var assignment=renderCatalogAssign(d,root);
+        assignment.insertBefore(btn(ci.status==='RUNNING'?'Проверяю…':'Проверить','cbi-button-neutral',function(){testOne(d.id,root,'catalog');},{disabled:ci.status==='RUNNING'||!!state.busy||!!state.jobRunning}),assignment.firstChild);
         if(isUserDnsRecord(d)){
           assignment.appendChild(btn('Удалить','cbi-button-negative',function(){deleteCustomDns(d,root);},{disabled:!!state.busy||!!state.jobRunning}));
           return [assignment];
@@ -8398,7 +8393,7 @@ function saveRouteCache(key,st,aux){
     var entry=JSON.parse(JSON.stringify({ts:Date.now(),data:st,aux:aux}));
     window.dmRouteCache[key]=entry;
     if(typeof session!=='undefined'&&session.setLocalData)
-      session.setLocalData('dns-manager-route-2.64-'+key,entry);
+      session.setLocalData('dns-manager-route-2.65-'+key,entry);
   }catch(e){}
 }
 function clearEngineUiState(){
@@ -8406,7 +8401,7 @@ function clearEngineUiState(){
   window.dmRouteCache=Object.create(null);
   window.dmStatusPromises=Object.create(null);
   ['dashboard','doh','network','time','devices','catalog','log'].forEach(function(key){
-    try{if(typeof session!=='undefined'&&session.setLocalData)session.setLocalData('dns-manager-route-2.64-'+key,null);}catch(e){}
+    try{if(typeof session!=='undefined'&&session.setLocalData)session.setLocalData('dns-manager-route-2.65-'+key,null);}catch(e){}
   });
   state.pageNotice={};state.profileProgress=null;state.profileOutput='';state.profileResumeStarted=false;
   state.regionalNotice='';state.pendingProfile='';state.pendingRegional=null;state.pendingDnscryptServer='';state.dnscryptDiagnostic='';state.dnscryptDiagnosticKind='';state.dnscryptDiagnosticResult='';
@@ -8418,7 +8413,7 @@ function clearEngineUiState(){
 function routeCacheEntry(key){
   var entry=key&&window.dmRouteCache&&window.dmRouteCache[key];
   if(!entry&&key){
-    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.64-'+key);}catch(e){}
+    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.65-'+key);}catch(e){}
   }
   if(!entry||typeof entry.ts!=='number'||Date.now()-entry.ts<0||Date.now()-entry.ts>300000||!entry.data||entry.data.ok!==true)return null;
   return entry;
@@ -9485,7 +9480,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 2.64
+// DNS Manager LuCI version: 2.65
 return view.extend({
   load: DM.load,
   render: DM.render,

@@ -47,7 +47,7 @@ async function testRouteCache(){
   if(!cached||cached.force_owner!=='steer'||cached.__dmCachedRoute!=='slots')throw Error('compatible route cache missing');
   ctx.window.dmRouteCache=undefined;
   if(ctx.cachedRouteStatus('slots').force_owner!=='steer')throw Error('cache did not survive page navigation');
-  ctx.window.dmRouteCache={doh:JSON.parse(store['dns-manager-route-2.64-doh'])};
+  ctx.window.dmRouteCache={doh:JSON.parse(store['dns-manager-route-2.65-doh'])};
   cached.slots.length=0;
   if(ctx.cachedRouteStatus('doh').slots.length!==1)throw Error('cache was mutated by view');
   ctx.applyStatusToCurrentRoot({ok:true,force_owner:'steer'},'doh');
@@ -95,7 +95,7 @@ async function testAdditionalRouteCache(){
   ctx.state.category='security';if(ctx.cachedRouteStatus('catalog'))throw Error('wrong catalog category reused');ctx.state.category='all';
   failDevices=true;failCatalog=true;failLog=true;
   const previous={...store};for(const route of ['devices','catalog','log'])await ctx.ensureStatusPromise(route);
-  for(const route of ['devices','catalog','log'])if(store['dns-manager-route-2.64-'+route]!==previous['dns-manager-route-2.64-'+route])throw Error('failed '+route+' replaced good cache');
+  for(const route of ['devices','catalog','log'])if(store['dns-manager-route-2.65-'+route]!==previous['dns-manager-route-2.65-'+route])throw Error('failed '+route+' replaced good cache');
 }
 async function testSequentialWarmup(){
   let active=0,max=0,calls=[],allowed=true;
@@ -488,4 +488,15 @@ async function testCachePresets(){
   if(JSON.stringify(calls)!=='[[4096,900]]'||state.cacheDraft!==null||state.busy)throw Error('cache preset values not applied');
   buttons=[];ctx.cacheCard(root,{cache_total:777,cache_ttl:42});if(state.cacheDraft.total!==777||state.cacheDraft.ttl!==42||buttons.some(b=>b.text==='Применить изменения'))throw Error('custom values not preserved');
 }
-Promise.all([testCachePresets(),testTimePresetCards(),testSettingToggle(),testProfileApplyWithoutPopup(),testDnscryptDiagnosticDisplay(),testRunningProfileTimeout(),testTimePresetWhitespace(),testPoolSelectionRefresh(),testProfileClickBothEngines(),testDnscryptPoolPresentation(),testRegionalSelection(),testResumeCatalog(),testBackgroundStartTimeout(),testBackgroundUnknown(),testBackgroundNavigation(),testBackgroundFailure(),testDoHRemove(),testSingleError(),testBadgeWithoutDuration(),testPollNavigation(),testLongCatalogProgress(117),testLongCatalogProgress(5,true),testRouteCache(),testCachedReadOnly(),testAdditionalRouteCache(),testSequentialWarmup(),testWarmupResourceGuard(),testResumeCache(),testSettingConnectionLoss(),testRegionalConnectionLoss(),testProfileMissingJob(),testJobTransientError(),testUninstallUnresponsiveStatus(),testProfileStatus(),testSlotDraft(),testDeviceSave(),testCatalogError(),testFoldState(),testCustomDnsFeedback(),testBootstrapForm(),testLogScroll(),testHeaderCheckKind()]).catch(e=>{console.error(e);process.exitCode=1;});
+async function testCatalogCardActions(){
+  let nodes=[],checked=[],selected=[],removed=[];const status={ok:'OK',bad:'FAIL',running:'RUNNING',custom:'OK'},state={busy:false,jobRunning:false,catalogLoading:false,category:'all',offset:0,limit:20},root={querySelector:()=>({innerHTML:'',appendChild:()=>{}})};
+  const E=(tag,attrs,children)=>{let n={tag,attrs,children:Array.isArray(children)?children:[],appendChild(x){this.children.push(x);},insertBefore(x){this.children.unshift(x);}};Object.defineProperty(n,'firstChild',{get(){return this.children[0];}});nodes.push(n);return n;};
+  const ctx={state,E,CATEGORY:[],checkInfo:id=>({status:status[id]}),resolverAvailable:ci=>ci.status==='OK',stateBadge:()=>({}),catName:x=>x,isUserDnsRecord:d=>d.id==='custom',btn:(text,cls,click,attrs)=>({text,cls,click,attrs}),testOne:id=>checked.push(id),openCatalogSlotPicker:d=>selected.push(d.id),deleteCustomDns:d=>removed.push(d.id),loadCatalog:()=>{}};
+  vm.createContext(ctx);vm.runInContext(extract('function renderCatalogAssign(d,root){','function openCatalogSlotPicker('),ctx);vm.runInContext(extract('function renderCatalogBody(root,data){','function renderLog('),ctx);
+  ctx.renderCatalogBody(root,{servers:[{id:'ok'},{id:'bad'},{id:'running'},{id:'custom'}],total:4});
+  const rows=nodes.filter(n=>n.attrs&&n.attrs.class==='dm-catalog-assign');if(rows.length!==4)throw Error('catalog controls missing');
+  for(const row of rows)if(!row.children[0].text.startsWith('Провер')||row.children[1].text!=='Выбрать')throw Error('catalog actions are not adjacent');
+  if(rows[0].children[1].attrs.disabled||!rows[1].children[1].attrs.disabled||!rows[2].children[1].attrs.disabled)throw Error('catalog availability guard incorrect');
+  rows[0].children[0].click();rows[0].children[1].click();rows[3].children[2].click();if(checked.join()!=='ok'||selected.join()!=='ok'||removed.join()!=='custom')throw Error('catalog action routing incorrect');
+}
+Promise.all([testCatalogCardActions(),testCachePresets(),testTimePresetCards(),testSettingToggle(),testProfileApplyWithoutPopup(),testDnscryptDiagnosticDisplay(),testRunningProfileTimeout(),testTimePresetWhitespace(),testPoolSelectionRefresh(),testProfileClickBothEngines(),testDnscryptPoolPresentation(),testRegionalSelection(),testResumeCatalog(),testBackgroundStartTimeout(),testBackgroundUnknown(),testBackgroundNavigation(),testBackgroundFailure(),testDoHRemove(),testSingleError(),testBadgeWithoutDuration(),testPollNavigation(),testLongCatalogProgress(117),testLongCatalogProgress(5,true),testRouteCache(),testCachedReadOnly(),testAdditionalRouteCache(),testSequentialWarmup(),testWarmupResourceGuard(),testResumeCache(),testSettingConnectionLoss(),testRegionalConnectionLoss(),testProfileMissingJob(),testJobTransientError(),testUninstallUnresponsiveStatus(),testProfileStatus(),testSlotDraft(),testDeviceSave(),testCatalogError(),testFoldState(),testCustomDnsFeedback(),testBootstrapForm(),testLogScroll(),testHeaderCheckKind()]).catch(e=>{console.error(e);process.exitCode=1;});
