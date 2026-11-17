@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.102"
+VERSION="2.103"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -2601,7 +2601,7 @@ if [ "$(uci -q get dns-manager.global.active_engine 2>/dev/null)" = dnscrypt-pro
 fi
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.102"
+SELF_VERSION="2.103"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -8755,10 +8755,12 @@ function routeStatusCall(){
     case 'network': return callNetworkStatus();
     case 'time': return callTimeStatus();
     case 'catalog':
+      var requestedCategory=state.category, requestedOffset=state.offset, requestedLimit=state.limit;
       return Promise.all([
-        callCatalog(state.category,state.offset,state.limit,0),
+        callCatalog(requestedCategory,requestedOffset,requestedLimit,0),
         Promise.all([callDohStatus(),callPageMeta()])
       ]).then(function(v){
+        if(state.category!==requestedCategory||state.offset!==requestedOffset||state.limit!==requestedLimit)return Object.assign({},v[1][0]||{},v[1][1]||{});
         if(!v[0]||v[0].ok===false){
           window.dmCatalog=null;state.catalogLoaded=false;state.catalogLoadFailed=true;
           state.pageNotice.catalog=(v[0]&&v[0].error)||'Не удалось загрузить каталог DNS.';
@@ -8867,7 +8869,7 @@ function cachedRouteStatus(route){
   try{
     var copy=JSON.parse(JSON.stringify(entry));
     if(!restoreRouteAux(route,copy.aux))return null;
-    var st=copy.data;st.__dmCachedRoute=route;return st;
+    var st=copy.data;st.__dmCachedRoute=route;st.__dmCacheFresh=Date.now()-copy.ts<=15000;return st;
   }catch(e){return null;}
 }
 function applyStatusToCurrentRoot(st,route){
@@ -8900,7 +8902,7 @@ function scheduleBackgroundStatus(root){
     window.dmStatusRefreshTimer=null;
     if(!rootAlive(root)||window.dmCurrentRoot!==root||currentRoute()!==route)return;
     ensureStatusPromise(route).then(function(st){
-      if(window.dmCurrentRoot===root)applyStatusToCurrentRoot(st,route);
+      if(window.dmCurrentRoot===root&&!state.busy&&!state.jobRunning&&!state.catalogLoading&&!(root.contains(document.activeElement)&&/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName)))applyStatusToCurrentRoot(st,route);
     }).catch(function(err){
       if(!rootAlive(root)||window.dmCurrentRoot!==root||currentRoute()!==route)return;
       state.statusError=withRpcError('Не удалось обновить состояние. Откройте вкладку повторно.',err);
@@ -9895,10 +9897,11 @@ return baseclass.extend({
     var root=E('div',{'class':'dm-wrap'});
     var route=currentRoute();
     root.__dmRoute=route;
-    state.statusFromCache=!!(st&&st.__dmCachedRoute===route);
-    state.statusRefreshAfterRender=state.statusFromCache;
+    var cached=!!(st&&st.__dmCachedRoute===route);
+    state.statusFromCache=cached&&!st.__dmCacheFresh;
+    state.statusRefreshAfterRender=cached;
     state.statusError='';
-    if(st&&st.__dmCachedRoute)delete st.__dmCachedRoute;
+    if(st&&st.__dmCachedRoute){delete st.__dmCachedRoute;delete st.__dmCacheFresh;}
     root.addEventListener('click',function(ev){if(state.statusFromCache){ev.preventDefault();ev.stopPropagation();}},true);
     root.addEventListener('keydown',function(ev){if(state.statusFromCache&&(ev.key==='Enter'||ev.key===' '||/^(INPUT|TEXTAREA|SELECT)$/.test(String(ev.target&&ev.target.tagName||'')))){ev.preventDefault();ev.stopPropagation();}},true);
     root.addEventListener('beforeinput',function(ev){if(state.statusFromCache){ev.preventDefault();ev.stopPropagation();}},true);
