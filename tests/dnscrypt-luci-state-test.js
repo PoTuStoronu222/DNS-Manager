@@ -47,7 +47,7 @@ for (const [fn, selector] of [['renderSlots', '#dm-slots'], ['renderDeviceDns', 
   assert.equal(panel.children.length, 1);
   if(fn==='renderSlots') {
     assert.equal(panel.children[0].title, 'DNS-серверы');
-    assert(panel.children[0].children.some(x => x.attrs && x.attrs.class==='dm-pool-actions'));
+    assert(panel.children[0].children.some(x => x.attrs && x.attrs.class==='dm-pool-buttons'));
   } else {
     assert.match(panel.children[0].children[0].text, /DNS роутера/);
     assert(panel.children[0].children.some(x => x.label === 'Обновить список'));
