@@ -47,7 +47,7 @@ async function testRouteCache(){
   if(!cached||cached.force_owner!=='steer'||cached.__dmCachedRoute!=='slots')throw Error('compatible route cache missing');
   ctx.window.dmRouteCache=undefined;
   if(ctx.cachedRouteStatus('slots').force_owner!=='steer')throw Error('cache did not survive page navigation');
-  ctx.window.dmRouteCache={doh:JSON.parse(store['dns-manager-route-2.59-doh'])};
+  ctx.window.dmRouteCache={doh:JSON.parse(store['dns-manager-route-2.60-doh'])};
   cached.slots.length=0;
   if(ctx.cachedRouteStatus('doh').slots.length!==1)throw Error('cache was mutated by view');
   ctx.applyStatusToCurrentRoot({ok:true,force_owner:'steer'},'doh');
@@ -95,7 +95,7 @@ async function testAdditionalRouteCache(){
   ctx.state.category='security';if(ctx.cachedRouteStatus('catalog'))throw Error('wrong catalog category reused');ctx.state.category='all';
   failDevices=true;failCatalog=true;failLog=true;
   const previous={...store};for(const route of ['devices','catalog','log'])await ctx.ensureStatusPromise(route);
-  for(const route of ['devices','catalog','log'])if(store['dns-manager-route-2.59-'+route]!==previous['dns-manager-route-2.59-'+route])throw Error('failed '+route+' replaced good cache');
+  for(const route of ['devices','catalog','log'])if(store['dns-manager-route-2.60-'+route]!==previous['dns-manager-route-2.60-'+route])throw Error('failed '+route+' replaced good cache');
 }
 async function testSequentialWarmup(){
   let active=0,max=0,calls=[],allowed=true;
@@ -218,10 +218,15 @@ async function testDeviceSave(){
   if(renders[0]!==true||ctx.state.busy||!ctx.state.pageNotice.slots.includes('сохранены'))throw Error('device save state missing');
 }
 async function testCatalogError(){
-  const ctx={state:{catalogLoading:false,category:'all',offset:0,limit:18,pageNotice:{}},window:{dmCatalog:{servers:[{id:'stale'}]}},callCatalog:()=>Promise.resolve({ok:false,error:'failed'}),renderCatalog:()=>{},renderCatalogBody:()=>{},withRpcError:(s,e)=>s+' '+e.message};
+  let resolveFirst,rendered=[];
+  const state={catalogLoading:false,category:'all',offset:0,limit:18,pageNotice:{}};
+  const ctx={state,window:{dmCatalog:{servers:[{id:'stale'}]}},callCatalog:()=>new Promise(resolve=>{resolveFirst=resolve;}),renderCatalog:()=>rendered.push(state.catalogLoading),renderCatalogBody:()=>{},withRpcError:(s,e)=>s+' '+e.message};
   vm.createContext(ctx);vm.runInContext(extract('function loadCatalog(root){','function showLog(root){'),ctx);
-  await ctx.loadCatalog({});
-  if(ctx.window.dmCatalog!==null||!ctx.state.pageNotice.catalog.includes('failed'))throw Error('catalog failure or stale entries hidden');
+  const pending=ctx.loadCatalog({});if(!state.catalogLoading||rendered[0]!==true)throw Error('catalog controls were not locked while loading');
+  resolveFirst({ok:false,error:'failed'});await pending;
+  if(ctx.window.dmCatalog!==null||!state.pageNotice.catalog.includes('failed')||state.catalogLoading)throw Error('catalog failure or stale entries hidden');
+  ctx.callCatalog=()=>Promise.resolve({ok:true,servers:[]});await ctx.loadCatalog({});
+  if(state.pageNotice.catalog||state.catalogLoading||!state.catalogLoaded)throw Error('catalog retry did not clear error and unlock controls');
 }
 async function testFoldState(){
   const ctx={state:{},E:(tag,attrs,children)=>({tag,attrs,children,open:Object.prototype.hasOwnProperty.call(attrs,'open'),addEventListener(name,fn){this[name]=fn;}})};
