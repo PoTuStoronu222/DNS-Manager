@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager full installer and LuCI companion
-# Version: 2.56
+# Version: 2.57
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.56"
+VERSION="2.57"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -2327,7 +2327,7 @@ if [ "$(uci -q get dns-manager.global.active_engine 2>/dev/null)" = dnscrypt-pro
 fi
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.56"
+SELF_VERSION="2.57"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -6005,7 +6005,7 @@ EOF_RPC_WRAPPER
 'require ui';
 'require session';
 
-// DNS Manager LuCI common module version: 2.56
+// DNS Manager LuCI common module version: 2.57
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -7438,13 +7438,20 @@ function renderProfiles(root,st){
   if(st.dnscrypt_engine!=='dnscrypt-proxy2'&&Number(st.engine_installed)===0)return;
   var g=E('div',{'class':'dm-seg dm-profile-seg'});
   var currentId=activeProfileId(st);
-  PROFILE.forEach(function(p){g.appendChild(btn(p[1],currentId===p[0]?'active cbi-button':'cbi-button',function(){applyProfile(p[0],root);},{disabled:!!state.busy||!!state.jobRunning||(st.dnscrypt_engine!=='dnscrypt-proxy2'&&Number(st.engine_installed)===0),'aria-pressed':currentId===p[0]?'true':'false'}));});
+  var chosenProfile=state.pendingProfile||currentId;
+  PROFILE.forEach(function(p){g.appendChild(btn(p[1],chosenProfile===p[0]?'active cbi-button':'cbi-button',function(){
+    state.pendingProfile=p[0]===currentId?'':p[0];renderProfiles(root,st);
+  },{disabled:!!state.busy||!!state.jobRunning||(st.dnscrypt_engine!=='dnscrypt-proxy2'&&Number(st.engine_installed)===0),'aria-pressed':chosenProfile===p[0]?'true':'false'}));});
+  var profileAction=state.pendingProfile&&state.pendingProfile!==currentId?E('div',{'class':'dm-actions'},[
+    btn('Применить изменения','cbi-button-action',function(){var selected=state.pendingProfile;state.pendingProfile='';applyProfile(selected,root,true);},{disabled:!!state.busy||!!state.jobRunning})
+  ]):null;
   var current=activeProfileLabel(st);
   var pch=[
-    row('Работает сейчас',badge('dm-ok',current)),
+    row('Работает сейчас',badge(currentId?'dm-ok':'dm-muted',current)),
     g,
-    E('div',{'class':'dm-mini'},'Профиль определяет схему выбора DNS и используется сейчас.')
-  ];
+    profileAction,
+    E('div',{'class':'dm-mini'},'Профиль определяет схему выбора DNS.')
+  ].filter(Boolean);
   if(currentId==='dnssec')pch.push(E('div',{'class':'dm-hint'},'DNSSEC проверяется выбранными серверами; фильтрация может различаться.'+(st.dnscrypt_engine==='dnscrypt-proxy2'?'':' Региональный DNS, Steer и привязки устройств работают по своим правилам.')));
   var regionalSlot=(st.slots||[]).filter(function(s){return String(s.slot)==='RU';})[0]||{};
   var regionalMode=String(st.dnscrypt_engine==='dnscrypt-proxy2'?(st.dnscrypt_regional_mode||'doh'):(st.regional_mode|| (regionalSlot.id?'legacy':'doh')));
@@ -7453,26 +7460,22 @@ function renderProfiles(root,st){
   pch.push(E('p',{'class':'dm-hint'},'DNS для .ru, .su, .рф, .by, .kz и отдельных ресурсов маркетплейсов и Яндекса. Смена профиля не меняет этот выбор.'));
   var regionalChoices=E('div',{'class':'dm-seg'});
   var regionalOptions=[['doh',st.dnscrypt_engine==='dnscrypt-proxy2'?'Через DNSCrypt':'Через DoH',0],['yandex','Яндекс DNS',2],['isp','DNS провайдера',3]];
-  if(st.dnscrypt_engine==='dnscrypt-proxy2'){
-    var regionalSelected=regionalMode==='yandex'?2:regionalMode==='isp'?3:0;
-    regionalOptions.forEach(function(choice){
-      var choiceButton=btn(choice[1],regionalSelected===choice[2]?'active cbi-button':'cbi-button',function(){
-        regionalSelected=choice[2];
-        regionalChoices.querySelectorAll('[data-regional-choice]').forEach(function(node){var active=Number(node.getAttribute('data-regional-choice'))===regionalSelected;node.classList.toggle('active',active);node.setAttribute('aria-pressed',active?'true':'false');});
-      },{disabled:!!state.busy||!hasGeneral,'data-regional-choice':String(choice[2]),'aria-pressed':regionalSelected===choice[2]?'true':'false'});
-      regionalChoices.appendChild(choiceButton);
-    });
-    regionalChoices.appendChild(btn('Применить','cbi-button-action',function(){setRegional(regionalSelected,root);},{disabled:!!state.busy||!hasGeneral}));
-  }else regionalOptions.forEach(function(choice){
-    regionalChoices.appendChild(btn(choice[1],regionalMode===choice[0]?'active cbi-button':'cbi-button',function(){setRegional(choice[2],root);},{disabled:!!state.busy||!hasGeneral,'aria-pressed':regionalMode===choice[0]?'true':'false'}));
+  var appliedRegional=regionalMode==='yandex'?2:regionalMode==='isp'?3:regionalMode==='legacy'?1:0;
+  var regionalSelected=state.pendingRegional==null?appliedRegional:state.pendingRegional;
+  regionalOptions.forEach(function(choice){
+    regionalChoices.appendChild(btn(choice[1],regionalSelected===choice[2]?'active cbi-button':'cbi-button',function(){
+      state.pendingRegional=choice[2]===appliedRegional?null:choice[2];renderProfiles(root,st);
+    },{disabled:!!state.busy||!!state.jobRunning||!hasGeneral,'aria-pressed':regionalSelected===choice[2]?'true':'false'}));
   });
-  if(regionalMode==='legacy')regionalChoices.appendChild(btn('Применить повторно','cbi-button',function(){setRegional(1,root);},{disabled:!!state.busy||!hasGeneral}));
   pch.push(regionalChoices);
+  if(state.pendingRegional!=null&&state.pendingRegional!==appliedRegional)pch.push(E('div',{'class':'dm-actions'},[
+    btn('Применить изменения','cbi-button-action',function(){var selected=state.pendingRegional;state.pendingRegional=null;setRegional(selected,root);},{disabled:!!state.busy||!!state.jobRunning||!hasGeneral})
+  ]));
   pch.push(E('p',{'class':'dm-hint'},regionalMode==='legacy'
     ? 'Сейчас выбран региональный DoH: '+String(regionalSlot.name||regionalSlot.id)+'. Он сохранён после обновления; новый режим включится только после выбора.'
-    : regionalMode==='doh' ? (st.dnscrypt_engine==='dnscrypt-proxy2'?'Все сайты используют общие DNSCrypt-серверы.':'Все сайты используют общие DoH-серверы.')
-    : regionalMode==='yandex' ? 'Указанные домены используют Яндекс DNS (77.88.8.8, 77.88.8.1) напрямую, без шифрования.'
-    : 'Указанные домены используют DNS провайдера напрямую, без шифрования: '+String((st.dnscrypt_engine==='dnscrypt-proxy2'?st.dnscrypt_regional_ips:st.regional_isp_ips)||'—')+'.'));
+    : regionalMode==='doh' ? (st.dnscrypt_engine==='dnscrypt-proxy2'?'Сейчас все сайты используют общие DNSCrypt-серверы.':'Сейчас все сайты используют общие DoH-серверы.')
+    : regionalMode==='yandex' ? 'Сейчас указанные домены используют Яндекс DNS (77.88.8.8, 77.88.8.1) напрямую, без шифрования.'
+    : 'Сейчас указанные домены используют DNS провайдера напрямую, без шифрования: '+String((st.dnscrypt_engine==='dnscrypt-proxy2'?st.dnscrypt_regional_ips:st.regional_isp_ips)||'—')+'.'));
   if(Number(st.steer_dns_active)===1)pch.push(E('p',{'class':'dm-hint'},'Правила DNS в Steer могут обрабатывать отдельные запросы до dnsmasq.'));
   if(!hasGeneral)pch.push(E('div',{'class':'dm-inline-msg info'},'Сначала примените основной DNS-профиль.'));
   if(state.regionalNotice)pch.push(E('div',{'class':'dm-inline-msg '+(state.regionalNoticeType||'info')},state.regionalNotice));
@@ -7484,11 +7487,12 @@ function renderProfiles(root,st){
   var pm=stripAnsi(String(st.profile_job_message||'')).trim();
   var pf=String(st.profile_job_finished||'');
   var localProfileRunning=!!(state.busy&&state.profileProgress);
+  if(!localProfileRunning&&pf&&Number(pf)>0&&Date.now()/1000-Number(pf)>=600&&state.profileNoticeType==='ok'&&String(state.pageNotice.profiles||'').indexOf('Профиль «')===0){state.pageNotice.profiles='';state.profileProgress=null;}
   if(!localProfileRunning&&pj==='running'){
     pch.push(E('div',{'class':'dm-inline-msg info'},'⟳ Сейчас выполняется: профиль «'+(pp?profileName(pp):'DNS')+'». Закрытие LuCI не останавливает операцию; при открытии она продолжится здесь.'));
-  }else if(!localProfileRunning&&pj==='done'&&pr==='ok'){
+  }else if(!localProfileRunning&&pf&&Number(pf)>0&&Date.now()/1000>=Number(pf)&&Date.now()/1000-Number(pf)<600&&pj==='done'&&pr==='ok'){
     pch.push(E('div',{'class':'dm-inline-msg ok'},'✓ Последняя операция: профиль «'+(pp?profileName(pp):'DNS')+'» применён.'+(pf?' · '+dateText(pf):'')));
-  }else if(!localProfileRunning&&pj==='failed'){
+  }else if(!localProfileRunning&&pf&&Number(pf)>0&&Date.now()/1000>=Number(pf)&&Date.now()/1000-Number(pf)<600&&pj==='failed'){
     var failText='✗ Последняя операция: профиль «'+(pp?profileName(pp):'DNS')+'» не применён.';
     if(pm)failText+=' Причина: '+pm;
     pch.push(E('div',{'class':'dm-inline-msg error'},failText+(pf?' · '+dateText(pf):'')));
@@ -8330,7 +8334,7 @@ function saveRouteCache(key,st,aux){
     var entry=JSON.parse(JSON.stringify({ts:Date.now(),data:st,aux:aux}));
     window.dmRouteCache[key]=entry;
     if(typeof session!=='undefined'&&session.setLocalData)
-      session.setLocalData('dns-manager-route-2.56-'+key,entry);
+      session.setLocalData('dns-manager-route-2.57-'+key,entry);
   }catch(e){}
 }
 function clearEngineUiState(){
@@ -8338,10 +8342,10 @@ function clearEngineUiState(){
   window.dmRouteCache=Object.create(null);
   window.dmStatusPromises=Object.create(null);
   ['dashboard','doh','network','time','devices','catalog','log'].forEach(function(key){
-    try{if(typeof session!=='undefined'&&session.setLocalData)session.setLocalData('dns-manager-route-2.56-'+key,null);}catch(e){}
+    try{if(typeof session!=='undefined'&&session.setLocalData)session.setLocalData('dns-manager-route-2.57-'+key,null);}catch(e){}
   });
   state.pageNotice={};state.profileProgress=null;state.profileOutput='';state.profileResumeStarted=false;
-  state.regionalNotice='';state.dnscryptDiagnostic='';state.dnscryptDiagnosticKind='';state.dnscryptDiagnosticResult='';
+  state.regionalNotice='';state.pendingProfile='';state.pendingRegional=null;state.dnscryptDiagnostic='';state.dnscryptDiagnosticKind='';state.dnscryptDiagnosticResult='';
   state.lastAction=null;state.lastJob=null;state.checking={};state.fullTest=null;state.catalogProgress=null;
   if(window.dmState){
     ['profile_job_status','profile_job_result','profile_job_profile','profile_job_started','profile_job_finished','profile_job_message'].forEach(function(key){delete window.dmState[key];});
@@ -8350,7 +8354,7 @@ function clearEngineUiState(){
 function routeCacheEntry(key){
   var entry=key&&window.dmRouteCache&&window.dmRouteCache[key];
   if(!entry&&key){
-    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.56-'+key);}catch(e){}
+    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.57-'+key);}catch(e){}
   }
   if(!entry||typeof entry.ts!=='number'||Date.now()-entry.ts<0||Date.now()-entry.ts>300000||!entry.data||entry.data.ok!==true)return null;
   return entry;
@@ -8777,12 +8781,12 @@ function selectDnscryptServer(id,root){
     });
   }).catch(function(err){state.busy=false;state.dnscryptDiagnostic=withRpcError('Не удалось применить сервер.',err);renderDnscryptDiagnostic(root);});
 }
-function applyProfile(name,root){
+function applyProfile(name,root,confirmed){
   if(state.busy)return;
   var st=window.dmState||{};
   var currentId=activeProfileId(st),current=currentId?profileName(currentId):activeProfileLabel(st),next=profileName(name);
   var repeat=currentId===name;
-  confirmAction(repeat?'Повторно применить профиль':'Подтвердить изменение профиля',[['Сейчас',current],[repeat?'Профиль':'Новый профиль',next]],function(){
+  function startProfile(){
     state.busy=true;
     state.profileProgress={p:5,label:'Подготавливаю профиль…',detail:''};
     state.profileOutput='';
@@ -8811,7 +8815,9 @@ function applyProfile(name,root){
       state.pageNotice.profiles=withRpcError('Не удалось запустить применение профиля.',err);
       refresh(root,true);
     });
-  });
+  }
+  if(confirmed)startProfile();
+  else confirmAction(repeat?'Повторно применить профиль':'Подтвердить изменение профиля',[['Сейчас',current],[repeat?'Профиль':'Новый профиль',next]],startProfile);
 }
 function awaitSettingResult(reply){
   if(!reply||!reply.ok||!reply.job)return Promise.resolve(reply);
@@ -9068,6 +9074,7 @@ function pollJob(root,job,meta,done){
     var ok=String(j&&j.status||'').toUpperCase()==='DONE' && String(j&&j.result||'')==='ok';
     state.busy=false;
     if(ok){
+      state.profileProgress=null;
       state.profileNoticeType='ok';
       setAction(true,'Профиль: «'+label+'».');
       state.pageNotice.profiles='Профиль «'+label+'» применён.';
@@ -9415,7 +9422,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 2.56
+// DNS Manager LuCI version: 2.57
 return view.extend({
   load: DM.load,
   render: DM.render,
