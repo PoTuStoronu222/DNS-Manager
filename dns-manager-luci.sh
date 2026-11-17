@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager full installer and LuCI companion
-# Version: 2.62
+# Version: 2.63
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.62"
+VERSION="2.63"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -2363,7 +2363,7 @@ if [ "$(uci -q get dns-manager.global.active_engine 2>/dev/null)" = dnscrypt-pro
 fi
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.62"
+SELF_VERSION="2.63"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -6041,7 +6041,7 @@ EOF_RPC_WRAPPER
 'require ui';
 'require session';
 
-// DNS Manager LuCI common module version: 2.62
+// DNS Manager LuCI common module version: 2.63
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -8034,36 +8034,30 @@ function renderTime(root,st){
   body.push(E('div',{'class':'dm-section-title'},'Наборы серверов'));
   presets.forEach(function(x){
     var active=preset===x[0];
-    body.push(E('div',{'class':'dm-setting '+(active?'dm-setting-saving':'')},[
-      E('div',{'class':'dm-setting-line'},[
-        E('div',{},[
-          E('div',{'class':'dm-setting-title'},x[1]),
-          E('div',{'class':'dm-setting-desc'},x[2]+' · '+ntpPresetServers(x[0]))
-        ]),
-        btn(state.busy?'Сохраняю…':(active?'Выбрано':'Применить'),active?'cbi-button-neutral':'cbi-button-add',function(){
-          if(state.busy)return;
-          if(active)return;
-          confirmAction('Подтвердить изменение серверов времени',[['Сейчас',selected],['Новый набор',x[1]]],function(){
-            state.busy=true;state.busySetting='ntp';state.pageNotice.time='Применяю набор серверов времени…';state.timeNoticeType='info';
-            renderTime(root,window.dmState||{});
-            callNtp(x[0]).then(awaitSettingResult).then(function(r){
-              state.busy=false;state.busySetting='';
-              if(r&&r.ok){
-                state.timeNoticeType='ok';
-                state.pageNotice.time='Набор серверов времени «'+x[1]+'» применён.';
-                return refresh(root,true);
-              }
-              state.timeNoticeType='error';state.pageNotice.time=(r&&r.error)||'Не удалось применить набор серверов времени.';
-              renderTime(root,window.dmState||{});
-            }).catch(function(err){
-              state.busy=false;state.busySetting='';
-              state.timeNoticeType='error';state.pageNotice.time=withRpcError('Не удалось применить серверы точного времени.',err);
-              renderTime(root,window.dmState||{});
-            });
-          });
-        },{disabled:!!state.busy})
-      ])
-    ]));
+    var locked=!!state.busy||!!state.jobRunning;
+    var attrs={'type':'button','class':'dm-toggle-card'+(active?' is-on':''),'aria-pressed':active?'true':'false','click':function(){
+      if(locked||active)return;
+      state.busy=true;state.busySetting='ntp';state.pageNotice.time='Применяю набор серверов времени…';state.timeNoticeType='info';
+      renderTime(root,window.dmState||{});
+      callNtp(x[0]).then(awaitSettingResult).then(function(r){
+        state.busy=false;state.busySetting='';
+        if(r&&r.ok){
+          state.timeNoticeType='ok';state.pageNotice.time='Набор серверов времени «'+x[1]+'» применён.';
+          return refresh(root,true);
+        }
+        state.timeNoticeType='error';state.pageNotice.time=(r&&r.error)||'Не удалось применить набор серверов времени.';
+        renderTime(root,window.dmState||{});
+      }).catch(function(err){
+        state.busy=false;state.busySetting='';state.timeNoticeType='error';
+        state.pageNotice.time=withRpcError('Не удалось применить серверы точного времени.',err);
+        renderTime(root,window.dmState||{});
+      });
+    }};
+    if(locked)attrs.disabled=true;
+    body.push(E('div',{'style':'margin-bottom:8px'},[E('button',attrs,[
+      E('span',{'class':'dm-toggle-main'},[E('span',{'class':'dm-setting-title'},x[1]),E('span',{'class':'dm-setting-desc'},x[2]+' · '+ntpPresetServers(x[0]))]),
+      E('span',{'class':'dm-toggle-side'},[badge(active?'dm-ok':'dm-muted',active?'выбрано':'выбрать')])
+    ])]));
   });
   if(state.pageNotice.time)body.unshift(E('div',{'class':'dm-inline-msg '+(state.timeNoticeType||'info')},state.pageNotice.time));
   e.appendChild(card('Серверы точного времени',body));
@@ -8380,7 +8374,7 @@ function saveRouteCache(key,st,aux){
     var entry=JSON.parse(JSON.stringify({ts:Date.now(),data:st,aux:aux}));
     window.dmRouteCache[key]=entry;
     if(typeof session!=='undefined'&&session.setLocalData)
-      session.setLocalData('dns-manager-route-2.62-'+key,entry);
+      session.setLocalData('dns-manager-route-2.63-'+key,entry);
   }catch(e){}
 }
 function clearEngineUiState(){
@@ -8388,7 +8382,7 @@ function clearEngineUiState(){
   window.dmRouteCache=Object.create(null);
   window.dmStatusPromises=Object.create(null);
   ['dashboard','doh','network','time','devices','catalog','log'].forEach(function(key){
-    try{if(typeof session!=='undefined'&&session.setLocalData)session.setLocalData('dns-manager-route-2.62-'+key,null);}catch(e){}
+    try{if(typeof session!=='undefined'&&session.setLocalData)session.setLocalData('dns-manager-route-2.63-'+key,null);}catch(e){}
   });
   state.pageNotice={};state.profileProgress=null;state.profileOutput='';state.profileResumeStarted=false;
   state.regionalNotice='';state.pendingProfile='';state.pendingRegional=null;state.pendingDnscryptServer='';state.dnscryptDiagnostic='';state.dnscryptDiagnosticKind='';state.dnscryptDiagnosticResult='';
@@ -8400,7 +8394,7 @@ function clearEngineUiState(){
 function routeCacheEntry(key){
   var entry=key&&window.dmRouteCache&&window.dmRouteCache[key];
   if(!entry&&key){
-    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.62-'+key);}catch(e){}
+    try{if(typeof session!=='undefined'&&session.getLocalData)entry=session.getLocalData('dns-manager-route-2.63-'+key);}catch(e){}
   }
   if(!entry||typeof entry.ts!=='number'||Date.now()-entry.ts<0||Date.now()-entry.ts>300000||!entry.data||entry.data.ok!==true)return null;
   return entry;
@@ -9467,7 +9461,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 2.62
+// DNS Manager LuCI version: 2.63
 return view.extend({
   load: DM.load,
   render: DM.render,
