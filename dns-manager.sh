@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="4.29"
+VERSION="4.30"
 # 3.86: make LuCI the primary interface and preserve external DNS on removal.
 # 3.85: revalidate Watchdog settings before recovery.
 # 3.84: cap DNS catalog test concurrency by total RAM on small routers.
@@ -4828,6 +4828,11 @@ _apply_settings_impl() {
             fi
             watchdog_cron_marker_exists >/dev/null 2>&1 && watchdog_cron_remove_owned_block >/dev/null 2>&1 || true
         fi
+        if ! /etc/init.d/https-dns-proxy enable >/dev/null 2>&1; then
+            err_msg "Не удалось включить автозапуск https-dns-proxy."
+            tx_restore_on_failure
+            return 1
+        fi
         tx_commit
         # Keep the complete live Apply progress visible while the operation runs.
         # After success, present a clean final screen with only the actual scheme.
@@ -5313,6 +5318,34 @@ restore_dns_core() {
     [ "${SILENT_APPLY:-0}" = 1 ] || pause
     release_mutation_lock
     return "$_rc"
+}
+disable_https_dns() {
+    local _disable_dns_rc
+    acquire_mutation_lock || return 1
+    _disable_dns_rc=0
+    load_config || _disable_dns_rc=1
+    watchdog_apply_toggle 0 >/dev/null 2>&1 || _disable_dns_rc=1
+    if ! sh /usr/lib/dns-manager-luci/dnscrypt/dns-manager-device-detach.sh >/dev/null 2>&1; then
+        release_mutation_lock
+        return 1
+    fi
+    UNINSTALL_DEFER_PROXY_RESTART=1
+    UNINSTALL_PROXY_OWNED=1
+    rollback_hdp_targeted >/dev/null 2>&1 || _disable_dns_rc=1
+    uninstall_detach_https_dns_proxy >/dev/null 2>&1 || _disable_dns_rc=1
+    sh /usr/lib/dns-manager-luci/dnscrypt/dns-manager-engine-services.sh quiesce https-dns-proxy >/dev/null 2>&1 || _disable_dns_rc=1
+    rollback_dnsmasq_targeted >/dev/null 2>&1 || _disable_dns_rc=1
+    uninstall_dnsmasq_resolv_fallback >/dev/null 2>&1 || _disable_dns_rc=1
+    rollback_firewall_targeted >/dev/null 2>&1 || _disable_dns_rc=1
+    clear_dns_core_runtime_state || _disable_dns_rc=1
+    if [ -x /etc/init.d/dns-manager-regional ] && grep -Fqx '# DNS_MANAGER_REGIONAL_SERVICE=1' /etc/init.d/dns-manager-regional; then
+        /etc/init.d/dns-manager-regional stop >/dev/null 2>&1 || _disable_dns_rc=1
+    fi
+    /etc/init.d/dnsmasq restart >/dev/null 2>&1 || _disable_dns_rc=1
+    reload_fw >/dev/null 2>&1 || _disable_dns_rc=1
+    unset UNINSTALL_DEFER_PROXY_RESTART UNINSTALL_PROXY_OWNED
+    release_mutation_lock
+    return "$_disable_dns_rc"
 }
 uninstall_stop_engines_and_restore() {
     _uninstall_helpers=/usr/lib/dns-manager-luci/dnscrypt

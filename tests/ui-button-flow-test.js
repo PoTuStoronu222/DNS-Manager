@@ -186,7 +186,7 @@ async function testUninstallUnresponsiveStatus(){
   const clock={setTimeout:(fn,ms)=>{const item={fn,ms};timers.push(item);return item;},clearTimeout:item=>{timers=timers.filter(x=>x!==item);}};
   const ctx={state:{busy:false},window:Object.assign({dmState:{}},clock),Date:{now:()=>now},Promise,
     renderDoH:()=>{},callUninstall:()=>Promise.resolve({ok:true,status_url:'/status'}),fetch:()=>new Promise(()=>{}),withRpcError:(s,e)=>s+' '+e.message};
-  vm.createContext(ctx);vm.runInContext(extract('function uninstallManager(root){','function resetDnsCore(root){'),ctx);
+  vm.createContext(ctx);vm.runInContext(extract('function uninstallManager(root){','function resetDnsCore(root,mode){'),ctx);
   ctx.uninstallManager({});await delay();
   if(!ctx.state.busy||timers.length!==1)throw Error('uninstall did not start polling');
   timers.shift().fn();const timeout=timers.find(x=>x.ms===10000);if(!timeout)throw Error('uninstall status has no request timeout');
@@ -585,7 +585,7 @@ async function testBrowserDnsControls(){
   }
 }
 async function testProfileNotice(){
-  const part=extract('  var pj=String(st.profile_job_status',"\n\n  pch.push(btn(st.dnscrypt_engine===");
+  const part=extract('  var pj=String(st.profile_job_status',"\n\n  pch.push(btn('Отключить защищённый DNS'");
   for(const [status,result,count] of [['done','ok',0],['running','',1],['failed','fail',1]]){
     const pch=[],ctx={st:{profile_job_status:status,profile_job_result:result,profile_job_profile:'clean',profile_job_message:'Ошибка',profile_job_finished:String(Math.floor(Date.now()/1000))},state:{busy:false},pch,stripAnsi:x=>x,profileName:x=>x,dateText:()=>'',E:(tag,attrs,text)=>({text})};
     vm.createContext(ctx);vm.runInContext(part,ctx);if(pch.length!==count)throw Error('incorrect profile notice '+status);
@@ -610,7 +610,7 @@ async function testEngineCardsBothDirections(){
 async function testEngineSwitchConfirmation(){
   for(const target of ['https-dns-proxy','dnscrypt-proxy2']){
     let confirm,requests=[],watching=0;const root={},state={busy:false,jobRunning:false},ctx={state,window:{dmState:{engine_installed:1,profile:'clean'}},displayDnsRows:()=>[{id:'dns'}],confirmAction:(message,rows,accept)=>{confirm=accept;},clearEngineUiState:()=>{},renderDoH:()=>{},callSwitchEngine:id=>{requests.push(id);return Promise.resolve({ok:true,job:'engine'});},watchEngine:()=>{watching++;},withRpcError:(s,e)=>s+e.message};
-    vm.createContext(ctx);vm.runInContext(extract('function switchEngine(target,root){','function resetDnsCore(root){'),ctx);
+    vm.createContext(ctx);vm.runInContext(extract('function switchEngine(target,root){','function resetDnsCore(root,mode){'),ctx);
     ctx.switchEngine(target,root);if(requests.length||typeof confirm!=='function')throw Error('engine switch did not require confirmation');
     confirm();await delay();if(requests.join(',')!==target||watching!==1||!state.busy)throw Error('engine switch did not start '+target);
   }
