@@ -68,6 +68,8 @@ acquire_mutation_lock() { [ "${LAB_SWITCH:-0}" != 1 ] || printf 'https-dns-proxy
 release_mutation_lock() { :; }
 restore_persistent_test_results() { :; }
 refresh_runtime_capabilities() { :; }
+dns_url() { case "$1" in cloudflare) printf 'https://cloudflare-dns.com/dns-query';; google) printf 'https://dns.google/dns-query';; *) return 1;; esac; }
+normalize_url() { printf '%s' "$1"; }
 case "${1:-}" in
   *) exit 1;;
 esac
@@ -77,7 +79,7 @@ esac
     (helpers / 'dns-manager-dnscrypt-profile-apply.sh').write_text('''#!/bin/sh
 dnscrypt_apply_profile_pool() {
     [ "${LAB_FAIL:-0}" != 1 ] || return 1
-    case "$1" in server:*) dnscrypt_select_profile "$1"; return $?;; esac
+    case "$1" in server:*|pool:*) dnscrypt_select_profile "$1"; return $?;; esac
     printf 'cloudflare|https://cloudflare-dns.com/dns-query\\n'
 }
 ''')
@@ -132,6 +134,15 @@ dnscrypt_apply_profile_pool() {
     selected = (config / 'dnscrypt-profile.state').read_text()
     result = run('worker', 'server:missing')
     assert result.returncode != 0 and (config / 'dnscrypt-profile.state').read_text() == selected
+    for invalid in ['pool:', 'pool:google,google', 'pool:google,', 'pool:a,b,c,d,e,f,g', 'pool:bad/name']:
+        assert json.loads(run('call', 'set_profile', input=json.dumps({'profile': invalid})).stdout)['ok'] is False
+    assert json.loads(run('call', 'set_profile', input='{"profile":"pool:google,cloudflare"}').stdout)['job'] == 'profile'
+    result = run('worker', 'pool:google,cloudflare')
+    assert result.returncode == 0, result.stderr
+    assert (config / 'dnscrypt-profile.state').read_text() == ('profile=none\nserver=google|https://dns.google/dns-query\nserver=cloudflare|https://cloudflare-dns.com/dns-query\n')
+    before = (config / 'dnscrypt-profile.state').read_text()
+    result = run('worker', 'pool:google,missing')
+    assert result.returncode != 0 and (config / 'dnscrypt-profile.state').read_text() == before
     (config / 'dnscrypt-profile.state').write_text(state)
     result = run('worker', 'clean', extra={'LAB_FAIL': '1'})
     assert result.returncode != 0
