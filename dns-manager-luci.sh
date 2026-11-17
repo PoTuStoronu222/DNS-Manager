@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.86"
+VERSION="2.87"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -1086,25 +1086,91 @@ reset_start() {
 }
 
 dnscrypt_catalog_snapshot() (
-    "$DNSCRYPT_INIT" running >/dev/null 2>&1 || exit 1
-    pid=$(pidof dnscrypt-proxy 2>/dev/null)
-    case "$pid" in ''|*[!0-9]*) exit 1;; esac
-    [ -r "$STATE_FILE" ] || exit 1
-    pool=$(sed -n '/^server=/p' "$STATE_FILE" | cksum)
-    records=$(dnscrypt_pool_latency 1)
+    load_manager_functions || exit 1
+    probe=''; dir=''
+    cleanup_catalog_probe() {
+        if [ -n "$probe" ]; then kill "$probe" 2>/dev/null || :; wait "$probe" 2>/dev/null || :; fi
+        [ -z "$dir" ] || rm -rf "$dir"
+        case "${TMP_DIR:-}" in /tmp/dnsmgr.*) rm -rf "$TMP_DIR";; esac
+    }
+    trap cleanup_catalog_probe EXIT
+    trap 'exit 1' HUP INT TERM
+    load_config || exit 1
+    [ -r "$DNS_CATALOG" ] || exit 1
+    command -v dnscrypt-proxy >/dev/null 2>&1 || exit 1
+    dir=$(mktemp -d "$RUNTIME_DIR/catalog-probe.XXXXXX") || exit 1
+    catalog_hash=$(cksum "$DNS_CATALOG")
+    custom_hash=$(cksum "$CUSTOM_DNS_CATALOG" 2>/dev/null || :)
+    awk -F'|' 'NF >= 5 && $1 !~ /^#/ && $1 ~ /^[A-Za-z0-9_-]+$/ && $5 ~ /^https:\/\// {print $1 "|" $5}' "$DNS_CATALOG" > "$dir/source"
+    if [ -r "$CUSTOM_DNS_CATALOG" ]; then
+        awk -F'|' 'NF >= 5 && $1 !~ /^#/ && $1 ~ /^[A-Za-z0-9_-]+$/ && $5 ~ /^https:\/\// {print $1 "|" $5}' "$CUSTOM_DNS_CATALOG" >> "$dir/source"
+    fi
+    total=$(wc -l < "$dir/source" | tr -d ' ')
+    [ "$total" -gt 0 ] || exit 1
+    printf 'name=dnscrypt_catalog\nprogress_total=%s\nprogress_done=0\n' "$total" >> "$JOB_DIR/health/state"
+    : > "$dir/results"
+    offset=1
+    while [ "$offset" -le "$total" ]; do
+        end=$((offset + 5))
+        sed -n "${offset},${end}p" "$dir/source" > "$dir/group"
+        : > "$dir/stamps"; : > "$dir/ids"; : > "$dir/valid"
+        while IFS='|' read -r id url; do
+            stamp=$(sh "$HELPERS/dns-manager-doh-stamp.sh" "$url" 2>/dev/null) || continue
+            printf '%s\n' "$id" >> "$dir/ids"
+            printf '%s\n' "$stamp" >> "$dir/stamps"
+            printf '%s\n' "$url" >> "$dir/valid"
+        done < "$dir/group"
+        count=$(wc -l < "$dir/ids" | tr -d ' ')
+        if [ "$count" -gt 0 ]; then
+            # One temporary process, with a distinct loopback port, tests at most six servers.
+            port=$((49152 + ($$ + offset) % 12000))
+            first_url=$(sed -n '1p' "$dir/valid")
+            sh "$HELPERS/dns-manager-dnscrypt-config.sh" "$port" "$first_url" "$BOOTSTRAP_DNS" > "$dir/base" || exit 1
+            {
+                printf 'server_names = ['
+                n=1; while [ "$n" -le "$count" ]; do [ "$n" -eq 1 ] || printf ', '; printf "'manager-%s'" "$n"; n=$((n + 1)); done
+                printf ']\n'
+                printf "log_file = '%s'\nuse_syslog = false\n" "$dir/probe.log"
+                sed -n '2,/^\[static\./{ /^\[static\./d; p; }' "$dir/base"
+                n=1; while IFS= read -r stamp; do printf "[static.manager-%s]\nstamp = '%s'\n" "$n" "$stamp"; n=$((n + 1)); done < "$dir/stamps"
+            } > "$dir/probe.toml"
+            : > "$dir/probe.log"
+            dnscrypt-proxy -config "$dir/probe.toml" -netprobe-timeout 5 > "$dir/process.log" 2>&1 &
+            probe=$!
+            tries=0
+            while kill -0 "$probe" 2>/dev/null && [ "$tries" -lt 30 ]; do
+                grep -q 'Server with the lowest initial latency:' "$dir/probe.log" && break
+                sleep 1; tries=$((tries + 1))
+            done
+            kill "$probe" 2>/dev/null || :; wait "$probe" 2>/dev/null || :; probe=''
+            if grep -Eqi 'address already in use|permission denied|failed to listen' "$dir/probe.log" "$dir/process.log"; then exit 1; fi
+            completed=0; grep -q 'Server with the lowest initial latency:' "$dir/probe.log" && completed=1
+            awk '
+                /Sorted latencies:/ {delete values; collecting=1; next}
+                collecting && /ms manager-[1-6]$/ {v=$(NF-1); sub(/ms$/, "", v); if(v ~ /^[0-9]+$/) values[$NF]=v; next}
+                /Server with the lowest initial latency:/ {
+                    if (!collecting) for(i=1;i<=NF;i++) if($i ~ /^manager-[1-6]$/ && $(i+1)=="(rtt:") {v=$(i+2); sub(/ms\).*/, "", v); if(v ~ /^[0-9]+$/) values[$i]=v}
+                    for(k in values) print k, values[k]; collecting=0
+                }' "$dir/probe.log" > "$dir/latencies"
+            n=1; while IFS= read -r id; do
+                latency=$(awk -v s="manager-$n" '$1==s {print $2; exit}' "$dir/latencies")
+                case "$latency" in ''|*[!0-9]*) [ "$completed" = 0 ] || printf '%s|-1\n' "$id" >> "$dir/results";; *) printf '%s|%s\n' "$id" "$latency" >> "$dir/results";; esac
+                n=$((n + 1))
+            done < "$dir/ids"
+        fi
+        done_count=$end; [ "$done_count" -le "$total" ] || done_count=$total
+        printf 'progress_done=%s\n' "$done_count" >> "$JOB_DIR/health/state"
+        offset=$((end + 1))
+    done
+    [ "$catalog_hash" = "$(cksum "$DNS_CATALOG" 2>/dev/null)" ] || exit 1
+    [ "$custom_hash" = "$(cksum "$CUSTOM_DNS_CATALOG" 2>/dev/null || :)" ] || exit 1
     . /usr/share/libubox/jshn.sh
     json_init
-    json_add_string pid "$pid"
-    json_add_string pool "$pool"
-    json_add_object servers
-    while read -r server latency; do
-        case "$server:$latency" in manager-[1-6]:*[!0-9]*|manager-[1-6]:|*[!A-Za-z0-9:-]*) continue;; manager-[1-6]:*) json_add_int "$server" "$latency";; esac
-    done <<EOF_CATALOG_LATENCY
-$records
-EOF_CATALOG_LATENCY
-    json_close_object
+    while IFS='|' read -r id latency; do json_add_int "$id" "$latency"; done < "$dir/results"
     tmp="$RUNTIME_DIR/dnscrypt-catalog-latencies.$$"
-    json_dump > "$tmp" && mv -f "$tmp" "$RUNTIME_DIR/dnscrypt-catalog-latencies.json"
+    json_dump > "$tmp" || exit 1
+    printf '%s\n%s\n' "$catalog_hash" "$custom_hash" > "$RUNTIME_DIR/dnscrypt-catalog-checksum"
+    mv -f "$tmp" "$RUNTIME_DIR/dnscrypt-catalog-latencies.json"
 )
 
 diagnostic() {
@@ -1216,6 +1282,7 @@ diagnostic_start() {
     fi
     ubus -t 5 call service delete "{\"name\":\"$service\"}" >/dev/null 2>&1 || true
     printf 'status=running\nstarted=%s\nmode=update\n' "$(date +%s)" > "$JOB_DIR/health/state"
+    [ "$method" != dnscrypt_latencies ] || printf 'name=dnscrypt_catalog\n' >> "$JOB_DIR/health/state"
     : > "$JOB_DIR/health/output"
     request="{\"name\":\"$service\",\"instances\":{\"main\":{\"command\":[\"/bin/sh\",\"/usr/lib/dns-manager-luci/backend-dnscrypt.sh\",\"diagnostic_worker\",\"$method\"]}}}"
     if ! ubus -t 5 call service set "$request" >/dev/null 2>&1; then
@@ -1347,21 +1414,16 @@ status_extra() {
 $latency_records
 EOF_LATENCY
     json_close_object
-    json_add_object dnscrypt_catalog_latency
     latency_cache="$RUNTIME_DIR/dnscrypt-catalog-latencies.json"
-    if [ "$running" = 1 ] && [ -r "$STATE_FILE" ] && [ -r "$latency_cache" ]; then
-        cache_pid=$(jsonfilter -i "$latency_cache" -e '@.pid' 2>/dev/null)
-        cache_pool=$(jsonfilter -i "$latency_cache" -e '@.pool' 2>/dev/null)
-        current_pid=$(pidof dnscrypt-proxy 2>/dev/null)
-        current_pool=$(sed -n '/^server=/p' "$STATE_FILE" | cksum)
-        if [ -n "$current_pid" ] && [ "$cache_pid" = "$current_pid" ] && [ "$cache_pool" = "$current_pool" ]; then
-            for n in 1 2 3 4 5 6; do
-                value=$(jsonfilter -i "$latency_cache" -e "@.servers[\"manager-$n\"]" 2>/dev/null)
-                case "$value" in ''|*[!0-9]*) ;; *) json_add_int "manager-$n" "$value";; esac
-            done
+    if [ -r "$latency_cache" ] && [ -r "$RUNTIME_DIR/dnscrypt-catalog-checksum" ] && [ -r "$CONFIG_DIR/dns-catalog.conf" ]; then
+        cache_catalog=$(sed -n '1p' "$RUNTIME_DIR/dnscrypt-catalog-checksum")
+        cache_custom=$(sed -n '2p' "$RUNTIME_DIR/dnscrypt-catalog-checksum")
+        current_catalog=$(cksum "$CONFIG_DIR/dns-catalog.conf")
+        current_custom=$(cksum "$CONFIG_DIR/dns-custom-catalog.conf" 2>/dev/null || :)
+        if [ "$cache_catalog" = "$current_catalog" ] && [ "$cache_custom" = "$current_custom" ]; then
+            json_add_string dnscrypt_catalog_results "$(cat "$latency_cache")"
         fi
     fi
-    json_close_object
     # Monitoring is optional; an unavailable endpoint must not look like zero activity.
     if [ "$method" = status ] && [ "$running" -eq 1 ] && command -v curl >/dev/null 2>&1; then
         metrics=$(curl --noproxy '*' --silent --fail --max-time 1 http://127.0.0.1:9100/api/metrics 2>/dev/null || :)
@@ -2486,7 +2548,7 @@ if [ "$(uci -q get dns-manager.global.active_engine 2>/dev/null)" = dnscrypt-pro
 fi
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.86"
+SELF_VERSION="2.87"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -8328,16 +8390,20 @@ function deleteCustomDns(d,root){
 }
 
 function dnscryptCatalogBadge(st,id){
-  var servers=Array.isArray(st.dnscrypt_servers)?st.dnscrypt_servers:[];
-  var index=servers.indexOf(String(id)), latency=index<0?null:(st.dnscrypt_catalog_latency||{})['manager-'+(index+1)];
-  return Number(st.dnscrypt_running)===1&&latency!=null&&/^\d+$/.test(String(latency))
+  var results={};try{results=JSON.parse(st.dnscrypt_catalog_results||'{}');}catch(e){}
+  var latency=results[String(id)];
+  if(latency===-1)return badge('dm-bad','недоступен');
+  return latency!=null&&/^\d+$/.test(String(latency))
     ? badge('dm-ok',String(latency)+' мс · последний замер')
     : badge('dm-muted','нет данных');
 }
 function refreshDnscryptCatalogLatency(root){
   if(state.busy||state.jobRunning)return;
   state.busy=true;state.dnscryptCatalogChecking=true;state.pageNotice.catalog='';renderCatalog(root);
-  callDnscryptLatencies().then(waitDnsHealth).then(function(result){
+  callDnscryptLatencies().then(function(r){return waitDnsHealth(r,true,function(j){
+    state.dnscryptCatalogProgress=Number(j.progress_total)?Number(j.progress_done||0)+' / '+Number(j.progress_total):'';
+    renderCatalog(root);
+  });}).then(function(result){
     if(!result.ok)throw new Error(result.output||'Не удалось получить замеры DNSCrypt.');
     state.busy=false;state.dnscryptCatalogChecking=false;return refresh(root,true);
   }).catch(function(err){
@@ -8345,14 +8411,29 @@ function refreshDnscryptCatalogLatency(root){
     state.pageNotice.catalog=(err&&err.message)||'Не удалось получить замеры DNSCrypt.';renderCatalog(root);
   });
 }
+function resumeDnscryptCatalogLatency(root){
+  if(state.dnscryptCatalogChecking||(window.dmState||{}).dnscrypt_engine!=='dnscrypt-proxy2')return;
+  callJob('health').then(function(j){
+    if(!j||j.name!=='dnscrypt_catalog'||j.status!=='running'||state.dnscryptCatalogChecking)return;
+    state.busy=true;state.dnscryptCatalogChecking=true;renderCatalog(root);
+    return waitDnsHealth({ok:true,job:'health'},true,function(progress){
+      state.dnscryptCatalogProgress=Number(progress.progress_total)?Number(progress.progress_done||0)+' / '+Number(progress.progress_total):'';
+      renderCatalog(root);
+    }).then(function(result){
+      state.busy=false;state.dnscryptCatalogChecking=false;
+      if(!result.ok)state.pageNotice.catalog=result.output||'Не удалось проверить каталог DNS.';
+      return refresh(root,true);
+    }).catch(function(err){state.busy=false;state.dnscryptCatalogChecking=false;state.pageNotice.catalog=(err&&err.message)||'Не удалось получить результат проверки.';renderCatalog(root);});
+  }).catch(function(){});
+}
 function renderCatalog(root){
   var e=root.querySelector('#dm-catalog');if(!e)return;e.innerHTML='';
   if((window.dmState||{}).dnscrypt_engine==='dnscrypt-proxy2'){
     var data=window.dmCatalog||{}, controls=E('div',{'class':'dm-seg'});
-    e.appendChild(E('div',{'class':'dm-actions'},[btn(state.dnscryptCatalogChecking?'Обновляю замеры…':'Обновить замеры','cbi-button-action',function(){refreshDnscryptCatalogLatency(root);},{disabled:!!state.busy||!!state.jobRunning})]));
+    e.appendChild(E('div',{'class':'dm-actions'},[btn(state.dnscryptCatalogChecking?'Проверяю DNS'+(state.dnscryptCatalogProgress?' · '+state.dnscryptCatalogProgress:'')+'…':'Проверить все DNS','cbi-button-action',function(){refreshDnscryptCatalogLatency(root);},{disabled:!!state.busy||!!state.jobRunning})]));
     CATEGORY.forEach(function(c){controls.appendChild(btn(c[1],c[0]===state.category?'active cbi-button':'cbi-button',function(){if(state.catalogLoading)return;state.category=c[0];state.offset=0;loadCatalog(root);},{disabled:!!state.catalogLoading,'aria-pressed':c[0]===state.category?'true':'false'}));});
     var rows=catalogGroups(data.servers||[],function(d){return E('div',{'class':'dm-card dm-catalog-item'},[E('h4',{},d.name||d.id),E('div',{'class':'dm-meta'},catName(d.category)),E('div',{'class':'dm-slot-state'},[dnscryptCatalogBadge(window.dmState||{},d.id)])]);},function(){renderCatalog(root);});
-    e.appendChild(card('Каталог DNS',[E('div',{'class':'dm-hint'},'DNSCrypt показывает последние замеры для серверов текущего набора. Для остальных серверов данных нет.'),controls,state.pageNotice.catalog?E('div',{'class':'dm-inline-msg error'},state.pageNotice.catalog):null,state.catalogLoading?E('div',{'class':'dm-hint'},'Загрузка каталога DNS…'):null,E('div',{'class':'dm-catalog'},rows),E('div',{'class':'dm-page'},[btn('←','cbi-button-neutral',function(){if(!state.catalogLoading&&state.offset>0){state.offset=Math.max(0,state.offset-state.limit);loadCatalog(root);}},{disabled:!!state.catalogLoading||state.offset<=0,'aria-label':'Предыдущая страница'}),E('span',{'class':'dm-mini'},(Math.floor(state.offset/state.limit)+1)+' / '+Math.max(1,Math.ceil((data.total||0)/state.limit))),btn('→','cbi-button-neutral',function(){if(!state.catalogLoading&&state.offset+state.limit<(data.total||0)){state.offset+=state.limit;loadCatalog(root);}},{disabled:!!state.catalogLoading||state.offset+state.limit>=(data.total||0),'aria-label':'Следующая страница'})])].filter(Boolean)));
+    e.appendChild(card('Каталог DNS',[E('div',{'class':'dm-hint'},'Проверка выполняется небольшими группами, не меняя текущие DNS.'),controls,state.pageNotice.catalog?E('div',{'class':'dm-inline-msg error'},state.pageNotice.catalog):null,state.catalogLoading?E('div',{'class':'dm-hint'},'Загрузка каталога DNS…'):null,E('div',{'class':'dm-catalog'},rows),E('div',{'class':'dm-page'},[btn('←','cbi-button-neutral',function(){if(!state.catalogLoading&&state.offset>0){state.offset=Math.max(0,state.offset-state.limit);loadCatalog(root);}},{disabled:!!state.catalogLoading||state.offset<=0,'aria-label':'Предыдущая страница'}),E('span',{'class':'dm-mini'},(Math.floor(state.offset/state.limit)+1)+' / '+Math.max(1,Math.ceil((data.total||0)/state.limit))),btn('→','cbi-button-neutral',function(){if(!state.catalogLoading&&state.offset+state.limit<(data.total||0)){state.offset+=state.limit;loadCatalog(root);}},{disabled:!!state.catalogLoading||state.offset+state.limit>=(data.total||0),'aria-label':'Следующая страница'})])].filter(Boolean)));
     return;
   }
   var ageCard=renderTestAgeCommon(root,window.dmState||{});
@@ -8934,11 +9015,11 @@ function resumeEngine(root){
     }
   }).catch(function(){});
 }
-function waitDnsHealth(r){
+function waitDnsHealth(r,longJob,onProgress){
   if(!r||!r.ok||r.job!=='health')return Promise.reject(new Error((r&&r.error)||'Не удалось запустить проверку DNS.'));
   var tries=0;
   function poll(){return callJob('health').then(function(j){
-    if(j&&j.status==='running'&&tries++<120)return new Promise(function(resolve){window.setTimeout(resolve,1000);}).then(poll);
+    if(j&&j.status==='running'&&tries++<(longJob?7200:120)){if(onProgress)onProgress(j);return new Promise(function(resolve){window.setTimeout(resolve,1000);}).then(poll);}
     if(!j||j.status!=='done')throw new Error('Не удалось получить результат проверки DNS.');
     return {ok:j.result==='ok',output:j.output};
   });}
@@ -9711,7 +9792,7 @@ return baseclass.extend({
     window.setTimeout(function(){if(rootAlive(root))showRecentJob(root);},0);
     if(route==='dashboard')window.setTimeout(function(){watchBackground(root,'update');resumeVersionCheck(root);},0);
     if(route==='doh')window.setTimeout(function(){watchBackground(root,'combined');},0);
-    if(route==='catalog')window.setTimeout(function(){resumeCatalogTest(root);},0);
+    if(route==='catalog')window.setTimeout(function(){resumeCatalogTest(root);resumeDnscryptCatalogLatency(root);},0);
     if(!state.profileResumeStarted&&route==='doh')window.setTimeout(function(){
       if(rootAlive(root))resumeRunningProfile(root);
     },0);
