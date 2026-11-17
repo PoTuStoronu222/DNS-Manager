@@ -44,7 +44,7 @@ async function testRouteCache(){
   resolveDoh({ok:true,force_owner:'steer',slots:[{id:'one'}]});resolveDashboard({ok:true,force_owner:'none',slots:[]});
   await Promise.all([a,b]);
   const cached=ctx.cachedRouteStatus('slots');
-  if(!cached||cached.force_owner!=='steer'||cached.__dmCachedRoute!=='slots')throw Error('compatible route cache missing');
+  if(!cached||cached.force_owner!=='steer'||cached.__dmCachedRoute!=='slots'||!cached.__dmCacheFresh)throw Error('fresh compatible route cache missing');
   ctx.window.dmRouteCache=undefined;
   if(ctx.cachedRouteStatus('slots').force_owner!=='steer')throw Error('cache did not survive page navigation');
   ctx.window.dmRouteCache={doh:JSON.parse(store['dns-manager-route-2.78-doh'])};
@@ -54,6 +54,8 @@ async function testRouteCache(){
   if(draws.length)throw Error('late response rendered on another route');
   ctx.applyStatusToCurrentRoot({ok:true,force_owner:'none',slots:[]},'dashboard');
   if(draws.length!==1||ctx.window.dmState.force_owner!=='none'||ctx.window.dmState.slots.length)throw Error('fresh empty values were not applied');
+  ctx.window.dmRouteCache.doh.ts=Date.now()-16000;
+  if(ctx.cachedRouteStatus('doh').__dmCacheFresh)throw Error('old cache marked immediately interactive');
   ctx.window.dmRouteCache.doh.ts=Date.now()-301000;
   if(ctx.cachedRouteStatus('doh')!==null)throw Error('expired cache was reused');
   let rejected=false;await ctx.ensureStatusPromise('time').catch(()=>{rejected=true;});
