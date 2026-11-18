@@ -261,7 +261,7 @@ case "$1" in
         case "$stamp" in ''|*[!A-Za-z0-9_-]*) fail 'invalid stamp encoding' ;; esac
         [ "${#stamp}" -le 1024 ] || fail 'stamp too long'
         case $((${#stamp} % 4)) in 0) padding= ;; 2) padding='==' ;; 3) padding='=' ;; *) fail 'invalid stamp encoding' ;; esac
-        if command -v base64 >/dev/null 2>&1; then
+        if printf 'test' | base64 >/dev/null 2>&1; then
             decode() { base64 -d; }
         elif command -v ucode >/dev/null 2>&1; then
             decode() { ucode -e 'import { stdin } from "fs"; print(b64dec(stdin.read("all")));'; }
@@ -314,7 +314,7 @@ lp() {
 
 # DNS-over-HTTPS, zero properties, no fixed IP or certificate pin.
 # With no pin dnscrypt-proxy uses its normal TLS certificate validation.
-if command -v base64 >/dev/null 2>&1; then
+if printf 'test' | base64 >/dev/null 2>&1; then
     encode() { base64; }
 elif command -v ucode >/dev/null 2>&1; then
     encode() { ucode -e 'import { stdin } from "fs"; print(b64enc(stdin.read("all")));'; }
