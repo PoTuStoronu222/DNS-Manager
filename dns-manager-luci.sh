@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion and full installer
-# Version: 2.111
+# Version: 2.112
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.111"
+VERSION="2.112"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -1775,7 +1775,7 @@ DM_SOURCE_BASE="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/$_d
 COMPANION_URL="$DM_SOURCE_BASE/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.111"
+SELF_VERSION="2.112"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -2535,7 +2535,7 @@ update_all_json() {
             if [ -n "$_old_m" ] && [ -n "$_new_m" ] && [ "$_new_m" != "$_old_m" ]; then append_update_message "DNS Manager $_old_m → $_new_m"; else append_update_message "DNS Manager обновлён"; fi
             ;;
         current) append_update_message "DNS Manager $_old_m · актуален" ;;
-        *) append_failure_message "DNS Manager: не удалось обновить" ;;
+        *) _detail="$(printf '%s' "$_mr" | jsonfilter -e '@.error' 2>/dev/null)"; append_failure_message "DNS Manager: ${_detail:-не удалось обновить}" ;;
     esac
 
     # DNSCrypt uses its own static pool. Do not update or restart HTTPS DNS Proxy
@@ -2550,7 +2550,7 @@ update_all_json() {
                 if [ -n "$_old_h" ] && [ -n "$_new_h" ] && [ "$_new_h" != "$_old_h" ]; then append_update_message "Защищённый DNS $_old_h → $_new_h"; else append_update_message "Защищённый DNS обновлён"; fi
                 ;;
             current) append_update_message "Защищённый DNS $_old_h · актуален" ;;
-            *) append_failure_message "Защищённый DNS: не удалось обновить" ;;
+            *) _detail="$(printf '%s' "$_hr" | jsonfilter -e '@.error' 2>/dev/null)"; append_failure_message "Защищённый DNS: ${_detail:-не удалось обновить}" ;;
         esac
 
         [ "${DM_BACKGROUND_ID:-}" != update ] || job_write update name 'Каталог DNS'
@@ -2577,7 +2577,7 @@ update_all_json() {
             if [ -n "$_old_l" ] && [ -n "$_new_l" ] && [ "$_new_l" != "$_old_l" ]; then append_update_message "LuCI $_old_l → $_new_l"; else append_update_message "LuCI обновлена"; fi
             ;;
         current) append_update_message "LuCI $_old_l · актуальна" ;;
-        *) append_failure_message "LuCI: не удалось обновить" ;;
+        *) _detail="$(printf '%s' "$_lr" | jsonfilter -e '@.error' 2>/dev/null)"; append_failure_message "LuCI: ${_detail:-не удалось обновить}" ;;
     esac
 
     release_runtime_lock "$RUNTIME_DIR/update-all.lock"
@@ -2613,6 +2613,7 @@ update_manager_json() {
         if { [ "$_latest" = "$_installed" ] && cmp -s "$_candidate" "$MANAGER_PATH"; } ||
            { [ "$_latest" != "$_installed" ] && [ "$(version_gt "$_latest" "$_installed")" != 1 ]; }; then
             rm -f "$_candidate"
+            DNS_MANAGER_NO_UPDATE=1 "$MANAGER_PATH" __watchdog-migrate >/dev/null 2>&1 || { json_error "Перенос проверки DNS не завершён"; return; }
             printf '{"ok":true,"updated":false,"version":'; json_quote "$_installed"; printf '}'
             return
         fi
@@ -2630,7 +2631,7 @@ update_manager_json() {
     _rc=0
     DNS_MANAGER_FORCE_UPDATE=1 DNS_MANAGER_UPDATE_NO_EXEC=1 "$MANAGER_PATH" update-check >"$_out" 2>&1 || _rc=$?
     _after="$(manager_version 2>/dev/null || true)"
-    if [ "$_rc" = 0 ]; then
+    if [ "$_rc" = 0 ] || [ "$_rc" = 2 ]; then
         DNS_MANAGER_NO_UPDATE=1 "$MANAGER_PATH" __watchdog-migrate >>"$_out" 2>&1 || _rc=1
     fi
     case "$_rc" in
