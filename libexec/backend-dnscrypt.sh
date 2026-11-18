@@ -459,7 +459,7 @@ dnscrypt_catalog_snapshot() (
     native_catalog="$NATIVE_CATALOG"
     if [ "$probe_scope" != all ]; then : > "$dir/source"; fi
     if [ -r "$native_catalog" ]; then
-        awk -F'|' -v scope="$probe_scope" 'NF >= 5 && $1 !~ /^#/ && $1 ~ /^[A-Za-z0-9_-]+$/ && $5 ~ /^sdns:\/\// && (scope == "all" || scope == "native" || $2 == scope) {print $1 "|" $5 "|" $4}' "$native_catalog" >> "$dir/source"
+        awk -F'|' -v scope="$probe_scope" 'NF >= 5 && $1 !~ /^#/ && $1 ~ /^[A-Za-z0-9_-]+$/ && $5 ~ /^sdns:\/\// && (scope == "all" || scope == "native" || (scope == "dnssec" && ($2 == "clean" || $2 == "privacy")) || $2 == scope) {print $1 "|" $5 "|" $4}' "$native_catalog" >> "$dir/source"
     fi
     total=$(wc -l < "$dir/source" | tr -d ' ')
     [ "$total" -gt 0 ] || { [ "$probe_scope" != all ] && exit 0; exit 1; }

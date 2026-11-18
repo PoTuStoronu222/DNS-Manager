@@ -45,7 +45,7 @@ dnscrypt_select_profile() (
         count=$((count + 1))
     done
     if command -v dnscrypt_catalog_snapshot >/dev/null 2>&1; then
-        native_scope=$goal; case "$goal" in all|dnssec) native_scope=native;; esac
+        native_scope=$goal; case "$goal" in all) native_scope=native;; esac
         snapshot_rc=0
         dnscrypt_catalog_snapshot "$native_scope" > "$tmp.native" || snapshot_rc=$?
         if [ "$snapshot_rc" -ne 0 ]; then
