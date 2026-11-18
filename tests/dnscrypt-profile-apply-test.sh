@@ -47,6 +47,13 @@ cmp "$TMP_DIR/result" "$TMP_DIR/expected-records"
 printf '5053|||\n' > "$TMP_DIR/expected-dnsmasq"
 cmp "$TMP_DIR/dnsmasq-arguments" "$TMP_DIR/expected-dnsmasq"
 
+DNS_MANAGER_PROTOCOL=native
+export DNS_MANAGER_PROTOCOL
+printf 'original\n' > "$DNS_MANAGER_DNSCRYPT_CONFIG"
+if dnscrypt_apply_profile_pool clean 5053 1.1.1.1 > "$TMP_DIR/result" 2>/dev/null; then exit 1; fi
+[ "$(cat "$DNS_MANAGER_DNSCRYPT_CONFIG")" = original ]
+unset DNS_MANAGER_PROTOCOL
+
 DNSMASQ_FAIL=1
 printf 'original\n' > "$DNS_MANAGER_DNSCRYPT_CONFIG"
 if dnscrypt_apply_profile_pool clean 5053 1.1.1.1 > "$TMP_DIR/result"; then exit 1; fi

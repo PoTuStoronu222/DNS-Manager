@@ -134,8 +134,13 @@ dnscrypt_apply_profile_pool() {
     result = run('worker', 'clean')
     assert result.returncode == 0, result.stderr
     state = (config / 'dnscrypt-profile.state').read_text()
-    assert state == 'profile=clean\nserver=cloudflare|https://cloudflare-dns.com/dns-query\n'
+    assert state == 'profile=clean\nprotocol=mixed\nstrategy=p2\nserver=cloudflare|https://cloudflare-dns.com/dns-query\n'
     assert 'status=done\n' in (jobs / 'profile/state').read_text()
+    for goal in ['options:invalid:p2:clean', 'options:native:invalid:clean']:
+        assert json.loads(run('call', 'set_profile', input=json.dumps({'profile': goal})).stdout)['ok'] is False
+    assert json.loads(run('call', 'set_profile', input=json.dumps({'profile': 'options:mixed:first:clean'})).stdout)['job'] == 'profile'
+    result = run('worker', 'options:mixed:first:clean')
+    assert result.returncode == 0 and 'strategy=first\n' in (config / 'dnscrypt-profile.state').read_text()
     pool = ('profile=none\nserver=cloudflare|https://cloudflare-dns.com/dns-query\n'
             'server=google|https://dns.google/dns-query\n')
     (config / 'dnscrypt-profile.state').write_text(pool)
@@ -155,7 +160,7 @@ dnscrypt_apply_profile_pool() {
     assert json.loads(run('call', 'set_profile', input='{"profile":"pool:google,cloudflare"}').stdout)['job'] == 'profile'
     result = run('worker', 'pool:google,cloudflare')
     assert result.returncode == 0, result.stderr
-    assert (config / 'dnscrypt-profile.state').read_text() == ('profile=none\nserver=google|https://dns.google/dns-query\nserver=cloudflare|https://cloudflare-dns.com/dns-query\n')
+    assert (config / 'dnscrypt-profile.state').read_text() == ('profile=none\nprotocol=mixed\nstrategy=p2\nserver=google|https://dns.google/dns-query\nserver=cloudflare|https://cloudflare-dns.com/dns-query\n')
     before = (config / 'dnscrypt-profile.state').read_text()
     result = run('worker', 'pool:google,missing')
     assert result.returncode != 0 and (config / 'dnscrypt-profile.state').read_text() == before

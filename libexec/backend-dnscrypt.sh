@@ -20,6 +20,14 @@ umask 077
 error() { printf '{"ok":false,"error":"%s"}\n' "$1"; }
 valid_profile() (
  case "$1" in
+ options:*)
+    options=${1#options:}; proto=${options%%:*}; options=${options#*:}
+    strategy=${options%%:*}; target=${options#*:}
+    case "$proto" in mixed|native) ;; *) return 1;; esac
+    case "$strategy" in p2|ph|first|random) ;; *) return 1;; esac
+    set -- "$target";;
+ esac
+ case "$1" in
  bypass|clean|security|privacy|adblock|family|all|dnssec|default) return 0;;
  server:*) id=${1#server:}; case "$id" in ''|*[!A-Za-z0-9_-]*) return 1;; esac;;
  pool:*) ids=${1#pool:}; case "$ids" in ''|,*|*,|*,,*|*[!A-Za-z0-9_,-]*) return 1;; esac
@@ -174,6 +182,14 @@ switch_start() {
 profile_worker() {
     goal=$1
     valid_profile "$goal" || exit 1
+    DNS_MANAGER_PROTOCOL=mixed
+    DNS_MANAGER_LB_STRATEGY=p2
+    case "$goal" in
+        options:*)
+            opts=${goal#options:}; DNS_MANAGER_PROTOCOL=${opts%%:*}; opts=${opts#*:}
+            DNS_MANAGER_LB_STRATEGY=${opts%%:*}; goal=${opts#*:};;
+    esac
+    export DNS_MANAGER_PROTOCOL DNS_MANAGER_LB_STRATEGY
     job_write pid "$$"
     token=$(awk '{print $22}' "/proc/$$/stat" 2>/dev/null || true)
     [ -z "$token" ] || job_write pid_start "$token"
@@ -212,7 +228,11 @@ profile_worker() {
                 if (
                     if [ "$goal" = default ]; then
                         dnscrypt_select_profile() {
-                            printf '%s\n' 'cloudflare_clean|https://cloudflare-dns.com/dns-query' 'google_clean|https://dns.google/dns-query'
+                            if [ "$DNS_MANAGER_PROTOCOL" = native ]; then
+                                awk -F'|' '$1=="native_adguard_unfiltered" || $1=="native_quad9_unfiltered" {print $1 "|" $5; count++} END {if (count != 2) exit 1}' "$HELPERS/dns-manager-dnscrypt-catalog.conf"
+                            else
+                                printf '%s\n' 'cloudflare_clean|https://cloudflare-dns.com/dns-query' 'google_clean|https://dns.google/dns-query'
+                            fi
                         }
                     else
                         case "$goal" in pool:*)
@@ -238,7 +258,7 @@ profile_worker() {
                     state_profile=$goal
                     case "$goal" in default|server:*|pool:*) state_profile=none;; esac
                     if "$DNSCRYPT_INIT" enable &&
-                       { printf 'profile=%s\n' "$state_profile";
+                       { printf 'profile=%s\nprotocol=%s\nstrategy=%s\n' "$state_profile" "$DNS_MANAGER_PROTOCOL" "$DNS_MANAGER_LB_STRATEGY";
                          case "$goal" in server:*) printf 'selected=%s\n' "${goal#server:}"; dnscrypt_pool_records | sed 's/^/available=/';; esac
                          sed 's/^/server=/' "$records"; } > "$state_tmp" &&
                        chmod 0600 "$state_tmp" && mv -f "$state_tmp" "$STATE_FILE"; then
@@ -805,6 +825,12 @@ EOF_LATENCY_TIME
     profile=$(sed -n 's/^profile=//p' "$STATE_FILE" 2>/dev/null | head -n1)
     valid_profile "$profile" || profile=none
     json_add_string dnscrypt_profile "$profile"
+    protocol=$(sed -n 's/^protocol=//p' "$STATE_FILE" 2>/dev/null | head -n1)
+    case "$protocol" in native) ;; *) protocol=mixed;; esac
+    strategy=$(sed -n 's/^strategy=//p' "$STATE_FILE" 2>/dev/null | head -n1)
+    case "$strategy" in p2|ph|first|random) ;; *) strategy=p2;; esac
+    json_add_string dnscrypt_protocol "$protocol"
+    json_add_string dnscrypt_strategy "$strategy"
     selected=$(sed -n 's/^selected=//p' "$STATE_FILE" 2>/dev/null | head -n1)
     case "$selected" in *[!A-Za-z0-9_-]*) selected='';; esac
     json_add_string dnscrypt_selected_server "$selected"

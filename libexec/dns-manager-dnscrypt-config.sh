@@ -46,6 +46,14 @@ END { if(bad || NR!=1) exit 1; print result }
 [ -n "$resolvers" ] || fail 'Empty bootstrap list'
 
 printf "server_names = ['manager-slot']\n"
+strategy=${DNS_MANAGER_LB_STRATEGY:-p2}
+case "$strategy" in p2|ph|first|random) ;; *) fail 'Invalid load balancing strategy';; esac
+protocol=${DNS_MANAGER_PROTOCOL:-mixed}
+case "$protocol" in mixed|native) ;; *) fail 'Invalid DNS protocol';; esac
+printf "lb_strategy = '%s'\n" "$strategy"
+if [ "$protocol" = native ]; then
+    printf "dnscrypt_servers = true\ndoh_servers = false\n"
+fi
 printf "listen_addresses = ['127.0.0.1:%s']\n" "$port"
 # dnsmasq's cache is disabled in DNSCrypt mode; keep one cache in the proxy.
 printf "cache = true\n"

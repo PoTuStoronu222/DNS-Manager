@@ -20,6 +20,12 @@ dnscrypt_apply_profile_pool() (
     trap 'exit 1' HUP INT TERM
     dnscrypt_select_profile "$goal" > "$records" || return 1
     [ -s "$records" ] || return 1
+    if [ "${DNS_MANAGER_PROTOCOL:-mixed}" = native ]; then
+        if awk -F'|' 'NF != 2 || $2 !~ /^sdns:\/\// {bad=1} END {exit !bad}' "$records"; then
+            echo 'Удалите DoH-серверы из набора: выбран только DNSCrypt.' >&2
+            return 1
+        fi
+    fi
     # Selector validates and bounds the records; pool helper independently
     # validates every URL and the bootstrap list before changing anything.
     cut -d '|' -f 2 "$records" > "$urls" || return 1
