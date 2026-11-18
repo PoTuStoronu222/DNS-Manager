@@ -24,7 +24,7 @@ valid_profile() (
     options=${1#options:}; proto=${options%%:*}; options=${options#*:}
     strategy=${options%%:*}; target=${options#*:}
     case "$proto" in mixed|native) ;; *) return 1;; esac
-    case "$strategy" in p2|ph|first|random) ;; *) return 1;; esac
+    case "$strategy" in wp2|p2|p3|p4|p5|p6|ph|first|random) ;; *) return 1;; esac
     set -- "$target";;
  esac
  case "$1" in
@@ -828,7 +828,7 @@ EOF_LATENCY_TIME
     protocol=$(sed -n 's/^protocol=//p' "$STATE_FILE" 2>/dev/null | head -n1)
     case "$protocol" in native) ;; *) protocol=mixed;; esac
     strategy=$(sed -n 's/^strategy=//p' "$STATE_FILE" 2>/dev/null | head -n1)
-    case "$strategy" in p2|ph|first|random) ;; *) strategy=p2;; esac
+    case "$strategy" in wp2|p2|p3|p4|p5|p6|ph|first|random) ;; *) strategy=p2;; esac
     json_add_string dnscrypt_protocol "$protocol"
     json_add_string dnscrypt_strategy "$strategy"
     selected=$(sed -n 's/^selected=//p' "$STATE_FILE" 2>/dev/null | head -n1)

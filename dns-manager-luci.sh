@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion and full installer
-# Version: 2.122
+# Version: 2.123
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.122"
+VERSION="2.123"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -366,7 +366,7 @@ END { if(bad || NR!=1) exit 1; print result }
 
 printf "server_names = ['manager-slot']\n"
 strategy=${DNS_MANAGER_LB_STRATEGY:-p2}
-case "$strategy" in p2|ph|first|random) ;; *) fail 'Invalid load balancing strategy';; esac
+case "$strategy" in wp2|p2|p3|p4|p5|p6|ph|first|random) ;; *) fail 'Invalid load balancing strategy';; esac
 protocol=${DNS_MANAGER_PROTOCOL:-mixed}
 case "$protocol" in mixed|native) ;; *) fail 'Invalid DNS protocol';; esac
 printf "lb_strategy = '%s'\n" "$strategy"
@@ -825,7 +825,7 @@ printf 'Service did not become ready: %s\n' "$target" >&2
 exit 1
 EOF_DNSCRYPT_ASSET_8
     fetch_installer_source "$_dc_stage/backend-dnscrypt.sh" "$SOURCE_BASE/libexec/backend-dnscrypt.sh"
-    [ "$(sha256sum "$_dc_stage/backend-dnscrypt.sh" | cut -d' ' -f1)" = "c7a53b0f545ecee661140a6fa22ee8d79c80e8bd7a002a8489807f1d0d2b9734" ] || { err "Файл backend DNSCrypt не прошёл проверку."; return 1; }
+    [ "$(sha256sum "$_dc_stage/backend-dnscrypt.sh" | cut -d' ' -f1)" = "e8ac39322ed24034d5eaba4cf5961f06565d9e50d83230de3c2b4752742b0c14" ] || { err "Файл backend DNSCrypt не прошёл проверку."; return 1; }
     cat > "$_dc_stage/dns-manager-device-detach.sh" <<'EOF_DNSCRYPT_ASSET_10'
 #!/bin/sh
 # Detach the Manager-owned per-device redirect before stopping its listeners.
@@ -1857,7 +1857,7 @@ DM_SOURCE_BASE="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/$_d
 COMPANION_URL="$DM_SOURCE_BASE/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.122"
+SELF_VERSION="2.123"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -6584,7 +6584,7 @@ function dnscryptOptionsControls(root,st,render){
   return E('div',{'class':'dm-hint'},[
     select('Протокол: ','dnscryptProtocol',[['mixed','DNSCrypt и DoH'],['native','Только DNSCrypt']],o.protocol),
     E('span',{},'  '),
-    select('Выбор сервера: ','dnscryptStrategy',[['p2','Два самых быстрых'],['ph','Быстрая половина'],['first','Самый быстрый'],['random','Случайный']],o.strategy),
+    select('Выбор сервера: ','dnscryptStrategy',[['wp2','Взвешенный выбор из двух'],['p2','Два самых быстрых'],['p3','Три самых быстрых'],['p4','Четыре самых быстрых'],['p5','Пять самых быстрых'],['p6','Шесть самых быстрых'],['ph','Быстрая половина'],['first','Самый быстрый'],['random','Случайный']],o.strategy),
     E('div',{'class':'dm-mini'},'Стратегия выбирает серверы по скорости или случайно; порядок списка не задаёт приоритет.')
   ]);
 }

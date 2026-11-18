@@ -41,7 +41,7 @@ for urls, bootstrap in [('', '1.1.1.1'),
     assert result.returncode != 0 and result.stdout == '', (urls, result.stdout, result.stderr)
 
 native = (root / 'libexec/dns-manager-dnscrypt-catalog.conf').read_text().splitlines()[2].split('|')[4]
-for strategy in ('p2', 'ph', 'first', 'random'):
+for strategy in ('wp2', 'p2', 'p3', 'p4', 'p5', 'p6', 'ph', 'first', 'random'):
     env = {**os.environ, 'DNS_MANAGER_PROTOCOL': 'native', 'DNS_MANAGER_LB_STRATEGY': strategy}
     result = subprocess.run(['sh', str(generator), '5053', '1.1.1.1'], input=native + '\n',
                             text=True, capture_output=True, env=env)
