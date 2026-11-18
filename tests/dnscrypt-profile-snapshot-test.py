@@ -36,13 +36,18 @@ load_config() { :; }
 dnscrypt_select_profile clean
 printf '%s\n' --privacy--
 dnscrypt_select_profile privacy
+printf '%s\n' --selected--
+printf '%s\n' 'server=native_adguard_unfiltered|sdns://selected' > "$TEST_TMP/selected"
+dnscrypt_catalog_snapshot native "$TEST_TMP/selected"
 """
     env = {**os.environ, 'TEST_ROOT': str(root), 'TEST_TMP': directory,
            'PATH': directory + os.pathsep + os.environ['PATH']}
     result = subprocess.run(['sh'], input=script, env=env, text=True,
                             capture_output=True, timeout=20)
     assert result.returncode == 0, result.stderr
-    clean, privacy = result.stdout.split('--privacy--\n')
+    profiles, selected = result.stdout.split('--selected--\n')
+    clean, privacy = profiles.split('--privacy--\n')
+    assert selected.strip() == 'native_adguard_unfiltered|18', selected
     assert 'native_adguard_unfiltered|sdns://' in clean, clean
     assert 'native_cryptostorm_fr|sdns://' in privacy, privacy
     assert 'https://' not in result.stdout

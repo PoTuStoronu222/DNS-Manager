@@ -436,6 +436,7 @@ dnscrypt_native_dnssec_probe() (
 
 dnscrypt_catalog_snapshot() (
     probe_scope=${1:-all}
+    probe_ids=${2:-}
     load_manager_functions || exit 1
     probe=''; dir=''
     cleanup_catalog_probe() {
@@ -465,6 +466,11 @@ dnscrypt_catalog_snapshot() (
     native_catalog="$NATIVE_CATALOG"
     if [ -r "$native_catalog" ]; then
         awk -F'|' -v scope="$probe_scope" 'NF >= 5 && $1 !~ /^#/ && $1 ~ /^[A-Za-z0-9_-]+$/ && $5 ~ /^sdns:\/\// && (scope == "all" || scope == "native" || (scope == "dnssec" && ($2 == "clean" || $2 == "privacy")) || $2 == scope) {print $1 "|" $5 "|" $4}' "$native_catalog" >> "$dir/source"
+    fi
+    if [ -n "$probe_ids" ]; then
+        [ -r "$probe_ids" ] || exit 1
+        awk -F'|' 'NR==FNR { if ($1 ~ /^server=/) { sub(/^server=/, "", $1); wanted[$1]=1 } next } $1 in wanted' "$probe_ids" "$dir/source" > "$dir/filtered"
+        mv "$dir/filtered" "$dir/source"
     fi
     if [ "$probe_scope" = all ] && [ -s "$JOB_DIR/health/ids" ]; then
         for list in doh source; do
@@ -708,7 +714,7 @@ dnscrypt_check_pool() (
     done < "$STATE_FILE"
     if grep -q '^server=[^|]*|sdns://' "$STATE_FILE"; then
         _native_tmp="$_checks_tmp.native"
-        dnscrypt_catalog_snapshot native > "$_native_tmp" 2>/dev/null || :
+        dnscrypt_catalog_snapshot native "$STATE_FILE" > "$_native_tmp" 2>/dev/null || :
         while IFS='|' read -r _entry_id _entry_url; do
             case "$_entry_id:$_entry_url" in server=*:sdns://*) _entry_id=${_entry_id#server=};; *) continue;; esac
             _check_ms=$(awk -F'|' -v id="$_entry_id" '$1==id {print $2; exit}' "$_native_tmp")
