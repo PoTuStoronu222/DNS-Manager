@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion and full installer
-# Version: 2.119
+# Version: 2.120
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.119"
+VERSION="2.120"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -510,7 +510,7 @@ EOF_DNSCRYPT_ASSET_4
 # loaded. Selects DNS using the existing checks without applying configuration.
 # On success stdout contains one catalog ID and URL per line, separated by '|'.
 dnscrypt_select_profile() (
-    local goal tmp started id url count
+    local goal tmp started id url count ms native_id native_ms native_url
     goal=${1:-}
     case "$goal" in bypass|clean|security|privacy|adblock|family|all|dnssec) ;; *) return 1 ;; esac
     tmp=$(mktemp "${TMP_DIR:-/tmp}/dnscrypt-profile.XXXXXX") || return 1
@@ -524,7 +524,9 @@ dnscrypt_select_profile() (
     # This invokes the existing direct DoH tests, including DNSSEC screening.
     started=1
     profile_apply_begin "$goal" >&2 || return 1
-    DNSCRYPT_FASTEST_ALL=1 auto_fill_slots "$goal" >&2 || return 1
+    if ! DNSCRYPT_FASTEST_ALL=1 auto_fill_slots "$goal" >&2; then
+        SLOT_1=''; SLOT_2=''; SLOT_3=''; SLOT_4=''; SLOT_5=''; SLOT_6=''
+    fi
     count=0
     for id in "${SLOT_1:-}" "${SLOT_2:-}" "${SLOT_3:-}" "${SLOT_4:-}" "${SLOT_5:-}" "${SLOT_6:-}"; do
         [ -n "$id" ] || continue
@@ -532,11 +534,26 @@ dnscrypt_select_profile() (
         url=$(normalize_url "$(dns_url "$id")") || return 1
         case "$url" in https://*) ;; *) return 1 ;; esac
         case "$url" in *'|'*|*[![:graph:]]*) return 1 ;; esac
-        printf '%s|%s\n' "$id" "$url" >> "$tmp" || return 1
+        ms=$(awk -F'|' -v id="$id" '$1==id && $5=="OK" && $4 ~ /^[0-9]+$/ {print $4; exit}' "${TEST_RESULTS:-/dev/null}" 2>/dev/null)
+        case "$ms" in ''|*[!0-9]*) ms=2147483647;; esac
+        printf '%s|%s|%s\n' "$id" "$url" "$ms" >> "$tmp" || return 1
         count=$((count + 1))
     done
-    [ "$count" -gt 0 ] || return 1
-    cat "$tmp"
+    # DNSSEC has an additional validation test; stamp properties alone do not
+    # prove that a resolver passes it, so keep its existing selection path.
+    if [ "$goal" != dnssec ] && command -v dnscrypt_catalog_snapshot >/dev/null 2>&1; then
+        native_scope=$goal; [ "$goal" != all ] || native_scope=native
+        dnscrypt_catalog_snapshot "$native_scope" 2>/dev/null > "$tmp.native" || :
+        while IFS='|' read -r native_id native_ms; do
+            case "$native_ms" in ''|*[!0-9]*) continue;; esac
+            native_url=$(awk -F'|' -v id="$native_id" '$1==id {print $5; exit}' "$HELPERS/dns-manager-dnscrypt-catalog.conf")
+            [ -n "$native_url" ] && printf '%s|%s|%s\n' "$native_id" "$native_url" "$native_ms" >> "$tmp"
+        done < "$tmp.native"
+        rm -f "$tmp.native"
+    fi
+    [ -s "$tmp" ] || return 1
+    if [ "$goal" = dnssec ]; then cut -d'|' -f1,2 "$tmp"
+    else sort -t'|' -k3,3n "$tmp" | head -n 6 | cut -d'|' -f1,2; fi
 )
 EOF_DNSCRYPT_ASSET_5
     cat > "$_dc_stage/dns-manager-dnscrypt-profile-apply.sh" <<'EOF_DNSCRYPT_ASSET_6'
@@ -775,7 +792,7 @@ printf 'Service did not become ready: %s\n' "$target" >&2
 exit 1
 EOF_DNSCRYPT_ASSET_8
     fetch_installer_source "$_dc_stage/backend-dnscrypt.sh" "$SOURCE_BASE/libexec/backend-dnscrypt.sh"
-    [ "$(sha256sum "$_dc_stage/backend-dnscrypt.sh" | cut -d' ' -f1)" = "84ee3ad8819114ae933896f771a723ce7e65b28f0315b9c68100afcfab23d22f" ] || { err "Файл backend DNSCrypt не прошёл проверку."; return 1; }
+    [ "$(sha256sum "$_dc_stage/backend-dnscrypt.sh" | cut -d' ' -f1)" = "65ab0402fee59f4d3c11457192db45c298cdf306d27c7a138d0c33ecc529f992" ] || { err "Файл backend DNSCrypt не прошёл проверку."; return 1; }
     cat > "$_dc_stage/dns-manager-device-detach.sh" <<'EOF_DNSCRYPT_ASSET_10'
 #!/bin/sh
 # Detach the Manager-owned per-device redirect before stopping its listeners.
@@ -1087,6 +1104,17 @@ dns_manager_stop_watchdog() {
     watchdog_cron_remove_owned_block
 }
 EOF_DNSCRYPT_ASSET_13
+    cat > "$_dc_stage/dns-manager-dnscrypt-catalog.conf" <<'EOF_DNSCRYPT_CATALOG'
+# DNSCrypt stamps from https://github.com/DNSCrypt/dnscrypt-resolvers/blob/master/v3/public-resolvers.md
+# id|category|tags|name|stamp|region|status
+native_adguard_unfiltered|clean|dnscrypt|AdGuard DNS без фильтрации (DNSCrypt)|sdns://AQcAAAAAAAAAEjk0LjE0MC4xNC4xNDA6NTQ0MyC16ETWuDo-PhJo62gfvqcN48X6aNvWiBQdvy7AZrLa-iUyLmRuc2NyeXB0LnVuZmlsdGVyZWQubnMxLmFkZ3VhcmQuY29t|any|official
+native_adguard_default|adblock|dnscrypt|AdGuard DNS (DNSCrypt)|sdns://AQMAAAAAAAAAETk0LjE0MC4xNC4xNDo1NDQzINErR_JS3PLCu_iZEIbq95zkSV2LFsigxDIuUso_OQhzIjIuZG5zY3J5cHQuZGVmYXVsdC5uczEuYWRndWFyZC5jb20|any|official
+native_adguard_family|family|dnscrypt|AdGuard DNS семейный (DNSCrypt)|sdns://AQMAAAAAAAAAETk0LjE0MC4xNC4xNTo1NDQzILgxXdexS27jIKRw3C7Wsao5jMnlhvhdRUXWuMm1AFq6ITIuZG5zY3J5cHQuZmFtaWx5Lm5zMS5hZGd1YXJkLmNvbQ|any|official
+native_quad9_unfiltered|clean|dnscrypt|Quad9 без фильтрации (DNSCrypt)|sdns://AQcAAAAAAAAADTkuOS45LjEwOjg0NDMgZ8hHuMh1jNEgJFVDvnVnRt803x2EwAuMRwNo34Idhj4ZMi5kbnNjcnlwdC1jZXJ0LnF1YWQ5Lm5ldA|any|official
+native_quad9_secure|security|dnscrypt|Quad9 защита от угроз (DNSCrypt)|sdns://AQMAAAAAAAAADDkuOS45Ljk6ODQ0MyBnyEe4yHWM0SAkVUO-dWdG3zTfHYTAC4xHA2jfgh2GPhkyLmRuc2NyeXB0LWNlcnQucXVhZDkubmV0|any|official
+native_scaleway_fr|clean|dnscrypt|Scaleway France (DNSCrypt)|sdns://AQcAAAAAAAAADjIxMi40Ny4yMjguMTM2IOgBuE6mBr-wusDOQ0RbsV66ZLAvo8SqMa4QY2oHkDJNHzIuZG5zY3J5cHQtY2VydC5mci5kbnNjcnlwdC5vcmc|fr|official
+EOF_DNSCRYPT_CATALOG
+    mv -f "$_dc_stage/dns-manager-dnscrypt-catalog.conf" "$_dc_dest/dns-manager-dnscrypt-catalog.conf"
     sh -n "$_dc_stage/backend-dnscrypt.sh"
     _dc_names="dns-manager-watchdog-common.sh dns-manager-doh-stamp.sh dns-manager-dnscrypt-config.sh dns-manager-dnscrypt-pool.sh dns-manager-dnscrypt-pool-apply.sh dns-manager-dnscrypt-profile.sh dns-manager-dnscrypt-profile-apply.sh dns-manager-dnscrypt-dnsmasq.sh dns-manager-engine-services.sh dns-manager-device-detach.sh dns-manager-engine-switch.sh dns-manager-dnscrypt.init"
     for _dc_name in $_dc_names; do
@@ -1796,7 +1824,7 @@ DM_SOURCE_BASE="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/$_d
 COMPANION_URL="$DM_SOURCE_BASE/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.119"
+SELF_VERSION="2.120"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -4922,7 +4950,9 @@ catalog_json() {
     case "$_only_ok" in 1|0) ;; *) _only_ok=0;; esac
     [ -s "$CATALOG_FILE" ] || [ -s "$CUSTOM_CATALOG_FILE" ] || { json_error "Каталог DNS недоступен"; return; }
     _filtered="$TMP_ROOT/catalog-filtered.$$"; _paged="$TMP_ROOT/catalog-page.$$"; : > "$_filtered"; : > "$_paged"
-    for _catalog_source in "$CATALOG_FILE" "$CUSTOM_CATALOG_FILE"; do
+    _native_catalog=''
+    [ "$(uci -q get dns-manager.global.active_engine 2>/dev/null)" != dnscrypt-proxy2 ] || _native_catalog=/usr/lib/dns-manager-luci/dnscrypt/dns-manager-dnscrypt-catalog.conf
+    for _catalog_source in "$CATALOG_FILE" "$CUSTOM_CATALOG_FILE" "$_native_catalog"; do
         [ -r "$_catalog_source" ] || continue
         while IFS='|' read -r _id _cat _prof _name _url _region _status; do
             case "$_id" in ''|\#*) continue;; esac
@@ -7773,7 +7803,7 @@ function renderCatalog(root){
     }
     CATEGORY.forEach(function(c){controls.appendChild(btn(c[1],c[0]===state.category?'active cbi-button':'cbi-button',function(){if(state.catalogLoading)return;state.category=c[0];state.offset=0;loadCatalog(root);},{disabled:!!state.catalogLoading,'aria-pressed':c[0]===state.category?'true':'false'}));});
     var draft=dnscryptPoolDraft(window.dmState||{});
-    var rows=catalogGroups(data.servers||[],function(d){var index=draft.items.findIndex(function(x){return x.id===d.id;}),chosen=index>=0;return E('div',{'class':'dm-card dm-catalog-item'},[E('h4',{},d.name||d.id),E('div',{'class':'dm-meta'},catName(d.category)),E('div',{'class':'dm-catalog-address'},String(d.url||'').replace(/^https?:\/\//,'')),E('div',{'class':'dm-catalog-status'},[dnscryptCatalogBadge(window.dmState||{},d.id)]),btn(chosen?'Убрать из набора':'Добавить в набор','cbi-button-neutral'+(chosen?' active':''),function(){if(chosen)draft.items.splice(index,1);else draft.items.push({id:d.id,name:d.name||d.id});saveDnscryptPoolDraft(draft);renderCatalog(root);},{disabled:!!state.busy||!!state.jobRunning||(!chosen&&draft.items.length>=6)})]);},function(){renderCatalog(root);});
+    var rows=catalogGroups(data.servers||[],function(d){var index=draft.items.findIndex(function(x){return x.id===d.id;}),chosen=index>=0;return E('div',{'class':'dm-card dm-catalog-item'},[E('h4',{},d.name||d.id),E('div',{'class':'dm-meta'},catName(d.category)),E('div',{'class':'dm-catalog-address'},(/^sdns:\/\//.test(String(d.url||''))?'Протокол DNSCrypt':String(d.url||'').replace(/^https?:\/\//,''))),E('div',{'class':'dm-catalog-status'},[dnscryptCatalogBadge(window.dmState||{},d.id)]),btn(chosen?'Убрать из набора':'Добавить в набор','cbi-button-neutral'+(chosen?' active':''),function(){if(chosen)draft.items.splice(index,1);else draft.items.push({id:d.id,name:d.name||d.id});saveDnscryptPoolDraft(draft);renderCatalog(root);},{disabled:!!state.busy||!!state.jobRunning||(!chosen&&draft.items.length>=6)})]);},function(){renderCatalog(root);});
     e.appendChild(E('div',{'class':'dm-hint'},[E('span',{},'В наборе: '+draft.items.length+' из 6. '),E('a',{'href':L.url('admin/services/dns-manager/slots')},'Открыть набор и применить')]));
     e.appendChild(card('Каталог DNS',[E('div',{'class':'dm-hint'},'Проверка выполняется небольшими группами, не меняя текущие DNS.'),controls,state.pageNotice.catalog?E('div',{'class':'dm-inline-msg error'},state.pageNotice.catalog):null,state.catalogLoading?E('div',{'class':'dm-hint'},'Загрузка каталога DNS…'):null,E('div',{'class':'dm-catalog'},rows),E('div',{'class':'dm-page'},[btn('←','cbi-button-neutral',function(){if(!state.catalogLoading&&state.offset>0){state.offset=Math.max(0,state.offset-state.limit);loadCatalog(root);}},{disabled:!!state.catalogLoading||state.offset<=0,'aria-label':'Предыдущая страница'}),E('span',{'class':'dm-mini'},(Math.floor(state.offset/state.limit)+1)+' / '+Math.max(1,Math.ceil((data.total||0)/state.limit))),btn('→','cbi-button-neutral',function(){if(!state.catalogLoading&&state.offset+state.limit<(data.total||0)){state.offset+=state.limit;loadCatalog(root);}},{disabled:!!state.catalogLoading||state.offset+state.limit>=(data.total||0),'aria-label':'Следующая страница'})])].filter(Boolean)));
     return;
