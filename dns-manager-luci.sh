@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion and full installer
-# Version: 2.115
+# Version: 2.116
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.115"
+VERSION="2.116"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -1775,7 +1775,7 @@ DM_SOURCE_BASE="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/$_d
 COMPANION_URL="$DM_SOURCE_BASE/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.115"
+SELF_VERSION="2.116"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -5941,6 +5941,7 @@ function injectStyle(root){
 function rootAlive(root){return !!root&&!!document&&!!document.documentElement&&document.documentElement.contains(root);}
 function globalUpdateNotice(msg,type){state.updateNotice=msg?{text:String(msg),type:type||'info'}:null;}
 function renderHeader(root,st){
+  var notice=arguments[2];
   var e=root.querySelector('#dm-header');if(!e)return;e.innerHTML='';
   var fullAt=Number(st.last_full_test||0),watchdogAt=Number(st.watchdog_last_check||0);
   var useWatchdog=watchdogAt>0&&watchdogAt>=fullAt;
@@ -5952,12 +5953,13 @@ function renderHeader(root,st){
   var testKind=useWatchdog?(dnscryptCheck?'Автопроверка DNSCrypt':'Автопроверка слотов'):(scope==='all'?'Проверка всего каталога':'Проверка категории');
   var dnscryptResult=st.watchdog_dnscrypt_status==='OK'?' · отвечает':st.watchdog_dnscrypt_status==='FAIL'?' · нет ответа':' · нет данных';
   var testText=lastTest==='—'?'Проверка DNS: не выполнялась':testKind+': '+lastTest+(dnscryptCheck?dnscryptResult:(scope==='all'&&!useWatchdog?'':' · '+scopeLabel));
-  e.appendChild(E('div',{'class':'dm-header'},[
+  var items=[
     E('h2',{},'DNS Manager LUCI'),
-    E('span',{'class':'dm-header-by'},'by PoTuStoronu222'),
-    E('span',{'class':'dm-header-by'},'v'+shortVal(st.luci_version)),
-    E('span',{'class':'dm-header-by'},'· '+testText)
-  ]));
+    E('span',{'class':'dm-header-by'},'by PoTuStoronu222')
+  ];
+  if(st.luci_version)items.push(E('span',{'class':'dm-header-by'},'v'+shortVal(st.luci_version)));
+  items.push(E('span',{'class':'dm-header-by'},notice||'· '+testText));
+  e.appendChild(E('div',{'class':'dm-header'},items));
 }
 function setActiveTab(root,name){
   var groups={
@@ -8106,7 +8108,7 @@ function scheduleBackgroundStatus(root,initial){
       state.statusError=withRpcError('Не удалось загрузить состояние DNS Manager.',err);
       if(initial){
         var loading=root.querySelector('#dm-initial-loading');
-        if(loading){loading.innerHTML='';loading.appendChild(card('DNS Manager',[E('div',{'class':'dm-inline-msg error'},state.statusError),btn('Повторить','cbi-button-neutral',function(){loading.innerHTML='';loading.appendChild(card('DNS Manager',[E('div',{'class':'dm-mini'},'Загружаю данные…')]));scheduleBackgroundStatus(root,true);})]));}
+        if(loading){renderHeader(root,{},state.statusError);root.querySelector('#dm-header .dm-header').appendChild(btn('Повторить','cbi-button-neutral',function(){renderHeader(root,{},'Загружаю данные…');scheduleBackgroundStatus(root,true);}));}
       }else render(root,window.dmState||{});
     });
   },0);
@@ -9134,7 +9136,8 @@ return baseclass.extend({
     ids.forEach(function(id){root.appendChild(E('section',{'id':id}));});
     injectStyle(root);window.dmState=st||{};state.activeTab=route;window.dmCurrentRoot=root;
     if(st&&st.__dmLoading){
-      var loading=E('div',{'id':'dm-initial-loading'},[card('DNS Manager',[E('div',{'class':'dm-mini'},'Загружаю данные…')])]);
+      renderHeader(root,{},'Загружаю данные…');
+      var loading=E('div',{'id':'dm-initial-loading'});
       root.appendChild(loading);
       scheduleBackgroundStatus(root,true);
     }else render(root,st||{});
