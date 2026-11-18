@@ -6,7 +6,7 @@ const delay=()=>new Promise(resolve=>setTimeout(resolve,20));
 async function testCatalogPageStartAndStop(){
   for(const crypt of [false,true]){
     const calls=[],state={busy:false,jobRunning:false,pageNotice:{}},root={};
-    const ctx={state,window:{dmState:{},dmCatalog:{servers:[{id:'one'},{id:'two'},{id:'bad/id'}]}},renderCatalog:()=>{},renderOverview:()=>{},refresh:()=>Promise.resolve(),withRpcError:(s,e)=>s+e.message,
+    const ctx={state,catalogFamilyKey:()=>'',window:{dmState:{},dmCatalog:{servers:[{id:'one'},{id:'two'},{id:'bad/id'}]}},renderCatalog:()=>{},renderOverview:()=>{},refresh:()=>Promise.resolve(),withRpcError:(s,e)=>s+e.message,
       callDnscryptCancel:()=>{calls.push('stop-crypt');return Promise.resolve({ok:true});},callTestPageCancel:()=>{calls.push('stop-https');return Promise.resolve({ok:true});},
       callDnscryptLatencies:ids=>{calls.push('start-crypt:'+ids);return Promise.resolve({ok:true});},callTestPage:ids=>{calls.push('start-https:'+ids);return Promise.resolve({ok:true,job:'test_page'});},
       callTestAll:()=>{throw Error('catalog must not check the entire catalog');},waitDnsHealth:()=>new Promise(()=>{}),pollJob:()=>{}};
@@ -582,8 +582,8 @@ async function testCachePresets(){
 async function testCatalogCardActions(){
   let nodes=[],checked=[],selected=[],removed=[];const status={ok:'OK',bad:'FAIL',running:'RUNNING',custom:'OK'},state={busy:false,jobRunning:false,catalogLoading:false,category:'all',offset:0,limit:20},root={querySelector:()=>({innerHTML:'',appendChild:()=>{}})};
   const E=(tag,attrs,children)=>{let n={tag,attrs,children:Array.isArray(children)?children:[],appendChild(x){this.children.push(x);},insertBefore(x){this.children.unshift(x);}};Object.defineProperty(n,'firstChild',{get(){return this.children[0];}});nodes.push(n);return n;};
-  const ctx={state,E,CATEGORY:[],catalogDisplayName:d=>d.name||d.id,checkInfo:id=>({status:status[id]}),resolverAvailable:ci=>ci.status==='OK',stateBadge:()=>({}),catName:x=>x,isUserDnsRecord:d=>d.id==='custom',btn:(text,cls,click,attrs)=>({text,cls,click,attrs}),testOne:id=>checked.push(id),openCatalogSlotPicker:d=>selected.push(d.id),deleteCustomDns:d=>removed.push(d.id),loadCatalog:()=>{}};
-  vm.createContext(ctx);vm.runInContext(extract('function renderCatalogAssign(d,root){','function openCatalogSlotPicker('),ctx);vm.runInContext(extract('function catalogGroups(servers,renderItem,rerender){','function renderLog('),ctx);
+  const ctx={state,E,CATEGORY:[],catalogCountryControls:()=>null,catalogDisplayName:d=>d.name||d.id,checkInfo:id=>({status:status[id]}),resolverAvailable:ci=>ci.status==='OK',stateBadge:()=>({}),catName:x=>x,isUserDnsRecord:d=>d.id==='custom',btn:(text,cls,click,attrs)=>({text,cls,click,attrs}),testOne:id=>checked.push(id),openCatalogSlotPicker:d=>selected.push(d.id),deleteCustomDns:d=>removed.push(d.id),loadCatalog:()=>{}};
+  vm.createContext(ctx);vm.runInContext(extract('function renderCatalogAssign(d,root){','function openCatalogSlotPicker('),ctx);vm.runInContext(extract('var catalogFamilies=','function renderLog('),ctx);
   let grouped=ctx.catalogGroups([{id:'quad9_secure'},{id:'quad9_ecs'},{id:'custom'}],d=>d.id,()=>{});
   if(grouped.length!==2||grouped[0].attrs['aria-expanded']!=='false')throw Error('catalog family was not grouped');
   grouped[0].attrs.click();

@@ -42,7 +42,7 @@ while IFS='|' read -r name stamp category description; do
     fi
     hash=$(printf %s "$name" | sha256sum)
     id=official_${hash%% *}
-    printf '%s|%s|dnscrypt|%s|%s|any|official\n' "$id" "$category" "$display" "$stamp"
+    printf '%s|%s|dnscrypt|%s|%s|%s|official\n' "$id" "$category" "$display" "$stamp" "$(printf '%s' "${region:-any}" | tr 'A-Z' 'a-z')"
 done < "$tmp/records" >> "$tmp/catalog"
 awk -F'|' '/^#/ {print; next} !seen[$5]++ && !ids[$1]++ {print}' "$tmp/catalog" > "$tmp/final"
 [ -s "$tmp/final" ] || exit 1
