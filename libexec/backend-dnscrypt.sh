@@ -219,8 +219,9 @@ profile_worker() {
  dnscrypt_select_profile() (
  set -f; IFS=,; set -- ${goal#pool:}
  for chosen do
- url=$(normalize_url "$(dns_url "$chosen")") || return 1
- case "$url" in https://*) ;; *) return 1;; esac
+ url=$(awk -F '|' -v id="$chosen" '$1==id {print $5; exit}' "$HELPERS/dns-manager-dnscrypt-catalog.conf" 2>/dev/null)
+ [ -n "$url" ] || url=$(normalize_url "$(dns_url "$chosen")")
+ case "$url" in https://*|sdns://*) ;; *) return 1;; esac
  case "$url" in *'|'*|*[![:graph:]]*) return 1;; esac
  printf '%s|%s\n' "$chosen" "$url"
  done
@@ -356,6 +357,7 @@ reset_start() {
 }
 
 dnscrypt_catalog_snapshot() (
+    probe_scope=${1:-all}
     load_manager_functions || exit 1
     probe=''; dir=''
     cleanup_catalog_probe() {
@@ -371,20 +373,26 @@ dnscrypt_catalog_snapshot() (
     dir=$(mktemp -d "$RUNTIME_DIR/catalog-probe.XXXXXX") || exit 1
     catalog_hash=$(cksum "$DNS_CATALOG")
     custom_hash=$(cksum "$CUSTOM_DNS_CATALOG" 2>/dev/null || :)
+    native_hash=$(cksum "$HELPERS/dns-manager-dnscrypt-catalog.conf" 2>/dev/null || :)
     awk -F'|' 'NF >= 5 && $1 !~ /^#/ && $1 ~ /^[A-Za-z0-9_-]+$/ && $5 ~ /^https:\/\// {gsub(/[\r\n]/, " ", $4); print $1 "|" $5 "|" $4}' "$DNS_CATALOG" > "$dir/source"
     if [ -r "$CUSTOM_DNS_CATALOG" ]; then
         awk -F'|' 'NF >= 5 && $1 !~ /^#/ && $1 ~ /^[A-Za-z0-9_-]+$/ && $5 ~ /^https:\/\// {gsub(/[\r\n]/, " ", $4); print $1 "|" $5 "|" $4}' "$CUSTOM_DNS_CATALOG" >> "$dir/source"
     fi
+    native_catalog="$HELPERS/dns-manager-dnscrypt-catalog.conf"
+    if [ "$probe_scope" != all ]; then : > "$dir/source"; fi
+    if [ -r "$native_catalog" ]; then
+        awk -F'|' -v scope="$probe_scope" 'NF >= 5 && $1 !~ /^#/ && $1 ~ /^[A-Za-z0-9_-]+$/ && $5 ~ /^sdns:\/\// && (scope == "all" || scope == "native" || $2 == scope) {print $1 "|" $5 "|" $4}' "$native_catalog" >> "$dir/source"
+    fi
     total=$(wc -l < "$dir/source" | tr -d ' ')
-    [ "$total" -gt 0 ] || exit 1
-    printf 'name=dnscrypt_catalog\nprogress_total=%s\nprogress_done=0\nprogress_ok=0\nprogress_fail=0\n' "$total" >> "$JOB_DIR/health/state"
+    [ "$total" -gt 0 ] || { [ "$probe_scope" != all ] && exit 0; exit 1; }
+    [ "$probe_scope" != all ] || printf 'name=dnscrypt_catalog\nprogress_total=%s\nprogress_done=0\nprogress_ok=0\nprogress_fail=0\n' "$total" >> "$JOB_DIR/health/state"
     : > "$dir/results"
     offset=1; success_count=0; failed_count=0
     while [ "$offset" -le "$total" ]; do
         end=$((offset + 5))
         sed -n "${offset},${end}p" "$dir/source" > "$dir/group"
         names=$(awk -F'|' '{if (NR>1) printf ", "; printf "%s", ($3 != "" ? $3 : $1)}' "$dir/group")
-        printf 'phase=%s\n' "$names" >> "$JOB_DIR/health/state"
+        [ "$probe_scope" != all ] || printf 'phase=%s\n' "$names" >> "$JOB_DIR/health/state"
         : > "$dir/stamps"; : > "$dir/ids"; : > "$dir/valid"
         while IFS='|' read -r id url name; do
             if ! stamp=$(sh "$HELPERS/dns-manager-doh-stamp.sh" "$url" 2>/dev/null); then
@@ -450,17 +458,19 @@ dnscrypt_catalog_snapshot() (
             done < "$dir/ids"
         fi
         done_count=$end; [ "$done_count" -le "$total" ] || done_count=$total
-        printf 'progress_done=%s\nprogress_ok=%s\nprogress_fail=%s\n' "$done_count" "$success_count" "$failed_count" >> "$JOB_DIR/health/state"
+        [ "$probe_scope" != all ] || printf 'progress_done=%s\nprogress_ok=%s\nprogress_fail=%s\n' "$done_count" "$success_count" "$failed_count" >> "$JOB_DIR/health/state"
         offset=$((end + 1))
     done
     [ "$catalog_hash" = "$(cksum "$DNS_CATALOG" 2>/dev/null)" ] || exit 1
     [ "$custom_hash" = "$(cksum "$CUSTOM_DNS_CATALOG" 2>/dev/null || :)" ] || exit 1
+    [ "$native_hash" = "$(cksum "$HELPERS/dns-manager-dnscrypt-catalog.conf" 2>/dev/null || :)" ] || exit 1
+    if [ "$probe_scope" != all ]; then cat "$dir/results"; exit 0; fi
     . /usr/share/libubox/jshn.sh
     json_init
     while IFS='|' read -r id latency; do json_add_int "$id" "$latency"; done < "$dir/results"
     tmp="$RUNTIME_DIR/dnscrypt-catalog-latencies.$$"
     json_dump > "$tmp" || exit 1
-    printf '%s\n%s\n' "$catalog_hash" "$custom_hash" > "$RUNTIME_DIR/dnscrypt-catalog-checksum"
+    printf '%s\n%s\n%s\n' "$catalog_hash" "$custom_hash" "$native_hash" > "$RUNTIME_DIR/dnscrypt-catalog-checksum"
     mv -f "$tmp" "$RUNTIME_DIR/dnscrypt-catalog-latencies.json"
 )
 
@@ -539,6 +549,20 @@ dnscrypt_check_pool() (
         _check_result=$(awk -F'|' -v id="$_entry_id" '$1==id && NF>=5 {print $4 "|" $5;exit}' "$TMP_DIR/t.$_entry_id" 2>/dev/null)
         case "$_check_result" in *'|'*) printf '%s|%s|%s|%s\n' "$_entry_id" "$_entry_url" "$_check_result" "$(date +%s)" >> "$_checks_tmp" || exit 1;; *) exit 1;; esac
     done < "$STATE_FILE"
+    if grep -q '^server=[^|]*|sdns://' "$STATE_FILE"; then
+        _native_tmp="$_checks_tmp.native"
+        dnscrypt_catalog_snapshot native > "$_native_tmp" 2>/dev/null || :
+        while IFS='|' read -r _entry_id _entry_url; do
+            case "$_entry_id:$_entry_url" in server=*:sdns://*) _entry_id=${_entry_id#server=};; *) continue;; esac
+            _check_ms=$(awk -F'|' -v id="$_entry_id" '$1==id {print $2; exit}' "$_native_tmp")
+            case "$_check_ms" in
+                -1) printf '%s|%s|0|FAIL|%s\n' "$_entry_id" "$_entry_url" "$(date +%s)" >> "$_checks_tmp";;
+                ''|*[!0-9]*) :;;
+                *) printf '%s|%s|%s|OK|%s\n' "$_entry_id" "$_entry_url" "$_check_ms" "$(date +%s)" >> "$_checks_tmp";;
+            esac
+        done < "$STATE_FILE"
+        rm -f "$_native_tmp"
+    fi
     [ -s "$_checks_tmp" ] || exit 1
     mv -f "$_checks_tmp" "$RUNTIME_DIR/dnscrypt-server-checks" || exit 1
     rm -rf "$TMP_DIR"
@@ -723,9 +747,11 @@ EOF_LATENCY_TIME
     if [ -r "$latency_cache" ] && [ -r "$RUNTIME_DIR/dnscrypt-catalog-checksum" ] && [ -r "$CONFIG_DIR/dns-catalog.conf" ]; then
         cache_catalog=$(sed -n '1p' "$RUNTIME_DIR/dnscrypt-catalog-checksum")
         cache_custom=$(sed -n '2p' "$RUNTIME_DIR/dnscrypt-catalog-checksum")
+        cache_native=$(sed -n '3p' "$RUNTIME_DIR/dnscrypt-catalog-checksum")
         current_catalog=$(cksum "$CONFIG_DIR/dns-catalog.conf")
         current_custom=$(cksum "$CONFIG_DIR/dns-custom-catalog.conf" 2>/dev/null || :)
-        if [ "$cache_catalog" = "$current_catalog" ] && [ "$cache_custom" = "$current_custom" ]; then
+        current_native=$(cksum "$HELPERS/dns-manager-dnscrypt-catalog.conf" 2>/dev/null || :)
+        if [ "$cache_catalog" = "$current_catalog" ] && [ "$cache_custom" = "$current_custom" ] && [ "$cache_native" = "$current_native" ]; then
             json_add_string dnscrypt_catalog_results "$(cat "$latency_cache")"
         fi
     fi
@@ -807,7 +833,7 @@ EOF_POOL
             case "$id" in server=*) id=${id#server=};; available=*) id=${id#available=};; *) continue;; esac
             case "$id" in ''|*[!A-Za-z0-9_-]*) continue;; esac
             name=''
-            for catalog in "$CONFIG_DIR/dns-catalog.conf" "$CONFIG_DIR/dns-custom-catalog.conf"; do
+            for catalog in "$CONFIG_DIR/dns-catalog.conf" "$CONFIG_DIR/dns-custom-catalog.conf" "$HELPERS/dns-manager-dnscrypt-catalog.conf"; do
                 [ -r "$catalog" ] || continue
                 name=$(awk -F '|' -v id="$id" '$1 == id {print $4; exit}' "$catalog")
                 [ -z "$name" ] || break

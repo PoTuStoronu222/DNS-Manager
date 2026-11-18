@@ -23,6 +23,15 @@ cmp "$TMP_DIR/expected" "$TMP_DIR/result"
 printf 'begin:clean\nselect:clean\nend\n' > "$TMP_DIR/expected-calls"
 cmp "$TMP_DIR/expected-calls" "$TMP_DIR/calls"
 
+# Compare native DNSCrypt with the checked DoH candidates by measured RTT.
+HELPERS="$ROOT/libexec"
+TEST_RESULTS="$TMP_DIR/ranking"
+printf 'one|clean|One|90|OK\ntwo|clean|Two|100|OK\n' > "$TEST_RESULTS"
+dnscrypt_catalog_snapshot() { [ "$1" = clean ] && printf 'native_adguard_unfiltered|20\n'; }
+dnscrypt_select_profile clean > "$TMP_DIR/result"
+[ "$(sed -n '1s/|.*//p' "$TMP_DIR/result")" = native_adguard_unfiltered ]
+unset -f dnscrypt_catalog_snapshot 2>/dev/null || unset dnscrypt_catalog_snapshot
+
 : > "$TMP_DIR/calls"
 FAIL_SELECT=1
 if dnscrypt_select_profile dnssec > "$TMP_DIR/result"; then exit 1; fi
