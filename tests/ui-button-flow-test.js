@@ -510,7 +510,7 @@ async function testDnscryptCatalogNativeLatency(){
 }
 async function testDnscryptCatalogCardActions(){
   const checks=[],state={busy:false,jobRunning:false},draft={items:[]},root={};
-  const ctx={state,window:{dmState:{dnscrypt_catalog_results:'{}'}},catName:x=>x,badge:(kind,label)=>({kind,label}),
+  const ctx={state,window:{dmState:{dnscrypt_catalog_results:'{}'}},catalogDisplayName:d=>d.name||d.id,catName:x=>x,badge:(kind,label)=>({kind,label}),
     E:(tag,attrs,children)=>({tag,attrs,children}),btn:(text,cls,click,attrs)=>({text,click,attrs}),
     refreshDnscryptCatalogLatency:(r,id)=>checks.push(id),saveDnscryptPoolDraft:()=>{},renderCatalog:()=>{}};
   vm.createContext(ctx);vm.runInContext(extract('function dnscryptCatalogBadge(st,id){','function updateDnscryptCatalogProgress(root,j){'),ctx);
@@ -582,7 +582,7 @@ async function testCachePresets(){
 async function testCatalogCardActions(){
   let nodes=[],checked=[],selected=[],removed=[];const status={ok:'OK',bad:'FAIL',running:'RUNNING',custom:'OK'},state={busy:false,jobRunning:false,catalogLoading:false,category:'all',offset:0,limit:20},root={querySelector:()=>({innerHTML:'',appendChild:()=>{}})};
   const E=(tag,attrs,children)=>{let n={tag,attrs,children:Array.isArray(children)?children:[],appendChild(x){this.children.push(x);},insertBefore(x){this.children.unshift(x);}};Object.defineProperty(n,'firstChild',{get(){return this.children[0];}});nodes.push(n);return n;};
-  const ctx={state,E,CATEGORY:[],checkInfo:id=>({status:status[id]}),resolverAvailable:ci=>ci.status==='OK',stateBadge:()=>({}),catName:x=>x,isUserDnsRecord:d=>d.id==='custom',btn:(text,cls,click,attrs)=>({text,cls,click,attrs}),testOne:id=>checked.push(id),openCatalogSlotPicker:d=>selected.push(d.id),deleteCustomDns:d=>removed.push(d.id),loadCatalog:()=>{}};
+  const ctx={state,E,CATEGORY:[],catalogDisplayName:d=>d.name||d.id,checkInfo:id=>({status:status[id]}),resolverAvailable:ci=>ci.status==='OK',stateBadge:()=>({}),catName:x=>x,isUserDnsRecord:d=>d.id==='custom',btn:(text,cls,click,attrs)=>({text,cls,click,attrs}),testOne:id=>checked.push(id),openCatalogSlotPicker:d=>selected.push(d.id),deleteCustomDns:d=>removed.push(d.id),loadCatalog:()=>{}};
   vm.createContext(ctx);vm.runInContext(extract('function renderCatalogAssign(d,root){','function openCatalogSlotPicker('),ctx);vm.runInContext(extract('function catalogGroups(servers,renderItem,rerender){','function renderLog('),ctx);
   let grouped=ctx.catalogGroups([{id:'quad9_secure'},{id:'quad9_ecs'},{id:'custom'}],d=>d.id,()=>{});
   if(grouped.length!==2||grouped[0].attrs['aria-expanded']!=='false')throw Error('catalog family was not grouped');
