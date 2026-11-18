@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion and full installer
-# Version: 2.118
+# Version: 2.119
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.118"
+VERSION="2.119"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -1775,7 +1775,7 @@ DM_SOURCE_BASE="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/$_d
 COMPANION_URL="$DM_SOURCE_BASE/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.118"
+SELF_VERSION="2.119"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -8110,7 +8110,7 @@ function scheduleBackgroundStatus(root,initial){
     window.dmStatusRefreshTimer=null;
     if(!rootAlive(root)||window.dmCurrentRoot!==root||currentRoute()!==route)return;
     ensureStatusPromise(route).then(function(st){
-      if(window.dmCurrentRoot===root&&!state.busy&&!state.jobRunning&&!state.catalogLoading&&!(root.contains(document.activeElement)&&/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName))){applyStatusToCurrentRoot(st,route);if(initial)scheduleRouteWarmup(root);}
+      if(window.dmCurrentRoot===root&&(initial||(!state.busy&&!state.jobRunning&&!state.catalogLoading&&!(root.contains(document.activeElement)&&/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName))))){applyStatusToCurrentRoot(st,route);if(initial)scheduleRouteWarmup(root);}
     }).catch(function(err){
       if(!rootAlive(root)||window.dmCurrentRoot!==root||currentRoute()!==route)return;
       state.statusError=withRpcError('Не удалось загрузить состояние DNS Manager.',err);

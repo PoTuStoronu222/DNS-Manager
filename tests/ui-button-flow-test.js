@@ -79,6 +79,19 @@ async function testCachedReadOnly(){
   ctx.render(root,{ok:true});
   if(controls.some(x=>!x.disabled)||!messages.includes('Обновляю данные…'))throw Error('cached state was not marked read-only');
 }
+async function testInitialStatusDuringJob(){
+  let route='dashboard',timer,drawn=[];
+  const root={},ctx={window:{dmCurrentRoot:root,setTimeout:fn=>{timer=fn;return 1;},clearTimeout:()=>{}},state:{busy:true,jobRunning:true,catalogLoading:true},document:{activeElement:{tagName:'INPUT'}},
+    rootAlive:()=>true,currentRoute:()=>route,ensureStatusPromise:r=>Promise.resolve({ok:true,route:r,dnscrypt_engine:ctx.engine}),
+    applyStatusToCurrentRoot:(st,r)=>drawn.push([st,r]),scheduleRouteWarmup:()=>{}};
+  root.contains=()=>true;
+  vm.createContext(ctx);vm.runInContext(extract('function scheduleBackgroundStatus(root,initial){','// Warm one read-only request'),ctx);
+  for(const engine of ['https-dns-proxy','dnscrypt-proxy2'])for(const tab of ['dashboard','doh','slots','devices','network','time','catalog','log']){
+    ctx.engine=engine;route=tab;ctx.scheduleBackgroundStatus(root,true);timer();await delay();
+    const last=drawn.pop();if(!last||last[0].dnscrypt_engine!==engine||last[1]!==tab)throw Error('initial status blocked on '+engine+'/'+tab);
+  }
+  ctx.scheduleBackgroundStatus(root,false);timer();await delay();if(drawn.length)throw Error('background refresh interrupted an active action');
+}
 async function testAdditionalRouteCache(){
   const store={};let failDevices=false,failCatalog=false,failLog=false;
   const ctx={window:{},state:{category:'all',offset:0,limit:18,pageNotice:{}},session:{setLocalData:(k,v)=>{store[k]=JSON.stringify(v);},getLocalData:k=>store[k]?JSON.parse(store[k]):null},
@@ -641,4 +654,4 @@ async function testVersionCheckBackground(){
   resolveJob({ok:true});await delay();
   if(ctx.state.versionCheck.running||refreshed!==1)throw Error('version result was not refreshed');
 }
-Promise.all([testDnscryptAutoBadge(),testDnscryptCatalogProgress(),testDnscryptCatalogNativeLatency(),testVersionCheckBackground(),testEngineCardsBothDirections(),testEngineSwitchConfirmation(),testSystemDnsSuccessNotice(),testProfileNotice(),testForcedDnsControls(),testEncryptedDnsControls(),testBrowserDnsControls(),testCurrentDnsNotice(),testTestAgePresets(),testCatalogCardActions(),testCachePresets(),testTimePresetCards(),testSettingToggle(),testProfileApplyWithoutPopup(),testDnscryptDiagnosticDisplay(),testRunningProfileTimeout(),testTimePresetWhitespace(),testPoolSelectionRefresh(),testProfileClickBothEngines(),testDnscryptPoolPresentation(),testRegionalSelection(),testResumeCatalog(),testBackgroundStartTimeout(),testBackgroundUnknown(),testBackgroundNavigation(),testBackgroundFailure(),testDoHRemove(),testSingleError(),testBadgeWithoutDuration(),testPollNavigation(),testLongCatalogProgress(117),testLongCatalogProgress(5,true),testRouteCache(),testCachedReadOnly(),testAdditionalRouteCache(),testSequentialWarmup(),testWarmupResourceGuard(),testResumeCache(),testSettingConnectionLoss(),testRegionalConnectionLoss(),testProfileMissingJob(),testJobTransientError(),testUninstallUnresponsiveStatus(),testProfileStatus(),testSlotDraft(),testDeviceSave(),testCatalogError(),testFoldState(),testCustomDnsFeedback(),testBootstrapForm(),testLogScroll(),testHeaderCheckKind()]).catch(e=>{console.error(e);process.exitCode=1;});
+Promise.all([testDnscryptAutoBadge(),testDnscryptCatalogProgress(),testDnscryptCatalogNativeLatency(),testVersionCheckBackground(),testEngineCardsBothDirections(),testEngineSwitchConfirmation(),testSystemDnsSuccessNotice(),testProfileNotice(),testForcedDnsControls(),testEncryptedDnsControls(),testBrowserDnsControls(),testCurrentDnsNotice(),testTestAgePresets(),testCatalogCardActions(),testCachePresets(),testTimePresetCards(),testSettingToggle(),testProfileApplyWithoutPopup(),testDnscryptDiagnosticDisplay(),testRunningProfileTimeout(),testTimePresetWhitespace(),testPoolSelectionRefresh(),testProfileClickBothEngines(),testDnscryptPoolPresentation(),testRegionalSelection(),testResumeCatalog(),testBackgroundStartTimeout(),testBackgroundUnknown(),testBackgroundNavigation(),testBackgroundFailure(),testDoHRemove(),testSingleError(),testBadgeWithoutDuration(),testPollNavigation(),testLongCatalogProgress(117),testLongCatalogProgress(5,true),testRouteCache(),testCachedReadOnly(),testInitialStatusDuringJob(),testAdditionalRouteCache(),testSequentialWarmup(),testWarmupResourceGuard(),testResumeCache(),testSettingConnectionLoss(),testRegionalConnectionLoss(),testProfileMissingJob(),testJobTransientError(),testUninstallUnresponsiveStatus(),testProfileStatus(),testSlotDraft(),testDeviceSave(),testCatalogError(),testFoldState(),testCustomDnsFeedback(),testBootstrapForm(),testLogScroll(),testHeaderCheckKind()]).catch(e=>{console.error(e);process.exitCode=1;});
