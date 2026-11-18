@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion and full installer
-# Version: 2.125
+# Version: 2.126
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.125"
+VERSION="2.126"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -261,7 +261,21 @@ case "$1" in
         case "$stamp" in ''|*[!A-Za-z0-9_-]*) fail 'invalid stamp encoding' ;; esac
         [ "${#stamp}" -le 1024 ] || fail 'stamp too long'
         case $((${#stamp} % 4)) in 0) padding= ;; 2) padding='==' ;; 3) padding='=' ;; *) fail 'invalid stamp encoding' ;; esac
-        bytes=$(printf '%s%s' "$stamp" "$padding" | tr '_-' '/+' | base64 -d 2>/dev/null | od -An -v -tu1) || fail 'invalid stamp encoding'
+        if command -v base64 >/dev/null 2>&1; then
+            decode() { base64 -d; }
+        elif command -v ucode >/dev/null 2>&1; then
+            decode() { ucode -e 'import { stdin } from "fs"; print(b64dec(stdin.read("all")));'; }
+        else
+            fail 'neither base64 nor ucode is available'
+        fi
+        if command -v hexdump >/dev/null 2>&1; then
+            decimal_bytes() { hexdump -v -e '1/1 "%u "'; }
+        elif command -v od >/dev/null 2>&1; then
+            decimal_bytes() { od -An -v -tu1; }
+        else
+            fail 'neither hexdump nor od is available'
+        fi
+        bytes=$(printf '%s%s' "$stamp" "$padding" | tr '_-' '/+' | decode | decimal_bytes) || fail 'invalid stamp encoding'
         printf '%s\n' "$bytes" | awk '
             { for (i = 1; i <= NF; i++) b[++n] = $i }
             END {
@@ -538,7 +552,7 @@ EOF_DNSCRYPT_ASSET_4
 # loaded. Selects DNS using the existing checks without applying configuration.
 # On success stdout contains one catalog ID and URL per line, separated by '|'.
 dnscrypt_select_profile() (
-    local goal tmp started id url count ms priority native_id native_ms native_url native_scope native_category
+    local goal tmp started id url count ms priority native_id native_ms native_url native_scope native_category snapshot_rc
     goal=${1:-}
     case "$goal" in bypass|clean|security|privacy|adblock|family|all|dnssec) ;; *) return 1 ;; esac
     tmp=$(mktemp "${TMP_DIR:-/tmp}/dnscrypt-profile.XXXXXX") || return 1
@@ -581,7 +595,11 @@ dnscrypt_select_profile() (
     done
     if command -v dnscrypt_catalog_snapshot >/dev/null 2>&1; then
         native_scope=$goal; case "$goal" in all|dnssec) native_scope=native;; esac
-        dnscrypt_catalog_snapshot "$native_scope" 2>/dev/null > "$tmp.native" || :
+        snapshot_rc=0
+        dnscrypt_catalog_snapshot "$native_scope" > "$tmp.native" || snapshot_rc=$?
+        if [ "$snapshot_rc" -ne 0 ]; then
+            echo 'Не удалось проверить серверы DNSCrypt. Проверьте доступность службы и сети.' >&2
+        fi
         while IFS='|' read -r native_id native_ms; do
             case "$native_ms" in ''|*[!0-9]*) continue;; esac
             native_url=$(awk -F'|' -v id="$native_id" '$1==id {print $5; exit}' "$HELPERS/dns-manager-dnscrypt-catalog.conf")
@@ -594,10 +612,17 @@ dnscrypt_select_profile() (
             fi
             [ -n "$native_url" ] && printf '%s|%s|%s|%s\n' "$native_id" "$native_url" "$native_ms" "$priority" >> "$tmp"
         done < "$tmp.native"
+        if [ "$snapshot_rc" -eq 0 ] && [ -s "$tmp.native" ] && ! awk -F'|' '$2 ~ /^[0-9]+$/ {found=1} END {exit !found}' "$tmp.native"; then
+            echo 'Серверы DNSCrypt не ответили или проверка не завершилась. Проверьте доступ к сети и повторите.' >&2
+        fi
         rm -f "$tmp.native"
     fi
     if [ ! -s "$tmp" ]; then
-        echo 'Для выбранного профиля и протокола не найдено доступных серверов.' >&2
+        if [ "${DNS_MANAGER_PROTOCOL:-mixed}:$goal" = native:bypass ]; then
+            echo 'В каталоге нет DNSCrypt-серверов для обхода геоблокировок. Выберите смешанный режим или другой профиль.' >&2
+        else
+            echo 'Для выбранного профиля и протокола не найдено доступных серверов.' >&2
+        fi
         return 1
     fi
     sort -t'|' -k4,4n -k3,3n "$tmp" | head -n 6 | cut -d'|' -f1,2
@@ -845,7 +870,7 @@ printf 'Service did not become ready: %s\n' "$target" >&2
 exit 1
 EOF_DNSCRYPT_ASSET_8
     fetch_installer_source "$_dc_stage/backend-dnscrypt.sh" "$SOURCE_BASE/libexec/backend-dnscrypt.sh"
-    [ "$(sha256sum "$_dc_stage/backend-dnscrypt.sh" | cut -d' ' -f1)" = "79919aeeeca3b7adf3a12cf72a46bcf406d0f1688d56f391d21ff7f22b48d2c4" ] || { err "Файл backend DNSCrypt не прошёл проверку."; return 1; }
+    [ "$(sha256sum "$_dc_stage/backend-dnscrypt.sh" | cut -d' ' -f1)" = "a4e57e7801f4f06f1c2f6d52f2582457c180a19fc293cc5b66c87caa65cbf141" ] || { err "Файл backend DNSCrypt не прошёл проверку."; return 1; }
     cat > "$_dc_stage/dns-manager-device-detach.sh" <<'EOF_DNSCRYPT_ASSET_10'
 #!/bin/sh
 # Detach the Manager-owned per-device redirect before stopping its listeners.
@@ -1166,6 +1191,7 @@ native_adguard_family|family|dnscrypt|AdGuard DNS семейный (DNSCrypt)|sd
 native_quad9_unfiltered|clean|dnscrypt|Quad9 без фильтрации (DNSCrypt)|sdns://AQcAAAAAAAAADTkuOS45LjEwOjg0NDMgZ8hHuMh1jNEgJFVDvnVnRt803x2EwAuMRwNo34Idhj4ZMi5kbnNjcnlwdC1jZXJ0LnF1YWQ5Lm5ldA|any|official
 native_quad9_secure|security|dnscrypt|Quad9 защита от угроз (DNSCrypt)|sdns://AQMAAAAAAAAADDkuOS45Ljk6ODQ0MyBnyEe4yHWM0SAkVUO-dWdG3zTfHYTAC4xHA2jfgh2GPhkyLmRuc2NyeXB0LWNlcnQucXVhZDkubmV0|any|official
 native_scaleway_fr|clean|dnscrypt|Scaleway France (DNSCrypt)|sdns://AQcAAAAAAAAADjIxMi40Ny4yMjguMTM2IOgBuE6mBr-wusDOQ0RbsV66ZLAvo8SqMa4QY2oHkDJNHzIuZG5zY3J5cHQtY2VydC5mci5kbnNjcnlwdC5vcmc|fr|official
+native_cryptostorm_fr|privacy|dnscrypt|CryptoStorm France (DNSCrypt)|sdns://AQcAAAAAAAAADTE2My4xNzIuMzQuNTYgMTNyrVlWMsJBa4cvCY-FG925ZShMbL6aTxkJZDDbqVoeMi5kbnNjcnlwdC1jZXJ0LmNyeXB0b3N0b3JtLmlz|fr|official
 EOF_DNSCRYPT_CATALOG
     mv -f "$_dc_stage/dns-manager-dnscrypt-catalog.conf" "$_dc_dest/dns-manager-dnscrypt-catalog.conf"
     sh -n "$_dc_stage/backend-dnscrypt.sh"
@@ -1877,7 +1903,7 @@ DM_SOURCE_BASE="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/$_d
 COMPANION_URL="$DM_SOURCE_BASE/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.125"
+SELF_VERSION="2.126"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then

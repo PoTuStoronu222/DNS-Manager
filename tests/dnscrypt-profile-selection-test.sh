@@ -52,6 +52,11 @@ grep -q '^native_quad9_unfiltered|' "$TMP_DIR/result"
     grep -q '^native_quad9_unfiltered|' "$TMP_DIR/native-only"
     ! grep -q '^one|' "$TMP_DIR/native-only"
 )
+# Privacy must have a native candidate and must never silently use DoH.
+dnscrypt_catalog_snapshot() { [ "$1" = privacy ] && printf 'native_cryptostorm_fr|15\n'; }
+DNS_MANAGER_PROTOCOL=native dnscrypt_select_profile privacy > "$TMP_DIR/native-only"
+grep -q '^native_cryptostorm_fr|sdns://' "$TMP_DIR/native-only"
+! grep -q '^one|' "$TMP_DIR/native-only"
 unset -f dnscrypt_catalog_snapshot 2>/dev/null || unset dnscrypt_catalog_snapshot
 
 : > "$TMP_DIR/calls"

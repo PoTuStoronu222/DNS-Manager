@@ -3,7 +3,7 @@
 # loaded. Selects DNS using the existing checks without applying configuration.
 # On success stdout contains one catalog ID and URL per line, separated by '|'.
 dnscrypt_select_profile() (
-    local goal tmp started id url count ms priority native_id native_ms native_url native_scope native_category
+    local goal tmp started id url count ms priority native_id native_ms native_url native_scope native_category snapshot_rc
     goal=${1:-}
     case "$goal" in bypass|clean|security|privacy|adblock|family|all|dnssec) ;; *) return 1 ;; esac
     tmp=$(mktemp "${TMP_DIR:-/tmp}/dnscrypt-profile.XXXXXX") || return 1
@@ -46,7 +46,11 @@ dnscrypt_select_profile() (
     done
     if command -v dnscrypt_catalog_snapshot >/dev/null 2>&1; then
         native_scope=$goal; case "$goal" in all|dnssec) native_scope=native;; esac
-        dnscrypt_catalog_snapshot "$native_scope" 2>/dev/null > "$tmp.native" || :
+        snapshot_rc=0
+        dnscrypt_catalog_snapshot "$native_scope" > "$tmp.native" || snapshot_rc=$?
+        if [ "$snapshot_rc" -ne 0 ]; then
+            echo 'Не удалось проверить серверы DNSCrypt. Проверьте доступность службы и сети.' >&2
+        fi
         while IFS='|' read -r native_id native_ms; do
             case "$native_ms" in ''|*[!0-9]*) continue;; esac
             native_url=$(awk -F'|' -v id="$native_id" '$1==id {print $5; exit}' "$HELPERS/dns-manager-dnscrypt-catalog.conf")
@@ -59,10 +63,17 @@ dnscrypt_select_profile() (
             fi
             [ -n "$native_url" ] && printf '%s|%s|%s|%s\n' "$native_id" "$native_url" "$native_ms" "$priority" >> "$tmp"
         done < "$tmp.native"
+        if [ "$snapshot_rc" -eq 0 ] && [ -s "$tmp.native" ] && ! awk -F'|' '$2 ~ /^[0-9]+$/ {found=1} END {exit !found}' "$tmp.native"; then
+            echo 'Серверы DNSCrypt не ответили или проверка не завершилась. Проверьте доступ к сети и повторите.' >&2
+        fi
         rm -f "$tmp.native"
     fi
     if [ ! -s "$tmp" ]; then
-        echo 'Для выбранного профиля и протокола не найдено доступных серверов.' >&2
+        if [ "${DNS_MANAGER_PROTOCOL:-mixed}:$goal" = native:bypass ]; then
+            echo 'В каталоге нет DNSCrypt-серверов для обхода геоблокировок. Выберите смешанный режим или другой профиль.' >&2
+        else
+            echo 'Для выбранного профиля и протокола не найдено доступных серверов.' >&2
+        fi
         return 1
     fi
     sort -t'|' -k4,4n -k3,3n "$tmp" | head -n 6 | cut -d'|' -f1,2
