@@ -456,17 +456,58 @@ dnscrypt_catalog_snapshot() (
     if [ -r "$CUSTOM_DNS_CATALOG" ]; then
         awk -F'|' 'NF >= 5 && $1 !~ /^#/ && $1 ~ /^[A-Za-z0-9_-]+$/ && $5 ~ /^https:\/\// {gsub(/[\r\n]/, " ", $4); print $1 "|" $5 "|" $4}' "$CUSTOM_DNS_CATALOG" >> "$dir/source"
     fi
+    if [ "$probe_scope" = all ]; then
+        mv "$dir/source" "$dir/doh"
+    else
+        : > "$dir/doh"
+        : > "$dir/source"
+    fi
     native_catalog="$NATIVE_CATALOG"
-    if [ "$probe_scope" != all ]; then : > "$dir/source"; fi
     if [ -r "$native_catalog" ]; then
         awk -F'|' -v scope="$probe_scope" 'NF >= 5 && $1 !~ /^#/ && $1 ~ /^[A-Za-z0-9_-]+$/ && $5 ~ /^sdns:\/\// && (scope == "all" || scope == "native" || (scope == "dnssec" && ($2 == "clean" || $2 == "privacy")) || $2 == scope) {print $1 "|" $5 "|" $4}' "$native_catalog" >> "$dir/source"
     fi
-    total=$(wc -l < "$dir/source" | tr -d ' ')
+    doh_total=$(wc -l < "$dir/doh" | tr -d ' ')
+    native_total=$(wc -l < "$dir/source" | tr -d ' ')
+    total=$((doh_total + native_total))
     [ "$total" -gt 0 ] || { [ "$probe_scope" != all ] && exit 0; exit 1; }
     [ "$probe_scope" != all ] || printf 'name=dnscrypt_catalog\nprogress_total=%s\nprogress_done=0\nprogress_ok=0\nprogress_fail=0\n' "$total" >> "$JOB_DIR/health/state"
     : > "$dir/results"
-    offset=1; success_count=0; failed_count=0
-    while [ "$offset" -le "$total" ]; do
+    offset=1; success_count=0; failed_count=0; done_count=0
+    if [ "$doh_total" -gt 0 ]; then
+        # Reuse the same direct DoH check as HTTPS DNS Proxy, in bounded groups.
+        printf '\022\064\001\000\000\001\000\000\000\000\000\000\007example\003com\000\000\001\000\001' > "$TMP_DIR/dns_query.bin" || exit 1
+        while [ "$offset" -le "$doh_total" ]; do
+            end=$((offset + 3))
+            sed -n "${offset},${end}p" "$dir/doh" > "$dir/group"
+            names=$(awk -F'|' '{if (NR>1) printf ", "; printf "%s", $3}' "$dir/group")
+            printf 'phase=DoH: %s\n' "$names" >> "$JOB_DIR/health/state"
+            pids=''
+            while IFS='|' read -r id url name; do
+                rm -f "$TMP_DIR/t.$id"
+                (trap - EXIT; test_one_dns "$id" >/dev/null 2>&1) &
+                pids="$pids $!"
+            done < "$dir/group"
+            for pid in $pids; do wait "$pid" 2>/dev/null || :; done
+            while IFS='|' read -r id url name; do
+                result=$(cat "$TMP_DIR/t.$id" 2>/dev/null || :)
+                latency=$(printf '%s\n' "$result" | awk -F'|' '$5=="OK" && $4 ~ /^[0-9]+$/ {print $4}')
+                status=$(printf '%s\n' "$result" | awk -F'|' '{print $5}')
+                if [ -n "$latency" ]; then
+                    printf '%s|%s\n' "$id" "$latency" >> "$dir/results"; success_count=$((success_count + 1))
+                elif [ -n "$status" ] && [ "$status" != INTERNAL_TEST_QUERY_CREATE_FAIL ]; then
+                    printf '%s|-1\n' "$id" >> "$dir/results"; failed_count=$((failed_count + 1))
+                else
+                    printf '%s|-2\n' "$id" >> "$dir/results"
+                fi
+                rm -f "$TMP_DIR/t.$id"
+                done_count=$((done_count + 1))
+            done < "$dir/group"
+            printf 'progress_done=%s\nprogress_ok=%s\nprogress_fail=%s\n' "$done_count" "$success_count" "$failed_count" >> "$JOB_DIR/health/state"
+            offset=$((end + 1))
+        done
+    fi
+    offset=1
+    while [ "$offset" -le "$native_total" ]; do
         end=$((offset + 5))
         sed -n "${offset},${end}p" "$dir/source" > "$dir/group"
         names=$(awk -F'|' '{if (NR>1) printf ", "; printf "%s", ($3 != "" ? $3 : $1)}' "$dir/group")
@@ -501,6 +542,8 @@ dnscrypt_catalog_snapshot() (
             tries=0
             while kill -0 "$probe" 2>/dev/null && [ "$tries" -lt 45 ]; do
                 grep -q 'Server with the lowest initial latency:' "$dir/probe.log" && break
+                # With no live servers dnscrypt-proxy never prints the sorted summary.
+                if awk -v expected="$count" '/\[manager-[0-9]+\] (OK .*rtt: [0-9]+ms|TIMEOUT)/ { for (i=1; i<=NF; i++) if ($i ~ /^\[manager-[0-9]+\]$/) done[$i]=1 } END { for (i in done) n++; exit !(n >= expected) }' "$dir/probe.log"; then break; fi
                 sleep 1; tries=$((tries + 1))
             done
             kill "$probe" 2>/dev/null || :; wait "$probe" 2>/dev/null || :; probe=''
@@ -512,9 +555,14 @@ dnscrypt_catalog_snapshot() (
             fi
             completed=0; grep -q 'Server with the lowest initial latency:' "$dir/probe.log" && completed=1
             awk '
+                /\[manager-[1-6]\] TIMEOUT/ {
+                    for(i=1;i<=NF;i++) if($i ~ /^\[manager-[1-6]\]$/) {
+                        server=$i; sub(/^\[/, "", server); sub(/\]$/, "", server); values[server]=-1
+                    }
+                }
                 /\[manager-[1-6]\] OK .*rtt: [0-9]+ms/ {
                     for(i=1;i<=NF;i++) if($i ~ /^\[manager-[1-6]\]$/) {
-                        server=$i; gsub(/[\[\]]/, "", server)
+                        server=$i; sub(/^\[/, "", server); sub(/\]$/, "", server)
                         for(j=i+1;j<NF;j++) if($j=="rtt:") {v=$(j+1); sub(/ms.*/, "", v); if(v ~ /^[0-9]+$/) values[server]=v}
                     }
                 }
@@ -528,6 +576,7 @@ dnscrypt_catalog_snapshot() (
             n=1; while IFS= read -r id; do
                 latency=$(awk -v s="manager-$n" '$1==s {print $2; exit}' "$dir/latencies")
                 case "$latency" in
+                    -1) printf '%s|-1\n' "$id" >> "$dir/results"; failed_count=$((failed_count + 1));;
                     ''|*[!0-9]*)
                         if [ "$completed" = 1 ]; then
                             printf '%s|-1\n' "$id" >> "$dir/results"; failed_count=$((failed_count + 1))
@@ -539,7 +588,7 @@ dnscrypt_catalog_snapshot() (
                 n=$((n + 1))
             done < "$dir/ids"
         fi
-        done_count=$end; [ "$done_count" -le "$total" ] || done_count=$total
+        done_count=$((doh_total + end)); [ "$done_count" -le "$total" ] || done_count=$total
         [ "$probe_scope" != all ] || printf 'progress_done=%s\nprogress_ok=%s\nprogress_fail=%s\n' "$done_count" "$success_count" "$failed_count" >> "$JOB_DIR/health/state"
         offset=$((end + 1))
     done
