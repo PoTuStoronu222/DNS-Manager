@@ -443,9 +443,9 @@ dnscrypt_catalog_snapshot() (
     trap cleanup_catalog_probe EXIT
     trap 'exit 1' HUP INT TERM
     load_config || exit 1
-    [ -r "$DNS_CATALOG" ] || exit 1
-    command -v dnscrypt-proxy >/dev/null 2>&1 || exit 1
-    dir=$(mktemp -d "$RUNTIME_DIR/catalog-probe.XXXXXX") || exit 1
+    [ -r "$DNS_CATALOG" ] || { echo 'Каталог DNS недоступен.' >&2; exit 1; }
+    command -v dnscrypt-proxy >/dev/null 2>&1 || { echo 'Программа dnscrypt-proxy не найдена.' >&2; exit 1; }
+    dir=$(mktemp -d "$RUNTIME_DIR/catalog-probe.XXXXXX") || { echo 'Не удалось создать временный каталог проверки.' >&2; exit 1; }
     catalog_hash=$(cksum "$DNS_CATALOG")
     custom_hash=$(cksum "$CUSTOM_DNS_CATALOG" 2>/dev/null || :)
     native_hash=$(cksum "$HELPERS/dns-manager-dnscrypt-catalog.conf" 2>/dev/null || :)
@@ -502,7 +502,11 @@ dnscrypt_catalog_snapshot() (
             done
             kill "$probe" 2>/dev/null || :; wait "$probe" 2>/dev/null || :; probe=''
             if grep -Eqi 'address already in use|permission denied|failed to listen' "$dir/probe.log" "$dir/process.log"; then exit 1; fi
-            [ -s "$dir/probe.log" ] || exit 1
+            if [ ! -s "$dir/probe.log" ]; then
+                echo 'DNSCrypt не создал журнал проверки серверов.' >&2
+                [ ! -s "$dir/process.log" ] || tail -n 5 "$dir/process.log" >&2
+                exit 1
+            fi
             completed=0; grep -q 'Server with the lowest initial latency:' "$dir/probe.log" && completed=1
             awk '
                 /\[manager-[1-6]\] OK .*rtt: [0-9]+ms/ {

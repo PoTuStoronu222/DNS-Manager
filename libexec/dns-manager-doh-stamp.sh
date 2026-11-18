@@ -13,7 +13,21 @@ case "$1" in
         case "$stamp" in ''|*[!A-Za-z0-9_-]*) fail 'invalid stamp encoding' ;; esac
         [ "${#stamp}" -le 1024 ] || fail 'stamp too long'
         case $((${#stamp} % 4)) in 0) padding= ;; 2) padding='==' ;; 3) padding='=' ;; *) fail 'invalid stamp encoding' ;; esac
-        bytes=$(printf '%s%s' "$stamp" "$padding" | tr '_-' '/+' | base64 -d 2>/dev/null | od -An -v -tu1) || fail 'invalid stamp encoding'
+        if command -v base64 >/dev/null 2>&1; then
+            decode() { base64 -d; }
+        elif command -v ucode >/dev/null 2>&1; then
+            decode() { ucode -e 'import { stdin } from "fs"; print(b64dec(stdin.read("all")));'; }
+        else
+            fail 'neither base64 nor ucode is available'
+        fi
+        if command -v hexdump >/dev/null 2>&1; then
+            decimal_bytes() { hexdump -v -e '1/1 "%u "'; }
+        elif command -v od >/dev/null 2>&1; then
+            decimal_bytes() { od -An -v -tu1; }
+        else
+            fail 'neither hexdump nor od is available'
+        fi
+        bytes=$(printf '%s%s' "$stamp" "$padding" | tr '_-' '/+' | decode | decimal_bytes) || fail 'invalid stamp encoding'
         printf '%s\n' "$bytes" | awk '
             { for (i = 1; i <= NF; i++) b[++n] = $i }
             END {
