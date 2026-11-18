@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.140"
+VERSION="2.141"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -1259,16 +1259,19 @@ while IFS='|' read -r name stamp category description; do
         else if ($0 ~ /^adguard-/) sub(/^adguard-/, "AdGuard-")
         else if ($0 ~ /^cleanbrowsing-/) sub(/^cleanbrowsing-/, "CleanBrowsing-")
         else if ($0 ~ /^cisco/) sub(/^cisco/, "Cisco OpenDNS")
-        gsub(/[-_]/, " "); print
+        gsub(/[-_]/, " ");
+        for (i=1; i<=NF; i++) { if ($i == "dns") $i="DNS"; else if ($i ~ /^[a-z]/) $i=toupper(substr($i,1,1)) substr($i,2); }
+        print
     }')
-    # The signed source supplies provider and location descriptions for native IDs.
-    case "$description" in
-        ''|*http://*|*https://*) ;;
-        *)
-            official_display=$(printf '%s\n' "$description" | awk '{ gsub(/^[[:space:]]+|[[:space:]]+$/, ""); sub(/ public resolver[.]?$/, ""); sub(/ resolver[.]?$/, ""); sub(/[.]$/, ""); if (length($0) <= 90) print }')
-            [ -z "$official_display" ] || display=$official_display
-            ;;
-    esac
+    # Only use an explicit country in the signed source description.
+    region=$(printf '%s\n' "$description" | awk '
+        BEGIN {n=split("Austria:AT,Spain:ES,Belgium:BE,Germany:DE,Switzerland:CH,Czech Republic:CZ,Finland:FI,France:FR,Hungary:HU,England:GB,United Kingdom:GB,Italy:IT,Canada:CA,Moldova:MD,Netherlands:NL,Norway:NO,Poland:PL,Portugal:PT,Romania:RO,Serbia:RS,Singapore:SG,Sweden:SE,Australia:AU,Japan:JP,United States:US", a, ",")}
+        {for(i=1;i<=n;i++){split(a[i], b, ":"); if(index($0,b[1])) {print b[2]; exit}}}
+    ')
+    if [ -n "$region" ]; then
+        display=$(printf '%s\n' "$display" | awk -v region="$region" '{if (NF>1 && toupper($NF)==region) NF--; print}')
+        display="$display [$region]"
+    fi
     hash=$(printf %s "$name" | sha256sum)
     id=official_${hash%% *}
     printf '%s|%s|dnscrypt|%s|%s|any|official\n' "$id" "$category" "$display" "$stamp"
@@ -1988,7 +1991,7 @@ DM_SOURCE_BASE="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/$_d
 COMPANION_URL="$DM_SOURCE_BASE/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.140"
+SELF_VERSION="2.141"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -8300,7 +8303,7 @@ function catalogGroups(servers,renderItem,rerender){
     if(isUserDnsRecord(d)||!group||group.length<2){result.push(renderItem(d));return;}
     if(emitted[key])return;
     emitted[key]=true;
-    var open=state.catalogOpenGroups[key]!==false;
+    var open=!!state.catalogOpenGroups[key];
     var toggle=E('button',{'type':'button','class':'dm-card dm-catalog-family'+(open?' is-open':''),'aria-expanded':open?'true':'false','click':function(){state.catalogOpenGroups[key]=!open;rerender();}},[
       E('span',{'class':'dm-catalog-family-main'},[E('strong',{},families[key]),E('span',{'class':'dm-mini'},group.length+' варианта на странице')]),E('span',{'aria-hidden':'true'},open?'⌃':'›')
     ]);
