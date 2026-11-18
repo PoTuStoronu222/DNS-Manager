@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion and full installer
-# Version: 3.2
+# Version: 3.2.1
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="3.2"
+VERSION="3.2.1"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -2166,7 +2166,7 @@ DM_SOURCE_BASE="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/$_d
 COMPANION_URL="$DM_SOURCE_BASE/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="3.2"
+SELF_VERSION="3.2.1"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -3683,7 +3683,9 @@ time_status_json() {
 page_meta_json() {
     _age="$(cfg_get TEST_RESULTS_MAX_AGE)"
     case "$_age" in ''|*[!0-9]*) _hours=6;; *) _hours=$((_age/3600)); [ "$_hours" -ge 1 ] || _hours=1;; esac
-    printf '{"ok":true,"test_age_common":%s}' "$_hours"
+    _engine="$(cat /etc/dns-manager/config/dnscrypt-engine 2>/dev/null)"
+    [ "$_engine" = dnscrypt-proxy2 ] || _engine=https-dns-proxy
+    printf '{"ok":true,"test_age_common":%s,"catalog_engine":"%s"}' "$_hours" "$_engine"
 }
 
 doh_status_json() {
@@ -6077,7 +6079,7 @@ EOF_RPC_WRAPPER
 'require ui';
 'require session';
 
-// DNS Manager LuCI common module version: 3.2
+// DNS Manager LuCI common module version: 3.2.1
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -8619,15 +8621,26 @@ function routeStatusCall(){
     case 'time': return callTimeStatus();
     case 'catalog':
       var requestedCategory=state.category, requestedProtocol=state.catalogProtocol, requestedCountry=state.catalogCountry, requestedOffset=state.offset, requestedLimit=state.limit;
-      return callDohStatus().then(function(st){
-        var selector='grouped:'+((st||{}).dnscrypt_engine==='dnscrypt-proxy2'?requestedProtocol+':':'')+(requestedCategory==='all'&&requestedCountry&&requestedCountry!=='all'?'country-'+requestedCountry+':':'')+requestedCategory;
-        return Promise.all([callCatalog(selector,requestedOffset,requestedLimit,0),callPageMeta()]).then(function(v){
-          if(state.category!==requestedCategory||state.catalogProtocol!==requestedProtocol||state.catalogCountry!==requestedCountry||state.offset!==requestedOffset||state.limit!==requestedLimit)return Object.assign({},st||{},v[1]||{});
-          if(!v[0]||v[0].ok===false){
+      function catalogSelector(engine){
+        return 'grouped:'+(engine==='dnscrypt-proxy2'?requestedProtocol+':':'')+(requestedCategory==='all'&&requestedCountry&&requestedCountry!=='all'?'country-'+requestedCountry+':':'')+requestedCategory;
+      }
+      var statusPromise=callDohStatus();
+      var catalogPromise=callPageMeta().then(function(meta){
+        if(!meta||meta.ok===false||!meta.catalog_engine)return statusPromise.then(function(st){return {meta:meta,engine:(st||{}).dnscrypt_engine};});
+        return {meta:meta,engine:meta.catalog_engine};
+      }).then(function(v){
+        v.selector=catalogSelector(v.engine);
+        return callCatalog(v.selector,requestedOffset,requestedLimit,0).then(function(data){v.data=data;return v;});
+      });
+      return Promise.all([statusPromise,catalogPromise]).then(function(values){
+        var st=values[0]||{}, v=values[1], selector=catalogSelector(st.dnscrypt_engine);
+        return (v.selector===selector?Promise.resolve(v.data):callCatalog(selector,requestedOffset,requestedLimit,0)).then(function(data){
+          if(state.category!==requestedCategory||state.catalogProtocol!==requestedProtocol||state.catalogCountry!==requestedCountry||state.offset!==requestedOffset||state.limit!==requestedLimit)return Object.assign({},st,v.meta||{});
+          if(!data||data.ok===false){
             window.dmCatalog=null;state.catalogLoaded=false;state.catalogLoadFailed=true;
-            state.pageNotice.catalog=(v[0]&&v[0].error)||'Не удалось загрузить каталог DNS.';
-          }else{window.dmCatalog=v[0];state.catalogLoaded=true;state.catalogCacheSelector=selector;if(state.catalogLoadFailed)state.pageNotice.catalog='';state.catalogLoadFailed=false;}
-          return Object.assign({},st||{},v[1]||{});
+            state.pageNotice.catalog=(data&&data.error)||'Не удалось загрузить каталог DNS.';
+          }else{window.dmCatalog=data;state.catalogLoaded=true;state.catalogCacheSelector=selector;if(state.catalogLoadFailed)state.pageNotice.catalog='';state.catalogLoadFailed=false;}
+          return Object.assign({},st,v.meta||{});
         });
       });
     case 'log':
@@ -9909,7 +9922,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 3.2
+// DNS Manager LuCI version: 3.2.1
 return view.extend({
   load: DM.load,
   render: DM.render,

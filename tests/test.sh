@@ -537,7 +537,7 @@ awk '/^function routeStatusCall\(\)/,/^}/' "$tmp/common.js" > "$tmp/route_status
 awk "/case 'catalog':/,/case 'log':/" "$tmp/route_status_call.js" > "$tmp/catalog_route_status.js"
 grep -Fq 'callDohStatus()' "$tmp/catalog_route_status.js" || fail "LuCI catalog refresh does not reload live DNS slots"
 grep -Fq 'callPageMeta()' "$tmp/catalog_route_status.js" || fail "LuCI catalog refresh dropped its page metadata"
-grep -Fq 'return Object.assign({},st||{},v[1]||{});' "$tmp/catalog_route_status.js" || fail "LuCI catalog refresh does not merge metadata into live slot state"
+grep -Fq 'return Object.assign({},st,v.meta||{});' "$tmp/catalog_route_status.js" || fail "LuCI catalog refresh does not merge metadata into live slot state"
 ok "catalog refresh reloads assigned DNS slots immediately"
 
 # The regional slot has an independent dnsmasq route; explain the actual suffix
@@ -653,7 +653,7 @@ grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validat
 grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
 grep -q 'VERSION="4.50"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
-grep -q 'VERSION="3.2"' dns-manager-luci.sh || fail "LuCI version not bumped"
+grep -q 'VERSION="3.2.1"' dns-manager-luci.sh || fail "LuCI version not bumped"
 grep -Fq "{id:'quad9plain',ips:'9.9.9.10,149.112.112.10,2620:fe::10,2620:fe::fe:10'}" dns-manager-luci.sh || fail "historical Quad9 bootstrap snapshot changed"
 grep -Fq "{id:'cira',ips:'149.112.121.10,149.112.122.10,2620:10a:80bb::10,2620:10a:80bc::10'}" dns-manager-luci.sh || fail "historical CIRA bootstrap snapshot changed"
 if grep -q '^main_menu$' dns-manager.sh; then fail "interactive console menu still starts"; fi

@@ -693,11 +693,19 @@ async function testVersionCheckBackground(){
 async function testCatalogProtocolOnFirstOpen(){
   for(const engine of ['dnscrypt-proxy2','https-dns-proxy'])for(const protocol of ['native','doh']){
     let selectors=[];const state={category:'all',catalogCountry:'all',catalogProtocol:protocol,offset:0,limit:18,pageNotice:{}};
-    const ctx={state,window:{},Promise,Object,Array,JSON,Date,Error,callDohStatus:()=>Promise.resolve({ok:true,dnscrypt_engine:engine}),callPageMeta:()=>Promise.resolve({ok:true}),callCatalog:(category)=>{selectors.push(category);return Promise.resolve({ok:true,servers:[]});}};
+    let releaseStatus;const status=new Promise(resolve=>{releaseStatus=resolve;});
+    const ctx={state,window:{},Promise,Object,Array,JSON,Date,Error,callDohStatus:()=>status,callPageMeta:()=>Promise.resolve({ok:true,catalog_engine:engine}),callCatalog:(category)=>{selectors.push(category);return Promise.resolve({ok:true,servers:[]});}};
     vm.createContext(ctx);vm.runInContext(extract('function routeStatusCall(){','function ensureStatusPromise('),ctx);
-    await ctx.routeStatusCall('catalog');
+    const pending=ctx.routeStatusCall('catalog');await delay();
+    if(selectors.length!==1)throw Error('catalog waited for slow status');
+    releaseStatus({ok:true,dnscrypt_engine:engine});await pending;
     const expected='grouped:'+(engine==='dnscrypt-proxy2'?protocol+':':'')+'all';
     if(selectors[0]!==expected||state.catalogCacheSelector!==expected)throw Error('incorrect first catalog: '+selectors[0]);
   }
+  const selectors=[],state={category:'all',catalogCountry:'all',catalogProtocol:'native',offset:0,limit:18,pageNotice:{}};
+  const ctx={state,window:{},Promise,Object,Array,JSON,Date,Error,callDohStatus:()=>Promise.resolve({ok:true,dnscrypt_engine:'https-dns-proxy'}),callPageMeta:()=>Promise.resolve({ok:true,catalog_engine:'dnscrypt-proxy2'}),callCatalog:category=>{selectors.push(category);return Promise.resolve({ok:true,servers:[]});}};
+  vm.createContext(ctx);vm.runInContext(extract('function routeStatusCall(){','function ensureStatusPromise('),ctx);
+  await ctx.routeStatusCall('catalog');
+  if(selectors.join()!=='grouped:native:all,grouped:all'||state.catalogCacheSelector!=='grouped:all')throw Error('catalog did not recover from engine change');
 }
 Promise.all([testCatalogProtocolOnFirstOpen(),testDnscryptCatalogCardActions(),testCatalogPageStartAndStop(),testDnscryptAutoBadge(),testDnscryptCatalogProgress(),testDnscryptCatalogNativeLatency(),testVersionCheckBackground(),testEngineCardsBothDirections(),testEngineSwitchConfirmation(),testSystemDnsSuccessNotice(),testProfileNotice(),testForcedDnsControls(),testEncryptedDnsControls(),testBrowserDnsControls(),testCurrentDnsNotice(),testTestAgePresets(),testCatalogCardActions(),testCachePresets(),testTimePresetCards(),testSettingToggle(),testProfileApplyWithoutPopup(),testDnscryptDiagnosticDisplay(),testRunningProfileTimeout(),testTimePresetWhitespace(),testPoolSelectionRefresh(),testProfileClickBothEngines(),testDnscryptPoolPresentation(),testRegionalSelection(),testResumeCatalog(),testBackgroundStartTimeout(),testBackgroundUnknown(),testBackgroundNavigation(),testBackgroundFailure(),testDoHRemove(),testSingleError(),testBadgeWithoutDuration(),testPollNavigation(),testLongCatalogProgress(117),testLongCatalogProgress(5,true),testRouteCache(),testCachedReadOnly(),testInitialStatusDuringJob(),testAdditionalRouteCache(),testSequentialWarmup(),testWarmupResourceGuard(),testResumeCache(),testSettingConnectionLoss(),testRegionalConnectionLoss(),testProfileMissingJob(),testJobTransientError(),testUninstallUnresponsiveStatus(),testProfileStatus(),testSlotDraft(),testDeviceSave(),testCatalogError(),testFoldState(),testCustomDnsFeedback(),testBootstrapForm(),testLogScroll(),testHeaderCheckKind()]).catch(e=>{console.error(e);process.exitCode=1;});
