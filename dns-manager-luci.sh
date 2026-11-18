@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion and full installer
-# Version: 2.116
+# Version: 2.117
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.116"
+VERSION="2.117"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -1775,7 +1775,7 @@ DM_SOURCE_BASE="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/$_d
 COMPANION_URL="$DM_SOURCE_BASE/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.116"
+SELF_VERSION="2.117"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -7903,7 +7903,7 @@ function render(root,st){
   document.querySelectorAll('a[href*="/dns-manager/slots"]').forEach(function(link){
     link.textContent=st.dnscrypt_engine==='dnscrypt-proxy2'?'DNS-серверы':'DNS по слотам';
   });
-  renderHeader(root,st);
+  renderHeader(root,st,state.statusFromCache?(state.statusError||'Обновляю данные…'):null);
   state.activeTab=currentRoute();
   switch(state.activeTab){
     case 'doh':
@@ -7936,7 +7936,7 @@ function render(root,st){
   setActiveTab(root,state.activeTab);
   if(state.statusFromCache){
     var header=root.querySelector('#dm-header');
-    if(header)header.appendChild(E('div',{'class':'dm-inline-msg '+(state.statusError?'error':'info')},state.statusError||'Показаны предыдущие данные. Обновляю состояние…'));
+    if(header&&state.statusError)header.querySelector('.dm-header').appendChild(btn('Повторить','cbi-button-neutral',function(){state.statusError='';render(root,st);scheduleBackgroundStatus(root);}));
     root.querySelectorAll('button,input,select,textarea').forEach(function(el){el.disabled=true;});
   }
 }
@@ -8071,6 +8071,14 @@ function cachedRouteStatus(route){
     var st=copy.data;st.__dmCachedRoute=route;st.__dmCacheFresh=Date.now()-copy.ts<=15000;return st;
   }catch(e){return null;}
 }
+function cachedHeaderStatus(){
+  var keys=['dashboard','doh','network','time','devices','catalog','log'];
+  for(var i=0;i<keys.length;i++){
+    var entry=routeCacheEntry(keys[i]);
+    if(entry&&entry.data.luci_version)return {luci_version:entry.data.luci_version};
+  }
+  return {};
+}
 function applyStatusToCurrentRoot(st,route){
   if(route&&currentRoute()!==route)return;
   var root=window.dmCurrentRoot;
@@ -8108,7 +8116,7 @@ function scheduleBackgroundStatus(root,initial){
       state.statusError=withRpcError('Не удалось загрузить состояние DNS Manager.',err);
       if(initial){
         var loading=root.querySelector('#dm-initial-loading');
-        if(loading){renderHeader(root,{},state.statusError);root.querySelector('#dm-header .dm-header').appendChild(btn('Повторить','cbi-button-neutral',function(){renderHeader(root,{},'Загружаю данные…');scheduleBackgroundStatus(root,true);}));}
+        if(loading){renderHeader(root,cachedHeaderStatus(),state.statusError);root.querySelector('#dm-header .dm-header').appendChild(btn('Повторить','cbi-button-neutral',function(){renderHeader(root,cachedHeaderStatus(),'Загружаю данные…');scheduleBackgroundStatus(root,true);}));}
       }else render(root,window.dmState||{});
     });
   },0);
@@ -9136,7 +9144,7 @@ return baseclass.extend({
     ids.forEach(function(id){root.appendChild(E('section',{'id':id}));});
     injectStyle(root);window.dmState=st||{};state.activeTab=route;window.dmCurrentRoot=root;
     if(st&&st.__dmLoading){
-      renderHeader(root,{},'Загружаю данные…');
+      renderHeader(root,cachedHeaderStatus(),'Загружаю данные…');
       var loading=E('div',{'id':'dm-initial-loading'});
       root.appendChild(loading);
       scheduleBackgroundStatus(root,true);

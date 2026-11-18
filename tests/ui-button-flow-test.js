@@ -74,10 +74,10 @@ async function testRouteCache(){
 async function testCachedReadOnly(){
   const controls=[{disabled:false},{disabled:false}],messages=[];
   const root={querySelector:()=>({appendChild:x=>messages.push(x)}),querySelectorAll:()=>controls};
-  const ctx={document:{querySelectorAll:()=>[]},state:{statusFromCache:true,statusError:'',activeTab:'dashboard'},currentRoute:()=> 'dashboard',renderHeader:()=>{},renderOverview:()=>{},setActiveTab:()=>{},E:(tag,attrs,text)=>({tag,attrs,text})};
+  const ctx={document:{querySelectorAll:()=>[]},state:{statusFromCache:true,statusError:'',activeTab:'dashboard'},currentRoute:()=> 'dashboard',renderHeader:(root,st,notice)=>messages.push(notice),renderOverview:()=>{},setActiveTab:()=>{},E:(tag,attrs,text)=>({tag,attrs,text})};
   vm.createContext(ctx);vm.runInContext(extract('function render(root,st){','function routeStatusCall(){'),ctx);
   ctx.render(root,{ok:true});
-  if(controls.some(x=>!x.disabled)||!messages.some(x=>String(x.text).includes('предыдущие данные')))throw Error('cached state was not marked read-only');
+  if(controls.some(x=>!x.disabled)||!messages.includes('Обновляю данные…'))throw Error('cached state was not marked read-only');
 }
 async function testAdditionalRouteCache(){
   const store={};let failDevices=false,failCatalog=false,failLog=false;
