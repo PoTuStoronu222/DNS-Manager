@@ -133,9 +133,9 @@ zurich|Zürich|CH
 EOF_LOCATIONS
 while IFS='|' read -r name stamp category description; do
     case "$name" in
-        adguard-dns-family|cisco-familyshield|cleanbrowsing-adult|cleanbrowsing-family|sfw.scaleway-fr) category=family ;;
-        adguard-dns) category=adblock ;;
-        cleanbrowsing-security|quad9-dnscrypt-ip4-filter-ecs-pri|quad9-dnscrypt-ip4-filter-pri) category=security ;;
+        adguard-dns-family|cisco-familyshield|cleanbrowsing-adult|cleanbrowsing-family|dnsforfamily|dnsforfamily-no-safe-search|sfw.scaleway-fr) category=family ;;
+        adguard-dns|doh.tiar.app) category=adblock ;;
+        cisco|cleanbrowsing-security|quad9-dnscrypt-ip4-filter-ecs-pri|quad9-dnscrypt-ip4-filter-pri) category=security ;;
     esac
     display=$(printf '%s\n' "$name" | awk '{
         if ($0 ~ /^cs-/) sub(/^cs-/, "CryptoStorm-")
