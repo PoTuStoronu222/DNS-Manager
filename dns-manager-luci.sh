@@ -1025,6 +1025,33 @@ for config_package in firewall https-dns-proxy; do
     pending=$(uci -q changes "$config_package" 2>/dev/null || true)
     [ -z "$pending" ] || { echo "Есть несохранённые изменения UCI: $config_package"; exit 1; }
 done
+# Download DNSCrypt while the current DNS path is still available. Resetting
+# dnsmasq first can remove the only resolver able to reach package feeds.
+if [ "$target" = dnscrypt-proxy2 ] && [ ! -x "$executable" ]; then
+    echo "Устанавливаю $package до сброса текущего DNS."
+    package_was_missing=0
+    package_is_installed "$package" || package_was_missing=1
+    printf 'phase=Загрузка и установка пакета…\n' >> "$job_dir/state"
+    if [ "$PKG_MGR" = apk ]; then
+        apk add "$package" || { printf 'phase=Обновление списка пакетов…\n' >> "$job_dir/state"; apk update && apk add "$package"; } || install_error="Не удалось установить пакет $package. Текущие настройки DNS сохранены; проверьте интернет и репозитории."
+    elif [ "$PKG_MGR" = opkg ]; then
+        opkg install "$package" || { printf 'phase=Обновление списка пакетов…\n' >> "$job_dir/state"; opkg update && opkg install "$package"; } || install_error="Не удалось установить пакет $package. Текущие настройки DNS сохранены; проверьте интернет и репозитории."
+    else
+        install_error='Менеджер пакетов не найден.'
+    fi
+    [ -z "$install_error" ] || exit 1
+    [ -x "$executable" ] || { install_error="Пакет $package установлен, но исполняемый файл не найден."; exit 1; }
+    if [ "$package_was_missing" = 1 ]; then
+        touch "$PACKAGE_OWNERSHIP" && { grep -Fqx -- "$package" "$PACKAGE_OWNERSHIP" || printf '%s\n' "$package" >> "$PACKAGE_OWNERSHIP"; } || echo 'Не удалось записать установленный пакет.'
+    fi
+    # Package installation may enable or start its own service.
+    if [ -x "$init_dir/dnscrypt-proxy" ]; then
+        "$init_dir/dnscrypt-proxy" disable || exit 1
+        if "$init_dir/dnscrypt-proxy" running >/dev/null 2>&1; then
+            "$init_dir/dnscrypt-proxy" stop || exit 1
+        fi
+    fi
+fi
 . "$helpers/dns-manager-watchdog-common.sh" || exit 1
 dns_manager_stop_watchdog || { echo 'Не удалось остановить DNS Watchdog.'; exit 1; }
 # Old failure counts and candidate history must not survive a clean engine switch.
