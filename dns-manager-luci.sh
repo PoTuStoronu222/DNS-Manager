@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.135"
+VERSION="2.136"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -1980,7 +1980,7 @@ DM_SOURCE_BASE="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/$_d
 COMPANION_URL="$DM_SOURCE_BASE/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.135"
+SELF_VERSION="2.136"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -8069,6 +8069,15 @@ function saveCustomDns(nameInput,urlInput,root){
   });
 }
 
+// Use the current official display names even when an older catalog is installed.
+var CATALOG_DISPLAY_NAMES={"quic_best":"QUIC DNS [RU/EU]","semqka":"Semqka DNS [RU/EU]","tamaev":"Tamaev DNS [RU/EU]","mafioznik":"Mafioznik DNS [RU/EU]","mafioznik_xyz":"Mafioznik DNS XYZ [RU/EU]","astracat":"AstraCat DNS [RU/EU]","malw_link":"Malw.link [Global]","malw_cloudflare":"Malw.link Cloudflare [Global]","geohide":"GeoHide DNS [RU]","geohide_8443":"GeoHide DNS :8443 [RU]","geohide_eu":"GeoHide EU [EU]","geohide_us":"GeoHide US [US]","comss_bypass":"Comss.one [RU/EU]","dns_ai_ru":"DNS-AI.RU [RU/EU]","magicdns":"MagicDNS [RU/EU]","wlrus":"Wlrus DNS [RU/EU]","geodema":"Geodema DNS [RU/EU]","bezmezhau":"Bezmezhau DNS [RU/EU]","dagami":"Dagami DNS [RU/EU]","webshift":"WebShift DNS [RU/EU]","yo1nk":"YO1NK DNS [RU/EU]","zapret_moe":"Zapret.moe DNS [RU/EU]","shecan":"Shecan [Asia]","nulls_proxy":"NullsProxy DNS [Global]","xbox_dns":"Xbox DNS [RU/EU]","bebas_unfiltered":"BebasDNS Unfiltered [Asia]","dns4all":"DNS4all [EU]","dns4eu_unfiltered":"DNS4EU Unfiltered [EU]","cloudflare_clean":"Cloudflare [Global]","google_clean":"Google Public DNS [Global]","quad9_unfiltered":"Quad9 Unsecured [Global]","adguard_unfiltered":"AdGuard Unfiltered [Global]","controld_p0":"Control D Unfiltered [Global]","controld_uncensored":"Control D Uncensored [Global]","he_public":"Hurricane Electric Public Recursor [US]","18bit_cn":"18Bit DNS [Asia]","aa_dns":"Andrews & Arnold [EU]","aquilenet":"Aquilenet DNS [EU]","belnet":"Belnet DNS [EU]","cynthia":"CynthiaLabs DNS [Global]","digitalsize":"DigitalSize DNS [EU]","dnshome":"DNSHome [EU]","one_dns_pure":"OneDNS Pure [Asia]","dns_pub":"DNSPod Public DNS [Asia]","dns_fdn0":"FDN DNS 0 [EU]","dns_fdn1":"FDN DNS 1 [EU]","doh_lacontrevoie":"LaContreVoie DNS [EU]","doh_seby":"Seby DNS [Global]","dns_surfshark":"Surfshark DNS [Global]","hostux":"Hostux DNS [EU]","nextdns_fast":"NextDNS [Global]","nextdns_anycast":"NextDNS Anycast [Global]","dns_sb":"DNS.SB [Global]","cubedns":"CubeDNS [Global]","applied_privacy":"Applied Privacy [EU]","cznic_odvr":"CZ.NIC ODVR [EU]","digitale_gesellschaft":"Digitale Gesellschaft [EU]","cira_private":"CIRA Private [US]","wikimedia":"Wikimedia DNS [Global]","pumplex":"PumpleX [EU]","ffmuc":"FFMUC [EU]","ahadns":"AhaDNS [EU]","rethinkdns":"RethinkDNS [Asia]","libredns_clean":"LibreDNS [EU]","njalla":"Njalla [EU]","cloudflare_security":"Cloudflare Security [Global]","quad9_secure":"Quad9 Secure [Global]","quad9_ecs":"Quad9 Secure ECS [Global]","controld_p1":"Control D Malware [Global]","opendns_standard":"OpenDNS Standard [Global]","cleanbrowsing_security":"CleanBrowsing Security [Global]","dns4eu_protective":"DNS4EU Protective [EU]","cert_ee":"CERT-EE [EU]","cira_protected":"CIRA Protected [US]","one_dns_block":"OneDNS Block [Asia]","hagezi_root":"HaGeZi Root [EU]","hagezi_wurzn":"HaGeZi Wurzn [EU]","hagezi_juuri":"HaGeZi Juuri [EU]","hagezi_ctif":"HaGeZi CTIF [EU]","openbld_ada":"OpenBLD ADA [EU]","openbld_ric":"OpenBLD RIC [EU]","dnsforge_strict":"dnsforge Strict [EU]","dnsbunker":"DNSBUNKER Pro+TIF [EU]","nsec_arnor":"arnor.org [EU]","switch_ch":"SWITCH DNS [EU]","dynx":"DynX DNS Adblock [EU]","paesa":"Paesa DNS [EU]","anon_no":"Anon.no DNS [EU]","adguard_default":"AdGuard DNS [Global]","controld_p2":"Control D Ads+Tracking [Global]","dns4eu_noads":"DNS4EU No Ads [EU]","libredns_ads":"LibreDNS Ads [EU]","dnsguard":"DNSGuard [EU]","nwps_standard":"NWPS.fi Standard [EU]","oszx":"OSZX DNS [EU]","angry_im":"Angry.im [Global]","dns_bebas_default":"BebasDNS [Asia]","blokada":"Blokada DNS [Global]","comss_adblock_bypass":"Comss Router · без рекламы [RU/EU]","dnsforge":"dnsforge [EU]","meatdns":"MeatDNS [EU]","cloudflare_family":"Cloudflare Family [Global]","adguard_family":"AdGuard Family [Global]","controld_family":"Control D Family [Global]","opendns_family":"OpenDNS FamilyShield [Global]","cleanbrowsing_adult":"CleanBrowsing Adult [Global]","cleanbrowsing_family":"CleanBrowsing Family [Global]","dns4eu_child":"DNS4EU Child [EU]","dns4eu_child_noads":"DNS4EU Child No Ads [EU]","dns_for_family":"DNS for Family [EU]","cira_family":"CIRA Family [US]","nwps_kids":"NWPS.fi Kids [EU]","dnsforge_youth":"dnsforge Youth Protection [EU]","yandex_ru":"Yandex RU [RU]","yandex_safe":"Yandex Safe [RU]","yandex_family":"Yandex Family [RU]","iijjp":"IIJ Public DNS [Asia]","comss_ru":"Comss DNS RU","cznic_odvr_doh":"CZ.NIC ODVR (тот же адрес)","cznic_odvr_query":"CZ.NIC ODVR Query","mullvad_family":"Mullvad Family (сменить до 02.11.2026)","mullvad_all":"Mullvad All (сменить до 02.11.2026)"};
+function catalogDisplayName(d){
+  var name=String((!isUserDnsRecord(d)&&CATALOG_DISPLAY_NAMES[d.id])||d.name||d.id||'');
+  if(/^sdns:\/\//.test(String(d.url||'')))name=name.replace(/\s*\(DNSCrypt\)/i,'');
+  var region=String(d.region||'').trim();
+  if(/^sdns:\/\//.test(String(d.url||'')) && /^[a-z]{2}$/i.test(region) && !/\[[^\]]+\]$/.test(name))name+=' ['+region.toUpperCase()+']';
+  return name;
+}
 function isUserDnsRecord(d){
   return !!(d&&d.category==='custom'&&/^custom_[0-9]{3}$/.test(String(d.id||'')));
 }
@@ -8137,8 +8146,8 @@ function dnscryptCatalogCard(d,root,draft,nativeOnly){
   var checking=state.dnscryptCatalogChecking&&state.dnscryptCatalogId===d.id;
   var latency=dnscryptCatalogLatency(window.dmState||{},d.id);
   var actions=[btn(checking?'Проверяю…':'Проверить','cbi-button-neutral',function(){refreshDnscryptCatalogLatency(root,d.id);},{disabled:!!state.busy||!!state.jobRunning})];
-  if(chosen||(!checking&&latency!==null&&latency>=0))actions.push(btn(chosen?'Убрать из набора':'Добавить в набор','cbi-button-neutral'+(chosen?' active':''),function(){if(chosen)draft.items.splice(index,1);else draft.items.push({id:d.id,name:d.name||d.id});saveDnscryptPoolDraft(draft);renderCatalog(root);},{disabled:!!state.busy||!!state.jobRunning||(!chosen&&(draft.items.length>=6||(nativeOnly&&!/^sdns:\/\//.test(String(d.url||'')))))}));
-  return E('div',{'class':'dm-card dm-catalog-item'},[E('h4',{},d.name||d.id),E('div',{'class':'dm-meta'},catName(d.category)),E('div',{'class':'dm-catalog-address'},(/^sdns:\/\//.test(String(d.url||''))?'Протокол DNSCrypt':String(d.url||'').replace(/^https?:\/\//,''))),E('div',{'class':'dm-catalog-status'},[checking?badge('dm-muted','проверяю…'):dnscryptCatalogBadge(window.dmState||{},d.id)]),E('div',{'class':'dm-catalog-controls'},actions)]);
+  if(chosen||(!checking&&latency!==null&&latency>=0))actions.push(btn(chosen?'Убрать из набора':'Добавить в набор','cbi-button-neutral'+(chosen?' active':''),function(){if(chosen)draft.items.splice(index,1);else draft.items.push({id:d.id,name:catalogDisplayName(d)});saveDnscryptPoolDraft(draft);renderCatalog(root);},{disabled:!!state.busy||!!state.jobRunning||(!chosen&&(draft.items.length>=6||(nativeOnly&&!/^sdns:\/\//.test(String(d.url||'')))))}));
+  return E('div',{'class':'dm-card dm-catalog-item'},[E('h4',{},catalogDisplayName(d)),E('div',{'class':'dm-meta'},catName(d.category)),E('div',{'class':'dm-catalog-address'},(/^sdns:\/\//.test(String(d.url||''))?'Протокол DNSCrypt':String(d.url||'').replace(/^https?:\/\//,''))),E('div',{'class':'dm-catalog-status'},[checking?badge('dm-muted','проверяю…'):dnscryptCatalogBadge(window.dmState||{},d.id)]),E('div',{'class':'dm-catalog-controls'},actions)]);
 }
 function resumeDnscryptCatalogLatency(root){
   if(state.dnscryptCatalogChecking||(window.dmState||{}).dnscrypt_engine!=='dnscrypt-proxy2')return;
@@ -8255,16 +8264,23 @@ function renderCatalog(root){
 
 // Group only known catalog entries on the current page; IDs and category filters stay unchanged.
 function catalogGroups(servers,renderItem,rerender){
-  var families={cloudflare:'Cloudflare',quad9:'Quad9',controld:'Control D',dns4eu:'DNS4EU',yandex:'Яндекс',geohide:'GeoHide'};
+  var families={cloudflare:'Cloudflare',quad9:'Quad9',controld:'Control D',dns4eu:'DNS4EU',yandex:'Яндекс',geohide:'GeoHide',adguard:'AdGuard DNS',cleanbrowsing:'CleanBrowsing',cryptostorm:'CryptoStorm',scaleway:'Scaleway'};
+  function familyKey(d){
+    if(isUserDnsRecord(d))return '';
+    var id=String(d.id||''), name=catalogDisplayName(d).toLowerCase();
+    var keys=Object.keys(families);
+    for(var i=0;i<keys.length;i++){var k=keys[i];if(id===k||id.indexOf(k+'_')===0||id.indexOf('native_'+k+'_')===0||(/^sdns:\/\//.test(String(d.url||''))&&name.indexOf(families[k].toLowerCase())===0))return k;}
+    return '';
+  }
   var members={}, result=[], emitted={};
   servers.forEach(function(d){
     if(isUserDnsRecord(d))return;
-    var key=String(d.id||'').split('_')[0];
+    var key=familyKey(d);
     if(families[key])(members[key]=members[key]||[]).push(d);
   });
   state.catalogOpenGroups=state.catalogOpenGroups||{};
   servers.forEach(function(d){
-    var key=String(d.id||'').split('_')[0], group=members[key];
+    var key=familyKey(d), group=members[key];
     if(isUserDnsRecord(d)||!group||group.length<2){result.push(renderItem(d));return;}
     if(emitted[key])return;
     emitted[key]=true;
@@ -8292,7 +8308,7 @@ function renderCatalogBody(root,data){
     var ci=checkInfo(d.id,d);
     var statusText=stateBadge(ci.status,ci.ping);
     return E('div',{'class':'dm-card dm-catalog-item'+(isUserDnsRecord(d)?' dm-catalog-item-custom':'')},[
-      E('h4',{},d.name||d.id),
+      E('h4',{},catalogDisplayName(d)),
       E('div',{'class':'dm-meta'},catName(d.category)),
       E('div',{'class':'dm-catalog-address'},String(d.url||'').replace(/^https?:\/\//,'')),
       E('div',{'class':'dm-catalog-status'},[statusText]),
