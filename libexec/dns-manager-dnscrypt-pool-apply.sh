@@ -40,6 +40,8 @@ cleanup() {
 }
 trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
+DNS_MANAGER_QUERY_LOG=$(uci -q get dns-manager.global.dc_query_log 2>/dev/null || :)
+export DNS_MANAGER_QUERY_LOG
 sh "$generator" "$port" "$bootstrap" > "$candidate" || exit 1
 "$binary" -config "$candidate" -check >/dev/null 2>&1 || { echo 'Invalid DNSCrypt pool configuration' >&2; exit 1; }
 [ "$had_config" -eq 0 ] || cp -p "$config" "$backup" || exit 1
