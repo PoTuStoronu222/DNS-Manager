@@ -12,11 +12,11 @@ ucode -e '''import { stdin } from "fs";
 let servers = json(stdin.read("all"));
 map(servers, s => {
  if (s.proto == "DNSCrypt" && !s.ipv6 && match(s.name, /^[A-Za-z0-9_.-]+$/) && match(s.stamp, /^sdns:\/\/[A-Za-z0-9_-]+$/))
-  print(s.name, "|", s.stamp, "|", s.nofilter ? "clean" : "unknown", "\n");
+  print(s.name, "|", s.stamp, "|", s.nofilter ? "clean" : "unknown", "|", replace(split(s.description || "", "\n")[0], /\|/g, "/"), "\n");
 });''' < "$tmp/source.json" > "$tmp/records"
 [ -s "$tmp/records" ] || { echo "В подписанном списке нет серверов DNSCrypt" >&2; exit 1; }
 cat "$helpers/dns-manager-dnscrypt-catalog.conf" > "$tmp/catalog"
-while IFS='|' read -r name stamp category; do
+while IFS='|' read -r name stamp category description; do
     case "$name" in
         adguard-dns-family|cisco-familyshield|cleanbrowsing-adult|cleanbrowsing-family) category=family ;;
         adguard-dns) category=adblock ;;
@@ -29,6 +29,14 @@ while IFS='|' read -r name stamp category; do
         else if ($0 ~ /^cisco/) sub(/^cisco/, "Cisco OpenDNS")
         gsub(/[-_]/, " "); print
     }')
+    # The signed source supplies provider and location descriptions for native IDs.
+    case "$description" in
+        ''|*http://*|*https://*) ;;
+        *)
+            official_display=$(printf '%s\n' "$description" | awk '{ gsub(/^[[:space:]]+|[[:space:]]+$/, ""); sub(/ public resolver[.]?$/, ""); sub(/ resolver[.]?$/, ""); sub(/[.]$/, ""); if (length($0) <= 90) print }')
+            [ -z "$official_display" ] || display=$official_display
+            ;;
+    esac
     hash=$(printf %s "$name" | sha256sum)
     id=official_${hash%% *}
     printf '%s|%s|dnscrypt|%s|%s|any|official\n' "$id" "$category" "$display" "$stamp"
