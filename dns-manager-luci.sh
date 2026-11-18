@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion and full installer
-# Version: 2.124
+# Version: 2.125
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.124"
+VERSION="2.125"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -384,8 +384,12 @@ printf "force_tcp = %s\n" "$(setting force_tcp false)"
 printf "block_ipv6 = %s\n" "$(setting block_ipv6 false)"
 printf "block_unqualified = %s\n" "$(setting block_unqualified true)"
 printf "block_undelegated = %s\n" "$(setting block_undelegated true)"
-# Do not extend upstream TTLs by default (dnscrypt-proxy defaults to 60s).
-printf "cache_min_ttl = 0\n"
+# Keep existing defaults unless a Manager preset has been selected.
+cache_size=$(uci -q get dns-manager.global.dc_cache_size 2>/dev/null || :)
+case "$cache_size" in 1000|4096|10000) ;; *) cache_size=4096;; esac
+cache_ttl=$(uci -q get dns-manager.global.dc_cache_ttl 2>/dev/null || :)
+case "$cache_ttl" in 0|300|900|1800) ;; *) cache_ttl=0;; esac
+printf "cache_size = %s\ncache_min_ttl = %s\n" "$cache_size" "$cache_ttl"
 printf "cache_neg_min_ttl = 0\n"
 if [ "${DNS_MANAGER_QUERY_LOG:-0}" = 1 ]; then
     printf "log_files_max_size = 1\nlog_files_max_backups = 1\n"
@@ -841,7 +845,7 @@ printf 'Service did not become ready: %s\n' "$target" >&2
 exit 1
 EOF_DNSCRYPT_ASSET_8
     fetch_installer_source "$_dc_stage/backend-dnscrypt.sh" "$SOURCE_BASE/libexec/backend-dnscrypt.sh"
-    [ "$(sha256sum "$_dc_stage/backend-dnscrypt.sh" | cut -d' ' -f1)" = "c313df2fa88617f007e525de01bb33e5d0cbb8e6707f50bc7f3281d4bdaf3321" ] || { err "Файл backend DNSCrypt не прошёл проверку."; return 1; }
+    [ "$(sha256sum "$_dc_stage/backend-dnscrypt.sh" | cut -d' ' -f1)" = "79919aeeeca3b7adf3a12cf72a46bcf406d0f1688d56f391d21ff7f22b48d2c4" ] || { err "Файл backend DNSCrypt не прошёл проверку."; return 1; }
     cat > "$_dc_stage/dns-manager-device-detach.sh" <<'EOF_DNSCRYPT_ASSET_10'
 #!/bin/sh
 # Detach the Manager-owned per-device redirect before stopping its listeners.
@@ -1873,7 +1877,7 @@ DM_SOURCE_BASE="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/$_d
 COMPANION_URL="$DM_SOURCE_BASE/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.124"
+SELF_VERSION="2.125"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -5829,7 +5833,7 @@ function stateBadge(status,pingValue){
   if(s==='OK')return badge('dm-ok',hasPing(pingValue)?ping(pingValue)+' · доступен':'ответ получен');
   return badge('dm-bad','недоступен');
 }
-function settingName(n){ var m={watchdog:'Проверка DNS',watchdog_autoreplace:'Автозамена DNS',force:'Принудительный DNS',browser_dns:'Подсказка браузерам',encrypted_dns:'Не давать устройствам обходить блокировку',dnsmasq_perf:'Увеличенный кэш DNS',dc_cache:'Кэш DNSCrypt',dc_force_tcp:'Только TCP',dc_block_ipv6:'Блокировать IPv6-ответы',dc_block_unqualified:'Блокировать короткие имена',dc_block_undelegated:'Блокировать локальные домены',dc_query_log:'Журнал запросов'}; return m[n]||n; }
+function settingName(n){ var m={watchdog:'Проверка DNS',watchdog_autoreplace:'Автозамена DNS',force:'Принудительный DNS',browser_dns:'Подсказка браузерам',encrypted_dns:'Не давать устройствам обходить блокировку',dnsmasq_perf:'Увеличенный кэш DNS',dc_cache:'Кэш DNSCrypt',dc_cache_size:'Размер кэша DNSCrypt',dc_cache_ttl:'Время хранения DNSCrypt',dc_force_tcp:'Только TCP',dc_block_ipv6:'Блокировать IPv6-ответы',dc_block_unqualified:'Блокировать короткие имена',dc_block_undelegated:'Блокировать локальные домены',dc_query_log:'Журнал запросов'}; return m[n]||n; }
 function settingModuleState(st,key){
   var raw=st[key+'_state'];
   if(raw===undefined||raw===null||raw==='')return -1;
@@ -7655,8 +7659,22 @@ function renderNetwork(root,st){
   if(st.dnscrypt_engine==='dnscrypt-proxy2'){
     var noPool=!(st.dnscrypt_servers||[]).length;
     var why=noPool?'Сначала настройте набор DNS-серверов.':'';
+    var cacheLocked=noPool||!yes(st.dc_cache)||!!state.busy||!!state.jobRunning;
+    function cacheOptions(key,current,options){
+      return E('div',{'class':'dm-seg'},options.map(function(option){
+        var selected=Number(current)===option[0];
+        return btn(option[1],selected?'active cbi-button':'cbi-button',function(){setSetting(key,option[0],root);},{disabled:cacheLocked||selected,'aria-pressed':selected?'true':'false'});
+      }));
+    }
     e.appendChild(card('Настройки DNSCrypt',[
       settingToggle(root,'Кэш DNSCrypt','Сохраняет ответы DNS до истечения срока их действия.',yes(st.dc_cache),'dc_cache',noPool,why),
+      E('div',{'class':'dm-section-title'},'Размер кэша'),
+      cacheOptions('dc_cache_size',st.dc_cache_size==null?4096:st.dc_cache_size,[[1000,'Стандартный · 1 000'],[4096,'Расширенный · 4 096'],[10000,'Большой · 10 000']]),
+      settingFeedback('','dc_cache_size'),
+      E('div',{'class':'dm-section-title'},'Минимальное время хранения'),
+      cacheOptions('dc_cache_ttl',st.dc_cache_ttl==null?0:st.dc_cache_ttl,[[0,'Как у DNS-сервера'],[300,'5 минут'],[900,'15 минут'],[1800,'30 минут']]),
+      E('div',{'class':'dm-setting-desc'},'Увеличение срока может сохранять устаревшие адреса.'),
+      settingFeedback('','dc_cache_ttl'),
       settingToggle(root,'Только TCP','Использовать TCP для связи с серверами. Некоторые серверы могут не поддерживать этот режим.',yes(st.dc_force_tcp),'dc_force_tcp',noPool,why),
       settingToggle(root,'Блокировать IPv6-ответы','Возвращать пустой ответ на запросы адресов IPv6 (AAAA).',yes(st.dc_block_ipv6),'dc_block_ipv6',noPool,why),
       settingToggle(root,'Блокировать короткие имена','Не отправлять в интернет запросы имён без точки.',yes(st.dc_block_unqualified),'dc_block_unqualified',noPool,why),
@@ -8757,7 +8775,7 @@ function setSetting(name,en,root){
     state.busy=false;state.busySetting='';
     if(r&&r.ok){
       if(window.dmState)window.dmState[name]=String(en);
-      setSettingFeedback(name,'Настройка «'+settingName(name)+'»: '+(en?'включена.':'выключена.'),'ok');
+      setSettingFeedback(name,'Настройка «'+settingName(name)+'»: '+(name==='dc_cache_size'||name==='dc_cache_ttl'?'сохранена.':(en?'включена.':'выключена.')),'ok');
     }else{
       setSettingFeedback(name,'Настройка «'+settingName(name)+'»: '+((r&&r.error)||'не удалось изменить.'),'error');
     }

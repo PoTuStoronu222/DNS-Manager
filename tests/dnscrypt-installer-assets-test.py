@@ -13,7 +13,8 @@ end = source.index('\n)\n\ninstall_files()', start) + 2
 function = source[start:end]
 pattern = r'cat > "\$_dc_stage/([^"\n]+)" <<\'(EOF_DNSCRYPT_ASSET_[0-9]+)\'\n(.*?)\n\2\n'
 assets = re.findall(pattern, function, re.DOTALL)
-assert len(assets) == 13
+assert len(assets) == 12
+assert 'fetch_installer_source "$_dc_stage/backend-dnscrypt.sh"' in function
 assert any(name == 'dns-manager-watchdog-common.sh' for name, _, _ in assets)
 for name, _, content in assets:
     assert content + '\n' == (root / 'libexec' / name).read_text(encoding='utf-8'), name
@@ -23,7 +24,9 @@ with tempfile.TemporaryDirectory(prefix='dnscrypt-assets-') as tmp:
     def installed(name):
         return destination.parent / name if name == 'backend-dnscrypt.sh' else destination / name
     env = {**os.environ, 'DNS_MANAGER_DNSCRYPT_INSTALL_DIR': str(destination)}
-    result = subprocess.run(['sh'], input=function + '\ninstall_dnscrypt_assets\n',
+    setup = 'SOURCE_BASE=local\nfetch_installer_source() { cp "$TEST_BACKEND" "$1"; }\nerr() { echo "$*" >&2; }\n'
+    env['TEST_BACKEND'] = str(root / 'libexec/backend-dnscrypt.sh')
+    result = subprocess.run(['sh'], input=setup + function + '\ninstall_dnscrypt_assets\n',
                             text=True, capture_output=True, env=env)
     assert result.returncode == 0, result.stderr
     for name, _, content in assets:
@@ -39,7 +42,7 @@ with tempfile.TemporaryDirectory(prefix='dnscrypt-assets-') as tmp:
                     r'\'\n).*?(\n' + marker + r'\n)', r'\1if\2', function,
                     count=1, flags=re.DOTALL)
     assert broken != function
-    result = subprocess.run(['sh'], input=broken + '\ninstall_dnscrypt_assets\n',
+    result = subprocess.run(['sh'], input=setup + broken + '\ninstall_dnscrypt_assets\n',
                             text=True, capture_output=True, env=env)
     assert result.returncode != 0
     assert all(installed(name).read_bytes() == old for name, old in before.items())

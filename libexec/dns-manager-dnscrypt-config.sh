@@ -65,8 +65,12 @@ printf "force_tcp = %s\n" "$(setting force_tcp false)"
 printf "block_ipv6 = %s\n" "$(setting block_ipv6 false)"
 printf "block_unqualified = %s\n" "$(setting block_unqualified true)"
 printf "block_undelegated = %s\n" "$(setting block_undelegated true)"
-# Do not extend upstream TTLs by default (dnscrypt-proxy defaults to 60s).
-printf "cache_min_ttl = 0\n"
+# Keep existing defaults unless a Manager preset has been selected.
+cache_size=$(uci -q get dns-manager.global.dc_cache_size 2>/dev/null || :)
+case "$cache_size" in 1000|4096|10000) ;; *) cache_size=4096;; esac
+cache_ttl=$(uci -q get dns-manager.global.dc_cache_ttl 2>/dev/null || :)
+case "$cache_ttl" in 0|300|900|1800) ;; *) cache_ttl=0;; esac
+printf "cache_size = %s\ncache_min_ttl = %s\n" "$cache_size" "$cache_ttl"
 printf "cache_neg_min_ttl = 0\n"
 if [ "${DNS_MANAGER_QUERY_LOG:-0}" = 1 ]; then
     printf "log_files_max_size = 1\nlog_files_max_backups = 1\n"
