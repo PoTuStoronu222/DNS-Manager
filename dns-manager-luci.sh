@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion and full installer
-# Version: 3.0
+# Version: 3.1
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="3.0"
+VERSION="3.1"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -2167,7 +2167,7 @@ DM_SOURCE_BASE="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/$_d
 COMPANION_URL="$DM_SOURCE_BASE/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="3.0"
+SELF_VERSION="3.1"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -3610,6 +3610,20 @@ lan_devices_json() {
     rm -f "$_ld_tmp" "$_ld_merged" 2>/dev/null || true
 }
 
+browser_dns_status_json() {
+    _browser_dns=0; _browser_loaded=0
+    if [ -f /etc/dnsmasq.d/91-dns-manager-browser.conf ] && [ "$(sed -n '1p' /etc/dnsmasq.d/91-dns-manager-browser.conf 2>/dev/null)" = '# DNS Manager browser DNS hints' ]; then
+        _browser_dns=1
+        _browser_sec=''
+        for _browser_candidate in $(uci show dhcp 2>/dev/null | sed -n 's/^dhcp\.\([^. =]*\)=dnsmasq$/\1/p'); do
+            [ -n "$_browser_sec" ] || _browser_sec="$_browser_candidate"
+            [ "$(uci -q get "dhcp.$_browser_candidate.interface" 2>/dev/null)" != lan ] || { _browser_sec="$_browser_candidate"; break; }
+        done
+        [ -n "$_browser_sec" ] && uci -q get "dhcp.$_browser_sec.confdir" 2>/dev/null | tr ' ' '\n' | grep -Fxq /etc/dnsmasq.d && _browser_loaded=1
+    fi
+    printf ',"browser_dns":%s,"browser_dns_loaded":%s' "$_browser_dns" "$_browser_loaded"
+}
+
 network_status_json() {
     _profile="$(cfg_get DNS_PROFILE)"; [ -n "$_profile" ] || _profile=none
     _mode="$(cfg_get DNS_SELECTION_MODE)"; [ -n "$_mode" ] || _mode=none
@@ -3674,7 +3688,9 @@ network_status_json() {
     _cache_ttl="$(uci -q get 'dhcp.@dnsmasq[0].min_cache_ttl' 2>/dev/null || true)"
     case "$_cache_total" in ''|*[!0-9]*|0[0-9]*) _cache_total=1000;; esac
     case "$_cache_ttl" in ''|*[!0-9]*|0[0-9]*) _cache_ttl=0;; esac
-    printf ',"dnsmasq_perf_state":%s,"cache_total":%s,"cache_ttl":%s}' "$_cache_state" "$_cache_total" "$_cache_ttl"
+    printf ',"dnsmasq_perf_state":%s,"cache_total":%s,"cache_ttl":%s' "$_cache_state" "$_cache_total" "$_cache_ttl"
+    browser_dns_status_json
+    printf '}'
 }
 
 time_status_json() {
@@ -3840,17 +3856,7 @@ doh_status_json() {
     printf '],"system_dns_count":%s' "$_system_dns_total"
     printf ',"profile_job_status":'; json_quote "$_pjs"; printf ',"profile_job_result":'; json_quote "$_pjr"; printf ',"profile_job_profile":'; json_quote "$_pjp"; printf ',"profile_job_started":'; json_quote "$_pjsd"; printf ',"profile_job_finished":'; json_quote "$_pjf"; printf ',"profile_job_message":'; json_quote "$_pjm"
     printf ',"encrypted_dns":%s' "$_encrypted_dns"
-    _browser_dns=0; _browser_loaded=0
-    if [ -f /etc/dnsmasq.d/91-dns-manager-browser.conf ] && [ "$(sed -n '1p' /etc/dnsmasq.d/91-dns-manager-browser.conf 2>/dev/null)" = '# DNS Manager browser DNS hints' ]; then
-        _browser_dns=1
-        _browser_sec=''
-        for _browser_candidate in $(uci show dhcp 2>/dev/null | sed -n 's/^dhcp\.\([^. =]*\)=dnsmasq$/\1/p'); do
-            [ -n "$_browser_sec" ] || _browser_sec="$_browser_candidate"
-            [ "$(uci -q get "dhcp.$_browser_candidate.interface" 2>/dev/null)" != lan ] || { _browser_sec="$_browser_candidate"; break; }
-        done
-        [ -n "$_browser_sec" ] && uci -q get "dhcp.$_browser_sec.confdir" 2>/dev/null | tr ' ' '\n' | grep -Fxq /etc/dnsmasq.d && _browser_loaded=1
-    fi
-    printf ',"browser_dns":%s,"browser_dns_loaded":%s' "$_browser_dns" "$_browser_loaded"
+    browser_dns_status_json
     printf '}'
 }
 
@@ -6093,7 +6099,7 @@ EOF_RPC_WRAPPER
 'require ui';
 'require session';
 
-// DNS Manager LuCI common module version: 3.0
+// DNS Manager LuCI common module version: 3.1
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -9925,7 +9931,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 3.0
+// DNS Manager LuCI version: 3.1
 return view.extend({
   load: DM.load,
   render: DM.render,
