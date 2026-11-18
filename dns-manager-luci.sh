@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion and full installer
-# Version: 3.1
+# Version: 3.2
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="3.1"
+VERSION="3.2"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -2155,7 +2155,6 @@ JOB_MAX_AGE_TEST_ONE=60
 CHECK_DIR="$RUNTIME_DIR/checks"
 TMP_ROOT="$RUNTIME_DIR/tmp"
 UPDATE_STATE="/etc/dns-manager-luci/update.state"
-UPDATE_CHECK_CACHE="$RUNTIME_DIR/update-check.cache"
 UPDATE_CHECK_LOCK="$RUNTIME_DIR/update-check.lock"
 COMPANION_URL="$(sed -n 's/^source=//p' /etc/dns-manager-luci/version 2>/dev/null | head -n1)"
 case "$COMPANION_URL" in
@@ -2167,7 +2166,7 @@ DM_SOURCE_BASE="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/$_d
 COMPANION_URL="$DM_SOURCE_BASE/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="3.1"
+SELF_VERSION="3.2"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -2782,39 +2781,18 @@ update_catalog_json() {
     esac
 }
 update_check_json() {
-    _force="$(jget force 2>/dev/null || true)"
-    [ "$_force" = 1 ] || _force=0
-
-    # Match Zapret Manager behavior: cache remote version data in tmpfs
-    # for 30 minutes. A reboot clears the cache and forces a new check.
-    if [ "$_force" != 1 ] && [ -f "$UPDATE_CHECK_CACHE" ] && [ -z "$(find "$UPDATE_CHECK_CACHE" -mmin +30 2>/dev/null)" ]; then
-        status_json
-        return 0
-    fi
-
-    # Only one LuCI worker performs the remote check at a time.
+    # Every requested check contacts the sources; an old local result is not
+    # evidence that no newer release exists.
     if ! acquire_runtime_lock "$UPDATE_CHECK_LOCK"; then
-        status_json
-        return 0
+        json_error "Проверка актуальности уже выполняется. Попробуйте ещё раз."
+        return 1
     fi
-
-    # Another worker may have completed the check while we acquired the lock.
-    if [ "$_force" != 1 ] && [ -f "$UPDATE_CHECK_CACHE" ] && [ -z "$(find "$UPDATE_CHECK_CACHE" -mmin +30 2>/dev/null)" ]; then
-        release_runtime_lock "$UPDATE_CHECK_LOCK"
-        status_json
-        return 0
-    fi
-
     update_check_json_luci >/dev/null 2>&1 || true
     component_update_check || true
-
-    if [ "${UPDATE_CHECK_LUCI_OK:-0}" = 1 ] && [ "${UPDATE_CHECK_COMPONENTS_OK:-0}" = 1 ]; then
-        _ts="$(date +%s 2>/dev/null || printf 0)"
-        printf '%s\n' "$_ts" > "$UPDATE_CHECK_CACHE" 2>/dev/null || true
-    fi
     release_runtime_lock "$UPDATE_CHECK_LOCK"
     status_json
 }
+
 update_catalog_direct() {
     _tmp="$TMP_ROOT/catalog-update-all.$$"
     fetch_raw_url "$_tmp" "$DM_SOURCE_BASE/catalogs/dns-8.8-FULL-CONFIG-CLEAN.conf" || { rm -f "$_tmp" 2>/dev/null || true; return 3; }
@@ -6099,7 +6077,7 @@ EOF_RPC_WRAPPER
 'require ui';
 'require session';
 
-// DNS Manager LuCI common module version: 3.1
+// DNS Manager LuCI common module version: 3.2
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -9931,7 +9909,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 3.1
+// DNS Manager LuCI version: 3.2
 return view.extend({
   load: DM.load,
   render: DM.render,
