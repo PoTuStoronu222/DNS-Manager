@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.143"
+VERSION="2.144"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -1248,6 +1248,121 @@ map(servers, s => {
 });''' < "$tmp/source.json" > "$tmp/records"
 [ -s "$tmp/records" ] || { echo "В подписанном списке нет серверов DNSCrypt" >&2; exit 1; }
 cat "$helpers/dns-manager-dnscrypt-catalog.conf" > "$tmp/catalog"
+# Location metadata: https://www.dnscry.pt/resolvers.json (snapshot).
+cat > "$tmp/locations" <<'EOF_LOCATIONS'
+adelaide|Adelaide|AU
+allendale|Allendale|US
+allentown|Allentown|US
+amsterdam|Amsterdam|NL
+ashburn|Ashburn|US
+atlanta|Atlanta|US
+auckland|Auckland|NZ
+bengaluru|Bengaluru|IN
+berkeleysprings|Berkeley Springs|US
+bratislava|Bratislava|SK
+bremen|Bremen|DE
+brisbane|Brisbane|AU
+bucharest|Bucharest|RO
+calgary|Calgary|CA
+capetown|Cape Town|ZA
+chicago|Chicago|US
+chisinau|Chișinău|MD
+copenhagen|Copenhagen|DK
+coventry|Coventry|GB
+dallas|Dallas|US
+denver|Denver|US
+detroit|Detroit|US
+dhaka|Dhaka|BD
+dublin|Dublin|IE
+dusseldorf|Düsseldorf|DE
+ebene|Ebène|MU
+ebenecity|Ebène|MU
+eygelshoven|Eygelshoven|NL
+flint|Flint|US
+frankfurt|Frankfurt|DE
+fremont|Fremont|NG
+gdansk|Gdansk|PL
+geneva|Geneva|CH
+grandrapids|Grand Rapids|US
+hafnarfjordur|Hafnarfjordur|IS
+halifax|Halifax|CA
+hanoi|Hanoi|VN
+helsinki|Helsinki|FI
+hochiminhcity|Ho-Chi-Minh City|VN
+hongkong|Hong Kong|HK
+houston|Houston|US
+hudiksvall|Hudiksvall|SE
+ikeja|Ikeja|NG
+indianapolis|Indianapolis|US
+islamabad|Islamabad|PK
+istanbul|Istanbul|TR
+jacksonville|Jacksonville|US
+jakarta|Jakarta|ID
+johannesburg|Johannesburg|ZA
+johor|Johor|MY
+kansascity|Kansas City|US
+kyiv|Kyiv|UA
+lasvegas|Las Vegas|US
+libertylake|Liberty Lake|US
+lisbon|Lisbon|PT
+london|London|GB
+losangeles|Los Angeles|US
+madrid|Madrid|ES
+manchester|Manchester|GB
+marseille|Marseille|FR
+melbourne|Melbourne|AU
+miami|Miami|US
+milan|Milan|IT
+molln|Mölln|DE
+montreal|Montreal|CA
+moscow|Moscow|RU
+mumbai|Mumbai|IN
+munich|Munich|DE
+newcastle|Newcastle|GB
+newyork|New York|US
+nuremberg|Nuremberg|DE
+ogden|Ogden|US
+oradea|Oradea|RO
+ottoville|Ottoville|US
+paris|Paris|FR
+perth|Perth|AU
+phoenix|Phoenix|US
+portedwards|Port Edwards|US
+portland|Portland|US
+prague|Prague|CZ
+redditch|Redditch|GB
+riga|Riga|LV
+saltlakecity|Salt Lake City|US
+sandefjord|Sandefjord|NO
+sanjose|San Jose|US
+santaclara|Santa Clara|US
+saopaulo|São Paulo|BR
+seattle|Seattle|US
+seoul|Seoul|KR
+singapore|Singapore|SG
+sofia|Sofia|BG
+spokane|Spokane|US
+stockholm|Stockholm|SE
+sydney|Sydney|AU
+taipeh|Taipeh|TW
+tallinn|Tallinn|EE
+tampa|Tampa|US
+taos|Taos|US
+tbilisi|Tbilisi|GE
+thessaloniki|Thessaloniki|GR
+timisoara|Timișoara|RO
+tirana|Tirana|AL
+tokyo|Tokyo|JP
+toronto|Toronto|CA
+tuusula|Tuusula|FI
+valdivia|Valdivia|CL
+vancouver|Vancouver|CA
+vienna|Vienna|AT
+vientiane|Vientiane|LA
+vilnius|Vilnius|LT
+warsaw|Warsaw|PL
+zurich|Zürich|CH
+EOF_LOCATIONS
 while IFS='|' read -r name stamp category description; do
     case "$name" in
         adguard-dns-family|cisco-familyshield|cleanbrowsing-adult|cleanbrowsing-family) category=family ;;
@@ -1259,7 +1374,7 @@ while IFS='|' read -r name stamp category description; do
         else if ($0 ~ /^adguard-/) sub(/^adguard-/, "AdGuard-")
         else if ($0 ~ /^cleanbrowsing-/) sub(/^cleanbrowsing-/, "CleanBrowsing-")
         else if ($0 ~ /^cisco/) sub(/^cisco/, "Cisco OpenDNS")
-        gsub(/[-_]/, " ");
+        sub(/-ipv4$/, ""); gsub(/[-_]/, " ");
         for (i=1; i<=NF; i++) { if ($i == "dns") $i="DNS"; else if ($i ~ /^[a-z]/) $i=toupper(substr($i,1,1)) substr($i,2); }
         print
     }')
@@ -1268,6 +1383,22 @@ while IFS='|' read -r name stamp category description; do
         BEGIN {n=split("Austria:AT,Spain:ES,Belgium:BE,Germany:DE,Switzerland:CH,Czech Republic:CZ,Finland:FI,France:FR,Hungary:HU,England:GB,United Kingdom:GB,Italy:IT,Canada:CA,Moldova:MD,Netherlands:NL,Norway:NO,Poland:PL,Portugal:PT,Romania:RO,Serbia:RS,Singapore:SG,Sweden:SE,Australia:AU,Japan:JP,United States:US", a, ",")}
         {for(i=1;i<=n;i++){split(a[i], b, ":"); if(index($0,b[1])) {print b[2]; exit}}}
     ')
+    case "$name" in
+        dnscry.pt-*-ipv4)
+            location_key=${name#dnscry.pt-}; location_key=${location_key%-ipv4}
+            location_base=$(printf '%s' "$location_key" | sed 's/[0-9]*$//')
+            location_number=${location_key#"$location_base"}
+            location=$(awk -F'|' -v key="$location_base" '$1==key {print $2 "|" $3; exit}' "$tmp/locations")
+            if [ -n "$location" ]; then
+                city=${location%|*}; region=${location##*|}
+                display="dnscry.pt $city${location_number:+ $location_number}"
+            fi
+            ;;
+        cs-*)
+            # The signed list gives CryptoStorm's city and country explicitly.
+            case "$description" in 'CryptoStorm '*,*' resolver.') display=${description%,*}; region=${region:-};; esac
+            ;;
+    esac
     if [ -n "$region" ]; then
         display=$(printf '%s\n' "$display" | awk -v region="$region" '{if (NF>1 && toupper($NF)==region) NF--; print}')
         display="$display [$region]"
@@ -1991,7 +2122,7 @@ DM_SOURCE_BASE="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/$_d
 COMPANION_URL="$DM_SOURCE_BASE/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.143"
+SELF_VERSION="2.144"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -9560,7 +9691,7 @@ function catalogCategory(){
 }
 function catalogCountryControls(root,data){
   if(state.category!=='all')return null;
-  var labels={all:'Все страны',any:'Страна не указана',global:'По всему миру',asia:'Азия',eu:'Европа',ru:'Россия',us:'США',gb:'Великобритания',uk:'Великобритания',by:'Беларусь',cn:'Китай',id:'Индонезия',de:'Германия',fr:'Франция',nl:'Нидерланды',ca:'Канада',au:'Австралия',at:'Австрия',be:'Бельгия',ch:'Швейцария',cz:'Чехия',es:'Испания',fi:'Финляндия',hu:'Венгрия',it:'Италия',jp:'Япония',md:'Молдова',no:'Норвегия',pl:'Польша',pt:'Португалия',ro:'Румыния',rs:'Сербия',se:'Швеция',sg:'Сингапур'};
+  var labels={all:'Все страны',any:'Страна не указана',global:'По всему миру',asia:'Азия',eu:'Европа',ru:'Россия',us:'США',bg:'Болгария',br:'Бразилия',cl:'Чили',dk:'Дания',ee:'Эстония',ge:'Грузия',ie:'Ирландия',gr:'Греция',hk:'Гонконг',is:'Исландия',kr:'Южная Корея',la:'Лаос',lt:'Литва',lv:'Латвия',mu:'Маврикий',my:'Малайзия',ng:'Нигерия',nz:'Новая Зеландия',pk:'Пакистан',sk:'Словакия',tr:'Турция',tw:'Тайвань',ua:'Украина',vn:'Вьетнам',za:'ЮАР',bd:'Бангладеш',in:'Индия',al:'Албания',gb:'Великобритания',uk:'Великобритания',by:'Беларусь',cn:'Китай',id:'Индонезия',de:'Германия',fr:'Франция',nl:'Нидерланды',ca:'Канада',au:'Австралия',at:'Австрия',be:'Бельгия',ch:'Швейцария',cz:'Чехия',es:'Испания',fi:'Финляндия',hu:'Венгрия',it:'Италия',jp:'Япония',md:'Молдова',no:'Норвегия',pl:'Польша',pt:'Португалия',ro:'Румыния',rs:'Сербия',se:'Швеция',sg:'Сингапур'};
   var codes=(data.regions||[]).slice().sort(function(a,b){return (labels[a]||a).localeCompare(labels[b]||b,'ru');});
   var buttons=E('div',{'class':'dm-seg'});
   ['all'].concat(codes).forEach(function(code){buttons.appendChild(btn(labels[code]||code.toUpperCase(),state.catalogCountry===code?'active cbi-button':'cbi-button',function(){if(state.catalogLoading)return;state.catalogCountry=code;state.offset=0;state.catalogOpenGroups={};loadCatalog(root);},{disabled:!!state.catalogLoading,'aria-pressed':state.catalogCountry===code?'true':'false'}));});
