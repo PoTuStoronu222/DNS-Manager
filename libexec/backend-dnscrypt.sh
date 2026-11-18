@@ -413,7 +413,8 @@ dnscrypt_native_dnssec_probe() (
     probe_pid=''
     trap '[ -z "$probe_pid" ] || { kill "$probe_pid" 2>/dev/null || :; wait "$probe_pid" 2>/dev/null || :; }; rm -rf "$probe_dir"' EXIT
     trap 'exit 1' HUP INT TERM
-    probe_offset=$(printf '%s' "$probe_url" | cksum | awk '{print $1 % 12000}')
+    probe_offset=$(printf '%s' "$probe_url" | sha256sum | cut -c1-6)
+    probe_offset=$((0x$probe_offset % 12000))
     probe_port=$((49152 + ($$ % 12000 + probe_offset) % 12000))
     sh "$HELPERS/dns-manager-dnscrypt-config.sh" "$probe_port" "$probe_url" "$BOOTSTRAP_DNS" > "$probe_dir/config" || return 1
     awk 'NR==1 {print; print "use_syslog = false"; next} {if ($0 == "cache = true") $0 = "cache = false"; print}' "$probe_dir/config" > "$probe_dir/config-test" || return 1
@@ -446,9 +447,9 @@ dnscrypt_catalog_snapshot() (
     [ -r "$DNS_CATALOG" ] || { echo 'Каталог DNS недоступен.' >&2; exit 1; }
     command -v dnscrypt-proxy >/dev/null 2>&1 || { echo 'Программа dnscrypt-proxy не найдена.' >&2; exit 1; }
     dir=$(mktemp -d "$RUNTIME_DIR/catalog-probe.XXXXXX") || { echo 'Не удалось создать временный каталог проверки.' >&2; exit 1; }
-    catalog_hash=$(cksum "$DNS_CATALOG")
-    custom_hash=$(cksum "$CUSTOM_DNS_CATALOG" 2>/dev/null || :)
-    native_hash=$(cksum "$HELPERS/dns-manager-dnscrypt-catalog.conf" 2>/dev/null || :)
+    catalog_hash=$(sha256sum "$DNS_CATALOG")
+    custom_hash=$(sha256sum "$CUSTOM_DNS_CATALOG" 2>/dev/null || :)
+    native_hash=$(sha256sum "$HELPERS/dns-manager-dnscrypt-catalog.conf" 2>/dev/null || :)
     awk -F'|' 'NF >= 5 && $1 !~ /^#/ && $1 ~ /^[A-Za-z0-9_-]+$/ && $5 ~ /^https:\/\// {gsub(/[\r\n]/, " ", $4); print $1 "|" $5 "|" $4}' "$DNS_CATALOG" > "$dir/source"
     if [ -r "$CUSTOM_DNS_CATALOG" ]; then
         awk -F'|' 'NF >= 5 && $1 !~ /^#/ && $1 ~ /^[A-Za-z0-9_-]+$/ && $5 ~ /^https:\/\// {gsub(/[\r\n]/, " ", $4); print $1 "|" $5 "|" $4}' "$CUSTOM_DNS_CATALOG" >> "$dir/source"
@@ -540,9 +541,9 @@ dnscrypt_catalog_snapshot() (
         [ "$probe_scope" != all ] || printf 'progress_done=%s\nprogress_ok=%s\nprogress_fail=%s\n' "$done_count" "$success_count" "$failed_count" >> "$JOB_DIR/health/state"
         offset=$((end + 1))
     done
-    [ "$catalog_hash" = "$(cksum "$DNS_CATALOG" 2>/dev/null)" ] || exit 1
-    [ "$custom_hash" = "$(cksum "$CUSTOM_DNS_CATALOG" 2>/dev/null || :)" ] || exit 1
-    [ "$native_hash" = "$(cksum "$HELPERS/dns-manager-dnscrypt-catalog.conf" 2>/dev/null || :)" ] || exit 1
+    [ "$catalog_hash" = "$(sha256sum "$DNS_CATALOG" 2>/dev/null)" ] || exit 1
+    [ "$custom_hash" = "$(sha256sum "$CUSTOM_DNS_CATALOG" 2>/dev/null || :)" ] || exit 1
+    [ "$native_hash" = "$(sha256sum "$HELPERS/dns-manager-dnscrypt-catalog.conf" 2>/dev/null || :)" ] || exit 1
     if [ "$probe_scope" != all ]; then cat "$dir/results"; exit 0; fi
     . /usr/share/libubox/jshn.sh
     json_init
@@ -854,9 +855,9 @@ EOF_LATENCY_TIME
         cache_catalog=$(sed -n '1p' "$RUNTIME_DIR/dnscrypt-catalog-checksum")
         cache_custom=$(sed -n '2p' "$RUNTIME_DIR/dnscrypt-catalog-checksum")
         cache_native=$(sed -n '3p' "$RUNTIME_DIR/dnscrypt-catalog-checksum")
-        current_catalog=$(cksum "$CONFIG_DIR/dns-catalog.conf")
-        current_custom=$(cksum "$CONFIG_DIR/dns-custom-catalog.conf" 2>/dev/null || :)
-        current_native=$(cksum "$HELPERS/dns-manager-dnscrypt-catalog.conf" 2>/dev/null || :)
+        current_catalog=$(sha256sum "$CONFIG_DIR/dns-catalog.conf")
+        current_custom=$(sha256sum "$CONFIG_DIR/dns-custom-catalog.conf" 2>/dev/null || :)
+        current_native=$(sha256sum "$HELPERS/dns-manager-dnscrypt-catalog.conf" 2>/dev/null || :)
         if [ "$cache_catalog" = "$current_catalog" ] && [ "$cache_custom" = "$current_custom" ] && [ "$cache_native" = "$current_native" ]; then
             json_add_string dnscrypt_catalog_results "$(cat "$latency_cache")"
         fi
