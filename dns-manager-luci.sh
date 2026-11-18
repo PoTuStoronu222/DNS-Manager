@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.142"
+VERSION="2.143"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -1991,7 +1991,7 @@ DM_SOURCE_BASE="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/$_d
 COMPANION_URL="$DM_SOURCE_BASE/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.142"
+SELF_VERSION="2.143"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -5273,7 +5273,7 @@ catalog_json() {
         # Older catalogues store country codes in the displayed name only.
         awk -F'|' -v OFS='|' -v country="$_country" -v regions="$_regions" '
           {region=tolower($6); if ((region=="" || region=="any") && match($4,/\[[A-Z][A-Z]\]$/)) region=tolower(substr($4,RSTART+1,2));
-           if(region=="")region="any"; $6=region; n=split(region,a,"/"); found=(country=="all");
+           if(region=="")region="any"; if(region=="uk")region="gb"; $6=region; n=split(region,a,"/"); found=(country=="all");
            for(i=1;i<=n;i++){if(a[i] ~ /^([a-z][a-z]|any|global|asia)$/) print a[i] >> regions; if(a[i]==country)found=1} if(found)print}
         ' "$_filtered" > "$_paged"
         cat "$_paged" > "$_filtered"; : > "$_paged"
@@ -8459,19 +8459,16 @@ function routeStatusCall(){
     case 'time': return callTimeStatus();
     case 'catalog':
       var requestedCategory=state.category, requestedProtocol=state.catalogProtocol, requestedCountry=state.catalogCountry, requestedOffset=state.offset, requestedLimit=state.limit;
-      return Promise.all([
-        callCatalog('grouped:'+((window.dmState||{}).dnscrypt_engine==='dnscrypt-proxy2'?requestedProtocol+':':'')+(requestedCategory==='all'&&requestedCountry&&requestedCountry!=='all'?'country-'+requestedCountry+':':'')+requestedCategory,requestedOffset,requestedLimit,0),
-        Promise.all([callDohStatus(),callPageMeta()])
-      ]).then(function(v){
-        if(state.category!==requestedCategory||state.catalogProtocol!==requestedProtocol||state.catalogCountry!==requestedCountry||state.offset!==requestedOffset||state.limit!==requestedLimit)return Object.assign({},v[1][0]||{},v[1][1]||{});
-        if(!v[0]||v[0].ok===false){
-          window.dmCatalog=null;state.catalogLoaded=false;state.catalogLoadFailed=true;
-          state.pageNotice.catalog=(v[0]&&v[0].error)||'Не удалось загрузить каталог DNS.';
-        }else{window.dmCatalog=v[0];state.catalogLoaded=true;if(state.catalogLoadFailed)state.pageNotice.catalog='';state.catalogLoadFailed=false;}
-        var st=v[1][0]||{};
-        var meta=v[1][1]||{};
-        Object.keys(meta).forEach(function(k){st[k]=meta[k];});
-        return st;
+      return callDohStatus().then(function(st){
+        var selector='grouped:'+((st||{}).dnscrypt_engine==='dnscrypt-proxy2'?requestedProtocol+':':'')+(requestedCategory==='all'&&requestedCountry&&requestedCountry!=='all'?'country-'+requestedCountry+':':'')+requestedCategory;
+        return Promise.all([callCatalog(selector,requestedOffset,requestedLimit,0),callPageMeta()]).then(function(v){
+          if(state.category!==requestedCategory||state.catalogProtocol!==requestedProtocol||state.catalogCountry!==requestedCountry||state.offset!==requestedOffset||state.limit!==requestedLimit)return Object.assign({},st||{},v[1]||{});
+          if(!v[0]||v[0].ok===false){
+            window.dmCatalog=null;state.catalogLoaded=false;state.catalogLoadFailed=true;
+            state.pageNotice.catalog=(v[0]&&v[0].error)||'Не удалось загрузить каталог DNS.';
+          }else{window.dmCatalog=v[0];state.catalogLoaded=true;state.catalogCacheSelector=selector;if(state.catalogLoadFailed)state.pageNotice.catalog='';state.catalogLoadFailed=false;}
+          return Object.assign({},st||{},v[1]||{});
+        });
       });
     case 'log':
       return callLog(160).then(function(r){
@@ -8550,17 +8547,19 @@ function routeCacheEntry(key){
 }
 function routeCacheAux(route){
   if(route==='devices')return window.dmLanDevices&&window.dmLanDevices.ok?{devices:window.dmLanDevices}:false;
-  if(route==='catalog')return state.catalogLoaded&&state.category==='all'&&state.offset===0&&window.dmCatalog?{catalog:window.dmCatalog,limit:state.limit}:false;
+  if(route==='catalog')return state.catalogLoaded&&state.category==='all'&&state.catalogCountry==='all'&&state.offset===0&&window.dmCatalog?{catalog:window.dmCatalog,limit:state.limit,selector:state.catalogCacheSelector}:false;
   if(route==='log')return state.logLoaded?{log:String(state.logText||'').slice(-131072)}:false;
   return null;
 }
-function restoreRouteAux(route,aux){
+function restoreRouteAux(route,aux,routeData){
   if(route==='devices'){
     if(!aux||!aux.devices||aux.devices.ok!==true||!Array.isArray(aux.devices.devices))return false;
     window.dmLanDevices=aux.devices;
   }else if(route==='catalog'){
-    if(!aux||!aux.catalog||aux.catalog.ok===false||!Array.isArray(aux.catalog.servers)||aux.limit!==state.limit||state.category!=='all'||state.offset!==0)return false;
-    window.dmCatalog=aux.catalog;state.catalogLoaded=true;state.catalogLoadFailed=false;
+    if(!aux||!aux.catalog||aux.catalog.ok===false||!Array.isArray(aux.catalog.servers)||aux.limit!==state.limit||state.category!=='all'||state.catalogCountry!=='all'||state.offset!==0)return false;
+    var selector='grouped:'+((routeData||{}).dnscrypt_engine==='dnscrypt-proxy2'?state.catalogProtocol+':':'')+'all';
+    if(aux.selector!==selector)return false;
+    state.catalogCacheSelector=selector;window.dmCatalog=aux.catalog;state.catalogLoaded=true;state.catalogLoadFailed=false;
   }else if(route==='log'){
     if(!aux||typeof aux.log!=='string'||aux.log.length>131072)return false;
     state.logText=aux.log;state.logLoaded=true;
@@ -8572,7 +8571,7 @@ function cachedRouteStatus(route){
   if(!entry)return null;
   try{
     var copy=JSON.parse(JSON.stringify(entry));
-    if(!restoreRouteAux(route,copy.aux))return null;
+    if(!restoreRouteAux(route,copy.aux,copy.data))return null;
     var st=copy.data;st.__dmCachedRoute=route;st.__dmCacheFresh=Date.now()-copy.ts<=15000;return st;
   }catch(e){return null;}
 }
@@ -8644,13 +8643,16 @@ function warmupFetch(route,allowed){
       return {data:st,aux:{devices:devices}};
     });
   });
-  if(route==='catalog')return get(function(){return callCatalog('grouped:all',0,18,0);}).then(function(catalog){
-    if(!catalog||catalog.ok!==true||!Array.isArray(catalog.servers))throw new Error('catalog unavailable');
-    return get(callDohStatus).then(function(st){return get(callPageMeta).then(function(meta){
-      if(!st||st.ok!==true||!meta||meta.ok!==true)throw new Error('catalog status unavailable');
-      var result=Object.assign({},st,meta);
-      return {data:result,aux:{catalog:catalog,limit:18}};
-    });});
+  if(route==='catalog')return get(callDohStatus).then(function(st){
+    if(!st||st.ok!==true)throw new Error('catalog status unavailable');
+    var selector='grouped:'+(st.dnscrypt_engine==='dnscrypt-proxy2'?'native:':'')+'all';
+    return get(function(){return callCatalog(selector,0,18,0);}).then(function(catalog){
+      if(!catalog||catalog.ok!==true||!Array.isArray(catalog.servers))throw new Error('catalog unavailable');
+      return get(callPageMeta).then(function(meta){
+        if(!meta||meta.ok!==true)throw new Error('catalog status unavailable');
+        return {data:Object.assign({},st,meta),aux:{catalog:catalog,limit:18,selector:selector}};
+      });
+    });
   });
   return Promise.reject(new Error('unsupported warmup'));
 }
@@ -9558,7 +9560,7 @@ function catalogCategory(){
 }
 function catalogCountryControls(root,data){
   if(state.category!=='all')return null;
-  var labels={all:'Все страны',any:'Страна не указана',global:'По всему миру',asia:'Азия',eu:'Европа',ru:'Россия',us:'США',gb:'Великобритания',de:'Германия',fr:'Франция',nl:'Нидерланды',ca:'Канада',au:'Австралия',at:'Австрия',be:'Бельгия',ch:'Швейцария',cz:'Чехия',es:'Испания',fi:'Финляндия',hu:'Венгрия',it:'Италия',jp:'Япония',md:'Молдова',no:'Норвегия',pl:'Польша',pt:'Португалия',ro:'Румыния',rs:'Сербия',se:'Швеция',sg:'Сингапур'};
+  var labels={all:'Все страны',any:'Страна не указана',global:'По всему миру',asia:'Азия',eu:'Европа',ru:'Россия',us:'США',gb:'Великобритания',uk:'Великобритания',by:'Беларусь',cn:'Китай',id:'Индонезия',de:'Германия',fr:'Франция',nl:'Нидерланды',ca:'Канада',au:'Австралия',at:'Австрия',be:'Бельгия',ch:'Швейцария',cz:'Чехия',es:'Испания',fi:'Финляндия',hu:'Венгрия',it:'Италия',jp:'Япония',md:'Молдова',no:'Норвегия',pl:'Польша',pt:'Португалия',ro:'Румыния',rs:'Сербия',se:'Швеция',sg:'Сингапур'};
   var codes=(data.regions||[]).slice().sort(function(a,b){return (labels[a]||a).localeCompare(labels[b]||b,'ru');});
   var buttons=E('div',{'class':'dm-seg'});
   ['all'].concat(codes).forEach(function(code){buttons.appendChild(btn(labels[code]||code.toUpperCase(),state.catalogCountry===code?'active cbi-button':'cbi-button',function(){if(state.catalogLoading)return;state.catalogCountry=code;state.offset=0;state.catalogOpenGroups={};loadCatalog(root);},{disabled:!!state.catalogLoading,'aria-pressed':state.catalogCountry===code?'true':'false'}));});
@@ -9570,7 +9572,7 @@ function loadCatalog(root){
   return callCatalog(catalogCategory(),state.offset,state.limit,0).then(function(d){
     if(!d||d.ok===false)throw new Error((d&&d.error)||'Каталог DNS недоступен.');
     if(state.catalogLoadFailed)state.pageNotice.catalog='';state.catalogLoadFailed=false;
-    state.catalogLoading=false;state.catalogLoaded=true;window.dmCatalog=d||{};renderCatalog(root);renderCatalogBody(root,window.dmCatalog);
+    state.catalogLoading=false;state.catalogLoaded=true;state.catalogCacheSelector=catalogCategory();window.dmCatalog=d||{};renderCatalog(root);renderCatalogBody(root,window.dmCatalog);
   }).catch(function(err){
     state.catalogLoading=false;state.catalogLoaded=false;state.catalogLoadFailed=true;window.dmCatalog=null;state.pageNotice.catalog=withRpcError('Не удалось загрузить каталог DNS.',err);renderCatalog(root);
   });
