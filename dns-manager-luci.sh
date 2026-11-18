@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.136"
+VERSION="2.137"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -1980,7 +1980,7 @@ DM_SOURCE_BASE="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/$_d
 COMPANION_URL="$DM_SOURCE_BASE/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.136"
+SELF_VERSION="2.137"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -6849,8 +6849,9 @@ function dnscryptOptionsControls(root,st,render){
   return E('div',{'class':'dm-hint'},[
     select('Протокол: ','dnscryptProtocol',[['mixed','DNSCrypt и DoH'],['native','Только DNSCrypt']],o.protocol),
     E('span',{},'  '),
-    select('Выбор сервера: ','dnscryptStrategy',[['wp2','Взвешенный выбор из двух'],['p2','Два самых быстрых'],['p3','Три самых быстрых'],['p4','Четыре самых быстрых'],['p5','Пять самых быстрых'],['p6','Шесть самых быстрых'],['ph','Быстрая половина'],['first','Самый быстрый'],['random','Случайный']],o.strategy),
-    E('div',{'class':'dm-mini'},'Стратегия выбирает серверы по скорости или случайно; порядок списка не задаёт приоритет.')
+    select('Как выбирать сервер: ','dnscryptStrategy',[['wp2','Умный выбор из двух'],['p2','Случайно из 2 быстрых'],['p3','Случайно из 3 быстрых'],['p4','Случайно из 4 быстрых'],['p5','Случайно из 5 быстрых'],['p6','Случайно из 6 быстрых'],['ph','Случайно из быстрой половины'],['first','Всегда самый быстрый'],['random','Случайно из всех']],o.strategy),
+    E('div',{'class':'dm-mini'},({wp2:'Из двух случайных серверов выбирается лучший по скорости и успешности ответов.',p2:'Для каждого запроса случайно выбирается один из двух самых быстрых серверов.',p3:'Для каждого запроса случайно выбирается один из трёх самых быстрых серверов.',p4:'Для каждого запроса случайно выбирается один из четырёх самых быстрых серверов.',p5:'Для каждого запроса случайно выбирается один из пяти самых быстрых серверов.',p6:'Для каждого запроса случайно выбирается один из шести самых быстрых серверов.',ph:'Для каждого запроса случайно выбирается сервер из быстрой половины набора.',first:'Запросы направляются на самый быстрый доступный сервер.',random:'Для каждого запроса случайно выбирается сервер из всего доступного набора.'})[o.strategy]||''),
+    E('div',{'class':'dm-mini'},'Порядок серверов в наборе не задаёт приоритет.')
   ]);
 }
 function dnscryptPoolDraft(st){
