@@ -53,10 +53,10 @@ dnscrypt_select_profile() (
         fi
         while IFS='|' read -r native_id native_ms; do
             case "$native_ms" in ''|*[!0-9]*) continue;; esac
-            native_url=$(awk -F'|' -v id="$native_id" '$1==id {print $5; exit}' "$HELPERS/dns-manager-dnscrypt-catalog.conf")
+            native_url=$(awk -F'|' -v id="$native_id" '$1==id {print $5; exit}' "${NATIVE_CATALOG:-$HELPERS/dns-manager-dnscrypt-catalog.conf}")
             priority=0
             if [ "$goal" = dnssec ]; then
-                native_category=$(awk -F'|' -v id="$native_id" '$1==id {print $2; exit}' "$HELPERS/dns-manager-dnscrypt-catalog.conf")
+                native_category=$(awk -F'|' -v id="$native_id" '$1==id {print $2; exit}' "${NATIVE_CATALOG:-$HELPERS/dns-manager-dnscrypt-catalog.conf}")
                 case "$native_category" in clean|privacy) ;; *) continue;; esac
                 [ "$native_category" != privacy ] || priority=1
                 [ -n "$native_url" ] && dnscrypt_native_dnssec_probe "$native_url" || continue

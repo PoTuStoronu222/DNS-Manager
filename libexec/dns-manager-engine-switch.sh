@@ -165,5 +165,8 @@ printf '%s\n' "$target" > "$tmp" && chmod 600 "$tmp" && mv -f "$tmp" "$engine_fi
 if [ -f /etc/dnsmasq.d/91-dns-manager-browser.conf ] && [ "$(sed -n '1p' /etc/dnsmasq.d/91-dns-manager-browser.conf 2>/dev/null)" = '# DNS Manager browser DNS hints' ]; then
     set_browser_dns_hint 1 || echo 'Не удалось восстановить подсказку браузерам; проверьте её в LuCI.'
 fi
+if [ "$target" = dnscrypt-proxy2 ]; then
+    (sh "$helpers/dns-manager-dnscrypt-catalog-update.sh" > /tmp/dns-manager-native-catalog.log 2>&1 < /dev/null &)
+fi
 echo 'Движок переключён. Выберите DNS-профиль.'
 success=1

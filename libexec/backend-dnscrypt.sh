@@ -6,6 +6,8 @@ LEGACY=${DNS_MANAGER_LEGACY_BACKEND:-/usr/lib/dns-manager-luci/backend.sh}
 MANAGER=${DNS_MANAGER_MANAGER:-/usr/bin/dns-manager}
 HELPERS=${DNS_MANAGER_DNSCRYPT_HELPERS:-/usr/lib/dns-manager-luci/dnscrypt}
 CONFIG_DIR=${DNS_MANAGER_DNSCRYPT_CONFIG_DIR:-/etc/dns-manager/config}
+NATIVE_CATALOG="$CONFIG_DIR/dnscrypt-native-catalog.conf"
+[ -r "$NATIVE_CATALOG" ] || NATIVE_CATALOG="$HELPERS/dns-manager-dnscrypt-catalog.conf"
 JOB_DIR=${DNS_MANAGER_DNSCRYPT_JOB_DIR:-/var/run/dns-manager-luci/jobs}
 RUNTIME_DIR=${DNS_MANAGER_DNSCRYPT_RUNTIME_DIR:-/var/run/dns-manager-luci}
 STATE_FILE="$CONFIG_DIR/dnscrypt-profile.state"
@@ -260,7 +262,7 @@ profile_worker() {
                     if [ "$goal" = default ]; then
                         dnscrypt_select_profile() {
                             if [ "$DNS_MANAGER_PROTOCOL" = native ]; then
-                                awk -F'|' '$1=="native_adguard_unfiltered" || $1=="native_quad9_unfiltered" {print $1 "|" $5; count++} END {if (count != 2) exit 1}' "$HELPERS/dns-manager-dnscrypt-catalog.conf"
+                                awk -F'|' '$1=="native_adguard_unfiltered" || $1=="native_quad9_unfiltered" {print $1 "|" $5; count++} END {if (count != 2) exit 1}' "$NATIVE_CATALOG"
                             else
                                 printf '%s\n' 'cloudflare_clean|https://cloudflare-dns.com/dns-query' 'google_clean|https://dns.google/dns-query'
                             fi
@@ -270,7 +272,7 @@ profile_worker() {
  dnscrypt_select_profile() (
  set -f; IFS=,; set -- ${goal#pool:}
  for chosen do
- url=$(awk -F '|' -v id="$chosen" '$1==id {print $5; exit}' "$HELPERS/dns-manager-dnscrypt-catalog.conf" 2>/dev/null)
+ url=$(awk -F '|' -v id="$chosen" '$1==id {print $5; exit}' "$NATIVE_CATALOG" 2>/dev/null)
  [ -n "$url" ] || url=$(normalize_url "$(dns_url "$chosen")")
  case "$url" in https://*|sdns://*) ;; *) return 1;; esac
  case "$url" in *'|'*|*[![:graph:]]*) return 1;; esac
@@ -449,12 +451,12 @@ dnscrypt_catalog_snapshot() (
     dir=$(mktemp -d "$RUNTIME_DIR/catalog-probe.XXXXXX") || { echo 'Не удалось создать временный каталог проверки.' >&2; exit 1; }
     catalog_hash=$(sha256sum "$DNS_CATALOG")
     custom_hash=$(sha256sum "$CUSTOM_DNS_CATALOG" 2>/dev/null || :)
-    native_hash=$(sha256sum "$HELPERS/dns-manager-dnscrypt-catalog.conf" 2>/dev/null || :)
+    native_hash=$(sha256sum "$NATIVE_CATALOG" 2>/dev/null || :)
     awk -F'|' 'NF >= 5 && $1 !~ /^#/ && $1 ~ /^[A-Za-z0-9_-]+$/ && $5 ~ /^https:\/\// {gsub(/[\r\n]/, " ", $4); print $1 "|" $5 "|" $4}' "$DNS_CATALOG" > "$dir/source"
     if [ -r "$CUSTOM_DNS_CATALOG" ]; then
         awk -F'|' 'NF >= 5 && $1 !~ /^#/ && $1 ~ /^[A-Za-z0-9_-]+$/ && $5 ~ /^https:\/\// {gsub(/[\r\n]/, " ", $4); print $1 "|" $5 "|" $4}' "$CUSTOM_DNS_CATALOG" >> "$dir/source"
     fi
-    native_catalog="$HELPERS/dns-manager-dnscrypt-catalog.conf"
+    native_catalog="$NATIVE_CATALOG"
     if [ "$probe_scope" != all ]; then : > "$dir/source"; fi
     if [ -r "$native_catalog" ]; then
         awk -F'|' -v scope="$probe_scope" 'NF >= 5 && $1 !~ /^#/ && $1 ~ /^[A-Za-z0-9_-]+$/ && $5 ~ /^sdns:\/\// && (scope == "all" || scope == "native" || $2 == scope) {print $1 "|" $5 "|" $4}' "$native_catalog" >> "$dir/source"
@@ -543,7 +545,7 @@ dnscrypt_catalog_snapshot() (
     done
     [ "$catalog_hash" = "$(sha256sum "$DNS_CATALOG" 2>/dev/null)" ] || exit 1
     [ "$custom_hash" = "$(sha256sum "$CUSTOM_DNS_CATALOG" 2>/dev/null || :)" ] || exit 1
-    [ "$native_hash" = "$(sha256sum "$HELPERS/dns-manager-dnscrypt-catalog.conf" 2>/dev/null || :)" ] || exit 1
+    [ "$native_hash" = "$(sha256sum "$NATIVE_CATALOG" 2>/dev/null || :)" ] || exit 1
     if [ "$probe_scope" != all ]; then cat "$dir/results"; exit 0; fi
     . /usr/share/libubox/jshn.sh
     json_init
@@ -808,10 +810,10 @@ status_extra() {
     json_init
     json_add_string dnscrypt_engine dnscrypt-proxy2
     # Catalog candidates are not a live availability or DNSSEC result.
-    if [ -r "$HELPERS/dns-manager-dnscrypt-catalog.conf" ]; then
+    if [ -r "$NATIVE_CATALOG" ]; then
     json_add_object dnscrypt_profile_candidates
     for category in bypass clean security privacy adblock family dnssec; do
-        count=$(awk -F'|' -v category="$category" '$1 !~ /^#/ && $3 == "dnscrypt" && ($2 == category || (category == "dnssec" && ($2 == "clean" || $2 == "privacy"))) { n++ } END { print n+0 }' "$HELPERS/dns-manager-dnscrypt-catalog.conf" 2>/dev/null)
+        count=$(awk -F'|' -v category="$category" '$1 !~ /^#/ && $3 == "dnscrypt" && ($2 == category || (category == "dnssec" && ($2 == "clean" || $2 == "privacy"))) { n++ } END { print n+0 }' "$NATIVE_CATALOG" 2>/dev/null)
         case "$count" in ''|*[!0-9]*) count=0;; esac
         json_add_int "$category" "$count"
     done
@@ -857,7 +859,7 @@ EOF_LATENCY_TIME
         cache_native=$(sed -n '3p' "$RUNTIME_DIR/dnscrypt-catalog-checksum")
         current_catalog=$(sha256sum "$CONFIG_DIR/dns-catalog.conf")
         current_custom=$(sha256sum "$CONFIG_DIR/dns-custom-catalog.conf" 2>/dev/null || :)
-        current_native=$(sha256sum "$HELPERS/dns-manager-dnscrypt-catalog.conf" 2>/dev/null || :)
+        current_native=$(sha256sum "$NATIVE_CATALOG" 2>/dev/null || :)
         if [ "$cache_catalog" = "$current_catalog" ] && [ "$cache_custom" = "$current_custom" ] && [ "$cache_native" = "$current_native" ]; then
             json_add_string dnscrypt_catalog_results "$(cat "$latency_cache")"
         fi
@@ -946,7 +948,7 @@ EOF_POOL
             case "$id" in server=*) id=${id#server=};; available=*) id=${id#available=};; *) continue;; esac
             case "$id" in ''|*[!A-Za-z0-9_-]*) continue;; esac
             name=''
-            for catalog in "$CONFIG_DIR/dns-catalog.conf" "$CONFIG_DIR/dns-custom-catalog.conf" "$HELPERS/dns-manager-dnscrypt-catalog.conf"; do
+            for catalog in "$CONFIG_DIR/dns-catalog.conf" "$CONFIG_DIR/dns-custom-catalog.conf" "$NATIVE_CATALOG"; do
                 [ -r "$catalog" ] || continue
                 name=$(awk -F '|' -v id="$id" '$1 == id {print $4; exit}' "$catalog")
                 [ -z "$name" ] || break
