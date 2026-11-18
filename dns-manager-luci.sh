@@ -594,7 +594,7 @@ dnscrypt_select_profile() (
         count=$((count + 1))
     done
     if command -v dnscrypt_catalog_snapshot >/dev/null 2>&1; then
-        native_scope=$goal; case "$goal" in all|dnssec) native_scope=native;; esac
+        native_scope=$goal; case "$goal" in all) native_scope=native;; esac
         snapshot_rc=0
         dnscrypt_catalog_snapshot "$native_scope" > "$tmp.native" || snapshot_rc=$?
         if [ "$snapshot_rc" -ne 0 ]; then
@@ -870,7 +870,7 @@ printf 'Service did not become ready: %s\n' "$target" >&2
 exit 1
 EOF_DNSCRYPT_ASSET_8
     fetch_installer_source "$_dc_stage/backend-dnscrypt.sh" "$SOURCE_BASE/libexec/backend-dnscrypt.sh"
-    [ "$(sha256sum "$_dc_stage/backend-dnscrypt.sh" | cut -d' ' -f1)" = "652f24877b0a850af374d12631056aa9389036a619b33c45ae40488a0939b84e" ] || { err "Файл backend DNSCrypt не прошёл проверку."; return 1; }
+    [ "$(sha256sum "$_dc_stage/backend-dnscrypt.sh" | cut -d' ' -f1)" = "c33e439b1264a4b08c0e45c425e4ffa05041924f3d31eaff77cfeaeacac78cdf" ] || { err "Файл backend DNSCrypt не прошёл проверку."; return 1; }
     cat > "$_dc_stage/dns-manager-device-detach.sh" <<'EOF_DNSCRYPT_ASSET_10'
 #!/bin/sh
 # Detach the Manager-owned per-device redirect before stopping its listeners.
