@@ -47,5 +47,8 @@ done
         printf "[static.manager-%s]\nstamp = '%s'\n" "$i" "$stamp"
         i=$((i + 1))
     done < "$dir/stamps"
+    if [ "${DNS_MANAGER_QUERY_LOG:-0}" = 1 ]; then
+        printf "[query_log]\nfile = '/tmp/dns-manager-dnscrypt-query.log'\nformat = 'tsv'\n"
+    fi
 } > "$dir/output"
 cat "$dir/output"

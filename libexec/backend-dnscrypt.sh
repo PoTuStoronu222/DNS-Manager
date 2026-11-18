@@ -62,15 +62,40 @@ disable_legacy_watchdog() {
         save_config || return 1
     fi
 }
+dnscrypt_tuning_apply() (
+    name=$1 enabled=$2
+    key="dns-manager.global.$name"
+    previous=$(uci -q get "$key" 2>/dev/null || :)
+    [ -r "$STATE_FILE" ] || return 1
+    urls=$(mktemp "$RUNTIME_DIR/dnscrypt-tuning.XXXXXX") || return 1
+    trap 'rm -f "$urls"' EXIT HUP INT TERM
+    sed -n 's/^server=[^|]*|//p' "$STATE_FILE" > "$urls"
+    [ -s "$urls" ] || return 1
+    DNS_MANAGER_PROTOCOL=$(sed -n 's/^protocol=//p' "$STATE_FILE" | head -n1)
+    DNS_MANAGER_LB_STRATEGY=$(sed -n 's/^strategy=//p' "$STATE_FILE" | head -n1)
+    case "$DNS_MANAGER_PROTOCOL" in native) ;; *) DNS_MANAGER_PROTOCOL=mixed;; esac
+    case "$DNS_MANAGER_LB_STRATEGY" in wp2|p2|p3|p4|p5|p6|ph|first|random) ;; *) DNS_MANAGER_LB_STRATEGY=p2;; esac
+    export DNS_MANAGER_PROTOCOL DNS_MANAGER_LB_STRATEGY
+    uci set "$key=$enabled" && uci commit dns-manager || return 1
+    if sh "$HELPERS/dns-manager-dnscrypt-pool-apply.sh" 5053 "$BOOTSTRAP_DNS" < "$urls"; then
+        return 0
+    fi
+    if [ -n "$previous" ]; then uci set "$key=$previous"; else uci -q delete "$key"; fi
+    uci commit dns-manager
+    return 1
+)
+
 dnscrypt_set_setting() {
     input=$(cat)
     name=$(printf '%s' "$input" | jsonfilter -e '@.name' 2>/dev/null)
     enabled=$(printf '%s' "$input" | jsonfilter -e '@.enabled' 2>/dev/null)
-    case "$name" in watchdog|force|browser_dns) ;; *) error 'Эта настройка пока недоступна для DNSCrypt'; return;; esac
+    case "$name" in watchdog|force|browser_dns|dc_cache|dc_force_tcp|dc_block_ipv6|dc_block_unqualified|dc_block_undelegated|dc_query_log) ;; *) error 'Эта настройка пока недоступна для DNSCrypt'; return;; esac
     case "$enabled" in 0|1) ;; *) error 'Неверное значение настройки'; return;; esac
     load_manager_functions && load_config && acquire_mutation_lock || { error 'Не удалось применить настройку DNS'; return; }
     rc=0
-    if [ "$name" = browser_dns ]; then
+    if [ "${name#dc_}" != "$name" ]; then
+        dnscrypt_tuning_apply "$name" "$enabled" >/dev/null 2>&1 || rc=$?
+    elif [ "$name" = browser_dns ]; then
         set_browser_dns_hint "$enabled" >/dev/null 2>&1 || rc=$?
     elif [ "$name" = force ]; then
         dnscrypt_set_force "$enabled" >/dev/null 2>&1 || rc=$?
@@ -97,7 +122,7 @@ dnscrypt_setting_start() {
     input=$(cat)
     name=$(printf '%s' "$input" | jsonfilter -e '@.name' 2>/dev/null)
     enabled=$(printf '%s' "$input" | jsonfilter -e '@.enabled' 2>/dev/null)
-    case "$name:$enabled" in watchdog:0|watchdog:1|force:0|force:1|browser_dns:0|browser_dns:1) ;; *) error 'Неверная настройка'; return;; esac
+    case "$name:$enabled" in watchdog:0|watchdog:1|force:0|force:1|browser_dns:0|browser_dns:1|dc_cache:0|dc_cache:1|dc_force_tcp:0|dc_force_tcp:1|dc_block_ipv6:0|dc_block_ipv6:1|dc_block_unqualified:0|dc_block_unqualified:1|dc_block_undelegated:0|dc_block_undelegated:1|dc_query_log:0|dc_query_log:1) ;; *) error 'Неверная настройка'; return;; esac
     mkdir -p "$JOB_DIR/setting" "$RUNTIME_DIR" || { error 'Не удалось подготовить задачу'; return; }
     exec 9>"$RUNTIME_DIR/setting-start.lock" || { error 'Не удалось подготовить блокировку'; return; }
     flock -n 9 || { error 'Другая настройка уже запускается'; return; }
@@ -566,6 +591,12 @@ $system_output"
         if [ "$rc" -eq 0 ]; then json_add_boolean ok 1; else json_add_boolean ok 0; fi
     else
         output=$(logread -e dnscrypt-proxy 2>&1 | tail -n 80)
+        if [ "$(uci -q get dns-manager.global.dc_query_log 2>/dev/null || :)" = 1 ] && [ -r /tmp/dns-manager-dnscrypt-query.log ]; then
+            output="$output
+
+Последние DNS-запросы:
+$(tail -n 40 /tmp/dns-manager-dnscrypt-query.log)"
+        fi
         json_add_boolean ok 1
     fi
     json_add_string output "$output"
@@ -772,6 +803,11 @@ status_extra() {
     running=0
     "$DNSCRYPT_INIT" running >/dev/null 2>&1 && running=1
     json_add_int dnscrypt_running "$running"
+    for setting in cache force_tcp block_ipv6 block_unqualified block_undelegated query_log; do
+        value=$(uci -q get "dns-manager.global.dc_$setting" 2>/dev/null || :)
+        case "$value" in 0|1) ;; *) case "$setting" in cache|block_unqualified|block_undelegated) value=1;; *) value=0;; esac;; esac
+        json_add_int "dc_$setting" "$value"
+    done
     json_add_object dnscrypt_server_latency
     latency_records=$(dnscrypt_pool_latency "$running")
     while read -r latency_server latency_ms latency_time; do

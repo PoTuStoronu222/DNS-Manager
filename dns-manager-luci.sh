@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion and full installer
-# Version: 2.123
+# Version: 2.124
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.123"
+VERSION="2.124"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -374,11 +374,22 @@ if [ "$protocol" = native ]; then
     printf "dnscrypt_servers = true\ndoh_servers = false\n"
 fi
 printf "listen_addresses = ['127.0.0.1:%s']\n" "$port"
-# dnsmasq's cache is disabled in DNSCrypt mode; keep one cache in the proxy.
-printf "cache = true\n"
+# Values are Manager-owned and survive regeneration after profile changes.
+setting() {
+    value=$(uci -q get "dns-manager.global.dc_$1" 2>/dev/null || :)
+    case "$value" in 0) printf false;; 1) printf true;; *) printf "%s" "$2";; esac
+}
+printf "cache = %s\n" "$(setting cache true)"
+printf "force_tcp = %s\n" "$(setting force_tcp false)"
+printf "block_ipv6 = %s\n" "$(setting block_ipv6 false)"
+printf "block_unqualified = %s\n" "$(setting block_unqualified true)"
+printf "block_undelegated = %s\n" "$(setting block_undelegated true)"
 # Do not extend upstream TTLs by default (dnscrypt-proxy defaults to 60s).
 printf "cache_min_ttl = 0\n"
 printf "cache_neg_min_ttl = 0\n"
+if [ "${DNS_MANAGER_QUERY_LOG:-0}" = 1 ]; then
+    printf "log_files_max_size = 1\nlog_files_max_backups = 1\n"
+fi
 printf "bootstrap_resolvers = [%s]\n" "$resolvers"
 printf "ignore_system_dns = true\n"
 printf "[static.manager-slot]\n"
@@ -434,6 +445,9 @@ done
         printf "[static.manager-%s]\nstamp = '%s'\n" "$i" "$stamp"
         i=$((i + 1))
     done < "$dir/stamps"
+    if [ "${DNS_MANAGER_QUERY_LOG:-0}" = 1 ]; then
+        printf "[query_log]\nfile = '/tmp/dns-manager-dnscrypt-query.log'\nformat = 'tsv'\n"
+    fi
 } > "$dir/output"
 cat "$dir/output"
 EOF_DNSCRYPT_ASSET_3
@@ -480,6 +494,8 @@ cleanup() {
 }
 trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
+DNS_MANAGER_QUERY_LOG=$(uci -q get dns-manager.global.dc_query_log 2>/dev/null || :)
+export DNS_MANAGER_QUERY_LOG
 sh "$generator" "$port" "$bootstrap" > "$candidate" || exit 1
 "$binary" -config "$candidate" -check >/dev/null 2>&1 || { echo 'Invalid DNSCrypt pool configuration' >&2; exit 1; }
 [ "$had_config" -eq 0 ] || cp -p "$config" "$backup" || exit 1
@@ -825,7 +841,7 @@ printf 'Service did not become ready: %s\n' "$target" >&2
 exit 1
 EOF_DNSCRYPT_ASSET_8
     fetch_installer_source "$_dc_stage/backend-dnscrypt.sh" "$SOURCE_BASE/libexec/backend-dnscrypt.sh"
-    [ "$(sha256sum "$_dc_stage/backend-dnscrypt.sh" | cut -d' ' -f1)" = "e8ac39322ed24034d5eaba4cf5961f06565d9e50d83230de3c2b4752742b0c14" ] || { err "Файл backend DNSCrypt не прошёл проверку."; return 1; }
+    [ "$(sha256sum "$_dc_stage/backend-dnscrypt.sh" | cut -d' ' -f1)" = "c313df2fa88617f007e525de01bb33e5d0cbb8e6707f50bc7f3281d4bdaf3321" ] || { err "Файл backend DNSCrypt не прошёл проверку."; return 1; }
     cat > "$_dc_stage/dns-manager-device-detach.sh" <<'EOF_DNSCRYPT_ASSET_10'
 #!/bin/sh
 # Detach the Manager-owned per-device redirect before stopping its listeners.
@@ -1857,7 +1873,7 @@ DM_SOURCE_BASE="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/$_d
 COMPANION_URL="$DM_SOURCE_BASE/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.123"
+SELF_VERSION="2.124"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -5813,7 +5829,7 @@ function stateBadge(status,pingValue){
   if(s==='OK')return badge('dm-ok',hasPing(pingValue)?ping(pingValue)+' · доступен':'ответ получен');
   return badge('dm-bad','недоступен');
 }
-function settingName(n){ var m={watchdog:'Проверка DNS',watchdog_autoreplace:'Автозамена DNS',force:'Принудительный DNS',browser_dns:'Подсказка браузерам',encrypted_dns:'Не давать устройствам обходить блокировку',dnsmasq_perf:'Увеличенный кэш DNS'}; return m[n]||n; }
+function settingName(n){ var m={watchdog:'Проверка DNS',watchdog_autoreplace:'Автозамена DNS',force:'Принудительный DNS',browser_dns:'Подсказка браузерам',encrypted_dns:'Не давать устройствам обходить блокировку',dnsmasq_perf:'Увеличенный кэш DNS',dc_cache:'Кэш DNSCrypt',dc_force_tcp:'Только TCP',dc_block_ipv6:'Блокировать IPv6-ответы',dc_block_unqualified:'Блокировать короткие имена',dc_block_undelegated:'Блокировать локальные домены',dc_query_log:'Журнал запросов'}; return m[n]||n; }
 function settingModuleState(st,key){
   var raw=st[key+'_state'];
   if(raw===undefined||raw===null||raw==='')return -1;
@@ -7636,6 +7652,18 @@ function renderNetwork(root,st){
       ].filter(Boolean))]
     : [watchdogCard(root,st), cacheCard(root,st)];
   e.appendChild(card('Сетевой тюнинг',body));
+  if(st.dnscrypt_engine==='dnscrypt-proxy2'){
+    var noPool=!(st.dnscrypt_servers||[]).length;
+    var why=noPool?'Сначала настройте набор DNS-серверов.':'';
+    e.appendChild(card('Настройки DNSCrypt',[
+      settingToggle(root,'Кэш DNSCrypt','Сохраняет ответы DNS до истечения срока их действия.',yes(st.dc_cache),'dc_cache',noPool,why),
+      settingToggle(root,'Только TCP','Использовать TCP для связи с серверами. Некоторые серверы могут не поддерживать этот режим.',yes(st.dc_force_tcp),'dc_force_tcp',noPool,why),
+      settingToggle(root,'Блокировать IPv6-ответы','Возвращать пустой ответ на запросы адресов IPv6 (AAAA).',yes(st.dc_block_ipv6),'dc_block_ipv6',noPool,why),
+      settingToggle(root,'Блокировать короткие имена','Не отправлять в интернет запросы имён без точки.',yes(st.dc_block_unqualified),'dc_block_unqualified',noPool,why),
+      settingToggle(root,'Блокировать локальные домены','Не отправлять в интернет запросы служебных и локальных доменных зон.',yes(st.dc_block_undelegated),'dc_block_undelegated',noPool,why),
+      settingToggle(root,'Журнал запросов','Записывает запрошенные домены во временную память роутера. Содержимое удаляется после перезагрузки.',yes(st.dc_query_log),'dc_query_log',noPool,why)
+    ]));
+  }
   var browserEnabled=yes(st.browser_dns), browserLoaded=yes(st.browser_dns_loaded);
   e.appendChild(card('Браузеры и DNS',[
     E('div',{'class':'dm-row'},[E('span',{'class':'dm-label'},'Предлагать браузерам использовать DNS роутера'),badge(browserEnabled?(browserLoaded?'dm-ok':'dm-bad'):'dm-off',browserEnabled?(browserLoaded?'настроено':'не применено'):'выключено')]),
