@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion and full installer
-# Version: 2.113
+# Version: 2.114
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.113"
+VERSION="2.114"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -1775,7 +1775,7 @@ DM_SOURCE_BASE="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/$_d
 COMPANION_URL="$DM_SOURCE_BASE/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.113"
+SELF_VERSION="2.114"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -7740,12 +7740,19 @@ function renderCatalog(root){
     e.appendChild(E('div',{'class':'dm-actions'},[btn(state.dnscryptCatalogChecking?'Проверяю DNS…':'Проверить все DNS','cbi-button-action',function(){refreshDnscryptCatalogLatency(root);},{disabled:!!state.busy||!!state.jobRunning})]));
     if(state.dnscryptCatalogChecking){
       var progress=state.dnscryptCatalogProgress||{}, done=progress.done||0, total=progress.total||0;
-      var progressItems=[E('strong',{},total?'Проверено '+done+' из '+total:'Подготавливаю проверку каталога…')];
-      if(total)progressItems.push(E('progress',{'value':Math.min(done,total),'max':total,'aria-label':'Проверено серверов DNS'}));
+      var pct=total>0?Math.max(0,Math.min(100,Math.round(done*100/total))):0;
+      var summary=total?'Проверено '+done+' из '+total+' · доступно: '+progress.ok+' · не ответили: '+progress.fail+(done-progress.ok-progress.fail>0?' · не удалось проверить: '+(done-progress.ok-progress.fail):''):'Подготавливаю список DNS-серверов…';
+      var progressItems=[
+        E('div',{'class':'dm-mini'},'Проверка каталога DNS'),
+        E('div',{'class':'dm-mem-line'},[
+          E('div',{'class':'dm-mem-track','role':'progressbar','aria-label':'Проверено серверов DNS','aria-valuemin':'0','aria-valuemax':'100','aria-valuenow':String(pct)},[E('div',{'class':'dm-mem-fill','style':'width:'+pct+'%'})]),
+          E('span',{'class':'dm-mem-value'},pct+'%')
+        ]),
+        E('div',{'class':'dm-mem-meta'},summary)
+      ];
       if(progress.phase)progressItems.push(E('div',{'class':'dm-mini'},'Сейчас проверяются: '+progress.phase));
-      if(done)progressItems.push(E('div',{'class':'dm-mini'},'Доступны: '+progress.ok+' · Недоступны: '+progress.fail+(done-progress.ok-progress.fail>0?' · Не удалось проверить: '+(done-progress.ok-progress.fail):'')));
       progressItems.push(E('div',{'class':'dm-mini'},'Серверы проверяются группами до шести. Можно закрыть страницу — проверка продолжится.'));
-      e.appendChild(E('div',{'class':'dm-hint'},progressItems));
+      e.appendChild(card('Ход проверки',progressItems));
     }
     CATEGORY.forEach(function(c){controls.appendChild(btn(c[1],c[0]===state.category?'active cbi-button':'cbi-button',function(){if(state.catalogLoading)return;state.category=c[0];state.offset=0;loadCatalog(root);},{disabled:!!state.catalogLoading,'aria-pressed':c[0]===state.category?'true':'false'}));});
     var draft=dnscryptPoolDraft(window.dmState||{});
