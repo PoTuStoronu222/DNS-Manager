@@ -1,8 +1,27 @@
+<div align="center">
+
 # DNS Manager
+
+**Управление защищённым DNS на роутере OpenWrt через LuCI**
+
+<img src="https://readme-typing-svg.demolab.com?font=JetBrains+Mono&size=21&duration=2600&pause=900&color=2F81F7&center=true&vCenter=true&width=840&lines=DNS+over+HTTPS+%E2%80%A2+DNSCrypt+%E2%80%A2+OpenWrt;DNS+profiles+%E2%80%A2+device+rules+%E2%80%A2+LuCI" alt="DNS Manager">
+
+[![OpenWrt](https://img.shields.io/badge/OpenWrt-ready-00B5E2?style=for-the-badge&logo=openwrt&logoColor=white)](https://openwrt.org/)
+[![LuCI](https://img.shields.io/badge/LuCI-3.0-5E5CE6?style=for-the-badge)](#вкладки-dns-manager)
+[![DoH](https://img.shields.io/badge/DNS-over_HTTPS-00A67E?style=for-the-badge)](#движки-и-серверы)
+[![DNSCrypt](https://img.shields.io/badge/DNSCrypt-Proxy_2-00A67E?style=for-the-badge)](#движки-и-серверы)
+
+[![GitHub stars](https://img.shields.io/github/stars/PoTuStoronu222/DNS-Manager?style=flat-square&logo=github)](https://github.com/PoTuStoronu222/DNS-Manager/stargazers)
+[![Просмотры](https://gitviews.com/repo/PoTuStoronu222/DNS-Manager.svg?style=flat-square&label=Views&label-color=%23555&color=%2310B981)](https://gitviews.com/)
+[![Последнее изменение](https://img.shields.io/github/last-commit/PoTuStoronu222/DNS-Manager?style=flat-square)](https://github.com/PoTuStoronu222/DNS-Manager/commits/main)
+
+</div>
 
 DNS Manager 4.50 и LuCI 3.0 — управление защищённым DNS на роутере OpenWrt. Поддерживаются два движка: **HTTPS DNS Proxy** и **DNSCrypt Proxy 2**. Выбранный движок устанавливается по требованию; при смене движка профили, слоты и привязки сбрасываются.
 
 ## Установка
+
+![Установка, открытие LuCI, проверка и применение DNS](docs/readme/setup-flow.gif)
 
 Подключитесь к роутеру по SSH:
 
@@ -15,6 +34,10 @@ wget -O /tmp/dns-manager-luci.sh https://raw.githubusercontent.com/PoTuStoronu22
 
 ## Движки и серверы
 
+![Пример DNS-запроса через dnsmasq и DNS over HTTPS](docs/readme/dns-flow.gif)
+
+Устройства обращаются к DNS роутера; dnsmasq передаёт запросы выбранной защищённой DNS-службе.
+
 - **HTTPS DNS Proxy** использует DNS over HTTPS (DoH). Поддерживает до шести слотов и привязку устройств к слотам.
 - **DNSCrypt Proxy 2** использует один процесс и общий набор серверов. Он поддерживает как протокол DNSCrypt, так и DoH. В настройках можно выбрать протокол, стратегию выбора и вручную собрать набор до шести серверов. Очерёдность в списке сама по себе не задаёт приоритет.
 
@@ -22,7 +45,7 @@ wget -O /tmp/dns-manager-luci.sh https://raw.githubusercontent.com/PoTuStoronu22
 
 Профили подбирают доступные серверы по назначению: без фильтрации, защита от угроз, конфиденциальность, блокировка рекламы, семейная фильтрация, DNSSEC или обход геоблокировок. Набор зависит от выбранного протокола и результатов проверки. DNS Manager работает на уровне DNS и не заменяет VPN или средства обхода DPI.
 
-## Вкладки
+## Вкладки DNS Manager
 
 | Вкладка | Возможности |
 |---|---|
@@ -37,13 +60,23 @@ wget -O /tmp/dns-manager-luci.sh https://raw.githubusercontent.com/PoTuStoronu22
 
 ## Проверка и региональные настройки
 
+![Проверка DNS и выбор доступного сервера](docs/readme/watchdog-actions.gif)
+
 В HTTPS DNS Proxy можно включить периодическую проверку слотов и автозамену. В DNSCrypt Proxy 2 за выбор доступного сервера из текущего набора отвечает сам DNSCrypt; проверка показывает состояние DNS и не меняет профиль при общем сбое.
 
 Для российских сайтов и сайтов СНГ можно выбрать общие защищённые DNS, Яндекс DNS или DNS провайдера. Смена профиля не меняет этот выбор. Принудительный DNS направляет обычные запросы устройств к DNS роутера; при использовании Steer результат зависит также от его правил.
 
 Длительные действия выполняются в фоне: переход со страницы не должен прерывать запущенную операцию. Состояние можно посмотреть после возвращения в LuCI.
 
+## Bootstrap DNS
+
+![Bootstrap DNS, IP-адрес и DoH-соединение](docs/readme/bootstrap-flow.gif)
+
+Bootstrap DNS помогает определить адрес защищённого DNS-сервера до подключения к нему. Для HTTPS DNS Proxy можно выбрать готовые наборы или добавить собственные IP-адреса. Начальный запрос к bootstrap-серверу не шифруется как DoH.
+
 ## Восстановление и удаление
+
+![Применение и проверка конфигурации](docs/readme/apply-flow.gif)
 
 Кнопки восстановления стандартного DNS и удаления DNS Manager находятся в интерфейсе. При смене движка и сбросе внимательно читайте предупреждения: выбранные профили и привязки могут быть удалены.
 
