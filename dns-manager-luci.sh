@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion and full installer
-# Version: 2.126
+# Version: 2.127
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.126"
+VERSION="2.127"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -870,7 +870,7 @@ printf 'Service did not become ready: %s\n' "$target" >&2
 exit 1
 EOF_DNSCRYPT_ASSET_8
     fetch_installer_source "$_dc_stage/backend-dnscrypt.sh" "$SOURCE_BASE/libexec/backend-dnscrypt.sh"
-    [ "$(sha256sum "$_dc_stage/backend-dnscrypt.sh" | cut -d' ' -f1)" = "a4e57e7801f4f06f1c2f6d52f2582457c180a19fc293cc5b66c87caa65cbf141" ] || { err "Файл backend DNSCrypt не прошёл проверку."; return 1; }
+    [ "$(sha256sum "$_dc_stage/backend-dnscrypt.sh" | cut -d' ' -f1)" = "e25dde22ed49c643e9ac4c109b808014c13499b55af74e36722367e412b6ec8b" ] || { err "Файл backend DNSCrypt не прошёл проверку."; return 1; }
     cat > "$_dc_stage/dns-manager-device-detach.sh" <<'EOF_DNSCRYPT_ASSET_10'
 #!/bin/sh
 # Detach the Manager-owned per-device redirect before stopping its listeners.
@@ -1903,7 +1903,7 @@ DM_SOURCE_BASE="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/$_d
 COMPANION_URL="$DM_SOURCE_BASE/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.126"
+SELF_VERSION="2.127"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -5730,6 +5730,7 @@ var CATEGORY = [
 var state = { slotPickerCheck:null, slotPickerRequest:0, lanDevicesLoading:false, lanDevicesMessage:'', luciUpdateReloadTimer:null, hdpUpdating:false, managerUpdating:false, updatingAll:false, category:'all', offset:0, limit:18, catalogLoaded:false, catalogLoading:false, advanced:true, logLoaded:false, logLoading:false, busy:false, busySetting:'', settingMessage:'', settingMessageType:'', settingMessageKey:'', pageNotice:{}, statusError:'', activeTab:'dashboard', jobRunning:false, lastJob:null, checking:{}, fullTest:null, catalogProgress:null, profileProgress:null, profileOutput:'', versionCheck:null, lastAction:null, runtimeCpuLoad:null, runtimeMemoryTotal:null, runtimeMemoryAvailable:null, boardInfo:null, systemPollBusy:false, profileResumeStarted:false };
 
 function profileName(p){
+  if(String(p||'').indexOf('options:')===0)p=String(p).split(':').slice(3).join(':');
   var x=PROFILE.filter(function(v){return v[0]===p;})[0];
   return x?x[1]:(p==='default'?'DNS по умолчанию':p==='hybrid'?'Обход геоблока':p==='custom'?'Собственный выбор':p==='none'?'Не выбран':(p||'—'));
 }
@@ -7180,11 +7181,18 @@ function renderProfiles(root,st){
   var g=E('div',{'class':'dm-seg dm-profile-seg'});
   var currentId=activeProfileId(st);
   var chosenProfile=state.pendingProfile||currentId;
-  PROFILE.forEach(function(p){g.appendChild(btn(p[1],chosenProfile===p[0]?'active cbi-button':'cbi-button',function(){
-    state.pendingProfile=p[0]===currentId?'':p[0];renderProfiles(root,st);
-  },{disabled:!!state.busy||!!state.jobRunning||(st.dnscrypt_engine!=='dnscrypt-proxy2'&&Number(st.engine_installed)===0),'aria-pressed':chosenProfile===p[0]?'true':'false'}));});
+  var candidates=st.dnscrypt_engine==='dnscrypt-proxy2'?st.dnscrypt_profile_candidates:null;
+  var nativeOnly=st.dnscrypt_engine==='dnscrypt-proxy2'&&dnscryptOptions(st).protocol==='native';
+  PROFILE.forEach(function(p){
+    var n=candidates&&Object.prototype.hasOwnProperty.call(candidates,p[0])?Number(candidates[p[0]]):null;
+    var label=p[1]+(n===null?'':n>0?' · DNSCrypt: '+n:' · DNSCrypt нет');
+    var unavailable=nativeOnly&&n===0;
+    g.appendChild(btn(label,chosenProfile===p[0]?'active cbi-button':'cbi-button',function(){
+      state.pendingProfile=p[0]===currentId?'':p[0];renderProfiles(root,st);
+    },{disabled:unavailable||!!state.busy||!!state.jobRunning||(st.dnscrypt_engine!=='dnscrypt-proxy2'&&Number(st.engine_installed)===0),'aria-pressed':chosenProfile===p[0]?'true':'false'}));
+  });
   var profileAction=((state.pendingProfile&&state.pendingProfile!==currentId)||(st.dnscrypt_engine==='dnscrypt-proxy2'&&currentId&&dnscryptOptionsChanged(st)))?E('div',{'class':'dm-actions'},[
-    btn('Применить изменения','cbi-button-action',function(){var selected=state.pendingProfile||currentId;state.pendingProfile='';applyProfile(selected,root,true);},{disabled:!!state.busy||!!state.jobRunning})
+    btn('Применить изменения','cbi-button-action',function(){var selected=state.pendingProfile||currentId;state.pendingProfile='';applyProfile(selected,root,true);},{disabled:!!state.busy||!!state.jobRunning||(nativeOnly&&candidates&&Number(candidates[state.pendingProfile||currentId])===0)})
   ]):null;
   var current=activeProfileLabel(st);
   var pch=[
@@ -7192,7 +7200,7 @@ function renderProfiles(root,st){
     g,
     st.dnscrypt_engine==='dnscrypt-proxy2'?dnscryptOptionsControls(root,st,renderProfiles):null,
     profileAction,
-    E('div',{'class':'dm-mini'},'Профиль определяет схему выбора DNS.')
+    E('div',{'class':'dm-mini'},candidates?'Число DNSCrypt — серверы в каталоге, не результат проверки. В DNSSEC показаны кандидаты, которые дополнительно проверяются. В смешанном режиме также используются DoH-серверы.':'Профиль определяет схему выбора DNS.')
   ].filter(Boolean);
   if(currentId==='dnssec')pch.push(E('div',{'class':'dm-hint'},'DNSSEC проверяется выбранными серверами; фильтрация может различаться.'+(st.dnscrypt_engine==='dnscrypt-proxy2'?'':' Региональный DNS, Steer и привязки устройств работают по своим правилам.')));
   var regionalSlot=(st.slots||[]).filter(function(s){return String(s.slot)==='RU';})[0]||{};
