@@ -806,6 +806,16 @@ status_extra() {
     . /usr/share/libubox/jshn.sh
     json_init
     json_add_string dnscrypt_engine dnscrypt-proxy2
+    # Catalog candidates are not a live availability or DNSSEC result.
+    if [ -r "$HELPERS/dns-manager-dnscrypt-catalog.conf" ]; then
+    json_add_object dnscrypt_profile_candidates
+    for category in bypass clean security privacy adblock family dnssec; do
+        count=$(awk -F'|' -v category="$category" '$1 !~ /^#/ && $3 == "dnscrypt" && ($2 == category || (category == "dnssec" && ($2 == "clean" || $2 == "privacy"))) { n++ } END { print n+0 }' "$HELPERS/dns-manager-dnscrypt-catalog.conf" 2>/dev/null)
+        case "$count" in ''|*[!0-9]*) count=0;; esac
+        json_add_int "$category" "$count"
+    done
+    json_close_object
+    fi
     force_active=0
     [ "$(uci -q get firewall.dns_forced 2>/dev/null)" = redirect ] &&
         [ "$(uci -q get firewall.dns_forced.name 2>/dev/null)" = Force-DNS-DNSCrypt ] && force_active=1
