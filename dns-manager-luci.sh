@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.139"
+VERSION="2.140"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -1244,11 +1244,11 @@ ucode -e '''import { stdin } from "fs";
 let servers = json(stdin.read("all"));
 map(servers, s => {
  if (s.proto == "DNSCrypt" && !s.ipv6 && match(s.name, /^[A-Za-z0-9_.-]+$/) && match(s.stamp, /^sdns:\/\/[A-Za-z0-9_-]+$/))
-  print(s.name, "|", s.stamp, "|", s.nofilter ? "clean" : "unknown", "\n");
+  print(s.name, "|", s.stamp, "|", s.nofilter ? "clean" : "unknown", "|", replace(split(s.description || "", "\n")[0], /\|/g, "/"), "\n");
 });''' < "$tmp/source.json" > "$tmp/records"
 [ -s "$tmp/records" ] || { echo "В подписанном списке нет серверов DNSCrypt" >&2; exit 1; }
 cat "$helpers/dns-manager-dnscrypt-catalog.conf" > "$tmp/catalog"
-while IFS='|' read -r name stamp category; do
+while IFS='|' read -r name stamp category description; do
     case "$name" in
         adguard-dns-family|cisco-familyshield|cleanbrowsing-adult|cleanbrowsing-family) category=family ;;
         adguard-dns) category=adblock ;;
@@ -1261,6 +1261,14 @@ while IFS='|' read -r name stamp category; do
         else if ($0 ~ /^cisco/) sub(/^cisco/, "Cisco OpenDNS")
         gsub(/[-_]/, " "); print
     }')
+    # The signed source supplies provider and location descriptions for native IDs.
+    case "$description" in
+        ''|*http://*|*https://*) ;;
+        *)
+            official_display=$(printf '%s\n' "$description" | awk '{ gsub(/^[[:space:]]+|[[:space:]]+$/, ""); sub(/ public resolver[.]?$/, ""); sub(/ resolver[.]?$/, ""); sub(/[.]$/, ""); if (length($0) <= 90) print }')
+            [ -z "$official_display" ] || display=$official_display
+            ;;
+    esac
     hash=$(printf %s "$name" | sha256sum)
     id=official_${hash%% *}
     printf '%s|%s|dnscrypt|%s|%s|any|official\n' "$id" "$category" "$display" "$stamp"
@@ -1980,7 +1988,7 @@ DM_SOURCE_BASE="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/$_d
 COMPANION_URL="$DM_SOURCE_BASE/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.139"
+SELF_VERSION="2.140"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -8201,8 +8209,9 @@ function renderCatalog(root){
     var draft=dnscryptPoolDraft(window.dmState||{});
     var nativeOnly=dnscryptOptions(window.dmState||{}).protocol==='native';
     var rows=catalogGroups(data.servers||[],function(d){return dnscryptCatalogCard(d,root,draft,nativeOnly);},function(){renderCatalog(root);});
+    var shown=E('div',{'class':'dm-mini'},'Серверы '+(data.total?state.offset+1:0)+'–'+(state.offset+(data.servers||[]).length)+' из '+(data.total||0)+'. Варианты одного провайдера собраны вместе.');
     e.appendChild(E('div',{'class':'dm-hint'},[E('span',{},'В наборе: '+draft.items.length+' из 6. '),E('a',{'href':L.url('admin/services/dns-manager/slots')},'Открыть набор и применить')]));
-    e.appendChild(card('Каталог DNS',[E('div',{'class':'dm-hint'},nativeOnly&&state.catalogProtocol==='doh'?'Выбран режим только DNSCrypt: DoH можно просматривать, но добавить в набор нельзя.':'Выберите протокол и категорию. Проверка не меняет текущие DNS.'),protocols,controls,state.pageNotice.catalog?E('div',{'class':'dm-inline-msg error'},state.pageNotice.catalog):null,state.catalogLoading?E('div',{'class':'dm-hint'},'Загрузка каталога DNS…'):null,E('div',{'class':'dm-catalog'},rows),E('div',{'class':'dm-page'},[btn('←','cbi-button-neutral',function(){if(!state.catalogLoading&&state.offset>0){state.offset=Math.max(0,state.offset-state.limit);loadCatalog(root);}},{disabled:!!state.catalogLoading||state.offset<=0,'aria-label':'Предыдущая страница'}),E('span',{'class':'dm-mini'},(Math.floor(state.offset/state.limit)+1)+' / '+Math.max(1,Math.ceil((data.total||0)/state.limit))),btn('→','cbi-button-neutral',function(){if(!state.catalogLoading&&state.offset+state.limit<(data.total||0)){state.offset+=state.limit;loadCatalog(root);}},{disabled:!!state.catalogLoading||state.offset+state.limit>=(data.total||0),'aria-label':'Следующая страница'})])].filter(Boolean)));
+    e.appendChild(card('Каталог DNS',[E('div',{'class':'dm-hint'},nativeOnly&&state.catalogProtocol==='doh'?'Выбран режим только DNSCrypt: DoH можно просматривать, но добавить в набор нельзя.':'Выберите протокол и категорию. Проверка не меняет текущие DNS.'),protocols,controls,shown,state.pageNotice.catalog?E('div',{'class':'dm-inline-msg error'},state.pageNotice.catalog):null,state.catalogLoading?E('div',{'class':'dm-hint'},'Загрузка каталога DNS…'):null,E('div',{'class':'dm-catalog'},rows),E('div',{'class':'dm-page'},[btn('←','cbi-button-neutral',function(){if(!state.catalogLoading&&state.offset>0){state.offset=Math.max(0,state.offset-state.limit);loadCatalog(root);}},{disabled:!!state.catalogLoading||state.offset<=0,'aria-label':'Предыдущая страница'}),E('span',{'class':'dm-mini'},(Math.floor(state.offset/state.limit)+1)+' / '+Math.max(1,Math.ceil((data.total||0)/state.limit))),btn('→','cbi-button-neutral',function(){if(!state.catalogLoading&&state.offset+state.limit<(data.total||0)){state.offset+=state.limit;loadCatalog(root);}},{disabled:!!state.catalogLoading||state.offset+state.limit>=(data.total||0),'aria-label':'Следующая страница'})])].filter(Boolean)));
     return;
   }
   var ageCard=renderTestAgeCommon(root,window.dmState||{});
@@ -8291,7 +8300,7 @@ function catalogGroups(servers,renderItem,rerender){
     if(isUserDnsRecord(d)||!group||group.length<2){result.push(renderItem(d));return;}
     if(emitted[key])return;
     emitted[key]=true;
-    var open=!!state.catalogOpenGroups[key];
+    var open=state.catalogOpenGroups[key]!==false;
     var toggle=E('button',{'type':'button','class':'dm-card dm-catalog-family'+(open?' is-open':''),'aria-expanded':open?'true':'false','click':function(){state.catalogOpenGroups[key]=!open;rerender();}},[
       E('span',{'class':'dm-catalog-family-main'},[E('strong',{},families[key]),E('span',{'class':'dm-mini'},group.length+' варианта на странице')]),E('span',{'aria-hidden':'true'},open?'⌃':'›')
     ]);
@@ -8309,7 +8318,7 @@ function renderCatalogBody(root,data){
   var f=E('div',{'class':'dm-seg'});
   CATEGORY.forEach(function(c){f.appendChild(btn(c[1],c[0]===state.category?'active cbi-button':'cbi-button',function(){if(state.catalogLoading)return;state.category=c[0];state.offset=0;loadCatalog(root);},{disabled:!!state.catalogLoading,'aria-pressed':c[0]===state.category?'true':'false'}));});
   b.appendChild(f);
-  b.appendChild(E('div',{'class':'dm-mini'},'Показано '+(data.servers||[]).length+' из '+(data.total||0)));
+  b.appendChild(E('div',{'class':'dm-mini'},'Серверы '+(data.total?state.offset+1:0)+'–'+(state.offset+(data.servers||[]).length)+' из '+(data.total||0)+'. Варианты одного провайдера собраны вместе.'));
   var g=E('div',{'class':'dm-catalog'});
   catalogGroups(data.servers||[],function(d){
     var ci=checkInfo(d.id,d);
