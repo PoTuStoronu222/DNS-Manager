@@ -387,7 +387,10 @@ dnscrypt_catalog_snapshot() (
         printf 'phase=%s\n' "$names" >> "$JOB_DIR/health/state"
         : > "$dir/stamps"; : > "$dir/ids"; : > "$dir/valid"
         while IFS='|' read -r id url name; do
-            stamp=$(sh "$HELPERS/dns-manager-doh-stamp.sh" "$url" 2>/dev/null) || continue
+            if ! stamp=$(sh "$HELPERS/dns-manager-doh-stamp.sh" "$url" 2>/dev/null); then
+                printf '%s|-2\n' "$id" >> "$dir/results"
+                continue
+            fi
             printf '%s\n' "$id" >> "$dir/ids"
             printf '%s\n' "$stamp" >> "$dir/stamps"
             printf '%s\n' "$url" >> "$dir/valid"
@@ -410,7 +413,7 @@ dnscrypt_catalog_snapshot() (
             dnscrypt-proxy -config "$dir/probe.toml" -netprobe-timeout 5 > "$dir/process.log" 2>&1 &
             probe=$!
             tries=0
-            while kill -0 "$probe" 2>/dev/null && [ "$tries" -lt 30 ]; do
+            while kill -0 "$probe" 2>/dev/null && [ "$tries" -lt 45 ]; do
                 grep -q 'Server with the lowest initial latency:' "$dir/probe.log" && break
                 sleep 1; tries=$((tries + 1))
             done
@@ -435,7 +438,12 @@ dnscrypt_catalog_snapshot() (
             n=1; while IFS= read -r id; do
                 latency=$(awk -v s="manager-$n" '$1==s {print $2; exit}' "$dir/latencies")
                 case "$latency" in
-                    ''|*[!0-9]*) if [ "$completed" = 1 ]; then printf '%s|-1\n' "$id" >> "$dir/results"; failed_count=$((failed_count + 1)); fi;;
+                    ''|*[!0-9]*)
+                        if [ "$completed" = 1 ]; then
+                            printf '%s|-1\n' "$id" >> "$dir/results"; failed_count=$((failed_count + 1))
+                        else
+                            printf '%s|-2\n' "$id" >> "$dir/results"
+                        fi ;;
                     *) printf '%s|%s\n' "$id" "$latency" >> "$dir/results"; success_count=$((success_count + 1));;
                 esac
                 n=$((n + 1))
