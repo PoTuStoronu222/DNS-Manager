@@ -508,10 +508,31 @@ async function testDnscryptCatalogNativeLatency(){
   if(ctx.dnscryptCatalogBadge(st,'other').label!=='нет данных')throw Error('unmeasured catalog server marked available');
   st.dnscrypt_catalog_results='{}';if(ctx.dnscryptCatalogBadge(st,'google').label!=='нет данных')throw Error('unmeasured server shown as measured');
 }
+async function testDnscryptCatalogCardActions(){
+  const checks=[],state={busy:false,jobRunning:false},draft={items:[]},root={};
+  const ctx={state,window:{dmState:{dnscrypt_catalog_results:'{}'}},catName:x=>x,badge:(kind,label)=>({kind,label}),
+    E:(tag,attrs,children)=>({tag,attrs,children}),btn:(text,cls,click,attrs)=>({text,click,attrs}),
+    refreshDnscryptCatalogLatency:(r,id)=>checks.push(id),saveDnscryptPoolDraft:()=>{},renderCatalog:()=>{}};
+  vm.createContext(ctx);vm.runInContext(extract('function dnscryptCatalogBadge(st,id){','function updateDnscryptCatalogProgress(root,j){'),ctx);
+  vm.runInContext(extract('function dnscryptCatalogCard(d,root,draft,nativeOnly){','function resumeDnscryptCatalogLatency(root){'),ctx);
+  const d={id:'server',name:'Server',url:'sdns://abc',category:'clean'};
+  let actions=ctx.dnscryptCatalogCard(d,root,draft,false).children[4].children;
+  if(actions.length!==1||actions[0].text!=='Проверить')throw Error('untested server should offer a check');
+  actions[0].click();if(checks.join()!=='server')throw Error('single server check not routed');
+  ctx.window.dmState.dnscrypt_catalog_results='{"server":-1}';actions=ctx.dnscryptCatalogCard(d,root,draft,false).children[4].children;
+  if(actions.length!==1)throw Error('unavailable server can be added');
+  ctx.window.dmState.dnscrypt_catalog_results='{"server":42}';actions=ctx.dnscryptCatalogCard(d,root,draft,false).children[4].children;
+  if(actions.length!==2||actions[1].text!=='Добавить в набор')throw Error('available server cannot be added');
+  actions[1].click();if(draft.items.length!==1)throw Error('server not added');
+  ctx.window.dmState.dnscrypt_catalog_results='{"server":-1}';actions=ctx.dnscryptCatalogCard(d,root,draft,false).children[4].children;
+  if(actions[1].text!=='Убрать из набора')throw Error('selected unavailable server cannot be removed');
+  state.busy=true;state.dnscryptCatalogChecking=true;state.dnscryptCatalogId='server';actions=ctx.dnscryptCatalogCard(d,root,draft,false).children[4].children;
+  if(actions[0].text!=='Проверяю…'||!actions[0].attrs.disabled)throw Error('checking state missing');
+}
 async function testDnscryptCatalogProgress(){
   const state={};let renders=0;
   const ctx={state,renderCatalog:()=>{renders++;}};vm.createContext(ctx);
-  vm.runInContext(extract('function updateDnscryptCatalogProgress(root,j){','function refreshDnscryptCatalogLatency(root){'),ctx);
+  vm.runInContext(extract('function updateDnscryptCatalogProgress(root,j){','function refreshDnscryptCatalogLatency(root,id){'),ctx);
   ctx.updateDnscryptCatalogProgress({}, {progress_done:'6',progress_total:'116',progress_ok:'4',progress_fail:'1',phase:'Cloudflare, Google'});
   const p=state.dnscryptCatalogProgress;
   if(p.done!==6||p.total!==116||p.ok!==4||p.fail!==1||p.phase!=='Cloudflare, Google'||renders!==1)throw Error('DNSCrypt catalog progress incorrect');
@@ -570,8 +591,8 @@ async function testCatalogCardActions(){
   if(grouped[1].attrs.class!=='dm-catalog-family-panel'||grouped[1].children[1].children.join()!=='quad9_secure,quad9_ecs')throw Error('catalog family did not expose variants');
   ctx.renderCatalogBody(root,{servers:[{id:'ok'},{id:'bad'},{id:'running'},{id:'custom'}],total:4});
   const rows=nodes.filter(n=>n.attrs&&n.attrs.class==='dm-catalog-assign');if(rows.length!==4)throw Error('catalog controls missing');
-  for(const row of rows)if(!row.children[0].text.startsWith('Провер')||row.children[1].text!=='Выбрать')throw Error('catalog actions are not adjacent');
-  if(rows[0].children[1].attrs.disabled||!rows[1].children[1].attrs.disabled||!rows[2].children[1].attrs.disabled)throw Error('catalog availability guard incorrect');
+  for(const row of rows)if(!row.children[0].text.startsWith('Провер'))throw Error('catalog check action missing');
+  if(rows[0].children[1].text!=='Выбрать'||rows[0].children[1].attrs.disabled||rows[1].children.length!==1||rows[2].children.length!==1)throw Error('catalog availability guard incorrect');
   rows[0].children[0].click();rows[0].children[1].click();rows[3].children[2].click();if(checked.join()!=='ok'||selected.join()!=='ok'||removed.join()!=='custom')throw Error('catalog action routing incorrect');
 }
 async function testTestAgePresets(){
@@ -669,4 +690,4 @@ async function testVersionCheckBackground(){
   resolveJob({ok:true});await delay();
   if(ctx.state.versionCheck.running||refreshed!==1)throw Error('version result was not refreshed');
 }
-Promise.all([testCatalogPageStartAndStop(),testDnscryptAutoBadge(),testDnscryptCatalogProgress(),testDnscryptCatalogNativeLatency(),testVersionCheckBackground(),testEngineCardsBothDirections(),testEngineSwitchConfirmation(),testSystemDnsSuccessNotice(),testProfileNotice(),testForcedDnsControls(),testEncryptedDnsControls(),testBrowserDnsControls(),testCurrentDnsNotice(),testTestAgePresets(),testCatalogCardActions(),testCachePresets(),testTimePresetCards(),testSettingToggle(),testProfileApplyWithoutPopup(),testDnscryptDiagnosticDisplay(),testRunningProfileTimeout(),testTimePresetWhitespace(),testPoolSelectionRefresh(),testProfileClickBothEngines(),testDnscryptPoolPresentation(),testRegionalSelection(),testResumeCatalog(),testBackgroundStartTimeout(),testBackgroundUnknown(),testBackgroundNavigation(),testBackgroundFailure(),testDoHRemove(),testSingleError(),testBadgeWithoutDuration(),testPollNavigation(),testLongCatalogProgress(117),testLongCatalogProgress(5,true),testRouteCache(),testCachedReadOnly(),testInitialStatusDuringJob(),testAdditionalRouteCache(),testSequentialWarmup(),testWarmupResourceGuard(),testResumeCache(),testSettingConnectionLoss(),testRegionalConnectionLoss(),testProfileMissingJob(),testJobTransientError(),testUninstallUnresponsiveStatus(),testProfileStatus(),testSlotDraft(),testDeviceSave(),testCatalogError(),testFoldState(),testCustomDnsFeedback(),testBootstrapForm(),testLogScroll(),testHeaderCheckKind()]).catch(e=>{console.error(e);process.exitCode=1;});
+Promise.all([testDnscryptCatalogCardActions(),testCatalogPageStartAndStop(),testDnscryptAutoBadge(),testDnscryptCatalogProgress(),testDnscryptCatalogNativeLatency(),testVersionCheckBackground(),testEngineCardsBothDirections(),testEngineSwitchConfirmation(),testSystemDnsSuccessNotice(),testProfileNotice(),testForcedDnsControls(),testEncryptedDnsControls(),testBrowserDnsControls(),testCurrentDnsNotice(),testTestAgePresets(),testCatalogCardActions(),testCachePresets(),testTimePresetCards(),testSettingToggle(),testProfileApplyWithoutPopup(),testDnscryptDiagnosticDisplay(),testRunningProfileTimeout(),testTimePresetWhitespace(),testPoolSelectionRefresh(),testProfileClickBothEngines(),testDnscryptPoolPresentation(),testRegionalSelection(),testResumeCatalog(),testBackgroundStartTimeout(),testBackgroundUnknown(),testBackgroundNavigation(),testBackgroundFailure(),testDoHRemove(),testSingleError(),testBadgeWithoutDuration(),testPollNavigation(),testLongCatalogProgress(117),testLongCatalogProgress(5,true),testRouteCache(),testCachedReadOnly(),testInitialStatusDuringJob(),testAdditionalRouteCache(),testSequentialWarmup(),testWarmupResourceGuard(),testResumeCache(),testSettingConnectionLoss(),testRegionalConnectionLoss(),testProfileMissingJob(),testJobTransientError(),testUninstallUnresponsiveStatus(),testProfileStatus(),testSlotDraft(),testDeviceSave(),testCatalogError(),testFoldState(),testCustomDnsFeedback(),testBootstrapForm(),testLogScroll(),testHeaderCheckKind()]).catch(e=>{console.error(e);process.exitCode=1;});
