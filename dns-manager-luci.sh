@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.134"
+VERSION="2.135"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -1980,7 +1980,7 @@ DM_SOURCE_BASE="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/$_d
 COMPANION_URL="$DM_SOURCE_BASE/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.134"
+SELF_VERSION="2.135"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -7145,7 +7145,7 @@ function renderCatalogAssign(d,root){
   var ci=checkInfo(d.id,d);
   var checking=String(ci.status||'').toUpperCase()==='RUNNING';
   var unavailable=!checking&&!resolverAvailable(ci);
-  return E('div',{'class':'dm-catalog-assign'},[
+  return E('div',{'class':'dm-catalog-assign'},unavailable||checking?[]:[
     btn('Выбрать','cbi-button-neutral',function(){
       if(unavailable||checking)return;
       openCatalogSlotPicker(d,root);
@@ -8098,13 +8098,17 @@ function deleteCustomDns(d,root){
 }
 
 function dnscryptCatalogBadge(st,id){
-  var results={};try{results=JSON.parse(st.dnscrypt_catalog_results||'{}');}catch(e){}
-  var latency=results[String(id)];
+  var latency=dnscryptCatalogLatency(st,id);
   if(latency===-1)return badge('dm-bad','недоступен');
   if(latency===-2)return badge('dm-muted','не удалось проверить');
-  return latency!=null&&/^\d+$/.test(String(latency))
+  return latency!==null&&latency>=0
     ? badge('dm-ok',String(latency)+' мс · последний замер')
     : badge('dm-muted','нет данных');
+}
+function dnscryptCatalogLatency(st,id){
+  var results={};try{results=JSON.parse(st.dnscrypt_catalog_results||'{}');}catch(e){}
+  var latency=results[String(id)];
+  return latency!=null&&/^-?\d+$/.test(String(latency))?Number(latency):null;
 }
 function updateDnscryptCatalogProgress(root,j){
   state.dnscryptCatalogProgress={done:Number(j.progress_done)||0,total:Number(j.progress_total)||0,ok:Number(j.progress_ok)||0,fail:Number(j.progress_fail)||0,phase:String(j.phase||'')};
@@ -8115,18 +8119,26 @@ function stopCatalogCheck(root,crypt){
   state.catalogStopping=true;renderCatalog(root);
   (crypt?callDnscryptCancel():callTestPageCancel()).then(function(r){if(r&&r.ok===false)throw new Error(r.error||'Ошибка остановки');}).catch(function(err){state.catalogStopping=false;state.pageNotice.catalog=withRpcError('Не удалось остановить проверку.',err);}).then(function(){renderCatalog(root);});
 }
-function refreshDnscryptCatalogLatency(root){
+function refreshDnscryptCatalogLatency(root,id){
   if(state.busy||state.jobRunning)return;
-  state.catalogStopping=false;state.busy=true;state.dnscryptCatalogChecking=true;state.dnscryptCatalogProgress=null;state.pageNotice.catalog='';renderCatalog(root);
-  callDnscryptLatencies(catalogPageIds()).then(function(r){return waitDnsHealth(r,true,function(j){
+  state.catalogStopping=false;state.busy=true;state.dnscryptCatalogChecking=true;state.dnscryptCatalogId=id||'';state.dnscryptCatalogProgress=null;state.pageNotice.catalog='';renderCatalog(root);
+  callDnscryptLatencies(id||catalogPageIds()).then(function(r){return waitDnsHealth(r,true,function(j){
     updateDnscryptCatalogProgress(root,j);
   });}).then(function(result){
     if(!result.ok)throw new Error(result.output||'Не удалось получить замеры DNSCrypt.');
-    state.busy=false;state.dnscryptCatalogChecking=false;return refresh(root,true);
+    state.busy=false;state.dnscryptCatalogChecking=false;state.dnscryptCatalogId='';return refresh(root,true);
   }).catch(function(err){
-    state.busy=false;state.dnscryptCatalogChecking=false;
+    state.busy=false;state.dnscryptCatalogChecking=false;state.dnscryptCatalogId='';
     state.pageNotice.catalog=(err&&err.message)||'Не удалось получить замеры DNSCrypt.';renderCatalog(root);
   });
+}
+function dnscryptCatalogCard(d,root,draft,nativeOnly){
+  var index=draft.items.findIndex(function(x){return x.id===d.id;}),chosen=index>=0;
+  var checking=state.dnscryptCatalogChecking&&state.dnscryptCatalogId===d.id;
+  var latency=dnscryptCatalogLatency(window.dmState||{},d.id);
+  var actions=[btn(checking?'Проверяю…':'Проверить','cbi-button-neutral',function(){refreshDnscryptCatalogLatency(root,d.id);},{disabled:!!state.busy||!!state.jobRunning})];
+  if(chosen||(!checking&&latency!==null&&latency>=0))actions.push(btn(chosen?'Убрать из набора':'Добавить в набор','cbi-button-neutral'+(chosen?' active':''),function(){if(chosen)draft.items.splice(index,1);else draft.items.push({id:d.id,name:d.name||d.id});saveDnscryptPoolDraft(draft);renderCatalog(root);},{disabled:!!state.busy||!!state.jobRunning||(!chosen&&(draft.items.length>=6||(nativeOnly&&!/^sdns:\/\//.test(String(d.url||'')))))}));
+  return E('div',{'class':'dm-card dm-catalog-item'},[E('h4',{},d.name||d.id),E('div',{'class':'dm-meta'},catName(d.category)),E('div',{'class':'dm-catalog-address'},(/^sdns:\/\//.test(String(d.url||''))?'Протокол DNSCrypt':String(d.url||'').replace(/^https?:\/\//,''))),E('div',{'class':'dm-catalog-status'},[checking?badge('dm-muted','проверяю…'):dnscryptCatalogBadge(window.dmState||{},d.id)]),E('div',{'class':'dm-catalog-controls'},actions)]);
 }
 function resumeDnscryptCatalogLatency(root){
   if(state.dnscryptCatalogChecking||(window.dmState||{}).dnscrypt_engine!=='dnscrypt-proxy2')return;
@@ -8172,7 +8184,7 @@ function renderCatalog(root){
     CATEGORY.forEach(function(c){controls.appendChild(btn(c[1],c[0]===state.category?'active cbi-button':'cbi-button',function(){if(state.catalogLoading)return;state.category=c[0];state.offset=0;loadCatalog(root);},{disabled:!!state.catalogLoading,'aria-pressed':c[0]===state.category?'true':'false'}));});
     var draft=dnscryptPoolDraft(window.dmState||{});
     var nativeOnly=dnscryptOptions(window.dmState||{}).protocol==='native';
-    var rows=catalogGroups(data.servers||[],function(d){var index=draft.items.findIndex(function(x){return x.id===d.id;}),chosen=index>=0;return E('div',{'class':'dm-card dm-catalog-item'},[E('h4',{},d.name||d.id),E('div',{'class':'dm-meta'},catName(d.category)),E('div',{'class':'dm-catalog-address'},(/^sdns:\/\//.test(String(d.url||''))?'Протокол DNSCrypt':String(d.url||'').replace(/^https?:\/\//,''))),E('div',{'class':'dm-catalog-status'},[dnscryptCatalogBadge(window.dmState||{},d.id)]),btn(chosen?'Убрать из набора':'Добавить в набор','cbi-button-neutral'+(chosen?' active':''),function(){if(chosen)draft.items.splice(index,1);else draft.items.push({id:d.id,name:d.name||d.id});saveDnscryptPoolDraft(draft);renderCatalog(root);},{disabled:!!state.busy||!!state.jobRunning||(!chosen&&(draft.items.length>=6||(nativeOnly&&!/^sdns:\/\//.test(String(d.url||'')))))})]);},function(){renderCatalog(root);});
+    var rows=catalogGroups(data.servers||[],function(d){return dnscryptCatalogCard(d,root,draft,nativeOnly);},function(){renderCatalog(root);});
     e.appendChild(E('div',{'class':'dm-hint'},[E('span',{},'В наборе: '+draft.items.length+' из 6. '),E('a',{'href':L.url('admin/services/dns-manager/slots')},'Открыть набор и применить')]));
     e.appendChild(card('Каталог DNS',[E('div',{'class':'dm-hint'},nativeOnly&&state.catalogProtocol==='doh'?'Выбран режим только DNSCrypt: DoH можно просматривать, но добавить в набор нельзя.':'Выберите протокол и категорию. Проверка не меняет текущие DNS.'),protocols,controls,state.pageNotice.catalog?E('div',{'class':'dm-inline-msg error'},state.pageNotice.catalog):null,state.catalogLoading?E('div',{'class':'dm-hint'},'Загрузка каталога DNS…'):null,E('div',{'class':'dm-catalog'},rows),E('div',{'class':'dm-page'},[btn('←','cbi-button-neutral',function(){if(!state.catalogLoading&&state.offset>0){state.offset=Math.max(0,state.offset-state.limit);loadCatalog(root);}},{disabled:!!state.catalogLoading||state.offset<=0,'aria-label':'Предыдущая страница'}),E('span',{'class':'dm-mini'},(Math.floor(state.offset/state.limit)+1)+' / '+Math.max(1,Math.ceil((data.total||0)/state.limit))),btn('→','cbi-button-neutral',function(){if(!state.catalogLoading&&state.offset+state.limit<(data.total||0)){state.offset+=state.limit;loadCatalog(root);}},{disabled:!!state.catalogLoading||state.offset+state.limit>=(data.total||0),'aria-label':'Следующая страница'})])].filter(Boolean)));
     return;
