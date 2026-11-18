@@ -7,9 +7,10 @@ DNS Manager 4.50 и LuCI 3.0 — управление защищённым DNS �
 Подключитесь к роутеру по SSH:
 
 ```sh
-wget -O /tmp/dns-manager-luci.sh https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh && sh /tmp/dns-manager-luci.sh install
+wget -O /tmp/dns-manager-luci.sh https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh && DNS_MANAGER_SOURCE_REF=main sh /tmp/dns-manager-luci.sh install
 ```
 
+При первом переходе со старой версии запустите эту же команду установки поверх существующей. Она обновляет backend и LuCI, переносит проверку DNS на cron и не выбирает новый DNS-профиль. Старый обновлятор LuCI может не скачать новый установщик из-за ограничения размера файла, поэтому для первого перехода используйте SSH-команду выше.
 Поддерживаются пакетные менеджеры `apk` и `opkg`. После установки откройте **LuCI → Службы → DNS Manager**, выберите движок и настройте DNS. Профиль автоматически не применяется.
 
 ## Движки и серверы
