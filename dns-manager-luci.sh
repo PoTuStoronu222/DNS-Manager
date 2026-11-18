@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.130"
+VERSION="2.131"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -602,10 +602,10 @@ dnscrypt_select_profile() (
         fi
         while IFS='|' read -r native_id native_ms; do
             case "$native_ms" in ''|*[!0-9]*) continue;; esac
-            native_url=$(awk -F'|' -v id="$native_id" '$1==id {print $5; exit}' "$HELPERS/dns-manager-dnscrypt-catalog.conf")
+            native_url=$(awk -F'|' -v id="$native_id" '$1==id {print $5; exit}' "${NATIVE_CATALOG:-$HELPERS/dns-manager-dnscrypt-catalog.conf}")
             priority=0
             if [ "$goal" = dnssec ]; then
-                native_category=$(awk -F'|' -v id="$native_id" '$1==id {print $2; exit}' "$HELPERS/dns-manager-dnscrypt-catalog.conf")
+                native_category=$(awk -F'|' -v id="$native_id" '$1==id {print $2; exit}' "${NATIVE_CATALOG:-$HELPERS/dns-manager-dnscrypt-catalog.conf}")
                 case "$native_category" in clean|privacy) ;; *) continue;; esac
                 [ "$native_category" != privacy ] || priority=1
                 [ -n "$native_url" ] && dnscrypt_native_dnssec_probe "$native_url" || continue
@@ -870,7 +870,7 @@ printf 'Service did not become ready: %s\n' "$target" >&2
 exit 1
 EOF_DNSCRYPT_ASSET_8
     fetch_installer_source "$_dc_stage/backend-dnscrypt.sh" "$SOURCE_BASE/libexec/backend-dnscrypt.sh"
-    [ "$(sha256sum "$_dc_stage/backend-dnscrypt.sh" | cut -d' ' -f1)" = "e81af575f24163f454be9663417562a9740875a18dd68a64665b2cb02848930a" ] || { err "Файл backend DNSCrypt не прошёл проверку."; return 1; }
+    [ "$(sha256sum "$_dc_stage/backend-dnscrypt.sh" | cut -d' ' -f1)" = "652f24877b0a850af374d12631056aa9389036a619b33c45ae40488a0939b84e" ] || { err "Файл backend DNSCrypt не прошёл проверку."; return 1; }
     cat > "$_dc_stage/dns-manager-device-detach.sh" <<'EOF_DNSCRYPT_ASSET_10'
 #!/bin/sh
 # Detach the Manager-owned per-device redirect before stopping its listeners.
@@ -1118,6 +1118,9 @@ printf '%s\n' "$target" > "$tmp" && chmod 600 "$tmp" && mv -f "$tmp" "$engine_fi
 if [ -f /etc/dnsmasq.d/91-dns-manager-browser.conf ] && [ "$(sed -n '1p' /etc/dnsmasq.d/91-dns-manager-browser.conf 2>/dev/null)" = '# DNS Manager browser DNS hints' ]; then
     set_browser_dns_hint 1 || echo 'Не удалось восстановить подсказку браузерам; проверьте её в LuCI.'
 fi
+if [ "$target" = dnscrypt-proxy2 ]; then
+    (sh "$helpers/dns-manager-dnscrypt-catalog-update.sh" > /tmp/dns-manager-native-catalog.log 2>&1 < /dev/null &)
+fi
 echo 'Движок переключён. Выберите DNS-профиль.'
 success=1
 EOF_DNSCRYPT_ASSET_11
@@ -1201,8 +1204,62 @@ native_cryptostorm_nl|privacy|dnscrypt|CryptoStorm Netherlands (DNSCrypt)|sdns:/
 native_cryptostorm_berlin|privacy|dnscrypt|CryptoStorm Berlin (DNSCrypt)|sdns://AQcAAAAAAAAADTM3LjEyMC4yMTcuNzUgMTNyrVlWMsJBa4cvCY-FG925ZShMbL6aTxkJZDDbqVoeMi5kbnNjcnlwdC1jZXJ0LmNyeXB0b3N0b3JtLmlz|de|official
 EOF_DNSCRYPT_CATALOG
     mv -f "$_dc_stage/dns-manager-dnscrypt-catalog.conf" "$_dc_dest/dns-manager-dnscrypt-catalog.conf"
+    cat > "$_dc_stage/dns-manager-dnscrypt-source.sh" <<'EOF_DNSCRYPT_SOURCE'
+#!/bin/sh
+# Export the DNSCrypt project's signed resolver source as JSON without changing DNS.
+set -eu
+umask 077
+cache_dir=${DNS_MANAGER_SOURCE_CACHE:-/etc/dns-manager/config/dnscrypt-sources}
+binary=${DNS_MANAGER_DNSCRYPT_BIN:-/usr/sbin/dnscrypt-proxy}
+mkdir -p "$cache_dir"
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/dns-manager-source.XXXXXX")
+trap 'rm -f "$tmp/config.toml" "$tmp/list.json"; rmdir "$tmp" 2>/dev/null || :' EXIT
+trap 'exit 1' HUP INT TERM
+# The proxy downloads and verifies the project's minisign signature before parsing.
+case "$cache_dir" in *[!A-Za-z0-9_./-]*) echo 'Invalid source cache directory' >&2; exit 1;; esac
+cat > "$tmp/config.toml" <<EOF
+listen_addresses = ['127.0.0.1:55399']
+server_names = []
+[sources.'public-resolvers']
+urls = ['https://raw.githubusercontent.com/DNSCrypt/dnscrypt-resolvers/master/v3/public-resolvers.md', 'https://download.dnscrypt.info/resolvers-list/v3/public-resolvers.md']
+cache_file = '$cache_dir/public-resolvers.md'
+minisign_key = 'RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3'
+EOF
+"$binary" -config "$tmp/config.toml" -list-all -json > "$tmp/list.json"
+[ -s "$tmp/list.json" ] || { echo 'Empty DNSCrypt resolver list' >&2; exit 1; }
+cat "$tmp/list.json"
+EOF_DNSCRYPT_SOURCE
+    cat > "$_dc_stage/dns-manager-dnscrypt-catalog-update.sh" <<'EOF_DNSCRYPT_UPDATE'
+#!/bin/sh
+set -eu
+umask 077
+helpers=${DNS_MANAGER_DNSCRYPT_HELPERS:-/usr/lib/dns-manager-luci/dnscrypt}
+config=${DNS_MANAGER_DNSCRYPT_CONFIG_DIR:-/etc/dns-manager/config}
+mkdir -p "$config"
+tmp=$(mktemp -d "$config/.native-catalog.XXXXXX")
+trap 'rm -rf "$tmp"' EXIT
+trap 'exit 1' HUP INT TERM
+sh "$helpers/dns-manager-dnscrypt-source.sh" > "$tmp/source.json"
+ucode -e '''import { stdin } from "fs";
+let servers = json(stdin.read("all"));
+map(servers, s => {
+ if (s.proto == "DNSCrypt" && match(s.name, /^[A-Za-z0-9_.-]+$/) && match(s.stamp, /^sdns:\/\/[A-Za-z0-9_-]+$/))
+  print(s.name, "|", s.stamp, "|", s.ipv6 ? "IPv6" : "any", "\n");
+});''' < "$tmp/source.json" > "$tmp/records"
+[ -s "$tmp/records" ] || { echo "В подписанном списке нет серверов DNSCrypt" >&2; exit 1; }
+cat "$helpers/dns-manager-dnscrypt-catalog.conf" > "$tmp/catalog"
+while IFS='|' read -r name stamp region; do
+    hash=$(printf %s "$name" | sha256sum)
+    id=official_${hash%% *}
+    printf '%s|unknown|dnscrypt|%s|%s|%s|official\n' "$id" "$name" "$stamp" "$region"
+done < "$tmp/records" >> "$tmp/catalog"
+awk -F'|' '/^#/ {print; next} !seen[$5]++ && !ids[$1]++ {print}' "$tmp/catalog" > "$tmp/final"
+[ -s "$tmp/final" ] || exit 1
+chmod 600 "$tmp/final"
+mv -f "$tmp/final" "$config/dnscrypt-native-catalog.conf"
+EOF_DNSCRYPT_UPDATE
     sh -n "$_dc_stage/backend-dnscrypt.sh"
-    _dc_names="dns-manager-watchdog-common.sh dns-manager-doh-stamp.sh dns-manager-dnscrypt-config.sh dns-manager-dnscrypt-pool.sh dns-manager-dnscrypt-pool-apply.sh dns-manager-dnscrypt-profile.sh dns-manager-dnscrypt-profile-apply.sh dns-manager-dnscrypt-dnsmasq.sh dns-manager-engine-services.sh dns-manager-device-detach.sh dns-manager-engine-switch.sh dns-manager-dnscrypt.init"
+    _dc_names="dns-manager-dnscrypt-source.sh dns-manager-dnscrypt-catalog-update.sh dns-manager-watchdog-common.sh dns-manager-doh-stamp.sh dns-manager-dnscrypt-config.sh dns-manager-dnscrypt-pool.sh dns-manager-dnscrypt-pool-apply.sh dns-manager-dnscrypt-profile.sh dns-manager-dnscrypt-profile-apply.sh dns-manager-dnscrypt-dnsmasq.sh dns-manager-engine-services.sh dns-manager-device-detach.sh dns-manager-engine-switch.sh dns-manager-dnscrypt.init"
     for _dc_name in $_dc_names; do
         sh -n "$_dc_stage/$_dc_name"
     done
@@ -1218,6 +1275,7 @@ EOF_DNSCRYPT_CATALOG
         chmod 0755 /etc/init.d/dnscrypt-proxy.new
         mv -f /etc/init.d/dnscrypt-proxy.new /etc/init.d/dnscrypt-proxy
         /etc/init.d/dnscrypt-proxy enable
+        (sh "$_dc_dest/dns-manager-dnscrypt-catalog-update.sh" > /tmp/dns-manager-native-catalog.log 2>&1 < /dev/null &)
     fi
 )
 
@@ -1910,7 +1968,7 @@ DM_SOURCE_BASE="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/$_d
 COMPANION_URL="$DM_SOURCE_BASE/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.130"
+SELF_VERSION="2.131"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -5039,7 +5097,10 @@ catalog_json() {
     [ -s "$CATALOG_FILE" ] || [ -s "$CUSTOM_CATALOG_FILE" ] || { json_error "Каталог DNS недоступен"; return; }
     _filtered="$TMP_ROOT/catalog-filtered.$$"; _paged="$TMP_ROOT/catalog-page.$$"; : > "$_filtered"; : > "$_paged"
     _native_catalog=''
-    [ "$(uci -q get dns-manager.global.active_engine 2>/dev/null)" != dnscrypt-proxy2 ] || _native_catalog=/usr/lib/dns-manager-luci/dnscrypt/dns-manager-dnscrypt-catalog.conf
+    if [ "$(uci -q get dns-manager.global.active_engine 2>/dev/null)" = dnscrypt-proxy2 ]; then
+        _native_catalog=/etc/dns-manager/config/dnscrypt-native-catalog.conf
+        [ -r "$_native_catalog" ] || _native_catalog=/usr/lib/dns-manager-luci/dnscrypt/dns-manager-dnscrypt-catalog.conf
+    fi
     for _catalog_source in "$CATALOG_FILE" "$CUSTOM_CATALOG_FILE" "$_native_catalog"; do
         [ -r "$_catalog_source" ] || continue
         while IFS='|' read -r _id _cat _prof _name _url _region _status; do
@@ -5770,7 +5831,7 @@ function activeProfileLabel(st){
   }
   return profileName(st.profile);
 }
-function catName(c){ var x=CATEGORY.filter(function(v){return v[0]===c;})[0]; return x?x[1]:(c||'—'); }
+function catName(c){ if(c==='unknown')return 'DNSCrypt'; var x=CATEGORY.filter(function(v){return v[0]===c;})[0]; return x?x[1]:(c||'—'); }
 function ping(v){ return v && /^\d+$/.test(String(v)) ? v+' мс' : '—'; }
 function uptime(sec){
   var n=Number(sec);
