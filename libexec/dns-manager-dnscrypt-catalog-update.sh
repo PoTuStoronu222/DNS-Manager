@@ -12,7 +12,7 @@ ucode -e '''import { stdin } from "fs";
 let servers = json(stdin.read("all"));
 map(servers, s => {
  if (s.proto == "DNSCrypt" && !s.ipv6 && match(s.name, /^[A-Za-z0-9_.-]+$/) && match(s.stamp, /^sdns:\/\/[A-Za-z0-9_-]+$/))
-  print(s.name, "|", s.stamp, "|", s.nofilter ? "clean" : "unknown", "|", replace(split(s.description || "", "\n")[0], /\|/g, "/"), "\n");
+  print(s.name, "|", s.stamp, "|", s.nofilter ? "clean" : "unknown", "|", replace(replace(s.description || "", /\n/g, " "), /\|/g, "/"), "\n");
 });''' < "$tmp/source.json" > "$tmp/records"
 [ -s "$tmp/records" ] || { echo "В подписанном списке нет серверов DNSCrypt" >&2; exit 1; }
 cat "$helpers/dns-manager-dnscrypt-catalog.conf" > "$tmp/catalog"
@@ -148,7 +148,7 @@ while IFS='|' read -r name stamp category description; do
     }')
     # Only use an explicit country in the signed source description.
     region=$(printf '%s\n' "$description" | awk '
-        BEGIN {n=split("Austria:AT,Spain:ES,Belgium:BE,Germany:DE,Switzerland:CH,Czech Republic:CZ,Finland:FI,France:FR,Hungary:HU,England:GB,United Kingdom:GB,Italy:IT,Canada:CA,Moldova:MD,Netherlands:NL,Norway:NO,Poland:PL,Portugal:PT,Romania:RO,Serbia:RS,Singapore:SG,Sweden:SE,Australia:AU,Japan:JP,United States:US", a, ",")}
+        BEGIN {n=split("Austria:AT,Spain:ES,Belgium:BE,Germany:DE,Switzerland:CH,Czech Republic:CZ,Finland:FI,France:FR,Hungary:HU,England:GB,United Kingdom:GB,Italy:IT,Canada:CA,Moldova:MD,Netherlands:NL,Norway:NO,Poland:PL,Portugal:PT,Romania:RO,Serbia:RS,Singapore:SG,Sweden:SE,Australia:AU,Japan:JP,United States:US,USA:US,Mexico:MX,Canadian:CA,Swedish:SE", a, ",")}
         {for(i=1;i<=n;i++){split(a[i], b, ":"); if(index($0,b[1])) {print b[2]; exit}}}
     ')
     case "$name" in
@@ -163,9 +163,27 @@ while IFS='|' read -r name stamp category description; do
             fi
             ;;
         cs-*)
-            # The signed list gives CryptoStorm's city and country explicitly.
-            case "$description" in 'CryptoStorm '*,*' resolver.') display=${description%,*}; region=${region:-};; esac
+            # The signed list uses US state abbreviations for these locations.
+            case "$name" in cs-dc|cs-fl|cs-ga|cs-il|cs-la|cs-nv|cs-nyc|cs-ore|cs-sea|cs-tx) region=US;; esac
+            case "$description" in 'CryptoStorm '*resolver.*)
+                display=${description%% resolver.*}; display=${display%%,*} ;;
+            esac
             ;;
+        dct-de) display='DCT Berlin'; region=DE;;
+        dct-de2) display='DCT Karlsruhe'; region=DE;;
+        dct-fr) display='DCT Paris'; region=FR;;
+        deffer-dns.au) display='deffer-dns.au Sydney'; region=AU;;
+        dnscrypt.ca-ipv4) display='dnscrypt.ca'; region=CA;;
+        nwps.fi) display='NWPS.fi Helsinki'; region=FI;;
+        plan9dns-fl) display='Plan9 DNS Miami'; region=US;;
+        plan9dns-nj) display='Plan9 DNS New Jersey'; region=US;;
+        plan9dns-mx) display='Plan9 DNS Mexico City'; region=MX;;
+        saldns01-conoha-ipv4) display='salDNS Tokyo 01'; region=JP;;
+        saldns02-conoha-ipv4) display='salDNS Tokyo 02'; region=JP;;
+        saldns03-conoha-ipv4) display='salDNS Tokyo 03'; region=JP;;
+        scaleway-ams) display='Scaleway Amsterdam'; region=NL;;
+        searx-se-ipv4) display='searx.se'; region=SE;;
+        sfw.scaleway-fr) display='Scaleway Family'; region=FR;;
     esac
     if [ -n "$region" ]; then
         display=$(printf '%s\n' "$display" | awk -v region="$region" '{if (NF>1 && toupper($NF)==region) NF--; print}')
