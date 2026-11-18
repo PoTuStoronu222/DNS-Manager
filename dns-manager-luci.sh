@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion and full installer
-# Version: 2.114
+# Version: 2.115
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.114"
+VERSION="2.115"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -1775,7 +1775,7 @@ DM_SOURCE_BASE="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/$_d
 COMPANION_URL="$DM_SOURCE_BASE/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.114"
+SELF_VERSION="2.115"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -5774,12 +5774,6 @@ function hasAvailableUpdates(st){
 
 function injectStyle(root){
   var css = ''+
-  '.dm-native-tabs{display:flex!important;flex-wrap:wrap;gap:6px;padding:0!important;margin-bottom:14px!important;border:0!important;list-style:none}'+
-  '.dm-native-tabs>li{margin:0!important;border:0!important;background:transparent!important}'+
-  '.dm-native-tabs>li>a{display:block;padding:8px 12px!important;border:1px solid rgba(110,118,129,.25)!important;border-radius:9px!important;background:var(--background-color-medium,transparent)!important;color:inherit!important;text-decoration:none!important;font-weight:600;line-height:1.3}'+
-  '.dm-native-tabs>li>a:hover{border-color:rgba(46,160,67,.55)!important;background:rgba(46,160,67,.07)!important}'+
-  '.dm-native-tabs>li.active>a,.dm-native-tabs>li.cbi-tab>a,.dm-native-tabs>li>a[aria-current=page]{border-color:rgba(46,160,67,.7)!important;background:rgba(46,160,67,.12)!important;color:#2ea043!important}'+
-  '.dm-native-tabs>li>a:focus-visible{outline:2px solid #2ea043;outline-offset:2px}'+
   '.dm-wrap{display:flex;flex-direction:column;gap:12px;width:100%;max-width:none;box-sizing:border-box;padding-bottom:28px}'+
   '.dm-header{display:flex;align-items:center;gap:9px;flex-wrap:wrap}.dm-header h2{margin:0;font-size:13px;font-weight:600}.dm-header-by{font-size:13px;opacity:.60}.dm-header-actions{display:flex;gap:7px;margin-left:auto;flex-wrap:wrap}.dm-header-actions .cbi-button{padding:5px 11px;font-size:12.5px}'+
   '.dm-load-wrap{min-width:220px;max-width:430px;width:100%}.dm-load-line{display:flex;align-items:center;gap:9px}.dm-load-track{height:8px;flex:1;min-width:120px;border-radius:999px;background:rgba(110,118,129,.16);overflow:hidden}.dm-load-fill{height:100%;border-radius:999px;background:#1a7f37;transition:width .25s ease}.dm-load-value{min-width:38px;font-size:12px;font-weight:700;text-align:right}.dm-load-meta{font-size:10.5px;opacity:.58;margin-top:3px}'+
@@ -7904,11 +7898,6 @@ function renderJobIdle(root,st){
   var e=root.querySelector('#dm-job');if(!e)return;e.innerHTML='';
 }
 function render(root,st){
-  var tabLinks=document.querySelectorAll('a[href*="/dns-manager/"]');
-  Array.prototype.forEach.call(tabLinks,function(link){
-    var list=link.closest&&link.closest('ul');
-    if(list&&list.querySelectorAll('a[href*="/dns-manager/"]').length>=3)list.classList.add('dm-native-tabs');
-  });
   document.querySelectorAll('a[href*="/dns-manager/slots"]').forEach(function(link){
     link.textContent=st.dnscrypt_engine==='dnscrypt-proxy2'?'DNS-серверы':'DNS по слотам';
   });
