@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion and full installer
-# Version: 2.129
+# Version: 2.130
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.129"
+VERSION="2.130"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -1910,7 +1910,7 @@ DM_SOURCE_BASE="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/$_d
 COMPANION_URL="$DM_SOURCE_BASE/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.129"
+SELF_VERSION="2.130"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -5031,6 +5031,8 @@ $_system_log"
 
 catalog_json() {
     _category="$(jget category)"; _offset="$(jget offset)"; _limit="$(jget limit)"; _only_ok="$(jget only_ok)"
+    _protocol=all
+    case "$_category" in native:*) _protocol=native; _category=${_category#native:};; doh:*) _protocol=doh; _category=${_category#doh:};; esac
     case "$_offset" in ''|*[!0-9]*) _offset=0;; esac; case "$_limit" in ''|*[!0-9]*) _limit=18;; esac; [ "$_limit" -gt 48 ] && _limit=48; [ -n "$_category" ] || _category=all
     case "$_category" in all|bypass|security|privacy|adblock|family|clean|gaming|regional|custom) ;; *) json_error "Неверная категория DNS"; return;; esac
     case "$_only_ok" in 1|0) ;; *) _only_ok=0;; esac
@@ -5043,6 +5045,7 @@ catalog_json() {
         while IFS='|' read -r _id _cat _prof _name _url _region _status; do
             case "$_id" in ''|\#*) continue;; esac
             [ "$_category" = all ] || [ "$_cat" = "$_category" ] || continue
+            case "$_protocol:$_url" in native:sdns://*|doh:https://*|all:*) ;; *) continue;; esac
             if [ "$_only_ok" = 1 ]; then _r="$(result_for_id "$_id" 2>/dev/null || true)"; _st="$(printf '%s' "$_r" | awk -F'|' 'NF>=5 {print $5;exit}')"; [ "$_st" = OK ] || continue; fi
             printf '%s|%s|%s|%s|%s|%s|%s\n' "$_id" "$_cat" "$_prof" "$_name" "$_url" "$_region" "$_status" >> "$_filtered"
         done < "$_catalog_source"
@@ -5734,7 +5737,7 @@ var CATEGORY = [
   ['all','Все DNS'], ['bypass','Обход геоблока'], ['security','Защита от угроз'], ['privacy','Конфиденциальность'],
   ['adblock','Блокировка рекламы'], ['family','Семейная фильтрация'], ['clean','Без фильтрации'], ['gaming','Игровые DNS'], ['regional','Региональные DNS'], ['custom','Мои DNS']
 ];
-var state = { slotPickerCheck:null, slotPickerRequest:0, lanDevicesLoading:false, lanDevicesMessage:'', luciUpdateReloadTimer:null, hdpUpdating:false, managerUpdating:false, updatingAll:false, category:'all', offset:0, limit:18, catalogLoaded:false, catalogLoading:false, advanced:true, logLoaded:false, logLoading:false, busy:false, busySetting:'', settingMessage:'', settingMessageType:'', settingMessageKey:'', pageNotice:{}, statusError:'', activeTab:'dashboard', jobRunning:false, lastJob:null, checking:{}, fullTest:null, catalogProgress:null, profileProgress:null, profileOutput:'', versionCheck:null, lastAction:null, runtimeCpuLoad:null, runtimeMemoryTotal:null, runtimeMemoryAvailable:null, boardInfo:null, systemPollBusy:false, profileResumeStarted:false };
+var state = { slotPickerCheck:null, slotPickerRequest:0, lanDevicesLoading:false, lanDevicesMessage:'', luciUpdateReloadTimer:null, hdpUpdating:false, managerUpdating:false, updatingAll:false, category:'all', catalogProtocol:'native', offset:0, limit:18, catalogLoaded:false, catalogLoading:false, advanced:true, logLoaded:false, logLoading:false, busy:false, busySetting:'', settingMessage:'', settingMessageType:'', settingMessageKey:'', pageNotice:{}, statusError:'', activeTab:'dashboard', jobRunning:false, lastJob:null, checking:{}, fullTest:null, catalogProgress:null, profileProgress:null, profileOutput:'', versionCheck:null, lastAction:null, runtimeCpuLoad:null, runtimeMemoryTotal:null, runtimeMemoryAvailable:null, boardInfo:null, systemPollBusy:false, profileResumeStarted:false };
 
 function profileName(p){
   if(String(p||'').indexOf('options:')===0)p=String(p).split(':').slice(3).join(':');
@@ -7947,11 +7950,18 @@ function renderCatalog(root){
       progressItems.push(E('div',{'class':'dm-mini'},'Серверы проверяются группами до шести. Можно закрыть страницу — проверка продолжится.'));
       e.appendChild(card('Ход проверки',progressItems));
     }
+    var protocols=E('div',{'class':'dm-seg'});
+    [['native','DNSCrypt'],['doh','DNS over HTTPS']].forEach(function(p){
+      protocols.appendChild(btn(p[1],state.catalogProtocol===p[0]?'active cbi-button':'cbi-button',function(){
+        if(state.catalogLoading)return;state.catalogProtocol=p[0];state.offset=0;window.dmCatalog=null;loadCatalog(root);
+      },{disabled:!!state.catalogLoading,'aria-pressed':state.catalogProtocol===p[0]?'true':'false'}));
+    });
     CATEGORY.forEach(function(c){controls.appendChild(btn(c[1],c[0]===state.category?'active cbi-button':'cbi-button',function(){if(state.catalogLoading)return;state.category=c[0];state.offset=0;loadCatalog(root);},{disabled:!!state.catalogLoading,'aria-pressed':c[0]===state.category?'true':'false'}));});
     var draft=dnscryptPoolDraft(window.dmState||{});
-    var rows=catalogGroups(data.servers||[],function(d){var index=draft.items.findIndex(function(x){return x.id===d.id;}),chosen=index>=0;return E('div',{'class':'dm-card dm-catalog-item'},[E('h4',{},d.name||d.id),E('div',{'class':'dm-meta'},catName(d.category)),E('div',{'class':'dm-catalog-address'},(/^sdns:\/\//.test(String(d.url||''))?'Протокол DNSCrypt':String(d.url||'').replace(/^https?:\/\//,''))),E('div',{'class':'dm-catalog-status'},[dnscryptCatalogBadge(window.dmState||{},d.id)]),btn(chosen?'Убрать из набора':'Добавить в набор','cbi-button-neutral'+(chosen?' active':''),function(){if(chosen)draft.items.splice(index,1);else draft.items.push({id:d.id,name:d.name||d.id});saveDnscryptPoolDraft(draft);renderCatalog(root);},{disabled:!!state.busy||!!state.jobRunning||(!chosen&&draft.items.length>=6)})]);},function(){renderCatalog(root);});
+    var nativeOnly=dnscryptOptions(window.dmState||{}).protocol==='native';
+    var rows=catalogGroups(data.servers||[],function(d){var index=draft.items.findIndex(function(x){return x.id===d.id;}),chosen=index>=0;return E('div',{'class':'dm-card dm-catalog-item'},[E('h4',{},d.name||d.id),E('div',{'class':'dm-meta'},catName(d.category)),E('div',{'class':'dm-catalog-address'},(/^sdns:\/\//.test(String(d.url||''))?'Протокол DNSCrypt':String(d.url||'').replace(/^https?:\/\//,''))),E('div',{'class':'dm-catalog-status'},[dnscryptCatalogBadge(window.dmState||{},d.id)]),btn(chosen?'Убрать из набора':'Добавить в набор','cbi-button-neutral'+(chosen?' active':''),function(){if(chosen)draft.items.splice(index,1);else draft.items.push({id:d.id,name:d.name||d.id});saveDnscryptPoolDraft(draft);renderCatalog(root);},{disabled:!!state.busy||!!state.jobRunning||(!chosen&&(draft.items.length>=6||(nativeOnly&&!/^sdns:\/\//.test(String(d.url||'')))))})]);},function(){renderCatalog(root);});
     e.appendChild(E('div',{'class':'dm-hint'},[E('span',{},'В наборе: '+draft.items.length+' из 6. '),E('a',{'href':L.url('admin/services/dns-manager/slots')},'Открыть набор и применить')]));
-    e.appendChild(card('Каталог DNS',[E('div',{'class':'dm-hint'},'Проверка выполняется небольшими группами, не меняя текущие DNS.'),controls,state.pageNotice.catalog?E('div',{'class':'dm-inline-msg error'},state.pageNotice.catalog):null,state.catalogLoading?E('div',{'class':'dm-hint'},'Загрузка каталога DNS…'):null,E('div',{'class':'dm-catalog'},rows),E('div',{'class':'dm-page'},[btn('←','cbi-button-neutral',function(){if(!state.catalogLoading&&state.offset>0){state.offset=Math.max(0,state.offset-state.limit);loadCatalog(root);}},{disabled:!!state.catalogLoading||state.offset<=0,'aria-label':'Предыдущая страница'}),E('span',{'class':'dm-mini'},(Math.floor(state.offset/state.limit)+1)+' / '+Math.max(1,Math.ceil((data.total||0)/state.limit))),btn('→','cbi-button-neutral',function(){if(!state.catalogLoading&&state.offset+state.limit<(data.total||0)){state.offset+=state.limit;loadCatalog(root);}},{disabled:!!state.catalogLoading||state.offset+state.limit>=(data.total||0),'aria-label':'Следующая страница'})])].filter(Boolean)));
+    e.appendChild(card('Каталог DNS',[E('div',{'class':'dm-hint'},nativeOnly&&state.catalogProtocol==='doh'?'Выбран режим только DNSCrypt: DoH можно просматривать, но добавить в набор нельзя.':'Выберите протокол и категорию. Проверка не меняет текущие DNS.'),protocols,controls,state.pageNotice.catalog?E('div',{'class':'dm-inline-msg error'},state.pageNotice.catalog):null,state.catalogLoading?E('div',{'class':'dm-hint'},'Загрузка каталога DNS…'):null,E('div',{'class':'dm-catalog'},rows),E('div',{'class':'dm-page'},[btn('←','cbi-button-neutral',function(){if(!state.catalogLoading&&state.offset>0){state.offset=Math.max(0,state.offset-state.limit);loadCatalog(root);}},{disabled:!!state.catalogLoading||state.offset<=0,'aria-label':'Предыдущая страница'}),E('span',{'class':'dm-mini'},(Math.floor(state.offset/state.limit)+1)+' / '+Math.max(1,Math.ceil((data.total||0)/state.limit))),btn('→','cbi-button-neutral',function(){if(!state.catalogLoading&&state.offset+state.limit<(data.total||0)){state.offset+=state.limit;loadCatalog(root);}},{disabled:!!state.catalogLoading||state.offset+state.limit>=(data.total||0),'aria-label':'Следующая страница'})])].filter(Boolean)));
     return;
   }
   var ageCard=renderTestAgeCommon(root,window.dmState||{});
@@ -8151,12 +8161,12 @@ function routeStatusCall(){
     case 'network': return callNetworkStatus();
     case 'time': return callTimeStatus();
     case 'catalog':
-      var requestedCategory=state.category, requestedOffset=state.offset, requestedLimit=state.limit;
+      var requestedCategory=state.category, requestedProtocol=state.catalogProtocol, requestedOffset=state.offset, requestedLimit=state.limit;
       return Promise.all([
-        callCatalog(requestedCategory,requestedOffset,requestedLimit,0),
+        callCatalog((window.dmState||{}).dnscrypt_engine==='dnscrypt-proxy2'?requestedProtocol+':'+requestedCategory:requestedCategory,requestedOffset,requestedLimit,0),
         Promise.all([callDohStatus(),callPageMeta()])
       ]).then(function(v){
-        if(state.category!==requestedCategory||state.offset!==requestedOffset||state.limit!==requestedLimit)return Object.assign({},v[1][0]||{},v[1][1]||{});
+        if(state.category!==requestedCategory||state.catalogProtocol!==requestedProtocol||state.offset!==requestedOffset||state.limit!==requestedLimit)return Object.assign({},v[1][0]||{},v[1][1]||{});
         if(!v[0]||v[0].ok===false){
           window.dmCatalog=null;state.catalogLoaded=false;state.catalogLoadFailed=true;
           state.pageNotice.catalog=(v[0]&&v[0].error)||'Не удалось загрузить каталог DNS.';
@@ -9066,7 +9076,7 @@ function pollJob(root,job,meta,done){
       if(done)done(ns,j);
       else{
         if(meta&&meta.mode==='one'&&meta.origin==='catalog'&&window.dmCatalog){
-          return callCatalog(state.category,state.offset,state.limit,0).then(function(cd){
+          return callCatalog(catalogCategory(),state.offset,state.limit,0).then(function(cd){
             window.dmCatalog=cd||{};
             render(root,ns);
           }).catch(function(){render(root,ns);});
@@ -9243,10 +9253,13 @@ function removeLegacyCbiActions(){
   });
 }
 
+function catalogCategory(){
+  return (window.dmState||{}).dnscrypt_engine==='dnscrypt-proxy2'?state.catalogProtocol+':'+state.category:state.category;
+}
 function loadCatalog(root){
   if(state.catalogLoading)return Promise.resolve();
   state.catalogLoading=true;renderCatalog(root);
-  return callCatalog(state.category,state.offset,state.limit,0).then(function(d){
+  return callCatalog(catalogCategory(),state.offset,state.limit,0).then(function(d){
     if(!d||d.ok===false)throw new Error((d&&d.error)||'Каталог DNS недоступен.');
     if(state.catalogLoadFailed)state.pageNotice.catalog='';state.catalogLoadFailed=false;
     state.catalogLoading=false;state.catalogLoaded=true;window.dmCatalog=d||{};renderCatalog(root);renderCatalogBody(root,window.dmCatalog);
