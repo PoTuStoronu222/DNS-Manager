@@ -767,7 +767,7 @@ diagnostic_start() {
         ids=$(jsonfilter -s "$input" -e '@.ids')
         case "$ids" in ''|*[!A-Za-z0-9_,-]*) error 'Выберите серверы на странице каталога'; return;; esac
         printf '%s\n' "$ids" | tr ',' '\n' | awk 'NF && !seen[$0]++ {print}' > "$JOB_DIR/health/ids"
-        [ "$(wc -l < "$JOB_DIR/health/ids")" -le 48 ] || { error 'Слишком много серверов'; return; }
+        [ "$(wc -l < "$JOB_DIR/health/ids")" -le 512 ] || { error 'Слишком много серверов'; return; }
     fi
     printf 'status=running\nstarted=%s\nmode=update\n' "$(date +%s)" > "$JOB_DIR/health/state"
     [ "$method" != dnscrypt_latencies ] || printf 'name=dnscrypt_catalog\n' >> "$JOB_DIR/health/state"
