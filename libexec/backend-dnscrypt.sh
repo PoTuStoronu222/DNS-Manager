@@ -466,6 +466,12 @@ dnscrypt_catalog_snapshot() (
     if [ -r "$native_catalog" ]; then
         awk -F'|' -v scope="$probe_scope" 'NF >= 5 && $1 !~ /^#/ && $1 ~ /^[A-Za-z0-9_-]+$/ && $5 ~ /^sdns:\/\// && (scope == "all" || scope == "native" || (scope == "dnssec" && ($2 == "clean" || $2 == "privacy")) || $2 == scope) {print $1 "|" $5 "|" $4}' "$native_catalog" >> "$dir/source"
     fi
+    if [ "$probe_scope" = all ] && [ -s "$JOB_DIR/health/ids" ]; then
+        for list in doh source; do
+            awk -F'|' 'NR==FNR { wanted[$1]=1; next } $1 in wanted' "$JOB_DIR/health/ids" "$dir/$list" > "$dir/filtered"
+            mv "$dir/filtered" "$dir/$list"
+        done
+    fi
     doh_total=$(wc -l < "$dir/doh" | tr -d ' ')
     native_total=$(wc -l < "$dir/source" | tr -d ' ')
     total=$((doh_total + native_total))
@@ -477,6 +483,7 @@ dnscrypt_catalog_snapshot() (
         # Reuse the same direct DoH check as HTTPS DNS Proxy, in bounded groups.
         printf '\022\064\001\000\000\001\000\000\000\000\000\000\007example\003com\000\000\001\000\001' > "$TMP_DIR/dns_query.bin" || exit 1
         while [ "$offset" -le "$doh_total" ]; do
+            [ ! -f "$JOB_DIR/health/cancel" ] || break
             end=$((offset + 3))
             sed -n "${offset},${end}p" "$dir/doh" > "$dir/group"
             names=$(awk -F'|' '{if (NR>1) printf ", "; printf "%s", $3}' "$dir/group")
@@ -508,6 +515,7 @@ dnscrypt_catalog_snapshot() (
     fi
     offset=1
     while [ "$offset" -le "$native_total" ]; do
+        [ "$probe_scope" != all ] || [ ! -f "$JOB_DIR/health/cancel" ] || break
         end=$((offset + 5))
         sed -n "${offset},${end}p" "$dir/source" > "$dir/group"
         names=$(awk -F'|' '{if (NR>1) printf ", "; printf "%s", ($3 != "" ? $3 : $1)}' "$dir/group")
@@ -541,12 +549,14 @@ dnscrypt_catalog_snapshot() (
             probe=$!
             tries=0
             while kill -0 "$probe" 2>/dev/null && [ "$tries" -lt 45 ]; do
+                [ "$probe_scope" != all ] || [ ! -f "$JOB_DIR/health/cancel" ] || break
                 grep -q 'Server with the lowest initial latency:' "$dir/probe.log" && break
                 # With no live servers dnscrypt-proxy never prints the sorted summary.
                 if awk -v expected="$count" '/\[manager-[0-9]+\] (OK .*rtt: [0-9]+ms|TIMEOUT)/ { for (i=1; i<=NF; i++) if ($i ~ /^\[manager-[0-9]+\]$/) done[$i]=1 } END { for (i in done) n++; exit !(n >= expected) }' "$dir/probe.log"; then break; fi
                 sleep 1; tries=$((tries + 1))
             done
             kill "$probe" 2>/dev/null || :; wait "$probe" 2>/dev/null || :; probe=''
+            if [ "$probe_scope" = all ] && [ -f "$JOB_DIR/health/cancel" ]; then break; fi
             if grep -Eqi 'address already in use|permission denied|failed to listen' "$dir/probe.log" "$dir/process.log"; then exit 1; fi
             if [ ! -s "$dir/probe.log" ]; then
                 echo 'DNSCrypt не создал журнал проверки серверов.' >&2
@@ -597,6 +607,16 @@ dnscrypt_catalog_snapshot() (
     [ "$native_hash" = "$(sha256sum "$NATIVE_CATALOG" 2>/dev/null || :)" ] || exit 1
     if [ "$probe_scope" != all ]; then cat "$dir/results"; exit 0; fi
     . /usr/share/libubox/jshn.sh
+    if [ -s "$JOB_DIR/health/ids" ] && [ -r "$RUNTIME_DIR/dnscrypt-catalog-latencies.json" ] && [ -r "$RUNTIME_DIR/dnscrypt-catalog-checksum" ] && [ "$(cat "$RUNTIME_DIR/dnscrypt-catalog-checksum")" = "$(printf '%s\n%s\n%s\n' "$catalog_hash" "$custom_hash" "$native_hash")" ]; then
+        json_load "$(cat "$RUNTIME_DIR/dnscrypt-catalog-latencies.json")" && json_get_keys old_ids
+        for id in $old_ids; do
+            case "$id" in *[!A-Za-z0-9_-]*|'') continue;; esac
+            json_get_var latency "$id"
+            case "$latency" in -[0-9]*|[0-9]*) printf '%s|%s\n' "$id" "$latency";; esac
+        done > "$dir/old-results"
+        cat "$dir/results" >> "$dir/old-results"
+        awk -F'|' '{ values[$1]=$2 } END { for (id in values) print id "|" values[id] }' "$dir/old-results" > "$dir/results"
+    fi
     json_init
     while IFS='|' read -r id latency; do json_add_int "$id" "$latency"; done < "$dir/results"
     tmp="$RUNTIME_DIR/dnscrypt-catalog-latencies.$$"
@@ -720,12 +740,13 @@ diagnostic_worker() {
     jsonfilter -s "$reply" -e '@.output' > "$JOB_DIR/health/output" 2>/dev/null || true
     [ -s "$JOB_DIR/health/output" ] || jsonfilter -s "$reply" -e '@.error' > "$JOB_DIR/health/output" 2>/dev/null || true
     if [ "$result" = true ] || [ "$result" = 1 ]; then result=ok; else result=fail; fi
+    [ "$method" != dnscrypt_latencies ] || [ ! -f "$JOB_DIR/health/cancel" ] || printf 'cancelled=1\n' >> "$JOB_DIR/health/state"
     printf 'result=%s\nstatus=done\nfinished=%s\n' "$result" "$(date +%s)" >> "$JOB_DIR/health/state"
 }
 
 diagnostic_start() {
     method=$1
-    cat >/dev/null
+    input=$(cat)
     mkdir -p "$JOB_DIR/health" "$RUNTIME_DIR" || { error 'Не удалось подготовить проверку DNS'; return; }
     exec 9>"$RUNTIME_DIR/health-start.lock" || { error 'Не удалось подготовить проверку DNS'; return; }
     flock -n 9 || { error 'Проверка DNS уже запускается'; return; }
@@ -735,6 +756,13 @@ diagnostic_start() {
         error 'Проверка DNS уже выполняется'; return
     fi
     ubus -t 5 call service delete "{\"name\":\"$service\"}" >/dev/null 2>&1 || true
+    rm -f "$JOB_DIR/health/cancel" "$JOB_DIR/health/ids"
+    if [ "$method" = dnscrypt_latencies ]; then
+        ids=$(jsonfilter -s "$input" -e '@.ids')
+        case "$ids" in ''|*[!A-Za-z0-9_,-]*) error 'Выберите серверы на странице каталога'; return;; esac
+        printf '%s\n' "$ids" | tr ',' '\n' | awk 'NF && !seen[$0]++ {print}' > "$JOB_DIR/health/ids"
+        [ "$(wc -l < "$JOB_DIR/health/ids")" -le 48 ] || { error 'Слишком много серверов'; return; }
+    fi
     printf 'status=running\nstarted=%s\nmode=update\n' "$(date +%s)" > "$JOB_DIR/health/state"
     [ "$method" != dnscrypt_latencies ] || printf 'name=dnscrypt_catalog\n' >> "$JOB_DIR/health/state"
     : > "$JOB_DIR/health/output"
@@ -744,6 +772,14 @@ diagnostic_start() {
         error 'Не удалось запустить проверку DNS'; return
     fi
     printf '{"ok":true,"job":"health"}\n'
+}
+
+diagnostic_cancel() {
+    cat >/dev/null
+    if [ "$(sed -n 's/^name=//p' "$JOB_DIR/health/state" 2>/dev/null | tail -n1)" = dnscrypt_catalog ] && [ "$(sed -n 's/^status=//p' "$JOB_DIR/health/state" 2>/dev/null | tail -n1)" = running ]; then
+        : > "$JOB_DIR/health/cancel"
+    fi
+    printf '{"ok":true}\n'
 }
 
 # The regional routes are dnsmasq rules; the encrypted pool remains unchanged.
@@ -1029,6 +1065,7 @@ case "${1:-}" in
             set_setting) dnscrypt_setting_start ;;
             switch_engine) switch_start ;;
             dnscrypt_test|dnscrypt_latencies|system_dns_test) diagnostic_start "$2" ;;
+            dnscrypt_cancel) diagnostic_cancel ;;
             dnscrypt_log) diagnostic "$2" ;;
             status|doh_status|network_status|time_status|log) status_extra "$2" ;;
             runtime|page_meta|catalog|lan_devices|job|job_status|multi|set_ntp|update_check|update_background|uninstall|uninstall_status)

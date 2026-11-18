@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.133"
+VERSION="2.134"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -870,7 +870,7 @@ printf 'Service did not become ready: %s\n' "$target" >&2
 exit 1
 EOF_DNSCRYPT_ASSET_8
     fetch_installer_source "$_dc_stage/backend-dnscrypt.sh" "$SOURCE_BASE/libexec/backend-dnscrypt.sh"
-    [ "$(sha256sum "$_dc_stage/backend-dnscrypt.sh" | cut -d' ' -f1)" = "46755317abdc8e0d7d68892c66b02122c87106fd16893a54051b0f805c9b277e" ] || { err "Файл backend DNSCrypt не прошёл проверку."; return 1; }
+    [ "$(sha256sum "$_dc_stage/backend-dnscrypt.sh" | cut -d' ' -f1)" = "a3de81c7cfa2eff25a3279451a3333f9ab5e713e2b77986d48dded7e8f2bf16b" ] || { err "Файл backend DNSCrypt не прошёл проверку."; return 1; }
     cat > "$_dc_stage/dns-manager-device-detach.sh" <<'EOF_DNSCRYPT_ASSET_10'
 #!/bin/sh
 # Detach the Manager-owned per-device redirect before stopping its listeners.
@@ -1936,7 +1936,7 @@ EOF_MENU
     },
     "write": {
       "ubus": {
-        "dns_manager": [ "dnscrypt_latencies", "switch_engine", "set_profile", "set_regional", "reset_dns", "set_slot", "set_slot_domains", "set_device_dns", "set_cache", "add_custom_dns", "delete_custom_dns", "set_setting", "set_bootstrap", "set_watchdog_setting", "set_watchdog_settings", "set_ntp", "set_test_age", "test_all", "test_current", "test_one", "test_system", "test_combined", "update", "update_manager", "update_hdp", "update_catalog", "update_all", "update_background", "uninstall" ]
+        "dns_manager": [ "dnscrypt_latencies", "dnscrypt_cancel", "test_page", "test_page_cancel", "switch_engine", "set_profile", "set_regional", "reset_dns", "set_slot", "set_slot_domains", "set_device_dns", "set_cache", "add_custom_dns", "delete_custom_dns", "set_setting", "set_bootstrap", "set_watchdog_setting", "set_watchdog_settings", "set_ntp", "set_test_age", "test_all", "test_current", "test_one", "test_system", "test_combined", "update", "update_manager", "update_hdp", "update_catalog", "update_all", "update_background", "uninstall" ]
       }
     }
   }
@@ -1980,7 +1980,7 @@ DM_SOURCE_BASE="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/$_d
 COMPANION_URL="$DM_SOURCE_BASE/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.133"
+SELF_VERSION="2.134"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -4371,6 +4371,7 @@ new_job_id() {
         profile) printf 'profile' ;;
         regional) printf 'regional' ;;
         test_all) printf 'test_all' ;;
+        test_page) printf 'test_page' ;;
         test_current) printf 'test_current' ;;
         test_one) printf 'test_one' ;;
         test_system) printf 'test_system' ;;
@@ -4770,13 +4771,14 @@ job_start_profile() {
 # Catalog tests are launched by procd, not by the rpcd request process.
 job_start_test() {
     DNSMGR_TEST_ID="$1"; DNSMGR_TEST_ARG="${2:-}"
-    case "$DNSMGR_TEST_ID" in test_all|test_current|test_system) ;; test_one) case "$DNSMGR_TEST_ARG" in ''|*[!A-Za-z0-9_-]*) json_error "Неверный ID DNS"; return;; esac ;; *) json_error "Неверная проверка"; return;; esac
+    case "$DNSMGR_TEST_ID" in test_all|test_current|test_system) ;; test_page) case "$DNSMGR_TEST_ARG" in ''|*[!A-Za-z0-9_,-]*) json_error "Неверный список DNS"; return;; esac ;; test_one) case "$DNSMGR_TEST_ARG" in ''|*[!A-Za-z0-9_-]*) json_error "Неверный ID DNS"; return;; esac ;; *) json_error "Неверная проверка"; return;; esac
     acquire_runtime_lock "$RUNTIME_DIR/$DNSMGR_TEST_ID-start.lock" || { json_error "Проверка уже запускается"; return; }
     if job_active "$DNSMGR_TEST_ID" && job_process_alive "$JOB_DIR/$DNSMGR_TEST_ID"; then release_runtime_lock "$RUNTIME_DIR/$DNSMGR_TEST_ID-start.lock"; json_error "Проверка уже выполняется"; return; fi
     bg_service_idle "$DNSMGR_TEST_ID" || { release_runtime_lock "$RUNTIME_DIR/$DNSMGR_TEST_ID-start.lock"; return; }
     job_prepare "$DNSMGR_TEST_ID" || { release_runtime_lock "$RUNTIME_DIR/$DNSMGR_TEST_ID-start.lock"; json_error "Не удалось подготовить проверку"; return; }
-    case "$DNSMGR_TEST_ID" in test_all) DNSMGR_TEST_MODE=all;; test_current) DNSMGR_TEST_MODE=current;; test_one) DNSMGR_TEST_MODE=one;; test_system) DNSMGR_TEST_MODE=system;; esac
+    case "$DNSMGR_TEST_ID" in test_all|test_page) DNSMGR_TEST_MODE=all;; test_current) DNSMGR_TEST_MODE=current;; test_one) DNSMGR_TEST_MODE=one;; test_system) DNSMGR_TEST_MODE=system;; esac
     printf 'status=running\nstarted=%s\nmode=%s\n' "$(date +%s)" "$DNSMGR_TEST_MODE" > "$JOB_DIR/$DNSMGR_TEST_ID/state"
+    [ "$DNSMGR_TEST_ID" != test_page ] || rm -f "$JOB_DIR/test_page/cancel"
     [ "$DNSMGR_TEST_ID" != test_one ] || job_write "$DNSMGR_TEST_ID" dns_id "$DNSMGR_TEST_ARG"
     if run_bg_job "$DNSMGR_TEST_ID" test "$DNSMGR_TEST_ARG"; then printf '{"ok":true,"job":'; json_quote "$DNSMGR_TEST_ID"; printf '}'; fi
     release_runtime_lock "$RUNTIME_DIR/$DNSMGR_TEST_ID-start.lock"
@@ -4791,6 +4793,7 @@ test_worker() {
     case "$DM_TEST_ID" in
         test_all) job_execute_test_all >/dev/null ;;
         test_current) job_execute_test_current >/dev/null ;;
+        test_page) job_execute_test_page "$DM_TEST_ARG" >/dev/null ;;
         test_system) job_execute_test_system >/dev/null ;;
         test_one) job_execute_test_one "$DM_TEST_ARG" >/dev/null ;;
         *) exit 1 ;;
@@ -4964,6 +4967,133 @@ job_execute_test_current() {
     job_record_pid "$_jid" "$_job_pid"
     printf '{"ok":true,"job":'; json_quote "$_jid"; printf '}'
 }
+job_execute_test_page() {
+    _page_ids="$1"
+    _jid="$(new_job_id test_page)"
+    printf 'status=running\nstarted=%s\nmode=current\n' "$(date +%s)" > "$JOB_DIR/$_jid/state"
+    (
+        exec >>"$JOB_DIR/$_jid/output" 2>&1
+        if ! load_manager; then
+            job_write "$_jid" status failed; job_write "$_jid" result fail; job_write "$_jid" finished "$(date +%s)"; exit 1
+        fi
+        if ! acquire_test_lock; then
+            job_write "$_jid" status failed; job_write "$_jid" result fail; job_write "$_jid" finished "$(date +%s)"; exit 1
+        fi
+
+        _ids="$TMP_ROOT/current-dns-ids.$$"
+        _results="$TMP_ROOT/current-test-results.$$"
+        _merged="$TMP_ROOT/current-merged.$$"
+        : > "$_ids"
+        : > "$_results"
+        rm -f "$TMP_DIR/t."* 2>/dev/null || true
+
+        _total=0
+        _done=0
+        _fail=0
+        printf '%s\n' "$_page_ids" | tr ',' '\n' | awk 'NF && !seen[$0]++ {print}' > "$_ids"
+        _total=$(wc -l < "$_ids" | tr -d ' ')
+        [ "$_total" -le 48 ] || _total=0
+        job_write "$_jid" progress_total "$_total"
+
+        if [ "$_total" -eq 0 ]; then
+            release_test_lock
+            rm -f "$_ids" "$_results" "$_merged"
+            job_write "$_jid" status failed
+            job_write "$_jid" result fail
+            job_write "$_jid" finished "$(date +%s)"
+            exit 1
+        fi
+
+        # test_one_dns workers share this immutable packet. Create it here
+        # before forking, exactly as the full catalog test does.
+        q="$TMP_DIR/dns_query.bin"
+        if ! printf '\022\064\001\000\000\001\000\000\000\000\000\000\007example\003com\000\000\001\000\001' > "$q" 2>/dev/null; then
+            rm -f "$q" "$_ids" "$_results" "$_merged" 2>/dev/null || true
+            release_test_lock
+            job_write "$_jid" status failed
+            job_write "$_jid" result fail
+            job_write "$_jid" finished "$(date +%s)"
+            job_write "$_jid" error "Не удалось создать общий DNS-тестовый пакет."
+            exit 1
+        fi
+
+        _batch="${TEST_BATCH:-${TEST_BATCH_DEFAULT:-4}}"
+        case "$_batch" in ''|*[!0-9]*) _batch=4;; esac
+        [ "$_batch" -ge 1 ] 2>/dev/null || _batch=1
+        [ "$_batch" -le 4 ] 2>/dev/null || _batch=4
+
+        _batch_pids=""
+        _batch_ids=""
+        _batch_n=0
+        collect_current_batch() {
+            for _wp in $_batch_pids; do
+                wait "$_wp" 2>/dev/null || true
+            done
+            for _cid in $_batch_ids; do
+                _rfile="$TMP_DIR/t.$_cid"
+                if [ -s "$_rfile" ]; then
+                    cat "$_rfile" >> "$_results" 2>/dev/null || true
+                    grep -q '|OK$' "$_rfile" 2>/dev/null || _fail=$((_fail+1))
+                else
+                    printf '%s|%s|%s|-1|TEST_NO_RESULT\n' "$_cid" "$(dns_cat "$_cid" 2>/dev/null || printf unknown)" "$(dns_name "$_cid" 2>/dev/null || printf "%s" "$_cid")" >> "$_results"
+                    _fail=$((_fail+1))
+                fi
+                _done=$((_done+1))
+            done
+            job_write "$_jid" progress_done "$_done"
+            job_write "$_jid" progress_ok "$((_done-_fail))"
+            job_write "$_jid" progress_fail "$_fail"
+            printf "Проверка выбранных DNS: %s из %s | ошибки %s\n" "$_done" "$_total" "$_fail"
+            _batch_pids=""
+            _batch_ids=""
+            _batch_n=0
+        }
+
+        while IFS= read -r _id; do
+            [ ! -f "$JOB_DIR/test_page/cancel" ] || break
+            [ -n "$_id" ] || continue
+            printf "Проверяю DoH: %s\n" "$_id"
+            (trap - EXIT; test_one_dns "$_id") &
+            _batch_pids="$_batch_pids $!"
+            _batch_ids="$_batch_ids $_id"
+            _batch_n=$((_batch_n+1))
+            if [ "$_batch_n" -ge "$_batch" ]; then
+                collect_current_batch
+            fi
+        done < "$_ids"
+        [ -n "$_batch_pids" ] && collect_current_batch
+
+        : > "$_merged"
+        if [ -s "$TEST_RESULTS" ]; then
+            awk -F"|" -v ids_file="$_results" 'BEGIN { while ((getline x < ids_file)>0) { split(x, fields, "|"); ids[fields[1]]=1 } } !($1 in ids) { print }' "$TEST_RESULTS" > "$_merged" 2>/dev/null || true
+        fi
+        [ -s "$_results" ] && cat "$_results" >> "$_merged"
+        mv -f "$_merged" "$TEST_RESULTS" 2>/dev/null || {
+            release_test_lock
+            rm -f "$_ids" "$_results" "$_merged"
+            job_write "$_jid" status failed
+            job_write "$_jid" result fail
+            job_write "$_jid" finished "$(date +%s)"
+            exit 1
+        }
+
+        _stamp="$(date +%s)"
+        while IFS="|" read -r _id _rest; do
+            [ -n "$_id" ] && set_check_stamp "$_id" "$_stamp"
+        done < "$_results"
+
+        rm -f "$_ids" "$_results" "$_merged" "$TMP_DIR/t."* "$TMP_DIR/dns_query.bin" 2>/dev/null || true
+        release_test_lock
+
+        [ ! -f "$JOB_DIR/test_page/cancel" ] || job_write "$_jid" cancelled 1
+        job_write "$_jid" status done
+        job_write "$_jid" result ok
+        job_write "$_jid" finished "$_stamp"
+    ) &
+    _job_pid=$!
+    job_record_pid "$_jid" "$_job_pid"
+    printf '{"ok":true,"job":'; json_quote "$_jid"; printf '}'
+}
 job_execute_test_one() {
     # Keep the requested DNS ID separate from helpers such as job_active(),
     # job_prepare() and job_write(), which reuse the global variable _id.
@@ -5056,6 +5186,7 @@ job_json() {
     printf ',"progress_total":'; json_quote "$(sed -n 's/^progress_total=//p' "$_d/state" 2>/dev/null | tail -n1)"
     printf ',"progress_ok":'; json_quote "$(sed -n 's/^progress_ok=//p' "$_d/state" 2>/dev/null | tail -n1)"
     printf ',"progress_fail":'; json_quote "$(sed -n 's/^progress_fail=//p' "$_d/state" 2>/dev/null | tail -n1)"
+    printf ',"cancelled":'; json_quote "$(sed -n 's/^cancelled=//p' "$_d/state" 2>/dev/null | tail -n1)"
     _job_mode="$(sed -n 's/^mode=//p' "$_d/state" 2>/dev/null | head -n1)"
     _job_dns_id="$(sed -n 's/^dns_id=//p' "$_d/state" 2>/dev/null | head -n1)"
     if [ "$_job_mode" = "one" ] && [ -n "$_job_dns_id" ]; then
@@ -5655,14 +5786,14 @@ multi_json() {
     done
     printf '}}'
 }
-test_json() { case "${RPC_METHOD:-}" in test_all) job_start_test_all;; test_current) job_start_test_current;; test_one) job_start_test_one "$(jget id)";; test_system) job_start_test_system;; *) json_error "Недопустимый метод проверки";; esac; }
+test_json() { case "${RPC_METHOD:-}" in test_all) job_start_test_all;; test_page) job_start_test test_page "$(jget ids)";; test_current) job_start_test_current;; test_one) job_start_test_one "$(jget id)";; test_system) job_start_test_system;; *) json_error "Недопустимый метод проверки";; esac; }
 
 case "${1:-}" in
     worker) background_worker "$2";;
     mutation_worker) mutation_worker "$2" "$3" "$4";;
     test_worker) test_worker "$2" "$3";;
     list)
-        printf '{"status":{},"runtime":{},"doh_status":{},"network_status":{},"lan_devices":{},"set_device_dns":{"mac":"String","slots":"String"},"set_cache":{"total":0,"ttl":0},"time_status":{},"page_meta":{},"catalog":{"category":"String","offset":0,"limit":0,"only_ok":0},"update_check":{"force":0},"update":{},"update_manager":{},"update_hdp":{},"update_catalog":{},"update_all":{},"update_background":{},"test_combined":{},"switch_engine":{"target_engine":"String"},"dnscrypt_test":{},"dnscrypt_latencies":{},"dnscrypt_log":{},"system_dns_test":{},"set_profile":{"profile":"String"},"set_regional":{"enabled":0},"reset_dns":{"mode":"String"},"uninstall":{},"uninstall_status":{},"set_slot":{"slot":"String","id":"String","expected":"String"},"set_slot_domains":{"slot":"String","domains":"String"},"add_custom_dns":{"name":"String","url":"String"},"delete_custom_dns":{"id":"String"},"set_setting":{"name":"String","enabled":0},"set_bootstrap":{"mode":"String","addresses":"String","preset_ids":"String","extra_addresses":"String"},"set_watchdog_setting":{"name":"String","value":0},"set_watchdog_settings":{"interval":0,"threshold":0,"repair_cooldown":0,"max_restarts":0,"guard_interval":0},"set_ntp":{"preset":"String"},"set_test_age":{"category":"String","hours":0},"test_all":{},"test_current":{},"test_one":{"id":"String"},"test_system":{},"job":{"id":"String"},"job_status":{"id":"String"},"multi":{"calls":"String"},"log":{"lines":0}}\n'
+        printf '{"status":{},"runtime":{},"doh_status":{},"network_status":{},"lan_devices":{},"set_device_dns":{"mac":"String","slots":"String"},"set_cache":{"total":0,"ttl":0},"time_status":{},"page_meta":{},"catalog":{"category":"String","offset":0,"limit":0,"only_ok":0},"update_check":{"force":0},"update":{},"update_manager":{},"update_hdp":{},"update_catalog":{},"update_all":{},"update_background":{},"test_combined":{},"switch_engine":{"target_engine":"String"},"dnscrypt_test":{},"dnscrypt_latencies":{"ids":"String"},"dnscrypt_cancel":{},"test_page":{"ids":"String"},"test_page_cancel":{},"dnscrypt_log":{},"system_dns_test":{},"set_profile":{"profile":"String"},"set_regional":{"enabled":0},"reset_dns":{"mode":"String"},"uninstall":{},"uninstall_status":{},"set_slot":{"slot":"String","id":"String","expected":"String"},"set_slot_domains":{"slot":"String","domains":"String"},"add_custom_dns":{"name":"String","url":"String"},"delete_custom_dns":{"id":"String"},"set_setting":{"name":"String","enabled":0},"set_bootstrap":{"mode":"String","addresses":"String","preset_ids":"String","extra_addresses":"String"},"set_watchdog_setting":{"name":"String","value":0},"set_watchdog_settings":{"interval":0,"threshold":0,"repair_cooldown":0,"max_restarts":0,"guard_interval":0},"set_ntp":{"preset":"String"},"set_test_age":{"category":"String","hours":0},"test_all":{},"test_current":{},"test_one":{"id":"String"},"test_system":{},"job":{"id":"String"},"job_status":{"id":"String"},"multi":{"calls":"String"},"log":{"lines":0}}\n'
         ;;
     call)
         case "${2:-}" in
@@ -5679,7 +5810,8 @@ case "${1:-}" in
             test_combined) background_start combined;;
             add_custom_dns|delete_custom_dns|set_device_dns|set_cache|reset_dns|uninstall|set_profile|set_regional|set_slot|set_slot_domains|set_setting|set_bootstrap|set_watchdog_setting|set_watchdog_settings|set_ntp|set_test_age) INPUT="$(cat 2>/dev/null || true)"; RPC_METHOD="$2"; run_action;;
             uninstall_status) uninstall_status_json;;
-            test_all|test_current|test_one|test_system) INPUT="$(cat 2>/dev/null || true)"; RPC_METHOD="$2"; test_json;;
+            test_page_cancel) cat >/dev/null; if job_active test_page; then : > "$JOB_DIR/test_page/cancel"; fi; printf '{"ok":true}\n';;
+            test_all|test_page|test_current|test_one|test_system) INPUT="$(cat 2>/dev/null || true)"; RPC_METHOD="$2"; test_json;;
             job|job_status) INPUT="$(cat 2>/dev/null || true)"; job_json "$(jget id)";;
             multi) INPUT="$(cat 2>/dev/null || true)"; multi_json;;
             log) INPUT="$(cat 2>/dev/null || true)"; log_json "$(jget lines)";;
@@ -5780,7 +5912,7 @@ var callRegional = dmRpc({ object:'dns_manager', method:'set_regional', params:[
 var callResetDns = dmRpc({ object:'dns_manager', method:'reset_dns', params:['mode'], expect:{} });
 var callSystemDnsTest = dmRpc({ object:'dns_manager', method:'system_dns_test', expect:{} });
 var callDnscryptTest = dmRpc({ object:'dns_manager', method:'dnscrypt_test', expect:{} });
-var callDnscryptLatencies = dmRpc({ object:'dns_manager', method:'dnscrypt_latencies', expect:{} });
+var callDnscryptLatencies = dmRpc({ object:'dns_manager', method:'dnscrypt_latencies', params:['ids'], expect:{} });
 var callDnscryptLog = dmRpc({ object:'dns_manager', method:'dnscrypt_log', expect:{} });
 var callSwitchEngine = dmRpc({ object:'dns_manager', method:'switch_engine', params:['target_engine'], expect:{} });
 var callUninstall = dmRpc({ object:'dns_manager', method:'uninstall', expect:{} });
@@ -5794,6 +5926,9 @@ var callBootstrap = dmRpc({ object:'dns_manager', method:'set_bootstrap', params
 var callWatchdogSettings = dmRpc({ object:'dns_manager', method:'set_watchdog_settings', params:['interval','threshold','repair_cooldown','max_restarts','guard_interval'], expect:{} });
 var callNtp = dmRpc({ object:'dns_manager', method:'set_ntp', params:['preset'], expect:{} });
 var callTestAge = dmRpc({ object:'dns_manager', method:'set_test_age', params:['category','hours'], expect:{} });
+var callDnscryptCancel = dmRpc({ object:'dns_manager', method:'dnscrypt_cancel', expect:{} });
+var callTestPage = dmRpc({ object:'dns_manager', method:'test_page', params:['ids'], expect:{} });
+var callTestPageCancel = dmRpc({ object:'dns_manager', method:'test_page_cancel', expect:{} });
 var callTestAll = dmRpc({ object:'dns_manager', method:'test_all', expect:{} });
 var callTestCurrent = dmRpc({ object:'dns_manager', method:'test_current', expect:{} });
 var callTestOne = dmRpc({ object:'dns_manager', method:'test_one', params:['id'], expect:{} });
@@ -7975,10 +8110,15 @@ function updateDnscryptCatalogProgress(root,j){
   state.dnscryptCatalogProgress={done:Number(j.progress_done)||0,total:Number(j.progress_total)||0,ok:Number(j.progress_ok)||0,fail:Number(j.progress_fail)||0,phase:String(j.phase||'')};
   renderCatalog(root);
 }
+function catalogPageIds(){return ((window.dmCatalog||{}).servers||[]).map(function(d){return d.id;}).filter(function(id){return /^[A-Za-z0-9_-]+$/.test(id);}).join(',');}
+function stopCatalogCheck(root,crypt){
+  state.catalogStopping=true;renderCatalog(root);
+  (crypt?callDnscryptCancel():callTestPageCancel()).then(function(r){if(r&&r.ok===false)throw new Error(r.error||'Ошибка остановки');}).catch(function(err){state.catalogStopping=false;state.pageNotice.catalog=withRpcError('Не удалось остановить проверку.',err);}).then(function(){renderCatalog(root);});
+}
 function refreshDnscryptCatalogLatency(root){
   if(state.busy||state.jobRunning)return;
-  state.busy=true;state.dnscryptCatalogChecking=true;state.dnscryptCatalogProgress=null;state.pageNotice.catalog='';renderCatalog(root);
-  callDnscryptLatencies().then(function(r){return waitDnsHealth(r,true,function(j){
+  state.catalogStopping=false;state.busy=true;state.dnscryptCatalogChecking=true;state.dnscryptCatalogProgress=null;state.pageNotice.catalog='';renderCatalog(root);
+  callDnscryptLatencies(catalogPageIds()).then(function(r){return waitDnsHealth(r,true,function(j){
     updateDnscryptCatalogProgress(root,j);
   });}).then(function(result){
     if(!result.ok)throw new Error(result.output||'Не удалось получить замеры DNSCrypt.');
@@ -8006,7 +8146,7 @@ function renderCatalog(root){
   var e=root.querySelector('#dm-catalog');if(!e)return;e.innerHTML='';
   if((window.dmState||{}).dnscrypt_engine==='dnscrypt-proxy2'){
     var data=window.dmCatalog||{}, controls=E('div',{'class':'dm-seg'});
-    e.appendChild(E('div',{'class':'dm-actions'},[btn(state.dnscryptCatalogChecking?'Проверяю DNS…':'Проверить все DNS','cbi-button-action',function(){refreshDnscryptCatalogLatency(root);},{disabled:!!state.busy||!!state.jobRunning})]));
+    e.appendChild(E('div',{'class':'dm-actions'},[state.dnscryptCatalogChecking?btn(state.catalogStopping?'Останавливаю…':'Остановить','cbi-button-neutral',function(){stopCatalogCheck(root,true);},{disabled:!!state.catalogStopping}):btn('Проверить эту страницу','cbi-button-action',function(){refreshDnscryptCatalogLatency(root);},{disabled:!!state.busy||!!state.jobRunning||!catalogPageIds()})]));
     if(state.dnscryptCatalogChecking){
       var progress=state.dnscryptCatalogProgress||{}, done=progress.done||0, total=progress.total||0;
       var pct=total>0?Math.max(0,Math.min(100,Math.round(done*100/total))):0;
@@ -8020,7 +8160,7 @@ function renderCatalog(root){
         E('div',{'class':'dm-mem-meta'},summary)
       ];
       if(progress.phase)progressItems.push(E('div',{'class':'dm-mini'},'Сейчас проверяются: '+progress.phase));
-      progressItems.push(E('div',{'class':'dm-mini'},'DoH и DNSCrypt проверяются небольшими группами. Можно закрыть страницу — проверка продолжится.'));
+      progressItems.push(E('div',{'class':'dm-mini'},'Проверяются серверы выбранной страницы. Можно закрыть страницу — проверка продолжится.'));
       e.appendChild(card('Ход проверки',progressItems));
     }
     var protocols=E('div',{'class':'dm-seg'});
@@ -8043,7 +8183,7 @@ function renderCatalog(root){
   var ch=[
     E('div',{'class':'dm-mini'},'Каталог DNS отображается постоянно. Выбор категории и назначение доступны ниже.'),
     E('div',{'class':'dm-actions'},[
-      btn(state.jobRunning&&state.fullTest&&state.fullTest.origin==='catalog'?'Проверяю…':'Проверить все DNS','cbi-button-action',function(){testAll(root,'catalog');},{disabled:!!state.busy||!!state.jobRunning})
+      state.jobRunning&&state.fullTest&&state.fullTest.origin==='catalog'?btn(state.catalogStopping?'Останавливаю…':'Остановить','cbi-button-neutral',function(){stopCatalogCheck(root,false);},{disabled:!!state.catalogStopping}):btn('Проверить эту страницу','cbi-button-action',function(){testAll(root,'catalog');},{disabled:!!state.busy||!!state.jobRunning||!catalogPageIds()})
     ])
   ];
 
@@ -8076,7 +8216,7 @@ function renderCatalog(root){
     var pct=total>0?Math.max(0,Math.min(100,Math.round(done*100/total))):0;
     var running=state.jobRunning&&state.fullTest.status==='RUNNING';
     var failed=state.fullTest.status==='FAILED';
-    var title=running?'Проверка каталога DNS':(failed?'Проверка каталога не завершена':'Проверка каталога завершена');
+    var title=running?'Проверка страницы':(state.catalogCancelled?'Проверка остановлена':(failed?'Проверка не завершена':'Проверка страницы завершена'));
     var summary=total>0
       ? (running?'Проверено '+done+' из '+total:'Проверено: '+done+' из '+total)+' · доступно: '+okn+' · не ответили: '+failn
       : (running?'Подготавливаю список DNS-серверов…':'Сведения о количестве проверенных серверов недоступны.');
@@ -9005,15 +9145,15 @@ function resumeAction(root){
 function resumeCatalogTest(root){
   if(!rootAlive(root)||root.__dmCatalogResumed||state.jobRunning)return;
   root.__dmCatalogResumed=true;
-  backgroundRequest(function(){return callJob('test_all');}).then(function(j){
+  backgroundRequest(function(){return callJob('test_page');}).then(function(j){
     if(!rootAlive(root)||!j||!j.ok||state.jobRunning)return;
     if(j.status==='running'){
       state.jobRunning=true;state.fullTest={status:'RUNNING',origin:'catalog'};
       state.pageNotice.catalog='';
-      renderCatalog(root);pollJob(root,'test_all',{mode:'all',origin:'catalog'});
+      renderCatalog(root);pollJob(root,'test_page',{mode:'all',origin:'catalog'});
     }else if(j.status==='done'||j.status==='failed'){
       var ok=j.status==='done'&&j.result==='ok';
-      state.fullTest={status:ok?'DONE':'FAILED',result:j.result||'fail',origin:'catalog'};
+      state.catalogCancelled=j.cancelled==='1';state.fullTest={status:ok?'DONE':'FAILED',result:j.result||'fail',origin:'catalog'};
       state.catalogProgress={done:Number(j.progress_done||0),total:Number(j.progress_total||0),ok:Number(j.progress_ok||0),fail:Number(j.progress_fail||0),detail:ok?'':'Полная проверка DNS завершилась с ошибкой.'};
       state.pageNotice.catalog='';
       renderCatalog(root);
@@ -9031,12 +9171,14 @@ function testAll(root,origin){
       total:0,
       ok:0,
       fail:0,
-      detail:'Запускаю полную проверку каталога…'
+      detail:'Проверяю серверы на этой странице…'
     };
   }
   if(from==='catalog')state.pageNotice.catalog='';
   if(from==='catalog')renderCatalog(root);else renderOverview(root,window.dmState||{});
-  callTestAll().then(function(r){
+  state.catalogStopping=false;
+  state.catalogCancelled=false;
+  (from==='catalog'?callTestPage(catalogPageIds()):callTestAll()).then(function(r){
     if(r&&r.ok)pollJob(root,r.job,{mode:'all',origin:from});
     else{
       state.fullTest={status:'FAILED',origin:from};
@@ -9155,6 +9297,7 @@ function pollJob(root,job,meta,done){
           }).catch(function(){render(root,ns);});
         }
         if(meta&&meta.mode==='all'){
+          state.catalogCancelled=j.cancelled==='1';
           var allOk=String(j.status||'').toUpperCase()==='DONE'&&j.result==='ok';
           state.fullTest={status:allOk?'DONE':'FAILED',result:j.result||'fail',finished:Date.now(),origin:meta.origin||''};
           if(meta.origin==='catalog'){
