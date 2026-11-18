@@ -247,7 +247,7 @@ install_dnscrypt_assets() (
     trap 'rm -rf "$_dc_stage"' EXIT
     cat > "$_dc_stage/dns-manager-doh-stamp.sh" <<'EOF_DNSCRYPT_ASSET_1'
 #!/bin/sh
-# Convert an HTTPS DoH endpoint to the DNS stamp format used by dnscrypt-proxy.
+# Convert an HTTPS DoH endpoint or validate a DNSCrypt stamp.
 # This helper does not change DNS settings or start any service.
 set -eu
 LC_ALL=C
@@ -255,6 +255,27 @@ export LC_ALL
 
 fail() { printf '%s\n' "Unsupported DoH URL: $1" >&2; exit 1; }
 [ "$#" -eq 1 ] || fail 'expected one URL'
+case "$1" in
+    sdns://*)
+        stamp=${1#sdns://}
+        case "$stamp" in ''|*[!A-Za-z0-9_-]*) fail 'invalid stamp encoding' ;; esac
+        [ "${#stamp}" -le 1024 ] || fail 'stamp too long'
+        case $((${#stamp} % 4)) in 0) padding= ;; 2) padding='==' ;; 3) padding='=' ;; *) fail 'invalid stamp encoding' ;; esac
+        bytes=$(printf '%s%s' "$stamp" "$padding" | tr '_-' '/+' | base64 -d 2>/dev/null | od -An -v -tu1) || fail 'invalid stamp encoding'
+        printf '%s\n' "$bytes" | awk '
+            { for (i = 1; i <= NF; i++) b[++n] = $i }
+            END {
+                if (n < 44 || b[1] != 1) exit 1
+                p = 10; addr = b[p]; p += addr + 1
+                if (addr < 1 || p > n || b[p] != 32) exit 1
+                p += 33
+                if (p > n || b[p] < 1 || p + b[p] != n) exit 1
+            }
+        ' || fail 'invalid DNSCrypt stamp'
+        printf '%s\n' "$1"
+        exit 0
+        ;;
+esac
 case "$1" in https://*) rest=${1#https://} ;; *) fail 'HTTPS is required' ;; esac
 case "$rest" in *'?'*|*'#'*|*'@'*|*[![:graph:]]*) fail 'query, fragment, credentials or whitespace' ;; esac
 case "$rest" in */*) host=${rest%%/*}; path=/${rest#*/} ;; *) host=$rest; path=/ ;; esac
