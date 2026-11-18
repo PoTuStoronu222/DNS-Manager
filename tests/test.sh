@@ -23,6 +23,10 @@ sh tests/regional-modes-test.sh || fail "regional mode routes"
 sh tests/regional-device-test.sh || fail "regional routes for bound devices"
 sh tests/regional-watch-test.sh || fail "regional provider watcher"
 sh tests/setting-job-test.sh || fail "settings background job"
+for method in network_status_json doh_status_json; do
+    sed -n "/^${method}() {/,/^}/p" dns-manager-luci.sh | grep -Fq 'browser_dns_status_json' || fail "$method lacks browser DNS state"
+done
+ok "browser DNS state available to both views"
 sh tests/bootstrap-apply-test.sh || fail "bootstrap apply and rollback"
 
 tmp="$(mktemp -d)"
@@ -649,7 +653,7 @@ grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validat
 grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
 grep -q 'VERSION="4.50"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
-grep -q 'VERSION="3.0"' dns-manager-luci.sh || fail "LuCI version not bumped"
+grep -q 'VERSION="3.1"' dns-manager-luci.sh || fail "LuCI version not bumped"
 grep -Fq "{id:'quad9plain',ips:'9.9.9.10,149.112.112.10,2620:fe::10,2620:fe::fe:10'}" dns-manager-luci.sh || fail "historical Quad9 bootstrap snapshot changed"
 grep -Fq "{id:'cira',ips:'149.112.121.10,149.112.122.10,2620:10a:80bb::10,2620:10a:80bc::10'}" dns-manager-luci.sh || fail "historical CIRA bootstrap snapshot changed"
 if grep -q '^main_menu$' dns-manager.sh; then fail "interactive console menu still starts"; fi
