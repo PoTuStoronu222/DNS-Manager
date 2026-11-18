@@ -421,7 +421,7 @@ ok "dashboard uses one complete status RPC and preserves DNS ownership"
 # detection cannot associate one of the running instances with its slot.
 grep -Fq 'function displayDnsRows(st){' "$tmp/common.js" || fail "selected-DNS display normalizer is missing"
 awk '/^function renderOverview\(root,st\)/,/^}/' "$tmp/common.js" > "$tmp/overview_dns.js"
-grep -Fq 'displayDnsRows(st).forEach(function(d){' "$tmp/overview_dns.js" || fail "dashboard DNS list does not use saved slot assignments"
+grep -Fq 'displayDnsRows(st).forEach(function(d' "$tmp/overview_dns.js" || fail "dashboard DNS list does not use saved slot assignments"
 awk '/^function resolverRows\(st,root\)/,/^}/' "$tmp/common.js" > "$tmp/resolver_rows.js"
 grep -Fq 'rows=displayDnsRows(st)' "$tmp/resolver_rows.js" || fail "DoH tab does not use saved slot assignments"
 COMMON_JS="$tmp/common.js" node <<'NODE' || fail "selected DNS visibility regression"
@@ -533,7 +533,7 @@ awk '/^function routeStatusCall\(\)/,/^}/' "$tmp/common.js" > "$tmp/route_status
 awk "/case 'catalog':/,/case 'log':/" "$tmp/route_status_call.js" > "$tmp/catalog_route_status.js"
 grep -Fq 'callDohStatus()' "$tmp/catalog_route_status.js" || fail "LuCI catalog refresh does not reload live DNS slots"
 grep -Fq 'callPageMeta()' "$tmp/catalog_route_status.js" || fail "LuCI catalog refresh dropped its page metadata"
-grep -Fq 'Object.keys(meta).forEach(function(k){st[k]=meta[k];});' "$tmp/catalog_route_status.js" || fail "LuCI catalog refresh does not merge metadata into live slot state"
+grep -Fq 'return Object.assign({},st||{},v[1]||{});' "$tmp/catalog_route_status.js" || fail "LuCI catalog refresh does not merge metadata into live slot state"
 ok "catalog refresh reloads assigned DNS slots immediately"
 
 # The regional slot has an independent dnsmasq route; explain the actual suffix
@@ -605,8 +605,9 @@ grep -q "xbox_dns|gaming|games+supercell|Xbox DNS|" catalogs/dns-8.7-RU-NOSOCIAL
 grep -Fq '# DNSCATREV=14' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog revision not bumped"
 grep -Fq '# ENTRIES=116' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog entry count header is incorrect"
 awk '/^catalog_validate_file\(\) \{/,/^}/' dns-manager.sh > "$tmp/catalog_validate.sh"
-( DNSCAT_VERSION=8.7-RU-NOSOCIAL DNSCAT_REVISION=14; . "$tmp/catalog_validate.sh"; catalog_validate_file catalogs/dns-8.7-RU-NOSOCIAL.conf ) || fail "updated catalog does not pass the manager validator"
+( DNSCAT_VERSION=8.8-FULL-CONFIG-CLEAN DNSCAT_REVISION=2; . "$tmp/catalog_validate.sh"; catalog_validate_file catalogs/dns-8.8-FULL-CONFIG-CLEAN.conf ) || fail "updated catalog does not pass the manager validator"
 sh tests/catalog-audit-update-test.sh || fail "catalog upgrade or fallback failed"
+sh tests/watchdog-migration-settings-test.sh || fail "watchdog migration settings"
 sed -n '/^DNSCAT_REF=/,/^DNSCAT_URL=/p' dns-manager.sh > "$tmp/catalog_ref.sh"
 ( DNS_MANAGER_SOURCE_REF=test/doh-catalog-audit; . "$tmp/catalog_ref.sh"; case "$DNSCAT_URL" in */test/doh-catalog-audit/catalogs/*) :;; *) exit 1;; esac ) || fail "test installer does not load its own catalog"
 ( DNS_MANAGER_SOURCE_REF='../invalid'; . "$tmp/catalog_ref.sh"; case "$DNSCAT_URL" in */main/catalogs/*) :;; *) exit 1;; esac ) || fail "unsafe catalog ref was not rejected"
@@ -634,7 +635,7 @@ EOF_NORMALIZE_URL
 node "$tmp/normalize_url.js" || fail "LuCI URL normalizer strips a significant DoH path slash"
 grep -Fq '$1!="shecan" {print}' dns-manager-luci.sh || fail "LuCI does not invalidate the changed resolver test result"
 grep -Fq '$1!="shecan" {print}' dns-manager.sh || fail "Manager does not invalidate the changed resolver test result"
-grep -Fq 'DNSCAT_REVISION="14"' dns-manager.sh || fail "backend catalog revision is not synchronized"
+grep -Fq 'DNSCAT_REVISION="2"' dns-manager.sh || fail "backend catalog revision is not synchronized"
 grep -Fq '_old_astracat_url=' dns-manager.sh || fail "old AstraCat endpoint is not tracked during catalog update"
 grep -Fq '_new_astracat_url=' dns-manager.sh || fail "new AstraCat endpoint is not tracked during catalog update"
 grep -Fq '$1!="astracat" {print}' dns-manager.sh || fail "AstraCat cached test result is not invalidated after endpoint change"
@@ -646,9 +647,9 @@ grep -Fq "disabled:!!state.busy||!!state.jobRunning||unavailable||checking" dns-
 grep -q "'gaming','Игровые DNS'" dns-manager-luci.sh || fail "gaming catalog label missing in LuCI"
 grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validation missing gaming category"
 grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
-grep -q 'VERSION="4.26"' dns-manager.sh || fail "manager version not bumped"
+grep -q 'VERSION="4.50"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
-grep -q 'VERSION="2.70"' dns-manager-luci.sh || fail "LuCI version not bumped"
+grep -q 'VERSION="3.0"' dns-manager-luci.sh || fail "LuCI version not bumped"
 grep -Fq "{id:'quad9plain',ips:'9.9.9.10,149.112.112.10,2620:fe::10,2620:fe::fe:10'}" dns-manager-luci.sh || fail "historical Quad9 bootstrap snapshot changed"
 grep -Fq "{id:'cira',ips:'149.112.121.10,149.112.122.10,2620:10a:80bb::10,2620:10a:80bc::10'}" dns-manager-luci.sh || fail "historical CIRA bootstrap snapshot changed"
 if grep -q '^main_menu$' dns-manager.sh; then fail "interactive console menu still starts"; fi
@@ -656,7 +657,7 @@ grep -Fq "btn('Удалить DNS Manager'" dns-manager-luci.sh || fail "LuCI un
 grep -Fq '"uninstall":{},"uninstall_status":{}' dns-manager-luci.sh || fail "LuCI uninstall RPC is not registered"
 grep -Fq 'ubus call service set' dns-manager-luci.sh || fail "uninstall is not detached under procd"
 awk '/^function renderOverview\(root,st\)/ {p=1} p && /^function / && !/^function renderOverview\(root,st\)/ {exit} p {print}' dns-manager-luci.sh > "$tmp/dashboard_watchdog.js"
-grep -Fq "watchdogSlotResult(st,d.slot,d.id)" "$tmp/dashboard_watchdog.js" || fail "DNS rows do not show automatic DNS check results"
+grep -Fq "watchdogSlotResult(st,d.slot||" "$tmp/dashboard_watchdog.js" || fail "DNS rows do not show automatic DNS check results"
 if grep -Fq "dm-watchdog-results" "$tmp/dashboard_watchdog.js"; then fail "duplicate automatic DNS results card remains"; fi
 awk '/^function watchdogSlotResult\(st,slot,id\)/ {p=1} p && /^function / && !/^function watchdogSlotResult\(st,slot,id\)/ {exit} p {print}' dns-manager-luci.sh > "$tmp/watchdog_slot_result.js"
 node - "$tmp/watchdog_slot_result.js" <<'EOF_WD_SLOT_RESULT' || fail "automatic results do not match the current DNS slot"
@@ -677,7 +678,7 @@ grep -Fq 'html[data-darkmode="true"] .dm-wrap .dm-card' dns-manager-luci.sh || f
 grep -Fq 'bootstrap_install_dependencies() {' dns-manager.sh || fail "backend noninteractive dependency bootstrap missing"
 grep -Fq 'install-dependencies|--install-dependencies)' dns-manager.sh || fail "backend dependency bootstrap command missing"
 grep -Fq 'install_missing_dependencies || return 1' dns-manager.sh || fail "bootstrap does not install the backend runtime dependencies"
-grep -Fq 'SOURCE_REF="${DNS_MANAGER_SOURCE_REF:-main}"' dns-manager-luci.sh || fail "installer cannot select an explicit source branch"
+grep -Fq 'SOURCE_REF="${DNS_MANAGER_SOURCE_REF:-}"' dns-manager-luci.sh || fail "installer cannot select an explicit source branch"
 grep -Fq 'SOURCE_BASE="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/$SOURCE_REF"' dns-manager-luci.sh || fail "installer source URL base is missing"
 grep -Fq 'BACKEND_URL="$SOURCE_BASE/dns-manager.sh"' dns-manager-luci.sh || fail "installer backend does not use its selected source branch"
 source_base_line="$(grep -n '^SOURCE_BASE=' dns-manager-luci.sh | head -n1 | cut -d: -f1)"
@@ -692,11 +693,11 @@ grep -Fq 'sh "$LUCI_COMPANION_CACHE" update >"$TMP_DIR/luci-install.log" 2>&1' d
 grep -Fq 'Откройте веб-интерфейс роутера → LuCI → Службы → DNS Manager.' dns-manager-luci.sh || fail "installer does not direct the user to the LuCI menu"
 grep -Fq 'DNS-профиль автоматически не применялся. Завершите настройку в панели.' dns-manager-luci.sh || fail "installer does not disclose that DNS settings remain unapplied"
 ok "Native LuCI installer bootstraps backend and dependencies without opening the console menu"
-main_luci_url='https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh'
-[ "$(grep -Fc "$main_luci_url" dns-manager-luci.sh)" -eq 1 ] || fail "released LuCI updater URL does not target main"
-grep -Fq 'LUCI_COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager-luci.sh"' dns-manager.sh || fail "optional backend LuCI updates do not target main"
-grep -Fq 'UPDATE_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager.sh"' dns-manager.sh || fail "optional backend updates do not target main"
-grep -Fq 'fetch_raw_url "$_tmp" "https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/main/dns-manager.sh"' dns-manager-luci.sh || fail "LuCI backend update does not target main"
+grep -Fq 'SOURCE_REF="${SOURCE_REF:-main}"' dns-manager-luci.sh || fail "LuCI default source is not main"
+grep -Fq 'DNSCAT_REF=main;;' dns-manager.sh || fail "backend default source is not main"
+grep -Fq 'LUCI_COMPANION_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/$DNSCAT_REF/dns-manager-luci.sh"' dns-manager.sh || fail "backend LuCI update does not use selected source"
+grep -Fq 'UPDATE_URL="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/$DNSCAT_REF/dns-manager.sh"' dns-manager.sh || fail "backend update does not use selected source"
+grep -Fq 'fetch_raw_url "$_tmp" "$DM_SOURCE_BASE/dns-manager.sh"' dns-manager-luci.sh || fail "LuCI backend update does not use selected source"
 grep -Fq 'DNS Manager LuCI on-device smoke test.' tests/openwrt-luci-smoke.sh || fail "OpenWrt LuCI smoke test is missing"
 grep -Fq 'DNS_MANAGER_SOURCE_REF="$REF" sh "$TMP" install' tests/openwrt-luci-smoke.sh || fail "smoke test does not install from its selected branch"
 grep -Fq 'rpc catalog' tests/openwrt-luci-smoke.sh || fail "smoke test does not verify the catalog RPC"
@@ -744,9 +745,8 @@ if grep -Fq "'disabled':!usable&&!selected" dns-manager-luci.sh; then fail "LAN 
 grep -Fq "doh:['doh','profiles']" dns-manager-luci.sh || fail "DoH page still includes DNS slots or device bindings"
 grep -Fq "slots:['slots']" dns-manager-luci.sh || fail "DNS slot/domain panel is not isolated to its own page"
 grep -Fq "devices:['devices']" dns-manager-luci.sh || fail "LAN device binding is not isolated to its own page"
-grep -Fq "if(!running&&detail==='Проверка запущена…')detail='';" dns-manager-luci.sh || fail "stale catalog running message is not hidden after completion"
-grep -Fq "if(!detail&&running)detail='Проверка запущена…';" dns-manager-luci.sh || fail "catalog check status fallback is not limited to a running check"
-grep -Fq "if(detail)method.push(E('div',{'class':'dm-inline-msg info'},detail));" dns-manager-luci.sh || fail "empty progress details are still displayed after completion"
+grep -Fq "if(running||!failed)detail='';" dns-manager-luci.sh || fail "catalog progress keeps stale details after completion"
+grep -Fq "if(detail)method.push(E('div',{'class':'dm-inline-msg error'},detail));" dns-manager-luci.sh || fail "catalog failure details are not displayed"
 grep -Fq 'width:60px!important;min-width:60px!important' dns-manager-luci.sh || fail "common freshness hours input remains too narrow"
 grep -q "'bypass','Обход геоблока'" dns-manager-luci.sh || fail "bypass profile label not updated"
 grep -q "'security','Защита от угроз'" dns-manager-luci.sh || fail "security profile label not updated"
@@ -757,9 +757,9 @@ if awk '/var PROFILE = \[/,/^\];/' dns-manager-luci.sh | grep -q "'gaming'"; the
 fi
 ok "LuCI atomic install, RPC retry, safe dynamic assignments and lock/result helpers"
 
-grep -q '^        set_watchdog_setting)' "$tmp/backend.sh" || fail "watchdog setting dispatch missing"
+grep -q '^ *set_watchdog_setting)' "$tmp/backend.sh" || fail "watchdog setting dispatch missing"
 grep -q 'WATCHDOG_INTERVAL' "$tmp/backend.sh" || fail "watchdog interval handling missing"
-if awk '/^        set_setting\)/ { capture=1 } capture { print } capture && /^        set_watchdog_setting\)/ { exit }' "$tmp/backend.sh" | grep -q '_value'; then
+if awk '/^ *set_setting\)/ { capture=1 } capture { print } capture && /^ *set_watchdog_setting\)/ { exit }' "$tmp/backend.sh" | grep -q '_value'; then
     fail "set_setting still contains stale _value watchdog logic"
 fi
 grep -q 'watchdog_apply_toggle .*|| _rc=' "$tmp/backend.sh" || fail "watchdog toggle result is not checked"
@@ -931,8 +931,8 @@ view_luci="$(sed -n 's|^// DNS Manager LuCI common module version:[[:space:]]*||
 dashboard_view_luci="$(sed -n 's|^// DNS Manager LuCI version: *||p' dns-manager-luci.sh | head -n1)"
 [ "$top_luci" = "$dashboard_view_luci" ] || fail "dashboard view version marker is stale"
 ok "LuCI version markers synchronized ($top_luci)"
-grep -Fq 'VERSION="4.26"' dns-manager.sh || fail "DNS Manager version marker is not 4.26"
-ok "DNS Manager version marker synchronized (4.26)"
+grep -Fq 'VERSION="4.50"' dns-manager.sh || fail "DNS Manager version marker is not 4.50"
+ok "DNS Manager version marker synchronized (4.50)"
 grep -Fq "assignment.appendChild(btn('Удалить'" dns-manager-luci.sh || fail "Custom DNS delete button is not aligned with the assignment action"
 grep -Fq ".dm-catalog-item-custom{grid-column:auto}" dns-manager-luci.sh || fail "Custom DNS card is wider than a stock catalog card"
 grep -Fq ".dm-catalog-controls-custom .dm-assign-inline select{height:30px;min-width:0;width:auto;max-width:100%;flex:1 1 160px" dns-manager-luci.sh || fail "Custom DNS actions do not have a responsive inline layout"
@@ -941,7 +941,7 @@ ok "Custom DNS assignment and delete actions share a responsive horizontal row"
 # Regression: the sourced manager backend uses generic `_url` temporaries while
 # load_manager() refreshes runtime capability data. Custom DNS input must survive
 # that call and be saved to catalog field 5.
-awk '/^add_custom_dns_json\(\) \{/,/^}/' dns-manager-luci.sh > "$tmp/add_custom_dns_json_fn.sh"
+awk '/^add_custom_dns_json\(\) \{/ {p=1} /^delete_custom_dns_json\(\) \{/ {p=0} p {print}' dns-manager-luci.sh > "$tmp/add_custom_dns_json_fn.sh"
 [ -s "$tmp/add_custom_dns_json_fn.sh" ] || fail "Custom DNS save function extraction"
 cat > "$tmp/add_custom_dns_runner.sh" <<'EOF_CUSTOM_DNS_SAVE'
 #!/bin/sh
@@ -1610,7 +1610,7 @@ grep -Fq 'canary_domains_icloud 2>/dev/null)" = "${BLOCK_EXTERNAL_DNS:-0}" ] || 
 grep -Fq 'canary_domains_mozilla 2>/dev/null)" = "${BLOCK_EXTERNAL_DNS:-0}" ] || _ok=0' dns-manager.sh || fail "forced-DNS state does not follow independent protection setting"
 grep -Fq 'canary_domains_icloud 2>/dev/null)" = "${BLOCK_EXTERNAL_DNS:-0}" ] || _changed=1' dns-manager.sh || fail "forced-DNS watchdog will treat protection OFF as drift"
 grep -Fq 'canary_domains_mozilla 2>/dev/null)" = "${BLOCK_EXTERNAL_DNS:-0}" ] || _changed=1' dns-manager.sh || fail "forced-DNS watchdog Mozilla canary check is not independent"
-grep -Fq 'watchdog|watchdog_autoreplace|force|encrypted_dns|dnsmasq_perf)' dns-manager-luci.sh || fail "LuCI RPC does not allow the independent encrypted-DNS setting"
+grep -Fq 'watchdog|watchdog_autoreplace|force|encrypted_dns|browser_dns|dnsmasq_perf)' dns-manager-luci.sh || fail "LuCI RPC does not allow the independent encrypted-DNS setting"
 grep -Fq "setSetting('encrypted_dns',1,root)" dns-manager-luci.sh || fail "LuCI has no enable action for encrypted-DNS protection"
 grep -Fq "setSetting('encrypted_dns',0,root)" dns-manager-luci.sh || fail "LuCI has no disable action for encrypted-DNS protection"
 grep -Fq 'Направляет обычные DNS-запросы устройств на DNS роутера.' dns-manager-luci.sh || fail "LuCI is missing the forced-DNS explanation"
@@ -2151,7 +2151,7 @@ ok "common DNS outage and uncertain listener state both suppress automatic rotat
 awk '/^watchdog_embedded_loop\(\) \{/,/^run_watchdog\(\) \{/' dns-manager.sh > "$tmp/watchdog_embedded_loop.sh"
 grep -Fq '[ "$_checked" -gt 1 ] && [ "$_failed" -eq "$_checked" ]' "$tmp/watchdog_embedded_loop.sh" || fail "common outage does not suppress replacement"
 grep -Fq 'watchdog_loop_reset_slot "$_trigger"' "$tmp/watchdog_embedded_loop.sh" || fail "successful replacement does not reset failure counter"
-grep -Fq '[ "$_fc" -lt 3 ]' "$tmp/watchdog_embedded_loop.sh" || fail "replacement threshold is not three failures"
+grep -Fq '[ "$_fc" -lt "${WATCHDOG_FAIL_THRESHOLD:-2}" ]' "$tmp/watchdog_embedded_loop.sh" || fail "configured failure threshold is ignored"
 grep -Fq 'watchdog_slot_target_run "$_trigger" "$_trigger_id" "$_trigger_port" "$_single"' "$tmp/watchdog_embedded_loop.sh" || fail "candidate selection is not invoked"
 if grep -Fq 'watchdog_restart_slot_instance' "$tmp/watchdog_embedded_loop.sh"; then fail "cron watchdog still restarts slot proxies"; fi
 ok "cron watchdog protects against common outage and resets confirmed replacements"
@@ -2237,13 +2237,13 @@ grep -Fq "watchdogComponentItem(st,wd,wdDetails)" "$tmp/common.js" || fail "LuCI
 grep -q "function watchdogReplacementComponentItem" "$tmp/common.js" || fail "LuCI auto-replacement component state helper missing"
 awk '/^function watchdogReplacementComponentItem\(/,/^}/' "$tmp/common.js" | grep -qE 'btn\(|setSetting\(' && fail "LuCI auto-replacement component must remain a state-only item"
 grep -Fq "watchdogReplacementComponentItem(wdAuto,wdAutoDetails)" "$tmp/common.js" || fail "LuCI auto-replacement component is not shown separately"
-grep -Fq "dateText(st.watchdog_cron_last_run)" "$tmp/common.js" || fail "LuCI check component must show the last cron run"
+grep -Fq "dateText(st.watchdog_last_check)" "$tmp/common.js" || fail "LuCI check component must show the last cron run"
 grep -Fq "st.watchdog_last_failed" "$tmp/common.js" || fail "LuCI check component must show the number of failures"
-grep -Fq "var wdAutoDetails='Замена после 3 последовательных сбоев.'" "$tmp/common.js" || fail "LuCI replacement component details must describe failure threshold separately"
+grep -Fq "Number(st.watchdog_fail_threshold)" "$tmp/common.js" || fail "LuCI replacement component details must describe failure threshold separately"
 grep -Fq "var watchdogAutoReplace=yes(st.watchdog_autoreplace)" "$tmp/common.js" || fail "LuCI replacement state does not use the independent auto-replace setting"
 grep -Fq "forceComponentItem(st)" "$tmp/common.js" || fail "LuCI forced-DNS component helper is not used as a state-only item"
 grep -Fq 'if [ "$_module" = watchdog ] && [ "$_new" = 1 ]; then' dns-manager.sh || fail "CLI watchdog no-profile guard missing"
-grep -Fq 'if [ "$DNSMGR_WD_REQUEST_VALUE" = 1 ] && [ -z "$SLOT_1$SLOT_2$SLOT_3$SLOT_4$SLOT_5$SLOT_6$SLOT_RU" ]; then' "$tmp/backend.sh" || fail "RPC watchdog no-profile guard missing"
+grep -Fq 'watchdog_apply_toggle "$DNSMGR_WD_REQUEST_VALUE"' "$tmp/backend.sh" || fail "RPC watchdog toggle is not delegated to backend"
 grep -q "Проверить текущие DNS','cbi-button-action'" "$tmp/common.js" || fail "Current DNS check button disappeared"
 if grep -q "canTestCurrent=profileSelected" "$tmp/common.js"; then fail "Current DNS check is incorrectly blocked without profile"; fi
 if grep -q "_profile_slots.*Проверить текущие DNS" "$tmp/backend.sh"; then fail "Current DNS check is incorrectly guarded by profile"; fi
@@ -2809,7 +2809,7 @@ grep -q 'watchdog_interval":%s,"watchdog_service' "$tmp/backend.sh" || fail "LuC
 if sed -n '/watchdog_interval/p' "$tmp/backend.sh" | grep -Fq '\'; then fail "LuCI status JSON has literal backslashes in keys"; fi
 if sed -n '/watchdog_fail_threshold/p' "$tmp/backend.sh" | grep -Fq '\'; then fail "LuCI network status JSON has literal backslashes in keys"; fi
 
-grep -q '^        set_watchdog_setting)' "$tmp/backend.sh" || fail "legacy watchdog setting dispatch missing"
+grep -q '^ *set_watchdog_setting)' "$tmp/backend.sh" || fail "legacy watchdog setting dispatch missing"
 grep -q '^        set_watchdog_settings)' "$tmp/backend.sh" || fail "atomic watchdog settings dispatch missing"
 grep -q '"set_watchdog_settings"' "$tmp/backend.sh" || fail "atomic watchdog settings RPC schema missing"
 grep -q 'watchdog_apply_values() {' "$tmp/backend.sh" || fail "shared watchdog apply helper missing"
@@ -3090,22 +3090,18 @@ awk '/^job_start_regional\(\) \{/,/^}/' "$tmp/backend.sh" > "$tmp/regional_job.s
 (
     set -eu
     . "$tmp/regional_job.sh"
-    JOB_DIR="$tmp/regional-jobs"
-    mkdir -p "$JOB_DIR"
-    job_active() { return 1; }
-    job_prepare() { mkdir -p "$JOB_DIR/$1"; : > "$JOB_DIR/$1/state"; : > "$JOB_DIR/$1/output"; }
+    JOB_DIR="$tmp/regional-jobs"; RUNTIME_DIR="$tmp/runtime"
+    mkdir -p "$JOB_DIR" "$RUNTIME_DIR"
+    acquire_runtime_lock() { :; }; release_runtime_lock() { :; }
+    job_active() { return 1; }; bg_service_idle() { :; }
+    job_prepare() { mkdir -p "$JOB_DIR/$1"; }
     json_error() { return 1; }
-    json_quote() { printf '"%s"' "$1"; }
-    load_manager() { return 0; }
-    regional_apply_toggle() { printf '%s' "$1" > "$JOB_DIR/argument"; return 0; }
-    job_write() { printf '%s=%s\n' "$2" "$3" >> "$JOB_DIR/$1/state"; }
-    job_record_pid() { :; }
+    run_bg_job() { printf '%s\n' "$*" > "$JOB_DIR/argument"; }
     job_start_regional 1 > "$tmp/regional-reply"
-    wait
     grep -Fq '"job":"regional"' "$tmp/regional-reply" || exit 1
     grep -qx 'enabled=1' "$JOB_DIR/regional/state" || exit 2
-    grep -qx 'status=done' "$JOB_DIR/regional/state" || exit 3
-    [ "$(cat "$JOB_DIR/argument")" = 1 ] || exit 4
+    grep -qx 'status=running' "$JOB_DIR/regional/state" || exit 3
+    grep -qx 'regional regional 1' "$JOB_DIR/argument" || exit 4
 ) || fail "regional background job does not expose its result"
 ok "regional action runs in a resumable background job"
 
