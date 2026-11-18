@@ -75,3 +75,60 @@ if dnscrypt_apply_profile_pool clean 5053 1.1.1.1 > "$TMP_DIR/result"; then exit
 [ ! -s "$TMP_DIR/result" ] && [ ! -f "$TMP_DIR/arguments" ]
 if find "$TMP_DIR" -name 'dnscrypt-selected.*' -o -name 'dnscrypt-urls.*' | grep -q .; then exit 1; fi
 printf '%s\n' 'DNSCrypt profile selection passes checked URLs to pool application'
+
+# Exercise the actual pool generator twice with persistent UCI settings.
+mkdir "$TMP_DIR/bin"
+cat > "$TMP_DIR/bin/uci" <<'EOF_UCI'
+#!/bin/sh
+case "$*" in
+    *dc_cache_size) echo 10000;;
+    *dc_cache_ttl) echo 900;;
+    *dc_cache) echo 1;;
+    *dc_force_tcp) echo 1;;
+    *dc_block_ipv6) echo 1;;
+    *dc_query_log) echo 1;;
+    *) exit 1;;
+esac
+EOF_UCI
+cat > "$TMP_DIR/bin/dig" <<'EOF_DIG'
+#!/bin/sh
+echo 192.0.2.1
+EOF_DIG
+cat > "$TMP_DIR/bin/sleep" <<'EOF_SLEEP'
+#!/bin/sh
+exit 0
+EOF_SLEEP
+cat > "$TMP_DIR/real-init" <<'EOF_INIT2'
+#!/bin/sh
+exit 0
+EOF_INIT2
+cat > "$TMP_DIR/real-binary" <<'EOF_BINARY'
+#!/bin/sh
+exit 0
+EOF_BINARY
+chmod +x "$TMP_DIR/bin/uci" "$TMP_DIR/bin/dig" "$TMP_DIR/bin/sleep" "$TMP_DIR/real-init" "$TMP_DIR/real-binary"
+PATH="$TMP_DIR/bin:$PATH"
+DNS_MANAGER_DNSCRYPT_BIN="$TMP_DIR/real-binary"
+DNS_MANAGER_DNSCRYPT_INIT="$TMP_DIR/real-init"
+DNS_MANAGER_DNSCRYPT_POOL_APPLY="$ROOT/libexec/dns-manager-dnscrypt-pool-apply.sh"
+DNS_MANAGER_DNSCRYPT_DNSMASQ_APPLY="$TMP_DIR/accept-dnsmasq"
+printf '#!/bin/sh\nexit 0\n' > "$DNS_MANAGER_DNSCRYPT_DNSMASQ_APPLY"
+export PATH DNS_MANAGER_DNSCRYPT_BIN DNS_MANAGER_DNSCRYPT_INIT DNS_MANAGER_DNSCRYPT_POOL_APPLY DNS_MANAGER_DNSCRYPT_DNSMASQ_APPLY
+unset DNSMASQ_FAIL APPLY_FAIL SELECTION_FAIL
+
+dnscrypt_select_profile() {
+    case "$1" in
+        clean) echo 'first|https://dns.google/dns-query';;
+        family) echo 'second|https://cloudflare-dns.com/dns-query';;
+        *) return 1;;
+    esac
+}
+for profile in clean family; do
+    dnscrypt_apply_profile_pool "$profile" 5053 1.1.1.1 >/dev/null
+    grep -qx 'cache_size = 10000' "$DNS_MANAGER_DNSCRYPT_CONFIG"
+    grep -qx 'cache_min_ttl = 900' "$DNS_MANAGER_DNSCRYPT_CONFIG"
+    grep -qx 'force_tcp = true' "$DNS_MANAGER_DNSCRYPT_CONFIG"
+    grep -qx 'block_ipv6 = true' "$DNS_MANAGER_DNSCRYPT_CONFIG"
+    grep -qx "file = '/tmp/dns-manager-dnscrypt-query.log'" "$DNS_MANAGER_DNSCRYPT_CONFIG"
+done
+printf '%s\n' 'DNSCrypt tuning survives applying two different profiles'

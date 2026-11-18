@@ -85,12 +85,18 @@ dnscrypt_tuning_apply() (
     return 1
 )
 
+dnscrypt_setting_valid() {
+    case "$1:$2" in
+        watchdog:0|watchdog:1|force:0|force:1|browser_dns:0|browser_dns:1|dc_cache:0|dc_cache:1|dc_force_tcp:0|dc_force_tcp:1|dc_block_ipv6:0|dc_block_ipv6:1|dc_block_unqualified:0|dc_block_unqualified:1|dc_block_undelegated:0|dc_block_undelegated:1|dc_query_log:0|dc_query_log:1|dc_cache_size:1000|dc_cache_size:4096|dc_cache_size:10000|dc_cache_ttl:0|dc_cache_ttl:300|dc_cache_ttl:900|dc_cache_ttl:1800) return 0;;
+        *) return 1;;
+    esac
+}
+
 dnscrypt_set_setting() {
     input=$(cat)
     name=$(printf '%s' "$input" | jsonfilter -e '@.name' 2>/dev/null)
     enabled=$(printf '%s' "$input" | jsonfilter -e '@.enabled' 2>/dev/null)
-    case "$name" in watchdog|force|browser_dns|dc_cache|dc_force_tcp|dc_block_ipv6|dc_block_unqualified|dc_block_undelegated|dc_query_log) ;; *) error 'Эта настройка пока недоступна для DNSCrypt'; return;; esac
-    case "$enabled" in 0|1) ;; *) error 'Неверное значение настройки'; return;; esac
+    dnscrypt_setting_valid "$name" "$enabled" || { error 'Неверное значение настройки'; return; }
     load_manager_functions && load_config && acquire_mutation_lock || { error 'Не удалось применить настройку DNS'; return; }
     rc=0
     if [ "${name#dc_}" != "$name" ]; then
@@ -122,7 +128,7 @@ dnscrypt_setting_start() {
     input=$(cat)
     name=$(printf '%s' "$input" | jsonfilter -e '@.name' 2>/dev/null)
     enabled=$(printf '%s' "$input" | jsonfilter -e '@.enabled' 2>/dev/null)
-    case "$name:$enabled" in watchdog:0|watchdog:1|force:0|force:1|browser_dns:0|browser_dns:1|dc_cache:0|dc_cache:1|dc_force_tcp:0|dc_force_tcp:1|dc_block_ipv6:0|dc_block_ipv6:1|dc_block_unqualified:0|dc_block_unqualified:1|dc_block_undelegated:0|dc_block_undelegated:1|dc_query_log:0|dc_query_log:1) ;; *) error 'Неверная настройка'; return;; esac
+    dnscrypt_setting_valid "$name" "$enabled" || { error 'Неверная настройка'; return; }
     mkdir -p "$JOB_DIR/setting" "$RUNTIME_DIR" || { error 'Не удалось подготовить задачу'; return; }
     exec 9>"$RUNTIME_DIR/setting-start.lock" || { error 'Не удалось подготовить блокировку'; return; }
     flock -n 9 || { error 'Другая настройка уже запускается'; return; }
@@ -808,6 +814,12 @@ status_extra() {
         case "$value" in 0|1) ;; *) case "$setting" in cache|block_unqualified|block_undelegated) value=1;; *) value=0;; esac;; esac
         json_add_int "dc_$setting" "$value"
     done
+    value=$(uci -q get dns-manager.global.dc_cache_size 2>/dev/null || :)
+    case "$value" in 1000|4096|10000) ;; *) value=4096;; esac
+    json_add_int dc_cache_size "$value"
+    value=$(uci -q get dns-manager.global.dc_cache_ttl 2>/dev/null || :)
+    case "$value" in 0|300|900|1800) ;; *) value=0;; esac
+    json_add_int dc_cache_ttl "$value"
     json_add_object dnscrypt_server_latency
     latency_records=$(dnscrypt_pool_latency "$running")
     while read -r latency_server latency_ms latency_time; do

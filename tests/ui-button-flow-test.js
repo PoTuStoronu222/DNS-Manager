@@ -454,7 +454,7 @@ async function testDnscryptPoolPresentation(){
 async function testProfileClickBothEngines(){
   for(const engine of ['dnscrypt-proxy2','https-dns-proxy']){
     const calls=[],state={busy:false,jobRunning:false,pendingProfile:''},root={};let buttons=[];
-    const ctx={state,st:{dnscrypt_engine:engine,engine_installed:1},root,PROFILE:[['clean','Без фильтрации'],['privacy','Конфиденциальность']],activeProfileId:()=>'clean',
+    const ctx={state,st:{dnscrypt_engine:engine,engine_installed:1},root,PROFILE:[['clean','Без фильтрации'],['privacy','Конфиденциальность']],activeProfileId:()=>'clean',dnscryptOptionsChanged:()=>false,
       E:(tag,attrs,children)=>attrs.class==='dm-seg dm-profile-seg'?{appendChild:b=>buttons.push(b)}:{tag,children},btn:(label,cls,click,opts)=>({label,click,opts}),applyProfile:(...args)=>calls.push(args),renderProfiles:()=>{}};
     vm.createContext(ctx);const snippet=extract("  var g=E('div',{'class':'dm-seg dm-profile-seg'});","  var current=activeProfileLabel(st);");
     vm.runInContext(snippet,ctx);if(ctx.profileAction!==null)throw Error('profile apply visible before changes');
