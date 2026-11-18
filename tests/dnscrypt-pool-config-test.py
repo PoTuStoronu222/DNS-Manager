@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Validate a single-process DNSCrypt configuration for several DoH endpoints."""
 import base64
+import os
 import pathlib
 import subprocess
 import tomllib
@@ -39,4 +40,13 @@ for urls, bootstrap in [('', '1.1.1.1'),
     result = generate(urls, bootstrap)
     assert result.returncode != 0 and result.stdout == '', (urls, result.stdout, result.stderr)
 
-print('Single-process DoH pool configuration and failure checks passed')
+native = (root / 'libexec/dns-manager-dnscrypt-catalog.conf').read_text().splitlines()[2].split('|')[4]
+for strategy in ('p2', 'ph', 'first', 'random'):
+    env = {**os.environ, 'DNS_MANAGER_PROTOCOL': 'native', 'DNS_MANAGER_LB_STRATEGY': strategy}
+    result = subprocess.run(['sh', str(generator), '5053', '1.1.1.1'], input=native + '\n',
+                            text=True, capture_output=True, env=env)
+    assert result.returncode == 0, result.stderr
+    config = tomllib.loads(result.stdout)
+    assert config['dnscrypt_servers'] is True and config['doh_servers'] is False
+    assert config['lb_strategy'] == strategy
+print('Single-process DoH and native DNSCrypt pool configuration checks passed')

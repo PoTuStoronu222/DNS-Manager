@@ -30,6 +30,10 @@ printf 'one|clean|One|90|OK\ntwo|clean|Two|100|OK\n' > "$TEST_RESULTS"
 dnscrypt_catalog_snapshot() { [ "$1" = clean ] && printf 'native_adguard_unfiltered|20\n'; }
 dnscrypt_select_profile clean > "$TMP_DIR/result"
 [ "$(sed -n '1s/|.*//p' "$TMP_DIR/result")" = native_adguard_unfiltered ]
+DNS_MANAGER_PROTOCOL=native dnscrypt_select_profile clean > "$TMP_DIR/native-only"
+grep -q '^native_adguard_unfiltered|' "$TMP_DIR/native-only"
+! grep -q '^one|' "$TMP_DIR/native-only"
+
 dnscrypt_catalog_snapshot() {
     [ "$1" = native ] || return 1
     printf 'native_quad9_unfiltered|20\nnative_adguard_unfiltered|10\nnative_adguard_family|1\n'

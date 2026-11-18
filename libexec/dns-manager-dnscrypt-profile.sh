@@ -15,6 +15,9 @@ dnscrypt_select_profile() (
     trap cleanup_dnscrypt_profile EXIT
     trap 'exit 1' HUP INT TERM
     # This invokes the existing direct DoH tests, including DNSSEC screening.
+    if [ "${DNS_MANAGER_PROTOCOL:-mixed}" = native ]; then
+        SLOT_1=''; SLOT_2=''; SLOT_3=''; SLOT_4=''; SLOT_5=''; SLOT_6=''
+    else
     started=1
     if profile_apply_begin "$goal" >&2; then
         DNSCRYPT_FASTEST_ALL=1 auto_fill_slots "$goal" >&2 || {
@@ -23,6 +26,7 @@ dnscrypt_select_profile() (
     else
         [ "$goal" = dnssec ] && command -v dig >/dev/null 2>&1 || return 1
         SLOT_1=''; SLOT_2=''; SLOT_3=''; SLOT_4=''; SLOT_5=''; SLOT_6=''
+    fi
     fi
     count=0
     for id in "${SLOT_1:-}" "${SLOT_2:-}" "${SLOT_3:-}" "${SLOT_4:-}" "${SLOT_5:-}" "${SLOT_6:-}"; do
@@ -57,6 +61,9 @@ dnscrypt_select_profile() (
         done < "$tmp.native"
         rm -f "$tmp.native"
     fi
-    [ -s "$tmp" ] || return 1
+    if [ ! -s "$tmp" ]; then
+        echo 'Для выбранного профиля и протокола не найдено доступных серверов.' >&2
+        return 1
+    fi
     sort -t'|' -k4,4n -k3,3n "$tmp" | head -n 6 | cut -d'|' -f1,2
 )
