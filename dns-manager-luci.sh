@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.145"
+VERSION="2.146"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -1365,9 +1365,9 @@ zurich|Zürich|CH
 EOF_LOCATIONS
 while IFS='|' read -r name stamp category description; do
     case "$name" in
-        adguard-dns-family|cisco-familyshield|cleanbrowsing-adult|cleanbrowsing-family) category=family ;;
+        adguard-dns-family|cisco-familyshield|cleanbrowsing-adult|cleanbrowsing-family|sfw.scaleway-fr) category=family ;;
         adguard-dns) category=adblock ;;
-        cleanbrowsing-security) category=security ;;
+        cleanbrowsing-security|quad9-dnscrypt-ip4-filter-ecs-pri|quad9-dnscrypt-ip4-filter-pri) category=security ;;
     esac
     display=$(printf '%s\n' "$name" | awk '{
         if ($0 ~ /^cs-/) sub(/^cs-/, "CryptoStorm-")
@@ -2140,7 +2140,7 @@ DM_SOURCE_BASE="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/$_d
 COMPANION_URL="$DM_SOURCE_BASE/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.145"
+SELF_VERSION="2.146"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
