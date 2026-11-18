@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion and full installer
-# Version: 2.117
+# Version: 2.118
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="2.117"
+VERSION="2.118"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -1775,7 +1775,7 @@ DM_SOURCE_BASE="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/$_d
 COMPANION_URL="$DM_SOURCE_BASE/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="2.117"
+SELF_VERSION="2.118"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -8149,6 +8149,41 @@ function warmupFetch(route,allowed){
   });
   return Promise.reject(new Error('unsupported warmup'));
 }
+function setupTabPrefetch(root){
+  if(window.dmTabPrefetchCleanup)window.dmTabPrefetchCleanup();
+  var timer=null,pending=false,generation=window.dmCacheGeneration||0;
+  function allowed(){
+    return generation===(window.dmCacheGeneration||0)&&rootAlive(root)&&window.dmCurrentRoot===root&&!document.hidden&&
+      !state.statusFromCache&&!state.busy&&!state.jobRunning&&!state.catalogLoading&&!state.logLoading&&!state.lanDevicesLoading&&
+      !state.updatingAll&&!state.managerUpdating&&!state.hdpUpdating&&!(state.versionCheck&&state.versionCheck.running)&&
+      !Object.keys(window.dmStatusPromises||{}).length;
+  }
+  function prefetch(ev){
+    var link=ev.target&&ev.target.closest&&ev.target.closest('a[href*="/dns-manager/"]');
+    var match=link&&String(link.getAttribute('href')||'').match(/\/dns-manager\/(dashboard|doh|slots|devices|network|time|catalog|log)(?:[?#]|$)/);
+    if(!match||match[1]===currentRoute()||pending||window.dmWarmupBusy)return;
+    var route=match[1]==='slots'?'doh':match[1],key=statusCacheKey(route);
+    if(routeCacheEntry(key)||!allowed())return;
+    if(timer)window.clearTimeout(timer);
+    timer=window.setTimeout(function(){
+      timer=null;if(!allowed()||routeCacheEntry(key)||window.dmWarmupBusy)return;
+      pending=true;window.dmWarmupBusy=true;
+      callRuntime().then(function(rt){
+        if(!allowed()||!rt||rt.ok!==true||rt.memory_available_kb==null||!isFinite(Number(rt.memory_available_kb))||Number(rt.memory_available_kb)<32768||
+           rt.cpu_load==null||!isFinite(Number(rt.cpu_load))||Number(rt.cpu_load)>75)return null;
+        return warmupFetch(route,allowed);
+      }).then(function(v){
+        if(allowed()&&v&&v.data&&v.data.ok===true&&!routeCacheEntry(key))saveRouteCache(key,v.data,v.aux);
+      }).catch(function(){}).then(function(){pending=false;window.dmWarmupBusy=false;});
+    },100);
+  }
+  ['mouseover','focusin','touchstart'].forEach(function(name){document.addEventListener(name,prefetch,true);});
+  window.dmTabPrefetchCleanup=function(){
+    if(timer)window.clearTimeout(timer);
+    ['mouseover','focusin','touchstart'].forEach(function(name){document.removeEventListener(name,prefetch,true);});
+    window.dmTabPrefetchCleanup=null;
+  };
+}
 function scheduleRouteWarmup(root){
   var routes=['doh','network','time','dashboard','devices','catalog','log'],index=0;
   var originalRoute=currentRoute(),generation=window.dmCacheGeneration||0;
@@ -8160,18 +8195,19 @@ function scheduleRouteWarmup(root){
   }
   function next(){
     if(generation!==(window.dmCacheGeneration||0)||!rootAlive(root)||window.dmCurrentRoot!==root||currentRoute()!==originalRoute||index>=routes.length)return;
-    if(!allowed()){window.setTimeout(next,10000);return;}
+    if(!allowed()||window.dmWarmupBusy){window.setTimeout(next,10000);return;}
     var route=routes[index++],key=statusCacheKey(route);
     if(routeCacheEntry(key)){window.setTimeout(next,1000);return;}
+    window.dmWarmupBusy=true;
     callRuntime().then(function(rt){
       if(!allowed()||!rt||rt.ok!==true||rt.memory_available_kb==null||!isFinite(Number(rt.memory_available_kb))||Number(rt.memory_available_kb)<32768||
          rt.cpu_load==null||!isFinite(Number(rt.cpu_load))||Number(rt.cpu_load)>75)return null;
       return warmupFetch(route,allowed);
     }).then(function(v){
       if(allowed()&&v&&v.data&&v.data.ok===true&&!routeCacheEntry(key))saveRouteCache(key,v.data,v.aux);
-    }).catch(function(){}).then(function(){window.setTimeout(next,5000);});
+    }).catch(function(){}).then(function(){window.dmWarmupBusy=false;window.setTimeout(next,3000);});
   }
-  window.setTimeout(next,10000);
+  window.setTimeout(next,3000);
 }
 function checkUpdate(root,force){
   if(state.updatingAll||(state.versionCheck&&state.versionCheck.running))return;
@@ -9142,7 +9178,7 @@ return baseclass.extend({
       log:['dm-header','dm-log']
     }[route]||['dm-header','dm-overview'];
     ids.forEach(function(id){root.appendChild(E('section',{'id':id}));});
-    injectStyle(root);window.dmState=st||{};state.activeTab=route;window.dmCurrentRoot=root;
+    injectStyle(root);window.dmState=st||{};state.activeTab=route;window.dmCurrentRoot=root;setupTabPrefetch(root);
     if(st&&st.__dmLoading){
       renderHeader(root,cachedHeaderStatus(),'Загружаю данные…');
       var loading=E('div',{'id':'dm-initial-loading'});
@@ -9174,7 +9210,7 @@ return baseclass.extend({
     },0);
     return root;
   },
-  remove:function(){stopAutoStatus();}
+  remove:function(){stopAutoStatus();if(window.dmTabPrefetchCleanup)window.dmTabPrefetchCleanup();}
 });
 EOF_COMMON
     chmod 0644 "$COMMON_STAGE"
