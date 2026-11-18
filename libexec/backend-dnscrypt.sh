@@ -356,6 +356,30 @@ reset_start() {
     printf '{"ok":true,"job":"action"}\n'
 }
 
+dnscrypt_native_dnssec_probe() (
+    probe_url=$1
+    probe_dir=$(mktemp -d "$RUNTIME_DIR/dnssec-probe.XXXXXX") || return 1
+    probe_pid=''
+    trap '[ -z "$probe_pid" ] || { kill "$probe_pid" 2>/dev/null || :; wait "$probe_pid" 2>/dev/null || :; }; rm -rf "$probe_dir"' EXIT
+    trap 'exit 1' HUP INT TERM
+    probe_offset=$(printf '%s' "$probe_url" | cksum | awk '{print $1 % 12000}')
+    probe_port=$((49152 + ($$ % 12000 + probe_offset) % 12000))
+    sh "$HELPERS/dns-manager-dnscrypt-config.sh" "$probe_port" "$probe_url" "$BOOTSTRAP_DNS" > "$probe_dir/config" || return 1
+    awk 'NR==1 {print; print "use_syslog = false"; next} {if ($0 == "cache = true") $0 = "cache = false"; print}' "$probe_dir/config" > "$probe_dir/config-test" || return 1
+    dnscrypt-proxy -config "$probe_dir/config-test" -netprobe-timeout 5 > "$probe_dir/log" 2>&1 &
+    probe_pid=$!
+    probe_wait=0
+    while [ "$probe_wait" -lt 15 ] && kill -0 "$probe_pid" 2>/dev/null; do
+        if grep -q 'Server with the lowest initial latency:' "$probe_dir/log"; then
+            dnssec_probe_local "$probe_port"
+            return $?
+        fi
+        sleep 1
+        probe_wait=$((probe_wait + 1))
+    done
+    return 1
+)
+
 dnscrypt_catalog_snapshot() (
     probe_scope=${1:-all}
     load_manager_functions || exit 1

@@ -7,9 +7,24 @@ import subprocess
 import tempfile
 
 root = pathlib.Path(__file__).resolve().parent.parent
-backend = root / 'libexec/backend-dnscrypt.sh'
+backend_source = root / 'libexec/backend-dnscrypt.sh'
 with tempfile.TemporaryDirectory(prefix='dnscrypt-rpc-') as tmp:
     d = pathlib.Path(tmp)
+    # OpenWrt supplies jshn through libubox; the local test supplies the same
+    # shell interface to exercise status_extra and RPC dispatch off-device.
+    backend = d / 'backend-dnscrypt.sh'
+    backend.write_text(backend_source.read_text().replace(
+        '. /usr/share/libubox/jshn.sh', '. "$LAB_ROOT/jshn.sh"'))
+    (d / 'jshn.sh').write_text('''
+json_init() { :; }
+json_add_string() { :; }
+json_add_int() { :; }
+json_add_object() { :; }
+json_add_array() { :; }
+json_close_object() { :; }
+json_close_array() { :; }
+json_dump() { printf '%s' '{"dnscrypt_engine":"dnscrypt-proxy2"}'; }
+''')
     helpers = d / 'helpers'
     helpers.mkdir()
     jobs = d / 'jobs'
@@ -101,7 +116,8 @@ dnscrypt_apply_profile_pool() {
                               capture_output=True, env={**env, **(extra or {})})
 
     assert json.loads(run('call', 'set_slot', input='{}').stdout)['ok'] is False
-    assert json.loads(run('call', 'log', input='{}').stdout)['method'] == 'log'
+    log_reply = json.loads(run('call', 'log', input='{}').stdout)
+    assert log_reply['method'] == 'log' and log_reply['dnscrypt_engine'] == 'dnscrypt-proxy2'
     assert json.loads(run('call', 'set_profile', input='{"profile":"invalid"}').stdout)['ok'] is False
     (config / 'dnscrypt-engine').write_text('https-dns-proxy\n')
     assert json.loads(run('call', 'set_profile', input='{"profile":"clean"}').stdout)['ok'] is False

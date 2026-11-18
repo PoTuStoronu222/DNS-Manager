@@ -30,6 +30,24 @@ printf 'one|clean|One|90|OK\ntwo|clean|Two|100|OK\n' > "$TEST_RESULTS"
 dnscrypt_catalog_snapshot() { [ "$1" = clean ] && printf 'native_adguard_unfiltered|20\n'; }
 dnscrypt_select_profile clean > "$TMP_DIR/result"
 [ "$(sed -n '1s/|.*//p' "$TMP_DIR/result")" = native_adguard_unfiltered ]
+dnscrypt_catalog_snapshot() {
+    [ "$1" = native ] || return 1
+    printf 'native_quad9_unfiltered|20\nnative_adguard_unfiltered|10\nnative_adguard_family|1\n'
+}
+dnscrypt_native_dnssec_probe() { case "$1" in *ADTkuOS45LjEwOjg0NDM*) return 0;; *) return 1;; esac; }
+dnscrypt_select_profile dnssec > "$TMP_DIR/result"
+grep -q '^native_quad9_unfiltered|' "$TMP_DIR/result"
+! grep -q '^native_adguard_' "$TMP_DIR/result"
+(
+    mkdir "$TMP_DIR/bin"
+    printf '#!/bin/sh\nexit 0\n' > "$TMP_DIR/bin/dig"
+    chmod +x "$TMP_DIR/bin/dig"
+    PATH="$TMP_DIR/bin:$PATH"; export PATH
+    FAIL_BEGIN=1
+    dnscrypt_select_profile dnssec > "$TMP_DIR/native-only"
+    grep -q '^native_quad9_unfiltered|' "$TMP_DIR/native-only"
+    ! grep -q '^one|' "$TMP_DIR/native-only"
+)
 unset -f dnscrypt_catalog_snapshot 2>/dev/null || unset dnscrypt_catalog_snapshot
 
 : > "$TMP_DIR/calls"
