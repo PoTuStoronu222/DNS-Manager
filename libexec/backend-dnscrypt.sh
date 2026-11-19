@@ -485,6 +485,9 @@ dnscrypt_catalog_snapshot() (
     total=$((doh_total + native_total))
     [ "$total" -gt 0 ] || { [ "$probe_scope" != all ] && exit 0; exit 1; }
     [ "$probe_scope" != all ] || printf 'name=dnscrypt_catalog\nprogress_total=%s\nprogress_done=0\nprogress_ok=0\nprogress_fail=0\n' "$total" >> "$JOB_DIR/health/state"
+    if [ "${DNS_MANAGER_PROFILE_PROGRESS:-0}" = 1 ]; then
+        printf 'phase=Проверяю серверы DNSCrypt\nprogress_total=%s\nprogress_done=0\n' "$total" >> "$JOB_DIR/profile/state"
+    fi
     : > "$dir/results"
     offset=1; success_count=0; failed_count=0; done_count=0
     if [ "$doh_total" -gt 0 ]; then
@@ -607,6 +610,9 @@ dnscrypt_catalog_snapshot() (
             done < "$dir/ids"
         fi
         done_count=$((doh_total + end)); [ "$done_count" -le "$total" ] || done_count=$total
+        if [ "${DNS_MANAGER_PROFILE_PROGRESS:-0}" = 1 ]; then
+            printf 'progress_done=%s\n' "$done_count" >> "$JOB_DIR/profile/state"
+        fi
         [ "$probe_scope" != all ] || printf 'progress_done=%s\nprogress_ok=%s\nprogress_fail=%s\n' "$done_count" "$success_count" "$failed_count" >> "$JOB_DIR/health/state"
         offset=$((end + 1))
     done

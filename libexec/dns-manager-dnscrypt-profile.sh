@@ -47,7 +47,10 @@ dnscrypt_select_profile() (
     if command -v dnscrypt_catalog_snapshot >/dev/null 2>&1; then
         native_scope=$goal; case "$goal" in all) native_scope=native;; esac
         snapshot_rc=0
-        dnscrypt_catalog_snapshot "$native_scope" > "$tmp.native" || snapshot_rc=$?
+        DNS_MANAGER_PROFILE_PROGRESS=1 dnscrypt_catalog_snapshot "$native_scope" > "$tmp.native" || snapshot_rc=$?
+        if [ -n "${JOB_DIR:-}" ]; then
+            printf 'phase=Отбираю подходящие серверы профиля\nprogress_total=0\n' >> "$JOB_DIR/profile/state"
+        fi
         if [ "$snapshot_rc" -ne 0 ]; then
             echo 'Не удалось проверить серверы DNSCrypt. Проверьте доступность службы и сети.' >&2
         fi
