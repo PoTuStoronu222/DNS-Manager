@@ -4,13 +4,13 @@
 
 **Управление защищённым DNS на роутере OpenWrt через LuCI**
 
-<img src="https://readme-typing-svg.demolab.com?font=JetBrains+Mono&size=21&duration=2600&pause=900&color=2F81F7&center=true&vCenter=true&width=840&lines=DNS+over+HTTPS+%E2%80%A2+DNSCrypt+%E2%80%A2+OpenWrt;DNS+profiles+%E2%80%A2+device+rules+%E2%80%A2+LuCI" alt="DNS Manager">
+<img src="https://readme-typing-svg.demolab.com?font=JetBrains+Mono&size=21&duration=2600&pause=900&color=2F81F7&center=true&vCenter=true&width=600&lines=DNS+over+HTTPS+%E2%80%A2+DNSCrypt+%E2%80%A2+OpenWrt;DNS+profiles+%E2%80%A2+device+rules+%E2%80%A2+LuCI" alt="DNS Manager">
 
-[![OpenWrt](https://img.shields.io/badge/OpenWrt-ready-00B5E2?style=for-the-badge&logo=openwrt&logoColor=white)](https://openwrt.org/)
-[![LuCI](https://img.shields.io/badge/Управление-LuCI-5E5CE6?style=for-the-badge)](#вкладки-dns-manager)
-[![DoH](https://img.shields.io/badge/DNS-over_HTTPS-00A67E?style=for-the-badge)](#движки-и-серверы)
-[![DNSCrypt](https://img.shields.io/badge/DNSCrypt-Proxy_2-00A67E?style=for-the-badge)](#движки-и-серверы)
-[![License](https://img.shields.io/badge/License-Apache_2.0-blue?style=for-the-badge)](LICENSE)
+[![OpenWrt](https://img.shields.io/badge/OpenWrt-ready-00B5E2?style=flat-square&logo=openwrt&logoColor=white)](https://openwrt.org/)
+[![LuCI](https://img.shields.io/badge/Управление-LuCI-5E5CE6?style=flat-square)](#вкладки-dns-manager)
+[![DoH](https://img.shields.io/badge/DNS-over_HTTPS-00A67E?style=flat-square)](#движки-и-серверы)
+[![DNSCrypt](https://img.shields.io/badge/DNSCrypt-Proxy_2-00A67E?style=flat-square)](#движки-и-серверы)
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue?style=flat-square)](LICENSE)
 
 [![GitHub stars](https://img.shields.io/github/stars/PoTuStoronu222/DNS-Manager?style=flat-square&logo=github)](https://github.com/PoTuStoronu222/DNS-Manager/stargazers)
 [![Просмотры](https://gitviews.com/repo/PoTuStoronu222/DNS-Manager.svg?style=flat-square&label=Views&label-color=%23555&color=%2310B981)](https://gitviews.com/)
