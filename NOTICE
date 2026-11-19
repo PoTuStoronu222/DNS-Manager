@@ -1,4 +1,9 @@
 DNS Manager
 Copyright 2026 PoTuStoronu222
 
-This product includes software developed by the DNS Manager contributors.
+Author: PoTuStoronu222
+https://github.com/PoTuStoronu222/DNS-Manager
+
+DNS Manager can download, install and configure third-party software,
+including HTTPS DNS Proxy and DNSCrypt Proxy 2. These components are
+provided by their respective authors under their own licenses.
