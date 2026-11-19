@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion and full installer
-# Version: 3.30.1
+# Version: 3.30.2
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="3.30.1"
+VERSION="3.30.2"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -2146,7 +2146,7 @@ EOF_MENU
     "description": "DNS Manager native LuCI interface",
     "read": {
       "ubus": {
-        "dns_manager": [ "dnscrypt_test", "dnscrypt_log", "system_dns_test", "status", "runtime", "doh_status", "network_status", "lan_devices", "time_status", "page_meta", "catalog", "job", "job_status", "multi", "log", "update_check", "uninstall_status" ]
+        "dns_manager": [ "dnscrypt_test", "dnscrypt_log", "system_dns_test", "status", "runtime", "connectivity", "doh_status", "network_status", "lan_devices", "time_status", "page_meta", "catalog", "job", "job_status", "multi", "log", "update_check", "uninstall_status" ]
       }
     },
     "write": {
@@ -2194,7 +2194,7 @@ DM_SOURCE_BASE="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/$_d
 COMPANION_URL="$DM_SOURCE_BASE/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="3.30.1"
+SELF_VERSION="3.30.2"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -3408,6 +3408,18 @@ runtime_json() {
     _mem_a="$(awk '/MemAvailable:/ {print $2;exit}' /proc/meminfo 2>/dev/null || true)"; [ -n "$_mem_a" ] || _mem_a=0
     printf '{"ok":true,"uptime":'; json_quote "$_uptime"
     printf ',"cpu_load":%s,"memory_total_kb":%s,"memory_available_kb":%s}' "$_load" "$_mem_t" "$_mem_a"
+}
+connectivity_json() {
+    _ping_output="$(ping -c 1 -W 2 ya.ru 2>/dev/null)"
+    _ping_rc=$?
+    if [ "$_ping_rc" -eq 0 ]; then
+        _latency="$(printf '%s\n' "$_ping_output" | awk 'match($0, /time[=<][0-9]+([.][0-9]+)?/) {print substr($0, RSTART+5, RLENGTH-5); exit}')"
+        printf '{"ok":true,"reachable":true,"latency":'
+        json_quote "$_latency"
+        printf '}\n'
+    else
+        printf '{"ok":true,"reachable":false,"latency":""}\n'
+    fi
 }
 detect_steer_dns_runtime() {
     STEER_DNS_ACTIVE=0
@@ -6043,7 +6055,7 @@ case "${1:-}" in
     mutation_worker) mutation_worker "$2" "$3" "$4";;
     test_worker) test_worker "$2" "$3";;
     list)
-        printf '{"status":{},"runtime":{},"doh_status":{},"network_status":{},"lan_devices":{},"set_device_dns":{"mac":"String","slots":"String"},"set_cache":{"total":0,"ttl":0},"time_status":{},"page_meta":{},"catalog":{"category":"String","offset":0,"limit":0,"only_ok":0},"update_check":{"force":0},"update":{},"update_manager":{},"update_hdp":{},"update_catalog":{},"update_all":{},"update_background":{},"test_combined":{},"switch_engine":{"target_engine":"String"},"dnscrypt_test":{},"dnscrypt_latencies":{"ids":"String"},"dnscrypt_cancel":{},"test_page":{"ids":"String"},"test_page_cancel":{},"dnscrypt_log":{},"system_dns_test":{},"set_profile":{"profile":"String"},"set_regional":{"enabled":0},"reset_dns":{"mode":"String"},"uninstall":{},"uninstall_status":{},"set_slot":{"slot":"String","id":"String","expected":"String"},"set_slot_domains":{"slot":"String","domains":"String"},"add_custom_dns":{"name":"String","url":"String"},"delete_custom_dns":{"id":"String"},"set_setting":{"name":"String","enabled":0},"set_bootstrap":{"mode":"String","addresses":"String","preset_ids":"String","extra_addresses":"String"},"set_watchdog_setting":{"name":"String","value":0},"set_watchdog_settings":{"interval":0,"threshold":0,"repair_cooldown":0,"max_restarts":0,"guard_interval":0},"set_ntp":{"preset":"String"},"set_test_age":{"category":"String","hours":0},"test_all":{},"test_current":{},"test_one":{"id":"String"},"test_system":{},"job":{"id":"String"},"job_status":{"id":"String"},"multi":{"calls":"String"},"log":{"lines":0}}\n'
+        printf '{"status":{},"runtime":{},"connectivity":{},"doh_status":{},"network_status":{},"lan_devices":{},"set_device_dns":{"mac":"String","slots":"String"},"set_cache":{"total":0,"ttl":0},"time_status":{},"page_meta":{},"catalog":{"category":"String","offset":0,"limit":0,"only_ok":0},"update_check":{"force":0},"update":{},"update_manager":{},"update_hdp":{},"update_catalog":{},"update_all":{},"update_background":{},"test_combined":{},"switch_engine":{"target_engine":"String"},"dnscrypt_test":{},"dnscrypt_latencies":{"ids":"String"},"dnscrypt_cancel":{},"test_page":{"ids":"String"},"test_page_cancel":{},"dnscrypt_log":{},"system_dns_test":{},"set_profile":{"profile":"String"},"set_regional":{"enabled":0},"reset_dns":{"mode":"String"},"uninstall":{},"uninstall_status":{},"set_slot":{"slot":"String","id":"String","expected":"String"},"set_slot_domains":{"slot":"String","domains":"String"},"add_custom_dns":{"name":"String","url":"String"},"delete_custom_dns":{"id":"String"},"set_setting":{"name":"String","enabled":0},"set_bootstrap":{"mode":"String","addresses":"String","preset_ids":"String","extra_addresses":"String"},"set_watchdog_setting":{"name":"String","value":0},"set_watchdog_settings":{"interval":0,"threshold":0,"repair_cooldown":0,"max_restarts":0,"guard_interval":0},"set_ntp":{"preset":"String"},"set_test_age":{"category":"String","hours":0},"test_all":{},"test_current":{},"test_one":{"id":"String"},"test_system":{},"job":{"id":"String"},"job_status":{"id":"String"},"multi":{"calls":"String"},"log":{"lines":0}}\n'
         ;;
     call)
         case "${2:-}" in
@@ -6054,6 +6066,7 @@ case "${1:-}" in
             time_status) time_status_json;;
             page_meta) page_meta_json;;
             runtime) runtime_json;;
+            connectivity) connectivity_json;;
             catalog) INPUT="$(cat 2>/dev/null || true)"; catalog_json;;
             update_check) INPUT="$(cat 2>/dev/null || true)"; job_start_version_check;;            update_catalog) update_catalog_json;;            update_all) update_all_json;;            update) update_json;;            update_manager) update_manager_json;;            update_hdp) update_hdp_json;;
             update_background) background_start update;;
@@ -6121,7 +6134,7 @@ EOF_RPC_WRAPPER
 'require ui';
 'require session';
 
-// DNS Manager LuCI common module version: 3.30.1
+// DNS Manager LuCI common module version: 3.30.2
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -6148,6 +6161,7 @@ var callTimeStatus = dmRpc({ object:'dns_manager', method:'time_status', expect:
 var callPageMeta = dmRpc({ object:'dns_manager', method:'page_meta', expect:{} });
 var callBoardInfo = rpc.declare({ object:'system', method:'info', expect:{} });
 var callRuntime = dmRpc({ object:'dns_manager', method:'runtime', expect:{} });
+var callConnectivity = dmRpc({ object:'dns_manager', method:'connectivity', expect:{} });
 function statusDetail(){return currentRoute()==='network'?1:0;}
 var callCatalog = dmRpc({ object:'dns_manager', method:'catalog', params:['category','offset','limit','only_ok'], expect:{} });
 var callUpdateCheck = dmRpc({ object:'dns_manager', method:'update_check', params:['force'], expect:{} });
@@ -6700,6 +6714,7 @@ function buildSystemCard(st){
     row('Платформа',shortVal(st.target)),
     row('OpenWrt',shortVal(st.openwrt)),
     row('Время работы',E('span',{'id':'dm-runtime-uptime','class':'dm-uptime'},uptime(up))),
+    row('Интернет (ya.ru)',state.internetCheck==null?badge('dm-muted','проверяю…'):(state.internetCheck.error?badge('dm-muted','не удалось проверить'):(state.internetCheck.reachable?badge('dm-ok',state.internetCheck.latency?state.internetCheck.latency+' мс · отвечает':'отвечает'):badge('dm-warn','нет ответа от ya.ru')))),
     row('IPv4',E('span',{'id':'dm-runtime-ipv4'},ipv4)),
     row('IPv6',E('span',{'id':'dm-runtime-ipv6'},ipv6)),
     row('LAN',shortVal(st.lan))
@@ -9861,12 +9876,23 @@ function pollSystem(root){
     state.systemPollBusy=false;
   });
 }
+function pollConnectivity(root){
+  if(!rootAlive(root)||document.hidden||currentRoute()!=='dashboard'||state.internetPollBusy)return;
+  state.internetPollBusy=true;
+  callConnectivity().then(function(result){
+    if(!rootAlive(root)||document.hidden||currentRoute()!=='dashboard')return;
+    state.internetCheck=result&&result.ok?result:{error:true};
+    renderSystemCard(root);
+  }).catch(function(){
+    if(rootAlive(root)&&currentRoute()==='dashboard'){state.internetCheck={error:true};renderSystemCard(root);}
+  }).then(function(){state.internetPollBusy=false;});
+}
 function startAutoStatus(root){
   stopAutoStatus();
   state.systemPollBusy=false;
   var tick=0;
   var watchdogPollBusy=false;
-  if(currentRoute()==='dashboard')pollSystem(root);
+  if(currentRoute()==='dashboard'){pollSystem(root);pollConnectivity(root);}
   dashboardPollTimer=setInterval(function(){
     if(!rootAlive(root)){
       stopAutoStatus();
@@ -9878,6 +9904,7 @@ function startAutoStatus(root){
     if(route==='dashboard')tickLocalUptime(root);
     if(route==='dashboard'&&tick%5===0){
       pollSystem(root);
+      pollConnectivity(root);
     }
     if(tick%30===0&&!watchdogPollBusy){
       watchdogPollBusy=true;
@@ -9973,7 +10000,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 3.30.1
+// DNS Manager LuCI version: 3.30.2
 return view.extend({
   load: DM.load,
   render: DM.render,
