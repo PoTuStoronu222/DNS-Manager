@@ -10,6 +10,7 @@
 [![LuCI](https://img.shields.io/badge/Управление-LuCI-5E5CE6?style=for-the-badge)](#вкладки-dns-manager)
 [![DoH](https://img.shields.io/badge/DNS-over_HTTPS-00A67E?style=for-the-badge)](#движки-и-серверы)
 [![DNSCrypt](https://img.shields.io/badge/DNSCrypt-Proxy_2-00A67E?style=for-the-badge)](#движки-и-серверы)
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue?style=for-the-badge)](LICENSE)
 
 [![GitHub stars](https://img.shields.io/github/stars/PoTuStoronu222/DNS-Manager?style=flat-square&logo=github)](https://github.com/PoTuStoronu222/DNS-Manager/stargazers)
 [![Просмотры](https://gitviews.com/repo/PoTuStoronu222/DNS-Manager.svg?style=flat-square&label=Views&label-color=%23555&color=%2310B981)](https://gitviews.com/)
@@ -131,6 +132,12 @@ logread -e dns-manager
 В режиме DNSCrypt локальный прокси использует порт `5053`, а устройства обращаются к `dnsmasq` на порту `53`.
 
 ---
+
+## Лицензия и безопасность
+
+DNS Manager распространяется на условиях [Apache License 2.0](LICENSE). Автор — **PoTuStoronu222**; уведомление об авторстве находится в [NOTICE](NOTICE).
+
+Об уязвимостях можно сообщить приватно через GitHub. Порядок описан в [политике безопасности](SECURITY.md).
 
 <div align="center">
   <sub>DNS Manager · OpenWrt · LuCI</sub>
