@@ -329,7 +329,7 @@ ok "embedded backend syntax"
 # newest automatic check. Test the actual RPC JSON with and without its files.
 awk '/^page_header_json\(\) \{/,/^}/' "$tmp/backend.sh" > "$tmp/log_header.sh"
 awk '/^log_json\(\) \{/,/^}/' "$tmp/backend.sh" >> "$tmp/log_header.sh"
-sed "s|/var/log/dns-manager.log|$tmp/log-fixture|g" "$tmp/log_header.sh" > "$tmp/log_header_test.sh"
+sed -e "s|/var/log/dns-manager.log|$tmp/log-fixture|g" -e "s|/tmp/dns-manager-dnscrypt-query.log|$tmp/dnscrypt-query-fixture|g" "$tmp/log_header.sh" > "$tmp/log_header_test.sh"
 printf '%s\n' '[2026-11-02 08:53:15] Удаляется DNS-секция: https://example.test/' '[2026-11-02 08:53:21] Перезапуск dnsmasq: udhcpc: no lease, failing' > "$tmp/log-fixture"
 mkdir -p "$tmp/log-state" "$tmp/log-persist"
 printf 'timestamp=100\ntest_scope=all\n' > "$tmp/log-state/dns-test-results.meta"
@@ -345,6 +345,46 @@ printf 'timestamp=200\ncategory=clean\n' > "$tmp/log-state/dns-watchdog-check-re
 ) > "$tmp/log-header.json"
 node -e 'const x=require(process.argv[1]);if(!x.ok||x.luci_version!=="2.26"||x.last_full_test!=="100"||x.watchdog_last_check!==200||x.watchdog_last_category!=="clean"||!x.log.includes("проблем: 1")||!x.log.includes("замена подтверждена")||!x.log.includes("no lease, failing")||x.log.includes("проблем: 0")||x.log.includes("Удаляется DNS-секция"))process.exit(1)' "$tmp/log-header.json" || fail "journal filtering or background events are incorrect"
 ok "journal RPC includes version and current check metadata"
+
+
+# Query log is a separate dnscrypt-proxy2 TSV file. The regular journal must
+# show only its bounded tail when both the active engine and setting allow it.
+printf '%s\n' '2026-11-19 first.example A' '2026-11-19 second.example AAAA' '2026-11-19 third.example A' > "$tmp/dnscrypt-query-fixture"
+(
+    STATE_DIR="$tmp/log-state"; PERSIST_STATE_DIR="$tmp/log-persist"
+    test_engine=dnscrypt-proxy2; test_query_logging=1
+    read_installed_luci_version() { printf 2.26; }
+    cfg_get() { :; }
+    logread() { :; }
+    json_quote() { node -e 'process.stdout.write(JSON.stringify(process.argv[1]))' "$1"; }
+    uci() {
+        [ "$1" = -q ] && [ "$2" = get ] || return 1
+        case "$3" in
+            dns-manager.global.active_engine) printf '%s\n' "$test_engine" ;;
+            dns-manager.global.dc_query_log) printf '%s\n' "$test_query_logging" ;;
+            *) return 1 ;;
+        esac
+    }
+    . "$tmp/log_header_test.sh"
+    log_json 2 > "$tmp/query-log-enabled.json"
+    test_query_logging=0
+    log_json 2 > "$tmp/query-log-disabled.json"
+    test_query_logging=1; test_engine=https-dns-proxy
+    log_json 2 > "$tmp/query-log-other-engine.json"
+    test_engine=dnscrypt-proxy2
+    : > "$tmp/dnscrypt-query-fixture"
+    log_json 2 > "$tmp/query-log-empty.json"
+) || fail "DNSCrypt query journal RPC test failed"
+node -e '
+const fs=require("fs"), dir=process.argv[1];
+const read=n=>JSON.parse(fs.readFileSync(dir+"/"+n+".json", "utf8")).log;
+const on=read("query-log-enabled");
+const off=read("query-log-disabled");
+const other=read("query-log-other-engine");
+const empty=read("query-log-empty");
+if(!on.includes("DNS-запросы DNSCrypt") || !on.includes("second.example") || !on.includes("third.example") || on.includes("first.example") || off.includes("DNS-запросы DNSCrypt") || off.includes("second.example") || other.includes("DNS-запросы DNSCrypt") || !empty.includes("Записей пока нет.")) process.exit(1);
+' "$tmp" || fail "DNSCrypt query log must be bounded, conditional and visible in journal"
+ok "DNSCrypt query journal respects active engine and privacy setting"
 
 # The dashboard and Network Tuning use different RPC read methods. Both must
 # expose the saved auto-replacement flag; otherwise the tuning toggle renders
