@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion and full installer
-# Version: 3.30.8
+# Version: 3.30.9
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="3.30.8"
+VERSION="3.30.9"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -2194,7 +2194,7 @@ DM_SOURCE_BASE="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/$_d
 COMPANION_URL="$DM_SOURCE_BASE/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="3.30.8"
+SELF_VERSION="3.30.9"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -4207,6 +4207,8 @@ status_json() {
     printf ',"hostname":'; json_quote "$_host"; printf ',"uptime":'; json_quote "$_uptime"; printf ',"load1":'; json_quote "$_load"
     printf ',"cpu_count":%s,"memory_total_kb":%s,"memory_available_kb":%s' "$_cpu_count" "$_mem_t" "$_mem_a"
     printf ',"catalog_total":%s,"catalog_version":' "$_cat_total"; json_quote "$(catalog_version)"; printf ',"catalog_revision":'; json_quote "$(catalog_revision)"
+    _native_catalog_updater=0; command -v dnscrypt-proxy >/dev/null 2>&1 && [ -r /usr/lib/dns-manager-luci/dnscrypt/dns-manager-dnscrypt-catalog-update.sh ] && _native_catalog_updater=1
+    printf ',"native_catalog_updater":%s' "$_native_catalog_updater"
     _native_catalog=/etc/dns-manager/config/dnscrypt-native-catalog.conf
     _native_catalog_source=downloaded
     if [ ! -r "$_native_catalog" ]; then
@@ -6160,7 +6162,7 @@ EOF_RPC_WRAPPER
 'require ui';
 'require session';
 
-// DNS Manager LuCI common module version: 3.30.8
+// DNS Manager LuCI common module version: 3.30.9
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -6925,8 +6927,10 @@ function renderOverview(root,st){
     ]),
     E('div',{'class':'dm-version-line'},[
       E('span',{'class':'dm-version-name'},'Каталог DNSCrypt'),
-      E('span',{'class':'dm-version-state'},state.versionCheck&&state.versionCheck.running
+      E('span',{'class':'dm-version-state'},state.versionCheck&&state.versionCheck.running&&Number(st.native_catalog_updater)===1
         ?badge('dm-muted','проверяю…')
+        :Number(st.native_catalog_updater)===0
+          ?badge('dm-muted','не обновляется · DNSCrypt Proxy 2 или модуль обновления не установлен')
         :st.native_catalog_check==='fail'
           ?badge('dm-warn','не удалось обновить · сохранён прежний список')
           :st.native_catalog_source==='none'||st.native_catalog_count==null||st.native_catalog_count===''
@@ -10045,7 +10049,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 3.30.8
+// DNS Manager LuCI version: 3.30.9
 return view.extend({
   load: DM.load,
   render: DM.render,
