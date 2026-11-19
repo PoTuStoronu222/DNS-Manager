@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion and full installer
-# Version: 3.2.7
+# Version: 3.2.8
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="3.2.7"
+VERSION="3.2.8"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -1429,6 +1429,12 @@ while IFS='|' read -r name stamp category description; do
                 display=${description%% resolver.*}; display=${display%%,*} ;;
             esac
             ;;
+        quad9-dnscrypt-ip4-filter-ecs-pri) display='Quad9 защита от угроз · ECS';;
+        quad9-dnscrypt-ip4-filter-pri) display='Quad9 защита от угроз';;
+        quad9-dnscrypt-ip4-nofilter-ecs-pri) display='Quad9 без фильтрации · ECS';;
+        quad9-dnscrypt-ip4-nofilter-pri) display='Quad9 без фильтрации';;
+        dnsforfamily-no-safe-search) display='DNS for Family без безопасного поиска';;
+        ksol.io-ns2-dnscrypt) display='KSOL DNS';;
         dct-de) display='DCT Berlin'; region=DE;;
         dct-de2) display='DCT Karlsruhe'; region=DE;;
         dct-fr) display='DCT Paris'; region=FR;;
@@ -1472,7 +1478,16 @@ EOF_DNSCRYPT_UPDATE
     # Remove the retired resolver from an existing downloaded catalog too.
     _dc_catalog=/etc/dns-manager/config/dnscrypt-native-catalog.conf
     if [ -f "$_dc_catalog" ]; then
-        awk -F'|' '$1 != "official_c682a5209242ecbd51fd17c7078c8708aa10a1344adb2cfb2a0f8549715a8869"' "$_dc_catalog" > "$_dc_catalog.new"
+        awk -F'|' 'BEGIN {OFS="|"}
+            $1 == "official_c682a5209242ecbd51fd17c7078c8708aa10a1344adb2cfb2a0f8549715a8869" {next}
+            $1 ~ /^official_/ {
+                if ($4 == "Quad9 Dnscrypt Ip4 Filter Ecs Pri") $4="Quad9 защита от угроз · ECS"
+                else if ($4 == "Quad9 Dnscrypt Ip4 Filter Pri") $4="Quad9 защита от угроз"
+                else if ($4 == "Quad9 Dnscrypt Ip4 Nofilter Ecs Pri") $4="Quad9 без фильтрации · ECS"
+                else if ($4 == "Quad9 Dnscrypt Ip4 Nofilter Pri") $4="Quad9 без фильтрации"
+                else if ($4 == "Dnsforfamily No Safe Search") $4="DNS for Family без безопасного поиска"
+                else if ($4 == "Ksol.io Ns2 Dnscrypt [HU]") $4="KSOL DNS [HU]"
+            } {print}' "$_dc_catalog" > "$_dc_catalog.new"
         mv -f "$_dc_catalog.new" "$_dc_catalog"
     fi
     # Existing DNSCrypt installations receive the same boot guard on update.
@@ -2173,7 +2188,7 @@ DM_SOURCE_BASE="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/$_d
 COMPANION_URL="$DM_SOURCE_BASE/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="3.2.7"
+SELF_VERSION="3.2.8"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -6100,7 +6115,7 @@ EOF_RPC_WRAPPER
 'require ui';
 'require session';
 
-// DNS Manager LuCI common module version: 3.2.7
+// DNS Manager LuCI common module version: 3.2.8
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -7043,8 +7058,8 @@ function dnscryptLatencyBadge(st,index){
   var checked=Number((st.dnscrypt_server_check_times||{})[id]||0), now=Number(st.dnscrypt_check_now||0);
   if(Number(st.dnscrypt_running)===1&&check&&checked>0){
     var fresh=now>=checked&&now-checked<=300, when=dateText(checked);
-    if(check==='fail')return badge(fresh?'dm-bad':'dm-muted',(fresh?'недоступен':'не ответил')+' · проверено '+when);
-    if(/^OK:[0-9]+$/.test(String(check)))return badge(fresh?'dm-ok':'dm-muted',String(check).slice(3)+' мс'+(fresh?' · доступен':'')+' · проверено '+when);
+    if(check==='fail')return badge(fresh?'dm-bad':'dm-muted',(fresh?'недоступен':'старая проверка: не ответил')+' · '+when);
+    if(/^OK:[0-9]+$/.test(String(check)))return badge(fresh?'dm-ok':'dm-muted',String(check).slice(3)+' мс'+(fresh?' · доступен · проверено ':' · старая проверка · ')+when);
   }
   var values=st.dnscrypt_server_latency||{}, value=values['manager-'+(index+1)];
   var time=(st.dnscrypt_server_latency_times||{})['manager-'+(index+1)];
@@ -9943,7 +9958,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 3.2.7
+// DNS Manager LuCI version: 3.2.8
 return view.extend({
   load: DM.load,
   render: DM.render,
