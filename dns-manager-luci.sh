@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="3.2.9"
+VERSION="3.2.10"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -7102,10 +7102,15 @@ function dnscryptOptionsControls(root,st,render){
     select('Протокол: ','dnscryptProtocol',[['mixed','DNSCrypt и DoH'],['native','Только DNSCrypt']],o.protocol),
     E('div',{'class':'dm-setting-title'},'Как выбирать DNS-сервер'),
     E('div',{'class':'dm-seg'},[
-      btn('Умный выбор','cbi-button'+(o.strategy==='wp2'?' active':''),function(){chooseStrategy('wp2');},{disabled:o.strategy==='wp2'||!!state.busy||!!state.jobRunning,'aria-pressed':o.strategy==='wp2'?'true':'false'}),
-      btn('Самый быстрый','cbi-button'+(o.strategy==='first'?' active':''),function(){chooseStrategy('first');},{disabled:o.strategy==='first'||!!state.busy||!!state.jobRunning,'aria-pressed':o.strategy==='first'?'true':'false'})
-    ]),
-    select('Другие варианты: ','dnscryptStrategy',[['wp2','Умный выбор из двух'],['p2','Случайно из 2 быстрых'],['p3','Случайно из 3 быстрых'],['p4','Случайно из 4 быстрых'],['p5','Случайно из 5 быстрых'],['p6','Случайно из 6 быстрых'],['ph','Случайно из быстрой половины'],['first','Самый быстрый'],['random','Случайно из всех']],o.strategy),
+      ['wp2','Умный выбор'], ['first','Самый быстрый'],
+      ['p2','Из 2 быстрых'], ['p3','Из 3 быстрых'], ['p4','Из 4 быстрых'],
+      ['p5','Из 5 быстрых'], ['p6','Из 6 быстрых'],
+      ['ph','Из быстрой половины'], ['random','Случайный']
+    ].map(function(item){
+      var active=o.strategy===item[0];
+      return btn(item[1],'cbi-button'+(active?' active':''),function(){chooseStrategy(item[0]);},
+        {disabled:active||!!state.busy||!!state.jobRunning,'aria-pressed':active?'true':'false'});
+    })),
     E('div',{'class':'dm-mini'},descriptions[o.strategy]||''),
     E('div',{'class':'dm-mini'},'Порядок в списке не определяет приоритет: DNSCrypt не поддерживает последовательный выбор по списку. Изменения сохраняются при применении набора или профиля.')
   ]);
@@ -7664,7 +7669,7 @@ function renderProfiles(root,st){
   var nativeOnly=st.dnscrypt_engine==='dnscrypt-proxy2'&&dnscryptOptions(st).protocol==='native';
   PROFILE.forEach(function(p){
     var n=candidates&&Object.prototype.hasOwnProperty.call(candidates,p[0])?Number(candidates[p[0]]):null;
-    var label=p[1]+(n===null?'':n>0?' · DNSCrypt: '+n:' · DNSCrypt нет');
+    var label=p[1]+(n===null?'':n>0?' · '+n+' в каталоге':' · нет в каталоге');
     var unavailable=nativeOnly&&n===0;
     g.appendChild(btn(label,chosenProfile===p[0]?'active cbi-button':'cbi-button',function(){
       state.pendingProfile=p[0]===currentId?'':p[0];renderProfiles(root,st);
@@ -7679,7 +7684,7 @@ function renderProfiles(root,st){
     g,
     st.dnscrypt_engine==='dnscrypt-proxy2'?dnscryptOptionsControls(root,st,renderProfiles):null,
     profileAction,
-    E('div',{'class':'dm-mini'},candidates?'Число DNSCrypt — серверы в каталоге, не результат проверки. В DNSSEC показаны кандидаты, которые дополнительно проверяются. В смешанном режиме также используются DoH-серверы.':'Профиль определяет схему выбора DNS.')
+    E('div',{'class':'dm-mini'},candidates?'Число у профиля — количество DNSCrypt-серверов в каталоге, а не результат проверки. Для DNSSEC показаны кандидаты; их поддержка проверяется при выборе. В смешанном режиме также используются DoH-серверы.':'Профиль определяет схему выбора DNS.')
   ].filter(Boolean);
   if(currentId==='dnssec')pch.push(E('div',{'class':'dm-hint'},'DNSSEC проверяется выбранными серверами; фильтрация может различаться.'+(st.dnscrypt_engine==='dnscrypt-proxy2'?'':' Региональный DNS, Steer и привязки устройств работают по своим правилам.')));
   var regionalSlot=(st.slots||[]).filter(function(s){return String(s.slot)==='RU';})[0]||{};
