@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion and full installer
-# Version: 3.2.1
+# Version: 3.2.2
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="3.2.1"
+VERSION="3.2.2"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -2166,7 +2166,7 @@ DM_SOURCE_BASE="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/$_d
 COMPANION_URL="$DM_SOURCE_BASE/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="3.2.1"
+SELF_VERSION="3.2.2"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -3695,9 +3695,11 @@ doh_status_json() {
     case "$_encrypted_dns" in 0|1) ;; *) _encrypted_dns=0 ;; esac
     _force_cfg="$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null || true)"
     _force_notrack="$(uci -q get https-dns-proxy.config.notrack_dns 2>/dev/null || true)"
-    _force_state="$("$MANAGER_PATH" --force-state 2>/dev/null || true)"
     _force_manager=0
-    case "$_force_state" in 1) _force_manager=1;; esac
+    if [ "$_force" = 1 ]; then
+        _force_state="$("$MANAGER_PATH" --force-state 2>/dev/null || true)"
+        case "$_force_state" in 1) _force_manager=1;; esac
+    fi
     [ "$_force_manager" = 1 ] || { [ "$_force" = 1 ] && [ "$_force_cfg" = 1 ] && [ "$_force_notrack" = 1 ] && _force_manager=1; }
 
     _steer_installed=0; steer_service_present && _steer_installed=1 || true
@@ -3883,9 +3885,11 @@ status_json() {
     _force_notrack="$(uci -q get https-dns-proxy.config.notrack_dns 2>/dev/null || true)"
     # Prefer the DNS Manager authoritative check when supported by the installed manager.
     # Older Manager versions remain fully supported by the legacy exact UCI/runtime check below.
-    _force_state="$("$MANAGER_PATH" --force-state 2>/dev/null || true)"
     _force_manager=0
-    [ "$_force_state" = 1 ] && _force_manager=1
+    if [ "$_force" = 1 ]; then
+        _force_state="$("$MANAGER_PATH" --force-state 2>/dev/null || true)"
+        [ "$_force_state" = 1 ] && _force_manager=1
+    fi
     [ "$_force_manager" = 1 ] || { [ "$_force" = 1 ] && [ "$_force_cfg" = 1 ] && [ "$_force_notrack" = 1 ] && _force_manager=1; }
     _steer_installed=0
     _steer_running=0
@@ -6079,7 +6083,7 @@ EOF_RPC_WRAPPER
 'require ui';
 'require session';
 
-// DNS Manager LuCI common module version: 3.2.1
+// DNS Manager LuCI common module version: 3.2.2
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -9922,7 +9926,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 3.2.1
+// DNS Manager LuCI version: 3.2.2
 return view.extend({
   load: DM.load,
   render: DM.render,
