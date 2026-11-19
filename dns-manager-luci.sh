@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion and full installer
-# Version: 3.30.10
+# Version: 3.30.11
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="3.30.10"
+VERSION="3.30.11"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -802,7 +802,13 @@ stop_disable() {
         *) printf 'Cannot verify service state: %s\n' "$1" >&2; return 1 ;;
     esac
     "$script" disable || { printf 'Failed to disable %s\n' "$1" >&2; return 1; }
-    if ! service_absent "$1"; then
+    # procd can keep the service registered briefly while its process exits.
+    _stopped=0
+    for _attempt in 1 2 3 4 5 6 7 8 9 10; do
+        if service_absent "$1"; then _stopped=1; break; fi
+        [ "$_attempt" -eq 10 ] || sleep 1
+    done
+    if [ "$_stopped" != 1 ]; then
         printf 'Service still registered or procd unavailable: %s\n' "$1" >&2
         return 1
     fi
@@ -2194,7 +2200,7 @@ DM_SOURCE_BASE="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/$_d
 COMPANION_URL="$DM_SOURCE_BASE/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="3.30.10"
+SELF_VERSION="3.30.11"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -6164,7 +6170,7 @@ EOF_RPC_WRAPPER
 'require ui';
 'require session';
 
-// DNS Manager LuCI common module version: 3.30.10
+// DNS Manager LuCI common module version: 3.30.11
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -9181,6 +9187,15 @@ function uninstallManager(root){
     renderDoH(root,window.dmState||{});
   });
 }
+function engineFailureMessage(j){
+  if(j&&j.error)return String(j.error);
+  var lines=String(j&&j.output||'').split('\n').map(function(x){return stripAnsi(x).trim();}).filter(function(x){return x&&!/^udhcpc:/.test(x)&&!/^__DONE__/.test(x)&&!/^Ошибка переключения\. Восстанавливаю/.test(x);});
+  for(var i=lines.length-1;i>=0;i--){
+    if(/^Service still registered or procd unavailable:/.test(lines[i]))return 'Не удалось остановить предыдущий DNS-движок. Повторите переключение; если ошибка повторится, проверьте журнал.';
+    if(/^(Не удалось|Ошибка|Есть несохранённые|Нет подключения|Другая операция)/.test(lines[i]))return lines[i];
+  }
+  return 'Не удалось переключить DNS-движок. Проверьте журнал и работу DNS.';
+}
 function watchEngine(root){
   if(state.engineWatching)return;
   state.engineWatching=true;
@@ -9193,7 +9208,7 @@ function watchEngine(root){
       var ok=j&&j.status==='done'&&j.result==='ok';
       if(ok)clearEngineUiState();
       state.engineNoticeType=ok?'ok':'error';
-      state.engineNotice=ok?'':((j&&j.output&&stripAnsi(j.output).split('\n').filter(function(x){return String(x||'').trim();}).pop())||'Не удалось подтвердить переключение. Проверьте DNS перед повтором.');
+      state.engineNotice=ok?'':engineFailureMessage(j);
       refresh(root,true);
     }).catch(function(){
       if(++errors<3){window.setTimeout(poll,2000);return;}
@@ -9216,7 +9231,7 @@ function resumeEngine(root){
     }else if(j.status==='done'||j.status==='failed'){
       var ok=j.status==='done'&&j.result==='ok';
       state.engineNoticeType=ok?'ok':'error';
-      state.engineNotice=ok?'':((j.output&&stripAnsi(j.output).split('\n').filter(function(x){return String(x||'').trim();}).pop())||'Переключение завершилось с ошибкой.');
+      state.engineNotice=ok?'':engineFailureMessage(j);
       renderDoH(root,window.dmState||{});
     }
   }).catch(function(){});
@@ -10069,7 +10084,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 3.30.10
+// DNS Manager LuCI version: 3.30.11
 return view.extend({
   load: DM.load,
   render: DM.render,

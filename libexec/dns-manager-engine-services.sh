@@ -45,7 +45,13 @@ stop_disable() {
         *) printf 'Cannot verify service state: %s\n' "$1" >&2; return 1 ;;
     esac
     "$script" disable || { printf 'Failed to disable %s\n' "$1" >&2; return 1; }
-    if ! service_absent "$1"; then
+    # procd can keep the service registered briefly while its process exits.
+    _stopped=0
+    for _attempt in 1 2 3 4 5 6 7 8 9 10; do
+        if service_absent "$1"; then _stopped=1; break; fi
+        [ "$_attempt" -eq 10 ] || sleep 1
+    done
+    if [ "$_stopped" != 1 ]; then
         printf 'Service still registered or procd unavailable: %s\n' "$1" >&2
         return 1
     fi
