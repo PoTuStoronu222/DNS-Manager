@@ -20,6 +20,9 @@ dnscrypt_apply_profile_pool() (
     trap 'exit 1' HUP INT TERM
     dnscrypt_select_profile "$goal" > "$records" || return 1
     [ -s "$records" ] || return 1
+    if [ -n "${JOB_DIR:-}" ]; then
+        printf 'phase=Применяю выбранные серверы и проверяю DNS\nprogress_total=0\n' >> "$JOB_DIR/profile/state"
+    fi
     if [ "${DNS_MANAGER_PROTOCOL:-mixed}" = native ]; then
         if awk -F'|' 'NF != 2 || $2 !~ /^sdns:\/\// {bad=1} END {exit !bad}' "$records"; then
             echo 'Удалите DoH-серверы из набора: выбран только DNSCrypt.' >&2

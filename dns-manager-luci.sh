@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="3.2.8"
+VERSION="3.2.9"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -596,7 +596,10 @@ dnscrypt_select_profile() (
     if command -v dnscrypt_catalog_snapshot >/dev/null 2>&1; then
         native_scope=$goal; case "$goal" in all) native_scope=native;; esac
         snapshot_rc=0
-        dnscrypt_catalog_snapshot "$native_scope" > "$tmp.native" || snapshot_rc=$?
+        DNS_MANAGER_PROFILE_PROGRESS=1 dnscrypt_catalog_snapshot "$native_scope" > "$tmp.native" || snapshot_rc=$?
+        if [ -n "${JOB_DIR:-}" ]; then
+            printf 'phase=Отбираю подходящие серверы профиля\nprogress_total=0\n' >> "$JOB_DIR/profile/state"
+        fi
         if [ "$snapshot_rc" -ne 0 ]; then
             echo 'Не удалось проверить серверы DNSCrypt. Проверьте доступность службы и сети.' >&2
         fi
@@ -651,6 +654,9 @@ dnscrypt_apply_profile_pool() (
     trap 'exit 1' HUP INT TERM
     dnscrypt_select_profile "$goal" > "$records" || return 1
     [ -s "$records" ] || return 1
+    if [ -n "${JOB_DIR:-}" ]; then
+        printf 'phase=Применяю выбранные серверы и проверяю DNS\nprogress_total=0\n' >> "$JOB_DIR/profile/state"
+    fi
     if [ "${DNS_MANAGER_PROTOCOL:-mixed}" = native ]; then
         if awk -F'|' 'NF != 2 || $2 !~ /^sdns:\/\// {bad=1} END {exit !bad}' "$records"; then
             echo 'Удалите DoH-серверы из набора: выбран только DNSCrypt.' >&2
@@ -870,7 +876,7 @@ printf 'Service did not become ready: %s\n' "$target" >&2
 exit 1
 EOF_DNSCRYPT_ASSET_8
     fetch_installer_source "$_dc_stage/backend-dnscrypt.sh" "$SOURCE_BASE/libexec/backend-dnscrypt.sh"
-    [ "$(sha256sum "$_dc_stage/backend-dnscrypt.sh" | cut -d' ' -f1)" = "7292b6a999869f0abc663ce587379f7fb201bc641ad03c540f3897d9d5515177" ] || { err "Файл backend DNSCrypt не прошёл проверку."; return 1; }
+    [ "$(sha256sum "$_dc_stage/backend-dnscrypt.sh" | cut -d' ' -f1)" = "bdf74f632c9b51254c86a03384570f9a2da4174f1f050fcc744bcb2d1ab1c411" ] || { err "Файл backend DNSCrypt не прошёл проверку."; return 1; }
     cat > "$_dc_stage/dns-manager-device-detach.sh" <<'EOF_DNSCRYPT_ASSET_10'
 #!/bin/sh
 # Detach the Manager-owned per-device redirect before stopping its listeners.
@@ -7596,7 +7602,7 @@ function profileProgressUpdate(j){
     {p:95,keys:['Проверяю dnsmasq, все локальные DoH-порты'],label:'Проверяю выбранные DNS'},
     {p:98,keys:['Все локальные проверки после применения'],label:'Проверка применения завершена'}
   ];
-  var best={p:0,label:'Подготавливаю применение профиля…',detail:''};
+  var best={p:null,label:'Подготавливаю применение профиля…',detail:''};
   var mlines=text.split('\n'),mprog='';
   for(var mi=mlines.length-1;mi>=0;mi--){
     if(mlines[mi].indexOf('Промежуточный результат:')>=0){mprog=String(mlines[mi]);break;}
@@ -7614,23 +7620,27 @@ function profileProgressUpdate(j){
       best={p:s.p,label:s.label,detail:''};
     }
   });
+  if(j&&j.phase){
+    var total=Number(j.progress_total)||0, checked=Number(j.progress_done)||0;
+    best={p:total>0?Math.min(100,Math.round(checked*100/total)):null,
+      label:total>0?String(j.phase)+' — проверено '+checked+' из '+total:String(j.phase),
+      detail:total>0?'Проверяются серверы выбранного профиля. После проверки настройки применятся автоматически.':''};
+  }
   var done=String(j&&j.status||'').toUpperCase()==='DONE', ok=String(j&&j.result||'')==='ok';
   if(done&&ok)best={p:100,label:'Профиль применён.',detail:''};
   state.profileProgress=best;
 }
 function renderProfileProgress(root){
   if(!state.profileProgress)return null;
-  var p=state.profileProgress||{},pct=Math.max(0,Math.min(100,Number(p.p||0)));
+  var p=state.profileProgress||{},pct=p.p==null?null:Math.max(0,Math.min(100,Number(p.p||0)));
   var running=!!state.busy&&!!state.jobRunning;
   var title=running?'Применение профиля выполняется':(pct>=100?'Применение завершено':'Результат применения профиля');
-  var body=[
-    E('div',{'class':'dm-mini'},title),
-    E('div',{'class':'dm-mem-line'},[
+  var body=[E('div',{'class':'dm-mini'},p.detail?'Проверка серверов':title)];
+  if(pct!==null)body.push(E('div',{'class':'dm-mem-line'},[
       E('div',{'class':'dm-mem-track'},[E('div',{'class':'dm-mem-fill','style':'width:'+pct+'%'})]),
       E('span',{'class':'dm-mem-value'},pct+'%')
-    ]),
-    E('div',{'class':'dm-profile-progress-status'},p.label||'Выполняю…')
-  ];
+    ]));
+  body.push(E('div',{'class':'dm-profile-progress-status'},p.label||'Выполняю…'));
   if(p.detail)body.push(E('div',{'class':'dm-profile-progress-detail'},p.detail));
   var out=String(state.profileOutput||'').trim();
   if(out){
@@ -9269,7 +9279,7 @@ function applyProfile(name,root,confirmed){
   var repeat=currentId===name;
   function startProfile(){
     state.busy=true;
-    state.profileProgress={p:5,label:'Подготавливаю профиль…',detail:''};
+    state.profileProgress={p:null,label:'Подготавливаю профиль…',detail:''};
     state.profileOutput='';
     state.pageNotice.profiles='';
     renderProfiles(root,window.dmState||{});
