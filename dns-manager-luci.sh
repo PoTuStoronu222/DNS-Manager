@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion and full installer
-# Version: 3.2.5
+# Version: 3.2.6
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="3.2.5"
+VERSION="3.2.6"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -2166,7 +2166,7 @@ DM_SOURCE_BASE="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/$_d
 COMPANION_URL="$DM_SOURCE_BASE/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="3.2.5"
+SELF_VERSION="3.2.6"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -6092,7 +6092,7 @@ EOF_RPC_WRAPPER
 'require ui';
 'require session';
 
-// DNS Manager LuCI common module version: 3.2.5
+// DNS Manager LuCI common module version: 3.2.6
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -8129,7 +8129,7 @@ function renderNetwork(root,st){
   var e=root.querySelector('#dm-network');if(!e)return;e.innerHTML='';
   var body=st.dnscrypt_engine==='dnscrypt-proxy2'
     ? [E('div',{'class':'dm-watchdog-card'},[
-        settingToggle(root,'Проверка DNS','Каждые 2 минуты проверяется ответ локального DNSCrypt. Ответ может быть из кэша. При сбое настройки DNS не изменяются.',yes(st.watchdog),'watchdog',false),
+        settingToggle(root,'Проверка DNS','Каждые 2 минуты проверяется ответ DNSCrypt. При повторном сбое и наличии связи служба перезапускается один раз. Профиль не меняется.',yes(st.watchdog),'watchdog',false),
         yes(st.watchdog)&&Number(st.watchdog_last_failed)>0&&(st.watchdog_last_records||[]).some(function(r){return r.id==='dnscrypt_pool'&&r.status==='FAIL';})?E('div',{'class':'dm-inline-msg error'},'DNSCrypt не ответил при последней проверке ('+dateText(st.watchdog_last_check)+'). Проверьте подключение и DNS-серверы.'):null,
         E('div',{'class':'dm-setting-desc'},'DNSCrypt автоматически выбирает доступные серверы из выбранного набора. Профиль не меняется.'),
         settingToggle(root,'Принудительный DNS','Направляет обычные DNS-запросы устройств на DNS роутера. Если перехват выполняет Steer, управление находится в Steer.',Number(st.dnscrypt_forced_dns)===1||Number(st.steer_dns_active)===1,'force',Number(st.steer_dns_active)===1&&Number(st.dnscrypt_forced_dns)!==1,Number(st.steer_dns_active)===1&&Number(st.dnscrypt_forced_dns)!==1?'Настраивается в Steer.':'',Number(st.dnscrypt_forced_dns)===1?'включён':Number(st.steer_dns_active)===1?'перехват Steer':'выключен')
@@ -9935,7 +9935,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 3.2.5
+// DNS Manager LuCI version: 3.2.6
 return view.extend({
   load: DM.load,
   render: DM.render,

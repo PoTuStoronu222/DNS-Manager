@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="4.50"
+VERSION="4.51"
 # 3.86: make LuCI the primary interface and preserve external DNS on removal.
 # 3.85: revalidate Watchdog settings before recovery.
 # 3.84: cap DNS catalog test concurrency by total RAM on small routers.
@@ -8370,21 +8370,47 @@ watchdog_embedded_loop() {
     save_watchdog_state
 }
 
-# DNSCrypt has a single listener for its pool. This check is observational:
-# it must not modify the pool when the network or the listener is unavailable.
+# Restart an unresponsive DNSCrypt process once per failure episode.
 watchdog_dnscrypt_check() {
-    local _records _result
+    local _records _result _init
     load_config
     [ "${WATCHDOG_ENABLED:-0}" = 1 ] || return 0
     mkdir -p "$STATE_DIR" || return 1
     WD_FAIL_1=0
     WD_RECOVERY_BLOCKED_1=0
+    WD_REPAIR_TS_1=0
     load_watchdog_state || return 1
     watchdog_check_due || return 0
     _records="$(mktemp "$STATE_DIR/dns-watchdog-cycle.XXXXXX")" || return 1
+    _init="${DNS_MANAGER_DNSCRYPT_INIT:-/etc/init.d/dnscrypt-proxy}"
     _result=FAIL
-    if "${DNS_MANAGER_DNSCRYPT_INIT:-/etc/init.d/dnscrypt-proxy}" running >/dev/null 2>&1 && local_dns_query_ok 5053 example.com; then
+    if "$_init" running >/dev/null 2>&1 && local_dns_query_ok 5053 example.com; then
         _result=OK
+        WD_FAIL_1=0
+        WD_RECOVERY_BLOCKED_1=0
+    elif ping -c 1 -W 2 1.1.1.1 >/dev/null 2>&1 || ping -c 1 -W 2 8.8.8.8 >/dev/null 2>&1; then
+        WD_FAIL_1=$((${WD_FAIL_1:-0}+1))
+        if [ "$WD_FAIL_1" -ge "${WATCHDOG_FAIL_THRESHOLD:-2}" ] &&
+           watchdog_loop_repair_cooldown_ok 1 && acquire_mutation_lock; then
+            # The engine may have changed while the lock was held elsewhere.
+            if [ "$(cat "${CFG_DIR:-/etc/dns-manager/config}/dnscrypt-engine" 2>/dev/null)" = dnscrypt-proxy2 ] &&
+               { ping -c 1 -W 2 1.1.1.1 >/dev/null 2>&1 || ping -c 1 -W 2 8.8.8.8 >/dev/null 2>&1; }; then
+                WD_RECOVERY_BLOCKED_1=1
+                watchdog_loop_mark_repair 1
+                logger -t dns-manager-watchdog 'DNSCrypt не отвечает; перезапускаю службу без изменения профиля.'
+                if "$_init" restart >/dev/null 2>&1 && local_dns_query_ok 5053 example.com; then
+                    _result=OK
+                    WD_FAIL_1=0
+                    WD_RECOVERY_BLOCKED_1=0
+                else
+                    logger -t dns-manager-watchdog 'DNSCrypt не ответил после перезапуска; повторная попытка отложена до восстановления DNS.'
+                fi
+            fi
+            release_mutation_lock
+        fi
+    else
+        # An unconfirmed WAN must never trigger a restart or accumulate failures.
+        WD_FAIL_1=0
     fi
     watchdog_append_check_record "$_records" 1 dnscrypt_pool dnscrypt "$_result"
     watchdog_save_check_results "$_records" || return 1
