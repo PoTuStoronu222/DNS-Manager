@@ -918,6 +918,15 @@ status_extra() {
     done
     json_close_object
     fi
+    if [ -r "$CONFIG_DIR/dns-catalog.conf" ]; then
+        json_add_object dnscrypt_doh_profile_candidates
+        for category in bypass clean security privacy adblock family; do
+            count=$(cat "$CONFIG_DIR/dns-catalog.conf" "$CONFIG_DIR/dns-custom-catalog.conf" 2>/dev/null | awk -F'|' -v category="$category" 'NF >= 5 && $1 !~ /^#/ && $1 ~ /^[A-Za-z0-9_-]+$/ && $2 == category && $5 ~ /^https:\/\// && !seen[$1]++ { n++ } END { print n+0 }')
+            case "$count" in ''|*[!0-9]*) count=0;; esac
+            json_add_int "$category" "$count"
+        done
+        json_close_object
+    fi
     force_active=0
     [ "$(uci -q get firewall.dns_forced 2>/dev/null)" = redirect ] &&
         [ "$(uci -q get firewall.dns_forced.name 2>/dev/null)" = Force-DNS-DNSCrypt ] && force_active=1
