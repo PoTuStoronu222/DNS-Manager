@@ -170,6 +170,12 @@ while IFS='|' read -r name stamp category description; do
                 display=${description%% resolver.*}; display=${display%%,*} ;;
             esac
             ;;
+        quad9-dnscrypt-ip4-filter-ecs-pri) display='Quad9 защита от угроз · ECS';;
+        quad9-dnscrypt-ip4-filter-pri) display='Quad9 защита от угроз';;
+        quad9-dnscrypt-ip4-nofilter-ecs-pri) display='Quad9 без фильтрации · ECS';;
+        quad9-dnscrypt-ip4-nofilter-pri) display='Quad9 без фильтрации';;
+        dnsforfamily-no-safe-search) display='DNS for Family без безопасного поиска';;
+        ksol.io-ns2-dnscrypt) display='KSOL DNS';;
         dct-de) display='DCT Berlin'; region=DE;;
         dct-de2) display='DCT Karlsruhe'; region=DE;;
         dct-fr) display='DCT Paris'; region=FR;;
