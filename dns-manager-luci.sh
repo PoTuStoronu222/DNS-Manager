@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion and full installer
-# Version: 3.2.3
+# Version: 3.2.4
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="3.2.3"
+VERSION="3.2.4"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -870,7 +870,7 @@ printf 'Service did not become ready: %s\n' "$target" >&2
 exit 1
 EOF_DNSCRYPT_ASSET_8
     fetch_installer_source "$_dc_stage/backend-dnscrypt.sh" "$SOURCE_BASE/libexec/backend-dnscrypt.sh"
-    [ "$(sha256sum "$_dc_stage/backend-dnscrypt.sh" | cut -d' ' -f1)" = "f7e2ef2c69abe2a19507ae0ac4bc75f9ad990ac70d610a17c84d4d4db77dbeb3" ] || { err "Файл backend DNSCrypt не прошёл проверку."; return 1; }
+    [ "$(sha256sum "$_dc_stage/backend-dnscrypt.sh" | cut -d' ' -f1)" = "7292b6a999869f0abc663ce587379f7fb201bc641ad03c540f3897d9d5515177" ] || { err "Файл backend DNSCrypt не прошёл проверку."; return 1; }
     cat > "$_dc_stage/dns-manager-device-detach.sh" <<'EOF_DNSCRYPT_ASSET_10'
 #!/bin/sh
 # Detach the Manager-owned per-device redirect before stopping its listeners.
@@ -2166,7 +2166,7 @@ DM_SOURCE_BASE="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/$_d
 COMPANION_URL="$DM_SOURCE_BASE/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="3.2.3"
+SELF_VERSION="3.2.4"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -3667,6 +3667,8 @@ network_status_json() {
     case "$_cache_total" in ''|*[!0-9]*|0[0-9]*) _cache_total=1000;; esac
     case "$_cache_ttl" in ''|*[!0-9]*|0[0-9]*) _cache_ttl=0;; esac
     printf ',"dnsmasq_perf_state":%s,"cache_total":%s,"cache_ttl":%s' "$_cache_state" "$_cache_total" "$_cache_ttl"
+    detect_steer_dns_runtime >/dev/null 2>&1 || true
+    printf ',"steer_dns_active":%s' "${STEER_DNS_ACTIVE:-0}"
     browser_dns_status_json
     printf '}'
 }
@@ -6083,7 +6085,7 @@ EOF_RPC_WRAPPER
 'require ui';
 'require session';
 
-// DNS Manager LuCI common module version: 3.2.3
+// DNS Manager LuCI common module version: 3.2.4
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -8123,7 +8125,7 @@ function renderNetwork(root,st){
         settingToggle(root,'Проверка DNS','Каждые 2 минуты проверяется ответ локального DNSCrypt. Ответ может быть из кэша. При сбое настройки DNS не изменяются.',yes(st.watchdog),'watchdog',false),
         yes(st.watchdog)&&Number(st.watchdog_last_failed)>0&&(st.watchdog_last_records||[]).some(function(r){return r.id==='dnscrypt_pool'&&r.status==='FAIL';})?E('div',{'class':'dm-inline-msg error'},'DNSCrypt не ответил при последней проверке ('+dateText(st.watchdog_last_check)+'). Проверьте подключение и DNS-серверы.'):null,
         E('div',{'class':'dm-setting-desc'},'DNSCrypt автоматически выбирает доступные серверы из выбранного набора. Профиль не меняется.'),
-        settingToggle(root,'Принудительный DNS','Направляет обычные DNS-запросы устройств на DNS роутера через dnsmasq. При активном перехвате Steer используется его правило.',Number(st.dnscrypt_forced_dns)===1,'force',Number(st.steer_dns_active)===1&&Number(st.dnscrypt_forced_dns)!==1,Number(st.steer_dns_active)===1&&Number(st.dnscrypt_forced_dns)!==1?'Управляется Steer.':'',Number(st.dnscrypt_forced_dns)===1?'включён':Number(st.steer_dns_active)===1?'работает Steer':'выключен')
+        settingToggle(root,'Принудительный DNS','Направляет обычные DNS-запросы устройств на DNS роутера. Если перехват выполняет Steer, управление находится в Steer.',Number(st.dnscrypt_forced_dns)===1||Number(st.steer_dns_active)===1,'force',Number(st.steer_dns_active)===1&&Number(st.dnscrypt_forced_dns)!==1,Number(st.steer_dns_active)===1&&Number(st.dnscrypt_forced_dns)!==1?'Настраивается в Steer.':'',Number(st.dnscrypt_forced_dns)===1?'включён':Number(st.steer_dns_active)===1?'перехват Steer':'выключен')
       ].filter(Boolean))]
     : [watchdogCard(root,st), cacheCard(root,st)];
   e.appendChild(card('Сетевой тюнинг',body));
@@ -9926,7 +9928,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 3.2.3
+// DNS Manager LuCI version: 3.2.4
 return view.extend({
   load: DM.load,
   render: DM.render,
