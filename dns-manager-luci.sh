@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion and full installer
-# Version: 3.30.6
+# Version: 3.30.7
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="3.30.6"
+VERSION="3.30.7"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -2194,7 +2194,7 @@ DM_SOURCE_BASE="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/$_d
 COMPANION_URL="$DM_SOURCE_BASE/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="3.30.6"
+SELF_VERSION="3.30.7"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -6160,7 +6160,7 @@ EOF_RPC_WRAPPER
 'require ui';
 'require session';
 
-// DNS Manager LuCI common module version: 3.30.6
+// DNS Manager LuCI common module version: 3.30.7
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -7733,8 +7733,12 @@ function renderProfiles(root,st){
       state.pendingProfile=p[0]===currentId?'':p[0];renderProfiles(root,st);
     },{disabled:unavailable||!!state.busy||!!state.jobRunning||(st.dnscrypt_engine!=='dnscrypt-proxy2'&&Number(st.engine_installed)===0),'aria-pressed':chosenProfile===p[0]?'true':'false'}));
   });
-  var profileAction=((state.pendingProfile&&state.pendingProfile!==currentId)||(st.dnscrypt_engine==='dnscrypt-proxy2'&&currentId&&dnscryptOptionsChanged(st)))?E('div',{'class':'dm-actions'},[
+  var profileChanged=(state.pendingProfile&&state.pendingProfile!==currentId)||(st.dnscrypt_engine==='dnscrypt-proxy2'&&currentId&&dnscryptOptionsChanged(st));
+  var profileAction=profileChanged?E('div',{'class':'dm-actions'},[
     btn('Применить изменения','cbi-button-action',function(){var selected=state.pendingProfile||currentId;state.pendingProfile='';applyProfile(selected,root,true);},{disabled:!!state.busy||!!state.jobRunning||(nativeOnly&&candidates&&Number(candidates[state.pendingProfile||currentId])===0)})
+  ]):currentId?E('div',{'class':'dm-actions'},[
+    btn('Проверить профиль заново','cbi-button-neutral',function(){applyProfile(currentId,root,true);},{disabled:!!state.busy||!!state.jobRunning}),
+    E('span',{'class':'dm-mini'},'Повторно проверит серверы и обновит набор, сохранив профиль и его настройки.')
   ]):null;
   var current=activeProfileLabel(st);
   var pch=[
@@ -10043,7 +10047,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 3.30.6
+// DNS Manager LuCI version: 3.30.7
 return view.extend({
   load: DM.load,
   render: DM.render,
