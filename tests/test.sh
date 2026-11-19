@@ -475,10 +475,8 @@ grep -Fq 'package_update_index() {' "$tmp/backend.sh" || fail "package index upd
 awk '/^component_update_check\(\) \{/ { capture=1 }
      capture { print }
      /^update_hdp_json\(\) \{/ && capture { exit }' "$tmp/backend.sh" > "$tmp/component_update_check.sh"
-grep -Fq 'package_candidate_version https-dns-proxy' "$tmp/component_update_check.sh" || fail "https-dns-proxy update check does not read the package candidate"
-if grep -Fq 'package_update_index' "$tmp/component_update_check.sh"; then
-    fail "https-dns-proxy version check must not refresh the package index"
-fi
+grep -Fq 'package_candidate_version "$_engine_check_package"' "$tmp/component_update_check.sh" || fail "active engine candidate check missing"
+grep -Fq 'package_update_index &&' "$tmp/component_update_check.sh" || fail "engine version check must refresh package indexes"
 grep -Fq '_hdp_available=0' "$tmp/component_update_check.sh" || fail "https-dns-proxy update check availability initialization missing"
 awk '/^update_hdp_json\(\) \{/ { capture=1 }
      capture { print }
@@ -653,7 +651,7 @@ grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validat
 grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
 grep -q 'VERSION="4.51.1"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
-grep -q 'VERSION="3.30.9"' dns-manager-luci.sh || fail "LuCI version not bumped"
+grep -q 'VERSION="3.30.10"' dns-manager-luci.sh || fail "LuCI version not bumped"
 grep -Fq "{id:'quad9plain',ips:'9.9.9.10,149.112.112.10,2620:fe::10,2620:fe::fe:10'}" dns-manager-luci.sh || fail "historical Quad9 bootstrap snapshot changed"
 grep -Fq "{id:'cira',ips:'149.112.121.10,149.112.122.10,2620:10a:80bb::10,2620:10a:80bc::10'}" dns-manager-luci.sh || fail "historical CIRA bootstrap snapshot changed"
 if grep -q '^main_menu$' dns-manager.sh; then fail "interactive console menu still starts"; fi
