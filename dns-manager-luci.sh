@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion and full installer
-# Version: 3.2.4
+# Version: 3.2.5
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="3.2.4"
+VERSION="3.2.5"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -2166,7 +2166,7 @@ DM_SOURCE_BASE="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/$_d
 COMPANION_URL="$DM_SOURCE_BASE/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="3.2.4"
+SELF_VERSION="3.2.5"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -5353,6 +5353,13 @@ job_json() {
             '__DONE__ 1') _job_status=failed; _job_result=fail;;
         esac
     fi
+    # A DNSCrypt setting is not ready for the next request until procd has
+    # reaped its worker, even if the worker has already written its result.
+    if [ "$_jid" = setting ] && { [ "$_job_status" = done ] || [ "$_job_status" = failed ]; } &&
+       ubus -t 3 call service list '{"name":"dns-manager-dnscrypt-setting"}' 2>/dev/null |
+           grep -q '"running"[[:space:]]*:[[:space:]]*true'; then
+        _job_status=running
+    fi
     printf ',"status":'; json_quote "$_job_status"
     printf ',"result":'; json_quote "$_job_result"
     printf ',"mode":'; json_quote "$(sed -n 's/^mode=//p' "$_d/state" 2>/dev/null | head -n1)"
@@ -6085,7 +6092,7 @@ EOF_RPC_WRAPPER
 'require ui';
 'require session';
 
-// DNS Manager LuCI common module version: 3.2.4
+// DNS Manager LuCI common module version: 3.2.5
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -9928,7 +9935,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 3.2.4
+// DNS Manager LuCI version: 3.2.5
 return view.extend({
   load: DM.load,
   render: DM.render,
