@@ -135,9 +135,9 @@ logread -e dns-manager
 
 ## Лицензия и безопасность
 
-DNS Manager распространяется на условиях [Apache License 2.0](LICENSE). Автор — **PoTuStoronu222**; уведомление об авторстве находится в [NOTICE](NOTICE).
+**Лицензия:** [Apache License 2.0](LICENSE) · Автор — **PoTuStoronu222** · [Уведомление об авторстве](NOTICE). Сторонние компоненты распространяются по своим лицензиям.
 
-Об уязвимостях можно сообщить приватно через GitHub. Порядок описан в [политике безопасности](SECURITY.md).
+**Безопасность:** об уязвимости можно [сообщить приватно через GitHub](https://github.com/PoTuStoronu222/DNS-Manager/security/advisories) — нажмите **Report a vulnerability**. Подробности — в [политике безопасности](SECURITY.md).
 
 <div align="center">
   <sub>DNS Manager · OpenWrt · LuCI</sub>
