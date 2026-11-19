@@ -472,7 +472,8 @@ async function testProfileClickBothEngines(){
     const ctx={state,st:{dnscrypt_engine:engine,engine_installed:1},root,PROFILE:[['clean','Без фильтрации'],['privacy','Конфиденциальность']],activeProfileId:()=>'clean',dnscryptOptions:()=>({protocol:'mixed'}),dnscryptOptionsChanged:()=>false,
       E:(tag,attrs,children)=>attrs.class==='dm-seg dm-profile-seg'?{appendChild:b=>buttons.push(b)}:{tag,children},btn:(label,cls,click,opts)=>({label,click,opts}),applyProfile:(...args)=>calls.push(args),renderProfiles:()=>{}};
     vm.createContext(ctx);const snippet=extract("  var g=E('div',{'class':'dm-seg dm-profile-seg'});","  var current=activeProfileLabel(st);");
-    vm.runInContext(snippet,ctx);if(ctx.profileAction!==null)throw Error('profile apply visible before changes');
+    vm.runInContext(snippet,ctx);if(!ctx.profileAction||ctx.profileAction.children[0].label!=='Проверить профиль заново')throw Error('profile recheck missing');
+    ctx.profileAction.children[0].click();if(calls.length!==1||calls[0][0]!=='clean'||calls[0][2]!==true)throw Error('profile recheck did not use current profile');calls.length=0;
     buttons[1].click();if(calls.length||state.pendingProfile!=='privacy')throw Error('profile selection applied early');
     buttons=[];vm.runInContext(snippet,ctx);ctx.profileAction.children[0].click();if(calls.length!==1||calls[0][0]!=='privacy'||calls[0][2]!==true)throw Error('profile change not applied');
     state.pendingProfile='privacy';buttons=[];vm.runInContext(snippet,ctx);buttons[0].click();if(state.pendingProfile!=='')throw Error('profile change not cancelled by selecting current profile');
