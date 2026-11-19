@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion and full installer
-# Version: 3.30.2
+# Version: 3.30.4
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="3.30.2"
+VERSION="3.30.4"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -876,7 +876,7 @@ printf 'Service did not become ready: %s\n' "$target" >&2
 exit 1
 EOF_DNSCRYPT_ASSET_8
     fetch_installer_source "$_dc_stage/backend-dnscrypt.sh" "$SOURCE_BASE/libexec/backend-dnscrypt.sh"
-    [ "$(sha256sum "$_dc_stage/backend-dnscrypt.sh" | cut -d' ' -f1)" = "bdf74f632c9b51254c86a03384570f9a2da4174f1f050fcc744bcb2d1ab1c411" ] || { err "Файл backend DNSCrypt не прошёл проверку."; return 1; }
+    [ "$(sha256sum "$_dc_stage/backend-dnscrypt.sh" | cut -d' ' -f1)" = "d1a4e1d7eb6f03ad2a623fe5f974f499bbbca3f0b74f4cc6b9c10f8e7d302cbf" ] || { err "Файл backend DNSCrypt не прошёл проверку."; return 1; }
     cat > "$_dc_stage/dns-manager-device-detach.sh" <<'EOF_DNSCRYPT_ASSET_10'
 #!/bin/sh
 # Detach the Manager-owned per-device redirect before stopping its listeners.
@@ -2194,7 +2194,7 @@ DM_SOURCE_BASE="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/$_d
 COMPANION_URL="$DM_SOURCE_BASE/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="3.30.2"
+SELF_VERSION="3.30.4"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -4207,6 +4207,22 @@ status_json() {
     printf ',"hostname":'; json_quote "$_host"; printf ',"uptime":'; json_quote "$_uptime"; printf ',"load1":'; json_quote "$_load"
     printf ',"cpu_count":%s,"memory_total_kb":%s,"memory_available_kb":%s' "$_cpu_count" "$_mem_t" "$_mem_a"
     printf ',"catalog_total":%s,"catalog_version":' "$_cat_total"; json_quote "$(catalog_version)"; printf ',"catalog_revision":'; json_quote "$(catalog_revision)"
+    _native_catalog=/etc/dns-manager/config/dnscrypt-native-catalog.conf
+    _native_catalog_source=downloaded
+    if [ ! -r "$_native_catalog" ]; then
+        _native_catalog=/usr/lib/dns-manager-luci/dnscrypt/dns-manager-dnscrypt-catalog.conf
+        _native_catalog_source=builtin
+    fi
+    _native_count=''; _native_updated=''
+    if [ -r "$_native_catalog" ]; then
+        _native_count="$(awk -F'|' '$1 !~ /^#/ && $5 ~ /^sdns:\/\// {n++} END {print n+0}' "$_native_catalog")"
+        _native_updated="$(stat -c %Y "$_native_catalog" 2>/dev/null || true)"
+    else
+        _native_catalog_source=none
+    fi
+    printf ',"native_catalog_count":'; json_quote "$_native_count"
+    printf ',"native_catalog_updated":'; json_quote "$_native_updated"
+    printf ',"native_catalog_source":'; json_quote "$_native_catalog_source"
     printf ',"hdp_version":'; json_quote "$_hdp_installed"; printf ',"hdp_latest_version":'; json_quote "$_hdp_latest"; printf ',"hdp_update_available":%s,"hdp_check_ok":%s' "$_hdp_avail" "$_hdp_checked"
     printf ',"doh_instances":['
     _doh_first=1
@@ -6134,7 +6150,7 @@ EOF_RPC_WRAPPER
 'require ui';
 'require session';
 
-// DNS Manager LuCI common module version: 3.30.2
+// DNS Manager LuCI common module version: 3.30.4
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -6714,7 +6730,7 @@ function buildSystemCard(st){
     row('Платформа',shortVal(st.target)),
     row('OpenWrt',shortVal(st.openwrt)),
     row('Время работы',E('span',{'id':'dm-runtime-uptime','class':'dm-uptime'},uptime(up))),
-    row('Интернет (ya.ru)',state.internetCheck==null?badge('dm-muted','проверяю…'):(state.internetCheck.error?badge('dm-muted','не удалось проверить'):(state.internetCheck.reachable?badge('dm-ok',state.internetCheck.latency?state.internetCheck.latency+' мс · отвечает':'отвечает'):badge('dm-warn','нет ответа от ya.ru')))),
+    row('Интернет',state.internetCheck==null?badge('dm-muted','проверяю…'):(state.internetCheck.error?badge('dm-muted','не удалось проверить'):(state.internetCheck.reachable?badge('dm-ok',state.internetCheck.latency?state.internetCheck.latency+' мс · отвечает':'отвечает'):badge('dm-warn','нет ответа')))),
     row('IPv4',E('span',{'id':'dm-runtime-ipv4'},ipv4)),
     row('IPv6',E('span',{'id':'dm-runtime-ipv6'},ipv6)),
     row('LAN',shortVal(st.lan))
@@ -6896,6 +6912,12 @@ function renderOverview(root,st){
     E('div',{'class':'dm-version-line'},[
       E('span',{'class':'dm-version-name'},'Каталог DNS'),
       E('span',{'class':'dm-version-state'},catalogVersionState(st.catalog_version,st.catalog_revision,st.catalog_total,st.catalog_update_available,st.catalog_latest_version,st.catalog_latest_rev,st.catalog_check_ok,state.versionCheck&&state.versionCheck.catalog==='running',st.catalog_update_error))
+    ]),
+    E('div',{'class':'dm-version-line'},[
+      E('span',{'class':'dm-version-name'},'Каталог DNSCrypt'),
+      E('span',{'class':'dm-version-state'},st.native_catalog_source==='none'||st.native_catalog_count==null||st.native_catalog_count===''
+        ?badge('dm-muted','нет данных')
+        :badge('dm-muted',String(st.native_catalog_count)+' серверов · '+(st.native_catalog_source==='builtin'?'встроенный набор':'загружен')+(st.native_catalog_updated?' · '+dateText(st.native_catalog_updated):'')))
     ]),
     row('Проверено',dateText(st.components_checked_at)),
     E('div',{'class':'dm-actions'},[
@@ -10000,7 +10022,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 3.30.2
+// DNS Manager LuCI version: 3.30.4
 return view.extend({
   load: DM.load,
   render: DM.render,
