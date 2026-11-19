@@ -5488,6 +5488,20 @@ $_manager_log"
         _log_text="${_log_text}Фоновая проверка и события DNS Manager:
 $_system_log"
     fi
+    # dnscrypt-proxy2 stores query details in tmpfs, not in the Manager event log.
+    # Never expose an old query file after logging has been disabled or the engine changed.
+    if [ "$(uci -q get dns-manager.global.active_engine 2>/dev/null || :)" = dnscrypt-proxy2 ] &&
+       [ "$(uci -q get dns-manager.global.dc_query_log 2>/dev/null || :)" = 1 ]; then
+        _query_log=""
+        if [ -r /tmp/dns-manager-dnscrypt-query.log ]; then
+            _query_log="$(tail -n "$_n" /tmp/dns-manager-dnscrypt-query.log 2>/dev/null || true)"
+        fi
+        [ -z "$_log_text" ] || _log_text="$_log_text
+
+"
+        _log_text="${_log_text}DNS-запросы DNSCrypt (временный журнал, последние $_n строк):
+${_query_log:-Записей пока нет.}"
+    fi
     printf '{"ok":true'; page_header_json
     printf ',"log":'; json_quote "$_log_text"; printf '}'
 }
@@ -8270,7 +8284,7 @@ function renderNetwork(root,st){
       settingToggle(root,'Блокировать IPv6-ответы','Возвращать пустой ответ на запросы адресов IPv6 (AAAA). Может мешать работе некоторых устройств.',yes(st.dc_block_ipv6),'dc_block_ipv6',noPool,why),
       settingToggle(root,'Блокировать короткие имена','Отвечать на запросы A и AAAA для имён без домена, не передавая их DNS-серверам.',yes(st.dc_block_unqualified),'dc_block_unqualified',noPool,why),
       settingToggle(root,'Блокировать локальные домены','Отвечать на запросы локальных зон, не передавая их DNS-серверам.',yes(st.dc_block_undelegated),'dc_block_undelegated',noPool,why),
-      settingToggle(root,'Журнал запросов','Записывает запрошенные домены во временную память роутера. Содержимое удаляется после перезагрузки.',yes(st.dc_query_log),'dc_query_log',noPool,why)
+      settingToggle(root,'Журнал запросов','Записывает запрошенные домены во временную память роутера. Последние запросы смотрите во вкладке «Журнал». Записи удаляются после перезагрузки.',yes(st.dc_query_log),'dc_query_log',noPool,why)
     ].filter(Boolean)));
   }
   var browserEnabled=yes(st.browser_dns), browserLoaded=yes(st.browser_dns_loaded);
