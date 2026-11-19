@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion and full installer
-# Version: 3.30.4
+# Version: 3.30.5
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="3.30.4"
+VERSION="3.30.5"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -2194,7 +2194,7 @@ DM_SOURCE_BASE="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/$_d
 COMPANION_URL="$DM_SOURCE_BASE/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="3.30.4"
+SELF_VERSION="3.30.5"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -4223,6 +4223,7 @@ status_json() {
     printf ',"native_catalog_count":'; json_quote "$_native_count"
     printf ',"native_catalog_updated":'; json_quote "$_native_updated"
     printf ',"native_catalog_source":'; json_quote "$_native_catalog_source"
+    printf ',"native_catalog_check":'; json_quote "$(cat "$RUNTIME_DIR/native-catalog-update.status" 2>/dev/null || true)"
     printf ',"hdp_version":'; json_quote "$_hdp_installed"; printf ',"hdp_latest_version":'; json_quote "$_hdp_latest"; printf ',"hdp_update_available":%s,"hdp_check_ok":%s' "$_hdp_avail" "$_hdp_checked"
     printf ',"doh_instances":['
     _doh_first=1
@@ -4914,6 +4915,15 @@ mutation_worker() {
             ;;
         version)
             INPUT="{\"force\":$DNSMGR_WORK_ARG}"
+            if command -v dnscrypt-proxy >/dev/null 2>&1 && [ -r /usr/lib/dns-manager-luci/dnscrypt/dns-manager-dnscrypt-catalog-update.sh ]; then
+                _source_cache="$(mktemp -d "$TMP_ROOT/catalog-source.XXXXXX")"
+                if [ -n "$_source_cache" ] && DNS_MANAGER_SOURCE_CACHE="$_source_cache" sh /usr/lib/dns-manager-luci/dnscrypt/dns-manager-dnscrypt-catalog-update.sh > "$RUNTIME_DIR/native-catalog-update.log" 2>&1; then
+                    printf 'ok\n' > "$RUNTIME_DIR/native-catalog-update.status"
+                else
+                    printf 'fail\n' > "$RUNTIME_DIR/native-catalog-update.status"
+                fi
+                [ -z "$_source_cache" ] || rm -rf "$_source_cache"
+            fi
             update_check_json
             grep -q '"ok"[[:space:]]*:[[:space:]]*true' "$JOB_DIR/$DNSMGR_WORK_JOB/output" && DNSMGR_WORK_RC=0
             ;;
@@ -6150,7 +6160,7 @@ EOF_RPC_WRAPPER
 'require ui';
 'require session';
 
-// DNS Manager LuCI common module version: 3.30.4
+// DNS Manager LuCI common module version: 3.30.5
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -6915,9 +6925,13 @@ function renderOverview(root,st){
     ]),
     E('div',{'class':'dm-version-line'},[
       E('span',{'class':'dm-version-name'},'Каталог DNSCrypt'),
-      E('span',{'class':'dm-version-state'},st.native_catalog_source==='none'||st.native_catalog_count==null||st.native_catalog_count===''
-        ?badge('dm-muted','нет данных')
-        :badge('dm-muted',String(st.native_catalog_count)+' серверов · '+(st.native_catalog_source==='builtin'?'встроенный набор':'загружен')+(st.native_catalog_updated?' · '+dateText(st.native_catalog_updated):'')))
+      E('span',{'class':'dm-version-state'},state.versionCheck&&state.versionCheck.running
+        ?badge('dm-muted','проверяю…')
+        :st.native_catalog_check==='fail'
+          ?badge('dm-warn','не удалось обновить · сохранён прежний список')
+          :st.native_catalog_source==='none'||st.native_catalog_count==null||st.native_catalog_count===''
+            ?badge('dm-muted','нет данных')
+            :badge(st.native_catalog_check==='ok'?'dm-ok':'dm-muted',String(st.native_catalog_count)+' серверов · '+(st.native_catalog_source==='builtin'?'встроенный набор':'загружен')+(st.native_catalog_updated?' · '+dateText(st.native_catalog_updated):'')))
     ]),
     row('Проверено',dateText(st.components_checked_at)),
     E('div',{'class':'dm-actions'},[
@@ -10022,7 +10036,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 3.30.4
+// DNS Manager LuCI version: 3.30.5
 return view.extend({
   load: DM.load,
   render: DM.render,
