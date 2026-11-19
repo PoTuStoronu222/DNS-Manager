@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion and full installer
-# Version: 3.2.6
+# Version: 3.2.7
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="3.2.6"
+VERSION="3.2.7"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -1391,6 +1391,7 @@ warsaw|Warsaw|PL
 zurich|Zürich|CH
 EOF_LOCATIONS
 while IFS='|' read -r name stamp category description; do
+    [ "$name" != dnscry.pt-moscow-ipv4 ] || continue
     case "$name" in
         adguard-dns-family|cisco-familyshield|cleanbrowsing-adult|cleanbrowsing-family|dnsforfamily|dnsforfamily-no-safe-search|sfw.scaleway-fr) category=family ;;
         adguard-dns|doh.tiar.app) category=adblock ;;
@@ -1468,6 +1469,12 @@ EOF_DNSCRYPT_UPDATE
     done
     chmod 0755 "$_dc_stage/backend-dnscrypt.sh"
     mv -f "$_dc_stage/backend-dnscrypt.sh" "${_dc_dest%/*}/backend-dnscrypt.sh"
+    # Remove the retired resolver from an existing downloaded catalog too.
+    _dc_catalog=/etc/dns-manager/config/dnscrypt-native-catalog.conf
+    if [ -f "$_dc_catalog" ]; then
+        awk -F'|' '$1 != "official_c682a5209242ecbd51fd17c7078c8708aa10a1344adb2cfb2a0f8549715a8869"' "$_dc_catalog" > "$_dc_catalog.new"
+        mv -f "$_dc_catalog.new" "$_dc_catalog"
+    fi
     # Existing DNSCrypt installations receive the same boot guard on update.
     if [ "$(uci -q get dns-manager.global.active_engine 2>/dev/null)" = dnscrypt-proxy2 ] && [ -x /etc/init.d/dnscrypt-proxy ]; then
         cp "$_dc_dest/dns-manager-dnscrypt.init" /etc/init.d/dnscrypt-proxy.new
@@ -2166,7 +2173,7 @@ DM_SOURCE_BASE="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/$_d
 COMPANION_URL="$DM_SOURCE_BASE/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="3.2.6"
+SELF_VERSION="3.2.7"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -5438,6 +5445,7 @@ catalog_json() {
         [ -r "$_catalog_source" ] || continue
         while IFS='|' read -r _id _cat _prof _name _url _region _status; do
             case "$_id" in ''|\#*) continue;; esac
+            [ "$_id" != official_c682a5209242ecbd51fd17c7078c8708aa10a1344adb2cfb2a0f8549715a8869 ] || continue
             [ "$_category" = all ] || [ "$_cat" = "$_category" ] || continue
             case "$_protocol:$_url" in native:sdns://*|doh:https://*|all:*) ;; *) continue;; esac
             if [ "$_only_ok" = 1 ]; then _r="$(result_for_id "$_id" 2>/dev/null || true)"; _st="$(printf '%s' "$_r" | awk -F'|' 'NF>=5 {print $5;exit}')"; [ "$_st" = OK ] || continue; fi
@@ -6092,7 +6100,7 @@ EOF_RPC_WRAPPER
 'require ui';
 'require session';
 
-// DNS Manager LuCI common module version: 3.2.6
+// DNS Manager LuCI common module version: 3.2.7
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -9747,7 +9755,7 @@ function catalogCategory(){
 function catalogCountryControls(root,data){
   if(state.category!=='all')return null;
   var labels={all:'Все страны',any:'Страна не указана',global:'По всему миру',asia:'Азия',eu:'Европа',ru:'Россия',us:'США',bg:'Болгария',br:'Бразилия',cl:'Чили',dk:'Дания',ee:'Эстония',ge:'Грузия',ie:'Ирландия',gr:'Греция',hk:'Гонконг',is:'Исландия',kr:'Южная Корея',la:'Лаос',lt:'Литва',lv:'Латвия',mu:'Маврикий',mx:'Мексика',my:'Малайзия',ng:'Нигерия',nz:'Новая Зеландия',pk:'Пакистан',sk:'Словакия',tr:'Турция',tw:'Тайвань',ua:'Украина',vn:'Вьетнам',za:'ЮАР',bd:'Бангладеш',in:'Индия',al:'Албания',gb:'Великобритания',uk:'Великобритания',by:'Беларусь',cn:'Китай',id:'Индонезия',de:'Германия',fr:'Франция',nl:'Нидерланды',ca:'Канада',au:'Австралия',at:'Австрия',be:'Бельгия',ch:'Швейцария',cz:'Чехия',es:'Испания',fi:'Финляндия',hu:'Венгрия',it:'Италия',jp:'Япония',md:'Молдова',no:'Норвегия',pl:'Польша',pt:'Португалия',ro:'Румыния',rs:'Сербия',se:'Швеция',sg:'Сингапур'};
-  var codes=(data.regions||[]).slice().sort(function(a,b){return (labels[a]||a).localeCompare(labels[b]||b,'ru');});
+  var codes=(data.regions||[]).filter(function(code){return code!=='ru';}).sort(function(a,b){return (labels[a]||a).localeCompare(labels[b]||b,'ru');});
   var buttons=E('div',{'class':'dm-seg'});
   ['all'].concat(codes).forEach(function(code){buttons.appendChild(btn(labels[code]||code.toUpperCase(),state.catalogCountry===code?'active cbi-button':'cbi-button',function(){if(state.catalogLoading)return;state.catalogCountry=code;state.offset=0;state.catalogOpenGroups={};loadCatalog(root);},{disabled:!!state.catalogLoading,'aria-pressed':state.catalogCountry===code?'true':'false'}));});
   return E('div',{},[E('div',{'class':'dm-mini'},'Страна сервера'),buttons]);
@@ -9935,7 +9943,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 3.2.6
+// DNS Manager LuCI version: 3.2.7
 return view.extend({
   load: DM.load,
   render: DM.render,
