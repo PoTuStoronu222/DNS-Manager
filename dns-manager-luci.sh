@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion and full installer
-# Version: 3.30.9
+# Version: 3.30.10
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="3.30.9"
+VERSION="3.30.10"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -876,7 +876,7 @@ printf 'Service did not become ready: %s\n' "$target" >&2
 exit 1
 EOF_DNSCRYPT_ASSET_8
     fetch_installer_source "$_dc_stage/backend-dnscrypt.sh" "$SOURCE_BASE/libexec/backend-dnscrypt.sh"
-    [ "$(sha256sum "$_dc_stage/backend-dnscrypt.sh" | cut -d' ' -f1)" = "de80be95bfc4870dac791d2e9afbbb8671e2f9dfd5bdbeba10b577b525af2984" ] || { err "Файл backend DNSCrypt не прошёл проверку."; return 1; }
+    [ "$(sha256sum "$_dc_stage/backend-dnscrypt.sh" | cut -d' ' -f1)" = "da059a8794c0dd3261db023c33a36efa628e1e008ea60bc69cdcb58b7dd6a5fb" ] || { err "Файл backend DNSCrypt не прошёл проверку."; return 1; }
     cat > "$_dc_stage/dns-manager-device-detach.sh" <<'EOF_DNSCRYPT_ASSET_10'
 #!/bin/sh
 # Detach the Manager-owned per-device redirect before stopping its listeners.
@@ -2194,7 +2194,7 @@ DM_SOURCE_BASE="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/$_d
 COMPANION_URL="$DM_SOURCE_BASE/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="3.30.9"
+SELF_VERSION="3.30.10"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -2695,11 +2695,20 @@ component_update_check() {
     fi
     rm -f "$_tmp" 2>/dev/null || true
 
-    _hdp_installed="$(package_version https-dns-proxy 2>/dev/null || true)"
-    _hdp_candidate="$(package_candidate_version https-dns-proxy 2>/dev/null || true)"
-    _hdp_checked=0
-    [ -n "$_hdp_installed" ] && _hdp_checked=1
-    _hdp_available=0
+    _engine_check_package=https-dns-proxy
+    [ "$(uci -q get dns-manager.global.active_engine 2>/dev/null)" = dnscrypt-proxy2 ] && _engine_check_package=dnscrypt-proxy2
+    _hdp_installed="$(package_version "$_engine_check_package" 2>/dev/null || true)"
+    _hdp_latest=""; _hdp_checked=0; _hdp_available=0; _hdp_error=""
+    if [ -n "$_hdp_installed" ]; then
+        if package_update_index && _hdp_candidate="$(package_candidate_version "$_engine_check_package")"; then
+            _hdp_checked=1
+            _hdp_latest="${_hdp_candidate:-$_hdp_installed}"
+            [ -n "$_hdp_candidate" ] && package_version_cmp "$_hdp_candidate" "$_hdp_installed" && _hdp_available=1
+        else
+            _hdp_error="Не удалось проверить репозитории пакетов"
+            UPDATE_CHECK_COMPONENTS_OK=0
+        fi
+    fi
 
     _state_tmp="$UPDATE_STATE.tmp.$$"
     if [ -r "$UPDATE_STATE" ]; then
@@ -2717,6 +2726,7 @@ component_update_check() {
     printf 'catalog_available=%s\n' "$_catalog_available" >> "$_state_tmp"
     printf 'catalog_checked=%s\n' "$_catalog_ok" >> "$_state_tmp"
     printf 'catalog_error=%s\n' "$_catalog_error" >> "$_state_tmp"
+    printf 'hdp_package=%s\nhdp_error=%s\n' "$_engine_check_package" "$_hdp_error" >> "$_state_tmp"
     printf 'hdp_latest=%s\n' "$_hdp_latest" >> "$_state_tmp"
     printf 'hdp_available=%s\n' "$_hdp_available" >> "$_state_tmp"
     printf 'hdp_checked=%s\n' "$_hdp_checked" >> "$_state_tmp"
@@ -2726,54 +2736,42 @@ component_update_check() {
 
 update_hdp_json() {
     if ! acquire_runtime_lock "$RUNTIME_DIR/hdp-update.lock"; then
-        json_error "Обновление https-dns-proxy уже выполняется"; return
+        json_error "Обновление DNS-движка уже выполняется"; return
     fi
     trap 'release_runtime_lock "$RUNTIME_DIR/hdp-update.lock"' EXIT INT TERM
-    _installed="$(package_version https-dns-proxy 2>/dev/null || true)"
-    [ -n "$_installed" ] || { json_error "https-dns-proxy не установлен"; return; }
-    package_update_index || { json_error "Не удалось обновить индекс пакетов для https-dns-proxy"; return; }
-    _candidate="$(package_candidate_version https-dns-proxy 2>/dev/null || true)"
-    [ -n "$_candidate" ] || {
-        _state_tmp="$UPDATE_STATE.tmp.$$"
-        if [ -r "$UPDATE_STATE" ]; then
-            sed '/^hdp_latest=/d;/^hdp_available=/d;/^hdp_checked=/d;/^components_checked_at=/d' "$UPDATE_STATE" > "$_state_tmp" 2>/dev/null || true
+    _engine_upgrade_package=https-dns-proxy
+    [ "$(uci -q get dns-manager.global.active_engine 2>/dev/null)" = dnscrypt-proxy2 ] && _engine_upgrade_package=dnscrypt-proxy2
+    _engine_upgrade_installed="$(package_version "$_engine_upgrade_package" 2>/dev/null || true)"
+    [ -n "$_engine_upgrade_installed" ] || { json_error "DNS-движок не установлен"; return; }
+    package_update_index || { json_error "Не удалось обновить списки пакетов"; return; }
+    _engine_upgrade_candidate="$(package_candidate_version "$_engine_upgrade_package")" || { json_error "Не удалось проверить версию пакета"; return; }
+    if [ -n "$_engine_upgrade_candidate" ] && package_version_cmp "$_engine_upgrade_candidate" "$_engine_upgrade_installed"; then
+        if command -v apk >/dev/null 2>&1; then
+            apk upgrade "$_engine_upgrade_package" >/dev/null 2>&1 || { json_error "Не удалось обновить пакет DNS-движка"; return; }
+        elif command -v opkg >/dev/null 2>&1; then
+            opkg upgrade "$_engine_upgrade_package" >/dev/null 2>&1 || { json_error "Не удалось обновить пакет DNS-движка"; return; }
         else
-            : > "$_state_tmp"
+            json_error "Менеджер пакетов не найден"; return
         fi
-        _ts="$(date +%s 2>/dev/null || printf 0)"
-        printf 'hdp_latest=%s\nhdp_available=0\nhdp_checked=1\ncomponents_checked_at=%s\n' "$_installed" "$_ts" >> "$_state_tmp"
-        mv "$_state_tmp" "$UPDATE_STATE" 2>/dev/null || rm -f "$_state_tmp" 2>/dev/null || true
-        printf '{"ok":true,"updated":false,"version":'; json_quote "$_installed"; printf ',"message":'; json_quote "https-dns-proxy уже актуален"; printf '}'
-        return
-    }
-    if ! package_version_cmp "$_candidate" "$_installed"; then
-        _state_tmp="$UPDATE_STATE.tmp.$$"
-        if [ -r "$UPDATE_STATE" ]; then
-            sed '/^hdp_latest=/d;/^hdp_available=/d;/^hdp_checked=/d;/^components_checked_at=/d' "$UPDATE_STATE" > "$_state_tmp" 2>/dev/null || true
+        if [ "$_engine_upgrade_package" = dnscrypt-proxy2 ]; then
+            _engine_init=/usr/lib/dns-manager-luci/dnscrypt/dns-manager-dnscrypt.init
+            [ -r "$_engine_init" ] && cp "$_engine_init" /etc/init.d/dnscrypt-proxy.new && chmod 0755 /etc/init.d/dnscrypt-proxy.new && mv -f /etc/init.d/dnscrypt-proxy.new /etc/init.d/dnscrypt-proxy || { json_error "Пакет обновлён, но не удалось восстановить службу DNSCrypt"; return; }
+            /etc/init.d/dnscrypt-proxy restart >/dev/null 2>&1 || { json_error "Пакет обновлён, но DNSCrypt не запустился"; return; }
         else
-            : > "$_state_tmp"
+            /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || { json_error "Пакет обновлён, но HTTPS DNS Proxy не запустился"; return; }
         fi
-        _ts="$(date +%s 2>/dev/null || printf 0)"
-        printf 'hdp_latest=%s\nhdp_available=0\nhdp_checked=1\ncomponents_checked_at=%s\n' "$_installed" "$_ts" >> "$_state_tmp"
-        mv "$_state_tmp" "$UPDATE_STATE" 2>/dev/null || rm -f "$_state_tmp" 2>/dev/null || true
-        printf '{"ok":true,"updated":false,"version":'; json_quote "$_installed"; printf ',"message":'; json_quote "https-dns-proxy уже актуален"; printf '}'
-        return
-    fi
-    if ! package_upgrade_hdp; then
-        json_error "https-dns-proxy не удалось обновить"; return
-    fi
-    _after="$(package_version https-dns-proxy 2>/dev/null || true)"
-    [ -n "$_after" ] || { json_error "Не удалось определить версию после обновления"; return; }
-    _state_tmp="$UPDATE_STATE.tmp.$$"
-    if [ -r "$UPDATE_STATE" ]; then
-        sed '/^hdp_latest=/d;/^hdp_available=/d;/^hdp_checked=/d;/^components_checked_at=/d' "$UPDATE_STATE" > "$_state_tmp" 2>/dev/null || true
+        _engine_upgrade_updated=true
     else
-        : > "$_state_tmp"
+        _engine_upgrade_updated=false
     fi
-    _ts="$(date +%s 2>/dev/null || printf 0)"
-    printf 'hdp_latest=%s\nhdp_available=0\nhdp_checked=1\ncomponents_checked_at=%s\n' "$_after" "$_ts" >> "$_state_tmp"
-    mv "$_state_tmp" "$UPDATE_STATE" 2>/dev/null || rm -f "$_state_tmp" 2>/dev/null || true
-    printf '{"ok":true,"updated":true,"version":'; json_quote "$_after"; printf '}'
+    _engine_upgrade_after="$(package_version "$_engine_upgrade_package" 2>/dev/null || true)"
+    [ -n "$_engine_upgrade_after" ] || { json_error "Не удалось определить версию пакета"; return; }
+    if [ "$_engine_upgrade_updated" = true ] && [ "$_engine_upgrade_after" = "$_engine_upgrade_installed" ]; then json_error "Пакет не обновился: проверьте ограничения версий и репозитории"; return; fi
+    _state_tmp="$UPDATE_STATE.tmp.$$"
+    sed '/^hdp_/d' "$UPDATE_STATE" > "$_state_tmp" 2>/dev/null || : > "$_state_tmp"
+    printf 'hdp_package=%s\nhdp_latest=%s\nhdp_available=0\nhdp_checked=1\nhdp_error=\n' "$_engine_upgrade_package" "$_engine_upgrade_after" >> "$_state_tmp"
+    mv "$_state_tmp" "$UPDATE_STATE"
+    printf '{"ok":true,"updated":%s,"version":' "$_engine_upgrade_updated"; json_quote "$_engine_upgrade_after"; printf '}'
 }
 
 update_catalog_json() {
@@ -3160,20 +3158,28 @@ package_version() {
     fi
 }
 package_candidate_version() {
-    _pkg="$1"
-    [ -n "$_pkg" ] || return 0
-    if command -v apk >/dev/null 2>&1; then        _v="$(apk list --upgradeable "$_pkg" 2>/dev/null | awk -v p="$_pkg" '$1 ~ "^"p"-" {sub("^"p"-","",$1); print $1; exit}')"
-        printf '%s' "$_v"
+    _candidate_pkg="$1"
+    [ -n "$_candidate_pkg" ] || return 1
+    _candidate_file="$(mktemp "$TMP_ROOT/package-candidate.XXXXXX")" || return 1
+    if command -v apk >/dev/null 2>&1; then
+        apk list --upgradeable "$_candidate_pkg" > "$_candidate_file" 2>/dev/null || { rm -f "$_candidate_file"; return 1; }
+        awk -v p="$_candidate_pkg" 'index($1,p"-")==1 {print substr($1,length(p)+2); exit}' "$_candidate_file"
     elif command -v opkg >/dev/null 2>&1; then
-        opkg list-upgradable 2>/dev/null | awk -v p="$_pkg" '$1==p {print $3; exit}'
+        opkg list-upgradable > "$_candidate_file" 2>/dev/null || { rm -f "$_candidate_file"; return 1; }
+        awk -v p="$_candidate_pkg" '$1==p {print $5; exit}' "$_candidate_file"
+    else
+        rm -f "$_candidate_file"; return 1
     fi
+    rm -f "$_candidate_file"
 }
+
 package_version_cmp() {
     _a="$1"; _b="$2"
     [ -n "$_a" ] && [ -n "$_b" ] || return 2
     if command -v apk >/dev/null 2>&1 && apk version -t "$_a" "$_b" >/dev/null 2>&1; then
         apk version -t "$_a" "$_b" 2>/dev/null | grep -q '^>' && return 0 || return 1
     fi
+    if command -v opkg >/dev/null 2>&1; then opkg compare-versions "$_a" '>>' "$_b"; return $?; fi
     awk -F'[^0-9]+' -v a="$_a" -v b="$_b" 'BEGIN{split(a,A);split(b,B);for(i=1;i<=8;i++){x=A[i]+0;y=B[i]+0;if(x>y){exit 0}if(x<y){exit 1}}exit 1}'
 }
 package_update_index() {
@@ -3184,16 +3190,6 @@ package_update_index() {
     else
         return 1
     fi
-}
-package_upgrade_hdp() {
-    if command -v apk >/dev/null 2>&1; then
-        apk upgrade https-dns-proxy >/dev/null 2>&1
-    elif command -v opkg >/dev/null 2>&1; then
-        opkg upgrade https-dns-proxy >/dev/null 2>&1
-    else
-        return 1
-    fi
-    /etc/init.d/https-dns-proxy restart >/dev/null 2>&1 || return 1
 }
 runtime_lan_input_match() {
     _ref="$1"
@@ -4089,6 +4085,9 @@ status_json() {
     _hdp_latest="$(sed -n 's/^hdp_latest=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"
     _hdp_avail="$(sed -n 's/^hdp_available=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"; [ -n "$_hdp_avail" ] || _hdp_avail=0
     _hdp_checked="$(sed -n 's/^hdp_checked=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"; [ -n "$_hdp_checked" ] || _hdp_checked=0
+    _hdp_package="$(sed -n 's/^hdp_package=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"
+    _hdp_error="$(sed -n 's/^hdp_error=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"
+    [ "$_hdp_package" = "$_engine_package" ] || { _hdp_checked=0; _hdp_avail=0; _hdp_error=""; }
     _components_checked_at="$(sed -n 's/^components_checked_at=//p' "$UPDATE_STATE" 2>/dev/null | head -n1)"
     _ntp_enabled="$(uci -q get system.ntp.enabled 2>/dev/null || true)"; [ -n "$_ntp_enabled" ] || _ntp_enabled=0
     _ntp_use_dhcp="$(uci -q get system.ntp.use_dhcp 2>/dev/null || true)"; [ -n "$_ntp_use_dhcp" ] || _ntp_use_dhcp=0
@@ -4226,7 +4225,7 @@ status_json() {
     printf ',"native_catalog_updated":'; json_quote "$_native_updated"
     printf ',"native_catalog_source":'; json_quote "$_native_catalog_source"
     printf ',"native_catalog_check":'; json_quote "$(cat "$RUNTIME_DIR/native-catalog-update.status" 2>/dev/null || true)"
-    printf ',"hdp_version":'; json_quote "$_hdp_installed"; printf ',"hdp_latest_version":'; json_quote "$_hdp_latest"; printf ',"hdp_update_available":%s,"hdp_check_ok":%s' "$_hdp_avail" "$_hdp_checked"
+    printf ',"hdp_version":'; json_quote "$_hdp_installed"; printf ',"hdp_latest_version":'; json_quote "$_hdp_latest"; printf ',"hdp_update_available":%s,"hdp_check_ok":%s,"hdp_update_error":' "$_hdp_avail" "$_hdp_checked"; json_quote "$_hdp_error"
     printf ',"doh_instances":['
     _doh_first=1
     _i=0
@@ -4778,7 +4777,7 @@ profile_job_running() {
 # by a browser page or rpcd. The worker writes its result to the normal job
 # directory so another page (or a new browser session) can read it.
 background_start() {
-    case "$1" in update|combined) DM_BACKGROUND_ID="$1";; *) json_error "Недопустимая задача"; return;; esac
+    case "$1" in update|combined|engine-update) DM_BACKGROUND_ID="$1";; *) json_error "Недопустимая задача"; return;; esac
     DM_BACKGROUND_SERVICE="dns-manager-job-$DM_BACKGROUND_ID"
     acquire_runtime_lock "$RUNTIME_DIR/$DM_BACKGROUND_ID-start.lock" || { json_error "Задача уже запускается"; return; }
     if job_active "$DM_BACKGROUND_ID" && job_process_alive "$JOB_DIR/$DM_BACKGROUND_ID"; then
@@ -4826,11 +4825,14 @@ background_wait_test() {
 }
 
 background_worker() {
-    case "$1" in update|combined) DM_BACKGROUND_ID="$1";; *) exit 1;; esac
+    case "$1" in update|combined|engine-update) DM_BACKGROUND_ID="$1";; *) exit 1;; esac
     job_record_pid "$DM_BACKGROUND_ID" "$$"
     if [ "$DM_BACKGROUND_ID" = update ]; then
         update_all_json > "$JOB_DIR/update/output" 2>&1
         if grep -q '"ok":true' "$JOB_DIR/update/output"; then DM_BACKGROUND_RESULT=ok; else DM_BACKGROUND_RESULT=fail; fi
+    elif [ "$DM_BACKGROUND_ID" = engine-update ]; then
+        update_hdp_json > "$JOB_DIR/engine-update/output" 2>&1
+        if grep -q '"ok":true' "$JOB_DIR/engine-update/output"; then DM_BACKGROUND_RESULT=ok; else DM_BACKGROUND_RESULT=fail; fi
     else
         DM_BACKGROUND_RESULT=ok
         DM_BACKGROUND_SLOTS=0
@@ -6096,7 +6098,7 @@ case "${1:-}" in
             runtime) runtime_json;;
             connectivity) connectivity_json;;
             catalog) INPUT="$(cat 2>/dev/null || true)"; catalog_json;;
-            update_check) INPUT="$(cat 2>/dev/null || true)"; job_start_version_check;;            update_catalog) update_catalog_json;;            update_all) update_all_json;;            update) update_json;;            update_manager) update_manager_json;;            update_hdp) update_hdp_json;;
+            update_check) INPUT="$(cat 2>/dev/null || true)"; job_start_version_check;;            update_catalog) update_catalog_json;;            update_all) update_all_json;;            update) update_json;;            update_manager) update_manager_json;;            update_hdp) background_start engine-update;;
             update_background) background_start update;;
             test_combined) background_start combined;;
             add_custom_dns|delete_custom_dns|set_device_dns|set_cache|reset_dns|uninstall|set_profile|set_regional|set_slot|set_slot_domains|set_setting|set_bootstrap|set_watchdog_setting|set_watchdog_settings|set_ntp|set_test_age) INPUT="$(cat 2>/dev/null || true)"; RPC_METHOD="$2"; run_action;;
@@ -6162,7 +6164,7 @@ EOF_RPC_WRAPPER
 'require ui';
 'require session';
 
-// DNS Manager LuCI common module version: 3.30.9
+// DNS Manager LuCI common module version: 3.30.10
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -6410,7 +6412,7 @@ function hasAvailableUpdates(st){
   return (yes(st.manager_check_ok)&&!st.manager_update_error&&yes(st.manager_update_available)) ||
     (yes(st.luci_update_checked)&&!st.luci_update_error&&yes(st.luci_update_available)) ||
     (yes(st.catalog_check_ok)&&!st.catalog_update_error&&yes(st.catalog_update_available)) ||
-    (st.dnscrypt_engine!=='dnscrypt-proxy2'&&yes(st.hdp_check_ok)&&yes(st.hdp_update_available));
+    false;
 }
 
 function injectStyle(root){
@@ -6919,7 +6921,7 @@ function renderOverview(root,st){
     ]),
     E('div',{'class':'dm-version-line'},[
       E('span',{'class':'dm-version-name'},st.dnscrypt_engine==='dnscrypt-proxy2'?'DNSCrypt Proxy 2':'HTTPS DNS Proxy'),
-      E('span',{'class':'dm-version-state'},st.hdp_version?badge('dm-muted',shortVal(st.hdp_version)+' · установлен'):badge('dm-muted','не установлен'))
+      E('span',{'class':'dm-version-state'},versionState(st.hdp_version,st.hdp_update_available,st.hdp_latest_version,st.hdp_check_ok,'актуален',state.versionCheck&&state.versionCheck.hdp==='running',st.hdp_update_error))
     ]),
     E('div',{'class':'dm-version-line'},[
       E('span',{'class':'dm-version-name'},'Каталог DNS'),
@@ -6940,6 +6942,7 @@ function renderOverview(root,st){
     row('Проверено',dateText(st.components_checked_at)),
     E('div',{'class':'dm-actions'},[
       btn(state.versionCheck&&state.versionCheck.running?'Проверяю актуальность…':'Проверить актуальность','cbi-button-neutral',function(){checkUpdate(root,true);},{disabled:!!state.updatingAll||!!(state.versionCheck&&state.versionCheck.running)}),
+      (state.updatingEngine||yes(st.hdp_check_ok)&&yes(st.hdp_update_available)) ? btn(state.updatingEngine?'Обновляю DNS-движок…':'Обновить DNS-движок','cbi-button-positive',function(){updateEngine(root);},{disabled:!!state.updatingEngine||!!state.updatingAll||!!state.busy||!!(state.versionCheck&&state.versionCheck.running)}) : null,
       (state.updatingAll||hasAvailableUpdates(st)) ?
         btn(state.updatingAll?'Обновляю…':'Обновить','cbi-button-positive',function(){updateAll(root);},{disabled:!!state.updatingAll||!!state.busy||!!(state.versionCheck&&state.versionCheck.running)}) :
         null
@@ -9103,6 +9106,23 @@ function watchBackground(root,id){
     });
   }poll();
 }
+function updateEngine(root){
+  if(state.updatingEngine||state.updatingAll||state.busy)return;
+  state.updatingEngine=true;globalUpdateNotice('Обновляю DNS-движок…','info');renderOverview(root,window.dmState||{});
+  callHdpUpdate().then(function(r){
+    if(!r||!r.ok||!r.job)throw new Error((r&&r.error)||'Не удалось запустить обновление');
+    var started=Date.now();
+    function poll(){return callJob(r.job).then(function(j){
+      if(j&&j.status==='running'&&Date.now()-started<330000)return new Promise(function(resolve){window.setTimeout(resolve,1500);}).then(poll);
+      if(j&&(j.status==='done'||j.status==='failed')){
+        var result;try{result=JSON.parse(String(j.output||'').split('\n')[0]);}catch(e){result=null;}
+        if(j.result!=='ok'||!result||!result.ok)throw new Error(result&&result.error||'Не удалось обновить DNS-движок');
+        state.updatingEngine=false;globalUpdateNotice(result.updated?'DNS-движок обновлён.':'DNS-движок уже актуален.','ok');return refresh(root,true);
+      }
+      throw new Error('Результат пока неизвестен: проверьте состояние позже');
+    });}return poll();
+  }).catch(function(err){state.updatingEngine=false;globalUpdateNotice(err.message||'Не удалось получить результат обновления.','error');renderOverview(root,window.dmState||{});});
+}
 function updateAll(root){
   if(state.updatingAll||state.busy||(state.versionCheck&&state.versionCheck.running))return;
   state.updatingAll=true;globalUpdateNotice('Запускаю обновление на роутере…','info');renderOverview(root,window.dmState||{});
@@ -10049,7 +10069,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 3.30.9
+// DNS Manager LuCI version: 3.30.10
 return view.extend({
   load: DM.load,
   render: DM.render,
