@@ -132,6 +132,7 @@ warsaw|Warsaw|PL
 zurich|Zürich|CH
 EOF_LOCATIONS
 while IFS='|' read -r name stamp category description; do
+    [ "$name" != dnscry.pt-moscow-ipv4 ] || continue
     case "$name" in
         adguard-dns-family|cisco-familyshield|cleanbrowsing-adult|cleanbrowsing-family|dnsforfamily|dnsforfamily-no-safe-search|sfw.scaleway-fr) category=family ;;
         adguard-dns|doh.tiar.app) category=adblock ;;
