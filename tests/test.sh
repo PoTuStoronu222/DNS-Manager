@@ -653,7 +653,7 @@ grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validat
 grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
 grep -q 'VERSION="4.50"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
-grep -q 'VERSION="3.2.1"' dns-manager-luci.sh || fail "LuCI version not bumped"
+grep -q 'VERSION="3.2.2"' dns-manager-luci.sh || fail "LuCI version not bumped"
 grep -Fq "{id:'quad9plain',ips:'9.9.9.10,149.112.112.10,2620:fe::10,2620:fe::fe:10'}" dns-manager-luci.sh || fail "historical Quad9 bootstrap snapshot changed"
 grep -Fq "{id:'cira',ips:'149.112.121.10,149.112.122.10,2620:10a:80bb::10,2620:10a:80bc::10'}" dns-manager-luci.sh || fail "historical CIRA bootstrap snapshot changed"
 if grep -q '^main_menu$' dns-manager.sh; then fail "interactive console menu still starts"; fi
@@ -1179,6 +1179,37 @@ _detect_external_line="$(grep -nF 'detect_forced_dns_path' "$tmp/force_enforce_s
 awk '/^[[:space:]]*force\)/,/^[[:space:]]*dnsmasq_perf\)/' dns-manager.sh > "$tmp/force_state.sh"
 grep -Fq '[ "$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null)" = "0" ] || _ok=0' "$tmp/force_state.sh" || fail "Steer force-state check does not expect explicit force_dns=0"
 ok "Steer forced-DNS avoids the package default interception"
+
+# Both status responses can skip the expensive manager probe only when the
+# saved Manager setting is off; enabled settings still use the live check.
+cat > "$tmp/force-state-manager" <<'EOF_FORCE_MANAGER'
+#!/bin/sh
+printf '%s\n' called >> "$FORCE_PROBE_LOG"
+printf '%s\n' "${FORCE_PROBE_RESULT:-0}"
+EOF_FORCE_MANAGER
+chmod +x "$tmp/force-state-manager"
+for _status_fn in doh_status_json status_json; do
+    awk -v name="$_status_fn" '
+        $0 == name "() {" { in_fn=1 }
+        in_fn && /^    _force_manager=0$/ { capture=1 }
+        capture { print }
+        capture && /^    \[ "\$_force_manager" = 1 \] \|\|/ { exit }
+    ' "$tmp/backend.sh" > "$tmp/force-status-block"
+    [ -s "$tmp/force-status-block" ] || fail "$_status_fn force status extraction"
+    for _force in 0 1; do
+        : > "$tmp/force-probe-log"
+        _force_cfg=0; _force_notrack=0; FORCE_PROBE_RESULT=1
+        FORCE_PROBE_LOG="$tmp/force-probe-log"; MANAGER_PATH="$tmp/force-state-manager"
+        export FORCE_PROBE_LOG FORCE_PROBE_RESULT
+        . "$tmp/force-status-block" || :
+        if [ "$_force" = 0 ]; then
+            [ "$_force_manager" = 0 ] && [ ! -s "$FORCE_PROBE_LOG" ] || fail "$_status_fn must skip disabled force probe"
+        else
+            [ "$_force_manager" = 1 ] && [ -s "$FORCE_PROBE_LOG" ] || fail "$_status_fn must probe enabled force"
+        fi
+    done
+done
+ok "status skips only disabled Manager forced-DNS probe"
 
 # Exercise both force-toggle paths without touching the host's OpenWrt config.
 awk '/^sync_hdp_force_contract\(\) \{/,/^configure_hdp_manager_control\(\) \{/' dns-manager.sh | sed '$d' | sed "s|/etc/config/https-dns-proxy|$tmp/force-config|g; s|/etc/init.d/https-dns-proxy|$tmp/no-proxy-service|g" > "$tmp/force_sync_mock.sh"
