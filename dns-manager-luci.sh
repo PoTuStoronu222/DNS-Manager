@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion and full installer
-# Version: 3.2.2
+# Version: 3.2.3
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="3.2.2"
+VERSION="3.2.3"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -2166,7 +2166,7 @@ DM_SOURCE_BASE="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/$_d
 COMPANION_URL="$DM_SOURCE_BASE/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="3.2.2"
+SELF_VERSION="3.2.3"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -6083,7 +6083,7 @@ EOF_RPC_WRAPPER
 'require ui';
 'require session';
 
-// DNS Manager LuCI common module version: 3.2.2
+// DNS Manager LuCI common module version: 3.2.3
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -8146,12 +8146,12 @@ function renderNetwork(root,st){
       cacheOptions('dc_cache_ttl',st.dc_cache_ttl==null?0:st.dc_cache_ttl,[[0,'Как у DNS-сервера'],[300,'5 минут'],[900,'15 минут'],[1800,'30 минут']]),
       E('div',{'class':'dm-setting-desc'},'Увеличение срока может сохранять устаревшие адреса.'),
       settingFeedback('','dc_cache_ttl'),
-      settingToggle(root,'Только TCP','Использовать TCP для связи с серверами. Некоторые серверы могут не поддерживать этот режим.',yes(st.dc_force_tcp),'dc_force_tcp',noPool,why),
-      settingToggle(root,'Блокировать IPv6-ответы','Возвращать пустой ответ на запросы адресов IPv6 (AAAA).',yes(st.dc_block_ipv6),'dc_block_ipv6',noPool,why),
-      settingToggle(root,'Блокировать короткие имена','Не отправлять в интернет запросы имён без точки.',yes(st.dc_block_unqualified),'dc_block_unqualified',noPool,why),
-      settingToggle(root,'Блокировать локальные домены','Не отправлять в интернет запросы служебных и локальных доменных зон.',yes(st.dc_block_undelegated),'dc_block_undelegated',noPool,why),
+      settingToggle(root,'Только TCP','Использовать TCP для связи с DNS-серверами. Может увеличить задержку; шифрование работает и через UDP.',yes(st.dc_force_tcp),'dc_force_tcp',noPool,why),
+      settingToggle(root,'Блокировать IPv6-ответы','Возвращать пустой ответ на запросы адресов IPv6 (AAAA). Может мешать работе некоторых устройств.',yes(st.dc_block_ipv6),'dc_block_ipv6',noPool,why),
+      settingToggle(root,'Блокировать короткие имена','Отвечать на запросы A и AAAA для имён без домена, не передавая их DNS-серверам.',yes(st.dc_block_unqualified),'dc_block_unqualified',noPool,why),
+      settingToggle(root,'Блокировать локальные домены','Отвечать на запросы локальных зон, не передавая их DNS-серверам.',yes(st.dc_block_undelegated),'dc_block_undelegated',noPool,why),
       settingToggle(root,'Журнал запросов','Записывает запрошенные домены во временную память роутера. Содержимое удаляется после перезагрузки.',yes(st.dc_query_log),'dc_query_log',noPool,why)
-    ]));
+    ].filter(Boolean)));
   }
   var browserEnabled=yes(st.browser_dns), browserLoaded=yes(st.browser_dns_loaded);
   e.appendChild(card('Браузеры и DNS',[
@@ -9926,7 +9926,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 3.2.2
+// DNS Manager LuCI version: 3.2.3
 return view.extend({
   load: DM.load,
   render: DM.render,
