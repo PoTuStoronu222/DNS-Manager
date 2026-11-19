@@ -111,7 +111,7 @@ dnscrypt_set_setting() {
         watchdog_apply_toggle "$enabled" >/dev/null 2>&1 || rc=$?
     fi
     release_mutation_lock
-    [ "$rc" -eq 0 ] || { error 'Не удалось применить настройку DNS'; return; }
+    [ "$rc" -eq 0 ] || { error "${DNSCRYPT_FORCE_ERROR:-Не удалось применить настройку DNS}"; return; }
     printf '{"ok":true}\n'
 }
 
@@ -155,17 +155,18 @@ dnscrypt_setting_start() {
 dnscrypt_set_force() {
     local enabled current owner lan_ip
     enabled=$1
+    DNSCRYPT_FORCE_ERROR='Не удалось применить правило принудительного DNS.'
     current=$(uci -q get firewall.dns_forced || :)
     owner=$(uci -q get firewall.dns_forced.name || :)
-    [ -z "$current" ] || { [ "$current" = redirect ] && [ "$owner" = Force-DNS-DNSCrypt ]; } || return 1
-    [ -z "$(uci -q changes firewall)" ] || return 1
+    [ -z "$current" ] || { [ "$current" = redirect ] && [ "$owner" = Force-DNS-DNSCrypt ]; } || { DNSCRYPT_FORCE_ERROR='Раздел firewall.dns_forced занят другим правилом.'; return 1; }
+    [ -z "$(uci -q changes firewall)" ] || { DNSCRYPT_FORCE_ERROR='Сначала примените несохранённые изменения межсетевого экрана в LuCI.'; return 1; }
     if [ "$enabled" = 1 ]; then
         refresh_runtime_capabilities >/dev/null 2>&1 || return 1
         detect_steer_dns_path >/dev/null 2>&1 || return 1
         # A second redirect would compete with Steer's own LAN DNS hook.
-        [ "${STEER_DNS_ACTIVE:-0}" != 1 ] || return 1
+        [ "${STEER_DNS_ACTIVE:-0}" != 1 ] || { DNSCRYPT_FORCE_ERROR='Перехват DNS уже выполняет Steer. Второе правило DNS Manager не добавлено.'; return 1; }
         lan_ip=$(uci -q get network.lan.ipaddr | sed 's-/.*$--')
-        case "$lan_ip" in ''|*[!0-9.]*) return 1;; esac
+        case "$lan_ip" in ''|*[!0-9.]*) DNSCRYPT_FORCE_ERROR='Не найден IPv4-адрес LAN в настройках сети.'; return 1;; esac
         uci -q delete firewall.dns_forced || :
         uci set firewall.dns_forced=redirect &&
         uci set firewall.dns_forced.name=Force-DNS-DNSCrypt &&
@@ -181,7 +182,8 @@ dnscrypt_set_force() {
     else
         return 0
     fi
-    uci commit firewall && /etc/init.d/firewall reload
+    uci commit firewall || { DNSCRYPT_FORCE_ERROR='Не удалось сохранить правило межсетевого экрана.'; return 1; }
+    /etc/init.d/firewall reload || { DNSCRYPT_FORCE_ERROR='Правило сохранено, но межсетевой экран не удалось перезагрузить.'; return 1; }
 }
 job_write() { printf '%s=%s\n' "$1" "$2" >> "$JOB_DIR/profile/state"; }
 action_write() { printf '%s=%s\n' "$1" "$2" >> "$JOB_DIR/action/state"; }
