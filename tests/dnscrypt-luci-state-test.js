@@ -32,12 +32,28 @@ ctx.E = (tag, attrs, text) => ({tag, attrs, text});
 ctx.card = (title, children) => ({title, children});
 ctx.state = {busy:false,openSections:{}};
 ctx.badge = (type, text) => ({type,text});
+ctx.row = (label, value) => ({label,value});
 ctx.foldSection = (key,title,content) => ({key,title,content});
 ctx.window = {dmLanDevices:{ok:true,devices:[]}};
 ctx.btn = (label, style, action, options) => ({label,style,action,options});
 ctx.selectDnscryptServer = (id) => { ctx.selectedServer=id; };
 vm.runInContext(section('function dnscryptLatencyBadge(', 'function renderDoH('), ctx);
 vm.runInContext(section('function renderSlots(', 'function settingCard('), ctx);
+let info=ctx.dnsPoolInfo({dnscrypt_engine:'dnscrypt-proxy2',dnscrypt_servers:['one'],dnscrypt_server_checks:{one:'OK:5'}});
+assert.equal(info[0].value.text,'Настроено серверов: 1');
+assert(info.some(x => x && /резервирование/.test(x.text || '')));
+info=ctx.dnsPoolInfo({dnscrypt_engine:'dnscrypt-proxy2',dnscrypt_servers:['one','two'],dnscrypt_server_checks:{one:'fail',two:'fail'}});
+assert.equal(info[0].value.text,'Настроено серверов: 2');
+assert(!info.some(x => x && /резервирование/.test(x.text || '')));
+info=ctx.dnsPoolInfo({slots:[],doh_instances:[{port:'5053'},{port:'5054'}]});
+assert.equal(info[0].value.text,'Нет данных о составе набора');
+info=ctx.dnsPoolInfo({dnscrypt_engine:'dnscrypt-proxy2'});
+assert.equal(info[0].value.text,'Нет данных о составе набора');
+for (const [value,expected] of [['on','включён в настройках dnsmasq'],['off','выключен в настройках dnsmasq'],[undefined,'нет данных']]) {
+  info=ctx.dnsPoolInfo({slots:[{slot:'1',id:'a',port:'5053'},{slot:'RU',id:'b',port:'5054'}],dnsmasq_allservers:value});
+  assert.equal(info[0].value.text,'Настроено серверов: 1');
+  assert.equal(info.find(x=>x.label==='Одновременный опрос DNS').value.text,expected);
+}
 for (const [fn, selector] of [['renderSlots', '#dm-slots'], ['renderDeviceDns', '#dm-devices']]) {
   const panel = {innerHTML:'old', children:[], appendChild(node) { this.children.push(node); }};
   const root = {querySelector(value) { assert.equal(value, selector); return panel; }};

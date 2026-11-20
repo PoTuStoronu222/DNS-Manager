@@ -3872,6 +3872,21 @@ doh_status_json() {
     printf ',"force_status":'; json_quote "$_force_status"; printf ',"force_source":'; json_quote "$_force_source"; printf ',"force_both":%s' "$_force_both"
     printf ',"steer_installed":%s,"steer_running":%s,"steer_dns_active":%s,"steer_dns_source":' "$_steer_installed" "$_steer_running" "$STEER_DNS_ACTIVE"; json_quote "$STEER_DNS_SOURCE"
     printf ',"profile":'; json_quote "$_profile"; printf ',"profile_mode":'; json_quote "$_mode"; printf ',"selection_category":'; json_quote "$_selection_category"
+    # Read the dnsmasq section selected by DNS Manager without changing UCI.
+    _allservers_state=unknown
+    if _dnsmasq_sections="$(uci -q show dhcp 2>/dev/null)"; then
+        _dnsmasq_sections="$(printf '%s\n' "$_dnsmasq_sections" | sed -n 's/^dhcp\.\([^.=]*\)=dnsmasq$/\1/p')"
+        _dnsmasq_section=''
+        for _dnsmasq_candidate in $_dnsmasq_sections; do
+            [ "$(uci -q get "dhcp.$_dnsmasq_candidate.interface" 2>/dev/null || true)" = lan ] && { _dnsmasq_section="$_dnsmasq_candidate"; break; }
+        done
+        [ -n "$_dnsmasq_section" ] || _dnsmasq_section="$(printf '%s\n' $_dnsmasq_sections | head -n1)"
+        if [ -n "$_dnsmasq_section" ]; then
+            _allservers_value="$(uci -q get "dhcp.$_dnsmasq_section.allservers" 2>/dev/null || true)"
+            case "$_allservers_value" in 1) _allservers_state=on;; ''|0) _allservers_state=off;; esac
+        fi
+    fi
+    printf ',"dnsmasq_allservers":'; json_quote "$_allservers_state"
     printf ',"doh_instances":[%s],"slots":[' "$_doh_instances"
     _first=1
     for _s in 1 2 3 4 5 6 RU; do
@@ -7269,7 +7284,7 @@ function dnscryptOptionsControls(root,st,render){
         {disabled:active||!!state.busy||!!state.jobRunning,'aria-pressed':active?'true':'false'});
     })),
     E('div',{'class':'dm-mini'},descriptions[o.strategy]||''),
-    E('div',{'class':'dm-mini'},'DNSCrypt выбирает сервер по выбранной стратегии. Изменения сохраняются при применении набора или профиля.')
+    E('div',{'class':'dm-mini'},'DNSCrypt выбирает среди доступных серверов набора; порядок списка не задаёт приоритет. Изменения сохраняются при применении набора или профиля.')
   ]);
 }
 function dnscryptPoolDraft(st){
@@ -7305,6 +7320,23 @@ function applyDnscryptPool(root,st){
     });
   }).catch(function(err){state.busy=false;state.dnscryptDiagnostic=withRpcError('Не удалось применить набор.',err);renderSlots(root,window.dmState||{});});
 }
+function dnsPoolInfo(st){
+  var isCrypt=st.dnscrypt_engine==='dnscrypt-proxy2';
+  var known=isCrypt?Array.isArray(st.dnscrypt_servers):Array.isArray(st.slots);
+  var count=!known?null:isCrypt?st.dnscrypt_servers.length:
+    st.slots.filter(function(slot){return slot&&/^[1-6]$/.test(String(slot.slot||''))&&!!slot.id&&!!slot.port;}).length;
+  // Unassigned system instances are not necessarily the dnsmasq upstream pool.
+  if(!isCrypt&&count===0&&Array.isArray(st.doh_instances)&&st.doh_instances.length)count=null;
+  var content=[row('Общий набор DNS',E('span',{},count===null?'Нет данных о составе набора':'Настроено серверов: '+count)),
+    E('p',{'class':'dm-mini'},'Количество показывает настройки, а не текущую доступность серверов.')];
+  if(count===1)content.push(E('p',{'class':'dm-inline-msg info'},'В наборе один DNS-сервер: резервирование и автоматическое переключение недоступны.'));
+  if(!isCrypt){
+    var balance=st.dnsmasq_allservers;
+    content.push(row('Одновременный опрос DNS',balance==='on'?badge('dm-ok','включён в настройках dnsmasq'):balance==='off'?badge('dm-off','выключен в настройках dnsmasq'):badge('dm-muted','нет данных')));
+    content.push(E('p',{'class':'dm-mini'},'При включённом одновременном опросе запросы отправляются всем серверам общего набора. Привязки устройств и отдельные домены используют свои правила.'));
+  }
+  return content;
+}
 function renderDoH(root,st){
   var e=root.querySelector('#dm-doh');if(!e)return;e.innerHTML='';
   var uninstall=root.querySelector('#dm-uninstall');
@@ -7337,6 +7369,7 @@ function renderDoH(root,st){
     var details=[row('Движок',E('span',{},'DNSCrypt Proxy 2')),row('Служба',Number(st.dnscrypt_running)===1?badge('dm-ok','работает'):badge('dm-bad','остановлена')),yes(st.watchdog)?row('Автопроверка DNSCrypt',dnscryptAutoCheckNode(st)):null,selectedServer?row('Режим',E('span',{},'Один сервер выбран вручную')):row('Профиль',!activeProfileId(st)?badge('dm-muted','не выбран'):E('span',{},activeProfileLabel(st)))];
     details=details.filter(Boolean);
     if(!activeProfileId(st)&&!selectedServer)details.push(E('p',{'class':'dm-hint'},servers.length?'Используется начальный набор DNS. При необходимости выберите профиль ниже.':'Выберите профиль ниже, чтобы настроить DNS.'));
+    details=details.concat(dnsPoolInfo(st));
     details.push(E('div',{'class':'dm-row'},[E('span',{'class':'dm-label'},servers.length===1?'Сейчас используется':'Сейчас используются')]));
     details.push(dnscryptCurrentPool(st));
     details.push(E('p',{'class':'dm-hint'},selectedServer?'Используется один выбранный вручную сервер.':'DNSCrypt автоматически выбирает сервер из этого набора.'));
@@ -7352,6 +7385,7 @@ function renderDoH(root,st){
   var ch=[];
   ch.push(row('Пакет',Number(st.engine_installed)!==0?badge('dm-ok','установлен'):badge('dm-off','не установлен')));
   ch.push(row('Служба',st.doh==='yes'?badge('dm-ok','включена'):st.doh_total>0?badge('dm-bad','остановлена'):badge('dm-off','не установлена')));
+  ch=ch.concat(dnsPoolInfo(st));
   if(count){
     ch.push(E('div',{'class':'dm-row'},[E('span',{'class':'dm-label'},count>1?'Сейчас используются':'Сейчас используется')]));
     ch.push(E('div',{'class':'dm-doh-list'},rows));
@@ -7924,6 +7958,7 @@ function renderSlots(root,st){
     var draft=dnscryptPoolDraft(st), changed=draft.items.map(function(x){return x.id;}).join(',')!==draft.base||dnscryptOptionsChanged(st);
     var poolContent=[E('p',{'class':'dm-mini'},'Выберите до шести DNS в каталоге. DNSCrypt автоматически использует доступные серверы.'),
       dnscryptOptionsControls(root,st,renderSlots),
+      E('div',{'class':'dm-pool-status'},dnsPoolInfo(st)),
       E('div',{'class':'dm-pool-heading'},[E('strong',{},'Ваш набор DNS'),E('span',{'class':'dm-mini'},draft.items.length+' из 6')]),dnscryptPoolRows(st,root),
       E('p',{'class':'dm-mini dm-pool-note'},'DNSCrypt выбирает доступный сервер по выбранной стратегии.'),
       E('div',{'class':'dm-pool-buttons'},[btn('Выбрать в каталоге','cbi-button-neutral',function(){window.location.href=L.url('admin/services/dns-manager/catalog');}),btn('Проверить DNS','cbi-button-neutral',function(){dnscryptDiagnostic(root,false);},{disabled:!!state.busy||!!state.jobRunning})])];
