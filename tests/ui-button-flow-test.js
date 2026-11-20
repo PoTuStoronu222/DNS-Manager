@@ -330,7 +330,7 @@ async function testLogScroll(){
   buttons.find(x=>x.label==='DNS-запросы').click();if(current.text!=='old\nnew')throw Error('query tab did not show requests');
   buttons.find(x=>x.label==='Обновить').click();if(refreshes!==1)throw Error('refresh did not request the latest logs');
   ctx.state.queryLog='';ctx.state.queryStatus='disabled';ctx.renderLog({querySelector:()=>panel});if(!current.text.includes('выключен'))throw Error('disabled query log is not explained');
-  ctx.state.queryStatus='unsupported';ctx.renderLog({querySelector:()=>panel});if(!current.text.includes('только для DNSCrypt'))throw Error('unsupported engine is not explained');
+  ctx.state.queryStatus='unsupported';ctx.renderLog({querySelector:()=>panel});if(!current.text.includes('недоступно'))throw Error('unknown query status is not explained');
 }
 async function testHeaderCheckKind(){
   let children=[];

@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion and full installer
-# Version: 3.30.13
+# Version: 3.30.14
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="3.30.13"
+VERSION="3.30.14"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -1063,6 +1063,9 @@ if [ "$target" = dnscrypt-proxy2 ] && [ ! -x "$executable" ]; then
             "$init_dir/dnscrypt-proxy" stop || exit 1
         fi
     fi
+fi
+if [ "$target" = dnscrypt-proxy2 ] && [ "$(uci -q get dns-manager.global.hdp_query_log 2>/dev/null || :)" = 1 ]; then
+    sh /usr/lib/dns-manager-luci/backend.sh hdp_query_cleanup || { echo 'Не удалось выключить журнал запросов dnsmasq.'; exit 1; }
 fi
 . "$helpers/dns-manager-watchdog-common.sh" || exit 1
 dns_manager_stop_watchdog || { echo 'Не удалось остановить DNS Watchdog.'; exit 1; }
@@ -2200,7 +2203,7 @@ DM_SOURCE_BASE="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/$_d
 COMPANION_URL="$DM_SOURCE_BASE/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="3.30.13"
+SELF_VERSION="3.30.14"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -3709,6 +3712,9 @@ network_status_json() {
     case "$_cache_total" in ''|*[!0-9]*|0[0-9]*) _cache_total=1000;; esac
     case "$_cache_ttl" in ''|*[!0-9]*|0[0-9]*) _cache_ttl=0;; esac
     printf ',"dnsmasq_perf_state":%s,"cache_total":%s,"cache_ttl":%s' "$_cache_state" "$_cache_total" "$_cache_ttl"
+    _query_enabled=0
+    [ "$(uci -q get dns-manager.global.hdp_query_log 2>/dev/null || :)" = 1 ] && [ "$(uci -q get 'dhcp.@dnsmasq[0].logqueries' 2>/dev/null || :)" = 1 ] && _query_enabled=1
+    printf ',"hdp_query_log":%s' "$_query_enabled"
     detect_steer_dns_runtime >/dev/null 2>&1 || true
     printf ',"steer_dns_active":%s' "${STEER_DNS_ACTIVE:-0}"
     browser_dns_status_json
@@ -5488,6 +5494,16 @@ $_manager_log"
         _log_text="${_log_text}Фоновая проверка и события DNS Manager:
 $_system_log"
     fi
+    if [ "$(uci -q get dns-manager.global.active_engine 2>/dev/null || :)" != dnscrypt-proxy2 ] && command -v logread >/dev/null 2>&1; then
+        _proxy_log="$(logread -e 'https-dns-proxy' 2>/dev/null | tail -n "$_n" || true)"
+        if [ -n "$_proxy_log" ]; then
+            [ -z "$_log_text" ] || _log_text="$_log_text
+
+"
+            _log_text="${_log_text}События HTTPS DNS Proxy:
+$_proxy_log"
+        fi
+    fi
     # dnscrypt-proxy2 stores query details in tmpfs, not in the Manager event log.
     # Never expose an old query file after logging has been disabled or the engine changed.
     _query_log=""
@@ -5499,6 +5515,11 @@ $_system_log"
             _query_log="$(tail -n "$_n" /tmp/dns-manager-dnscrypt-query.log 2>/dev/null || true)"
         fi
     elif [ "$(uci -q get dns-manager.global.active_engine 2>/dev/null || :)" = dnscrypt-proxy2 ]; then
+        _query_status=disabled
+    elif [ "$(uci -q get dns-manager.global.hdp_query_log 2>/dev/null || :)" = 1 ] && [ "$(uci -q get 'dhcp.@dnsmasq[0].logqueries' 2>/dev/null || :)" = 1 ]; then
+        _query_status=enabled
+        _query_log="$(logread -e 'dnsmasq.*query\[' 2>/dev/null | tail -n "$_n" || true)"
+    else
         _query_status=disabled
     fi
     printf '{"ok":true'; page_header_json
@@ -5753,7 +5774,7 @@ uninstall_start_json() {
     fi
     # The worker is a separate procd service so it survives rpcd reload while
     # its own LuCI plugin is being removed. No user input enters the command.
-    _un_command='sleep 2; DNS_MANAGER_UNINSTALL_PROGRESS=1 SILENT_APPLY=1 /usr/bin/dns-manager --uninstall > /var/run/dns-manager-uninstall/output 2>&1; rc=$?; echo "$rc" > /var/run/dns-manager-uninstall/result; if [ "$rc" = 0 ]; then printf "%s\\n" "{\"status\":\"done\"}" > "$1/status.json"; else printf "%s\\n" "{\"status\":\"failed\"}" > "$1/status.json"; fi; sleep 120; rm -f "$1/status.json"; rmdir "$1" 2>/dev/null; ubus call service delete "{\"name\":\"dns-manager-uninstall\"}" >/dev/null 2>&1'
+    _un_command='sleep 2; if sh /usr/lib/dns-manager-luci/backend.sh hdp_query_cleanup > /var/run/dns-manager-uninstall/output 2>&1; then DNS_MANAGER_UNINSTALL_PROGRESS=1 SILENT_APPLY=1 /usr/bin/dns-manager --uninstall >> /var/run/dns-manager-uninstall/output 2>&1; rc=$?; else echo "Не удалось восстановить настройку журнала dnsmasq." >> /var/run/dns-manager-uninstall/output; rc=1; fi; echo "$rc" > /var/run/dns-manager-uninstall/result; if [ "$rc" = 0 ]; then printf "%s\\n" "{\"status\":\"done\"}" > "$1/status.json"; else printf "%s\\n" "{\"status\":\"failed\"}" > "$1/status.json"; fi; sleep 120; rm -f "$1/status.json"; rmdir "$1" 2>/dev/null; ubus call service delete "{\"name\":\"dns-manager-uninstall\"}" >/dev/null 2>&1'
     _un_request="$(printf '%s' '{"name":"dns-manager-uninstall","instances":{"main":{"command":["/bin/sh","-c",'; json_quote "$_un_command"; printf '%s' ',"dns-manager-uninstall",'; json_quote "$_un_web_dir"; printf '%s' ']}}}')"
     if ! ubus call service set "$_un_request" >/dev/null 2>&1; then
         rm -f "$_un_web_dir/status.json"; rmdir "$_un_web_dir" 2>/dev/null
@@ -5785,6 +5806,57 @@ apply_live_setting() {
     release_mutation_lock
     return "$_als_rc"
 }
+
+hdp_query_setting() (
+    _want="$1"
+    _key='dhcp.@dnsmasq[0].logqueries'
+    _current="$(uci -q get "$_key" 2>/dev/null || :)"
+    _saved="$(uci -q get dns-manager.global.hdp_query_previous 2>/dev/null || :)"
+    _active="$(uci -q get dns-manager.global.hdp_query_log 2>/dev/null || :)"
+    [ "$_want" != 0 ] || [ "$_active" = 1 ] || [ -n "$_saved" ] || return 0
+    [ -z "$(uci -q changes dhcp 2>/dev/null)$(uci -q changes dns-manager 2>/dev/null)" ] || return 1
+    _uci_config="${DNS_MANAGER_QUERY_UCI_CONFIG:-/etc/config/dns-manager}"
+    [ -e "$_uci_config" ] || (umask 077; : > "$_uci_config") || return 1
+    uci -q get dns-manager.global >/dev/null 2>&1 || uci set dns-manager.global=manager || return 1
+    if [ "$_want" = 1 ]; then
+        if [ "$_current" != 1 ]; then
+            case "$_current" in '') _previous=absent;; 0) _previous=0;; *) return 1;; esac
+            [ -n "$_saved" ] || _saved="$_previous"
+            uci set "dns-manager.global.hdp_query_previous=$_saved" && uci commit dns-manager || return 1
+            uci set "$_key=1" && uci commit dhcp || return 1
+            if ! /etc/init.d/dnsmasq reload >/dev/null 2>&1; then
+                if [ "$_previous" = absent ]; then uci -q delete "$_key"; else uci set "$_key=$_previous"; fi
+                uci commit dhcp; /etc/init.d/dnsmasq reload >/dev/null 2>&1 || :
+                return 1
+            fi
+        fi
+        if ! uci set dns-manager.global.hdp_query_log=1 || ! uci commit dns-manager; then
+            if [ "$_current" != 1 ]; then
+                if [ "$_current" = 0 ]; then uci set "$_key=0"; else uci -q delete "$_key"; fi
+                uci commit dhcp; /etc/init.d/dnsmasq reload >/dev/null 2>&1 || :
+            fi
+            return 1
+        fi
+    else
+        if [ "$_current" = 1 ] && { [ "$_active" = 1 ] || [ -n "$_saved" ]; }; then
+            case "$_saved" in
+                absent) uci -q delete "$_key" || return 1;;
+                0) uci set "$_key=0" || return 1;;
+                *) _saved='';;
+            esac
+            if [ -n "$_saved" ]; then
+                uci commit dhcp || return 1
+                if ! /etc/init.d/dnsmasq reload >/dev/null 2>&1; then
+                    uci set "$_key=1"; uci commit dhcp; /etc/init.d/dnsmasq reload >/dev/null 2>&1 || :
+                    return 1
+                fi
+            fi
+        fi
+        uci -q delete dns-manager.global.hdp_query_log || :
+        uci -q delete dns-manager.global.hdp_query_previous || :
+        uci commit dns-manager || return 1
+    fi
+)
 
 run_action() {
     _profile="$(jget profile)"
@@ -6002,7 +6074,7 @@ run_action() {
                 *) json_error "Неверное значение enabled"; return;;
             esac
             case "$_name" in
-                watchdog|watchdog_autoreplace|force|encrypted_dns|browser_dns|dnsmasq_perf) ;;
+                watchdog|watchdog_autoreplace|force|encrypted_dns|browser_dns|dnsmasq_perf|hdp_query_log) ;;
                 *) json_error "Недопустимая настройка"; return;;
             esac
             if [ "${DNSMGR_SETTING_WORKER:-0}" != 1 ]; then
@@ -6053,6 +6125,12 @@ run_action() {
                 browser_dns)
                     if apply_live_setting browser_dns "$DNSMGR_SETTING_REQUEST_VALUE"; then _rc=0; else _rc=$?; fi
                     ;;
+                hdp_query_log)
+                    if acquire_mutation_lock; then
+                        hdp_query_setting "$DNSMGR_SETTING_REQUEST_VALUE" || _rc=$?
+                        release_mutation_lock
+                    else _rc=1; fi
+                    ;;
                 dnsmasq_perf)
                     if [ -f /etc/dns-manager/config/cache.conf ]; then json_error 'Используйте настройки кэша на вкладке «Сеть»'; return; fi
                     DNSMASQ_PERF="$_enabled"
@@ -6102,6 +6180,7 @@ multi_json() {
 test_json() { case "${RPC_METHOD:-}" in test_all) job_start_test_all;; test_page) job_start_test test_page "$(jget ids)";; test_current) job_start_test_current;; test_one) job_start_test_one "$(jget id)";; test_system) job_start_test_system;; *) json_error "Недопустимый метод проверки";; esac; }
 
 case "${1:-}" in
+    hdp_query_cleanup) hdp_query_setting 0;;
     worker) background_worker "$2";;
     mutation_worker) mutation_worker "$2" "$3" "$4";;
     test_worker) test_worker "$2" "$3";;
@@ -6185,7 +6264,7 @@ EOF_RPC_WRAPPER
 'require ui';
 'require session';
 
-// DNS Manager LuCI common module version: 3.30.13
+// DNS Manager LuCI common module version: 3.30.14
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -6393,7 +6472,7 @@ function stateBadge(status,pingValue){
   if(s==='OK')return badge('dm-ok',hasPing(pingValue)?ping(pingValue)+' · доступен':'ответ получен');
   return badge('dm-bad','недоступен');
 }
-function settingName(n){ var m={watchdog:'Проверка DNS',watchdog_autoreplace:'Автозамена DNS',force:'Принудительный DNS',browser_dns:'Подсказка браузерам',encrypted_dns:'Не давать устройствам обходить блокировку',dnsmasq_perf:'Увеличенный кэш DNS',dc_cache:'Кэш DNSCrypt',dc_cache_size:'Размер кэша DNSCrypt',dc_cache_ttl:'Время хранения DNSCrypt',dc_force_tcp:'Только TCP',dc_block_ipv6:'Блокировать IPv6-ответы',dc_block_unqualified:'Блокировать короткие имена',dc_block_undelegated:'Блокировать локальные домены',dc_query_log:'Журнал запросов'}; return m[n]||n; }
+function settingName(n){ var m={watchdog:'Проверка DNS',watchdog_autoreplace:'Автозамена DNS',force:'Принудительный DNS',browser_dns:'Подсказка браузерам',encrypted_dns:'Не давать устройствам обходить блокировку',dnsmasq_perf:'Увеличенный кэш DNS',hdp_query_log:'Журнал запросов',dc_cache:'Кэш DNSCrypt',dc_cache_size:'Размер кэша DNSCrypt',dc_cache_ttl:'Время хранения DNSCrypt',dc_force_tcp:'Только TCP',dc_block_ipv6:'Блокировать IPv6-ответы',dc_block_unqualified:'Блокировать короткие имена',dc_block_undelegated:'Блокировать локальные домены',dc_query_log:'Журнал запросов'}; return m[n]||n; }
 function settingModuleState(st,key){
   var raw=st[key+'_state'];
   if(raw===undefined||raw===null||raw==='')return -1;
@@ -8262,6 +8341,7 @@ function renderNetwork(root,st){
       ].filter(Boolean))]
     : [watchdogCard(root,st), cacheCard(root,st)];
   e.appendChild(card('Сетевой тюнинг',body));
+  if(st.dnscrypt_engine!=='dnscrypt-proxy2')e.appendChild(card('Журнал DNS',[settingToggle(root,'Журнал запросов','Записывает запросы, прошедшие через dnsmasq, в системный журнал роутера. Настройки системного журнала определяют, где и как долго хранятся записи. Другие приложения могут вести свой журнал.',yes(st.hdp_query_log),'hdp_query_log',false)]));
   if(st.dnscrypt_engine==='dnscrypt-proxy2'){
     var noPool=!(st.dnscrypt_servers||[]).length;
     var why=noPool?'Сначала настройте набор DNS-серверов.':'';
@@ -8700,7 +8780,7 @@ function renderLog(root){
   })));
   ch.push(btn('Обновить','cbi-button-neutral',function(){showLog(root);},{disabled:!!state.logLoading}));
   var body=tab==='events'?state.logText:state.queryLog;
-  var empty=tab==='events'?'Событий пока нет.':state.queryStatus==='disabled'?'Журнал запросов выключен. Включите его в настройках DNSCrypt.':state.queryStatus==='unsupported'?'Журнал DNS-запросов доступен только для DNSCrypt.':'DNS-запросов пока нет.';
+  var empty=tab==='events'?'Событий пока нет.':state.queryStatus==='disabled'?'Показ запросов выключен. Включите журнал в настройках сети.':state.queryStatus==='unsupported'?'Состояние журнала запросов недоступно.':'DNS-запросов пока нет.';
   if(state.logLoaded)ch.push(body?E('pre',{'class':'dm-log'},stripAnsi(body)):E('div',{'class':'dm-hint'},empty));
   else ch.push(E('div',{'class':'dm-hint'},'Журнал загружается автоматически при открытии этой вкладки.'));
   e.appendChild(card('Журнал',ch));
@@ -10106,7 +10186,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 3.30.13
+// DNS Manager LuCI version: 3.30.14
 return view.extend({
   load: DM.load,
   render: DM.render,

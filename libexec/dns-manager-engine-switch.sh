@@ -99,6 +99,9 @@ if [ "$target" = dnscrypt-proxy2 ] && [ ! -x "$executable" ]; then
         fi
     fi
 fi
+if [ "$target" = dnscrypt-proxy2 ] && [ "$(uci -q get dns-manager.global.hdp_query_log 2>/dev/null || :)" = 1 ]; then
+    sh /usr/lib/dns-manager-luci/backend.sh hdp_query_cleanup || { echo 'Не удалось выключить журнал запросов dnsmasq.'; exit 1; }
+fi
 . "$helpers/dns-manager-watchdog-common.sh" || exit 1
 dns_manager_stop_watchdog || { echo 'Не удалось остановить DNS Watchdog.'; exit 1; }
 # Old failure counts and candidate history must not survive a clean engine switch.

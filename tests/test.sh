@@ -339,7 +339,7 @@ printf 'timestamp=200\ncategory=clean\n' > "$tmp/log-state/dns-watchdog-check-re
     STATE_DIR="$tmp/log-state"; PERSIST_STATE_DIR="$tmp/log-persist"
     read_installed_luci_version() { printf 2.26; }
     cfg_get() { :; }
-    logread() { printf '%s\n' 'dns-manager: Проверка DNS: проверено 2, проблем: 0.' 'dns-manager: Проверка DNS: проверено 2, проблем: 1.' 'dns-manager: Watchdog: замена подтверждена.'; }
+    logread() { [ "$2" = 'dns-manager:' ] && printf '%s\n' 'dns-manager: Проверка DNS: проверено 2, проблем: 0.' 'dns-manager: Проверка DNS: проверено 2, проблем: 1.' 'dns-manager: Watchdog: замена подтверждена.'; }
     . "$tmp/log_header_test.sh"
     log_json 10
 ) > "$tmp/log-header.json"
@@ -355,12 +355,13 @@ printf '%s\n' '2026-11-19 first.example A' '2026-11-19 second.example AAAA' '202
     test_engine=dnscrypt-proxy2; test_query_logging=1
     read_installed_luci_version() { printf 2.26; }
     cfg_get() { :; }
-    logread() { :; }
+    logread() { case "$2" in 'https-dns-proxy') printf '%s\n' 'https-dns-proxy: connection failed';; 'dnsmasq.*query\[') printf '%s\n' 'dnsmasq[1]: query[A] example.test from 192.168.1.2';; esac; }
     uci() {
         [ "$1" = -q ] && [ "$2" = get ] || return 1
         case "$3" in
             dns-manager.global.active_engine) printf '%s\n' "$test_engine" ;;
-            dns-manager.global.dc_query_log) printf '%s\n' "$test_query_logging" ;;
+            dns-manager.global.dc_query_log|dns-manager.global.hdp_query_log) printf '%s\n' "$test_query_logging" ;;
+            'dhcp.@dnsmasq[0].logqueries') printf '%s\n' "$test_query_logging" ;;
             *) return 1 ;;
         esac
     }
@@ -370,7 +371,9 @@ printf '%s\n' '2026-11-19 first.example A' '2026-11-19 second.example AAAA' '202
     log_json 2 > "$tmp/query-log-disabled.json"
     test_query_logging=1; test_engine=https-dns-proxy
     log_json 2 > "$tmp/query-log-other-engine.json"
-    test_engine=dnscrypt-proxy2
+    test_query_logging=0
+    log_json 2 > "$tmp/query-log-hdp-disabled.json"
+    test_engine=dnscrypt-proxy2; test_query_logging=1
     : > "$tmp/dnscrypt-query-fixture"
     log_json 2 > "$tmp/query-log-empty.json"
 ) || fail "DNSCrypt query journal RPC test failed"
@@ -380,8 +383,9 @@ const read=n=>JSON.parse(fs.readFileSync(dir+"/"+n+".json", "utf8"));
 const on=read("query-log-enabled");
 const off=read("query-log-disabled");
 const other=read("query-log-other-engine");
+const hdpOff=read("query-log-hdp-disabled");
 const empty=read("query-log-empty");
-if(on.query_status!=="enabled" || !on.query_log.includes("second.example") || !on.query_log.includes("third.example") || on.query_log.includes("first.example") || on.log.includes("second.example") || off.query_status!=="disabled" || off.query_log || other.query_status!=="unsupported" || other.query_log || empty.query_status!=="enabled" || empty.query_log) process.exit(1);
+if(on.query_status!=="enabled" || !on.query_log.includes("second.example") || !on.query_log.includes("third.example") || on.query_log.includes("first.example") || on.log.includes("second.example") || off.query_status!=="disabled" || off.query_log || other.query_status!=="enabled" || !other.query_log.includes("example.test") || !other.log.includes("connection failed") || other.log.includes("example.test") || hdpOff.query_status!=="disabled" || hdpOff.query_log || empty.query_status!=="enabled" || empty.query_log) process.exit(1);
 ' "$tmp" || fail "DNSCrypt query log must be bounded, conditional and visible in journal"
 ok "DNSCrypt query journal respects active engine and privacy setting"
 
@@ -690,7 +694,7 @@ grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validat
 grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
 grep -q 'VERSION="4.51.1"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
-grep -q 'VERSION="3.30.13"' dns-manager-luci.sh || fail "LuCI version not bumped"
+grep -q 'VERSION="3.30.14"' dns-manager-luci.sh || fail "LuCI version not bumped"
 grep -Fq "{id:'quad9plain',ips:'9.9.9.10,149.112.112.10,2620:fe::10,2620:fe::fe:10'}" dns-manager-luci.sh || fail "historical Quad9 bootstrap snapshot changed"
 grep -Fq "{id:'cira',ips:'149.112.121.10,149.112.122.10,2620:10a:80bb::10,2620:10a:80bc::10'}" dns-manager-luci.sh || fail "historical CIRA bootstrap snapshot changed"
 if grep -q '^main_menu$' dns-manager.sh; then fail "interactive console menu still starts"; fi
@@ -1678,7 +1682,7 @@ grep -Fq 'canary_domains_icloud 2>/dev/null)" = "${BLOCK_EXTERNAL_DNS:-0}" ] || 
 grep -Fq 'canary_domains_mozilla 2>/dev/null)" = "${BLOCK_EXTERNAL_DNS:-0}" ] || _ok=0' dns-manager.sh || fail "forced-DNS state does not follow independent protection setting"
 grep -Fq 'canary_domains_icloud 2>/dev/null)" = "${BLOCK_EXTERNAL_DNS:-0}" ] || _changed=1' dns-manager.sh || fail "forced-DNS watchdog will treat protection OFF as drift"
 grep -Fq 'canary_domains_mozilla 2>/dev/null)" = "${BLOCK_EXTERNAL_DNS:-0}" ] || _changed=1' dns-manager.sh || fail "forced-DNS watchdog Mozilla canary check is not independent"
-grep -Fq 'watchdog|watchdog_autoreplace|force|encrypted_dns|browser_dns|dnsmasq_perf)' dns-manager-luci.sh || fail "LuCI RPC does not allow the independent encrypted-DNS setting"
+grep -Fq 'watchdog|watchdog_autoreplace|force|encrypted_dns|browser_dns|dnsmasq_perf|hdp_query_log)' dns-manager-luci.sh || fail "LuCI RPC does not allow the independent encrypted-DNS setting"
 grep -Fq "setSetting('encrypted_dns',1,root)" dns-manager-luci.sh || fail "LuCI has no enable action for encrypted-DNS protection"
 grep -Fq "setSetting('encrypted_dns',0,root)" dns-manager-luci.sh || fail "LuCI has no disable action for encrypted-DNS protection"
 grep -Fq 'Направляет обычные DNS-запросы устройств на DNS роутера.' dns-manager-luci.sh || fail "LuCI is missing the forced-DNS explanation"
@@ -3299,6 +3303,7 @@ sh tests/dnssec-watchdog-priority-test.sh || fail "DNSSEC watchdog priority"
 sh tests/doh-slot-remove-test.sh || fail "DoH slot removal guards"
 sh tests/dnssec-local-retry-dispatch-test.sh || fail "DNSSEC local retry dispatch test"
 if command -v dig >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then python3 tests/dnssec-real-dig-test.py || fail "DNSSEC real-dig probe test"; fi
+sh tests/hdp-query-log-test.sh || fail "HTTPS DNS query log settings"
 sh tests/test-uninstall-regression.sh || fail "uninstall regression tests"
 
 printf '%s\n' "All DNS Manager regression checks passed."
