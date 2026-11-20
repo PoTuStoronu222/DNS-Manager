@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion and full installer
-# Version: 3.30.11
+# Version: 3.30.12
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="3.30.11"
+VERSION="3.30.12"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -2200,7 +2200,7 @@ DM_SOURCE_BASE="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/$_d
 COMPANION_URL="$DM_SOURCE_BASE/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="3.30.11"
+SELF_VERSION="3.30.12"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -2239,7 +2239,7 @@ json_update_state() {
 }
 json_quote() {
     _s="$1"
-    _s=$(printf '%s' "$_s" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\r/ /g; s/\t/\\t/g')
+    _s=$(printf '%s' "$_s" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\r/ /g; s/\t/\\t/g' | awk 'NR>1 {printf "\\n"} {printf "%s", $0}')
     printf '"%s"' "$_s"
 }
 json_error() { printf '{"ok":false,"error":'; json_quote "$1"; printf '}'; }
@@ -6184,7 +6184,7 @@ EOF_RPC_WRAPPER
 'require ui';
 'require session';
 
-// DNS Manager LuCI common module version: 3.30.11
+// DNS Manager LuCI common module version: 3.30.12
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -8693,7 +8693,7 @@ function renderLog(root){
   var follow=!previous||previous.scrollHeight-previous.clientHeight-oldTop<20;
   e.innerHTML='';
   var ch=[];if(state.pageNotice.log)ch.push(E('div',{'class':'dm-inline-msg info'},state.pageNotice.log));
-  if(state.logLoaded)ch.push(E('pre',{'class':'dm-log'},stripAnsi(state.logText||'')));
+  if(state.logLoaded)ch.push(state.logText?E('pre',{'class':'dm-log'},stripAnsi(state.logText)):E('div',{'class':'dm-hint'},'В журнале пока нет записей.'));
   else ch.push(E('div',{'class':'dm-hint'},'Журнал загружается автоматически при открытии этой вкладки.'));
   e.appendChild(card('Журнал',ch));
   var log=e.querySelector('.dm-log');
@@ -10098,7 +10098,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 3.30.11
+// DNS Manager LuCI version: 3.30.12
 return view.extend({
   load: DM.load,
   render: DM.render,

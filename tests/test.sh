@@ -327,7 +327,8 @@ ok "embedded backend syntax"
 
 # The journal uses the same header data as the other pages, including the
 # newest automatic check. Test the actual RPC JSON with and without its files.
-awk '/^page_header_json\(\) \{/,/^}/' "$tmp/backend.sh" > "$tmp/log_header.sh"
+awk '/^json_quote\(\) \{/,/^}/' "$tmp/backend.sh" > "$tmp/log_header.sh"
+awk '/^page_header_json\(\) \{/,/^}/' "$tmp/backend.sh" >> "$tmp/log_header.sh"
 awk '/^log_json\(\) \{/,/^}/' "$tmp/backend.sh" >> "$tmp/log_header.sh"
 sed -e "s|/var/log/dns-manager.log|$tmp/log-fixture|g" -e "s|/tmp/dns-manager-dnscrypt-query.log|$tmp/dnscrypt-query-fixture|g" "$tmp/log_header.sh" > "$tmp/log_header_test.sh"
 printf '%s\n' '[2026-11-02 08:53:15] Удаляется DNS-секция: https://example.test/' '[2026-11-02 08:53:21] Перезапуск dnsmasq: udhcpc: no lease, failing' > "$tmp/log-fixture"
@@ -339,7 +340,6 @@ printf 'timestamp=200\ncategory=clean\n' > "$tmp/log-state/dns-watchdog-check-re
     read_installed_luci_version() { printf 2.26; }
     cfg_get() { :; }
     logread() { printf '%s\n' 'dns-manager: Проверка DNS: проверено 2, проблем: 0.' 'dns-manager: Проверка DNS: проверено 2, проблем: 1.' 'dns-manager: Watchdog: замена подтверждена.'; }
-    json_quote() { node -e 'process.stdout.write(JSON.stringify(process.argv[1]))' "$1"; }
     . "$tmp/log_header_test.sh"
     log_json 10
 ) > "$tmp/log-header.json"
@@ -356,7 +356,6 @@ printf '%s\n' '2026-11-19 first.example A' '2026-11-19 second.example AAAA' '202
     read_installed_luci_version() { printf 2.26; }
     cfg_get() { :; }
     logread() { :; }
-    json_quote() { node -e 'process.stdout.write(JSON.stringify(process.argv[1]))' "$1"; }
     uci() {
         [ "$1" = -q ] && [ "$2" = get ] || return 1
         case "$3" in
@@ -691,7 +690,7 @@ grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validat
 grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
 grep -q 'VERSION="4.51.1"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
-grep -q 'VERSION="3.30.11"' dns-manager-luci.sh || fail "LuCI version not bumped"
+grep -q 'VERSION="3.30.12"' dns-manager-luci.sh || fail "LuCI version not bumped"
 grep -Fq "{id:'quad9plain',ips:'9.9.9.10,149.112.112.10,2620:fe::10,2620:fe::fe:10'}" dns-manager-luci.sh || fail "historical Quad9 bootstrap snapshot changed"
 grep -Fq "{id:'cira',ips:'149.112.121.10,149.112.122.10,2620:10a:80bb::10,2620:10a:80bc::10'}" dns-manager-luci.sh || fail "historical CIRA bootstrap snapshot changed"
 if grep -q '^main_menu$' dns-manager.sh; then fail "interactive console menu still starts"; fi
