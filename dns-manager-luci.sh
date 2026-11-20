@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion and full installer
-# Version: 3.30.14
+# Version: 3.30.15
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="3.30.14"
+VERSION="3.30.15"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -2203,7 +2203,7 @@ DM_SOURCE_BASE="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/$_d
 COMPANION_URL="$DM_SOURCE_BASE/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="3.30.14"
+SELF_VERSION="3.30.15"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -4990,7 +4990,7 @@ job_start_version_check() {
 
 job_start_setting() {
     DNSMGR_SETTING_NAME="$1"; DNSMGR_SETTING_VALUE="$2"
-    case "$DNSMGR_SETTING_NAME:$DNSMGR_SETTING_VALUE" in force:0|force:1|encrypted_dns:0|encrypted_dns:1|browser_dns:0|browser_dns:1|watchdog:0|watchdog:1|watchdog_autoreplace:0|watchdog_autoreplace:1|dnsmasq_perf:0|dnsmasq_perf:1) ;; *) json_error "Неверная настройка"; return;; esac
+    case "$DNSMGR_SETTING_NAME:$DNSMGR_SETTING_VALUE" in force:0|force:1|encrypted_dns:0|encrypted_dns:1|browser_dns:0|browser_dns:1|watchdog:0|watchdog:1|watchdog_autoreplace:0|watchdog_autoreplace:1|dnsmasq_perf:0|dnsmasq_perf:1|hdp_query_log:0|hdp_query_log:1) ;; *) json_error "Неверная настройка"; return;; esac
     acquire_runtime_lock "$RUNTIME_DIR/setting-start.lock" || { json_error "Другая настройка уже запускается"; return; }
     if job_active setting && job_process_alive "$JOB_DIR/setting"; then release_runtime_lock "$RUNTIME_DIR/setting-start.lock"; json_error "Другая настройка уже применяется"; return; fi
     bg_service_idle setting || { release_runtime_lock "$RUNTIME_DIR/setting-start.lock"; return; }
@@ -6264,7 +6264,7 @@ EOF_RPC_WRAPPER
 'require ui';
 'require session';
 
-// DNS Manager LuCI common module version: 3.30.14
+// DNS Manager LuCI common module version: 3.30.15
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -6446,8 +6446,7 @@ function renderActionStatus(){
 function stripAnsi(s){
   return String(s||'')
     .replace(/\x1B\[[0-?]*[ -\/]*[@-~]/g,'')
-    .replace(/\[[0-9;?]*[ -\/]*[@-~]/g,'')
-    .replace(/[0-9]+(?:;[0-9]+)*m/g,'')
+    .replace(/\[[0-9;?]+m/g,'')
     .replace(/\r/g,'');
 }
 function rpcErrorText(err){
@@ -10186,7 +10185,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 3.30.14
+// DNS Manager LuCI version: 3.30.15
 return view.extend({
   load: DM.load,
   render: DM.render,

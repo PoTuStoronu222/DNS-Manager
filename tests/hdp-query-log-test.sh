@@ -1,5 +1,6 @@
 #!/bin/sh
 set -eu
+sed -n '/^job_start_setting() {/,/^}/p' dns-manager-luci.sh | grep -Fq 'hdp_query_log:0|hdp_query_log:1' || { echo 'HTTPS query log setting is rejected by job validation'; exit 1; }
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 export tmp

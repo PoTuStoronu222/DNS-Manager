@@ -2,6 +2,12 @@
 const fs=require('fs'), vm=require('vm');
 const source=fs.readFileSync(process.argv[2],'utf8');
 function extract(start,end){const a=source.indexOf(start),b=source.indexOf(end,a);if(a<0||b<0)throw Error('missing '+start);return source.slice(a,b);}
+{
+  const ctx={}; vm.createContext(ctx);
+  vm.runInContext(extract('function stripAnsi(s){','function rpcErrorText('),ctx);
+  const input='dnsmasq[1]: query[A] example.com; query[AAAA] example.com';
+  if(ctx.stripAnsi(input)!==input || ctx.stripAnsi('\x1b[31merror\x1b[0m')!=='error') throw Error('log formatting corrupted DNS records or left ANSI colors');
+}
 const delay=()=>new Promise(resolve=>setTimeout(resolve,20));
 async function testCatalogPageStartAndStop(){
   for(const crypt of [false,true]){
