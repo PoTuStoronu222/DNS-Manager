@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion and full installer
-# Version: 3.30.12
+# Version: 3.30.13
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="3.30.12"
+VERSION="3.30.13"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -2200,7 +2200,7 @@ DM_SOURCE_BASE="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/$_d
 COMPANION_URL="$DM_SOURCE_BASE/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="3.30.12"
+SELF_VERSION="3.30.13"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -5490,20 +5490,21 @@ $_system_log"
     fi
     # dnscrypt-proxy2 stores query details in tmpfs, not in the Manager event log.
     # Never expose an old query file after logging has been disabled or the engine changed.
+    _query_log=""
+    _query_status=unsupported
     if [ "$(uci -q get dns-manager.global.active_engine 2>/dev/null || :)" = dnscrypt-proxy2 ] &&
        [ "$(uci -q get dns-manager.global.dc_query_log 2>/dev/null || :)" = 1 ]; then
-        _query_log=""
+        _query_status=enabled
         if [ -r /tmp/dns-manager-dnscrypt-query.log ]; then
             _query_log="$(tail -n "$_n" /tmp/dns-manager-dnscrypt-query.log 2>/dev/null || true)"
         fi
-        [ -z "$_log_text" ] || _log_text="$_log_text
-
-"
-        _log_text="${_log_text}DNS-запросы DNSCrypt (временный журнал, последние $_n строк):
-${_query_log:-Записей пока нет.}"
+    elif [ "$(uci -q get dns-manager.global.active_engine 2>/dev/null || :)" = dnscrypt-proxy2 ]; then
+        _query_status=disabled
     fi
     printf '{"ok":true'; page_header_json
-    printf ',"log":'; json_quote "$_log_text"; printf '}'
+    printf ',"log":'; json_quote "$_log_text"
+    printf ',"query_log":'; json_quote "$_query_log"
+    printf ',"query_status":'; json_quote "$_query_status"; printf '}'
 }
 
 catalog_json() {
@@ -6184,7 +6185,7 @@ EOF_RPC_WRAPPER
 'require ui';
 'require session';
 
-// DNS Manager LuCI common module version: 3.30.12
+// DNS Manager LuCI common module version: 3.30.13
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -8693,7 +8694,14 @@ function renderLog(root){
   var follow=!previous||previous.scrollHeight-previous.clientHeight-oldTop<20;
   e.innerHTML='';
   var ch=[];if(state.pageNotice.log)ch.push(E('div',{'class':'dm-inline-msg info'},state.pageNotice.log));
-  if(state.logLoaded)ch.push(state.logText?E('pre',{'class':'dm-log'},stripAnsi(state.logText)):E('div',{'class':'dm-hint'},'В журнале пока нет записей.'));
+  var tab=state.logTab||'queries';
+  ch.push(E('div',{'class':'dm-seg'},[['queries','DNS-запросы'],['events','События и ошибки']].map(function(item){
+    return btn(item[1],item[0]===tab?'active':'',function(){state.logTab=item[0];renderLog(root);},{'aria-pressed':item[0]===tab?'true':'false'});
+  })));
+  ch.push(btn('Обновить','cbi-button-neutral',function(){showLog(root);},{disabled:!!state.logLoading}));
+  var body=tab==='events'?state.logText:state.queryLog;
+  var empty=tab==='events'?'Событий пока нет.':state.queryStatus==='disabled'?'Журнал запросов выключен. Включите его в настройках DNSCrypt.':state.queryStatus==='unsupported'?'Журнал DNS-запросов доступен только для DNSCrypt.':'DNS-запросов пока нет.';
+  if(state.logLoaded)ch.push(body?E('pre',{'class':'dm-log'},stripAnsi(body)):E('div',{'class':'dm-hint'},empty));
   else ch.push(E('div',{'class':'dm-hint'},'Журнал загружается автоматически при открытии этой вкладки.'));
   e.appendChild(card('Журнал',ch));
   var log=e.querySelector('.dm-log');
@@ -8785,8 +8793,8 @@ function routeStatusCall(){
       return callLog(160).then(function(r){
         if(!r||r.ok===false){state.logLoaded=false;state.pageNotice.log=(r&&r.error)||'Не удалось загрузить журнал.';return {ok:true};}
         state.logLoaded=true;
-        state.logText=stripAnsi((r&&r.log)||'');
-        var st=Object.assign({},r);delete st.log;return st;
+        state.logText=stripAnsi((r&&r.log)||'');state.queryLog=stripAnsi(r.query_log||'');state.queryStatus=r.query_status||'unsupported';
+        var st=Object.assign({},r);delete st.log;delete st.query_log;delete st.query_status;return st;
       });
     case 'dashboard':
       return callStatus(0);
@@ -8859,7 +8867,7 @@ function routeCacheEntry(key){
 function routeCacheAux(route){
   if(route==='devices')return window.dmLanDevices&&window.dmLanDevices.ok?{devices:window.dmLanDevices}:false;
   if(route==='catalog')return state.catalogLoaded&&state.category==='all'&&state.catalogCountry==='all'&&state.offset===0&&window.dmCatalog?{catalog:window.dmCatalog,limit:state.limit,selector:state.catalogCacheSelector}:false;
-  if(route==='log')return state.logLoaded?{log:String(state.logText||'').slice(-131072)}:false;
+  if(route==='log')return state.logLoaded?{log:String(state.logText||'').slice(-131072),queryLog:String(state.queryLog||'').slice(-131072),queryStatus:state.queryStatus||'unsupported'}:false;
   return null;
 }
 function restoreRouteAux(route,aux,routeData){
@@ -8873,7 +8881,7 @@ function restoreRouteAux(route,aux,routeData){
     state.catalogCacheSelector=selector;window.dmCatalog=aux.catalog;state.catalogLoaded=true;state.catalogLoadFailed=false;
   }else if(route==='log'){
     if(!aux||typeof aux.log!=='string'||aux.log.length>131072)return false;
-    state.logText=aux.log;state.logLoaded=true;
+    state.logText=aux.log;state.queryLog=String(aux.queryLog||'').slice(-131072);state.queryStatus=aux.queryStatus||'unsupported';state.logLoaded=true;
   }
   return true;
 }
@@ -8945,8 +8953,8 @@ function warmupFetch(route,allowed){
   if(route==='time')return get(callTimeStatus).then(function(st){return {data:st,aux:null};});
   if(route==='log')return get(function(){return callLog(160);}).then(function(log){
     if(!log||log.ok!==true)throw new Error('log unavailable');
-    var st=Object.assign({},log);delete st.log;
-    return {data:st,aux:{log:stripAnsi(String(log.log||'')).slice(-131072)}};
+    var st=Object.assign({},log);delete st.log;delete st.query_log;delete st.query_status;
+    return {data:st,aux:{log:stripAnsi(String(log.log||'')).slice(-131072),queryLog:stripAnsi(String(log.query_log||'')).slice(-131072),queryStatus:log.query_status||'unsupported'}};
   });
   if(route==='devices')return get(callDohStatus).then(function(st){
     return get(callLanDevices).then(function(devices){
@@ -9917,7 +9925,7 @@ function loadCatalog(root){
 function showLog(root){
   if(state.logLoading)return Promise.resolve();
   state.logLoading=true;
-  return callLog(160).then(function(r){if(!r||r.ok===false)throw new Error((r&&r.error)||'Журнал недоступен.');state.logLoading=false;state.logLoaded=true;state.logText=stripAnsi(r.log||'');renderLog(root);}).catch(function(err){state.logLoading=false;state.pageNotice.log=withRpcError('Не удалось загрузить журнал.',err);renderLog(root);});
+  return callLog(160).then(function(r){if(!r||r.ok===false)throw new Error((r&&r.error)||'Журнал недоступен.');state.logLoading=false;state.logLoaded=true;state.logText=stripAnsi(r.log||'');state.queryLog=stripAnsi(r.query_log||'');state.queryStatus=r.query_status||'unsupported';state.pageNotice.log='';renderLog(root);}).catch(function(err){state.logLoading=false;state.pageNotice.log=withRpcError('Не удалось загрузить журнал.',err);renderLog(root);});
 }
 
 var autoStatusTimer=null;
@@ -10098,7 +10106,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 3.30.12
+// DNS Manager LuCI version: 3.30.13
 return view.extend({
   load: DM.load,
   render: DM.render,

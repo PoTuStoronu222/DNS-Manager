@@ -113,7 +113,7 @@ async function testAdditionalRouteCache(){
     callDohStatus:()=>Promise.resolve({ok:true,slots:[]}),
     callLanDevices:()=>Promise.resolve(failDevices?{ok:false}:{ok:true,devices:[{mac:'aa'}]}),
     callCatalog:()=>Promise.resolve(failCatalog?{ok:false}:{ok:true,servers:[{id:'dns'}]}),
-    callPageMeta:()=>Promise.resolve({ok:true}),callLog:()=>Promise.resolve(failLog?{ok:false}:{ok:true,log:'log text',luci_version:'2.26',last_full_test:'100',watchdog_last_check:200,watchdog_last_category:'clean'}),
+    callPageMeta:()=>Promise.resolve({ok:true}),callLog:()=>Promise.resolve(failLog?{ok:false}:{ok:true,log:'log text',query_log:'query text',query_status:'enabled',luci_version:'2.26',last_full_test:'100',watchdog_last_check:200,watchdog_last_category:'clean'}),
     stripAnsi:s=>s,Date,JSON,Promise,Object,Array,Error};
   vm.createContext(ctx);vm.runInContext(extract('function routeStatusCall(){','function checkUpdate(root,force){'),ctx);
   for(const route of ['devices','catalog','log'])await ctx.ensureStatusPromise(route);
@@ -121,7 +121,7 @@ async function testAdditionalRouteCache(){
   ctx.window.dmRouteCache=undefined;ctx.window.dmLanDevices=undefined;ctx.window.dmCatalog=undefined;ctx.state.logText='';ctx.state.logLoaded=false;ctx.state.catalogLoaded=false;
   for(const route of ['devices','catalog','log'])if(!ctx.cachedRouteStatus(route))throw Error(route+' cache missing after navigation');
   if(ctx.cachedRouteStatus('log').watchdog_last_category!=='clean')throw Error('log header metadata lost after navigation');
-  if(ctx.window.dmLanDevices.devices[0].mac!=='aa'||ctx.window.dmCatalog.servers[0].id!=='dns'||ctx.state.logText!=='log text')throw Error('route-specific data not restored');
+  if(ctx.window.dmLanDevices.devices[0].mac!=='aa'||ctx.window.dmCatalog.servers[0].id!=='dns'||ctx.state.logText!=='log text'||ctx.state.queryLog!=='query text'||ctx.state.queryStatus!=='enabled')throw Error('route-specific data not restored');
   ctx.state.category='security';if(ctx.cachedRouteStatus('catalog'))throw Error('wrong catalog category reused');ctx.state.category='all';
   failDevices=true;failCatalog=true;failLog=true;
   const previous={...store};for(const route of ['devices','catalog','log'])await ctx.ensureStatusPromise(route);
@@ -317,13 +317,20 @@ async function testBootstrapForm(){
 }
 async function testLogScroll(){
   let current=null;
+  let buttons=[], refreshes=0;
   const panel={querySelector:()=>current,set innerHTML(v){current=null;},appendChild(card){current=card.log;}};
-  const ctx={state:{pageNotice:{},logLoaded:true,logText:'old\nnew'},window:{setTimeout:fn=>fn()},stripAnsi:s=>s,
+  const ctx={state:{pageNotice:{},logLoaded:true,logText:'event error',queryLog:'old\nnew',queryStatus:'enabled'},window:{setTimeout:fn=>fn()},stripAnsi:s=>s,
     E:(tag,attrs,text)=>({scrollTop:0,scrollHeight:1000,clientHeight:100,text}),
+    btn:(label,cls,fn)=>{let b={label,click:fn};buttons.push(b);return b;},showLog:()=>{refreshes++;},
     card:(name,children)=>({log:children[children.length-1]})};
   vm.createContext(ctx);vm.runInContext(extract('function renderLog(root){','function renderJobIdle(root,st){'),ctx);
   ctx.renderLog({querySelector:()=>panel});if(current.scrollTop!==1000)throw Error('log did not open at newest entries');
   current.scrollTop=100;ctx.renderLog({querySelector:()=>panel});if(current.scrollTop!==100)throw Error('log refresh disturbed manual scrolling');
+  buttons.find(x=>x.label==='События и ошибки').click();if(current.text!=='event error')throw Error('event tab did not show events');
+  buttons.find(x=>x.label==='DNS-запросы').click();if(current.text!=='old\nnew')throw Error('query tab did not show requests');
+  buttons.find(x=>x.label==='Обновить').click();if(refreshes!==1)throw Error('refresh did not request the latest logs');
+  ctx.state.queryLog='';ctx.state.queryStatus='disabled';ctx.renderLog({querySelector:()=>panel});if(!current.text.includes('выключен'))throw Error('disabled query log is not explained');
+  ctx.state.queryStatus='unsupported';ctx.renderLog({querySelector:()=>panel});if(!current.text.includes('только для DNSCrypt'))throw Error('unsupported engine is not explained');
 }
 async function testHeaderCheckKind(){
   let children=[];

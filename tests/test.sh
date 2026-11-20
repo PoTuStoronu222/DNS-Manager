@@ -376,12 +376,12 @@ printf '%s\n' '2026-11-19 first.example A' '2026-11-19 second.example AAAA' '202
 ) || fail "DNSCrypt query journal RPC test failed"
 node -e '
 const fs=require("fs"), dir=process.argv[1];
-const read=n=>JSON.parse(fs.readFileSync(dir+"/"+n+".json", "utf8")).log;
+const read=n=>JSON.parse(fs.readFileSync(dir+"/"+n+".json", "utf8"));
 const on=read("query-log-enabled");
 const off=read("query-log-disabled");
 const other=read("query-log-other-engine");
 const empty=read("query-log-empty");
-if(!on.includes("DNS-запросы DNSCrypt") || !on.includes("second.example") || !on.includes("third.example") || on.includes("first.example") || off.includes("DNS-запросы DNSCrypt") || off.includes("second.example") || other.includes("DNS-запросы DNSCrypt") || !empty.includes("Записей пока нет.")) process.exit(1);
+if(on.query_status!=="enabled" || !on.query_log.includes("second.example") || !on.query_log.includes("third.example") || on.query_log.includes("first.example") || on.log.includes("second.example") || off.query_status!=="disabled" || off.query_log || other.query_status!=="unsupported" || other.query_log || empty.query_status!=="enabled" || empty.query_log) process.exit(1);
 ' "$tmp" || fail "DNSCrypt query log must be bounded, conditional and visible in journal"
 ok "DNSCrypt query journal respects active engine and privacy setting"
 
@@ -690,7 +690,7 @@ grep -q 'family|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog validat
 grep -q 'all|bypass|security|privacy|adblock|family|clean|gaming|regional' "$tmp/backend.sh" || fail "LuCI catalog JSON category validation missing gaming category"
 grep -q 'VERSION="4.51.1"' dns-manager.sh || fail "manager version not bumped"
 grep -q '# DNSCATVER=8.7-RU-NOSOCIAL' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog version not bumped"
-grep -q 'VERSION="3.30.12"' dns-manager-luci.sh || fail "LuCI version not bumped"
+grep -q 'VERSION="3.30.13"' dns-manager-luci.sh || fail "LuCI version not bumped"
 grep -Fq "{id:'quad9plain',ips:'9.9.9.10,149.112.112.10,2620:fe::10,2620:fe::fe:10'}" dns-manager-luci.sh || fail "historical Quad9 bootstrap snapshot changed"
 grep -Fq "{id:'cira',ips:'149.112.121.10,149.112.122.10,2620:10a:80bb::10,2620:10a:80bc::10'}" dns-manager-luci.sh || fail "historical CIRA bootstrap snapshot changed"
 if grep -q '^main_menu$' dns-manager.sh; then fail "interactive console menu still starts"; fi
