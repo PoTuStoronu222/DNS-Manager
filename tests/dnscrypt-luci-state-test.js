@@ -40,18 +40,25 @@ ctx.selectDnscryptServer = (id) => { ctx.selectedServer=id; };
 vm.runInContext(section('function dnscryptLatencyBadge(', 'function renderDoH('), ctx);
 vm.runInContext(section('function renderSlots(', 'function settingCard('), ctx);
 let info=ctx.dnsPoolInfo({dnscrypt_engine:'dnscrypt-proxy2',dnscrypt_servers:['one'],dnscrypt_server_checks:{one:'OK:5'}});
-assert.equal(info[0].value.text,'Настроено серверов: 1');
-assert(info.some(x => x && /резервирование/.test(x.text || '')));
+assert.equal(info[0].value.text,'Выбрано в DNS Manager: 1');
+assert(info.some(x => x && /резервного сервера/.test(x.text || '')));
 info=ctx.dnsPoolInfo({dnscrypt_engine:'dnscrypt-proxy2',dnscrypt_servers:['one','two'],dnscrypt_server_checks:{one:'fail',two:'fail'}});
-assert.equal(info[0].value.text,'Настроено серверов: 2');
-assert(!info.some(x => x && /резервирование/.test(x.text || '')));
+assert.equal(info[0].value.text,'Выбрано в DNS Manager: 2');
+assert(!info.some(x => x && /резервного сервера/.test(x.text || '')));
 info=ctx.dnsPoolInfo({slots:[],doh_instances:[{port:'5053'},{port:'5054'}]});
-assert.equal(info[0].value.text,'Нет данных о составе набора');
+assert.equal(info[0].value.text,'Нет данных о выбранном наборе');
 info=ctx.dnsPoolInfo({dnscrypt_engine:'dnscrypt-proxy2'});
-assert.equal(info[0].value.text,'Нет данных о составе набора');
+assert.equal(info[0].value.text,'Нет данных о выбранном наборе');
+info=ctx.dnsPoolInfo({dnscrypt_engine:'dnscrypt-proxy2',dnscrypt_running:0,dnscrypt_servers:['one']});
+assert.equal(info[0].value.text,'Выбрано в DNS Manager: 1');
+assert(info.some(x => x && /резервного сервера/.test(x.text || '')));
+info=ctx.dnsPoolInfo({slots:[{slot:'1',id:'a',port:'5053'},{slot:'2',id:'b',port:'5054'},{slot:'RU',id:'c',port:'5055'}]});
+assert.equal(info[0].value.text,'Выбрано в DNS Manager: 2');
+assert(!info.some(x => x && /резервного сервера/.test(x.text || '')));
 for (const [value,expected] of [['on','включён в настройках dnsmasq'],['off','выключен в настройках dnsmasq'],[undefined,'нет данных']]) {
   info=ctx.dnsPoolInfo({slots:[{slot:'1',id:'a',port:'5053'},{slot:'RU',id:'b',port:'5054'}],dnsmasq_allservers:value});
-  assert.equal(info[0].value.text,'Настроено серверов: 1');
+  assert.equal(info[0].value.text,'Выбрано в DNS Manager: 1');
+  assert(info.some(x => x && /резервного сервера/.test(x.text || '')));
   assert.equal(info.find(x=>x.label==='Одновременный опрос DNS').value.text,expected);
 }
 for (const [fn, selector] of [['renderSlots', '#dm-slots'], ['renderDeviceDns', '#dm-devices']]) {

@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion and full installer
-# Version: 3.30.15
+# Version: 3.30.16
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="3.30.15"
+VERSION="3.30.16"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -2203,7 +2203,7 @@ DM_SOURCE_BASE="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/$_d
 COMPANION_URL="$DM_SOURCE_BASE/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="3.30.15"
+SELF_VERSION="3.30.16"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -6279,7 +6279,7 @@ EOF_RPC_WRAPPER
 'require ui';
 'require session';
 
-// DNS Manager LuCI common module version: 3.30.15
+// DNS Manager LuCI common module version: 3.30.16
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -7327,9 +7327,9 @@ function dnsPoolInfo(st){
     st.slots.filter(function(slot){return slot&&/^[1-6]$/.test(String(slot.slot||''))&&!!slot.id&&!!slot.port;}).length;
   // Unassigned system instances are not necessarily the dnsmasq upstream pool.
   if(!isCrypt&&count===0&&Array.isArray(st.doh_instances)&&st.doh_instances.length)count=null;
-  var content=[row('Общий набор DNS',E('span',{},count===null?'Нет данных о составе набора':'Настроено серверов: '+count)),
-    E('p',{'class':'dm-mini'},'Количество показывает настройки, а не текущую доступность серверов.')];
-  if(count===1)content.push(E('p',{'class':'dm-inline-msg info'},'В наборе один DNS-сервер: резервирование и автоматическое переключение недоступны.'));
+  var content=[row('Общий набор DNS',E('span',{},count===null?'Нет данных о выбранном наборе':'Выбрано в DNS Manager: '+count)),
+    E('p',{'class':'dm-mini'},'Число показывает сохранённый выбор DNS Manager, а не текущую доступность серверов. При изменениях вне DNS Manager настройки службы могут отличаться.')];
+  if(count===1)content.push(E('p',{'class':'dm-inline-msg info'},'В выбранном наборе один DNS-сервер: резервного сервера в этом наборе нет.'));
   if(!isCrypt){
     var balance=st.dnsmasq_allservers;
     content.push(row('Одновременный опрос DNS',balance==='on'?badge('dm-ok','включён в настройках dnsmasq'):balance==='off'?badge('dm-off','выключен в настройках dnsmasq'):badge('dm-muted','нет данных')));
@@ -10220,7 +10220,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 3.30.15
+// DNS Manager LuCI version: 3.30.16
 return view.extend({
   load: DM.load,
   render: DM.render,
