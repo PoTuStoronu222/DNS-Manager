@@ -20,7 +20,7 @@ function extract(start,end){const a=source.indexOf(start),b=source.indexOf(end,a
   if(!find(view,'Другие стратегии · Из 3 быстрых'))throw Error('hidden selection is not visible');
   delete state.dnscryptMoreOpen;delete state.dnscryptStrategy;st.dnscrypt_strategy='p2';
   view=ctx.dnscryptOptionsControls(root,st,()=>{});
-  if(!find(view,'Из 2 быстрых')||find(view,'Из 2 быстрых').opts['aria-pressed']!=='true')throw Error('saved additional strategy is not visible');
+  if(!find(view,'Другие стратегии')||!find(view,'Из 2 быстрых')||find(view,'Из 2 быстрых').opts['aria-pressed']!=='true')throw Error('saved additional strategy is not visible');
 }
 {
   const ctx={}; vm.createContext(ctx);

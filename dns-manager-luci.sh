@@ -7284,7 +7284,7 @@ function dnscryptOptionsControls(root,st,render){
     select('Протокол: ','dnscryptProtocol',[['mixed','DNSCrypt и DoH'],['native','Только DNSCrypt']],o.protocol),
     E('div',{'class':'dm-setting-title'},'Как выбирать DNS-сервер'),
     E('div',{'class':'dm-seg'},primary.map(strategyButton).concat([
-      btn('Другие стратегии'+(selectedOther?' · '+selectedOther[1]:''),'cbi-button',function(){state.dnscryptMoreOpen=!moreOpen;render(root,st);},
+      btn('Другие стратегии'+(selectedOther&&!moreOpen?' · '+selectedOther[1]:''),'cbi-button',function(){state.dnscryptMoreOpen=!moreOpen;render(root,st);},
         {'aria-expanded':moreOpen?'true':'false'})
     ])),
     moreOpen?E('div',{'class':'dm-seg dm-strategy-more'},other.map(strategyButton)):null,
