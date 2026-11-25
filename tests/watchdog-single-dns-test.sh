@@ -2,6 +2,32 @@
 set -eu
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT HUP INT TERM
+# Exercise the real config loader in a caller with a local slot variable.
+awk '/^load_config\(\) \{/,/^}/' dns-manager.sh > "$tmp/load.sh"
+(
+    set +u
+    . "$tmp/load.sh"
+    CONFIG_FILE="$tmp/no-config" BOOTSTRAP_DNS_ALL=1.1.1.1 DNS_PROFILE=hybrid
+    repair_catalog_category_state() { :; }
+    sync_regional_dns_state() { :; }
+    check_slot() { local _slot=1; load_config; [ "$_slot" = 1 ]; }
+    check_slot || { echo 'FAIL: load_config overwrote caller slot' >&2; exit 1; }
+)
+# A failed bootstrap must never be accepted as a successful direct probe.
+awk '/^test_one_dns\(\) \{/,/^}/' dns-manager.sh > "$tmp/test-one.sh"
+(
+    set +u
+    . "$tmp/test-one.sh"
+    TMP_DIR="$tmp" HAS_DIG=no
+    normalize_url() { printf '%s' "$1"; }
+    dns_url() { printf 'https://example.com/dns-query'; }
+    dns_name() { printf example; }; dns_cat() { printf clean; }
+    url_host() { printf example.com; }; url_port() { printf 443; }
+    resolve_host_fallback() { return 1; }
+    if test_one_dns candidate; then echo 'FAIL: bootstrap failure reported success' >&2; exit 1; fi
+    grep -q '|BOOTSTRAP_FAIL$' "$tmp/t.candidate"
+    rm -f "$tmp/t.candidate" "$tmp/dns_query.bin"
+)
 awk '/^watchdog_slot_target_run\(\) \{/,/^watchdog_service_recover_run\(\) \{/' dns-manager.sh | sed '$d' > "$tmp/target.sh"
 . "$tmp/target.sh"
 TMP_DIR="$tmp"

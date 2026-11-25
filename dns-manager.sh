@@ -1099,6 +1099,7 @@ bootstrap_apply_selection() {
     rm -rf "$bs_dir"; return 0
 }
 load_config() {
+local _slot
 _had_dns_profile=0
 BOOTSTRAP_DNS_SELECTED=""
 BOOTSTRAP_PRESET_IDS=""; BOOTSTRAP_EXTRA=""; BOOTSTRAP_METADATA_SNAPSHOT=""
@@ -2596,7 +2597,7 @@ if [ ! -s "$q" ]; then
     printf '\022\064\001\000\000\001\000\000\000\000\000\000\007example\003com\000\000\001\000\001' > "$q" 2>/dev/null || {
         printf '%s\n' "$id|$cat|$name|-1|INTERNAL_TEST_QUERY_CREATE_FAIL" > "$TMP_DIR/t.$id"
         rm -f "$body" "$hdr"
-        return
+        return 1
     }
 fi
 _ips=""
@@ -2616,7 +2617,7 @@ if [ -z "$_ips" ] && [ "$HAS_DIG" = yes ]; then
     [ -n "$_chunk" ] && _ips="$_chunk"
 fi
 [ -n "$_ips" ] || { _one="$(resolve_host_fallback "$host")"; [ -n "$_one" ] && _ips="$_one"; }
-[ -n "$_ips" ] || { printf '%s|%s|%s|-1|BOOTSTRAP_FAIL\n' "$id" "$cat" "$name" > "$TMP_DIR/t.$id"; rm -f "$body" "$hdr"; return; }
+[ -n "$_ips" ] || { printf '%s|%s|%s|-1|BOOTSTRAP_FAIL\n' "$id" "$cat" "$name" > "$TMP_DIR/t.$id"; rm -f "$body" "$hdr"; return 1; }
 _best_ms=-1; st=CONNECTION_ERROR
 while IFS= read -r ipx; do
     [ -n "$ipx" ] || continue
