@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion and full installer
-# Version: 3.30.17
+# Version: 3.30.18
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="3.30.17"
+VERSION="3.30.18"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -2203,7 +2203,7 @@ DM_SOURCE_BASE="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/$_d
 COMPANION_URL="$DM_SOURCE_BASE/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="3.30.17"
+SELF_VERSION="3.30.18"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -6279,7 +6279,7 @@ EOF_RPC_WRAPPER
 'require ui';
 'require session';
 
-// DNS Manager LuCI common module version: 3.30.17
+// DNS Manager LuCI common module version: 3.30.18
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -6589,6 +6589,7 @@ function injectStyle(root){
   '.dm-seg .cbi-button{border:1px solid rgba(110,118,129,.30)!important;border-radius:10px!important;background:rgba(110,118,129,.05)!important;color:inherit!important;box-shadow:none!important;white-space:normal;text-align:center;transition:background .15s ease,border-color .15s ease,box-shadow .15s ease}'+
   '.dm-seg .cbi-button:hover:not(:disabled){background:rgba(110,118,129,.11)!important;border-color:rgba(110,118,129,.55)!important}'+
   '.dm-seg .cbi-button.active{border-color:rgba(35,134,54,.65)!important;background:rgba(35,134,54,.10)!important;color:inherit!important}'+
+  '.dm-strategy-options .dm-seg .cbi-button.active:disabled{opacity:1}.dm-strategy-options .dm-strategy-more{margin-top:8px}.dm-strategy-options .dm-strategy-description{margin-top:7px;line-height:1.45}'+
   '.dm-seg .cbi-button.active::before{content:"";display:inline-block;width:7px;height:7px;margin-right:7px;border-radius:50%;background:#2da44e;vertical-align:middle}'+
   '.dm-seg .cbi-button:focus-visible{outline:2px solid var(--primary-color,#0969da);outline-offset:2px}.dm-seg .cbi-button:disabled{opacity:.5;cursor:not-allowed}'+
   '.dm-wrap .dm-input,.dm-wrap input:not([type=checkbox]):not([type=radio]),.dm-wrap select,.dm-wrap textarea{max-width:100%;border:1px solid rgba(110,118,129,.28);border-radius:8px;background:var(--background-color-medium,#fff);color:inherit;box-shadow:none}'+
@@ -7269,23 +7270,27 @@ function dnscryptOptionsControls(root,st,render){
     }},items.map(function(item){var attrs={'value':item[0]};if(item[0]===value)attrs.selected='selected';return E('option',attrs,item[1]);}))]);
   }
   var descriptions={wp2:'Для каждого запроса сравниваются два случайных сервера: учитываются скорость и успешность ответов.',p2:'Случайный выбор из двух самых быстрых серверов.',p3:'Случайный выбор из трёх самых быстрых серверов.',p4:'Случайный выбор из четырёх самых быстрых серверов.',p5:'Случайный выбор из пяти самых быстрых серверов.',p6:'Случайный выбор из шести самых быстрых серверов.',ph:'Случайный выбор из быстрой половины доступных серверов.',first:'Запрос направляется самому быстрому доступному серверу по оценке DNSCrypt.',random:'Случайный выбор из всех доступных серверов.'};
+  var primary=[['wp2','Умный выбор'],['first','Самый быстрый']];
+  var other=[['p2','Из 2 быстрых'],['p3','Из 3 быстрых'],['p4','Из 4 быстрых'],['p5','Из 5 быстрых'],['p6','Из 6 быстрых'],['ph','Из быстрой половины'],['random','Случайный']];
+  var selectedOther=other.filter(function(item){return item[0]===o.strategy;})[0];
+  var moreOpen=state.dnscryptMoreOpen==null?!!selectedOther:state.dnscryptMoreOpen;
   function chooseStrategy(value){state.dnscryptStrategy=value;render(root,st);}
-  return E('div',{'class':'dm-hint'},[
+  function strategyButton(item){
+    var active=o.strategy===item[0];
+    return btn(item[1],'cbi-button'+(active?' active':''),function(){chooseStrategy(item[0]);},
+      {disabled:active||!!state.busy||!!state.jobRunning,'aria-pressed':active?'true':'false'});
+  }
+  return E('div',{'class':'dm-hint dm-strategy-options'},[
     select('Протокол: ','dnscryptProtocol',[['mixed','DNSCrypt и DoH'],['native','Только DNSCrypt']],o.protocol),
     E('div',{'class':'dm-setting-title'},'Как выбирать DNS-сервер'),
-    E('div',{'class':'dm-seg'},[
-      ['wp2','Умный выбор'], ['first','Самый быстрый'],
-      ['p2','Из 2 быстрых'], ['p3','Из 3 быстрых'], ['p4','Из 4 быстрых'],
-      ['p5','Из 5 быстрых'], ['p6','Из 6 быстрых'],
-      ['ph','Из быстрой половины'], ['random','Случайный']
-    ].map(function(item){
-      var active=o.strategy===item[0];
-      return btn(item[1],'cbi-button'+(active?' active':''),function(){chooseStrategy(item[0]);},
-        {disabled:active||!!state.busy||!!state.jobRunning,'aria-pressed':active?'true':'false'});
-    })),
-    E('div',{'class':'dm-mini'},descriptions[o.strategy]||''),
+    E('div',{'class':'dm-seg'},primary.map(strategyButton).concat([
+      btn('Другие стратегии'+(selectedOther?' · '+selectedOther[1]:''),'cbi-button',function(){state.dnscryptMoreOpen=!moreOpen;render(root,st);},
+        {'aria-expanded':moreOpen?'true':'false'})
+    ])),
+    moreOpen?E('div',{'class':'dm-seg dm-strategy-more'},other.map(strategyButton)):null,
+    E('div',{'class':'dm-mini dm-strategy-description'},descriptions[o.strategy]||''),
     E('div',{'class':'dm-mini'},'DNSCrypt выбирает среди доступных серверов набора; порядок списка не задаёт приоритет. Изменения сохраняются при применении набора или профиля.')
-  ]);
+  ].filter(Boolean));
 }
 function dnscryptPoolDraft(st){
   var current=Array.isArray(st.dnscrypt_servers)?st.dnscrypt_servers:[], base=current.join(','), draft;
@@ -10220,7 +10225,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 3.30.17
+// DNS Manager LuCI version: 3.30.18
 return view.extend({
   load: DM.load,
   render: DM.render,

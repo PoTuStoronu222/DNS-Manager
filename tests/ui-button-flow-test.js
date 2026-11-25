@@ -3,6 +3,26 @@ const fs=require('fs'), vm=require('vm');
 const source=fs.readFileSync(process.argv[2],'utf8');
 function extract(start,end){const a=source.indexOf(start),b=source.indexOf(end,a);if(a<0||b<0)throw Error('missing '+start);return source.slice(a,b);}
 {
+  const state={}, root={}, st={dnscrypt_protocol:'native',dnscrypt_strategy:'wp2'};
+  const ctx={state,E:(tag,attrs,children)=>({tag,attrs,children}),btn:(label,cls,click,opts)=>({label,cls,click,opts})};
+  vm.createContext(ctx);
+  vm.runInContext(extract('function dnscryptOptions(st){','function dnscryptPoolDraft(st){'),ctx);
+  const find=(node,label)=>{if(!node||typeof node!=='object')return null;if(node.label===label)return node;for(const child of node.children||[]){const found=find(child,label);if(found)return found;}return null;};
+  let view=ctx.dnscryptOptionsControls(root,st,()=>{});
+  if(!find(view,'Умный выбор')||!find(view,'Самый быстрый')||find(view,'Из 3 быстрых'))throw Error('strategy options are not compact');
+  find(view,'Другие стратегии').click();
+  view=ctx.dnscryptOptionsControls(root,st,()=>{});
+  if(!find(view,'Из 3 быстрых'))throw Error('additional strategies did not open');
+  find(view,'Из 3 быстрых').click();
+  if(state.dnscryptStrategy!=='p3')throw Error('additional strategy was not selected');
+  state.dnscryptMoreOpen=false;
+  view=ctx.dnscryptOptionsControls(root,st,()=>{});
+  if(!find(view,'Другие стратегии · Из 3 быстрых'))throw Error('hidden selection is not visible');
+  delete state.dnscryptMoreOpen;delete state.dnscryptStrategy;st.dnscrypt_strategy='p2';
+  view=ctx.dnscryptOptionsControls(root,st,()=>{});
+  if(!find(view,'Из 2 быстрых')||find(view,'Из 2 быстрых').opts['aria-pressed']!=='true')throw Error('saved additional strategy is not visible');
+}
+{
   const ctx={}; vm.createContext(ctx);
   vm.runInContext(extract('function stripAnsi(s){','function rpcErrorText('),ctx);
   const input='dnsmasq[1]: query[A] example.com; query[AAAA] example.com';
