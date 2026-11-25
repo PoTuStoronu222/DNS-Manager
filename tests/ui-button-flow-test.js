@@ -587,12 +587,17 @@ async function testDnscryptDiagnosticDisplay(){
   state.dnscryptDiagnosticKind='log';if(ctx.dnscryptDiagnosticView().tag!=='pre')throw Error('journal display changed');
 }
 async function testProfileApplyWithoutPopup(){
-  let called=0,modal=0;const root={},state={busy:false,pageNotice:{}};
+  let called=0,modal=0,goal='';const root={},state={busy:false,pageNotice:{}};
   const ctx={state,window:{dmState:{}},activeProfileId:()=>'',activeProfileLabel:()=>'',profileName:x=>x,confirmAction:()=>{modal++;},renderProfiles:()=>{},
-    callProfile:()=>{called++;return Promise.resolve({ok:true,job:'profile'});},pollJob:()=>{},refresh:()=>{},setAction:()=>{},withRpcError:s=>s};
+    dnscryptGoal:x=>x,callProfile:x=>{called++;goal=x;return Promise.resolve({ok:true,job:'profile'});},pollJob:()=>{},refresh:()=>{},setAction:()=>{},withRpcError:s=>s};
   vm.createContext(ctx);vm.runInContext(extract('function applyProfile(name,root,confirmed,autoCatalog){','function awaitSettingResult(reply){'),ctx);
   ctx.applyProfile('clean',root,true);await delay();
   if(modal||called!==1)throw Error('confirmed profile unexpectedly showed a popup or did not start');
+  ctx.window.dmState={dnscrypt_engine:'dnscrypt-proxy2',dnscrypt_auto_catalog:1};
+  state.busy=false;ctx.applyProfile('clean',root,true);await delay();
+  if(goal!=='auto:clean')throw Error('reapplying clean profile lost catalog mode');
+  state.busy=false;ctx.applyProfile('clean',root,true,false);await delay();
+  if(goal!=='clean')throw Error('turning off catalog mode did not return to profile pool');
 }
 async function testTimePresetCards(){
   let cards=[],calls=[],refreshes=0;
