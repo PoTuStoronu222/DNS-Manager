@@ -7003,7 +7003,7 @@ function renderOverview(root,st){
     'Последняя проверка: '+dateText(st.watchdog_last_check)+'.';
   if(watchdogEnabled&&currentCheck&&!isDnscrypt)wdDetails+=' Проверено: '+Number(st.watchdog_last_checked||0)+', ошибок: '+Number(st.watchdog_last_failed||0)+'.';
   var wdAuto=!watchdogEnabled?badge('dm-muted','проверка выключена'):watchdogAutoReplace?(watchdogService?badge('dm-ok','включена'):badge('dm-warn','проверка не работает')):badge('dm-muted','выключена');
-  var wdAutoDetails='Замена после '+(Number(st.watchdog_fail_threshold)||3)+' последовательных сбоев.';
+  var wdAutoDetails='Замена после '+(Number(st.watchdog_fail_threshold)||2)+' последовательных сбоев.';
 
   var dnsItems=[];
   displayDnsRows(st).forEach(function(d,index){
@@ -8266,8 +8266,8 @@ function watchdogCard(root,st){
     ]);
   }
 
-  var intervalMinutes=2;
-  var failThreshold=3;
+  var intervalMinutes=minuteValue(st.watchdog_interval,120);
+  var failThreshold=Number(st.watchdog_fail_threshold)||2;
   var cooldownMinutes=minuteValue(st.watchdog_repair_cooldown,5);
   var spec=[
     ['watchdog_repair_cooldown','Пауза между попытками восстановления DNS',5,120,'мин','Минимальная пауза перед следующей попыткой восстановления или замены того же слота.',true]
@@ -8293,7 +8293,7 @@ function watchdogCard(root,st){
     clearSettingFeedback();
     state.busy=true;state.busySetting='watchdog_batch';
     renderNetwork(root,window.dmState||{});
-    callWatchdogSettings(120,3,values[0],Math.round(restarts),Math.round(guard)).then(awaitSettingResult).then(function(r){
+    callWatchdogSettings(Number(st.watchdog_interval)||120,failThreshold,values[0],Math.round(restarts),Math.round(guard)).then(awaitSettingResult).then(function(r){
       state.busy=false;state.busySetting='';
       if(r&&r.ok)state.watchdogCooldownDraft=null;
       setSettingFeedback('watchdog_batch',r&&r.ok?'Настройки проверки сохранены.':((r&&r.error)||'Не удалось сохранить настройки контроля.'),r&&r.ok?'ok':'error');

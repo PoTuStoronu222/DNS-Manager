@@ -758,7 +758,7 @@ ok "Watchdog result rows follow the active LuCI theme"
 grep -Fq 'WATCHDOG_CHECK_INTERVAL_DEFAULT=120' dns-manager.sh || fail "Watchdog default interval is not 120 seconds"
 grep -Fq ': "${WATCHDOG_REPAIR_COOLDOWN:=300}"' dns-manager.sh || fail "Watchdog default repair cooldown is not 300 seconds"
 grep -Fq '*/2 * * * * /usr/bin/dns-manager-watchdog >/dev/null 2>&1 # dm-watchdog' dns-manager.sh || fail "two-minute cron entry missing"
-grep -Fq "var failThreshold=3;" dns-manager-luci.sh || fail "LuCI does not show the three-failure threshold"
+grep -Fq "var failThreshold=Number(st.watchdog_fail_threshold)||2;" dns-manager-luci.sh || fail "LuCI does not show the configured failure threshold"
 grep -Fq 'Пауза между попытками восстановления DNS' dns-manager-luci.sh || fail "LuCI cooldown label inaccurately describes recovery as replacement only"
 ok "Watchdog uses a 2-minute check interval and 5-minute recovery cooldown by default"
 ok "LuCI version and updater sources target the paired test branch"
@@ -904,8 +904,9 @@ grep -q "row('Выбранный набор'" "$tmp/ntp_view.js" || fail "LuCI N
 ok "NTP status follows actual OpenWrt system.ntp.server configuration"
 # Watchdog time controls are shown to users in minutes, while the RPC still receives seconds.
 awk '/^function watchdogCard\(root,st\)\{/,/^function renderTestAgeCommon/' "$tmp/common.js" > "$tmp/watchdog_card.sh"
-grep -Fq "var intervalMinutes=2;" "$tmp/watchdog_card.sh" || fail "cron watchdog interval is not displayed"
-grep -Fq "var failThreshold=3;" "$tmp/watchdog_card.sh" || fail "watchdog failure threshold is not displayed"
+grep -Fq "var intervalMinutes=minuteValue(st.watchdog_interval,120);" "$tmp/watchdog_card.sh" || fail "configured watchdog interval is not displayed"
+grep -Fq "var failThreshold=Number(st.watchdog_fail_threshold)||2;" "$tmp/watchdog_card.sh" || fail "watchdog failure threshold is not displayed"
+grep -Fq 'callWatchdogSettings(Number(st.watchdog_interval)||120,failThreshold,values[0]' "$tmp/watchdog_card.sh" || fail "watchdog settings do not preserve the configured interval and threshold"
 grep -q "Пауза между попытками восстановления DNS" "$tmp/watchdog_card.sh" || fail "watchdog repair cooldown label is not user-friendly"
 grep -q "5,120,'мин'" "$tmp/watchdog_card.sh" || fail "watchdog repair cooldown range is not practical"
 grep -q "'step':'1'" "$tmp/watchdog_card.sh" || fail "watchdog fields must use whole-number steps"
@@ -920,7 +921,7 @@ fi
 if grep -q "Сколько раз можно перезапустить DNS" "$tmp/watchdog_card.sh"; then
     fail "internal watchdog restart limit is still exposed in LuCI"
 fi
-grep -q "callWatchdogSettings(120,3,values\[0\],Math.round(restarts),Math.round(guard))" "$tmp/watchdog_card.sh" || fail "internal watchdog defaults are not preserved when saving"
+grep -Fq 'callWatchdogSettings(Number(st.watchdog_interval)||120,failThreshold,values[0],Math.round(restarts),Math.round(guard))' "$tmp/watchdog_card.sh" || fail "watchdog settings are not preserved when saving"
 if grep -q "Интервал проверки.*30.*600.*'с'" "$tmp/watchdog_card.sh"; then
     fail "watchdog interval still exposes seconds"
 fi
