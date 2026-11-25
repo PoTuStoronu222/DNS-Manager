@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion and full installer
-# Version: 3.30.18
+# Version: 3.30.19
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="3.30.18"
+VERSION="3.30.19"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -2203,7 +2203,7 @@ DM_SOURCE_BASE="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/$_d
 COMPANION_URL="$DM_SOURCE_BASE/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="3.30.18"
+SELF_VERSION="3.30.19"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -5492,6 +5492,27 @@ job_json() {
 log_json() {
     _n="$1"; case "$_n" in ''|*[!0-9]*) _n=80;; esac
     [ "$_n" -gt 300 ] && _n=300
+    _query_search="${2:-}"; _query_group="${3:-}"
+    query_log_format() {
+        DNSMGR_LOG_SEARCH="$_query_search" DNSMGR_LOG_GROUP="$_query_group" awk -v engine="$1" '
+          BEGIN { search=tolower(ENVIRON["DNSMGR_LOG_SEARCH"]); grouped=ENVIRON["DNSMGR_LOG_GROUP"]=="1"; FS="\t" }
+          {
+            line=$0; domain=""; kind=""; client=""; result=""
+            if (engine=="dnscrypt" && NF>=5) { client=$2; domain=$3; kind=$4; result=$5 }
+            else if (engine=="dnsmasq") {
+              n=split(line,fields,/[[:space:]]+/)
+              for (i=1;i<=n;i++) if (fields[i] ~ /^query\[[^]]+\]$/ && i+3<=n && fields[i+2]=="from") {
+                kind=fields[i]; domain=fields[i+1]; client=fields[i+3]; break
+              }
+            }
+            if (search!="" && index(tolower(domain),search)==0) next
+            if (!grouped) { print line; next }
+            key=(domain=="" ? "unknown:" line : tolower(domain) SUBSEP kind SUBSEP client SUBSEP result)
+            count[key]++; last[key]=NR; lines[key]=line; keys[NR]=key
+          }
+          END { if (grouped) for (i=1;i<=NR;i++) { key=keys[i]; if (key!="" && last[key]==i) print lines[key] (count[key]>1 ? "  ·  запросов: " count[key] : "") } }
+        ' | tail -n "$_n"
+    }
     _manager_log="$(awk '
         !/^\[[^]]+\] (Автоматическое подтверждение:|Текущая DNS-схема отличается;|Останавливаю текущие экземпляры |Текущие экземпляры https-dns-proxy остановлены|Пересобираю DNS-секции |Удаляется DNS-секция:|Старых DNS-секций удалено:|Конфигурация https-dns-proxy сохранена|Обновляю конфигурацию dnsmasq|Конфигурация dnsmasq обновлена|Включаю одновременный опрос DNS|Запускаю https-dns-proxy с выбранными экземплярами|Перезапускаю dnsmasq|Вывод команды перезапуска dnsmasq:|Перезапуск dnsmasq: udhcpc: (started|broadcasting discover)|Повторно проверяю параметры dnsmasq|Обновляю правила firewall|Firewall обновлён|Выполняю итоговое обнаружение|Итоговое обнаружение завершено|Проверяю dnsmasq, все локальные|Все локальные проверки после применения пройдены)/ {print}
     ' /var/log/dns-manager.log 2>/dev/null | tail -n "$_n" || true)"
@@ -5527,13 +5548,13 @@ $_proxy_log"
        [ "$(uci -q get dns-manager.global.dc_query_log 2>/dev/null || :)" = 1 ]; then
         _query_status=enabled
         if [ -r /tmp/dns-manager-dnscrypt-query.log ]; then
-            _query_log="$(tail -n "$_n" /tmp/dns-manager-dnscrypt-query.log 2>/dev/null || true)"
+            _query_log="$(tail -n 10000 /tmp/dns-manager-dnscrypt-query.log 2>/dev/null | query_log_format dnscrypt || true)"
         fi
     elif [ "$(uci -q get dns-manager.global.active_engine 2>/dev/null || :)" = dnscrypt-proxy2 ]; then
         _query_status=disabled
     elif [ "$(uci -q get dns-manager.global.hdp_query_log 2>/dev/null || :)" = 1 ] && [ "$(uci -q get 'dhcp.@dnsmasq[0].logqueries' 2>/dev/null || :)" = 1 ]; then
         _query_status=enabled
-        _query_log="$(logread -e 'dnsmasq.*query\[' 2>/dev/null | tail -n "$_n" || true)"
+        _query_log="$(logread -e 'dnsmasq.*query\[' 2>/dev/null | tail -n 10000 | query_log_format dnsmasq || true)"
     else
         _query_status=disabled
     fi
@@ -6200,7 +6221,7 @@ case "${1:-}" in
     mutation_worker) mutation_worker "$2" "$3" "$4";;
     test_worker) test_worker "$2" "$3";;
     list)
-        printf '{"status":{},"runtime":{},"connectivity":{},"doh_status":{},"network_status":{},"lan_devices":{},"set_device_dns":{"mac":"String","slots":"String"},"set_cache":{"total":0,"ttl":0},"time_status":{},"page_meta":{},"catalog":{"category":"String","offset":0,"limit":0,"only_ok":0},"update_check":{"force":0},"update":{},"update_manager":{},"update_hdp":{},"update_catalog":{},"update_all":{},"update_background":{},"test_combined":{},"switch_engine":{"target_engine":"String"},"dnscrypt_test":{},"dnscrypt_latencies":{"ids":"String"},"dnscrypt_cancel":{},"test_page":{"ids":"String"},"test_page_cancel":{},"dnscrypt_log":{},"system_dns_test":{},"set_profile":{"profile":"String"},"set_regional":{"enabled":0},"reset_dns":{"mode":"String"},"uninstall":{},"uninstall_status":{},"set_slot":{"slot":"String","id":"String","expected":"String"},"set_slot_domains":{"slot":"String","domains":"String"},"add_custom_dns":{"name":"String","url":"String"},"delete_custom_dns":{"id":"String"},"set_setting":{"name":"String","enabled":0},"set_bootstrap":{"mode":"String","addresses":"String","preset_ids":"String","extra_addresses":"String"},"set_watchdog_setting":{"name":"String","value":0},"set_watchdog_settings":{"interval":0,"threshold":0,"repair_cooldown":0,"max_restarts":0,"guard_interval":0},"set_ntp":{"preset":"String"},"set_test_age":{"category":"String","hours":0},"test_all":{},"test_current":{},"test_one":{"id":"String"},"test_system":{},"job":{"id":"String"},"job_status":{"id":"String"},"multi":{"calls":"String"},"log":{"lines":0}}\n'
+        printf '{"status":{},"runtime":{},"connectivity":{},"doh_status":{},"network_status":{},"lan_devices":{},"set_device_dns":{"mac":"String","slots":"String"},"set_cache":{"total":0,"ttl":0},"time_status":{},"page_meta":{},"catalog":{"category":"String","offset":0,"limit":0,"only_ok":0},"update_check":{"force":0},"update":{},"update_manager":{},"update_hdp":{},"update_catalog":{},"update_all":{},"update_background":{},"test_combined":{},"switch_engine":{"target_engine":"String"},"dnscrypt_test":{},"dnscrypt_latencies":{"ids":"String"},"dnscrypt_cancel":{},"test_page":{"ids":"String"},"test_page_cancel":{},"dnscrypt_log":{},"system_dns_test":{},"set_profile":{"profile":"String"},"set_regional":{"enabled":0},"reset_dns":{"mode":"String"},"uninstall":{},"uninstall_status":{},"set_slot":{"slot":"String","id":"String","expected":"String"},"set_slot_domains":{"slot":"String","domains":"String"},"add_custom_dns":{"name":"String","url":"String"},"delete_custom_dns":{"id":"String"},"set_setting":{"name":"String","enabled":0},"set_bootstrap":{"mode":"String","addresses":"String","preset_ids":"String","extra_addresses":"String"},"set_watchdog_setting":{"name":"String","value":0},"set_watchdog_settings":{"interval":0,"threshold":0,"repair_cooldown":0,"max_restarts":0,"guard_interval":0},"set_ntp":{"preset":"String"},"set_test_age":{"category":"String","hours":0},"test_all":{},"test_current":{},"test_one":{"id":"String"},"test_system":{},"job":{"id":"String"},"job_status":{"id":"String"},"multi":{"calls":"String"},"log":{"lines":0,"search":"String","grouped":"String"}}\n'
         ;;
     call)
         case "${2:-}" in
@@ -6222,7 +6243,7 @@ case "${1:-}" in
             test_all|test_page|test_current|test_one|test_system) INPUT="$(cat 2>/dev/null || true)"; RPC_METHOD="$2"; test_json;;
             job|job_status) INPUT="$(cat 2>/dev/null || true)"; job_json "$(jget id)";;
             multi) INPUT="$(cat 2>/dev/null || true)"; multi_json;;
-            log) INPUT="$(cat 2>/dev/null || true)"; log_json "$(jget lines)";;
+            log) INPUT="$(cat 2>/dev/null || true)"; log_json "$(jget lines)" "$(jget search)" "$(jget grouped)";;
             *) json_error "Недопустимый метод";;
         esac
         ;;
@@ -6279,7 +6300,7 @@ EOF_RPC_WRAPPER
 'require ui';
 'require session';
 
-// DNS Manager LuCI common module version: 3.30.18
+// DNS Manager LuCI common module version: 3.30.19
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -6343,7 +6364,7 @@ var callTestCurrent = dmRpc({ object:'dns_manager', method:'test_current', expec
 var callTestOne = dmRpc({ object:'dns_manager', method:'test_one', params:['id'], expect:{} });
 var callTestSystem = dmRpc({ object:'dns_manager', method:'test_system', expect:{} });
 var callJob = dmRpc({ object:'dns_manager', method:'job_status', params:['id'], expect:{} });
-var callLog = dmRpc({ object:'dns_manager', method:'log', params:['lines'], expect:{} });
+var callLog = dmRpc({ object:'dns_manager', method:'log', params:['lines','search','grouped'], expect:{} });
 
 var PROFILE = [
   ['bypass','Обход геоблока'], ['clean','Без фильтрации'],
@@ -8818,8 +8839,17 @@ function renderLog(root){
     return btn(item[1],item[0]===tab?'active':'',function(){state.logTab=item[0];renderLog(root);},{'aria-pressed':item[0]===tab?'true':'false'});
   })));
   ch.push(btn('Обновить','cbi-button-neutral',function(){showLog(root);},{disabled:!!state.logLoading}));
+  if(tab==='queries'){
+    var search=E('input',{'class':'dm-input','type':'search','maxlength':'253','placeholder':'Поиск по домену','aria-label':'Поиск по домену'});
+    search.value=state.querySearch||'';
+    function searchLog(){state.querySearch=String(search.value||'').trim();showLog(root);}
+    search.addEventListener('keydown',function(ev){if(ev.key==='Enter'){ev.preventDefault();searchLog();}});
+    ch.push(E('div',{'class':'dm-seg'},[search,btn('Найти','cbi-button-neutral',searchLog,{disabled:!!state.logLoading}),
+      btn(state.queryGroup===false?'Группировка выключена':'Группировка включена',state.queryGroup===false?'':'active',function(){state.queryGroup=state.queryGroup===false;showLog(root);},{disabled:!!state.logLoading,'aria-pressed':state.queryGroup===false?'false':'true'})]));
+    ch.push(E('div',{'class':'dm-mini'},'Поиск и группировка по последним 10 000 доступным записям; показано до 160 результатов. При группировке указана последняя запись и число запросов одного типа и клиента.'));
+  }
   var body=tab==='events'?state.logText:state.queryLog;
-  var empty=tab==='events'?'Событий пока нет.':state.queryStatus==='disabled'?'Показ запросов выключен. Включите журнал в настройках сети.':state.queryStatus==='unsupported'?'Состояние журнала запросов недоступно.':'DNS-запросов пока нет.';
+  var empty=tab==='events'?'Событий пока нет.':state.queryStatus==='disabled'?'Показ запросов выключен. Включите журнал в настройках сети.':state.queryStatus==='unsupported'?'Состояние журнала запросов недоступно.':state.querySearch?'Запросов для этого домена не найдено.':'DNS-запросов пока нет.';
   if(state.logLoaded)ch.push(body?E('pre',{'class':'dm-log'},stripAnsi(body)):E('div',{'class':'dm-hint'},empty));
   else ch.push(E('div',{'class':'dm-hint'},'Журнал загружается автоматически при открытии этой вкладки.'));
   e.appendChild(card('Журнал',ch));
@@ -8909,7 +8939,7 @@ function routeStatusCall(){
         });
       });
     case 'log':
-      return callLog(160).then(function(r){
+      return callLog(160,state.querySearch||'',state.queryGroup===false?'0':'1').then(function(r){
         if(!r||r.ok===false){state.logLoaded=false;state.pageNotice.log=(r&&r.error)||'Не удалось загрузить журнал.';return {ok:true};}
         state.logLoaded=true;
         state.logText=stripAnsi((r&&r.log)||'');state.queryLog=stripAnsi(r.query_log||'');state.queryStatus=r.query_status||'unsupported';
@@ -9070,7 +9100,7 @@ function warmupFetch(route,allowed){
   if(route==='doh')return get(callDohStatus).then(function(st){return {data:st,aux:null};});
   if(route==='network')return get(callNetworkStatus).then(function(st){return {data:st,aux:null};});
   if(route==='time')return get(callTimeStatus).then(function(st){return {data:st,aux:null};});
-  if(route==='log')return get(function(){return callLog(160);}).then(function(log){
+  if(route==='log')return get(function(){return callLog(160,state.querySearch||'',state.queryGroup===false?'0':'1');}).then(function(log){
     if(!log||log.ok!==true)throw new Error('log unavailable');
     var st=Object.assign({},log);delete st.log;delete st.query_log;delete st.query_status;
     return {data:st,aux:{log:stripAnsi(String(log.log||'')).slice(-131072),queryLog:stripAnsi(String(log.query_log||'')).slice(-131072),queryStatus:log.query_status||'unsupported'}};
@@ -10044,7 +10074,7 @@ function loadCatalog(root){
 function showLog(root){
   if(state.logLoading)return Promise.resolve();
   state.logLoading=true;
-  return callLog(160).then(function(r){if(!r||r.ok===false)throw new Error((r&&r.error)||'Журнал недоступен.');state.logLoading=false;state.logLoaded=true;state.logText=stripAnsi(r.log||'');state.queryLog=stripAnsi(r.query_log||'');state.queryStatus=r.query_status||'unsupported';state.pageNotice.log='';renderLog(root);}).catch(function(err){state.logLoading=false;state.pageNotice.log=withRpcError('Не удалось загрузить журнал.',err);renderLog(root);});
+  return callLog(160,state.querySearch||'',state.queryGroup===false?'0':'1').then(function(r){if(!r||r.ok===false)throw new Error((r&&r.error)||'Журнал недоступен.');state.logLoading=false;state.logLoaded=true;state.logText=stripAnsi(r.log||'');state.queryLog=stripAnsi(r.query_log||'');state.queryStatus=r.query_status||'unsupported';state.pageNotice.log='';renderLog(root);}).catch(function(err){state.logLoading=false;state.pageNotice.log=withRpcError('Не удалось загрузить журнал.',err);renderLog(root);});
 }
 
 var autoStatusTimer=null;
@@ -10225,7 +10255,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 3.30.18
+// DNS Manager LuCI version: 3.30.19
 return view.extend({
   load: DM.load,
   render: DM.render,

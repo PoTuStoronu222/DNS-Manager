@@ -355,7 +355,7 @@ printf '%s\n' '2026-11-19 first.example A' '2026-11-19 second.example AAAA' '202
     test_engine=dnscrypt-proxy2; test_query_logging=1
     read_installed_luci_version() { printf 2.26; }
     cfg_get() { :; }
-    logread() { case "$2" in 'https-dns-proxy') printf '%s\n' 'https-dns-proxy: connection failed';; 'dnsmasq.*query\[') printf '%s\n' 'dnsmasq[1]: query[A] example.test from 192.168.1.2';; esac; }
+    logread() { case "$2" in 'https-dns-proxy') printf '%s\n' 'https-dns-proxy: connection failed';; 'dnsmasq.*query\[') printf '%s\n' 'dnsmasq[1]: query[A] example.test from 192.168.1.2' 'dnsmasq[1]: query[A] example.test from 192.168.1.2' 'dnsmasq[1]: query[A] example.test from 192.168.1.3';; esac; }
     uci() {
         [ "$1" = -q ] && [ "$2" = get ] || return 1
         case "$3" in
@@ -367,10 +367,14 @@ printf '%s\n' '2026-11-19 first.example A' '2026-11-19 second.example AAAA' '202
     }
     . "$tmp/log_header_test.sh"
     log_json 2 > "$tmp/query-log-enabled.json"
+    printf '[t1]\t127.0.0.1\tquiet.example\tA\tPASS\t1ms\t-\n[t2]\t127.0.0.1\tbusy.example\tA\tPASS\t0ms\t-\n[t3]\t127.0.0.1\tbusy.example\tA\tPASS\t0ms\t-\n[t4]\t127.0.0.1\tbusy.example\tAAAA\tPASS\t0ms\t-\n' > "$tmp/dnscrypt-query-fixture"
+    log_json 2 'QUIET' 1 > "$tmp/query-log-search.json"
+    log_json 5 '' 1 > "$tmp/query-log-grouped.json"
     test_query_logging=0
     log_json 2 > "$tmp/query-log-disabled.json"
     test_query_logging=1; test_engine=https-dns-proxy
     log_json 2 > "$tmp/query-log-other-engine.json"
+    log_json 2 'EXAMPLE' 1 > "$tmp/query-log-hdp-search.json"
     test_query_logging=0
     log_json 2 > "$tmp/query-log-hdp-disabled.json"
     test_engine=dnscrypt-proxy2; test_query_logging=1
@@ -385,6 +389,8 @@ const off=read("query-log-disabled");
 const other=read("query-log-other-engine");
 const hdpOff=read("query-log-hdp-disabled");
 const empty=read("query-log-empty");
+const search=read("query-log-search"), grouped=read("query-log-grouped"), hdpSearch=read("query-log-hdp-search");
+if(!search.query_log.includes("quiet.example") || search.query_log.includes("busy.example") || !grouped.query_log.includes("запросов: 2") || grouped.query_log.split("busy.example").length!==3 || !hdpSearch.query_log.includes("запросов: 2") || !hdpSearch.query_log.includes("192.168.1.3")) process.exit(1);
 if(on.query_status!=="enabled" || !on.query_log.includes("second.example") || !on.query_log.includes("third.example") || on.query_log.includes("first.example") || on.log.includes("second.example") || off.query_status!=="disabled" || off.query_log || other.query_status!=="enabled" || !other.query_log.includes("example.test") || !other.log.includes("connection failed") || other.log.includes("example.test") || hdpOff.query_status!=="disabled" || hdpOff.query_log || empty.query_status!=="enabled" || empty.query_log) process.exit(1);
 ' "$tmp" || fail "DNSCrypt query log must be bounded, conditional and visible in journal"
 ok "DNSCrypt query journal respects active engine and privacy setting"

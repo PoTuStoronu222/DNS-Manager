@@ -343,10 +343,10 @@ async function testBootstrapForm(){
 }
 async function testLogScroll(){
   let current=null;
-  let buttons=[], refreshes=0;
+  let buttons=[], refreshes=0, searchInput;
   const panel={querySelector:()=>current,set innerHTML(v){current=null;},appendChild(card){current=card.log;}};
   const ctx={state:{pageNotice:{},logLoaded:true,logText:'event error',queryLog:'old\nnew',queryStatus:'enabled'},window:{setTimeout:fn=>fn()},stripAnsi:s=>s,
-    E:(tag,attrs,text)=>({scrollTop:0,scrollHeight:1000,clientHeight:100,text}),
+    E:(tag,attrs,text)=>{const node={scrollTop:0,scrollHeight:1000,clientHeight:100,text,addEventListener:()=>{}};if(tag==='input')searchInput=node;return node;},
     btn:(label,cls,fn)=>{let b={label,click:fn};buttons.push(b);return b;},showLog:()=>{refreshes++;},
     card:(name,children)=>({log:children[children.length-1]})};
   vm.createContext(ctx);vm.runInContext(extract('function renderLog(root){','function renderJobIdle(root,st){'),ctx);
@@ -354,7 +354,9 @@ async function testLogScroll(){
   current.scrollTop=100;ctx.renderLog({querySelector:()=>panel});if(current.scrollTop!==100)throw Error('log refresh disturbed manual scrolling');
   buttons.find(x=>x.label==='События и ошибки').click();if(current.text!=='event error')throw Error('event tab did not show events');
   buttons.find(x=>x.label==='DNS-запросы').click();if(current.text!=='old\nnew')throw Error('query tab did not show requests');
-  buttons.find(x=>x.label==='Обновить').click();if(refreshes!==1)throw Error('refresh did not request the latest logs');
+  searchInput.value=' Example.COM ';buttons.filter(x=>x.label==='Найти').slice(-1)[0].click();if(ctx.state.querySearch!=='Example.COM')throw Error('domain search was not submitted');
+  buttons.filter(x=>x.label==='Группировка включена').slice(-1)[0].click();if(ctx.state.queryGroup!==false)throw Error('grouping was not switched off');
+  buttons.find(x=>x.label==='Обновить').click();if(refreshes!==3)throw Error('refresh did not request the latest logs');
   ctx.state.queryLog='';ctx.state.queryStatus='disabled';ctx.renderLog({querySelector:()=>panel});if(!current.text.includes('выключен'))throw Error('disabled query log is not explained');
   ctx.state.queryStatus='unsupported';ctx.renderLog({querySelector:()=>panel});if(!current.text.includes('недоступно'))throw Error('unknown query status is not explained');
 }
