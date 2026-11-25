@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion and full installer
-# Version: 3.30.16
+# Version: 3.30.17
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="3.30.16"
+VERSION="3.30.17"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -379,7 +379,7 @@ END { if(bad || NR!=1) exit 1; print result }
 [ -n "$resolvers" ] || fail 'Empty bootstrap list'
 
 printf "server_names = ['manager-slot']\n"
-strategy=${DNS_MANAGER_LB_STRATEGY:-p2}
+strategy=${DNS_MANAGER_LB_STRATEGY:-wp2}
 case "$strategy" in wp2|p2|p3|p4|p5|p6|ph|first|random) ;; *) fail 'Invalid load balancing strategy';; esac
 protocol=${DNS_MANAGER_PROTOCOL:-mixed}
 case "$protocol" in mixed|native) ;; *) fail 'Invalid DNS protocol';; esac
@@ -882,7 +882,7 @@ printf 'Service did not become ready: %s\n' "$target" >&2
 exit 1
 EOF_DNSCRYPT_ASSET_8
     fetch_installer_source "$_dc_stage/backend-dnscrypt.sh" "$SOURCE_BASE/libexec/backend-dnscrypt.sh"
-    [ "$(sha256sum "$_dc_stage/backend-dnscrypt.sh" | cut -d' ' -f1)" = "da059a8794c0dd3261db023c33a36efa628e1e008ea60bc69cdcb58b7dd6a5fb" ] || { err "Файл backend DNSCrypt не прошёл проверку."; return 1; }
+    [ "$(sha256sum "$_dc_stage/backend-dnscrypt.sh" | cut -d' ' -f1)" = "3545cac8ec7eef338de110d21873d5a0f6a1cc7bf7247e66568f3a2be1cd4491" ] || { err "Файл backend DNSCrypt не прошёл проверку."; return 1; }
     cat > "$_dc_stage/dns-manager-device-detach.sh" <<'EOF_DNSCRYPT_ASSET_10'
 #!/bin/sh
 # Detach the Manager-owned per-device redirect before stopping its listeners.
@@ -2203,7 +2203,7 @@ DM_SOURCE_BASE="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/$_d
 COMPANION_URL="$DM_SOURCE_BASE/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="3.30.16"
+SELF_VERSION="3.30.17"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -6279,7 +6279,7 @@ EOF_RPC_WRAPPER
 'require ui';
 'require session';
 
-// DNS Manager LuCI common module version: 3.30.16
+// DNS Manager LuCI common module version: 3.30.17
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -7252,11 +7252,11 @@ function dnscryptCurrentPool(st){
   })):E('div',{'class':'dm-hint'},'DNS ещё не выбраны: примените профиль.');
 }
 function dnscryptOptions(st){
-  return {protocol:state.dnscryptProtocol||st.dnscrypt_protocol||'mixed',strategy:state.dnscryptStrategy||st.dnscrypt_strategy||'p2'};
+  return {protocol:state.dnscryptProtocol||st.dnscrypt_protocol||'mixed',strategy:state.dnscryptStrategy||st.dnscrypt_strategy||'wp2'};
 }
 function dnscryptOptionsChanged(st){
   var o=dnscryptOptions(st);
-  return o.protocol!==(st.dnscrypt_protocol||'mixed')||o.strategy!==(st.dnscrypt_strategy||'p2');
+  return o.protocol!==(st.dnscrypt_protocol||'mixed')||o.strategy!==(st.dnscrypt_strategy||'wp2');
 }
 function dnscryptGoal(goal,st){
   var o=dnscryptOptions(st);return 'options:'+o.protocol+':'+o.strategy+':'+goal;
@@ -10220,7 +10220,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 3.30.16
+// DNS Manager LuCI version: 3.30.17
 return view.extend({
   load: DM.load,
   render: DM.render,

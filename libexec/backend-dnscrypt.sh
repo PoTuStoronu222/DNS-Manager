@@ -44,6 +44,13 @@ dnscrypt_pool_records() {
     else sed -n 's/^server=//p' "$STATE_FILE"; fi
 }
 engine_selected() { [ -r "$ENGINE_FILE" ] && [ "$(cat "$ENGINE_FILE" 2>/dev/null)" = dnscrypt-proxy2 ]; }
+dnscrypt_configured_strategy() {
+    strategy=$(sed -n 's/^strategy=//p' "$STATE_FILE" 2>/dev/null | head -n1)
+    if [ -z "$strategy" ] && engine_selected; then
+        strategy=$(awk -F "'" '/^[[:space:]]*lb_strategy[[:space:]]*=/ {print $2; exit}' "${DNS_MANAGER_DNSCRYPT_CONFIG:-/etc/dnscrypt-proxy2/dnscrypt-proxy.toml}" 2>/dev/null)
+    fi
+    case "$strategy" in wp2|p2|p3|p4|p5|p6|ph|first|random) printf '%s\n' "$strategy";; *) printf '%s\n' wp2;; esac
+}
 hdp_active() { [ -x "$HDP_INIT" ] && { "$HDP_INIT" enabled >/dev/null 2>&1 || "$HDP_INIT" running >/dev/null 2>&1; }; }
 load_manager_functions() {
     local manager_src
@@ -74,9 +81,9 @@ dnscrypt_tuning_apply() (
     sed -n 's/^server=[^|]*|//p' "$STATE_FILE" > "$urls"
     [ -s "$urls" ] || return 1
     DNS_MANAGER_PROTOCOL=$(sed -n 's/^protocol=//p' "$STATE_FILE" | head -n1)
-    DNS_MANAGER_LB_STRATEGY=$(sed -n 's/^strategy=//p' "$STATE_FILE" | head -n1)
+    DNS_MANAGER_LB_STRATEGY=$(dnscrypt_configured_strategy)
     case "$DNS_MANAGER_PROTOCOL" in native) ;; *) DNS_MANAGER_PROTOCOL=mixed;; esac
-    case "$DNS_MANAGER_LB_STRATEGY" in wp2|p2|p3|p4|p5|p6|ph|first|random) ;; *) DNS_MANAGER_LB_STRATEGY=p2;; esac
+    case "$DNS_MANAGER_LB_STRATEGY" in wp2|p2|p3|p4|p5|p6|ph|first|random) ;; *) DNS_MANAGER_LB_STRATEGY=wp2;; esac
     export DNS_MANAGER_PROTOCOL DNS_MANAGER_LB_STRATEGY
     uci set "$key=$enabled" && uci commit dns-manager || return 1
     if sh "$HELPERS/dns-manager-dnscrypt-pool-apply.sh" 5053 "$BOOTSTRAP_DNS" < "$urls"; then
@@ -218,7 +225,7 @@ profile_worker() {
     goal=$1
     valid_profile "$goal" || exit 1
     DNS_MANAGER_PROTOCOL=mixed
-    DNS_MANAGER_LB_STRATEGY=p2
+    DNS_MANAGER_LB_STRATEGY=$(dnscrypt_configured_strategy)
     case "$goal" in
         options:*)
             opts=${goal#options:}; DNS_MANAGER_PROTOCOL=${opts%%:*}; opts=${opts#*:}
@@ -1000,8 +1007,7 @@ EOF_LATENCY_TIME
     json_add_string dnscrypt_profile "$profile"
     protocol=$(sed -n 's/^protocol=//p' "$STATE_FILE" 2>/dev/null | head -n1)
     case "$protocol" in native) ;; *) protocol=mixed;; esac
-    strategy=$(sed -n 's/^strategy=//p' "$STATE_FILE" 2>/dev/null | head -n1)
-    case "$strategy" in wp2|p2|p3|p4|p5|p6|ph|first|random) ;; *) strategy=p2;; esac
+    strategy=$(dnscrypt_configured_strategy)
     json_add_string dnscrypt_protocol "$protocol"
     json_add_string dnscrypt_strategy "$strategy"
     selected=$(sed -n 's/^selected=//p' "$STATE_FILE" 2>/dev/null | head -n1)

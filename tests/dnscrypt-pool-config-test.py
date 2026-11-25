@@ -18,6 +18,7 @@ def generate(urls, bootstrap='1.1.1.1,2606:4700:4700::1111'):
 result = generate('https://dns.google/dns-query\nhttps://api.magicdns.ru/sync\n')
 assert result.returncode == 0, result.stderr
 config = tomllib.loads(result.stdout)
+assert config['lb_strategy'] == 'wp2'
 assert config['server_names'] == ['manager-1', 'manager-2']
 assert config['listen_addresses'] == ['127.0.0.1:5053']
 assert config['cache'] is True
