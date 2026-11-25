@@ -30,6 +30,7 @@ valid_profile() (
     set -- "$target";;
  esac
  case "$1" in
+ auto:clean) return 0;;
  bypass|clean|security|privacy|adblock|family|all|dnssec|default) return 0;;
  server:*) id=${1#server:}; case "$id" in ''|*[!A-Za-z0-9_-]*) return 1;; esac;;
  pool:*) ids=${1#pool:}; case "$ids" in ''|,*|*,|*,,*|*[!A-Za-z0-9_,-]*) return 1;; esac
@@ -81,10 +82,12 @@ dnscrypt_tuning_apply() (
     sed -n 's/^server=[^|]*|//p' "$STATE_FILE" > "$urls"
     [ -s "$urls" ] || return 1
     DNS_MANAGER_PROTOCOL=$(sed -n 's/^protocol=//p' "$STATE_FILE" | head -n1)
+    DNS_MANAGER_AUTO_CATALOG=$(sed -n 's/^auto_catalog=//p' "$STATE_FILE" | head -n1)
+    DNS_MANAGER_SOURCE_CACHE="$CONFIG_DIR/dnscrypt-sources"
     DNS_MANAGER_LB_STRATEGY=$(dnscrypt_configured_strategy)
     case "$DNS_MANAGER_PROTOCOL" in native) ;; *) DNS_MANAGER_PROTOCOL=mixed;; esac
     case "$DNS_MANAGER_LB_STRATEGY" in wp2|p2|p3|p4|p5|p6|ph|first|random) ;; *) DNS_MANAGER_LB_STRATEGY=wp2;; esac
-    export DNS_MANAGER_PROTOCOL DNS_MANAGER_LB_STRATEGY
+    export DNS_MANAGER_PROTOCOL DNS_MANAGER_LB_STRATEGY DNS_MANAGER_AUTO_CATALOG DNS_MANAGER_SOURCE_CACHE
     uci set "$key=$enabled" && uci commit dns-manager || return 1
     if sh "$HELPERS/dns-manager-dnscrypt-pool-apply.sh" 5053 "$BOOTSTRAP_DNS" < "$urls"; then
         return 0
@@ -231,7 +234,10 @@ profile_worker() {
             opts=${goal#options:}; DNS_MANAGER_PROTOCOL=${opts%%:*}; opts=${opts#*:}
             DNS_MANAGER_LB_STRATEGY=${opts%%:*}; goal=${opts#*:};;
     esac
-    export DNS_MANAGER_PROTOCOL DNS_MANAGER_LB_STRATEGY
+    DNS_MANAGER_AUTO_CATALOG=0
+    case "$goal" in auto:clean) DNS_MANAGER_AUTO_CATALOG=1; goal=clean;; esac
+    DNS_MANAGER_SOURCE_CACHE="$CONFIG_DIR/dnscrypt-sources"
+    export DNS_MANAGER_PROTOCOL DNS_MANAGER_LB_STRATEGY DNS_MANAGER_AUTO_CATALOG DNS_MANAGER_SOURCE_CACHE
     job_write pid "$$"
     token=$(awk '{print $22}' "/proc/$$/stat" 2>/dev/null || true)
     [ -z "$token" ] || job_write pid_start "$token"
@@ -301,6 +307,7 @@ profile_worker() {
                     case "$goal" in default|server:*|pool:*) state_profile=none;; esac
                     if "$DNSCRYPT_INIT" enable &&
                        { printf 'profile=%s\nprotocol=%s\nstrategy=%s\n' "$state_profile" "$DNS_MANAGER_PROTOCOL" "$DNS_MANAGER_LB_STRATEGY";
+                         [ "$DNS_MANAGER_AUTO_CATALOG" != 1 ] || printf 'auto_catalog=1\n';
                          case "$goal" in server:*) printf 'selected=%s\n' "${goal#server:}"; dnscrypt_pool_records | sed 's/^/available=/';; esac
                          sed 's/^/server=/' "$records"; } > "$state_tmp" &&
                        chmod 0600 "$state_tmp" && mv -f "$state_tmp" "$STATE_FILE"; then
@@ -1005,6 +1012,9 @@ EOF_LATENCY_TIME
     profile=$(sed -n 's/^profile=//p' "$STATE_FILE" 2>/dev/null | head -n1)
     valid_profile "$profile" || profile=none
     json_add_string dnscrypt_profile "$profile"
+    auto_catalog=$(sed -n 's/^auto_catalog=//p' "$STATE_FILE" 2>/dev/null | head -n1)
+    case "$auto_catalog" in 1) ;; *) auto_catalog=0;; esac
+    json_add_int dnscrypt_auto_catalog "$auto_catalog"
     protocol=$(sed -n 's/^protocol=//p' "$STATE_FILE" 2>/dev/null | head -n1)
     case "$protocol" in native) ;; *) protocol=mixed;; esac
     strategy=$(dnscrypt_configured_strategy)
@@ -1014,12 +1024,14 @@ EOF_LATENCY_TIME
     case "$selected" in *[!A-Za-z0-9_-]*) selected='';; esac
     json_add_string dnscrypt_selected_server "$selected"
     json_add_array dnscrypt_available_servers
+    if [ "$auto_catalog" != 1 ]; then
     while IFS='|' read -r id url; do
         case "$id" in ''|*[!A-Za-z0-9_-]*) continue;; esac
         json_add_string '' "$id"
     done <<EOF_POOL
 $(dnscrypt_pool_records)
 EOF_POOL
+    fi
     json_close_array
     regional_mode=$(uci -q get dns-manager.global.dnscrypt_regional_mode || :)
     case "$regional_mode" in yandex|isp) ;; *) regional_mode=doh;; esac
@@ -1048,7 +1060,7 @@ EOF_POOL
     json_close_object
     json_add_int dnscrypt_check_now "$(date +%s)"
     json_add_array dnscrypt_servers
-    if [ -r "$STATE_FILE" ]; then
+    if [ "$auto_catalog" != 1 ] && [ -r "$STATE_FILE" ]; then
         while IFS='|' read -r id url; do
             case "$id" in server=*) id=${id#server=};; *) continue;; esac
             case "$id" in ''|*[!A-Za-z0-9_-]*) continue;; esac

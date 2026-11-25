@@ -590,7 +590,7 @@ async function testProfileApplyWithoutPopup(){
   let called=0,modal=0;const root={},state={busy:false,pageNotice:{}};
   const ctx={state,window:{dmState:{}},activeProfileId:()=>'',activeProfileLabel:()=>'',profileName:x=>x,confirmAction:()=>{modal++;},renderProfiles:()=>{},
     callProfile:()=>{called++;return Promise.resolve({ok:true,job:'profile'});},pollJob:()=>{},refresh:()=>{},setAction:()=>{},withRpcError:s=>s};
-  vm.createContext(ctx);vm.runInContext(extract('function applyProfile(name,root,confirmed){','function awaitSettingResult(reply){'),ctx);
+  vm.createContext(ctx);vm.runInContext(extract('function applyProfile(name,root,confirmed,autoCatalog){','function awaitSettingResult(reply){'),ctx);
   ctx.applyProfile('clean',root,true);await delay();
   if(modal||called!==1)throw Error('confirmed profile unexpectedly showed a popup or did not start');
 }

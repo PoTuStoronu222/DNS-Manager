@@ -28,6 +28,7 @@ assert.equal(ctx.activeProfileId(current), '');
 assert.equal(ctx.activeProfileLabel(current), 'Не выбран');
 assert.equal(ctx.activeProfileId({profile:'clean'}), 'clean');
 assert.equal(ctx.displayDnsRows({slots:[], doh_instances:[]}).length, 0);
+assert.equal(ctx.displayDnsRows({dnscrypt_engine:'dnscrypt-proxy2', dnscrypt_auto_catalog:1, dnscrypt_servers:['old']}).length, 0);
 ctx.E = (tag, attrs, text) => ({tag, attrs, text});
 ctx.card = (title, children) => ({title, children});
 ctx.state = {busy:false,openSections:{}};
@@ -43,6 +44,9 @@ let info=ctx.dnsPoolInfo({dnscrypt_engine:'dnscrypt-proxy2',dnscrypt_servers:['o
 assert.equal(info[0].value.text,'Выбрано в DNS Manager: 1');
 assert(info.some(x => x && /резервного сервера/.test(x.text || '')));
 assert(info.some(x => x && /Добавьте ещё один и примените набор/.test(x.text || '')));
+let autoInfo=ctx.dnsPoolInfo({dnscrypt_engine:'dnscrypt-proxy2',dnscrypt_auto_catalog:1,dnscrypt_servers:['old']});
+assert.equal(autoInfo[0].value.text,'Официальный каталог DNSCrypt');
+assert(!autoInfo.some(x => x && /резервного сервера/.test(x.text || '')));
 info=ctx.dnsPoolInfo({dnscrypt_engine:'dnscrypt-proxy2',dnscrypt_servers:['one','two'],dnscrypt_server_checks:{one:'fail',two:'fail'}});
 assert.equal(info[0].value.text,'Выбрано в DNS Manager: 2');
 assert(!info.some(x => x && /резервного сервера/.test(x.text || '')));

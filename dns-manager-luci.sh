@@ -449,6 +449,9 @@ done
 [ "$count" -gt 0 ] || { echo 'At least one DoH endpoint is required' >&2; exit 1; }
 
 {
+    if [ "${DNS_MANAGER_AUTO_CATALOG:-0}" = 1 ]; then
+        printf 'server_names = []\n'
+    else
     printf 'server_names = ['
     i=1
     while [ "$i" -le "$count" ]; do
@@ -457,12 +460,25 @@ done
         i=$((i + 1))
     done
     printf ']\n'
+    fi
     sed -n '2,/^\[static\./{ /^\[static\./d; p; }' "$dir/first"
+    if [ "${DNS_MANAGER_AUTO_CATALOG:-0}" = 1 ]; then
+        cache_dir=${DNS_MANAGER_SOURCE_CACHE:?DNSCrypt source cache is required}
+        case "$cache_dir" in *[!A-Za-z0-9_./-]*) echo 'Invalid source cache directory' >&2; exit 1;; esac
+        mkdir -p "$cache_dir"
+        printf "require_nofilter = true\n"
+        printf "disabled_server_names = ['dnscry.pt-moscow-ipv4', 'dnscry.pt-moscow-ipv6', 'dnscry.pt-doh-moscow-ipv4', 'dnscry.pt-doh-moscow-ipv6']\n"
+        printf "[sources.'public-resolvers']\n"
+        printf "urls = ['https://raw.githubusercontent.com/DNSCrypt/dnscrypt-resolvers/master/v3/public-resolvers.md', 'https://download.dnscrypt.info/resolvers-list/v3/public-resolvers.md']\n"
+        printf "cache_file = '%s/public-resolvers.md'\n" "$cache_dir"
+        printf "minisign_key = 'RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3'\n"
+    else
     i=1
     while IFS= read -r stamp; do
         printf "[static.manager-%s]\nstamp = '%s'\n" "$i" "$stamp"
         i=$((i + 1))
     done < "$dir/stamps"
+    fi
     if [ "${DNS_MANAGER_QUERY_LOG:-0}" = 1 ]; then
         printf "[query_log]\nfile = '/tmp/dns-manager-dnscrypt-query.log'\nformat = 'tsv'\n"
     fi
@@ -882,7 +898,7 @@ printf 'Service did not become ready: %s\n' "$target" >&2
 exit 1
 EOF_DNSCRYPT_ASSET_8
     fetch_installer_source "$_dc_stage/backend-dnscrypt.sh" "$SOURCE_BASE/libexec/backend-dnscrypt.sh"
-    [ "$(sha256sum "$_dc_stage/backend-dnscrypt.sh" | cut -d' ' -f1)" = "3545cac8ec7eef338de110d21873d5a0f6a1cc7bf7247e66568f3a2be1cd4491" ] || { err "Файл backend DNSCrypt не прошёл проверку."; return 1; }
+    [ "$(sha256sum "$_dc_stage/backend-dnscrypt.sh" | cut -d' ' -f1)" = "2162950cb323441fd5fb6fbac51ea00c84f83c4acdbe19af3ff50bcab61c74d7" ] || { err "Файл backend DNSCrypt не прошёл проверку."; return 1; }
     cat > "$_dc_stage/dns-manager-device-detach.sh" <<'EOF_DNSCRYPT_ASSET_10'
 #!/bin/sh
 # Detach the Manager-owned per-device redirect before stopping its listeners.
@@ -6912,6 +6928,7 @@ function renderSystemCard(root){
  * router, but that must not hide a DNS already assigned to a slot. */
 function dnscryptServerName(st,id){return String((st.dnscrypt_server_names||{})[id]||id);}
 function displayDnsRows(st){
+  if(st.dnscrypt_engine==='dnscrypt-proxy2'&&Number(st.dnscrypt_auto_catalog)===1)return [];
   st=st||{};
   if(st.dnscrypt_engine==='dnscrypt-proxy2')return (Array.isArray(st.dnscrypt_servers)?st.dnscrypt_servers:[]).map(function(id){return {id:String(id),name:dnscryptServerName(st,id),slot:'',running:Number(st.dnscrypt_running)===1};});
   var slots=Array.isArray(st.slots)?st.slots:[];
@@ -7025,7 +7042,7 @@ function renderOverview(root,st){
   if(!dnsItems.length)dnsItems.push(E('div',{'class':'dm-hint'},'DNS в слоты не назначены.'));
   var components=card('Компоненты',[
     componentItem('DNS-движок',st.dnscrypt_engine==='dnscrypt-proxy2'?badge(Number(st.dnscrypt_running)===1?'dm-ok':'dm-bad','DNSCrypt Proxy 2 · '+(Number(st.dnscrypt_running)===1?'работает':'остановлен')):Number(st.engine_installed)===0?badge('dm-off','не выбран'):badge(Number(st.engine_running)===1?'dm-ok':'dm-bad','HTTPS DNS Proxy · '+(Number(st.engine_running)===1?'работает':'остановлен'))),
-    st.dnscrypt_engine==='dnscrypt-proxy2'?componentItem('Выбор сервера',st.dnscrypt_selected_server?badge('dm-ok',dnscryptServerName(st,st.dnscrypt_selected_server)):badge('dm-muted',Array.isArray(st.dnscrypt_servers)&&st.dnscrypt_servers.length?'автоматически из пула':'серверы не настроены')):null,
+    st.dnscrypt_engine==='dnscrypt-proxy2'?componentItem('Выбор сервера',Number(st.dnscrypt_auto_catalog)===1?badge('dm-ok','официальный каталог'):st.dnscrypt_selected_server?badge('dm-ok',dnscryptServerName(st,st.dnscrypt_selected_server)):badge('dm-muted',Array.isArray(st.dnscrypt_servers)&&st.dnscrypt_servers.length?'автоматически из пула':'серверы не настроены')):null,
     st.dnscrypt_engine==='dnscrypt-proxy2'&&st.dnscrypt_cache_entries!=null?componentItem('Кэш DNSCrypt',badge('dm-ok',String(st.dnscrypt_cache_entries)+' записей')):null,
     st.dnscrypt_engine==='dnscrypt-proxy2'&&st.dnscrypt_avg_response_ms!=null?componentItem('Среднее время ответа DNS',badge('dm-ok',String(st.dnscrypt_avg_response_ms)+' мс')):null,
     watchdogComponentItem(st,wd,wdDetails),
@@ -7268,6 +7285,7 @@ function dnscryptLatencyBadge(st,index){
     : badge('dm-muted','нет данных');
 }
 function dnscryptCurrentPool(st){
+  if(Number(st.dnscrypt_auto_catalog)===1)return E('div',{'class':'dm-hint'},'DNSCrypt выбирает серверы из официального каталога. Текущий список работающих серверов здесь не отображается.');
   var servers=Array.isArray(st.dnscrypt_servers)?st.dnscrypt_servers:[];
   return servers.length?E('div',{'class':'dm-doh-list'},servers.map(function(id,index){
     return E('div',{'class':'dm-dnscrypt-server'},[E('span',{},dnscryptServerName(st,id)),dnscryptLatencyBadge(st,index)]);
@@ -7348,6 +7366,7 @@ function applyDnscryptPool(root,st){
 }
 function dnsPoolInfo(st){
   var isCrypt=st.dnscrypt_engine==='dnscrypt-proxy2';
+  if(isCrypt&&Number(st.dnscrypt_auto_catalog)===1)return [row('Общий набор DNS',E('span',{},'Официальный каталог DNSCrypt')),E('p',{'class':'dm-mini'},'Серверы без фильтрации выбирает DNSCrypt; их текущая доступность здесь не показана.')];
   var known=isCrypt?Array.isArray(st.dnscrypt_servers):Array.isArray(st.slots);
   var count=!known?null:isCrypt?st.dnscrypt_servers.length:
     st.slots.filter(function(slot){return slot&&/^[1-6]$/.test(String(slot.slot||''))&&!!slot.id&&!!slot.port;}).length;
@@ -7909,6 +7928,12 @@ function renderProfiles(root,st){
     row('Работает сейчас',badge(currentId?'dm-ok':'dm-muted',current)),
     g,
     st.dnscrypt_engine==='dnscrypt-proxy2'?dnscryptOptionsControls(root,st,renderProfiles):null,
+    st.dnscrypt_engine==='dnscrypt-proxy2'&&currentId==='clean'&&!state.pendingProfile?E('div',{'class':'dm-hint'},[
+      E('strong',{},'Автоподбор DNS из официального каталога'),
+      E('p',{'class':'dm-mini'},'DNSCrypt сам выбирает доступные серверы, отмеченные в каталоге как работающие без фильтрации. При запуске проверяется весь подходящий каталог; серверы dnscry.pt Moscow исключены.'),
+      btn(Number(st.dnscrypt_auto_catalog)===1?'Выключить автоподбор':'Включить автоподбор','cbi-button',function(){applyProfile('clean',root,true,Number(st.dnscrypt_auto_catalog)!==1);},{disabled:!!state.busy||!!state.jobRunning}),
+      E('span',{'class':'dm-mini'},Number(st.dnscrypt_auto_catalog)===1?' Включён':' Выключен')
+    ]):null,
     profileAction,
     E('div',{'class':'dm-mini'},candidates?'Числа показывают серверы каждого протокола в каталоге, а не количество работающих. Поддержка DNSSEC проверяется при выборе профиля.':'Профиль определяет схему выбора DNS.')
   ].filter(Boolean);
@@ -7981,6 +8006,10 @@ function foldSection(key,summary,content,classes){
 function renderSlots(root,st){
   var e=root.querySelector('#dm-slots');if(!e)return;e.innerHTML='';
   if(st.dnscrypt_engine==='dnscrypt-proxy2'){
+    if(Number(st.dnscrypt_auto_catalog)===1){
+      e.appendChild(card('DNS-серверы',dnsPoolInfo(st).concat([E('p',{'class':'dm-mini'},'Автоподбор включён в профиле «Без фильтрации». Чтобы выбрать серверы вручную, выключите автоподбор в настройках профиля.')])));
+      return;
+    }
     var draft=dnscryptPoolDraft(st), changed=draft.items.map(function(x){return x.id;}).join(',')!==draft.base||dnscryptOptionsChanged(st);
     var poolContent=[E('p',{'class':'dm-mini'},'Выберите до шести DNS в каталоге. DNSCrypt автоматически использует доступные серверы.'),
       dnscryptOptionsControls(root,st,renderSlots),
@@ -9547,9 +9576,10 @@ function selectDnscryptServer(id,root){
     });
   }).catch(function(err){state.busy=false;state.dnscryptDiagnostic=withRpcError('Не удалось применить сервер.',err);renderDnscryptDiagnostic(root);});
 }
-function applyProfile(name,root,confirmed){
+function applyProfile(name,root,confirmed,autoCatalog){
   if(state.busy)return;
   var st=window.dmState||{};
+  if(autoCatalog==null)autoCatalog=name==='clean'&&Number(st.dnscrypt_auto_catalog)===1;
   var currentId=activeProfileId(st),current=currentId?profileName(currentId):activeProfileLabel(st),next=profileName(name);
   var repeat=currentId===name;
   function startProfile(){
@@ -9558,7 +9588,7 @@ function applyProfile(name,root,confirmed){
     state.profileOutput='';
     state.pageNotice.profiles='';
     renderProfiles(root,window.dmState||{});
-    callProfile(st.dnscrypt_engine==='dnscrypt-proxy2'?dnscryptGoal(name,st):name).then(function(r){
+    callProfile(st.dnscrypt_engine==='dnscrypt-proxy2'?dnscryptGoal(autoCatalog?'auto:'+name:name,st):name).then(function(r){
       if(r&&r.ok&&r.job){
         pollJob(root,r.job,{mode:'profile',profile:name});
         return;

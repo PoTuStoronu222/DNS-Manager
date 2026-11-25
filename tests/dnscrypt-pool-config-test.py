@@ -4,6 +4,7 @@ import base64
 import os
 import pathlib
 import subprocess
+import tempfile
 import tomllib
 
 root = pathlib.Path(__file__).resolve().parent.parent
@@ -42,6 +43,17 @@ for urls, bootstrap in [('', '1.1.1.1'),
     assert result.returncode != 0 and result.stdout == '', (urls, result.stdout, result.stderr)
 
 native = (root / 'libexec/dns-manager-dnscrypt-catalog.conf').read_text().splitlines()[2].split('|')[4]
+with tempfile.TemporaryDirectory() as cache:
+    env = {**os.environ, 'DNS_MANAGER_AUTO_CATALOG': '1', 'DNS_MANAGER_SOURCE_CACHE': cache}
+    result = subprocess.run(['sh', str(generator), '5053', '1.1.1.1'], input=native + '\n',
+                            text=True, capture_output=True, env=env)
+    assert result.returncode == 0, result.stderr
+    auto = tomllib.loads(result.stdout)
+    assert auto['server_names'] == [] and auto['require_nofilter'] is True
+    assert 'static' not in auto and 'public-resolvers' in auto['sources']
+    assert set(auto['disabled_server_names']) == {
+        'dnscry.pt-moscow-ipv4', 'dnscry.pt-moscow-ipv6',
+        'dnscry.pt-doh-moscow-ipv4', 'dnscry.pt-doh-moscow-ipv6'}
 for strategy in ('wp2', 'p2', 'p3', 'p4', 'p5', 'p6', 'ph', 'first', 'random'):
     env = {**os.environ, 'DNS_MANAGER_PROTOCOL': 'native', 'DNS_MANAGER_LB_STRATEGY': strategy}
     result = subprocess.run(['sh', str(generator), '5053', '1.1.1.1'], input=native + '\n',
