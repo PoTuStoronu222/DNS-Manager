@@ -2590,6 +2590,30 @@ awk '/^dnsmasq_restart_checked\(\) \{/,/^}$/ { print }' dns-manager.sh > "$tmp/d
 [ -s "$tmp/dnsmasq_restart_checked.sh" ] || fail "dnsmasq restart helper extraction"
 sh -n "$tmp/dnsmasq_diagnostics.sh" || fail "dnsmasq diagnostics helper syntax"
 sh -n "$tmp/dnsmasq_restart_checked.sh" || fail "dnsmasq restart helper syntax"
+# Preserve real restart failures while describing the successful DHCP check.
+sed "s|/etc/init.d/dnsmasq|$tmp/mock-dnsmasq|" "$tmp/dnsmasq_restart_checked.sh" > "$tmp/dnsmasq_restart_mock.sh"
+cat > "$tmp/mock-dnsmasq" <<'EOF_DNSMASQ_MOCK'
+#!/bin/sh
+printf '%s\n' 'udhcpc: no lease, failing'
+exit "${MOCK_RESTART_RC:-0}"
+EOF_DNSMASQ_MOCK
+chmod +x "$tmp/mock-dnsmasq"
+(
+    TMP_DIR="$tmp"
+    . "$tmp/dnsmasq_restart_mock.sh"
+    apply_progress() { :; }
+    log_msg() { printf '%s\n' "$*" >> "$tmp/dnsmasq-test.log"; }
+    err_msg() { :; }
+    dnsmasq_failure_diagnostics() { :; }
+    : > "$tmp/dnsmasq-test.log"
+    MOCK_RESTART_RC=0; export MOCK_RESTART_RC
+    dnsmasq_restart_checked > /dev/null || exit 1
+    grep -Fq 'аренда не получена; команда запуска завершилась успешно' "$tmp/dnsmasq-test.log" || exit 1
+    : > "$tmp/dnsmasq-test.log"
+    MOCK_RESTART_RC=1; export MOCK_RESTART_RC
+    if dnsmasq_restart_checked > /dev/null; then exit 1; fi
+    grep -Fq 'Перезапуск dnsmasq: udhcpc: no lease, failing' "$tmp/dnsmasq-test.log" || exit 1
+) || fail "dnsmasq restart diagnostics must retain failures"
 ok "dnsmasq failure diagnostics and checked restart helpers"
  
 # Completed profile jobs survive a LuCI page reload and expose the actual reason for failure.

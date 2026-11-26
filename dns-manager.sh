@@ -4341,7 +4341,9 @@ dnsmasq_restart_checked() {
         apply_progress "Вывод перезапуска dnsmasq. udhcpc может проверять наличие другого DHCP-сервера; результат оценивается вместе с кодом запуска:"
         while IFS= read -r _dnsmasq_line; do
             [ -n "$_dnsmasq_line" ] || continue
-            if [ "$_dnsmasq_rc" -ne 0 ] || printf '%s\n' "$_dnsmasq_line" | grep -Eiq 'fail|error|warn|ошибк'; then
+            if [ "$_dnsmasq_rc" -eq 0 ] && [ "$_dnsmasq_line" = 'udhcpc: no lease, failing' ]; then
+                log_msg 'Проверка DHCP при запуске dnsmasq: аренда не получена; команда запуска завершилась успешно.'
+            elif [ "$_dnsmasq_rc" -ne 0 ] || printf '%s\n' "$_dnsmasq_line" | grep -Eiq 'fail|error|warn|ошибк'; then
                 log_msg "Перезапуск dnsmasq: $_dnsmasq_line"
             fi
             [ "${APPLY_OUTPUT_QUIET:-0}" = 1 ] || printf "    %s\n" "$_dnsmasq_line"
