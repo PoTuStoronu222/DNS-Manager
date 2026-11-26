@@ -32,16 +32,30 @@ const delay=()=>new Promise(resolve=>setTimeout(resolve,20));
 async function testCatalogPageStartAndStop(){
   for(const crypt of [false,true]){
     const calls=[],state={busy:false,jobRunning:false,pageNotice:{}},root={};
-    const ctx={state,catalogFamilyKey:()=>'',window:{dmState:{},dmCatalog:{servers:[{id:'one'},{id:'two'},{id:'bad/id'}]}},renderCatalog:()=>{},renderOverview:()=>{},refresh:()=>Promise.resolve(),withRpcError:(s,e)=>s+e.message,
+    const ctx={state,catalogFamilyKey:()=>'',catalogCategory:()=> 'grouped:country-us:all',callCatalog:(selector,offset)=>{if(selector!=='grouped:country-us:all')throw Error('wrong filters');return Promise.resolve({ok:true,total:49,servers:offset===0?[{id:'one'},{id:'two'},{id:'bad/id'}]:[{id:'three'}]});},window:{dmState:{},dmCatalog:{servers:[{id:'one'},{id:'two'},{id:'bad/id'}]}},renderCatalog:()=>{},renderOverview:()=>{},refresh:()=>Promise.resolve(),withRpcError:(s,e)=>s+e.message,
       callDnscryptCancel:()=>{calls.push('stop-crypt');return Promise.resolve({ok:true});},callTestPageCancel:()=>{calls.push('stop-https');return Promise.resolve({ok:true});},
       callDnscryptLatencies:ids=>{calls.push('start-crypt:'+ids);return Promise.resolve({ok:true});},callTestPage:ids=>{calls.push('start-https:'+ids);return Promise.resolve({ok:true,job:'test_page'});},
       callTestAll:()=>{throw Error('catalog must not check the entire catalog');},waitDnsHealth:()=>new Promise(()=>{}),pollJob:()=>{}};
-    vm.createContext(ctx);vm.runInContext(extract('function catalogPageIds(){','function resumeDnscryptCatalogLatency(root){'),ctx);
+    vm.createContext(ctx);vm.runInContext(extract('function catalogFilterCheckActive(){','function resumeDnscryptCatalogLatency(root){'),ctx);
     vm.runInContext(extract('function testAll(root,origin){','function testOne(id,root,origin,done){'),ctx);
     if(crypt)ctx.refreshDnscryptCatalogLatency(root);else ctx.testAll(root,'catalog');
     await delay();ctx.stopCatalogCheck(root,crypt);await delay();
     const prefix=crypt?'crypt':'https';
-    if(calls.join(',')!=='start-'+prefix+':one,two,stop-'+prefix||!state.catalogStopping)throw Error('catalog page start/stop routed incorrectly: '+calls);
+    if(calls.join(',')!=='start-'+prefix+':one,two,three,stop-'+prefix||!state.catalogStopping)throw Error('catalog page start/stop routed incorrectly: '+calls);
+  }
+}
+async function testCatalogFinalProgress(){
+  for(const outcome of ['done','stopped','failed']){
+    const cancelled=outcome==='stopped';let final;
+    const state={busy:false,jobRunning:false,pageNotice:{}},root={};
+    const ctx={state,window:{dmState:{},setTimeout},catalogCategory:()=> 'grouped:native:all',callCatalog:()=>Promise.resolve({servers:[{id:'one'},{id:'two'}],total:1}),callDnscryptLatencies:()=>Promise.resolve({ok:true,job:'health'}),callJob:()=>Promise.resolve({status:'done',result:outcome==='done'?'ok':'fail',cancelled:cancelled?'1':'0',progress_done:'2',progress_total:'2',progress_ok:'1',progress_fail:'1'}),renderCatalog:()=>{},refresh:()=>Promise.resolve(),Error,Promise};
+    vm.createContext(ctx);
+    vm.runInContext(extract('function updateDnscryptCatalogProgress(root,j){','function dnscryptCatalogCard(d,root,draft,nativeOnly){'),ctx);
+    vm.runInContext(extract('function waitDnsHealth(r,longJob,onProgress){','function renderDnscryptDiagnostic(root){'),ctx);
+    ctx.refreshDnscryptCatalogLatency(root);await delay();
+    final=state.dnscryptCatalogProgress;
+    if(!final||final.done!==2||final.ok!==1||state.dnscryptCatalogResult!==outcome||state.busy)throw Error('DNSCrypt final result lost or cancellation shown as success');
+    ctx.clearCatalogCheckResult();if(state.dnscryptCatalogResult||state.dnscryptCatalogProgress)throw Error('old result remains after changing filter');
   }
 }
 async function testSingleError(){
@@ -659,9 +673,9 @@ async function testCachePresets(){
 }
 
 async function testCatalogCardActions(){
-  let nodes=[],checked=[],selected=[],removed=[];const status={ok:'OK',bad:'FAIL',running:'RUNNING',custom:'OK'},state={busy:false,jobRunning:false,catalogLoading:false,category:'all',offset:0,limit:20},root={querySelector:()=>({innerHTML:'',appendChild:()=>{}})};
+  let nodes=[],checked=[],selected=[],removed=[];const status={ok:'OK',bad:'FAIL',running:'RUNNING',custom:'OK'},state={busy:false,jobRunning:false,catalogLoading:false,category:'all',offset:0,limit:20},root={querySelector:()=>({innerHTML:'',classList:{add:()=>{},remove:()=>{}},appendChild:()=>{}})};
   const E=(tag,attrs,children)=>{let n={tag,attrs,children:Array.isArray(children)?children:[],appendChild(x){this.children.push(x);},insertBefore(x){this.children.unshift(x);}};Object.defineProperty(n,'firstChild',{get(){return this.children[0];}});nodes.push(n);return n;};
-  const ctx={state,E,CATEGORY:[],catalogCountryControls:()=>null,catalogDisplayName:d=>d.name||d.id,checkInfo:id=>({status:status[id]}),resolverAvailable:ci=>ci.status==='OK',stateBadge:()=>({}),catName:x=>x,isUserDnsRecord:d=>d.id==='custom',btn:(text,cls,click,attrs)=>({text,cls,click,attrs}),testOne:id=>checked.push(id),openCatalogSlotPicker:d=>selected.push(d.id),deleteCustomDns:d=>removed.push(d.id),loadCatalog:()=>{}};
+  const ctx={state,catalogFilterCheckActive:()=>false,E,CATEGORY:[],catalogCountryControls:()=>null,catalogDisplayName:d=>d.name||d.id,checkInfo:id=>({status:status[id]}),resolverAvailable:ci=>ci.status==='OK',stateBadge:()=>({}),catName:x=>x,isUserDnsRecord:d=>d.id==='custom',btn:(text,cls,click,attrs)=>({text,cls,click,attrs}),testOne:id=>checked.push(id),openCatalogSlotPicker:d=>selected.push(d.id),deleteCustomDns:d=>removed.push(d.id),loadCatalog:()=>{}};
   vm.createContext(ctx);vm.runInContext(extract('function renderCatalogAssign(d,root){','function openCatalogSlotPicker('),ctx);vm.runInContext(extract('var catalogFamilies=','function renderLog('),ctx);
   let grouped=ctx.catalogGroups([{id:'quad9_secure'},{id:'quad9_ecs'},{id:'custom'}],d=>d.id,()=>{});
   if(grouped.length!==2||grouped[0].attrs['aria-expanded']!=='false')throw Error('catalog family was not grouped');
@@ -787,4 +801,4 @@ async function testCatalogProtocolOnFirstOpen(){
   await ctx.routeStatusCall('catalog');
   if(selectors.join()!=='grouped:native:all,grouped:all'||state.catalogCacheSelector!=='grouped:all')throw Error('catalog did not recover from engine change');
 }
-Promise.all([testSettingFeedbackBeforeRefresh(),testSettingResponsivePolling(),testDnscryptCatalogToggle(),testCatalogProtocolOnFirstOpen(),testDnscryptCatalogCardActions(),testCatalogPageStartAndStop(),testDnscryptAutoBadge(),testDnscryptCatalogProgress(),testDnscryptCatalogNativeLatency(),testVersionCheckBackground(),testEngineCardsBothDirections(),testEngineSwitchConfirmation(),testSystemDnsSuccessNotice(),testProfileNotice(),testForcedDnsControls(),testEncryptedDnsControls(),testBrowserDnsControls(),testCurrentDnsNotice(),testTestAgePresets(),testCatalogCardActions(),testCachePresets(),testTimePresetCards(),testSettingToggle(),testProfileApplyWithoutPopup(),testDnscryptDiagnosticDisplay(),testRunningProfileTimeout(),testTimePresetWhitespace(),testPoolSelectionRefresh(),testProfileClickBothEngines(),testDnscryptPoolPresentation(),testRegionalSelection(),testResumeCatalog(),testBackgroundStartTimeout(),testBackgroundUnknown(),testBackgroundNavigation(),testBackgroundFailure(),testDoHRemove(),testSingleError(),testBadgeWithoutDuration(),testPollNavigation(),testLongCatalogProgress(117),testLongCatalogProgress(5,true),testRouteCache(),testCachedReadOnly(),testInitialStatusDuringJob(),testAdditionalRouteCache(),testSequentialWarmup(),testWarmupResourceGuard(),testResumeCache(),testSettingConnectionLoss(),testRegionalConnectionLoss(),testProfileMissingJob(),testJobTransientError(),testUninstallUnresponsiveStatus(),testProfileStatus(),testSlotDraft(),testDeviceSave(),testCatalogError(),testFoldState(),testCustomDnsFeedback(),testBootstrapForm(),testLogScroll(),testHeaderCheckKind()]).catch(e=>{console.error(e);process.exitCode=1;});
+Promise.all([testCatalogFinalProgress(),testSettingFeedbackBeforeRefresh(),testSettingResponsivePolling(),testDnscryptCatalogToggle(),testCatalogProtocolOnFirstOpen(),testDnscryptCatalogCardActions(),testCatalogPageStartAndStop(),testDnscryptAutoBadge(),testDnscryptCatalogProgress(),testDnscryptCatalogNativeLatency(),testVersionCheckBackground(),testEngineCardsBothDirections(),testEngineSwitchConfirmation(),testSystemDnsSuccessNotice(),testProfileNotice(),testForcedDnsControls(),testEncryptedDnsControls(),testBrowserDnsControls(),testCurrentDnsNotice(),testTestAgePresets(),testCatalogCardActions(),testCachePresets(),testTimePresetCards(),testSettingToggle(),testProfileApplyWithoutPopup(),testDnscryptDiagnosticDisplay(),testRunningProfileTimeout(),testTimePresetWhitespace(),testPoolSelectionRefresh(),testProfileClickBothEngines(),testDnscryptPoolPresentation(),testRegionalSelection(),testResumeCatalog(),testBackgroundStartTimeout(),testBackgroundUnknown(),testBackgroundNavigation(),testBackgroundFailure(),testDoHRemove(),testSingleError(),testBadgeWithoutDuration(),testPollNavigation(),testLongCatalogProgress(117),testLongCatalogProgress(5,true),testRouteCache(),testCachedReadOnly(),testInitialStatusDuringJob(),testAdditionalRouteCache(),testSequentialWarmup(),testWarmupResourceGuard(),testResumeCache(),testSettingConnectionLoss(),testRegionalConnectionLoss(),testProfileMissingJob(),testJobTransientError(),testUninstallUnresponsiveStatus(),testProfileStatus(),testSlotDraft(),testDeviceSave(),testCatalogError(),testFoldState(),testCustomDnsFeedback(),testBootstrapForm(),testLogScroll(),testHeaderCheckKind()]).catch(e=>{console.error(e);process.exitCode=1;});

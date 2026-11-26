@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion and full installer
-# Version: 3.30.24
+# Version: 3.30.25
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="3.30.24"
+VERSION="3.30.25"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -2250,7 +2250,7 @@ DM_SOURCE_BASE="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/$_d
 COMPANION_URL="$DM_SOURCE_BASE/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="3.30.24"
+SELF_VERSION="3.30.25"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -6369,7 +6369,7 @@ EOF_RPC_WRAPPER
 'require ui';
 'require session';
 
-// DNS Manager LuCI common module version: 3.30.24
+// DNS Manager LuCI common module version: 3.30.25
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -6680,6 +6680,7 @@ function injectStyle(root){
   '.dm-seg .cbi-button:hover:not(:disabled){background:rgba(110,118,129,.11)!important;border-color:rgba(110,118,129,.55)!important}'+
   '.dm-seg .cbi-button.active{border-color:rgba(35,134,54,.65)!important;background:rgba(35,134,54,.10)!important;color:inherit!important}'+
   '.dm-strategy-options .dm-seg .cbi-button.active:disabled{opacity:1}.dm-strategy-options .dm-strategy-more{margin-top:8px}.dm-strategy-options .dm-strategy-description{margin-top:7px;line-height:1.45}'+
+  '.dm-catalog-checking .dm-seg .cbi-button.active{box-shadow:0 0 0 2px rgba(45,164,78,.22),0 0 14px rgba(45,164,78,.30)!important;border-color:#2da44e!important;opacity:1!important}'+
   '.dm-seg .cbi-button.active::before{content:"";display:inline-block;width:7px;height:7px;margin-right:7px;border-radius:50%;background:#2da44e;vertical-align:middle}'+
   '.dm-seg .cbi-button:focus-visible{outline:2px solid var(--primary-color,#0969da);outline-offset:2px}.dm-seg .cbi-button:disabled{opacity:.5;cursor:not-allowed}'+
   '.dm-wrap .dm-input,.dm-wrap input:not([type=checkbox]):not([type=radio]),.dm-wrap select,.dm-wrap textarea{max-width:100%;border:1px solid rgba(110,118,129,.28);border-radius:8px;background:var(--background-color-medium,#fff);color:inherit;box-shadow:none}'+
@@ -8703,6 +8704,22 @@ function updateDnscryptCatalogProgress(root,j){
   state.dnscryptCatalogProgress={done:Number(j.progress_done)||0,total:Number(j.progress_total)||0,ok:Number(j.progress_ok)||0,fail:Number(j.progress_fail)||0,phase:String(j.phase||'')};
   renderCatalog(root);
 }
+function clearCatalogCheckResult(){state.dnscryptCatalogResult='';state.dnscryptCatalogProgress=null;if(state.fullTest&&state.fullTest.origin==='catalog'&&!state.jobRunning){state.fullTest=null;state.catalogProgress=null;}}
+function catalogFilterCheckActive(){return !!state.catalogCollecting||!!(state.dnscryptCatalogChecking&&!state.dnscryptCatalogId)||!!(state.jobRunning&&state.fullTest&&state.fullTest.origin==='catalog'&&state.fullTest.status==='RUNNING');}
+function catalogFilteredIds(){
+  var selector=catalogCategory(), offset=0, limit=48, ids=[], seen={};
+  state.catalogCollecting=true;
+  function next(){return callCatalog(selector,offset,limit,0).then(function(d){
+    if(!d||d.ok===false||!Array.isArray(d.servers))throw new Error('Не удалось получить список серверов.');
+    d.servers.forEach(function(row){var id=String(row.id||'');if(/^[A-Za-z0-9_-]+$/.test(id)&&!seen[id]){seen[id]=true;ids.push(id);}});
+    if(ids.length>512)throw new Error('Слишком много серверов для одной проверки. Выберите категорию или страну.');
+    offset+=limit;
+    if(offset<Number(d.total||0))return next();
+    if(!ids.length)throw new Error('По выбранным фильтрам нет DNS-серверов.');
+    return ids.join(',');
+  });}
+  return next().then(function(ids){state.catalogCollecting=false;return ids;},function(err){state.catalogCollecting=false;throw err;});
+}
 function catalogPageIds(){var rows=(window.dmCatalog||{}).servers||[], counts={};rows.forEach(function(d){var k=catalogFamilyKey(d);if(k)counts[k]=(counts[k]||0)+1;});return rows.filter(function(d){var k=catalogFamilyKey(d);return !k||counts[k]<2||!!(state.catalogOpenGroups||{})[k];}).map(function(d){return d.id;}).filter(function(id){return /^[A-Za-z0-9_-]+$/.test(id);}).join(',');}
 function stopCatalogCheck(root,crypt){
   state.catalogStopping=true;renderCatalog(root);
@@ -8710,14 +8727,16 @@ function stopCatalogCheck(root,crypt){
 }
 function refreshDnscryptCatalogLatency(root,id){
   if(state.busy||state.jobRunning)return;
-  state.catalogStopping=false;state.busy=true;state.dnscryptCatalogChecking=true;state.dnscryptCatalogId=id||'';state.dnscryptCatalogProgress=null;state.pageNotice.catalog='';renderCatalog(root);
-  callDnscryptLatencies(id||catalogPageIds()).then(function(r){return waitDnsHealth(r,true,function(j){
+  state.catalogStopping=false;state.busy=true;state.dnscryptCatalogChecking=true;state.dnscryptCatalogId=id||'';state.catalogCollecting=!id;state.dnscryptCatalogProgress=null;state.dnscryptCatalogResult='';state.pageNotice.catalog='';renderCatalog(root);
+  (id?Promise.resolve(id):catalogFilteredIds()).then(function(ids){return callDnscryptLatencies(ids);}).then(function(r){return waitDnsHealth(r,true,function(j){
     updateDnscryptCatalogProgress(root,j);
   });}).then(function(result){
-    if(!result.ok)throw new Error(result.output||'Не удалось получить замеры DNSCrypt.');
+    if(!result.ok&&!result.cancelled)throw new Error(result.output||'Не удалось получить замеры DNSCrypt.');
+    if(!id)state.dnscryptCatalogResult=result.cancelled?'stopped':'done';
     state.busy=false;state.dnscryptCatalogChecking=false;state.dnscryptCatalogId='';return refresh(root,true);
   }).catch(function(err){
     state.busy=false;state.dnscryptCatalogChecking=false;state.dnscryptCatalogId='';
+    if(!id)state.dnscryptCatalogResult='failed';
     state.pageNotice.catalog=(err&&err.message)||'Не удалось получить замеры DNSCrypt.';renderCatalog(root);
   });
 }
@@ -8747,30 +8766,31 @@ function renderCatalog(root){
   var e=root.querySelector('#dm-catalog');if(!e)return;e.innerHTML='';
   if((window.dmState||{}).dnscrypt_engine==='dnscrypt-proxy2'){
     var data=window.dmCatalog||{}, controls=E('div',{'class':'dm-seg'});
-    e.appendChild(E('div',{'class':'dm-actions'},[state.dnscryptCatalogChecking?btn(state.catalogStopping?'Останавливаю…':'Остановить','cbi-button-neutral',function(){stopCatalogCheck(root,true);},{disabled:!!state.catalogStopping}):btn('Проверить видимые DNS','cbi-button-action',function(){refreshDnscryptCatalogLatency(root);},{disabled:!!state.busy||!!state.jobRunning||!catalogPageIds()})]));
-    if(state.dnscryptCatalogChecking){
+    if(catalogFilterCheckActive())e.classList.add('dm-catalog-checking');else e.classList.remove('dm-catalog-checking');
+    e.appendChild(E('div',{'class':'dm-actions'},[state.dnscryptCatalogChecking?btn(state.catalogStopping?'Останавливаю…':'Остановить','cbi-button-neutral',function(){stopCatalogCheck(root,true);},{disabled:!!state.catalogStopping||!!state.catalogCollecting}):btn('Проверить DNS по фильтрам','cbi-button-action',function(){refreshDnscryptCatalogLatency(root);},{disabled:!!state.busy||!!state.jobRunning||!Number((window.dmCatalog||{}).server_total||0)})]));
+    if((state.dnscryptCatalogChecking&&!state.dnscryptCatalogId)||state.dnscryptCatalogResult){
       var progress=state.dnscryptCatalogProgress||{}, done=progress.done||0, total=progress.total||0;
       var pct=total>0?Math.max(0,Math.min(100,Math.round(done*100/total))):0;
       var summary=total?'Проверено '+done+' из '+total+' · доступно: '+progress.ok+' · не ответили: '+progress.fail+(done-progress.ok-progress.fail>0?' · не удалось проверить: '+(done-progress.ok-progress.fail):''):'Подготавливаю список DNS-серверов…';
       var progressItems=[
-        E('div',{'class':'dm-mini'},'Проверка каталога DNS'),
+        E('div',{'class':'dm-mini'},state.dnscryptCatalogChecking?'Проверка выбранных DNS':(state.dnscryptCatalogResult==='stopped'?'Проверка остановлена':(state.dnscryptCatalogResult==='failed'?'Проверка не завершена':'Проверка выбранных DNS завершена'))),
         E('div',{'class':'dm-mem-line'},[
           E('div',{'class':'dm-mem-track','role':'progressbar','aria-label':'Проверено серверов DNS','aria-valuemin':'0','aria-valuemax':'100','aria-valuenow':String(pct)},[E('div',{'class':'dm-mem-fill','style':'width:'+pct+'%'})]),
           E('span',{'class':'dm-mem-value'},pct+'%')
         ]),
         E('div',{'class':'dm-mem-meta'},summary)
       ];
-      if(progress.phase)progressItems.push(E('div',{'class':'dm-mini'},'Сейчас проверяются: '+progress.phase));
-      progressItems.push(E('div',{'class':'dm-mini'},'Проверяются показанные и раскрытые серверы. Можно закрыть страницу — проверка продолжится.'));
-      e.appendChild(card('Ход проверки',progressItems));
+      if(state.dnscryptCatalogChecking&&progress.phase)progressItems.push(E('div',{'class':'dm-mini'},'Сейчас проверяются: '+progress.phase));
+      if(state.dnscryptCatalogChecking)progressItems.push(E('div',{'class':'dm-mini'},'Проверяются все серверы выбранных фильтров, включая другие страницы и свёрнутые группы. Проверка продолжится, если закрыть страницу.'));
+      e.appendChild(card(state.dnscryptCatalogChecking?'Ход проверки':'Результат проверки',progressItems));
     }
     var protocols=E('div',{'class':'dm-seg'});
     [['native','DNSCrypt'],['doh','DNS over HTTPS']].forEach(function(p){
       protocols.appendChild(btn(p[1],state.catalogProtocol===p[0]?'active cbi-button':'cbi-button',function(){
-        if(state.catalogLoading)return;state.catalogProtocol=p[0];state.catalogCountry='all';state.offset=0;window.dmCatalog=null;loadCatalog(root);
-      },{disabled:!!state.catalogLoading,'aria-pressed':state.catalogProtocol===p[0]?'true':'false'}));
+        if(state.catalogLoading)return;clearCatalogCheckResult();state.catalogProtocol=p[0];state.catalogCountry='all';state.offset=0;window.dmCatalog=null;loadCatalog(root);
+      },{disabled:!!state.catalogLoading||catalogFilterCheckActive(),'aria-pressed':state.catalogProtocol===p[0]?'true':'false'}));
     });
-    CATEGORY.forEach(function(c){controls.appendChild(btn(c[1],c[0]===state.category?'active cbi-button':'cbi-button',function(){if(state.catalogLoading)return;state.category=c[0];state.catalogCountry='all';state.offset=0;loadCatalog(root);},{disabled:!!state.catalogLoading,'aria-pressed':c[0]===state.category?'true':'false'}));});
+    CATEGORY.forEach(function(c){controls.appendChild(btn(c[1],c[0]===state.category?'active cbi-button':'cbi-button',function(){if(state.catalogLoading)return;clearCatalogCheckResult();state.category=c[0];state.catalogCountry='all';state.offset=0;loadCatalog(root);},{disabled:!!state.catalogLoading||catalogFilterCheckActive(),'aria-pressed':c[0]===state.category?'true':'false'}));});
     var draft=dnscryptPoolDraft(window.dmState||{});
     var nativeOnly=dnscryptOptions(window.dmState||{}).protocol==='native';
     var rows=catalogGroups(data.servers||[],function(d){return dnscryptCatalogCard(d,root,draft,nativeOnly);},function(){renderCatalog(root);});
@@ -8785,7 +8805,7 @@ function renderCatalog(root){
   var ch=[
     E('div',{'class':'dm-mini'},'Каталог DNS отображается постоянно. Выбор категории и назначение доступны ниже.'),
     E('div',{'class':'dm-actions'},[
-      state.jobRunning&&state.fullTest&&state.fullTest.origin==='catalog'?btn(state.catalogStopping?'Останавливаю…':'Остановить','cbi-button-neutral',function(){stopCatalogCheck(root,false);},{disabled:!!state.catalogStopping}):btn('Проверить видимые DNS','cbi-button-action',function(){testAll(root,'catalog');},{disabled:!!state.busy||!!state.jobRunning||!catalogPageIds()})
+      state.jobRunning&&state.fullTest&&state.fullTest.origin==='catalog'?btn(state.catalogStopping?'Останавливаю…':'Остановить','cbi-button-neutral',function(){stopCatalogCheck(root,false);},{disabled:!!state.catalogStopping||!!state.catalogCollecting}):btn('Проверить DNS по фильтрам','cbi-button-action',function(){testAll(root,'catalog');},{disabled:!!state.busy||!!state.jobRunning||!Number((window.dmCatalog||{}).server_total||0)})
     ])
   ];
 
@@ -8818,7 +8838,7 @@ function renderCatalog(root){
     var pct=total>0?Math.max(0,Math.min(100,Math.round(done*100/total))):0;
     var running=state.jobRunning&&state.fullTest.status==='RUNNING';
     var failed=state.fullTest.status==='FAILED';
-    var title=running?'Проверка страницы':(state.catalogCancelled?'Проверка остановлена':(failed?'Проверка не завершена':'Проверка страницы завершена'));
+    var title=running?'Проверка выбранных DNS':(state.catalogCancelled?'Проверка остановлена':(failed?'Проверка не завершена':'Проверка выбранных DNS завершена'));
     var summary=total>0
       ? (running?'Проверено '+done+' из '+total:'Проверено: '+done+' из '+total)+' · доступно: '+okn+' · не ответили: '+failn
       : (running?'Подготавливаю список DNS-серверов…':'Сведения о количестве проверенных серверов недоступны.');
@@ -8881,8 +8901,9 @@ function catalogGroups(servers,renderItem,rerender){
 
 function renderCatalogBody(root,data){
   var b=root.querySelector('#dm-cat-body');if(!b)return;b.innerHTML='';
+  if(catalogFilterCheckActive())b.classList.add('dm-catalog-checking');else b.classList.remove('dm-catalog-checking');
   var f=E('div',{'class':'dm-seg'});
-  CATEGORY.forEach(function(c){f.appendChild(btn(c[1],c[0]===state.category?'active cbi-button':'cbi-button',function(){if(state.catalogLoading)return;state.category=c[0];state.catalogCountry='all';state.offset=0;loadCatalog(root);},{disabled:!!state.catalogLoading,'aria-pressed':c[0]===state.category?'true':'false'}));});
+  CATEGORY.forEach(function(c){f.appendChild(btn(c[1],c[0]===state.category?'active cbi-button':'cbi-button',function(){if(state.catalogLoading)return;clearCatalogCheckResult();state.category=c[0];state.catalogCountry='all';state.offset=0;loadCatalog(root);},{disabled:!!state.catalogLoading||catalogFilterCheckActive(),'aria-pressed':c[0]===state.category?'true':'false'}));});
   b.appendChild(f);
   var countries=catalogCountryControls(root,data);if(countries)b.appendChild(countries);
   b.appendChild(E('div',{'class':'dm-mini'},'На странице: '+(data.servers||[]).length+' DNS · всего: '+(data.server_total||0)+' DNS. Варианты провайдера раскрываются нажатием.'));
@@ -9086,7 +9107,7 @@ function clearEngineUiState(){
   state.dnscryptProtocol=null;state.dnscryptStrategy=null;state.dnscryptPoolDraft=null;
   state.pageNotice={};state.profileProgress=null;state.profileOutput='';state.profileResumeStarted=false;
   state.regionalNotice='';state.pendingProfile='';state.pendingRegional=null;state.pendingDnscryptServer='';state.dnscryptDiagnostic='';state.dnscryptDiagnosticKind='';state.dnscryptDiagnosticResult='';
-  state.lastAction=null;state.lastJob=null;state.checking={};state.fullTest=null;state.catalogProgress=null;
+  state.lastAction=null;state.lastJob=null;state.checking={};state.fullTest=null;state.catalogProgress=null;state.dnscryptCatalogResult='';state.dnscryptCatalogProgress=null;
   if(window.dmState){
     ['profile_job_status','profile_job_result','profile_job_profile','profile_job_started','profile_job_finished','profile_job_message'].forEach(function(key){delete window.dmState[key];});
   }
@@ -9499,7 +9520,8 @@ function waitDnsHealth(r,longJob,onProgress){
   function poll(){return callJob('health').then(function(j){
     if(j&&j.status==='running'&&tries++<(longJob?7200:120)){if(onProgress)onProgress(j);return new Promise(function(resolve){window.setTimeout(resolve,1000);}).then(poll);}
     if(!j||j.status!=='done')throw new Error('Не удалось получить результат проверки DNS.');
-    return {ok:j.result==='ok',output:j.output};
+    if(onProgress)onProgress(j);
+    return {ok:j.result==='ok',output:j.output,cancelled:j.cancelled==='1'};
   });}
   return poll();
 }
@@ -9832,6 +9854,7 @@ function testAll(root,origin){
   if(state.jobRunning||state.busy)return;
   var from=origin||state.activeTab||'overview';
   state.jobRunning=true;
+  state.catalogCollecting=from==='catalog';
   state.fullTest={status:'RUNNING',origin:from,started:Date.now()};
   if(from==='catalog'){
     state.catalogProgress={
@@ -9839,14 +9862,14 @@ function testAll(root,origin){
       total:0,
       ok:0,
       fail:0,
-      detail:'Проверяю серверы на этой странице…'
+      detail:'Подготавливаю серверы выбранных фильтров…'
     };
   }
   if(from==='catalog')state.pageNotice.catalog='';
   if(from==='catalog')renderCatalog(root);else renderOverview(root,window.dmState||{});
   state.catalogStopping=false;
   state.catalogCancelled=false;
-  (from==='catalog'?callTestPage(catalogPageIds()):callTestAll()).then(function(r){
+  (from==='catalog'?catalogFilteredIds().then(function(ids){return callTestPage(ids);}):callTestAll()).then(function(r){
     if(r&&r.ok)pollJob(root,r.job,{mode:'all',origin:from});
     else{
       state.fullTest={status:'FAILED',origin:from};
@@ -10145,7 +10168,7 @@ function catalogCountryControls(root,data){
   var labels={all:'Все страны',any:'Страна не указана',global:'По всему миру',asia:'Азия',eu:'Европа',ru:'Россия',us:'США',bg:'Болгария',br:'Бразилия',cl:'Чили',dk:'Дания',ee:'Эстония',ge:'Грузия',ie:'Ирландия',gr:'Греция',hk:'Гонконг',is:'Исландия',kr:'Южная Корея',la:'Лаос',lt:'Литва',lv:'Латвия',mu:'Маврикий',mx:'Мексика',my:'Малайзия',ng:'Нигерия',nz:'Новая Зеландия',pk:'Пакистан',sk:'Словакия',tr:'Турция',tw:'Тайвань',ua:'Украина',vn:'Вьетнам',za:'ЮАР',bd:'Бангладеш',in:'Индия',al:'Албания',gb:'Великобритания',uk:'Великобритания',by:'Беларусь',cn:'Китай',id:'Индонезия',de:'Германия',fr:'Франция',nl:'Нидерланды',ca:'Канада',au:'Австралия',at:'Австрия',be:'Бельгия',ch:'Швейцария',cz:'Чехия',es:'Испания',fi:'Финляндия',hu:'Венгрия',it:'Италия',jp:'Япония',md:'Молдова',no:'Норвегия',pl:'Польша',pt:'Португалия',ro:'Румыния',rs:'Сербия',se:'Швеция',sg:'Сингапур'};
   var codes=(data.regions||[]).filter(function(code){return code!=='ru';}).sort(function(a,b){return (labels[a]||a).localeCompare(labels[b]||b,'ru');});
   var buttons=E('div',{'class':'dm-seg'});
-  ['all'].concat(codes).forEach(function(code){buttons.appendChild(btn(labels[code]||code.toUpperCase(),state.catalogCountry===code?'active cbi-button':'cbi-button',function(){if(state.catalogLoading)return;state.catalogCountry=code;state.offset=0;state.catalogOpenGroups={};loadCatalog(root);},{disabled:!!state.catalogLoading,'aria-pressed':state.catalogCountry===code?'true':'false'}));});
+  ['all'].concat(codes).forEach(function(code){buttons.appendChild(btn(labels[code]||code.toUpperCase(),state.catalogCountry===code?'active cbi-button':'cbi-button',function(){if(state.catalogLoading)return;clearCatalogCheckResult();state.catalogCountry=code;state.offset=0;state.catalogOpenGroups={};loadCatalog(root);},{disabled:!!state.catalogLoading||catalogFilterCheckActive(),'aria-pressed':state.catalogCountry===code?'true':'false'}));});
   return E('div',{},[E('div',{'class':'dm-mini'},'Страна сервера'),buttons]);
 }
 function loadCatalog(root){
@@ -10343,7 +10366,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 3.30.24
+// DNS Manager LuCI version: 3.30.25
 return view.extend({
   load: DM.load,
   render: DM.render,
