@@ -5670,6 +5670,27 @@ catalog_json() {
     printf '{"ok":true,"regions":['; _first_region=1
     for _region_item in $(sort -u "$_regions"); do [ "$_first_region" = 1 ] || printf ','; _first_region=0; json_quote "$_region_item"; done
     printf '],"version":'; json_quote "$(catalog_version)"; printf ',"category":'; json_quote "$_category"; printf ',"offset":%s,"limit":%s,"total":%s,"server_total":%s,"servers":[' "$_offset" "$_limit" "$_total" "$_server_total"
+    if [ "$_grouped" = 1 ] && [ -n "$_native_catalog" ]; then
+        # A grouped page can contain hundreds of variants. Encode the page in
+        # one awk process instead of starting sed and awk for every field.
+        awk -F'|' '
+          function quote(s,  i,c,out) {
+            out="\""
+            for (i=1; i<=length(s); i++) {
+              c=substr(s,i,1)
+              if (c=="\\" || c=="\"") out=out "\\" c
+              else if (c=="\t") out=out "\\t"
+              else if (c=="\r") out=out " "
+              else out=out c
+            }
+            return out "\""
+          }
+          $1 != "" {
+            if (first++) printf ","
+            printf "{\"id\":%s,\"category\":%s,\"name\":%s,\"url\":%s,\"region\":%s,\"catalog_status\":%s,\"ping\":\"\",\"status\":\"\",\"last_check\":\"\"}", quote($1),quote($2),quote($4),quote($5),quote($6),quote($7)
+          }
+        ' "$_paged"
+    else
     _first=1
     while IFS='|' read -r _id _cat _prof _name _url _region _status; do
         [ -n "$_id" ] || continue; [ "$_first" = 1 ] || printf ','; _first=0
@@ -5679,6 +5700,7 @@ catalog_json() {
         fi
         printf '{"id":'; json_quote "$_id"; printf ',"category":'; json_quote "$_cat"; printf ',"name":'; json_quote "$_name"; printf ',"url":'; json_quote "$_url"; printf ',"region":'; json_quote "$_region"; printf ',"catalog_status":'; json_quote "$_status"; printf ',"ping":'; json_quote "$_ms"; printf ',"status":'; json_quote "$_st"; printf ',"last_check":'; json_quote "$_last"; printf '}'
     done < "$_paged"
+    fi
     printf ']}'; rm -f "$_filtered" "$_paged" "$_regions" 2>/dev/null || true
 }
 
