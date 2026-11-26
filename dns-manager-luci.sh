@@ -9670,6 +9670,7 @@ function setSetting(name,en,root){
     }else{
       setSettingFeedback(name,'Настройка «'+settingName(name)+'»: '+((r&&r.error)||'не удалось изменить.'),'error');
     }
+    if(state.activeTab==='network'&&name.indexOf('dc_')===0)renderNetwork(root,window.dmState||{});
     refresh(root,true);
   }).catch(function(err){
     state.busy=false;state.busySetting='';
