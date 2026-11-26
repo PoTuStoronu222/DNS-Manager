@@ -1135,7 +1135,7 @@ case "${1:-}" in
             dnscrypt_cancel) diagnostic_cancel ;;
             dnscrypt_log) diagnostic "$2" ;;
             status|doh_status|network_status|time_status|log) status_extra "$2" ;;
-            runtime|connectivity|page_meta|catalog|lan_devices|job|job_status|multi|set_ntp|update_check|update_hdp|update_background|uninstall|uninstall_status)
+            runtime|connectivity|page_meta|catalog|lan_devices|job|job_status|multi|set_ntp|update_check|update_hdp|update_catalog|update_background|uninstall|uninstall_status)
                 exec "$LEGACY" "$@" ;;
             *) error 'Действие пока недоступно для dnscrypt-proxy2' ;;
         esac ;;

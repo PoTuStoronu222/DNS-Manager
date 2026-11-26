@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion and full installer
-# Version: 3.30.25
+# Version: 3.30.26
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="3.30.25"
+VERSION="3.30.26"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -927,7 +927,7 @@ printf 'Service did not become ready: %s\n' "$target" >&2
 exit 1
 EOF_DNSCRYPT_ASSET_8
     fetch_installer_source "$_dc_stage/backend-dnscrypt.sh" "$SOURCE_BASE/libexec/backend-dnscrypt.sh"
-    [ "$(sha256sum "$_dc_stage/backend-dnscrypt.sh" | cut -d' ' -f1)" = "21e45c803b08ea96c1a5cecc95bceeaa24da829d28305893e5b65948b0f66c5c" ] || { err "Файл backend DNSCrypt не прошёл проверку."; return 1; }
+    [ "$(sha256sum "$_dc_stage/backend-dnscrypt.sh" | cut -d' ' -f1)" = "46b2b7158695484605a80a8f3ad20e3f039f7f639cc882ad046a588977159316" ] || { err "Файл backend DNSCrypt не прошёл проверку."; return 1; }
     cat > "$_dc_stage/dns-manager-device-detach.sh" <<'EOF_DNSCRYPT_ASSET_10'
 #!/bin/sh
 # Detach the Manager-owned per-device redirect before stopping its listeners.
@@ -2250,7 +2250,7 @@ DM_SOURCE_BASE="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/$_d
 COMPANION_URL="$DM_SOURCE_BASE/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="3.30.25"
+SELF_VERSION="3.30.26"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -2680,6 +2680,12 @@ update_check_json_luci() {
 
 catalog_cached_update_available() {
     # A cached check can predate installation of the very revision it found.
+    if [ "$1" = 1 ] && [ "$2" = 1 ] && [ -n "$3" ] && [ "$3" = "$6" ]; then
+        case "$4:$7" in
+            *[!0-9:]*|:*|*:) ;;
+            *) if [ "$7" -gt "$4" ] 2>/dev/null; then printf 0; return; fi ;;
+        esac
+    fi
     # Only clear its flag when all published metadata matches the local file.
     if [ "$1" = 1 ] && [ "$2" = 1 ] && [ -n "$3" ] && [ -n "$4" ] &&
        [ "$5" != 0 ] && [ -n "$5" ] && [ "$3" = "$6" ] && [ "$4" = "$7" ] && [ "$5" = "$8" ]; then
@@ -2990,8 +2996,7 @@ update_all_json() {
         *) _detail="$(printf '%s' "$_mr" | jsonfilter -e '@.error' 2>/dev/null)"; append_failure_message "DNS Manager: ${_detail:-не удалось обновить}" ;;
     esac
 
-    # DNSCrypt uses its own static pool. Do not update or restart HTTPS DNS Proxy
-    # or replace its catalog while updating the manager in this mode.
+    # Do not update or restart HTTPS DNS Proxy while DNSCrypt is active.
     if [ "$(uci -q get dns-manager.global.active_engine 2>/dev/null)" != dnscrypt-proxy2 ]; then
         [ "${DM_BACKGROUND_ID:-}" != update ] || job_write update name 'Защищённый DNS'
         _old_h="$(package_version https-dns-proxy 2>/dev/null || true)"
@@ -3005,7 +3010,9 @@ update_all_json() {
             *) _detail="$(printf '%s' "$_hr" | jsonfilter -e '@.error' 2>/dev/null)"; append_failure_message "Защищённый DNS: ${_detail:-не удалось обновить}" ;;
         esac
 
-        [ "${DM_BACKGROUND_ID:-}" != update ] || job_write update name 'Каталог DNS'
+    fi
+
+    [ "${DM_BACKGROUND_ID:-}" != update ] || job_write update name 'Каталог DNS'
         _old_cv="$(catalog_version 2>/dev/null || true)"
         _old_cr="$(catalog_revision 2>/dev/null || true)"
         update_catalog_direct
@@ -3017,8 +3024,6 @@ update_all_json() {
             2) append_update_message "Каталог DNS $_old_cv rev.$_old_cr · актуален" ;;
             *) append_failure_message "Каталог DNS: не удалось обновить" ;;
         esac
-
-    fi
 
     [ "${DM_BACKGROUND_ID:-}" != update ] || job_write update name 'LuCI'
     _old_l="$(read_installed_luci_version)"
@@ -6369,7 +6374,7 @@ EOF_RPC_WRAPPER
 'require ui';
 'require session';
 
-// DNS Manager LuCI common module version: 3.30.25
+// DNS Manager LuCI common module version: 3.30.26
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -6680,6 +6685,7 @@ function injectStyle(root){
   '.dm-seg .cbi-button:hover:not(:disabled){background:rgba(110,118,129,.11)!important;border-color:rgba(110,118,129,.55)!important}'+
   '.dm-seg .cbi-button.active{border-color:rgba(35,134,54,.65)!important;background:rgba(35,134,54,.10)!important;color:inherit!important}'+
   '.dm-strategy-options .dm-seg .cbi-button.active:disabled{opacity:1}.dm-strategy-options .dm-strategy-more{margin-top:8px}.dm-strategy-options .dm-strategy-description{margin-top:7px;line-height:1.45}'+
+  '.dm-catalog-pool{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}.dm-catalog-pool .cbi-button{white-space:nowrap}'+
   '.dm-catalog-checking .dm-seg .cbi-button.active{box-shadow:0 0 0 2px rgba(45,164,78,.22),0 0 14px rgba(45,164,78,.30)!important;border-color:#2da44e!important;opacity:1!important}'+
   '.dm-seg .cbi-button.active::before{content:"";display:inline-block;width:7px;height:7px;margin-right:7px;border-radius:50%;background:#2da44e;vertical-align:middle}'+
   '.dm-seg .cbi-button:focus-visible{outline:2px solid var(--primary-color,#0969da);outline-offset:2px}.dm-seg .cbi-button:disabled{opacity:.5;cursor:not-allowed}'+
@@ -8795,7 +8801,7 @@ function renderCatalog(root){
     var nativeOnly=dnscryptOptions(window.dmState||{}).protocol==='native';
     var rows=catalogGroups(data.servers||[],function(d){return dnscryptCatalogCard(d,root,draft,nativeOnly);},function(){renderCatalog(root);});
     var shown=E('div',{'class':'dm-mini'},'На странице: '+(data.servers||[]).length+' DNS · всего: '+(data.server_total||0)+' DNS. Варианты провайдера раскрываются нажатием.');
-    e.appendChild(E('div',{'class':'dm-hint'},[E('span',{},'В наборе: '+draft.items.length+' из 6. '),E('a',{'href':L.url('admin/services/dns-manager/slots')},'Открыть набор и применить')]));
+    e.appendChild(E('div',{'class':'dm-hint dm-catalog-pool'},[E('div',{},[E('strong',{},'Общий набор DNSCrypt'),E('div',{'class':'dm-mini'},'Выбрано серверов: '+draft.items.length+' из 6')]),E('a',{'class':'cbi-button cbi-button-neutral','href':L.url('admin/services/dns-manager/slots')},'Открыть набор')]));
     e.appendChild(card('Каталог DNS',[E('div',{'class':'dm-hint'},nativeOnly&&state.catalogProtocol==='doh'?'Выбран режим только DNSCrypt: DoH можно просматривать, но добавить в набор нельзя.':'Выберите протокол и категорию. Проверка не меняет текущие DNS.'),protocols,controls,catalogCountryControls(root,data),shown,state.pageNotice.catalog?E('div',{'class':'dm-inline-msg error'},state.pageNotice.catalog):null,state.catalogLoading?E('div',{'class':'dm-hint'},'Загрузка каталога DNS…'):null,E('div',{'class':'dm-catalog'},rows),E('div',{'class':'dm-page'},[btn('←','cbi-button-neutral',function(){if(!state.catalogLoading&&state.offset>0){state.offset=Math.max(0,state.offset-state.limit);loadCatalog(root);}},{disabled:!!state.catalogLoading||state.offset<=0,'aria-label':'Предыдущая страница'}),E('span',{'class':'dm-mini'},(Math.floor(state.offset/state.limit)+1)+' / '+Math.max(1,Math.ceil((data.total||0)/state.limit))),btn('→','cbi-button-neutral',function(){if(!state.catalogLoading&&state.offset+state.limit<(data.total||0)){state.offset+=state.limit;loadCatalog(root);}},{disabled:!!state.catalogLoading||state.offset+state.limit>=(data.total||0),'aria-label':'Следующая страница'})])].filter(Boolean)));
     return;
   }
@@ -10366,7 +10372,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 3.30.25
+// DNS Manager LuCI version: 3.30.26
 return view.extend({
   load: DM.load,
   render: DM.render,

@@ -315,6 +315,7 @@ awk '/^catalog_cached_update_available\(\) \{/,/^}/' "$tmp/backend.sh" > "$tmp/c
 (
     . "$tmp/catalog_cached_update.sh"
     [ "$(catalog_cached_update_available 1 1 v 9 113 v 9 113)" = 0 ] || exit 1
+    [ "$(catalog_cached_update_available 1 1 v 8 113 v 9 112)" = 0 ] || exit 1
     [ "$(catalog_cached_update_available 1 1 v 9 113 v 8 113)" = 1 ] || exit 1
     [ "$(catalog_cached_update_available 1 1 v 9 113 v 9 112)" = 1 ] || exit 1
     [ "$(catalog_cached_update_available 1 1 v 9 113 older 9 113)" = 1 ] || exit 1
@@ -659,6 +660,7 @@ grep -Fq '# ENTRIES=116' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog entr
 awk '/^catalog_validate_file\(\) \{/,/^}/' dns-manager.sh > "$tmp/catalog_validate.sh"
 ( DNSCAT_VERSION=$(sed -n "s/^# DNSCATVER=//p" catalogs/dns-8.8-FULL-CONFIG-CLEAN.conf); DNSCAT_REVISION=$(sed -n "s/^# DNSCATREV=//p" catalogs/dns-8.8-FULL-CONFIG-CLEAN.conf); . "$tmp/catalog_validate.sh"; catalog_validate_file catalogs/dns-8.8-FULL-CONFIG-CLEAN.conf ) || fail "updated catalog does not pass the manager validator"
 sh tests/catalog-audit-update-test.sh || fail "catalog upgrade or fallback failed"
+sh tests/catalog-update-engines-test.sh "$tmp/backend.sh" || fail "catalog update with both engines"
 sh tests/watchdog-migration-settings-test.sh || fail "watchdog migration settings"
 sed -n '/^DNSCAT_REF=/,/^DNSCAT_URL=/p' dns-manager.sh > "$tmp/catalog_ref.sh"
 ( DNS_MANAGER_SOURCE_REF=test/doh-catalog-audit; . "$tmp/catalog_ref.sh"; case "$DNSCAT_URL" in */test/doh-catalog-audit/catalogs/*) :;; *) exit 1;; esac ) || fail "test installer does not load its own catalog"
