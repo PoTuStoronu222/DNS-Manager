@@ -262,6 +262,12 @@ profile_worker() {
             job_write result fail; job_write status failed; job_write finished "$(date +%s)"
             exit 1
         fi
+        # The selected engine owns startup. Repair a stale HTTPS autostart
+        # only when the service is stopped; never stop a running service here.
+        if [ -x "$HDP_INIT" ] && "$HDP_INIT" enabled >/dev/null 2>&1 &&
+           ! "$HDP_INIT" running >/dev/null 2>&1; then
+            "$HDP_INIT" disable >/dev/null 2>&1 || true
+        fi
         if hdp_active; then
             printf '%s\n' 'https-dns-proxy ещё работает или включён в автозапуске.'
             release_mutation_lock

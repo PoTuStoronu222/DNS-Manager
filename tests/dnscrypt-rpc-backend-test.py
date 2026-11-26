@@ -37,7 +37,14 @@ json_dump() { printf '%s' '{"dnscrypt_engine":"dnscrypt-proxy2"}'; }
     init.write_text('#!/bin/sh\n[ "$1" = enable ] && [ ! -e "$LAB_ROOT/enable-fail" ]\n')
     init.chmod(0o755)
     hdp = d / 'https-dns-proxy'
-    hdp.write_text('#!/bin/sh\n[ -e "$LAB_ROOT/hdp-active" ]\n')
+    hdp.write_text('''#!/bin/sh
+case "$1" in
+ enabled) [ -e "$LAB_ROOT/hdp-active" ] || [ -e "$LAB_ROOT/hdp-enabled" ];;
+ running) [ -e "$LAB_ROOT/hdp-active" ];;
+ disable) [ ! -e "$LAB_ROOT/hdp-disable-fail" ] && rm -f "$LAB_ROOT/hdp-enabled";;
+ *) exit 1;;
+esac
+''')
     hdp.chmod(0o755)
     legacy = d / 'legacy'
     legacy.write_text('#!/bin/sh\nprintf "{\\"ok\\":true,\\"method\\":\\"%s\\"}\\n" "$2"\n')
@@ -139,6 +146,18 @@ dnscrypt_apply_profile_pool() {
     state = (config / 'dnscrypt-profile.state').read_text()
     assert state == 'profile=clean\nprotocol=mixed\nstrategy=wp2\nserver=cloudflare|https://cloudflare-dns.com/dns-query\n'
     assert 'status=done\n' in (jobs / 'profile/state').read_text()
+    (d / 'hdp-enabled').touch()
+    assert run('worker', 'clean').returncode == 0
+    assert not (d / 'hdp-enabled').exists()
+    (d / 'hdp-enabled').touch()
+    (d / 'hdp-disable-fail').touch()
+    assert run('worker', 'clean').returncode != 0
+    assert (d / 'hdp-enabled').exists()
+    (d / 'hdp-enabled').unlink()
+    (d / 'hdp-disable-fail').unlink()
+    (d / 'hdp-active').touch()
+    assert run('worker', 'clean').returncode != 0
+    (d / 'hdp-active').unlink()
     result = run('worker', 'catalog-on', extra={'LAB_REUSE': '1'})
     assert result.returncode == 0 and (d / 'catalog-mode').read_text() == '1'
     assert 'auto_catalog=1\n' in (config / 'dnscrypt-profile.state').read_text()
