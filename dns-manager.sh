@@ -6,7 +6,7 @@ if [ -t 0 ] && [ ! -t 1 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
     exec </dev/tty >/dev/tty 2>&1
 fi
 MANAGER_PATH="/usr/bin/dns-manager"
-VERSION="4.51.3"
+VERSION="4.51.4"
 # 3.86: make LuCI the primary interface and preserve external DNS on removal.
 # 3.85: revalidate Watchdog settings before recovery.
 # 3.84: cap DNS catalog test concurrency by total RAM on small routers.
@@ -29,7 +29,7 @@ CUSTOM_DNS_CATALOG="$CFG_DIR/dns-custom-catalog.conf"
 NTP_CATALOG="$CFG_DIR/ntp-catalog.conf"
 BOOTSTRAP_DNS_ALL="77.88.8.8,77.88.8.1,94.150.14.15,1.1.1.1,1.0.0.1,8.8.8.8,8.8.4.4,9.9.9.9,149.112.112.112,208.67.222.222,208.67.220.220,149.112.121.10,149.112.122.10,76.76.2.0,76.76.10.0,2606:4700:4700::1111,2606:4700:4700::1001,2001:4860:4860::8888,2001:4860:4860::8844,2620:fe::fe,2620:fe::9"
 DNSCAT_VERSION="8.8-FULL-CONFIG-CLEAN"
-DNSCAT_REVISION="2"
+DNSCAT_REVISION="3"
 DNSCAT_REF="${DNS_MANAGER_SOURCE_REF:-}"
 if [ -z "$DNSCAT_REF" ]; then
     _source_url="$(sed -n 's/^source=//p' /etc/dns-manager-luci/version 2>/dev/null | head -n1)"
@@ -750,7 +750,7 @@ catalog_validate_file() {
     [ "$_ver" = "$DNSCAT_VERSION" ] || { [ "$_mode" = legacy ] && [ "$_ver" = 8.7-RU-NOSOCIAL ]; } || return 1
     if [ "$_mode" != "legacy" ]; then
         grep -Fqx "# DNSCATREV=$DNSCAT_REVISION" "$_f" 2>/dev/null || return 1
-        grep -Fqx "# ENTRIES=122" "$_f" 2>/dev/null || return 1
+        grep -Fqx "# ENTRIES=120" "$_f" 2>/dev/null || return 1
     fi
     awk -F'|' -v strict="$_mode" '
         /^[[:space:]]*#/ || /^[[:space:]]*$/ { next }
@@ -762,7 +762,7 @@ catalog_validate_file() {
             ids[$1]++
             if (ids[$1] > 1) bad=1
         }
-        END { if (bad || count < 1 || (strict != "legacy" && count != 122)) exit 1 }
+        END { if (bad || count < 1 || (strict != "legacy" && count != 120)) exit 1 }
     ' "$_f" >/dev/null 2>&1 || return 1
     return 0
 }
@@ -837,7 +837,7 @@ write_catalogs() {
                         rm -f "$_result_tmp" 2>/dev/null || true
                 done
             fi
-            log_msg "Каталог DNS: загружен внешний $DNSCAT_VERSION (revision $DNSCAT_REVISION, 122 записи)."
+            log_msg "Каталог DNS: загружен внешний $DNSCAT_VERSION (revision $DNSCAT_REVISION, 120 записей)."
             return 0
         fi
         [ -z "$_catalog_config_backup" ] || mv -f "$_catalog_config_backup" "$CONFIG_FILE" || return 1

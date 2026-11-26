@@ -657,7 +657,7 @@ grep -q "xbox_dns|gaming|games+supercell|Xbox DNS|" catalogs/dns-8.7-RU-NOSOCIAL
 grep -Fq '# DNSCATREV=14' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog revision not bumped"
 grep -Fq '# ENTRIES=116' catalogs/dns-8.7-RU-NOSOCIAL.conf || fail "catalog entry count header is incorrect"
 awk '/^catalog_validate_file\(\) \{/,/^}/' dns-manager.sh > "$tmp/catalog_validate.sh"
-( DNSCAT_VERSION=8.8-FULL-CONFIG-CLEAN DNSCAT_REVISION=2; . "$tmp/catalog_validate.sh"; catalog_validate_file catalogs/dns-8.8-FULL-CONFIG-CLEAN.conf ) || fail "updated catalog does not pass the manager validator"
+( DNSCAT_VERSION=$(sed -n "s/^# DNSCATVER=//p" catalogs/dns-8.8-FULL-CONFIG-CLEAN.conf); DNSCAT_REVISION=$(sed -n "s/^# DNSCATREV=//p" catalogs/dns-8.8-FULL-CONFIG-CLEAN.conf); . "$tmp/catalog_validate.sh"; catalog_validate_file catalogs/dns-8.8-FULL-CONFIG-CLEAN.conf ) || fail "updated catalog does not pass the manager validator"
 sh tests/catalog-audit-update-test.sh || fail "catalog upgrade or fallback failed"
 sh tests/watchdog-migration-settings-test.sh || fail "watchdog migration settings"
 sed -n '/^DNSCAT_REF=/,/^DNSCAT_URL=/p' dns-manager.sh > "$tmp/catalog_ref.sh"
@@ -687,7 +687,8 @@ EOF_NORMALIZE_URL
 node "$tmp/normalize_url.js" || fail "LuCI URL normalizer strips a significant DoH path slash"
 grep -Fq '$1!="shecan" {print}' dns-manager-luci.sh || fail "LuCI does not invalidate the changed resolver test result"
 grep -Fq '$1!="shecan" {print}' dns-manager.sh || fail "Manager does not invalidate the changed resolver test result"
-grep -Fq 'DNSCAT_REVISION="2"' dns-manager.sh || fail "backend catalog revision is not synchronized"
+catalog_rev=$(sed -n 's/^# DNSCATREV=//p' catalogs/dns-8.8-FULL-CONFIG-CLEAN.conf)
+grep -Fq "DNSCAT_REVISION=\"$catalog_rev\"" dns-manager.sh || fail "backend catalog revision is not synchronized"
 grep -Fq '_old_astracat_url=' dns-manager.sh || fail "old AstraCat endpoint is not tracked during catalog update"
 grep -Fq '_new_astracat_url=' dns-manager.sh || fail "new AstraCat endpoint is not tracked during catalog update"
 grep -Fq '$1!="astracat" {print}' dns-manager.sh || fail "AstraCat cached test result is not invalidated after endpoint change"
