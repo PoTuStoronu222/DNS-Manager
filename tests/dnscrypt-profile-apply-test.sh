@@ -47,6 +47,25 @@ cmp "$TMP_DIR/result" "$TMP_DIR/expected-records"
 printf '5053|||\n' > "$TMP_DIR/expected-dnsmasq"
 cmp "$TMP_DIR/dnsmasq-arguments" "$TMP_DIR/expected-dnsmasq"
 
+mkdir "$TMP_DIR/commands"
+cat > "$TMP_DIR/commands/uci" <<'EOF_UCI_READY'
+#!/bin/sh
+case "$*" in
+    *noresolv) echo 1;;
+    *server) printf '%s\n' "${TEST_SERVERS:-127.0.0.1#5053 /ru/77.88.8.8}";;
+esac
+EOF_UCI_READY
+printf '#!/bin/sh\nexit 0\n' > "$TMP_DIR/commands/service"
+chmod +x "$TMP_DIR/commands/uci" "$TMP_DIR/commands/service"
+PATH="$TMP_DIR/commands:$PATH"; export PATH
+rm -f "$TMP_DIR/dnsmasq-arguments"
+DNS_MANAGER_KEEP_DNSMASQ=1 dnscrypt_apply_profile_pool clean 5053 1.1.1.1 > "$TMP_DIR/result"
+[ ! -e "$TMP_DIR/dnsmasq-arguments" ]
+TEST_SERVERS='127.0.0.1#5053 8.8.8.8'; export TEST_SERVERS
+DNS_MANAGER_KEEP_DNSMASQ=1 dnscrypt_apply_profile_pool clean 5053 1.1.1.1 > "$TMP_DIR/result"
+[ -e "$TMP_DIR/dnsmasq-arguments" ]
+unset TEST_SERVERS
+
 DNS_MANAGER_PROTOCOL=native
 export DNS_MANAGER_PROTOCOL
 printf 'original\n' > "$DNS_MANAGER_DNSCRYPT_CONFIG"

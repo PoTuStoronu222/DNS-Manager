@@ -590,7 +590,7 @@ async function testProfileApplyWithoutPopup(){
   let called=0,modal=0,goal='';const root={},state={busy:false,pageNotice:{}};
   const ctx={state,window:{dmState:{}},activeProfileId:()=>'',activeProfileLabel:()=>'',profileName:x=>x,confirmAction:()=>{modal++;},renderProfiles:()=>{},
     dnscryptGoal:x=>x,callProfile:x=>{called++;goal=x;return Promise.resolve({ok:true,job:'profile'});},pollJob:()=>{},refresh:()=>{},setAction:()=>{},withRpcError:s=>s};
-  vm.createContext(ctx);vm.runInContext(extract('function applyProfile(name,root,confirmed,autoCatalog){','function awaitSettingResult(reply){'),ctx);
+  vm.createContext(ctx);vm.runInContext(extract('function applyProfile(name,root,confirmed,autoCatalog,catalogToggle){','function awaitSettingResult(reply){'),ctx);
   ctx.applyProfile('clean',root,true);await delay();
   if(modal||called!==1)throw Error('confirmed profile unexpectedly showed a popup or did not start');
   ctx.window.dmState={dnscrypt_engine:'dnscrypt-proxy2',dnscrypt_auto_catalog:1};
@@ -598,6 +598,22 @@ async function testProfileApplyWithoutPopup(){
   if(goal!=='auto:clean')throw Error('reapplying clean profile lost catalog mode');
   state.busy=false;ctx.applyProfile('clean',root,true,false);await delay();
   if(goal!=='clean')throw Error('turning off catalog mode did not return to profile pool');
+  state.busy=false;ctx.applyProfile('clean',root,true,true,true);await delay();
+  if(goal!=='catalog-on')throw Error('catalog toggle reran profile selection');
+  state.busy=false;ctx.applyProfile('clean',root,true,false,true);await delay();
+  if(goal!=='catalog-off')throw Error('catalog toggle reran profile selection');
+}
+async function testDnscryptCatalogToggle(){
+  const calls=[],root={},state={busy:false,jobRunning:false};
+  const ctx={state,E:(tag,attrs,children)=>({tag,attrs,children}),badge:(kind,text)=>({kind,text}),applyProfile:(...args)=>calls.push(args)};
+  vm.createContext(ctx);vm.runInContext(extract('function dnscryptCatalogToggle(root,st){','function renderProfiles(root,st){'),ctx);
+  for(const on of [0,1]){
+    const card=ctx.dnscryptCatalogToggle(root,{dnscrypt_auto_catalog:on});
+    if(card.attrs['aria-pressed']!==(on?'true':'false')||card.attrs.disabled)throw Error('incorrect catalog toggle state');
+    card.attrs.click();if(calls[calls.length-1][3]!==!on||calls[calls.length-1][4]!==true)throw Error('incorrect catalog toggle action');
+  }
+  state.jobRunning=true;const card=ctx.dnscryptCatalogToggle(root,{dnscrypt_auto_catalog:0});card.attrs.click();
+  if(!card.attrs.disabled||calls.length!==2)throw Error('catalog toggle active during a job');
 }
 async function testTimePresetCards(){
   let cards=[],calls=[],refreshes=0;
@@ -749,4 +765,4 @@ async function testCatalogProtocolOnFirstOpen(){
   await ctx.routeStatusCall('catalog');
   if(selectors.join()!=='grouped:native:all,grouped:all'||state.catalogCacheSelector!=='grouped:all')throw Error('catalog did not recover from engine change');
 }
-Promise.all([testCatalogProtocolOnFirstOpen(),testDnscryptCatalogCardActions(),testCatalogPageStartAndStop(),testDnscryptAutoBadge(),testDnscryptCatalogProgress(),testDnscryptCatalogNativeLatency(),testVersionCheckBackground(),testEngineCardsBothDirections(),testEngineSwitchConfirmation(),testSystemDnsSuccessNotice(),testProfileNotice(),testForcedDnsControls(),testEncryptedDnsControls(),testBrowserDnsControls(),testCurrentDnsNotice(),testTestAgePresets(),testCatalogCardActions(),testCachePresets(),testTimePresetCards(),testSettingToggle(),testProfileApplyWithoutPopup(),testDnscryptDiagnosticDisplay(),testRunningProfileTimeout(),testTimePresetWhitespace(),testPoolSelectionRefresh(),testProfileClickBothEngines(),testDnscryptPoolPresentation(),testRegionalSelection(),testResumeCatalog(),testBackgroundStartTimeout(),testBackgroundUnknown(),testBackgroundNavigation(),testBackgroundFailure(),testDoHRemove(),testSingleError(),testBadgeWithoutDuration(),testPollNavigation(),testLongCatalogProgress(117),testLongCatalogProgress(5,true),testRouteCache(),testCachedReadOnly(),testInitialStatusDuringJob(),testAdditionalRouteCache(),testSequentialWarmup(),testWarmupResourceGuard(),testResumeCache(),testSettingConnectionLoss(),testRegionalConnectionLoss(),testProfileMissingJob(),testJobTransientError(),testUninstallUnresponsiveStatus(),testProfileStatus(),testSlotDraft(),testDeviceSave(),testCatalogError(),testFoldState(),testCustomDnsFeedback(),testBootstrapForm(),testLogScroll(),testHeaderCheckKind()]).catch(e=>{console.error(e);process.exitCode=1;});
+Promise.all([testDnscryptCatalogToggle(),testCatalogProtocolOnFirstOpen(),testDnscryptCatalogCardActions(),testCatalogPageStartAndStop(),testDnscryptAutoBadge(),testDnscryptCatalogProgress(),testDnscryptCatalogNativeLatency(),testVersionCheckBackground(),testEngineCardsBothDirections(),testEngineSwitchConfirmation(),testSystemDnsSuccessNotice(),testProfileNotice(),testForcedDnsControls(),testEncryptedDnsControls(),testBrowserDnsControls(),testCurrentDnsNotice(),testTestAgePresets(),testCatalogCardActions(),testCachePresets(),testTimePresetCards(),testSettingToggle(),testProfileApplyWithoutPopup(),testDnscryptDiagnosticDisplay(),testRunningProfileTimeout(),testTimePresetWhitespace(),testPoolSelectionRefresh(),testProfileClickBothEngines(),testDnscryptPoolPresentation(),testRegionalSelection(),testResumeCatalog(),testBackgroundStartTimeout(),testBackgroundUnknown(),testBackgroundNavigation(),testBackgroundFailure(),testDoHRemove(),testSingleError(),testBadgeWithoutDuration(),testPollNavigation(),testLongCatalogProgress(117),testLongCatalogProgress(5,true),testRouteCache(),testCachedReadOnly(),testInitialStatusDuringJob(),testAdditionalRouteCache(),testSequentialWarmup(),testWarmupResourceGuard(),testResumeCache(),testSettingConnectionLoss(),testRegionalConnectionLoss(),testProfileMissingJob(),testJobTransientError(),testUninstallUnresponsiveStatus(),testProfileStatus(),testSlotDraft(),testDeviceSave(),testCatalogError(),testFoldState(),testCustomDnsFeedback(),testBootstrapForm(),testLogScroll(),testHeaderCheckKind()]).catch(e=>{console.error(e);process.exitCode=1;});

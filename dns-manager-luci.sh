@@ -653,7 +653,7 @@ EOF_DNSCRYPT_ASSET_5
 # The caller owns the DNS Manager mutation lock and commits UI metadata only
 # after this function succeeds. stdout is the applied catalog ID|URL list.
 dnscrypt_apply_profile_pool() (
-    local goal port bootstrap apply dnsmasq_apply records urls config init backup had_config
+    local goal port bootstrap apply dnsmasq_apply records urls config init backup had_config dnsmasq_ready server found
     goal=${1:-}
     port=${2:-}
     bootstrap=${3:-}
@@ -689,7 +689,20 @@ dnscrypt_apply_profile_pool() (
         had_config=1
     fi
     sh "$apply" "$port" "$bootstrap" < "$urls" || return 1
-    if ! sh "$dnsmasq_apply" "$port"; then
+    dnsmasq_ready=0
+    if [ "${DNS_MANAGER_KEEP_DNSMASQ:-0}" = 1 ] &&
+       [ "$(uci -q get 'dhcp.@dnsmasq[0].noresolv')" = 1 ] && service dnsmasq running >/dev/null 2>&1; then
+        found=0
+        for server in $(uci -q get 'dhcp.@dnsmasq[0].server'); do
+            case "$server" in
+                "127.0.0.1#$port") found=1;;
+                /*) ;;
+                *) found=0; break;;
+            esac
+        done
+        [ "$found" = 1 ] && dnsmasq_ready=1
+    fi
+    if [ "$dnsmasq_ready" != 1 ] && ! sh "$dnsmasq_apply" "$port"; then
         # The pool helper has already switched the proxy. Restore its previous
         # configuration so a failed dnsmasq update does not silently change
         # the DNS servers behind an existing profile.
@@ -898,7 +911,7 @@ printf 'Service did not become ready: %s\n' "$target" >&2
 exit 1
 EOF_DNSCRYPT_ASSET_8
     fetch_installer_source "$_dc_stage/backend-dnscrypt.sh" "$SOURCE_BASE/libexec/backend-dnscrypt.sh"
-    [ "$(sha256sum "$_dc_stage/backend-dnscrypt.sh" | cut -d' ' -f1)" = "2162950cb323441fd5fb6fbac51ea00c84f83c4acdbe19af3ff50bcab61c74d7" ] || { err "Файл backend DNSCrypt не прошёл проверку."; return 1; }
+    [ "$(sha256sum "$_dc_stage/backend-dnscrypt.sh" | cut -d' ' -f1)" = "be995484207a60ef557a2a1e3f7858a9e703f3821fb2bb25885fec012fa22a0f" ] || { err "Файл backend DNSCrypt не прошёл проверку."; return 1; }
     cat > "$_dc_stage/dns-manager-device-detach.sh" <<'EOF_DNSCRYPT_ASSET_10'
 #!/bin/sh
 # Detach the Manager-owned per-device redirect before stopping its listeners.
@@ -7889,6 +7902,15 @@ function renderProfileProgress(root){
   return card('Ход применения',body);
 }
 
+function dnscryptCatalogToggle(root,st){
+  var enabled=Number(st.dnscrypt_auto_catalog)===1,locked=!!state.busy||!!state.jobRunning;
+  var attrs={'type':'button','class':'dm-toggle-card'+(enabled?' is-on':''),'aria-pressed':enabled?'true':'false','click':function(){if(!locked)applyProfile('clean',root,true,!enabled,true);}};
+  if(locked)attrs.disabled=true;
+  return E('button',attrs,[
+    E('span',{'class':'dm-toggle-main'},[E('span',{'class':'dm-setting-title'},'Автоподбор DNS'),E('span',{'class':'dm-setting-desc'},'DNSCrypt выбирает серверы без фильтрации из официального каталога. Московские серверы исключены. При включении DNSCrypt проверяет доступность серверов.')]),
+    E('span',{'class':'dm-toggle-side'},[badge(enabled?'dm-ok':'dm-muted',enabled?'включено':'выключено'),E('span',{'class':'dm-toggle-action'},enabled?'Нажмите, чтобы выключить':'Нажмите, чтобы включить')])
+  ]);
+}
 function renderProfiles(root,st){
   var e=root.querySelector('#dm-profiles');if(!e)return;
   var oldOut=e.querySelector('.dm-profile-output');
@@ -7928,12 +7950,7 @@ function renderProfiles(root,st){
     row('Работает сейчас',badge(currentId?'dm-ok':'dm-muted',current)),
     g,
     st.dnscrypt_engine==='dnscrypt-proxy2'?dnscryptOptionsControls(root,st,renderProfiles):null,
-    st.dnscrypt_engine==='dnscrypt-proxy2'&&currentId==='clean'&&!state.pendingProfile?E('div',{'class':'dm-hint'},[
-      E('strong',{},'Автоподбор DNS из официального каталога'),
-      E('p',{'class':'dm-mini'},'DNSCrypt сам выбирает доступные серверы, отмеченные в каталоге как работающие без фильтрации. При запуске проверяется весь подходящий каталог; серверы dnscry.pt Moscow исключены.'),
-      btn(Number(st.dnscrypt_auto_catalog)===1?'Выключить автоподбор':'Включить автоподбор','cbi-button',function(){applyProfile('clean',root,true,Number(st.dnscrypt_auto_catalog)!==1);},{disabled:!!state.busy||!!state.jobRunning}),
-      E('span',{'class':'dm-mini'},Number(st.dnscrypt_auto_catalog)===1?' Включён':' Выключен')
-    ]):null,
+    st.dnscrypt_engine==='dnscrypt-proxy2'&&currentId==='clean'&&!state.pendingProfile?dnscryptCatalogToggle(root,st):null,
     profileAction,
     E('div',{'class':'dm-mini'},candidates?'Числа показывают серверы каждого протокола в каталоге, а не количество работающих. Поддержка DNSSEC проверяется при выборе профиля.':'Профиль определяет схему выбора DNS.')
   ].filter(Boolean);
@@ -9576,7 +9593,7 @@ function selectDnscryptServer(id,root){
     });
   }).catch(function(err){state.busy=false;state.dnscryptDiagnostic=withRpcError('Не удалось применить сервер.',err);renderDnscryptDiagnostic(root);});
 }
-function applyProfile(name,root,confirmed,autoCatalog){
+function applyProfile(name,root,confirmed,autoCatalog,catalogToggle){
   if(state.busy)return;
   var st=window.dmState||{};
   if(autoCatalog==null)autoCatalog=name==='clean'&&Number(st.dnscrypt_auto_catalog)===1;
@@ -9588,7 +9605,7 @@ function applyProfile(name,root,confirmed,autoCatalog){
     state.profileOutput='';
     state.pageNotice.profiles='';
     renderProfiles(root,window.dmState||{});
-    callProfile(st.dnscrypt_engine==='dnscrypt-proxy2'?dnscryptGoal(autoCatalog?'auto:'+name:name,st):name).then(function(r){
+    callProfile(st.dnscrypt_engine==='dnscrypt-proxy2'?(catalogToggle?(autoCatalog?'catalog-on':'catalog-off'):dnscryptGoal(autoCatalog?'auto:'+name:name,st)):name).then(function(r){
       if(r&&r.ok&&r.job){
         pollJob(root,r.job,{mode:'profile',profile:name});
         return;

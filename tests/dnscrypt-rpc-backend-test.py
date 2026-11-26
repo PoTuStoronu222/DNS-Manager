@@ -96,6 +96,7 @@ dnscrypt_apply_profile_pool() {
     [ "${LAB_FAIL:-0}" != 1 ] || return 1
     printf '%s' "${DNS_MANAGER_AUTO_CATALOG:-0}" > "$LAB_ROOT/catalog-mode"
     case "$1" in server:*|pool:*) dnscrypt_select_profile "$1"; return $?;; esac
+    [ "${LAB_REUSE:-0}" != 1 ] || { dnscrypt_select_profile "$1"; return $?; }
     printf 'cloudflare|https://cloudflare-dns.com/dns-query\\n'
 }
 ''')
@@ -138,6 +139,12 @@ dnscrypt_apply_profile_pool() {
     state = (config / 'dnscrypt-profile.state').read_text()
     assert state == 'profile=clean\nprotocol=mixed\nstrategy=wp2\nserver=cloudflare|https://cloudflare-dns.com/dns-query\n'
     assert 'status=done\n' in (jobs / 'profile/state').read_text()
+    result = run('worker', 'catalog-on', extra={'LAB_REUSE': '1'})
+    assert result.returncode == 0 and (d / 'catalog-mode').read_text() == '1'
+    assert 'auto_catalog=1\n' in (config / 'dnscrypt-profile.state').read_text()
+    result = run('worker', 'catalog-off', extra={'LAB_REUSE': '1'})
+    assert result.returncode == 0 and (d / 'catalog-mode').read_text() == '0'
+    assert 'auto_catalog=' not in (config / 'dnscrypt-profile.state').read_text()
     assert json.loads(run('call', 'set_profile', input='{"profile":"options:mixed:wp2:auto:family"}').stdout)['ok'] is False
     result = run('worker', 'options:mixed:wp2:auto:clean')
     assert result.returncode == 0 and (d / 'catalog-mode').read_text() == '1'

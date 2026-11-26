@@ -3,7 +3,7 @@
 # The caller owns the DNS Manager mutation lock and commits UI metadata only
 # after this function succeeds. stdout is the applied catalog ID|URL list.
 dnscrypt_apply_profile_pool() (
-    local goal port bootstrap apply dnsmasq_apply records urls config init backup had_config
+    local goal port bootstrap apply dnsmasq_apply records urls config init backup had_config dnsmasq_ready server found
     goal=${1:-}
     port=${2:-}
     bootstrap=${3:-}
@@ -39,7 +39,20 @@ dnscrypt_apply_profile_pool() (
         had_config=1
     fi
     sh "$apply" "$port" "$bootstrap" < "$urls" || return 1
-    if ! sh "$dnsmasq_apply" "$port"; then
+    dnsmasq_ready=0
+    if [ "${DNS_MANAGER_KEEP_DNSMASQ:-0}" = 1 ] &&
+       [ "$(uci -q get 'dhcp.@dnsmasq[0].noresolv')" = 1 ] && service dnsmasq running >/dev/null 2>&1; then
+        found=0
+        for server in $(uci -q get 'dhcp.@dnsmasq[0].server'); do
+            case "$server" in
+                "127.0.0.1#$port") found=1;;
+                /*) ;;
+                *) found=0; break;;
+            esac
+        done
+        [ "$found" = 1 ] && dnsmasq_ready=1
+    fi
+    if [ "$dnsmasq_ready" != 1 ] && ! sh "$dnsmasq_apply" "$port"; then
         # The pool helper has already switched the proxy. Restore its previous
         # configuration so a failed dnsmasq update does not silently change
         # the DNS servers behind an existing profile.

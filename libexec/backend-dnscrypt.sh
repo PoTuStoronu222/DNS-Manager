@@ -30,7 +30,7 @@ valid_profile() (
     set -- "$target";;
  esac
  case "$1" in
- auto:clean) return 0;;
+ auto:clean|catalog-on|catalog-off) return 0;;
  bypass|clean|security|privacy|adblock|family|all|dnssec|default) return 0;;
  server:*) id=${1#server:}; case "$id" in ''|*[!A-Za-z0-9_-]*) return 1;; esac;;
  pool:*) ids=${1#pool:}; case "$ids" in ''|,*|*,|*,,*|*[!A-Za-z0-9_,-]*) return 1;; esac
@@ -235,7 +235,12 @@ profile_worker() {
             DNS_MANAGER_LB_STRATEGY=${opts%%:*}; goal=${opts#*:};;
     esac
     DNS_MANAGER_AUTO_CATALOG=0
-    case "$goal" in auto:clean) DNS_MANAGER_AUTO_CATALOG=1; goal=clean;; esac
+    catalog_toggle=0
+    case "$goal" in
+        auto:clean) DNS_MANAGER_AUTO_CATALOG=1; goal=clean;;
+        catalog-on) catalog_toggle=1; DNS_MANAGER_AUTO_CATALOG=1; goal=clean;;
+        catalog-off) catalog_toggle=1; goal=clean;;
+    esac
     DNS_MANAGER_SOURCE_CACHE="$CONFIG_DIR/dnscrypt-sources"
     export DNS_MANAGER_PROTOCOL DNS_MANAGER_LB_STRATEGY DNS_MANAGER_AUTO_CATALOG DNS_MANAGER_SOURCE_CACHE
     job_write pid "$$"
@@ -263,6 +268,18 @@ profile_worker() {
             job_write result fail; job_write status failed; job_write finished "$(date +%s)"
             exit 1
         fi
+        if [ "$catalog_toggle" = 1 ]; then
+            if [ "$(sed -n 's/^profile=//p' "$STATE_FILE" 2>/dev/null | head -n1)" != clean ] || ! dnscrypt_pool_records | grep -q .; then
+                printf '%s\n' 'Для автоподбора сначала примените профиль «Без фильтрации».'
+                release_mutation_lock
+                job_write result fail; job_write status failed; job_write finished "$(date +%s)"
+                exit 1
+            fi
+            DNS_MANAGER_PROTOCOL=$(sed -n 's/^protocol=//p' "$STATE_FILE" | head -n1)
+            case "$DNS_MANAGER_PROTOCOL" in native|mixed) ;; *) DNS_MANAGER_PROTOCOL=mixed;; esac
+            DNS_MANAGER_LB_STRATEGY=$(dnscrypt_configured_strategy)
+            export DNS_MANAGER_PROTOCOL DNS_MANAGER_LB_STRATEGY
+        fi
         restore_persistent_test_results >/dev/null 2>&1 || true
         refresh_runtime_capabilities >/dev/null 2>&1 || true
         if [ -r "$HELPERS/dns-manager-dnscrypt-profile.sh" ] &&
@@ -272,9 +289,11 @@ profile_worker() {
             records=''; state_tmp=''
             if mkdir -p "$CONFIG_DIR" && records=$(mktemp "$CONFIG_DIR/.dnscrypt-profile.XXXXXX") &&
                state_tmp=$(mktemp "$CONFIG_DIR/.dnscrypt-state.XXXXXX"); then
-                printf '%s\n' 'Проверяю DNS и применяю профиль.'
+                if [ "$catalog_toggle" = 1 ]; then printf '%s\n' 'Переключаю режим выбора DNSCrypt.'; else printf '%s\n' 'Проверяю DNS и применяю профиль.'; fi
                 if (
-                    if [ "$goal" = default ]; then
+                    if [ "$catalog_toggle" = 1 ]; then
+                        dnscrypt_select_profile() { dnscrypt_pool_records; }
+                    elif [ "$goal" = default ]; then
                         dnscrypt_select_profile() {
                             if [ "$DNS_MANAGER_PROTOCOL" = native ]; then
                                 awk -F'|' '$1=="native_adguard_unfiltered" || $1=="native_quad9_unfiltered" {print $1 "|" $5; count++} END {if (count != 2) exit 1}' "$NATIVE_CATALOG"
@@ -301,7 +320,7 @@ profile_worker() {
                             } ;;
                         esac
                     fi
-                    DNS_MANAGER_NO_UPDATE=1 SILENT_APPLY=1 dnscrypt_apply_profile_pool "$goal" 5053 "$BOOTSTRAP_DNS"
+                    DNS_MANAGER_KEEP_DNSMASQ=$catalog_toggle DNS_MANAGER_NO_UPDATE=1 SILENT_APPLY=1 dnscrypt_apply_profile_pool "$goal" 5053 "$BOOTSTRAP_DNS"
                 ) > "$records"; then
                     state_profile=$goal
                     case "$goal" in default|server:*|pool:*) state_profile=none;; esac
