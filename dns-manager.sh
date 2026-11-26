@@ -4338,7 +4338,7 @@ dnsmasq_restart_checked() {
     _dnsmasq_rc=$?
 
     if [ -s "$_dnsmasq_output" ]; then
-        apply_progress "Вывод команды перезапуска dnsmasq:"
+        apply_progress "Вывод перезапуска dnsmasq. udhcpc может проверять наличие другого DHCP-сервера; результат оценивается вместе с кодом запуска:"
         while IFS= read -r _dnsmasq_line; do
             [ -n "$_dnsmasq_line" ] || continue
             if [ "$_dnsmasq_rc" -ne 0 ] || printf '%s\n' "$_dnsmasq_line" | grep -Eiq 'fail|error|warn|ошибк'; then

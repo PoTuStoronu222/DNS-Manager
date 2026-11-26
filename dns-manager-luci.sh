@@ -568,7 +568,7 @@ EOF_DNSCRYPT_ASSET_4
 # loaded. Selects DNS using the existing checks without applying configuration.
 # On success stdout contains one catalog ID and URL per line, separated by '|'.
 dnscrypt_select_profile() (
-    local goal tmp started id url count ms priority native_id native_ms native_url native_scope native_category snapshot_rc
+    local goal tmp started id url count ms priority native_id native_ms native_url native_scope native_category snapshot_rc native_done native_total
     goal=${1:-}
     case "$goal" in bypass|clean|security|privacy|adblock|family|all|dnssec) ;; *) return 1 ;; esac
     tmp=$(mktemp "${TMP_DIR:-/tmp}/dnscrypt-profile.XXXXXX") || return 1
@@ -613,13 +613,23 @@ dnscrypt_select_profile() (
         native_scope=$goal; case "$goal" in all) native_scope=native;; esac
         snapshot_rc=0
         DNS_MANAGER_PROFILE_PROGRESS=1 dnscrypt_catalog_snapshot "$native_scope" > "$tmp.native" || snapshot_rc=$?
+        native_done=0
+        native_total=$(wc -l < "$tmp.native" | tr -d ' ')
         if [ -n "${JOB_DIR:-}" ]; then
-            printf 'phase=Отбираю подходящие серверы профиля\nprogress_total=0\n' >> "$JOB_DIR/profile/state"
+            if [ "$goal" = dnssec ]; then
+                printf 'phase=Проверяю поддержку DNSSEC у кандидатов\nprogress_total=%s\nprogress_done=0\n' "$native_total" >> "$JOB_DIR/profile/state"
+            else
+                printf 'phase=Отбираю подходящие серверы профиля\nprogress_total=0\n' >> "$JOB_DIR/profile/state"
+            fi
         fi
         if [ "$snapshot_rc" -ne 0 ]; then
             echo 'Не удалось проверить серверы DNSCrypt. Проверьте доступность службы и сети.' >&2
         fi
         while IFS='|' read -r native_id native_ms; do
+            if [ "$goal" = dnssec ] && [ -n "${JOB_DIR:-}" ]; then
+                printf 'progress_done=%s\n' "$native_done" >> "$JOB_DIR/profile/state"
+                native_done=$((native_done + 1))
+            fi
             case "$native_ms" in ''|*[!0-9]*) continue;; esac
             native_url=$(awk -F'|' -v id="$native_id" '$1==id {print $5; exit}' "${NATIVE_CATALOG:-$HELPERS/dns-manager-dnscrypt-catalog.conf}")
             priority=0
@@ -631,6 +641,9 @@ dnscrypt_select_profile() (
             fi
             [ -n "$native_url" ] && printf '%s|%s|%s|%s\n' "$native_id" "$native_url" "$native_ms" "$priority" >> "$tmp"
         done < "$tmp.native"
+        if [ "$goal" = dnssec ] && [ -n "${JOB_DIR:-}" ]; then
+            printf 'progress_done=%s\n' "$native_done" >> "$JOB_DIR/profile/state"
+        fi
         if [ "$snapshot_rc" -eq 0 ] && [ -s "$tmp.native" ] && ! awk -F'|' '$2 ~ /^[0-9]+$/ {found=1} END {exit !found}' "$tmp.native"; then
             echo 'Серверы DNSCrypt не ответили или проверка не завершилась. Проверьте доступ к сети и повторите.' >&2
         fi
@@ -638,7 +651,7 @@ dnscrypt_select_profile() (
     fi
     if [ ! -s "$tmp" ]; then
         if [ "${DNS_MANAGER_PROTOCOL:-mixed}:$goal" = native:bypass ]; then
-            echo 'В каталоге нет DNSCrypt-серверов для обхода геоблокировок. Выберите смешанный режим или другой профиль.' >&2
+            echo 'Не найдено доступных DNSCrypt-серверов для обхода геоблокировок. Проверьте сеть или выберите смешанный режим либо другой профиль.' >&2
         else
             echo 'Для выбранного профиля и протокола не найдено доступных серверов.' >&2
         fi
@@ -701,6 +714,9 @@ dnscrypt_apply_profile_pool() (
             esac
         done
         [ "$found" = 1 ] && dnsmasq_ready=1
+    fi
+    if [ "$dnsmasq_ready" != 1 ]; then
+        echo "Запускаю dnsmasq; udhcpc может проверять наличие другого DHCP-сервера." >&2
     fi
     if [ "$dnsmasq_ready" != 1 ] && ! sh "$dnsmasq_apply" "$port"; then
         # The pool helper has already switched the proxy. Restore its previous
@@ -911,7 +927,7 @@ printf 'Service did not become ready: %s\n' "$target" >&2
 exit 1
 EOF_DNSCRYPT_ASSET_8
     fetch_installer_source "$_dc_stage/backend-dnscrypt.sh" "$SOURCE_BASE/libexec/backend-dnscrypt.sh"
-    [ "$(sha256sum "$_dc_stage/backend-dnscrypt.sh" | cut -d' ' -f1)" = "23d84f64aceed2299df38d420177121243775ba6568b3c69fb625ba7cf2c1abc" ] || { err "Файл backend DNSCrypt не прошёл проверку."; return 1; }
+    [ "$(sha256sum "$_dc_stage/backend-dnscrypt.sh" | cut -d' ' -f1)" = "21e45c803b08ea96c1a5cecc95bceeaa24da829d28305893e5b65948b0f66c5c" ] || { err "Файл backend DNSCrypt не прошёл проверку."; return 1; }
     cat > "$_dc_stage/dns-manager-device-detach.sh" <<'EOF_DNSCRYPT_ASSET_10'
 #!/bin/sh
 # Detach the Manager-owned per-device redirect before stopping its listeners.
@@ -7877,7 +7893,7 @@ function profileProgressUpdate(j){
   if(j&&j.phase){
     var total=Number(j.progress_total)||0, checked=Number(j.progress_done)||0;
     best={p:total>0?Math.min(100,Math.round(checked*100/total)):null,
-      label:total>0?String(j.phase)+' — проверено '+checked+' из '+total:String(j.phase),
+      label:total>0?String(j.phase)+' — обработано '+checked+' из '+total:String(j.phase),
       detail:total>0?'Проверяются серверы выбранного профиля. После проверки настройки применятся автоматически.':''};
   }
   var done=String(j&&j.status||'').toUpperCase()==='DONE', ok=String(j&&j.result||'')==='ok';

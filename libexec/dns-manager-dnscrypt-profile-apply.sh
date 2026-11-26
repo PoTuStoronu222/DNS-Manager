@@ -52,6 +52,9 @@ dnscrypt_apply_profile_pool() (
         done
         [ "$found" = 1 ] && dnsmasq_ready=1
     fi
+    if [ "$dnsmasq_ready" != 1 ]; then
+        echo "Запускаю dnsmasq; udhcpc может проверять наличие другого DHCP-сервера." >&2
+    fi
     if [ "$dnsmasq_ready" != 1 ] && ! sh "$dnsmasq_apply" "$port"; then
         # The pool helper has already switched the proxy. Restore its previous
         # configuration so a failed dnsmasq update does not silently change

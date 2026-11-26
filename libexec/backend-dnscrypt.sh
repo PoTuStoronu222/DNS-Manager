@@ -461,6 +461,7 @@ dnscrypt_native_dnssec_probe() (
     probe_port=$((49152 + ($$ % 12000 + probe_offset) % 12000))
     sh "$HELPERS/dns-manager-dnscrypt-config.sh" "$probe_port" "$probe_url" "$BOOTSTRAP_DNS" > "$probe_dir/config" || return 1
     awk 'NR==1 {print; print "use_syslog = false"; next} {if ($0 == "cache = true") $0 = "cache = false"; print}' "$probe_dir/config" > "$probe_dir/config-test" || return 1
+    : > "$probe_dir/log" || return 1
     dnscrypt-proxy -config "$probe_dir/config-test" -netprobe-timeout 5 > "$probe_dir/log" 2>&1 &
     probe_pid=$!
     probe_wait=0

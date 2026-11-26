@@ -3300,6 +3300,7 @@ chmod +x "$tmp/tx_restore_on_failure_runner.sh"
 "$tmp/tx_restore_on_failure_runner.sh" "$tmp/tx_restore_on_failure.sh" "$tmp" || fail "transaction rollback left stale profile variables in memory"
 ok "transaction rollback restores the in-memory manager profile"
 
+sh tests/dnscrypt-profile-selection-test.sh || fail "DNSCrypt profile selection test"
 sh tests/dnssec-probe-test.sh || fail "DNSSEC probe test"
 python3 tests/dnscrypt-bundled-catalog-test.py || fail "DNSCrypt bundled catalog test"
 sh tests/dnssec-doh-prefilter-test.sh || fail "DNSSEC DoH prefilter test"

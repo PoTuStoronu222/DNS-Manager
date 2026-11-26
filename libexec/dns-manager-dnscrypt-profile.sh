@@ -3,7 +3,7 @@
 # loaded. Selects DNS using the existing checks without applying configuration.
 # On success stdout contains one catalog ID and URL per line, separated by '|'.
 dnscrypt_select_profile() (
-    local goal tmp started id url count ms priority native_id native_ms native_url native_scope native_category snapshot_rc
+    local goal tmp started id url count ms priority native_id native_ms native_url native_scope native_category snapshot_rc native_done native_total
     goal=${1:-}
     case "$goal" in bypass|clean|security|privacy|adblock|family|all|dnssec) ;; *) return 1 ;; esac
     tmp=$(mktemp "${TMP_DIR:-/tmp}/dnscrypt-profile.XXXXXX") || return 1
@@ -48,13 +48,23 @@ dnscrypt_select_profile() (
         native_scope=$goal; case "$goal" in all) native_scope=native;; esac
         snapshot_rc=0
         DNS_MANAGER_PROFILE_PROGRESS=1 dnscrypt_catalog_snapshot "$native_scope" > "$tmp.native" || snapshot_rc=$?
+        native_done=0
+        native_total=$(wc -l < "$tmp.native" | tr -d ' ')
         if [ -n "${JOB_DIR:-}" ]; then
-            printf 'phase=Отбираю подходящие серверы профиля\nprogress_total=0\n' >> "$JOB_DIR/profile/state"
+            if [ "$goal" = dnssec ]; then
+                printf 'phase=Проверяю поддержку DNSSEC у кандидатов\nprogress_total=%s\nprogress_done=0\n' "$native_total" >> "$JOB_DIR/profile/state"
+            else
+                printf 'phase=Отбираю подходящие серверы профиля\nprogress_total=0\n' >> "$JOB_DIR/profile/state"
+            fi
         fi
         if [ "$snapshot_rc" -ne 0 ]; then
             echo 'Не удалось проверить серверы DNSCrypt. Проверьте доступность службы и сети.' >&2
         fi
         while IFS='|' read -r native_id native_ms; do
+            if [ "$goal" = dnssec ] && [ -n "${JOB_DIR:-}" ]; then
+                printf 'progress_done=%s\n' "$native_done" >> "$JOB_DIR/profile/state"
+                native_done=$((native_done + 1))
+            fi
             case "$native_ms" in ''|*[!0-9]*) continue;; esac
             native_url=$(awk -F'|' -v id="$native_id" '$1==id {print $5; exit}' "${NATIVE_CATALOG:-$HELPERS/dns-manager-dnscrypt-catalog.conf}")
             priority=0
@@ -66,6 +76,9 @@ dnscrypt_select_profile() (
             fi
             [ -n "$native_url" ] && printf '%s|%s|%s|%s\n' "$native_id" "$native_url" "$native_ms" "$priority" >> "$tmp"
         done < "$tmp.native"
+        if [ "$goal" = dnssec ] && [ -n "${JOB_DIR:-}" ]; then
+            printf 'progress_done=%s\n' "$native_done" >> "$JOB_DIR/profile/state"
+        fi
         if [ "$snapshot_rc" -eq 0 ] && [ -s "$tmp.native" ] && ! awk -F'|' '$2 ~ /^[0-9]+$/ {found=1} END {exit !found}' "$tmp.native"; then
             echo 'Серверы DNSCrypt не ответили или проверка не завершилась. Проверьте доступ к сети и повторите.' >&2
         fi
@@ -73,7 +86,7 @@ dnscrypt_select_profile() (
     fi
     if [ ! -s "$tmp" ]; then
         if [ "${DNS_MANAGER_PROTOCOL:-mixed}:$goal" = native:bypass ]; then
-            echo 'В каталоге нет DNSCrypt-серверов для обхода геоблокировок. Выберите смешанный режим или другой профиль.' >&2
+            echo 'Не найдено доступных DNSCrypt-серверов для обхода геоблокировок. Проверьте сеть или выберите смешанный режим либо другой профиль.' >&2
         else
             echo 'Для выбранного профиля и протокола не найдено доступных серверов.' >&2
         fi

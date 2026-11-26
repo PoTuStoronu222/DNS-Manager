@@ -35,11 +35,16 @@ grep -q '^native_adguard_unfiltered|' "$TMP_DIR/native-only"
 ! grep -q '^one|' "$TMP_DIR/native-only"
 
 dnscrypt_catalog_snapshot() {
-    [ "$1" = native ] || return 1
+    [ "$1" = dnssec ] || return 1
     printf 'native_quad9_unfiltered|20\nnative_adguard_unfiltered|10\nnative_adguard_family|1\n'
 }
 dnscrypt_native_dnssec_probe() { case "$1" in *ADTkuOS45LjEwOjg0NDM*) return 0;; *) return 1;; esac; }
+mkdir -p "$TMP_DIR/jobs/profile"
+JOB_DIR="$TMP_DIR/jobs"
 dnscrypt_select_profile dnssec > "$TMP_DIR/result"
+grep -q "^progress_total=3$" "$JOB_DIR/profile/state"
+grep -q "^progress_done=3$" "$JOB_DIR/profile/state"
+unset JOB_DIR
 grep -q '^native_quad9_unfiltered|' "$TMP_DIR/result"
 ! grep -q '^native_adguard_' "$TMP_DIR/result"
 (
@@ -52,6 +57,11 @@ grep -q '^native_quad9_unfiltered|' "$TMP_DIR/result"
     grep -q '^native_quad9_unfiltered|' "$TMP_DIR/native-only"
     ! grep -q '^one|' "$TMP_DIR/native-only"
 )
+# A listed but unreachable bypass server must not be reported as absent.
+dnscrypt_catalog_snapshot() { [ "$1" = bypass ] && printf 'native_quic|FAIL\n'; }
+if DNS_MANAGER_PROTOCOL=native dnscrypt_select_profile bypass > "$TMP_DIR/result" 2> "$TMP_DIR/error"; then exit 1; fi
+grep -q 'Не найдено доступных DNSCrypt-серверов' "$TMP_DIR/error"
+! grep -q 'В каталоге нет' "$TMP_DIR/error"
 # Privacy must have a native candidate and must never silently use DoH.
 dnscrypt_catalog_snapshot() { [ "$1" = privacy ] && printf 'native_cryptostorm_fr|15\n'; }
 DNS_MANAGER_PROTOCOL=native dnscrypt_select_profile privacy > "$TMP_DIR/native-only"
