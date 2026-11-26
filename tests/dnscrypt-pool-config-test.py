@@ -42,7 +42,9 @@ for urls, bootstrap in [('', '1.1.1.1'),
     result = generate(urls, bootstrap)
     assert result.returncode != 0 and result.stdout == '', (urls, result.stdout, result.stderr)
 
-native = (root / 'libexec/dns-manager-dnscrypt-catalog.conf').read_text().splitlines()[2].split('|')[4]
+native = next(line.split('|')[4] for line in
+              (root / 'libexec/dns-manager-dnscrypt-catalog.conf').read_text(encoding='utf-8').splitlines()
+              if line and not line.startswith('#'))
 with tempfile.TemporaryDirectory() as cache:
     env = {**os.environ, 'DNS_MANAGER_AUTO_CATALOG': '1', 'DNS_MANAGER_SOURCE_CACHE': cache}
     result = subprocess.run(['sh', str(generator), '5053', '1.1.1.1'], input=native + '\n',

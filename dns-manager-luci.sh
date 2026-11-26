@@ -911,7 +911,7 @@ printf 'Service did not become ready: %s\n' "$target" >&2
 exit 1
 EOF_DNSCRYPT_ASSET_8
     fetch_installer_source "$_dc_stage/backend-dnscrypt.sh" "$SOURCE_BASE/libexec/backend-dnscrypt.sh"
-    [ "$(sha256sum "$_dc_stage/backend-dnscrypt.sh" | cut -d' ' -f1)" = "be995484207a60ef557a2a1e3f7858a9e703f3821fb2bb25885fec012fa22a0f" ] || { err "Файл backend DNSCrypt не прошёл проверку."; return 1; }
+    [ "$(sha256sum "$_dc_stage/backend-dnscrypt.sh" | cut -d' ' -f1)" = "23d84f64aceed2299df38d420177121243775ba6568b3c69fb625ba7cf2c1abc" ] || { err "Файл backend DNSCrypt не прошёл проверку."; return 1; }
     cat > "$_dc_stage/dns-manager-device-detach.sh" <<'EOF_DNSCRYPT_ASSET_10'
 #!/bin/sh
 # Detach the Manager-owned per-device redirect before stopping its listeners.
@@ -1259,6 +1259,8 @@ EOF_DNSCRYPT_ASSET_13
     cat > "$_dc_stage/dns-manager-dnscrypt-catalog.conf" <<'EOF_DNSCRYPT_CATALOG'
 # DNSCrypt stamps from https://github.com/DNSCrypt/dnscrypt-resolvers/blob/master/v3/public-resolvers.md
 # id|category|tags|name|stamp|region|status
+# QUIC DNS: https://dns.quic.best/ (provided by the server operator)
+native_quic_best|bypass|dnscrypt|QUIC DNS [RU/EU]|sdns://AQIAAAAAAAAAEzE5Mi4xNjYuMjE5LjMwOjUzNTMgpXrEwx8mE3akbSa3sPa-mj9UiQyvkcdDmTY1c8nxJFcbMi5kbnNjcnlwdC1jZXJ0LncucXVpYy5iZXN0|ru/eu|provider
 native_adguard_unfiltered|clean|dnscrypt|AdGuard DNS без фильтрации (DNSCrypt)|sdns://AQcAAAAAAAAAEjk0LjE0MC4xNC4xNDA6NTQ0MyC16ETWuDo-PhJo62gfvqcN48X6aNvWiBQdvy7AZrLa-iUyLmRuc2NyeXB0LnVuZmlsdGVyZWQubnMxLmFkZ3VhcmQuY29t|any|official
 native_adguard_default|adblock|dnscrypt|AdGuard DNS (DNSCrypt)|sdns://AQMAAAAAAAAAETk0LjE0MC4xNC4xNDo1NDQzINErR_JS3PLCu_iZEIbq95zkSV2LFsigxDIuUso_OQhzIjIuZG5zY3J5cHQuZGVmYXVsdC5uczEuYWRndWFyZC5jb20|any|official
 native_adguard_family|family|dnscrypt|AdGuard DNS семейный (DNSCrypt)|sdns://AQMAAAAAAAAAETk0LjE0MC4xNC4xNTo1NDQzILgxXdexS27jIKRw3C7Wsao5jMnlhvhdRUXWuMm1AFq6ITIuZG5zY3J5cHQuZmFtaWx5Lm5zMS5hZGd1YXJkLmNvbQ|any|official

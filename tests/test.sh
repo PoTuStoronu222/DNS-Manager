@@ -3301,6 +3301,7 @@ chmod +x "$tmp/tx_restore_on_failure_runner.sh"
 ok "transaction rollback restores the in-memory manager profile"
 
 sh tests/dnssec-probe-test.sh || fail "DNSSEC probe test"
+python3 tests/dnscrypt-bundled-catalog-test.py || fail "DNSCrypt bundled catalog test"
 sh tests/dnssec-doh-prefilter-test.sh || fail "DNSSEC DoH prefilter test"
 sh tests/dnssec-worker-test.sh || fail "DNSSEC screening worker test"
 sh tests/dnssec-integration-guard-test.sh || fail "DNSSEC profile and replacement guard test"
