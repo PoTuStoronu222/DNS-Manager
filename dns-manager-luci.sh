@@ -9640,7 +9640,7 @@ function awaitSettingResult(reply){
     function poll(){
       callJob(reply.job).then(function(j){
         errors=0;
-        if(j&&j.status==='running'&&attempts++<200&&Date.now()-started<330000){window.setTimeout(poll,1500);return;}
+        if(j&&j.status==='running'&&attempts++<200&&Date.now()-started<330000){window.setTimeout(poll,attempts<=4?500:1500);return;}
         if(j&&(j.status==='done'||j.status==='failed')){
           var result;
           try{result=JSON.parse(String(j.output||'').trim());}catch(e){result=null;}
@@ -10023,7 +10023,7 @@ function pollJob(root,job,meta,done){
       }
       if(s==='DONE'||s==='FAILED'){finish(j);return;}
       if(ticks++>maxTicks){finish({status:'FAILED',result:'fail',unknown:true,output:'Превышено время ожидания фоновой задачи; её результат неизвестен.'});return;}
-      setTimeout(poll,1200);
+      setTimeout(poll,ticks<=4?500:1200);
     }).catch(function(){
       if(++errors>maxErrors){finish({status:'FAILED',result:'fail',unknown:true,output:'RPC задачи недоступен; её результат неизвестен.'});return;}
       setTimeout(poll,1200);
