@@ -8286,6 +8286,17 @@ watchdog_embedded_loop() {
         return $?
     fi
     watchdog_resource_guard || { save_watchdog_state; return 0; }
+    # Restore missing local HTTPS DNS Proxy listeners before probing upstreams.
+    # The shared restart helper applies the persisted cooldown; take the same
+    # mutation lock as profile and engine changes and recheck both under it.
+    if acquire_mutation_lock; then
+        if load_config >/dev/null 2>&1 && [ "${WATCHDOG_ENABLED:-0}" = 1 ] && watchdog_legacy_engine_allowed; then
+            WATCHDOG_RESTART_COUNT=0
+            watchdog_service_recover || log_msg "Не удалось восстановить https-dns-proxy."
+            save_watchdog_state || { release_mutation_lock; return 1; }
+        fi
+        release_mutation_lock
+    fi
     if ! command -v dig >/dev/null 2>&1 && ! command -v nslookup >/dev/null 2>&1; then
         log_msg "DNS-проверка приостановлена: dig/nslookup недоступен."
         save_watchdog_state
