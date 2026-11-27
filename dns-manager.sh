@@ -8357,10 +8357,16 @@ watchdog_embedded_loop() {
             _wd_system_index=$((_wd_system_index+1))
         done
     fi
+    if [ "$_checked" -gt 1 ] && [ "$_failed" -eq "$_checked" ]; then
+        # Failures during a common outage must not count against individual
+        # servers after connectivity returns.
+        for _slot in 1 2 3 4 5 6 RU; do
+            eval "WD_FAIL_${_slot}=0"
+        done
+        _threshold_slots=''
+        log_msg 'Watchdog: общий сбой DNS; автоматическая замена отложена.'
+    fi
     if [ "${WATCHDOG_AUTOREPLACE:-0}" = 1 ] && [ -n "$_threshold_slots" ]; then
-        if [ "$_checked" -gt 1 ] && [ "$_failed" -eq "$_checked" ]; then
-            log_msg 'Watchdog: общий сбой DNS; автоматическая замена отложена.'
-        else
             _attempts=0
             for _trigger in $_threshold_slots; do
                 [ "$_attempts" -lt 3 ] || break
@@ -8378,7 +8384,6 @@ watchdog_embedded_loop() {
                     log_msg "Watchdog: не удалось подобрать замену для DNS $_trigger."
                 fi
             done
-        fi
     fi
     watchdog_save_check_results "$_wd_cycle_records"
     save_watchdog_state
