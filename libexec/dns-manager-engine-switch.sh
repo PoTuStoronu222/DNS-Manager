@@ -174,9 +174,16 @@ else
     echo 'Настраиваю HTTPS DNS Proxy.'
     restore_hdp_package_defaults || exit 1
     uci set https-dns-proxy.config.force_dns=0 || exit 1
-    uci set https-dns-proxy.config.dnsmasq_config_update=- || exit 1
+    uci set 'https-dns-proxy.config.dnsmasq_config_update=*' || exit 1
     uci commit https-dns-proxy || exit 1
     sh "$helpers/dns-manager-engine-services.sh" start https-dns-proxy || exit 1
+    [ "$(uci -q get 'dhcp.@dnsmasq[0].noresolv')" = 1 ] || exit 1
+    port1=$(uci -q get 'https-dns-proxy.@https-dns-proxy[0].listen_port') || exit 1
+    port2=$(uci -q get 'https-dns-proxy.@https-dns-proxy[1].listen_port') || exit 1
+    for port in "$port1" "$port2"; do
+        case "$port" in ''|*[!0-9]*) exit 1 ;; esac
+        case " $(uci -q get 'dhcp.@dnsmasq[0].server') " in *" 127.0.0.1#$port "*) ;; *) exit 1 ;; esac
+    done
 fi
 # Persist the selection in UCI as well as the existing dispatch marker. Refuse
 # to commit somebody else's pending changes to this package.

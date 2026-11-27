@@ -891,13 +891,12 @@ script="$initdir/$target"
 # rc.common's procd start may not propagate start_service's failure. Validate
 # the Manager-owned single-process configuration before enabling it at boot.
 if [ "$engine" = https-dns-proxy ]; then
-    # A fresh engine switch leaves dnsmasq on provider DNS until the user
-    # selects a profile. Package defaults otherwise redirect DNS and may
-    # compete with Steer as soon as the service starts.
+    # Keep packet interception disabled; dnsmasq integration may be managed
+    # by the package for its default resolvers or by DNS Manager for profiles.
     force=$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null) || force=''
     integration=$(uci -q get https-dns-proxy.config.dnsmasq_config_update 2>/dev/null) || integration=''
-    if [ "$force" != 0 ] || [ "$integration" != - ]; then
-        printf 'HTTPS DNS Proxy integration must be disabled before start\n' >&2
+    if [ "$force" != 0 ] || { [ "$integration" != - ] && [ "$integration" != "*" ]; }; then
+        printf 'Invalid HTTPS DNS Proxy integration or forced DNS setting\n' >&2
         exit 1
     fi
 fi
@@ -1184,9 +1183,16 @@ else
     echo 'Настраиваю HTTPS DNS Proxy.'
     restore_hdp_package_defaults || exit 1
     uci set https-dns-proxy.config.force_dns=0 || exit 1
-    uci set https-dns-proxy.config.dnsmasq_config_update=- || exit 1
+    uci set 'https-dns-proxy.config.dnsmasq_config_update=*' || exit 1
     uci commit https-dns-proxy || exit 1
     sh "$helpers/dns-manager-engine-services.sh" start https-dns-proxy || exit 1
+    [ "$(uci -q get 'dhcp.@dnsmasq[0].noresolv')" = 1 ] || exit 1
+    port1=$(uci -q get 'https-dns-proxy.@https-dns-proxy[0].listen_port') || exit 1
+    port2=$(uci -q get 'https-dns-proxy.@https-dns-proxy[1].listen_port') || exit 1
+    for port in "$port1" "$port2"; do
+        case "$port" in ''|*[!0-9]*) exit 1 ;; esac
+        case " $(uci -q get 'dhcp.@dnsmasq[0].server') " in *" 127.0.0.1#$port "*) ;; *) exit 1 ;; esac
+    done
 fi
 # Persist the selection in UCI as well as the existing dispatch marker. Refuse
 # to commit somebody else's pending changes to this package.

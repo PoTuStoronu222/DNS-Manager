@@ -89,13 +89,12 @@ script="$initdir/$target"
 # rc.common's procd start may not propagate start_service's failure. Validate
 # the Manager-owned single-process configuration before enabling it at boot.
 if [ "$engine" = https-dns-proxy ]; then
-    # A fresh engine switch leaves dnsmasq on provider DNS until the user
-    # selects a profile. Package defaults otherwise redirect DNS and may
-    # compete with Steer as soon as the service starts.
+    # Keep packet interception disabled; dnsmasq integration may be managed
+    # by the package for its default resolvers or by DNS Manager for profiles.
     force=$(uci -q get https-dns-proxy.config.force_dns 2>/dev/null) || force=''
     integration=$(uci -q get https-dns-proxy.config.dnsmasq_config_update 2>/dev/null) || integration=''
-    if [ "$force" != 0 ] || [ "$integration" != - ]; then
-        printf 'HTTPS DNS Proxy integration must be disabled before start\n' >&2
+    if [ "$force" != 0 ] || { [ "$integration" != - ] && [ "$integration" != "*" ]; }; then
+        printf 'Invalid HTTPS DNS Proxy integration or forced DNS setting\n' >&2
         exit 1
     fi
 fi

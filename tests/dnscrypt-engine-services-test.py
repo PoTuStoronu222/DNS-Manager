@@ -92,12 +92,17 @@ esac
         assert result.returncode == 0 and state(target, 'running') and state(target, 'enabled'), result.stderr
         assert run('quiesce', engine).returncode == 0
 
-    for flag in ('force-on', 'force-missing', 'integration-on'):
+    for flag in ('force-on', 'force-missing'):
         (directory / flag).touch()
         result = run('start', 'https-dns-proxy')
-        assert result.returncode != 0 and 'integration must be disabled' in result.stderr
+        assert result.returncode != 0 and 'Invalid HTTPS DNS Proxy integration' in result.stderr
         assert not state('https-dns-proxy', 'running') and not state('https-dns-proxy', 'enabled')
         (directory / flag).unlink()
+
+    (directory / 'integration-on').touch()
+    assert run('start', 'https-dns-proxy').returncode == 0
+    assert run('quiesce', 'https-dns-proxy').returncode == 0
+    (directory / 'integration-on').unlink()
 
     (directory / 'https-dns-proxy.fail-stop').touch()
     (directory / 'https-dns-proxy.running').touch()
