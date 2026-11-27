@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion and full installer
-# Version: 3.30.26
+# Version: 3.30.27
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="3.30.26"
+VERSION="3.30.27"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -966,7 +966,7 @@ if json_select "$name" 2>/dev/null; then
     json_get_var chain chain
     [ "$type" = include ] && [ "$include_type" = nftables ] &&
     [ "$include_path" = "$nft_file" ] && [ "$position" = chain-pre ] &&
-    [ "$chain" = dstnat_lan ] || { echo 'Unrelated firewall include with Manager name' >&2; exit 1; }
+    { [ "$chain" = dstnat ] || [ "$chain" = dstnat_lan ]; } || { echo 'Unrelated firewall include with Manager name' >&2; exit 1; }
     ubus call uci delete "{\"ubus_rpc_session\":\"$sid\",\"config\":\"firewall\",\"section\":\"$name\"}" >/dev/null
     ubus call uci commit "{\"ubus_rpc_session\":\"$sid\",\"config\":\"firewall\"}" >/dev/null
     changed=1
@@ -1786,7 +1786,7 @@ DMD_ASSIGNMENTS="/etc/dns-manager/config/device-dns.conf"
 DMD_MANAGER_CONFIG="/etc/dns-manager/config/manager.conf"
 DMD_NFT="/etc/dns-manager/device-dns/redirects.nft"
 DMD_INCLUDE="dns_manager_device_dns"
-DMD_CHAIN="dstnat_lan"
+DMD_CHAIN="dstnat"
 DMD_STAGE=""
 
 dmd_log() { logger -t dns-manager-device-dns -- "$*" 2>/dev/null || true; }
@@ -1890,7 +1890,8 @@ dmd_include_is_owned() {
     [ "$(uci -q get "firewall.$DMD_INCLUDE.type" 2>/dev/null || true)" = nftables ] &&
     [ "$(uci -q get "firewall.$DMD_INCLUDE.path" 2>/dev/null || true)" = "$DMD_NFT" ] &&
     [ "$(uci -q get "firewall.$DMD_INCLUDE.position" 2>/dev/null || true)" = chain-pre ] &&
-    [ "$(uci -q get "firewall.$DMD_INCLUDE.chain" 2>/dev/null || true)" = "$DMD_CHAIN" ]
+    { [ "$(uci -q get "firewall.$DMD_INCLUDE.chain" 2>/dev/null || true)" = "$DMD_CHAIN" ] ||
+      [ "$(uci -q get "firewall.$DMD_INCLUDE.chain" 2>/dev/null || true)" = dstnat_lan ]; }
 }
 
 dmd_remove_include() {
@@ -2250,7 +2251,7 @@ DM_SOURCE_BASE="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/$_d
 COMPANION_URL="$DM_SOURCE_BASE/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="3.30.26"
+SELF_VERSION="3.30.27"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -6374,7 +6375,7 @@ EOF_RPC_WRAPPER
 'require ui';
 'require session';
 
-// DNS Manager LuCI common module version: 3.30.26
+// DNS Manager LuCI common module version: 3.30.27
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -10372,7 +10373,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 3.30.26
+// DNS Manager LuCI version: 3.30.27
 return view.extend({
   load: DM.load,
   render: DM.render,
@@ -10458,7 +10459,8 @@ uninstall_files() {
            [ "$(uci -q get firewall.dns_manager_device_dns.type 2>/dev/null || true)" != nftables ] ||
            [ "$(uci -q get firewall.dns_manager_device_dns.path 2>/dev/null || true)" != /etc/dns-manager/device-dns/redirects.nft ] ||
            [ "$(uci -q get firewall.dns_manager_device_dns.position 2>/dev/null || true)" != chain-pre ] ||
-           [ "$(uci -q get firewall.dns_manager_device_dns.chain 2>/dev/null || true)" != dstnat_lan ]; then
+           { [ "$(uci -q get firewall.dns_manager_device_dns.chain 2>/dev/null || true)" != dstnat ] &&
+             [ "$(uci -q get firewall.dns_manager_device_dns.chain 2>/dev/null || true)" != dstnat_lan ]; }; then
             err "Найден чужой firewall include с именем dns_manager_device_dns; ничего не удалено."
             return 1
         fi
