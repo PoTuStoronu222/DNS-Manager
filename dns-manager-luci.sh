@@ -1,6 +1,6 @@
 #!/bin/sh
 # DNS Manager LuCI companion and full installer
-# Version: 3.30.27
+# Version: 3.30.28
 # install bootstraps the backend, required packages and native LuCI UI.
 # update refreshes only the LuCI companion for the in-panel updater.
 # It does not install ttyd and does not open another HTTP port.
@@ -31,7 +31,7 @@ CONFIG_FILE="/etc/dns-manager/config/manager.conf"
 STATE_FILE="/etc/dns-manager/config/luci-state.conf"
 # Legacy update compatibility: admin/services/dns_manager
 VERSION_FILE="$BACKUP_DIR/version"
-VERSION="3.30.27"
+VERSION="3.30.28"
 ASSET_VERSION="v$(printf '%s' "$VERSION" | tr '.' '_')"
 
 say() { printf '%s\n' "$*"; }
@@ -2257,7 +2257,7 @@ DM_SOURCE_BASE="https://raw.githubusercontent.com/PoTuStoronu222/DNS-Manager/$_d
 COMPANION_URL="$DM_SOURCE_BASE/dns-manager-luci.sh"
 VERSION_FILE="/etc/dns-manager-luci/version"
 VIEW_FILE="$VIEW_DIR/dashboard.js"
-SELF_VERSION="3.30.27"
+SELF_VERSION="3.30.28"
 
 umask 077
 if [ "${1:-}" != "call" ] || [ "${2:-}" != "runtime" ]; then
@@ -6381,7 +6381,7 @@ EOF_RPC_WRAPPER
 'require ui';
 'require session';
 
-// DNS Manager LuCI common module version: 3.30.27
+// DNS Manager LuCI common module version: 3.30.28
 function dmRpc(o){
   var fn=rpc.declare(o);
   return function(){
@@ -7042,7 +7042,7 @@ function displayDnsRows(st){
       slot:'',
       id:String(instance.id||''),
       index:instance.index,
-      name:String(instance.name||instance.url||'Пользовательский DNS'),
+      name:String((instance.name&&instance.name!=='Пользовательский DNS'&&instance.name)||instance.url||instance.name||'Пользовательский DNS'),
       port:String(instance.port||''),
       url:String(instance.url||''),
       status:String(ci.status||instance.status||''),
@@ -7091,7 +7091,7 @@ function renderOverview(root,st){
 
   var dnsItems=[];
   displayDnsRows(st).forEach(function(d,index){
-    var slot=d.slot?slotLabel(d.slot):(st.dnscrypt_engine==='dnscrypt-proxy2'?'Общий пул':'системный DNS');
+    var slot=d.slot?slotLabel(d.slot):(st.dnscrypt_engine==='dnscrypt-proxy2'?'Общий пул':'HTTPS DNS Proxy');
     var name=d.name||'Пользовательский DNS';
     var ci=checkInfo(d.id,d);
     var statusNode=st.dnscrypt_engine==='dnscrypt-proxy2'?dnscryptLatencyBadge(st,index):stateBadge(ci.status||d.status,ci.ping||d.ping);
@@ -7187,7 +7187,7 @@ function renderOverview(root,st){
 function resolverRows(st,root){
   var out=[],rows=displayDnsRows(st);
   rows.forEach(function(d){
-    var slot=d.slot?slotLabel(d.slot):'системный DNS';
+    var slot=d.slot?slotLabel(d.slot):'HTTPS DNS Proxy';
     var name=d.name||'Пользовательский DNS';
     var ci=checkInfo(d.id,d);
     var status=String(ci.status||d.status||'').toUpperCase();
@@ -10379,7 +10379,7 @@ EOF_COMMON
 'use strict';
 'require view';
 'require dns-manager.common as DM';
-// DNS Manager LuCI version: 3.30.27
+// DNS Manager LuCI version: 3.30.28
 return view.extend({
   load: DM.load,
   render: DM.render,

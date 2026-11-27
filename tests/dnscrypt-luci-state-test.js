@@ -29,6 +29,12 @@ assert.equal(ctx.activeProfileLabel(current), 'Не выбран');
 assert.equal(ctx.activeProfileId({profile:'clean'}), 'clean');
 assert.equal(ctx.displayDnsRows({slots:[], doh_instances:[]}).length, 0);
 assert.equal(ctx.displayDnsRows({dnscrypt_engine:'dnscrypt-proxy2', dnscrypt_auto_catalog:1, dnscrypt_servers:['old']}).length, 0);
+const hdpDefault = {slots:[], doh_instances:[
+  {name:'Пользовательский DNS',url:'https://cloudflare-dns.com/dns-query',port:'5053'},
+  {name:'Пользовательский DNS',url:'https://dns.google/dns-query',port:'5054'}]};
+assert.deepEqual(Array.from(ctx.displayDnsRows(hdpDefault), x => x.name),
+  ['https://cloudflare-dns.com/dns-query','https://dns.google/dns-query']);
+assert.equal(ctx.displayDnsRows({slots:[],doh_instances:[{name:'Мой DNS',url:'https://example.org/dns-query'}]})[0].name,'Мой DNS');
 ctx.E = (tag, attrs, text) => ({tag, attrs, text});
 ctx.card = (title, children) => ({title, children});
 ctx.state = {busy:false,openSections:{}};
@@ -37,6 +43,7 @@ ctx.row = (label, value) => ({label,value});
 ctx.foldSection = (key,title,content) => ({key,title,content});
 ctx.window = {dmLanDevices:{ok:true,devices:[]}};
 ctx.btn = (label, style, action, options) => ({label,style,action,options});
+
 ctx.selectDnscryptServer = (id) => { ctx.selectedServer=id; };
 vm.runInContext(section('function dnscryptLatencyBadge(', 'function renderDoH('), ctx);
 vm.runInContext(section('function renderSlots(', 'function settingCard('), ctx);
@@ -88,6 +95,13 @@ console.log('PASS: DNSCrypt profile and pooled servers do not inherit legacy slo
 ctx.state = {busy:false,jobRunning:false};
 ctx.badge = (type, text) => ({type,text});
 ctx.btn = (label, style, action, options) => ({label,style,action,options});
+ctx.stateBadge = () => ({});
+ctx.slotLabel = slot => 'Слот ' + slot;
+vm.runInContext(section('function resolverRows(', 'function removeSelectedSlot('), ctx);
+const [defaultRows] = ctx.resolverRows(hdpDefault, {});
+assert.equal(defaultRows[0].text[0].text, 'HTTPS DNS Proxy');
+assert.equal(defaultRows[0].text[1].text, 'https://cloudflare-dns.com/dns-query');
+
 ctx.resumeEngine = () => {};
 ctx.appendUninstall = children => children.push({label:'Удалить'});
 vm.runInContext(section('function renderDoH(', 'function renderSlots(').split('function renderSlots(')[0], ctx);
